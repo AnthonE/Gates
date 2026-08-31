@@ -342,8 +342,13 @@ pub struct Place {
 pub struct Netstat {
     /// Reconciles where the predictor's ring matched the server bit for bit.
     pub confirmations: u64,
-    /// Reconciles that had to rewind and replay.
+    /// Reconciles that had to rewind and replay past the minor band —
+    /// real divergence, the number worth hunting.
     pub mispredictions: u64,
+    /// Reconciles that rewound inside the minor band (netcode v2 S3):
+    /// sub-quantum jiggle the smoothing hides — starved-tick residue,
+    /// not a defect. Split out so the row above stays worth reading.
+    pub corrections_minor: u64,
     pub snapshots_applied: u64,
     pub snapshots_delta: u64,
     /// Snapshots that arrived older than what was already applied.
@@ -363,7 +368,7 @@ impl Netstat {
     /// says whether prediction is working — the HUD's net line makes the same
     /// choice for the same reason.
     pub fn confirm_pct(&self) -> Option<f64> {
-        let total = self.confirmations + self.mispredictions;
+        let total = self.confirmations + self.mispredictions + self.corrections_minor;
         (total > 0).then(|| 100.0 * self.confirmations as f64 / total as f64)
     }
 }
@@ -650,6 +655,11 @@ impl Report {
                 None => row(&mut s, "reconciles confirmed", "_(none yet)_"),
             }
             row(&mut s, "mispredictions", &n.mispredictions.to_string());
+            row(
+                &mut s,
+                "· minor (in-band)",
+                &n.corrections_minor.to_string(),
+            );
             row(
                 &mut s,
                 "snapshots applied",

@@ -13,14 +13,15 @@
 //! same encoder produced and can never notice the prose drifting.
 //!
 //! **Input, C→S** — `kind:4 · snapshot_ack:16 · ack_bits:32 ·
-//! first_client_tick:32 · frame_count:4`, then if any frames:
+//! playout_ticks:4 · frame_count:4`, then if any frames:
 //! `first_seq:16` and per frame `buttons:8 · yaw:16 · pitch:8 · move_x:8 ·
 //! move_z:8 · sel:3` (hotbar selector 0–5; 6–7 refuse as malformed).
 //! Frames are the client's unacked tail, oldest first, seq-consecutive by
 //! construction (seq rides the wire once).
 //!
 //! **Snapshot, S→C** — `kind:4 · tick:32 · baseline_age:8 ·
-//! last_executed_seq:16 · nudge:2 · removed_count:7 · entity_count:7`,
+//! last_executed_seq:16 · nudge:2 · buffered_depth:4 · repeat_count:3 ·
+//! removed_count:7 · entity_count:7`,
 //! then removed ids (`u32` each), then entity records. `baseline_age == 0`
 //! is the canonical zero-state (NETCODE.md §3, the Quake-3 move): every
 //! record absolute, no baseline needed. Otherwise records may delta
@@ -794,7 +795,28 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// which is a firearm that silently never reloads rather than a mismatch
 /// anyone sees. `PROTO_VER` is exact-match gated precisely so neither side
 /// has to guess.
-pub const PROTO_VER: u16 = 59;
+///
+/// **v60 — netcode v2, slice 1 (the stop-snap kill; DECISIONS.md
+/// 2026-08-31).** One layout move: the snapshot header gains
+/// `buffered_depth:4` and `repeat_count:3` between `nudge` and the counts
+/// — the server's input-buffer gauge and its starved-reuse counter, the
+/// two numbers the client's clock controller steers on where it used to
+/// follow `nudge`'s 2-bit quantization. Behind the same bump (no wire
+/// shape of their own): a starved tick now feeds the sim the last real
+/// frame *decayed* rather than verbatim, and a throttle tick executes
+/// BOTH consumed frames (`Command::InputPair`) — the consumed-but-never-
+/// stepped older frame was one guaranteed misprediction per throttle
+/// tick, felt as the client snapping on every stop.
+///
+/// **v61 — netcode v2, slice 5 (the playout report).** One layout move on
+/// the input datagram: the dead `first_client_tick:32` — read by nothing
+/// on the server since M0 — becomes `playout_ticks:4`, the client's
+/// current adaptive interpolation delay, so lag-comp favour prices the
+/// delay each client actually renders at instead of assuming the old
+/// constant (`stats::favour_for`; the claim is clamped to the shared
+/// `PLAYOUT_MIN/MAX_TICKS` rails at the mint). Every input datagram gets
+/// 28 bits shorter. Snapshot layout unchanged.
+pub const PROTO_VER: u16 = 61;
 
 /// This game's slug in the elo catalog.
 ///
@@ -2413,25 +2435,26 @@ pub struct InputDatagram {
     pub snapshot_ack: u16,
     /// Bit n set ⇒ snapshot tick `snapshot_ack − n − 1` also applied.
     pub ack_bits: u32,
-    /// Client tick of `frames[0]`; with no frames, the client's current
-    /// tick. **Nothing on the server reads it.** This line used to say the
-    /// field "feeds the server's clock estimate", which described an
-    /// estimate that was never built: `Core::push_input` folds the acks and
-    /// the frame tail and drops the rest, and the accessor below has no
-    /// callers. It stays on the wire because taking it off is a layout
-    /// change (wall 6) and because it is what a clock estimate would be
-    /// built from — the field is not evidence that one exists.
-    pub first_client_tick: u32,
+    /// The client's current playout delay in ticks — how far in the past
+    /// it renders remote bodies — **4 bits, saturating at 15** (netcode v2
+    /// S5, wire v61). The server clamps it to the shared rails
+    /// (`PLAYOUT_MIN/MAX_TICKS`) before lag-comp favour prices it, so a
+    /// forged value buys nothing an honest client at max jitter would not
+    /// get. This replaced `first_client_tick:32` — a field nothing on the
+    /// server ever read, kept only because removing it was a layout
+    /// change; a bump that adds a field is the one free moment to reclaim
+    /// one, and 28 of its bits come off every input datagram with it.
+    pub playout_ticks: u8,
     frames: [InputFrame; MAX_INPUT_FRAMES],
     frame_count: u8,
 }
 
 impl InputDatagram {
-    pub fn new(snapshot_ack: u16, ack_bits: u32, first_client_tick: u32) -> Self {
+    pub fn new(snapshot_ack: u16, ack_bits: u32, playout_ticks: u8) -> Self {
         Self {
             snapshot_ack,
             ack_bits,
-            first_client_tick,
+            playout_ticks: playout_ticks.min(0xF),
             frames: [InputFrame::default(); MAX_INPUT_FRAMES],
             frame_count: 0,
         }
@@ -2457,11 +2480,6 @@ impl InputDatagram {
     pub fn frames(&self) -> &[InputFrame] {
         &self.frames[..self.frame_count as usize]
     }
-
-    /// Client tick of frame `i` (ticks advance in lockstep with seqs).
-    pub fn client_tick_of(&self, i: usize) -> u32 {
-        self.first_client_tick.wrapping_add(i as u32)
-    }
 }
 
 pub fn encode_input(dg: &InputDatagram, buf: &mut [u8]) -> Result<usize, WireError> {
@@ -2469,7 +2487,7 @@ pub fn encode_input(dg: &InputDatagram, buf: &mut [u8]) -> Result<usize, WireErr
     w.write(KIND_INPUT, KIND_BITS)?;
     w.write(dg.snapshot_ack as u32, 16)?;
     w.write(dg.ack_bits, 32)?;
-    w.write(dg.first_client_tick, 32)?;
+    w.write(dg.playout_ticks.min(0xF) as u32, 4)?;
     let frames = dg.frames();
     w.write(frames.len() as u32, FRAME_COUNT_BITS)?;
     if let Some(first) = frames.first() {
@@ -2516,12 +2534,12 @@ pub fn decode_input(buf: &[u8]) -> Result<InputDatagram, WireError> {
     }
     let snapshot_ack = r.read(16)? as u16;
     let ack_bits = r.read(32)?;
-    let first_client_tick = r.read(32)?;
+    let playout_ticks = r.read(4)? as u8;
     let count = r.read(FRAME_COUNT_BITS)? as usize;
     if count > MAX_INPUT_FRAMES {
         return Err(WireError::Malformed);
     }
-    let mut dg = InputDatagram::new(snapshot_ack, ack_bits, first_client_tick);
+    let mut dg = InputDatagram::new(snapshot_ack, ack_bits, playout_ticks);
     if count > 0 {
         let first_seq = r.read(16)? as u16;
         for i in 0..count {
@@ -2583,6 +2601,23 @@ pub struct SnapshotHeader {
     /// prediction reconciliation (DESIGN.md §5.6).
     pub last_executed_seq: u16,
     pub nudge: Nudge,
+    /// Post-consume input-buffer depth this tick, **4 bits, saturating at
+    /// 15** (netcode v2). The buffer caps at `INPUT_BUFFER_CAP` (16), so
+    /// the one unrepresentable value reads as its neighbor — a stated
+    /// policy on a gauge, not the silent range clamp this codec refuses
+    /// for sim values: 15 already means "far past every threshold that
+    /// matters" (`INPUT_THROTTLE_DEPTH` is 6). The client's dilation
+    /// controller steers on this number where it used to follow `nudge`'s
+    /// 2-bit quantization of it.
+    pub buffered_depth: u8,
+    /// Consecutive ticks the sim has covered for a missing frame by
+    /// re-running the last real one decayed (`sim_core::input::decay_frame`)
+    /// — **3 bits, saturating at 7**, and ≥ `DECAY_STEPS` (3) means the
+    /// stand-in is fully spent and the body stands still. Zero on every
+    /// fed tick. Diagnostics and honesty, not control: the client cannot
+    /// replay ghosts it may never hear about (a starved link is a lossy
+    /// link), so reconcile absorbs them instead.
+    pub repeat_count: u8,
 }
 
 /// One class-D entity as the wire sees it: the quantized body (the sim
@@ -2791,6 +2826,8 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
         w.write(header.baseline_age as u32, 8)?;
         w.write(header.last_executed_seq as u32, 16)?;
         w.write(header.nudge as u32, 2)?;
+        w.write(header.buffered_depth.min(0xF) as u32, 4)?;
+        w.write(header.repeat_count.min(0x7) as u32, 3)?;
         let removed_count_at = w.bit_pos();
         w.write(0, COUNT_BITS)?;
         let entity_count_at = w.bit_pos();
@@ -3080,6 +3117,8 @@ fn read_snapshot_header(r: &mut BitReader) -> Result<SnapshotHeader, WireError> 
         baseline_age: r.read(8)? as u8,
         last_executed_seq: r.read(16)? as u16,
         nudge: Nudge::from_bits(r.read(2)?),
+        buffered_depth: r.read(4)? as u8,
+        repeat_count: r.read(3)? as u8,
     })
 }
 
@@ -3272,6 +3311,8 @@ mod tests {
             baseline_age: 0,
             last_executed_seq: 0,
             nudge: Nudge::Ok,
+            buffered_depth: 0,
+            repeat_count: 0,
         };
         let baseline = [ent(1)];
         let mut buf = [0u8; 64];
@@ -3296,6 +3337,8 @@ mod tests {
             baseline_age: 1,
             last_executed_seq: 0,
             nudge: Nudge::Ok,
+            buffered_depth: 0,
+            repeat_count: 0,
         };
         let mut buf = [0u8; DATAGRAM_BUDGET_BYTES];
         let full: Vec<EntityState> = (0..MAX_SNAPSHOT_ENTITIES as u32).map(ent).collect();
@@ -3322,6 +3365,8 @@ mod tests {
             baseline_age: 1,
             last_executed_seq: 0,
             nudge: Nudge::Ok,
+            buffered_depth: 0,
+            repeat_count: 0,
         };
         // Ids shaped like the shard's: `(generation << 8) | slot` for
         // players and the mob tag above them, so the probe meets the same
@@ -3349,7 +3394,7 @@ mod tests {
         // at-rest absolute record is 32 + 85 (1 is_delta + 17 + 14 + 17 +
         // 3 flags + 1 at-rest + 16 + 8 + `HELD_BITS` + 1 lit), so a single
         // missed lookup adds 77 bits and this bound catches it.
-        let head_bits = KIND_BITS + 32 + 8 + 16 + 2 + COUNT_BITS * 2;
+        let head_bits = KIND_BITS + 32 + 8 + 16 + 2 + 4 + 3 + COUNT_BITS * 2;
         let want = (head_bits as usize + MAX_SNAPSHOT_ENTITIES * 40).div_ceil(8);
         assert_eq!(
             len, want,
@@ -3407,6 +3452,8 @@ mod tests {
             baseline_age: 0,
             last_executed_seq: 0,
             nudge: Nudge::Ok,
+            buffered_depth: 0,
+            repeat_count: 0,
         };
         // Eight bodies, so a per-record bit difference lands on a byte
         // boundary. The first three carry the cases that matter on the
@@ -3486,6 +3533,8 @@ mod tests {
             baseline_age: 0,
             last_executed_seq: 0,
             nudge: Nudge::Ok,
+            buffered_depth: 0,
+            repeat_count: 0,
         };
         let mut buf = [0u8; 128];
         let mut enc = SnapshotEncoder::begin(&mut buf, &hdr, &[]).unwrap();
@@ -3541,6 +3590,8 @@ mod tests {
             baseline_age: 0,
             last_executed_seq: 0,
             nudge: Nudge::Ok,
+            buffered_depth: 0,
+            repeat_count: 0,
         };
         let mut buf = [0u8; 128];
         let mut enc = SnapshotEncoder::begin(&mut buf, &hdr, &[]).unwrap();
@@ -3555,6 +3606,8 @@ mod tests {
             baseline_age: 0,
             last_executed_seq: 0,
             nudge: Nudge::Ok,
+            buffered_depth: 0,
+            repeat_count: 0,
         };
         let mut buf = [0u8; 128];
         let mut enc = SnapshotEncoder::begin(&mut buf, &hdr, &[]).unwrap();
@@ -3573,6 +3626,8 @@ mod tests {
             baseline_age: 0,
             last_executed_seq: 5,
             nudge: Nudge::Ok,
+            buffered_depth: 0,
+            repeat_count: 0,
         };
         // Room for the header and one absolute record, not two.
         let mut buf = [0u8; 28];

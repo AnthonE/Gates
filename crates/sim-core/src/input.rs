@@ -1,8 +1,12 @@
 //! The input frame (DESIGN.md §5.4): seq, buttons, yaw u16, pitch u8,
 //! move vec 2×i8. The wire adds client_tick and redundancy; the sim
-//! consumes exactly one effective frame per player per tick and keeps the
-//! last one applied — an empty server-side buffer reuses it (NETCODE.md §4),
-//! and replay reproduces that for free because the frame is sim state.
+//! consumes exactly one effective frame per player per tick (two on a
+//! throttle catch-up, `world.rs Command::InputPair`) and keeps the last
+//! one applied — an empty server-side buffer reuses it, and replay
+//! reproduces that for free because the frame is sim state. Since netcode
+//! v2 (NETCODE.md §4) the SERVER does not leave the reuse at full
+//! strength: it mints [`decay_frame`]'s ramp as ordinary commands, so the
+//! sim rule stays one sentence and the WAL still carries everything.
 
 /// Button bits (ALPHA.md §1 sizes sprint/crouch into the field; crouch has
 /// no sim effect yet — it lands with the combat pass). PRIMARY is the
@@ -87,4 +91,125 @@ pub struct InputFrame {
     /// 1–6). 3 bits on the wire (decode refuses 6–7); `world::apply`
     /// falls invalid non-wire values back to slot 0.
     pub sel: u8,
+}
+
+/// How many starved reuses fully extinguish a frame's movement — the
+/// length of [`decay_frame`]'s ramp. Server-side minting stops once a
+/// frame is this stale (the stored frame is then already fully decayed,
+/// so the sim's implicit reuse of it is identical to further mints), and
+/// the wire's `repeat_count` saturation only has to say "at least this".
+pub const DECAY_STEPS: u32 = 3;
+
+/// The starved-reuse frame (netcode v2, DECISIONS.md 2026-08-31): what the
+/// server feeds the sim on a tick that has no fresh frame from this player,
+/// in place of re-running the last one verbatim at full strength forever.
+///
+/// `repeat` is how many consecutive ticks the last real frame has already
+/// covered (1 on the first starved tick). Movement fades 3/3 → 2/3 → 1/3 →
+/// 0 across [`DECAY_STEPS`] reuses — Rocket League's published ramp, and
+/// the direction matters more than the numbers: **undershooting and
+/// catching up when the real input lands reads better than overshooting
+/// and rubber-banding back** (Cone, GDC 2018). The overshoot is exactly
+/// what a player felt as "my client snaps when I stop": the release frame
+/// is late, the server walks the body on at full speed, and the reconcile
+/// drags the client to a place it never went.
+///
+/// What decays and what rides through is decided by kind, not by list:
+/// - **Axes decay.** `move_x`/`move_z` are the only intent that
+///   extrapolates badly.
+/// - **Edges and holds clear from the first reuse.** A reused `BTN_JUMP`
+///   is a hop on every landing (`movement.rs` — grounded re-arms the
+///   button), a reused `BTN_PRIMARY` swings an arm nobody is driving.
+/// - **Latches ride through untouched**: `yaw`, `pitch`, `sel`, and
+///   `BTN_LIGHT` — the frame's statements about what *is* rather than
+///   what to *do*. A two-tick starve that snuffed a torch for everyone
+///   watching would be a new defect wearing a fix's clothes.
+///
+/// Integer math only, widened to i32 before the scale so ±127 cannot
+/// overflow and division truncates toward zero identically on native and
+/// wasm32 — an arithmetic shift would decay left-strafe harder than right
+/// (`-127 >> 1` is -64 against `127 >> 1`'s 63), which is why there isn't
+/// one. `repeat == 0` returns the frame bit-identical, so a caller may
+/// use this total function unconditionally.
+pub fn decay_frame(f: &InputFrame, repeat: u32) -> InputFrame {
+    let keep = (DECAY_STEPS.saturating_sub(repeat)) as i32;
+    let scale = |v: i8| ((v as i32) * keep / DECAY_STEPS as i32) as i8;
+    InputFrame {
+        seq: f.seq,
+        buttons: if repeat == 0 {
+            f.buttons
+        } else {
+            f.buttons & BTN_LIGHT
+        },
+        yaw: f.yaw,
+        pitch: f.pitch,
+        move_x: scale(f.move_x),
+        move_z: scale(f.move_z),
+        sel: f.sel,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame(move_x: i8, move_z: i8, buttons: u8) -> InputFrame {
+        InputFrame {
+            seq: 9,
+            buttons,
+            yaw: 0x1234,
+            pitch: 77,
+            move_x,
+            move_z,
+            sel: 3,
+        }
+    }
+
+    /// repeat 0 is the frame itself, bit for bit — the total-function
+    /// contract that lets a caller apply the decay unconditionally.
+    #[test]
+    fn repeat_zero_is_identity() {
+        let f = frame(-127, 127, BTN_MASK);
+        assert_eq!(decay_frame(&f, 0), f);
+    }
+
+    /// The ramp is 2/3, 1/3, 0 — and symmetric in sign, which is the
+    /// reason the scale is a widened multiply-divide and not a shift.
+    #[test]
+    fn movement_decays_symmetrically_to_zero() {
+        let f = frame(-127, 127, 0);
+        let d1 = decay_frame(&f, 1);
+        assert_eq!((d1.move_x, d1.move_z), (-84, 84));
+        let d2 = decay_frame(&f, 2);
+        assert_eq!((d2.move_x, d2.move_z), (-42, 42));
+        for repeat in DECAY_STEPS.. {
+            let d = decay_frame(&f, repeat);
+            assert_eq!((d.move_x, d.move_z), (0, 0));
+            if repeat > DECAY_STEPS + 2 {
+                break;
+            }
+        }
+    }
+
+    /// Edges and holds clear on the first reuse — the reused-jump hop and
+    /// the driverless swing — while the flame latch rides through, so a
+    /// short starve cannot snuff a torch for everyone watching.
+    #[test]
+    fn buttons_clear_except_the_light_latch() {
+        let f = frame(50, 50, BTN_MASK);
+        let d = decay_frame(&f, 1);
+        assert_eq!(d.buttons, BTN_LIGHT);
+        let dark = frame(50, 50, BTN_SPRINT | BTN_JUMP | BTN_PRIMARY);
+        assert_eq!(decay_frame(&dark, 1).buttons, 0);
+    }
+
+    /// The facts of the frame — look, hand, seq — never decay.
+    #[test]
+    fn latches_ride_through_every_step() {
+        let f = frame(10, -10, BTN_LIGHT);
+        for repeat in 0..6 {
+            let d = decay_frame(&f, repeat);
+            assert_eq!((d.seq, d.yaw, d.pitch, d.sel), (9, 0x1234, 77, 3));
+        }
+    }
 }

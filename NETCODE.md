@@ -35,7 +35,7 @@ pipeline. Nothing rides the snapshot path unless it moves.**
 
 | class | what's in it | changes | pipeline | steady-state cost |
 |---|---|---|---|---|
-| **D — dynamic** | awake players, projectiles in flight, items mid-physics | every tick | unreliable datagrams: delta snapshots vs acked baseline, priority-filled, 15 Hz | per-tick, bounded by datagram budget |
+| **D — dynamic** | awake players, projectiles in flight, items mid-physics | every tick | unreliable datagrams: delta snapshots vs acked baseline, priority-filled, 30 Hz (netcode v2 S2; was 15) | per-tick, bounded by datagram budget |
 | **S — structural** | building blocks, doors, tool cupboards, storage, settled items, death backpacks, **sleepers** | discrete events (placed, damaged, opened, looted, slept) | reliable **chunk event streams** with version numbers (§5) | zero between events |
 | **G — global** | time of day, wipe clock, shard notices | slow | a few bytes in every snapshot header + reliable notices | ~free |
 
@@ -165,8 +165,9 @@ Refinements over `DESIGN.md` §5, with the canon's shipped parameters:
   carries `snapshot_ack: u16` (newest snapshot tick received) plus
   `ack_bits: u32` (bit n ⇒ tick `ack − n` also received), so every ack is
   repeated ~32×; ack loss is a non-event. The server deltas each client
-  against the **newest acked baseline** in its ring of the last 32 sent
-  states (~2 s at 15 Hz). [gafferongames.com/post/reliable_ordered_messages]
+  against the **newest acked baseline** in its ring of the last 64 sent
+  states (~2 s at 30 Hz; the ring doubled with the rate at netcode v2 S2
+  so the window held). [gafferongames.com/post/reliable_ordered_messages]
 - **Resync is not a special path** — the Quake 3 trick: if a client's ack
   falls outside the ring (loss burst, tab-out, join), the baseline becomes
   the **canonical zero-state** and the same delta encoder produces an
@@ -200,15 +201,25 @@ Refinements over `DESIGN.md` §5, with the canon's shipped parameters:
   [gafferongames.com/post/state_synchronization ·
   gafferongames.com/post/packet_fragmentation_and_reassembly]
 - **Interpolation, with velocity.** Remote entities render 133 ms in the
-  past by default — 2 × the 66.7 ms snapshot interval, Source's shipped
-  `cl_interp` rule, tolerating exactly one lost snapshot — widening
-  adaptively to 200 ms on lossy links (Gaffer's tolerate-two rule) and
-  floored at 100 ms. Interpolation is **Hermite using the snapshot's
-  velocity**, not linear: at ≤ 15 Hz linear visibly pulses; Hermite at the
-  same rate shows no artifacts. Both straddling snapshots missing →
-  extrapolate linearly for at most **250 ms** (Source's bound), then
-  freeze honestly. [developer.valvesoftware.com/wiki/
-  Source_Multiplayer_Networking · gafferongames.com/post/snapshot_interpolation]
+  past by default — since netcode v2 S2 that is FOUR 33.3 ms snapshot
+  intervals (Valve's ratio doctrine: ratio 2 survives zero drops, 4
+  survives two consecutive) — and **adaptive since S5**: the delay
+  breathes between 2 and 8 intervals (67–267 ms) on an RFC 3550-style
+  jitter estimate over snapshot arrivals, slewed at half a tick per
+  second so the slide is beneath notice, starting at the 4-tick default.
+  Interpolation is **linear, and velocity is estimated rather than
+  carried** — the Hermite-with-wire-velocity this bullet used to specify
+  was designed against 15 Hz, where linear visibly pulses; at 30 Hz the
+  samples are the sim's own per-tick positions, so linear is exact to the
+  quantum and differencing adjacent samples reconstructs per-tick
+  velocity for zero wire bytes (the 64-moving worst case had 42 B of
+  headroom against ≥ +180 B for any honest velocity width). A dry buffer
+  **extrapolates on that estimate for 4 ticks (133 ms, well under
+  Source's 250 ms bound), then freezes honestly** — it used to freeze on
+  the spot and teleport when the next snapshot landed.
+  [developer.valvesoftware.com/wiki/
+  Source_Multiplayer_Networking · gafferongames.com/post/snapshot_interpolation
+  · rust.facepunch.com/news/devblog-196]
 - **Correction smoothing** on reconciliation error, Gaffer's blend:
   exponential 0.95/frame for errors ≤ 25 cm, 0.85 for ≥ 1 m, hard snap
   beyond a few meters. Corrections read as a nudge, never a teleport.
@@ -219,22 +230,42 @@ The model, named plainly (it's Overwatch's command-frame scheme): **the
 client's sim clock runs ahead of the server's by RTT/2 + one buffered
 tick**, so each input arrives just before the tick that consumes it. The
 server holds a per-client input buffer with a target depth of 1–2 ticks
-and never waits: an empty buffer means it reuses the previous input and
-the client will hear about it.
+and never waits: an empty buffer means it replays the previous input
+**decayed** — movement at 2/3, then 1/3, then zero (`input::decay_frame`,
+netcode v2 S1; Rocket League's undershoot ramp — catching up reads better
+than rubber-banding back), acting buttons cleared from the first reuse,
+look and the light latch held — and the client hears about it in the
+header (`repeat_count`). Until 2026-08-31 the reuse ran verbatim at full
+strength forever and the client heard nothing, which is what a stop felt
+like as a snap: the release frame arrived late, the server walked the body
+on at full stride, and the reconcile dragged the player back from a place
+they never went.
 
 Two feedback loops keep the buffer at target — both shipped mechanisms:
 
-1. **Time dilation** (Overwatch): every snapshot header carries a 2-bit
-   nudge — `ok / faster / slower / hard-resync`. On `faster` the client
-   shortens its 33.3 ms frame by ~5% (Overwatch runs 16 ms frames at
-   15.2 ms when starving — the same ratio) until the buffer refills, then
-   dilates back. `hard-resync` (buffer empty or > 6 ticks, or a
-   tab-throttle return) recomputes the offset outright from fresh pings.
+1. **Time dilation** (Overwatch): since netcode v2 S4 the header carries
+   the server's input-buffer gauge itself (`buffered_depth`, wire v60) and
+   the client runs a **proportional controller with a deadband** on it —
+   depth 1–3 is home and dilates nothing (the old 3-state nudge dilated at
+   depth 3, so a buffer breathing between 2 and 3 kept the clock hunting,
+   and every hunt was a small misprediction), one frame past the band
+   reaches the full ±5% (Overwatch's ratio: 16 ms frames at 15.2 ms when
+   starving). The 2-bit nudge still rides the header: `hard-resync`
+   (a second of starvation, a tab-throttle return) is starvation-driven —
+   a signal no depth reading carries — and still recenters the clock;
+   `faster`/`slower` are stamped and ignored, quantizations of the gauge
+   that now travels whole.
    [gdcvault.com/play/1024001 — Overwatch Gameplay Architecture and Netcode]
 2. **Server-side consume throttle** (Rocket League's fallback, credited by
    them to the Overwatch talk): when dilation can't keep up, the server
-   consumes 0, 1, or 2 buffered inputs in a tick to re-center the buffer —
-   a minor, bounded desync instead of an unbounded drift.
+   consumes 0, 1, or 2 buffered inputs in a tick to re-center the buffer.
+   **Both consumed frames execute** (`Command::InputPair`, wire v60): the
+   older steps movement first, exactly as the client's prediction ring
+   stepped it, so a throttle tick is bit-exact rather than "a minor,
+   bounded desync" — the shipped code consumed two and executed one from
+   M0 to 2026-08-31, which was one guaranteed misprediction per throttle
+   tick with every gate green (`client_loop.rs` now holds the pigeonhole
+   gate that would have caught it).
    [media.gdcvault.com/gdc2018/presentations/Cone_Jared_It_Is_Rocket.pdf]
 
 Result: just-in-time inputs across drifting clocks, changing RTT, and
@@ -472,6 +503,8 @@ omitting the third term:
 
 ```
 rewind_to = server_now − that_client's_latency − that_client's_ACTUAL_interp_delay
+(built at wire v61: the input datagram reports the client's live playout
+delay and `stats::favour_for` prices it, clamped to the shared 2–8 rails)
 ```
 
 — the server tracks each client's current interpolation delay (it varies
@@ -536,7 +569,7 @@ this is better.
 |---|---|
 | **the tick itself, 100 clients in one AOI cell, all acking, all swinging** | **~0.8 ms of the 33.3 ms budget** — sim ~0.15, interest + events + drip ~0.24, snapshot encode ~0.43. Measured 2026-08-11, `cargo run --release -p server --bin profile`; the periodic whole-world passes are `state_hash` 85 µs one tick in 32 and `encode_world` 24 µs one tick in 1,800. The one row here that was never measured, and the reason the AOI scan needs no spatial structure |
 | class D entities in a client's interest set, typical / cap | ~15 / 64 |
-| per-client downstream, steady | ≤ 20 kB/s (snapshots) + bursts on approach (chunk streams) |
+| per-client downstream, steady | ≤ 32 kB/s worst-case (30 Hz × ≤ 1.06 kB; typical is delta records over a few dozen entities, far less) + bursts on approach (chunk streams) |
 | chunk full-state, dense base chunk | ≤ 24 kB (1,500 blocks × 16 B) |
 | megabase approach burst | ≤ 100 kB across ~4 chunks, nearest-first, stream-paced |
 | structural events, raid storm, per subscriber | ≤ 40 events/s after coalescing |
@@ -548,7 +581,7 @@ this is better.
 | failure | what happens |
 |---|---|
 | lost snapshot datagram | nothing; next snapshot supersedes (baselines make gaps free) |
-| lost input datagram | covered by unacked-input redundancy (≤ 10 frames ≈ 333 ms); beyond that the server reuses the last input (you glide briefly), dilation refills the buffer |
+| lost input datagram | covered by unacked-input redundancy (≤ 10 frames ≈ 333 ms); beyond that the server replays the last input on the decay ramp (2/3 → 1/3 → 0 over three ticks — you coast to a stop rather than glide on at full stride), dilation refills the buffer |
 | ack gap > baseline ring | baseline drops to the canonical zero-state; the same delta path streams the world back by priority (Q3's dummy-gamestate move) |
 | chunk event lane stalls | QUIC retransmits (reliable); if the stream resets, resubscribe at V → tail replay |
 | client stops stepping (was: a throttled background tab; now a suspended laptop, an unfocused window, a compositor stall) | dilation hard-resync on return; > 30 s → treated as disconnect: **you become a sleeper where you stand**. The cause changed with the client and the handling did not — §4 says why it never was tab-specific |

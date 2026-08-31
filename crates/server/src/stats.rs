@@ -4,8 +4,8 @@
 //! design (L5: diagnostics are numbers, not strings).
 
 use sim_core::limits::{
-    INPUT_BUFFER_CAP, INTERP_DELAY_TICKS, REWIND_ACK_BIAS_TICKS, REWIND_MAX_TICKS,
-    SENT_SNAPSHOT_RING, SNAPSHOT_INTERVAL_TICKS, TICK_HZ,
+    INPUT_BUFFER_CAP, INTERP_DELAY_TICKS, PLAYOUT_MAX_TICKS, PLAYOUT_MIN_TICKS,
+    REWIND_ACK_BIAS_TICKS, REWIND_MAX_TICKS, SENT_SNAPSHOT_RING, SNAPSHOT_INTERVAL_TICKS, TICK_HZ,
 };
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -80,15 +80,19 @@ pub const FAVOUR_DISAGREE_BAND_TICKS: u16 = 2;
 
 /// The formula's two terms cannot underflow the raw staleness: it is added
 /// to, then subtracted from, and this is the order that keeps it in `u16`
-/// without a saturating call that would hide a constant moving.
-const _: () = assert!(INTERP_DELAY_TICKS >= REWIND_ACK_BIAS_TICKS);
+/// without a saturating call that would hide a constant moving. Compared
+/// as `i32` because the bias sits at 0 since netcode v2 S2 (interval 1,
+/// floored half) and clippy's `absurd_extreme_comparisons` rightly points
+/// out a `u8 >= 0` proves nothing — the widened compare keeps meaning if
+/// the bias ever moves back up.
+const _: () = assert!(INTERP_DELAY_TICKS as i32 >= REWIND_ACK_BIAS_TICKS as i32);
 
 /// **How many ticks of lag compensation this frame has earned** — the one
 /// place a favour is minted, and the whole of lag-compensation slice 5
 /// (`findings/lagcomp-design-20260818.md` §7).
 ///
 /// ```text
-/// favour = min((T − S) + INTERP_DELAY_TICKS − REWIND_ACK_BIAS_TICKS, REWIND_MAX_TICKS)
+/// favour = min((T − S) + clamp(playout, rails) − REWIND_ACK_BIAS_TICKS, REWIND_MAX_TICKS)
 /// ```
 ///
 /// `now` is `T`, the low 16 bits of the tick this frame executes at, and
@@ -120,11 +124,23 @@ const _: () = assert!(INTERP_DELAY_TICKS >= REWIND_ACK_BIAS_TICKS);
 ///   *favour* is the same judgement with teeth: this is the only input a
 ///   forger controls, and the reward for reaching for an hour of rewind is
 ///   none at all rather than the clamp's seven ticks.
-/// - **A zero-tick-old ack** would mint `0 + 4 − 1 = 3`, not zero — and
-///   that is correct, not a bug. Even a client on loopback drew its remotes
-///   `INTERP_DELAY_TICKS` in the past; the measured floor on this box was
-///   1.107 raw ticks ⇒ ~4.1 of favour (DECISIONS.md, aim staleness v0).
-pub fn favour_for(now: u16, view: Option<u16>) -> u8 {
+/// - **A zero-tick-old ack** still mints its reported playout (2–8 ticks),
+///   not zero — and that is correct, not a bug. Even a client on loopback
+///   draws its remotes that far in the past; the measured floor on this box
+///   was 1.107 raw ticks (DECISIONS.md, aim staleness v0).
+///
+/// `playout` is the delay the client REPORTS rendering at (wire v61) —
+/// a claim, so it is clamped to the shared rails before it prices
+/// anything: below `PLAYOUT_MIN_TICKS` no honest interpolator runs, and
+/// above `PLAYOUT_MAX_TICKS` no honest one buffers, so a forged value
+/// buys exactly what an honest client at that extreme would get and not
+/// a tick more. Before v61 this term was the `INTERP_DELAY_TICKS`
+/// constant, which over-favoured every smooth-link client (actual delay
+/// at the floor, 2) and under-favoured every jittery one (actual delay
+/// up to 8) — the fairness gap NETCODE.md §8 always specified closing
+/// ("the server tracks each client's current interpolation delay — it
+/// varies").
+pub fn favour_for(now: u16, view: Option<u16>, playout: u8) -> u8 {
     let Some(ack) = view else {
         return 0;
     };
@@ -132,7 +148,8 @@ pub fn favour_for(now: u16, view: Option<u16>) -> u8 {
     if raw > AIM_STALE_CEILING_TICKS {
         return 0;
     }
-    let want = raw + INTERP_DELAY_TICKS as u16 - REWIND_ACK_BIAS_TICKS as u16;
+    let delay = playout.clamp(PLAYOUT_MIN_TICKS, PLAYOUT_MAX_TICKS);
+    let want = raw + delay as u16 - REWIND_ACK_BIAS_TICKS as u16;
     // Clamped here and clamped again by the sim (`world.rs`'s `Input` arm),
     // deliberately: this one states the ceiling where the number is made,
     // and that one holds it for every command the sim ever applies —
@@ -208,6 +225,12 @@ pub struct ShardStats {
     pub input_dg_forged: AtomicU64,
     /// Inbound ring full — datagram dropped (redundancy re-carries).
     pub input_ring_drops: AtomicU64,
+    /// Datagrams the dev netsim shim (`config.rs netsim`) held for their
+    /// fake latency, both lanes. Zero on every shard with the knob unset.
+    pub netsim_delayed: AtomicU64,
+    /// Datagrams the shim discarded: the loss roll, plus a delay line at
+    /// its bound (drop, counted — a dev tool still states its policy).
+    pub netsim_dropped: AtomicU64,
     /// Snapshots encoded and handed to rings.
     pub snap_sent: AtomicU64,
     /// Outbound ring full — that client skipped a snapshot.
@@ -879,6 +902,8 @@ impl ShardStats {
             "input_dg_bad" => &self.input_dg_bad,
             "input_dg_forged" => &self.input_dg_forged,
             "input_ring_drops" => &self.input_ring_drops,
+            "netsim_delayed" => &self.netsim_delayed,
+            "netsim_dropped" => &self.netsim_dropped,
             "snap_ring_skips" => &self.snap_ring_skips,
             "snap_send_errors" => &self.snap_send_errors,
             "encode_range_errors" => &self.encode_range_errors,

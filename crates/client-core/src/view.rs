@@ -37,6 +37,14 @@ pub struct ClientView {
     pub newest_applied: Option<u32>,
     pub last_executed_seq: u16,
     pub nudge: Nudge,
+    /// The server's post-consume input-buffer depth as of the newest
+    /// applied snapshot (netcode v2, wire v60) — what the dilation
+    /// controller steers on where it used to follow `nudge`'s 2-bit
+    /// quantization. 4-bit saturating gauge; see the header field's doc.
+    pub buffered_depth: u8,
+    /// Consecutive starved ticks the server covered with the decayed
+    /// stand-in, as of that snapshot. 3-bit saturating; diagnostics.
+    pub repeat_count: u8,
 }
 
 impl ClientView {
@@ -49,6 +57,8 @@ impl ClientView {
             newest_applied: None,
             last_executed_seq: 0,
             nudge: Nudge::Ok,
+            buffered_depth: 0,
+            repeat_count: 0,
         }
     }
 
@@ -92,6 +102,8 @@ impl ClientView {
         self.newest_applied = Some(header.tick);
         self.last_executed_seq = header.last_executed_seq;
         self.nudge = header.nudge;
+        self.buffered_depth = header.buffered_depth;
+        self.repeat_count = header.repeat_count;
         self.ring[ring_index(header.tick)] = Some(snap);
         Ok(Applied::Ok {
             delta: header.baseline_age != 0,

@@ -192,7 +192,7 @@ fn test_snapshot_budget() {
         // Every client acks its newest applied snapshot.
         for (slot, view) in views.iter().enumerate() {
             let (ack, bits) = view.ack_fields();
-            let dg = InputDatagram::new(ack, bits, 1);
+            let dg = InputDatagram::new(ack, bits, 4);
             core.push_input(slot, &dg);
         }
         let sent = snapshot_round(&mut core, &stats);
@@ -1257,7 +1257,7 @@ fn settle_interest(core: &mut ShardCore, stats: &ShardStats) {
 /// it looks identical in the event counts until you go looking.
 fn press_primary(core: &mut ShardCore, slots: &[usize], seq: &mut u16, pitch: u8) {
     for &slot in slots {
-        let mut dg = InputDatagram::new(0, 0, *seq as u32);
+        let mut dg = InputDatagram::new(0, 0, 4);
         dg.push(InputFrame {
             seq: *seq,
             buttons: BTN_PRIMARY,

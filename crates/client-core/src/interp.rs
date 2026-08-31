@@ -10,18 +10,55 @@
 //! two crates typing one constant is the `props.js` drift `CLAUDE.md` opens
 //! with. It lives in `sim_core::limits` now, as the `u8` it is, and this
 //! module's one reader converts at the point of use. There is no second
-//! spelling to keep in step, which is stronger than a gate on one. Linear, not Hermite, at v0: the wire
-//! carries no horizontal velocity yet (NETCODE §3's Hermite rides the M2
-//! combat-feel pass with it). A buffer that runs dry freezes honestly —
-//! extrapolation likewise waits on wire velocity.
+//! spelling to keep in step, which is stronger than a gate on one.
+//!
+//! **Linear, deliberately, and velocity is estimated rather than carried**
+//! (netcode v2 S5). NETCODE §3's Hermite-with-wire-velocity was designed
+//! against 15 Hz snapshots, where linear visibly pulses; at 30 Hz the
+//! samples are the sim's own per-tick positions, so linear between them is
+//! exact to the quantum and differencing adjacent samples reconstructs the
+//! per-tick velocity the wire would have carried — for zero of the ~180
+//! worst-case bytes any honest width costs against 42 of headroom
+//! (`velocity_of`). A buffer that runs dry extrapolates on that estimate
+//! for `EXTRAP_MAX_TICKS`, then freezes honestly.
 
 use protocol::EntityState;
 use sim_core::limits::{MAX_MOBS, MAX_PLAYERS};
 use sim_core::movement::{POS_XZ_Q, POS_Y_Q};
 
-/// Per-entity history depth: 16 samples ≈ 1 s at 15 Hz (proposed default,
-/// DECISIONS.md §open, client fill-ins). Overflow policy: drop oldest.
+/// Per-entity history depth: 16 samples ≈ 0.5 s at 30 Hz (proposed
+/// default, DECISIONS.md §open, client fill-ins). Overflow policy: drop
+/// oldest.
 const HISTORY: usize = 16;
+
+/// The widest tick gap `sample` will lerp across (netcode v2 S2). Wider
+/// straddles — a stall, a loss burst past the history, the far side of a
+/// keyframe that kept this body's ring — read as a teleport and take the
+/// newer sample, because a lerp across a gap is a body sliding through
+/// walls at gap-speed. Twice `INTERP_DELAY_TICKS`: anything the playout
+/// delay was sized to ride out lerps as before, anything past double it
+/// is not motion the buffer ever promised to reconstruct.
+const MAX_LERP_SPAN_TICKS: u32 = sim_core::limits::INTERP_DELAY_TICKS as u32 * 2;
+
+/// How far past the newest sample a dry buffer extrapolates before it
+/// freezes, in ticks (netcode v2 S5; proposed default, DECISIONS.md
+/// §open). 4 ticks (133 ms) sits well under Source's 250 ms bound — past
+/// it the guess is worth less than the honesty of a body standing still.
+/// The reference game's own interpolation rewrite added exactly this
+/// ("better velocity estimation and the addition of movement
+/// extrapolation… the delay has been drastically reduced", devblog 196);
+/// before it, our dry buffer froze the body on the spot and the next
+/// snapshot teleported it — the freeze-then-jump half of "players snap
+/// around the screen".
+const EXTRAP_MAX_TICKS: f64 = 4.0;
+
+/// The widest sample gap a velocity may be estimated across, in ticks.
+/// Adjacent 30 Hz samples are per-tick positions, so differencing them IS
+/// the sim's per-tick velocity (the reason wire velocity earns no bytes
+/// here — at interval 1 the client reconstructs it exactly); one missing
+/// snapshot still leaves a usable two-tick average, and anything wider is
+/// a gap whose speed means nothing.
+const VEL_SPAN_MAX_TICKS: u32 = 2;
 
 /// Entities this table can hold at once — **the world's size, not the
 /// wire's**, and the distinction is the whole reason the constant exists.
@@ -195,7 +232,27 @@ impl Interp {
         }
     }
 
-    /// Zero-state snapshot: the authoritative restart of the entity set.
+    /// Zero-state snapshot (netcode v2 S2): the keyframe restarts the
+    /// ENTITY SET, not the motion history. This drops every id the
+    /// keyframe does not name and keeps the sample rings of the ones it
+    /// does — `clear()` here wiped them all, so every ack gap froze every
+    /// remote body for a snapshot interval and then teleported it, which
+    /// is most of what "players snap around the screen" was. The
+    /// positions already held are not made wrong by a baseline reset:
+    /// that reset is about delta-coding, and the interpolator never
+    /// delta-codes. Bounded at `INTERP_SLOTS × MAX_SNAPSHOT_ENTITIES`
+    /// compares, keyframes only.
+    pub fn retain_present(&mut self, present: &[EntityState]) {
+        for s in 0..INTERP_SLOTS {
+            if self.used[s] && !present.iter().any(|e| e.id == self.ids[s]) {
+                self.used[s] = false;
+                self.len[s] = 0;
+            }
+        }
+    }
+
+    /// Full restart — session start and hard resync, where the history
+    /// genuinely is from another life. Keyframes use `retain_present`.
     pub fn clear(&mut self) {
         self.used = [false; INTERP_SLOTS];
         self.len = [0; INTERP_SLOTS];
@@ -209,6 +266,33 @@ impl Interp {
 
     fn get(&self, slot: usize, i: usize) -> &Sample {
         &self.hist[slot][(self.head[slot] as usize + i) % HISTORY]
+    }
+
+    /// Estimated velocity in render meters per tick, from the newest two
+    /// samples (netcode v2 S5). At 30 Hz snapshots adjacent samples are
+    /// per-tick positions, so this IS the sim's own per-tick displacement
+    /// — the reason horizontal velocity earns no wire bytes (the 64-moving
+    /// worst case had 42 B of headroom against ≥ +180 B for any honest
+    /// width; differencing costs zero and is exact at interval 1). Zero
+    /// when there is nothing to difference: one sample, a pair wider than
+    /// `VEL_SPAN_MAX_TICKS` (a gap's speed means nothing), or a body
+    /// nobody drives.
+    fn velocity_of(&self, slot: usize, n: usize) -> (f32, f32, f32) {
+        if n < 2 {
+            return (0.0, 0.0, 0.0);
+        }
+        let s1 = self.get(slot, n - 1);
+        let s0 = self.get(slot, n - 2);
+        let span = s1.tick.saturating_sub(s0.tick);
+        if span == 0 || span > VEL_SPAN_MAX_TICKS {
+            return (0.0, 0.0, 0.0);
+        }
+        let inv = 1.0 / span as f32;
+        (
+            (s1.e.qx - s0.e.qx) as f32 * POS_XZ_Q * inv,
+            (s1.e.qy - s0.e.qy) as f32 * POS_Y_Q * inv,
+            (s1.e.qz - s0.e.qz) as f32 * POS_XZ_Q * inv,
+        )
     }
 
     /// Sample entity `id` at float server tick `at`. Between two samples:
@@ -225,7 +309,25 @@ impl Interp {
         let newest = self.get(slot, n - 1);
         if at >= newest.tick as f64 {
             dequant(newest, out);
-            out.live = at <= newest.tick as f64 + f64::EPSILON;
+            // A dry buffer extrapolates on the estimated per-tick velocity
+            // before it freezes (netcode v2 S5): the body keeps its heading
+            // for up to `EXTRAP_MAX_TICKS`, then stands still — where it
+            // used to stand still instantly and TELEPORT when the next
+            // snapshot landed. `live` keeps its honest-freeze meaning: true
+            // while the position is real or a bounded fresh guess, false
+            // once the guess has gone stale. A corpse or a sleeper never
+            // extrapolates — nobody is driving it anywhere.
+            let ahead = at - newest.tick as f64;
+            if ahead > f64::EPSILON {
+                let (vx, vy, vz) = self.velocity_of(slot, n);
+                let t = ahead.min(EXTRAP_MAX_TICKS) as f32;
+                if !newest.e.sleeping && !newest.e.dead {
+                    out.x += vx * t;
+                    out.y += vy * t;
+                    out.z += vz * t;
+                }
+            }
+            out.live = ahead <= EXTRAP_MAX_TICKS;
             return true;
         }
         let oldest = self.get(slot, 0);
@@ -238,6 +340,19 @@ impl Interp {
             let s1 = self.get(slot, i);
             let s0 = self.get(slot, i - 1);
             if at >= s0.tick as f64 {
+                // A straddle wider than the buffer's own design depth is
+                // not motion — it is a gap (a stall, a stretch of loss, a
+                // respawn) — and lerping across it would slide the body
+                // through the world at whatever speed the gap implies.
+                // Take the newer sample outright: a teleport reads as a
+                // teleport (the reference fixed the same "snapback near
+                // your corpse" defect, devblog 74). `live` stays true —
+                // the sample is real, only the path to it is unknown.
+                if s1.tick - s0.tick > MAX_LERP_SPAN_TICKS {
+                    dequant(s1, out);
+                    out.live = true;
+                    return true;
+                }
                 let span = (s1.tick - s0.tick) as f64;
                 let t = ((at - s0.tick as f64) / span) as f32;
                 let mut a = RemoteState::default();
@@ -377,15 +492,127 @@ mod tests {
         assert!(r.yaw > 65520.0 || r.yaw < 16.0, "yaw {}", r.yaw);
     }
 
+    /// A dry buffer extrapolates on the estimated velocity for
+    /// `EXTRAP_MAX_TICKS`, then freezes honestly (netcode v2 S5): far past
+    /// the window the position holds at the capped guess and `live` goes
+    /// false. Samples 2 ticks apart here, so the velocity estimate is the
+    /// two-tick average — 500 quanta/tick.
     #[test]
-    fn dry_buffer_freezes_honestly() {
+    fn dry_buffer_extrapolates_then_freezes_honestly() {
         let mut it = Interp::new();
         it.push(10, &ent(5, 1000, 0));
         it.push(12, &ent(5, 2000, 0));
         let mut r = RemoteState::default();
+        // Inside the window: the body keeps its heading, and it is live.
+        assert!(it.sample(5, 14.0, &mut r));
+        assert!(r.live, "a bounded fresh guess is live");
+        assert!(
+            (r.x - 3000.0 * 0.03).abs() < 1e-3,
+            "2 ticks past newest at 500 q/tick, got {}",
+            r.x
+        );
+        // Far past it: capped at EXTRAP_MAX_TICKS of travel, not live.
         assert!(it.sample(5, 30.0, &mut r));
-        assert!(!r.live, "clamped to newest must not read live");
-        assert!((r.x - 2000.0 * 0.03).abs() < 1e-3);
+        assert!(!r.live, "a stale guess must not read live");
+        assert!(
+            (r.x - 4000.0 * 0.03).abs() < 1e-3,
+            "held at the cap, got {}",
+            r.x
+        );
+    }
+
+    /// Nobody drives a corpse or a sleeper anywhere: their dry buffer
+    /// freezes on the spot exactly as every body's did before S5.
+    #[test]
+    fn a_dead_body_does_not_extrapolate() {
+        let mut it = Interp::new();
+        it.push(10, &ent(5, 1000, 0));
+        let mut dead = ent(5, 2000, 0);
+        dead.dead = true;
+        it.push(12, &dead);
+        let mut r = RemoteState::default();
+        assert!(it.sample(5, 14.0, &mut r));
+        assert!(
+            (r.x - 2000.0 * 0.03).abs() < 1e-3,
+            "the corpse moved: {}",
+            r.x
+        );
+    }
+
+    /// One sample, or a pair spanning wider than `VEL_SPAN_MAX_TICKS`,
+    /// estimates no velocity — a gap's speed means nothing, and
+    /// extrapolating on it would launch the body along the teleport.
+    #[test]
+    fn velocity_needs_a_tight_pair() {
+        let mut it = Interp::new();
+        it.push(10, &ent(5, 1000, 0));
+        let mut r = RemoteState::default();
+        assert!(it.sample(5, 12.0, &mut r));
+        assert!((r.x - 1000.0 * 0.03).abs() < 1e-3, "one sample cannot move");
+        // A wide pair (a teleport) must not become a velocity.
+        it.push(10 + VEL_SPAN_MAX_TICKS + 9, &ent(5, 50_000, 0));
+        let at = (10 + VEL_SPAN_MAX_TICKS + 9) as f64 + 2.0;
+        assert!(it.sample(5, at, &mut r));
+        assert!(
+            (r.x - 50_000.0 * 0.03).abs() < 1e-3,
+            "a gap-speed extrapolation launched the body to {}",
+            r.x
+        );
+    }
+
+    /// **A keyframe keeps the motion history of everyone it names**
+    /// (netcode v2 S2). The old `clear()`-on-keyframe wiped every sample
+    /// ring, so the recovery packet after an ack gap was itself the freeze
+    /// -then-teleport the player saw. `retain_present` drops only the ids
+    /// the keyframe does not name.
+    #[test]
+    fn a_keyframe_keeps_named_history_and_drops_the_rest() {
+        let mut it = Interp::new();
+        it.push(10, &ent(5, 1000, 0));
+        it.push(12, &ent(5, 2000, 0));
+        it.push(12, &ent(9, 4000, 0));
+        // The keyframe names 5 and not 9.
+        it.retain_present(&[ent(5, 2000, 0)]);
+        let mut r = RemoteState::default();
+        assert!(
+            it.sample(5, 11.0, &mut r) && r.live,
+            "the named body lost its history to the keyframe"
+        );
+        assert!(
+            (r.x - 1500.0 * 0.03).abs() < 1e-3,
+            "history intact, mid-lerp"
+        );
+        assert!(!it.sample(9, 12.0, &mut r), "the unnamed body is gone");
+        assert_eq!(it.ids().count(), 1);
+    }
+
+    /// **A straddle wider than the buffer's design depth is a teleport,
+    /// not motion** — the newer sample wins outright instead of the body
+    /// sliding across the gap at gap-speed (a respawn would glide from
+    /// the corpse to the beach through every wall between).
+    #[test]
+    fn a_wide_gap_jumps_instead_of_sliding() {
+        let mut it = Interp::new();
+        it.push(10, &ent(5, 1000, 0));
+        it.push(10 + MAX_LERP_SPAN_TICKS + 5, &ent(5, 50_000, 0));
+        let mut r = RemoteState::default();
+        // Sampled mid-gap: the lerp would put the body in the void between.
+        assert!(it.sample(5, 12.0, &mut r));
+        assert!(r.live, "a real sample is live even across a gap");
+        assert!(
+            (r.x - 50_000.0 * 0.03).abs() < 1e-3,
+            "mid-gap sample slid ({}) instead of jumping to the newer side",
+            r.x
+        );
+        // A straddle at exactly the design depth still lerps.
+        let mut it = Interp::new();
+        it.push(10, &ent(5, 1000, 0));
+        it.push(10 + MAX_LERP_SPAN_TICKS, &ent(5, 2000, 0));
+        assert!(it.sample(5, 10.0 + MAX_LERP_SPAN_TICKS as f64 / 2.0, &mut r));
+        assert!(
+            (r.x - 1500.0 * 0.03).abs() < 1e-3,
+            "an in-depth straddle stopped lerping"
+        );
     }
 
     #[test]
