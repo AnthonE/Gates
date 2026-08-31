@@ -80,8 +80,12 @@ pub const FAVOUR_DISAGREE_BAND_TICKS: u16 = 2;
 
 /// The formula's two terms cannot underflow the raw staleness: it is added
 /// to, then subtracted from, and this is the order that keeps it in `u16`
-/// without a saturating call that would hide a constant moving.
-const _: () = assert!(INTERP_DELAY_TICKS >= REWIND_ACK_BIAS_TICKS);
+/// without a saturating call that would hide a constant moving. Compared
+/// as `i32` because the bias sits at 0 since netcode v2 S2 (interval 1,
+/// floored half) and clippy's `absurd_extreme_comparisons` rightly points
+/// out a `u8 >= 0` proves nothing — the widened compare keeps meaning if
+/// the bias ever moves back up.
+const _: () = assert!(INTERP_DELAY_TICKS as i32 >= REWIND_ACK_BIAS_TICKS as i32);
 
 /// **How many ticks of lag compensation this frame has earned** — the one
 /// place a favour is minted, and the whole of lag-compensation slice 5

@@ -894,7 +894,11 @@ fn a_stale_aim_lands_a_swing_the_live_world_would_have_missed() {
     let old = advance_to_snapshot(&mut core, &stats);
     ack_only(&mut core, old);
     victim_walked_out_of_reach(&mut core, &stats);
-    let recent = core.world.tick - core.world.tick % SNAPSHOT_INTERVAL_TICKS;
+    // Every tick is a snapshot tick since netcode v2 S2 put the interval
+    // at 1, so "the most recent snapshot tick" is the current one — the
+    // interval-rounding this line used to do died with the cadence (and
+    // clippy's modulo_one rightly called the leftover arithmetic dead).
+    let recent = core.world.tick;
     ack_only(&mut core, recent);
     let raw = core.world.tick - recent;
     let favour = stats::favour_for(raw as u16, Some(0));
