@@ -267,22 +267,51 @@ fn standing_litter_is_understory_and_not_a_second_lawn() {
 ///
 /// A tile is capped at `CLUTTER_TILE_CAP` elements and baked into ONE mesh, so
 /// the cost of standing the litter channel up is (elements × the vertices each
-/// one adds). Grass has always been the expensive channel — seven blades — and
-/// the bound that matters is that litter did not quietly become worse than the
-/// thing that was already the ceiling.
+/// one adds).
+///
+/// ⚠ **This was a comparison against the tuft and it could not stay one**
+/// (grass cards v0). It read `clump < tuft`, which held while a tuft was seven
+/// blades at 42 vertices; a tuft is now three photographed cards at 18, so the
+/// same line demands a litter clump under 18 — and
+/// `standing_litter_is_understory_and_not_a_second_lawn` above forbids exactly
+/// that, because a clump with no stalks is the flat chip this file exists to
+/// retire. Two gates in one file contradicting each other is a worse failure
+/// than either alone, so the reference became the number rather than the
+/// neighbour.
+///
+/// **Nothing about litter regressed.** Its 30 vertices are the same 30 it has
+/// had since 2026-08-15; what moved is that the thing it was measured against
+/// got 2.3× cheaper. [`BLADE_TUFT_VERTS`] is that old ceiling, kept as the
+/// budget because it is the one a person actually accepted for a near-ground
+/// element.
+///
+/// **42, and where it comes from**: `BLADES_PER_TUFT` was 7 and a blade is two
+/// triangles — the constant is deleted from `clutter.rs` with the blade path,
+/// so it is written out here rather than imported, and this comment is the
+/// derivation.
+const BLADE_TUFT_VERTS: usize = 42;
+
 #[test]
-fn a_litter_clump_costs_less_than_the_tuft_that_was_already_the_ceiling() {
+fn the_growing_channels_stay_under_the_budget_that_was_accepted() {
     let n = |k: Clutter| positions(&element_mesh(&elem(k, 33, 1.0))).len();
     let (tuft, clump) = (n(Clutter::Tuft), n(Clutter::Twig));
     assert!(
-        clump < tuft,
-        "a litter clump is {clump} vertices against a tuft's {tuft} — the \
-         channel that covers 93% of the capture spawn is now the most \
-         expensive one on the island"
+        clump <= BLADE_TUFT_VERTS,
+        "a litter clump is {clump} vertices against the {BLADE_TUFT_VERTS} \
+         accepted for a near-ground element — the channel that covers 93% of \
+         the capture spawn has gone over the budget"
     );
     // And it is not free either, which is the whole point of the change.
     assert!(
         clump > n(Clutter::Pebble),
         "a litter clump costs no more than a pebble, so nothing was added"
+    );
+    // The card's own half of the same budget, and the direction it moved.
+    // A regression here would be somebody putting the blades back.
+    assert!(
+        tuft < BLADE_TUFT_VERTS,
+        "a tuft is {tuft} vertices against the {BLADE_TUFT_VERTS} the blades \
+         cost — the card is supposed to be the cheaper geometry as well as \
+         the better-looking one"
     );
 }

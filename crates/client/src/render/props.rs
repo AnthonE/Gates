@@ -137,6 +137,12 @@ pub struct PropAssets {
     shelter: Handle<Mesh>,
     canopy: Handle<Mesh>,
     foliage: [Handle<StandardMaterial>; TINT_POOL],
+    /// The bush's leaf cards, a pool indexed by yaw. See [`bush_card_mesh`].
+    bush_cards: Vec<Handle<Mesh>>,
+    /// …and their material: alpha-MASKED, wearing the leaf atlas. Separate
+    /// from `foliage` for the reason `needle` is separate from `bark` — one
+    /// `StandardMaterial` has one `alpha_mode`.
+    bush_leaf: [Handle<StandardMaterial>; TINT_POOL],
     /// The needle card's material: alpha-MASKED, not blended. A canopy is
     /// hundreds of overlapping cards, and blending them would need a per-card
     /// depth sort that changes with the camera — masked cards write depth and
@@ -567,6 +573,49 @@ impl Soup {
         }
     }
 
+    /// One triangle with **explicit** UVs — the box projection bypassed.
+    ///
+    /// **Why the projection has to be bypassed rather than scaled.** Every
+    /// other builder here wears a tiling photograph, and a box projection is
+    /// the right answer for that: it is seamless inside a facet and costs
+    /// nothing. An atlas is the opposite case — the UV is not a surface
+    /// parameterisation at all, it is an ADDRESS, and a projection that
+    /// derives it from world position would land each card on whatever cell
+    /// its position happened to point at and slide between them as the tile
+    /// moved.
+    ///
+    /// The normal law is `tri_ramp`'s, unchanged and deliberately shared:
+    /// `clutter::card` wants exactly the root-bedded, tip-free ramp
+    /// `clutter::blade` established, and a second copy of it would be a second
+    /// thing to fix.
+    pub(super) fn tri_uv(
+        &mut self,
+        corners: [(Vec3, [f32; 2]); 3],
+        color: impl Fn(Vec3) -> [f32; 4],
+        volume_center: Option<Vec3>,
+        blend: impl Fn(Vec3) -> f32,
+    ) {
+        let (a, b, c) = (corners[0].0, corners[1].0, corners[2].0);
+        let facet = (b - a).cross(c - a).normalize_or_zero();
+        for (v, uv) in corners {
+            let n = match volume_center {
+                Some(ctr) => {
+                    let vol = (v - ctr).normalize_or_zero();
+                    let t = blend(v);
+                    (facet * (1.0 - t) + vol * t).normalize_or_zero()
+                }
+                None => facet,
+            };
+            self.pos.push([v.x, v.y, v.z]);
+            self.nrm.push([n.x, n.y, n.z]);
+            self.col.push(color(v));
+            // **Not multiplied by `uv_scale`.** That field means "tiles per
+            // metre" for a projected UV; an atlas address has no such unit and
+            // scaling one walks off the cell.
+            self.uv.push(uv);
+        }
+    }
+
     pub(super) fn mesh(self) -> Mesh {
         let n = self.pos.len() as u32;
         let mut m = Mesh::new(
@@ -801,6 +850,128 @@ fn squash(seed: u32) -> Vec3 {
         0.62 + 0.22 * hash01(seed ^ 0x6d2b_79f5, 2),
         0.88 + 0.12 * hash01(seed ^ 0x6d2b_79f5, 3),
     )
+}
+
+// ---------------------------------------------------------------------------
+// The bush's leaves — a photograph, on crossed cards over the blob.
+// ---------------------------------------------------------------------------
+
+/// The bush card atlas: four composed leaf clusters, 2×2 cells of 512×512.
+///
+/// **This closes a defect this file already names.** `archetype_mesh`'s own
+/// comment says the bush "wants a ragged outline (`ART.md` rule 6) and 320
+/// smooth [triangles do not give one]" — an icosphere is the least ragged
+/// shape there is, and no subdivision count fixes that, because the problem is
+/// that the silhouette is a circle. A leaf cluster's silhouette is measured
+/// off real leaves and is ragged by construction.
+///
+/// **The blob stays.** It is the interior mass a bush needs to not read as a
+/// flat billboard from the side, and it is what the leaves are seen against;
+/// the cards break its outline rather than replacing it. Two children, because
+/// the blob is opaque and the leaves are alpha-masked, and one
+/// `StandardMaterial` has one `alpha_mode` — the same split the conifer's bark
+/// and needles already pay for the same reason.
+///
+/// Baked by `ci/bake_bush_atlas.py` from Poly Haven `shrub_01` (CC0);
+/// `assets/textures/MANIFEST.md` carries the provenance row.
+pub const BUSH_CARD_ATLAS: &str = "textures/bush_card_albedo.png";
+pub const BUSH_CARD_COLS: u32 = 2;
+pub const BUSH_CARD_ROWS: u32 = 2;
+/// Cells in the atlas — the count [`bush_card_mesh`] hashes into.
+pub const BUSH_CARD_CELLS: u32 = BUSH_CARD_COLS * BUSH_CARD_ROWS;
+
+/// Quads per bush. Three at 60°, for `clutter::CARDS_PER_TUFT`'s reason: two
+/// cross at 90° and present their thinnest pair of edges 45° from either.
+pub const BUSH_CARDS: u32 = 3;
+
+/// Distinct card meshes, indexed by yaw exactly as the conifer pool is.
+///
+/// **One shared mesh would make every bush on the island identical**, which is
+/// rule 7's forbidden case — and unlike the grass, a bush cannot hash per
+/// instance inside its own builder, because a prop's mesh is an asset handle
+/// chosen at spawn rather than geometry baked per tile.
+pub const BUSH_CARD_POOL: usize = 4;
+
+/// Half-extent of a card at `scale` 1, metres. **Square, and that is forced
+/// rather than chosen.**
+///
+/// A card samples a whole atlas CELL, and the cells are square, so any quad
+/// that is not square stretches every leaf on it by the ratio. The first cut
+/// used 0.78 × 0.64 — a bush-shaped quad — which drew the leaves 22% wide;
+/// caught by measuring the baked cell against the constant rather than by
+/// looking, because a 22% fat leaf reads as a different plant and not as a
+/// bug. `tests/bush_card.rs` pins the two together.
+///
+/// The bush is still wider than tall: the BAKED CLUSTER is (it fills ~94% of
+/// its cell across and ~86% down), which is where that shape belongs — in the
+/// photograph, not in the quad.
+///
+/// 0.80 puts the leaf mass at ~1.51 m across and ~1.38 m tall against a blob
+/// that reaches 1.4 m, so leaves break the sphere's outline horizontally and
+/// just cover its crown.
+pub const BUSH_CARD_HALF: f32 = 0.80;
+
+/// The alpha a bush card's cutout is tested against — `render::mipmap::
+/// MASK_CUT` as a 0..1 value, pinned to it by `tests/bush_card.rs`.
+pub const BUSH_CARD_ALPHA_CUT: f32 = 0.5;
+
+/// How far a card's normals are pulled from its own facet toward a sphere
+/// centred on the bush.
+///
+/// **Nearly all the way, and for the opposite reason a chip keeps its facets.**
+/// `clutter::CHIP_VOLUME_BLEND` keeps 45% of a pebble's facing because a pebble
+/// IS angular. A leaf mass is not: light entering a bush scatters between
+/// leaves and comes out as if off a rough sphere, so three flat quads taking
+/// three different sun cosines would read as three plates — the "pile of foil"
+/// `BLADE_TIP_BLEND` names. A little facet is kept so the cards do not shade
+/// identically to each other from every angle.
+pub const BUSH_CARD_VOLUME: f32 = 0.88;
+
+/// One bush's leaves: [`BUSH_CARDS`] crossed, alpha-masked, photographed quads
+/// centred on the origin — the same local frame `blob_mesh` builds in, so both
+/// children of a bush slot take the identical transform.
+pub fn bush_card_mesh(variant: u32) -> Mesh {
+    let mut s = Soup::default();
+    let seed = 0x8f31_u32 ^ variant.wrapping_mul(2_654_435_761);
+    for i in 0..BUSH_CARDS {
+        // Evenly spread, then jittered, so the pool's four variants do not all
+        // present a card at the same yaw.
+        let a = i as f32 * std::f32::consts::PI / BUSH_CARDS as f32
+            + hash01(seed, i) * 0.7;
+        let side = Vec3::new(a.sin(), 0.0, a.cos());
+        // One jitter for both axes, so a card stays square and the leaves on
+        // it stay unstretched — see `BUSH_CARD_HALF`.
+        let half = BUSH_CARD_HALF * (0.86 + 0.28 * hash01(seed, i + 11));
+        let (hw, hh) = (half, half);
+        let cell = (hash01(seed, i + 41) * BUSH_CARD_CELLS as f32) as u32 % BUSH_CARD_CELLS;
+        let (du, dv) = (
+            1.0 / BUSH_CARD_COLS as f32,
+            1.0 / BUSH_CARD_ROWS as f32,
+        );
+        let (cu, cv) = (
+            (cell % BUSH_CARD_COLS) as f32 * du,
+            (cell / BUSH_CARD_COLS) as f32 * dv,
+        );
+
+        let b0 = -side * hw - Vec3::Y * hh;
+        let b1 = side * hw - Vec3::Y * hh;
+        let t0 = -side * hw + Vec3::Y * hh;
+        let t1 = side * hw + Vec3::Y * hh;
+        // V grows downward in image space: the card's TOP takes the cell's
+        // smallest v. `tests/bush_card.rs` asserts it rather than trusting it.
+        let (uv_b0, uv_b1) = ([cu, cv + dv], [cu + du, cv + dv]);
+        let (uv_t0, uv_t1) = ([cu, cv], [cu + du, cv]);
+
+        let v = 0.88 + 0.24 * hash01(seed, i + 59);
+        let col = move |_: Vec3| [v, v, v, 1.0];
+        // A sphere centred on the bush, so every leaf's normal points out of
+        // the mass it belongs to. See `BUSH_CARD_VOLUME`.
+        let dome = Some(Vec3::ZERO);
+        let blend = |_: Vec3| BUSH_CARD_VOLUME;
+        s.tri_uv([(b0, uv_b0), (t0, uv_t0), (b1, uv_b1)], col, dome, blend);
+        s.tri_uv([(b1, uv_b1), (t0, uv_t0), (t1, uv_t1)], col, dome, blend);
+    }
+    s.mesh()
 }
 
 /// A rock, built by subdividing an icosahedron and displacing it.
@@ -1202,6 +1373,14 @@ pub fn assets(
     materials: &mut Assets<StandardMaterial>,
     images: &mut Assets<Image>,
     maps: &super::textures::PropMaps,
+    // **The handle, not an `AssetServer`.** The atlas is a single RGBA cutout
+    // rather than a PBR set, so it does not belong in `PropMaps` beside the
+    // four-map roles; and taking the loaded handle instead of the loader keeps
+    // this function callable with no filesystem, which is what puts five
+    // renderer-tier suites in the tier that runs headless. They pass
+    // `Handle::default()` — an unresolved handle, exactly as `MapSet::default`
+    // documents for the same reason.
+    bush_card: Handle<Image>,
 ) -> PropAssets {
     // `foliage` was the only untinted-`surface` caller and is pooled now, so
     // the single-handle constructor went with it. `photo` stays: five classes
@@ -1305,6 +1484,25 @@ pub fn assets(
         shelter: meshes.add(archetype_mesh(Occupant::HavenShelter).expect("shelter mesh")),
         canopy: meshes.add(archetype_mesh(Occupant::WaystationCanopy).expect("canopy mesh")),
         foliage: surface_pool(0.86, fresnel::DIELECTRIC, materials),
+        bush_cards: (0..BUSH_CARD_POOL as u32)
+            .map(|v| meshes.add(bush_card_mesh(v)))
+            .collect(),
+        bush_leaf: tint_pool().map(|v| {
+            materials.add(StandardMaterial {
+                // The tint is a mean-1 grey over the photograph's own colour,
+                // never a hue — `textures::PropMaps` states the law.
+                base_color: Color::linear_rgb(v, v, v),
+                base_color_texture: Some(bush_card.clone()),
+                perceptual_roughness: 0.88,
+                reflectance: fresnel::DIELECTRIC,
+                alpha_mode: AlphaMode::Mask(BUSH_CARD_ALPHA_CUT),
+                // You see the underside of every leaf you stand beside, and a
+                // bush is short enough that you always do.
+                cull_mode: None,
+                double_sided: true,
+                ..default()
+            })
+        }),
         needle: tint_pool().map(|v| {
             materials.add(StandardMaterial {
                 base_color: Color::linear_rgb(v, v, v),
@@ -1382,11 +1580,16 @@ pub fn stream(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
     maps: Res<super::textures::PropMaps>,
+    server: Res<AssetServer>,
     world: Res<WorldId>,
     eye: Res<Eye>,
     lod: Res<tree::TreeLod>,
 ) {
-    let a = store.get_or_insert_with(|| assets(&mut meshes, &mut materials, &mut images, &maps));
+    let a = store
+        .get_or_insert_with(|| {
+            let card = server.load_with_settings(BUSH_CARD_ATLAS, super::textures::atlas(true));
+            assets(&mut meshes, &mut materials, &mut images, &maps, card)
+        });
 
     let cx = (eye.pos.x / CHUNK_M).floor() as i32;
     let cz = (eye.pos.z / CHUNK_M).floor() as i32;
@@ -1619,7 +1822,12 @@ pub fn spawn_slot(
         Occupant::StoneNode => (a.blob.clone(), a.ore_stone.clone()),
         Occupant::MetalNode => (a.blob.clone(), a.ore_metal.clone()),
         Occupant::SulfurNode => (a.blob.clone(), a.ore_sulfur.clone()),
-        Occupant::Bush => (a.bush.clone(), a.foliage[tint].clone()),
+        Occupant::Bush => {
+            // Indexed exactly as the conifer pool is, so two bushes side by
+            // side do not present the same three cards.
+            variant = (slot.yaw as usize) % a.bush_cards.len();
+            (a.bush.clone(), a.foliage[tint].clone())
+        }
         Occupant::Rock => (a.boulder.clone(), a.rock[tint].clone()),
         Occupant::BarrelSlot => (a.barrel.clone(), a.metal.clone()),
         Occupant::CrateSlot => (a.crate_box.clone(), a.wood.clone()),
@@ -1686,6 +1894,19 @@ pub fn spawn_slot(
         ));
     } else {
         e.with_child((Mesh3d(mesh), MeshMaterial3d(material), transform));
+    }
+    // The bush's leaves, as a second child of the same slot — the blob above
+    // is the mass, this is the outline (see [`BUSH_CARD_ATLAS`]). Same
+    // `transform`, because `bush_card_mesh` builds in `blob_mesh`'s frame; and
+    // the same `FellPart::Vanish` the blob took, or picking a bush would leave
+    // its leaves standing in the air.
+    if slot.occupant == Occupant::Bush {
+        e.with_child((
+            fellable(FellPart::Vanish),
+            Mesh3d(a.bush_cards[variant].clone()),
+            MeshMaterial3d(a.bush_leaf[tint].clone()),
+            transform,
+        ));
     }
     // The stump, spawned WITH the tree and hidden until the cut lands.
     //

@@ -302,8 +302,22 @@ texture-plus-quad job in `clutter.rs`'s existing bake, not a new system.
 
 ### 6.4 · The shopping list, split by who fetches it
 
-The proxy blocks every asset host from this box, so anything below is the
-operator's to fetch; nothing here can be pulled by a loop. `WANTED.md` §10
+⚠ **This said the proxy blocks every asset host from this box. It was true
+where it was written and it is not a property of the hosts** — `SOURCES.md`
+§0's own warning, arrived at independently: reachability belongs to the
+container, so PROBE rather than trusting either claim. Measured 2026-08-31 on
+this box, `ambientcg.com`, `polyhaven.com` and `api.polyhaven.com` all answer
+200, and `assets/textures/fetch_gates_texture_candidates.py` pulled sets 9.7,
+9.8 and 9.10 without an error. Two of the rows below are consequently no
+longer wanted:
+
+- ~~**Grass blade atlas**~~ — taken. Poly Haven `grass_medium_01`, baked by
+  `ci/bake_grass_atlas.py`, drawn by `clutter::card`.
+- The **bush** half of the shrub layer (§6.3) — taken. Poly Haven `shrub_01`,
+  composed into leaf clusters by `ci/bake_bush_atlas.py`, drawn by
+  `props::bush_card_mesh`.
+
+The rest of the list stands, and the fetcher is the way to get it: `WANTED.md` §10
 carries the same list in buying order.
 
 **Textures — the real gap, and none of it is a mesh generator's job:**
