@@ -1608,9 +1608,10 @@ is §0win's, not this item's.
    (`render/input.rs:289`) and never reaches a snapshot.
 2. **The gather swing is `Sword_Attack`** (operator, 2026-08-17): no asset is
    owed, and the blocker is item 1.
-3. **The item is not parented to the hand** — `render/viewmodel.rs:572` says so
-   in its own comment; `ViewArms::hand` holds the bone, and the grip offset and
-   tilt need re-deriving against the arm's frame, which is judged by looking.
+3. ✅ ~~**The item is not parented to the hand**~~ — **stale, landed
+   2026-08-30**: `dress_arms` does `.insert((ChildOf(hand), InHand,
+   item_pose(true, 0.0)))` and `VIEWMODEL_GRIP_M`/`_Q` are the re-derived
+   grip, gated by `tests/viewmodel_arms.rs`. Checked 2026-09-01.
 4. **No render layer**, so the arms and the held item can clip into a wall: a
    second camera would duplicate the exposure/tonemap/atmosphere owner.
 5. **The head's pitch is clamped, not distributed.** `ANIM_HEAD_PITCH_MAX`
@@ -1618,8 +1619,20 @@ is §0win's, not this item's.
    spread — "distributing it across the spine is the follow-up this constant
    exists to make obvious." A steep look up or down bends nothing below
    the neck.
-6. **The hand reads large and the fingers splay** — 24 joints, no finger bones,
-   so a re-import or a sculpted grip is the only lever.
+6. **The hand reads large**, and ~~the fingers splay~~ — **the splay half is
+   stale**: `ci/curl_hands.py` sculpted the grip in the vertices (85° over a
+   digit, 35° on the thumb, 45% of the spread taken out), and
+   `rig_asset.rs::the_hands_are_curled_out_of_their_bind_pose_splay` gates it
+   — the two hands read 0.138 and 0.132 against 0.032/0.043 splayed. Checked
+   2026-09-01, still green.
+   **What is left is that the curl is STATIC and RELAXED, and a bigger number
+   is the wrong fix** — the tool's own header says so: one vertex buffer
+   serves the first-person hand and every remote body, holding something or
+   not, so a fist angle (~2× the 85°) would make an empty hand a permanent
+   fist. A grip wants a **second baked pose** swapped in when
+   `held_model_in_hand` returns `Some`, which is a mesh variant and a swap,
+   not a knob. Nobody has asked for it (operator, 2026-09-01: *"did we decide
+   we can curl fingers any?"* — answered, not commissioned).
 7. **Unlooked-at**: `Death01` on a real body, the collapsed off arm, the
    sleeper tint. ⚠ "No frame has a body in it" is stale — `render/capture.rs`'s
    scene pass shoots `7-player.png`, staged by `ci/scene.sh`.

@@ -260,13 +260,14 @@ pub const HELD_MODELS: [HeldModelDef; 14] = [
         // 0.393 m haft now; the fist band still lands on haft, which
         // `the_fist_closes_on_the_model_and_not_on_air` is what checks.
         grip_frac: 0.15,
-        // Judged smaller by eye and taken to 0.85 (operator, 2026-09-01:
-        // *"maybe the ax needs to be a little bit smaller"*). At true size the
-        // axe is 70% of the frame's height at the hold's depth; this is 60%.
-        // The ordinary viewmodel scale cheat, the bow's and the rock's — and
-        // NOT a fix for the head, which is 0.345 m wide on a 0.562 m axe and
-        // stays out of proportion at every scale.
-        scale: 0.85,
+        // Judged smaller by eye, twice (operator, 2026-09-01: *"maybe the ax
+        // needs to be a little bit smaller"*, then *"if anything we should
+        // scale the whole axe down if we can"*). At true size the axe is 70%
+        // of the frame's height at the hold's depth; 0.85 was 60% and this is
+        // 51%. The ordinary viewmodel scale cheat, the bow's and the rock's —
+        // and NOT a fix for the head, which is 0.345 m wide on a 0.562 m axe
+        // and stays out of proportion at every scale.
+        scale: 0.72,
         lay: 0.960,
         pose_yaw: -0.663,
         light: None,
