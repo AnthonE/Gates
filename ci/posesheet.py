@@ -140,11 +140,51 @@ def item_view(model, height_m, grip_frac, lay, yaw, scale):
 
 
 def haft_angles(lay, yaw):
-    """Where the model's +Y points, as the three numbers a pose is argued in."""
+    """Where the model's +Y points in VIEW SPACE: lean and elevation.
+
+    ⚠ **The first of these is not the angle you see** and is returned only
+    because the other two are worth having. See [`clock`].
+    """
     v = TILT @ (Ry(yaw) @ Rx(-lay)) @ np.array([0, 1, 0.0])
-    return (np.degrees(np.arctan2(v[1], v[0])),                    # on-screen
+    return (np.degrees(np.arctan2(v[1], v[0])),                    # NOT the screen angle
             np.degrees(np.arctan2(v[2], v[1])),                    # + = toward the eye
             np.degrees(np.arctan2(v[1], np.hypot(v[0], v[2]))))    # elevation
+
+
+def oclock(screen_deg):
+    """The screen angle as a clock hour, which is how the operator says it."""
+    return int(round((90.0 - screen_deg) / 30.0)) % 12 or 12
+
+
+def clock(model, height_m, grip_frac, lay, yaw, scale, frame=(1280, 720)):
+    """The angle the item draws at ON SCREEN, degrees, 90 = straight up.
+
+    Butt centroid to head centroid, projected, **in pixels**. This is the
+    number to solve a rotation on, and the two obvious alternatives are both
+    wrong -- each was shipped once here before the frame disagreed with it:
+
+      · **The haft's direction vector** (`haft_angles`' first return) is in
+        view space, where x and y are aspect-corrected and pixels are not.
+        A 16:9 frame stretches x by 1.78, so the two differ by ~7 degrees:
+        the vector read 99 on a pose the capture showed at 106.
+      · **The principal axis of the projected silhouette** is the direction
+        of the point CLOUD, which is the head's axis and not the haft's on
+        any model whose head is a large mass hung off one side -- the stone
+        hatchet's is 61% of its own length. It read 97 where the picture
+        read 106, and solving a 60 degree swing on it laid the axe flat.
+
+    Checked against the thing it models: it puts the hatchet's head at
+    (830, 348) where the `ci/scene.sh` capture of that pose has it at about
+    (835, 375), and read 11.5 o'clock on the pose the operator called 11.
+    """
+    iv = item_view(model, height_m, grip_frac, lay, yaw, scale)
+    f = 1.0 / np.tan(np.radians(FOV_DEG) / 2)
+    w, h = frame
+    x = (f / ASPECT) * iv[:, 0] / (-iv[:, 2]) * (w / 2)
+    y = f * iv[:, 1] / (-iv[:, 2]) * (h / 2)
+    p = np.stack([x, y], 1)
+    d = p[model[:, 1] > height_m * 0.80].mean(0) - p[model[:, 1] < height_m * 0.06].mean(0)
+    return np.degrees(np.arctan2(d[1], d[0]))
 
 
 def panel(pts_hand, pts_item, label, w, h):
@@ -166,10 +206,11 @@ def panel(pts_hand, pts_item, label, w, h):
 
 # The row under review, and the poses to compare. Edit these two.
 ROW = dict(rel="models/held/stone_hatchet.glb", height_m=0.5616, grip_frac=0.25)
+ROW["grip_frac"] = 0.15
 CANDIDATES = [
-    ("shipped", 0.25, -1.60, 0.85),
+    ("shipped", 0.960, -0.663, 0.85),
+    ("before the 1 o'clock swing", 0.881, 0.244, 0.85),
     ("flat upright", 0.0, np.pi / 2, 1.00),
-    ("more back", 0.35, -1.85, 0.85),
     ("too far back", 0.436, -2.094, 0.85),
 ]
 
@@ -183,13 +224,16 @@ def main():
     rows = (len(CANDIDATES) + cols - 1) // cols
     sheet = Image.new("RGB", (cols * w + (cols + 1) * 8, rows * h + (rows + 1) * 8), (16, 17, 19))
     for i, (tag, lay, yaw, scale) in enumerate(CANDIDATES):
-        sc, lean, elev = haft_angles(lay, yaw)
+        _, lean, elev = haft_angles(lay, yaw)
+        sc = clock(model, ROW["height_m"], ROW["grip_frac"], lay, yaw, scale)
         lab = (f"{tag}\n  lay {np.degrees(lay):.0f}  yaw {np.degrees(yaw):.0f}  x{scale:.2f}\n"
-               f"  screen {sc:.0f}  lean {lean:+.0f}  elev {elev:.0f}")
+               f"  screen {sc:.0f} ({oclock(sc)} o'clock)  "
+               f"lean {lean:+.0f}  elev {elev:.0f}")
         iv = item_view(model, ROW["height_m"], ROW["grip_frac"], lay, yaw, scale)
         sheet.paste(panel(hv, iv, lab, w, h), (8 + (i % cols) * (w + 8), 8 + (i // cols) * (h + 8)))
         print(f"  {tag:14s} lay {np.degrees(lay):5.1f}  yaw {np.degrees(yaw):7.1f}  "
-              f"scale {scale:.2f}   screen {sc:6.1f}  lean {lean:+6.1f}  elev {elev:5.1f}")
+              f"scale {scale:.2f}   screen {sc:6.1f} ({oclock(sc):2d} o'clock)"
+              f"  lean {lean:+6.1f}  elev {elev:5.1f}")
     sheet.save(out)
     print(f"wrote {out}")
 
