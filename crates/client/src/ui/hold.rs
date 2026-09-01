@@ -168,14 +168,55 @@ pub const HELD_MODELS: [HeldModelDef; 14] = [
     // deployables' cheat (a token of a world-sized object) — this is a held
     // prop authored bigger than the hand that holds it.
     HeldModelDef::upright("rock", "models/held/rock.glb", 0.103, 0.15, 0.60),
-    // A hafted tool is held near the butt, far from the head. A quarter up
-    // the haft is where a hand actually sits on an axe.
-    HeldModelDef::tool(
-        "stone_hatchet",
-        "models/held/stone_hatchet.glb",
-        0.500,
-        0.25,
-    ),
+    // A hafted tool is held near the butt, far from the head. 0.25 of the
+    // model is **36% up the haft**, which is where the number finally means
+    // what this line has always claimed: the haft is the bottom 0.393 m of a
+    // 0.562 m model and the head is the rest. It used to mean 48%, a choked
+    // grip halfway up, because the haft was only half the model's declared
+    // height when the model was measured across its own lean.
+    //
+    // **0.562 is not a regenerated asset, it is the same axe measured along
+    // the haft instead of across the box** (`ci/stand_grip.py`, 2026-09-01).
+    // The file was authored leaning 32°, so its +Y extent was the diagonal's
+    // shadow — and, worse, `import_meshy.py` centres the BOUNDING BOX, which
+    // on a heavy head hung off one side of a leaning handle put the haft
+    // **121 mm from the +Y axis at the grip height**. `viewmodel::pose` did
+    // what it says and slid thin air into the palm, so the axe hung a hand's
+    // width beside the fist and pointed 32° across the frame (operator,
+    // 2026-09-01, with the frame). Standing it up is a rigid rotation:
+    // nothing about the axe changed size, and `scale` is still 1.0.
+    //
+    // **And it is `upright`, not `tool`** (operator, 2026-09-01, with a
+    // reference frame: *"you have the ax almost going the same exact
+    // direction as the arm. doesn't make sense. it needs to be a right
+    // angle"*). `lay_forward`'s quarter-turn is what a SPEAR wants; on a
+    // hatchet it laid the haft down to **19.5° above horizontal**, which
+    // draws at 36° on screen — within a few degrees of the forearm's own
+    // diagonal, so the axe read as the arm continuing rather than as a
+    // thing being carried. Upright is 69°, near-vertical in frame and
+    // across the arm, which is how every first-person axe is held.
+    //
+    // ⚠ **This was invisible until the model was stood up, and that is the
+    // trap worth remembering**: the file's own 32° lean happened to cancel a
+    // third of the lay, so the wrong quarter-turn and the wrong asset were
+    // hiding each other. Fixing one exposed the other, which is why this row
+    // moved twice in one day.
+    // **And it is yawed a quarter turn, for the reason the revolver is**: the
+    // head's long axis is the model's +X, so at `pose_yaw = 0` the blade lies
+    // broadside to the eye — 34.5 of its 34.5 cm across the screen, on an axe
+    // whose head is already 61% of its own length. A quarter turn puts the
+    // edge where the swing goes and leaves 19.4 cm in the image plane, which
+    // is a tool you are about to use rather than a wall.
+    HeldModelDef {
+        key: "stone_hatchet",
+        src: HeldSrc::Glb("models/held/stone_hatchet.glb"),
+        height_m: 0.562,
+        grip_frac: 0.25,
+        scale: 1.0,
+        lay_forward: false,
+        pose_yaw: core::f32::consts::FRAC_PI_2,
+        light: None,
+    },
     HeldModelDef::tool(
         "stone_pickaxe",
         "models/held/stone_pickaxe.glb",
@@ -202,10 +243,18 @@ pub const HELD_MODELS: [HeldModelDef; 14] = [
     // UPRIGHT, which is what a bow looks like in a hand and what laying it
     // flat never did. Drawn at 0.8: a viewmodel's scale cheat, so the top
     // limb stays inside the frame instead of leaving it at the hold's depth.
+    //
+    // **"Upright" was a table entry and not a fact about the file until
+    // 2026-09-01**: the bow was authored across a 45° diagonal, so keeping it
+    // upright kept the diagonal, and the riser sat 165 mm off the axis the
+    // fist is on — the hatchet's defect on the other modelled hold. 1.687 is
+    // the limb-to-limb length, which is what 1.191 was a diagonal's shadow
+    // of; the bow is the same size on screen, because `scale` is what sets
+    // that and `ci/stand_grip.py` only turns the mesh.
     HeldModelDef::upright(
         "hunting_bow",
         "models/held/hunting_bow.glb",
-        1.191,
+        1.687,
         0.50,
         0.80,
     ),

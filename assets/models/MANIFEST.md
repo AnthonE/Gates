@@ -206,12 +206,34 @@ silently breaking one. `crates/client/tests/held_assets.rs` reads
 | file | item | task id | credits |
 |---|---|---|---|
 | `held/rock.glb` | Rock | `019fefe3-2c88` | 24 |
-| `held/stone_hatchet.glb` | Stone Hatchet | `019fefe7-e4b8` | 24 |
+| `held/stone_hatchet.glb` | Stone Hatchet | `019fefe7-e4b8` | 24 | **stood up** 2026-09-01 |
 | `held/stone_pickaxe.glb` | Stone Pickaxe | `019fefe9-a24e` | 24 |
 | `held/hammer.glb` | Hammer | `019feffa-b068` | 24 |
 | `held/building_plan.glb` | Building Plan | `019feffc-45fe` | 24 |
 | `held/wooden_spear.glb` | Wooden Spear | `019feffe-2c4b` | 24 |
-| `held/hunting_bow.glb` | Hunting Bow | `019feff1-37f6` | 24 |
+| `held/hunting_bow.glb` | Hunting Bow | `019feff1-37f6` | 24 | **stood up** 2026-09-01 |
+
+**Two of these ship a second baked transform, and the reason is a defect that
+was in every frame.** `ci/import_meshy.py` centres the BOUNDING BOX on X/Z,
+and `ui::hold` spends the grip as one number up the model's own +Y — two
+statements that agree only when the thing the hand closes on is itself on +Y.
+The hatchet was authored leaning **32°** with a heavy head off one side, so
+the box centred on the head and the haft sat **121 mm** from the axis at the
+grip height; `viewmodel::pose` then slid thin air into the palm and the axe
+hung a hand's width beside the fist, pointing across the frame. The bow was
+the same at **165 mm** across a 45° diagonal. Both were stood up by
+`ci/stand_grip.py` — a rigid rotation and a slide, no resampling, no rescale,
+so the axe and the bow are exactly the size they always were:
+
+```
+ci/stand_grip.py assets/models/held/stone_hatchet.glb <out> --shaft 0.02 0.45 --grip 0.25
+ci/stand_grip.py assets/models/held/hunting_bow.glb   <out> --shaft 0.02 0.98 --grip 0.50
+```
+
+`height_m` in `HELD_MODELS` moved with them — 0.500 → 0.562 and 1.191 → 1.687
+— because a diagonal's shadow is shorter than the diagonal, and
+`crates/client/tests/held_assets.rs::the_fist_closes_on_the_model_and_not_on_air`
+is the gate that now refuses the whole class.
 
 Three of these were regenerated once, and the two prompt failures are worth
 keeping because they are the failure mode of the *prompt*, not the tool: the

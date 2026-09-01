@@ -121,12 +121,24 @@ thing the probe cannot photograph:
    viewmodel back and shrink it. `VIEWMODEL_HOLD` is the knob and it has
    never been judged against a frame with a real model in it, because until
    now there was no frame.
-2. **The grip reads as *beside* the fist rather than *in* it, up close.**
-   This rig's hand has **no finger bones** (`rig_asset.rs`'s curl gate says
-   so), so `VIEWMODEL_PALM` buys the read with occlusion — the open fingers
-   drawing in front of the shaft — and at this scale it half-works.
-   Unchanged by the grip work: the item is within a millimetre of where it
-   hung before, by construction.
+2. ✅ **"The grip reads as beside the fist rather than in it" was a
+   MEASUREMENT, not a taste call, and it is closed** (2026-09-01). This item
+   blamed the rig's missing finger bones and `VIEWMODEL_PALM`'s occlusion
+   trick, and that was the symptom's nearest neighbour rather than its cause:
+   `stone_hatchet.glb` is authored leaning 32° with its head off one side, so
+   `import_meshy.py`'s bounding-box centring put the haft **121 mm off the
+   +Y axis** — three palm-widths — and `viewmodel::pose` slid that empty
+   point into the palm. `hunting_bow.glb` was the same at 165 mm. Both are
+   stood up (`ci/stand_grip.py`), `height_m` restated, and
+   `held_assets.rs::the_fist_closes_on_the_model_and_not_on_air` refuses the
+   class. The finger-bone half stands as a real limit and is now the only
+   half. **A second fault was underneath it**: the file's own lean was
+   cancelling a third of `lay_forward`'s quarter-turn, so with the model
+   straight the hatchet's haft lay 19.5° above horizontal — along the
+   forearm. The row is `upright` with a quarter-turn of `pose_yaw` now, which
+   is 69° and across the arm (`DECISIONS.md` 2026-09-01). Item 1 (true scale
+   reads oversized) is untouched by the geometry — nothing changed size — but
+   the axe no longer hides behind its own foreshortening, so judge it again.
 3. ⚠ **The motion is still unphotographable here, and this is worth knowing
    before someone tries.** The swing arc and the chip burst are driven by
    `Time::delta_secs`, and under lavapipe a frame is a large fraction of a
