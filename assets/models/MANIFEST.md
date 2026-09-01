@@ -304,6 +304,9 @@ second and differed only by material.
 | `prop/node_stone.glb` | `StoneNode` | `01a05e6e-4baa` | `01a05e6e-c5a5` | 1,439 | 1,400 | 3.5 MB |
 | `prop/node_metal.glb` | `MetalNode` | `01a05e85-6c8d` | `01a05e85-e691` | 1,364 | 1,250 | 3.4 MB |
 | `prop/node_sulfur.glb` | `SulfurNode` | `01a05e7c-bfc4` | `01a05e7d-3978` | 1,490 | 1,400 | 3.5 MB |
+| `prop/barrel.glb` | `BarrelSlot` | `01a05ea8-6214` | `01a05ea9-0399` | 758 | 700 | 3.6 MB |
+| `prop/crate.glb` | `CrateSlot` | `01a05ea1-9804` | `01a05ea2-894d` | 522 | 550 | 3.3 MB |
+| `prop/cache.glb` | `CacheSlot` | `01a05ea5-0f65` | `01a05ea5-8934` | 479 | 550 | 3.2 MB |
 
 **`target_polycount` works and overshoots by 3–11 %**, which is why the metal
 node was asked for 1,250 to land under `WANTED.md` §2's 1,500 — the roll before
@@ -358,6 +361,29 @@ therefore pushes the corners outside it: measured on the first ore node at
 walks through**. `--fit-radius` solves for the largest per-vertex
 `hypot(x, z)` instead — one shared X/Z factor, so the plan shape is preserved
 and only its scale moves.
+
+**Which fit mode a row takes is DERIVABLE, not a judgement call.** Compute the
+half-diagonal of the massing the model replaces and compare it to
+`OCCUPANT_R_M`: equal means the row describes a **box** and takes
+`--fit-axes`; unequal means it describes a **cylinder** and takes
+`--fit-radius`. Measured across the nine shipped props — crate 0.6801 ==
+hypot(0.55, 0.40), cache 0.5701 == hypot(0.45, 0.35), so both are boxes; the
+barrel, the boulder and the three nodes are round in plan and are not. Getting
+this wrong is not cosmetic: it drew the first ore node 36 cm outside what the
+sim blocks.
+
+⚠ **Stating a dimension can put the dimension IN the picture.** Every prompt
+here names metric sizes, and on the boar the image came back with a scale bar
+and the figures "1.5 metres / 0.78 metres" drawn under the animal — text that
+a reconstruction can bake into an albedo. None of the nine shipped props show
+it, and it is not something a bounding-box check can see; look at the
+reference image, not only at the numbers.
+
+**One roll was rejected for a colour the prompt itself asked for**: the first
+barrel measured **16.0 % green-dominant** on "flaking grey-green paint over
+rust". Re-rolled as "bare rusted steel, orange-brown oxide, no paint at all"
+→ 0.0 % and luma 0.248. The lesson from the boulders holds — the generator
+does what the prompt says, including the parts of it nobody thought about.
 
 `--center` is the other mode they need: `archetype_lift` is 0.55 for a boulder
 and 0.5 for a node against half-extents of 0.99 and 0.63, so these sit 0.44 m

@@ -152,6 +152,8 @@ pub struct PropAssets {
     /// three used to be one mesh and three materials, so two of them had no
     /// silhouette.
     node_models: [Option<(Handle<Mesh>, Handle<StandardMaterial>)>; 3],
+    /// Barrel, supply crate, cache box — one apiece, `None` for the massing.
+    small_models: [Option<(Handle<Mesh>, Handle<StandardMaterial>)>; 3],
     foliage: [Handle<StandardMaterial>; TINT_POOL],
     /// The bush's leaf cards, a pool indexed by yaw. See [`bush_card_mesh`].
     bush_cards: Vec<Handle<Mesh>>,
@@ -1253,6 +1255,14 @@ pub fn prop_models(o: Occupant) -> &'static [&'static str] {
         Occupant::StoneNode => &["models/prop/node_stone.glb"],
         Occupant::MetalNode => &["models/prop/node_metal.glb"],
         Occupant::SulfurNode => &["models/prop/node_sulfur.glb"],
+        // The road's reward and the two site containers. The barrel is a
+        // CYLINDER row (`OCCUPANT_R_M` 0.2925 is a radius) and the two boxes
+        // are BOX rows (0.6801 and 0.5701 are each exactly the half-diagonal
+        // of the massing they replace), which is what picks `--fit-radius`
+        // against `--fit-axes` at import — see `assets/models/MANIFEST.md`.
+        Occupant::BarrelSlot => &["models/prop/barrel.glb"],
+        Occupant::CrateSlot => &["models/prop/crate.glb"],
+        Occupant::CacheSlot => &["models/prop/cache.glb"],
         _ => &[],
     }
 }
@@ -1667,6 +1677,11 @@ pub fn assets(
             models.pool(Occupant::MetalNode).first().cloned(),
             models.pool(Occupant::SulfurNode).first().cloned(),
         ],
+        small_models: [
+            models.pool(Occupant::BarrelSlot).first().cloned(),
+            models.pool(Occupant::CrateSlot).first().cloned(),
+            models.pool(Occupant::CacheSlot).first().cloned(),
+        ],
         foliage: surface_pool(0.86, fresnel::DIELECTRIC, materials),
         bush_cards: (0..BUSH_CARD_POOL as u32)
             .map(|v| meshes.add(bush_card_mesh(v)))
@@ -2056,9 +2071,20 @@ pub fn spawn_slot(
                 a.rocks[variant].clone()
             }
         }
-        Occupant::BarrelSlot => (a.barrel.clone(), a.metal.clone()),
-        Occupant::CrateSlot => (a.crate_box.clone(), a.wood.clone()),
-        Occupant::CacheSlot => (a.cache_box.clone(), a.wood.clone()),
+        // Same fallback shape as the nodes: the model where one exists, the
+        // generated massing and its tiled photograph where one does not.
+        Occupant::BarrelSlot => match &a.small_models[0] {
+            Some(m) => m.clone(),
+            None => (a.barrel.clone(), a.metal.clone()),
+        },
+        Occupant::CrateSlot => match &a.small_models[1] {
+            Some(m) => m.clone(),
+            None => (a.crate_box.clone(), a.wood.clone()),
+        },
+        Occupant::CacheSlot => match &a.small_models[2] {
+            Some(m) => m.clone(),
+            None => (a.cache_box.clone(), a.wood.clone()),
+        },
         Occupant::HavenShelter => (a.shelter.clone(), a.shelter_mat.clone()),
         Occupant::WaystationCanopy => (a.canopy.clone(), a.canopy_mat.clone()),
         Occupant::None => return,

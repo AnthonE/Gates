@@ -63,6 +63,9 @@ fn tri_ceiling(o: Occupant) -> usize {
         Occupant::HavenShelter | Occupant::WaystationCanopy => 12_000,
         Occupant::Rock => 3_000,
         Occupant::StoneNode | Occupant::MetalNode | Occupant::SulfurNode => 1_500,
+        // `WANTED.md` §2.8/§2.9/§2.10's own numbers.
+        Occupant::BarrelSlot => 800,
+        Occupant::CrateSlot | Occupant::CacheSlot => 600,
         _ => 1_000,
     }
 }

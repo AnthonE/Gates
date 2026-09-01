@@ -384,6 +384,22 @@ do not rediscover)
   several, and reject on a number. `ci/measure_glb.py` is that step, and it
   reads its target out of `sim-core` rather than taking it typed.
 
+- **Auto-rigging is humanoid pose estimation, so it refuses every animal in
+  this game.** Meshy's `/openapi/v1/rigging` advertises a free walk and run
+  clip with every rig, which reads as the obvious way to animate a mob —
+  and on the generated boar it answers *"Pose estimation failed, please
+  provide a valid model"*. The docs say "character models" and "t-pose" and
+  mean it. Two things follow, and the second is the load-bearing one.
+  **First**, a generated animal arrives as one primitive with no skin and no
+  animation, so it can be neither rigged nor split. **Second, and this is the
+  part to check before buying any mob asset: `render/mobs.rs` does not draw a
+  skeleton.** It draws a body plus four leg children swung off `LEG_ANCHORS`
+  at a rate keyed to distance travelled, which is a deliberate design with
+  registered knobs — so a whole-animal mesh has nowhere to go. Shipping one
+  anyway means an animal that slides across the ground, the exact defect
+  `render/anim.rs`'s own header records as worth fixing for players. The
+  order is the client slice first, the asset second.
+
 - **A cheap counter is not a free counter, and one was left in the tree.**
   `crates/sim-core/src/perfcount.rs` sat untracked in this branch's working
   tree — its own first line reading *"TEMPORARY measurement scaffold (not for

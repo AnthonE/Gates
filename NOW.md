@@ -76,16 +76,63 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
    and it is sim truth: `test_replay`'s golden, the const blocks that hold the
    plinth lowest, `SHELTER_CORNER_R_M`, `WAYSTATION_RADIUS_M`'s derivation and
    the guard aprons all read it. A real slice, not a tweak.
-3. **Four `WANTED.md` §2 rows still want a mesh** — the barrel (188 on the
-   seed, and the road's whole reward loop, drawn as a 10-segment cylinder),
-   the supply crate, the cache box and the pine stump. 2.1 and 2.6 are
-   deliberately generated; 2.3–2.5, 2.7, 2.11 and 2.12 landed 2026-09-01/02.
+3. **§2 is done except the stump**, and that one waits on a verb (§0stump).
+   2.1 and 2.6 are deliberately generated; the other nine landed 2026-09-01/02.
+   Next is §4's seven greybox deployables and §5's fifteen held items.
    The pipeline is three commands now (`meshy_gen` → `measure_glb` →
    `import_meshy`) and the hit rate to budget for is **six keepers from
    eleven rolls**. ⚠ **Check every §2 size against the sim before spending**:
    four rows have now been found wrong, and two kinds of wrong — 2.11 was
    3.6 m out on height, and 2.3–2.5/2.7 describe a CUBE where the sim blocks
    a cylinder. Read `occupant_volume`, not this file.
+
+## 0anim · The animals cannot be bought until the client can move one *(client lane)*
+
+Asked 2026-09-02 whether the generator can rig. **It can, and it will not rig
+ours** — probed rather than assumed: `POST /openapi/v1/rigging` on the
+generated boar returns *"Pose estimation failed, please provide a valid
+model"*. The API's own description says "character models" and "t-pose", and
+the failure is literally a humanoid pose estimator declining a quadruped. So
+the free walk/run clips that come with rigging are not available to us.
+
+That matters because of what `render/mobs.rs` draws: **a body plus four leg
+children**, swung per-leg off `LEG_ANCHORS` at a rate keyed to distance
+travelled (`PIG_LEG_CYCLE_M`, `PIG_LEG_SWING_RAD` — registered knobs). A
+generated animal is one primitive, one material, **no skin and no
+animation** (measured on both), so it can be neither rigged nor split, and
+its hips are nowhere near `LEG_ANCHORS`.
+
+Both meshes exist and are **deliberately not in the tree**: drawing one whole
+loses the leg swing (a boar sliding across the ground — the defect
+`anim.rs`'s header records as worth fixing for players), and keeping the box
+legs under it gives the animal eight.
+
+**A client slice before an asset**: generalise `anim.rs`'s clip machinery to
+mobs and author a skeleton, or deform a whole mesh the way the leg transforms
+already do. Pig `01a05e9f-775d`, wolf `01a05ea2-c78a` when it is wanted.
+
+## 0stump · A felled pine leaves scenery, not a second harvest *(systems lane)*
+
+Operator, 2026-09-02: *"stumps are to be collected ya know for wood, its not
+like a stump is used for looks. u click to collect"*. Right, and **we do not
+do that** — checked rather than assumed:
+
+- `content/gatherables.toml` carries **five** rows: tree, stone node, metal
+  node, sulfur node, bush. There is no stump row and no stump item.
+- `Occupant` deliberately **skips discriminant 8** with a doc comment saying
+  so: "8 is the client's felled-pine stump, which is not a sim occupant".
+- So the stump is `render/props.rs`'s `FellPart::Stump` and nothing else — a
+  mesh revealed when `apply_fell` runs, with no slot, no `SlotLives` entry, no
+  collision and no verb. It vanishes when the tree respawns.
+
+A **sim slice, not an asset**, and the cheap shape is a second life on the
+tree's existing `SlotLives` entry — one address yielding wood twice, the stump
+as the visible second stage. No new occupant, no wire byte. The expensive
+shape is a real `Occupant` taking the hole at 8, which costs `OCCUPANT_R_M`
+rows and the archetype-table alignment that comment is warning about.
+
+Until it lands, `WANTED.md` §2.2's stump model is an ornament on something
+you cannot click — buy it after the verb.
 
 ## 0kit · The build kit is the one row a generated mesh fights *(client lane)*
 
