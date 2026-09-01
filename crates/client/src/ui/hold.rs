@@ -204,7 +204,9 @@ pub const HELD_MODELS: [HeldModelDef; 14] = [
     // APPARENT angle, 84.6° → 106.9°, which is not the direction vector's
     // 94° because the item hangs 0.32 m right of centre and perspective
     // tilts it — and the head swung 55° forward, from 20.5° leaning back at
-    // the eye to 35.0° away from it**, at 52.2° of elevation.
+    // the eye to 35.0° away from it**, at 52.2° of elevation. Then 8° back
+    // clockwise (*"it needs to rotate clockwise a tiny bit"*): apparent
+    // **99.1°**, lean held at −35.0°, elevation 55.0°.
     //
     // ⚠ **The elevation is the constraint nobody would guess, and it is why
     // the lean stops at 20°.** "Back towards the character" is depth, and
@@ -235,7 +237,15 @@ pub const HELD_MODELS: [HeldModelDef; 14] = [
         key: "stone_hatchet",
         src: HeldSrc::Glb("models/held/stone_hatchet.glb"),
         height_m: 0.562,
-        grip_frac: 0.25,
+        // 0.15, not the 0.25 it shipped at (operator, 2026-09-01: *"make the
+        // Y value or whatever of the axe go up so the axe slides up the hand
+        // more"*). This is the knob rather than a translation because it
+        // slides the axe ALONG ITS OWN HAFT through the fist — 4.8 cm up,
+        // drawn — instead of lifting it off the palm, which is the defect
+        // this whole row exists to have fixed. The fist is 0.084 m up a
+        // 0.393 m haft now; the fist band still lands on haft, which
+        // `the_fist_closes_on_the_model_and_not_on_air` is what checks.
+        grip_frac: 0.15,
         // Judged smaller by eye and taken to 0.85 (operator, 2026-09-01:
         // *"maybe the ax needs to be a little bit smaller"*). At true size the
         // axe is 70% of the frame's height at the hold's depth; this is 60%.
@@ -243,8 +253,8 @@ pub const HELD_MODELS: [HeldModelDef; 14] = [
         // NOT a fix for the head, which is 0.345 m wide on a 0.562 m axe and
         // stays out of proportion at every scale.
         scale: 0.85,
-        lay: 0.811,
-        pose_yaw: 0.593,
+        lay: 0.881,
+        pose_yaw: 0.244,
         light: None,
     },
     HeldModelDef::tool(
