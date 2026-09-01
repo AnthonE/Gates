@@ -205,8 +205,22 @@ pub const HELD_MODELS: [HeldModelDef; 14] = [
     // 94° because the item hangs 0.32 m right of centre and perspective
     // tilts it — and the head swung 55° forward, from 20.5° leaning back at
     // the eye to 35.0° away from it**, at 52.2° of elevation. Then 8° back
-    // clockwise (*"it needs to rotate clockwise a tiny bit"*): apparent
-    // **99.1°**, lean held at −35.0°, elevation 55.0°.
+    // clockwise, then 45.8° more (*"if the rotation was in the middle of the
+    // axe object then its facing at 11 oclock we need it at around 1 o
+    // clock"*): butt-to-head **105.8° → 60.0°**, elevation held at 54.8°,
+    // lean −10.1°.
+    //
+    // ⚠ **Measure that angle in PIXELS, not in NDC, and not on the point
+    // cloud's principal axis.** Both wrong ways were tried here. NDC is
+    // aspect-corrected and pixels are not, so a 16:9 frame stretches x by
+    // 1.78 and an angle read in NDC is off by ~7° — the operator reads the
+    // screen. And a PCA of the projected silhouette is not the direction the
+    // axe points, because this head is 61% of the model's length and hangs
+    // off one side, so the cloud's principal axis is the HEAD's axis: it
+    // read 97° where the picture read 106°, and solving on it swung the axe
+    // flat. Butt centroid to head centroid, projected, in pixels, is the one
+    // that agreed with the frame (it put the head at 830, 348 against 835,
+    // 375 measured off the capture).
     //
     // ⚠ **The elevation is the constraint nobody would guess, and it is why
     // the lean stops at 20°.** "Back towards the character" is depth, and
@@ -253,8 +267,8 @@ pub const HELD_MODELS: [HeldModelDef; 14] = [
         // NOT a fix for the head, which is 0.345 m wide on a 0.562 m axe and
         // stays out of proportion at every scale.
         scale: 0.85,
-        lay: 0.881,
-        pose_yaw: 0.244,
+        lay: 0.960,
+        pose_yaw: -0.663,
         light: None,
     },
     HeldModelDef::tool(
