@@ -200,10 +200,18 @@ text-to-image → `image-to-3d` with `model_type: smart-topology`,
 carrying exactly the columns below, so this table is transcribed rather than
 remembered.
 
-| file | occupant | image task | mesh task | credits | tris | size |
-|---|---|---|---|---|---|---|
-| `site/shelter.glb` | `HavenShelter` | `01a05e1c-5de3` | `01a05e1c-ff8d` | 48 | 4,140 | 3.6 MB |
-| `site/canopy.glb` | `WaystationCanopy` | `01a05e1c-ad22` | `01a05e1d-4e95` | 39 | 3,801 | 3.3 MB |
+| file | occupant | image task | mesh task | tris | size |
+|---|---|---|---|---|---|
+| `site/shelter.glb` | `HavenShelter` | `01a05e1c-5de3` | `01a05e1c-ff8d` | 4,140 | 3.6 MB |
+| `site/canopy.glb` | `WaystationCanopy` | `01a05e1c-ad22` | `01a05e1d-4e95` | 3,801 | 3.3 MB |
+
+**Credits: 72 for all three tasks** (5,247 → 5,175), and there is deliberately
+no per-asset column. `ci/meshy_gen.py` reports a delta between a balance read
+before its first call and after its last, which is correct for one run and
+**wrong for two running at once** — these two were generated concurrently, so
+each sidecar charged itself part of the other's spend and their figures sum to
+111 against a true 72. The script's header now says so. The total is the number
+that was actually observed; the split was not.
 
 Image prompts, in full, because the IP rail's auditability is the reason they
 are recorded at all:

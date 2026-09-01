@@ -26,6 +26,12 @@ imposed after texturing and never before.
 The key is read from `$MESHY_API_KEY` and is never written to disk -- not
 into the sidecar, not into a log line.
 
+⚠ **`credits` in the sidecar is a balance delta, so it is only true for a
+run that had the account to itself.** Two of these running at once each
+charge themselves part of the other's spend: measured 2026-09-01, two
+concurrent assets reported 48 and 39 against a true combined 72. Run them
+serially if the per-asset figure matters, or record the total and say so.
+
 Usage:
   ci/meshy_gen.py <slug> --image-prompt "..." --mesh-prompt "..." --out DIR
   ci/meshy_gen.py --resume <image_task> <mesh_task> --out DIR   (poll only)
