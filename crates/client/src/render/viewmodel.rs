@@ -81,12 +81,32 @@ pub const VIEWMODEL_HOLD: Vec3 = Vec3::new(0.32, -0.30, -0.52);
 /// the WRIST: the palm channel — where a rod actually crosses a fist — sits
 /// a few centimetres beyond it toward the fingers. Without this, every item
 /// rode low and right of the open palm and read as floating beside the hand
-/// (operator, 2026-08-21: *"its not in the hand though?"*). Judged off
-/// capture frames rather than derived: left and up into the finger curl, and
-/// a touch DEEPER than the palm so the bind pose's open fingers draw in
-/// front of the shaft — occlusion is what sells a grip on a rig whose hand
-/// has no finger bones to close (`NOW.md` §0chr).
-pub const VIEWMODEL_PALM: Vec3 = Vec3::new(-0.040, 0.030, -0.015);
+/// (operator, 2026-08-21: *"its not in the hand though?"*).
+///
+/// ## Solved off the mesh, 2026-09-01, and the old value was 9.6 cm short
+///
+/// It used to be judged off capture frames — 5.3 cm, "left and up into the
+/// finger curl" — and that was the right instinct at the wrong magnitude.
+/// Measured in the `RightHand` bone's own frame, the old seat put the haft
+/// **5.4 cm from the wrist bone**, at the heel of the palm, with the nearest
+/// finger vertex **9.1 cm away** on a hand 21.7 cm long. Nothing was gripping
+/// anything; the haft only LOOKED like it crossed the hand because a
+/// projection flattens the two together (operator, 2026-09-01: *"the axe need
+/// to probably move to the fingers some. its off just a bit"* — the read was
+/// right and the "bit" was half a hand).
+///
+/// The value now is where a cylinder of the haft's own drawn radius actually
+/// fits: swept over the bone frame, the seat that maximises clearance while
+/// the hand still closes AROUND it. It lands at (4.5, 13.0, −1.5) cm — on the
+/// knuckle line, which is where a rod crosses a fist — with 2.57 cm of
+/// clearance and hand in **all sixteen** of the directions sampled
+/// perpendicular to the haft. The old seat had the hand on one side of it.
+///
+/// It is a translation, so the item's ORIENTATION is untouched: the pose
+/// angles in `ui::hold::HELD_MODELS` still mean exactly what they measured.
+/// `bodies::hand_pose` takes the same constant, so the remote body's grip
+/// moves with it — which is the point, there is one grip.
+pub const VIEWMODEL_PALM: Vec3 = Vec3::new(-0.0854, 0.0426, -0.0981);
 
 /// The item's resting orientation in view space, YXZ Euler radians.
 ///
