@@ -76,6 +76,29 @@ it reads as a lighting fault rather than a geometry one.
 Usage:
   ci/curl_hands.py <in.glb> <out.glb> [--degrees 85] [--thumb-degrees 35]
                    [--adduct 0.45] [--bones RightHand,LeftHand]
+                   [--into <keep.glb>]
+
+## `--into`, and why re-running this on its own output is not the answer
+
+**This tool must be run on the ORIGINAL import, never on a file it has already
+bent.** Everything it derives -- the digit islands, each digit's base, which
+island is the thumb, which way the palm faces -- is read off the geometry, and
+bent geometry gives different answers: run at 65 degrees on the shipped 85 and
+it re-derives the LEFT hand's palm as `+z` where the original gives `-x`, i.e.
+it bends the second pass about the wrong axis. The measured curl comes out
+close enough to look right, which is what makes it worth this paragraph.
+
+That leaves a problem, because the file to re-bend from is the original import
+and the file the game ships also carries later work on its CLIPS that the
+original does not. `--into` is the join: bend the hands of `<in.glb>`, then
+write those vertices into a copy of `<keep.glb>` and emit that, so the clips,
+animations and everything else come from the shipped rig and only the hand
+moves. It refuses unless the two files agree vertex for vertex outside the
+bones being bent, which is what makes the splice safe rather than hopeful.
+
+  git show 44acd31:assets/models/stumpy.glb > /tmp/orig.glb
+  ci/curl_hands.py /tmp/orig.glb assets/models/stumpy.glb --degrees 150 \
+      --thumb-degrees 90 --adduct 0.85 --into assets/models/stumpy.glb
 """
 import sys
 from pathlib import Path
@@ -217,12 +240,16 @@ def main():
     opts = {"--degrees": CURL_DEG, "--thumb-degrees": THUMB_DEG,
             "--adduct": ADDUCT}
     bones = list(HAND_BONES)
+    into = None
     files = []
     i = 0
     while i < len(argv):
         a = argv[i]
         if a in opts:
             opts[a] = float(argv[i + 1])
+            i += 2
+        elif a == "--into":
+            into = argv[i + 1]
             i += 2
         elif a == "--bones":
             bones = [b.strip() for b in argv[i + 1].split(",")]
@@ -264,6 +291,8 @@ def main():
     IBM = (read_accessor(gltf, blob, skin["inverseBindMatrices"])
            .astype(np.float64).reshape(-1, 4, 4).transpose(0, 2, 1))
 
+    orig_P = P.copy()
+    bent_any = np.zeros(len(P), dtype=bool)
     moved_total = 0
     for bone in bones:
         ji = names.index(bone)
@@ -375,6 +404,7 @@ def main():
             nm /= np.linalg.norm(nm, axis=1, keepdims=True)
             N[sel] = nm
             moved[sel] = True
+            bent_any[sel] = True
             moved_total += int(len(sel))
             bases.append(f"{base_frac:.2f}")
 
@@ -393,6 +423,35 @@ def main():
         if len(raw) != bv["byteLength"]:
             raise SystemExit("the rewrite changed the buffer's length")
         blob[start:start + len(raw)] = raw
+
+    # `--into`: keep everything but the vertices from another file. The two
+    # have to be the same mesh for that to mean anything, so it is checked
+    # rather than assumed -- outside the bones being bent, every vertex must
+    # already agree, which is exactly the condition under which swapping the
+    # buffer is a no-op for the rest of the character.
+    if into is not None:
+        keep_gltf, keep_blob = read_glb(into)
+        keep_prims = [m["primitives"][0] for m in keep_gltf["meshes"]]
+        keep_pos = {p["attributes"]["POSITION"] for p in keep_prims}
+        keep_nrm = {p["attributes"]["NORMAL"] for p in keep_prims}
+        if len(keep_pos) != 1 or len(keep_nrm) != 1:
+            raise SystemExit(f"{into}: does not share one POSITION/NORMAL accessor")
+        keep_pos, keep_nrm = keep_pos.pop(), keep_nrm.pop()
+        K = read_accessor(keep_gltf, keep_blob, keep_pos).astype(np.float64)
+        if K.shape != P.shape:
+            raise SystemExit(
+                f"{into} has {len(K)} vertices and {src} has {len(P)} — not the "
+                f"same mesh, so there is nothing to splice")
+        untouched = ~bent_any
+        drift = float(np.abs(K[untouched] - orig_P[untouched]).max()) if untouched.any() else 0.0
+        if drift > 1e-5:
+            raise SystemExit(
+                f"{into} and {src} disagree by {drift:.6f} on a vertex neither "
+                f"hand moves — they are different meshes and the splice would "
+                f"import that difference silently")
+        gltf, blob, pos_ix, nrm_ix = keep_gltf, keep_blob, keep_pos, keep_nrm
+        print(f"  --into {Path(into).name}: {int(untouched.sum())} untouched "
+              f"vertices agree; keeping its clips and taking only the hands")
 
     overwrite(pos_ix, P)
     overwrite(nrm_ix, N)

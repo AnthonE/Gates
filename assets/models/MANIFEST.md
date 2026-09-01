@@ -189,6 +189,33 @@ gates every claim in this table.
 | `deploy/fire.glb` | 3 fire | `019feff4-8c6e` | 15 | stone ring, charred logs, embers. **The one asset that keeps its emissive map** (measured peak 0.24, genuine glow) |
 | `deploy/workbench.glb` | 5 workbench | `019feff2-cd94` | 24 | plank worktop, vice, scattered tools |
 
+**The rig's hands are bent in the mesh, and the recipe is three lines**
+(operator, 2026-09-01: *"we just need to close the fingers. also i can never
+see the thumb"*). `stumpy.glb` arrived with five modelled digits per hand and
+`RightHand` as a LEAF — the fingers were never rigged, so nothing can pose
+them and the bind-pose rake was in every frame. `ci/curl_hands.py` bends the
+vertices instead:
+
+```
+git show 44acd31:assets/models/stumpy.glb > /tmp/orig.glb
+ci/curl_hands.py /tmp/orig.glb assets/models/stumpy.glb --degrees 150 \
+    --thumb-degrees 90 --adduct 0.85 --into assets/models/stumpy.glb
+```
+
+⚠ **Run it on the ORIGINAL, never on its own output**, which is what `--into`
+is for. Everything the tool derives comes off the geometry, and bent geometry
+gives different answers — a second pass re-derived the LEFT hand's palm as
+`+z` where the original gives `-x`, so it would bend about the wrong axis
+while producing a curl number that looks right. `--into` takes the clips from
+the shipped rig and only the hands from the freshly bent one, and refuses
+unless every vertex neither hand moves already agrees.
+
+The hand was at 85°/35°/0.45 (a relaxed hand) until 2026-09-01 and is now
+150°/90°/0.85 (a grip). `crates/client/tests/rig_asset.rs` gates it, on a
+length-to-thickness ratio rather than the fingertip offset it used to use —
+that measure PEAKED at the 85° it shipped at and read a fist as an uncurled
+hand. See `HAND_CURL_MAX`.
+
 ## `held/` — what the viewmodel puts in your hand
 
 **The surface these were waiting on turned out to already exist.** They were

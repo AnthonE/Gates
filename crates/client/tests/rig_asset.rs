@@ -584,16 +584,28 @@ fn the_flinch_blend_lands_on_the_clips_own_apex() {
     const { assert!(FLINCH_BLEND_S < FLINCH_CLIP_S) };
 }
 
-/// The smallest fingertip displacement that counts as a curled hand, as a
-/// fraction of the hand's own reach.
+/// The largest length-to-thickness ratio that still counts as a curled hand:
+/// the hand's reach along the finger axis over its thickness across the palm.
 ///
-/// **Both ends are measured, not chosen.** The shipped bind pose reads 0.032
-/// and 0.043 on the two hands; after `ci/curl_hands.py` they read 0.138 and
-/// 0.132. This sits between, more than twice the splayed reading and well
-/// under the curled one, so it is a gate on "was the step run" rather than a
-/// golden on the angle it was run at — the angle is that tool's knob and may
-/// move without touching this number.
-const HAND_CURL_MIN: f32 = 0.09;
+/// A splayed hand is long and thin and a closed one is short and thick, which
+/// is the whole idea — no segmentation, no left/right case, and dimensionless,
+/// so a re-import at another scale does not move it.
+///
+/// ⚠ **This replaces a measure that was not monotonic, and the failure was
+/// the bad kind: it read a FIST as an uncurled hand.** The old gate took the
+/// fingertips' offset off the palm plane, which rises as a digit bends away
+/// from the plane and then falls as it comes back round toward it. Swept over
+/// `ci/curl_hands.py`'s own knob it reads 0.018 splayed, peaks at **0.094 at
+/// the 85° it happened to ship at**, and falls back to 0.029 at 150° and
+/// 0.010 at 165° — under its own 0.09 floor at both ends. So it passed
+/// exactly one narrow band, could not tell "the step was never run" from "the
+/// step was run into a grip", and would have gone red on the closed hand the
+/// operator asked for (2026-09-01). Measured on the same six files, this one
+/// falls 1.660 → 1.364 → 1.273 → 1.239 → 1.195 → 1.163 without a turn.
+///
+/// **Both ends are measured, not chosen.** The pre-curl import reads 1.660
+/// and the shipped grip 1.195. This sits between with room either side.
+const HAND_CURL_MAX: f32 = 1.45;
 
 #[test]
 fn both_views_of_one_swing_strike_at_the_same_moment() {
@@ -786,26 +798,21 @@ fn the_hands_are_curled_out_of_their_bind_pose_splay() {
             sorted[1]
         );
 
-        let mut along: Vec<f32> = hand_v.iter().map(|v| v[finger]).collect();
-        along.sort_by(f32::total_cmp);
-        let tip_line = along[(along.len() as f32 * 0.95) as usize];
-        let tips: Vec<&[f32; 3]> = hand_v.iter().filter(|v| v[finger] >= tip_line).collect();
-        let mean = |vs: &[&[f32; 3]], k: usize| -> f32 {
-            vs.iter().map(|v| v[k]).sum::<f32>() / vs.len() as f32
-        };
-        let all: Vec<&[f32; 3]> = hand_v.iter().collect();
-        let off = |k: usize| (mean(&tips, k) - mean(&all, k)).abs() / spans[finger];
-        let curl = (0..3)
+        // Reach along the fingers over thickness across the palm. The thicker
+        // of the two remaining axes, because which one carries the palm's
+        // depth is opposite between the two hands and this needs no case.
+        let thick = (0..3)
             .filter(|&k| k != finger)
-            .map(off)
+            .map(|k| spans[k])
             .fold(0.0f32, f32::max);
+        let curl = spans[finger] / thick;
 
         assert!(
-            curl >= HAND_CURL_MIN,
-            "{RIG}: {hand}'s fingertips sit {curl:.3} of the hand's reach off \
-             the palm plane, under {HAND_CURL_MIN}. The hand is still in its \
-             bind-pose splay — run `ci/curl_hands.py` on it (see \
-             `assets/models/MANIFEST.md` for where it goes in the pipeline)."
+            curl <= HAND_CURL_MAX,
+            "{RIG}: {hand} is {curl:.3} long-to-thick, over {HAND_CURL_MAX}. \
+             The hand is still in its bind-pose splay — run \
+             `ci/curl_hands.py` on it (see `assets/models/MANIFEST.md` for \
+             where it goes in the pipeline)."
         );
     }
 }
