@@ -115,6 +115,20 @@ hands and this is no longer a claim.
 What is left is two taste calls that only the operator can make, and one
 thing the probe cannot photograph:
 
+0b. ⚠ **The grip is not anatomical, and that is why the axe cannot be put
+   on the thumb.** `VIEWMODEL_GRIP_Q` is `hand⁻¹ ∘ (T(HOLD) · R(TILT))` — it
+   is whatever quaternion reproduces a chosen VIEW pose, so it carries no
+   information about the hand. Measured off `stumpy.glb`: the rig's thumb
+   runs (0.412, 0.906, −0.095) in the hand's own frame, 25° off the fingers,
+   and points 31.4° above horizontal in view leaning 56° AWAY. A haft laid
+   along it therefore lands there, and every pose that satisfies the framing
+   the operator asked for sits ~90° off it. The two constraints are
+   orthogonal *through this constant*, not in principle: aligning the haft to
+   the thumb and then rotating the HAND so the thumb stands up in frame would
+   satisfy both, at the cost of moving a visible arm. Nobody has asked for
+   that yet (operator, 2026-09-01: *"in line with the thumb with an open
+   Palm"* — the intent, unbuilt).
+
 1. **The viewmodel is drawn at TRUE scale 0.52 m from the eye**, so a 0.6 m
    hatchet fills about three-quarters of the frame height. That is
    physically right and it reads as oversized — most games push the
@@ -135,10 +149,23 @@ thing the probe cannot photograph:
    half. **A second fault was underneath it**: the file's own lean was
    cancelling a third of `lay_forward`'s quarter-turn, so with the model
    straight the hatchet's haft lay 19.5° above horizontal — along the
-   forearm. The row is `upright` with a quarter-turn of `pose_yaw` now, which
-   is 69° and across the arm (`DECISIONS.md` 2026-09-01). Item 1 (true scale
-   reads oversized) is untouched by the geometry — nothing changed size — but
-   the axe no longer hides behind its own foreshortening, so judge it again.
+   forearm. `lay_forward` is a `lay` ANGLE now (it was a bool controlling an
+   angle, and between it and `VIEWMODEL_TILT`'s pitch the row could ask for
+   19.5° or 69° and nothing between); the hatchet is at screen 94.0°, 20.5°
+   of lean, 69.2° elevation, drawn at 0.85. `DECISIONS.md` 2026-09-01.
+   Item 1 (true scale) is partly answered by that 0.85.
+2b. ⚠ **The swing does not chop any more, and it is arithmetic, not a
+   frame.** `swing_pose`'s arc is written in view-space axes and was picked
+   when a held tool's long axis was −Z: its strike is 0.55 of yaw and 0.55 of
+   roll against 0.25 of pitch. Turn the tool's long axis to +Y and yaw/roll
+   trade jobs with pitch, so the stroke sweeps sideways instead of down.
+   Composed at the apex (`swing_pose(0.545)` with `strike · 0.70` of wrist),
+   the haft finishes at **+70° above horizontal** where the laid-forward
+   hatchet finished at **−12°** — head below the horizon, pointing away. The
+   fix is to derive the strike's axis from the item's own rest direction
+   instead of hard-coding X/Y/Z coefficients; it touches every held item and
+   cannot be judged here (see item 3), so it is not bundled with the pose.
+
 3. ⚠ **The motion is still unphotographable here, and this is worth knowing
    before someone tries.** The swing arc and the chip burst are driven by
    `Time::delta_secs`, and under lavapipe a frame is a large fraction of a

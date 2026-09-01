@@ -151,7 +151,7 @@ pub enum HeldSrc {
 /// the hand tells the player less than the stand-in tool does.
 pub const HELD_MODELS: [HeldModelDef; 14] = [
     // **A stone is palmed, not hafted, which makes this the one row where
-    // `lay_forward` is wrong and the one where the scale cheat is not about
+    // `lay` is wrong and the one where the scale cheat is not about
     // frame area.** Laid forward the model's 16 cm axis stands up and its
     // flat authored bottom faces the eye — a slab, edge-on. Upright it sits
     // the way it was authored to sit on the ground, straddling the fist
@@ -186,35 +186,60 @@ pub const HELD_MODELS: [HeldModelDef; 14] = [
     // 2026-09-01, with the frame). Standing it up is a rigid rotation:
     // nothing about the axe changed size, and `scale` is still 1.0.
     //
-    // **And it is `upright`, not `tool`** (operator, 2026-09-01, with a
-    // reference frame: *"you have the ax almost going the same exact
-    // direction as the arm. doesn't make sense. it needs to be a right
-    // angle"*). `lay_forward`'s quarter-turn is what a SPEAR wants; on a
-    // hatchet it laid the haft down to **19.5° above horizontal**, which
-    // draws at 36° on screen — within a few degrees of the forearm's own
-    // diagonal, so the axe read as the arm continuing rather than as a
-    // thing being carried. Upright is 69°, near-vertical in frame and
-    // across the arm, which is how every first-person axe is held.
+    // **And it is neither `tool` nor plain `upright`; the pose is two
+    // measured angles** (operator, 2026-09-01, twice, with a reference frame
+    // each time: *"it needs to be a right angle"*, then *"it needs to tilt
+    // more to the right and then back towards the character"*).
     //
-    // ⚠ **This was invisible until the model was stood up, and that is the
-    // trap worth remembering**: the file's own 32° lean happened to cancel a
-    // third of the lay, so the wrong quarter-turn and the wrong asset were
-    // hiding each other. Fixing one exposed the other, which is why this row
-    // moved twice in one day.
-    // **And it is yawed a quarter turn, for the reason the revolver is**: the
-    // head's long axis is the model's +X, so at `pose_yaw = 0` the blade lies
-    // broadside to the eye — 34.5 of its 34.5 cm across the screen, on an axe
-    // whose head is already 61% of its own length. A quarter turn puts the
-    // edge where the swing goes and leaves 19.4 cm in the image plane, which
-    // is a tool you are about to use rather than a wall.
+    // `lay = FRAC_PI_2` — what `tool()` gives — is what a SPEAR wants. On a
+    // hatchet it laid the haft to **19.5° above horizontal**, drawing at 36°
+    // on screen, within a few degrees of the forearm's own diagonal: the axe
+    // read as the arm continuing rather than as a thing being carried. Flat
+    // upright (`lay = 0`) is 69° and 106.7° on screen — vertical, but leaning
+    // 17° LEFT and only 13° back. These two angles are the pose the second
+    // reference describes, solved rather than nudged: **screen 94.0° (13°
+    // right of where it was, and dead vertical in frame) with the lean back
+    // toward the eye up from 13.4° to 20.5°**, at 69.2° of true elevation.
+    //
+    // ⚠ **The elevation is the constraint nobody would guess, and it is why
+    // the lean stops at 20°.** "Back towards the character" is depth, and
+    // depth is foreshortening: at 27° the head starts to read as a lump and
+    // at 34.5° — which was tried, and shot — the silhouette stops being an
+    // axe at all. Holding elevation at 69° is what keeps the head high enough
+    // in frame to still have a shape. The trade is visible in one place:
+    // `posesheet.py`'s projection of these four poses, which is arithmetic
+    // through the same camera and agreed with the captures it was checked
+    // against.
+    //
+    // `pose_yaw` also decides which way the head faces, and that is the other
+    // reason it is not 0: the head's long axis is the model's +X, so untwisted
+    // it lies broadside — 34.5 of its 34.5 cm across the screen, on an axe
+    // whose head is already 61% of its own length.
+    //
+    // ⚠ **Two things this row is NOT, and both are measured**: it is not the
+    // thumb line — the rig's thumb runs (0.412, 0.906, −0.095) in the hand's
+    // own frame and every pose that satisfies the framing above sits ~90° off
+    // it, because `VIEWMODEL_GRIP_Q` is reverse-derived from a VIEW pose and
+    // carries no anatomy at all; and it does not fix the swing, whose apex
+    // still finishes above the horizon. `NOW.md` §0fp carries both.
+    //
+    // ⚠ **The lean was invisible until the model was stood up**: the file's
+    // own 32° lean cancelled a third of the lay, so the wrong angle and the
+    // wrong asset were hiding each other.
     HeldModelDef {
         key: "stone_hatchet",
         src: HeldSrc::Glb("models/held/stone_hatchet.glb"),
         height_m: 0.562,
         grip_frac: 0.25,
-        scale: 1.0,
-        lay_forward: false,
-        pose_yaw: core::f32::consts::FRAC_PI_2,
+        // Judged smaller by eye and taken to 0.85 (operator, 2026-09-01:
+        // *"maybe the ax needs to be a little bit smaller"*). At true size the
+        // axe is 70% of the frame's height at the hold's depth; this is 60%.
+        // The ordinary viewmodel scale cheat, the bow's and the rock's — and
+        // NOT a fix for the head, which is 0.345 m wide on a 0.562 m axe and
+        // stays out of proportion at every scale.
+        scale: 0.85,
+        lay: 0.25,
+        pose_yaw: -1.60,
         light: None,
     },
     HeldModelDef::tool(
@@ -267,7 +292,7 @@ pub const HELD_MODELS: [HeldModelDef; 14] = [
         height_m: 0.455,
         grip_frac: 0.35,
         scale: 1.0,
-        lay_forward: false,
+        lay: 0.0,
         pose_yaw: 0.0,
         light: Some(TORCH_LIGHT),
     },
@@ -279,7 +304,7 @@ pub const HELD_MODELS: [HeldModelDef; 14] = [
         height_m: 0.261,
         grip_frac: 0.19,
         scale: 1.0,
-        lay_forward: true,
+        lay: core::f32::consts::FRAC_PI_2,
         pose_yaw: -0.65,
         light: None,
     },
@@ -353,10 +378,20 @@ pub struct HeldModelDef {
     /// authored wider than the hand can close on, and a thing bigger than the
     /// hand around it reads as floating however it is placed.
     pub scale: f32,
-    /// `true` lays the model forward (+Y → −Z, the quarter-turn a swung tool
-    /// wants); `false` keeps it upright, for the things a hand carries level
-    /// — a bow at the riser, a torch, a box.
-    pub lay_forward: bool,
+    /// How far the model is laid off its own +Y, radians, about the hold
+    /// frame's X — 0 keeps it upright, `FRAC_PI_2` lays it flat forward
+    /// (+Y → −Z, the quarter-turn a swung tool wants).
+    ///
+    /// ⚠ **This was a `bool` and the thing it controls is an ANGLE**, which
+    /// cost the hatchet two passes. A rotation about the hold frame's X and
+    /// `render::viewmodel::VIEWMODEL_TILT`'s pitch term are near-parallel —
+    /// the item frame's own X sits 31° off the view's — so between them they
+    /// decide how far off vertical a haft stands, and with one of the two
+    /// pinned to 0 or 90° the row could ask for **19.5° or 69° and nothing
+    /// in between**. Neither is what an axe wants. Now the row says the
+    /// angle and `pose_yaw` says which way it leans, which together point
+    /// the model's +Y anywhere on the sphere.
+    pub lay: f32,
     /// Extra presentation yaw about the fist, radians, composed onto the
     /// pose. Zero for almost everything; the revolver turns so the frame
     /// shows its PROFILE — seen from dead behind, a gun is a stack of
@@ -470,7 +505,7 @@ impl HeldModelDef {
             height_m,
             grip_frac,
             scale: 1.0,
-            lay_forward: true,
+            lay: core::f32::consts::FRAC_PI_2,
             pose_yaw: 0.0,
             light: None,
         }
@@ -490,7 +525,7 @@ impl HeldModelDef {
             height_m,
             grip_frac,
             scale,
-            lay_forward: false,
+            lay: 0.0,
             pose_yaw: 0.0,
             light: None,
         }
@@ -519,7 +554,7 @@ impl HeldModelDef {
     ///
     /// Only meaningful for an upright row, and every row that declares a
     /// light is one — `tests/hand_light.rs` refuses a lit row with
-    /// `lay_forward`, because a laid-forward model's +Y is the view's −Z
+    /// a non-zero `lay`, because a laid-forward model's +Y is the view's −Z
     /// and this offset would push the flame out of the frame instead of up.
     pub fn flame_m(&self) -> f32 {
         self.height_m * self.scale - self.grip_m() + FLAME_LIFT_M

@@ -1026,11 +1026,7 @@ pub fn arms_report(
 /// mirror-drift `CLAUDE.md` warns about on every hand-kept duplicate — so
 /// there is one, and the caller says where the hand is.
 pub fn pose(def: &crate::ui::hold::HeldModelDef, palm: Vec3) -> Transform {
-    let lay = if def.lay_forward {
-        Quat::from_rotation_x(MODEL_UPRIGHT_TO_HELD)
-    } else {
-        Quat::IDENTITY
-    };
+    let lay = Quat::from_rotation_x(-def.lay);
     // The presentation yaw composes in the hand's frame, so it turns the
     // item about the fist rather than about its own foot, and the grip
     // point below stays in the palm under any yaw.
