@@ -33,6 +33,7 @@ panel and the `ci/scene.sh` frame of that same row are the same picture.
 """
 import json
 import os
+import re
 import struct
 import sys
 
@@ -61,16 +62,38 @@ def accessor(gltf, blob, i):
     return np.frombuffer(blob, dtype=np.dtype(dt), count=n, offset=off).reshape(a["count"], ncomp)
 
 
-# ── the constants, restated from the crate ───────────────────────────────
-# A copy, deliberately: this is a bench, and a bench that imports the thing it
-# is measuring cannot disagree with it out loud. If a number here drifts the
-# sheet stops matching `ci/scene.sh`, which is the check.
-HOLD = np.array([0.32, -0.30, -0.52])          # VIEWMODEL_HOLD
-PALM = np.array([-0.040, 0.030, -0.015])       # VIEWMODEL_PALM
-TILT_YXZ = (-0.50, 0.34, 0.14)                 # VIEWMODEL_TILT
-GRIP_Q = (-0.163194, -0.429258, 0.687723, -0.562265)
-GRIP_M = np.array([0.45838, -0.00628, -0.13165])
-FOV_DEG, ASPECT = 75.0, 16 / 9                 # render::rig::FOV_DEG
+# ── the constants, READ from the crate ───────────────────────────────────
+# Not copied. They were copied for one afternoon and `VIEWMODEL_PALM` drifted
+# inside it -- the bench went on drawing the old seat while the game had the
+# new one, which is a bench that lies in exactly the way you would not notice,
+# because the picture still looks like a hand holding an axe. A regex over the
+# source is uglier than a constant and cannot be wrong.
+VIEWMODEL_RS = os.path.join(ROOT, "crates/client/src/render/viewmodel.rs")
+
+
+def _crate(pattern, n):
+    src = open(VIEWMODEL_RS).read()
+    m = re.search(pattern, src)
+    if not m:
+        raise SystemExit(
+            f"{VIEWMODEL_RS}: no match for {pattern!r}. The constant was renamed "
+            f"or reshaped; fix this bench rather than letting it draw a stale pose.")
+    return np.array([float(x) for x in m.groups()[:n]])
+
+
+def _vec3(name):
+    return _crate(rf"{name}: Vec3 = Vec3::new\(\s*(-?[\d.]+),\s*(-?[\d.]+),\s*(-?[\d.]+)", 3)
+
+
+HOLD = _vec3("VIEWMODEL_HOLD")
+PALM = _vec3("VIEWMODEL_PALM")
+TILT_YXZ = tuple(_vec3("VIEWMODEL_TILT"))
+GRIP_Q = tuple(_crate(
+    r"VIEWMODEL_GRIP_Q: Quat = Quat::from_xyzw\(\s*(-?[\d.]+),\s*(-?[\d.]+),"
+    r"\s*(-?[\d.]+),\s*(-?[\d.]+)", 4))
+GRIP_M = _vec3("VIEWMODEL_GRIP_M")
+# `render::rig::FOV_DEG` and the 16:9 the shipped window and `ci/scene.sh` use.
+FOV_DEG, ASPECT = 75.0, 16 / 9
 
 
 def Rx(a):
