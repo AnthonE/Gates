@@ -76,14 +76,16 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
    and it is sim truth: `test_replay`'s golden, the const blocks that hold the
    plinth lowest, `SHELTER_CORNER_R_M`, `WAYSTATION_RADIUS_M`'s derivation and
    the guard aprons all read it. A real slice, not a tweak.
-3. **Eight `WANTED.md` §2 rows still want a mesh** — the three ore nodes, the
-   boulder, the barrel, the crate, the cache box, the stump (2.1 and 2.6 are
-   deliberately generated, and 2.11/2.12 just landed). The pipeline is a
-   command now (`ci/meshy_gen.py`), ~40 credits an asset against 5,175 in the
-   account, and the wiring already generalises: `site_asset`'s shape fits any
-   occupant with a fixed volume. ⚠ **Check every §2 size against the sim
-   before spending** — 2.11 was 3.6 m out on height and 2.12 wrong on all
-   three axes. Read the box tables, not this file.
+3. **Four `WANTED.md` §2 rows still want a mesh** — the barrel (188 on the
+   seed, and the road's whole reward loop, drawn as a 10-segment cylinder),
+   the supply crate, the cache box and the pine stump. 2.1 and 2.6 are
+   deliberately generated; 2.3–2.5, 2.7, 2.11 and 2.12 landed 2026-09-01/02.
+   The pipeline is three commands now (`meshy_gen` → `measure_glb` →
+   `import_meshy`) and the hit rate to budget for is **six keepers from
+   eleven rolls**. ⚠ **Check every §2 size against the sim before spending**:
+   four rows have now been found wrong, and two kinds of wrong — 2.11 was
+   3.6 m out on height, and 2.3–2.5/2.7 describe a CUBE where the sim blocks
+   a cylinder. Read `occupant_volume`, not this file.
 
 ## 0kit · The build kit is the one row a generated mesh fights *(client lane)*
 

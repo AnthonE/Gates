@@ -287,6 +287,88 @@ oversize, a kept emissive map, an unpacked JPEG).
 `greybox.rs` still measures the sim's scalars against it, and it is still what
 draws if a model fails to load.
 
+## `prop/` — the scatter, where the instance count is the argument
+
+Same rail, same pipeline, same date-stamped audit trail. What is different is
+the *reason*: a site stands once on an island, and these stand thousands of
+times. Census on the shipped seed — **1,054 boulders, 609 stone nodes, 89
+metal, 48 sulfur** — off exactly two meshes before this landed, because every
+boulder was one `blob_mesh` at one seed and the three ore nodes shared a
+second and differed only by material.
+
+| file | occupant | image task | mesh task | tris | asked | size |
+|---|---|---|---|---|---|---|
+| `prop/rock_a.glb` | `Rock` (pool 0) | `01a05e71-4efe` | `01a05e73-a70e` | 2,662 | 2,400 | 3.4 MB |
+| `prop/rock_b.glb` | `Rock` (pool 1) | `01a05e7a-56ee` | `01a05e7a-f87b` | 2,670 | 2,400 | 3.4 MB |
+| `prop/rock_c.glb` | `Rock` (pool 2) | `01a05e7d-075b` | `01a05e7d-811d` | 2,662 | 2,400 | 3.3 MB |
+| `prop/node_stone.glb` | `StoneNode` | `01a05e6e-4baa` | `01a05e6e-c5a5` | 1,439 | 1,400 | 3.5 MB |
+| `prop/node_metal.glb` | `MetalNode` | `01a05e85-6c8d` | `01a05e85-e691` | 1,364 | 1,250 | 3.4 MB |
+| `prop/node_sulfur.glb` | `SulfurNode` | `01a05e7c-bfc4` | `01a05e7d-3978` | 1,490 | 1,400 | 3.5 MB |
+
+**`target_polycount` works and overshoots by 3–11 %**, which is why the metal
+node was asked for 1,250 to land under `WANTED.md` §2's 1,500 — the roll before
+it came back at 1,554 and was rejected on triangles alone rather than have the
+ceiling moved to fit it.
+
+### Eleven rolls, six keepers — selection is the method
+
+**`ci/measure_glb.py` is the step that makes this work, and it exists because
+prompting alone does not.** Every row below is measured; the KEEP column is
+the tool's verdict and it agrees with the six that shipped.
+
+| roll | d/w | aspect | luma | green | verdict |
+|---|---|---|---|---|---|
+| rock_a | 0.425 | 1.02× | 0.179 | **47.6 %** | slab, and green |
+| **rock_b → `rock_a.glb`** | 1.000 | 1.36× | 0.344 | 0.2 % | **KEEP** |
+| rock_c | 0.195 | 1.08× | 0.094 | 0.2 % | wafer |
+| **rock_d → `rock_b.glb`** | 1.016 | 1.36× | 0.204 | 1.3 % | **KEEP** |
+| **rock_e → `rock_c.glb`** | 1.022 | 1.17× | 0.250 | 0.4 % | **KEEP** |
+| rock_f | 1.032 | 1.42× | 0.234 | 12.3 % | green |
+| **node_stone** | 1.000 | 1.03× | 0.303 | 0.2 % | **KEEP** |
+| node_metal (1) | 0.801 | 1.22× | **0.081** | 0.2 % | 1,552 tris |
+| node_metal (2) | 1.002 | 1.69× | 0.146 | 0.2 % | 1,554 tris, aspect |
+| **node_metal (3) → `node_metal.glb`** | 1.000 | 1.44× | 0.190 | 3.6 % | **KEEP** |
+| node_sulfur (1) | 0.531 | 1.39× | 0.269 | **28.3 %** | slab, and green |
+| **node_sulfur (2) → `node_sulfur.glb`** | 0.807 | 1.48× | 0.259 | 0.4 % | **KEEP** |
+
+What the prompt controls and what it does not, measured rather than assumed:
+
+- **Naming an omitted axis works.** "2.2 m wide and 2.0 m tall", with no depth
+  given, reconstructed to 0.425 / 1.000 / 0.195. Adding "2.2 deep, as deep as
+  it is wide" took the next three to 1.016 / 1.022 / 1.032.
+- **Naming a colour to avoid works.** "Lichen crusting the hollows" → 47.6 %
+  green-dominant; "mottled grey with rust-brown staining" → 0.2–1.3 %. "Bright
+  yellow" sulfur drifted to 28.3 % green; "warm golden-yellow, mustard, never
+  green" → 0.4 %. "Dark iron ore seams" measured luma **0.081**, half of
+  granite's 0.292 — a black lump in a grey world — and naming the host rock
+  grey lifted it to 0.190.
+- **Asking for a ratio more extreme than the object's natural one does not**,
+  which is the canopy's lesson from the day before (1.329× against the 1.291×
+  it was meant to fix).
+
+### `--fit-radius`, and why a box is the wrong shape here
+
+These are imported `--fit-radius --center`, not `--fit-axes`, and the
+difference is a defect the gate caught in production. The two authored sites
+publish `OCCUPANT_R_M` as a half-**diagonal** — their footprint IS the box.
+These rows were measured off `blob_mesh`, which is round in plan, so the same
+number is the radius of a **cylinder**. Fitting the bounding box to `2 × R`
+therefore pushes the corners outside it: measured on the first ore node at
+**1.2737 m drawn against 0.9148 m blocked, 36 cm of visible rock a player
+walks through**. `--fit-radius` solves for the largest per-vertex
+`hypot(x, z)` instead — one shared X/Z factor, so the plan shape is preserved
+and only its scale moves.
+
+`--center` is the other mode they need: `archetype_lift` is 0.55 for a boulder
+and 0.5 for a node against half-extents of 0.99 and 0.63, so these sit 0.44 m
+and 0.13 m **into** the ground (`ART.md` rule 2). Every asset before them stood
+on its base.
+
+**The greybox massing is not deleted** — `archetype_mesh` still returns it,
+`greybox.rs` still measures the sim's scalars against it, and `spawn_slot`
+still draws it wherever a model is absent, which is every row on a headless
+build.
+
 ## `held/` — what the viewmodel puts in your hand
 
 **The surface these were waiting on turned out to already exist.** They were

@@ -144,6 +144,14 @@ pub struct PropAssets {
     /// the mesh falls back to the massing.
     shelter_mat: Handle<StandardMaterial>,
     canopy_mat: Handle<StandardMaterial>,
+    /// The boulder's variants, in yaw order, or EMPTY for the one generated
+    /// blob. A pool because the alternative shipped for the life of the
+    /// native client: 1,054 copies of one mesh on the default seed.
+    rocks: Vec<(Handle<Mesh>, Handle<StandardMaterial>)>,
+    /// Stone, metal, sulfur — one apiece, `None` for the shared blob. The
+    /// three used to be one mesh and three materials, so two of them had no
+    /// silhouette.
+    node_models: [Option<(Handle<Mesh>, Handle<StandardMaterial>)>; 3],
     foliage: [Handle<StandardMaterial>; TINT_POOL],
     /// The bush's leaf cards, a pool indexed by yaw. See [`bush_card_mesh`].
     bush_cards: Vec<Handle<Mesh>>,
@@ -1222,11 +1230,30 @@ pub const SINK_M: f32 = 0.06;
 /// measures the sim's scalars against, and still what draws if a model fails
 /// to load. `assets/models/MANIFEST.md` carries the prompt and task id per
 /// file; `tests/site_assets.rs` gates every claim in this doc comment.
-pub fn site_asset(o: Occupant) -> Option<&'static str> {
+pub fn prop_models(o: Occupant) -> &'static [&'static str] {
     match o {
-        Occupant::HavenShelter => Some("models/site/shelter.glb"),
-        Occupant::WaystationCanopy => Some("models/site/canopy.glb"),
-        _ => None,
+        Occupant::HavenShelter => &["models/site/shelter.glb"],
+        Occupant::WaystationCanopy => &["models/site/canopy.glb"],
+        // **A pool, and this is where most of the visual win is.** Every
+        // boulder on the island was ONE mesh — `blob_mesh(1.5, 0.52,
+        // 0x1b87_3593, ..)`, one seed — varied only by yaw, a 0.9..1.1 scale
+        // and a four-entry grey tint. Measured on the shipped seed that is
+        // 1,054 instances of the same object, which is `ART.md` rule 7 broken
+        // a thousand times over. Three silhouettes indexed by yaw is a bigger
+        // purchase than three better-looking copies of one.
+        Occupant::Rock => &[
+            "models/prop/rock_a.glb",
+            "models/prop/rock_b.glb",
+            "models/prop/rock_c.glb",
+        ],
+        // One apiece, and the pool is length 1 rather than absent because the
+        // three ore nodes shared ONE mesh and differed by material alone —
+        // so metal and sulfur had no silhouette of their own while `ART.md`
+        // says a node's identity is the glint its reflectance gives it.
+        Occupant::StoneNode => &["models/prop/node_stone.glb"],
+        Occupant::MetalNode => &["models/prop/node_metal.glb"],
+        Occupant::SulfurNode => &["models/prop/node_sulfur.glb"],
+        _ => &[],
     }
 }
 
@@ -1239,48 +1266,78 @@ pub fn site_asset(o: Occupant) -> Option<&'static str> {
 /// runs headless. `Default` is the box massing on both rows, so a headless
 /// build draws exactly what it drew before this existed.
 #[derive(Clone, Default)]
-pub struct SiteModels {
-    shelter: Option<(Handle<Mesh>, Handle<StandardMaterial>)>,
-    canopy: Option<(Handle<Mesh>, Handle<StandardMaterial>)>,
+pub struct PropModels {
+    /// One pool per occupant, indexed by discriminant. Empty where the
+    /// generated massing in [`archetype_mesh`] is still what draws — which
+    /// is every row on a headless build, so those suites keep drawing
+    /// exactly what they drew before this existed.
+    pools: Vec<Vec<(Handle<Mesh>, Handle<StandardMaterial>)>>,
 }
 
-impl SiteModels {
-    /// Load both models' first primitive and first material.
+impl PropModels {
+    /// Load every declared model's first primitive and first material.
     ///
     /// One mesh, one primitive, one material — asserted by
-    /// `tests/site_assets.rs`, because `Primitive { mesh: 0, primitive: 0 }`
+    /// `tests/prop_assets.rs`, because `Primitive { mesh: 0, primitive: 0 }`
     /// on a multi-primitive model draws a fraction of it and reports nothing.
     /// Loading the primitive rather than the scene is what lets these land in
-    /// the same `Handle<Mesh>` the massing used, so `spawn_slot` is unchanged;
-    /// the cost is that a node transform is dropped at load, which is why
-    /// `ci/import_meshy.py` bakes its scale into the vertices.
+    /// the same `Handle<Mesh>` the massing used, so `spawn_slot` needs no new
+    /// draw path; the cost is that a node transform is dropped at load, which
+    /// is why `ci/import_meshy.py` bakes its scale into the vertices.
     pub fn load(server: &AssetServer) -> Self {
-        let one = |o: Occupant| {
-            site_asset(o).map(|path| {
-                (
-                    server.load(
-                        GltfAssetLabel::Primitive {
-                            mesh: 0,
-                            primitive: 0,
-                        }
-                        .from_asset(path),
-                    ),
-                    server.load(
-                        GltfAssetLabel::Material {
-                            index: 0,
-                            is_scale_inverted: false,
-                        }
-                        .from_asset(path),
-                    ),
-                )
+        let n = Occupant::WaystationCanopy as usize + 1;
+        let pools = (0..n)
+            .map(|i| match OCCUPANTS.iter().find(|o| **o as usize == i) {
+                Some(o) => prop_models(*o)
+                    .iter()
+                    .map(|path| {
+                        (
+                            server.load(
+                                GltfAssetLabel::Primitive {
+                                    mesh: 0,
+                                    primitive: 0,
+                                }
+                                .from_asset(*path),
+                            ),
+                            server.load(
+                                GltfAssetLabel::Material {
+                                    index: 0,
+                                    is_scale_inverted: false,
+                                }
+                                .from_asset(*path),
+                            ),
+                        )
+                    })
+                    .collect(),
+                None => Vec::new(),
             })
-        };
-        Self {
-            shelter: one(Occupant::HavenShelter),
-            canopy: one(Occupant::WaystationCanopy),
-        }
+            .collect();
+        Self { pools }
+    }
+
+    /// This occupant's variants, or an empty slice for the massing.
+    pub fn pool(&self, o: Occupant) -> &[(Handle<Mesh>, Handle<StandardMaterial>)] {
+        self.pools.get(o as usize).map_or(&[], |v| v.as_slice())
     }
 }
+
+/// Every occupant the sim can place. `Occupant` is not dense — it skips 8 on
+/// purpose — so [`PropModels::load`] cannot walk discriminants and needs the
+/// list. `tests/prop_assets.rs` holds it to the enum.
+pub const OCCUPANTS: [Occupant; 12] = [
+    Occupant::None,
+    Occupant::Tree,
+    Occupant::StoneNode,
+    Occupant::MetalNode,
+    Occupant::SulfurNode,
+    Occupant::Bush,
+    Occupant::Rock,
+    Occupant::BarrelSlot,
+    Occupant::CrateSlot,
+    Occupant::CacheSlot,
+    Occupant::HavenShelter,
+    Occupant::WaystationCanopy,
+];
 
 /// The mesh the client draws for one occupant, as a pure function.
 ///
@@ -1474,7 +1531,7 @@ pub fn assets(
     bush_card: Handle<Image>,
     // The two authored sites' generated models, or `Default` for the box
     // massing — same reason as `bush_card` one line up.
-    sites: SiteModels,
+    models: PropModels,
 ) -> PropAssets {
     // `foliage` was the only untinted-`surface` caller and is pooled now, so
     // the single-handle constructor went with it. `photo` stays: five classes
@@ -1586,20 +1643,30 @@ pub fn assets(
         // see the `authored` block above for what mirroring them by hand
         // cost, and `site_asset` for why the massing stays rather than being
         // deleted once a model exists.
-        shelter: sites
-            .shelter
-            .as_ref()
+        shelter: models
+            .pool(Occupant::HavenShelter)
+            .first()
             .map(|(m, _)| m.clone())
             .unwrap_or_else(|| {
                 meshes.add(archetype_mesh(Occupant::HavenShelter).expect("shelter mesh"))
             }),
-        canopy: sites
-            .canopy
-            .as_ref()
+        canopy: models
+            .pool(Occupant::WaystationCanopy)
+            .first()
             .map(|(m, _)| m.clone())
             .unwrap_or_else(|| {
                 meshes.add(archetype_mesh(Occupant::WaystationCanopy).expect("canopy mesh"))
             }),
+        // The scatter pools, kept whole rather than resolved here: which
+        // variant a slot draws is a per-slot question and `spawn_slot` is
+        // where the slot is. Empty on a headless build, and `spawn_slot`'s
+        // fallback arm is then bit-identical to what it was.
+        rocks: models.pool(Occupant::Rock).to_vec(),
+        node_models: [
+            models.pool(Occupant::StoneNode).first().cloned(),
+            models.pool(Occupant::MetalNode).first().cloned(),
+            models.pool(Occupant::SulfurNode).first().cloned(),
+        ],
         foliage: surface_pool(0.86, fresnel::DIELECTRIC, materials),
         bush_cards: (0..BUSH_CARD_POOL as u32)
             .map(|v| meshes.add(bush_card_mesh(v)))
@@ -1679,14 +1746,14 @@ pub fn assets(
         // model draws wearing the massing's tiled photograph and its own
         // albedo is loaded and discarded. The fallbacks are the two the
         // massing wore, and they fall back TOGETHER with the mesh above.
-        shelter_mat: sites
-            .shelter
-            .as_ref()
+        shelter_mat: models
+            .pool(Occupant::HavenShelter)
+            .first()
             .map(|(_, m)| m.clone())
             .unwrap_or_else(|| stone.clone()),
-        canopy_mat: sites
-            .canopy
-            .as_ref()
+        canopy_mat: models
+            .pool(Occupant::WaystationCanopy)
+            .first()
             .map(|(_, m)| m.clone())
             .unwrap_or_else(|| wood.clone()),
         // The conifer's trunk. `ART.md` §5 asks for fissures running UP the
@@ -1716,8 +1783,15 @@ pub fn stream(
 ) {
     let a = store.get_or_insert_with(|| {
         let card = server.load_with_settings(BUSH_CARD_ATLAS, super::textures::atlas(true));
-        let sites = SiteModels::load(&server);
-        assets(&mut meshes, &mut materials, &mut images, &maps, card, sites)
+        let models = PropModels::load(&server);
+        assets(
+            &mut meshes,
+            &mut materials,
+            &mut images,
+            &maps,
+            card,
+            models,
+        )
     });
 
     let cx = (eye.pos.x / CHUNK_M).floor() as i32;
@@ -1948,16 +2022,40 @@ pub fn spawn_slot(
             variant = (slot.yaw as usize) % a.pines.len();
             (a.pines[variant].clone(), a.bark[tint].clone())
         }
-        Occupant::StoneNode => (a.blob.clone(), a.ore_stone.clone()),
-        Occupant::MetalNode => (a.blob.clone(), a.ore_metal.clone()),
-        Occupant::SulfurNode => (a.blob.clone(), a.ore_sulfur.clone()),
+        // Each node takes its own model where one exists and the shared blob
+        // where it does not. The fallback arm is the exact pair that shipped
+        // before the models did, so a headless build draws what it always did.
+        Occupant::StoneNode => match &a.node_models[0] {
+            Some(m) => m.clone(),
+            None => (a.blob.clone(), a.ore_stone.clone()),
+        },
+        Occupant::MetalNode => match &a.node_models[1] {
+            Some(m) => m.clone(),
+            None => (a.blob.clone(), a.ore_metal.clone()),
+        },
+        Occupant::SulfurNode => match &a.node_models[2] {
+            Some(m) => m.clone(),
+            None => (a.blob.clone(), a.ore_sulfur.clone()),
+        },
         Occupant::Bush => {
             // Indexed exactly as the conifer pool is, so two bushes side by
             // side do not present the same three cards.
             variant = (slot.yaw as usize) % a.bush_cards.len();
             (a.bush.clone(), a.foliage[tint].clone())
         }
-        Occupant::Rock => (a.boulder.clone(), a.rock[tint].clone()),
+        // **Indexed by yaw, exactly as the conifer pool is**, so two boulders
+        // side by side do not present the same silhouette and two players in
+        // one clearing see the same one. `tint` still selects the material on
+        // the fallback arm; a generated variant brings its own, so its
+        // variety is three shapes rather than four greys.
+        Occupant::Rock => {
+            if a.rocks.is_empty() {
+                (a.boulder.clone(), a.rock[tint].clone())
+            } else {
+                variant = (slot.yaw as usize) % a.rocks.len();
+                a.rocks[variant].clone()
+            }
+        }
         Occupant::BarrelSlot => (a.barrel.clone(), a.metal.clone()),
         Occupant::CrateSlot => (a.crate_box.clone(), a.wood.clone()),
         Occupant::CacheSlot => (a.cache_box.clone(), a.wood.clone()),

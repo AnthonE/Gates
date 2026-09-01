@@ -1,36 +1,33 @@
-//! Gate: a generated SITE model is the volume the sim blocks.
+//! Gate: a generated PROP model is the volume the sim blocks.
 //!
 //! **This is `tests/deploy_assets.rs`'s job against a different contract, and
-//! the difference is the whole reason this file exists rather than a sixth
-//! test over there.**
+//! the difference is the whole reason this file exists rather than five more
+//! tests over there.**
 //!
 //! A `DEPLOY` row is a render row. Nothing in `sim-core` reads it, so a model
 //! is fitted UNIFORMLY inside it and one that comes up short is, in
 //! `ci/import_meshy.py`'s own words, "a row to re-measure, not a mesh to
-//! stretch". The two authored sites are the opposite case:
-//! `terrain::SHELTER_BOXES` and `WAYSTATION_CANOPY_BOXES` are the sim's
-//! **collision volume**, and `OCCUPANT_R_M` / `OCCUPANT_TOP_M` are not
-//! approximations of them — they are *defined* as their bounds
-//! (`SHELTER_CORNER_R_M`'s doc: the plinth's half-diagonal, rounded up;
-//! `SHELTER_PEAK_M`: the tower-cap's top). So the drawn thing and the blocked
-//! thing are one object, and the box massing satisfied that by construction
-//! because it WAS the table.
+//! stretch". Every occupant here is the opposite case: `OCCUPANT_R_M` and
+//! `OCCUPANT_TOP_M` are what stops a body, and for the two authored sites
+//! they are not approximations but *definitions* — `SHELTER_CORNER_R_M` is
+//! the plinth's half-diagonal, `SHELTER_PEAK_M` the tower-cap's top. For the
+//! scatter rows they were measured off the generated blob the model replaces,
+//! which is tighter still.
 //!
-//! A generated model is not the table, and under a uniform fit it misses in
-//! whichever direction its own aspect happens to differ. Measured on the pair
-//! that shipped: the shelter's model would have left **1.51 m of blocked air
-//! above its roof**, and the canopy's **1.26 m of invisible skirt on each
-//! horizontal axis** — a body stopped by nothing it can see, which is exactly
-//! the defect `greybox.rs`'s `SLACK_R_M` was closed to a millimetre to stop.
-//! They are imported with `--fit-axes` instead, which scales each axis to its
-//! own target. This file is what holds that.
+//! A generated model is not that table, and under a uniform fit it misses in
+//! whichever direction its own aspect happens to differ. Measured on the
+//! first pair that shipped: the shelter's model would have left **1.51 m of
+//! blocked air above its roof**, and the canopy's **1.26 m of invisible skirt
+//! on each horizontal axis** — a body stopped by nothing it can see, which is
+//! exactly the defect `greybox.rs`'s `SLACK_R_M` was closed to a millimetre
+//! to stop. They are imported with `--fit-axes` instead, which scales each
+//! axis to its own target. This file is what holds that.
 //!
 //! **What it deliberately does not do is relax
 //! `the_authored_pair_bounds_equal_what_the_sim_publishes`.** That test still
-//! measures `archetype_mesh` — the box massing — against the published
+//! measures `archetype_mesh` — the generated massing — against the published
 //! scalars at a millimetre, because that pair is still definitionally equal
-//! and is still the fallback draw. This file adds the second claim the model
-//! introduced: the ASSET agrees with them too.
+//! and is still the fallback draw everywhere a model is absent.
 //!
 //! It runs headless. A GLB header is JSON, a vertex buffer is little-endian
 //! f32, and a bounding radius is arithmetic — the same tier as
@@ -38,13 +35,37 @@
 
 #![cfg(feature = "render")]
 
-use client::render::props::{archetype_lift, site_asset};
+use client::render::props::{archetype_lift, prop_models, OCCUPANTS, SINK_M};
 use sim_core::terrain::{Occupant, OCCUPANT_R_M, OCCUPANT_TOP_M};
 
-/// The occupants this file covers, written out rather than derived, so a
-/// third site added to `site_asset` without a row here is caught by
-/// [`every_site_with_a_model_is_covered_here`] instead of by nothing.
-const SITES: [Occupant; 2] = [Occupant::HavenShelter, Occupant::WaystationCanopy];
+/// Every (occupant, model path) this tree ships, derived from the table
+/// rather than mirrored — a mirror is the drift `CLAUDE.md` names twice, and
+/// there is nothing here a mirror would buy.
+fn shipped() -> Vec<(Occupant, &'static str)> {
+    OCCUPANTS
+        .iter()
+        .flat_map(|o| prop_models(*o).iter().map(move |p| (*o, *p)))
+        .collect()
+}
+
+/// Triangles a model may carry, by what it is.
+///
+/// **Per category, because the instance count is the budget.** A site stands
+/// once (the pad) or twice (the waystations) on an island; a boulder stands
+/// **1,054 times on the shipped seed** and an ore node 746 across its three
+/// kinds, and `WANTED.md`'s header does the arithmetic — "a scatter ring puts
+/// ~40 boulders on screen at once. A 60 k-triangle boulder is 2.4 M on its
+/// own", against `RENDER.md` §6's 1.5 M frame ceiling. So the scatter rows
+/// take `WANTED.md` §2's own numbers and the sites take a loose ceiling that
+/// exists only to catch a re-roll coming back at 200 k.
+fn tri_ceiling(o: Occupant) -> usize {
+    match o {
+        Occupant::HavenShelter | Occupant::WaystationCanopy => 12_000,
+        Occupant::Rock => 3_000,
+        Occupant::StoneNode | Occupant::MetalNode | Occupant::SulfurNode => 1_500,
+        _ => 1_000,
+    }
+}
 
 /// Assets live beside the crate, not inside it — `assets/` is what the depot
 /// ships and `crates/client/` is what cargo builds. Same hop `tests/ui.rs` and
@@ -163,91 +184,38 @@ fn raw4(s: &[u8]) -> [u8; 4] {
     s.try_into().unwrap()
 }
 
-fn glb_of(o: Occupant) -> (&'static str, Glb) {
-    let rel = site_asset(o).unwrap_or_else(|| panic!("{o:?} has no model"));
-    (rel, Glb::open(&asset_path(rel)))
-}
-
-/// Every occupant the sim can place, as `greybox.rs` keeps the same list.
-///
-/// ⚠ **Not in discriminant order, and it cannot be**: `Occupant` skips 8 on
-/// purpose (the client's archetype table's slot 8 is the felled-pine stump,
-/// which is a consequence of an occupant rather than one), so the enum is not
-/// dense and an index-equals-position check is wrong here. The first draft of
-/// this file asserted exactly that and failed on its first run — which is the
-/// check working, on the wrong claim.
-///
-/// **Completeness is `greybox.rs` §C's job**, not this file's: it holds the
-/// count. What is asserted below is narrower and is the one this file needs —
-/// that the set of occupants declaring a model is the set covered here.
-const ALL: [Occupant; 12] = [
-    Occupant::None,
-    Occupant::Tree,
-    Occupant::StoneNode,
-    Occupant::MetalNode,
-    Occupant::SulfurNode,
-    Occupant::Bush,
-    Occupant::Rock,
-    Occupant::BarrelSlot,
-    Occupant::CrateSlot,
-    Occupant::CacheSlot,
-    Occupant::HavenShelter,
-    Occupant::WaystationCanopy,
-];
-
-#[test]
-fn every_site_with_a_model_is_covered_here() {
-    // A duplicate would let a variant hide behind its twin and never be
-    // filtered into `declared`.
-    for (i, o) in ALL.iter().enumerate() {
-        assert!(
-            !ALL[..i].contains(o),
-            "{o:?} appears twice in ALL — the mirror has drifted"
-        );
-    }
-    // The claim: `site_asset` is the authority and `SITES` is this file's
-    // coverage. A model added there without a row here would skip every
-    // assertion below and report nothing.
-    let declared: Vec<Occupant> = ALL
-        .iter()
-        .copied()
-        .filter(|o| site_asset(*o).is_some())
-        .collect();
-    assert_eq!(
-        declared,
-        SITES.to_vec(),
-        "site_asset declares models for {declared:?} and this file covers \
-         {SITES:?}"
-    );
+fn glb_of(rel: &str) -> Glb {
+    Glb::open(&asset_path(rel))
 }
 
 #[test]
 fn every_declared_model_ships() {
-    for o in SITES {
-        let rel = site_asset(o).unwrap();
+    let all = shipped();
+    assert!(!all.is_empty(), "prop_models declares nothing at all");
+    for (o, rel) in all {
         assert!(
             asset_path(rel).exists(),
-            "{o:?} declares {rel} and it is not in the tree — the site would \
-             fall back to the box massing with nothing saying so"
+            "{o:?} declares {rel} and it is not in the tree — the prop would \
+             fall back to the generated massing with nothing saying so"
         );
     }
 }
 
 #[test]
-fn each_model_is_the_single_primitive_site_models_loads() {
-    for o in SITES {
-        let (rel, g) = glb_of(o);
+fn each_model_is_the_single_primitive_prop_models_loads() {
+    for (o, rel) in shipped() {
+        let g = glb_of(rel);
         let n = g.primitives().len();
         assert_eq!(
             n, 1,
-            "{o:?} ({rel}) has {n} primitives and `SiteModels::load` asks for \
+            "{o:?} ({rel}) has {n} primitives and `PropModels::load` asks for \
              `Primitive {{ mesh: 0, primitive: 0 }}` — it would draw 1/{n} of \
              this model and report no error"
         );
         let mats = g.json["materials"].as_array().map_or(0, |m| m.len());
         assert_eq!(
             mats, 1,
-            "{o:?} ({rel}) has {mats} materials and `SiteModels::load` asks \
+            "{o:?} ({rel}) has {mats} materials and `PropModels::load` asks \
              for `Material {{ index: 0 }}` — the rest would never be applied"
         );
     }
@@ -264,59 +232,59 @@ fn each_model_is_the_single_primitive_site_models_loads() {
 /// Five centimetres, and the number is picked against the body rather than
 /// against the measurement: it is a fifth of `collide::WALL_THICKNESS_M`
 /// (0.24) and an order under `STEP_UP`, so a gap this size cannot hold a
-/// player anywhere they would notice being held. **Measured on the shipped
-/// pair it is 21.4 mm (shelter) and 0.2 mm (canopy)** — the shelter's is
-/// larger because its extreme-x and extreme-z vertices are not the same
-/// vertex, so the corner the box massing owns is chamfered away by the
-/// generator. The headroom over that is deliberate: these assets are
-/// regenerable by design (`DECISIONS.md` 2026-08-11 — "replaceable by a file
-/// swap with no code change"), and a ratchet pinned to today's mesh would go
-/// red on a re-roll that is no worse.
+/// player anywhere they would notice being held. **Measured on the shelter it
+/// is 21.4 mm and on the canopy 0.2 mm** — the shelter's is larger because
+/// its extreme-x and extreme-z vertices are not the same vertex, so the
+/// corner the box massing owns is chamfered away by the generator. The
+/// headroom over that is deliberate: these assets are regenerable by design
+/// (`DECISIONS.md` 2026-08-11 — "replaceable by a file swap with no code
+/// change"), and a ratchet pinned to today's mesh would go red on a re-roll
+/// that is no worse.
 ///
 /// It is a physical allowance, not a budget. Raising it is re-opening the
 /// invisible skirt; the fix for a model that fails is a re-import, or a
-/// reference image whose aspect is closer to the box table's.
-const SITE_SHORT_M: f32 = 0.05;
+/// reference image whose aspect is closer to the sim's row.
+const PROP_SHORT_M: f32 = 0.05;
 
 /// Drawn outside what the sim stops a body at. A tenth of a millimetre, which
 /// is the same float slack `deploy_assets.rs` allows an importer's arithmetic.
-const SITE_OVER_M: f32 = 1.0e-4;
+const PROP_OVER_M: f32 = 1.0e-4;
 
 #[test]
 fn each_model_is_the_volume_the_sim_blocks() {
-    for o in SITES {
-        let (rel, g) = glb_of(o);
+    for (o, rel) in shipped() {
+        let g = glb_of(rel);
         let (peak, radius) = g.peak_and_radius();
-        // These meshes stand on their own base rather than being centred, so
-        // the lift is zero and the peak IS `OCCUPANT_TOP_M`. Read it rather
-        // than assuming it, so a lift added later fails here loudly.
-        let lift = archetype_lift(o);
-        let top = lift + peak;
+        // `archetype_lift` is read rather than assumed: a site stands on its
+        // base (lift 0) and a scatter prop is CENTRED and partly buried
+        // (rock 0.55, nodes 0.5), so the drawn top is lift + peak in both
+        // cases and only this table knows which is which.
+        let top = archetype_lift(o) + peak;
         let (r_pub, top_pub) = (OCCUPANT_R_M[o as usize], OCCUPANT_TOP_M[o as usize]);
 
         assert!(
-            radius <= r_pub + SITE_OVER_M,
+            radius <= r_pub + PROP_OVER_M,
             "{o:?} ({rel}) draws out to {radius:.4} m against a blocked radius \
              of {r_pub:.4} — a player would pass through geometry they can see"
         );
         assert!(
-            top <= top_pub + SITE_OVER_M,
+            top <= top_pub + PROP_OVER_M,
             "{o:?} ({rel}) draws up to {top:.4} m against a blocked top of \
-             {top_pub:.4} — the roof stands above what stops a body"
+             {top_pub:.4} — it stands above what stops a body"
         );
         assert!(
-            r_pub - radius <= SITE_SHORT_M,
+            r_pub - radius <= PROP_SHORT_M,
             "{o:?} ({rel}) draws to {radius:.4} m inside a blocked radius of \
-             {r_pub:.4} — {:.4} m of invisible skirt, past SITE_SHORT_M. \
+             {r_pub:.4} — {:.4} m of invisible skirt, past PROP_SHORT_M. \
              Re-import with `--fit-axes`, or the model's aspect is too far \
-             from the box table's to stretch.",
+             from the sim's row to stretch.",
             r_pub - radius
         );
         assert!(
-            top_pub - top <= SITE_SHORT_M,
+            top_pub - top <= PROP_SHORT_M,
             "{o:?} ({rel}) draws to {top:.4} m under a blocked top of \
-             {top_pub:.4} — {:.4} m of blocked air above the roof, past \
-             SITE_SHORT_M. This is the exact reading a UNIFORM fit produced \
+             {top_pub:.4} — {:.4} m of blocked air above it, past \
+             PROP_SHORT_M. This is the exact reading a UNIFORM fit produced \
              (1.51 m on the shelter); check the import used `--fit-axes`.",
             top_pub - top
         );
@@ -324,25 +292,58 @@ fn each_model_is_the_volume_the_sim_blocks() {
 }
 
 #[test]
-fn every_model_stands_on_the_ground() {
-    for o in SITES {
-        let (rel, g) = glb_of(o);
-        let y = g.min_y();
-        // `spawn_slot` seats these by their own origin at `archetype_lift` = 0
-        // above the slot's ground, so a model centred on its middle sinks half
-        // of itself into the terrain.
+fn nothing_floats_and_nothing_is_buried_whole() {
+    for (o, rel) in shipped() {
+        let g = glb_of(rel);
+        let lift = archetype_lift(o);
+        let base = lift + g.min_y();
+        // `greybox.rs`'s own rule, applied to the asset: a prop's lowest
+        // vertex must reach the ground or below it, because `ART.md` rule 2
+        // is that nothing sits ON the ground. The sites satisfy it with
+        // lift 0 and min_y 0; a boulder satisfies it by being centred on an
+        // origin `archetype_lift` puts 0.55 m up, so 0.44 m of it is under.
         assert!(
-            y.abs() < 1.0e-3,
-            "{o:?} ({rel}) has min.y = {y:+.4} — it is not authored with its \
-             base at zero and would sit buried or float"
+            base <= SINK_M,
+            "{o:?} ({rel}) has its lowest vertex {base:+.4} m above the slot's \
+             ground, past SINK_M {SINK_M} — it floats. A centred prop wants \
+             `ci/import_meshy.py --center`; a base-authored one wants min.y 0."
+        );
+        // …and the other end: buried past its own top is a prop nobody sees.
+        assert!(
+            lift + g.peak_and_radius().0 > 0.0,
+            "{o:?} ({rel}) has no geometry above the ground at all"
         );
     }
 }
 
 #[test]
-fn nothing_on_a_site_glows() {
-    for o in SITES {
-        let (rel, g) = glb_of(o);
+fn a_pools_variants_are_actually_different() {
+    for o in OCCUPANTS {
+        let paths = prop_models(o);
+        if paths.len() < 2 {
+            continue;
+        }
+        // A three-entry pool whose entries are one mesh copied three times is
+        // exactly the defect the pool exists to fix — 1,054 identical
+        // boulders — wearing the fix's clothes. Bytes, because two rolls of
+        // the same prompt are legitimately similar and only *identical* is
+        // the failure.
+        for (i, a) in paths.iter().enumerate() {
+            for b in &paths[..i] {
+                let (x, y) = (
+                    std::fs::read(asset_path(a)).unwrap(),
+                    std::fs::read(asset_path(b)).unwrap(),
+                );
+                assert_ne!(x, y, "{o:?}: {a} and {b} are the same file");
+            }
+        }
+    }
+}
+
+#[test]
+fn nothing_on_a_prop_glows() {
+    for (o, rel) in shipped() {
+        let g = glb_of(rel);
         let lit = g.json["materials"]
             .as_array()
             .into_iter()
@@ -356,40 +357,30 @@ fn nothing_on_a_site_glows() {
             !lit,
             "{o:?} ({rel}) is emissive. The generator ships \
              `emissiveFactor = [1,1,1]` on nearly everything and its map is \
-             usually junk — a wooden spear measured a 0.53 peak. Neither of \
-             these structures burns; `ci/import_meshy.py` strips it unless \
-             `--emissive` is passed, so this is an import that skipped the \
-             strip."
+             usually junk — a wooden spear measured a 0.53 peak. Nothing here \
+             burns; `ci/import_meshy.py` strips it unless `--emissive` is \
+             passed, so this is an import that skipped the strip."
         );
     }
 }
 
-/// Triangles a site model may carry.
-///
-/// A site stands once (the pad) or twice (the waystations) on an island and is
-/// never instanced, so this is nowhere near `RENDER.md` §6's 1.5 M frame
-/// ceiling — a single conifer is ~6 k and a scatter ring holds dozens. The
-/// ceiling exists so a re-roll that comes back at 200 k is caught before it
-/// ships, not because 4 k is expensive. Measured: shelter 4,140, canopy 3,801.
-const SITE_TRI_MAX: usize = 12_000;
-
 #[test]
-fn a_site_model_is_within_its_triangle_ceiling() {
-    for o in SITES {
-        let (rel, g) = glb_of(o);
-        let t = g.triangles();
+fn a_prop_model_is_within_its_triangle_ceiling() {
+    for (o, rel) in shipped() {
+        let g = glb_of(rel);
+        let (t, cap) = (g.triangles(), tri_ceiling(o));
         assert!(
-            t <= SITE_TRI_MAX,
-            "{o:?} ({rel}) is {t} triangles against a ceiling of \
-             {SITE_TRI_MAX} — remesh it rather than raising this"
+            t <= cap,
+            "{o:?} ({rel}) is {t} triangles against a ceiling of {cap} — \
+             remesh it (ci/meshy_gen.py --tris) rather than raising this"
         );
     }
 }
 
 #[test]
-fn a_site_models_textures_are_compressed_in_vram() {
-    for o in SITES {
-        let (rel, g) = glb_of(o);
+fn a_prop_models_textures_are_compressed_in_vram() {
+    for (o, rel) in shipped() {
+        let g = glb_of(rel);
         let imgs = g.json["images"].as_array().cloned().unwrap_or_default();
         assert!(!imgs.is_empty(), "{o:?} ({rel}) carries no texture at all");
         for (i, im) in imgs.iter().enumerate() {

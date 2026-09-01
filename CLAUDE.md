@@ -342,6 +342,17 @@ do not rediscover)
   meant to fix. The general shape: **before reusing a pipeline step, ask
   whether the target number is a render fact or a sim fact.** The same box
   written in two crates means two different things.
+  ⚠ **And the SHAPE of the target matters as much as its size: fitting a box
+  to a volume the sim blocks as a CYLINDER is wrong by up to √2.** The two
+  authored sites publish `OCCUPANT_R_M` as a half-DIAGONAL, because their
+  footprint IS the box table. The scatter rows publish the same field as the
+  radius of a round-in-plan blob. Same field, same units, two different
+  shapes — and reusing `--fit-axes` across them drew the first ore node out to
+  **1.2737 m against 0.9148 m blocked, 36 cm of visible rock a player walks
+  straight through**, which is the worse of the two directions. `--fit-radius`
+  solves for the largest per-vertex `hypot(x, z)` instead, which is the number
+  `render::tree::bounds` actually measures. Found by `tests/prop_assets.rs` on
+  a real import rather than under a mutant.
   ⚠ **And the equality gate over the second half of this slice was green
   because its fixtures never visited the feature.** `client/tests/ground.rs`
   compares the optimised heightfield against a naive rebuild vertex for vertex,
@@ -353,6 +364,25 @@ do not rediscover)
   hit count asserted, and the proof is that the mutant reddens the new test
   while all four old ones stay green. Same family as the `lattice.rs` entry
   below: a gate can be exact, bit-for-bit, and aimed at nothing.
+
+- **A generator is a SAMPLER, so the pipeline needs a selection step and not a
+  better prompt.** Eleven rolls of six scatter props on 2026-09-02 produced
+  six keepers, and the rejects failed in ways no amount of rewriting fixed:
+  one reference image of a rock reconstructs to a **slab** (depth/width 0.425,
+  1.000 and 0.195 across three rolls of ONE prompt). What the prompt does
+  control was measured and is narrower than it looks — **naming an axis it had
+  omitted works** (adding "2.2 m deep, as deep as it is wide" took the next
+  three rolls to 1.016 / 1.022 / 1.032), and **naming a colour to avoid works**
+  ("lichen in the hollows" → 47.6% green-dominant; dropping it → 0.2%). What
+  does NOT work is asking for a ratio more extreme than the object's natural
+  one, measured twice: a canopy asked three ways to be "much wider than it is
+  tall" came back **worse** than the roll it was meant to fix. **And the
+  obvious structural fix is a trap of its own**: `multi-image-to-3d` does give
+  real depth, and it refuses `smart-topology` AND silently ignores
+  `target_polycount` — one boulder came back at **1,924,782 triangles**
+  against a 1.5 M *frame* ceiling. So: say what the object is in full, roll
+  several, and reject on a number. `ci/measure_glb.py` is that step, and it
+  reads its target out of `sim-core` rather than taking it typed.
 
 - **A cheap counter is not a free counter, and one was left in the tree.**
   `crates/sim-core/src/perfcount.rs` sat untracked in this branch's working

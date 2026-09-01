@@ -58,7 +58,36 @@ backwards is a lighting bug that no bounding-box check can see: a direction
 that must stay perpendicular to a stretched surface scales by 1/k per axis,
 while a tangent lies IN the surface and scales by k like a position.
 
-Usage:  ci/import_meshy.py <in.glb> <out.glb> W H D [--emissive] [--fit-axes]
+`--center` is the third mode and it is about the ORIGIN rather than the
+scale. Every asset before it stood on its base, because a deployable and a
+building do. The scatter props do not: `props::archetype_lift` places a
+boulder's origin 0.55 m above the slot's ground against a half-extent of
+0.99, so 0.44 m of it is UNDER the surface -- `ART.md` rule 2, "nothing sits
+ON the ground, everything sits IN it", which is also what hides the seam
+where a hull meets a heightfield. Those meshes are centred on their origin
+and `OCCUPANT_TOP_M` is documented as "lift + half-extent", so pinning their
+feet to y = 0 would lift every rock on the island out of the ground and
+break the gate in one move. With `--center` the pivot is the box's midpoint
+in Y as well as in X/Z.
+
+`--fit-radius` is the fourth mode, and it exists because fitting a BOX to a
+prop whose sim volume is a CYLINDER is wrong by up to sqrt(2). The two
+authored sites publish `OCCUPANT_R_M` as a half-DIAGONAL -- their footprint
+IS the box, and `SHELTER_CORNER_R_M`'s doc says so. The scatter props do not:
+their rows were measured off `blob_mesh`, which is round in plan, so
+`OCCUPANT_R_M` is the radius of a roughly circular footprint. Fit such a mesh
+by its bounding box and its CORNERS stick out past the cylinder the sim
+blocks -- measured on the first ore node at **1.2737 m drawn against 0.9148 m
+blocked**, i.e. 36 cm of visible rock a player walks straight through, which
+is the worse of the two directions `client/tests/prop_assets.rs` separates.
+
+So this mode solves for the radius the renderer actually measures (the
+largest per-vertex `hypot(x, z)`, `render::tree::bounds`) rather than for the
+box: one shared X/Z factor, so the plan shape is preserved and only its scale
+moves, and Y independently as `--fit-axes` does.
+
+Usage:  ci/import_meshy.py <in.glb> <out.glb> W H D
+                           [--emissive] [--fit-axes] [--fit-radius] [--center]
 """
 import json
 import struct
@@ -133,6 +162,8 @@ def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     keep_emissive = "--emissive" in sys.argv
     fit_axes = "--fit-axes" in sys.argv
+    fit_radius = "--fit-radius" in sys.argv
+    center = "--center" in sys.argv
     if len(args) != 5:
         raise SystemExit(__doc__)
     src, dst = args[0], args[1]
@@ -151,7 +182,18 @@ def main():
     size = hi - lo
 
     ratio = target / np.maximum(size, 1e-9)
-    if fit_axes:
+    if fit_radius:
+        # The pivot has to be known before the radius means anything, because
+        # `hypot(x, z)` is measured about the origin the mesh will be drawn
+        # at -- so this repeats the centring the transform below applies.
+        cx, cz = (lo[0] + hi[0]) / 2, (lo[2] + hi[2]) / 2
+        rmax = 0.0
+        for i in set(accs):
+            v = positions(gltf, blob, i)
+            rmax = max(rmax, float(np.hypot(v[:, 0] - cx, v[:, 2] - cz).max()))
+        kxz = (target[0] / 2.0) / max(rmax, 1e-9)
+        k = np.array([kxz, float(ratio[1]), kxz])
+    elif fit_axes:
         # Each axis to its own target, so the drawn BOUNDING BOX equals the
         # blocked volume rather than fitting inside it. (The renderer's radius
         # is a per-vertex max, which is a hair under the box's corner unless a
@@ -165,8 +207,12 @@ def main():
         k = ratio.astype(float)
     else:
         k = np.full(3, float(np.min(ratio)))
-    # centre X/Z on the origin, keep the feet on y = 0
-    pivot = np.array([(lo[0] + hi[0]) / 2, lo[1], (lo[2] + hi[2]) / 2])
+    # centre X/Z on the origin; Y is the mode's business (see --center).
+    pivot = np.array([
+        (lo[0] + hi[0]) / 2,
+        (lo[1] + hi[1]) / 2 if center else lo[1],
+        (lo[2] + hi[2]) / 2,
+    ])
     # Inverse-transpose for normals; for a diagonal scale that is 1/k per
     # axis. Identical to `k` under a uniform fit, which is why this file
     # never needed it until `--fit-axes`.
@@ -220,7 +266,10 @@ def main():
     # relative to the least. 1.000 is a uniform fit by luck; above ~1.3 the
     # answer is a better reference image, not a bigger stretch.
     how = (f"x{k[0]:.3f} y{k[1]:.3f} z{k[2]:.3f} aspect {k.max() / k.min():.3f}x"
-           if fit_axes else f"x{k[0]:.3f}")
+           if (fit_axes or fit_radius) else f"x{k[0]:.3f}")
+    if fit_radius:
+        how += " (radial)"
+    how += "  origin=" + ("center" if center else "base")
     print(f"  {dst.rsplit('/', 1)[-1]:22s} {size[0]:.2f}x{size[1]:.2f}x{size[2]:.2f}"
           f" -> {out[0]:.2f}x{out[1]:.2f}x{out[2]:.2f} m  ({how})"
           f"  emissive={'kept' if keep_emissive else 'off'}")
