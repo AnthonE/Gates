@@ -145,8 +145,8 @@ Sizes are the **full extents at scale 1.0**; the terrain applies a per-slot
 | 2.8 | **Loot barrel** | 0.9 ⌀ × 0.95 | ≤ 800 | Weathered steel drum, dented, ribbed. Smashable — it is a gatherable, not scenery. |
 | 2.9 | **Supply crate** | 1.1 × 0.8 × 0.8 | ≤ 600 | The haven pad's container. Wooden slatted crate, banded, latched lid. |
 | 2.10 | **Cache box** | 0.9 × 0.55 × 0.7 | ≤ 600 | The waystation's lesser-tier container. Visibly poorer than 2.9 — a loot table is chosen by which of these two you opened, so they must be tellable apart at 20 m. |
-| 2.11 | **Haven shelter** | 7.2 × 5.6 × 7.2 | ≤ 6 k | The greybox at the pad's centre: a walled stone block, open on one side, with a tower on the roof at one corner. One object, not a kit. |
-| 2.12 | **Waystation canopy** | 3.8 × 2.1 × 3.8 | ≤ 2 k | The lesser tier's: an open timber roof on four posts with one back wall. Deliberately **not** 2.11 shrunk — under half its height, squatter. |
+| 2.11 | ~~**Haven shelter**~~ | 7.0 × 9.2 × 7.0 | 4,140 | ✅ **COVERED 2026-09-01** — `assets/models/site/shelter.glb` (`MANIFEST.md`). ⚠ The size column above was WRONG and this row is the correction: it read 7.2 × 5.6 × 7.2 where `SHELTER_BOXES` bounds are 7.0 × 9.2 × 7.0 — **3.6 m short on height**, which is the axis the tower lives on, so it was a spec nobody could have hit. Read the box table, never this file, for a volume the sim collides with. |
+| 2.12 | ~~**Waystation canopy**~~ | 5.6 × 4.1 × 5.6 | 3,801 | ✅ **COVERED 2026-09-01** — `assets/models/site/canopy.glb`. Same correction as 2.11: this row said 3.8 × 2.1 × 3.8 against `WAYSTATION_CANOPY_BOXES`' 5.6 × 4.1 × 5.6 — wrong on every axis, by 1.8 / 2.0 / 1.8 m. The ≤ 2 k triangle target is exceeded and deliberately not enforced — `tests/site_assets.rs` gates 12 k, because a structure that stands twice on an island and never instances is not what presses `RENDER.md` §6's frame ceiling. |
 
 ---
 

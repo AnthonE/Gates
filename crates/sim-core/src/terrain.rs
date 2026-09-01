@@ -3202,6 +3202,73 @@ pub fn splat_from(h: f32, moist: f32, slope: f32) -> [u8; 4] {
     ]
 }
 
+/// How worn the SHOULDER reads against the carriageway, 0..1 — and it is
+/// derived rather than spoken, which is the whole reason it is a `const` here
+/// instead of a number typed into the client.
+///
+/// A verge is worn in proportion to how much of the band beside it is
+/// actually road, so this is `ROAD_HALF_W / ROAD_SHOULDER_HALF_W` = 2/5. Two
+/// consequences follow that a chosen 0.5 would not have: widening the
+/// carriageway drags its verge with it, and narrowing the shoulder makes the
+/// verge read *more* worn, which is what a narrower verge is. Same shape as
+/// `SiteFootprint::swept_m` being derived off its own container ring rather
+/// than picked (`reference/MONUMENTS.md` §9.2).
+pub const ROAD_WEAR_SHOULDER: f32 = ROAD_HALF_W / ROAD_SHOULDER_HALF_W;
+
+/// The ground's four identity weights with the coast road worn into them.
+///
+/// **This is `clutter_kind_at`'s override, one layer down, and the two are
+/// one claim.** That function already refuses grass on the carriageway and
+/// returns `Clutter::Pebble` — grit — with the reasoning that "a road that
+/// grows a continuous lawn is not a road", and it was written when
+/// `TERRAIN.md` §1 stage 7's road material did not exist. The result was a
+/// ring whose *population* was gravel standing on ground still painted
+/// meadow: the two halves of one surface disagreeing. This is the other half.
+///
+/// The carriageway goes to **sand**, which is not an approximation — sand is
+/// the channel whose clutter is "grit, shells, small water-worn stones", so
+/// the surface and the things standing on it now come from one identity by
+/// construction rather than by coincidence.
+///
+/// **The sum is preserved exactly** and that is arithmetic rather than luck:
+/// pushing `t` of every other channel into channel 0 gives
+/// `S + t·(255 − S)`, which is `S` whenever `S` is 255 — the invariant
+/// `tests/clutter.rs::test_splat_weights_are_normalized_on_land` rests on.
+/// Rounding costs the same ±1 `splat_from` itself costs.
+///
+/// **It is deliberately NOT applied inside [`splat`].** The clutter
+/// population resolves the carriageway before it ever asks for a splat, so
+/// folding this in there would move no clutter and would move the terrain
+/// golden for nothing. The one consumer is the ground mesh, and the client
+/// calls it beside `splat_from` on the same vertex.
+pub fn splat_road(w: [u8; 4], band: RoadBand) -> [u8; 4] {
+    let t = match band {
+        RoadBand::Off => return w,
+        RoadBand::Shoulder => ROAD_WEAR_SHOULDER,
+        RoadBand::Carriageway => 1.0,
+    };
+    let f = [w[0] as f32, w[1] as f32, w[2] as f32, w[3] as f32];
+    let out = [
+        f[0] + (255.0 - f[0]) * t,
+        f[1] * (1.0 - t),
+        f[2] * (1.0 - t),
+        f[3] * (1.0 - t),
+    ];
+    [
+        floor_i32(out[0] + 0.5).clamp(0, 255) as u8,
+        floor_i32(out[1] + 0.5).clamp(0, 255) as u8,
+        floor_i32(out[2] + 0.5).clamp(0, 255) as u8,
+        floor_i32(out[3] + 0.5).clamp(0, 255) as u8,
+    ]
+}
+
+const _: () = {
+    // A verge that is not strictly between "wilderness" and "road surface" is
+    // not a verge, and the derivation above is what makes both ends true.
+    assert!(ROAD_WEAR_SHOULDER > 0.0);
+    assert!(ROAD_WEAR_SHOULDER < 1.0);
+};
+
 /// `splat_from` at a world position, resolving the three channels itself.
 /// The client's terrain worker already holds all three per vertex and calls
 /// the law directly; this is for callers that hold only (x, z).

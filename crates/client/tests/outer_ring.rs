@@ -92,6 +92,7 @@ fn fixture() -> (App, PropAssets) {
         // Unresolved, like every `MapSet::default()` above it: this tier has no
         // filesystem and a material clones the handle either way.
         Handle::default(),
+        client::render::props::SiteModels::default(),
     );
     world.insert_resource(meshes);
     world.insert_resource(materials);

@@ -601,3 +601,115 @@ const BAY_MEAN_DRIFT_PERMILLE: f32 = 25.0;
 /// ROAD_BARREL_PERMILLE: 239 barrels over 2,033 shoulder cells. The baseline
 /// the redistribution must not move (DECISIONS.md §open: bay slots v0).
 const BAY_FLAT_REALIZED_PERMILLE: f32 = 117.6;
+
+// ── The road's surface: `splat_road` ───────────────────────────────────────
+//
+// Stage 7 asked for a dirt material and shipped without one, so for months
+// the ring's *population* was gravel (`clutter_kind_at` forces `Pebble` on
+// the carriageway) standing on ground still painted meadow — two halves of
+// one surface disagreeing. `splat_road` is the other half; these hold it to
+// the same claim rather than to a colour, because no gate here can see a
+// pixel.
+
+/// The three bands do what they say, and the verge is a verge.
+///
+/// Written against a synthetic weight rather than a sampled one so the
+/// arithmetic is exact and the assertion is about the LAW: a real splat would
+/// make this a test of wherever the sampler happened to land.
+#[test]
+fn the_carriageway_is_grit_and_the_shoulder_is_between() {
+    // A pure meadow vertex: all grass, no sand. The hardest case for the
+    // override, because every byte it moves has to come from somewhere.
+    let meadow = [0u8, 255, 0, 0];
+    let off = terrain::splat_road(meadow, RoadBand::Off);
+    let shoulder = terrain::splat_road(meadow, RoadBand::Shoulder);
+    let road = terrain::splat_road(meadow, RoadBand::Carriageway);
+
+    assert_eq!(off, meadow, "off the ring the ground is untouched");
+    assert_eq!(
+        road[0], 255,
+        "the carriageway is not pure sand — the surface and the grit standing \
+         on it come from one channel or they do not agree"
+    );
+    assert_eq!(
+        [road[1], road[2], road[3]],
+        [0, 0, 0],
+        "the carriageway kept some meadow: {road:?}"
+    );
+    assert!(
+        shoulder[0] > off[0] && shoulder[0] < road[0],
+        "the shoulder's sand weight {} is not strictly between the wilderness's \
+         {} and the carriageway's {} — a verge that matches either one of its \
+         neighbours is not a verge",
+        shoulder[0],
+        off[0],
+        road[0]
+    );
+    // The derivation, not the digit: 2/5 of the band beside the verge is road.
+    let want = (255.0 * terrain::ROAD_WEAR_SHOULDER + 0.5) as u8;
+    assert_eq!(
+        shoulder[0], want,
+        "the shoulder reads {} where ROAD_WEAR_SHOULDER = ROAD_HALF_W / \
+         ROAD_SHOULDER_HALF_W asks for {want}",
+        shoulder[0]
+    );
+    println!("splat_road on pure meadow: off {off:?} shoulder {shoulder:?} road {road:?}");
+}
+
+/// The coverage invariant survives the override — over the real island, not
+/// over one hand-written weight.
+///
+/// `tests/clutter.rs::test_splat_weights_are_normalized_on_land` rests on the
+/// four weights summing to 255, and the ground material divides by that sum.
+/// The algebra says pushing `t` of every channel into channel 0 leaves the sum
+/// at `S + t·(255 − S)`, i.e. unchanged when `S` is 255 — this is that claim
+/// measured rather than believed, at the ±1 `splat_from`'s own rounding costs.
+#[test]
+fn the_road_override_keeps_the_weights_normalized() {
+    let mut checked = 0u64;
+    let mut on_road = 0u64;
+    for seed in SEEDS {
+        // March the ring the way every other test in this file does, so the
+        // samples are on the road rather than near it.
+        for b in 0..BEARINGS {
+            let (ux, uz) = yaw_dir((b * (256 / BEARINGS)) << 8);
+            let c = ISLAND_SIZE * 0.5;
+            let mut r = ROAD_R_MIN;
+            while r <= ROAD_R_MAX {
+                let (x, z) = (c + ux * r, c + uz * r);
+                r += MARCH_M;
+                if terrain::height(seed, x, z) < SEA_LEVEL {
+                    continue;
+                }
+                let band = terrain::road_band(seed, x, z);
+                let w = terrain::splat_road(terrain::splat(seed, x, z), band);
+                let sum: u32 = w.iter().map(|v| *v as u32).sum();
+                assert!(
+                    (254..=256).contains(&sum),
+                    "seed {seed:#x} at ({x:.1}, {z:.1}) band {band:?}: weights \
+                     {w:?} sum to {sum}, not 255 ± 1 — the ground material \
+                     divides by this"
+                );
+                checked += 1;
+                if band != RoadBand::Off {
+                    on_road += 1;
+                    assert!(
+                        w[0] >= (255.0 * terrain::ROAD_WEAR_SHOULDER) as u8,
+                        "seed {seed:#x} at ({x:.1}, {z:.1}) is {band:?} and its \
+                         sand weight is only {} — the road is not being worn in",
+                        w[0]
+                    );
+                }
+            }
+        }
+    }
+    println!("splat_road normalization: {checked} land samples, {on_road} on the ring");
+    // The ring is what this test is about; a march that met none of it is a
+    // test of the wilderness. Same guard `a_near_chunk_on_the_coast_road...`
+    // carries in the client, and for the same reason.
+    assert!(
+        on_road > 1_000,
+        "only {on_road} of {checked} samples were on the road — this asserted \
+         almost nothing"
+    );
+}

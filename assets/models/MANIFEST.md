@@ -189,6 +189,96 @@ gates every claim in this table.
 | `deploy/fire.glb` | 3 fire | `019feff4-8c6e` | 15 | stone ring, charred logs, embers. **The one asset that keeps its emissive map** (measured peak 0.24, genuine glow) |
 | `deploy/workbench.glb` | 5 workbench | `019feff2-cd94` | 24 | plank worktop, vice, scattered tools |
 
+## `site/` — the two authored places, and the fit rule they forced
+
+Same rail and same pipeline as `deploy/` above — Meshy, paid plan, commissioned
+output, no `NOTICE` entry due, and no proper noun in either prompt. Generated
+2026-09-01 with `ci/meshy_gen.py`, which is the pipeline `DECISIONS.md` settled
+on 2026-08-11 written down as a command instead of as prose: `nano-banana-pro`
+text-to-image → `image-to-3d` with `model_type: smart-topology`,
+`ai_model: meshy-t2`, 2K PBR, `origin_at: "bottom"`. It writes a JSON sidecar
+carrying exactly the columns below, so this table is transcribed rather than
+remembered.
+
+| file | occupant | image task | mesh task | credits | tris | size |
+|---|---|---|---|---|---|---|
+| `site/shelter.glb` | `HavenShelter` | `01a05e1c-5de3` | `01a05e1c-ff8d` | 48 | 4,140 | 3.6 MB |
+| `site/canopy.glb` | `WaystationCanopy` | `01a05e1c-ad22` | `01a05e1d-4e95` | 39 | 3,801 | 3.3 MB |
+
+Image prompts, in full, because the IP rail's auditability is the reason they
+are recorded at all:
+
+> **shelter** — "A single ruined stone outpost building on a plain white
+> background, three-quarter view. Square footprint 7 metres by 7 metres, 9.2
+> metres tall. Thick weathered grey granite walls on three sides. One tall open
+> doorway with heavy square stone jambs and a lintel across the front. Flat
+> stone slab roof. Four square corner pillars rising above the roofline. One
+> square watchtower standing on the roof, set back from the front, topped by a
+> wide flat capstone. Moss in the joints, storm worn. Exactly one building. No
+> ground, no terrain, no people, no plants."
+>
+> **canopy** — "A single small open timber shelter on a plain white background,
+> three-quarter view. Square plank deck 5.2 metres by 5.2 metres at ground
+> level, 4.1 metres tall overall. Four slender square wooden corner posts hold
+> up a wide flat plank roof, with a second smaller plank roof stacked above it
+> and a short square finial on top. One low knee-high plank wall along the back
+> edge only; the other three sides are fully open. Weathered grey timber, iron
+> nails, no paint. Exactly one structure. No ground, no terrain, no people, no
+> plants."
+
+Texture prompts are one line each — "Weathered grey granite blocks, moss in the
+joints, storm worn stone, no vegetation" and "Weathered grey timber planks, iron
+nails, sun bleached wood, no paint".
+
+### These two are imported with `--fit-axes`, and the reason is not cosmetic
+
+**A `deploy/` row is a render row; these are the sim's collision volume.**
+`terrain::SHELTER_BOXES` and `WAYSTATION_CANOPY_BOXES` are what a body is
+stopped by, and `OCCUPANT_R_M`/`OCCUPANT_TOP_M` are *defined* as their bounds —
+so where a deployable that comes up short inside its row is "a row to
+re-measure", a site that comes up short is a player stopped by air. Measured on
+these two under the uniform fit every other asset here uses:
+
+| | drawn (uniform fit) | blocked | gap |
+|---|---|---|---|
+| shelter | 7.00 × **7.69** × 6.92 | 7.00 × 9.20 × 7.00 | **1.51 m of blocked air above the roof** |
+| canopy | **4.34** × 4.10 × **4.34** | 5.60 × 4.10 × 5.60 | **1.26 m of invisible skirt per horizontal axis** |
+
+`ci/import_meshy.py --fit-axes` scales each axis to its own target instead, so
+the drawn bound meets the blocked one: **both peaks are exact** (0.00000 m
+against `OCCUPANT_TOP_M`) and neither model reaches outside its blocked radius.
+The radii come up **short by 21.4 mm (shelter) and 0.2 mm (canopy)** rather
+than equal, because the number that matters is the one the renderer uses —
+largest per-vertex `hypot(x, z)` — and a box corner is only that if a vertex
+sits on the corner, which the generator's eroded roof slab does not. The gate's
+allowance for that is `SITE_SHORT_M = 0.05`, picked against the body (a fifth
+of `WALL_THICKNESS_M`) rather than against today's mesh. What the fit costs is
+an **aspect correction** —
+`max(k) / min(k)`, how much the most-stretched axis was stretched relative to
+the least:
+
+| | x | y | z | aspect |
+|---|---|---|---|---|
+| shelter | 1.538 | 1.840 | 1.555 | **1.196×** |
+| canopy | 1.765 | 1.367 | 1.765 | **1.291×** |
+
+**Prompting for the aspect does not fix this, and that was measured rather than
+assumed.** A second canopy was generated the same day (`01a05e20-9d03` /
+`01a05e21-1775`, 24 credits) with the aspect stated three ways — "much wider
+than it is tall", the two figures, "eaves overhang far past the posts". It came
+back at 3.08 × 3.00 × 3.08 against the first's 3.17 × 3.00 × 3.17, i.e. an
+aspect correction of **1.329×, worse than the 1.291× it was meant to fix.** It
+is not shipped. The lever that would actually work is the box table, and that
+is sim truth with a replay golden behind it — see `NOW.md`.
+
+`crates/client/tests/site_assets.rs` gates every number in this section, and
+each of its claims is proven red under its own mutant (uniform fit, a 5%
+oversize, a kept emissive map, an unpacked JPEG).
+
+**The box massing is not deleted.** `props::archetype_mesh` still returns it,
+`greybox.rs` still measures the sim's scalars against it, and it is still what
+draws if a model fails to load.
+
 ## `held/` — what the viewmodel puts in your hand
 
 **The surface these were waiting on turned out to already exist.** They were

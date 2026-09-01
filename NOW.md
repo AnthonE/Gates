@@ -59,6 +59,58 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
 
 # Buildable now — a loop can pick any of these
 
+## 0site · Site art v0 landed — three things it left *(art + sim lane)*
+
+`assets/models/site/{shelter,canopy}.glb` draw the pad and the waystations
+(`DECISIONS.md` §open, site art v0). What it did not do:
+
+1. **Nobody has booted it.** Every claim is arithmetic off the `.glb`
+   (`tests/site_assets.rs`, 8 checks, each proven red under its own mutant).
+   The aspect corrections — 1.196× on the shelter, 1.291× on the canopy — are
+   *stated* stretches, and whether a 29% squat reads as chunky-rustic or as
+   wrong is a question for a person looking. Belongs to `§LOOK`.
+2. **The box table is the lever nobody pulled.** The stretch exists because
+   the generator's aspect is not `SHELTER_BOXES`', and prompting for the
+   aspect measurably does not fix it (a second canopy came back *worse*,
+   1.329×). Moving the table to the art would retire the stretch outright —
+   and it is sim truth: `test_replay`'s golden, the const blocks that hold the
+   plinth lowest, `SHELTER_CORNER_R_M`, `WAYSTATION_RADIUS_M`'s derivation and
+   the guard aprons all read it. A real slice, not a tweak.
+3. **Eight `WANTED.md` §2 rows still want a mesh** — the three ore nodes, the
+   boulder, the barrel, the crate, the cache box, the stump (2.1 and 2.6 are
+   deliberately generated, and 2.11/2.12 just landed). The pipeline is a
+   command now (`ci/meshy_gen.py`), ~40 credits an asset against 5,175 in the
+   account, and the wiring already generalises: `site_asset`'s shape fits any
+   occupant with a fixed volume. ⚠ **Check every §2 size against the sim
+   before spending** — 2.11 was 3.6 m out on height and 2.12 wrong on all
+   three axes. Read the box tables, not this file.
+
+## 0kit · The build kit is the one row a generated mesh fights *(client lane)*
+
+`WANTED.md` §3's six shapes are the obvious next Meshy target and they are
+**not** the deploy/site problem again. Measured off `structures.rs`:
+
+1. **A piece's material is gameplay state, not art.** One mesh is shared
+   across all four tiers and painted by one of `DMG_BANDS(8) × N_TIERS(4)` =
+   32 materials. A generated `.glb` bakes its look into its albedo, so a
+   stone-looking wall reads as stone in the twig tier. Four models a shape is
+   44 assets and retires the damage bands too.
+2. **So buy GEOMETRY, not appearance** — `should_texture: false`, and keep the
+   tier materials. That is the only shape of this that fits.
+3. **Which makes UVs the binding constraint, and they are already specified.**
+   `PIECE_UV_PER_M = 1.0`: piece meshes carry **metre-scaled** UVs and the
+   tier applies `tiles_per_m` as the material's `uv_transform`. Meshy emits an
+   arbitrary atlas unwrap, which would sample a tiled photograph incoherently.
+   The fix is a box projection in metres at import — what `Soup::tiling`
+   already does for the massing — as a third `import_meshy.py` mode.
+4. **Dimensions are collision truth**, tighter than the sites':
+   `WALL_THICKNESS_M = 0.24`, and a doorway's lintel underside is the 2.1 m
+   the sim lets a body through — an interior feature no bounding fit can
+   place. So a doorway is the shape to try first or not at all.
+
+Not started. Honest order is 3 → one wall → look at it: step 3 is the one that
+could make all of it worthless.
+
 ## 0dk · The player character is as dark as grass — measured *(art lane)*
 
 From the operator, off the capture frames: *"other players do look a bit dark

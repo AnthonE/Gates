@@ -136,6 +136,14 @@ pub struct PropAssets {
     cache_box: Handle<Mesh>,
     shelter: Handle<Mesh>,
     canopy: Handle<Mesh>,
+    /// The two authored sites' materials. They are fields rather than a reach
+    /// into `stone`/`wood` because a generated model carries its OWN PBR set:
+    /// a row that overrides the mesh must override the material with it, or
+    /// the model draws wearing the massing's tiled photograph and its own
+    /// baked albedo is thrown away. Fall back to `stone`/`wood` exactly where
+    /// the mesh falls back to the massing.
+    shelter_mat: Handle<StandardMaterial>,
+    canopy_mat: Handle<StandardMaterial>,
     foliage: [Handle<StandardMaterial>; TINT_POOL],
     /// The bush's leaf cards, a pool indexed by yaw. See [`bush_card_mesh`].
     bush_cards: Vec<Handle<Mesh>>,
@@ -1187,6 +1195,93 @@ pub fn authored<const N: usize>(
 /// <= 0`, which is not checkable while the number is a local.
 pub const SINK_M: f32 = 0.06;
 
+/// The generated model for an authored site, or `None` where the box massing
+/// in [`archetype_mesh`] is still what draws.
+///
+/// **This is `structures::DEPLOY_ASSET`'s shape with one difference that
+/// changes the whole import, and it is worth stating rather than
+/// rediscovering.** A `DEPLOY` row is a RENDER row: nothing in the sim reads
+/// it, so `ci/import_meshy.py` fits a model uniformly INSIDE the row and a
+/// model that comes up short is "a row to re-measure, not a mesh to stretch".
+/// These two rows are the opposite — `terrain::SHELTER_BOXES` and
+/// `WAYSTATION_CANOPY_BOXES` are the sim's own collision volume and
+/// `OCCUPANT_R_M`/`OCCUPANT_TOP_M` are *defined* as their bounds — so a model
+/// that fits inside leaves a skirt of blocked air nobody can see, which is
+/// exactly the defect `tests/greybox.rs`'s `SLACK_R_M` was closed to 1 mm to
+/// stop. Measured on the first pair under a uniform fit: **1.51 m of blocked
+/// air above the shelter's roof, 1.26 m of invisible skirt on each horizontal
+/// axis of the canopy.** They are imported with `--fit-axes` instead, which
+/// scales each axis to its own target: both peaks land exactly on
+/// `OCCUPANT_TOP_M` and neither model reaches outside its blocked radius. It
+/// is paid for in a measured aspect correction (1.196x on the shelter,
+/// 1.291x on the canopy) rather than in geometry a player can walk through.
+///
+/// The box massing is NOT deleted and is not a dead path: it is still what
+/// `archetype_mesh` returns, still what
+/// `greybox.rs::the_authored_pair_bounds_equal_what_the_sim_publishes`
+/// measures the sim's scalars against, and still what draws if a model fails
+/// to load. `assets/models/MANIFEST.md` carries the prompt and task id per
+/// file; `tests/site_assets.rs` gates every claim in this doc comment.
+pub fn site_asset(o: Occupant) -> Option<&'static str> {
+    match o {
+        Occupant::HavenShelter => Some("models/site/shelter.glb"),
+        Occupant::WaystationCanopy => Some("models/site/canopy.glb"),
+        _ => None,
+    }
+}
+
+/// The two site models, loaded — or unresolved, which is the headless case.
+///
+/// **Taken as a value rather than reached through an `AssetServer`, for the
+/// reason [`assets`] states about `bush_card`**: five renderer-tier suites
+/// build the whole prop pool with no filesystem under them, and a parameter
+/// they can pass `Default::default()` to is what keeps them in the tier that
+/// runs headless. `Default` is the box massing on both rows, so a headless
+/// build draws exactly what it drew before this existed.
+#[derive(Clone, Default)]
+pub struct SiteModels {
+    shelter: Option<(Handle<Mesh>, Handle<StandardMaterial>)>,
+    canopy: Option<(Handle<Mesh>, Handle<StandardMaterial>)>,
+}
+
+impl SiteModels {
+    /// Load both models' first primitive and first material.
+    ///
+    /// One mesh, one primitive, one material — asserted by
+    /// `tests/site_assets.rs`, because `Primitive { mesh: 0, primitive: 0 }`
+    /// on a multi-primitive model draws a fraction of it and reports nothing.
+    /// Loading the primitive rather than the scene is what lets these land in
+    /// the same `Handle<Mesh>` the massing used, so `spawn_slot` is unchanged;
+    /// the cost is that a node transform is dropped at load, which is why
+    /// `ci/import_meshy.py` bakes its scale into the vertices.
+    pub fn load(server: &AssetServer) -> Self {
+        let one = |o: Occupant| {
+            site_asset(o).map(|path| {
+                (
+                    server.load(
+                        GltfAssetLabel::Primitive {
+                            mesh: 0,
+                            primitive: 0,
+                        }
+                        .from_asset(path),
+                    ),
+                    server.load(
+                        GltfAssetLabel::Material {
+                            index: 0,
+                            is_scale_inverted: false,
+                        }
+                        .from_asset(path),
+                    ),
+                )
+            })
+        };
+        Self {
+            shelter: one(Occupant::HavenShelter),
+            canopy: one(Occupant::WaystationCanopy),
+        }
+    }
+}
+
 /// The mesh the client draws for one occupant, as a pure function.
 ///
 /// **Extracted so the gate can ask the renderer's own question.** Before this,
@@ -1377,6 +1472,9 @@ pub fn assets(
     // `Handle::default()` — an unresolved handle, exactly as `MapSet::default`
     // documents for the same reason.
     bush_card: Handle<Image>,
+    // The two authored sites' generated models, or `Default` for the box
+    // massing — same reason as `bush_card` one line up.
+    sites: SiteModels,
 ) -> PropAssets {
     // `foliage` was the only untinted-`surface` caller and is pooled now, so
     // the single-handle constructor went with it. `photo` stays: five classes
@@ -1448,6 +1546,15 @@ pub fn assets(
         })
         .collect();
     let needle_map = images.add(tree::needle_image());
+    // Hoisted out of the literal below because the two site rows fall back to
+    // them: a `photo(...)` written twice would be two materials wearing one
+    // photograph, and the second would be invisible to `tests/fresnel.rs`'s
+    // by-name sweep.
+    let wood = photo(&maps.wood, 0.85, fresnel::DIELECTRIC, materials);
+    // The haven pad and the waystation ARE built, so they get the masonry —
+    // this is the identity that map was sourced for (`MANIFEST.md`: "the
+    // identity ART asks for, not brick").
+    let stone = photo(&maps.stone, 0.82, fresnel::DIELECTRIC, materials);
     PropAssets {
         pines: conifers.iter().map(|(b, _, _)| b.clone()).collect(),
         needles: conifers.iter().map(|(_, n, _)| n.clone()).collect(),
@@ -1475,10 +1582,24 @@ pub fn assets(
         barrel: meshes.add(archetype_mesh(Occupant::BarrelSlot).expect("barrel mesh")),
         crate_box: meshes.add(archetype_mesh(Occupant::CrateSlot).expect("crate mesh")),
         cache_box: meshes.add(archetype_mesh(Occupant::CacheSlot).expect("cache mesh")),
-        // Both authored structures come off the sim's own box tables — see
-        // the `authored` block above for what mirroring them by hand cost.
-        shelter: meshes.add(archetype_mesh(Occupant::HavenShelter).expect("shelter mesh")),
-        canopy: meshes.add(archetype_mesh(Occupant::WaystationCanopy).expect("canopy mesh")),
+        // Both authored structures fall back to the sim's own box tables —
+        // see the `authored` block above for what mirroring them by hand
+        // cost, and `site_asset` for why the massing stays rather than being
+        // deleted once a model exists.
+        shelter: sites
+            .shelter
+            .as_ref()
+            .map(|(m, _)| m.clone())
+            .unwrap_or_else(|| {
+                meshes.add(archetype_mesh(Occupant::HavenShelter).expect("shelter mesh"))
+            }),
+        canopy: sites
+            .canopy
+            .as_ref()
+            .map(|(m, _)| m.clone())
+            .unwrap_or_else(|| {
+                meshes.add(archetype_mesh(Occupant::WaystationCanopy).expect("canopy mesh"))
+            }),
         foliage: surface_pool(0.86, fresnel::DIELECTRIC, materials),
         bush_cards: (0..BUSH_CARD_POOL as u32)
             .map(|v| meshes.add(bush_card_mesh(v)))
@@ -1550,12 +1671,24 @@ pub fn assets(
         ore_stone: photo(&maps.rock, 0.80, fresnel::DIELECTRIC, materials),
         ore_metal: photo(&maps.metal, 0.55, fresnel::METAL_DIELECTRIC, materials),
         ore_sulfur: photo(&maps.rock, 0.78, fresnel::DIELECTRIC, materials),
-        wood: photo(&maps.wood, 0.85, fresnel::DIELECTRIC, materials),
+        wood: wood.clone(),
         metal: photo(&maps.metal, 0.50, fresnel::METAL_DIELECTRIC, materials),
-        // The haven pad and the waystation ARE built, so they get the
-        // masonry — this is the identity that map was sourced for
-        // (`MANIFEST.md`: "the identity ART asks for, not brick").
-        stone: photo(&maps.stone, 0.82, fresnel::DIELECTRIC, materials),
+        stone: stone.clone(),
+        // A generated model brings its own baked PBR set, so a row that
+        // overrides the mesh overrides the material with it — otherwise the
+        // model draws wearing the massing's tiled photograph and its own
+        // albedo is loaded and discarded. The fallbacks are the two the
+        // massing wore, and they fall back TOGETHER with the mesh above.
+        shelter_mat: sites
+            .shelter
+            .as_ref()
+            .map(|(_, m)| m.clone())
+            .unwrap_or_else(|| stone.clone()),
+        canopy_mat: sites
+            .canopy
+            .as_ref()
+            .map(|(_, m)| m.clone())
+            .unwrap_or_else(|| wood.clone()),
         // The conifer's trunk. `ART.md` §5 asks for fissures running UP the
         // trunk, and this is the one prop that needed no UV work at all to get
         // them: `bevy_procedural_tree` emits `ATTRIBUTE_UV_0` cylindrically —
@@ -1583,7 +1716,8 @@ pub fn stream(
 ) {
     let a = store.get_or_insert_with(|| {
         let card = server.load_with_settings(BUSH_CARD_ATLAS, super::textures::atlas(true));
-        assets(&mut meshes, &mut materials, &mut images, &maps, card)
+        let sites = SiteModels::load(&server);
+        assets(&mut meshes, &mut materials, &mut images, &maps, card, sites)
     });
 
     let cx = (eye.pos.x / CHUNK_M).floor() as i32;
@@ -1827,8 +1961,8 @@ pub fn spawn_slot(
         Occupant::BarrelSlot => (a.barrel.clone(), a.metal.clone()),
         Occupant::CrateSlot => (a.crate_box.clone(), a.wood.clone()),
         Occupant::CacheSlot => (a.cache_box.clone(), a.wood.clone()),
-        Occupant::HavenShelter => (a.shelter.clone(), a.stone.clone()),
-        Occupant::WaystationCanopy => (a.canopy.clone(), a.wood.clone()),
+        Occupant::HavenShelter => (a.shelter.clone(), a.shelter_mat.clone()),
+        Occupant::WaystationCanopy => (a.canopy.clone(), a.canopy_mat.clone()),
         Occupant::None => return,
     };
     let sink = SINK_M;

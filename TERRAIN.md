@@ -102,10 +102,21 @@ Stages, in order — each cheap, each deterministic:
    answered in speckle would still pass a density ratio and would still be
    unlearnable; per-cell parity substituted for `in_bay` gives 14–17 arcs
    against the cap of 8.
+   **The dirt material landed 2026-09-01** (`DECISIONS.md` §open, road surface
+   v0). `terrain::splat_road` pushes the four identity weights toward **sand**
+   on the carriageway and, at `ROAD_WEAR_SHOULDER` = `ROAD_HALF_W /
+   ROAD_SHOULDER_HALF_W` = 2/5, on the shoulder — closing a disagreement that
+   had been shipping since the road did: `clutter_kind_at` already forced grit
+   there, so the ring's population was gravel standing on ground painted
+   meadow. It is applied by the ground mesh and **not** inside `splat`, because
+   the clutter population resolves the carriageway before it asks for a splat —
+   so no clutter moves and no golden moves — and only where `step <=
+   ROAD_HALF_W`, because an 8 m far lattice cannot resolve a 4 m ribbon and
+   would draw the loop as a dashed line.
    **Still open**: the flattening (it needs a mask inside `height` — that is
-   the representation decision the block defers, and nothing forced it yet)
-   and the dirt material. `DECISIONS.md` §open "coast road v0" and "bay slots
-   v0" have the knobs and the measured numbers.
+   the representation decision the block defers, and nothing forced it yet).
+   `DECISIONS.md` §open "coast road v0" and "bay slots v0" have the knobs and
+   the measured numbers.
 8. **The haven pad** — deterministic placement: score candidate sites on
    the road ring by flatness + coast distance, take the best, carve a
    flat pad with a smooth blend radius. (This is also the monument hook:

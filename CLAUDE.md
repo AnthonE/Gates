@@ -323,6 +323,37 @@ do not rediscover)
   count (`Sea::carried`) asserted as a floor on a one-cell snap and as zero on
   a diagonal — a count of VERTICES, not a time, so the no-clock rule is
   untouched.
+- **An import rule that is correct for a RENDER row is a defect on a COLLISION
+  row, and the two rows look identical in the code.** `ci/import_meshy.py`
+  scales a generated mesh uniformly to fit INSIDE a declared box, and its
+  header argues the case well: a model that comes up short is "a row to
+  re-measure, not a mesh to stretch". That is right for `structures::DEPLOY`,
+  which has no sim consumer. It is wrong for `terrain::SHELTER_BOXES` and
+  `WAYSTATION_CANOPY_BOXES`, which ARE what stops a body — `OCCUPANT_R_M` and
+  `OCCUPANT_TOP_M` are *defined* as their bounds — so "fits inside" means a
+  player held by air. Measured 2026-09-01 on the first two site models:
+  **1.51 m of blocked space above the shelter's roof, 1.26 m of invisible
+  skirt on each horizontal axis of the canopy**, i.e. the 0.39 m skirt
+  `SLACK_R_M` was closed to 1 mm to eliminate, re-introduced at four times the
+  size by an import flag. `--fit-axes` scales each axis to its own target
+  instead; the price is a stated aspect stretch, and **prompting the generator
+  for the right aspect does not work** — a regenerated canopy asked three ways
+  for "much wider than it is tall" came back 1.329× against the 1.291× it was
+  meant to fix. The general shape: **before reusing a pipeline step, ask
+  whether the target number is a render fact or a sim fact.** The same box
+  written in two crates means two different things.
+  ⚠ **And the equality gate over the second half of this slice was green
+  because its fixtures never visited the feature.** `client/tests/ground.rs`
+  compares the optimised heightfield against a naive rebuild vertex for vertex,
+  splat weights included — and its four near-chunk origins sit at the island's
+  centre and past its corners, while the coast road lives in a 600–1000 m
+  annulus. Not one of 16,384 vertices was ever on it, so the road paint landed
+  under an exact gate that could not see it. The fix is a chunk that is FOUND
+  rather than written down (a seed decides where its own coastline is) with the
+  hit count asserted, and the proof is that the mutant reddens the new test
+  while all four old ones stay green. Same family as the `lattice.rs` entry
+  below: a gate can be exact, bit-for-bit, and aimed at nothing.
+
 - **A cheap counter is not a free counter, and one was left in the tree.**
   `crates/sim-core/src/perfcount.rs` sat untracked in this branch's working
   tree — its own first line reading *"TEMPORARY measurement scaffold (not for

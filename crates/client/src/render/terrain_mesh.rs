@@ -949,7 +949,24 @@ pub fn heightfield(
             // `splat_from` rather than `splat` because the height and the
             // slope are the ones this vertex just resolved; `splat` would
             // sample both again.
-            let w = terrain::splat_from(y, terrain::moisture_memo(&mut lat, seed, x, z), sl);
+            let mut w = terrain::splat_from(y, terrain::moisture_memo(&mut lat, seed, x, z), sl);
+            // …then the coast road worn into it, but only on a mesh fine
+            // enough to draw one.
+            //
+            // **The guard is the whole design and not a micro-optimisation.**
+            // The carriageway is `2 * ROAD_HALF_W` = 4 m wide, so an 8 m
+            // lattice cannot resolve it: painting the far mesh would sample
+            // the ribbon at roughly one vertex in two and draw the island's
+            // one navigation landmark as a dashed line — worse than not
+            // drawing it. It is also where the cost is. `road_band` probes
+            // `height` 40 m away along the sample's own radial, which is
+            // outside this patch and therefore always cold in `lat`, and its
+            // cheap reject covers only the island outside a 600–1000 m
+            // annulus; inside that band every vertex pays one real tap. The
+            // near ring is 1 m and small, the far mesh is the whole island.
+            if step <= terrain::ROAD_HALF_W {
+                w = terrain::splat_road(w, terrain::road_band_memo(&mut lat, seed, x, z));
+            }
             // The gradient the normal was just built from, as a rise/run — the
             // waterline band is a horizontal distance and this is what converts
             // it. Free: `hx` and `hz` are already in hand.
