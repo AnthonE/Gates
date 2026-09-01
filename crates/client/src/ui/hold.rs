@@ -197,9 +197,14 @@ pub const HELD_MODELS: [HeldModelDef; 14] = [
     // read as the arm continuing rather than as a thing being carried. Flat
     // upright (`lay = 0`) is 69° and 106.7° on screen — vertical, but leaning
     // 17° LEFT and only 13° back. These two angles are the pose the second
-    // reference describes, solved rather than nudged: **screen 94.0° (13°
-    // right of where it was, and dead vertical in frame) with the lean back
-    // toward the eye up from 13.4° to 20.5°**, at 69.2° of true elevation.
+    // reference describes, solved rather than nudged. Then turned again
+    // (operator, 2026-09-01: *"rotate the axe counter clockwise 22 degrees.
+    // then if the bottom of the axe was pinned down the whole then need to
+    // rotate forward way more"*): **22.3° CCW in the image plane — the
+    // APPARENT angle, 84.6° → 106.9°, which is not the direction vector's
+    // 94° because the item hangs 0.32 m right of centre and perspective
+    // tilts it — and the head swung 55° forward, from 20.5° leaning back at
+    // the eye to 35.0° away from it**, at 52.2° of elevation.
     //
     // ⚠ **The elevation is the constraint nobody would guess, and it is why
     // the lean stops at 20°.** "Back towards the character" is depth, and
@@ -238,8 +243,8 @@ pub const HELD_MODELS: [HeldModelDef; 14] = [
         // NOT a fix for the head, which is 0.345 m wide on a 0.562 m axe and
         // stays out of proportion at every scale.
         scale: 0.85,
-        lay: 0.25,
-        pose_yaw: -1.60,
+        lay: 0.811,
+        pose_yaw: 0.593,
         light: None,
     },
     HeldModelDef::tool(
