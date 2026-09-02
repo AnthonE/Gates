@@ -210,10 +210,43 @@ pub const VIEWMODEL_SWING_DRAW: Vec3 = Vec3::new(0.0, 0.16, 0.0);
 /// old name, kept as a component of the displacement rather than as a term of
 /// its own, because it is one motion.
 pub const VIEWMODEL_SWING_THROW: Vec3 = Vec3::new(-0.10, -0.10, -0.09);
-/// How far the strike snaps the item about the hold frame's own X, radians —
-/// the wrist, on top of the arm. The rig is rigid between the shoulder and the
-/// fist, so without this the tool arrives flat.
-pub const VIEWMODEL_SWING_WRIST: f32 = 0.70;
+/// Where the item's long axis POINTS at the strike apex, in the hold frame —
+/// down and forward, which is where a chop lands.
+///
+/// ## It is the old constant re-read, not a new number
+///
+/// This was `VIEWMODEL_SWING_WRIST: f32 = 0.70`, "how far the strike snaps the
+/// item about the hold frame's own X". That framing hid what the number was
+/// doing: `Rx(-0.70) * NEG_Z` is exactly `(0, -0.6442, -0.7648)`, so an angle
+/// about a fixed axis was an AIM DIRECTION for one particular carry — the
+/// laid-forward one, where the tool's long axis is the hold frame's −Z. Stated
+/// as a direction it serves every carry, and every laid-forward row lands
+/// bit-for-bit where it landed before, because for those rows the two forms are
+/// the same rotation.
+///
+/// **Why this had to change.** A tool's rest direction is the row's business
+/// now (`ui::hold::HeldModelDef::lay` and `pose_yaw`), and the hatchet's is
+/// 54.8° above horizontal where a laid tool's is 19.5°. A fixed angle about a
+/// fixed axis therefore aimed the two at different places: measured, the strike
+/// used to finish with the hatchet's head **+37.6° above the horizon** — a
+/// salute, not a chop — where the laid pose finished at −12.2°. Aiming at a
+/// direction instead makes the landing the invariant and the travel the
+/// difference, which is what a chop is.
+pub const VIEWMODEL_SWING_AIM: Vec3 = Vec3::new(0.0, -0.6442, -0.7648);
+
+/// The most the aim may turn the item, radians. **(knob)** — `DECISIONS.md`.
+///
+/// **A cap and not a target**, because the aim is a direction and the angle to
+/// it is the row's: a laid tool needs 0.70 rad (the old constant, unchanged), a
+/// bow carried upright wants 2.27. Uncapped, every row would land on exactly
+/// the same apex direction and the carry would stop reading at all.
+///
+/// 1.45 is chosen so the tool actually in hand lands where the swing has always
+/// landed: measured, it takes the hatchet's apex to −12.2°, which is the laid
+/// pose's historic landing to a tenth of a degree. It clamps the upright
+/// carries, which is the honest half — they finish above the horizon and would
+/// need the ARM to make up the rest, and the arm cannot (see [`swing_pose`]).
+pub const VIEWMODEL_SWING_WRIST_MAX: f32 = 1.45;
 
 /// Where the item sits in the **`RightHand` bone's own frame**, once
 /// [`dress_arms`] has hung it there.
@@ -291,11 +324,20 @@ pub struct InHand;
 /// once dressed, the rig's until then.
 ///
 /// `wrist` is the strike's snap, radians about the hold frame's own X.
-pub fn item_pose(in_hand: bool, wrist: f32) -> Transform {
-    let snap = Quat::from_rotation_x(-wrist);
+pub fn item_pose(in_hand: bool, snap: Quat) -> Transform {
     if in_hand {
         let mut t = grip();
+        // The snap turns the item about the item frame's ORIGIN, which is the
+        // wrist bone — not the palm, where the fist actually closes. Left
+        // alone that slides the haft THROUGH the hand by
+        // `2·|VIEWMODEL_PALM|·sin(θ/2)`: 9.4 cm at the old 0.70 rad and 18.1 cm
+        // at the 1.45 this now allows. So the turn is taken about the palm,
+        // which is `rig_transform`'s arithmetic one frame over — and in the
+        // bone's own units, because a child of the hand inherits the rig's
+        // 0.01 scale (see [`VIEWMODEL_GRIP_SCALE`]).
         t.rotation *= snap;
+        t.translation +=
+            VIEWMODEL_GRIP_SCALE * (VIEWMODEL_GRIP_Q * (VIEWMODEL_PALM - snap * VIEWMODEL_PALM));
         t
     } else {
         let rest = Quat::from_euler(
@@ -305,11 +347,52 @@ pub fn item_pose(in_hand: bool, wrist: f32) -> Transform {
             VIEWMODEL_TILT.z,
         );
         Transform {
-            translation: VIEWMODEL_HOLD,
+            // The same correction, in the frame this branch lives in: here the
+            // item hangs off the camera at scale 1, so the palm offset needs no
+            // unit change.
+            translation: VIEWMODEL_HOLD + rest * (VIEWMODEL_PALM - snap * VIEWMODEL_PALM),
             rotation: rest * snap,
             scale: Vec3::ONE,
         }
     }
+}
+
+/// The strike's turn for an item whose long axis rests along `rest` in the hold
+/// frame, at strike progress `strike` in 0..1.
+///
+/// **Published because a gate has to walk it**, the same reason
+/// [`swing_pose`] is: `tests/viewmodel_arms.rs` composes this against every
+/// `HELD_MODELS` row to check the head finishes BELOW where it started, which
+/// is the assertion this file spent a session not having.
+///
+/// The axis is the cross product with a named fallback rather than
+/// `Quat::from_rotation_arc`. That function is one line shorter and picks an
+/// arbitrary perpendicular at the antipode; `render/tree.rs` records this repo
+/// bending a whole tree sideways on exactly that branch. Here the failure would
+/// be one item snapping to a random axis at a pose nobody photographs, and it
+/// is reachable from `ui::hold`'s table with no code change at all — so the
+/// margin is gated too.
+pub fn aim_snap(rest: Vec3, strike: f32) -> Quat {
+    let u = rest.normalize_or(Vec3::NEG_Z);
+    let v = VIEWMODEL_SWING_AIM.normalize();
+    let axis = u.cross(v).try_normalize().unwrap_or(Vec3::NEG_X);
+    let turn = u
+        .dot(v)
+        .clamp(-1.0, 1.0)
+        .acos()
+        .min(VIEWMODEL_SWING_WRIST_MAX);
+    Quat::from_axis_angle(axis, turn * strike)
+}
+
+/// An item's long axis at rest, in the hold frame — what [`aim_snap`] aims.
+///
+/// `pose` puts the model's +Y through `Ry(pose_yaw) * Rx(-lay)`, so this is
+/// that rotation applied to +Y and nothing else. It is a function rather than
+/// an expression at the call site because the gate and `ci/posesheet.py` both
+/// need the same answer, and a second copy of a two-line rotation is how the
+/// two stop agreeing.
+pub fn item_rest_dir(def: &crate::ui::hold::HeldModelDef) -> Vec3 {
+    Quat::from_rotation_y(def.pose_yaw) * Quat::from_rotation_x(-def.lay) * Vec3::Y
 }
 
 /// The item's frame **in the `RightHand` bone's own space** — the constants
@@ -568,59 +651,63 @@ pub fn spawn_item(
         // motions. See [`HeldRig`].
         c.spawn((HeldRig, Transform::IDENTITY, Visibility::Inherited))
             .with_children(|rig| {
-                rig.spawn((HeldItem, item_pose(false, 0.0), Visibility::Inherited))
-                    .with_children(|item| {
-                        // The generic tool, kept as the fallback for every item with no
-                        // model of its own. It is NOT what an empty hand draws — see
-                        // `swap` — it is what a revolver draws until a revolver is made.
-                        item.spawn((
-                            Mesh3d(meshes.add(super::heldgen::handle_mesh())),
-                            MeshMaterial3d(wood.clone()),
-                            Transform::from_translation(VIEWMODEL_PALM),
-                            Fallback,
-                        ));
-                        item.spawn((
-                            Mesh3d(meshes.add(super::heldgen::head_mesh())),
-                            MeshMaterial3d(steel.clone()),
-                            Transform::from_translation(VIEWMODEL_PALM),
-                            Fallback,
-                        ));
-                        // The model in hand. Spawned empty and filled by `swap`, which is
-                        // what keeps this file free of the inventory: it reads a row index
-                        // from `ui::hold` and never an item id.
-                        // **The empty handles are load-bearing, not tidiness.** `swap`'s
-                        // query is `(&mut HeldModel, &mut Mesh3d, &mut MeshMaterial3d,
-                        // &mut Visibility)`, and a Bevy query matches only entities that
-                        // have EVERY component in it. Spawned without these two the
-                        // entity exists, holds its transform, and is invisible to the one
-                        // system that fills it — which is not a compile error, not a
-                        // panic, and not a warning: the hand is simply always empty.
-                        // Cost one capture to find.
-                        item.spawn((
-                            HeldModel { shown: None },
-                            Mesh3d(Handle::default()),
-                            MeshMaterial3d::<StandardMaterial>(Handle::default()),
-                            Transform::from_rotation(Quat::from_rotation_x(MODEL_UPRIGHT_TO_HELD)),
-                            Visibility::Hidden,
-                        ));
-                        // What the item puts into the world, dark until `hand_light`
-                        // says otherwise. See [`HandLight`] for why it hangs here and
-                        // not on the model, and `structures::FireLight` for why its
-                        // shadows are off: a shadow-casting point light is six faces of
-                        // re-rasterised geometry, this one MOVES every frame, and the
-                        // sun already spends four cascades.
-                        item.spawn((
-                            HandLight,
-                            PointLight {
-                                color: super::structures::FIRE_COLOR,
-                                intensity: 0.0,
-                                range: 0.0,
-                                shadows_enabled: false,
-                                ..default()
-                            },
-                            Transform::IDENTITY,
-                        ));
-                    });
+                rig.spawn((
+                    HeldItem,
+                    item_pose(false, Quat::IDENTITY),
+                    Visibility::Inherited,
+                ))
+                .with_children(|item| {
+                    // The generic tool, kept as the fallback for every item with no
+                    // model of its own. It is NOT what an empty hand draws — see
+                    // `swap` — it is what a revolver draws until a revolver is made.
+                    item.spawn((
+                        Mesh3d(meshes.add(super::heldgen::handle_mesh())),
+                        MeshMaterial3d(wood.clone()),
+                        Transform::from_translation(VIEWMODEL_PALM),
+                        Fallback,
+                    ));
+                    item.spawn((
+                        Mesh3d(meshes.add(super::heldgen::head_mesh())),
+                        MeshMaterial3d(steel.clone()),
+                        Transform::from_translation(VIEWMODEL_PALM),
+                        Fallback,
+                    ));
+                    // The model in hand. Spawned empty and filled by `swap`, which is
+                    // what keeps this file free of the inventory: it reads a row index
+                    // from `ui::hold` and never an item id.
+                    // **The empty handles are load-bearing, not tidiness.** `swap`'s
+                    // query is `(&mut HeldModel, &mut Mesh3d, &mut MeshMaterial3d,
+                    // &mut Visibility)`, and a Bevy query matches only entities that
+                    // have EVERY component in it. Spawned without these two the
+                    // entity exists, holds its transform, and is invisible to the one
+                    // system that fills it — which is not a compile error, not a
+                    // panic, and not a warning: the hand is simply always empty.
+                    // Cost one capture to find.
+                    item.spawn((
+                        HeldModel { shown: None },
+                        Mesh3d(Handle::default()),
+                        MeshMaterial3d::<StandardMaterial>(Handle::default()),
+                        Transform::from_rotation(Quat::from_rotation_x(MODEL_UPRIGHT_TO_HELD)),
+                        Visibility::Hidden,
+                    ));
+                    // What the item puts into the world, dark until `hand_light`
+                    // says otherwise. See [`HandLight`] for why it hangs here and
+                    // not on the model, and `structures::FireLight` for why its
+                    // shadows are off: a shadow-casting point light is six faces of
+                    // re-rasterised geometry, this one MOVES every frame, and the
+                    // sun already spends four cascades.
+                    item.spawn((
+                        HandLight,
+                        PointLight {
+                            color: super::structures::FIRE_COLOR,
+                            intensity: 0.0,
+                            range: 0.0,
+                            shadows_enabled: false,
+                            ..default()
+                        },
+                        Transform::IDENTITY,
+                    ));
+                });
             });
     });
 }
@@ -968,7 +1055,7 @@ pub fn dress_arms(
     };
     commands
         .entity(item)
-        .insert((ChildOf(hand), InHand, item_pose(true, 0.0)));
+        .insert((ChildOf(hand), InHand, item_pose(true, Quat::IDENTITY)));
 
     arms.hand = Some(hand);
     arms.player = Some(player);
@@ -1387,7 +1474,30 @@ pub fn animate(
                 VIEWMODEL_SWING_ATTACK,
             )
         };
-        *it = item_pose(in_hand, strike * VIEWMODEL_SWING_WRIST);
+        // Which way the tool is carried decides where the strike has to turn
+        // it, so the aim needs the row. Resolved the way `swap` and
+        // `hand_light` resolve it — `held_model_in_hand` is a pure lookup over
+        // the catalog and the inventory mirror, and `hand_light`'s doc is the
+        // standing argument that a second reader of a pure function is two
+        // calls and not the second-drain defect `feed.rs` narrates.
+        //
+        // `None` is an empty hand, or a capture run with no session at all.
+        // Falling back to −Z is not an arbitrary default: it is the direction a
+        // laid-forward tool rests along, so an empty fist swings exactly as
+        // everything swung before this changed.
+        let rest = net
+            .as_deref()
+            .and_then(|n| {
+                crate::ui::hold::held_model_in_hand(
+                    &n.session.core.catalog,
+                    &n.session.core.inv,
+                    n.sel,
+                )
+            })
+            .map_or(Vec3::NEG_Z, |i| {
+                item_rest_dir(&crate::ui::hold::HELD_MODELS[i])
+            });
+        *it = item_pose(in_hand, aim_snap(rest, strike));
     }
 }
 

@@ -247,38 +247,33 @@ pub const HELD_MODELS: [HeldModelDef; 14] = [
     // ⚠ **The lean was invisible until the model was stood up**: the file's
     // own 32° lean cancelled a third of the lay, so the wrong angle and the
     // wrong asset were hiding each other.
-    HeldModelDef {
-        key: "stone_hatchet",
-        src: HeldSrc::Glb("models/held/stone_hatchet.glb"),
-        height_m: 0.562,
-        // 0.15, not the 0.25 it shipped at (operator, 2026-09-01: *"make the
-        // Y value or whatever of the axe go up so the axe slides up the hand
-        // more"*). This is the knob rather than a translation because it
-        // slides the axe ALONG ITS OWN HAFT through the fist — 4.8 cm up,
-        // drawn — instead of lifting it off the palm, which is the defect
-        // this whole row exists to have fixed. The fist is 0.084 m up a
-        // 0.393 m haft now; the fist band still lands on haft, which
-        // `the_fist_closes_on_the_model_and_not_on_air` is what checks.
-        grip_frac: 0.15,
-        // Judged smaller by eye, twice (operator, 2026-09-01: *"maybe the ax
-        // needs to be a little bit smaller"*, then *"if anything we should
-        // scale the whole axe down if we can"*). At true size the axe is 70%
-        // of the frame's height at the hold's depth; 0.85 was 60% and this is
-        // 51%. The ordinary viewmodel scale cheat, the bow's and the rock's —
-        // and NOT a fix for the head, which is 0.345 m wide on a 0.562 m axe
-        // and stays out of proportion at every scale.
-        scale: 0.72,
-        lay: 0.960,
-        pose_yaw: -0.663,
-        light: None,
-    },
-    HeldModelDef::tool(
+    HeldModelDef::hafted(
+        "stone_hatchet",
+        "models/held/stone_hatchet.glb",
+        0.562,
+        0.15,
+        0.72,
+    ),
+    // **The pickaxe and the hammer are carried the way the axe is**, and they
+    // are the same row three times rather than three tunings: measured with
+    // `ci/posesheet.py`, both are head-heavy tools whose long axis IS the
+    // model's +Y and whose butt-to-head vector is within 0.8° of it, so the
+    // hatchet's own angles reproduce on them exactly — 1 o'clock, elevation
+    // 54.8°, and a haft clearance of 2.56 cm through the closed fist against
+    // the 1.30 cm they had lying along the forearm.
+    //
+    // They were `tool()`, i.e. `lay = FRAC_PI_2`, which is the pose the hatchet
+    // was in before 2026-09-01 and is wrong for the same reason: it lays the
+    // haft to 19.5° above horizontal, within a few degrees of the forearm's own
+    // diagonal, so the tool reads as the arm continuing.
+    HeldModelDef::hafted(
         "stone_pickaxe",
         "models/held/stone_pickaxe.glb",
         0.600,
         0.22,
+        1.0,
     ),
-    HeldModelDef::tool("hammer", "models/held/hammer.glb", 0.350, 0.25),
+    HeldModelDef::hafted("hammer", "models/held/hammer.glb", 0.350, 0.25, 1.0),
     // A rolled document is carried in the middle — no haft either, so the
     // fist closes around the roll rather than beside it. 0.50 of 0.069 is
     // 3.5 cm; the same fraction used to mean 15 cm up a model 6.9 cm tall.
@@ -360,6 +355,24 @@ pub const HELD_MODELS: [HeldModelDef; 14] = [
     ),
     HeldModelDef::upright("hearth", "models/deploy/hearth.glb", 1.000, 0.80, 0.20),
 ];
+
+/// The pose a head-heavy hafted tool is carried in — the axe's, shared by the
+/// pickaxe and the hammer.
+///
+/// **Named once because three rows use it and a copy would drift**, which this
+/// file has already watched happen to a constant inside one afternoon. Solved
+/// on the pixel-space butt-to-head measure (`ci/posesheet.py`'s `clock()`)
+/// against a reference frame the operator supplied on 2026-09-01: 1 o'clock on
+/// screen, 54.8° of true elevation, 10.2° of lean away from the eye, and a haft
+/// clearance of 2.56 cm through the closed fist.
+///
+/// ⚠ **These are angles about the ITEM, so they only mean this for a model
+/// whose long axis is its own +Y.** `tests/held_assets.rs` is what holds every
+/// row to that; a model that is widest across X gets ROLLED by `lay` rather
+/// than stood up, which is why the building plan is not in this family.
+pub const HAFTED_LAY: f32 = 0.960;
+/// See [`HAFTED_LAY`].
+pub const HAFTED_YAW: f32 = -0.663;
 
 /// One held model: the item it answers to, its geometry source, and how the
 /// hand carries it.
@@ -537,6 +550,36 @@ impl HeldModelDef {
             scale: 1.0,
             lay: core::f32::consts::FRAC_PI_2,
             pose_yaw: 0.0,
+            light: None,
+        }
+    }
+
+    /// A head-heavy hafted tool, carried head-up and turned so the head faces
+    /// the swing: the axe's pose, shared.
+    ///
+    /// **The angles are one number each because the three tools are one
+    /// problem.** They are the hatchet's, solved on the pixel-space
+    /// butt-to-head measure (`ci/posesheet.py`'s `clock()`) against a reference
+    /// frame the operator supplied, and they reproduce on any model whose long
+    /// axis is its own +Y — which `tests/held_assets.rs` is what checks. A tool
+    /// that is NOT that shape does not belong here: the building plan's long
+    /// axis is its X, so `lay` would roll it rather than stand it up, and the
+    /// spear is 1.8 m, which stood upright is 151% of the frame's height.
+    const fn hafted(
+        key: &'static str,
+        path: &'static str,
+        height_m: f32,
+        grip_frac: f32,
+        scale: f32,
+    ) -> Self {
+        Self {
+            key,
+            src: HeldSrc::Glb(path),
+            height_m,
+            grip_frac,
+            scale,
+            lay: HAFTED_LAY,
+            pose_yaw: HAFTED_YAW,
             light: None,
         }
     }

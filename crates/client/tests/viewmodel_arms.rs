@@ -39,10 +39,11 @@
 
 use client::render::bodies::RETIRED_BODY_PALM;
 use client::render::viewmodel::{
-    bump, rig_transform, swing_pose, VIEWMODEL_ARMS, VIEWMODEL_BOB_X, VIEWMODEL_BOB_Y,
-    VIEWMODEL_GRIP_M, VIEWMODEL_GRIP_Q, VIEWMODEL_GRIP_SCALE, VIEWMODEL_HIDDEN_ARM,
-    VIEWMODEL_HIDDEN_BEHIND_M, VIEWMODEL_HIDDEN_OFFSET, VIEWMODEL_HOLD, VIEWMODEL_SWING_ATTACK,
-    VIEWMODEL_SWING_WINDUP, VIEWMODEL_TILT,
+    aim_snap, bump, item_rest_dir, rig_transform, swing_apex_s, swing_pose, VIEWMODEL_ARMS,
+    VIEWMODEL_BOB_X, VIEWMODEL_BOB_Y, VIEWMODEL_GRIP_M, VIEWMODEL_GRIP_Q, VIEWMODEL_GRIP_SCALE,
+    VIEWMODEL_HIDDEN_ARM, VIEWMODEL_HIDDEN_BEHIND_M, VIEWMODEL_HIDDEN_OFFSET, VIEWMODEL_HOLD,
+    VIEWMODEL_PALM, VIEWMODEL_SWING_AIM, VIEWMODEL_SWING_ATTACK, VIEWMODEL_SWING_S,
+    VIEWMODEL_SWING_WINDUP, VIEWMODEL_SWING_WRIST_MAX, VIEWMODEL_TILT,
 };
 
 /// Assets live beside the crate — `tests/rig_asset.rs`'s hop.
@@ -1059,6 +1060,147 @@ fn the_hold_clip_never_animates_the_hidden_bones_pose() {
              would be overwritten on the next frame. Re-apply it after \
              AnimationSystems (anim::head_look's shape) or pick a clip that \
              leaves it alone"
+        );
+    }
+}
+
+/// How far above horizontal a direction points, degrees.
+fn elevation(v: bevy::prelude::Vec3) -> f32 {
+    v.y.atan2(v.x.hypot(v.z)).to_degrees()
+}
+
+/// How close a row's rest direction may come to being antiparallel to the aim,
+/// degrees. Under this, `aim_snap`'s cross product has no axis to normalise and
+/// it takes its named fallback — which is a defined answer, not a wrong one,
+/// but it is an answer nobody has looked at.
+const AIM_ANTIPODE_MARGIN_DEG: f32 = 25.0;
+
+#[test]
+fn the_strike_carries_every_held_row_below_where_it_started() {
+    // **This is the assertion this file spent a whole session not having**, and
+    // the cost was exact: standing the hatchet up on its grip axis turned the
+    // chop into a salute — the head finished **+37.6° above** the horizon where
+    // the laid-forward pose finished at −12.2° — and every gate in the repo
+    // stayed green, including the two swing gates twenty lines up. They pin the
+    // grip POINT: `the_swing_keeps_the_item_in_frame_and_the_dead_arm_out_of_it`
+    // transforms `VIEWMODEL_HOLD` and checks a path length, an ndc span and the
+    // dead arm's depth. Nothing here has ever transformed a DIRECTION, so a
+    // swing that ends pointing at the sky reads identically to one that chops.
+    //
+    // The composition is rebuilt from published parts rather than borrowed from
+    // `animate` — `CLAUDE.md`'s naive-rebuild trap: a check that shares a code
+    // path with the thing it checks is checking that path against itself.
+    let apex = swing_apex_s() / VIEWMODEL_SWING_S;
+    let (arc, _) = swing_pose(apex);
+    let tilt = euler_yxz(VIEWMODEL_TILT.x, VIEWMODEL_TILT.y, VIEWMODEL_TILT.z);
+    let tilt = bevy::prelude::Quat::from_xyzw(tilt[0], tilt[1], tilt[2], tilt[3]);
+
+    for def in &client::ui::hold::HELD_MODELS {
+        let rest = item_rest_dir(def);
+        let at_rest = tilt * rest;
+        let at_apex = arc * (tilt * (aim_snap(rest, 1.0) * rest));
+        let (r, a) = (elevation(at_rest), elevation(at_apex));
+
+        // **"It comes down a bit" is not the assertion, and the first draft of
+        // this test learned that from its own mutant.** Reverting `aim_snap` to
+        // the fixed angle it replaced — the exact regression this file exists
+        // to catch — still descends 17°, so a `a < r - 5.0` bound passed it.
+        // A chop is not a descent, it is a LANDING: the head finishes at or
+        // under the horizon.
+        //
+        // Unless the row asked for more turn than `VIEWMODEL_SWING_WRIST_MAX`
+        // allows, which a tool carried steeply upright does. Then the aim has
+        // spent every degree it is permitted and where it lands is the cap's
+        // business, not the aim's — so the weaker "it came down" is all that is
+        // owed. The two branches together say: reach the horizon, or run out of
+        // wrist trying.
+        let want = rest
+            .normalize()
+            .dot(VIEWMODEL_SWING_AIM.normalize())
+            .clamp(-1.0, 1.0)
+            .acos();
+        let clamped = want > VIEWMODEL_SWING_WRIST_MAX - 1e-4;
+        if clamped {
+            assert!(
+                a < r - 5.0,
+                "{}: the strike is clamped at {VIEWMODEL_SWING_WRIST_MAX} rad and \
+                 still only gets from {r:.1}° to {a:.1}°. Even capped the head has \
+                 to come down.",
+                def.key
+            );
+        } else {
+            assert!(
+                a <= 2.0,
+                "{}: the strike finishes at {a:.1}° — above the horizon — having \
+                 asked for only {want:.3} rad of the \
+                 {VIEWMODEL_SWING_WRIST_MAX} it is allowed. It started at {r:.1}°. \
+                 The head does not LAND, which is not a chop: this is the salute \
+                 the fixed-angle wrist produced for any carry it was not tuned \
+                 for.",
+                def.key
+            );
+        }
+
+        // The aim's own singularity, gated because it is reachable from the
+        // HELD_MODELS table with no code change: a row carried within a few
+        // degrees of straight AWAY from the aim has no cross product to turn
+        // about and takes `aim_snap`'s named fallback axis instead.
+        let apart = rest
+            .normalize()
+            .dot(VIEWMODEL_SWING_AIM.normalize())
+            .clamp(-1.0, 1.0)
+            .acos()
+            .to_degrees();
+        assert!(
+            apart < 180.0 - AIM_ANTIPODE_MARGIN_DEG,
+            "{}: rests {apart:.1}° from the strike aim, inside \
+             {AIM_ANTIPODE_MARGIN_DEG}° of antiparallel — `aim_snap` would fall \
+             back to a fixed axis and the strike would swing somewhere nobody \
+             chose. Re-aim the row.",
+            def.key
+        );
+    }
+}
+
+#[test]
+fn the_aim_reproduces_the_angle_it_replaced_for_a_laid_forward_tool() {
+    // `VIEWMODEL_SWING_AIM` is not a new number: it is `Rx(-0.70) * NEG_Z`, the
+    // direction the retired `VIEWMODEL_SWING_WRIST = 0.70` produced for a tool
+    // laid forward. So for any row still carried that way the new form must be
+    // the OLD rotation exactly, and this is what says so — without it, "every
+    // laid row is bit-identical" is a claim in a doc comment.
+    let laid = bevy::prelude::Vec3::NEG_Z;
+    let got = aim_snap(laid, 1.0);
+    let want = bevy::prelude::Quat::from_rotation_x(-0.70);
+    let apart = got.angle_between(want).to_degrees();
+    assert!(
+        apart < 0.05,
+        "the aim turns a laid-forward tool by a rotation {apart:.3}° from the \
+         0.70 rad about −X it replaced. The two forms are supposed to be the \
+         same rotation for this carry; they are not, so every hafted row just \
+         moved and nobody asked for it."
+    );
+}
+
+#[test]
+fn the_rest_direction_helper_agrees_with_the_pose_it_summarises() {
+    // `item_rest_dir` restates the rotation `pose` builds rather than calling
+    // it, because `pose` returns a whole `Transform` and the aim wants one
+    // axis. A restatement is a second copy, and this file has already watched
+    // a second copy of a constant drift inside one afternoon (ci/posesheet.py's
+    // VIEWMODEL_PALM, 2026-09-01). So the two are held equal here instead of
+    // being trusted to stay that way.
+    for def in &client::ui::hold::HELD_MODELS {
+        let from_pose =
+            client::render::viewmodel::pose(def, VIEWMODEL_PALM).rotation * bevy::prelude::Vec3::Y;
+        let helper = item_rest_dir(def);
+        let apart = from_pose.angle_between(helper).to_degrees();
+        assert!(
+            apart < 0.01,
+            "{}: item_rest_dir says {helper:?} and pose() says {from_pose:?}, \
+             {apart:.4}° apart. The aim would turn the item from a direction it \
+             is not actually resting along.",
+            def.key
         );
     }
 }
