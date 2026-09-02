@@ -1759,11 +1759,25 @@ is §0win's, not this item's.
 
 ## 0v · Players are people — what the rig still cannot say *(client lane)*
 
-1. **Crouch, jump and swim are wired to nothing.** The clips are in the
-   file; the snapshot carries no grounded bit on a remote body and no
-   crouch bit, so `BodyAnim` cannot see them — `render/audio.rs::
-   remote_steps` names the same gap. A protocol change (wall 6: version
-   bump + regenerated goldens in one commit), not a client one.
+1. **Crouch, jump and swim are wired to nothing** — ⚠ **and this item's
+   own reason was wrong about two of the three, checked 2026-09-01.** It
+   said all three need "a protocol change (wall 6: version bump +
+   regenerated goldens in one commit), not a client one". Measured against
+   the tree: **jump needs no wire work at all.** `EntityState::grounded`
+   and `qvy` have crossed on every entity record since v0 (`protocol/
+   src/lib.rs`'s `encode_delta` writes `grounded` in the flag block) and
+   `interp::dequant` simply declines to copy either onto `RemoteState` —
+   two fields in one client file, no `PROTO_VER`. **Swim** has no sim fact
+   (wading is a local in `movement::step`, computed and thrown away) and is
+   *approximately* derivable client-side, but not exactly: a body airborne
+   over shallows is wading in the sim and not by the derivation, and
+   `quant_y`'s rounding moves the threshold. **Crouch** is the only one
+   that genuinely needs the wire, and its C→S half already exists —
+   `BTN_CROUCH` reaches `Player::frame` and `state_hash`; only S→C is
+   missing, one bit and a `PROTO_VER` bump. ⚠ Landing crouch also makes a
+   player-visible string untrue: `render/settings.rs`'s `BINDS` ships
+   *"Left Ctrl (sent, no effect until the combat pass)"*, read by
+   `tests/ui.rs` §H.
 2. **Nobody holds anything.** The viewmodel is first-person only; a
    remote mannequin has empty hands (`render/bodies.rs` spawns no held
    mesh). The rig has hand joints, so this is an attachment to a named

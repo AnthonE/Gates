@@ -258,9 +258,15 @@ pub const HELD_MODELS: [HeldModelDef; 14] = [
     // are the same row three times rather than three tunings: measured with
     // `ci/posesheet.py`, both are head-heavy tools whose long axis IS the
     // model's +Y and whose butt-to-head vector is within 0.8° of it, so the
-    // hatchet's own angles reproduce on them exactly — 1 o'clock, elevation
-    // 54.8°, and a haft clearance of 2.56 cm through the closed fist against
-    // the 1.30 cm they had lying along the forearm.
+    // hatchet's angles put them at 1 o'clock the way they put the hatchet
+    // there. That last part is the whole of the evidence, and it is worth
+    // saying what is NOT evidence: elevation, lean and the haft's clearance
+    // through the fist are functions of `lay` and `pose_yaw` alone — the
+    // clearance measure is the distance from a line to the hand and never
+    // touches the mesh — so "54.8° and 2.56 cm" is true of every row at these
+    // angles, the building plan included, and says nothing about whether a
+    // given tool belongs here. `clock()` is the only one of the four that
+    // reads the model.
     //
     // They were `tool()`, i.e. `lay = FRAC_PI_2`, which is the pose the hatchet
     // was in before 2026-09-01 and is wrong for the same reason: it lays the
