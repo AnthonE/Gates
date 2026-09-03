@@ -115,18 +115,57 @@ hands and this is no longer a claim.
 What is left is two taste calls that only the operator can make, and one
 thing the probe cannot photograph:
 
+0b. ⚠ **The grip is not anatomical, and that is why the axe cannot be put
+   on the thumb.** `VIEWMODEL_GRIP_Q` is `hand⁻¹ ∘ (T(HOLD) · R(TILT))` — it
+   is whatever quaternion reproduces a chosen VIEW pose, so it carries no
+   information about the hand. Measured off `stumpy.glb`: the rig's thumb
+   runs (0.412, 0.906, −0.095) in the hand's own frame, 25° off the fingers,
+   and points 31.4° above horizontal in view leaning 56° AWAY. A haft laid
+   along it therefore lands there, and every pose that satisfies the framing
+   the operator asked for sits ~90° off it. The two constraints are
+   orthogonal *through this constant*, not in principle: aligning the haft to
+   the thumb and then rotating the HAND so the thumb stands up in frame would
+   satisfy both, at the cost of moving a visible arm. Nobody has asked for
+   that yet (operator, 2026-09-01: *"in line with the thumb with an open
+   Palm"* — the intent, unbuilt).
+
 1. **The viewmodel is drawn at TRUE scale 0.52 m from the eye**, so a 0.6 m
    hatchet fills about three-quarters of the frame height. That is
    physically right and it reads as oversized — most games push the
    viewmodel back and shrink it. `VIEWMODEL_HOLD` is the knob and it has
    never been judged against a frame with a real model in it, because until
    now there was no frame.
-2. **The grip reads as *beside* the fist rather than *in* it, up close.**
-   This rig's hand has **no finger bones** (`rig_asset.rs`'s curl gate says
-   so), so `VIEWMODEL_PALM` buys the read with occlusion — the open fingers
-   drawing in front of the shaft — and at this scale it half-works.
-   Unchanged by the grip work: the item is within a millimetre of where it
-   hung before, by construction.
+2. ✅ **"The grip reads as beside the fist rather than in it" was a
+   MEASUREMENT, not a taste call, and it is closed** (2026-09-01). This item
+   blamed the rig's missing finger bones and `VIEWMODEL_PALM`'s occlusion
+   trick, and that was the symptom's nearest neighbour rather than its cause:
+   `stone_hatchet.glb` is authored leaning 32° with its head off one side, so
+   `import_meshy.py`'s bounding-box centring put the haft **121 mm off the
+   +Y axis** — three palm-widths — and `viewmodel::pose` slid that empty
+   point into the palm. `hunting_bow.glb` was the same at 165 mm. Both are
+   stood up (`ci/stand_grip.py`), `height_m` restated, and
+   `held_assets.rs::the_fist_closes_on_the_model_and_not_on_air` refuses the
+   class. The finger-bone half stands as a real limit and is now the only
+   half. **A second fault was underneath it**: the file's own lean was
+   cancelling a third of `lay_forward`'s quarter-turn, so with the model
+   straight the hatchet's haft lay 19.5° above horizontal — along the
+   forearm. `lay_forward` is a `lay` ANGLE now (it was a bool controlling an
+   angle, and between it and `VIEWMODEL_TILT`'s pitch the row could ask for
+   19.5° or 69° and nothing between); the hatchet is at screen 94.0°, 20.5°
+   of lean, 69.2° elevation, drawn at 0.85. `DECISIONS.md` 2026-09-01.
+   Item 1 (true scale) is partly answered by that 0.85.
+2b. ⚠ **The swing does not chop any more, and it is arithmetic, not a
+   frame.** `swing_pose`'s arc is written in view-space axes and was picked
+   when a held tool's long axis was −Z: its strike is 0.55 of yaw and 0.55 of
+   roll against 0.25 of pitch. Turn the tool's long axis to +Y and yaw/roll
+   trade jobs with pitch, so the stroke sweeps sideways instead of down.
+   Composed at the apex (`swing_pose(0.545)` with `strike · 0.70` of wrist),
+   the haft finishes at **+70° above horizontal** where the laid-forward
+   hatchet finished at **−12°** — head below the horizon, pointing away. The
+   fix is to derive the strike's axis from the item's own rest direction
+   instead of hard-coding X/Y/Z coefficients; it touches every held item and
+   cannot be judged here (see item 3), so it is not bundled with the pose.
+
 3. ⚠ **The motion is still unphotographable here, and this is worth knowing
    before someone tries.** The swing arc and the chip burst are driven by
    `Time::delta_secs`, and under lavapipe a frame is a large fraction of a
@@ -1569,9 +1608,10 @@ is §0win's, not this item's.
    (`render/input.rs:289`) and never reaches a snapshot.
 2. **The gather swing is `Sword_Attack`** (operator, 2026-08-17): no asset is
    owed, and the blocker is item 1.
-3. **The item is not parented to the hand** — `render/viewmodel.rs:572` says so
-   in its own comment; `ViewArms::hand` holds the bone, and the grip offset and
-   tilt need re-deriving against the arm's frame, which is judged by looking.
+3. ✅ ~~**The item is not parented to the hand**~~ — **stale, landed
+   2026-08-30**: `dress_arms` does `.insert((ChildOf(hand), InHand,
+   item_pose(true, 0.0)))` and `VIEWMODEL_GRIP_M`/`_Q` are the re-derived
+   grip, gated by `tests/viewmodel_arms.rs`. Checked 2026-09-01.
 4. **No render layer**, so the arms and the held item can clip into a wall: a
    second camera would duplicate the exposure/tonemap/atmosphere owner.
 5. **The head's pitch is clamped, not distributed.** `ANIM_HEAD_PITCH_MAX`
@@ -1579,8 +1619,20 @@ is §0win's, not this item's.
    spread — "distributing it across the spine is the follow-up this constant
    exists to make obvious." A steep look up or down bends nothing below
    the neck.
-6. **The hand reads large and the fingers splay** — 24 joints, no finger bones,
-   so a re-import or a sculpted grip is the only lever.
+6. **The hand reads large**, and ~~the fingers splay~~ — **the splay half is
+   stale**: `ci/curl_hands.py` sculpted the grip in the vertices (85° over a
+   digit, 35° on the thumb, 45% of the spread taken out), and
+   `rig_asset.rs::the_hands_are_curled_out_of_their_bind_pose_splay` gates it
+   — the two hands read 0.138 and 0.132 against 0.032/0.043 splayed. Checked
+   2026-09-01, still green.
+   **What is left is that the curl is STATIC and RELAXED, and a bigger number
+   is the wrong fix** — the tool's own header says so: one vertex buffer
+   serves the first-person hand and every remote body, holding something or
+   not, so a fist angle (~2× the 85°) would make an empty hand a permanent
+   fist. A grip wants a **second baked pose** swapped in when
+   `held_model_in_hand` returns `Some`, which is a mesh variant and a swap,
+   not a knob. Nobody has asked for it (operator, 2026-09-01: *"did we decide
+   we can curl fingers any?"* — answered, not commissioned).
 7. **Unlooked-at**: `Death01` on a real body, the collapsed off arm, the
    sleeper tint. ⚠ "No frame has a body in it" is stale — `render/capture.rs`'s
    scene pass shoots `7-player.png`, staged by `ci/scene.sh`.
@@ -1707,11 +1759,25 @@ is §0win's, not this item's.
 
 ## 0v · Players are people — what the rig still cannot say *(client lane)*
 
-1. **Crouch, jump and swim are wired to nothing.** The clips are in the
-   file; the snapshot carries no grounded bit on a remote body and no
-   crouch bit, so `BodyAnim` cannot see them — `render/audio.rs::
-   remote_steps` names the same gap. A protocol change (wall 6: version
-   bump + regenerated goldens in one commit), not a client one.
+1. **Crouch, jump and swim are wired to nothing** — ⚠ **and this item's
+   own reason was wrong about two of the three, checked 2026-09-01.** It
+   said all three need "a protocol change (wall 6: version bump +
+   regenerated goldens in one commit), not a client one". Measured against
+   the tree: **jump needs no wire work at all.** `EntityState::grounded`
+   and `qvy` have crossed on every entity record since v0 (`protocol/
+   src/lib.rs`'s `encode_delta` writes `grounded` in the flag block) and
+   `interp::dequant` simply declines to copy either onto `RemoteState` —
+   two fields in one client file, no `PROTO_VER`. **Swim** has no sim fact
+   (wading is a local in `movement::step`, computed and thrown away) and is
+   *approximately* derivable client-side, but not exactly: a body airborne
+   over shallows is wading in the sim and not by the derivation, and
+   `quant_y`'s rounding moves the threshold. **Crouch** is the only one
+   that genuinely needs the wire, and its C→S half already exists —
+   `BTN_CROUCH` reaches `Player::frame` and `state_hash`; only S→C is
+   missing, one bit and a `PROTO_VER` bump. ⚠ Landing crouch also makes a
+   player-visible string untrue: `render/settings.rs`'s `BINDS` ships
+   *"Left Ctrl (sent, no effect until the combat pass)"*, read by
+   `tests/ui.rs` §H.
 2. **Nobody holds anything.** The viewmodel is first-person only; a
    remote mannequin has empty hands (`render/bodies.rs` spawns no held
    mesh). The rig has hand joints, so this is an attachment to a named

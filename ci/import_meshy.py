@@ -22,6 +22,15 @@ cheap to fix and expensive to leave:
   3. **Origin is right and is left alone.** `origin_at: "bottom"` held on
      all twelve assets (min.y == 0.000), so this only re-centres X/Z.
 
+     ⚠ **X/Z is centred on the BOUNDING BOX, which is not the same thing as
+     the axis a hand grips the object by, and on two shipped assets it was
+     121 mm and 165 mm away from it.** `ui::hold` spends the grip as one
+     number up the model's own +Y, so a hafted tool authored leaning, or a
+     bow authored across a diagonal, gets slid into the fist by a point that
+     is in mid-air. That is `ci/stand_grip.py`'s job -- run it after this on
+     anything a hand closes around, and `crates/client/tests/held_assets.rs`
+     fails if nobody did.
+
 Scale is UNIFORM and fits INSIDE the declared box -- `k = min(W/w, H/h,
 D/d)`. Non-uniform scaling to fill the box exactly is what squashes a
 correctly-proportioned mesh, which is the defect the `DEPLOY` table was
