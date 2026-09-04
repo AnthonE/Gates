@@ -9,7 +9,7 @@
 //!
 //! **What it is for.** The reference's main menu carries NEWS, ITEM STORE and
 //! WORKSHOP beside PLAY GAME, and every one of the three is a live service
-//! rather than a screen the game draws from nothing. Ours are the scry-works
+//! rather than a screen the game draws from nothing. Ours are the elo
 //! launcher's (operator, 2026-08-09: *"we have NEWS thats part of the
 //! community on the scry-works launcher … we do have an item store and
 //! workshop. that again is part of the scry-works setup"*). This document is
@@ -166,8 +166,8 @@ mod tests {
 
     #[test]
     fn a_manifest_with_one_section_keeps_the_others_empty() {
-        let m = parse(br#"{"news":{"url":"https://scry.works/gates/news"}}"#).unwrap();
-        assert_eq!(m.news.link(), Some("https://scry.works/gates/news"));
+        let m = parse(br#"{"news":{"url":"https://elopros.com/gates/news"}}"#).unwrap();
+        assert_eq!(m.news.link(), Some("https://elopros.com/gates/news"));
         assert_eq!(m.store.link(), None);
         assert_eq!(m.workshop.link(), None);
     }
@@ -184,7 +184,7 @@ mod tests {
     fn a_junk_link_costs_its_own_section_and_nothing_else() {
         let m = parse(
             br#"{"news":{"url":"javascript:alert(1)"},
-                 "store":{"url":"https://scry.works/gates/store"}}"#,
+                 "store":{"url":"https://elopros.com/gates/store"}}"#,
         )
         .unwrap();
         assert_eq!(m.news.link(), None, "a non-https link must not be opened");
@@ -196,17 +196,17 @@ mod tests {
         // The verb on the other end reaches the player's desktop.
         for bad in [
             "",
-            "http://scry.works/x",
+            "http://elopros.com/x",
             "file:///etc/passwd",
             "javascript:alert(1)",
-            "scry://join/gates/h:1",
+            "elo://join/gates/h:1",
             "https://",
             "https:///nohost",
             "https://a.example/ has a space",
         ] {
             assert!(check_url(bad).is_err(), "{bad} must be refused");
         }
-        assert!(check_url("https://scry.works/gates/news").is_ok());
+        assert!(check_url("https://elopros.com/gates/news").is_ok());
     }
 
     #[test]

@@ -92,6 +92,8 @@ impl Glb {
             Some("SCALAR") => 1,
             Some("VEC3") => 3,
             Some("VEC4") => 4,
+            // The inverse bind matrices, for the hand gate below.
+            Some("MAT4") => 16,
             other => panic!("{RIG}: accessor {i} is {other:?} — this reader cannot decode it"),
         };
         let bv = &self.json["bufferViews"][a["bufferView"].as_u64().unwrap() as usize];
@@ -112,6 +114,38 @@ impl Glb {
                         f32::from_le_bytes(self.bin[o..o + 4].try_into().unwrap())
                     })
                     .collect()
+            })
+            .collect()
+    }
+
+    /// One accessor's `u8` VEC4 rows — `JOINTS_0` and nothing else. Separate
+    /// from [`Self::floats`] rather than folded into it: that reader refuses
+    /// what it cannot decode on purpose, and widening it to cover every
+    /// component type is how a decoder starts guessing.
+    fn u8_quads(&self, i: usize) -> Vec<[u8; 4]> {
+        let a = &self.json["accessors"][i];
+        assert_eq!(
+            (a["componentType"].as_u64(), a["type"].as_str()),
+            (Some(5121), Some("VEC4")),
+            "{RIG}: accessor {i} is not u8 VEC4 — JOINTS_0 may also ship as \
+             u16, and reading it as bytes would pick a different bone"
+        );
+        let bv = &self.json["bufferViews"][a["bufferView"].as_u64().unwrap() as usize];
+        let base = bv["byteOffset"].as_u64().unwrap_or(0) as usize
+            + a["byteOffset"].as_u64().unwrap_or(0) as usize;
+        let stride = match bv["byteStride"].as_u64().unwrap_or(0) as usize {
+            0 => 4,
+            s => s,
+        };
+        (0..a["count"].as_u64().unwrap() as usize)
+            .map(|k| {
+                let o = base + k * stride;
+                [
+                    self.bin[o],
+                    self.bin[o + 1],
+                    self.bin[o + 2],
+                    self.bin[o + 3],
+                ]
             })
             .collect()
     }
@@ -548,4 +582,237 @@ fn the_flinch_blend_lands_on_the_clips_own_apex() {
     // constants and clippy is right that a runtime assert over two of those
     // is a check deferred for no reason — this way it is a compile error.
     const { assert!(FLINCH_BLEND_S < FLINCH_CLIP_S) };
+}
+
+/// The largest length-to-thickness ratio that still counts as a curled hand:
+/// the hand's reach along the finger axis over its thickness across the palm.
+///
+/// A splayed hand is long and thin and a closed one is short and thick, which
+/// is the whole idea — no segmentation, no left/right case, and dimensionless,
+/// so a re-import at another scale does not move it.
+///
+/// ⚠ **This replaces a measure that was not monotonic, and the failure was
+/// the bad kind: it read a FIST as an uncurled hand.** The old gate took the
+/// fingertips' offset off the palm plane, which rises as a digit bends away
+/// from the plane and then falls as it comes back round toward it. Swept over
+/// `ci/curl_hands.py`'s own knob it reads 0.018 splayed, peaks at **0.094 at
+/// the 85° it happened to ship at**, and falls back to 0.029 at 150° and
+/// 0.010 at 165° — under its own 0.09 floor at both ends. So it passed
+/// exactly one narrow band, could not tell "the step was never run" from "the
+/// step was run into a grip", and would have gone red on the closed hand the
+/// operator asked for (2026-09-01). Measured on the same six files, this one
+/// falls 1.660 → 1.364 → 1.273 → 1.239 → 1.195 → 1.163 without a turn.
+///
+/// **Both ends are measured, not chosen.** The pre-curl import reads 1.660
+/// and the shipped grip 1.195. This sits between with room either side.
+const HAND_CURL_MAX: f32 = 1.45;
+
+#[test]
+fn both_views_of_one_swing_strike_at_the_same_moment() {
+    // **The question `NOW.md` §0fp item 5 asked, answered by measuring it.**
+    // One swing is drawn two ways: a remote body plays `Sword_Attack` over
+    // `SWING_CLIP_S` = 1.053 s, and the swinger's own hands run
+    // `viewmodel::swing_pose` over `VIEWMODEL_SWING_S` = 0.45 s. Stated as
+    // durations that reads as a disagreement — two views of one event, more
+    // than twice as long on one side as the other.
+    //
+    // It is not, and the difference is entirely in the RECOVERY. What a
+    // player reads off a swing is the strike, and the two land within half a
+    // tick of each other. What the clip spends its extra half-second on is
+    // the arm coming back down, which is the half a defender wants LONGER
+    // out there (a body still committed is a body you can act against) and
+    // the half the swinger wants shorter (their own swing already resolved
+    // and the cue already played — `VIEWMODEL_SWING_S`'s doc).
+    //
+    // So the asymmetry is a design and this is what stops it drifting into
+    // an accident: retime the clip, or move the wind-up split, and the two
+    // strikes come apart with nothing else red.
+    let glb = Glb::open(&asset_path(RIG));
+    let remote = glb.pose_apex(client::render::anim::Clip::Swing.name());
+    let own = client::render::viewmodel::swing_apex_s();
+    let tick = 1.0 / sim_core::limits::TICK_HZ as f32;
+    assert!(
+        (remote - own).abs() < tick,
+        "the remote clip strikes at {remote:.3} s and the first-person arc at \
+         {own:.3} s — {:.0} ms apart, more than the {:.0} ms tick the sim \
+         resolves the swing on. One of the two has been retimed without the \
+         other.",
+        (remote - own).abs() * 1000.0,
+        tick * 1000.0
+    );
+    // And the tail is the part that differs, which is the claim above stated
+    // the other way round: the clip is more than twice as long overall.
+    let dur = glb
+        .clip_duration(client::render::anim::Clip::Swing.name())
+        .expect("the swing clip has a length");
+    assert!(
+        dur > client::render::viewmodel::VIEWMODEL_SWING_S * 2.0,
+        "the two strokes are now the same length ({dur:.3} s against {:.3}) — \
+         if that is deliberate this gate should say so instead of this",
+        client::render::viewmodel::VIEWMODEL_SWING_S
+    );
+}
+
+#[test]
+fn the_bone_that_holds_is_in_the_file_and_in_the_skin() {
+    // **The name two files resolve at runtime, checked at build.**
+    // `viewmodel::dress_arms` and `bodies::bind_hands` both look up
+    // `anim::HAND_BONE` in a spawned scene, and a rename in a re-imported
+    // rig fails neither: the viewmodel would draw an undressed body wrapped
+    // around the camera and every remote would carry nothing — two symptoms,
+    // one cause, both silent, neither a compile error. It was a bare
+    // `"RightHand"` literal in both files until 2026-08-31.
+    //
+    // **In the SKIN as well as in the nodes**, which is the half a name check
+    // alone misses: a bone that is not a joint of the skin is posed by no
+    // clip, so an item parented to it would be welded to the bind pose and
+    // never move — which reads exactly like the fixed offset this replaced.
+    let glb = Glb::open(&asset_path(RIG));
+    let bone = client::render::anim::HAND_BONE;
+    let node = glb
+        .json
+        .get("nodes")
+        .and_then(|n| n.as_array())
+        .expect("no nodes")
+        .iter()
+        .position(|n| n["name"].as_str() == Some(bone))
+        .unwrap_or_else(|| {
+            panic!(
+                "{RIG}: no bone named {bone:?} — the first-person arms would \
+                 stay undressed and every remote hand would stay empty, with \
+                 nothing else red"
+            )
+        });
+    let joints: Vec<usize> = glb.json["skins"][0]["joints"]
+        .as_array()
+        .expect("the rig has no skin")
+        .iter()
+        .map(|j| j.as_u64().unwrap() as usize)
+        .collect();
+    assert!(
+        joints.contains(&node),
+        "{RIG}: {bone:?} exists but is not a joint of the skin, so no clip \
+         poses it — an item hung there would never move"
+    );
+}
+
+#[test]
+fn the_hands_are_curled_out_of_their_bind_pose_splay() {
+    // **`RightHand` is a LEAF on this skeleton** — the generator modelled five
+    // digits per hand and rigged none of them — so the hand's pose is the
+    // mesh's shape and nothing at runtime can change it. It arrived in the
+    // flat, spread pose a rigger binds in, which is correct as a BIND pose and
+    // wrong as the rest pose of a character on screen in every frame of the
+    // game, first person and third, holding something or not.
+    // `ci/curl_hands.py` bends it in the vertices; this is what fails when a
+    // re-import runs the documented pipeline and forgets that step. Nothing
+    // else would notice: the file loads, the clips play, the height is right,
+    // and the character just goes back to holding its hands out flat.
+    let glb = Glb::open(&asset_path(RIG));
+    let prim = &glb.json["meshes"][0]["primitives"][0];
+    let attrs = &prim["attributes"];
+
+    // The two halves must share one vertex buffer, which is what makes the
+    // viewmodel and every remote body impossible to fix separately.
+    for a in ["POSITION", "JOINTS_0", "WEIGHTS_0"] {
+        let ix: Vec<_> = glb.json["meshes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["primitives"][0]["attributes"][a].as_u64().unwrap())
+            .collect();
+        assert!(
+            ix.windows(2).all(|w| w[0] == w[1]),
+            "{RIG}: the mesh halves point at different {a} accessors ({ix:?}). \
+             `ci/split_arms.py` shares one, and a bend applied to the shared \
+             buffer is what curls the first-person hand and the world body at \
+             the same time."
+        );
+    }
+
+    let pos = glb.floats(attrs["POSITION"].as_u64().unwrap() as usize);
+    let joints = glb.u8_quads(attrs["JOINTS_0"].as_u64().unwrap() as usize);
+    let weights = glb.floats(attrs["WEIGHTS_0"].as_u64().unwrap() as usize);
+
+    let skin = &glb.json["skins"][0];
+    let bones: Vec<usize> = skin["joints"]
+        .as_array()
+        .expect("the rig has no skin")
+        .iter()
+        .map(|j| j.as_u64().unwrap() as usize)
+        .collect();
+    let ibm = glb.floats(skin["inverseBindMatrices"].as_u64().unwrap() as usize);
+
+    for hand in ["RightHand", "LeftHand"] {
+        let slot = bones
+            .iter()
+            .position(|&n| glb.json["nodes"][n]["name"].as_str() == Some(hand))
+            .unwrap_or_else(|| panic!("{RIG}: the skin has no {hand}"));
+        // glTF stores a MAT4 column-major, so row r column c is m[c * 4 + r].
+        let m = &ibm[slot];
+        let to_bone = |p: &[f32]| -> [f32; 3] {
+            let mut o = [0.0f32; 3];
+            for (r, out) in o.iter_mut().enumerate() {
+                *out = m[r] * p[0] + m[4 + r] * p[1] + m[8 + r] * p[2] + m[12 + r];
+            }
+            o
+        };
+
+        // The vertices this bone alone owns. It is a leaf, so their skinned
+        // position depends on nothing else in the character.
+        let hand_v: Vec<[f32; 3]> = (0..pos.len())
+            .filter(|&k| (0..4).any(|c| joints[k][c] as usize == slot && weights[k][c] > 0.5))
+            .map(|k| to_bone(&pos[k]))
+            .collect();
+        assert!(
+            hand_v.len() > 200,
+            "{RIG}: only {} vertices are dominated by {hand} — this gate is \
+             measuring almost nothing",
+            hand_v.len()
+        );
+
+        // Derived, not typed: the finger axis is the bone frame's longest
+        // extent, and the curl shows up on whichever of the other two the
+        // fingertips have moved furthest along — which is opposite between
+        // the two hands, so naming it would need a left/right special case
+        // and this does not.
+        let axis_span = |k: usize| {
+            let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+            for v in &hand_v {
+                lo = lo.min(v[k]);
+                hi = hi.max(v[k]);
+            }
+            hi - lo
+        };
+        let spans = [axis_span(0), axis_span(1), axis_span(2)];
+        let finger = (0..3)
+            .max_by(|&a, &b| spans[a].total_cmp(&spans[b]))
+            .unwrap();
+        let mut sorted = spans;
+        sorted.sort_by(f32::total_cmp);
+        assert!(
+            sorted[2] > sorted[1] * 1.15,
+            "{RIG}: {hand}'s longest axis ({:.2}) is not clearly longer than \
+             the next ({:.2}), so which way the fingers point is a guess",
+            sorted[2],
+            sorted[1]
+        );
+
+        // Reach along the fingers over thickness across the palm. The thicker
+        // of the two remaining axes, because which one carries the palm's
+        // depth is opposite between the two hands and this needs no case.
+        let thick = (0..3)
+            .filter(|&k| k != finger)
+            .map(|k| spans[k])
+            .fold(0.0f32, f32::max);
+        let curl = spans[finger] / thick;
+
+        assert!(
+            curl <= HAND_CURL_MAX,
+            "{RIG}: {hand} is {curl:.3} long-to-thick, over {HAND_CURL_MAX}. \
+             The hand is still in its bind-pose splay — run \
+             `ci/curl_hands.py` on it (see `assets/models/MANIFEST.md` for \
+             where it goes in the pipeline)."
+        );
+    }
 }

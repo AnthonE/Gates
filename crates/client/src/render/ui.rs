@@ -109,6 +109,37 @@ pub fn font_bold(size: f32) -> TextFont {
     }
 }
 
+/// The drop shadow every **floating** HUD string carries. **(knob)**
+///
+/// **The problem it solves is that the HUD has no background and the world
+/// does.** Chrome-backed strings — the hotbar count sitting in its cell, the
+/// vitals number on its trough — are legible because something behind them is
+/// a known colour. The strings that float over the scene are not: the toast
+/// stack, the `[E]` prompt, the compass, the build plan and the chat log are
+/// warm off-whites at 0.75–0.95 alpha drawn straight onto whatever the player
+/// is looking at, and `ART.md` §3 measures that backdrop at a near-band mean of
+/// 86 luma against a sky band of 143. So the same string is comfortable over
+/// turf and gone over sky, and nothing in the client had a `TextShadow`,
+/// `BoxShadow` or `Outline` anywhere.
+///
+/// **A shadow rather than a plate, deliberately.** A backing plate is a second
+/// rectangle in the layout, and the announce stack's whole design is that each
+/// row has a fixed home so an arriving line does not shove the readout — a
+/// plate sized to its text reintroduces exactly the movement that geometry was
+/// built to avoid. A shadow costs no layout at all.
+///
+/// **Offset is 1 px, not Bevy's default 4.** The default is sized for display
+/// type; at the 13–15 px this HUD draws at, 4 px is a second copy of the string
+/// rather than a shadow. One logical pixel down-right is the smallest offset
+/// that separates a glyph from a bright background, and it is what keeps this
+/// readable as the reference's flat interface rather than as an outlined
+/// arcade HUD. The alpha is high because the job is contrast against a *bright*
+/// backdrop; over dark ground it disappears into the ground.
+pub const TEXT_SHADOW: TextShadow = TextShadow {
+    offset: Vec2::splat(1.0),
+    color: Color::srgba(0.0, 0.0, 0.0, 0.85),
+};
+
 // ---- the palette, re-derived 2026-08-07 ----------------------------------
 //
 // **Every value below is sampled off the reference `crafting.png`**, the

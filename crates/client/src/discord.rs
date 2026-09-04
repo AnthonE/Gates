@@ -37,7 +37,7 @@
 //! ## Dark until an operator says otherwise
 //!
 //! [`app_id`] reads `GATES_DISCORD_APP_ID`; unset or malformed means **no
-//! thread, no socket, no cost**. Same fail-closed shape scry's own announcer
+//! thread, no socket, no cost**. Same fail-closed shape elo's own announcer
 //! uses (`meter/praeco.py`: no webhook configured, nothing posts).
 //!
 //! ## What a presence may say — and who decides
@@ -60,7 +60,7 @@
 //! `an_unshared_activity_carries_no_address` is that boundary as a test, and
 //! it is the one that fails when a later slice reaches for the address
 //! outside the opt-in. The player's identity is never carried at all — the
-//! wallet is the launcher's (`crate::scry`) and no setting opens it.
+//! wallet is the launcher's (`crate::elo`) and no setting opens it.
 //!
 //! ## No allocation on the frame path
 //!
@@ -775,7 +775,7 @@ fn worker(app_id: String, rx: Receiver<Activity>, joins: SyncSender<Addr>) {
 /// worker has no `cfg` in it.
 ///
 /// **The `cfg` is on the field as well as the call**, which is the specific
-/// shape the vendored scry SDK got wrong: it named `std::os::unix::net`
+/// shape the vendored elo SDK got wrong: it named `std::os::unix::net`
 /// unconditionally and therefore could not compile for Windows at all, with
 /// every gate in both repos green (`CLAUDE.md`, the vendoring note).
 struct Pipe {
@@ -1086,10 +1086,10 @@ mod tests {
     fn a_shared_activity_offers_the_join() {
         let mut a = plain(State::InWorld);
         a.shard = Some(ShardName::new("us-east-1"));
-        a.join = Some(Addr::new("game.moreright.xyz:4433"));
+        a.join = Some(Addr::new("game.elopros.com:4433"));
         a.party = Some((7, 100));
         let s = activity_payload(&a, 1, 1, 1_700_000_000);
-        assert!(s.contains("\"secrets\":{\"join\":\"game.moreright.xyz:4433\"}"));
+        assert!(s.contains("\"secrets\":{\"join\":\"game.elopros.com:4433\"}"));
         assert!(s.contains("\"party\":{\"id\":\"gates-"));
         assert!(s.contains("\"size\":[7,100]"));
         assert!(balanced(&s), "{s}");
@@ -1125,8 +1125,9 @@ mod tests {
 
     #[test]
     fn a_join_event_yields_its_secret() {
-        let doc = r#"{"cmd":"DISPATCH","evt":"ACTIVITY_JOIN","data":{"secret":"game.moreright.xyz:4433"}}"#;
-        assert_eq!(join_secret(doc).as_deref(), Some("game.moreright.xyz:4433"));
+        let doc =
+            r#"{"cmd":"DISPATCH","evt":"ACTIVITY_JOIN","data":{"secret":"game.elopros.com:4433"}}"#;
+        assert_eq!(join_secret(doc).as_deref(), Some("game.elopros.com:4433"));
     }
 
     #[test]

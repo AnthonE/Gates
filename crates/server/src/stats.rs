@@ -3,7 +3,10 @@
 //! tests, the smoke gate, and later the status page. Integer-only by
 //! design (L5: diagnostics are numbers, not strings).
 
-use sim_core::limits::{INPUT_BUFFER_CAP, SENT_SNAPSHOT_RING, SNAPSHOT_INTERVAL_TICKS, TICK_HZ};
+use sim_core::limits::{
+    INPUT_BUFFER_CAP, INTERP_DELAY_TICKS, PLAYOUT_MAX_TICKS, PLAYOUT_MIN_TICKS,
+    REWIND_ACK_BIAS_TICKS, REWIND_MAX_TICKS, SENT_SNAPSHOT_RING, SNAPSHOT_INTERVAL_TICKS, TICK_HZ,
+};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// Buckets in [`ShardStats::aim_stale_hist`]: one per tick for `0..=6`, and
@@ -54,6 +57,105 @@ const _: () = assert!(
 /// `wrapping_sub` cannot alias a real sample onto a refused one.
 const _: () = assert!(AIM_STALE_CEILING_TICKS > TICK_HZ as u16);
 const _: () = assert!(AIM_STALE_CEILING_TICKS < u16::MAX / 2);
+
+/// How far a client's *claimed* view may sit behind the server's own
+/// evidence of what it has received before the gap is logged as a
+/// disagreement rather than absorbed as reordering.
+///
+/// `findings/lagcomp-design-20260818.md` §6.2 asks for "a persistent
+/// disagreement past a **2-tick band**", and two is what it is here. The
+/// band's whole job is to absorb the legitimate case: QUIC datagrams are
+/// unordered, so a datagram acking snapshot 98 can land *after* one acking
+/// 100 and the client has lied about nothing. Snapshots are
+/// `SNAPSHOT_INTERVAL_TICKS` apart, so one datagram of reordering is one
+/// snapshot of gap — the band is two of them.
+///
+/// **"Persistent" is the operator reading a rate, not a state machine.**
+/// `favour_disagree` is a counter, matching the aim-staleness block's
+/// stated decision below against per-client tables; one bump is noise and a
+/// climbing rate on a quiet shard is the accusation.
+///
+/// Proposed default, DECISIONS.md §open ("lag compensation v0 — the mint").
+pub const FAVOUR_DISAGREE_BAND_TICKS: u16 = 2;
+
+/// The formula's two terms cannot underflow the raw staleness: it is added
+/// to, then subtracted from, and this is the order that keeps it in `u16`
+/// without a saturating call that would hide a constant moving. Compared
+/// as `i32` because the bias sits at 0 since netcode v2 S2 (interval 1,
+/// floored half) and clippy's `absurd_extreme_comparisons` rightly points
+/// out a `u8 >= 0` proves nothing — the widened compare keeps meaning if
+/// the bias ever moves back up.
+const _: () = assert!(INTERP_DELAY_TICKS as i32 >= REWIND_ACK_BIAS_TICKS as i32);
+
+/// **How many ticks of lag compensation this frame has earned** — the one
+/// place a favour is minted, and the whole of lag-compensation slice 5
+/// (`findings/lagcomp-design-20260818.md` §7).
+///
+/// ```text
+/// favour = min((T − S) + clamp(playout, rails) − REWIND_ACK_BIAS_TICKS, REWIND_MAX_TICKS)
+/// ```
+///
+/// `now` is `T`, the low 16 bits of the tick this frame executes at, and
+/// `view` is `S`, the ack the datagram carrying it arrived under —
+/// **exactly the pair [`ShardStats::record_aim_stale`] reads**, which is
+/// why the two live in one file: they are two readings of one datagram and
+/// a second derivation of `T − S` elsewhere is the hand-kept mirror
+/// `CLAUDE.md` opens with.
+///
+/// It is a free function and takes no `&self` on purpose. The favour is
+/// spent inside one tick and is not a statistic; making it a method would
+/// invite a caller to believe the counters had already been folded.
+///
+/// **Three inputs mint zero, and zero is the pre-lag-compensation sim bit
+/// for bit** (`limits::REWIND_TICKS`: a rewind of 0 is the live body, never
+/// a row). Each is a case where the server does not *know*, and the
+/// direction of a guess is the whole design:
+///
+/// - **`view` is `None`** — the client has never acked a snapshot this
+///   shard sent, so there is no measurement. The design note does not cover
+///   this case (it predates the `Option`), and the choice here is the one
+///   its §4.2c posture makes everywhere else: a shooter the server cannot
+///   measure gets *less* help, never more. It self-clears on the first real
+///   ack, which is at most `SNAPSHOT_INTERVAL_TICKS` after the first
+///   snapshot lands.
+/// - **The staleness is past [`AIM_STALE_CEILING_TICKS`]** — the ack names
+///   a snapshot older than the sent ring can corroborate, which
+///   `record_aim_stale` already refuses as a *statistic*. Refusing it as a
+///   *favour* is the same judgement with teeth: this is the only input a
+///   forger controls, and the reward for reaching for an hour of rewind is
+///   none at all rather than the clamp's seven ticks.
+/// - **A zero-tick-old ack** still mints its reported playout (2–8 ticks),
+///   not zero — and that is correct, not a bug. Even a client on loopback
+///   draws its remotes that far in the past; the measured floor on this box
+///   was 1.107 raw ticks (DECISIONS.md, aim staleness v0).
+///
+/// `playout` is the delay the client REPORTS rendering at (wire v61) —
+/// a claim, so it is clamped to the shared rails before it prices
+/// anything: below `PLAYOUT_MIN_TICKS` no honest interpolator runs, and
+/// above `PLAYOUT_MAX_TICKS` no honest one buffers, so a forged value
+/// buys exactly what an honest client at that extreme would get and not
+/// a tick more. Before v61 this term was the `INTERP_DELAY_TICKS`
+/// constant, which over-favoured every smooth-link client (actual delay
+/// at the floor, 2) and under-favoured every jittery one (actual delay
+/// up to 8) — the fairness gap NETCODE.md §8 always specified closing
+/// ("the server tracks each client's current interpolation delay — it
+/// varies").
+pub fn favour_for(now: u16, view: Option<u16>, playout: u8) -> u8 {
+    let Some(ack) = view else {
+        return 0;
+    };
+    let raw = now.wrapping_sub(ack);
+    if raw > AIM_STALE_CEILING_TICKS {
+        return 0;
+    }
+    let delay = playout.clamp(PLAYOUT_MIN_TICKS, PLAYOUT_MAX_TICKS);
+    let want = raw + delay as u16 - REWIND_ACK_BIAS_TICKS as u16;
+    // Clamped here and clamped again by the sim (`world.rs`'s `Input` arm),
+    // deliberately: this one states the ceiling where the number is made,
+    // and that one holds it for every command the sim ever applies —
+    // including a WAL replay and a bot, which never come through here.
+    want.min(REWIND_MAX_TICKS as u16) as u8
+}
 
 #[derive(Default)]
 pub struct ShardStats {
@@ -123,6 +225,12 @@ pub struct ShardStats {
     pub input_dg_forged: AtomicU64,
     /// Inbound ring full — datagram dropped (redundancy re-carries).
     pub input_ring_drops: AtomicU64,
+    /// Datagrams the dev netsim shim (`config.rs netsim`) held for their
+    /// fake latency, both lanes. Zero on every shard with the knob unset.
+    pub netsim_delayed: AtomicU64,
+    /// Datagrams the shim discarded: the loss roll, plus a delay line at
+    /// its bound (drop, counted — a dev tool still states its policy).
+    pub netsim_dropped: AtomicU64,
     /// Snapshots encoded and handed to rings.
     pub snap_sent: AtomicU64,
     /// Outbound ring full — that client skipped a snapshot.
@@ -248,9 +356,46 @@ pub struct ShardStats {
     pub forced_resyncs: AtomicU64,
     /// Event-lane messages accepted by per-connection rings.
     pub ev_sent: AtomicU64,
+    /// Event-lane broadcasts a connection was not sent because it cannot
+    /// see what the event is about. **One counter for two predicates**,
+    /// because the operational question is the same one: how much of the
+    /// fan-out is this shard's geometry saving. `EV_SWING` and `EV_SHOT`
+    /// are body-addressed and go through `body_event_visible` (class-D
+    /// interest); `EV_IMPACT` names a place rather than a body and goes
+    /// through `point_event_visible` (the class-S anchor). Not an anomaly
+    /// and deliberately not in `by_name` — a filter firing is the normal
+    /// case, and `piece_events_skipped` sets that precedent. Read the
+    /// other way it is the useful number: near zero on a shard whose
+    /// players all stand in one place, and most of the fan-out on a shard
+    /// where they do not.
+    pub ev_interest_skipped: AtomicU64,
     /// Event-lane resyncs: a refused ring push or a dropped sim event
     /// restarted a client's harvested-set walk (limits.rs policy).
+    ///
+    /// **Two causes, one number** — which is why the two fields below
+    /// exist. Refused-push resyncs are `ev_resyncs − ev_resyncs_dropped`;
+    /// they are per-client and mean that one connection fell behind. The
+    /// other cause is shard-wide and means the *sim* outran its per-tick
+    /// event budget, which is a different problem with a different fix.
+    /// Nothing could tell them apart until 2026-08-24.
     pub ev_resyncs: AtomicU64,
+    /// Sim events `EventQueue` refused because a single tick produced more
+    /// than `MAX_EVENTS_PER_TICK` of them (drop-newest, `world.rs`).
+    ///
+    /// **The cause, and it was recorded nowhere at all.** `EventQueue::
+    /// dropped` is reset by `clear()` on the first line of every
+    /// `World::tick`, so before this counter the only trace a drop ever
+    /// left was its consequence — every connected client resyncing at
+    /// once, indistinguishable from a hundred slow connections. Watched by
+    /// name, unlike `ev_interest_skipped`: a filter firing is normal and
+    /// this never is.
+    pub ev_sim_dropped: AtomicU64,
+    /// The subset of `ev_resyncs` caused by the above rather than by a
+    /// refused push. One dropped sim event resyncs **every** connected
+    /// client, so this moves in steps of the population and the two
+    /// numbers together say how much of a resync storm one overflowing
+    /// tick bought.
+    pub ev_resyncs_dropped: AtomicU64,
     /// Event-lane stream writes that failed (connection dying).
     pub ev_send_errors: AtomicU64,
     /// C→S action frames decoded and ringed.
@@ -521,14 +666,21 @@ pub struct ShardStats {
     //
     // **This is the RAW number and it deliberately omits one term.** §2.2's
     // favour formula is `(T − S) + INTERP_DELAY_TICKS − REWIND_ACK_BIAS_TICKS`.
-    // `INTERP_DELAY_TICKS` is a compile-time `4.0` in
-    // `client-core/src/interp.rs` and moving it to `limits.rs` is slice 2's
-    // `sim-core` change, so adding it here would mean this crate mirroring
-    // another crate's constant by hand — the `props.js` drift `CLAUDE.md`
-    // opens with. Adding a constant to a measured number is arithmetic
-    // anybody can do later; measuring the part **only the server knows** is
-    // not. So: read these as raw `T − S`, and add the two constants at the
-    // moment they have one home. **Do not double-count them here.**
+    // **Both constants have one home now** — `sim_core::limits`, since slice
+    // 2 — so the reason this stayed raw has expired and only the instruction
+    // survives it. `INTERP_DELAY_TICKS` (4) and `REWIND_ACK_BIAS_TICKS` (1)
+    // are importable from here, and `client-core/src/interp.rs` declares
+    // neither; this comment said the move was still owed until slice 3
+    // (2026-08-30), which is the drift `CLAUDE.md` opens with, in the file
+    // whose whole job is to hand a number to a later slice.
+    //
+    // It stays raw anyway, and now for a better reason than availability:
+    // adding a constant to a measured number is arithmetic anybody can do,
+    // and the thing worth storing is the part **only the server knows**.
+    // Slice 5 is what applies the formula, at the one site that mints the
+    // favour (`core.rs`). So: read these as raw `T − S`, and **do not
+    // double-count the two constants here** — that is the whole of the
+    // handoff, and it is the sentence slice 5 must not misread.
     //
     // **Aggregate, not per-client**, for the reason the lane-byte block
     // above gives: the per-client half already exists on the other end
@@ -561,6 +713,62 @@ pub struct ShardStats {
     /// `n < AIM_STALE_BUCKETS − 1`, and the last index counts everything at
     /// or above it. See [`AIM_STALE_BUCKETS`] for why the top edge is 7.
     pub aim_stale_hist: [AtomicU64; AIM_STALE_BUCKETS],
+
+    // ── The favour actually granted (lagcomp slice 5) ──
+    //
+    // **Whether lag compensation is on, and how much of it a shard is
+    // handing out.** The block above measures what the server *knows*;
+    // these four say what it *did* with it. They exist because the failure
+    // this slice repairs was invisible: every piece of the rewind — the
+    // ring, the clamp, the type, `combat::strike`'s reader and
+    // `ranged::hitscan`'s — shipped and passed its gates while
+    // `core.rs` handed the sim a hard-coded `favour: 0`, so the feature was
+    // dead code with a green wall in front of it for three passes. A number
+    // on `/status.json` is what makes "is it on" a question anybody can
+    // answer without reading the source.
+    //
+    // Written at the mint site from the **same binding** the command
+    // carries, never re-derived — a counter that calls `favour_for` a
+    // second time would agree with itself and say nothing about the
+    // command (`CLAUDE.md`: a naive rebuild that calls the function under
+    // test is a rebuild of nothing).
+    //
+    // ⚠ **And that is still not enough to prove the value arrives, which
+    // was measured rather than assumed.** Binding once makes the counter
+    // honest about the code as written; it does not make it a *gate*,
+    // because the two lines can be separated and every assertion is on
+    // this side of the split. Restoring `favour: 0` at the command leaves
+    // all sixteen arithmetic gates green. These four are a **diagnostic**
+    // — what a shard is doing, on `/status.json` — and the thing that
+    // holds the feature is a gate on the consequence:
+    // `lagcomp_measure::a_stale_aim_lands_a_swing_the_live_world_would_
+    // have_missed` asserts hp, on the far side of the sim.
+    // `findings/note-20260830-the-counter-that-could-not-see-the-command.md`.
+    /// Frames minted with a nonzero favour — i.e. verbs that will resolve
+    /// against a rewound body. `favour_sum / this` is the mean depth **of
+    /// the frames that got one**, which is the honest denominator: folding
+    /// in the zeros would average a fresh client's aim together with a
+    /// client that has never acked, and those are not the same number.
+    pub favour_granted: AtomicU64,
+    /// Total ticks of rewind granted over those frames.
+    pub favour_sum: AtomicU64,
+    /// Frames whose computed favour hit [`REWIND_MAX_TICKS`] and was
+    /// clamped down to it. **This is the operator's question, not a load
+    /// gauge**: it is the fraction of fights the 233 ms ceiling is actually
+    /// binding, which is the evidence for moving that number and the only
+    /// thing `aim_stale_hist`'s top bucket could not say (it counts raw
+    /// staleness ≥ 7; the favour clamps at 7 from a raw of 4).
+    pub favour_clamped: AtomicU64,
+    /// Frames whose claimed view sat more than
+    /// [`FAVOUR_DISAGREE_BAND_TICKS`] behind the server's own evidence of
+    /// what the client had received, so the claim was corrected down to the
+    /// evidence before a favour was minted (`ShardCore::push_input`).
+    ///
+    /// **The one counter here that accuses somebody**, which is why it is
+    /// the one in `anomaly::WATCHED` — the shape is a client acking
+    /// backwards to buy rewind depth it has not earned. Reordering is
+    /// absorbed by the band; see [`FAVOUR_DISAGREE_BAND_TICKS`].
+    pub favour_disagree: AtomicU64,
 }
 
 impl ShardStats {
@@ -625,6 +833,28 @@ impl ShardStats {
             .fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Fold one minted favour into the counters. **Takes the value, never
+    /// the inputs** — the caller passes the same binding it puts on
+    /// `Command::Input`, so the counter cannot disagree with the command;
+    /// handing this `(now, view)` and letting it call `favour_for` again
+    /// would be a second derivation that agrees with itself and proves
+    /// nothing about what the sim was told.
+    ///
+    /// A favour of zero is deliberately not counted: it is the absence of
+    /// the feature, it is what every non-server command carries, and
+    /// counting it would put "a client that has never acked" in the same
+    /// average as "a fight on a fast link".
+    pub fn record_favour(&self, favour: u8) {
+        if favour == 0 {
+            return;
+        }
+        Self::bump(&self.favour_granted);
+        Self::add(&self.favour_sum, favour as u64);
+        if favour == REWIND_MAX_TICKS {
+            Self::bump(&self.favour_clamped);
+        }
+    }
+
     /// Publish a gauge — a number that is *read off* the world each tick
     /// rather than accumulated, so it must be assigned and never bumped.
     pub fn set(field: &AtomicU64, v: u64) {
@@ -672,12 +902,16 @@ impl ShardStats {
             "input_dg_bad" => &self.input_dg_bad,
             "input_dg_forged" => &self.input_dg_forged,
             "input_ring_drops" => &self.input_ring_drops,
+            "netsim_delayed" => &self.netsim_delayed,
+            "netsim_dropped" => &self.netsim_dropped,
             "snap_ring_skips" => &self.snap_ring_skips,
             "snap_send_errors" => &self.snap_send_errors,
             "encode_range_errors" => &self.encode_range_errors,
             "snap_entities_shed" => &self.snap_entities_shed,
             "forced_resyncs" => &self.forced_resyncs,
             "ev_resyncs" => &self.ev_resyncs,
+            "ev_sim_dropped" => &self.ev_sim_dropped,
+            "ev_resyncs_dropped" => &self.ev_resyncs_dropped,
             "ev_send_errors" => &self.ev_send_errors,
             "actions_bad" => &self.actions_bad,
             "chat_bad" => &self.chat_bad,
@@ -694,6 +928,7 @@ impl ShardStats {
             "admin_kicked" => &self.admin_kicked,
             "admin_refused" => &self.admin_refused,
             "aim_stale_refused" => &self.aim_stale_refused,
+            "favour_disagree" => &self.favour_disagree,
             _ => return None,
         })
     }

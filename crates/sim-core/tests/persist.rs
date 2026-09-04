@@ -518,6 +518,7 @@ fn a_restore_replays_bit_for_bit() {
                     move_z: 90,
                     ..Default::default()
                 },
+                favour: 0,
             }]);
             hashes.push(w.state_hash());
         }
@@ -541,6 +542,7 @@ fn a_restore_replays_bit_for_bit() {
                     move_z: 90,
                     ..Default::default()
                 },
+                favour: 0,
             }]);
             hashes.push(w.state_hash());
         }
@@ -728,7 +730,7 @@ mod carried_through_death {
     /// a field a death is *allowed* to erase — the inventory (the backpack
     /// takes it), the meters and health (a respawn is a whole body), the
     /// craft queue, the weak-spot chase, and the death record itself.
-    pub const RE_DERIVED: [&str; 26] = [
+    pub const RE_DERIVED: [&str; 29] = [
         "body",
         "inv",
         // **The corpse does not keep its plates.** `worn` is here rather
@@ -741,6 +743,26 @@ mod carried_through_death {
         // wrong way round.
         "worn",
         "next_swing",
+        // **A corpse's cylinder does not follow it to the beach.** `worn`'s
+        // argument one step on: the gun itself is on the other list by
+        // being inside `inv`, so it goes to the death bag, and a magazine
+        // that stayed with the *player* would mean a killer looted an
+        // empty revolver while the dead player respawned holding its
+        // rounds. `..Player::default()` is what clears it, and it is
+        // correct by construction — `Player::default` writes
+        // `[NO_ITEM; MAX_MAGS]` into `mag_round`, so an emptied magazine
+        // remembers no round rather than naming item 0.
+        //
+        // **And the rounds are no longer destroyed on the way** — that
+        // cost stood here until 2026-08-30 and read "up to a magazine's
+        // worth per death". `die` now sheds `mag`/`mag_round` into the
+        // same `shed` buffer as `worn`, as an ordinary `ItemStack` built
+        // from the pair the arrays already hold, so the field stays on
+        // this list (the *player* keeps nothing) while the ammunition
+        // reaches the killer. `tests/reload.rs`'s
+        // `a_death_empties_the_cylinder` holds both halves.
+        "mag",
+        "mag_round",
         "ws_cell",
         "ws_hits",
         "jobs",
@@ -763,6 +785,15 @@ mod carried_through_death {
         "death_range_cm",
         "sleeping",
         "slept_at",
+        // **A corpse is not holding a torch up.** `light_acc` is the
+        // sub-point remainder of a flame, and the flame is derived from a
+        // held stack the backpack has just taken (`inv`, four lines up),
+        // so carrying the remainder would be keeping change for a purchase
+        // somebody else now owns. Six seconds of light, and the decision
+        // is about where it lives rather than what it is worth: a
+        // remainder without the item it was burning is state nothing can
+        // spend.
+        "light_acc",
     ];
 }
 

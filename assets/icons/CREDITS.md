@@ -11,6 +11,7 @@ Icons made by:
 - carl-olsen
 - delapouite
 - lorc
+- sbed
 
 Available on https://game-icons.net
 
@@ -50,7 +51,7 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | `metal_pickaxe.png` | `delapouite/mining-helmet` |
 | `metal_spear.png` | `lorc/barbed-spear` |
 | `mushrooms.png` | `delapouite/mushrooms` |
-| `obol.png` | `delapouite/two-coins` |
+| `junk.png` | `delapouite/two-coins` |
 | `pistol_round.png` | `delapouite/heavy-bullets` |
 | `raw_meat.png` | `delapouite/steak` |
 | `recycler.png` | `lorc/recycle` |
@@ -84,6 +85,9 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | `verb_pick_up.png` | `lorc/grab` |
 | `verb_repair.png` | `lorc/auto-repair` |
 | `verb_upgrade.png` | `delapouite/upgrade` |
+| `vital_food.png` | `delapouite/hot-meal` |
+| `vital_hp.png` | `sbed/health-normal` |
+| `vital_water.png` | `sbed/water-drop` |
 | `wood.png` | `delapouite/log` |
 | `wooden_arrow.png` | `delapouite/plain-arrow` |
 | `wooden_door.png` | `delapouite/door` |

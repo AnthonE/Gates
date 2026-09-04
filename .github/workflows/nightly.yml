@@ -1,7 +1,7 @@
 name: nightly
 
 # The builder, not the gate. Every night: run the gates against main, build the
-# release server, and package the desktop client as a scry depot. (The test
+# release server, and package the desktop client as an elo depot. (The test
 # gate, ci/gates.sh, is the one that is never allowed to skip-pass.)
 #
 # ⚠ The header used to say this built "the wasm client". It never did, and the
@@ -71,7 +71,7 @@ jobs:
   #
   # What this does NOT do is publish. A build goes live when the origin's
   # `published.json` names it, and that file is written by a person who has
-  # looked at what they are about to serve (scry `CLAUDE.md`; `docs/LAUNCHER.md`
+  # looked at what they are about to serve (elo `CLAUDE.md`; `docs/LAUNCHER.md`
   # §8 row 1b). This produces the tree that act would rsync, and stops.
   #
   # **Both platforms, since 2026-08-16.** This job packaged linux only, so
@@ -153,9 +153,9 @@ jobs:
           x86_64-w64-mingw32-gcc -v 2>&1 | grep -q 'Thread model: posix' \
             || { echo "::error::mingw is not on POSIX threading"; exit 1; }
       # ci/depot.py builds, stages, strips and writes the index itself. It
-      # deliberately computes no digest — `scry digest` is the one
+      # deliberately computes no digest — `elo digest` is the one
       # implementation of the number that gets notarized, and a second one
-      # here would be scry's invariant 3 with money attached.
+      # here would be elo's invariant 3 with money attached.
       - name: package the depot
         run: ./ci/depot.py --platform ${{ matrix.platform }} --out target/depot
       - name: what was packaged

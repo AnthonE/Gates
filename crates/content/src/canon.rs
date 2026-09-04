@@ -49,6 +49,12 @@ pub fn hash(c: &Content) -> u64 {
         // canonicalise identically, and a WAL then replays under a wear
         // table it was not played under (item durability v0).
         h.u(i.condition_max);
+        // The burn rate walks for `condition_max`'s reason exactly: it
+        // reaches the sim (`bake_gather`'s `light_burn`), it decides both
+        // whether an item is a light and how fast it eats itself, and two
+        // contents that disagree on it would run the same WAL to different
+        // inventories (torch fuel v0).
+        h.u(i.light_burn);
     }
 
     h.s("gatherables");
@@ -113,6 +119,7 @@ pub fn hash(c: &Content) -> u64 {
         h.u(w.damage);
         h.u(w.structure);
         h.u(w.headshot_mult);
+        h.u(w.limb_pct);
         h.u(w.rate_per_min);
         h.u(w.range_m);
         // The round list walks in **declared order, not sorted**, and that
@@ -259,6 +266,8 @@ pub fn hash(c: &Content) -> u64 {
     }
     h.u(g.upkeep_pct_per_day);
     h.u(g.repair_cost_pct);
+    h.u(g.arrow_break_pct);
+    h.u(g.arrow_lodge_s);
     let b = &c.balance.bands;
     for pair in [
         b.ttk_melee,
@@ -274,6 +283,7 @@ pub fn hash(c: &Content) -> u64 {
         h.u(pair[1]);
     }
     h.u(b.headshot_mult);
+    h.u(b.limb_pct);
     h.u(b.armor_extra_hits_max);
     h.u(b.wall_breach_swings_min);
     h.u(b.upkeep_solo_daily_max_min);

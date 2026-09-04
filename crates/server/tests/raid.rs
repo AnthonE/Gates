@@ -223,6 +223,7 @@ fn a_shipped_satchel_breaks_a_shipped_twig_foundation() {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        freehand: false,
     }]);
     assert_eq!(
         w.pieces.len(),
@@ -243,6 +244,7 @@ fn a_shipped_satchel_breaks_a_shipped_twig_foundation() {
             sel: 1,
             ..InputFrame::default()
         },
+        favour: 0,
     }]);
     let planted = tick_events(
         &mut w,
@@ -373,6 +375,7 @@ fn a_shipped_fuse_burns_its_whole_length_without_being_swept() {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        freehand: false,
     }]);
     w.tick(&[Command::Input {
         id: RAIDER,
@@ -381,6 +384,7 @@ fn a_shipped_fuse_burns_its_whole_length_without_being_swept() {
             sel: 1,
             ..InputFrame::default()
         },
+        favour: 0,
     }]);
     w.tick(&[Command::Throw {
         id: RAIDER,

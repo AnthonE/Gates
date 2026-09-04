@@ -50,9 +50,15 @@ pub const MAX_SNAPSHOT_ENTITIES: usize = 64;
 /// `state_hash` cadence in ticks (DESIGN.md §7).
 pub const STATE_HASH_INTERVAL: u64 = 32;
 
-/// Snapshot cadence: one snapshot every this many sim ticks — 15 Hz at the
-/// 30 Hz tick (DESIGN.md §5.3).
-pub const SNAPSHOT_INTERVAL_TICKS: u64 = 2;
+/// Snapshot cadence: one snapshot every this many sim ticks — every tick,
+/// 30 Hz, since netcode v2 S2 (DECISIONS.md 2026-08-31; was 2, 15 Hz).
+/// 15 Hz was the floor under every remote-motion defect: it set the
+/// minimum interpolation buffer, halved the sample density every lerp
+/// worked from, and made one lost datagram a 133 ms hole. The worst-case
+/// datagram is unchanged (~1.06 KB) and doubles in frequency, ~254 kbit/s
+/// against §2.1's ~300 kbit/s budget; typical traffic is a fraction of
+/// worst case (delta records, a few dozen entities).
+pub const SNAPSHOT_INTERVAL_TICKS: u64 = 1;
 
 /// AOI v0 radii in centimeters (DESIGN.md §5.5): subscribe entering at
 /// 176 m, unsubscribe leaving at 208 m — hysteresis so edge-dancers don't
@@ -123,10 +129,17 @@ const _: () = assert!(
 );
 
 /// Per-client ring of sent snapshots the server deltas against
-/// (NETCODE.md §3: "the last 32 sent states"). An ack that falls outside
-/// it drops the baseline to the canonical zero-state — recovery is the
-/// same code path, not a special one.
-pub const SENT_SNAPSHOT_RING: usize = 32;
+/// (NETCODE.md §3). An ack that falls outside it drops the baseline to
+/// the canonical zero-state — recovery is the same code path, not a
+/// special one. **64 since netcode v2 S2** (was 32): the ring is sized in
+/// SNAPSHOTS while its purpose — the baseline window, and the
+/// aim-staleness corroboration window derived from it — is wall time, so
+/// doubling the snapshot rate without doubling the ring would have halved
+/// both to ~1 s and raised zero-state fallbacks under the same loss.
+/// Doubling keeps the window at ~2.1 s and `AIM_STALE_CEILING_TICKS` at
+/// its measured 80. Cost: ~2.3 KB per slot per client, allocation at
+/// construction only (wall 2).
+pub const SENT_SNAPSHOT_RING: usize = 64;
 
 /// Staleness ceiling (NETCODE.md §3): an interest-set player may never
 /// exceed this many unsent snapshots — at the ceiling it preempts the
@@ -144,6 +157,17 @@ pub const INPUT_RING_CAP: usize = 32;
 /// Overflow policy: **skip** — a client not draining skips a snapshot
 /// (DESIGN.md §4); the next one supersedes it anyway.
 pub const SNAPSHOT_RING_CAP: usize = 4;
+
+/// The client's inbound datagram ring (netcode v2 S2): snapshots held
+/// between render frames, drained in arrival order every `Session::pump`.
+/// Overflow policy: **drop-oldest, counted** — past a ~266 ms frame stall
+/// at the 30 Hz snapshot rate, older world states are the ones a stalled
+/// client least wants to draw. This replaced a depth-one latest-wins
+/// `watch`, which was the right shape at 15 Hz for the OWN body (a
+/// snapshot replaces its predecessor) and starved the interpolator of the
+/// in-between samples every other body's motion is reconstructed from —
+/// at ≤ 30 fps, half of a 30 Hz snapshot stream never reached it.
+pub const CLIENT_DG_RING: usize = 8;
 
 /// Connection-lifecycle control rings (accept loop → sim, and the
 /// graveyard back). Overflow policy: **refuse** the join / retry the
@@ -189,6 +213,112 @@ pub const INPUT_BUFFER_CAP: usize = 16;
 /// depth above this consumes two inputs in one tick to re-center.
 pub const INPUT_THROTTLE_DEPTH: usize = 6;
 
+/// Rewind ring depth in sim ticks — 8 rows of body history, 267 ms
+/// (NETCODE.md §8, `findings/lagcomp-design-20260818.md` §1.4). A power of
+/// two so the ring index is a mask and never a modulo: wall 1 likes
+/// integers and wall 3 likes no division.
+///
+/// Eight holds the seven `REWIND_MAX_TICKS` can reach plus the row being
+/// overwritten. During tick `T` the rows carry ticks `T-1 ..= T-8`, and the
+/// row for `T` is written at the end of `World::tick` — so a rewind of 0 is
+/// **the live body**, never a row, and that is what makes a favour of zero
+/// bit-identical to the pre-rewind sim.
+///
+/// Overflow policy: **overwrite oldest**. It is a ring by construction and
+/// the row it overwrites is older than `REWIND_MAX_TICKS` can ask for, so
+/// nothing reachable is ever discarded. Cost:
+/// `MAX_PLAYERS * REWIND_TICKS * 16 B = 12,800 B` of poses plus a
+/// `[u64; REWIND_TICKS]` of stamps, all preallocated at construction —
+/// nothing allocates in the tick (wall 2).
+///
+/// Proposed default, DECISIONS.md §open ("lag compensation v0 — the ring").
+pub const REWIND_TICKS: usize = 8;
+
+/// Favouring clamp, in ticks (NETCODE.md §8's 250 ms, Overwatch's bound).
+/// 250 ms is 7.5 ticks at `TICK_HZ` and a rewind is an integer number of
+/// ticks, so this is **7 (233.3 ms)** — under the doc's promise rather than
+/// over it, because that number is a promise to the *victim*: it bounds how
+/// far into their past a shooter may be handed a hit they have already run
+/// out of.
+///
+/// Overflow policy: **clamp**, and a value past it is *also* safe by
+/// construction — `Rewind::pose_at` resolves `tick - back` and checks the
+/// row's stamp, so an out-of-range `back` lands on a row stamped with a
+/// different tick and falls back to the live body. That is deliberate: the
+/// failure of a forged favour is the shooter getting *less* help, never
+/// more (`findings/lagcomp-design-20260818.md` §4.2c, §6.2).
+///
+/// Proposed default, DECISIONS.md §open ("lag compensation v0 — the ring").
+pub const REWIND_MAX_TICKS: u8 = 7;
+
+/// The interpolation delay both ends agree on: remote bodies are drawn this
+/// many ticks in the past. **Unchanged at 4 across netcode v2 S2 on
+/// purpose**: the same 133 ms of wall delay is now FOUR snapshot intervals
+/// instead of two, and the buffer is sized in intervals (Valve's
+/// `cl_interp_ratio` doctrine — ratio 2 is the bare minimum and survives
+/// zero dropped packets, ratio 4 survives two consecutive). S5 makes this
+/// adaptive; until then the fixed number errs toward robustness at
+/// unchanged latency.
+///
+/// It lives **here** rather than in the client because the *server* needs it
+/// to know how stale a client's aim is
+/// (`findings/lagcomp-design-20260818.md` §2.2), and a hand-kept mirror of
+/// another crate's constant is exactly the drift `CLAUDE.md` opens with.
+/// `client-core/src/interp.rs` re-expresses this one as its `f64`; it does
+/// not carry a second copy of the number.
+///
+/// Proposed default, DECISIONS.md §open ("lag compensation v0 — the ring").
+pub const INTERP_DELAY_TICKS: u8 = 4;
+
+/// The adaptive playout delay's rails (netcode v2 S5), here because BOTH
+/// ends read them: the client breathes its delay between them off measured
+/// jitter (`client-core/core.rs`), and the server clamps the delay a
+/// datagram REPORTS to the same rails before favour prices it
+/// (`server/stats.rs`) — a claim outside what any honest client can render
+/// buys nothing. Floor is Valve's ratio-2 minimum (survives zero dropped
+/// snapshots); ceiling is the interp span guard's own bound, past which a
+/// straddle reads as a teleport anyway.
+pub const PLAYOUT_MIN_TICKS: u8 = 2;
+pub const PLAYOUT_MAX_TICKS: u8 = 8;
+
+/// Correction for the age of the newest snapshot a client had applied when
+/// it made an input. Snapshots land every `SNAPSHOT_INTERVAL_TICKS`, so the
+/// expected age of the newest one is half of that — **derived, not
+/// picked**, and at interval 1 the floor of that half is **0** (the
+/// expected age is 0.5 ticks and a bias is an integer; flooring is the
+/// generous-to-the-shooter direction by half a tick, which the
+/// `REWIND_MAX_TICKS` clamp still bounds).
+///
+/// Written as the number with its derivation asserted beside it rather than
+/// substituted for it, which is `AOI_RANK_ENTER`'s shape above and for
+/// `AOI_RANK_ENTER`'s reason: `ci/knob_registry.mjs` pins a registry claim
+/// against the constant a source file declares and cannot evaluate
+/// arithmetic, so a computed initializer fails that gate loudly. It shipped
+/// as the expression here for exactly as long as it took to read that
+/// comment.
+///
+/// Proposed default, DECISIONS.md §open ("lag compensation v0 — the ring").
+pub const REWIND_ACK_BIAS_TICKS: u8 = 0;
+const _: () = assert!(
+    REWIND_ACK_BIAS_TICKS as u64 == SNAPSHOT_INTERVAL_TICKS / 2,
+    "REWIND_ACK_BIAS_TICKS must stay half the snapshot interval — the \
+     interval moved and the bias did not, so every favour the server mints \
+     is off by the difference"
+);
+
+const _: () = assert!(
+    REWIND_TICKS.is_power_of_two(),
+    "REWIND_TICKS must be a power of two — the ring index is a mask, and a \
+     non-power-of-two silently aliases two ticks onto one row"
+);
+
+const _: () = assert!(
+    (REWIND_MAX_TICKS as usize) < REWIND_TICKS,
+    "REWIND_TICKS must hold every tick REWIND_MAX_TICKS can ask for plus the \
+     row being overwritten — at equality the deepest rewind reads the row \
+     this tick is about to write"
+);
+
 /// Per-client pending-removal set: entity ids that left the client's
 /// interest, re-sent in every snapshot until a snapshot carrying them is
 /// acked (so a ghost can't survive datagram loss). Overflow policy:
@@ -215,6 +345,25 @@ pub const MAX_ITEM_DEFS: usize = 64;
 /// `RangedDef`, so it is a cap in the `MAX_ITEM_DEFS` sense.
 /// Proposed default, DECISIONS.md §open (ballistics-on-ammo row).
 pub const MAX_WEAPON_AMMO: usize = 4;
+
+/// Weapons that may carry a **magazine** at once — the width of
+/// `Player::mag`, which is indexed by `RangedDef::mag_slot` rather than by
+/// item index.
+///
+/// The index is dense and assigned at bake time to the weapon rows that
+/// declare `magazine > 0`, so this is not `MAX_ITEM_DEFS`: sixty-four
+/// slots per player would be sixty-four `u16` pairs of which one is used,
+/// and the store is per-player so the waste multiplies by `MAX_PLAYERS`.
+/// Eight because `content/weapons.toml` has one firearm today and the
+/// catalogue a wipe cycle is priced for (`ALPHA.md` §1) is single digits;
+/// the bake **refuses** a ninth rather than dropping it, because a weapon
+/// with no magazine slot would silently fire straight out of the pack —
+/// exactly the mechanic this cap exists to make impossible to lose.
+///
+/// Structural, not a balance number: it sizes a fixed array on `Player`,
+/// so it is a cap in the `MAX_WEAPON_AMMO` sense.
+/// Proposed default, DECISIONS.md §open (reload v1).
+pub const MAX_MAGS: usize = 8;
 
 /// Stacks a fresh character may be granted at spawn (`content/balance.toml`
 /// `[[spawn_kit]]`). Bounded like everything else on a content-driven path:
@@ -392,7 +541,69 @@ pub const UPKEEP_SWEEP_PER_TICK: usize = 64;
 /// with a reset batch, catalog restarts, the inventory shadow already
 /// re-diffs), the same recovery path a fresh join uses. Proposed default,
 /// DECISIONS.md §open (gather wire row).
-pub const EVENT_RING_CAP: usize = 64;
+///
+/// **It is authored as `BODY_BROADCAST_ARMS × AOI_RANK_EXIT` and typed as a
+/// literal, which is deliberate and was wrong for one commit.** The product
+/// is the whole argument for the value; writing the product *as the
+/// definition* is what makes the argument uncheckable, because the assertion
+/// that pins the relation
+/// (`server/tests/snapshot_budget.rs::the_filter_buys_nothing_on_a_clustered_shard`)
+/// then compares an expression to itself and is green for every value of
+/// every term. It was `BODY_BROADCAST_ARMS * AOI_RANK_EXIT` here between
+/// wire v54 and this line; the mutant sweep is in the judge report for pass
+/// `20260829-153230-02`. Two independently authored numbers, one assertion
+/// between them — the shape every cross-check in this file has.
+///
+/// A broadcast arm in `pump_events` costs one push into *this* ring per
+/// connected client, so the per-client fan-in from one class-D-filtered arm
+/// (`ShardCore::body_event_visible`) is bounded by the interest set, which
+/// the rank band caps at `AOI_RANK_EXIT`. One such arm can therefore fill
+/// `AOI_RANK_EXIT` slots by itself, and the ring has to hold one band per
+/// arm or a firefight overflows it on arithmetic alone.
+///
+/// ⚠ **It was a flat 64 until wire v54, equal to `AOI_RANK_EXIT`, and that
+/// left zero headroom** — the doc here said so in those words, and
+/// `snapshot_budget.rs` had measured the peak at 50 of 64. The second arm
+/// is what called it in: `EV_SHOT` became a firearm's report as well as a
+/// bow's, so a hundred co-located players firing offered one client **82**
+/// messages in a tick against the 64-slot ring. That is the predicted
+/// failure arriving, not a new one, and the fix is the one the assertion
+/// named first.
+///
+/// The overflow is self-amplifying — a refused push calls `ev_resync`, and
+/// the recovery drip pushes *more* messages into the ring that just refused
+/// — which is why this is sized against the worst case rather than the
+/// common one. Overflow policy is unchanged: **resync**.
+/// Proposed default, DECISIONS.md §open (event-lane fan-out v0).
+pub const EVENT_RING_CAP: usize = 128;
+
+/// How many `pump_events` arms broadcast a **body's** fact to the whole
+/// class-D interest set, each therefore able to fan in `AOI_RANK_EXIT`
+/// messages to one client in one tick.
+///
+/// Two: `EV_SWING` (an arm moved) and `EV_SHOT` (a round left a weapon).
+/// Both are filtered by `ShardCore::body_event_visible`, and both fire on
+/// exactly the tick everyone is co-located — a raid — so the filter buys
+/// nothing precisely when the ring is fullest.
+///
+/// **This is a count of code sites, so it would rot the way a hand-kept
+/// mirror always does** (`CLAUDE.md`'s `props.js` line) — and the answer is
+/// the one that file gives: read the surface, do not remember it.
+/// `server/tests/snapshot_budget.rs::every_body_broadcast_arm_is_counted`
+/// scrapes `server/src/core.rs` for the filter's own call sites and asserts
+/// the count equals this constant, so a third arm is red at the arm, in the
+/// commit that adds it, whether or not anyone thought about the ring.
+///
+/// A second assertion in the same file
+/// (`the_filter_buys_nothing_on_a_clustered_shard`) then pins
+/// `EVENT_RING_CAP == BODY_BROADCAST_ARMS * AOI_RANK_EXIT`, which is the
+/// sizing law. The two are a chain and both links are needed: the scrape
+/// catches an uncounted arm, the equality catches a counted arm nobody
+/// resized the ring for, and a widened rank band. For one commit the second
+/// link was the ring's own definition and therefore held nothing — see
+/// [`EVENT_RING_CAP`].
+/// Proposed default, DECISIONS.md §open (event-lane fan-out v0).
+pub const BODY_BROADCAST_ARMS: usize = 2;
 
 /// Slot-life entries the per-client harvested-set walk scans per tick
 /// (join sync / resync is drip-fed: at most one sync message per client
@@ -700,6 +911,36 @@ pub const BLAST_MAX_CM: u16 = 300;
 /// must never do.
 /// Proposed default, DECISIONS.md §open (ranged v0).
 pub const MAX_ARROWS: usize = 128;
+
+/// Spent arrows lying on the ground across the whole shard
+/// (`spent.rs`, arrow recovery v0). Four full skies of arrows: nothing
+/// reaches this store without leaving `MAX_ARROWS` first, so the cap says
+/// how many landings the world remembers, and 4 × 128 is the number that
+/// keeps every arrow from two whole volleys collectable while the third
+/// is still in the air.
+///
+/// Overflow policy: **drop the one that has been takeable longest** — the
+/// entry with the smallest `ready_at` is evicted to make room, and
+/// `SpentArrows::evictions` counts it so the policy is measurable rather
+/// than assumed (`World::evictions`' argument, one store over: an
+/// eviction's only evidence is an absence).
+///
+/// It is deliberately not *refuse*, which is the policy one const up and
+/// is right there and wrong here. `MAX_ARROWS` refuses because the thing
+/// being refused is a shot that has not happened yet, and the shooter
+/// pays nothing. Here the arrow has already landed, so refusing would
+/// destroy the newest arrow — the one whose owner is walking toward it —
+/// because of litter somebody else left on the far side of the island.
+/// Evicting the oldest takeable arrow instead is also the closest thing
+/// this store has to the despawn timer the reference presumably has and
+/// `reference/PROJECTILES.md` §5 does not give a number for.
+///
+/// Note it is `ready_at` and not a landing tick, so a **lodged** arrow is
+/// protected for its lodge window: the arrow you have just shot someone
+/// with cannot be evicted out from under you by a busy shard, which is
+/// the one case where losing it would read as the game cheating.
+/// Proposed default, DECISIONS.md §open (arrow recovery v0).
+pub const MAX_SPENT_ARROWS: usize = 512;
 
 /// Ticks an arrow may stay in flight before it expires, whatever the
 /// weapon's own derived life. The backstop that makes `MAX_ARROWS` a

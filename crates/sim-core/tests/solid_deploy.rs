@@ -389,6 +389,7 @@ fn world() -> (World, u16, u16) {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        freehand: false,
     }]);
     assert_eq!(w.pieces.len(), 1, "the fixture needs its foundation");
     (w, cx, cz)
@@ -406,6 +407,7 @@ fn drive(w: &mut World, ticks: usize, buttons: u8) {
                 move_z: 127,
                 ..InputFrame::default()
             },
+            favour: 0,
         }]);
     }
 }
@@ -516,6 +518,7 @@ fn the_wall_survives_a_save_and_a_load() {
                 move_z: 127,
                 ..InputFrame::default()
             },
+            favour: 0,
         }]);
     }
     let (_, _, hd) = solid_vol(ARCH_FURNACE).unwrap();

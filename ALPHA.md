@@ -54,10 +54,10 @@
 ## 2 · Staged economy arming (do NOT launch coins into an unstable game)
 
 **What stages is the CLAIM RAIL, not the currency** (operator,
-2026-08-10). Two things share the name OBOL and only one of them is a
+2026-08-10). Two things share the name JUNK and only one of them is a
 token risk:
 
-- **Carried OBOL is an ordinary item** — paid by the recycler, dropped on
+- **Carried JUNK is an ordinary item** — paid by the recycler, dropped on
   death, raidable, spent at the research table. That is scrap's job, it is
   **live from A1**, and there is nothing to stage: an item stack in a save
   file cannot be cashed out.
@@ -67,17 +67,17 @@ token risk:
   each its own switch. The break-things-freely privilege (which expires
   when the operator posts) is spent on A1, not A3:
 
-- **A1 — the survival economy, whole** (first playtests): OBOL is earned
+- **A1 — the survival economy, whole** (first playtests): JUNK is earned
   and spent in world, no bank terminal, no ledger, skins vendor dark.
   Everything a player touches is here; the game must be fun before a
   balance is worth anything.
 - **A2 — the ledger, off-chain**: the bank terminal opens and the
   carried/banked split goes live, balances accruing — **no merkle export
   yet**; they are real and unclaimable while wipe cadence and dupe-testing
-  settle. Posted plainly on the site: "banked OBOL becomes claimable at
+  settle. Posted plainly on the site: "banked JUNK becomes claimable at
   A3."
-- **A3 — the claim + the counter**: merkle export on the scry claim rail,
-  skin catalog opens (SCRY/MYRRH), munus-first-sale delivery includes a
+- **A3 — the claim + the counter**: merkle export on the elo claim rail,
+  skin catalog opens (ELO/ORBS), munus-first-sale delivery includes a
   recorded round. This is the moment that needs the operator's announce,
   and everything before it is rehearsal.
 
@@ -131,11 +131,11 @@ replay — the deterministic replay is the dupe investigation tool.
   Shipping a *try it* button over a retired client is worse than shipping
   none — it is the dark-panel defect with a purchase attached. Price and
   what the purchase gates are §open, so the page cannot be finished until
-  they are spoken. A card on scry's build page links here at A3, not
+  they are spoken. A card on elo's build page links here at A3, not
   before **(operator)**.
 - **Alpha predates the store**: the A1 cohort below plays free — there is
   nothing armed to gate and no counter open yet (`DECISIONS.md` §open).
-- **Playtest cohort**: the SCRY holder community is a real, waiting
+- **Playtest cohort**: the ELO holder community is a real, waiting
   audience — that's the documented state of the town — so A1's 10–20
   testers come from there via the operator's channels when he chooses.
   Feedback lands in one channel (Discord/Telegram **(knob)**) + a `/bug`
@@ -175,8 +175,8 @@ and §9.5 lists what v0 does not have.
 It was cut on the reasoning that alpha runs one shard, so a browser has
 nothing to browse; the operator asked for the intro screen and the list
 directly, which outranks the cut. Two things make it cheap enough that the
-original reasoning no longer holds either way: scry's launcher has carried
-a dark `ServersWindow` and the `scry-shardlist-v1` shape all along waiting
+original reasoning no longer holds either way: elo's launcher has carried
+a dark `ServersWindow` and the `elo-shardlist-v1` shape all along waiting
 on a title to publish one, and a one-shard list is still a list — it is
 what turns "type an address" into "pick the shard", and it is the only
 screen a player sees before the world. It does not un-cut anything else on
@@ -198,7 +198,7 @@ would ban the agent players the training goal depends on.
 ## 6 · Order of work (folds into DESIGN §11)
 
 M0 shell → M1 verbs (+ **bags**, hotbar, chat) → M2 combat (+ death/respawn
-flow, day/night) → M3 OBOL machinery dark + ops hardening (admin, backups,
+flow, day/night) → M3 JUNK machinery dark + ops hardening (admin, backups,
 status, error capture) → **A1 playtest** → tune → M4 arm A2, then A3 with
 the announce and the board delivery.
 

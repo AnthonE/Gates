@@ -157,7 +157,7 @@ seed = 20260731
 # community or training shard runs unarmed and open, and has nothing worth
 # cheating for.
 #
-# Armed, this shard asks scry two questions, both one `balanceOf` underneath:
+# Armed, this shard asks elo two questions, both one `balanceOf` underneath:
 # `GET /api/ticket/<slug>/of/<wallet>` at join, and
 # `POST /api/ticket/<slug>/check` for the whole roster every sweep — because
 # a player can sell the ticket and stay logged in.
@@ -171,9 +171,9 @@ seed = 20260731
 #
 # Needs require_auth = true and the shard REFUSES TO BOOT without it — a
 # guest has no wallet, so a ticket door over an open door checks nobody.
-# entitle_origin = "https://scry.moreright.xyz"
+# entitle_origin = "https://elopros.com"
 
-# This title's slug in scry's catalog. Defaults to "gates"; set it only if a
+# This title's slug in elo's catalog. Defaults to "gates"; set it only if a
 # staging origin files this game under another name.
 # entitle_slug = "gates"
 
@@ -296,3 +296,13 @@ seed = 20260731
 # against configured, shifts started/ended/errored, and what the finished
 # shifts placed. `live` below the configured count is the health signal.
 # population = 8
+
+# Dev-only fake network on both datagram lanes: "lat_ms,jitter_ms,loss_pct".
+# Boot with this to FEEL the netcode at the RTT it is tuned for (netcode
+# v2's bar is 60 ms — that is `netsim = "30,10,1"`, latency each way) on
+# loopback, instead of tuning at zero and finding out on a real link. It
+# marks the shard `dev` in the welcome, seeds its jitter RNG from the knob
+# and the slot so a "feels wrong at 30,10,1" report reproduces, and never
+# touches the sim thread or the handshake — only late (and, per loss_pct,
+# missing) datagrams. Never set it on a public shard.
+# netsim = "30,10,1"

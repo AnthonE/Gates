@@ -355,6 +355,6 @@ mod tests {
                 "{bad:?} should be refused"
             );
         }
-        assert!(crate::shardlist::check_addr("game.moreright.xyz:4433").is_ok());
+        assert!(crate::shardlist::check_addr("game.elopros.com:4433").is_ok());
     }
 }

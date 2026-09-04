@@ -13,6 +13,10 @@ use std::time::Duration;
 
 const BOTS: usize = 50;
 
+/// How many transport-level connect sheds the herd may absorb before the
+/// suite calls it a capacity problem rather than a busy box. A fifth.
+const SHED_CEILING: u32 = (BOTS / 5) as u32;
+
 /// The shipped content set, baked — the smoke runs the same boot path the
 /// shard binary does, so gather and the catalog are live under the herd.
 fn baked_content() -> server::net::SimTables {
@@ -85,6 +89,21 @@ async fn test_bot_smoke_50() {
             .unwrap_or_else(|e| panic!("bot {i} failed: {e}"));
         reports.push(report);
     }
+
+    // `run_bot` re-dials a connect the peer's HTTP/3 layer SHED
+    // (`H3_EXCESSIVE_LOAD`, 0x107) rather than failing the herd over one
+    // busy moment — a shed is the box saying "not now", and our own
+    // refusals (0..=5) are still returned on the first try. But a retry
+    // that nothing counts is a capacity regression made invisible: a shard
+    // that could only seat ten would go green, slowly. So the count is
+    // observable and bounded here. One shed on a loaded box is ordinary;
+    // a fifth of the herd needing a second dial is the shard's problem.
+    let sheds: u32 = reports.iter().map(|r| r.connect_sheds).sum();
+    assert!(
+        sheds <= SHED_CEILING,
+        "{sheds} of {BOTS} bots were shed at connect (ceiling {SHED_CEILING}) — \
+         that is not a busy box, that is the shard failing to seat a herd"
+    );
 
     // ...and return to 0 once every bot has left, which is what separates a
     // gauge (set each tick off occupancy) from a counter that only climbs.
@@ -383,12 +402,43 @@ async fn test_bots_raid_over_the_wire() {
 
     let mut reports = Vec::with_capacity(RAIDERS);
     for (i, t) in tasks.into_iter().enumerate() {
-        let report = t
-            .await
-            .expect("bot task join")
-            .unwrap_or_else(|e| panic!("raider {i} failed: {e}"));
+        let report = t.await.expect("bot task join").unwrap_or_else(|e| {
+            // **The shard's own side of the same moment.** A dial that dies
+            // as `connection closed by peer: 261` (H3_FRAME_UNEXPECTED, and
+            // an empty reason, so not one of our `REFUSE_*` answers — those
+            // are 0..=5 and always carry `refuse_text`) was seen once in a
+            // gate run on 2026-08-30 and never reproduced in ~60 loaded runs
+            // here. It is a DIFFERENT mechanism from the selection race this
+            // suite was just fixed for, it is not diagnosed, and guessing it
+            // into `is_load_shed` would widen a predicate whose own gate
+            // says a widened range is how a refusal starts being retried.
+            // What is cheap is making the next one readable in the log
+            // instead of costing a pass: these three separate "our admission
+            // gate turned it away" from "the H3 layer under both ends did".
+            let st = &handle.stats;
+            panic!(
+                "raider {i} failed: {e} (shard: handshake_errors {}, \
+                 admit_refused {}, admit_retried {})",
+                ShardStats::get(&st.handshake_errors),
+                ShardStats::get(&st.admit_refused),
+                ShardStats::get(&st.admit_retried),
+            )
+        });
         reports.push(report);
     }
+    // **How much walking the fleet actually did**, quoted by every assertion
+    // below that can fail for want of it. Until these counters existed a red
+    // here could not distinguish "the bot never took the step" from "it took
+    // the step and the run ended before the answer came back" — opposite
+    // bugs with one symptom, and the reason this gate flipped red and green
+    // on an unchanged tree (2026-08-30).
+    let walked: u64 = reports.iter().map(|r| r.ticks_walked).sum();
+    let steps: u64 = reports.iter().map(|r| r.raid_steps).sum();
+    let truncated = reports.iter().filter(|r| r.walk_truncated).count();
+    let walk = format!(
+        "{walked} ticks / {steps} raid steps across {RAIDERS} raiders, \
+         {truncated} truncated by the box"
+    );
     let window_ticks = ShardStats::get(&handle.stats.ticks) - ticks_before;
 
     // **Why `struct_hits` is not asserted, measured instead of assumed.**
@@ -400,11 +450,18 @@ async fn test_bots_raid_over_the_wire() {
     // 355, so *how many ticks a window held* is the question the
     // unexplained 30 s run never answered.
     //
-    // It is safe against this box's load rule (`CLAUDE.md`: never assert on
-    // elapsed ms) because it can only fail in the impossible direction. At
-    // `TICK_HZ` 30 a 4 s window tops out at ~120 ticks, so a contended box
-    // makes this MORE true, never less; the only way it reddens is a shard
-    // ticking faster than its own rate.
+    // ⚠ **This paragraph used to say the assertion could only fail in the
+    // impossible direction, and that stopped being true on 2026-08-30.**
+    // The claim was that a 4 s window tops out at ~120 ticks so a contended
+    // box makes it MORE true — which held only while the walk was a
+    // wall-clock window. It is a tick budget now (`botclient::walk_ticks`),
+    // so a contended box stretches the window in wall time and the shard
+    // completes MORE ticks inside it, not fewer. The bound is still sound
+    // and is now arithmetic rather than a direction: the walk's ceiling is
+    // `WALK_CEILING` x 4 s plus a 500 ms settle, so ~255 ticks worst case
+    // against a 300-tick fuse. It reddens if that headroom is ever spent,
+    // which is the honest failure — the gate's premise would have broken and
+    // `struct_hits` would owe an assertion — and not a silent pass.
     assert!(
         window_ticks < fuse_ticks,
         "the shard completed {window_ticks} ticks in this window against a \
@@ -436,6 +493,24 @@ async fn test_bots_raid_over_the_wire() {
             "raider {i}: the action stream died mid-raid"
         );
         assert_eq!(r.event_decode_errors, 0, "raider {i}: event decode errors");
+        // **The walk is a count, and this is the gate on that.** Before
+        // 2026-08-30 the run ended on a 4 s clock, so a loaded box silently
+        // bought the profile fewer steps and every assertion below read as
+        // "the sim refused everything". A short walk is now either the
+        // backstop firing — which the report says out loud — or a defect.
+        assert!(
+            r.ticks_walked >= server::botclient::walk_ticks(WINDOW) || r.walk_truncated,
+            "raider {i}: walked {} of {} ticks and the backstop never fired, \
+             so the walk ended for a reason nothing here can name",
+            r.ticks_walked,
+            server::botclient::walk_ticks(WINDOW)
+        );
+        // The settle ran at all: a report read the instant the walk stopped
+        // is the flaky gate this suite is recovering from.
+        assert!(
+            r.settle_polls > 0,
+            "raider {i}: the tally was read with no settle behind it"
+        );
         // The round trip closed: the sim heard this bot's claims and
         // answered them. A naked spawn can afford none of them, so the
         // answer is a refusal — which is the half of wall 4 that had never
@@ -462,7 +537,10 @@ async fn test_bots_raid_over_the_wire() {
     // Fleet-wide: the build verbs specifically were heard, and the server
     // survived the storm with nothing malformed and no forced resync.
     let build_refusals: u64 = reports.iter().map(|r| r.build_refused).sum();
-    assert!(build_refusals > 0, "no raider's Place ever reached the sim");
+    assert!(
+        build_refusals > 0,
+        "no raider's Place ever reached the sim ({walk})"
+    );
 
     // ---- the success half -------------------------------------------------
     //
@@ -481,11 +559,13 @@ async fn test_bots_raid_over_the_wire() {
     let auths: u64 = reports.iter().map(|r| r.auths).sum();
     assert!(
         placed > 0,
-        "no raider ever placed a piece: {per_plot} wood per plot, one stack funds {plots_funded}"
+        "no raider ever placed a piece: {per_plot} wood per plot, one stack \
+         funds {plots_funded} ({walk})"
     );
     assert!(
         deployed > 0,
-        "no raider ever deployed: the box, the lock and the loot verbs all hang off this"
+        "no raider ever deployed: the box, the lock and the loot verbs all \
+         hang off this ({walk})"
     );
     // The code lock's whole point, and the one verb in the profile that is
     // an *authorization* rather than a purchase: the owner set a code on
@@ -495,7 +575,8 @@ async fn test_bots_raid_over_the_wire() {
     // the kit existed.
     assert!(
         auths > 0,
-        "no code was ever accepted: {deployed} deploys landed, so the lock never took or never opened"
+        "no code was ever accepted: {deployed} deploys landed, so the lock \
+         never took or never opened ({walk})"
     );
     // The attacker's half, as far as it is proven: a satchel selected off
     // the hotbar, planted on a structure that had to already be standing
@@ -505,7 +586,7 @@ async fn test_bots_raid_over_the_wire() {
     // measurement nobody has explained is not a gate.
     assert!(
         planted > 0,
-        "no charge ever armed: {placed} pieces stood to plant one on"
+        "no charge ever armed: {placed} pieces stood to plant one on ({walk})"
     );
     let s = &handle.stats;
     assert!(ShardStats::get(&s.actions_ok) > 0, "no action decoded");
@@ -826,4 +907,247 @@ async fn test_welcome_dev_bit_tracks_dev_spawn() {
             .shutdown
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
+}
+
+/// **A bot fires until it is empty, hears the click, and presses R** — the
+/// reload verb over a real socket, which nothing had ever driven.
+///
+/// `NOW.md` §0mag item 6, and the judge's ranked fix 4 of pass -19. Reload v1
+/// landed the whole path for a *human* client and `probe_combat` drives it
+/// in-process for the parity digest, but `botclient.rs` had no arm for it:
+/// a soak fired its magazines dry and went quiet, so every population number
+/// taken after reload v1 understated the fight it was measuring.
+///
+/// **The fixture arms the bots, and that is not a convenience — without it
+/// the lane is dead code with a green gate.** No bot in any soak, smoke or
+/// population run has ever held a firearm: the shipped kit is a rock and a
+/// torch, `raid_step` reaches no verb that can acquire one, and
+/// `REFUSE_RL_EMPTY` is raised only inside `if let Some(slot) = mag`, so a
+/// bot with no magazine weapon in hand can never even go dry. A reload lane
+/// gated by a fleet carrying rocks would assert nothing at all while reading
+/// as coverage — the exact shape `RangedDef`'s doc comments record three
+/// columns arriving in.
+///
+/// **Every hotbar slot holds the weapon**, which is the second half of the
+/// same problem rather than laziness. `bot_frame` re-rolls `sel` across all
+/// six slots every frame on purpose, so one revolver in slot 0 is held a
+/// sixth of the time and fired a eighteenth — the run would measure the
+/// wander and not the reload. Filling the bar also exercises a property the
+/// sim states and nothing over the wire had checked: `two_of_a_kind_share_
+/// one_magazine`, six stacks and one cylinder, because the magazine is keyed
+/// by weapon row.
+///
+/// The magazine starts **empty** — `grant_kit` fills `inv`, never `mag` — so
+/// the first trigger pull is a dry click and the cycle starts on its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_bots_reload_over_the_wire() {
+    /// Four. This suite is about one lane's round trip; the herd size is
+    /// `test_bot_smoke_50`'s claim, not this one's.
+    const SHOOTERS: usize = 4;
+    /// Long enough for the cycle to close several times over. Checked
+    /// against shipped cadence below rather than asserted from here.
+    const WINDOW: Duration = Duration::from_secs(5);
+
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
+    let content = content::Content::load_dir(&dir).expect("shipped content loads");
+    let mut tables = baked_content();
+    let (gather, combat) = (tables.gather, tables.combat);
+    let item = |id: &str| {
+        content
+            .item_index(id)
+            .unwrap_or_else(|| panic!("shipped {id}"))
+    };
+    let (gun, round) = (item("item.revolver"), item("item.pistol_ammo"));
+
+    // ---- the fixture is live, read off the shard's own bake ---------------
+    //
+    // Every number below is read rather than typed, for wall 7's reason: a
+    // gate that named its own cadence would stay green while `content/` said
+    // otherwise. It is also the only way this suite can state its window
+    // arithmetic instead of asserting a wall-clock guess.
+    let def = combat
+        .held_ranged(gun)
+        .expect("the shipped revolver is not a live ranged weapon");
+    assert!(
+        def.magazine > 0 && (def.mag_slot as usize) < sim_core::limits::MAX_MAGS,
+        "the shipped revolver carries no magazine slot — nothing here can go dry"
+    );
+    assert!(
+        def.hitscan,
+        "the shipped revolver is not hitscan — `hitscan` is the only path \
+         that raises the dry click, so this fixture would fire in silence"
+    );
+    let rate = def.rate_ticks as u64;
+    let budget = server::botclient::walk_ticks(WINDOW);
+    // **What the window has to cover, and what it deliberately does not.**
+    // An empty magazine clicks, the ask is refused BUSY until the sim
+    // crosses `next_swing`, and the fill lands on the first boundary tick
+    // whose input frame did not pull the trigger — two boundaries in three,
+    // so a handful of cadences is a wide margin. `reload_ticks` is **not**
+    // in this bound and that is the arithmetic worth writing down: `reload`
+    // pushes `EV_RELOAD` the instant it moves the rounds and only *then*
+    // sets the recovery beat, so a confirmed fill is not waiting on it. The
+    // recovery is what a second cycle would cost, and this suite claims one.
+    //
+    // Stated so that a content edit lengthening the beat past the window
+    // reddens here, naming the reason, rather than in the counts below where
+    // it would read as the lane being broken.
+    assert!(
+        budget > rate * 8 + 8,
+        "the walk is {budget} ticks against a {rate}-tick cadence: too short \
+         for eight boundary crossings, so a red below would be the window \
+         and not the lane"
+    );
+
+    // ---- what a shooter carries ------------------------------------------
+    let stack = |i: u16| sim_core::gather::ItemStack {
+        item: i,
+        count: gather.stack_max_of(i),
+        cond: gather.cond_max_of(i),
+    };
+    let mut kit = sim_core::inventory::SpawnKit::EMPTY;
+    for slot in 0..sim_core::limits::HOTBAR_SLOTS {
+        assert!(kit.set(slot, stack(gun)), "hotbar slot {slot}");
+    }
+    // The pack, deliberately outside the bar: rounds in a hotbar slot would
+    // be a slot the bot can hold, and a hand full of ammunition is a hand
+    // with no gun in it.
+    const PACK: usize = sim_core::limits::HOTBAR_SLOTS;
+    assert!(kit.set(PACK, stack(round)), "pack slot");
+    let carried = kit.stacks[PACK].count as u64;
+    assert!(
+        carried >= def.magazine as u64,
+        "a shooter carries {carried} rounds against a {}-round cylinder — \
+         it cannot fill once",
+        def.magazine
+    );
+    tables.spawn_kit = kit;
+
+    let handle = spawn_shard(
+        ShardConfig::ephemeral(0x5EED_1E5E),
+        tables,
+        Saves::off(),
+        server::worldfile::WorldBoot::off(),
+    )
+    .await
+    .expect("shard boots");
+    let addr = handle.local_addr;
+
+    let endpoint = std::sync::Arc::new(bot_endpoint().expect("client endpoint"));
+    let mut tasks = Vec::with_capacity(SHOOTERS);
+    for i in 0..SHOOTERS {
+        let endpoint = endpoint.clone();
+        tasks.push(tokio::spawn(async move {
+            run_bot(&endpoint, addr, i as u64, WINDOW, None).await
+        }));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let mut reports = Vec::with_capacity(SHOOTERS);
+    for (i, t) in tasks.into_iter().enumerate() {
+        let st = &handle.stats;
+        let report = t.await.expect("bot task join").unwrap_or_else(|e| {
+            panic!(
+                "shooter {i} failed: {e} (shard: handshake_errors {}, \
+                 admit_refused {}, admit_retried {})",
+                ShardStats::get(&st.handshake_errors),
+                ShardStats::get(&st.admit_refused),
+                ShardStats::get(&st.admit_retried),
+            )
+        });
+        reports.push(report);
+    }
+
+    for (i, r) in reports.iter().enumerate() {
+        let walk = format!(
+            "{} of {budget} ticks walked, truncated {}",
+            r.ticks_walked, r.walk_truncated
+        );
+        assert_eq!(r.event_decode_errors, 0, "shooter {i}: event decode errors");
+        assert_eq!(
+            r.action_lane_errors, 0,
+            "shooter {i}: the action stream died mid-run"
+        );
+        // A `Command` with no arm in `encode_raid` lands here rather than on
+        // a shard — the guard the raid suite added, now covering `Reload`.
+        assert_eq!(
+            r.actions_unencodable, 0,
+            "shooter {i}: {} reload commands had no wire form",
+            r.actions_unencodable
+        );
+
+        // **Anti-vacuity, and it is the whole test.** Each of the three
+        // below fails on a different broken half, and every one of them is
+        // satisfied by the others being wrong — which is why all three are
+        // here rather than the last one alone.
+        //
+        // The gun went dry: the kit armed, the bar held it, the trigger was
+        // pulled and the sim answered. A fleet carrying rocks stops here.
+        assert!(
+            r.dry_clicks > 0,
+            "shooter {i}: never heard a dry click, so it never fired an \
+             empty magazine — the fixture is not armed and every count \
+             below proves nothing ({walk})"
+        );
+        // The lane wrote frames. A tally that heard the click and no lane
+        // that answered it stops here.
+        assert!(
+            r.reloads_sent > 0,
+            "shooter {i}: heard {} dry clicks and asked for no reload ({walk})",
+            r.dry_clicks
+        );
+        // **The sim filled a magazine.** The path end to end, over a socket.
+        assert!(
+            r.reloads_confirmed > 0,
+            "shooter {i}: asked {} times and never reloaded — {} refused \
+             busy, {} refused otherwise ({walk})",
+            r.reloads_sent,
+            r.reloads_busy,
+            r.reloads_refused
+        );
+        // The retry is load-bearing and this is what says so. `hitscan`
+        // pays `next_swing` before it refuses, so the first ask after a dry
+        // click is inside the cadence and *cannot* succeed: a lane
+        // simplified to one ask per click would read zero here and zero
+        // above. Asserted rather than tolerated, because a build where this
+        // is zero has either changed that ordering — in which case the
+        // comment in `run_bot`'s reload lane is now wrong and must move —
+        // or stopped clicking at all.
+        assert!(
+            r.reloads_busy > 0,
+            "shooter {i}: no ask was ever refused as busy, which contradicts \
+             `hitscan` paying the cadence before it refuses. Either that \
+             ordering moved or nothing was asked ({walk})"
+        );
+        // Rounds really left the pack, and never more than the cylinder
+        // holds. `took` is the sim's own number and not a difference this
+        // suite computed — the distinction `EventMsg::Reload` exists for.
+        assert!(
+            r.rounds_loaded >= r.reloads_confirmed,
+            "shooter {i}: {} reloads moved {} rounds — a fill that took \
+             nothing is not a fill",
+            r.reloads_confirmed,
+            r.rounds_loaded
+        );
+        assert!(
+            r.rounds_loaded <= r.reloads_confirmed * def.magazine as u64,
+            "shooter {i}: {} reloads took {} rounds, past {} per cylinder",
+            r.reloads_confirmed,
+            r.rounds_loaded,
+            def.magazine
+        );
+        // Nothing was asked that could not be answered. FULL, HAND and DRY
+        // all mean the lane asked for something impossible: it only ever
+        // asks off a dry click, holding the weapon that raised it, with a
+        // pack that funds several cylinders.
+        assert_eq!(
+            r.reloads_refused, 0,
+            "shooter {i}: {} reloads refused for something other than busy \
+             — the lane asked for a fill it had no business asking for ({walk})",
+            r.reloads_refused
+        );
+    }
+
+    handle
+        .shutdown
+        .store(true, std::sync::atomic::Ordering::Relaxed);
 }

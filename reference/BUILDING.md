@@ -16,8 +16,15 @@ reference solved them separately and differently.
 Dated 2026-08-08; **§7b added 2026-08-10** and answers a second question
 the first draft did not — *what may be built, and what does a shape cost*
 — because the operator asked for the cost grammar next and it turns out to
-be four ratios doing the work of a hundred numbers. §9 is the part that
-changes what we build; its last five items are §7b's.
+be four ratios doing the work of a hundred numbers. **§7c added 2026-08-21**
+and answers the third — *how high does a piece sit, and how did they decide*
+— because build plate v1 shipped two numbers with no source and it turns out
+they published both the answer and the experiment that produced it. §9 is the
+part that changes what we build; items 11–15 are §7b's and 16–19 are §7c's.
+
+⚠ **§7c already changed a shipped number the day it was written** (§9 item
+16), which is the best argument this directory has for being read before a
+knob is picked rather than after.
 
 ## 0 · Provenance — read this first
 
@@ -33,10 +40,19 @@ changes what we build; its last five items are §7b's.
    tier, and weaker here than in `DOORS.md` — decay figures are the single
    most re-tuned set of numbers in that game.
 
-**Same honesty note as `DOORS.md`**: this container's egress proxy refuses
-every one of those page fetches, so tiers 2 and 3 arrived as **search-result
-summaries of those pages, not the pages**. Where two summaries disagreed I
-say so in the text rather than picking (§6 has the one that matters).
+**Same honesty note as `DOORS.md`, and it has since been half-repealed.**
+When §§1–7b were written, this container's egress proxy refused every one of
+those page fetches, so tiers 2 and 3 arrived as **search-result summaries of
+those pages, not the pages**. Where two summaries disagreed I say so in the
+text rather than picking (§6 has the one that matters).
+
+⚠ **§7c is not like that: its devblogs were fetched whole** (2026-08-21, a
+different container). `SOURCES.md` §0's rule is the reason to say so rather
+than to leave the blanket sentence standing — reachability is a property of
+the box, not of the hosts, so *probe* rather than trusting either claim. The
+practical consequence is that §7c's two quotes are transcribed from the pages
+and the rest of this file's are not, and a reader deciding how much weight to
+put on a sentence should know which kind they are holding.
 
 Nothing here was decompiled. Nothing ships.
 
@@ -338,6 +354,104 @@ are exempt. **A bigger base is not merely expensive to build — it is
 expensive to keep**, which is the sentence that makes this a survival game
 rather than a construction toy.
 
+## 7c · Where a piece sits VERTICALLY, and what they tried first
+
+Added 2026-08-21, and unlike the rest of this file **the two load-bearing
+quotes here were fetched whole** — see §8's note on why that sentence needed
+writing. It exists because build plate v1 shipped two numbers nobody had a
+source for (`DECISIONS.md` §open), and it turns out the reference published
+both the answer and the experiment that produced it.
+
+### 7c.1 A piece snaps to a SOCKET, and the offset is half a wall
+
+Placement is socket-based rather than addressed: a foundation exposes wall
+sockets on its edges and a floor socket above, a wall exposes sockets on its
+top and its vertical edges, and a piece must snap to one. The first foundation
+of a base is the exception — it goes on open ground, and everything else grows
+outward from it. (Tier 3.)
+
+The vertical part is the half we needed, and Devblog 187 (Dec 2017) states it
+directly:
+
+> "I started by allowing foundations to snap to each other at a vertical
+> offset of half a wall. Then I added half height walls that can be used to
+> even out that offset on the higher floors."
+
+Their wall is 3 m. So the snap offset is **±1.5 m, one symmetric number**, and
+the half wall exists specifically to close the gap that offset leaves once you
+build up from a stepped plate. Rustafied's Building 3.0 write-up adds the
+limits without publishing them, which is itself worth knowing:
+
+> "Both square and triangle foundations will snap at different levels to each
+> other, provided the height is not too high or low off the ground."
+
+Two limits, unstated, in a shipped game a decade old. Ours are `DECISIONS.md`
+§open rows for the same reason theirs are not in a devblog: they are tuning.
+
+Roofs occupy the wall socket at their bottom end, so a roof and a wall cannot
+share a position — an anti-honeycomb rule riding the same socket mechanism
+(Devblog 187).
+
+### 7c.2 They tried the generous version and reverted it
+
+This is the finding, and it is the one thing in this file that changed a
+number the same day it was written. Devblog 85 (Vince), on `foundation.steps`:
+
+> "I proposed the idea of using a three metre gradient for our
+> foundation.steps block earlier in October. The goal was to ease building
+> creation, so that you did not end up with walls ending at different heights
+> as soon as you built on uneven terrain."
+
+That is our problem statement in their words — the 2026-08-15 screenshots said
+the same thing about our island. And they measured it:
+
+> "We tested it, and while it worked perfectly for mountain bases where slope
+> angle reach 45 degrees easily, building on flat became harder. Door blocks
+> clipping were a tad nasty, too."
+
+> "Ideally we'd have a foundation steps block that can adapt between 1.5m and
+> 3m, but for the work required as of now it doesn't seem to be worth the
+> while."
+
+**A generous vertical allowance degrades the common case to serve the rare
+one.** They kept the half-wall snap and a dedicated *stepped shape*, and threw
+away the wide gradient. Note the second sentence too: the failure was not only
+in feel — a 3 m gradient made *door blocks clip*, which is the geometry half
+and the one a gate could have caught.
+
+### 7c.3 Declining the snap is a mechanic, not an omission — and it is not an input
+
+Freehand placement — putting a block down without letting it take a socket —
+is a real and widely-taught Rust technique, and it is where most of their
+advanced base tech comes from: floor stacking, multi-TC layouts, bunkers,
+bridge bases. (Tier 3, guides and tutorials.)
+
+**Re-asked 2026-08-22, because the answer turned out to matter to us**, and
+this paragraph used to end by saying the input was not consistently stated so
+this file would not state it. That was the wrong shape of gap. **There is no
+input.** Placement is continuous and socket-based (§7c.1): a piece is
+*attracted* to a socket when your aim comes near one, so a freehand piece is
+simply one aimed where no socket catches it. Nothing is held, nothing is
+toggled — which is exactly why the guides describe the technique as *"very
+tricky and non-intuitive, even to veteran Rust players"* and teach it with
+visual crutches instead of a keybind: study where the poles of normally-placed
+triangles sit, use the two logs on a twig foundation as a height reference for
+floor stacking, use the compass tics to turn 90 or 120 degrees. A game with a
+freehand *button* would need none of that.
+
+The corollary is the half worth carrying: **a wall still cannot go anywhere.**
+You cannot place one in mid-air; it must take a socket. So freehand there is a
+foundation-and-floor technique, not a general licence, and the socket rule is
+what keeps a wall on the floor it belongs to.
+
+What matters for us is the shape of the claim: a build system with one snap
+rule and no way out of it is strictly less expressive than theirs, and the
+players who care most about building are the ones who notice.
+
+⚠ **And the mechanism does not port — §9 item 20 is what we did instead.**
+Their freehand falls out of a continuous world for free; ours is
+address-based, so there is no "near" for a placement to miss.
+
 ## 8 · Sources
 
 Tier 1 (in-tree, MIT): `reference/rust-systems.txt` — `BuildingPrivlidge`,
@@ -350,6 +464,25 @@ Tier 2 (developer devblogs, **via search summary — see §0**): Devblog 185
 Devblog 189 (Dec 2017, Building 3.0 and upkeep, with the door-opening decay
 bug as its stated motivation); Devblog 190 (deployables protected inside
 privilege).
+
+Tier 2 also, and **fetched whole rather than summarised** (2026-08-21, §0's
+⚠): Devblog 187 (Dec 2017 — the half-wall snap offset, half height walls, and
+roofs taking the wall socket) and Devblog 85 (Vince — the three-metre
+`foundation.steps` gradient, the test that killed it, and the 1.5–3 m
+adaptive block they decided was not worth the work). Devblog 158 was fetched
+too and carries only the intent (*"the possibility of half height snapping of
+foundations and half height walls"*), which is useful for dating.
+
+Tier 3 for §7c: Rustafied's Building 3.0 write-up (the "not too high or low
+off the ground" phrasing, and the half wall's dimensions), and the community
+freehand-placement guides for §7c.3 — Corrosion Hour's foundation-freehand
+guide and the floor-stacking / bridge-base tutorials beside it. **Search
+summaries, not fetched**: every direct fetch was blocked by this box's proxy
+on 2026-08-22, §0's ⚠ again. What they establish is consistent across all of
+them and is a NEGATIVE — no key, no toggle, alignment done by eye against
+logs and compass tics — which is why §7c.3 now states the input where the
+first draft declined to: "the sources do not agree on the input" was itself
+the misreading, and the agreement is that there is none.
 
 Tier 3 (community wikis, guides and decay calculators, **via search
 summary**): the 10-player list cap, the `E`/hold-`E` interaction, the 24
@@ -488,3 +621,58 @@ The rest of this section is **§7b's half**, added 2026-08-10.
     sides (§7b.5) — which is a *good* rule we should want, but it needs
     a facing on every piece and an attack direction on every swing, and
     it is worth its own pass rather than a corner of this one.
+16. **The plate offset is theirs now, and the asymmetric one we shipped
+    first was worse on our own island** (§7c.1, `DECISIONS.md` §open
+    "build plate v1"). Build plate v1 landed with `PLATE_RISE_MAX_BANDS`
+    6 and `PLATE_SINK_MAX_BANDS` 2, reasoned from how the two directions
+    LOOK — a plate over its ground is a leg, a plate under it is the hill
+    through the floor. Devblog 187 says theirs is **one symmetric number**,
+    half a wall, and `BALANCE.md` §6's default takes it without a case. It
+    is also just better: swept over 1 598 buildable starts on the shipped
+    seed, ±3 against 6/2 moves a whole 4×4 from 86.7% of starts to 91.3%,
+    a 6×6 from 74.7% to 81.7%, an 8×8 from 62.1% to 70.8%, and **halves
+    the deepest leg**, 3.0 m → 1.5 m. The sink is the knob that binds and
+    the rise was buying nothing.
+17. **We have no half wall, and a half-storey offset is exactly what
+    creates the need for one.** §7b.1 already listed it as missing from
+    our catalogue; §7c.1 is why it matters more now than it did then —
+    their half wall exists *specifically* to even out the snap offset on
+    the floors above a stepped plate. Ours has the offset and not the
+    piece, so a base that steps carries the gap upward forever. Cheap:
+    one shape code, and `SHAPE_BITS` is 4 with codes to spare since
+    triangles.
+18. **Do not widen the plate limits to fix a slope — add the stepped
+    shape.** §7c.2 is a published, tested negative result on precisely
+    the change that will keep suggesting itself: a wide vertical
+    allowance helps mountains and hurts flats, and it made their door
+    blocks clip. Our version of "a stepped shape" is a foundation whose
+    top is a plate and whose footprint spans two bands, which is a
+    catalogue row plus a shape code rather than a knob.
+19. ~~**Freehand is the open one, and it is bigger than it sounds**~~
+    — **SPOKEN AND BUILT 2026-08-22** (`DECISIONS.md`; the operator took
+    "any piece"). It was the one thing here that wanted a word rather
+    than a measurement, and it got one. What it cost is what this item
+    predicted: one bit on `ActionMsg::Place`, `PROTO_VER` 49 → 50, and a
+    UI decision — which is item 20, because the UI is where the research
+    stopped being a formality.
+20. **Their freehand is not an input, and that does not port** (§7c.3,
+    added 2026-08-22 by re-asking the question item 19 left open).
+    Theirs falls out of a continuous world for free: aim near a socket
+    and the piece is attracted to it, aim away and nothing catches it.
+    **Ours has no "near"** — `Place` carries a cell, and `plate_for`
+    latches on exact adjacency, so there is no room for a placement to
+    be adjacent-but-not-snapped. The bit therefore has to be explicit
+    where theirs is emergent, and the interesting question became how a
+    player sets it.
+    **What ports is the aim, not the mechanism.** `place::aim_from_look`
+    already marches the look ray to a real `(f32, f32)` and
+    `place::target_at` quantizes it away, so the sub-cell remainder was
+    sitting there unused: near the shared edge with a built neighbour it
+    snaps, past `SNAP_BAND_FRAC` of the cell it goes freehand, and the
+    ghost's own height is the preview. No key, no mode — which is the
+    property of theirs actually worth keeping.
+    **And their socket rule is why case 1 stays**: a wall must still
+    take a socket there, so a freehand wall floating a band off its own
+    floor is not a thing their system permits either. Ours refuses it in
+    `plate_for` rather than by geometry, and `plate.rs`'
+    `freehand_cannot_lift_a_piece_off_its_own_column` is the gate.

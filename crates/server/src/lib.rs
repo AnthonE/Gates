@@ -51,10 +51,10 @@ pub mod worldfile;
 /// and the bots share one implementation); re-exported for the gates.
 pub use client_core::view;
 
-/// This title's slug in scry's catalog — what its manifest, its depot, its
+/// This title's slug in elo's catalog — what its manifest, its depot, its
 /// shard list and its ticket contract are all filed under.
 ///
-/// The client has its own copy (`client::scry::SLUG`) and the two are not
+/// The client has its own copy (`client::elo::SLUG`) and the two are not
 /// shared, because the crates do not depend on each other in that direction
 /// and never should. `crates/server/tests/entitlement.rs` pins them equal.
 pub const ENTITLE_SLUG: &str = "gates";

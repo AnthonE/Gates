@@ -115,21 +115,54 @@ pub const fn kind_of(slot: usize) -> u8 {
     }
 }
 
-/// Guards standing at each authored site (`DECISIONS.md` §open, "site
-/// guards v0"). The pad and every live waystation get this many.
-const GUARDS_PER_SITE: usize = 2;
+/// Guards standing at the haven pad, and at each live waystation
+/// (`DECISIONS.md` §open, "site guards v0" and "the guard chain").
+///
+/// **Two numbers rather than one, because a flat roster is the defect.**
+/// Guards v0 gave every authored site the same two, so the pad and a
+/// waystation cost a player exactly the same to walk up to — while
+/// `ci/haven_prize.mjs` gates a strictly rising *prize* chain across three
+/// tiers (road shoulder → waystation → pad, each out-paying the one below on
+/// yield, rolls and reach). A rising reward against a flat risk is a gradient
+/// of **travel time**, which is what `reference/RIPLIST.md` §0's threat frame
+/// names: their yields were priced for contested farming and ours were not,
+/// so taking the yield without the interruption that balanced it imports half
+/// a number.
+///
+/// The magnitudes are a proposed default and the operator's word is owed on
+/// how far the ladder should lean; what is not a preference is the **shape**,
+/// and that is what the const block below and `tests/guard.rs` §A hold: the
+/// richest site keeps strictly the most, and the tier below it keeps some.
+/// The road shoulder keeps none and is the chain's zero.
+pub const HAVEN_GUARDS: usize = 4;
+pub const WAYSTATION_GUARDS: usize = 2;
 
 /// Roster slots spent guarding, across every site. A stated number and not
 /// a hashed draw, for `WOLF_SLOT_EVERY`'s reason: a gate counts it instead
-/// of sampling it. One pad plus [`terrain::WAYSTATIONS`] at
-/// `GUARDS_PER_SITE` each is **6 of the 16 wolves**, leaving 10 hunting the
-/// island as before.
-pub const SITE_GUARDS: usize = (1 + terrain::WAYSTATIONS) * GUARDS_PER_SITE;
+/// of sampling it. The pad's four plus [`terrain::WAYSTATIONS`] at
+/// [`WAYSTATION_GUARDS`] each is **8 of the 16 wolves**, leaving 8 hunting
+/// the island — two fewer than guards v0 left, which is the price of the
+/// gradient and is paid out of the free roster rather than out of the cap.
+pub const SITE_GUARDS: usize = HAVEN_GUARDS + terrain::WAYSTATIONS * WAYSTATION_GUARDS;
 
 const _: () = assert!(
     SITE_GUARDS * WOLF_SLOT_EVERY <= MAX_MOBS,
     "the guard slots run past the roster — every guard is a wolf slot, so \
      SITE_GUARDS * WOLF_SLOT_EVERY is the last slot one can claim"
+);
+// The chain's shape, at the definition, in the form `terrain.rs` uses for
+// the footprints: get it wrong and the crate does not build, so there is no
+// version of the tree where the pad is the cheapest site to rob and a suite
+// is merely red.
+const _: () = assert!(
+    HAVEN_GUARDS > WAYSTATION_GUARDS,
+    "the pad keeps no more guards than a waystation — the risk chain does \
+     not rise where ci/haven_prize.mjs proves the prize chain does"
+);
+const _: () = assert!(
+    WAYSTATION_GUARDS > 0,
+    "a waystation keeps no guards, so the middle tier of the prize chain is \
+     free to rob and only the pad costs anything"
 );
 
 /// Which authored site a roster slot keeps, or `None` for the free roster.
@@ -155,7 +188,14 @@ pub const fn guard_site_of(slot: usize) -> Option<usize> {
     if g >= SITE_GUARDS {
         return None;
     }
-    Some(g / GUARDS_PER_SITE)
+    // The pad takes the first block of guard ordinals and the waystations
+    // divide the rest evenly. Ordering matters only in that it is *stated*:
+    // a gate counts per site rather than sampling, so the pad being first is
+    // a fact the test reads rather than a property anything depends on.
+    if g < HAVEN_GUARDS {
+        return Some(0);
+    }
+    Some(1 + (g - HAVEN_GUARDS) / WAYSTATION_GUARDS)
 }
 
 /// The footprint a site presents — the same [`terrain::SiteFootprint`] the
@@ -948,7 +988,12 @@ pub fn strike(
     // EV_HIT is the attacker's own fact and the server routes it by `a`,
     // so a tagged mob id in `b` reaches the hand that swung and nothing
     // else — the hitmarker, exactly as a player hit draws it.
-    events.push(EV_HIT, attacker_id, mob_id(slot), def.damage as u32);
+    events.push(
+        EV_HIT,
+        attacker_id,
+        mob_id(slot),
+        crate::world::hit_c(crate::collide::Part::Chest, def.damage),
+    );
     if !died {
         return true;
     }

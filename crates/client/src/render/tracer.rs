@@ -59,7 +59,7 @@ use sim_core::{pitch_dir, yaw_dir};
 /// one AOI, and the overflow policy is to refuse the newest tracer — never to
 /// steal a live one, because a streak that vanishes mid-flight reads as a bug
 /// where a missing one reads as nothing at all.
-const TRACERS: usize = 16;
+pub const TRACERS: usize = 16;
 
 /// Millimetres in a metre — the wire speaks mm, Bevy speaks m.
 const MM_PER_M: f32 = 1000.0;
@@ -105,6 +105,74 @@ impl Tracers {
     /// refusal `TRACERS` documents, and deliberately not drop-oldest.
     fn free(&self) -> Option<usize> {
         self.slots.iter().position(|f| f.life == 0)
+    }
+
+    /// How many slots are drawing a flight right now.
+    ///
+    /// Public because it is the **observable** the refusals below are gated
+    /// on: a refusal is a slot that was not taken, and a test that can only
+    /// read the return value is checking the branch it just read rather than
+    /// its effect (`CLAUDE.md`'s water-carry entry — gate the effect, not
+    /// only the correctness). Nothing in the frame path reads it.
+    pub fn live(&self) -> usize {
+        self.slots.iter().filter(|f| f.life != 0).count()
+    }
+
+    /// Claim a slot for one shot and start its flight. `false` when nothing
+    /// was claimed.
+    ///
+    /// **Both refusals live here rather than at the call site, and that is
+    /// the whole reason this function exists.** They were written inline in
+    /// [`launch`], which takes `NonSend<Net>` and a live session, so no test
+    /// in this repo could drive them: deleting the instant-shot `continue`
+    /// left every gate in the tree green while restoring exactly the
+    /// motionless four-second streak `sim-core/tests/gun.rs` used to prevent.
+    /// A rule that only a Bevy system can reach is a rule nothing holds.
+    ///
+    /// **The instant shot** (`speed == 0`, wire v54's spare reading) has no
+    /// flight to draw: the low field is a reach rather than a drop, so flying
+    /// it would hang a streak at the muzzle for `MAX_ARROW_LIFE_TICKS` and
+    /// burn one of `TRACERS` slots doing it. Drawing the beam is a different
+    /// shape entirely — one frame, a line of known length rather than an
+    /// integration — and `NOW.md` §0shot carries it.
+    ///
+    /// **The full pool** refuses the newest, never steals a live one, which
+    /// is the policy `TRACERS` documents.
+    pub fn claim(
+        &mut self,
+        feet: [f32; 3],
+        yaw: u16,
+        pitch: u8,
+        speed_mmpt: u16,
+        drop_mmpt2: u16,
+    ) -> bool {
+        if protocol::shot_is_instant(speed_mmpt) {
+            return false;
+        }
+        let Some(ix) = self.free() else {
+            return false;
+        };
+        let (fx, fz) = yaw_dir(yaw);
+        let (ch, sv) = pitch_dir(pitch);
+        let speed = speed_mmpt as f32;
+        self.slots[ix] = Flight {
+            qx: (feet[0] * MM_PER_M) as i32,
+            qy: (feet[1] * MM_PER_M) as i32 + ARROW_EYE_MM,
+            qz: (feet[2] * MM_PER_M) as i32,
+            vx: (fx * ch * speed) as i32,
+            vy: (sv * speed) as i32,
+            vz: (fz * ch * speed) as i32,
+            drop: drop_mmpt2,
+            // The sim derives this from the weapon's reach and the round's
+            // speed; the wire does not carry reach, so the tracer runs on
+            // the store's own backstop instead. A streak that outlives the
+            // arrow by a few ticks is invisible — it is already past
+            // anything it could have hit — where one that dies early reads
+            // as the arrow vanishing.
+            life: sim_core::limits::MAX_ARROW_LIFE_TICKS,
+            carry: 0.0,
+        };
+        true
     }
 }
 
@@ -154,6 +222,17 @@ pub fn launch(mut pool: ResMut<Tracers>, feed: Res<Feed>, net: NonSend<Net>) {
     let mut rs = client_core::interp::RemoteState::default();
 
     for &(shooter, yaw, pitch, speed_mmpt, drop_mmpt2) in feed.shots() {
+        // **An instantaneous shot is refused, and the refusal is
+        // `Tracers::claim`'s** — this early-out is the same test one step
+        // sooner, kept only so a rifle skips the interpolator sample below
+        // and costs this system nothing at all. Deleting it therefore
+        // changes the cost and not the behaviour; deleting the one in
+        // `claim` is red (`tests/tracer.rs`). That split is deliberate: an
+        // optimization at a call site and a law in a function a test can
+        // call are different things, and this file had only the first.
+        if protocol::shot_is_instant(speed_mmpt) {
+            continue;
+        }
         // Where the bow was. The local player's own shot comes off the
         // predictor — the interpolator does not hold you — and everyone
         // else's off the same sample `bodies::stream` draws them at, so a
@@ -169,30 +248,12 @@ pub fn launch(mut pool: ResMut<Tracers>, feed: Res<Feed>, net: NonSend<Net>) {
             // rather than drawn from the origin.
             continue;
         };
-        let Some(ix) = pool.free() else {
-            return;
-        };
-
-        let (fx, fz) = yaw_dir(yaw);
-        let (ch, sv) = pitch_dir(pitch);
-        let speed = speed_mmpt as f32;
-        pool.slots[ix] = Flight {
-            qx: (feet[0] * MM_PER_M) as i32,
-            qy: (feet[1] * MM_PER_M) as i32 + ARROW_EYE_MM,
-            qz: (feet[2] * MM_PER_M) as i32,
-            vx: (fx * ch * speed) as i32,
-            vy: (sv * speed) as i32,
-            vz: (fz * ch * speed) as i32,
-            drop: drop_mmpt2,
-            // The sim derives this from the weapon's reach and the round's
-            // speed; the wire does not carry reach, so the tracer runs on
-            // the store's own backstop instead. A streak that outlives the
-            // arrow by a few ticks is invisible — it is already past
-            // anything it could have hit — where one that dies early reads
-            // as the arrow vanishing.
-            life: sim_core::limits::MAX_ARROW_LIFE_TICKS,
-            carry: 0.0,
-        };
+        // A refusal — instant shot, or every slot busy — stops this shot and
+        // not the feed. The old form returned on a full pool; the loop is
+        // bounded by the event ring either way, and a later shot in the same
+        // frame cannot free a slot, so the two differ by a `free()` scan of
+        // sixteen and nothing else.
+        pool.claim(feet, yaw, pitch, speed_mmpt, drop_mmpt2);
     }
 }
 

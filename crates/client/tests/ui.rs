@@ -37,11 +37,12 @@ use client::ui::slots::{self, Grab};
 use sim_core::build::{
     BuildContent, MAT_METAL, MAT_STONE, MAT_TWIG, MAT_WOOD, SHAPE_FOUNDATION, SHAPE_WALL,
 };
+use sim_core::combat;
 use sim_core::craft::CraftContent;
 use sim_core::deploy::DeployContent;
 use sim_core::gather::ItemStack;
-use sim_core::inventory::{CONT_BAG, CONT_BOX, CONT_SELF};
-use sim_core::limits::{BOX_SLOTS, INV_SLOTS};
+use sim_core::inventory::{CONT_BAG, CONT_BOX, CONT_SELF, CONT_WEAR, CONT_WORLD};
+use sim_core::limits::{BOX_SLOTS, INV_SLOTS, WEAR_SLOTS};
 
 fn empty() -> [ItemStack; INV_SLOTS] {
     [ItemStack::default(); INV_SLOTS]
@@ -67,6 +68,15 @@ fn stocked() -> [ItemStack; INV_SLOTS] {
     inv
 }
 
+/// An empty body — the third view `move_args` reads since the wear
+/// container moved off the ground subscription (`NOW.md` §0eq item 4).
+/// Two slots wide, which is the width the panel and the wire now agree
+/// on; passing `empty()` here would still compile and would hide a
+/// source-side read of the wrong container behind a 30-long array.
+fn bare() -> [ItemStack; WEAR_SLOTS] {
+    [ItemStack::default(); WEAR_SLOTS]
+}
+
 /// A real handle: large, distinct, and not confusable with a kind or a slot.
 /// The browser client learned this the hard way — while `bag`, `from_kind`
 /// and `to_kind` were all 0 on every legal call, transposing two of them was
@@ -79,8 +89,18 @@ const HANDLE: u32 = 0x0031_0004;
 fn move_marshals_every_field_to_its_own_name() {
     let inv = stocked();
     let cont = empty();
-    let m = slots::move_args(0, CONT_SELF, 0, CONT_SELF, 5, Grab::All, &inv, &cont)
-        .expect("a self move of a real stack");
+    let m = slots::move_args(
+        0,
+        CONT_SELF,
+        0,
+        CONT_SELF,
+        5,
+        Grab::All,
+        &inv,
+        &cont,
+        &bare(),
+    )
+    .expect("a self move of a real stack");
     assert_eq!(m.from_slot, 0);
     assert_eq!(m.to_slot, 5);
     assert_eq!(m.from_kind, CONT_SELF);
@@ -95,6 +115,186 @@ fn move_marshals_every_field_to_its_own_name() {
     assert_eq!(m.bag, 0);
 }
 
+/// **A wear move carries no handle, and the old rule sent nothing at all.**
+///
+/// `move_args` required a non-zero handle for every kind that was not
+/// `CONT_SELF`, which was right while every other container stood in the
+/// world. `CONT_WEAR` is on the body and has none, so under the old rule
+/// this returned `None` — and `None` here is not a refusal: it is the
+/// drag snapping back with nothing sent, no `EV_MOVE_REFUSED`, no toast
+/// and no line in any log. The feature would have read as a dead panel.
+///
+/// The second half is worse and is why the fixture passes a live handle:
+/// with a box open, `bag` is that box's `box_key`, and a rule that only
+/// asked "is it non-zero" would have shipped it as a **wear** move's
+/// handle. So the assertion is `m.bag == 0` — normalized away, not
+/// passed through — for the reason the self-to-self case gives one test
+/// up: `world.rs` never reads the field for an own move and the encoder
+/// does not range-check it, so a stray value enters the WAL unvalidated.
+#[test]
+fn a_wear_move_needs_no_handle_and_carries_none() {
+    let mut inv = empty();
+    inv[3] = ItemStack {
+        item: 5,
+        count: 1,
+        cond: 0,
+    };
+    let cont = empty();
+
+    let m = slots::move_args(
+        HANDLE,
+        CONT_SELF,
+        3,
+        CONT_WEAR,
+        1,
+        Grab::All,
+        &inv,
+        &cont,
+        &bare(),
+    )
+    .expect("putting armor on is a move the client can address");
+    assert_eq!((m.from_kind, m.from_slot), (CONT_SELF, 3));
+    assert_eq!((m.to_kind, m.to_slot), (CONT_WEAR, 1));
+    assert_eq!(m.count, 1);
+    assert_eq!(
+        m.bag, 0,
+        "a body has no address; an open box's handle must not ride along"
+    );
+
+    // And back off again, with the wear container on the source side.
+    //
+    // The body is its own view now, so this reads it out of `worn` and
+    // not out of `cont` — it used to pass `&worn` for *both* the pack and
+    // the ground container, which was the only way to make the source
+    // read land while the two shared one array. `inv` and `cont` are
+    // deliberately empty here: if the source pick regressed to either,
+    // the count is 0 and the call refuses.
+    let mut worn = bare();
+    worn[1] = ItemStack {
+        item: 5,
+        count: 1,
+        cond: 0,
+    };
+    let m = slots::move_args(
+        HANDLE,
+        CONT_WEAR,
+        1,
+        CONT_SELF,
+        8,
+        Grab::All,
+        &empty(),
+        &empty(),
+        &worn,
+    )
+    .expect("taking it off is the same verb");
+    assert_eq!((m.from_kind, m.to_kind), (CONT_WEAR, CONT_SELF));
+    assert_eq!(m.bag, 0);
+}
+
+/// A wear move and a ground container in one drag is still two handles,
+/// and still refused here.
+///
+/// `is_own` widened what counts as "on the player"; it must not have
+/// widened what counts as one handle. Box-to-wear is legal (one ground
+/// side) and is gated in `sim-core`; bag-to-box was and stays illegal.
+#[test]
+fn widening_own_did_not_legalise_two_ground_containers() {
+    let inv = empty();
+    let mut cont = empty();
+    cont[0] = ItemStack {
+        item: 5,
+        count: 1,
+        cond: 0,
+    };
+    // One ground side plus the body: addressable.
+    assert!(
+        slots::move_args(
+            HANDLE,
+            CONT_BOX,
+            0,
+            CONT_WEAR,
+            1,
+            Grab::All,
+            &inv,
+            &cont,
+            &bare()
+        )
+        .is_some(),
+        "putting on what you just looted is one handle"
+    );
+    // Two ground sides: still not.
+    assert!(
+        slots::move_args(
+            HANDLE,
+            CONT_BAG,
+            0,
+            CONT_BOX,
+            1,
+            Grab::All,
+            &inv,
+            &cont,
+            &bare()
+        )
+        .is_none(),
+        "two ground containers name one handle between them"
+    );
+}
+
+/// The container grid's width is the sim's width, for every kind.
+///
+/// `container_cols` used to name `CONT_BOX` and answer `GRID_COLS` for
+/// everything else — a hand-kept mirror of `slots_in`, which would have
+/// drawn a two-slot wear container as six cells with four of them lies.
+/// It is derived now, and this is the gate that says the derivation
+/// agrees with the sim on every live kind rather than only on the new one.
+#[test]
+fn every_container_draws_at_the_sims_own_width() {
+    // The property, and it is the bug class rather than the formula: a
+    // panel may never draw a cell the sim has no slot for. Asserted
+    // against `slots_in` — the sim's own answer — and NOT against
+    // `container_cols`' body, which would be the naive rebuild that
+    // shares a code path with the thing it checks.
+    for kind in [CONT_SELF, CONT_BAG, CONT_BOX, CONT_WORLD, CONT_WEAR] {
+        let cols = slots::container_cols(kind);
+        assert!(
+            cols <= slots::slots_in(kind),
+            "kind {kind} draws {cols} cells over {} slots",
+            slots::slots_in(kind)
+        );
+        assert!(cols > 0, "kind {kind} draws nothing");
+    }
+    // The four kinds that predate the derivation are unchanged — this is
+    // the regression half, and without it the property above is satisfied
+    // by returning 1 for everything.
+    for kind in [CONT_SELF, CONT_BAG, CONT_BOX, CONT_WORLD] {
+        assert_eq!(
+            slots::container_cols(kind),
+            slots::GRID_COLS,
+            "kind {kind} changed width when the derivation landed"
+        );
+    }
+    assert_eq!(slots::container_cols(CONT_WEAR), WEAR_SLOTS);
+}
+
+/// Every live kind has a title of its own, and none of them falls through.
+///
+/// The fallback is `"BAG"`, which was a real answer for one kind and a
+/// lie about the next two — the comment in `container_title` was written
+/// after `CONT_WORLD` nearly shipped as "BAG". This is that comment as a
+/// test, so the next kind fails here instead of being discovered on
+/// screen.
+#[test]
+fn no_live_container_kind_is_titled_bag_by_accident() {
+    assert_eq!(slots::container_title(CONT_BAG), "BAG");
+    for kind in [CONT_SELF, CONT_BOX, CONT_WORLD, CONT_WEAR] {
+        assert_ne!(
+            slots::container_title(kind),
+            "BAG",
+            "kind {kind} fell through to the bag fallback"
+        );
+    }
+}
+
 #[test]
 fn a_ground_move_carries_the_handle_and_the_containers_own_count() {
     let inv = empty();
@@ -104,8 +304,18 @@ fn a_ground_move_carries_the_handle_and_the_containers_own_count() {
         count: 6,
         cond: 0,
     };
-    let m = slots::move_args(HANDLE, CONT_BOX, 4, CONT_SELF, 0, Grab::All, &inv, &cont)
-        .expect("box to self");
+    let m = slots::move_args(
+        HANDLE,
+        CONT_BOX,
+        4,
+        CONT_SELF,
+        0,
+        Grab::All,
+        &inv,
+        &cont,
+        &bare(),
+    )
+    .expect("box to self");
     assert_eq!(m.bag, HANDLE);
     assert_eq!(m.from_kind, CONT_BOX);
     // Read from the CONTAINER's view. Reading `inv` here is the label bug
@@ -125,12 +335,36 @@ fn refusals_in_order() {
     };
 
     // 1 · a kind past CONT_MAX.
-    assert!(slots::move_args(HANDLE, 9, 0, CONT_SELF, 1, Grab::All, &inv, &cont).is_none());
+    assert!(
+        slots::move_args(HANDLE, 9, 0, CONT_SELF, 1, Grab::All, &inv, &cont, &bare()).is_none()
+    );
 
     // 2 · two DIFFERENT ground containers — the command carries one handle.
-    assert!(slots::move_args(HANDLE, CONT_BAG, 0, CONT_BOX, 1, Grab::All, &inv, &cont).is_none());
+    assert!(slots::move_args(
+        HANDLE,
+        CONT_BAG,
+        0,
+        CONT_BOX,
+        1,
+        Grab::All,
+        &inv,
+        &cont,
+        &bare()
+    )
+    .is_none());
     // ...but the same kind on both ends is rearranging one open container.
-    assert!(slots::move_args(HANDLE, CONT_BOX, 0, CONT_BOX, 1, Grab::All, &inv, &cont).is_some());
+    assert!(slots::move_args(
+        HANDLE,
+        CONT_BOX,
+        0,
+        CONT_BOX,
+        1,
+        Grab::All,
+        &inv,
+        &cont,
+        &bare()
+    )
+    .is_some());
 
     // 3 · a slot past its OWN container's width. The encoder would carry
     //     box slot 20 — `slots_in` is why the panel does not send it.
@@ -143,7 +377,8 @@ fn refusals_in_order() {
         BOX_SLOTS,
         Grab::All,
         &inv,
-        &cont
+        &cont,
+        &bare()
     )
     .is_none());
     // The same slot number in your own inventory is fine: the bound is
@@ -156,30 +391,86 @@ fn refusals_in_order() {
         BOX_SLOTS,
         Grab::All,
         &inv,
-        &cont
+        &cont,
+        &bare()
     )
     .is_some());
 
     // 4 · the same address twice.
-    assert!(slots::move_args(0, CONT_SELF, 3, CONT_SELF, 3, Grab::All, &inv, &cont).is_none());
+    assert!(slots::move_args(
+        0,
+        CONT_SELF,
+        3,
+        CONT_SELF,
+        3,
+        Grab::All,
+        &inv,
+        &cont,
+        &bare()
+    )
+    .is_none());
     // Same slot NUMBER across two kinds is a different address.
-    assert!(slots::move_args(HANDLE, CONT_BOX, 0, CONT_SELF, 0, Grab::All, &inv, &cont).is_some());
+    assert!(slots::move_args(
+        HANDLE,
+        CONT_BOX,
+        0,
+        CONT_SELF,
+        0,
+        Grab::All,
+        &inv,
+        &cont,
+        &bare()
+    )
+    .is_some());
 
     // 5 · a ground end with a zero handle. `box_key(0,0,0) == 0` addresses a
     //     real box, so sending 0 for "no container known" would move items
     //     in a stranger's box rather than being refused.
-    assert!(slots::move_args(0, CONT_BOX, 0, CONT_SELF, 5, Grab::All, &inv, &cont).is_none());
+    assert!(slots::move_args(
+        0,
+        CONT_BOX,
+        0,
+        CONT_SELF,
+        5,
+        Grab::All,
+        &inv,
+        &cont,
+        &bare()
+    )
+    .is_none());
 
     // 6 · an empty source. The sim does not clamp a count, so neither does
     //     this: a stack of nothing yields nothing to send.
-    assert!(slots::move_args(0, CONT_SELF, 20, CONT_SELF, 21, Grab::All, &inv, &cont).is_none());
+    assert!(slots::move_args(
+        0,
+        CONT_SELF,
+        20,
+        CONT_SELF,
+        21,
+        Grab::All,
+        &inv,
+        &cont,
+        &bare()
+    )
+    .is_none());
 }
 
 #[test]
 fn a_validated_move_encodes() {
     let inv = stocked();
     let cont = empty();
-    let m = slots::move_args(0, CONT_SELF, 0, CONT_SELF, 5, Grab::All, &inv, &cont).unwrap();
+    let m = slots::move_args(
+        0,
+        CONT_SELF,
+        0,
+        CONT_SELF,
+        5,
+        Grab::All,
+        &inv,
+        &cont,
+        &bare(),
+    )
+    .unwrap();
     let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
     let len = m
         .encode(&mut buf)
@@ -208,9 +499,31 @@ fn grabs_round_the_way_a_hand_expects() {
 fn a_half_drag_sends_half() {
     let inv = stocked();
     let cont = empty();
-    let m = slots::move_args(0, CONT_SELF, 0, CONT_SELF, 6, Grab::Half, &inv, &cont).unwrap();
+    let m = slots::move_args(
+        0,
+        CONT_SELF,
+        0,
+        CONT_SELF,
+        6,
+        Grab::Half,
+        &inv,
+        &cont,
+        &bare(),
+    )
+    .unwrap();
     assert_eq!(m.count, 5);
-    let m = slots::move_args(0, CONT_SELF, 0, CONT_SELF, 6, Grab::One, &inv, &cont).unwrap();
+    let m = slots::move_args(
+        0,
+        CONT_SELF,
+        0,
+        CONT_SELF,
+        6,
+        Grab::One,
+        &inv,
+        &cont,
+        &bare(),
+    )
+    .unwrap();
     assert_eq!(m.count, 1);
 }
 
@@ -423,7 +736,7 @@ fn the_browser_skips_inert_rows() {
 #[test]
 fn an_unnamed_item_prints_its_index_rather_than_nothing() {
     let mut catalog = protocol::event::ItemCatalog::EMPTY;
-    catalog.set(4, b"Wood", 0).unwrap();
+    catalog.set(4, b"Wood", protocol::ItemRow::EMPTY).unwrap();
     assert_eq!(craft::item_name(&catalog, 4), Some("Wood"));
     assert_eq!(craft::item_name(&catalog, 9), None);
     assert_eq!(craft::item_label(&catalog, 4), "Wood");
@@ -1166,6 +1479,11 @@ fn the_mark_belongs_to_one_node() {
         cx: 40,
         cz: 90,
         d2: 1.0,
+        // The world position the pick now carries for `render::impact`. Not
+        // what this gate is about, and left at the default on purpose: the
+        // mark is keyed on the CELL, and a position agreeing with it would
+        // make the test read as though it were not.
+        ..SwingPick::default()
     };
     assert!(
         mark_is_for(cell_key(40, 90), &pick),
@@ -1478,8 +1796,9 @@ fn every_item_in_the_content_has_an_icon() {
 // §H · the two items the mouse is modal on must exist
 //
 // `crate::ui::hold` decides what left and right click mean by normalising the
-// held item's DISPLAY NAME, because that is the only thing on the wire —
-// `protocol::ItemCatalog` carries names and nothing else. That works, and it
+// held item's DISPLAY NAME, because it is the only IDENTITY on the wire —
+// `protocol::ItemCatalog` carries names plus numeric columns (a condition
+// ceiling since v46, armor since v52) and no id. That works, and it
 // has one failure mode worth a gate: rename the item in `content/items.toml`
 // and nothing breaks loudly. `held` simply returns `Other` forever, the ghost
 // stops appearing, right-click stops opening the wheel, and left click goes
@@ -2360,7 +2679,7 @@ fn a_declared_identity_reaches_the_wire_by_either_route() {
     // The command-line half, which is what the pre-window connect used.
     let from_args = args.address().expect("a well-formed identity parses");
     // The `Who` half, which is what every screen-driven connect uses now.
-    let player = client::scry::Player::Declared(ID.to_string());
+    let player = client::elo::Player::Declared(ID.to_string());
     let from_who =
         protocol::Address::from_hex(player.address().expect("declared carries one").as_bytes())
             .expect("the same string parses the same way");
@@ -2377,7 +2696,7 @@ fn a_declared_identity_reaches_the_wire_by_either_route() {
         other => panic!("expected Run, got {other:?}"),
     };
     assert_eq!(bare.address().unwrap(), protocol::Address::GUEST);
-    assert_eq!(client::scry::Player::Anonymous.address(), None);
+    assert_eq!(client::elo::Player::Anonymous.address(), None);
 }
 
 /// The other half, and a grep — because the defect is a call site.
@@ -3044,6 +3363,53 @@ fn the_landed_eat_gate_can_see_the_reader_go_away() {
     );
 }
 
+/// Being hurt reaches the screen — the whole chain, in one grep.
+///
+/// `EV_HURT` lands in `ClientCore`'s ring, `render/feed.rs` drains it (which
+/// `tests/sound.rs` enforces, from the other end), and this is the link
+/// neither of those can see: that something in `render/hud.rs` actually
+/// *reads* it. A direction the client receives and never draws is exactly
+/// §0eat's dead button — worse here, because the wire carries a packet per
+/// landed blow to pay for it.
+#[test]
+fn the_direction_a_blow_came_from_reaches_the_screen() {
+    let (feed, hud) = feed_and_hud();
+    assert!(
+        feed.contains("pop_hurt()"),
+        "render/feed.rs is not draining the hurt ring - either the drain \
+         moved (which tests/sound.rs would also be shouting about) or the \
+         mark is now fed from somewhere that is not the one drain"
+    );
+    assert!(
+        names_field(&hud, "hurt_from"),
+        "nothing in render/hud.rs reads `hurt_from` - a player is being told \
+         which way to turn by a packet nobody draws"
+    );
+    assert!(
+        hud.contains("hurt_arc_px("),
+        "render/hud.rs no longer places the arc - the sector reaches the HUD \
+         and stops at a number"
+    );
+}
+
+/// The gate above, proven red on its defect — every run.
+#[test]
+fn the_hurt_gate_can_see_the_reader_go_away() {
+    let (_, hud) = feed_and_hud();
+    let doctored = hud
+        .replace("hurt_from", "hurt_gone")
+        .replace("hurt_arc_px(", "gone(");
+    assert_ne!(
+        doctored, hud,
+        "nothing in hud.rs matches the hurt reader - this proof is scanning \
+         for text that is not there, so it proves nothing"
+    );
+    assert!(
+        !names_field(&doctored, "hurt_from") && !doctored.contains("hurt_arc_px("),
+        "the hurt gate cannot see its reader go away, so it is not a gate"
+    );
+}
+
 /// Does `code` name `field` as a whole word, rather than as a prefix?
 ///
 /// Kept even with one row left: `last_eat` was a prefix of
@@ -3151,7 +3517,7 @@ fn the_readout_gate_can_see_a_reader_go_away() {
 ///
 /// An empty list means the row is not a discrete button — `LOOK` is mouse
 /// motion — and is exempt by name rather than by falling through.
-const BIND_IDENTS: [(&str, &[&str]); 17] = [
+const BIND_IDENTS: [(&str, &[&str]); 20] = [
     ("MOVE", &["KeyW", "KeyA", "KeyS", "KeyD"]),
     ("SPRINT", &["ShiftLeft"]),
     ("CROUCH", &["ControlLeft"]),
@@ -3169,7 +3535,10 @@ const BIND_IDENTS: [(&str, &[&str]); 17] = [
     ("CHAT", &["KeyT", "Enter"]),
     ("EAT / DRINK", &["KeyJ", "KeyH"]),
     ("BUILD", &["MouseButton::Right"]),
+    ("LIGHT / SNUFF A TORCH", &["MouseButton::Right"]),
     ("REPAIR / UPGRADE", &["KeyR", "KeyU"]),
+    ("SCREENSHOT", &["F12"]),
+    ("REPORT A BUG", &["F7"]),
     ("MENU", &["Escape"]),
     ("QUIT", &["Escape"]),
 ];
@@ -3283,23 +3652,33 @@ fn the_bind_gate_covers_every_row() {
 ///
 /// A gate nobody has watched fail is a gate nobody knows the polarity of.
 /// This feeds `unread_binds` a row naming a key the client genuinely does not
-/// read and asserts it is caught; `F7` qualifies because `F12` is the only
-/// function key this client binds (`render/shot.rs` says so and the claim is
-/// re-checked here rather than trusted).
+/// read and asserts it is caught.
+///
+/// ⚠ **The dead key is FOUND, not named**, and it is written that way because
+/// the hardcoded one stopped being dead. This proof said `F7` — true while
+/// `F12` was the only function key bound — and it went red the day the report
+/// key landed, correctly, with nothing wrong except the canary. A named canary
+/// is the hand-kept mirror `CLAUDE.md` complains about, in a test, so the
+/// candidates are swept and the first unbound one is used. All of them bound
+/// is a loud failure rather than a skip: this gate has no proof left at that
+/// point, and it must say so rather than quietly pass.
 #[test]
 fn the_bind_gate_can_see_a_dead_key() {
     let haystack = render_text();
-    assert!(
-        !haystack.contains("KeyCode::F7"),
-        "this proof needs a key nothing reads, and F7 stopped being one"
-    );
-    let doctored: [(&str, &[&str]); 1] = [("MADE UP", &["F7"])];
+    let dead = ["F1", "F2", "F4", "F5", "F6", "F8", "F9", "F10", "F11"]
+        .into_iter()
+        .find(|k| !haystack.contains(&format!("KeyCode::{k}")))
+        .expect(
+            "every candidate function key is bound now, so this proof has no \
+             canary left — pick an unbound key and add it to the sweep",
+        );
+    let doctored: [(&str, &[&str]); 1] = [("MADE UP", &[dead])];
     let caught = unread_binds(&haystack, &doctored);
     assert_eq!(
         caught.len(),
         1,
-        "the bind gate cannot see a row naming a key nothing reads, so it is \
-         not a gate"
+        "the bind gate cannot see a row naming `{dead}`, which nothing reads, \
+         so it is not a gate"
     );
 }
 
@@ -3396,7 +3775,8 @@ mod loot {
 
     fn named() -> ItemCatalog {
         let mut c = ItemCatalog::EMPTY;
-        c.set(LARGE_BOX as usize, b"Large Box", 0).unwrap();
+        c.set(LARGE_BOX as usize, b"Large Box", protocol::ItemRow::EMPTY)
+            .unwrap();
         c
     }
 
@@ -3669,4 +4049,515 @@ mod q_durability_pip {
              an item or a count happened to move (`NOW.md` §0dur item 1)"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// §R · the wear panel's arithmetic (`NOW.md` §0eq items 1 and 2)
+//
+// The client links no content crate, so until wire v52 it held the worn
+// items and no number to put beside them: `combat::worn_pct` was read on
+// every hit and carried by nothing. The catalog drip carries the two
+// columns now, and this section is the half that cannot be checked by
+// looking at the panel — that the client's read of them is the sim's.
+//
+// **`slots::worn_pct` is a second implementation of `combat::worn_pct`**,
+// which is the shape `CLAUDE.md`'s trap list warns about twice. What makes
+// it safe is below: the gate drives *both* functions over the same worn
+// sets and compares, off a `CombatContent` and the `ItemCatalog` the boot
+// path would derive from it. Neither side rebuilds the other's body.
+// ---------------------------------------------------------------------------
+
+/// The catalog a shard would drip for `cc`, built the way `net::bake_catalog`
+/// builds it — one row per item, armor columns read off the baked combat
+/// table rather than re-derived. Names are placeholders; this section is
+/// about the numeric columns.
+fn catalog_for(cc: &combat::CombatContent) -> protocol::ItemCatalog {
+    let mut cat = protocol::ItemCatalog::EMPTY;
+    cat.count = 8;
+    for idx in 0..8usize {
+        let a = cc.armor[idx];
+        cat.set(
+            idx,
+            format!("Item {idx}").as_bytes(),
+            protocol::ItemRow {
+                cond_max: 0,
+                armor_pct: a.reduction_pct,
+                wear_slot: a.slot,
+            },
+        )
+        .expect("a fixture row the sim already validated is coherent");
+    }
+    cat
+}
+
+/// **The panel's number is the number the server will subtract.**
+///
+/// Every worn set the two slots can hold, over the probe fixture's items,
+/// through both implementations. A disagreement here is the worst shape
+/// this feature has: the player reads a protection total, plays a fight
+/// priced on it, and takes damage off a different one — with the wire, the
+/// goldens and the sim's own armor suite all green, because none of them
+/// looks at both sides at once.
+#[test]
+fn the_panels_protection_is_the_sims_protection() {
+    let cc = combat::CombatContent::probe_fixture();
+    let cat = catalog_for(&cc);
+
+    let mut agreed = 0usize;
+    let mut nonzero = 0usize;
+    for head in 0..8u16 {
+        for body in 0..8u16 {
+            for count in [0u16, 1] {
+                let mut p = sim_core::world::Player::default();
+                let mut worn = empty();
+                for (i, item) in [head, body].into_iter().enumerate() {
+                    let s = ItemStack {
+                        item,
+                        count,
+                        cond: 0,
+                    };
+                    p.worn[i] = s;
+                    worn[i] = s;
+                }
+                let sim = combat::worn_pct(&cc, &p);
+                let ours = slots::worn_pct(&cat, &worn);
+                assert_eq!(
+                    sim, ours,
+                    "head {head} body {body} count {count}: the sim charges \
+                     {sim} % and the panel would print {ours} %"
+                );
+                agreed += 1;
+                if sim > 0 {
+                    nonzero += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(agreed, 128, "the sweep stopped covering the pairs");
+    assert!(
+        nonzero >= 8,
+        "only {nonzero} of {agreed} cases carried any protection at all — \
+         the fixture stopped containing armor and this gate is agreeing \
+         about zero, which every implementation does"
+    );
+}
+
+/// **The cap is the one line of `worn_pct` the sweep above cannot reach.**
+///
+/// The judge's first ranked fix on pass `-07`. `probe_fixture` ships 10 %
+/// head and 20 % body, so the sweep's largest possible total is **30**
+/// against an `ARMOR_MAX_PCT` of **90** — deleting `.min(ARMOR_MAX_PCT)`
+/// from either copy passes all 128 cases. That is `lattice.rs`'s shape in
+/// the trap list: a gate that agrees for a reason that has nothing to do
+/// with the branch it was written for.
+///
+/// So this drives the same pair over a fixture priced to *exceed* the cap
+/// — 60 head + 50 body, both inside what `ItemRow::coherent` admits — and
+/// asserts three things the sweep above cannot: that the two agree, that
+/// the answer is the cap and not the sum, and (the effect, not only the
+/// correctness) that some case actually saturated. Run the mutant: drop
+/// the `.min` from `slots::worn_pct` and the full set reads 110 against
+/// the sim's 90; drop it from `combat::worn_pct` and the mismatch is the
+/// other way round. Neither is visible above.
+#[test]
+fn the_protection_total_stops_at_the_cap_on_both_sides() {
+    let mut cc = combat::CombatContent::probe_fixture();
+    cc.armor[4] = sim_core::combat::ArmorDef {
+        reduction_pct: 60,
+        slot: combat::WEAR_HEAD,
+    };
+    cc.armor[5] = sim_core::combat::ArmorDef {
+        reduction_pct: 50,
+        slot: combat::WEAR_BODY,
+    };
+    let cat = catalog_for(&cc);
+
+    let mut saturated = 0usize;
+    let mut biggest = 0u32;
+    for head in 0..8u16 {
+        for body in 0..8u16 {
+            let mut p = sim_core::world::Player::default();
+            let mut worn = empty();
+            for (i, item) in [head, body].into_iter().enumerate() {
+                let s = ItemStack {
+                    item,
+                    count: 1,
+                    cond: 0,
+                };
+                p.worn[i] = s;
+                worn[i] = s;
+            }
+            let sim = combat::worn_pct(&cc, &p);
+            let ours = slots::worn_pct(&cat, &worn);
+            assert_eq!(
+                sim, ours,
+                "head {head} body {body}: the sim charges {sim} % and the \
+                 panel would print {ours} %"
+            );
+            assert!(
+                sim <= combat::ARMOR_MAX_PCT,
+                "head {head} body {body}: {sim} % is over the cap of {} %",
+                combat::ARMOR_MAX_PCT
+            );
+            biggest = biggest.max(sim);
+            if sim == combat::ARMOR_MAX_PCT {
+                saturated += 1;
+            }
+        }
+    }
+    // The full set is 60 + 50 = 110, which is 20 over the cap. If this
+    // stops being true the sweep has quietly gone back to agreeing about
+    // a sum that never needed clamping.
+    assert_eq!(
+        biggest,
+        combat::ARMOR_MAX_PCT,
+        "no worn set in this sweep reached the cap, so neither `.min` ran"
+    );
+    assert_eq!(
+        saturated, 1,
+        "exactly one of the 64 pairs (head 4, body 5) wears both rows and \
+         so exceeds the cap; {saturated} did"
+    );
+}
+
+/// **A tail slot protects nobody, and the loop bound is what says so.**
+/// The wire ships `INV_SLOTS` slots whatever container is open and the
+/// wear container is two wide, so `cont[2..30]` is a region the server
+/// never writes.
+///
+/// **The forged row is the point, and it was found by running the
+/// mutant.** With a *shipped* catalog this case is held up twice over —
+/// the loop stops at `WEAR_SLOTS`, and the `slot == i + 1` check could not
+/// match at index 2 anyway, because no row may carry slot 3
+/// (`ItemRow::coherent`). So `take(WEAR_SLOTS)` → `take(INV_SLOTS)` passed
+/// the first version of this test: it asserted a property two independent
+/// guards hold and credited the wrong one. What makes the bound
+/// load-bearing is the value `coherent` refuses and `WEAR_SLOT_BITS`
+/// carries — two bits hold 3, one more than the ledger has, which is
+/// exactly the spare pattern the `wire_domains` row for `WEAR_SLOT_BITS`
+/// exists to guard. Written straight into the table here, past `set`,
+/// because that is the state a decoder bug would leave.
+#[test]
+fn a_stack_past_the_last_wear_slot_is_worth_nothing() {
+    let cc = combat::CombatContent::probe_fixture();
+    let mut cat = catalog_for(&cc);
+
+    // Find an item the fixture treats as real armor, so the case is not
+    // vacuous — a tail slot full of nothing proves nothing.
+    let armor = (0..8u16)
+        .find(|i| cc.armor[*i as usize].slot != combat::WEAR_NONE)
+        .expect("the probe fixture ships armor");
+    assert!(
+        cat.armor_pct(armor as usize) > 0,
+        "the fixture's armor reduces nothing, so the tail case cannot fail"
+    );
+
+    let mut worn = empty();
+    worn[WEAR_SLOTS] = ItemStack {
+        item: armor,
+        count: 1,
+        cond: 0,
+    };
+    assert_eq!(
+        slots::worn_pct(&cat, &worn),
+        0,
+        "a stack past the last wear slot was added to the total"
+    );
+
+    // The forged row: a slot one past the ledger, aimed at the first index
+    // the loop must not reach. `slot == i + 1` is satisfied here, so the
+    // bound is the only thing left.
+    let ghost = 7u16;
+    cat.rows[ghost as usize] = protocol::ItemRow {
+        cond_max: 0,
+        armor_pct: 25,
+        wear_slot: WEAR_SLOTS as u8 + 1,
+    };
+    assert!(
+        !cat.rows[ghost as usize].coherent(),
+        "the forged row is one `set` would have taken, so it forges nothing"
+    );
+    let mut worn = empty();
+    worn[WEAR_SLOTS] = ItemStack {
+        item: ghost,
+        count: 1,
+        cond: 0,
+    };
+    assert_eq!(
+        slots::worn_pct(&cat, &worn),
+        0,
+        "a row naming a slot the body does not have paid into the total \
+         from the container's tail"
+    );
+
+    // And in the slot it belongs in, real armor does pay — otherwise every
+    // assertion above is satisfied by a function that always says 0.
+    let mut worn = empty();
+    let s = (cc.armor[armor as usize].slot - 1) as usize;
+    worn[s] = ItemStack {
+        item: armor,
+        count: 1,
+        cond: 0,
+    };
+    assert!(slots::worn_pct(&cat, &worn) > 0);
+}
+
+/// **`wearable_here` is the sim's predicate, including at the slot index
+/// that used to wrap.** `combat::wearable_in` takes a `u8` and computed
+/// `s + 1`, which panics in debug and wraps to `WEAR_NONE` in release — so
+/// a release build asked about slot 255 answered *true* for every item
+/// that is not armor. Both copies bound the slot now; this drives both.
+#[test]
+fn nothing_is_wearable_in_a_slot_the_body_does_not_have() {
+    let cc = combat::CombatContent::probe_fixture();
+    let mut cat = catalog_for(&cc);
+
+    for item in 0..8u16 {
+        for s in 0..WEAR_SLOTS {
+            assert_eq!(
+                slots::wearable_here(&cat, item, s),
+                combat::wearable_in(&cc, item, s as u8),
+                "item {item} slot {s}: the client and the sim disagree about \
+                 what goes where, which is a drag the client draws and the \
+                 server refuses"
+            );
+        }
+        // The wrap the merge-gate judge named: `255u8 + 1` panics in debug
+        // and is `WEAR_NONE` in release, and `WEAR_NONE` is what every
+        // non-armor row carries — so an unbounded release build answered
+        // *true* here for everything that is not armor.
+        assert!(
+            !slots::wearable_here(&cat, item, 255),
+            "item {item} is wearable in slot 255"
+        );
+        assert!(
+            !combat::wearable_in(&cc, item, 255),
+            "item {item} is wearable in slot 255 (sim side)"
+        );
+    }
+
+    // And the slot one past the ledger, which no wrap is involved in. The
+    // forged row is the same one `a_stack_past_the_last_wear_slot_is_worth_nothing`
+    // uses and for the same reason found the same way: without it, `s + 1`
+    // at `s == WEAR_SLOTS` is 3 and no shipped row carries 3, so the bound
+    // is redundant and dropping it survives the test.
+    let ghost = 7u16;
+    cat.rows[ghost as usize] = protocol::ItemRow {
+        cond_max: 0,
+        armor_pct: 25,
+        wear_slot: WEAR_SLOTS as u8 + 1,
+    };
+    assert!(
+        !slots::wearable_here(&cat, ghost, WEAR_SLOTS),
+        "a row naming a slot the body does not have was accepted into it"
+    );
+    assert!(
+        !combat::wearable_in(&cc, ghost, WEAR_SLOTS as u8),
+        "the sim accepted a slot the body does not have"
+    );
+}
+
+/// **The captions are the sim's slot order, not a guess.** `Player::worn`
+/// is zero-based and `ArmorDef::slot` is one-based; a paperdoll that
+/// captioned container slot 0 "BODY" would be a wrong label over a cell
+/// that still worked, which nothing else in this suite could see.
+#[test]
+fn the_paperdoll_captions_the_slots_the_sim_names() {
+    assert_eq!(
+        slots::wear_slot_label(combat::WEAR_HEAD as usize - 1),
+        "HEAD"
+    );
+    assert_eq!(
+        slots::wear_slot_label(combat::WEAR_BODY as usize - 1),
+        "BODY"
+    );
+    for s in 0..WEAR_SLOTS {
+        assert_ne!(
+            slots::wear_slot_label(s),
+            "-",
+            "wear slot {s} is drawn by the panel and has no caption"
+        );
+    }
+    assert_eq!(
+        slots::wear_slot_label(WEAR_SLOTS),
+        "-",
+        "a slot the body does not have was given a name"
+    );
+    // The judge's second ranked fix on pass `-07`: `WEAR_SLOTS` is 2 and
+    // cannot overflow `s + 1`, so the case above proved the fallback and
+    // not the bound. 255 is the value the `u8` cast admits and the one
+    // that panics in debug / wraps to `WEAR_NONE` in release.
+    assert_eq!(
+        slots::wear_slot_label(255),
+        "-",
+        "the caption's u8 cast was reached with an out-of-range slot"
+    );
+    assert_eq!(
+        slots::wear_slot_label(usize::MAX),
+        "-",
+        "a slot index no cast can hold was given a name"
+    );
+}
+
+/// **The wear refusal reaches a sentence.** `REFUSE_M_WEAR` was minted by
+/// armor v1 and had no arm here, so dragging a helmet onto the body slot
+/// printed the generic word — the one refusal in the ledger that is about
+/// *what* rather than *where*, reading as if the move had been malformed.
+#[test]
+fn every_move_refusal_including_the_wear_one_says_something() {
+    use sim_core::inventory::{REFUSE_M_MAX, REFUSE_M_WEAR};
+    let generic = slots::refusal_text(u8::MAX);
+    for r in 1..=REFUSE_M_MAX {
+        let t = slots::refusal_text(r as u8);
+        assert_ne!(
+            t, generic,
+            "move refusal {r} falls through to `{generic}` — the sim has a \
+             reason and the panel prints the fallback"
+        );
+    }
+    assert!(
+        slots::refusal_text(REFUSE_M_WEAR as u8).contains("slot"),
+        "the wear refusal should name the slot it is about"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// §S · the wear panel's readers are called (`NOW.md` §0eq items 1 and 2)
+//
+// §R above proves the arithmetic. This is the other half and the one that
+// actually failed before: from wire v42 to v46 `cond` shipped on every
+// slot with nothing dividing it, and the fix was a call site rather than a
+// value. v52 puts two more columns on the same drip, and a correct
+// `worn_pct` that no panel calls is that state again — the wear container
+// drawn as a two-cell grid under the heading LOOT, with a protection total
+// the client can compute and does not print.
+//
+// A source scan, for the reason `tests/sound.rs` states about the feed
+// drain: the defect is a call site, not a value.
+// ---------------------------------------------------------------------------
+
+/// `inv.rs` with its comments stripped — a rule may be *named* freely in
+/// prose without satisfying itself. `tls_callsite.rs`'s `code_of`, inlined
+/// the way §Q inlines it.
+fn inv_code() -> String {
+    let src = std::fs::read_to_string("src/render/panels/inv.rs").expect("panels/inv.rs");
+    src.lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// **The worn container is drawn as a body, and the body says what it is
+/// worth.** Three readers, each guarding a different way the panel could
+/// be correct and useless.
+#[test]
+fn the_wear_panel_draws_what_the_wire_now_carries() {
+    let code = inv_code();
+    assert!(
+        code.contains("worn_pct("),
+        "`inv.rs` draws the wear container and never calls `worn_pct` — the \
+         armor columns are on the wire (v52), the client holds them, and \
+         the panel is throwing them away, which is the v42→v46 condition \
+         defect arriving on the next column"
+    );
+    assert!(
+        code.contains("wear_slot_label("),
+        "`inv.rs` draws the wear cells with no caption from `wear_slot_label` \
+         — the slot names would be a second mapping of one-based \
+         `ArmorDef::slot` onto a zero-based array, which is the one thing \
+         about this container that is easy to get backwards"
+    );
+    assert!(
+        code.contains("wearable_here("),
+        "`inv.rs` never asks whether a wear slot takes what is being dragged. \
+         The answer is on the wire now, so a wrong-slot drag can be told \
+         before the release instead of coming back as `REFUSE_M_WEAR` after \
+         the prediction has already drawn the piece into the slot"
+    );
+}
+
+/// **The body is drawn whether or not a box is open, and it is drawn from
+/// the body's own view.**
+///
+/// `NOW.md` §0eq item 4. The wear panel used to be a branch inside
+/// `container_grid`, which is called only when `cont_kind != CONT_SELF` —
+/// so the paperdoll appeared exactly when a ground container did *not*,
+/// and the move the feature exists for (helmet out of a raided box, onto
+/// a head) was the one route the panel could not draw.
+///
+/// Two claims, and the second is the one a value test cannot make. That
+/// `wear_panel` is called from the unconditional row rather than from
+/// `container_grid` is a *call site*, which is `tests/sound.rs`'s reason
+/// for scraping: it is not a number anywhere and nothing about the panel
+/// is wrong when it is missing — the panel is simply absent, which is
+/// what it was before.
+#[test]
+fn the_body_is_drawn_beside_the_container_and_not_instead_of_it() {
+    let code = inv_code();
+    assert!(
+        !code.contains("wear_panel(row, core, icons);\n        return;"),
+        "`container_grid` still short-circuits into `wear_panel` — the body \
+         is drawn only when it IS the open container, which is never now \
+         and was a box's eviction before"
+    );
+    // The call sits in `build_screen`'s lower row, ungated: `own_grid`,
+    // then the body, then the container *if* one is open.
+    let row = code
+        .split("own_grid(row, core, icons);")
+        .nth(1)
+        .expect("`build_screen` must draw the pack");
+    let head = &row[..row.len().min(200)];
+    assert!(
+        head.contains("wear_panel(row, core, icons);"),
+        "the body is not drawn beside the pack: {head}"
+    );
+    assert!(
+        head.find("wear_panel").unwrap() < head.find("if core.cont_kind").unwrap_or(usize::MAX),
+        "the body is drawn inside the open-container branch — it must be \
+         unconditional, which is the whole of §0eq item 4: {head}"
+    );
+    // And from `core.worn`, not `core.cont`. The two were one array until
+    // 2026-08-28; a panel left reading `cont` draws the open box's first
+    // two slots as the armor a player is wearing, which is a *plausible*
+    // picture and would have shipped.
+    assert!(
+        code.contains("&core.worn") && code.contains("CONT_WEAR => &core.worn"),
+        "`inv.rs` does not read the body's own view — the wear cells and \
+         the protection total would come off whatever container is open"
+    );
+}
+
+/// **The heading is the container's own, not the literal `LOOT`.** Every
+/// kind was titled LOOT with the name bar underneath carrying the
+/// difference — which reads as "someone else's loot" over your own body,
+/// and would read the same way over the next own-kind container.
+/// `container_title` is the sim-keyed answer and it already exists.
+#[test]
+fn no_container_is_headed_with_a_literal() {
+    let code = inv_code();
+    assert!(
+        !code.contains("\"LOOT\""),
+        "`inv.rs` still hardcodes a container heading. `container_title(kind)` \
+         is the one place a kind gets a name, and a literal beside it is the \
+         hand-kept mirror that gave `CONT_WORLD` the title BAG"
+    );
+    assert!(
+        code.contains("container_title("),
+        "`inv.rs` heads its container panels with nothing the sim named"
+    );
+}
+
+/// **The paperdoll walks the sim's slot count.** A panel that drew a
+/// literal two cells would be right today and silently short the day
+/// `WEAR_SLOTS` grows — the same defect `container_cols` was rewritten to
+/// avoid, one panel over.
+#[test]
+fn the_paperdoll_is_as_wide_as_the_body_is() {
+    let code = inv_code();
+    assert!(
+        code.contains("0..WEAR_SLOTS"),
+        "the wear panel does not walk `WEAR_SLOTS` — a hardcoded pair of \
+         cells draws two slots of however many the sim has, and \
+         `reference/ARMOR.md` §9.3 has three more queued"
+    );
 }

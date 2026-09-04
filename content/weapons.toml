@@ -11,6 +11,21 @@
 # may exceed its own `damage`, and the throwable raid tool's must strictly
 # exceed every melee weapon's — the raid tool stays the raid tool. The
 # raid-ratio anchor divides wall hp by the satchel's `structure`.
+#
+# `headshot_mult` and `limb_pct` are the two ends of the body-part ladder
+# (`reference/PROJECTILES.md` §0: head ×2, chest ×1, limbs ×0.5, with a
+# per-weapon override). The head is a multiplier and the limb a **percent**
+# because one integer column cannot say both "double" and "half"; 100 and 1
+# respectively are the identities, and the satchel carries both because a
+# blast has no anatomy to aim at. `[bands]` pins each to exactly one value
+# on every non-throwable row, so the ladder is a shape rather than a per-row
+# taste call until a weapon earns an override — which is what the columns
+# are for and why they are per-row and not two globals.
+#
+# **Only `bow` and `firearm` rows reach the sim** (`bake_ranged`). The melee
+# rows carry both columns priced for a mechanic that does not exist: a swing
+# is resolved feet-to-feet in a plane, so there is no height to test
+# (`combat::strike`, and `RangedDef::headshot_mult`'s doc says it in full).
 
 # --- tools that are also weapons ---------------------------------------
 #
@@ -43,6 +58,7 @@ kind = "melee"
 damage = 20
 structure = 1
 headshot_mult = 2
+limb_pct = 50
 rate_per_min = 48
 range_m = 1
 
@@ -52,6 +68,7 @@ kind = "melee"
 damage = 25
 structure = 2
 headshot_mult = 2
+limb_pct = 50
 rate_per_min = 48
 range_m = 1
 
@@ -61,6 +78,7 @@ kind = "melee"
 damage = 25
 structure = 1
 headshot_mult = 2
+limb_pct = 50
 rate_per_min = 48
 range_m = 1
 
@@ -70,6 +88,7 @@ kind = "melee"
 damage = 30
 structure = 3
 headshot_mult = 2
+limb_pct = 50
 rate_per_min = 48
 range_m = 1
 
@@ -79,6 +98,7 @@ kind = "melee"
 damage = 30
 structure = 2
 headshot_mult = 2
+limb_pct = 50
 rate_per_min = 48
 range_m = 1
 
@@ -90,6 +110,7 @@ kind = "melee"
 damage = 20
 structure = 3
 headshot_mult = 2
+limb_pct = 50
 rate_per_min = 48
 range_m = 2
 
@@ -99,6 +120,7 @@ kind = "melee"
 damage = 30
 structure = 4
 headshot_mult = 2
+limb_pct = 50
 rate_per_min = 48
 range_m = 2
 
@@ -108,6 +130,7 @@ kind = "bow"
 damage = 30
 structure = 1
 headshot_mult = 2
+limb_pct = 50
 rate_per_min = 30
 range_m = 60
 ammo = ["item.arrow_wood"]
@@ -118,6 +141,7 @@ kind = "bow"
 damage = 35
 structure = 1
 headshot_mult = 2
+limb_pct = 50
 rate_per_min = 20
 range_m = 80
 ammo = ["item.arrow_metal"]
@@ -128,9 +152,25 @@ kind = "firearm"
 damage = 20
 structure = 1
 headshot_mult = 2
+limb_pct = 50
 rate_per_min = 150
 range_m = 50
 ammo = ["item.pistol_ammo"]
+# Eight rounds and 3.4 s, both the reference's own published figures for
+# this weapon, taken rather than argued (`reference/BALANCE.md` §6: take
+# theirs, a case is needed only to differ). The magazine is what gives a
+# firefight a rhythm — without it `rate_per_min` alone makes a gun an
+# unbroken stream of clicks and the body-part ladder above is only a
+# slightly longer stream of them.
+#
+# Neither bow carries one, and that IS a difference from the reference,
+# which models a bow as a one-round magazine reloaded between shots (a bow
+# is a `BaseProjectile` like every gun — `reference/PROJECTILES.md` §1).
+# The mechanism is the case: a one-round magazine reloaded after every shot
+# is the nock, and the nock is already `rate_per_min` here, so carrying
+# both would be two cadences to keep in step for one wait.
+magazine = 8
+reload_ms = 3400
 
 [[weapon]]
 id = "item.satchel_charge"
@@ -138,6 +178,7 @@ kind = "throwable"
 damage = 475
 structure = 125
 headshot_mult = 1
+limb_pct = 100
 rate_per_min = 10
 range_m = 10
 # Seconds between planting the charge and the blast. The only field that

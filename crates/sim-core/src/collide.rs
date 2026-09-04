@@ -5,10 +5,14 @@
 //! prediction through a doorway holds bit for bit (skew is bounded by the
 //! one in-flight placement event, the same bound the slot store accepts).
 //!
-//! Geometry: a piece's vertical base is `build::column_floor_y(cell) +
+//! Geometry: a piece's vertical base is `build::column_floor_y(cell, plate) +
 //! level·LEVEL_H_M` — cell-center terrain snapped to the build lattice
-//! (`BUILD_BASE_Q_M`) plus the lift, one implementation shared with the
-//! renderer. Planes (foundation/floor/roof) are walkable
+//! (`BUILD_BASE_Q_M`) plus the lift, offset by the column's STORED plate
+//! (build plate v1), one implementation shared with the renderer. The plate is
+//! why every walk here takes a `ColIndex` to ask for a height: the floor of a
+//! base is a choice its first foundation made, not a function of the ground,
+//! and `ColMasks::plate` is where that choice lives. Planes
+//! (foundation/floor/roof) are walkable
 //! surfaces at their base; stairs are a ramp rising toward +Z through the
 //! storey; walls block their edge for the storey they span; doorways
 //! block only their posts (the 1.2 m opening passes; the lintel never
@@ -36,8 +40,8 @@
 //! DECISIONS.md §open ("piece collision v0" row).
 
 use crate::build::{
-    BUILD_CELL_M, LEVEL_H_M, LOC_DIAG_A, LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_TRI_XHI_ZHI,
-    LOC_TRI_XHI_ZLO, LOC_TRI_XLO_ZHI, LOC_TRI_XLO_ZLO, SHAPE_DOORWAY, SHAPE_FLOOR,
+    BUILD_CELL_M, LEVEL_H_M, LOC_DIAG_A, LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE,
+    LOC_TRI_XHI_ZHI, LOC_TRI_XHI_ZLO, LOC_TRI_XLO_ZHI, LOC_TRI_XLO_ZLO, SHAPE_DOORWAY, SHAPE_FLOOR,
     SHAPE_FOUNDATION, SHAPE_FRAME, SHAPE_ROOF, SHAPE_STAIRS, SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION,
     SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
 };
@@ -53,6 +57,146 @@ pub const PIECE_LIFT_M: f32 = 0.3;
 /// v0; the render capsule is 0.4 m, the eye 1.6 m).
 pub const CAPSULE_RADIUS_M: f32 = 0.4;
 pub const CAPSULE_HEIGHT_M: f32 = 1.7;
+/// The head, as a band off the **top** of that same cylinder: a hit whose
+/// line crosses `[CAPSULE_HEIGHT_M - HEAD_BAND_M, CAPSULE_HEIGHT_M]` above
+/// the feet is worth the weapon's `headshot_mult` (`DECISIONS.md` §open,
+/// headshot v0; `reference/PROJECTILES.md` §9.4 is the design).
+///
+/// **A band and not a second collider**, because the body is one cylinder
+/// and a second one buys nothing a band does not: a second collider needs
+/// its own radius, its own entry solve and its own place in the hit
+/// decision, and answers no question three bands cannot.
+///
+/// ⚠ **The reduction this doc used to rest on is retired.** It said that
+/// with exactly two parts §7's *most significant part along the segment*
+/// rule collapses to "was the head interval crossed at all" — true, and
+/// false the moment [`LIMB_BAND_M`] landed beside it. `ranged::part_crossed`
+/// is the ordering that replaced it and [`Part`] is what it returns;
+/// `ranged::nearest_body` still hands it the span the shot spent inside
+/// the body.
+///
+/// 0.25 of 1.7 is 14.7% of stature, a shade over a real head's ~13%, and
+/// the generosity is deliberate — the reference rebuilt hit detection
+/// around **best-fit rather than exact intersection** (§7) after shipping
+/// the opposite. `ranged::ARROW_EYE_MM` (1.6 m) sits inside this band, so
+/// a level shot between two bodies standing on the same ground is a
+/// headshot, which is the property that makes aim worth anything.
+pub const HEAD_BAND_M: f32 = 0.25;
+/// The legs, as a band off the **bottom** of the same cylinder: a hit
+/// whose line crosses `[0, LIMB_BAND_M]` above the feet and reaches
+/// nothing higher is worth the weapon's `limb_pct` (`DECISIONS.md` §open,
+/// limb band v0; `reference/PROJECTILES.md` §0 and §7 are the design).
+///
+/// **The third part is what makes [`Part`] an ordering rather than a
+/// boolean.** With a head and a body, "most significant part crossed"
+/// reduced to "was the head interval crossed at all" ([`HEAD_BAND_M`]);
+/// with a third band under the chest the reduction stops working, because
+/// a span that misses the head still has two answers. §7's rule is then
+/// literally what [`Part`]'s `Ord` says: take the *maximum* significance
+/// over the bands the span touches, never the first one entered.
+///
+/// 0.85 is exactly half of [`CAPSULE_HEIGHT_M`], and on a 1.7 m body the
+/// hip sits at 0.80–0.90 m, so half the cylinder is the legs to within
+/// the quantization the wire already imposes on a foot. It is a *band*
+/// and not an arm: a cylinder cannot tell an arm from the chest it hangs
+/// beside, and inventing a lateral test would be the second hit model
+/// `combat.rs` refuses for melee. The reference's own bow figures spread
+/// wider than a clean ×2/×1/×0.5 (`PROJECTILES.md` §0), so the ratio is
+/// theirs and the geometry is ours.
+pub const LIMB_BAND_M: f32 = 0.85;
+
+/// Which body part a shot is scored against, **least significant first**,
+/// so the derived `Ord` *is* `reference/PROJECTILES.md` §7's rule: a
+/// segment that touches several bands is scored at the `max`, never at
+/// the one it entered through.
+///
+/// That inversion is the whole reason §7 exists. First-intersection is
+/// what a raycast hands you and it is the wrong answer — limbs are in
+/// front of torsos constantly, so a shot that clips a shin on its way
+/// into a chest must not be a shin hit. Reading it off `Ord` rather than
+/// off a chain of `if`s means the next part cannot be inserted in the
+/// wrong place without moving this list, which is the ordering itself.
+///
+/// [`Chest`](Part::Chest) is the identity and the fallback: it is what a
+/// span that touches no band at all is scored as, which is exactly what
+/// shipped before there were three parts (a `head_crossed` of `false` was
+/// the raw damage). A degenerate span therefore costs the shooter
+/// nothing and pays them nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Part {
+    /// The legs: `[0, LIMB_BAND_M]` above the feet.
+    Limb,
+    /// Everything between the legs and the head — and the fallback.
+    Chest,
+    /// `[CAPSULE_HEIGHT_M - HEAD_BAND_M, CAPSULE_HEIGHT_M]` above the feet.
+    Head,
+}
+
+/// Bits a [`Part`] occupies on the wire and in an event payload (v58).
+///
+/// Two, for three values, and the fourth is deliberately unrepresentable
+/// rather than folded onto `Chest`: [`Part::from_bits`] returns `None` for
+/// it so a sim that started making a part it never declared is refused at
+/// the boundary instead of drawing the wrong rung. Same posture as
+/// `HURT_SECTOR_BITS` — range-check, never mask.
+pub const PART_BITS: u32 = 2;
+
+impl Part {
+    /// Every part, least significant first — the order the derived `Ord`
+    /// gives and the order [`Part::bits`] numbers them in.
+    ///
+    /// It exists so the guards below are over the *set* rather than over a
+    /// variant named by hand, and **its completeness is checked rather
+    /// than trusted**: a fourth rung (`NOW.md` §0hs item 2 wants an arm)
+    /// added to the enum forces an arm in `bits` and `from_bits`, which
+    /// the compiler demands, and the second assert below then fails
+    /// unless it is added here too. A hand-kept mirror of a type's own
+    /// surface is the drift `CLAUDE.md` names twice; this one has a
+    /// build-time reader.
+    pub const ALL: [Part; 3] = [Part::Limb, Part::Chest, Part::Head];
+
+    /// The part as a small integer, **ordered the way the type is**:
+    /// `Limb < Chest < Head` numerically as well as by the derived `Ord`,
+    /// so a `max` taken over the bits is the same most-significant-part
+    /// rule as a `max` taken over the values (`PROJECTILES.md` §7). A
+    /// reader that merges several hits into one marker depends on that.
+    #[inline]
+    pub const fn bits(self) -> u8 {
+        match self {
+            Part::Limb => 0,
+            Part::Chest => 1,
+            Part::Head => 2,
+        }
+    }
+
+    /// The inverse, total on nothing: `3` is not a part and never becomes
+    /// one. The caller decides what a value it did not declare costs —
+    /// `WireError::Malformed` on the wire, a panic in a test.
+    #[inline]
+    pub const fn from_bits(bits: u8) -> Option<Part> {
+        match bits {
+            0 => Some(Part::Limb),
+            1 => Some(Part::Chest),
+            2 => Some(Part::Head),
+            _ => None,
+        }
+    }
+}
+
+// The width holds the set. `protocol::event` spends `PART_BITS` directly
+// rather than declaring a wire-side copy, because a copy is a second
+// number that can disagree with this one — and `Part` is an *enum*, so
+// `event.rs`'s DOMAINS table cannot scrape a member block off it the way
+// it does off a `pub const DEATH_BY_*` block. The guard is therefore here,
+// beside the thing that grows, and it is the compiler rather than a
+// scrape: a fourth rung widens `ALL`, and a fifth stops fitting and fails
+// this assert at build time instead of truncating a marker on the wire.
+const _: () = assert!(Part::ALL.len() <= (1usize << PART_BITS));
+// And `ALL` holds every rung there is. A variant given a `bits` arm but
+// left out of the array would otherwise go unseen by every loop over the
+// set — including the wire's round-trip check — while the assert above
+// stayed happily true.
+const _: () = assert!(Part::from_bits(Part::ALL.len() as u8).is_none());
 /// Edge-piece slab thickness (scene.js WALL_T, now sim truth).
 pub const WALL_THICKNESS_M: f32 = 0.24;
 /// Doorway post width from each end of the edge; the opening between is
@@ -75,6 +219,23 @@ pub const WINDOW_HEAD_M: f32 = 2.2;
 /// (`RENDER.md` §8), and a painted jamb a body ghosts through is that lie.
 /// Proposed default, DECISIONS.md §open ("wall frame v0").
 pub const FRAME_RIM_M: f32 = 0.15;
+/// How thick a plane piece is under its walk surface, metres — the slab a
+/// floor or a roof hangs below the level plane, and the band its FLANK stops
+/// a body in ([`plane_blocked`]).
+///
+/// **Sim truth, and the renderer's `SLAB_T` is this number** rather than a
+/// second 0.3 beside it. It was render-only for the reason [`PIECE_LIFT_M`]
+/// was: nothing collided with it, so nothing else needed to know. A flank is
+/// a collision, so the drawn thickness and the blocked thickness are one
+/// number or they are a crack.
+///
+/// A **foundation** (level 0) is not this thick: it is solid from its walk
+/// surface down to the ground, which is exactly what the drawn skirt fills
+/// (`render/structures.rs` `foundation_part`). [`plane_blocked`] says so.
+///
+/// Proposed default, DECISIONS.md §open ("piece flanks v0").
+pub const PLANE_THICKNESS_M: f32 = 0.3;
+
 /// The doorway opening's height, metres above the storey base — the
 /// lintel's underside. The client has always drawn the lintel at
 /// 2.1..3.0 (`render/structures.rs` derives it from `LINTEL_H_M`); the
@@ -143,6 +304,18 @@ pub struct ColMasks {
     /// `deploy::DEPLOY_VOL`'s row; only archetypes that table gives a
     /// height ever land here.
     pub solid: u32,
+    /// The column's **plate**: how many `build::BUILD_BASE_Q_M` bands its
+    /// level-0 floor stands above the band its own terrain would give it
+    /// (build plate v1, `build::plate_for`). Zero is the old rule exactly —
+    /// the column sits on its own ground.
+    ///
+    /// **Not occupancy, and deliberately outside [`ColMasks::is_empty`]**:
+    /// it is a property of the column rather than of any level, every piece
+    /// in the column carries the same value (`build::place` enforces it),
+    /// and a column whose last piece is gone leaves the table entirely, so
+    /// a rebuilt foundation re-derives from terrain rather than inheriting
+    /// a plate nothing stands on any more.
+    pub plate: i8,
 }
 
 impl Default for ColMasks {
@@ -172,6 +345,7 @@ impl ColMasks {
         shut_xlo: 0,
         shut_zlo: 0,
         solid: SOLID_NONE,
+        plate: 0,
     };
 
     fn is_empty(&self) -> bool {
@@ -195,6 +369,40 @@ impl ColMasks {
             | self.shut_zlo)
             == 0
             && self.solid == SOLID_NONE
+    }
+
+    /// Does a PIECE stand in this column — as opposed to a deployable
+    /// standing on bare ground?
+    ///
+    /// The distinction exists for `build::plate_for` (build plate v1) and is
+    /// load-bearing there: `set_solid` opens a column slot for a box dropped
+    /// on open terrain, and a slot is what `ColIndex::plate` answers from. A
+    /// column with a box and no floor has no plate to latch to — and latching
+    /// to it would pin the next foundation to the box's ground instead of its
+    /// own, so a crate left uphill would refuse a base with "the hill is in
+    /// the way" for a reason no player could see.
+    ///
+    /// The shut and solid masks are excluded for that reason; everything else
+    /// here is a piece.
+    #[inline]
+    pub fn has_piece(&self) -> bool {
+        (self.planes
+            | self.stairs
+            | self.walls_xlo
+            | self.walls_zlo
+            | self.doors_xlo
+            | self.doors_zlo
+            | self.wins_xlo
+            | self.wins_zlo
+            | self.frames_xlo
+            | self.frames_zlo
+            | self.tri_xlo_zlo
+            | self.tri_xhi_zlo
+            | self.tri_xlo_zhi
+            | self.tri_xhi_zhi
+            | self.diag_a
+            | self.diag_b)
+            != 0
     }
 
     /// The solid archetype standing at `level`, or `None`.
@@ -309,7 +517,18 @@ impl ColIndex {
     /// Set the piece's occupancy bit. A full table refuses (unreachable
     /// while callers enforce MAX_PIECES; the movement queries just see
     /// one piece less — the same bounded staleness a dropped event has).
-    pub fn add(&mut self, cx: u16, cz: u16, level: u8, loc: u8, shape: u8) {
+    /// Set the piece's occupancy bit and record the column's `plate`
+    /// (`ColMasks::plate` — build plate v1).
+    ///
+    /// **The plate is written on every add, not only on the first.** Every
+    /// piece in a column carries the same one by construction (`build::place`
+    /// adopts it from the column before it inserts, and `plate_for` is the
+    /// only source), so the last write is the same value as the first — and
+    /// writing it unconditionally is what makes `Pieces::restore` correct
+    /// whatever order the save hands the records back in. A first-write-wins
+    /// rule would make the rebuilt index depend on record order, which is the
+    /// one thing a derived-state rebuild must never do.
+    pub fn add(&mut self, cx: u16, cz: u16, level: u8, loc: u8, shape: u8, plate: i8) {
         if self.len as usize >= COL_INDEX_SLOTS - 1 {
             return;
         }
@@ -327,11 +546,37 @@ impl ColIndex {
             }
             i = (i + 1) & (COL_INDEX_SLOTS - 1);
         }
+        self.masks[i].plate = plate;
         if let Some(m) = self.masks[i].field(shape, loc) {
             *m |= 1 << level;
         } else if self.masks[i].is_empty() {
             // A no-footprint shape opened this slot: take it back.
             self.remove_slot(i);
+        }
+    }
+
+    /// The plate of a column that holds a **piece**, or `None`.
+    ///
+    /// `get` cannot answer this: it returns `ColMasks::EMPTY` for a column
+    /// that is not in the table, and `EMPTY.plate` is 0 — which is a real
+    /// plate value (the column sits on its own ground). The distinction is
+    /// the whole of `build::plate_for`'s first question, so it needs the
+    /// presence and not the value.
+    ///
+    /// **A slot is not enough** ([`ColMasks::has_piece`]): a deployable on
+    /// open ground opens one, and a column with no floor has no plate.
+    pub fn plate(&self, cx: u16, cz: u16) -> Option<i8> {
+        let key = Self::key(cx, cz);
+        let mut i = Self::home(key);
+        loop {
+            let k = self.keys[i];
+            if k == 0 {
+                return None;
+            }
+            if k == key {
+                return self.masks[i].has_piece().then_some(self.masks[i].plate);
+            }
+            i = (i + 1) & (COL_INDEX_SLOTS - 1);
         }
     }
 
@@ -500,10 +745,28 @@ impl Default for ColIndex {
 /// A column's level-0 base — `build::column_floor_y`, the one
 /// implementation of the height rule (quantized to `BUILD_BASE_Q_M` so
 /// neighbouring columns in one terrain band are bit-equal flush; its doc
-/// carries the derivation). No piece height ever rides the wire.
+/// carries the derivation).
+///
+/// **It takes the index, because since build plate v1 the height is stored.**
+/// A column's floor is its terrain band plus the plate its first piece
+/// latched (`ColMasks::plate`), so the answer is no longer a pure function of
+/// (seed, cell) and every collision walk must read the same store the placer
+/// wrote. An unoccupied column has no plate and answers the terrain rule
+/// unchanged, which is what keeps `deploy_blocked` and the ground walks
+/// correct over bare land.
+///
+/// Only the plate rides the wire, never the height itself: the client
+/// recomputes the terrain band from (seed, cell) exactly as before, so a
+/// float height still never crosses the network.
 #[inline]
-pub(crate) fn col_base_y(seed: u64, haven: &crate::terrain::Haven, cx: u16, cz: u16) -> f32 {
-    crate::build::column_floor_y(seed, haven, cx, cz)
+pub(crate) fn col_base_y(
+    seed: u64,
+    haven: &crate::terrain::Haven,
+    cols: &ColIndex,
+    cx: u16,
+    cz: u16,
+) -> f32 {
+    crate::build::column_floor_y(seed, haven, cx, cz, cols.plate(cx, cz).unwrap_or(0))
 }
 
 /// The highest built surface under (x, z) the capsule at `feet_y` may
@@ -529,7 +792,7 @@ pub fn piece_ground(
     if m.planes == 0 && m.stairs == 0 && tris == 0 && m.solid == SOLID_NONE {
         return NO_SURFACE;
     }
-    let base = col_base_y(seed, haven, bx as u16, bz as u16);
+    let base = col_base_y(seed, haven, cols, bx as u16, bz as u16);
     let lid = feet_y + STEP_UP;
     let mut best = NO_SURFACE;
     // A triangle plane is ground over its own half of the cell and air
@@ -615,7 +878,7 @@ pub fn deploy_blocked(
     if m.solid == SOLID_NONE {
         return false;
     }
-    let base = col_base_y(seed, haven, bx as u16, bz as u16);
+    let base = col_base_y(seed, haven, cols, bx as u16, bz as u16);
     let head = feet_y + CAPSULE_HEIGHT_M;
     let (cxm, czm) = (
         bx as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5,
@@ -654,6 +917,378 @@ pub fn deploy_blocked(
         }
     }
     false
+}
+
+/// Which solid deployable a **shot** sample at (`x`, `z`) and altitude `y`,
+/// carrying radius `r`, stops on — [`deploy_blocked`]'s walk with a
+/// projectile's profile instead of a body's, and the hole `ranged.rs`'s
+/// module doc has named since ranged structure damage v0. The three walks
+/// [`shot_stop`] runs read edges, diagonals and planes and **no bit of
+/// [`ColMasks::solid`] at all**, so an arrow flew through a furnace, a box
+/// and a bench rather than failing to damage one.
+///
+/// Three differences from the body twin, each the same one the piece walks
+/// already make:
+///
+/// - the mover is a **point at `y`** inflated by the arrowhead, not a 1.7 m
+///   capsule standing on `feet_y`, so the vertical test clamps into the
+///   box's own band where the body's overlaps a storey;
+/// - there is **no `STEP_UP` mount rule** — a top low enough for a body to
+///   climb is still a surface an arrow hits, and the whole reason that rule
+///   exists (admitting the move the vertical pass would land) has no
+///   projectile analogue;
+/// - it is a **point sample where the edges are swept**, for
+///   [`cell_planes_stop_shot`]'s reason and with the same arithmetic owed:
+///   the shortest through-thickness in `deploy::DEPLOY_VOL` is the hearth's
+///   0.6 m depth and the shallowest band is the box's 0.65 m height, both
+///   well over the 0.17 m (`ARROW_STEP_MM`) between two taps. A shot that
+///   clips a corner between samples is the cost that constant's own doc
+///   admits to, not a defect of this walk.
+///
+/// **One cell, and that is proved rather than assumed.** `DEPLOY_VOL`'s
+/// const block asserts no row's half-extent plus `CAPSULE_RADIUS_M` reaches
+/// the half-cell; `r` here is the arrowhead, which is smaller, so the
+/// inflated volume cannot cross a boundary either and a neighbour's cell
+/// can hold nothing this sample could be inside.
+///
+/// The address returned is the **deploy store's**, and `loc` is always
+/// [`crate::build::LOC_PLANE`]: every archetype `deploy::solid_vol` gives a
+/// volume places `ground`, `foundation` or `any`, and
+/// `deploy::loc_fits_placement` admits only the plane for all three. That
+/// is a claim about `content/deployables.toml`, so the gate for it is in
+/// the content crate (`content/tests/content.rs`) and not here.
+pub fn deploy_stop(
+    seed: u64,
+    haven: &crate::terrain::Haven,
+    cols: &ColIndex,
+    x: f32,
+    z: f32,
+    y: f32,
+    r: f32,
+) -> Option<PieceHit> {
+    let bx = crate::build::build_cell_of(x);
+    let bz = crate::build::build_cell_of(z);
+    if bx < 0 || bz < 0 || bx >= MAX_BUILD_COORD as i32 || bz >= MAX_BUILD_COORD as i32 {
+        return None;
+    }
+    let m = cols.get(bx as u16, bz as u16);
+    if m.solid == SOLID_NONE {
+        return None;
+    }
+    let base = col_base_y(seed, haven, cols, bx as u16, bz as u16);
+    let (cxm, czm) = (
+        bx as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5,
+        bz as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5,
+    );
+    for level in 0..MAX_BUILD_LEVELS {
+        let Some(arch) = m.solid_at(level) else {
+            continue;
+        };
+        let Some((hw, h, hd)) = crate::deploy::solid_vol(arch) else {
+            continue;
+        };
+        let bottom = base + level as f32 * LEVEL_H_M;
+        // Sphere against the box: [`deploy_blocked`]'s clamp-to-rectangle
+        // circle distance with the third axis added, because a shot has an
+        // altitude where a body has a storey. Growing the box by `r`
+        // instead would round its corners the wrong way — the reason that
+        // function gives for the clamp, unchanged by the extra axis.
+        let ex = x - cxm - (x - cxm).clamp(-hw, hw);
+        let ey = y - y.clamp(bottom, bottom + h);
+        let ez = z - czm - (z - czm).clamp(-hd, hd);
+        if ex * ex + ey * ey + ez * ez < r * r {
+            return Some(PieceHit {
+                cx: bx as u16,
+                cz: bz as u16,
+                level: level as u8,
+                loc: crate::build::LOC_PLANE,
+            });
+        }
+    }
+    None
+}
+
+/// Whether a PLANE piece's flank stops a capsule standing at (`x`, `z`) with
+/// its feet at `feet_y` — the side of a foundation, a floor or a roof.
+///
+/// **Planes had no sides at all until 2026-08-21**, and that is what put the
+/// camera inside people's bases: [`blocked`] walks edges and diagonals,
+/// [`deploy_blocked`] walks solid deployables, and a plane was ground and
+/// nothing else. So a body walked straight into the flank of a foundation and
+/// stood inside the slab and the drawn skirt under it, looking at the world
+/// from within a wall of earth (`NOW.md` §0bl item 4). Build plate v1 made it
+/// worse rather than better: a stilted base carries up to a storey of leg, and
+/// every centimetre of that leg was walk-through.
+///
+/// Three tests, and each one earns its place:
+///
+/// 1. **A top within `STEP_UP` of the feet is a step, not a wall** —
+///    [`deploy_blocked`]'s rule verbatim, and it is what keeps a base walkable:
+///    the plate you are standing on and every neighbour at your own level
+///    short-circuit here. Without it a base would be a set of cells you could
+///    not walk between.
+/// 2. **A slab above the head is passed under.** A floor or a roof is
+///    [`PLANE_THICKNESS_M`] thick with open air below it, so walking under a
+///    first storey stays possible. A **foundation** (level 0) is exempt: it is
+///    solid to the ground, because the skirt that draws it is.
+/// 3. **The footprint is the cell, at the capsule's radius** — the same
+///    clamp-to-rectangle circle distance [`deploy_blocked`] uses, for its
+///    reason: growing the rectangle by the radius rounds the corners the wrong
+///    way. A triangle adds its own half test at the point, so its hypotenuse
+///    blocks on the diagonal rather than 0.4 m out from it; the two halves of
+///    one cell are otherwise a body's width apart and neither is enterable.
+///
+/// A **destination** test like [`deploy_blocked`], and the caller lifts its
+/// veto the same way (`movement::step`): a foundation can be placed around a
+/// standing body, so being inside one must never be absorbing — walking out is
+/// the only escape a capsule has.
+///
+/// The **shot** walk does not call this — it calls
+/// [`cell_planes_stop_shot`], which is this function's slab set at a
+/// projectile's profile. Until 2026-08-25 it consulted nothing and every
+/// floor in the world was transparent to an arrow; this doc said so and
+/// sent the reader to `NOW.md` §0ar, **a section that never existed**. The
+/// lintel precedent decided it in the end: a body and an arrow may disagree
+/// about what is solid, but only where somebody has decided that they
+/// should, and nobody ever decided this.
+pub fn plane_blocked(
+    seed: u64,
+    haven: &crate::terrain::Haven,
+    cols: &ColIndex,
+    x: f32,
+    z: f32,
+    feet_y: f32,
+) -> bool {
+    let r = CAPSULE_RADIUS_M;
+    // **Up to FOUR cells, not one, and that is the difference from
+    // [`deploy_blocked`].** That function is complete over the candidate's own
+    // cell because `deploy::DEPLOY_VOL`'s const block proves no volume,
+    // inflated by the capsule, reaches past the half-cell. A plane IS the
+    // cell, so inflated by the capsule it reaches past every boundary — the
+    // first draft looked only at `build_cell_of(x, z)` and let a body stand a
+    // finger's width from a stilted plate, because the point was in the empty
+    // cell NEXT to it. A 3 m cell against a 0.4 m radius means the reach is at
+    // most one cell each way, so the corners `x ± r` and `z ± r` name every
+    // cell that can matter and the pair collapses to one when the point is
+    // not near a boundary.
+    let (x0, x1) = (
+        crate::build::build_cell_of(x - r),
+        crate::build::build_cell_of(x + r),
+    );
+    let (z0, z1) = (
+        crate::build::build_cell_of(z - r),
+        crate::build::build_cell_of(z + r),
+    );
+    let head = feet_y + CAPSULE_HEIGHT_M;
+    let half = BUILD_CELL_M * 0.5;
+    for bx in x0..=x1 {
+        for bz in z0..=z1 {
+            if bx < 0 || bz < 0 || bx >= MAX_BUILD_COORD as i32 || bz >= MAX_BUILD_COORD as i32 {
+                continue;
+            }
+            let m = cols.get(bx as u16, bz as u16);
+            let tris = m.tri_xlo_zlo | m.tri_xhi_zlo | m.tri_xlo_zhi | m.tri_xhi_zhi;
+            if m.planes == 0 && tris == 0 {
+                continue;
+            }
+            // The cell, at the capsule's radius: the clamp-to-rectangle circle
+            // distance [`deploy_blocked`] uses, for its reason — growing the
+            // rectangle by the radius rounds the corners the wrong way.
+            let (cxm, czm) = (
+                bx as f32 * BUILD_CELL_M + half,
+                bz as f32 * BUILD_CELL_M + half,
+            );
+            let ex = x - cxm - (x - cxm).clamp(-half, half);
+            let ez = z - czm - (z - czm).clamp(-half, half);
+            if ex * ex + ez * ez >= r * r {
+                continue;
+            }
+            let base = col_base_y(seed, haven, cols, bx as u16, bz as u16);
+            let dx = x - bx as f32 * BUILD_CELL_M;
+            let dz = z - bz as f32 * BUILD_CELL_M;
+            // `piece_ground`'s own half tests, boundary-inclusive on both
+            // sides for its reason: the seam of a NW+SE pair must read the
+            // same from either.
+            let in_half = |loc: u8| match loc {
+                LOC_TRI_XLO_ZLO => dx + dz <= BUILD_CELL_M,
+                LOC_TRI_XHI_ZHI => dx + dz >= BUILD_CELL_M,
+                LOC_TRI_XHI_ZLO => dz <= dx,
+                _ => dz >= dx,
+            };
+            for level in 0..MAX_BUILD_LEVELS {
+                let bit = 1u8 << level;
+                let here = m.planes & bit != 0
+                    || (m.tri_xlo_zlo & bit != 0 && in_half(LOC_TRI_XLO_ZLO))
+                    || (m.tri_xhi_zlo & bit != 0 && in_half(LOC_TRI_XHI_ZLO))
+                    || (m.tri_xlo_zhi & bit != 0 && in_half(LOC_TRI_XLO_ZHI))
+                    || (m.tri_xhi_zhi & bit != 0 && in_half(LOC_TRI_XHI_ZHI));
+                if !here {
+                    continue;
+                }
+                let top = base + level as f32 * LEVEL_H_M;
+                if feet_y + STEP_UP >= top {
+                    continue; // a step, not a wall
+                }
+                // Level 0 is a foundation and is solid to the ground; anything
+                // above it is a slab with air under it.
+                if level > 0 && head <= top - PLANE_THICKNESS_M {
+                    continue; // passed under
+                }
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Whether a built **plane** stops a shot sample at (`x`, `z`) at altitude
+/// `y` with radius `r` — [`plane_blocked`]'s slab set with a projectile's
+/// profile instead of a body's, and the answer to the question that
+/// function's own doc deferred until now.
+///
+/// **The defect it closes: an arrow fired down inside a base reached the
+/// dirt.** [`shot_blocked`] walked edges and diagonals and nothing else, so
+/// every floor, roof and foundation in the world was transparent to a
+/// projectile — a shot through six storeys stopped on `SURF_GROUND` under
+/// the base, and a roof was cover you could see through. The body walk has
+/// read these bits since piece flanks v0; only the shot walk had not.
+///
+/// Three differences from the body twin, each the same one [`shot_blocked`]
+/// lists against [`blocked`]:
+///
+/// - the mover is a point at `y`, not a capsule spanning `feet_y..head`;
+/// - the footprint is inflated by `r` (the arrowhead), not
+///   [`CAPSULE_RADIUS_M`], through the identical clamp-to-rectangle circle
+///   distance — so the two walks are one algorithm with two radii rather
+///   than two footprints that can drift;
+/// - there is **no [`STEP_UP`]**. A body may climb a slab that low; an
+///   arrow meets it. That short circuit is the whole of what keeps a base
+///   walkable and it has no meaning for a projectile.
+///
+/// **Stairs are absent here because they are absent from the body twin**,
+/// not by a separate judgement: [`plane_blocked`] reads `planes` and the
+/// triangles and never `stairs` — a ramp is something you stand on
+/// ([`piece_ground`]), never something that stops you. Keeping the two sets
+/// equal is what lets the pair be read as one law; a stair that stops an
+/// arrow is a change to *both* walks and its own item (`NOW.md` §0mk).
+///
+/// **Point sampling is honest at this thickness.** `ranged.rs` taps its
+/// segment every `limits::ARROW_STEP_MM` (170 mm), and the vertical
+/// spacing of those taps is at most that — so a slab whose band is
+/// [`PLANE_THICKNESS_M`] + 2·`r` deep always takes at least two samples,
+/// which is the same argument `ARROW_STEP_MM`'s own doc makes about a
+/// trunk's diameter.
+fn cell_planes_stop_shot(
+    seed: u64,
+    haven: &crate::terrain::Haven,
+    cols: &ColIndex,
+    x: f32,
+    z: f32,
+    y: f32,
+    r: f32,
+) -> Option<PieceHit> {
+    // The same four-cell reach [`plane_blocked`] takes, and for its reason:
+    // a plane IS the cell, so inflated by the mover's radius it can reach
+    // past a boundary. The arrowhead is 0.05 m against a 3 m cell, so the
+    // pair collapses to one except within a head's width of a seam.
+    let (x0, x1) = (
+        crate::build::build_cell_of(x - r),
+        crate::build::build_cell_of(x + r),
+    );
+    let (z0, z1) = (
+        crate::build::build_cell_of(z - r),
+        crate::build::build_cell_of(z + r),
+    );
+    let half = BUILD_CELL_M * 0.5;
+    for bx in x0..=x1 {
+        for bz in z0..=z1 {
+            if bx < 0 || bz < 0 || bx >= MAX_BUILD_COORD as i32 || bz >= MAX_BUILD_COORD as i32 {
+                continue;
+            }
+            let m = cols.get(bx as u16, bz as u16);
+            let tris = m.tri_xlo_zlo | m.tri_xhi_zlo | m.tri_xlo_zhi | m.tri_xhi_zhi;
+            if m.planes == 0 && tris == 0 {
+                continue;
+            }
+            let (cxm, czm) = (
+                bx as f32 * BUILD_CELL_M + half,
+                bz as f32 * BUILD_CELL_M + half,
+            );
+            let ex = x - cxm - (x - cxm).clamp(-half, half);
+            let ez = z - czm - (z - czm).clamp(-half, half);
+            if ex * ex + ez * ez >= r * r {
+                continue;
+            }
+            let base = col_base_y(seed, haven, cols, bx as u16, bz as u16);
+            let dx = x - bx as f32 * BUILD_CELL_M;
+            let dz = z - bz as f32 * BUILD_CELL_M;
+            // `piece_ground`'s own half tests, boundary-inclusive on both
+            // sides for its reason: the seam of a NW+SE pair must read the
+            // same from either.
+            let in_half = |loc: u8| match loc {
+                LOC_TRI_XLO_ZLO => dx + dz <= BUILD_CELL_M,
+                LOC_TRI_XHI_ZHI => dx + dz >= BUILD_CELL_M,
+                LOC_TRI_XHI_ZLO => dz <= dx,
+                _ => dz >= dx,
+            };
+            for level in 0..MAX_BUILD_LEVELS {
+                let bit = 1u8 << level;
+                // Which slab, not just whether one — the address is what
+                // `ranged.rs` charges structure damage against, and the OR
+                // this replaced could not say.
+                //
+                // **The order is a real tie-break and not just insurance.**
+                // A plane and a triangle cannot share a (cell, level) —
+                // `build::body_overlaps` refuses that pair — but two
+                // COMPLEMENTARY triangles can, and are meant to: NW+SE and
+                // NE+SW are how two halves make a cell. Their `in_half`
+                // tests are boundary-inclusive on both sides on purpose
+                // (the comment above says why: the seam must read the same
+                // from either), so a sample landing exactly on `dx + dz ==
+                // BUILD_CELL_M` satisfies both halves and the first arm
+                // wins. That is a whole answer either way — both halves are
+                // real pieces standing at that point, and a raider on the
+                // seam of a split floor has no claim about which one the
+                // arrow found. What the sim does require is that the pick
+                // be a rule rather than an accident, which an `||` chain
+                // read for its address would not have been.
+                let here = if m.planes & bit != 0 {
+                    Some(LOC_PLANE)
+                } else if m.tri_xlo_zlo & bit != 0 && in_half(LOC_TRI_XLO_ZLO) {
+                    Some(LOC_TRI_XLO_ZLO)
+                } else if m.tri_xhi_zlo & bit != 0 && in_half(LOC_TRI_XHI_ZLO) {
+                    Some(LOC_TRI_XHI_ZLO)
+                } else if m.tri_xlo_zhi & bit != 0 && in_half(LOC_TRI_XLO_ZHI) {
+                    Some(LOC_TRI_XLO_ZHI)
+                } else if m.tri_xhi_zhi & bit != 0 && in_half(LOC_TRI_XHI_ZHI) {
+                    Some(LOC_TRI_XHI_ZHI)
+                } else {
+                    None
+                };
+                let Some(loc) = here else {
+                    continue;
+                };
+                let top = base + level as f32 * LEVEL_H_M;
+                if y - r >= top {
+                    continue; // over it
+                }
+                // Level 0 is a foundation and is solid to the ground — the
+                // skirt `render/structures.rs` draws is the volume, exactly
+                // as [`plane_blocked`] reads it. Anything above it is a
+                // slab with air under it, and an arrow uses that air.
+                if level > 0 && y + r <= top - PLANE_THICKNESS_M {
+                    continue; // passed under
+                }
+                return Some(PieceHit {
+                    cx: bx as u16,
+                    cz: bz as u16,
+                    level: level as u8,
+                    loc,
+                });
+            }
+        }
+    }
+    None
 }
 
 /// Where the move `a0`→`a1` meets the edge plane at `px`, if it does: the
@@ -768,7 +1403,7 @@ fn cell_edges_block(
         if walls | doors | frames == 0 {
             continue;
         }
-        let base = col_base_y(seed, haven, ecx as u16, ecz as u16);
+        let base = col_base_y(seed, haven, cols, ecx as u16, ecz as u16);
         for level in 0..MAX_BUILD_LEVELS {
             let bit = 1u8 << level;
             let has_wall = walls & bit != 0;
@@ -879,15 +1514,15 @@ fn cell_diags_block(
     hi_y: f32,
     point: bool,
     r_extra: f32,
-) -> bool {
+) -> Option<PieceHit> {
     if bx < 0 || bz < 0 || bx >= MAX_BUILD_COORD as i32 || bz >= MAX_BUILD_COORD as i32 {
-        return false;
+        return None;
     }
     let m = cols.get(bx as u16, bz as u16);
     if m.diag_a | m.diag_b == 0 {
-        return false;
+        return None;
     }
-    let base = col_base_y(seed, haven, bx as u16, bz as u16);
+    let base = col_base_y(seed, haven, cols, bx as u16, bz as u16);
     for level in 0..MAX_BUILD_LEVELS {
         let bit = 1u8 << level;
         if (m.diag_a | m.diag_b) & bit == 0 {
@@ -908,12 +1543,17 @@ fn cell_diags_block(
             }
             if let Some(t) = diag_meet(bx, bz, diag_b, x, z, nx, nz, r_extra) {
                 if (0.0..=DIAG_LEN_M).contains(&t) {
-                    return true;
+                    return Some(PieceHit {
+                        cx: bx as u16,
+                        cz: bz as u16,
+                        level: level as u8,
+                        loc: if diag_b { LOC_DIAG_B } else { LOC_DIAG_A },
+                    });
                 }
             }
         }
     }
-    false
+    None
 }
 
 /// Whether a wall, doorway post, window, frame rim or diagonal wall stops
@@ -956,6 +1596,9 @@ pub fn blocked(
         return true;
     }
     let (lo, hi) = (feet_y, feet_y + CAPSULE_HEIGHT_M);
+    // `.is_some()`: the body walk asks only whether it is stopped. The
+    // address the diagonal now names is the shot walk's business
+    // ([`shot_stop`]) — a mover that cannot damage a wall has no use for it.
     if cell_diags_block(
         seed,
         haven,
@@ -970,7 +1613,9 @@ pub fn blocked(
         hi,
         false,
         CAPSULE_RADIUS_M,
-    ) {
+    )
+    .is_some()
+    {
         return true;
     }
     if (bx0 != bx1 || bz0 != bz1)
@@ -989,10 +1634,40 @@ pub fn blocked(
             false,
             CAPSULE_RADIUS_M,
         )
+        .is_some()
     {
         return true;
     }
     false
+}
+
+/// Which built piece a shot walk stopped on — the address, never a store
+/// index.
+///
+/// **An address cannot go stale and an index can**, which is
+/// `charge::detonate`'s rule arriving on the shot path: the walk that finds
+/// the piece and the write that damages it are separated by the body pass
+/// and, on a hitscan tick, by other players' shots, any of which can drop a
+/// piece and shuffle the store. The caller re-resolves through
+/// `Pieces::find_index` at the moment it charges damage, and a hit whose
+/// address no longer holds a piece is simply no longer a hit.
+///
+/// `loc` is one of `build`'s `LOC_*` — the same four-part address
+/// `combat::raid` picks and `deploy::damage_piece` writes against, so a shot
+/// and a swing name a wall identically.
+///
+/// ⚠ **The address alone does not say which STORE**, and since
+/// [`deploy_stop`] it is returned by a walk over both. `Deploys::find_index`
+/// states the design in its own doc — a door and its doorway have one
+/// address — so a caller holding this has already decided, or is carrying
+/// the discriminator beside it (`ranged::Struck`, `build::repair`'s
+/// `deploy` flag, `STRUCT_DEPLOY_BIT` on the wire). This type never guesses.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct PieceHit {
+    pub cx: u16,
+    pub cz: u16,
+    pub level: u8,
+    pub loc: u8,
 }
 
 /// Whether an edge piece stops a **shot** sample moving (x,z)→(nx,nz) at
@@ -1011,6 +1686,64 @@ pub fn blocked(
 ///   ([`DOOR_HEAD_M`]), where a body only ever met the posts; and a
 ///   **shut door** seals its doorway on both walks.
 #[allow(clippy::too_many_arguments)]
+pub fn shot_stop(
+    seed: u64,
+    haven: &crate::terrain::Haven,
+    cols: &ColIndex,
+    x: f32,
+    z: f32,
+    nx: f32,
+    nz: f32,
+    y: f32,
+    r: f32,
+) -> Option<PieceHit> {
+    let (bx0, bz0) = (
+        crate::build::build_cell_of(x),
+        crate::build::build_cell_of(z),
+    );
+    let (bx1, bz1) = (
+        crate::build::build_cell_of(nx),
+        crate::build::build_cell_of(nz),
+    );
+    let hit = cell_edges_stop_shot(seed, haven, cols, bx1, bz1, x, z, nx, nz, y, r);
+    if hit.is_some() {
+        return hit;
+    }
+    if bx0 != bx1 || bz0 != bz1 {
+        let hit = cell_edges_stop_shot(seed, haven, cols, bx0, bz0, x, z, nx, nz, y, r);
+        if hit.is_some() {
+            return hit;
+        }
+    }
+    // The diagonals, with the point's own band: containment of `y`, not a
+    // capsule's overlap.
+    let hit = cell_diags_block(seed, haven, cols, bx1, bz1, x, z, nx, nz, y, y, true, r);
+    if hit.is_some() {
+        return hit;
+    }
+    if bx0 != bx1 || bz0 != bz1 {
+        let hit = cell_diags_block(seed, haven, cols, bx0, bz0, x, z, nx, nz, y, y, true, r);
+        if hit.is_some() {
+            return hit;
+        }
+    }
+    // The planes, at the sample's own point rather than over the sweep.
+    // **A point, deliberately, where the edges above are swept**: an edge is
+    // crossed horizontally and a plane is crossed vertically, and the
+    // vertical step between two taps is at most `ARROW_STEP_MM` — under the
+    // band a slab presents, so the sweep an edge needs a plane does not
+    // ([`cell_planes_stop_shot`]'s doc carries the arithmetic). It reads the
+    // destination `(nx, nz)`, which is the sample `ranged::world_stop` is
+    // asking about and the same point it hands `Occupants::blocks_volume`.
+    cell_planes_stop_shot(seed, haven, cols, nx, nz, y, r)
+}
+
+/// Whether anything built stops the shot — [`shot_stop`] with the address
+/// discarded. The two are one walk: this is the question the collision
+/// suite has always asked, kept spelled as a predicate so a caller that
+/// only needs a yes/no does not carry an address it will drop.
+#[allow(clippy::too_many_arguments)]
+#[inline]
 pub fn shot_blocked(
     seed: u64,
     haven: &crate::terrain::Haven,
@@ -1022,33 +1755,7 @@ pub fn shot_blocked(
     y: f32,
     r: f32,
 ) -> bool {
-    let (bx0, bz0) = (
-        crate::build::build_cell_of(x),
-        crate::build::build_cell_of(z),
-    );
-    let (bx1, bz1) = (
-        crate::build::build_cell_of(nx),
-        crate::build::build_cell_of(nz),
-    );
-    if cell_edges_stop_shot(seed, haven, cols, bx1, bz1, x, z, nx, nz, y, r) {
-        return true;
-    }
-    if (bx0 != bx1 || bz0 != bz1)
-        && cell_edges_stop_shot(seed, haven, cols, bx0, bz0, x, z, nx, nz, y, r)
-    {
-        return true;
-    }
-    // The diagonals, with the point's own band: containment of `y`, not a
-    // capsule's overlap.
-    if cell_diags_block(seed, haven, cols, bx1, bz1, x, z, nx, nz, y, y, true, r) {
-        return true;
-    }
-    if (bx0 != bx1 || bz0 != bz1)
-        && cell_diags_block(seed, haven, cols, bx0, bz0, x, z, nx, nz, y, y, true, r)
-    {
-        return true;
-    }
-    false
+    shot_stop(seed, haven, cols, x, z, nx, nz, y, r).is_some()
 }
 
 /// [`cell_edges_block`] with the shot profile — the four boundaries of one
@@ -1067,7 +1774,7 @@ fn cell_edges_stop_shot(
     nz: f32,
     y: f32,
     r: f32,
-) -> bool {
+) -> Option<PieceHit> {
     let edges = [
         (bx, bz, true),
         (bx + 1, bz, true),
@@ -1099,7 +1806,7 @@ fn cell_edges_stop_shot(
         if walls | doors | wins | frames == 0 {
             continue;
         }
-        let base = col_base_y(seed, haven, ecx as u16, ecz as u16);
+        let base = col_base_y(seed, haven, cols, ecx as u16, ecz as u16);
         for level in 0..MAX_BUILD_LEVELS {
             let bit = 1u8 << level;
             if (walls | doors | wins | frames) & bit == 0 {
@@ -1139,11 +1846,16 @@ fn cell_edges_stop_shot(
                 span && frame_solid_at(t, y - bottom)
             };
             if solid {
-                return true;
+                return Some(PieceHit {
+                    cx: ecx as u16,
+                    cz: ecz as u16,
+                    level: level as u8,
+                    loc: if x_plane { LOC_EDGE_XLO } else { LOC_EDGE_ZLO },
+                });
             }
         }
     }
-    false
+    None
 }
 
 #[cfg(test)]
@@ -1237,6 +1949,7 @@ mod tests {
             cz,
             level,
             loc,
+            false,
             &mut ev,
         );
         let last = ev.entries()[ev.len() - 1];
@@ -1376,7 +2089,7 @@ mod tests {
         let bc = free_table();
         let mut pieces = Pieces::new();
         put(&bc, &mut pieces, CX, CZ, 0, LOC_PLANE, 0);
-        let base = col_base_y(SEED, hv(), CX, CZ);
+        let base = col_base_y(SEED, hv(), &ColIndex::new(), CX, CZ);
 
         // Standing in the cell snaps up onto the slab (lift ≤ step-up)…
         let mut b = body_at(1024.5, 1024.5);
@@ -1442,7 +2155,7 @@ mod tests {
         let mut pieces = Pieces::new();
         put(&bc, &mut pieces, CX, CZ, 0, LOC_PLANE, 0);
         put(&bc, &mut pieces, CX, CZ, 0, LOC_RISER, 4);
-        let base = col_base_y(SEED, hv(), CX, CZ);
+        let base = col_base_y(SEED, hv(), &ColIndex::new(), CX, CZ);
 
         // Walk +Z up the ramp: feet rise monotonically to base + storey.
         let mut b = body_at(1024.5, CZ as f32 * BUILD_CELL_M + 0.2);
@@ -1514,7 +2227,7 @@ mod tests {
         );
 
         // The same edge, to a shot: the storey base is the column's own.
-        let base = col_base_y(SEED, hv(), CX, CZ);
+        let base = col_base_y(SEED, hv(), &ColIndex::new(), CX, CZ);
         let (z_open, z_jamb) = (
             CZ as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5, // mid-opening
             CZ as f32 * BUILD_CELL_M + 0.4,                // inside a jamb
@@ -1716,7 +2429,7 @@ mod tests {
             crate::build::LOC_TRI_XLO_ZLO,
             7,
         );
-        let base = col_base_y(SEED, hv(), CX, CZ);
+        let base = col_base_y(SEED, hv(), &ColIndex::new(), CX, CZ);
         let x0 = CX as f32 * BUILD_CELL_M;
         let z0 = CZ as f32 * BUILD_CELL_M;
 
@@ -1835,7 +2548,7 @@ mod tests {
                 .position(|e| e.0 == cx && e.1 == cz && e.2 == level && e.3 == loc);
             match at {
                 None if rng.next_bounded(5) < 3 => {
-                    idx.add(cx, cz, level, loc, shape);
+                    idx.add(cx, cz, level, loc, shape, 0);
                     shadow.push((cx, cz, level, loc, shape));
                 }
                 Some(i) if rng.next_bounded(5) >= 3 => {

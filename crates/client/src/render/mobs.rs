@@ -220,6 +220,27 @@ pub fn full_mps_of(slot: usize) -> f32 {
 /// Beside [`full_mps_of`] and reading the same `mob::kind_of`, so the three
 /// per-species facts the render half needs — meshes, stride, voice height —
 /// are one lookup pattern rather than three conventions.
+/// Where a blow lands on an animal, metres above its own origin.
+///
+/// **Read off the shipped mesh table rather than taken as a fraction of the
+/// standing height**, which is the `ANIM_RIG_H_M` habit applied to a
+/// four-legged body: the first box in each species' table is documented as
+/// the barrel — *"the silhouette. Everything else hangs off it"* for the pig,
+/// *"chest and barrel"* for the wolf — so its centre IS the flank, and a
+/// re-shaped animal moves this with it instead of leaving a constant behind.
+///
+/// Beside [`voice_h_of`] and [`full_mps_of`], reading the same
+/// `mob::kind_of`, so the per-species facts the render half needs stay one
+/// lookup pattern. It is deliberately NOT `voice_h_of`: that is the snout,
+/// and a snout is where a sound comes from rather than where a hatchet
+/// lands.
+pub fn flank_h_of(slot: usize) -> f32 {
+    match mob::kind_of(slot) {
+        mob::MOB_WOLF => WOLF_BODY[0].0[1],
+        _ => PIG_BODY[0].0[1],
+    }
+}
+
 pub fn voice_h_of(slot: usize) -> f32 {
     let stand = match mob::kind_of(slot) {
         mob::MOB_WOLF => WOLF_H_M,
@@ -311,7 +332,10 @@ pub fn load(
         material: materials.add(StandardMaterial {
             base_color: Color::WHITE,
             perceptual_roughness: 0.88,
-            reflectance: 0.06,
+            // Hide, not stone — `fresnel::FLESH` is 2.8% where the island
+            // is 4%. It shipped at 0.06, i.e. F0 0.06%, the darkest specular
+            // anywhere in the client.
+            reflectance: super::fresnel::FLESH,
             ..default()
         }),
     });

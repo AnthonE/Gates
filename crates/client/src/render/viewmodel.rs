@@ -64,7 +64,6 @@ use bevy::camera::visibility::NoFrustumCulling;
 use bevy::prelude::*;
 
 use super::feed::Feed;
-use super::props::{tint1, Soup};
 use super::rig::EyeCam;
 use super::textures::PropMaps;
 use super::Eye;
@@ -75,6 +74,39 @@ use super::Net;
 /// leaving frame at the bottom, and a first cut near centre at arm's length
 /// read as a prop floating in the world rather than as something carried.
 pub const VIEWMODEL_HOLD: Vec3 = Vec3::new(0.32, -0.30, -0.52);
+
+/// Wrist-to-palm correction, in the held item's own (tilted) frame, metres.
+///
+/// The grip point lands on the `RightHand` BONE, and a hand bone's origin is
+/// the WRIST: the palm channel — where a rod actually crosses a fist — sits
+/// a few centimetres beyond it toward the fingers. Without this, every item
+/// rode low and right of the open palm and read as floating beside the hand
+/// (operator, 2026-08-21: *"its not in the hand though?"*).
+///
+/// ## Solved off the mesh, 2026-09-01, and the old value was 9.6 cm short
+///
+/// It used to be judged off capture frames — 5.3 cm, "left and up into the
+/// finger curl" — and that was the right instinct at the wrong magnitude.
+/// Measured in the `RightHand` bone's own frame, the old seat put the haft
+/// **5.4 cm from the wrist bone**, at the heel of the palm, with the nearest
+/// finger vertex **9.1 cm away** on a hand 21.7 cm long. Nothing was gripping
+/// anything; the haft only LOOKED like it crossed the hand because a
+/// projection flattens the two together (operator, 2026-09-01: *"the axe need
+/// to probably move to the fingers some. its off just a bit"* — the read was
+/// right and the "bit" was half a hand).
+///
+/// The value now is where a cylinder of the haft's own drawn radius actually
+/// fits: swept over the bone frame, the seat that maximises clearance while
+/// the hand still closes AROUND it. It lands at (4.5, 13.0, −1.5) cm — on the
+/// knuckle line, which is where a rod crosses a fist — with 2.57 cm of
+/// clearance and hand in **all sixteen** of the directions sampled
+/// perpendicular to the haft. The old seat had the hand on one side of it.
+///
+/// It is a translation, so the item's ORIENTATION is untouched: the pose
+/// angles in `ui::hold::HELD_MODELS` still mean exactly what they measured.
+/// `bodies::hand_pose` takes the same constant, so the remote body's grip
+/// moves with it — which is the point, there is one grip.
+pub const VIEWMODEL_PALM: Vec3 = Vec3::new(-0.0854, 0.0426, -0.0981);
 
 /// The item's resting orientation in view space, YXZ Euler radians.
 ///
@@ -113,16 +145,384 @@ pub const VIEWMODEL_SWAY_CATCHUP: f32 = 9.0;
 pub const VIEWMODEL_SWAY_MAX: f32 = 0.16;
 
 /// How long one swing takes, seconds.
-pub const VIEWMODEL_SWING_S: f32 = 0.32;
-/// How far the swing rotates, radians.
-pub const VIEWMODEL_SWING_PITCH: f32 = 1.15;
-/// How far the swing pushes away from the eye, metres.
-pub const VIEWMODEL_SWING_PUSH: f32 = 0.13;
+///
+/// ⚠ **PROPOSED — a tunable no doc has spoken, so it ships carrying its
+/// derivation** (`RIG_SUN_ARC`'s convention) and belongs in `DECISIONS.md`
+/// §open ("viewmodel swing v1") the day it is.
+///
+/// **It is deliberately NOT [`super::anim::SWING_CLIP_S`]**, which is the
+/// stroke a remote body plays for the same event, and the two bounds that
+/// pick it are the reason:
+///
+///   · the whole stroke recovers inside the sim's own cadence
+///     (`SWING_INTERVAL_TICKS / TICK_HZ` = 1.267 s) with the arm back at
+///     rest, so holding the button is a steady chop and never a wind-up
+///     that never resolves — 0.45 s is a third of it;
+///   · the arc's **apex** lands at `VIEWMODEL_SWING_WINDUP + (1 −
+///     VIEWMODEL_SWING_WINDUP)·VIEWMODEL_SWING_ATTACK` = 0.35 of the
+///     stroke, so 0.16 s in. That is the half `SWING_CLIP_S` cannot
+///     satisfy: the sim resolves your own swing on the frame the button
+///     goes down and `render::input` plays the cue there, so an apex a
+///     third of a second later reads as the picture lagging the sound.
+///     A remote body has no such constraint — nothing of theirs is
+///     synchronised to your speakers.
+pub const VIEWMODEL_SWING_S: f32 = 0.45;
+
+/// The point the whole viewmodel — arm, hand and item — turns about, in view
+/// space, metres.
+///
+/// **Not the eye, and the difference is the whole reason the arc reads.** The
+/// item sits 0.52 m in front of the camera; rotating it about the camera's own
+/// origin by the angles below takes it round *toward the lens* and out through
+/// the near plane (measured: 0.11 m of depth at a 0.86 rad pitch, against a
+/// 0.1 m near plane). Behind and slightly below the eye is roughly where a
+/// shoulder is, and swinging about it sweeps the item **across** the frame
+/// instead of into it.
+pub const VIEWMODEL_SWING_PIVOT: Vec3 = Vec3::new(0.05, -0.10, 0.30);
+
+/// What fraction of the stroke is the wind-up. The rest is the strike and its
+/// recovery.
+pub const VIEWMODEL_SWING_WINDUP: f32 = 0.30;
+/// How much of the STRIKE is the fall toward the apex; the remainder is the
+/// recovery back to rest. Under a half, so the blow is faster than the arm's
+/// return — a symmetric strike reads as a wave rather than a chop.
+pub const VIEWMODEL_SWING_ATTACK: f32 = 0.35;
+
+/// How far the wind-up pitches the rig **up**, radians.
+pub const VIEWMODEL_SWING_LIFT: f32 = 0.55;
+/// How far the wind-up cocks the rig out to the right — yaw and roll
+/// together, radians. Smaller than [`VIEWMODEL_SWING_SWEEP`] because a
+/// wind-up that matched the swing-through carries the grip off the right
+/// edge of the frame (measured at 0.55: ndc x 1.17).
+pub const VIEWMODEL_SWING_COCK: f32 = 0.28;
+/// How far the strike pitches the rig **down**, radians. Small next to the
+/// sweep on purpose: at this pivot most of the downward read on screen comes
+/// from the roll and the yaw carrying the item across and under.
+pub const VIEWMODEL_SWING_PITCH: f32 = 0.25;
+/// How far the strike sweeps the rig across — yaw and roll together, radians.
+pub const VIEWMODEL_SWING_SWEEP: f32 = 0.55;
+
+/// Where the wind-up displaces the whole rig, metres — up, out of the way of
+/// what is about to be hit.
+pub const VIEWMODEL_SWING_DRAW: Vec3 = Vec3::new(0.0, 0.16, 0.0);
+/// Where the strike displaces the whole rig, metres: left, down, and away
+/// from the eye. The Z term is the reach — [`VIEWMODEL_SWING_PUSH`] under its
+/// old name, kept as a component of the displacement rather than as a term of
+/// its own, because it is one motion.
+pub const VIEWMODEL_SWING_THROW: Vec3 = Vec3::new(-0.10, -0.10, -0.09);
+/// Where the item's long axis POINTS at the strike apex, in the hold frame —
+/// down and forward, which is where a chop lands.
+///
+/// ## It is the old constant re-read, not a new number
+///
+/// This was `VIEWMODEL_SWING_WRIST: f32 = 0.70`, "how far the strike snaps the
+/// item about the hold frame's own X". That framing hid what the number was
+/// doing: `Rx(-0.70) * NEG_Z` is exactly `(0, -0.6442, -0.7648)`, so an angle
+/// about a fixed axis was an AIM DIRECTION for one particular carry — the
+/// laid-forward one, where the tool's long axis is the hold frame's −Z. Stated
+/// as a direction it serves every carry, and every laid-forward row lands
+/// bit-for-bit where it landed before, because for those rows the two forms are
+/// the same rotation.
+///
+/// **Why this had to change.** A tool's rest direction is the row's business
+/// now (`ui::hold::HeldModelDef::lay` and `pose_yaw`), and the hatchet's is
+/// 54.8° above horizontal where a laid tool's is 19.5°. A fixed angle about a
+/// fixed axis therefore aimed the two at different places: measured, the strike
+/// used to finish with the hatchet's head **+37.6° above the horizon** — a
+/// salute, not a chop — where the laid pose finished at −12.2°. Aiming at a
+/// direction instead makes the landing the invariant and the travel the
+/// difference, which is what a chop is.
+pub const VIEWMODEL_SWING_AIM: Vec3 = Vec3::new(0.0, -0.6442, -0.7648);
+
+/// The most the aim may turn the item, radians. **(knob)** — `DECISIONS.md`.
+///
+/// **A cap and not a target**, because the aim is a direction and the angle to
+/// it is the row's: a laid tool needs 0.70 rad (the old constant, unchanged), a
+/// bow carried upright wants 2.27. Uncapped, every row would land on exactly
+/// the same apex direction and the carry would stop reading at all.
+///
+/// 1.45 is chosen so the tool actually in hand lands where the swing has always
+/// landed: measured, it takes the hatchet's apex to −12.2°, which is the laid
+/// pose's historic landing to a tenth of a degree. It clamps the upright
+/// carries, which is the honest half — they finish above the horizon and would
+/// need the ARM to make up the rest, and the arm cannot (see [`swing_pose`]).
+pub const VIEWMODEL_SWING_WRIST_MAX: f32 = 1.45;
+
+/// Where the item sits in the **`RightHand` bone's own frame**, once
+/// [`dress_arms`] has hung it there.
+///
+/// ## Derived off the shipped file, and the derivation is the whole entry
+///
+/// `DECISIONS.md`'s 2026-08-17 row closed with *"the item is not parented to
+/// the hand, because a grip is judged by looking rather than derived"*, and
+/// that was right about a grip and wrong about **this** grip: there is one
+/// placement nobody has to judge, which is the one that leaves the picture
+/// exactly where it already is. So the constant is not a new pose — it is
+/// `hand⁻¹ ∘ (T(VIEWMODEL_HOLD) · R(VIEWMODEL_TILT))`, sampled off
+/// [`super::anim::ARMS_HOLD_CLIP`]'s first frame with [`VIEWMODEL_ARMS`]
+/// applied. At rest the item is within a millimetre of where it hung as a
+/// child of the camera; what changes is that it now **moves with the hand**.
+///
+/// **The defect it closes was reported from play** — *"held items are shitty
+/// looking like again they are not under the parent"* (operator, 2026-08-30)
+/// — and it was exactly that: the item and the arms were siblings, so the
+/// hold clip posed the hand and the item stayed where the camera put it.
+/// Small at rest (the hold loop moves the hand 7 mm) and total under any
+/// motion the arm is given.
+///
+/// `crates/client/tests/viewmodel_arms.rs` re-derives all three of these off
+/// the GLB, so a re-import, a retarget or a change to `VIEWMODEL_HOLD` fails
+/// the gate instead of hanging the axe beside the fist.
+pub const VIEWMODEL_GRIP_M: Vec3 = Vec3::new(0.45838, -0.00628, -0.13165);
+/// The item's orientation in the hand bone's frame. See [`VIEWMODEL_GRIP_M`].
+pub const VIEWMODEL_GRIP_Q: Quat = Quat::from_xyzw(-0.163194, -0.429258, 0.687723, -0.562265);
+/// What the item has to be scaled by to come out life-sized in the hand.
+///
+/// The rig's own root node carries `scale 0.01` — this skeleton's joint
+/// translations are centimetres (`tests/rig_asset.rs` `root_transform` says
+/// why) — and a child of a bone inherits it. Every offset under
+/// [`HeldItem`] is in metres (`VIEWMODEL_PALM`, `hold::HeldModelDef::grip_m`,
+/// the flame lift), and they all keep meaning metres because this puts the
+/// item's own world scale back at 1. Same arithmetic, opposite direction,
+/// as `bodies::hand_pose` dividing `BODY_PALM` by the body's scale.
+pub const VIEWMODEL_GRIP_SCALE: f32 = 100.0;
+
+/// The whole viewmodel assembly — the arms and, through the hand, the item.
+///
+/// **One node carries every motion, which is what the split it replaces could
+/// not do.** Bob, sway and the swing used to be written onto two entities
+/// separately: the item took the rotation and the arms took only the
+/// translation, because *"the item rotates about its own origin, which is in
+/// the hand; the arms rotate about the character's FEET, a metre and a half
+/// away, so the same sway applied to both would swing the hands out of
+/// frame"*. That reasoning was sound and it was solving the wrong problem —
+/// with the item hung off the hand ([`VIEWMODEL_GRIP_M`]) the two are one
+/// rigid body, and a rigid body has one pivot: [`VIEWMODEL_SWING_PIVOT`],
+/// roughly where a shoulder is. So there is one transform again, and the arm
+/// and the thing in it cannot disagree about where the swing went.
+#[derive(Component)]
+pub struct HeldRig;
 
 /// The parent of the held item's meshes. One transform to animate, so the
 /// handle and the head cannot drift apart.
+///
+/// Spawned under [`HeldRig`] and **re-parented onto the `RightHand` bone** by
+/// [`dress_arms`]; [`InHand`] is the marker for which of the two it is, and
+/// the fallback matters — a rig that never loads still draws an item at
+/// [`VIEWMODEL_HOLD`], which is the picture this shipped for months.
 #[derive(Component)]
 pub struct HeldItem;
+
+/// On [`HeldItem`] once it hangs off the hand bone rather than off
+/// [`HeldRig`]. What [`animate`] composes its wrist snap onto depends on
+/// which frame the item is in, and a marker says so in the type system
+/// rather than by re-deriving it from the hierarchy every frame.
+#[derive(Component)]
+pub struct InHand;
+
+/// The item's transform in whichever frame it is hanging in — the hand bone's
+/// once dressed, the rig's until then.
+///
+/// `wrist` is the strike's snap, radians about the hold frame's own X.
+pub fn item_pose(in_hand: bool, snap: Quat) -> Transform {
+    if in_hand {
+        let mut t = grip();
+        // The snap turns the item about the item frame's ORIGIN, which is the
+        // wrist bone — not the palm, where the fist actually closes. Left
+        // alone that slides the haft THROUGH the hand by
+        // `2·|VIEWMODEL_PALM|·sin(θ/2)`: 9.4 cm at the old 0.70 rad and 18.1 cm
+        // at the 1.45 this now allows. So the turn is taken about the palm,
+        // which is `rig_transform`'s arithmetic one frame over — and in the
+        // bone's own units, because a child of the hand inherits the rig's
+        // 0.01 scale (see [`VIEWMODEL_GRIP_SCALE`]).
+        t.rotation *= snap;
+        t.translation +=
+            VIEWMODEL_GRIP_SCALE * (VIEWMODEL_GRIP_Q * (VIEWMODEL_PALM - snap * VIEWMODEL_PALM));
+        t
+    } else {
+        let rest = Quat::from_euler(
+            EulerRot::YXZ,
+            VIEWMODEL_TILT.x,
+            VIEWMODEL_TILT.y,
+            VIEWMODEL_TILT.z,
+        );
+        Transform {
+            // The same correction, in the frame this branch lives in: here the
+            // item hangs off the camera at scale 1, so the palm offset needs no
+            // unit change.
+            translation: VIEWMODEL_HOLD + rest * (VIEWMODEL_PALM - snap * VIEWMODEL_PALM),
+            rotation: rest * snap,
+            scale: Vec3::ONE,
+        }
+    }
+}
+
+/// The strike's turn for an item whose long axis rests along `rest` in the hold
+/// frame, at strike progress `strike` in 0..1.
+///
+/// **Published because a gate has to walk it**, the same reason
+/// [`swing_pose`] is: `tests/viewmodel_arms.rs` composes this against every
+/// `HELD_MODELS` row to check the head finishes BELOW where it started, which
+/// is the assertion this file spent a session not having.
+///
+/// The axis is the cross product with a named fallback rather than
+/// `Quat::from_rotation_arc`. That function is one line shorter and picks an
+/// arbitrary perpendicular at the antipode; `render/tree.rs` records this repo
+/// bending a whole tree sideways on exactly that branch. Here the failure would
+/// be one item snapping to a random axis at a pose nobody photographs, and it
+/// is reachable from `ui::hold`'s table with no code change at all — so the
+/// margin is gated too.
+pub fn aim_snap(rest: Vec3, strike: f32) -> Quat {
+    let u = rest.normalize_or(Vec3::NEG_Z);
+    let v = VIEWMODEL_SWING_AIM.normalize();
+    let axis = u.cross(v).try_normalize().unwrap_or(Vec3::NEG_X);
+    let turn = u
+        .dot(v)
+        .clamp(-1.0, 1.0)
+        .acos()
+        .min(VIEWMODEL_SWING_WRIST_MAX);
+    Quat::from_axis_angle(axis, turn * strike)
+}
+
+/// An item's long axis at rest, in the hold frame — what [`aim_snap`] aims.
+///
+/// `pose` puts the model's +Y through `Ry(pose_yaw) * Rx(-lay)`, so this is
+/// that rotation applied to +Y and nothing else. It is a function rather than
+/// an expression at the call site because the gate and `ci/posesheet.py` both
+/// need the same answer, and a second copy of a two-line rotation is how the
+/// two stop agreeing.
+pub fn item_rest_dir(def: &crate::ui::hold::HeldModelDef) -> Vec3 {
+    Quat::from_rotation_y(def.pose_yaw) * Quat::from_rotation_x(-def.lay) * Vec3::Y
+}
+
+/// The item's frame **in the `RightHand` bone's own space** — the constants
+/// above as one transform.
+///
+/// ## One grip, two hands, and that is the point
+///
+/// `bodies::hand_pose` composes this same function for a REMOTE body, and the
+/// sharing is the argument rather than a saving: a grip is a property of the
+/// fist and the item, not of the camera or of the body it hangs on. The same
+/// character rig holds the same hatchet the same way whether you are looking
+/// down your own arm or across a clearing at somebody else's, so a second
+/// constant for the third-person case would be a copy that can drift — and
+/// the one it replaced *had* drifted, by 0.69 m and onto the wrong side of
+/// the body (`bodies::hand_pose`'s doc carries the measurement).
+///
+/// It is derived against [`super::anim::ARMS_HOLD_CLIP`] and that does not
+/// make it first-person-only: the derivation reads the item's pose *relative
+/// to the hand*, so [`VIEWMODEL_ARMS`] and the camera cancel out of it. What
+/// the clip supplies is a fist actually gripping something, which is the only
+/// pose in which "where does a held thing sit" has an answer at all.
+pub fn grip() -> Transform {
+    Transform {
+        translation: VIEWMODEL_GRIP_M,
+        rotation: VIEWMODEL_GRIP_Q,
+        scale: Vec3::splat(VIEWMODEL_GRIP_SCALE),
+    }
+}
+
+/// A 0 → 1 → 0 pulse over `u` ∈ [0, 1] that rises across `attack` of its span
+/// and falls across the rest.
+///
+/// **C¹ at all three of its interesting points**, which is not decoration
+/// here: the swing composes two of these back to back, and a slope step at
+/// the join is a visible flick in a motion whose whole job is to read as one
+/// stroke. `sin²` and `cos²` are flat at 0 and at π/2, so the rise leaves 0
+/// with zero slope, meets the fall at 1 with zero slope from both sides, and
+/// returns to 0 the same way. (A bare `sin` — the shape `animate` used for
+/// its old arc — is *not*: its derivative at either end is π·A, so the item
+/// snapped into motion and snapped out of it.)
+pub fn bump(u: f32, attack: f32) -> f32 {
+    if u <= 0.0 || u >= 1.0 {
+        return 0.0;
+    }
+    let a = attack.clamp(1e-3, 1.0 - 1e-3);
+    if u < a {
+        let t = std::f32::consts::FRAC_PI_2 * (u / a);
+        t.sin() * t.sin()
+    } else {
+        let t = std::f32::consts::FRAC_PI_2 * ((u - a) / (1.0 - a));
+        t.cos() * t.cos()
+    }
+}
+
+/// The rig's rotation and displacement at swing progress `s` ∈ [0, 1], where
+/// 0 and 1 are both the rest pose.
+///
+/// Published because the gate walks it: `tests/viewmodel_arms.rs` applies this
+/// to the hold point and to the collapsed arm's origin at every step of the
+/// stroke and asserts the first stays inside the frame and the second stays
+/// outside it. That is the one thing about this arc that is checkable without
+/// a GPU, and it is the thing that actually went wrong — the rig's own
+/// `Sword_Attack` was the obvious clip to play here and, measured, it carries
+/// the right hand **behind the camera** for 40% of its length and to ndc
+/// y −2.36 at the strike, because it is authored for a body seen from
+/// outside. See [`VIEWMODEL_SWING_PIVOT`].
+pub fn swing_pose(s: f32) -> (Quat, Vec3) {
+    let w = VIEWMODEL_SWING_WINDUP;
+    let (wind, strike) = if s < w {
+        (bump(s / w, 0.5), 0.0)
+    } else {
+        (0.0, bump((s - w) / (1.0 - w), VIEWMODEL_SWING_ATTACK))
+    };
+    // Yaw and roll move together — one diagonal, cocked out to the right and
+    // swept down across to the left — so they share a coefficient.
+    let turn = -VIEWMODEL_SWING_COCK * wind + VIEWMODEL_SWING_SWEEP * strike;
+    let rot = Quat::from_euler(
+        EulerRot::YXZ,
+        turn,
+        VIEWMODEL_SWING_LIFT * wind - VIEWMODEL_SWING_PITCH * strike,
+        turn,
+    );
+    (
+        rot,
+        VIEWMODEL_SWING_DRAW * wind + VIEWMODEL_SWING_THROW * strike,
+    )
+}
+
+/// When in the stroke the blow lands, seconds from its start.
+///
+/// The strike's own bump peaks at [`VIEWMODEL_SWING_ATTACK`] of the span
+/// left after the wind-up, so this is arithmetic over three constants rather
+/// than a fourth number — and it is published because a gate needs it:
+/// `tests/rig_asset.rs` holds this within half a tick of where the rig's own
+/// `Sword_Attack` strikes, which is what keeps the swinger's view and
+/// everybody else's view of one swing pointed at the same instant.
+pub fn swing_apex_s() -> f32 {
+    (VIEWMODEL_SWING_WINDUP + (1.0 - VIEWMODEL_SWING_WINDUP) * VIEWMODEL_SWING_ATTACK)
+        * VIEWMODEL_SWING_S
+}
+
+/// The rig's transform for a rotation about [`VIEWMODEL_SWING_PIVOT`] plus a
+/// displacement — the arithmetic that turns "turn about the shoulder" into
+/// the one `Transform` Bevy wants.
+pub fn rig_transform(rot: Quat, off: Vec3) -> Transform {
+    Transform {
+        translation: VIEWMODEL_SWING_PIVOT - rot * VIEWMODEL_SWING_PIVOT + off,
+        rotation: rot,
+        scale: Vec3::ONE,
+    }
+}
+
+/// The emitter a lit held item hangs in the world. One per session, spawned
+/// dark beside the model and driven by [`hand_light`].
+///
+/// **A child of [`HeldItem`] and not of [`HeldModel`]**, which is the whole
+/// reason it needs no work to follow the hand: `HeldItem` is the entity
+/// `animate` writes, so the light inherits bob, sway and the swing arc for
+/// free, and it is NOT the entity `swap` re-poses per item — a light hung
+/// there would be rotated by `grip_m`'s slide and by `pose_yaw`, which are
+/// corrections for where a MESH sits in a fist and mean nothing to a point
+/// source. Its own offset is [`crate::ui::hold::HeldModelDef::flame_m`], up
+/// the hold frame's +Y, and every row that declares a light is upright, so
+/// that axis is the item's axis too.
+///
+/// **Driven by intensity, never by `Visibility`**, exactly as
+/// `structures::FireLight` is: it is one entity that outlives every swap, so
+/// there is nothing to spawn or despawn when the hand changes.
+#[derive(Component)]
+pub struct HandLight;
 
 /// The child that carries whichever model is in hand. Separate from
 /// [`HeldItem`] so `animate` keeps writing exactly one transform and the swap
@@ -146,11 +546,18 @@ pub struct HeldModel {
 /// format convention, and merging them makes the next asset's fix ambiguous.
 const MODEL_UPRIGHT_TO_HELD: f32 = -std::f32::consts::FRAC_PI_2;
 
-// The grip is per item and lives in `ui::hold::HeldModelDef::grip_offset_m`.
-// **One shared offset was the first cut and it does not survive the set**: a
-// 0.20 m rock and a 1.80 m spear are a factor of nine apart, so an offset that
-// seats the rock puts the spear's butt through the camera. `swap` writes it
-// when the model changes.
+// The grip is per item and lives in `ui::hold::HeldModelDef::grip_m` — a
+// point up the model's own +Y that `swap` rotates with the pose and lands on
+// the fist. **One shared offset was the first cut and it does not survive the
+// set**: a 0.10 m rock and a 1.80 m spear are a factor of eighteen apart, so
+// an offset that seats the rock puts the spear's butt through the camera.
+// `swap` writes it when the model changes.
+//
+// ⚠ **A fraction is only as good as the axis it is a fraction OF**, and that
+// cost the rock a shipped frame: the table declared each model's longest axis
+// while `grip_m` spent the fraction up +Y, which agree on a haft and do not
+// agree on a stone that is twice as wide as it is tall. See
+// `HeldModelDef::height_m`.
 
 /// The motion state. A resource rather than a component: there is exactly one
 /// held item, and this keeps `animate` one cheap system that queries only the
@@ -175,169 +582,6 @@ pub struct Motion {
     /// mouse button into a chop at the sim's cadence instead of a blur at
     /// the frame rate. See [`crate::ui::swing`].
     cadence: crate::ui::swing::SwingCadence,
-}
-
-/// Emit an axis-aligned box into a soup. `c` is the centre, `h` the
-/// half-extent, `tint` a mean-1 colour over whatever photograph the material
-/// carries (`props::tint1`).
-fn boxed(s: &mut Soup, c: Vec3, h: Vec3, tint: [f32; 3]) {
-    let v = |sx: f32, sy: f32, sz: f32| c + Vec3::new(h.x * sx, h.y * sy, h.z * sz);
-    // Per-face value break-up, small: the photograph carries the variation and
-    // a second source of it is the patchwork `blob_mesh` used to be.
-    let faces = [
-        (
-            [
-                v(-1., -1., 1.),
-                v(1., -1., 1.),
-                v(1., 1., 1.),
-                v(-1., 1., 1.),
-            ],
-            1.00,
-        ),
-        (
-            [
-                v(1., -1., -1.),
-                v(-1., -1., -1.),
-                v(-1., 1., -1.),
-                v(1., 1., -1.),
-            ],
-            0.93,
-        ),
-        (
-            [
-                v(1., -1., 1.),
-                v(1., -1., -1.),
-                v(1., 1., -1.),
-                v(1., 1., 1.),
-            ],
-            0.97,
-        ),
-        (
-            [
-                v(-1., -1., -1.),
-                v(-1., -1., 1.),
-                v(-1., 1., 1.),
-                v(-1., 1., -1.),
-            ],
-            0.95,
-        ),
-        (
-            [
-                v(-1., 1., 1.),
-                v(1., 1., 1.),
-                v(1., 1., -1.),
-                v(-1., 1., -1.),
-            ],
-            1.02,
-        ),
-        (
-            [
-                v(-1., -1., -1.),
-                v(1., -1., -1.),
-                v(1., -1., 1.),
-                v(-1., -1., 1.),
-            ],
-            0.90,
-        ),
-    ];
-    for (q, shade) in faces {
-        let col = move |_: Vec3| [tint[0] * shade, tint[1] * shade, tint[2] * shade, 1.0];
-        s.tri(q[0], q[1], q[2], col, None, 0.0);
-        s.tri(q[0], q[2], q[3], col, None, 0.0);
-    }
-}
-
-/// Emit a hexahedron from eight corners: `back` then `front`, each wound
-/// counter-clockwise seen from outside its own face. A box cannot taper and a
-/// blade must, so this is the shape the axe bit needs and `boxed` cannot make.
-fn hexa(s: &mut Soup, back: [Vec3; 4], front: [Vec3; 4], tint: [f32; 3]) {
-    let quad = |s: &mut Soup, q: [Vec3; 4], shade: f32| {
-        let col = move |_: Vec3| [tint[0] * shade, tint[1] * shade, tint[2] * shade, 1.0];
-        s.tri(q[0], q[1], q[2], col, None, 0.0);
-        s.tri(q[0], q[2], q[3], col, None, 0.0);
-    };
-    quad(s, front, 1.00);
-    quad(s, [back[3], back[2], back[1], back[0]], 0.90);
-    quad(s, [back[0], back[1], front[1], front[0]], 0.97);
-    quad(s, [back[1], back[2], front[2], front[1]], 1.03);
-    quad(s, [back[2], back[3], front[3], front[2]], 0.95);
-    quad(s, [back[3], back[0], front[0], front[3]], 0.99);
-}
-
-/// The handle: a long box down the view's forward axis.
-///
-/// **One tool, and the client cannot yet know which one.** `ClientCore`
-/// mirrors which hotbar CELL is selected but not what is in it — `RENDER.md`
-/// §6 records the same gap for the hotbar's own icons — so drawing the actual
-/// held item needs an inventory surface that does not exist yet. A hatchet is
-/// the starter tool; when that surface lands this becomes a lookup and none of
-/// the motion above changes.
-fn handle_mesh() -> Mesh {
-    // Tiles per metre, and deliberately dense: a haft is ~0.5 m and the plank
-    // map is authored for a wall, so at 1.0 the handle shows one blurred
-    // plank rather than grain.
-    let mut s = Soup::tiling(3.0);
-    let grain = tint1(0x8a6f4a);
-    boxed(
-        &mut s,
-        Vec3::new(0.0, 0.0, 0.0),
-        Vec3::new(0.016, 0.019, 0.25),
-        grain,
-    );
-    s.mesh()
-}
-
-/// The head: an eye around the haft and a bit swept out to one side.
-///
-/// **The tiling here is 1.1 and the first cut was 9.0, which is the boulder's
-/// mistake in miniature.** `CorrugatedSteel009` is photoscanned RIBBED SHEET;
-/// at nine tiles per metre a 10 cm head samples a dozen full rib periods and
-/// resolves into a stack of pale stripes — it read as a paperback on a stick.
-/// At 1.1 the head samples roughly a tenth of the map, so what reaches the
-/// frame is the broad tonal variation of worn steel rather than its corrugation.
-/// The rule the two share: **match the tile rate to the scale the map was
-/// photographed at, not to the size of the object.** A map whose own features
-/// are wrong for the identity cannot be fixed by either — that is a sourcing
-/// gap, and a plain steel albedo is the entry `MANIFEST.md` is missing.
-fn head_mesh() -> Mesh {
-    // Tiling is irrelevant to this mesh's own material, which carries no map —
-    // see `spawn_item`. Kept sane so the UVs are well-formed for tangents.
-    let mut s = Soup::tiling(1.0);
-    let steel = tint1(0x9aa0a6);
-    // The eye, wrapped around the haft.
-    boxed(
-        &mut s,
-        Vec3::new(-0.004, 0.014, -0.238),
-        Vec3::new(0.024, 0.040, 0.030),
-        steel,
-    );
-    // The bit, TAPERED — thick and short where it meets the eye, thin and
-    // flared at the cutting edge. Two earlier cuts made this out of boxes
-    // (one, then three) and both read as a cluster of blocks rather than a
-    // blade: at 10 cm the silhouette is the whole of what the eye gets, and a
-    // rectangle is not an axe. The flare in Y and the taper in Z are what
-    // make the outline read.
-    let (zb, zf) = (0.022f32, 0.004f32);
-    let (yb, yf) = (0.040f32, 0.060f32);
-    let (xb, xf) = (-0.020f32, -0.098f32);
-    let y0 = 0.018f32;
-    hexa(
-        &mut s,
-        [
-            Vec3::new(xb, y0 - yb, zb),
-            Vec3::new(xb, y0 + yb, zb),
-            Vec3::new(xb, y0 + yb, -zb),
-            Vec3::new(xb, y0 - yb, -zb),
-        ],
-        [
-            Vec3::new(xf, y0 - yf, zf),
-            Vec3::new(xf, y0 + yf, zf),
-            Vec3::new(xf, y0 + yf, -zf),
-            Vec3::new(xf, y0 - yf, -zf),
-        ],
-        steel,
-    );
-    s.mesh()
 }
 
 /// Spawn the held item under the camera, once.
@@ -373,7 +617,8 @@ pub fn spawn_item(
         base_color_texture: Some(maps.wood.albedo.clone()),
         normal_map_texture: Some(maps.wood.normal.clone()),
         perceptual_roughness: 0.82,
-        reflectance: 0.14,
+        // See `render::fresnel`: 0.14 was F0 0.31%.
+        reflectance: super::fresnel::DIELECTRIC,
         ..default()
     });
     // **The head carries no map, and that is a sourcing gap stated rather than
@@ -395,54 +640,75 @@ pub fn spawn_item(
         // polished one needs a reflection probe, which is a slice, not a knob.
         perceptual_roughness: 0.52,
         metallic: 0.55,
-        reflectance: 0.35,
+        reflectance: super::fresnel::METAL_DIELECTRIC,
         ..default()
     });
 
     commands.entity(cam).with_children(|c| {
-        c.spawn((
-            HeldItem,
-            Transform::from_translation(VIEWMODEL_HOLD).with_rotation(Quat::from_euler(
-                EulerRot::YXZ,
-                VIEWMODEL_TILT.x,
-                VIEWMODEL_TILT.y,
-                VIEWMODEL_TILT.z,
-            )),
-            Visibility::Inherited,
-        ))
-        .with_children(|item| {
-            // The generic tool, kept as the fallback for every item with no
-            // model of its own. It is NOT what an empty hand draws — see
-            // `swap` — it is what a revolver draws until a revolver is made.
-            item.spawn((
-                Mesh3d(meshes.add(handle_mesh())),
-                MeshMaterial3d(wood.clone()),
-                Fallback,
-            ));
-            item.spawn((
-                Mesh3d(meshes.add(head_mesh())),
-                MeshMaterial3d(steel.clone()),
-                Fallback,
-            ));
-            // The model in hand. Spawned empty and filled by `swap`, which is
-            // what keeps this file free of the inventory: it reads a row index
-            // from `ui::hold` and never an item id.
-            // **The empty handles are load-bearing, not tidiness.** `swap`'s
-            // query is `(&mut HeldModel, &mut Mesh3d, &mut MeshMaterial3d,
-            // &mut Visibility)`, and a Bevy query matches only entities that
-            // have EVERY component in it. Spawned without these two the
-            // entity exists, holds its transform, and is invisible to the one
-            // system that fills it — which is not a compile error, not a
-            // panic, and not a warning: the hand is simply always empty.
-            // Cost one capture to find.
-            item.spawn((
-                HeldModel { shown: None },
-                Mesh3d(Handle::default()),
-                MeshMaterial3d::<StandardMaterial>(Handle::default()),
-                Transform::from_rotation(Quat::from_rotation_x(MODEL_UPRIGHT_TO_HELD)),
-                Visibility::Hidden,
-            ));
-        });
+        // The assembly node. Everything the viewmodel does to itself — bob,
+        // sway, the swing arc — is written here, and the arms spawn under it
+        // (`spawn_arms`) so the arm and the item cannot be given different
+        // motions. See [`HeldRig`].
+        c.spawn((HeldRig, Transform::IDENTITY, Visibility::Inherited))
+            .with_children(|rig| {
+                rig.spawn((
+                    HeldItem,
+                    item_pose(false, Quat::IDENTITY),
+                    Visibility::Inherited,
+                ))
+                .with_children(|item| {
+                    // The generic tool, kept as the fallback for every item with no
+                    // model of its own. It is NOT what an empty hand draws — see
+                    // `swap` — it is what a revolver draws until a revolver is made.
+                    item.spawn((
+                        Mesh3d(meshes.add(super::heldgen::handle_mesh())),
+                        MeshMaterial3d(wood.clone()),
+                        Transform::from_translation(VIEWMODEL_PALM),
+                        Fallback,
+                    ));
+                    item.spawn((
+                        Mesh3d(meshes.add(super::heldgen::head_mesh())),
+                        MeshMaterial3d(steel.clone()),
+                        Transform::from_translation(VIEWMODEL_PALM),
+                        Fallback,
+                    ));
+                    // The model in hand. Spawned empty and filled by `swap`, which is
+                    // what keeps this file free of the inventory: it reads a row index
+                    // from `ui::hold` and never an item id.
+                    // **The empty handles are load-bearing, not tidiness.** `swap`'s
+                    // query is `(&mut HeldModel, &mut Mesh3d, &mut MeshMaterial3d,
+                    // &mut Visibility)`, and a Bevy query matches only entities that
+                    // have EVERY component in it. Spawned without these two the
+                    // entity exists, holds its transform, and is invisible to the one
+                    // system that fills it — which is not a compile error, not a
+                    // panic, and not a warning: the hand is simply always empty.
+                    // Cost one capture to find.
+                    item.spawn((
+                        HeldModel { shown: None },
+                        Mesh3d(Handle::default()),
+                        MeshMaterial3d::<StandardMaterial>(Handle::default()),
+                        Transform::from_rotation(Quat::from_rotation_x(MODEL_UPRIGHT_TO_HELD)),
+                        Visibility::Hidden,
+                    ));
+                    // What the item puts into the world, dark until `hand_light`
+                    // says otherwise. See [`HandLight`] for why it hangs here and
+                    // not on the model, and `structures::FireLight` for why its
+                    // shadows are off: a shadow-casting point light is six faces of
+                    // re-rasterised geometry, this one MOVES every frame, and the
+                    // sun already spends four cascades.
+                    item.spawn((
+                        HandLight,
+                        PointLight {
+                            color: super::structures::FIRE_COLOR,
+                            intensity: 0.0,
+                            range: 0.0,
+                            shadows_enabled: false,
+                            ..default()
+                        },
+                        Transform::IDENTITY,
+                    ));
+                });
+            });
     });
 }
 
@@ -455,11 +721,15 @@ pub struct Fallback;
 ///
 /// ## What made this possible, and what nearly made it impossible
 ///
-/// A viewmodel needs the arms and **nothing else**, and the obvious way to get
-/// that does not work on this character: the body is one mesh with one
-/// material, so `Visibility` (per entity) has no limb to reach, and the only
-/// lever that does — collapsing a joint to zero scale — inherits down the
-/// hierarchy, so hiding the torso hides the arms hanging off it. That was
+/// A viewmodel needs the arms and **nothing else** — and, it turned out,
+/// only ONE of them: the hold clip is a two-handed grip and the support hand
+/// tangles with the item, so [`VIEWMODEL_HIDDEN_ARM`] collapses the other arm
+/// and carries that whole argument. What follows is about the body.
+///
+/// The obvious way to hide the body does not work on this character: it is one
+/// mesh with one material, so `Visibility` (per entity) has no limb to reach,
+/// and the only lever that does — collapsing a joint to zero scale — inherits
+/// down the hierarchy, so hiding the torso hides the arms hanging off it. That was
 /// reported as "not reachable on this asset", and the report was wrong in a
 /// useful way: what was missing was not a trick but **something to hide**.
 /// `ci/split_arms.py` makes one, splitting the mesh by skin weight into
@@ -488,6 +758,11 @@ pub struct ViewArms {
     /// The `RightHand` bone, once the scene has spawned it. The held item is
     /// re-parented onto this.
     hand: Option<Entity>,
+    /// The scene's `AnimationPlayer`. Recorded rather than re-walked, for
+    /// `bodies::Live::hand`'s reason: the walk is a bounded descendant search
+    /// and doing it per frame to find one entity that cannot move is a cost
+    /// with nothing bought.
+    player: Option<Entity>,
     /// Whether the body half has been hidden and the player bound.
     dressed: bool,
 }
@@ -502,6 +777,103 @@ pub struct ViewArms {
 /// construction rather than by taste.
 pub const VIEWMODEL_ARMS: Vec3 = Vec3::new(0.238, -1.477, -0.241);
 
+/// The arm the first-person view does **not** draw, by bone name.
+///
+/// ## Why an arm is deleted rather than posed
+///
+/// [`super::anim::ARMS_HOLD_CLIP`] is `Pistol_Idle_Loop`, and it was chosen
+/// because it is the rig's only **two-handed** hold that loops. That is the
+/// right property for a pistol and the wrong one for everything this game puts
+/// in a hand: a two-handed grip is a support hand clamped onto a weapon that
+/// is not there, so the second hand lands on top of the first with nothing
+/// between them. Measured off the shipped file across the whole 1.667 s loop,
+/// with [`VIEWMODEL_ARMS`] applied:
+///
+///   · the hands stay **62–66 mm apart** for the whole loop — the tightest of
+///     the rig's 22 looping clips by a factor of 2.9 (`Swim_Fwd_Loop` is next,
+///     at 181 mm), and beaten across all 53 only by `Pistol_Aim_Up`,
+///     `Pistol_Aim_Down`, `Pistol_Reload` and `Pistol_Shoot` — the same
+///     two-handed grip, none of which loops;
+///   · the left hand sits **31 mm NEARER the eye** than the right, so the open
+///     support palm draws in FRONT of the held item;
+///   · the left arm crosses the body's midline to get there — its shoulder is
+///     on +X, its hand on −X, which on this rig (right = −X, proven by the
+///     T-pose and by which hand `Punch_Cross` throws) is the far side.
+///
+/// That is the tangle the operator reported as *"our models hands are a bit
+/// crossed?"* (2026-08-20), and it is a property of the POSE, so no offset
+/// fixes it. Two things could: pick a one-handed clip, or stop drawing the
+/// hand that is not holding anything.
+///
+/// **Hiding won, and the reason is the other half of the file.** Every
+/// one-handed idle this rig owns presents its LEFT hand (`Idle_Torch_Loop`,
+/// `Spell_Simple_Idle_Loop`, `Sword_Idle` — the torch, the spell and the
+/// off-hand shield are all on +X), so switching clips moves the item into the
+/// wrong hand: it re-derives [`VIEWMODEL_ARMS`] away from the one placement
+/// that has been measured in a running client, it puts a left hand's chirality
+/// at the lower right of every frame, and it points the hold away from
+/// `Sword_Attack`, which is the operator's spoken gather swing (2026-08-17)
+/// and swings the RIGHT arm. Hiding costs none of that, and one arm is what
+/// the reference game draws for a one-handed tool anyway.
+///
+/// **Collapsing the shoulder is the mechanism**, not `Visibility`: both arms
+/// are one node, one material and one index array (`ci/split_arms.py`), so
+/// there is no entity to hide. A joint scaled to nothing takes every vertex
+/// weighted to it — and its whole child chain — onto its own origin, which for
+/// this bone sits at ndc y ≈ −1.8, comfortably under the bottom of the frame,
+/// and further out still under the swing's push. `--bin modelview --hide` is
+/// the same trick and its doc comment carries the same limit.
+///
+/// ⚠ **The write is one-shot, and that is only safe because this clip carries
+/// no scale channel.** `Pistol_Idle_Loop` animates rotation on 22 joints and
+/// translation on the hips, nothing else, so nothing overwrites the collapse
+/// after [`dress_arms`] runs. `Idle_Loop` DOES animate scale, on all 24 — so a
+/// future clip swap here would pop the arm back with no compile error and no
+/// log line. `tests/viewmodel_arms.rs` gates exactly that, which is what buys
+/// the zero per-frame cost.
+pub const VIEWMODEL_HIDDEN_ARM: &str = "LeftShoulder";
+
+/// What a collapsed joint is scaled to. Not zero: a zero-scale skinning matrix
+/// is a degenerate basis, and every normal derived through it is a division by
+/// nothing. At 1e-4 a vertex half a metre out lands 50 µm from the origin,
+/// which is the same picture with arithmetic that stays finite.
+pub const VIEWMODEL_HIDDEN_SCALE: f32 = 1e-4;
+
+/// Where the collapsed joint is MOVED to, in its own parent's local units.
+///
+/// ## Scaling it to nothing was never enough, and the swing is what proved it
+///
+/// A collapsed joint is a heap of zero-area triangles at that joint's own
+/// origin, and this rig's `LeftShoulder` origin sits at ndc (0.69, −1.87) —
+/// just under the bottom of the frame, and **0.217 m from the lens**. At that
+/// depth the frame is 33 cm tall, so *any* motion of the viewmodel is a
+/// large motion in ndc: the swing's wind-up carried it to ndc y −0.97, which
+/// is a stray speck of skin in shot, and even a 20 cm translation would have
+/// moved it 1.2 ndc. The old arc survived only because it was tiny — which is
+/// the defect it was reported for.
+///
+/// So the joint is moved as well as collapsed, to
+/// [`VIEWMODEL_HIDDEN_BEHIND_M`] **behind the camera**, where nothing the rig
+/// can do to itself brings it back: a point 4.8 m behind a pivot 0.3 m behind
+/// the eye is still 4.5 m behind it after any rotation this file writes.
+///
+/// **Measured, not typed** — it is `R_Spine⁻¹ · (0, 0, VIEWMODEL_HIDDEN_BEHIND_M)
+/// / scale` at the hold clip's rest pose, in the parent's own frame, so the
+/// numbers are large and arbitrary-looking for the same reason
+/// [`VIEWMODEL_GRIP_M`]'s are: a bone's local axes are wherever the skeleton
+/// put them. `tests/viewmodel_arms.rs` re-derives it off the shipped file and
+/// walks it through the whole hold loop and the whole swing.
+///
+/// ⚠ **Safe only because the hold clip animates no translation on this
+/// bone** — the same condition the scale collapse already rests on, one
+/// channel over, and gated in the same test.
+pub const VIEWMODEL_HIDDEN_OFFSET: Vec3 = Vec3::new(-301.23, -75.10, -387.69);
+
+/// How far behind the eye [`VIEWMODEL_HIDDEN_OFFSET`] parks the collapsed
+/// joint, metres. Published because it is what the offset MEANS, and because
+/// the gate checks the consequence rather than the vector.
+pub const VIEWMODEL_HIDDEN_BEHIND_M: f32 = 4.78;
+
 /// Spawn the arms once the rig's glTF is in.
 ///
 /// A child of the camera, so the arms follow the view the way a viewmodel
@@ -512,12 +884,20 @@ pub fn spawn_arms(
     mut commands: Commands,
     mut done: Local<bool>,
     rig: Res<super::anim::Rig>,
-    cam: Query<Entity, With<EyeCam>>,
+    // **Under [`HeldRig`] and not under the camera.** The arms and the item
+    // are one rigid assembly now (the item hangs off the hand), so they take
+    // one motion from one node; hanging the arms off the camera again would
+    // put the swing back on two entities that have to be kept in step by
+    // hand, which is the bug this replaced.
+    host: Query<Entity, With<HeldRig>>,
 ) {
     if *done || !rig.ready() {
         return;
     }
-    let (Ok(cam), Some(scene)) = (cam.single(), rig.scene.clone()) else {
+    // `spawn_item` spawns the host and both are `Update` systems, so the
+    // first frame here can genuinely find nothing — bail without latching,
+    // exactly as a missing `Rig` does.
+    let (Ok(cam), Some(scene)) = (host.single(), rig.scene.clone()) else {
         return;
     };
     *done = true;
@@ -525,6 +905,7 @@ pub fn spawn_arms(
         c.spawn((
             ViewArms {
                 hand: None,
+                player: None,
                 dressed: false,
             },
             SceneRoot(scene),
@@ -553,6 +934,7 @@ pub fn dress_arms(
     children: Query<&Children>,
     names: Query<&Name>,
     mut vis: Query<&mut Visibility>,
+    mut xf: Query<&mut Transform>,
     players: Query<Entity, With<AnimationPlayer>>,
     meshes: Query<(), With<Mesh3d>>,
     item: Query<Entity, With<HeldItem>>,
@@ -567,6 +949,7 @@ pub fn dress_arms(
     let mut stack = vec![root];
     let mut seen = 0usize;
     let (mut body_half, mut hand, mut player) = (None, None, None);
+    let mut off_arm = None;
     let mut drawn = Vec::new();
     while let Some(e) = stack.pop() {
         seen += 1;
@@ -580,6 +963,7 @@ pub fn dress_arms(
             match n.as_str() {
                 super::anim::BODY_NODE => body_half = Some(e),
                 "RightHand" => hand = Some(e),
+                VIEWMODEL_HIDDEN_ARM => off_arm = Some(e),
                 _ => {}
             }
         }
@@ -590,7 +974,14 @@ pub fn dress_arms(
             stack.extend(kids.iter());
         }
     }
-    let (Some(body_half), Some(hand), Some(player)) = (body_half, hand, player) else {
+    // Required, not optional, and `body_half` is the precedent: the dressing
+    // is one atomic step, so a name the asset stopped carrying leaves the
+    // whole viewmodel undressed and loudly wrong rather than half-applied.
+    // `tests/viewmodel_arms.rs` is what stops that reaching a build — it
+    // resolves every name here against the shipped file.
+    let (Some(body_half), Some(hand), Some(player), Some(off_arm)) =
+        (body_half, hand, player, off_arm)
+    else {
         return;
     };
 
@@ -621,6 +1012,16 @@ pub fn dress_arms(
         *v = Visibility::Hidden;
     }
 
+    // The arm that is not holding anything — see [`VIEWMODEL_HIDDEN_ARM`] for
+    // the measurement and for why this is a scale and not a `Visibility`, and
+    // [`VIEWMODEL_HIDDEN_OFFSET`] for why the scale alone does not do it.
+    // Neither channel is one `Pistol_Idle_Loop` writes, so this survives every
+    // frame the clip plays without a system to re-apply it.
+    if let Ok(mut t) = xf.get_mut(off_arm) {
+        t.scale = Vec3::splat(VIEWMODEL_HIDDEN_SCALE);
+        t.translation = VIEWMODEL_HIDDEN_OFFSET;
+    }
+
     if let Some(graph) = rig.graph.clone() {
         let mut transitions = AnimationTransitions::new();
         let mut p = AnimationPlayer::default();
@@ -632,18 +1033,34 @@ pub fn dress_arms(
             .insert((AnimationGraphHandle(graph), transitions, p));
     }
 
-    // **The item is deliberately NOT re-parented onto the hand yet**, and the
-    // reason is honesty about what can be checked here. `VIEWMODEL_ARMS` puts
-    // the hand ON the hold point, so the item already appears in the hand and
-    // `animate` moves both with one motion — but a child of the hand needs its
-    // grip offset and tilt re-derived against the arm's own frame, and a grip
-    // is judged by looking at it, not computed. The hand is recorded so that
-    // change is one line when somebody with a GPU can see the result.
-    let _ = &item;
+    // **The item moves into the hand here**, which is the whole of what
+    // 2026-08-17 deferred as *"a grip is judged by looking rather than
+    // derived"*. That is still true of a grip in general and it is not true
+    // of this one: [`VIEWMODEL_GRIP_M`] is whatever leaves the item exactly
+    // where the camera was already hanging it, so nothing about the resting
+    // frame is being judged — only whether it FOLLOWS, and it now does.
+    //
+    // `insert` writes the local transform in the same command as the
+    // re-parent, so the item is never one frame at the hand's origin wearing
+    // the camera's offsets — which at `scale 0.01` would be a hundred-fold
+    // item somewhere under the floor for a frame.
+    //
+    // **A guard and not an `if let`, because the dressing is atomic.**
+    // `body_half`/`hand`/`player`/`off_arm` above are all required for that
+    // reason; the item is the fifth. `spawn_item` runs first in practice —
+    // it waits on `PropMaps`, where this waits on a glTF — but "in practice"
+    // is how a latch comes to be set on a frame that did half the work.
+    let Ok(item) = item.single() else {
+        return;
+    };
+    commands
+        .entity(item)
+        .insert((ChildOf(hand), InHand, item_pose(true, Quat::IDENTITY)));
 
     arms.hand = Some(hand);
+    arms.player = Some(player);
     arms.dressed = true;
-    info!("viewmodel: arms up, body half hidden");
+    info!("viewmodel: arms up, body half hidden, {VIEWMODEL_HIDDEN_ARM} collapsed, item in hand");
 }
 
 /// Say where the hand actually ended up, once, in VIEW space.
@@ -700,6 +1117,34 @@ pub fn arms_report(
 /// Handles are loaded once into [`Models`] rather than per swap: `AssetServer`
 /// dedups, but a `load` per frame still walks a path and hashes it, and this
 /// runs every frame by construction.
+/// Where a held row sits relative to the fist that holds it, in metres.
+///
+/// The whole pose is a property of the ITEM, so all of it is here and none
+/// of it at spawn: lay a tool forward, keep a carried thing upright, then
+/// slide the model so its grip point — `grip_m` up its own +Y — lands on
+/// `palm`. The grip vector is rotated WITH the model; writing it on a fixed
+/// axis is the bug this replaces, which hung every tool `grip_m` below the
+/// hand (63 cm, for the spear).
+///
+/// **`palm` is a parameter because there are two fists now.** The
+/// viewmodel's is [`VIEWMODEL_PALM`], an offset in eye space; a remote
+/// body's is `bodies::BODY_PALM`, an offset in that body's own space. The
+/// arithmetic between them is identical and a second copy of it is the
+/// mirror-drift `CLAUDE.md` warns about on every hand-kept duplicate — so
+/// there is one, and the caller says where the hand is.
+pub fn pose(def: &crate::ui::hold::HeldModelDef, palm: Vec3) -> Transform {
+    let lay = Quat::from_rotation_x(-def.lay);
+    // The presentation yaw composes in the hand's frame, so it turns the
+    // item about the fist rather than about its own foot, and the grip
+    // point below stays in the palm under any yaw.
+    let rot = Quat::from_rotation_y(def.pose_yaw) * lay;
+    Transform {
+        translation: palm - (rot * (Vec3::Y * def.grip_m())),
+        rotation: rot,
+        scale: Vec3::splat(def.scale),
+    }
+}
+
 pub fn swap(
     net: Option<NonSend<Net>>,
     models: Res<Models>,
@@ -731,12 +1176,10 @@ pub fn swap(
         if held.shown != want {
             match want {
                 Some(i) => {
-                    mesh.0 = models.mesh[i].clone();
-                    mat.0 = models.mat[i].clone();
-                    // Slide the model down its own axis so the grip is at the
-                    // hand. Written here and not at spawn because it is a
-                    // property of the ITEM, and the item changes.
-                    tf.translation.y = crate::ui::hold::HELD_MODELS[i].grip_offset_m();
+                    let (m, mt) = models.row(i);
+                    mesh.0 = m;
+                    mat.0 = mt;
+                    *tf = pose(&crate::ui::hold::HELD_MODELS[i], VIEWMODEL_PALM);
                 }
                 None => {
                     mesh.0 = Handle::default();
@@ -762,6 +1205,81 @@ pub fn swap(
     }
 }
 
+/// Drive the hand's emitter off whichever [`crate::ui::hold::HELD_MODELS`]
+/// row is in the fist.
+///
+/// **Night had no counter before this.** `rig::day_night` takes the sun to
+/// zero illuminance, kills the environment map and the sky brightness, and
+/// leaves `NIGHT_AMBIENT_LUX` — 60 lux of direction-free ambient — as the
+/// entire lighting of a tenth of every cycle, while `mob::think` sends the
+/// wolves out into it. The starter kit has put a torch on hotbar slot 2
+/// since the kit existed (`content/balance.toml`), and holding it did
+/// nothing at all.
+///
+/// **It reads the same function `swap` reads and that is not a second
+/// drain.** `hold::held_model_in_hand` is a pure lookup over the catalog
+/// and the inventory mirror — the single-consumer trap `feed.rs` narrates
+/// is about the destructive `pop_*` rings, and this touches none of them.
+/// Two readers of a pure function is two calls.
+///
+/// No allocation, no branch per frame beyond the row lookup: the emitter is
+/// one entity that outlives every swap.
+pub fn hand_light(
+    net: Option<NonSend<Net>>,
+    q: Query<(&mut PointLight, &mut Transform), With<HandLight>>,
+) {
+    let want = net.as_deref().and_then(|n| {
+        let core = &n.session.core;
+        crate::ui::hold::lit_model_in_hand(&core.catalog, &core.inv, n.sel, n.light)
+    });
+    apply_hand_light(want, q);
+}
+
+/// [`hand_light`] with the held row as a value. The half a gate can drive —
+/// `structures::apply_fire_lights` is the same split for the same reason:
+/// the socket is the only thing the system adds.
+///
+/// A row with no `light` and an empty hand are one case on purpose. There is
+/// no third state: an emitter that is off is a zero, not a hidden entity,
+/// so nothing here can leave a light burning for an item that is no longer
+/// in the hand.
+///
+/// Since torch fuel v0 the caller narrows it further — `hold::lit_model_in_hand`
+/// hands `None` for a torch whose latch is off or whose condition has run
+/// out — and that is deliberately *its* job rather than a fourth branch
+/// here: this function's contract is "draw the light this row declares",
+/// and whether a flame is burning is a question about the sim's three
+/// facts, not about a `PointLight`.
+pub fn apply_hand_light(
+    want: Option<usize>,
+    mut q: Query<(&mut PointLight, &mut Transform), With<HandLight>>,
+) {
+    let (lumens, range, lift) = match want.map(|i| &crate::ui::hold::HELD_MODELS[i]) {
+        Some(row) => match row.light {
+            Some(l) => (l.lumens, l.range_m, row.flame_m()),
+            None => (0.0, 0.0, 0.0),
+        },
+        None => (0.0, 0.0, 0.0),
+    };
+    for (mut light, mut tf) in &mut q {
+        // Assign only on a change, `apply_fire_lights`' reason exactly:
+        // `PointLight` is `Changed`-tracked and the render world re-extracts
+        // what moved, so writing the same lumens every frame would re-upload
+        // this light forever. The transform is the same — and it is the
+        // stronger case here, because a `Transform` write on a parent of
+        // nothing still dirties the propagation.
+        if light.intensity != lumens {
+            light.intensity = lumens;
+        }
+        if light.range != range {
+            light.range = range;
+        }
+        if tf.translation.y != lift {
+            tf.translation.y = lift;
+        }
+    }
+}
+
 /// The held-item models, index-aligned with [`crate::ui::hold::HELD_MODELS`].
 #[derive(Resource)]
 pub struct Models {
@@ -769,31 +1287,62 @@ pub struct Models {
     mat: Vec<Handle<StandardMaterial>>,
 }
 
-/// Load every held model once at startup. Same `Primitive`/`Material` pair
-/// `structures::build_kit` uses, and for the same reason: these are
-/// single-primitive assets, so the label lands in an ordinary handle and no
-/// scene hierarchy is spawned. `tests/held_assets.rs` is what keeps that true.
-pub fn load_models(mut commands: Commands, assets: Res<AssetServer>) {
+impl Models {
+    /// The geometry and the surface for one [`crate::ui::hold::HELD_MODELS`]
+    /// row, cloned handles.
+    ///
+    /// Read by `swap` through the fields directly and by
+    /// `bodies::stream` through here — the second reader is what makes
+    /// this an accessor rather than two `pub` fields. Both vectors are
+    /// built by [`load_models`] at the same index, so one bounds check
+    /// answers for both, and a row index that is out of them is a
+    /// `HELD_MODELS` change that skipped the loader (`tests/
+    /// held_assets.rs`), not a runtime condition to recover from.
+    pub fn row(&self, i: usize) -> (Handle<Mesh>, Handle<StandardMaterial>) {
+        (self.mesh[i].clone(), self.mat[i].clone())
+    }
+}
+
+/// Load every held model once at startup. For the `.glb` rows, the same
+/// `Primitive`/`Material` pair `structures::build_kit` uses, and for the same
+/// reason: these are single-primitive assets, so the label lands in an
+/// ordinary handle and no scene hierarchy is spawned. `tests/held_assets.rs`
+/// is what keeps that true. The generated rows are built here, once — the
+/// same startup, the same vectors, so `swap` cannot tell the sources apart.
+pub fn load_models(
+    mut commands: Commands,
+    assets: Res<AssetServer>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
     let (mut mesh, mut mat) = (Vec::new(), Vec::new());
     for m in &crate::ui::hold::HELD_MODELS {
-        mesh.push(
-            assets.load(
-                GltfAssetLabel::Primitive {
-                    mesh: 0,
-                    primitive: 0,
-                }
-                .from_asset(m.path),
-            ),
-        );
-        mat.push(
-            assets.load(
-                GltfAssetLabel::Material {
-                    index: 0,
-                    is_scale_inverted: false,
-                }
-                .from_asset(m.path),
-            ),
-        );
+        match m.src {
+            crate::ui::hold::HeldSrc::Glb(path) => {
+                mesh.push(
+                    assets.load(
+                        GltfAssetLabel::Primitive {
+                            mesh: 0,
+                            primitive: 0,
+                        }
+                        .from_asset(path),
+                    ),
+                );
+                mat.push(
+                    assets.load(
+                        GltfAssetLabel::Material {
+                            index: 0,
+                            is_scale_inverted: false,
+                        }
+                        .from_asset(path),
+                    ),
+                );
+            }
+            crate::ui::hold::HeldSrc::Gen(name) => {
+                mesh.push(meshes.add(super::heldgen::mesh(name)));
+                mat.push(materials.add(super::heldgen::material(name)));
+            }
+        }
     }
     commands.insert_resource(Models { mesh, mat });
 }
@@ -808,11 +1357,11 @@ pub fn animate(
     // out of every probe frame.
     net: Option<NonSend<Net>>,
     mut m: ResMut<Motion>,
-    // `Without<ViewArms>` is not decoration: two `&mut Transform` queries in
+    // `Without<HeldItem>` is not decoration: two `&mut Transform` queries in
     // one system have to be PROVABLY disjoint, and two different `With`
     // markers do not prove it — an entity could carry both.
-    mut q: Query<&mut Transform, (With<HeldItem>, Without<ViewArms>)>,
-    mut arms: Query<&mut Transform, With<ViewArms>>,
+    mut q: Query<&mut Transform, (With<HeldRig>, Without<HeldItem>)>,
+    mut item: Query<(&mut Transform, Has<InHand>), With<HeldItem>>,
 ) {
     let Ok(mut t) = q.single_mut() else { return };
     let dt = time.delta_secs();
@@ -890,44 +1439,65 @@ pub fn animate(
     if m.swing > 0.0 {
         m.swing = (m.swing - dt / VIEWMODEL_SWING_S).max(0.0);
     }
-    // 0 at rest, 1 at the middle of the stroke: a half sine over the swing, so
-    // it accelerates in and decelerates out with no discontinuity at either
-    // end. `1 - swing` runs the stroke forwards as `swing` counts down.
-    let arc = (std::f32::consts::PI * (1.0 - m.swing)).sin();
-
-    t.translation = VIEWMODEL_HOLD + bob + Vec3::new(0.0, arc * 0.05, arc * VIEWMODEL_SWING_PUSH);
-    // Composed onto the rest pose, never replacing it — see `VIEWMODEL_TILT`.
-    let rest = Quat::from_euler(
-        EulerRot::YXZ,
-        VIEWMODEL_TILT.x,
-        VIEWMODEL_TILT.y,
-        VIEWMODEL_TILT.z,
-    );
-    let motion = Quat::from_euler(
-        EulerRot::YXZ,
-        m.sway.x,
-        m.sway.y - arc * VIEWMODEL_SWING_PITCH,
-        0.0,
-    );
-    t.rotation = motion * rest;
-
-    // ── The arms ride the same motion ────────────────────────────────────
+    // ── One pose for the whole assembly ─────────────────────────────────
     //
-    // **Translation only, and the omission is the point.** The item rotates
-    // about its own origin, which is in the hand; the arms rotate about the
-    // character's FEET, a metre and a half away, so the same sway applied to
-    // both would swing the hands out of frame while the item stayed put. So
-    // the arms take the bob and the swing's push — which are displacements of
-    // the whole body and read correctly from either pivot — and not the sway
-    // or the swing's pitch.
+    // `1 - swing` runs the stroke forwards as `swing` counts down. The arc
+    // is a rotation about the shoulder rather than a rotation of the item
+    // about its own grip, which is the difference between the arm swinging
+    // and the tool head waggling on a stationary fist — the operator's
+    // *"hardly anything moves"* (2026-08-30) was the second of those.
+    let s = 1.0 - m.swing;
+    let (arc, throw) = swing_pose(s);
+    // The sway rides OUTSIDE the swing, so a turn taken mid-stroke lags the
+    // whole assembly rather than bending the stroke.
+    let lag = Quat::from_euler(EulerRot::YXZ, m.sway.x, m.sway.y, 0.0);
+    *t = rig_transform(lag * arc, throw + bob);
+
+    // ── The wrist, on top of the arm ────────────────────────────────────
     //
-    // The two therefore travel together, which is what keeps the hand on the
-    // item without the item being parented to the hand. Parenting it is the
-    // better design and the follow-up: it needs the grip retuned against the
-    // arm, and a grip is judged by looking rather than derived.
-    if let Ok(mut a) = arms.single_mut() {
-        a.translation =
-            VIEWMODEL_ARMS + bob + Vec3::new(0.0, arc * 0.05, arc * VIEWMODEL_SWING_PUSH);
+    // Everything from the shoulder to the fist is rigid, so the item arrives
+    // flat without this. It is composed onto whichever frame the item is
+    // hanging in — see [`item_pose`] — and it is written WHOLE every frame
+    // rather than nudged, so a swing that ends on a dropped frame cannot
+    // leave the grip a few degrees off forever.
+    //
+    // No contention with the two other writers in this file, and it is worth
+    // being exact about why: `swap` and `hand_light` write the item's
+    // CHILDREN (the model and the emitter), not the item, so the three
+    // systems own one entity each and need no order between them.
+    if let Ok((mut it, in_hand)) = item.single_mut() {
+        let strike = if s < VIEWMODEL_SWING_WINDUP {
+            0.0
+        } else {
+            bump(
+                (s - VIEWMODEL_SWING_WINDUP) / (1.0 - VIEWMODEL_SWING_WINDUP),
+                VIEWMODEL_SWING_ATTACK,
+            )
+        };
+        // Which way the tool is carried decides where the strike has to turn
+        // it, so the aim needs the row. Resolved the way `swap` and
+        // `hand_light` resolve it — `held_model_in_hand` is a pure lookup over
+        // the catalog and the inventory mirror, and `hand_light`'s doc is the
+        // standing argument that a second reader of a pure function is two
+        // calls and not the second-drain defect `feed.rs` narrates.
+        //
+        // `None` is an empty hand, or a capture run with no session at all.
+        // Falling back to −Z is not an arbitrary default: it is the direction a
+        // laid-forward tool rests along, so an empty fist swings exactly as
+        // everything swung before this changed.
+        let rest = net
+            .as_deref()
+            .and_then(|n| {
+                crate::ui::hold::held_model_in_hand(
+                    &n.session.core.catalog,
+                    &n.session.core.inv,
+                    n.sel,
+                )
+            })
+            .map_or(Vec3::NEG_Z, |i| {
+                item_rest_dir(&crate::ui::hold::HELD_MODELS[i])
+            });
+        *it = item_pose(in_hand, aim_snap(rest, strike));
     }
 }
 
@@ -972,15 +1542,5 @@ mod tests {
         let d = wrap_pi(-3.13 - 3.13);
         assert!(d.abs() < 0.03, "wrapped delta was {d}");
         assert!((wrap_pi(0.2) - 0.2).abs() < 1e-6);
-    }
-
-    #[test]
-    fn the_tool_meshes_carry_uvs_and_tangents() {
-        // A normal map without tangents is silently ignored — the failure that
-        // looks like "the texture did not load" and reports nothing.
-        for m in [handle_mesh(), head_mesh()] {
-            assert!(m.attribute(Mesh::ATTRIBUTE_UV_0).is_some());
-            assert!(m.attribute(Mesh::ATTRIBUTE_TANGENT).is_some());
-        }
     }
 }

@@ -4,7 +4,7 @@
 //! **Why there is a splash at all, and it is not decoration.** Until this
 //! landed, double-clicking the game showed *nothing* until the window
 //! existed, and on the launcher path that interval contained: a blocking
-//! round trip to the scry launcher over a local socket, a blocking QUIC
+//! round trip to the elo launcher over a local socket, a blocking QUIC
 //! connect that ended in `exit(1)` on failure, wgpu adapter enumeration,
 //! window creation, the generated sound bank, ten rasterised wheel rings,
 //! two TTF parses and 57 icon PNGs. A player who double-clicked a shortcut
@@ -26,7 +26,7 @@
 //!    that `Startup` asks the asset server for. A menu drawn before them is a
 //!    menu with no icons on it, and — the trap `CLAUDE.md` names — the first
 //!    frame that *uses* a pipeline is the frame that pays to specialize it.
-//! 2. **Who is playing?** `Scry::discover` is a blocking socket round trip.
+//! 2. **Who is playing?** `Elo::discover` is a blocking socket round trip.
 //!    It used to happen before the window, which is what made the window
 //!    late; run from inside, it must still be *answered* before the shell
 //!    draws an identity, or the chip says "anonymous" and then changes its
@@ -58,7 +58,7 @@ pub enum Next {
 pub struct Boot {
     /// Every asset `Startup` asked for is resident.
     pub warm: bool,
-    /// The scry handshake has answered — including "there is no launcher
+    /// The elo handshake has answered — including "there is no launcher
     /// running", which is a normal answer and not a failure.
     pub greeted: bool,
     /// A shard was named on the command line or by the launcher.

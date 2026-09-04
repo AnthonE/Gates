@@ -39,9 +39,15 @@ fn main() {
         "parity {PARITY_MASTER_SEED:#018x} {PARITY_SEQUENCES} {PARITY_TICKS} {:#018x}",
         probe_parity(PARITY_MASTER_SEED, PARITY_SEQUENCES, PARITY_TICKS)
     );
+    // Packed `rewound << 32 | digest32`, printed as its two halves for the
+    // bags line's reason: the count of hitscan shots that resolved against
+    // a rewound pose is a field a gate can read, not a number buried in a
+    // hash. Zero there means the gun fell off the parity surface.
+    let combat = probe_combat(PARITY_MASTER_SEED, COMBAT_SEQUENCES, COMBAT_TICKS);
     println!(
-        "combat {PARITY_MASTER_SEED:#018x} {COMBAT_SEQUENCES} {COMBAT_TICKS} {:#018x}",
-        probe_combat(PARITY_MASTER_SEED, COMBAT_SEQUENCES, COMBAT_TICKS)
+        "combat {PARITY_MASTER_SEED:#018x} {COMBAT_SEQUENCES} {COMBAT_TICKS} {} {:#010x}",
+        combat >> 32,
+        combat & 0xFFFF_FFFF
     );
     // Packed `wakes << 32 | digest32` — printed as its two halves so the
     // count is a field a gate can read, not a number buried in a hash.

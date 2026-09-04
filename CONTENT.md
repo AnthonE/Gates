@@ -52,7 +52,18 @@ properly. The short version:
   `globals.repair_cost_pct` (100 = the damage's worth exactly, validated
   1..=100), rounded up and floored at one unit so no repair is ever free.
 - **weapon**: kind (`melee|bow|firearm|throwable`), damage, headshot ×,
-  rate, range falloff curve, ballistic (speed, drop) or hitscan, ammo id
+  **limb %**, rate, range falloff curve, ballistic (speed, drop) or hitscan,
+  ammo id. The two body-part columns are the ends of one ladder and are
+  spelled differently on purpose: one integer column cannot say both
+  "double" and "half", so the head is a multiplier (identity 1) and the
+  limb a percent (identity 100). A throwable carries both identities —
+  a blast has no anatomy.
+  What a *spent* arrow does is not on this row and is two `globals`
+  instead — `arrow_break_pct` (chance in 100 that a landing destroys it)
+  and `arrow_lodge_s` (seconds an arrow that dealt damage waits before it
+  may be taken; a miss waits none). Globals rather than an ammo column for
+  `[[ammo]]`'s own stated reason: it carries no damage column either, so
+  one break rate for every round is that posture one step out
 - **armor**: slot, damage reduction %, movement penalty
 - **consumable**: health/food/water deltas over seconds
 - **mob**: one row per animal species — hp, speeds as a percentage of the
@@ -96,7 +107,7 @@ properly. The short version:
   ⚠ The BENCH tier (workbench 2/3, the tree UI) is a different system and
   is unbuilt — `NOW.md` §0tt, and the era is a spoken knob.
 - **loot_table**: container archetype → weighted entries + count range
-- **skin**: id, covers (item id), price (SCRY or MYRRH — one coin per
+- **skin**: id, covers (item id), price (ELO or ORBS — one coin per
   row, bare tickers), season — the catalog is content too (dark until A3)
 
 ## 1.5 · The spawn kit
@@ -223,7 +234,21 @@ reference's.
    its own `damage`, and the throwable raid tool's must strictly exceed
    every melee weapon's. `test_content` asserts all of it.
 2. **TTK bands** (body hits, no armor): melee 3–5 · bow 3–4 · revolver
-   4–6; headshot × 2. Armor may add at most +2 hits. Asserted from data.
+   4–6; headshot × 2, **limb 50%**. Armor may add at most +2 hits.
+   Asserted from data.
+   **"Body hits" is load-bearing since headshot v0** (2026-08-30): a ranged
+   hit crossing the top 0.25 m of the body pays the × 2, so the real
+   revolver TTK against a shooter who aims is 2–3. Limb band v0 (also
+   2026-08-30) opens the band at the other end: a hit reaching nothing
+   above the bottom 0.85 m pays half, so the same revolver needs 8–11 in
+   the legs. The bands are priced on the body on purpose — they are the
+   floor a fight cannot go below, not a prediction of one — and they do not
+   move when either end of the ladder lands. **Both ends are pinned
+   exactly** (`[bands] headshot_mult`, `limb_pct`), because the TTK band is
+   measured on the chest and is green whatever a leg or a skull is worth.
+   Melee has no head and no leg (`combat::strike` is planar), so its band
+   is whole and its two columns are priced for a mechanic that does not
+   exist.
 3. **Farm rate** — a node pays the reference game's total over ~10 swings
    (2026-08-10: stone 1000, metal 600, sulfur 300, large tree 870 — it
    read "≈ 300 units" for every node before that); a full wood wall ≈ **4**

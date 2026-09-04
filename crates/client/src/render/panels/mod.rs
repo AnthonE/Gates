@@ -154,6 +154,13 @@ pub(crate) struct Seen {
     /// repair or wear-on-hit walks through it.
     pub inv: [(u16, u16, u16); sim_core::limits::INV_SLOTS],
     pub cont: [(u16, u16, u16); sim_core::limits::INV_SLOTS],
+    /// The **body**, watched separately from `cont` since the two views
+    /// split (`NOW.md` §0eq item 4). It has to be here rather than
+    /// folded into `cont`: the wear panel is drawn on every inventory
+    /// screen now, so a helmet arriving on a head while no ground
+    /// container is open changes nothing else on this list, and the
+    /// paperdoll would keep drawing the slot it had before.
+    pub worn: [(u16, u16, u16); sim_core::limits::WEAR_SLOTS],
     pub cont_kind: u8,
     pub cont_handle: u32,
     pub jobs: [(u8, u8); sim_core::limits::CRAFT_QUEUE],
@@ -161,7 +168,7 @@ pub(crate) struct Seen {
     pub recipes_have: u16,
     pub pieces_have: u16,
     /// The blueprint mask (tech tree v0). Without it a node clicked to
-    /// `Known` only redraws because the obol left `inv` — and a FREE
+    /// `Known` only redraws because the junk left `inv` — and a FREE
     /// node, which content permits, would not redraw at all.
     pub known: u64,
     /// The research drip's watermark, `recipes_have`'s reason exactly.
@@ -464,6 +471,19 @@ pub fn keys(
         super::verbs::close_container(&net, &mut toast);
     }
 
+    // **Opening the panel no longer opens the body, because the body is
+    // never shut.** Armor v1 sent an `ACT_CONTAINER(CONT_WEAR, 0)` here,
+    // gated on the key rather than on the panel becoming visible, so that
+    // `E` on a box — which also raises this panel — did not put two
+    // container opens in one tick and let the box win or lose by
+    // ordering. That whole hazard is gone with the shared slot: the wear
+    // view has its own stream and is dripped unconditionally, so there is
+    // nothing to open, nothing to race, and no ordering to depend on
+    // (`NOW.md` §0eq item 4). The reference's arrangement is unchanged —
+    // `inventory.jpeg` draws the worn slots as part of the inventory
+    // screen rather than as a panel of their own, so there is still no
+    // key to bind and none is invented.
+
     // The wheel wins over nothing and loses to the two toggle screens: a
     // player with the inventory (or the tree) open who brushes the button
     // is not asking for a wheel on top of it.
@@ -588,8 +608,11 @@ pub fn rebuild(
             std::array::from_fn(|i| (core.inv[i].item, core.inv[i].count, core.inv[i].cond));
         let cont: [(u16, u16, u16); sim_core::limits::INV_SLOTS] =
             std::array::from_fn(|i| (core.cont[i].item, core.cont[i].count, core.cont[i].cond));
+        let worn: [(u16, u16, u16); sim_core::limits::WEAR_SLOTS] =
+            std::array::from_fn(|i| (core.worn[i].item, core.worn[i].count, core.worn[i].cond));
         if inv != ui.seen.inv
             || cont != ui.seen.cont
+            || worn != ui.seen.worn
             || core.cont_kind != ui.seen.cont_kind
             || core.cont_handle != ui.seen.cont_handle
             || core.jobs != ui.seen.jobs
@@ -606,6 +629,7 @@ pub fn rebuild(
             }
             ui.seen.inv = inv;
             ui.seen.cont = cont;
+            ui.seen.worn = worn;
             ui.seen.cont_kind = core.cont_kind;
             ui.seen.cont_handle = core.cont_handle;
             ui.seen.jobs = core.jobs;

@@ -49,6 +49,28 @@ pub struct Item {
     /// state and two conditions in one slot is a merge nobody can resolve.
     #[serde(default)]
     pub condition_max: u32,
+    /// **Hundredths of condition burned per minute while this item is
+    /// held up lit** (torch fuel v0). Absent means 0 means *this is not a
+    /// light* — the field is the predicate as well as the price, and that
+    /// is deliberate: an item that emitted light for free would be a
+    /// decoration rather than the tradeoff `ALPHA.md` §1 names
+    /// (*"light = visibility = target"*), so there is no way to declare
+    /// the first without the second.
+    ///
+    /// **Taken from the reference** (`reference/BALANCE.md` §6's default):
+    /// their torch burns **1/6 of a condition point per second** off a max
+    /// of 50, which is five minutes of light. One sixth of a point per
+    /// second is exactly 1 000 hundredths per minute, and 5 000 hundredths
+    /// of ceiling divided by that is 5.00 minutes — the numbers fall out
+    /// whole, so nothing here is rounded to look tidy.
+    ///
+    /// A nonzero value requires `condition_max > 0` (validation rule V8):
+    /// a light with no condition to spend would burn forever, which is the
+    /// free light this field exists to make unrepresentable. V9 holds it
+    /// under `u16::MAX`, which is what makes the sim's debit at most one
+    /// point per tick — see `sim_core::light::step`.
+    #[serde(default)]
+    pub light_burn: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -280,8 +302,47 @@ pub struct Weapon {
     /// laws that hold it; balance.rs asserts them).
     pub structure: u32,
     pub headshot_mult: u32,
+    /// What a hit that reached nothing above the leg band is worth, in
+    /// **percent** of `damage` — the reference's ×0.5 limb
+    /// (`reference/PROJECTILES.md` §0), taken rather than argued
+    /// (`reference/BALANCE.md` §6).
+    ///
+    /// Percent and not a multiplier because the ladder needs a fraction:
+    /// `headshot_mult` says how much *more* a skull is worth and this
+    /// says how much *less* a shin is, and one `u32` column cannot do
+    /// both without every existing row moving. 100 is the identity — a
+    /// weapon that does not discount a leg at all.
+    pub limb_pct: u32,
     pub rate_per_min: u32,
     pub range_m: u32,
+    /// Rounds this weapon holds **loaded**, or absent for a weapon that
+    /// spends straight out of the pack. Required on `firearm`, refused on
+    /// every other kind (`validate.rs`).
+    ///
+    /// This is the column that gives a firefight a rhythm: `rate_per_min`
+    /// alone makes a gun an unbroken stream of clicks, and the reference
+    /// game makes a body-part ladder legible precisely because missing has
+    /// a price — you go dry and you are helpless for a beat
+    /// (`reference/PROJECTILES.md` §1: a bow is a one-round-magazine
+    /// `BaseProjectile`, the same class as every gun, so the magazine is
+    /// the shared mechanism and not a firearm special case).
+    ///
+    /// A bow deliberately does **not** carry one here even though the
+    /// reference models it as a magazine of one: a one-round magazine
+    /// reloaded after every shot is the nock, and the nock is already
+    /// `rate_per_min`. Two names for one wait would be two cadences to
+    /// keep in step.
+    pub magazine: Option<u32>,
+    /// Milliseconds to fill the magazine, baked to ticks against
+    /// `TICK_HZ`. Required wherever `magazine` is, refused without it.
+    ///
+    /// Milliseconds rather than `fuse_s`'s whole seconds because this one
+    /// is felt: it is the length of the hole in a fight, and the tick is
+    /// 33 ms, so a second's granularity would round every reload in the
+    /// catalogue to the same number. No float from a content file reaches
+    /// the sim — the bake does the division (`range_m` → `range_mm`'s
+    /// treatment).
+    pub reload_ms: Option<u32>,
     /// The rounds this weapon can fire, in **preference order** — the sim
     /// spends the first one the shooter is actually carrying. Required on
     /// `bow`, refused on melee and throwable.
@@ -537,13 +598,13 @@ pub struct Mob {
     pub drops: Vec<Stack>,
 }
 
-/// Bare tickers only (CLAUDE.md wall 8) — the enum cannot spell `$SCRY`.
+/// Bare tickers only (CLAUDE.md wall 8) — the enum cannot spell `$ELO`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub enum Coin {
-    #[serde(rename = "SCRY")]
-    Scry,
-    #[serde(rename = "MYRRH")]
-    Myrrh,
+    #[serde(rename = "ELO")]
+    Elo,
+    #[serde(rename = "ORBS")]
+    Orbs,
 }
 
 /// Appearance only: no stat field exists to write (DESIGN.md §3.3).
@@ -572,6 +633,18 @@ pub struct Globals {
     /// A map rather than three fields so a fourth grade is a data change
     /// (`Material`'s own set is what validate checks it against).
     pub decay_pct_per_period: BTreeMap<Material, u32>,
+    /// Chance in 100 that an arrow is destroyed where it lands rather
+    /// than becoming an item on the ground (arrow recovery v0). A
+    /// *global* and not an ammo column on purpose: `[[ammo]]` carries no
+    /// damage column either (`content/weapons.toml` says why), and one
+    /// break rate for every round is the same posture one tick further
+    /// out. §9.3's per-round ballistics table is where a per-round break
+    /// chance would go the day one is wanted.
+    pub arrow_break_pct: u32,
+    /// Seconds an arrow that dealt damage lies in its target before it
+    /// may be taken back; a missed arrow is takeable at once. Seconds so
+    /// the file stays free of the tick rate, exactly like `fuse_s`.
+    pub arrow_lodge_s: u32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -582,6 +655,11 @@ pub struct Bands {
     pub ttk_firearm: [u32; 2],
     /// Every banded weapon carries exactly this headshot multiplier.
     pub headshot_mult: u32,
+    /// And exactly this limb percent, for the same reason: a data edit
+    /// must not be able to quietly turn a leg hit into a full one (or
+    /// into nothing) underneath the TTK band, which is measured on body
+    /// hits and says nothing about either end of the ladder.
+    pub limb_pct: u32,
     pub armor_extra_hits_max: u32,
     pub node_yield: [u32; 2],
     pub node_hits: [u32; 2],

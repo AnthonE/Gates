@@ -7,7 +7,7 @@
 //!    bird recordings whose `README.txt` cites xeno-canto and *states no
 //!    licence per file*, and `Eanpa-Sky`'s four recordings are CC BY-NC-SA —
 //!    NC does not survive a sold product. Audio is the single worst-labelled
-//!    asset class on the internet, and a game sold through scry's board
+//!    asset class on the internet, and a game sold through elo's board
 //!    cannot carry a sample whose provenance is a forum post.
 //! 2. **The IP rail.** `DECISIONS.md` 2026-07-31 puts exactly two things on
 //!    it, and one of them is *no asset copied verbatim*. A recording of the
@@ -261,6 +261,20 @@ fn render(cue: Cue) -> Vec<f32> {
         Cue::Hit => chime(&[(2_100.0, 0.0, 0.035), (3_150.0, 0.004, 0.028)]),
         // Being hurt: a thud with a downward sweep in it. Down, because every
         // organism on earth reads a falling pitch as damage.
+        // The head rung: the same shape as `Hit` and a fifth above it,
+        // with a third partial so it reads as *brighter* rather than
+        // merely higher — pitch alone is what `pitch_var` would have done,
+        // and a symbol that only differs by pitch is a symbol that drifts.
+        Cue::HitHead => chime(&[
+            (3_150.0, 0.0, 0.040),
+            (4_720.0, 0.004, 0.032),
+            (6_300.0, 0.009, 0.022),
+        ]),
+        // The limb rung: lower, shorter, and one partial instead of two —
+        // duller, which is the honest read of a x0.5 blow. It stays a
+        // chime and not a thud, because the thing it must never be
+        // confused with is a miss.
+        Cue::HitLimb => chime(&[(1_400.0, 0.0, 0.030)]),
         Cue::Hurt => sweep(&mut r, 0.42, 240.0, 130.0, 0.55),
         Cue::Death => sweep(&mut r, 1.10, 190.0, 55.0, 0.35),
 
@@ -319,6 +333,63 @@ fn render(cue: Cue) -> Vec<f32> {
         // at the body, culled by the falloff law — never its waveform, and
         // a copied parameter set is a fork waiting to happen.
         Cue::RemoteSwing => render(Cue::Swing),
+
+        // ---- the two shots ------------------------------------------------
+        // Both are `impact`, which is the bank's transient-plus-body
+        // primitive, because that is exactly what a shot is: a crack and
+        // whatever the mechanism rings at underneath it.
+        //
+        // **A bow.** Almost all transient and almost no body — a string
+        // released is a broadband snap with a short woody thump off the
+        // limbs, gone in a fifth of a second. The high-pass sits well up so
+        // it stays a *tick* rather than a thud, which is what keeps it from
+        // reading as a footstep at distance: its def already says it only
+        // carries 40 m, and a sound that carries a short way and has energy
+        // low down is a sound a player mistakes for their own boots.
+        Cue::ShotBow => impact(
+            &mut r,
+            0.20,
+            Tone {
+                lo_hz: 240.0,
+                lo_amp: 0.30,
+                lo_tau: 0.030,
+                noise_amp: 0.80,
+                noise_tau: 0.022,
+                lp_hz: 7_000.0,
+                hp_hz: 700.0,
+                attack_s: 0.0004,
+                crackle: 0.35,
+            },
+        ),
+        // **A gun**, and it is the loudest and longest transient in the
+        // bank. Three things separate it from every impact above, and each
+        // is doing a job at a hundred metres rather than in front of you:
+        // a very low body (85 Hz) with a long tail, which is the half that
+        // survives distance and tells you *something serious happened over
+        // there*; a wide-open low-pass, because the crack's brightness is
+        // what makes it read as a gun and not as a tree falling; and a
+        // longer `noise_tau` than any impact, which is the report's slap
+        // off the terrain rather than a strike on a surface.
+        //
+        // No falloff filtering — the mixer's law is amplitude only
+        // (`sound::falloff`), so a distant shot here is a quiet shot and
+        // not a muffled one. That is a real gap against the reference and
+        // it belongs to the mixer rather than to this waveform.
+        Cue::ShotGun => impact(
+            &mut r,
+            0.55,
+            Tone {
+                lo_hz: 85.0,
+                lo_amp: 0.95,
+                lo_tau: 0.150,
+                noise_amp: 1.00,
+                noise_tau: 0.060,
+                lp_hz: 11_000.0,
+                hp_hz: 120.0,
+                attack_s: 0.0002,
+                crackle: 0.15,
+            },
+        ),
 
         // ---- the forest layer -------------------------------------------
         Cue::Bird => bird(&mut r),

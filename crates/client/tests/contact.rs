@@ -297,3 +297,88 @@ fn a_blades_two_triangles_do_not_wind_opposite_ways() {
         }
     }
 }
+
+/// **Gate: a blade shades like a blade at the tip and like the ground at the
+/// root.**
+///
+/// The defect this closes is the one the test above measured the cost of
+/// without fixing: `blade()` blended every vertex fully to the volume normal,
+/// which over a 34 cm blade about a centre 2 m below it is within ~3° of
+/// straight up — the GROUND's own normal. So a blade took the same sun cosine
+/// and the same hemisphere sample as the dirt it stood in, on the layer that
+/// fills the bottom half of every frame, and albedo was the only thing telling
+/// grass from ground. `ART.md` §5 asks for the opposite in as many words:
+/// "blades catch a rim of sun at their tips".
+///
+/// **Both ends are asserted, because both ends are load-bearing.** A root that
+/// stopped being vertical would be `ART.md` rule 2 broken — the blade would
+/// stop being bedded in the turf and start reading as a decal standing on it.
+/// A tip that stays vertical is the paint defect. One number cannot satisfy
+/// both, which is why `Soup::tri_ramp` exists.
+#[test]
+fn a_blade_separates_from_the_ground_it_grows_out_of() {
+    // ⚠ **A tuft is CARDS now, not blades** (`clutter::card`, grass cards v0)
+    // — this still runs on `Clutter::Tuft` and the law is unchanged, because
+    // it was never about blades: a standing thing's root shades with the turf
+    // and its tip shades as itself. What changed is that a card's base is up
+    // to 0.68 m wide where a blade's was 6 cm, so the bedding axis had to
+    // become proportional to that width (`clutter::CARD_BED`) to keep the
+    // root normal vertical. This gate is what found that, at 0.9863.
+    let m = element_mesh(&elem(Clutter::Tuft, 91, 1.0));
+    let (p, n) = (positions(&m), normals(&m));
+    assert_eq!(p.len(), n.len());
+
+    let y_max = p.iter().fold(f32::MIN, |a, v| a.max(v.y));
+    let y_min = p.iter().fold(f32::MAX, |a, v| a.min(v.y));
+    let span = y_max - y_min;
+    assert!(span > 0.05, "a tuft with no height in it: span {span}");
+
+    // Root band and tip band, by height. A blade is two triangles, so its four
+    // corners appear six times between them; taking bands rather than indices
+    // keeps this independent of the emit order.
+    let band = |lo: f32, hi: f32| -> Vec<f32> {
+        p.iter()
+            .zip(&n)
+            .filter(|(v, _)| {
+                let t = (v.y - y_min) / span;
+                t >= lo && t <= hi
+            })
+            .map(|(_, nn)| nn.y)
+            .collect()
+    };
+    let mean = |v: &[f32]| v.iter().sum::<f32>() / v.len() as f32;
+
+    let root = band(0.0, 0.10);
+    let tip = band(0.90, 1.0);
+    assert!(
+        !root.is_empty() && !tip.is_empty(),
+        "no vertices in one of the bands — root {} tip {}",
+        root.len(),
+        tip.len()
+    );
+    let (rm, tm) = (mean(&root), mean(&tip));
+
+    // The root is bedded: essentially the ground's own normal.
+    assert!(
+        rm > 0.99,
+        "a blade's ROOT normal averages y={rm:.4} — it must stay with the \
+         ground it grows out of (ART.md rule 2), or the blade reads as a decal \
+         standing on the turf rather than as something in it"
+    );
+    // The tip is not. This is the whole fix, and it is the assertion that goes
+    // red on the shipped `blend = 1.0`.
+    assert!(
+        tm < 0.985,
+        "a blade's TIP normal averages y={tm:.4} — that is the GROUND's normal, \
+         so every blade takes the same sun cosine and the same hemisphere \
+         sample as the dirt under it and only albedo separates them. This is \
+         the visual judge's 'reads as paint' as arithmetic"
+    );
+    // …and the separation is a real one rather than float noise.
+    assert!(
+        rm - tm > 0.008,
+        "root {rm:.4} and tip {tm:.4} differ by {:.4} — under this the ramp is \
+         present in the code and absent from the mesh",
+        rm - tm
+    );
+}

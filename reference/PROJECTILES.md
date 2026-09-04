@@ -397,23 +397,94 @@ records what landed. Kept unedited — the reasoning is the reason the shape
 is what it is, and a prediction is worth more when you can still read what
 it said.)*
 
-### 9.4 · `headshot_mult` is armed and unread, which is a bug we have seen
+### 9.4 · `headshot_mult` was armed and unread — **BUILT 2026-08-30**
 
-Every row in `weapons.toml` carries `headshot_mult = 2`. It is validated
+*(Kept in its original terms, with what landed appended. The prediction is
+worth more when you can still read what it said.)*
+
+Every row in `weapons.toml` carries `headshot_mult = 2`. It was validated
 (`validate.rs`), band-checked (`balance.rs`), hashed into the content hash
-(`canon.rs`) — and **no sim code reads it**. `ranged.rs` says so plainly
-("No headshot, so the whole body is one target") and `combat.rs` says the
+(`canon.rs`) — and **no sim code read it**. `ranged.rs` said so plainly
+("No headshot, so the whole body is one target") and `combat.rs` said the
 same for melee.
 
 That is the same shape `ranged.rs`'s own header opens with: content armed,
 validated, hashed, and thrown away at the sim boundary. It was true of the
-bow for months before ranged v0 salvaged it. It is true of headshots now.
+bow for months before ranged v0 salvaged it, and of `structure` until
+2026-08-28.
 
-§7 says what to build when we do: **not** first-intersection. The body is
-one cylinder today; a head is a second, shorter cylinder at the top, and the
-rule is *most significant part along the segment*, which for two parts is
-"if the head interval is crossed at all, it is a headshot". The closest-
-approach solve in `ranged.rs` already produces the `t` this needs.
+§7 says what to build: **not** first-intersection. The body is one cylinder;
+a head is a second, shorter cylinder at the top, and the rule is *most
+significant part along the segment*, which for two parts is "if the head
+interval is crossed at all, it is a headshot". The closest-approach solve in
+`ranged.rs` already produces the `t` this needs.
+
+**What landed (headshot v0), and the two places it differs from the
+paragraph above.**
+
+1. **A band, not a second cylinder.** `collide::HEAD_BAND_M = 0.25` is the
+   top quarter-metre of the same 1.7 m cylinder. A second collider would
+   need its own radius, its own entry solve and its own place in the hit
+   decision, and with two parts it can answer no question the band cannot —
+   the reduction §9.4 itself states is what makes the band sufficient.
+2. **The `t` was necessary and not sufficient.** The closest approach is
+   one point, and §7's rule is about a *crossing*. `nearest_body` now
+   finishes the planar quadratic it was already taking the vertex of and
+   returns `BodyHit { t, slot, enter, exit }`; `ranged::head_crossed` is the
+   interval overlap. This is the difference between a shot that enters
+   through the crown being a headshot and being scored at whatever the
+   chest was — and it is the one behaviour a closest-approach reading gets
+   wrong, gated as `a_shot_that_enters_through_the_crown_is_a_headshot_at_
+   the_chest`.
+
+The multiplier is applied to raw damage before armor reduction (a plate
+stops a percentage of the blow that arrived), the span is clipped against
+the world's stop (cover between a chest and a crown is cover), and both
+`EV_HIT` and `EV_HURT` carry the scaled number — no wire change, because
+the field already meant damage. **Melee did not get one**: `strike` is
+planar, so §9.4's own "combat.rs says the same for melee" is still true and
+is now a decision with a gate on it rather than an omission.
+
+Gates: `crates/sim-core/tests/headshot.rs` (9 checks, ten mutants run and
+the two survivors written down in its header) and `content`'s
+`the_headshot_column_reaches_the_sim`.
+
+### 9.4b · The limb, and the ordering it forced — **BUILT 2026-08-30**
+
+§9.4's reduction was load-bearing and it did not survive the third part.
+"With a head and a body and nothing else, most significant part crossed is
+was the head interval crossed at all" is true and is *why* a bool was
+enough; a leg band makes it false, because a span that misses the head has
+two answers now. So `head_crossed` became `ranged::part_crossed` returning
+`collide::Part`, and §7's rule is that enum's derived `Ord` — the `max`
+over the bands a span touches. The inversion §7 exists for is now
+assertable in one line: a shot crossing a shin **and** a chest is a chest
+hit (`a_shin_on_the_way_into_a_chest_is_a_chest_hit`).
+
+Three things differ from §0's paragraph.
+
+1. **A band again, not a limb.** `LIMB_BAND_M = 0.85` is the bottom half of
+   the same cylinder. A cylinder cannot tell an arm from the chest it hangs
+   beside, so what shipped is *legs*, and §0's own note that the reference's
+   bow figures spread wider than a clean ×2/×1/×0.5 is the reason not to
+   pretend otherwise: the ratio is theirs, the geometry is ours.
+2. **A percent, not a multiplier.** `limb_pct = 50` beside
+   `headshot_mult = 2`, because one `u16` column cannot say both "double"
+   and "half". That gives §0's **per-weapon override** for free at both
+   ends, in data, with the identities (1 and 100) meaning "opts out".
+   The satchel carries both — a blast has no anatomy.
+3. **The band pins it exactly.** `[bands] limb_pct` is checked for equality
+   on every non-throwable row, because the TTK band is measured on the
+   chest and is green whatever a leg is worth.
+
+**What §9.4's own gate could not do, measured.** `balance.rs`'s equality
+weakened to `<` survived the whole workspace: shipped content agrees with
+the band by construction, so a comparison that only fires *below* it never
+fires. `content`'s `the_body_part_ladder_refuses_what_it_names` hands the
+loader a row that disagrees; it did not exist for `headshot_mult` either.
+
+Gates: `tests/headshot.rs` (13 checks; eleven more mutants run, all caught
+once that refusal row existed) and `content`'s two ladder rows.
 
 ### 9.5 · The rest, in the order a player notices
 
@@ -446,7 +517,7 @@ and no reason of ours to differ takes theirs and cites it. Candidates:
 |---|---|---|
 | bow damage 30 | ~35 | **hold.** §5 — theirs is priced against 85 % arrow recovery and ours against none. Move the recovery loop first, then the number |
 | `rate_per_min = 30` (2.0 s) | ~1 s draw + ~2.75 s reload ≈ 3.75 s | ours is fast. A real candidate once draw exists, because their number is *two* mechanics and ours is one |
-| headshot ×2 | ×2 head, ×1 chest, ×0.5 limbs | **take the structure** when §9.4 lands; ×2 already matches |
+| headshot ×2 | ×2 head, ×1 chest, ×0.5 limbs | **taken whole** (§9.4 + §9.4b, both 2026-08-30): ×2 head, ×1 chest and ×0.5 limbs are all live. The third part did exactly what this row predicted — the band stopped being sufficient and §7's ordering is built for real (`collide::Part`'s `Ord`). What is *not* taken is the per-part **arm**: our limb is a leg band on a cylinder, and their spread is wider than a clean ×2/×1/×0.5 anyway |
 | HV arrow −20 % damage | −20 % | take it whole — but it is blocked on §9.3 |
 
 The bands in `CONTENT.md` §4 still decide whether any of it may land;
@@ -454,6 +525,21 @@ The bands in `CONTENT.md` §4 still decide whether any of it may land;
 25–34 damage, so their ~35 **would not load** without moving the band.
 
 ### 9.7 · Arrow recovery: why we do not have it, and what it costs
+
+⚠ **HALF BUILT, 2026-08-28 — read the four pieces below as a checklist and
+not as a plan.** Pieces **1 and 2 landed** (arrow recovery v0): the store
+is `crates/sim-core/src/spent.rs`, the break roll is `spent::breaks` keyed
+exactly as item 1 proposes, and both numbers came out of §5 into
+`content/balance.toml` as `arrow_break_pct` and `arrow_lodge_s`. It is in
+`state_hash` and in the world save (`WORLD_SAVE_FORMAT` 10);
+`crates/sim-core/tests/arrow_recovery.rs` is the gate.
+Pieces **3 and 4 did not**, and item 4's instruction is the reason they
+were left together rather than half-taken: no player can pick an arrow up
+yet, so the economy consequence at the foot of this section is **not yet
+paid** and §9.6's hold on the bow's damage row still stands.
+`SpentArrows::take_near` is written and gated as the thing that verb will
+call. The paragraph below is left in its original tense because it is the
+argument that produced the decomposition, not a status line.
 
 Asked directly by the operator on 2026-08-10 ("why cant we get arrows
 back?"). The honest answer is that **nothing prevents it** — no wall, no
@@ -477,16 +563,26 @@ So recovery is four pieces, and only the first is small:
    is deterministic, which is what the 15 % would need (§5).
 2. **The lodge timer** — 10 s at `TICK_HZ` is 300 ticks, and the rule is
    theirs: an arrow that dealt damage waits, an arrow that missed does not.
-3. **A pickup verb the wire can carry.** This is the real work. Either a new
-   `ActionMsg` variant addressed by world position or by store index — the
-   first non-grid-addressed verb in the protocol, so its shape sets a
-   precedent — or proximity auto-pickup, which needs no wire at all.
-   **The operator's direction settles which**: as close to theirs as we can,
-   and theirs is a deliberate press, so it is the verb.
-4. **A protocol bump** for that verb, and it should ride with `EV_SHOT`
-   (§9.2) rather than after it. Both are wire changes to the same system;
-   two bumps for one feature is two sets of regenerated goldens and two
-   chances to get wall 6 wrong.
+3. ✅ **A pickup verb the wire can carry** (arrow recovery v1, wire v53).
+   `ActionMsg::Pickup` — and the shape it set as a precedent is the one
+   this section did not list: **payload-free**, neither a world position
+   nor a store index, because `ActionMsg::Loot` had already answered the
+   question. The sim re-derives the pick from the sender's own body, so
+   there is no id to forge and nothing reachable through a wall. A
+   deliberate press, as the operator's direction requires.
+4. ✅ **A protocol bump** (52 → 53), and it did **not** ride with
+   `EV_SHOT`. That advice was right about the cost and wrong about the
+   blocker: `EV_SHOT` carries a muzzle speed and a drop that the client
+   re-flies, a hitscan has neither, and refusing to invent a meaning for
+   those fields was a live refusal in `ranged::hitscan`'s own doc rather
+   than a scheduling matter. Bundling would have held *"arrows come back"*
+   behind an unmade decision. One extra bump, paid knowingly — and it
+   cost exactly the one predicted, because **§9.2 landed the next pass**
+   (gun report v0, wire v54): `speed == 0` reads as *instantaneous* and
+   the low `u16` becomes a reach in decimetres, so a firearm raises the
+   event, the mixer gives it a hundred-metre report and the tracer
+   declines to fly it. The flash and the beam are still unbuilt and owe
+   no further bump. `DECISIONS.md` §open, "gun report v0".
 
 **The economy consequence, stated because it is the reason to want this.**
 Our arrow is spent permanently, so our ammunition is strictly harsher than

@@ -16,11 +16,11 @@ use protocol::{
     encode_event_craft_q, encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
     encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
     encode_event_door, encode_event_gather, encode_event_health, encode_event_hit,
-    encode_event_inv, encode_event_knock, encode_event_piece_defs, encode_event_piece_placed,
-    encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
-    encode_event_removed, encode_event_slot_change, encode_event_slot_sync, encode_event_stock,
-    encode_event_struct_hit, encode_event_vitals, encode_event_weak_mark, encode_hello,
-    encode_input, encode_refuse, encode_snapshot, encode_welcome, goldens,
+    encode_event_hurt, encode_event_inv, encode_event_knock, encode_event_piece_defs,
+    encode_event_piece_placed, encode_event_piece_repaired, encode_event_piece_sync,
+    encode_event_recipes, encode_event_removed, encode_event_slot_change, encode_event_slot_sync,
+    encode_event_stock, encode_event_struct_hit, encode_event_vitals, encode_event_weak_mark,
+    encode_hello, encode_input, encode_refuse, encode_snapshot, encode_welcome, goldens,
 };
 use protocol::{
     encode_action_consume, encode_action_container, encode_action_drink, encode_action_move,
@@ -124,8 +124,8 @@ fn main() {
     let len = encode_action_cancel(goldens::action_cancel(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[20], &buf[..len]);
 
-    let (row, cx, cz, level, loc) = goldens::action_place();
-    let len = encode_action_place(row, cx, cz, level, loc, &mut buf).unwrap();
+    let (row, cx, cz, level, loc, freehand) = goldens::action_place();
+    let len = encode_action_place(row, cx, cz, level, loc, freehand, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[21], &buf[..len]);
 
     let len = encode_event_piece_placed(&goldens::event_piece_placed(), &mut buf).unwrap();
@@ -217,8 +217,8 @@ fn main() {
     let len = encode_event_chat(from, global, &text, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[40], &buf[..len]);
 
-    let (victim, damage) = goldens::event_hit();
-    let len = encode_event_hit(victim, damage, &mut buf).unwrap();
+    let (victim, part, damage) = goldens::event_hit();
+    let len = encode_event_hit(victim, part, damage, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[41], &buf[..len]);
 
     let (hp, max) = goldens::event_health();
@@ -456,5 +456,59 @@ fn main() {
         let s = goldens::event_swing();
         let len = protocol::encode_event_swing(s, &mut buf).unwrap();
         write_fixture(goldens::FIXTURES[95], &buf[..len]);
+    }
+
+    // Armor v1 (v51): the fifth container kind — the one worn rather
+    // than stood in — on all three lanes it travels, plus the refusal
+    // that is the only place a kind rides inside an address.
+    {
+        let (kind, cont) = goldens::action_container_wear();
+        let len = encode_action_container(kind, cont, &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[96], &buf[..len]);
+
+        let (cont, fk, fs, tk, ts, count) = goldens::action_move_wear();
+        let len = encode_action_move(cont, fk, fs, tk, ts, count, &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[97], &buf[..len]);
+
+        let (kind, cont, reset, slots) = goldens::event_cont_sync_wear();
+        let len = encode_event_cont_sync(kind, cont, reset, &slots, &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[98], &buf[..len]);
+
+        let (reason, fk, fs, tk, ts) = goldens::event_move_refused_wear();
+        let len = encode_event_move_refused(reason, fk, fs, tk, ts, &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[99], &buf[..len]);
+    }
+
+    // Arrow recovery v1 (v53): the pickup verb. Payload-free, so the
+    // fixture is the shortest C→S frame this crate writes — a kind and a
+    // subtype, and the subtype is the only thing in it that is new.
+    {
+        let len = protocol::encode_action_pickup(&mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[100], &buf[..len]);
+    }
+
+    // The victim's half of a landed blow (v57): a bearing sector and the
+    // damage, unicast to the person it happened to.
+    {
+        let (sector, damage) = goldens::event_hurt();
+        let len = encode_event_hurt(sector, damage, &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[101], &buf[..len]);
+    }
+
+    // Reload v1 (v59). The verb is payload-free like `action_pickup` above
+    // — a kind and a subtype — and the two events carry the magazine pair
+    // that lets a client with no content tables draw `5/8`.
+    {
+        let len = protocol::encode_action_reload(&mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[102], &buf[..len]);
+
+        let (loaded, ceiling, took) = goldens::event_reload();
+        let len = protocol::encode_event_reload(loaded, ceiling, took, &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[103], &buf[..len]);
+
+        let (item, reason, loaded, ceiling) = goldens::event_reload_refused();
+        let len =
+            protocol::encode_event_reload_refused(item, reason, loaded, ceiling, &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[104], &buf[..len]);
     }
 }

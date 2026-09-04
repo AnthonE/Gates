@@ -4,23 +4,23 @@
 //! A shard that forgets you on every disconnect cannot be authenticated
 //! into meaning anything: you could prove who you are perfectly and still
 //! lose everything when your connection drops. So this is the slice that
-//! had to come first, and it needs nothing from scry to land.
+//! had to come first, and it needs nothing from elo to land.
 //!
 //! ## The key is opaque, and that is the point
 //!
 //! A save is filed under a [`PlayerKey`]: bytes the admission seam returned
 //! (`auth::verify`), which this module never interprets. Whether they come
-//! from a SIWE signature, a scry player id or a dev flag is that seam's
+//! from a SIWE signature, an elo player id or a dev flag is that seam's
 //! business — change it and nothing here moves. The debate about *which*
 //! identity scheme wins was therefore never a blocker for persistence; it
 //! is one function's return type, and SIWE won (`DECISIONS.md` 2026-08-07).
 //!
-//! ## What this stores, and what scry stores
+//! ## What this stores, and what elo stores
 //!
 //! This holds where your body stood and what was in its hands. It holds no
 //! profile, no balance, no item entitlement: those live in the launcher's
 //! world, and a shard that cached them would be a second, stale copy of
-//! somebody else's ledger. The division is the same one `scry_overlay.rs`
+//! somebody else's ledger. The division is the same one `elo_overlay.rs`
 //! draws for keys — the game process never holds what it is not the
 //! authority for.
 //!
@@ -62,7 +62,7 @@ use xxhash_rust::xxh3::xxh3_64;
 ///
 /// Covers every identity anyone has proposed for this game with room over:
 /// a lowercase `0x…` Ethereum address (42 bytes — what `auth::verify`
-/// actually returns), a 32-byte scry player id, a UUID, or a dev shard's
+/// actually returns), a 32-byte elo player id, a UUID, or a dev shard's
 /// bare name. Deliberately too small to hold a self-describing credential —
 /// a key is a lookup handle, and a store that could hold a JWT would invite
 /// somebody to read claims out of one.
@@ -71,7 +71,7 @@ use xxhash_rust::xxh3::xxh3_64;
 /// today, so a cap under 42 would leave every verified player unnameable —
 /// persistence silently doing nothing for everybody, with every gate green.
 /// It stays at 48 rather than shrinking to 42 because the key is
-/// deliberately opaque to everything but `auth.rs` — the day scry maps an
+/// deliberately opaque to everything but `auth.rs` — the day elo maps an
 /// address to a player id, that id lands here and nothing else moves.
 /// Proposed default, DECISIONS.md §open ("player persistence v0").
 pub const PLAYER_KEY_MAX_BYTES: usize = 48;
@@ -145,7 +145,12 @@ pub const SAVE_MAGIC: [u8; 8] = *b"GATESAV\0";
 /// `worn`, `WEAR_SLOTS` stacks at the inventory's own six-byte stride, so
 /// the record went 256 → 268 per player. The layout moved and nothing on
 /// disk announces it, which is the whole reason this number exists.
-pub const SAVE_FORMAT: u16 = 4;
+/// **5 — a burning torch keeps its remainder** (torch fuel v0): the
+/// scalar head grew `light_acc`, 60 → 64 B, so the record went 268 → 272.
+/// Four bytes, and they buy the same thing `food_acc` buys — a restore
+/// that zeroed the remainder would hand back six seconds of flame on
+/// every reconnect (`sim-core/light.rs`).
+pub const SAVE_FORMAT: u16 = 5;
 
 /// Header size. Fixed so record `i` is at a computable offset.
 pub const SAVE_HEADER_BYTES: usize = 48;
@@ -862,7 +867,8 @@ mod tests {
         // 268 → 328 at SAVE_FORMAT 3: the save body grew 60 bytes (an
         // inventory slot is six bytes since item durability v0). 328 → 340
         // at SAVE_FORMAT 4: two worn slots at the same stride (armor v0).
-        assert_eq!(SAVE_RECORD_BYTES, 340);
+        // 340 → 344 at SAVE_FORMAT 5: the torch's remainder (torch fuel v0).
+        assert_eq!(SAVE_RECORD_BYTES, 344);
         let head = encode_header(7, 0xdead_beef);
         assert_eq!(
             u16::from_le_bytes([head[10], head[11]]) as usize,

@@ -136,7 +136,20 @@ pub fn cell_cm(cx: u16, cz: u16) -> (i64, i64) {
 /// walk anchored at `anchor` (centimetres)?
 #[inline]
 pub fn piece_in_interest(anchor: (i64, i64), cx: u16, cz: u16) -> bool {
-    d2_cm(cell_cm(cx, cz), anchor) <= PIECE_INTEREST_CM * PIECE_INTEREST_CM
+    point_in_interest(anchor, cell_cm(cx, cz))
+}
+
+/// Is world point `at` (centimetres) inside the class-S interest of a walk
+/// anchored at `anchor`?
+///
+/// The band without the grid. `piece_in_interest` is this with a cell
+/// address quantized first; an event that names a *place* rather than a
+/// build cell — `EV_IMPACT`'s stop point — has no address to quantize and
+/// asks the question directly. One predicate, so the two can never answer
+/// differently about the same metre.
+#[inline]
+pub fn point_in_interest(anchor: (i64, i64), at: (i64, i64)) -> bool {
+    d2_cm(at, anchor) <= PIECE_INTEREST_CM * PIECE_INTEREST_CM
 }
 
 /// [`piece_in_interest`] taking the record, for the walk's inner loop.

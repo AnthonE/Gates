@@ -128,12 +128,12 @@ inputs = [
 # the satchel is not gated by its own price so much as by the two benches
 # standing in front of it. Costs are the pre-Oct-2025 scrap-era **ratios**
 # over our own T1 research row: their WB2 was 6.7× a T1 research and WB3
-# 16.7×, ours are 125 and 300 against the 20-obol T1 row. That the ratio
+# 16.7×, ours are 125 and 300 against the 20-junk T1 row. That the ratio
 # is what was taken is what makes this row survive 2026-08-18, when the
 # recycler's yields became theirs (`reference/RIPLIST.md` §1f): the
 # faucet tripled, our T1 research row did not move, and a multiple of an
 # unmoved row does not move either. The clause it used to carry — the
-# ratios "scaled onto our faucet (~0.85 obol/barrel against their ~10
+# ratios "scaled onto our faucet (~0.85 junk/barrel against their ~10
 # scrap)" — is struck, because **the ~10 was never measured**; their
 # barrel pays ~2.42 and ours now pays 2.727, so no scaling is applied to
 # anything here. Their 20/100 HQM line has no equivalent
@@ -148,7 +148,7 @@ station = "workbench1"
 seconds = 60
 inputs = [
     { item = "item.metal_frags", count = 500 },
-    { item = "item.obol", count = 125 },
+    { item = "item.junk", count = 125 },
 ]
 
 [[recipe]]
@@ -159,7 +159,7 @@ station = "workbench2"
 seconds = 60
 inputs = [
     { item = "item.metal_frags", count = 1000 },
-    { item = "item.obol", count = 300 },
+    { item = "item.junk", count = 300 },
 ]
 
 [[recipe]]
@@ -263,7 +263,7 @@ station = "workbench1"
 seconds = 20
 inputs = [
     { item = "item.metal_frags", count = 200 },
-    { item = "item.obol", count = 20 },
+    { item = "item.junk", count = 20 },
 ]
 
 # The recycler (recycler v0). Priced between the furnace (275 units of

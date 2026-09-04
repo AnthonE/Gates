@@ -79,6 +79,7 @@ use sim_core::build::{
     foundation_terrain_ok, BuildContent, BUILD_CELL_M, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE,
     REFUSE_B_COST, REFUSE_B_PIECE,
 };
+use sim_core::combat::NO_MAG;
 use sim_core::combat::{AmmoDef, CombatContent, RangedDef};
 use sim_core::craft::{CraftContent, REFUSE_INPUTS, REFUSE_RECIPE};
 use sim_core::deploy::{box_key, DeployContent, REFUSE_D_KIND, REFUSE_D_SPOT};
@@ -96,12 +97,12 @@ use sim_core::world::{
     Command, SimEvent, World, DEATH_BY_MAX, EV_AUTH, EV_BAG_DROPPED, EV_BAG_REMOVED,
     EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE,
     EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
-    EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_IMPACT, EV_KNOCK, EV_KNOWN,
-    EV_MAX, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED,
-    EV_PIECE_REPAIRED, EV_RESEARCH, EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SHOT, EV_SLOT_HARVESTED,
-    EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_SWING, EV_TRUST, EV_VITALS, EV_WEAK_MARK,
-    PRESENCE_ASLEEP, PRESENCE_AWAKE, PRESENCE_GONE, PRESENCE_MAX, STRUCT_DEPLOY_BIT, TRUST_AUTH,
-    TRUST_CONT, TRUST_DOOR, TRUST_VERB_MAX,
+    EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_HURT, EV_IMPACT, EV_KNOCK,
+    EV_KNOWN, EV_MAX, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED,
+    EV_PIECE_REPAIRED, EV_RELOAD, EV_RELOAD_REFUSED, EV_RESEARCH, EV_RESEARCH_REFUSED, EV_RESPAWN,
+    EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_SWING, EV_TRUST,
+    EV_VITALS, EV_WEAK_MARK, PRESENCE_ASLEEP, PRESENCE_AWAKE, PRESENCE_GONE, PRESENCE_MAX,
+    STRUCT_DEPLOY_BIT, TRUST_AUTH, TRUST_CONT, TRUST_DOOR, TRUST_VERB_MAX,
 };
 use sim_core::yaw_dir;
 
@@ -141,7 +142,7 @@ const DAMAGE: u32 = 34;
 const FIXTURE_HP: u32 = 100;
 /// A fixture item with no weapon row, used where a stack must be
 /// distinguishable from a player id and from its own count.
-const JUNK: u16 = 7;
+const FILLER: u16 = 7;
 const JUNK_COUNT: u16 = 3;
 
 /// The attacker and the victim, by id. Kept apart on purpose — an event
@@ -345,7 +346,7 @@ fn arm_victim_with_junk(w: &mut World) {
         *s = ItemStack::default();
     }
     w.players[1].inv[0] = ItemStack {
-        item: JUNK,
+        item: FILLER,
         count: JUNK_COUNT,
         cond: 0,
     };
@@ -365,6 +366,7 @@ fn step(w: &mut World, seq: &mut u16) {
             move_z: 0,
             sel: 0,
         },
+        favour: 0,
     }]);
     *seq = seq.wrapping_add(1);
 }
@@ -458,6 +460,15 @@ fn shot_names_the_shooter_then_the_aim_then_the_ballistics() {
         rate_ticks: 60,
         hitscan: false,
         range_mm: 60_000,
+        structure: 0,
+        headshot_mult: 2,
+        limb_pct: 50,
+        // No magazine: a bow spends straight out of the quiver
+        // (`RangedDef::magazine`), so the arrow path is unchanged by
+        // reload v1 and this fixture is what says so.
+        magazine: 0,
+        reload_ticks: 0,
+        mag_slot: NO_MAG,
     };
     w.combat.ammo[ARROW as usize] = AmmoDef {
         speed_mmpt: SPEED_MMPT,
@@ -484,6 +495,7 @@ fn shot_names_the_shooter_then_the_aim_then_the_ballistics() {
             move_z: 0,
             sel: 0,
         },
+        favour: 0,
     }]);
 
     let shot = only(&w, EV_SHOT);
@@ -512,6 +524,259 @@ fn shot_names_the_shooter_then_the_aim_then_the_ballistics() {
         shot.c & 0xffff,
         DROP_MMPT2 as u32,
         "EV_SHOT.c's low half is drop"
+    );
+}
+
+/// The same event from a **firearm**: `c`'s high half is zero and its low
+/// half stops being a drop and becomes a reach in decimetres (wire v54).
+///
+/// This is the role gate for the spare-bit reading, and it is the half a
+/// byte-golden is blindest to — the field is the same `u32` in the same
+/// position carrying a different quantity, so nothing about the layout
+/// moved and nothing about the encoder can notice. The fixture picks a
+/// range whose decimetre value **cannot be mistaken for a speed or a
+/// drop**: 50 m is 500 dm, which is three times the largest drop the bow
+/// fixture above uses and far under any muzzle speed in mm/tick, so a
+/// half-swap inside the word lands somewhere obviously wrong rather than
+/// somewhere plausible.
+/// A gun and its rounds, in a world where nothing else has a magazine.
+///
+/// `mag_slot` 0 and a `magazine` past one, so a swapped `loaded`/`ceiling`
+/// moves bytes; `RELOAD_TICKS` past `rate_ticks` so the beat a reload costs
+/// is distinguishable from the beat a shot costs.
+#[cfg(test)]
+fn gun_world() -> World {
+    let mut w = duel_world();
+    w.combat.ranged[RL_GUN as usize] = RangedDef {
+        damage: 20,
+        ammo: [RL_ROUND, NO_ITEM, NO_ITEM, NO_ITEM],
+        rate_ticks: 4,
+        hitscan: true,
+        range_mm: 50_000,
+        structure: 0,
+        headshot_mult: 2,
+        limb_pct: 50,
+        magazine: RL_MAG,
+        reload_ticks: RL_RELOAD_TICKS,
+        mag_slot: 0,
+    };
+    w.players[0].inv[0] = ItemStack {
+        item: RL_GUN,
+        count: 1,
+        cond: 0,
+    };
+    w.players[0].inv[1] = ItemStack {
+        item: RL_ROUND,
+        count: RL_PACK,
+        cond: 0,
+    };
+    w
+}
+
+/// The gun this world's magazine belongs to. Its own constants rather than
+/// the shot suite's, because these two suites disagree on purpose about
+/// cadence and reach.
+const RL_GUN: u16 = 5;
+const RL_ROUND: u16 = 6;
+/// Six, not eight: distinct from `RL_PACK` and from every slot index, so a
+/// field that ended up carrying the wrong one of them is visible.
+const RL_MAG: u16 = 6;
+/// More than one magazine's worth, so a fill can be partial or full
+/// depending on what is already loaded.
+const RL_PACK: u16 = 10;
+/// Past `rate_ticks`, so "the arm is busy for a reload" is a different
+/// number from "the arm is busy for a shot".
+const RL_RELOAD_TICKS: u16 = 20;
+
+/// **EV_RELOAD names the filler, the magazine's new state and what the
+/// fill cost the pack.**
+///
+/// The three are deliberately distinct here — 6 loaded of 6, taken 6 out of
+/// a pack of 10 — no. Six and six would hide a swap of `loaded` and `took`,
+/// which is exactly the positional-payload defect this file exists for
+/// (`reference/FINDINGS.md` §1), so the fill is driven from a **partly
+/// loaded** cylinder: two already in, four taken, six loaded. Three values,
+/// none equal to another.
+#[test]
+fn a_reload_names_the_magazine_and_what_it_cost() {
+    let mut w = gun_world();
+    w.players[0].mag[0] = 2;
+    w.players[0].mag_round[0] = RL_ROUND;
+    w.tick(&[Command::Reload { id: ATTACKER }]);
+
+    let ev = only(&w, EV_RELOAD);
+    assert_eq!(ev.a, ATTACKER, "EV_RELOAD.a is whose magazine it is");
+    assert_eq!(
+        sim_core::ranged::mag_loaded(ev.b),
+        RL_MAG,
+        "EV_RELOAD.b's high half is the rounds now loaded"
+    );
+    assert_eq!(
+        sim_core::ranged::mag_ceiling(ev.b),
+        RL_MAG,
+        "EV_RELOAD.b's low half is the magazine's ceiling"
+    );
+    assert_eq!(
+        ev.c,
+        (RL_MAG - 2) as u32,
+        "EV_RELOAD.c is what left the PACK, not what is in the magazine"
+    );
+    distinct3(ev, "EV_RELOAD");
+
+    // And the pack really paid it — the event is a report of a mutation,
+    // not a claim about one.
+    assert_eq!(
+        sim_core::craft::inv_count(&w.players[0].inv, RL_ROUND),
+        (RL_PACK - (RL_MAG - 2)) as u32,
+        "the rounds EV_RELOAD.c named came out of the inventory"
+    );
+    assert_eq!(w.players[0].mag[0], RL_MAG, "and went into the magazine");
+}
+
+/// **EV_RELOAD_REFUSED names the hand, the reason and the count.**
+///
+/// Driven by the dry click rather than by a refused reload, because that is
+/// the path the count exists for: the trigger is pulled on an empty
+/// cylinder, no `EV_SHOT` is raised, and this event is the only statement
+/// the client gets that the magazine is at zero.
+#[test]
+fn a_dry_click_names_the_hand_the_reason_and_the_count() {
+    let mut w = gun_world();
+    // Empty on purpose. `gun_world` loads nothing, so this is the state a
+    // freshly crafted revolver is in.
+    assert_eq!(w.players[0].mag[0], 0);
+    w.tick(&[Command::Input {
+        id: ATTACKER,
+        frame: InputFrame {
+            seq: 1,
+            buttons: BTN_PRIMARY,
+            yaw: 4_097,
+            pitch: 128,
+            move_x: 0,
+            move_z: 0,
+            sel: 0,
+        },
+        favour: 0,
+    }]);
+
+    let ev = only(&w, EV_RELOAD_REFUSED);
+    assert_eq!(ev.a, ATTACKER, "EV_RELOAD_REFUSED.a is whose hand it is");
+    assert_eq!(
+        (ev.b >> 16) as u16,
+        RL_GUN,
+        "EV_RELOAD_REFUSED.b's high half is the HELD ITEM, not the round"
+    );
+    assert_eq!(
+        ev.b & 0xFFFF,
+        sim_core::ranged::REFUSE_RL_EMPTY,
+        "EV_RELOAD_REFUSED.b's low half is the reason"
+    );
+    assert_eq!(
+        sim_core::ranged::mag_loaded(ev.c),
+        0,
+        "EV_RELOAD_REFUSED.c's high half is the rounds loaded — zero is the \
+         whole point of the dry click"
+    );
+    assert_eq!(
+        sim_core::ranged::mag_ceiling(ev.c),
+        RL_MAG,
+        "EV_RELOAD_REFUSED.c's low half is the ceiling, so the client can \
+         draw 0/6 rather than blanking the readout"
+    );
+    // The two halves of `b` must not be confusable, which is the whole of
+    // what a packed field can get wrong.
+    assert_ne!(ev.b >> 16, ev.b & 0xFFFF);
+    // And no shot was raised: a dry click is a refusal, not a round.
+    assert_eq!(
+        count(&w, EV_SHOT),
+        0,
+        "an empty magazine must not also announce a shot"
+    );
+}
+
+#[test]
+fn an_instant_shot_reads_zero_speed_and_a_reach() {
+    /// Past a byte, for the same reason the bow fixture's is.
+    const SHOT_YAW: u16 = 4_097;
+    /// Not the level default.
+    const SHOT_PITCH: u8 = 200;
+    const GUN: u16 = 5;
+    const ROUND: u16 = 6;
+    /// 50 m, so the reach reads 500 dm.
+    const RANGE_MM: u32 = 50_000;
+
+    let mut w = duel_world();
+    w.combat.ranged[GUN as usize] = RangedDef {
+        damage: 20,
+        ammo: [ROUND, NO_ITEM, NO_ITEM, NO_ITEM],
+        rate_ticks: 60,
+        hitscan: true,
+        range_mm: RANGE_MM,
+        structure: 0,
+        headshot_mult: 2,
+        limb_pct: 50,
+        // The shipped revolver's magazine (`content/weapons.toml`): eight
+        // rounds and 3.4 s, which is 102 ticks at 30 Hz. Slot 0 — this
+        // fixture bakes no other magazine.
+        magazine: 8,
+        reload_ticks: 102,
+        mag_slot: 0,
+    };
+    w.players[0].inv[0] = ItemStack {
+        item: GUN,
+        count: 1,
+        cond: 0,
+    };
+    w.players[0].inv[1] = ItemStack {
+        item: ROUND,
+        count: 5,
+        cond: 0,
+    };
+    // Loaded (reload v1). A gun with an empty cylinder raises
+    // `EV_RELOAD_REFUSED` and no `EV_SHOT`, which `only` reports as "the
+    // cause never fired" — this suite is about the shot's payload, so the
+    // magazine is filled here rather than reloaded in the middle of it.
+    w.players[0].mag[0] = 8;
+    w.players[0].mag_round[0] = ROUND;
+    w.tick(&[Command::Input {
+        id: ATTACKER,
+        frame: InputFrame {
+            seq: 1,
+            buttons: BTN_PRIMARY,
+            yaw: SHOT_YAW,
+            pitch: SHOT_PITCH,
+            move_x: 0,
+            move_z: 0,
+            sel: 0,
+        },
+        favour: 0,
+    }]);
+
+    let shot = only(&w, EV_SHOT);
+    assert_eq!(
+        shot.a, ATTACKER,
+        "EV_SHOT.a is who fired, whichever weapon fired it"
+    );
+    assert_eq!(
+        shot.b >> 8,
+        SHOT_YAW as u32,
+        "EV_SHOT.b's high half is yaw on the hitscan path too"
+    );
+    assert_eq!(
+        shot.b & 0xff,
+        SHOT_PITCH as u32,
+        "EV_SHOT.b's low byte is pitch on the hitscan path too"
+    );
+    assert_eq!(
+        shot.c >> 16,
+        0,
+        "a hitscan's muzzle speed is zero — that zero IS the instant reading, \
+         and a nonzero here makes the client fly a phantom arrow"
+    );
+    assert_eq!(
+        shot.c & 0xffff,
+        RANGE_MM / 100,
+        "EV_SHOT.c's low half is the reach in decimetres when speed is zero"
     );
 }
 
@@ -554,6 +819,15 @@ fn impact_names_the_surface_then_x_then_z_then_y() {
         rate_ticks: 60,
         hitscan: false,
         range_mm: 60_000,
+        structure: 0,
+        headshot_mult: 2,
+        limb_pct: 50,
+        // No magazine: a bow spends straight out of the quiver
+        // (`RangedDef::magazine`), so the arrow path is unchanged by
+        // reload v1 and this fixture is what says so.
+        magazine: 0,
+        reload_ticks: 0,
+        mag_slot: NO_MAG,
     };
     w.combat.ammo[ARROW as usize] = AmmoDef {
         speed_mmpt: 1_333,
@@ -593,6 +867,7 @@ fn impact_names_the_surface_then_x_then_z_then_y() {
             move_z: 0,
             sel: 0,
         },
+        favour: 0,
     }]);
     until(&mut w, EV_IMPACT);
     let im = only(&w, EV_IMPACT);
@@ -640,7 +915,8 @@ fn impact_names_the_surface_then_x_then_z_then_y() {
 /// up to one segment below it.
 const ARROW_STEP_Q: i32 = 200;
 
-/// `EV_HIT: a = attacker player id, b = victim player id, c = damage`.
+/// `EV_HIT: a = attacker player id, b = victim player id, c = the rung
+/// packed over the damage` (v58).
 ///
 /// The sharpest case in the lane: `a` and `b` are the same kind of thing,
 /// so nothing but the values distinguishes them.
@@ -652,7 +928,70 @@ fn hit_names_the_attacker_then_the_victim_then_the_damage() {
     distinct3(hit, "EV_HIT");
     assert_eq!(hit.a, ATTACKER, "EV_HIT.a is the ATTACKER, not the victim");
     assert_eq!(hit.b, VICTIM, "EV_HIT.b is the VICTIM, not the attacker");
-    assert_eq!(hit.c, DAMAGE, "EV_HIT.c is the damage dealt");
+    // `c` is packed since v58, so it is read through the same accessors
+    // the server uses. Asserting on the raw `c` would pin the layout in
+    // two places and let them disagree.
+    assert_eq!(
+        sim_core::world::hit_damage(hit.c),
+        DAMAGE as u16,
+        "EV_HIT.c's low half is the damage dealt"
+    );
+    // A swing has no line to cross, so the identity rung is the truth here
+    // rather than a default that happens to look right — `part_damage`'s
+    // own doc says melee never asks the ladder.
+    assert_eq!(
+        sim_core::world::hit_part(hit.c),
+        sim_core::collide::Part::Chest,
+        "a swing pays the identity rung"
+    );
+    // And the pack is not degenerate: `DAMAGE` must not itself be a value
+    // that could be mistaken for the part half. Same discipline as
+    // `distinct_halves`, one field narrower.
+    assert!(
+        hit.c >> sim_core::world::HIT_PART_SHIFT != hit.c & 0xffff,
+        "EV_HIT.c carries the same number in both halves, so this check \
+         cannot see the pack reversed. Move the fixture, not the assertion."
+    );
+}
+
+/// `EV_HURT: a = victim id, b = bearing sector toward the attacker,
+/// c = damage`.
+///
+/// `EV_HIT`'s mirror, and the transposition to fear is between the two
+/// events rather than inside one: `EV_HIT.a` is the attacker and this one's
+/// is the victim, so a copy-paste of the emit line one row up sends the
+/// arrow marker to the person who fired it and leaves the person who was
+/// shot with nothing. That swap is invisible to the golden (both are `u32`
+/// ids), invisible to the replay (the queue is out of `state_hash`) and
+/// invisible to clippy.
+///
+/// The sector is asserted as a **number**, not as a re-run of
+/// `bearing_sector`: the fixture stands the victim one metre along the
+/// attacker's facing at `YAW = 0`, which is `+Z`, so the attacker is due
+/// SOUTH of the body that was hit and south is sector 8 of 16. A flipped
+/// axis, a swapped quadrant, or a delta taken attacker-minus-victim where
+/// it should be the other way all land somewhere else.
+#[test]
+fn hurt_names_the_victim_then_the_bearing_then_the_damage() {
+    let mut w = duel_world();
+    until(&mut w, EV_HURT);
+    let hurt = only(&w, EV_HURT);
+    distinct3(hurt, "EV_HURT");
+    assert_eq!(
+        hurt.a, VICTIM,
+        "EV_HURT.a is the VICTIM — this is the half of the blow addressed \
+         to the person it happened to. `EV_HIT.a` is the attacker; if this \
+         is too, the server unicasts the direction back to the shooter."
+    );
+    assert_eq!(
+        hurt.b,
+        8,
+        "EV_HURT.b is the bearing sector from the victim TOWARD the \
+         attacker, clockwise from north out of {} sectors. The fixture \
+         puts the attacker due south of the victim, which is 8.",
+        sim_core::combat::HURT_SECTORS
+    );
+    assert_eq!(hurt.c, DAMAGE, "EV_HURT.c is the damage dealt");
 }
 
 /// `EV_HEALTH: a = player id, b = hp after the change, c = max hp`.
@@ -832,7 +1171,7 @@ fn gather_names_the_player_then_item_over_count() {
     assert_eq!(got.a, ATTACKER, "EV_GATHER.a is who gained the items");
     assert_eq!(
         got.b >> 16,
-        JUNK as u32,
+        FILLER as u32,
         "EV_GATHER.b's HIGH half is the item index"
     );
     assert_eq!(
@@ -858,7 +1197,7 @@ fn gather_names_the_player_then_item_over_count() {
 /// (1, 7, 2) in the three seats — all pairwise distinct.
 ///
 /// The arrangement mutates the fixture the way every arrangement here
-/// does: the junk item is given a condition ceiling so a zero-condition
+/// does: the filler item is given a condition ceiling so a zero-condition
 /// stack of it reads as DEAD (`gather::swing`'s Q4 guard), and the tree's
 /// hand row is zeroed so the fallback pays nothing — the shipped content's
 /// own shape since 2026-08-15.
@@ -924,14 +1263,14 @@ fn gather_refused_names_the_player_then_item_over_reason() {
         n.weak_pct = 0;
         n.hand_yield = 0;
     }
-    // The junk item gains a ceiling so a zero-condition stack of it is a
+    // The filler item gains a ceiling so a zero-condition stack of it is a
     // DEAD tool rather than a mere non-tool. 123 is distinct from every
     // other value in the check.
-    w.gather.cond_max[JUNK as usize] = 123;
+    w.gather.cond_max[FILLER as usize] = 123;
     w.dev_spawn = Some((px, pz));
     w.tick(&[Command::Join { id: BODY }]);
     w.players[0].inv[0] = ItemStack {
-        item: JUNK,
+        item: FILLER,
         count: 1,
         cond: 0,
     };
@@ -950,6 +1289,7 @@ fn gather_refused_names_the_player_then_item_over_reason() {
                 move_z: 0,
                 sel: 0,
             },
+            favour: 0,
         }]);
         seq = seq.wrapping_add(1);
         if w.events
@@ -973,7 +1313,7 @@ fn gather_refused_names_the_player_then_item_over_reason() {
     assert_eq!(got.a, BODY, "EV_GATHER_REFUSED.a is who swung");
     assert_eq!(
         got.b >> 16,
-        JUNK as u32,
+        FILLER as u32,
         "EV_GATHER_REFUSED.b's HIGH half is the HELD item — the sentence \
          names the torch, never bare hands"
     );
@@ -1362,6 +1702,7 @@ fn build_refused_names_the_player_then_why() {
         cz,
         level: GROUND,
         loc: LOC_PLANE,
+        freehand: false,
     }]);
     let bad_row = only(&w, EV_BUILD_REFUSED);
     refused(
@@ -1386,6 +1727,7 @@ fn build_refused_names_the_player_then_why() {
         cz,
         level: GROUND,
         loc: LOC_PLANE,
+        freehand: false,
     }]);
     let broke = only(&w, EV_BUILD_REFUSED);
     refused(
@@ -1577,6 +1919,7 @@ fn place_piece(w: &mut World, row: u16, cx: u16, cz: u16, level: u8, loc: u8) {
         cz,
         level,
         loc,
+        freehand: false,
     }]);
     assert_eq!(
         w.pieces.len(),
@@ -1658,6 +2001,7 @@ fn raid_until(w: &mut World, cx: u16, cz: u16, code: u8) {
                 move_z: 0,
                 sel: 0,
             },
+            favour: 0,
         }]);
         seq = seq.wrapping_add(1);
         if count(w, code) > 0 {
@@ -2249,6 +2593,7 @@ fn piece_repaired_names_the_cell_then_the_address_then_healed_over_hp() {
             move_z: 0,
             sel: 0,
         },
+        favour: 0,
     }]);
     let hurt = w
         .pieces
@@ -2403,6 +2748,7 @@ fn repairing_a_deployable_sets_the_deploy_bit() {
             move_z: 0,
             sel: 0,
         },
+        favour: 0,
     }]);
     let hurt = w
         .deploys
@@ -2614,7 +2960,7 @@ fn deploy_removed_names_the_cell_and_the_deploy_row_not_the_piece_under_it() {
 fn moved_names_the_address_and_what_moved() {
     let mut w = duel_world();
     w.players[0].inv[0] = ItemStack {
-        item: JUNK,
+        item: FILLER,
         count: 30,
         cond: 0,
     };
@@ -2657,7 +3003,7 @@ fn moved_names_the_address_and_what_moved() {
     assert_eq!(e.b & 0xff, TO_SLOT as u32, "b[7:0] is the to slot");
     distinct_halves(e.c, "EV_MOVED.c");
     assert_eq!(e.c >> 16, COUNT as u32, "c's high half is the count");
-    assert_eq!(e.c & 0xffff, JUNK as u32, "c's low half is the item");
+    assert_eq!(e.c & 0xffff, FILLER as u32, "c's low half is the item");
     // And the world actually did it — a role check against an event whose
     // cause did nothing is a check on a lie.
     assert_eq!(w.players[0].inv[TO_SLOT as usize].count, COUNT);
@@ -2751,6 +3097,7 @@ fn charge_placed_names_the_cell_then_the_address_then_the_fuse() {
             move_z: 0,
             sel: CHARGE_SLOT,
         },
+        favour: 0,
     }]);
     w.tick(&[Command::Throw {
         id: BUILDER,
@@ -2871,6 +3218,7 @@ fn until_facing(w: &mut World, yaw: u16, code: u8) {
                 move_z: 0,
                 sel: 0,
             },
+            favour: 0,
         }]);
         seq = seq.wrapping_add(1);
         if count(w, code) > 0 {
@@ -3136,7 +3484,7 @@ fn bag_removed_names_the_bag_then_why() {
     until(&mut w, EV_BAG_DROPPED);
     let first_bag = w.backpacks.next_id() - 1;
 
-    // Cause one: the timer. JUNK is item 7, the fixture ladder's
+    // Cause one: the timer. FILLER is item 7, the fixture ladder's
     // short-lived half, so the despawn fits the quiet-step bound.
     until_quiet(&mut w, EV_BAG_REMOVED);
     let gone = only(&w, EV_BAG_REMOVED);
@@ -3170,6 +3518,7 @@ fn bag_removed_names_the_bag_then_why() {
                 move_z: 0,
                 sel: 0,
             },
+            favour: 0,
         },
         Command::Respawn {
             id: VICTIM,
@@ -3440,6 +3789,7 @@ fn swing_names_the_swinger_and_nothing_else() {
                 move_z: 0,
                 sel: 0,
             },
+            favour: 0,
         }]);
         seq = seq.wrapping_add(1);
         if count(&w, EV_SWING) > 0 {
@@ -3488,7 +3838,7 @@ fn swing_names_the_swinger_and_nothing_else() {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 40] = [
+    const COVERED: [(&str, u8); 43] = [
         ("EV_GATHER", EV_GATHER),
         ("EV_GATHER_REFUSED", EV_GATHER_REFUSED),
         ("EV_SLOT_HARVESTED", EV_SLOT_HARVESTED),
@@ -3529,6 +3879,9 @@ fn coverage_is_stated_not_implied() {
         ("EV_IMPACT", EV_IMPACT),
         ("EV_TRUST", EV_TRUST),
         ("EV_SWING", EV_SWING),
+        ("EV_HURT", EV_HURT),
+        ("EV_RELOAD", EV_RELOAD),
+        ("EV_RELOAD_REFUSED", EV_RELOAD_REFUSED),
     ];
     /// What is knowingly still byte-golden only: nothing, since the last
     /// five landed. The seat stays — named, not just counted — so the next
@@ -3884,7 +4237,7 @@ fn research_refused_names_the_player_then_why() {
 /// second thing this checks. `wake` rebuilds the record from
 /// `Player::default()` and names what a body carries through; until
 /// 2026-08-15 `known` was not on that list, so every death deleted every
-/// blueprint the player had bought with OBOL. The clock kills the body
+/// blueprint the player had bought with FILLER. The clock kills the body
 /// here — `starve` is the same real cause `respawn_names_the_player…`
 /// uses — and the mask has to come back out the other side intact.
 #[test]
@@ -3929,7 +4282,7 @@ fn known_names_the_holder_then_the_mask_low_half_first() {
     // the mask but announced the old one would satisfy every check above.
     assert_eq!(
         w.players[0].known, WIDE,
-        "a real death erased blueprints bought with OBOL — `wake` is not \
+        "a real death erased blueprints bought with FILLER — `wake` is not \
          carrying `known` across"
     );
 }
@@ -4194,7 +4547,7 @@ fn trust_names_a_container_opened_while_its_owner_watches() {
         bi,
         0,
         ItemStack {
-            item: JUNK,
+            item: FILLER,
             count: JUNK_COUNT,
             cond: 0,
         },
@@ -4325,7 +4678,7 @@ fn trust_is_silent_for_your_own_door_and_for_an_animals_bag() {
         let b = w.players[0].body;
         let mut items = [ItemStack::default(); INV_SLOTS];
         items[0] = ItemStack {
-            item: JUNK,
+            item: FILLER,
             count: JUNK_COUNT,
             cond: 0,
         };

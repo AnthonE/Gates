@@ -45,10 +45,11 @@
 
 use protocol::event::ItemCatalog;
 use protocol::{encode_action_move, WireError};
+use sim_core::combat::{ARMOR_MAX_PCT, WEAR_BODY, WEAR_HEAD};
 use sim_core::deploy::{box_key, DeployContent, DeployRec, ARCH_BOX};
 use sim_core::gather::ItemStack;
-use sim_core::inventory::{CONT_BOX, CONT_MAX, CONT_SELF, CONT_WORLD};
-use sim_core::limits::{BOX_SLOTS, HOTBAR_SLOTS, INV_SLOTS};
+use sim_core::inventory::{is_own, CONT_BOX, CONT_MAX, CONT_SELF, CONT_WEAR, CONT_WORLD};
+use sim_core::limits::{HOTBAR_SLOTS, INV_SLOTS, WEAR_SLOTS};
 
 /// Slots addressable in a container of `kind` — `sim_core::inventory`'s
 /// `slots_in`, re-exported rather than mirrored so the two cannot drift.
@@ -220,18 +221,24 @@ pub fn move_args(
     grab: Grab,
     inv: &[ItemStack; INV_SLOTS],
     cont: &[ItemStack; INV_SLOTS],
+    worn: &[ItemStack],
 ) -> Option<MoveArgs> {
     // 1 · a kind the wire's two-bit field will carry.
     if from_kind > CONT_MAX || to_kind > CONT_MAX {
         return None;
     }
     // 2 · one ground container, or none. Which one is the handle's owner.
-    let ground = if from_kind != CONT_SELF {
+    //
+    //     `is_own`, not `!= CONT_SELF`, and it is `sim_core`'s predicate
+    //     rather than a second one written here — the same reason
+    //     `slots_in` is re-exported above. A player carries two containers
+    //     since armor v1, and both of them are addressed without a handle.
+    let ground = if !is_own(from_kind) {
         from_kind
     } else {
         to_kind
     };
-    if from_kind != CONT_SELF && to_kind != CONT_SELF && from_kind != to_kind {
+    if !is_own(from_kind) && !is_own(to_kind) && from_kind != to_kind {
         return None;
     }
     // 3 · each slot inside its OWN container's width.
@@ -242,15 +249,39 @@ pub fn move_args(
     if from_kind == to_kind && from_slot == to_slot {
         return None;
     }
-    // 5 · the handle. Normalized to zero for self→self, required non-zero
-    //     for anything on the ground.
-    let handle = if ground == CONT_SELF { 0 } else { bag };
-    if ground != CONT_SELF && handle == 0 {
+    // 5 · the handle. Normalized to zero when both sides are on the
+    //     player, required non-zero for anything on the ground.
+    //
+    //     **This check is why the wear panel would have looked broken
+    //     rather than refused.** Under `ground != CONT_SELF` a
+    //     `CONT_SELF → CONT_WEAR` move takes `ground == CONT_WEAR`, has no
+    //     handle to offer, and returns `None` here — which sends nothing
+    //     at all, so the drag snaps back with no refusal, no event and no
+    //     toast. Worse, with a box open it would have shipped the *box's*
+    //     `box_key` as a wear move's handle.
+    let handle = if is_own(ground) { 0 } else { bag };
+    if !is_own(ground) && handle == 0 {
         return None;
     }
     // 6 · the count, read from the source container's own view.
-    let src = if from_kind == CONT_SELF { inv } else { cont };
-    let held = src[from_slot].count;
+    //
+    //     Three views since the body moved off the ground subscription
+    //     (`NOW.md` §0eq item 4): the pack, the body, and whatever is
+    //     open. This was a two-way pick on `== CONT_SELF` while the wear
+    //     slots lived in `cont`, and leaving it that way would have read
+    //     a helmet's count out of the open box's slot 0 — the right
+    //     value in the wrong container, which is the positional-payload
+    //     shape and would have shipped a plausible `count`.
+    //
+    //     `get` rather than an index: step 3 already bounded `from_slot`
+    //     against `slots_in(from_kind)`, but `worn` is a slice and its
+    //     width is no longer proved by its type.
+    let src: &[ItemStack] = match from_kind {
+        CONT_SELF => inv,
+        CONT_WEAR => worn,
+        _ => cont,
+    };
+    let held = src.get(from_slot).map_or(0, |s| s.count);
     let count = grab.units(held);
     if count == 0 || count > held {
         return None;
@@ -276,7 +307,7 @@ pub fn move_args(
 pub fn refusal_text(reason: u8) -> &'static str {
     use sim_core::inventory::{
         REFUSE_M_COUNT, REFUSE_M_EMPTY, REFUSE_M_NO_CONTAINER, REFUSE_M_NO_ROOM, REFUSE_M_OVEN,
-        REFUSE_M_REACH, REFUSE_M_SLOT, REFUSE_M_UNSTACKABLE,
+        REFUSE_M_REACH, REFUSE_M_SLOT, REFUSE_M_UNSTACKABLE, REFUSE_M_WEAR,
     };
     match reason as u32 {
         REFUSE_M_SLOT => "that slot is not addressable",
@@ -287,8 +318,59 @@ pub fn refusal_text(reason: u8) -> &'static str {
         REFUSE_M_REACH => "too far away",
         REFUSE_M_UNSTACKABLE => "that item cannot be moved",
         REFUSE_M_OVEN => "a fire takes fuel and what it cooks",
+        // The reason armor v1 minted, unwired until v52: a helmet dragged
+        // onto the body slot, or anything that is not armor dragged onto
+        // either, bounced with the generic word. The client refuses most
+        // of these before the round trip now (`wearable_here`), so what
+        // reaches this arm is the disagreement — a stale catalog, or a
+        // slot the server knows about and this build does not.
+        REFUSE_M_WEAR => "that is not what goes in that slot",
         _ => "refused",
     }
+}
+
+/// The protection a worn set is worth, whole percent — the client's read
+/// of `sim_core::combat::worn_pct`, off the catalog columns wire v52
+/// added.
+///
+/// **The same arithmetic, deliberately, and gated against the original**
+/// (`tests/ui.rs` §H). Both sum every slot rather than the slot that was
+/// hit, both pay a piece only in the slot its baked row names — the check
+/// is against the *row*, not against where the stack is sitting — and both
+/// clamp to `combat::ARMOR_MAX_PCT`. A second implementation is what this
+/// is, and it is the shape `CLAUDE.md` warns about; what makes it safe is
+/// that the gate drives the sim's function and this one over the same
+/// worn sets and compares, rather than rebuilding this one's body.
+///
+/// `worn` is the client's view of the `CONT_WEAR` container. It is a
+/// **slice** rather than a fixed array because the view moved: it was
+/// `cont`, `INV_SLOTS` wide with a tail of zeros, until the body got its
+/// own `WEAR_SLOTS`-wide stream (2026-08-28, `NOW.md` §0eq item 4). The
+/// `take(WEAR_SLOTS)` is unchanged and is why both shapes are correct
+/// here — it reads the sim's own width and nothing past it, so a
+/// smuggled stack in slot 7 protects nobody either way.
+pub fn worn_pct(catalog: &ItemCatalog, worn: &[ItemStack]) -> u32 {
+    let mut pct = 0u32;
+    for (i, stack) in worn.iter().enumerate().take(WEAR_SLOTS) {
+        if stack.count > 0 && catalog.wear_slot(stack.item as usize) as usize == i + 1 {
+            pct += catalog.armor_pct(stack.item as usize) as u32;
+        }
+    }
+    pct.min(ARMOR_MAX_PCT)
+}
+
+/// May this item be worn in wear-container slot `s`? The client's read of
+/// `sim_core::combat::wearable_in`, off the same catalog column.
+///
+/// This is what lets a wrong-slot drag be refused **before** the round
+/// trip, on the sim's own predicate rather than a second list of what
+/// counts as armor. `s` is a container slot index and is bounded here
+/// rather than at the caller: `s + 1` on a `u8` wraps to 0 in release and
+/// `0` is `WEAR_NONE`, so an unbounded `s = 255` would answer *true* for
+/// every non-armor item — the hardening the merge-gate judge asked for on
+/// `wearable_in`, taken at both copies rather than one.
+pub fn wearable_here(catalog: &ItemCatalog, item: u16, s: usize) -> bool {
+    s < WEAR_SLOTS && catalog.wear_slot(item as usize) as usize == s + 1
 }
 
 /// The container panel's title. `CONT_SELF` has no panel, so it is named
@@ -304,7 +386,39 @@ pub fn container_title(kind: u8) -> &'static str {
         // fallback that is a real answer for one kind is a fallback that
         // lies about the next one.
         CONT_WORLD => "CRATE",
+        // Named for the same reason, one kind later. The fallback would
+        // have titled a player's own armor "BAG".
+        CONT_WEAR => "WORN",
         _ => "BAG",
+    }
+}
+
+/// What wear-container slot `s` is called, for the paperdoll's caption.
+///
+/// **Keyed on the sim's own constants, not on the index.** `Player::worn`
+/// is zero-based and `ArmorDef::slot` is one-based, which is the one thing
+/// about this container that is easy to get backwards — `combat::worn_pct`
+/// and `combat::wearable_in` both spell the relation `slot == s + 1`, and
+/// so does this, so a third slot lands here as a compile-visible gap
+/// rather than as a caption that is off by one.
+///
+/// A slot past `WEAR_SLOTS` has no name; it cannot be drawn (the panel
+/// walks `WEAR_SLOTS`) and it cannot be addressed (`slots_in`), so the
+/// fallback is a placeholder rather than a guess at what a fourth slot
+/// would be called. `s` is bounded here for the same reason
+/// `wearable_here` bounds it and not one step later: `s + 1` on a `u8`
+/// overflow-panics in debug and wraps to 0 in release, and `0` is
+/// `WEAR_NONE` — so an unbounded `s = 255` is a panic in one build and a
+/// silent `"-"` in the other, which is two behaviours for one input. The
+/// third copy of the `s + 1` shape, hardened like the other two.
+pub fn wear_slot_label(s: usize) -> &'static str {
+    if s >= WEAR_SLOTS {
+        return "-";
+    }
+    match u8::try_from(s).map(|s| s + 1) {
+        Ok(WEAR_HEAD) => "HEAD",
+        Ok(WEAR_BODY) => "BODY",
+        _ => "-",
     }
 }
 
@@ -312,12 +426,18 @@ pub fn container_title(kind: u8) -> &'static str {
 /// the view that carries it: the wire ships `INV_SLOTS` slots whatever kind
 /// is open, and the tail stays zero for a box — so a panel that drew all 30
 /// would draw twelve slots and eighteen lies.
+///
+/// **Derived from `slots_in` rather than listed**, which is the same move
+/// the re-export at the top of this file makes and for the same reason.
+/// The old body named `CONT_BOX` and answered `GRID_COLS` for everything
+/// else; that is a hand-kept mirror of `sim_core`'s width table, and a
+/// two-slot wear container would have drawn as six — four of them lies,
+/// which is the defect the paragraph above describes arriving at the next
+/// kind. This form is identical for all four older kinds (30 and 12 both
+/// clamp to `GRID_COLS`; 12 was already reaching `BOX_SLOTS.min`) and
+/// correct for the fifth without naming it.
 pub fn container_cols(kind: u8) -> usize {
-    if kind == CONT_BOX {
-        BOX_SLOTS.min(GRID_COLS)
-    } else {
-        GRID_COLS
-    }
+    slots_in(kind).min(GRID_COLS)
 }
 
 /// The deployable item standing at a box handle, if the client is already

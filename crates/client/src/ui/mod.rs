@@ -47,7 +47,7 @@
 //! fire on release where [`build`]'s latch.
 //!
 //! [`hub`] is the third piece of the front door and the one that is not
-//! ours: NEWS, ITEM STORE and WORKSHOP are the scry-works launcher's
+//! ours: NEWS, ITEM STORE and WORKSHOP are the elo launcher's
 //! (operator, 2026-08-09), so this owns which state each is in and what the
 //! screen says about it — four states, never collapsed, because "no launcher"
 //! and "not published yet" have different fixes.

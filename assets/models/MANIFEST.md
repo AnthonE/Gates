@@ -30,6 +30,7 @@ private ownership with no attribution owed and no `NOTICE` entry due.
 |---|---|
 | file | `stumpy.glb`, **4.2 MB** |
 | mesh | one skinned character, 21,360 verts / 31,252 tris, **24 joints**, split into `char1_arms` (8,184 tris) + `char1_body` for the first-person view |
+| albedo | `Material_1_baseColor`, KTX2/UASTC 1024², **linear luma 0.056** — measured off the shipped file 2026-08-31 at mips 0/2/4/6 (0.0568 / 0.0564 / 0.0553 / 0.0556), 94% of texels in the darkest eighth. ⚠ **That is level with `grass` (0.054), the darkest identity in the game, and one thousandth over `ALBEDO_LUMA_BAND`'s 0.05 floor** — against granite 0.292, sand 0.178, twig 0.167 and litter 0.135. It is why the operator reads other players as dark in a frame (`NOW.md` §0dk), and it is the asset rather than the light: an A/B capture rules out SSAO at under 1% and the fill gives a shaded vertical face 14.3% of lit ground, which is physically correct. |
 | clips | **53** — the delivery's 7, plus 46 retargeted off the mannequin |
 | texture | one 4096² base colour, packed to **1024 UASTC** (28.9 MB → 2.8 MB) |
 | stands | **1.800 m**, feet on y = 0 — the sim's own `Capsule3d::new(0.4, 1.0)` exactly, so `ANIM_RIG_H_M` is 1.8 and the scale is 1 |
@@ -49,7 +50,8 @@ ci/import_char.py <merged>.glb stumpy_raw.glb \
 ci/ktx_pack.py stumpy_raw.glb stumpy_packed.glb
 ci/retarget_anim.py assets/models/mannequin.gltf stumpy_packed.glb stumpy_rt.glb \
     --retime Sword_Attack=1.05333
-ci/split_arms.py stumpy_rt.glb assets/models/stumpy.glb
+ci/split_arms.py stumpy_rt.glb stumpy_split.glb
+ci/curl_hands.py stumpy_split.glb assets/models/stumpy.glb
 ```
 
 
@@ -60,19 +62,36 @@ ci/split_arms.py stumpy_rt.glb assets/models/stumpy.glb
    and a name it cannot find draws a body frozen in its bind pose, so
    `Idle_11` is an idle that never plays.
 
-**The last step is what makes a first-person viewmodel possible**, and it is
+**`split_arms.py` is what makes a first-person viewmodel possible**, and it is
 one line because the alternative was believed impossible: the mesh becomes
 `char1_arms` + `char1_body`, two nodes on one skeleton **sharing their vertex
 buffers** and differing only in their index array (+0.4 MB, no second copy of
 anything). `render/viewmodel.rs` hides the body half and draws the arms on the
 camera; `bodies.rs` draws both and is unchanged.
 
+**`curl_hands.py` is the last step and it corrects a delivery, not a choice.**
+The generator modelled five digits per hand — 1,048 vertices in the right one —
+and rigged none of them: `RightHand` is a LEAF, so the hand's pose IS the
+mesh's shape and nothing at runtime can change it. It arrived in the flat,
+spread pose a rigger binds in, which is right for binding and wrong as the rest
+pose of the most-seen mesh in the game. The tool bends 1,068 vertices across
+both hands — nothing else in the file moves, and the shared vertex buffer means
+the viewmodel and every remote body get it in the same edit. It derives the
+hand frame, which digit is the thumb, which way the palm faces and where each
+digit's knuckle is from the geometry; the one knob is how far, defaulting to
+85° over a finger's length (a relaxed hand, not a fist) with the spread closed
+45%. Both hands land at 0.13 of their reach off the palm plane against 0.03
+before. **A grip pose is not this**: it would want a second baked pose selected
+by what is in hand, and joints are what it would want after that (`NOW.md`
+0chr).
+
 `crates/client/tests/rig_asset.rs` gates all of it — the clip names off `Clip`
 itself, the height against `ANIM_RIG_H_M`, the stand-up rotation, one material,
-KTX2 textures, both halves of the split, the arms' hold clip, and that the
-swing clip still fits the sim's swing cadence. Five of the eight were watched
-going red under their own defect — four against the raw file, and the cadence
-one against the un-retimed 1.5 s swing.
+KTX2 textures, both halves of the split, the arms' hold clip, that the swing
+clip still fits the sim's swing cadence, and that the hands are curled. Six of
+the nine were watched going red under their own defect — four against the raw
+file, the cadence one against the un-retimed 1.5 s swing, and the hand one
+against the splayed delivery, which reports 0.032 against a floor of 0.09.
 
 **The `--retime` on the swing is not cosmetic.** `SWING_CLIP_S` is derived
 from the sim (`SWING_INTERVAL_TICKS / TICK_HZ − ANIM_BLEND_S − one frame` = 1.05333 s), and
@@ -170,6 +189,239 @@ gates every claim in this table.
 | `deploy/fire.glb` | 3 fire | `019feff4-8c6e` | 15 | stone ring, charred logs, embers. **The one asset that keeps its emissive map** (measured peak 0.24, genuine glow) |
 | `deploy/workbench.glb` | 5 workbench | `019feff2-cd94` | 24 | plank worktop, vice, scattered tools |
 
+**The rig's hands are bent in the mesh, and the recipe is three lines**
+(operator, 2026-09-01: *"we just need to close the fingers. also i can never
+see the thumb"*). `stumpy.glb` arrived with five modelled digits per hand and
+`RightHand` as a LEAF — the fingers were never rigged, so nothing can pose
+them and the bind-pose rake was in every frame. `ci/curl_hands.py` bends the
+vertices instead:
+
+```
+git show 44acd31:assets/models/stumpy.glb > /tmp/orig.glb
+ci/curl_hands.py /tmp/orig.glb assets/models/stumpy.glb --degrees 150 \
+    --thumb-degrees 90 --adduct 0.85 --into assets/models/stumpy.glb
+```
+
+⚠ **Run it on the ORIGINAL, never on its own output**, which is what `--into`
+is for. Everything the tool derives comes off the geometry, and bent geometry
+gives different answers — a second pass re-derived the LEFT hand's palm as
+`+z` where the original gives `-x`, so it would bend about the wrong axis
+while producing a curl number that looks right. `--into` takes the clips from
+the shipped rig and only the hands from the freshly bent one, and refuses
+unless every vertex neither hand moves already agrees.
+
+The hand was at 85°/35°/0.45 (a relaxed hand) until 2026-09-01 and is now
+150°/90°/0.85 (a grip). `crates/client/tests/rig_asset.rs` gates it, on a
+length-to-thickness ratio rather than the fingertip offset it used to use —
+that measure PEAKED at the 85° it shipped at and read a fist as an uncurled
+hand. See `HAND_CURL_MAX`.
+
+## `site/` — the two authored places, and the fit rule they forced
+
+Same rail and same pipeline as `deploy/` above — Meshy, paid plan, commissioned
+output, no `NOTICE` entry due, and no proper noun in either prompt. Generated
+2026-09-01 with `ci/meshy_gen.py`, which is the pipeline `DECISIONS.md` settled
+on 2026-08-11 written down as a command instead of as prose: `nano-banana-pro`
+text-to-image → `image-to-3d` with `model_type: smart-topology`,
+`ai_model: meshy-t2`, 2K PBR, `origin_at: "bottom"`. It writes a JSON sidecar
+carrying exactly the columns below, so this table is transcribed rather than
+remembered.
+
+| file | occupant | image task | mesh task | tris | size |
+|---|---|---|---|---|---|
+| `site/shelter.glb` | `HavenShelter` | `01a05e1c-5de3` | `01a05e1c-ff8d` | 4,140 | 3.6 MB |
+| `site/canopy.glb` | `WaystationCanopy` | `01a05e1c-ad22` | `01a05e1d-4e95` | 3,801 | 3.3 MB |
+
+**Credits: 72 for all three tasks** (5,247 → 5,175), and there is deliberately
+no per-asset column. `ci/meshy_gen.py` reports a delta between a balance read
+before its first call and after its last, which is correct for one run and
+**wrong for two running at once** — these two were generated concurrently, so
+each sidecar charged itself part of the other's spend and their figures sum to
+111 against a true 72. The script's header now says so. The total is the number
+that was actually observed; the split was not.
+
+Image prompts, in full, because the IP rail's auditability is the reason they
+are recorded at all:
+
+> **shelter** — "A single ruined stone outpost building on a plain white
+> background, three-quarter view. Square footprint 7 metres by 7 metres, 9.2
+> metres tall. Thick weathered grey granite walls on three sides. One tall open
+> doorway with heavy square stone jambs and a lintel across the front. Flat
+> stone slab roof. Four square corner pillars rising above the roofline. One
+> square watchtower standing on the roof, set back from the front, topped by a
+> wide flat capstone. Moss in the joints, storm worn. Exactly one building. No
+> ground, no terrain, no people, no plants."
+>
+> **canopy** — "A single small open timber shelter on a plain white background,
+> three-quarter view. Square plank deck 5.2 metres by 5.2 metres at ground
+> level, 4.1 metres tall overall. Four slender square wooden corner posts hold
+> up a wide flat plank roof, with a second smaller plank roof stacked above it
+> and a short square finial on top. One low knee-high plank wall along the back
+> edge only; the other three sides are fully open. Weathered grey timber, iron
+> nails, no paint. Exactly one structure. No ground, no terrain, no people, no
+> plants."
+
+Texture prompts are one line each — "Weathered grey granite blocks, moss in the
+joints, storm worn stone, no vegetation" and "Weathered grey timber planks, iron
+nails, sun bleached wood, no paint".
+
+### These two are imported with `--fit-axes`, and the reason is not cosmetic
+
+**A `deploy/` row is a render row; these are the sim's collision volume.**
+`terrain::SHELTER_BOXES` and `WAYSTATION_CANOPY_BOXES` are what a body is
+stopped by, and `OCCUPANT_R_M`/`OCCUPANT_TOP_M` are *defined* as their bounds —
+so where a deployable that comes up short inside its row is "a row to
+re-measure", a site that comes up short is a player stopped by air. Measured on
+these two under the uniform fit every other asset here uses:
+
+| | drawn (uniform fit) | blocked | gap |
+|---|---|---|---|
+| shelter | 7.00 × **7.69** × 6.92 | 7.00 × 9.20 × 7.00 | **1.51 m of blocked air above the roof** |
+| canopy | **4.34** × 4.10 × **4.34** | 5.60 × 4.10 × 5.60 | **1.26 m of invisible skirt per horizontal axis** |
+
+`ci/import_meshy.py --fit-axes` scales each axis to its own target instead, so
+the drawn bound meets the blocked one: **both peaks are exact** (0.00000 m
+against `OCCUPANT_TOP_M`) and neither model reaches outside its blocked radius.
+The radii come up **short by 21.4 mm (shelter) and 0.2 mm (canopy)** rather
+than equal, because the number that matters is the one the renderer uses —
+largest per-vertex `hypot(x, z)` — and a box corner is only that if a vertex
+sits on the corner, which the generator's eroded roof slab does not. The gate's
+allowance for that is `SITE_SHORT_M = 0.05`, picked against the body (a fifth
+of `WALL_THICKNESS_M`) rather than against today's mesh. What the fit costs is
+an **aspect correction** —
+`max(k) / min(k)`, how much the most-stretched axis was stretched relative to
+the least:
+
+| | x | y | z | aspect |
+|---|---|---|---|---|
+| shelter | 1.538 | 1.840 | 1.555 | **1.196×** |
+| canopy | 1.765 | 1.367 | 1.765 | **1.291×** |
+
+**Prompting for the aspect does not fix this, and that was measured rather than
+assumed.** A second canopy was generated the same day (`01a05e20-9d03` /
+`01a05e21-1775`, 24 credits) with the aspect stated three ways — "much wider
+than it is tall", the two figures, "eaves overhang far past the posts". It came
+back at 3.08 × 3.00 × 3.08 against the first's 3.17 × 3.00 × 3.17, i.e. an
+aspect correction of **1.329×, worse than the 1.291× it was meant to fix.** It
+is not shipped. The lever that would actually work is the box table, and that
+is sim truth with a replay golden behind it — see `NOW.md`.
+
+`crates/client/tests/site_assets.rs` gates every number in this section, and
+each of its claims is proven red under its own mutant (uniform fit, a 5%
+oversize, a kept emissive map, an unpacked JPEG).
+
+**The box massing is not deleted.** `props::archetype_mesh` still returns it,
+`greybox.rs` still measures the sim's scalars against it, and it is still what
+draws if a model fails to load.
+
+## `prop/` — the scatter, where the instance count is the argument
+
+Same rail, same pipeline, same date-stamped audit trail. What is different is
+the *reason*: a site stands once on an island, and these stand thousands of
+times. Census on the shipped seed — **1,054 boulders, 609 stone nodes, 89
+metal, 48 sulfur** — off exactly two meshes before this landed, because every
+boulder was one `blob_mesh` at one seed and the three ore nodes shared a
+second and differed only by material.
+
+| file | occupant | image task | mesh task | tris | asked | size |
+|---|---|---|---|---|---|---|
+| `prop/rock_a.glb` | `Rock` (pool 0) | `01a05e71-4efe` | `01a05e73-a70e` | 2,662 | 2,400 | 3.4 MB |
+| `prop/rock_b.glb` | `Rock` (pool 1) | `01a05e7a-56ee` | `01a05e7a-f87b` | 2,670 | 2,400 | 3.4 MB |
+| `prop/rock_c.glb` | `Rock` (pool 2) | `01a05e7d-075b` | `01a05e7d-811d` | 2,662 | 2,400 | 3.3 MB |
+| `prop/node_stone.glb` | `StoneNode` | `01a05e6e-4baa` | `01a05e6e-c5a5` | 1,439 | 1,400 | 3.5 MB |
+| `prop/node_metal.glb` | `MetalNode` | `01a05e85-6c8d` | `01a05e85-e691` | 1,364 | 1,250 | 3.4 MB |
+| `prop/node_sulfur.glb` | `SulfurNode` | `01a05e7c-bfc4` | `01a05e7d-3978` | 1,490 | 1,400 | 3.5 MB |
+| `prop/barrel.glb` | `BarrelSlot` | `01a05ea8-6214` | `01a05ea9-0399` | 758 | 700 | 3.6 MB |
+| `prop/crate.glb` | `CrateSlot` | `01a05ea1-9804` | `01a05ea2-894d` | 522 | 550 | 3.3 MB |
+| `prop/cache.glb` | `CacheSlot` | `01a05ea5-0f65` | `01a05ea5-8934` | 479 | 550 | 3.2 MB |
+
+**`target_polycount` works and overshoots by 3–11 %**, which is why the metal
+node was asked for 1,250 to land under `WANTED.md` §2's 1,500 — the roll before
+it came back at 1,554 and was rejected on triangles alone rather than have the
+ceiling moved to fit it.
+
+### Eleven rolls, six keepers — selection is the method
+
+**`ci/measure_glb.py` is the step that makes this work, and it exists because
+prompting alone does not.** Every row below is measured; the KEEP column is
+the tool's verdict and it agrees with the six that shipped.
+
+| roll | d/w | aspect | luma | green | verdict |
+|---|---|---|---|---|---|
+| rock_a | 0.425 | 1.02× | 0.179 | **47.6 %** | slab, and green |
+| **rock_b → `rock_a.glb`** | 1.000 | 1.36× | 0.344 | 0.2 % | **KEEP** |
+| rock_c | 0.195 | 1.08× | 0.094 | 0.2 % | wafer |
+| **rock_d → `rock_b.glb`** | 1.016 | 1.36× | 0.204 | 1.3 % | **KEEP** |
+| **rock_e → `rock_c.glb`** | 1.022 | 1.17× | 0.250 | 0.4 % | **KEEP** |
+| rock_f | 1.032 | 1.42× | 0.234 | 12.3 % | green |
+| **node_stone** | 1.000 | 1.03× | 0.303 | 0.2 % | **KEEP** |
+| node_metal (1) | 0.801 | 1.22× | **0.081** | 0.2 % | 1,552 tris |
+| node_metal (2) | 1.002 | 1.69× | 0.146 | 0.2 % | 1,554 tris, aspect |
+| **node_metal (3) → `node_metal.glb`** | 1.000 | 1.44× | 0.190 | 3.6 % | **KEEP** |
+| node_sulfur (1) | 0.531 | 1.39× | 0.269 | **28.3 %** | slab, and green |
+| **node_sulfur (2) → `node_sulfur.glb`** | 0.807 | 1.48× | 0.259 | 0.4 % | **KEEP** |
+
+What the prompt controls and what it does not, measured rather than assumed:
+
+- **Naming an omitted axis works.** "2.2 m wide and 2.0 m tall", with no depth
+  given, reconstructed to 0.425 / 1.000 / 0.195. Adding "2.2 deep, as deep as
+  it is wide" took the next three to 1.016 / 1.022 / 1.032.
+- **Naming a colour to avoid works.** "Lichen crusting the hollows" → 47.6 %
+  green-dominant; "mottled grey with rust-brown staining" → 0.2–1.3 %. "Bright
+  yellow" sulfur drifted to 28.3 % green; "warm golden-yellow, mustard, never
+  green" → 0.4 %. "Dark iron ore seams" measured luma **0.081**, half of
+  granite's 0.292 — a black lump in a grey world — and naming the host rock
+  grey lifted it to 0.190.
+- **Asking for a ratio more extreme than the object's natural one does not**,
+  which is the canopy's lesson from the day before (1.329× against the 1.291×
+  it was meant to fix).
+
+### `--fit-radius`, and why a box is the wrong shape here
+
+These are imported `--fit-radius --center`, not `--fit-axes`, and the
+difference is a defect the gate caught in production. The two authored sites
+publish `OCCUPANT_R_M` as a half-**diagonal** — their footprint IS the box.
+These rows were measured off `blob_mesh`, which is round in plan, so the same
+number is the radius of a **cylinder**. Fitting the bounding box to `2 × R`
+therefore pushes the corners outside it: measured on the first ore node at
+**1.2737 m drawn against 0.9148 m blocked, 36 cm of visible rock a player
+walks through**. `--fit-radius` solves for the largest per-vertex
+`hypot(x, z)` instead — one shared X/Z factor, so the plan shape is preserved
+and only its scale moves.
+
+**Which fit mode a row takes is DERIVABLE, not a judgement call.** Compute the
+half-diagonal of the massing the model replaces and compare it to
+`OCCUPANT_R_M`: equal means the row describes a **box** and takes
+`--fit-axes`; unequal means it describes a **cylinder** and takes
+`--fit-radius`. Measured across the nine shipped props — crate 0.6801 ==
+hypot(0.55, 0.40), cache 0.5701 == hypot(0.45, 0.35), so both are boxes; the
+barrel, the boulder and the three nodes are round in plan and are not. Getting
+this wrong is not cosmetic: it drew the first ore node 36 cm outside what the
+sim blocks.
+
+⚠ **Stating a dimension can put the dimension IN the picture.** Every prompt
+here names metric sizes, and on the boar the image came back with a scale bar
+and the figures "1.5 metres / 0.78 metres" drawn under the animal — text that
+a reconstruction can bake into an albedo. None of the nine shipped props show
+it, and it is not something a bounding-box check can see; look at the
+reference image, not only at the numbers.
+
+**One roll was rejected for a colour the prompt itself asked for**: the first
+barrel measured **16.0 % green-dominant** on "flaking grey-green paint over
+rust". Re-rolled as "bare rusted steel, orange-brown oxide, no paint at all"
+→ 0.0 % and luma 0.248. The lesson from the boulders holds — the generator
+does what the prompt says, including the parts of it nobody thought about.
+
+`--center` is the other mode they need: `archetype_lift` is 0.55 for a boulder
+and 0.5 for a node against half-extents of 0.99 and 0.63, so these sit 0.44 m
+and 0.13 m **into** the ground (`ART.md` rule 2). Every asset before them stood
+on its base.
+
+**The greybox massing is not deleted** — `archetype_mesh` still returns it,
+`greybox.rs` still measures the sim's scalars against it, and `spawn_slot`
+still draws it wherever a model is absent, which is every row on a headless
+build.
+
 ## `held/` — what the viewmodel puts in your hand
 
 **The surface these were waiting on turned out to already exist.** They were
@@ -187,12 +439,34 @@ silently breaking one. `crates/client/tests/held_assets.rs` reads
 | file | item | task id | credits |
 |---|---|---|---|
 | `held/rock.glb` | Rock | `019fefe3-2c88` | 24 |
-| `held/stone_hatchet.glb` | Stone Hatchet | `019fefe7-e4b8` | 24 |
+| `held/stone_hatchet.glb` | Stone Hatchet | `019fefe7-e4b8` | 24 | **stood up** 2026-09-01 |
 | `held/stone_pickaxe.glb` | Stone Pickaxe | `019fefe9-a24e` | 24 |
 | `held/hammer.glb` | Hammer | `019feffa-b068` | 24 |
 | `held/building_plan.glb` | Building Plan | `019feffc-45fe` | 24 |
 | `held/wooden_spear.glb` | Wooden Spear | `019feffe-2c4b` | 24 |
-| `held/hunting_bow.glb` | Hunting Bow | `019feff1-37f6` | 24 |
+| `held/hunting_bow.glb` | Hunting Bow | `019feff1-37f6` | 24 | **stood up** 2026-09-01 |
+
+**Two of these ship a second baked transform, and the reason is a defect that
+was in every frame.** `ci/import_meshy.py` centres the BOUNDING BOX on X/Z,
+and `ui::hold` spends the grip as one number up the model's own +Y — two
+statements that agree only when the thing the hand closes on is itself on +Y.
+The hatchet was authored leaning **32°** with a heavy head off one side, so
+the box centred on the head and the haft sat **121 mm** from the axis at the
+grip height; `viewmodel::pose` then slid thin air into the palm and the axe
+hung a hand's width beside the fist, pointing across the frame. The bow was
+the same at **165 mm** across a 45° diagonal. Both were stood up by
+`ci/stand_grip.py` — a rigid rotation and a slide, no resampling, no rescale,
+so the axe and the bow are exactly the size they always were:
+
+```
+ci/stand_grip.py assets/models/held/stone_hatchet.glb <out> --shaft 0.02 0.45 --grip 0.25
+ci/stand_grip.py assets/models/held/hunting_bow.glb   <out> --shaft 0.02 0.98 --grip 0.50
+```
+
+`height_m` in `HELD_MODELS` moved with them — 0.500 → 0.562 and 1.191 → 1.687
+— because a diagonal's shadow is shorter than the diagonal, and
+`crates/client/tests/held_assets.rs::the_fist_closes_on_the_model_and_not_on_air`
+is the gate that now refuses the whole class.
 
 Three of these were regenerated once, and the two prompt failures are worth
 keeping because they are the failure mode of the *prompt*, not the tool: the

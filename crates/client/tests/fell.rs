@@ -98,7 +98,16 @@ fn fixture() -> (App, PropAssets) {
         stone: MapSet::default(),
         metal: MapSet::default(),
     };
-    let a = assets(&mut meshes, &mut materials, &mut images, &maps);
+    let a = assets(
+        &mut meshes,
+        &mut materials,
+        &mut images,
+        &maps,
+        // Unresolved, like every `MapSet::default()` above it: this tier has no
+        // filesystem and a material clones the handle either way.
+        Handle::default(),
+        client::render::props::PropModels::default(),
+    );
     world.insert_resource(meshes);
     world.insert_resource(materials);
     world.insert_resource(images);
@@ -129,7 +138,7 @@ fn part(app: &mut App, a: &PropAssets, part: FellPart) -> Entity {
             felled: false,
         },
         Mesh3d(mesh),
-        MeshMaterial3d(a.bark_material().clone()),
+        MeshMaterial3d(a.bark_material(KEY).clone()),
         Transform {
             // The stump sits `STUMP_LIFT_M` above the slot's ground because
             // its mesh is centred on its own axis while the slot's `y` is the

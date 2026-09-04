@@ -19,7 +19,7 @@ use sim_core::build::{
     SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
 };
 use sim_core::combat::{
-    AmmoDef, ArmorDef, CombatContent, MeleeDef, RangedDef, ThrowDef, WEAR_BODY, WEAR_HEAD,
+    AmmoDef, ArmorDef, CombatContent, MeleeDef, RangedDef, ThrowDef, NO_MAG, WEAR_BODY, WEAR_HEAD,
     WEAR_NONE,
 };
 use sim_core::craft::{
@@ -38,7 +38,7 @@ use sim_core::limits::MAX_SPAWN_KIT;
 use sim_core::limits::{
     ARROW_STEP_MM, HEARTH_STOCK_ROWS, MAX_ARROW_SUBSTEPS, MAX_COOK_ROWS, MAX_DEPLOY_COSTS,
     MAX_DEPLOY_DEFS, MAX_HITSCAN_SAMPLES, MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_ROLLS,
-    MAX_LOOT_TABLES, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS,
+    MAX_LOOT_TABLES, MAX_MAGS, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS,
     MAX_RESEARCH_ROWS, MAX_WEAPON_AMMO, TICK_HZ,
 };
 use sim_core::loot::{
@@ -112,6 +112,12 @@ impl Content {
                 format!(
                     "bake: `{}` condition_max {} overflows u16 hundredths",
                     item.id, item.condition_max
+                )
+            })?;
+            gc.light_burn[idx] = u16::try_from(item.light_burn).map_err(|_| {
+                format!(
+                    "bake: `{}` light_burn {} overflows u16 hundredths/min",
+                    item.id, item.light_burn
                 )
             })?;
         }
@@ -556,6 +562,33 @@ impl Content {
         if cc.player_hp == 0 {
             return Err("bake: player_hp 0 would disarm combat entirely".to_string());
         }
+        // `validate::structural` has already pinned this to 0..=100, so the
+        // narrow cannot fail on shipped content; it is written as a bake
+        // refusal anyway for `repair_cost_pct`'s reason one function over —
+        // `bake_combat` is reachable from fixtures that never validated.
+        cc.arrow_break_pct = u16::try_from(self.balance.globals.arrow_break_pct)
+            .ok()
+            .filter(|&p| p <= 100)
+            .ok_or_else(|| {
+                format!(
+                    "bake: arrow_break_pct {} is not a percentage",
+                    self.balance.globals.arrow_break_pct
+                )
+            })?;
+        // Seconds → ticks, checked, exactly like a throwable's `fuse_s`.
+        // A lodge nobody could outlive is a lodge that never expires, so
+        // the overflow is refused rather than saturated.
+        cc.arrow_lodge_ticks = self
+            .balance
+            .globals
+            .arrow_lodge_s
+            .checked_mul(TICK_HZ)
+            .ok_or_else(|| {
+                format!(
+                    "bake: arrow_lodge_s {} overflows a tick count",
+                    self.balance.globals.arrow_lodge_s
+                )
+            })?;
         // Rounds before weapons: a bow's row is meaningless without the
         // ballistics its rounds carry, and baking them first means a
         // failure names the round rather than the weapon that happened to
@@ -566,9 +599,17 @@ impl Content {
         for a in &self.armors {
             self.bake_armor(a, &mut cc)?;
         }
+        // The dense magazine index, handed out in `self.weapons` order.
+        // A counter rather than a scan of `cc.ranged`, because `cc.ranged`
+        // is keyed by *item* and its order is the sorted-rank mapping's,
+        // not this file's — so a scan would make a weapon's slot depend on
+        // where its item happened to sort, and content is a hashed input
+        // to a replay (wall 7). Bake order is `weapons.toml` order, which
+        // is a thing a person can read.
+        let mut next_mag: u8 = 0;
         for w in &self.weapons {
             if w.kind == WeaponKind::Bow || w.kind == WeaponKind::Firearm {
-                self.bake_ranged(w, &mut cc)?;
+                self.bake_ranged(w, &mut next_mag, &mut cc)?;
                 continue;
             }
             if w.kind != WeaponKind::Melee && w.kind != WeaponKind::Throwable {
@@ -688,7 +729,12 @@ impl Content {
     /// `MAX_HITSCAN_SAMPLES`. Content past either is refused at boot rather
     /// than shipped and silently clamped, because a clamped shot is a
     /// weapon whose reach is a lie the data does not admit to.
-    fn bake_ranged(&self, w: &Weapon, cc: &mut CombatContent) -> Result<(), String> {
+    fn bake_ranged(
+        &self,
+        w: &Weapon,
+        next_mag: &mut u8,
+        cc: &mut CombatContent,
+    ) -> Result<(), String> {
         let idx = self
             .item_index(&w.id)
             .ok_or_else(|| format!("bake: weapon `{}` arms no item", w.id))?
@@ -718,6 +764,11 @@ impl Content {
 
         let damage = u16::try_from(w.damage)
             .map_err(|_| format!("bake: `{}` damage {} overflows u16", w.id, w.damage))?;
+        // The melee arm's rule on the melee arm's column: refused, never
+        // truncated. A `structure` past `u16` silently wrapping is a wall
+        // that a bow opens in one shot.
+        let structure = u16::try_from(w.structure)
+            .map_err(|_| format!("bake: `{}` structure {} overflows u16", w.id, w.structure))?;
         if damage == 0 {
             return Err(format!("bake: ranged weapon `{}` deals no damage", w.id));
         }
@@ -755,6 +806,49 @@ impl Content {
             }
         }
 
+        // The magazine, and the dense slot that indexes `Player::mag`.
+        // `validate.rs` has already refused a firearm without one and a
+        // magazine on anything else; this arm is what turns the column
+        // into an index, and it is the only place that index is chosen.
+        let magazine = u16::try_from(w.magazine.unwrap_or(0))
+            .map_err(|_| format!("bake: `{}` magazine {:?} overflows u16", w.id, w.magazine))?;
+        let reload_ticks = u16::try_from(w.reload_ms.unwrap_or(0) as u64 * TICK_HZ as u64 / 1000)
+            .map_err(|_| {
+            format!(
+                "bake: `{}` reload_ms {:?} overflows u16 ticks",
+                w.id, w.reload_ms
+            )
+        })?;
+        if magazine > 0 && reload_ticks == 0 {
+            return Err(format!(
+                "bake: `{}` holds {magazine} rounds and reloads in no time at all",
+                w.id
+            ));
+        }
+        let mag_slot = if magazine > 0 {
+            // Refused rather than wrapped or dropped. A weapon that lost
+            // its slot would fall back to spending straight out of the
+            // pack — the mechanic silently gone, with every gate green,
+            // which is the shape `limits::MAX_MAGS` is written against.
+            if *next_mag as usize >= MAX_MAGS {
+                return Err(format!(
+                    "bake: `{}` is the {}th weapon with a magazine, past the \
+                     {MAX_MAGS} slots `Player::mag` holds",
+                    w.id,
+                    *next_mag as usize + 1
+                ));
+            }
+            let s = *next_mag;
+            *next_mag += 1;
+            s
+        } else {
+            // `NO_MAG` and not 0: slot 0 is a real magazine, so a
+            // zero-defaulted `mag_slot` on a bow would name the first
+            // firearm's rounds. The `NO_ITEM`-padded `ammo` array two
+            // fields up refuses the identical mistake for the identical
+            // reason.
+            NO_MAG
+        };
         if cc.ranged[idx].damage != 0 {
             return Err(format!("bake: duplicate weapon row for `{}`", w.id));
         }
@@ -768,6 +862,38 @@ impl Content {
             // speed on the round, `range_m` over *which* speed? The sim
             // divides by the round it actually fires (`ranged::draw`).
             range_mm: w.range_m * 1000,
+            // The structure column, carried at last. It has been on the
+            // bow, the crossbow and the revolver in `weapons.toml` since
+            // the content crate and been dropped here every bake — parsed,
+            // range-checked, `canon`-hashed, and thrown away one line
+            // before the sim could read it. `RangedDef::structure` says
+            // what that cost.
+            structure,
+            // And the last of them, on the same terms. `headshot_mult` has
+            // been parsed, banded and content-hashed since this crate was
+            // written and dropped here every bake — `reference/
+            // PROJECTILES.md` §9.4 named it as the outstanding case of
+            // exactly the disease the lines above record. `u16` because
+            // `combat::headshot` multiplies in `u32` and saturates; the
+            // band is 2 and `validate` refuses a zero, so a shipped row
+            // cannot arrive here as a hit that deals nothing.
+            headshot_mult: w.headshot_mult as u16,
+            // The other end of the ladder, and the first column in this
+            // block that was never "armed and unread": it was parsed,
+            // banded, hashed, baked and read by `ranged::part_crossed` in
+            // one commit. `u16` for `headshot_mult`'s reason —
+            // `combat::limb` multiplies in `u32` and divides by 100, and
+            // `validate` holds the value in `1..=100`, so the product
+            // cannot overflow and the quotient cannot exceed the raw.
+            limb_pct: w.limb_pct as u16,
+            // Reload v1's three, and unlike the four columns above them
+            // none arrives armed and unread: `ranged::hitscan` spends
+            // `magazine` and `ranged::reload` pays `reload_ticks` in the
+            // same commit that bakes them (`RangedDef::limb_pct` names
+            // that as the shape to copy).
+            magazine,
+            reload_ticks,
+            mag_slot,
         };
         Ok(())
     }

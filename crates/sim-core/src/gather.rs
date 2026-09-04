@@ -234,6 +234,14 @@ pub struct GatherContent {
     /// stack of it at `cond == 0` is a **dead tool**: still in the hand,
     /// no longer a tool (`swing`'s Q4 guard).
     pub cond_max: [u16; MAX_ITEM_DEFS],
+    /// Hundredths of condition burned per minute while this item is held
+    /// up lit (content `light_burn`; torch fuel v0). **Zero means the item
+    /// is not a light at all** — the rate is the predicate, because an
+    /// item that lit the world for nothing would be a decoration instead
+    /// of `ALPHA.md` §1's tradeoff. Content rule V8 refuses a nonzero row
+    /// with no `cond_max` to spend, and V9 holds it under `u16::MAX`,
+    /// which is what bounds `light::step`'s debit to one point a tick.
+    pub light_burn: [u16; MAX_ITEM_DEFS],
     pub item_count: u16,
 }
 
@@ -264,12 +272,24 @@ impl GatherContent {
         }
     }
 
+    /// The burn rate for an item — `cond_max_of`'s shape and for its
+    /// reason, and an index past the table reads as "not a light", which
+    /// is what a zero already means everywhere else.
+    pub fn light_burn_of(&self, item: u16) -> u16 {
+        if (item as usize) < MAX_ITEM_DEFS {
+            self.light_burn[item as usize]
+        } else {
+            0
+        }
+    }
+
     /// Inert: nothing is gatherable. `World::new` starts here; the boot
     /// path installs the baked table before the first tick.
     pub const EMPTY: Self = Self {
         nodes: [NodeDef::INERT; GATHERABLE_KINDS],
         stack_max: [0; MAX_ITEM_DEFS],
         cond_max: [0; MAX_ITEM_DEFS],
+        light_burn: [0; MAX_ITEM_DEFS],
         item_count: 0,
     };
 
@@ -301,6 +321,15 @@ impl GatherContent {
         // transposed field cannot hide (event_roles' discipline 2).
         c.cond_max[0] = 400;
         c.cond_max[1] = 300;
+        // Item 0 is the fixture's light, so torch fuel rides the parity,
+        // replay and alloc surfaces the moment a bot holds one up. The
+        // rate is deliberately NOT the shipped torch's 1 000 and
+        // deliberately not item 0's `cond_max`, for the reason above: a
+        // fixture that matches the game, or that reuses a neighbouring
+        // column's number, hides a bake or a lookup that read the wrong
+        // one. Item 1 stays unlit so the "held item is not a light"
+        // branch has a fixture item too.
+        c.light_burn[0] = 600;
         // (output, hits, hand, weak %, finish %, tool-item, tool-yield,
         // wear-per-hit). Finish shares are deliberately varied and
         // deliberately NOT the shipped content's — a fixture that matches
@@ -428,7 +457,10 @@ pub const STRIKE_WAIST_FRAC: f32 = 0.5;
 /// `ranged::fire` shoots from. Derived from `ARROW_EYE_MM` rather than
 /// picked, so the two origins cannot drift apart — no new knob is spoken
 /// for here and none is invented.
-const EYE_M: f32 = crate::ranged::ARROW_EYE_MM as f32 / 1000.0;
+/// `pub(crate)` since 2026-08-28 so `combat::raid`'s mark rides the same
+/// origin: a hatchet's swing at a wall and a hatchet's swing at a tree
+/// leave their scuff at one height, and the two cannot drift apart.
+pub(crate) const EYE_M: f32 = crate::ranged::ARROW_EYE_MM as f32 / 1000.0;
 
 /// Where a landed swing scuffs the thing it hit: the point on the struck
 /// occupant's own collision skin, on the side the swinger is standing.

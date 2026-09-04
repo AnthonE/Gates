@@ -69,7 +69,7 @@ seconds = 20
 #
 # **Several rows may share one input and they all fire together**, off one
 # slot timer — which is how a gear pays a material AND a coin on one pass
-# (the OBOL block below). The bake holds such a set to one `seconds` and
+# (the JUNK block below). The bake holds such a set to one `seconds` and
 # refuses two rows paying the same output (`validate::structural`).
 #
 # **The yields are theirs as of 2026-08-18** (`reference/RIPLIST.md` §1f).
@@ -120,9 +120,9 @@ count = 60
 station = "recycler"
 seconds = 5
 
-# --- the OBOL faucet ------------------------------------------------------
+# --- the JUNK faucet ------------------------------------------------------
 #
-# **OBOL is scrap** (operator, 2026-08-10: *"what the hell is obol turned off
+# **JUNK is scrap** (operator, 2026-08-10: *"what the hell is obol turned off
 # for its just like scrap"*). It is an item you carry, drop on death and
 # spend at a research table — no wallet, no ledger, nothing redeemable. The
 # thing `ALPHA.md` §2 stages is the CLAIM RAIL (a banked balance keyed to a
@@ -131,7 +131,7 @@ seconds = 5
 # never a token risk here to gate against.
 #
 # This rides the SAME input as one of the three rows above, which is what
-# multi-row conversion is for: a gear becomes 15 fragments AND 12 obol on
+# multi-row conversion is for: a gear becomes 15 fragments AND 12 junk on
 # one 5 s timer, rather than the player choosing which machine to feed. The
 # `seconds` must match the row it shares an input with — the bake refuses
 # otherwise.
@@ -146,13 +146,13 @@ seconds = 5
 #
 # **What this does to the faucet, derived off `loot.toml` rather than
 # asserted.** A barrel is 1–2 rolls over 99 weight; the three components
-# used to pay 0.848 obol a barrel between them and the gear alone now pays
+# used to pay 0.848 junk a barrel between them and the gear alone now pays
 # **2.727**, a 3.2× faucet. Theirs pays ~2.42 scrap a barrel (2 direct at
-# 100 %, plus gears 2–3 at 1.4 % recycled) — so after this take **one obol
+# 100 %, plus gears 2–3 at 1.4 % recycled) — so after this take **one junk
 # buys about what one scrap buys**, within 13 %.
 #
 # **Which is why no price in `research.toml` or `recipes.toml` moves, and
-# that is the surprising half.** Both files justify their own obol prices
+# that is the surprising half.** Both files justify their own junk prices
 # against "a ~10-scrap barrel where ours pays ~0.85" — the 0.85 was right
 # and **the ~10 was never measured and is wrong**; the page says 2.42.
 # Priced in barrels against the four researchable items we both have
@@ -160,7 +160,7 @@ seconds = 5
 # revolver 30, satchel 60, gunpowder 120), our ladder cost **2.66× theirs
 # before this take and 0.83× after it**. The faucet is what brought the
 # research economy into their range at all, and it did it without moving
-# a price. `DECISIONS.md` §open "OBOL faucet v0" carries the row; the
+# a price. `DECISIONS.md` §open "JUNK faucet v0" carries the row; the
 # ratio clause it states ("move these with the research prices or the
 # ratio breaks") held, and this is what holding looks like.
 #
@@ -173,7 +173,7 @@ seconds = 5
 # of this one.
 [[cook]]
 input = "item.gears"
-output = "item.obol"
+output = "item.junk"
 count = 12
 station = "recycler"
 seconds = 5

@@ -66,7 +66,7 @@ fn pump(core: &mut ShardCore, stats: &ShardStats, clients: &mut [(usize, ClientC
     let mut buf = [0u8; 1100];
     for (slot, c) in clients.iter_mut() {
         c.advance(1000.0 / 30.0);
-        c.predict.decay_error();
+        c.predict.decay_error(1000.0 / 30.0);
         let n = c.poll_input(&mut buf);
         if n > 0 {
             let dg = protocol::decode_input(&buf[..n]).expect("client encodes valid input");
@@ -140,6 +140,7 @@ fn lay_base(core: &mut ShardCore, cx0: u16, cz0: u16, n: usize) -> Vec<(u16, u16
             cz,
             0,
             LOC_PLANE,
+            false,
             &mut core.world.events,
         );
         if core.world.pieces.len() > before {
@@ -350,6 +351,7 @@ fn walking_to_a_base_delivers_it_including_what_was_placed_while_away() {
             cz: late.1,
             level: 0,
             loc: LOC_PLANE,
+            freehand: false,
         },
     );
     let skipped_before = ShardStats::get(&stats.piece_events_skipped);
@@ -442,7 +444,7 @@ fn a_finished_walk_says_nothing_more() {
         let mut buf = [0u8; 1100];
         let (slot, c) = &mut clients[0];
         c.advance(1000.0 / 30.0);
-        c.predict.decay_error();
+        c.predict.decay_error(1000.0 / 30.0);
         let n = c.poll_input(&mut buf);
         if n > 0 {
             let dg = protocol::decode_input(&buf[..n]).expect("client encodes valid input");

@@ -49,8 +49,8 @@ use sim_core::combat::CombatContent;
 use sim_core::deploy::{box_key, DeployContent, DeployDef, ARCH_BOX, PLACE_FOUNDATION};
 use sim_core::gather::{cell_key, GatherContent, ItemStack, SWING_INTERVAL_TICKS};
 use sim_core::input::BTN_PRIMARY;
-use sim_core::inventory::{CONT_BAG, CONT_BOX, CONT_SELF, CONT_WORLD};
-use sim_core::limits::{BOX_SLOTS, INV_SLOTS, MAX_ITEM_DEFS};
+use sim_core::inventory::{CONT_BAG, CONT_BOX, CONT_SELF, CONT_WEAR, CONT_WORLD};
+use sim_core::limits::{BOX_SLOTS, INV_SLOTS, MAX_ITEM_DEFS, WEAR_SLOTS};
 use sim_core::loot::{LootContent, LootEntryDef, LootTableDef, LOOT_CRATE};
 use sim_core::movement::Body;
 use sim_core::terrain::{self, Haven, Occupant, ScatterTable, CELL_SIZE, HAVEN_CRATES};
@@ -94,7 +94,7 @@ const SPAWN: (f32, f32) = (1024.0, 1024.0);
 /// positional payload with (slot, item, count) triples in it, which is the
 /// shape `reference/FINDINGS.md` §1 counts ~27 shipped defects in.
 const SPEAR: u16 = 0;
-const JUNK: u16 = 7;
+const FILLER: u16 = 7;
 const OTHER: u16 = 11;
 const THIRD: u16 = 19;
 /// Slots inside a bag, spread rather than bunched so an off-by-one in the
@@ -168,7 +168,28 @@ type Sync = (usize, u8, u32, bool, Vec<(u8, ItemStack)>);
 
 /// Every container-sync message on the lane.
 fn syncs(seen: &[(usize, EventMsg)]) -> Vec<Sync> {
+    cont_syncs(seen, false)
+}
+
+/// The same, for the **body's** stream.
+///
+/// The two are separated at the helper rather than at each call site
+/// because they are now two independent subscriptions sharing one
+/// message (`NOW.md` §0eq item 4): the ground container is opened, is
+/// exclusive and can be shut by the server, and the body is none of
+/// those — it is dripped unconditionally from the moment a player has a
+/// world slot. Every assertion in this file below `two_clients` is about
+/// one of them, and a helper that returned both would make each of those
+/// assertions quietly depend on what the *other* stream did that tick.
+fn wear_syncs(seen: &[(usize, EventMsg)]) -> Vec<Sync> {
+    cont_syncs(seen, true)
+}
+
+fn cont_syncs(seen: &[(usize, EventMsg)], want_wear: bool) -> Vec<Sync> {
     seen.iter()
+        .filter(|(_, m)| {
+            matches!(m, EventMsg::ContSync { kind, .. } if (*kind == CONT_WEAR) == want_wear)
+        })
         .filter_map(|(slot, m)| match m {
             EventMsg::ContSync {
                 kind,
@@ -221,8 +242,25 @@ fn two_clients(core: &mut ShardCore, stats: &ShardStats) -> Vec<(usize, ClientCo
     }
     assert!(
         syncs(&warm).is_empty(),
-        "a join must not open a container by itself"
+        "a join must not open a GROUND container by itself"
     );
+    // **The body, on the other hand, opens itself and must.** That is the
+    // whole of `NOW.md` §0eq item 4: the wear view stopped competing for
+    // the ground subscription and is dripped from the moment a player has
+    // a world slot, so a client never has to ask and a box can never
+    // evict it. One reset apiece, carrying nothing — a fresh spawn wears
+    // nothing, and `reset` with zero rows is how "the body is empty" is
+    // said (a diff with no rows is never sent).
+    let worn = wear_syncs(&warm);
+    assert_eq!(
+        worn.len(),
+        2,
+        "each joined client is owed exactly one opening body: {worn:?}"
+    );
+    for (_, kind, handle, reset, rows) in &worn {
+        assert_eq!((*kind, *handle, *reset), (CONT_WEAR, 0, true));
+        assert!(rows.is_empty(), "a fresh spawn wears nothing: {rows:?}");
+    }
     clients
 }
 
@@ -248,7 +286,7 @@ fn bag_from_a_kill(
     };
     core.world.players[w1].inv = [ItemStack::default(); INV_SLOTS];
     core.world.players[w1].inv[SLOT_A] = ItemStack {
-        item: JUNK,
+        item: FILLER,
         count: COUNT_A,
         cond: 0,
     };
@@ -348,7 +386,7 @@ fn only_the_opener_is_shown_a_container() {
             (
                 SLOT_A as u8,
                 ItemStack {
-                    item: JUNK,
+                    item: FILLER,
                     count: COUNT_A,
                     cond: 0,
                 }
@@ -378,7 +416,7 @@ fn only_the_opener_is_shown_a_container() {
     assert_eq!(
         c0.cont[SLOT_A],
         ItemStack {
-            item: JUNK,
+            item: FILLER,
             count: COUNT_A,
             cond: 0,
         }
@@ -648,6 +686,288 @@ fn buildable_cell(seed: u64) -> (u16, u16) {
     panic!("no buildable cell within 64 cells — the generator changed under this test");
 }
 
+/// **A box open no longer costs you your body, which is the whole slice.**
+///
+/// `NOW.md` §0eq item 4, and the merge-gate judge's second ranked fix on
+/// pass `-06`. Armor v1 gave `CONT_WEAR` an arm in the server's *one*
+/// container subscription, so the two views took turns: opening a box
+/// evicted the wear panel, and the route from a looted helmet to a head
+/// was take it, close the box, open the inventory, drag again — with the
+/// box's own gate (`box_container.rs`) celebrating a move the client had
+/// no path to make.
+///
+/// The claim here is that both streams run at once. A box is opened, its
+/// contents arrive on the ground stream, and then the player is dressed
+/// **while it is still open** — and the body arrives on its own stream,
+/// addressed to `CONT_WEAR` with handle 0, without a second open and
+/// without disturbing the box.
+///
+/// The mutant that matters is the old code: put `CONT_WEAR` back on the
+/// ground subscription and the wear stream has no reset to send, the
+/// helmet never crosses, and `clients[0].1.worn` stays empty while
+/// `cont_kind` reads `CONT_BOX`. Both halves of the final assertion pair
+/// fail, and they fail for the two different reasons the split exists
+/// for: the box is not evicted, and the body is not absent.
+#[test]
+fn the_body_is_still_fed_while_a_box_is_open() {
+    let stats = ShardStats::default();
+    let (cx, cz) = buildable_cell(SEED);
+    let (x, z) = cell_center(cx, cz);
+
+    let mut core = Box::new(ShardCore::new(SEED));
+    core.world.gather = GatherContent::probe_fixture();
+    core.world.build = BuildContent::probe_fixture();
+    core.world.deploy = box_fixture();
+    core.world.dev_spawn = Some((x, z));
+    core.catalog = ItemCatalog::EMPTY;
+    let mut clients = two_clients(&mut core, &stats);
+
+    let w0 = world_slot(&core, id_of(0));
+    core.world.players[w0].body = Body::at(SEED, hv(SEED), x, z);
+    core.world.players[w0].inv[0] = ItemStack {
+        item: 0,
+        count: 5,
+        cond: 0,
+    };
+    core.world.players[w0].inv[1] = ItemStack {
+        item: BOX_ITEM,
+        count: 1,
+        cond: 0,
+    };
+    core.world.tick(&[Command::Place {
+        id: id_of(0),
+        row: FOUNDATION_ROW,
+        cx,
+        cz,
+        level: 0,
+        loc: LOC_PLANE,
+        freehand: false,
+    }]);
+    core.world.tick(&[Command::PlaceDeploy {
+        id: id_of(0),
+        row: BOX_ROW,
+        cx,
+        cz,
+        level: 0,
+        loc: LOC_PLANE,
+    }]);
+    core.world.deploys.set_box_slot(
+        0,
+        SLOT_A,
+        ItemStack {
+            item: FILLER,
+            count: COUNT_A,
+            cond: 0,
+        },
+    );
+    let key = box_key(cx, cz, 0);
+
+    // 1 · open the box and let it land.
+    let mut seen = Vec::new();
+    ask(&mut core, 0, CONT_BOX, key);
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients, &mut seen);
+    }
+    assert_eq!(syncs(&seen).len(), 1, "the box must have opened");
+    assert!(
+        wear_syncs(&seen).is_empty(),
+        "nothing was worn, so the body owed nothing: {:?}",
+        wear_syncs(&seen)
+    );
+
+    // 2 · dress the player with the box still open. In the game this is
+    //     the move `box_container.rs` gates; here the store is written
+    //     directly, because the claim is about the two VIEWS and not
+    //     about the verb, which has its own suite.
+    let helmet = ItemStack {
+        item: OTHER,
+        count: 1,
+        cond: 9_100,
+    };
+    core.world.players[w0].worn[0] = helmet;
+
+    let mut after = Vec::new();
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients, &mut after);
+    }
+
+    let worn = wear_syncs(&after);
+    assert_eq!(
+        worn.len(),
+        1,
+        "the body changed under an open box and owed exactly one diff: {worn:?}"
+    );
+    let (slot, kind, handle, reset, rows) = &worn[0];
+    assert_eq!((*slot, *kind, *handle, *reset), (0, CONT_WEAR, 0, false));
+    assert_eq!(
+        rows,
+        &vec![(0u8, helmet)],
+        "the body's diff must carry the helmet and nothing else"
+    );
+    // The box was not disturbed: it changed nothing, so it owed nothing.
+    assert!(
+        syncs(&after).is_empty(),
+        "the ground container must not have been re-sent or shut: {:?}",
+        syncs(&after)
+    );
+
+    // 3 · and the client holds both at once, which is what the panel
+    //     draws. This pair is the feature: a kind that says a box is
+    //     open, and a body that is legible beside it.
+    assert_eq!(
+        (clients[0].1.cont_kind, clients[0].1.cont_handle),
+        (CONT_BOX, key),
+        "the box must still be the open container"
+    );
+    assert_eq!(
+        clients[0].1.worn[0], helmet,
+        "the body must be readable while a box is open — the whole of §0eq item 4"
+    );
+}
+
+/// **An old client's `open_worn` press is answered with a resync, not an
+/// eviction.**
+///
+/// `ACT_CONTAINER(CONT_WEAR, 0)` was the armor v1 open and is still a
+/// shape the wire takes, so a client built before 2026-08-28 sends it
+/// every time it raises the inventory — and the one thing it must not do
+/// is what it used to: take the ground subscription and shut whatever
+/// box was open. The server answers it by re-sending the body, which is
+/// the honest reading of "send me my body" and is what it was already
+/// doing anyway.
+#[test]
+fn asking_for_the_body_resyncs_it_and_keeps_the_box() {
+    let stats = ShardStats::default();
+    let (cx, cz) = buildable_cell(SEED);
+    let (x, z) = cell_center(cx, cz);
+
+    let mut core = Box::new(ShardCore::new(SEED));
+    core.world.gather = GatherContent::probe_fixture();
+    core.world.build = BuildContent::probe_fixture();
+    core.world.deploy = box_fixture();
+    core.world.dev_spawn = Some((x, z));
+    core.catalog = ItemCatalog::EMPTY;
+    let mut clients = two_clients(&mut core, &stats);
+
+    let w0 = world_slot(&core, id_of(0));
+    core.world.players[w0].body = Body::at(SEED, hv(SEED), x, z);
+    core.world.players[w0].inv[0] = ItemStack {
+        item: 0,
+        count: 5,
+        cond: 0,
+    };
+    core.world.players[w0].inv[1] = ItemStack {
+        item: BOX_ITEM,
+        count: 1,
+        cond: 0,
+    };
+    core.world.tick(&[Command::Place {
+        id: id_of(0),
+        row: FOUNDATION_ROW,
+        cx,
+        cz,
+        level: 0,
+        loc: LOC_PLANE,
+        freehand: false,
+    }]);
+    core.world.tick(&[Command::PlaceDeploy {
+        id: id_of(0),
+        row: BOX_ROW,
+        cx,
+        cz,
+        level: 0,
+        loc: LOC_PLANE,
+    }]);
+    let key = box_key(cx, cz, 0);
+    let helmet = ItemStack {
+        item: OTHER,
+        count: 1,
+        cond: 9_100,
+    };
+    core.world.players[w0].worn[0] = helmet;
+
+    let mut seen = Vec::new();
+    ask(&mut core, 0, CONT_BOX, key);
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients, &mut seen);
+    }
+    assert_eq!(syncs(&seen).len(), 1, "the box must have opened");
+
+    // The old press, arriving under an open box.
+    let mut after = Vec::new();
+    ask(&mut core, 0, CONT_WEAR, 0);
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients, &mut after);
+    }
+
+    let worn = wear_syncs(&after);
+    assert_eq!(worn.len(), 1, "the press is owed one body: {worn:?}");
+    let (_, kind, handle, reset, rows) = &worn[0];
+    assert_eq!(
+        (*kind, *handle, *reset),
+        (CONT_WEAR, 0, true),
+        "a press is a resync, so the batch carries the reset bit"
+    );
+    assert_eq!(rows, &vec![(0u8, helmet)], "the whole body, not a diff");
+    assert!(
+        syncs(&after).is_empty(),
+        "asking for the body must not shut the box: {:?}",
+        syncs(&after)
+    );
+    assert_eq!(
+        (clients[0].1.cont_kind, clients[0].1.cont_handle),
+        (CONT_BOX, key),
+        "the box must still be open after the press"
+    );
+
+    // **The box is still being FED, which is the assertion with teeth.**
+    //
+    // The three above are all satisfied by an eviction, and finding that
+    // out is what the mutant run is for: restore `open_container`'s
+    // `CONT_WEAR` arm and the press takes the ground subscription — but
+    // the server sends no close (it re-opened, it did not shut), the
+    // client routes the reply to `worn` by kind, and `cont_kind` is left
+    // reading `CONT_BOX` from before. Every one of them stays green over
+    // a subscription that is silently pointed at a body.
+    //
+    // A live subscription is one that still notices a change, so the
+    // proof is to make one.
+    core.world.deploys.set_box_slot(
+        0,
+        SLOT_A,
+        ItemStack {
+            item: FILLER,
+            count: COUNT_A,
+            cond: 0,
+        },
+    );
+    let mut later = Vec::new();
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients, &mut later);
+    }
+    let ground = syncs(&later);
+    assert_eq!(
+        ground.len(),
+        1,
+        "the box changed and the subscription owed a diff — if this is \
+         empty the press evicted it: {ground:?}"
+    );
+    let (_, kind, handle, reset, rows) = &ground[0];
+    assert_eq!((*kind, *handle, *reset), (CONT_BOX, key, false));
+    assert_eq!(
+        rows,
+        &vec![(
+            SLOT_A as u8,
+            ItemStack {
+                item: FILLER,
+                count: COUNT_A,
+                cond: 0,
+            }
+        )],
+        "the diff must carry the box's slot, not the body's"
+    );
+}
+
 #[test]
 fn a_box_opens_by_its_packed_address() {
     let stats = ShardStats::default();
@@ -681,6 +1001,7 @@ fn a_box_opens_by_its_packed_address() {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        freehand: false,
     }]);
     core.world.tick(&[Command::PlaceDeploy {
         id: id_of(0),
@@ -701,7 +1022,7 @@ fn a_box_opens_by_its_packed_address() {
         0,
         SLOT_A,
         ItemStack {
-            item: JUNK,
+            item: FILLER,
             count: COUNT_A,
             cond: 0,
         },
@@ -723,7 +1044,7 @@ fn a_box_opens_by_its_packed_address() {
         &vec![(
             SLOT_A as u8,
             ItemStack {
-                item: JUNK,
+                item: FILLER,
                 count: COUNT_A,
                 cond: 0,
             }
@@ -815,6 +1136,7 @@ fn a_corpse_is_shown_no_container() {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        freehand: false,
     }]);
     core.world.tick(&[Command::PlaceDeploy {
         id: id_of(0),
@@ -829,7 +1151,7 @@ fn a_corpse_is_shown_no_container() {
         0,
         SLOT_A,
         ItemStack {
-            item: JUNK,
+            item: FILLER,
             count: COUNT_A,
             cond: 0,
         },
@@ -852,7 +1174,7 @@ fn a_corpse_is_shown_no_container() {
         &vec![(
             SLOT_A as u8,
             ItemStack {
-                item: JUNK,
+                item: FILLER,
                 count: COUNT_A,
                 cond: 0,
             }
@@ -1046,6 +1368,7 @@ fn a_locked_box_shows_a_stranger_nothing_until_it_unlocks() {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        freehand: false,
     }]);
     core.world.tick(&[Command::PlaceDeploy {
         id: id_of(0),
@@ -1060,7 +1383,7 @@ fn a_locked_box_shows_a_stranger_nothing_until_it_unlocks() {
         0,
         SLOT_A,
         ItemStack {
-            item: JUNK,
+            item: FILLER,
             count: COUNT_A,
             cond: 0,
         },
@@ -1130,7 +1453,7 @@ fn a_locked_box_shows_a_stranger_nothing_until_it_unlocks() {
         &vec![(
             SLOT_A as u8,
             ItemStack {
-                item: JUNK,
+                item: FILLER,
                 count: COUNT_A,
                 cond: 0,
             }
@@ -1168,7 +1491,7 @@ fn a_locked_box_shows_a_stranger_nothing_until_it_unlocks() {
         &vec![(
             SLOT_A as u8,
             ItemStack {
-                item: JUNK,
+                item: FILLER,
                 count: COUNT_A,
                 cond: 0,
             }
@@ -1353,6 +1676,145 @@ fn crate_fixture() -> LootContent {
 /// Do not "fix" a failure here by bumping the literal. The failure is the
 /// notice.
 const _: () = assert!(
-    sim_core::inventory::CONT_MAX == CONT_WORLD,
+    sim_core::inventory::CONT_MAX == CONT_WEAR,
     "a container kind was added without a container_wire test that opens it"
 );
+
+/// A body's wear panel carries the *body's* contents, not its backpack's.
+///
+/// The sixth thing a container view can get wrong, and it is the fifth one
+/// again — `cont_slot`'s dispatch — with the failure mode inverted, which
+/// is why it earns its own test rather than a line in the one above.
+///
+/// `CONT_WORLD` fell through an `else` into the wrong store and drew a
+/// crate as a deploy box. `CONT_WEAR` would have fallen through
+/// `cont_slot`'s `_` arm into `players[slot].inv` — the player's own
+/// backpack — and that is worse in the one way that matters here: the
+/// wrong store is a *plausible* store. A crate showing a box's contents is
+/// visibly nonsense; a wear panel showing your own inventory reads as a
+/// UI that opened the wrong tab, and both of its slots are real, occupied
+/// and in range. It could have shipped.
+///
+/// So the fixture makes the two stores **disagree by construction**:
+/// `worn[0..2]` holds `OTHER`/`THIRD` and `inv[0..2]` holds `SPEAR`/
+/// `FILLER` at the same two indices. Reading the wrong array cannot
+/// produce these bytes, and reading the right one cannot produce the
+/// other's.
+///
+/// It makes a second claim nothing else can, and it is the one that would
+/// have been a remote panic rather than a wrong picture: the panel is
+/// `WEAR_SLOTS` wide. `Player::worn` is a two-element array and
+/// `slots_in`'s `_` arm answers `INV_SLOTS`, so a `CONT_WEAR` without its
+/// own arm sends the drip walking `cont_slot(.., s, ..)` for `s` in
+/// `0..30` across a `[ItemStack; 2]`. That is an out-of-bounds index on
+/// the server tick, reachable from one wire field, in the module whose
+/// header says every reachable input lands on an announced refusal. The
+/// assertion below is `rows.len() <= WEAR_SLOTS`, but the test's real
+/// proof of it is that the tick returns at all.
+#[test]
+fn a_wear_panel_is_drawn_from_the_body_not_the_backpack() {
+    let stats = ShardStats::default();
+    let mut core = Box::new(ShardCore::new(SEED));
+    core.world.gather = GatherContent::probe_fixture();
+    core.world.dev_spawn = Some(SPAWN);
+    core.catalog = ItemCatalog::EMPTY;
+    let mut clients = two_clients(&mut core, &stats);
+
+    let w0 = world_slot(&core, id_of(0));
+    // The two stores, deliberately disagreeing at the same indices.
+    let worn = [
+        ItemStack {
+            item: OTHER,
+            count: 1,
+            cond: 9_100,
+        },
+        ItemStack {
+            item: THIRD,
+            count: 1,
+            cond: 10_000,
+        },
+    ];
+    core.world.players[w0].worn = worn;
+    core.world.players[w0].inv[0] = ItemStack {
+        item: SPEAR,
+        count: COUNT_A,
+        cond: 0,
+    };
+    core.world.players[w0].inv[1] = ItemStack {
+        item: FILLER,
+        count: COUNT_B,
+        cond: 0,
+    };
+
+    // The handle is zero and stays zero: a body has no address, which is
+    // the whole of what `inventory::is_own` means on the wire.
+    //
+    // **Nothing is asked for.** This test opened the body with an
+    // `ACT_CONTAINER` until 2026-08-28; there is no open any more, so
+    // dressing the player is the whole of the stimulus and the drip is
+    // expected to notice. `reset` is false for the same reason — the
+    // reset was spent at join, which `two_clients` now asserts — so this
+    // is a *diff*, and a diff is only sent when the two stores differ.
+    let mut seen = Vec::new();
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients, &mut seen);
+    }
+
+    let got = wear_syncs(&seen);
+    assert_eq!(got.len(), 1, "one change, one payment: {got:?}");
+    let (slot, kind, handle, reset, rows) = &got[0];
+    assert_eq!((*slot, *kind, *handle, *reset), (0, CONT_WEAR, 0, false));
+
+    // **The claim.** Under `cont_slot`'s `_` arm this was the backpack:
+    // `[(0, SPEAR x COUNT_A), (1, FILLER x COUNT_B)]`, a full and
+    // believable panel drawn from the wrong array.
+    let expect: Vec<(u8, ItemStack)> = worn
+        .iter()
+        .enumerate()
+        .map(|(s, st)| (s as u8, *st))
+        .collect();
+    assert_eq!(
+        rows, &expect,
+        "the wear panel must carry `Player::worn`, not `Player::inv`"
+    );
+    assert!(
+        rows.len() <= WEAR_SLOTS,
+        "a wear panel is {WEAR_SLOTS} slots wide, got {}: {rows:?}",
+        rows.len()
+    );
+
+    // The audience restriction holds for the fifth kind too, and for a
+    // body it is not a nicety: what someone is wearing is how much damage
+    // they will take, so a fanned-out wear panel is the same raid
+    // intelligence a box's contents are, read off a person.
+    assert!(
+        seen.iter()
+            .all(|(s, m)| *s == 0
+                || !matches!(m, EventMsg::ContSync { kind, .. } if *kind == CONT_WEAR)),
+        "nobody else may read what a body is wearing: {seen:?}"
+    );
+
+    // And it crossed the ABI, so the claim is about what the client draws.
+    //
+    // **Into `worn`, and `cont_kind` must not have moved.** The client
+    // holds two views now, and this is the assertion that says the wear
+    // stream did not arrive through the ground one: nothing was opened
+    // here, so a `cont_kind` of `CONT_WEAR` would mean the body had
+    // taken the ground subscription again — which is the defect §0eq
+    // item 4 names, seen from the other end.
+    assert_eq!(
+        (clients[0].1.cont_kind, clients[0].1.cont_handle),
+        (CONT_SELF, 0),
+        "the body must not have taken the ground container's slot"
+    );
+    let mirrored: Vec<(u8, ItemStack)> = clients[0].1.worn[..WEAR_SLOTS]
+        .iter()
+        .enumerate()
+        .filter(|(_, st)| st.count > 0)
+        .map(|(s, st)| (s as u8, *st))
+        .collect();
+    assert_eq!(
+        mirrored, expect,
+        "the client's mirror of the body must agree with the store"
+    );
+}

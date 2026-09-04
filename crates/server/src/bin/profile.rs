@@ -135,7 +135,7 @@ fn build_core(a: &Args) -> ShardCore {
     bake!(loot, bake_loot);
     bake!(mob, bake_mobs);
     bake!(research, bake_research);
-    core.catalog = match server::net::bake_catalog(&content) {
+    core.catalog = match server::net::bake_catalog(&content, &core.world.combat) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("profile: catalog bake refused: {e}");
@@ -170,6 +170,15 @@ fn fill_clients(core: &mut ShardCore, stats: &ShardStats, a: &Args) {
 /// this wants is a *populated store*, not a base that would stand up.
 ///
 /// Returns what actually landed, which is never the number asked for.
+///
+/// **The sweep is four times the cells it needs since build plate v1.** Every
+/// cell here is orthogonally adjacent to the last, so the whole block is ONE
+/// plate — and a plate that wide over real terrain hits the stilt limits
+/// often. The old `ceil(sqrt(want)) + 1` square assumed the only refusals
+/// were `foundation_terrain_ok`'s; with the plate it ran out of cells first
+/// and quietly profiled a third of the store it was asked for. Widening is
+/// the right fix rather than exempting the bench: a profile that measures a
+/// world the game cannot produce is a profile of nothing.
 fn fill_pieces(core: &mut ShardCore, want: usize) -> usize {
     let bc = core.world.build;
     let Some(row) = (0..bc.piece_count).find(|&r| {
@@ -199,7 +208,7 @@ fn fill_pieces(core: &mut ShardCore, want: usize) -> usize {
     // A solid block of foundations on the build grid (`BUILD_CELL_M`), one
     // per cell. The builder teleports to each address because `place`
     // checks reach and this is not a walk simulator.
-    let side = (want as f32).sqrt().ceil() as u16 + 1;
+    let side = ((want as f32).sqrt().ceil() as u16 + 1) * 2;
     let base = 300u16;
     'outer: for gz in 0..side {
         for gx in 0..side {
@@ -227,6 +236,7 @@ fn fill_pieces(core: &mut ShardCore, want: usize) -> usize {
                 cz,
                 level: 0,
                 loc: LOC_PLANE,
+                freehand: false,
             });
             let before = core.world.pieces.len();
             core.world.tick(&cmds);
@@ -272,7 +282,7 @@ fn main() {
     let mut last_snap = vec![0u16; MAX_PLAYERS];
     let feed = |core: &mut ShardCore, seq: &mut u16, last_snap: &[u16]| {
         for (slot, &ack) in last_snap.iter().enumerate().take(a.clients) {
-            let mut dg = InputDatagram::new(ack, 0, *seq as u32);
+            let mut dg = InputDatagram::new(ack, 0, 4);
             let _ = dg.push(InputFrame {
                 seq: *seq,
                 // Held, because the arm is the verb this game is mostly

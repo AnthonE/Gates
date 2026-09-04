@@ -242,8 +242,38 @@ pub fn keys(
     if keys.just_pressed(KeyCode::KeyU) {
         upgrade_near(&net, &near.0, &mut toast);
     }
+    // **`R` is modal on the hand since reload v1: hammer repairs, anything
+    // else reloads.** `R` is the genre's reload key and the reference's, so
+    // taking it is the standing instruction rather than a preference — and
+    // the hand is what the rest of this file already switches on
+    // (`hand.repairs()` five lines down, `hand.opens_a_wheel()` at the
+    // wheel). What the move costs is repair-with-no-hammer-out, which the
+    // comment below used to call the point of the binding; what it buys is
+    // that a gun in your hand answers the key every player already reaches
+    // for. Proposed default, `DECISIONS.md` §open (reload v1).
+    let hand =
+        crate::ui::hold::held_in_hand(&net.session.core.catalog, &net.session.core.inv, net.sel);
     if !wheel_up && keys.just_pressed(KeyCode::KeyR) {
-        repair_near(&net, &near.0, &mut toast);
+        if hand.repairs() {
+            repair_near(&net, &near.0, &mut toast);
+        } else {
+            // Payload-free, `V`'s shape: the sim reads the hand it already
+            // has, so there is nothing to aim and no amount for the client
+            // to guess. `just_pressed` for `V`'s reason too — the action
+            // lane holds one pending action per client per tick, so a held
+            // key would send a frame's worth and have all but one dropped
+            // at `push_action`.
+            //
+            // Sent blind, and the refusal is what makes that work: a press
+            // with a rock in hand, a full cylinder or an empty pack each
+            // come back as their own `EV_RELOAD_REFUSED` sentence, so the
+            // key never does nothing silently. Deciding it here off
+            // `mag()` instead would be worse, not better — the readout is
+            // whatever the last event stated, so a revolver just picked up
+            // reads `(0, 0)` and the client would swallow the one press
+            // that matters.
+            send(&net, &mut toast, "reload", protocol::encode_action_reload);
+        }
     }
     // **The hammer's left click is the repair swing** — the reference's own
     // binding, and free because the hammer has no attack (damage total 0).
@@ -252,8 +282,6 @@ pub fn keys(
     //
     // Not while a panel owns the pointer, for the reason `place_key` states:
     // a left click on the wheel is a wedge being chosen.
-    let hand =
-        crate::ui::hold::held_in_hand(&net.session.core.catalog, &net.session.core.inv, net.sel);
     let busy = ui.as_ref().map(|u| u.panel != Panel::None).unwrap_or(false);
     if hand.repairs() && !busy && mouse.just_pressed(MouseButton::Left) {
         repair_near(&net, &near.0, &mut toast);
@@ -287,6 +315,31 @@ pub fn keys(
         send(&net, &mut toast, "eat", |buf| {
             protocol::encode_action_consume(slot, buf)
         });
+    }
+    if keys.just_pressed(KeyCode::KeyV) {
+        // Pick up the nearest spent arrow in reach (`sim-core/spent.rs`).
+        //
+        // **A key and not an `E` prompt, and that is forced rather than
+        // chosen.** Every other thing `E` acts on is something the client
+        // can see — a door, a bag, a crate all reach it through the
+        // snapshot, so `interact::resolve` can put a prompt under the
+        // crosshair. Spent arrows are sim state that does not cross the
+        // wire at all, so there is nothing here to resolve against and a
+        // `Verb::Arrow` would be a prompt this build cannot decide to
+        // draw. The verb is blind on purpose: press it, and the server
+        // says what it found.
+        //
+        // Payload-free, `H`'s shape — the sim reads the body it already
+        // has, so there is nothing to aim and no reach for the client to
+        // guess. `just_pressed` because the action lane holds one pending
+        // action per client per tick: a held key would send a frame's
+        // worth and have all but one dropped at `push_action`.
+        //
+        // `V` is a proposed default (`DECISIONS.md` §open) and is picked
+        // for the hand rather than the letter: collecting arrows happens
+        // while walking a field you just shot across, so the key has to be
+        // reachable without leaving `WASD`.
+        send(&net, &mut toast, "pick up", protocol::encode_action_pickup);
     }
     if keys.just_pressed(KeyCode::KeyH) {
         // Drink from the water at your feet. `H` because `J` is the eat and
@@ -751,6 +804,22 @@ fn open_panel(ui: Option<&mut Ui>) {
         }
     }
 }
+
+// **There is no `open_worn`, and its absence is the feature.**
+//
+// Armor v1 shipped one here: a body has no world verb to be opened by —
+// every other container is reached by pointing at a thing, `E` on a box,
+// a crate, a bag — so the open was attached to the screen that draws it.
+// The cost was that the body then competed for the server's single
+// container subscription, and a box always won: you could not reach a
+// wear slot while looting, which is the move the feature exists for
+// (`NOW.md` §0eq item 4).
+//
+// The body has its own stream now and is dripped unconditionally, so
+// there is nothing to ask for. An old client's press still decodes and
+// the server answers it with a resync of that stream rather than a
+// refusal (`ClientNetState::open_container`) — the honest answer to
+// "send me my body", which it is already doing.
 
 /// Close whatever container the sim has open, if any.
 ///

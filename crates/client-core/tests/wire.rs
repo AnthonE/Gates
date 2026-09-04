@@ -40,7 +40,8 @@
 //! fail, so no two fields may share a value.
 
 use client_core::core::{
-    ClientCore, APPLIED2_CONT, APPLIED2_MOVE, APPLIED_BAGS, APPLIED_DEATH, APPLIED_HIT, NO_VICTIM,
+    ClientCore, HitFact, APPLIED2_CONT, APPLIED2_MOVE, APPLIED_BAGS, APPLIED_DEATH, APPLIED_HIT,
+    NO_VICTIM,
 };
 use protocol::{
     encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
@@ -50,6 +51,7 @@ use protocol::{
     MAX_EVENT_MSG_BYTES,
 };
 use sim_core::backpack::{BAG_GONE_DESPAWN, BAG_GONE_EMPTIED};
+use sim_core::collide::Part;
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{addr, CONT_BAG, CONT_BOX, CONT_SELF, REFUSE_M_NO_ROOM};
 use sim_core::ranged::{SURF_GROUND, SURF_WORLD};
@@ -267,7 +269,10 @@ fn the_hit_ring_fills_and_drains() {
     let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
     assert_eq!(c.pop_hit(), None, "the hit ring starts empty");
 
-    let len = encode_event_hit(9, 37, &mut buf).unwrap();
+    // `Part::Head` and not `Chest`: the identity rung is what
+    // `world::hit_part` falls back to and what a wall reports, so a ring
+    // that dropped the part entirely would still satisfy a `Chest` fixture.
+    let len = encode_event_hit(9, Part::Head, 37, &mut buf).unwrap();
     assert_eq!(feed(&mut c, &buf[..len]) & APPLIED_HIT, APPLIED_HIT);
     // **The victim rides with the damage since 2026-08-18** and the two are
     // distinct numbers here on purpose: the arm used to write `let _ =
@@ -275,9 +280,49 @@ fn the_hit_ring_fills_and_drains() {
     // to one that carried both.
     assert_eq!(
         c.pop_hit(),
-        Some((9, 37)),
-        "hitmarker (victim, damage) mismatch"
+        Some(HitFact {
+            victim: 9,
+            part: Some(Part::Head),
+            damage: 37
+        }),
+        "hitmarker fact mismatch"
     );
+    assert_eq!(c.pop_hit(), None, "the hit ring must drain");
+}
+
+/// Each rung reaches the ring as itself (v58).
+///
+/// The gate the marker's whole point rests on: three shots, three rungs, and
+/// the reader must be able to tell them apart. A wire that dropped the two
+/// bits, or a decoder that folded them onto the identity, passes
+/// `the_hit_ring_fills_and_drains` with a single-rung fixture and fails here.
+#[test]
+fn every_rung_survives_the_wire_and_the_ring() {
+    let mut c = core();
+    let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+    // Distinct damages as well as distinct parts, so a ring that paired the
+    // wrong part with the wrong blow is visible rather than symmetric.
+    for (i, (part, dmg)) in [(Part::Limb, 11u16), (Part::Chest, 22), (Part::Head, 44)]
+        .into_iter()
+        .enumerate()
+    {
+        let len = encode_event_hit(70 + i as u32, part, dmg, &mut buf).unwrap();
+        assert_eq!(feed(&mut c, &buf[..len]) & APPLIED_HIT, APPLIED_HIT);
+    }
+    for (i, (part, dmg)) in [(Part::Limb, 11u16), (Part::Chest, 22), (Part::Head, 44)]
+        .into_iter()
+        .enumerate()
+    {
+        assert_eq!(
+            c.pop_hit(),
+            Some(HitFact {
+                victim: 70 + i as u32,
+                part: Some(part),
+                damage: dmg
+            }),
+            "rung {part:?} did not survive the wire"
+        );
+    }
     assert_eq!(c.pop_hit(), None, "the hit ring must drain");
 }
 
@@ -395,21 +440,29 @@ fn an_unknown_impact_surface_is_malformed() {
 /// A round with no muzzle speed is refused rather than drawn.
 ///
 /// Zero speed is a tracer that hangs at the shooter's eye forever, and
-/// `content::validate` refuses such a round at boot, so the value can only
-/// reach a client from a forged or corrupted datagram. Both ends refuse it:
-/// the encoder returns `Range`, and this is the decoder's half.
+/// **Narrowed at wire v54, and this test grew a positive half rather than
+/// shrinking.** A zero muzzle speed used to be refused outright, because a
+/// round that never leaves the bow is not a round. It now *means* something
+/// — the shot was instantaneous, and the second `u16` is a reach in
+/// decimetres rather than a drop — so what stays malformed is the pattern
+/// that is still nonsense in the new reading: a beam of no length. Both
+/// ends narrowed together (`protocol::encode_event_shot` returns `Range`,
+/// and this is the decoder's half), and a weapon with no reach is refused
+/// at boot by `content::validate`, so the value can still only arrive from
+/// a forged or corrupted datagram.
 ///
 /// **The forge is bit-exact and paired with a control**, because a test that
 /// corrupted the frame at large would be refused for any number of reasons
 /// and prove nothing about this one. The event header is 10 bits
 /// (`KIND_BITS` 4 + `SUB_BITS` 6) and the writer packs LSB-first, so the
 /// fields land at bit 10 (shooter, 32), 42 (yaw, 16), 58 (pitch, 8), 66
-/// (speed, 16), 82 (drop, 16). Only bits 66..=81 are cleared; the control
-/// clears a strict subset that leaves the speed nonzero and must still
-/// decode. If the control ever starts failing, this test has stopped
-/// isolating the zero.
+/// (speed, 16), 82 (drop, 16). Three frames come out of one encode: a
+/// control that leaves the speed nonzero, an *instant* forge that clears
+/// only the speed, and a malformed forge that clears the speed and the
+/// reach together. If the control ever starts failing, this test has
+/// stopped isolating anything.
 #[test]
-fn a_shot_with_no_speed_is_malformed() {
+fn a_shot_with_no_speed_is_instant_and_one_with_no_reach_either_is_malformed() {
     let mut c = core();
     let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
     // speed = 1, so the field's only set bit is its bit 0, at wire
@@ -427,16 +480,37 @@ fn a_shot_with_no_speed_is_malformed() {
     );
     assert!(c.pop_shot().is_some(), "and it must reach the ring");
 
-    // Forge: clear exactly bits 66..=81. Byte 8 keeps its low two bits
-    // (the top of `pitch`), byte 10 keeps everything above its low two
-    // (the bottom of `drop`).
+    // Instant: clear exactly bits 66..=81, leaving `drop` (the reach) at
+    // 22. Byte 8 keeps its low two bits (the top of `pitch`), byte 10 keeps
+    // everything above its low two (the bottom of `drop`). This is what a
+    // firearm actually sends, and it must arrive.
+    let mut instant = buf[..len].to_vec();
+    instant[8] &= 0b0000_0011;
+    instant[9] = 0;
+    instant[10] &= 0b1111_1100;
+    assert!(
+        c.on_stream(&instant).is_ok(),
+        "a zero-speed shot is the instant reading now, not a malformed frame"
+    );
+    let shot = c.pop_shot().expect("and it must reach the ring");
+    assert_eq!(
+        shot.3, 0,
+        "the speed the client sees is the zero that was sent"
+    );
+    assert_eq!(shot.4, 22, "and the low field is the reach, untouched");
+
+    // Malformed: clear the speed AND the reach — bits 66..=97, which is
+    // byte 8's top six, bytes 9 through 11, and byte 10's low two carried
+    // above. A beam of no length is the one pattern left with no meaning.
     let mut forged = buf[..len].to_vec();
     forged[8] &= 0b0000_0011;
     forged[9] = 0;
-    forged[10] &= 0b1111_1100;
+    forged[10] = 0;
+    forged[11] = 0;
+    forged[12] &= 0b1111_1100;
     assert!(
         c.on_stream(&forged).is_err(),
-        "a zero-speed shot must be refused, not drawn"
+        "an instant shot with no reach must be refused, not drawn"
     );
     assert_eq!(c.pop_shot(), None, "and nothing may reach the ring");
 }
@@ -666,7 +740,13 @@ fn a_struct_hit_carries_its_address_and_never_guesses_a_maximum() {
     );
     assert_eq!(
         c.pop_hit(),
-        Some((NO_VICTIM, 40)),
+        Some(HitFact {
+            victim: NO_VICTIM,
+            // No rung: a wall has no head and no legs. `None` and not
+            // `Some(Chest)`, so merging a frame cannot promote a leg hit.
+            part: None,
+            damage: 40
+        }),
         "a raid swing must still feed the hitmarker ring, and a wall is not a body"
     );
 }

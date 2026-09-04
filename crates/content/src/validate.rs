@@ -57,6 +57,37 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 i.id, i.condition_max, i.stack
             ));
         }
+        // --- torch fuel V8: a light spends condition, so it must have
+        // some. `light_burn` is the predicate for *is this a light* as
+        // well as its price (see the schema field), and a light with no
+        // ceiling to spend would burn forever — the free light the field
+        // exists to make unrepresentable.
+        if i.light_burn > 0 && i.condition_max == 0 {
+            return Err(format!(
+                "item `{}`: light_burn {} with no condition_max — a light \
+                 burns its own condition, so one that never wears would be \
+                 a free light (V8)",
+                i.id, i.light_burn
+            ));
+        }
+        // --- torch fuel V9: the rate fits `u16`, and that bound is load-
+        // bearing rather than tidy. `light::step` runs
+        // `tick_units(acc, light_burn, TICK_HZ * 60 * 100)`, whose
+        // denominator is 180 000; a numerator below 65 536 can never put
+        // more than one whole point out of the accumulator in a tick, so
+        // the per-tick debit is bounded by construction rather than by a
+        // clamp somebody has to remember (wall 4). It is also a real
+        // ceiling: 65 535 hundredths a minute burns the torch's whole
+        // 5 000 in under five seconds.
+        if i.light_burn > u16::MAX as u32 {
+            return Err(format!(
+                "item `{}`: light_burn {} overflows u16 (max {}) — the sim's \
+                 per-tick debit is bounded by this fitting (V9)",
+                i.id,
+                i.light_burn,
+                u16::MAX
+            ));
+        }
         // --- durability V1: the ceiling fits the sim's u16 hundredths.
         // 65 535 hundredths is 655 points — the metal tier's 40 000 sits
         // inside it with headroom, and a value past it would truncate in
@@ -328,6 +359,19 @@ pub fn structural(c: &Content) -> Result<(), String> {
              for free, over 100 costs more than rebuilding"
         ));
     }
+    // A break chance is a percentage and both ends of the range mean
+    // something, so this refuses only the value that is not a percentage.
+    // 0 is "an arrow is forever" and 100 is "an arrow is spent", which is
+    // the game that existed before arrow recovery v0 — a shard may choose
+    // either end, and `CombatContent::EMPTY` chooses 100 for the reason
+    // stated there.
+    let bp = c.balance.globals.arrow_break_pct;
+    if bp > 100 {
+        return Err(format!(
+            "globals: arrow_break_pct {bp} is not a percentage — 0 is an \
+             arrow that never breaks, 100 is one that always does"
+        ));
+    }
     let piece_hp = |shape: Shape, material: Material| -> Option<u32> {
         c.pieces
             .iter()
@@ -374,6 +418,32 @@ pub fn structural(c: &Content) -> Result<(), String> {
         }
         if w.damage == 0 || w.headshot_mult == 0 || w.rate_per_min == 0 {
             return Err(format!("weapon `{}`: zero damage/mult/rate", w.id));
+        }
+        // Both ends of the ladder, and the bounds are not symmetric. Zero
+        // is a leg hit that costs the body nothing — a hit that announces
+        // itself on `EV_HIT`, spends the round and does not move the hp,
+        // which reads to the player as the game losing the shot. Above
+        // 100 is a leg worth more than the chest above it, which inverts
+        // `Part`'s ordering in data: `part_crossed` would still score the
+        // chest, correctly, and the shooter would be punished for the
+        // better hit.
+        if w.limb_pct == 0 || w.limb_pct > 100 {
+            return Err(format!(
+                "weapon `{}`: limb_pct is {}, outside 1..=100",
+                w.id, w.limb_pct
+            ));
+        }
+        // A weapon with no reach cannot hit anything, and since wire v54 it
+        // is also unsendable: a firearm's `EV_SHOT` carries `range_m` as a
+        // reach in decimetres, and the encoder refuses an instant shot whose
+        // reach is zero because a beam of no length is the same nonsense a
+        // zero-speed arrow was. Refused at the door rather than guarded at
+        // the encoder — the ammo block below makes the identical argument
+        // about `speed_mps`, and for the identical reason: a content bound
+        // is a boot failure a person reads, and an encoder bound is an
+        // event that silently stops arriving.
+        if w.range_m == 0 {
+            return Err(format!("weapon `{}`: a weapon with no reach", w.id));
         }
         match w.kind {
             WeaponKind::Bow => {
@@ -507,6 +577,81 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 }
             }
         }
+        // The magazine belongs to exactly one kind, checked both ways for
+        // the fuse's reason: a firearm without one is the mechanic this
+        // column exists to add silently absent — a gun that fires the pack
+        // dry in one unbroken stream — and a magazine on a hatchet is a
+        // number nothing reads.
+        match w.kind {
+            WeaponKind::Firearm => {
+                if w.magazine.unwrap_or(0) == 0 {
+                    return Err(format!(
+                        "weapon `{}`: firearms need a nonzero magazine",
+                        w.id
+                    ));
+                }
+                if w.reload_ms.unwrap_or(0) == 0 {
+                    return Err(format!(
+                        "weapon `{}`: a magazine needs a nonzero reload_ms",
+                        w.id
+                    ));
+                }
+            }
+            _ => {
+                if w.magazine.is_some() {
+                    return Err(format!("weapon `{}`: only firearms carry a magazine", w.id));
+                }
+                if w.reload_ms.is_some() {
+                    return Err(format!(
+                        "weapon `{}`: only a weapon with a magazine carries a reload_ms",
+                        w.id
+                    ));
+                }
+            }
+        }
+        // Both baked fields are `u16` on `RangedDef`, so the ceiling is the
+        // field and not a taste — refused here, where a person reads the
+        // message, rather than truncated at the bake.
+        if w.magazine.unwrap_or(0) > u16::MAX as u32 {
+            return Err(format!("weapon `{}`: magazine over u16", w.id));
+        }
+        let reload_ticks =
+            w.reload_ms.unwrap_or(0) as u64 * sim_core::limits::TICK_HZ as u64 / 1000;
+        if reload_ticks > u16::MAX as u64 {
+            return Err(format!(
+                "weapon `{}`: reload_ms {} is {reload_ticks} ticks, over u16",
+                w.id,
+                w.reload_ms.unwrap_or(0)
+            ));
+        }
+        // A reload that rounds to nothing is a reload the player never
+        // pays, which is this whole column arriving armed and unread —
+        // `RangedDef`'s three doc comments name that failure by name.
+        if w.magazine.is_some() && reload_ticks == 0 {
+            return Err(format!(
+                "weapon `{}`: reload_ms {} rounds to zero ticks at {} Hz",
+                w.id,
+                w.reload_ms.unwrap_or(0),
+                sim_core::limits::TICK_HZ
+            ));
+        }
+    }
+
+    // `Player::mag` is indexed by a dense `mag_slot`, so the number of
+    // magazine-bearing rows is a hard cap and not a soft one. Refused here
+    // and asserted again at the bake: a ninth firearm that silently lost
+    // its slot would fire straight out of the pack, which is the mechanic
+    // gone rather than a number wrong.
+    let mags = c
+        .weapons
+        .iter()
+        .filter(|w| w.magazine.unwrap_or(0) > 0)
+        .count();
+    if mags > sim_core::limits::MAX_MAGS {
+        return Err(format!(
+            "{mags} weapons carry a magazine, over MAX_MAGS ({})",
+            sim_core::limits::MAX_MAGS
+        ));
     }
 
     // Ammo: item-backed rounds carrying the ballistics that used to sit on

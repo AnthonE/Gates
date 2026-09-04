@@ -14,17 +14,29 @@
 use protocol::{ActionMsg, ChatMsg, EntityState, Nudge};
 use sim_core::craft::CraftJob;
 use sim_core::gather::ItemStack;
-use sim_core::input::InputFrame;
-use sim_core::inventory::CONT_SELF;
+use sim_core::input::{self, InputFrame};
+use sim_core::inventory::{CONT_SELF, CONT_WEAR};
 use sim_core::limits::{
     CRAFT_QUEUE, INPUT_BUFFER_CAP, INPUT_THROTTLE_DEPTH, INV_SLOTS, MAX_MOBS, MAX_PLAYERS,
     MAX_SNAPSHOT_ENTITIES, PENDING_REMOVALS_CAP, SENT_SNAPSHOT_RING, SNAPSHOT_INTERVAL_TICKS,
+    WEAR_SLOTS,
 };
 
 /// Consecutive starved ticks before the nudge escalates to `HardResync`
 /// (NETCODE.md §4's "buffer empty" case, debounced so one lost datagram
 /// doesn't trigger it). Proposed default, DECISIONS.md §open.
 pub const STARVE_HARD_RESYNC_TICKS: u32 = 30;
+
+/// One tick's executed input (`consume_input`): the frame that acts, the
+/// aim-staleness stamp of the datagram that first delivered it, and — on a
+/// throttle tick — the OLDER consumed frame, which must still move the
+/// body (`world.rs Command::InputPair`; the ring the client reconciles
+/// against stepped every seq exactly once).
+pub struct Consumed {
+    pub frame: InputFrame,
+    pub view: Option<u16>,
+    pub prev: Option<InputFrame>,
+}
 
 /// One snapshot as sent: the delta baseline candidate and the removal
 /// coverage record.
@@ -121,9 +133,51 @@ pub struct ClientNetState {
     /// `InputFrame` is the wire's type: this is a fact about the datagram
     /// the frame *arrived in*, which the frame itself does not carry.
     in_view: [Option<u16>; INPUT_BUFFER_CAP],
+    /// Datagrams from this client whose claimed view sat further behind the
+    /// server's own evidence than reordering explains (lagcomp slice 5,
+    /// `ShardCore::push_input`). **A relay, not a statistic**: it is written
+    /// on the datagram path and drained to `ShardStats::favour_disagree` by
+    /// the tick loop, because `push_input` has no `&ShardStats` and giving
+    /// it one to carry a single counter would thread a parameter through
+    /// nineteen call sites for a diagnostic.
+    ///
+    /// **Cap and overflow policy: saturating.** A `u16` holds 65 535
+    /// disagreements between two ticks, which no client can send — the
+    /// input ring is `INPUT_BUFFER_CAP` deep. Saturating rather than
+    /// wrapping so that if one ever could, the counter pins at "very many"
+    /// instead of rolling to zero and reporting innocence.
+    ///
+    /// Drained destructively by exactly one reader
+    /// (`take_ack_regressions`), which is the single-consumer contract
+    /// `CLAUDE.md` keeps a trap entry for; `tests/sound.rs`'s scrape is
+    /// about `ClientCore`'s rings and does not reach here, so the owner is
+    /// named in this sentence and gated by
+    /// `the_disagreement_relay_has_one_reader`.
+    ack_regressions: u16,
     pub last_executed: u16,
     got_input: bool,
     starve_ticks: u32,
+    /// The last REAL frame this connection executed — the decay mint's
+    /// source (`core.rs`, the starved branch). Deliberately a server-side
+    /// copy and not the world's `Player::frame`: the mint overwrites the
+    /// world's copy with each decayed ghost, and scaling THAT would
+    /// compound (two thirds of two thirds). This one only moves when a
+    /// frame the client actually sent executes.
+    last_real: InputFrame,
+    /// The playout delay this client's newest input datagram reported
+    /// (wire v61), already saturated by the codec's 4-bit field; clamped
+    /// again to the shared rails where favour is minted. Defaults to the
+    /// pre-v61 constant so a client that has not spoken yet is priced
+    /// exactly as every client used to be.
+    pub reported_playout: u8,
+    /// Post-consume input-buffer depth, cached at consume time for the
+    /// snapshot header (`SnapshotHeader::buffered_depth`) — `buffered_depth()`
+    /// is an O(cap) scan and the header is built later in the same tick.
+    /// Saturated to the wire's 4-bit field, and the saturation is policy,
+    /// not a silent clamp: this is a report of a bounded gauge (the buffer
+    /// caps at `INPUT_BUFFER_CAP`), and 15 already means "far past every
+    /// threshold that matters" (`INPUT_THROTTLE_DEPTH` is 6).
+    depth_report: u8,
     pub nudge: Nudge,
 
     // --- sent ring + acks + removals ---
@@ -225,6 +279,30 @@ pub struct ClientNetState {
     /// and the tail stays zero on both sides, so it never manufactures a
     /// change.
     pub last_cont: [ItemStack; INV_SLOTS],
+    /// The **body's** slots as last successfully queued — `last_cont`'s
+    /// twin, for a stream that runs beside the ground container rather
+    /// than taking its place.
+    ///
+    /// `CONT_WEAR` is the one kind that is `inventory::is_own`: it has no
+    /// handle, no store to resolve, no reach and no lock, so the three
+    /// reasons the subscription above is exclusive — an address, a
+    /// distance and a permission — none of them apply to it. Sharing one
+    /// slot with a box therefore bought nothing and cost the move the
+    /// feature exists for: a helmet out of a raided box could not reach a
+    /// head without closing the box first (`NOW.md` §0eq item 4, the
+    /// merge-gate judge's pass `-06` fix 2).
+    ///
+    /// It is implicit and permanent rather than opened: every live player
+    /// has exactly one body, always addressable, so there is no press for
+    /// the client to make and nothing for a close to mean. The cost is a
+    /// two-slot diff per tick against this shadow, which sends nothing
+    /// while nothing changes — the same arithmetic `last_cont` already
+    /// pays, over 2 slots instead of 30.
+    pub last_wear: [ItemStack; WEAR_SLOTS],
+    /// The next wear batch carries the reset bit: the whole body, forget
+    /// what you had. Armed by a fresh slot and by `ev_resync`, cleared
+    /// once a batch is away.
+    pub wear_reset: bool,
     /// One decoded C→S action awaiting its command slot (the sim drains
     /// the ring only into an empty hand — defer, never drop).
     pub pending_action: Option<ActionMsg>,
@@ -257,9 +335,13 @@ impl ClientNetState {
             in_frames: [InputFrame::default(); INPUT_BUFFER_CAP],
             in_valid: [false; INPUT_BUFFER_CAP],
             in_view: [None; INPUT_BUFFER_CAP],
+            ack_regressions: 0,
             last_executed: 0,
             got_input: false,
             starve_ticks: 0,
+            last_real: InputFrame::default(),
+            reported_playout: sim_core::limits::INTERP_DELAY_TICKS,
+            depth_report: 0,
             nudge: Nudge::Ok,
             sent: [SentSnap::empty(); SENT_SNAPSHOT_RING],
             newest_acked: None,
@@ -285,6 +367,8 @@ impl ClientNetState {
             open_cont_handle: 0,
             open_cont_reset: false,
             last_cont: [ItemStack::default(); INV_SLOTS],
+            last_wear: [ItemStack::default(); WEAR_SLOTS],
+            wear_reset: true,
             pending_action: None,
             pending_chat: None,
             last_jobs: [CraftJob::default(); CRAFT_QUEUE],
@@ -324,6 +408,14 @@ impl ClientNetState {
         // have shut is worse than making it ask again — an open is one
         // nine-byte action away, and it is the client's press to make.
         self.close_container();
+        // The **body**, unlike the container above, is resynced rather
+        // than dropped. The distinction is whose opinion the state is: an
+        // open box is the client's press and after a ring overflow the two
+        // ends no longer agree it happened, so making it ask again is the
+        // honest answer. A body is not a press — it is a fact about a
+        // player the server can always name — so there is nothing for the
+        // client to re-ask and no panel it may have shut.
+        self.resync_wear();
         self.last_done_at = u64::MAX;
     }
 
@@ -337,10 +429,29 @@ impl ClientNetState {
             self.close_container();
             return;
         }
+        // The body has its own stream and cannot be *opened* into this
+        // one — a client that asks is asking for a resync of something it
+        // is already being fed, which is exactly what an old client's
+        // `open_worn` press means and the only thing it can honestly be
+        // answered with. Taking the ground slot for it would put the two
+        // views back in one place, which is the defect this pair exists
+        // to remove: a box open would evict the body again.
+        if kind == CONT_WEAR {
+            self.resync_wear();
+            return;
+        }
         self.open_cont_kind = kind;
         self.open_cont_handle = handle;
         self.open_cont_reset = true;
         self.last_cont = [ItemStack::default(); INV_SLOTS];
+    }
+
+    /// Send the whole body next tick. The shadow is zeroed so the reset
+    /// batch is built from the truth rather than diffed against whatever
+    /// this client was last told.
+    pub fn resync_wear(&mut self) {
+        self.wear_reset = true;
+        self.last_wear = [ItemStack::default(); WEAR_SLOTS];
     }
 
     /// Nothing is open. The shadow is zeroed with it so the next open
@@ -361,6 +472,23 @@ impl ClientNetState {
     }
 
     // --- acks ---------------------------------------------------------
+
+    /// One datagram claimed a staler view than this connection's own ack
+    /// history supports, by more than the band that absorbs reordering
+    /// (`ShardCore::push_input`). Saturating, per the field's policy.
+    pub fn note_ack_regression(&mut self) {
+        self.ack_regressions = self.ack_regressions.saturating_add(1);
+    }
+
+    /// Drain the relay. **The one reader** — `ShardCore::tick`, once per
+    /// client per tick, folding into `ShardStats::favour_disagree`. A
+    /// second caller would silently halve the shard's count of the only
+    /// lag-compensation signal that accuses anybody, which is the
+    /// destructive-read defect `CLAUDE.md` keeps an entry for; the gate is
+    /// a grep for this name, not a value assertion.
+    pub fn take_ack_regressions(&mut self) -> u64 {
+        core::mem::take(&mut self.ack_regressions) as u64
+    }
 
     /// Process the redundant ack header of one input datagram: mark ring
     /// entries acked, advance the newest-acked baseline, and clear pending
@@ -561,21 +689,31 @@ impl ClientNetState {
     /// One tick's consume (NETCODE.md §4): normally one frame; two when
     /// the buffer runs deep (the consume throttle); a gap with frames
     /// behind it jumps — 10-frame redundancy means a gap is a ≥ 10-datagram
-    /// loss burst, not one missing packet. Returns the frame to execute
-    /// this tick (`None` ⇒ reuse last, which the sim does by keeping
-    /// `Player::frame`) **with its aim-staleness stamp** (`in_view`), and
-    /// refreshes the nudge.
+    /// loss burst, not one missing packet. Returns what to execute this
+    /// tick **with the aim-staleness stamp** (`in_view`) of the frame that
+    /// acts, and refreshes the nudge. `None` ⇒ starved: the caller mints
+    /// the decayed reuse (`ghost_frame`) — the sim would otherwise re-run
+    /// the stale `Player::frame` verbatim at full strength forever, which
+    /// is the overshoot a player feels as a snap on every stop.
+    ///
+    /// **Both consumed frames execute.** When the throttle takes two, the
+    /// older rides back as `prev` and steps movement first
+    /// (`world.rs Command::InputPair`) — this method consumed two and
+    /// returned one until netcode v2 (DECISIONS.md 2026-08-31), which
+    /// marked the older seq executed while its movement never ran: a
+    /// guaranteed one-tick misprediction on every throttle tick, since the
+    /// client's ring steps every seq exactly once.
     ///
     /// The stamp rides the return rather than a field the caller reads
     /// afterwards, because a second reader of a value handed over once is
     /// the destructive-read defect `CLAUDE.md` keeps a trap entry for. Two
-    /// frames consumed in one tick (the throttle) report the stamp of the
-    /// one that **executes**, which is the newer of the two — the older
-    /// frame's aim never reaches the world, so measuring it would price a
+    /// frames consumed in one tick report the stamp of the NEWER — the
+    /// older frame's buttons never act, so measuring its aim would price a
     /// swing nobody swung.
-    pub fn consume_input(&mut self) -> Option<(InputFrame, Option<u16>)> {
+    pub fn consume_input(&mut self) -> Option<Consumed> {
         if !self.got_input {
             self.nudge = Nudge::Ok;
+            self.depth_report = 0;
             return None;
         }
         let to_consume = if self.buffered_depth() > INPUT_THROTTLE_DEPTH {
@@ -583,23 +721,48 @@ impl ClientNetState {
         } else {
             1
         };
-        let mut executed: Option<(InputFrame, Option<u16>)> = None;
+        let mut first: Option<(InputFrame, Option<u16>)> = None;
+        let mut second: Option<(InputFrame, Option<u16>)> = None;
         for _ in 0..to_consume {
             if let Some(f) = self.take_next() {
-                executed = Some(f);
-            } else if executed.is_none() {
+                if first.is_none() {
+                    first = Some(f);
+                } else {
+                    second = Some(f);
+                }
+            } else if first.is_none() {
                 if let Some(seq) = self.oldest_ahead() {
                     self.last_executed = seq.wrapping_sub(1);
-                    executed = self.take_next();
+                    first = self.take_next();
                 }
             }
         }
         let depth_after = self.buffered_depth();
-        if executed.is_none() {
-            self.starve_ticks += 1;
-        } else {
+        self.depth_report = depth_after.min(0xF) as u8;
+        let executed = match (first, second) {
+            (Some((prev, _)), Some((frame, view))) => Some(Consumed {
+                frame,
+                view,
+                prev: Some(prev),
+            }),
+            (Some((frame, view)), None) => Some(Consumed {
+                frame,
+                view,
+                prev: None,
+            }),
+            (None, _) => None,
+        };
+        if let Some(c) = &executed {
             self.starve_ticks = 0;
+            self.last_real = c.frame;
+        } else {
+            self.starve_ticks += 1;
         }
+        // `HardResync` is the rung that still steers (netcode v2 S4):
+        // the client's clock runs a proportional controller on the
+        // header's `buffered_depth` gauge now, so `Faster`/`Slower` are
+        // stamped for the wire's continuity and diagnostics and ignored
+        // by the shipped client.
         self.nudge = if self.starve_ticks > STARVE_HARD_RESYNC_TICKS {
             Nudge::HardResync
         } else if depth_after == 0 {
@@ -610,6 +773,35 @@ impl ClientNetState {
             Nudge::Slower
         };
         executed
+    }
+
+    /// The starved tick's stand-in (netcode v2): the last REAL frame this
+    /// connection executed, decayed by how long it has been re-covering
+    /// for the missing one — `sim_core::input::decay_frame`'s 2/3 → 1/3 →
+    /// 0 ramp on movement, buttons cleared except the light latch, look
+    /// held. `None` once the ramp is spent: after `DECAY_STEPS` mints the
+    /// world's stored frame IS the fully decayed one, so the sim's
+    /// implicit reuse of it is bit-identical to minting on — the mint
+    /// stops paying command budget the moment it stops changing anything.
+    /// Also `None` before the first real frame (nothing to decay) — the
+    /// sim's zero-frame default already stands still.
+    pub fn ghost_frame(&self) -> Option<InputFrame> {
+        if !self.got_input || self.starve_ticks == 0 || self.starve_ticks > input::DECAY_STEPS {
+            return None;
+        }
+        Some(input::decay_frame(&self.last_real, self.starve_ticks))
+    }
+
+    /// The snapshot header's two netcode-v2 gauges: post-consume buffer
+    /// depth (4-bit saturating — the field doc in `client.rs` states the
+    /// policy) and consecutive starved ticks (3-bit saturating; ≥ 7 means
+    /// "long past fully decayed").
+    pub fn depth_report(&self) -> u8 {
+        self.depth_report
+    }
+
+    pub fn repeat_report(&self) -> u8 {
+        self.starve_ticks.min(7) as u8
     }
 }
 
@@ -637,22 +829,31 @@ mod tests {
         c.push_frame(frame(100), None);
         c.push_frame(frame(101), None);
         c.push_frame(frame(100), None); // dup after anchor: stale, dropped
-        assert_eq!(c.consume_input().unwrap().0.seq, 100);
-        assert_eq!(c.consume_input().unwrap().0.seq, 101);
+        assert_eq!(c.consume_input().unwrap().frame.seq, 100);
+        assert_eq!(c.consume_input().unwrap().frame.seq, 101);
         assert!(c.consume_input().is_none());
         assert_eq!(c.nudge, Nudge::Faster);
     }
 
+    /// The throttle consumes two and hands BOTH back — the newer as the
+    /// tick's frame, the older as `prev`, owed a movement step
+    /// (`world.rs Command::InputPair`). This asserted "the newer executes"
+    /// alone until netcode v2: the older seq was marked executed while its
+    /// movement never ran, one guaranteed misprediction per throttle tick.
     #[test]
-    fn throttle_consumes_two_when_deep() {
+    fn throttle_consumes_two_and_returns_both() {
         let mut c = ClientNetState::new();
         c.reset(1);
         for s in 0..10u16 {
             c.push_frame(frame(s), None);
         }
-        // depth 10 > 6: two consumed, the newer executes.
-        assert_eq!(c.consume_input().unwrap().0.seq, 1);
+        // depth 10 > 6: two consumed, both handed back, oldest first.
+        let got = c.consume_input().unwrap();
+        assert_eq!(got.prev.unwrap().seq, 0);
+        assert_eq!(got.frame.seq, 1);
+        assert_eq!(c.last_executed, 1);
         assert_eq!(c.nudge, Nudge::Slower);
+        assert_eq!(c.depth_report(), 8);
     }
 
     #[test]
@@ -660,11 +861,61 @@ mod tests {
         let mut c = ClientNetState::new();
         c.reset(1);
         c.push_frame(frame(5), None);
-        assert_eq!(c.consume_input().unwrap().0.seq, 5);
+        assert_eq!(c.consume_input().unwrap().frame.seq, 5);
         // 6..=9 lost forever; 10 arrives.
         c.push_frame(frame(10), None);
-        assert_eq!(c.consume_input().unwrap().0.seq, 10);
+        assert_eq!(c.consume_input().unwrap().frame.seq, 10);
         assert_eq!(c.last_executed, 10);
+    }
+
+    /// A starved tick mints the decayed stand-in off the last REAL frame —
+    /// never off the world's stored copy, which the mint itself replaces
+    /// (two thirds of two thirds is the compounding this field exists to
+    /// refuse) — and the mint stops once the ramp is spent, because from
+    /// there the sim's implicit reuse is bit-identical to minting on.
+    #[test]
+    fn starvation_mints_the_decay_ramp_then_stops() {
+        use sim_core::input::BTN_SPRINT;
+        let mut c = ClientNetState::new();
+        c.reset(1);
+        assert!(c.ghost_frame().is_none(), "nothing to decay before input");
+        let real = InputFrame {
+            seq: 4,
+            move_z: 127,
+            buttons: BTN_SPRINT,
+            yaw: 900,
+            ..InputFrame::default()
+        };
+        c.push_frame(real, None);
+        assert_eq!(c.consume_input().unwrap().frame.seq, 4);
+        assert!(c.ghost_frame().is_none(), "a fed tick mints nothing");
+        // Three starved ticks walk the ramp; the fourth mints nothing.
+        let mut walked = Vec::new();
+        for _ in 0..4 {
+            assert!(c.consume_input().is_none());
+            walked.push(c.ghost_frame());
+        }
+        let g1 = walked[0].unwrap();
+        assert_eq!((g1.move_z, g1.buttons, g1.yaw), (84, 0, 900));
+        assert_eq!(walked[1].unwrap().move_z, 42);
+        assert_eq!(walked[2].unwrap().move_z, 0);
+        assert!(
+            walked[3].is_none(),
+            "ramp spent: implicit reuse is identical"
+        );
+        assert_eq!(c.repeat_report(), 4);
+        // A fresh real frame re-arms the ramp from the new movement.
+        c.push_frame(
+            InputFrame {
+                seq: 5,
+                move_x: -90,
+                ..InputFrame::default()
+            },
+            None,
+        );
+        assert_eq!(c.consume_input().unwrap().frame.seq, 5);
+        assert!(c.consume_input().is_none());
+        assert_eq!(c.ghost_frame().unwrap().move_x, -60);
     }
 
     #[test]

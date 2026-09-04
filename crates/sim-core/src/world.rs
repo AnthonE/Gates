@@ -15,7 +15,8 @@ use crate::input::InputFrame;
 use crate::inventory;
 use crate::limits::{
     BOX_SLOTS, CRAFT_QUEUE, HOTBAR_SLOTS, INV_SLOTS, MAX_ARROWS, MAX_COMMANDS_PER_TICK,
-    MAX_EVENTS_PER_TICK, MAX_PLAYERS, MAX_REMOVALS_PER_TICK, STATE_HASH_INTERVAL, WEAR_SLOTS,
+    MAX_EVENTS_PER_TICK, MAX_MAGS, MAX_PLAYERS, MAX_REMOVALS_PER_TICK, STATE_HASH_INTERVAL,
+    WEAR_SLOTS,
 };
 use crate::loot::{LootContent, LOOT_BARREL};
 use crate::mob;
@@ -138,10 +139,53 @@ pub const EV_STOCK: u8 = 13;
 /// the same lane (locks on boxes): the event is addressed, and a box's
 /// `open` bit is simply always 0.
 pub const EV_DOOR: u8 = 14;
-/// EV_HIT: a = attacker player id, b = victim player id, c = damage dealt.
+/// EV_HIT: a = attacker player id, b = victim player id, c = the part in
+/// the high bits over the damage dealt (`hit_c`, v58).
 /// The attacker's fact — the hitmarker, not the truth; EV_HEALTH is what
 /// the victim's bar reads (combat.rs).
+///
+/// `c` is **packed**, and that is the whole of the "two spare bits" this
+/// event had: `a` is what the server routes on and `b` already carries a
+/// mob tag in its own high bits (`mob::mob_id`), so the only field with
+/// room was the damage — a `u16` sitting in a `u32`. Read it with
+/// [`hit_part`] and [`hit_damage`], never by hand.
+///
+/// Why the part rides here at all: the ladder pays x2 / x1 / x0.5 off
+/// where the line crossed the cylinder, and until v58 the wire carried
+/// only the product. A halved number is easier to misread as a miss than
+/// a doubled one is to read as a skull, so aim was unlearnable in play —
+/// three rungs of arithmetic with no way to perceive any of them.
 pub const EV_HIT: u8 = 15;
+
+/// Where the part sits in [`EV_HIT`]'s `c`. Sixteen, because the damage
+/// below it is a `u16` and occupies the whole low half.
+pub const HIT_PART_SHIFT: u32 = 16;
+
+/// Pack an `EV_HIT` payload: the part above the damage it already scaled.
+#[inline]
+pub fn hit_c(part: crate::collide::Part, damage: u16) -> u32 {
+    ((part.bits() as u32) << HIT_PART_SHIFT) | damage as u32
+}
+
+/// The rung out of an `EV_HIT` payload.
+///
+/// Total, unlike [`crate::collide::Part::from_bits`], because the only
+/// producer is [`hit_c`] and a value it cannot make is a sim bug rather
+/// than an untrusted input — `Chest` is the identity rung and the
+/// documented fallback, so a garbled read costs the marker its colour and
+/// never its existence. The wire does **not** inherit this leniency; the
+/// decoder range-checks (`protocol::event`).
+#[inline]
+pub fn hit_part(c: u32) -> crate::collide::Part {
+    crate::collide::Part::from_bits(((c >> HIT_PART_SHIFT) & 0b11) as u8)
+        .unwrap_or(crate::collide::Part::Chest)
+}
+
+/// The scaled damage out of an `EV_HIT` payload.
+#[inline]
+pub fn hit_damage(c: u32) -> u16 {
+    (c & 0xffff) as u16
+}
 /// EV_HEALTH: a = player id, b = hp after the change, c = max hp. Own-fact,
 /// absolute: a client that misses one hears the whole truth from the next.
 pub const EV_HEALTH: u8 = 16;
@@ -323,6 +367,18 @@ pub const EV_RESEARCH_REFUSED: u8 = 34;
 /// air is a world fact like a door swinging, and it is the one fact in
 /// combat that everyone near it needs and only the shooter had.
 ///
+/// **`speed == 0` reads as *instantaneous*, and then the low half is the
+/// reach in decimetres rather than a drop** (wire v54, `DECISIONS.md`
+/// §open). A projectile cannot leave the muzzle at rest, so that pattern
+/// was unreachable rather than merely unused, which is what makes it
+/// spendable: it costs no field and it partitions the event into the two
+/// things a ranged weapon can be. A flight is re-flown from
+/// `(speed, drop)`; a beam is drawn from `(yaw, pitch, reach)` and gone
+/// the same frame. Until v54 a firearm raised no `EV_SHOT` at all, so it
+/// announced itself only by what it *reached* and a gunfight had no
+/// sound, no flash and no line — the disclosure the reference gets from
+/// audio at a hundred metres (`reference/AUDIO.md` §9).
+///
 /// **The payload is what a tracer needs and not one field more, and the
 /// omissions are the design.** No origin: the client knows where the
 /// shooter is from the snapshot, and `ranged::ARROW_EYE_MM` above the feet
@@ -352,7 +408,7 @@ pub const EV_SHOT: u8 = 35;
 ///
 /// The whole mask, never a delta, and the reason is the one `SUB_KNOWN`
 /// was already written for: a dropped increment would grey a recipe the
-/// player has paid OBOL for, with no later event able to correct it. A
+/// player has paid JUNK for, with no later event able to correct it. A
 /// full statement of the fact is self-healing — the next one repairs
 /// every loss before it.
 ///
@@ -397,16 +453,25 @@ pub const EV_GATHER_REFUSED: u8 = 37;
 /// door, so flesh is `EV_HIT` and this is everything else — the two are
 /// exclusive and a reader never has to ask which kind of mark to make.
 ///
-/// **Two producers since 2026-08-18, and it was never really an arrow's
-/// fact.** `ranged::step` pushes it where an arrow stopped, and
-/// `gather::swing` pushes it where a landed melee swing bit an occupant
-/// (`NOW.md` §0mk item 1). The fact is *a surface was struck at this
-/// point*, which belongs to neither verb, so a mark on a tree cost no wire
+/// **Three producers since 2026-08-28, and it was never really an arrow's
+/// fact.** `ranged::step` pushes it where an arrow stopped, `gather::swing`
+/// where a landed melee swing bit an occupant, and `combat::raid` where one
+/// bit a built piece or a solid deployable (`combat::piece_mark`). The fact
+/// is *a surface was struck at this point*, which belongs to none of the
+/// three verbs, so a mark on a tree and a mark on a plank each cost no wire
 /// byte, no `PROTO_VER` bump and no client line — `render/decal.rs` was
-/// already the single reader and could not tell the two apart, which is
-/// the test of whether reuse was honest rather than convenient. A swing
-/// the node REFUSES pushes nothing: the mark sits below that arm, so a
-/// torch waved at a tree leaves the bark clean.
+/// already the single reader and cannot tell them apart, which is the test
+/// of whether reuse was honest rather than convenient. **The third one is
+/// why the first two were worth reusing**: the shard had taken the right hp
+/// off the right record for an arrow, a bullet, four wall orientations and
+/// nine deployable archetypes while a raider could not see any of it
+/// (`NOW.md` §0mk item 1; the merge-gate judge's second ranked gap,
+/// 2026-08-28), and closing that was one emit site rather than an event.
+///
+/// A swing that lands on NOTHING pushes nothing, on all three paths: the
+/// mark sits past the node's tool refusal, past `raid`'s target pick and
+/// past its store lookup, so a torch waved at a tree leaves the bark clean
+/// and a swing at empty air leaves the base unmarked.
 ///
 /// The position is here rather than read back out of a store at encode
 /// (`EV_BAG_DROPPED`'s trick) because on the arrow path there is nothing
@@ -490,6 +555,45 @@ pub const EV_TRUST: u8 = 39;
 /// reads is a field nobody maintains (`validate.rs` names that shape).
 pub const EV_SWING: u8 = 40;
 
+/// EV_HURT: a = victim player id, b = the world bearing sector from the
+/// victim toward whatever hurt them, c = damage dealt.
+///
+/// **The victim's fact, and the mirror of `EV_HIT`.** A hit has two people
+/// in it and the wire only ever told one of them: `EV_HIT` is unicast to
+/// the attacker (its own doc says so, and it drops field `a` at encode for
+/// that reason), so the whole of being shot was `EV_HEALTH` — an absolute
+/// number, with no direction and no author. You could not tell a sniper
+/// from a bear from starving. This is the other half, unicast to `a`.
+///
+/// **Five routes raise it, and the two that do not are named rather than
+/// forgotten.** A swing (`combat::strike`), an arrow and a bullet
+/// (`ranged`), a bite (the mob loop below) and a blast (`charge::detonate`)
+/// all point somewhere; starvation (`survival`) and the keypad shock
+/// (`deploy`) do not, because neither has a direction to point at. That
+/// split is the load-bearing part and it is gated rather than written down
+/// here alone: `tests/damage_routes.rs`'s `ROUTES` table carries an
+/// announce column, so a **new** damage route is born announced or born
+/// exempt with a reason, the same way it is already born reduced or
+/// unreduced. The bite and the blast were silent until 2026-08-30, which
+/// is what that column exists to stop happening again.
+///
+/// **`b` is a sector, not an angle, and that is a disclosure decision.**
+/// `combat::HURT_SECTORS` of them, 22.5° each, clockwise from north on
+/// `look::bearing_of`'s axes (+Z north, −X east). It is enough to turn
+/// toward and not enough to aim with, which is the same reasoning
+/// `reference/VOICE.md` §9.1 applies to a voice radius: a client handed a
+/// precise position it did not earn is a wallhack whatever the UI does
+/// with it. Absolute rather than relative to the victim's own facing, so
+/// the client subtracts its own yaw at draw time and the mark stays
+/// anchored in the world while the player turns to look.
+///
+/// **Not a broadcast.** `DECISIONS.md` §open ("attacker-side flinch v0")
+/// refuses a bystander flinch on fan-out grounds — one message per landed
+/// blow per player, unfiltered, on a fight's hottest path — and that
+/// refusal stands. This is one message per landed blow to exactly one
+/// recipient, the person it happened to.
+pub const EV_HURT: u8 = 41;
+
 /// Which trust-bearing verb `EV_TRUST.c` is about, in its high byte.
 ///
 /// A leaf someone else placed, worked by this hand (`deploy::use_door`).
@@ -547,6 +651,60 @@ pub const PRESENCE_GONE: u8 = 3;
 /// as a field nobody wrote.
 pub const PRESENCE_MAX: u8 = PRESENCE_GONE;
 
+/// EV_RELOAD: a = player id, b = rounds now loaded << 16 | the magazine's
+/// ceiling (`ranged::mag_pair`), c = rounds taken from the pack — **zero
+/// on a shot**, which is how one code says both halves of the fact.
+/// **Own-fact** — how full your cylinder is is yours, and a broadcast of it
+/// would be a wallhack that told the shard when to push you.
+///
+/// The pair rather than the delta, and `EV_KNOWN`'s reason word for word: a
+/// dropped increment would leave the HUD claiming rounds the sim does not
+/// have, with no later event able to correct it, and the player would find
+/// out by pulling the trigger in a fight. A full statement of the fact is
+/// self-healing — the next one repairs every loss before it — which is also
+/// why the *ceiling* travels on every event instead of once at a catalog
+/// drip: `client-core` holds no content tables, so a client handed only the
+/// loaded count cannot draw `4/6`.
+///
+/// `c` is what actually left the pack, which is not `magazine` and not the
+/// difference the client could compute: a partial reload off a nearly-empty
+/// pack takes fewer rounds than the cylinder wanted, and the toast the
+/// player is owed says how many they got. **Zero partitions the event into
+/// its two causes** — a fill (`c > 0`, worth a sound and a toast) and a
+/// spend (`c == 0`, worth only the readout ticking down) — which is
+/// `EV_SHOT`'s `speed == 0` trick one lane over, and spendable for the same
+/// reason: a fill that moved no rounds is not a fill, so the pattern was
+/// unreachable before it was given a meaning.
+///
+/// **It fires on the shot as well as on the reload, and that is what makes
+/// the readout authoritative rather than predicted.** The alternative was
+/// for the client to decrement its own count on `EV_SHOT` — but `EV_SHOT`
+/// is a broadcast and `client-core` has no notion of which body is its own,
+/// so "was that me" would have had to be invented, and a count the client
+/// maintains is a count that drifts silently the first time a datagram is
+/// lost. One own-fact event per shot to one recipient is cheaper than that
+/// bug, and it costs less than the broadcast `EV_SHOT` beside it.
+pub const EV_RELOAD: u8 = 42;
+
+/// EV_RELOAD_REFUSED: a = player id, b = held item index << 16 |
+/// `ranged::REFUSE_RL_*` reason, c = rounds now loaded << 16 | the
+/// magazine's ceiling. Own-fact, `EV_GATHER_REFUSED`'s posture and its
+/// packing: a button that did nothing says so, and the high half of `b`
+/// names the **held item** rather than only a reason, because the sentence
+/// the client owes is *a bow has no magazine* and not *refused*.
+///
+/// **It carries the count too, and that is the half that matters.** The
+/// dry click — a trigger pulled on an empty cylinder — arrives here rather
+/// than as a shot, so this event is the authoritative statement that the
+/// magazine is at zero. Without `c` the HUD would have to infer emptiness
+/// from a shot that never came, which is the same silence as a dropped
+/// datagram.
+///
+/// Bounded by the weapon's cadence on that path (`ranged::hitscan` pays
+/// `rate_ticks` before refusing) and by one action per client per tick on
+/// the reload path, so a held trigger cannot flood the lane.
+pub const EV_RELOAD_REFUSED: u8 = 43;
+
 /// The highest code above, named rather than counted: the event codes are
 /// `1..=EV_MAX` with no gaps, and `test_event_roles`'s coverage ledger
 /// scans that range. It lived in that test as a literal `25`, which meant a
@@ -554,7 +712,7 @@ pub const PRESENCE_MAX: u8 = PRESENCE_GONE;
 /// classified it. Tying it to the last constant closes half of that; the
 /// other half is the ledger's own `every_event_code_is_in_range`, which
 /// parses this file and fails if a code is declared past this line.
-pub const EV_MAX: u8 = EV_SWING;
+pub const EV_MAX: u8 = EV_RELOAD_REFUSED;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -598,6 +756,13 @@ pub const DEATH_BY_SALT: u8 = 2;
 /// different reason: `event_roles.rs` and `protocol/src/event.rs` narrate
 /// the 2026-08-05 failure by this name, and a rename would falsify three
 /// histories to tidy one word.
+///
+/// **That refusal was conditional and the condition is now met.** It said
+/// the bump, the goldens and the pin land together or not at all and that
+/// *that* slice did not bump; arrow recovery v1 bumps, so
+/// `DEATH_BY_BULLET` lands in this merge window on that bump, exactly the
+/// way `DEATH_BY_MOB` and `DEATH_BY_CHARGE` did on v36's. This constant is
+/// the arrow's again, and now only the arrow's.
 pub const DEATH_BY_ARROW: u8 = 3;
 /// An animal's bite (mob.rs — the pig that fights back). `death_by` is
 /// the roster slot's **tagged** id (`mob::mob_id`), which is how the
@@ -637,7 +802,24 @@ pub const DEATH_BY_CHARGE: u8 = 5;
 /// (And it was not an accident when it happened: `DEATH_BY_MOB` is the
 /// cause that saturated the two-bit field, and wire v36 widened it;
 /// `DEATH_BY_CHARGE` landed in the same merge window on the same bump.)
-pub const DEATH_BY_MAX: u8 = DEATH_BY_CHARGE;
+/// A firearm's hitscan round (`ranged::hitscan`). `death_by` is the
+/// shooter, `death_item` the weapon, `death_range_cm` the distance the
+/// shot crossed — the same three facts an arrow death carries, which is
+/// why this is a seventh *cause* and not a seventh event.
+///
+/// **The seventh, and it was refused once.** `DEATH_BY_ARROW`'s doc holds
+/// the refusal in full: a cause fits `DEATH_CAUSE_BITS` with room to
+/// spare, but minting one turns a bit pattern both ends currently refuse
+/// as forged into a live fact, so an old client and a new server would
+/// disagree about a packet whose bytes are identical. That is a wire
+/// change with no layout move — the hardest kind to notice — and the
+/// answer is the `PROTO_VER` bump, the regenerated goldens and the
+/// `live_max` pin in one commit. Until arrow recovery v1 there was no
+/// bump to ride, and a firearm kill told the victim they were shot with
+/// an arrow for twenty-three days.
+pub const DEATH_BY_BULLET: u8 = 6;
+
+pub const DEATH_BY_MAX: u8 = DEATH_BY_BULLET;
 
 /// Where in the day/night cycle a tick falls, `0.0..1.0` — 0 is dawn,
 /// `limits::DAY_PORTION` is dusk (day/night v0, `DECISIONS.md` §open).
@@ -762,16 +944,51 @@ pub struct Player {
     /// the placement — which is what holds "one piece per slot" up before
     /// any verb exists to enforce it.
     ///
-    /// **Nothing in the sim writes this yet, and that is the honest state
-    /// of it** (2026-08-19). Wearing is a container move into a
-    /// `CONT_WEAR` kind, and all four values of the wire's 2-bit container
-    /// field are spent (`inventory.rs`), so equipping costs a
-    /// `CONT_KIND_BITS` widening and a `PROTO_VER` bump — a wire slice, not
-    /// this one. Until it lands, the only writers are tests and a save.
-    /// Reduction is real; reachability is not.
+    /// **Written by the move verb since armor v1** (wire v51). This said
+    /// "nothing in the sim writes this yet, and that is the honest state
+    /// of it" from 2026-08-19, and priced the fix: a `CONT_WEAR` kind, a
+    /// `CONT_KIND_BITS` widening, a `PROTO_VER` bump. That is what landed,
+    /// so the writers are now `move_item` (through `set_cont_slot`), a
+    /// save, and tests — in that order of importance.
+    ///
+    /// The invariant above still does the work it always did, and now it
+    /// has a second enforcer rather than none: `worn_pct` ignores a piece
+    /// in the wrong index, and `combat::wearable_in` refuses to put one
+    /// there. Both are spelled `slot == index + 1`, deliberately.
     pub worn: [ItemStack; WEAR_SLOTS],
     /// Tick the next swing is allowed at (gather.rs cadence).
+    ///
+    /// **Reload v1 pays here too, deliberately.** A reload sets this
+    /// forward by `RangedDef::reload_ticks`, so the one field already
+    /// shared by gather, melee and both ranged paths is also the beat you
+    /// are helpless for: a reload stops a swing and a swing stops a
+    /// reload, with no second clock to keep in step and nothing new in
+    /// the hash.
     pub next_swing: u64,
+    /// Rounds loaded, indexed by `RangedDef::mag_slot` — **not** by
+    /// inventory slot and **not** by item index.
+    ///
+    /// Keyed by the weapon row, so nothing has to move it: a gun that
+    /// travels from the hotbar to a box to the ground and back keeps its
+    /// count, because the count was never attached to where the gun was.
+    /// That is the whole reason it is not a field on `ItemStack` — the
+    /// stated cost is in `RangedDef::mag_slot`, and `tests/reload.rs`
+    /// gates it.
+    ///
+    /// Zero on a fresh body, so a spawned revolver starts empty and the
+    /// first thing a player does with a gun is load it.
+    pub mag: [u16; MAX_MAGS],
+    /// Which round is in each magazine, `NO_ITEM` when empty — parallel to
+    /// [`Player::mag`].
+    ///
+    /// A weapon lists up to `MAX_WEAPON_AMMO` rounds in preference order,
+    /// so "six loaded" is not a fact until you say six of *what*: the
+    /// magazine has to remember, or a reload that topped up a partly-full
+    /// cylinder with a different round would fire the wrong damage and an
+    /// unload would return the wrong item to the pack. `ranged::reload`
+    /// refuses to mix — a magazine holding one kind tops up with that kind
+    /// or not at all.
+    pub mag_round: [u16; MAX_MAGS],
     /// Weak-spot chase: the cell this player last landed a hit on
     /// (`NO_CELL` = none) and how many hits they've landed there. The mark
     /// heading derives from these (gather.rs), so they are sim state.
@@ -863,6 +1080,17 @@ pub struct Player {
     /// by, and a shard that drifted on it would nominate a different
     /// victim on its next replayed session.
     pub slept_at: u64,
+    /// The sub-point remainder of a burning torch (torch fuel v0,
+    /// `light.rs`). Hundredths×ticks, drained against `light::BURN_DEN`.
+    ///
+    /// The **only** state a flame has, because a flame is derived rather
+    /// than stored — `light::is_lit` reads the latch, the content row and
+    /// the fuel, and there is no `lit` bit for the two ends of the wire to
+    /// disagree about. This is here for the reason `food_acc` is: a
+    /// remainder that reset on a restore would hand back a fraction of a
+    /// torch on every reconnect, which is a small exploit and an exact-
+    /// arithmetic bug (`persist.rs`).
+    pub light_acc: u32,
 }
 
 impl Default for Player {
@@ -875,6 +1103,11 @@ impl Default for Player {
             inv: [ItemStack::default(); INV_SLOTS],
             worn: [ItemStack::default(); WEAR_SLOTS],
             next_swing: 0,
+            mag: [0; MAX_MAGS],
+            // `NO_ITEM` and not 0, for the reason `RangedDef::ammo` is
+            // `NO_ITEM`-padded: item 0 is a real item, so a zeroed round
+            // array would say every empty magazine holds one.
+            mag_round: [NO_ITEM; MAX_MAGS],
             ws_cell: NO_CELL,
             ws_hits: 0,
             jobs: [CraftJob::default(); CRAFT_QUEUE],
@@ -899,6 +1132,7 @@ impl Default for Player {
             death_range_cm: 0,
             sleeping: false,
             slept_at: 0,
+            light_acc: 0,
         }
     }
 }
@@ -1027,9 +1261,47 @@ pub enum Command {
         item: u16,
         count: u16,
     },
+    /// One client input frame, plus how many ticks of lag compensation the
+    /// server is willing to grant this player's verbs *this tick*.
+    ///
+    /// `favour` is **not on the wire** and never will be: it is minted
+    /// server-side from the client's `snapshot_ack` (slice 5,
+    /// `findings/lagcomp-design-20260818.md` §2.2), so a client cannot ask
+    /// for a rewind depth. Every non-server construction — bots, probes,
+    /// tests, a replayed WAL — passes `0`, which is the present tick and
+    /// therefore the pre-lag-compensation behaviour bit for bit.
+    ///
+    /// It rides on the command rather than on `Player` on purpose: the
+    /// value is spent inside one tick, so storing it would be storing a
+    /// fact `state_hash` has to answer for. `apply` clamps it into a
+    /// tick-local array — the `removals` precedent, see `World::tick`.
     Input {
         id: u32,
         frame: InputFrame,
+        favour: u8,
+    },
+    /// Two frames in one tick — the input-buffer throttle's catch-up
+    /// (`server/client.rs consume_input`: a buffer past
+    /// `INPUT_THROTTLE_DEPTH` consumes two frames in one tick to drain).
+    /// Both must MOVE the body: the client's prediction ring stepped every
+    /// seq exactly once, so a consumed-but-unexecuted frame is a
+    /// guaranteed reconcile mismatch — the shipped consume-2-execute-1
+    /// shape was one tick of walking silently dropped on every throttle
+    /// tick, and it read as a snap (netcode v2, DECISIONS.md 2026-08-31).
+    ///
+    /// `prev` is the OLDER frame and steps movement first, movement only —
+    /// exactly what the client's predictor did with it (`predict.rs` steps
+    /// nothing but `movement::step`). `frame` is the newer: it steps
+    /// second, it is the tick's stored frame, and the verbs, the wire and
+    /// any later starved reuse see it alone — bit-identical to the frame
+    /// having arrived by itself. A separate variant rather than an
+    /// `Option` on `Input`, so the hundred-odd existing constructions
+    /// (bots, tests, a replayed WAL) keep meaning what they said.
+    InputPair {
+        id: u32,
+        prev: InputFrame,
+        frame: InputFrame,
+        favour: u8,
     },
     /// Enqueue `count` crafts of recipe row `recipe` (craft.rs validates
     /// and refuses by event, never by panic).
@@ -1064,6 +1336,11 @@ pub enum Command {
     /// Place baked building-piece row `row` at grid address (cx, cz,
     /// level, loc) (build.rs validates and refuses by event, never by
     /// panic).
+    ///
+    /// `freehand` declines the plate latch — see [`build::plate_for`]. It
+    /// rides the command rather than being re-derived because the server
+    /// knows which neighbour is built and cannot know which floor the
+    /// player wanted (freehand placement v0).
     Place {
         id: u32,
         row: u16,
@@ -1071,6 +1348,7 @@ pub enum Command {
         cz: u16,
         level: u8,
         loc: u8,
+        freehand: bool,
     },
     /// Place baked deployable row `row` at grid address (deploy.rs
     /// validates and refuses by event, never by panic).
@@ -1186,6 +1464,17 @@ pub enum Command {
     Loot {
         id: u32,
     },
+    /// Take the nearest ready spent arrow in reach back into the quiver
+    /// (spent.rs — arrow recovery v1, the verb `take_near` was gated for).
+    ///
+    /// `Loot`'s shape and for `Loot`'s reason: no target crosses, so there
+    /// is no id to forge and nothing can be picked up that the sender is
+    /// not standing on. It is the first verb whose pick is resolved in
+    /// **three** dimensions — an arrow lodged up a trunk is out of reach
+    /// where a backpack at your feet never is.
+    Pickup {
+        id: u32,
+    },
     /// Open the authored world container at cell key `cont`
     /// (`worldcont.rs`) — the haven pad's crate, a waystation's cache.
     ///
@@ -1250,6 +1539,19 @@ pub enum Command {
     Respawn {
         id: u32,
         on_bag: bool,
+    },
+    /// Fill the held weapon's magazine from the pack (`ranged::reload`).
+    ///
+    /// No target and no count: the weapon is whatever is in the selected
+    /// hotbar slot and the amount is however much the cylinder takes, so
+    /// there is nothing here a client could forge that the sim would not
+    /// have decided for itself. That is deliberate and it is why this is
+    /// an action rather than a button bit — a reload is a one-shot intent
+    /// with a *duration*, and `BTN_LIGHT`'s doc gives the rule: a level
+    /// both sides must agree on every tick is a bit, and a one-shot the
+    /// world has to acknowledge is a message.
+    Reload {
+        id: u32,
     },
 }
 
@@ -1340,6 +1642,38 @@ pub struct World {
     /// for its client array — keeps `World`'s stack footprint where this
     /// slice found it. Nothing here allocates in the tick (wall 2).
     pub backpacks: Box<Backpacks>,
+    /// Where every body stood for the last `REWIND_TICKS` ticks
+    /// (`rewind.rs`) — lag compensation's store, and the **one field on
+    /// `World` that is neither hashed nor saved**.
+    ///
+    /// It is derived from state that already is both: the row for tick `T`
+    /// is a copy of poses `state_hash` covered at `T`, so two shards
+    /// agreeing on every hash from tick 0 hold identical rings by
+    /// construction. That is `Pieces::cols`' argument (*"Derived, never
+    /// hashed"*) and the event ring's, and it is why hashing this would be
+    /// adding a second name for a fact the hash already carries.
+    ///
+    /// Not saved either, on `worldsave.rs`'s arrows-in-flight precedent —
+    /// but unlike `cols` it is **not reconstructible at load**, so what
+    /// keeps wall 5 whole is `Rewind::pose_at`'s fallback to the live body
+    /// on a stamp that is not the tick asked for. Read that module's header
+    /// before touching it; the fallback looks like a rough edge and is the
+    /// design.
+    ///
+    /// **Read by `combat::strike` since slice 4** of
+    /// `findings/lagcomp-design-20260818.md` §7 — the melee target scan
+    /// resolves against `pose_at` at the tick's granted `favour` — and by
+    /// **`ranged::hitscan` since the gun's slice**, which closes the
+    /// asymmetry the line here used to describe: for one pass melee
+    /// rewound and the firearm did not, so the only fight decided by ping
+    /// was the ranged one, where lead error is largest.
+    ///
+    /// `ranged::step` still resolves against present-tick bodies and that
+    /// is now a **refusal with a type behind it** (`ranged::Pose::Live`),
+    /// not an omission: an arrow in the store was launched on an earlier
+    /// tick. Its *launch* aim is the one question left and it is in
+    /// `DECISIONS.md` §open rather than in a findings note nobody re-reads.
+    pub rewind: crate::rewind::Rewind,
     /// Authored world containers a player has opened — sim state, hashed
     /// (`worldcont.rs`). Boxed inside, for `backpacks`' reason: 64 records
     /// of `INV_SLOTS` stacks is ~8.7 kB of fixed capacity on a stack-built
@@ -1383,6 +1717,13 @@ pub struct World {
     /// that only grows with `MAX_ARROWS`. One allocation at construction,
     /// none in the tick.
     pub arrows: Box<ranged::Arrows>,
+    /// Arrows that have landed and can be taken back — sim state, hashed
+    /// and **saved**, which is the pair's whole distinction (`spent.rs`).
+    /// One field up is a trajectory between two ticks and `worldsave.rs`
+    /// drops it on purpose; this is an item lying on a hillside, and
+    /// dropping it across a restart would delete ammunition a player
+    /// earned. Boxed for `slot_cache`'s reason.
+    pub spent: Box<crate::spent::SpentArrows>,
     /// This tick's outbound events; cleared at tick start.
     pub events: EventQueue,
     /// Hash stamped every `STATE_HASH_INTERVAL` ticks (0 until the first).
@@ -1425,6 +1766,7 @@ impl World {
             deploys: Deploys::new(),
             charges: crate::charge::Charges::new(),
             backpacks: Box::new(Backpacks::new()),
+            rewind: crate::rewind::Rewind::new(),
             world_conts: crate::worldcont::WorldConts::new(),
             sweep_piece: 0,
             sweep_deploy: 0,
@@ -1433,6 +1775,7 @@ impl World {
             slot_lives: SlotLives::new(),
             slot_cache: Box::new(crate::occupy::SlotCache::new()),
             arrows: Box::new(ranged::Arrows::new()),
+            spent: Box::new(crate::spent::SpentArrows::new()),
             events: EventQueue::default(),
             last_hash: 0,
             dev_spawn: None,
@@ -1655,6 +1998,16 @@ impl World {
             inventory::CONT_BAG => self.backpacks.slot(ci, s as usize),
             inventory::CONT_BOX => self.deploys.box_slot(ci, s as usize),
             inventory::CONT_WORLD => self.world_conts.slot(ci, s as usize),
+            // Armor v1. This arm is exactly the defect the paragraph above
+            // describes, caught before it shipped rather than after: the
+            // `_` fallback is `inv`, so a `CONT_WEAR` reaching it would
+            // read and write the *inventory* array under a wear address —
+            // in range, never a panic, green everywhere, and the helmet
+            // you dragged onto your head would land in backpack slot 0.
+            // The wrong store here is a *plausible* store, which is what
+            // makes it worse than the `CONT_WORLD` case above it.
+            // `container_wire`'s wear test is the mutant proof.
+            inventory::CONT_WEAR => self.players[slot].worn[s as usize],
             _ => self.players[slot].inv[s as usize],
         }
     }
@@ -1675,6 +2028,7 @@ impl World {
                 self.world_conts
                     .set_slot(ci, s as usize, v, self.tick, refill);
             }
+            inventory::CONT_WEAR => self.players[slot].worn[s as usize] = v,
             _ => self.players[slot].inv[s as usize] = v,
         }
     }
@@ -1732,15 +2086,18 @@ impl World {
         //    ground container — two different ones is a destination the
         //    message cannot address, not a rule about what players may do
         //    (`REFUSE_M_NO_CONTAINER`).
-        if from_kind != inventory::CONT_SELF
-            && to_kind != inventory::CONT_SELF
-            && from_kind != to_kind
-        {
+        //    "Ground" is `!is_own`, not `!= CONT_SELF`: since armor v1 a
+        //    player carries two containers, and a wear slot has no handle
+        //    to be named by and nothing to be out of reach of. Spelled the
+        //    old way, `CONT_SELF` -> `CONT_WEAR` would have been read as a
+        //    move into a ground container, handed whatever handle the
+        //    command carried, and refused as `REFUSE_M_NO_CONTAINER`.
+        if !inventory::is_own(from_kind) && !inventory::is_own(to_kind) && from_kind != to_kind {
             self.events
                 .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_NO_CONTAINER, addr);
             return;
         }
-        let ground = if from_kind != inventory::CONT_SELF {
+        let ground = if !inventory::is_own(from_kind) {
             from_kind
         } else {
             to_kind
@@ -1849,6 +2206,34 @@ impl World {
             }
         }
         let dst = self.cont_slot(slot, to_kind, to_slot, ci);
+        // A wear slot takes the piece that goes in it and nothing else
+        // (`CanWearItem`, `combat::wearable_in`). Asked here for the same
+        // reason the oven is: it is a rule about what a container accepts,
+        // which is a property of content, and `plan_move` decides
+        // arithmetic and only arithmetic.
+        //
+        // **Both landing sites, not just the destination.** A move's
+        // result is two writes, and when the destination is occupied
+        // `plan_move` answers SWAP — so `dst` travels backwards into
+        // `from_slot`. Check only the forward half and a body piece
+        // dragged from the body slot onto a helmet puts the helmet in the
+        // body slot: refused in one direction, admitted in the other, by
+        // one verb. The source side is guarded on `dst.count > 0` because
+        // that is exactly when a swap can happen; an empty destination
+        // falls through to `plan_move`'s own ladder with the reason it
+        // would have given anyway, and `src.count > 0` leaves an empty
+        // source to `REFUSE_M_EMPTY` rather than answering it here.
+        let wear_refused = (to_kind == inventory::CONT_WEAR
+            && src.count > 0
+            && !combat::wearable_in(&self.combat, src.item, to_slot))
+            || (from_kind == inventory::CONT_WEAR
+                && dst.count > 0
+                && !combat::wearable_in(&self.combat, dst.item, from_slot));
+        if wear_refused {
+            self.events
+                .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_WEAR, addr);
+            return;
+        }
 
         // 4. Plan. This is the whole of the validation, and it holds no
         //    reference to anything it could damage.
@@ -1896,6 +2281,90 @@ impl World {
         if ground == inventory::CONT_BAG {
             self.backpacks.drop_if_empty(ci, &mut self.events);
         }
+    }
+
+    /// Charge one shot's structure damage to the piece **or deployable** it
+    /// stopped on — `ranged`'s half of the raid verb, written here for the
+    /// reason `Chip` states: the shot pass holds the collision index, and
+    /// this holds both stores, the content and the tick's removal budget.
+    ///
+    /// **The address is re-resolved, never carried as an index.** Between
+    /// the walk that found this piece and this line sit the rest of the
+    /// arrows, every other player's bullet and — on the arrow pass — the
+    /// bodies `die` has already laid down, any of which can drop a piece
+    /// and swap-remove another into its slot (`Pieces::remove_at`). A hit
+    /// whose address no longer holds a piece is simply no longer a hit; the
+    /// shot still stopped there and still drew its `EV_IMPACT`.
+    ///
+    /// **Hard and soft sides apply exactly as they do to a swing**
+    /// (`combat::raid`, hard/soft v0): a shot meeting a sided piece on its
+    /// hard face lands `HARD_SIDE_STRUCTURE` whatever fired it. Sharing the
+    /// law rather than restating it is the point — otherwise a bow pays a
+    /// price a hatchet pays or does not, depending on which file was
+    /// written first. That sharing is literal since 2026-08-28: both call
+    /// `build::structure_price`, where ranged structure damage v0 had
+    /// copied the three lines and *said* they were shared. What differs is
+    /// only *whose* position names the side: `raid` asks where the attacker
+    /// stands, a shot asks where the shot came from.
+    ///
+    /// **A deployable takes it flat, and that is not an omission.** The
+    /// deploy arm pays no side price and spends no removal budget because
+    /// neither exists for it anywhere else: `combat::raid`'s own
+    /// `Target::Deploy` arm and `charge::detonate` both hand
+    /// `damage_deploy` the raw number, a box has no facing to be on the
+    /// wrong side of, and `drop_deploy` collapses nothing so there is no
+    /// cascade for a budget to bound. Adding either here would make a shot
+    /// the one verb in the game that prices a furnace differently.
+    ///
+    /// Bounded: one `find_index` walk and one damage write per chip, and
+    /// the chip array is capped at `MAX_ARROWS`. The removal budget is the
+    /// same allowance a swing spends, so an arrow cannot drop a piece past
+    /// the cap that bounds every other remover.
+    fn chip(&mut self, c: &ranged::Chip, removals: &mut usize) {
+        if c.deploy {
+            // Same re-resolve, other store — `charge::detonate`'s two-arm
+            // shape, and for its stated reason: an address cannot go
+            // stale, an index can.
+            let Some(i) = self
+                .deploys
+                .find_index(c.hit.cx, c.hit.cz, c.hit.level, c.hit.loc)
+            else {
+                return;
+            };
+            deploy::damage_deploy(
+                &self.deploy,
+                &mut self.pieces,
+                &mut self.deploys,
+                i,
+                c.structure,
+                &mut self.events,
+            );
+            return;
+        }
+        let Some(i) = self
+            .pieces
+            .find_index(c.hit.cx, c.hit.cz, c.hit.level, c.hit.loc)
+        else {
+            return;
+        };
+        let rec = self.pieces.entries()[i];
+        let amount = crate::build::structure_price(
+            &rec,
+            self.build.pieces[rec.row as usize].shape,
+            c.from_x,
+            c.from_z,
+            c.structure,
+        );
+        deploy::damage_piece(
+            &self.deploy,
+            &self.build,
+            &mut self.pieces,
+            &mut self.deploys,
+            i,
+            amount,
+            removals,
+            &mut self.events,
+        );
     }
 
     /// Death, v3: the body falls **and stays down**. What you were carrying
@@ -1989,6 +2458,56 @@ impl World {
         // reason `backpack.rs`'s header names the others.
         let mut shed = [ItemStack::default(); INV_SLOTS];
         shed[..WEAR_SLOTS].copy_from_slice(&body.worn);
+        // **And the loaded rounds go with them** (`NOW.md` §0mag item 1).
+        // Until 2026-08-30 they did not: `mag`/`mag_round` are cleared by
+        // the `..Player::default()` above, so up to a magazine's worth was
+        // destroyed per death and the killer looted an empty revolver
+        // while the shot that emptied it had already been paid for. That
+        // is the armor argument one level down — a corpse that keeps its
+        // plates is a body nobody fights for, and a corpse that eats its
+        // ammunition is a body nobody reloads before.
+        //
+        // **No content lookup is needed and that is the whole trick.**
+        // `mag_round[slot]` already names the item and `mag[slot]` already
+        // counts it, so this does not need `self.combat` and does not need
+        // a reverse map from `mag_slot` to a weapon row — there is no such
+        // map in the tree, and adding one to shed ammunition would have
+        // been the expensive way to answer a question the pair of arrays
+        // answers by construction. The `NO_ITEM` guard is the same one
+        // `reload` uses: `hitscan` deliberately leaves `mag_round` naming
+        // the spent kind after the last round, so `loaded == 0` is the
+        // only honest emptiness test and the round check is belt-and-braces
+        // against a save that arrived with a count and no kind.
+        //
+        // `cond_max_of` and not zero, and not the source stack's own
+        // condition. The source stack's is unrecoverable — `reload`'s
+        // `inv_take` discards it, by the same content rule V7 that makes
+        // the question moot: a round stacks past 1 (the shipped one stacks
+        // 128) so it carries no condition and `cond_max_of` is 0 for every
+        // one of them. It is written as the ceiling rather than as 0
+        // because a hypothetical round that *did* carry condition should
+        // arrive as ammunition arrives, not as scrap.
+        //
+        // Bounded by `inv_add`, which tops up matching stacks before it
+        // fills empties and returns what fit; a remainder past the 28 free
+        // slots is destroyed, which is the stated overflow policy and the
+        // same one `inv_add`'s other bare callers carry. The shipped set
+        // cannot reach it — `the_shed_magazines_fit_the_bag_they_shed_into`
+        // measures the worst case at one slot against 28 — and a content
+        // set that could is one where eight firearms each carry a magazine
+        // deeper than four full stacks of its own round.
+        for (loaded, round) in body.mag.iter().zip(body.mag_round.iter()) {
+            if *loaded == 0 || *round == NO_ITEM {
+                continue;
+            }
+            gather::inv_add(
+                &mut shed,
+                *round,
+                *loaded,
+                self.gather.stack_max_of(*round),
+                self.gather.cond_max_of(*round),
+            );
+        }
         self.drain_spill(slot, &mut shed);
     }
 
@@ -2053,7 +2572,7 @@ impl World {
         // `known` is the fifth thing a body carries through a death, and
         // it is carried for the same reason `deaths` is: both are ledgers
         // of what the player *did*, not of what they were holding when
-        // they fell. A blueprint is bought with OBOL, and OBOL is the
+        // they fell. A blueprint is bought with JUNK, and JUNK is the
         // scarcest thing on the shard.
         //
         // **It was not carried until 2026-08-15, so dying deleted every
@@ -2062,7 +2581,7 @@ impl World {
         // `worldsave.rs`, and the `..Player::default()` below answered
         // "no, a body does not keep that" without anybody deciding it —
         // the spread's silence is the whole defect. Death is the most
-        // common event in the game, so this was the OBOL sink emptying
+        // common event in the game, so this was the JUNK sink emptying
         // itself on a timer. The gates are `research.rs`'s
         // `a_blueprint_survives_a_death`, `persist.rs`'s
         // `the_carried_decisions_survive_a_real_death`, and
@@ -2224,7 +2743,7 @@ impl World {
                 // the blueprint mask correctly, the codec round-tripped it,
                 // and the spread then quietly answered `known: 0` — so a
                 // keyed player reconnecting after a restart lost every
-                // blueprint they had paid OBOL for, with `test_replay`
+                // blueprint they had paid JUNK for, with `test_replay`
                 // blind to it (its stream has no `JoinAs`) and
                 // `a_blueprint_survives_a_save_and_a_load` blind to it too
                 // (it exercises the codec and never seats a world).
@@ -2259,6 +2778,7 @@ impl World {
                     food_acc: s.food_acc,
                     water_acc: s.water_acc,
                     hurt_acc: s.hurt_acc,
+                    light_acc: s.light_acc,
                     heal_rem: s.heal_rem,
                     heal_total: s.heal_total,
                     heal_span: s.heal_span,
@@ -2270,6 +2790,17 @@ impl World {
                     dead: false,
                     frame: InputFrame::default(),
                     next_swing: 0,
+                    // Not from the save, and for `next_swing`'s reason one
+                    // line up rather than a new one: `PlayerSave` is the
+                    // store's record of a body that has LEFT the world, and
+                    // reload v1 did not widen it. A player who reconnects
+                    // to a sleeper still standing in the world keeps their
+                    // rounds — that body was never serialized through here
+                    // — and one whose record came back off disk finds the
+                    // cylinder empty and presses reload. Stated rather than
+                    // silent; `NOW.md` §0mag carries the remainder.
+                    mag: [0; MAX_MAGS],
+                    mag_round: [NO_ITEM; MAX_MAGS],
                     // `NO_CELL`, not zero: the weak-spot chase names a
                     // cell and cell 0 is a real one, so a `0` here would
                     // restore a player already half-way through chasing
@@ -2585,7 +3116,27 @@ impl World {
         );
     }
 
-    fn apply(&mut self, cmd: &Command, removals: &mut usize) {
+    /// One frame's non-wire sanitation — `sel` falls back, unknown button
+    /// bits are masked. The wire refuses both at decode/accept; a non-wire
+    /// command (bot, test, WAL) is clamped instead, and the stored frame is
+    /// hashed, so a bit no verb reads must never reach it (NOW.md §5b).
+    /// One spelling for `Input` and `InputPair`, so the pair cannot drift
+    /// into a laxer door.
+    fn sanitize_frame(mut frame: InputFrame) -> InputFrame {
+        if frame.sel as usize >= HOTBAR_SLOTS {
+            frame.sel = 0;
+        }
+        frame.buttons &= crate::input::BTN_MASK;
+        frame
+    }
+
+    fn apply(
+        &mut self,
+        cmd: &Command,
+        removals: &mut usize,
+        favour: &mut [u8; MAX_PLAYERS],
+        catchup: &mut [Option<InputFrame>; MAX_PLAYERS],
+    ) {
         match *cmd {
             Command::Join { id } => self.seat(id, None),
             Command::JoinAs { id, save } => self.seat(id, Some(save)),
@@ -2647,21 +3198,45 @@ impl World {
                     }
                 }
             }
-            Command::Input { id, frame } => {
+            Command::Input {
+                id,
+                frame,
+                favour: want,
+            } => {
                 if let Some(slot) = self.slot_of(id) {
-                    let mut frame = frame;
-                    if frame.sel as usize >= HOTBAR_SLOTS {
-                        // The wire refuses 6–7 at decode; a non-wire
-                        // command (bot, test, WAL) falls back to slot 0.
-                        frame.sel = 0;
-                    }
-                    // The wire refuses unknown button bits at the server's
-                    // accept boundary (net.rs `accept_input`); a non-wire
-                    // command is masked instead — `sel`'s rule, applied to
-                    // bits. The stored frame is hashed, so a bit no verb
-                    // reads must never reach it (NOW.md §5b).
-                    frame.buttons &= crate::input::BTN_MASK;
-                    self.players[slot].frame = frame;
+                    // Clamped, not refused. `pose_at` is already total over
+                    // `back` — an out-of-range depth falls back to the live
+                    // body — so this is not a safety check but a statement
+                    // of the ceiling in one place, next to the ring it
+                    // indexes. `REWIND_MAX_TICKS` is 250 ms floored to
+                    // whole ticks (`limits.rs`), and the clamp direction is
+                    // the conservative one: a forged favour buys the
+                    // shooter *less* help, never more.
+                    //
+                    // Written on `slot_of`, not `live_slot_of`, for the
+                    // same reason the frame below is: the arm is one
+                    // condition, and a sleeper's verbs do not run anyway.
+                    favour[slot] = want.min(crate::rewind::Rewind::max_back());
+                    self.players[slot].frame = Self::sanitize_frame(frame);
+                }
+            }
+            Command::InputPair {
+                id,
+                prev,
+                frame,
+                favour: want,
+            } => {
+                if let Some(slot) = self.slot_of(id) {
+                    // `Input`'s arm, with the older frame set aside for the
+                    // movement pass. The catch-up is a tick-local exactly
+                    // as `favour` is and for `favour`'s reason: it is spent
+                    // inside this tick, and a `World` field would put a
+                    // network condition into `state_hash`. Here it arrives
+                    // in the command, so a replayed WAL reproduces the
+                    // double step bit for bit.
+                    favour[slot] = want.min(crate::rewind::Rewind::max_back());
+                    catchup[slot] = Some(Self::sanitize_frame(prev));
+                    self.players[slot].frame = Self::sanitize_frame(frame);
                 }
             }
             Command::Craft { id, recipe, count } => {
@@ -2724,6 +3299,7 @@ impl World {
                 cz,
                 level,
                 loc,
+                freehand,
             } => {
                 if let Some(slot) = self.live_slot_of(id) {
                     build::place(
@@ -2739,6 +3315,7 @@ impl World {
                         cz,
                         level,
                         loc,
+                        freehand,
                         &mut self.events,
                     );
                 }
@@ -3047,6 +3624,17 @@ impl World {
                     );
                 }
             }
+            Command::Pickup { id } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    crate::spent::pickup(
+                        &mut self.spent,
+                        &self.gather,
+                        self.tick,
+                        &mut self.players[slot],
+                        &mut self.events,
+                    );
+                }
+            }
             Command::OpenWorldCont { id, cont } => {
                 if let Some(slot) = self.live_slot_of(id) {
                     self.world_conts.open(
@@ -3088,6 +3676,19 @@ impl World {
                     }
                 }
             }
+            Command::Reload { id } => {
+                // `live_slot_of`: a corpse and a sleeper do not reload,
+                // for the reason `hitscan` restates the same rule — the
+                // arm belongs to a body somebody is driving.
+                if let Some(slot) = self.live_slot_of(id) {
+                    ranged::reload(
+                        self.tick,
+                        &self.combat,
+                        &mut self.events,
+                        &mut self.players[slot],
+                    );
+                }
+            }
         }
     }
 
@@ -3103,8 +3704,31 @@ impl World {
         // so the verbs and the sweep spend one allowance between them.
         // Two budgets would be two caps and therefore no cap.
         let mut removals = MAX_REMOVALS_PER_TICK;
+        // How far back each slot's verbs may look this tick, in ticks.
+        //
+        // Minted here beside `removals` and for the same reason: it is
+        // spent and forgotten inside one tick, so it is a tick-local and
+        // never a `World` field. Storing it would put a latency-derived
+        // number into `state_hash` and `persist.rs`, and a replay of the
+        // same command stream would then have to reproduce a network
+        // condition — which is the determinism violation wall 5 forbids.
+        // Here the favour arrives *in the command*, so the WAL already
+        // carries everything a replay needs.
+        //
+        // Zero is the floor and the default, in three places at once: a
+        // slot nobody sent an input for this tick, a slot whose input
+        // arrived with `favour: 0`, and every non-server construction of
+        // `Command::Input`. Zero means `pose_at` returns the live body,
+        // which is the behaviour that predates lag compensation.
+        let mut favour = [0u8; MAX_PLAYERS];
+        // The throttle's older frame, per slot — `favour`'s shape, minted
+        // and spent inside this one tick for `favour`'s stated reason (a
+        // `World` field here would hash a network condition). ~1.4 KB of
+        // stack, zero allocation; wasm's shadow stack holds it with three
+        // orders of magnitude to spare.
+        let mut catchup: [Option<InputFrame>; MAX_PLAYERS] = [None; MAX_PLAYERS];
         for cmd in commands.iter().take(MAX_COMMANDS_PER_TICK) {
-            self.apply(cmd, &mut removals);
+            self.apply(cmd, &mut removals, &mut favour, &mut catchup);
         }
         let seed = self.seed;
         let tick = self.tick;
@@ -3123,7 +3747,10 @@ impl World {
         // one arm — `gather::swing` gets first claim on it (a tree in
         // reach is always the nearer target) and hands it on only when
         // nothing standing absorbed it.
-        for i in 0..MAX_PLAYERS {
+        // Iterated over the favour array rather than `0..MAX_PLAYERS`, which
+        // is the same slot order — the array is exactly `MAX_PLAYERS` wide
+        // and is never written inside this loop, only by `apply` above.
+        for (i, &granted) in favour.iter().enumerate() {
             if !self.players[i].active {
                 continue;
             }
@@ -3208,6 +3835,42 @@ impl World {
                 let id = self.players[i].id;
                 self.die(i, id, DEATH_BY_CLOCK, NO_ITEM, 0);
                 continue;
+            }
+            // The torch burns on the same footing as the metabolism, and
+            // deliberately beside it: both are clocks that spend something
+            // the player is carrying, and both run before the arm so a
+            // flame that dies this tick is dead for this tick's swing too.
+            //
+            // Only the live path. `light::is_lit` refuses a sleeper and a
+            // corpse on its own, so this placement is not what makes that
+            // true — but a body nobody is driving holds a stale frame, and
+            // the cheapest way to never spend an absent player's inventory
+            // is to not run the sweep over them.
+            crate::light::step(&mut self.players[i], &self.gather);
+            // The throttle's catch-up: the OLDER of two consumed frames
+            // steps first, movement only — the client's predictor stepped
+            // it exactly once through the same `movement::step`, so this
+            // is what keeps the per-seq ring bit-identical across a
+            // throttle tick. Only the live branch honors it: a corpse and
+            // a sleeper step a zeroed frame, and stepping one twice would
+            // double a tick of gravity for a body nobody is driving.
+            // The verbs below never see it — the older frame's buttons
+            // never act, exactly as they never acted when the throttle
+            // silently dropped it.
+            if let Some(prev) = catchup[i] {
+                movement::step(
+                    seed,
+                    &self.haven,
+                    self.pieces.cols(),
+                    &mut crate::occupy::Occupants {
+                        table: &self.scatter,
+                        haven: &self.haven,
+                        harvested: &self.slot_lives,
+                        cache: &mut self.slot_cache,
+                    },
+                    &mut self.players[i].body,
+                    &prev,
+                );
             }
             let frame = self.players[i].frame;
             movement::step(
@@ -3308,7 +3971,15 @@ impl World {
                 // far too — a node must not become cover — and stops at
                 // the animal: it was aimed at a gather node, so the wall
                 // behind that node is not a target (`Swing::Refused`).
-                match combat::strike(&self.combat, i, &mut self.players, &mut self.events) {
+                match combat::strike(
+                    &self.combat,
+                    i,
+                    &mut self.players,
+                    &mut self.events,
+                    &self.rewind,
+                    tick,
+                    granted,
+                ) {
                     combat::Strike::Killed {
                         victim,
                         item,
@@ -3418,20 +4089,36 @@ impl World {
         // `combat::hurt`, the one debit (this loop used to hand-copy
         // "`combat::strike`'s exact damage liturgy" and said so); what
         // stays here is the half the funnel deliberately does not own —
-        // EV_HEALTH to the victim, EV_DEATH broadcast, and `die` laying
-        // the body down with the cause the wire widened for. Still no
-        // EV_HIT: a hitmarker is an attacker's fact and a pig has no
-        // screen to draw one on.
+        // EV_HURT and EV_HEALTH to the victim, EV_DEATH broadcast, and
+        // `die` laying the body down with the cause the wire widened for.
+        // Still no EV_HIT: a hitmarker is an attacker's fact and a pig has
+        // no screen to draw one on. EV_HURT is the other side of exactly
+        // that asymmetry — the victim has a screen, and until 2026-08-30
+        // the only thing on it for a bear in the dark was a number going
+        // down (`NOW.md` §0hrt item 5).
         for b in bites.entries() {
             let victim = b.victim as usize;
+            // The animal's body, read before the victim is borrowed
+            // mutably — `combat::strike` takes the attacker's position in
+            // the same order and for the same borrow. Post-`mob::step`, so
+            // it is where the animal was standing when it bit rather than
+            // where it started the tick.
+            let (mqx, mqz) = {
+                let body = &self.mobs.m[b.mob_slot as usize].body;
+                (body.qx as i64, body.qz as i64)
+            };
             let v = &mut self.players[victim];
             if !v.active || v.hp == 0 {
                 continue; // died to something else since the roster looked
             }
+            let sector =
+                crate::combat::bearing_sector(mqx - v.body.qx as i64, mqz - v.body.qz as i64);
             // The funnel, reduced: a bite is a hit.
             let crate::combat::Hurt { left, died, .. } =
                 crate::combat::hurt(&self.combat, v, b.damage);
             let victim_id = v.id;
+            self.events
+                .push(EV_HURT, victim_id, sector as u32, b.damage as u32);
             self.events.push(
                 EV_HEALTH,
                 victim_id,
@@ -3451,9 +4138,16 @@ impl World {
         // final for the low slots and stale for the high ones; and nothing
         // about a hit may depend on the shooter's slot index, which it
         // would if flight ran while the loop still held one player
-        // mutably. `removals` is not spent here — an arrow does not chip a
-        // wall in v0, it stops on one.
+        // mutably. **`removals` IS spent here now** (ranged structure
+        // damage v0): an arrow chips the wall it stops on, so a shot can
+        // drop a piece and pays out of the same tick allowance a swing
+        // does — this line said the opposite until 2026-08-28.
         let mut kills = [ranged::Kill::default(); MAX_ARROWS];
+        // Reused between the two passes exactly as `kills` is, and drained
+        // by each before the other fills it — one entry per arrow that
+        // stopped on a piece, and `hitscan` writes at most one per player
+        // under the same `MAX_PLAYERS <= MAX_ARROWS` const assert.
+        let mut chips = [ranged::Chip::default(); MAX_ARROWS];
         // A firearm resolves here rather than in the loop above, for the
         // arrow's two reasons — final positions, and no dependence on the
         // shooter's slot index — and it goes **first** because it is the
@@ -3464,7 +4158,7 @@ impl World {
         // reused rather than doubled: this pass writes at most one entry
         // per player, the array is drained before `step` fills it again,
         // and `ranged.rs`'s const assert holds `MAX_PLAYERS <= MAX_ARROWS`.
-        let n_shot = ranged::hitscan(
+        let (n_shot, n_chips) = ranged::hitscan(
             seed,
             &self.haven,
             self.pieces.cols(),
@@ -3475,16 +4169,38 @@ impl World {
                 cache: &mut self.slot_cache,
             },
             tick,
+            // Lag compensation, the gun's half (`ranged::hitscan`). Melee
+            // rewound one pass earlier and this did not, which left the
+            // firearm as the only weapon on the shard decided by ping.
+            // `favour` is the same tick-local the melee loop above spends,
+            // read here by the shooter's slot — it is still never a
+            // `World` field and still never in `state_hash`.
+            &self.rewind,
+            &favour,
             &self.combat,
             &mut self.players,
             &mut self.events,
             &mut kills,
+            &mut chips,
         );
-        for k in kills.iter().take(n_shot) {
-            self.die(k.victim, k.by, DEATH_BY_ARROW, k.item, k.range_cm);
+        // Chips before deaths, and the order is the tick's chronology
+        // rather than a preference: a bullet reaches the wall it stops on
+        // during this pass, and `die` lays a body down, drops its bag and
+        // can itself take a deployable with it. Draining the shot's own
+        // consequence first keeps the wall's `EV_STRUCT_HIT` adjacent to
+        // the `EV_IMPACT` that explains it.
+        for c in chips.iter().take(n_chips) {
+            self.chip(c, &mut removals);
         }
-        let n_kills = ranged::step(
+        for k in kills.iter().take(n_shot) {
+            // Was `DEATH_BY_ARROW` from hitscan v0 to arrow recovery v1,
+            // under the refusal that constant's doc states and this bump
+            // lifts. A rifle no longer reports an arrow.
+            self.die(k.victim, k.by, DEATH_BY_BULLET, k.item, k.range_cm);
+        }
+        let (n_kills, n_chips) = ranged::step(
             seed,
+            self.tick,
             &self.haven,
             self.pieces.cols(),
             &mut crate::occupy::Occupants {
@@ -3495,10 +4211,15 @@ impl World {
             },
             &self.combat,
             &mut self.arrows,
+            &mut self.spent,
             &mut self.players,
             &mut self.events,
             &mut kills,
+            &mut chips,
         );
+        for c in chips.iter().take(n_chips) {
+            self.chip(c, &mut removals);
+        }
         for k in kills.iter().take(n_kills) {
             self.die(k.victim, k.by, DEATH_BY_ARROW, k.item, k.range_cm);
         }
@@ -3556,7 +4277,14 @@ impl World {
         // that decayed with nothing in it.
         for i in 0..self.deploys.box_spill_len() {
             let bx = self.deploys.box_spill_at(i);
-            let (x, y, z) = deploy::box_drop_pos(seed, &self.haven, bx.cx, bx.cz, bx.level);
+            let (x, y, z) = deploy::box_drop_pos(
+                seed,
+                &self.haven,
+                self.pieces.cols(),
+                bx.cx,
+                bx.cz,
+                bx.level,
+            );
             let mut items = [ItemStack::default(); INV_SLOTS];
             items[..BOX_SLOTS].copy_from_slice(&bx.items);
             self.backpacks.stand_up(
@@ -3571,6 +4299,18 @@ impl World {
             );
         }
         self.deploys.clear_box_spill();
+        // Every body's pose, recorded for tick `tick` — the last thing the
+        // tick does, and deliberately *after* the phase note above says
+        // positions are final. Three of the four `movement::step` sites are
+        // in the player loop and a death, a respawn or a blast can still
+        // replace a body after it, so a snapshot taken inside that loop
+        // would record a pose the tick then overwrote.
+        //
+        // Here `self.tick` is still `T`, so row `T & (REWIND_TICKS - 1)`
+        // holds end-of-tick poses for `T` and during tick `T + 1` the ring
+        // answers for `T` back to `T - REWIND_TICKS + 1`. Derived output:
+        // it is not hashed and not saved (`rewind.rs`).
+        self.rewind.write_row(self.tick, &self.players);
         self.tick += 1;
         if self.tick.is_multiple_of(STATE_HASH_INTERVAL) {
             self.last_hash = self.state_hash();
@@ -3610,6 +4350,19 @@ impl World {
             buf[44..46].copy_from_slice(&p.hp.to_le_bytes());
             buf[46..48].copy_from_slice(&p.deaths.to_le_bytes());
             h.update(&buf);
+            // The magazine, in its own update rather than widening the
+            // buffer above — and hashed at all because it decides whether
+            // a gun fires. Sim state outside the hash is the shape this
+            // repo pays for twice over: two shards could disagree about a
+            // loaded cylinder with `test_replay` green, and a save that
+            // dropped it would restore a world that hashes the same and
+            // plays differently. Both halves: `mag_round` is what the next
+            // shot spends, so a magazine holding the wrong round is a
+            // divergence even at an identical count.
+            for (loaded, round) in p.mag.iter().zip(p.mag_round.iter()) {
+                h.update(&loaded.to_le_bytes());
+                h.update(&round.to_le_bytes());
+            }
             // The survival clock, in its own buffer rather than widening
             // the one above — every byte of it is sim state (the
             // accumulators included: a replay resuming mid-span with a
@@ -3624,9 +4377,15 @@ impl World {
             sv[18..20].copy_from_slice(&p.heal_rem.to_le_bytes());
             sv[20..22].copy_from_slice(&p.heal_total.to_le_bytes());
             h.update(&sv);
-            let mut hb = [0u8; 8];
+            let mut hb = [0u8; 12];
             hb[0..4].copy_from_slice(&p.heal_span.to_le_bytes());
             hb[4..8].copy_from_slice(&p.heal_acc.to_le_bytes());
+            // The torch's remainder, for the accumulators' reason exactly
+            // (torch fuel v0): a replay resuming mid-point with a zeroed
+            // remainder burns the next point six seconds late and every
+            // one after it. There is no `lit` byte to hash beside it
+            // because a flame is derived, not stored — `light.rs`.
+            hb[8..12].copy_from_slice(&p.light_acc.to_le_bytes());
             h.update(&hb);
             // The death screen, in its own buffer for the survival clock's
             // reason: every byte is sim state. `dead` most obviously — two
@@ -3718,7 +4477,7 @@ impl World {
             h.update(&t.to_le_bytes());
         }
         for r in self.pieces.entries() {
-            let mut buf = [0u8; 12];
+            let mut buf = [0u8; 13];
             buf[0..2].copy_from_slice(&r.cx.to_le_bytes());
             buf[2..4].copy_from_slice(&r.cz.to_le_bytes());
             buf[4] = r.level;
@@ -3730,6 +4489,13 @@ impl World {
             // spare byte: it prices a swing, so two shards disagreeing
             // about it disagree about a raid.
             buf[11] = r.facing;
+            // The column's plate (build plate v1), which widened this
+            // buffer from 12 — the first piece field that is a CHOICE
+            // rather than a function of (seed, cell). Two shards that
+            // disagree about it disagree about where every surface in the
+            // column is, which is further than a raid's price: it is
+            // whether a body is standing or falling.
+            buf[12] = r.plate as u8;
             h.update(&buf);
         }
         // Arrows in the air, and deliberately on the **player** idiom
@@ -3747,7 +4513,7 @@ impl World {
         // allocation order, allocation is deterministic, so two runs that
         // agree about the shot agree about the index.
         for a in self.arrows.entries() {
-            let mut buf = [0u8; 36];
+            let mut buf = [0u8; 40];
             buf[0..4].copy_from_slice(&a.qx.to_le_bytes());
             buf[4..8].copy_from_slice(&a.qy.to_le_bytes());
             buf[8..12].copy_from_slice(&a.qz.to_le_bytes());
@@ -3758,9 +4524,39 @@ impl World {
             buf[26..30].copy_from_slice(&a.owner.to_le_bytes());
             buf[30..32].copy_from_slice(&a.item.to_le_bytes());
             buf[32..34].copy_from_slice(&a.damage.to_le_bytes());
-            buf[34..36].copy_from_slice(&a.life.to_le_bytes());
+            buf[34..36].copy_from_slice(&a.structure.to_le_bytes());
+            buf[36..38].copy_from_slice(&a.life.to_le_bytes());
+            buf[38..40].copy_from_slice(&a.round.to_le_bytes());
             h.update(&buf);
             h.update(&a.flown.to_le_bytes());
+        }
+        // Arrows that have landed (`spent.rs`). Length-prefixed, unlike the
+        // block above — this store is dense with an explicit `len` where
+        // `Arrows` is a slotted array with holes, so the count is state
+        // here and an artefact there.
+        //
+        // **The whole block is skipped while nothing has ever landed**,
+        // which is the arrow idiom's payoff kept rather than its shape:
+        // a world where no arrow has hit anything folds not one byte, so
+        // `GOLDEN_FINAL_HASH` stays evidence about the script it pins.
+        // `evictions` is part of the condition and not only of the body,
+        // because a store that filled and was then emptied by pickups has
+        // a zero length and a history — and that history is the only
+        // evidence an eviction leaves (`MAX_SPENT_ARROWS`, and
+        // `World::evictions` one field over makes the same argument about
+        // sleeping bodies).
+        if !self.spent.is_empty() || self.spent.evictions() > 0 {
+            h.update(&(self.spent.len() as u64).to_le_bytes());
+            for e in self.spent.entries() {
+                let mut buf = [0u8; 14];
+                buf[0..4].copy_from_slice(&e.qx.to_le_bytes());
+                buf[4..8].copy_from_slice(&e.qy.to_le_bytes());
+                buf[8..12].copy_from_slice(&e.qz.to_le_bytes());
+                buf[12..14].copy_from_slice(&e.round.to_le_bytes());
+                h.update(&buf);
+                h.update(&e.ready_at.to_le_bytes());
+            }
+            h.update(&self.spent.evictions().to_le_bytes());
         }
         // The animal roster, on the arrow idiom above and for its reason:
         // **skip-if-not-alive, no length prefix**, so a world whose content

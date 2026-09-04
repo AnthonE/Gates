@@ -115,6 +115,7 @@ fn hold_primary(yaw: u16, seq: u16) -> Command {
             move_z: 0,
             sel: 0,
         },
+        favour: 0,
     }
 }
 
@@ -130,6 +131,7 @@ fn stand_still(yaw: u16, seq: u16) -> Command {
             move_z: 0,
             sel: 0,
         },
+        favour: 0,
     }
 }
 
@@ -554,6 +556,7 @@ fn selected_slot_is_the_held_item_and_invalid_sel_falls_back() {
             move_z: 0,
             sel,
         },
+        favour: 0,
     };
 
     // The tool sits in hotbar slot 3; selecting it swings its row.
@@ -1085,6 +1088,7 @@ fn a_refused_swing_never_reaches_the_wall_behind_the_node() {
                 cz: bz,
                 level: 0,
                 loc: LOC_PLANE,
+                freehand: false,
             }]);
             if w.pieces.len() != 1 {
                 continue 'candidates;
@@ -1096,6 +1100,7 @@ fn a_refused_swing_never_reaches_the_wall_behind_the_node() {
                 cz: bz,
                 level: 0,
                 loc: LOC_EDGE_XLO,
+                freehand: false,
             }]);
             if w.pieces.len() != 2 {
                 continue 'candidates;

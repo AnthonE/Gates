@@ -13,14 +13,15 @@
 //! same encoder produced and can never notice the prose drifting.
 //!
 //! **Input, C→S** — `kind:4 · snapshot_ack:16 · ack_bits:32 ·
-//! first_client_tick:32 · frame_count:4`, then if any frames:
+//! playout_ticks:4 · frame_count:4`, then if any frames:
 //! `first_seq:16` and per frame `buttons:8 · yaw:16 · pitch:8 · move_x:8 ·
 //! move_z:8 · sel:3` (hotbar selector 0–5; 6–7 refuse as malformed).
 //! Frames are the client's unacked tail, oldest first, seq-consecutive by
 //! construction (seq rides the wire once).
 //!
 //! **Snapshot, S→C** — `kind:4 · tick:32 · baseline_age:8 ·
-//! last_executed_seq:16 · nudge:2 · removed_count:7 · entity_count:7`,
+//! last_executed_seq:16 · nudge:2 · buffered_depth:4 · repeat_count:3 ·
+//! removed_count:7 · entity_count:7`,
 //! then removed ids (`u32` each), then entity records. `baseline_age == 0`
 //! is the canonical zero-state (NETCODE.md §3, the Quake-3 move): every
 //! record absolute, no baseline needed. Otherwise records may delta
@@ -56,20 +57,21 @@ pub use event::{
     encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
     encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
     encode_event_door, encode_event_drank, encode_event_gather, encode_event_gather_refused,
-    encode_event_health, encode_event_hit, encode_event_impact, encode_event_inv,
-    encode_event_knock, encode_event_known, encode_event_move_refused, encode_event_moved,
-    encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
+    encode_event_health, encode_event_hit, encode_event_hurt, encode_event_impact,
+    encode_event_inv, encode_event_knock, encode_event_known, encode_event_move_refused,
+    encode_event_moved, encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
     encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
-    encode_event_removed, encode_event_research, encode_event_research_refused,
-    encode_event_research_rows, encode_event_respawn, encode_event_shot, encode_event_slot_change,
-    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_swing,
-    encode_event_vitals, encode_event_weak_mark, EventMsg, InvSlot, ItemCatalog, WireBag,
-    BAG_SYNC_BATCH, CATALOG_BATCH, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH,
-    MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH,
-    RESEARCH_BATCH, SLOT_SYNC_BATCH,
+    encode_event_reload, encode_event_reload_refused, encode_event_removed, encode_event_research,
+    encode_event_research_refused, encode_event_research_rows, encode_event_respawn,
+    encode_event_shot, encode_event_slot_change, encode_event_slot_sync, encode_event_stock,
+    encode_event_struct_hit, encode_event_swing, encode_event_vitals, encode_event_weak_mark,
+    shot_is_instant, EventMsg, InvSlot, ItemCatalog, ItemRow, WireBag, BAG_SYNC_BATCH,
+    CATALOG_BATCH, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES,
+    MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH,
+    SLOT_SYNC_BATCH,
 };
 use sim_core::input::InputFrame;
-use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
+use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSHOT_ENTITIES};
 
 /// Wire protocol version. Bumps only with a packet-layout change and
 /// regenerated goldens in the same commit (CLAUDE.md wall 6). v1 added
@@ -642,16 +644,188 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// refusal. All 96 fixtures re-key; the three snapshot cases are the only
 /// ones whose bytes carry an entity record, and the hello carries the
 /// version itself.
-pub const PROTO_VER: u16 = 48;
+///
+/// **v49 (2026-08-21): four more bits on the piece record, `plate`** (build
+/// plate v1). A column's level-0 floor stopped being a pure function of
+/// (seed, cell): the first foundation of a base pins a height and its
+/// neighbours latch to it, so the offset from the column's own terrain band
+/// is a CHOICE and has to cross. It rides `write_piece_rec` rather than a
+/// per-column lane, because a column's plate arrives with its pieces and
+/// leaves with its last one — there is no third message to forget, and no
+/// removal broadcast to write. The deploy record deliberately does NOT carry
+/// it (`write_deploy_rec` says why): the piece record for the same column
+/// already does.
+///
+/// The failure a stale client suffers is the family's usual one, and it is
+/// the loud kind rather than the quiet kind: everything after `dmg` reads
+/// short, so the record's tail is garbage, and — worse than garbage — a
+/// client that decoded a v49 stream as v48 would put every base back on the
+/// terrain it was stilted over, dropping half of them into hillsides. All 96
+/// fixtures re-key; every one carrying a piece record moves bytes.
+///
+/// **v50 (freehand placement v0, `d57dbe0`) left no paragraph here.** Said
+/// rather than quietly fixed, because the gap is the evidence: this list is
+/// maintained by hand and nothing gates it, so it is a history that can skip
+/// a row without any test noticing. Read `git log -S` for the authority.
+///
+/// **v51 (2026-08-28): `CONT_KIND_BITS` 2 → 3, one wider field on both
+/// lanes** (armor v1). Not a new message and not a new column — the
+/// *container-kind field itself* grew a bit, because `CONT_WEAR` is the
+/// fifth kind and v37 spent the last of four. Wearing is a move into it
+/// (`reference/ARMOR.md` §9.2), so this one bit is the entire wire cost of
+/// equipment: no `ACT_EQUIP`, no wear-sync message, no second mutation path
+/// into container state.
+///
+/// The failure a stale client suffers is the **quiet** kind, and it is worth
+/// naming as the exception to the run of loud ones above. The field sits
+/// mid-message on `ACT_MOVE`, `ACT_CONTAINER`, `EV_MOVED`, `EV_MOVE_REFUSED`
+/// and `EV_CONT_SYNC`, so a v50 client reading a v51 stream does not read
+/// short — it reads *shifted*: every slot index, count and item id after the
+/// kind is off by one bit, which decodes cleanly into wrong numbers. A move
+/// acknowledgement would land on the wrong slot and a container sync would
+/// fill a panel with plausible garbage. Nothing errors; the two ends simply
+/// disagree about a container, which is the trap-list disconnect arriving by
+/// the other road. That is exactly what the handshake refusal is for. All 96
+/// fixtures re-key and every one carrying a **non-zero** container address
+/// moves bytes — `action_container_close` is the exception and it is the
+/// instructive one: a close encodes `kind = CONT_SELF` with an all-zero
+/// handle, so widening the field shifted zeros into zeros and 41 bits and
+/// 42 bits both round to the same six. Four are appended for the new kind,
+/// taking the set to 100.
+///
+/// **v52 (2026-08-28): two columns on the catalog row** (equipment
+/// readout). `ItemCatalog` and `EV_CATALOG` carry `armor_pct` and
+/// `wear_slot` beside `cond_max`, nine bits per row, and `set` takes an
+/// `ItemRow` rather than a fourth and fifth positional argument.
+///
+/// The reason is v46's, one version later and worth stating as a pattern
+/// rather than an incident: **the client links no content crate**, so any
+/// fact a panel must draw either rides the catalog drip or does not exist
+/// on that side of the wire at all. `combat::worn_pct` was read on every
+/// hit and carried by nothing, so armor v1 shipped a wear container the
+/// player could fill and a screen that could not say what filling it was
+/// worth. This is also what lets the client refuse a wrong-slot drag
+/// before the round trip, on the sim's own predicate rather than a second
+/// list of what is armor.
+///
+/// A stale client's failure here is **loud**, unlike v51's: the row grew
+/// nine bits mid-message, so a v51 reader takes the next row's name length
+/// out of this row's armor bits and reads a length of 0 or one over the
+/// cap within a batch or two — `WireError::Malformed`, not plausible
+/// garbage. All 100 fixtures re-key; `event_catalog` is the only one whose
+/// bytes move for a reason other than the version prefix, and none are
+/// added or removed.
+///
+/// **v54 — a firearm announces itself, and not one bit was added to say
+/// so.** `EventMsg::Shot`'s layout is byte-identical; what changed is that
+/// `speed_mmpt == 0` acquired a meaning (*instantaneous*, low field = reach
+/// in decimetres) where it had been refused as malformed on both sides.
+/// That refusal is why this is a version turn and not a free change: a v53
+/// reader does not ignore the new pattern, it rejects the whole event as
+/// `Malformed`, so a v53 client against a v54 shard would drop every rifle
+/// report and keep every arrow. `input.rs`'s v22 note is the precedent for
+/// a bump with no layout change — the golden that moves is `hello`, which
+/// carries this number, and nothing else in the 100 shifts a byte.
+///
+/// **v55 — a torch can be put out, and it burns while it is not** (torch
+/// fuel v0, `sim-core/light.rs`). `BTN_LIGHT` takes bit 4 of the input
+/// frame's `buttons` octet, which is `input.rs`'s v22 case exactly: the
+/// field was already eight bits wide and unmasked, so **no byte moves** —
+/// what changed is that a bit crossed as garbage before and is a verb now.
+///
+/// It is a version turn for v22's reason turned around. `server/net.rs`'s
+/// `accept_input` drops any datagram carrying a bit outside `BTN_MASK` and
+/// counts it as forgery, so a **v55 client against a v54 shard has every
+/// frame it lights a torch in thrown away** — not a missing feature, a
+/// movement stall for as long as the key is held. The handshake refusing
+/// the pairing is the only correct outcome, and it is why joining
+/// `BTN_MASK` and turning this number are one commit.
+///
+/// Nothing else on the wire learns about a flame: it is derived from the
+/// latch, the item's content row and its `cond`, all three of which both
+/// ends already hold, so there is no `lit` field anywhere and the golden
+/// that moves is `hello`.
+///
+/// v56 put the **hand on the entity record**: `EntityState` gains `held`
+/// (the content item id in the body's selected hotbar slot, or nothing —
+/// `HELD_BITS` seven, `HELD_NONE` the sentinel) and `lit` (`sim-core`'s
+/// `light::is_lit`, resolved server-side). Both were derivable for your
+/// own body and unknowable for anyone else's: `SUB_INV` is your bag, the
+/// `BTN_LIGHT` latch is your input, and nothing about another player's
+/// hand had ever crossed. The absolute record grows eight bits; the delta
+/// grows one, behind a `hand_changed` flag beside `look_changed`, because
+/// eight is worth gating and one is not (`EntityState::held`'s doc has the
+/// arithmetic, and `sleeping`'s has the other side of it). Worst case is
+/// `snapshot_cap`, 64 absolute records — still inside
+/// `DATAGRAM_BUDGET_BYTES`, and `test_snapshot_cap_within_budget` is the
+/// gate that says so rather than this sentence.
+/// v57 gave the **victim** a fact. A landed blow raised `EV_HIT` to the
+/// attacker and `EV_HEALTH` to the body, and `EV_HEALTH` is an absolute
+/// number with no author and no direction — so being shot, bitten, and
+/// starving all read the same on the receiving screen, and the one thing a
+/// player needs in that second (*which way do I turn*) was the one thing the
+/// wire never carried. `EV_HURT` is the mirror of `EV_HIT`: a `SUB_HURT` of
+/// twenty bits — a four-bit bearing sector and the damage — unicast to the
+/// victim, one packet per landed blow to exactly one recipient. It is
+/// deliberately not the bystander broadcast `DECISIONS.md` §open
+/// ("attacker-side flinch v0") refuses; that refusal is about fan-out and
+/// this has none.
+/// v58 told the attacker **where** it landed. The ladder has paid x2 /
+/// x1 / x0.5 off the body part a shot crossed since limb band v0, and the
+/// wire carried only the product — so a leg hit and a graze were the same
+/// number, a headshot read as luck, and aim was the one thing in this
+/// game a player could not learn by playing it. `SUB_HIT` grows by two
+/// bits: `sim_core::collide::Part`, spent as the width that lives beside
+/// the enum rather than a wire-side copy of it. The bits were already
+/// there — `EV_HIT`'s `c` is a `u16` damage in a `u32` field — so this
+/// costs the packet two bits and the payload nothing.
+///
+/// The fourth value those two bits can hold is **refused** by the decoder
+/// rather than folded onto `Chest`. That is what makes a fourth rung (an
+/// arm, `NOW.md` §0hs item 2) a wire decision: it reddens
+/// `a_part_the_ladder_does_not_price_is_refused` instead of quietly
+/// drawing an arm hit as a chest hit.
+///
+/// **v59 — the magazine (reload v1).** Three additions and no field moved:
+/// `ACT_RELOAD` on the action lane, `SUB_RELOAD` and `SUB_RELOAD_REFUSED`
+/// on the event lane. A bump for an *addition* rather than a layout move,
+/// and `goldens.rs`'s rule is why — the subtype space's meaning changed,
+/// so a v58 client reaching a v59 shard would decode a reload refusal as
+/// `Malformed` and a v58 shard would answer `ACT_RELOAD` the same way,
+/// which is a firearm that silently never reloads rather than a mismatch
+/// anyone sees. `PROTO_VER` is exact-match gated precisely so neither side
+/// has to guess.
+///
+/// **v60 — netcode v2, slice 1 (the stop-snap kill; DECISIONS.md
+/// 2026-08-31).** One layout move: the snapshot header gains
+/// `buffered_depth:4` and `repeat_count:3` between `nudge` and the counts
+/// — the server's input-buffer gauge and its starved-reuse counter, the
+/// two numbers the client's clock controller steers on where it used to
+/// follow `nudge`'s 2-bit quantization. Behind the same bump (no wire
+/// shape of their own): a starved tick now feeds the sim the last real
+/// frame *decayed* rather than verbatim, and a throttle tick executes
+/// BOTH consumed frames (`Command::InputPair`) — the consumed-but-never-
+/// stepped older frame was one guaranteed misprediction per throttle
+/// tick, felt as the client snapping on every stop.
+///
+/// **v61 — netcode v2, slice 5 (the playout report).** One layout move on
+/// the input datagram: the dead `first_client_tick:32` — read by nothing
+/// on the server since M0 — becomes `playout_ticks:4`, the client's
+/// current adaptive interpolation delay, so lag-comp favour prices the
+/// delay each client actually renders at instead of assuming the old
+/// constant (`stats::favour_for`; the claim is clamped to the shared
+/// `PLAYOUT_MIN/MAX_TICKS` rails at the mint). Every input datagram gets
+/// 28 bits shorter. Snapshot layout unchanged.
+pub const PROTO_VER: u16 = 61;
 
-/// This game's slug in the scry catalog.
+/// This game's slug in the elo catalog.
 ///
 /// It lives here rather than only in the client because it reaches the
 /// **signed bytes**: the launcher takes the name from the SDK's `hello` and
 /// writes it into the SIWE statement, so the shard has to spell it the same
 /// way to recompute what it verifies. Two constants would be two chances to
 /// disagree, and the symptom of disagreeing is every login failing while both
-/// sides look right. `client::scry::SLUG` re-exports this one.
+/// sides look right. `client::elo::SLUG` re-exports this one.
 pub const SLUG: &str = "gates";
 
 /// Datagram kind field width.
@@ -728,6 +902,27 @@ pub const POS_Y_BITS: u32 = 14;
 pub const POS_Y_BIAS: i32 = 2048;
 pub const VEL_BITS: u32 = 14;
 pub const VEL_BIAS: i32 = 8192;
+
+/// Width of the held-item field on an entity record (v56).
+///
+/// Seven bits because six do not fit the sentinel: `MAX_ITEM_DEFS` is 64,
+/// so the ids alone fill a six-bit field exactly and "empty hand" needs a
+/// value the ids cannot take. Derived-adjacent rather than typed — the
+/// gate `held_bits_hold_every_item_the_sim_can_define` fails if
+/// `MAX_ITEM_DEFS` ever grows past what this width can carry alongside
+/// [`HELD_NONE`], which is the shape a `KIND_BITS` widening took at v27.
+pub const HELD_BITS: u32 = 7;
+
+/// The wire's "empty hand" — the all-ones code point in [`HELD_BITS`],
+/// deliberately the far end of the field from id 0 so a truncated or
+/// zeroed read reads as *holding item 0* and fails a golden rather than
+/// silently meaning "nothing" (the byte-golden hole `CLAUDE.md` names:
+/// a field that is only ever zero has no byte to pin).
+///
+/// Everything between `MAX_ITEM_DEFS` and this is refused by the decoder
+/// — `ed1cff2`'s rule, the decoder stops taking values the sim can never
+/// mean.
+pub const HELD_NONE: u16 = (1 << HELD_BITS) - 1;
 
 // Delta records: per-axis position deltas vs baseline, ±3.81 m x/z and
 // ±5.11 m y — a sprint covers 0.37 m and terminal fall 3.33 m between
@@ -876,9 +1071,9 @@ pub fn refuse_text(code: u8) -> Option<&'static str> {
     Some(match code {
         REFUSE_VERSION => "this shard runs a different build — update the game",
         REFUSE_FULL => "this shard is full",
-        REFUSE_AUTH => "this shard needs a signed identity — sign in through the scry launcher",
+        REFUSE_AUTH => "this shard needs a signed identity — sign in through the elo launcher",
         REFUSE_TICKET => {
-            "this shard checks copies and this wallet holds none — buy a copy on scry, \
+            "this shard checks copies and this wallet holds none — buy a copy on elo, \
              or play a community shard"
         }
         REFUSE_BUILD => "this shard runs a newer release — update the game",
@@ -1092,6 +1287,30 @@ const ACT_RESEARCH: u32 = 17;
 /// (`research::unlock`), so the only thing the client may claim is
 /// *which node it is pointing at*.
 const ACT_UNLOCK: u32 = 18;
+/// Take the nearest ready spent arrow in reach back into the quiver
+/// (`sim-core/spent.rs`). **Payload-free, `ACT_LOOT`'s shape and its whole
+/// argument** — an arrow lies wherever it stopped, so it has no grid
+/// address to name, and the sim re-derives the pick from the sender's own
+/// body. Nothing to forge and nothing to reach past a wall.
+///
+/// The nineteenth code, and the first spent since `ACT_UNLOCK`. It is what
+/// `reference/PROJECTILES.md` §9.7 calls piece 3, and the `PROTO_VER` bump
+/// it costs is piece 4.
+const ACT_PICKUP: u32 = 19;
+/// Fill the held weapon's magazine from the pack (`Command::Reload`,
+/// wire v59). No payload: the weapon is whatever is in the selected hotbar
+/// slot and the amount is however much the cylinder takes, so there is
+/// nothing here a client could forge that the sim would not have decided
+/// for itself.
+///
+/// **An action rather than a button bit**, and `BTN_LIGHT`'s doc gives the
+/// rule: a *level* both sides must agree on every tick is a bit, because a
+/// one-shot toggle can be inverted by a single dropped datagram; a one-shot
+/// intent the world has to acknowledge is a message, because the action
+/// lane is reliable and the input datagram is not. A reload is the second
+/// kind — it has a duration the server owns and an outcome the player is
+/// owed a sentence about.
+const ACT_RELOAD: u32 = 20;
 /// The highest live action code, named rather than counted — the event
 /// lane's `SUB_MAX` discipline, which this lane did not have.
 ///
@@ -1101,7 +1320,7 @@ const ACT_UNLOCK: u32 = 18;
 /// prevents is the worst shape of wire drift there is: an action past the
 /// field width truncates into a *live* code, and both ends then agree on
 /// bytes that mean two different things.
-const ACT_MAX: u32 = ACT_UNLOCK;
+const ACT_MAX: u32 = ACT_RELOAD;
 const _: () = assert!(
     ACT_MAX < (1 << ACTION_SUB_BITS),
     "an action subtype past the field width would truncate into a live code"
@@ -1134,7 +1353,15 @@ const _: () = assert!(
 /// Every check is against `inventory::CONT_MAX`, never against this width
 /// — the two are deliberately not the same number, and the paragraph above
 /// is what that separation buys.
-const CONT_KIND_BITS: u32 = 2;
+///
+/// **Widened to three at v51, and the paragraph above is what happened.**
+/// `CONT_WEAR` (armor v1) is the "next container kind" it names, the
+/// widening is its "first move", and the guards kept rather than deleted
+/// are the ones that start refusing again: 4 is live, 5..7 are forgeable
+/// and refuse at decode. The separation this last paragraph describes is
+/// what let the widening be one number here plus one in `event.rs` — no
+/// call site checks a *width*, so none of them had to move.
+const CONT_KIND_BITS: u32 = 3;
 /// Move-count width. Full `u16`, matching `ItemStack::count` and the
 /// stack ladder's own type, so no count a container can legally hold is
 /// unsendable. Zero refuses at decode: a move of nothing is not a move,
@@ -1182,6 +1409,29 @@ pub(crate) const DEPLOY_ROW_BITS: u32 = 4;
 /// field a hostile client can set, and it is why the band is 8 rather than a
 /// rounder 10.
 pub(crate) const DMG_BAND_BITS: u32 = 3;
+/// The piece's **plate** on the wire (build plate v1, wire v49): the signed
+/// band offset `build::plate_for` latched, carried biased so the writer needs
+/// no zig-zag.
+///
+/// **Four bits, and the width is deliberately wider than the sim's own
+/// limits.** `PLATE_RISE_MAX_BANDS` and `PLATE_SINK_MAX_BANDS` are knobs —
+/// they live in `DECISIONS.md` §open and the operator may move them — and a
+/// wire field sized exactly to today's knob is a `PROTO_VER` bump for every
+/// balance pass. Sixteen values give the whole `[-8, 7]` band range room, so
+/// the layout is a fact about the wire and the limit stays a fact about the
+/// sim, checked where it is decided (`build::place`) and again where a file
+/// is read (`worldsave.rs`). Every value the width can carry is legal here
+/// for `DMG_BAND_BITS`' reason: the sim's own clamp, not the decoder's, is
+/// what a forged plate meets.
+///
+/// `pub` for `build::anchor`'s reason, one layer over: the golden suite
+/// asserts that the sync fixture covers the FIELD rather than today's knobs,
+/// and a check that re-derived the width from the knobs would be exactly the
+/// coupling this constant exists to refuse.
+pub const PLATE_BITS: u32 = 4;
+/// What is added to a plate before it is written, so the four bits carry
+/// `[-PLATE_BIAS, PLATE_BIAS - 1]`.
+pub const PLATE_BIAS: i32 = 8;
 /// The upgrade action's target material (build.rs `MAT_*`: wood, stone,
 /// metal). Three values in two bits, so the fourth is forgeable and the
 /// decoder refuses it — the same posture as the hotbar selector.
@@ -1190,6 +1440,12 @@ const BUILD_MAT_BITS: u32 = 2;
 /// bits hold it and the two forgeable values above it refuse at decode,
 /// the same posture as the hotbar selector.
 const ACTION_SLOT_BITS: u32 = 5;
+
+/// The freehand flag's width on `ActionMsg::Place` (freehand placement
+/// v0). One, and named rather than a literal `1` so the write and the read
+/// cannot drift apart — the `a`/`b` positional-payload trap in CLAUDE.md is
+/// the same defect one field over.
+const PLACE_FREEHAND_BITS: u32 = 1;
 
 /// One decoded C→S action. The wire enforces shape (recipe inside the
 /// sim's table, a live index, a nonzero count); meaning — does the recipe
@@ -1205,12 +1461,28 @@ pub enum ActionMsg {
     /// loc). Shape here too: address inside the grid, row inside the
     /// table; support/terrain/cost are the sim's verdict, delivered as a
     /// build-refused event.
+    ///
+    /// `freehand` declines the plate latch (freehand placement v0,
+    /// `DECISIONS.md` 2026-08-22): the column takes its OWN terrain band
+    /// instead of adopting a built orthogonal neighbour's floor. It has to
+    /// cross the wire and cannot be re-derived — which neighbour is built
+    /// is a fact about the store the server already has, but whether the
+    /// player WANTED that floor is a fact only the client holds. One bit,
+    /// because the alternative is the server guessing an intent.
+    ///
+    /// It cannot lift a piece off a floor its column already holds
+    /// (`build::plate_for` case 1 is untouched), so a wall still cannot
+    /// base itself a band off the floor it stands on. Declining is about
+    /// starting a NEW plate beside an old one, which is the reference's
+    /// own shape — their walls take a socket too
+    /// (`reference/BUILDING.md` §7c.3).
     Place {
         row: u16,
         cx: u16,
         cz: u16,
         level: u8,
         loc: u8,
+        freehand: bool,
     },
     /// Place baked deployable row `row` at the grid address. Same
     /// contract: the wire enforces shape, the sim delivers meaning as a
@@ -1332,6 +1604,13 @@ pub enum ActionMsg {
     /// there is no id here to forge, no address to aim past a wall, and
     /// no way to loot something the sender is not standing on.
     Loot,
+    /// Take the nearest ready spent arrow in reach (`sim-core/spent.rs`).
+    /// **Payload-free for `Loot`'s reason exactly**, and it is the second
+    /// message on this lane to be so: the thing it acts on lies where it
+    /// fell rather than at an address. The one way it differs from `Loot`
+    /// is invisible from here — the sim's pick is a three-dimensional one,
+    /// because an arrow can be lodged above your head.
+    Pickup,
     /// Eat what is in inventory slot `slot` (survival.rs). The slot is
     /// shape-checked here — past the sim's array it does not decode — and
     /// everything else is the sim's verdict: an empty hand, a stack of
@@ -1355,6 +1634,10 @@ pub enum ActionMsg {
     /// sender's own body. There is no position here to forge, no reach to
     /// stretch, and no way to drink an ocean from a hilltop.
     Drink,
+    /// Fill the held weapon's magazine from the pack (`Command::Reload`).
+    /// No payload for `Drink`'s reason: the sim already knows the hand and
+    /// the amount, so there is nothing here to forge.
+    Reload,
     /// Answer the death screen: `on_bag` asks to wake on the nearest of
     /// your own ready sleeping bags, false asks for a beach (ALPHA.md §1,
     /// "choose beach or a bag").
@@ -1488,6 +1771,14 @@ pub fn encode_action_respawn(on_bag: bool, buf: &mut [u8]) -> Result<usize, Wire
     Ok(w.finish())
 }
 
+/// The reload verb. No payload — see `ActionMsg::Reload`.
+pub fn encode_action_reload(buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_RELOAD, ACTION_SUB_BITS)?;
+    Ok(w.finish())
+}
+
 /// The drink verb. No payload — see `ActionMsg::Drink`.
 pub fn encode_action_drink(buf: &mut [u8]) -> Result<usize, WireError> {
     let mut w = BitWriter::new(buf);
@@ -1540,6 +1831,15 @@ pub fn encode_action_loot(buf: &mut [u8]) -> Result<usize, WireError> {
     Ok(w.finish())
 }
 
+/// `ActionMsg::Pickup` — take the nearest ready spent arrow in reach.
+/// Payload-free, so this is the whole frame: a kind and a subtype.
+pub fn encode_action_pickup(buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_PICKUP, ACTION_SUB_BITS)?;
+    Ok(w.finish())
+}
+
 pub fn encode_action_craft(recipe: u16, count: u16, buf: &mut [u8]) -> Result<usize, WireError> {
     if recipe as usize >= sim_core::limits::MAX_RECIPES
         || count == 0
@@ -1572,6 +1872,7 @@ pub fn encode_action_place(
     cz: u16,
     level: u8,
     loc: u8,
+    freehand: bool,
     buf: &mut [u8],
 ) -> Result<usize, WireError> {
     if row as usize >= sim_core::limits::MAX_PIECE_DEFS
@@ -1590,6 +1891,9 @@ pub fn encode_action_place(
     w.write(cz as u32, BUILD_CELL_BITS)?;
     w.write(level as u32, BUILD_LEVEL_BITS)?;
     w.write(loc as u32, BUILD_LOC_BITS)?;
+    // Width-exact: a bool has two values and the field has two, so unlike
+    // the row and the loc above there is nothing here to forge.
+    w.write(freehand as u32, PLACE_FREEHAND_BITS)?;
     Ok(w.finish())
 }
 
@@ -1866,6 +2170,7 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
             // Coord/level widths are exact; the row and — since the loc
             // field widened past its ten live values (v40) — the loc can
             // both be forged.
+            let freehand = r.read(PLACE_FREEHAND_BITS)? != 0;
             if row as usize >= sim_core::limits::MAX_PIECE_DEFS || loc > loc_max(false) {
                 return Err(WireError::Malformed);
             }
@@ -1875,6 +2180,7 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
                 cz,
                 level,
                 loc,
+                freehand,
             }
         }
         ACT_DEPLOY => {
@@ -2022,6 +2328,7 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
             }
         }
         ACT_LOOT => ActionMsg::Loot,
+        ACT_PICKUP => ActionMsg::Pickup,
         ACT_CONSUME => {
             let slot = r.read(ACTION_SLOT_BITS)? as u8;
             if slot as usize >= sim_core::limits::INV_SLOTS {
@@ -2044,6 +2351,7 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
             ActionMsg::Unlock { recipe }
         }
         ACT_DRINK => ActionMsg::Drink,
+        ACT_RELOAD => ActionMsg::Reload,
         ACT_RESPAWN => ActionMsg::Respawn {
             on_bag: r.read_bit()?,
         },
@@ -2127,25 +2435,26 @@ pub struct InputDatagram {
     pub snapshot_ack: u16,
     /// Bit n set ⇒ snapshot tick `snapshot_ack − n − 1` also applied.
     pub ack_bits: u32,
-    /// Client tick of `frames[0]`; with no frames, the client's current
-    /// tick. **Nothing on the server reads it.** This line used to say the
-    /// field "feeds the server's clock estimate", which described an
-    /// estimate that was never built: `Core::push_input` folds the acks and
-    /// the frame tail and drops the rest, and the accessor below has no
-    /// callers. It stays on the wire because taking it off is a layout
-    /// change (wall 6) and because it is what a clock estimate would be
-    /// built from — the field is not evidence that one exists.
-    pub first_client_tick: u32,
+    /// The client's current playout delay in ticks — how far in the past
+    /// it renders remote bodies — **4 bits, saturating at 15** (netcode v2
+    /// S5, wire v61). The server clamps it to the shared rails
+    /// (`PLAYOUT_MIN/MAX_TICKS`) before lag-comp favour prices it, so a
+    /// forged value buys nothing an honest client at max jitter would not
+    /// get. This replaced `first_client_tick:32` — a field nothing on the
+    /// server ever read, kept only because removing it was a layout
+    /// change; a bump that adds a field is the one free moment to reclaim
+    /// one, and 28 of its bits come off every input datagram with it.
+    pub playout_ticks: u8,
     frames: [InputFrame; MAX_INPUT_FRAMES],
     frame_count: u8,
 }
 
 impl InputDatagram {
-    pub fn new(snapshot_ack: u16, ack_bits: u32, first_client_tick: u32) -> Self {
+    pub fn new(snapshot_ack: u16, ack_bits: u32, playout_ticks: u8) -> Self {
         Self {
             snapshot_ack,
             ack_bits,
-            first_client_tick,
+            playout_ticks: playout_ticks.min(0xF),
             frames: [InputFrame::default(); MAX_INPUT_FRAMES],
             frame_count: 0,
         }
@@ -2171,11 +2480,6 @@ impl InputDatagram {
     pub fn frames(&self) -> &[InputFrame] {
         &self.frames[..self.frame_count as usize]
     }
-
-    /// Client tick of frame `i` (ticks advance in lockstep with seqs).
-    pub fn client_tick_of(&self, i: usize) -> u32 {
-        self.first_client_tick.wrapping_add(i as u32)
-    }
 }
 
 pub fn encode_input(dg: &InputDatagram, buf: &mut [u8]) -> Result<usize, WireError> {
@@ -2183,7 +2487,7 @@ pub fn encode_input(dg: &InputDatagram, buf: &mut [u8]) -> Result<usize, WireErr
     w.write(KIND_INPUT, KIND_BITS)?;
     w.write(dg.snapshot_ack as u32, 16)?;
     w.write(dg.ack_bits, 32)?;
-    w.write(dg.first_client_tick, 32)?;
+    w.write(dg.playout_ticks.min(0xF) as u32, 4)?;
     let frames = dg.frames();
     w.write(frames.len() as u32, FRAME_COUNT_BITS)?;
     if let Some(first) = frames.first() {
@@ -2230,12 +2534,12 @@ pub fn decode_input(buf: &[u8]) -> Result<InputDatagram, WireError> {
     }
     let snapshot_ack = r.read(16)? as u16;
     let ack_bits = r.read(32)?;
-    let first_client_tick = r.read(32)?;
+    let playout_ticks = r.read(4)? as u8;
     let count = r.read(FRAME_COUNT_BITS)? as usize;
     if count > MAX_INPUT_FRAMES {
         return Err(WireError::Malformed);
     }
-    let mut dg = InputDatagram::new(snapshot_ack, ack_bits, first_client_tick);
+    let mut dg = InputDatagram::new(snapshot_ack, ack_bits, playout_ticks);
     if count > 0 {
         let first_seq = r.read(16)? as u16;
         for i in 0..count {
@@ -2297,11 +2601,28 @@ pub struct SnapshotHeader {
     /// prediction reconciliation (DESIGN.md §5.6).
     pub last_executed_seq: u16,
     pub nudge: Nudge,
+    /// Post-consume input-buffer depth this tick, **4 bits, saturating at
+    /// 15** (netcode v2). The buffer caps at `INPUT_BUFFER_CAP` (16), so
+    /// the one unrepresentable value reads as its neighbor — a stated
+    /// policy on a gauge, not the silent range clamp this codec refuses
+    /// for sim values: 15 already means "far past every threshold that
+    /// matters" (`INPUT_THROTTLE_DEPTH` is 6). The client's dilation
+    /// controller steers on this number where it used to follow `nudge`'s
+    /// 2-bit quantization of it.
+    pub buffered_depth: u8,
+    /// Consecutive ticks the sim has covered for a missing frame by
+    /// re-running the last real one decayed (`sim_core::input::decay_frame`)
+    /// — **3 bits, saturating at 7**, and ≥ `DECAY_STEPS` (3) means the
+    /// stand-in is fully spent and the body stands still. Zero on every
+    /// fed tick. Diagnostics and honesty, not control: the client cannot
+    /// replay ghosts it may never hear about (a starved link is a lossy
+    /// link), so reconcile absorbs them instead.
+    pub repeat_count: u8,
 }
 
 /// One class-D entity as the wire sees it: the quantized body (the sim
 /// runs on exactly these values — NETCODE.md §3) plus view yaw/pitch.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EntityState {
     pub id: u32,
     /// Position in world-absolute quanta (3 cm x/z, 1 cm y — `movement.rs`).
@@ -2345,6 +2666,80 @@ pub struct EntityState {
     pub dead: bool,
     pub yaw: u16,
     pub pitch: u8,
+    /// **What this body is holding**, as the content item id in its
+    /// selected hotbar slot, or `None` for an empty hand.
+    ///
+    /// The item id and not a model index, because the alternative is a
+    /// *client* table on the wire: `client/ui/hold.rs`'s `HELD_MODELS` is
+    /// keyed on the normalised display name and its doc already refuses
+    /// this — "an item→model id on the wire, which is wall 6 for a fact
+    /// the client can already derive". The catalog crosses the wire
+    /// already, so an id is a fact both ends hold and a row index is a
+    /// second authority for the same thing.
+    ///
+    /// **`Option` rather than a sentinel, and that is the field's one
+    /// design decision.** `EntityState::default()` fills a baseline buffer
+    /// in two places (`server/core.rs`, and every golden's zero baseline),
+    /// and a `u16` sentinel would have to be *typed* into each of them —
+    /// a derived `Default` would say `held: 0`, which is not "empty hand",
+    /// it is item id 0. The wire still spends a sentinel
+    /// ([`HELD_NONE`]) because bits have no niche; the type is what keeps
+    /// the default honest.
+    ///
+    /// Delta-gated behind one `hand_changed` bit, unlike
+    /// [`Self::sleeping`] and [`Self::dead`] — and the difference is
+    /// arithmetic, not taste. Those are one bit each, so a change flag
+    /// would spend a bit to save a bit; this pair is eight, so the flag
+    /// spends one to save eight on every record of every body that did
+    /// not switch hotbar slots this snapshot, which is nearly all of them.
+    /// Same shape as `look_changed`, which is here for the same reason.
+    pub held: Option<u16>,
+    /// **And it is on fire.** `sim-core/light.rs` `is_lit` — the latch,
+    /// the content row and the fuel, resolved server-side once a tick.
+    ///
+    /// Derived on the server and sent, rather than derived on the client
+    /// from [`Self::held`], because two of `is_lit`'s three facts are
+    /// *not* on this record: the `BTN_LIGHT` latch is the holder's own
+    /// input and the stack's `cond` is the holder's own inventory.
+    /// `SUB_INV` carries condition for your own bag and nobody else's, so
+    /// a client asked to derive this would have to guess, and the guess it
+    /// would make is "a torch is always lit" — which is the whole of
+    /// `ALPHA.md` §1's disclosure running backwards.
+    pub lit: bool,
+}
+
+impl EntityState {
+    /// The zero record: at the origin, on the ground, awake, alive,
+    /// **empty-handed and unlit**.
+    ///
+    /// A `const` and not only a `Default` because the baseline buffers are
+    /// fixed arrays (`server/core.rs`, `goldens.rs`) and one of them wants
+    /// to be built in a const context; both spellings resolve here, so
+    /// there is one place that decides what an unfilled record claims.
+    pub const EMPTY: Self = Self {
+        id: 0,
+        qx: 0,
+        qy: 0,
+        qz: 0,
+        qvy: 0,
+        grounded: false,
+        sleeping: false,
+        dead: false,
+        yaw: 0,
+        pitch: 0,
+        held: None,
+        lit: false,
+    };
+}
+
+impl Default for EntityState {
+    /// **Hand-written, and that is the point** — see [`Self::held`]. A
+    /// derived `Default` fills `held` with `Some`-shaped nothing in the
+    /// `u16` spelling this field deliberately does not use; here the empty
+    /// hand is the default because [`Self::EMPTY`] says so once.
+    fn default() -> Self {
+        Self::EMPTY
+    }
 }
 
 /// Incremental snapshot encoder — the priority-fill loop's tool
@@ -2431,6 +2826,8 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
         w.write(header.baseline_age as u32, 8)?;
         w.write(header.last_executed_seq as u32, 16)?;
         w.write(header.nudge as u32, 2)?;
+        w.write(header.buffered_depth.min(0xF) as u32, 4)?;
+        w.write(header.repeat_count.min(0x7) as u32, 3)?;
         let removed_count_at = w.bit_pos();
         w.write(0, COUNT_BITS)?;
         let entity_count_at = w.bit_pos();
@@ -2559,9 +2956,15 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
         let pos_changed = dx != 0 || dy != 0 || dz != 0;
         let vel_changed = e.qvy != b.qvy;
         let look_changed = e.yaw != b.yaw || e.pitch != b.pitch;
+        // One flag over both hand facts, not two. They move together in
+        // every case that matters — a hotbar switch changes what is held
+        // and puts the flame out in the same tick — and a torch that
+        // burns out changes `lit` alone, which is one flag either way.
+        let hand_changed = e.held != b.held || e.lit != b.lit;
         self.w.write_bit(pos_changed)?;
         self.w.write_bit(vel_changed)?;
         self.w.write_bit(look_changed)?;
+        self.w.write_bit(hand_changed)?;
         self.w.write_bit(e.grounded)?;
         self.w.write_bit(e.sleeping)?;
         self.w.write_bit(e.dead)?;
@@ -2580,6 +2983,9 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
             self.w.write(e.yaw as u32, 16)?;
             self.w.write(e.pitch as u32, 8)?;
         }
+        if hand_changed {
+            self.write_hand(e)?;
+        }
         Ok(())
     }
 
@@ -2594,6 +3000,17 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
         self.write_vel(e.qvy)?;
         self.w.write(e.yaw as u32, 16)?;
         self.w.write(e.pitch as u32, 8)?;
+        self.write_hand(e)?;
+        Ok(())
+    }
+
+    /// The hand, both facts, in the order the decoder reads them.
+    /// `check_ranges` has already refused an id this field cannot hold,
+    /// so the `unwrap_or` below is the sentinel and never a truncation.
+    fn write_hand(&mut self, e: &EntityState) -> Result<(), WireError> {
+        self.w
+            .write(e.held.unwrap_or(HELD_NONE) as u32, HELD_BITS)?;
+        self.w.write_bit(e.lit)?;
         Ok(())
     }
 
@@ -2627,6 +3044,14 @@ fn check_ranges(e: &EntityState) -> Result<(), WireError> {
         || !in_window(e.qz as i64, 0, POS_XZ_BITS)
         || !in_window(e.qvy as i64, VEL_BIAS, VEL_BITS)
     {
+        return Err(WireError::Range);
+    }
+    // The hand, checked here for the reason the header states: up front,
+    // so a `Range` refusal never needs a rollback. An id at or past
+    // `MAX_ITEM_DEFS` is not a truncation risk — it would fit seven bits
+    // — it is a value the sim cannot mean, and the decoder refuses the
+    // same band, so the two ends agree about what is representable.
+    if e.held.is_some_and(|h| h as usize >= MAX_ITEM_DEFS) {
         return Err(WireError::Range);
     }
     Ok(())
@@ -2692,6 +3117,8 @@ fn read_snapshot_header(r: &mut BitReader) -> Result<SnapshotHeader, WireError> 
         baseline_age: r.read(8)? as u8,
         last_executed_seq: r.read(16)? as u16,
         nudge: Nudge::from_bits(r.read(2)?),
+        buffered_depth: r.read(4)? as u8,
+        repeat_count: r.read(3)? as u8,
     })
 }
 
@@ -2755,6 +3182,8 @@ fn decode_entity(
             dead,
             yaw: r.read(16)? as u16,
             pitch: r.read(8)? as u8,
+            held: read_held(r)?,
+            lit: r.read_bit()?,
         });
     }
     if baseline_age == 0 {
@@ -2768,6 +3197,7 @@ fn decode_entity(
     let pos_changed = r.read_bit()?;
     let vel_changed = r.read_bit()?;
     let look_changed = r.read_bit()?;
+    let hand_changed = r.read_bit()?;
     e.grounded = r.read_bit()?;
     e.sleeping = r.read_bit()?;
     e.dead = r.read_bit()?;
@@ -2787,7 +3217,28 @@ fn decode_entity(
         e.yaw = r.read(16)? as u16;
         e.pitch = r.read(8)? as u8;
     }
+    if hand_changed {
+        e.held = read_held(r)?;
+        e.lit = r.read_bit()?;
+    }
     Ok(e)
+}
+
+/// The held-item field, with the band the sim cannot mean refused.
+///
+/// `MAX_ITEM_DEFS..HELD_NONE` is 63 unreachable code points and a decoder
+/// that accepted them would hand the renderer an id no catalog row
+/// answers — a silent empty hand at best, and at worst a lookup that
+/// depends on which crate's bounds check runs first.
+fn read_held(r: &mut BitReader) -> Result<Option<u16>, WireError> {
+    let v = r.read(HELD_BITS)? as u16;
+    if v == HELD_NONE {
+        return Ok(None);
+    }
+    if v as usize >= MAX_ITEM_DEFS {
+        return Err(WireError::Range);
+    }
+    Ok(Some(v))
 }
 
 fn read_vel(r: &mut BitReader) -> Result<i32, WireError> {
@@ -2835,6 +3286,8 @@ mod tests {
             dead: false,
             yaw: 0x1234,
             pitch: 7,
+            held: None,
+            lit: false,
         }
     }
 
@@ -2858,6 +3311,8 @@ mod tests {
             baseline_age: 0,
             last_executed_seq: 0,
             nudge: Nudge::Ok,
+            buffered_depth: 0,
+            repeat_count: 0,
         };
         let baseline = [ent(1)];
         let mut buf = [0u8; 64];
@@ -2882,6 +3337,8 @@ mod tests {
             baseline_age: 1,
             last_executed_seq: 0,
             nudge: Nudge::Ok,
+            buffered_depth: 0,
+            repeat_count: 0,
         };
         let mut buf = [0u8; DATAGRAM_BUDGET_BYTES];
         let full: Vec<EntityState> = (0..MAX_SNAPSHOT_ENTITIES as u32).map(ent).collect();
@@ -2908,6 +3365,8 @@ mod tests {
             baseline_age: 1,
             last_executed_seq: 0,
             nudge: Nudge::Ok,
+            buffered_depth: 0,
+            repeat_count: 0,
         };
         // Ids shaped like the shard's: `(generation << 8) | slot` for
         // players and the mob tag above them, so the probe meets the same
@@ -2925,21 +3384,203 @@ mod tests {
         let mut enc = SnapshotEncoder::begin(&mut buf, &hdr, &baseline).expect("begin");
         for b in &baseline {
             // Identical to its baseline record: a found delta writes the id
-            // plus seven flag bits and nothing else — six until v48 added
-            // `dead` beside `sleeping`.
+            // plus eight flag bits and nothing else — six until v48 added
+            // `dead` beside `sleeping`, seven until v56 added
+            // `hand_changed` beside `look_changed`.
             assert_eq!(enc.add_entity(b), Ok(()), "entity {} did not fit", b.id);
         }
         let len = enc.finish().expect("finish");
-        // 64 entities × (32 id bits + 7 delta bits) plus the header; an
-        // absolute record is 32 + 67 bits, so a single missed lookup adds
-        // 60 bits and this bound catches it.
-        let head_bits = KIND_BITS + 32 + 8 + 16 + 2 + COUNT_BITS * 2;
-        let want = (head_bits as usize + MAX_SNAPSHOT_ENTITIES * 39).div_ceil(8);
+        // 64 entities × (32 id bits + 8 delta bits) plus the header. An
+        // at-rest absolute record is 32 + 85 (1 is_delta + 17 + 14 + 17 +
+        // 3 flags + 1 at-rest + 16 + 8 + `HELD_BITS` + 1 lit), so a single
+        // missed lookup adds 77 bits and this bound catches it.
+        let head_bits = KIND_BITS + 32 + 8 + 16 + 2 + 4 + 3 + COUNT_BITS * 2;
+        let want = (head_bits as usize + MAX_SNAPSHOT_ENTITIES * 40).div_ceil(8);
         assert_eq!(
             len, want,
             "the encoder wrote {len} B where {want} B is every entity delta-coded \
              — a baseline id the index failed to find fell back to absolute"
         );
+    }
+
+    /// **The width is a claim about `sim-core`, so it is checked against
+    /// `sim-core`.** `HELD_BITS` is seven because six hold the ids and
+    /// none hold the sentinel; if `MAX_ITEM_DEFS` ever grows past what
+    /// this field can carry alongside `HELD_NONE`, that is a wire
+    /// widening and a `PROTO_VER` turn, exactly as `KIND_BITS` was at
+    /// v27 — and it must fail here rather than silently truncating an id
+    /// into another item.
+    #[test]
+    fn held_bits_hold_every_item_the_sim_can_define() {
+        assert!(
+            MAX_ITEM_DEFS <= HELD_NONE as usize,
+            "MAX_ITEM_DEFS is {MAX_ITEM_DEFS}, which does not fit \
+             {HELD_BITS} bits beside the {HELD_NONE} sentinel"
+        );
+        // And the sentinel is genuinely out of the sim's reach, not just
+        // at its edge: an id equal to `HELD_NONE` would decode as an
+        // empty hand.
+        assert!(HELD_NONE as usize >= MAX_ITEM_DEFS);
+    }
+
+    /// **An unfilled record is empty-handed**, which is the whole reason
+    /// `held` is an `Option` and not a `u16` with a typed sentinel. Two
+    /// baseline buffers in this repo are `[EntityState::default(); N]`
+    /// (`server/core.rs`, every golden's zero baseline) and a derived
+    /// `Default` would fill them with `held: 0` — a real item id.
+    #[test]
+    fn an_unfilled_record_is_empty_handed() {
+        assert_eq!(EntityState::default().held, None);
+        assert!(!EntityState::default().lit);
+        assert_eq!(EntityState::default(), EntityState::EMPTY);
+    }
+
+    /// **The hand survives both encoder paths, and the delta gate is
+    /// checked for its EFFECT and not only its correctness.**
+    ///
+    /// `CLAUDE.md`'s water-carry trap is the reason for the second half:
+    /// a `hand_changed` flag that were always `true` would produce
+    /// bit-identical *values* on the other side and buy nothing, and
+    /// every round-trip assertion here would still pass. So the size is
+    /// asserted too, and asserted **exactly** — eight records at a time,
+    /// so the eight bits each one saves come to a whole byte and the
+    /// tail padding cancels instead of hiding the difference.
+    #[test]
+    fn the_hand_survives_both_encoder_paths() {
+        let hdr = SnapshotHeader {
+            tick: 7,
+            baseline_age: 0,
+            last_executed_seq: 0,
+            nudge: Nudge::Ok,
+            buffered_depth: 0,
+            repeat_count: 0,
+        };
+        // Eight bodies, so a per-record bit difference lands on a byte
+        // boundary. The first three carry the cases that matter on the
+        // absolute path: an item with the flame on, an item with it off,
+        // and an empty hand — so neither field can be read as the other.
+        let mut want: Vec<EntityState> = (1..=8).map(ent).collect();
+        want[0].held = Some(41);
+        want[0].lit = true;
+        want[1].held = Some(6);
+        want[2].held = None;
+        let mut buf = [0u8; 512];
+        let mut enc = SnapshotEncoder::begin(&mut buf, &hdr, &[]).unwrap();
+        for e in &want {
+            enc.add_entity(e).unwrap();
+        }
+        let len = enc.finish().unwrap();
+        let got = decode_snapshot(&buf[..len], &[]).unwrap();
+        assert_eq!(got.entities(), &want[..], "absolute path");
+
+        // Delta, against those eight as the baseline.
+        let hdr = SnapshotHeader {
+            baseline_age: 1,
+            ..hdr
+        };
+        let encode = |set: &[EntityState]| -> usize {
+            let mut buf = [0u8; 512];
+            let mut enc = SnapshotEncoder::begin(&mut buf, &hdr, &want).unwrap();
+            for e in set {
+                enc.add_entity(e).unwrap();
+            }
+            let len = enc.finish().unwrap();
+            let got = decode_snapshot(&buf[..len], &want).unwrap();
+            assert_eq!(got.entities(), set, "delta path");
+            len
+        };
+        // Nothing moved: eight floor records.
+        let still = encode(&want);
+        // Every hand moved, one per kind of change, cycling so all three
+        // directions are covered and every record pays the field.
+        let moved: Vec<EntityState> = want
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                let mut e = *e;
+                match i % 3 {
+                    0 => e.lit = !e.lit,               // the flame alone
+                    1 => e.held = Some(7),             // the item alone
+                    _ => e.held = e.held.xor(Some(9)), // to and from empty
+                }
+                e
+            })
+            .collect();
+        let hands = encode(&moved);
+        assert_eq!(
+            hands - still,
+            8,
+            "eight changed hands cost {} B over eight unchanged ones, not 8 \
+             — one byte per record is the field, so this is the gate on the \
+             flag doing anything at all",
+            hands - still
+        );
+        // …and the floor itself: an unchanged record is 40 bits, 32 id +
+        // 8 flags. If it is 47 the hand is not gated and every still body
+        // pays for it on every snapshot.
+        let one = encode(&want[..1]);
+        let two = encode(&want[..2]);
+        assert_eq!((two - one) * 8, 40, "the unchanged floor moved");
+    }
+
+    /// **The encoder refuses an item id the sim cannot mean**, up front,
+    /// so a `Range` never needs a rollback — `check_ranges`' contract,
+    /// extended to the field v56 added.
+    #[test]
+    fn an_item_id_past_the_catalog_is_refused_not_truncated() {
+        let hdr = SnapshotHeader {
+            tick: 1,
+            baseline_age: 0,
+            last_executed_seq: 0,
+            nudge: Nudge::Ok,
+            buffered_depth: 0,
+            repeat_count: 0,
+        };
+        let mut buf = [0u8; 128];
+        let mut enc = SnapshotEncoder::begin(&mut buf, &hdr, &[]).unwrap();
+        let mut bad = ent(1);
+        bad.held = Some(MAX_ITEM_DEFS as u16);
+        assert_eq!(enc.add_entity(&bad), Err(WireError::Range));
+        // The last legal id still fits, so the bound is exact rather than
+        // conservative.
+        let mut ok = ent(2);
+        ok.held = Some(MAX_ITEM_DEFS as u16 - 1);
+        assert_eq!(enc.add_entity(&ok), Ok(()));
+    }
+
+    /// **And the decoder refuses the same band**, which is the half a
+    /// hostile datagram reaches. `MAX_ITEM_DEFS..HELD_NONE` is 63 code
+    /// points no catalog row answers; accepting one hands the renderer an
+    /// id whose behaviour depends on which crate's bounds check runs
+    /// first.
+    ///
+    /// Driven at `read_held` rather than through a patched packet, and
+    /// the reason is that `read_held` is the **only** reader of this
+    /// field — both `decode_entity` paths call it and nothing else does
+    /// (`grep`), so an exhaustive sweep here is an exhaustive sweep of
+    /// the wire. What a packet-level test would add is coverage of the
+    /// field's *position*, and that is what the goldens pin.
+    #[test]
+    fn the_decoder_refuses_the_unreachable_item_band() {
+        let read = |v: u16| -> Result<Option<u16>, WireError> {
+            let mut buf = [0u8; 4];
+            let n = {
+                let mut w = BitWriter::new(&mut buf);
+                w.write(v as u32, HELD_BITS).expect("the field fits");
+                w.finish()
+            };
+            read_held(&mut BitReader::new(&buf[..n]))
+        };
+        // Every unreachable code point, all 63 of them.
+        for v in MAX_ITEM_DEFS as u16..HELD_NONE {
+            assert_eq!(read(v), Err(WireError::Range), "id {v} was accepted");
+        }
+        // Both ends of the legal range are taken, so the bound is exact
+        // and not conservative in either direction.
+        assert_eq!(read(0), Ok(Some(0)));
+        assert_eq!(read(MAX_ITEM_DEFS as u16 - 1), Ok(Some(63)));
+        // And the sentinel is an empty hand rather than an id.
+        assert_eq!(read(HELD_NONE), Ok(None));
     }
 
     #[test]
@@ -2949,6 +3590,8 @@ mod tests {
             baseline_age: 0,
             last_executed_seq: 0,
             nudge: Nudge::Ok,
+            buffered_depth: 0,
+            repeat_count: 0,
         };
         let mut buf = [0u8; 128];
         let mut enc = SnapshotEncoder::begin(&mut buf, &hdr, &[]).unwrap();
@@ -2963,6 +3606,8 @@ mod tests {
             baseline_age: 0,
             last_executed_seq: 0,
             nudge: Nudge::Ok,
+            buffered_depth: 0,
+            repeat_count: 0,
         };
         let mut buf = [0u8; 128];
         let mut enc = SnapshotEncoder::begin(&mut buf, &hdr, &[]).unwrap();
@@ -2981,6 +3626,8 @@ mod tests {
             baseline_age: 0,
             last_executed_seq: 5,
             nudge: Nudge::Ok,
+            buffered_depth: 0,
+            repeat_count: 0,
         };
         // Room for the header and one absolute record, not two.
         let mut buf = [0u8; 28];
@@ -3104,19 +3751,37 @@ mod tests {
             encode_action_container(CONT_SELF, 1, &mut buf),
             Err(WireError::Range)
         );
-        // The kind field is **saturated** as of wire v37 (world containers
-        // v0): `CONT_MAX` is 3 and the field is two bits, so there is no
-        // longer a bit pattern that decodes as a forged kind, and the
-        // forged-kind half of this test cannot be written any more. That
-        // is a real change in the wire's shape, so it is asserted rather
-        // than deleted — the day a fifth kind widens `CONT_KIND_BITS`,
-        // this line goes red and the forged case becomes writable again.
-        assert_eq!(
-            CONT_MAX as u32,
-            (1 << CONT_KIND_BITS) - 1,
-            "the container-kind field is saturated; if it was widened, \
-             restore the forged-kind decode case below it"
+        // **That day came: wire v51 (armor v1) widened the field to three
+        // bits for `CONT_WEAR`, and the forged case below is writable
+        // again** — which is the whole reason the assert that used to
+        // stand here was written as an assert instead of a deletion. It
+        // went red on the widening commit and pointed at this paragraph.
+        //
+        // So the field now has headroom, and headroom is a thing a
+        // decoder has to refuse rather than pass along: 5, 6 and 7 encode
+        // fine as bit patterns and name no container. Every one of them
+        // is checked, not just the first, because the guard being
+        // defended is `kind > CONT_MAX` and an off-by-one there —
+        // `>=`, or a mask — passes exactly one of these three.
+        assert!(
+            (CONT_MAX as u32) < (1 << CONT_KIND_BITS) - 1,
+            "the container-kind field is saturated again; the forged-kind \
+             cases below cannot fire and must be replaced by the assert \
+             this paragraph describes"
         );
+        for forged in (CONT_MAX as u32 + 1)..(1 << CONT_KIND_BITS) {
+            let mut w = BitWriter::new(&mut buf);
+            w.write(KIND_ACTION, KIND_BITS).unwrap();
+            w.write(ACT_CONTAINER, ACTION_SUB_BITS).unwrap();
+            w.write(forged, CONT_KIND_BITS).unwrap();
+            w.write(0, 32).unwrap();
+            let len = w.finish();
+            assert_eq!(
+                decode_action(&buf[..len]),
+                Err(WireError::Malformed),
+                "forged container kind {forged} decoded"
+            );
+        }
 
         let mut w = BitWriter::new(&mut buf);
         w.write(KIND_ACTION, KIND_BITS).unwrap();
@@ -3148,10 +3813,10 @@ mod tests {
     /// not slip in against a stale one.
     #[test]
     fn the_action_lane_has_the_room_it_claims() {
-        assert_eq!(ACT_MAX, ACT_UNLOCK);
+        assert_eq!(ACT_MAX, ACT_RELOAD);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
-            13,
+            11,
             "the spare action codes moved — say so where the count is written"
         );
     }

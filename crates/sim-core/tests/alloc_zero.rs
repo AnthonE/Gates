@@ -106,6 +106,7 @@ fn tick_cmds(
             Command::Input {
                 id: i as u32 + 1,
                 frame: f,
+                favour: 0,
             }
         } else if i == MAX_PLAYERS {
             Command::Craft {
@@ -136,6 +137,14 @@ fn tick_cmds(
                 cz: cell.1,
                 level,
                 loc,
+                // Alternates with the loc cycle so `plate_for`'s freehand
+                // early-out is a branch this gate actually walks (freehand
+                // placement v0). This covers what alloc_zero measures — the
+                // PATH — and deliberately claims nothing about the value:
+                // see `plate.rs` for the gate on what the bit means, and
+                // `NOW.md` §0bl item 5 for why replay and parity do not
+                // cover it.
+                freehand: loc % 2 == 0,
             }
         } else if i == MAX_PLAYERS + 3 {
             Command::Upgrade {
@@ -548,6 +557,7 @@ fn test_alloc_zero() {
                     move_z: 0,
                     sel: 0,
                 },
+                favour: 0,
             };
         }
         // Bot 6 stands still. It is the body staged to starve on top of its
@@ -562,6 +572,7 @@ fn test_alloc_zero() {
                 seq: t,
                 ..InputFrame::default()
             },
+            favour: 0,
         };
         // Both duelists reach for a bag every tick. The command array
         // grows on the stack rather than stealing a bot's input slot —

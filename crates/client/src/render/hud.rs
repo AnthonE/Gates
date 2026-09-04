@@ -17,6 +17,7 @@
 //! draw an empty bar for a player who cannot be hurt.
 
 use bevy::prelude::*;
+use sim_core::collide::Part;
 use sim_core::limits::HOTBAR_SLOTS;
 
 use super::verbs::Aimed;
@@ -107,6 +108,172 @@ const HOTBAR_CELL_PX: f32 = 46.0;
 /// How long the hitmarker flashes, seconds. Short on purpose — it is
 /// confirmation, not a readout.
 pub const HITMARK_SECS: f32 = 0.25;
+
+// ---- the hurt arc ------------------------------------------------------
+//
+// The mark that says *someone is over there and they just hit you*. Wire
+// v57's `EV_HURT` is what feeds it; before that a body being shot learned
+// only that its hp had fallen, which is the same sentence starvation writes.
+//
+// Drawn as an arc of blocks on a circle around the crosshair rather than as
+// a rotated wedge, and the reason is arithmetic rather than taste: Bevy's UI
+// has no arc primitive, so `panels/ring.rs` bakes its wedges into a texture
+// at plugin-build time, and a mark that must point in sixteen directions
+// would need sixteen of them or a rotation this file has never asked a UI
+// node for. Five square children on a circle need neither, and their
+// placement is a pure function this file can test without a window.
+
+/// How long a hurt mark holds before it is gone, seconds.
+///
+/// Long next to `HITMARK_SECS` on purpose and by an order of magnitude: a
+/// hitmarker confirms something you already knew you did, and this one is
+/// the only thing on screen telling you where to turn. It has to survive
+/// the turn.
+pub const HURT_MARK_SECS: f32 = 1.4;
+// A compile error rather than a test, because it is a relation between two
+// constants and nothing at runtime can change it: the mark that says where to
+// turn must outlive the one that confirms what you already did.
+const _: () = assert!(HURT_MARK_SECS > HITMARK_SECS);
+/// How far off the crosshair the arc sits, px, and how big one of its
+/// blocks is. Outside the prompt line and well inside the hotbar.
+const HURT_RADIUS_PX: f32 = 116.0;
+const HURT_BLOCK_PX: f32 = 7.0;
+/// How many blocks the arc is made of, and the angle between two of them.
+/// Five at 7° spans 28° — a little wider than the 22.5° sector it reports,
+/// so the arc reads as *about there* rather than as a claim of precision the
+/// sector does not have.
+pub const HURT_ARC_MARKS: usize = 5;
+const HURT_ARC_STEP_DEG: f32 = 7.0;
+/// The damage at which a mark is drawn at full strength. Below it the arc
+/// fades toward `HURT_ALPHA_MIN` of its colour, so a graze and a rifle round
+/// do not read the same (`DECISIONS.md` §open, hurt direction v0).
+const HURT_FULL_DMG: f32 = 35.0;
+const HURT_ALPHA_MIN: f32 = 0.45;
+/// The fraction of `HURT_MARK_SECS` the arc holds at full strength before
+/// it starts to go. A mark that fades from the first frame is dimmest
+/// exactly while the player is still hunting for it.
+const HURT_HOLD_FRAC: f32 = 0.5;
+/// The arc's colour. Cosmetics (`DECISIONS.md` §open, client cosmetics),
+/// and deliberately `CROSSHAIR_HIT`'s red rather than a second one: the
+/// palette already says "flesh took damage" in exactly this hue.
+const HURT_MARK_COLOR: Color = Color::srgba(0.98, 0.30, 0.24, 0.92);
+/// How many directions the ring can show at once.
+///
+/// Was one until 2026-08-30, which was the honest v0 and the wrong number
+/// the moment a fight has two people in it: two attackers on opposite sides
+/// collapsed to whichever blow the sim resolved second, so the ring was
+/// right about one real threat and silent about the other exactly when
+/// knowing about both mattered most.
+///
+/// **Three, and the ceiling is legibility rather than cost** — twenty nodes
+/// on the crosshair is nothing, and the ring itself is the scarce surface.
+/// Each arc spans 28° of a 360° ring, so three can be told apart at any
+/// spacing and a fourth starts to read as *everywhere*, which says the same
+/// thing as nothing at all. Three also covers what the sim can actually
+/// stage in one frame short of a gang-up: two attackers and a bear.
+/// Overflow evicts the arc with the least time left — the oldest threat,
+/// which is the one most likely to be dead or behind you (`Toast::hurt`).
+/// A knob (`DECISIONS.md` §open, hurt direction v1).
+pub const HURT_ARCS: usize = 3;
+
+/// One live direction on the ring.
+///
+/// `left` counts down from [`HURT_MARK_SECS`], `from` is the absolute world
+/// bearing sector it points at, and `weight` is how solid to draw it,
+/// [`HURT_ALPHA_MIN`]..=1, from the damage that arrived. Per-arc rather
+/// than shared: three blows do not land together, and a mark that inherited
+/// a neighbour's clock would vanish while its attacker was still shooting.
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+pub struct HurtArc {
+    pub left: f32,
+    pub from: u8,
+    pub weight: f32,
+}
+
+/// Where the arc's blocks sit, px from the crosshair centre, for a blow that
+/// arrived on world bearing `sector` seen by a body facing `facing_deg`.
+///
+/// The screen angle is `sector's bearing − facing`, which is the whole
+/// reason `EV_HURT` carries an **absolute** bearing: the subtraction happens
+/// here, every frame, against the yaw the client is drawing with, so the
+/// mark stays on the attacker while the player turns rather than sliding
+/// with them. Zero is up and the angle grows clockwise —
+/// `panels/wheel.rs`'s convention, and `ui::build::pick`'s.
+///
+/// `facing_deg` is a compass bearing (`crate::look::bearing_deg`), so both
+/// sides of the subtraction are clockwise-from-north and the axes are
+/// `look::bearing_of`'s. That agreement with the sim's integer twin is
+/// checked by `the_compass_walks_the_sims_bearing` and
+/// `the_arc_points_at_the_attacker_and_not_at_north`, both in this file's
+/// own test module — this line named `tests/hurt_arc.rs` until 2026-08-30
+/// and **no such file has ever existed**, which is the dead-citation shape
+/// `CLAUDE.md` warns about: the doc read as covered while the reader had no
+/// way to check without an `ls`.
+pub fn hurt_arc_px(sector: u8, facing_deg: f32) -> [(f32, f32); HURT_ARC_MARKS] {
+    let bearing = sector as f32 * (360.0 / sim_core::combat::HURT_SECTORS as f32);
+    let centre = bearing - facing_deg;
+    let mut out = [(0.0, 0.0); HURT_ARC_MARKS];
+    for (i, o) in out.iter_mut().enumerate() {
+        let off = i as f32 - (HURT_ARC_MARKS - 1) as f32 * 0.5;
+        let a = (centre + off * HURT_ARC_STEP_DEG).to_radians();
+        *o = (HURT_RADIUS_PX * a.sin(), -HURT_RADIUS_PX * a.cos());
+    }
+    out
+}
+
+/// A block of a hurt arc: which arc, then which block along it.
+///
+/// Two indices rather than one flat run, because the pair is what the
+/// drawing system needs — the arc index picks the direction and the block
+/// index picks the offset within it, and flattening them would put the
+/// division back at the read site every frame.
+#[derive(Component)]
+pub struct HurtMark(pub usize, pub usize);
+
+/// Point the hurt arc at whatever last hit you, and fade it out.
+///
+/// Reads [`Toast`] and never writes it: the latch is `feedback`'s, one
+/// system earlier, for the single-owner reason `feed.rs`'s header gives.
+/// Runs whether or not a mark is live, because the frame after the last one
+/// expires is the frame that has to blank it.
+pub fn hurt_arc(
+    toast: Res<Toast>,
+    look: Res<super::input::Look>,
+    mut marks: Query<(&HurtMark, &mut Node, &mut BackgroundColor)>,
+) {
+    let facing = crate::look::bearing_deg(look.yaw);
+    // One placement solve per live arc, reused by its blocks. The query
+    // arrives in whatever order the ECS holds the entities, so computing it
+    // per mark would run the same trig `HURT_ARC_MARKS` times for each arc.
+    let mut alpha = [0.0f32; HURT_ARCS];
+    let mut at = [[(0.0f32, 0.0f32); HURT_ARC_MARKS]; HURT_ARCS];
+    for (i, arc) in toast.hurts.iter().enumerate() {
+        if arc.left <= 0.0 {
+            continue; // stays at zero alpha; its blocks get blanked below
+        }
+        let t = (arc.left / HURT_MARK_SECS).clamp(0.0, 1.0);
+        alpha[i] = arc.weight * (t / HURT_HOLD_FRAC).min(1.0);
+        if alpha[i] > 0.0 {
+            at[i] = hurt_arc_px(arc.from, facing);
+        }
+    }
+    for (mark, mut node, mut bg) in marks.iter_mut() {
+        let arc = mark.0.min(HURT_ARCS - 1);
+        let want = HURT_MARK_COLOR.with_alpha(HURT_MARK_COLOR.alpha() * alpha[arc]);
+        // An invisible block is recoloured and not moved: the frame after
+        // the last one expires is the frame that has to blank it, and
+        // placing a mark nobody can see is the trig of a whole arc for
+        // nothing.
+        if alpha[arc] > 0.0 {
+            let (x, y) = at[arc][mark.1.min(HURT_ARC_MARKS - 1)];
+            node.left = Val::Px(x - HURT_BLOCK_PX * 0.5);
+            node.top = Val::Px(y - HURT_BLOCK_PX * 0.5);
+        }
+        if bg.0 != want {
+            bg.0 = want;
+        }
+    }
+}
 
 // ---- the announce stack's geometry --------------------------------------
 //
@@ -313,6 +480,17 @@ pub struct Toast {
     pub hit_left: f32,
     /// Damage the last landed hit dealt, drawn beside the marker.
     pub hit_damage: u16,
+    /// The rung that hit landed on (v58), or `None` for a wall — which is
+    /// what picks the marker's colour. See [`mark_colour`].
+    pub hit_part: Option<Part>,
+    /// The live hurt arcs — `hit_*`'s pair from the other side of the blow
+    /// (wire v57), one entry per direction currently being pointed at.
+    ///
+    /// A fixed array, all `HURT_ARCS` of it always present: an expired arc
+    /// is one with `left <= 0.0`, not an absent one, so the drawing system
+    /// has a slot to blank rather than an entity to despawn on a fight's
+    /// hot path.
+    pub hurts: [HurtArc; HURT_ARCS],
 }
 
 impl Default for Toast {
@@ -325,6 +503,8 @@ impl Default for Toast {
             overflow: String::new(),
             hit_left: 0.0,
             hit_damage: 0,
+            hit_part: None,
+            hurts: [HurtArc::default(); HURT_ARCS],
         }
     }
 }
@@ -447,6 +627,11 @@ impl Toast {
         if self.hit_left > 0.0 {
             self.hit_left = (self.hit_left - dt).max(0.0);
         }
+        for arc in self.hurts.iter_mut() {
+            if arc.left > 0.0 {
+                arc.left = (arc.left - dt).max(0.0);
+            }
+        }
     }
 
     /// The line drawn in row `row`, newest first. `None` past the live end,
@@ -497,9 +682,65 @@ impl Toast {
         self.dropped
     }
 
-    pub fn hit(&mut self, damage: u16) {
+    /// A blow of yours landed, for `damage`, on `part` (`None` = a wall).
+    ///
+    /// The rung is latched with the clock and not merged with whatever was
+    /// there: the marker is a statement about the shot the player just
+    /// took, and a headshot four frames ago must not colour a leg hit now.
+    pub fn hit(&mut self, damage: u16, part: Option<Part>) {
         self.hit_left = HITMARK_SECS;
         self.hit_damage = damage;
+        self.hit_part = part;
+    }
+
+    /// Something hurt you, from `sector`, for `damage`.
+    ///
+    /// Restarts the clock rather than adding to it: a second blow from the
+    /// same direction should read as *still happening*, not as a mark that
+    /// outlives the fight by twice as long.
+    ///
+    /// **Which slot** is the whole of this function's judgement, and it is
+    /// three rules in order:
+    ///
+    /// 1. **The same bearing refreshes its own arc.** A rifle firing four
+    ///    times from the north is one threat and must stay one mark — if it
+    ///    took a slot per blow it would evict every other direction on the
+    ///    ring inside a second, which is the failure mode the single arc
+    ///    already had, arrived at from the opposite direction.
+    /// 2. **Otherwise an expired slot**, in order, so a quiet ring fills
+    ///    from the top and the arc indices stay stable across a fight
+    ///    rather than shuffling under the blocks that draw them.
+    /// 3. **Otherwise the arc with the least time left.** Three live
+    ///    directions and a fourth blow is a real choice about which threat
+    ///    to stop reporting, and the oldest is the one most likely to be
+    ///    dead, behind you, or already turned toward. It is never the new
+    ///    blow that loses: the thing that just hit you is the thing you
+    ///    most need to know about.
+    ///
+    /// Weight is taken from the new blow rather than kept at the maximum
+    /// seen, so an arc that has stopped being hit hard dims while it is
+    /// still being hit — a rifle that becomes a fist reads as a fight
+    /// turning, which is true.
+    pub fn hurt(&mut self, sector: u8, damage: u16) {
+        let weight = HURT_ALPHA_MIN
+            + (1.0 - HURT_ALPHA_MIN) * (damage as f32 / HURT_FULL_DMG).clamp(0.0, 1.0);
+        let mut slot = 0usize;
+        let mut worst = f32::INFINITY;
+        for (i, arc) in self.hurts.iter().enumerate() {
+            if arc.left > 0.0 && arc.from == sector {
+                slot = i;
+                break; // rule 1 wins outright
+            }
+            if arc.left < worst {
+                worst = arc.left;
+                slot = i;
+            }
+        }
+        self.hurts[slot] = HurtArc {
+            left: HURT_MARK_SECS,
+            from: sector,
+            weight,
+        };
     }
 }
 
@@ -507,6 +748,37 @@ impl Toast {
 /// Cosmetics (`DECISIONS.md` §open, client cosmetics).
 const CROSSHAIR: Color = Color::srgba(0.94, 0.93, 0.89, 0.72);
 const CROSSHAIR_HIT: Color = Color::srgba(0.98, 0.42, 0.30, 0.95);
+/// The head rung (v58): hotter and brighter than the identity, and pushed
+/// toward gold rather than further into red — red is already spent on "a
+/// hit", so a *redder* red would be a difference of degree where the player
+/// needs a difference of kind.
+const CROSSHAIR_HIT_HEAD: Color = Color::srgba(1.00, 0.84, 0.36, 1.00);
+/// The limb rung (v58): the identity, desaturated and dimmed — but only
+/// partway, and this is the number the whole item turns on. A x0.5 blow is
+/// already easy to misread as a MISS, so the failure to avoid is a marker
+/// that fades toward the resting crosshair. It stays plainly hotter than
+/// [`CROSSHAIR`] and plainly cooler than [`CROSSHAIR_HIT`].
+const CROSSHAIR_HIT_LIMB: Color = Color::srgba(0.80, 0.55, 0.44, 0.92);
+
+/// The marker's colour for a rung: three symbols, one per rung of the
+/// ladder, and the resting crosshair when nothing has landed.
+///
+/// A free function rather than a `match` inside the system so a headless
+/// test can drive it — the system needs a Bevy `World` and this is the only
+/// judgement in it.
+pub fn mark_colour(hot: bool, part: Option<Part>) -> Color {
+    if !hot {
+        return CROSSHAIR;
+    }
+    match part {
+        Some(Part::Head) => CROSSHAIR_HIT_HEAD,
+        Some(Part::Limb) => CROSSHAIR_HIT_LIMB,
+        // A wall shares the hitmarker ring and has no rung; it took the
+        // unscaled blow, so it reads as the identity — which is exactly
+        // what it read as before there were rungs.
+        Some(Part::Chest) | None => CROSSHAIR_HIT,
+    }
+}
 
 /// A hotbar cell, by index.
 #[derive(Component)]
@@ -558,11 +830,28 @@ impl Vital {
         }
     }
 
-    /// The glyph standing in for the reference's icon.
+    /// The baked icon's file stem, and the ASCII the square falls back to.
     ///
-    /// **A placeholder, and named as one.** The reference puts a drawn icon
-    /// in that square; a glyph is what a client with no icons can say
-    /// truthfully until `NOW.md` §0p item 3 lands them.
+    /// **The glyph was a placeholder that named itself as one and outlived
+    /// three icon passes.** `+`, `~` and `*` sat in the bottom-right corner of
+    /// every frame of play beside three carefully measured coloured bars,
+    /// which is `ART.md` §2 rule 1's complaint arriving through the interface
+    /// rather than through a material — the bars were authored and the thing
+    /// labelling them was typography.
+    ///
+    /// The fallback is not dead code and must stay: `icons::load` is a
+    /// `Startup` system, a shard can be entered before its handles settle, and
+    /// this module's own rule is to draw something truthful rather than an
+    /// empty square. It is the same shape `panels::inv` uses for item cells.
+    fn icon_stem(self) -> &'static str {
+        match self {
+            Vital::Hp => "vital_hp",
+            Vital::Water => "vital_water",
+            Vital::Food => "vital_food",
+        }
+    }
+
+    /// What the square draws when the icon has not loaded.
     fn glyph(self) -> &'static str {
         match self {
             Vital::Hp => "+",
@@ -672,6 +961,53 @@ pub struct Compass;
 #[derive(Component)]
 pub struct NetLine;
 
+/// The two top-left diagnostics — the build stamp and [`NetLine`] — as one set.
+///
+/// **They were in every frame this project has ever produced.** Both were
+/// spawned unconditionally with no toggle and no run condition, so
+/// `0.2.0-g<sha>` and `net 99.87% ok · 3 miss · err 0.04 m` sat in the corner
+/// of every capture the visual judge scored, every screenshot the operator
+/// posted, and every `.png` an F7 report attached. Their own doc comments say
+/// the job is *"to be legible in a screenshot pasted into a bug report"* — and
+/// that job moved when bug reports v0 landed: `render/report.rs` writes
+/// `VERSION`/`GIT_SHA`/`PROTO_VER` and the netcode counters into the `.md` and
+/// the `.json` beside the frame, so the document carries the build whether or
+/// not the pixels do. What was left was the cost with none of the reason.
+///
+/// Hidden by default, F4 shows them. Same shape as `collider_debug`'s F3 and
+/// for the same stated reason: making an invisible thing visible on a keypress
+/// is the other half of "the operator boots the game and looks", and it asserts
+/// nothing, so `CLAUDE.md`'s ban on a replacement pixel gate is untouched.
+#[derive(Component)]
+pub struct Diagnostic;
+
+/// Are the top-left diagnostics up? Off by default and never persisted — the
+/// whole defect this fixes is that they shipped in frames nobody chose to put
+/// them in, and a toggle that survived a restart would do it again.
+#[derive(Resource, Default)]
+pub struct ShowDiagnostics(pub bool);
+
+/// F4 toggles. F3 is the collider overlay, F7 files a report and F12 takes a
+/// screenshot, so this is the next free one.
+pub fn toggle_diagnostics(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut show: ResMut<ShowDiagnostics>,
+    mut q: Query<&mut Visibility, With<Diagnostic>>,
+) {
+    if !keys.just_pressed(KeyCode::F4) {
+        return;
+    }
+    show.0 = !show.0;
+    let want = if show.0 {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+    for mut v in &mut q {
+        *v = want;
+    }
+}
+
 /// The code lock's keypad, drawn — the root of [`pad_overlay`]'s small
 /// panel. Spawned and despawned by the system itself, so it lives here in
 /// the HUD (over the world, pointer-free) and not in `panels::` (which
@@ -680,7 +1016,45 @@ pub struct NetLine;
 #[derive(Component)]
 pub struct PadRoot;
 
-pub fn setup(mut commands: Commands) {
+/// The ammo readout — `loaded / ceiling` for the weapon in hand, blank for
+/// a hand that takes no magazine.
+///
+/// **Above the hotbar and right of centre**, which is the reference's own
+/// placement (`gameplayfoundbase.jpeg`, `generichighview.jpeg`): the number
+/// belongs near the hand it describes and away from the crosshair, because
+/// a count under the reticle is read on every shot whether or not the
+/// player asked. Bold and larger than a cell count for the reason the
+/// reference draws it larger — this is the one HUD number a firefight is
+/// actually steered by.
+#[derive(Component)]
+pub struct AmmoText;
+
+pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
+    // The ammo readout, sitting one line above the hotbar and to the right
+    // of it. Spawned empty and left that way by `update` for every hand
+    // that takes no magazine, so a hatchet draws nothing rather than
+    // `0/0` — the ceiling is what says there is a readout at all
+    // (`ClientCore::mag`).
+    commands.spawn((
+        super::WorldEntity,
+        AmmoText,
+        Text::new(""),
+        super::ui::font_bold(22.0),
+        TextColor(Color::srgba(0.97, 0.95, 0.88, 0.95)),
+        Node {
+            position_type: PositionType::Absolute,
+            bottom: Val::Px(HOTBAR_BOTTOM_PX + HOTBAR_CELL_PX + 8.0),
+            // Right of the six centred cells rather than over them: three
+            // cells is half the strip, and the gap is the strip's own.
+            left: Val::Percent(50.0),
+            margin: UiRect::left(Val::Px(
+                HOTBAR_CELL_PX * HOTBAR_SLOTS as f32 * 0.5 + 6.0 * 3.0 + 8.0,
+            )),
+            ..default()
+        },
+        Pickable::IGNORE,
+    ));
+
     // The hotbar: six cells, bottom centre.
     commands
         .spawn((
@@ -826,9 +1200,19 @@ pub fn setup(mut commands: Commands) {
                         },
                     ))
                     .with_children(|row| {
-                        // The icon square, left of the bar. A glyph today; a
-                        // drawn icon when there are icons.
-                        row.spawn((
+                        // The icon square, left of the bar. The baked picture
+                        // when it is loaded, the ASCII glyph when it is not —
+                        // never an empty square.
+                        //
+                        // The image is inset by 3 px on each side rather than
+                        // filling the trough: a 128 px silhouette scaled to the
+                        // bar's own 19 px height touches all four edges and
+                        // reads as a filled tile, and the cell is a *label* for
+                        // the bar beside it. Tinted with the vital's own fill,
+                        // so the icon and its bar are one colour and the row
+                        // reads as one object.
+                        let icon = icons.as_ref().and_then(|i| i.glyph(v.icon_stem()));
+                        let mut square = row.spawn((
                             Node {
                                 width: Val::Px(VITAL_BAR_H),
                                 height: Val::Px(VITAL_BAR_H),
@@ -837,12 +1221,31 @@ pub fn setup(mut commands: Commands) {
                                 ..default()
                             },
                             BackgroundColor(super::panels::VITAL_TROUGH),
-                            children![(
-                                Text::new(v.glyph().to_string()),
-                                super::ui::font_bold(13.0),
-                                TextColor(v.fill()),
-                            )],
                         ));
+                        match icon {
+                            Some(h) => {
+                                square.with_children(|c| {
+                                    c.spawn((
+                                        ImageNode::new(h).with_color(v.fill()),
+                                        Node {
+                                            width: Val::Px(VITAL_BAR_H - 6.0),
+                                            height: Val::Px(VITAL_BAR_H - 6.0),
+                                            ..default()
+                                        },
+                                        Pickable::IGNORE,
+                                    ));
+                                });
+                            }
+                            None => {
+                                square.with_children(|c| {
+                                    c.spawn((
+                                        Text::new(v.glyph().to_string()),
+                                        super::ui::font_bold(13.0),
+                                        TextColor(v.fill()),
+                                    ));
+                                });
+                            }
+                        }
                         // The bar: a trough, the fill over it, and the number
                         // over both. Only the fill's width animates.
                         row.spawn((
@@ -901,6 +1304,7 @@ pub fn setup(mut commands: Commands) {
         Text::new(""),
         super::ui::font_bold(14.0),
         TextColor(Color::srgba(0.86, 0.83, 0.76, 0.80)),
+        super::ui::TEXT_SHADOW,
         Pickable::IGNORE,
     ));
 
@@ -918,6 +1322,7 @@ pub fn setup(mut commands: Commands) {
     // server log all say one thing.
     commands.spawn((
         super::WorldEntity,
+        Diagnostic,
         Node {
             position_type: PositionType::Absolute,
             top: Val::Px(10.0),
@@ -927,6 +1332,9 @@ pub fn setup(mut commands: Commands) {
         Text::new(protocol::version::BUILD_ID),
         super::ui::font(11.0),
         TextColor(Color::srgba(0.86, 0.83, 0.76, 0.45)),
+        super::ui::TEXT_SHADOW,
+        // Hidden until F4. See [`ShowDiagnostics`].
+        Visibility::Hidden,
         Pickable::IGNORE,
     ));
 
@@ -935,6 +1343,7 @@ pub fn setup(mut commands: Commands) {
     commands.spawn((
         super::WorldEntity,
         NetLine,
+        Diagnostic,
         Node {
             position_type: PositionType::Absolute,
             top: Val::Px(24.0),
@@ -944,6 +1353,8 @@ pub fn setup(mut commands: Commands) {
         Text::new(""),
         super::ui::font(11.0),
         TextColor(Color::srgba(0.86, 0.83, 0.76, 0.35)),
+        super::ui::TEXT_SHADOW,
+        Visibility::Hidden,
         Pickable::IGNORE,
     ));
 
@@ -982,6 +1393,26 @@ pub fn setup(mut commands: Commands) {
                     Pickable::IGNORE,
                 ));
             }
+            // The hurt arc rides the same centred wrapper — it is measured from
+            // the same point, so hanging it anywhere else would be two places
+            // that have to agree about where the middle of the screen is.
+            // Spawned once and moved, never respawned: a mark that appears and
+            // disappears is a spawn on a fight's hot path.
+            for (arc, i) in (0..HURT_ARCS).flat_map(|a| (0..HURT_ARC_MARKS).map(move |i| (a, i))) {
+                c.spawn((
+                    HurtMark(arc, i),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(-HURT_BLOCK_PX * 0.5),
+                        top: Val::Px(-HURT_BLOCK_PX * 0.5),
+                        width: Val::Px(HURT_BLOCK_PX),
+                        height: Val::Px(HURT_BLOCK_PX),
+                        ..default()
+                    },
+                    BackgroundColor(HURT_MARK_COLOR.with_alpha(0.0)),
+                    Pickable::IGNORE,
+                ));
+            }
         });
 
     // The centre prompt and the toast beneath it. Both sit BELOW the
@@ -1000,6 +1431,7 @@ pub fn setup(mut commands: Commands) {
         Text::new(""),
         super::ui::font_bold(PROMPT_FONT_PX),
         TextColor(Color::srgba(0.96, 0.94, 0.88, 0.92)),
+        super::ui::TEXT_SHADOW,
         TextLayout::new_with_justify(Justify::Center),
         Pickable::IGNORE,
     ));
@@ -1021,6 +1453,7 @@ pub fn setup(mut commands: Commands) {
             Text::new(""),
             super::ui::font(TOAST_FONT_PX),
             TextColor(Color::srgba(0.98, 0.82, 0.55, 0.0)),
+            super::ui::TEXT_SHADOW,
             TextLayout::new_with_justify(Justify::Center),
             Pickable::IGNORE,
         ));
@@ -1043,6 +1476,7 @@ pub fn setup(mut commands: Commands) {
         Text::new(""),
         super::ui::font_bold(14.0),
         TextColor(Color::srgba(0.98, 0.82, 0.55, 0.0)),
+        super::ui::TEXT_SHADOW,
         TextLayout::new_with_justify(Justify::Center),
         Pickable::IGNORE,
     ));
@@ -1062,6 +1496,7 @@ pub fn setup(mut commands: Commands) {
         Text::new(""),
         super::ui::font_bold(15.0),
         TextColor(Color::srgba(0.90, 0.88, 0.82, 0.75)),
+        super::ui::TEXT_SHADOW,
         TextLayout::new_with_justify(Justify::Center),
         Pickable::IGNORE,
     ));
@@ -1085,6 +1520,15 @@ pub fn update(
     mut cells: Query<(&Cell, &mut BorderColor, &mut BackgroundColor)>,
     mut icons: Query<(&CellIcon, &mut ImageNode, &mut Visibility)>,
     mut counts: Query<(&CellCount, &mut Text), (Without<Plan>, Without<VitalNum>)>,
+    mut ammo: Query<
+        &mut Text,
+        (
+            With<AmmoText>,
+            Without<Plan>,
+            Without<VitalNum>,
+            Without<CellCount>,
+        ),
+    >,
     mut pips: Query<(&CellPip, &mut Visibility), Without<CellIcon>>,
     mut pip_fills: Query<
         (&CellPipFill, &mut Node),
@@ -1100,6 +1544,26 @@ pub fn update(
     ghost: Option<Res<super::ghost::Ghost>>,
 ) {
     let core = &net.session.core;
+
+    // The ammo readout. `mag()` answers `(0, 0)` for a hand with no
+    // magazine AND for one whose magazine was last stated for a different
+    // item, so this needs no held-item test of its own — the staleness
+    // rule lives in one place (`ClientCore::mag_item`) rather than being
+    // re-derived by every reader.
+    if let Ok(mut text) = ammo.single_mut() {
+        let (loaded, ceiling) = core.mag();
+        let want = if ceiling == 0 {
+            String::new()
+        } else {
+            format!("{loaded} / {ceiling}")
+        };
+        // Written only when it changed: `Text` is change-detected and the
+        // hotbar counts beside it take the same care, because a string
+        // rewritten every frame re-lays out the node every frame.
+        if text.0 != want {
+            text.0 = want;
+        }
+    }
 
     if let (Ok(mut text), Some(ui)) = (plan.single_mut(), ui.as_ref()) {
         use crate::ui::build::{material_label, row_for, shape_label, PLACE_MATERIAL, SHAPES};
@@ -1324,7 +1788,15 @@ pub fn feedback(
 
     // Hits first: the marker is the only feedback with a deadline on it.
     if feed.hits > 0 {
-        toast.hit(feed.damage);
+        toast.hit(feed.damage, feed.hit_part);
+    }
+    // And the same blow from the other end — every direction it came from,
+    // not just the last one. `Feed::hurt_from` is a list precisely so that a
+    // reader cannot mistake north for silence *or* two attackers for one:
+    // an empty slice is the quiet frame, and each entry is already merged
+    // by bearing, so a burst from one gun is one call here rather than four.
+    for h in feed.hurt_from() {
+        toast.hurt(h.from, h.damage);
     }
 
     // Refusals. Each store answers a different verb, and the reason codes are
@@ -1346,6 +1818,19 @@ pub fn feedback(
                     format!("your {}", crate::ui::craft::item_label(&core.catalog, item))
                 };
                 crate::ui::refusals::gather(code, &held)
+            }
+            // The second, on the same terms: *a rock takes no magazine*,
+            // *no rounds left for your Revolver*. `NO_ITEM` is reachable
+            // here where it is not on a gather — `REFUSE_RL_HAND` fires
+            // from an empty hand — so the bare-hands phrase is not a
+            // fallback but a real case.
+            super::feed::Refused::Reload => {
+                let held = if item == sim_core::gather::NO_ITEM {
+                    "bare hands".to_string()
+                } else {
+                    format!("your {}", crate::ui::craft::item_label(&core.catalog, item))
+                };
+                crate::ui::refusals::reload(code, &held)
             }
         });
     }
@@ -1372,6 +1857,16 @@ pub fn feedback(
         // looking — the item left the pack and the meters moved — which puts
         // it beside the gather and craft lines rather than beside a refusal.
         toast.say(format!("used {label}"));
+    }
+    if feed.reloaded > 0 {
+        // "loaded 6", not "reloaded": the number is what the player did
+        // not know — a partial fill off a nearly empty pack takes fewer
+        // rounds than the cylinder wanted, and the readout above the
+        // hotbar states the result while this states the cost.
+        //
+        // `say`, not `warn`, by `Rank`'s rule: the rounds left the pack
+        // and the readout moved, so it is recoverable by looking.
+        toast.say(format!("loaded {}", feed.reloaded));
     }
     if feed.applied & client_core::core::APPLIED_DRANK != 0 {
         // `water restored << 16 | hp it cost`. The cost is the sea being salt
@@ -1497,8 +1992,8 @@ pub fn feedback(
     toast.tick(time.delta_secs());
 
     let hot = toast.hit_left > 0.0;
+    let want = mark_colour(hot, toast.hit_part);
     for mut bg in marks.iter_mut() {
-        let want = if hot { CROSSHAIR_HIT } else { CROSSHAIR };
         if bg.0 != want {
             bg.0 = want;
         }
@@ -2346,12 +2841,302 @@ mod tests {
     #[test]
     fn the_hitmarker_is_not_a_toast() {
         let mut t = Toast::default();
-        t.hit(37);
+        t.hit(37, Some(Part::Head));
         t.say("+1 × WOOD");
         assert_eq!(t.hit_damage, 37);
+        assert_eq!(t.hit_part, Some(Part::Head));
         t.tick(HITMARK_SECS + 0.01);
         assert_eq!(t.hit_left, 0.0, "the marker is off");
         assert_eq!(t.len(), 1, "…while the line it landed with is still up");
+    }
+
+    /// Three rungs are three colours, and none of them is the resting
+    /// crosshair (v58).
+    ///
+    /// The whole of `NOW.md` §0hs item 3 on the screen side: a x0.5 blow
+    /// and a x2 blow drew the identical marker, so the ladder was
+    /// arithmetic the player could not perceive. The assertions are about
+    /// *distinctness* rather than about which colour is which — the hues
+    /// are a taste call (`DECISIONS.md` §open) and will move; that they
+    /// are four different things is the property.
+    #[test]
+    fn every_rung_draws_its_own_marker() {
+        let hot: Vec<Color> = [Some(Part::Head), Some(Part::Chest), Some(Part::Limb), None]
+            .into_iter()
+            .map(|p| mark_colour(true, p))
+            .collect();
+        // A wall (`None`) reads as the identity: it took the unscaled blow
+        // and has no head to miss. Three distinct symbols, not four.
+        assert_eq!(hot[1], hot[3], "a wall reads as the identity rung");
+        assert!(
+            hot[0] != hot[1] && hot[1] != hot[2] && hot[0] != hot[2],
+            "the three rungs must not share a colour, or the marker cannot \
+             teach the difference it exists to teach: {hot:?}"
+        );
+        // And every one of them is plainly not the resting crosshair. The
+        // failure this guards is the limb rung being dimmed toward the
+        // idle state until it reads as a MISS, which is the exact
+        // misreading the item is about.
+        for (i, c) in hot.iter().enumerate() {
+            assert_ne!(
+                *c,
+                mark_colour(false, None),
+                "rung {i} is indistinguishable from the resting crosshair"
+            );
+        }
+        // Cold is cold whatever landed: an expired marker does not keep a
+        // rung's colour on the crosshair.
+        for part in [Some(Part::Head), Some(Part::Chest), Some(Part::Limb), None] {
+            assert_eq!(
+                mark_colour(false, part),
+                CROSSHAIR,
+                "an expired marker must return to the resting crosshair"
+            );
+        }
+    }
+
+    /// The hurt arc keeps its own clock, longer than the hitmarker's,
+    /// and the weight it is drawn at rises with the blow.
+    #[test]
+    fn the_hurt_arc_holds_longer_than_the_hitmarker() {
+        // The ordering itself is asserted at compile time beside the
+        // constant; this is about what the clock does with it.
+        let mut t = Toast::default();
+        t.hurt(3, 40);
+        assert_eq!(t.hurts[0].from, 3);
+        let heavy = t.hurts[0].weight;
+        assert!(
+            (heavy - 1.0).abs() < 1e-6,
+            "a blow at or past HURT_FULL_DMG draws at full weight, got {heavy}"
+        );
+        // The same bearing again refreshes its own arc rather than taking a
+        // second one — four shots from one gun is one threat.
+        t.hurt(3, 1);
+        assert_eq!(
+            t.hurts.iter().filter(|a| a.left > 0.0).count(),
+            1,
+            "a second blow from the same sector must not open a second arc"
+        );
+        assert!(
+            t.hurts[0].weight < heavy && t.hurts[0].weight >= HURT_ALPHA_MIN,
+            "a graze is fainter than a rifle round and never invisible, \
+             got {}",
+            t.hurts[0].weight
+        );
+        t.tick(HITMARK_SECS + 0.01);
+        assert!(
+            t.hurts[0].left > 0.0,
+            "still up when a hitmarker would be gone"
+        );
+        t.tick(HURT_MARK_SECS);
+        assert_eq!(t.hurts[0].left, 0.0, "and gone on its own clock");
+    }
+
+    /// **Two attackers on opposite sides are two arcs**, which is the whole
+    /// of what hurt direction v1 is (`NOW.md` §0hrt item 2).
+    ///
+    /// Under v0 this test's second assertion read `8` — the latch kept one
+    /// sector and the north attacker vanished the instant the south one
+    /// fired. Asserted as a *set* rather than by slot, because which slot a
+    /// direction lands in is `Toast::hurt`'s business and not a promise to
+    /// anyone.
+    #[test]
+    fn two_attackers_are_two_arcs() {
+        let mut t = Toast::default();
+        t.hurt(0, 20);
+        t.hurt(8, 20);
+        let mut live: Vec<u8> = t
+            .hurts
+            .iter()
+            .filter(|a| a.left > 0.0)
+            .map(|a| a.from)
+            .collect();
+        live.sort_unstable();
+        assert_eq!(
+            live,
+            vec![0, 8],
+            "a blow from the north and one from the south are two threats \
+             and must be two marks — under one arc the second overwrote the \
+             first and the player turned toward whichever the sim happened \
+             to resolve last"
+        );
+        // Each runs its own clock: the older one goes first, and the newer
+        // one is still up after it does.
+        t.tick(HURT_MARK_SECS * 0.5);
+        t.hurt(4, 20);
+        t.tick(HURT_MARK_SECS * 0.6);
+        let live: Vec<u8> = t
+            .hurts
+            .iter()
+            .filter(|a| a.left > 0.0)
+            .map(|a| a.from)
+            .collect();
+        assert_eq!(
+            live,
+            vec![4],
+            "the two older arcs ran out on their own clocks and the newer \
+             one did not — a shared timer would have retired all three \
+             together or none of them"
+        );
+    }
+
+    /// A fourth direction evicts the **oldest**, never the newest.
+    ///
+    /// The one real choice in `Toast::hurt`'s third rule. The thing that
+    /// just hit you is the thing you most need to know about, so a full
+    /// ring must not refuse a new blow; and the arc with the least time
+    /// left is the threat most likely to be dead, behind you, or already
+    /// turned toward.
+    #[test]
+    fn a_full_ring_drops_the_oldest_and_never_the_newest() {
+        let mut t = Toast::default();
+        for i in 0..HURT_ARCS {
+            t.hurt(i as u8 * 2, 20);
+            // Stagger the clocks so "oldest" is a fact rather than a tie.
+            t.tick(0.01);
+            assert_eq!(
+                t.hurts.iter().filter(|a| a.left > 0.0).count(),
+                i + 1,
+                "{} distinct bearings must open {} arcs",
+                i + 1,
+                i + 1
+            );
+        }
+        // "Oldest" by the clock, not by slot: which slot a direction lands
+        // in is `Toast::hurt`'s business, and reading it off the array order
+        // would be this test agreeing with the implementation about a thing
+        // neither of them promises.
+        let oldest = t
+            .hurts
+            .iter()
+            .min_by(|a, b| a.left.total_cmp(&b.left))
+            .expect("the ring is never empty")
+            .from;
+        t.hurt(15, 20);
+        let live: Vec<u8> = t
+            .hurts
+            .iter()
+            .filter(|a| a.left > 0.0)
+            .map(|a| a.from)
+            .collect();
+        assert_eq!(
+            live.len(),
+            HURT_ARCS,
+            "the ring holds {HURT_ARCS} and a fourth blow must not grow it"
+        );
+        assert!(
+            live.contains(&15),
+            "the blow that just landed is the one that must be on screen"
+        );
+        assert!(
+            !live.contains(&oldest),
+            "sector {oldest} had the least time left and is the one that \
+             should have gone; the ring dropped something else"
+        );
+    }
+
+    /// The sim's integer bearing and this client's float one are the same
+    /// bearing.
+    ///
+    /// **This is the gate the sector exists to earn.** `sim-core` may not
+    /// call `atan2` (wall 1), so `combat::bearing_sector` decides sixteen
+    /// sectors with four `i64` compares against scaled tangents, and there
+    /// is no way to look at that function and see whether its quadrants are
+    /// wired the right way round. `look::bearing_of` is the same question
+    /// answered in floats, by the module that owns the axes — so the check
+    /// is the angular error between them, which is boundary-safe (a sample
+    /// sitting exactly on a sector edge may round either way and is still
+    /// inside half a sector) and does not care how either one is spelled.
+    ///
+    /// Proven red: flipping the east sign in `bearing_sector` puts the
+    /// error at 180° for every off-axis sample; swapping either of its two
+    /// southern quadrant arms puts it past 45°.
+    #[test]
+    fn the_integer_bearing_and_the_float_bearing_are_the_same_bearing() {
+        let half = 360.0 / sim_core::combat::HURT_SECTORS as f32 * 0.5;
+        let mut n = 0;
+        for dx in -20i64..=20 {
+            for dz in -20i64..=20 {
+                if dx == 0 && dz == 0 {
+                    continue;
+                }
+                let sector = sim_core::combat::bearing_sector(dx * 137, dz * 137);
+                assert!(
+                    sector < sim_core::combat::HURT_SECTORS,
+                    "sector {sector} is outside the domain the wire's four \
+                     bits carry"
+                );
+                let want = crate::look::bearing_of(dx as f32, dz as f32);
+                let got = sector as f32 * (360.0 / sim_core::combat::HURT_SECTORS as f32);
+                let err = ((got - want + 180.0).rem_euclid(360.0) - 180.0).abs();
+                assert!(
+                    err <= half + 1e-3,
+                    "({dx}, {dz}): the sim says sector {sector} ({got}°) and \
+                     look::bearing_of says {want}° — {err}° apart, past the \
+                     {half}° a sixteenth of a circle allows"
+                );
+                n += 1;
+            }
+        }
+        assert_eq!(n, 41 * 41 - 1, "the sweep stopped early");
+    }
+
+    /// The arc lands where the attacker is on screen, not where they are in
+    /// the world.
+    ///
+    /// The subtraction in [`hurt_arc_px`] is the whole point of `EV_HURT`
+    /// carrying an absolute bearing, and it has two ways to be wrong that
+    /// look identical at rest: the wrong sign (the mark mirrors as you turn)
+    /// and the wrong zero (it sits a quarter-turn off). Facing four
+    /// directions at one attacker separates both.
+    #[test]
+    fn the_arc_points_at_the_attacker_and_not_at_north() {
+        let step = 360.0 / sim_core::combat::HURT_SECTORS as f32;
+        let mid = HURT_ARC_MARKS / 2;
+        // An attacker due east of us, sector 4 of 16.
+        let sector = 4u8;
+        let bearing = sector as f32 * step;
+        for (facing, want, what) in [
+            (bearing, (0.0, -HURT_RADIUS_PX), "looking straight at them"),
+            (
+                bearing - 90.0,
+                (HURT_RADIUS_PX, 0.0),
+                "they are on our right",
+            ),
+            (
+                bearing + 90.0,
+                (-HURT_RADIUS_PX, 0.0),
+                "they are on our left",
+            ),
+            (bearing + 180.0, (0.0, HURT_RADIUS_PX), "they are behind us"),
+        ] {
+            let at = hurt_arc_px(sector, facing);
+            let (x, y) = at[mid];
+            assert!(
+                (x - want.0).abs() < 0.01 && (y - want.1).abs() < 0.01,
+                "{what}: the arc's middle block is at ({x:.2}, {y:.2}), \
+                 wanted ({:.2}, {:.2}). Screen y grows DOWN, so straight \
+                 ahead is negative.",
+                want.0,
+                want.1
+            );
+            // Every block is on the circle, and they are laid out in order
+            // rather than piled at one end.
+            for (i, &(bx, by)) in at.iter().enumerate() {
+                let r = (bx * bx + by * by).sqrt();
+                assert!(
+                    (r - HURT_RADIUS_PX).abs() < 0.01,
+                    "block {i} is {r} from the centre, not {HURT_RADIUS_PX}"
+                );
+            }
+            let spread = (HURT_ARC_MARKS - 1) as f32 * HURT_ARC_STEP_DEG;
+            assert!(
+                spread > step,
+                "the arc spans {spread}°, which is narrower than the {step}° \
+                 sector it reports — it would claim precision the wire does \
+                 not carry"
+            );
+        }
     }
 
     /// `E` outranks the swing and the swing fills the silence. Asserted
@@ -2406,7 +3191,8 @@ mod tests {
         let mut c = protocol::event::ItemCatalog::EMPTY;
         let mut top = 0;
         for &(idx, name) in rows {
-            c.set(idx, name.as_bytes(), 0).unwrap();
+            c.set(idx, name.as_bytes(), protocol::ItemRow::EMPTY)
+                .unwrap();
             top = top.max(idx);
         }
         c.count = (top + 1) as u16;

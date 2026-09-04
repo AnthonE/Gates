@@ -4,6 +4,7 @@
 //! to: orphan refs, duplicate ids, unknown fields (the never-table at the
 //! schema layer), and band breaks.
 
+use content::schema::WeaponKind;
 use content::Content;
 use std::path::Path;
 
@@ -67,6 +68,185 @@ fn refuses_bake(file: &str, from: &str, to: &str, phrase: &str) {
     assert!(
         err.contains(phrase),
         "{file}: expected bake error containing `{phrase}`, got: {err}"
+    );
+}
+
+/// The two recovery globals reach the sim, which is the disease this row
+/// was written to avoid — a column nothing bakes is a number that looks
+/// tuned and does nothing.
+///
+/// It used to cite `headshot_mult` as the live instance of that. **It is
+/// not one any more** (headshot v0): `bake_ranged` carries it and
+/// `the_headshot_column_reaches_the_sim` below is its own version of this
+/// check. The example moved, the rule did not.
+///
+/// It pins the *wiring* and not the values — asserting 15 and 10 here
+/// would make a balance pass red for no reason, and `CONTENT.md` §4's
+/// bands are what decide whether a value may land.
+#[test]
+fn the_arrow_recovery_globals_reach_the_sim() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let cc = c.bake_combat().expect("shipped content must bake");
+    assert_eq!(
+        u32::from(cc.arrow_break_pct),
+        c.balance.globals.arrow_break_pct,
+        "the break chance the sim rolls is not the one the file declares"
+    );
+    assert_eq!(
+        cc.arrow_lodge_ticks,
+        c.balance.globals.arrow_lodge_s * sim_core::limits::TICK_HZ,
+        "the lodge the sim waits out is not the file's seconds at TICK_HZ"
+    );
+}
+
+/// **The headshot column reaches the sim**, which it did not for the whole
+/// life of this crate: `headshot_mult` was parsed, pinned to exactly the
+/// band and folded into the content hash while `bake_ranged` dropped it one
+/// line before `RangedDef` could hold it (`reference/PROJECTILES.md` §9.4).
+/// A number that is validated, banded and hashed *looks* enforced from
+/// every direction except the only one that matters.
+///
+/// It pins the **wiring** and not the value — asserting `2` here would turn
+/// a balance pass red for no reason, and `CONTENT.md` §4's bands plus
+/// `balance.rs`'s exact-equality check are what decide whether a value may
+/// land. What it asserts is that every ranged row the file declares arrives
+/// in the sim's table carrying the file's own number, whatever that is.
+///
+/// The bow, the crossbow and the revolver — every `WeaponKind` that bakes
+/// through `bake_ranged`. Melee is deliberately absent: `MeleeDef` has no
+/// such field and `sim-core`'s `tests/headshot.rs` is where that decision
+/// is written down and gated.
+///
+/// Mutant watched red: `headshot_mult: 1` hard-coded at the bake.
+#[test]
+fn the_headshot_column_reaches_the_sim() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let cc = c.bake_combat().expect("shipped content must bake");
+    let mut checked = 0;
+    for w in &c.weapons {
+        let idx = c.item_index(&w.id).expect("own id resolves") as usize;
+        if cc.ranged[idx].damage == 0 {
+            continue; // melee or a throwable: no ranged row to carry it
+        }
+        assert_eq!(
+            u32::from(cc.ranged[idx].headshot_mult),
+            w.headshot_mult,
+            "`{}` declares headshot_mult {} and the sim's table says {}",
+            w.id,
+            w.headshot_mult,
+            cc.ranged[idx].headshot_mult
+        );
+        assert_eq!(
+            u32::from(cc.ranged[idx].limb_pct),
+            w.limb_pct,
+            "`{}` declares limb_pct {} and the sim's table says {}",
+            w.id,
+            w.limb_pct,
+            cc.ranged[idx].limb_pct
+        );
+        checked += 1;
+    }
+    assert!(
+        checked >= 3,
+        "the file ships a bow, a crossbow and a revolver: only {checked} \
+         ranged rows reached the table, so this passed by finding nothing"
+    );
+}
+
+/// Both ends of the ladder are pinned to a band, and the band is what
+/// stops a data edit from moving the shape of a fight.
+///
+/// **The TTK band says nothing about either end**, which is why this
+/// exists as a second check rather than a comment: `hits_to_kill` is
+/// measured on *body* hits, so `[bands] ttk_firearm` is green whether a
+/// leg is worth 100% or 1% of the column. `balance.rs` refuses a row that
+/// disagrees with `[bands] headshot_mult` / `limb_pct`, and this asserts
+/// the two the shipped file actually carries — so the values are here in
+/// one place rather than spread over eleven rows nobody diffs.
+///
+/// The throwable is skipped by `balance.rs` (a blast has no anatomy) and
+/// carries the identities at both ends; that is asserted too, because
+/// "skipped by the band" and "unset" look identical in a TOML file.
+///
+/// **This check cannot see a weakened predicate**, and that is measured
+/// rather than assumed: `balance.rs`'s `!=` mutated to `<` survived it and
+/// every other gate in the workspace. Asserting that the data agrees with
+/// the band says nothing about what happens when it disagrees, so
+/// `the_body_part_ladder_refuses_what_it_names` is the other half and the
+/// two are only useful together.
+///
+/// Mutant watched red: the shipped `[bands] limb_pct` moved off 50.
+#[test]
+fn the_body_part_ladder_is_the_band_on_every_row() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let b = &c.balance.bands;
+    assert_eq!(b.headshot_mult, 2, "the head is the reference's x2");
+    assert_eq!(b.limb_pct, 50, "and the leg its x0.5, as a percent");
+    let mut banded = 0;
+    let mut opted_out = 0;
+    for w in &c.weapons {
+        if matches!(w.kind, WeaponKind::Throwable) {
+            assert_eq!(
+                (w.headshot_mult, w.limb_pct),
+                (1, 100),
+                "`{}` is a throwable and must carry both identities",
+                w.id
+            );
+            opted_out += 1;
+            continue;
+        }
+        assert_eq!(
+            (w.headshot_mult, w.limb_pct),
+            (b.headshot_mult, b.limb_pct),
+            "`{}` is off the band",
+            w.id
+        );
+        banded += 1;
+    }
+    assert!(banded >= 10, "only {banded} banded rows: the file shrank");
+    assert_eq!(opted_out, 1, "exactly one throwable ships");
+}
+
+/// The ladder's refusals, driven from the file rather than from the
+/// predicate — because the check above **cannot see a weakened one.**
+///
+/// Measured, and it is the reason this test exists: `balance.rs`'s
+/// `w.limb_pct != bands.limb_pct` mutated to `<` was run and stayed
+/// **green** through every gate in the workspace. Every shipped row
+/// carries exactly the band, so a comparison that only fires *below* it
+/// never fires at all — a row-by-row assertion proves the data agrees with
+/// the band and says nothing about whether disagreeing would be caught.
+/// The only way to ask is to hand the loader a row that disagrees.
+///
+/// Both directions, because they fail for different reasons: 100 is a leg
+/// worth a chest (`Part`'s ordering inverted in data) and 25 is a leg the
+/// band never priced.
+///
+/// Mutants watched red: `!=` → `<` and `!=` → `>` in `balance.rs`, and
+/// each of `validate.rs`'s two bounds dropped.
+#[test]
+fn the_body_part_ladder_refuses_what_it_names() {
+    // The rock is the first weapon row in the file and the only one whose
+    // `damage = 20` line is unique, so it is where every bait below goes.
+    const ROCK: &str = "id = \"item.rock\"\nkind = \"melee\"\ndamage = 20\nstructure = 1\nheadshot_mult = 2\nlimb_pct = 50";
+    let bait = |limb: &str| ROCK.replace("limb_pct = 50", &format!("limb_pct = {limb}"));
+
+    // Above the band: a leg worth as much as the chest above it.
+    refuses("weapons.toml", ROCK, &bait("100"), "band break: limb pct");
+    // Below it: a leg the band never priced.
+    refuses("weapons.toml", ROCK, &bait("25"), "band break: limb pct");
+    // Past the ordering entirely — `validate` refuses this before
+    // `balance` ever sees it, which is the bound that stops a leg from
+    // being worth more than the chest `part_crossed` would have scored.
+    refuses("weapons.toml", ROCK, &bait("101"), "outside 1..=100");
+    // And a leg hit that costs the body nothing.
+    refuses("weapons.toml", ROCK, &bait("0"), "outside 1..=100");
+    // The head's twin, which had no refusal test of its own either.
+    refuses(
+        "weapons.toml",
+        ROCK,
+        &ROCK.replace("headshot_mult = 2", "headshot_mult = 3"),
+        "band break: headshot mult",
     );
 }
 
@@ -382,7 +562,7 @@ fn skin_stat_field_refused() {
     let skins = srcs.iter_mut().find(|(n, _)| *n == "skins.toml").unwrap();
     skins.1 = String::from(
         "[[skin]]\nid = \"skin.wood_gilt\"\ncovers = \"item.hatchet_stone\"\n\
-         coin = \"SCRY\"\nprice = 10\nseason = \"alpha\"\n",
+         coin = \"ELO\"\nprice = 10\nseason = \"alpha\"\n",
     );
     build(&srcs).expect("a plain appearance row must parse");
     let skins = srcs.iter_mut().find(|(n, _)| *n == "skins.toml").unwrap();
@@ -393,12 +573,12 @@ fn skin_stat_field_refused() {
 
 #[test]
 fn dollar_ticker_refused() {
-    // Tickers are bare (CLAUDE.md wall 8): `$SCRY` is not a coin.
+    // Tickers are bare (CLAUDE.md wall 8): `$ELO` is not a coin.
     let mut srcs = sources();
     let skins = srcs.iter_mut().find(|(n, _)| *n == "skins.toml").unwrap();
     skins.1 = String::from(
         "[[skin]]\nid = \"skin.wood_gilt\"\ncovers = \"item.hatchet_stone\"\n\
-         coin = \"$SCRY\"\nprice = 10\nseason = \"alpha\"\n",
+         coin = \"$ELO\"\nprice = 10\nseason = \"alpha\"\n",
     );
     assert!(build(&srcs).is_err(), "$-prefixed ticker was accepted");
 }
@@ -526,6 +706,16 @@ fn band_breaks_refused() {
         "headshot_mult = 2",
         "headshot_mult = 5",
         "band break: headshot",
+    );
+    // A break chance is a percentage, and BOTH ends of it are legal — 0 is
+    // an arrow that lasts forever and 100 is the game that existed before
+    // arrow recovery v0. So the only refusable value is one that is not a
+    // percentage at all, and 101 is the smallest of those.
+    refuses(
+        "balance.toml",
+        "arrow_break_pct = 15",
+        "arrow_break_pct = 101",
+        "arrow_break_pct 101 is not a percentage",
     );
 }
 
@@ -1042,6 +1232,249 @@ fn bake_backpack_walks_the_rarity_ladder_the_data_declares() {
     );
 }
 
+/// **The magazine column refuses what it names** (reload v1).
+///
+/// Written because the column is the whole mechanic: a firearm that lost
+/// its `magazine` does not fail — it silently goes back to spending
+/// straight out of the pack, which is a firefight with no rhythm and every
+/// gate green. `RangedDef`'s own doc comments record three columns that
+/// arrived armed and unread; this is what stops a fourth.
+///
+/// The magnitudes are deliberately NOT here. `magazine = 8` and
+/// `reload_ms = 3400` are the reference's published figures for the
+/// revolver (`DECISIONS.md` §open) and a knob's registry must not be argued
+/// with by its own gate — what is pinned is the column's *shape*.
+#[test]
+fn the_magazine_rules_refuse_what_they_name() {
+    // A firearm needs one. Dropping it is the silent regression above.
+    refuses(
+        "weapons.toml",
+        "magazine = 8\nreload_ms = 3400",
+        "reload_ms = 3400",
+        "firearms need a nonzero magazine",
+    );
+    // …and a nonzero one. Zero is the value that MEANS "no magazine", so a
+    // firearm carrying it reads as opting out in data rather than as a
+    // mistake, which is exactly why it has to be refused at the door.
+    refuses(
+        "weapons.toml",
+        "magazine = 8\nreload_ms = 3400",
+        "magazine = 0\nreload_ms = 3400",
+        "firearms need a nonzero magazine",
+    );
+    // A magazine needs a reload time, both ways round: a fill that costs
+    // nothing is the beat the whole mechanic is, absent.
+    refuses(
+        "weapons.toml",
+        "magazine = 8\nreload_ms = 3400",
+        "magazine = 8",
+        "a magazine needs a nonzero reload_ms",
+    );
+    // And a reload that rounds to zero ticks at `TICK_HZ` is the same
+    // absence spelled as a number — 33 ms is one tick, so 16 is none.
+    refuses(
+        "weapons.toml",
+        "magazine = 8\nreload_ms = 3400",
+        "magazine = 8\nreload_ms = 16",
+        "rounds to zero ticks",
+    );
+    // Only a firearm carries either. A bow's magazine would be a second
+    // cadence to keep in step with the nock it already has, and a hatchet's
+    // would be a number nothing reads — the shape `fuse_s` is refused in.
+    refuses(
+        "weapons.toml",
+        "range_m = 60\nammo = [\"item.arrow_wood\"]",
+        "range_m = 60\nammo = [\"item.arrow_wood\"]\nmagazine = 4",
+        "only firearms carry a magazine",
+    );
+    refuses(
+        "weapons.toml",
+        "range_m = 60\nammo = [\"item.arrow_wood\"]",
+        "range_m = 60\nammo = [\"item.arrow_wood\"]\nreload_ms = 1000",
+        "only a weapon with a magazine carries a reload_ms",
+    );
+}
+
+/// **The ninth magazine is refused at the bake — and this is the first thing
+/// that ever ran that refusal.**
+///
+/// `bake.rs`'s own comment says why the arm exists: a weapon that lost its
+/// `mag_slot` falls back to spending straight out of the pack, which is *the
+/// mechanic silently gone with every gate green*. Nothing drove it.
+/// `the_magazine_rules_refuse_what_they_name` above gates the six **validate**
+/// rules and stops at the crate boundary; `reload.rs`'s store test checks the
+/// array widths and `NO_MAG`'s range, not the bake.
+///
+/// The evidence it had never run is that **the message it prints was
+/// malformed** — a hand-broken string literal missing its `\`, so twenty-two
+/// literal spaces and no noun sat between the count and `` `Player::mag` ``.
+/// Nobody had ever seen the sentence. That is what the last assertion here is
+/// for, and it is not pedantry: a refusal is a thing a *person* reads at boot
+/// while the shard will not start, so a garbled one costs an outage's worth of
+/// confusion at exactly the wrong moment.
+///
+/// It cannot go through `refuses_bake`, and that is a fact about the two
+/// layers rather than an inconvenience: `validate.rs` refuses nine magazine
+/// rows in the *source*, so no `weapons.toml` text reaches this arm. The two
+/// checks are deliberately doubled at the same threshold (validate's comment
+/// says so), which leaves the bake's copy reachable only by handing it rows
+/// the validator has already passed — a built `Content`, mutated. So this test
+/// is also the demonstration that the second of the two is real and not
+/// decoration.
+#[test]
+fn the_ninth_magazine_is_refused_at_the_bake() {
+    // The shipped firearm, cloned. Cloning rather than hand-building keeps
+    // every other column at a shape the bake already accepts, so the only
+    // thing under test is the slot count — a hand-built row that tripped
+    // `range_m` or a missing round would go red here and read as this
+    // refusal firing when it was a different one.
+    let shipped = build(&sources()).expect("the shipped set validates");
+    let proto = shipped
+        .weapons
+        .iter()
+        .find(|w| w.magazine.unwrap_or(0) > 0)
+        .expect("the shipped set carries a weapon with a magazine")
+        .clone();
+    let already = shipped
+        .weapons
+        .iter()
+        .filter(|w| w.magazine.unwrap_or(0) > 0)
+        .count();
+
+    // Item ids that exist and carry no weapon row today — a duplicate row
+    // trips `bake: duplicate weapon row` and would pass an assertion looking
+    // only for "refused".
+    let spare = [
+        "item.wood",
+        "item.stone",
+        "item.metal_ore",
+        "item.sulfur_ore",
+        "item.cloth",
+        "item.fat",
+        "item.charcoal",
+        "item.metal_frags",
+    ];
+    assert!(
+        already + spare.len() > sim_core::limits::MAX_MAGS,
+        "fixture rot: {already} shipped magazines plus {} spares \
+         cannot reach MAX_MAGS ({})",
+        spare.len(),
+        sim_core::limits::MAX_MAGS
+    );
+    let armed = |n: usize| {
+        let mut c = build(&sources()).expect("the shipped set validates");
+        for id in spare.iter().take(n) {
+            let mut w = proto.clone();
+            w.id = (*id).to_string();
+            c.weapons.push(w);
+        }
+        c
+    };
+
+    // Anti-vacuity, and it is the load-bearing half: the cap must be the
+    // thing refusing. A bake that refused the *first* clone — because the
+    // rows were malformed, or because `MAX_MAGS` moved to 1 — satisfies the
+    // refusal below while proving nothing, and it is the shape a mutant
+    // takes. Exactly `MAX_MAGS` magazine rows must still bake.
+    let fits = sim_core::limits::MAX_MAGS - already;
+    armed(fits).bake_combat().unwrap_or_else(|e| {
+        panic!(
+            "{} magazine rows is the cap, not past it: {e}",
+            already + fits
+        )
+    });
+
+    let err = armed(fits + 1)
+        .bake_combat()
+        .expect_err("a weapon past MAX_MAGS was handed a magazine slot");
+    assert!(
+        err.contains("weapon with a magazine"),
+        "the ninth magazine was refused for the wrong reason: {err}"
+    );
+    assert!(
+        err.contains(&format!("{}th", sim_core::limits::MAX_MAGS + 1)),
+        "the refusal must name which row it is refusing, got: {err}"
+    );
+    // The message is a sentence a person reads at a shard that will not
+    // boot. `"  "` is what a hand-broken literal leaves behind, and it is
+    // the exact defect that proved this arm had never executed.
+    assert!(
+        !err.contains("  "),
+        "the refusal is malformed — a run of spaces from a broken string \
+         literal: {err:?}"
+    );
+}
+
+/// **Every loaded round the shipped set can put in a body fits the bag
+/// that body sheds into.**
+///
+/// `World::die` shed the magazine into the death spill from 2026-08-30
+/// (`NOW.md` §0mag item 1), through `gather::inv_add` into the same
+/// `[ItemStack; INV_SLOTS]` buffer that already carries `worn`. `inv_add`
+/// is the cap — it returns what fit and destroys the rest — so the
+/// overflow policy is stated and bounded, and this is the check that the
+/// *shipped* set cannot reach it. Wall 4's shape: the bound is a number,
+/// not a hope.
+///
+/// The arithmetic is per firearm `ceil(magazine / stack_max(round))` slots,
+/// summed over every row with a magazine, against `INV_SLOTS - WEAR_SLOTS`
+/// — the two plates are already in the buffer when the rounds arrive.
+/// A set that broke this would be one where eight firearms each carry a
+/// magazine several full stacks of their own ammunition deep; today it is
+/// one revolver, eight rounds, a round that stacks 128, so **one slot
+/// against 28**. The headroom is printed rather than asserted blind,
+/// because the number moving is the interesting event.
+#[test]
+fn the_shed_magazines_fit_the_bag_they_shed_into() {
+    let c = build(&sources()).expect("the shipped set validates");
+    let cc = c.bake_combat().expect("shipped weapons must bake");
+    let gc = c.bake_gather().expect("shipped gather table must bake");
+
+    let free = sim_core::limits::INV_SLOTS - sim_core::limits::WEAR_SLOTS;
+    let mut want = 0usize;
+    let mut armed_rows = 0usize;
+    for (item, def) in cc.ranged.iter().enumerate() {
+        if def.magazine == 0 {
+            continue;
+        }
+        armed_rows += 1;
+        // The round a full magazine holds is the first ammo the weapon
+        // accepts — `reload`'s own preference order — and a ceiling of
+        // zero means the item cannot be carried at all, which `inv_add`
+        // reads as "adds nothing" rather than as an overflow.
+        let round = def.ammo[0];
+        let ceiling = gc.stack_max_of(round) as usize;
+        assert!(
+            ceiling > 0,
+            "item {item} loads a magazine of {} but its round ({round}) has no \
+             stack ceiling, so a shed magazine would silently add nothing",
+            def.magazine
+        );
+        let slots = (def.magazine as usize).div_ceil(ceiling);
+        eprintln!(
+            "  weapon {item}: magazine {} of round {round} (stacks {ceiling}) = {slots} slot(s)",
+            def.magazine
+        );
+        want += slots;
+    }
+
+    // Anti-vacuity, and it is the whole of what makes the sum mean
+    // anything: a bake that dropped every magazine row — which is exactly
+    // what `bake_combat` did to every non-melee row until 2026-08-19 —
+    // sums to zero and satisfies the bound while proving nothing.
+    assert!(
+        armed_rows > 0,
+        "no shipped weapon carries a magazine: the sum below is vacuous"
+    );
+    eprintln!("shed magazines: {armed_rows} armed row(s), {want} slot(s) of {free} free");
+    assert!(
+        want <= free,
+        "{armed_rows} shipped magazine(s) want {want} spill slots and a death bag \
+         has {free} once the two worn plates are in it — the excess would be \
+         destroyed by `inv_add`"
+    );
+}
+
 /// The seven durability rules (item durability v0), each proven against
 /// the shipped set with one edit. V7 and V4 are the two the slice's gates
 /// name — the stack law everything else leans on, and the set check this
@@ -1106,6 +1539,69 @@ fn the_durability_rules_refuse_what_they_name() {
         "# 100 pts / 0.3 per hit (wiki-confirmed) = 333 hits, ~33 trees.\ncondition_max = 10000",
         "# 100 pts / 0.3 per hit (wiki-confirmed) = 333 hits, ~33 trees.\ncondition_max = 0",
         "(V6)",
+    );
+}
+
+/// The two torch-fuel rules (torch fuel v0), each proven against the
+/// shipped set with one edit.
+///
+/// Both exist because `light_burn` is a **predicate as well as a price** —
+/// nonzero is what makes an item a light at all (`sim_core::light::is_lit`
+/// fact 2) — so the two ways to write a nonsense light are a light that
+/// cannot pay and a light that pays impossibly fast.
+#[test]
+fn the_torch_fuel_rules_refuse_what_they_name() {
+    // V8: a light must have condition to spend. Strip the torch's ceiling
+    // and leave its burn rate, and the shard ships a flame that burns
+    // forever for nothing — the free light the field exists to forbid.
+    refuses(
+        "items.toml",
+        "condition_max = 5000
+# Hundredths of condition per minute",
+        "condition_max = 0
+# Hundredths of condition per minute",
+        "(V8)",
+    );
+    // V9: the rate fits `u16`, which is what bounds the sim's per-tick
+    // debit to one point without a clamp anywhere (wall 4).
+    refuses(
+        "items.toml",
+        "light_burn = 1000",
+        "light_burn = 200000",
+        "(V9)",
+    );
+}
+
+/// The shipped torch is **five minutes**, asserted off the two shipped
+/// numbers rather than off either one.
+///
+/// `condition_max` and `light_burn` are each individually plausible at any
+/// value and neither states the duration, which is the thing taken from
+/// the reference (`reference/BALANCE.md` §6: 1/6 of a point a second off a
+/// max of 50). A balance pass that moved one and not the other would leave
+/// both bands green and quietly hand the player a 30-second torch.
+#[test]
+fn the_shipped_torch_is_five_minutes_of_light() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let torch = c
+        .items
+        .iter()
+        .find(|i| i.id == "item.torch")
+        .expect("content/items.toml no longer ships a torch");
+    assert!(torch.light_burn > 0, "the torch stopped being a light");
+    // Hundredths / (hundredths per minute) = minutes, exactly — and the
+    // exactness is the point: the reference's rate divides its ceiling
+    // whole, so a remainder here would mean one of the two moved off it.
+    assert_eq!(
+        torch.condition_max % torch.light_burn,
+        0,
+        "the torch's ceiling is no longer a whole number of minutes at \
+         its own burn rate"
+    );
+    assert_eq!(
+        torch.condition_max / torch.light_burn,
+        5,
+        "the shipped torch is no longer the reference's five minutes"
     );
 }
 
@@ -3184,5 +3680,158 @@ fn an_armor_row_that_cannot_work_never_reaches_the_sim() {
         "reduction_pct = 15",
         "reduction_pct = 0",
         "protects from nothing",
+    );
+}
+
+/// **No weapon outranges the band that decides who is told it fired.**
+///
+/// This is a relationship between a content number and a limit, and until
+/// 2026-08-24 nothing held it from either side.
+///
+/// `EV_SHOT` is filtered to the shooter's class-D interest set
+/// (`server/core.rs::body_event_visible`), so a client that cannot see the
+/// hand is not told it loosed anything. Two things make that safe, and the
+/// second is this gate: `render/tracer.rs` already discards a shot it has
+/// no body to hang on, **and** no weapon can throw a projectile far enough
+/// to reach somebody outside the band anyway. The first is behavioural and
+/// holds whatever the numbers say; the second is arithmetic and a content
+/// edit can break it in silence.
+///
+/// The failure it prevents is a real product decision arriving as an
+/// accident: someone adds a 200 m rifle to `weapons.toml`, every gate in
+/// the tree stays green, and its tracer stops existing for exactly the
+/// players it was aimed at. If this goes red, the fix is **not** to raise
+/// the number here — it is to decide whether that weapon wants a wider
+/// filter (a range-aware radius rather than the interest bit) and to say
+/// so in `DECISIONS.md`.
+///
+/// `AOI_ENTER_CM` rather than `AOI_EXIT_CM`: enter is the *narrower* band
+/// and the one a client must have crossed to hold the body, so it is the
+/// conservative side to measure against.
+#[test]
+fn no_weapon_outranges_the_interest_band() {
+    let c = build(&sources()).expect("shipped content builds");
+    let band_m = (sim_core::limits::AOI_ENTER_CM / 100) as u32;
+    let worst = c
+        .weapons
+        .iter()
+        .max_by_key(|w| w.range_m)
+        .expect("content ships at least one weapon");
+    assert!(
+        worst.range_m < band_m,
+        "`{}` reaches {} m and the interest band is {} m — a shot from \
+         outside a client's band could land inside its world, and \
+         `EV_SHOT`'s filter would have thrown the tracer away. Do not \
+         raise this assertion; decide what that weapon's audience is.",
+        worst.id,
+        worst.range_m,
+        band_m
+    );
+}
+
+/// The three ranged rows' `structure` column reaches the sim.
+///
+/// **`the_raid_tool_crosses_into_the_sim`, one weapon kind over, and it was
+/// broken in exactly the same way for longer.** `content/weapons.toml` has
+/// given the bow, the crossbow and the revolver a `structure` since the
+/// content crate was written; it is parsed, range-checked by
+/// `balance.rs`'s two laws, and folded into the content hash by `canon.rs`
+/// — so editing it moved the hash, moved the WAL header, and moved nothing
+/// a player could see, because `bake_ranged` wrote a `RangedDef` that had
+/// no field to put it in. Ranged structure damage v0 (2026-08-28) gave it
+/// one; this is the assertion that keeps it wired.
+///
+/// The value is read off the file rather than typed, so a balance pass on
+/// `weapons.toml` is not a red gate here — what is asserted is the
+/// *crossing*, which is the thing that was silently absent.
+#[test]
+fn every_ranged_weapon_carries_its_structure_column_into_the_sim() {
+    let c = build(&sources()).expect("shipped content bakes");
+    let cc = c.bake_combat().expect("combat bakes");
+    let mut seen = 0;
+    for w in &c.weapons {
+        if !matches!(
+            w.kind,
+            content::schema::WeaponKind::Bow | content::schema::WeaponKind::Firearm
+        ) {
+            continue;
+        }
+        seen += 1;
+        let idx = c
+            .item_index(&w.id)
+            .unwrap_or_else(|| panic!("ranged weapon `{}` arms no item", w.id))
+            as usize;
+        assert_eq!(
+            cc.ranged[idx].structure as u32, w.structure,
+            "`{}` declares structure {} and the sim baked {} — the column is \
+             hashed either way, so this drift is invisible to every other gate",
+            w.id, w.structure, cc.ranged[idx].structure
+        );
+    }
+    assert!(
+        seen >= 3,
+        "expected the bow, the crossbow and the revolver; found {seen} ranged \
+         rows — if a row was cut, cut it here too rather than letting this \
+         pass on an empty loop"
+    );
+}
+
+/// Every deployable with a collision volume places on the **plane** and
+/// nowhere else.
+///
+/// This is a claim about `content/deployables.toml` that a function in
+/// `sim-core` depends on and cannot check. `collide::deploy_stop` returns a
+/// four-part address so a shot can charge the thing it stopped on, and the
+/// two stores share one address space — a door and its doorway have one —
+/// so the walk has to supply a `loc`. The collision index does not carry
+/// one: `ColMasks::solid` is a nibble per level holding an archetype code,
+/// and nothing else. `LOC_PLANE` is therefore derived from the placement
+/// class, and that derivation is only sound while every solid archetype
+/// places `ground`, `foundation` or `any`.
+///
+/// **The failure it prevents is silent.** A future row that gave a solid
+/// archetype the `doorway` class would place at `LOC_EDGE_XLO`, the shot
+/// walk would keep saying `LOC_PLANE`, `Deploys::find_index` would find
+/// nothing there and `World::chip` would drop the chip — a deployable that
+/// stops every arrow and never loses a point of hp, with no event, no
+/// refusal and no red gate anywhere.
+///
+/// Read off the file and the sim's own tables rather than typed, so this is
+/// the crossing and not a copy of the roster.
+#[test]
+fn every_solid_deployable_places_on_the_plane() {
+    use sim_core::build::LOC_PLANE;
+    let c = build(&sources()).expect("shipped content bakes");
+    let dc = c.bake_deployables().expect("deployables bake");
+    let mut seen = 0;
+    for i in 0..dc.def_count as usize {
+        let def = &dc.defs[i];
+        if sim_core::deploy::solid_vol(def.arch).is_none() {
+            continue;
+        }
+        seen += 1;
+        for loc in 0u8..=sim_core::build::LOC_DIAG_B {
+            let fits = sim_core::deploy::loc_fits_placement(def.placement, loc);
+            assert_eq!(
+                fits,
+                loc == LOC_PLANE,
+                "deployable row {i} (archetype {}, placement {}) has a \
+                 collision volume and {} loc {loc} — `collide::deploy_stop` \
+                 names LOC_PLANE for every solid it finds, so a shot would \
+                 charge an address this row does not occupy",
+                def.arch,
+                def.placement,
+                if fits { "admits" } else { "refuses" }
+            );
+        }
+    }
+    assert_eq!(
+        seen, 9,
+        "expected exactly nine solid rows — the hearth, the box (twice), the \
+         furnace, the three benches, the recycler and the research table — \
+         and found {seen}. The floor used to be `>= 7`, which its own message \
+         already contradicted: two solid rows could have been deleted with \
+         this gate green (judged 2026-08-28). A row added here is a \
+         deliberate edit to this number."
     );
 }

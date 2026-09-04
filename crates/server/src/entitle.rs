@@ -2,7 +2,7 @@
 //! thing in this repo that asks another host a question about a person.
 //!
 //! A copy of Gates is an ERC-721 (`ScryGameTicket`, one deployment per
-//! title) and holding any token of it is the licence. scry's origin answers
+//! title) and holding any token of it is the licence. elo's origin answers
 //! two questions about that, both of them one `balanceOf` underneath:
 //!
 //! - `GET  /api/ticket/{slug}/of/{wallet}` — one wallet, asked at join.
@@ -17,7 +17,7 @@
 //! degenerate case of the second. *"The chain says zero"* and *"we could not
 //! ask"* are opposite facts that arrive down the same wire, and collapsing
 //! them is how an RPC outage boots every paying player off the shard at
-//! once. scry's own route says so in its response body (`kick_rule`), the
+//! once. elo's own route says so in its response body (`kick_rule`), the
 //! platform's `CLAUDE.md` names it as a trap it has already paid for, and
 //! this type is that rule made unrepresentable-wrong: there is no `bool`
 //! anywhere in this file for a caller to get backwards.
@@ -33,7 +33,7 @@
 //! Admitting on `Unknown` is a choice and it is the right one here. The game
 //! is open source and the depot is served openly; the licence is a posted
 //! rule about official servers, not a secret to be defended by an outage.
-//! A shard that refused everyone whenever scry was slow would fail loudly at
+//! A shard that refused everyone whenever elo was slow would fail loudly at
 //! the players and quietly at the operator, which is backwards. The counters
 //! (`stats.rs`) make the fail-open visible instead.
 //!
@@ -43,7 +43,7 @@
 //! cleaner and is a machine that misses on this chain: `eth_getLogs` is
 //! refused past ~100 blocks on 4663, about ten seconds at 101 ms blocks, so
 //! a watcher that blinks loses the transfer forever. State cannot miss.
-//! (scry's `CLAUDE.md` carries the measurement; we take the conclusion.)
+//! (elo's `CLAUDE.md` carries the measurement; we take the conclusion.)
 //!
 //! ## Where this runs
 //!
@@ -139,10 +139,10 @@ impl Verdict {
 /// honest default `status_addr` and `require_auth` take.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
-    /// The origin, no trailing slash: `https://scry.moreright.xyz`. `None`
+    /// The origin, no trailing slash: `https://elopros.com`. `None`
     /// disables every check in this module.
     pub origin: Option<String>,
-    /// The title's slug in scry's catalog. Ours, and it is not a knob a
+    /// The title's slug in elo's catalog. Ours, and it is not a knob a
     /// deployment should be inventing — but it is configurable because a
     /// staging origin may file this game under a different name.
     pub slug: String,
@@ -192,7 +192,7 @@ impl Config {
             ));
         }
         if self.slug.is_empty() {
-            return Err("entitle_slug is empty — it names this title in scry's catalog".into());
+            return Err("entitle_slug is empty — it names this title in elo's catalog".into());
         }
         Ok(())
     }
@@ -385,7 +385,7 @@ fn verdicts_from_page(body: &str, wallets: &[String]) -> Vec<Verdict> {
 // no new crate in the tree. Blocking on purpose and never on a hot path.
 //
 // A non-2xx is `None` and therefore `Unknown` at both call sites, and that
-// covers the 503 scry answers when its own chain read fails — the response
+// covers the 503 elo answers when its own chain read fails — the response
 // body for that case says `entitled: null` anyway, so the two roads to
 // "could not look" meet.
 
@@ -464,7 +464,7 @@ mod tests {
 
     #[test]
     fn a_null_is_could_not_look_and_not_a_zero() {
-        // scry's 503 body, verbatim in shape. The bug this pins is one
+        // elo's 503 body, verbatim in shape. The bug this pins is one
         // character wide: `entitled == false` in a language where null is
         // falsey would kick every player on the shard during an RPC blip.
         let body =
@@ -602,7 +602,7 @@ mod tests {
     }
 
     #[test]
-    fn the_urls_are_the_routes_scry_actually_serves() {
+    fn the_urls_are_the_routes_elo_actually_serves() {
         let cfg = armed();
         assert_eq!(
             cfg.url_of(A).unwrap(),

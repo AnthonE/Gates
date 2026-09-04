@@ -360,7 +360,11 @@ fn kill_the_pig(w: &mut World, slot: usize) {
             sel: 0,
             ..InputFrame::default()
         };
-        w.tick(&[Command::Input { id: 1, frame }]);
+        w.tick(&[Command::Input {
+            id: 1,
+            frame,
+            favour: 0,
+        }]);
         if !w.mobs.m[slot].alive {
             return;
         }
@@ -496,7 +500,11 @@ fn a_whole_pig_charges_and_bites() {
             seq,
             ..InputFrame::default()
         };
-        w.tick(&[Command::Input { id: 1, frame }]);
+        w.tick(&[Command::Input {
+            id: 1,
+            frame,
+            favour: 0,
+        }]);
     }
     assert!(
         w.players[0].hp < full,
@@ -539,7 +547,11 @@ fn a_hurt_pig_breaks_off_and_flees() {
             seq,
             ..InputFrame::default()
         };
-        w.tick(&[Command::Input { id: 1, frame }]);
+        w.tick(&[Command::Input {
+            id: 1,
+            frame,
+            favour: 0,
+        }]);
     }
     let d2_after = {
         let m = &w.mobs.m[slot].body;
@@ -578,7 +590,11 @@ fn a_bite_can_kill_and_the_cause_is_the_mob() {
             seq,
             ..InputFrame::default()
         };
-        w.tick(&[Command::Input { id: 1, frame }]);
+        w.tick(&[Command::Input {
+            id: 1,
+            frame,
+            favour: 0,
+        }]);
         if w.players[0].dead {
             break;
         }
@@ -652,7 +668,11 @@ fn a_wolf_notices_a_player_at_a_range_the_pig_ignores() {
                 seq,
                 ..InputFrame::default()
             };
-            w.tick(&[Command::Input { id: 1, frame }]);
+            w.tick(&[Command::Input {
+                id: 1,
+                frame,
+                favour: 0,
+            }]);
         }
         assert_eq!(
             w.mobs.m[slot].roused_until > 0,
@@ -685,7 +705,11 @@ fn a_wolf_runs_down_a_player_who_stands_still() {
             seq,
             ..InputFrame::default()
         };
-        w.tick(&[Command::Input { id: 1, frame }]);
+        w.tick(&[Command::Input {
+            id: 1,
+            frame,
+            favour: 0,
+        }]);
         if w.players[0].dead {
             break;
         }
@@ -709,7 +733,11 @@ fn a_wolf_runs_down_a_player_who_stands_still() {
             seq,
             ..InputFrame::default()
         };
-        w.tick(&[Command::Input { id: 1, frame }]);
+        w.tick(&[Command::Input {
+            id: 1,
+            frame,
+            favour: 0,
+        }]);
     }
     assert_eq!(
         w.players[0].hp, full,
@@ -733,7 +761,11 @@ fn a_wolf_at_one_hit_point_never_breaks_off() {
             seq,
             ..InputFrame::default()
         };
-        w.tick(&[Command::Input { id: 1, frame }]);
+        w.tick(&[Command::Input {
+            id: 1,
+            frame,
+            favour: 0,
+        }]);
     }
     assert_eq!(w.mobs.m[slot].hp, 1, "nothing here hurts the wolf further");
     assert!(
@@ -773,7 +805,11 @@ fn a_closed_charge_settles_instead_of_orbiting() {
             seq,
             ..InputFrame::default()
         };
-        w.tick(&[Command::Input { id: 1, frame }]);
+        w.tick(&[Command::Input {
+            id: 1,
+            frame,
+            favour: 0,
+        }]);
         gaps.push(gap2(&w, slot));
     }
     let reach2 = {
@@ -846,7 +882,11 @@ fn think_once(w: &mut World) {
             seq,
             ..InputFrame::default()
         };
-        w.tick(&[Command::Input { id: 1, frame }]);
+        w.tick(&[Command::Input {
+            id: 1,
+            frame,
+            favour: 0,
+        }]);
     }
 }
 

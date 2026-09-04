@@ -22,7 +22,7 @@
 //! public key, hash it to an address, and compare.
 //!
 //! No network call. No issuer to be unreachable. No "what does a shard do
-//! when it cannot reach scry" policy question, which is the one the token
+//! when it cannot reach elo" policy question, which is the one the token
 //! model could not answer and the reason it kept not landing. The identity
 //! is a public key hash and the proof is arithmetic over bytes we already
 //! have.
@@ -103,7 +103,7 @@ fn address_of(vk: &VerifyingKey) -> Address {
 /// **Why a shard needs this at all.** The identity we store stays lowercase —
 /// `Address::to_hex` says why, and a save filed under a checksummed key would
 /// depend on how the address was capitalised where it came from. But the
-/// *message* is scry's, and scry's launcher binds the checksummed spelling
+/// *message* is elo's, and elo's launcher binds the checksummed spelling
 /// into the bytes it signs, because EIP-4361 requires it and reference SIWE
 /// parsers reject an all-lowercase address outright. So the case matters in
 /// exactly one place — recomputing what was signed — and nowhere else.

@@ -64,14 +64,14 @@ pub const RESEARCH: [&str; 7] = [
     "nothing in that slot",
     "that cannot be researched",
     "already known",
-    "not enough obol",
+    "not enough junk",
     "unlock the node before it first",
     "no workbench of that level in reach",
 ];
 
 /// `sim_core::build`'s `REFUSE_B_*: u32` — a build, an upgrade or a repair
 /// on a structure piece.
-pub const BUILD: [&str; 13] = [
+pub const BUILD: [&str; 15] = [
     "no such piece",
     "spot taken",
     "needs support",
@@ -85,6 +85,12 @@ pub const BUILD: [&str; 13] = [
     "cannot be repaired",
     "too late to take that down",
     "nothing there",
+    // The two plate refusals (build plate v1). They are a pair and they are
+    // written from the PLAYER's side of the fact: the sim knows "the latched
+    // band is 7 over this column's terrain", and what a player can act on is
+    // which way the ground went and what to do about it.
+    "too far below the floor",
+    "the hill is in the way",
 ];
 
 /// `sim_core::deploy`'s `REFUSE_D_*: u32` — placing a deployable.
@@ -164,6 +170,20 @@ pub const GATHER: [&str; 3] = [
     "{} is broken — craft a new one",
 ];
 
+/// `ranged::REFUSE_RL_*` — why a reload (or a trigger pull on an empty
+/// magazine) did nothing. `{}` is the held item, [`GATHER`]'s substitution.
+pub const RELOAD: [&str; 6] = [
+    // Code 0 = "no refusal" — unreachable, `CONSUME[0]`'s posture.
+    "nothing was refused",
+    "{} takes no magazine",
+    "still busy",
+    "the magazine is full",
+    // The dry click, and the sentence names the fix rather than the state:
+    // `GATHER[2]`'s rule — a refusal a player cannot act on reads as a bug.
+    "empty — press R to reload",
+    "no rounds left for {}",
+];
+
 /// The sentence, or the bare code when the sim is ahead of the client.
 ///
 /// The fallback keeps a wire ahead of us honest rather than mislabelled: an
@@ -224,6 +244,16 @@ pub fn consume(code: u8) -> String {
 /// the sentence reads as a whole. Never called with 0, [`consume`]'s rule.
 pub fn gather(code: u8, held: &str) -> String {
     match GATHER.get(code as usize) {
+        Some(s) if code != 0 => s.replacen("{}", held, 1),
+        _ => format!("code {code}"),
+    }
+}
+
+/// Why a reload did nothing, with the held item's label spliced in —
+/// [`gather`]'s shape and its rule. Two of the six sentences carry no
+/// `{}`; `replacen` leaves those alone, so one call site covers both.
+pub fn reload(code: u8, held: &str) -> String {
+    match RELOAD.get(code as usize) {
         Some(s) if code != 0 => s.replacen("{}", held, 1),
         _ => format!("code {code}"),
     }

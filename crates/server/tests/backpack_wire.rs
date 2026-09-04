@@ -58,7 +58,7 @@ const SPAWN: (f32, f32) = (1024.0, 1024.0);
 /// weapon, so three hits kill.
 const SPEAR: u16 = 0;
 /// A fixture item with no weapon row: pure loot.
-const JUNK: u16 = 7;
+const FILLER: u16 = 7;
 
 fn id_of(slot: usize) -> u32 {
     (1 << 8) | slot as u32
@@ -186,7 +186,7 @@ fn a_kill_puts_a_bag_on_every_client_and_the_loot_takes_it_off() {
         cond: 0,
     };
     core.world.players[w1].inv[1] = ItemStack {
-        item: JUNK,
+        item: FILLER,
         count: 42,
         cond: 0,
     };
@@ -243,7 +243,7 @@ fn a_kill_puts_a_bag_on_every_client_and_the_loot_takes_it_off() {
         .collect();
     assert_eq!(
         held,
-        vec![(SPEAR, 2), (JUNK, 42)],
+        vec![(SPEAR, 2), (FILLER, 42)],
         "the kill paid: the victim's kit is in the killer's pockets"
     );
     let removed: Vec<usize> = seen
@@ -283,7 +283,7 @@ fn a_late_joiner_is_handed_the_standing_bags_by_the_sync_walk() {
         cond: 0,
     };
     core.world.players[w1].inv[0] = ItemStack {
-        item: JUNK,
+        item: FILLER,
         count: 9,
         cond: 0,
     };
@@ -338,7 +338,7 @@ fn a_bag_out_of_reach_is_refused_by_distance_alone() {
         cond: 0,
     };
     core.world.players[w1].inv[1] = ItemStack {
-        item: JUNK,
+        item: FILLER,
         count: 42,
         cond: 0,
     };
@@ -361,7 +361,7 @@ fn a_bag_out_of_reach_is_refused_by_distance_alone() {
     assert_eq!(core.world.backpacks.len(), 1, "the bag is untouched");
     let w0 = world_slot(&core, id_of(0));
     assert!(
-        core.world.players[w0].inv.iter().all(|s| s.item != JUNK),
+        core.world.players[w0].inv.iter().all(|s| s.item != FILLER),
         "and nothing crossed twenty metres into a pocket"
     );
     assert!(

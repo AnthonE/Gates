@@ -91,6 +91,11 @@ pub fn setup(mut commands: Commands) {
 /// must not reach the system after it.** Every press while the composer is
 /// open is consumed, which is what stops a typed line also being a walk, a
 /// swing and an inventory toggle.
+// Eight, and every one is a distinct owner of the keyboard this frame: the
+// composer's own state, the wire it sends on, the toast, the key state it
+// consumes from, the character stream, the pointer it releases, and the two
+// other text fields that must not be typed into at the same time.
+#[allow(clippy::too_many_arguments)]
 pub fn keys(
     mut chat: ResMut<Chat>,
     net: NonSend<Net>,
@@ -99,8 +104,15 @@ pub fn keys(
     mut chars: MessageReader<KeyboardInput>,
     mut cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
     ui: Option<Res<super::panels::Ui>>,
+    reports: Option<Res<super::report::Reports>>,
 ) {
-    let panel_up = ui.map(|u| u.panel != Panel::None).unwrap_or(false);
+    // The report composer is a text field too, and it is the one that draws on
+    // every screen — so it can be up here, where a panel cannot. Same rule as
+    // the panels: two text fields open at once is one of them eating the
+    // other's keystrokes, and this pair bites hardest because typing the
+    // letter `t` into a bug report would otherwise open chat mid-sentence.
+    let panel_up =
+        ui.map(|u| u.panel != Panel::None).unwrap_or(false) || reports.is_some_and(|r| r.open);
 
     if !chat.composer.open {
         // A panel already owns the keyboard — the search box is a text field
@@ -272,6 +284,12 @@ pub fn draw(
                 } else {
                     Color::srgba(0.92, 0.90, 0.84, 0.85)
                 }),
+                // The chat log is the longest-lived floating string in the
+                // client and the only one a stranger writes the content of, so
+                // it is the one that most has to stay readable over whatever
+                // the player happens to be facing. `ui::TEXT_SHADOW` has the
+                // reasoning.
+                super::ui::TEXT_SHADOW,
                 Pickable::IGNORE,
             ));
         }

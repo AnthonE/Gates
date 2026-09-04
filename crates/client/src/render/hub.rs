@@ -5,7 +5,7 @@
 //! and what the screen says about each. This is the Bevy half: one fetch, one
 //! resource, one click handler. `render/menu.rs` draws it.
 //!
-//! **The launcher is held for the life of the app.** `Scry` used to be built
+//! **The launcher is held for the life of the app.** `Elo` used to be built
 //! before the window, read for a `Player`, and dropped — so the socket that
 //! could sign a challenge, name a shard list and open a page was closed
 //! before the first frame. It is a resource now, non-send because
@@ -14,8 +14,8 @@
 
 use bevy::prelude::*;
 
+use crate::elo::Elo;
 use crate::manifest::{self, Manifest};
-use crate::scry::Scry;
 use crate::ui::hub::{Hub, Section};
 
 /// The manifest, and the fetch that is filling it.
@@ -96,7 +96,7 @@ pub fn poll(mut state: ResMut<HubState>) {
 /// that silently does nothing is worse than one that says it failed:
 /// there is no url (the click should not have been offered), the launcher
 /// refused, or it opened.
-pub fn open(scry: Option<&mut Scry>, hub: &Hub, section: Section) -> Opened {
+pub fn open(elo: Option<&mut Elo>, hub: &Hub, section: Section) -> Opened {
     let Some(url) = section.status(hub).url().map(str::to_string) else {
         return Opened::NoLink;
     };
@@ -107,7 +107,7 @@ pub fn open(scry: Option<&mut Scry>, hub: &Hub, section: Section) -> Opened {
     if manifest::check_url(&url).is_err() {
         return Opened::NoLink;
     }
-    match scry {
+    match elo {
         None => Opened::NoLauncher,
         Some(s) => {
             if s.open(&url) {
@@ -139,8 +139,7 @@ impl Opened {
                 format!("the launcher would not open {label} - check its window")
             }
             Opened::NoLauncher => {
-                "the scry launcher is not running - start the game from it to reach this"
-                    .to_string()
+                "the elo launcher is not running - start the game from it to reach this".to_string()
             }
             Opened::NoLink => format!("nothing is published at {label} yet"),
         }

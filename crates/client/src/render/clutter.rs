@@ -58,8 +58,8 @@ pub const TUFT_H: f32 = 0.34;
 /// instead.
 pub const FROND_H: f32 = 0.19;
 
-/// Standing stalks per litter clump. Fewer than `BLADES_PER_TUFT` for the same
-/// reason the height is lower — a litter floor is sparser standing matter than
+/// Standing stalks per litter clump. Fewer than a tuft's blades were, for the
+/// same reason the height is lower — a litter floor is sparser standing matter than
 /// turf, and the fallen half of the clump is already carrying its coverage.
 pub const FRONDS_PER_CLUMP: u32 = 3;
 
@@ -74,11 +74,16 @@ pub const FRONDS_PER_CLUMP: u32 = 3;
 /// and saturation, which `GROUND_ALBEDO` already carries).
 pub const FROND_TIP_GAIN: f32 = 1.45;
 
-/// Authored colour per kind, sRGB. Grass is the darkest thing on the island
-/// and its shadowed side goes COOL (`ART.md` §3), which the blade ramp does
-/// by lightening and warming toward the tip rather than by tinting the base.
-const TUFT_LO: u32 = 0x354a2b;
-const TUFT_HI: u32 = 0x778a4b;
+/// Authored colour per kind, sRGB.
+///
+/// **Grass is no longer in this table and that is the point of the card.** It
+/// used to be `TUFT_LO`/`TUFT_HI`, two hex values ramped root-to-tip, and
+/// `ART.md` §3's "shadowed side goes cool" was satisfied by authoring it. A
+/// photographed tuft carries its own root-to-tip value, its own cool shadow
+/// and its own dead-blade yellows measured off a real clump, so authoring any
+/// of them again would be a second opinion fighting the first
+/// (`props.rs`'s `photo` states the law). What the card takes instead is a
+/// per-instance mean-1 grey, which is rule 7's variation and not a colour.
 const PEBBLE_C: u32 = 0x8a8880;
 const TWIG_C: u32 = 0x5a4630;
 const SHARD_C: u32 = 0x7d7a73;
@@ -87,6 +92,17 @@ const SHARD_C: u32 = 0x7d7a73;
 pub struct ClutterRing {
     built: HashMap<(i32, i32), Entity>,
     material: Option<Handle<StandardMaterial>>,
+    /// The grass cards' own material — alpha-MASKED and wearing the atlas, so
+    /// it cannot be the one above. A tile therefore draws twice, not once.
+    ///
+    /// **That is a real change to this file's stated budget and it is worth
+    /// naming rather than absorbing**: the header says one mesh per tile keeps
+    /// the ring at 25 draws, and it is 50 now. The alternative was to give the
+    /// pebbles and twigs UVs into an opaque corner of the grass atlas so one
+    /// material could carry both, which would put every pebble through an
+    /// alpha test it does not need and tie two unrelated surfaces to one
+    /// texture forever. 25 extra draws is the cheaper half of that trade.
+    card_material: Option<Handle<StandardMaterial>>,
 }
 
 /// Tiles in a full clutter ring.
@@ -164,38 +180,205 @@ fn blade(s: &mut Soup, k: Stalk, v: f32) {
     // whichever way it happens to face, which is also what a real blade does
     // once its neighbours have scattered into it.
     //
-    // ⚠ **The reason this line used to give for going fully vertical was
-    // false, and the correction matters because it points at a different
-    // fix.** It said "a blade's two triangles wind opposite ways, so one of
-    // them took the sun and the other went black". They do not:
-    // `(b0,t0,b1)` and `(b1,t0,t1)` cross to the same side of the quad, and
-    // `tests/contact.rs` computes both facets over a swept blade and holds
-    // them in one hemisphere. The mechanism that actually blackens half a
-    // tuft is the material's `double_sided` flip below — Bevy negates the
-    // shading normal on a back-facing fragment, so any normal with a
-    // horizontal component presents as its own opposite to a camera on the
-    // other side, and seven blades at seven yaws put half of them there.
+    // ⚠ **This line has now given TWO false reasons for going fully vertical,
+    // and both corrections matter because each pointed at a different fix.**
     //
-    // **So the cost of this line is a real defect and the fix is not a
-    // blend number.** A fully vertical normal is the ground's own normal, so
-    // every blade is shaded *identically to the dirt it stands in* — same sun
-    // cosine, same hemisphere sample — and the only thing separating grass
-    // from ground is albedo. That is the visual judge's "reads as paint"
-    // stated as arithmetic. What it wants is a per-vertex ramp (ground normal
-    // at the root, the blade's own facing at the tip) rather than one constant
-    // for the whole quad, which is a change to `Soup::tri`'s signature and a
-    // shading change nobody here can look at. `NOW.md` §0gc carries it.
+    // The first said "a blade's two triangles wind opposite ways, so one took
+    // the sun and the other went black". They do not: `(b0,t0,b1)` and
+    // `(b1,t0,t1)` cross to the same side of the quad, and `tests/contact.rs`
+    // computes both facets over a swept blade and holds them in one
+    // hemisphere.
+    //
+    // The second — that the material's `double_sided` flip is what blackens
+    // half a tuft — is **also false, and was checked against Bevy's source
+    // rather than reasoned about** (2026-08-25). `pbr_functions.wgsl:130-134`
+    // wraps that negation in `#ifndef VERTEX_TANGENTS`, and
+    // `bevy_pbr/src/render/mesh.rs:2410` pushes `VERTEX_TANGENTS` whenever the
+    // layout carries `ATTRIBUTE_TANGENT` — which `Soup::mesh` puts on every
+    // clutter tile via `generate_tangents()`. The other `double_sided &&
+    // !is_front` in that file is inside `apply_normal_mapping`, and this
+    // material has no normal map. **No blade is ever flipped.** Do not
+    // "fix" this by turning `double_sided` off; it would change nothing here
+    // and would black out the back of every blade for real.
+    //
+    // **The real defect this line carried, and the fix.** A fully vertical
+    // normal is the GROUND's own normal, so every blade was shaded identically
+    // to the dirt it stood in — same sun cosine, same hemisphere sample — and
+    // albedo was the only thing separating grass from ground. That is the
+    // visual judge's "reads as paint" stated as arithmetic, on the layer that
+    // fills the bottom half of every frame.
+    //
+    // One number could not fix it, because BOTH ENDS ARE RIGHT: a blade's root
+    // really is bedded in the turf and should shade with it (`ART.md` rule 2 —
+    // nothing sits ON the ground), and its tip is a card standing in the light
+    // and should shade as itself (rule 1 — no surface may be one flat value).
+    // So the blend is a ramp up the blade rather than a constant, which is what
+    // `Soup::tri_ramp` exists for.
     let up_volume = Some(base - Vec3::Y * 2.0);
-    s.tri(b0, t0, b1, col, up_volume, 1.0);
-    s.tri(b1, t0, t1, col, up_volume, 1.0);
+    let root_y = base.y;
+    let ramp = move |p: Vec3| {
+        let t = ((p.y - root_y) / h).clamp(0.0, 1.0);
+        // 1 at the root (the ground's normal), `BLADE_TIP_BLEND` at the tip.
+        1.0 - (1.0 - BLADE_TIP_BLEND) * t
+    };
+    s.tri_ramp(b0, t0, b1, col, up_volume, ramp);
+    s.tri_ramp(b1, t0, t1, col, up_volume, ramp);
 }
 
-/// Blades per tuft. Seven, not the three the first native capture shipped:
-/// `terrain::clutter_fill` places ~2.4 elements per square metre, so a tuft
-/// is what stands between one element and the next, and three blades of it is
-/// a sprig. Seven is 5,000 blades a tile — still one draw, since the tile is
-/// one baked mesh.
-const BLADES_PER_TUFT: u32 = 7;
+// ---------------------------------------------------------------------------
+// The grass card — a photograph of a real tuft, on two crossed quads.
+// ---------------------------------------------------------------------------
+
+/// The grass card atlas: four photoscanned tufts, 2×2 cells of 512×256.
+///
+/// **Why a card at all, when this file already builds blades.** Seven tapered
+/// quads of one authored colour is what `ART.md` rule 1 calls a flat surface
+/// at blade scale wearing a ramp — the silhouette is seven straight edges, the
+/// colour is two hex values, and no amount of either reads as turf. A card
+/// carries a photograph of ~30 real blades in one quad: the silhouette is
+/// measured rather than authored, the value variation inside it is the
+/// scan's, and the density per triangle is roughly thirty times higher.
+/// `reference/PLANTS.md` §6.4 names this exact gap — *"Grass blade atlas.
+/// Blades are vertex-coloured today with no map at all."*
+///
+/// Baked by `ci/bake_grass_atlas.py` from Poly Haven `grass_medium_01` (CC0);
+/// `assets/textures/MANIFEST.md` carries the provenance row.
+pub const CARD_ATLAS: &str = "textures/grass_card_albedo.png";
+/// Atlas layout. Four cells, so a tuft's crossed quads can each take a
+/// different silhouette and no two tufts in a tile need be the same pair.
+pub const CARD_COLS: u32 = 2;
+pub const CARD_ROWS: u32 = 2;
+/// Cells in the atlas — the count `card` hashes into.
+pub const CARD_CELLS: u32 = CARD_COLS * CARD_ROWS;
+
+/// Quads per tuft. Three at 60° apart, so the tuft has a silhouette from every
+/// yaw instead of vanishing edge-on — the failure a single card has and the
+/// reason nobody ships one.
+///
+/// Three rather than two because two cross at 90° and present their thinnest
+/// pair of edges 45° from either, which is where a player standing still is
+/// most likely to be looking; three never leaves a gap wider than 60°.
+/// Proposed default, not spoken — `DECISIONS.md` §open, grass cards v0.
+pub const CARDS_PER_TUFT: u32 = 3;
+
+/// A card's width as a multiple of its height, matching the atlas cell's
+/// 512×256. Baked and drawn have to agree or the tuft is stretched, so this
+/// is checked against the shipped file by `tests/grass_card.rs`.
+pub const CARD_ASPECT: f32 = 2.0;
+
+/// The alpha a card's cutout is tested against.
+///
+/// The same 0.5 `render::mipmap::MASK_CUT` preserves coverage against. They
+/// are two spellings of one number — the mip chain is built to hold the
+/// coverage that THIS test draws — and a gate pins them together, because a
+/// drift between them thins the grass with distance and looks like an LOD bug.
+pub const CARD_ALPHA_CUT: f32 = 0.5;
+
+/// How deep a card's bedding axis sits below its root, as a multiple of the
+/// card's own HALF-WIDTH.
+///
+/// **Proportional, not a fixed depth, and that is the whole subtlety.** The
+/// normal law `blade` established blends toward a point below the root, and at
+/// the root it blends fully — so the root's normal is the direction from that
+/// point to the vertex. A blade's base is a few centimetres wide, so that
+/// direction is vertical whatever depth you pick. A card's base is up to
+/// `TUFT_H * CARD_ASPECT` across, so at `blade`'s fixed 2 m the corner normals
+/// tilt 9.5° off vertical and the root stops being bedded — measured 0.9863
+/// against `tests/contact.rs`'s 0.99 floor, which is what caught it.
+///
+/// Keying the depth to the half-width makes the root angle a constant instead
+/// of a function of the card's size: `d = k·w` gives `n.y = k/√(k²+1)`, which
+/// is 0.992 at k = 8 for every card at every `scale`. A fixed depth would pass
+/// the gate at one tuft size and fail it at another.
+pub const CARD_BED: f32 = 8.0;
+
+/// How far a card's baseline sinks below the ground point, as a fraction of
+/// its height. `ART.md` rule 2: nothing sits ON the ground. The scan's own
+/// roots do most of this work; the sink is what stops a card's straight
+/// bottom edge showing as a line on a slope.
+pub const CARD_SINK: f32 = 0.04;
+
+/// One tuft as [`CARDS_PER_TUFT`] crossed, alpha-masked, photographed quads.
+///
+/// The normal law is `blade`'s, deliberately: fully the ground's normal at the
+/// root and `BLADE_TIP_BLEND` of it at the tip, so a card is bedded where it
+/// meets the turf and shades as itself where it stands in the light. All the
+/// reasoning for that ramp is on `blade` and is not repeated.
+///
+/// The vertex colour is a **mean-1 grey**, not a green ramp. `props.rs`'s
+/// `photo` states the law: a surface wearing a photograph keeps the
+/// photograph's colour and takes only a per-instance value multiplier, or the
+/// authored tint fights the measured one. The root-to-tip value the blade ramp
+/// used to author is in the scan already.
+fn card(s: &mut Soup, at: Vec3, yaw: f32, seed: u32, h: f32) {
+    let root = at - Vec3::Y * h * CARD_SINK;
+    for i in 0..CARDS_PER_TUFT {
+        let a = yaw + i as f32 * std::f32::consts::PI / CARDS_PER_TUFT as f32;
+        let side = Vec3::new(a.sin(), 0.0, a.cos());
+        // Per-card height jitter — rule 7's "no two identical instances", and
+        // it also stops three coincident top edges reading as one hard line.
+        let hj = h * (0.80 + 0.40 * hash01(seed, i + 5));
+        let half_w = hj * CARD_ASPECT * 0.5;
+        // Per card, because `half_w` is per card — see `CARD_BED`.
+        let up_volume = Some(root - Vec3::Y * half_w * CARD_BED);
+        let cell = (hash01(seed, i + 91) * CARD_CELLS as f32) as u32 % CARD_CELLS;
+        let (du, dv) = (1.0 / CARD_COLS as f32, 1.0 / CARD_ROWS as f32);
+        let (cu, cv) = (
+            (cell % CARD_COLS) as f32 * du,
+            (cell / CARD_COLS) as f32 * dv,
+        );
+
+        let b0 = root - side * half_w;
+        let b1 = root + side * half_w;
+        let t0 = b0 + Vec3::Y * hj;
+        let t1 = b1 + Vec3::Y * hj;
+        // V grows downward in image space, so the card's TOP is the cell's top
+        // edge and its baseline is `cv + dv`. Getting this backwards plants the
+        // tuft upside down, which is obvious in a frame and invisible in a
+        // vertex count — `tests/grass_card.rs` asserts the roots are at the
+        // bottom of the cell.
+        let (uv_b0, uv_b1) = ([cu, cv + dv], [cu + du, cv + dv]);
+        let (uv_t0, uv_t1) = ([cu, cv], [cu + du, cv]);
+
+        let v = 0.86 + 0.28 * hash01(seed, i + 13);
+        let col = move |_: Vec3| [v, v, v, 1.0];
+        let root_y = root.y;
+        let ramp = move |p: Vec3| {
+            let t = ((p.y - root_y) / hj).clamp(0.0, 1.0);
+            1.0 - (1.0 - BLADE_TIP_BLEND) * t
+        };
+        // Both triangles wind the same way — `tests/contact.rs` holds their
+        // facets in one hemisphere and that claim is not weakened by the UVs.
+        s.tri_uv(
+            [(b0, uv_b0), (t0, uv_t0), (b1, uv_b1)],
+            col,
+            up_volume,
+            ramp,
+        );
+        s.tri_uv(
+            [(b1, uv_b1), (t0, uv_t0), (t1, uv_t1)],
+            col,
+            up_volume,
+            ramp,
+        );
+    }
+}
+
+/// How much of the volume normal a blade's TIP keeps. **(knob)**
+///
+/// 0 would be the blade's own facet outright, which is the plate-lit look the
+/// fully-vertical blend was introduced to kill: seven blades at seven yaws each
+/// taking a different sun cosine reads as a pile of foil, not as turf. 1 is
+/// what shipped and is the ground's normal, which is the "reads as paint"
+/// defect. This keeps most of the volume behaviour and lets a quarter of the
+/// blade's own facing through, so a tuft still shades as a mass while its tips
+/// separate from the dirt.
+///
+/// **Invented, and nobody has looked at it** — `DECISIONS.md` §open, clutter
+/// contact v0. It is the one number in this slice a person has to judge, and
+/// `ART.md` §5's "blades catch a rim of sun at their tips" is what to judge it
+/// against.
+pub const BLADE_TIP_BLEND: f32 = 0.75;
 
 /// A spray of standing quads out of one root — the ONE builder for every
 /// standing thing the near-ground population draws, so a tuft of grass and a
@@ -342,6 +525,18 @@ fn litter(s: &mut Soup, at: Vec3, yaw: f32, scale: f32, seed: u32) {
 /// GPU or a shard. Rule: this must stay the SAME call as the tile path
 /// (`element`), because a gate that measures a parallel builder measures
 /// nothing about what ships.
+/// Whether a kind draws through the alpha-masked card material rather than the
+/// opaque one.
+///
+/// **A function on the kind, not a list at the call site.** `stream` splits one
+/// tile's elements into two meshes by this, and a kind that changes materials
+/// without this changing would be drawn by the wrong shader — which for a
+/// cutout means a card rendered as an opaque grey quad, and for an opaque
+/// solid means an alpha test against a texture it has no UVs for.
+pub fn masked(kind: Clutter) -> bool {
+    matches!(kind, Clutter::Tuft)
+}
+
 pub fn element_mesh(e: &ClutterElem) -> Mesh {
     let mut s = Soup::default();
     element(&mut s, e);
@@ -357,18 +552,7 @@ fn element(s: &mut Soup, e: &ClutterElem) {
     let seed = ((e.x * 64.0) as i32 as u32) ^ ((e.z * 64.0) as i32 as u32).rotate_left(13);
     match e.kind {
         Clutter::None => {}
-        Clutter::Tuft => stand(
-            s,
-            at,
-            yaw,
-            seed,
-            BLADES_PER_TUFT,
-            TUFT_H * e.scale,
-            Ramp {
-                lo: linear(TUFT_LO),
-                hi: linear(TUFT_HI),
-            },
-        ),
+        Clutter::Tuft => card(s, at, yaw, seed, TUFT_H * e.scale),
         Clutter::Pebble => chip(
             s,
             at,
@@ -389,6 +573,13 @@ fn element(s: &mut Soup, e: &ClutterElem) {
     }
 }
 
+// Eight injected parameters, and the eighth is `AssetServer` for the card
+// atlas. A Bevy system's arity is its dependency list rather than a signature
+// somebody designed, and the alternative here — a setup system that builds
+// both materials up front — would trade one lint for a second place the
+// ring's materials can be half-initialised. Same call the nine other
+// `render::` systems make.
+#[allow(clippy::too_many_arguments)]
 pub fn stream(
     mut commands: Commands,
     mut ring: ResMut<ClutterRing>,
@@ -397,6 +588,7 @@ pub fn stream(
     mut buf: Local<Vec<ClutterElem>>,
     world: Res<WorldId>,
     eye: Res<Eye>,
+    assets: Res<AssetServer>,
 ) {
     // The grid stratum AND the skirt stratum, in one buffer. `CLUTTER_TILE_CAP`
     // is the browser's name for exactly this sum and the two fills are
@@ -410,9 +602,41 @@ pub fn stream(
             materials.add(StandardMaterial {
                 base_color: Color::WHITE,
                 perceptual_roughness: 0.92,
-                reflectance: 0.12,
+                // A blade is a leaf: an ordinary dielectric. See
+                // `render::fresnel` for what 0.12 was actually delivering.
+                reflectance: super::fresnel::DIELECTRIC,
                 // Blades are single-sided quads and a player walks all the way
                 // around them.
+                double_sided: true,
+                cull_mode: None,
+                ..default()
+            })
+        })
+        .clone();
+    // The cards' material. `AlphaMode::Mask`, never `Blend`: a tile is
+    // hundreds of overlapping quads and blending them needs a per-card depth
+    // sort that changes with the camera, where masked cards write depth and
+    // sort themselves. `props.rs`'s needle material states the same reasoning
+    // for the same reason — this is the second population to need it.
+    let card_material = ring
+        .card_material
+        .get_or_insert_with(|| {
+            materials.add(StandardMaterial {
+                // WHITE, and the per-card mean-1 grey rides in the vertex
+                // colour: the photograph ships its own colour whole
+                // (`textures::PropMaps` has the law).
+                base_color: Color::WHITE,
+                // `textures::atlas`, not a bare `load`: Bevy's default sampler is
+                // clamped and linear (right for an atlas) but leaves anisotropy
+                // at 1, and a 34 cm card seen from 1.6 m is almost always at a
+                // grazing angle.
+                base_color_texture: Some(
+                    assets.load_with_settings(CARD_ATLAS, super::textures::atlas(true)),
+                ),
+                alpha_mode: AlphaMode::Mask(CARD_ALPHA_CUT),
+                perceptual_roughness: 0.92,
+                reflectance: super::fresnel::DIELECTRIC,
+                // A card is one quad and the player walks all the way round it.
                 double_sided: true,
                 cull_mode: None,
                 ..default()
@@ -471,22 +695,38 @@ pub fn stream(
                 &mut buf[grid..],
             );
             let n = grid + skirt;
-            let mut s = Soup::default();
+            // Two soups, because the grass wears a cutout and nothing else in
+            // this file does — see `ClutterRing::card_material`. Split by
+            // `masked` rather than by a list here, so a kind that changes
+            // material cannot be drawn by the wrong shader.
+            let mut solid = Soup::default();
+            let mut cards = Soup::default();
+            let mut n_solid = 0usize;
+            let mut n_cards = 0usize;
             for e in buf.iter().take(n) {
-                element(&mut s, e);
+                if masked(e.kind) {
+                    n_cards += 1;
+                    element(&mut cards, e);
+                } else {
+                    n_solid += 1;
+                    element(&mut solid, e);
+                }
             }
-            let e = if n == 0 {
-                commands.spawn((
+            // The tile entity carries `Tile` and nothing drawable; each mesh
+            // hangs off it as a child. `despawn` follows `Children`
+            // (`linked_spawn`), so retiring the tile still takes both with it
+            // and the retire path above is unchanged.
+            let e = commands
+                .spawn((
                     super::WorldEntity,
                     Tile(key.0, key.1),
                     Transform::IDENTITY,
                     Visibility::default(),
                 ))
-            } else {
-                commands.spawn((
-                    super::WorldEntity,
-                    Tile(key.0, key.1),
-                    Mesh3d(meshes.add(s.mesh())),
+                .id();
+            if n_solid > 0 {
+                commands.entity(e).with_child((
+                    Mesh3d(meshes.add(solid.mesh())),
                     MeshMaterial3d(material.clone()),
                     // A blade is two triangles a few centimetres wide. Against
                     // a cascade sized for a 200 m world that is not a shadow,
@@ -503,9 +743,21 @@ pub fn stream(
                     // at blade scale, and `NotShadowCaster` is why.
                     NotShadowCaster,
                     Transform::IDENTITY,
-                ))
+                ));
             }
-            .id();
+            if n_cards > 0 {
+                commands.entity(e).with_child((
+                    Mesh3d(meshes.add(cards.mesh())),
+                    MeshMaterial3d(card_material.clone()),
+                    // `NotShadowCaster` for the same reason as the solids
+                    // above, and one more that is specific to a cutout: a
+                    // masked card in the shadow pass is an alpha test per
+                    // shadow texel, which for hundreds of overlapping quads is
+                    // the most expensive thing on the tile and buys acne.
+                    NotShadowCaster,
+                    Transform::IDENTITY,
+                ));
+            }
             ring.built.insert(key, e);
             filled += 1;
         }

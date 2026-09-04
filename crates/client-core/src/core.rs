@@ -6,7 +6,7 @@
 //! exact struct against `ShardCore`; the browser drives it through
 //! `bridge.rs`.
 
-use crate::clock::ClientClock;
+use crate::clock::{self, ClientClock};
 use crate::interp::Interp;
 use crate::predict::Predictor;
 use crate::view::{Applied, ClientView};
@@ -14,15 +14,15 @@ use protocol::{
     decode_event, encode_input, ChatText, EventMsg, InputDatagram, ItemCatalog, WireBag, WireError,
 };
 use sim_core::build::{BuildContent, PieceRec};
-use sim_core::collide::ColIndex;
+use sim_core::collide::{ColIndex, Part};
 use sim_core::craft::CraftContent;
 use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, ARCH_DOOR, BAG_CAP};
-use sim_core::gather::{cell_key, ItemStack, NO_CELL};
+use sim_core::gather::{cell_key, ItemStack, NO_CELL, NO_ITEM};
 use sim_core::input::InputFrame;
-use sim_core::inventory::CONT_SELF;
+use sim_core::inventory::{CONT_SELF, CONT_WEAR};
 use sim_core::limits::{
     CRAFT_QUEUE, HEARTH_STOCK_ROWS, HOTBAR_SLOTS, INV_SLOTS, MAX_BACKPACKS, MAX_BOXES, MAX_DEPLOYS,
-    MAX_PIECES, MAX_SLOT_LIVES,
+    MAX_PIECES, MAX_SLOT_LIVES, WEAR_SLOTS,
 };
 use sim_core::movement::POS_XZ_Q;
 use sim_core::occupy::{Harvested, Occupants, SlotCache};
@@ -94,6 +94,28 @@ pub const SWING_RING: usize = 8;
 /// `limits::MOB_ID_TAG | slot` with `slot < MAX_MOBS`, so neither family can
 /// reach it.
 pub const NO_VICTIM: u32 = u32::MAX;
+
+/// One landed blow of this client's own, as the hitmarker ring holds it.
+///
+/// A **struct and not a tuple**, which it was until v58 carried a third
+/// thing. `(u32, u16, Part)` is exactly the positional payload
+/// `CLAUDE.md`'s trap list says a byte-golden cannot see: two of the three
+/// are numbers, and a reader that took them in the wrong order would type
+/// check, decode and draw. Named fields make that a compile error instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HitFact {
+    /// Who took it, or [`NO_VICTIM`] when the thing struck was a wall.
+    pub victim: u32,
+    /// The rung the ladder priced it at (v58). [`None`] for a structure:
+    /// a wall has no head and no legs, and the marker must not claim
+    /// otherwise. It is not `Some(Part::Chest)` because that would let a
+    /// wall hit in the same frame *raise* a leg hit to the identity rung
+    /// when the two are merged, which is a lie about the shot that
+    /// mattered.
+    pub part: Option<Part>,
+    /// The damage dealt, after the ladder scaled it.
+    pub damage: u16,
+}
 
 /// What one event-lane message changed, as bit flags the bridge hands JS.
 pub const APPLIED_INV: u32 = 1 << 0;
@@ -220,6 +242,12 @@ pub const APPLIED2_MOVE: u32 = 1 << 0;
 /// `client_cont_kind()`, which is zero when nothing is open and names the
 /// container otherwise.
 pub const APPLIED2_CONT: u32 = 1 << 1;
+
+/// The **body's** slots changed (`EventMsg::ContSync` with `CONT_WEAR`).
+/// Distinct from `APPLIED2_CONT` because the two views are now distinct:
+/// a box arriving must not read as the armor moving, and the wear panel
+/// is drawn whether or not a ground container is open.
+pub const APPLIED2_WORN: u32 = 1 << 2;
 
 /// A satchel charge was planted somewhere in the world and its fuse is
 /// burning — `EventMsg::ChargePlaced`. Re-read `client_charge_key`,
@@ -437,7 +465,8 @@ impl PieceSet {
                         self.cols.del(rec.cx, rec.cz, rec.level, rec.loc, shape);
                     }
                     if let Some(shape) = shape_of(defs, have, rec.row) {
-                        self.cols.add(rec.cx, rec.cz, rec.level, rec.loc, shape);
+                        self.cols
+                            .add(rec.cx, rec.cz, rec.level, rec.loc, shape, rec.plate);
                     }
                 }
                 return true;
@@ -449,7 +478,8 @@ impl PieceSet {
         self.recs[self.len] = rec;
         self.len += 1;
         if let Some(shape) = shape_of(defs, have, rec.row) {
-            self.cols.add(rec.cx, rec.cz, rec.level, rec.loc, shape);
+            self.cols
+                .add(rec.cx, rec.cz, rec.level, rec.loc, shape, rec.plate);
         }
         true
     }
@@ -490,7 +520,7 @@ impl PieceSet {
         self.cols.clear();
         for r in self.recs[..self.len].iter() {
             if let Some(shape) = shape_of(defs, have, r.row) {
-                self.cols.add(r.cx, r.cz, r.level, r.loc, shape);
+                self.cols.add(r.cx, r.cz, r.level, r.loc, shape, r.plate);
             }
         }
     }
@@ -793,12 +823,50 @@ struct InputState {
     sel: u8,
 }
 
+// The playout rails are spelled once, in `sim_core::limits`, because the
+// server clamps the reported delay to the same pair (netcode v2 S5) —
+// and NOT re-declared here even as a cast alias, because two declarations
+// of one knob is the shape `ci/knob_registry.mjs` refuses however honest
+// the second one is (the interp-delay lesson, re-paid). Read at the point
+// of use. `INTERP_DELAY_TICKS` (4) stays the starting point, so a fresh
+// session feels exactly what shipped before the delay learned to move.
+/// Delay above the floor per unit of smoothed jitter: two jitters of
+/// margin, the classic adaptive-playout sizing (a sample later than the
+/// mean by one jitter is ordinary; by two is the tail worth buffering).
+const PLAYOUT_JITTER_K: f64 = 2.0;
+/// How fast the playout delay may move, in ticks per second. A delay
+/// change slides every remote body on screen; half a tick per second is
+/// 16 ms of slide per second — beneath notice, and fast enough to double
+/// the buffer inside a rough patch's first seconds.
+const PLAYOUT_SLEW_PER_S: f64 = 0.5;
+/// RFC 3550's jitter gain: a 16-sample memory, ~0.5 s at 30 Hz.
+const JITTER_GAIN: f64 = 1.0 / 16.0;
+
 pub struct ClientCore {
     pub player_id: u32,
     pub view: ClientView,
     pub predict: Predictor,
     pub interp: Interp,
     pub clock: ClientClock,
+    /// Wall milliseconds accumulated by `advance` — the only clock this
+    /// crate has, fed to it, never read by it (the purity rule the module
+    /// header states). Arrival stamps below are quantized to the frame
+    /// that drained the ring, which errs the jitter estimate HIGH at low
+    /// frame rates — the direction that buys more buffer, which is the
+    /// direction a struggling client wants.
+    now_ms: f64,
+    /// The previous applied snapshot's arrival, for the estimator: when it
+    /// landed (frame-quantized wall ms) and the server tick it carried.
+    last_arrival_ms: f64,
+    last_arrival_tick: u32,
+    have_arrival: bool,
+    /// Smoothed delay variation between consecutive applied snapshots, in
+    /// ms — RFC 3550's estimator over (wall gap − tick gap).
+    pub jitter_ms: f64,
+    /// The adaptive playout delay, in ticks, slewed toward its target —
+    /// what `render_tick` subtracts where it used to subtract the
+    /// constant.
+    playout_ticks: f64,
     input: InputState,
     /// Buttons seen down at ANY point since the last input frame was built.
     ///
@@ -859,6 +927,23 @@ pub struct ClientCore {
     /// fills the first `BOX_SLOTS` and the rest stay empty, which is what
     /// the server's shadow holds too.
     pub cont: [ItemStack; INV_SLOTS],
+    /// **What this player is wearing** — a second container view, fed by
+    /// its own stream and never by the one above.
+    ///
+    /// `CONT_WEAR` shared `cont` from armor v1 to 2026-08-28, which meant
+    /// opening a box evicted the body: the route from a looted helmet to
+    /// a head was take, close, re-open, drag (`NOW.md` §0eq item 4). It is
+    /// the one `is_own` kind — no handle, no reach, no lock — so nothing
+    /// about it ever needed the exclusivity a ground container's
+    /// subscription is for, and the server drips it unconditionally now.
+    /// There is therefore no `worn_kind` beside this: the body is always
+    /// open, so the only state is the slots.
+    ///
+    /// Sized to `WEAR_SLOTS` rather than `INV_SLOTS`, which is safe by
+    /// the codec and not by the array: `decode_event_cont_sync` refuses a
+    /// slot at or past `slots_in(kind)`, so a `CONT_WEAR` batch that
+    /// reached here cannot name a slot this array does not have.
+    pub worn: [ItemStack; WEAR_SLOTS],
     pub harvested: HarvestedSet,
     /// The three parts the occupant collision query needs beyond the
     /// harvested mirror above (`sim_core::occupy`). They live here rather
@@ -947,6 +1032,46 @@ pub struct ClientCore {
     gather_refusals: [(u16, u8); REFUSAL_RING],
     gather_refusal_head: usize,
     gather_refusal_len: usize,
+    /// `(held item, reason)` per refused reload (wire v59) — the gather
+    /// refusal ring's shape and posture, drop-oldest and cosmetic.
+    reload_refusals: [(u16, u8); REFUSAL_RING],
+    reload_refusal_head: usize,
+    reload_refusal_len: usize,
+    /// Rounds each completed fill took out of the pack (wire v59). Only
+    /// `EV_RELOAD` with a nonzero `took` lands here: the same code arrives
+    /// on every shot to state the count, and a spend is not a fill, so
+    /// ringing it would play the reload cue on every trigger pull.
+    reload_toasts: [u16; TOAST_RING],
+    reload_toast_head: usize,
+    reload_toast_len: usize,
+    /// **The magazine as a LEVEL, not an event** — rounds loaded and the
+    /// weapon's ceiling, last as the server stated them.
+    ///
+    /// A field and not a ring, because the HUD asks this question every
+    /// frame and the answer is a *state* rather than a thing that
+    /// happened: a ring would hand the count to whichever system drained
+    /// it first and leave the readout blank on every frame with no event
+    /// in it, which is the single-consumer trap in `CLAUDE.md`'s list
+    /// arriving by a different road. `mag()` borrows it immutably and
+    /// consumes nothing, so any number of readers is fine.
+    ///
+    /// `(0, 0)` is "no magazine in this hand" and draws nothing — the
+    /// ceiling is what says whether there is a readout to draw at all, so
+    /// a bow reads the same as an empty hand and neither reads as `0/0`.
+    mag: (u16, u16),
+    /// The item the magazine above was last stated for.
+    ///
+    /// **The readout has to expire when the hand changes, and this is how
+    /// it does that without a clearing site to miss.** Nothing on the wire
+    /// announces a hotbar switch — `sel` is client latch state — so a
+    /// `mag` cleared by hand would need a hook at every place the held
+    /// stack can change (the selector, an inventory drip, a move, a
+    /// death), and a missed one leaves a hatchet reading `5/8`. Comparing
+    /// instead means there is nothing to clear: [`ClientCore::mag`] checks
+    /// this against what is actually in the hand and answers `(0, 0)` when
+    /// they disagree, so a stale level is unreachable rather than
+    /// unwritten.
+    mag_item: u16,
     /// Chat lines as received: (speaker id, global, text).
     chats: [(u32, bool, ChatText); CHAT_RING],
     chat_head: usize,
@@ -1010,8 +1135,7 @@ pub struct ClientCore {
     /// hook — an id it did not predict means its picture of the container
     /// had drifted, so it redraws rather than trusting the drag it drew.
     pub last_move_count: u32,
-    /// Own landed hits, oldest first: `(victim, damage dealt)`. The
-    /// hitmarker ring.
+    /// Own landed hits, oldest first ([`HitFact`]). The hitmarker ring.
     ///
     /// **The victim was thrown away until 2026-08-18** — the `EV_HIT` arm
     /// read `let _ = victim; // v0 marks the hit, not who took it` — which
@@ -1022,9 +1146,22 @@ pub struct ClientCore {
     ///
     /// [`NO_VICTIM`] for the structure half of this ring, which names an
     /// address rather than a person.
-    hits: [(u32, u16); TOAST_RING],
+    hits: [HitFact; TOAST_RING],
     hit_head: usize,
     hit_len: usize,
+    /// Blows landed on **you**, oldest first: `(bearing sector, damage)`.
+    ///
+    /// The mirror of [`ClientCore::pop_hit`] and the newer half by three
+    /// months (wire v57). Being hurt used to reach this client only as a
+    /// fall in `hp` — an absolute number with no author and no direction, so
+    /// `render/audio.rs` had to *derive* the fact from a delta and nothing
+    /// could tell a hatchet behind you from starvation. The sector is an
+    /// absolute world bearing (`sim_core::combat::bearing_sector`); the
+    /// renderer subtracts its own yaw, so the mark stays where the attacker
+    /// is while you turn to look at them.
+    hurts: [(u8, u16); TOAST_RING],
+    hurt_head: usize,
+    hurt_len: usize,
     /// Deaths as broadcast, oldest first: (victim, killer) — the kill feed.
     deaths: [(u32, u32); TOAST_RING],
     death_head: usize,
@@ -1219,6 +1356,12 @@ impl ClientCore {
             predict: Predictor::new(seed),
             interp: Interp::new(),
             clock: ClientClock::new(server_tick),
+            now_ms: 0.0,
+            last_arrival_ms: 0.0,
+            last_arrival_tick: 0,
+            have_arrival: false,
+            jitter_ms: 0.0,
+            playout_ticks: f64::from(sim_core::limits::INTERP_DELAY_TICKS),
             input: InputState::default(),
             sticky_buttons: 0,
             next_seq: 1,
@@ -1232,6 +1375,7 @@ impl ClientCore {
             cont_kind: CONT_SELF,
             cont_handle: 0,
             cont: [ItemStack::default(); INV_SLOTS],
+            worn: [ItemStack::default(); WEAR_SLOTS],
             harvested: HarvestedSet::new(),
             scatter_table: ScatterTable::alpha_default(),
             haven: terrain::haven(seed),
@@ -1278,9 +1422,16 @@ impl ClientCore {
             last_move: 0,
             last_move_refused: 0,
             last_move_count: 0,
-            hits: [(NO_VICTIM, 0); TOAST_RING],
+            hits: [HitFact {
+                victim: NO_VICTIM,
+                part: None,
+                damage: 0,
+            }; TOAST_RING],
             hit_head: 0,
             hit_len: 0,
+            hurts: [(0, 0); TOAST_RING],
+            hurt_head: 0,
+            hurt_len: 0,
             deaths: [(0, 0); TOAST_RING],
             death_head: 0,
             death_len: 0,
@@ -1348,6 +1499,14 @@ impl ClientCore {
             research_toast_len: 0,
             research_refusals: [0; REFUSAL_RING],
             gather_refusals: [(0, 0); REFUSAL_RING],
+            reload_refusals: [(0, 0); REFUSAL_RING],
+            reload_refusal_head: 0,
+            reload_refusal_len: 0,
+            reload_toasts: [0; TOAST_RING],
+            reload_toast_head: 0,
+            reload_toast_len: 0,
+            mag: (0, 0),
+            mag_item: NO_ITEM,
             gather_refusal_head: 0,
             gather_refusal_len: 0,
             research_refusal_head: 0,
@@ -1418,6 +1577,56 @@ impl ClientCore {
                     self.push_spill(item);
                 }
             }
+            EventMsg::Reload {
+                loaded,
+                ceiling,
+                took,
+            } => {
+                // The level first and unconditionally — this arrives on
+                // every shot as well as every fill, and the readout is the
+                // half that must never be stale.
+                self.mag = (loaded, ceiling);
+                self.mag_item = self.held_item();
+                if took > 0 {
+                    // A fill. Drop-oldest, the toast rings' posture.
+                    if self.reload_toast_len == TOAST_RING {
+                        self.reload_toast_head = (self.reload_toast_head + 1) % TOAST_RING;
+                        self.reload_toast_len -= 1;
+                    }
+                    self.reload_toasts
+                        [(self.reload_toast_head + self.reload_toast_len) % TOAST_RING] = took;
+                    self.reload_toast_len += 1;
+                    flags |= APPLIED_TOAST;
+                }
+            }
+            EventMsg::ReloadRefused {
+                item,
+                reason,
+                loaded,
+                ceiling,
+            } => {
+                // The count rides the refusal for the dry click's sake:
+                // this event IS the statement that the magazine is at
+                // zero, so the readout must move even though nothing was
+                // loaded. `ceiling == 0` is a hand with no magazine
+                // (`REFUSE_RL_HAND`), which is exactly the "draw nothing"
+                // value the field already means.
+                self.mag = (loaded, ceiling);
+                // The item the SERVER named, not the one in hand: a
+                // refusal can arrive a frame after the player switched
+                // away, and stamping the current hand would attach the old
+                // weapon's count to the new one.
+                self.mag_item = item;
+                if self.reload_refusal_len == REFUSAL_RING {
+                    self.reload_refusal_head = (self.reload_refusal_head + 1) % REFUSAL_RING;
+                    self.reload_refusal_len -= 1;
+                }
+                self.reload_refusals
+                    [(self.reload_refusal_head + self.reload_refusal_len) % REFUSAL_RING] =
+                    (item, reason);
+                self.reload_refusal_len += 1;
+                flags |= APPLIED_TOAST;
+            }
             EventMsg::GatherRefused { item, reason } => {
                 if self.gather_refusal_len == REFUSAL_RING {
                     self.gather_refusal_head = (self.gather_refusal_head + 1) % REFUSAL_RING;
@@ -1478,15 +1687,18 @@ impl ClientCore {
                 count,
                 names,
                 lens,
-                cond_max,
+                rows,
             } => {
                 self.catalog.count = total as u16;
                 for i in 0..count as usize {
-                    // Server-sent lens are wire-validated ≤ the cap.
+                    // Server-sent lens are wire-validated ≤ the cap, and
+                    // the decoder has already refused any row whose armor
+                    // pair the sim cannot mean — so the discarded result
+                    // is an out-of-table index and nothing else.
                     let _ = self.catalog.set(
                         first as usize + i,
                         &names[i][..lens[i] as usize],
-                        cond_max[i],
+                        rows[i],
                     );
                 }
                 flags |= APPLIED_CATALOG;
@@ -1729,7 +1941,27 @@ impl ClientCore {
                 slots,
                 count,
             } => {
-                if kind == CONT_SELF {
+                if kind == CONT_WEAR {
+                    // **The body's own stream, routed before anything
+                    // else.** It shares this message and nothing else:
+                    // no handle to echo (there is one body and the
+                    // server sends 0), no kind to latch (it is always
+                    // open), and — the reason this arm is first — no
+                    // interaction with `CONT_SELF` below. A close is
+                    // about the ground container; routing it here would
+                    // undress the panel every time a box shut.
+                    //
+                    // `s.slot` is bounded by the decoder against
+                    // `slots_in(CONT_WEAR)`, so it indexes this array;
+                    // the `take` mirrors `count`'s own bound.
+                    if reset {
+                        self.worn = [ItemStack::default(); WEAR_SLOTS];
+                    }
+                    for s in slots.iter().take(count as usize) {
+                        self.worn[s.slot as usize] = s.stack;
+                    }
+                    self.applied2 |= APPLIED2_WORN;
+                } else if kind == CONT_SELF {
                     // The server shut the panel: gone, or out of reach.
                     self.cont_kind = CONT_SELF;
                     self.cont_handle = 0;
@@ -1820,7 +2052,14 @@ impl ClientCore {
                     self.hit_head = (self.hit_head + 1) % TOAST_RING;
                     self.hit_len -= 1;
                 }
-                self.hits[(self.hit_head + self.hit_len) % TOAST_RING] = (NO_VICTIM, damage);
+                self.hits[(self.hit_head + self.hit_len) % TOAST_RING] = HitFact {
+                    victim: NO_VICTIM,
+                    // No rung: a wall is not a body. `None` rather than
+                    // the identity so merging a frame cannot promote a
+                    // leg hit to a chest one.
+                    part: None,
+                    damage,
+                };
                 self.hit_len += 1;
                 let addressed =
                     |r: &(u16, u16, u8, u8)| r.0 == cx && r.1 == cz && r.2 == level && r.3 == loc;
@@ -2040,7 +2279,20 @@ impl ClientCore {
                 self.hp_max = max;
                 flags |= APPLIED_HEALTH;
             }
-            EventMsg::Hit { victim, damage } => {
+            EventMsg::Hurt { sector, damage } => {
+                if self.hurt_len == TOAST_RING {
+                    self.hurt_head = (self.hurt_head + 1) % TOAST_RING;
+                    self.hurt_len -= 1;
+                }
+                self.hurts[(self.hurt_head + self.hurt_len) % TOAST_RING] = (sector, damage);
+                self.hurt_len += 1;
+                flags |= APPLIED_HIT;
+            }
+            EventMsg::Hit {
+                victim,
+                part,
+                damage,
+            } => {
                 // **The victim is kept, and it used to be dropped here.**
                 // `EV_HIT` is unicast to the attacker, so this names the
                 // body *your* blow landed on — which is the whole of what
@@ -2051,7 +2303,11 @@ impl ClientCore {
                     self.hit_head = (self.hit_head + 1) % TOAST_RING;
                     self.hit_len -= 1;
                 }
-                self.hits[(self.hit_head + self.hit_len) % TOAST_RING] = (victim, damage);
+                self.hits[(self.hit_head + self.hit_len) % TOAST_RING] = HitFact {
+                    victim,
+                    part: Some(part),
+                    damage,
+                };
                 self.hit_len += 1;
                 flags |= APPLIED_HIT;
             }
@@ -2098,6 +2354,23 @@ impl ClientCore {
                 speed_mmpt,
                 drop_mmpt2,
             } => {
+                // **Our own shot spends a round.** The sim raises no
+                // event for the spend — one own-fact message per shot put
+                // a hundred bodies firing at once over
+                // `MAX_EVENTS_PER_TICK` (`ranged::hitscan` carries the
+                // measurement) — so the count is kept here, where the fact
+                // already arrives. Exact rather than approximate: one shot
+                // is one round, and `saturating_sub` is the floor because
+                // a count that went negative would wrap to 65 535.
+                //
+                // Only when the magazine is for the hand that fired: `mag`
+                // reads `(0, 0)` through `mag()` once the hand changes, but
+                // the raw field is what a decrement would touch, so the
+                // same test guards it here.
+                if shooter == self.player_id && self.mag.1 > 0 && self.mag_item == self.held_item()
+                {
+                    self.mag.0 = self.mag.0.saturating_sub(1);
+                }
                 // Drop-oldest, the knock ring's policy: under a volley
                 // worth more than `REFUSAL_RING`, the newest tracers are
                 // the ones still worth drawing.
@@ -2483,10 +2756,28 @@ impl ClientCore {
         Some(r)
     }
 
-    /// Oldest buffered hitmarker, if any: `(victim, damage)` this client's
-    /// blow dealt. The victim is [`NO_VICTIM`] when the thing struck was a
-    /// wall rather than a body — see the `hits` field.
-    pub fn pop_hit(&mut self) -> Option<(u32, u16)> {
+    /// The oldest blow landed on you: `(bearing sector, damage)`.
+    ///
+    /// Destructive, single-consumer, `pop_hit`'s contract exactly —
+    /// `render/feed.rs` is the one drain and `client/tests/sound.rs` is what
+    /// keeps it that way (`CLAUDE.md`'s clean-merge trap).
+    pub fn pop_hurt(&mut self) -> Option<(u8, u16)> {
+        if self.hurt_len == 0 {
+            return None;
+        }
+        let h = self.hurts[self.hurt_head];
+        self.hurt_head = (self.hurt_head + 1) % TOAST_RING;
+        self.hurt_len -= 1;
+        Some(h)
+    }
+
+    /// Oldest buffered hitmarker, if any: the [`HitFact`] this client's own
+    /// blow made. The victim is [`NO_VICTIM`] and the part [`None`] when
+    /// the thing struck was a wall rather than a body.
+    ///
+    /// Destructive, single-consumer — `render/feed.rs` is the one drain and
+    /// `client/tests/sound.rs` is what keeps it that way.
+    pub fn pop_hit(&mut self) -> Option<HitFact> {
         if self.hit_len == 0 {
             return None;
         }
@@ -2597,6 +2888,60 @@ impl ClientCore {
         self.research_refusal_head = (self.research_refusal_head + 1) % REFUSAL_RING;
         self.research_refusal_len -= 1;
         Some(r)
+    }
+
+    /// The magazine as a level: `(rounds loaded, the weapon's ceiling)`.
+    ///
+    /// **Not a `pop_`** — it borrows and consumes nothing, so the HUD, the
+    /// mixer and the viewmodel may all read it in the same frame. That is
+    /// the point: a magazine is a state, and the destructive-ring rule
+    /// (`client/tests/sound.rs`) exists for facts that are handed over
+    /// exactly once.
+    ///
+    /// `(0, 0)` means there is no readout to draw — an empty hand, a
+    /// hatchet or a bow. `(0, n)` with `n > 0` is a gun that is dry.
+    pub fn mag(&self) -> (u16, u16) {
+        if self.mag_item != self.held_item() {
+            return (0, 0);
+        }
+        self.mag
+    }
+
+    /// The item index in the selected hotbar slot, `NO_ITEM` for an empty
+    /// hand. The client's own mirror, which is the only place this is
+    /// known — `EntityState::held` is what *others* see of this body.
+    fn held_item(&self) -> u16 {
+        let s = self.inv[self.input.sel as usize];
+        if s.count == 0 {
+            NO_ITEM
+        } else {
+            s.item
+        }
+    }
+
+    /// Oldest buffered reload refusal: `(held item, reason)` —
+    /// `sim_core::ranged::REFUSE_RL_*`.
+    pub fn pop_reload_refusal(&mut self) -> Option<(u16, u8)> {
+        if self.reload_refusal_len == 0 {
+            return None;
+        }
+        let r = self.reload_refusals[self.reload_refusal_head];
+        self.reload_refusal_head = (self.reload_refusal_head + 1) % REFUSAL_RING;
+        self.reload_refusal_len -= 1;
+        Some(r)
+    }
+
+    /// Oldest buffered completed fill: how many rounds it took out of the
+    /// pack. Only a fill lands here; a spend states the level and rings
+    /// nothing.
+    pub fn pop_reload_toast(&mut self) -> Option<u16> {
+        if self.reload_toast_len == 0 {
+            return None;
+        }
+        let t = self.reload_toasts[self.reload_toast_head];
+        self.reload_toast_head = (self.reload_toast_head + 1) % TOAST_RING;
+        self.reload_toast_len -= 1;
+        Some(t)
     }
 
     /// Oldest buffered gather refusal: `(held item, reason)` —
@@ -2711,8 +3056,17 @@ impl ClientCore {
     /// carry two 30 Hz ticks would otherwise decay twice as fast as one
     /// that carried one.
     pub fn advance(&mut self, dt_ms: f64) -> u32 {
+        self.now_ms += dt_ms;
+        // The playout delay slews toward its jitter-derived target
+        // (netcode v2 S5): floor + K jitters of margin, bounded by the
+        // rails, moved slowly enough that the slide is beneath notice.
+        let lo = f64::from(sim_core::limits::PLAYOUT_MIN_TICKS);
+        let hi = f64::from(sim_core::limits::PLAYOUT_MAX_TICKS);
+        let target = (lo + self.jitter_ms * PLAYOUT_JITTER_K / clock::TICK_MS).clamp(lo, hi);
+        let max_step = PLAYOUT_SLEW_PER_S * dt_ms / 1000.0;
+        self.playout_ticks += (target - self.playout_ticks).clamp(-max_step, max_step);
         let steps = self.clock.advance(dt_ms);
-        self.predict.decay_error();
+        self.predict.decay_error(dt_ms);
         for _ in 0..steps {
             let frame = InputFrame {
                 seq: self.next_seq,
@@ -2749,6 +3103,21 @@ impl ClientCore {
         steps
     }
 
+    /// Where to draw the **camera** this frame: the predicted body,
+    /// interpolated across the sim tick real time is currently inside.
+    ///
+    /// The two halves are `ClientClock::alpha` and
+    /// `Predictor::eye_position`, and both doc comments carry the argument —
+    /// this is only the seam that puts them together, so no caller has to
+    /// know that the clock owns the remainder the predictor needs.
+    ///
+    /// **Not a replacement for `predict.render_position()`**, which stays the
+    /// sim-truth reader every verb resolves against. See
+    /// `Predictor::eye_position`.
+    pub fn eye_position(&self) -> [f32; 3] {
+        self.predict.eye_position(self.clock.alpha())
+    }
+
     /// Encode the due input datagram — the unacked tail plus the redundant
     /// ack header — into `buf`. Returns 0 when none is due. One datagram
     /// per client tick (30 Hz): the tail already carries the loss cover,
@@ -2761,8 +3130,11 @@ impl ClientCore {
         self.input_due = false;
         let (ack, ack_bits) = self.view.ack_fields();
         let tail = self.predict.tail();
-        let first_tick = self.clock.client_tick.wrapping_sub(tail.len() as u32);
-        let mut dg = InputDatagram::new(ack, ack_bits, first_tick);
+        // The playout report (wire v61): the delay this client actually
+        // renders remotes at, rounded to the tick, so the server's
+        // lag-comp favour prices the past THIS player sees rather than
+        // the old constant. The constructor saturates it to the field.
+        let mut dg = InputDatagram::new(ack, ack_bits, self.playout_ticks.round() as u8);
         for f in tail {
             if dg.push(*f).is_err() {
                 break; // tail is wire-capped already; defensive only
@@ -2785,7 +3157,13 @@ impl ClientCore {
                 };
                 let header = snap.header;
                 if header.baseline_age == 0 {
-                    self.interp.clear();
+                    // The keyframe restarts the entity SET, never the
+                    // motion history (netcode v2 S2): drop the ids it
+                    // does not name, keep the sample rings of the ones it
+                    // does. This was `interp.clear()`, which froze then
+                    // teleported every remote body on every ack gap —
+                    // the gap's own recovery packet was the snap.
+                    self.interp.retain_present(snap.entities());
                 }
                 for &id in snap.removed() {
                     self.interp.remove(id);
@@ -2795,7 +3173,30 @@ impl ClientCore {
                         self.interp.push(header.tick, e);
                     }
                 }
-                self.clock.on_snapshot(header.tick, header.nudge);
+                // The jitter estimator eats every applied snapshot's
+                // arrival (netcode v2 S5): wall gap minus tick gap is the
+                // delay variation, smoothed at RFC 3550's gain. Feeding it
+                // APPLIED snapshots only means a reordered stale datagram
+                // cannot spike it.
+                if self.have_arrival {
+                    let wall = self.now_ms - self.last_arrival_ms;
+                    let ticks = f64::from(header.tick.wrapping_sub(self.last_arrival_tick));
+                    let d = wall - ticks * clock::TICK_MS;
+                    self.jitter_ms += (d.abs() - self.jitter_ms) * JITTER_GAIN;
+                }
+                self.last_arrival_ms = self.now_ms;
+                self.last_arrival_tick = header.tick;
+                self.have_arrival = true;
+                if self
+                    .clock
+                    .on_snapshot(header.tick, header.nudge, header.buffered_depth)
+                {
+                    // A hard resync is a tick discontinuity: the next
+                    // arrival gap would read as one enormous jitter and
+                    // max the buffer for nothing. Start the estimator's
+                    // pairing over instead.
+                    self.have_arrival = false;
+                }
                 if let Some(own) = self.view.get(self.player_id).copied() {
                     self.predict.reconcile(
                         &own,
@@ -2830,9 +3231,20 @@ impl ClientCore {
         }
     }
 
-    /// The float server tick remote entities render at.
+    /// The float server tick remote entities render at: the server
+    /// estimate minus the ADAPTIVE playout delay (netcode v2 S5). The
+    /// delay starts at `sim_core::limits::INTERP_DELAY_TICKS` — still the
+    /// one home of the default, which is what the interp-delay pin in
+    /// `tests/interp_capacity.rs` now checks — and breathes between the
+    /// rails with measured jitter.
     pub fn render_tick(&self) -> f64 {
-        self.clock.server_est - crate::interp::INTERP_DELAY_TICKS
+        self.clock.server_est - self.playout_ticks
+    }
+
+    /// The current playout delay in ticks (HUD, and S5b reports it to the
+    /// server so lag-comp favour prices the delay actually in use).
+    pub fn playout_ticks(&self) -> f64 {
+        self.playout_ticks
     }
 }
 
@@ -2842,11 +3254,61 @@ mod tests {
     use protocol::{
         encode_event_catalog, encode_event_craft_done, encode_event_gather, encode_event_inv,
         encode_event_move_refused, encode_event_moved, encode_event_slot_change,
-        encode_event_slot_sync, InvSlot, MAX_EVENT_MSG_BYTES,
+        encode_event_slot_sync, InvSlot, ItemRow, MAX_EVENT_MSG_BYTES,
     };
 
     fn core() -> ClientCore {
         ClientCore::new(1, 0x107, 0)
+    }
+
+    /// The playout delay breathes with measured jitter and never leaves
+    /// its rails (netcode v2 S5): a smooth link settles it on the floor,
+    /// a tick of jitter buys two ticks of buffer above it, and the slew
+    /// takes seconds — a slide beneath notice — not a frame.
+    #[test]
+    fn the_playout_delay_slews_between_its_rails() {
+        let mut c = core();
+        assert!(
+            (c.playout_ticks() - 4.0).abs() < 1e-9,
+            "starts at the shipped INTERP_DELAY_TICKS default"
+        );
+        // A clean link: jitter 0, target = floor. Ten seconds of frames.
+        for _ in 0..600 {
+            c.advance(1000.0 / 60.0);
+        }
+        assert!(
+            (c.playout_ticks() - f64::from(sim_core::limits::PLAYOUT_MIN_TICKS)).abs() < 0.05,
+            "smooth link must settle on the floor, at {}",
+            c.playout_ticks()
+        );
+        // One tick of measured jitter: floor + two jitters = 4 ticks.
+        c.jitter_ms = clock::TICK_MS;
+        for _ in 0..600 {
+            c.advance(1000.0 / 60.0);
+        }
+        assert!(
+            (c.playout_ticks() - 4.0).abs() < 0.05,
+            "a tick of jitter buys two of buffer, at {}",
+            c.playout_ticks()
+        );
+        // Absurd jitter pins at the ceiling, not beyond it.
+        c.jitter_ms = 1_000.0;
+        for _ in 0..1200 {
+            c.advance(1000.0 / 60.0);
+        }
+        assert!(
+            (c.playout_ticks() - f64::from(sim_core::limits::PLAYOUT_MAX_TICKS)).abs() < 0.05,
+            "the ceiling binds, at {}",
+            c.playout_ticks()
+        );
+        // And the slew is a rate: one frame moves it imperceptibly.
+        c.jitter_ms = 0.0;
+        let before = c.playout_ticks();
+        c.advance(1000.0 / 60.0);
+        assert!(
+            (before - c.playout_ticks()).abs() < 0.01,
+            "a single frame slid the world by a visible amount"
+        );
     }
 
     /// Every `APPLIED_*` flag of word 0, in bit order. A new flag added
@@ -3272,9 +3734,17 @@ mod tests {
         let mut c = core();
         let mut cat = ItemCatalog::EMPTY;
         cat.count = 3;
-        cat.set(0, b"Wood", 0).unwrap();
-        cat.set(1, b"Stone", 0).unwrap();
-        cat.set(2, b"Cloth", 12_000).unwrap();
+        cat.set(0, b"Wood", ItemRow::EMPTY).unwrap();
+        cat.set(1, b"Stone", ItemRow::EMPTY).unwrap();
+        cat.set(
+            2,
+            b"Cloth",
+            ItemRow {
+                cond_max: 12_000,
+                ..ItemRow::EMPTY
+            },
+        )
+        .unwrap();
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
         let (len, took) = encode_event_catalog(&cat, 0, &mut buf).unwrap();
         assert_eq!(took, 3);

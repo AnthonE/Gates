@@ -14,10 +14,13 @@
 //! The reference rail sorts by **item class** — CONSTRUCTION, RESOURCES,
 //! CLOTHING, TOOLS, MEDICAL, WEAPONS, AMMO. We cannot draw that rail
 //! honestly, because **the wire does not carry an item's class.**
-//! `EventMsg::Catalog` ships display names and condition ceilings and
-//! nothing else (`protocol/src/event.rs`, v46), so a client-side class
-//! would be a guess made from a string — and a guess in a filter is a
-//! recipe the player cannot find.
+//! `EventMsg::Catalog` ships display names, condition ceilings (v46) and
+//! the two armor columns (v52) — no class among them (`protocol/src/
+//! event.rs`), so a client-side class would be a guess made from a string,
+//! and a guess in a filter is a recipe the player cannot find. Note what
+//! the armor columns are *not*: `wear_slot` says where a piece is worn,
+//! which is CLOTHING for the three rows that carry it and silent about
+//! every other item, so it is one bucket of seven and not a rail.
 //!
 //! So the rail here is built from what the client provably knows, and every
 //! bucket is a fact rather than a category: which station a recipe needs
@@ -374,7 +377,7 @@ pub fn item_name(catalog: &ItemCatalog, item: u16) -> Option<&str> {
 
 /// What a cell or a table row prints for an item: its name, or `#12` for an
 /// index no name has arrived for. Drawing the index is honest; drawing an
-/// empty cell is the dark-panel defect both this repo and scry's launcher
+/// empty cell is the dark-panel defect both this repo and elo's launcher
 /// have a rule against.
 ///
 /// Allocates, and that is the right trade here: it builds the string a

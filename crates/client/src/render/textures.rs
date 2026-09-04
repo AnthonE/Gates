@@ -16,6 +16,14 @@
 //! splat weights the mesh carries in its vertex colours still choose the
 //! identity, still ramp between them, and still multiply the photograph.
 //!
+//! **These load with no mip chain and `render/mipmap.rs` builds one.** Bevy
+//! 0.18 generates none for an ordinary image format — `ImageLoaderSettings`
+//! has no such setting — and a one-level photograph minified across the
+//! island is the static that module exists to remove. The sampler below is
+//! already right for a chain (`linear()` sets `mipmap_filter` to Linear, and
+//! `anisotropy_clamp: 4` needs one to mean anything); what was missing was
+//! the chain itself.
+//!
 //! **The budget that shaped these files is gone.** They were fetched at 1K
 //! and re-encoded to fit a 12 MB *download* — a browser boot cost. A desktop
 //! client pays it once from disk. Re-sourcing at 2K/4K is a later slice and
@@ -35,6 +43,24 @@ pub struct MapSet {
     pub albedo: Handle<Image>,
     pub normal: Handle<Image>,
     pub rough: Handle<Image>,
+    /// Ambient occlusion, where the source published one.
+    ///
+    /// **`Option`, because only seven of the ten roles have a file** — the
+    /// photogrammetry sets (grass, gravel, litter, metal, rock, sand, stone)
+    /// ship `<role>_ao.jpg` and the three authored-surface sets (bark, wood,
+    /// twig) do not. A missing map must be `None` and not a broken handle:
+    /// `StandardMaterial::occlusion_texture` is itself an `Option`, and an
+    /// unresolved handle in that slot samples as black, which would put every
+    /// bark surface in full shadow.
+    ///
+    /// These seven files were **git-tracked, staged into every depot by
+    /// `ci/depot.py`, and read by nothing** — 436 KB shipped to every player
+    /// with `occlusion_texture` appearing zero times in `crates/`. `ART.md` §4
+    /// names this exact term as the one scale a light rig cannot supply
+    /// (*"Medium … `indirectDiffuse *= ao`, indirect only"*) and as the unblock
+    /// for raising the ambient floor: fill lands everywhere, AO removes it only
+    /// where the geometry occludes.
+    pub ao: Option<Handle<Image>>,
 }
 
 /// A tiling sampler. **Every map here is tiled and the default is not.**
@@ -64,13 +90,51 @@ fn tiling(srgb: bool) -> impl Fn(&mut ImageLoaderSettings) + Send + Sync + 'stat
     }
 }
 
+/// A cutout ATLAS's sampler — clamped, not tiled.
+///
+/// **The opposite of [`tiling`] on the one axis that matters.** A tiling map
+/// wants `Repeat` because its UVs run to the hundreds; an atlas addresses
+/// cells inside 0..1 and `Repeat` on one would let a filter tap wrap from the
+/// left edge of the sheet to the right, splicing two unrelated cards together
+/// at the seam. `ClampToEdge` is also Bevy's default, so this exists for the
+/// other half: **anisotropy**, which the default leaves at 1. A grass card is
+/// seen at a grazing angle almost always — the camera stands 1.6 m up and the
+/// cards are 34 cm — and at anisotropy 1 that is a smear.
+pub fn atlas(srgb: bool) -> impl Fn(&mut ImageLoaderSettings) + Send + Sync + 'static {
+    move |s: &mut ImageLoaderSettings| {
+        s.is_srgb = srgb;
+        s.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+            address_mode_u: ImageAddressMode::ClampToEdge,
+            address_mode_v: ImageAddressMode::ClampToEdge,
+            address_mode_w: ImageAddressMode::ClampToEdge,
+            anisotropy_clamp: 4,
+            ..ImageSamplerDescriptor::linear()
+        });
+    }
+}
+
+/// Roles that ship an `<role>_ao.jpg`, which is not all of them.
+///
+/// **Derived from the tree by `tests/textures.rs`, not trusted from here.**
+/// A hand-kept mirror of a directory listing is the drift `CLAUDE.md` names
+/// twice — a role added to this list with no file loads a handle that samples
+/// black, and a role with a file left off the list ships an unread texture
+/// again, which is the bug this whole change is fixing.
+pub const ROLES_WITH_AO: [&str; 7] = [
+    "grass", "gravel", "litter", "metal", "rock", "sand", "stone",
+];
+
 impl MapSet {
-    /// Load one role out of `assets/textures/<role>_{albedo,normal,rough}.jpg`.
+    /// Load one role out of `assets/textures/<role>_{albedo,normal,rough}.jpg`,
+    /// plus `_ao.jpg` for the roles that have one.
     pub fn load(assets: &AssetServer, role: &str) -> Self {
         Self {
             albedo: assets.load_with_settings(format!("textures/{role}_albedo.jpg"), tiling(true)),
             normal: assets.load_with_settings(format!("textures/{role}_normal.jpg"), tiling(false)),
             rough: assets.load_with_settings(format!("textures/{role}_rough.jpg"), tiling(false)),
+            ao: ROLES_WITH_AO.contains(&role).then(|| {
+                assets.load_with_settings(format!("textures/{role}_ao.jpg"), tiling(false))
+            }),
         }
     }
 }
@@ -84,8 +148,8 @@ impl MapSet {
 /// the delivered mean and the relief's light and shade survive. It also
 /// bounds the alternative — a per-channel gain placing a source's mean may
 /// not stretch that source's colour deviation by more than ×1 — and measured
-/// over the four ground sources, only `rock` clears it (span 1.054; grass
-/// 2.454, sand 2.073, litter 3.586). A luminance field has span **1.000 by
+/// over the four ground sources, only `rock` clears it (span 1.108; grass
+/// 2.444, sand 2.066, litter 3.559). A luminance field has span **1.000 by
 /// construction**, because every channel is the same channel.
 ///
 /// So this is not a workaround for the rule; it is what the rule asks for.
@@ -137,15 +201,16 @@ pub struct GroundMaps {
 /// the rule is vacuous in. The rule bounds how far a per-channel gain may
 /// stretch a source's colour deviation, and a gain of exactly 1 stretches it
 /// by exactly 1. Measured off the shipped files (linear means, Rec.709 luma,
-/// against `ALBEDO_LUMA_BAND = [0.05, 0.55]`):
+/// against `ALBEDO_LUMA_BAND = [0.05, 0.55]`, at the files' full 1024²;
+/// `tests/manifest_measured.rs` re-measures every cell):
 ///
 /// | role | linear mean rgb | luma | albedo sd | in band |
 /// |---|---|---|---|---|
-/// | rock | 0.273 0.269 0.259 | 0.269 | 0.0933 | ✓ |
+/// | rock | 0.250 0.245 0.226 | 0.245 | 0.1379 | ✓ |
 /// | bark | 0.128 0.105 0.064 | 0.107 | 0.0676 | ✓ |
-/// | wood | 0.161 0.139 0.112 | 0.142 | 0.0661 | ✓ |
-/// | stone | 0.237 0.202 0.106 | 0.203 | 0.1139 | ✓ |
-/// | metal | 0.230 0.228 0.228 | 0.228 | 0.0689 | ✓ |
+/// | wood | 0.161 0.139 0.112 | 0.141 | 0.0661 | ✓ |
+/// | stone | 0.237 0.202 0.107 | 0.203 | 0.1138 | ✓ |
+/// | metal | 0.230 0.227 0.228 | 0.228 | 0.0688 | ✓ |
 ///
 /// All five clear the band off the raw file, so every one of them ships its
 /// colour whole. The per-instance and per-part variation that used to BE the

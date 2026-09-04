@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""publish_depot.py — package one platform's build and put it live on scry's origin.
+"""publish_depot.py — package one platform's build and put it live on elo's origin.
 
     ./ci/publish_depot.py --platform linux-x86_64            build, upload, publish
     ./ci/publish_depot.py --platform win-x86_64 --no-build   package what is compiled
@@ -12,7 +12,7 @@ quietly when it is skipped. Four of them exist only because doing this by hand
 went wrong at least once.
 
 **It does not compute the depot digest and it does not package.** `ci/depot.py`
-packages and `scry digest` computes the number that gets notarized — a second
+packages and `elo digest` computes the number that gets notarized — a second
 implementation of either is the failure both of those files are shaped to
 refuse. This script is the ORDER, the refusals, and the checks between.
 
@@ -37,7 +37,7 @@ refuse. This script is the ORDER, the refusals, and the checks between.
    keyed one, so the notarized depot would quietly stop being served. That is
    a decision, not a default, so it refuses.
 
-   **Do not "fix" any of this with a platform suffix on the id** — scry's
+   **Do not "fix" any of this with a platform suffix on the id** — elo's
    `meter/gamerepo.py::version_of` strips `-g[0-9a-f]+…$` anchored at `$`, so
    `0.2.0-gsha-win-x86_64` stops parsing back to `0.2.0` and the store's
    declared-vs-published check goes permanently red.
@@ -77,7 +77,7 @@ TARGETS = depot_mod.TARGETS
 
 DEFAULT_HOST = "morr"
 DEFAULT_DEPOTS = "/data/apps/scry-data/depots"
-DEFAULT_API = "https://scry.moreright.xyz/api"
+DEFAULT_API = "https://elopros.com/api"   # scry.moreright.xyz retired 2026-08-20 (410)
 NOTARY = "0x0C15fA7829458118e3d26229F58FE0443f8b792c"  # ScryNotary, chain 4663
 NOTARY_CHAIN = 4663
 
@@ -89,8 +89,17 @@ def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
     return p
 
 
-def ssh(host: str, script: str) -> str:
-    """One remote command. `script` runs under the remote shell as written."""
+def ssh(host: str | None, script: str) -> str:
+    """One command against the origin. `script` runs under its shell as written.
+
+    ⚠ `host=None` is the LOCAL origin (`--local`), and it is not a shortcut: the
+    platform runs on the box the depots live on, where ssh-to-self needs a key
+    nobody should add for this. Same script, same order, same refusals — only
+    the transport differs. Every caller goes through here, so there is one
+    place where that choice is made.
+    """
+    if host is None:
+        return run(["bash", "-c", script]).stdout.strip()
     return run(["ssh", "-o", "BatchMode=yes", host, script]).stdout.strip()
 
 
@@ -108,7 +117,7 @@ def require_clean_tree() -> str:
 def refuse_legacy_collision(host: str, depots: str, build: str, platform: str) -> None:
     """Would this upload land on top of a depot published under the OLD layout?
 
-    scry keys by (build, platform) since 2026-08-14, so `<build>/<platform>/` is
+    elo keys by (build, platform) since 2026-08-14, so `<build>/<platform>/` is
     this platform's own directory and two platforms from one commit no longer
     collide — that is the whole point and it is why this function no longer
     refuses the ordinary case.
@@ -173,7 +182,7 @@ def package(platform: str, do_build: bool) -> Path:
 def upload(stage: Path, host: str, depots: str, build: str, platform: str,
            dry: bool) -> None:
     remote = f"{depots}/{SLUG}/{build}/{platform}"
-    dest = f"{host}:{remote}/"
+    dest = f"{remote}/" if host is None else f"{host}:{remote}/"
     print(f"== upload · {stage} → {dest}")
     if dry:
         print("   (dry-run: nothing sent)")
@@ -256,7 +265,7 @@ def confirm_live(api: str, build: str, platform: str) -> str | None:
 def _cast_send(digest: str, label: str, memo: str) -> str:
     """The remote one-liner. Everything secret stays inside this shell.
 
-    ⚠ **`SCRY_RH_RPC_POOL` is a COMMA-SEPARATED LIST, not a url**, and passing
+    ⚠ **`ELO_RH_RPC_POOL` is a COMMA-SEPARATED LIST, not a url**, and passing
     it whole to `--rpc-url` fails as `HTTP 401 UNAUTHORIZED` — which reads like
     a bad key and is really a malformed url, because the first endpoint's
     credential arrives with the rest of the list glued to it. Measured
@@ -271,11 +280,18 @@ def _cast_send(digest: str, label: str, memo: str) -> str:
     """
     return (
         "set -a; . /data/apps/secrets/keys.env; set +a; "
+        # ⚠ The knob is `ELO_RH_RPC_POOL` since the SCRY→ELO migration; it was
+        # `SCRY_RH_RPC_POOL` before. Reading only the old name is not a
+        # misconfiguration that announces itself — every endpoint in an EMPTY
+        # list is unreachable, so it fails as "no reachable endpoint" and reads
+        # like a dead provider. Both names, current one first.
+        'POOL="${ELO_RH_RPC_POOL:-$SCRY_RH_RPC_POOL}"; '
+        'if [ -z "$POOL" ]; then echo "neither ELO_RH_RPC_POOL nor SCRY_RH_RPC_POOL is set in keys.env" >&2; exit 1; fi; '
         'RPC=""; '
-        'for u in $(printf %s "$SCRY_RH_RPC_POOL" | tr "," " "); do '
+        'for u in $(printf %s "$POOL" | tr "," " "); do '
         '  if ~/.foundry/bin/cast chain-id --rpc-url "$u" >/dev/null 2>&1; then RPC="$u"; break; fi; '
         "done; "
-        'if [ -z "$RPC" ]; then echo "no reachable endpoint in SCRY_RH_RPC_POOL" >&2; exit 1; fi; '
+        'if [ -z "$RPC" ]; then echo "no reachable endpoint in the RPC pool" >&2; exit 1; fi; '
         f"~/.foundry/bin/cast send {NOTARY} "
         f"'notarize(bytes32,string,string)' {digest} {shlex.quote(label)} {shlex.quote(memo)} "
         '--rpc-url "$RPC" --private-key "$PRIVATE_KEY" --json'
@@ -312,11 +328,18 @@ def main() -> int:
     ap.add_argument("--no-build", action="store_true", help="package what is compiled")
     ap.add_argument("--dry-run", action="store_true", help="every check, no writes")
     ap.add_argument("--notarize", action="store_true", help="seal the digest on chain")
-    ap.add_argument("--scry", default=None, help="path to a `scry` binary for --notarize")
+    ap.add_argument("--elo", "--scry", dest="elo", default=None,
+                    help="path to an `elo` binary (formerly `scry`) for --notarize")
     ap.add_argument("--host", default=DEFAULT_HOST, help="origin box (ssh alias)")
+    ap.add_argument("--local", action="store_true",
+                    help="the origin is THIS box — run the steps here, no ssh")
     ap.add_argument("--depots", default=DEFAULT_DEPOTS, help="depot root on the origin")
     ap.add_argument("--api", default=DEFAULT_API, help="public API base to confirm against")
     a = ap.parse_args()
+    if a.local:
+        # One assignment, so every step below takes the same road. `ssh()` and
+        # `upload()` both read None as "this box".
+        a.host = None
 
     sha = require_clean_tree()
     build = depot_mod.build_id()
@@ -333,16 +356,16 @@ def main() -> int:
 
     if a.notarize:
         local = None
-        if a.scry:
-            local = run([a.scry, "digest", str(stage / "depot.json")]).stdout.strip()
+        if a.elo:
+            local = run([a.elo, "digest", str(stage / "depot.json")]).stdout.strip()
             if digest and local != digest:
                 sys.exit(
-                    f"publish: `scry digest` says {local} and the origin serves {digest}.\n"
+                    f"publish: `elo digest` says {local} and the origin serves {digest}.\n"
                     "         Notarizing either would seal a number nobody can reproduce."
                 )
         seal = local or digest
         if not seal:
-            sys.exit("publish: no digest to notarize (--dry-run, or pass --scry)")
+            sys.exit("publish: no digest to notarize (--dry-run, or pass --elo)")
         notarize(a.host, a.depots, build, seal, f"{SLUG}-{a.platform}",
                  f"{SLUG} {build} {a.platform} depot", a.dry_run)
 

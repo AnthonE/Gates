@@ -444,7 +444,12 @@ fn the_needle_card_is_actually_cut_out() {
     // real transparency, and it must have real coverage.
     let img = needle_image();
     let data = img.data.as_ref().expect("needle image has no data");
-    let alphas: Vec<u8> = data.chunks_exact(4).map(|p| p[3]).collect();
+    // LEVEL 0 ONLY. `data` carries the whole mip chain since the chain landed,
+    // and reading all of it would average the base card together with a 1×1
+    // texel — this assertion is about the card the artist sees.
+    let w = img.texture_descriptor.size.width as usize;
+    let level0 = &data[..w * w * 4];
+    let alphas: Vec<u8> = level0.chunks_exact(4).map(|p| p[3]).collect();
     let opaque = alphas.iter().filter(|&&a| a > 128).count();
     let clear = alphas.iter().filter(|&&a| a < 16).count();
     let total = alphas.len();
@@ -551,5 +556,86 @@ fn the_limbs_reach_past_the_trunk_and_that_is_the_intent() {
         "bark reaches {worst:.3} m against a {:.4} m blocked cylinder — limbs \
          are passable by design (capsule band {band} m)",
         sim_core::terrain::OCCUPANT_R_M[sim_core::terrain::Occupant::Tree as usize],
+    );
+}
+
+/// **Gate: the canopy keeps its coverage all the way down the mip chain.**
+///
+/// The map shipped with `mip_level_count` at 1 until 2026-08-25, which is two
+/// defects wearing one cause. The visible one is shimmer — a 64² alpha mask
+/// minified with no filtering re-picks which needles win the sample every time
+/// the camera moves, and no still frame this project has ever captured could
+/// show it. The one that outlives the fix is what a *naive* chain would have
+/// done instead: box-filtering a sparse mask drives every texel toward the
+/// mask's mean, the mean of a sprig is well under the 0.5 cutoff, and each
+/// level would test out more of the canopy than the one above it. Four levels
+/// down the tree goes bald, which reads as a thinning forest rather than as a
+/// texture bug.
+///
+/// So the assertion is not "there are mips" — it is that each level survives
+/// the *same threshold the material applies* at roughly the same rate. Proven
+/// red by pinning the rescale at 1.0, i.e. returning the box-filtered level as
+/// it comes: **level 1 alone falls to 0.53× the base coverage** (0.102 against
+/// 0.192) against the 0.55 floor below, and it is the first level, one halving
+/// from full detail.
+#[test]
+fn the_needle_chain_holds_its_coverage() {
+    let img = needle_image();
+    let data = img.data.as_ref().expect("needle image has no data");
+    let w0 = img.texture_descriptor.size.width;
+    let levels = img.texture_descriptor.mip_level_count;
+
+    // 64 → 1 is seven levels. A chain that stops early is a chain that still
+    // aliases at the range the forest is actually seen from.
+    assert_eq!(
+        levels,
+        w0.ilog2() + 1,
+        "needle mask has {levels} mip levels for a {w0}² card — the chain must \
+         reach 1×1 or minification falls off the end of it"
+    );
+
+    // The cutoff the foliage material tests against, as a byte. Authored in
+    // `props.rs` as `AlphaMode::Mask(0.5)`; alpha is linear even in an sRGB
+    // texture, so 0.5 is 128.
+    const CUT: u8 = 128;
+
+    let coverage = |px: &[u8]| -> f32 {
+        let hit = px.chunks_exact(4).filter(|p| p[3] > CUT).count();
+        hit as f32 / (px.len() / 4) as f32
+    };
+
+    let mut off = 0usize;
+    let mut w = w0;
+    let mut base = 0.0f32;
+    for level in 0..levels {
+        let bytes = (w * w) as usize * 4;
+        let cov = coverage(&data[off..off + bytes]);
+        if level == 0 {
+            base = cov;
+            assert!(
+                base > 0.0,
+                "level 0 of the needle mask has no coverage at all"
+            );
+        } else if w >= 4 {
+            // Below 4×4 there are sixteen texels and exact coverage is not
+            // reachable at any scale, so the band is only held where it means
+            // something. Those levels are also sub-pixel in every frame that
+            // has ever existed.
+            let ratio = cov / base;
+            assert!(
+                (0.55..=1.75).contains(&ratio),
+                "needle mip level {level} ({w}²) tests to {ratio:.2}× level 0's \
+                 coverage ({cov:.3} against {base:.3}) — outside 0.55..1.75 the \
+                 canopy visibly thickens or goes bald at that range"
+            );
+        }
+        off += bytes;
+        w /= 2;
+    }
+    assert_eq!(
+        off,
+        data.len(),
+        "the mip chain's declared levels and the buffer's length disagree — \
+         wgpu would read past the end of the last level"
     );
 }

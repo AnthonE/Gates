@@ -116,6 +116,7 @@ fn swing(w: &mut World, seq: &mut u16) {
             buttons: BTN_PRIMARY,
             ..Default::default()
         },
+        favour: 0,
     }]);
     *seq = seq.wrapping_add(1);
 }

@@ -33,8 +33,10 @@
 //!
 //! **What v0 deliberately does not do**, all of it registered in
 //! `DECISIONS.md` §open ("melee combat v0" and "piece damage v0"): no
-//! headshots (aim is planar until M2's rewound raycasts, so there is no
-//! head to hit), no per-weapon cadence (every swing rides gather's one
+//! headshots **for a swing** — aim is planar until M2's rewound raycasts,
+//! so there is no head to hit, and this clause said it of the whole crate
+//! until headshot v0 gave one to `ranged` (`RangedDef::headshot_mult`, and
+//! `MeleeDef` deliberately has no twin) — no per-weapon cadence (every swing rides gather's one
 //! interval, which is the melee rows' own rate), and no corpse: death drops what you carried into a
 //! backpack where you fell. That last clause is about the SIM and stays
 //! true — there is no lootable body entity, only a bag — while the client
@@ -70,9 +72,10 @@
 //! hits into six. What is still *not* here is named rather than implied:
 //! no damage types (one scalar — `ArmorDef`'s doc has the argument and its
 //! source), no hit areas (the set is one number, `worn_pct`), no condition
-//! on a worn piece, no `move_penalty_pct` consumer, and — the one a player
-//! notices — **no way to put armor on**, because that is `CONT_WEAR` and a
-//! wire bump (`findings/armor-design-20260818.md` §4).
+//! on a worn piece, and no `move_penalty_pct` consumer. The item this list
+//! led with — *"the one a player notices: no way to put armor on"* — is
+//! **closed** (armor v1, wire v51): `CONT_WEAR` is the fifth container
+//! kind and equipping is a move into it, checked here by `wearable_in`.
 //!
 //! The throwable's damage does not flow through this module's swing arm at
 //! all, and that is the design rather than an omission: a charge resolves
@@ -85,7 +88,7 @@ use crate::build::{
     anchor, BuildContent, Pieces, BUILD_CELL_M, LEVEL_H_M, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE,
     LOC_RISER,
 };
-use crate::collide::{col_base_y, CAPSULE_HEIGHT_M};
+use crate::collide::{col_base_y, Part, PieceHit, CAPSULE_HEIGHT_M};
 use crate::deploy::{damage_deploy, damage_piece, DeployContent, Deploys};
 use crate::fmath::fabs;
 use crate::gather::{CONE_COS, DY_MAX_M, NO_ITEM, POINT_BLANK_M2};
@@ -93,7 +96,8 @@ use crate::limits::{
     MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_ITEM_DEFS, MAX_PLAYERS, MAX_WEAPON_AMMO, WEAR_SLOTS,
 };
 use crate::movement::{POS_XZ_Q, POS_Y_Q};
-use crate::world::{EventQueue, Player, EV_DEATH, EV_HEALTH, EV_HIT};
+use crate::rewind::{Rewind, RewindPose};
+use crate::world::{EventQueue, Player, EV_DEATH, EV_HEALTH, EV_HIT, EV_HURT};
 use crate::yaw_lut::yaw_dir;
 
 /// One item's melee row. `damage == 0` ⇒ the item is not a weapon (the
@@ -213,7 +217,123 @@ pub struct RangedDef {
     /// The sim divides this by the chosen round's speed at the moment of
     /// the shot — integer division, once per shot, never per tick.
     pub range_mm: u32,
+    /// What one hit takes off a **building piece** — `weapons.toml`'s
+    /// second damage column, the same one `MeleeDef::structure` carries and
+    /// under the same law (`balance.rs`: never above the row's own
+    /// `damage`, never at the raid tool's).
+    ///
+    /// **It was priced, validated and content-hashed for months while the
+    /// bake threw it away.** `content/weapons.toml` has given the bow,
+    /// the crossbow and the revolver `structure = 1` since the content
+    /// crate; `bake_combat` sends a `bow`/`firearm` row to `bake_ranged`
+    /// before the melee table's `structure` read, and `RangedDef` had
+    /// nowhere to put it — so `canon.rs` hashed a number that changed
+    /// nothing, which is the same "armed and unread" shape that left the
+    /// whole bow unfired until hitscan v0 (this module's header).
+    ///
+    /// Zero is a weapon that cannot mark a wall at all, and the sim reads
+    /// it as exactly that rather than as "unset": `ranged.rs` skips the
+    /// damage write, and the shot still stops and still draws its impact.
+    pub structure: u16,
+    /// What a hit that crossed the head band is multiplied by — the
+    /// `headshot_mult` column of `content/weapons.toml`, `= 2` on every
+    /// banded row.
+    ///
+    /// **The third column to arrive here armed and unread**, after the bow
+    /// itself and `structure`, and the longest-standing of the three: it
+    /// has been parsed (`schema.rs`), pinned to exactly the band
+    /// (`balance.rs`), and folded into the content hash (`canon.rs`) since
+    /// the content crate was written, while `bake_ranged` dropped it one
+    /// line before this struct could hold it. `reference/PROJECTILES.md`
+    /// §9.4 named it as a bug of the shape this module keeps repeating —
+    /// a number that looks tuned and does nothing — and the fix is the
+    /// same one `structure` got: carry it.
+    ///
+    /// `MeleeDef` deliberately has no twin. A swing is resolved feet-to-
+    /// feet in a plane (`strike`), so there is no height to test and no
+    /// head to cross; inventing one from `frame.pitch` would be a second
+    /// hit model rather than the same one, and the band on a melee row
+    /// stays what it has always been — content priced for a mechanic that
+    /// does not exist yet, which `balance.rs:122` says in the file.
+    pub headshot_mult: u16,
+    /// What a hit that reached nothing above the leg band is multiplied
+    /// by, in **percent** — the `limb_pct` column of
+    /// `content/weapons.toml`, `= 50` on every banded row.
+    ///
+    /// **The fourth column to arrive here, and the first that did not
+    /// arrive armed and unread.** The bow, `structure` and
+    /// `headshot_mult` were each parsed, banded and content-hashed for
+    /// months before a line of sim read them (this struct's three doc
+    /// comments above say so in order). This one landed in the same
+    /// commit as the code that reads it, which is the shape the next
+    /// column should copy.
+    ///
+    /// Percent because the ladder needs a *fraction* and a `u16`
+    /// multiplier cannot say a half ([`limb`]). 100 is the identity and
+    /// is a weapon that does not discount a leg at all.
+    ///
+    /// `MeleeDef` has no twin, for [`RangedDef::headshot_mult`]'s reason
+    /// word for word: `strike` is resolved feet-to-feet in a plane, so
+    /// there is no height to test and no band to miss. The column is on
+    /// the melee rows in content and stays priced for a mechanic that
+    /// does not exist yet, exactly as the head multiplier is.
+    pub limb_pct: u16,
+    /// Rounds this weapon holds **loaded**, or 0 for a weapon that spends
+    /// straight out of the pack — the `magazine` column of
+    /// `content/weapons.toml`, set on the revolver and absent on both bows.
+    ///
+    /// Zero is read as exactly that and not as "unset": `ranged::draw`
+    /// (every bow) keeps spending out of the quiver, so a magazine is an
+    /// opt-in per row and the arrow path did not move for this.
+    ///
+    /// The mechanic it buys is the one a body-part ladder needs to be
+    /// legible: `rate_ticks` alone makes a firefight an unbroken stream of
+    /// identical clicks, and the difference between a leg and a chest is
+    /// then only a slightly longer stream. With a magazine, missing has a
+    /// price — you go dry, and [`RangedDef::reload_ticks`] is how long you
+    /// are helpless for.
+    pub magazine: u16,
+    /// Ticks to fill the magazine, from `reload_ms`. Zero exactly when
+    /// `magazine` is: `validate.rs` refuses one without the other, and the
+    /// bake refuses a `reload_ms` that rounds to nothing at `TICK_HZ`.
+    ///
+    /// Paid on `Player::next_swing`, which is the field the gather, melee
+    /// and both ranged cadences already share — so a reload stops a swing
+    /// and a swing stops a reload, for free and without a second clock to
+    /// keep in step. That sharing is the whole of "helpless for a beat".
+    pub reload_ticks: u16,
+    /// This weapon's index into `Player::mag`, or [`NO_MAG`].
+    ///
+    /// Dense and assigned at bake in `weapons.toml` order, so it is not
+    /// the item index: `Player::mag` is per-player state and
+    /// `MAX_ITEM_DEFS` slots of it would be sixty-four `u16` pairs per
+    /// body of which one is used. The bake refuses a weapon past
+    /// `limits::MAX_MAGS` rather than dropping its slot, because a weapon
+    /// with no slot falls back to spending out of the pack — the mechanic
+    /// silently gone with every gate green.
+    ///
+    /// **Keyed by the weapon row and not by the stack, and the cost is
+    /// stated.** Two revolvers in one pack share one magazine, and a gun
+    /// handed to another player arrives at the receiver's count for that
+    /// kind. The alternative was a fourth field on `ItemStack`, which is
+    /// ~500 struct literals across 82 files — and the alternative to
+    /// *that* was a side table keyed by inventory slot, which has ten
+    /// movers (move, loot, craft, pickup, spill, death, backpack,
+    /// containers…) and a silently wrong count at each. Keyed by the
+    /// content row there is nothing to move, so there is no site to miss.
+    /// `sim-core/tests/reload.rs` gates the corner rather than leaving it
+    /// to be rediscovered.
+    pub mag_slot: u8,
 }
+
+/// A weapon that carries no magazine, in [`RangedDef::mag_slot`].
+///
+/// `u8::MAX` and not 0, for the reason `NO_ITEM` is not 0 one field up:
+/// slot 0 is a real magazine, so a zero-defaulted `mag_slot` on a bow
+/// would name the first firearm's rounds — a bow that drained a revolver.
+/// Out of range of `MAX_MAGS` by construction, so an unguarded index with
+/// it panics in a debug build rather than aliasing.
+pub const NO_MAG: u8 = u8::MAX;
 
 /// **Hand-written rather than derived, and the reason is the ammo array.**
 /// `#[derive(Default)]` fills a `[u16; N]` with zeros, and zero is a valid
@@ -233,6 +353,12 @@ impl Default for RangedDef {
             rate_ticks: 0,
             hitscan: false,
             range_mm: 0,
+            structure: 0,
+            headshot_mult: 1,
+            limb_pct: 100,
+            magazine: 0,
+            reload_ticks: 0,
+            mag_slot: NO_MAG,
         }
     }
 }
@@ -314,7 +440,16 @@ pub struct CombatContent {
 
     /// Indexed the same way. A row here and a row in `melee` are not
     /// exclusive in the type, but nothing in the alpha data is both, and
-    /// `ranged::armed` reads this one first — a bow in hand does not swing.
+    /// the ranged read happens first — a bow in hand does not swing.
+    ///
+    /// ⚠ This line named **`ranged::armed`** until 2026-08-30 and there has
+    /// never been a function by that name in the tree. The two reads that
+    /// actually do the job are `held_ranged` (below — `damage > 0` is the
+    /// whole test) and `ranged::draw`, whose `true` means *the weapon took
+    /// the arm*, which is what `World::tick` uses to skip `gather::swing`.
+    /// Corrected while arming this table's first fixture ranged row; the
+    /// class is `CLAUDE.md`'s dead-citation ⚠, one level down — a doc that
+    /// names a symbol is a claim you can `grep`.
     pub ranged: [RangedDef; MAX_ITEM_DEFS],
     /// Ballistics, indexed by the **round's** item index rather than the
     /// weapon's (`reference/PROJECTILES.md` §9.3). A stack of arrows in a
@@ -331,6 +466,20 @@ pub struct CombatContent {
     /// the inert default and disarms the module entirely: no hp is granted
     /// at join, so no damage is applied and nobody can die.
     pub player_hp: u16,
+    /// Chance in 100 that a landed arrow is destroyed rather than lodged
+    /// (`globals.arrow_break_pct`, arrow recovery v0). **Zero is not the
+    /// inert default here and that is deliberate**: the disarmed value is
+    /// 100, which destroys every arrow and is exactly the game that
+    /// existed before `spent.rs` — so a content set with no recovery row
+    /// cannot silently make ammunition free. `CombatContent::EMPTY` says
+    /// 100 for that reason and it is the one field of this struct whose
+    /// inert value is not zero.
+    pub arrow_break_pct: u16,
+    /// Ticks an arrow that DEALT DAMAGE waits before it may be taken back
+    /// (`globals.arrow_lodge_s` × `TICK_HZ`, baked). A missed arrow is
+    /// takeable on the tick it lands, so this number prices exactly one
+    /// thing: re-using the arrow you just shot someone with, mid-fight.
+    pub arrow_lodge_ticks: u32,
 }
 
 impl CombatContent {
@@ -353,6 +502,21 @@ impl CombatContent {
             rate_ticks: 0,
             hitscan: false,
             range_mm: 0,
+            structure: 0,
+            // One, not zero: the empty row's multiplier is the identity, so
+            // a table nothing baked cannot silently delete a hit.
+            headshot_mult: 1,
+            // A hundred for the same reason at the other end of the
+            // ladder: a percent of zero would make the empty row delete a
+            // leg hit outright, which is the same defect spelled the other
+            // way round.
+            limb_pct: 100,
+            // No magazine on the empty row, and `NO_MAG` rather than slot
+            // 0 for the reason the constant states: a table nothing baked
+            // must not name the first firearm's rounds.
+            magazine: 0,
+            reload_ticks: 0,
+            mag_slot: NO_MAG,
         }; MAX_ITEM_DEFS],
         ammo: [AmmoDef {
             speed_mmpt: 0,
@@ -363,6 +527,12 @@ impl CombatContent {
             slot: WEAR_NONE,
         }; MAX_ITEM_DEFS],
         player_hp: 0,
+        // 100, not 0 — see the field. An inert recovery rule must destroy
+        // every arrow, because the opposite failure (a content set with no
+        // row silently giving ammunition back forever) is the one that
+        // cannot be noticed by looking at the game.
+        arrow_break_pct: 100,
+        arrow_lodge_ticks: 0,
     };
 
     /// Synthetic table for the parity/replay/alloc gates. Deliberately
@@ -416,6 +586,73 @@ impl CombatContent {
         c.armor[5] = ArmorDef {
             reduction_pct: 20,
             slot: WEAR_BODY,
+        };
+        // **Item 6 is a hitscan firearm and item 7 is its round**, and this
+        // row is the whole reason `probe_combat`'s rewind claim is true.
+        // Until 2026-08-30 this table had no `ranged` entry at all, so every
+        // `held_ranged` in that probe answered `None`, every `BTN_PRIMARY`
+        // fell through to `gather::swing`, and `test_parity_wasm` covered
+        // the *melee* reader while `NOW.md` §0lc read as though it covered
+        // both. `ranged::hitscan` is the only shot path that consults the
+        // rewind ring (`Pose::Rewound`); the arrow deliberately stays live.
+        //
+        // Continuing the ladder above rather than picking a free number:
+        // 0–3 are the melee rows, 4–5 the armor rows, 6–7 the gun and its
+        // round. Nothing is two things at once, so a test cannot arm what
+        // it meant to wear or shoot what it meant to swing.
+        //
+        // Every number is chosen for what it *reaches* inside a counted
+        // window, which is this fixture's rule everywhere else:
+        //   damage 25 — four shots to kill against `player_hp`, so a
+        //     gunfight resolves inside 256 ticks without one-shotting the
+        //     melee brawl out of the digest;
+        //   headshot_mult 2 — nonzero and not 1, so `part_crossed`'s head
+        //     band changes an outcome rather than being computed and
+        //     discarded;
+        //   rate_ticks 8 — faster than the shared swing cadence, so holding
+        //     the gun is a different tempo and not a re-skinned club;
+        //   range_mm 20_000 — the melee row's 2 m reason at gun scale. Long
+        //     enough to cross the spawn ring the three bots share, short
+        //     enough not to shoot across the island, and 118 sampler taps
+        //     against `MAX_HITSCAN_SAMPLES` (320), so the backstop at
+        //     `ranged.rs`'s sample check is not what stops the shot;
+        //   structure 0 — a bullet chips nothing here on purpose. The piece
+        //     stores are `probe_parity`'s subject and a fixture that
+        //     demolished them would hollow that probe out, which is the
+        //     same trade `raid_fixture`'s one point of damage refuses.
+        // The round carries **no `ammo` row**, and that is not an omission:
+        // `hitscan` never looks one up, and a firearm whose round had
+        // ballistics is the pairing `content/validate.rs` refuses at boot.
+        c.ranged[6] = RangedDef {
+            damage: 25,
+            ammo: [7, NO_ITEM, NO_ITEM, NO_ITEM],
+            rate_ticks: 8,
+            hitscan: true,
+            range_mm: 20_000,
+            structure: 0,
+            // A magazine on the fixture's firearm, because a fixture row
+            // nothing reaches rides the parity surface while covering
+            // nothing (the note four lines down says so about `limb_pct`).
+            // Six and a two-tick fill: short enough that a probe running a
+            // few hundred ticks empties it and reloads more than once, so
+            // the magazine is on the digest's surface rather than beside
+            // it. `mag_slot` 0 — the fixture bakes no other magazine.
+            magazine: 6,
+            reload_ticks: 2,
+            mag_slot: 0,
+            headshot_mult: 2,
+            //   limb_pct 50 — the reference's ×0.5 rather than the
+            //     identity, so a leg hit is a *different* number in the
+            //     digest and not a chest hit spelled twice. **And the
+            //     bots reach it**, which is measured rather than assumed:
+            //     0lc slice 6's lesson is that a fixture row nothing
+            //     reaches rides the parity surface while covering
+            //     nothing. Flipping this one line to the identity moves
+            //     the `combat` digest (0x4cbe7083 → 0x3c7b11ac) and its
+            //     rewound-hitscan count (2412 → 2415) at 500×256, so the
+            //     leg band is on the parity surface for a reason and not
+            //     by hope.
+            limb_pct: 50,
         };
         c
     }
@@ -600,6 +837,88 @@ pub struct Hurt {
 ///
 /// Wall 1: `min`, `saturating_add` and one `u16` subtraction that cannot
 /// underflow because `dealt <= before`. No float, no clock, no allocation.
+/// The head multiplier, applied to the **raw** damage before the funnel
+/// sees it.
+///
+/// **Before armor and not after, and the order is a decision.** `reduce`
+/// takes a percentage, so scaling first and scaling last differ only by
+/// integer rounding — but they differ in what they *mean*: a plate that
+/// stops 30% of a blow stops 30% of the blow that arrived, and a headshot
+/// is a bigger blow, not a smaller plate. `reference/ARMOR.md` §0 has
+/// protection proportional to damage for exactly this reason. Doing it
+/// here also keeps the funnel's signature a `u16`, so `tests/
+/// damage_routes.rs` still sees one door into a body's hp.
+///
+/// **Not on the funnel itself**, because the funnel is every route and only
+/// two of them have a head to hit. A pig's bite (`world.rs`) and a satchel
+/// blast (`charge.rs`) resolve against a body with no line to cross, and a
+/// `hurt` that took a `head: bool` would ask both of them a question
+/// neither can answer — the shape `hurt`'s own doc refuses for `EV_HIT`.
+///
+/// Saturating rather than wrapping: `u16::MAX` hp does not exist
+/// (`balance.toml` caps a body at three digits) so the clamp is
+/// unreachable with shipped content, and the alternative is a headshot
+/// that heals.
+///
+/// Wall 1: two `u32` multiplies and a `min`. No float, no allocation.
+#[inline]
+pub fn headshot(raw: u16, mult: u16) -> u16 {
+    (raw as u32 * mult as u32).min(u16::MAX as u32) as u16
+}
+
+/// What a hit that reached nothing above the leg band is worth: `pct`
+/// percent of the raw damage, floored.
+///
+/// **A percent and not a multiplier, and the asymmetry with
+/// [`headshot`] is the point.** The reference's ladder is ×2 head, ×1
+/// chest, ×0.5 limbs (`reference/PROJECTILES.md` §0), and a `u16`
+/// multiplier cannot say a half. Widening `headshot_mult` into a percent
+/// would move a shipped, banded, content-hashed column on eleven rows to
+/// buy nothing the second column does not, so the two live side by side:
+/// one says how much *more* a skull is worth and one how much *less* a
+/// shin is.
+///
+/// **Floored, and the floor is reachable in principle and not in
+/// content.** `1 × 50 / 100` is 0, a hit that costs a body nothing —
+/// `validate` refuses `damage == 0`, so the smallest shipped weapon is
+/// the rock's 20 and the smallest leg hit is 10. A shipped zero would
+/// need a one-damage weapon, which is a content edit this gate would
+/// catch on the way past (`tests/headshot.rs`).
+///
+/// `pct == 100` is the identity by construction rather than by a branch,
+/// which is what lets a weapon opt out of the ladder in *data*: a
+/// `limb_pct` of 100 is a weapon whose legs are worth a chest, exactly as
+/// `headshot_mult = 1` is one whose skull is worth a chest. The satchel
+/// charge already carries the second and now carries the first.
+///
+/// Wall 1: one `u32` multiply, one integer divide, one `min`. No float,
+/// no allocation. The product is at most `u16::MAX × u16::MAX / 100` =
+/// 42 948 362, so the `u32` cannot overflow before the `min` clamps it.
+#[inline]
+pub fn limb(raw: u16, pct: u16) -> u16 {
+    (raw as u32 * pct as u32 / 100).min(u16::MAX as u32) as u16
+}
+
+/// The one door a shot's damage goes through once the body part is known.
+///
+/// **One function rather than two branches at two call sites**, and the
+/// reason is the trap list's: `ranged` resolves a shot twice (an arrow in
+/// `step`, a beam in `hitscan`) and the head multiplier had to be
+/// remembered at both. A second multiplier doubles the number of places
+/// that can disagree, so the ladder lives here and each site asks it
+/// once. [`Part::Chest`] is the identity, which is what makes the
+/// fallback free.
+///
+/// Wall 1: a match and one of [`headshot`]/[`limb`]. No float.
+#[inline]
+pub fn part_damage(raw: u16, part: Part, head_mult: u16, limb_pct: u16) -> u16 {
+    match part {
+        Part::Head => headshot(raw, head_mult),
+        Part::Chest => raw,
+        Part::Limb => limb(raw, limb_pct),
+    }
+}
+
 #[inline]
 pub fn hurt(cc: &CombatContent, v: &mut Player, raw: u16) -> Hurt {
     debit(v, reduce(raw, worn_pct(cc, v)))
@@ -609,9 +928,12 @@ pub fn hurt(cc: &CombatContent, v: &mut Player, raw: u16) -> Hurt {
 /// slots, clamped at [`ARMOR_MAX_PCT`].
 ///
 /// **The sum, not the slot that was hit, and that is a v0 decision rather
-/// than an oversight.** Aim is planar and there is no head to hit
-/// (`combat.rs`'s header, still true), so a coverage model has nothing to
-/// key on: crediting only the body piece would ship
+/// than an oversight.** It used to rest on there being no head to hit at
+/// all; since headshot v0 a *shot* has one, so the reason is now the
+/// narrower and truer one — **a head band is not a coverage model.**
+/// `ranged` knows whether a line crossed the crown; nothing anywhere knows
+/// which worn piece was under it, and a swing still has no height at all.
+/// Crediting only the body piece would ship
 /// `item.armor_burlap_head` as *charged* dead content — craftable, priced,
 /// and protecting nobody — on the very day armor started working, which is
 /// the same defect this slice exists to remove. Until hit areas land
@@ -642,6 +964,47 @@ pub fn worn_pct(cc: &CombatContent, v: &Player) -> u32 {
         i += 1;
     }
     pct.min(ARMOR_MAX_PCT)
+}
+
+/// **May `item` be worn in wear slot `s`?** — `CanWearItem(Item, Int32)`
+/// (`reference/ARMOR.md` §1), and the whole of what `CONT_WEAR` refuses.
+///
+/// One-based `ArmorDef::slot` against a zero-based array index, exactly
+/// as `worn_pct` reads it two functions up. That is not a coincidence to
+/// be tidied away — it is the invariant. `worn_pct` **ignores** a piece
+/// sitting in the wrong index rather than counting it, so before armor v1
+/// a mis-slotted piece was inert; now that a move can put one there, the
+/// two predicates have to be the same predicate or a helmet in the body
+/// slot becomes a thing you can wear for no protection. Written as
+/// `slot == s + 1` at both sites, deliberately, so a reader diffing them
+/// sees one expression twice.
+///
+/// `WEAR_NONE` is 0 and `s + 1` is never 0, so "this item is not armor at
+/// all" needs no separate branch and no separate refusal — which is why
+/// there is exactly one `REFUSE_M_WEAR` rather than three.
+///
+/// An item index past the table reads as not wearable, the same way
+/// `worn_pct` bounds it and for the same reason: content decides the
+/// table's width, and a forged index is a wire fact, not a content one.
+///
+/// **`s` is bounded here rather than by its caller's discipline.** This is
+/// `pub` and total, and `s + 1` on a `u8` was neither: it overflow-panics
+/// in debug and *wraps to 0* in release, and 0 is `WEAR_NONE` — so a
+/// release-mode call with `s = 255` answered **true** for every item in
+/// the table that is not armor, which is the exact inverse of what this
+/// function is for. Nothing reached it: the one call site bounds `s` by
+/// `slots_in(CONT_WEAR)` two steps earlier. A `pub` predicate whose
+/// correctness lives at a call site two steps away is a predicate waiting
+/// for its second caller, and this one is named in a reference doc as the
+/// thing the next equipment slice extends. Raised by the merge-gate judge
+/// on pass `20260828-065501-06`.
+///
+/// Wall 1: one compare. Wall 2: no allocation.
+#[inline]
+pub fn wearable_in(cc: &CombatContent, item: u16, s: u8) -> bool {
+    (s as usize) < WEAR_SLOTS
+        && (item as usize) < MAX_ITEM_DEFS
+        && cc.armor[item as usize].slot == s + 1
 }
 
 /// What gets through `pct` percent of protection.
@@ -751,11 +1114,98 @@ pub enum Strike {
 /// eligible target inside the weapon's reach and gather's aim cone wins,
 /// exactly as a node does; the attacker is never a candidate, so no weapon
 /// can ever hit its own holder.
+/// How many world-bearing sectors an `EV_HURT` is quantized to.
+///
+/// Sixteen, so a sector is 22.5° — the eight compass points a player can
+/// name, halved once so "front-left" is expressible. The width is the
+/// disclosure: it is enough to turn toward and not enough to aim with, and
+/// widening it is a decision about what a victim learns, not a cosmetic
+/// one (`world.rs`, `EV_HURT`).
+pub const HURT_SECTORS: u8 = 16;
+
+/// The sector of the world bearing along `(dx, dz)`, clockwise from north.
+///
+/// `dx`/`dz` are a delta *toward* the thing being pointed at, in any units
+/// so long as both axes share them — only the ratio is read. North is `+Z`
+/// and east is `−X` (`DECISIONS.md` 2026-08-15, and `client/src/look.rs`
+/// `bearing_of` is the float twin this must agree with, and
+/// `client/src/render/hud.rs`'s
+/// `the_integer_bearing_and_the_float_bearing_are_the_same_bearing` checks
+/// the two against each other rather than restating either — it lives on
+/// that side because this crate cannot reach `atan2` to check itself).
+///
+/// **Integer only, because wall 1 forbids the obvious spelling.** There is
+/// no `atan2` in this crate and there is not going to be one. A bearing
+/// quantized to sixteen sectors does not need one: the sector is decided by
+/// four comparisons against `tan(11.25°)`, `tan(33.75°)`, `tan(56.25°)` and
+/// `tan(78.75°)`, each held as a millionth so the compare is an `i64`
+/// multiply. That is exact — the same integers on native and on wasm — where
+/// a float `atan2` is the one thing `test_parity_wasm` exists to catch.
+///
+/// A zero delta has no bearing. It happens (two bodies standing inside each
+/// other is point-blank, which `strike` explicitly allows), and the answer
+/// is sector 0: arbitrary, documented, and no more wrong than any other
+/// direction when the attacker is on top of you.
+pub fn bearing_sector(dx: i64, dz: i64) -> u8 {
+    if dx == 0 && dz == 0 {
+        return 0;
+    }
+    // |east| is |dx| and |north| is |dz|, so the quadrant is read off the
+    // signs below and the magnitudes never need the negation.
+    let a = dx.saturating_abs();
+    let b = dz.saturating_abs();
+    // How far off the north/south axis, in sectors: 0 is on it, 4 is square
+    // onto the east/west one. `tan(11.25°) = 0.198912` and its three
+    // siblings, scaled by a million.
+    let k = if a.saturating_mul(1_000_000) < b.saturating_mul(198_912) {
+        0
+    } else if a.saturating_mul(1_000_000) < b.saturating_mul(668_179) {
+        1
+    } else if a.saturating_mul(1_000_000) < b.saturating_mul(1_496_606) {
+        2
+    } else if a.saturating_mul(1_000_000) < b.saturating_mul(5_027_339) {
+        3
+    } else {
+        4
+    };
+    // East is `−X`, so `dx <= 0` is the eastern half. The two axis cases
+    // land on the same sector from either side (k == 4 is due east in both
+    // eastern quadrants, k == 0 is due south in both southern ones), which
+    // is what makes the seams here unobservable.
+    match (dx <= 0, dz >= 0) {
+        (true, true) => k,              // N..E
+        (true, false) => 8 - k,         // E..S
+        (false, false) => 8 + k,        // S..W
+        (false, true) => (16 - k) % 16, // W..N
+    }
+}
+
+/// Resolve one melee swing by `attacker` against the nearest aimed body.
+///
+/// **Lag-compensated since slice 4** (`findings/lagcomp-design-20260818.md`
+/// §7). `favour` is how many ticks back the target scan looks, already
+/// clamped to `Rewind::max_back()` by `world::apply`; `rewind` is the ring
+/// slice 2 fills at the end of every tick.
+///
+/// Only the **targets** rewind. The attacker's own body is read live and
+/// deliberately: this swing is his own input, the server has already
+/// stepped him this tick, and he is exactly where he thinks he is. Lag
+/// compensation exists to undo the *interpolation delay the client applies
+/// to everyone else* — a remote body is drawn `INTERP_DELAY_TICKS` in the
+/// past, so it is remote bodies that have to be put back there.
+///
+/// `favour == 0` returns every candidate's live body (`pose_at` short-
+/// circuits on it), so a zero favour is bit-identical to the sim before
+/// this parameter existed. That is what kept slice 3's hashes still, and it
+/// is why every non-server caller passes zero.
 pub fn strike(
     cc: &CombatContent,
     attacker: usize,
     players: &mut [Player; MAX_PLAYERS],
     events: &mut EventQueue,
+    rewind: &Rewind,
+    tick: u64,
+    favour: u8,
 ) -> Strike {
     if cc.player_hp == 0 {
         return Strike::Missed; // inert content: combat is not armed
@@ -773,15 +1223,25 @@ pub fn strike(
     let az = a.body.qz as f32 * POS_XZ_Q;
     let (fx, fz) = yaw_dir(a.frame.yaw);
     let attacker_id = a.id;
+    // Read before the victim is borrowed mutably, and in the body's own
+    // quanta rather than the metres above: `bearing_sector` wants integers.
+    let (aqx, aqz) = (a.body.qx as i64, a.body.qz as i64);
 
     let mut best: Option<(f32, usize)> = None;
     for (j, t) in players.iter().enumerate() {
         if j == attacker || !t.active || t.hp == 0 {
             continue;
         }
-        let dx = t.body.qx as f32 * POS_XZ_Q - ax;
-        let dy = t.body.qy as f32 * POS_Y_Q - ay;
-        let dz = t.body.qz as f32 * POS_XZ_Q - az;
+        // Where this body stood when the attacker saw it. The liveness
+        // tests above stay on the LIVE record on purpose: the ring stores
+        // a position, not a life, and a body that has since died or left
+        // is not a target however solid it looked `favour` ticks ago.
+        // `pose_at` falls back to `t`'s own pose whenever it cannot answer
+        // honestly, so `where_it_was` is never a stranger's position.
+        let where_it_was = rewind.pose_at(tick, j, favour, RewindPose::live(t.id, &t.body));
+        let dx = where_it_was.qx as f32 * POS_XZ_Q - ax;
+        let dy = where_it_was.qy as f32 * POS_Y_Q - ay;
+        let dz = where_it_was.qz as f32 * POS_XZ_Q - az;
         let d2 = dx * dx + dz * dz;
         if d2 > reach * reach || fabs(dy) > DY_MAX_M {
             continue;
@@ -804,9 +1264,32 @@ pub fn strike(
 
     let v = &mut players[victim];
     let victim_id = v.id;
+    // **Live on both ends, and not rewound with the scan above.** The two
+    // reads answer different questions. `range_cm` is a fact about the
+    // blow — what the shooter saw and what the death screen reports — so
+    // it is measured on the geometry the hit was decided on. This bearing
+    // is an instruction to the victim: *turn this way*. They are at their
+    // present position when the arc appears, so the only useful bearing is
+    // from where they are now to where the attacker is now. Rewinding it
+    // would point at where the attacker stood relative to where the victim
+    // stood, which describes neither player's situation — and at a favour
+    // of 7 that is a quarter-second of walking, easily a whole sector of
+    // the sixteen.
+    let sector = bearing_sector(aqx - v.body.qx as i64, aqz - v.body.qz as i64);
     // The funnel, reduced: a swing is the route armor exists to blunt.
     let Hurt { left, died, .. } = hurt(cc, v, def.damage);
-    events.push(EV_HIT, attacker_id, victim_id, def.damage as u32);
+    // `Part::Chest` and not a spare "no part" value: a swing has no line
+    // to cross (`part_damage`'s own doc), so it pays the identity rung and
+    // the marker says exactly that. A fourth part meaning "unknown" would
+    // be a value the ladder cannot price.
+    events.push(
+        EV_HIT,
+        attacker_id,
+        victim_id,
+        crate::world::hit_c(crate::collide::Part::Chest, def.damage),
+    );
+    // The other half of the same blow, addressed to the other person in it.
+    events.push(EV_HURT, victim_id, sector as u32, def.damage as u32);
     events.push(EV_HEALTH, victim_id, left as u32, cc.player_hp as u32);
     if died {
         events.push(EV_DEATH, victim_id, attacker_id, 0);
@@ -916,7 +1399,10 @@ pub fn raid(
         let Some(d2) = aimed_at_rec(&aimed_at, rec.cx, rec.cz, rec.loc) else {
             continue;
         };
-        if !storey_ok(col_base_y(seed, haven, rec.cx, rec.cz), rec.level) {
+        if !storey_ok(
+            col_base_y(seed, haven, pieces.cols(), rec.cx, rec.cz),
+            rec.level,
+        ) {
             continue;
         }
         if best.is_none_or(|(bd2, _)| d2 < bd2) {
@@ -965,7 +1451,8 @@ pub fn raid(
                 if best.is_some_and(|(bd2, _)| d2 >= bd2) {
                     continue; // an equal or nearer target already stands
                 }
-                let base = *base.get_or_insert_with(|| col_base_y(seed, haven, cx, cz));
+                let base =
+                    *base.get_or_insert_with(|| col_base_y(seed, haven, pieces.cols(), cx, cz));
                 for level in 0..MAX_BUILD_LEVELS as u8 {
                     if mask & (1 << level) == 0 || !storey_ok(base, level) {
                         continue;
@@ -984,6 +1471,34 @@ pub fn raid(
     match best {
         None => false,
         Some((_, Target::Deploy(di))) => {
+            // **The mark, before the damage** — `ranged::step` and
+            // `gather::swing` both push the scuff and then charge for it,
+            // and a swing that fells the thing it struck still struck it.
+            //
+            // The point is `collide::deploy_stop`'s own clamp: the box
+            // point nearest the raider. A raider is necessarily OUTSIDE
+            // the volume (`collide::deploy_blocked` keeps a capsule out of
+            // one), so that point is on the surface rather than inside it.
+            // An archetype with no volume gets no mark: there is no
+            // surface to put one on, and a `None` here is the same refusal
+            // `gather::skin_point` makes for a node with no skin.
+            let rec = deploys.entries()[di];
+            if let Some((hw, h, hd)) = crate::deploy::solid_vol(dc.defs[rec.row as usize].arch) {
+                let floor = col_base_y(seed, haven, pieces.cols(), rec.cx, rec.cz)
+                    + rec.level as f32 * LEVEL_H_M;
+                let (cxm, czm) = (
+                    rec.cx as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5,
+                    rec.cz as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5,
+                );
+                push_mark(
+                    events,
+                    (
+                        cxm + (px - cxm).clamp(-hw, hw),
+                        (feet_y + crate::gather::EYE_M).clamp(floor, floor + h),
+                        czm + (pz - czm).clamp(-hd, hd),
+                    ),
+                );
+            }
             damage_deploy(dc, pieces, deploys, di, def.structure, events);
             true
         }
@@ -999,14 +1514,34 @@ pub fn raid(
                     // whatever the tool — the reference's own rule as a
                     // raider meets it. Planes and risers have no sides;
                     // the satchel does not care either (`charge.rs` — a
-                    // blast is a point, not a stance).
+                    // blast is a point, not a stance). The rule itself is
+                    // `build::structure_price`, shared with the shot path
+                    // (`World::chip`) rather than copied into it.
                     let rec = pieces.entries()[i];
-                    let sided = crate::build::shape_has_facing(bc.pieces[rec.row as usize].shape);
-                    let amount = if sided && !crate::build::soft_side(&rec, px, pz) {
-                        HARD_SIDE_STRUCTURE
-                    } else {
-                        def.structure
-                    };
+                    // The scuff, before the bill — `piece_mark`'s doc has
+                    // the surface each loc puts it on. Reached only past
+                    // `find_index`, so it means "this swing bit a piece
+                    // that is in the store" rather than "a button was
+                    // down": the `None` arm below breaks nothing and marks
+                    // nothing, exactly as a refused gather swing leaves
+                    // the bark clean.
+                    push_mark(
+                        events,
+                        piece_mark(
+                            &PieceHit { cx, cz, level, loc },
+                            col_base_y(seed, haven, pieces.cols(), cx, cz),
+                            px,
+                            pz,
+                            feet_y + crate::gather::EYE_M,
+                        ),
+                    );
+                    let amount = crate::build::structure_price(
+                        &rec,
+                        bc.pieces[rec.row as usize].shape,
+                        px,
+                        pz,
+                        def.structure,
+                    );
                     damage_piece(dc, bc, pieces, deploys, i, amount, budget, events);
                     true
                 }
@@ -1014,6 +1549,113 @@ pub fn raid(
             }
         }
     }
+}
+
+/// Where a landed raid swing leaves its scuff: a point **on the struck
+/// piece's own surface**, nearest the raider's stance.
+///
+/// `gather::skin_point` is this function's sibling and its reason —
+/// a swing that bites a tree marks the bark, and until now a swing that
+/// bit a *wall* marked nothing at all (`NOW.md` §0mk item 1, and the
+/// merge-gate judge's second ranked gap on 2026-08-28: a raider could not
+/// see whether the raid was working). `EV_IMPACT` is reused rather than
+/// joined by a second event, for the reason its own doc gives: the fact is
+/// *a surface was struck at this point*, which belongs to no one verb.
+/// So a mark on a plank costs no wire byte, no `PROTO_VER` bump and no
+/// client line — `render/decal.rs` was already the single reader.
+///
+/// **Every arm returns a point the piece actually occupies**, which is the
+/// whole of the correctness claim and what `tests/mark.rs` rebuilds from
+/// published parts:
+///
+/// * A **slab** (the plane and the four triangles) is walkable ground at
+///   `floor` — `collide::piece_ground` reads exactly that y — so the mark
+///   sits at that height. The plane takes the raider's own x/z clamped
+///   into the cell, because the whole rectangle is surface. A **triangle**
+///   takes its centroid instead: a rectangle's clamp can land in the half
+///   the triangle does not occupy, and a mark floating beside a plate is
+///   worse than a mark in the middle of it.
+/// * A **straight wall** is degenerate in one axis and free along the
+///   other, so it takes the edge's own coordinate on the pinned axis and
+///   the clamped stance along the free one. Its height is the strike,
+///   clamped into the storey — a wall two storeys up is reachable by
+///   `storey_ok` from below, and the clamp is what keeps that mark on the
+///   wall rather than under it.
+/// * A **diagonal wall** takes the cell centre, where the two diagonals
+///   cross and where `build::anchor` already measures reach to. Both
+///   diagonals pass through it, so it is on the piece for either.
+/// * The **riser** is the ramp `collide::piece_ground` describes — rising
+///   toward +Z across the storey — evaluated at the clamped stance, so the
+///   mark is on the tread rather than in the air above it.
+///
+/// **What it deliberately does not do**: nothing here reads the aim
+/// direction, so the mark is the nearest point of the piece and not the
+/// point the swing was pointed at. Reach is measured to `build::anchor`
+/// and a swing lands or does not; where on a 3 m plank it lands is not a
+/// fact this arm has, and inventing a ray for it would be inventing a
+/// mechanic. The visible cost is on a plane, where two raiders standing on
+/// opposite corners mark opposite corners — which is right — and on a
+/// triangle and a diagonal, where every swing marks one spot.
+///
+/// **`pub` for its gate, and for nothing else** — no caller outside this
+/// module exists. `tests/mark.rs` needs the point for all ten `loc` arms
+/// and the probe fixture has piece rows for six of them, so a gate that
+/// could only reach it through `raid` would be a gate on six. It rebuilds
+/// the surface from `build::anchor`, the two cell constants and the
+/// `LOC_TRI_*` half definitions — published parts this function does not
+/// share a line with — because `tests/lattice.rs`'s naive side called the
+/// function under test and carried the mutant with it (`CLAUDE.md`).
+///
+/// The address arrives as a [`PieceHit`] rather than four loose numbers,
+/// which is the same trap one level down: `cx`/`cz` are both `u16` and
+/// `level`/`loc` are both `u8`, so a transposition at a call site
+/// type-checks and puts the mark on a real address somewhere else in the
+/// base. It is the type the shot path already names for this four-part
+/// address, so a shot and a swing carry a wall's identity the same way.
+pub fn piece_mark(at: &PieceHit, base: f32, px: f32, pz: f32, strike_y: f32) -> (f32, f32, f32) {
+    let x0 = at.cx as f32 * BUILD_CELL_M;
+    let z0 = at.cz as f32 * BUILD_CELL_M;
+    let floor = base + at.level as f32 * LEVEL_H_M;
+    let mx = px.clamp(x0, x0 + BUILD_CELL_M);
+    let mz = pz.clamp(z0, z0 + BUILD_CELL_M);
+    // The storey the wall spans; `storey_ok` let the swing reach a level
+    // the eye is not inside, so this clamp is load-bearing and not a
+    // formality.
+    let wall_y = strike_y.clamp(floor, floor + LEVEL_H_M);
+    let (ax, az) = anchor(at.cx, at.cz, at.loc);
+    match at.loc {
+        LOC_PLANE => (mx, floor, mz),
+        LOC_RISER => (mx, floor + (mz - z0) / BUILD_CELL_M * LEVEL_H_M, mz),
+        LOC_EDGE_XLO => (x0, wall_y, mz),
+        LOC_EDGE_ZLO => (mx, wall_y, z0),
+        crate::build::LOC_DIAG_A | crate::build::LOC_DIAG_B => (ax, wall_y, az),
+        // The four triangles, and any loc this scan cannot produce: the
+        // centroid `anchor` already returns, at the slab's own height.
+        _ => (ax, floor, az),
+    }
+}
+
+/// Push the scuff a landed structure hit leaves, at a point already solved
+/// to be on the struck surface.
+///
+/// One body for the piece arm and the deployable arm because the two would
+/// otherwise hand-copy the quantize-and-push — `build::structure_price`'s
+/// own doc is this module's receipt for what that costs, and the payload
+/// here is `reference/FINDINGS.md` §1's positional trap in its sharpest
+/// form (`a`'s low half and `b` are two axes of one point in one unit).
+/// `tests/event_roles.rs` role-checks it; one emit site is one thing for
+/// it to check.
+#[inline]
+fn push_mark(events: &mut EventQueue, m: (f32, f32, f32)) {
+    let qx = crate::fmath::floor_i32(m.0 / POS_XZ_Q);
+    let qy = crate::fmath::floor_i32(m.1 / POS_Y_Q);
+    let qz = crate::fmath::floor_i32(m.2 / POS_XZ_Q);
+    events.push(
+        crate::world::EV_IMPACT,
+        (crate::ranged::SURF_BUILT as u32) << 24 | qx as u32,
+        qz as u32,
+        qy as u32,
+    );
 }
 
 /// `aimed_at` against a store record's address — the anchor lookup the two
@@ -1068,6 +1710,23 @@ mod tests {
         CombatContent::probe_fixture()
     }
 
+    /// The one `EV_STRUCT_HIT` in the ring — and it is a *search* rather
+    /// than `entries()[0]` because a landed swing now pushes its scuff
+    /// first (`piece_mark`). Refusing zero and refusing two keeps this
+    /// stronger than the index it replaced: an index cannot see a double
+    /// emit, and `tests/event_roles.rs` §4's first cut is this repo's own
+    /// receipt for reading the wrong slot.
+    fn struct_hit(ev: &EventQueue) -> crate::world::SimEvent {
+        let mut found = None;
+        for e in ev.entries() {
+            if e.code == EV_STRUCT_HIT {
+                assert!(found.is_none(), "two EV_STRUCT_HIT on one swing");
+                found = Some(*e);
+            }
+        }
+        found.expect("a landed swing bills exactly one EV_STRUCT_HIT")
+    }
+
     fn last(ev: &EventQueue) -> (u8, u32, u32, u32) {
         let e = ev.entries()[ev.len() - 1];
         (e.code, e.a, e.b, e.c)
@@ -1108,6 +1767,7 @@ mod tests {
             CZ,
             0,
             LOC_PLANE,
+            false,
             &mut ev,
         );
         assert_eq!(pieces.len(), 1, "the rig needs its foundation");
@@ -1168,8 +1828,7 @@ mod tests {
                 &mut tick_budget(),
                 &mut ev
             ));
-            let e = ev.entries()[0];
-            assert_eq!(e.code, EV_STRUCT_HIT);
+            let e = struct_hit(&ev);
             assert_eq!(e.a, crate::gather::cell_key(CX, CZ));
             assert_eq!(e.b, LOC_PLANE as u32);
             assert_eq!(
@@ -1194,11 +1853,17 @@ mod tests {
             &mut ev
         ));
         assert_eq!(
-            ev.entries()[0].c,
+            struct_hit(&ev).c,
             32 << 16,
             "the last swing deals only the hp that was left, and leaves zero"
         );
-        assert_eq!(codes(&ev), [EV_STRUCT_HIT, EV_PIECE_REMOVED]);
+        // The scuff leads the bill and the bill leads the collapse — one
+        // swing's whole story, in order, and the mark is pinned here
+        // rather than merely tolerated.
+        assert_eq!(
+            codes(&ev),
+            [crate::world::EV_IMPACT, EV_STRUCT_HIT, EV_PIECE_REMOVED]
+        );
         assert!(pieces.is_empty(), "the foundation fell");
 
         // Nothing left to hit: the swing finds no target at all.
@@ -1249,6 +1914,7 @@ mod tests {
             CZ,
             0,
             crate::build::LOC_EDGE_XLO,
+            false,
             &mut ev,
         );
         let wall = pieces.find(CX, CZ, 0, crate::build::LOC_EDGE_XLO).unwrap();
@@ -1277,8 +1943,7 @@ mod tests {
             &mut tick_budget(),
             &mut ev
         ));
-        let e = ev.entries()[0];
-        assert_eq!(e.code, EV_STRUCT_HIT);
+        let e = struct_hit(&ev);
         assert_eq!(
             e.c >> 16,
             34,
@@ -1298,8 +1963,7 @@ mod tests {
             &mut tick_budget(),
             &mut ev
         ));
-        let e = ev.entries()[0];
-        assert_eq!(e.code, EV_STRUCT_HIT);
+        let e = struct_hit(&ev);
         assert_eq!(
             e.c >> 16,
             HARD_SIDE_STRUCTURE as u32,
@@ -1309,6 +1973,93 @@ mod tests {
             e.c & 0xFFFF,
             (wall_hp - 34 - HARD_SIDE_STRUCTURE) as u32,
             "both swings landed on the one wall"
+        );
+    }
+
+    /// **A swing at a solid deployable marks its FACE**, not its middle
+    /// and not the raider's own feet.
+    ///
+    /// `piece_mark`'s sibling arm: a deployable has an archetype volume
+    /// rather than a storey, so the point is `collide::deploy_stop`'s own
+    /// clamp — the box point nearest the raider — and this case stands
+    /// well outside the hearth on −x so that clamp is the binding thing.
+    /// Under a mutant that drops it the mark is at the raider's own x,
+    /// 1.2 m out in the air; under one that returns the cell centre it is
+    /// inside the box. Both are asserted against here, in metres decoded
+    /// back off the event.
+    #[test]
+    fn a_swing_at_a_hearth_marks_the_face_it_struck() {
+        let (cc, bc, dc, mut pieces, mut deploys, _) = rig();
+        let mut ev = EventQueue::default();
+        let mut owner = raider(CX, CZ);
+        owner.inv[1] = ItemStack {
+            item: 2,
+            count: 9,
+            cond: 0,
+        };
+        crate::deploy::place_deploy(
+            SEED,
+            hv(),
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut owner,
+            0,
+            0,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(deploys.len(), 1, "the rig needs its hearth");
+        let (hw, h, _) = crate::deploy::solid_vol(dc.defs[0].arch).expect("a hearth is solid");
+
+        // Stand off the hearth's −x face, inside the fixture's 2 m reach,
+        // facing +x at it. `Body::at` bypasses movement, which is what
+        // lets the stance be chosen rather than walked to.
+        let cxm = CX as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5;
+        let czm = CZ as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5;
+        let mut p = raider(CX, CZ);
+        p.body = Body::at(SEED, hv(), cxm - 1.2, czm);
+        p.frame.yaw = YAW_PLUS_X;
+
+        ev.clear();
+        assert!(raid(
+            hv(),
+            &cc,
+            &bc,
+            &dc,
+            SEED,
+            &p,
+            &mut pieces,
+            &mut deploys,
+            &mut tick_budget(),
+            &mut ev
+        ));
+        let m = ev.entries()[0];
+        assert_eq!(m.code, crate::world::EV_IMPACT, "the scuff leads the bill");
+        assert_eq!(
+            (m.a >> 24) as u8,
+            crate::ranged::SURF_BUILT,
+            "a deployable is built surface, exactly as it is to an arrow"
+        );
+        // Decoded back to metres — `world.rs`' own role line: a = SURF << 24
+        // | x, b = z, c = y signed. One quantum of slack per axis and no
+        // more; `POS_XZ_Q` is 3 cm and the claim is about a 0.6 m half-width.
+        let mx = (m.a & 0x00ff_ffff) as f32 * POS_XZ_Q;
+        let my = m.c as i32 as f32 * POS_Y_Q;
+        let floor = col_base_y(SEED, hv(), pieces.cols(), CX, CZ);
+        assert!(
+            fabs(mx - (cxm - hw)) <= POS_XZ_Q,
+            "the mark sits on the hearth's -x face at {}, not at {mx}",
+            cxm - hw
+        );
+        assert!(
+            (floor - POS_Y_Q..=floor + h + POS_Y_Q).contains(&my),
+            "{my} is outside the hearth's own band [{floor}, {}]",
+            floor + h
         );
     }
 
@@ -1403,7 +2154,7 @@ mod tests {
                 &mut ev
             ));
             assert_eq!(
-                ev.entries()[0].b & crate::world::STRUCT_DEPLOY_BIT,
+                struct_hit(&ev).b & crate::world::STRUCT_DEPLOY_BIT,
                 crate::world::STRUCT_DEPLOY_BIT,
                 "the hearth takes it, never the foundation under it"
             );
@@ -1471,6 +2222,7 @@ mod tests {
             CZ,
             0,
             LOC_PLANE,
+            false,
             &mut ev,
         );
         crate::build::place(
@@ -1486,6 +2238,7 @@ mod tests {
             CZ,
             0,
             LOC_EDGE_XLO,
+            false,
             &mut ev,
         );
         assert_eq!(pieces.len(), 2, "foundation + doorway");
@@ -1784,11 +2537,17 @@ mod tests {
             p.body = Body::at(SEED, hv(), 512.0, 512.0);
         }
         let mut ev = EventQueue::default();
-        assert_eq!(strike(&cc, 0, &mut players, &mut ev), Strike::Hit);
-        assert_eq!(players[1].hp, 66);
-        assert_eq!(strike(&cc, 0, &mut players, &mut ev), Strike::Hit);
         assert_eq!(
-            strike(&cc, 0, &mut players, &mut ev),
+            strike(&cc, 0, &mut players, &mut ev, &Rewind::new(), 0, 0),
+            Strike::Hit
+        );
+        assert_eq!(players[1].hp, 66);
+        assert_eq!(
+            strike(&cc, 0, &mut players, &mut ev, &Rewind::new(), 0, 0),
+            Strike::Hit
+        );
+        assert_eq!(
+            strike(&cc, 0, &mut players, &mut ev, &Rewind::new(), 0, 0),
             Strike::Killed {
                 victim: 1,
                 // The two bodies stand on the same point, so the blow lands
@@ -1800,7 +2559,7 @@ mod tests {
             "the third of three"
         );
         assert_eq!(
-            strike(&cc, 0, &mut players, &mut ev),
+            strike(&cc, 0, &mut players, &mut ev, &Rewind::new(), 0, 0),
             Strike::Missed,
             "a corpse is not a target, and the arm is free for a wall"
         );
@@ -1854,7 +2613,10 @@ mod tests {
             };
         }
         let mut ev = EventQueue::default();
-        assert_eq!(strike(&cc, 0, &mut players, &mut ev), Strike::Missed);
+        assert_eq!(
+            strike(&cc, 0, &mut players, &mut ev, &Rewind::new(), 0, 0),
+            Strike::Missed
+        );
         assert_eq!(players[1].hp, 100);
         assert!(ev.is_empty());
     }

@@ -27,7 +27,7 @@
 //! avoid, so every check here is one the sim runs the same way.
 
 use sim_core::build::{
-    anchor, build_cell_of, foundation_terrain_ok, BuildContent, PieceRec, BUILD_CELL_M,
+    anchor, build_cell_of, foundation_terrain_ok, plate_for, BuildContent, PieceRec, BUILD_CELL_M,
     BUILD_REACH_M, LOC_DIAG_A, LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, LOC_RISER,
     LOC_TRI_XHI_ZHI, LOC_TRI_XHI_ZLO, LOC_TRI_XLO_ZHI, LOC_TRI_XLO_ZLO, SHAPE_DOORWAY,
     SHAPE_FOUNDATION, SHAPE_FRAME, SHAPE_STAIRS, SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION,
@@ -285,13 +285,18 @@ pub struct Site<'a> {
     pub at: (f32, f32),
     /// Addresses already holding a piece.
     pub taken: &'a [sim_core::build::PieceRec],
+    /// The predictor's column index — the client's own mirror of the store
+    /// `build::place` reads. Here for the plate (build plate v1): the height
+    /// a placement takes is no longer a function of (seed, cell), so the
+    /// ghost has to ask the same question the sim will.
+    pub cols: &'a sim_core::collide::ColIndex,
     pub content: &'a BuildContent,
     pub inv: &'a [ItemStack; INV_SLOTS],
 }
 
 /// The four refusals a client can see for itself. See the module header for
 /// what this deliberately does not answer.
-pub fn verdict(t: Target, row: u16, shape: u8, site: &Site<'_>) -> Verdict {
+pub fn verdict(t: Target, row: u16, shape: u8, site: &Site<'_>, freehand: bool) -> Verdict {
     // Spot taken. `deploy.rs` and `build.rs` both key on the full address, so
     // this is the same comparison the sim's `find` makes.
     if site
@@ -316,11 +321,129 @@ pub fn verdict(t: Target, row: u16, shape: u8, site: &Site<'_>) -> Verdict {
         return Verdict::No("bad ground");
     }
 
+    // The plate (build plate v1), by the sim's own rule against the client's
+    // own mirror — after ground and before cost, which is `build::place`'s
+    // own order, so the sentence the ghost shows is the one the server would
+    // have said and not a later one.
+    //
+    // **Mirrored rather than left Unknown**, unlike the claim: the two plate
+    // refusals are computed from the piece index and the terrain, and the
+    // client holds both. Leaving them out would put a green ghost on the
+    // commonest refusal a hillside can produce.
+    if let Err(why) = plate_for(site.cols, site.seed, site.haven, t.cx, t.cz, freehand) {
+        // Indexed rather than formatted: `Verdict::No` carries a
+        // `&'static str`, and the table row IS that string — the same one
+        // the server's refusal would arrive with (`DeployVerdict`'s
+        // discipline, one table over). `plate_for` returns only these two
+        // codes, so an out-of-range index here is a loud bug and not a
+        // case to clamp away.
+        return Verdict::No(super::refusals::BUILD[why as usize]);
+    }
+
     if !affordable(site.content, row, site.inv) {
         return Verdict::No("missing materials");
     }
 
     Verdict::Ok
+}
+
+/// The plate a placement at `t` would take, or 0 where the rule refuses —
+/// what the GHOST draws at.
+///
+/// A refusal still has to draw something: the ghost's whole job on a hillside
+/// is to show you the base is too high or too low before you press, and a
+/// hidden ghost says nothing. Zero is the column's own ground, which is where
+/// an unlatched foundation would stand — so a red ghost on `too far below the
+/// floor` sits on the terrain under it with the base it could not reach
+/// visibly above, which is the picture that explains the refusal.
+pub fn ghost_plate(site: &Site<'_>, t: Target, freehand: bool) -> i8 {
+    plate_for(site.cols, site.seed, site.haven, t.cx, t.cz, freehand).unwrap_or(0)
+}
+
+/// How near the shared edge with a BUILT neighbour the aim has to fall for
+/// the placement to take that neighbour's floor — the snap band, and the
+/// whole user interface of freehand placement v0 (`DECISIONS.md` §open).
+///
+/// **The reference has no freehand key, and that is the finding this is built
+/// on** (2026-08-22, `reference/BUILDING.md` §7c.3). Placement there is
+/// continuous: a piece is ATTRACTED to a socket when you aim near one, and
+/// you get a freehand piece by aiming where no socket catches it. There is no
+/// button to hold, which is exactly why their own guides call the technique
+/// "tricky and non-intuitive" and teach it with the logs on a twig foundation
+/// and the compass tics as visual guides.
+///
+/// That does not port as-is, because **ours is address-based**: `Place`
+/// carries a cell, so there is no "near" — a cell is either the neighbour's
+/// or the next one over, and `plate_for`'s latch fires on exact adjacency.
+/// What survives is that the continuous aim point is still there:
+/// [`aim_from_look`] marches the look ray to a real `(f32, f32)` and
+/// [`target_at`] quantizes it away. The sub-cell remainder is the freehand
+/// input the model was missing, so the bit is aimed rather than typed and the
+/// ghost shows it — which is the operator's own memory of the reference
+/// (2026-08-22) expressed against a grid.
+///
+/// **Two thirds of a cell, so snapping is what HAPPENS and freehand is what
+/// you DO.** A base that is one plate is the common case build plate v1
+/// landed for, and a placement declining it is advanced tech; the default has
+/// to favour the first. At `BUILD_CELL_M` 3 m the near 2 m snap and the far
+/// 1 m is freehand, so a player not thinking about it never leaves the plate
+/// and a player who is aims at the far edge and watches the ghost drop.
+/// Derived rather than typed, so a cell resize moves both — which is also
+/// why the KNOB is the fraction and the metres are arithmetic off it
+/// (`DECISIONS.md` §open pins `SNAP_BAND_FRAC`; a registry cannot pin a
+/// constant whose initializer is an expression, and making the metres the
+/// knob would have meant typing 2.0 and letting it drift from the cell).
+pub const SNAP_BAND_FRAC: f32 = 2.0 / 3.0;
+
+/// [`SNAP_BAND_FRAC`] in metres, against the cell it is a fraction of.
+pub const SNAP_BAND_M: f32 = BUILD_CELL_M * SNAP_BAND_FRAC;
+
+/// Whether a placement at `t` aimed at `aim` declines the plate latch.
+///
+/// True when the aim lands further than [`SNAP_BAND_M`] from the shared edge
+/// of EVERY built orthogonal neighbour — you did not reach toward the base,
+/// so you get your own ground. False when no neighbour is built at all,
+/// because there is then no latch to decline and a bit flipping with the
+/// crosshair over open ground would be noise on the wire and in the replay.
+///
+/// **A cell wedged between two built columns can never go freehand**: the
+/// band is two thirds measured from each side, so the two overlap and no
+/// point in the cell clears both. Deliberate — an interior cell of somebody's
+/// base is the one place a second floor height has nothing to mean.
+///
+/// Pure, and mirrors nothing the sim computes: the server cannot re-derive
+/// this because it never sees the aim, which is why the bit crosses the wire
+/// (`protocol::ActionMsg::Place`).
+pub fn freehand_from_aim(site: &Site<'_>, t: Target, aim: (f32, f32)) -> bool {
+    let x0 = t.cx as f32 * BUILD_CELL_M;
+    let z0 = t.cz as f32 * BUILD_CELL_M;
+    // Each entry is a neighbour address and the aim's distance to the edge
+    // it shares with this cell. Same checked arithmetic and same range guard
+    // as `plate_for`'s own scan, because this runs on an address a look ray
+    // produced and `u16::MAX + 1` is a debug panic on a path a player aims at.
+    let edges = [
+        (t.cx.checked_sub(1), Some(t.cz), aim.0 - x0),
+        (t.cx.checked_add(1), Some(t.cz), x0 + BUILD_CELL_M - aim.0),
+        (Some(t.cx), t.cz.checked_sub(1), aim.1 - z0),
+        (Some(t.cx), t.cz.checked_add(1), z0 + BUILD_CELL_M - aim.1),
+    ];
+    let mut latchable = false;
+    for (nx, nz, d) in edges {
+        let (Some(nx), Some(nz)) = (nx, nz) else {
+            continue;
+        };
+        if (nx as usize) >= MAX_BUILD_COORD || (nz as usize) >= MAX_BUILD_COORD {
+            continue;
+        }
+        if site.cols.plate(nx, nz).is_none() {
+            continue;
+        }
+        latchable = true;
+        if d <= SNAP_BAND_M {
+            return false;
+        }
+    }
+    latchable
 }
 
 // ---------------------------------------------------------------------------
@@ -726,17 +849,25 @@ mod tests {
             hp: 10,
             uh: 0,
             dmg: 0,
+            plate: 0,
         }];
         let (ax, az) = anchor(t.cx, t.cz, t.loc);
+        // Nothing built anywhere: `plate_for` answers 0 and refuses nothing,
+        // so these two tests keep asking exactly what they asked before.
+        let empty_cols = sim_core::collide::ColIndex::new();
         let site = Site {
             seed: 1,
             haven: &haven1,
             at: (ax, az),
             taken: &taken,
+            cols: &empty_cols,
             content: &content,
             inv: &inv,
         };
-        assert_eq!(verdict(t, 0, SHAPE_WALL, &site), Verdict::No("spot taken"));
+        assert_eq!(
+            verdict(t, 0, SHAPE_WALL, &site, false),
+            Verdict::No("spot taken")
+        );
     }
 
     /// Reach is measured to the anchor, so a cell whose CENTRE is in range
@@ -756,25 +887,28 @@ mod tests {
             loc: LOC_EDGE_XLO,
         };
         let (ax, az) = anchor(t.cx, t.cz, t.loc);
+        let empty_cols = sim_core::collide::ColIndex::new();
         let site_near = Site {
             seed: 1,
             haven: &haven1,
             at: (ax, az - BUILD_REACH_M + 0.2),
             taken: &[],
+            cols: &empty_cols,
             content: &content,
             inv: &inv,
         };
-        assert!(verdict(t, 0, SHAPE_WALL, &site_near).ok());
+        assert!(verdict(t, 0, SHAPE_WALL, &site_near, false).ok());
         let site_far = Site {
             seed: 1,
             haven: &haven1,
             at: (ax, az - BUILD_REACH_M - 0.2),
             taken: &[],
+            cols: &empty_cols,
             content: &content,
             inv: &inv,
         };
         assert_eq!(
-            verdict(t, 0, SHAPE_WALL, &site_far),
+            verdict(t, 0, SHAPE_WALL, &site_far, false),
             Verdict::No("out of reach")
         );
     }

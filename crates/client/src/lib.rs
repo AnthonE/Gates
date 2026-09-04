@@ -32,7 +32,7 @@ pub mod look;
 // values in it is handed to the launcher to OPEN on the player's desktop, so
 // the scheme allowlist is the part that most needs a test in the code tier.
 pub mod manifest;
-// Join links — `scry://join/gates/host:port`. Unconditional for the reason
+// Join links — `elo://join/gates/host:port`. Unconditional for the reason
 // `shardlist` is: it parses a string a stranger wrote and handed to a friend,
 // which is the input in this client that most needs a test in the code tier.
 pub mod deeplink;
@@ -43,7 +43,7 @@ pub mod deeplink;
 // `render/presence.rs` is the Bevy half (the `Screen` mapping and the
 // once-per-change handoff). Dark unless `GATES_DISCORD_APP_ID` is set.
 pub mod discord;
-pub mod scry;
+pub mod elo;
 pub mod shardlist;
 // Where a player's screenshot goes and what it is called. Unconditional for
 // `config`'s reason exactly: a path rule and a filename rule are pure, they
@@ -51,6 +51,13 @@ pub mod shardlist;
 // two Linux conventions), and a test behind `--features render` runs in the
 // renderer tier where nobody looks at it. `render/shot.rs` is the Bevy half.
 pub mod shot;
+// What a player's bug report IS — the document, its bounds, and the rule that
+// a stranger's prose is evidence rather than instructions. Unconditional for
+// `shot`'s reason exactly: every rule in it is arithmetic over strings, it is
+// the half that has to be right on a box nobody here owns, and the untrusted
+// input it bounds is the one input in this crate a stranger writes.
+// `render/report.rs` is the Bevy half (one keypress, the live facts, one file).
+pub mod report;
 // The audio model — which sound, how loud, how many at once, and the
 // generated bank itself. NOT feature-gated, for `ui`'s reason exactly: it is
 // pure, a mixer is where "Bevy plays, it does not decide" is easiest to break,
@@ -210,7 +217,7 @@ pub fn client_endpoint(server: &str, cert_hash: Option<&str>) -> Result<Endpoint
     // report both failures if neither binds.
     //
     // Confirmed against the packaged desktop build on 2026-08-05: the depot
-    // the scry launcher installed died here at startup, before any address
+    // the elo launcher installed died here at startup, before any address
     // was parsed, on a container with IPv6 off.
     let build = |ip: IpBindConfig| {
         let roots = ClientConfig::builder().with_bind_config(ip);
@@ -300,14 +307,15 @@ pub struct Session {
     /// synchronous and non-blocking, which is what a UI system can call.
     actions: tokio::sync::mpsc::Sender<Vec<u8>>,
     events: tokio::sync::mpsc::Receiver<Vec<u8>>,
-    /// The unreliable lane, depth one — see [`datagram_lane`] for why it is a
-    /// `watch` and what that costs at a bad frame rate.
+    /// The unreliable lane — a bounded drop-oldest ring since netcode v2
+    /// S2; see [`datagram_lane`] for the policy and what the watch it
+    /// replaced cost the interpolator.
     datagrams: DatagramRx,
     snapshots: u64,
     input_buf: [u8; DATAGRAM_BUDGET_BYTES],
-    /// Reused landing buffer for the newest datagram, so the watch's read
-    /// guard is released before the decode runs — see [`drain_datagram`].
-    dg_buf: Vec<u8>,
+    /// Reused landing buffers the ring's payloads are swapped into, so the
+    /// lock is released before any decode runs — see [`drain_datagram`].
+    dg_scratch: Vec<Vec<u8>>,
     /// The shard hung up. Latched by [`Session::pump`] when either receive
     /// lane's reader task ends — the event task on a closed or desynced
     /// stream, the datagram task on a dead connection — because a reader
@@ -337,85 +345,99 @@ fn drain_lane(rx: &mut tokio::sync::mpsc::Receiver<Vec<u8>>, mut each: impl FnMu
     }
 }
 
-/// The receiving end of the datagram mailbox — see [`datagram_lane`].
-type DatagramRx = tokio::sync::watch::Receiver<Vec<u8>>;
+/// The shared handle to the datagram ring — see [`datagram_lane`].
+type DatagramRx = std::sync::Arc<std::sync::Mutex<DgRing>>;
 
-/// The datagram mailbox: **depth one, latest-wins**. A `watch` and not an
-/// mpsc, because the lane carries snapshots and a snapshot REPLACES its
-/// predecessor rather than adding to it — the policy the server's own writer
-/// already runs three files away and states in one line (`server::net`:
-/// *"Drain to the newest — snapshots replace, never accumulate"*). This end
-/// was a `channel::<Vec<u8>>(256)` with `send().await` behind it, which is
-/// backpressure: an INVENTED LITERAL DEPTH with no stated overflow policy,
-/// opened in the same function as — and just above — a lane that takes its
-/// depth from `ACTION_RING_CAP` and spells its policy out. Wall 4 wants the
-/// cap and the policy named; latest-wins is both, and it is the server's,
-/// not a new one.
-///
-/// The initial value is an empty payload that is never delivered: a `watch`
-/// hands a fresh receiver its seed already marked seen, so [`drain_datagram`]
-/// sees no change until the reader task actually sends.
-///
-/// **Why dropping older snapshots is safe, and it is a property of the wire
-/// rather than a hope** (re-read against the tree on 2026-08-10): the server
-/// deltas only against a snapshot the client ACKED (`server::client::baseline`
-/// takes `newest_acked`), and an ack can only name a snapshot that was really
-/// applied (`client_core::view` writes the ring on the success path and
-/// `ack_fields` reads that ring) — so a snapshot dropped here is a baseline
-/// the server never offers. Removed entity ids are not exactly-once either:
-/// they stay in `pending_removals` and ride EVERY snapshot until an ack
-/// clears them (`ClientSlot::on_acks` → `pending_remove`). `nudge` and
-/// `last_executed_seq` are levels stamped into every header, not edges. And
-/// the shard has exactly one `send_datagram` (`server::net`), so this lane
-/// carries snapshots and nothing else.
-///
-/// **What it costs, stated rather than hidden.** Below ~15 fps two snapshots
-/// can land inside one frame and depth one keeps only the second, so the
-/// interpolator loses a sample — `INTERP_DELAY_TICKS = 4` over a 16-deep
-/// `HISTORY` (`client_core::interp`), i.e. it eats history it would rather
-/// have exactly when the frame rate is worst. The trade is deliberate: the
-/// alternative is a queue that hands a stalled client old world states to
-/// draw, and stale is worse than sparse.
-fn datagram_lane() -> (tokio::sync::watch::Sender<Vec<u8>>, DatagramRx) {
-    tokio::sync::watch::channel(Vec::new())
+/// The datagram ring's storage: `CLIENT_DG_RING` reusable buffers, oldest
+/// first from `head`. Payload `Vec`s are cleared and refilled in place, so
+/// after warm-up neither side of the lane allocates.
+struct DgRing {
+    bufs: [Vec<u8>; sim_core::limits::CLIENT_DG_RING],
+    head: usize,
+    len: usize,
+    /// Snapshots overwritten before a frame drained them — wall 4's
+    /// stated policy (drop-oldest), counted rather than silent.
+    dropped: u64,
+    closed: bool,
 }
 
-/// Take whatever is in the mailbox — at most one payload — and answer
-/// whether the sender has hung up. The counterpart of [`drain_lane`] for the
-/// unreliable lane, and deliberately a SECOND function rather than a change
-/// to that one: `drain_lane` is shared with the 64-deep reliable event lane
-/// (inventory, container echoes, toasts, refusals, chat), where every message
-/// is owed and none may be skipped.
-///
-/// **The hangup is asked BEFORE the value is read**, which is the whole
-/// subtlety here. `has_changed` answers `Err` the instant the sender drops,
-/// unseen payload or not, so returning early on it would eat the last
-/// snapshot — the property `the_last_words_land_before_the_hangup_is_reported`
-/// pins on the other lane, and it has to hold on this one too. The payload
-/// outlives its sender in the watch's slot, and its seen-flag with it, so the
-/// read below is still correct after the hangup.
-///
-/// **The payload is copied out before `each` runs, and that is not
-/// bookkeeping.** A `watch::Ref` is a read guard over the slot's lock, so
-/// holding it across the callback would hold it across a whole snapshot
-/// decode — and `each` here is `ClientCore::on_datagram`. The reader task's
-/// `send` is synchronous now, so it would block a tokio worker thread for
-/// that span; the mpsc this replaced took no lock on the frame path at all,
-/// and a change that fixes a queue by adding a lock to the frame path has
-/// not paid for itself. `scratch` is owned by the [`Session`] and reused, so
-/// the copy costs a `memcpy` and no allocation after the first frame — the
-/// per-frame-allocation rule the client is held to, same as the sim thread.
-fn drain_datagram(rx: &mut DatagramRx, scratch: &mut Vec<u8>, mut each: impl FnMut(&[u8])) -> bool {
-    let gone = rx.has_changed().is_err();
-    {
-        let newest = rx.borrow_and_update();
-        if !newest.has_changed() {
-            return gone;
+impl DgRing {
+    fn push(&mut self, bytes: &[u8]) {
+        let cap = sim_core::limits::CLIENT_DG_RING;
+        if self.len == cap {
+            self.head = (self.head + 1) % cap;
+            self.len -= 1;
+            self.dropped += 1;
         }
-        scratch.clear();
-        scratch.extend_from_slice(&newest);
+        let at = (self.head + self.len) % cap;
+        self.bufs[at].clear();
+        self.bufs[at].extend_from_slice(bytes);
+        self.len += 1;
     }
-    each(scratch);
+}
+
+/// The datagram lane: **a bounded ring, drained whole every frame**
+/// (netcode v2 S2; `limits::CLIENT_DG_RING`, drop-oldest, counted).
+///
+/// This was a depth-one latest-wins `watch`, and that shape was honest
+/// about exactly one consumer: the OWN body, whose snapshot genuinely
+/// replaces its predecessor. Every OTHER body is reconstructed by the
+/// interpolator from the samples in between, so each collapsed pair was a
+/// hole in someone's motion — at ≤ 30 fps against 30 Hz snapshots, half
+/// the stream never reached `client-core` at all — and S5's arrival-jitter
+/// estimator cannot measure a network through a slot that conflates
+/// arrival with the render loop. Delivery is in arrival order; dropping
+/// the OLDEST under a stall keeps the freshest world, which is the half of
+/// latest-wins that was worth keeping.
+///
+/// **Why dropping old snapshots remains safe** (the watch's argument,
+/// re-checked): the server deltas only against an ACKED snapshot
+/// (`server::client::baseline` takes `newest_acked`), removed ids ride
+/// every snapshot until acked, and `nudge`/`last_executed_seq`/the v60
+/// gauges are levels in every header, not edges. Nothing on this lane is
+/// exactly-once.
+fn datagram_lane() -> DatagramRx {
+    std::sync::Arc::new(std::sync::Mutex::new(DgRing {
+        bufs: std::array::from_fn(|_| Vec::with_capacity(DATAGRAM_BUDGET_BYTES)),
+        head: 0,
+        len: 0,
+        dropped: 0,
+        closed: false,
+    }))
+}
+
+/// Hand over every pending datagram, oldest first, and answer whether the
+/// lane is finished — closed AND empty, so the last snapshots land in (or
+/// before) the same drain that reports the hangup, the property
+/// `the_last_words_land_before_the_hangup_is_reported` pins on the
+/// reliable lane. A poisoned lock reads as gone: the reader task panicking
+/// mid-push is a dead lane, not a recoverable state.
+///
+/// **The payloads are swapped out, not copied, and processed after the
+/// lock drops.** `each` here is `ClientCore::on_datagram` — a whole
+/// snapshot decode — and holding the ring's mutex across it would block
+/// the reader task for the span (the watch this replaced documented the
+/// same rule for its read guard). The swap trades `Vec` pointers with the
+/// session-owned `scratch`, so the frame path allocates nothing after
+/// warm-up: the ring refills the swapped-in buffers in place.
+fn drain_datagram(rx: &DatagramRx, scratch: &mut [Vec<u8>], mut each: impl FnMut(&[u8])) -> bool {
+    let cap = sim_core::limits::CLIENT_DG_RING;
+    let (n, gone) = {
+        let Ok(mut r) = rx.lock() else {
+            return true;
+        };
+        let n = r.len.min(scratch.len());
+        for (k, s) in scratch.iter_mut().enumerate().take(n) {
+            let i = (r.head + k) % cap;
+            std::mem::swap(&mut r.bufs[i], s);
+        }
+        r.head = (r.head + n) % cap;
+        r.len -= n;
+        (n, r.closed && r.len == 0)
+    };
+    for b in scratch.iter().take(n) {
+        each(b);
+    }
     gone
 }
 
@@ -430,7 +452,7 @@ impl Session {
     /// (`shard-public.toml`), which is why the shard list carries names too.
     /// `address` is who the player claims to be ([`Address::GUEST`] for a
     /// guest), and `sign` is asked to sign the shard's SIWE challenge with
-    /// the key behind it — in practice a call into the scry launcher, which
+    /// the key behind it — in practice a call into the elo launcher, which
     /// holds the key and shows the player a consent prompt. Returning `None`
     /// connects as a guest, which is what a declined prompt or an absent
     /// launcher should do rather than failing the connection.
@@ -498,7 +520,7 @@ impl Session {
             // **This process no longer composes the message, and that is the
             // fix.** It used to build the SIWE text here and hand it to the
             // launcher's `sign`, which refused every one: `sign` classifies a
-            // message by its first line (`scry <family>`) and EIP-4361 begins
+            // message by its first line (`elo <family>`) and EIP-4361 begins
             // with a domain. The refusal became `None`, `None` means "connect
             // as a guest", and a `require_auth` shard answered REFUSE_AUTH —
             // so every login failed as if the signature were wrong, when the
@@ -556,17 +578,19 @@ impl Session {
         let connection = std::sync::Arc::new(connection);
 
         // Datagrams get their own task for the same reason the events do:
-        // the pump must never await the network mid-frame. The mailbox
-        // itself is depth one and latest-wins (`datagram_lane`), so the
-        // handoff cannot await either — a full queue is not a state this
-        // lane can be in.
-        let (dg_tx, datagrams) = datagram_lane();
+        // the pump must never await the network mid-frame. The ring's
+        // push cannot await either — a full ring drops its oldest and
+        // counts it (`datagram_lane`), never backpressures.
+        let datagrams = datagram_lane();
+        let dg_ring = datagrams.clone();
         let dg_conn = connection.clone();
         tokio::spawn(async move {
             while let Ok(dgram) = dg_conn.receive_datagram().await {
-                if dg_tx.send(dgram.to_vec()).is_err() {
-                    return;
-                }
+                let Ok(mut r) = dg_ring.lock() else { return };
+                r.push(&dgram);
+            }
+            if let Ok(mut r) = dg_ring.lock() {
+                r.closed = true;
             }
         });
 
@@ -601,7 +625,9 @@ impl Session {
             datagrams,
             snapshots: 0,
             input_buf: [0u8; DATAGRAM_BUDGET_BYTES],
-            dg_buf: Vec::with_capacity(DATAGRAM_BUDGET_BYTES),
+            dg_scratch: (0..sim_core::limits::CLIENT_DG_RING)
+                .map(|_| Vec::with_capacity(DATAGRAM_BUDGET_BYTES))
+                .collect(),
             closed: false,
         })
     }
@@ -647,9 +673,11 @@ impl Session {
         let core = &mut self.core;
         let snapshots = &mut self.snapshots;
         // Datagrams first: freshest state before we predict on top of it.
-        // At most one, and it is the newest the wire delivered since the
-        // last frame — the lane replaces rather than queues.
-        let dg_gone = drain_datagram(&mut self.datagrams, &mut self.dg_buf, |dgram| {
+        // Every arrival since the last frame, oldest first — the
+        // interpolator wants the samples in between, and the view's
+        // stale-guard already refuses any datagram a drop reordered past
+        // (netcode v2 S2).
+        let dg_gone = drain_datagram(&self.datagrams, &mut self.dg_scratch, |dgram| {
             if core.on_datagram(dgram) != Ingest::Error {
                 *snapshots += 1;
             }
@@ -715,7 +743,7 @@ mod tests {
         }
         for no in [
             "192.0.2.2:4433",
-            "game.moreright.xyz:61234",
+            "game.elopros.com:61234",
             "0.0.0.0:4433",             // reachable from off-box, not loopback
             "127.0.0.1.evil.test:4433", // a NAME that merely starts like one
             "localhost.evil.test:4433", // ...and the other spelling of it
@@ -765,63 +793,57 @@ mod tests {
         )));
     }
 
-    /// The unreliable lane replaces, it does not accumulate: six datagrams
-    /// arriving between two frames hand over ONE payload, the newest. Six
-    /// because the join is where a backlog was really reachable — `bin/gates`
-    /// connects before `App::new()`, so the mailbox filled through window,
-    /// asset and first-chunk time on every join, and those pre-first-ack
-    /// snapshots are zero-state and all apply.
-    ///
-    /// **Be honest about which half of that this test can defend.** The
-    /// keeps-only-the-newest half is enforced by the TYPE — a `watch` slot is
-    /// physically unable to accumulate — so no edit to [`drain_datagram`] can
-    /// redden the `got == [6]` assertion; it was seen red only against the
-    /// mpsc this replaced, and a revert to mpsc would delete this test along
-    /// with the code. What the test actually gates is the ordering that IS
-    /// hand-written and IS breakable: the seed is never delivered, a seen
-    /// payload is never redelivered, and the last snapshot lands in the same
-    /// drain that reports the hangup rather than being eaten by it —
-    /// `watch::has_changed` answers `Err` on a dropped sender whether or not
-    /// a payload is unseen, which is the same property
-    /// `the_last_words_land_before_the_hangup_is_reported` pins on the
-    /// reliable lane. Each of those three fails on a one-line mutation.
+    /// The unreliable lane queues in arrival order and bounds itself by
+    /// dropping the OLDEST (netcode v2 S2; `limits::CLIENT_DG_RING`,
+    /// counted). This replaced a depth-one latest-wins `watch` — right for
+    /// the own body, a hole in everyone else's motion — so the properties
+    /// pinned here are the ring's own: in-order full delivery, drop-oldest
+    /// at the cap with the count moving, nothing redelivered, and the last
+    /// snapshots landing no later than the drain that reports the hangup.
     #[test]
-    fn the_datagram_mailbox_keeps_only_the_newest() {
-        let (tx, mut rx) = super::datagram_lane();
-        let mut buf: Vec<u8> = Vec::new();
+    fn the_datagram_ring_delivers_in_order_and_drops_oldest() {
+        use sim_core::limits::CLIENT_DG_RING;
+        let ring = super::datagram_lane();
+        let mut scratch: Vec<Vec<u8>> = (0..CLIENT_DG_RING).map(|_| Vec::new()).collect();
         let mut got: Vec<usize> = Vec::new();
         assert!(
-            !drain_datagram(&mut rx, &mut buf, |_| unreachable!("nothing has arrived")),
+            !drain_datagram(&ring, &mut scratch, |_| unreachable!("nothing has arrived")),
             "a quiet lane with a live sender is not a dead one"
         );
+        // Six arrive between frames: six hand over, oldest first.
         for n in 1..=6usize {
-            tx.send(vec![0u8; n]).unwrap();
+            ring.lock().unwrap().push(&vec![0u8; n]);
+        }
+        assert!(!drain_datagram(&ring, &mut scratch, |b| got.push(b.len())));
+        assert_eq!(got, [1, 2, 3, 4, 5, 6], "in order, none collapsed");
+        got.clear();
+        // Nothing is redelivered on a quiet frame.
+        assert!(!drain_datagram(&ring, &mut scratch, |_| unreachable!(
+            "already handed over"
+        )));
+        // Two past the cap: the two OLDEST are gone, and counted.
+        for n in 1..=CLIENT_DG_RING + 2 {
+            ring.lock().unwrap().push(&vec![0u8; n]);
+        }
+        assert!(!drain_datagram(&ring, &mut scratch, |b| got.push(b.len())));
+        let want: Vec<usize> = (3..=CLIENT_DG_RING + 2).collect();
+        assert_eq!(got, want, "drop-oldest kept the freshest ring-full");
+        assert_eq!(ring.lock().unwrap().dropped, 2, "the drops are counted");
+        got.clear();
+        // The reader task's last words land in the drain that reports the
+        // hangup — closed-with-pending is not yet gone.
+        {
+            let mut r = ring.lock().unwrap();
+            r.push(&[9u8; 7]);
+            r.closed = true;
         }
         assert!(
-            !drain_datagram(&mut rx, &mut buf, |b| got.push(b.len())),
-            "the sender is alive"
+            drain_datagram(&ring, &mut scratch, |b| got.push(b.len())),
+            "closed and drained empty is gone"
         );
-        assert_eq!(got, [6], "only the newest snapshot is handed over");
-        // And a second drain with nothing new is not a redelivery: the
-        // payload stays in the slot, but it has been marked seen.
-        assert!(!drain_datagram(&mut rx, &mut buf, |_| unreachable!(
-            "the newest was already handed over"
-        )));
-
-        got.clear();
-        tx.send(vec![0u8; 7]).unwrap();
-        drop(tx); // the reader task ending is exactly this drop
-        assert!(
-            drain_datagram(&mut rx, &mut buf, |b| got.push(b.len())),
-            "a dropped sender must be reported as gone"
-        );
-        assert_eq!(
-            got,
-            [7],
-            "the last snapshot lands in the drain that reports the hangup"
-        );
-        // Repeatable, which is what lets `pump` run on after the latch is set.
-        assert!(drain_datagram(&mut rx, &mut buf, |_| unreachable!(
+        assert_eq!(got, [7], "the last snapshot was not eaten by the hangup");
+        // Repeatable, which is what lets `pump` run on after the latch.
+        assert!(drain_datagram(&ring, &mut scratch, |_| unreachable!(
             "nothing left to hand over"
         )));
     }

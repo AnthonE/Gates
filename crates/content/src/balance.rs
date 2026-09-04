@@ -118,8 +118,10 @@ pub fn check(c: &Content) -> Result<Anchors, String> {
     // 1. **Slot-blind.** The loop below runs every armor row against a
     //    *body* hits-to-kill, so `item.armor_burlap_head` — a head piece —
     //    is credited with reducing body hits. The sim happens to agree
-    //    today (`combat::worn_pct` sums both slots because aim is planar),
-    //    so this is right by coincidence and wrong the day hit areas land.
+    //    today (`combat::worn_pct` sums both slots, because a head band is
+    //    not a coverage model — headshot v0 gave a *shot* a head to cross
+    //    without giving anything a worn piece to look up), so this is right
+    //    by coincidence and wrong the day hit areas land.
     // 2. **A ceiling with no floor.** A worn set adding *zero* hits
     //    satisfies `armor_extra_hits_max` perfectly, so armor could be
     //    entirely decorative with every gate green.
@@ -149,6 +151,12 @@ pub fn check(c: &Content) -> Result<Anchors, String> {
             return Err(format!(
                 "band break: headshot mult on `{}` is {}, the band says exactly {}",
                 w.id, w.headshot_mult, bands.headshot_mult
+            ));
+        }
+        if w.limb_pct != bands.limb_pct {
+            return Err(format!(
+                "band break: limb pct on `{}` is {}, the band says exactly {}",
+                w.id, w.limb_pct, bands.limb_pct
             ));
         }
         for a in &c.armors {

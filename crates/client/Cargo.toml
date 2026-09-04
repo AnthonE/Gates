@@ -74,6 +74,14 @@ required-features = ["render"]
 # The conifer's bounds gate: pure geometry, headless, no GPU — but it imports
 # `render::tree`, so it carries the same feature requirement and runs in the
 # renderer tier.
+# The report key's arithmetic: what a player may choose and that every screen
+# has a name. Headless — it draws nothing — but it imports `render::`, so it
+# carries the same requirement the binary does.
+[[test]]
+name = "report_key"
+path = "tests/report_key.rs"
+required-features = ["render"]
+
 [[test]]
 name = "tree"
 path = "tests/tree.rs"
@@ -108,6 +116,11 @@ required-features = ["render"]
 [[test]]
 name = "ghost"
 path = "tests/ghost.rs"
+required-features = ["render"]
+
+[[test]]
+name = "lattice_geom"
+path = "tests/lattice_geom.rs"
 required-features = ["render"]
 
 [[test]]
@@ -338,7 +351,7 @@ bevy = { version = "0.18", optional = true, features = [
     "basis-universal",
     "zstd_rust",
 ] }
-# The shard list (`scry-shardlist-v1`, docs/LAUNCHER.md §6 in AnthonE/scry).
+# The shard list (`elo-shardlist-v1`, docs/LAUNCHER.md §6 in AnthonE/scry).
 # `rustls` rather than a system TLS: the same reason wtransport carries its
 # own — one trust store the build controls, on a box that may have no
 # OpenSSL. Blocking on purpose; the menu fetches on a thread, never a frame.

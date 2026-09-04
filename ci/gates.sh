@@ -92,7 +92,7 @@ $NICE node ci/haven_prize.mjs || fail "haven prize"
 # produces a game that installs perfectly and never starts — on a player's
 # machine, which is the only place it would be noticed. No compiler needed:
 # it stages fakes and asserts the rules in about a second.
-echo "== gate: depot packaging (the scry launcher's seam, docs/LAUNCHER.md §3)"
+echo "== gate: depot packaging (the elo launcher's seam, docs/LAUNCHER.md §3)"
 $NICE python3 ci/depot.py --self-test || fail "depot packaging"
 
 # The other half of that seam. A shard list is the one document where a wrong
@@ -100,19 +100,28 @@ $NICE python3 ci/depot.py --self-test || fail "depot packaging"
 # the client cannot parse, a cap above the sim's own MAX_PLAYERS, or a player
 # count nobody measured. It also reads the client parser's constants, so the
 # generator and the game cannot drift apart on what they will accept.
-echo "== gate: shard list (scry-shardlist-v1, docs/LAUNCHER.md §6)"
+echo "== gate: shard list (elo-shardlist-v1, docs/LAUNCHER.md §6)"
 $NICE python3 ci/shardlist.py --self-test || fail "shard list"
 
-# The third seam onto scry, and the only one where this repo is the AUTHOR
+# The third seam onto elo, and the only one where this repo is the AUTHOR
 # rather than the source of a build. `scry.json` is our store row and our
-# community feed; `scry.sig.json` signs its exact bytes, and scry applies the
+# community feed; `scry.sig.json` signs its exact bytes, and elo applies the
 # pair or neither. The failure this catches is the ordinary one — edit the
-# manifest, forget to re-sign — which scry refuses silently as far as we can
+# manifest, forget to re-sign — which elo refuses silently as far as we can
 # see from here: the row simply stops moving. Local properties only (the
 # signature covers these bytes; the version equals the workspace's), so it
-# needs no key, no network, and no copy of scry's schema to drift from.
-echo "== gate: scry manifest (the repo desk, GAME-REPO.md)"
-$NICE python3 ci/scry_manifest.py --self-test || fail "scry manifest"
+# needs no key, no network, and no copy of elo's schema to drift from.
+echo "== gate: elo manifest (the repo desk, GAME-REPO.md)"
+$NICE python3 ci/elo_manifest.py --self-test || fail "elo manifest"
+
+# The other end of the bug-report key. `report.rs` writes one `.json` per
+# report and this folds a directory of them onto their fingerprints — which is
+# the claim that two reports sharing one are ONE piece of work, and the only
+# place that arithmetic lives. Two failures it exists to catch, both silent:
+# a fold that drops a report, and a file it cannot read being skipped instead
+# of named. No network and no client; it builds reports in a temp directory.
+echo "== gate: report board (a pile of reports is a worklist, crates/client/src/report.rs)"
+$NICE python3 ci/reports.py --self-test || fail "report board"
 
 echo "== gate: rustfmt"
 $NICE cargo fmt --all --check || fail "rustfmt"
@@ -211,7 +220,7 @@ diff -u "$debug_out" "$native_out" \
   || fail "test_parity_wasm: debug and release digests differ — the optimizer \
 changed a float result, which is the contraction class wall 1 bans by name"
 grep -q '^parity ' "$native_out" || fail "probe output empty — parity not exercised"
-grep -q '^combat ' "$native_out" || fail "probe output has no combat line — melee not exercised"
+grep -q '^combat ' "$native_out" || fail "probe output has no combat line — the brawl is not exercised"
 grep -q '^bags ' "$native_out" || fail "probe output has no bags line — respawn-on-bag not exercised"
 # The terrain and sites lines, asserted by COUNT rather than presence. The
 # `diff` above cannot see an empty loop: drop the seed table on both sides and
@@ -238,6 +247,23 @@ done
 bag_wakes="$(awk '/^bags /{print $5}' "$native_out")"
 [ -n "$bag_wakes" ] && [ "$bag_wakes" -gt 0 ] \
   || fail "test_parity_wasm: the bags probe woke nobody on a bag (count '$bag_wakes') — the respawn scan is not actually on the parity surface"
+
+# The combat line carries a count too, and it reads the OTHER shot path.
+# `ranged::hitscan` is the only one that consults the lag-comp ring — the
+# arrow deliberately resolves live — so until 2026-08-30 this probe drove a
+# nonzero favour through the melee reader alone while `NOW.md` §0lc read as
+# though it covered both.
+#
+# What is counted is deliberately not "a gun fired": it is a hitscan shot
+# whose shooter was being rewound on that tick, which is the only event that
+# proves `Pose::Rewound` was the pose the scan used. §0lc's own lesson is
+# why — sixteen gates stayed green under a `favour: 0` literal because they
+# watched the arithmetic instead of the consequence. Four things can each
+# close this path silently (the fixture row, `sel` landing on the gun, the
+# shared swing cadence, a round in the pack) and all four read zero here.
+combat_rewound="$(awk '/^combat /{print $5}' "$native_out")"
+[ -n "$combat_rewound" ] && [ "$combat_rewound" -gt 0 ] \
+  || fail "test_parity_wasm: the combat probe fired no rewound shot (count '$combat_rewound') — the gun's lag-comp rewind is not actually on the parity surface"
 
 # WHAT WAS CUT HERE, and what it costs (operator, 2026-08-06).
 #

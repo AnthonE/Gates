@@ -50,6 +50,10 @@ pub mod death;
 // the client in a dead world; `pause::Disconnect` is the verb the PLAYER
 // takes, and this is the state for when the shard takes it.
 pub mod disconnected;
+// The one place a `reflectance` is decided. Every material in the client was
+// authored 8-70x under physical because Bevy's `reflectance` is a remap
+// (`F0 = 0.16 * r^2`) and not a 0..1 slider.
+pub mod fresnel;
 // The build ghost: the cell being aimed at, and the click that commits it.
 pub mod ghost;
 // The blue wash over the piece a hammer is aimed at.
@@ -59,8 +63,12 @@ pub mod tracer;
 // The launcher-backed nav entries: the title manifest's fetch, and the click
 // that hands NEWS / ITEM STORE / WORKSHOP to the launcher's own window. The
 // model is `crate::ui::hub`.
+// Generated held-item geometry: the meshes behind `ui::hold::HeldSrc::Gen`
+// rows and the viewmodel's two-primitive stand-in tool.
+pub mod heldgen;
 pub mod hub;
 pub mod hud;
+pub mod impact;
 pub mod input;
 pub mod loading;
 // The island map. Painted from the same `terrain::splat_from` the ground
@@ -68,6 +76,10 @@ pub mod loading;
 pub mod map;
 pub mod menu;
 pub mod mobs;
+// The mip chains for `assets/textures/`. Bevy builds none for an ordinary
+// image format, and a one-level photograph minified across the island is the
+// static the operator saw. Derived off `AssetEvent::Added`, not a list.
+pub mod mipmap;
 // The in-game panels — inventory, crafting, the build wheel. Distinct from
 // `ui`, which is the chrome the full-screen MENU screens share: `ui` is what a
 // player sees instead of the world, `panels` is what they see on top of it.
@@ -86,6 +98,10 @@ pub mod settings;
 // this is a player pressing F12 at a moment they chose, so it settles
 // nothing and never touches the view. `crate::shot` is the arithmetic half.
 pub mod shot;
+// The report key: `F7`, one line of typing, two files beside the screenshots.
+// `crate::report` owns what goes in them; this owns nodes, keys and the live
+// facts. Beside `shot` because they share a directory and a keypress.
+pub mod report;
 pub mod sky;
 // What players built. Distinct from `props`, which is the world the seed
 // makes: this is the world other players made, and it arrives on the wire.
@@ -140,6 +156,17 @@ pub struct Net {
     /// The selected hotbar slot, held here because it is a client-side
     /// latch rather than a per-frame key state.
     pub sel: u8,
+    /// **The torch is up** (torch fuel v0). `sel`'s neighbour in every
+    /// sense: a client-side latch the player toggles, sent to the sim
+    /// every frame as `BTN_LIGHT`, and never a fact the server hands back.
+    ///
+    /// It is intent, not state. Whether a flame is actually burning is
+    /// `sim_core::light::is_lit` server-side and
+    /// `viewmodel::apply_hand_light`'s three-way gate here, and both read
+    /// the same three facts — this latch, the held row's `light`, and the
+    /// stack's `cond`. So a torch that runs dry goes dark on both sides
+    /// off the same `SUB_INV`, with nothing stored anywhere to disagree.
+    pub light: bool,
 }
 
 /// The world's identity, resolved once from the welcome and then read-only.
@@ -381,6 +408,7 @@ impl Plugin for GatesRenderPlugin {
         app.insert_resource(day_pin)
             .init_resource::<Eye>()
             .init_resource::<collider_debug::ShowColliders>()
+            .init_resource::<hud::ShowDiagnostics>()
             .init_resource::<input::Look>()
             .init_resource::<terrain_mesh::Ring>()
             .init_resource::<props::PropRing>()
@@ -406,6 +434,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<highlight::Highlight>()
             .init_resource::<tracer::Tracers>()
             .init_resource::<decal::Marks>()
+            .init_resource::<impact::Chips>()
             .init_resource::<hud::Toast>()
             .init_resource::<hud::Readout>()
             .init_resource::<feed::Feed>()
@@ -513,6 +542,10 @@ impl Plugin for GatesRenderPlugin {
                 // specializes, and a pipeline compiled mid-fight is the
                 // pop `decal.rs`'s `PREWARM_FRAMES` exists to avoid.
                 decal::setup,
+                // The chip pool, `tracer::setup`'s reason exactly: a landed
+                // blow must not spawn an entity inside a fight
+                // (`impact.rs`).
+                impact::setup,
                 // The shared warm mesh. Before anything that could create a
                 // material, so `prewarm::warm` never sees an `Added` it has
                 // no mesh to draw against.
@@ -656,7 +689,7 @@ impl Plugin for GatesRenderPlugin {
             )
             .add_systems(
                 OnEnter(Screen::Disconnected),
-                (map::forget, viewmodel::forget),
+                (map::forget, viewmodel::forget, impact::forget),
             )
             .add_systems(OnExit(Screen::Disconnected), disconnected::teardown)
             .add_systems(
@@ -693,7 +726,10 @@ impl Plugin for GatesRenderPlugin {
                     .after(pause::open)
                     .run_if(in_state(Screen::InWorld)),
             )
-            .add_systems(OnEnter(Screen::Menu), (map::forget, viewmodel::forget));
+            .add_systems(
+                OnEnter(Screen::Menu),
+                (map::forget, viewmodel::forget, impact::forget),
+            );
 
         // ---- settings ------------------------------------------------
         // The two `apply_*` systems are deliberately NOT gated on the screen
@@ -733,8 +769,18 @@ impl Plugin for GatesRenderPlugin {
                     // would lose a frame of its own life to the counter.
                     prewarm::warm,
                     prewarm::retire.after(prewarm::warm),
+                    // Every photograph out of `assets/textures/` gets the mip
+                    // chain Bevy will not build for it. `drain` after
+                    // `enqueue`, so an image that finishes loading on this
+                    // frame can be filtered on this frame rather than losing
+                    // one to the queue. Both are no-ops on a frame where
+                    // nothing loaded, which is every frame after the loading
+                    // screen.
+                    mipmap::enqueue,
+                    mipmap::drain.after(mipmap::enqueue),
                 ),
             )
+            .init_resource::<mipmap::Pending>()
             .init_resource::<tree::TreeLod>()
             // **The frame cap, and it must be `Last` and unconditional.**
             // `Last` because a cap has to be the final thing a frame does —
@@ -803,6 +849,12 @@ impl Plugin for GatesRenderPlugin {
                 // `animate` writes only a transform, so the two never
                 // contend for one entity and need no order between them.
                 viewmodel::swap.after(viewmodel::spawn_item),
+                // What the hand puts into the WORLD, which is a different
+                // question from what it draws — `swap` writes handles and
+                // visibility on the model, this writes lumens and one offset
+                // on an emitter that outlives every swap. Both read the same
+                // pure row lookup, so neither has to run first.
+                viewmodel::hand_light.after(viewmodel::spawn_item),
                 // The tracer's two halves. `launch` reads the drained feed,
                 // so it must follow the drain for the swing's reason —
                 // the other order reacts a frame late. `fly` then advances
@@ -816,6 +868,13 @@ impl Plugin for GatesRenderPlugin {
                 // claimed, which is what releases the prewarm slot.
                 decal::mark.after(feed::drain),
                 decal::fade.after(decal::mark),
+                // The impact burst, the same two halves for the same
+                // reasons. `strike` reads the drained feed AND the frame's
+                // swing pick, so it follows both — a burst resolved against
+                // last frame's pick is a burst at the node you were looking
+                // at before you turned.
+                impact::strike.after(feed::drain).after(verbs::resolve),
+                impact::fly.after(impact::strike),
             )
                 .run_if(world_running)
                 .run_if(move || !plate),
@@ -829,6 +888,11 @@ impl Plugin for GatesRenderPlugin {
             (
                 anim::build,
                 anim::bind.after(Stream),
+                // The hand bone, per body — `anim::bind_head`'s trigger and
+                // its climb, one bone over. After `Stream` because the body
+                // it walks up to and the `Live` record it writes are both
+                // `bodies::stream`'s, spawned inside that set.
+                bodies::bind_hands.after(Stream),
                 anim::bind_head.after(Stream),
                 anim::reshade.after(Stream),
                 anim::drive.after(anim::bind),
@@ -988,7 +1052,11 @@ impl Plugin for GatesRenderPlugin {
                     // `InWorld`: a refusal that arrived while the Esc menu was
                     // up is still owed to the player, and a ring nobody drains
                     // is a ring that overflows and drops the newest.
-                    hud::feedback,
+                    // Paired into one element on purpose: the tuple below is
+                    // at Bevy's twenty-one limit, and these two are the halves
+                    // of one fact — `feedback` latches the blow, `hurt_arc`
+                    // draws where it came from.
+                    (hud::feedback, hud::hurt_arc),
                     // The pinned readout: `Feed`'s second HUD reader,
                     // which the drain architecture exists to make free
                     // (`feed.rs` — a reader borrows, only the drain pops).
@@ -999,14 +1067,29 @@ impl Plugin for GatesRenderPlugin {
                     // every snapshot and displayed nowhere — see `NetLine`.
                     hud::net_line,
                     // F3: draw what the SIM blocks over what the client
-                    // draws. Not a gate and not a probe — it does nothing
-                    // until a person presses the key.
-                    collider_debug::toggle,
-                    collider_debug::draw,
+                    // draws. F4: the two top-left diagnostics. Neither is a
+                    // gate or a probe — they do nothing until a person
+                    // presses the key.
+                    //
+                    // **Nested, and it has to be.** Bevy implements
+                    // `IntoScheduleConfigs` for tuples up to 20 elements and
+                    // this set reached exactly 20; a 21st resolves to no
+                    // `in_set` method at all, and the error names a
+                    // twenty-one-field tuple rather than the system that
+                    // overflowed it. Grouping the keypress-driven three keeps
+                    // the outer arity where the trait can still see it.
+                    (
+                        hud::toggle_diagnostics,
+                        collider_debug::toggle,
+                        collider_debug::draw,
+                    ),
                     // The keypad's small panel, beside the prompt that
                     // goes quiet while it is up. HUD, not `panels::` — it
                     // must not grab the pointer, so it runs on a capture
                     // build too (where the pad simply never opens).
+                    // Fires light the ground beside them. Reads the lit set
+                    // `EV_OVEN` already puts in `ClientCore`; no wire change.
+                    structures::fire_lights,
                     hud::pad_overlay,
                 )
                     .in_set(Stream)
@@ -1073,6 +1156,10 @@ impl Plugin for GatesRenderPlugin {
                 // …and their arms. Same slice `bodies::stream` animates
                 // from, same transform it just wrote.
                 audio::remote_swings,
+                // …and every shot in earshot, at the shooter. Same slice,
+                // and after it for the same reason: the transform this
+                // reads is the one `bodies::stream` just wrote.
+                audio::shots,
                 audio::fell,
                 // The herd's voices, off the animals `mobs::stream` just
                 // moved — a snort, a howl or a growl, by species and range.
@@ -1106,6 +1193,14 @@ impl Plugin for GatesRenderPlugin {
             // has to remember the rules for.
             app.init_resource::<shot::Shots>()
                 .add_systems(Update, shot::take);
+
+            // ---- the report key --------------------------------------
+            // **Not on a capture run either**, and for the screenshot key's
+            // reason exactly: filing a report shoots the frame, and a probe
+            // harness with a second writer of the same frame is a gate whose
+            // frames depend on which key was pressed. Registered after it so
+            // the two systems are declared where a reader expects the pair.
+            report::register(app);
 
             // ---- discord rich presence -------------------------------
             // **Not on a capture run either**, and this one is the

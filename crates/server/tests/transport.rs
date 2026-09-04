@@ -228,6 +228,54 @@ async fn the_shard_counts_the_bytes_it_actually_moved() {
     );
 }
 
+/// A shard configured for fake latency must still serve — late, and
+/// measurably through the detour (netcode v2, the netsim knob).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_netsim_shard_serves_late_datagrams_rather_than_none() {
+    // The knob-plumbing gate, in the cc knob's shape (the comment there
+    // names the risk verbatim): a knob is worth nothing if it parses and
+    // is then dropped on the way to the tasks. Real latency both ways,
+    // zero loss, and the bot must still join and see a world — plus the
+    // shim's own counter proving datagrams actually took the detour.
+    let mut cfg = ShardConfig::ephemeral(0xFA4E);
+    cfg.netsim = Some(server::config::NetSim {
+        lat_ms: 40,
+        jitter_ms: 10,
+        loss_pct: 0,
+    });
+    let handle = spawn_shard(
+        cfg,
+        baked_content(),
+        Saves::off(),
+        server::worldfile::WorldBoot::off(),
+    )
+    .await
+    .expect("a shard configured for netsim must boot");
+    let addr = handle.local_addr;
+    let endpoint = std::sync::Arc::new(bot_endpoint().expect("client endpoint"));
+    let report = run_bot(&endpoint, addr, 1, Duration::from_secs(2), None)
+        .await
+        .expect("a bot must join a netsim shard — late is not broken");
+    assert!(
+        report.welcome.is_some(),
+        "the fake latency sits on the datagram lanes, never the handshake"
+    );
+    assert!(
+        report.snapshots_applied > 0,
+        "snapshots must still flow through the delay line"
+    );
+    assert!(
+        server::stats::ShardStats::get(&handle.stats.netsim_delayed) > 0,
+        "the knob parsed and was then dropped on the way to the tasks — \
+         nothing detoured"
+    );
+    assert_eq!(
+        server::stats::ShardStats::get(&handle.stats.netsim_dropped),
+        0,
+        "zero configured loss must drop zero datagrams"
+    );
+}
+
 /// A shard configured for BBR must actually boot on BBR.
 ///
 /// The knob is worth nothing if it parses and is then dropped on the way to

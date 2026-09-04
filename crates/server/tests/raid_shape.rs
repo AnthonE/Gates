@@ -63,10 +63,11 @@
 //!
 //! ## What is deliberately NOT reproduced, and which way each one leans
 //!
-//! - **No jitter buffer.** `client::consume_input` executes one buffered
-//!   frame per tick, so over the wire the frame carrying `charge_slot` need
-//!   not be the frame in force when the throw lands. Here the input command
-//!   is applied the same tick it is issued. That makes both arms the
+//! - **No jitter buffer.** `client::consume_input` buffers frames and can
+//!   throttle two into one tick (both stepping, netcode v2), so over the
+//!   wire the frame carrying `charge_slot` need not be the frame in force
+//!   when the throw lands. Here the input command is applied the same tick
+//!   it is issued. That makes both arms the
 //!   **optimistic** case for held-item timing: they can only find *more*
 //!   plants than the shard, never fewer.
 //! - No packet loss, no reordering, no join stagger. Same direction.
@@ -348,7 +349,11 @@ fn replay(seating: Seating) -> Run {
             }
             b.yaw = f.yaw;
             b.seq = b.seq.wrapping_add(1);
-            cmds.push(Command::Input { id: b.id, frame: f });
+            cmds.push(Command::Input {
+                id: b.id,
+                frame: f,
+                favour: 0,
+            });
 
             // Then one raid step, on the plot re-seated from the live body.
             if b.steps_in_cycle >= RAID_CYCLE {
@@ -610,6 +615,7 @@ fn a_raider_alone_on_its_own_plot_still_completes_a_raid() {
                     sel,
                     ..InputFrame::default()
                 },
+                favour: 0,
             });
             seq = seq.wrapping_add(1);
         }

@@ -644,7 +644,7 @@ fn rows(cat: usize) -> Vec<Row> {
 }
 
 /// The binds, read off `input::gather`, `verbs::keys`, `panels::keys`,
-/// `map::open`, `chat::keys` and `pause::keys`. Read-only: rebinding needs a
+/// `map::open`, `chat::keys`, `pause::keys`, `shot::take` and `report::keys`. Read-only: rebinding needs a
 /// stored map and a conflict check, which is its own slice. Drawn anyway,
 /// because **a bind the player is never told about is a bind that does not
 /// exist** — the rule the intro screen's numbered rows already obey.
@@ -661,7 +661,7 @@ fn rows(cat: usize) -> Vec<Row> {
 /// **CROUCH is listed as doing nothing on purpose.** `BTN_CROUCH` crosses the
 /// wire and no sim code reads it (`sim-core/input.rs`), so the row states that
 /// rather than implying a stance the player will go looking for.
-pub const BINDS: [(&str, &str); 17] = [
+pub const BINDS: [(&str, &str); 20] = [
     ("MOVE", "W A S D"),
     ("SPRINT", "Left Shift"),
     (
@@ -682,7 +682,16 @@ pub const BINDS: [(&str, &str); 17] = [
     ("CHAT", "T or Enter"),
     ("EAT / DRINK", "J / H"),
     ("BUILD", "Hold Right Mouse with a plan; Left Mouse places"),
+    (
+        "LIGHT / SNUFF A TORCH",
+        "Right Mouse with a torch in hand (it burns while it is lit)",
+    ),
     ("REPAIR / UPGRADE", "R / U, or Left Mouse with a hammer"),
+    ("SCREENSHOT", "F12"),
+    (
+        "REPORT A BUG",
+        "F7 (writes a file next to your screenshots)",
+    ),
     ("MENU", "Esc"),
     ("QUIT", "Esc from the server list"),
 ];

@@ -6,7 +6,7 @@
 
 use crate::client::ClientNetState;
 use crate::interest::{self, PIECE_SCAN_BATCH};
-use crate::stats::ShardStats;
+use crate::stats::{self, ShardStats, FAVOUR_DISAGREE_BAND_TICKS};
 use crate::store::PlayerKey;
 use protocol::{
     encode_event_auth, encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
@@ -16,28 +16,29 @@ use protocol::{
     encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
     encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
     encode_event_door, encode_event_drank, encode_event_gather, encode_event_gather_refused,
-    encode_event_health, encode_event_hit, encode_event_impact, encode_event_inv,
-    encode_event_knock, encode_event_known, encode_event_move_refused, encode_event_moved,
-    encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
+    encode_event_health, encode_event_hit, encode_event_hurt, encode_event_impact,
+    encode_event_inv, encode_event_knock, encode_event_known, encode_event_move_refused,
+    encode_event_moved, encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
     encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
-    encode_event_removed, encode_event_research, encode_event_research_refused,
-    encode_event_research_rows, encode_event_respawn, encode_event_shot, encode_event_slot_change,
-    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_swing,
-    encode_event_vitals, encode_event_weak_mark, ActionMsg, ChatMsg, EntityState, InputDatagram,
-    InvSlot, ItemCatalog, SnapshotEncoder, SnapshotHeader, WireBag, WireError, BAG_SYNC_BATCH,
-    CONT_SYNC_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
+    encode_event_reload, encode_event_reload_refused, encode_event_removed, encode_event_research,
+    encode_event_research_refused, encode_event_research_rows, encode_event_respawn,
+    encode_event_shot, encode_event_slot_change, encode_event_slot_sync, encode_event_stock,
+    encode_event_struct_hit, encode_event_swing, encode_event_vitals, encode_event_weak_mark,
+    ActionMsg, ChatMsg, EntityState, InputDatagram, InvSlot, ItemCatalog, SnapshotEncoder,
+    SnapshotHeader, WireBag, WireError, BAG_SYNC_BATCH, CONT_SYNC_BATCH, DEPLOY_SYNC_BATCH,
+    MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::backpack::BAG_GONE_MAX;
 use sim_core::build::{damage_band, BuildContent, PieceRec, LOC_PLANE};
 use sim_core::craft::CraftJob;
 use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, BAG_CAP};
-use sim_core::gather::{ItemStack, NO_ITEM};
-use sim_core::inventory::{slots_in, CONT_BAG, CONT_BOX, CONT_SELF, CONT_WORLD};
+use sim_core::gather::{GatherContent, ItemStack, NO_ITEM};
+use sim_core::inventory::{slots_in, CONT_BAG, CONT_BOX, CONT_SELF, CONT_WEAR, CONT_WORLD};
 use sim_core::limits::{
     AOI_ENTER_CM, AOI_EXIT_CM, AOI_RANK_ENTER, AOI_RANK_EXIT, CHAT_LOCAL_CM, CRAFT_QUEUE,
-    DATAGRAM_BUDGET_BYTES, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_COMMANDS_PER_TICK, MAX_MOBS,
-    MAX_PLAYERS, MAX_SNAPSHOT_ENTITIES, SNAPSHOT_INTERVAL_TICKS, STALENESS_CEILING,
-    SYNC_SCAN_PER_TICK,
+    DATAGRAM_BUDGET_BYTES, HEARTH_STOCK_ROWS, HOTBAR_SLOTS, INV_SLOTS, MAX_COMMANDS_PER_TICK,
+    MAX_MOBS, MAX_PLAYERS, MAX_SNAPSHOT_ENTITIES, SNAPSHOT_INTERVAL_TICKS, STALENESS_CEILING,
+    SYNC_SCAN_PER_TICK, WEAR_SLOTS,
 };
 use sim_core::mob;
 use sim_core::persist::PlayerSave;
@@ -46,10 +47,11 @@ use sim_core::world::{
     Command, Player, World, DEATH_BY_CLOCK, EV_AUTH, EV_BAG_DROPPED, EV_BAG_REMOVED,
     EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE,
     EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
-    EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_IMPACT, EV_KNOCK, EV_KNOWN,
-    EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED,
-    EV_RESEARCH, EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED,
-    EV_STOCK, EV_STRUCT_HIT, EV_SWING, EV_VITALS, EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
+    EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_HURT, EV_IMPACT, EV_KNOCK,
+    EV_KNOWN, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED,
+    EV_PIECE_REPAIRED, EV_RELOAD, EV_RELOAD_REFUSED, EV_RESEARCH, EV_RESEARCH_REFUSED, EV_RESPAWN,
+    EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_SWING, EV_VITALS,
+    EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
 };
 
 /// A piece row's baked maximum hp, or 0 if the row is past the table.
@@ -146,8 +148,8 @@ pub struct ShardCore {
     removed_buf: [u32; MAX_SNAPSHOT_ENTITIES],
     /// Scratch: encode target; the closure receives its bytes.
     dg_buf: [u8; DATAGRAM_BUDGET_BYTES],
-    /// Item display names and condition ceilings (v46) for the catalog
-    /// drip. Boot input like the baked gather table: the shard installs it
+    /// Item display names with their condition ceilings (v46) and armor
+    /// columns (v52), for the catalog drip. Boot input like the baked gather table: the shard installs it
     /// before the first tick; empty (the default) sends no catalog, which
     /// is what content-less tests run under.
     pub catalog: ItemCatalog,
@@ -707,13 +709,72 @@ impl ShardCore {
     /// the shard's entire uptime as one player's lag. Ordering matters and
     /// is the point of the two lines being adjacent: acking first means the
     /// very first datagram carrying a real ack is measured, not the second.
+    ///
+    /// **And the stamp is now the fresher of two readings, not the claim**
+    /// (lagcomp slice 5). Once a favour is minted from this number, the
+    /// number is worth lying about: a client that acks *backwards* looks
+    /// staler than it is and buys rewind depth it has not earned, which is
+    /// peeker's advantage on demand. `newest_acked` is the server's own
+    /// record of the newest snapshot it has seen this client ack, so the
+    /// two are independent and the smaller staleness wins
+    /// (`findings/lagcomp-design-20260818.md` §6.2's stated rule).
+    ///
+    /// ⚠ **§6.2's mechanism was a wall clock and this is not it.** That
+    /// bullet asks for an `Instant`-derived RTT estimate on the I/O thread
+    /// compared against the ack-derived staleness. It is not buildable as
+    /// written: the only transport RTT this shard reads is quinn's, folded
+    /// into a shard-wide `net_rtt_us_max` high-water mark at ~1 Hz
+    /// (`net.rs`), and there is no per-client channel from the I/O tasks to
+    /// this thread at all — `Link`'s four rings carry datagrams, not
+    /// derived numbers. Building one would be a per-slot table invented for
+    /// a counter, which is the thing `stats.rs`'s aim-staleness block
+    /// explicitly decided against. The check here is strictly cheaper and
+    /// strictly better: no clock (so it is a gate under `CLAUDE.md`'s
+    /// rule), no new transport, and it compares the claim against
+    /// *evidence* rather than against a second estimate.
     pub fn push_input(&mut self, slot: usize, dg: &InputDatagram) {
+        // Read before the client is borrowed: `world` and `clients` are two
+        // fields of one `self`, the `tick` loop's problem one method over.
+        let now = self.world.tick as u16;
         let c = &mut self.clients[slot];
         if !c.connected {
             return;
         }
         c.on_acks(dg.snapshot_ack, dg.ack_bits);
-        let view = c.newest_acked.map(|_| dg.snapshot_ack);
+        // Copied out before the block below, which needs `c` mutably to
+        // count a disagreement.
+        let newest = c.newest_acked;
+        let view = newest.map(|b| {
+            // **The cross-check, and it needed no clock**
+            // (`findings/lagcomp-design-20260818.md` §6.2, built differently
+            // — see this method's doc).
+            //
+            // Two independent readings of one quantity, both already here:
+            // `dg.snapshot_ack` is what the client *claims* its newest
+            // applied world is, and `newest_acked` is the newest snapshot
+            // the server has *watched it ack* out of the server's own sent
+            // ring. Compare them as ages against `now` rather than as
+            // magnitudes, because `snapshot_ack` is 16 bits of a `u64` tick
+            // and a shard crosses that boundary every 36 minutes.
+            let claim = now.wrapping_sub(dg.snapshot_ack);
+            let evidence = now.wrapping_sub(b as u16);
+            if evidence >= claim {
+                return dg.snapshot_ack;
+            }
+            // §6.2's rule verbatim — **use the smaller of the two
+            // estimates.** A client acking backwards is asking to be
+            // treated as staler than the server has seen it be, and
+            // staleness is what buys rewind depth.
+            if claim - evidence > FAVOUR_DISAGREE_BAND_TICKS {
+                c.note_ack_regression();
+            }
+            b as u16
+        });
+        // The playout report is a level, not an edge: latest datagram
+        // wins, exactly as the nudge and the gauges are levels in every
+        // header going the other way. Clamped at the favour mint, not
+        // here — the mint is the one place the claim buys anything.
+        c.reported_playout = dg.playout_ticks;
         for f in dg.frames() {
             c.push_frame(*f, view);
         }
@@ -796,16 +857,84 @@ impl ShardCore {
             if !c.connected {
                 continue;
             }
-            if let Some((frame, view)) = c.consume_input() {
-                // Measured on the frame the throttle CHOSE to execute (the
-                // newer of two, when it consumed two), and measured before
+            if let Some(consumed) = c.consume_input() {
+                let (frame, view) = (consumed.frame, consumed.view);
+                // Measured on the frame whose buttons ACT (the newer of
+                // two, when the throttle consumed two), and measured before
                 // the command-buffer check on purpose: dropping the sample
                 // exactly on the ticks that ran out of command room would
                 // bias the distribution toward the quiet ticks, which is
                 // the reverse of what a lag measurement is for.
                 stats.record_aim_stale(now, view);
+                // Every disagreement this client's datagrams accumulated
+                // since the last tick, drained here because this is the one
+                // reader (`ClientNetState::take_ack_regressions`) and
+                // because it belongs beside the number it is about.
+                ShardStats::add(&stats.favour_disagree, c.take_ack_regressions());
                 if n < MAX_COMMANDS_PER_TICK {
-                    self.cmd_buf[n] = Command::Input { id: c.id, frame };
+                    // **The mint** — lag compensation stops being dead code
+                    // on this line (`findings/lagcomp-design-20260818.md`
+                    // §7 slice 5). Everything under it shipped first and
+                    // sat unreachable behind the `0` that used to be here:
+                    // the ring (`sim_core::rewind`), the clamp
+                    // (`world.rs`'s `Input` arm), `combat::strike`'s
+                    // rewound target scan and `ranged::hitscan`'s.
+                    //
+                    // **Bound once and used twice**, deliberately: a
+                    // counter that called `favour_for` a second time would
+                    // be a second derivation agreeing with itself
+                    // (`CLAUDE.md`'s naive-rebuild trap, in a counter).
+                    //
+                    // ⚠ It does **not** follow that the counter proves the
+                    // command. Split these two lines and every gate in
+                    // `lagcomp_measure.rs` that reads a counter stays
+                    // green — measured, not supposed. What holds this line
+                    // is the swing gate at the end of that file, which
+                    // asserts hp on the far side of `World::tick`.
+                    //
+                    // Counted inside the command-room check, unlike the
+                    // staleness above it: a frame the buffer had no room
+                    // for spends no favour, and counting one would report
+                    // help nobody received.
+                    let favour = stats::favour_for(now, view, c.reported_playout);
+                    stats.record_favour(favour);
+                    // A throttle tick carries BOTH consumed frames — the
+                    // older must still move the body (`InputPair`'s doc:
+                    // the client's ring stepped every seq exactly once).
+                    self.cmd_buf[n] = match consumed.prev {
+                        Some(prev) => Command::InputPair {
+                            id: c.id,
+                            prev,
+                            frame,
+                            favour,
+                        },
+                        None => Command::Input {
+                            id: c.id,
+                            frame,
+                            favour,
+                        },
+                    };
+                    n += 1;
+                }
+            } else if let Some(ghost) = c.ghost_frame() {
+                // The starved tick's stand-in (netcode v2, DECISIONS.md
+                // 2026-08-31): feed the sim the last real frame DECAYED
+                // (2/3 → 1/3 → 0 on movement) instead of letting it re-run
+                // the stale one verbatim at full strength — the overshoot
+                // a player felt as a snap on every stop, because the
+                // release frame was late and the reconcile dragged them
+                // back from a place they never went. As a command, so the
+                // WAL carries it and a replay reproduces the ghost bit for
+                // bit; favour 0 — no aim was measured, nothing swings (the
+                // decay cleared every acting button). One command per
+                // player at most, so the input reserve arithmetic above
+                // this loop still holds.
+                if n < MAX_COMMANDS_PER_TICK {
+                    self.cmd_buf[n] = Command::Input {
+                        id: c.id,
+                        frame: ghost,
+                        favour: 0,
+                    };
                     n += 1;
                 }
             }
@@ -866,6 +995,7 @@ impl ShardCore {
                         cz,
                         level,
                         loc,
+                        freehand,
                     } => Command::Place {
                         id: c.id,
                         row,
@@ -873,6 +1003,7 @@ impl ShardCore {
                         cz,
                         level,
                         loc,
+                        freehand,
                     },
                     ActionMsg::Deploy {
                         row,
@@ -974,10 +1105,12 @@ impl ShardCore {
                         loc,
                     },
                     ActionMsg::Loot => Command::Loot { id: c.id },
+                    ActionMsg::Pickup => Command::Pickup { id: c.id },
                     ActionMsg::Consume { slot } => Command::Consume { id: c.id, slot },
                     ActionMsg::Research { slot } => Command::Research { id: c.id, slot },
                     ActionMsg::Unlock { recipe } => Command::Unlock { id: c.id, recipe },
                     ActionMsg::Drink => Command::Drink { id: c.id },
+                    ActionMsg::Reload => Command::Reload { id: c.id },
                     ActionMsg::Respawn { on_bag } => Command::Respawn { id: c.id, on_bag },
                     ActionMsg::Move {
                         cont,
@@ -1343,6 +1476,62 @@ impl ShardCore {
                         Err(_) => ShardStats::bump(&stats.encode_range_errors),
                     }
                 }
+                EV_RELOAD => {
+                    let Some(slot) = self.client_slot_of(ev.a) else {
+                        continue; // shooter left this tick
+                    };
+                    // b = loaded << 16 | ceiling, c = rounds taken from
+                    // the pack, zero on a spend (world.rs's role line).
+                    let loaded = sim_core::ranged::mag_loaded(ev.b);
+                    let ceiling = sim_core::ranged::mag_ceiling(ev.b);
+                    match encode_event_reload(loaded, ceiling, ev.c as u16, &mut self.ev_buf) {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            } else {
+                                // The readout is a level and this event is
+                                // its only statement, so a lost one is not
+                                // cosmetic the way a toast is — it leaves
+                                // the HUD claiming rounds the sim does not
+                                // have. The resync is the uniform recovery
+                                // and the next shot or fill repairs it
+                                // regardless (the event's self-healing
+                                // shape, `world.rs`).
+                                self.clients[slot].ev_resync();
+                                ShardStats::bump(&stats.ev_resyncs);
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_RELOAD_REFUSED => {
+                    let Some(slot) = self.client_slot_of(ev.a) else {
+                        continue; // shooter left this tick
+                    };
+                    // b = held item << 16 | reason, c = loaded << 16 |
+                    // ceiling (world.rs's role line).
+                    let item = (ev.b >> 16) as u16;
+                    let reason = ev.b as u8;
+                    let loaded = sim_core::ranged::mag_loaded(ev.c);
+                    let ceiling = sim_core::ranged::mag_ceiling(ev.c);
+                    match encode_event_reload_refused(
+                        item,
+                        reason,
+                        loaded,
+                        ceiling,
+                        &mut self.ev_buf,
+                    ) {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            } else {
+                                self.clients[slot].ev_resync();
+                                ShardStats::bump(&stats.ev_resyncs);
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
                 EV_GATHER_REFUSED => {
                     let Some(slot) = self.client_slot_of(ev.a) else {
                         continue; // swinger left this tick
@@ -1657,6 +1846,33 @@ impl ShardCore {
                         Err(_) => ShardStats::bump(&stats.encode_range_errors),
                     }
                 }
+                EV_HURT => {
+                    // The victim's own fact, so the audience is `a` for
+                    // `EV_HIT`'s reason read from the other end: this is the
+                    // one message in a fight addressed to the person being
+                    // hit. Not AOI-filtered and not broadcast — a bystander
+                    // flinch is the fan-out `DECISIONS.md` §open
+                    // ("attacker-side flinch v0") refuses, and this is one
+                    // packet to one slot.
+                    let Some(slot) = self.client_slot_of(ev.a) else {
+                        continue; // that player left this tick
+                    };
+                    // The sector is sim-made and the encoder range-checks it
+                    // anyway; a widened `HURT_SECTORS` that outgrew the field
+                    // lands here as a counted encode error rather than as a
+                    // marker pointing the wrong way.
+                    match encode_event_hurt(ev.b as u8, ev.c as u16, &mut self.ev_buf) {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            } else {
+                                self.clients[slot].ev_resync();
+                                ShardStats::bump(&stats.ev_resyncs);
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
                 EV_HIT | EV_HEALTH => {
                     // Both are own-facts and the audience is the same
                     // shape: the hit goes to the hand that landed it, the
@@ -1668,7 +1884,16 @@ impl ShardCore {
                         continue; // that player left this tick
                     };
                     let enc = if ev.code == EV_HIT {
-                        encode_event_hit(ev.b, ev.c as u16, &mut self.ev_buf)
+                        // `c` is packed since v58: the rung above the
+                        // damage. Unpacked here rather than on the wire so
+                        // the encoder takes a `Part` and cannot be handed
+                        // a fourth rung by a caller doing its own shifting.
+                        encode_event_hit(
+                            ev.b,
+                            sim_core::world::hit_part(ev.c),
+                            sim_core::world::hit_damage(ev.c),
+                            &mut self.ev_buf,
+                        )
                     } else {
                         encode_event_health(ev.b as u16, ev.c as u16, &mut self.ev_buf)
                     };
@@ -1945,18 +2170,51 @@ impl ShardCore {
                     }
                 }
                 EV_KNOCK => {
-                    // A knock is broadcast for the same reason a door's
-                    // state is, and for one more: the whole point of the
-                    // event is that somebody *other* than the sender
-                    // hears it (`reference/DOORS.md` §4). AOI'ing it
-                    // would silence the case it exists for — a defender
-                    // asleep on the far side of their own base.
+                    // A knock reaches the **neighbourhood**, which is what
+                    // the reference means by it (`DOORS.md` §4): the one
+                    // channel a locked-out player has to the person
+                    // inside. The point of the event is still that
+                    // somebody *other* than the sender hears it.
+                    //
+                    // ⚠ **This paragraph used to argue against filtering
+                    // and the argument did not survive its own radius.**
+                    // It said AOI'ing would silence "a defender asleep on
+                    // the far side of their own base" — but the band is
+                    // `PIECE_INTEREST_CM`, 208 m, and a base spans tens of
+                    // metres, so that defender is four to seven times
+                    // inside it. What the unfiltered version actually did
+                    // was toast *"knock knock"* on every screen on the
+                    // island for every knock anywhere on it — `hud.rs`
+                    // says the quiet part, that it fires "for a door
+                    // across the base as readily as the one in front of
+                    // you", and there is no owner check anywhere to stop
+                    // it at your own base's edge.
+                    //
+                    // Safe to filter where `EV_DOOR` and `EV_OVEN` — the
+                    // two events beside it in this arm's family — are not,
+                    // and the difference is not the address, it is the
+                    // residue. A knock is an instant; those two are
+                    // *state*, on records the client holds shard-wide
+                    // because the deploy walk is unaimed. Filtering a
+                    // state change onto a record somebody keeps is how a
+                    // door stays shut on one screen forever.
+                    //
+                    // **Still open and the operator's**: whether the OWNER
+                    // should hear their own door knocked from anywhere on
+                    // the island. That is a game question, not a routing
+                    // one, and nothing here has an owner check to hang it
+                    // on. `NOW.md` §0fan.
                     let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
                     let (level, loc) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8);
+                    let at = interest::cell_cm(cx, cz);
                     match encode_event_knock(cx, cz, level, loc, ev.c, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if !self.point_event_visible(slot, at) {
+                                    ShardStats::bump(&stats.ev_interest_skipped);
                                     continue;
                                 }
                                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
@@ -2001,18 +2259,41 @@ impl ShardCore {
                     }
                 }
                 EV_SHOT => {
-                    // Broadcast, `EV_OVEN`'s posture and its reason: an
-                    // arrow in the air is a world fact, visible from
-                    // outside whatever base it was loosed in. A client
-                    // that misses one loses a tracer and nothing else —
-                    // the arrow itself is the sim's, and the hit arrives
-                    // on its own events whether the shot was drawn or not.
+                    // Broadcast **to the interest set**, `EV_SWING`'s
+                    // posture and — after this was checked rather than
+                    // assumed — its reason too. A client that misses one
+                    // loses a tracer and nothing else: the arrow itself is
+                    // the sim's, and the hit arrives on its own events
+                    // whether the shot was drawn or not.
+                    //
+                    // **The obvious objection is that a projectile
+                    // travels**, so unlike a swing it could matter to
+                    // somebody who cannot see the hand that loosed it. It
+                    // does not, for two independent reasons, and the first
+                    // alone is sufficient. `render/tracer.rs` already
+                    // refuses a shot whose shooter it holds no body for —
+                    // *"Nothing to hang it on, so it is dropped rather
+                    // than drawn from the origin"* — and that is the same
+                    // set this filter reads, so nothing that was ever
+                    // drawn stops being drawn. And the arithmetic agrees:
+                    // the longest `range_m` in `content/weapons.toml` is
+                    // 80 against an `AOI_ENTER_CM` of 176 m, so a shot
+                    // from outside a client's interest cannot put a
+                    // projectile within 96 m of it.
+                    // `content/tests/content.rs` gates that second reason,
+                    // because it is a relationship between a content
+                    // number and a limit and nothing else was holding it.
                     let (yaw, pitch) = ((ev.b >> 8) as u16, ev.b as u8);
                     let (speed, drop) = ((ev.c >> 16) as u16, ev.c as u16);
+                    let sh = Self::world_slot_of(&self.world, ev.a);
                     match encode_event_shot(ev.a, yaw, pitch, speed, drop, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if !self.body_event_visible(slot, ev.a, sh) {
+                                    ShardStats::bump(&stats.ev_interest_skipped);
                                     continue;
                                 }
                                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
@@ -2027,23 +2308,53 @@ impl ShardCore {
                     }
                 }
                 EV_SWING => {
-                    // Broadcast, `EV_SHOT`'s posture and its reason, and
-                    // the routing is the whole slice: a swing exists to be
-                    // seen by everyone EXCEPT the hand that swung, which
-                    // already predicted its own arc from its own button
-                    // (`ui::swing::SwingCadence`). `EV_HIT`'s arm below
-                    // sends to one slot and drops field `a` at encode; copy
-                    // that here and the feature is a body standing still
-                    // for everybody, with every other gate green — which is
-                    // why `gather_wire.rs`'s
+                    // Broadcast **to the interest set**, which is the whole
+                    // of the routing: an arm that moved is a fact about a
+                    // body other people are drawing, so the audience is
+                    // exactly the clients drawing that body.
+                    // `body_event_visible` states the three pass-throughs;
+                    // the filter is legitimate here — where
+                    // `EV_PIECE_REMOVED`'s refuses one — because a swing is
+                    // an instant and leaves no residue to be wrong about.
+                    // `EV_HIT`'s arm below sends to one slot and drops field
+                    // `a` at encode; copy that here and the feature is a
+                    // body standing still for everybody, with every other
+                    // gate green — which is why `gather_wire.rs`'s
                     // `a_swing_reaches_every_client_not_just_the_swinger`
                     // exists. (That citation named a `swing_wire.rs` that was
                     // never written, for one commit: the exact dead-citation
                     // class `CLAUDE.md` says to `ls` before writing.)
+                    //
+                    // ⚠ **This paragraph used to say the opposite of the
+                    // code.** It claimed the swing went to everyone EXCEPT
+                    // the hand that swung; the loop had no such skip and a
+                    // named gate pinned the copy. The copy stays — it is one
+                    // message per event, not one per client, and the client
+                    // discards it by itself (`bodies::stream` skips
+                    // `core.player_id`) — and the sentence is now the one
+                    // the code implements.
+                    //
+                    // ⚠ **What this does NOT bound.** Post-filter peak
+                    // fan-in per client is `AOI_RANK_EXIT`. Co-located
+                    // swingers — a raid, i.e. the case where everyone
+                    // swings at once — are all inside each other's
+                    // interest, so the filter is a no-op there by
+                    // construction. It buys the dispersed shard, which is
+                    // every other minute of play.
+                    //
+                    // This arm is one of `BODY_BROADCAST_ARMS`, and that
+                    // count is what `EVENT_RING_CAP` is sized from — it
+                    // was equal to a single band until `EV_SHOT` became
+                    // the second such arm at wire v54 and overflowed it.
+                    let sw = Self::world_slot_of(&self.world, ev.a);
                     match encode_event_swing(ev.a, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if !self.body_event_visible(slot, ev.a, sw) {
+                                    ShardStats::bump(&stats.ev_interest_skipped);
                                     continue;
                                 }
                                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
@@ -2076,10 +2387,23 @@ impl ShardCore {
                     let qx = (ev.a & 0x00FF_FFFF) as i32;
                     let qz = ev.b as i32;
                     let qy = ev.c as i32;
+                    // Filtered on the **point**, not on a body — see
+                    // `point_event_visible`. A mark is the one thing in
+                    // this arm's family a client can place without holding
+                    // anything, so this filter removes a decal that would
+                    // otherwise have been spawned, and it is worth it: the
+                    // pool is fixed and evicts, so a sub-pixel impact past
+                    // the band takes a slot from a mark at the player's
+                    // feet.
+                    let at = interest::body_cm(qx, qz);
                     match encode_event_impact(qx, qy, qz, surf, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if !self.point_event_visible(slot, at) {
+                                    ShardStats::bump(&stats.ev_interest_skipped);
                                     continue;
                                 }
                                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
@@ -2372,10 +2696,22 @@ impl ShardCore {
         if self.world.events.dropped > 0 {
             // The ring refused events this tick; whatever they announced,
             // the sync walk re-derives (limits.rs event-ring policy).
+            //
+            // **Counted in two places, because the cause and the
+            // consequence are different questions.** `EventQueue::dropped`
+            // is reset by `clear()` on the first line of the next
+            // `World::tick`, so unless it is folded in here the fact that
+            // the sim outran its per-tick event budget leaves no trace at
+            // all — only a shard-wide resync that reads exactly like a
+            // hundred connections falling behind at once. `ev_resyncs`
+            // keeps counting the total so nothing watching it changes
+            // meaning; `ev_resyncs_dropped` is the share this branch owns.
+            ShardStats::add(&stats.ev_sim_dropped, self.world.events.dropped as u64);
             for slot in 0..MAX_PLAYERS {
                 if self.clients[slot].connected {
                     self.clients[slot].ev_resync();
                     ShardStats::bump(&stats.ev_resyncs);
+                    ShardStats::bump(&stats.ev_resyncs_dropped);
                 }
             }
         }
@@ -2819,6 +3155,20 @@ impl ShardCore {
                         .world_conts
                         .index_of(handle)
                         .filter(|&i| self.world.world_conts.in_reach(i, p)),
+                    // **The body does not ride here any more.** It had
+                    // this arm from armor v1 to 2026-08-28 and resolved
+                    // to `Some(0)` — no store, no reach, no lock, the one
+                    // kind for which every line of this resolution was a
+                    // formality. That is precisely why it was moved to
+                    // its own stream below (`ClientNetState::last_wear`):
+                    // sharing the slot bought nothing and evicted the
+                    // wear view whenever a box opened.
+                    //
+                    // `open_container` refuses `CONT_WEAR` outright, so
+                    // this field cannot hold it and the arm is gone
+                    // rather than left answering. Falling to `None` is
+                    // the safe direction if it ever did: a close costs a
+                    // panel that is being fed by the other stream anyway.
                     _ => None,
                 }
             };
@@ -2862,11 +3212,16 @@ impl ShardCore {
                     // one owner: `cont_slot` is that owner, and the drip
                     // asks it rather than answering again.
                     //
-                    // `own_wslot` is passed for the `CONT_SELF` arm the
-                    // drip can never reach (line ~2409 already proved the
-                    // kind is a ground container); it is the honest
-                    // argument rather than a placeholder, so the call
-                    // stays correct if that guard ever moves.
+                    // `own_wslot` was passed for the `CONT_SELF` arm the
+                    // drip can never reach — the honest argument rather
+                    // than a placeholder, so the call would stay correct
+                    // if that guard ever moved. **It is load-bearing as
+                    // of armor v1** and that is worth recording: the fifth
+                    // kind is `CONT_WEAR`, which reads `players[slot].worn`,
+                    // so this argument now selects a body on every wear
+                    // drip. Passing a placeholder here would have been
+                    // free for four kinds and drawn every player the wrong
+                    // armor on the fifth.
                     for (s, out) in now.iter_mut().enumerate().take(width) {
                         *out = self.world.cont_slot(c.own_wslot, kind, s as u8, i);
                     }
@@ -2910,6 +3265,78 @@ impl ShardCore {
                             Err(_) => ShardStats::bump(&stats.encode_range_errors),
                         }
                     }
+                }
+            }
+        }
+
+        // **The body, beside the container and never instead of it.**
+        //
+        // `CONT_WEAR` used to ride the subscription above, so opening a
+        // box evicted the wear view and the route from a looted helmet to
+        // a head was: take it, close the box, open the inventory, drag
+        // again (`NOW.md` §0eq item 4). It rides its own stream now, for
+        // the reason `ClientNetState::last_wear` states: it is the one
+        // `is_own` kind, so it has no handle to resolve, no reach to
+        // re-prove and no lock to pass — the whole resolution the block
+        // above spends its length on says `Some(0)` for this kind and
+        // always did. What is left when that is gone is a two-slot diff.
+        //
+        // It is deliberately not gated on a panel being up. A view the
+        // client did not ask for costs nothing while nothing changes —
+        // the shadow below sends only differences — and gating it on an
+        // open would put back the press, the race and the eviction in one
+        // step. The quantize-both-sides law is untouched: a wear move is
+        // refused on `players[slot].worn`, which is the array this drip
+        // reads, so the panel and the refusal cannot disagree.
+        //
+        // A dead player still has a body and it is still fed. Unlike a
+        // box there is nothing here that can despawn, lock or move out of
+        // reach, so `None` would name no fact — and the death screen's
+        // panel showing what the corpse is wearing is the truth.
+        let c = &self.clients[slot];
+        if c.own_wslot != usize::MAX {
+            let wslot = c.own_wslot;
+            let mut now = [ItemStack::default(); WEAR_SLOTS];
+            // Through `World::cont_slot` for the reason spelled at length
+            // above: the arithmetic that turns a kind and a slot into a
+            // stack has one owner, and a second reader of `worn` here
+            // would be the `CONT_WORLD` defect waiting to happen again.
+            // The handle is 0 and means it — this kind resolves to the
+            // body of `wslot` and to nothing else.
+            for (s, out) in now.iter_mut().enumerate() {
+                *out = self.world.cont_slot(wslot, CONT_WEAR, s as u8, 0);
+            }
+            let c = &self.clients[slot];
+            let mut changed = [InvSlot::default(); CONT_SYNC_BATCH];
+            let mut n_changed = 0usize;
+            for (s, (now, last)) in now.iter().zip(c.last_wear.iter()).enumerate() {
+                if now != last {
+                    changed[n_changed] = InvSlot {
+                        slot: s as u8,
+                        stack: *now,
+                    };
+                    n_changed += 1;
+                }
+            }
+            if c.wear_reset || n_changed > 0 {
+                match encode_event_cont_sync(
+                    CONT_WEAR,
+                    0,
+                    c.wear_reset,
+                    &changed[..n_changed],
+                    &mut self.ev_buf,
+                ) {
+                    Ok(len) => {
+                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            ShardStats::bump(&stats.ev_sent);
+                            let c = &mut self.clients[slot];
+                            c.wear_reset = false;
+                            c.last_wear = now;
+                        } else {
+                            return;
+                        }
+                    }
+                    Err(_) => ShardStats::bump(&stats.encode_range_errors),
                 }
             }
         }
@@ -2978,6 +3405,95 @@ impl ShardCore {
         world.players.iter().position(|p| p.active && p.id == id)
     }
 
+    /// Does connection `slot`'s class-D interest array describe this tick?
+    ///
+    /// `update_interest` gives up before pass 1 when the connection has no
+    /// live body — a join command still queued, or a world slot whose
+    /// tenant changed under it — and returns **without touching
+    /// `interest`**, so the array is not "empty", it is meaningless.
+    /// Anything reading it as a routing filter has to ask this first, or
+    /// it reads "interested in nobody" off a client that has simply not
+    /// been measured yet and mutes it. Named once and used by both the
+    /// producer and the consumer, so the two cannot drift.
+    fn interest_settled(&self, slot: usize) -> bool {
+        let c = &self.clients[slot];
+        c.own_wslot != usize::MAX
+            && self.world.players[c.own_wslot].active
+            && self.world.players[c.own_wslot].id == c.id
+    }
+
+    /// May connection `slot` be told that body `subject` did something?
+    ///
+    /// The class-D interest set read as a routing filter for a
+    /// **body-addressed instant** — an event whose whole payload is "this
+    /// player did a visible thing", which carries no position because the
+    /// snapshot already said where the body is, and which leaves no
+    /// residue if it is never delivered. `EV_SWING` is the first arm to
+    /// use it; `EV_SHOT` and `EV_IMPACT` are the same shape and are the
+    /// intended next two, which is why this is a method rather than an
+    /// expression inlined in one arm.
+    ///
+    /// **Only for instants.** A state change may not be filtered this way,
+    /// and `EV_PIECE_REMOVED`'s arm says why at length: an absence that
+    /// nothing re-derives is a wall standing in a client's world forever.
+    /// An unheard swing is an arm that did not move on a screen that was
+    /// not looking at it.
+    ///
+    /// `subject_wslot` is passed in rather than resolved here because the
+    /// caller hoists it out of the per-client loop — one `world_slot_of`
+    /// scan per event, not one per connection.
+    ///
+    /// Three pass-throughs, each load-bearing:
+    ///
+    /// - **The subject's own connection.** A body is never a candidate for
+    ///   itself (`update_interest` pass 1: `p.id != c.id`), so
+    ///   `interest[own]` is false *by construction* and filtering on it
+    ///   alone would silently drop the copy the actor gets. That copy is
+    ///   one message per event rather than one per client, and
+    ///   `gather_wire.rs`'s `a_swing_reaches_every_client_not_just_the_swinger`
+    ///   pins it.
+    /// - **A subject with no world slot.** Nothing to index; fail open.
+    /// - **A recipient whose interest is unsettled** (above). This is the
+    ///   one that bites, and it fails open for the same reason
+    ///   `EV_PIECE_PLACED` passes everything through an invalid
+    ///   `piece_anchor_valid`: a filter that guesses is worse than one
+    ///   that waits a tick.
+    fn body_event_visible(&self, slot: usize, subject: u32, subject_wslot: Option<usize>) -> bool {
+        let c = &self.clients[slot];
+        if c.id == subject {
+            return true;
+        }
+        let Some(w) = subject_wslot else {
+            return true;
+        };
+        !self.interest_settled(slot) || c.interest[w]
+    }
+
+    /// May connection `slot` be told about something that happened at
+    /// world point `at_cm` (centimetres)?
+    ///
+    /// The **position-addressed** twin of `body_event_visible`, for an
+    /// event that names a place rather than a body — `EV_IMPACT` today.
+    /// Those cannot use class-D interest at all: an arrow's stop point is
+    /// not an entity and has no world slot, so the question is a distance
+    /// and the set to measure it against is the class-S anchor
+    /// `EV_PIECE_PLACED` already filters on. Same predicate, same anchor,
+    /// same fail-open when the anchor is not yet valid.
+    ///
+    /// **This one is not free the way the body filter is.** A client
+    /// discards a swing or a shot it cannot hang on a body by itself
+    /// (`render/tracer.rs` says so in as many words), so filtering those
+    /// removes nothing that was ever drawn. A decal needs no body — it is
+    /// placed at the point — so `render/decal.rs` will happily spawn one
+    /// 500 m away, claim a slot from a fixed pool and **evict a mark at
+    /// the player's feet for one that is sub-pixel**. That eviction is the
+    /// thing this removes; the visible cost is a 0.22 m quad past 208 m,
+    /// which is under a pixel at any sane field of view.
+    fn point_event_visible(&self, slot: usize, at_cm: (i64, i64)) -> bool {
+        let c = &self.clients[slot];
+        !c.piece_anchor_valid || interest::point_in_interest(c.piece_anchor_cm, at_cm)
+    }
+
     /// AOI v0 (DESIGN.md §5.5): **two** hysteresis bands over the same
     /// candidate field, plus the NETCODE.md §3 priority accrual for
     /// everything inside. A distance band — enter 176 m, leave 208 m — and
@@ -3007,16 +3523,13 @@ impl ShardCore {
         /// decision falls through to distance — no special case needed.
         const ABSENT: i64 = i64::MAX;
 
-        let c = &mut self.clients[slot];
-        if c.own_wslot == usize::MAX
-            || !self.world.players[c.own_wslot].active
-            || self.world.players[c.own_wslot].id != c.id
-        {
-            c.own_wslot = match Self::world_slot_of(&self.world, c.id) {
-                Some(w) => w,
+        if !self.interest_settled(slot) {
+            match Self::world_slot_of(&self.world, self.clients[slot].id) {
+                Some(w) => self.clients[slot].own_wslot = w,
                 None => return, // join command still queued
-            };
+            }
         }
+        let c = &mut self.clients[slot];
         let own = self.world.players[c.own_wslot].body;
         let mut overflow = false;
 
@@ -3199,7 +3712,16 @@ impl ShardCore {
         }
     }
 
-    fn wire_entity(p: &Player) -> EntityState {
+    /// One player as the wire sees them.
+    ///
+    /// **`gc` is here for the hand and nothing else** (wire v56). `held`
+    /// and `lit` are the only two fields on this record a client cannot
+    /// derive for a body that is not its own: `SUB_INV` carries condition
+    /// for your own bag, the `BTN_LIGHT` latch is your own input, and the
+    /// content row that says a torch burns at all lives in `GatherContent`.
+    /// So the server resolves both once per record, on the same values the
+    /// sim ran on — the quantize-both-sides law applied to a flag.
+    fn wire_entity(p: &Player, gc: &GatherContent) -> EntityState {
         EntityState {
             id: p.id,
             qx: p.body.qx,
@@ -3211,7 +3733,35 @@ impl ShardCore {
             dead: p.dead,
             yaw: p.frame.yaw,
             pitch: p.frame.pitch,
+            held: Self::held_of(p),
+            lit: sim_core::light::is_lit(p, gc),
         }
+    }
+
+    /// What is in this body's selected hotbar slot, or nothing.
+    ///
+    /// **Bounded here rather than trusted**, `light::is_lit`'s reason
+    /// exactly: `sel` arrives from a datagram on one path and from a WAL
+    /// on another, `world::apply` clamps the wire's three bits, and this
+    /// is the second of the two places that must hold whichever one fed
+    /// it. An empty stack is an empty hand — `count == 0` is a slot with
+    /// a stale item id in it, and drawing the tool a player just spent
+    /// would be the inventory lying about itself, one body over.
+    ///
+    /// A corpse keeps its hand. `dead` and `sleeping` are their own bits
+    /// on this record and it is the client that decides what a body in
+    /// either state is drawn holding — the wire says what is true, and
+    /// hiding a fact here would put a render policy in the sim's answer.
+    fn held_of(p: &Player) -> Option<u16> {
+        let sel = p.frame.sel as usize;
+        if sel >= HOTBAR_SLOTS {
+            return None;
+        }
+        let s = p.inv[sel];
+        if s.count == 0 || s.item == NO_ITEM {
+            return None;
+        }
+        Some(s.item)
     }
 
     /// One animal as the same record. Four of the ten fields have no
@@ -3237,6 +3787,13 @@ impl ShardCore {
             dead: false,
             yaw: m.yaw,
             pitch: 0,
+            // Six of twelve now. A pig has no hotbar, so the hand is
+            // empty and the flame is off — and unlike the four above,
+            // these two would be *wrong* rather than merely meaningless
+            // if they were ever filled: `held` is an index into the item
+            // catalog and a mob has no inventory to index it from.
+            held: None,
+            lit: false,
         }
     }
 
@@ -3264,6 +3821,10 @@ impl ShardCore {
             baseline_age: age,
             last_executed_seq: c.last_executed,
             nudge: c.nudge,
+            // Both cached at consume time earlier this tick, so the header
+            // reports the state the tick actually ran under (netcode v2).
+            buffered_depth: c.depth_report(),
+            repeat_count: c.repeat_report(),
         };
         let mut enc = match SnapshotEncoder::begin(
             &mut self.dg_buf,
@@ -3330,7 +3891,7 @@ impl ShardCore {
             .sort_unstable_by(|a, b| b.2.cmp(&a.2).then(b.1.total_cmp(&a.1)).then(a.0.cmp(&b.0)));
 
         let mut n_sent = 0usize;
-        let own = Self::wire_entity(&self.world.players[c.own_wslot]);
+        let own = Self::wire_entity(&self.world.players[c.own_wslot], &self.world.gather);
         match enc.add_entity(&own) {
             Ok(()) => {
                 self.sent_buf[n_sent] = own;
@@ -3346,7 +3907,7 @@ impl ShardCore {
         for &(w, _, _) in order[..n_cand].iter() {
             let w = w as usize;
             let e = if w < MAX_PLAYERS {
-                Self::wire_entity(&self.world.players[w])
+                Self::wire_entity(&self.world.players[w], &self.world.gather)
             } else {
                 Self::wire_mob(w - MAX_PLAYERS, &self.world.mobs.m[w - MAX_PLAYERS])
             };

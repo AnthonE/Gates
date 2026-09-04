@@ -12,18 +12,27 @@
 //! `--capture <dir>` runs the probe harness instead of a player: settle on
 //! observable state, warm the pipelines, shoot a fixed vantage list, exit.
 //!
-//! `--server` and `--identity` are how the **scry launcher** starts this
+//! `--server` and `--identity` are how the **elo launcher** starts this
 //! binary — a depot's launch block names them (`ci/depot.py`). Parsing lives
 //! in `client::args` so the two binaries cannot disagree about a flag.
 
 use bevy::prelude::*;
 use client::args::{self, Parsed};
+use client::elo::Player;
 use client::render::boot::Who;
 use client::render::{GatesRenderPlugin, Net, Rt, Start, WorldId};
-use client::scry::Player;
 use client::{client_endpoint, Session};
 
 fn main() -> AppExit {
+    // **First, before anything can panic.** A crash writes the same document
+    // a player's `F7` writes, into the same directory, and then hands off to
+    // the hook it displaced so the message and the backtrace still print —
+    // `render::report::install_panic_hook` explains why it chains rather than
+    // replaces. Installed on a capture run too, unlike every other key and
+    // socket this client owns: this one writes no frame and opens nothing, and
+    // a probe that dies is exactly when the file is worth having.
+    client::render::report::install_panic_hook();
+
     let a = match args::parse(std::env::args().skip(1)) {
         Parsed::Run(a) => a,
         Parsed::Help => {
@@ -85,7 +94,7 @@ fn main() -> AppExit {
                 eprintln!("gates: {e}");
                 std::process::exit(1);
             });
-            Session::connect(&endpoint, &server, address, client::scry::sign_siwe)
+            Session::connect(&endpoint, &server, address, client::elo::sign_siwe)
                 .await
                 .unwrap_or_else(|e| {
                     eprintln!("gates: {e}");
@@ -125,7 +134,11 @@ fn main() -> AppExit {
 
     if let Some(session) = session {
         app.insert_resource(WorldId::new(session.welcome.seed));
-        app.insert_non_send_resource(Net { session, sel: 0 });
+        app.insert_non_send_resource(Net {
+            session,
+            sel: 0,
+            light: false,
+        });
     }
     let start = Start {
         direct: server,

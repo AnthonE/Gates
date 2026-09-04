@@ -48,7 +48,7 @@ frame explains all of it at once:
 | you respawn on the beach forever | a threshold place does not let you leave by dying |
 | the world wipes on a cadence | the gate cycles. A wipe is the world's own clock, not an admin act |
 | the civilization is gone and the wilderness is wrong | something came through, and it is still here |
-| **banked OBOL survives a wipe; carried OBOL does not** | what you *send out* leaves the broken place. What you carry stays in it (§4) |
+| **banked JUNK survives a wipe; carried JUNK does not** | what you *send out* leaves the broken place. What you carry stays in it (§4) |
 | a ward, if one is ever built | what the threshold does to a body it keeps bringing back (§6) |
 
 The last two are the ones that earn the frame. Extraction is the strongest
@@ -187,13 +187,13 @@ except through a gate, and a gate has to be opened.
 
 ### 4.1 · What already exists
 
-`DESIGN.md` §3.1 has the whole seam built as design: carried OBOL is an item
-that dies with you, banked OBOL is a ledger row that survives death and
+`DESIGN.md` §3.1 has the whole seam built as design: carried JUNK is an item
+that dies with you, banked JUNK is a ledger row that survives death and
 wipes, and the only place the two convert is **the bank terminal at the
 haven**, with a deposit fee **(knob: default 2%)**. `ALPHA.md` §2 stages it
 at **A2** — A1 has no terminal at all.
 
-So "extract your OBOL" is the bank terminal, and it is already the design.
+So "extract your JUNK" is the bank terminal, and it is already the design.
 What is new is a **gate on when you may use it**.
 
 ### 4.2 · The two proposals
@@ -206,7 +206,7 @@ They solve different problems and are not alternatives:
 
 | | what it is | what it actually does |
 |---|---|---|
-| **per-player cooldown** | you may bank once per N hours | a **valve**. Stops the terminal being a save button, keeps carried OBOL genuinely at risk |
+| **per-player cooldown** | you may bank once per N hours | a **valve**. Stops the terminal being a save button, keeps carried JUNK genuinely at risk |
 | **server-opened window** | the gate must be activated; while it is open, *everyone* may bank | a **convergence**. Puts 100 players on one route at a known time |
 
 ### 4.3 · The recommendation: guaranteed floor, contested ceiling

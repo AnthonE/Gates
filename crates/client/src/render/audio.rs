@@ -54,10 +54,11 @@ use super::{Eye, Net};
 /// The scale handed to rodio, so its own inverse-square law clamps to 1 for
 /// every audible emitter and only its panning survives. See the header.
 ///
-/// 128 rather than 96 (`MAX_AUDIBLE_M`) because rodio measures from each EAR,
+/// 128 rather than 100 (`MAX_AUDIBLE_M`) because rodio measures from each EAR,
 /// not from the listener's centre — at the far edge of the radius an ear is
 /// half the ear gap further out, and the margin keeps the clamp exact rather
-/// than approximately exact.
+/// than approximately exact. The margin is what absorbed v54's gunshot: 96 m
+/// became 100 m and `clamp_holds` did not have to move.
 pub const SPATIAL_SCALE: f32 = 1.0 / 128.0;
 
 /// Distance between the listener's ears, metres. Bevy defaults to **4.0**,
@@ -372,6 +373,84 @@ pub fn remote_swings(
     }
 }
 
+/// Which report a shot makes, from the one bit that separates the two
+/// weapons.
+///
+/// Split out of [`shots`] for `tests/fell.rs`'s stated reason — a decision
+/// inside a system needs a window and a socket to drive, and this one is
+/// arithmetic. `protocol::shot_is_instant` is the law itself; this is the
+/// mapping from it to a sound, and the mapping is the half a gate can
+/// actually be wrong about.
+///
+/// No item crosses the wire on `EV_SHOT` and none is wanted: the two cues
+/// exist because the two *disclosure radii* differ, and the radius is what
+/// the wire's one bit already tells you.
+pub fn shot_cue(speed_mmpt: u16) -> Cue {
+    if protocol::shot_is_instant(speed_mmpt) {
+        Cue::ShotGun
+    } else {
+        Cue::ShotBow
+    }
+}
+
+/// Every shot in earshot, as a report at the shooter (wire v54).
+///
+/// **This is the fact the game has been broadcasting and nobody was
+/// listening to.** `EV_SHOT` has crossed the wire since ranged v0 and had
+/// exactly one reader — `render/tracer.rs`, which draws a streak — so a bow
+/// made no sound, and a firearm raised no event at all. A gunfight was a
+/// private event between the two people in it: the only evidence a shot had
+/// been fired was the damage, which is the wrong end of the fight to learn
+/// it at. Sound is the reference's primary disclosure channel
+/// (`reference/AUDIO.md` §9) and the radius is where the mechanic lives —
+/// 40 m for a bow against 100 m for a gun.
+///
+/// **The shooter's own shot is positional too, and that is deliberate**
+/// against `feed`'s own-fact rule below. A report is not an interface sound
+/// happening *to* you like a hitmarker; it is a thing that happens at a
+/// place, and the place is where you are standing. Emitting it at the body
+/// costs one lookup and keeps one rule — `Request::at` for a world event,
+/// `Request::own` for an answer from the interface — instead of splitting
+/// one cue across both constructors. The falloff at zero distance is 1.0,
+/// so it is full gain with no pan, which is what `own` would have given it
+/// anyway.
+///
+/// A shooter with no body is dropped rather than played from the origin,
+/// `tracer::launch`'s rule for `tracer::launch`'s reason: the local player
+/// is not in `bodies`, so the predictor answers for them.
+pub fn shots(
+    net: NonSend<Net>,
+    feed: Res<super::feed::Feed>,
+    bodies: Query<(&super::bodies::Body, &Transform)>,
+    mut sound: ResMut<Sound>,
+) {
+    if feed.shots().is_empty() {
+        return;
+    }
+    let core = &net.session.core;
+    for &(shooter, _yaw, _pitch, speed_mmpt, _reach) in feed.shots() {
+        // The one bit that separates the two weapons, and it is the same
+        // bit the tracer reads: a projectile cannot leave a muzzle at rest,
+        // so zero means the shot was instantaneous and instantaneous means
+        // a firearm. No item on the wire and none needed.
+        let cue = shot_cue(speed_mmpt);
+        let at = if shooter == core.player_id {
+            let p = core.predict.position();
+            [p[0], p[1], p[2]]
+        } else {
+            let Some(t) = bodies
+                .iter()
+                .find(|(b, _)| b.0 == shooter)
+                .map(|(_, t)| t.translation)
+            else {
+                continue;
+            };
+            [t.x, t.y, t.z]
+        };
+        sound.play(Request::at(cue, at));
+    }
+}
+
 /// This frame's own-facts, as cues.
 ///
 /// **Reads [`super::feed::Feed`]; pops nothing.** It used to pop the core's
@@ -384,12 +463,18 @@ pub fn feed(net: NonSend<Net>, feed: Res<super::feed::Feed>, mut sound: ResMut<S
     // One marker per frame however many landed — `Cue::Hit`'s own cooldown
     // would refuse the rest anyway, and asking for four identical clicks so
     // three can be thrown away is work the queue does not need to do.
-    if feed.hits > 0 {
-        sound.play(Request::own(Cue::Hit));
+    //
+    // WHICH marker is `sound::hit`'s judgement and not this system's, the
+    // shape `sound::hurt` established: the rung arrives already merged in
+    // `feed.hit_part` and the choice of cue is a pure function a headless
+    // test can drive.
+    if let Some(req) = crate::sound::hit::request(feed.hits, feed.hit_part) {
+        sound.play(req);
         // The middle bump. One per frame however many landed, for the same
         // reason the marker is: the director reads its tier once a section,
         // so four bumps in one frame and one bump in one frame are the same
-        // musical fact.
+        // musical fact. Rung-blind on purpose — a headshot is not a
+        // different musical event, it is the same fight going better.
         sound.music.bump(music::BUMP_HIT);
     }
     for &(victim, _killer) in feed.deaths() {
@@ -405,6 +490,18 @@ pub fn feed(net: NonSend<Net>, feed: Res<super::feed::Feed>, mut sound: ResMut<S
     }
     for _ in feed.crafted() {
         sound.play(Request::own(Cue::CraftDone));
+    }
+    // A magazine seated. `Cue::Place` borrowed rather than minted, on the
+    // spill's argument below and for its reason: the ear needs "that
+    // happened" and the readout above the hotbar says what — and what a
+    // reload sounds like is a mechanical thing seating, which is the cue
+    // a piece going down already is. A voice of its own is a fair later
+    // change and would cost a `synth.rs` row, a bank entry and a
+    // `WANTED.md` line (`assets/sound/WANTED.md` is the queue); the dry
+    // click needs no such argument, because it is a refusal and the
+    // variant-agnostic block below already answers it.
+    if feed.reloaded > 0 {
+        sound.play(Request::own(Cue::Place));
     }
     // Every refusal kind, one sound. A player does not need to hear the
     // difference between a refused craft and a refused placement — the toast
@@ -496,10 +593,28 @@ pub fn fell(q: Query<(Ref<super::props::Fellable>, &GlobalTransform)>, mut sound
 /// The position is [`super::structures::base_transform`]'s — the same
 /// anchor the mesh stands at, edge canonicalisation included, so the sound
 /// cannot come from a different place than the wall appears in.
-pub fn place(feed: Res<super::feed::Feed>, world: Res<super::WorldId>, mut sound: ResMut<Sound>) {
+///
+/// **The plate is read out of the mirror, not off the event** (build plate
+/// v1): `feed.placed()` carries an address and the placement broadcast that
+/// raised it also inserted the record, so the column is in the piece mirror by
+/// the time this runs. A hammer blow is a point source at head height either
+/// way — but the column's floor is the one number here that can be a whole
+/// storey out, and a sound a storey off is a sound in the wrong room.
+pub fn place(
+    feed: Res<super::feed::Feed>,
+    world: Res<super::WorldId>,
+    net: NonSend<super::Net>,
+    mut sound: ResMut<Sound>,
+) {
     for &(cx, cz, level, loc, _deploy) in feed.placed() {
-        let p = super::structures::base_transform(world.seed, &world.haven, (cx, cz, level, loc))
-            .translation;
+        let plate = net.session.core.pieces.cols().plate(cx, cz).unwrap_or(0);
+        let p = super::structures::base_transform(
+            world.seed,
+            &world.haven,
+            (cx, cz, level, loc),
+            plate,
+        )
+        .translation;
         sound.play(Request::at(Cue::Place, [p.x, p.y, p.z]));
     }
 }
@@ -554,26 +669,49 @@ pub fn voices(
 
 /// Health, as a change rather than as an event.
 ///
-/// `EV_HEALTH` is absolute and own-fact (`sim_core::world`), so "I was hurt"
-/// is a *fall* in `core.hp`, not a message. Tracked here rather than in the
-/// core because it is a presentation fact: the core is right to publish the
-/// value and wrong to publish a delta nobody but the HUD and this file wants.
+/// `EV_HEALTH` is absolute and own-fact (`sim_core::world`), so a *fall* in
+/// `core.hp` is what every damage route in the sim has in common — the four
+/// that announce and the three `damage_routes.rs` marks silent alike. Tracked
+/// here rather than in the core because it is a presentation fact: the core is
+/// right to publish the value and wrong to publish a delta nobody but the HUD
+/// and this file wants.
 #[derive(Resource, Default)]
 pub struct LastHp(pub u16);
 
-pub fn hurt(net: NonSend<Net>, mut last: ResMut<LastHp>, mut sound: ResMut<Sound>) {
-    let hp = net.session.core.hp;
+/// Being hurt, as a **blow** rather than as a health bar.
+///
+/// Two producers, one voice. The fall carries coverage — see
+/// [`crate::sound::hurt`] for why reading `EV_HURT` alone would silence
+/// starvation, thirst and the keypad shock — and this frame's announced blows
+/// carry the weight. `Feed` is taken immutably, which is the shape
+/// `CLAUDE.md`'s two-drains trap requires of every reader that is not
+/// `feed::drain` itself; scheduling puts this after it.
+pub fn hurt(
+    net: NonSend<Net>,
+    feed: Res<super::feed::Feed>,
+    mut last: ResMut<LastHp>,
+    mut sound: ResMut<Sound>,
+) {
+    let core = &net.session.core;
     // A rise (heal, respawn) and the first message of all are both silent.
     // `last.0 == 0` is "we have never seen one", which a fresh world is.
-    if last.0 > 0 && hp < last.0 {
-        sound.play(Request::own(Cue::Hurt));
+    let fall = if last.0 > 0 {
+        last.0.saturating_sub(core.hp)
+    } else {
+        0
+    };
+    last.0 = core.hp;
+    if let Some(req) = crate::sound::hurt::request(fall, feed.hurt_damage, feed.hurts, core.hp_max)
+    {
+        sound.play(req);
         // **The biggest bump, and theirs is too** (`reference/AUDIO.md` §8's
         // published order: a weapon in play < a bullet past your head <
         // taking damage). Two of these inside two sections is what puts the
-        // score in its top tier.
+        // score in its top tier. It rides the same decision as the cue, so a
+        // blow armor ate whole now tenses the music too — it is the shooting
+        // that matters to the score, not the bookkeeping.
         sound.music.bump(music::BUMP_HURT);
     }
-    last.0 = hp;
 }
 
 /// The ambience bed's level: quiet in the open, louder under trees.

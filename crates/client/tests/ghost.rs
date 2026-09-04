@@ -579,6 +579,7 @@ impl Rig {
             cz,
             0,
             loc,
+            false,
             &mut ev,
         );
         let last = ev.entries().last().expect("place answers");
@@ -894,9 +895,16 @@ fn the_bag_cap_stays_neutral() {
 #[test]
 fn the_door_ghost_stands_in_the_doorway_edge() {
     let size = deploy_size(ARCH_DOOR as usize);
-    let base = level_base_y(SEED, hv(SEED), CX, CZ, 0);
+    let base = level_base_y(SEED, hv(SEED), CX, CZ, 0, 0);
 
-    let xlo = deploy_transform(SEED, hv(SEED), (CX, CZ, 0, LOC_EDGE_XLO), ARCH_DOOR, false);
+    let xlo = deploy_transform(
+        SEED,
+        hv(SEED),
+        (CX, CZ, 0, LOC_EDGE_XLO),
+        ARCH_DOOR,
+        false,
+        0,
+    );
     assert!(
         (xlo.translation.x - CX as f32 * BUILD_CELL_M).abs() < 1e-4,
         "a low-x door's centre is not on the low-x boundary"
@@ -918,6 +926,7 @@ fn the_door_ghost_stands_in_the_doorway_edge() {
         (CX, CZ, 0, sim_core::build::LOC_EDGE_ZLO),
         ARCH_DOOR,
         false,
+        0,
     );
     assert!(
         (zlo.translation.z - CZ as f32 * BUILD_CELL_M).abs() < 1e-4,
@@ -930,7 +939,7 @@ fn the_door_ghost_stands_in_the_doorway_edge() {
     );
 
     // A body deployable keeps the cell body: the split is the door's alone.
-    let body = deploy_transform(SEED, hv(SEED), (CX, CZ, 0, LOC_PLANE), ARCH_BOX, false);
+    let body = deploy_transform(SEED, hv(SEED), (CX, CZ, 0, LOC_PLANE), ARCH_BOX, false, 0);
     assert!(
         (body.translation.x - (CX as f32 + 0.5) * BUILD_CELL_M).abs() < 1e-4,
         "a box left the cell centre"
@@ -938,7 +947,14 @@ fn the_door_ghost_stands_in_the_doorway_edge() {
 
     // And an open door is drawn elsewhere than a closed one — the leaf
     // swings, exactly as the sim's collision reads it.
-    let open = deploy_transform(SEED, hv(SEED), (CX, CZ, 0, LOC_EDGE_XLO), ARCH_DOOR, true);
+    let open = deploy_transform(
+        SEED,
+        hv(SEED),
+        (CX, CZ, 0, LOC_EDGE_XLO),
+        ARCH_DOOR,
+        true,
+        0,
+    );
     assert!(
         (open.translation - xlo.translation).length() > 0.1,
         "an open door is drawn shut"
@@ -990,7 +1006,7 @@ fn the_footing_keeps_the_floor_and_buries_its_skirt() {
     let mut checked = 0;
     for cx in (CX - 30..CX + 30).step_by(3) {
         for cz in (CZ - 30..CZ + 30).step_by(3) {
-            let part = foundation_part(SEED, hv(SEED), cx, cz, false);
+            let part = foundation_part(SEED, hv(SEED), cx, cz, false, 0);
             assert_eq!(part.kind, PartKind::Box);
             // Top at the level plane, exactly: offset is the box centre.
             let top = part.offset.y + part.size.y * 0.5;
@@ -1013,7 +1029,7 @@ fn the_footing_keeps_the_floor_and_buries_its_skirt() {
             );
             // The bottom is in the ground under every corner — unless the
             // cap cut it, which only steep ground reaches.
-            let base = level_base_y(SEED, hv(SEED), cx, cz, 0);
+            let base = level_base_y(SEED, hv(SEED), cx, cz, 0, 0);
             let bottom = base + part.offset.y - part.size.y * 0.5;
             let x0 = cx as f32 * BUILD_CELL_M;
             let z0 = cz as f32 * BUILD_CELL_M;
@@ -1043,8 +1059,8 @@ fn the_footing_keeps_the_floor_and_buries_its_skirt() {
 #[test]
 fn the_tri_footing_matches_the_square_one() {
     use client::render::structures::{foundation_part, PartKind};
-    let sq = foundation_part(SEED, hv(SEED), CX, CZ, false);
-    let tri = foundation_part(SEED, hv(SEED), CX, CZ, true);
+    let sq = foundation_part(SEED, hv(SEED), CX, CZ, false, 0);
+    let tri = foundation_part(SEED, hv(SEED), CX, CZ, true, 0);
     assert_eq!(tri.kind, PartKind::Tri);
     assert_eq!(tri.size, sq.size);
     assert_eq!(tri.offset, sq.offset);

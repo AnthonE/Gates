@@ -20,6 +20,13 @@
 //! (`CLAUDE.md`): a sweep window is cross-checked against something that
 //! already knows where the world is.
 //!
+//! ⚠ **This gates the rule that decides where a base STARTS, not where the
+//! rest of it goes.** Since build plate v1 (2026-08-21) a column's floor is
+//! `terrain_band + plate`, and every call here passes plate 0 — the terrain
+//! rule alone, which is exactly what the first foundation of a base takes and
+//! what an unbuilt column answers. The latch, the stilt limits and the
+//! one-base-one-floor identity are `tests/plate.rs`.
+//!
 //! Float vocabulary: `fmath` only — the walls' clippy list reaches test
 //! targets too, and a test written outside the wall would redden the gate
 //! it rides in.
@@ -104,8 +111,8 @@ fn neighbouring_columns_in_one_band_are_bit_equal_flush() {
                 };
                 land_pairs += 1;
                 if a == b {
-                    let ya = column_floor_y(seed, hv(seed), cx, cz);
-                    let yb = column_floor_y(seed, hv(seed), nx, nz);
+                    let ya = column_floor_y(seed, hv(seed), cx, cz, 0);
+                    let yb = column_floor_y(seed, hv(seed), nx, nz, 0);
                     assert!(
                         ya == yb,
                         "seed {seed}: cells ({cx},{cz}) and ({nx},{nz}) share band {a} \
@@ -154,8 +161,8 @@ fn a_band_step_is_an_exact_multiple_of_the_quantum() {
                 if a == b {
                     continue;
                 }
-                let d =
-                    column_floor_y(seed, hv(seed), cx, cz) - column_floor_y(seed, hv(seed), nx, nz);
+                let d = column_floor_y(seed, hv(seed), cx, cz, 0)
+                    - column_floor_y(seed, hv(seed), nx, nz, 0);
                 let k = d / BUILD_BASE_Q_M;
                 assert!(
                     k == floor_i32(k) as f32,
@@ -190,7 +197,7 @@ fn a_lone_foundation_is_always_steppable() {
             if band(seed, cx, cz).is_none() {
                 continue;
             }
-            let lift = column_floor_y(seed, hv(seed), cx, cz) - center_h(seed, cx, cz);
+            let lift = column_floor_y(seed, hv(seed), cx, cz, 0) - center_h(seed, cx, cz);
             assert!(
                 lift <= STEP_UP + 1e-4,
                 "seed {seed}: cell ({cx},{cz}) floats {lift} above its own ground — unclimbable"
@@ -211,7 +218,7 @@ fn the_lattice_holds_the_ground_within_half_a_quantum() {
     for seed in SEEDS {
         for (cx, cz) in cells() {
             let h = center_h(seed, cx, cz);
-            let snapped = column_floor_y(seed, hv(seed), cx, cz) - PIECE_LIFT_M;
+            let snapped = column_floor_y(seed, hv(seed), cx, cz, 0) - PIECE_LIFT_M;
             assert!(
                 fabs(snapped - h) <= BUILD_BASE_Q_M * 0.5 + 1e-4,
                 "seed {seed}: cell ({cx},{cz}) snapped {h} to {snapped}"

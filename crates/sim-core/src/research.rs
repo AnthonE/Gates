@@ -1,4 +1,4 @@
-//! Research — the sink OBOL exists for (research v0, DECISIONS.md §open).
+//! Research — the sink JUNK exists for (research v0, DECISIONS.md §open).
 //!
 //! You find a revolver in a crate. You stand at a research table with it
 //! in your hand, press the key, and it is gone along with a fistful of
@@ -234,7 +234,7 @@ pub fn research(
         return;
     }
     // The coin, counted across the whole inventory rather than one stack —
-    // 75 obol in three stacks is 75 obol. Counted BEFORE the item is taken
+    // 75 junk in three stacks is 75 junk. Counted BEFORE the item is taken
     // because the item may itself be the coin: a content set that priced
     // researching a coin in coins would otherwise charge a different
     // number depending on which half ran first.

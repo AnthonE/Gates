@@ -94,7 +94,16 @@ fn naive(seed: u64, ox: f32, oz: f32, n: usize, step: f32, drop: f32) -> Attrs {
             // `terrain::splat` — the whole point of the comparison. It
             // re-derives the height and takes four fresh taps for the slope;
             // the shipped path hands `splat_from` the two it already has.
-            let w = terrain::splat(seed, x, z);
+            let mut w = terrain::splat(seed, x, z);
+            // …and the road, on the same guard the shipped path applies it
+            // under. `road_band` is the published law rather than a rebuild of
+            // it: what this side is proving is that the optimised path asks it
+            // at the right POINT and under the right condition, which is the
+            // failure `lattice.rs` records — a naive side that re-derives the
+            // law from the function under test proves nothing about either.
+            if step <= terrain::ROAD_HALF_W {
+                w = terrain::splat_road(w, terrain::road_band(seed, x, z));
+            }
             let grad = ((hx * hx + hz * hz).sqrt()) / (2.0 * d);
             colors.push(terrain_mesh::vertex_splat(w));
             mods.push(terrain_mesh::vertex_mods(y, x, z, grad));
@@ -263,6 +272,65 @@ fn the_near_ring_is_bit_identical_to_the_naive_build() {
             0.0,
         );
     }
+}
+
+/// The near ring again, on a chunk that actually crosses the coast road.
+///
+/// **Split from the test above because that one was green for the wrong
+/// reason and this is the correction.** The four chunk origins it walks are
+/// at the island's centre and past its corners; the road ring lives 600–1000 m
+/// from the centre, so not one of their 16,384 vertices was ever on it. The
+/// road paint landed with an equality gate over it that could not see it —
+/// `CLAUDE.md`'s "three green gates over a fact nobody checked", one more
+/// time.
+///
+/// The chunk is FOUND rather than hard-coded, for `lattice.rs`'s reason: the
+/// seed decides where its own coastline is, so an origin that is on the ring
+/// today is on it for one seed and quietly tests nothing for any other. The
+/// count is asserted so a future change that moves the road cannot turn this
+/// back into a test of empty ground.
+#[test]
+fn a_near_chunk_on_the_coast_road_is_bit_identical_too() {
+    let step = CHUNK_M / (NEAR_N - 1) as f32;
+    let c = terrain::ISLAND_SIZE * 0.5;
+    // Walk out along +x from the centre until a chunk's own vertices include
+    // carriageway. The ring is a closed loop around the island, so a radial
+    // walk meets it whatever the coastline does.
+    let mut best: Option<(f32, f32, usize)> = None;
+    let mut cx = (c / CHUNK_M).floor() as i32;
+    let cz = (c / CHUNK_M).floor() as i32;
+    while (cx as f32 * CHUNK_M) < terrain::ISLAND_SIZE {
+        let (ox, oz) = (cx as f32 * CHUNK_M, cz as f32 * CHUNK_M);
+        let mut hit = 0usize;
+        for iz in 0..NEAR_N {
+            for ix in 0..NEAR_N {
+                let (x, z) = (ox + ix as f32 * step, oz + iz as f32 * step);
+                if terrain::road_band(SEED, x, z) == terrain::RoadBand::Carriageway {
+                    hit += 1;
+                }
+            }
+        }
+        if hit > best.map_or(0, |b| b.2) {
+            best = Some((ox, oz, hit));
+        }
+        cx += 1;
+    }
+    let (ox, oz, hit) = best.expect("no chunk on the +x radial holds any road");
+    // A carriageway is 4 m wide and a chunk is 64 m, so a chunk the ring
+    // crosses holds a few hundred of its 16,384 vertices. A handful would mean
+    // the walk clipped a corner and the comparison is nearly empty again.
+    assert!(
+        hit >= 64,
+        "the best chunk on the radial holds only {hit} carriageway vertices —          this is testing empty ground, which is the defect it was written for"
+    );
+    compare(
+        &format!("road chunk at ({ox}, {oz}), {hit} carriageway vertices"),
+        ox,
+        oz,
+        NEAR_N,
+        step,
+        0.0,
+    );
 }
 
 /// The far mesh's pitch: 8 m, where the slope arm is a quarter of a step and

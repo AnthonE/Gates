@@ -61,20 +61,21 @@
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use client_core::core::ClientCore;
+use sim_core::combat::ARMOR_MAX_PCT;
 use sim_core::gather::ItemStack;
-use sim_core::inventory::{CONT_SELF, REFUSE_M_MAX};
-use sim_core::limits::{HOTBAR_SLOTS, INV_SLOTS};
+use sim_core::inventory::{CONT_SELF, CONT_WEAR, REFUSE_M_MAX};
+use sim_core::limits::{HOTBAR_SLOTS, INV_SLOTS, WEAR_SLOTS};
 
 use super::{
     craft, font, font_bold, GhostRoot, Panel, PanelRoot, Ui, BADGE, CELL_BG, CELL_FULL,
     CELL_GAP_PX, CELL_HOVER, CELL_PX, LINE, LINE_HOT, PANEL_BG, PIP_FILL, PIP_H_PX, PIP_TROUGH,
-    SCRIM, TEXT, TEXT_DIM,
+    SCRIM, TEXT, TEXT_DIM, TEXT_SHORT,
 };
 use crate::render::icons::Icons;
 use crate::ui::craft::{cell_abbrev, item_label, CELL_LINE_CHARS};
 use crate::ui::slots::{
-    container_cols, container_name, count_badge, ghost_origin, move_args, pip_fraction,
-    refusal_text, slots_in, Drag, Grab,
+    container_cols, container_name, container_title, count_badge, ghost_origin, move_args,
+    pip_fraction, refusal_text, slots_in, wear_slot_label, wearable_here, worn_pct, Drag, Grab,
 };
 
 /// One addressable cell. `kind` is a `CONT_*`, so the same component serves
@@ -120,7 +121,19 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: 
 
             craft::build_queue(root, ui, core);
 
-            // The lower half: your slots, and the container if one is open.
+            // The lower half: your slots, your body, and the container if
+            // one is open.
+            //
+            // **The body is drawn unconditionally now** (`NOW.md` §0eq
+            // item 4). It used to be a branch inside `container_grid`, so
+            // it appeared only when `CONT_WEAR` was the open container —
+            // and a box was the open container the whole time you were
+            // looting one, which made the panel's own move (helmet out of
+            // a raided box, onto a head) the one route it could not draw.
+            // It is fed by its own stream now and is never absent, so the
+            // three panels sit left-to-right in the order the move runs:
+            // take from the box on the right, drop on the body in the
+            // middle, or hold it in the pack on the left.
             root.spawn(Node {
                 flex_direction: FlexDirection::Row,
                 column_gap: Val::Px(8.0),
@@ -128,6 +141,7 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: 
             })
             .with_children(|row| {
                 own_grid(row, core, icons);
+                wear_panel(row, core, icons);
                 if core.cont_kind != CONT_SELF {
                     container_grid(row, core, icons);
                 }
@@ -217,6 +231,11 @@ fn own_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons) {
 /// and eighteen lies.
 fn container_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons) {
     let kind = core.cont_kind;
+    // The body is not loot, and it is not drawn from here. It had a
+    // branch at the top of this function until 2026-08-28, when it got
+    // its own stream and its own permanent column beside this one —
+    // `core.cont_kind` can no longer be `CONT_WEAR` at all, because the
+    // server refuses to open the body into the ground subscription.
     let n = slots_in(kind);
     let name = container_name(
         kind,
@@ -238,10 +257,184 @@ fn container_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Ico
         BorderColor::all(LINE),
     ))
     .with_children(|col| {
-        section(col, "LOOT");
+        section(col, container_title(kind));
         name_bar(col, &name);
         grid(col, core, icons, kind, 0, n, container_cols(kind));
     });
+}
+
+/// Height of the drawn silhouette's head block, and of its torso. Two
+/// rectangles is the whole figure: `inventory.jpeg`'s paperdoll is a dim,
+/// low-contrast body that exists to say *where* a slot sits on a person,
+/// and at this size a detailed one would be noise. Sized so head + gap +
+/// torso lines up against two 44 px cells and their captions.
+const DOLL_HEAD_PX: f32 = 26.0;
+const DOLL_TORSO_PX: f32 = 52.0;
+const DOLL_W_PX: f32 = 40.0;
+
+/// The worn container, drawn as a paperdoll rather than as a grid
+/// (`NOW.md` §0eq.1, off `inventory.jpeg`).
+///
+/// Three things a two-cell grid could not say. **Which slot is which** —
+/// the cells are captioned HEAD and BODY, in the sim's own slot order
+/// (`combat::WEAR_HEAD` is 1 and the array is zero-based, so container
+/// slot 0 is the head; the captions are derived from that mapping, not
+/// listed twice). **That they are worn on a person** — the silhouette
+/// beside them, which is what the reference frame uses the middle of the
+/// panel for. **What the set is worth** — the protection line, which is
+/// the whole reason wire v52 exists, because until this pass the client
+/// held the worn items and no number to put beside them.
+///
+/// The cells themselves are `cell()`, unchanged, so the drag path does not
+/// know this panel is shaped differently: `drag_pointer` finds a
+/// `SlotCell { kind: CONT_WEAR, slot }` by query and neither knows nor
+/// cares what is drawn around it.
+fn wear_panel(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons) {
+    let pct = worn_pct(&core.catalog, &core.worn);
+    row.spawn((
+        Node {
+            flex_direction: FlexDirection::Column,
+            padding: UiRect::all(Val::Px(10.0)),
+            row_gap: Val::Px(6.0),
+            border: UiRect::all(Val::Px(1.0)),
+            ..default()
+        },
+        BackgroundColor(PANEL_BG),
+        BorderColor::all(LINE),
+    ))
+    .with_children(|col| {
+        section(col, container_title(CONT_WEAR));
+        col.spawn(Node {
+            flex_direction: FlexDirection::Row,
+            column_gap: Val::Px(8.0),
+            align_items: AlignItems::Center,
+            ..default()
+        })
+        .with_children(|body| {
+            body.spawn(Node {
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(CELL_GAP_PX),
+                ..default()
+            })
+            .with_children(|stack| {
+                for slot in 0..WEAR_SLOTS {
+                    wear_slot(stack, core, icons, slot);
+                }
+            });
+            silhouette(body);
+        });
+        protection_bar(col, pct);
+    });
+}
+
+/// One captioned wear cell: the slot's name over the cell it addresses.
+fn wear_slot(parent: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons, slot: usize) {
+    parent
+        .spawn(Node {
+            flex_direction: FlexDirection::Column,
+            row_gap: Val::Px(2.0),
+            ..default()
+        })
+        .with_children(|c| {
+            c.spawn((
+                Text::new(wear_slot_label(slot).to_string()),
+                font(10.0),
+                TextColor(TEXT_DIM),
+                Pickable::IGNORE,
+            ));
+            cell(
+                c,
+                CONT_WEAR,
+                slot,
+                cell_stack(core, CONT_WEAR, slot),
+                core,
+                icons,
+            );
+        });
+}
+
+/// Head over torso, in the panel's own line colour at low contrast. Not an
+/// asset: two `Node`s cost nothing, carry no licence and cannot go missing
+/// from `assets/` — and `assets/models/WANTED.md` has no paperdoll row to
+/// wait on.
+fn silhouette(parent: &mut ChildSpawnerCommands) {
+    parent
+        .spawn(Node {
+            flex_direction: FlexDirection::Column,
+            align_items: AlignItems::Center,
+            row_gap: Val::Px(3.0),
+            ..default()
+        })
+        .with_children(|d| {
+            // `border_radius` is a field on `Node` in this Bevy, not a
+            // component beside it — `map.rs` and `wheel.rs` both spell it
+            // this way, and spelling it the other way is a compile error
+            // rather than the silent duplicate-component panic the trap
+            // list warns about, which is the good half of the same rule.
+            d.spawn((
+                Node {
+                    width: Val::Px(DOLL_HEAD_PX),
+                    height: Val::Px(DOLL_HEAD_PX),
+                    border_radius: BorderRadius::MAX,
+                    ..default()
+                },
+                BackgroundColor(CELL_FULL),
+                Pickable::IGNORE,
+            ));
+            d.spawn((
+                Node {
+                    width: Val::Px(DOLL_W_PX),
+                    height: Val::Px(DOLL_TORSO_PX),
+                    border_radius: BorderRadius::all(Val::Px(6.0)),
+                    ..default()
+                },
+                BackgroundColor(CELL_FULL),
+                Pickable::IGNORE,
+            ));
+        });
+}
+
+/// What the set is worth, as a word and a bar.
+///
+/// The bar's full width is `combat::ARMOR_MAX_PCT` and not 100, because 90
+/// is the most the sim will ever subtract — a bar that filled to 100 would
+/// read as "there is more armor to find" at the point where there is not.
+fn protection_bar(parent: &mut ChildSpawnerCommands, pct: u32) {
+    parent
+        .spawn(Node {
+            flex_direction: FlexDirection::Column,
+            row_gap: Val::Px(3.0),
+            ..default()
+        })
+        .with_children(|c| {
+            c.spawn((
+                Text::new(format!("PROTECTION {pct}%")),
+                font_bold(11.0),
+                TextColor(if pct > 0 { TEXT } else { TEXT_DIM }),
+                Pickable::IGNORE,
+            ));
+            c.spawn((
+                Node {
+                    width: Val::Percent(100.0),
+                    height: Val::Px(PIP_H_PX),
+                    ..default()
+                },
+                BackgroundColor(PIP_TROUGH),
+                Pickable::IGNORE,
+            ))
+            .with_children(|trough| {
+                let frac = pct as f32 / ARMOR_MAX_PCT as f32;
+                trough.spawn((
+                    Node {
+                        width: Val::Percent(frac * 100.0),
+                        height: Val::Percent(100.0),
+                        ..default()
+                    },
+                    BackgroundColor(PIP_FILL),
+                    Pickable::IGNORE,
+                ));
+            });
+        });
 }
 
 /// The strip under `LOOT` naming what was opened. Spans the grid because it
@@ -269,6 +462,29 @@ fn name_bar(parent: &mut ChildSpawnerCommands, name: &str) {
 
 /// `slots` of `kind`, `cols` wide, drawn from the core's view of it.
 #[allow(clippy::too_many_arguments)]
+/// **The stack a cell draws from, and the only place the view is
+/// picked.** Three containers reach this panel — the pack, the body and
+/// whatever is open on the ground — and until 2026-08-28 there were two,
+/// so the pick was `if kind == CONT_SELF { inv } else { cont }` written
+/// out at four call sites. Adding the third view to three of four is a
+/// silent defect of exactly the shape the trap list names: the wrong
+/// container answers with a *plausible* stack, so the panel draws, the
+/// drag starts, and the count shipped to the server is some other item's.
+///
+/// `get` rather than an index, and no clamp. The three sites this
+/// replaces each ended `[slot.min(INV_SLOTS - 1)]`, which turns an
+/// out-of-range slot into slot 29's contents — a lie that draws. An
+/// empty stack is the honest answer and the one a cell already knows how
+/// to render.
+fn cell_stack(core: &ClientCore, kind: u8, slot: usize) -> ItemStack {
+    let view: &[ItemStack] = match kind {
+        CONT_SELF => &core.inv,
+        CONT_WEAR => &core.worn,
+        _ => &core.cont,
+    };
+    view.get(slot).copied().unwrap_or_default()
+}
+
 fn grid(
     parent: &mut ChildSpawnerCommands,
     core: &ClientCore,
@@ -278,11 +494,6 @@ fn grid(
     to: usize,
     cols: usize,
 ) {
-    let view: &[ItemStack; INV_SLOTS] = if kind == CONT_SELF {
-        &core.inv
-    } else {
-        &core.cont
-    };
     parent
         .spawn(Node {
             display: Display::Grid,
@@ -292,8 +503,8 @@ fn grid(
             ..default()
         })
         .with_children(|g| {
-            for (slot, stack) in view.iter().enumerate().take(to).skip(from) {
-                cell(g, kind, slot, *stack, core, icons);
+            for slot in from..to {
+                cell(g, kind, slot, cell_stack(core, kind, slot), core, icons);
             }
         });
 }
@@ -494,16 +705,33 @@ pub fn drag_pointer(
             .drag
             .map(|d| d.kind == cell.kind && d.slot == cell.slot)
             .unwrap_or(false);
-        let want = if hot || source { LINE_HOT } else { LINE };
+        // **A wear slot says whether it will take this, before the
+        // release.** The other four container kinds accept anything that
+        // fits, so a border is only ever "you are over this cell"; the
+        // body is the first one with an opinion about *what*, and until
+        // wire v52 the client had no way to hold that opinion — the answer
+        // came back as a refusal after the round trip, by which time the
+        // prediction had already drawn the piece into the slot.
+        //
+        // Lit when it accepts (so a helmet picked up marks the head slot
+        // across the panel), red only when the pointer is actually on a
+        // slot that will refuse — a permanent red on every non-matching
+        // slot would make dragging wood across the screen look like an
+        // error.
+        let takes = ui.drag.and_then(|d| {
+            (cell.kind == CONT_WEAR && d.kind != CONT_WEAR)
+                .then(|| wearable_here(&core.catalog, d.stack.item, cell.slot))
+        });
+        let want = match takes {
+            Some(true) => LINE_HOT,
+            Some(false) if hot => TEXT_SHORT,
+            _ if hot || source => LINE_HOT,
+            _ => LINE,
+        };
         if border.top != want {
             *border = BorderColor::all(want);
         }
-        let view = if cell.kind == CONT_SELF {
-            &core.inv
-        } else {
-            &core.cont
-        };
-        let filled = view[cell.slot.min(INV_SLOTS - 1)].count > 0;
+        let filled = cell_stack(core, cell.kind, cell.slot).count > 0;
         let fill = match (hot || source, filled) {
             (true, _) => CELL_HOVER,
             (false, true) => CELL_FULL,
@@ -531,12 +759,7 @@ pub fn drag_pointer(
             None
         };
         if let (Some(grab), Some(cell)) = (grab, over) {
-            let view = if cell.kind == CONT_SELF {
-                &core.inv
-            } else {
-                &core.cont
-            };
-            let stack = view[cell.slot.min(INV_SLOTS - 1)];
+            let stack = cell_stack(core, cell.kind, cell.slot);
             if stack.count > 0 {
                 ui.drag = Some(Drag {
                     kind: cell.kind,
@@ -599,6 +822,7 @@ pub fn drag_pointer(
         drag.grab,
         &core.inv,
         &core.cont,
+        &core.worn,
     ) else {
         // The refusals this side owns are all "the panel cannot address
         // that", and every one of them would otherwise cost a round trip and

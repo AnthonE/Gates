@@ -181,6 +181,7 @@ pub fn raid_step(plan: &mut RaidPlan, rng: &mut Pcg32, rows: RaidRows) -> Comman
                     sel: rows.charge_slot,
                     ..InputFrame::default()
                 },
+                favour: 0,
             },
             1 => Command::Throw {
                 id,
@@ -218,6 +219,7 @@ pub fn raid_step(plan: &mut RaidPlan, rng: &mut Pcg32, rows: RaidRows) -> Comman
                 cz,
                 level: 0,
                 loc: LOC_PLANE,
+                freehand: false,
             },
             5 => Command::Throw {
                 id,
@@ -268,6 +270,7 @@ pub fn raid_step(plan: &mut RaidPlan, rng: &mut Pcg32, rows: RaidRows) -> Comman
                 cz,
                 level: 0,
                 loc: LOC_PLANE,
+                freehand: false,
             },
             1 => Command::Place {
                 id,
@@ -276,6 +279,7 @@ pub fn raid_step(plan: &mut RaidPlan, rng: &mut Pcg32, rows: RaidRows) -> Comman
                 cz,
                 level: 0,
                 loc: LOC_EDGE_XLO,
+                freehand: false,
             },
             2 => Command::Place {
                 id,
@@ -284,6 +288,7 @@ pub fn raid_step(plan: &mut RaidPlan, rng: &mut Pcg32, rows: RaidRows) -> Comman
                 cz,
                 level: 0,
                 loc: LOC_EDGE_ZLO,
+                freehand: false,
             },
             3 => Command::PlaceDeploy {
                 id,
@@ -353,5 +358,129 @@ pub fn raid_step(plan: &mut RaidPlan, rng: &mut Pcg32, rows: RaidRows) -> Comman
                 count: 5,
             },
         }
+    }
+}
+
+/// Steps in a duellist's cycle: **pull, then feed.**
+///
+/// Two, and the count is a measurement rather than a preference. The first
+/// draft held the trigger on three steps out of four and the gun never
+/// fired once in four hundred ticks — because a pull on an empty magazine
+/// is not free. `ranged::hitscan` pays the weapon's cadence *before* it
+/// looks for a round (`ranged.rs`, the dry click), so every pull on a
+/// spent cylinder pushes `next_swing` another `rate_ticks` out, and
+/// `reload` refuses anything inside that window as `REFUSE_RL_BUSY`. Pull
+/// more often than the gun can fire and the reload is starved forever:
+/// the storm measured 96 deaths, all of them from the knife duels, with
+/// `EV_SHOT` and `EV_RELOAD` never once announced and `EV_RELOAD_REFUSED`
+/// the only thing the firearms said.
+///
+/// One pull and one feed per tick fixes it without a clock, because the
+/// two verbs resolve at different points of the tick: `Command::Reload` is
+/// applied in the command phase and the shot resolves after the player
+/// loop, so the feed always gets the first look at a cadence that has just
+/// expired. The gun then settles into its own rhythm — six shots at
+/// `rate_ticks`, one dry click, one `rate_ticks` of quiet while the pulls
+/// bounce off the cadence gate, and the reload lands on the tick that
+/// window closes.
+pub const BRAWL_CYCLE: u16 = 2;
+
+/// One synthetic duellist: who it is, what it holds, and which way it
+/// faces.
+///
+/// There is no `cx`/`cz` here, unlike [`RaidPlan`], because a duel is not
+/// a place — it is a **bearing**. The partner stands straight ahead at a
+/// fixed separation, so `yaw` is the whole of the geometry: a melee swing
+/// wants the victim inside a 30° cone (`combat::strike`) and a bullet
+/// wants it on the ray (`ranged::hitscan`), and one heading satisfies
+/// both. The caller owns the seating; this owns the intent.
+#[derive(Clone, Copy)]
+pub struct BrawlPlan {
+    pub id: u32,
+    /// Hotbar slot the weapon sits in. Both verbs read the **held** item
+    /// (`combat::held_melee`, `combat::held_ranged`), so a duellist that
+    /// never selects never fights.
+    pub weapon_slot: u8,
+    /// Heading. The partner is straight ahead of it, and carries this
+    /// yaw flipped a half turn.
+    pub yaw: u16,
+    /// `true` = carries the firearm and has to feed it; `false` = melee
+    /// only, and its whole cycle is the one button.
+    pub shooter: bool,
+    /// How many steps this plan has taken; the cycle is `BRAWL_CYCLE`.
+    pub step: u16,
+    /// Input sequence, so two frames in one tick are not one frame
+    /// replayed.
+    pub seq: u16,
+}
+
+impl BrawlPlan {
+    pub const fn new(id: u32, weapon_slot: u8, yaw: u16, shooter: bool) -> Self {
+        Self {
+            id,
+            weapon_slot,
+            yaw,
+            shooter,
+            step: 0,
+            seq: 0,
+        }
+    }
+}
+
+/// The next command this duellist wants to issue: **hold the trigger, feed
+/// the gun, and get up when you are put down.**
+///
+/// The third of those is why `down` is a parameter rather than something
+/// this function could work out. A profile is a *client*, and a client
+/// knows exactly one thing about its own death: the screen is up. So it
+/// presses respawn, and the sim decides whether that is allowed — the
+/// same claim-not-fact discipline every step of [`raid_step`] follows.
+/// Without it a storm with damage in it is a graveyard by tick 120, which
+/// is the reason `tests/raid_storm.rs` set its throwable's damage to zero
+/// and left this whole family un-driven.
+///
+/// One command per call, allocation-free, no floats, no clock. One `rng`
+/// draw per call whichever branch runs, so two duellists spend the stream
+/// at the same rate — `raid_step`'s rule, for `raid_step`'s reason.
+pub fn brawl_step(plan: &mut BrawlPlan, rng: &mut Pcg32, down: bool) -> Command {
+    let step = plan.step % BRAWL_CYCLE;
+    plan.step = plan.step.wrapping_add(1);
+    plan.seq = plan.seq.wrapping_add(1);
+    let id = plan.id;
+    // Lag compensation's own input, and the only place this profile is
+    // random. `world::apply` clamps a request to `Rewind::max_back()`, so
+    // every value here is legal by construction and the draw is a
+    // *rewind depth* rather than a knob: a duel where every body asks for
+    // a different one puts `Rewind::pose_at` under a hundred distinct
+    // lookups a tick instead of the one a unit fixture spends.
+    let favour = rng.next_bounded(crate::rewind::Rewind::max_back() as u32 + 1) as u8;
+    if down {
+        // Not `on_bag`: a bag is a placed deployable and this fixture
+        // places nothing, so asking for one would be a refusal dressed as
+        // a verb. The spawn ring answers instead.
+        return Command::Respawn { id, on_bag: false };
+    }
+    // The odd step is the feed, and only a shooter has anything to feed.
+    // A melee fighter spends it on the button as well, which is not
+    // filler: the cadence is 38 ticks (`gather::SWING_INTERVAL_TICKS`)
+    // and the cycle is one tick long, so most presses are *absorbed* —
+    // and a storm that never pressed a button it was not allowed to
+    // press would not drive the cadence gate at all.
+    if plan.shooter && step == BRAWL_CYCLE - 1 {
+        return Command::Reload { id };
+    }
+    Command::Input {
+        id,
+        frame: InputFrame {
+            seq: plan.seq,
+            buttons: BTN_PRIMARY,
+            yaw: plan.yaw,
+            // Level, the value every melee suite in this repo aims with.
+            pitch: 128,
+            move_x: 0,
+            move_z: 0,
+            sel: plan.weapon_slot,
+        },
+        favour,
     }
 }

@@ -29,7 +29,7 @@ without the JS viewer. Unconfirmed, single-summary: the mixing table's
 
 Its tree-claims all verify: six square shapes and 5b4915f's four ratios
 (`NOW.md` §0ac already queues the missing window/frame/triangles),
-`research.toml`'s powder-era-only gate, one workbench, OBOL-is-scrap.
+`research.toml`'s powder-era-only gate, one workbench, JUNK-is-scrap.
 
 What consumed this: `RIPLIST.md` §2 row 7 · `NOW.md` §0tt ·
 `DECISIONS.md` 2026-08-14 (the spoken direction) · `SOURCES.md` §1.
@@ -76,7 +76,7 @@ Building pieces — no, we never got them
 
   We're closer than you'd think, with one big hole
 
-  We already have the research table: content/research.toml + sim-core/research.rs. And the currency question is already settled — OBOL is scrap (operator,
+  We already have the research table: content/research.toml + sim-core/research.rs. And the currency question is already settled — JUNK is scrap (operator,
   2026-08-10, "the carried, item-stack kind"). Only the powder era is gated, deliberately: the file's header says gating the hatchet you need to gather the wood to
   build the bench to research the hatchet is "the kind of circle a tech tree gets wrong once and never lives down."
 

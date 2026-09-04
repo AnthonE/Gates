@@ -45,7 +45,7 @@
 //!
 //! **The nav carries NEWS, ITEM STORE and WORKSHOP, and the first cut of this
 //! file was wrong to leave them off.** It argued they had no service behind
-//! them; they have one — the scry-works launcher (operator, 2026-08-09) — so
+//! them; they have one — the elo launcher (operator, 2026-08-09) — so
 //! the argument was a mistake about the product, not an application of the
 //! rule. `settings.rs`'s policy is that a section with nothing behind it
 //! *says so*, and `crate::ui::hub` is that sentence: four states, never
@@ -157,7 +157,7 @@ impl Menu {
                 Some(u) => format!("fetching the shard list from {u}"),
                 // The honest empty state, and it names what would fill it.
                 None => "no shard list to fetch - pass --servers URL, or start \
-                         the game from the scry launcher's Servers window"
+                         the game from the elo launcher's Servers window"
                     .into(),
             },
             dirty: false,
@@ -184,7 +184,7 @@ pub struct Browse {
 /// The nav column, in the reference's own order.
 ///
 /// **The three middle entries are the launcher's, not ours** (operator,
-/// 2026-08-09: NEWS is the scry-works community, and the item store and
+/// 2026-08-09: NEWS is the elo community, and the item store and
 /// workshop are part of that setup too). The first cut left all three off on
 /// the grounds that nothing was behind them — wrong about the product, not
 /// about the rule. `crate::ui::hub` owns which of four states each is in;
@@ -798,7 +798,7 @@ fn hub_pane(body: &mut ChildSpawnerCommands, section: Section, hub: &Hub) {
         pane.spawn((
             ui::label(
                 format!(
-                    "{label} is part of scry-works, the launcher this game is sold \
+                    "{label} is part of Elo, the launcher this game is sold \
                      through. It opens there rather than here."
                 ),
                 14.0,
@@ -1229,7 +1229,7 @@ pub fn take_pick(
     state: Res<HubState>,
     // The launcher, if one answered at boot. `Option` because the majority
     // case is no launcher at all, which is playable and never a fault.
-    mut scry: Option<NonSendMut<crate::scry::Scry>>,
+    mut elo: Option<NonSendMut<crate::elo::Elo>>,
     mut next: ResMut<NextState<Screen>>,
     mut exit: MessageWriter<AppExit>,
 ) {
@@ -1245,7 +1245,7 @@ pub fn take_pick(
             menu.dirty = true;
         }
         Pick::Open(section) => {
-            let outcome = super::hub::open(scry.as_deref_mut(), &state.hub, section);
+            let outcome = super::hub::open(elo.as_deref_mut(), &state.hub, section);
             menu.status = outcome.line(&section.label(&state.hub));
             menu.dirty = true;
         }
@@ -1354,7 +1354,7 @@ pub fn begin_connect(rt: NonSend<Rt>, who: Res<Who>, mut connecting: NonSendMut<
         // rest — loopback permissive, everything else validated.
         let result = match crate::client_endpoint(&addr, None) {
             Ok(endpoint) => {
-                crate::Session::connect(&endpoint, &addr, address, crate::scry::sign_siwe).await
+                crate::Session::connect(&endpoint, &addr, address, crate::elo::sign_siwe).await
             }
             Err(e) => Err(e),
         };
@@ -1449,7 +1449,11 @@ pub fn poll_connect(
             // through the world directly. `Net` is non-send because the
             // session owns tokio channel receivers (`render::mod`).
             commands.queue(move |world: &mut World| {
-                world.insert_non_send_resource(super::Net { session, sel: 0 });
+                world.insert_non_send_resource(super::Net {
+                    session,
+                    sel: 0,
+                    light: false,
+                });
             });
             // `Loading`, not `InWorld`: the welcome names a seed and the seed
             // is not a world. What comes next is three rings and a far mesh at

@@ -16,12 +16,15 @@ use crate::chat::{read_text, write_text, ChatText};
 use crate::loc_max;
 use crate::{
     expect_zero_padding, BUILD_CELL_BITS, BUILD_LEVEL_BITS, BUILD_LOC_BITS, DEPLOY_ROW_BITS,
-    DMG_BAND_BITS, KIND_BITS, KIND_EVENT, PIECE_ROW_BITS, POS_XZ_BITS, POS_Y_BIAS, POS_Y_BITS,
+    DMG_BAND_BITS, KIND_BITS, KIND_EVENT, PIECE_ROW_BITS, PLATE_BIAS, PLATE_BITS, POS_XZ_BITS,
+    POS_Y_BIAS, POS_Y_BITS,
 };
 use sim_core::backpack::BackpackRec;
 use sim_core::build::{
     BuildContent, PieceDef, PieceRec, DMG_BANDS, LOC_EDGE_ZLO, MAT_METAL, SHAPE_TRI_ROOF,
 };
+use sim_core::collide::{Part, PART_BITS};
+use sim_core::combat::{ARMOR_MAX_PCT, HURT_SECTORS, WEAR_NONE};
 use sim_core::craft::{CraftContent, CraftJob, RecipeDef, STATION_MAX};
 use sim_core::deploy::{
     BagAnchor, DeployContent, DeployDef, DeployRec, ARCH_WORKBENCH3, BAG_CAP, PLACE_DOOR,
@@ -31,7 +34,7 @@ use sim_core::inventory::{slots_in, CONT_MAX, CONT_SELF};
 use sim_core::limits::{
     CRAFT_QUEUE, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_DEPLOY_COSTS,
     MAX_DEPLOY_DEFS, MAX_ITEM_DEFS, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES,
-    MAX_RECIPE_INPUTS, MAX_RESEARCH_ROWS,
+    MAX_RECIPE_INPUTS, MAX_RESEARCH_ROWS, WEAR_SLOTS,
 };
 use sim_core::research::{ResearchRow, NO_RECIPE};
 
@@ -287,7 +290,36 @@ const SUB_IMPACT: u32 = 51;
 /// or not the swing found anything. `SUB_SHOT` is the shape this copies:
 /// a broadcast cosmetic fact about someone else's hands.
 const SUB_SWING: u32 = 52;
-const SUB_MAX: u32 = SUB_SWING;
+/// `EV_HURT` (v57): the victim's half of a landed blow — a direction and a
+/// magnitude, unicast to the person it happened to. `SUB_HIT` is the other
+/// half and goes to the other person; the two are deliberately separate
+/// subtypes rather than one with an audience flag, because the audience is
+/// the server's decision and nothing on the wire should be able to claim it.
+const SUB_HURT: u32 = 53;
+/// `EV_RELOAD` (v59): how full your own magazine is, and how many rounds
+/// the last fill took out of the pack.
+///
+/// **Own-fact, unicast**, and that is a disclosure call rather than a fan-out
+/// one: how many rounds the player across the valley has left is exactly
+/// what tells you when to push them, so a broadcast of it would be a
+/// wallhack that the client could not choose not to draw. `SUB_HIT` and
+/// `SUB_HURT` two lines up split for the same reason and it is stated there.
+///
+/// Loaded AND ceiling on every message, never a delta: `client-core` holds
+/// no content tables, so a client told only "four" cannot draw `4/6`, and a
+/// dropped increment would leave the HUD claiming rounds the sim does not
+/// have until the player found out by pulling the trigger. `SUB_KNOWN`'s
+/// self-healing shape (`world.rs`'s `EV_RELOAD` doc says it in full).
+const SUB_RELOAD: u32 = 54;
+/// `EV_RELOAD_REFUSED` (v59): why a reload did nothing, and — on the dry
+/// click — the authoritative statement that the magazine is at zero.
+///
+/// `SUB_GATHER_REFUSED`'s shape with one field more. The count travels
+/// because the trigger pulled on an empty cylinder arrives *here* rather
+/// than as a shot, so without it the HUD would have to infer emptiness from
+/// a shot that never came, which is the same silence as a dropped datagram.
+const SUB_RELOAD_REFUSED: u32 = 55;
+const SUB_MAX: u32 = SUB_RELOAD_REFUSED;
 /// Width of `SUB_IMPACT`'s surface field, and how many values it may say.
 ///
 /// **`SURF_KINDS` is derived from the sim's own last kind rather than
@@ -317,7 +349,13 @@ const _: () = assert!(
 /// `ACTION_SLOT_BITS`). An acknowledgement that could not express an
 /// address the client is allowed to *ask* for would be a reconcile hole,
 /// so the two lanes carry the address identically or neither is sound.
-const CONT_KIND_BITS: u32 = 2;
+///
+/// **Three since wire v51** (armor v1). The pair was exactly full at v37
+/// and `CONT_WEAR` is the kind that had to widen it. Both lanes moved in
+/// the one commit for the reason this paragraph already gives: widening
+/// only the action lane would let a client ask for an address the
+/// acknowledgement could not name back.
+const CONT_KIND_BITS: u32 = 3;
 const MOVE_SLOT_BITS: u32 = 5;
 /// Move-refusal reason width — `inventory::REFUSE_M_*` runs `1..=7` and
 /// zero is reserved as "no reason", refused at both ends the way
@@ -372,6 +410,16 @@ const _: () = assert!(
 /// zero reserved as "no reason", refused at both ends — `REFUSE_C_BITS`'s
 /// posture exactly).
 const REFUSE_G_BITS: u32 = 4;
+/// Reload-refusal reason width (`ranged::REFUSE_RL_*`: five codes today,
+/// zero reserved as "no reason", refused at both ends — `REFUSE_C_BITS`'s
+/// posture exactly).
+const REFUSE_RL_BITS: u32 = 3;
+const _: () = assert!(
+    sim_core::ranged::REFUSE_RL_MAX < (1 << REFUSE_RL_BITS),
+    "ranged::REFUSE_RL_MAX no longer fits REFUSE_RL_BITS — a new reload \
+     refusal needs the field widened, PROTO_VER bumped and the goldens \
+     regenerated in this same commit (CLAUDE.md wall 6)"
+);
 /// Build-refusal reason width (`build::REFUSE_B_*`: ten codes today, and
 /// zero is a live one — `REFUSE_B_PIECE`).
 ///
@@ -388,6 +436,25 @@ const SYNC_COUNT_BITS: u32 = 7;
 const CATALOG_TOTAL_BITS: u32 = 7;
 const CATALOG_COUNT_BITS: u32 = 4;
 const NAME_LEN_BITS: u32 = 5;
+/// A catalog row's `armor_pct` (v52). Seven bits carries 0..=127 over a
+/// `combat::ARMOR_MAX_PCT` of 90, and both ends range-check against that
+/// constant rather than against the width — a widened cap must move the
+/// refusal, not silently start truncating.
+const ARMOR_PCT_BITS: u32 = 7;
+/// A catalog row's `wear_slot` (v52): `WEAR_NONE`, `WEAR_HEAD`,
+/// `WEAR_BODY`. Two bits over `WEAR_SLOTS + 1` live values.
+const WEAR_SLOT_BITS: u32 = 2;
+// `WEAR_SLOTS` live slots plus `WEAR_NONE`, so the ledger's largest value
+// is `WEAR_SLOTS` itself and that is what has to be representable.
+const _: () = assert!(WEAR_SLOTS < (1usize << WEAR_SLOT_BITS));
+const _: () = assert!(ARMOR_MAX_PCT < (1u32 << ARMOR_PCT_BITS));
+/// An `EV_HURT` bearing sector (v57). Four bits over
+/// `combat::HURT_SECTORS` of them, and the assert below is what makes
+/// widening the disclosure a wire decision instead of a silent truncation
+/// to the low nibble — a sector 16 that arrived as sector 0 would point a
+/// hurt player due north for every attacker in the world.
+const HURT_SECTOR_BITS: u32 = 4;
+const _: () = assert!((HURT_SECTORS as u32) <= (1u32 << HURT_SECTOR_BITS));
 const CRAFT_Q_COUNT_BITS: u32 = 3;
 /// A `research::REFUSE_R_*` reason: seven values since v38 (the tree
 /// verb's parent and bench), and the decoder range-checks rather than
@@ -476,6 +543,50 @@ pub struct InvSlot {
     pub stack: ItemStack,
 }
 
+/// One catalog row's non-name columns.
+///
+/// **A struct rather than three more positional parameters to
+/// [`ItemCatalog::set`].** `set(i, n, 0, 10, 1)` and `set(i, n, 0, 1, 10)`
+/// both compile and mean different things — the right value in the wrong
+/// position, which is the defect class `sim-core/tests/event_roles.rs`
+/// exists against on the event lane and which a byte-golden is blind to by
+/// construction (CLAUDE.md: *a byte-golden is blind to what a field
+/// means*). Named fields make the swap a compile error instead.
+///
+/// `armor_pct` and `wear_slot` are one fact split across two columns and
+/// the split is checked rather than assumed: a row with no slot
+/// (`combat::WEAR_NONE`) carrying a reduction is a state the sim cannot
+/// mean — `combat::worn_pct` only pays a piece in the slot its baked row
+/// names — so both the encoder and the decoder refuse the pair.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ItemRow {
+    /// Condition ceiling in u16 hundredths; 0 ⇒ carries no condition.
+    pub cond_max: u16,
+    /// Damage reduction this piece pays **in its own slot**, whole
+    /// percent, ≤ `combat::ARMOR_MAX_PCT`.
+    pub armor_pct: u8,
+    /// `combat::WEAR_NONE` (not armor), `WEAR_HEAD` or `WEAR_BODY` —
+    /// one-based, so a zeroed row is inert rather than a headpiece.
+    pub wear_slot: u8,
+}
+
+impl ItemRow {
+    pub const EMPTY: Self = Self {
+        cond_max: 0,
+        armor_pct: 0,
+        wear_slot: 0,
+    };
+
+    /// Is this pair one the sim could mean? A reduction with no slot pays
+    /// nobody, so it is refused at both ends of the wire rather than
+    /// silently dripped into a client that would add it to a total.
+    pub fn coherent(&self) -> bool {
+        self.wear_slot as usize <= WEAR_SLOTS
+            && self.armor_pct as u32 <= ARMOR_MAX_PCT
+            && (self.wear_slot != WEAR_NONE || self.armor_pct == 0)
+    }
+}
+
 /// The item-index → display-name table (the mapping `content::bake`
 /// promises the wire ships). Server bakes it at boot; the client fills
 /// its copy from catalog messages. Fixed storage, `MAX_ITEM_DEFS` rows.
@@ -486,11 +597,19 @@ pub struct InvSlot {
 /// catalog dripped names only, no def table carried a ceiling, and the
 /// client links no content crate). 0 means the item carries no condition,
 /// the same convention `content` and the sim use.
+///
+/// v52 added `armor_pct` and `wear_slot` for the same reason one version
+/// later, and the reason is worth restating because it keeps recurring:
+/// **the client links no content crate**, so a fact it must draw has to
+/// ride this table or not exist. `combat::worn_pct` was read on every hit
+/// and carried by no message, so a blunted hit and a soft one were
+/// identical on screen and the wear panel could not say what a set was
+/// worth (NOW.md §0eq.2). Two columns, nine bits a row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ItemCatalog {
     pub names: [[u8; MAX_ITEM_NAME_BYTES]; MAX_ITEM_DEFS],
     pub lens: [u8; MAX_ITEM_DEFS],
-    pub cond_max: [u16; MAX_ITEM_DEFS],
+    pub rows: [ItemRow; MAX_ITEM_DEFS],
     pub count: u16,
 }
 
@@ -498,23 +617,27 @@ impl ItemCatalog {
     pub const EMPTY: Self = Self {
         names: [[0; MAX_ITEM_NAME_BYTES]; MAX_ITEM_DEFS],
         lens: [0; MAX_ITEM_DEFS],
-        cond_max: [0; MAX_ITEM_DEFS],
+        rows: [ItemRow::EMPTY; MAX_ITEM_DEFS],
         count: 0,
     };
 
-    /// Install one row. Refuses empty, oversize, or out-of-table — the
-    /// server's bake path turns this into a refused boot. `cond_max` is a
-    /// parameter rather than a second setter so the compiler refuses a row
-    /// installed without its ceiling (the omission that kept the column
-    /// off the wire for four versions).
-    pub fn set(&mut self, idx: usize, name: &[u8], cond_max: u16) -> Result<(), WireError> {
-        if idx >= MAX_ITEM_DEFS || name.is_empty() || name.len() > MAX_ITEM_NAME_BYTES {
+    /// Install one row. Refuses empty, oversize, out-of-table, or an
+    /// incoherent [`ItemRow`] — the server's bake path turns this into a
+    /// refused boot. The columns ride in a struct parameter rather than a
+    /// second setter so the compiler refuses a row installed without them
+    /// (the omission that kept `cond_max` off the wire for four versions).
+    pub fn set(&mut self, idx: usize, name: &[u8], row: ItemRow) -> Result<(), WireError> {
+        if idx >= MAX_ITEM_DEFS
+            || name.is_empty()
+            || name.len() > MAX_ITEM_NAME_BYTES
+            || !row.coherent()
+        {
             return Err(WireError::Range);
         }
         self.names[idx][..name.len()].copy_from_slice(name);
         self.names[idx][name.len()..].fill(0);
         self.lens[idx] = name.len() as u8;
-        self.cond_max[idx] = cond_max;
+        self.rows[idx] = row;
         Ok(())
     }
 
@@ -526,14 +649,32 @@ impl ItemCatalog {
         }
     }
 
+    /// One item index's columns; the inert row out of table, so every
+    /// reader below inherits the 0-means-nothing convention.
+    pub fn row(&self, idx: usize) -> ItemRow {
+        if idx < MAX_ITEM_DEFS {
+            self.rows[idx]
+        } else {
+            ItemRow::EMPTY
+        }
+    }
+
     /// The condition ceiling for one item index; 0 out of table, matching
     /// the 0-means-no-condition convention in table.
     pub fn cond_max(&self, idx: usize) -> u16 {
-        if idx < MAX_ITEM_DEFS {
-            self.cond_max[idx]
-        } else {
-            0
-        }
+        self.row(idx).cond_max
+    }
+
+    /// The reduction this item pays in the slot it names; 0 for anything
+    /// that is not armor.
+    pub fn armor_pct(&self, idx: usize) -> u8 {
+        self.row(idx).armor_pct
+    }
+
+    /// The slot this item is worn in — `combat::WEAR_NONE` for everything
+    /// that is not armor.
+    pub fn wear_slot(&self, idx: usize) -> u8 {
+        self.row(idx).wear_slot
     }
 }
 
@@ -572,16 +713,18 @@ pub enum EventMsg {
         count: u8,
     },
     /// Item display names `first..first+count` of a `total`-row table.
-    /// Each row carries its condition ceiling too (v46) — the number
-    /// `pip_fraction` divides a container lane's `cond` by; 0 means the
-    /// item carries no condition.
+    /// Each name is followed by its [`ItemRow`] — the condition ceiling
+    /// (v46) the pip divides by, and since v52 the reduction and slot the
+    /// wear panel adds up. The columns ride in the struct rather than as
+    /// three parallel arrays so a reader cannot pair row *i*'s ceiling
+    /// with row *j*'s slot.
     Catalog {
         total: u8,
         first: u8,
         count: u8,
         names: [[u8; MAX_ITEM_NAME_BYTES]; CATALOG_BATCH],
         lens: [u8; CATALOG_BATCH],
-        cond_max: [u16; CATALOG_BATCH],
+        rows: [ItemRow; CATALOG_BATCH],
     },
     /// Own weak-spot mark after a landed hit (swinger-only): the node's
     /// cell, the next mark heading (u8 over the shared 256-entry yaw LUT,
@@ -814,11 +957,21 @@ pub enum EventMsg {
         lit: bool,
         by: u32,
     },
-    /// An arrow left `shooter`'s bow, aimed at (`yaw`, `pitch`), flying at
-    /// `speed_mmpt` and falling `drop_mmpt2` a tick (broadcast).
+    /// A round left `shooter`'s weapon, aimed at (`yaw`, `pitch`)
+    /// (broadcast).
     ///
     /// No origin and no item — the client reconstructs the first from the
     /// shooter's snapshot and does not need the second to draw a shaft.
+    ///
+    /// **`speed_mmpt == 0` means the shot did not fly** (wire v54), and
+    /// then `drop_mmpt2` is not a drop: it is the **reach in decimetres**.
+    /// One event covers both kinds of ranged weapon because the two
+    /// readings are never both meaningful — a flight needs a gravity and a
+    /// beam needs a length — and a projectile cannot leave a muzzle at
+    /// rest, so the discriminating pattern costs no field. The field names
+    /// keep the flight's spelling because renaming them to something
+    /// neutral would make every bow call site read worse to make one gun
+    /// call site read better.
     Shot {
         shooter: u32,
         yaw: u16,
@@ -863,11 +1016,50 @@ pub enum EventMsg {
         global: bool,
         text: ChatText,
     },
-    /// Your swing landed on `victim` for `damage` (combat.rs). The
-    /// attacker's fact and the attacker's alone — a hitmarker, not a
+    /// Your shot landed on `victim` for `damage`, on `part` (combat.rs).
+    /// The attacker's fact and the attacker's alone — a hitmarker, not a
     /// health readout; the victim's own `Health` is the truth about the
     /// victim, and it goes only to them.
-    Hit { victim: u32, damage: u16 },
+    ///
+    /// `part` is the rung the ladder priced the blow at (v58), and it is
+    /// carried rather than inferred because `damage` alone cannot say it:
+    /// a x0.5 leg hit from a strong weapon and a x1 chest hit from a weak
+    /// one are the same number, and the client does not hold the victim's
+    /// armor or the shooter's row to divide it back out. A swing sends
+    /// `Part::Chest`, which is the identity rung and what melee actually
+    /// pays.
+    Hit {
+        victim: u32,
+        part: Part,
+        damage: u16,
+    },
+    /// Something took `damage` off you, and it came from `sector`
+    /// (`sim_core::combat::bearing_sector`, clockwise from north, absolute
+    /// world bearing). The victim's fact and the victim's alone — the
+    /// mirror of `Hit`, and the only thing on this wire that tells a body
+    /// which way to turn. Quantized to sectors on purpose: enough to face,
+    /// not enough to aim (`sim_core::world`, `EV_HURT`).
+    Hurt { sector: u8, damage: u16 },
+    /// A magazine changed: `loaded` of `ceiling` now sit in the weapon, and
+    /// `took` rounds left the pack to put them there. `took` is not the
+    /// difference the client could compute — a partial reload off a nearly
+    /// empty pack takes fewer than the cylinder wanted, and the toast the
+    /// player is owed says how many they got.
+    Reload {
+        loaded: u16,
+        ceiling: u16,
+        took: u16,
+    },
+    /// A reload (or a trigger pull on an empty magazine) did nothing.
+    /// `item` names the hand so the sentence can be *a bow has no
+    /// magazine*; `loaded`/`ceiling` restate the count, which is the whole
+    /// point on the dry-click path.
+    ReloadRefused {
+        item: u16,
+        reason: u8,
+        loaded: u16,
+        ceiling: u16,
+    },
     /// Your hp after something changed it, and the max it is measured
     /// against. Absolute, never a delta: a client that misses one hears
     /// the whole truth from the next, exactly like `Door`.
@@ -1050,6 +1242,53 @@ pub fn encode_event_gather_refused(
     Ok(w.finish())
 }
 
+/// A magazine's new state. `ceiling` must be nonzero: a weapon with no
+/// magazine cannot raise this, and a zero would draw `4/0`.
+pub fn encode_event_reload(
+    loaded: u16,
+    ceiling: u16,
+    took: u16,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    // Refused at the encoder, not clamped. A count over its own ceiling is
+    // a server bug and the whole value of the pair travelling together is
+    // that the client never has to decide which half to believe.
+    if ceiling == 0 || loaded > ceiling || took > ceiling {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_RELOAD)?;
+    w.write(loaded as u32, 16)?;
+    w.write(ceiling as u32, 16)?;
+    w.write(took as u32, 16)?;
+    Ok(w.finish())
+}
+
+/// Why a reload did nothing, plus the count it did nothing to.
+///
+/// `ceiling` may be zero here and only here: `REFUSE_RL_HAND` is raised by
+/// a hand holding no magazine at all, so there is no ceiling to state and
+/// the client draws no readout rather than `0/0`.
+pub fn encode_event_reload_refused(
+    item: u16,
+    reason: u8,
+    loaded: u16,
+    ceiling: u16,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if reason == 0 || (reason as u32) > sim_core::ranged::REFUSE_RL_MAX {
+        return Err(WireError::Range);
+    }
+    if loaded > ceiling {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_RELOAD_REFUSED)?;
+    w.write(item as u32, 16)?;
+    w.write(reason as u32, REFUSE_RL_BITS)?;
+    w.write(loaded as u32, 16)?;
+    w.write(ceiling as u32, 16)?;
+    Ok(w.finish())
+}
+
 /// `slots` must be non-empty and within `INV_SLOTS` rows/indices — an
 /// empty update is a server bug, not a message.
 pub fn encode_event_inv(slots: &[InvSlot], buf: &mut [u8]) -> Result<usize, WireError> {
@@ -1133,7 +1372,17 @@ pub fn encode_event_catalog(
         for &b in name {
             w.write(b as u32, 8)?;
         }
-        w.write(catalog.cond_max(idx) as u32, 16)?;
+        let row = catalog.row(idx);
+        // `set` already refused an incoherent row, so a table that reaches
+        // here holds only pairs the sim can mean. Re-checked anyway: this
+        // is the last place before the bytes leave, and a field written
+        // wider than its width truncates silently.
+        if !row.coherent() {
+            return Err(WireError::Range);
+        }
+        w.write(row.cond_max as u32, 16)?;
+        w.write(row.armor_pct as u32, ARMOR_PCT_BITS)?;
+        w.write(row.wear_slot as u32, WEAR_SLOT_BITS)?;
     }
     Ok((w.finish(), count))
 }
@@ -1331,7 +1580,7 @@ pub fn encode_event_research_rows(
     Ok((w.finish(), count))
 }
 
-/// One placed-piece record on the wire: 34 bits, shared by the placed
+/// One placed-piece record on the wire: 38 bits, shared by the placed
 /// broadcast and the sync batches. Refuses an address outside the grid or
 /// a row outside the def table — this encoder only ever sees sim records.
 /// The trailing bit is the soft side's facing (hard/soft v0, wire v39):
@@ -1359,6 +1608,16 @@ fn write_piece_rec(w: &mut BitWriter, rec: &PieceRec) -> Result<(), WireError> {
     // the one place it builds these; `tests/protocol_golden.rs` §dmg holds
     // the round trip.
     w.write((rec.dmg & (DMG_BANDS - 1)) as u32, DMG_BAND_BITS)?;
+    // The column's plate (build plate v1, wire v49), biased into
+    // `PLATE_BITS`. Unlike `dmg` this IS sim state and the store maintains
+    // it — a record that arrives with the wrong plate draws the whole base
+    // on the wrong floor, which is why it rides every record rather than a
+    // per-column lane: a column's plate arrives with its pieces and leaves
+    // with its last one, so there is no third message to forget.
+    w.write(
+        (rec.plate as i32 + PLATE_BIAS).clamp(0, (1 << PLATE_BITS) - 1) as u32,
+        PLATE_BITS,
+    )?;
     Ok(())
 }
 
@@ -1376,6 +1635,7 @@ fn read_piece_rec(r: &mut BitReader) -> Result<PieceRec, WireError> {
         // Every one of the eight values `DMG_BAND_BITS` can carry is legal,
         // so this needs no range check — the width is the check.
         dmg: r.read(DMG_BAND_BITS)? as u8,
+        plate: (r.read(PLATE_BITS)? as i32 - PLATE_BIAS) as i8,
         ..rec
     };
     // Coord/level/facing widths are exact; the row — and, since v40's
@@ -1586,6 +1846,15 @@ fn write_deploy_rec(w: &mut BitWriter, rec: &DeployRec) -> Result<(), WireError>
     w.write_bit(rec.has_lock)?;
     // The damage band (wire v44) — `write_piece_rec`'s note applies here.
     w.write((rec.dmg & (DMG_BANDS - 1)) as u32, DMG_BAND_BITS)?;
+    // **No plate here, deliberately** (build plate v1). A deployable stands
+    // on a piece or on bare ground, and in the first case the piece record
+    // for its own column already carries the plate — so a second copy on
+    // this record would be a field two messages could disagree about, for a
+    // column the renderer can look up in the mirror it already keeps
+    // (`render/structures.rs` reads `ClientCore::cols`). The ordering hazard
+    // that buys — a deploy arriving before its column's pieces — is closed
+    // on the render side by treating the plate as redraw state, the way the
+    // door's own open bit is.
     Ok(())
 }
 
@@ -1931,10 +2200,18 @@ pub fn encode_event_shot(
     drop_mmpt2: u16,
     buf: &mut [u8],
 ) -> Result<usize, WireError> {
-    // A round with no speed is not a round (`content::validate` refuses
-    // one), and a zero here would be a tracer that hangs in the air at the
-    // shooter's eye forever. Refused at the encoder rather than drawn.
-    if speed_mmpt == 0 {
+    // **This refusal narrowed at v54 rather than went away, and the
+    // difference is the whole of the spare-bit reading.** It used to be
+    // `speed_mmpt == 0`, on the argument that a round with no speed is not
+    // a round and a zero would hang a tracer at the shooter's eye forever.
+    // Zero speed now *means* something — an instantaneous shot, where the
+    // second `u16` stops being a drop and becomes a reach in decimetres —
+    // so the pattern that stayed nonsense is the one where both are zero:
+    // a beam of no length, which is exactly as undrawable as the hanging
+    // tracer was. `content::validate` refuses a weapon with no reach at the
+    // door, so this is unreachable with anything shipped, which is what
+    // lets it stay a hard refusal instead of a clamp.
+    if shot_is_instant(speed_mmpt) && drop_mmpt2 == 0 {
         return Err(WireError::Range);
     }
     let mut w = begin(buf, SUB_SHOT)?;
@@ -1944,6 +2221,26 @@ pub fn encode_event_shot(
     w.write(speed_mmpt as u32, 16)?;
     w.write(drop_mmpt2 as u32, 16)?;
     Ok(w.finish())
+}
+
+/// Did this shot fly, or was it instantaneous?
+///
+/// **The v54 spare-bit reading, in one place so its three readers cannot
+/// disagree about it.** `EventMsg::Shot` covers both kinds of ranged
+/// weapon, and everything that separates them is this predicate: a
+/// projectile cannot leave a muzzle at rest, so a zero muzzle speed is the
+/// sim saying *there was no flight*, and `drop_mmpt2` stops being a drop
+/// and becomes a reach in decimetres.
+///
+/// Three callers, and the point of naming it is that they are in three
+/// crates: the encoder's range check here, `render/tracer.rs` (which must
+/// not fly it — a zero velocity is a streak that hangs at the muzzle for
+/// four seconds and burns one of sixteen slots), and `render/audio.rs`
+/// (which picks the gunshot cue over the bowshot by it, since no item
+/// crosses the wire). A `== 0` written out at each of those is three
+/// chances to write `!= 0`.
+pub fn shot_is_instant(speed_mmpt: u16) -> bool {
+    speed_mmpt == 0
 }
 
 /// Where an arrow stopped: a point in the entity lane's quanta and what
@@ -2215,9 +2512,40 @@ pub fn encode_event_move_refused(
     Ok(w.finish())
 }
 
-pub fn encode_event_hit(victim: u32, damage: u16, buf: &mut [u8]) -> Result<usize, WireError> {
+/// The attacker's half: `damage` landed on `victim`, on `part`.
+///
+/// `part` is a [`Part`] and not a raw pair of bits on purpose — the two
+/// spare bits `EV_HIT`'s payload had are only spare while the value in
+/// them is one of three, and a `u8` parameter here would push that check
+/// out to every caller. The server unpacks `world::hit_part` and hands
+/// over a type that cannot be a fourth rung.
+pub fn encode_event_hit(
+    victim: u32,
+    part: Part,
+    damage: u16,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
     let mut w = begin(buf, SUB_HIT)?;
     w.write(victim, 32)?;
+    w.write(part.bits() as u32, PART_BITS)?;
+    w.write(damage as u32, 16)?;
+    Ok(w.finish())
+}
+
+/// The victim's half: `damage` arrived from `sector`.
+///
+/// `sector` is range-checked rather than masked. The field is four bits and
+/// `HURT_SECTORS` is sixteen, so today the two agree exactly and this can
+/// only fire on a sim that started making a value it did not declare — which
+/// is precisely the case where silently keeping the low nibble would put an
+/// arrow marker on the wrong side of a player's screen and no gate anywhere
+/// would notice.
+pub fn encode_event_hurt(sector: u8, damage: u16, buf: &mut [u8]) -> Result<usize, WireError> {
+    if sector >= HURT_SECTORS {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_HURT)?;
+    w.write(sector as u32, HURT_SECTOR_BITS)?;
     w.write(damage as u32, 16)?;
     Ok(w.finish())
 }
@@ -2356,6 +2684,43 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             item: r.read(16)? as u16,
             added: r.read(16)? as u16,
         },
+        SUB_RELOAD => {
+            let loaded = r.read(16)? as u16;
+            let ceiling = r.read(16)? as u16;
+            let took = r.read(16)? as u16;
+            // The encoder's bound, restated at the door. A forged pair
+            // whose halves disagree is the one thing a self-healing full
+            // statement cannot repair — it would draw `9/6` and stay wrong
+            // until the next reload — so it is refused rather than clamped.
+            if ceiling == 0 || loaded > ceiling || took > ceiling {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Reload {
+                loaded,
+                ceiling,
+                took,
+            }
+        }
+        SUB_RELOAD_REFUSED => {
+            let item = r.read(16)? as u16;
+            let reason = r.read(REFUSE_RL_BITS)? as u8;
+            let loaded = r.read(16)? as u16;
+            let ceiling = r.read(16)? as u16;
+            // Zero is refused and the upper end deliberately is not —
+            // `SUB_GATHER_REFUSED`'s posture below, for its reason: a shard
+            // newer than this client may legitimately send a reason it has
+            // no word for, and the client prints `code N` rather than
+            // dropping the frame.
+            if reason == 0 || loaded > ceiling {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::ReloadRefused {
+                item,
+                reason,
+                loaded,
+                ceiling,
+            }
+        }
         SUB_GATHER_REFUSED => {
             let item = r.read(16)? as u16;
             let reason = r.read(REFUSE_G_BITS)? as u8;
@@ -2430,7 +2795,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             }
             let mut names = [[0u8; MAX_ITEM_NAME_BYTES]; CATALOG_BATCH];
             let mut lens = [0u8; CATALOG_BATCH];
-            let mut cond_max = [0u16; CATALOG_BATCH];
+            let mut rows = [ItemRow::EMPTY; CATALOG_BATCH];
             for i in 0..count {
                 let len = r.read(NAME_LEN_BITS)? as usize;
                 if len == 0 || len > MAX_ITEM_NAME_BYTES {
@@ -2440,7 +2805,19 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     *b = r.read(8)? as u8;
                 }
                 lens[i] = len as u8;
-                cond_max[i] = r.read(16)? as u16;
+                rows[i] = ItemRow {
+                    cond_max: r.read(16)? as u16,
+                    armor_pct: r.read(ARMOR_PCT_BITS)? as u8,
+                    wear_slot: r.read(WEAR_SLOT_BITS)? as u8,
+                };
+                // Both fields fit their widths by construction; what the
+                // width cannot say is that 91 % is over the cap or that a
+                // reduction with no slot pays nobody. A client that
+                // installed either would draw a total the server will
+                // never charge (`combat::worn_pct`).
+                if !rows[i].coherent() {
+                    return Err(WireError::Malformed);
+                }
             }
             EventMsg::Catalog {
                 total: total as u8,
@@ -2448,7 +2825,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 count: count as u8,
                 names,
                 lens,
-                cond_max,
+                rows,
             }
         }
         SUB_WEAK_MARK => EventMsg::WeakMark {
@@ -2904,10 +3281,18 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 speed_mmpt: r.read(16)? as u16,
                 drop_mmpt2: r.read(16)? as u16,
             };
-            // The encoder's refusal, mirrored: a zero-speed tracer is a
-            // value no honest sender produces, so it is malformed rather
-            // than drawn. Same posture as the address ranges above.
-            if matches!(m, EventMsg::Shot { speed_mmpt: 0, .. }) {
+            // The encoder's refusal, mirrored, and it narrowed with it at
+            // v54: a zero speed is now the *instant* reading and the low
+            // field is a reach, so what no honest sender produces is a beam
+            // of no length. Same posture as the address ranges above.
+            if matches!(
+                m,
+                EventMsg::Shot {
+                    speed_mmpt: 0,
+                    drop_mmpt2: 0,
+                    ..
+                }
+            ) {
                 return Err(WireError::Malformed);
             }
             m
@@ -2915,6 +3300,20 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
         SUB_SWING => EventMsg::Swing {
             swinger: r.read(32)?,
         },
+        SUB_HURT => {
+            // The width and the domain are the same size today, so nothing
+            // here can be out of range — and it is written as a checked read
+            // anyway, because the encoder's refusal above is only half a
+            // guarantee: it binds our sender, not the next one.
+            let sector = r.read(HURT_SECTOR_BITS)? as u8;
+            if sector >= HURT_SECTORS {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Hurt {
+                sector,
+                damage: r.read(16)? as u16,
+            }
+        }
         SUB_IMPACT => {
             let qx = r.read(POS_XZ_BITS)? as i32;
             let qy = r.read(POS_Y_BITS)? as i32 - POS_Y_BIAS;
@@ -2989,10 +3388,23 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 text: read_text(&mut r)?,
             }
         }
-        SUB_HIT => EventMsg::Hit {
-            victim: r.read(32)?,
-            damage: r.read(16)? as u16,
-        },
+        SUB_HIT => {
+            let victim = r.read(32)?;
+            // Range-checked, not masked — `PART_BITS` holds four values
+            // and the ladder prices three, so the fourth is refused here
+            // rather than folded onto a rung it did not mean. The
+            // `HURT_SECTOR_BITS` posture: a marker on the wrong rung
+            // teaches the player the wrong thing about their aim, which
+            // is worse than no marker.
+            let Some(part) = Part::from_bits(r.read(PART_BITS)? as u8) else {
+                return Err(WireError::Malformed);
+            };
+            EventMsg::Hit {
+                victim,
+                part,
+                damage: r.read(16)? as u16,
+            }
+        }
         SUB_HEALTH => {
             let hp = r.read(16)? as u16;
             let max = r.read(16)? as u16;
@@ -3188,6 +3600,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sim_core::combat::{WEAR_BODY, WEAR_HEAD};
     use sim_core::inventory::{CONT_BAG, CONT_BOX};
     use sim_core::limits::BOX_SLOTS;
 
@@ -3304,16 +3717,130 @@ mod tests {
         );
     }
 
+    /// **A reduction with no slot is a state the sim cannot mean, and it
+    /// is refused at three doors rather than drawn.** `combat::worn_pct`
+    /// pays a piece only in the slot its baked row names, so a row saying
+    /// "20 %, nowhere" would put a number on the wear panel that the
+    /// server will never subtract from a hit — the two ends disagreeing
+    /// about protection, which is the container-divergence shape one lane
+    /// over. `set` refuses it, the encoder re-refuses it, and a decoder
+    /// handed the bytes anyway calls them malformed.
+    #[test]
+    fn a_reduction_with_no_slot_never_reaches_a_panel() {
+        let mut cat = ItemCatalog::EMPTY;
+        cat.count = 1;
+        assert_eq!(
+            cat.set(
+                0,
+                b"Ghost Plate",
+                ItemRow {
+                    cond_max: 0,
+                    armor_pct: 20,
+                    wear_slot: WEAR_NONE,
+                },
+            ),
+            Err(WireError::Range),
+            "a reduction that pays in no slot was installed"
+        );
+        assert_eq!(
+            cat.set(
+                0,
+                b"Overplate",
+                ItemRow {
+                    cond_max: 0,
+                    armor_pct: ARMOR_MAX_PCT as u8 + 1,
+                    wear_slot: WEAR_BODY,
+                },
+            ),
+            Err(WireError::Range),
+            "a reduction over the sim's own cap was installed"
+        );
+        assert_eq!(
+            cat.set(
+                0,
+                b"Third Slot",
+                ItemRow {
+                    cond_max: 0,
+                    armor_pct: 10,
+                    wear_slot: WEAR_SLOTS as u8 + 1,
+                },
+            ),
+            Err(WireError::Range),
+            "a slot the body does not have was installed"
+        );
+
+        // The encoder's own door: a table smuggled past `set` by a direct
+        // field write still cannot reach the wire.
+        cat.set(
+            0,
+            b"Plate",
+            ItemRow {
+                cond_max: 0,
+                armor_pct: 20,
+                wear_slot: WEAR_BODY,
+            },
+        )
+        .unwrap();
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        assert!(encode_event_catalog(&cat, 0, &mut buf).is_ok());
+        cat.rows[0].wear_slot = WEAR_NONE;
+        assert_eq!(
+            encode_event_catalog(&cat, 0, &mut buf),
+            Err(WireError::Range),
+            "the encoder shipped a pair the sim cannot mean"
+        );
+
+        // And the decoder's, against bytes this crate cannot produce.
+        // The slot bits are LOCATED rather than counted: encode the same
+        // row twice differing only in `wear_slot` (2 = `10` against 1 =
+        // `01`, so both bits move) and XOR the two messages. Clearing that
+        // mask leaves `armor_pct` untouched and the slot at `WEAR_NONE` —
+        // a hand-counted bit offset would be a second copy of the layout
+        // and would rot the next time a field lands above it.
+        cat.rows[0].wear_slot = WEAR_BODY;
+        let (len, _) = encode_event_catalog(&cat, 0, &mut buf).unwrap();
+        let body = buf;
+        cat.rows[0].wear_slot = WEAR_HEAD;
+        let (head_len, _) = encode_event_catalog(&cat, 0, &mut buf).unwrap();
+        assert_eq!(head_len, len, "the two slots encode at different widths");
+        let mut forged = body;
+        let mut moved = 0u32;
+        for i in 0..len {
+            let mask = body[i] ^ buf[i];
+            moved += mask.count_ones();
+            forged[i] = body[i] & !mask;
+        }
+        assert_eq!(
+            moved, WEAR_SLOT_BITS,
+            "changing only the slot moved {moved} bits, not the field's own width"
+        );
+        assert_eq!(
+            decode_event(&forged[..len]),
+            Err(WireError::Malformed),
+            "the decoder installed a reduction that pays in no slot"
+        );
+    }
+
     #[test]
     fn catalog_batches_walk_the_table_within_cap() {
         let mut cat = ItemCatalog::EMPTY;
         cat.count = 11;
         for i in 0..11usize {
             // Worst-width names so the cap check is honest; ceilings mix
-            // zero (no condition) with the full u16 corner.
+            // zero (no condition) with the full u16 corner, and the armor
+            // columns mix both slots with the not-armor row so the batch
+            // exercises every value the widths carry.
             let name = [b'a' + (i as u8 % 26); MAX_ITEM_NAME_BYTES];
-            let cond_max = if i % 2 == 0 { 0 } else { u16::MAX - i as u16 };
-            cat.set(i, &name, cond_max).unwrap();
+            let row = ItemRow {
+                cond_max: if i % 2 == 0 { 0 } else { u16::MAX - i as u16 },
+                armor_pct: if i % 3 == 0 { 0 } else { ARMOR_MAX_PCT as u8 },
+                wear_slot: if i % 3 == 0 {
+                    WEAR_NONE
+                } else {
+                    (i % 2 + 1) as u8
+                },
+            };
+            cat.set(i, &name, row).unwrap();
         }
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
         let (len, took) = encode_event_catalog(&cat, 0, &mut buf).unwrap();
@@ -3326,12 +3853,12 @@ mod tests {
                 count,
                 names,
                 lens,
-                cond_max,
+                rows,
             } => {
                 assert_eq!((total, first, count), (11, 0, CATALOG_BATCH as u8));
                 assert_eq!(&names[0][..lens[0] as usize], cat.name(0));
-                for (i, &cm) in cond_max.iter().enumerate().take(CATALOG_BATCH) {
-                    assert_eq!(cm, cat.cond_max(i), "ceiling column drifted at row {i}");
+                for (i, &row) in rows.iter().enumerate().take(CATALOG_BATCH) {
+                    assert_eq!(row, cat.row(i), "a column drifted at row {i}");
                 }
             }
             other => panic!("wrong variant: {other:?}"),
@@ -3523,6 +4050,62 @@ mod tests {
             decode_event(&buf[..len]).unwrap(),
             EventMsg::BuildRefused { reason: 4 }
         );
+    }
+
+    /// Every plate the sim can produce survives the wire, sign and all
+    /// (build plate v1, wire v49).
+    ///
+    /// **A signed field on a bit writer is where a round trip earns its
+    /// keep.** `plate` is written biased and read back by subtracting the
+    /// bias, and every way of getting that wrong — the wrong bias, an
+    /// unsigned read, a width one bit short — is silent on the value 0, which
+    /// is what every fixture in `goldens.rs` carries and what an untouched
+    /// column has. A base drawn a storey off the one it is walked on is what
+    /// a dropped sign looks like in play.
+    #[test]
+    fn a_plate_round_trips_through_its_whole_sign() {
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        for plate in -(sim_core::build::PLATE_SINK_MAX_BANDS as i8)
+            ..=sim_core::build::PLATE_RISE_MAX_BANDS as i8
+        {
+            let rec = PieceRec {
+                cx: 341,
+                cz: 682,
+                level: 3,
+                loc: LOC_EDGE_ZLO,
+                row: 17,
+                plate,
+                ..PieceRec::default()
+            };
+            let len = encode_event_piece_placed(&rec, &mut buf).unwrap();
+            assert_eq!(
+                decode_event(&buf[..len]).unwrap(),
+                EventMsg::PiecePlaced { rec },
+                "plate {plate} did not survive the wire"
+            );
+        }
+        // And the whole width, past the knobs: the field is deliberately
+        // wider than today's limits (`PLATE_BITS` says why), so the values
+        // between them and the width must not alias onto legal ones.
+        let mut seen = std::collections::BTreeSet::new();
+        for plate in -PLATE_BIAS as i8..PLATE_BIAS as i8 {
+            let rec = PieceRec {
+                cx: 1,
+                cz: 1,
+                row: 0,
+                plate,
+                ..PieceRec::default()
+            };
+            let len = encode_event_piece_placed(&rec, &mut buf).unwrap();
+            let EventMsg::PiecePlaced { rec: back } = decode_event(&buf[..len]).unwrap() else {
+                panic!("not a placement")
+            };
+            assert!(
+                seen.insert(back.plate),
+                "plate {plate} aliased onto another"
+            );
+        }
+        assert_eq!(seen.len(), 1 << PLATE_BITS);
     }
 
     #[test]
@@ -4293,12 +4876,20 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/charge.rs"),
         },
         Module {
+            file: "light.rs",
+            src: include_str!("../../sim-core/src/light.rs"),
+        },
+        Module {
             file: "persist.rs",
             src: include_str!("../../sim-core/src/persist.rs"),
         },
         Module {
             file: "research.rs",
             src: include_str!("../../sim-core/src/research.rs"),
+        },
+        Module {
+            file: "rewind.rs",
+            src: include_str!("../../sim-core/src/rewind.rs"),
         },
         Module {
             file: "pitch_lut.rs",
@@ -4385,6 +4976,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/rng.rs"),
         },
         Module {
+            file: "spent.rs",
+            src: include_str!("../../sim-core/src/spent.rs"),
+        },
+        Module {
             file: "survival.rs",
             src: include_str!("../../sim-core/src/survival.rs"),
         },
@@ -4432,12 +5027,17 @@ mod wire_domains {
             prefix: "pub const DEATH_BY_",
             ty: ": u8 = ",
             exempt: &["MAX"],
-            min_members: 6,
+            min_members: 7,
             bits: DEATH_CAUSE_BITS,
             // 4 = DEATH_BY_MOB and 5 = DEATH_BY_CHARGE, the meanings the
             // v36 field widening was minted for — pin moved in the same
-            // merge window as the bump, once per cause.
-            live_max: 5,
+            // merge window as the bump, once per cause. 6 =
+            // DEATH_BY_BULLET at v53, which is the third time this pin has
+            // moved and the second time it did the job it exists for: it
+            // is what refused a firearm cause at hitscan v0, and it let
+            // this one through only because arrow recovery v1 spent the
+            // bump it demanded.
+            live_max: 6,
         },
         Domain {
             what: "move refusal",
@@ -4449,7 +5049,29 @@ mod wire_domains {
             exempt: &["MAX"],
             min_members: 8,
             bits: REFUSE_M_BITS,
-            live_max: 8,
+            // 8 -> 9 at wire v51 (armor v1): `REFUSE_M_WEAR` is the
+            // reason a wear slot gives for "that is not what goes here",
+            // and the pin fired on it exactly as its message promised.
+            live_max: 9,
+        },
+        Domain {
+            what: "wear slot",
+            sim_site: "combat.rs WEAR_*",
+            wire_site: "WEAR_SLOT_BITS",
+            home: "combat.rs",
+            prefix: "pub const WEAR_",
+            ty: ": u8 = ",
+            exempt: &[],
+            min_members: 3,
+            bits: WEAR_SLOT_BITS,
+            // `WEAR_BODY`. One-based, so the ledger is NONE/HEAD/BODY and
+            // the width carries one spare value — which is exactly the
+            // headroom this row exists to guard, because
+            // `reference/ARMOR.md` §9.3 has legs, gloves and boots queued
+            // behind the per-type vector. A fourth slot is 3, 3 fits two
+            // bits, and every numeric check below would stay green while
+            // a pattern both ends refuse today became a live fact.
+            live_max: 2,
         },
         Domain {
             what: "consume refusal",
@@ -4468,6 +5090,18 @@ mod wire_domains {
             min_members: 3,
             bits: REFUSE_C_BITS,
             live_max: 3,
+        },
+        Domain {
+            what: "reload refusal",
+            sim_site: "ranged.rs REFUSE_RL_*",
+            wire_site: "REFUSE_RL_BITS",
+            home: "ranged.rs",
+            prefix: "pub const REFUSE_RL_",
+            ty: ": u32 = ",
+            exempt: &["MAX"],
+            min_members: 5,
+            bits: REFUSE_RL_BITS,
+            live_max: 5,
         },
         Domain {
             what: "gather refusal",
@@ -4489,9 +5123,9 @@ mod wire_domains {
             prefix: "pub const REFUSE_B_",
             ty: ": u32 = ",
             exempt: &[],
-            min_members: 13,
+            min_members: 15,
             bits: REFUSE_B_BITS,
-            live_max: 12,
+            live_max: 14,
         },
         Domain {
             what: "container kind",
@@ -4501,17 +5135,24 @@ mod wire_domains {
             prefix: "pub const CONT_",
             ty: ": u8 = ",
             exempt: &["MAX"],
-            min_members: 4,
+            min_members: 5,
             bits: CONT_KIND_BITS,
             // Moved 2 -> 3 at wire v37 (world containers v0), which is
             // the case this pin was written for: no field widened and no
             // fixture's bytes moved, but value 3 stopped being forged and
-            // started being the crate on the haven pad. The domain is now
-            // **saturated** — `live_max == capacity - 1` — so the next
-            // container kind cannot be added without widening
-            // `CONT_KIND_BITS`, and the fit assert above is what will say
-            // so.
-            live_max: 3,
+            // started being the crate on the haven pad. That saturated
+            // the domain, and the note here said the next kind could not
+            // land without a widening.
+            //
+            // It did, at v51 (armor v1): `CONT_WEAR` is 4, the field went
+            // 2 -> 3 bits, and every fixture carrying a container address
+            // re-keyed. So this pin has now fired for real, in both of
+            // its jobs — the fit assert refused the fifth kind under two
+            // bits, and this `live_max` refused it under three until the
+            // widening was deliberate. Values 5..7 are forgeable and
+            // refuse at both ends, which is the posture the field lost at
+            // v37 and has back.
+            live_max: 4,
         },
         Domain {
             what: "piece shape",
@@ -4769,9 +5410,12 @@ mod wire_domains {
 
     /// The table itself must stay honest about which domains exist.
     ///
-    /// Ten is not a count of convenience: it is every private `*_BITS` in
-    /// this module that bounds a `sim-core` enumeration rather than a
-    /// length, an index or a quantity. Widths like `INV_COUNT_BITS` or
+    /// The count is not one of convenience: it is every private `*_BITS`
+    /// in this module that bounds a `sim-core` enumeration rather than a
+    /// length, an index or a quantity. (It is written once, below, and
+    /// **not** restated here — this paragraph said "ten" against a pinned
+    /// sixteen, which is the hand-kept-mirror drift `CLAUDE.md` names
+    /// twice, in a doc comment attached to the pin itself.) Widths like `INV_COUNT_BITS` or
     /// `NAME_LEN_BITS` bound a *magnitude* the sim computes and are not
     /// domains — they have no constant block to drift against.
     ///
@@ -4784,8 +5428,11 @@ mod wire_domains {
     #[test]
     fn the_domain_table_states_its_own_coverage() {
         assert_eq!(
+            // 17 -> 18 at wire v59 (reload v1): `REFUSE_RL_BITS` is a
+            // field width spent on `ranged::REFUSE_RL_*`, so it owes a
+            // row, and this assert is what asked for it.
             DOMAINS.len(),
-            16,
+            18,
             "the wire-domain table changed size. Every entry is a field \
              width spent on a sim-core enumeration; add the new pair here \
              in the same commit that adds the width, or state why the \
@@ -4868,6 +5515,89 @@ mod wire_domains {
     /// ten and still green. So this reads this file's own `*_BITS` block
     /// and forces each width into one of two named sets. A width that is
     /// in neither fails, and the fix is a sentence either way.
+    /// The fourth value `PART_BITS` can hold is not a rung, and the decoder
+    /// refuses it rather than folding it onto one (v58).
+    ///
+    /// **This is the pin that makes a fourth rung a wire decision.** `Part`
+    /// is an enum, so `DOMAINS` cannot scrape a member block off it the way
+    /// it does off a `pub const DEATH_BY_*` block — the growth guard is
+    /// therefore a compile-time assert beside the enum (`collide.rs`) and
+    /// this value pin here. Add an arm (`NOW.md` §0hs item 2) and this test
+    /// goes red, which is the point: it forces the question *does the
+    /// marker still fit two bits* instead of silently drawing an arm hit as
+    /// a chest hit.
+    ///
+    /// Refusing rather than masking is the `HURT_SECTOR_BITS` posture. A
+    /// marker on the wrong rung teaches a player the wrong thing about
+    /// their aim, which is worse than no marker at all.
+    #[test]
+    fn a_part_the_ladder_does_not_price_is_refused() {
+        let mut buf = [0u8; 64];
+
+        // Built with the encoder's own layout rather than by patching a
+        // byte at a guessed offset: kind, subtype, victim, part, damage.
+        // A shape change here is a compile error, not a test that keeps
+        // passing while it corrupts the wrong field.
+        let write = |part: u32, buf: &mut [u8]| -> usize {
+            let mut w = BitWriter::new(buf);
+            w.write(KIND_EVENT, KIND_BITS).unwrap();
+            w.write(SUB_HIT, SUB_BITS).unwrap();
+            w.write(4_242, 32).unwrap();
+            w.write(part, PART_BITS).unwrap();
+            w.write(25, 16).unwrap();
+            w.finish()
+        };
+
+        // First prove the harness builds a message the decoder accepts, so
+        // the refusal below cannot be passing for an unrelated reason —
+        // the vacuous-gate trap in its usual clothes.
+        let len = write(Part::Head.bits() as u32, &mut buf);
+        assert_eq!(
+            decode_event(&buf[..len]).unwrap(),
+            EventMsg::Hit {
+                victim: 4_242,
+                part: Part::Head,
+                damage: 25
+            },
+            "the hand-built message must be the one the encoder makes, or \
+             the refusal below proves nothing"
+        );
+        assert_eq!(
+            &buf[..len],
+            {
+                let mut enc = [0u8; 64];
+                let n = encode_event_hit(4_242, Part::Head, 25, &mut enc).unwrap();
+                enc[..n].to_vec()
+            }
+            .as_slice(),
+            "the hand-built layout has drifted from `encode_event_hit`"
+        );
+
+        // Now the value the ladder does not price.
+        let len = write(3, &mut buf);
+        assert!(
+            matches!(decode_event(&buf[..len]), Err(WireError::Malformed)),
+            "a part of 3 is not a rung and must be refused, never folded \
+             onto Chest — it decoded as {:?}",
+            decode_event(&buf[..len])
+        );
+
+        // And every value that IS a rung still round-trips, so the check
+        // above cannot be satisfied by refusing everything.
+        for part in Part::ALL {
+            let len = write(part.bits() as u32, &mut buf);
+            assert_eq!(
+                decode_event(&buf[..len]).unwrap(),
+                EventMsg::Hit {
+                    victim: 4_242,
+                    part,
+                    damage: 25
+                },
+                "{part:?} must survive the wire"
+            );
+        }
+    }
+
     #[test]
     fn every_enumeration_width_is_classified() {
         const WIRE_SRC: &str = include_str!("event.rs");
@@ -4913,6 +5643,17 @@ mod wire_domains {
             "BAGS_COUNT_BITS",
             "CONT_COUNT_BITS",
             "LOCK_CODE_BITS",
+            // A percentage bounded by `combat::ARMOR_MAX_PCT`, which is a
+            // sim-core *cap* and not an enumeration — `BAGS_COUNT_BITS`'
+            // shape exactly, and classified with it for the same reason.
+            // Raising the cap is guarded by the compile-time assert beside
+            // the declaration; there is no member list to count.
+            "ARMOR_PCT_BITS",
+            // A bearing sector bounded by `combat::HURT_SECTORS`, which is
+            // a sim-core *count* and not an enumeration — there is no
+            // member block to scrape, only a compile-time assert beside the
+            // declaration. `ARMOR_PCT_BITS`' shape, classified with it.
+            "HURT_SECTOR_BITS",
         ];
 
         let mut widths = Vec::new();

@@ -35,11 +35,32 @@ Stages, in order — each cheap, each deterministic:
 3. **Domain warp** — one warp pass over the relief lookup; this is the
    single biggest "looks procedural → looks natural" purchase and costs
    two extra noise reads.
-4. **Height remap curve** — a fixed LUT that flattens mid-elevations into
-   **buildable shelves** and steepens the transitions. This curve *is* the
-   game design: it manufactures base spots and the cliffs between them.
-   Ridged-noise blend above the treeline fakes an eroded look without
-   simulating erosion (hydraulic erosion is a post-alpha toy, not a need).
+4. **Height remap curve** — a fixed 17-knot LUT that flattens mid-elevations
+   into **buildable shelves** and steepens the transitions. This curve *is*
+   the game design: it manufactures base spots and the cliffs between them.
+   ⚠ **It is interpolated with a monotone cubic (PCHIP), not `lerp`, and that
+   is load-bearing rather than cosmetic.** A piecewise-linear curve steps its
+   slope at every knot — up to 12× — and the renderer takes its normal
+   analytically from this field's gradient, so each step drew a contour line
+   at a fixed elevation across the whole island. It rendered as a survey map;
+   `sim-core/examples/hillshade` is the picture and `tests/contour.rs` is the
+   gate. The knots did not move (the cubic stays within 2 m of 90).
+4b. **Detail** — three octaves (75 / 37.5 / 18.75 m) added **after** the
+   curve, because a curve that flattens a shelf flattens the fine octaves
+   with it: before this the island's smallest legible feature was ~100 m
+   across. Applied as `land = shelf × (AMPLITUDE + shelf × detail ×
+   DETAIL_AMP)` — multiplicative so `land ≥ 0` holds by construction and no
+   pond appears the water pass cannot draw, squared in `shelf` so the
+   roughness is spent on the highlands and not on the buildable flats and the
+   shoreline disturbance falls to 1.8 cm at the LUT's 2.7 m contour. The floor of 18.75 m is set by
+   `FAR_STEP`: worldgen may not author relief the far mesh cannot resolve.
+   **Ridged multifractal** above the treeline fakes an eroded look without
+   simulating erosion (hydraulic erosion is a post-alpha toy, not a need) —
+   three octaves, each weighted by the one above it so spurs grow on crests
+   and valley floors stay smooth, on a `fade`d height gate rather than a
+   linear clamp (a clamp put two more contour rings at its two rails). This
+   is our answer to what the reference game calls "pseudo-erosion"
+   (Devblog 63).
 5. **Masks** (derived, not stored): slope from finite differences → cliff
    mask (slope > ~50° **(knob)**: unclimbable, unbuildable, distinct
    material); beach mask (height within ~2 m of sea level); moisture =
@@ -81,10 +102,21 @@ Stages, in order — each cheap, each deterministic:
    answered in speckle would still pass a density ratio and would still be
    unlearnable; per-cell parity substituted for `in_bay` gives 14–17 arcs
    against the cap of 8.
+   **The dirt material landed 2026-09-01** (`DECISIONS.md` §open, road surface
+   v0). `terrain::splat_road` pushes the four identity weights toward **sand**
+   on the carriageway and, at `ROAD_WEAR_SHOULDER` = `ROAD_HALF_W /
+   ROAD_SHOULDER_HALF_W` = 2/5, on the shoulder — closing a disagreement that
+   had been shipping since the road did: `clutter_kind_at` already forced grit
+   there, so the ring's population was gravel standing on ground painted
+   meadow. It is applied by the ground mesh and **not** inside `splat`, because
+   the clutter population resolves the carriageway before it asks for a splat —
+   so no clutter moves and no golden moves — and only where `step <=
+   ROAD_HALF_W`, because an 8 m far lattice cannot resolve a 4 m ribbon and
+   would draw the loop as a dashed line.
    **Still open**: the flattening (it needs a mask inside `height` — that is
-   the representation decision the block defers, and nothing forced it yet)
-   and the dirt material. `DECISIONS.md` §open "coast road v0" and "bay slots
-   v0" have the knobs and the measured numbers.
+   the representation decision the block defers, and nothing forced it yet).
+   `DECISIONS.md` §open "coast road v0" and "bay slots v0" have the knobs and
+   the measured numbers.
 8. **The haven pad** — deterministic placement: score candidate sites on
    the road ring by flatness + coast distance, take the best, carve a
    flat pad with a smooth blend radius. (This is also the monument hook:

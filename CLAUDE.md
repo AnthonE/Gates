@@ -9,7 +9,7 @@ here is wrong, fix the claim; history goes in `DECISIONS.md`.
 
 A survival game (Rust-the-game tradition): Rust-language authoritative
 server, **a native Rust desktop client** (Bevy; operator, 2026-08-05),
-WebTransport/QUIC. A separate product that orbits scry — sold through its
+WebTransport/QUIC. A separate product that orbits elo — sold through its
 Great Work board, coins from its economy — importing none of its code.
 **The skeleton is the product**: determinism, netcode, and the hot-path
 laws outrank every feature.
@@ -82,10 +82,10 @@ pays the same doors and earns the same coins as a human.
 | `reference/SPAWN.md` | how the reference game places and respawns world objects: four systems, the placement-check chain, the convar layer, and **§9 what it means for us** | **owns nothing** — research, not law. Read it before building placement; `TERRAIN.md` §7/§8 is our answer to it |
 | `reference/AUDIO.md` | how the reference game decides what a player hears: the Unity mixer groups/snapshots it built first, the `audio.framebudget 0.3` convar, localized ambience, the 2–5 kHz carve, its four shipped audio bugs, and **§9 what it means for us** | **owns nothing** — research, not law, and a *cleaner* source than `SPAWN.md`: devblogs and the public convar list, nothing decompiled. Our answer is `crates/client/src/sound/` |
 | `reference/VOICE.md` | how the reference game does **proximity voice chat**: voice as a `ServerMgr` message rather than an entity RPC, the P2P origin that let players read each other's IP and DDoS them, the forced move onto the server (Devblog 189) and the voice props that move then unlocked, what Steam's voice API actually hands you (a codec and a microphone, **no transport**), the radius as a disclosure mechanic, and the three costs they have published — a talker-side hitch, a fan-out knee around 8–10 concurrent talkers, and moderation forever. **§9 what it means for us** | **owns nothing** — research, not law, `DOORS.md`'s proxy caveat in full (every fetch blocked here; tiers 2–4 are search summaries, and one of them was a decade stale until the in-tree hook table corrected it). Written because two live claims pointed at an unopened question, and it **retires one of them**: voice is not "its own transport" for us (§9.2 — a voice radius sits inside `AOI_ENTER_CM`, so the cull is one compare against a set the AOI scan already built). §9.1 is the half that is unfixable later — a client-side attenuation of a broadcast stream is a wallhack |
-| `reference/BUILDING.md` | how the reference game decides **who may build here** *and* **what a shape costs**: the cupboard's authorized list (one pattern it reuses three times), privilege as a *volume emitted by the blocks* rather than a sphere around the cupboard, upkeep as a cost and the activity-keyed decay bug that caused it, the decay ladder, the demolish/rotate grace window, and — **§7b, 2026-08-10** — the 20 × 5 catalogue, twig as the editable draft, the socket separation between an opening and its insert, and the **four ratios** a hundred prices reduce to, with the half-wall's full price as the arbitrage they refuse on purpose. **§9 what it means for us** | **owns nothing** — research, not law, `DOORS.md`'s posture and its proxy caveat too, and §7b is tier 3 transcribed rather than fetched (§8 says so). Written because `DOORS.md` §9 kept pointing at it; §7b because the operator asked for the cost grammar next. **§9's last five items are the live half** — the first ten landed 2026-08-08/09 |
+| `reference/BUILDING.md` | how the reference game decides **who may build here** *and* **what a shape costs**: the cupboard's authorized list (one pattern it reuses three times), privilege as a *volume emitted by the blocks* rather than a sphere around the cupboard, upkeep as a cost and the activity-keyed decay bug that caused it, the decay ladder, the demolish/rotate grace window, and — **§7b, 2026-08-10** — the 20 × 5 catalogue, twig as the editable draft, the socket separation between an opening and its insert, and the **four ratios** a hundred prices reduce to, with the half-wall's full price as the arbitrage they refuse on purpose. **§9 what it means for us** | **owns nothing** — research, not law, `DOORS.md`'s posture and its proxy caveat too, and §7b is tier 3 transcribed rather than fetched (§8 says so). Written because `DOORS.md` §9 kept pointing at it; §7b because the operator asked for the cost grammar next. **§9's last items are the live half** — the first ten landed 2026-08-08/09, §7b's five 2026-08-10, and **§7c (2026-08-21) is where a piece sits vertically**: the half-wall snap offset, and the three-metre gradient they tried for exactly our problem and reverted |
 | `reference/DOORS.md` | how the reference game decides **who is allowed through a door**: the lock is a separate entity and a door with no lock is anyone's, the code lock's remembered list and its guest tier, the two goes it took them to rate-limit a keypad, knocking as a verb, and **§9 what it means for us** | **owns nothing** — research, not law, and `AUDIO.md`'s source posture with one caveat §0 states in full: every page fetch was blocked by this box's proxy, so the devblog and wiki tiers arrived as *search summaries*. The operator adopted it (`DECISIONS.md` 2026-08-08), so §9 is built: our answer is `crates/sim-core/src/lock.rs` |
 | `reference/DURABILITY.md` | how the reference game **wears an item out**: condition as per-instance state on the item, worn by a float **keyed on (tool, resource)** so the wrong-tool penalty is *data* rather than a predicate (a metal hatchet pays 0.3 on a tree and 1.0 on flesh), the repair bench as a place you go with a blueprint check on the player, the **20% of *maximum* condition** every repair costs forever, and the two starting items that carry no condition at all so a naked spawn can always bootstrap. **§9 what it means for us** | **owns nothing** — research, not law, and the **strongest provenance in this directory**, which is worth saying because `MONUMENTS.md` holds the other end: §0's numbers are read off `wiki.facepunch.com/rust/item/<slug>` pages **fetched whole on 2026-08-15**, not search summaries, and it corrects `SOURCES.md`'s map twice — those pages *do* carry stat tables, with a per-resource Condition Loss column. Read it before touching `ItemStack`: §9.2 is why condition belongs **on** the stack and what wall 6 charges for putting it there |
-| `reference/ARMOR.md` | how the reference game **dresses a player**: wearing is a **container move** — there is no equip RPC, only `CanWearItem(Item, slot)` beside `CanEquipItem` with one `MoveItem` under both — layering expressed as a *conflict* rather than an ordering, protection as a **vector keyed by damage type** (and radiation subtractive on a rate, where damage is proportional), coverage as the mechanic so an uncovered area takes full damage, the heavy set's 40% movement cost charged for *entering the category* and not per piece, and armor as hitpoints that break to **25%** rather than to zero. **§9 what it means for us** | **owns nothing** — research, not law, and `DOORS.md`'s proxy caveat in full (every fetch blocked; tiers 2–3 are search summaries), which is why §1 leads on the in-tree hook table. Written because `content/armor.toml` has been priced, validated, hashed and balance-anchored since M1 while **`grep -rn armor crates/sim-core` returns one comment** — §9.1 is that audit. §9.2 is the load-bearing half: `CONT_WEAR` reuses the move verb this repo has paid most dearly to harden, and costs a `CONT_KIND_BITS` widening (wall 6) because all four values are spent |
+| `reference/ARMOR.md` | how the reference game **dresses a player**: wearing is a **container move** — there is no equip RPC, only `CanWearItem(Item, slot)` beside `CanEquipItem` with one `MoveItem` under both — layering expressed as a *conflict* rather than an ordering, protection as a **vector keyed by damage type** (and radiation subtractive on a rate, where damage is proportional), coverage as the mechanic so an uncovered area takes full damage, the heavy set's 40% movement cost charged for *entering the category* and not per piece, and armor as hitpoints that break to **25%** rather than to zero. **§9 what it means for us** | **owns nothing** — research, not law, and `DOORS.md`'s proxy caveat in full (every fetch blocked; tiers 2–3 are search summaries), which is why §1 leads on the in-tree hook table. Written because `content/armor.toml` was priced, validated, hashed and balance-anchored since M1 while `grep -rn armor crates/sim-core` returned one comment — §9.1 is that audit, and **both halves of it are now closed**: reduction landed 2026-08-19 and the equip verb 2026-08-28. §9.2 was the load-bearing half and it is **built** (armor v1, wire v51): `CONT_WEAR = 4` reuses the move verb this repo has paid most dearly to harden, and it cost the `CONT_KIND_BITS` widening (wall 6) that §9.2 priced. §9.3's per-type vector and §9.4's condition are what remain |
 | `reference/SAVES.md` | how the reference game remembers a player: **there is no player save file** — the body stays in the world as a sleeper and is saved because it is an entity, the save and the wire on one base class, the stop-the-world stall it never fixed, the wipe split, and **§9 what it means for us** | **owns nothing** — research, not law, and `AUDIO.md`'s clean source posture. The operator adopted its model (`DECISIONS.md` 2026-08-07), so §9 is a plan: read it before touching persistence. Our answer is `crates/server/src/store.rs` + `sim-core/src/persist.rs` |
 | `reference/BALANCE.md` | which of our numbers are the reference game's and which are ours: what matched already, what moved on 2026-08-08, and **§4 what deliberately did not move** | **owns one thing, unlike the other `reference/*.md`** — §6's standing instruction, **rewritten 2026-08-10 and now a default rather than a permission**: take theirs, no case needed; a case is needed only to *differ*, and the only admissible one is a **mechanism** difference. Effort, a band, and source uncertainty are explicitly named as costs wearing principle's clothes (§6.2), a split source is broken by §6.3's ladder rather than deferred, and averaging stays forbidden. The bands in `CONTENT.md` §4 still decide whether it may land |
 | `reference/RIPLIST.md` | the **queue** for ripping the reference's numbers: what is taken, what is outstanding, what is blocked on research nobody has done, what has no equivalent to take, and the six steps for executing one row | **owns nothing** — a worklist, and `BALANCE.md` §6 plus `CONTENT.md` §4's bands still decide. Read it before touching a balance number. Its §0 carries the **threat frame** (operator, 2026-08-09): their numbers are priced for contested farming and ours are not, so taking a yield without the interruption that balanced it is §4.1's false-familiarity trap one level out |
@@ -94,16 +94,15 @@ pays the same doors and earns the same coins as a human.
 | `reference/PROJECTILES.md` | how the reference game does **bows and arrows**: there is no `Bow` class (a bow is a one-round-magazine `BaseProjectile`, the same class as every gun), the projectile is **client-simulated** and audited by a thirteen-convar tolerance budget rather than a predicate, ballistics live on the **ammo** (`ItemModProjectile`) so one bow fires four different arrows, the arrow is an item three times over (~15 % break, 10 s lodge), hit detection takes the **most significant** body part not the first intersection, and **§9 what it means for us** | **owns nothing** — research, not law. Read it before touching `crates/sim-core/src/ranged.rs`. §9.1 is why our server-simulated arrow stays server-simulated; §9.3 is the one schema change it argues for (`[weapon.ballistic]` belongs on the ammo row), and it gets harder every arrow we add first |
 | `reference/MONUMENTS.md` | how the reference game decides **where a large authored place goes**: placement as a solve rather than a guess (three rewrites in ten years, still moving), the collision list every worldgen system after monuments produced — rivers, cliffs, ice lakes, roads, ring roads, rails — terrain blending as authored per-monument masks rather than a flattened circle, the 2015 client-worldgen checksum mismatch they had to stop kicking for, vertical AOI layers, per-class interest ranges, what one moving monument actually costs, and **§9 what it means for us** | **owns nothing** — research, not law, and **the weakest provenance in this directory: §0 says so in full.** It is a summary of sources nobody here has opened (an operator briefing, 2026-08-10), so no number in it may reach `content/`. Its value is the ORDER, which is checkable against our tree. §9.2 is built (`SiteFootprint` / `site_sweep`); §9.3 is the real gap — our solver is two hand-written tiers |
 | `reference/ANIMALS.md` | how survival games do animal mobs: the reference game's baked navmesh (100% CPU at boot) and the fixed think rate and dormancy it settled on, Valheim's ring spawners and two caps, Minecraft's mob cap and 1-in-800 despawn roll, and **§9 what it means for us** | **owns nothing** — research, not law, and `AUDIO.md`'s clean-source posture (devblogs, convar lists, wikis; nothing decompiled). The operator un-cut animals off it (`DECISIONS.md` 2026-08-08), so §9 is a landed design: read it before touching `crates/sim-core/src/mob.rs` |
-| `WORLD.md` | the proposed register: **Gates as a threshold dimension** (the name is the fiction — it explains respawn, the wipe cadence and why banked OBOL leaves and carried OBOL does not), an ancient obsidian/lapis/gold civilization, the coast→interior gradient, the monument catalogue, **extraction** as a server-opened window at the haven's bank terminal, world states whose **default is broken** so a wipe cycle is a repair project, and an optional **ward** | **DESIGN — unspoken, none of it built, and a roadmap rather than a v1 spec** (operator, 2026-08-10: *"paths over time"*, and *"i think this is the max deviation"* — it is a ceiling, not a floor). Owns the fiction and nothing in `crates/`. Its §8 is the useful half: five collisions with live gates, two of them real — the visual rubric scores an obsidian world as a defect by construction, and a ward would invalidate `CONTENT.md` §4's TTK anchor *without reddening `test_content`*. §9.1 is the one piece of timing advice: **decide the register early, build it late**, because art made for the wrong register is remade |
+| `WORLD.md` | the proposed register: **Gates as a threshold dimension** (the name is the fiction — it explains respawn, the wipe cadence and why banked JUNK leaves and carried JUNK does not), an ancient obsidian/lapis/gold civilization, the coast→interior gradient, the monument catalogue, **extraction** as a server-opened window at the haven's bank terminal, world states whose **default is broken** so a wipe cycle is a repair project, and an optional **ward** | **DESIGN — unspoken, none of it built, and a roadmap rather than a v1 spec** (operator, 2026-08-10: *"paths over time"*, and *"i think this is the max deviation"* — it is a ceiling, not a floor). Owns the fiction and nothing in `crates/`. Its §8 is the useful half: five collisions with live gates, two of them real — the visual rubric scores an obsidian world as a defect by construction, and a ward would invalidate `CONTENT.md` §4's TTK anchor *without reddening `test_content`*. §9.1 is the one piece of timing advice: **decide the register early, build it late**, because art made for the wrong register is remade |
 | `reference/PLANTS.md` | how games grow a forest: the five-layer forest structure and which two of ours are empty, space colonization vs L-systems (and that we already ship the solver), Deussen's ecosystem sim as the reference for *placement*, octahedral impostors, and **§6 what it means for us** | **owns nothing** — research, not law, `AUDIO.md`'s clean source posture (a SIGGRAPH paper, four MIT repos, and our own dependency's source; `docs.rs` was proxy-blocked so the crate API came off `raw.githubusercontent.com`). Written because "are our trees good" has an arithmetic answer: **one species at three seeds, on a uniform 8 m scatter lattice that `ART.md` rule 7 forbids**. Read it before buying any foliage — §4 is why a mesh generator is the wrong tool — and before touching `render/tree.rs` or `terrain::scatter` |
 | `reference/SOURCES.md` | the research **reading list**: which document settles which question, in priority order, with tiers 1–3 marked ANSWERED, tier 4 (the threat/logistics decomposition) half-closed 2026-08-14 — the violence paper is read at primary tier (`RIPLIST.md` §5.6, and it settles threat *shape*, not the magnitude; the session numbers stay open) — and **§3b the systems queue** (logistics by wipe stage, events, progression, clans, industry, moderation, trade) as the standing research worklist | **owns nothing** — a worklist for research the way `RIPLIST.md` is one for numbers. ⚠ Its §0 header is the load-bearing part and has been rewritten **in both directions**: reachability is a property of the container, not of the hosts, so *probe* rather than trusting either the "every Rust domain 403s" claim or the "they are open" one — both were honest measurements, on different boxes, days apart |
 | `assets/models/WANTED.md` | the 3D object inventory: 63 meshes and 6 texture sets with sizes read off the code, the glTF/origin/ORM pipeline rules, and what is already covered | **owns nothing** — a sourcing worklist, `RIPLIST.md`'s shape. `MANIFEST.md` records what ships; this records what does not exist yet |
 | `assets/textures/CANDIDATES.md` | the texture sourcing queue for the six foliage/bark sets: 84 candidate rows (80 CC0, 4 CC-BY) with licence, fetch mode and the measurement columns still empty, plus `fetch_gates_texture_candidates.py`, the csv/xlsx it reads and `CANDIDATES_CC_BY.md`'s draft notices | **owns nothing** — `WANTED.md`'s shape for pixels rather than meshes, and the measurement still decides (`ART.md` §7's estimator, never the fetcher's). The 1.3 GB it downloads is gitignored; `assets/textures/MANIFEST.md` records what ships |
 | `assets/sound/WANTED.md` | the SFX inventory: every cue the client plays with its length, character and delivery spec, the ElevenLabs prompt sheet, the open-source candidates with their licences, and the score's composer brief | **owns nothing** — `WANTED.md`'s shape for audio. The enum (`sound/mod.rs::Cue`) is the authority and the bank stays generated (`sound/synth.rs`) until a file lands with a manifest row; `DECISIONS.md` 2026-08-11 (ElevenLabs, paid plan) and 2026-08-07 (CC0/CC-BY, NC/SA refused) are the rail |
 | `assets/models/MANIFEST.md` | what **ships** in `assets/models/`: vendor, mode, prompt, task id and date per mesh, the KTX2/UASTC-at-1024 texture rule and its VRAM reason, and what the client actually loads | **owns the licence rail's audit trail**, which is the one thing here that is not just a note: `DECISIONS.md` 2026-08-07 is CC0 preferred, CC-BY with a `NOTICE` entry, **NC and SA refused** because the game is sold. Recording the provenance per file is what makes that rail auditable after the fact rather than a promise. `WANTED.md` is the inverse — what does not exist yet |
-| `PLAYERS.md` | the agent player: the verb set, the observation encoder, and the four walls that keep agent play measurable | **DESIGN — none of it built.** The research half is scry's `SUBSTRATE.md`; this owns only what an agent may do here |
-| `marketing/` | what a stranger reads about **OBOL and MYRRH** somewhere that is not this repo — an explorer's token-info field, a DEX listing, a wallet's coin row — plus the four marks | **owns nothing in `crates/`**, and it is here because the coins are ours: scry has exactly one coin and it is SCRY (operator, 2026-08-07), so its repo keeps only our listing row. ⚠ **Every number in it is derived in `scry-forge`**, where the contracts and pool seeds live — re-derive there, paste here |
-| `BRANCH-NOTES.md` | a **transient** handoff note, written on a branch by the loop's builder when it lands a partial slice (`gates-loop/GOAL.md` §the partial rule) — what landed, what is measured, what remains | **owns nothing and is not a queue.** It describes whatever branch wrote it last, so read the heading before trusting a word of it; the current one says it carries no handoff. Not deleted because the loop is paused, not retired, and its builder recreates this file by protocol |
+| `PLAYERS.md` | the agent player: the verb set, the observation encoder, and the four walls that keep agent play measurable | **DESIGN — none of it built.** The research half is elo's `SUBSTRATE.md`; this owns only what an agent may do here |
+| `BRANCH-NOTES.md` | a **transient** handoff note, written on a branch by the loop's builder when it lands a partial slice (`gates-loop/GOAL.md` §the partial rule) — what landed, what is measured, what remains | **owns nothing and is not a queue.** It describes whatever branch wrote it last, so read the heading before trusting a word of it — checked 2026-08-30, the current one is `claude/game-visual-improvements-fj1qyz`'s seven visual slices from 2026-08-26, and this row said it carried no handoff until that was read. Not deleted because the loop is paused, not retired, and its builder recreates this file by protocol |
 | `NOW.md` | what next | **the only list that answers that** |
 
 Docs are dated notes, not law. Four things actually bind: the walls below,
@@ -169,7 +168,7 @@ one. That direction of error is the cheaper one and it is still an error:
    `content/*.toml` only, validated at boot, content hash pinned into the
    WAL header (a replay replays the content it was played under). →
    `test_content`.
-## Traps already paid for (learned from research or scry production —
+## Traps already paid for (learned from research or elo production —
 do not rediscover)
 
 - **wtransport must be pinned ≥ commit `0f7609a`** (or a release
@@ -324,6 +323,83 @@ do not rediscover)
   count (`Sea::carried`) asserted as a floor on a one-cell snap and as zero on
   a diagonal — a count of VERTICES, not a time, so the no-clock rule is
   untouched.
+- **An import rule that is correct for a RENDER row is a defect on a COLLISION
+  row, and the two rows look identical in the code.** `ci/import_meshy.py`
+  scales a generated mesh uniformly to fit INSIDE a declared box, and its
+  header argues the case well: a model that comes up short is "a row to
+  re-measure, not a mesh to stretch". That is right for `structures::DEPLOY`,
+  which has no sim consumer. It is wrong for `terrain::SHELTER_BOXES` and
+  `WAYSTATION_CANOPY_BOXES`, which ARE what stops a body — `OCCUPANT_R_M` and
+  `OCCUPANT_TOP_M` are *defined* as their bounds — so "fits inside" means a
+  player held by air. Measured 2026-09-01 on the first two site models:
+  **1.51 m of blocked space above the shelter's roof, 1.26 m of invisible
+  skirt on each horizontal axis of the canopy**, i.e. the 0.39 m skirt
+  `SLACK_R_M` was closed to 1 mm to eliminate, re-introduced at four times the
+  size by an import flag. `--fit-axes` scales each axis to its own target
+  instead; the price is a stated aspect stretch, and **prompting the generator
+  for the right aspect does not work** — a regenerated canopy asked three ways
+  for "much wider than it is tall" came back 1.329× against the 1.291× it was
+  meant to fix. The general shape: **before reusing a pipeline step, ask
+  whether the target number is a render fact or a sim fact.** The same box
+  written in two crates means two different things.
+  ⚠ **And the SHAPE of the target matters as much as its size: fitting a box
+  to a volume the sim blocks as a CYLINDER is wrong by up to √2.** The two
+  authored sites publish `OCCUPANT_R_M` as a half-DIAGONAL, because their
+  footprint IS the box table. The scatter rows publish the same field as the
+  radius of a round-in-plan blob. Same field, same units, two different
+  shapes — and reusing `--fit-axes` across them drew the first ore node out to
+  **1.2737 m against 0.9148 m blocked, 36 cm of visible rock a player walks
+  straight through**, which is the worse of the two directions. `--fit-radius`
+  solves for the largest per-vertex `hypot(x, z)` instead, which is the number
+  `render::tree::bounds` actually measures. Found by `tests/prop_assets.rs` on
+  a real import rather than under a mutant.
+  ⚠ **And the equality gate over the second half of this slice was green
+  because its fixtures never visited the feature.** `client/tests/ground.rs`
+  compares the optimised heightfield against a naive rebuild vertex for vertex,
+  splat weights included — and its four near-chunk origins sit at the island's
+  centre and past its corners, while the coast road lives in a 600–1000 m
+  annulus. Not one of 16,384 vertices was ever on it, so the road paint landed
+  under an exact gate that could not see it. The fix is a chunk that is FOUND
+  rather than written down (a seed decides where its own coastline is) with the
+  hit count asserted, and the proof is that the mutant reddens the new test
+  while all four old ones stay green. Same family as the `lattice.rs` entry
+  below: a gate can be exact, bit-for-bit, and aimed at nothing.
+
+- **A generator is a SAMPLER, so the pipeline needs a selection step and not a
+  better prompt.** Eleven rolls of six scatter props on 2026-09-02 produced
+  six keepers, and the rejects failed in ways no amount of rewriting fixed:
+  one reference image of a rock reconstructs to a **slab** (depth/width 0.425,
+  1.000 and 0.195 across three rolls of ONE prompt). What the prompt does
+  control was measured and is narrower than it looks — **naming an axis it had
+  omitted works** (adding "2.2 m deep, as deep as it is wide" took the next
+  three rolls to 1.016 / 1.022 / 1.032), and **naming a colour to avoid works**
+  ("lichen in the hollows" → 47.6% green-dominant; dropping it → 0.2%). What
+  does NOT work is asking for a ratio more extreme than the object's natural
+  one, measured twice: a canopy asked three ways to be "much wider than it is
+  tall" came back **worse** than the roll it was meant to fix. **And the
+  obvious structural fix is a trap of its own**: `multi-image-to-3d` does give
+  real depth, and it refuses `smart-topology` AND silently ignores
+  `target_polycount` — one boulder came back at **1,924,782 triangles**
+  against a 1.5 M *frame* ceiling. So: say what the object is in full, roll
+  several, and reject on a number. `ci/measure_glb.py` is that step, and it
+  reads its target out of `sim-core` rather than taking it typed.
+
+- **Auto-rigging is humanoid pose estimation, so it refuses every animal in
+  this game.** Meshy's `/openapi/v1/rigging` advertises a free walk and run
+  clip with every rig, which reads as the obvious way to animate a mob —
+  and on the generated boar it answers *"Pose estimation failed, please
+  provide a valid model"*. The docs say "character models" and "t-pose" and
+  mean it. Two things follow, and the second is the load-bearing one.
+  **First**, a generated animal arrives as one primitive with no skin and no
+  animation, so it can be neither rigged nor split. **Second, and this is the
+  part to check before buying any mob asset: `render/mobs.rs` does not draw a
+  skeleton.** It draws a body plus four leg children swung off `LEG_ANCHORS`
+  at a rate keyed to distance travelled, which is a deliberate design with
+  registered knobs — so a whole-animal mesh has nowhere to go. Shipping one
+  anyway means an animal that slides across the ground, the exact defect
+  `render/anim.rs`'s own header records as worth fixing for players. The
+  order is the client slice first, the asset second.
+
 - **A cheap counter is not a free counter, and one was left in the tree.**
   `crates/sim-core/src/perfcount.rs` sat untracked in this branch's working
   tree — its own first line reading *"TEMPORARY measurement scaffold (not for
@@ -336,6 +412,81 @@ do not rediscover)
   look right and not the same measurement. **`git status` before quoting a
   timing**, and if a counter has to exist, put it behind a cargo feature so the
   default build has no atomic in the hot path.
+- **An event count taken while the ring is overflowing is an UNDERCOUNT of the
+  thing it names, so a fixture that measures itself through the ring measures
+  the ring.** The event ring is drop-newest at `MAX_EVENTS_PER_TICK`, which
+  every wall-4 gate knows — but knowing it as a *policy* and remembering it as
+  a *measurement hazard* are different, and `sim-core/tests/loot_storm.rs`
+  found the second the hard way on 2026-08-30. Its first draft asserted "the
+  fight kept feeding the store while it was being emptied" by counting
+  `EV_BAG_DROPPED` during a loot burst. It counted **6**, where the run's own
+  death rate (1,700 over 1,050 ticks) implies roughly fifty across those 32
+  — because the same burst had saturated the ring with `EV_GATHER` and the
+  drops were thrown away. The assertion passed. Its number was a property of
+  the ring's saturation, and it was read as a property of the fight.
+  The rule: inside any fixture that deliberately overflows the ring, **ground
+  truth comes off the store, not off the announcements** (`Backpacks::len`,
+  not `EV_BAG_REMOVED`). And the gap between the two is worth gating rather
+  than working around — that file now asserts that 1,024 bags provably left
+  the store against 856 removals announced, which is the only place in this
+  tree where drop-newest has an observable consequence instead of a comment.
+  Same family as the byte-golden entry above: three green gates over a fact
+  nobody checked, and the one that was green for the wrong reason was the one
+  that looked most like coverage.
+- **A shaping curve interpolated with `lerp` is a contour map, and no gate in
+  this repo could see it.** `terrain::remap` ran the height field through 17
+  LUT knots with `lerp` between them from the first commit to 2026-08-26. A
+  piecewise-linear curve is C⁰ and not C¹ — its *slope* steps at every knot,
+  here by **8× at knot 7 and 12× at knot 12** — and `render/terrain_mesh.rs`
+  takes its normal analytically from that field's gradient, on purpose, so the
+  triangulation never shades. A slope step is therefore a normal step, and a
+  normal step along a set of constant elevation is a **survey contour drawn on
+  the mountain in shading**. Sixteen knots, sixteen rings, nested around every
+  hill; the same thing happens at a `clamp`'s two rails and at any linear ramp
+  keyed on height (the ridged blend's gate put two more at 52 m and 80 m).
+  **Every gate was green and every one of them had to be**: the golden pinned
+  the values the curve produced, the replay reproduced them, `test_content` had
+  no opinion, and clippy sees a `lerp`. The defect is not a wrong value
+  anywhere — it is a *derivative* being discontinuous, and nothing in this tree
+  asserted on a derivative. It was found by drawing it
+  (`sim-core/examples/hillshade` renders |∇‖∇h‖|; the island came out as a topo
+  map) after the operator pointed at a screenshot.
+  Two things to carry. **First: a shading defect can live entirely in the sim
+  crate.** The renderer was correct; worldgen handed it a creased surface.
+  Anything that reaches the frame through an analytic normal — terrain, water,
+  any signed distance — is held to C¹, and a LUT, a `clamp`, a `min`/`max`
+  ramp and a `t.clamp(0,1)` gate are all C⁰ by default. **Second: the obvious
+  gate does not work and was thrown away rather than shipped** — sweeping the
+  island and binning curvature by elevation reads 3.58–4.65× the median before
+  the fix and 1.54–3.52× after, overlapping, because it cannot tell a crease
+  from the cliffs the LUT exists to create. `tests/contour.rs` gates the
+  *mechanism* (the curve is C¹ at every knot and at the clamp) instead, which
+  is exact, runs in microseconds, and is proven red under the old body.
+
+- **A statistic about an asset is not a number until you say how it was read,
+  and the DECODER is part of that.** `assets/textures/MANIFEST.md` and two doc
+  tables in `crates/client/src/render/` describe the shipped `.jpg`s — means,
+  luma, sd, gain span — and on 2026-08-28 all three were wrong somewhere while
+  every constant beside them was right, because `GRAIN_GAIN`, `ROUGH_MEAN` and
+  `GRAIN_SHARE` each have a test that re-measures them off the file and the
+  prose had nothing. The 2026-08-27 `rock` swap (`Rock023` → `Gravel004`) moved
+  exactly the things with a gate pointing at them and left the old texture's
+  numbers in **four** places plus a dead `pub ROCK_GAIN` nothing read. Two
+  things to carry beyond "gate the prose". **First: the basis is half the
+  claim** — one `rock_albedo.jpg` reads an sd of 0.1379 at 1024², 0.1287 at
+  512² and 0.1131 at 256², so the file's own candidate table and its prop-bind
+  table differ legitimately and neither may be "corrected" into the other.
+  **Second: two JPEG decoders of one file disagree by more than the digits
+  these tables print** — the first round of corrections here was measured with
+  Pillow and `image` 0.25 put five more cells out of range (`bark`'s span
+  2.000 → 1.995, `litter`'s 3.586 → 3.559, worst case 0.45%). Neither is wrong;
+  the one that matters is **the decoder the game ships**, because Bevy reads
+  these files through `image` and the frame is what the number describes. The
+  gate is `crates/client/tests/manifest_measured.rs`, its bound is half an ulp
+  of whatever precision the text printed (a full ulp let `47.6%` → `47.5%`
+  pass — found by running the mutants, six of seven caught and the bound was
+  the reason), and it prints the whole table as measured so nobody re-derives
+  one by hand again.
 - **A judge names the symptom; fix the cause.** Optimizing the judge's
   literal sentence is how a loop circles for three passes — elsewhere,
   "untextured" was really diffuse contrast crushed by an earlier fix for
@@ -421,7 +572,7 @@ do not rediscover)
   (measured elsewhere: three parallel rounds worsened visual defects
   60→66; one sequential owner over the coupled set cut them to 26). The
   lighting gap, when attacked, is a single iteration's single ownership.
-- **A depot build id has no platform in it, and scry's origin keys by build id
+- **A depot build id has no platform in it, and elo's origin keys by build id
   alone.** `ci/depot.py`'s `build_id()` is `<version>-g<sha>` (plus a
   content-keyed `-dirty` marker); the origin stores
   `$SCRY_DEPOTS_DIR/<slug>/<build>/depot.json` and `published.json` maps
@@ -432,7 +583,7 @@ do not rediscover)
   destination for both. It has never fired only because the two builds
   published 2026-08-10 happened to be cut at different commits, which is luck
   wearing a design's clothes. **Do not fix it with a platform suffix on the
-  id**: scry's `meter/gamerepo.py::version_of` strips `-g[0-9a-f]+…$` anchored
+  id**: elo's `meter/gamerepo.py::version_of` strips `-g[0-9a-f]+…$` anchored
   at `$`, so `0.2.0-g<sha>-win-x86_64` stops parsing back to `0.2.0` and the
   store row's declared-vs-published gap goes permanently red; a fake-hex sha
   parses and lies about the commit.
@@ -465,7 +616,7 @@ do not rediscover)
   with draft notices. The fix is structural rather than a check: stage from
   `git ls-files` and refuse to fall back, so `.gitignore` stays the single
   author of what is not ours to ship and the packager cannot disagree with it.
-  scry's `deploy/publish_scryward.py` chose `git archive` over a walk for this
+  elo's `deploy/publish_scryward.py` chose `git archive` over a walk for this
   exact reason and says it has paid for it seven times; we now have our own.
   **The general shape: a build step that enumerates by walking is only as
   correct as the tidiness of the box it runs on, which is not a property
@@ -578,18 +729,41 @@ trim that is owed (`NOW.md` §0x item 4).
 
 ## The loop that builds this repo
 
-⚠ **STOPPED, not retired — and "stopped" is a state that changes, so read the
-harness rather than this line.** It was paused 2026-08-04 through 2026-08-13
-(operator, 2026-08-11: *"its paused"*), then **ran again: 18 judged passes
-under `gates-anchor-20260813-230343` (2026-08-13 23:44 → 2026-08-14 14:16) and
-3 under `gates-anchor-20260814-142610` (15:31 → 17:44), all 21 PASS at the
-merge gate and merged by the runner.** `STOP` was touched at 17:16 on
-2026-08-14, the runner finished its pass and exited cleanly, and nothing is
-running now. **The check is `loop-status.sh` and `ls .../STOP`, in that order**
-— this paragraph has been wrong about the loop's state at least once, and a
-dated claim about a live process is the shape `CLAUDE.md` warns about
-everywhere else. While it is dark, `NOW.md` is the steering; the harness is
-intact and the table below still works.
+⚠ **Not retired, and this line does not know whether it is running.** That is
+deliberate now: every previous version of this paragraph asserted a state, and
+each was wrong within days — a dated claim about a live process is the shape
+`CLAUDE.md` warns about everywhere else. **The check is `loop-status.sh` then
+`ls .../STOP`, in that order.** It has run in bursts (21 passes 2026-08-13/14,
+11 on 2026-08-15, 8 on 2026-08-28) with long dark stretches between; while it is
+dark, `NOW.md` is the steering.
+
+**The failure worth knowing about is 2026-08-29**, because it changed the
+harness. A run died at 01:31 with no `STOP` — its first health gate took seven
+`rust-lld` SIGBUS crashes, so no test ran and no wall fired, and every one of
+them surfaced as `GATE FAIL: native client suites`. The loop could not tell a
+build that failed to COMPLETE from a wall that FIRED, so it would have opened a
+recovery pass against a green tree; the steward that woke measured silence
+against a *previous* run's log and reported 22790s about a four-minute-old
+runner; and the sweep meant to file pre-2026-08 reports had been eating the
+current ones, so `loop-status.sh` read `0 PASS / 0 FAIL` over 70 real verdicts.
+All three are fixed and gated — run `gates-loop/watchdog-test.sh`, and note
+that the count that stood here for one commit was wrong within the hour;
+`gates-loop/findings/note-20260829-the-loop-died-of-the-box-not-the-tree.md`.
+
+⚠ **`rust-lld`'s SIGBUS is ENOSPC, and this line said it was unknown until
+2026-08-30**, when a bump to 0.7.0 reproduced it in one log with the cause
+still in it: `rustc-LLVM ERROR: IO failure on output stream: No space left on
+device` / `(os error 28)` on three crates, then `collect2: fatal error: ld
+terminated with signal 7 [Bus error]` linking `client`'s test binaries, then
+`GATE FAIL: native client suites` — the same three lines, in the same order, as
+the run that died. A full disk is a truncated mmap and a truncated mmap is a
+bus error, so the linker never sees an `ENOSPC` to report. The reason it read
+as unknown for a day is note §4's: the partial outputs are unlinked on the way
+out, so a `df` run afterwards shows a healthy box. **Read the compiler's lines
+above the linker's**, or the box lies to you. What filled it here was ordinary:
+a version bump invalidates every artifact of our six crates, so `target/debug`
+held two full sets at ~1.4 GB per render-tier test binary — 17 GB of a 49 GB
+disk, with 7 GB of `debug/incremental` beside it.
 
 The loop wrote most of the commits in this tree. It lives at
 `/mnt/hive-data/gates-loop` — **outside this repo, deliberately.** The builder is
@@ -616,17 +790,35 @@ judge holding `judge/RUBRIC.md` (ten procedural checks — the merge gate) and
 performs the merge itself on a PASS, then captures and spawns the visual judge
 holding `art/RUBRIC.md` (ten visual criteria against the reference set). Both
 reports end in a `## Ranked gaps` section, and those gaps — not `NOW.md` — are
-where the loop's direction comes from **while it is running**. It is stopped,
-so that instruction is suspended rather than deleted, and the reports are
-evidence rather than a queue. **The newest pair is 2026-08-14
-(`pass-20260814-142610-03-{judge,visual}.md`)**, and all six frames in it were
-shot on seed 20260731 under `art/capture-native.sh` — the same island the
-shard ships, which is the only reason those gaps are about our world at all.
-Steer from `NOW.md` until the loop is restarted.
+where the loop's direction comes from **while it is running**; when it is dark
+that instruction is suspended rather than deleted, and the reports are evidence
+rather than a queue. `ls -t findings/` is the newest pair — do not trust a date
+written here, which is why one is not. **The visual half is the older half**:
+capture has been OFF since 2026-08-28, so the newest visual report is weeks
+behind the newest judge report, and its frames were shot on seed 20260731 under
+`art/capture-native.sh` — the same island the shard ships, which is the only
+reason those gaps are about our world at all. Steer from `NOW.md` while it is
+dark.
 
-**`git push` is blocked** by a `pre-push` hook the runner installs, and
-`--no-verify` is how anything gets past it. That friction stays: a push is
-publication, it is hard to take back, and it should cost a deliberate act.
+**`git push` is the DEFAULT now** (operator, 2026-08-28: *"pushing needs to be
+the default change it"*). It was blocked outright by a `pre-push` hook the
+runner installs, with `--no-verify` the only road past it, and that friction
+was retired for a measured reason rather than a preference: **it cost a
+seven-day divergence.** Two commits sat here from 2026-08-21 while thirty-one
+landed on the remote, and because the box also stopped fetching, both sides
+independently did the same elopros.com host migration — eight conflicts that
+existed only because the work never met. Not-pushing was the default, so work
+rotted by omission instead of by decision.
+
+The hook still refuses **one** thing: a force / non-fast-forward push to
+`main`, which is the only push that can destroy published history.
+`--no-verify` remains the deliberate override for a real rewrite. Everything
+else — a branch, a fast-forward of `main` — just goes.
+
+⚠ **So the friction that used to stop you is gone, and the judgement is now
+entirely yours.** Fetch before you start (`git fetch && git status` would have
+said *"ahead 2, behind 31"* the moment anyone looked), and push a slice when
+it lands rather than leaving it to age.
 
 **An agent may push when the operator has plainly asked for it** (operator,
 2026-08-17: *"when its clear that i wanna push you can push please"*). This
@@ -745,14 +937,14 @@ which is neither.
 
 ## Vendored, and not to be edited here
 
-- `crates/client/src/scry_overlay.rs` is **scry's SDK, byte-for-byte**
-  (`sdk/rust/scry_overlay.rs` in **`AnthonE/scry-forge`** — this line said
+- `crates/client/src/elo_overlay.rs` is **elo's SDK, byte-for-byte**
+  (`sdk/rust/elo_overlay.rs` in **`AnthonE/scry-forge`** — this line said
   `AnthonE/scry` until 2026-08-14, which is a different repo). It is how this game reaches
-  a running scry launcher for identity and signatures with no key in the game
-  process and no crate added to the tree. `scry::VENDORED_SHA256` pins it and
+  a running elo launcher for identity and signatures with no key in the game
+  process and no crate added to the tree. `elo::VENDORED_SHA256` pins it and
   a test fails on any local edit — **fix it upstream and re-vendor**, because
   a patch applied here fixes Gates and leaves every other game on the broken
-  copy. `crates/client/src/scry.rs` is our wrapper and is ours to change.
+  copy. `crates/client/src/elo.rs` is our wrapper and is ours to change.
   Not third-party: same author, same licence, no notice owed.
   ⚠ **The pin catches a local edit and is blind to upstream moving**, and the
   two are not the same failure. Found 2026-08-09: the copy sat 326 lines
@@ -760,9 +952,9 @@ which is neither.
   transport (it `use`d `std::os::unix::net` unconditionally, so a Windows
   build of this client could not compile), no `prove`, no `profile`. Nothing
   gates a file in another repo, so the check is a command you run when you
-  touch this seam: `sha256sum crates/client/src/scry_overlay.rs` must appear
+  touch this seam: `sha256sum crates/client/src/elo_overlay.rs` must appear
   in `sdk/SHA256SUMS` upstream. Re-vendoring is `cp` + re-pin + `cargo test
-  -p client --lib scry`, and check the CALL SITES, not just the compile —
+  -p client --lib elo`, and check the CALL SITES, not just the compile —
   `Overlay::title` changed shape under us and only luck kept it uncalled.
   ⚠ **Run that check against `scry-forge` and nothing else — there are two
   repos with an `sdk/` and the other one lies.** `AnthonE/scryward` is the
@@ -773,13 +965,27 @@ which is neither.
   That re-vendor also proved the call-site rule twice over: `play_message`
   changed the bytes a wallet signs (`vow:` → lowercased `wallet:`, upstream
   2026-08-12), which two sides can disagree about while both compile. It is
-  re-exported by `scry.rs` and called nowhere, so again nothing broke, and
-  again that was luck. The trees are on morr: `/data/apps/scry-forge`
+  re-exported by `elo.rs` and called nowhere, so again nothing broke, and
+  again that was luck. **On 2026-08-29 the luck ran out**, and it ran out
+  on the one thing a stale copy cannot survive: upstream's platform rename
+  (`elo-broker` 575a273b, 2026-08-21 — the same day as ours) moved **the door**,
+  all four spellings of it — `SCRY_LAUNCHER_SOCKET` → `ELO_LAUNCHER_SOCKET`,
+  `$XDG_RUNTIME_DIR/scry/launcher.sock` → `…/elo/…`, `~/.cache/scry/launcher/`
+  → `~/.cache/elo/…`, `\\.\pipe\scry-launcher-<user>` → `elo-launcher-<user>`.
+  A game on the old copy then finds no launcher on a machine running one, which
+  is the failure the vendored file's own `default_socket` doc calls *"the worst
+  shape of bug here"* — the game says "playing anonymously", nothing is red, and
+  it lands two hops away as a **login** failure: no launcher → `sign_siwe` is
+  `None` → guest → a `require_auth` shard answers `REFUSE_AUTH`, which is what a
+  bad signature looks like. **So the drift class to fear is not an API that
+  stops compiling — it is a CONSTANT that still compiles and no longer points at
+  anything.** Neither the sha pin, nor `cargo test`, nor `ci/gates.sh` can see
+  it, and the eight days it survived were paid for in one command nobody ran. The trees are on morr: `/data/apps/scry-forge`
   (`launcher-rs/`, `sdk/`) is the one that is edited and built from.
 - The depot the launcher installs is written by `ci/depot.py`, gated by
   `--self-test` in `ci/gates.sh`. It deliberately does **not** compute the
-  depot digest — `scry digest` does, and a second implementation of the number
-  that gets notarized is scry's invariant 3 with money attached.
+  depot digest — `elo digest` does, and a second implementation of the number
+  that gets notarized is elo's invariant 3 with money attached.
 
 ## Third-party credit
 

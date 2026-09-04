@@ -7,8 +7,8 @@
 //! rare barrel drop with a recipe, a research rung and a craftable round,
 //! all of which a player could pay for before pulling the trigger on
 //! nothing, because `bake_combat` dropped every row that was not melee,
-//! throwable or bow. See `hitscan` for what it deliberately still does not
-//! do (no `EV_SHOT`, so no tracer and no muzzle flash).
+//! throwable or bow. It announces itself with `EV_SHOT` at speed zero —
+//! see `hitscan` for why that pattern was free to spend.
 //!
 //! Until this module `combat.rs` exposed `strike` and `raid` and nothing
 //! else, so every fight on the island was a walk-up club fight while
@@ -44,10 +44,57 @@
 //!
 //! # What v0 does not do
 //!
-//! No headshots (melee has none either — `frame.pitch` aims the shot but no
-//! part of a body is worth more than another), no damage falloff (the schema
-//! has no curve to read), and no structure damage
-//! — an arrow that reaches a wall stops dead rather than chipping it.
+//! No damage falloff — the schema has no curve to read.
+//!
+//! **A bullet is lag-compensated and an arrow is not, since 2026-08-30**, and
+//! the asymmetry is the design rather than a gap: `hitscan` resolves on the
+//! tick its trigger came down, so its bodies are put back where the shooter's
+//! screen had them (`Pose::Rewound`), while `step` is one tick of a flight
+//! launched earlier and stays present-tick (`Pose::Live`). `Pose`'s own doc
+//! carries the argument and `DECISIONS.md` §open carries the launch half.
+//!
+//! **"No headshots" stood here until 2026-08-30** and is the third clause
+//! of this header to outlive its truth, after the bow and after the wall
+//! chip. A head is a band off the top of the body cylinder
+//! (`collide::HEAD_BAND_M`) and a hit whose line crosses it pays the
+//! weapon's `headshot_mult`, which had been priced, banded and
+//! content-hashed since the content crate and dropped at the bake every
+//! time (`reference/PROJECTILES.md` §9.4). The rule is §7's — the most
+//! significant part **along the segment**, so `nearest_body` carries the
+//! span the shot spent inside the body and `part_crossed` is the overlap.
+//!
+//! **Melee still has none**, and that half of the old sentence stays true
+//! for the reason it always gave: `combat::strike` resolves feet-to-feet in
+//! a plane, so there is no height for a band to test. `MeleeDef` has no
+//! such field.
+//!
+//! **A shot chips the wall it stops on, since 2026-08-28** (ranged
+//! structure damage v0) — this paragraph said it did not, for as long as
+//! there has been a bow. `content/weapons.toml` has given the bow, the
+//! crossbow and the revolver a `structure = 1` since the content crate was
+//! written; the column was parsed, range-checked, balance-checked and
+//! folded into the content hash, and `bake_ranged` dropped it one line
+//! before `RangedDef` could hold it. The same "armed and unread" shape as
+//! the whole bow before hitscan v0, one column down.
+//!
+//! It is not a second damage path. `world_stop` already knew a shot had
+//! stopped on a piece — that is what `SURF_BUILT` means — and all that was
+//! missing was **which** piece, so [`collide::shot_stop`] now names the
+//! address the walk already had in hand and threw away. The write is
+//! `deploy::damage_piece`, the same one a swing uses, through
+//! `World::chip`; the sides, the removal budget and the `EV_STRUCT_HIT`
+//! payload are `combat::raid`'s and are not restated here.
+//!
+//! **A deployable stops one now too** (2026-08-28, `NOW.md` §0mk item 2).
+//! It was a different hole in a different walk — `shot_stop` reads edges,
+//! diagonals and planes and no bit of `ColMasks::solid` — so an arrow
+//! passed through a furnace rather than failing to damage one, and the
+//! body walk had reached the same volume through a separate function
+//! (`collide::deploy_blocked`) since deploy collision v0.
+//! `collide::deploy_stop` is that function with a projectile's profile,
+//! asked last in `world_stop`'s ladder, and `Struck` is what lets one
+//! four-part address say which of the two stores it came out of. Arrows
+//! still do not come back (`reference/PROJECTILES.md` §9.7).
 //!
 //! **An arrow flies at its own size now** (catalogue v1). Pieces stop it
 //! through `collide::shot_blocked` — a point at the arrow's altitude,
@@ -58,22 +105,201 @@
 //! whole contract is *blocks a body and not a shot* is unbuildable while
 //! every shot is shaped like a body. Trees and bodies still stop arrows
 //! exactly as before; only the piece query changed profile.
+//!
+//! **A floor stops it too, since 2026-08-25** (shot planes v0). Until then
+//! `shot_blocked` read edges and diagonals and no plane, so an arrow fired
+//! down inside a base fell through every storey and landed on the dirt as
+//! `SURF_GROUND` — and a roof was cover you could see through, which is the
+//! half a raider notices. The body walk has read those bits since piece
+//! flanks v0; the two movers now share the slab set, and where they
+//! deliberately differ is written down at each shape rather than left to
+//! whichever walk was written first. It costs the same walk, at the sample
+//! point rather than over the sweep: a plane is crossed vertically, and the
+//! vertical step between two taps is at most `ARROW_STEP_MM`, under the band
+//! a slab presents.
 
-use crate::collide::{self, ColIndex, CAPSULE_HEIGHT_M, CAPSULE_RADIUS_M};
+use crate::collide::{
+    self, ColIndex, Part, CAPSULE_HEIGHT_M, CAPSULE_RADIUS_M, HEAD_BAND_M, LIMB_BAND_M,
+};
 use crate::combat::{held_item, CombatContent};
 use crate::craft::{inv_count, inv_take};
 use crate::gather::NO_ITEM;
 use crate::input::BTN_PRIMARY;
 use crate::limits::{
     ARROW_STEP_MM, MAX_ARROWS, MAX_ARROW_LIFE_TICKS, MAX_ARROW_SUBSTEPS, MAX_HITSCAN_MARK_SAMPLES,
-    MAX_HITSCAN_SAMPLES, MAX_PLAYERS,
+    MAX_HITSCAN_SAMPLES, MAX_MAGS, MAX_PLAYERS,
 };
 use crate::movement::{POS_XZ_Q, POS_Y_Q};
 use crate::occupy::Occupants;
 use crate::pitch_lut::pitch_dir;
+use crate::rewind::{Rewind, RewindPose};
+use crate::spent::{SpentArrows, SpentRec};
 use crate::terrain;
-use crate::world::{EventQueue, Player, EV_DEATH, EV_HEALTH, EV_HIT, EV_IMPACT, EV_SHOT};
+use crate::world::{
+    EventQueue, Player, EV_DEATH, EV_HEALTH, EV_HIT, EV_HURT, EV_IMPACT, EV_RELOAD,
+    EV_RELOAD_REFUSED, EV_SHOT,
+};
 use crate::yaw_lut::yaw_dir;
+
+// ── Reload v1 ────────────────────────────────────────────────────────────
+//
+// The mechanic a body-part ladder needs to be legible. `rate_ticks` alone
+// makes a firefight an unbroken stream of identical clicks, and the
+// difference between a leg and a chest is then only a slightly longer
+// stream; with a magazine, missing has a price. The magazine is per weapon
+// row (`RangedDef::mag_slot`, whose doc states the cost of that choice) and
+// the wait is paid on `Player::next_swing`, the field gather, melee and
+// both ranged paths already share — so a reload stops a swing and a swing
+// stops a reload, with no second clock to keep in step.
+
+/// Not holding a weapon that takes a magazine — bare hands, a hatchet, or
+/// a bow (which spends straight out of the quiver by design; see
+/// `RangedDef::magazine`).
+pub const REFUSE_RL_HAND: u32 = 1;
+/// The arm is busy: mid-cadence from a shot or a swing, or already
+/// reloading. One code for all three because they are one field
+/// (`Player::next_swing`) and the sentence the player is owed is the same.
+pub const REFUSE_RL_BUSY: u32 = 2;
+/// The magazine is already full. Its own code rather than a silent no-op:
+/// a key that did nothing must say so (`EV_CRAFT_REFUSED`'s posture).
+pub const REFUSE_RL_FULL: u32 = 3;
+/// The trigger was pulled on an empty magazine — the dry click.
+///
+/// A refusal and not a shot, and separate from [`REFUSE_RL_DRY`] because
+/// the two sentences differ: this one is *reload*, that one is *you have
+/// no rounds at all*. Bounded by the weapon's cadence — `hitscan` pays
+/// `rate_ticks` before it refuses, exactly as it does for a shot, so a
+/// held trigger raises at most one of these per `rate_ticks`.
+pub const REFUSE_RL_EMPTY: u32 = 4;
+/// A reload was asked for and the pack holds none of the round it needs.
+///
+/// "The round it needs" and not "any round": a magazine that already holds
+/// one kind tops up with that kind or not at all, because mixing would fire
+/// the wrong item and hand back the wrong item on the next unload.
+pub const REFUSE_RL_DRY: u32 = 5;
+/// The highest reason above, named rather than counted — the discipline
+/// `REFUSE_G_MAX` and `EV_MAX` apply to a value domain, so the wire's
+/// field width is checked against a constant and not against a memory.
+pub const REFUSE_RL_MAX: u32 = REFUSE_RL_DRY;
+
+/// Pack a magazine's state into one `u32` event field: loaded in the high
+/// half, the weapon's ceiling in the low half.
+///
+/// Both halves travel together on purpose. `client-core` holds no content
+/// tables at all — it is a wire and prediction layer — so a client told
+/// only "four loaded" cannot draw `4/6`, and a client told the ceiling once
+/// at a catalog drip would have to keep a second table in step with the
+/// content hash. One field, stated in full on every event that moves it,
+/// is `EV_KNOWN`'s self-healing shape: the next statement repairs every
+/// loss before it.
+pub fn mag_pair(loaded: u16, ceiling: u16) -> u32 {
+    (loaded as u32) << 16 | ceiling as u32
+}
+
+/// The loaded count out of [`mag_pair`].
+pub fn mag_loaded(pair: u32) -> u16 {
+    (pair >> 16) as u16
+}
+
+/// The magazine's ceiling out of [`mag_pair`].
+pub fn mag_ceiling(pair: u32) -> u16 {
+    (pair & 0xFFFF) as u16
+}
+
+/// Fill the held weapon's magazine from the pack, and pay the beat.
+///
+/// Returns `true` when rounds moved. Every other path raises exactly one
+/// `EV_RELOAD_REFUSED` and returns `false` — a key that did nothing says
+/// which nothing, because a reload key that is silent when the magazine is
+/// full is indistinguishable from one that is silent because the verb is
+/// unbuilt.
+///
+/// **Order matters and it is the container-verb order, not the arithmetic
+/// one.** `CLAUDE.md`'s trap list: the item-move verb is the most bug-prone
+/// thing in the reference and it fails as a *kick*, because validation ran
+/// against the wrong side of the mutation. So every refusal here is decided
+/// before `inv_take` is called, and the pack is debited by exactly what the
+/// magazine is credited in the same two statements.
+pub fn reload(tick: u64, cc: &CombatContent, events: &mut EventQueue, p: &mut Player) -> bool {
+    let item = held_item(p);
+    let refuse = |events: &mut EventQueue, why: u32, pair: u32| {
+        events.push(EV_RELOAD_REFUSED, p.id, (item as u32) << 16 | why, pair);
+    };
+    // A hand that cannot hold a magazine. `held_ranged` filters on
+    // `damage > 0`, so an unarmed or unbaked row lands here rather than
+    // reaching the slot index below.
+    let Some(def) = cc.held_ranged(item) else {
+        refuse(events, REFUSE_RL_HAND, 0);
+        return false;
+    };
+    // A bow. `magazine == 0` is read as exactly that and never as "unset":
+    // `draw` keeps spending out of the quiver, so the arrow path did not
+    // move for reload v1 and the refusal names the hand rather than
+    // pretending a bow has an empty cylinder.
+    if def.magazine == 0 || def.mag_slot as usize >= MAX_MAGS {
+        refuse(events, REFUSE_RL_HAND, 0);
+        return false;
+    }
+    let slot = def.mag_slot as usize;
+    let loaded = p.mag[slot];
+    let pair = mag_pair(loaded, def.magazine);
+    // Mid-cadence, mid-swing or mid-reload — one field, one sentence.
+    // Checked before the full test so that spamming the key during a
+    // reload reads as "busy" rather than as "full" the instant it lands.
+    if tick < p.next_swing {
+        refuse(events, REFUSE_RL_BUSY, pair);
+        return false;
+    }
+    if loaded >= def.magazine {
+        refuse(events, REFUSE_RL_FULL, pair);
+        return false;
+    }
+    // Which round. A magazine already holding one kind tops up with that
+    // kind or not at all; an empty one takes the first round in the
+    // weapon's preference order the shooter is actually carrying, which is
+    // `draw`'s rule and `hitscan`'s.
+    let round = if p.mag_round[slot] != NO_ITEM && loaded > 0 {
+        p.mag_round[slot]
+    } else {
+        let Some(r) = def
+            .ammo
+            .iter()
+            .copied()
+            .take_while(|&a| a != NO_ITEM)
+            .find(|&a| inv_count(&p.inv, a) > 0)
+        else {
+            refuse(events, REFUSE_RL_DRY, pair);
+            return false;
+        };
+        r
+    };
+    let want = def.magazine - loaded;
+    // `u32` down to `u16`: `inv_count` totals a whole inventory and
+    // `want` is at most a magazine, so the `min` is taken in the wider
+    // type and the result is bounded by `want` before it narrows. Doing
+    // it the other way round would truncate a full pack to nothing.
+    let got = (want as u32).min(inv_count(&p.inv, round)) as u16;
+    if got == 0 {
+        refuse(events, REFUSE_RL_DRY, pair);
+        return false;
+    }
+    // The mutation, after every refusal has had its say. `inv_take` moves
+    // exactly `got` because `got` was clamped to `inv_count` one line up:
+    // the pack is debited by what the magazine is credited, and there is no
+    // ordering in which one happens without the other.
+    inv_take(&mut p.inv, round, got as u32);
+    p.mag[slot] = loaded + got;
+    p.mag_round[slot] = round;
+    // The beat you are helpless for, on the shared cadence field.
+    p.next_swing = tick + def.reload_ticks.max(1) as u64;
+    events.push(
+        EV_RELOAD,
+        p.id,
+        mag_pair(p.mag[slot], def.magazine),
+        got as u32,
+    );
+    true
+}
 
 /// Height above the feet an arrow leaves from, millimetres. The eye, not
 /// the chest: a shot that started at the navel would clear cover the
@@ -114,6 +340,16 @@ pub const SURF_GROUND: u8 = 0;
 /// a slot (`occupy::Occupants::blocks_volume`).
 pub const SURF_WORLD: u8 = 1;
 /// A built piece: a wall, a floor, a door (`collide::shot_blocked`).
+///
+/// ⚠ **"a floor" was a lie in this line until 2026-08-25.**
+/// `collide::shot_blocked` walked edges and diagonals and consulted no plane
+/// at all, so a floor, a roof and a foundation were transparent to a
+/// projectile and this code could never mean one — a shot fired down inside a
+/// base reported [`SURF_GROUND`] from the dirt underneath it. The doc was
+/// right about the intent and wrong about the tree, which is the direction
+/// that reads as covered while nothing checks it. `collide::
+/// cell_planes_stop_shot` is what makes the sentence true; `tests/shoot.rs`'
+/// floor block is what keeps it that way.
 pub const SURF_BUILT: u8 = 2;
 
 /// One arrow in flight. `life == 0` ⇔ the slot is free, which is also what
@@ -142,7 +378,44 @@ pub struct Arrow {
     pub owner: u32,
     /// The weapon that fired it, for the death screen's "with <weapon>".
     pub item: u16,
+    /// The **round** it is, which is not the weapon that fired it
+    /// (`reference/PROJECTILES.md` §1 fact 5: the arrow you pull out of a
+    /// tree is the arrow you fired). Carried for recovery and for nothing
+    /// else — until `spent.rs` there was no reason to remember which of a
+    /// bow's listed rounds left the quiver, because the ballistics were
+    /// already denormalized into `vx/vy/vz` and `drop`. A bow firing
+    /// wooden arrows until they run out and then high-velocity ones gives
+    /// back exactly what it spent, in the order it spent it.
+    pub round: u16,
     pub damage: u16,
+    /// What this arrow takes off a building piece if it stops on one —
+    /// the bow's `structure` column, copied at the draw beside `damage`
+    /// and for `drop`'s stated reason: an arrow already in the air should
+    /// not change behaviour because content was rebaked under it.
+    ///
+    /// It is the **bow's** number and not the round's. `content/
+    /// weapons.toml`'s `[[ammo]]` table carries no damage column of any
+    /// kind (the file says so and says why), so every arrow out of one bow
+    /// chips a wall by the same amount — the same rule already in force
+    /// for flesh.
+    pub structure: u16,
+    /// What this arrow is multiplied by if its line crosses the head band
+    /// — the bow's `headshot_mult`, copied at the draw beside `damage` and
+    /// `structure`, for the same reason those two are copied: an arrow
+    /// already in the air should not change what it does because content
+    /// was rebaked under it.
+    ///
+    /// The **bow's** number, like `damage` and `structure`, and not the
+    /// round's. `weapons.toml`'s `[[ammo]]` rows carry ballistics and
+    /// nothing else; a high-velocity arrow flies flatter and hits for what
+    /// the bow says.
+    pub head_mult: u16,
+    /// What this arrow is multiplied by, in **percent**, if its line
+    /// reached nothing above the leg band — the bow's `limb_pct`, copied
+    /// at the draw for [`Arrow::head_mult`]'s reason word for word: an
+    /// arrow already in the air must not change what it does because
+    /// content was rebaked under it.
+    pub limb_pct: u16,
     /// Ticks of flight left. Zero means the slot is free.
     pub life: u16,
     /// Millimetres flown so far — arc length, summed per tick, which is
@@ -191,7 +464,14 @@ impl Arrows {
             drop: 0,
             owner: 0,
             item: 0,
+            round: 0,
             damage: 0,
+            structure: 0,
+            // The identity, so an unfilled slot cannot delete a hit.
+            head_mult: 1,
+            // The identity at the other end, and the same sentence: a
+            // percent of zero on an unfilled slot would delete one.
+            limb_pct: 100,
             life: 0,
             flown: 0,
         }; MAX_ARROWS],
@@ -323,7 +603,11 @@ pub fn draw(
         drop: ball.drop_mmpt2,
         owner: p.id,
         item: held_item(p),
+        round,
         damage: def.damage,
+        structure: def.structure,
+        head_mult: def.headshot_mult,
+        limb_pct: def.limb_pct,
         life,
         flown: 0,
     };
@@ -341,6 +625,60 @@ pub fn draw(
     true
 }
 
+/// Retire a landed arrow into the world: break it, or lay it down where a
+/// player can take it back (`spent.rs`, `reference/PROJECTILES.md` §5).
+///
+/// `lodged` is the reference's own axis and it is *dealt damage* rather
+/// than *what was hit*: an arrow in a body waits out the lodge, an arrow
+/// in the scenery is takeable at once. §5 draws no distinction between a
+/// tree, a wall and a hillside, so neither does this.
+///
+/// **The break roll happens here and only here**, so every path that ends
+/// with an arrow on the ground pays the same odds and none of them can
+/// forget to. The slot is part of the key, which is what makes two arrows
+/// landing on one tick two independent draws.
+///
+/// ⚠ **A lodged arrow does not travel with the body it is in.** The
+/// reference sticks it to the victim; ours lies at the point of impact,
+/// so a hit player walking away leaves the arrow behind them. That is a
+/// simplification and not an oversight — attaching it needs the arrow to
+/// be a child of a moving entity, which is a second store and a second
+/// set of rules about what happens when the body dies, sleeps or is
+/// evicted. The lodge *timer* is what §5 says the mechanic is for, and
+/// the timer is exact.
+///
+/// **The arrow's own position is where it lies**, so the caller advances
+/// `a.q*` to the stop point before calling rather than passing the point
+/// beside the arrow that is already carrying one. That is one fewer
+/// argument than the obvious shape — clippy's limit is seven and the
+/// obvious shape was eight — and it is also the truer statement: an arrow
+/// that has stopped is at the place it stopped.
+#[inline]
+fn land(
+    seed: u64,
+    tick: u64,
+    cc: &CombatContent,
+    spent: &mut SpentArrows,
+    slot: usize,
+    a: &Arrow,
+    lodged: bool,
+) {
+    if crate::spent::breaks(seed, tick, slot, cc.arrow_break_pct) {
+        return;
+    }
+    spent.lodge(SpentRec {
+        qx: a.qx,
+        qy: a.qy,
+        qz: a.qz,
+        round: a.round,
+        ready_at: if lodged {
+            tick + u64::from(cc.arrow_lodge_ticks)
+        } else {
+            tick
+        },
+    });
+}
+
 /// Fly every arrow one tick and resolve what it reached. Returns how many
 /// entries of `kills` were written.
 ///
@@ -351,16 +689,20 @@ pub fn draw(
 #[allow(clippy::too_many_arguments)]
 pub fn step(
     seed: u64,
+    tick: u64,
     haven: &terrain::Haven,
     cols: &ColIndex,
     occ: &mut Occupants,
     cc: &CombatContent,
     arrows: &mut Arrows,
+    spent: &mut SpentArrows,
     players: &mut [Player; MAX_PLAYERS],
     events: &mut EventQueue,
     kills: &mut [Kill; MAX_ARROWS],
-) -> usize {
+    chips: &mut [Chip; MAX_ARROWS],
+) -> (usize, usize) {
     let mut n_kills = 0usize;
+    let mut n_chips = 0usize;
     for ix in 0..MAX_ARROWS {
         let mut a = arrows.a[ix];
         if !a.active() {
@@ -405,22 +747,72 @@ pub fn step(
         // answered, because that is the difference between a puff of dirt,
         // a chip of bark and a splintered plank, and it is knowable here
         // and nowhere else (`SURF_*`).
-        let (stop_t, surf) = world_stop(seed, haven, cols, occ, (ox, oy, oz), (sx, sy, sz), n, n);
+        let (stop_t, surf, built) =
+            world_stop(seed, haven, cols, occ, (ox, oy, oz), (sx, sy, sz), n, n);
 
         // Pass two: the nearest body whose closest approach to the segment
         // comes at or before the world's stop. Solved rather than sampled,
         // so a body is never missed between two taps — and compared against
         // `stop_t`, so a body behind a trunk is never reached.
-        let best = nearest_body(players, (ox, oy, oz), (sx, sy, sz), stop_t, a.owner);
+        //
+        // **`Pose::Live`, and it is a refusal rather than an omission**
+        // (lag comp, the gun's slice). This shaft was launched on an
+        // earlier tick and has been flying since; the client was paid for
+        // its aim at the draw, and rewinding 1.3 m of a four-second journey
+        // against a quarter-second-old world would hit people the arrow
+        // visibly flew past. `Pose`'s own doc has the whole argument and
+        // `DECISIONS.md` §open carries the launch half, which is the part
+        // this does NOT decide.
+        let best = nearest_body(
+            players,
+            (ox, oy, oz),
+            (sx, sy, sz),
+            stop_t,
+            a.owner,
+            Pose::Live,
+        );
 
-        if let Some((t, j)) = best {
+        if let Some(BodyHit {
+            t,
+            slot: j,
+            enter,
+            exit,
+            qy: feet_q,
+        }) = best
+        {
             let range_cm = ((a.flown as f32 + len_mm * t) / 10.0) as u16;
             let v = &mut players[j];
+            // Did the shaft cross the head on its way through? The span is
+            // clipped against the world's stop first, so an arrow that
+            // buries itself in a windowsill at chest height is not credited
+            // with the skull that was on the far side of it.
+            // The feet the SCAN resolved, which for an arrow is the live
+            // body and is spelled that way anyway: one rule for both
+            // shots — the band is always measured off the cylinder the hit
+            // was decided against (`BodyHit::qy`).
+            let feet_mm = feet_q as f32 * (POS_Y_Q * MM_PER_M);
+            // Hoisted, because the rung is now a fact the shooter is told
+            // and not only a multiplier: `EV_HIT` carries it (v58).
+            let part = part_crossed(oy, sy, feet_mm, enter, exit.min(stop_t));
+            let dmg = crate::combat::part_damage(a.damage, part, a.head_mult, a.limb_pct);
             // The funnel, reduced: an arrow is a hit like any other.
-            let h = crate::combat::hurt(cc, v, a.damage);
+            let h = crate::combat::hurt(cc, v, dmg);
             let died = h.died;
             let (vid, left, vmax) = (v.id, h.left as u32, v.hp_max as u32);
-            events.push(EV_HIT, a.owner, vid, a.damage as u32);
+            // The scaled number on both events, not the bow's column.
+            // `EV_HIT` is the attacker's hitmarker and `EV_HURT` the
+            // victim's arc, and each is answering "how hard was that",
+            // which is the blow that arrived and not the one on the row.
+            events.push(EV_HIT, a.owner, vid, crate::world::hit_c(part, dmg));
+            // Where it came FROM, which for something still in flight is the
+            // reverse of where it was going — truer than the archer's current
+            // position, because the archer has had the whole flight to move.
+            events.push(
+                EV_HURT,
+                vid,
+                crate::combat::bearing_sector(-(dx as i64), -(dz as i64)) as u32,
+                dmg as u32,
+            );
             events.push(EV_HEALTH, vid, left, vmax);
             if died {
                 events.push(EV_DEATH, vid, a.owner, 0);
@@ -432,6 +824,15 @@ pub fn step(
                 };
                 n_kills += 1;
             }
+            // Dealt damage, so the lodge timer applies — this is the
+            // arrow you may not re-use during the fight you fired it in.
+            // The point is the closest approach the solve already found,
+            // which is the arrow's position at the instant it met the
+            // body, not a re-solve of it.
+            a.qx = crate::fmath::floor_i32(ox + sx * t);
+            a.qy = crate::fmath::floor_i32(oy + sy * t);
+            a.qz = crate::fmath::floor_i32(oz + sz * t);
+            land(seed, tick, cc, spent, ix, &a, true);
             arrows.a[ix].life = 0;
             continue;
         }
@@ -467,6 +868,31 @@ pub fn step(
                 // starts at zero.
                 qy as u32,
             );
+            // …and the wall takes it, on `hitscan`'s ordering and for its
+            // reason. `(ox, oz)` is the arrow's position at the start of
+            // this tick — one tick of flight back from the wall, which is
+            // the side it came from and what the hard/soft rule asks for.
+            if let Some(hit) = built {
+                if a.structure > 0 {
+                    chips[n_chips] = Chip {
+                        hit: hit.at,
+                        deploy: hit.deploy,
+                        structure: a.structure,
+                        from_x: ox / MM_PER_M,
+                        from_z: oz / MM_PER_M,
+                    };
+                    n_chips += 1;
+                }
+            }
+            // Missed every body, so it is takeable at once. Same stop
+            // point the impact event just reported, in millimetres rather
+            // than in the body's coarser quanta: a decal is 20 cm across
+            // and does not care, but the hand reaching for the arrow is
+            // the thing `take_near` measures against.
+            a.qx = crate::fmath::floor_i32(ox + sx * stop_t);
+            a.qy = crate::fmath::floor_i32(oy + sy * stop_t);
+            a.qz = crate::fmath::floor_i32(oz + sz * stop_t);
+            land(seed, tick, cc, spent, ix, &a, false);
             arrows.a[ix].life = 0;
             continue;
         }
@@ -478,7 +904,67 @@ pub fn step(
         a.life -= 1;
         arrows.a[ix] = a;
     }
-    n_kills
+    (n_kills, n_chips)
+}
+
+/// What a shot walk stopped on, when what it stopped on was **built** —
+/// the address and the store it lives in.
+///
+/// The two stores share one four-part address by design (`Deploys::
+/// find_index` says so: a door and its doorway have one), so a walk that
+/// reaches both has to say which. It is the same discriminator
+/// `build::repair` takes as its `deploy` flag and the same one the wire
+/// carries as `world::STRUCT_DEPLOY_BIT`; without it the shot path would
+/// have to guess, and a guess here charges a wall for a furnace's hit or
+/// silently drops the chip.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Struck {
+    pub at: collide::PieceHit,
+    /// `true` <=> the address names a `DeployRec`, not a `PieceRec`.
+    pub deploy: bool,
+}
+
+/// A chip a shot took out of a building piece — found here, applied by
+/// `World`.
+///
+/// **Handed back rather than written, for `Kill`'s reason stated one type
+/// up**: damaging a piece needs the store, the build and deploy content and
+/// the tick's removal budget, and this pass holds none of them — it holds
+/// the collision index and half a world. Taking `&mut Pieces` here would
+/// also make the shot pass the only reader of that store that is not a
+/// build verb, and would put a store-mutating parameter on the one function
+/// `tests/shoot.rs` drives with a hand-built `ColIndex`.
+///
+/// The address travels, never a store index. `charge::detonate` states the
+/// rule: the walk that finds a piece and the write that damages it are
+/// separated — here by the body pass, the remaining arrows and every other
+/// player's shot on the same tick — and any of those can drop a piece and
+/// swap-remove another into its slot. `World::chip` re-resolves the address
+/// at the moment it charges the damage, and a hit whose piece has gone is
+/// simply no longer a hit: the shot still stopped and still drew its
+/// impact, and only the chip is lost.
+#[derive(Clone, Copy, Default)]
+pub struct Chip {
+    /// Which piece — `build`'s four-part address, the same one
+    /// `combat::raid` picks and `deploy::damage_piece` writes against, so a
+    /// shot and a swing name a wall identically.
+    pub hit: collide::PieceHit,
+    /// Which store that address names ([`Struck::deploy`], carried out).
+    /// `World::chip` re-resolves through `Deploys::find_index` and
+    /// `deploy::damage_deploy` when it is set, and pays no side price:
+    /// a box has no facing, exactly as `combat::raid`'s own
+    /// `Target::Deploy` arm and `charge::detonate` already have it.
+    pub deploy: bool,
+    /// What to take off it: the firing weapon's `structure` column. Never
+    /// zero — a weapon with no structure column produces no `Chip` at all,
+    /// so this array holds only hits that will be charged.
+    pub structure: u16,
+    /// Where the shot came from, metres, planar — what the hard/soft side
+    /// rule reads. For an arrow that is its position one tick of flight
+    /// back; for a bullet it is the muzzle. Both are the approach side,
+    /// which is what the rule is actually about.
+    pub from_x: f32,
+    pub from_z: f32,
 }
 
 /// How far along `s` from `o` the **world** stops a shot, and what stopped
@@ -511,11 +997,12 @@ fn world_stop(
     s: (f32, f32, f32),
     n: usize,
     upto: usize,
-) -> (f32, Option<u8>) {
+) -> (f32, Option<u8>, Option<Struck>) {
     let (ox, oy, oz) = o;
     let (sx, sy, sz) = s;
     let mut stop_t = 1.0f32;
     let mut surf: Option<u8> = None;
+    let mut built: Option<Struck> = None;
     let mut prev = (ox / MM_PER_M, oz / MM_PER_M);
     for k in 1..=upto.min(n) {
         let t = k as f32 / n as f32;
@@ -526,48 +1013,255 @@ fn world_stop(
         // stands on, and on an authored site that is the carved floor. A
         // raw read here puts the impact — and the decal drawn from it —
         // several metres under the pad.
+        // `shot_stop` rather than `shot_blocked`: the address it names is
+        // what the caller charges structure damage against. The ladder is
+        // otherwise unchanged — ground, then occupants, then pieces, and
+        // the first answer wins — so a shot stops exactly where it did.
+        let mut hit = None;
         let what = if py <= terrain::ground(seed, haven, px, pz) {
             Some(SURF_GROUND)
         } else if occ.blocks_volume(seed, px, pz, py, ARROW_R_M, ARROW_R_M) {
             Some(SURF_WORLD)
-        } else if collide::shot_blocked(seed, haven, cols, prev.0, prev.1, px, pz, py, ARROW_R_M) {
-            Some(SURF_BUILT)
         } else {
-            None
+            // Pieces, then deployables — and this is not a tie-break, it is
+            // an order two shapes can never both answer. A solid deployable
+            // stands at its cell's centre and `DEPLOY_VOL`'s const block
+            // proves its inflated volume never reaches the boundary; the
+            // widest bench leaves 0.6 m of clear cell between its face and
+            // the edge, against a 0.17 m step. So no sample can be both
+            // crossing an edge and inside a box.
+            //
+            // The one place they do overlap is a 2*`ARROW_R_M` sliver where
+            // a box's base meets the floor it stands on, and there the
+            // plane answering first is the honest read: at that altitude
+            // the slab is what the arrowhead is in.
+            hit = collide::shot_stop(seed, haven, cols, prev.0, prev.1, px, pz, py, ARROW_R_M)
+                .map(|at| Struck { at, deploy: false })
+                .or_else(|| {
+                    collide::deploy_stop(seed, haven, cols, px, pz, py, ARROW_R_M)
+                        .map(|at| Struck { at, deploy: true })
+                });
+            hit.map(|_| SURF_BUILT)
         };
         if what.is_some() {
             stop_t = t;
             surf = what;
+            built = hit;
             break;
         }
         prev = (px, pz);
     }
-    (stop_t, surf)
+    (stop_t, surf, built)
+}
+
+/// How a body scan answers *where was this body*.
+///
+/// The two shots in this module need different answers and the difference
+/// is not a depth one caller happens to pass zero for — it is a rule about
+/// each shot's own chronology — so it is a **type**. `Pose::Live` cannot be
+/// given a depth, which is what stops the arrow acquiring one by accident
+/// the next time this signature is edited.
+///
+/// [`Pose::Live`] is the arrow's. `findings/lagcomp-design-20260818.md`
+/// §5.1 is the reasoning and it survives intact: an arrow in the store was
+/// launched on an *earlier* tick and has been travelling ever since, so
+/// rewinding this tick of its flight would resolve 1.3 m of a four-second
+/// journey against a quarter-second-old world — hitting people the shaft
+/// visibly flew past, and doing it to a shooter who has already been paid
+/// for their aim once. The **launch** direction is the open question there
+/// and it is refused deliberately now rather than by omission
+/// (`DECISIONS.md` §open, lag comp — the arrow's launch aim).
+///
+/// [`Pose::Rewound`] is the bullet's, and it is the case lag compensation
+/// exists for: a hitscan resolves on the tick its trigger came down, which
+/// is the tick the client aimed on, against bodies that client was drawing
+/// `INTERP_DELAY_TICKS` in the past.
+#[derive(Clone, Copy)]
+enum Pose<'a> {
+    /// Present tick. Bit-identical to the scan before this type existed.
+    Live,
+    /// `back` ticks before `tick`, out of the ring, per slot.
+    Rewound {
+        rewind: &'a Rewind,
+        tick: u64,
+        back: u8,
+    },
+}
+
+impl Pose<'_> {
+    /// Where slot `slot` was, for this resolver's definition of *was*.
+    ///
+    /// The live pose is built here and handed to `pose_at` as the fallback,
+    /// so every honest-answer refusal in the ring (cold row, wrong stamp,
+    /// empty slot, a stranger's id) lands on the body the scan would have
+    /// read anyway. `back == 0` short-circuits inside `pose_at`, so
+    /// `Rewound { back: 0 }` and `Live` are the same bytes as well as the
+    /// same idea.
+    #[inline]
+    fn of(self, slot: usize, p: &Player) -> RewindPose {
+        let live = RewindPose::live(p.id, &p.body);
+        match self {
+            Self::Live => live,
+            Self::Rewound { rewind, tick, back } => rewind.pose_at(tick, slot, back, live),
+        }
+    }
+}
+
+/// One body the shot reached, and everything the two resolvers need to know
+/// about how it reached it.
+///
+/// **A named struct rather than the `(f32, usize)` tuple this used to
+/// return**, and the reason is in `CLAUDE.md`'s trap list twice over: a
+/// positional payload is where the reference ecosystem actually bled, and a
+/// gate that re-derives a tuple's layout is checking the layout against
+/// itself. Four values in a tuple would be four chances to swap two of them
+/// at a call site, in a file where `t`, `enter` and `exit` are all segment
+/// fractions of the same segment and all interchangeable to the compiler.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BodyHit {
+    /// Segment fraction of the closest approach, clamped to `[0, 1]`. This
+    /// is what decides *which* body was hit and where the arrow lodges.
+    pub t: f32,
+    /// Slot in `players`, not the network id — the caller already holds the
+    /// array and wants `&mut players[slot]`.
+    pub slot: usize,
+    /// Segment fraction where the line **enters** that body's radius, and
+    /// where it **leaves** it, clamped to `[0, 1]`. Together they are the
+    /// span the shot spent inside the body, which is what [`part_crossed`]
+    /// needs and what `t` alone cannot give: `t` is one point, and §7's
+    /// rule is about the whole crossing.
+    ///
+    /// The caller clips `exit` against the world's stop before using it. It
+    /// is not clipped here because `hitscan` asks this question **before**
+    /// it knows where the world stopped — that is the whole of its
+    /// truncation optimization — so a stop clipped in would be the wrong
+    /// one on one of the two paths.
+    pub enter: f32,
+    pub exit: f32,
+    /// The victim's **feet**, in `Body`'s own y quanta, as the scan
+    /// resolved them — not as they are now.
+    ///
+    /// Carried rather than re-read at the call site, and that is the whole
+    /// of what makes a rewound headshot coherent. The head band is an
+    /// offset off the top of the same cylinder this scan solved against
+    /// ([`part_crossed`]), so reading `players[slot].body.qy` afterwards
+    /// would test a **present-tick crown** against a **past-tick
+    /// horizontal solve** — a victim who jumped, fell or walked downhill in
+    /// the last quarter-second gets a head floating away from the body the
+    /// bullet was decided against.
+    ///
+    /// At [`Pose::Live`] this is exactly `players[slot].body.qy`, so the
+    /// arrow's arithmetic is unchanged to the bit.
+    pub qy: i32,
+}
+
+/// Which body part did the shot's span inside this body reach?
+///
+/// **`reference/PROJECTILES.md` §7's rule, built for real**, which is
+/// *damage the most significant body part along the line of sight*, not
+/// the first one intersected. Until 2026-08-30 this was `head_crossed`, a
+/// bool, and §9.4 stated the reduction that made a bool sufficient: with a
+/// head and a body and nothing else, "most significant part crossed" is
+/// "was the head interval crossed at all". A third band retires that
+/// reduction — a span that misses the head has two answers now — so this
+/// returns a [`Part`] and the ordering is [`Part`]'s own `Ord`.
+///
+/// It is still an interval overlap and still not a raycast: a shot that
+/// clips a shin on its way into a chest is a **chest** hit, which is the
+/// inversion §7 says they had to make on purpose (a limb in front of a
+/// torso must not save the torso). What changed is that the answer is now
+/// a `max` over three bands instead of a single compare against one.
+///
+/// Everything is **millimetres**, matching the two call sites' own units,
+/// so nothing here converts and nothing rounds: `oy + sy * t` is the
+/// shot's altitude at fraction `t`, and `feet_mm` is the victim's feet.
+/// `t_lo` and `t_hi` are [`BodyHit::enter`] and [`BodyHit::exit`], the
+/// second already clipped against the world's stop by the caller — a wall
+/// between the chest and the head means the head was never reached.
+///
+/// `y` is linear in `t`, so the altitudes at the two ends **are** the
+/// range over the span and there is nothing to sample. That is the whole
+/// reason this is six adds and three compares rather than a walk.
+///
+/// **[`Part::Chest`] is the fallback and that is the shipped behaviour**,
+/// not a new rule: a degenerate span (a stop before the entry) and a span
+/// that lies entirely outside every band both score the raw damage, which
+/// is what a `head_crossed` of `false` has always meant. The bands do not
+/// tile the cylinder's *complement* — an altitude below the feet or above
+/// the crown belongs to no part — so the fallback is doing real work and
+/// is not dead.
+///
+/// Wall 1: `+ − × min max` only.
+#[inline]
+pub fn part_crossed(oy: f32, sy: f32, feet_mm: f32, t_lo: f32, t_hi: f32) -> Part {
+    // A stop before the entry means the shot never got inside this body at
+    // all on the part of the segment that survived the world.
+    if t_hi < t_lo {
+        return Part::Chest;
+    }
+    let (a, b) = (oy + sy * t_lo, oy + sy * t_hi);
+    let (lo, hi) = (a.min(b), a.max(b));
+    let head_lo = feet_mm + (CAPSULE_HEIGHT_M - HEAD_BAND_M) * MM_PER_M;
+    let head_hi = feet_mm + CAPSULE_HEIGHT_M * MM_PER_M;
+    if hi >= head_lo && lo <= head_hi {
+        return Part::Head;
+    }
+    // The legs, and the order matters: this is asked only after the head
+    // has said no, so a span running shin-to-skull never reaches it.
+    let limb_hi = feet_mm + LIMB_BAND_M * MM_PER_M;
+    if hi >= feet_mm && lo <= limb_hi {
+        // Reaching the legs does not mean stopping there. A span from a
+        // shin to a sternum touches both bands, and §7 scores it at the
+        // chest — so the legs are only the answer when nothing above them
+        // was touched.
+        if hi > limb_hi {
+            return Part::Chest;
+        }
+        return Part::Limb;
+    }
+    Part::Chest
 }
 
 /// The nearest body whose closest approach to the segment `o + s·t` comes at
 /// or before `stop_t`, skipping the shooter. Solved rather than sampled, so
 /// a body is never missed between two taps — and compared against the
 /// world's stop, so a body behind a trunk is never reached.
+///
+/// **The hit decision is unchanged by headshots and that is deliberate.**
+/// What the winner now carries as well is the span it spent inside the
+/// body's radius — the same planar quadratic the closest approach already
+/// half-solves, finished. Who is hit is still decided at the closest
+/// approach, exactly as it was before there was a head, so this landed
+/// without moving a single existing hit/miss assertion in `tests/shoot.rs`
+/// or `tests/gun.rs`. A headshot is a question asked **of a hit**, never a
+/// second way to score one.
+///
+/// **`pose` decides where each candidate stood** (lag comp, the gun's
+/// slice). The liveness tests below stay on the LIVE record and that is
+/// `combat::strike`'s rule word for word: the ring stores a position, not a
+/// life, and a body that has since died or left is not a target however
+/// solid it looked `back` ticks ago.
 fn nearest_body(
     players: &[Player; MAX_PLAYERS],
     o: (f32, f32, f32),
     s: (f32, f32, f32),
     stop_t: f32,
     owner: u32,
-) -> Option<(f32, usize)> {
+    pose: Pose<'_>,
+) -> Option<BodyHit> {
     let (ox, oy, oz) = o;
     let (sx, sy, sz) = s;
-    let mut best: Option<(f32, usize)> = None;
+    let mut best: Option<BodyHit> = None;
     let planar2 = sx * sx + sz * sz;
     for (j, v) in players.iter().enumerate() {
         if !v.active || v.dead || v.hp == 0 || v.id == owner {
             continue;
         }
+        let at = pose.of(j, v);
         let (bx, by, bz) = (
-            v.body.qx as f32 * POS_XZ_Q,
-            v.body.qy as f32 * POS_Y_Q,
-            v.body.qz as f32 * POS_XZ_Q,
+            at.qx as f32 * POS_XZ_Q,
+            at.qy as f32 * POS_Y_Q,
+            at.qz as f32 * POS_XZ_Q,
         );
         let (ax, ay, az) = (ox / MM_PER_M, oy / MM_PER_M, oz / MM_PER_M);
         let (ux, uy, uz) = (sx / MM_PER_M, sy / MM_PER_M, sz / MM_PER_M);
@@ -584,15 +1278,48 @@ fn nearest_body(
         let (cx, cy, cz) = (ax + ux * t, ay + uy * t, az + uz * t);
         let (ddx, ddz) = (cx - bx, cz - bz);
         // A cylinder, exactly like `terrain::slot_blocks` — the house
-        // shape. No headshot, so the whole body is one target.
+        // shape. The head is a band off the top of this same cylinder
+        // (`collide::HEAD_BAND_M`), never a second collider, so this test
+        // is what it always was.
         if ddx * ddx + ddz * ddz > CAPSULE_RADIUS_M * CAPSULE_RADIUS_M {
             continue;
         }
         if cy < by || cy > by + CAPSULE_HEIGHT_M {
             continue;
         }
-        if best.is_none_or(|(bt, _)| t < bt) {
-            best = Some((t, j));
+        // The rest of the quadratic the closest approach is the vertex of:
+        // `|w + v·t|² = R²`, with `w` the muzzle-to-body planar offset. The
+        // discriminant cannot be negative here — the compare above already
+        // proved the line comes within `R` — but it is `max`ed at zero
+        // anyway, because a `sqrt` of a float that is -1e-9 by rounding is
+        // a NaN, and a NaN would spread through the span into
+        // `part_crossed` and out of it as a silent chest hit.
+        let vv = ux * ux + uz * uz;
+        let (enter, exit) = if vv <= 0.0 {
+            // A purely vertical shot never leaves its own column, so the
+            // span is the point the hit was decided at — the same `t = 0`
+            // pin above, for the same reason.
+            (t, t)
+        } else {
+            let (wx, wz) = (ax - bx, az - bz);
+            let wv = wx * ux + wz * uz;
+            let ww = wx * wx + wz * wz;
+            let disc = (wv * wv - vv * (ww - CAPSULE_RADIUS_M * CAPSULE_RADIUS_M)).max(0.0);
+            let half = disc.sqrt() / vv;
+            let centre = -wv / vv;
+            (
+                (centre - half).clamp(0.0, 1.0),
+                (centre + half).clamp(0.0, 1.0),
+            )
+        };
+        if best.is_none_or(|b| t < b.t) {
+            best = Some(BodyHit {
+                t,
+                slot: j,
+                enter,
+                exit,
+                qy: at.qy,
+            });
         }
     }
     best
@@ -603,10 +1330,18 @@ fn nearest_body(
 /// Asserted rather than assumed: `World::tick` hands both passes the same
 /// `[Kill; MAX_ARROWS]`, and the day `MAX_PLAYERS` outgrows `MAX_ARROWS`
 /// that array stops being a container and becomes an overflow.
+///
+/// **It bounds the chip array on the same terms** (ranged structure damage
+/// v0): `World::tick` hands both passes one `[Chip; MAX_ARROWS]` too, and
+/// the two passes fill it under the two rules this covers — `step` writes
+/// at most one chip per arrow over `0..MAX_ARROWS`, and `hitscan` at most
+/// one per player. So wall 4's cap on this write is the array's own length
+/// and this line is the check, rather than a bound restated at each
+/// `chips[n_chips]`.
 const _: () = assert!(
     MAX_PLAYERS <= MAX_ARROWS,
-    "the hitscan pass writes at most one Kill per player into the arrow \
-     store's kill array — widen MAX_ARROWS or give the pass its own"
+    "the hitscan pass writes at most one Kill and one Chip per player into \
+     the arrow store's arrays — widen MAX_ARROWS or give the pass its own"
 );
 
 /// Every firearm on the shard fires, resolves and is paid for, once, on the
@@ -642,19 +1377,58 @@ const _: () = assert!(
 /// name is the only thing about it that is wrong: a seventh cause is a
 /// wire change and that constant's doc carries the refusal.
 ///
-/// # What it does not do
+/// # It raises `EV_SHOT`, and the reading it uses is the cheap one
 ///
-/// **No `EV_SHOT`.** That event's payload is a muzzle speed and a drop in
-/// mm/tick, and the client re-flies exactly those integers
-/// (`render/tracer.rs`); a hitscan has neither, and a zero in both fields
-/// would hang a motionless tracer at the muzzle for four seconds. So a
-/// firearm announces itself by what it *reaches* — `EV_IMPACT` where the
-/// world stopped it, `EV_HIT` on a body — and the muzzle flash, the crack
-/// and the beam are a follow-up that needs either a new event or a spoken
-/// reading of `EV_SHOT`'s spare bit patterns. Neither is invented here.
+/// Until wire v54 it raised none, on a stated argument: the payload is a
+/// muzzle speed and a drop that the client re-flies (`render/tracer.rs`),
+/// a hitscan has neither, and a zero in both would hang a motionless
+/// tracer at the muzzle for four seconds. The argument was sound and the
+/// conclusion outlived it — the same doc named the fix (*a spoken reading
+/// of `EV_SHOT`'s spare bit patterns*) and then declined to take it, so a
+/// firearm announced itself only by what it *reached* and a gunfight was
+/// a private event for twenty-four days.
 ///
-/// No structure damage (an arrow does not chip a wall either), no falloff
-/// (`content/weapons.toml` has no curve to read), and no headshot.
+/// **`speed == 0` means instantaneous** and the low half of `c` carries
+/// the **reach in decimetres**. The tracer reads the zero and draws
+/// nothing to fly; the mixer reads it and picks the gunshot cue over the
+/// bowshot, which is the whole of how the wire tells them apart without a
+/// field for the item. `world.rs`'s doc on the constant is the authority
+/// and `DECISIONS.md` §open carries the proposal.
+///
+/// It chips a wall exactly as an arrow does (the module header): the shot
+/// stops on a piece, `Chip` carries the address out and `World::chip`
+/// charges the revolver's `structure` against it. No falloff —
+/// `content/weapons.toml` has no curve to read.
+///
+/// **It pays the head band exactly as an arrow does**, from the same two
+/// functions and the same clip against the world's stop; this line said
+/// "and no headshot" until headshot v0. The one difference is where the
+/// multiplier is read from — a bullet takes it off `def` because a beam
+/// has no flight to outlive a rebake, while an arrow copies it onto the
+/// shaft at the draw.
+///
+/// # It is lag-compensated, and it is the only fight that now is
+///
+/// Melee rewound on 2026-08-29 (`combat::strike`, slice 4) and this pass
+/// did not, which made the gun the **only** weapon on the shard decided by
+/// ping — the asymmetry being worse than the uniform gap it replaced,
+/// because lead error is largest exactly where the weapon is ranged. The
+/// body scan now resolves against [`Pose::Rewound`] at the tick's granted
+/// `favour`, and the head band is measured off the same rewound feet
+/// ([`BodyHit::qy`]), so a crown is never solved at present-tick altitude
+/// against a past-tick horizontal solve.
+///
+/// `favour` is indexed by **slot**, minted per tick by `World::tick` from
+/// the shooter's own `Command::Input` and already clamped to
+/// `Rewind::max_back()`. Zero — a slot nobody sent an input for, and every
+/// non-server construction — makes `pose_at` return the live body, so a
+/// zero favour is bit-identical to this pass before the parameter existed.
+///
+/// **The hurt bearing stays live**, `strike`'s rule and `strike`'s reason:
+/// `EV_HURT` is an instruction to the victim (*turn this way*) and they are
+/// at their present position when the arc appears. `range_cm` does rewind,
+/// because it is a fact about the blow and is measured on the geometry the
+/// hit was decided on.
 #[allow(clippy::too_many_arguments)]
 pub fn hitscan(
     seed: u64,
@@ -662,12 +1436,16 @@ pub fn hitscan(
     cols: &ColIndex,
     occ: &mut Occupants,
     tick: u64,
+    rewind: &Rewind,
+    favour: &[u8; MAX_PLAYERS],
     cc: &CombatContent,
     players: &mut [Player; MAX_PLAYERS],
     events: &mut EventQueue,
     kills: &mut [Kill; MAX_ARROWS],
-) -> usize {
+    chips: &mut [Chip; MAX_ARROWS],
+) -> (usize, usize) {
     let mut n_kills = 0usize;
+    let mut n_chips = 0usize;
     for i in 0..MAX_PLAYERS {
         let p = &players[i];
         // A corpse and a sleeper do not shoot. `World::tick`'s player loop
@@ -696,26 +1474,98 @@ pub fn hitscan(
         if n > MAX_HITSCAN_SAMPLES {
             continue;
         }
-        // The first round in the weapon's preference order the shooter is
-        // carrying — `draw`'s rule, minus the ballistics lookup, because a
-        // hitscan round has no flight to look up. Read before the cadence
-        // is paid so that ordering stays visible, spent after it.
-        let round = def
-            .ammo
-            .iter()
-            .copied()
-            .take_while(|&a| a != NO_ITEM)
-            .find(|&a| inv_count(&p.inv, a) > 0);
+        // **Where the round comes from, and it is the magazine now.**
+        // A weapon that declares one spends `Player::mag`; a weapon that
+        // does not keeps `draw`'s rule and spends straight out of the pack.
+        // `validate.rs` requires a magazine on every firearm, so the second
+        // arm is unreachable with shipped content — it stays because
+        // `CombatContent::EMPTY` and a bare test fixture can produce a
+        // magazineless hitscan row, and an unguarded index into
+        // `Player::mag` with `NO_MAG` is the aliasing the constant exists
+        // to prevent. Read before the cadence is paid so that ordering
+        // stays visible, spent after it.
+        let mag = (def.magazine > 0 && (def.mag_slot as usize) < MAX_MAGS)
+            .then_some(def.mag_slot as usize);
+        let round = match mag {
+            Some(slot) if p.mag[slot] > 0 => Some(p.mag_round[slot]),
+            Some(_) => None,
+            None => def
+                .ammo
+                .iter()
+                .copied()
+                .take_while(|&a| a != NO_ITEM)
+                .find(|&a| inv_count(&p.inv, a) > 0),
+        };
         let (id, yaw, pitch) = (p.id, p.frame.yaw, p.frame.pitch);
         let (qx, qy, qz) = (p.body.qx, p.body.qy, p.body.qz);
+        let (held, magazine) = (held_item(p), def.magazine);
         // The cadence is the weapon's and it is paid on the pull, not on
         // the hit — `draw`'s rule, for `draw`'s reason: a refused shot must
-        // not be re-attempted every tick.
+        // not be re-attempted every tick. It is also what bounds the dry
+        // click below to one event per `rate_ticks` per player.
         players[i].next_swing = tick + def.rate_ticks.max(1) as u64;
         let Some(round) = round else {
+            // **The dry click.** A trigger pulled on an empty magazine is a
+            // refusal and not a silence: without it the gun going quiet is
+            // indistinguishable from the client having dropped the input,
+            // and the player is owed the sentence that says *press reload*.
+            // The pack path stays silent, as it always has — it has no
+            // magazine to be empty and no reload verb to point at.
+            if let Some(slot) = mag {
+                let pair = mag_pair(players[i].mag[slot], magazine);
+                events.push(
+                    EV_RELOAD_REFUSED,
+                    id,
+                    (held as u32) << 16 | REFUSE_RL_EMPTY,
+                    pair,
+                );
+            }
             continue;
         };
-        inv_take(&mut players[i].inv, round, 1);
+        match mag {
+            // One round out of the cylinder. `mag_round` is left alone at
+            // zero rather than reset to `NO_ITEM`: `reload` only trusts it
+            // when `loaded > 0`, so a spent magazine remembers nothing and
+            // takes whatever the pack offers next.
+            // **No event for the spend, and that is a measurement rather
+            // than a preference.** It emitted `EV_RELOAD` here for one
+            // build, which is one own-fact message per shot and reads as
+            // cheap — until a hundred bodies fire at once:
+            // `snapshot_budget::the_event_lane_holds_at_population` went
+            // from ~128 to **256 sim events in one tick against a 256
+            // cap**, where `EventQueue` drops the newest and `pump_events`
+            // resyncs every connected client at the same instant. The
+            // client counts its own shots instead (`ClientCore`'s
+            // `EventMsg::Shot` arm), which is exact — one shot is one
+            // round — and self-heals against the full statements that
+            // bracket it: a fill and a dry click both carry the pair.
+            // Losing an `EV_SHOT` costs a count that is one high until
+            // then, and it costs the tracer too, so the readout and the
+            // picture stay in agreement.
+            Some(slot) => players[i].mag[slot] -= 1,
+            None => {
+                inv_take(&mut players[i].inv, round, 1);
+            }
+        }
+        // **The report, and it is the same event a bow raises.** Announced
+        // here for `draw`'s reason, one line later in the same order: the
+        // cadence and the ammunition have both had their say, so `EV_SHOT`
+        // means *a round left this barrel* rather than *someone pressed the
+        // button*. Everything below only decides what it reached.
+        //
+        // `speed == 0` is the instantaneous reading (`world.rs`'s doc on the
+        // constant): a projectile cannot leave the muzzle at rest, so the
+        // pattern was unreachable, and it is now the one bit of state that
+        // separates a flight from a beam. The low half then carries the
+        // **reach in decimetres** instead of a drop, because a shot with no
+        // flight has no gravity to describe and a beam does need a length —
+        // `range_m` is at most 80 here and the field holds 6 553.
+        events.push(
+            EV_SHOT,
+            id,
+            (yaw as u32) << 8 | pitch as u32,
+            def.range_mm / 100,
+        );
 
         let (fx, fz) = yaw_dir(yaw);
         let (ch, sv) = pitch_dir(pitch);
@@ -753,25 +1603,80 @@ pub fn hitscan(
         // tick. Measured, at 100 shooters all firing on one tick: 20 ms
         // when every trace runs its full 50 m, 2.1 ms when a body
         // truncates it (`DECISIONS.md` §open, hitscan v0).
-        let seen = nearest_body(players, (ox, oy, oz), (sx, sy, sz), 1.0, id);
+        //
+        // **Rewound** (lag comp, the gun's slice): this shot was fired on
+        // this tick, so the bodies it is asked about are put back where the
+        // shooter's screen had them. The truncation argument above is
+        // untouched by that — it is about which `t` is the minimum, and the
+        // scan still returns the minimum of whatever positions it resolved.
+        let seen = nearest_body(
+            players,
+            (ox, oy, oz),
+            (sx, sy, sz),
+            1.0,
+            id,
+            Pose::Rewound {
+                rewind,
+                tick,
+                back: favour[i],
+            },
+        );
         let upto = match seen {
-            Some((t, _)) => (t * n as f32) as usize + 1,
+            Some(b) => (b.t * n as f32) as usize + 1,
             None => MAX_HITSCAN_MARK_SAMPLES,
         };
-        let (stop_t, surf) =
+        let (stop_t, surf, built) =
             world_stop(seed, haven, cols, occ, (ox, oy, oz), (sx, sy, sz), n, upto);
-        let best = seen.filter(|&(t, _)| t <= stop_t);
+        let best = seen.filter(|b| b.t <= stop_t);
 
-        if let Some((t, j)) = best {
+        if let Some(BodyHit {
+            t,
+            slot: j,
+            enter,
+            exit,
+            qy: feet_q,
+        }) = best
+        {
             let range_cm = (reach * t / 10.0) as u16;
             let v = &mut players[j];
+            // Same question the arrow asks, from the same two functions —
+            // the head band is a property of the body, not of what is
+            // travelling towards it. Clipped against the world's stop for
+            // the same reason: a beam that dies in a wall did not reach
+            // what was standing behind the wall.
+            //
+            // **The rewound feet, not the live ones**, and this is the
+            // half a rewind that stopped at the scan would have got wrong:
+            // the band is an offset off the top of the cylinder the hit was
+            // solved against, so a victim who jumped or walked downhill in
+            // the last quarter-second would otherwise have a head floating
+            // clear of the body the bullet met. At favour 0 this is the
+            // live `qy` to the bit.
+            let feet_mm = feet_q as f32 * (POS_Y_Q * MM_PER_M);
+            // Hoisted for the same reason as the arrow's: the rung reaches
+            // the shooter's screen now, not just their damage number.
+            let part = part_crossed(oy, sy, feet_mm, enter, exit.min(stop_t));
+            let dmg = crate::combat::part_damage(def.damage, part, def.headshot_mult, def.limb_pct);
             // The funnel, reduced: a bullet is a hit like any other, and
             // armor blunts it (armor v0, 2026-08-19 — this said "the day
             // armor lands" for exactly one day).
-            let h = crate::combat::hurt(cc, v, def.damage);
+            let h = crate::combat::hurt(cc, v, dmg);
             let died = h.died;
             let (vid, left, vmax) = (v.id, h.left as u32, v.hp_max as u32);
-            events.push(EV_HIT, id, vid, def.damage as u32);
+            let sector = crate::combat::bearing_sector(
+                qx as i64 - v.body.qx as i64,
+                qz as i64 - v.body.qz as i64,
+            );
+            events.push(EV_HIT, id, vid, crate::world::hit_c(part, dmg));
+            // A beam has no flight to reverse, so this is the muzzle itself —
+            // the shooter's body this tick, which is where they still are.
+            // **And the victim's live body, not the rewound one**, which is
+            // `strike`'s rule verbatim: this bearing is an instruction to
+            // the person it is sent to, who is at their present position
+            // when the arc appears. At a favour of 7 the rewound bearing
+            // would describe neither player's situation and is easily a
+            // whole sector of the sixteen out.
+            events.push(EV_HURT, vid, sector as u32, dmg as u32);
             events.push(EV_HEALTH, vid, left, vmax);
             if died {
                 events.push(EV_DEATH, vid, id, 0);
@@ -800,7 +1705,23 @@ pub fn hitscan(
                 qz as u32,
                 qy as u32,
             );
+            // …and the wall takes it. After the impact, so the order on the
+            // wire is *where it hit* then *what that cost* — and so a piece
+            // that falls to this shot has its `EV_PIECE_REMOVED` behind the
+            // mark that explains it.
+            if let Some(hit) = built {
+                if def.structure > 0 {
+                    chips[n_chips] = Chip {
+                        hit: hit.at,
+                        deploy: hit.deploy,
+                        structure: def.structure,
+                        from_x: ox / MM_PER_M,
+                        from_z: oz / MM_PER_M,
+                    };
+                    n_chips += 1;
+                }
+            }
         }
     }
-    n_kills
+    (n_kills, n_chips)
 }
