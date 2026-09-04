@@ -203,7 +203,7 @@ pub(super) fn head_mesh() -> Mesh {
 }
 
 /// The torch: a wrapped head on a stick, authored standing so it is carried
-/// upright (`lay_forward: false` on its row). No flame geometry and no
+/// upright (`lay: 0.0` on its row). No flame geometry and no
 /// emissive — `nothing_held_glows` keeps a carried emissive out and still
 /// does. It is no longer inert, though: its row declares a light and the
 /// hand carries a `PointLight` for it (torch light v0), sitting
@@ -245,7 +245,7 @@ fn torch_mesh() -> Mesh {
 }
 
 /// The revolver, authored BARREL-UP so the table's shared quarter-turn
-/// (`lay_forward: true`) points it forward: authored +Y is held −Z (away),
+/// (a quarter turn of `lay`) points it forward: authored +Y is held −Z (away),
 /// authored +Z is held +Y (up), so height here is depth in hand and the bore
 /// axis is the column. Grip low (its row's `grip_frac`), bore ~3 cm above
 /// the fist, the way a revolver actually sits.

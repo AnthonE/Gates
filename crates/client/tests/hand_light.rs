@@ -257,7 +257,7 @@ fn the_pool_radius_is_where_the_flame_equals_the_night() {
 fn the_flame_sits_above_the_head_it_comes_out_of() {
     for m in HELD_MODELS.iter().filter(|m| m.light.is_some()) {
         assert!(
-            !m.lay_forward,
+            m.lay == 0.0,
             "{} declares a light and is laid forward. `flame_m` is spent up \
              the hold frame's +Y, which for a laid-forward row is the model's \
              own −Z — the flame would be pushed out of the frame rather than \

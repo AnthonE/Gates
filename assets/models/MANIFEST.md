@@ -189,6 +189,33 @@ gates every claim in this table.
 | `deploy/fire.glb` | 3 fire | `019feff4-8c6e` | 15 | stone ring, charred logs, embers. **The one asset that keeps its emissive map** (measured peak 0.24, genuine glow) |
 | `deploy/workbench.glb` | 5 workbench | `019feff2-cd94` | 24 | plank worktop, vice, scattered tools |
 
+**The rig's hands are bent in the mesh, and the recipe is three lines**
+(operator, 2026-09-01: *"we just need to close the fingers. also i can never
+see the thumb"*). `stumpy.glb` arrived with five modelled digits per hand and
+`RightHand` as a LEAF — the fingers were never rigged, so nothing can pose
+them and the bind-pose rake was in every frame. `ci/curl_hands.py` bends the
+vertices instead:
+
+```
+git show 44acd31:assets/models/stumpy.glb > /tmp/orig.glb
+ci/curl_hands.py /tmp/orig.glb assets/models/stumpy.glb --degrees 150 \
+    --thumb-degrees 90 --adduct 0.85 --into assets/models/stumpy.glb
+```
+
+⚠ **Run it on the ORIGINAL, never on its own output**, which is what `--into`
+is for. Everything the tool derives comes off the geometry, and bent geometry
+gives different answers — a second pass re-derived the LEFT hand's palm as
+`+z` where the original gives `-x`, so it would bend about the wrong axis
+while producing a curl number that looks right. `--into` takes the clips from
+the shipped rig and only the hands from the freshly bent one, and refuses
+unless every vertex neither hand moves already agrees.
+
+The hand was at 85°/35°/0.45 (a relaxed hand) until 2026-09-01 and is now
+150°/90°/0.85 (a grip). `crates/client/tests/rig_asset.rs` gates it, on a
+length-to-thickness ratio rather than the fingertip offset it used to use —
+that measure PEAKED at the 85° it shipped at and read a fist as an uncurled
+hand. See `HAND_CURL_MAX`.
+
 ## `site/` — the two authored places, and the fit rule they forced
 
 Same rail and same pipeline as `deploy/` above — Meshy, paid plan, commissioned
@@ -412,12 +439,34 @@ silently breaking one. `crates/client/tests/held_assets.rs` reads
 | file | item | task id | credits |
 |---|---|---|---|
 | `held/rock.glb` | Rock | `019fefe3-2c88` | 24 |
-| `held/stone_hatchet.glb` | Stone Hatchet | `019fefe7-e4b8` | 24 |
+| `held/stone_hatchet.glb` | Stone Hatchet | `019fefe7-e4b8` | 24 | **stood up** 2026-09-01 |
 | `held/stone_pickaxe.glb` | Stone Pickaxe | `019fefe9-a24e` | 24 |
 | `held/hammer.glb` | Hammer | `019feffa-b068` | 24 |
 | `held/building_plan.glb` | Building Plan | `019feffc-45fe` | 24 |
 | `held/wooden_spear.glb` | Wooden Spear | `019feffe-2c4b` | 24 |
-| `held/hunting_bow.glb` | Hunting Bow | `019feff1-37f6` | 24 |
+| `held/hunting_bow.glb` | Hunting Bow | `019feff1-37f6` | 24 | **stood up** 2026-09-01 |
+
+**Two of these ship a second baked transform, and the reason is a defect that
+was in every frame.** `ci/import_meshy.py` centres the BOUNDING BOX on X/Z,
+and `ui::hold` spends the grip as one number up the model's own +Y — two
+statements that agree only when the thing the hand closes on is itself on +Y.
+The hatchet was authored leaning **32°** with a heavy head off one side, so
+the box centred on the head and the haft sat **121 mm** from the axis at the
+grip height; `viewmodel::pose` then slid thin air into the palm and the axe
+hung a hand's width beside the fist, pointing across the frame. The bow was
+the same at **165 mm** across a 45° diagonal. Both were stood up by
+`ci/stand_grip.py` — a rigid rotation and a slide, no resampling, no rescale,
+so the axe and the bow are exactly the size they always were:
+
+```
+ci/stand_grip.py assets/models/held/stone_hatchet.glb <out> --shaft 0.02 0.45 --grip 0.25
+ci/stand_grip.py assets/models/held/hunting_bow.glb   <out> --shaft 0.02 0.98 --grip 0.50
+```
+
+`height_m` in `HELD_MODELS` moved with them — 0.500 → 0.562 and 1.191 → 1.687
+— because a diagonal's shadow is shorter than the diagonal, and
+`crates/client/tests/held_assets.rs::the_fist_closes_on_the_model_and_not_on_air`
+is the gate that now refuses the whole class.
 
 Three of these were regenerated once, and the two prompt failures are worth
 keeping because they are the failure mode of the *prompt*, not the tool: the
