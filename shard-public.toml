@@ -69,21 +69,27 @@ key_pem = "/home/master/gates-certs/privkey.pem"
 #
 # ── the release floor ────────────────────────────────────────────────────────
 #
-# **Raised to 0.7.0 on 2026-08-30, after the release was published** — that
+# **Raised to 0.8.0 on 2026-09-04, after both depots were published** — that
 # order is the whole discipline (`CLAUDE.md`: publish first, raise the floor
 # after). Backwards and every player is refused by a shard asking for a build
 # they cannot download yet, which reads as an outage and is found by watching
-# `refused_build` climb days later.
+# `refused_build` climb days later. The check that licenses this line is the
+# launcher manifest serving `0.8.0-ga2ac3fa49` on BOTH platform rows, not the
+# depot the operator happened to be watching.
 #
-# `PROTO_VER` already refuses a 0.6.0 client at the wire — 52 against 59 — so
+# `PROTO_VER` already refuses a 0.7.0 client at the wire — 59 against 61 — so
 # this is not what keeps the old build out. It exists for what the protocol
 # number cannot see (`config.rs`): a release that parses fine and is wrong
-# about something that is not a byte. 0.7.0 is exactly that case in both
-# directions — lag compensation moved what the client predicts, and
-# `content/` moved under a wipe — so the floor and the wire happen to agree
-# today, and the floor is the half that still holds when the next release
-# does not bump the wire.
-min_client = "0.7.0"
+# about something that is not a byte. 0.8.0 is that case on the client side —
+# the predictor now publishes a sub-tick alpha and the camera reads it, and
+# the datagram lane became a bounded ring — so the floor and the wire agree
+# again today, and the floor is the half that still holds when the next
+# release does not bump the wire.
+#
+# ⚠ Unlike 0.7.0, `content/` did NOT move under this release. The 2026-09-04
+# wipe was a deliberate one rather than wall 7 refusing a stale world, so a
+# reader looking for a content hash change to explain it will not find one.
+min_client = "0.8.0"
 
 require_auth = true
 save_file = "/home/master/gates-data/players.save"
