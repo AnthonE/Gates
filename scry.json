@@ -1,7 +1,7 @@
 {
  "scry": 1,
  "game": "gates",
- "version": "0.7.0",
+ "version": "0.8.0",
  "_version": "The workspace version in Cargo.toml. scry never copies this onto the store row \u2014 it serves it beside the version actually published in its depot and flags the gap, so a tag ahead of a build shows up as a gap instead of vanishing. ci/scry_manifest.py --self-test keeps this equal to Cargo.toml, the same check release.yml already makes against a tag.",
  "listing": {
   "kind": "survival \u2014 100-player shards",
@@ -20,6 +20,12 @@
  },
  "_listing": "These fields are now THIS REPO's to write: whatever is here wins on the next pull, so editing them at scry's store desk is temporary and editing them here is permanent. Seeded byte-for-byte from the row as it stood 2026-08-11, so wiring this up changed no copy. Fields deliberately NOT claimed: state and play_url (the house decides when a title reads live), and capsule/hero/media (art is uploaded, not committed \u2014 a manifest is text and cannot ship bytes). band/hidden/placeholder/lane/note are the house's and a manifest may not write them at all.",
  "updates": [
+  {
+   "id": "v0.8.0",
+   "kind": "release",
+   "title": "0.8.0 \u2014 the distance stops fizzing, remote players stop teleporting, and the monuments are buildings",
+   "body": "The far hillside stops fizzing. Every photographic texture in the game reached the GPU with exactly one mip level \u2014 no chain at all \u2014 so a 1024-pixel rock surface minified onto a slope two kilometres away folded in on itself, differently every frame the camera moved. That is the static you have been seeing on distant ground, and it was never an edge the anti-aliasing could find. There is a real chain now, built per image as it loads, and each map is filtered the way it deserves: colour is decoded before it is averaged, normals are renormalised, roughness is averaged plainly.\n\nRemote players stop teleporting. Three separate starvations were stacked on one lane. A tick with no input from you used to walk your body at full stride, so stopping snapped you back \u2014 a starved tick now decays the last real frame to nothing over three ticks instead. Snapshots doubled to 30 Hz, which was the floor under every remote-motion defect at once. And the packet sent to recover from a dropped one used to throw away every remote body's motion history, so the recovery WAS the snap; it keeps them now. A respawn no longer slides your corpse through every wall between where you died and the beach.\n\nYour own camera crosses the tick. The predictor steps on a fixed 30 Hz clock, so at 144 fps four frames in five were repeats of the last one, and eyes tracking the world read the repeats as smear. The view walks between the two predicted positions now. Aim is untouched \u2014 it still comes off the mouse at frame rate.\n\nThe item is actually in your hand. It was a sibling of the arms rather than a child of the hand, so the animation posed the fist and the tool stayed where the camera put it. The swing is a rotation of the whole assembly about a shoulder now, not a twist about the grip: travel over one stroke went from 26 cm to 2.24 m. The hatchet and the bow are held across the arm instead of along it, which is what a tool looks like in a hand. A landed blow throws debris \u2014 and a whiff throws nothing, because the server never announced one.\n\nThe world is built rather than boxed. The haven's shelter and the waystations' canopy were fourteen and nine grey boxes; they are modelled buildings. The island's 1,054 boulders and 746 ore nodes were drawn off two meshes between them \u2014 one rock, and one node wearing three different materials \u2014 and there are nine now, so stone, metal and sulfur finally tell themselves apart. Barrels, supply crates and cache boxes are their own objects, and the crate and the cache are deliberately tellable apart, because which one you opened decides what is in it. The road is a gravel surface rather than a line of pebbles standing on painted meadow.\n\nThis one breaks the wire \u2014 the packet layout went from 59 to 61, so a 0.7.0 client is refused at the door rather than quietly misread \u2014 and the world is wiped with it. 12 commits since 0.7.0."
+  },
   {
    "id": "v0.7.0",
    "kind": "release",
