@@ -2262,9 +2262,10 @@ Then, in the order a player would notice:
     line** (§0sp2), **the map's marked set** (§0a), **a diagonal base**
     (§0ac item 3), **the clutter ring's hard edge at ~32–45 m** (§0a).
 
-And the two that need a machine rather than a look: **nobody has started the
-Windows build on Windows** (§0win) and **nobody has ever joined the public
-shard** (§0ab item 2).
+And the one that needs a machine rather than a look: **nobody has started the
+Windows build on Windows** (§0win). Its old companion — "nobody has ever
+joined the public shard" — is retired: the first join was 2026-08-15 and
+§0ab item 2 now carries the measurement.
 
 
 ## 0gq · Nobody has seen LOW or MEDIUM *(client lane)*
@@ -2484,12 +2485,19 @@ retired 2026-08-20 and answers 410. The platform is `elopros.com`
    the origin's `published.json` names it and the digest is notarized, and
    `elo digest` — the one implementation of the notarized number — is not
    runnable from this box by construction.
-2. **Nobody has ever joined the public shard.** `game.elopros.com:61234` is
-   in the served list and `status.json` answers, but the tools here cannot
-   measure a join: `bots` takes a `SocketAddr`, so it cannot dial the name
-   the certificate is issued for (`server/tests/tls_posture.rs`), and it
-   carries no wallet, so `require_auth = true` refuses it correctly. The
-   first real join is a person with the published build.
+2. ✅ ~~**Nobody has ever joined the public shard.**~~ — **false since
+   2026-08-15 03:36:45**, and this line carried it for three weeks. The
+   journal is the evidence and the command is the claim:
+   `journalctl -u gates-shard.service | grep -E 'joins [1-9]' | head -1`.
+   Real joins have happened under `require_auth = true` with zero auth
+   refusals ever recorded, so the SIWE seam works end to end; the 0.7.0 run
+   wrote 105 player records and left a sleeper, and a 0.8.0 join on
+   2026-09-04 survived a shard restart (`took over 1`). **What is still
+   true is the TOOLING half**: nothing here can measure a join on demand —
+   `bots` takes a `SocketAddr`, so it cannot dial the name the certificate
+   is issued for (`server/tests/tls_posture.rs`), and it carries no wallet,
+   so `require_auth = true` refuses it correctly. A person with the
+   published build is still the only instrument.
 3. **`elo://` is not registered with the desktop.** That is the launcher's
    installer, not this repo; `crates/client/src/deeplink.rs` is ready.
 4. Re-run `./ci/shardlist.py` and re-copy `servers.json` to the origin
