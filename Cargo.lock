@@ -1973,12 +1973,15 @@ dependencies = [
 name = "client"
 version = "0.8.0"
 dependencies = [
+ "basis-universal",
  "bevy",
  "bevy_procedural_tree",
  "client-core",
  "fastrand",
  "image",
+ "ktx2",
  "protocol",
+ "ruzstd",
  "serde",
  "serde_json",
  "sim-core",

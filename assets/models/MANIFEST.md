@@ -422,6 +422,82 @@ on its base.
 still draws it wherever a model is absent, which is every row on a headless
 build.
 
+### 2026-09-05 · two of the six keepers are the wrong object, and every map was bent
+
+The operator read a frame: the boulder *"looks like mineable"*, the node is
+*"square instead of spherical"*. Both are measurable off the files, and the
+eleven-roll table above could not have caught either, because every number in
+it is about SIZE and colour and the defect is shape:
+
+| file | plan ratio | spread | luma | chart contrast | reads as |
+|---|---|---|---|---|---|
+| `rock_a.glb` | **1.17** | 0.12 | **0.344** | 0.139 | a pale 2 m ball — an ore node |
+| `rock_b.glb` | 1.44 | 0.20 | 0.204 | 0.147 | keeps the new bands |
+| `rock_c.glb` | 1.37 | 0.10 | 0.250 | 0.089 | keeps, marginally |
+| `node_stone.glb` | **1.39** | 0.38 | 0.303 | **0.309** | a cube of quarried blocks |
+| `node_metal.glb` | **1.39** | 0.27 | 0.190 | 0.178 | blocks |
+| `node_sulfur.glb` | **1.75** | 0.20 | 0.259 | 0.143 | blocks, 0.39 m of skirt on its short axis |
+
+Plan ratio is the widest over the narrowest direction of the footprint (1.0 a
+circle, 1.39 what 36 bins make of a square); spread is how far the surface
+is from a sphere; both are `ci/glbcharts.py`'s and `ci/measure_glb.py` now
+rejects on them, with OPPOSITE bands for the two rows — a node must be round in
+plan (the sim blocks a cylinder, and a square node's faces sit 0.26 m inside
+it), a formation must not be a ball. The luma band is per row too: the node is
+the pale rock and the formation the dark one, split at granite's 0.292, and
+the shipped pair had that the wrong way round. `tests/prop_assets.rs` pins the
+four offenders at today's numbers until their re-roll lands.
+
+**Chart contrast is the third column and it is why the boulder wears
+camouflage.** Decoded off the shipped KTX2 through Bevy's own transcoder, the
+albedo's 116 UV islands disagree with each other by a texel-weighted **13.9 %**
+of the map's luma (the node's 384 by 30.9 %): the generator paints each island
+under its own light, and the seams follow polygon edges exactly.
+`ci/flatten_charts.py` equalises them (0.139 → 0.000 on rock_a's decoded
+albedo, per channel, gutter dilated); `tests/packed_maps.rs` holds what ships.
+
+⚠ **And the larger half of the patchwork was the packer, not the generator**:
+every normal map in this directory was linearised by `ci/ktx_pack.py` — see
+§Textures below. Both halves are repaired by one re-pack per file.
+
+**The two prompts, ready to roll** (`ci/meshy_gen.py … --tris 1400` for the
+node, `--tris 2400` for the formation; then `ci/measure_glb.py --occupant
+StoneNode|Rock` over every roll; six keepers from eleven is the rate to budget):
+
+> **stone node** — "A single rounded weathered granite boulder on a plain white
+> background, three-quarter view. A smooth water-worn dome, 1.83 metres wide,
+> 1.83 metres deep and 1.65 metres tall, as deep as it is wide, sitting half
+> sunk into the ground so the lower third is hidden. One continuous rounded
+> mass with a few shallow fractures and small chipped facets, no separate
+> blocks, no stacked stones, no cut faces, no cube. Pale grey granite with a
+> light speckled crystalline surface, faint quartz veins, mottled with darker
+> grey, no lichen, no moss, no green. Exactly one rock. No ground, no terrain,
+> no people, no plants."  ·  texture: "Pale speckled granite, light grey with
+> faint quartz veins and darker grey mottling, dry stone, no moss, no
+> vegetation."
+>
+> **formation** (replaces `rock_a`) — "A single weathered granite outcrop on a
+> plain white background, three-quarter view. An angular tilted slab of
+> fractured bedrock, 2.2 metres wide, 2.2 metres deep and 2.0 metres tall, as
+> deep as it is wide, leaning at a slight angle with one large flat inclined
+> face, sharp broken edges, horizontal bedding lines and a fractured corner,
+> partly sunk into the ground. Not rounded, not a dome, not a ball, not a
+> boulder. Dark cool grey granite, matte, with rust-brown staining in the
+> cracks, no moss, no lichen, no green. Exactly one rock. No ground, no
+> terrain, no people, no plants."  ·  texture: "Dark cool grey weathered
+> granite, matte, fractured, rust-brown staining in the cracks, dry stone, no
+> moss, no vegetation."
+
+Naming the omitted axis and naming what to avoid are the two levers this
+table measured as working; "not a ball" is the second lever aimed at the
+first defect. Moss is left out of the first rolls on purpose — the green
+ceiling is 10 % and "lichen in the hollows" returned 47.6 % — and a mossy
+variant is a second roll type once a keeper exists. The node's 1.65 m height
+is for the PROPOSED lift of 0.3 (`DECISIONS.md` §open, scatter art v1): the
+import height is `2 × (OCCUPANT_TOP_M − lift)`, so a lower lift buries more of
+the same blocked volume and the collision does not move; at the shipped lift
+of 0.5 the height is 1.25 m.
+
 ## `held/` — what the viewmodel puts in your hand
 
 **The surface these were waiting on turned out to already exist.** They were
@@ -504,6 +580,22 @@ UASTC *cheaper* than the JPEG it replaces instead of 1.5× dearer. **The
 mipmaps are the quiet win**: the JPEGs had none at all, so every prop aliased
 at distance, and a mipmapped 1K generally reads better in motion than a
 shimmering 2K. Whole set: **95 MB → 42 MB.**
+
+⚠ **Every data map packed between 2026-08-11 and 2026-09-05 is LINEARISED, and
+every file in this directory carries one.** `ci/ktx_pack.py` asked `ktx create`
+for `R8G8B8A8_UNORM` on the normal and metal/rough maps and never said the PNG
+was already linear; the tool's documented default takes an untagged PNG as sRGB
+and converts it. Decoded through the transcoder Bevy uses, every normal map's
+X and Y average **0.212** where a tangent-space map centres on 0.5 (0.5 through
+the sRGB curve is 0.214), 0.05 % of texels are unit length, and the mean vector
+is bent ~41° in tangent space — a different world direction on each UV island,
+which is the polygon-edged shading patchwork on the boulders. Roughness went
+through the same curve (0.41 stored where ~0.67 was delivered), so everything
+is glossier than it was made. The packer assigns the transfer function
+explicitly now and round-trips every map it writes; `tests/packed_maps.rs`
+lists the 23 bent files and holds each to neutral the moment its entry is
+removed. **The repair is a re-pack from the raw deliveries** (`NOW.md` §0rk):
+`ci/flatten_charts.py` then `ci/ktx_pack.py`, per file, on the box with `ktx`.
 
 ⚠ **These files are deliberately not spec-clean glTF, and it is not an
 oversight.** The standard way to say "this texture is KTX2" is

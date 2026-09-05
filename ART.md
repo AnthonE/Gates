@@ -106,6 +106,16 @@ set is unanimous. Breaking one is a finding, not a taste dispute.
    texture budget.
 7. **Nothing may look procedural.** No visible tiling, no uniform spacing, no
    two identical instances adjacent at the same rotation and scale.
+8. **A node and a formation differ in shape, value and attitude, because the
+   look is the only thing that tells them apart.** The sim says a boulder is
+   never a node (`gather.rs`), so a player picks which rock to swing at by
+   eye. The node is the pale, round, half-buried lump with the glint; the
+   formation is the dark, angular, tilted mass. Measured 2026-09-05, the
+   shipped pair was the other way round on shape and value both — a 1.17
+   ball at luma 0.344 for the boulder against a 1.39 cube at 0.303 for the
+   node — and the operator read them that way from a frame. `ci/measure_glb.py`
+   holds the bands a roll is selected on; `tests/prop_assets.rs` holds what
+   ships to them.
 
 ## 3 · The measured bar
 

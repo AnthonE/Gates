@@ -22,7 +22,15 @@ default = []
 # unconditional on purpose: it reads bytes off the network, so wall 4's
 # bounds are the part that most needs a test, and a test behind
 # `--features render` runs in the renderer tier where nobody looks at it.
-render = ["dep:bevy", "dep:bevy_procedural_tree", "dep:fastrand", "dep:ureq"]
+render = [
+    "dep:bevy",
+    "dep:bevy_procedural_tree",
+    "dep:fastrand",
+    "dep:ureq",
+    "dep:basis-universal",
+    "dep:ktx2",
+    "dep:ruzstd",
+]
 # Asset hot-reload for the dev loop: edit a file under `assets/` and Bevy
 # reloads it into the running client instead of asking for a rebuild and a
 # reconnect. The one thing `RENDER.md` §9 lists from Bevy's scene stack that
@@ -121,6 +129,14 @@ required-features = ["render"]
 [[test]]
 name = "lattice_geom"
 path = "tests/lattice_geom.rs"
+required-features = ["render"]
+
+# What a packed KTX2 map DECODES to, through Bevy's own transcoder — the
+# normal maps' neutrality and the albedos' chart contrast. Arithmetic off the
+# shipped file, no GPU; needs the decoder crates the render feature carries.
+[[test]]
+name = "packed_maps"
+path = "tests/packed_maps.rs"
 required-features = ["render"]
 
 [[test]]
@@ -383,6 +399,17 @@ bevy_procedural_tree = { version = "0.3", default-features = false, features = [
 # never placement, which is `sim_core::terrain::scatter`'s pure hash — so no
 # sim-facing determinism rests on this crate's PRNG.
 fastrand = { version = "2", optional = true }
+# The three crates `tests/packed_maps.rs` decodes a shipped KTX2 with — the
+# SAME path Bevy takes (ktx2 container → ruzstd → basis-universal UASTC), at
+# the versions Bevy already pins, so they cost no download and no extra
+# compile. Optional and on the render feature only, so the headless gate never
+# builds the C++ transcoder for a test it cannot run. The library does not use
+# them; the test does, and it is the only reader of what a packed map actually
+# decodes to — which is how every normal map in the tree shipped bent for
+# three weeks with every other gate green (`ci/ktx_pack.py`'s header).
+basis-universal = { version = "0.3", optional = true }
+ktx2 = { version = "0.4", optional = true }
+ruzstd = { version = "0.8", optional = true }
 sim-core = { path = "../sim-core" }
 protocol = { path = "../protocol" }
 client-core = { path = "../client-core" }

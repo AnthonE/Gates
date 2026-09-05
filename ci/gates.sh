@@ -123,6 +123,18 @@ $NICE python3 ci/elo_manifest.py --self-test || fail "elo manifest"
 echo "== gate: report board (a pile of reports is a worklist, crates/client/src/report.rs)"
 $NICE python3 ci/reports.py --self-test || fail "report board"
 
+# The asset triage and the chart repair, proven on meshes whose shape is
+# known by construction (a sphere, a cube, a slab, a patchwork albedo). Both
+# select or repair what a generator hands back, and a band that stopped
+# rejecting would be discovered on the next purchase — six keepers from
+# eleven rolls were all inside every band and two were the wrong object
+# (`ci/measure_glb.py`'s header). Needs numpy and Pillow; both exit nonzero
+# and say SKIP without them rather than pass on cases that did not run.
+echo "== gate: asset triage (ci/measure_glb.py: shape, value and chart bands)"
+$NICE python3 ci/measure_glb.py --self-test || fail "asset triage"
+echo "== gate: chart repair (ci/flatten_charts.py: the UV islands agree afterwards)"
+$NICE python3 ci/flatten_charts.py --self-test || fail "chart repair"
+
 echo "== gate: rustfmt"
 $NICE cargo fmt --all --check || fail "rustfmt"
 
