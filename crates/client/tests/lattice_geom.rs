@@ -29,8 +29,8 @@
 
 use bevy::prelude::*;
 use client::render::structures::{
-    base_transform, foundation_part, level_base_y, piece_span, shape_parts, Part, PartKind, SEAM_M,
-    SLAB_T,
+    base_transform, foundation_part, level_base_y, parts_for, shape_parts, Part, PartKind,
+    EDGE_DROP_M, SLAB_T,
 };
 use sim_core::build::{
     anchor, column_floor_y, BUILD_CELL_M, LEVEL_H_M, LOC_DIAG_A, LOC_DIAG_B, LOC_EDGE_XLO,
@@ -95,7 +95,7 @@ const EPS: f32 = 1.0e-3;
 /// per-address skirt is a different emit from the per-shape table and
 /// `spawn_piece` picks between them, so a gate that only read the table would
 /// be blind to the shape the game actually spawns most of.
-fn parts_at(shape: u8, cx: u16, cz: u16, plate: i8) -> Vec<Part> {
+fn parts_at(shape: u8, cx: u16, cz: u16, plate: i8, loc: u8) -> Vec<Part> {
     if matches!(shape, SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION) {
         return vec![foundation_part(
             SEED,
@@ -106,24 +106,28 @@ fn parts_at(shape: u8, cx: u16, cz: u16, plate: i8) -> Vec<Part> {
             plate,
         )];
     }
-    let (parts, n) = shape_parts(shape);
+    let (parts, n) = parts_for(shape, loc);
     parts[..n].to_vec()
 }
 
-/// Is world point `p` inside anything the client draws for this piece?
+/// Is world point `p` inside anything the client draws for this piece —
+/// every part, the corner posts included, since the ghost draws both and a
+/// standing piece's missing post is drawn by its neighbour?
 fn drawn_solid(shape: u8, addr: (u16, u16, u8, u8), plate: i8, p: Vec3) -> bool {
     let root = base_transform(SEED, hv(SEED), addr, plate);
-    parts_at(shape, addr.0, addr.1, plate).iter().any(|part| {
-        let l = (root * part.transform())
-            .to_matrix()
-            .inverse()
-            .transform_point3(p);
-        let h = part.size * 0.5;
-        let in_box = l.x.abs() <= h.x && l.y.abs() <= h.y && l.z.abs() <= h.z;
-        // The prism is the box's NW half, split on the hypotenuse its own
-        // mesh is built from (`tri_prism_mesh`): x/h.x + z/h.z ≤ 0.
-        in_box && (part.kind == PartKind::Box || l.x / h.x + l.z / h.z <= 0.0)
-    })
+    parts_at(shape, addr.0, addr.1, plate, addr.3)
+        .iter()
+        .any(|part| {
+            let l = (root * part.transform())
+                .to_matrix()
+                .inverse()
+                .transform_point3(p);
+            let h = part.size * 0.5;
+            let in_box = l.x.abs() <= h.x && l.y.abs() <= h.y && l.z.abs() <= h.z;
+            // The prism is the box's NW half, split on the hypotenuse its own
+            // mesh is built from (`tri_prism_mesh`): x/h.x + z/h.z ≤ 0.
+            in_box && (part.kind == PartKind::Box || l.x / h.x + l.z / h.z <= 0.0)
+        })
 }
 
 /// The highest drawn surface at (x, z), or `None` where the piece draws
@@ -172,17 +176,15 @@ fn cols_with(cx: u16, cz: u16, level: u8, loc: u8, shape: u8, plate: i8) -> ColI
 }
 
 /// How close to a shape's own edge a sample may sit before it is skipped,
-/// metres. Two different reasons, one number.
-///
-/// The **cell** boundary is the drawn seam ([`SEAM_M`]): a deliberate cosmetic
-/// inset, pinned by §D, and re-litigating it inside a height sweep would only
-/// make §A noisy. The **triangle's hypotenuse** is float noise on a shared
-/// line: `collide::piece_ground`'s `in_half` is boundary-inclusive on both
-/// sides on purpose, so a body on the seam of a NW+SE pair reads one floor
-/// from either — and the two sides reach that line by different arithmetic
-/// (the sim adds two cell offsets, the client inverts a rotated matrix), which
-/// disagrees at 6·10⁻⁵ m. That is not drift; it is the last bit of an f32.
-const SKIP_M: f32 = SEAM_M;
+/// metres. One reason since the seam went (gap v1): the **triangle's
+/// hypotenuse** and the **cell boundary** are float noise on a shared line —
+/// `collide::piece_ground`'s `in_half` is boundary-inclusive on both sides on
+/// purpose, so a body on the seam of a NW+SE pair reads one floor from either,
+/// and the two sides reach that line by different arithmetic (the sim adds
+/// two cell offsets, the client inverts a rotated matrix), which disagrees at
+/// 6·10⁻⁵ m. That is not drift; it is the last bit of an f32. A millimetre
+/// is a hundred of those and a thousandth of the defect class §A catches.
+const SKIP_M: f32 = 1.0e-3;
 
 /// Is the sample within [`SKIP_M`] of this loc's own drawn boundary?
 fn on_a_seam(loc: u8, dx: f32, dz: f32) -> bool {
@@ -383,23 +385,23 @@ fn every_storey_is_one_cube_tall_on_both_sides() {
                 base0 + level as f32 * LEVEL_H_M,
                 "level {level} is not {level} storeys over level 0 (plate {plate})"
             );
-            // The wall at this level: base point at the storey base, top face
-            // at the next storey's base.
+            // The wall at this level: a storey tall, its foot the edge drop
+            // under the storey base and its head the same under the next —
+            // so a wall stacked on it abuts it exactly, foot to head (gap v1,
+            // `structures::EDGE_DROP_M`).
             let (parts, n) = shape_parts(SHAPE_WALL);
-            assert_eq!(n, 1, "a wall is one part");
+            assert_eq!(n, 3, "a wall is a body and two corner posts");
             let w = parts[0];
             assert_eq!(w.size.y, LEVEL_H_M, "a wall is not one storey tall");
-            assert_eq!(
-                w.offset.y - w.size.y * 0.5,
-                0.0,
-                "a wall's foot is not on its own storey base"
+            assert!(
+                (w.offset.y - w.size.y * 0.5 + EDGE_DROP_M).abs() < 1e-6,
+                "a wall's foot is not the edge drop under its storey base"
             );
             if level + 1 < 8 {
                 let next = level_base_y(SEED, hv(SEED), CX, CZ, level + 1, plate);
-                assert_eq!(
-                    base + w.offset.y + w.size.y * 0.5,
-                    next,
-                    "the wall at level {level} does not reach level {}",
+                assert!(
+                    (base + w.offset.y + w.size.y * 0.5 - (next - EDGE_DROP_M)).abs() < 1e-4,
+                    "the wall at level {level} does not reach the drop under level {}",
                     level + 1
                 );
             }
@@ -421,10 +423,16 @@ fn the_build_lattice_is_cubic() {
         BUILD_CELL_M, LEVEL_H_M,
         "the storey is not the cell's height"
     );
+    // A plane spans exactly its cell since the seam went (gap v1): two
+    // neighbours abut, sharing an edge and no face.
+    let (parts, _) = shape_parts(SHAPE_FLOOR);
     assert_eq!(
-        piece_span(),
-        BUILD_CELL_M - SEAM_M,
-        "a piece does not span its cell less the seam"
+        parts[0].size.x, BUILD_CELL_M,
+        "a plane does not span its cell"
+    );
+    assert_eq!(
+        parts[0].size.z, BUILD_CELL_M,
+        "a plane does not span its cell"
     );
     const {
         assert!(
@@ -448,7 +456,7 @@ fn a_plane_hangs_under_its_own_plate() {
             SHAPE_FOUNDATION,
             SHAPE_TRI_FOUNDATION,
         ] {
-            for part in parts_at(shape, CX, CZ, plate) {
+            for part in parts_at(shape, CX, CZ, plate, LOC_PLANE) {
                 let top = part.offset.y + part.size.y * 0.5;
                 assert!(
                     top.abs() <= EPS,
@@ -599,44 +607,34 @@ fn the_skirt_reaches_the_stilt_the_sim_allows() {
 // §D · The pinned cosmetic deviations
 // ---------------------------------------------------------------------------
 
-/// The seam, restated for the two shapes that are NOT edge pieces, and the
-/// diagonal's own version of it.
+/// The drawn extents are the sim's, to the millimetre: a plane spans its cell,
+/// and a diagonal wall runs the whole diagonal the sim blocks (`collide`'s
+/// `DIAG_LEN_M`).
 ///
-/// `ghost.rs` pins the doorway's `SEAM_M / 2` inset. These are the other two
-/// places the same idea shows up, both measured 2026-08-21 and both pinned
-/// here rather than tolerated: a plane is inset half a seam from its cell, and
-/// a **diagonal wall is inset `SEAM_M·√2 / 2` — 28 mm, not 20** — because its
-/// span is the straight wall's, stretched by the cell's diagonal ratio on the
-/// root. At 28 mm no player can see or exploit it; if it ever grows this says
-/// so before anybody has to notice a gap at a corner.
+/// This test used to pin two deliberate INSETS — half a seam on a plane, and
+/// `SEAM_M·√2 / 2` = 28 mm on a diagonal — as "no player can see or exploit
+/// it". The seam is gone (gap v1) and the insets with it, so the pin is now
+/// zero: the seam was the see-through slit the 2026-09-04 playtest saw.
 #[test]
-fn the_drawn_insets_are_the_pinned_ones() {
-    let seam = SEAM_M * 0.5;
-    // A plane: half a seam in from each side of the cell.
+fn the_drawn_extents_are_the_sims() {
     let (parts, _) = shape_parts(SHAPE_FLOOR);
-    assert_eq!(parts[0].size.x, BUILD_CELL_M - SEAM_M);
-    assert_eq!(parts[0].size.z, BUILD_CELL_M - SEAM_M);
+    assert_eq!(parts[0].size.x, BUILD_CELL_M);
+    assert_eq!(parts[0].size.z, BUILD_CELL_M);
 
-    // A diagonal: measure the drawn slab's own ends against the span the sim
-    // blocks (`collide`'s `DIAG_LEN_M`, the cell's diagonal).
     let sim_len = BUILD_CELL_M * std::f32::consts::SQRT_2;
     for loc in [LOC_DIAG_A, LOC_DIAG_B] {
         let root = base_transform(SEED, hv(SEED), (CX, CZ, 0, loc), 0);
-        let (parts, _) = shape_parts(SHAPE_WALL);
+        let (parts, n) = parts_for(SHAPE_WALL, loc);
+        assert_eq!(n, 1, "a diagonal is one body and no posts");
         let m = (root * parts[0].transform()).to_matrix();
         let h = parts[0].size.z * 0.5;
         let a = m.transform_point3(Vec3::new(0.0, 0.0, -h));
         let b = m.transform_point3(Vec3::new(0.0, 0.0, h));
         let short = sim_len - (b - a).length();
         assert!(
-            (short - SEAM_M * std::f32::consts::SQRT_2).abs() <= 1e-3,
-            "diag {loc}: short by {short:.4} m, not the pinned {:.4}",
-            SEAM_M * std::f32::consts::SQRT_2
-        );
-        assert!(
-            short * 0.5 < 0.03 && short * 0.5 > seam,
-            "diag {loc}: {:.4} m per end is outside the pinned band",
-            short * 0.5
+            short.abs() <= 1e-3,
+            "diagonal {loc}: drawn {:.4} m short of the {sim_len:.4} m the sim blocks",
+            short
         );
     }
 }

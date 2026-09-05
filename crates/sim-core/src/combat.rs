@@ -1768,6 +1768,7 @@ mod tests {
             0,
             LOC_PLANE,
             false,
+            0,
             &mut ev,
         );
         assert_eq!(pieces.len(), 1, "the rig needs its foundation");
@@ -1915,6 +1916,7 @@ mod tests {
             0,
             crate::build::LOC_EDGE_XLO,
             false,
+            0,
             &mut ev,
         );
         let wall = pieces.find(CX, CZ, 0, crate::build::LOC_EDGE_XLO).unwrap();
@@ -2223,6 +2225,7 @@ mod tests {
             0,
             LOC_PLANE,
             false,
+            0,
             &mut ev,
         );
         crate::build::place(
@@ -2239,6 +2242,7 @@ mod tests {
             0,
             LOC_EDGE_XLO,
             false,
+            0,
             &mut ev,
         );
         assert_eq!(pieces.len(), 2, "foundation + doorway");

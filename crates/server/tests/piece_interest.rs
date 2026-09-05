@@ -141,6 +141,7 @@ fn lay_base(core: &mut ShardCore, cx0: u16, cz0: u16, n: usize) -> Vec<(u16, u16
             0,
             LOC_PLANE,
             false,
+            0,
             &mut core.world.events,
         );
         if core.world.pieces.len() > before {
@@ -352,6 +353,7 @@ fn walking_to_a_base_delivers_it_including_what_was_placed_while_away() {
             level: 0,
             loc: LOC_PLANE,
             freehand: false,
+            plate: 0,
         },
     );
     let skipped_before = ShardStats::get(&stats.piece_events_skipped);

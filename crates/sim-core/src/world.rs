@@ -1349,6 +1349,12 @@ pub enum Command {
         level: u8,
         loc: u8,
         freehand: bool,
+        /// The band the placer asked for, heard only where nothing else
+        /// decides the plate — a first foundation, or a freehand one
+        /// (`build::plate_for`, foundation height v0). Bands of
+        /// `build::BUILD_BASE_Q_M` over the column's own ground, refused
+        /// past half a wall either way.
+        plate: i8,
     },
     /// Place baked deployable row `row` at grid address (deploy.rs
     /// validates and refuses by event, never by panic).
@@ -3300,6 +3306,7 @@ impl World {
                 level,
                 loc,
                 freehand,
+                plate,
             } => {
                 if let Some(slot) = self.live_slot_of(id) {
                     build::place(
@@ -3316,6 +3323,7 @@ impl World {
                         level,
                         loc,
                         freehand,
+                        plate,
                         &mut self.events,
                     );
                 }

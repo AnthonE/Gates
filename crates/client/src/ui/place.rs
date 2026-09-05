@@ -27,9 +27,10 @@
 //! avoid, so every check here is one the sim runs the same way.
 
 use sim_core::build::{
-    anchor, build_cell_of, foundation_terrain_ok, plate_for, BuildContent, PieceRec, BUILD_CELL_M,
-    BUILD_REACH_M, LOC_DIAG_A, LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, LOC_RISER,
-    LOC_TRI_XHI_ZHI, LOC_TRI_XHI_ZLO, LOC_TRI_XLO_ZHI, LOC_TRI_XLO_ZLO, SHAPE_DOORWAY,
+    anchor, band_of_ground, build_cell_of, column_floor_y, foundation_terrain_ok, plate_for,
+    terrain_band, BuildContent, PieceRec, BUILD_CELL_M, BUILD_REACH_M, LEVEL_H_M, LOC_DIAG_A,
+    LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, LOC_RISER, LOC_TRI_XHI_ZHI, LOC_TRI_XHI_ZLO,
+    LOC_TRI_XLO_ZHI, LOC_TRI_XLO_ZLO, PLATE_RISE_MAX_BANDS, PLATE_SINK_MAX_BANDS, SHAPE_DOORWAY,
     SHAPE_FOUNDATION, SHAPE_FRAME, SHAPE_STAIRS, SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION,
     SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
 };
@@ -71,48 +72,426 @@ pub const AIM_STEP_M: f32 = 0.25;
 /// metres. Same §open row.
 pub const AIM_RANGE_M: f32 = BUILD_REACH_M + 3.0;
 
-/// Where the LOOK ray meets the world, as a planar aim point for
-/// [`target_at`] — clamped to [`BUILD_REACH_M`] around the feet so the
-/// resolved cell is one the player could plausibly place in.
+/// What the look ray met — the fact the storey is read off (aimed level v0,
+/// `DECISIONS.md` §open).
 ///
-/// The march tests the ray against the same two grounds the sim stands
-/// players on: raw terrain, and the piece surfaces in the predictor's own
-/// collision index (`ClientCore::cols`) via `collide::piece_ground` — so
-/// aiming at your own floor extends the floor, at the working level or
-/// not. What it deliberately does NOT test is wall faces: a ray into a
-/// wall lands on the ground behind it, and the verdict says what the sim
-/// would say about that cell. `eye`/`dir` are the camera's own (the
-/// tracer's ray convention, so the ghost agrees with where a shot goes);
-/// pure and bevy-free so the whole aim is testable headless.
+/// **The reference has no level key, and that is the reason ours went.**
+/// Its placement is socket-based: a floor ghost aimed at the top of a wall
+/// takes the wall's top socket, a wall aimed at a floor's edge stands on it,
+/// and the storey is never typed — it is whatever the piece you are looking
+/// at implies (`reference/BUILDING.md` §7d). Ours was `R`/`F` on a
+/// client-side latch, live only while the wheel was up, and the 2026-09-04
+/// playtest's *"i cant build a second story"* is what a storey nobody can
+/// find looks like. So the storey is aimed now, the way the cell already
+/// was: what the ray met says which one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Met {
+    /// Bare terrain.
+    Ground,
+    /// The walk surface of a built plane, a stair tread or a solid
+    /// deployable's top, at this storey.
+    Floor(u8),
+    /// The face of an edge piece — wall, doorway, window or frame — at
+    /// this storey. A plane or an edge piece aimed here goes ON TOP of it
+    /// (the wall-top socket); stairs stand beside it.
+    Wall(u8),
+    /// A built neighbour's level plane, crossed inside a cell that holds
+    /// no plane at that storey — the floor socket: aim at the edge of a
+    /// floor from above or below and the next tile continues it.
+    Socket(u8),
+    /// Nothing inside the march: the aim is the fixed projection ahead of
+    /// the feet, and the storey is the one the feet stand on.
+    Nothing,
+}
+
+/// Where the look ray landed, and what it landed on.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Aim {
+    /// The planar aim point [`target_at`] addresses, clamped to reach.
+    pub at: (f32, f32),
+    pub met: Met,
+    /// The storey the feet stand on — what [`Met::Nothing`] resolves to, so
+    /// looking at the sky from an upper floor still builds on that floor.
+    pub standing: u8,
+}
+
+impl Aim {
+    /// The storey a piece of `shape` is placed at from here.
+    ///
+    /// A foundation is the piece that stands on the ground and is pinned to
+    /// level 0 whatever was met (`target_at` pins it again). Everything else
+    /// reads the socket: a wall's face means the storey above it for a plane
+    /// or another edge piece — a floor on the wall, a wall on the wall — and
+    /// the wall's own storey for stairs, which stand on a plane beside it
+    /// rather than on the wall.
+    pub fn level_for(&self, shape: u8) -> u8 {
+        let top = MAX_BUILD_LEVELS as u8 - 1;
+        if matches!(shape, SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION) {
+            return 0;
+        }
+        match self.met {
+            Met::Ground => 0,
+            Met::Floor(l) | Met::Socket(l) => l.min(top),
+            Met::Wall(l) => {
+                if shape == SHAPE_STAIRS {
+                    l.min(top)
+                } else {
+                    l.saturating_add(1).min(top)
+                }
+            }
+            Met::Nothing => self.standing.min(top),
+        }
+    }
+
+    /// The storey a doorway-class deployable resolves to: the doorway's own,
+    /// so a door aimed at its frame lands in it and not a storey up.
+    pub fn level_for_deploy(&self) -> u8 {
+        let top = MAX_BUILD_LEVELS as u8 - 1;
+        match self.met {
+            Met::Ground => 0,
+            Met::Floor(l) | Met::Socket(l) | Met::Wall(l) => l.min(top),
+            Met::Nothing => self.standing.min(top),
+        }
+    }
+}
+
+/// Where the LOOK ray meets the world — the planar aim point for
+/// [`target_at`], clamped to [`BUILD_REACH_M`] around the feet, and the
+/// storey it implies.
+///
+/// The march tests each step's segment against three things in a fixed
+/// order, and the order is the socket rule:
+///
+/// 1. **An edge piece's face.** The segment crossing a cell boundary where
+///    the predictor's own collision index (`ClientCore::cols`) holds an edge
+///    piece at the crossing's storey is [`Met::Wall`], and the aim point is
+///    the step BEFORE the crossing — the side the ray came from, so a floor
+///    aimed at a wall from inside a room goes over the room. Tested on the
+///    boundary itself rather than the slab, because a 0.25 m step can
+///    straddle a 0.24 m slab entirely.
+/// 2. **A floor socket.** A built orthogonal neighbour's level plane, at a
+///    storey this cell has no plane of its own at, crossed by the segment
+///    in either direction, is [`Met::Socket`]: aim at the edge of your floor
+///    from on top of it, or up at it from the ground, and the next tile
+///    continues it. Level 0 is excluded — the ground resolves that storey
+///    by itself, and a level-0 crossing would drag the aim point back toward
+///    the neighbour and shrink the freehand band (`freehand_from_aim`
+///    measures it from the shared edge).
+/// 3. **The ground**, which is what it always was: raw terrain, or a piece
+///    surface via `collide::piece_ground`, whichever is higher; a piece
+///    surface is [`Met::Floor`] at its storey.
+///
+/// `eye`/`dir` are the camera's own (the tracer's ray convention, so the
+/// ghost agrees with where a shot goes); `feet` is the body, whose storey
+/// answers when nothing is met. Pure and bevy-free so the whole aim is
+/// testable headless.
 pub fn aim_from_look(
     seed: u64,
     haven: &sim_core::terrain::Haven,
     cols: &sim_core::collide::ColIndex,
     eye: [f32; 3],
     dir: [f32; 3],
-    feet: (f32, f32),
-) -> (f32, f32) {
+    feet: [f32; 3],
+) -> Aim {
+    let standing = standing_level(seed, haven, cols, feet);
+    let planar_feet = (feet[0], feet[2]);
+    let mut prev = eye;
     let mut t = AIM_STEP_M;
     while t <= AIM_RANGE_M {
-        let px = eye[0] + dir[0] * t;
-        let py = eye[1] + dir[1] * t;
-        let pz = eye[2] + dir[2] * t;
-        let ground = sim_core::terrain::ground(seed, haven, px, pz).max(
-            sim_core::collide::piece_ground(seed, haven, cols, px, pz, py),
-        );
-        if py <= ground {
-            return clamp_to_reach(feet, (px, pz));
+        let p = [
+            eye[0] + dir[0] * t,
+            eye[1] + dir[1] * t,
+            eye[2] + dir[2] * t,
+        ];
+        if let Some(level) = edge_crossed(seed, haven, cols, prev, p) {
+            return Aim {
+                at: clamp_to_reach(planar_feet, (prev[0], prev[2])),
+                met: Met::Wall(level),
+                standing,
+            };
         }
+        if let Some((level, s)) = socket_crossed(seed, haven, cols, prev, p) {
+            let x = prev[0] + (p[0] - prev[0]) * s;
+            let z = prev[2] + (p[2] - prev[2]) * s;
+            return Aim {
+                at: clamp_to_reach(planar_feet, (x, z)),
+                met: Met::Socket(level),
+                standing,
+            };
+        }
+        let terrain = sim_core::terrain::ground(seed, haven, p[0], p[2]);
+        // The highest built surface at or below the step's START, so the
+        // hit is a crossing — the ray came from above it and is now at or
+        // under it. `piece_ground` answers surfaces up to `STEP_UP` over
+        // the feet it is given, which is the right lid for a body and the
+        // wrong one for a ray: fed the ray's own height it declared a hit
+        // half a metre under every ceiling, so a ray aimed at a wall's top
+        // from inside a roofed room met the roof one step short of the wall.
+        let piece = sim_core::collide::piece_ground(
+            seed,
+            haven,
+            cols,
+            p[0],
+            p[2],
+            prev[1] - sim_core::movement::STEP_UP,
+        );
+        if p[1] <= terrain.max(piece) {
+            let met = if piece > terrain {
+                Met::Floor(level_of(seed, haven, cols, p[0], p[2], piece))
+            } else {
+                Met::Ground
+            };
+            return Aim {
+                at: clamp_to_reach(planar_feet, (p[0], p[2])),
+                met,
+                standing,
+            };
+        }
+        prev = p;
         t += AIM_STEP_M;
     }
     let planar = (dir[0] * dir[0] + dir[2] * dir[2]).sqrt().max(1e-3);
-    clamp_to_reach(
-        feet,
-        (
-            feet.0 + dir[0] / planar * AIM_AHEAD_M,
-            feet.1 + dir[2] / planar * AIM_AHEAD_M,
+    Aim {
+        at: clamp_to_reach(
+            planar_feet,
+            (
+                feet[0] + dir[0] / planar * AIM_AHEAD_M,
+                feet[2] + dir[2] / planar * AIM_AHEAD_M,
+            ),
         ),
-    )
+        met: Met::Nothing,
+        standing,
+    }
+}
+
+/// Is (cx, cz) a cell the grid can name?
+fn in_grid(cx: i32, cz: i32) -> bool {
+    (0..MAX_BUILD_COORD as i32).contains(&cx) && (0..MAX_BUILD_COORD as i32).contains(&cz)
+}
+
+/// The column's level-0 floor, the sim's own rule against the mirror's
+/// stored plate — an unbuilt column answers the terrain rule.
+fn column_floor(
+    seed: u64,
+    haven: &sim_core::terrain::Haven,
+    cols: &sim_core::collide::ColIndex,
+    cx: u16,
+    cz: u16,
+) -> f32 {
+    column_floor_y(seed, haven, cx, cz, cols.plate(cx, cz).unwrap_or(0))
+}
+
+/// The storey of a built surface at height `y` over (x, z): how many storeys
+/// it stands above the column's own floor.
+fn level_of(
+    seed: u64,
+    haven: &sim_core::terrain::Haven,
+    cols: &sim_core::collide::ColIndex,
+    x: f32,
+    z: f32,
+    y: f32,
+) -> u8 {
+    let (cx, cz) = (build_cell_of(x), build_cell_of(z));
+    if !in_grid(cx, cz) {
+        return 0;
+    }
+    let base = column_floor(seed, haven, cols, cx as u16, cz as u16);
+    // A plane's surface is `base + level · LEVEL_H_M` to the bit
+    // (`collide::piece_ground` adds the same two terms), so the quotient is
+    // already the integer; the nudge is for a stair tread or a solid
+    // deployable's top, which sit between storeys and belong to the one
+    // below — and for the top of the tread, which is the next storey's base.
+    let l = ((y - base) / LEVEL_H_M + 0.05).floor();
+    l.clamp(0.0, (MAX_BUILD_LEVELS - 1) as f32) as u8
+}
+
+/// The storey the feet stand on: the highest standable built surface under
+/// them (`collide::piece_ground`'s step rule, so a slab a step above the
+/// feet counts and a ceiling does not), or 0 on bare ground.
+pub fn standing_level(
+    seed: u64,
+    haven: &sim_core::terrain::Haven,
+    cols: &sim_core::collide::ColIndex,
+    feet: [f32; 3],
+) -> u8 {
+    let s = sim_core::collide::piece_ground(seed, haven, cols, feet[0], feet[2], feet[1]);
+    if s > sim_core::collide::NO_SURFACE {
+        level_of(seed, haven, cols, feet[0], feet[2], s)
+    } else {
+        0
+    }
+}
+
+/// The storey of the edge piece the segment `a → b` crossed, if it crossed
+/// one: a cell boundary the segment spans, in the column that boundary is
+/// canonical to (`build.rs`: low-x / low-z), at the storey of the crossing's
+/// height. When both an x and a z boundary are crossed in one step, the
+/// nearer crossing answers.
+fn edge_crossed(
+    seed: u64,
+    haven: &sim_core::terrain::Haven,
+    cols: &sim_core::collide::ColIndex,
+    a: [f32; 3],
+    b: [f32; 3],
+) -> Option<u8> {
+    let (ax, bx) = (build_cell_of(a[0]), build_cell_of(b[0]));
+    let (az, bz) = (build_cell_of(a[2]), build_cell_of(b[2]));
+    let mut best: Option<(f32, u8)> = None;
+    if ax != bx {
+        let bound = ax.max(bx);
+        let s = (bound as f32 * BUILD_CELL_M - a[0]) / (b[0] - a[0]);
+        let y = a[1] + (b[1] - a[1]) * s;
+        let cz = build_cell_of(a[2] + (b[2] - a[2]) * s);
+        if let Some(l) = edge_level_at(seed, haven, cols, bound, cz, LOC_EDGE_XLO, y) {
+            best = Some((s, l));
+        }
+    }
+    if az != bz {
+        let bound = az.max(bz);
+        let s = (bound as f32 * BUILD_CELL_M - a[2]) / (b[2] - a[2]);
+        let y = a[1] + (b[1] - a[1]) * s;
+        let cx = build_cell_of(a[0] + (b[0] - a[0]) * s);
+        if let Some(l) = edge_level_at(seed, haven, cols, cx, bound, LOC_EDGE_ZLO, y) {
+            if best.is_none_or(|(bs, _)| s < bs) {
+                best = Some((s, l));
+            }
+        }
+    }
+    best.map(|(_, l)| l)
+}
+
+/// The storey of an edge piece on the named boundary at height `y`, if one
+/// stands there. Every edge shape counts — a doorway's opening included,
+/// because the piece is what the crosshair is on, hole or not: aim through
+/// a doorway and the doorway is what a floor goes over.
+fn edge_level_at(
+    seed: u64,
+    haven: &sim_core::terrain::Haven,
+    cols: &sim_core::collide::ColIndex,
+    cx: i32,
+    cz: i32,
+    loc: u8,
+    y: f32,
+) -> Option<u8> {
+    if !in_grid(cx, cz) {
+        return None;
+    }
+    let (cx, cz) = (cx as u16, cz as u16);
+    let m = cols.get(cx, cz);
+    let mask = if loc == LOC_EDGE_XLO {
+        m.walls_xlo | m.doors_xlo | m.wins_xlo | m.frames_xlo
+    } else {
+        m.walls_zlo | m.doors_zlo | m.wins_zlo | m.frames_zlo
+    };
+    if mask == 0 {
+        return None;
+    }
+    let rel = y - column_floor(seed, haven, cols, cx, cz);
+    if rel < 0.0 {
+        return None;
+    }
+    let l = (rel / LEVEL_H_M).floor();
+    if l >= MAX_BUILD_LEVELS as f32 {
+        return None;
+    }
+    let l = l as u8;
+    (mask & (1u8 << l) != 0).then_some(l)
+}
+
+/// How far past the shared edge a neighbour's level plane still catches the
+/// ray as that neighbour's floor socket, metres (aimed level v0, `DECISIONS.md`
+/// §open).
+///
+/// **Without a band the socket is greedy in one specific way.** From an upper
+/// floor the eye is 1.6 m over the plane, so every downward aim that reaches
+/// the ground crosses the plane on the way — and any crossing inside the
+/// adjacent cell would read as "continue my floor", which made the ground
+/// beside a base unreachable from its first storey: `tests/storey.rs`'
+/// `bare_ground_is_the_first_storey` found it, with the ray to a spot nine
+/// metres out crossing the plane 1.65 m past the edge. The reference's
+/// sockets attract within a radius for the same reason. One metre past the
+/// edge is a pitch of about 32° from the cell's centre — "looking at the edge
+/// of my floor" is 47° — and a spot on the ground five metres out is 17°.
+pub const SOCKET_BAND_M: f32 = 1.0;
+
+/// The floor socket the segment `a → b` crossed, if any: `(storey, s)` with
+/// `s` the fraction along the segment. A built orthogonal neighbour's level
+/// plane at a storey ≥ 1 this cell has no plane at, crossed in either
+/// direction within [`SOCKET_BAND_M`] of the edge the two cells share; the
+/// nearest crossing answers.
+fn socket_crossed(
+    seed: u64,
+    haven: &sim_core::terrain::Haven,
+    cols: &sim_core::collide::ColIndex,
+    a: [f32; 3],
+    b: [f32; 3],
+) -> Option<(u8, f32)> {
+    if a[1] == b[1] {
+        return None;
+    }
+    let (cx, cz) = (build_cell_of(b[0]), build_cell_of(b[2]));
+    if !in_grid(cx, cz) {
+        return None;
+    }
+    let (cx, cz) = (cx as u16, cz as u16);
+    let here = cols.get(cx, cz);
+    let here_planes =
+        here.planes | here.tri_xlo_zlo | here.tri_xhi_zlo | here.tri_xlo_zhi | here.tri_xhi_zhi;
+    let mut best: Option<(u8, f32)> = None;
+    let (x0, z0) = (cx as f32 * BUILD_CELL_M, cz as f32 * BUILD_CELL_M);
+    // Each entry is a neighbour address and how far a point in this cell is
+    // from the edge the two share. Same checked arithmetic and range guard as
+    // `plate_for`'s own scan: this runs on an address a look ray produced.
+    type Edge = fn(f32, f32, f32, f32) -> f32;
+    let edges: [(Option<u16>, Option<u16>, Edge); 4] = [
+        (cx.checked_sub(1), Some(cz), |x, _z, x0, _z0| x - x0),
+        (cx.checked_add(1), Some(cz), |x, _z, x0, _z0| {
+            x0 + BUILD_CELL_M - x
+        }),
+        (Some(cx), cz.checked_sub(1), |_x, z, _x0, z0| z - z0),
+        (Some(cx), cz.checked_add(1), |_x, z, _x0, z0| {
+            z0 + BUILD_CELL_M - z
+        }),
+    ];
+    for (nx, nz, past_edge) in edges {
+        let (Some(nx), Some(nz)) = (nx, nz) else {
+            continue;
+        };
+        if !in_grid(nx as i32, nz as i32) {
+            continue;
+        }
+        let n = cols.get(nx, nz);
+        let planes = n.planes | n.tri_xlo_zlo | n.tri_xhi_zlo | n.tri_xlo_zhi | n.tri_xhi_zhi;
+        if planes == 0 {
+            continue;
+        }
+        let nbase = column_floor(seed, haven, cols, nx, nz);
+        for level in 1..MAX_BUILD_LEVELS as u8 {
+            let bit = 1u8 << level;
+            if planes & bit == 0 || here_planes & bit != 0 {
+                continue;
+            }
+            let plane_y = nbase + level as f32 * LEVEL_H_M;
+            let s = (plane_y - a[1]) / (b[1] - a[1]);
+            if !(0.0..=1.0).contains(&s) {
+                continue;
+            }
+            // The crossing has to be inside THIS cell, not the step's end:
+            // a segment that also crosses a boundary is the neighbour's.
+            let x = a[0] + (b[0] - a[0]) * s;
+            let z = a[2] + (b[2] - a[2]) * s;
+            if build_cell_of(x) != cx as i32 || build_cell_of(z) != cz as i32 {
+                continue;
+            }
+            if past_edge(x, z, x0, z0) > SOCKET_BAND_M {
+                continue;
+            }
+            if best.is_none_or(|(_, bs)| s < bs) {
+                best = Some((level, s));
+            }
+        }
+    }
+    best
 }
 
 /// Pull an aim point back onto the reach circle around the feet. The ghost
@@ -155,7 +534,7 @@ pub fn target(x: f32, z: f32, fx: f32, fz: f32, shape: u8, level: u8) -> Target 
 /// N means the low-x edge of cell N+1, which is what the `cx += 1` arm below
 /// is doing — it is a re-address, not an off-by-one.
 ///
-/// A foundation is pinned to level 0 whatever the working level says: it is
+/// A foundation is pinned to level 0 whatever level it is given: it is
 /// the piece that stands on the ground by definition, and letting the level
 /// stepper lift one is how a player spends materials on a refusal.
 pub fn target_at(ax: f32, az: f32, shape: u8, level: u8) -> Target {
@@ -296,7 +675,14 @@ pub struct Site<'a> {
 
 /// The four refusals a client can see for itself. See the module header for
 /// what this deliberately does not answer.
-pub fn verdict(t: Target, row: u16, shape: u8, site: &Site<'_>, freehand: bool) -> Verdict {
+pub fn verdict(
+    t: Target,
+    row: u16,
+    shape: u8,
+    site: &Site<'_>,
+    freehand: bool,
+    want: i8,
+) -> Verdict {
     // Spot taken. `deploy.rs` and `build.rs` both key on the full address, so
     // this is the same comparison the sim's `find` makes.
     if site
@@ -330,7 +716,7 @@ pub fn verdict(t: Target, row: u16, shape: u8, site: &Site<'_>, freehand: bool) 
     // refusals are computed from the piece index and the terrain, and the
     // client holds both. Leaving them out would put a green ghost on the
     // commonest refusal a hillside can produce.
-    if let Err(why) = plate_for(site.cols, site.seed, site.haven, t.cx, t.cz, freehand) {
+    if let Err(why) = plate_for(site.cols, site.seed, site.haven, t.cx, t.cz, freehand, want) {
         // Indexed rather than formatted: `Verdict::No` carries a
         // `&'static str`, and the table row IS that string — the same one
         // the server's refusal would arrive with (`DeployVerdict`'s
@@ -356,8 +742,37 @@ pub fn verdict(t: Target, row: u16, shape: u8, site: &Site<'_>, freehand: bool) 
 /// an unlatched foundation would stand — so a red ghost on `too far below the
 /// floor` sits on the terrain under it with the base it could not reach
 /// visibly above, which is the picture that explains the refusal.
-pub fn ghost_plate(site: &Site<'_>, t: Target, freehand: bool) -> i8 {
-    plate_for(site.cols, site.seed, site.haven, t.cx, t.cz, freehand).unwrap_or(0)
+pub fn ghost_plate(site: &Site<'_>, t: Target, freehand: bool, want: i8) -> i8 {
+    plate_for(site.cols, site.seed, site.haven, t.cx, t.cz, freehand, want).unwrap_or(0)
+}
+
+/// The band a placement at `t` ASKS for (foundation height v0,
+/// `DECISIONS.md` §open): the band of the ground under the crosshair, plus
+/// the `R`/`F` nudge, expressed against the column's own terrain band and
+/// held to the window the sim holds it to.
+///
+/// **The aimed half is the reference's mechanic.** Its foundation ghost
+/// follows the crosshair's terrain hit, so on a slope aiming at the high
+/// side of a cell lifts the piece and aiming at the low side drops it, and
+/// "finding a flat spot" is a skill its guides teach (`reference/BUILDING.md`
+/// §7d). Ours quantizes that to the lattice: a cell whose ground spans a
+/// band boundary shows the ghost step half a metre as the crosshair sweeps
+/// it, which is coarser than theirs and steadier. **The nudge is what their
+/// players asked for** and never got — a key to set the height on flat
+/// ground, where an aim cannot. Both are bounded by half a wall
+/// (`PLATE_RISE_MAX_BANDS` / `PLATE_SINK_MAX_BANDS`), which is the latch's
+/// own window: a base started high is one the latch could have carried
+/// there.
+///
+/// Sent with every placement, because the client cannot know which of
+/// `plate_for`'s cases the server's store is in; the sim hears it only where
+/// nothing else decides — a first foundation, or a freehand one.
+pub fn plate_request(site: &Site<'_>, t: Target, aim: (f32, f32), nudge: i8) -> i8 {
+    let aimed = band_of_ground(sim_core::terrain::ground(
+        site.seed, site.haven, aim.0, aim.1,
+    ));
+    let here = terrain_band(site.seed, site.haven, t.cx, t.cz);
+    (aimed - here + nudge as i32).clamp(-PLATE_SINK_MAX_BANDS, PLATE_RISE_MAX_BANDS) as i8
 }
 
 /// How near the shared edge with a BUILT neighbour the aim has to fall for
@@ -865,7 +1280,7 @@ mod tests {
             inv: &inv,
         };
         assert_eq!(
-            verdict(t, 0, SHAPE_WALL, &site, false),
+            verdict(t, 0, SHAPE_WALL, &site, false, 0),
             Verdict::No("spot taken")
         );
     }
@@ -897,7 +1312,7 @@ mod tests {
             content: &content,
             inv: &inv,
         };
-        assert!(verdict(t, 0, SHAPE_WALL, &site_near, false).ok());
+        assert!(verdict(t, 0, SHAPE_WALL, &site_near, false, 0).ok());
         let site_far = Site {
             seed: 1,
             haven: &haven1,
@@ -908,7 +1323,7 @@ mod tests {
             inv: &inv,
         };
         assert_eq!(
-            verdict(t, 0, SHAPE_WALL, &site_far, false),
+            verdict(t, 0, SHAPE_WALL, &site_far, false, 0),
             Verdict::No("out of reach")
         );
     }
@@ -972,7 +1387,7 @@ mod tests {
                 "bearing {i}: a door resolved loc {}",
                 door.loc
             );
-            assert_eq!(door.level, 1, "a door follows the working level");
+            assert_eq!(door.level, 1, "a door follows the level it is given");
             let body = deploy_target(40.0, 40.0, a.sin(), a.cos(), PLACE_GROUND, 1);
             assert_eq!(body.loc, LOC_PLANE);
             assert_eq!(body.level, 0, "a body deploy is sent at level 0");
@@ -1010,34 +1425,29 @@ mod tests {
         let (fx, fz) = (1024.5f32, 1024.5f32);
         let eye_y = sim_core::terrain::ground(seed, &haven, fx, fz) + 1.6;
 
+        let feet = [fx, eye_y - 1.6, fz];
+
         // Straight down: the ray meets the ground under the eye.
-        let (ax, az) = aim_from_look(
-            seed,
-            &haven,
-            &cols,
-            [fx, eye_y, fz],
-            [0.0, -1.0, 0.0],
-            (fx, fz),
-        );
+        let aim = aim_from_look(seed, &haven, &cols, [fx, eye_y, fz], [0.0, -1.0, 0.0], feet);
+        let (ax, az) = aim.at;
         assert!(
             (ax - fx).abs() < 1e-3 && (az - fz).abs() < 1e-3,
             "straight down aimed at ({ax}, {az}), not the feet"
         );
+        assert_eq!(aim.met, Met::Ground, "bare terrain is the ground");
+        assert_eq!(aim.level_for(SHAPE_WALL), 0);
 
         // Steeply up: no ground inside the march (the climb outruns any
-        // slope), so the old fixed projection answers.
-        let (ax, az) = aim_from_look(
-            seed,
-            &haven,
-            &cols,
-            [fx, eye_y, fz],
-            [0.1, 1.0, 0.0],
-            (fx, fz),
-        );
+        // slope), so the old fixed projection answers — at the storey the
+        // feet are on, which is the ground.
+        let aim = aim_from_look(seed, &haven, &cols, [fx, eye_y, fz], [0.1, 1.0, 0.0], feet);
+        let (ax, az) = aim.at;
         assert!(
             (ax - (fx + AIM_AHEAD_M)).abs() < 1e-3 && (az - fz).abs() < 1e-3,
             "skyward aim fell back to ({ax}, {az}), not {AIM_AHEAD_M} ahead"
         );
+        assert_eq!(aim.met, Met::Nothing);
+        assert_eq!(aim.standing, 0);
 
         // Nothing escapes the reach circle, whatever the direction.
         for b in 0..16 {
@@ -1049,8 +1459,9 @@ mod tests {
                     &cols,
                     [fx, eye_y, fz],
                     [a.cos(), p, a.sin()],
-                    (fx, fz),
-                );
+                    feet,
+                )
+                .at;
                 let d = ((ax - fx).powi(2) + (az - fz).powi(2)).sqrt();
                 assert!(
                     d <= BUILD_REACH_M + 1e-3,

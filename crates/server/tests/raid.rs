@@ -224,6 +224,7 @@ fn a_shipped_satchel_breaks_a_shipped_twig_foundation() {
         level: 0,
         loc: LOC_PLANE,
         freehand: false,
+        plate: 0,
     }]);
     assert_eq!(
         w.pieces.len(),
@@ -376,6 +377,7 @@ fn a_shipped_fuse_burns_its_whole_length_without_being_swept() {
         level: 0,
         loc: LOC_PLANE,
         freehand: false,
+        plate: 0,
     }]);
     w.tick(&[Command::Input {
         id: RAIDER,

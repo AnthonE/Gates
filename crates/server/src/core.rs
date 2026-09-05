@@ -996,6 +996,7 @@ impl ShardCore {
                         level,
                         loc,
                         freehand,
+                        plate,
                     } => Command::Place {
                         id: c.id,
                         row,
@@ -1004,6 +1005,7 @@ impl ShardCore {
                         level,
                         loc,
                         freehand,
+                        plate,
                     },
                     ActionMsg::Deploy {
                         row,

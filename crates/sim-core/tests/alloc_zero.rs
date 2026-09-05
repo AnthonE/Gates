@@ -145,6 +145,9 @@ fn tick_cmds(
                 // `NOW.md` §0bl item 5 for why replay and parity do not
                 // cover it.
                 freehand: loc % 2 == 0,
+                // Walks the asked band through the window and past it, so
+                // `plate_asked`'s refusal is a branch this gate takes too.
+                plate: loc as i8 - 1,
             }
         } else if i == MAX_PLAYERS + 3 {
             Command::Upgrade {

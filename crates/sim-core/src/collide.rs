@@ -1950,6 +1950,7 @@ mod tests {
             level,
             loc,
             false,
+            0,
             &mut ev,
         );
         let last = ev.entries()[ev.len() - 1];

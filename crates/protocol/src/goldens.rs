@@ -40,129 +40,129 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names, keyed by wire version (`PROTO_VER` 10 ⇒ `v10_*`).
 pub const FIXTURES: [&str; 105] = [
-    "v61_input_acks_only.bin",
-    "v61_input_full.bin",
-    "v61_snapshot_keyframe.bin",
-    "v61_snapshot_delta.bin",
-    "v61_snapshot_cap.bin",
-    "v61_hello.bin",
-    "v61_welcome.bin",
-    "v61_refuse_full.bin",
-    "v61_event_gather.bin",
-    "v61_event_inv.bin",
-    "v61_event_slot_harvested.bin",
-    "v61_event_slot_respawned.bin",
-    "v61_event_slot_sync.bin",
-    "v61_event_catalog.bin",
-    "v61_event_weak_mark.bin",
-    "v61_event_craft_q.bin",
-    "v61_event_craft_done.bin",
-    "v61_event_craft_refused.bin",
-    "v61_event_recipes.bin",
-    "v61_action_craft.bin",
-    "v61_action_cancel.bin",
-    "v61_action_place.bin",
-    "v61_event_piece_placed.bin",
-    "v61_event_piece_sync.bin",
-    "v61_event_build_refused.bin",
-    "v61_event_piece_defs.bin",
-    "v61_action_deploy.bin",
-    "v61_action_feed.bin",
-    "v61_event_deploy_placed.bin",
-    "v61_event_deploy_sync.bin",
-    "v61_event_deploy_refused.bin",
-    "v61_event_deploy_defs.bin",
-    "v61_event_piece_removed.bin",
-    "v61_event_deploy_removed.bin",
-    "v61_event_stock.bin",
-    "v61_action_use.bin",
-    "v61_action_access.bin",
-    "v61_event_door.bin",
-    "v61_action_upgrade.bin",
-    "v61_chat.bin",
-    "v61_event_chat.bin",
-    "v61_event_hit.bin",
-    "v61_event_health.bin",
-    "v61_event_death.bin",
-    "v61_action_loot.bin",
-    "v61_event_bag_dropped.bin",
-    "v61_event_bag_sync.bin",
-    "v61_event_bag_removed.bin",
-    "v61_event_struct_hit_piece.bin",
-    "v61_event_struct_hit_deploy.bin",
-    "v61_event_vitals.bin",
-    "v61_event_consumed.bin",
-    "v61_event_consume_refused.bin",
-    "v61_action_consume.bin",
-    "v61_event_drank.bin",
-    "v61_action_drink.bin",
-    "v61_event_respawn.bin",
-    "v61_action_respawn.bin",
-    "v61_action_move.bin",
-    "v61_event_moved.bin",
-    "v61_event_move_refused.bin",
-    "v61_action_move_box.bin",
-    "v61_action_container.bin",
-    "v61_action_container_close.bin",
-    "v61_event_cont_sync.bin",
-    "v61_event_cont_close.bin",
-    "v61_action_repair_piece.bin",
-    "v61_action_repair_deploy.bin",
-    "v61_event_piece_repaired_piece.bin",
-    "v61_event_piece_repaired_deploy.bin",
-    "v61_action_throw_piece.bin",
-    "v61_action_throw_deploy.bin",
-    "v61_event_charge_placed_piece.bin",
-    "v61_event_charge_placed_deploy.bin",
-    "v61_challenge.bin",
-    "v61_auth.bin",
-    "v61_event_oven_lit.bin",
-    "v61_event_oven_out.bin",
+    "v62_input_acks_only.bin",
+    "v62_input_full.bin",
+    "v62_snapshot_keyframe.bin",
+    "v62_snapshot_delta.bin",
+    "v62_snapshot_cap.bin",
+    "v62_hello.bin",
+    "v62_welcome.bin",
+    "v62_refuse_full.bin",
+    "v62_event_gather.bin",
+    "v62_event_inv.bin",
+    "v62_event_slot_harvested.bin",
+    "v62_event_slot_respawned.bin",
+    "v62_event_slot_sync.bin",
+    "v62_event_catalog.bin",
+    "v62_event_weak_mark.bin",
+    "v62_event_craft_q.bin",
+    "v62_event_craft_done.bin",
+    "v62_event_craft_refused.bin",
+    "v62_event_recipes.bin",
+    "v62_action_craft.bin",
+    "v62_action_cancel.bin",
+    "v62_action_place.bin",
+    "v62_event_piece_placed.bin",
+    "v62_event_piece_sync.bin",
+    "v62_event_build_refused.bin",
+    "v62_event_piece_defs.bin",
+    "v62_action_deploy.bin",
+    "v62_action_feed.bin",
+    "v62_event_deploy_placed.bin",
+    "v62_event_deploy_sync.bin",
+    "v62_event_deploy_refused.bin",
+    "v62_event_deploy_defs.bin",
+    "v62_event_piece_removed.bin",
+    "v62_event_deploy_removed.bin",
+    "v62_event_stock.bin",
+    "v62_action_use.bin",
+    "v62_action_access.bin",
+    "v62_event_door.bin",
+    "v62_action_upgrade.bin",
+    "v62_chat.bin",
+    "v62_event_chat.bin",
+    "v62_event_hit.bin",
+    "v62_event_health.bin",
+    "v62_event_death.bin",
+    "v62_action_loot.bin",
+    "v62_event_bag_dropped.bin",
+    "v62_event_bag_sync.bin",
+    "v62_event_bag_removed.bin",
+    "v62_event_struct_hit_piece.bin",
+    "v62_event_struct_hit_deploy.bin",
+    "v62_event_vitals.bin",
+    "v62_event_consumed.bin",
+    "v62_event_consume_refused.bin",
+    "v62_action_consume.bin",
+    "v62_event_drank.bin",
+    "v62_action_drink.bin",
+    "v62_event_respawn.bin",
+    "v62_action_respawn.bin",
+    "v62_action_move.bin",
+    "v62_event_moved.bin",
+    "v62_event_move_refused.bin",
+    "v62_action_move_box.bin",
+    "v62_action_container.bin",
+    "v62_action_container_close.bin",
+    "v62_event_cont_sync.bin",
+    "v62_event_cont_close.bin",
+    "v62_action_repair_piece.bin",
+    "v62_action_repair_deploy.bin",
+    "v62_event_piece_repaired_piece.bin",
+    "v62_event_piece_repaired_deploy.bin",
+    "v62_action_throw_piece.bin",
+    "v62_action_throw_deploy.bin",
+    "v62_event_charge_placed_piece.bin",
+    "v62_event_charge_placed_deploy.bin",
+    "v62_challenge.bin",
+    "v62_auth.bin",
+    "v62_event_oven_lit.bin",
+    "v62_event_oven_out.bin",
     // Appended rather than slotted beside `v30_event_door`: the
     // fixture list is positional (`gen_goldens` indexes it), so a new
     // name in the middle silently renumbers every writer after it.
-    "v61_event_knock.bin",
-    "v61_event_auth.bin",
-    "v61_action_access_crew.bin",
-    "v61_action_demolish.bin",
-    "v61_event_shot.bin",
+    "v62_event_knock.bin",
+    "v62_event_auth.bin",
+    "v62_action_access_crew.bin",
+    "v62_action_demolish.bin",
+    "v62_event_shot.bin",
     // World containers v0 (v37): the fourth container kind. Three
     // fixtures and not one, because `action_move_box`'s own doc records
     // what happens otherwise — the third kind crossed the wire for a
     // whole version with only the *open* pinned, so the bytes that mean
     // "take it out of the box" were checked by nothing. Kind 3 gets its
     // open, its move and its sync in the commit that legalises it.
-    "v61_action_container_world.bin",
-    "v61_action_move_world.bin",
-    "v61_event_cont_sync_world.bin",
+    "v62_action_container_world.bin",
+    "v62_action_move_world.bin",
+    "v62_event_cont_sync_world.bin",
     // The bench ladder + tech tree (v38): the unlock action and the
     // research-rows drip, plus the three research-lane events that had
     // ridden unpinned since v32 — the role gate checked their payloads
     // and nothing checked their bytes, which is the exact seat the v37
     // world-container note called out as empty.
-    "v61_action_unlock.bin",
-    "v61_event_research_rows.bin",
-    "v61_event_research.bin",
-    "v61_event_research_refused.bin",
-    "v61_event_known.bin",
+    "v62_action_unlock.bin",
+    "v62_event_research_rows.bin",
+    "v62_event_research.bin",
+    "v62_event_research_refused.bin",
+    "v62_event_known.bin",
     // The table verb's own action, pinned by the local branch and kept
     // through the 2026-08-15 integration: `encode_action_research` is
     // still live (the client's `verbs.rs` calls it), so
     // `every_encoder_has_a_golden` requires these bytes.
-    "v61_action_research.bin",
+    "v62_action_research.bin",
     // The gather refusal (v42) — appended, because the manifest is
     // positional and a name in the middle silently renumbers every
     // writer after it.
-    "v61_event_gather_refused.bin",
+    "v62_event_gather_refused.bin",
     // Bag choice v0 (v43): the own-fact bag list the death screen shapes
     // itself around. Appended for the same positional reason.
-    "v61_event_bags.bin",
+    "v62_event_bags.bin",
     // Surface marks v0 (v45): where an arrow stopped, and on what.
     // Appended, like the two above — `gen_goldens` writes this list by
     // INDEX, so inserting anywhere but the end silently re-points every
     // fixture after the insertion at another message's bytes.
-    "v61_event_impact.bin",
-    "v61_event_swing.bin",
+    "v62_event_impact.bin",
+    "v62_event_swing.bin",
     // Armor v1 (v51): the fifth container kind, and the first that is
     // carried on the player rather than standing in the world. Four
     // fixtures on the v37 precedent above — its open, its move and its
@@ -170,15 +170,15 @@ pub const FIXTURES: [&str; 105] = [
     // `REFUSE_M_WEAR` is a reason no fixture has ever carried and the
     // refusal message is the only one that pins a container kind inside
     // an *address* rather than as a field of its own.
-    "v61_action_container_wear.bin",
-    "v61_action_move_wear.bin",
-    "v61_event_cont_sync_wear.bin",
-    "v61_event_move_refused_wear.bin",
+    "v62_action_container_wear.bin",
+    "v62_action_move_wear.bin",
+    "v62_event_cont_sync_wear.bin",
+    "v62_event_move_refused_wear.bin",
     // Appended, never inserted: `protocol_golden.rs` and `gen_goldens.rs`
     // address this array by literal index, so a name landing in the middle
     // would silently re-point ~14 existing fixtures at each other's bytes.
-    "v61_action_pickup.bin",
-    "v61_event_hurt.bin",
+    "v62_action_pickup.bin",
+    "v62_event_hurt.bin",
     // Reload v1 (v59): the verb, the magazine's new state, and the refusal
     // that carries the count — the dry click's authoritative "you are at
     // zero".
@@ -192,9 +192,9 @@ pub const FIXTURES: [&str; 105] = [
     // this file already records two blocks up, arrived at alone rather
     // than in a merge: **this list is positional, so a new name appends
     // and never inserts.**
-    "v61_action_reload.bin",
-    "v61_event_reload.bin",
-    "v61_event_reload_refused.bin",
+    "v62_action_reload.bin",
+    "v62_event_reload.bin",
+    "v62_event_reload_refused.bin",
 ];
 
 /// The move action: container handle (a bag id, or a packed
@@ -961,15 +961,18 @@ pub fn action_cancel() -> u16 {
     2
 }
 
-/// A place request: (row, cx, cz, level, loc) — a stone wall on a cell's
-/// low-z edge, one storey up.
+/// A place request: (row, cx, cz, level, loc, freehand, plate) — a stone
+/// wall on a cell's low-z edge, one storey up.
 /// The freehand bit is pinned **true** here, not defaulted false: a fixture
 /// whose new field carries the zero value is a fixture that cannot tell a
 /// live bit from a dropped one, which is the positional-payload trap
 /// (CLAUDE.md) one field over. Proven by deleting the `w.write` in
 /// `encode_action_place` — with `false` the bytes are unchanged.
-pub fn action_place() -> (u16, u16, u16, u8, u8, bool) {
-    (13, 341, 682, 1, sim_core::build::LOC_EDGE_ZLO, true)
+/// The asked band (v62) is pinned **negative and nonzero** for the same
+/// reason twice over: zero would not see a dropped write, and a positive
+/// value would not see a lost bias.
+pub fn action_place() -> (u16, u16, u16, u8, u8, bool, i8) {
+    (13, 341, 682, 1, sim_core::build::LOC_EDGE_ZLO, true, -2)
 }
 
 /// The piece record behind the placed broadcast.

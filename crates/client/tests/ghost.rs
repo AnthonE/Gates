@@ -15,26 +15,44 @@
 //! opening is 1.2 m x 2.1 m *because* that is what `edge_hit` refuses, and
 //! "draw it elsewhere and the frame lies about where a player can walk".
 //!
+//! **Since gap v1 (2026-09-05) an edge piece's solid is its body PLUS its two
+//! corner posts**, and the posts are what reach the boundary — the doorway's
+//! own posts start where the corner post's face is. The ghost draws both
+//! posts, so the table's whole emit is what these sample; `tests/gaps.rs`
+//! samples the standing pieces, which draw only the posts they own.
+//!
 //! Headless, no GPU, no socket; it links `render` for the shared constants.
 
 use client::render::structures::{
-    door_opening_w, door_post_gap, shape_parts, LINTEL_DROP_M, LINTEL_H_M, MAX_PARTS, N_SHAPES,
-    SEAM_M,
+    door_opening_w, door_post_gap, door_post_span, lintel_band, post_w, shape_parts, Part,
+    PartRole, EDGE_DROP_M, MAX_PARTS, N_SHAPES,
 };
 use sim_core::build::{BUILD_CELL_M, LEVEL_H_M};
 use sim_core::collide::{
-    doorway_solid_at, frame_solid_at, window_solid_at, DOOR_POST_W_M, FRAME_RIM_M, WINDOW_HEAD_M,
-    WINDOW_SILL_M,
+    doorway_solid_at, frame_solid_at, window_solid_at, DOOR_HEAD_M, DOOR_POST_W_M, FRAME_RIM_M,
+    WINDOW_HEAD_M, WINDOW_SILL_M,
 };
 
-/// Where the two drawn posts span, as `t` along the edge.
-fn drawn_posts() -> [(f32, f32); 2] {
-    let gap = door_post_gap();
+/// How close to one of the sim's own boundaries along the edge a sample may
+/// sit before it is skipped, metres. Float noise only, since the seam went:
+/// the drawn solid reaches every boundary exactly, and a sample ON one is a
+/// coin toss between two `<=`s.
+const SKIP_M: f32 = 1.0e-3;
+
+/// Where the drawn solids span along the edge, as `t` — the two corner
+/// posts and the two door posts, restated by hand from the published
+/// numbers so that the table's emit has something independent to disagree
+/// with.
+fn drawn_posts() -> [(f32, f32); 4] {
+    let (w, gap) = door_post_span();
     let mid = BUILD_CELL_M * 0.5;
-    let half = DOOR_POST_W_M * 0.5;
+    let half = w * 0.5;
+    let pw = post_w() * 0.5;
     [
+        (-pw, pw),
         (mid - gap - half, mid - gap + half),
         (mid + gap - half, mid + gap + half),
+        (BUILD_CELL_M - pw, BUILD_CELL_M + pw),
     ]
 }
 
@@ -42,57 +60,43 @@ fn drawn_solid_at(t: f32) -> bool {
     drawn_posts().iter().any(|(a, b)| t >= *a && t <= *b)
 }
 
-/// **The measured deviation, pinned.** The drawn posts are inset from the
-/// cell boundary by half the cosmetic seam — `SEAM_M / 2` = 2 cm — because
-/// `door_post_gap` is computed over `BUILD_CELL_M - SEAM_M` so adjacent edge
-/// pieces do not z-fight. The sim blocks to the boundary itself.
-///
-/// This is a deliberate cosmetic offset, not a defect, and it is pinned here
-/// rather than tolerated silently: at 2 cm no player can see or exploit it,
-/// and if it ever grows this test says so before anyone has to notice a
-/// phantom post in play.
-const EXPECTED_INSET_M: f32 = SEAM_M * 0.5;
-
+/// The drawn posts reach the boundary — and past it, which is the corner
+/// post's proud half — and their inner faces are the sim's own. The doorway
+/// used to be inset half a seam from the boundary and this file pinned the
+/// 2 cm as tolerable; the seam is gone (gap v1) and the pin is zero.
 #[test]
-fn the_posts_are_inset_by_exactly_half_the_seam_and_no_more() {
-    let [(a0, a1), (b0, b1)] = drawn_posts();
-    // The outer face of each post against the cell's two ends.
+fn the_posts_reach_the_boundary_and_abut_the_corner_post() {
+    let [(c0, c1), (a0, a1), (b0, b1), (d0, d1)] = drawn_posts();
+    // The corner posts straddle the boundaries.
     assert!(
-        (a0 - EXPECTED_INSET_M).abs() < 1e-4,
-        "near post starts at {a0}, expected {EXPECTED_INSET_M}"
+        c0 < 0.0 && c1 > 0.0,
+        "the low corner post {c0}..{c1} misses t=0"
     );
     assert!(
-        ((BUILD_CELL_M - b1) - EXPECTED_INSET_M).abs() < 1e-4,
-        "far post ends {} from the boundary, expected {EXPECTED_INSET_M}",
-        BUILD_CELL_M - b1
+        d0 < BUILD_CELL_M && d1 > BUILD_CELL_M,
+        "the high corner post {d0}..{d1} misses t=3"
+    );
+    // The door posts abut them — no slit, no overlap.
+    assert!(
+        (a0 - c1).abs() < 1e-5,
+        "near post starts at {a0}, corner post ends {c1}"
+    );
+    assert!(
+        (b1 - d0).abs() < 1e-5,
+        "far post ends at {b1}, corner post starts {d0}"
     );
     // The inner faces, against the band the sim stops blocking at.
+    assert!((a1 - DOOR_POST_W_M).abs() < 1e-5, "near post ends at {a1}");
     assert!(
-        (a1 - (DOOR_POST_W_M + EXPECTED_INSET_M)).abs() < 1e-4,
-        "near post ends at {a1}"
-    );
-    assert!(
-        (b0 - (BUILD_CELL_M - DOOR_POST_W_M - EXPECTED_INSET_M)).abs() < 1e-4,
+        (b0 - (BUILD_CELL_M - DOOR_POST_W_M)).abs() < 1e-5,
         "far post starts at {b0}"
     );
-    // A const assertion, because the bound is on a constant: clippy is right
-    // that a runtime `assert!` over two literals is not a test. It still
-    // belongs here rather than beside the constant — this is the file that
-    // explains why 2 cm is tolerable and 5 cm is not.
-    const {
-        assert!(
-            EXPECTED_INSET_M < 0.05,
-            "the drawn/blocked disagreement has grown past what a player \
-             cannot see: a post they can walk through"
-        )
-    };
 }
 
-/// Everywhere except within the seam of a boundary, the drawn doorway and the
-/// sim agree about solid and open.
+/// Everywhere but on the sim's own boundaries, the drawn doorway and the sim
+/// agree about solid and open.
 #[test]
 fn no_sampled_point_disagrees_with_the_sim() {
-    // The four boundaries the seam sits astride.
     let seams = [
         0.0,
         DOOR_POST_W_M,
@@ -103,7 +107,7 @@ fn no_sampled_point_disagrees_with_the_sim() {
     let mut skipped = 0;
     for i in 0..=600 {
         let t = BUILD_CELL_M * (i as f32 / 600.0);
-        if seams.iter().any(|s| (t - s).abs() <= SEAM_M) {
+        if seams.iter().any(|s| (t - s).abs() <= SKIP_M) {
             skipped += 1;
             continue;
         }
@@ -119,8 +123,8 @@ fn no_sampled_point_disagrees_with_the_sim() {
     // The suite must not pass by checking nothing, and must not pass by
     // skipping everything (`CLAUDE.md`: a pass it did not earn is the worst
     // bug class). Both halves are asserted.
-    assert!(checked > 500, "only {checked} samples were compared");
-    assert!(skipped < 60, "{skipped} samples were skipped as seam");
+    assert!(checked > 590, "only {checked} samples were compared");
+    assert!(skipped < 8, "{skipped} samples were skipped as seam");
 }
 
 /// The middle of the opening is walkable and the middle of each post is not —
@@ -137,20 +141,23 @@ fn the_opening_is_open_and_the_posts_are_solid() {
     }
 }
 
-/// The lintel's underside is the top of the opening, and a player is 1.8 m.
+/// The lintel's underside is the top of the opening — the sim's own
+/// `DOOR_HEAD_M` — a player is 1.8 m, and its head is the edge-dropped
+/// storey top like every other edge part's.
 #[test]
 fn the_lintel_clears_a_standing_player() {
-    let centre = LEVEL_H_M * 0.5 + (LEVEL_H_M * 0.5 - LINTEL_DROP_M);
-    let underside = centre - LINTEL_H_M * 0.5;
+    let (underside, top) = lintel_band();
     assert!(
         underside >= 1.8,
         "the doorway is {underside} m clear — a 1.8 m player cannot walk through"
     );
-    // ...and it does not float: the lintel's top is the piece's own top.
-    let top = centre + LINTEL_H_M * 0.5;
     assert!(
-        (top - LEVEL_H_M).abs() < 1e-4,
-        "the lintel's top is {top}, not the piece's {LEVEL_H_M}"
+        (underside - DOOR_HEAD_M).abs() < 1e-5,
+        "the lintel's underside is {underside}, not the sim's {DOOR_HEAD_M}"
+    );
+    assert!(
+        (top - (LEVEL_H_M - EDGE_DROP_M)).abs() < 1e-5,
+        "the lintel's top is {top}, not the edge drop under the storey"
     );
 }
 
@@ -158,11 +165,12 @@ fn the_lintel_clears_a_standing_player() {
 /// happens to look right.
 #[test]
 fn the_lintel_spans_exactly_what_the_posts_leave() {
-    let between = 2.0 * door_post_gap() - DOOR_POST_W_M;
+    let [_, (_, a1), (b0, _), _] = drawn_posts();
     assert!(
-        (door_opening_w() - between).abs() < 1e-4,
-        "lintel spans {} but the posts leave {between}",
-        door_opening_w()
+        (door_opening_w() - (b0 - a1)).abs() < 1e-4,
+        "lintel spans {} but the posts leave {}",
+        door_opening_w(),
+        b0 - a1
     );
 }
 
@@ -179,14 +187,31 @@ fn the_lintel_spans_exactly_what_the_posts_leave() {
 // and where they go was a second, ungated copy. `no_sampled_point_…` above
 // could not see either, since `drawn_posts` restates the layout by hand.
 
-/// Where the table's doorway posts span, as `t` along the edge — read off the
-/// emitted parts rather than restated.
+/// Where the table's solids span along the edge, as `t` — every part, the
+/// corner posts included — with their vertical band.
+fn table_spans(shape: u8) -> Vec<((f32, f32), (f32, f32))> {
+    let (parts, n) = shape_parts(shape);
+    let mid = BUILD_CELL_M * 0.5;
+    parts[..n]
+        .iter()
+        .map(|p| {
+            let c = mid + p.offset.z;
+            (
+                (c - p.size.z * 0.5, c + p.size.z * 0.5),
+                (p.offset.y - p.size.y * 0.5, p.offset.y + p.size.y * 0.5),
+            )
+        })
+        .collect()
+}
+
+/// The table's door posts alone: the full-height BODY parts, which excludes
+/// the corner posts by role and the lintel by height.
 fn table_posts() -> Vec<(f32, f32)> {
     let (parts, n) = shape_parts(sim_core::build::SHAPE_DOORWAY);
     let mid = BUILD_CELL_M * 0.5;
     parts[..n]
         .iter()
-        .filter(|p| (p.size.y - LEVEL_H_M).abs() < 1e-4) // full height = a post
+        .filter(|p| p.role == PartRole::Body && (p.size.y - LEVEL_H_M).abs() < 1e-4)
         .map(|p| {
             let c = mid + p.offset.z;
             (c - p.size.z * 0.5, c + p.size.z * 0.5)
@@ -200,8 +225,13 @@ fn table_posts() -> Vec<(f32, f32)> {
 #[test]
 fn the_tables_doorway_is_the_sims_doorway() {
     let posts = table_posts();
-    assert_eq!(posts.len(), 2, "a doorway emits exactly two posts");
-    let solid = |t: f32| posts.iter().any(|(a, b)| t >= *a && t <= *b);
+    assert_eq!(posts.len(), 2, "a doorway emits exactly two door posts");
+    let spans = table_spans(sim_core::build::SHAPE_DOORWAY);
+    let solid = |t: f32| {
+        spans
+            .iter()
+            .any(|((a, b), (y0, y1))| t >= *a && t <= *b && *y0 <= 1.0 && *y1 >= 1.0)
+    };
     let seams = [
         0.0,
         DOOR_POST_W_M,
@@ -211,7 +241,7 @@ fn the_tables_doorway_is_the_sims_doorway() {
     let mut checked = 0;
     for i in 0..=600 {
         let t = BUILD_CELL_M * (i as f32 / 600.0);
-        if seams.iter().any(|s| (t - s).abs() <= SEAM_M) {
+        if seams.iter().any(|s| (t - s).abs() <= SKIP_M) {
             continue;
         }
         assert_eq!(
@@ -223,26 +253,27 @@ fn the_tables_doorway_is_the_sims_doorway() {
         );
         checked += 1;
     }
-    assert!(checked > 500, "only {checked} samples were compared");
+    assert!(checked > 590, "only {checked} samples were compared");
 }
 
-/// The emitted lintel caps the opening: its underside is the 2.1 m the
-/// opening derivation on `LINTEL_H_M` states, a 1.8 m player clears it, and
-/// its top is the piece's own top. **This is the assertion the old ghost
-/// failed** — its copy hung the lintel at waist height, underside 0.6 m.
+/// The emitted lintel caps the opening: its underside is the sim's own
+/// `DOOR_HEAD_M`, a 1.8 m player clears it, and its head is the edge-dropped
+/// storey top. **This is the assertion the old ghost failed** — its copy hung
+/// the lintel at waist height, underside 0.6 m.
 #[test]
 fn the_tables_lintel_caps_the_opening() {
     let (parts, n) = shape_parts(sim_core::build::SHAPE_DOORWAY);
-    let lintels: Vec<_> = parts[..n]
+    let (want_under, want_top) = lintel_band();
+    let lintels: Vec<&Part> = parts[..n]
         .iter()
-        .filter(|p| (p.size.y - LINTEL_H_M).abs() < 1e-4)
+        .filter(|p| (p.size.y - (want_top - want_under)).abs() < 1e-4)
         .collect();
     assert_eq!(lintels.len(), 1, "a doorway emits exactly one lintel");
     let lintel = lintels[0];
     let underside = lintel.offset.y - lintel.size.y * 0.5;
     assert!(
-        (underside - (LEVEL_H_M - LINTEL_DROP_M - LINTEL_H_M * 0.5)).abs() < 1e-4,
-        "the lintel's underside is {underside}, not the derived opening top"
+        (underside - DOOR_HEAD_M).abs() < 1e-4,
+        "the lintel's underside is {underside}, not the sim's opening head"
     );
     assert!(
         underside >= 1.8,
@@ -250,8 +281,8 @@ fn the_tables_lintel_caps_the_opening() {
     );
     let top = lintel.offset.y + lintel.size.y * 0.5;
     assert!(
-        (top - LEVEL_H_M).abs() < 1e-4,
-        "the lintel's top is {top}, not the piece's {LEVEL_H_M}"
+        (top - (LEVEL_H_M - EDGE_DROP_M)).abs() < 1e-4,
+        "the lintel's top is {top}, not the edge drop under the storey"
     );
     assert!(
         (lintel.size.z - door_opening_w()).abs() < 1e-4,
@@ -267,21 +298,19 @@ fn the_tables_lintel_caps_the_opening() {
 /// doorway pair's discipline extended to the axis those two shapes
 /// actually vary on: height.
 fn table_solid_at(shape: u8, t: f32, y: f32) -> bool {
-    let (parts, n) = shape_parts(shape);
-    let mid = BUILD_CELL_M * 0.5;
-    parts[..n].iter().any(|p| {
-        let c = mid + p.offset.z;
-        t >= c - p.size.z * 0.5
-            && t <= c + p.size.z * 0.5
-            && y >= p.offset.y - p.size.y * 0.5
-            && y <= p.offset.y + p.size.y * 0.5
-    })
+    table_spans(shape)
+        .iter()
+        .any(|((a, b), (y0, y1))| t >= *a && t <= *b && y >= *y0 && y <= *y1)
 }
 
 /// The emitted window agrees with `collide::window_solid_at` everywhere
 /// but the seam bands: sill solid, header solid, jambs solid, aperture
 /// open. This is the gate `collide.rs` promises in `window_solid_at`'s
 /// own doc — the drawn hole IS the hole an arrow threads.
+///
+/// Sampled inside the edge drop: the drawn foot and head are two
+/// centimetres under the storey's, by design (gap v1), and a sample in
+/// those two bands would compare a cosmetic shortfall against collision.
 #[test]
 fn the_tables_window_is_the_sims_window() {
     let t_seams = [
@@ -294,12 +323,14 @@ fn the_tables_window_is_the_sims_window() {
     let mut checked = 0;
     for i in 0..=150 {
         let t = BUILD_CELL_M * (i as f32 / 150.0);
-        if t_seams.iter().any(|s| (t - s).abs() <= SEAM_M) {
+        if t_seams.iter().any(|s| (t - s).abs() <= SKIP_M) {
             continue;
         }
         for j in 0..150 {
             let y = LEVEL_H_M * (j as f32 + 0.5) / 150.0;
-            if y_seams.iter().any(|s| (y - s).abs() <= SEAM_M) {
+            if y_seams.iter().any(|s| (y - s).abs() <= SKIP_M)
+                || !(EDGE_DROP_M..=LEVEL_H_M - EDGE_DROP_M).contains(&y)
+            {
                 continue;
             }
             assert_eq!(
@@ -317,18 +348,27 @@ fn the_tables_window_is_the_sims_window() {
 
 /// The emitted frame agrees with `collide::frame_solid_at`: rim jambs and
 /// top beam solid, the rest of the edge open — to bodies and arrows both.
+/// The jambs ARE the corner posts since gap v1: the sim's rim is
+/// `FRAME_RIM_M` in from each end, which is exactly a post's inner half.
 #[test]
 fn the_tables_frame_is_the_sims_frame() {
+    assert!(
+        (FRAME_RIM_M - post_w() * 0.5).abs() < 1e-5,
+        "the frame's rim ({FRAME_RIM_M}) is not the corner post's inner half ({})",
+        post_w() * 0.5
+    );
     let t_seams = [0.0, FRAME_RIM_M, BUILD_CELL_M - FRAME_RIM_M, BUILD_CELL_M];
     let mut checked = 0;
     for i in 0..=150 {
         let t = BUILD_CELL_M * (i as f32 / 150.0);
-        if t_seams.iter().any(|s| (t - s).abs() <= SEAM_M) {
+        if t_seams.iter().any(|s| (t - s).abs() <= SKIP_M) {
             continue;
         }
         for j in 0..150 {
             let y = LEVEL_H_M * (j as f32 + 0.5) / 150.0;
-            if (y - (LEVEL_H_M - FRAME_RIM_M)).abs() <= SEAM_M {
+            if (y - (LEVEL_H_M - FRAME_RIM_M)).abs() <= SKIP_M
+                || !(EDGE_DROP_M..=LEVEL_H_M - EDGE_DROP_M).contains(&y)
+            {
                 continue;
             }
             assert_eq!(
@@ -580,6 +620,7 @@ impl Rig {
             0,
             loc,
             false,
+            0,
             &mut ev,
         );
         let last = ev.entries().last().expect("place answers");
@@ -974,7 +1015,7 @@ fn the_door_fits_the_opening_the_sim_leaves() {
         size.z,
         door_opening_w()
     );
-    let opening_top = LEVEL_H_M - LINTEL_DROP_M - LINTEL_H_M * 0.5;
+    let (opening_top, _) = lintel_band();
     assert!(
         size.y <= opening_top + 1e-4,
         "the door leaf ({}) is taller than the opening ({opening_top})",
@@ -989,17 +1030,13 @@ fn the_door_fits_the_opening_the_sim_leaves() {
 // against the sim's own surfaces, not against a copy of the arithmetic.
 // ---------------------------------------------------------------------------
 
-/// The footing's TOP is the level plane — the exact surface
-/// `collide::piece_ground` stands players on — at every sampled cell, and
-/// its bottom is buried below every ground sample under the cell (or the
-/// depth cap was hit, on ground steep enough to beat it). A skirt that
-/// moved the top would move where players stand with every gate green;
-/// a skirt that missed the ground is the floating-plank screenshot the
-/// part exists to close.
+/// Across the island's buildable cells the footing keeps its top on the
+/// level plane and its bottom in the ground — the two facts that make it a
+/// footing rather than a floating plank or a hidden step.
 #[test]
 fn the_footing_keeps_the_floor_and_buries_its_skirt() {
     use client::render::structures::{
-        foundation_part, PartKind, SEAM_M, SKIRT_MAX_M, SKIRT_SINK_M, SLAB_T,
+        foundation_part, PartKind, SKIRT_MAX_M, SKIRT_SINK_M, SLAB_T,
     };
     use sim_core::build::BUILD_CELL_M;
 
@@ -1014,11 +1051,13 @@ fn the_footing_keeps_the_floor_and_buries_its_skirt() {
                 top.abs() < 1e-4,
                 "cell ({cx},{cz}): footing top {top} is off the level plane"
             );
-            // Footprint: the shared slab span, so the ghost's footing and a
-            // neighbouring floor tile stay the same object family.
+            // Footprint: exactly the cell (gap v1 — the seam is gone and the
+            // skirt is not widened; `structures::foundation_part` says why),
+            // so the ghost's footing and a neighbouring floor tile stay the
+            // same object family and abut.
             assert!(
-                (part.size.x - (BUILD_CELL_M - SEAM_M)).abs() < 1e-4
-                    && (part.size.z - (BUILD_CELL_M - SEAM_M)).abs() < 1e-4,
+                (part.size.x - BUILD_CELL_M).abs() < 1e-4
+                    && (part.size.z - BUILD_CELL_M).abs() < 1e-4,
                 "cell ({cx},{cz}): footing footprint {:?}",
                 part.size
             );

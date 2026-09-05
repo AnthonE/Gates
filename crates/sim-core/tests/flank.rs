@@ -96,6 +96,7 @@ fn founded(cx: u16, cz: u16) -> Pieces {
         0,
         LOC_PLANE,
         false,
+        0,
         &mut ev,
     );
     assert!(
@@ -280,6 +281,7 @@ fn a_plate_stays_walkable_end_to_end() {
             0,
             LOC_PLANE,
             false,
+            0,
             &mut ev,
         );
         if ev.entries().iter().any(|e| e.code == EV_BUILD_REFUSED) {
@@ -363,11 +365,11 @@ fn a_floor_lets_you_under_and_a_foundation_does_not() {
 /// keeps the eye out of the drawn slab.
 ///
 /// **This is the number the whole ask is about.** The camera sits at the
-/// body's centre; the drawn slab's face is `SEAM_M/2` inside the cell
-/// boundary. Hold the centre at the boundary and the eye is 2 cm from a
-/// surface the near plane clips at 10 cm — you see through your own base.
-/// Hold it a radius out and the eye is 0.42 m from the face, which is the
-/// clearance a wall has had all along.
+/// body's centre; the drawn slab's face IS the cell boundary (it was 2 cm
+/// inside it until the seam went, gap v1). Hold the centre at the boundary
+/// and the eye is on a surface the near plane clips at 10 cm — you see
+/// through your own base. Hold it a radius out and the eye is 0.4 m from
+/// the face, which is the clearance a wall has had all along.
 #[test]
 fn the_flank_holds_a_capsules_radius_off_the_cell() {
     let mut cols = ColIndex::new();
@@ -395,10 +397,12 @@ fn the_flank_holds_a_capsules_radius_off_the_cell() {
         "the flank refused a body more than a radius from the cell"
     );
     // The clearance that matters: eye to the DRAWN face, against the near
-    // plane. `SEAM_M` is the renderer's, restated as a literal here because
-    // sim-core may not depend on the client — `client/tests/lattice_geom.rs`
-    // owns the version of this that reads the real constant.
-    let drawn_face_inset = 0.04 / 2.0;
+    // plane. The drawn face sits on the cell boundary itself since the seam
+    // went (gap v1; it was half a 4 cm seam inside) — restated as a literal
+    // here because sim-core may not depend on the client;
+    // `client/tests/lattice_geom.rs` owns the version that reads the real
+    // extents.
+    let drawn_face_inset = 0.0;
     assert!(
         CAPSULE_RADIUS_M + drawn_face_inset > 0.1,
         "the eye can reach inside the near plane of its own base"

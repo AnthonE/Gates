@@ -189,6 +189,7 @@ fn deployables_ride_the_wire() {
             level: 0,
             loc: LOC_PLANE,
             freehand: false,
+            plate: 0,
         },
     );
     pump(&mut core, &stats, &mut clients);
@@ -238,6 +239,7 @@ fn deployables_ride_the_wire() {
             level: 0,
             loc: LOC_PLANE,
             freehand: false,
+            plate: 0,
         },
     );
     let flags = pump(&mut core, &stats, &mut clients);
@@ -358,6 +360,7 @@ fn deployables_ride_the_wire() {
             level: 0,
             loc: LOC_PLANE,
             freehand: false,
+            plate: 0,
         },
     );
     pump(&mut core, &stats, &mut clients);
@@ -462,6 +465,7 @@ fn doors_toggle_across_the_wire() {
             level: 0,
             loc: LOC_PLANE,
             freehand: false,
+            plate: 0,
         },
         ActionMsg::Place {
             row: 3,
@@ -470,6 +474,7 @@ fn doors_toggle_across_the_wire() {
             level: 0,
             loc: LOC_EDGE_XLO,
             freehand: false,
+            plate: 0,
         },
     ] {
         act(&mut core, 0, a);
@@ -1023,6 +1028,7 @@ fn a_removal_storm_leaves_every_walk_standing() {
             0,
             LOC_PLANE,
             false,
+            0,
             &mut core.world.events,
         );
     };
@@ -1085,6 +1091,7 @@ fn a_removal_storm_leaves_every_walk_standing() {
                     level: 0,
                     loc: LOC_PLANE,
                     freehand: false,
+                    plate: 0,
                 },
             );
         }
@@ -1235,6 +1242,7 @@ fn a_cliff_cannot_run_the_piece_cursor_off_the_store() {
             0,
             LOC_PLANE,
             false,
+            0,
             &mut core.world.events,
         );
     }

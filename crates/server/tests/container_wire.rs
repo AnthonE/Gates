@@ -742,6 +742,7 @@ fn the_body_is_still_fed_while_a_box_is_open() {
         level: 0,
         loc: LOC_PLANE,
         freehand: false,
+        plate: 0,
     }]);
     core.world.tick(&[Command::PlaceDeploy {
         id: id_of(0),
@@ -869,6 +870,7 @@ fn asking_for_the_body_resyncs_it_and_keeps_the_box() {
         level: 0,
         loc: LOC_PLANE,
         freehand: false,
+        plate: 0,
     }]);
     core.world.tick(&[Command::PlaceDeploy {
         id: id_of(0),
@@ -1002,6 +1004,7 @@ fn a_box_opens_by_its_packed_address() {
         level: 0,
         loc: LOC_PLANE,
         freehand: false,
+        plate: 0,
     }]);
     core.world.tick(&[Command::PlaceDeploy {
         id: id_of(0),
@@ -1137,6 +1140,7 @@ fn a_corpse_is_shown_no_container() {
         level: 0,
         loc: LOC_PLANE,
         freehand: false,
+        plate: 0,
     }]);
     core.world.tick(&[Command::PlaceDeploy {
         id: id_of(0),
@@ -1369,6 +1373,7 @@ fn a_locked_box_shows_a_stranger_nothing_until_it_unlocks() {
         level: 0,
         loc: LOC_PLANE,
         freehand: false,
+        plate: 0,
     }]);
     core.world.tick(&[Command::PlaceDeploy {
         id: id_of(0),

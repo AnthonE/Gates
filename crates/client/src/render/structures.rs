@@ -43,7 +43,7 @@ use sim_core::build::{
     SHAPE_WINDOW,
 };
 use sim_core::collide::{
-    DOOR_POST_W_M, FRAME_RIM_M, WALL_THICKNESS_M, WINDOW_HEAD_M, WINDOW_SILL_M,
+    ColIndex, DOOR_POST_W_M, FRAME_RIM_M, WALL_THICKNESS_M, WINDOW_HEAD_M, WINDOW_SILL_M,
 };
 use sim_core::deploy::{
     DeployRec, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE, ARCH_HEARTH, ARCH_RECYCLER,
@@ -67,20 +67,70 @@ use super::{Net, WorldId};
 /// — which is the drawn-vs-collided split this whole lane exists to close.
 pub const SLAB_T: f32 = sim_core::collide::PLANE_THICKNESS_M;
 
-/// The seam a drawn piece leaves at its cell boundary, metres. Without it,
-/// two abutting floors z-fight along their shared edge for the whole length
-/// of a base. `scene.js` carries the same 0.04 for the same reason.
-pub const SEAM_M: f32 = 0.04;
+// ---------------------------------------------------------------------------
+// The gaps (gap v1, 2026-09-05, `DECISIONS.md` §open)
+//
+// **The seam is retired.** Every drawn piece used to stop `SEAM_M` = 0.04 m
+// short of its cell on each side, inherited from the browser client's
+// `scene.js` with the reason "two abutting floors z-fight along their shared
+// edge". They do not: z-fighting is two faces with the SAME normal at the same
+// depth, and two abutting slabs share an edge, not a face — their tops meet
+// without overlapping and their sides face each other. What the seam actually
+// bought was a see-through slit four centimetres wide between every two
+// walls in a line, every two floors, and a notch at every outside corner —
+// the 2026-09-04 playtest's "building pieces have a gap in them". Pieces abut
+// exactly now, and the three places two faces genuinely DID share a plane are
+// closed one by one below, each by moving one of them: the edge drop, the
+// corner posts, and the diagonal's extra drop.
+// ---------------------------------------------------------------------------
 
-/// How wide a piece draws across its cell, metres — the cell less its seam.
+/// How far every EDGE part drops below the storey lattice, metres: an edge
+/// piece's foot sits this far under its storey base and its head this far
+/// under the next.
 ///
-/// One expression, three callers ([`shape_parts`], [`foundation_part`] and
-/// the kit's footing cache), because the footing mesh is now built to a size
-/// rather than scaled to one: a cache keyed on a span that drifted from the
-/// part's span would hand every foundation a mesh of the wrong footprint.
-pub fn piece_span() -> f32 {
-    BUILD_CELL_M - SEAM_M
+/// **Why a drawn wall is not exactly a storey tall.** A floor's walk surface
+/// IS the next storey's base, and a wall centred on its boundary reaches
+/// `WALL_THICKNESS_M / 2` in under that slab: its top face and the slab's top
+/// face were coplanar over a 12 cm strip along every wall a floor stood on —
+/// the same normal at the same depth, which is z-fighting, visible from the
+/// storey above as a flicker outlining the room. Dropping every edge part two
+/// centimetres puts a wall's head INSIDE the slab above (the slab hangs
+/// `SLAB_T` = 0.3 m) and its foot inside the slab below, so no face of an edge
+/// piece is coplanar with a plane's. Where no floor stands above, the drop is
+/// a two-centimetre shortfall against the storey the sim blocks — under what
+/// a player can see or exploit, the bound the old doorway inset was held to —
+/// and a wall stacked on a wall still abuts it exactly, foot to head, because
+/// both moved. `tests/lattice_geom.rs` holds the drop at exactly this and the
+/// stacked seam at zero.
+pub const EDGE_DROP_M: f32 = 0.02;
+
+/// How proud of a wall's face its corner post stands, metres, each side.
+///
+/// Two straight walls meeting at a corner used to leave an OUTSIDE NOTCH:
+/// each ran to its boundary and no further, and the square where neither
+/// reached — `WALL_THICKNESS_M / 2` on a side, the wall's own thickness past
+/// the other's end — was bare. The reference closes this with conditional
+/// models (`reference/BUILDING.md` §7d): a corner piece that appears where two
+/// blocks meet and belongs to one of them. Ours is a POST at every corner an
+/// edge piece ends at, drawn by exactly one of the pieces meeting there
+/// ([`post_owner`]), with the bodies running between the posts. Proud by this
+/// much so the post's faces are not coplanar with the bodies' — a post flush
+/// with the wall would z-fight down its whole height — and because a pilaster
+/// is what the reference's corners look like.
+pub const POST_PROUD_M: f32 = 0.03;
+
+/// A corner post's width across, metres: the wall's thickness plus the proud
+/// rim on both sides. Derived rather than typed, so the knob is the rim.
+pub fn post_w() -> f32 {
+    WALL_THICKNESS_M + 2.0 * POST_PROUD_M
 }
+
+/// How far below the edge-dropped head a DIAGONAL wall's body stops, metres.
+/// A diagonal runs corner to corner, its end inside the post a straight wall
+/// owns there, and one more centimetre keeps its head under the post's so the
+/// two never share a plane. Alone, the shortfall is invisible; a diagonal
+/// draws no posts of its own for the same reason a corner cannot hold two.
+pub const DIAG_DROP_M: f32 = 0.01;
 
 /// How many build materials the sim can hand us: `MAT_TWIG`…`MAT_METAL`.
 /// Derived from the sim's own last code rather than typed, because a table
@@ -461,6 +511,11 @@ struct Live {
     /// forever: this loop redraws on a CHANGE, and a change nobody records
     /// is a change nobody notices.
     dmg: u8,
+    /// Which corner posts it was drawn with ([`PostOwn::bits`], gap v1) —
+    /// a function of its NEIGHBOURS, re-read on every reconcile, so a wall
+    /// is redrawn when the wall beside it arrives or goes and takes or
+    /// leaves the post they share. Zero for every shape that has none.
+    own: u8,
     /// The plate it was drawn at (build plate v1).
     ///
     /// **It is redraw state for the DEPLOY store and not for the piece one**,
@@ -487,6 +542,14 @@ pub struct Kit {
     /// table — and deduplicated by size, so the doorway's two posts share a
     /// mesh and the three slab shapes share one slab.
     shape_mesh: [[Option<Handle<Mesh>>; MAX_PARTS]; N_SHAPES],
+    /// The straight edge shapes as ONE mesh each, per corner-post ownership
+    /// ([`PostOwn::bits`]): body and owned posts baked together
+    /// ([`parts_mesh`]), so a wall, a doorway, a window and a frame are each
+    /// one entity with its mesh on it whatever they own. Four variants per
+    /// shape, built once.
+    edge_mesh: [[Option<Handle<Mesh>>; 4]; N_SHAPES],
+    /// The diagonal wall's body ([`diagonal_parts`]) — its own size.
+    diag_mesh: Handle<Mesh>,
     /// The footings, for the shapes whose one part is sized PER ADDRESS
     /// rather than per shape — the foundations, whose skirt depth follows
     /// the terrain under their cell ([`foundation_part`]). Indexed by
@@ -494,6 +557,9 @@ pub struct Kit {
     /// hundred depths are `2 × SKIRT_STEPS` meshes and the hammer
     /// highlight's one-entity contract (`Transform` + `Mesh3d`) holds.
     footing: [[Handle<Mesh>; 2]; SKIRT_STEPS],
+    /// A ground-storey edge piece's apron, per corner-post ownership
+    /// ([`apron_parts`]) — the plinth under its outer half.
+    apron: [Handle<Mesh>; 4],
     /// One material per (tier, damage band). `DMG_BANDS` × `N_TIERS` = 32
     /// materials, built once — which is the whole reason the band is 3 bits
     /// and not a float: a continuous damage value would mean a material per
@@ -631,8 +697,28 @@ pub fn stairs_offset() -> Vec3 {
     )
 }
 
-/// The doorway's lintel: how tall it is, and how far its centre sits below the
-/// piece's own mid-height.
+/// An edge part's vertical extent under the edge drop: `(height, centre)`
+/// for a band `y0..y1` in storey-local metres, with a foot on the storey base
+/// moved to `-EDGE_DROP_M` and a head on the storey top to
+/// `LEVEL_H_M - EDGE_DROP_M`. A band that starts or ends strictly inside the
+/// storey — a sill's top, a lintel's underside, a window's head — is
+/// untouched, because those are the heights the sim's shot walk agrees with
+/// (`RENDER.md` §8: the frame may not lie about where a player can walk, or
+/// an arrow fly).
+pub fn edge_band(y0: f32, y1: f32) -> (f32, f32) {
+    let lo = if y0 <= 0.0 { -EDGE_DROP_M } else { y0 };
+    let hi = if y1 >= LEVEL_H_M {
+        LEVEL_H_M - EDGE_DROP_M
+    } else {
+        y1
+    };
+    (hi - lo, (hi + lo) * 0.5)
+}
+
+/// The doorway's lintel band, storey-local: from the sim's opening head
+/// (`collide::DOOR_HEAD_M`, the height `edge_hit` refuses at) to the
+/// edge-dropped storey top. Derived, so the underside IS the opening's height
+/// rather than a third number that happens to agree with it.
 ///
 /// **Public because the BUILD GHOST draws the same doorway** and the two must
 /// not disagree. `RENDER.md` §8 states the stake in one line — the opening is
@@ -640,25 +726,68 @@ pub fn stairs_offset() -> Vec3 {
 /// and `[2.1, 3.0]`, so "draw it elsewhere and the frame lies about where a
 /// player can walk". A ghost that lies about it lies one step earlier, while
 /// the player is still deciding.
-///
-/// Derivation, and it is why these are two constants rather than one: the
-/// lintel's underside must land at 2.1 m so the opening is the height the sim
-/// blocks. At `LEVEL_H_M` 3.0 the piece's centre is 1.5, so a 0.9-tall lintel
-/// dropped 0.45 from centre spans 2.1..3.0 — exactly the band `edge_hit`
-/// refuses.
-pub const LINTEL_H_M: f32 = 0.9;
-/// How far the lintel's centre sits below the piece's mid-height, metres.
-pub const LINTEL_DROP_M: f32 = 0.45;
-
-/// Half the distance between the two door posts' centres, metres — each post
-/// hugs one end of the edge and the gap between them is the opening.
-pub fn door_post_gap() -> f32 {
-    (BUILD_CELL_M - SEAM_M - DOOR_POST_W_M) * 0.5
+pub fn lintel_band() -> (f32, f32) {
+    let (h, c) = edge_band(sim_core::collide::DOOR_HEAD_M, LEVEL_H_M);
+    (c - h * 0.5, c + h * 0.5)
 }
 
-/// The clear span between the posts, metres. The lintel spans exactly this.
+/// The doorway's drawn posts: `(width, gap)` — how wide each is along the
+/// edge, and how far its centre sits from the piece's mid.
+///
+/// The sim's post spans `DOOR_POST_W_M` in from the boundary. The drawn one
+/// starts where the corner post's face is (`post_w() / 2` in) and runs to the
+/// same inner face, so the corner post and the door post together are exactly
+/// the sim's solid and share no face: the two abut at the corner post's face
+/// and their heads are edge-dropped alike.
+pub fn door_post_span() -> (f32, f32) {
+    let w = DOOR_POST_W_M - post_w() * 0.5;
+    let centre_from_end = post_w() * 0.5 + w * 0.5;
+    (w, BUILD_CELL_M * 0.5 - centre_from_end)
+}
+
+/// Half the distance between the two drawn door posts' centres, metres.
+pub fn door_post_gap() -> f32 {
+    door_post_span().1
+}
+
+/// The clear span between the posts, metres — the sim's own opening, since
+/// the seam went. The lintel spans exactly this.
 pub fn door_opening_w() -> f32 {
-    ((BUILD_CELL_M - SEAM_M) - 2.0 * DOOR_POST_W_M).max(0.1)
+    (BUILD_CELL_M - 2.0 * DOOR_POST_W_M).max(0.1)
+}
+
+/// A box part of an edge piece: the wall's thickness across the boundary,
+/// the band `y0..y1` tall under the edge drop, `len` along the edge centred
+/// `z` from the piece's mid.
+fn edge_part(y0: f32, y1: f32, len: f32, z: f32, role: PartRole) -> Part {
+    let (h, c) = edge_band(y0, y1);
+    Part {
+        size: Vec3::new(WALL_THICKNESS_M, h, len),
+        offset: Vec3::new(0.0, c, z),
+        x_rot: 0.0,
+        kind: PartKind::Box,
+        role,
+    }
+}
+
+/// The two corner posts every straight edge piece emits — square, a wall's
+/// thickness plus the proud rim across, the full edge-dropped storey tall,
+/// centred on the piece's two corners. The ghost draws both; the standing
+/// piece draws the ones [`post_owner`] gives it.
+pub fn corner_posts() -> [Part; 2] {
+    let (h, c) = edge_band(0.0, LEVEL_H_M);
+    let w = post_w();
+    let post = |z: f32, role: PartRole| Part {
+        size: Vec3::new(w, h, w),
+        offset: Vec3::new(0.0, c, z),
+        x_rot: 0.0,
+        kind: PartKind::Box,
+        role,
+    };
+    [
+        post(-BUILD_CELL_M * 0.5, PartRole::PostLow),
+        post(BUILD_CELL_M * 0.5, PartRole::PostHigh),
+    ]
 }
 
 /// One drawn part of a build shape: the box's full extents, its centre, and
@@ -670,7 +799,7 @@ pub fn door_opening_w() -> f32 {
 /// the level's base height (`level_base_y`). A low-z edge is the same parts
 /// under the root's quarter-turn ([`base_transform`]), exactly as the sim
 /// canonicalises the two edges to one shape (`build.rs`).
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
 pub struct Part {
     /// Full extents of the box, metres.
     pub size: Vec3,
@@ -685,11 +814,26 @@ pub struct Part {
     /// eighth-turns [`base_transform`] hangs on the ROOT, exactly as a
     /// north edge has always been the west edge turned.
     pub kind: PartKind,
+    /// Which end of an edge piece this is, for the corner-post rule.
+    pub role: PartRole,
+}
+
+/// [`Part::role`]: the body of a piece, or the corner post at one of an edge
+/// piece's two ends — the low end being the boundary's low-z / low-x corner
+/// (part-local −z), the high end the other. `spawn_piece` draws the posts
+/// [`post_owner`] gives the piece and the ghost draws both.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum PartRole {
+    #[default]
+    Body,
+    PostLow,
+    PostHigh,
 }
 
 /// [`Part::kind`]'s two fillings.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum PartKind {
+    #[default]
     Box,
     /// A right triangular prism over the NW half of the unit cell —
     /// hypotenuse from (+x, −z) to (−x, +z) in part-local space — scaled
@@ -706,8 +850,9 @@ impl Part {
 }
 
 /// The most parts any shape emits — the window's sill, header and two
-/// jambs (the doorway held this at 3 until catalogue v1).
-pub const MAX_PARTS: usize = 4;
+/// jambs, plus its two corner posts (the doorway held this at 3 until
+/// catalogue v1, the window at 4 until the posts).
+pub const MAX_PARTS: usize = 6;
 
 /// How many shapes the parts table covers: the sim's own last shape, plus
 /// one. A shape past it is drawn as the fallback slab, same as one the
@@ -731,55 +876,42 @@ pub const N_SHAPES: usize = SHAPE_TRI_ROOF as usize + 1;
 /// Returns a fixed array and a live count rather than pushing to a `Vec`:
 /// the ghost reads it on the frame path, and a [`Part`] is plain data.
 pub fn shape_parts(shape: u8) -> ([Part; MAX_PARTS], usize) {
-    let span = piece_span();
-    let none = Part {
-        size: Vec3::ZERO,
-        offset: Vec3::ZERO,
-        x_rot: 0.0,
-        kind: PartKind::Box,
-    };
+    let none = Part::default();
+    // The run between the two corner posts, which is what every straight
+    // edge body spans: the bodies abut the posts, never overlap them.
+    let between = BUILD_CELL_M - post_w();
+    let [lo, hi] = corner_posts();
+    let body = PartRole::Body;
     match shape {
         SHAPE_WALL => (
             [
-                Part {
-                    size: Vec3::new(WALL_THICKNESS_M, LEVEL_H_M, span),
-                    offset: Vec3::new(0.0, LEVEL_H_M * 0.5, 0.0),
-                    x_rot: 0.0,
-                    kind: PartKind::Box,
-                },
+                edge_part(0.0, LEVEL_H_M, between, 0.0, body),
+                lo,
+                hi,
                 none,
                 none,
                 none,
             ],
-            1,
+            3,
         ),
         SHAPE_DOORWAY => {
-            // Two posts hugging each end of the edge, and the lintel over
-            // what they leave.
-            let gap = door_post_gap();
-            let post = |z: f32| Part {
-                size: Vec3::new(WALL_THICKNESS_M, LEVEL_H_M, DOOR_POST_W_M),
-                offset: Vec3::new(0.0, LEVEL_H_M * 0.5, z),
-                x_rot: 0.0,
-                kind: PartKind::Box,
-            };
+            // Two posts hugging each end of the edge, the lintel over what
+            // they leave, and the corner posts they abut.
+            let (w, gap) = door_post_span();
+            let (head, _) = lintel_band();
             (
                 [
-                    post(-gap),
-                    post(gap),
+                    edge_part(0.0, LEVEL_H_M, w, -gap, body),
+                    edge_part(0.0, LEVEL_H_M, w, gap, body),
                     // The lintel's underside is the top of the opening the
-                    // sim refuses to let a player through: centred at
-                    // `LEVEL_H_M - LINTEL_DROP_M` = 2.55 m, it spans exactly
-                    // 2.1..3.0 (`LINTEL_H_M`'s own derivation, above).
-                    Part {
-                        size: Vec3::new(WALL_THICKNESS_M, LINTEL_H_M, door_opening_w()),
-                        offset: Vec3::new(0.0, LEVEL_H_M - LINTEL_DROP_M, 0.0),
-                        x_rot: 0.0,
-                        kind: PartKind::Box,
-                    },
+                    // sim refuses to let a player through (`DOOR_HEAD_M`);
+                    // its head is edge-dropped like every other.
+                    edge_part(head, LEVEL_H_M, door_opening_w(), 0.0, body),
+                    lo,
+                    hi,
                     none,
                 ],
-                3,
+                5,
             )
         }
         SHAPE_STAIRS => (
@@ -788,11 +920,14 @@ pub fn shape_parts(shape: u8) -> ([Part; MAX_PARTS], usize) {
                 // always rises toward +Z (cosmetic v0 — the browser's choice
                 // too), pitched the way the standing piece has always been.
                 Part {
-                    size: Vec3::new(span, SLAB_T, stairs_run()),
+                    size: Vec3::new(BUILD_CELL_M, SLAB_T, stairs_run()),
                     offset: stairs_offset(),
                     x_rot: -stairs_pitch(),
                     kind: PartKind::Box,
+                    role: body,
                 },
+                none,
+                none,
                 none,
                 none,
                 none,
@@ -800,82 +935,55 @@ pub fn shape_parts(shape: u8) -> ([Part; MAX_PARTS], usize) {
             1,
         ),
         SHAPE_WINDOW => {
-            // Sill, header, and two jambs around the aperture the sim's
-            // shot walk passes — every extent is the collision constant
-            // itself (`collide::window_solid_at`), so the drawn hole IS
-            // the hole an arrow threads. The jambs reuse the doorway's
-            // post width and gap on purpose: one opening family, one set
-            // of numbers.
-            let gap = door_post_gap();
-            let jamb_h = WINDOW_HEAD_M - WINDOW_SILL_M;
+            // Sill, header, two jambs around the aperture the sim's shot walk
+            // passes, and the corner posts — every extent is the collision
+            // constant itself (`collide::window_solid_at`), so the drawn hole
+            // IS the hole an arrow threads. The jambs reuse the doorway's
+            // post width and gap on purpose: one opening family, one set of
+            // numbers.
+            let (w, gap) = door_post_span();
             (
                 [
-                    Part {
-                        size: Vec3::new(WALL_THICKNESS_M, WINDOW_SILL_M, span),
-                        offset: Vec3::new(0.0, WINDOW_SILL_M * 0.5, 0.0),
-                        x_rot: 0.0,
-                        kind: PartKind::Box,
-                    },
-                    Part {
-                        size: Vec3::new(WALL_THICKNESS_M, LEVEL_H_M - WINDOW_HEAD_M, span),
-                        offset: Vec3::new(0.0, (LEVEL_H_M + WINDOW_HEAD_M) * 0.5, 0.0),
-                        x_rot: 0.0,
-                        kind: PartKind::Box,
-                    },
-                    Part {
-                        size: Vec3::new(WALL_THICKNESS_M, jamb_h, DOOR_POST_W_M),
-                        offset: Vec3::new(0.0, (WINDOW_SILL_M + WINDOW_HEAD_M) * 0.5, -gap),
-                        x_rot: 0.0,
-                        kind: PartKind::Box,
-                    },
-                    Part {
-                        size: Vec3::new(WALL_THICKNESS_M, jamb_h, DOOR_POST_W_M),
-                        offset: Vec3::new(0.0, (WINDOW_SILL_M + WINDOW_HEAD_M) * 0.5, gap),
-                        x_rot: 0.0,
-                        kind: PartKind::Box,
-                    },
+                    edge_part(0.0, WINDOW_SILL_M, between, 0.0, body),
+                    edge_part(WINDOW_HEAD_M, LEVEL_H_M, between, 0.0, body),
+                    edge_part(WINDOW_SILL_M, WINDOW_HEAD_M, w, -gap, body),
+                    edge_part(WINDOW_SILL_M, WINDOW_HEAD_M, w, gap, body),
+                    lo,
+                    hi,
                 ],
-                4,
+                6,
             )
         }
-        SHAPE_FRAME => {
-            // The rim and nothing else — two thin jambs and the top beam,
-            // each `FRAME_RIM_M` thick, which is exactly the solid
-            // `collide::frame_solid_at` answers for. The opening is the
-            // piece.
-            let jamb_off = (span - FRAME_RIM_M) * 0.5;
-            let jamb = |z: f32| Part {
-                size: Vec3::new(WALL_THICKNESS_M, LEVEL_H_M - FRAME_RIM_M, FRAME_RIM_M),
-                offset: Vec3::new(0.0, (LEVEL_H_M - FRAME_RIM_M) * 0.5, z),
-                x_rot: 0.0,
-                kind: PartKind::Box,
-            };
-            (
-                [
-                    jamb(-jamb_off),
-                    jamb(jamb_off),
-                    Part {
-                        size: Vec3::new(WALL_THICKNESS_M, FRAME_RIM_M, span),
-                        offset: Vec3::new(0.0, LEVEL_H_M - FRAME_RIM_M * 0.5, 0.0),
-                        x_rot: 0.0,
-                        kind: PartKind::Box,
-                    },
-                    none,
-                ],
-                3,
-            )
-        }
+        SHAPE_FRAME => (
+            // The top beam and the two corner posts, and nothing else: the
+            // sim's rim is `FRAME_RIM_M` = 0.15 in from each end, which is
+            // exactly the half of a corner post that lies inside the cell
+            // (`collide::frame_solid_at`), so the posts ARE the jambs. The
+            // opening is the piece.
+            [
+                edge_part(LEVEL_H_M - FRAME_RIM_M, LEVEL_H_M, between, 0.0, body),
+                lo,
+                hi,
+                none,
+                none,
+                none,
+            ],
+            3,
+        ),
         SHAPE_TRI_FOUNDATION | SHAPE_TRI_FLOOR | SHAPE_TRI_ROOF => (
             [
                 // One NW prism; the other three halves are this part under
                 // the root's quarter-turns (`base_transform`), the way the
                 // north edge is the west edge turned.
                 Part {
-                    size: Vec3::new(span, SLAB_T, span),
+                    size: Vec3::new(BUILD_CELL_M, SLAB_T, BUILD_CELL_M),
                     offset: Vec3::new(0.0, -SLAB_T * 0.5, 0.0),
                     x_rot: 0.0,
                     kind: PartKind::Tri,
+                    role: body,
                 },
+                none,
+                none,
                 none,
                 none,
                 none,
@@ -884,15 +992,18 @@ pub fn shape_parts(shape: u8) -> ([Part; MAX_PARTS], usize) {
         ),
         // Foundation / floor / roof — and any shape the defs name that this
         // table does not: the slab whose TOP is the level plane, which is
-        // the surface the sim stands players on.
+        // the surface the sim stands players on, exactly the cell across.
         _ => (
             [
                 Part {
-                    size: Vec3::new(span, SLAB_T, span),
+                    size: Vec3::new(BUILD_CELL_M, SLAB_T, BUILD_CELL_M),
                     offset: Vec3::new(0.0, -SLAB_T * 0.5, 0.0),
                     x_rot: 0.0,
                     kind: PartKind::Box,
+                    role: body,
                 },
+                none,
+                none,
                 none,
                 none,
                 none,
@@ -900,6 +1011,157 @@ pub fn shape_parts(shape: u8) -> ([Part; MAX_PARTS], usize) {
             1,
         ),
     }
+}
+
+/// The parts a DIAGONAL wall draws: one body the cell's own span — the root
+/// scales it by √2 into the cell's diagonal (`base_transform`) — dropped a
+/// further [`DIAG_DROP_M`] at its head, and no posts. Its own emit rather
+/// than the straight wall's, because the straight body is trimmed to run
+/// between two posts the diagonal does not have, and its head sits where a
+/// straight wall's post would share a plane with it.
+pub fn diagonal_parts() -> ([Part; MAX_PARTS], usize) {
+    let lo = -EDGE_DROP_M;
+    let hi = LEVEL_H_M - EDGE_DROP_M - DIAG_DROP_M;
+    (
+        [
+            Part {
+                size: Vec3::new(WALL_THICKNESS_M, hi - lo, BUILD_CELL_M),
+                offset: Vec3::new(0.0, (hi + lo) * 0.5, 0.0),
+                x_rot: 0.0,
+                kind: PartKind::Box,
+                role: PartRole::Body,
+            },
+            Part::default(),
+            Part::default(),
+            Part::default(),
+            Part::default(),
+            Part::default(),
+        ],
+        1,
+    )
+}
+
+/// The parts a shape draws at a location: [`shape_parts`], except that a
+/// wall on a diagonal is [`diagonal_parts`]. What the ghost and the kit both
+/// read, so a diagonal previews as the object it becomes.
+pub fn parts_for(shape: u8, loc: u8) -> ([Part; MAX_PARTS], usize) {
+    if shape == SHAPE_WALL && (loc == LOC_DIAG_A || loc == LOC_DIAG_B) {
+        diagonal_parts()
+    } else {
+        shape_parts(shape)
+    }
+}
+
+/// Is `shape` a straight-edge piece, the kind that ends at two corners and
+/// takes part in the post rule?
+pub fn is_edge_shape(shape: u8) -> bool {
+    matches!(
+        shape,
+        SHAPE_WALL | SHAPE_DOORWAY | SHAPE_WINDOW | SHAPE_FRAME
+    )
+}
+
+/// Which of its two corner posts an edge piece draws (Rust's conditional
+/// models, ported — `reference/BUILDING.md` §7d).
+///
+/// At a corner where up to four straight edge pieces meet, exactly ONE draws
+/// the post — the first present in a fixed order — so two posts never
+/// coincide (coincident posts z-fight) and no corner is bare. The order, for
+/// the corner at cell `(px, pz)`'s low-x/low-z point:
+///
+/// 1. the low-x edge of `(px, pz)`, whose low end is this corner;
+/// 2. the low-z edge of `(px, pz)`, likewise;
+/// 3. the low-x edge of `(px, pz - 1)`, whose HIGH end is this corner;
+/// 4. the low-z edge of `(px - 1, pz)`, likewise.
+///
+/// Read off the predictor's own collision index (`ClientCore::cols`) at
+/// spawn time, and re-read on every reconcile — `stream` keeps the answer
+/// beside the entity and redraws the piece when it changes, which is how a
+/// wall's post moves to the wall that arrived beside it. Every edge shape
+/// counts; a diagonal takes no post and blocks none.
+pub fn post_owner(cols: &ColIndex, cx: u16, cz: u16, level: u8, loc: u8) -> PostOwn {
+    // The corner at each end — as (px, pz), possibly off the grid's far
+    // edge — and this piece's rank in the order above at that corner.
+    type Corner = (Option<u16>, Option<u16>);
+    let (low, high, low_rank, high_rank): (Corner, Corner, u8, u8) = match loc {
+        LOC_EDGE_XLO => ((Some(cx), Some(cz)), (Some(cx), cz.checked_add(1)), 0, 2),
+        LOC_EDGE_ZLO => ((Some(cx), Some(cz)), (cx.checked_add(1), Some(cz)), 1, 3),
+        _ => return PostOwn::default(),
+    };
+    let owns = |corner: Corner, rank: u8| -> bool {
+        // A corner off the grid's far edge belongs to nobody else.
+        let (Some(px), Some(pz)) = corner else {
+            return true;
+        };
+        (0..rank).all(|r| !match r {
+            0 => edge_at(cols, Some(px), Some(pz), level, LOC_EDGE_XLO),
+            1 => edge_at(cols, Some(px), Some(pz), level, LOC_EDGE_ZLO),
+            2 => edge_at(cols, Some(px), pz.checked_sub(1), level, LOC_EDGE_XLO),
+            _ => edge_at(cols, px.checked_sub(1), Some(pz), level, LOC_EDGE_ZLO),
+        })
+    };
+    PostOwn {
+        low: owns(low, low_rank),
+        high: owns(high, high_rank),
+    }
+}
+
+/// Which corner posts a standing edge piece draws — [`post_owner`]'s answer,
+/// and `Live`'s redraw key for it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct PostOwn {
+    pub low: bool,
+    pub high: bool,
+}
+
+impl PostOwn {
+    /// Both, for the ghost and for an edge piece with nothing beside it.
+    pub const BOTH: Self = Self {
+        low: true,
+        high: true,
+    };
+
+    /// Two bits — the kit's index into its per-ownership meshes.
+    pub fn bits(self) -> u8 {
+        (self.low as u8) | ((self.high as u8) << 1)
+    }
+
+    pub fn from_bits(bits: u8) -> Self {
+        Self {
+            low: bits & 1 != 0,
+            high: bits & 2 != 0,
+        }
+    }
+
+    /// Does this ownership draw `role`?
+    pub fn draws(self, role: PartRole) -> bool {
+        match role {
+            PartRole::Body => true,
+            PartRole::PostLow => self.low,
+            PartRole::PostHigh => self.high,
+        }
+    }
+}
+
+/// Does any straight edge piece stand on the named boundary at `level`, in
+/// the client's mirror? Every edge shape — a doorway, a window and a frame
+/// end at corners exactly as a wall does.
+fn edge_at(cols: &ColIndex, cx: Option<u16>, cz: Option<u16>, level: u8, loc: u8) -> bool {
+    let (Some(cx), Some(cz)) = (cx, cz) else {
+        return false;
+    };
+    if (cx as usize) >= sim_core::limits::MAX_BUILD_COORD
+        || (cz as usize) >= sim_core::limits::MAX_BUILD_COORD
+    {
+        return false;
+    }
+    let m = cols.get(cx, cz);
+    let mask = if loc == LOC_EDGE_XLO {
+        m.walls_xlo | m.doors_xlo | m.wins_xlo | m.frames_xlo
+    } else {
+        m.walls_zlo | m.doors_zlo | m.wins_zlo | m.frames_zlo
+    };
+    mask & (1u8 << level) != 0
 }
 
 /// How far below the lowest ground sample under its cell a foundation's
@@ -949,8 +1211,8 @@ pub fn skirt_step(raw: f32) -> (usize, f32) {
 }
 
 /// The one drawn part of a foundation at its address: the slab whose top
-/// is the level plane, extended DOWN as a skirt until it is buried in the
-/// ground under every corner of its cell.
+/// is the level plane, exactly the cell across, extended DOWN as a skirt
+/// until it is buried in the ground under every corner of its cell.
 ///
 /// **Per-address where [`shape_parts`] is per-shape**, because the depth
 /// depends on the terrain under the cell — the build lattice holds the
@@ -959,6 +1221,18 @@ pub fn skirt_step(raw: f32) -> (usize, f32) {
 /// exactly the 2026-08-15 playtest's "pieces don't line up" screenshot:
 /// foundations reading as levitating planks with terrain showing through
 /// the steps. The skirt is how the reference grounds the same geometry.
+///
+/// **Exactly the cell across, and not a wall's thickness wider (gap v1).**
+/// A wall is centred on its boundary, so its outer half hangs
+/// `WALL_THICKNESS_M / 2` past this slab's edge with nothing under it — an
+/// undercut the footing's whole height, under every outside wall. The first
+/// fix widened the skirt out to the wall's face; `tests/gaps.rs` refused it
+/// the day it was written, because two neighbours' widened skirts then
+/// overlapped with their tops on one plane at every corner of the base
+/// where nothing hid them. What closes the undercut instead is the
+/// [`apron_parts`] each ground-storey edge piece hangs from its own foot:
+/// the wall's plinth belongs to the wall, owned like its posts, so a
+/// foundation with no wall on a side has no rim there to fight over.
 ///
 /// **The one emit site for both the standing piece and the build ghost**
 /// (`spawn_piece` and `ghost::track`), the same rule the parts table
@@ -979,14 +1253,69 @@ pub fn foundation_part(
     tri: bool,
     plate: i8,
 ) -> Part {
-    let span = piece_span();
     let (_, depth) = footing_of(seed, haven, cx, cz, plate);
     Part {
-        size: Vec3::new(span, depth, span),
+        size: Vec3::new(BUILD_CELL_M, depth, BUILD_CELL_M),
         offset: Vec3::new(0.0, -depth * 0.5, 0.0),
         x_rot: 0.0,
         kind: if tri { PartKind::Tri } else { PartKind::Box },
+        role: PartRole::Body,
     }
+}
+
+/// How far below its foot a ground-storey edge piece's apron reaches, metres:
+/// the skirt's own ceiling, so wherever the foundation's skirt stops the apron
+/// stops with it — buried under every footing the cap has not cut, and cut
+/// exactly where the skirt is on ground steep enough to cut it.
+pub const APRON_DEPTH_M: f32 = SKIRT_MAX_M;
+
+/// The apron a ground-storey edge piece hangs from its foot (gap v1): the
+/// wall's own plinth, a wall's thickness across and [`APRON_DEPTH_M`] deep
+/// from [`EDGE_DROP_M`] under the storey base, running between its corner
+/// posts — plus, under each post the piece owns, the post's own continuation
+/// down.
+///
+/// **Why the wall carries it and not the foundation.** The undercut is under
+/// the wall's OUTER half, which hangs past the slab's edge
+/// ([`foundation_part`] says what widening the skirt cost). A plinth that is
+/// part of the wall closes exactly that half — the inner half is inside the
+/// skirt and never seen — and has the wall's own answer to every join: it
+/// runs between the same posts, its ends abut the same post the wall's ends
+/// do, and a corner with no wall has no apron to fight over. Two in-line
+/// walls' aprons abut where their bodies do; an interior wall's apron is
+/// inside two skirts and draws nothing anyone sees.
+///
+/// A child of the piece's entity, at the root's own frame, on the ground
+/// storey only: a storey up, the foot is inside the slab below and there is
+/// no ground to reach.
+pub fn apron_parts(own: PostOwn) -> ([Part; 3], usize) {
+    let h = APRON_DEPTH_M - EDGE_DROP_M;
+    let c = -(APRON_DEPTH_M + EDGE_DROP_M) * 0.5;
+    let strip = Part {
+        size: Vec3::new(WALL_THICKNESS_M, h, BUILD_CELL_M - post_w()),
+        offset: Vec3::new(0.0, c, 0.0),
+        x_rot: 0.0,
+        kind: PartKind::Box,
+        role: PartRole::Body,
+    };
+    let post = |z: f32, role: PartRole| Part {
+        size: Vec3::new(post_w(), h, post_w()),
+        offset: Vec3::new(0.0, c, z),
+        x_rot: 0.0,
+        kind: PartKind::Box,
+        role,
+    };
+    let mut out = [strip, Part::default(), Part::default()];
+    let mut n = 1;
+    if own.low {
+        out[n] = post(-BUILD_CELL_M * 0.5, PartRole::PostLow);
+        n += 1;
+    }
+    if own.high {
+        out[n] = post(BUILD_CELL_M * 0.5, PartRole::PostHigh);
+        n += 1;
+    }
+    (out, n)
 }
 
 /// A cell's footing: which cached mesh draws it, and how deep that mesh is.
@@ -1052,6 +1381,29 @@ pub fn part_mesh(part: &Part) -> Mesh {
         PartKind::Box => box_mesh(part.size),
         PartKind::Tri => tri_prism_mesh(part.size),
     }
+}
+
+/// Several parts as ONE mesh, each at its own offset — what a standing
+/// multi-part piece is drawn from (gap v1).
+///
+/// The hammer highlight reads `Transform` + `Mesh3d` off the one entity
+/// `StructRing::entity_at` answers (`highlight.rs`), which is why a piece has
+/// always been one entity where it could be. A doorway was three children
+/// under a bare root and the highlight could not wash it; the corner posts
+/// would have made a wall the same. Baking the parts into one mesh keeps
+/// every piece one entity with its mesh on it, and costs one draw instead of
+/// six. The offsets are baked and the pitch is not: only the stairs carry
+/// one, and the stairs are one part.
+pub fn parts_mesh(parts: &[Part]) -> Mesh {
+    let mut b = buffers(24 * parts.len());
+    for part in parts {
+        debug_assert!(part.x_rot == 0.0, "a merged part cannot carry a pitch");
+        match part.kind {
+            PartKind::Box => box_into(&mut b, part.size, part.offset),
+            PartKind::Tri => tri_prism_into(&mut b, part.size, part.offset),
+        }
+    }
+    finish(b)
 }
 
 /// A quad's worth of vertices for one face, appended to the buffers.
@@ -1154,8 +1506,16 @@ fn finish((pos, nor, col, uv, idx): Buffers) -> Mesh {
 
 /// A box of `size`, centred on its own origin.
 fn box_mesh(size: Vec3) -> Mesh {
-    let h = size * 0.5;
     let mut b = buffers(24);
+    box_into(&mut b, size, Vec3::ZERO);
+    finish(b)
+}
+
+/// A box of `size` centred at `at`, appended to the buffers. The face tint's
+/// vertical ramp runs over the box's own height, not the world's, so a part
+/// baked at an offset wears the same ramp it would standing alone.
+fn box_into(b: &mut Buffers, size: Vec3, at: Vec3) {
+    let h = size * 0.5;
     // (normal, u, v) with u × v = normal — see [`quad`].
     //
     // **v is UP on all four uprights, and it was not until 2026-08-22.** The
@@ -1180,10 +1540,10 @@ fn box_mesh(size: Vec3) -> Mesh {
         (Vec3::Z, Vec3::X, Vec3::Y),
         (Vec3::NEG_Z, Vec3::NEG_X, Vec3::Y),
     ] {
-        let c = n * h;
+        let c = at + n * h;
         let (hu, hv) = ((u * h).length(), (v * h).length());
         quad(
-            &mut b,
+            b,
             [
                 c - u * hu - v * hv,
                 c + u * hu - v * hv,
@@ -1191,32 +1551,38 @@ fn box_mesh(size: Vec3) -> Mesh {
                 c - u * hu + v * hv,
             ],
             n,
-            |p| face_tint(n, p.y, -h.y, h.y),
+            |p| face_tint(n, p.y - at.y, -h.y, h.y),
         );
     }
-    finish(b)
 }
 
 /// The NW half-cell prism at true size: the triangle {u + w ≤ 0} over
 /// x, z ∈ [−½, ½] × `size`, extruded over y — corners at (−½,−½), (½,−½),
 /// (−½,½), hypotenuse facing +x+z.
 fn tri_prism_mesh(size: Vec3) -> Mesh {
+    let mut buf = buffers(21);
+    tri_prism_into(&mut buf, size, Vec3::ZERO);
+    finish(buf)
+}
+
+/// The prism centred at `at`, appended to the buffers — [`box_into`]'s
+/// shape for the other filling.
+fn tri_prism_into(buf: &mut Buffers, size: Vec3, at: Vec3) {
     let h = size * 0.5;
     // The three cross-section corners, CCW seen from +y (bevy's up).
     let a = Vec3::new(-h.x, 0.0, -h.z); // right angle (NW corner)
     let b = Vec3::new(h.x, 0.0, -h.z); // N-E corner
     let c = Vec3::new(-h.x, 0.0, h.z); // S-W corner
-    let mut buf = buffers(21);
-    // The two triangular caps. They are emitted by hand rather than through
-    // `quad` — a triangle is not a quad, and its UV is the cross-section's
-    // own x/z in metres so the cap's grain matches the sides'.
+                                       // The two triangular caps. They are emitted by hand rather than through
+                                       // `quad` — a triangle is not a quad, and its UV is the cross-section's
+                                       // own x/z in metres so the cap's grain matches the sides'.
     for (ny, y, wind) in [(1.0f32, h.y, false), (-1.0, -h.y, true)] {
-        let (pos, nor, col, uv, idx) = &mut buf;
+        let (pos, nor, col, uv, idx) = &mut *buf;
         let base = pos.len() as u32;
         let n = Vec3::new(0.0, ny, 0.0);
         let t = face_tint(n, y, -h.y, h.y);
         for p in [a, b, c] {
-            pos.push([p.x, y, p.z]);
+            pos.push([p.x + at.x, y + at.y, p.z + at.z]);
             nor.push([0.0, ny, 0.0]);
             col.push([t, t, t, 1.0]);
             uv.push([(p.x + h.x) * PIECE_UV_PER_M, (p.z + h.z) * PIECE_UV_PER_M]);
@@ -1243,18 +1609,17 @@ fn tri_prism_mesh(size: Vec3) -> Mesh {
         // against the wall it meets. Starting at `p1` rather than `p0` is what
         // keeps `u × v = n` with v flipped; see the winding note in [`quad`].
         quad(
-            &mut buf,
+            buf,
             [
-                p1 - Vec3::Y * h.y,
-                p0 - Vec3::Y * h.y,
-                p0 + Vec3::Y * h.y,
-                p1 + Vec3::Y * h.y,
+                at + p1 - Vec3::Y * h.y,
+                at + p0 - Vec3::Y * h.y,
+                at + p0 + Vec3::Y * h.y,
+                at + p1 + Vec3::Y * h.y,
             ],
             n,
-            |p| face_tint(n, p.y, -h.y, h.y),
+            |p| face_tint(n, p.y - at.y, -h.y, h.y),
         );
     }
-    finish(buf)
 }
 
 /// The world transform of an address's base point: the canonical anchor
@@ -1444,19 +1809,42 @@ pub fn build_kit(
             *slot = Some(handle);
         }
     }
+    // The straight edge shapes, merged per ownership: the body and whichever
+    // of the two corner posts the piece draws (`post_owner`).
+    let mut edge_mesh: [[Option<Handle<Mesh>>; 4]; N_SHAPES] =
+        std::array::from_fn(|_| [NO_MESH; 4]);
+    for shape in [SHAPE_WALL, SHAPE_DOORWAY, SHAPE_WINDOW, SHAPE_FRAME] {
+        let (parts, n) = shape_parts(shape);
+        for own in 0..4u8 {
+            let keep = PostOwn::from_bits(own);
+            let owned: Vec<Part> = parts[..n]
+                .iter()
+                .copied()
+                .filter(|p| keep.draws(p.role))
+                .collect();
+            edge_mesh[shape as usize][own as usize] = Some(meshes.add(parts_mesh(&owned)));
+        }
+    }
+    let diag_mesh = meshes.add(part_mesh(&diagonal_parts().0[0]));
+    let apron = std::array::from_fn(|own| {
+        let (parts, n) = apron_parts(PostOwn::from_bits(own as u8));
+        meshes.add(parts_mesh(&parts[..n]))
+    });
     // One footing mesh per quantised depth, per kind — built here rather
     // than on demand so a player walking onto new ground never pays a mesh
     // upload mid-frame (`RENDER.md` §2's prewarm discipline, applied to
     // geometry).
-    let span = piece_span();
     let footing = std::array::from_fn(|i| {
-        let depth = SLAB_T + i as f32 * SKIRT_STEP_M;
-        let size = Vec3::new(span, depth.min(SKIRT_MAX_M), span);
+        let depth = (SLAB_T + i as f32 * SKIRT_STEP_M).min(SKIRT_MAX_M);
+        let size = Vec3::new(BUILD_CELL_M, depth, BUILD_CELL_M);
         [meshes.add(box_mesh(size)), meshes.add(tri_prism_mesh(size))]
     });
     Kit {
         shape_mesh,
+        edge_mesh,
+        diag_mesh,
         footing,
+        apron,
         tier,
         deploy_mesh,
         deploy_mat,
@@ -1556,18 +1944,32 @@ pub fn stream(
             continue;
         }
         let key = (rec.cx, rec.cz, rec.level, rec.loc);
+        let def = core.piece_defs.pieces[rec.row as usize];
+        // Which corner posts this piece draws is a fact about its NEIGHBOURS
+        // (gap v1), so it is re-read here every pass rather than latched at
+        // spawn: the wall that arrived beside this one takes the post they
+        // share, and this one must be redrawn without it.
+        let own = if is_edge_shape(def.shape) {
+            post_owner(core.pieces.cols(), rec.cx, rec.cz, rec.level, rec.loc).bits()
+        } else {
+            0
+        };
         if let Some(live) = ring.pieces.get_mut(&key) {
             live.seen = gen;
             // An upgrade keeps the address and changes the row; a raid keeps
-            // both and changes the band. Both are redraws, and the band is
-            // the one that moves while the player is standing there.
-            if live.row == rec.row && live.dmg == rec.dmg && live.plate == rec.plate {
+            // both and changes the band; a neighbour keeps everything and
+            // changes the posts. All are redraws, and the band is the one
+            // that moves while the player is standing there.
+            if live.row == rec.row
+                && live.dmg == rec.dmg
+                && live.plate == rec.plate
+                && live.own == own
+            {
                 continue;
             }
             commands.entity(live.entity).despawn();
             ring.pieces.remove(&key);
         }
-        let def = core.piece_defs.pieces[rec.row as usize];
         let entity = spawn_piece(
             &mut commands,
             kit,
@@ -1578,6 +1980,7 @@ pub fn stream(
             def.material,
             rec.dmg,
             rec.plate,
+            PostOwn::from_bits(own),
         );
         ring.pieces.insert(
             key,
@@ -1588,6 +1991,7 @@ pub fn stream(
                 open: false,
                 locked: false,
                 dmg: rec.dmg,
+                own,
                 plate: rec.plate,
             },
         );
@@ -1645,6 +2049,7 @@ pub fn stream(
                 open: rec.open,
                 locked: rec.locked,
                 dmg: 0,
+                own: 0,
                 plate,
             },
         );
@@ -1688,6 +2093,7 @@ pub fn stream(
                 open: false,
                 locked: false,
                 dmg: 0,
+                own: 0,
                 // A bag carries a quantized world position, so it has no
                 // column and no plate to be drawn against.
                 plate: 0,
@@ -1714,6 +2120,7 @@ fn spawn_piece(
     material: u8,
     dmg: u8,
     plate: i8,
+    own: PostOwn,
 ) -> Entity {
     // Clamped, not `.min(2)`: the table covers every material the sim has
     // (`N_TIERS`, gated in `tests/pieces.rs` §A), so this only catches a
@@ -1727,69 +2134,68 @@ fn spawn_piece(
     // (`build.rs`) — and the parts are the shared table's, so this and the
     // build ghost are the same object in the same pose.
     let root = base_transform(seed, haven, addr, plate);
+    let (cx, cz, _, loc) = addr;
 
-    // A foundation's one part is per-address — the terrain-following skirt
-    // ([`foundation_part`], the shared emit the ghost also draws) — so it
-    // takes the unit mesh scaled in the transform instead of the kit's
-    // per-shape cache. Still one entity with `Mesh3d` on it: the hammer
-    // highlight's contract.
-    if matches!(
+    // **Every piece is ONE entity with its mesh on it.** Not a style choice:
+    // the hammer highlight reads `Transform` + `Mesh3d` off the entity
+    // `entity_at` answers (`highlight.rs`), and a bare root over children
+    // would hide both from it. A multi-part shape is therefore baked into one
+    // mesh (`parts_mesh`) at build time — per corner-post ownership for the
+    // edge shapes, per footing depth for the foundations — and sits on the
+    // root; a one-part shape carries its part's own transform, which is where
+    // the stairs' pitch lives.
+    let (mesh, transform) = if matches!(
         shape,
         sim_core::build::SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION
     ) {
-        let part = foundation_part(
-            seed,
-            haven,
-            addr.0,
-            addr.1,
-            shape == SHAPE_TRI_FOUNDATION,
-            plate,
-        );
-        // The mesh is picked by the same call that sized the part, and it is
-        // already true-size — so the transform carries NO scale, which is
-        // what lets the skirt wear a metre-scaled texture at all.
-        let (step, _) = footing_of(seed, haven, addr.0, addr.1, plate);
-        let mesh = kit.footing[step][usize::from(part.kind == PartKind::Tri)].clone();
-        return commands
-            .spawn((
-                super::WorldEntity,
-                Mesh3d(mesh),
-                MeshMaterial3d(mat),
-                root * part.transform(),
-            ))
-            .id();
+        // The footing is per address — the terrain-following skirt
+        // (`foundation_part`, the shared emit the ghost also draws) — picked
+        // by the same call that sized it, already true-size, so the transform
+        // carries no scale and the skirt wears a metre-scaled texture.
+        let tri = shape == SHAPE_TRI_FOUNDATION;
+        let part = foundation_part(seed, haven, cx, cz, tri, plate);
+        let (step, _) = footing_of(seed, haven, cx, cz, plate);
+        (
+            kit.footing[step][usize::from(tri)].clone(),
+            root * part.transform(),
+        )
+    } else if shape == SHAPE_WALL && (loc == LOC_DIAG_A || loc == LOC_DIAG_B) {
+        let (parts, _) = diagonal_parts();
+        (kit.diag_mesh.clone(), root * parts[0].transform())
+    } else if is_edge_shape(shape) {
+        (
+            kit.edge_mesh[(shape as usize).min(N_SHAPES - 1)][own.bits() as usize]
+                .clone()
+                .expect("every edge shape has a mesh per ownership"),
+            root,
+        )
+    } else {
+        let (parts, _) = shape_parts(shape);
+        (
+            kit.shape_mesh[(shape as usize).min(N_SHAPES - 1)][0]
+                .clone()
+                .expect("every live part has a mesh"),
+            root * parts[0].transform(),
+        )
+    };
+    let mut piece = commands.spawn((
+        super::WorldEntity,
+        Mesh3d(mesh),
+        MeshMaterial3d(mat.clone()),
+        transform,
+    ));
+    // The ground storey's edge pieces hang their apron (`apron_parts`) as a
+    // child at the root's own frame: the wall's plinth, in the wall's
+    // material, owned like its posts. The root keeps the mesh the highlight
+    // reads; a child is exactly what the one-entity contract allows.
+    if addr.2 == 0 && is_edge_shape(shape) && matches!(loc, LOC_EDGE_XLO | LOC_EDGE_ZLO) {
+        piece.with_child((
+            Mesh3d(kit.apron[own.bits() as usize].clone()),
+            MeshMaterial3d(mat),
+            Transform::IDENTITY,
+        ));
     }
-
-    let (parts, n) = shape_parts(shape);
-    let meshes = &kit.shape_mesh[(shape as usize).min(N_SHAPES - 1)];
-
-    if n == 1 {
-        // A one-part shape stays ONE entity with the mesh on it, root and
-        // part composed. Not a style choice: the hammer highlight reads
-        // `Transform` + `Mesh3d` off the entity `entity_at` answers
-        // (`highlight.rs`), and a bare root over a single child would hide
-        // both from it.
-        return commands
-            .spawn((
-                super::WorldEntity,
-                Mesh3d(meshes[0].clone().expect("every live part has a mesh")),
-                MeshMaterial3d(mat),
-                root * parts[0].transform(),
-            ))
-            .id();
-    }
-    commands
-        .spawn((super::WorldEntity, root, Visibility::default()))
-        .with_children(|c| {
-            for (part, mesh) in parts[..n].iter().zip(meshes) {
-                c.spawn((
-                    Mesh3d(mesh.clone().expect("every live part has a mesh")),
-                    MeshMaterial3d(mat.clone()),
-                    part.transform(),
-                ));
-            }
-        })
-        .id()
+    piece.id()
 }
 
 /// Where a deployable of `arch` stands at `addr` — the centre of its box,

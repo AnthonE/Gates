@@ -452,6 +452,95 @@ players who care most about building are the ones who notice.
 Their freehand falls out of a continuous world for free; ours is
 address-based, so there is no "near" for a placement to miss.
 
+## 7d · The storey, the first foundation's height, and the corner piece — what they do that we did not (2026-09-05)
+
+Written from a playtest screenshot of our own base (2026-09-04: *"building
+pieces have a gap in them … i cant build a second story and i couldnt vary
+my initial foundation piece height at all"*) — three symptoms, and each
+turned out to be a place where the reference's mechanism differs from ours
+in kind rather than in a number. **Provenance is mixed and marked per
+paragraph**: Devblogs 84, 95, 97, 98 and 187 and Rustafied's Building 3.0
+write-up were **fetched whole** on this box (§0's ⚠ cuts both ways again —
+this container reaches `rust.facepunch.com`); the corrosionhour guides and
+the feedback-board post arrived as **search summaries**.
+
+### 7d.1 The storey is a socket, never a number
+
+Their walls, floors and roofs have no level. A floor ghost aimed at the top
+of a wall takes the wall's top socket; a wall aimed at a floor's edge stands
+on it; the storey a piece lands on is whatever the piece you are looking at
+implies. Rustafied's Building 3.0 notes (fetched whole) say it sideways, as a
+complaint about the half-height case: *"At times, ceiling tiles won't snap
+halfway up a full wall"* — a ceiling snaps to a wall's top, and the half wall
+gave it a second socket to reach. Nothing in their UI types a storey.
+
+Ours was a client-side latch stepped by `R`/`F`, live only while the build
+wheel was up, shown as `L0` on the HUD and explained nowhere — a storey
+nobody found. §9 item 21 is what replaced it: the storey is read off what the
+look ray meets, which is their socket rule expressed against an address grid.
+
+### 7d.2 The first foundation's height is where you aim, and their players want a key on top of it
+
+Once a base exists, §7c.1 applies: the next foundation snaps to the existing
+one at a vertical offset of up to half a wall. The FIRST foundation has no
+socket to take, and its height is the aim's — the ghost follows the
+crosshair's hit on the terrain, so on a slope the same cell is higher when
+you look at its uphill side. Two tier-3 guides say this from opposite ends.
+Corrosion Hour's flat-spots guide teaches finding buildable ground by
+placing *"a low foundation, followed by a medium foundation, and high
+foundation"* and reading *"the terrain line against the foundation
+silhouette edge"* (search summary); its freehand guide teaches the height
+control for stacked floors by eye, off the twig foundation's logs (§7c.3).
+And a Rust feedback-board thread titled *"Key binding to adjust the height
+of foundations before placing them?"* (rust.nolt.io/21165, 403 to a direct
+fetch; the summary describes a click-and-hold-to-set-height proposal) is the
+players saying the aim alone is not enough on flat ground — which is
+precisely what the aim cannot do: on a flat cell every point is the same
+height.
+
+So their answer is *aim*, and the open request against it is *a key*. §9
+item 22 takes both.
+
+### 7d.3 The corner piece is a conditional model, and the reason ours had a notch is that we had none
+
+Devblog 98 (fetched whole), on Conditional Models 2.0:
+
+> "The conditional model system is the thing that changes the appearance of
+> building blocks depending on what other building blocks they're connected
+> to."
+
+> "we can, for example, remove the sides of foundations where other
+> foundations connect, which reduces the overall vertex count of buildings
+> quite noticeably."
+
+Devblog 95 (fetched whole) lists what the rewrite had to be: run on the
+server *"to be able to change colliders (like roof sides)"*, *"free of
+physics queries"*, *"fast enough to run on all building blocks"*, *"remove
+pieces of building meshes that cannot be seen (like inside foundations)"*,
+and *"be reliable (no more incorrect wall corner pieces)"*. Devblog 84, a
+year earlier, is the version they replaced: conditional models *"do physics
+checks to determine their state, which is slow and unreliable and is
+therefore only done on the client"*, *"are slow to render and therefore only
+spawn very close to the camera"*, and *"cannot change building colliders."*
+
+The pattern: a block's drawn parts depend on its neighbours, the decision is
+made from the building's own connectivity rather than a physics probe, and
+one block owns each shared piece so no two draw it. Our walls each ran to
+their boundary and stopped, so two meeting at a corner left the square
+neither reached bare, and our fix was the same idea as theirs (§9 item 23):
+a post at every corner drawn by exactly one of the pieces that meet there,
+decided off the collision index the client already keeps, and re-decided
+whenever a neighbour arrives or goes.
+
+**What the seam was, for the record.** Our 4 cm inset per piece — the
+see-through slit between every two walls in a line — was not theirs at all.
+It was inherited from the browser client's `scene.js` with the stated reason
+that two abutting floors z-fight, and they do not: z-fighting is two faces
+with the same normal at the same depth, and two abutting slabs share an edge,
+not a face. The three places our pieces genuinely did share a plane were
+closed by moving one face of each pair, and `tests/gaps.rs` now asks the
+depth buffer's question directly.
+
 ## 8 · Sources
 
 Tier 1 (in-tree, MIT): `reference/rust-systems.txt` — `BuildingPrivlidge`,
@@ -483,6 +572,16 @@ them and is a NEGATIVE — no key, no toggle, alignment done by eye against
 logs and compass tics — which is why §7c.3 now states the input where the
 first draft declined to: "the sources do not agree on the input" was itself
 the misreading, and the agreement is that there is none.
+
+Tier 2 for §7d, **fetched whole** (2026-09-05): Devblog 84 (the first,
+client-only conditional models and their three stated limits), Devblog 95
+(Conditional Models 2.0's goals), Devblog 97 (its landing), Devblog 98 (the
+definition, and foundation sides removed where foundations connect), and
+Rustafied's Building 3.0 write-up again (the ceiling-tile socket sentence).
+Tier 3 for §7d, **via search summary**: Corrosion Hour's flat-spots guide
+(low/medium/high foundations, the silhouette against the terrain line) and
+the rust.nolt.io feedback thread asking for a foundation height key (a
+direct fetch answered 403).
 
 Tier 3 (community wikis, guides and decay calculators, **via search
 summary**): the 10-player list cap, the `E`/hold-`E` interaction, the 24
@@ -676,3 +775,39 @@ The rest of this section is **§7b's half**, added 2026-08-10.
     floor is not a thing their system permits either. Ours refuses it in
     `plate_for` rather than by geometry, and `plate.rs`'
     `freehand_cannot_lift_a_piece_off_its_own_column` is the gate.
+
+The rest of this section is **§7d's half**, added 2026-09-05, and all three
+are BUILT in the same commit as the research — the symptoms were a playtest's
+and the fixes were a day's.
+
+21. **The storey is aimed now, and `R`/`F` stopped stepping it** (§7d.1;
+    `DECISIONS.md` §open "aimed level v0"). `ui::place::aim_from_look`
+    returns what the ray MET — a wall's face (the storey above it for a
+    plane or another edge piece, its own for stairs), a floor's surface, a
+    built neighbour's level plane crossed inside an empty cell within
+    `SOCKET_BAND_M` of the shared edge (their floor socket), bare ground, or
+    nothing (the storey the feet stand on). Their sockets against our grid:
+    what ports is that "the piece you are looking at decides", not the
+    attraction radius. `client/tests/storey.rs` drives every case through
+    `build::place` so a storey the ghost resolves is one the sim takes.
+22. **The first foundation's height is the aimed ground's band plus a
+    nudge, sent on the wire and held to the latch's window** (§7d.2;
+    `DECISIONS.md` §open "foundation height v0", `PROTO_VER` 62).
+    `ActionMsg::Place` carries the band the placer asked for; `plate_for`
+    hears it only where nothing else decides — a first foundation or a
+    freehand one — and refuses it past half a wall with the latch's own two
+    codes, so a base started by hand can never stand where the latch could
+    not have carried it. The aimed half is theirs; the `R`/`F` half is what
+    their players asked for. `sim-core/tests/plate.rs` holds both.
+23. **Every corner has one post, every seam is closed, and no two faces
+    share a plane** (§7d.3; `DECISIONS.md` §open "gap v1"). The seam is
+    retired; every edge part drops `EDGE_DROP_M` so a wall's head is inside
+    the slab above it; a corner post proud by `POST_PROUD_M` is drawn by
+    the first-ranked piece at each corner (`structures::post_owner`, the
+    conditional-model rule off the client's own index, re-read on every
+    reconcile); a ground-storey wall hangs its own apron under its outer
+    half. `client/tests/gaps.rs` asks the two questions a box can answer —
+    is every point on every edge line drawn, and do any two same-normal
+    faces share a plane over an area nothing hides — and proved its
+    checker on a mutant the day it was written, when a first draft that
+    widened the skirts failed it at every corner of the base.

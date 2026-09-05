@@ -952,9 +952,11 @@ unbuilt, and a key that does nothing is worse than an absent one.
    is `§0tl` items 3 and 4: a lit bit and a fuel debit. `nothing_held_glows`
    turned out not to be in the way at all; it forbids a carried EMISSIVE,
    which is a different mechanism from a carried light.
-⚠ **Both keys are already conditionally bound**: `ghost.rs:153/156` give `R`
-and `F` the build ghost's level up/down while the wheel is up, and
-`verbs.rs:245` is `R`'s repair arm otherwise. Bind over them knowingly.
+⚠ **Both keys are already conditionally bound**: `ghost::height_keys` gives
+`R` and `F` the foundation height nudge while the building plan is in hand
+(foundation height v0 — they stepped the STOREY until 2026-09-05, and the
+storey is aimed now), and `verbs.rs`' `R` arm is repair or reload otherwise.
+Bind over them knowingly.
 4. **Voice (hold `V`).** No capture, codec, `KIND_*` or fan-out;
    `reference/VOICE.md` §9 settles both design questions.
 Also open: the viewmodel sways in free look (`viewmodel.rs` reads `eye.yaw`
@@ -981,6 +983,12 @@ The first two need a wire field (`DECISIONS.md` §open):
 
 
 ## 0bl · The lattice's residuals: a seam, a memo, and a shot with no flanks *(client+sim lane)*
+
+✅ **2026-09-05, three of the playtest's four**: the seam is retired, every
+corner has one post, a wall's head sits inside the floor above (gap v1); the
+storey follows the aim (aimed level v0); a first foundation takes the band it
+asked for (foundation height v0, `PROTO_VER` 62). `DECISIONS.md` §open has
+the three rows; `client/tests/gaps.rs` and `storey.rs` are the gates.
 
 1. **A band-boundary wall bases on its canonical cell** and hangs one band over
    the lower plate — an arrow-sized slit. The lower column is the honest base;
@@ -1013,6 +1021,14 @@ The first two need a wire field (`DECISIONS.md` §open):
    in (`DECISIONS.md` §open "piece flanks v0"), and nobody has played the aimed
    freehand bit — which rides no golden either, closing which means scripting
    `sim-core/src/probe.rs` to build beside a built neighbour.
+8. **Nobody has played the three 2026-09-05 slices either**, and each has a
+   look or a feel only a person can judge: the corner posts (3 cm proud is a
+   guess at the reference's stone corners) and the apron on a stilted plate
+   (gap v1); a wall aimed at a wall's LOWER half stacks on top rather than
+   standing beside it (aimed level v0 — the reference snaps beside); the
+   aimed band stepping half a metre as the crosshair sweeps a sloped cell
+   (foundation height v0). The HUD's `+0.5 m` and `(R/F height)` hint are
+   the only teaching there is.
 
 
 ## 0ac · The catalogue's inserts, the soft face's look, and the diagonal price *(systems lane)*
@@ -2254,8 +2270,10 @@ Then, in the order a player would notice:
 9. **The tech-tree panel at a bench** (§0tt, §0tree) — press `E`.
 10. **A world crate and a site guard** (§0wc 1, 4) — `dev_spawn` puts the
     camera at the pad; §0p3 has the command.
-11. **The freehand build bit on a hillside** (§0bl item 5) — whether a height
-    that changes as you sweep one cell reads as control or as twitch.
+11. **The freehand build bit and the aimed band on a hillside** (§0bl items
+    5 and 8) — whether a height that changes as you sweep one cell reads as
+    control or as twitch, now that the band moves with the crosshair's
+    ground and `R`/`F` step it (foundation height v0).
 12. **The sky's swept bearing** (§0sun item 1) — a full revolution per cycle,
     exact and gated, and a visible change nobody asked for.
 13. **The collapsed off arm and the sleeper tint** (§0chr item 6), **a spill

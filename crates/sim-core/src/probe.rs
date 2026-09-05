@@ -287,6 +287,11 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                 level: ((t / 32) % 2) as u8,
                 loc: ((t / 16) % 4) as u8,
                 freehand: false,
+                // Both signs and zero, so the asked band (foundation
+                // height v0) — and its refusal past the window — is on the
+                // parity/replay surface rather than a constant nothing
+                // exercises.
+                plate: ((t / 64) % 5) as i8 - 2,
             };
             // Bot 2 pokes the deploy verb at its own feet: loc/level
             // cycle, so placements AND every deploy refusal reason ride

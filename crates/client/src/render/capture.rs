@@ -1357,7 +1357,7 @@ fn sight_is_clear(
         // two people standing on the ground. The eye and the subject are
         // both around 1.6 m, so a span either side of the line's height
         // covers what could be across it.
-        let span = super::structures::piece_span();
+        let span = sim_core::build::BUILD_CELL_M;
         if (c.y - (from.y + to.y) * 0.5).abs() > span {
             continue;
         }

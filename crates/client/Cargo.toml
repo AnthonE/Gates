@@ -124,6 +124,11 @@ path = "tests/lattice_geom.rs"
 required-features = ["render"]
 
 [[test]]
+name = "gaps"
+path = "tests/gaps.rs"
+required-features = ["render"]
+
+[[test]]
 name = "fell"
 path = "tests/fell.rs"
 required-features = ["render"]

@@ -333,6 +333,7 @@ fn place(w: &mut World, row: u16, cx: u16, cz: u16, level: u8, loc: u8) {
         level,
         loc,
         freehand: false,
+        plate: 0,
     }]);
     assert_eq!(
         w.pieces.len(),

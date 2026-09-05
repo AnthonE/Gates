@@ -253,7 +253,10 @@ pub fn keys(
     // for. Proposed default, `DECISIONS.md` §open (reload v1).
     let hand =
         crate::ui::hold::held_in_hand(&net.session.core.catalog, &net.session.core.inv, net.sel);
-    if !wheel_up && keys.just_pressed(KeyCode::KeyR) {
+    // ...and the building plan takes `R` (and `F`) for the foundation
+    // height nudge (`ghost::height_keys`, foundation height v0) — the same
+    // modal rule, one hand further along: a plan has nothing to reload.
+    if !wheel_up && !hand.places() && keys.just_pressed(KeyCode::KeyR) {
         if hand.repairs() {
             repair_near(&net, &near.0, &mut toast);
         } else {

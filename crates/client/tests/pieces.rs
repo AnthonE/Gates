@@ -35,9 +35,9 @@
 use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::*;
 use client::render::structures::{
-    damage_mix, footing_of, foundation_part, part_mesh, skirt_step, tier, Part, PartKind,
-    DMG_DARKEST, FACE_BOTTOM, N_TIERS, PIECE_UV_PER_M, SIDE_FOOT, SKIRT_MAX_M, SKIRT_STEPS,
-    SKIRT_STEP_M, SLAB_T,
+    apron_parts, damage_mix, diagonal_parts, footing_of, foundation_part, part_mesh, parts_mesh,
+    skirt_step, tier, Part, PartKind, PartRole, PostOwn, DMG_DARKEST, FACE_BOTTOM, N_TIERS,
+    PIECE_UV_PER_M, SIDE_FOOT, SKIRT_MAX_M, SKIRT_STEPS, SKIRT_STEP_M, SLAB_T,
 };
 use sim_core::build::DMG_BANDS;
 use sim_core::build::{MAT_METAL, MAT_STONE, MAT_TWIG, MAT_WOOD};
@@ -149,6 +149,7 @@ fn part(size: Vec3, kind: PartKind) -> Part {
         offset: Vec3::ZERO,
         x_rot: 0.0,
         kind,
+        role: PartRole::Body,
     }
 }
 
@@ -314,17 +315,58 @@ fn the_whole_kit_builds() {
             built += 1;
         }
     }
+    // The diagonal's own body, and the edge shapes merged per ownership —
+    // every part set `parts_mesh` bakes for the kit.
+    let (dp, dn) = diagonal_parts();
+    assert!(part_mesh(&dp[0]).count_vertices() >= 12);
+    built += dn;
+    for shape in [
+        sim_core::build::SHAPE_WALL,
+        sim_core::build::SHAPE_DOORWAY,
+        sim_core::build::SHAPE_WINDOW,
+        sim_core::build::SHAPE_FRAME,
+    ] {
+        let (parts, n) = client::render::structures::shape_parts(shape);
+        for own in 0..4u8 {
+            let keep = client::render::structures::PostOwn::from_bits(own);
+            let owned: Vec<Part> = parts[..n]
+                .iter()
+                .copied()
+                .filter(|p| keep.draws(p.role))
+                .collect();
+            let m = parts_mesh(&owned);
+            assert!(
+                m.count_vertices() >= 24 * owned.len(),
+                "shape {shape} ownership {own}: the merged mesh is short of its parts"
+            );
+            built += 1;
+        }
+    }
+    // The aprons, per ownership.
+    for own in 0..4u8 {
+        let (parts, n) = apron_parts(PostOwn::from_bits(own));
+        let m = parts_mesh(&parts[..n]);
+        assert!(
+            m.count_vertices() >= 24 * n,
+            "apron {own} is short of its parts"
+        );
+        built += 1;
+    }
     // The footing cache, at every depth the kit pre-builds — including the
     // capped top bucket, whose size is clamped rather than stepped.
     for i in 0..SKIRT_STEPS {
         let depth = (SLAB_T + i as f32 * SKIRT_STEP_M).min(SKIRT_MAX_M);
-        let size = Vec3::new(client::render::structures::piece_span(), depth, 2.96);
+        let size = Vec3::new(
+            sim_core::build::BUILD_CELL_M,
+            depth,
+            sim_core::build::BUILD_CELL_M,
+        );
         for kind in [PartKind::Box, PartKind::Tri] {
             part_mesh(&part(size, kind));
             built += 1;
         }
     }
-    assert!(built > 20, "the kit sweep built only {built} meshes");
+    assert!(built > 40, "the kit sweep built only {built} meshes");
 }
 
 /// **Every upright face runs its texture the same way up.**

@@ -220,6 +220,7 @@ pub fn raid_step(plan: &mut RaidPlan, rng: &mut Pcg32, rows: RaidRows) -> Comman
                 level: 0,
                 loc: LOC_PLANE,
                 freehand: false,
+                plate: 0,
             },
             5 => Command::Throw {
                 id,
@@ -271,6 +272,7 @@ pub fn raid_step(plan: &mut RaidPlan, rng: &mut Pcg32, rows: RaidRows) -> Comman
                 level: 0,
                 loc: LOC_PLANE,
                 freehand: false,
+                plate: 0,
             },
             1 => Command::Place {
                 id,
@@ -280,6 +282,7 @@ pub fn raid_step(plan: &mut RaidPlan, rng: &mut Pcg32, rows: RaidRows) -> Comman
                 level: 0,
                 loc: LOC_EDGE_XLO,
                 freehand: false,
+                plate: 0,
             },
             2 => Command::Place {
                 id,
@@ -289,6 +292,7 @@ pub fn raid_step(plan: &mut RaidPlan, rng: &mut Pcg32, rows: RaidRows) -> Comman
                 level: 0,
                 loc: LOC_EDGE_ZLO,
                 freehand: false,
+                plate: 0,
             },
             3 => Command::PlaceDeploy {
                 id,

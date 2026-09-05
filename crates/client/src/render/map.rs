@@ -108,7 +108,7 @@ impl Island {
 /// neither is a `Screen` — so without it, `G` typed into the crafting search
 /// box or into a keypad's code would also throw the map up. That was a live
 /// bug on the old binding (`M` into the search box opened the map) and it is
-/// fixed here rather than inherited: `verbs::keys` and `ghost::level_keys`
+/// fixed here rather than inherited: `verbs::keys` and `ghost::height_keys`
 /// already stand down for the same reason, and this system simply never had
 /// the check. The chat composer needs no arm — `chat::keys` clears the whole
 /// keyboard while it is open.
