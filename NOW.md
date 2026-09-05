@@ -86,6 +86,32 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
    3.6 m out on height, and 2.3–2.5/2.7 describe a CUBE where the sim blocks
    a cylinder. Read `occupant_volume`, not this file.
 
+## 0rk · The rocks read as the wrong object, and every normal map is bent *(art + client lane)*
+
+Operator, 2026-09-05: the boulder *"looks like mineable"*, the node is
+*"square instead of spherical"*. Measured, and both are the asset (`DECISIONS.md`
+§open, scatter art v1): the shipped boulder is a 1.17 ball paler than the node,
+the node a 1.39 cube; every UV island of every albedo was lit on its own (chart
+contrast 0.09–0.36); and **every normal map in the tree decodes bent** — X/Y
+means 0.212, not 0.5 — because `ci/ktx_pack.py` let `ktx create` linearise the
+data maps for three weeks. The tooling landed; the assets did not:
+
+1. **Re-pack all 23 models from their raw deliveries** on the box with `ktx`:
+   `ci/flatten_charts.py` → `ci/ktx_pack.py` (which now refuses a bent map).
+   Then delete each file's entry from `tests/packed_maps.rs`'s two lists — the
+   gate holds it neutral and chart-flat from then on. Roughness moves with it
+   (0.41 stored where ~0.67 was delivered): expect every prop to read matter.
+2. **Re-roll the stone node and the boulder pool's first entry** with the two
+   prompts in `MANIFEST.md` §prop, and select with `ci/measure_glb.py` — rock_a
+   and node_stone are proven rejects, and metal and sulfur fail the round band
+   too. Remove each landed file's pin from `tests/prop_assets.rs`.
+3. **The formation levers, measured and parked.** Tilt is out at these
+   tolerances: rock_b and rock_c leave the blocked cylinder past **3°**. A
+   cluster per slot waits for a slab, because the top gate holds the main part
+   at ≥ 0.97 scale, so satellites on a ball are warts. Widening the Rock row is
+   sim truth and the operator's call. §LOOK: nobody has seen a flattened albedo
+   or a straight normal in a frame.
+
 ## 0anim · The animals cannot be bought until the client can move one *(client lane)*
 
 Asked 2026-09-02 whether the generator can rig. **It can, and it will not rig

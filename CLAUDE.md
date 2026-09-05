@@ -384,6 +384,23 @@ do not rediscover)
   several, and reject on a number. `ci/measure_glb.py` is that step, and it
   reads its target out of `sim-core` rather than taking it typed.
 
+- **A packer that asks a tool for a linear format has said what the OUTPUT
+  is, not what the input was, and the tool's default fills the gap with a
+  conversion.** `ci/ktx_pack.py` asked `ktx create` for `R8G8B8A8_UNORM` on
+  every normal and metal/rough map and never said the PNG was already linear;
+  the tool's documented default takes an untagged PNG as sRGB and converts
+  it. Every normal map in the tree decoded to X/Y means of **0.212** (0.5
+  through the sRGB curve) from 2026-08-11 to 2026-09-05 — a ~41° bend in
+  tangent space, a different world direction on every UV island, the
+  polygon-edged shading patchwork the operator pointed at on a boulder — with
+  every gate green, because every gate read the container and none read a
+  texel. Assign the transfer function explicitly in BOTH directions, and
+  round-trip what you packed against what went in (`ktx extract`);
+  `tests/packed_maps.rs` reads the shipped file through Bevy's own transcoder.
+  ⚠ **And that transcoder's safe Rust wrapper segfaults on an uncompressed
+  output** — `basis-universal 0.3.1` computes the row pitch in blocks where an
+  RGBA32 target wants pixels — so the gate calls the C function with a pixel
+  pitch. Bevy never trips it because it only ever asks for a block format.
 - **Auto-rigging is humanoid pose estimation, so it refuses every animal in
   this game.** Meshy's `/openapi/v1/rigging` advertises a free walk and run
   clip with every rig, which reads as the obvious way to animate a mob —
