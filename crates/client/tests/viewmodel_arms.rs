@@ -31,6 +31,13 @@
 //!      while the clip leaves scale alone. `Idle_Loop` does not: it animates
 //!      scale on all 24 joints, so this is a real edit away.
 //!
+//! Since 2026-09-05 it also holds the **thrust** (`the_thrust_*` below): the
+//! spear's point lands ON the view axis at the apex, at a depth inside the
+//! body of a player standing at the spear's content reach, after an arm that
+//! drew back and then extended. That is the arithmetic half of *"does
+//! everything line up with where you aim"* — the half a pixel gate could
+//! never see, and the half the sim's planar cone cannot answer for.
+//!
 //! What it CANNOT check is whether an arm entering frame at that angle reads
 //! as an arm. That is `--bin modelview <file> --eye --hide char1_body`, and a
 //! person looking at the game.
@@ -39,12 +46,14 @@
 
 use client::render::bodies::RETIRED_BODY_PALM;
 use client::render::viewmodel::{
-    aim_snap, bump, item_rest_dir, rig_transform, swing_apex_s, swing_pose, VIEWMODEL_ARMS,
-    VIEWMODEL_BOB_X, VIEWMODEL_BOB_Y, VIEWMODEL_GRIP_M, VIEWMODEL_GRIP_Q, VIEWMODEL_GRIP_SCALE,
-    VIEWMODEL_HIDDEN_ARM, VIEWMODEL_HIDDEN_BEHIND_M, VIEWMODEL_HIDDEN_OFFSET, VIEWMODEL_HOLD,
-    VIEWMODEL_PALM, VIEWMODEL_SWING_AIM, VIEWMODEL_SWING_ATTACK, VIEWMODEL_SWING_S,
-    VIEWMODEL_SWING_WINDUP, VIEWMODEL_SWING_WRIST_MAX, VIEWMODEL_TILT,
+    aim_snap, bump, item_rest_dir, palm_rig, rig_transform, swing_apex_s, swing_phases, swing_pose,
+    thrust_pose, thrust_snap, tilt, VIEWMODEL_ARMS, VIEWMODEL_BOB_X, VIEWMODEL_BOB_Y,
+    VIEWMODEL_GRIP_M, VIEWMODEL_GRIP_Q, VIEWMODEL_GRIP_SCALE, VIEWMODEL_HIDDEN_ARM,
+    VIEWMODEL_HIDDEN_BEHIND_M, VIEWMODEL_HIDDEN_OFFSET, VIEWMODEL_HOLD, VIEWMODEL_PALM,
+    VIEWMODEL_SWING_AIM, VIEWMODEL_SWING_ATTACK, VIEWMODEL_SWING_S, VIEWMODEL_SWING_WINDUP,
+    VIEWMODEL_SWING_WRIST_MAX, VIEWMODEL_THRUST_WRIST_MAX, VIEWMODEL_TILT,
 };
+use client::ui::hold::{HeldModelDef, Stroke, HELD_MODELS};
 
 /// Assets live beside the crate — `tests/rig_asset.rs`'s hop.
 fn asset_path(rel: &str) -> std::path::PathBuf {
@@ -1095,7 +1104,12 @@ fn the_strike_carries_every_held_row_below_where_it_started() {
     let tilt = euler_yxz(VIEWMODEL_TILT.x, VIEWMODEL_TILT.y, VIEWMODEL_TILT.z);
     let tilt = bevy::prelude::Quat::from_xyzw(tilt[0], tilt[1], tilt[2], tilt[3]);
 
-    for def in &client::ui::hold::HELD_MODELS {
+    // Chop rows only, since 2026-09-05: a `Stroke::Thrust` row never takes
+    // `aim_snap` — its wrist is `thrust_snap`, and where THAT lands is
+    // `the_thrust_lands_the_point_on_the_crosshair_at_the_sims_reach`'s
+    // business. Holding the spear to a chop it does not draw would be a green
+    // assertion about a stroke nobody sees.
+    for def in HELD_MODELS.iter().filter(|d| d.stroke == Stroke::Chop) {
         let rest = item_rest_dir(def);
         let at_rest = tilt * rest;
         let at_apex = arc * (tilt * (aim_snap(rest, 1.0) * rest));
@@ -1201,6 +1215,261 @@ fn the_rest_direction_helper_agrees_with_the_pose_it_summarises() {
              {apart:.4}° apart. The aim would turn the item from a direction it \
              is not actually resting along.",
             def.key
+        );
+    }
+}
+
+// ── The thrust ───────────────────────────────────────────────────────────
+
+/// The melee reach `content/weapons.toml` gives the item behind a held row,
+/// metres — the arm `combat::strike` actually swings for it, read through the
+/// same bake the shard runs rather than off a number typed here.
+///
+/// The row is keyed by icon stem and content by id, so the join is the one
+/// `ui::hold::held_model` makes at runtime: the item whose normalised display
+/// name is the row's key. A thrust row with no melee row behind it is a
+/// picture of a weapon that cannot hit anyone, and that is refused here.
+fn content_reach_m(key: &str) -> f32 {
+    let content = content::Content::load_dir(std::path::Path::new("../../content"))
+        .unwrap_or_else(|e| panic!("content/ does not load: {e}"));
+    let item = content
+        .items
+        .iter()
+        .find(|i| client::ui::icons::stem(&i.name) == key)
+        .unwrap_or_else(|| panic!("no item in content/items.toml answers to held row {key:?}"));
+    let idx = content.item_index(&item.id).expect("an item has an index");
+    let combat = content
+        .bake_combat()
+        .unwrap_or_else(|e| panic!("bake_combat: {e}"));
+    let melee = combat.melee[usize::from(idx)];
+    assert!(
+        melee.damage > 0 && melee.reach_cm > 0,
+        "{key} ({}) is a thrust row and not a melee weapon in content — the \
+         picture would thrust with something that cannot hit anyone",
+        item.id
+    );
+    f32::from(melee.reach_cm) * 0.01
+}
+
+/// The rig at the instant the blow lands, for either stroke.
+fn apex_progress() -> f32 {
+    swing_apex_s() / VIEWMODEL_SWING_S
+}
+
+/// A thrust row's point, in the rig's own frame, under `snap` — the crown of
+/// the model `ahead_m` past the palm along the item's long axis. Rebuilt from
+/// the published parts (`CLAUDE.md`'s naive-rebuild trap): the palm and the
+/// tilt are constants, the rest direction is the row's, and only the snap
+/// comes from the code under test, so a snap that aims anywhere else lands
+/// the point somewhere else here.
+fn point_rig(def: &HeldModelDef, snap: bevy::prelude::Quat) -> bevy::prelude::Vec3 {
+    palm_rig() + tilt() * (snap * item_rest_dir(def)) * def.ahead_m()
+}
+
+#[test]
+fn the_thrust_lands_the_point_on_the_crosshair_at_the_sims_reach() {
+    // **The alignment gate.** The operator's ask (2026-09-05) was two halves —
+    // *"spear needs a thrust animation"* and *"figure if everything lines up
+    // with where u aim"* — and the second half is arithmetic: at the apex the
+    // spear's POINT has to be on the view axis (what the crosshair is drawn
+    // on), at a depth that agrees with the sim's arm. `thrust_snap` claims to
+    // solve for exactly that, and this is the claim checked from outside.
+    //
+    // The depth band is the sim's, not a taste: `combat::strike` lands on a
+    // body whose centre is within the item's `reach_cm` (planar), and a body
+    // is `CAPSULE_RADIUS_M` wide. So a player standing at the spear's exact
+    // reach has skin at `reach − r` and a centre at `reach`; a point inside
+    // `[reach − r, reach + r]` is inside that player. Shallower and the spear
+    // visibly stops short of somebody the sim hits; deeper and it visibly runs
+    // through somebody the sim cannot reach.
+    let (rot, off) = thrust_pose(apex_progress());
+    let rig = rig_transform(rot, off);
+    let r = sim_core::collide::CAPSULE_RADIUS_M;
+    let mut rows = 0;
+    for def in HELD_MODELS.iter().filter(|d| d.stroke == Stroke::Thrust) {
+        rows += 1;
+        let snap = thrust_snap(def, 1.0);
+        // The solve must not have hit its cap: a clamped turn lands the point
+        // beside the axis, which the lateral check below would also catch,
+        // but naming the cap is what tells the next reader which knob moved.
+        let (_, turned) = snap.to_axis_angle();
+        assert!(
+            turned < VIEWMODEL_THRUST_WRIST_MAX - 1e-3,
+            "{}: the thrust's wrist needs {turned:.3} rad and \
+             VIEWMODEL_THRUST_WRIST_MAX is {VIEWMODEL_THRUST_WRIST_MAX} — the \
+             solve is clamped and the point cannot reach the crosshair",
+            def.key
+        );
+
+        let tip = rig.transform_point(point_rig(def, snap));
+        let lateral = tip.x.hypot(tip.y);
+        let depth = -tip.z;
+        let reach = content_reach_m(def.key);
+        println!(
+            "{}: apex point at ({:+.3}, {:+.3}, {:+.3}) view — {:.1} mm off the \
+             view axis, {:.3} m deep against a content reach of {reach:.2} m \
+             (band [{:.2}, {:.2}]); wrist {:.1}°",
+            def.key,
+            tip.x,
+            tip.y,
+            tip.z,
+            lateral * 1000.0,
+            depth,
+            reach - r,
+            reach + r,
+            turned.to_degrees()
+        );
+        assert!(
+            lateral < 0.01,
+            "{}: at the apex the point is {:.1} mm off the view axis — the \
+             thrust does not land where the crosshair is",
+            def.key,
+            lateral * 1000.0
+        );
+        assert!(
+            depth >= reach - r && depth <= reach + r,
+            "{}: the point lands {depth:.3} m down the view axis, outside \
+             [{:.2}, {:.2}] — the body of a player standing at the row's \
+             {reach:.2} m content reach. The picture and combat::strike \
+             disagree about who is in range.",
+            def.key,
+            reach - r,
+            reach + r
+        );
+
+        // And it CONVERGES: the point starts well off the axis, so the stroke
+        // visibly brings it to the crosshair rather than starting there. This
+        // is the assertion that separates a thrust from a spear that is simply
+        // carried pointing at the middle of the screen.
+        let rest = rig_transform(bevy::prelude::Quat::IDENTITY, bevy::prelude::Vec3::ZERO)
+            .transform_point(point_rig(def, bevy::prelude::Quat::IDENTITY));
+        let off_axis_at_rest = rest.x.hypot(rest.y);
+        assert!(
+            off_axis_at_rest > 0.3,
+            "{}: the point rests only {:.2} m off the view axis — there is \
+             nothing for the thrust to bring in",
+            def.key,
+            off_axis_at_rest
+        );
+    }
+    assert!(rows > 0, "no held row thrusts — this gate checked nothing");
+}
+
+#[test]
+fn the_thrust_draws_back_then_extends_and_keeps_the_fist_in_frame() {
+    // The chop's frame gate, for the other stroke, with the thrust's own
+    // floors: a wind-up that is a DRAW (the fist comes toward the eye), a
+    // strike that is an EXTENSION (the fist goes out past rest), the deepest
+    // extension landing at the apex — the instant the sim resolves the blow
+    // and `render::input` plays the cue — and the fist never leaving the
+    // frame, because a thrust does not sweep. The collapsed off-arm has to
+    // stay behind the camera the whole way, exactly as under the chop.
+    let glb = Glb::open(&asset_path(RIG));
+    let clip = client::render::anim::ARMS_HOLD_CLIP;
+    let hold = [VIEWMODEL_HOLD.x, VIEWMODEL_HOLD.y, VIEWMODEL_HOLD.z];
+    let dead_pts: Vec<V3> = steps(&glb, clip)
+        .into_iter()
+        .map(|t| collapsed_off_arm(&glb, clip, t))
+        .collect();
+
+    const N: usize = 120;
+    let rest_depth = -VIEWMODEL_HOLD.z;
+    let (mut draw_depth, mut deepest, mut deepest_at) = (f32::MAX, f32::MIN, 0.0f32);
+    let mut near_dead = f32::MAX;
+    for i in 0..=N {
+        let s = i as f32 / N as f32;
+        let (rot, off) = thrust_pose(s);
+        let rig = rig_transform(rot, off);
+        let place = |p: V3| {
+            let v = rig.transform_point(bevy::math::Vec3::new(p[0], p[1], p[2]));
+            [v.x, v.y, v.z]
+        };
+        let fist = place(hold);
+        let (x, y) = ndc(fist).unwrap_or_else(|| {
+            panic!("the thrust takes the fist to {fist:?} at s={s:.2} — behind the near plane")
+        });
+        assert!(
+            x.abs() <= 1.0 && y.abs() <= 1.0,
+            "the thrust takes the fist to ndc ({x:.2}, {y:.2}) at s={s:.2} — \
+             out of the frame, which a thrust never does"
+        );
+        let depth = -fist[2];
+        let (wind, _) = swing_phases(s);
+        if wind > 0.0 {
+            draw_depth = draw_depth.min(depth);
+        }
+        if depth > deepest {
+            deepest = depth;
+            deepest_at = s;
+        }
+        for p in &dead_pts {
+            let q = place(*p);
+            assert!(
+                !on_screen(q),
+                "{VIEWMODEL_HIDDEN_ARM}'s collapse point is dragged to {q:?} \
+                 at s={s:.2}, which is inside the frame"
+            );
+            near_dead = near_dead.min(q[2]);
+        }
+    }
+    println!(
+        "thrust: fist rests {rest_depth:.3} m out, draws to {draw_depth:.3}, \
+         extends to {deepest:.3} at s={deepest_at:.3} (apex {:.3})",
+        apex_progress()
+    );
+    assert!(
+        rest_depth - draw_depth > 0.08,
+        "the wind-up brings the fist only {:.3} m toward the eye — that is not \
+         a draw, and a push with no draw reads as the spear growing",
+        rest_depth - draw_depth
+    );
+    assert!(
+        deepest - rest_depth > 0.15,
+        "the strike extends the fist only {:.3} m past rest — the arm does \
+         not go out, so it is a wrist flick and not a thrust",
+        deepest - rest_depth
+    );
+    assert!(
+        (deepest_at - apex_progress()).abs() <= 1.0 / N as f32 + 1e-6,
+        "the fist is furthest out at s={deepest_at:.3} and the blow lands at \
+         s={:.3} — the arm and the sim disagree about when the spear arrives",
+        apex_progress()
+    );
+    assert!(
+        near_dead > 1.0,
+        "the thrust brings the collapsed arm to {near_dead:.2} m — it has to \
+         stay well behind the camera for the whole stroke"
+    );
+}
+
+#[test]
+fn a_thrust_row_is_carried_point_forward() {
+    // `thrust_snap` turns the item from where it RESTS to where the point has
+    // to go, under a wrist cap. A row carried upright, or across the body,
+    // asks for a turn the cap refuses and the point lands beside the
+    // crosshair — with the first gate above red, but with a message about a
+    // solve rather than about the table entry that caused it. This names the
+    // entry: a thrust row rests within 60° of straight ahead, and is long
+    // enough past the fist to reach the axis at all.
+    let palm = rig_transform(bevy::prelude::Quat::IDENTITY, bevy::prelude::Vec3::ZERO)
+        .transform_point(palm_rig());
+    for def in HELD_MODELS.iter().filter(|d| d.stroke == Stroke::Thrust) {
+        let ahead = (tilt() * item_rest_dir(def)).angle_between(bevy::prelude::Vec3::NEG_Z);
+        assert!(
+            ahead.to_degrees() < 60.0,
+            "{}: rests {:.1}° off straight ahead — too far for a thrust's wrist \
+             to bring the point round. Lay it forward, or make it a chop.",
+            def.key,
+            ahead.to_degrees()
+        );
+        assert!(
+            def.ahead_m() > palm.x.hypot(palm.y),
+            "{}: only {:.2} m of it lies past the fist and the fist sits \
+             {:.2} m off the view axis — the point cannot reach the axis \
+             however far the wrist turns",
+            def.key,
+            def.ahead_m(),
+            palm.x.hypot(palm.y)
         );
     }
 }

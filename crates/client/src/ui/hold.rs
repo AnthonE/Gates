@@ -291,10 +291,13 @@ pub const HELD_MODELS: [HeldModelDef; 14] = [
     ),
     // **The spear is the reason this table has a fraction at all.** At 1.8 m
     // it is seventeen times the rock's height, and one shared offset put its
-    // butt through the camera. A third back from the point is a carry, not a
-    // thrust; the butt behind the grip leaves the frame at the near plane,
-    // which is what every first-person spear does.
-    HeldModelDef::tool("wooden_spear", "models/held/wooden_spear.glb", 1.800, 0.35),
+    // butt through the camera. The fist a third of the way up from the butt
+    // is a carry — 1.17 m of shaft and point ahead of the hand, 0.63 m behind
+    // it leaving the frame at the near plane, which is what every
+    // first-person spear does. **And it is the only row that thrusts**: the
+    // chop every other row draws swept this point across the frame and
+    // landed it below the horizon, which is the wrong verb for a spear.
+    HeldModelDef::thrust("wooden_spear", "models/held/wooden_spear.glb", 1.800, 0.35),
     // A bow is held at the riser, dead centre between the limbs — and held
     // UPRIGHT, which is what a bow looks like in a hand and what laying it
     // flat never did. Drawn at 0.8: a viewmodel's scale cheat, so the top
@@ -325,6 +328,7 @@ pub const HELD_MODELS: [HeldModelDef; 14] = [
         scale: 1.0,
         lay: 0.0,
         pose_yaw: 0.0,
+        stroke: Stroke::Chop,
         light: Some(TORCH_LIGHT),
     },
     // A revolver is authored barrel-up so the shared quarter-turn points it
@@ -337,6 +341,7 @@ pub const HELD_MODELS: [HeldModelDef; 14] = [
         scale: 1.0,
         lay: core::f32::consts::FRAC_PI_2,
         pose_yaw: -0.65,
+        stroke: Stroke::Chop,
         light: None,
     },
     // The deployables, palmed level. `height_m` restates each FILE's +Y
@@ -379,6 +384,36 @@ pub const HELD_MODELS: [HeldModelDef; 14] = [
 pub const HAFTED_LAY: f32 = 0.960;
 /// See [`HAFTED_LAY`].
 pub const HAFTED_YAW: f32 = -0.663;
+
+/// How a held row is SWUNG — the stroke `render::viewmodel::animate` draws
+/// when the primary button goes down.
+///
+/// A property of the item and not of the swing, and it lives here for the
+/// module header's reason: the pose is arithmetic that can be silently wrong,
+/// and so is this. A spear drawn with the hatchet's chop is not a bit off, it
+/// is the wrong verb — the point sweeps across the frame and lands below the
+/// horizon, where a thrust drives it down the view axis at whatever the
+/// crosshair is on (operator, 2026-09-05: *"spear needs a thrust animation"*).
+///
+/// **The sim knows nothing of this and must not.** `gather::swing` and
+/// `combat::strike` resolve every melee item on one planar cone at one reach,
+/// so a chop and a thrust are the same tick to the server; this only says
+/// where the picture goes. What the picture owes the sim is the other half of
+/// the same request — *"figure if everything lines up with where u aim"* — and
+/// that is a gate rather than a field: `tests/viewmodel_arms.rs` holds a
+/// thrust row's point on the view axis at the apex, at a depth inside the body
+/// of a player standing at the row's content reach.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Stroke {
+    /// Cocked out to the right, swept down and across — a hatchet, a rock, a
+    /// hammer, and every row that has not said otherwise.
+    /// `render::viewmodel::swing_pose`.
+    Chop,
+    /// Drawn back, then driven forward along the view axis with the point
+    /// converging on the crosshair — a spear. `render::viewmodel::thrust_pose`
+    /// for the arm and `thrust_snap` for the wrist.
+    Thrust,
+}
 
 /// One held model: the item it answers to, its geometry source, and how the
 /// hand carries it.
@@ -446,6 +481,9 @@ pub struct HeldModelDef {
     /// shows its PROFILE — seen from dead behind, a gun is a stack of
     /// blocks, and the L-shape is the whole read.
     pub pose_yaw: f32,
+    /// How this row is swung. See [`Stroke`] — one row is a thrust and the
+    /// rest chop, and a row that says nothing chops.
+    pub stroke: Stroke,
     /// What this item puts into the world when it is in the hand, or `None`
     /// for the twelve rows that put nothing. See [`HeldLight`].
     pub light: Option<HeldLight>,
@@ -556,6 +594,25 @@ impl HeldModelDef {
             scale: 1.0,
             lay: core::f32::consts::FRAC_PI_2,
             pose_yaw: 0.0,
+            stroke: Stroke::Chop,
+            light: None,
+        }
+    }
+
+    /// A thrusting weapon: carried exactly as a [`tool`](Self::tool) — full
+    /// scale, laid forward, point away from the eye — and swung as a
+    /// [`Stroke::Thrust`]. The carry is the same because the stroke is not
+    /// what a resting spear looks like; it is what a swung one does.
+    const fn thrust(key: &'static str, path: &'static str, height_m: f32, grip_frac: f32) -> Self {
+        Self {
+            key,
+            src: HeldSrc::Glb(path),
+            height_m,
+            grip_frac,
+            scale: 1.0,
+            lay: core::f32::consts::FRAC_PI_2,
+            pose_yaw: 0.0,
+            stroke: Stroke::Thrust,
             light: None,
         }
     }
@@ -586,6 +643,7 @@ impl HeldModelDef {
             scale,
             lay: HAFTED_LAY,
             pose_yaw: HAFTED_YAW,
+            stroke: Stroke::Chop,
             light: None,
         }
     }
@@ -606,6 +664,7 @@ impl HeldModelDef {
             scale,
             lay: 0.0,
             pose_yaw: 0.0,
+            stroke: Stroke::Chop,
             light: None,
         }
     }
@@ -619,6 +678,15 @@ impl HeldModelDef {
     /// tautology and it is the whole bug fix — see the field.
     pub fn grip_m(&self) -> f32 {
         self.height_m * self.scale * self.grip_frac
+    }
+
+    /// How much of the model lies BEYOND the fist along its own +Y, metres —
+    /// the crown side, which for a laid-forward row is the end pointing away
+    /// from the eye. A spear's point is this far past the hand, and it is the
+    /// length `render::viewmodel::thrust_snap` has to land on the view axis;
+    /// `grip_m` and this sum to the model's whole drawn height.
+    pub fn ahead_m(&self) -> f32 {
+        self.height_m * self.scale - self.grip_m()
     }
 
     /// How far above the fist this row's light sits, metres — the crown of

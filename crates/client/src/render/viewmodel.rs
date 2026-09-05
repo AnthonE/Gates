@@ -22,7 +22,9 @@
 //!     mouse moves.
 //!   · **Swing** — did I just do something? Driven by the client's mirror of
 //!     the sim's own swing cadence ([`crate::ui::swing`]), with [`Feed`] as a
-//!     backstop.
+//!     backstop. **Its shape is the row's** ([`Stroke`]): a hatchet chops
+//!     ([`swing_pose`]) and a spear thrusts ([`thrust_pose`]), on one clock,
+//!     so the blow lands at one instant whichever it is.
 //!
 //! ### The swing trigger moved, and why
 //!
@@ -68,6 +70,7 @@ use super::rig::EyeCam;
 use super::textures::PropMaps;
 use super::Eye;
 use super::Net;
+use crate::ui::hold::{held_model_in_hand, HeldModelDef, Stroke, HELD_MODELS};
 
 /// Where the item sits in view space, metres. Low and to the right — the
 /// reference frames all show the held item entering from the lower right and
@@ -248,6 +251,58 @@ pub const VIEWMODEL_SWING_AIM: Vec3 = Vec3::new(0.0, -0.6442, -0.7648);
 /// need the ARM to make up the rest, and the arm cannot (see [`swing_pose`]).
 pub const VIEWMODEL_SWING_WRIST_MAX: f32 = 1.45;
 
+/// How far the thrust's wind-up cocks the rig out to the right, radians — a
+/// yaw about [`VIEWMODEL_SWING_PIVOT`]. **(knob)** — `DECISIONS.md` §open,
+/// "viewmodel thrust v0", together with the six that follow.
+///
+/// The thrust is [`swing_pose`]'s shape with a different path: the same
+/// wind-up/strike split on the same clock, so [`swing_apex_s`] is one instant
+/// for both strokes and everything timed against it (the cue, the remote
+/// body's clip) stays timed. What differs is that a chop turns about the
+/// shoulder and sweeps, where a thrust mostly TRANSLATES — back, then forward
+/// — and the rotations here are small and in service of the line: the fist
+/// cocks out and lifts on the draw, then turns in as the arm goes out.
+pub const VIEWMODEL_THRUST_COCK: f32 = 0.12;
+/// How far the wind-up pitches the rig up, radians: the point lifts as the
+/// spear is drawn back, the way a spear is actually cocked.
+pub const VIEWMODEL_THRUST_LIFT: f32 = 0.18;
+/// How far the strike yaws the rig INWARD, radians — toward the view axis,
+/// which is where a fist goes when the arm extends across the chest. About
+/// the shoulder pivot this also carries the fist forward, so it is part of
+/// the extension as well as of the line.
+pub const VIEWMODEL_THRUST_TURN: f32 = 0.18;
+/// How far the strike pitches the rig up, radians. Small on purpose: the
+/// point's climb to the crosshair is the wrist's job ([`thrust_snap`]), and
+/// this only stops the fist dropping as the arm goes out.
+pub const VIEWMODEL_THRUST_RISE: f32 = 0.08;
+/// Where the wind-up displaces the whole rig, metres: back toward the eye, a
+/// little up and out. The draw — 14 cm of it, which is what makes the push
+/// read as a push rather than as the item growing.
+pub const VIEWMODEL_THRUST_DRAW: Vec3 = Vec3::new(0.03, 0.02, 0.14);
+/// Where the strike displaces the whole rig, metres: forward, inward and up.
+/// The Z term is the extension — how far the arm goes out past rest — and
+/// with [`VIEWMODEL_THRUST_TURN`]'s share it is about 0.21 m at the apex.
+///
+/// **Sized against the sim's arm and not against a frame.** The point lands
+/// where [`thrust_snap`] puts it, and how DEEP that is follows from this push
+/// and the row's length: for the spear, ~1.99 m down the view axis, which is
+/// the centre of a body standing at the spear's 2 m content reach. Push
+/// further and the picture stabs people the sim cannot reach; push less and
+/// the arm does not extend. `tests/viewmodel_arms.rs` holds the depth inside
+/// that body, ± its capsule radius.
+pub const VIEWMODEL_THRUST_PUSH: Vec3 = Vec3::new(-0.04, 0.06, -0.16);
+/// The most the thrust's wrist may turn the item, radians. **(knob)**
+///
+/// Where the chop's [`VIEWMODEL_SWING_WRIST_MAX`] caps an aim every row
+/// shares, this caps a SOLVE: [`thrust_snap`] computes the exact turn that
+/// puts the row's point on the view axis, and for the spear that is 0.50 rad.
+/// The cap is for a row that asks more than a wrist can give — something
+/// short carried across the body — and it is a clamp rather than a refusal,
+/// so the arithmetic stays finite; the refusal is the gate's, which reads the
+/// point's lateral miss and goes red on a clamped row rather than letting the
+/// spear land beside the crosshair with nothing red anywhere.
+pub const VIEWMODEL_THRUST_WRIST_MAX: f32 = 0.70;
+
 /// Where the item sits in the **`RightHand` bone's own frame**, once
 /// [`dress_arms`] has hung it there.
 ///
@@ -340,12 +395,7 @@ pub fn item_pose(in_hand: bool, snap: Quat) -> Transform {
             VIEWMODEL_GRIP_SCALE * (VIEWMODEL_GRIP_Q * (VIEWMODEL_PALM - snap * VIEWMODEL_PALM));
         t
     } else {
-        let rest = Quat::from_euler(
-            EulerRot::YXZ,
-            VIEWMODEL_TILT.x,
-            VIEWMODEL_TILT.y,
-            VIEWMODEL_TILT.z,
-        );
+        let rest = tilt();
         Transform {
             // The same correction, in the frame this branch lives in: here the
             // item hangs off the camera at scale 1, so the palm offset needs no
@@ -373,15 +423,101 @@ pub fn item_pose(in_hand: bool, snap: Quat) -> Transform {
 /// is reachable from `ui::hold`'s table with no code change at all — so the
 /// margin is gated too.
 pub fn aim_snap(rest: Vec3, strike: f32) -> Quat {
-    let u = rest.normalize_or(Vec3::NEG_Z);
-    let v = VIEWMODEL_SWING_AIM.normalize();
+    turn_toward(rest, VIEWMODEL_SWING_AIM, VIEWMODEL_SWING_WRIST_MAX, strike)
+}
+
+/// The turn that carries `from` toward `to`, capped at `cap` radians and
+/// scaled by `strike` — the one wrist both strokes share. See [`aim_snap`]
+/// for why the axis is a cross product with a named fallback.
+fn turn_toward(from: Vec3, to: Vec3, cap: f32, strike: f32) -> Quat {
+    let u = from.normalize_or(Vec3::NEG_Z);
+    let v = to.normalize_or(Vec3::NEG_Z);
     let axis = u.cross(v).try_normalize().unwrap_or(Vec3::NEG_X);
-    let turn = u
-        .dot(v)
-        .clamp(-1.0, 1.0)
-        .acos()
-        .min(VIEWMODEL_SWING_WRIST_MAX);
+    let turn = u.dot(v).clamp(-1.0, 1.0).acos().min(cap);
     Quat::from_axis_angle(axis, turn * strike)
+}
+
+/// The item's resting orientation in view space — [`VIEWMODEL_TILT`] as one
+/// rotation. Every hold-frame direction in this file is expressed under it,
+/// and `tests/viewmodel_arms.rs` re-derives the grip against it.
+pub fn tilt() -> Quat {
+    Quat::from_euler(
+        EulerRot::YXZ,
+        VIEWMODEL_TILT.x,
+        VIEWMODEL_TILT.y,
+        VIEWMODEL_TILT.z,
+    )
+}
+
+/// Where the fist closes, in the rig's own frame at rest: the wrist at
+/// [`VIEWMODEL_HOLD`] plus the palm correction turned into view space. The
+/// point the wrist snap turns about, and the point a thrust measures from.
+pub fn palm_rig() -> Vec3 {
+    VIEWMODEL_HOLD + tilt() * VIEWMODEL_PALM
+}
+
+/// The thrust's wrist for a row, at strike progress `strike` ∈ 0..1: the turn
+/// about the palm that puts the row's POINT on the view axis at the apex.
+///
+/// ## Solved, not tuned
+///
+/// At the apex the rig is at [`thrust_pose`] of [`swing_apex_s`], which fixes
+/// where the palm is in view space; the row fixes how far past the palm its
+/// point lies ([`HeldModelDef::ahead_m`]). A point that far from the palm
+/// meets the view axis at exactly one depth in front of the eye —
+/// `D = −palm.z + √(ahead² − palm.x² − palm.y²)` — and the direction from the
+/// palm to `(0, 0, −D)` is the direction the item's long axis has to take.
+/// Brought back into the hold frame through the apex rotation and the tilt,
+/// that is a target for the same cross-product turn [`aim_snap`] uses, capped
+/// by [`VIEWMODEL_THRUST_WRIST_MAX`] and scaled by `strike` on the way in and
+/// out, so the point arrives on the crosshair exactly when the blow lands and
+/// nowhere else.
+///
+/// So the number that matters — the depth the point lands at — is a
+/// consequence of the carry and of the reach the pose buys, not a dial, and
+/// `tests/viewmodel_arms.rs` holds it against the sim's own arm: the point at
+/// the apex sits inside the body of a player standing at the row's content
+/// reach (`combat::strike`'s `reach_cm`, ± `collide::CAPSULE_RADIUS_M`). That
+/// is what *"lines up with where you aim"* means in this repo, and it is the
+/// half a pixel gate could never have seen.
+///
+/// **What it deliberately cannot fix**: the sim aims in yaw alone
+/// (`gather::CONE_COS`, `DY_MAX_M`), so a thrust drawn at the ground still
+/// lands on a body in front of you. The picture follows the camera's pitch
+/// because the camera is what the player is aiming with; the sim's planar
+/// cone is a spoken v0 decision (`DECISIONS.md`, gather verb v0) and not this
+/// module's to overrule.
+///
+/// A row too short to reach the axis from where the palm sits — `ahead²`
+/// under the palm's lateral offset squared — aims straight down −Z instead,
+/// which is a defined answer and a red gate rather than a NaN in a transform.
+pub fn thrust_snap(def: &HeldModelDef, strike: f32) -> Quat {
+    let apex = swing_apex_s() / VIEWMODEL_SWING_S;
+    let (rot, off) = thrust_pose(apex);
+    let palm = rig_transform(rot, off).transform_point(palm_rig());
+    let ahead = def.ahead_m();
+    let lat2 = palm.x * palm.x + palm.y * palm.y;
+    let want_view = if ahead * ahead > lat2 {
+        let depth = -palm.z + (ahead * ahead - lat2).sqrt();
+        (Vec3::new(0.0, 0.0, -depth) - palm) / ahead
+    } else {
+        Vec3::NEG_Z
+    };
+    let want = tilt().inverse() * (rot.inverse() * want_view);
+    turn_toward(item_rest_dir(def), want, VIEWMODEL_THRUST_WRIST_MAX, strike)
+}
+
+/// The wrist for whatever is in hand: [`thrust_snap`] for a thrust row,
+/// [`aim_snap`] for a chop, and the laid-forward chop for an empty fist or a
+/// capture run with no session — `NEG_Z` is the direction a laid tool rests
+/// along, so an empty hand swings exactly as everything swung before rows
+/// carried a stroke.
+pub fn stroke_snap(def: Option<&HeldModelDef>, strike: f32) -> Quat {
+    match def {
+        Some(d) if d.stroke == Stroke::Thrust => thrust_snap(d, strike),
+        Some(d) => aim_snap(item_rest_dir(d), strike),
+        None => aim_snap(Vec3::NEG_Z, strike),
+    }
 }
 
 /// An item's long axis at rest, in the hold frame — what [`aim_snap`] aims.
@@ -460,12 +596,7 @@ pub fn bump(u: f32, attack: f32) -> f32 {
 /// y −2.36 at the strike, because it is authored for a body seen from
 /// outside. See [`VIEWMODEL_SWING_PIVOT`].
 pub fn swing_pose(s: f32) -> (Quat, Vec3) {
-    let w = VIEWMODEL_SWING_WINDUP;
-    let (wind, strike) = if s < w {
-        (bump(s / w, 0.5), 0.0)
-    } else {
-        (0.0, bump((s - w) / (1.0 - w), VIEWMODEL_SWING_ATTACK))
-    };
+    let (wind, strike) = swing_phases(s);
     // Yaw and roll move together — one diagonal, cocked out to the right and
     // swept down across to the left — so they share a coefficient.
     let turn = -VIEWMODEL_SWING_COCK * wind + VIEWMODEL_SWING_SWEEP * strike;
@@ -479,6 +610,51 @@ pub fn swing_pose(s: f32) -> (Quat, Vec3) {
         rot,
         VIEWMODEL_SWING_DRAW * wind + VIEWMODEL_SWING_THROW * strike,
     )
+}
+
+/// The two pulses of a stroke at progress `s` ∈ [0, 1]: `(wind, strike)`,
+/// each 0..1 and never both nonzero. One function for both strokes and for
+/// the wrist, so the arm and the item cannot disagree about when the blow
+/// lands — which is also what keeps [`swing_apex_s`] true of a thrust.
+pub fn swing_phases(s: f32) -> (f32, f32) {
+    let w = VIEWMODEL_SWING_WINDUP;
+    if s < w {
+        (bump(s / w, 0.5), 0.0)
+    } else {
+        (0.0, bump((s - w) / (1.0 - w), VIEWMODEL_SWING_ATTACK))
+    }
+}
+
+/// The rig's rotation and displacement at thrust progress `s` ∈ [0, 1] —
+/// [`swing_pose`]'s twin for a [`Stroke::Thrust`] row, on the same clock.
+///
+/// Same wind-up split, same attack fraction, same [`VIEWMODEL_SWING_S`], so
+/// the apex is the chop's apex. What differs is the path: the chop turns
+/// about the shoulder and sweeps, this draws the whole assembly back toward
+/// the eye and then drives it forward, inward and slightly up. The point's
+/// own convergence on the crosshair is not here — it is the wrist,
+/// [`thrust_snap`] — because it depends on the row's length and this does
+/// not. Published for the same reason [`swing_pose`] is: the gate walks it.
+pub fn thrust_pose(s: f32) -> (Quat, Vec3) {
+    let (wind, strike) = swing_phases(s);
+    let rot = Quat::from_euler(
+        EulerRot::YXZ,
+        -VIEWMODEL_THRUST_COCK * wind + VIEWMODEL_THRUST_TURN * strike,
+        VIEWMODEL_THRUST_LIFT * wind + VIEWMODEL_THRUST_RISE * strike,
+        0.0,
+    );
+    (
+        rot,
+        VIEWMODEL_THRUST_DRAW * wind + VIEWMODEL_THRUST_PUSH * strike,
+    )
+}
+
+/// [`swing_pose`] or [`thrust_pose`], by the row.
+pub fn stroke_pose(stroke: Stroke, s: f32) -> (Quat, Vec3) {
+    match stroke {
+        Stroke::Chop => swing_pose(s),
+        Stroke::Thrust => thrust_pose(s),
+    }
 }
 
 /// When in the stroke the blow lands, seconds from its start.
@@ -1447,7 +1623,22 @@ pub fn animate(
     // and the tool head waggling on a stationary fist — the operator's
     // *"hardly anything moves"* (2026-08-30) was the second of those.
     let s = 1.0 - m.swing;
-    let (arc, throw) = swing_pose(s);
+    // Which way the tool is carried and how it is swung are both the row's,
+    // so the row is resolved once here for the arm and the wrist together.
+    // Resolved the way `swap` and `hand_light` resolve it —
+    // `held_model_in_hand` is a pure lookup over the catalog and the
+    // inventory mirror, and `hand_light`'s doc is the standing argument that
+    // a second reader of a pure function is two calls and not the
+    // second-drain defect `feed.rs` narrates.
+    //
+    // `None` is an empty hand, or a capture run with no session at all, and
+    // it chops: `stroke_snap` says why that is the historic swing and not an
+    // arbitrary default.
+    let def: Option<&'static HeldModelDef> = net
+        .as_deref()
+        .and_then(|n| held_model_in_hand(&n.session.core.catalog, &n.session.core.inv, n.sel))
+        .map(|i| &HELD_MODELS[i]);
+    let (arc, throw) = stroke_pose(def.map_or(Stroke::Chop, |d| d.stroke), s);
     // The sway rides OUTSIDE the swing, so a turn taken mid-stroke lags the
     // whole assembly rather than bending the stroke.
     let lag = Quat::from_euler(EulerRot::YXZ, m.sway.x, m.sway.y, 0.0);
@@ -1466,38 +1657,8 @@ pub fn animate(
     // CHILDREN (the model and the emitter), not the item, so the three
     // systems own one entity each and need no order between them.
     if let Ok((mut it, in_hand)) = item.single_mut() {
-        let strike = if s < VIEWMODEL_SWING_WINDUP {
-            0.0
-        } else {
-            bump(
-                (s - VIEWMODEL_SWING_WINDUP) / (1.0 - VIEWMODEL_SWING_WINDUP),
-                VIEWMODEL_SWING_ATTACK,
-            )
-        };
-        // Which way the tool is carried decides where the strike has to turn
-        // it, so the aim needs the row. Resolved the way `swap` and
-        // `hand_light` resolve it — `held_model_in_hand` is a pure lookup over
-        // the catalog and the inventory mirror, and `hand_light`'s doc is the
-        // standing argument that a second reader of a pure function is two
-        // calls and not the second-drain defect `feed.rs` narrates.
-        //
-        // `None` is an empty hand, or a capture run with no session at all.
-        // Falling back to −Z is not an arbitrary default: it is the direction a
-        // laid-forward tool rests along, so an empty fist swings exactly as
-        // everything swung before this changed.
-        let rest = net
-            .as_deref()
-            .and_then(|n| {
-                crate::ui::hold::held_model_in_hand(
-                    &n.session.core.catalog,
-                    &n.session.core.inv,
-                    n.sel,
-                )
-            })
-            .map_or(Vec3::NEG_Z, |i| {
-                item_rest_dir(&crate::ui::hold::HELD_MODELS[i])
-            });
-        *it = item_pose(in_hand, aim_snap(rest, strike));
+        let (_, strike) = swing_phases(s);
+        *it = item_pose(in_hand, stroke_snap(def, strike));
     }
 }
 

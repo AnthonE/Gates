@@ -274,6 +274,25 @@ thing the probe cannot photograph:
    one or two frames and never land on a shot. `./ci/scene.sh --play` on a
    box with a GPU is the only way to see either.
 
+4. ⚠ **The spear thrusts now, and only the arithmetic has been checked**
+   (operator, 2026-09-05: *"spear needs a thrust animation and we need to
+   figure if everything lines up with where u aim"* — `DECISIONS.md`
+   2026-09-05 has the account). `HeldModelDef::stroke` picks the stroke,
+   `viewmodel::thrust_pose` draws the arm and `thrust_snap` SOLVES the wrist
+   so the point lands on the view axis at the apex, 1.99 m out — inside a
+   body standing at the spear's 2 m content reach, gated against the real
+   bake. Three alignment facts stand as they were and are now written down:
+   yaw agrees end to end (`tests/look.rs`), the sim's cone is planar so pitch
+   never mattered (gather verb v0 — the sim's 2 m is centre-to-centre, 1.6 m
+   to skin), and free look sends the body's yaw while the picture follows
+   the head. **What is owed is a look**, item 3's reason: whether 15.6 cm
+   of draw and 20.8 cm of extension (the gate's numbers, off the fist) read
+   as a thrust or a twitch is a frame question.
+   A remote spear still plays `Sword_Attack`, measured: the rig has no
+   right-handed thrust (`Punch_Jab` is the left hand, `Punch_Cross` clips the
+   head). The metal spear has no model and draws the stand-in's chop until
+   `§0hand` item 1 lands it a row, which is one `thrust()` line.
+
 ⚠ **Seen once and not chased**: in the first run's `7-player.png` two remote
 bodies read as near-black silhouettes against lit ground, where the second
 run's read as ordinary brown. Different frames, different distances; it may
@@ -1708,7 +1727,11 @@ is §0win's, not this item's.
    needs a fact on the wire. Crouch is an input bit the sim ignores
    (`render/input.rs:289`) and never reaches a snapshot.
 2. **The gather swing is `Sword_Attack`** (operator, 2026-08-17): no asset is
-   owed, and the blocker is item 1.
+   owed, and the blocker is item 1. **A remote spear plays it too**, and that
+   is measured rather than lazy (2026-09-05): the rig has no right-handed
+   thrust — `Punch_Jab` leads with the LEFT hand (0.51 m forward) and
+   `Punch_Cross` brings the right to 0.159 m of the head, the clip the
+   operator rejected on sight. A thrust for other players is an asset ask.
 3. ✅ ~~**The item is not parented to the hand**~~ — **stale, landed
    2026-08-30**: `dress_arms` does `.insert((ChildOf(hand), InHand,
    item_pose(true, 0.0)))` and `VIEWMODEL_GRIP_M`/`_Q` are the re-derived
