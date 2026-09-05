@@ -439,6 +439,18 @@ triangles sit, use the two logs on a twig foundation as a height reference for
 floor stacking, use the compass tics to turn 90 or 120 degrees. A game with a
 freehand *button* would need none of that.
 
+**Read whole 2026-09-05** — the operator pasted Evil Wurst's transcript
+(Corrosion Hour, April 2020), so this paragraph's summary is now checked
+against the page. It holds, and the page is blunter than the summary: *"you
+can change the elevation of foundations freely"*, *"the standard controls do
+not allow precise movement and rotation"*, and the two "hacks" it offers are
+*"lower the sensitivity of your mouse"* and *"equip flippers or any other
+piece of attire that slows down the movement speed of your avatar"*. The
+foolproof version is a jig built out of pieces — a row of five triangles with
+the middle three destroyed, twig walls on the survivors, then *"find the
+position where it's still blue but gets stuck between the walls"*. Nothing in
+it is an input; all of it is a player working around the absence of one.
+
 The corollary is the half worth carrying: **a wall still cannot go anywhere.**
 You cannot place one in mid-air; it must take a socket. So freehand there is a
 foundation-and-floor technique, not a general licence, and the socket rule is
@@ -489,10 +501,18 @@ you look at its uphill side. Two tier-3 guides say this from opposite ends.
 Corrosion Hour's flat-spots guide teaches finding buildable ground by
 placing *"a low foundation, followed by a medium foundation, and high
 foundation"* and reading *"the terrain line against the foundation
-silhouette edge"* (search summary); its freehand guide teaches the height
-control for stacked floors by eye, off the twig foundation's logs (§7c.3).
-And a Rust feedback-board thread titled *"Key binding to adjust the height
-of foundations before placing them?"* (rust.nolt.io/21165, 403 to a direct
+silhouette edge"* (search summary). Its freehand guide — **read whole,
+operator-pasted 2026-09-05** — teaches the height control for stacked floors
+by eye and names no key anywhere: *"One of the key features of freehand
+placement of foundations is that you can slightly alter the height of the
+adjacent foundations, which allows you to stack floors"*, and the reading is
+off the twig foundation's two logs — *"As a rule of thumb, you want the big
+log to be at least as high as the small log. This way you can get two floor
+tiles incredibly close to each other."* A height read off a drawn log against
+another drawn log is a height set by where you stand and look, and the guide
+spends its next three sections on jigs that hold the player still. And a
+Rust feedback-board thread titled *"Key binding to adjust the height of
+foundations before placing them?"* (rust.nolt.io/21165, 403 to a direct
 fetch; the summary describes a click-and-hold-to-set-height proposal) is the
 players saying the aim alone is not enough on flat ground — which is
 precisely what the aim cannot do: on a flat cell every point is the same
@@ -522,6 +542,16 @@ year earlier, is the version they replaced: conditional models *"do physics
 checks to determine their state, which is slow and unreliable and is
 therefore only done on the client"*, *"are slow to render and therefore only
 spawn very close to the camera"*, and *"cannot change building colliders."*
+
+The freehand guide (read whole, §7d.2) shows the same join from the
+player's side, with a hammer out: *"learn where the poles of those triangles
+are. As you can see they overlap substantially with the adjacent foundations.
+Wherewith squares the overlap is less pronounced. Their poles are overlapped
+partially. This overlap is what you're trying to recreate if you want the
+walls to actually connect."* Their connected pieces are not inset from each
+other; the join is corner geometry that OVERLAPS, which the conditional
+corner piece exists to draw once — and which our one owned post per corner
+expresses on a grid where the overlap is exact rather than approximate.
 
 The pattern: a block's drawn parts depend on its neighbours, the decision is
 made from the building's own connectivity rather than a physics probe, and
@@ -581,7 +611,11 @@ Rustafied's Building 3.0 write-up again (the ceiling-tile socket sentence).
 Tier 3 for §7d, **via search summary**: Corrosion Hour's flat-spots guide
 (low/medium/high foundations, the silhouette against the terrain line) and
 the rust.nolt.io feedback thread asking for a foundation height key (a
-direct fetch answered 403).
+direct fetch answered 403). Tier 3 for §7c.3 and §7d, **read whole**:
+Corrosion Hour's foundation freehand placement guide — Evil Wurst's video
+transcript, April 2020, crediting budsatawny, Cohen, Rula Novelis, Salty and
+Viceless Gaming — pasted in full by the operator on 2026-09-05, which is how
+a page this box's fetch could not read arrived anyway.
 
 Tier 3 (community wikis, guides and decay calculators, **via search
 summary**): the 10-player list cap, the `E`/hold-`E` interaction, the 24
@@ -811,3 +845,21 @@ and the fixes were a day's.
     faces share a plane over an area nothing hides — and proved its
     checker on a mutant the day it was written, when a first draft that
     widened the skirts failed it at every corner of the base.
+24. **Their connection is geometric and ours is addressed, so an offset
+    DISCONNECTS there and not here** (§7c.3 and §7d.3, read whole). The
+    freehand guide's third application is bunkers: *"free-hand placement
+    allows to disconnect the sockets of building blocks. A height offset
+    floor tile would not receive stability from a neighboring wall"* — and
+    its multi-TC bases are foundations placed *"a little bit more space"*
+    apart *"so that the walls do not register as connected"*, with *"up to
+    your placement whether the offset foundations are kept by the central or
+    external TC"*. Ours cannot express any of that: `build::supported` and
+    `claim::reach` walk ADDRESSES and never read the plate, so a freehand
+    foundation a band below a base still bears the wall between them (the
+    band-boundary wall, `NOW.md` §0bl item 1) and still joins the base's
+    claim walk. Two honest readings and it is the operator's call: keep ours
+    (a base is one base whatever its plates, simpler and raid-honest), or
+    make a plate step a disconnect — their expressiveness, at the price of
+    a second support rule and a claim walk that reads plates, and with the
+    band-boundary slit becoming the visible edge of a designed seam rather
+    than a defect. Not built; `NOW.md` §0bl item 9 carries it.

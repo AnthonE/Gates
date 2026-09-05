@@ -1029,6 +1029,12 @@ the three rows; `client/tests/gaps.rs` and `storey.rs` are the gates.
    aimed band stepping half a metre as the crosshair sweeps a sloped cell
    (foundation height v0). The HUD's `+0.5 m` and `(R/F height)` hint are
    the only teaching there is.
+9. **Operator: should a plate step disconnect?** In the reference a
+   height-offset piece takes no stability from its neighbour and an offset
+   foundation is a separate building, which is what their bunkers and
+   multi-TC bases are made of; ours walks addresses and never reads the
+   plate, so a freehand plate is still one base (`reference/BUILDING.md`
+   §9 item 24). A word, not a measurement.
 
 
 ## 0ac · The catalogue's inserts, the soft face's look, and the diagonal price *(systems lane)*
