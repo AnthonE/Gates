@@ -48,10 +48,46 @@ fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
 /// Arbitrary fixed seed; the tests derive everything else from it.
 const SEED: u64 = 20_260_731;
 
-/// A gatherable slot, the walkable point 1.2 m west of it, and the yaw
+/// Where the swinger looks: the wire's yaw and pitch. Since melee aim v1
+/// (2026-09-05) a swing is a ray from the eye, so a fixture that stands at
+/// a node also has to look AT it — `find_isolated` and `stand_at_bearing`
+/// hand one of these out, aimed [`AIM_UP_M`] up the slot.
+#[derive(Clone, Copy, Debug)]
+struct Aim {
+    yaw: u16,
+    pitch: u8,
+}
+
+/// How far up a node the fixtures aim, metres above the slot's base — inside
+/// every gatherable's swing volume, the barrel's 0.79 m top at scale 0.9
+/// being the lowest.
+const AIM_UP_M: f32 = 0.7;
+/// The eye above the feet, `ranged::ARROW_EYE_MM` in metres — the origin
+/// the swing's ray leaves from.
+const EYE_M: f32 = sim_core::ranged::ARROW_EYE_MM as f32 / 1000.0;
+
+/// The pitch byte pointing closest along `(run, rise)`: a scan of the sim's
+/// own 256-entry LUT, because the crate's clippy walls bind this suite too
+/// and there is no `atan2` to be had.
+fn pitch_toward(rise: f32, run: f32) -> u8 {
+    let len = (rise * rise + run * run).sqrt();
+    let mut best = 128u8;
+    let mut best_dot = f32::MIN;
+    for b in 0..=255u8 {
+        let (ch, sv) = sim_core::pitch_dir(b);
+        let dot = (ch * run + sv * rise) / len;
+        if dot > best_dot {
+            best_dot = dot;
+            best = b;
+        }
+    }
+    best
+}
+
+/// A gatherable slot, the walkable point 1.2 m west of it, and the aim
 /// (of 256 headings) that best faces it. Panics if the seed offers no
 /// sufficiently isolated node — that is a test-setup failure, not a skip.
-fn find_isolated(seed: u64, want: Occupant) -> ((f32, f32), u16, (i32, i32)) {
+fn find_isolated(seed: u64, want: Occupant) -> ((f32, f32), Aim, (i32, i32)) {
     let table = ScatterTable::alpha_default();
     let haven = terrain::haven(seed);
     for cz in 40..216i32 {
@@ -97,20 +133,29 @@ fn find_isolated(seed: u64, want: Occupant) -> ((f32, f32), u16, (i32, i32)) {
                     best_yaw = yaw;
                 }
             }
-            return ((px, pz), best_yaw, (cx, cz));
+            // Down at the node from the eye: the ray has to enter it.
+            let pitch = pitch_toward(s.y + AIM_UP_M - (py + EYE_M), 1.2);
+            return (
+                (px, pz),
+                Aim {
+                    yaw: best_yaw,
+                    pitch,
+                },
+                (cx, cz),
+            );
         }
     }
     panic!("seed {seed:#x} offered no isolated {want:?} in the scanned block");
 }
 
-fn hold_primary(yaw: u16, seq: u16) -> Command {
+fn hold_primary(aim: Aim, seq: u16) -> Command {
     Command::Input {
         id: 1,
         frame: sim_core::input::InputFrame {
             seq,
             buttons: BTN_PRIMARY,
-            yaw,
-            pitch: 0,
+            yaw: aim.yaw,
+            pitch: aim.pitch,
             move_x: 0,
             move_z: 0,
             sel: 0,
@@ -119,14 +164,14 @@ fn hold_primary(yaw: u16, seq: u16) -> Command {
     }
 }
 
-fn stand_still(yaw: u16, seq: u16) -> Command {
+fn stand_still(aim: Aim, seq: u16) -> Command {
     Command::Input {
         id: 1,
         frame: sim_core::input::InputFrame {
             seq,
             buttons: 0,
-            yaw,
-            pitch: 0,
+            yaw: aim.yaw,
+            pitch: aim.pitch,
             move_x: 0,
             move_z: 0,
             sel: 0,
@@ -354,7 +399,10 @@ fn tool_in_slot0_outyields_hand() {
 #[test]
 fn cone_refuses_a_node_behind_you() {
     let (pos, yaw, (cx, cz)) = find_isolated(SEED, Occupant::Tree);
-    let away = yaw.wrapping_add(0x8000);
+    let away = Aim {
+        yaw: yaw.yaw.wrapping_add(0x8000),
+        ..yaw
+    };
     let mut w = world_at(pos);
     for t in 0..SWING_INTERVAL_TICKS * 2 {
         w.tick(&[hold_primary(away, t as u16)]);
@@ -397,15 +445,19 @@ fn facing_yaw(dx: f32, dz: f32) -> u16 {
 }
 
 /// Teleport player 0 to 1.2 m out from the node at `(nx, ny, nz)` along
-/// heading `bearing8`, and return the yaw that faces the node from there.
-fn stand_at_bearing(w: &mut World, nx: f32, ny: f32, nz: f32, bearing8: u8) -> u16 {
+/// heading `bearing8`, and return the aim that looks at the node from there
+/// — `AIM_UP_M` up its base, from an eye `EYE_M` above feet seated at `ny`.
+fn stand_at_bearing(w: &mut World, nx: f32, ny: f32, nz: f32, bearing8: u8) -> Aim {
     let (bx, bz) = yaw_dir((bearing8 as u16) << 8);
     let px = nx + bx * 1.2;
     let pz = nz + bz * 1.2;
     w.players[0].body.qx = movement::quant_xz(px);
     w.players[0].body.qz = movement::quant_xz(pz);
     w.players[0].body.qy = movement::quant_y(ny);
-    facing_yaw(nx - px, nz - pz)
+    Aim {
+        yaw: facing_yaw(nx - px, nz - pz),
+        pitch: pitch_toward(AIM_UP_M - EYE_M, 1.2),
+    }
 }
 
 #[test]
@@ -550,8 +602,8 @@ fn selected_slot_is_the_held_item_and_invalid_sel_falls_back() {
         frame: InputFrame {
             seq: 0,
             buttons: BTN_PRIMARY,
-            yaw,
-            pitch: 0,
+            yaw: yaw.yaw,
+            pitch: yaw.pitch,
             move_x: 0,
             move_z: 0,
             sel,
@@ -858,31 +910,21 @@ fn a_swing_the_node_pays_nothing_for_is_refused_and_costs_the_node_nothing() {
     );
 }
 
-/// The refusal is a **whiff, not an absorb**: the arm stays free, so the
-/// swing carries on to `combat::strike` exactly as a swing into empty air
-/// does (`world.rs`: node → player → structure).
+/// **A refused node absorbs the swing, and the body beside it is hit by
+/// aiming at the body** — melee aim v1's reading of the case this test used
+/// to make the other way round. Before the ray, a node inside the planar
+/// cone ate the swing meant for the person standing next to it, so a refusal
+/// had to hand the arm on (`Swing::Refused`, retired). A ray enters the node
+/// only when it is aimed at the node, so the tree takes the thunk —
+/// `EV_GATHER_REFUSED`, no `EV_HIT`, the victim untouched — and the same
+/// swing aimed at the victim lands.
 ///
-/// This is what keeps the wrong tool a *weapon* while it is not a tool. It
-/// is not a hypothetical — the shipped rock is both, and a spear is neither
-/// a tree's tool nor a harmless thing to be swung at somebody standing in
-/// front of one. A guard that absorbed the swing would make a node into
-/// cover: stand behind a tree and the fight stops.
-///
-/// The fixture holds item 2, which `CombatContent::probe_fixture` arms as
-/// melee and which is **not** in the tree's tool row (that is item 1) — so
-/// `yield_for` falls through to the zeroed hand row and the guard fires,
-/// while the strike behind it has a live weapon to resolve.
-///
-/// Proven red twice, and the pair is the point:
-///
-/// - return `Swing::Absorbed` from the guard and the victim's hp never
-///   moves — the node ate a swing it was paid nothing for;
-/// - delete the guard entirely and the node absorbs the swing itself, which
-///   is the behaviour before 2026-08-15, and the victim's hp never moves
-///   either.
+/// Both halves in one arrangement, so the second proves the body was
+/// genuinely reachable and the first is not a fixture that could never hit.
 #[test]
-fn a_refused_gather_swing_leaves_the_arm_free() {
-    let (pos, yaw, _) = find_isolated(SEED, Occupant::Tree);
+fn a_refused_node_absorbs_the_swing_and_the_body_beside_it_is_hit_by_aiming_at_it() {
+    use sim_core::world::{EV_GATHER_REFUSED, EV_HIT};
+    let (pos, aim, _) = find_isolated(SEED, Occupant::Tree);
     let mut w = Box::new(World::new(SEED));
     w.gather = GatherContent::probe_fixture();
     w.combat = sim_core::combat::CombatContent::probe_fixture();
@@ -893,10 +935,8 @@ fn a_refused_gather_swing_leaves_the_arm_free() {
     assert_ne!(
         w.gather.nodes[0].tools[0].0, 2,
         "fixture rot: item 2 became the tree's tool, so the swing below \
-         would be absorbed by the node and prove nothing"
+         would pay the node and prove nothing"
     );
-    // Both bodies on the same point: `dev_spawn` pins every join, so the
-    // victim is inside the weapon's reach without a walk.
     w.dev_spawn = Some(pos);
     w.tick(&[Command::Join { id: 1 }, Command::Join { id: 2 }]);
     let victim = w
@@ -904,6 +944,13 @@ fn a_refused_gather_swing_leaves_the_arm_free() {
         .iter()
         .position(|p| p.active && p.id == 2)
         .expect("the second body seated");
+    // The victim stands a metre to the swinger's right — beside the line to
+    // the tree, well outside a 0.4 m capsule's reach of the ray — on ground
+    // of its own, so the second half aims at its chest rather than level.
+    let (fx, fz) = yaw_dir(aim.yaw);
+    let (px, pz) = pos;
+    let (vx, vz) = (px - fz, pz + fx);
+    w.players[victim].body = sim_core::movement::Body::at(SEED, hv(SEED), vx, vz);
     let hp_before = w.players[victim].hp;
     assert!(hp_before > 0, "the combat fixture granted the victim no hp");
 
@@ -913,40 +960,74 @@ fn a_refused_gather_swing_leaves_the_arm_free() {
         count: 1,
         cond: 0,
     };
-    let mut seq = 0u16;
-    for _ in 0..SWING_INTERVAL_TICKS * 3 {
-        w.tick(&[hold_primary(yaw, seq)]);
+    let (mut refused, mut hits, mut seq) = (0u32, 0u32, 0u16);
+    for _ in 0..SWING_INTERVAL_TICKS * 2 {
+        w.tick(&[hold_primary(aim, seq)]);
+        seq = seq.wrapping_add(1);
+        for e in w.events.entries() {
+            match e.code {
+                EV_GATHER_REFUSED => refused += 1,
+                EV_HIT => hits += 1,
+                _ => {}
+            }
+        }
+    }
+    assert!(
+        refused > 0,
+        "the tree must have refused the tool or this proves nothing"
+    );
+    assert_eq!(
+        hits, 0,
+        "a swing aimed at a tree that refused it reached the body standing \
+         beside the tree — the ray went somewhere it was not pointed"
+    );
+    assert_eq!(w.players[victim].hp, hp_before, "the bystander was hurt");
+
+    // Now look at the victim: yaw toward them, pitch at their chest.
+    let (swy, vy) = (
+        w.players[0].body.qy as f32 * movement::POS_Y_Q,
+        w.players[victim].body.qy as f32 * movement::POS_Y_Q,
+    );
+    let face = Aim {
+        yaw: facing_yaw(vx - px, vz - pz),
+        pitch: pitch_toward(vy + 1.0 - (swy + EYE_M), 1.0),
+    };
+    for _ in 0..SWING_INTERVAL_TICKS * 2 {
+        w.tick(&[hold_primary(face, seq)]);
         seq = seq.wrapping_add(1);
     }
     assert!(
         w.players[victim].hp < hp_before,
-        "a swing the node refused was absorbed by it anyway — a tree is \
-         cover, and the arm never reached the body standing at it"
+        "aimed at the body a metre away, the swing must land — the tree is \
+         not between them"
     );
 }
 
-/// The refusal is a whiff for flesh and a **stop for structure**: a swing
-/// aimed at a node the held item cannot gather must not fall through
-/// `combat::raid` into the wall standing in the same cone. `raid` takes no
-/// owner or privilege filter (`combat.rs` says so in its own doc), so
-/// before `Swing::Refused` a stone hatchet aimed at a stone node inside
-/// your own base took structure off your own wall, silently, every swing
-/// (`NOW.md` §0kit item 1 — proven by fixture: hp fell at
-/// `hand_yield = 0`, not at 25).
+/// A swing aimed at a node the held item cannot gather must not reach the
+/// wall standing behind that node. Under the planar pick this needed a
+/// contract (`Swing::Refused`, a stop for structure); under melee aim v1 it
+/// is geometry — the tree is in the way of the ray — and this test holds
+/// the consequence either way. The history it guards: before 2026-08-15 a
+/// stone hatchet aimed at a stone node inside your own base took structure
+/// off your own wall, silently, every swing (`NOW.md` §0kit item 1 — proven
+/// by fixture: hp fell at `hand_yield = 0`, not at 25).
 ///
 /// Gated both ways, in one arrangement so the control proves the wall is
-/// genuinely reachable by the raid arm:
+/// genuinely reachable by the structure arm:
 ///
-/// - **refused-node swing** — player at the tree's stand point, wall in
-///   the same aim cone, wrong tool in hand: piece hp does NOT fall;
+/// - **refused-node swing** — player west of the tree looking straight
+///   through its trunk, the wall on the cell edge just EAST of the trunk
+///   and inside the weapon's reach, wrong tool in hand: piece hp does NOT
+///   fall;
 /// - **deliberate swing at the wall with no node in the way** — same
-///   wall, stood where the tree is out of gather reach: piece hp DOES
-///   fall.
+///   wall, same heading, stood 0.8 m aside so the ray passes the trunk:
+///   piece hp DOES fall.
 ///
 /// Proven red against the un-fixed fall-through: with the gather guard
 /// returning `Swing::Free` (the pre-2026-08-15 shape restored) the first
 /// half fails — the wall takes `EV_STRUCT_HIT` damage from the refused
-/// swings.
+/// swings. Under the ray it is proven red a second way: let `cast` skip the
+/// node arm and the wall behind the trunk is what the ray reaches.
 #[test]
 fn a_refused_swing_never_reaches_the_wall_behind_the_node() {
     use sim_core::build::{anchor, build_cell_of, LOC_EDGE_XLO, LOC_PLANE};
@@ -959,6 +1040,12 @@ fn a_refused_swing_never_reaches_the_wall_behind_the_node() {
     // gather guard refuses it while the raid arm has a live weapon row.
     const WRONG_TOOL: u16 = 2;
     const REACH: f32 = 2.0;
+    /// Eye to trunk axis. Far enough that the body's capsule clears the
+    /// trunk, near enough to leave the wall room inside `REACH`.
+    const STAND_M: f32 = 1.0;
+    /// How far the control steps aside: past the trunk's 0.24 m radius and
+    /// the probe with room, still well inside a 3 m wall span.
+    const ASIDE_M: f32 = 0.8;
 
     'candidates: for cz in 40..216i32 {
         for cx in 40..216i32 {
@@ -966,9 +1053,11 @@ fn a_refused_swing_never_reaches_the_wall_behind_the_node() {
             if s.occupant != Occupant::Tree {
                 continue;
             }
-            // The tree's own build cell must take a foundation, or there
-            // is no wall to protect.
-            let bcx = build_cell_of(s.x);
+            // The wall goes on the west edge of the cell EAST of the tree's
+            // — the plane just past the trunk along a ray fired at it from
+            // the west — so that cell must take a foundation, or there is
+            // no wall to protect.
+            let bcx = build_cell_of(s.x) + 1;
             let bcz = build_cell_of(s.z);
             if !(0..1024).contains(&bcx) || !(0..1024).contains(&bcz) {
                 continue;
@@ -981,45 +1070,42 @@ fn a_refused_swing_never_reaches_the_wall_behind_the_node() {
             if !sim_core::build::foundation_terrain_ok(SEED, hv(SEED), fx_c, fz_c) {
                 continue;
             }
-            // Stand point: 1.2 m west of the tree, on ground near its own
-            // height (the `find_isolated` filter).
-            let (px, pz) = (s.x - 1.2, s.z);
+            // Stand point: `STAND_M` west of the trunk, on ground near its
+            // own height (the `find_isolated` filter), looking due +x so
+            // the ray runs through the trunk's axis.
+            let (px, pz) = (s.x - STAND_M, s.z);
             let py = terrain::height(SEED, px, pz);
             if (s.y - py).max(py - s.y) > 1.0 || py < 1.0 {
                 continue;
             }
-            // The wall goes on the west edge of the tree's cell. Its
-            // anchor must sit inside the same aim cone as the tree, within
-            // the weapon's reach, so the raid arm WOULD hit it if handed
-            // the swing.
-            let (ax, az) = anchor(bx, bz, LOC_EDGE_XLO);
-            let (dax, daz) = (ax - px, az - pz);
-            let d2a = dax * dax + daz * daz;
-            if d2a > (REACH - 0.1) * (REACH - 0.1) {
+            let yaw: u16 = 64 << 8;
+            // The wall's plane sits between the trunk's far skin and the
+            // end of the weapon's reach, with margin at both ends: the
+            // trunk (r 0.24) plus the wall's half-thickness plus the probe
+            // is what "behind the tree" has to clear, and the reach is
+            // what the control has to stay inside.
+            let (ax, _) = anchor(bx, bz, LOC_EDGE_XLO);
+            let gap = ax - s.x;
+            if !(0.5..=REACH - STAND_M - 0.15).contains(&gap) {
                 continue;
             }
-            // Best LUT heading toward the tree, and the anchor must be
-            // inside its cone with margin.
-            let (dx, dz) = (s.x - px, s.z - pz);
-            let mut yaw = 0u16;
-            let mut best = f32::MIN;
-            for hi in 0..=255u16 {
-                let (fx, fz) = yaw_dir(hi << 8);
-                let dot = fx * dx + fz * dz;
-                if dot > best {
-                    best = dot;
-                    yaw = hi << 8;
-                }
-            }
-            let (fx, fz) = yaw_dir(yaw);
-            if dax * fx + daz * fz <= 0.9 * d2a.sqrt() {
-                continue; // anchor too far off-axis — cone margin
+            // The ray hits the wall at the tree's own z, and the control's
+            // does 0.8 m aside; both must be inside the wall's span.
+            let z_lo = bz as f32 * sim_core::build::BUILD_CELL_M;
+            let z_hi = z_lo + sim_core::build::BUILD_CELL_M;
+            let aside = if s.z + ASIDE_M <= z_hi - 0.3 {
+                ASIDE_M
+            } else {
+                -ASIDE_M
+            };
+            if s.z < z_lo + 0.3 || s.z > z_hi - 0.3 || s.z + aside < z_lo + 0.3 {
+                continue;
             }
             // No OTHER swingable near either stand point: rivals eat the
             // swing and turn both halves into tests of nothing. Barrels
             // count — `target_index` aims at them even though
             // `node_index` does not.
-            let (ctl_x, ctl_z) = (ax - 1.6, az);
+            let (ctl_x, ctl_z) = (px, pz + aside);
             let mut rivals = 0;
             for &(sx, sz) in &[(px, pz), (ctl_x, ctl_z)] {
                 let pcx = (sx / CELL_SIZE) as i32;
@@ -1039,12 +1125,6 @@ fn a_refused_swing_never_reaches_the_wall_behind_the_node() {
                 }
             }
             if rivals > 0 {
-                continue;
-            }
-            // The control point must have the tree OUT of gather reach, or
-            // the "no node in the way" half is a lie.
-            let dt2 = (s.x - ctl_x) * (s.x - ctl_x) + (s.z - ctl_z) * (s.z - ctl_z);
-            if dt2 <= (REACH + 0.3) * (REACH + 0.3) {
                 continue;
             }
 
@@ -1079,8 +1159,10 @@ fn a_refused_swing_never_reaches_the_wall_behind_the_node() {
                 count: 200,
                 cond: 0,
             };
-            // Foundation, then the wall on its west edge. A refusal here is
-            // this candidate's terrain, not the mechanic — try the next.
+            // Foundation, then the wall on its west edge — placed from the
+            // stance, so the soft side faces the raider and both halves
+            // swing at the same face. A refusal here is this candidate's
+            // terrain, not the mechanic — try the next.
             w.tick(&[Command::Place {
                 id: 1,
                 row: 0,
@@ -1115,7 +1197,7 @@ fn a_refused_swing_never_reaches_the_wall_behind_the_node() {
             let mut seq = 0u16;
             let mut hit_while_refused = 0u32;
             for _ in 0..SWING_INTERVAL_TICKS * 4 {
-                w.tick(&[hold_primary(yaw, seq)]);
+                w.tick(&[hold_primary(Aim { yaw, pitch: 128 }, seq)]);
                 seq = seq.wrapping_add(1);
                 for e in w.events.entries() {
                     if e.code == EV_STRUCT_HIT {
@@ -1129,22 +1211,12 @@ fn a_refused_swing_never_reaches_the_wall_behind_the_node() {
                 .expect("the wall still stands")
                 .hp;
 
-            // ---- the control: same wall, no node in the way ----
+            // ---- the control: same wall, same heading, the ray passes
+            // the trunk 0.8 m to one side ----
             w.players[0].body = sim_core::movement::Body::at(SEED, hv(SEED), ctl_x, ctl_z);
-            let (cdx, cdz) = (ax - ctl_x, az - ctl_z);
-            let mut cyaw = 0u16;
-            let mut cbest = f32::MIN;
-            for hi in 0..=255u16 {
-                let (fx, fz) = yaw_dir(hi << 8);
-                let dot = fx * cdx + fz * cdz;
-                if dot > cbest {
-                    cbest = dot;
-                    cyaw = hi << 8;
-                }
-            }
             let mut control_hit = false;
             for _ in 0..SWING_INTERVAL_TICKS * 4 {
-                w.tick(&[hold_primary(cyaw, seq)]);
+                w.tick(&[hold_primary(Aim { yaw, pitch: 128 }, seq)]);
                 seq = seq.wrapping_add(1);
                 for e in w.events.entries() {
                     if e.code == EV_STRUCT_HIT {
@@ -1330,11 +1402,10 @@ fn a_dead_tool_gathers_at_the_hand_rate() {
 }
 
 /// The dead tool on the SHIPPED shape — no hand row — is a refusal that
-/// names the broken tool, and the wall behind the node stays whole (the
-/// Q4 half of `Swing::Refused`'s contract: a dead hatchet swung at a node
-/// must not chew the wall behind it, which `world.rs` enforces by
-/// declining the raid arm for every `Refused` swing, dead-tool ones
-/// included).
+/// names the broken tool, and the wall behind the node stays whole. That
+/// second half was `Swing::Refused`'s contract and is geometry now: the
+/// node is what the ray entered first, so a refusal ends the swing there
+/// (`gather::land`'s `Swing::Absorbed`) and nothing behind it is reached.
 #[test]
 fn a_dead_tool_is_refused_where_hands_are() {
     use sim_core::world::EV_GATHER_REFUSED;
@@ -1531,38 +1602,34 @@ fn a_bush_pays_but_has_no_skin_to_mark() {
     assert_eq!(marks, 0, "a bush has no skin to scuff");
 }
 
-/// **The waist rule, pinned as a value** — the branch that added it shipped
-/// it entered by nothing.
+/// **The mark is where the ray met the node**, not at eye height and not at
+/// a waist rule. `skin_point`'s `STRIKE_WAIST_FRAC` — eye height or half the
+/// occupant's height, whichever is lower — was the planar pick's answer to
+/// "where up a knee-high rock does a swing from eye level land"; the answer
+/// since melee aim v1 is *where you aimed*. `NodeHit::skin` pulls the entry
+/// point onto the collision skin at the ray's own height, clamped into the
+/// occupant's span.
 ///
-/// `skin_point` takes the LOWER of the swinger's eye height and the
-/// occupant's own waist, and the eye arm is the one every existing test
-/// happens to exercise: `strike_y` is feet + 1.6 m, so the `.min` only
-/// bites when `top * STRIKE_WAIST_FRAC` is under that — a tree's is 2.85 m
-/// and never does. The rock beside the shipped seed's spawn is where it
-/// bites, and `a_landed_swing_marks_the_node…`'s y assertion cannot see it:
-/// that check allows the occupant's WHOLE span, which is twice as wide as
-/// this guarantee and would pass a mark pinned to the rim — which is
-/// exactly what the old code did.
+/// Pinned on the stone node because it is short: a level swing from 1.6 m
+/// passes clean over its 1.13 m top, so the fixture aims down at it and the
+/// mark has to come out at the height the ray was at when it got there —
+/// not at the eye, which is the pre-2026-09-05 rule, and not at the waist,
+/// which was the rule between.
 ///
-/// Red-proven both ways: drop the `.min` and the short node's mark returns
-/// to eye height; drop the `.max` and a strike below a raised occupant's
-/// base goes under it.
+/// Red-proven by returning `ray.at_m(0.0)`'s height from `skin`: the mark
+/// comes out at eye height and the first assert fails.
 #[test]
-fn a_short_node_is_struck_at_its_waist_and_a_tall_one_at_the_eye() {
-    let (pos, yaw, (cx, cz)) = find_isolated(SEED, Occupant::StoneNode);
+fn the_mark_is_at_the_height_the_ray_entered_the_node() {
+    let (pos, aim, (cx, cz)) = find_isolated(SEED, Occupant::StoneNode);
     let table = ScatterTable::alpha_default();
     let s = terrain::scatter(SEED, &table, hv(SEED), cx, cz);
-    let (_, top_m) = terrain::occupant_volume(s.occupant);
-    let top = top_m * s.scale;
-    let waist = s.y + top * sim_core::gather::STRIKE_WAIST_FRAC;
+    let (r_m, top_m) = terrain::occupant_volume(s.occupant);
+    let (skin, top) = (r_m * s.scale, top_m * s.scale);
 
     let mut w = world_at(pos);
     // The probe fixture pays a bare hand on the tree and not necessarily on
     // the stone node, so arm the row this test swings at — the geometry is
-    // what is being pinned here, not the payout table. (`Occupant::Rock` is
-    // NOT a gatherable at all — `node_index` calls it one of the two things
-    // a swing passes through — so the short node a player actually mines is
-    // this one.)
+    // what is being pinned here, not the payout table.
     let ni = sim_core::gather::node_index(Occupant::StoneNode).expect("a stone node is a node");
     w.gather.nodes[ni].hand_yield = 1;
     w.gather.nodes[ni].weak_pct = 0;
@@ -1570,34 +1637,58 @@ fn a_short_node_is_struck_at_its_waist_and_a_tall_one_at_the_eye() {
         w.gather.nodes[ni].output != sim_core::gather::NO_ITEM,
         "the fixture's stone row must pay something or the swing is refused"
     );
-    let eye = w.players[0].body.qy as f32 * movement::POS_Y_Q + 1.6;
-    // The fixture must be the case this test is about, or it proves nothing
-    // about the arm it claims to pin.
+    let feet = w.players[0].body.qy as f32 * movement::POS_Y_Q;
+    let eye = feet + EYE_M;
     assert!(
-        waist < eye,
-        "this node's waist {waist:.2} is above the eye {eye:.2}, so the \
-         .min arm is not taken and this test is vacuous — pick another node"
+        s.y + top < eye,
+        "this node's top {:.2} is above the eye {eye:.2}, so a level swing \
+         would hit it and this test is not about aiming down — pick another",
+        s.y + top
     );
 
     let mut marks = Vec::new();
     for t in 0..SWING_INTERVAL_TICKS {
-        w.tick(&[hold_primary(yaw, t as u16)]);
+        w.tick(&[hold_primary(aim, t as u16)]);
         for e in w.events.entries() {
             if e.code == sim_core::world::EV_IMPACT {
-                marks.push(e.c as i32 as f32 * movement::POS_Y_Q);
+                let mx = (e.a & 0x00ff_ffff) as i32 as f32 * movement::POS_XZ_Q;
+                let mz = e.b as i32 as f32 * movement::POS_XZ_Q;
+                let my = e.c as i32 as f32 * movement::POS_Y_Q;
+                marks.push((mx, my, mz));
             }
         }
     }
     assert_eq!(marks.len(), 1, "one landed swing leaves exactly one mark");
+    let (mx, my, mz) = marks[0];
+
+    // Where the ray was at the mark's planar distance from the eye: the
+    // same LUT byte the fixture sent, so this is the sim's own direction and
+    // not a second derivation of it.
+    let (px, pz) = pos;
+    let (ch, sv) = sim_core::pitch_dir(aim.pitch);
+    let run = ((mx - px) * (mx - px) + (mz - pz) * (mz - pz)).sqrt();
+    let ray_y = eye + run / ch * sv;
+    let q = movement::POS_Y_Q;
     assert!(
-        (marks[0] - waist).max(waist - marks[0]) <= 2.0 * movement::POS_Y_Q,
-        "mark at y {:.2}, want the waist {waist:.2} — eye was {eye:.2}, so a \
-         mark up there is the pre-2026-08-18 rule with its rim problem",
-        marks[0]
+        (my - ray_y).max(ray_y - my) <= 3.0 * q,
+        "mark at y {my:.3} where the ray was at {ray_y:.3} — eye {eye:.2}, \
+         node top {:.2}; a mark at eye height is the planar rule back",
+        s.y + top
     );
     assert!(
-        marks[0] < s.y + top - movement::POS_Y_Q,
-        "the mark is at the occupant's rim, where its own horizontal normal \
-         has nothing to lie against"
+        my < eye - 0.1,
+        "the mark sits at the eye ({my:.2} vs {eye:.2}) on a node the swing \
+         had to aim down at"
+    );
+    // Still on the skin and inside the span — the projection kept the
+    // mark on the stone rather than a hand's width in front of it.
+    let d = ((mx - s.x) * (mx - s.x) + (mz - s.z) * (mz - s.z)).sqrt();
+    assert!(
+        d <= skin + 2.0 * movement::POS_XZ_Q,
+        "mark {d:.3} m from the node's centre, past its {skin:.3} m skin"
+    );
+    assert!(
+        my >= s.y - q && my <= s.y + top + q,
+        "mark outside the node's span"
     );
 }

@@ -27,7 +27,7 @@
 use bevy::prelude::*;
 use sim_core::inventory::{CONT_BAG, CONT_BOX, CONT_SELF, CONT_WORLD};
 
-use crate::look::yaw_u16;
+use crate::look::{pitch_u8, yaw_u16};
 use crate::ui::interact::{self, Aim, Pick, SwingAim, SwingPick, Verb};
 use crate::ui::structure::{self, Store, Target};
 
@@ -93,7 +93,10 @@ pub fn resolve(
 ) {
     let core = &mut net.session.core;
     let [x, y, z] = core.predict.render_position();
-    let (fx, fz) = sim_core::yaw_dir(yaw_u16(look.yaw));
+    // The wire's own two bytes for the look, so the swing prompt is cast
+    // from exactly what the frame will carry (`SwingAim`'s header).
+    let (yaw, pitch) = (yaw_u16(look.yaw), pitch_u8(look.pitch));
+    let (fx, fz) = sim_core::yaw_dir(yaw);
     aimed.0 = interact::resolve(
         Aim::new(x, z, fx, fz),
         core.deploys.entries(),
@@ -130,7 +133,16 @@ pub fn resolve(
                 harvested: occ.harvested,
                 cache: occ.cache,
             };
-            let pick = interact::resolve_swing(SwingAim { x, y, z, fx, fz }, &mut island);
+            let pick = interact::resolve_swing(
+                SwingAim {
+                    x,
+                    y,
+                    z,
+                    yaw,
+                    pitch,
+                },
+                &mut island,
+            );
             // The open pick, on the same island borrow and the same aim.
             // Folded into `aimed` rather than kept beside it, because to
             // the player there is one `E` and one centre prompt — a
@@ -140,7 +152,16 @@ pub fn resolve(
             // built and meant, and the authored container is not going
             // anywhere.
             if aimed.0.is_none() {
-                let open = interact::resolve_open(SwingAim { x, y, z, fx, fz }, &mut island);
+                let open = interact::resolve_open(
+                    SwingAim {
+                        x,
+                        y,
+                        z,
+                        yaw,
+                        pitch,
+                    },
+                    &mut island,
+                );
                 if open.occupant != 0 {
                     aimed.0 = interact::Pick {
                         verb: interact::Verb::Crate,

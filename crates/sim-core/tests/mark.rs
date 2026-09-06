@@ -1,391 +1,468 @@
-//! `test_mark` — the gate for **where a raid swing leaves its scuff**.
+//! `test_mark` — the gate for **where a melee swing leaves its scuff on a
+//! built piece**.
 //!
-//! A hatchet swung at a tree has marked the bark since 2026-08-25; a
-//! hatchet swung at a *wall* marked nothing at all until 2026-08-28, which
-//! is `NOW.md` §0mk item 1 and the merge-gate judge's second ranked gap on
-//! the same day: the shard took the right hp off the right record for an
-//! arrow, a bullet, four wall orientations and nine deployable archetypes,
-//! and what reached the player was a number they could not see. A raider
-//! could not tell whether the raid was working.
+//! A hatchet swung at a tree has marked the bark since 2026-08-25 and a
+//! hatchet swung at a wall since 2026-08-28 (`NOW.md` §0mk item 1: the shard
+//! took the right hp off the right record and the raider could not see it).
+//! Until melee aim v1 the wall's mark was `combat::piece_mark` — a centroid
+//! on the piece's surface nearest the raider's *stance*, because the planar
+//! pick had no point of contact to offer. This file held that function's ten
+//! `loc` shapes to the piece.
 //!
-//! `combat::piece_mark` is the answer and this file is what makes its one
-//! claim true rather than aspirational: **every point it returns is a
-//! point the struck piece actually occupies.** A mark that is 20 cm off
-//! the plank draws on nothing, or on the plank behind it, and no other
-//! gate in this repo can see that — `EV_IMPACT` is not in `state_hash`
-//! (replay green), it moved no wire byte (golden green), and all three
-//! fields are `u32` (clippy green). `tests/event_roles.rs` checks which
-//! field is which; nothing checked whether the *value* was on the object.
+//! **Since 2026-09-05 there is a point of contact.** A swing is a ray from
+//! the eye along the look direction (`sim-core/src/melee.rs`), the world is
+//! walked by the same `ranged::world_stop` an arrow and a bullet are walked
+//! by, and the mark is the ray's own stop — the sample at which the swing met
+//! the plank, up to one `ARROW_STEP_MM` inside its face, exactly where an
+//! arrow's mark sits and where `render/decal.rs` already draws one facing the
+//! shooter. So the claim this file makes changed shape: not *the centroid is
+//! on the piece* but **the mark is where you aimed, and it moves when you
+//! do**. Three things follow and each is checked from outside the code that
+//! produces them:
 //!
-//! ## Why the law is rebuilt rather than called
+//! 1. **On the face.** The mark's x is within the probe's forgiveness in
+//!    front of the wall's plane and within one sample behind it; a mark on
+//!    the cell centre, or at the raider's feet, is off by metres.
+//! 2. **At the aim's height and bearing.** Level, the mark is at eye height
+//!    on the raider's own z; pitched down it drops, pitched up it climbs,
+//!    yawed it slides along the face — and stays inside the storey the wall
+//!    spans. This is the assertion the stance centroid could never satisfy,
+//!    and the whole reason the operator's *"proper video game"* was owed.
+//! 3. **Over the wall is over the wall.** A swing pitched above the storey
+//!    marks nothing built and charges nothing; one pitched at the ground
+//!    marks the ground. The old scan hit the wall from any stance in the
+//!    cone whatever the pitch, because there was no pitch.
 //!
-//! `CLAUDE.md`'s lattice entry: `tests/lattice.rs` wrote a "naive rebuild"
-//! whose naive side called the function under test, so both sides carried
-//! the mutant and ten assertions were green over a real defect. So nothing
-//! below calls `piece_mark` to decide what `piece_mark` should have
-//! returned. The surface is rebuilt from parts that are published for
-//! other reasons and share no line with it:
-//!
-//! * `build::anchor` — the point reach is already measured to.
-//! * `build::BUILD_CELL_M` / `build::LEVEL_H_M` — the cell and the storey.
-//! * `build::column_floor_y` — where a column's level-0 floor sits, which
-//!   is what `collide::col_base_y` resolves for an unbuilt column and the
-//!   independent statement of the slab height.
-//! * the `LOC_TRI_*` half definitions, restated from their own doc
-//!   comments in `build.rs` — a different function's rule (`piece_mark`
-//!   never tests a half; it returns a centroid).
-//!
-//! ## Anti-vacuity
-//!
-//! Every `loc` this repo has is walked from one table, and the table is
-//! asserted complete against `LOC_DIAG_B` — the highest code — so a
-//! *eleventh* `loc` cannot be added with this file quietly covering ten.
-//! `raid`'s scan produces exactly these ten.
+//! `EV_IMPACT` is not in `state_hash` (replay green), moved no wire byte
+//! (golden green), and all three fields are `u32` (clippy green) — so, as
+//! before, nothing but this file can see the *value*. `tests/event_roles.rs`
+//! still checks which field is which.
 
 use sim_core::build::{
-    anchor, column_floor_y, BUILD_CELL_M, LEVEL_H_M, LOC_DIAG_A, LOC_DIAG_B, LOC_EDGE_XLO,
-    LOC_EDGE_ZLO, LOC_PLANE, LOC_RISER, LOC_TRI_XHI_ZHI, LOC_TRI_XHI_ZLO, LOC_TRI_XLO_ZHI,
-    LOC_TRI_XLO_ZLO,
+    foundation_terrain_ok, BuildContent, BUILD_CELL_M, LEVEL_H_M, LOC_EDGE_XLO, LOC_PLANE,
 };
-use sim_core::collide::PieceHit;
-use sim_core::combat::piece_mark;
+use sim_core::collide::WALL_THICKNESS_M;
+use sim_core::combat::CombatContent;
+use sim_core::deploy::DeployContent;
+use sim_core::gather::{GatherContent, ItemStack};
+use sim_core::input::{InputFrame, BTN_PRIMARY};
+use sim_core::limits::ARROW_STEP_MM;
+use sim_core::melee::MELEE_PROBE_M;
+use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q};
+use sim_core::ranged::{ARROW_EYE_MM, SURF_BUILT, SURF_GROUND};
+use sim_core::world::{Command, SimEvent, World, EV_IMPACT, EV_STRUCT_HIT, EV_SWING};
 
-const SEED: u64 = 20260731;
-/// **The two cell axes differ, and that is load-bearing.** The first cut
-/// used (341, 341) with a symmetric stance ring, and a mutant that
-/// swapped `mx` and `mz` in the plane arm passed all five tests — the
-/// sharpest positional payload in the lane (`tests/event_roles.rs` on
-/// `EV_IMPACT`) invisible to the file written to gate it, because
-/// `x0 == z0` makes a transposition the identity. `event_roles.rs`'s
-/// `distinct3` is the same discipline; this is its fixture form. Every
-/// stance offset below is asymmetric for the same reason.
-const CX: u16 = 341;
-const CZ: u16 = 344;
+const SEED: u64 = 20260802;
+/// The raider's network id — `event_roles.rs`' `BUILDER`, and the same
+/// player builds and swings here so the wall's soft side faces them.
+const RAIDER: u32 = 4;
+/// `BuildContent::probe_fixture`'s rows: 0 is the foundation, 1 the wall.
+const PIECE_FOUNDATION: u16 = 0;
+const PIECE_WALL: u16 = 1;
+const GROUND: u8 = 0;
+/// `CombatContent::probe_fixture`'s item 0: 34 body, 34 structure, 2 m.
+const CLUB: u16 = 0;
+const CLUB_STRUCTURE: u32 = 34;
+/// `BuildContent::probe_fixture`'s wall hp.
+const WALL_HP: u32 = 100;
+/// Wire yaw facing +X — LUT index 64 of 256 (`yaw_lut.rs`: index 0 is +Z,
+/// increasing index rotates toward +X). The raider stands west of the wall
+/// and looks east at it.
+const YAW_PLUS_X: u16 = 64 << 8;
+/// How far west of the wall's face the raider stands, metres — inside the
+/// club's 2 m reach with room for the pitched cases to still land.
+const STANCE_M: f32 = 1.5;
+const EYE_M: f32 = ARROW_EYE_MM as f32 / 1000.0;
+/// The sampler's spacing: the most a mark can sit *inside* the face.
+const SAMPLE_STEP_M: f32 = ARROW_STEP_MM as f32 / 1000.0;
+const MAX_STEPS: u32 = 200;
 
-fn hv() -> &'static sim_core::terrain::Haven {
-    static HV: std::sync::OnceLock<sim_core::terrain::Haven> = std::sync::OnceLock::new();
-    HV.get_or_init(|| sim_core::terrain::haven(SEED))
-}
-
-/// The column's level-0 floor for the fixture cell, off `build`'s own
-/// published resolver rather than `collide::col_base_y` — an unbuilt
-/// column takes its plate from the terrain band and nothing else.
-/// The fixture cell's address at `loc` and `level` — one constructor, so
-/// no case can transpose the four parts by hand.
-fn addr(loc: u8, level: u8) -> PieceHit {
-    PieceHit {
-        cx: CX,
-        cz: CZ,
-        level,
-        loc,
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
     }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
 }
 
-fn base() -> f32 {
-    column_floor_y(SEED, hv(), CX, CZ, 0)
-}
-
-/// The ten `loc` codes `combat::raid`'s scan can produce, with the shape
-/// each one is: a **slab** lies at the storey's floor, a **wall** spans
-/// the storey, and the **riser** ramps between them.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Kind {
-    Slab,
-    Wall,
-    Ramp,
-}
-
-const LOCS: [(u8, &str, Kind); 10] = [
-    (LOC_PLANE, "LOC_PLANE", Kind::Slab),
-    (LOC_RISER, "LOC_RISER", Kind::Ramp),
-    (LOC_EDGE_XLO, "LOC_EDGE_XLO", Kind::Wall),
-    (LOC_EDGE_ZLO, "LOC_EDGE_ZLO", Kind::Wall),
-    (LOC_TRI_XLO_ZLO, "LOC_TRI_XLO_ZLO", Kind::Slab),
-    (LOC_TRI_XHI_ZLO, "LOC_TRI_XHI_ZLO", Kind::Slab),
-    (LOC_TRI_XLO_ZHI, "LOC_TRI_XLO_ZHI", Kind::Slab),
-    (LOC_TRI_XHI_ZHI, "LOC_TRI_XHI_ZHI", Kind::Slab),
-    (LOC_DIAG_A, "LOC_DIAG_A", Kind::Wall),
-    (LOC_DIAG_B, "LOC_DIAG_B", Kind::Wall),
-];
-
-/// A ring of stances around the cell — inside it, outside it on each axis,
-/// and on both boundaries — so no assertion below is proven on the one
-/// spot where a clamp is the identity. `tests/chip.rs`'s judged FAIL of
-/// 2026-08-28 is the receipt: every hit fixture fired down the exact
-/// centre, where the clamp does nothing, and four mutants ran green.
-fn stances(level: u8) -> Vec<(f32, f32, f32, &'static str)> {
-    let x0 = CX as f32 * BUILD_CELL_M;
-    let z0 = CZ as f32 * BUILD_CELL_M;
-    let feet = base() + level as f32 * LEVEL_H_M;
-    [
-        (x0 + 0.4, z0 + 2.1, "inside, -x +z"),
-        (x0 + 2.6, z0 + 0.7, "inside, +x -z"),
-        (x0 + 1.1, z0 + 1.9, "inside, off centre both ways"),
-        (x0 - 2.0, z0 + 0.8, "outside on -x"),
-        (x0 + 5.0, z0 + 2.2, "outside on +x"),
-        (x0 + 0.8, z0 - 2.0, "outside on -z"),
-        (x0 + 2.2, z0 + 5.0, "outside on +z"),
-        (x0, z0, "the low corner exactly"),
-        (
-            x0 + BUILD_CELL_M,
-            z0 + BUILD_CELL_M,
-            "the high corner exactly",
-        ),
-    ]
-    .iter()
-    .map(|(x, z, w)| (*x, *z, feet, *w))
-    .collect()
-}
-
-/// A melee strike lands at the swinger's eye height, and the origin is
-/// derived from the arrow's rather than typed: `gather::EYE_M` is the
-/// same expression, so the two cannot drift and no number is invented
-/// here (`CLAUDE.md` §loop discipline — knobs are spoken, never invented).
-const EYE_M: f32 = sim_core::ranged::ARROW_EYE_MM as f32 / 1000.0;
-
-/// **The claim, for all ten `loc` arms and every stance: the mark is on
-/// the piece.**
+/// Ask the sim's own rule for a buildable cell rather than typing a
+/// coordinate — `chip.rs`' helper, and the reason worldgen moved under a
+/// hand-typed cell twice.
 ///
-/// Three things are checked and each fails a different way:
-///
-/// 1. **Inside the cell footprint.** A raider standing 2 m outside the
-///    cell must not drag the mark out there with them — the piece is 3 m
-///    wide and its surface stops at the boundary.
-/// 2. **At the piece's own height.** A slab is at the storey floor, a wall
-///    spans the storey, a ramp is between them. A mark at eye height on a
-///    *floor* hangs in the air; a mark at floor height on a *wall* two
-///    storeys up is under the base.
-/// 3. **On the pinned axis, exactly.** A straight wall has no thickness,
-///    so its mark's x (or z) is the edge's own coordinate to the bit. This
-///    is the one that catches a mark drawn on the cell centre instead of
-///    the plank.
-#[test]
-fn every_mark_lands_on_the_piece_it_marks() {
-    assert_eq!(
-        LOCS.len(),
-        LOC_DIAG_B as usize + 1,
-        "a loc was added and this table did not grow — see the header"
-    );
-    let x0 = CX as f32 * BUILD_CELL_M;
-    let z0 = CZ as f32 * BUILD_CELL_M;
-    for level in 0..3u8 {
-        let floor = base() + level as f32 * LEVEL_H_M;
-        for (loc, name, kind) in LOCS {
-            for (px, pz, feet, where_) in stances(level) {
-                let (mx, my, mz) = piece_mark(&addr(loc, level), base(), px, pz, feet + EYE_M);
-
-                // 1 — the footprint.
-                assert!(
-                    (x0..=x0 + BUILD_CELL_M).contains(&mx)
-                        && (z0..=z0 + BUILD_CELL_M).contains(&mz),
-                    "{name} at level {level}, raider {where_}: mark ({mx}, {mz}) \
-                     is outside the cell [{x0}, {}] x [{z0}, {}]",
-                    x0 + BUILD_CELL_M,
-                    z0 + BUILD_CELL_M
+/// **And a quiet one**: nothing the scatter put down within a swing's reach
+/// of the raider's stance. A swing is a ray, and a bush or a rock standing
+/// beside the wall is what the ray meets when the yawed cases below turn
+/// eleven degrees — the first draft lost its `right lands` case to exactly
+/// that, a scatter occupant it had never been told about.
+fn buildable_cell(seed: u64) -> (u16, u16) {
+    let table = sim_core::terrain::ScatterTable::alpha_default();
+    for r in 0..64i32 {
+        for dz in -r..=r {
+            for dx in -r..=r {
+                if dx.abs() != r && dz.abs() != r {
+                    continue;
+                }
+                let cx = (170 + dx).clamp(0, 1023) as u16;
+                let cz = (170 + dz).clamp(0, 1023) as u16;
+                if cx == cz {
+                    continue;
+                }
+                let (x, z) = (
+                    (cx as f32 + 0.5) * BUILD_CELL_M,
+                    (cz as f32 + 0.5) * BUILD_CELL_M,
                 );
-
-                // 2 — the height.
-                match kind {
-                    Kind::Slab => assert_eq!(
-                        my, floor,
-                        "{name} at level {level}, raider {where_}: a slab's surface \
-                         is the storey floor {floor}, got {my}"
-                    ),
-                    Kind::Wall | Kind::Ramp => assert!(
-                        (floor..=floor + LEVEL_H_M).contains(&my),
-                        "{name} at level {level}, raider {where_}: {my} is outside \
-                         the storey [{floor}, {}]",
-                        floor + LEVEL_H_M
-                    ),
+                if !foundation_terrain_ok(seed, hv(seed), x, z) {
+                    continue;
                 }
-
-                // 3 — the pinned axis, to the bit.
-                if loc == LOC_EDGE_XLO {
-                    assert_eq!(
-                        mx.to_bits(),
-                        x0.to_bits(),
-                        "{name} at level {level}, raider {where_}: not on the -x edge"
-                    );
+                // The stance and everything within a long swing of it.
+                let (sx, sz) = (cx as f32 * BUILD_CELL_M - STANCE_M, z);
+                let (pcx, pcz) = (
+                    (sx / sim_core::terrain::CELL_SIZE) as i32,
+                    (sz / sim_core::terrain::CELL_SIZE) as i32,
+                );
+                let mut quiet = true;
+                for ddz in -1..=1i32 {
+                    for ddx in -1..=1i32 {
+                        let s = sim_core::terrain::scatter(
+                            seed,
+                            &table,
+                            hv(seed),
+                            pcx + ddx,
+                            pcz + ddz,
+                        );
+                        let (r_m, _) = sim_core::melee::swing_volume(s.occupant);
+                        if r_m <= 0.0 {
+                            continue;
+                        }
+                        let d2 = (s.x - sx) * (s.x - sx) + (s.z - sz) * (s.z - sz);
+                        if d2 < (3.5 + r_m) * (3.5 + r_m) {
+                            quiet = false;
+                        }
+                    }
                 }
-                if loc == LOC_EDGE_ZLO {
-                    assert_eq!(
-                        mz.to_bits(),
-                        z0.to_bits(),
-                        "{name} at level {level}, raider {where_}: not on the -z edge"
-                    );
+                if quiet {
+                    return (cx, cz);
                 }
             }
         }
     }
+    panic!("no quiet buildable cell within 64 cells — the generator changed under this test");
 }
 
-/// **A triangle's mark is inside the half the triangle occupies**, and a
-/// diagonal's is where the two diagonals cross.
-///
-/// This is the arm that cannot take the raider's clamped stance: a
-/// rectangle's clamp lands anywhere in the cell, and half of the cell is
-/// air for a triangle. The half tests are restated from the `LOC_TRI_*`
-/// doc comments in `build.rs` — a rule `piece_mark` never evaluates.
-#[test]
-fn a_triangle_is_marked_on_its_own_half_and_a_diagonal_where_they_cross() {
-    let x0 = CX as f32 * BUILD_CELL_M;
-    let z0 = CZ as f32 * BUILD_CELL_M;
-    for (px, pz, feet, where_) in stances(0) {
-        for loc in [
-            LOC_TRI_XLO_ZLO,
-            LOC_TRI_XHI_ZLO,
-            LOC_TRI_XLO_ZHI,
-            LOC_TRI_XHI_ZHI,
-        ] {
-            let (mx, my, mz) = piece_mark(&addr(loc, 0), base(), px, pz, feet + EYE_M);
-            let (dx, dz) = (mx - x0, mz - z0);
-            let inside = match loc {
-                LOC_TRI_XLO_ZLO => dx + dz <= BUILD_CELL_M,
-                LOC_TRI_XHI_ZHI => dx + dz >= BUILD_CELL_M,
-                LOC_TRI_XHI_ZLO => dz <= dx,
-                _ => dz >= dx,
-            };
-            assert!(
-                inside,
-                "loc {loc}, raider {where_}: mark ({dx}, {dz}) into the cell is \
-                 on the empty half of the triangle"
-            );
-            let _ = my;
+/// The pitch byte pointing closest along `(run, rise)`, off the sim's own
+/// LUT — no trig, because the crate's clippy walls bind this suite.
+fn pitch_toward(rise: f32, run: f32) -> u8 {
+    let len = (rise * rise + run * run).sqrt();
+    let mut best = 128u8;
+    let mut best_dot = f32::MIN;
+    for b in 0..=255u8 {
+        let (ch, sv) = sim_core::pitch_dir(b);
+        let dot = (ch * run + sv * rise) / len;
+        if dot > best_dot {
+            best_dot = dot;
+            best = b;
         }
-        // The diagonals cross at the cell centre and `anchor` says so; a
-        // mark anywhere else is on one wall or the other, never both.
-        for loc in [LOC_DIAG_A, LOC_DIAG_B] {
-            let (mx, _, mz) = piece_mark(&addr(loc, 0), base(), px, pz, feet + EYE_M);
-            let (ax, az) = anchor(CX, CZ, loc);
-            assert_eq!(
-                (mx.to_bits(), mz.to_bits()),
-                (ax.to_bits(), az.to_bits()),
-                "loc {loc}, raider {where_}: a diagonal is marked where the two cross"
-            );
-        }
+    }
+    best
+}
+
+fn place(w: &mut World, row: u16, cx: u16, cz: u16, level: u8, loc: u8) {
+    let before = w.pieces.len();
+    w.tick(&[Command::Place {
+        id: RAIDER,
+        row,
+        cx,
+        cz,
+        level,
+        loc,
+        freehand: false,
+    }]);
+    assert_eq!(
+        w.pieces.len(),
+        before + 1,
+        "piece row {row} did not place at ({cx}, {cz}) level {level} loc {loc} — \
+         the fixture, not the mechanic"
+    );
+}
+
+/// Stand the wall back up if the swings so far have felled it. Three club
+/// hits (`CLUB_STRUCTURE` × 3 ≥ `WALL_HP`) take it down, and the mark test
+/// below swings four times at one wall: its fourth mark was measured
+/// against a wall that no longer existed, and read as a swing that marked
+/// nothing. Placed from the same stance, so the soft side stays toward the
+/// raider and the damage assertions keep meaning what they say.
+fn rewall(w: &mut World, cx: u16, cz: u16) {
+    if w.pieces.find(cx, cz, GROUND, LOC_EDGE_XLO).is_none() {
+        place(w, PIECE_WALL, cx, cz, GROUND, LOC_EDGE_XLO);
     }
 }
 
-/// **The mark moves with the raider.** Two people hitting opposite ends of
-/// one plank leave two scuffs, not one.
+/// A world with a foundation and one wall on its west edge, and a club-armed
+/// raider standing [`STANCE_M`] west of that face on the ground there — not
+/// pinned to the slab, because every `tick` steps the body under gravity and
+/// a pinned raider 1.5 m outside the foundation falls between two swings,
+/// which moved the eye the second mark was measured against. The wall's
+/// storey starts at the column's plate, `PIECE_LIFT_M` over the cell's
+/// terrain, so an eye 1.6 m over the ground beside it is inside the span.
 ///
-/// The mutant this kills is the obvious cheap implementation — return
-/// `build::anchor` for everything — which satisfies every assertion in the
-/// first test above, because an anchor is always on its piece. What it
-/// costs is the whole point of the slice: a wall a raider has been hitting
-/// for thirty seconds would carry exactly one mark, in the middle,
-/// wherever they stood.
+/// **Takes `&mut World` and never returns one** — `event_roles.rs`' measured
+/// rule: a `World` is ~440 kB and moving one out of a frame puts two in a
+/// debug test thread's 2 MiB stack.
 ///
-/// The free axis is asserted rather than "some coordinate differs", so a
-/// mark that moved along the *pinned* axis — off the plank — cannot pass
-/// this by being different.
-#[test]
-fn a_mark_moves_along_the_face_with_the_stance() {
-    let x0 = CX as f32 * BUILD_CELL_M;
-    let z0 = CZ as f32 * BUILD_CELL_M;
-    let feet = base();
-    let near = |loc, px, pz| piece_mark(&addr(loc, 0), base(), px, pz, feet + EYE_M);
-
-    // A wall on the -x edge runs along z: standing at the two ends of it
-    // marks the two ends of it.
-    let lo = near(LOC_EDGE_XLO, x0 - 1.0, z0 + 0.2);
-    let hi = near(LOC_EDGE_XLO, x0 - 1.0, z0 + 2.8);
-    assert!(
-        hi.2 - lo.2 > 2.0,
-        "LOC_EDGE_XLO: the mark did not travel along the plank ({} -> {})",
-        lo.2,
-        hi.2
+/// **The wall is placed from the stance**, `chip.rs`' rule and its reason:
+/// hard/soft v0 puts a placement's soft side toward the placer, so a wall
+/// built from inside and swung at from outside pays `HARD_SIDE_STRUCTURE`
+/// and every damage assertion silently becomes a test of the side rule.
+///
+/// Returns the wall's cell and the x of its face.
+fn walled(w: &mut World) -> ((u16, u16), f32) {
+    w.gather = GatherContent::probe_fixture();
+    w.combat = CombatContent::probe_fixture();
+    w.build = BuildContent::probe_fixture();
+    w.deploy = DeployContent::probe_fixture();
+    w.tick(&[Command::Join { id: RAIDER }]);
+    let (cx, cz) = buildable_cell(SEED);
+    let x0 = cx as f32 * BUILD_CELL_M;
+    let z_mid = (cz as f32 + 0.5) * BUILD_CELL_M;
+    w.players[0].body = Body::at(SEED, hv(SEED), x0 - STANCE_M, z_mid);
+    for (slot, item) in [(0usize, CLUB), (1, 1), (2, 2), (3, 4)] {
+        w.players[0].inv[slot] = ItemStack {
+            item,
+            count: 200,
+            cond: 0,
+        };
+    }
+    place(w, PIECE_FOUNDATION, cx, cz, GROUND, LOC_PLANE);
+    place(w, PIECE_WALL, cx, cz, GROUND, LOC_EDGE_XLO);
+    // Let the body settle onto its ground before anything is measured
+    // against its eye.
+    for _ in 0..8 {
+        w.tick(&[]);
+    }
+    let base = sim_core::build::column_floor_y(
+        SEED,
+        hv(SEED),
+        cx,
+        cz,
+        w.pieces.cols().plate(cx, cz).unwrap_or(0),
     );
-    assert_eq!(lo.0.to_bits(), hi.0.to_bits(), "and it stayed on the face");
-
-    // The -z edge runs along x.
-    let lo = near(LOC_EDGE_ZLO, x0 + 0.2, z0 - 1.0);
-    let hi = near(LOC_EDGE_ZLO, x0 + 2.8, z0 - 1.0);
+    let (eye_y, _) = eye(w);
     assert!(
-        hi.0 - lo.0 > 2.0,
-        "LOC_EDGE_ZLO: the mark did not travel along the plank"
+        eye_y > base && eye_y < base + LEVEL_H_M,
+        "fixture: the raider's eye ({eye_y:.2}) is outside the storey the wall \
+         spans ({base:.2}..{:.2}) — pick another cell",
+        base + LEVEL_H_M
     );
-    assert_eq!(lo.2.to_bits(), hi.2.to_bits(), "and it stayed on the face");
-
-    // A floor is surface in both axes, so both move.
-    let lo = near(LOC_PLANE, x0 + 0.2, z0 + 0.4);
-    let hi = near(LOC_PLANE, x0 + 2.8, z0 + 2.7);
-    assert!(
-        hi.0 - lo.0 > 2.0 && hi.2 - lo.2 > 2.0,
-        "LOC_PLANE: a floor is marked under the raider"
-    );
-    assert_eq!(lo.1.to_bits(), hi.1.to_bits(), "at one height, the slab's");
+    ((cx, cz), x0)
 }
 
-/// **A wall's mark climbs with the raider and stops at the storey.**
-///
-/// `combat::raid`'s `storey_ok` is the movement collider's overlap test, so
-/// a 1.7 m capsule reaches a level its eye is not inside: standing on the
-/// ground floor you can swing at the wall above you. The clamp is what
-/// keeps that mark on the wall instead of under the base, and this is the
-/// case that makes it load-bearing rather than decorative — under a mutant
-/// that drops either rail the mark leaves the plank.
-#[test]
-fn a_walls_mark_is_clamped_into_its_own_storey() {
-    let x0 = CX as f32 * BUILD_CELL_M;
-    let z0 = CZ as f32 * BUILD_CELL_M;
-    let feet = base();
-    let eye = feet + EYE_M;
+/// Hold the primary button at `(yaw, pitch)` until a swing is taken, and
+/// hand back that tick's events. Cadence, not the button, paces it.
+fn swing(w: &mut World, yaw: u16, pitch: u8) -> Vec<SimEvent> {
+    let mut seq = w.players[0].frame.seq;
+    for _ in 0..MAX_STEPS {
+        seq = seq.wrapping_add(1);
+        w.tick(&[Command::Input {
+            id: RAIDER,
+            frame: InputFrame {
+                seq,
+                buttons: BTN_PRIMARY,
+                yaw,
+                pitch,
+                move_x: 0,
+                move_z: 0,
+                sel: 0,
+            },
+            favour: 0,
+        }]);
+        if w.events.entries().iter().any(|e| e.code == EV_SWING) {
+            return w.events.entries().to_vec();
+        }
+    }
+    panic!("no swing was taken in {MAX_STEPS} ticks");
+}
 
-    // Level 0: the eye is inside the storey, so the mark is at eye height
-    // exactly — neither rail binds and the clamp is the identity.
-    let (_, my, _) = piece_mark(&addr(LOC_EDGE_XLO, 0), base(), x0 - 1.0, z0 + 1.5, eye);
-    assert_eq!(my, eye, "inside its own storey the eye is the mark");
+/// The one `EV_IMPACT` in a swing's events, unpacked to metres with its
+/// surface class — or `None` for a swing that marked nothing.
+fn impact(events: &[SimEvent]) -> Option<(u8, f32, f32, f32)> {
+    let hits: Vec<_> = events.iter().filter(|e| e.code == EV_IMPACT).collect();
+    assert!(hits.len() <= 1, "one swing left {} marks", hits.len());
+    hits.first().map(|e| {
+        (
+            (e.a >> 24) as u8,
+            (e.a & 0x00ff_ffff) as i32 as f32 * POS_XZ_Q,
+            e.c as i32 as f32 * POS_Y_Q,
+            e.b as i32 as f32 * POS_XZ_Q,
+        )
+    })
+}
 
-    // Level 1: the eye is BELOW the wall. The floor rail binds.
-    let up = base() + LEVEL_H_M;
-    let (_, my, _) = piece_mark(&addr(LOC_EDGE_XLO, 1), base(), x0 - 1.0, z0 + 1.5, eye);
-    assert_eq!(
-        my, up,
-        "a wall a storey up is marked at its foot, not below it"
-    );
+fn struct_hits(events: &[SimEvent]) -> usize {
+    events.iter().filter(|e| e.code == EV_STRUCT_HIT).count()
+}
 
-    // Standing a storey up swinging DOWN at the ground-floor wall: the
-    // ceiling rail binds, and the mark is at the top of the plank.
-    let (_, my, _) = piece_mark(
-        &addr(LOC_EDGE_XLO, 0),
-        base(),
-        x0 - 1.0,
-        z0 + 1.5,
-        up + EYE_M,
-    );
-    assert_eq!(
-        my,
-        base() + LEVEL_H_M,
-        "a wall below is marked at its head, not above it"
+/// The eye's height and z for the seated raider.
+fn eye(w: &World) -> (f32, f32) {
+    let b = w.players[0].body;
+    (b.qy as f32 * POS_Y_Q + EYE_M, b.qz as f32 * POS_XZ_Q)
+}
+
+/// The mark is on the wall: the sampler stops on the first tap whose probe
+/// reaches the slab, so the point sits at most the wall's half-thickness
+/// plus the probe in front of the plane, and at most one sample behind it —
+/// exactly where an arrow's mark sits (`tests/shoot.rs`).
+fn assert_on_face(mx: f32, x0: f32, what: &str) {
+    let lo = x0 - WALL_THICKNESS_M * 0.5 - MELEE_PROBE_M - 2.0 * POS_XZ_Q;
+    let hi = x0 + SAMPLE_STEP_M + 2.0 * POS_XZ_Q;
+    assert!(
+        mx >= lo && mx <= hi,
+        "{what}: mark x {mx:.3} is not on the wall's face at x {x0:.3} \
+         (allowed {lo:.3}..{hi:.3})"
     );
 }
 
-/// **A riser is marked on the tread**, which rises toward +Z across the
-/// storey (`collide::piece_ground`'s ramp, in words).
-///
-/// Asserted as an ORDER rather than as the formula restated: a stance
-/// further along +Z marks higher, the low end is the storey floor and the
-/// high end is the storey ceiling. A rebuild of the expression here would
-/// be the lattice trap with two authors instead of one.
 #[test]
-fn a_riser_is_marked_on_the_tread_it_rises_along() {
-    let x0 = CX as f32 * BUILD_CELL_M;
-    let z0 = CZ as f32 * BUILD_CELL_M;
-    let feet = base();
-    let at = |pz| piece_mark(&addr(LOC_RISER, 0), base(), x0 + 1.5, pz, feet + EYE_M).1;
-
-    let bottom = at(z0 - 1.0); // clamped to the low end
-    let mid = at(z0 + 1.5);
-    let top = at(z0 + BUILD_CELL_M + 1.0); // clamped to the high end
-    assert_eq!(bottom, base(), "the foot of the ramp is the storey floor");
+fn a_level_swing_marks_the_wall_at_eye_height_on_its_own_line() {
+    let mut w = World::new(SEED);
+    let (_, x0) = walled(&mut w);
+    let (eye_y, eye_z) = eye(&w);
+    let ev = swing(&mut w, YAW_PLUS_X, 128);
+    let (surf, mx, my, mz) = impact(&ev).expect("a swing at a wall 1.5 m away leaves a mark");
     assert_eq!(
-        top,
-        base() + LEVEL_H_M,
-        "the head of the ramp is the storey ceiling"
+        surf, SURF_BUILT,
+        "a struck plank is the built surface, not the ground"
+    );
+    assert_on_face(mx, x0, "level");
+    assert!(
+        (my - eye_y).max(eye_y - my) <= 2.0 * POS_Y_Q,
+        "level swing marked at y {my:.3}, eye at {eye_y:.3}"
     );
     assert!(
-        bottom < mid && mid < top,
-        "the tread rises monotonically toward +Z: {bottom} / {mid} / {top}"
+        (mz - eye_z).max(eye_z - mz) <= 2.0 * POS_XZ_Q,
+        "a swing straight along +x marked at z {mz:.3}, raider at {eye_z:.3}"
+    );
+    // And it was charged, at the soft-side price: the mark is a fact about
+    // the same blow `World::chip` billed.
+    let hit = ev
+        .iter()
+        .find(|e| e.code == EV_STRUCT_HIT)
+        .expect("the swing that marked the wall also charged it");
+    // `EV_STRUCT_HIT.c = damage << 16 | hp left` (`world.rs`).
+    assert_eq!(
+        hit.c >> 16,
+        CLUB_STRUCTURE,
+        "the soft side pays the club's whole structure column"
+    );
+    assert_eq!(
+        hit.c & 0xffff,
+        WALL_HP - CLUB_STRUCTURE,
+        "and the wall keeps the rest"
+    );
+}
+
+#[test]
+fn the_mark_follows_the_aim_down_up_and_across() {
+    let mut w = World::new(SEED);
+    let ((cx, cz), x0) = walled(&mut w);
+    let base = sim_core::build::column_floor_y(
+        SEED,
+        hv(SEED),
+        cx,
+        cz,
+        w.pieces.cols().plate(cx, cz).unwrap_or(0),
+    );
+
+    // The eye is read before EACH swing: nothing moves the body between
+    // them, and reading it once and trusting it is how the first draft of
+    // this test measured a mark against an eye that had since fallen.
+    let down = pitch_toward(-0.7, STANCE_M);
+    let up = pitch_toward(0.7, STANCE_M);
+    let (eye_y, _) = eye(&w);
+    let (_, mx_down, y_down, _) = impact(&swing(&mut w, YAW_PLUS_X, down)).expect("down lands");
+    assert_on_face(mx_down, x0, "down");
+    assert!(
+        y_down < eye_y - 0.4 && y_down >= base - 2.0 * POS_Y_Q,
+        "aimed 25° down the mark sits at {y_down:.3} (eye {eye_y:.3}, storey base {base:.3})"
+    );
+    let (eye_y, eye_z) = eye(&w);
+    rewall(&mut w, cx, cz);
+    let (_, mx_up, y_up, _) = impact(&swing(&mut w, YAW_PLUS_X, up)).expect("up lands");
+    assert!(
+        y_up > eye_y + 0.4 && y_up <= base + LEVEL_H_M + 2.0 * POS_Y_Q,
+        "aimed 25° up the mark sits at {y_up:.3} (eye {eye_y:.3}, storey top {:.3})",
+        base + LEVEL_H_M
+    );
+    assert_on_face(mx_up, x0, "up");
+
+    // Yawed eight LUT steps (11°) either side: the mark slides along the
+    // face, on the side the yaw turned to. Index 0 is +Z and increasing
+    // index rotates toward +X, so a smaller index than +X leans toward +Z.
+    let left = YAW_PLUS_X.wrapping_sub(8 << 8);
+    let right = YAW_PLUS_X.wrapping_add(8 << 8);
+    rewall(&mut w, cx, cz);
+    let (_, mx_l, _, z_l) = impact(&swing(&mut w, left, 128)).expect("left lands");
+    rewall(&mut w, cx, cz);
+    let (_, mx_r, _, z_r) = impact(&swing(&mut w, right, 128)).expect("right lands");
+    assert_on_face(mx_l, x0, "yawed toward +z");
+    assert_on_face(mx_r, x0, "yawed toward -z");
+    assert!(
+        z_l > eye_z + 0.15 && z_r < eye_z - 0.15,
+        "yawing moved the mark to z {z_l:.3} and {z_r:.3} around {eye_z:.3} — \
+         it should slide along the face with the aim"
+    );
+    // Still inside the wall's own cell along its face.
+    let z0 = cz as f32 * BUILD_CELL_M;
+    for (z, what) in [(z_l, "left"), (z_r, "right")] {
+        assert!(
+            z >= z0 - 2.0 * POS_XZ_Q && z <= z0 + BUILD_CELL_M + 2.0 * POS_XZ_Q,
+            "{what}: mark z {z:.3} is off the wall's span {z0:.3}..{:.3}",
+            z0 + BUILD_CELL_M
+        );
+    }
+}
+
+#[test]
+fn over_the_wall_marks_nothing_built_and_the_ground_is_the_ground() {
+    let mut w = World::new(SEED);
+    let ((cx, cz), _) = walled(&mut w);
+    let hp_before = w
+        .pieces
+        .find(cx, cz, GROUND, LOC_EDGE_XLO)
+        .expect("the wall stands")
+        .hp;
+
+    // 60° up from 1.5 m away clears a 3 m storey from a 1.6 m eye by a
+    // metre — and a 2 m reach ends in the air.
+    let over = pitch_toward(2.6, STANCE_M);
+    let ev = swing(&mut w, YAW_PLUS_X, over);
+    assert!(
+        impact(&ev).is_none_or(|(surf, ..)| surf != SURF_BUILT),
+        "a swing pitched over the wall marked it"
+    );
+    assert_eq!(
+        struct_hits(&ev),
+        0,
+        "a swing pitched over the wall charged it"
+    );
+
+    // Straight down: the dirt at the feet, and the wall is untouched.
+    let ev = swing(&mut w, YAW_PLUS_X, 0);
+    let (surf, ..) = impact(&ev).expect("a swing straight down meets the ground");
+    assert_eq!(surf, SURF_GROUND, "a swing at the ground marks the ground");
+    assert_eq!(struct_hits(&ev), 0);
+    assert_eq!(
+        w.pieces
+            .find(cx, cz, GROUND, LOC_EDGE_XLO)
+            .expect("the wall stands")
+            .hp,
+        hp_before,
+        "the wall lost hp to swings that never met it"
     );
 }

@@ -481,12 +481,14 @@ pub fn palm_rig() -> Vec3 {
 /// is what *"lines up with where you aim"* means in this repo, and it is the
 /// half a pixel gate could never have seen.
 ///
-/// **What it deliberately cannot fix**: the sim aims in yaw alone
-/// (`gather::CONE_COS`, `DY_MAX_M`), so a thrust drawn at the ground still
-/// lands on a body in front of you. The picture follows the camera's pitch
-/// because the camera is what the player is aiming with; the sim's planar
-/// cone is a spoken v0 decision (`DECISIONS.md`, gather verb v0) and not this
-/// module's to overrule.
+/// **What it could not fix, and what closed it the same day**: until melee
+/// aim v1 (2026-09-05) the sim aimed in yaw alone, so a thrust drawn at the
+/// ground still landed on a body in front of you and this paragraph said the
+/// planar cone was a spoken v0 decision not this module's to overrule. The
+/// operator overruled it — *"we need to step back and make this a PROPER
+/// VIDEO GAME"* — and a swing is a ray along the look now (`melee::cast`,
+/// yaw AND pitch), so the picture's pitch and the sim's agree by
+/// construction: both read `look.pitch` through `pitch_u8`.
 ///
 /// A row too short to reach the axis from where the palm sits — `ahead²`
 /// under the palm's lateral offset squared — aims straight down −Z instead,

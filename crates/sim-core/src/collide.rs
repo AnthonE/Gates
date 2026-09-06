@@ -1653,8 +1653,9 @@ pub fn blocked(
 /// address no longer holds a piece is simply no longer a hit.
 ///
 /// `loc` is one of `build`'s `LOC_*` — the same four-part address
-/// `combat::raid` picks and `deploy::damage_piece` writes against, so a shot
-/// and a swing name a wall identically.
+/// `melee::cast`'s world arm picks (a swing walks this same sampler since
+/// melee aim v1) and `deploy::damage_piece` writes against, so a shot and a
+/// swing name a wall identically.
 ///
 /// ⚠ **The address alone does not say which STORE**, and since
 /// [`deploy_stop`] it is returned by a walk over both. `Deploys::find_index`

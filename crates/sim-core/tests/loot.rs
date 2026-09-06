@@ -80,9 +80,11 @@ fn scanned_slot(kind: Occupant) -> (f32, f32, f32) {
     panic!("no {kind:?} on this island — the scatter table changed under this gate");
 }
 
-/// One player stood exactly on the first barrel. Point-blank on purpose:
-/// `POINT_BLANK_M2` bypasses the aim cone, so the fixture never has to
-/// reproduce a yaw to make a swing land.
+/// One player stood exactly on the first barrel, looking straight down at
+/// it (pitch 0). On purpose: from a 1.6 m eye over the drum's centre the
+/// ray enters its 0.88 m top whatever the yaw, so the fixture never has to
+/// reproduce a heading to make a swing land. It leant on a planar cone's
+/// point-blank exemption until melee aim v1 made the swing a ray.
 ///
 /// Returns the `World` bare and never inside a tuple or a wrapper: it is a
 /// large fixed-capacity value and an unoptimized build puts a construction

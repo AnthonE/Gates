@@ -912,55 +912,12 @@ fn a_stop_before_the_head_is_not_a_headshot() {
     );
 }
 
-/// A swing has no head, and that is the sim's answer rather than an
-/// oversight.
-///
-/// **Two bodies at the same feet height, one hit with the melee row's
-/// reach.** `combat::strike` resolves feet-to-feet in a plane, so there is
-/// no altitude for a band to test; `MeleeDef` has no `headshot_mult` field
-/// at all, which is what makes this check a *compile-time* claim as much as
-/// a runtime one. If a melee head ever lands, this file is where the
-/// decision has to be re-made rather than silently inherited.
-///
-/// Not mutant-tested, and it cannot usefully be: the claim is the
-/// **absence** of a field, which a one-line mutation cannot express — a
-/// melee head is a design change, and this check is where it has to be
-/// argued rather than inherited.
-#[test]
-fn a_swing_has_no_head_to_find() {
-    let mut cc = fixture();
-    const AXE: u16 = 9;
-    cc.melee[AXE as usize] = sim_core::combat::MeleeDef {
-        damage: 10,
-        structure: 0,
-        reach_cm: 300,
-    };
-    let mut players = Box::new([Player::default(); MAX_PLAYERS]);
-    players[0] = shooter(1, 0.0, 400.0, 0.0, AXE, NO_ITEM, LEVEL);
-    // Standing where a bullet would take the head: same ground, so the
-    // attacker's eye is 1.6 m up their 1.7 m body.
-    players[1] = target(2, 0.0, 400.0, 1.0);
-
-    let mut events = EventQueue::default();
-    let out = combat::strike(
-        &cc,
-        0,
-        &mut players,
-        &mut events,
-        &sim_core::rewind::Rewind::new(),
-        0,
-        0,
-    );
-    assert!(
-        !matches!(out, combat::Strike::Missed),
-        "the swing must land, or this proves nothing"
-    );
-    assert_eq!(
-        100 - players[1].hp,
-        10,
-        "melee is the row's own damage: there is no head to double"
-    );
-}
+// `a_swing_has_no_head_to_find` stood here until melee aim v1 (2026-09-05)
+// and asserted the ABSENCE of a melee head — a compile-time claim, since
+// `MeleeDef` had no `headshot_mult`. It has one now: a swing is a cast along
+// the look ray (`sim-core/src/melee.rs`) and pays the same ladder a shot
+// pays. The decision that test said had to be re-made here was re-made by
+// the operator, and the positive claims live in `tests/melee_aim.rs`.
 
 /// The multiplier saturates rather than wrapping, so a hit can never heal.
 ///

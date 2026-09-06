@@ -395,10 +395,10 @@ pub const HAFTED_YAW: f32 = -0.663;
 /// horizon, where a thrust drives it down the view axis at whatever the
 /// crosshair is on (operator, 2026-09-05: *"spear needs a thrust animation"*).
 ///
-/// **The sim knows nothing of this and must not.** `gather::swing` and
-/// `combat::strike` resolve every melee item on one planar cone at one reach,
-/// so a chop and a thrust are the same tick to the server; this only says
-/// where the picture goes. What the picture owes the sim is the other half of
+/// **The sim knows nothing of this and must not.** `melee::cast` resolves
+/// every melee item as one ray along the look at the row's reach, so a chop
+/// and a thrust are the same tick to the server; this only says where the
+/// picture goes. What the picture owes the sim is the other half of
 /// the same request — *"figure if everything lines up with where u aim"* — and
 /// that is a gate rather than a field: `tests/viewmodel_arms.rs` holds a
 /// thrust row's point on the view axis at the apex, at a depth inside the body

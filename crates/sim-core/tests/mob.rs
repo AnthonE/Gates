@@ -12,7 +12,7 @@ use sim_core::limits::{
     DAY_PORTION, DAY_TICKS, MAX_MOBS, MAX_PLAYERS, MOB_ID_TAG, MOB_THINK_TICKS, MOB_WAKE_CM,
 };
 use sim_core::mob::{self, MobContent, MOB_PIG, MOB_WOLF};
-use sim_core::movement::{Body, POS_XZ_Q};
+use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q};
 use sim_core::terrain;
 use sim_core::world::{self, Command, World};
 use sim_core::yaw_dir;
@@ -343,6 +343,34 @@ fn hunt_world() -> (World, usize) {
     (w, slot)
 }
 
+/// The pitch byte that looks from player `attacker`'s eye at the middle of
+/// animal `slot`'s body — a scan of the sim's own LUT (no trig; the crate's
+/// clippy walls bind this suite).
+fn aim_at_mob(w: &World, attacker: usize, slot: usize) -> u8 {
+    let a = w.players[attacker].body;
+    let m = w.mobs.m[slot].body;
+    let h = f32::from(w.mob.def(w.mobs.m[slot].kind).body_h_cm) * 0.01;
+    let (dx, dz) = (
+        (m.qx - a.qx) as f32 * POS_XZ_Q,
+        (m.qz - a.qz) as f32 * POS_XZ_Q,
+    );
+    let run = (dx * dx + dz * dz).sqrt();
+    let rise =
+        (m.qy - a.qy) as f32 * POS_Y_Q + h * 0.5 - sim_core::ranged::ARROW_EYE_MM as f32 / 1000.0;
+    let len = (rise * rise + run * run).sqrt();
+    let mut best = 128u8;
+    let mut best_dot = f32::MIN;
+    for b in 0..=255u8 {
+        let (ch, sv) = sim_core::pitch_dir(b);
+        let dot = (ch * run + sv * rise) / len;
+        if dot > best_dot {
+            best_dot = dot;
+            best = b;
+        }
+    }
+    best
+}
+
 /// Hold the swing until the pig dies. Cadence, not re-pressing, paces the
 /// swings; every tick is checked because the kill can land on any of them.
 fn kill_the_pig(w: &mut World, slot: usize) {
@@ -352,11 +380,14 @@ fn kill_the_pig(w: &mut World, slot: usize) {
         cond: 0,
     };
     for seq in 0..(SWING_INTERVAL_TICKS as u16 * 8) {
+        // Down at the animal: a pig is 0.8 m tall (`body_h_cm`) and a
+        // swing is a ray from a 1.6 m eye since melee aim v1, so a level
+        // one passes clean over it — you look at what you are hunting.
         let frame = InputFrame {
             seq,
             buttons: BTN_PRIMARY,
             yaw: 0,
-            pitch: 128,
+            pitch: aim_at_mob(w, 0, slot),
             sel: 0,
             ..InputFrame::default()
         };

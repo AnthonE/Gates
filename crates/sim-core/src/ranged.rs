@@ -83,7 +83,8 @@
 //! address the walk already had in hand and threw away. The write is
 //! `deploy::damage_piece`, the same one a swing uses, through
 //! `World::chip`; the sides, the removal budget and the `EV_STRUCT_HIT`
-//! payload are `combat::raid`'s and are not restated here.
+//! payload were `combat::raid`'s and are `World::chip`'s now, for a swing
+//! and a shot alike (melee aim v1), and are not restated here.
 //!
 //! **A deployable stops one now too** (2026-08-28, `NOW.md` §0mk item 2).
 //! It was a different hole in a different walk — `shot_stop` reads edges,
@@ -318,7 +319,7 @@ pub const ARROW_R_M: f32 = 0.05;
 
 /// Millimetres in a metre — the one conversion this module makes, named so
 /// the collision calls read as unit changes rather than magic scaling.
-const MM_PER_M: f32 = 1000.0;
+pub const MM_PER_M: f32 = 1000.0;
 
 /// What an arrow stopped on (`EV_IMPACT`'s surface field) — the ground, a
 /// thing worldgen put there, or a thing a player built.
@@ -747,8 +748,17 @@ pub fn step(
         // answered, because that is the difference between a puff of dirt,
         // a chip of bark and a splintered plank, and it is knowable here
         // and nowhere else (`SURF_*`).
-        let (stop_t, surf, built) =
-            world_stop(seed, haven, cols, occ, (ox, oy, oz), (sx, sy, sz), n, n);
+        let (stop_t, surf, built) = world_stop(
+            seed,
+            haven,
+            cols,
+            occ,
+            (ox, oy, oz),
+            (sx, sy, sz),
+            n,
+            n,
+            ARROW_R_M,
+        );
 
         // Pass two: the nearest body whose closest approach to the segment
         // comes at or before the world's stop. Solved rather than sampled,
@@ -946,14 +956,14 @@ pub struct Struck {
 #[derive(Clone, Copy, Default)]
 pub struct Chip {
     /// Which piece — `build`'s four-part address, the same one
-    /// `combat::raid` picks and `deploy::damage_piece` writes against, so a
-    /// shot and a swing name a wall identically.
+    /// `melee::cast`'s world arm picks and `deploy::damage_piece` writes
+    /// against, so a shot and a swing name a wall identically.
     pub hit: collide::PieceHit,
     /// Which store that address names ([`Struck::deploy`], carried out).
     /// `World::chip` re-resolves through `Deploys::find_index` and
     /// `deploy::damage_deploy` when it is set, and pays no side price:
-    /// a box has no facing, exactly as `combat::raid`'s own
-    /// `Target::Deploy` arm and `charge::detonate` already have it.
+    /// a box has no facing, exactly as `charge::detonate` has it (and as
+    /// `combat::raid`'s `Target::Deploy` arm had it before the ray).
     pub deploy: bool,
     /// What to take off it: the firing weapon's `structure` column. Never
     /// zero — a weapon with no structure column produces no `Chip` at all,
@@ -987,8 +997,11 @@ pub struct Chip {
 /// and two copies of this ladder would be two chances for a bullet and an
 /// arrow to disagree about what a trunk is — the shape `CLAUDE.md`'s
 /// event-payload trap warns about, one crate over.
+/// `probe` is the sample's own extent, metres — an arrowhead's
+/// [`ARROW_R_M`] for both shots, `melee::MELEE_PROBE_M` for a swing, which
+/// is how a swing gets its forgiveness at a plank without a second walk.
 #[allow(clippy::too_many_arguments)]
-fn world_stop(
+pub(crate) fn world_stop(
     seed: u64,
     haven: &terrain::Haven,
     cols: &ColIndex,
@@ -997,6 +1010,7 @@ fn world_stop(
     s: (f32, f32, f32),
     n: usize,
     upto: usize,
+    probe: f32,
 ) -> (f32, Option<u8>, Option<Struck>) {
     let (ox, oy, oz) = o;
     let (sx, sy, sz) = s;
@@ -1020,7 +1034,7 @@ fn world_stop(
         let mut hit = None;
         let what = if py <= terrain::ground(seed, haven, px, pz) {
             Some(SURF_GROUND)
-        } else if occ.blocks_volume(seed, px, pz, py, ARROW_R_M, ARROW_R_M) {
+        } else if occ.blocks_volume(seed, px, pz, py, probe, probe) {
             Some(SURF_WORLD)
         } else {
             // Pieces, then deployables — and this is not a tie-break, it is
@@ -1035,10 +1049,10 @@ fn world_stop(
             // a box's base meets the floor it stands on, and there the
             // plane answering first is the honest read: at that altitude
             // the slab is what the arrowhead is in.
-            hit = collide::shot_stop(seed, haven, cols, prev.0, prev.1, px, pz, py, ARROW_R_M)
+            hit = collide::shot_stop(seed, haven, cols, prev.0, prev.1, px, pz, py, probe)
                 .map(|at| Struck { at, deploy: false })
                 .or_else(|| {
-                    collide::deploy_stop(seed, haven, cols, px, pz, py, ARROW_R_M)
+                    collide::deploy_stop(seed, haven, cols, px, pz, py, probe)
                         .map(|at| Struck { at, deploy: true })
                 });
             hit.map(|_| SURF_BUILT)
@@ -1077,7 +1091,7 @@ fn world_stop(
 /// is the tick the client aimed on, against bodies that client was drawing
 /// `INTERP_DELAY_TICKS` in the past.
 #[derive(Clone, Copy)]
-enum Pose<'a> {
+pub(crate) enum Pose<'a> {
     /// Present tick. Bit-identical to the scan before this type existed.
     Live,
     /// `back` ticks before `tick`, out of the ring, per slot.
@@ -1241,7 +1255,7 @@ pub fn part_crossed(oy: f32, sy: f32, feet_mm: f32, t_lo: f32, t_hi: f32) -> Par
 /// `combat::strike`'s rule word for word: the ring stores a position, not a
 /// life, and a body that has since died or left is not a target however
 /// solid it looked `back` ticks ago.
-fn nearest_body(
+pub(crate) fn nearest_body(
     players: &[Player; MAX_PLAYERS],
     o: (f32, f32, f32),
     s: (f32, f32, f32),
@@ -1625,8 +1639,17 @@ pub fn hitscan(
             Some(b) => (b.t * n as f32) as usize + 1,
             None => MAX_HITSCAN_MARK_SAMPLES,
         };
-        let (stop_t, surf, built) =
-            world_stop(seed, haven, cols, occ, (ox, oy, oz), (sx, sy, sz), n, upto);
+        let (stop_t, surf, built) = world_stop(
+            seed,
+            haven,
+            cols,
+            occ,
+            (ox, oy, oz),
+            (sx, sy, sz),
+            n,
+            upto,
+            ARROW_R_M,
+        );
         let best = seen.filter(|b| b.t <= stop_t);
 
         if let Some(BodyHit {

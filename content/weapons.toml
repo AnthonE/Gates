@@ -22,10 +22,13 @@
 # taste call until a weapon earns an override — which is what the columns
 # are for and why they are per-row and not two globals.
 #
-# **Only `bow` and `firearm` rows reach the sim** (`bake_ranged`). The melee
-# rows carry both columns priced for a mechanic that does not exist: a swing
-# is resolved feet-to-feet in a plane, so there is no height to test
-# (`combat::strike`, and `RangedDef::headshot_mult`'s doc says it in full).
+# **Every row reaches the sim now** (melee aim v1, 2026-09-05). The melee
+# rows carried both columns priced for a mechanic that did not exist — a
+# swing was resolved feet-to-feet in a plane, so there was no height to
+# test — and `bake_combat` dropped them one line before `MeleeDef` could
+# hold them. A swing is a cast along the look ray since `melee.rs`, so a
+# spear crossing a skull pays `headshot_mult` and one that reaches only the
+# shins pays `limb_pct`, exactly as an arrow does (`combat::strike_body`).
 
 # --- tools that are also weapons ---------------------------------------
 #

@@ -1007,14 +1007,35 @@ fn the_counts_line_names_which_wait_it_is_in() {
 
 // ---------------------------------------------------------------------------
 // The swing resolver. These assertions are the ones `ci/ui_smoke.mjs` used to
-// make about `resolveSwing` before the browser client was deleted; they are
-// re-earned here in Rust, against the mesh and the scan this client actually
-// ships, rather than left as a hole (`NOW.md` §0y).
+// make about `resolveSwing` before the browser client was deleted; they were
+// re-earned in Rust against a 3×3 planar walk (`NOW.md` §0y), and since melee
+// aim v1 (2026-09-05) they hold against the sim's own cast: `resolve_swing`
+// IS `sim_core::melee::node_cast` over the client's memo, so what is gated
+// here is that the prompt is handed the right eye and the right look — and,
+// in `the_prompt_and_the_swing_agree`, that a real `World` fed the same look
+// reaches the node exactly when the prompt names one.
 
+use client::look::{pitch_u8, yaw_u16};
 use client::ui::interact::{resolve_swing, swing_label, Island, SwingAim, SwingPick};
-use sim_core::gather::{CONE_COS, DY_MAX_M, POINT_BLANK_M2, REACH_M as SWING_REACH_M};
+use sim_core::gather::REACH_M as SWING_REACH_M;
+use sim_core::melee::swing_volume;
 use sim_core::occupy::{Harvested, Pristine, SlotCache};
 use sim_core::terrain::{scatter, Occupant, ScatterTable, CELL_SIZE};
+
+/// The eye over the feet, metres — the sim's own (`ranged::ARROW_EYE_MM`),
+/// which is where `melee::ray` starts every swing.
+const EYE_M: f32 = sim_core::ranged::ARROW_EYE_MM as f32 / 1000.0;
+/// Wire pitch for a level look (`InputFrame::pitch`: 0 straight down, 255
+/// straight up).
+const LEVEL: u8 = 128;
+/// Wire yaw due +x, and its opposite (`yaw_dir`: index 0 is +z, 64 << 8 +x).
+const YAW_PLUS_X: u16 = 64 << 8;
+const YAW_MINUS_X: u16 = 192 << 8;
+/// How far short of a node's SKIN the tests stand. Skin rather than axis,
+/// because that is what the ray measures reach to: an ore node is 0.91 m
+/// across and a trunk 0.24, and "a metre from the centre" is inside the one
+/// and a stride from the other.
+const SHORT_M: f32 = 0.6;
 
 /// A harvested set naming exactly one cell, so "the sim already took it" is
 /// testable without standing a server up.
@@ -1041,7 +1062,59 @@ fn find_slot(seed: u64, want: Occupant) -> Option<(i32, i32, f32, f32, f32)> {
     None
 }
 
-/// Standing on a node and looking at it names it; the label is the kind.
+/// The first ore node the island offers — the three kinds share one volume
+/// (`terrain::occupant_volume`), and the pitch tests below only need a node
+/// shorter than the eye.
+fn find_short_node(seed: u64) -> (Occupant, f32, f32, f32) {
+    for want in [
+        Occupant::StoneNode,
+        Occupant::MetalNode,
+        Occupant::SulfurNode,
+    ] {
+        if let Some((_, _, x, y, z)) = find_slot(seed, want) {
+            return (want, x, y, z);
+        }
+    }
+    panic!(
+        "seed {seed} has no ore node inside the scan — the scatter table changed under this gate"
+    );
+}
+
+/// An aim from feet `(px, py, pz)` at the point `(tx, ty, tz)`, through the
+/// same two conversions the input frame uses (`look::{yaw_u16, pitch_u8}`) —
+/// so a test aims the way a player does, by looking at the thing.
+fn aim_at(px: f32, py: f32, pz: f32, tx: f32, ty: f32, tz: f32) -> SwingAim {
+    let (dx, dy, dz) = (tx - px, ty - (py + EYE_M), tz - pz);
+    SwingAim {
+        x: px,
+        y: py,
+        z: pz,
+        yaw: yaw_u16(dx.atan2(dz)),
+        pitch: pitch_u8(dy.atan2((dx * dx + dz * dz).sqrt())),
+    }
+}
+
+/// A level look along the wire yaw from feet `(px, py, pz)`.
+fn level(px: f32, py: f32, pz: f32, yaw: u16) -> SwingAim {
+    SwingAim {
+        x: px,
+        y: py,
+        z: pz,
+        yaw,
+        pitch: LEVEL,
+    }
+}
+
+/// Where a test stands to swing at a node whose axis is at `sx` and whose
+/// radius is `r`: `SHORT_M` west of the skin, on the node's own z.
+fn stance(sx: f32, r: f32) -> f32 {
+    sx - (r + SHORT_M)
+}
+
+/// Standing short of a node and looking at it names it; the label is the
+/// kind. The look is aimed at each kind's own middle — level at a trunk
+/// taller than you, down at the belly of a knee-high node — because that is
+/// what a swing is: a ray, not a radius.
 #[test]
 fn a_swing_names_what_it_would_hit() {
     let seed = 7;
@@ -1060,17 +1133,10 @@ fn a_swing_names_what_it_would_hit() {
         let Some((cx, cz, sx, sy, sz)) = find_slot(seed, want) else {
             continue;
         };
-        // Stand one metre short of it, looking straight at it.
-        let px = sx - 1.0;
-        let pz = sz;
+        let (r, top) = swing_volume(want);
+        let aim_y = sy + (top * 0.5).min(EYE_M);
         let pick = resolve_swing(
-            SwingAim {
-                x: px,
-                y: sy,
-                z: pz,
-                fx: 1.0,
-                fz: 0.0,
-            },
+            aim_at(stance(sx, r), sy, sz, sx, aim_y, sz),
             &mut Island {
                 seed,
                 table: &table,
@@ -1081,7 +1147,7 @@ fn a_swing_names_what_it_would_hit() {
         );
         assert_eq!(
             pick.occupant, want as u8,
-            "{want:?} at cell ({cx},{cz}) was not picked from 1 m in front of it"
+            "{want:?} at cell ({cx},{cz}) was not picked from {SHORT_M} m in front of its skin"
         );
         assert_eq!((pick.cx, pick.cz), (cx as u16, cz as u16));
         assert!(
@@ -1111,25 +1177,20 @@ fn a_rock_is_not_a_target() {
     assert_eq!(swing_label(8), "");
 }
 
-/// Looking away from a node in reach must whiff: the cone is the aim, and a
+/// Looking away from a node in reach must whiff: the look is the aim, and a
 /// prompt that ignored it would name a thing behind the player.
 #[test]
-fn the_cone_is_the_aim() {
+fn the_look_is_the_aim() {
     let seed = 7;
     let table = ScatterTable::alpha_default();
     let haven = sim_core::terrain::haven(seed);
     let mut cache = SlotCache::new();
     let (_, _, sx, sy, sz) = find_slot(seed, Occupant::Tree).expect("seed 7 has a tree");
-    let px = sx - 1.0;
+    let (r, _) = swing_volume(Occupant::Tree);
+    let px = stance(sx, r);
 
     let toward = resolve_swing(
-        SwingAim {
-            x: px,
-            y: sy,
-            z: sz,
-            fx: 1.0,
-            fz: 0.0,
-        },
+        level(px, sy, sz, YAW_PLUS_X),
         &mut Island {
             seed,
             table: &table,
@@ -1141,13 +1202,7 @@ fn the_cone_is_the_aim() {
     assert_eq!(toward.occupant, Occupant::Tree as u8);
 
     let away = resolve_swing(
-        SwingAim {
-            x: px,
-            y: sy,
-            z: sz,
-            fx: -1.0,
-            fz: 0.0,
-        },
+        level(px, sy, sz, YAW_MINUS_X),
         &mut Island {
             seed,
             table: &table,
@@ -1162,23 +1217,64 @@ fn the_cone_is_the_aim() {
     );
 }
 
-/// Point blank beats the cone — you can hit what you are standing in.
+/// **Pitch is part of the aim.** An ore node is 1.13 m tall and the eye is
+/// 1.6 m up, so a level look from in front of it passes clean over the top —
+/// the prompt must whiff there and name the node once the look drops onto it.
+/// Until melee aim v1 the sim ignored pitch and so did this prompt, and a
+/// swing drawn at the sky landed on the rock in front of you; the sky case
+/// is here too, against a trunk that a level look does take.
 #[test]
-fn point_blank_ignores_the_cone() {
+fn the_pitch_is_the_aim_too() {
     let seed = 7;
     let table = ScatterTable::alpha_default();
     let haven = sim_core::terrain::haven(seed);
     let mut cache = SlotCache::new();
-    let (_, _, sx, sy, sz) = find_slot(seed, Occupant::Tree).expect("seed 7 has a tree");
-    // Inside POINT_BLANK_M2, facing the wrong way entirely.
-    let off = (POINT_BLANK_M2.sqrt()) * 0.5;
-    let pick = resolve_swing(
+    let (kind, sx, sy, sz) = find_short_node(seed);
+    let (r, top) = swing_volume(kind);
+    assert!(
+        top < EYE_M,
+        "fixture: {kind:?} outgrew the eye ({top} m) — this test needs a node shorter than 1.6 m"
+    );
+    let px = stance(sx, r);
+
+    let over = resolve_swing(
+        level(px, sy, sz, YAW_PLUS_X),
+        &mut Island {
+            seed,
+            table: &table,
+            haven: &haven,
+            harvested: &Pristine,
+            cache: &mut cache,
+        },
+    );
+    assert_eq!(
+        over.occupant, 0,
+        "a level look from a {EYE_M} m eye passes over a {top} m {kind:?}, and the prompt named it anyway"
+    );
+    let onto = resolve_swing(
+        aim_at(px, sy, sz, sx, sy + top * 0.5, sz),
+        &mut Island {
+            seed,
+            table: &table,
+            haven: &haven,
+            harvested: &Pristine,
+            cache: &mut cache,
+        },
+    );
+    assert_eq!(
+        onto.occupant, kind as u8,
+        "looking down at the {kind:?} must name it"
+    );
+
+    let (_, _, tx, ty, tz) = find_slot(seed, Occupant::Tree).expect("seed 7 has a tree");
+    let (tr, _) = swing_volume(Occupant::Tree);
+    let sky = resolve_swing(
         SwingAim {
-            x: sx + off,
-            y: sy,
-            z: sz,
-            fx: -1.0,
-            fz: 0.0,
+            x: stance(tx, tr),
+            y: ty,
+            z: tz,
+            yaw: YAW_PLUS_X,
+            pitch: 255,
         },
         &mut Island {
             seed,
@@ -1189,14 +1285,15 @@ fn point_blank_ignores_the_cone() {
         },
     );
     assert_eq!(
-        pick.occupant,
-        Occupant::Tree as u8,
-        "point blank must ignore the cone"
+        sky.occupant, 0,
+        "a swing at the sky named the tree under it"
     );
 }
 
 /// Past `REACH_M` is a whiff however well aimed — the reach is a wall, and a
-/// prompt that outran the sim's own scan would invite a swing that refuses.
+/// prompt that outran the sim's own cast would invite a swing that refuses.
+/// Measured to the trunk's SKIN along the ray, which is where the sim measures
+/// it: the arm reaches what it touches, not the axis behind it.
 #[test]
 fn reach_bounds_the_prompt() {
     let seed = 7;
@@ -1204,15 +1301,10 @@ fn reach_bounds_the_prompt() {
     let haven = sim_core::terrain::haven(seed);
     let mut cache = SlotCache::new();
     let (_, _, sx, sy, sz) = find_slot(seed, Occupant::Tree).expect("seed 7 has a tree");
+    let (r, _) = swing_volume(Occupant::Tree);
 
     let inside = resolve_swing(
-        SwingAim {
-            x: sx - SWING_REACH_M * 0.9,
-            y: sy,
-            z: sz,
-            fx: 1.0,
-            fz: 0.0,
-        },
+        level(sx - (r + SWING_REACH_M * 0.9), sy, sz, YAW_PLUS_X),
         &mut Island {
             seed,
             table: &table,
@@ -1224,17 +1316,11 @@ fn reach_bounds_the_prompt() {
     assert_eq!(
         inside.occupant,
         Occupant::Tree as u8,
-        "0.9 x reach must hit"
+        "skin at 0.9 x reach must hit"
     );
 
     let outside = resolve_swing(
-        SwingAim {
-            x: sx - SWING_REACH_M * 1.1,
-            y: sy,
-            z: sz,
-            fx: 1.0,
-            fz: 0.0,
-        },
+        level(sx - (r + SWING_REACH_M * 1.1), sy, sz, YAW_PLUS_X),
         &mut Island {
             seed,
             table: &table,
@@ -1243,7 +1329,7 @@ fn reach_bounds_the_prompt() {
             cache: &mut cache,
         },
     );
-    assert_eq!(outside.occupant, 0, "1.1 x reach must whiff");
+    assert_eq!(outside.occupant, 0, "skin at 1.1 x reach must whiff");
 }
 
 /// A harvested cell is not a target. The browser needed `hidden || fellAt`
@@ -1257,16 +1343,11 @@ fn the_sim_having_taken_it_ends_the_prompt() {
     let haven = sim_core::terrain::haven(seed);
     let mut cache = SlotCache::new();
     let (cx, cz, sx, sy, sz) = find_slot(seed, Occupant::Tree).expect("seed 7 has a tree");
-    let px = sx - 1.0;
+    let (r, _) = swing_volume(Occupant::Tree);
+    let px = stance(sx, r);
 
     let standing = resolve_swing(
-        SwingAim {
-            x: px,
-            y: sy,
-            z: sz,
-            fx: 1.0,
-            fz: 0.0,
-        },
+        level(px, sy, sz, YAW_PLUS_X),
         &mut Island {
             seed,
             table: &table,
@@ -1279,13 +1360,7 @@ fn the_sim_having_taken_it_ends_the_prompt() {
 
     let taken = OneHarvested(cx as u16, cz as u16);
     let gone = resolve_swing(
-        SwingAim {
-            x: px,
-            y: sy,
-            z: sz,
-            fx: 1.0,
-            fz: 0.0,
-        },
+        level(px, sy, sz, YAW_PLUS_X),
         &mut Island {
             seed,
             table: &table,
@@ -1300,57 +1375,6 @@ fn the_sim_having_taken_it_ends_the_prompt() {
     );
 }
 
-/// The vertical window. A node far above or below the eye is out of the
-/// swing even when its planar distance is nothing.
-#[test]
-fn the_vertical_window_bounds_it() {
-    let seed = 7;
-    let table = ScatterTable::alpha_default();
-    let haven = sim_core::terrain::haven(seed);
-    let mut cache = SlotCache::new();
-    let (_, _, sx, sy, sz) = find_slot(seed, Occupant::Tree).expect("seed 7 has a tree");
-    let px = sx - 1.0;
-
-    let level = resolve_swing(
-        SwingAim {
-            x: px,
-            y: sy,
-            z: sz,
-            fx: 1.0,
-            fz: 0.0,
-        },
-        &mut Island {
-            seed,
-            table: &table,
-            haven: &haven,
-            harvested: &Pristine,
-            cache: &mut cache,
-        },
-    );
-    assert_eq!(level.occupant, Occupant::Tree as u8);
-
-    let below = resolve_swing(
-        SwingAim {
-            x: px,
-            y: sy + DY_MAX_M * 1.5,
-            z: sz,
-            fx: 1.0,
-            fz: 0.0,
-        },
-        &mut Island {
-            seed,
-            table: &table,
-            haven: &haven,
-            harvested: &Pristine,
-            cache: &mut cache,
-        },
-    );
-    assert_eq!(
-        below.occupant, 0,
-        "a node {DY_MAX_M} m below the eye must whiff"
-    );
-}
-
 /// The pick is a pure function of its inputs: the prompt drawn on one frame
 /// and the verb run on the click cannot differ while the world stands still.
 #[test]
@@ -1360,14 +1384,9 @@ fn the_swing_pick_is_stable() {
     let haven = sim_core::terrain::haven(seed);
     let mut cache = SlotCache::new();
     let (_, _, sx, sy, sz) = find_slot(seed, Occupant::Tree).expect("seed 7 has a tree");
+    let (r, _) = swing_volume(Occupant::Tree);
     let a = resolve_swing(
-        SwingAim {
-            x: sx - 1.0,
-            y: sy,
-            z: sz,
-            fx: 1.0,
-            fz: 0.0,
-        },
+        level(stance(sx, r), sy, sz, YAW_PLUS_X),
         &mut Island {
             seed,
             table: &table,
@@ -1377,13 +1396,7 @@ fn the_swing_pick_is_stable() {
         },
     );
     let b = resolve_swing(
-        SwingAim {
-            x: sx - 1.0,
-            y: sy,
-            z: sz,
-            fx: 1.0,
-            fz: 0.0,
-        },
+        level(stance(sx, r), sy, sz, YAW_PLUS_X),
         &mut Island {
             seed,
             table: &table,
@@ -1396,16 +1409,144 @@ fn the_swing_pick_is_stable() {
     assert_eq!(SwingPick::default().occupant, 0);
 }
 
-/// Every bound this resolver uses is `gather`'s own, not a copy. If the sim
-/// moves one, this fails rather than the crosshair quietly disagreeing with
-/// the swing it invites.
+/// The numbers this file still names are the sim's own, not copies. If the
+/// sim moves one, this fails rather than a test above quietly measuring a
+/// different arm than the one the crosshair invites.
 #[test]
-fn the_swing_reads_the_sims_own_bounds() {
+fn the_prompt_reads_the_sims_own_bounds() {
     assert_eq!(SWING_REACH_M, 2.0);
-    assert_eq!(CONE_COS, 0.866_025_4);
-    assert_eq!(DY_MAX_M, 3.0);
-    assert_eq!(POINT_BLANK_M2, 0.04);
+    assert_eq!(EYE_M, 1.6);
     assert_eq!(CELL_SIZE, 8.0);
+}
+
+/// **The prompt and the swing agree, proven against a running sim.** The
+/// resolver is `melee::node_cast` by construction, so this does not compare
+/// two mirrors — it checks the half construction cannot: that the prompt is
+/// handed the same eye and the same look the shard resolves the swing from.
+/// A `World` seats a player where the prompt stands, holds the button with
+/// the prompt's own yaw and pitch, and the swing must reach a node exactly
+/// when the prompt named one — four aims, two of each answer, and the two
+/// whiffs are the two the planar pick used to get wrong (a look away, and a
+/// level look over a knee-high node).
+///
+/// "Reached" is the node arm's own word — `EV_GATHER` or `EV_GATHER_REFUSED`
+/// — and not `EV_IMPACT`, which a whiff can push when the ray meets the
+/// ground instead.
+#[test]
+fn the_prompt_and_the_swing_agree() {
+    use sim_core::gather::{GatherContent, SWING_INTERVAL_TICKS};
+    use sim_core::input::{InputFrame, BTN_PRIMARY};
+    use sim_core::movement::{POS_XZ_Q, POS_Y_Q};
+    use sim_core::world::{Command, World, EV_GATHER, EV_GATHER_REFUSED, EV_SWING};
+
+    enum Look {
+        Level(u16),
+        At(f32, f32, f32),
+    }
+
+    let seed = 7;
+    let table = ScatterTable::alpha_default();
+    let haven = sim_core::terrain::haven(seed);
+    let (_, _, tx, ty, tz) = find_slot(seed, Occupant::Tree).expect("seed 7 has a tree");
+    let (tr, _) = swing_volume(Occupant::Tree);
+    let (kind, nx, ny, nz) = find_short_node(seed);
+    let (nr, ntop) = swing_volume(kind);
+    let _ = ty;
+
+    let cases = [
+        (
+            "tree, level, in front of it",
+            stance(tx, tr),
+            tz,
+            Look::Level(YAW_PLUS_X),
+        ),
+        (
+            "tree, facing away",
+            stance(tx, tr),
+            tz,
+            Look::Level(YAW_MINUS_X),
+        ),
+        (
+            "ore node, level — the ray passes over it",
+            stance(nx, nr),
+            nz,
+            Look::Level(YAW_PLUS_X),
+        ),
+        (
+            "ore node, looked down at",
+            stance(nx, nr),
+            nz,
+            Look::At(nx, ny + ntop * 0.5, nz),
+        ),
+    ];
+    let mut named = 0;
+    for (name, px, pz, look) in cases {
+        let mut w = Box::new(World::new(seed));
+        w.gather = GatherContent::probe_fixture();
+        w.dev_spawn = Some((px, pz));
+        w.tick(&[Command::Join { id: 1 }]);
+        // Settle onto the ground before the eye is read off the body.
+        for _ in 0..8 {
+            w.tick(&[]);
+        }
+        let b = w.players[0].body;
+        let (x, y, z) = (
+            b.qx as f32 * POS_XZ_Q,
+            b.qy as f32 * POS_Y_Q,
+            b.qz as f32 * POS_XZ_Q,
+        );
+        let aim = match look {
+            Look::Level(yaw) => level(x, y, z, yaw),
+            Look::At(ax, ay, az) => aim_at(x, y, z, ax, ay, az),
+        };
+        let mut cache = SlotCache::new();
+        let prompt = resolve_swing(
+            aim,
+            &mut Island {
+                seed,
+                table: &table,
+                haven: &haven,
+                harvested: &Pristine,
+                cache: &mut cache,
+            },
+        );
+
+        let (mut swung, mut reached) = (false, false);
+        let mut seq = 0u16;
+        for _ in 0..SWING_INTERVAL_TICKS * 2 {
+            seq = seq.wrapping_add(1);
+            w.tick(&[Command::Input {
+                id: 1,
+                frame: InputFrame {
+                    seq,
+                    buttons: BTN_PRIMARY,
+                    yaw: aim.yaw,
+                    pitch: aim.pitch,
+                    move_x: 0,
+                    move_z: 0,
+                    sel: 0,
+                },
+                favour: 0,
+            }]);
+            for e in w.events.entries() {
+                swung |= e.code == EV_SWING;
+                reached |= e.code == EV_GATHER || e.code == EV_GATHER_REFUSED;
+            }
+        }
+        assert!(
+            swung,
+            "{name}: the sim never took a swing — the fixture, not the mechanic"
+        );
+        assert_eq!(
+            prompt.occupant != 0,
+            reached,
+            "{name}: the prompt said {:?} and the sim's swing {} a node",
+            swing_label(prompt.occupant),
+            if reached { "reached" } else { "did not reach" }
+        );
+        named += !reached as usize;
+    }
+    assert_eq!(named, 2, "two of the four aims are meant to whiff");
 }
 
 // ---------------------------------------------------------------------------
@@ -2838,8 +2979,8 @@ fn a_shared_cache_picks_the_same() {
             x: sx - 4.0 + step as f32 * 0.4,
             y: sy,
             z: sz,
-            fx: 1.0,
-            fz: 0.0,
+            yaw: YAW_PLUS_X,
+            pitch: LEVEL,
         };
         carried.push(resolve_swing(
             aim,
@@ -2891,8 +3032,8 @@ fn standing_still_costs_nothing_after_the_first() {
         x: sx - 1.0,
         y: sy,
         z: sz,
-        fx: 1.0,
-        fz: 0.0,
+        yaw: YAW_PLUS_X,
+        pitch: LEVEL,
     };
     let mut cache = SlotCache::new();
     assert_eq!(cache.resolves(), 0);

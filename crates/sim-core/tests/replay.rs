@@ -465,7 +465,18 @@ const TICKS: u64 = 900;
 /// on the ground, and every `y` in the trace moved with it. No verb, no
 /// ordering and no rule changed; the equality assert above it stayed green on
 /// the same run, which is what says the drift is the world and not the sim.
-const GOLDEN_FINAL_HASH: u64 = 0xEB39_5100_9AA1_A923;
+///
+/// **Moved `0xEB39_5100_9AA1_A923` → `0x565A_4CF4_EC7B_B375` at melee aim v1**
+/// (2026-09-05), and this one IS behavioural, in two ways the header calls the
+/// expensive kind. A swing is a ray along the look now — yaw AND pitch —
+/// where it was a planar cone that ignored pitch, so every bot swing in this
+/// run resolves against different things: a node the cone took is now missed
+/// when the bot looks over it, and the wandering pitch was narrowed to a
+/// walking band (`bots::PITCH_LOW..+PITCH_SPAN`) to keep the gather path on
+/// this surface at all. And the smasher looks straight down (its frame is
+/// the one this script edits), because standing on a drum no longer lands a
+/// swing by proximity. Deliberate, regenerated in the commit that caused it.
+const GOLDEN_FINAL_HASH: u64 = 0x565A_4CF4_EC7B_B375;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -507,7 +518,13 @@ const GOLDEN_FINAL_HASH: u64 = 0xEB39_5100_9AA1_A923;
 /// one does. Both moving together is what says the change is in the
 /// digest's SHAPE — a behavioural drift on this surface would move the
 /// trace at the tick it started and the final hash once.
-const GOLDEN_TRACE_HASH: u64 = 0x5C84_28EA_CCE5_6E9B;
+///
+/// Moved `0x5C84_28EA_CCE5_6E9B` → `0x31F6_CAD0_C685_6B34` at melee aim v1 (2026-09-05),
+/// beside `GOLDEN_FINAL_HASH` and for its reason: the swing became a ray, so
+/// what the bots gather, smash and chip changed from the first swing of the
+/// run, which is the behavioural shape — the trace moved from where the
+/// change started, not by a constant.
+const GOLDEN_TRACE_HASH: u64 = 0x31F6_CAD0_C685_6B34;
 
 /// Fold a stamped trace into one number.
 ///
@@ -557,8 +574,11 @@ fn shoreline(seed: u64) -> (f32, f32) {
 /// stops meaning what it says.
 ///
 /// Returns the barrel's own world position, because the smasher is stood
-/// exactly on it: `POINT_BLANK_M2` bypasses the aim cone, so the swing
-/// lands without the script also having to reproduce a yaw.
+/// exactly on it and looks straight down (pitch 0): from a 1.6 m eye over
+/// the drum's centre the ray enters its 0.88 m top whatever the yaw, so the
+/// swing lands without the script also having to reproduce a heading. It
+/// used to lean on `POINT_BLANK_M2` bypassing a planar cone; melee aim v1
+/// (2026-09-05) made the swing a ray and the cone is gone.
 fn barrel_cells(seed: u64, scatter: &sim_core::terrain::ScatterTable, n: usize) -> Vec<(f32, f32)> {
     let mut out = Vec::new();
     // The same haven the sim resolves at init: it vetoes scatter, so a script
@@ -735,8 +755,16 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
             if (450..500).contains(&t) && id == 3 {
                 continue;
             }
-            let f = bot_frame(&mut rng, yaws[id as usize - 1], t as u16);
+            let mut f = bot_frame(&mut rng, yaws[id as usize - 1], t as u16);
             yaws[id as usize - 1] = f.yaw;
+            // The smasher looks straight down (`barrel_cells`' doc says why
+            // it must): a swing is a ray since melee aim v1, and the bots'
+            // walking band never enters a 0.88 m drum from a 1.6 m eye
+            // stood on top of it. Its yaw still wanders, and the roll it
+            // drives is the weighted walk the golden is watching.
+            if world.players[30].active && id == world.players[30].id {
+                f.pitch = 0;
+            }
             cmds.push(Command::Input {
                 id,
                 frame: f,

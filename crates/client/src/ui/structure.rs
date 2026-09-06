@@ -72,7 +72,7 @@ pub struct Target {
     /// Which face of a sided piece the player stands on — `Some(true)` is
     /// the SOFT side, `Some(false)` the hard one, `None` a shape with no
     /// sides (or the other store). Computed by `sim_core::build::soft_side`,
-    /// the same comparison `combat::raid` prices the swing with, so the
+    /// the same comparison `World::chip` prices the swing with, so the
     /// label can never disagree with the bill (hard/soft v0).
     pub side: Option<bool>,
 }

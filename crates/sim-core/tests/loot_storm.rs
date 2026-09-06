@@ -66,10 +66,10 @@
 //!
 //! ## The one content difference from the sibling, and why
 //!
-//! `combat_storm.rs` leaves `GatherContent::EMPTY` in place so that
-//! `gather::swing` returns `Swing::Free` on every path and the arm reaches
-//! `combat::strike` — a duel beside a harvestable tree would have had its
-//! swing eaten by the tree. But `loot_nearest` skips any item whose
+//! `combat_storm.rs` leaves `GatherContent::EMPTY` in place so that no
+//! scatter cell is a swingable target and every swing resolves against
+//! bodies — a duel beside a harvestable tree would have had its ray
+//! stopped by the trunk. But `loot_nearest` skips any item whose
 //! `stack_max_of` is 0, and under `EMPTY` that is *every* item, so a
 //! withdrawal storm on `EMPTY` would take nothing and empty no bag: the
 //! gate would pass while asserting nothing.
@@ -77,8 +77,8 @@
 //! So this file arms the **stack ladder only** — `probe_fixture`'s table
 //! with every node put back to `NodeDef::INERT`. Nothing is invented: the
 //! ceilings, the condition rows and the light rate are the ones every
-//! other wall runs, and `swing`'s inert-content guard (`def.output ==
-//! NO_ITEM` → `Swing::Free`) is exactly the branch `EMPTY` takes, so the
+//! other wall runs, and an inert node absorbs a swing without paying
+//! (`gather::land`'s `Swing::Absorbed`) exactly as `EMPTY` does, so the
 //! fight is the sibling's fight while the ladder can size a stack.
 //!
 //! ## What it asserts, and why each one can go red

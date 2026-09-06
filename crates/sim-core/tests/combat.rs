@@ -13,7 +13,7 @@
 use sim_core::combat::CombatContent;
 use sim_core::gather::{GatherContent, ItemStack, NO_ITEM, SWING_INTERVAL_TICKS};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
-use sim_core::movement::{Body, POS_XZ_Q};
+use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q};
 use sim_core::terrain::{self, Occupant};
 use sim_core::world::{Command, World, DEATH_BY_HAND};
 use sim_core::yaw_dir;
@@ -69,17 +69,77 @@ fn duel_world() -> World {
     w
 }
 
-/// A frame that swings, facing `yaw`, standing still.
-fn swing_frame(seq: u16, yaw: u16) -> InputFrame {
+/// A frame that swings, facing `yaw`, looking at player 1's chest, standing
+/// still.
+fn swing_frame(w: &World, seq: u16, yaw: u16) -> InputFrame {
+    swing_frame_at(aim_at(w, 0, 1), seq, yaw)
+}
+
+/// [`swing_frame`] at an explicit pitch.
+fn swing_frame_at(pitch: u8, seq: u16, yaw: u16) -> InputFrame {
     InputFrame {
         seq,
         buttons: BTN_PRIMARY,
         yaw,
-        pitch: 128,
+        pitch,
         move_x: 0,
         move_z: 0,
         sel: 0,
     }
+}
+
+/// The eye above the feet, `ranged::ARROW_EYE_MM` in metres — where a
+/// swing's ray leaves from since melee aim v1 (2026-09-05).
+const EYE_M: f32 = sim_core::ranged::ARROW_EYE_MM as f32 / 1000.0;
+/// Where the fixtures aim on a body: the chest, a metre up. Not the head,
+/// so every hit here pays the identity rung and the counts below stay the
+/// content's; `tests/melee_aim.rs` is where the ladder is asserted.
+const CHEST_M: f32 = 1.0;
+
+/// The pitch byte that looks from `attacker`'s eye at `victim`'s chest — a
+/// scan of the sim's own LUT, because the crate's clippy walls bind this
+/// suite and there is no `atan2` to be had. A swing is a ray now, and a
+/// victim `Body::at` seated on lower ground is under a level one.
+fn aim_at(w: &World, attacker: usize, victim: usize) -> u8 {
+    aim_at_body(w, attacker, &w.players[victim].body)
+}
+
+/// [`aim_at`] toward an arbitrary body — the lag tests aim at where the
+/// victim WAS, which is a body the world no longer holds.
+fn aim_at_body(w: &World, attacker: usize, target: &Body) -> u8 {
+    let a = w.players[attacker].body;
+    let (dx, dz) = (
+        (target.qx - a.qx) as f32 * POS_XZ_Q,
+        (target.qz - a.qz) as f32 * POS_XZ_Q,
+    );
+    let run = (dx * dx + dz * dz).sqrt();
+    let rise = (target.qy - a.qy) as f32 * POS_Y_Q + CHEST_M - EYE_M;
+    let len = (rise * rise + run * run).sqrt();
+    let mut best = 128u8;
+    let mut best_dot = f32::MIN;
+    for b in 0..=255u8 {
+        let (ch, sv) = sim_core::pitch_dir(b);
+        let dot = (ch * run + sv * rise) / len;
+        if dot > best_dot {
+            best_dot = dot;
+            best = b;
+        }
+    }
+    best
+}
+
+/// Where `place_in_front(w, 0, 1, 0, NEAR_M)` seats the victim — rebuilt
+/// from the attacker's body rather than remembered, so the lag tests can
+/// aim at where the victim WAS after the fixture has moved it away.
+fn near_body(w: &World) -> Body {
+    let (fx, fz) = yaw_dir(0);
+    let a = w.players[0].body;
+    Body::at(
+        SEED,
+        hv(SEED),
+        a.qx as f32 * POS_XZ_Q + fx * NEAR_M,
+        a.qz as f32 * POS_XZ_Q + fz * NEAR_M,
+    )
 }
 
 /// Put `victim` `dist` metres in front of `attacker` along `yaw`, and
@@ -95,7 +155,7 @@ fn place_in_front(w: &mut World, attacker: usize, victim: usize, yaw: u16, dist:
 fn swing_once(w: &mut World, attacker_id: u32, yaw: u16, seq: u16) {
     w.tick(&[Command::Input {
         id: attacker_id,
-        frame: swing_frame(seq, yaw),
+        frame: swing_frame(w, seq, yaw),
         favour: 0,
     }]);
 }
@@ -188,10 +248,10 @@ fn out_of_reach_is_a_miss() {
     assert_eq!(w.players[1].hp, FIXTURE_HP, "3 m is past a 2 m reach");
 }
 
-/// In reach but behind: the aim cone is 30° half-angle, so facing the
-/// opposite way cannot land it.
+/// In reach but behind: a swing is a ray along the look direction, so facing
+/// the opposite way cannot land it.
 #[test]
-fn out_of_the_aim_cone_is_a_miss() {
+fn facing_away_is_a_miss() {
     let mut w = duel_world();
     place_in_front(&mut w, 0, 1, 0, 1.0);
     swing_once(&mut w, 1, u16::MAX / 2, 0);
@@ -401,15 +461,19 @@ fn a_fight_replays_to_the_same_hash() {
         let mut w = duel_world();
         place_in_front(&mut w, 0, 1, 0, 1.0);
         for seq in 0..8u16 {
+            let (f1, f2) = (
+                swing_frame(&w, seq, 0),
+                swing_frame_at(aim_at(&w, 1, 0), seq, 0),
+            );
             w.tick(&[
                 Command::Input {
                     id: 1,
-                    frame: swing_frame(seq, 0),
+                    frame: f1,
                     favour: 0,
                 },
                 Command::Input {
                     id: 2,
-                    frame: swing_frame(seq, 0),
+                    frame: f2,
                     favour: 0,
                 },
             ]);
@@ -475,9 +539,13 @@ fn victim_walked_out_of_reach() -> World {
 /// Swing once at `favour` and report whether the victim lost hp.
 fn swing_with_favour(w: &mut World, favour: u8) -> bool {
     let before = w.players[1].hp;
+    // At where the victim WAS: the swing under test lands on the rewound
+    // near pose, and a ray aimed at the far body's chest is not a ray
+    // through the near one's.
+    let frame = swing_frame_at(aim_at_body(w, 0, &near_body(w)), 0, 0);
     w.tick(&[Command::Input {
         id: 1,
-        frame: swing_frame(0, 0),
+        frame,
         favour,
     }]);
     w.players[1].hp < before
@@ -568,9 +636,10 @@ fn a_favour_past_the_ceiling_is_clamped_to_the_ceiling() {
     // Same swing, same tick, same fixture — so the two must agree on damage
     // and not merely on landing.
     let mut at_ceiling = victim_walked_out_of_reach();
+    let frame = swing_frame_at(aim_at_body(&at_ceiling, 0, &near_body(&at_ceiling)), 0, 0);
     at_ceiling.tick(&[Command::Input {
         id: 1,
-        frame: swing_frame(0, 0),
+        frame,
         favour: WALK_TICKS as u8,
     }]);
     assert_eq!(
@@ -609,9 +678,14 @@ fn a_favour_does_not_survive_into_the_next_tick() {
         // far and has been all along — and its only job is to leave a favour
         // behind and to arm `next_swing`.
         let first = w.tick;
+        // Aimed at the near pose, and this matters twice: the frame
+        // persists (`Player::frame`), so the command-less second swing
+        // below fires with THIS pitch, and it has to be a ray through the
+        // body the ring will put back.
+        let near_aim = aim_at_body(&w, 0, &near_body(&w));
         w.tick(&[Command::Input {
             id: 1,
-            frame: swing_frame(0, 0),
+            frame: swing_frame_at(near_aim, 0, 0),
             favour: WALK_TICKS as u8,
         }]);
         let second = first + SWING_INTERVAL_TICKS;
@@ -639,7 +713,7 @@ fn a_favour_does_not_survive_into_the_next_tick() {
             None => w.tick(&[]),
             Some(f) => w.tick(&[Command::Input {
                 id: 1,
-                frame: swing_frame(1, 0),
+                frame: swing_frame_at(near_aim, 1, 0),
                 favour: f,
             }]),
         }
@@ -702,9 +776,10 @@ fn the_attacker_does_not_rewind_with_the_target() {
     // …then steps back onto its mark and swings, at the deepest favour.
     w.players[0].body = home;
     let before = w.players[1].hp;
+    let frame = swing_frame(&w, 0, 0);
     w.tick(&[Command::Input {
         id: 1,
-        frame: swing_frame(0, 0),
+        frame,
         favour: WALK_TICKS as u8,
     }]);
     assert!(

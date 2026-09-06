@@ -120,6 +120,14 @@ night_spook_m = 12
 # re-rolls the population's distribution and the herd migrates over a wipe
 # (reference/SPAWN.md §3.5).
 respawn_seconds = 300
+# The hit volume a swing's ray must enter (melee aim v1, 2026-09-05): a
+# cylinder on the animal's feet, centimetres. Read off what the client draws
+# — a pig is 1.5 m long and 0.78 m high (`render/mobs.rs`), so the radius
+# covers the body's width and most of its length, and the height is the drawn
+# one (`client/tests/mob_volume.rs` holds both against the mesh). Aim DOWN at it:
+# a level swing from a 1.6 m eye passes clean over a pig.
+body_r_cm = 55
+body_h_cm = 78
 
 # What the corpse holds. The kill stands these rows up as a ground bag at
 # the death position (`mob::strike` → `backpack::stand_up`) — the killer
@@ -251,6 +259,9 @@ night_spook_m = 15
 # your base should be worth the same kind of doing, and no mechanism argues
 # for a rarer respawn — only a wish for one.
 respawn_seconds = 300
+# 1.6 m long and 0.85 m high on the client (`render/mobs.rs` WOLF_LEN_M / WOLF_H_M).
+body_r_cm = 60
+body_h_cm = 85
 
 # **It pays less than the pig, and that is the reference's own shape** —
 # their boar is the fat-and-cloth animal and their wolf is not. The point

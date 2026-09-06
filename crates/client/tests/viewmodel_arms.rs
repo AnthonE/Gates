@@ -36,7 +36,8 @@
 //! body of a player standing at the spear's content reach, after an arm that
 //! drew back and then extended. That is the arithmetic half of *"does
 //! everything line up with where you aim"* — the half a pixel gate could
-//! never see, and the half the sim's planar cone cannot answer for.
+//! never see. The sim's half arrived the same day (melee aim v1): the swing
+//! resolves along the same look the picture follows, so the two halves meet.
 //!
 //! What it CANNOT check is whether an arm entering frame at that angle reads
 //! as an arm. That is `--bin modelview <file> --eye --hide char1_body`, and a

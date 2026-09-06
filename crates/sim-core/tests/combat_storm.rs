@@ -155,10 +155,10 @@ const _: () = assert!(PLAYERS * STEPS_PER_TICK <= MAX_COMMANDS_PER_TICK);
 /// How far apart the two halves of a duel stand.
 ///
 /// Inside the fixture's 2 m melee reach with room for the ground to tilt
-/// under it, and far enough out that the shot is a real solve rather than
-/// `combat::strike`'s point-blank exemption (`POINT_BLANK_M2`, 0.2 m),
-/// which would have made the 30° cone unreachable — a duel that never
-/// tested its own aim is a duel that proves nothing about aiming.
+/// under it, and far enough out that the swing is a real solve: a duel
+/// fought inside one capsule is a duel that proves nothing about aiming,
+/// and since melee aim v1 the aim is a ray that has to enter the victim's
+/// own volume — `bots::brawl_step` looks at the body it is fighting.
 const SEPARATION_M: f32 = 1.2;
 
 /// Cells between duels. The firearm's fixture reach is 20 m; 7 cells is
@@ -305,10 +305,10 @@ struct Storm {
 fn storm() -> Storm {
     let mut w = World::new(SEED);
     // Combat is armed and gathering is not: `World::new` leaves
-    // `GatherContent::EMPTY` in place, so `gather::swing` pays the
-    // cadence and returns `Swing::Free` on every path (`gather.rs:927`,
-    // `:936`) and the arm reaches `combat::strike`. A duel next to a
-    // harvestable tree would have had its swing eaten by the tree.
+    // `GatherContent::EMPTY` in place, so no scatter cell is a swingable
+    // target at all and `melee::cast`'s node arm can never claim a swing.
+    // A duel next to a harvestable tree would have had its ray stopped by
+    // the trunk — which is the right behaviour and the wrong fixture.
     w.combat = CombatContent::probe_fixture();
     w.backpack = BackpackContent::probe_fixture();
 
