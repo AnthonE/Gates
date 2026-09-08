@@ -1577,9 +1577,10 @@ pub fn update(
         // same sentence the server's refusal would carry — and until now that
         // string was only spoken by `ghost::place_key`, i.e. after the player
         // had already spent the click. A red box with no reason teaches
-        // nothing; "TOO FAR" or "NO ROOM" beside it teaches the rule. Level is
-        // here for the same reason: `R`/`F` step it and nothing showed it, so
-        // a player building on level 2 by accident had no way to notice.
+        // nothing; "TOO FAR" or "NO ROOM" beside it teaches the rule. The storey is
+        // here because it is AIMED now (aimed level v0) — what the crosshair
+        // resolved is what the click builds, and the readout is how a player
+        // learns that looking at a wall's top means the storey above it.
         // A held deployable claims the line ahead of the build latch: the
         // hand decides what the mouse means (`ui::hold`), and its ghost has
         // a verdict to say while AIMING — the same grammar the build ghost
@@ -1613,19 +1614,46 @@ pub fn update(
                         _ => "",
                     };
                     let level = ghost.as_ref().map(|g| g.level).unwrap_or(0);
+                    // How far off its own ground the drawn floor stands
+                    // (build plate v1's plate, or foundation height v0's
+                    // request where nothing else decides) — said in metres,
+                    // because a band is the sim's unit and half a metre is
+                    // the player's. Silent at zero, which is the common
+                    // case and the one that needs no reading.
+                    let plate = ghost.as_ref().map(|g| g.plate).unwrap_or(0);
+                    let height = if plate != 0 {
+                        format!("  {:+.1} m", plate as f32 * sim_core::build::BUILD_BASE_Q_M)
+                    } else {
+                        String::new()
+                    };
+                    // The height keys are named on the shapes they mean
+                    // something for: a foundation starting a plate. On a
+                    // wall the nudge is sent and ignored, and a hint about
+                    // it there would teach a key that does nothing.
+                    let keys = if matches!(
+                        shape,
+                        sim_core::build::SHAPE_FOUNDATION | sim_core::build::SHAPE_TRI_FOUNDATION
+                    ) {
+                        "(hold right · R/F height)"
+                    } else {
+                        "(hold right)"
+                    };
                     if why.is_empty() {
                         format!(
-                            "BUILD  {} {}  L{}   (hold right)",
-                            material_label(material),
-                            shape_label(shape),
-                            level
-                        )
-                    } else {
-                        format!(
-                            "BUILD  {} {}  L{}  — {}",
+                            "BUILD  {} {}  L{}{}   {}",
                             material_label(material),
                             shape_label(shape),
                             level,
+                            height,
+                            keys
+                        )
+                    } else {
+                        format!(
+                            "BUILD  {} {}  L{}{}  — {}",
+                            material_label(material),
+                            shape_label(shape),
+                            level,
+                            height,
                             why.to_uppercase()
                         )
                     }

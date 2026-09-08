@@ -583,6 +583,7 @@ mod tests {
                 level: 0,
                 loc: LOC_PLANE,
                 freehand: false,
+                plate: 0,
             },
             Command::Place {
                 id: 7,
@@ -592,6 +593,7 @@ mod tests {
                 level: 0,
                 loc: LOC_EDGE_XLO,
                 freehand: false,
+                plate: 0,
             },
         ]);
         assert_eq!(world.pieces.len(), 2, "fixture placements must land");

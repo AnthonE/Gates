@@ -183,6 +183,10 @@ fn place(w: &mut World, row: u16, cx: u16, cz: u16, level: u8, loc: u8) {
         level,
         loc,
         freehand: false,
+        // The band asked for (foundation height v0): 0 is the column's own
+        // ground where this fixture starts one, and ignored where it builds
+        // into a column that already stands — the v61 behaviour either way.
+        plate: 0,
     }]);
     assert_eq!(
         w.pieces.len(),

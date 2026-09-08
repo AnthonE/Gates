@@ -24,7 +24,6 @@ use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 use client_core::core::ClientCore;
 use sim_core::build::{SHAPE_FOUNDATION, SHAPE_TRI_FOUNDATION};
-use sim_core::limits::MAX_BUILD_LEVELS;
 
 use crate::look::yaw_u16;
 use crate::ui::build::{row_for, PLACE_MATERIAL, SHAPES};
@@ -33,13 +32,15 @@ use crate::ui::place::{self, DeploySite, DeployVerdict, Site, Target, Verdict};
 use super::hud::Toast;
 use super::input::{pitch_u8, Look};
 use super::panels::Ui;
-use super::structures::{self, base_transform, deploy_transform, shape_parts};
+use super::structures::{self, base_transform, deploy_transform};
 use super::{Net, WorldId, EYE_HEIGHT};
 
-/// The planar point the ghost aims at: the LOOK ray — eye, yaw AND pitch,
+/// Where the ghost aims, and at what: the LOOK ray — eye, yaw AND pitch,
 /// the tracer's own ray convention, so the ghost sits where a shot would
 /// land — marched into the world by [`place::aim_from_look`] against
-/// terrain and the predictor's piece surfaces.
+/// terrain, the predictor's piece surfaces, its wall faces and its floor
+/// sockets. The storey comes back with the point (aimed level v0): what the
+/// ray met says which one, the way the reference's sockets do.
 ///
 /// Until 2026-08-15 the aim was `feet + yaw · 3.5 m`, pitch discarded: the
 /// crosshair rested on one cell and the ghost stood on another, which is
@@ -52,7 +53,7 @@ fn aim_point(
     core: &ClientCore,
     look: &Look,
     feet: [f32; 3],
-) -> (f32, f32) {
+) -> place::Aim {
     let (fx, fz) = sim_core::yaw_dir(yaw_u16(look.yaw));
     let (ch, sv) = sim_core::pitch_dir(pitch_u8(look.pitch));
     place::aim_from_look(
@@ -61,7 +62,7 @@ fn aim_point(
         core.pieces.cols(),
         [feet[0], feet[1] + EYE_HEIGHT, feet[2]],
         [fx * ch, sv, fz * ch],
-        (feet[0], feet[2]),
+        feet,
     )
 }
 
@@ -99,7 +100,7 @@ pub struct Ghost {
     /// a shape CHANGE and not every frame. A doorway is three children; a wall
     /// is one. Respawning them per frame would churn entities on the client's
     /// hot path for a value that changes when the player turns a wheel.
-    built_shape: Option<u8>,
+    built: Option<(u8, bool)>,
     /// The deploy preview — a separate entity from the build ghost because the
     /// two are never up at once but are driven by different systems, and one
     /// entity shared between them would need a mode flag that could disagree.
@@ -112,9 +113,23 @@ pub struct Ghost {
     /// `structures::part_mesh` builds both, so the preview's triangle is
     /// the piece's.
     tri_mesh: Option<Handle<Mesh>>,
-    /// The working level the `R`/`F` steppers move. Client-side latch, like
-    /// the wheel's own shape and material.
+    /// The storey the aim resolved this frame (aimed level v0) — a readout
+    /// for the HUD, no longer a latch: `R`/`F` stepped it until 2026-09-05,
+    /// and only while the wheel was up, which is a storey nobody found.
     pub level: u8,
+    /// The `R`/`F` height nudge, in bands of `build::BUILD_BASE_Q_M`
+    /// (foundation height v0). A client-side latch like the wheel's shape:
+    /// it persists across placements, because a player raising a base
+    /// wants every fresh plate raised the same.
+    pub nudge: i8,
+    /// The band the drawn placement ASKS for — the aimed ground's band plus
+    /// [`Ghost::nudge`], from `place::plate_request` — latched beside
+    /// `target` for `target`'s reason: `place_key` sends what was drawn.
+    pub want: i8,
+    /// The plate the ghost is drawn at: the sim's own answer to the request
+    /// against the mirror (`place::ghost_plate`), so the HUD can say how
+    /// far off its own ground the piece stands.
+    pub plate: i8,
     /// Where it is and what it decided, so `place` acts on exactly what is
     /// drawn — the prompt-and-verb rule from `verbs`.
     pub target: Target,
@@ -135,26 +150,39 @@ pub struct Ghost {
     pub deploy_verdict: DeployVerdict,
 }
 
-/// `R` raises the working level, `F` lowers it.
+/// `R` raises a foundation's asked height a band, `F` lowers it
+/// (foundation height v0) — while the building plan is in hand and no
+/// panel owns the pointer, wheel up or not.
 ///
-/// **Only while the wheel is up**, which is what keeps `R` free for repair
-/// in the world (`web/src/main.js` orders the same two branches the same way
-/// and pins the ordering in a gate, because R means two things and the one
-/// that wins is decided by whether build mode is on).
-pub fn level_keys(keys: Res<ButtonInput<KeyCode>>, ui: Option<Res<Ui>>, mut ghost: ResMut<Ghost>) {
-    // Level nudges belong to the wheel, which is the plan's. Held-item
-    // modality means they are dead keys the rest of the time.
-    let wheel_up = ui
-        .map(|u| u.panel == super::panels::Panel::Wheel)
-        .unwrap_or(false);
-    if !wheel_up {
+/// **These two keys stepped the STOREY until 2026-09-05**, and only while
+/// the wheel was up. The storey is aimed now (`place::Aim::level_for`, the
+/// reference's socket rule), which freed them for the one height the aim
+/// cannot always express: a first foundation on flat ground has nowhere
+/// higher to aim at, and the reference's own players have asked for exactly
+/// this key (`reference/BUILDING.md` §7d). The plan owns `R` here rather
+/// than reload or repair — `verbs::keys` yields it while `hand.places()`,
+/// which is the same modal rule that gives the hammer repair.
+///
+/// Bounded to the latch's own window: the sim refuses past half a wall and
+/// the nudge cannot ask for what the sim will not give.
+pub fn height_keys(
+    keys: Res<ButtonInput<KeyCode>>,
+    net: NonSend<Net>,
+    ui: Option<Res<Ui>>,
+    mut ghost: ResMut<Ghost>,
+) {
+    let busy = ui.map(|u| u.panel.grabs_pointer()).unwrap_or(false);
+    let holding_plan =
+        crate::ui::hold::held_in_hand(&net.session.core.catalog, &net.session.core.inv, net.sel)
+            .places();
+    if busy || !holding_plan {
         return;
     }
     if keys.just_pressed(KeyCode::KeyR) {
-        ghost.level = (ghost.level + 1).min(MAX_BUILD_LEVELS as u8 - 1);
+        ghost.nudge = (ghost.nudge + 1).min(sim_core::build::PLATE_RISE_MAX_BANDS as i8);
     }
     if keys.just_pressed(KeyCode::KeyF) {
-        ghost.level = ghost.level.saturating_sub(1);
+        ghost.nudge = (ghost.nudge - 1).max(-(sim_core::build::PLATE_SINK_MAX_BANDS as i8));
     }
 }
 
@@ -188,6 +216,7 @@ pub fn track(
             offset: Vec3::ZERO,
             x_rot: 0.0,
             kind: structures::PartKind::Tri,
+            role: structures::PartRole::Body,
         })));
         ghost.ok_mat = Some(materials.add(translucent(GHOST_OK)));
         ghost.no_mat = Some(materials.add(translucent(GHOST_NO)));
@@ -226,7 +255,10 @@ pub fn track(
 
     let [x, y, z] = core.predict.render_position();
     let aim = aim_point(world.seed, &world.haven, core, &look, [x, y, z]);
-    let target = place::target_at(aim.0, aim.1, shape, ghost.level);
+    // The storey is what the ray met (aimed level v0): the wall's face means
+    // the storey above it, a floor's edge its own, bare ground the first.
+    let level = aim.level_for(shape);
+    let target = place::target_at(aim.at.0, aim.at.1, shape, level);
     let site = Site {
         seed: world.seed,
         haven: &world.haven,
@@ -240,17 +272,25 @@ pub fn track(
     // sub-cell remainder `target_at` discards, so the answer moves with the
     // crosshair inside one cell and the ghost's own height is the preview of
     // it — there is no key and no mode.
-    let freehand = place::freehand_from_aim(&site, target, aim);
-    let verdict = place::verdict(target, row, shape, &site, freehand);
+    let freehand = place::freehand_from_aim(&site, target, aim.at);
+    // What band the placement asks for (foundation height v0): the aimed
+    // ground's band plus the `R`/`F` nudge. Heard by the sim only where
+    // nothing else decides the plate; sent always, because the client cannot
+    // know which case the server is in.
+    let want = place::plate_request(&site, target, aim.at, ghost.nudge);
+    let verdict = place::verdict(target, row, shape, &site, freehand, want);
     // The floor this placement would take (build plate v1) — the sim's own
     // rule, so the preview stands where the piece will and a stilt is visible
     // before the key is pressed rather than after.
-    let plate = place::ghost_plate(&site, target, freehand);
+    let plate = place::ghost_plate(&site, target, freehand, want);
     ghost.target = target;
     ghost.verdict = verdict;
     ghost.row = Some(row);
     ghost.shape = shape;
     ghost.freehand = freehand;
+    ghost.level = level;
+    ghost.want = want;
+    ghost.plate = plate;
 
     // The same base point and quarter-turn `structures::spawn_piece` gives
     // the real thing, from the same function, so the ghost and the piece it
@@ -282,13 +322,14 @@ pub fn track(
         }
     };
 
-    // Rebuild the children only when the shape changes. `despawn_related` drops
-    // the previous set; a shape that keeps its part count would still be
-    // rebuilt, which is fine because the trigger is a wheel turn.
-    // A foundation's one part is per-ADDRESS, not per shape: the skirt
-    // depth follows the terrain under the aimed cell
-    // (`structures::foundation_part` — the same emit the standing piece
-    // draws, so the preview promises exactly the object the click buys).
+    // Rebuild the children only when the shape changes — or the aim moves a
+    // wall onto or off a diagonal, which is its own part set. `despawn_related`
+    // drops the previous set; a shape that keeps its part count would still
+    // be rebuilt, which is fine because the trigger is a wheel turn.
+    // A foundation's one part is per-ADDRESS, not per shape: the skirt depth
+    // follows the terrain under the aimed cell (`structures::foundation_part`
+    // — the same emit the standing piece draws, so the preview promises
+    // exactly the object the click buys).
     let footing = matches!(shape, SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION).then(|| {
         structures::foundation_part(
             world.seed,
@@ -299,19 +340,27 @@ pub fn track(
             plate,
         )
     });
+    let diagonal = shape == sim_core::build::SHAPE_WALL
+        && matches!(
+            target.loc,
+            sim_core::build::LOC_DIAG_A | sim_core::build::LOC_DIAG_B
+        );
 
-    if ghost.built_shape != Some(shape) {
-        ghost.built_shape = Some(shape);
+    if ghost.built != Some((shape, diagonal)) {
+        ghost.built = Some((shape, diagonal));
         commands.entity(root).despawn_related::<Children>();
         let mesh = ghost.mesh.clone().expect("built above");
         let tri = ghost.tri_mesh.clone().expect("built above");
-        // The shared table (`structures::shape_parts`): one unit mesh —
-        // the cube, or the prism for a Tri part — scaled per part, where
-        // the piece will use a real-size mesh per part. Same sizes, same
-        // offsets, same pitch, one emit site. The foundations' one part is
-        // the per-address footing computed above instead of the table's
+        // The shared table (`structures::parts_for`): one unit mesh — the
+        // cube, or the prism for a Tri part — scaled per part, where the
+        // piece will use a real-size mesh. Same sizes, same offsets, same
+        // pitch, one emit site. The ghost draws BOTH corner posts of an edge
+        // piece where the standing piece draws the ones it owns: a preview
+        // over an existing post is translucent, and a preview missing one
+        // would promise a bare corner. The foundations' parts are the
+        // per-address footing computed above instead of the table's
         // fixed-thickness fallback arm.
-        let (mut parts, n) = shape_parts(shape);
+        let (mut parts, n) = structures::parts_for(shape, target.loc);
         if let Some(part) = footing {
             parts[0] = part;
         }
@@ -401,7 +450,16 @@ pub fn place_key(
     // there to stop the player wasting the press, not to veto it.
     let t = ghost.target;
     let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
-    match protocol::encode_action_place(row, t.cx, t.cz, t.level, t.loc, ghost.freehand, &mut buf) {
+    match protocol::encode_action_place(
+        row,
+        t.cx,
+        t.cz,
+        t.level,
+        t.loc,
+        ghost.freehand,
+        ghost.want,
+        &mut buf,
+    ) {
         Ok(len) => match net.session.send_action(&buf[..len]) {
             Ok(()) => {
                 if let Verdict::No(why) = ghost.verdict {
@@ -498,11 +556,11 @@ pub fn deploy_track(
 
     let [x, y, z] = core.predict.render_position();
     let aim = aim_point(world.seed, &world.haven, core, &look, [x, y, z]);
-    // A doorway-class deployable resolves an edge (the level is the build
-    // ghost's working latch — placing a doorway at L1 leaves the latch
-    // there, so the door that follows it aims the same storey); everything
-    // else keeps `deploy_key`'s original plane target at level 0.
-    let t = place::deploy_target_at(aim.0, aim.1, def.placement, ghost.level);
+    // A doorway-class deployable resolves an edge at the storey the aim
+    // met — a door aimed at its doorway's frame lands in that doorway,
+    // whatever storey it is on (aimed level v0); everything else keeps
+    // `deploy_key`'s original plane target at level 0.
+    let t = place::deploy_target_at(aim.at.0, aim.at.1, def.placement, aim.level_for_deploy());
     let verdict = place::deploy_verdict(
         t,
         row,

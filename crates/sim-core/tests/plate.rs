@@ -91,6 +91,22 @@ impl Rig {
         loc: u8,
         freehand: bool,
     ) -> Result<(), u32> {
+        self.place_asking(row, cx, cz, level, loc, freehand, 0)
+    }
+
+    /// The verb with a band ASKED for (foundation height v0) — what the
+    /// client sends off the aimed ground and the `R`/`F` nudge.
+    #[allow(clippy::too_many_arguments)]
+    fn place_asking(
+        &mut self,
+        row: u16,
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
+        freehand: bool,
+        want: i8,
+    ) -> Result<(), u32> {
         let (ax, az) = sim_core::build::anchor(cx, cz, loc);
         let mut p = Player {
             id: 7,
@@ -120,6 +136,7 @@ impl Rig {
             level,
             loc,
             freehand,
+            want,
             &mut ev,
         );
         match ev.entries().iter().find(|e| e.code == EV_BUILD_REFUSED) {
@@ -277,7 +294,7 @@ fn the_ground_running_away_refuses_by_name() {
                 }
                 let (nx, nz) = (next as u16, sz);
                 // What the rule WANTS here, before the verb is asked.
-                let want = plate_for(r.pieces.cols(), SEED, hv(SEED), nx, nz, false);
+                let want = plate_for(r.pieces.cols(), SEED, hv(SEED), nx, nz, false, 0);
                 match r.place(ROW_FOUNDATION, nx, nz, 0, LOC_PLANE) {
                     Ok(()) => {
                         assert!(want.is_ok(), "the verb took a placement the rule refused");
@@ -397,7 +414,7 @@ fn an_emptied_column_forgets_its_plate() {
     let mut empty = Pieces::new();
     core::mem::swap(&mut r.pieces, &mut empty);
     assert_eq!(
-        plate_for(r.pieces.cols(), SEED, hv(SEED), nx, nz, false),
+        plate_for(r.pieces.cols(), SEED, hv(SEED), nx, nz, false, 0),
         Ok(0),
         "an empty column still remembers a plate"
     );
@@ -628,5 +645,157 @@ fn freehand_is_the_answer_to_a_latch_that_ran_out_of_leg() {
     assert!(
         proved > 0,
         "no march on the shipped island reached a plate refusal, so this proves nothing"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The asked band (foundation height v0)
+// ---------------------------------------------------------------------------
+
+/// The first foundation of a base takes the band it asked for — every band
+/// in the window, both signs — and stands exactly that many quanta off its
+/// own ground. This is the 2026-09-04 playtest's *"couldn't vary my initial
+/// foundation height at all"*, closed as an identity.
+#[test]
+fn a_first_foundation_takes_the_band_it_asked_for() {
+    for want in -PLATE_SINK_MAX_BANDS..=PLATE_RISE_MAX_BANDS {
+        let mut r = Rig::new();
+        r.place_asking(ROW_FOUNDATION, CX, CZ, 0, LOC_PLANE, false, want as i8)
+            .unwrap_or_else(|e| panic!("asking for band {want} refused with {e}"));
+        assert_eq!(
+            r.plate_at(CX, CZ),
+            Some(want as i8),
+            "band {want} was not taken"
+        );
+        assert_eq!(
+            r.floor_at(CX, CZ),
+            sim_core::build::band_y(terrain_band(SEED, hv(SEED), CX, CZ) + want),
+            "band {want}: the floor is not that many quanta off the column's ground"
+        );
+    }
+}
+
+/// Past half a wall either way the request is refused by the latch's own two
+/// names, and nothing is placed — the window is the SAME window, so a base
+/// started by hand can never stand where the latch could not have carried it.
+#[test]
+fn a_request_past_half_a_wall_refuses_by_name() {
+    for want in -(PLATE_BIAS_I32)..=PLATE_BIAS_I32 - 1 {
+        let mut r = Rig::new();
+        let got = r.place_asking(ROW_FOUNDATION, CX, CZ, 0, LOC_PLANE, false, want as i8);
+        if want > PLATE_RISE_MAX_BANDS {
+            assert_eq!(
+                got,
+                Err(REFUSE_B_PLATE_HIGH),
+                "band {want} should be too high"
+            );
+            assert!(
+                r.pieces.is_empty(),
+                "band {want}: a refusal placed something"
+            );
+        } else if want < -PLATE_SINK_MAX_BANDS {
+            assert_eq!(
+                got,
+                Err(REFUSE_B_PLATE_LOW),
+                "band {want} should be too low"
+            );
+            assert!(
+                r.pieces.is_empty(),
+                "band {want}: a refusal placed something"
+            );
+        } else {
+            assert_eq!(got, Ok(()), "band {want} is inside the window and refused");
+        }
+    }
+}
+
+/// The wire's whole range, so the sweep above covers every code four biased
+/// bits can carry (`protocol::PLATE_BIAS`), not just the knobs' window.
+const PLATE_BIAS_I32: i32 = 8;
+
+/// A latched neighbour ignores the request: the base decides, whatever the
+/// player asked — that is the plate rule, and the request would otherwise
+/// be a second way to step a base that build plate v1 exists to prevent.
+#[test]
+fn a_latched_neighbour_ignores_the_request() {
+    let mut r = Rig::new();
+    r.place_asking(ROW_FOUNDATION, CX, CZ, 0, LOC_PLANE, false, 1)
+        .expect("first, asked one band up");
+    let latched = plate_for(r.pieces.cols(), SEED, hv(SEED), CX + 1, CZ, false, 0)
+        .expect("the latch itself is in range for the fixture cell");
+    r.place_asking(
+        ROW_FOUNDATION,
+        CX + 1,
+        CZ,
+        0,
+        LOC_PLANE,
+        false,
+        PLATE_RISE_MAX_BANDS as i8,
+    )
+    .expect("second, asking for the ceiling");
+    assert_eq!(
+        r.plate_at(CX + 1, CZ),
+        Some(latched),
+        "a latched neighbour took the band it asked for instead of the base's"
+    );
+    assert_eq!(
+        r.floor_at(CX + 1, CZ),
+        r.floor_at(CX, CZ),
+        "the second foundation is not flush with the first"
+    );
+}
+
+/// A built column ignores the request too (case 1 is not askable, exactly as
+/// it is not declinable): a wall asking for a different band than the floor
+/// it stands on still takes the floor's.
+#[test]
+fn a_built_column_ignores_the_request() {
+    let mut r = Rig::new();
+    r.place_asking(ROW_FOUNDATION, CX, CZ, 0, LOC_PLANE, false, 2)
+        .expect("a foundation two bands up");
+    r.place_asking(
+        ROW_WALL,
+        CX,
+        CZ,
+        0,
+        LOC_EDGE_XLO,
+        false,
+        -(PLATE_SINK_MAX_BANDS as i8),
+    )
+    .expect("a wall asking for the floor of the hill");
+    let wall = r
+        .pieces
+        .entries()
+        .iter()
+        .find(|p| p.cx == CX && p.cz == CZ && p.loc == LOC_EDGE_XLO)
+        .expect("the wall is in the store");
+    assert_eq!(
+        wall.plate, 2,
+        "the wall based itself off the floor it stands on"
+    );
+}
+
+/// Freehand plus a request is the player's story on a hill: decline the
+/// neighbour's plate AND say where the new one starts. The freehand
+/// placement takes the asked band off its OWN ground, not the base's.
+#[test]
+fn a_freehand_neighbour_takes_its_request() {
+    let Some((ax, bx)) = adjacent_disagreeing_pair() else {
+        panic!("the fixture needs an adjacent pair the terrain steps across")
+    };
+    let mut r = Rig::new();
+    r.place(ROW_FOUNDATION, ax, CZ, 0, LOC_PLANE)
+        .expect("first");
+    r.place_asking(ROW_FOUNDATION, bx, CZ, 0, LOC_PLANE, true, 2)
+        .expect("freehand, two bands up");
+    assert_eq!(
+        r.plate_at(bx, CZ),
+        Some(2),
+        "the freehand request was not taken"
+    );
+    assert_eq!(
+        r.floor_at(bx, CZ),
+        sim_core::build::band_y(terrain_band(SEED, hv(SEED), bx, CZ) + 2),
+        "the freehand floor is not two bands off its own ground"
     );
 }

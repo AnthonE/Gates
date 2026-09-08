@@ -816,7 +816,15 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// constant (`stats::favour_for`; the claim is clamped to the shared
 /// `PLAYOUT_MIN/MAX_TICKS` rails at the mint). Every input datagram gets
 /// 28 bits shorter. Snapshot layout unchanged.
-pub const PROTO_VER: u16 = 61;
+///
+/// **v62 — foundation height v0 (the asked band).** One layout move:
+/// `ActionMsg::Place` gains `plate:4` after the freehand bit — the band the
+/// placer asked for, biased by `PLATE_BIAS` exactly as the piece record's
+/// own field is. The sim hears it only where nothing else decides the plate
+/// (a first foundation, or a freehand one) and refuses it past half a wall
+/// either way (`build::plate_for`); a placement that sends 0 behaves as
+/// every placement did under v61. Nothing else moved.
+pub const PROTO_VER: u16 = 62;
 
 /// This game's slug in the elo catalog.
 ///
@@ -1483,6 +1491,16 @@ pub enum ActionMsg {
         level: u8,
         loc: u8,
         freehand: bool,
+        /// The band the placer asked for (foundation height v0): heard by
+        /// the sim only where nothing else decides the plate — a first
+        /// foundation, or a freehand one — and refused past
+        /// `build::PLATE_RISE_MAX_BANDS` / `PLATE_SINK_MAX_BANDS`. Four
+        /// biased bits (`PLATE_BITS`), the piece record's own field, so
+        /// the wire carries the whole `[-8, 7]` and a forged band is the
+        /// sim's refusal rather than the decoder's truncation. Cannot be
+        /// re-derived for the freehand bit's reason: how high the player
+        /// WANTED the floor is a fact only the client holds.
+        plate: i8,
     },
     /// Place baked deployable row `row` at the grid address. Same
     /// contract: the wire enforces shape, the sim delivers meaning as a
@@ -1866,6 +1884,7 @@ pub fn encode_action_cancel(index: u16, buf: &mut [u8]) -> Result<usize, WireErr
     Ok(w.finish())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn encode_action_place(
     row: u16,
     cx: u16,
@@ -1873,6 +1892,7 @@ pub fn encode_action_place(
     level: u8,
     loc: u8,
     freehand: bool,
+    plate: i8,
     buf: &mut [u8],
 ) -> Result<usize, WireError> {
     if row as usize >= sim_core::limits::MAX_PIECE_DEFS
@@ -1880,6 +1900,8 @@ pub fn encode_action_place(
         || cz as usize >= sim_core::limits::MAX_BUILD_COORD
         || level as usize >= sim_core::limits::MAX_BUILD_LEVELS
         || loc > loc_max(false)
+        || (plate as i32) < -PLATE_BIAS
+        || (plate as i32) >= PLATE_BIAS
     {
         return Err(WireError::Range);
     }
@@ -1894,6 +1916,10 @@ pub fn encode_action_place(
     // Width-exact: a bool has two values and the field has two, so unlike
     // the row and the loc above there is nothing here to forge.
     w.write(freehand as u32, PLACE_FREEHAND_BITS)?;
+    // The asked band, biased like the piece record's plate (v62). Also
+    // width-exact after the range check above: sixteen values, sixteen
+    // codes, and whether a band is ACCEPTABLE is the sim's verdict.
+    w.write((plate as i32 + PLATE_BIAS) as u32, PLATE_BITS)?;
     Ok(w.finish())
 }
 
@@ -2171,6 +2197,8 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
             // field widened past its ten live values (v40) — the loc can
             // both be forged.
             let freehand = r.read(PLACE_FREEHAND_BITS)? != 0;
+            // Every code is a band (v62): the window is the sim's to refuse.
+            let plate = (r.read(PLATE_BITS)? as i32 - PLATE_BIAS) as i8;
             if row as usize >= sim_core::limits::MAX_PIECE_DEFS || loc > loc_max(false) {
                 return Err(WireError::Malformed);
             }
@@ -2181,6 +2209,7 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
                 level,
                 loc,
                 freehand,
+                plate,
             }
         }
         ACT_DEPLOY => {

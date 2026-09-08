@@ -318,6 +318,7 @@ fn blasted_from(dx: f32, dz: f32) -> World {
         level: 0,
         loc: sim_core::build::LOC_PLANE,
         freehand: false,
+        plate: 0,
     }]);
     w.tick(&[Command::Place {
         id: RAIDER,
@@ -327,6 +328,7 @@ fn blasted_from(dx: f32, dz: f32) -> World {
         level: 0,
         loc: LOC_EDGE_XLO,
         freehand: false,
+        plate: 0,
     }]);
     // Select the satchel, then plant it. Reach is 200 cm, so this has to
     // happen before the body moves.

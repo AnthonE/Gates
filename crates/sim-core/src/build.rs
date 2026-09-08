@@ -241,14 +241,17 @@ pub const REFUSE_B_UNPRICED: u32 = 10;
 pub const REFUSE_B_WINDOW: u32 = 11;
 /// The address holds nothing to take down.
 pub const REFUSE_B_EMPTY: u32 = 12;
-/// The plate the neighbouring base carries would stand more than
-/// [`PLATE_RISE_MAX_BANDS`] over this column's own ground — the land fell
-/// away faster than a leg can follow (build plate v1). Build a storey and
-/// come back over the top, or start a new plate lower down.
+/// The plate the neighbouring base carries — or, for a first or freehand
+/// foundation, the plate the placer asked for — would stand more than
+/// [`PLATE_RISE_MAX_BANDS`] over this column's own ground: the land fell
+/// away faster than a leg can follow (build plate v1), or the request was
+/// past half a wall (foundation height v0). Build a storey and come back
+/// over the top, or start a new plate lower down.
 pub const REFUSE_B_PLATE_HIGH: u32 = 13;
-/// The plate the neighbouring base carries would sit more than
-/// [`PLATE_SINK_MAX_BANDS`] under this column's own ground — the hill rises
-/// into the floor (build plate v1). Terrace: start a new plate higher up.
+/// The plate the neighbouring base carries — or the one asked for — would
+/// sit more than [`PLATE_SINK_MAX_BANDS`] under this column's own ground:
+/// the hill rises into the floor (build plate v1). Terrace: start a new
+/// plate higher up.
 pub const REFUSE_B_PLATE_LOW: u32 = 14;
 
 /// Build cell size in meters (v0: one foundation spans one cell).
@@ -325,12 +328,22 @@ pub fn column_floor_y(seed: u64, haven: &terrain::Haven, cx: u16, cz: u16, plate
 #[inline]
 pub fn terrain_band(seed: u64, haven: &terrain::Haven, cx: u16, cz: u16) -> i32 {
     let half = BUILD_CELL_M * 0.5;
-    let h = terrain::ground(
+    band_of_ground(terrain::ground(
         seed,
         haven,
         cx as f32 * BUILD_CELL_M + half,
         cz as f32 * BUILD_CELL_M + half,
-    );
+    ))
+}
+
+/// The band a floor over ground height `h` takes — the lift folded into the
+/// snap, round to nearest ([`terrain_band`]'s arithmetic, on a height
+/// rather than a cell). Public because the client's ghost reads a first
+/// foundation's asked band off the ground under the crosshair (foundation
+/// height v0) and it has to round the way the column rule rounds, or the
+/// preview and the placement disagree by a band at every half-quantum.
+#[inline]
+pub fn band_of_ground(h: f32) -> i32 {
     floor_i32((h + crate::collide::PIECE_LIFT_M) / BUILD_BASE_Q_M + 0.5)
 }
 
@@ -457,9 +470,26 @@ pub const PLATE_SINK_MAX_BANDS: i32 = 3;
 /// because their walls must still take a socket (`reference/BUILDING.md`
 /// §7c.3). Declining is about starting a NEW plate beside an old one.
 ///
-/// Pure in (index, seed, cell, bit): the client's ghost calls it against its
-/// own mirror to preview the height a placement will get, which is the only
-/// way a preview can tell the truth about a stilt.
+/// **`want` is the band the placer ASKED for, and it is heard in exactly the
+/// cases where nothing else decides** (foundation height v0, `DECISIONS.md`
+/// §open): case 3, and a freehand placement. Both used to answer band 0 —
+/// the column's own ground, with no way to say otherwise — which is the
+/// 2026-09-04 playtest's *"couldn't vary my initial foundation height at
+/// all"*. The reference reads that height off the aim (its foundation ghost
+/// follows the crosshair's terrain hit) and its players have asked for a key
+/// on top of that (`reference/BUILDING.md` §7d); ours is the aimed ground's
+/// band plus an `R`/`F` nudge, computed by the client and sent as one
+/// biased field, because which band the player WANTED is a fact only the
+/// client holds. It is refused with the same two codes the latch uses,
+/// against the same two limits: a first foundation may stilt or cut
+/// **half a wall**, never more, so a base started high is a base the latch
+/// could have carried there. Cases 1 and 2 ignore it — a piece in a built
+/// column takes that column's plate and a latched neighbour takes the base's,
+/// whatever the player asked, which is what keeps a wall on its floor.
+///
+/// Pure in (index, seed, cell, bit, want): the client's ghost calls it
+/// against its own mirror to preview the height a placement will get, which
+/// is the only way a preview can tell the truth about a stilt.
 pub fn plate_for(
     cols: &crate::collide::ColIndex,
     seed: u64,
@@ -467,12 +497,13 @@ pub fn plate_for(
     cx: u16,
     cz: u16,
     freehand: bool,
+    want: i8,
 ) -> Result<i8, u32> {
     if let Some(p) = cols.plate(cx, cz) {
         return Ok(p);
     }
     if freehand {
-        return Ok(0);
+        return plate_asked(want);
     }
     let here = terrain_band(seed, haven, cx, cz);
     let mut best: Option<i32> = None;
@@ -498,7 +529,9 @@ pub fn plate_for(
         let abs = terrain_band(seed, haven, nx, nz) + np as i32;
         best = Some(best.map_or(abs, |b: i32| b.max(abs)));
     }
-    let Some(abs) = best else { return Ok(0) };
+    let Some(abs) = best else {
+        return plate_asked(want);
+    };
     let plate = abs - here;
     if plate > PLATE_RISE_MAX_BANDS {
         return Err(REFUSE_B_PLATE_HIGH);
@@ -507,6 +540,27 @@ pub fn plate_for(
         return Err(REFUSE_B_PLATE_LOW);
     }
     Ok(plate as i8)
+}
+
+/// The plate a placement asked for, held to the same window the latch is:
+/// at most [`PLATE_RISE_MAX_BANDS`] over the column's own ground, at most
+/// [`PLATE_SINK_MAX_BANDS`] under it. One function for both of
+/// [`plate_for`]'s asked cases, so a first foundation and a freehand one
+/// cannot come to disagree about how high is too high.
+///
+/// The wire carries four biased bits (`protocol::PLATE_BITS`), which is
+/// wider than this window on purpose — those two are balance knobs, and a
+/// field sized to them would move every wire golden on a balance pass — so
+/// a forged value lands here and is refused as a plate, never truncated
+/// into one.
+fn plate_asked(want: i8) -> Result<i8, u32> {
+    if want as i32 > PLATE_RISE_MAX_BANDS {
+        return Err(REFUSE_B_PLATE_HIGH);
+    }
+    if (want as i32) < -PLATE_SINK_MAX_BANDS {
+        return Err(REFUSE_B_PLATE_LOW);
+    }
+    Ok(want)
 }
 
 /// One baked piece row. `hp == 0` ⇒ inert (the empty-table row).
@@ -1584,6 +1638,7 @@ pub fn place(
     level: u8,
     loc: u8,
     freehand: bool,
+    want: i8,
     events: &mut EventQueue,
 ) {
     if row >= bc.piece_count {
@@ -1650,8 +1705,9 @@ pub fn place(
     // height is told as one (build plate v1). A piece in a built column takes
     // that column's plate; the first piece of a base latches to whatever it
     // touches, or takes its own ground — unless `freehand` declined the latch,
-    // which only the client can tell us (freehand placement v0).
-    let plate = match plate_for(pieces.cols(), seed, haven, cx, cz, freehand) {
+    // which only the client can tell us (freehand placement v0) — and where
+    // nothing else decides, the band it asked for (foundation height v0).
+    let plate = match plate_for(pieces.cols(), seed, haven, cx, cz, freehand, want) {
         Ok(p) => p,
         Err(why) => {
             events.push(EV_BUILD_REFUSED, p.id, why, 0);
@@ -2236,6 +2292,7 @@ mod tests {
             0,
             LOC_PLANE,
             false,
+            0,
             &mut ev,
         );
         assert_eq!(
@@ -2262,6 +2319,7 @@ mod tests {
             0,
             LOC_EDGE_XLO,
             false,
+            0,
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
@@ -2282,6 +2340,7 @@ mod tests {
             1,
             LOC_PLANE,
             false,
+            0,
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
@@ -2303,6 +2362,7 @@ mod tests {
             1,
             LOC_EDGE_XLO,
             false,
+            0,
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
@@ -2338,6 +2398,7 @@ mod tests {
                 level,
                 loc,
                 false,
+                0,
                 &mut ev,
             );
             assert_eq!(last(&ev), (crate::world::EV_BUILD_REFUSED, 7, reason));
@@ -2358,6 +2419,7 @@ mod tests {
             0,
             LOC_PLANE,
             false,
+            0,
             &mut ev,
         );
         assert_eq!(last(&ev).1, 7);
@@ -2378,6 +2440,7 @@ mod tests {
             0,
             LOC_EDGE_ZLO,
             false,
+            0,
             &mut ev,
         );
         assert_eq!(last(&ev).2, REFUSE_B_SUPPORT);
@@ -2396,6 +2459,7 @@ mod tests {
             1,
             LOC_PLANE,
             false,
+            0,
             &mut ev,
         );
         assert_eq!(last(&ev).2, REFUSE_B_SUPPORT);
@@ -2416,6 +2480,7 @@ mod tests {
             0,
             LOC_PLANE,
             false,
+            0,
             &mut ev,
         );
         assert_eq!(last(&ev).2, REFUSE_B_COST);
@@ -2435,6 +2500,7 @@ mod tests {
             0,
             LOC_PLANE,
             false,
+            0,
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
@@ -2452,6 +2518,7 @@ mod tests {
             0,
             LOC_PLANE,
             false,
+            0,
             &mut ev,
         );
         assert_eq!(last(&ev).2, REFUSE_B_SPOT);
@@ -2507,6 +2574,7 @@ mod tests {
             0,
             LOC_PLANE,
             false,
+            0,
             &mut ev,
         );
         // A window on a plane loc is a spot refusal, not a support one.
@@ -2524,6 +2592,7 @@ mod tests {
             0,
             LOC_PLANE,
             false,
+            0,
             &mut ev,
         );
         assert_eq!(
@@ -2545,6 +2614,7 @@ mod tests {
             0,
             LOC_EDGE_XLO,
             false,
+            0,
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
@@ -2562,6 +2632,7 @@ mod tests {
             0,
             LOC_EDGE_ZLO,
             false,
+            0,
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
@@ -2634,6 +2705,7 @@ mod tests {
             0,
             LOC_PLANE,
             false,
+            0,
             &mut ev,
         );
         place(
@@ -2650,6 +2722,7 @@ mod tests {
             0,
             LOC_EDGE_XLO,
             false,
+            0,
             &mut ev,
         );
         place(
@@ -2666,6 +2739,7 @@ mod tests {
             0,
             LOC_EDGE_ZLO,
             false,
+            0,
             &mut ev,
         );
 
@@ -2738,6 +2812,7 @@ mod tests {
             0,
             LOC_TRI_XLO_ZLO,
             false,
+            0,
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
@@ -2755,6 +2830,7 @@ mod tests {
             0,
             LOC_TRI_XHI_ZHI,
             false,
+            0,
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
@@ -2773,6 +2849,7 @@ mod tests {
             0,
             LOC_TRI_XHI_ZLO,
             false,
+            0,
             &mut ev,
         );
         assert_eq!(
@@ -2794,6 +2871,7 @@ mod tests {
             0,
             LOC_PLANE,
             false,
+            0,
             &mut ev,
         );
         assert_eq!(
@@ -2816,6 +2894,7 @@ mod tests {
             0,
             LOC_DIAG_A,
             false,
+            0,
             &mut ev,
         );
         assert_eq!(
@@ -2836,6 +2915,7 @@ mod tests {
             0,
             LOC_DIAG_B,
             false,
+            0,
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
@@ -2857,6 +2937,7 @@ mod tests {
             1,
             LOC_TRI_XLO_ZLO,
             false,
+            0,
             &mut ev,
         );
         assert_eq!(
@@ -2881,6 +2962,7 @@ mod tests {
             1,
             LOC_TRI_XHI_ZLO,
             false,
+            0,
             &mut ev,
         );
         assert_eq!(
@@ -2901,6 +2983,7 @@ mod tests {
             1,
             LOC_TRI_XLO_ZLO,
             false,
+            0,
             &mut ev,
         );
         assert_eq!(
@@ -2958,6 +3041,7 @@ mod tests {
             0,
             LOC_PLANE,
             false,
+            0,
             &mut ev,
         );
         assert_eq!(last(&ev).2, REFUSE_B_TERRAIN);
@@ -3005,6 +3089,7 @@ mod tests {
             0,
             LOC_PLANE,
             false,
+            0,
             &mut ev,
         );
         assert_eq!(last(&ev).2, REFUSE_B_FULL);
@@ -3034,6 +3119,7 @@ mod tests {
                 0,
                 loc,
                 false,
+                0,
                 &mut ev,
             );
             assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
@@ -3354,6 +3440,7 @@ mod tests {
             0,
             LOC_PLANE,
             false,
+            0,
             &mut ev,
         );
         assert_eq!(pieces.len(), 1, "the foundation stands");
@@ -3401,6 +3488,7 @@ mod tests {
             0,
             LOC_PLANE,
             false,
+            0,
             &mut ev,
         );
         let held = crate::craft::inv_count(&p.inv, 0);
@@ -3496,6 +3584,7 @@ mod tests {
             0,
             LOC_PLANE,
             false,
+            0,
             &mut ev,
         );
         let mut far = Player {
@@ -3594,6 +3683,7 @@ mod tests {
                 0,
                 loc,
                 false,
+                0,
                 &mut ev,
             );
             assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
@@ -3734,6 +3824,7 @@ mod tests {
             0,
             LOC_EDGE_ZLO,
             false,
+            0,
             &mut ev,
         );
         assert_eq!(
@@ -3764,6 +3855,7 @@ mod tests {
             0,
             LOC_EDGE_ZLO,
             false,
+            0,
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
@@ -3811,6 +3903,7 @@ mod tests {
             0,
             LOC_EDGE_ZLO,
             false,
+            0,
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
@@ -3938,6 +4031,7 @@ mod tests {
             0,
             LOC_EDGE_ZLO,
             false,
+            0,
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
@@ -3987,6 +4081,7 @@ mod tests {
                 0,
                 loc,
                 false,
+                0,
                 &mut ev,
             );
             assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
@@ -4073,6 +4168,7 @@ mod tests {
             0,
             LOC_PLANE,
             false,
+            0,
             &mut ev,
         );
         place(
@@ -4089,6 +4185,7 @@ mod tests {
             0,
             LOC_EDGE_XLO,
             false,
+            0,
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);

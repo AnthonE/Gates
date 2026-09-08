@@ -287,8 +287,9 @@ fn encode_raid(cmd: &Command, buf: &mut [u8]) -> Option<Result<usize, WireError>
             level,
             loc,
             freehand,
+            plate,
             ..
-        } => encode_action_place(row, cx, cz, level, loc, freehand, buf),
+        } => encode_action_place(row, cx, cz, level, loc, freehand, plate, buf),
         Command::PlaceDeploy {
             row,
             cx,

@@ -71,6 +71,7 @@ fn store_with(cells: &[(u16, u16)]) -> (Pieces, BuildContent) {
             0,
             LOC_PLANE,
             false,
+            0,
             &mut ev,
         );
     }

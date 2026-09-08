@@ -986,7 +986,7 @@ impl Plugin for GatesRenderPlugin {
         .add_systems(
             Update,
             (
-                ghost::level_keys,
+                ghost::height_keys,
                 ghost::track,
                 ghost::deploy_track,
                 ghost::place_key,

@@ -343,6 +343,10 @@ fn place_at(w: &mut World, cx: u16, cz: u16, row: u16, loc: u8) {
             level: GROUND,
             loc: l,
             freehand: false,
+            // The band asked for (foundation height v0): 0 is this column's
+            // own ground for the foundation, and ignored outright for the
+            // piece that follows it into a built column.
+            plate: 0,
         }]);
         assert_eq!(
             w.pieces.len(),
