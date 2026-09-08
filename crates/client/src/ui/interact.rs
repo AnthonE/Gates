@@ -665,11 +665,15 @@ mod tests {
 // crosshair named what `E` would do and never what a swing would hit, so the
 // most common verb in the game was the one with no prompt.
 //
-// **Ported from `sim_core::gather::swing`, not from the browser.** The deleted
-// `web/src/interact.js` had a `resolveSwing`, but it was itself a hand-mirror
-// of the sim's scan, and mirroring a mirror is how the two drift. Every bound
-// below is read from `gather` rather than restated: `REACH_M`, `CONE_COS`,
-// `DY_MAX_M`, `POINT_BLANK_M2`. Nothing here invents a number.
+// **It is the sim's own cast, not a port of it** (melee aim v1, 2026-09-05).
+// The deleted `web/src/interact.js` had a `resolveSwing` that hand-mirrored
+// the sim's planar scan, this file's first version ported that mirror from
+// `gather::swing` and pinned four constants to keep the two in step, and the
+// swing then became a ray along the look — yaw AND pitch, entering real
+// volumes. Rather than mirror that, the prompt calls `melee::node_cast` on
+// the client's own memo: one function on both sides of the wire, so nothing
+// here can drift from the swing it invites. The only numbers this file still
+// names are the two reaches, and both are imports.
 //
 // **One difference from the browser, and it is a simplification the native
 // client earned.** `resolveSwing` skipped a cell that was `hidden || fellAt`,
@@ -681,12 +685,14 @@ mod tests {
 // the harvested set is the whole truth and there is no second state to test.
 
 use sim_core::backpack::LOOT_REACH_M as OPEN_REACH_M;
-use sim_core::fmath::{fabs, floor_i32};
-use sim_core::gather::{CONE_COS, DY_MAX_M, POINT_BLANK_M2, REACH_M as SWING_REACH_M};
-use sim_core::occupy::{Harvested, SlotCache};
+use sim_core::gather::{POINT_BLANK_M2, REACH_M as SWING_REACH_M};
+use sim_core::melee::{self, Ray};
+use sim_core::movement::{quant_xz, quant_y, Body};
+use sim_core::occupy::{Harvested, Occupants, SlotCache};
+use sim_core::ranged::MM_PER_M;
 // `scatter` itself is deliberately NOT imported: every read on this path goes
 // through `Island::slot`, and `tests/ui.rs`'s call-site gate says so.
-use sim_core::terrain::{Haven, Occupant, ScatterTable, Slot, CELL_SIZE};
+use sim_core::terrain::{Haven, Occupant, ScatterTable, Slot};
 
 /// What a swing would land on, or `Occupant::None` for a whiff.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -696,7 +702,9 @@ pub struct SwingPick {
     pub occupant: u8,
     pub cx: u16,
     pub cz: u16,
-    /// Planar squared distance. Diagnostics for the gate; nothing draws it.
+    /// Planar squared distance from the feet to the picked slot's centre.
+    /// Diagnostics for the gate and the `E` pick's own `d2`; nothing draws
+    /// it, and it is not what decided the pick — the ray did.
     pub d2: f32,
     /// Where the picked slot stands, world metres — the scatter's own
     /// `Slot { x, y, z }`, carried out rather than re-derived.
@@ -710,25 +718,6 @@ pub struct SwingPick {
     pub x: f32,
     pub y: f32,
     pub z: f32,
-}
-
-/// Whether an occupant is something a swing takes.
-///
-/// `Rock` (6) is deliberately absent and so is the stump: a rock is scenery
-/// the sim never harvests, and a stump is the CONSEQUENCE of a harvest rather
-/// than a target. `gather::target_index` makes the same split one crate down —
-/// nodes 1..=5 plus the barrel at 7 — and this is that predicate, not a
-/// second opinion about it.
-fn swingable(o: Occupant) -> bool {
-    matches!(
-        o,
-        Occupant::Tree
-            | Occupant::StoneNode
-            | Occupant::MetalNode
-            | Occupant::SulfurNode
-            | Occupant::Bush
-            | Occupant::BarrelSlot
-    )
 }
 
 /// The noun the prompt names for a swing pick, or `""` for a whiff.
@@ -747,18 +736,40 @@ pub fn swing_label(occupant: u8) -> &'static str {
     }
 }
 
-/// Where the swing is taken from: feet position, eye height and facing.
+/// Where the swing is taken from: the feet, and the look **as the wire
+/// carries it**.
 ///
-/// A struct rather than five scalars because the five are one fact — and
-/// because `resolve_swing` reached clippy's argument ceiling honestly, which
-/// is usually the lint telling you a parameter list has become a bag.
+/// `yaw` and `pitch` are `InputFrame`'s own two fields — the 256-entry LUT
+/// heading and the 128-level pitch byte — rather than a float direction,
+/// because the sim resolves the swing from exactly those bytes and nothing
+/// finer. A prompt computed from the unquantized camera would name a node
+/// the quantized ray misses by a LUT step, which is the drift the
+/// quantize-both-sides law exists for (`CLAUDE.md` §traps). `render/verbs.rs`
+/// converts through the same `look::{yaw_u16, pitch_u8}` the frame does.
+///
+/// A struct rather than five scalars because the five are one fact.
 #[derive(Clone, Copy, Debug)]
 pub struct SwingAim {
     pub x: f32,
     pub y: f32,
     pub z: f32,
-    pub fx: f32,
-    pub fz: f32,
+    pub yaw: u16,
+    pub pitch: u8,
+}
+
+impl SwingAim {
+    /// The sim's own ray for this aim, `reach_m` long: the eye
+    /// `ranged::ARROW_EYE_MM` over the feet, along the look — `melee::ray`,
+    /// from a body quantized the way the server holds one.
+    fn ray(&self, reach_m: f32) -> Ray {
+        let body = Body {
+            qx: quant_xz(self.x),
+            qy: quant_y(self.y),
+            qz: quant_xz(self.z),
+            ..Body::default()
+        };
+        melee::ray(&body, self.yaw, self.pitch, reach_m * MM_PER_M)
+    }
 }
 
 /// The island the swing lands on, borrowed rather than copied.
@@ -796,23 +807,56 @@ impl Island<'_> {
     pub fn slot(&mut self, cx: i32, cz: i32) -> Slot {
         self.cache.slot(self.seed, self.table, self.haven, cx, cz)
     }
+
+    /// The same four borrows as the sim's `Occupants`, so `melee`'s casts
+    /// run over the client's memo exactly as they run over the server's.
+    fn occupants(&mut self) -> Occupants<'_> {
+        Occupants {
+            table: self.table,
+            haven: self.haven,
+            harvested: self.harvested,
+            cache: self.cache,
+        }
+    }
 }
 
-/// The nearest standing swingable slot in reach and inside the aim cone.
+/// A cast's answer as the prompt carries it.
+fn pick_of(at: SwingAim, cx: u16, cz: u16, s: Slot) -> SwingPick {
+    let (dx, dz) = (s.x - at.x, s.z - at.z);
+    SwingPick {
+        occupant: s.occupant as u8,
+        cx,
+        cz,
+        d2: dx * dx + dz * dz,
+        x: s.x,
+        y: s.y,
+        z: s.z,
+    }
+}
+
+/// What a swing from `at` would land on: **the sim's own cast**, over the
+/// client's memo.
 ///
-/// The 3×3 cell window around the player's own cell, walked **dz outer, dx
-/// inner** — the sim's own order, and the tiebreak depends on it. Two slots
-/// at exactly equal `d2` is not a contrived case (the scatter places on a
-/// grid), and `d2 < best` is strict so the FIRST cell in that order keeps it,
-/// which is what `gather::swing`'s `is_none_or(|b| d2 < b.d2)` does.
+/// This is `sim_core::melee::node_cast` and not a mirror of it — the one
+/// function, called on both sides of the wire, so the prompt and the swing
+/// it invites cannot disagree about which node the ray enters first, how far
+/// the arm reaches, or whether the eye's pitch carries the ray over a
+/// knee-high node (it does: a level look at a stone node from a 1.6 m eye is
+/// a whiff, and the prompt says so before the click). Until melee aim v1 this
+/// was a 3×3 planar walk copied from `gather::swing`, and the two had to be
+/// kept in step by a test that pinned four constants.
 ///
 /// Allocates nothing and is **idempotent**: the caller may run it every frame
-/// for the prompt and again on the click without the two disagreeing. It took
-/// no `&mut` at all until the memo landed, and the weaker word is the honest
-/// one — `island.cache` is written, but only with answers `terrain::scatter`
-/// would have recomputed, so nothing observable moves.
+/// for the prompt and again on the click without the two disagreeing.
+/// `island.cache` is written, but only with answers `terrain::scatter` would
+/// have recomputed, so nothing observable moves.
 pub fn resolve_swing(at: SwingAim, island: &mut Island<'_>) -> SwingPick {
-    scan_slots(at, island, swingable, SWING_REACH_M)
+    let ray = at.ray(SWING_REACH_M);
+    let seed = island.seed;
+    match melee::node_cast(seed, &mut island.occupants(), &ray) {
+        Some(hit) => pick_of(at, hit.cx, hit.cz, hit.slot),
+        None => SwingPick::default(),
+    }
 }
 
 /// Whether an occupant is something `E` OPENS.
@@ -829,89 +873,31 @@ fn openable(o: Occupant) -> bool {
 
 /// What `E` would OPEN in the scatter, or `Occupant::None` for nothing.
 ///
-/// Same scan, same cone, same 3×3 memo as `resolve_swing` — a different
-/// predicate and a different reach, because an open is priced at the arm
-/// every other container uses (`backpack::LOOT_REACH_M`) and a swing at
-/// the longer `gather::REACH_M`. Sharing the body rather than copying it
-/// is the point: the two prompts must never disagree about which cell the
-/// player is standing at, and two hand-written 3×3 walks would eventually
-/// do exactly that.
+/// Same cast, same memo, same eye as `resolve_swing` — a different predicate
+/// and a different reach, because an open is priced at the arm every other
+/// container uses (`backpack::LOOT_REACH_M`) and a swing at the shorter
+/// `gather::REACH_M`. Sharing `melee::occupant_cast` rather than copying it
+/// is the point: the two prompts must never disagree about where the eye is
+/// or which way it looks, and two hand-written walks would eventually do
+/// exactly that.
+///
+/// ⚠ **It is narrower than the verb it prompts for, and it always was.**
+/// `worldcont::open` asks for planar proximity inside `LOOT_REACH_M` and
+/// nothing else — no aim at any distance — so the prompt has been the
+/// stricter of the two since it was a 30° cone, and a ray is stricter again:
+/// a crate is 0.68 m across and 0.8 m tall, so from a 1.6 m eye it wants the
+/// look dropped 44° at 1.5 m and 13° at 4 m. Whether stooping to open a
+/// barrel reads as aiming or as fumbling is a frame question and it is
+/// unanswered (`NOW.md` §0ray item 6); padding the cast is the fix if it
+/// reads badly, and inventing the pad before anybody has looked would be
+/// inventing a knob.
 pub fn resolve_open(at: SwingAim, island: &mut Island<'_>) -> SwingPick {
-    scan_slots(at, island, openable, OPEN_REACH_M)
-}
-
-/// The 3×3 scatter walk both slot resolvers run: nearest cell whose
-/// occupant satisfies `want`, inside `reach`, inside the aim cone or
-/// point-blank, not already harvested.
-fn scan_slots(
-    at: SwingAim,
-    island: &mut Island<'_>,
-    want: fn(Occupant) -> bool,
-    reach: f32,
-) -> SwingPick {
-    let SwingAim { x, y, z, fx, fz } = at;
-    let mut out = SwingPick::default();
-    let mut best = f32::INFINITY;
-
-    // A zero-length look is not a refusal to answer: the cone test degrades
-    // to point-blank-only, which is the same posture `resolve` takes above.
-    let flen = (fx * fx + fz * fz).sqrt();
-    let (f0, f1) = if flen > 0.0 {
-        (fx / flen, fz / flen)
-    } else {
-        (0.0, 0.0)
-    };
-
-    let pcx = floor_i32(x / CELL_SIZE);
-    let pcz = floor_i32(z / CELL_SIZE);
-
-    let mut dz_cell = -1i32;
-    while dz_cell <= 1 {
-        let mut dx_cell = -1i32;
-        while dx_cell <= 1 {
-            let cx = pcx + dx_cell;
-            let cz = pcz + dz_cell;
-            dx_cell += 1;
-            let s = island.slot(cx, cz);
-            if !want(s.occupant) {
-                continue;
-            }
-            let dx = s.x - x;
-            let dy = s.y - y;
-            let dz = s.z - z;
-            let d2 = dx * dx + dz * dz;
-            if d2 > reach * reach {
-                continue;
-            }
-            if fabs(dy) > DY_MAX_M {
-                continue;
-            }
-            let aimed = d2 <= POINT_BLANK_M2 || {
-                let dot = dx * f0 + dz * f1;
-                dot > CONE_COS * d2.sqrt()
-            };
-            if !aimed || d2 >= best {
-                continue;
-            }
-            // Negative cells cannot be harvested — the set is keyed on u16,
-            // and the sim's own scan casts the same way.
-            if cx < 0 || cz < 0 || island.harvested.is_harvested(cx as u16, cz as u16) {
-                continue;
-            }
-            best = d2;
-            out = SwingPick {
-                occupant: s.occupant as u8,
-                cx: cx as u16,
-                cz: cz as u16,
-                d2,
-                x: s.x,
-                y: s.y,
-                z: s.z,
-            };
-        }
-        dz_cell += 1;
+    let ray = at.ray(OPEN_REACH_M);
+    let seed = island.seed;
+    match melee::occupant_cast(seed, &mut island.occupants(), &ray, openable) {
+        Some(hit) => pick_of(at, hit.cx, hit.cz, hit.slot),
+        None => SwingPick::default(),
     }
-    out
 }
 
 // ---------------------------------------------------------------------------

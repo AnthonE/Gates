@@ -555,7 +555,12 @@ fn test_alloc_zero() {
                     seq: t,
                     buttons: BTN_PRIMARY,
                     yaw: 0,
-                    pitch: 128,
+                    // The duellists look level at each other; the raider
+                    // (bot 5) stands ON the plane it is breaking and has to
+                    // look down at it — a swing is a ray since melee aim
+                    // v1, and a level one from 1.6 m never meets a floor.
+                    // Byte 48 is 56° down: the slab 1.1 m ahead, in reach.
+                    pitch: if i == 4 { 48 } else { 128 },
                     move_x: 0,
                     move_z: 0,
                     sel: 0,

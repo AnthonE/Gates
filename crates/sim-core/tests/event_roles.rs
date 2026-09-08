@@ -355,13 +355,27 @@ fn arm_victim_with_junk(w: &mut World) {
 /// One tick with the swing held — which is what a player holding the
 /// button actually sends, and what makes the sim repeat the swing.
 fn step(w: &mut World, seq: &mut u16) {
+    // At the victim's chest when one stands within the arm, level otherwise
+    // — a swing is a ray since melee aim v1, and the victim `Body::at`
+    // seats two metres out is on ground of its own.
+    let pitch = if w.players[1].active && planar_m(w, 0, 1) <= 3.0 {
+        aim_at(w, 0, 1)
+    } else {
+        128
+    };
+    step_looking(w, seq, pitch);
+}
+
+/// One tick with the swing held at an explicit `pitch` — the fixtures that
+/// stand ON a short slot look straight down at it.
+fn step_looking(w: &mut World, seq: &mut u16, pitch: u8) {
     w.tick(&[Command::Input {
         id: ATTACKER,
         frame: InputFrame {
             seq: *seq,
             buttons: BTN_PRIMARY,
             yaw: YAW,
-            pitch: 128,
+            pitch,
             move_x: 0,
             move_z: 0,
             sel: 0,
@@ -369,6 +383,56 @@ fn step(w: &mut World, seq: &mut u16) {
         favour: 0,
     }]);
     *seq = seq.wrapping_add(1);
+}
+
+/// Planar distance between two seated bodies, metres.
+fn planar_m(w: &World, a: usize, b: usize) -> f32 {
+    let (pa, pb) = (w.players[a].body, w.players[b].body);
+    let (dx, dz) = (
+        (pb.qx - pa.qx) as f32 * POS_XZ_Q,
+        (pb.qz - pa.qz) as f32 * POS_XZ_Q,
+    );
+    (dx * dx + dz * dz).sqrt()
+}
+
+/// The eye above the feet, `ranged::ARROW_EYE_MM` in metres — where a
+/// swing's ray leaves from since melee aim v1 (2026-09-05).
+const EYE_M: f32 = sim_core::ranged::ARROW_EYE_MM as f32 / 1000.0;
+/// Where the fixtures aim on a body: the chest, a metre up. Not the head,
+/// so every hit here pays the identity rung and the counts below stay the
+/// content's; `tests/melee_aim.rs` is where the ladder is asserted.
+const CHEST_M: f32 = 1.0;
+
+/// The pitch byte that looks from `attacker`'s eye at `victim`'s chest — a
+/// scan of the sim's own LUT, because the crate's clippy walls bind this
+/// suite and there is no `atan2` to be had. A swing is a ray now, and a
+/// victim `Body::at` seated on lower ground is under a level one.
+fn aim_at(w: &World, attacker: usize, victim: usize) -> u8 {
+    aim_at_body(w, attacker, &w.players[victim].body)
+}
+
+/// [`aim_at`] toward an arbitrary body — the lag tests aim at where the
+/// victim WAS, which is a body the world no longer holds.
+fn aim_at_body(w: &World, attacker: usize, target: &Body) -> u8 {
+    let a = w.players[attacker].body;
+    let (dx, dz) = (
+        (target.qx - a.qx) as f32 * POS_XZ_Q,
+        (target.qz - a.qz) as f32 * POS_XZ_Q,
+    );
+    let run = (dx * dx + dz * dz).sqrt();
+    let rise = (target.qy - a.qy) as f32 * POS_Y_Q + CHEST_M - EYE_M;
+    let len = (rise * rise + run * run).sqrt();
+    let mut best = 128u8;
+    let mut best_dot = f32::MIN;
+    for b in 0..=255u8 {
+        let (ch, sv) = sim_core::pitch_dir(b);
+        let dot = (ch * run + sv * rise) / len;
+        if dot > best_dot {
+            best_dot = dot;
+            best = b;
+        }
+    }
+    best
 }
 
 /// Step until `code` lands, leaving the world standing on that tick.
@@ -381,6 +445,18 @@ fn until(w: &mut World, code: u8) {
         }
     }
     panic!("event code {code} never landed in {MAX_STEPS} sim ticks");
+}
+
+/// [`until`] with the swing pitched at `pitch` rather than at the victim.
+fn until_looking(w: &mut World, code: u8, pitch: u8) {
+    let mut seq = 0u16;
+    for _ in 0..MAX_STEPS {
+        step_looking(w, &mut seq, pitch);
+        if count(w, code) > 0 {
+            return;
+        }
+    }
+    panic!("event code {code} never landed in {MAX_STEPS} sim ticks looking at {pitch}");
 }
 
 /// `distinct3`, carried inside a packed field.
@@ -1054,8 +1130,10 @@ fn death_names_the_dead_then_the_killer() {
 /// than typed in: a cell that held a barrel at one seed and one weight
 /// table is a fixture that silently stops meaning what it says. Returns
 /// the slot's world position and its cell, because the swinger is stood
-/// exactly on it — `POINT_BLANK_M2` bypasses the aim cone, so the swing
-/// lands without this fixture also having to reproduce a yaw.
+/// exactly on it — a ray that starts inside an occupant's volume enters it
+/// at once (`melee::cylinder_span`), so the swing lands without this fixture
+/// also having to reproduce a yaw. A slot shorter than the eye needs the
+/// swing pitched down onto it (`until_looking`).
 fn scanned_slot(w: &World, kind: terrain::Occupant) -> (f32, f32, u16, u16) {
     let span = (terrain::ISLAND_SIZE / terrain::CELL_SIZE) as i32;
     for cz in 0..span {
@@ -1081,7 +1159,9 @@ fn slot_harvested_on_a_barrel_names_the_cell_then_the_occupant() {
     w.loot = LootContent::probe_fixture();
     let (x, z, cx, cz) = scanned_slot(&w, terrain::Occupant::BarrelSlot);
     w.players[0].body = Body::at(SEED, hv(SEED), x, z);
-    until(&mut w, EV_SLOT_HARVESTED);
+    // Standing on a barrel 0.88 m tall with a 1.6 m eye: the swing has to
+    // look straight down to enter it (pitch 0 is the LUT's bottom).
+    until_looking(&mut w, EV_SLOT_HARVESTED, 0);
     let ev = only(&w, EV_SLOT_HARVESTED);
     assert_ne!(
         ev.a, ev.b,
@@ -1284,7 +1364,7 @@ fn gather_refused_names_the_player_then_item_over_reason() {
                 seq,
                 buttons: BTN_PRIMARY,
                 yaw,
-                pitch: 0,
+                pitch: 128,
                 move_x: 0,
                 move_z: 0,
                 sel: 0,

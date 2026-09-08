@@ -48,7 +48,7 @@ use sim_core::inventory::{
     CONT_BOX, CONT_MAX, CONT_SELF, CONT_WEAR, REFUSE_M_NO_CONTAINER, REFUSE_M_SLOT, REFUSE_M_WEAR,
 };
 use sim_core::limits::{INV_SLOTS, MAX_ITEM_DEFS, WEAR_SLOTS};
-use sim_core::movement::{Body, POS_XZ_Q};
+use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q};
 use sim_core::survival::{self, SurvivalContent};
 use sim_core::world::{Command, EventQueue, Player, World, EV_MOVED, EV_MOVE_REFUSED};
 use sim_core::yaw_dir;
@@ -104,16 +104,56 @@ fn duel_world() -> World {
     w
 }
 
-fn swing_frame(seq: u16, yaw: u16) -> InputFrame {
+fn swing_frame(w: &World, seq: u16, yaw: u16) -> InputFrame {
     InputFrame {
         seq,
         buttons: BTN_PRIMARY,
         yaw,
-        pitch: 128,
+        pitch: aim_at(w, 0, 1),
         move_x: 0,
         move_z: 0,
         sel: 0,
     }
+}
+
+/// The eye above the feet, `ranged::ARROW_EYE_MM` in metres — where a
+/// swing's ray leaves from since melee aim v1 (2026-09-05).
+const EYE_M: f32 = sim_core::ranged::ARROW_EYE_MM as f32 / 1000.0;
+/// Where the fixtures aim on a body: the chest, a metre up. Not the head,
+/// so every hit here pays the identity rung and the counts below stay the
+/// content's; `tests/melee_aim.rs` is where the ladder is asserted.
+const CHEST_M: f32 = 1.0;
+
+/// The pitch byte that looks from `attacker`'s eye at `victim`'s chest — a
+/// scan of the sim's own LUT, because the crate's clippy walls bind this
+/// suite and there is no `atan2` to be had. A swing is a ray now, and a
+/// victim `Body::at` seated on lower ground is under a level one.
+fn aim_at(w: &World, attacker: usize, victim: usize) -> u8 {
+    aim_at_body(w, attacker, &w.players[victim].body)
+}
+
+/// [`aim_at`] toward an arbitrary body — the lag tests aim at where the
+/// victim WAS, which is a body the world no longer holds.
+fn aim_at_body(w: &World, attacker: usize, target: &Body) -> u8 {
+    let a = w.players[attacker].body;
+    let (dx, dz) = (
+        (target.qx - a.qx) as f32 * POS_XZ_Q,
+        (target.qz - a.qz) as f32 * POS_XZ_Q,
+    );
+    let run = (dx * dx + dz * dz).sqrt();
+    let rise = (target.qy - a.qy) as f32 * POS_Y_Q + CHEST_M - EYE_M;
+    let len = (rise * rise + run * run).sqrt();
+    let mut best = 128u8;
+    let mut best_dot = f32::MIN;
+    for b in 0..=255u8 {
+        let (ch, sv) = sim_core::pitch_dir(b);
+        let dot = (ch * run + sv * rise) / len;
+        if dot > best_dot {
+            best_dot = dot;
+            best = b;
+        }
+    }
+    best
 }
 
 /// Put player 1 two metres in front of player 0 and return the yaw player
@@ -134,7 +174,7 @@ fn swings_to_kill(w: &mut World, yaw: u16) -> u32 {
     for seq in 1..=40u16 {
         w.tick(&[Command::Input {
             id: 1,
-            frame: swing_frame(seq, yaw),
+            frame: swing_frame(w, seq, yaw),
             favour: 0,
         }]);
         hits += 1;
@@ -196,7 +236,7 @@ fn every_hit_arrives_reduced_not_only_the_killing_one() {
     w.players[1].worn[1] = one(PLATE);
     w.tick(&[Command::Input {
         id: 1,
-        frame: swing_frame(1, yaw),
+        frame: swing_frame(&w, 1, yaw),
         favour: 0,
     }]);
     assert_eq!(
@@ -212,8 +252,9 @@ fn every_hit_arrives_reduced_not_only_the_killing_one() {
 // ---------------------------------------------------------------------
 
 /// **The worn set is one number and both slots contribute.** A head piece
-/// pays against a body hit, because the sim has no hit areas at all
-/// (`combat.rs`'s header: aim is planar, there is no head to hit) — and
+/// pays against a body hit, because armor is not keyed to a hit area: the
+/// swing has a part ladder since melee aim v1 (`ranged::part_crossed`) and
+/// `reference/ARMOR.md` §9.3's per-area coverage is deferred by name — and
 /// the alternative would ship `item.armor_burlap_head` as craftable,
 /// priced and protecting nobody on the very day armor started working.
 #[test]

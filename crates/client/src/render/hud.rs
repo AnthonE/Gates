@@ -2401,7 +2401,7 @@ fn swing_prompt_weak(occupant: u8, in_weak: bool) -> String {
 
 /// Which face of the nearest sided piece the player stands on (hard/soft
 /// v0) — the damage rule's one line of legibility. `side` was computed by
-/// `sim_core::build::soft_side`, the same comparison `combat::raid`
+/// `sim_core::build::soft_side`, the same comparison `World::chip`
 /// prices the swing with, so this label cannot disagree with the bill;
 /// shapes with no sides (and deployables) carry `None` and stay silent.
 fn side_line(near: &Option<crate::ui::structure::Target>) -> String {

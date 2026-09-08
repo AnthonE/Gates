@@ -65,5 +65,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwayland-dev libasound2-dev libudev-dev
+      # The asset triage and its repair step measure a texture, so their
+      # self-tests need a decoder: `ci/measure_glb.py` and
+      # `ci/flatten_charts.py` say SKIP and exit nonzero without one rather
+      # than pass on the cases that did not run.
+      - name: numpy and Pillow, for the asset triage self-tests
+        run: pip3 install numpy pillow
       - name: the gates
         run: ./ci/gates.sh

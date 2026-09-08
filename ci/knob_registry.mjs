@@ -123,7 +123,7 @@ function* sources(dir) {
     if (SKIP_DIRS.has(ent.name)) continue;
     const full = path.join(dir, ent.name);
     if (ent.isDirectory()) yield* sources(full);
-    else if (/\.(rs|js|mjs)$/.test(ent.name)) yield full;
+    else if (/\.(rs|js|mjs|py)$/.test(ent.name)) yield full;
   }
 }
 
@@ -131,17 +131,27 @@ function* sources(dir) {
 // Non-greedy to the first semicolon, which is correct for the scalar and
 // array literals a knob can be. A name whose initializer is something else
 // entirely surfaces below as an unparseable value, loudly.
+// Python: `NAME = value` at column 0 (a module-level assignment, which is
+// what a knob in `ci/*.py` is), to end of line, a `#` comment stripped.
+// Added 2026-09-05 when four knobs landed in the asset triage scripts — a
+// registry that reads two of the three languages a default ships in would
+// have called them unimplemented.
 const rustDecl = (name) =>
   new RegExp(`\\bconst\\s+${name}\\s*:\\s*[^=]+=\\s*([^;]+);`);
 const jsDecl = (name) =>
   new RegExp(`\\bconst\\s+${name}\\s*=\\s*([^;]+);`);
+const pyDecl = (name) => new RegExp(`^${name}\\s*=\\s*([^#\\n]+)`, "m");
 
 const found = new Map(); // name -> [{file, raw}]
 for (const file of sources(ROOT)) {
   const src = fs.readFileSync(file, "utf8");
   for (const name of wanted) {
     if (!src.includes(name)) continue;
-    const re = file.endsWith(".rs") ? rustDecl(name) : jsDecl(name);
+    const re = file.endsWith(".rs")
+      ? rustDecl(name)
+      : file.endsWith(".py")
+        ? pyDecl(name)
+        : jsDecl(name);
     const m = src.match(re);
     if (!m) continue;
     if (!found.has(name)) found.set(name, []);
@@ -156,6 +166,8 @@ for (const file of sources(ROOT)) {
 // knob this cannot pin, and silently declaring victory on it is the bug.
 function parseValue(raw) {
   let s = raw.trim();
+  // A Python tuple is the same list of numbers in different brackets.
+  s = s.replace(/^\(/, "[").replace(/\)$/, "]");
   // Rust type suffixes and digit separators.
   s = s.replace(/_/g, "");
   s = s.replace(/\b(\d+(?:\.\d+)?)(?:usize|u\d+|i\d+|f32|f64)\b/g, "$1");
@@ -207,7 +219,7 @@ for (const d of declared) {
   check(
     hits && hits.length > 0,
     `registry declares \`${d.name} = ${d.raw}\` in DECISIONS.md §open but no ` +
-      `\`const ${d.name}\` exists in any .rs/.js/.mjs source. Either the knob ` +
+      `\`const ${d.name}\` exists in any .rs/.js/.mjs/.py source. Either the knob ` +
       `was renamed or removed in code (fix the row), or it was never ` +
       `implemented (then it is not a default that ships, and the row does not ` +
       `belong in §open yet).`,

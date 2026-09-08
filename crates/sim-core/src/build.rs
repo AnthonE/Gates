@@ -1176,9 +1176,9 @@ pub fn facing_of(loc: u8, cx: u16, cz: u16, px: f32, pz: f32) -> u8 {
 }
 
 /// Is a toucher standing at (`px`, `pz`) on the piece's SOFT side? The
-/// one comparison `combat::raid` prices a swing with and the client's
-/// readout labels a wall with — the same function, so the label can
-/// never disagree with the bill.
+/// one comparison `World::chip` prices a swing and a shot with and the
+/// client's readout labels a wall with — the same function, so the label
+/// can never disagree with the bill.
 #[inline]
 pub fn soft_side(rec: &PieceRec, px: f32, pz: f32) -> bool {
     facing_of(rec.loc, rec.cx, rec.cz, px, pz) == rec.facing
@@ -1201,8 +1201,9 @@ pub fn soft_side(rec: &PieceRec, px: f32, pz: f32) -> bool {
 ///
 /// **A blast is deliberately not a caller.** `charge::detonate` prices by
 /// distance alone, because a satchel is a point and not a stance — that
-/// exemption is stated in `combat::raid`'s own comment and is preserved
-/// here by omission rather than by a flag nobody would read.
+/// exemption was stated in `combat::raid`'s own comment (the swing's bill
+/// is `World::chip`'s since melee aim v1) and is preserved here by omission
+/// rather than by a flag nobody would read.
 #[inline]
 pub fn structure_price(rec: &PieceRec, shape: u8, px: f32, pz: f32, full: u16) -> u16 {
     if shape_has_facing(shape) && !soft_side(rec, px, pz) {
@@ -2679,7 +2680,7 @@ mod tests {
 
     /// Hard/soft v0: a placement's soft side faces the builder, on both
     /// edge axes; planes carry no facing; and `soft_side` answers the
-    /// builder's own stance as soft — the label `combat::raid` prices by.
+    /// builder's own stance as soft — the label `World::chip` prices by.
     #[test]
     fn facing_is_set_toward_the_builder_and_only_on_edges() {
         let bc = BuildContent::probe_fixture();

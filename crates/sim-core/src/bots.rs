@@ -39,6 +39,20 @@ use crate::world::Command;
 /// a landing; `probe_combat` (256) and `probe_bags` (600) carry whole arcs.
 const JUMP_PERIOD: u16 = 128;
 
+/// The wanderer's look, as a band of pitch bytes: `PITCH_LOW..PITCH_LOW +
+/// PITCH_SPAN`, which is 34° down to 6° up.
+///
+/// It was the whole byte until melee aim v1 (2026-09-05), and the whole
+/// byte was fine while a swing ignored pitch. A swing is a ray now, so a
+/// bot looking at the sky or its own feet two frames in three hit nothing
+/// it wandered past, and `test_replay`'s barrel-smash coverage went to
+/// zero. The band is where a person looks while walking — down enough to
+/// take a barrel (0.88 m) or a stone node (1.13 m) at a stride's distance
+/// from a 1.6 m eye, up enough to still launch an arrow with some lift.
+/// Bounded, so every value is wire-legal by construction.
+pub const PITCH_LOW: u32 = 80;
+pub const PITCH_SPAN: u32 = 57;
+
 /// Random-walk input frame: `yaw` drifts around the previous heading,
 /// mostly-forward movement, bursts of sprint and strafe, and the primary
 /// button held about a third of the time — bots swing at whatever they
@@ -66,7 +80,7 @@ pub fn bot_frame(rng: &mut Pcg32, prev_yaw: u16, seq: u16) -> InputFrame {
         seq,
         buttons,
         yaw,
-        pitch: rng.next_bounded(256) as u8,
+        pitch: (PITCH_LOW + rng.next_bounded(PITCH_SPAN)) as u8,
         move_x: strafe as i8,
         move_z: forward as i8,
         // Wander the hotbar too, so held-item selection is inside the

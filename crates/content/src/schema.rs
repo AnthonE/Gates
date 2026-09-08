@@ -592,6 +592,18 @@ pub struct Mob {
     /// Time between a death and the same slot standing up again at the
     /// same home.
     pub respawn_seconds: u32,
+    /// The animal's hit volume — a cylinder standing on its feet, radius
+    /// and height in **centimetres** (melee aim v1, 2026-09-05). What a
+    /// swing's ray has to enter to land (`sim-core/src/melee.rs`
+    /// `mob_cast`), so a pig is 0.8 m tall to a spear because this row
+    /// says so, and a level swing from a 1.6 m eye passes over it until
+    /// the hunter looks down. Centimetres, like `range_m` becomes
+    /// `reach_cm`, because an animal is not a whole number of metres tall.
+    /// The client's drawn body is held to `body_h_cm` by a test
+    /// (`client/tests/mob_volume.rs`), so the picture and the volume the
+    /// sim tests cannot drift apart.
+    pub body_r_cm: u32,
+    pub body_h_cm: u32,
     /// What the killing blow pays. Straight into the killer's inventory
     /// (`mob::strike`), so these are stacks and not a weighted table —
     /// butchering an animal is not opening a barrel.

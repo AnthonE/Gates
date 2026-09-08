@@ -86,6 +86,32 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
    3.6 m out on height, and 2.3–2.5/2.7 describe a CUBE where the sim blocks
    a cylinder. Read `occupant_volume`, not this file.
 
+## 0rk · The rocks read as the wrong object, and every normal map is bent *(art + client lane)*
+
+Operator, 2026-09-05: the boulder *"looks like mineable"*, the node is
+*"square instead of spherical"*. Measured, and both are the asset (`DECISIONS.md`
+§open, scatter art v1): the shipped boulder is a 1.17 ball paler than the node,
+the node a 1.39 cube; every UV island of every albedo was lit on its own (chart
+contrast 0.09–0.36); and **every normal map in the tree decodes bent** — X/Y
+means 0.212, not 0.5 — because `ci/ktx_pack.py` let `ktx create` linearise the
+data maps for three weeks. The tooling landed; the assets did not:
+
+1. **Re-pack all 23 models from their raw deliveries** on the box with `ktx`:
+   `ci/flatten_charts.py` → `ci/ktx_pack.py` (which now refuses a bent map).
+   Then delete each file's entry from `tests/packed_maps.rs`'s two lists — the
+   gate holds it neutral and chart-flat from then on. Roughness moves with it
+   (0.41 stored where ~0.67 was delivered): expect every prop to read matter.
+2. **Re-roll the stone node and the boulder pool's first entry** with the two
+   prompts in `MANIFEST.md` §prop, and select with `ci/measure_glb.py` — rock_a
+   and node_stone are proven rejects, and metal and sulfur fail the round band
+   too. Remove each landed file's pin from `tests/prop_assets.rs`.
+3. **The formation levers, measured and parked.** Tilt is out at these
+   tolerances: rock_b and rock_c leave the blocked cylinder past **3°**. A
+   cluster per slot waits for a slab, because the top gate holds the main part
+   at ≥ 0.97 scale, so satellites on a ball are warts. Widening the Rock row is
+   sim truth and the operator's call. §LOOK: nobody has seen a flattened albedo
+   or a straight normal in a frame.
+
 ## 0anim · The animals cannot be bought until the client can move one *(client lane)*
 
 Asked 2026-09-02 whether the generator can rig. **It can, and it will not rig
@@ -273,6 +299,25 @@ thing the probe cannot photograph:
    second — so a 0.45 s stroke and a 0.55 s chip life are consumed inside
    one or two frames and never land on a shot. `./ci/scene.sh --play` on a
    box with a GPU is the only way to see either.
+
+4. ⚠ **The spear thrusts now, and only the arithmetic has been checked**
+   (operator, 2026-09-05: *"spear needs a thrust animation and we need to
+   figure if everything lines up with where u aim"* — `DECISIONS.md`
+   2026-09-05 has the account). `HeldModelDef::stroke` picks the stroke,
+   `viewmodel::thrust_pose` draws the arm and `thrust_snap` SOLVES the wrist
+   so the point lands on the view axis at the apex, 1.99 m out — inside a
+   body standing at the spear's 2 m content reach, gated against the real
+   bake. Three alignment facts stand as they were and are now written down:
+   yaw agrees end to end (`tests/look.rs`), the sim's cone is planar so pitch
+   never mattered (gather verb v0 — the sim's 2 m is centre-to-centre, 1.6 m
+   to skin), and free look sends the body's yaw while the picture follows
+   the head. **What is owed is a look**, item 3's reason: whether 15.6 cm
+   of draw and 20.8 cm of extension (the gate's numbers, off the fist) read
+   as a thrust or a twitch is a frame question.
+   A remote spear still plays `Sword_Attack`, measured: the rig has no
+   right-handed thrust (`Punch_Jab` is the left hand, `Punch_Cross` clips the
+   head). The metal spear has no model and draws the stand-in's chop until
+   `§0hand` item 1 lands it a row, which is one `thrust()` line.
 
 ⚠ **Seen once and not chased**: in the first run's `7-player.png` two remote
 bodies read as near-black silhouettes against lit ground, where the second
@@ -796,6 +841,46 @@ Items 1–3 are a **spoken operator call**, not a builder's proposal — 2026-08
    it does *not* cover is in `§0cs`; `raid_storm.rs`'s bodies are `§0rs`.
 
 
+## 0ray · What melee aim v1 left *(systems+client lane)*
+
+*A swing is one cast along the look since 2026-09-05 (`sim-core/src/melee.rs`,
+`DECISIONS.md` that date; the operator's call was **make this a PROPER VIDEO
+GAME**). Nine gates in `tests/melee_aim.rs`, seven mutants red. What it left:*
+
+1. **Nobody has swung one on a screen** — §LOOK's list, and the first item on
+   it now. Whether a knee-high node needs a look down that feels like aiming
+   or like stooping is a frame question, and the pitch band a bot wanders in
+   (`bots::PITCH_LOW`) was picked to keep a gate armed, not from watching
+   anybody play.
+2. **The crosshair still only names scatter.** `ui::interact::resolve_swing`
+   is `melee::node_cast`, so the prompt says CHOP TREE and says nothing about
+   the player, the animal or the wall the same ray would reach — the sim
+   already answers all four in one call (`melee::cast`), and the client asks
+   for a fifth of it. A HUD that named a body would also make the reach
+   legible, which is the half a player currently learns by whiffing.
+3. **An animal is one cylinder.** `body_r_cm`/`body_h_cm` give a mob a volume
+   to enter; there is no part ladder behind it, so a spear through a wolf's
+   skull pays exactly what one through its flank does. Players got the rungs
+   for free (`ranged::part_crossed`); a mob would need bands of its own, and
+   `reference/ANIMALS.md` has no opinion yet.
+4. **The weak spot is still stance-based.** `gather`'s sector asks where you
+   STAND relative to the node, which is the reference's own shape and now the
+   only aim-adjacent rule that ignores where you look.
+5. **A remote body's swing is drawn level** — `render/anim.rs` plays the clip
+   without the swinger's pitch, so the man who just speared your ankles is
+   animated jabbing at your chest. The pitch is on the wire already.
+6. ⚠ **`E` on a world container is now a ray too, and that one is a FEEL
+   question nobody has answered.** `resolve_open` shares the cast, so a crate
+   (0.68 m across, 0.8 m tall) has to be looked AT: from a 1.6 m eye that is
+   44° down at 1.5 m and 13° at 4 m. The sim does not agree and never did —
+   `worldcont::open` is planar proximity inside `LOOT_REACH_M` with no aim at
+   all — so the prompt has always been the narrower of the two, and it is
+   narrower now than the 30° cone it replaced. The prompt is also the gate in
+   practice: `render/verbs.rs` only sends the verb for a pick it resolved. If
+   stooping to open a barrel reads badly, the fix is a padded cast here and
+   not a second rule — but it is one boot away from being answerable, and
+   inventing the pad first would be inventing a knob.
+
 ## 0mk · A swing at a piece marks nothing, and a deployable eats no shot *(systems+client lane)*
 
 ✅ **The floor half landed 2026-08-25** (shot planes v0, `DECISIONS.md` §open):
@@ -809,15 +894,16 @@ a `±Y` normal instead of a wall's. Item 1 was behind it and is now free.
    and a bow scuff one plank and `EV_IMPACT` has three producers. No wire
    byte, no `PROTO_VER`, no client line. `tests/mark.rs` proves the point
    is ON the piece for all ten `loc` arms; eleven mutants, all red. Flesh
-   stays unmarked by choice (one spare code). **What it does not do**: the
-   mark ignores aim, so it is the nearest point of the piece rather than
-   the point swung at — a triangle and a diagonal therefore take one spot
-   per piece. Giving them more wants a ray this arm does not have.
+   stays unmarked by choice (one spare code). ✅ **Its "what it does not do"
+   is closed**: the mark ignored aim and sat at the nearest point of the
+   piece, so a triangle and a diagonal took one spot each — melee aim v1
+   (2026-09-05) gave the arm the ray that wanted, and a swing now marks
+   where it stopped, exactly as an arrow does (`tests/mark.rs`).
 2. ✅ **A solid deployable stops a shot now** (deploy shots v0, 2026-08-28):
    `collide::deploy_stop` is `deploy_blocked` with a projectile's profile,
    `ranged::Struck` is what lets one four-part address say which store it
    came from, and `World::chip` charges `damage_deploy` flat — no side, no
-   removal budget, which is what `combat::raid` and `charge::detonate`
+   removal budget, which is what a swing and `charge::detonate`
    already pay. What it leaves open is the **door's own volume**: a shut
    door blocks as an *edge* through `ColMasks::shut_*`, which `shot_stop`
    already walks, so nothing is owed there — but a door standing OPEN is
@@ -1730,7 +1816,11 @@ is §0win's, not this item's.
    needs a fact on the wire. Crouch is an input bit the sim ignores
    (`render/input.rs:289`) and never reaches a snapshot.
 2. **The gather swing is `Sword_Attack`** (operator, 2026-08-17): no asset is
-   owed, and the blocker is item 1.
+   owed, and the blocker is item 1. **A remote spear plays it too**, and that
+   is measured rather than lazy (2026-09-05): the rig has no right-handed
+   thrust — `Punch_Jab` leads with the LEFT hand (0.51 m forward) and
+   `Punch_Cross` brings the right to 0.159 m of the head, the clip the
+   operator rejected on sight. A thrust for other players is an asset ask.
 3. ✅ ~~**The item is not parented to the hand**~~ — **stale, landed
    2026-08-30**: `dress_arms` does `.insert((ChildOf(hand), InHand,
    item_pose(true, 0.0)))` and `VIEWMODEL_GRIP_M`/`_Q` are the re-derived

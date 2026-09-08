@@ -69,7 +69,9 @@ properly. The short version:
 - **mob**: one row per animal species — hp, speeds as a percentage of the
   player's own, the leash in metres, **two notice radii** (day and night,
   the only content number the *hour* selects — `night_spook_m`), the
-  respawn in seconds, and the stacks a kill pays. Two species ship, prey
+  respawn in seconds, the **hit volume** a swing's ray must enter
+  (`body_r_cm` / `body_h_cm`, a cylinder on the animal's feet — melee aim
+  v1, 2026-09-05), and the stacks a kill pays. Two species ship, prey
   and hunter, and they differ by content numbers alone: nothing in
   `mob.rs` branches on species. `content/mobs.toml`; the sim's side is
   `sim-core/src/mob.rs` and the design is `reference/ANIMALS.md` §9.

@@ -136,9 +136,9 @@ fn a_naked_spawn_can_kill_another_player_with_the_rock_it_woke_holding() {
         "the attacker did not wake holding the rock"
     );
 
-    // Stand them 0.6 m apart — inside the rock's 1 m reach and outside
-    // `POINT_BLANK_M2`, so the aim cone is actually tested rather than
-    // short-circuited by two capsules occupying one point.
+    // Stand them 0.6 m apart — inside the rock's 1 m reach, and far enough
+    // that the swing's ray has to be AIMED: a level look from the eye enters
+    // the victim's capsule at the chest, and the yaw is solved each tick.
     let (x, z) = (
         w.players[0].body.qx as f32 * POS_XZ_Q,
         w.players[0].body.qz as f32 * POS_XZ_Q,
@@ -153,6 +153,10 @@ fn a_naked_spawn_can_kill_another_player_with_the_rock_it_woke_holding() {
         // Slot 0 explicitly: the default, restated so a future change to
         // `InputFrame::default` cannot quietly move this test's hand.
         sel: 0,
+        // Level. A swing is a ray along the look since melee aim v1, and
+        // the frame's default pitch is 0 — straight DOWN — which swings a
+        // rock into the ground between two men standing 0.6 m apart.
+        pitch: 128,
         ..w.players[0].frame
     };
     let mut first_blood = None;
@@ -230,6 +234,10 @@ fn the_rocks_reach_is_a_metre_and_not_the_island() {
 
     let mut frame = InputFrame {
         sel: 0,
+        // Level. A swing is a ray along the look since melee aim v1, and
+        // the frame's default pitch is 0 — straight DOWN — which swings a
+        // rock into the ground between two men standing 0.6 m apart.
+        pitch: 128,
         ..w.players[0].frame
     };
     for _ in 0..DUEL_LIMIT_TICKS {
