@@ -76,7 +76,8 @@ pays the same doors and earns the same coins as a human.
 | `ALPHA.md` | the alpha cut, staged economy arming (A1→A2→A3) | |
 | `BUSINESS.md` | what we sell: IAP, the entry price, and the one thing that stays out (an advantage over another player) | **product, not engineering** — read it when building the store, never otherwise. Nothing in `crates/` reads it |
 | `ART.md` | the art bible: measured targets off the reference set, the hard visual rules, the review checklist | **the visual bar; the art rubric scores against it** |
-| `DECISIONS.md` | dated operator calls; **the knob registry** | authoritative on every **(knob)** |
+| `DECISIONS.md` | dated operator calls; **the knob registry** | authoritative on every **(knob)**. ⚠ **The spoken log restarted 2026-09-08** — it had reached 1.1 MB and conflicted on every branch that touched it — so a call older than that date is in `DECISIONS-ARCHIVE.md`, and the ~82 citations in `crates/` that name one were left pointing at the decision rather than rewritten to point at a path. **§Open did not restart**: it is live state the knob gate reads, not history |
+| `DECISIONS-ARCHIVE.md` | the spoken log 2026-07-31 → 2026-09-05, frozen, plus the knobs retired with the browser client | **history and never appended to** — it is authoritative about the past and says nothing about what ships now. A spoken call goes in `DECISIONS.md` |
 | `MENUS.md` | the interaction surface audit: every screen and verb, ours against the reference, measured off the two Rust mod loaders' hook tables | **owns nothing** — a survey to cut items from, never a queue |
 | `RENDER.md` | the **native** client's render path: the Bevy-draws-not-decides boundary, the slice order, the native visual gate, the budgets | owns the path, never the bar — `ART.md` outranks it everywhere |
 | `reference/SPAWN.md` | how the reference game places and respawns world objects: four systems, the placement-check chain, the convar layer, and **§9 what it means for us** | **owns nothing** — research, not law. Read it before building placement; `TERRAIN.md` §7/§8 is our answer to it |
@@ -384,6 +385,23 @@ do not rediscover)
   several, and reject on a number. `ci/measure_glb.py` is that step, and it
   reads its target out of `sim-core` rather than taking it typed.
 
+- **A packer that asks a tool for a linear format has said what the OUTPUT
+  is, not what the input was, and the tool's default fills the gap with a
+  conversion.** `ci/ktx_pack.py` asked `ktx create` for `R8G8B8A8_UNORM` on
+  every normal and metal/rough map and never said the PNG was already linear;
+  the tool's documented default takes an untagged PNG as sRGB and converts
+  it. Every normal map in the tree decoded to X/Y means of **0.212** (0.5
+  through the sRGB curve) from 2026-08-11 to 2026-09-05 — a ~41° bend in
+  tangent space, a different world direction on every UV island, the
+  polygon-edged shading patchwork the operator pointed at on a boulder — with
+  every gate green, because every gate read the container and none read a
+  texel. Assign the transfer function explicitly in BOTH directions, and
+  round-trip what you packed against what went in (`ktx extract`);
+  `tests/packed_maps.rs` reads the shipped file through Bevy's own transcoder.
+  ⚠ **And that transcoder's safe Rust wrapper segfaults on an uncompressed
+  output** — `basis-universal 0.3.1` computes the row pitch in blocks where an
+  RGBA32 target wants pixels — so the gate calls the C function with a pixel
+  pitch. Bevy never trips it because it only ever asks for a block format.
 - **Auto-rigging is humanoid pose estimation, so it refuses every animal in
   this game.** Meshy's `/openapi/v1/rigging` advertises a free walk and run
   clip with every rig, which reads as the obvious way to animate a mob —
