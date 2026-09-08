@@ -32,6 +32,21 @@
 //! It runs headless. A GLB header is JSON, a vertex buffer is little-endian
 //! f32, and a bounding radius is arithmetic — the same tier as
 //! `tests/deploy_assets.rs` and `tests/tree.rs`, and the same reason.
+//!
+//! **Shape, since 2026-09-05.** Every check above is about SIZE, and the
+//! six props that passed them all were two wrong objects: the boulder pool's
+//! first entry is a 2 m ball painted paler than the ore node, which is an
+//! ore node's silhouette and value, and the stone node is a cube of blocks
+//! whose corners touch the blocked cylinder while its faces sit 0.26 m
+//! inside it — an invisible skirt the max-radius check cannot see, because
+//! a cylinder is only what the sim blocks if the mesh is round in plan.
+//! `a_node_is_round_in_plan_and_a_formation_is_not` reads the two shape
+//! numbers `ci/measure_glb.py` selects on (plan ratio, radius spread), off
+//! the same script so the triage and the gate cannot disagree, and holds
+//! every shipped file to its row's band — or, for the four that shipped
+//! before the band existed, to a PIN of what they measure today, so they
+//! cannot get worse and cannot be quietly forgotten: a re-roll that lands
+//! fails the pin and removes the entry.
 
 #![cfg(feature = "render")]
 
@@ -181,11 +196,120 @@ impl Glb {
             })
             .sum()
     }
+
+    fn indices(&self) -> Vec<u32> {
+        let p = &self.json["meshes"][0]["primitives"][0];
+        let i = p["indices"].as_u64().expect("no indices") as usize;
+        let a = &self.json["accessors"][i];
+        let bv = &self.json["bufferViews"][a["bufferView"].as_u64().unwrap() as usize];
+        let st = bv["byteOffset"].as_u64().unwrap_or(0) as usize
+            + a["byteOffset"].as_u64().unwrap_or(0) as usize;
+        let count = a["count"].as_u64().unwrap() as usize;
+        match a["componentType"].as_u64() {
+            Some(5123) => (0..count)
+                .map(|k| {
+                    u16::from_le_bytes(self.bin[st + k * 2..st + k * 2 + 2].try_into().unwrap())
+                        as u32
+                })
+                .collect(),
+            Some(5125) => (0..count)
+                .map(|k| u32::from_le_bytes(raw4(&self.bin[st + k * 4..st + k * 4 + 4])))
+                .collect(),
+            other => panic!("indices componentType {other:?}"),
+        }
+    }
+
+    /// `glbcharts.plan_ratio` and `radius_spread`, the same arithmetic:
+    /// every vertex plus `edge_steps` points along every triangle edge (a
+    /// cube's eight vertices all sit at one radius and would read as a
+    /// sphere), the widest over the narrowest of 36 angular bins about the
+    /// X/Z box centre, and the standard deviation over the mean of the
+    /// samples' distance from the box centre. 1.0 is a circle, 1.39 is what
+    /// 36 bins make of a square; 0 is a sphere.
+    fn plan_ratio_and_spread(&self) -> (f64, f64) {
+        let pos = self.positions();
+        let idx = self.indices();
+        let tris = idx.len() / 3;
+        let steps = 8usize.max((2000.0 / tris.max(1) as f64).ceil() as usize);
+        let mut p: Vec<[f64; 3]> = pos
+            .iter()
+            .map(|v| [v[0] as f64, v[1] as f64, v[2] as f64])
+            .collect();
+        for t in idx.chunks_exact(3) {
+            for (u, v) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                let (a, b) = (p[u as usize], p[v as usize]);
+                for k in 1..steps {
+                    let s = k as f64 / steps as f64;
+                    p.push([
+                        a[0] + (b[0] - a[0]) * s,
+                        a[1] + (b[1] - a[1]) * s,
+                        a[2] + (b[2] - a[2]) * s,
+                    ]);
+                }
+            }
+        }
+        let mut lo = [f64::INFINITY; 3];
+        let mut hi = [f64::NEG_INFINITY; 3];
+        for q in &p {
+            for k in 0..3 {
+                lo[k] = lo[k].min(q[k]);
+                hi[k] = hi[k].max(q[k]);
+            }
+        }
+        let c = [
+            (lo[0] + hi[0]) / 2.0,
+            (lo[1] + hi[1]) / 2.0,
+            (lo[2] + hi[2]) / 2.0,
+        ];
+        let mut bins = [-1.0f64; 36];
+        let mut d = Vec::with_capacity(p.len());
+        for q in &p {
+            let (x, z) = (q[0] - c[0], q[2] - c[2]);
+            let b = (((z.atan2(x) + std::f64::consts::PI) / std::f64::consts::TAU) * 36.0) as usize
+                % 36;
+            bins[b] = bins[b].max(x.hypot(z));
+            let y = q[1] - c[1];
+            d.push((x * x + y * y + z * z).sqrt());
+        }
+        assert!(
+            bins.iter().all(|b| *b >= 0.0),
+            "an angular bin has no surface sample"
+        );
+        let plan = bins.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
+            / bins.iter().cloned().fold(f64::INFINITY, f64::min).max(1e-9);
+        let mean = d.iter().sum::<f64>() / d.len() as f64;
+        let var = d.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>() / d.len() as f64;
+        (plan, var.sqrt() / mean.max(1e-9))
+    }
 }
 
 fn raw4(s: &[u8]) -> [u8; 4] {
     s.try_into().unwrap()
 }
+
+/// One number read off `ci/measure_glb.py`, which owns the shape bands: the
+/// triage rejects a roll on them and this gate holds what shipped to them,
+/// off one definition.
+fn python_const(name: &str) -> f64 {
+    let src = std::fs::read_to_string("../../ci/measure_glb.py").expect("ci/measure_glb.py");
+    let line = src
+        .lines()
+        .find(|l| l.starts_with(&format!("{name} = ")))
+        .unwrap_or_else(|| panic!("{name} is not defined at top level in ci/measure_glb.py"));
+    line.split('=').nth(1).unwrap().trim().parse().unwrap()
+}
+
+/// What the four props that violate their row's shape band measured on
+/// 2026-09-05 — pinned, so they cannot drift further and cannot be
+/// forgotten. Remove an entry when its re-roll lands; the file is then held
+/// to the band itself. (`plan`, `spread`.)
+const SHAPE_AS_SHIPPED: &[(&str, f64, f64)] = &[
+    ("models/prop/rock_a.glb", 1.1723, 0.1162),
+    ("models/prop/node_stone.glb", 1.3911, 0.3763),
+    ("models/prop/node_metal.glb", 1.3936, 0.2671),
+    ("models/prop/node_sulfur.glb", 1.7488, 0.1996),
+];
+const SHAPE_PIN_TOL: f64 = 0.005;
 
 fn glb_of(rel: &str) -> Glb {
     Glb::open(&asset_path(rel))
@@ -340,6 +464,60 @@ fn a_pools_variants_are_actually_different() {
                 assert_ne!(x, y, "{o:?}: {a} and {b} are the same file");
             }
         }
+    }
+}
+
+#[test]
+fn a_node_is_round_in_plan_and_a_formation_is_not() {
+    let round_max = python_const("PLAN_ROUND_MAX");
+    let angular_min = python_const("PLAN_ANGULAR_MIN");
+    let spread_min = python_const("SPREAD_ANGULAR_MIN");
+    let pins: std::collections::BTreeMap<&str, (f64, f64)> = SHAPE_AS_SHIPPED
+        .iter()
+        .map(|(p, a, b)| (*p, (*a, *b)))
+        .collect();
+    let mut seen = std::collections::BTreeSet::new();
+    println!("{:26} {:>6} {:>6}  band", "file", "plan", "spread");
+    for (o, rel) in shipped() {
+        let (plan, spread) = glb_of(rel).plan_ratio_and_spread();
+        let band = match o {
+            Occupant::StoneNode | Occupant::MetalNode | Occupant::SulfurNode => "node: round",
+            Occupant::Rock => "formation: not a ball",
+            _ => "none",
+        };
+        println!(
+            "{rel:26} {plan:6.3} {spread:6.3}  {band}{}",
+            if pins.contains_key(rel) {
+                " (pinned)"
+            } else {
+                ""
+            }
+        );
+        if let Some((pp, ps)) = pins.get(rel) {
+            seen.insert(rel);
+            assert!(
+                (plan - pp).abs() <= SHAPE_PIN_TOL && (spread - ps).abs() <= SHAPE_PIN_TOL,
+                "{rel} is pinned at plan {pp:.4} spread {ps:.4} and measures {plan:.4} / {spread:.4} — \
+                 a re-roll landed? remove its SHAPE_AS_SHIPPED entry so the band holds it"
+            );
+            continue;
+        }
+        match o {
+            Occupant::StoneNode | Occupant::MetalNode | Occupant::SulfurNode => assert!(
+                plan <= round_max,
+                "{rel}: plan ratio {plan:.3} over {round_max} — a node is round in plan, because the \
+                 sim blocks a CYLINDER and reads as blocks otherwise (ci/measure_glb.py)"
+            ),
+            Occupant::Rock => assert!(
+                plan >= angular_min || spread >= spread_min,
+                "{rel}: plan ratio {plan:.3} under {angular_min} and spread {spread:.3} under {spread_min} — \
+                 a ball, which is an ore node's silhouette (ci/measure_glb.py)"
+            ),
+            _ => {}
+        }
+    }
+    for (rel, _, _) in SHAPE_AS_SHIPPED {
+        assert!(seen.contains(rel), "{rel} is pinned but was not measured");
     }
 }
 
