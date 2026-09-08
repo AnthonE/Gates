@@ -694,10 +694,18 @@ impl Content {
             if cc.melee[idx].damage != 0 {
                 return Err(format!("bake: duplicate weapon row for `{}`", w.id));
             }
+            // The ladder, read for a melee row since melee aim v1
+            // (2026-09-05): a swing has a line to cross now, so the two
+            // columns every melee row has carried since the content crate
+            // existed — priced, banded and content-hashed — finally reach
+            // the sim. Validate already bounded both; `u16` for the
+            // ranged row's reason (`RangedDef::headshot_mult`).
             cc.melee[idx] = MeleeDef {
                 damage,
                 structure,
                 reach_cm,
+                headshot_mult: w.headshot_mult as u16,
+                limb_pct: w.limb_pct as u16,
             };
         }
         Ok(cc)
@@ -1460,6 +1468,11 @@ impl Content {
                     .respawn_seconds
                     .checked_mul(TICK_HZ)
                     .ok_or_else(|| format!("bake: mob `{}` respawn span overflows", m.id))?,
+                // Centimetres straight through: the hit volume a swing's ray
+                // is tested against (`melee::mob_cast`). Validate bounded
+                // both, so `small` cannot refuse a row it accepted.
+                body_r_cm: small(m.body_r_cm, "body_r_cm")?,
+                body_h_cm: small(m.body_h_cm, "body_h_cm")?,
                 loot: [ItemStack {
                     item: NO_ITEM,
                     count: 0,

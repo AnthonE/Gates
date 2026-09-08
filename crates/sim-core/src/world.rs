@@ -19,8 +19,9 @@ use crate::limits::{
     WEAR_SLOTS,
 };
 use crate::loot::{LootContent, LOOT_BARREL};
+use crate::melee;
 use crate::mob;
-use crate::movement::{self, quant_xz, quant_y, Body};
+use crate::movement::{self, quant_xz, quant_y, Body, POS_XZ_Q, POS_Y_Q};
 use crate::persist::PlayerSave;
 use crate::ranged;
 use crate::rng::cell_hash;
@@ -454,9 +455,10 @@ pub const EV_GATHER_REFUSED: u8 = 37;
 /// exclusive and a reader never has to ask which kind of mark to make.
 ///
 /// **Three producers since 2026-08-28, and it was never really an arrow's
-/// fact.** `ranged::step` pushes it where an arrow stopped, `gather::swing`
-/// where a landed melee swing bit an occupant, and `combat::raid` where one
-/// bit a built piece or a solid deployable (`combat::piece_mark`). The fact
+/// fact.** `ranged::step` pushes it where an arrow stopped, `gather::land`
+/// where a landed melee swing bit an occupant, and `World::tick`'s swing arm
+/// where one stopped on a built piece or a solid deployable (it was
+/// `combat::piece_mark` until melee aim v1 gave the swing a ray). The fact
 /// is *a surface was struck at this point*, which belongs to none of the
 /// three verbs, so a mark on a tree and a mark on a plank each cost no wire
 /// byte, no `PROTO_VER` bump and no client line — `render/decal.rs` was
@@ -2297,21 +2299,23 @@ impl World {
     /// shot still stopped there and still drew its `EV_IMPACT`.
     ///
     /// **Hard and soft sides apply exactly as they do to a swing**
-    /// (`combat::raid`, hard/soft v0): a shot meeting a sided piece on its
-    /// hard face lands `HARD_SIDE_STRUCTURE` whatever fired it. Sharing the
-    /// law rather than restating it is the point — otherwise a bow pays a
-    /// price a hatchet pays or does not, depending on which file was
-    /// written first. That sharing is literal since 2026-08-28: both call
+    /// (hard/soft v0): a shot meeting a sided piece on its hard face lands
+    /// `HARD_SIDE_STRUCTURE` whatever fired it. Sharing the law rather than
+    /// restating it is the point — otherwise a bow pays a price a hatchet
+    /// pays or does not, depending on which file was written first. That
+    /// sharing is literal since 2026-08-28: both call
     /// `build::structure_price`, where ranged structure damage v0 had
-    /// copied the three lines and *said* they were shared. What differs is
-    /// only *whose* position names the side: `raid` asks where the attacker
-    /// stands, a shot asks where the shot came from.
+    /// copied the three lines and *said* they were shared. **Since melee
+    /// aim v1 (2026-09-05) they are not even two callers**: a swing bills
+    /// through here too, so the only thing that differs is whose position
+    /// names the side — the swinger's stance, or where the shot came from,
+    /// and `Chip::from_x`/`from_z` is that one field.
     ///
     /// **A deployable takes it flat, and that is not an omission.** The
     /// deploy arm pays no side price and spends no removal budget because
-    /// neither exists for it anywhere else: `combat::raid`'s own
-    /// `Target::Deploy` arm and `charge::detonate` both hand
-    /// `damage_deploy` the raw number, a box has no facing to be on the
+    /// neither exists for it anywhere else: `charge::detonate` hands
+    /// `damage_deploy` the raw number too (as `combat::raid`'s
+    /// `Target::Deploy` arm did before the ray), a box has no facing to be on the
     /// wrong side of, and `drop_deploy` collapses nothing so there is no
     /// cascade for a budget to bound. Adding either here would make a shot
     /// the one verb in the game that prices a furnace differently.
@@ -2321,7 +2325,29 @@ impl World {
     /// same allowance a swing spends, so an arrow cannot drop a piece past
     /// the cap that bounds every other remover.
     fn chip(&mut self, c: &ranged::Chip, removals: &mut usize) {
-        if c.deploy {
+        // **A door in its doorway takes the hit, not the frame it hangs
+        // in.** `collide::shot_stop` answers a shut door by blocking the
+        // whole edge and returns the EDGE's address, which is the doorway
+        // piece's — so until melee aim v1 a bullet into a closed door was
+        // billed to the doorway, and the door was a vault to anything but a
+        // swing (`combat::raid` gave the deployable the tie by hand). Now
+        // every blow comes through here, so the tie is settled here, once:
+        // a deployable hanging at exactly the struck EDGE address is the
+        // thing that was hit. Edges only, and that is load-bearing rather
+        // than tidy: a bench is a deployable at its cell's PLANE address,
+        // and a shot that passes the bench and lands on the slab under it
+        // stops at that same plane address — `tests/chip.rs` fires exactly
+        // that shot and the bench must stay whole. Nothing but a door ever
+        // hangs on an edge, so an edge tie only ever finds a door — the
+        // breach point the whole raid ladder is priced around.
+        let on_edge = c.hit.loc == build::LOC_EDGE_XLO || c.hit.loc == build::LOC_EDGE_ZLO;
+        let deploy = c.deploy
+            || (on_edge
+                && self
+                    .deploys
+                    .find_index(c.hit.cx, c.hit.cz, c.hit.level, c.hit.loc)
+                    .is_some());
+        if deploy {
             // Same re-resolve, other store — `charge::detonate`'s two-arm
             // shape, and for its stated reason: an address cannot go
             // stale, an index can.
@@ -3898,29 +3924,130 @@ impl World {
             // producers each standing their own bag up is the shape
             // CLAUDE.md's single-consumer trap is about.
             let mut spill = [ItemStack::default(); INV_SLOTS];
-            let swung = if ranged::draw(
+            // A drawn bow takes the arm before the swing is even cast — the
+            // old reason survives the new pick: an archer stands next to a
+            // tree. Otherwise the cadence gate decides, and a taken swing is
+            // ONE cast along the look ray (`melee::cast`): whatever the arm
+            // meets first is what it hit, and exactly one of the arms below
+            // lands it. There is no node → player → animal → structure order
+            // any more; `melee.rs`'s header has the argument.
+            let mut swung = gather::Swing::Absorbed;
+            let took_arm = ranged::draw(
                 tick,
                 &self.combat,
                 &mut self.arrows,
                 &mut self.events,
                 &mut self.players[i],
-            ) {
-                gather::Swing::Absorbed
-            } else {
-                gather::swing(
+            );
+            if !took_arm && gather::take_swing(tick, &mut self.events, &mut self.players[i]) {
+                let (body, yaw, pitch, held) = {
+                    let p = &self.players[i];
+                    (p.body, p.frame.yaw, p.frame.pitch, combat::held_item(p))
+                };
+                let reaches = melee::Reaches::for_hand(&self.combat, held);
+                let ray = melee::ray(&body, yaw, pitch, reaches.longest());
+                let reached = melee::cast(
                     seed,
-                    tick,
-                    &self.gather,
-                    &self.loot,
-                    &self.scatter,
                     &self.haven,
-                    &mut self.slot_cache,
-                    &mut self.slot_lives,
-                    &mut self.events,
-                    &mut self.players[i],
-                    &mut spill,
-                )
-            };
+                    self.pieces.cols(),
+                    &mut crate::occupy::Occupants {
+                        table: &self.scatter,
+                        haven: &self.haven,
+                        harvested: &self.slot_lives,
+                        cache: &mut self.slot_cache,
+                    },
+                    &self.players,
+                    &self.mobs,
+                    &self.mob,
+                    i,
+                    &self.rewind,
+                    tick,
+                    granted,
+                    &ray,
+                    &reaches,
+                );
+                match reached {
+                    melee::Reached::Node(hit) => {
+                        swung = gather::land(
+                            seed,
+                            tick,
+                            &self.gather,
+                            &self.loot,
+                            &mut self.slot_lives,
+                            &mut self.events,
+                            &mut self.players[i],
+                            &mut spill,
+                            &hit,
+                            &ray,
+                        );
+                    }
+                    melee::Reached::Body { hit, stop_t } => {
+                        if let combat::Strike::Killed {
+                            victim,
+                            item,
+                            range_cm,
+                        } = combat::strike_body(
+                            &self.combat,
+                            i,
+                            &hit,
+                            &ray,
+                            stop_t,
+                            &mut self.players,
+                            &mut self.events,
+                        ) {
+                            let by = self.players[i].id;
+                            self.die(victim, by, DEATH_BY_HAND, item, range_cm);
+                        }
+                    }
+                    melee::Reached::Mob(m) => {
+                        mob::strike_slot(
+                            &self.combat,
+                            &self.backpack,
+                            &self.mob,
+                            tick,
+                            i,
+                            &self.players,
+                            &mut self.mobs,
+                            &mut self.backpacks,
+                            &mut self.events,
+                            m.slot,
+                        );
+                    }
+                    melee::Reached::World { t, surf, built } => {
+                        // The mark first, then the bill — `hitscan`'s order,
+                        // so a piece that falls to this swing has its
+                        // `EV_PIECE_REMOVED` behind the scuff that explains
+                        // it. The point is the ray's own stop, which on a
+                        // plank is up to one sample inside the face, exactly
+                        // where an arrow's mark sits; `render/decal.rs`
+                        // draws it facing the swinger as it draws theirs.
+                        let (mx, my, mz) = ray.at_m(t);
+                        self.events.push(
+                            EV_IMPACT,
+                            (surf as u32) << 24 | crate::fmath::floor_i32(mx / POS_XZ_Q) as u32,
+                            crate::fmath::floor_i32(mz / POS_XZ_Q) as u32,
+                            crate::fmath::floor_i32(my / POS_Y_Q) as u32,
+                        );
+                        // …and the wall takes it, priced by `World::chip` —
+                        // the same door a bullet's chip goes through, so the
+                        // hard/soft side rule (`build::structure_price`) is
+                        // written once for a swing and a shot. `melee::cast`
+                        // already emptied `built` for a hand whose structure
+                        // reach does not get there.
+                        if let (Some(struck), Some(def)) = (built, self.combat.held_struct(held)) {
+                            let chip = ranged::Chip {
+                                hit: struck.at,
+                                deploy: struck.deploy,
+                                structure: def.structure,
+                                from_x: body.qx as f32 * POS_XZ_Q,
+                                from_z: body.qz as f32 * POS_XZ_Q,
+                            };
+                            self.chip(&chip, &mut removals);
+                        }
+                    }
+                    melee::Reached::Nothing => {}
+                }
+            }
             craft::step(
                 &self.craft,
                 &self.gather,
@@ -3965,63 +4092,6 @@ impl World {
             // the same tick merges into it instead of minting a second
             // container a step away.
             self.drain_spill(i, &mut spill);
-            if swung == Swing::Free || swung == Swing::Refused {
-                // node → player → structure: the arm passes on only what
-                // nothing nearer absorbed. A `Refused` swing carries this
-                // far too — a node must not become cover — and stops at
-                // the animal: it was aimed at a gather node, so the wall
-                // behind that node is not a target (`Swing::Refused`).
-                match combat::strike(
-                    &self.combat,
-                    i,
-                    &mut self.players,
-                    &mut self.events,
-                    &self.rewind,
-                    tick,
-                    granted,
-                ) {
-                    combat::Strike::Killed {
-                        victim,
-                        item,
-                        range_cm,
-                    } => {
-                        let by = self.players[i].id;
-                        self.die(victim, by, DEATH_BY_HAND, item, range_cm);
-                    }
-                    combat::Strike::Hit => {}
-                    combat::Strike::Missed => {
-                        // node → player → **animal** → structure. An
-                        // animal outranks the wall behind it and never
-                        // outranks a player: standing between a raider and
-                        // a door must not become a way to eat the swing.
-                        let took = mob::strike(
-                            &self.combat,
-                            &self.backpack,
-                            &self.mob,
-                            tick,
-                            i,
-                            &self.players,
-                            &mut self.mobs,
-                            &mut self.backpacks,
-                            &mut self.events,
-                        );
-                        if !took && swung == Swing::Free {
-                            combat::raid(
-                                &self.haven,
-                                &self.combat,
-                                &self.build,
-                                &self.deploy,
-                                seed,
-                                &self.players[i],
-                                &mut self.pieces,
-                                &mut self.deploys,
-                                &mut removals,
-                                &mut self.events,
-                            );
-                        }
-                    }
-                }
-            }
         }
         // Fuses burn after the player loop that can light one and before
         // the sweeps that clean up after a collapse. A charge planted this

@@ -214,6 +214,13 @@ fn a_walker_can_farm_the_island_and_the_rate_is_measured() {
 
     let mut frame = core.world.players[p].frame;
     frame.sel = sel as u8;
+    // Level. A swing is a ray along the look since melee aim v1
+    // (2026-09-05) and a seated body's frame carries pitch 0, which is
+    // straight DOWN — so before this line the walker crossed the island
+    // driving its hatchet into the dirt and banked nothing. A trunk is
+    // 5.7 m of cylinder starting at the walker's own feet, so level is
+    // where a person chopping one looks.
+    frame.pitch = 128;
     let mut target: Option<usize> = None;
     let mut skip = vec![false; trees.len()];
     let mut stall = 0u32;

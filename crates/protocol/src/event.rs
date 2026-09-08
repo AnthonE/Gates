@@ -4952,6 +4952,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/loot.rs"),
         },
         Module {
+            file: "melee.rs",
+            src: include_str!("../../sim-core/src/melee.rs"),
+        },
+        Module {
             file: "mob.rs",
             src: include_str!("../../sim-core/src/mob.rs"),
         },

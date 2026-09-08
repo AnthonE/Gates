@@ -39,7 +39,7 @@ use sim_core::combat::CombatContent;
 use sim_core::gather::{GatherContent, ItemStack};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::limits::{INV_SLOTS, MAX_PLAYERS};
-use sim_core::movement::{Body, POS_XZ_Q};
+use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q};
 use sim_core::survival::SurvivalContent;
 use sim_core::world::{Command, World};
 use sim_core::yaw_dir;
@@ -98,16 +98,56 @@ fn duel_world() -> World {
     w
 }
 
-fn swing_frame(seq: u16, yaw: u16) -> InputFrame {
+fn swing_frame(w: &World, attacker: usize, victim: usize, seq: u16, yaw: u16) -> InputFrame {
     InputFrame {
         seq,
         buttons: BTN_PRIMARY,
         yaw,
-        pitch: 128,
+        pitch: aim_at(w, attacker, victim),
         move_x: 0,
         move_z: 0,
         sel: 0,
     }
+}
+
+/// The eye above the feet, `ranged::ARROW_EYE_MM` in metres — where a
+/// swing's ray leaves from since melee aim v1 (2026-09-05).
+const EYE_M: f32 = sim_core::ranged::ARROW_EYE_MM as f32 / 1000.0;
+/// Where the fixtures aim on a body: the chest, a metre up. Not the head,
+/// so every hit here pays the identity rung and the counts below stay the
+/// content's; `tests/melee_aim.rs` is where the ladder is asserted.
+const CHEST_M: f32 = 1.0;
+
+/// The pitch byte that looks from `attacker`'s eye at `victim`'s chest — a
+/// scan of the sim's own LUT, because the crate's clippy walls bind this
+/// suite and there is no `atan2` to be had. A swing is a ray now, and a
+/// victim `Body::at` seated on lower ground is under a level one.
+fn aim_at(w: &World, attacker: usize, victim: usize) -> u8 {
+    aim_at_body(w, attacker, &w.players[victim].body)
+}
+
+/// [`aim_at`] toward an arbitrary body — the lag tests aim at where the
+/// victim WAS, which is a body the world no longer holds.
+fn aim_at_body(w: &World, attacker: usize, target: &Body) -> u8 {
+    let a = w.players[attacker].body;
+    let (dx, dz) = (
+        (target.qx - a.qx) as f32 * POS_XZ_Q,
+        (target.qz - a.qz) as f32 * POS_XZ_Q,
+    );
+    let run = (dx * dx + dz * dz).sqrt();
+    let rise = (target.qy - a.qy) as f32 * POS_Y_Q + CHEST_M - EYE_M;
+    let len = (rise * rise + run * run).sqrt();
+    let mut best = 128u8;
+    let mut best_dot = f32::MIN;
+    for b in 0..=255u8 {
+        let (ch, sv) = sim_core::pitch_dir(b);
+        let dot = (ch * run + sv * rise) / len;
+        if dot > best_dot {
+            best_dot = dot;
+            best = b;
+        }
+    }
+    best
 }
 
 /// Put `victim` `dist` metres in front of `attacker` along `yaw`.
@@ -211,7 +251,7 @@ fn a_sleeper_can_be_killed_and_stays_one() {
         }
         w.tick(&[Command::Input {
             id: 1,
-            frame: swing_frame(seq, yaw),
+            frame: swing_frame(&w, raider, sleeper, seq, yaw),
             favour: 0,
         }]);
     }
@@ -333,7 +373,7 @@ fn waking_onto_a_corpse_beaches_you_alive() {
         }
         w.tick(&[Command::Input {
             id: 1,
-            frame: swing_frame(seq, yaw),
+            frame: swing_frame(&w, raider, sleeper, seq, yaw),
             favour: 0,
         }]);
     }
@@ -427,7 +467,7 @@ fn a_takeover_of_a_dead_body_wakes_holding_the_spawn_kit() {
         }
         w.tick(&[Command::Input {
             id: 1,
-            frame: swing_frame(seq, yaw),
+            frame: swing_frame(&w, raider, sleeper, seq, yaw),
             favour: 0,
         }]);
     }

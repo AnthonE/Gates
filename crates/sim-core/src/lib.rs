@@ -22,6 +22,7 @@ pub mod light;
 pub mod limits;
 pub mod lock;
 pub mod loot;
+pub mod melee;
 pub mod mob;
 pub mod movement;
 pub mod occupy;

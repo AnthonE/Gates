@@ -12,6 +12,13 @@ use server::core::{Lane, ShardCore};
 use server::stats::ShardStats;
 use sim_core::gather::{cell_key, weak_mark8, GatherContent, NO_CELL, SWING_INTERVAL_TICKS};
 use sim_core::input::BTN_PRIMARY;
+
+/// Wire pitch for a level look. `InputFrame`'s pitch 0 is straight DOWN, and
+/// a swing has been a ray along the look since melee aim v1 (2026-09-05) —
+/// so every `set_input` below that used to pass 0 was a hatchet driven into
+/// the ground. A trunk is 5.7 m of cylinder standing at the swinger's own
+/// feet, so level is where somebody chopping one looks.
+const LEVEL: u8 = 128;
 use sim_core::terrain::{self, Occupant, ScatterTable, CELL_SIZE};
 use sim_core::yaw_dir;
 
@@ -174,8 +181,8 @@ fn gather_rides_the_wire() {
     // by it — join-window noise the next swing repairs, not what this
     // gate pins.
     for _ in 0..4 {
-        clients[0].1.set_input(0, yaw, 0, 0, 0, 0);
-        clients[1].1.set_input(0, yaw, 0, 0, 0, 0);
+        clients[0].1.set_input(0, yaw, LEVEL, 0, 0, 0);
+        clients[1].1.set_input(0, yaw, LEVEL, 0, 0, 0);
         pump(&mut core, &stats, &mut clients, &[]);
     }
 
@@ -186,8 +193,8 @@ fn gather_rides_the_wire() {
     let mut mark_flags = [0u32; 2];
     let mut first_mark8 = None;
     for _ in 0..ticks {
-        clients[0].1.set_input(BTN_PRIMARY, yaw, 0, 0, 0, 2);
-        clients[1].1.set_input(0, yaw, 0, 0, 0, 0);
+        clients[0].1.set_input(BTN_PRIMARY, yaw, LEVEL, 0, 0, 2);
+        clients[1].1.set_input(0, yaw, LEVEL, 0, 0, 0);
         let flags = pump(&mut core, &stats, &mut clients, &[]);
         mark_flags[0] |= flags[0];
         mark_flags[1] |= flags[1];
@@ -268,7 +275,7 @@ fn gather_rides_the_wire() {
     let mut late_flags = 0u32;
     for _ in 0..8 {
         for (_, c) in clients.iter_mut() {
-            c.set_input(0, yaw, 0, 0, 0, 0);
+            c.set_input(0, yaw, LEVEL, 0, 0, 0);
         }
         late_flags |= pump(&mut core, &stats, &mut clients, &[])[2];
     }
@@ -291,7 +298,7 @@ fn gather_rides_the_wire() {
     core.world.tick = respawn_at;
     for _ in 0..4 {
         for (_, c) in clients.iter_mut() {
-            c.set_input(0, yaw, 0, 0, 0, 0);
+            c.set_input(0, yaw, LEVEL, 0, 0, 0);
         }
         pump(&mut core, &stats, &mut clients, &[]);
     }
@@ -329,8 +336,8 @@ fn event_ring_overflow_heals_by_resync() {
     // Client 1's event ring refuses everything while the tree is felled.
     let ticks = SWING_INTERVAL_TICKS * (tree.hits as u64 + 2);
     for _ in 0..ticks {
-        clients[0].1.set_input(BTN_PRIMARY, yaw, 0, 0, 0, 0);
-        clients[1].1.set_input(0, yaw, 0, 0, 0, 0);
+        clients[0].1.set_input(BTN_PRIMARY, yaw, LEVEL, 0, 0, 0);
+        clients[1].1.set_input(0, yaw, LEVEL, 0, 0, 0);
         pump(&mut core, &stats, &mut clients, &[1]);
     }
     assert!(core.world.slot_lives.is_harvested(cx, cz));
@@ -342,8 +349,8 @@ fn event_ring_overflow_heals_by_resync() {
 
     // The ring drains; the resync walk restores the truth.
     for _ in 0..8 {
-        clients[0].1.set_input(0, yaw, 0, 0, 0, 0);
-        clients[1].1.set_input(0, yaw, 0, 0, 0, 0);
+        clients[0].1.set_input(0, yaw, LEVEL, 0, 0, 0);
+        clients[1].1.set_input(0, yaw, LEVEL, 0, 0, 0);
         pump(&mut core, &stats, &mut clients, &[]);
     }
     assert!(
@@ -386,15 +393,15 @@ fn a_swing_reaches_every_client_not_just_the_swinger() {
         (1usize, ClientCore::new(SEED, id_of(1), 0)),
     ];
     for _ in 0..4 {
-        clients[0].1.set_input(0, 0, 0, 0, 0, 0);
-        clients[1].1.set_input(0, 0, 0, 0, 0, 0);
+        clients[0].1.set_input(0, 0, LEVEL, 0, 0, 0);
+        clients[1].1.set_input(0, 0, LEVEL, 0, 0, 0);
         pump(&mut core, &stats, &mut clients, &[]);
     }
 
     let mut seen: Vec<(usize, protocol::EventMsg)> = Vec::new();
     for _ in 0..SWING_INTERVAL_TICKS + 2 {
-        clients[0].1.set_input(BTN_PRIMARY, 0, 0, 0, 0, 0);
-        clients[1].1.set_input(0, 0, 0, 0, 0, 0);
+        clients[0].1.set_input(BTN_PRIMARY, 0, LEVEL, 0, 0, 0);
+        clients[1].1.set_input(0, 0, LEVEL, 0, 0, 0);
         pump_seen(&mut core, &stats, &mut clients, &[], &mut seen);
     }
 

@@ -76,7 +76,8 @@ pays the same doors and earns the same coins as a human.
 | `ALPHA.md` | the alpha cut, staged economy arming (A1→A2→A3) | |
 | `BUSINESS.md` | what we sell: IAP, the entry price, and the one thing that stays out (an advantage over another player) | **product, not engineering** — read it when building the store, never otherwise. Nothing in `crates/` reads it |
 | `ART.md` | the art bible: measured targets off the reference set, the hard visual rules, the review checklist | **the visual bar; the art rubric scores against it** |
-| `DECISIONS.md` | dated operator calls; **the knob registry** | authoritative on every **(knob)** |
+| `DECISIONS.md` | dated operator calls; **the knob registry** | authoritative on every **(knob)**. ⚠ **The spoken log restarted 2026-09-08** — it had reached 1.1 MB and conflicted on every branch that touched it — so a call older than that date is in `DECISIONS-ARCHIVE.md`, and the ~82 citations in `crates/` that name one were left pointing at the decision rather than rewritten to point at a path. **§Open did not restart**: it is live state the knob gate reads, not history |
+| `DECISIONS-ARCHIVE.md` | the spoken log 2026-07-31 → 2026-09-05, frozen, plus the knobs retired with the browser client | **history and never appended to** — it is authoritative about the past and says nothing about what ships now. A spoken call goes in `DECISIONS.md` |
 | `MENUS.md` | the interaction surface audit: every screen and verb, ours against the reference, measured off the two Rust mod loaders' hook tables | **owns nothing** — a survey to cut items from, never a queue |
 | `RENDER.md` | the **native** client's render path: the Bevy-draws-not-decides boundary, the slice order, the native visual gate, the budgets | owns the path, never the bar — `ART.md` outranks it everywhere |
 | `reference/SPAWN.md` | how the reference game places and respawns world objects: four systems, the placement-check chain, the convar layer, and **§9 what it means for us** | **owns nothing** — research, not law. Read it before building placement; `TERRAIN.md` §7/§8 is our answer to it |
@@ -884,6 +885,15 @@ existence. The crate that WAS a web build is gone (operator, 2026-08-08:
 1,635-line C-ABI bridge and the 1,266-line `ci/client_smoke.mjs` that drove
 it are deleted, and what that gate actually asserted is
 `crates/client-core/tests/wire.rs`.
+**And a fresh box is missing an eighth**, added 2026-09-05 with the asset
+triage and paid for on 2026-09-08: `ci/measure_glb.py` and
+`ci/flatten_charts.py` need **numpy and Pillow**. They are the good kind of
+red — both exit nonzero and print `SKIP: PIL is not installed, the albedo
+cases did not run` rather than passing on three cases that never ran — so the
+symptom is `GATE FAIL: asset triage` on a clean tree with the reason one line
+above it. `pip install Pillow`. Read the line above the failure, not the
+failure.
+
 All of them are the same class — a wall that cannot run is not a wall, so
 install them rather than trimming the feature.
 

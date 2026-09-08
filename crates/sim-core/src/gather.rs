@@ -19,7 +19,7 @@ use crate::limits::{INV_SLOTS, MAX_ITEM_DEFS, MAX_SLOT_LIVES};
 use crate::loot::{LootContent, LOOT_BARREL};
 use crate::movement::{quant_xz, quant_y, POS_XZ_Q, POS_Y_Q};
 use crate::rng::{cell_hash, splitmix64};
-use crate::terrain::{self, Occupant, ScatterTable, CELL_SIZE};
+use crate::terrain::Occupant;
 use crate::world::{
     EventQueue, Player, EV_GATHER, EV_GATHER_REFUSED, EV_SLOT_HARVESTED, EV_WEAK_MARK,
 };
@@ -83,16 +83,17 @@ pub const SWING_INTERVAL_TICKS: u64 = 38;
 /// without paying more in total (`NodeDef::weak_pct`). 100 so a content
 /// percentage lands on it exactly. Structural, not a knob.
 pub const HIT_UNIT: u32 = 100;
-/// Reach in meters (matches the melee weapon rows' range_m = 2).
+/// Reach at a node in metres, whatever is in hand (matches the melee
+/// weapon rows' range_m = 2). Since melee aim v1 (2026-09-05) this is the
+/// length of the swing's **ray** at a node — `melee::Reaches::node` — and
+/// no longer the radius of a planar cone; the cone (`CONE_COS`, 30°) and its
+/// ±3 m vertical window (`DY_MAX_M`) are gone with the planar pick, and
+/// `melee.rs`'s header says why.
 pub const REACH_M: f32 = 2.0;
-/// Aim cone half-angle 30°: cos authored offline (√3/2), no trig at
-/// runtime — same discipline as terrain's CLIFF_SLOPE_RATIO.
-pub const CONE_COS: f32 = 0.866_025_4;
-/// Vertical acceptance window: slot within ±3 m of the feet. Aim is
-/// planar in v0; pitch starts mattering with M2's raycasts.
-pub const DY_MAX_M: f32 = 3.0;
-/// Standing inside the node (≤ 0.2 m planar) bypasses the cone test —
-/// a zero-length aim vector has no direction to test against.
+/// Standing inside the node (≤ 0.2 m planar) has no bearing to judge — the
+/// weak-spot sector test skips it, and so does the client's mirror of that
+/// test. It used to bypass the aim cone as well; the cone is gone and the
+/// ray hits a node it starts inside at once (`melee::cylinder_span`).
 pub const POINT_BLANK_M2: f32 = 0.04;
 
 /// Weak-spot sector half-angle 45°: cos authored offline (√2/2), no trig
@@ -391,7 +392,7 @@ pub fn node_index(o: Occupant) -> Option<usize> {
 /// What the 3×3 scan may aim at: a gatherable index, or `BARREL_TARGET`.
 /// `None` for Rock and empty cells — the two things a swing passes through.
 #[inline]
-fn target_index(o: Occupant) -> Option<usize> {
+pub(crate) fn target_index(o: Occupant) -> Option<usize> {
     match node_index(o) {
         Some(ni) => Some(ni),
         None if o == Occupant::BarrelSlot => Some(BARREL_TARGET),
@@ -413,122 +414,21 @@ fn occupant_of(target: usize) -> u32 {
     }
 }
 
-/// The 3×3 scan's pick: the nearest swingable slot in reach and inside the
-/// aim cone. A named struct rather than a tuple because it grew a seventh
-/// member (the slot's own world position, which a smashed barrel needs to
-/// stand its container up at) and a seven-tuple is where a positional
-/// payload starts going wrong — the exact failure mode `event_roles.rs`
-/// exists to catch one layer up.
-struct Target {
-    /// Planar distance², for the nearest-wins comparison.
-    d2: f32,
-    /// Slot→player planar offset, for the weak-spot sector test.
-    ox: f32,
-    oz: f32,
-    cx: u16,
-    cz: u16,
-    /// Gatherable index, or `BARREL_TARGET`.
-    ni: usize,
-    /// The slot's world position (m).
-    pos: (f32, f32, f32),
-    /// The occupant's own radius and top, **already scaled** by the slot
-    /// (`terrain::occupant_volume` × `Slot::scale`) — the same pair
-    /// `terrain::slot_blocks` collides against. Carried from the pick
-    /// rather than re-queried at the push site because the slot is right
-    /// here and a second `cache.slot` call would be a second chance to
-    /// disagree with the thing we actually hit.
-    r: f32,
-    top: f32,
-}
-
-/// Where up a short occupant a strike lands, as a fraction of its height.
-///
-/// **Its own constant because it is an invented number and the rule is that
-/// they are spoken** (`CLAUDE.md` §loop discipline; `DECISIONS.md` §open,
-/// "melee mark v0"). Half is the middle of the thing rather than a tuning
-/// — you cannot strike the centre of a knee-high rock from eye level — but
-/// a bare `* 0.5` in an expression is not registrable, and the two
-/// constants either side of it in this seam both carry rows.
-pub const STRIKE_WAIST_FRAC: f32 = 0.5;
-
-/// A melee strike lands at the swinger's eye height, because melee is
-/// planar: the pick below reads `yaw` and never `pitch` (this file says so
-/// in words at the top), so the arm swings level from the same origin
-/// `ranged::fire` shoots from. Derived from `ARROW_EYE_MM` rather than
-/// picked, so the two origins cannot drift apart — no new knob is spoken
-/// for here and none is invented.
-/// `pub(crate)` since 2026-08-28 so `combat::raid`'s mark rides the same
-/// origin: a hatchet's swing at a wall and a hatchet's swing at a tree
-/// leave their scuff at one height, and the two cannot drift apart.
-pub(crate) const EYE_M: f32 = crate::ranged::ARROW_EYE_MM as f32 / 1000.0;
-
-/// Where a landed swing scuffs the thing it hit: the point on the struck
-/// occupant's own collision skin, on the side the swinger is standing.
-///
-/// `None` for an occupant with no volume. The bush is the only swingable
-/// one (`terrain::occupant_volume` gives it `(0.0, 0.0)`) and a bundle of
-/// leaves has no surface to mark, so it gets no mark rather than a mark at
-/// its centre. That refusal is also what keeps the arithmetic safe: a
-/// positive radius means the slot blocks, which means the swinger is
-/// standing outside it, so `d2` cannot be the zero this function would
-/// otherwise divide by.
-///
-/// The offset direction is slot→swinger, which is exactly what
-/// `render/decal.rs::facing` re-derives at the other end — the horizontal
-/// from the scatter slot's centre to the impact point. So the decal turns
-/// to face whoever made it and no normal ever crosses the wire.
-fn skin_point(
-    pos: (f32, f32, f32),
-    ox: f32,
-    oz: f32,
-    d2: f32,
-    r: f32,
-    top: f32,
-    strike_y: f32,
-) -> Option<(f32, f32, f32)> {
-    if r <= 0.0 || top <= 0.0 || d2 <= 0.0 {
-        return None;
-    }
-    let inv = 1.0 / d2.sqrt();
-    // **Eye height, or the occupant's waist if the occupant is shorter.**
-    //
-    // Measured rather than reasoned, and the first cut was wrong: clamping
-    // to the occupant's TOP put a mark on the rim of the boulder beside
-    // spawn — 13.43 against an eye at 13.87 — where the mark's own normal
-    // is horizontal and the surface curves away under it, so a decal
-    // projecting sideways across a rounded rim grazes it and draws
-    // nothing. A capture aimed at those exact coordinates is what found it.
-    //
-    // Half the height is not a tuned number, it is the middle of the
-    // thing: you cannot strike the centre of a knee-high rock from eye
-    // level, and for anything taller than you — every tree — the eye still
-    // wins, which is where a swing at a trunk actually lands.
-    let y = strike_y.min(pos.1 + top * STRIKE_WAIST_FRAC).max(pos.1);
-    Some((pos.0 + ox * inv * r, y, pos.2 + oz * inv * r))
-}
-
 /// What a swing did, for the caller that owns the stores gather does not.
+///
+/// Two variants where there were four. `Free` and `Refused` were the
+/// planar pick's fall-through contract — *the node did not take it, so
+/// hand the arm on to flesh (and, for `Free`, to structure)* — and a ray
+/// has no fall-through: `melee::cast` hands `land` exactly one occupant,
+/// the one the arm reached first, and whatever it does about it, the swing
+/// ends there. A node that refuses a tool absorbs the swing as a thunk,
+/// because it is physically in the way; the person beside it is hit by
+/// aiming at the person (`tests/melee_aim.rs`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Swing {
-    /// No swing this tick (button up, or still on cooldown), or a node
-    /// absorbed it. Either way the arm is not free.
+    /// The node took it — paid, refused, or inert — or the bow took the arm
+    /// first and there was no swing to land.
     Absorbed,
-    /// A swing was taken and nothing absorbed it — the cadence is paid and
-    /// the arm is still moving, so the caller hands it to `combat::strike`.
-    Free,
-    /// A swing was taken, it was aimed at a gather node, and the node
-    /// refused it (a tool it pays nothing for — which since Q4 includes a
-    /// dead one). The cadence is paid and the arm is still free **for
-    /// flesh**: the caller hands it to `combat::strike` and `mob::strike`
-    /// exactly as `Free`, because a node must not become cover
-    /// (`tests/gather.rs` `a_refused_gather_swing_leaves_the_arm_free`).
-    /// What the caller must NOT do is pass it to `combat::raid` — the
-    /// swing was aimed at the node, and `raid` has no owner or privilege
-    /// filter, so a stone hatchet aimed at a stone node inside your own
-    /// base was chipping your own wall silently (`NOW.md` §0kit item 1;
-    /// the fall-through was proven by fixture: piece hp fell at
-    /// `hand_yield = 0` and not at 25).
-    Refused,
     /// A barrel came apart. The swing is spent; what falls out is the
     /// caller's to roll, because it owns the container store and gather
     /// deliberately does not. Address is the smashed slot's own quantized
@@ -795,137 +695,75 @@ pub fn weak_mark8(seed: u64, cx: u16, cz: u16, pid: u32, n: u16) -> u8 {
     (splitmix64(h ^ ((pid as u64) << 16) ^ n as u64) >> 32) as u8
 }
 
-/// One player's swing gate + target pick + payout. Called every tick for
-/// every active player, after movement — bounded: 3×3 scatter cells
-/// scanned only on a swing tick, and read through the same memo the
-/// collision path uses (`cache`).
+/// The cadence gate: does this body swing on this tick, and if so, pay it.
 ///
-/// **That memo is not an optimisation here, it is the difference between a
-/// smooth tick and a spike**, and this function was the one caller in the
-/// tick that went around it. `occupy.rs` says why in its own words — a
-/// `terrain::scatter` is ~60 `noise2` evaluations, so a 3×3 ring resolved
-/// cold is ~540 — and it says a movement step must never re-derive slots
-/// that way. A swing is not a movement step, but it reads the *same nine
-/// cells at the same position on the same tick*, so the lines it wants are
-/// the ones `Occupants::blocks` just filled. Measured 2026-08-11 with
-/// `server/bin/profile.rs` at `MAX_PLAYERS`: a hundred bodies whose swing
-/// cooldowns had lined up cost 1.9 ms in one `World::tick` against a 33 ms
-/// budget — an 8× spike over the same shard's average — and cold scatter
-/// was all of it. `SWING_INTERVAL_TICKS` makes that alignment a normal
-/// event, not a contrivance: everyone who spawns together swings together.
+/// `gather::swing` used to be this and the whole node pick in one; the pick
+/// is `melee::cast` now and this is what was always exactly-once per swing.
+/// **The arm moved, and that is a fact about a body other people are
+/// drawing.** `EV_SWING` is pushed HERE and nowhere else, because these two
+/// lines are the cadence gate — the only point in the tree that runs
+/// exactly once per swing regardless of what the swing goes on to find.
+/// Every consequence — a whiff, a refusal, a body, a smashed barrel, a wall
+/// — is downstream of a decision the swinger has already committed to, and
+/// a fact that fires only when something was hit is a HIT fact, not a swing
+/// fact (`EV_HIT` is unicast to the attacker for exactly that reason).
+/// `NOW.md` §0sw: the commonest swing in the game is the one that misses,
+/// and it drew nothing on any screen but the swinger's.
+pub fn take_swing(tick: u64, events: &mut EventQueue, p: &mut Player) -> bool {
+    if p.frame.buttons & BTN_PRIMARY == 0 || tick < p.next_swing {
+        return false;
+    }
+    p.next_swing = tick + SWING_INTERVAL_TICKS;
+    events.push(crate::world::EV_SWING, p.id, 0, 0);
+    true
+}
+
+/// Land a taken swing on the occupant the ray reached first.
 ///
-/// Exact, not approximate, for `SlotCache`'s stated reason: scatter is a
-/// pure function of `(seed, cell)`, so a hit and a miss return the same
-/// bits and eviction can only change how long an answer took. The cache is
-/// not sim state and is not hashed.
+/// `hit` is `melee::cast`'s pick — the cell, the slot as the memo resolved
+/// it, and where along `ray` the arm met it. Everything from here on is
+/// what `gather::swing` always did once it had a target: the barrel comes
+/// apart, the tool is checked against the node's table and refused with a
+/// reason, the weak-spot chase is judged by where the swinger **stands**
+/// (footwork, unchanged and on purpose — `melee.rs`'s header), the budget
+/// is spent and paid pro rata, the mark is left, the tool wears, and an
+/// exhausted node goes on its timer.
 ///
-/// Returns `Swing::Free` when a swing was taken and nothing absorbed it —
-/// the cadence is paid and the arm is still moving, so the caller hands it
-/// to `combat::strike`. `Absorbed` means either no swing this tick (button
-/// up, or still on cooldown) or a node took the hit: one arm, one target,
-/// and the nearest standing thing is always the nearer claim on it.
-/// `Smashed` is a barrel that came apart — absorbed, and with a container
-/// owed at the address it names.
+/// **A refused node absorbs the swing.** It is in the way — the ray entered
+/// it — so the arm stops there exactly as it stops on a boulder, and the
+/// wall or the person behind it is not reached. The old `Swing::Refused`
+/// hand-on existed because a planar cone could not tell "in the sector"
+/// from "in the way"; `tests/melee_aim.rs` holds the new rule from both
+/// sides.
 ///
 /// `spill` catches yield the swinger's inventory could not hold. It is the
 /// caller's buffer for the tick and this function only writes into it; the
 /// caller stands it up as a bag, because gather owns the slot bit and not
 /// the container store — the same split `Smashed` already makes.
 #[allow(clippy::too_many_arguments)]
-pub fn swing(
+pub fn land(
     seed: u64,
     tick: u64,
     gc: &GatherContent,
     lc: &LootContent,
-    scatter: &ScatterTable,
-    haven: &terrain::Haven,
-    cache: &mut crate::occupy::SlotCache,
     lives: &mut SlotLives,
     events: &mut EventQueue,
     p: &mut Player,
     spill: &mut [ItemStack; INV_SLOTS],
+    hit: &crate::melee::NodeHit,
+    ray: &crate::melee::Ray,
 ) -> Swing {
-    if p.frame.buttons & BTN_PRIMARY == 0 || tick < p.next_swing {
-        return Swing::Absorbed;
-    }
-    p.next_swing = tick + SWING_INTERVAL_TICKS;
-
-    // **The arm moved, and that is a fact about a body other people are
-    // drawing.** Pushed HERE and nowhere else, because the two lines above
-    // are the cadence gate: this is the only point in the tree that runs
-    // exactly once per swing regardless of what the swing goes on to find.
-    // Every exit below it — a whiff, a refusal, a free arm handed to flesh,
-    // a smashed barrel — is downstream of a decision the swinger has
-    // already committed to, and a fact that fires only when something was
-    // hit is a HIT fact, not a swing fact. This lane already has one of
-    // those, and `EV_HIT` is unicast to the attacker for exactly that
-    // reason. `NOW.md` §0sw: the commonest swing in the game is the one
-    // that misses, and it drew nothing on any screen but the swinger's.
-    events.push(crate::world::EV_SWING, p.id, 0, 0);
-
     let px = p.body.qx as f32 * POS_XZ_Q;
-    let py = p.body.qy as f32 * POS_Y_Q;
     let pz = p.body.qz as f32 * POS_XZ_Q;
-    let (fx, fz) = yaw_dir(p.frame.yaw);
-    let pcx = crate::fmath::floor_i32(px / CELL_SIZE);
-    let pcz = crate::fmath::floor_i32(pz / CELL_SIZE);
-
-    // Nearest standing swingable slot in reach, inside the aim cone.
-    let mut best: Option<Target> = None;
-    let mut dz_cell = -1;
-    while dz_cell <= 1 {
-        let mut dx_cell = -1;
-        while dx_cell <= 1 {
-            let cx = pcx + dx_cell;
-            let cz = pcz + dz_cell;
-            let s = cache.slot(seed, scatter, haven, cx, cz);
-            if let Some(ni) = target_index(s.occupant) {
-                let dx = s.x - px;
-                let dy = s.y - py;
-                let dz = s.z - pz;
-                let d2 = dx * dx + dz * dz;
-                let aimed = d2 <= POINT_BLANK_M2 || {
-                    let dot = dx * fx + dz * fz;
-                    dot > CONE_COS * d2.sqrt()
-                };
-                if d2 <= REACH_M * REACH_M
-                    && crate::fmath::fabs(dy) <= DY_MAX_M
-                    && aimed
-                    && best.as_ref().is_none_or(|b| d2 < b.d2)
-                    && !lives.is_harvested(cx as u16, cz as u16)
-                {
-                    let (or_m, otop_m) = terrain::occupant_volume(s.occupant);
-                    best = Some(Target {
-                        d2,
-                        ox: -dx,
-                        oz: -dz,
-                        cx: cx as u16,
-                        cz: cz as u16,
-                        ni,
-                        pos: (s.x, s.y, s.z),
-                        r: or_m * s.scale,
-                        top: otop_m * s.scale,
-                    });
-                }
-            }
-            dx_cell += 1;
-        }
-        dz_cell += 1;
-    }
-    let Some(Target {
-        d2,
-        ox,
-        oz,
-        cx,
-        cz,
-        ni,
-        pos,
-        r: hit_r,
-        top: hit_top,
-    }) = best
-    else {
-        return Swing::Free; // whiff — the cooldown is paid, the arm is free
-    };
+    let crate::melee::NodeHit {
+        cx, cz, slot, ni, ..
+    } = *hit;
+    let pos = (slot.x, slot.y, slot.z);
+    // Slot→swinger planar offset and its length², for the weak-spot sector:
+    // the mark is about where you stand, and a ray does not change that.
+    let ox = px - slot.x;
+    let oz = pz - slot.z;
+    let d2 = ox * ox + oz * oz;
 
     if ni == BARREL_TARGET {
         return smash(lc, seed, tick, cx, cz, pos, lives, events, p);
@@ -933,7 +771,7 @@ pub fn swing(
 
     let def = &gc.nodes[ni];
     if def.output == NO_ITEM || def.output as usize >= MAX_ITEM_DEFS {
-        return Swing::Free; // inert content (or a table the bake would have refused)
+        return Swing::Absorbed; // inert content (or a table the bake would have refused)
     }
     // What is in hand decides whether this node answers at all, so it is
     // read here rather than beside the payout below.
@@ -983,12 +821,12 @@ pub fn swing(
             REFUSE_G_TOOL
         };
         events.push(EV_GATHER_REFUSED, p.id, ((raw_held as u32) << 16) | why, 0);
-        // Refused, not Free: the arm carries on to flesh and never to
-        // structure — `Swing::Refused` says why in full.
-        return Swing::Refused;
+        // The node is in the way and took the swing as a thunk: the arm goes
+        // no further (`Swing`'s doc), and the bark stays clean.
+        return Swing::Absorbed;
     }
     let Some(life) = lives.find_or_insert(cx, cz) else {
-        return Swing::Free; // store exhausted by harvested entries — refuse the hit
+        return Swing::Absorbed; // store exhausted by harvested entries — refuse the hit
     };
     // The weak-spot chase: switching nodes restarts it; the mark only
     // exists after the first landed hit. A hit landed while standing in
@@ -1040,7 +878,7 @@ pub fn swing(
     // `render/decal.rs` is already its single reader — so a mark on a tree
     // costs no wire byte, no `PROTO_VER` bump and no client line
     // (`NOW.md` §0mk item 1).
-    if let Some((mx, my, mz)) = skin_point(pos, ox, oz, d2, hit_r, hit_top, py + EYE_M) {
+    if let Some((mx, my, mz)) = hit.skin(ray) {
         let qx = crate::fmath::floor_i32(mx / POS_XZ_Q);
         let qy = crate::fmath::floor_i32(my / POS_Y_Q);
         let qz = crate::fmath::floor_i32(mz / POS_XZ_Q);
@@ -1188,7 +1026,7 @@ fn smash(
 ) -> Swing {
     let hits = lc.hits(LOOT_BARREL);
     if hits == 0 {
-        return Swing::Free; // inert loot content: nothing here to break
+        return Swing::Absorbed; // inert loot content: the barrel takes the thunk and stands
     }
     // A barrel has no glint to chase, so aiming at one ends any chase in
     // progress rather than leaving the mark pointed at a cell that pays no
@@ -1197,7 +1035,7 @@ fn smash(
     p.ws_hits = 0;
 
     let Some(life) = lives.find_or_insert(cx, cz) else {
-        return Swing::Free; // store exhausted by harvested entries
+        return Swing::Absorbed; // store exhausted by harvested entries
     };
     life.hits += 1;
     if life.hits < hits {

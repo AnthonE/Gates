@@ -551,8 +551,12 @@ Two halves of "evidence a person is playing", one first-person and one not.
 
 The viewmodel is `render/viewmodel.rs`: a textured tool with bob off distance
 travelled, sway as a frame-rate-independent lag on the look rate, and a swing
-triggered off `Feed` rather than off the input buttons — the swing worth
-drawing is the one that LANDED.
+predicted off the sim's own cadence (`ui::swing`) with `Feed` as the backstop
+— it used to fire off `Feed` alone, which drew every hit and no miss. Its
+shape is the row's (`ui::hold::Stroke`, 2026-09-05): a hatchet chops and a
+spear thrusts, and the thrust's wrist is solved so the point lands on the
+view axis at the apex, at a depth `tests/viewmodel_arms.rs` holds against the
+spear's content reach.
 
 Remote bodies are a CC0 skinned mannequin (`render/anim.rs`, 46 clips,
 `assets/models/MANIFEST.md`) instead of `Capsule3d`. Three things this settled:

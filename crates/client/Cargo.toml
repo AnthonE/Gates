@@ -90,6 +90,13 @@ name = "report_key"
 path = "tests/report_key.rs"
 required-features = ["render"]
 
+# The animal the client draws against the cylinder the sim lets you hit —
+# one number in two crates with a TOML file between them (melee aim v1).
+[[test]]
+name = "mob_volume"
+path = "tests/mob_volume.rs"
+required-features = ["render"]
+
 [[test]]
 name = "tree"
 path = "tests/tree.rs"
@@ -293,6 +300,11 @@ required-features = ["render"]
 # false` + `jpeg` keeps it to the one format `assets/textures/` ships.
 [dev-dependencies]
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
+# `tests/viewmodel_arms.rs` holds the thrust's landing depth against the
+# spear's melee reach as the shard bakes it — read through the real loader,
+# so a picture and `combat::strike` cannot quietly disagree about who is in
+# range. A gate, not a runtime reader: the client never opens `content/`.
+content = { path = "../content" }
 
 [dependencies]
 # Default features for now. Trimming is still a follow-up — but the list of

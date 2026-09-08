@@ -1977,6 +1977,7 @@ dependencies = [
  "bevy",
  "bevy_procedural_tree",
  "client-core",
+ "content",
  "fastrand",
  "image",
  "ktx2",

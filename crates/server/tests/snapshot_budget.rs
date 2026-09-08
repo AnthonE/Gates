@@ -1345,7 +1345,13 @@ fn the_swing_filter_counts_what_it_skipped() {
     let mut swings: Vec<(usize, u32)> = Vec::new();
     let all: Vec<usize> = (0..SPARSE_N).collect();
     for _ in 0..SWING_INTERVAL_TICKS + 4 {
-        press_primary(&mut core, &all, &mut seq, 0);
+        // Level, and the arithmetic below is why. A swing is a ray since
+        // melee aim v1 (2026-09-05), so pitch 0 drives it into the ground
+        // at the swinger's own feet — which lands an `EV_IMPACT` mark
+        // beside every `EV_SWING`, and this gate's whole claim is that a
+        // swing puts EXACTLY ONE frame on the wire. A level swing on an
+        // empty grid reaches nothing and announces only itself.
+        press_primary(&mut core, &all, &mut seq, PITCH_LEVEL);
         swings.extend(swing_round(&mut core, &stats));
     }
     let skipped = ShardStats::get(&stats.ev_interest_skipped) - before;

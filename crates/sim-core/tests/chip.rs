@@ -388,7 +388,8 @@ fn only(events: &[SimEvent], code: u8) -> SimEvent {
 /// says so on the wire in `EV_STRUCT_HIT`'s own payload roles.
 ///
 /// This is the whole slice in one case: the address the walk found, the
-/// column the bake now carries, and the write `combat::raid` already owned.
+/// column the bake now carries, and the write `World::chip` owns for every
+/// blow (a swing came through `combat::raid` when this was written).
 #[test]
 fn an_arrow_chips_the_wall_it_stops_on() {
     const S: u16 = 25;
@@ -453,7 +454,8 @@ fn the_chipping_shot_still_reports_where_it_landed() {
 /// A shot on the wall's HARD face pays `HARD_SIDE_STRUCTURE`, exactly as a
 /// swing does.
 ///
-/// Sharing `combat::raid`'s law rather than restating it is the point: the
+/// Sharing `build::structure_price` rather than restating it is the point:
+/// a swing and a shot are one bill (`World::chip`) and the
 /// mutant is a shot that ignores the side, and it is invisible with shipped
 /// numbers, because the shipped bow's `structure` is 1 and so is
 /// `HARD_SIDE_STRUCTURE` — the two branches return the same value. This

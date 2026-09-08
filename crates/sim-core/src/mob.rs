@@ -62,11 +62,10 @@
 use crate::backpack::{BackpackContent, Backpacks, BAG_Y_OFFSET_Q};
 use crate::collide::ColIndex;
 use crate::combat::{held_item, CombatContent};
-use crate::fmath::fabs;
-use crate::gather::{ItemStack, CONE_COS, DY_MAX_M, NO_ITEM, POINT_BLANK_M2};
+use crate::gather::{ItemStack, NO_ITEM};
 use crate::input::{InputFrame, BTN_SPRINT};
 use crate::limits::{INV_SLOTS, MAX_MOBS, MAX_PLAYERS, MOB_ID_TAG, MOB_THINK_TICKS, MOB_WAKE_CM};
-use crate::movement::{self, Body, POS_XZ_Q, POS_Y_Q};
+use crate::movement::{self, Body, POS_XZ_Q};
 use crate::occupy::Occupants;
 use crate::rng::cell_hash;
 use crate::terrain::{self, Haven};
@@ -333,8 +332,16 @@ pub struct MobDef {
     /// population migrates over a wipe (`reference/SPAWN.md` §3.5). Ours is
     /// the slot model `TERRAIN.md` §2 already applies to trees.
     pub respawn_ticks: u32,
+    /// The animal's hit volume, a cylinder standing on its feet: radius and
+    /// height in **centimetres** (`mobs.toml` `body_r_cm` / `body_h_cm`).
+    /// What `melee::mob_cast` tests the swing's ray against — so a pig is
+    /// 0.8 m tall to a spear because content says so, and a level swing
+    /// from a 1.6 m eye passes over it until the hunter looks down. Zero
+    /// height is a species nothing can hit, the inert row's shape.
+    pub body_r_cm: u16,
+    pub body_h_cm: u16,
     /// What the corpse holds: the killing blow stands these rows up as a
-    /// ground bag at the death cell (`strike`), and the killer loots it
+    /// ground bag at the death cell (`strike_slot`), and the killer loots it
     /// like any other bag. `NO_ITEM` ends the table.
     pub loot: [ItemStack; MOB_LOOT_ROWS],
 }
@@ -353,6 +360,8 @@ impl MobDef {
         spook_cm: 0,
         night_spook_cm: 0,
         respawn_ticks: 0,
+        body_r_cm: 0,
+        body_h_cm: 0,
         loot: [ItemStack {
             item: NO_ITEM,
             count: 0,
@@ -423,6 +432,15 @@ impl MobContent {
             // `the_clock_moves_the_hunter_and_not_the_prey` reads it.
             night_spook_cm: 1_200,
             respawn_ticks: 9_000,
+            // The client draws a pig 0.78 m high and 1.5 m long
+            // (`render/mobs.rs` PIG_H_M / PIG_LEN_M); a cylinder of this
+            // radius covers the body's width and most of its length, and
+            // the height is the drawn one. The shipped rows in
+            // `content/mobs.toml` say the same, which
+            // `client/tests/mob_volume.rs` holds — it caught them 2 cm
+            // apart the first time it ran.
+            body_r_cm: 55,
+            body_h_cm: 78,
             loot: [ItemStack {
                 item: NO_ITEM,
                 count: 0,
@@ -442,6 +460,8 @@ impl MobContent {
             spook_cm: 3_000,
             night_spook_cm: 1_500,
             respawn_ticks: 9_000,
+            body_r_cm: 60,
+            body_h_cm: 85,
             loot: [ItemStack {
                 item: NO_ITEM,
                 count: 0,
@@ -905,14 +925,12 @@ fn think(
     mob.gait = def.gait.min(127) as i8;
 }
 
-/// Resolve one already-taken swing (cadence paid, no node and no player
-/// hit) against the animals in front of the attacker.
+/// Land one already-taken swing on the animal in `slot` — the one
+/// `melee::cast` found the ray entering first.
 ///
-/// The same pick every other target gets — nearest inside the weapon's
-/// reach and gather's aim cone — and it sits between the player scan and
-/// the raid scan in `world::tick` for the reason the order implies: a
-/// player is always the intended target over an animal, and an animal is
-/// always the intended target over the wall behind it.
+/// The pick is no longer here (it was the planar cone every other target
+/// got, and `melee.rs`'s header says why it went); what is left is the
+/// consequence, which is the same as it was.
 ///
 /// **The kill leaves a body, not a payment.** The loot rows stand up as a
 /// ground bag at the death position (`Backpacks::stand_up` — the same
@@ -929,9 +947,9 @@ fn think(
 /// lifetime; and a **full store** evicts the bag nearest its own despawn
 /// (`BAG_GONE_EVICTED`), exactly as a player death does.
 ///
-/// Bounded: one pass over `MAX_MOBS`, on a swing tick only, allocation-free.
+/// Returns true when the animal took the hit.
 #[allow(clippy::too_many_arguments)]
-pub fn strike(
+pub fn strike_slot(
     cc: &CombatContent,
     bc: &BackpackContent,
     mc: &MobContent,
@@ -941,41 +959,19 @@ pub fn strike(
     mobs: &mut Mobs,
     bags: &mut Backpacks,
     events: &mut EventQueue,
+    slot: usize,
 ) -> bool {
     let a = &players[attacker];
-    if !a.active || a.hp == 0 {
+    if !a.active || a.hp == 0 || slot >= mobs.m.len() {
         return false;
     }
     let Some(def) = cc.held_melee(held_item(a)) else {
         return false;
     };
-    let reach = def.reach_cm as f32 * 0.01;
-    let ax = a.body.qx as f32 * POS_XZ_Q;
-    let ay = a.body.qy as f32 * POS_Y_Q;
-    let az = a.body.qz as f32 * POS_XZ_Q;
-    let (fx, fz) = yaw_dir(a.frame.yaw);
     let attacker_id = a.id;
-
-    let mut best: Option<(f32, usize)> = None;
-    for (slot, m) in mobs.m.iter().enumerate() {
-        if !m.alive || m.hp == 0 {
-            continue;
-        }
-        let dx = m.body.qx as f32 * POS_XZ_Q - ax;
-        let dy = m.body.qy as f32 * POS_Y_Q - ay;
-        let dz = m.body.qz as f32 * POS_XZ_Q - az;
-        let d2 = dx * dx + dz * dz;
-        if d2 > reach * reach || fabs(dy) > DY_MAX_M {
-            continue;
-        }
-        let aimed = d2 <= POINT_BLANK_M2 || dx * fx + dz * fz > CONE_COS * d2.sqrt();
-        if aimed && best.is_none_or(|(bd2, _)| d2 < bd2) {
-            best = Some((d2, slot));
-        }
-    }
-    let Some((_, slot)) = best else {
+    if !mobs.m[slot].alive || mobs.m[slot].hp == 0 {
         return false;
-    };
+    }
 
     let species = mc.def(mobs.m[slot].kind);
     let mob = &mut mobs.m[slot];

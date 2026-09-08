@@ -1095,6 +1095,17 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 m.id
             ));
         }
+        // The hit volume: an animal nothing can hit is not a species, and
+        // one wider than a cell or taller than a house is a typo. The
+        // bands are generous on purpose — a moose is a content row, not a
+        // code change — and the floor is the melee probe's own scale.
+        if !(10..=200).contains(&m.body_r_cm) || !(20..=300).contains(&m.body_h_cm) {
+            return Err(format!(
+                "mob `{}`: body_r_cm {} / body_h_cm {} — the hit volume must be \
+                 10–200 cm wide and 20–300 cm tall, or a swing cannot land on it",
+                m.id, m.body_r_cm, m.body_h_cm
+            ));
+        }
         // The bite is armed whole or not at all: `attack = 0` is the
         // pacifist row and every other field must be zero with it, while
         // an armed row needs a reach, a cadence and a courage floor —

@@ -33,10 +33,11 @@
 //!
 //! **What v0 deliberately does not do**, all of it registered in
 //! `DECISIONS.md` §open ("melee combat v0" and "piece damage v0"): no
-//! headshots **for a swing** — aim is planar until M2's rewound raycasts,
-//! so there is no head to hit, and this clause said it of the whole crate
-//! until headshot v0 gave one to `ranged` (`RangedDef::headshot_mult`, and
-//! `MeleeDef` deliberately has no twin) — no per-weapon cadence (every swing rides gather's one
+//! headshots **for a swing** — ⚠ **retired 2026-09-05 and kept here because
+//! the clause moved twice**: it was true of the whole crate, then only of the
+//! swing when headshot v0 gave `ranged` a head, and melee aim v1 made the
+//! swing a ray, so `MeleeDef` carries `headshot_mult` and `limb_pct` and a
+//! spear pays the same rungs a bullet does — no per-weapon cadence (every swing rides gather's one
 //! interval, which is the melee rows' own rate), and no corpse: death drops what you carried into a
 //! backpack where you fell. That last clause is about the SIM and stays
 //! true — there is no lootable body entity, only a bag — while the client
@@ -84,21 +85,11 @@
 //! swing is the *ending* — both spend the same `MAX_REMOVALS_PER_TICK`
 //! allowance and both land through `deploy::damage_piece`.
 
-use crate::build::{
-    anchor, BuildContent, Pieces, BUILD_CELL_M, LEVEL_H_M, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE,
-    LOC_RISER,
-};
-use crate::collide::{col_base_y, Part, PieceHit, CAPSULE_HEIGHT_M};
-use crate::deploy::{damage_deploy, damage_piece, DeployContent, Deploys};
-use crate::fmath::fabs;
-use crate::gather::{CONE_COS, DY_MAX_M, NO_ITEM, POINT_BLANK_M2};
-use crate::limits::{
-    MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_ITEM_DEFS, MAX_PLAYERS, MAX_WEAPON_AMMO, WEAR_SLOTS,
-};
-use crate::movement::{POS_XZ_Q, POS_Y_Q};
-use crate::rewind::{Rewind, RewindPose};
+use crate::collide::Part;
+use crate::gather::NO_ITEM;
+use crate::limits::{MAX_ITEM_DEFS, MAX_PLAYERS, MAX_WEAPON_AMMO, WEAR_SLOTS};
+use crate::movement::POS_Y_Q;
 use crate::world::{EventQueue, Player, EV_DEATH, EV_HEALTH, EV_HIT, EV_HURT};
-use crate::yaw_lut::yaw_dir;
 
 /// One item's melee row. `damage == 0` ⇒ the item is not a weapon (the
 /// whole table starts that way), so a bare hand and a stack of wood are
@@ -111,6 +102,17 @@ pub struct MeleeDef {
     /// `structure` column of `content/weapons.toml`, its own number.
     pub structure: u16,
     pub reach_cm: u16,
+    /// What a head is worth, as a multiplier on `damage` — the
+    /// `headshot_mult` column, which every melee row has carried, priced
+    /// and content-hashed, since the content crate existed, and which the
+    /// bake dropped one line before this struct could hold it. Read since
+    /// melee aim v1 (2026-09-05): a swing has a line to cross now
+    /// (`melee::cast`), so it pays the same ladder a shot pays
+    /// (`part_damage`). 1 is the identity.
+    pub headshot_mult: u16,
+    /// What a leg is worth, in **percent** of `damage` — the `limb_pct`
+    /// column, `headshot_mult`'s other end. 100 is the identity.
+    pub limb_pct: u16,
 }
 
 /// One item's throwable row — the raid tool (`charge.rs`). Separate from
@@ -488,6 +490,8 @@ impl CombatContent {
             damage: 0,
             structure: 0,
             reach_cm: 0,
+            headshot_mult: 1,
+            limb_pct: 100,
         }; MAX_ITEM_DEFS],
         throw: [ThrowDef {
             damage: 0,
@@ -556,6 +560,13 @@ impl CombatContent {
                 damage: rows[i].0,
                 structure: rows[i].1,
                 reach_cm: 200,
+                // The shipped ladder (`content/weapons.toml`: ×2 head,
+                // ×0.5 limbs), so the counted gates cross a head band
+                // with a club as well as with a bullet — a fixture row
+                // nothing reaches rides the parity surface while covering
+                // nothing (item 6's own lesson, below).
+                headshot_mult: 2,
+                limb_pct: 50,
             };
             i += 1;
         }
@@ -673,6 +684,8 @@ impl CombatContent {
                 damage: 0,
                 structure: 1,
                 reach_cm: 200,
+                headshot_mult: 1,
+                limb_pct: 100,
             };
             // One point a blast, for the swing's reason: `probe_parity`'s
             // bots must keep the base they built standing long enough to
@@ -1180,133 +1193,101 @@ pub fn bearing_sector(dx: i64, dz: i64) -> u8 {
     }
 }
 
-/// Resolve one melee swing by `attacker` against the nearest aimed body.
+/// Land one already-taken swing on the body `melee::cast` found the ray
+/// entering first.
 ///
 /// **Lag-compensated since slice 4** (`findings/lagcomp-design-20260818.md`
-/// §7). `favour` is how many ticks back the target scan looks, already
-/// clamped to `Rewind::max_back()` by `world::apply`; `rewind` is the ring
-/// slice 2 fills at the end of every tick.
+/// §7) and the compensation now lives in the cast: `hit` was solved against
+/// bodies put back `favour` ticks by `ranged::nearest_body`, exactly as a
+/// bullet's are, and `hit.qy` is the victim's feet *as they were then*, so
+/// the head band is measured off the cylinder the blow was decided against
+/// (`BodyHit::qy`'s doc has the argument).
 ///
-/// Only the **targets** rewind. The attacker's own body is read live and
+/// **The ladder is the shot's** (melee aim v1): `part_crossed` over the span
+/// the ray spent inside the body, clipped at `stop_t` where the world would
+/// have stopped it, then `part_damage` with the melee row's own
+/// `headshot_mult` and `limb_pct`. A swing that crosses the crown pays the
+/// head, one that reaches only the shins pays the legs, and the attacker's
+/// hitmarker says which (`EV_HIT`'s packed part).
+///
+/// Only the **target** was rewound. The attacker's own eye is read live and
 /// deliberately: this swing is his own input, the server has already
-/// stepped him this tick, and he is exactly where he thinks he is. Lag
-/// compensation exists to undo the *interpolation delay the client applies
-/// to everyone else* — a remote body is drawn `INTERP_DELAY_TICKS` in the
-/// past, so it is remote bodies that have to be put back there.
-///
-/// `favour == 0` returns every candidate's live body (`pose_at` short-
-/// circuits on it), so a zero favour is bit-identical to the sim before
-/// this parameter existed. That is what kept slice 3's hashes still, and it
-/// is why every non-server caller passes zero.
-pub fn strike(
+/// stepped him this tick, and he is exactly where he thinks he is.
+pub fn strike_body(
     cc: &CombatContent,
     attacker: usize,
+    hit: &crate::ranged::BodyHit,
+    ray: &crate::melee::Ray,
+    stop_t: f32,
     players: &mut [Player; MAX_PLAYERS],
     events: &mut EventQueue,
-    rewind: &Rewind,
-    tick: u64,
-    favour: u8,
 ) -> Strike {
     if cc.player_hp == 0 {
         return Strike::Missed; // inert content: combat is not armed
     }
     let a = &players[attacker];
-    if !a.active || a.hp == 0 {
+    if !a.active || a.hp == 0 || hit.slot == attacker || hit.slot >= MAX_PLAYERS {
         return Strike::Missed;
     }
     let Some(def) = cc.held_melee(held_item(a)) else {
         return Strike::Missed;
     };
-    let reach = def.reach_cm as f32 * 0.01;
-    let ax = a.body.qx as f32 * POS_XZ_Q;
-    let ay = a.body.qy as f32 * POS_Y_Q;
-    let az = a.body.qz as f32 * POS_XZ_Q;
-    let (fx, fz) = yaw_dir(a.frame.yaw);
     let attacker_id = a.id;
     // Read before the victim is borrowed mutably, and in the body's own
-    // quanta rather than the metres above: `bearing_sector` wants integers.
+    // quanta rather than metres: `bearing_sector` wants integers.
     let (aqx, aqz) = (a.body.qx as i64, a.body.qz as i64);
-
-    let mut best: Option<(f32, usize)> = None;
-    for (j, t) in players.iter().enumerate() {
-        if j == attacker || !t.active || t.hp == 0 {
-            continue;
-        }
-        // Where this body stood when the attacker saw it. The liveness
-        // tests above stay on the LIVE record on purpose: the ring stores
-        // a position, not a life, and a body that has since died or left
-        // is not a target however solid it looked `favour` ticks ago.
-        // `pose_at` falls back to `t`'s own pose whenever it cannot answer
-        // honestly, so `where_it_was` is never a stranger's position.
-        let where_it_was = rewind.pose_at(tick, j, favour, RewindPose::live(t.id, &t.body));
-        let dx = where_it_was.qx as f32 * POS_XZ_Q - ax;
-        let dy = where_it_was.qy as f32 * POS_Y_Q - ay;
-        let dz = where_it_was.qz as f32 * POS_XZ_Q - az;
-        let d2 = dx * dx + dz * dz;
-        if d2 > reach * reach || fabs(dy) > DY_MAX_M {
-            continue;
-        }
-        // Standing inside someone has no bearing to test, same rule the
-        // node scan uses.
-        let aimed = d2 <= POINT_BLANK_M2 || dx * fx + dz * fz > CONE_COS * d2.sqrt();
-        if aimed && best.is_none_or(|(bd2, _)| d2 < bd2) {
-            best = Some((d2, j));
+    let weapon = held_item(a);
+    {
+        let t = &players[hit.slot];
+        if !t.active || t.hp == 0 {
+            return Strike::Missed;
         }
     }
-    let Some((d2, victim)) = best else {
-        return Strike::Missed;
-    };
-    // Floor-by-cast of a sqrt, both on wall 1's allowed list, and the two
-    // sides quantize identically because they run the same expression on
-    // the same values — the reason the sim sims on what it transmits.
-    let range_cm = (d2.sqrt() * 100.0) as u16;
-    let weapon = held_item(&players[attacker]);
+    // The span inside the body, clipped against the world's stop, scored at
+    // its most significant band — `hitscan`'s three lines, with the
+    // rewound feet the cast carried out.
+    let feet_mm = hit.qy as f32 * (POS_Y_Q * crate::ranged::MM_PER_M);
+    let part =
+        crate::ranged::part_crossed(ray.o.1, ray.s.1, feet_mm, hit.enter, hit.exit.min(stop_t));
+    let dmg = part_damage(def.damage, part, def.headshot_mult, def.limb_pct);
+    // The death screen's range: the PLANAR distance to the victim's axis at
+    // the closest approach, centimetres — `Strike::Killed`'s documented
+    // meaning, kept. `hit.t` is the planar closest-approach fraction, so it
+    // scales the ray's planar length and not its 3D one; a stab pitched
+    // down at somebody a metre away is a metre, not the hypotenuse. Measured
+    // on the geometry the hit was decided on. Floor-by-cast, wall 1's list.
+    let planar_mm = (ray.s.0 * ray.s.0 + ray.s.2 * ray.s.2).sqrt();
+    let range_cm = (planar_mm * hit.t / 10.0) as u16;
 
-    let v = &mut players[victim];
+    let v = &mut players[hit.slot];
     let victim_id = v.id;
-    // **Live on both ends, and not rewound with the scan above.** The two
-    // reads answer different questions. `range_cm` is a fact about the
-    // blow — what the shooter saw and what the death screen reports — so
-    // it is measured on the geometry the hit was decided on. This bearing
-    // is an instruction to the victim: *turn this way*. They are at their
-    // present position when the arc appears, so the only useful bearing is
-    // from where they are now to where the attacker is now. Rewinding it
-    // would point at where the attacker stood relative to where the victim
-    // stood, which describes neither player's situation — and at a favour
-    // of 7 that is a quarter-second of walking, easily a whole sector of
-    // the sixteen.
+    // **Live on both ends, and not rewound with the cast.** `range_cm` is a
+    // fact about the blow; this bearing is an instruction to the victim —
+    // *turn this way* — and they are at their present position when the
+    // arc appears, so the only useful bearing is from where they are now to
+    // where the attacker is now.
     let sector = bearing_sector(aqx - v.body.qx as i64, aqz - v.body.qz as i64);
     // The funnel, reduced: a swing is the route armor exists to blunt.
-    let Hurt { left, died, .. } = hurt(cc, v, def.damage);
-    // `Part::Chest` and not a spare "no part" value: a swing has no line
-    // to cross (`part_damage`'s own doc), so it pays the identity rung and
-    // the marker says exactly that. A fourth part meaning "unknown" would
-    // be a value the ladder cannot price.
+    let Hurt { left, died, .. } = hurt(cc, v, dmg);
     events.push(
         EV_HIT,
         attacker_id,
         victim_id,
-        crate::world::hit_c(crate::collide::Part::Chest, def.damage),
+        crate::world::hit_c(part, dmg),
     );
     // The other half of the same blow, addressed to the other person in it.
-    events.push(EV_HURT, victim_id, sector as u32, def.damage as u32);
+    events.push(EV_HURT, victim_id, sector as u32, dmg as u32);
     events.push(EV_HEALTH, victim_id, left as u32, cc.player_hp as u32);
     if died {
         events.push(EV_DEATH, victim_id, attacker_id, 0);
         return Strike::Killed {
-            victim,
+            victim: hit.slot,
             item: weapon,
             range_cm,
         };
     }
     Strike::Hit
 }
-
-/// The build cells a swing can reach out of the attacker's own cell.
-/// Weapon reach is under 3 m in the alpha data and `BUILD_CELL_M` is 3, so
-/// the ring one out covers every anchor a reach can touch; the reach test
-/// itself, not this radius, is what decides.
-const RAID_CELL_RING: i32 = 1;
 
 /// What a melee swing lands on the HARD side of an edge piece, whatever
 /// the tool (hard/soft v0). One, flat — the reference's rule as players
@@ -1315,1255 +1296,18 @@ const RAID_CELL_RING: i32 = 1;
 /// default, DECISIONS.md §open ("hard/soft v0"). Explosives ignore it.
 pub const HARD_SIDE_STRUCTURE: u16 = 1;
 
-/// Which store a raid swing found, and where.
-#[derive(Clone, Copy)]
-enum Target {
-    Piece {
-        cx: u16,
-        cz: u16,
-        level: u8,
-        loc: u8,
-    },
-    Deploy(usize),
-}
-
-/// Resolve one already-taken swing (cadence paid, no node and no player
-/// hit) against the base in front of the attacker. Returns true when
-/// something took the hit.
-///
-/// Nearest anchor inside the weapon's reach and gather's aim cone wins —
-/// the same pick a node and a player get — and reach is measured to
-/// `build::anchor`, the exact point placement measures build reach to: what
-/// you can build, you can break. Vertically the rule is the movement
-/// collider's own storey-overlap test, so **you can hit what could block
-/// you**, and a swing at a ground-floor wall never reaches a wall two
-/// storeys up.
-///
-/// A deployable at the same address as a piece wins the tie, always: the
-/// door in the doorway is the intended breach point and it must not be
-/// possible to swing "past" it into the frame it hangs in.
-///
-/// Bounded: `(2·RAID_CELL_RING+1)² = 9` columns × 4 locs of planar tests,
-/// each resolving at most `MAX_BUILD_LEVELS` mask bits, plus one pass over
-/// the deployable store — on a swing tick only, and allocation-free. The
-/// piece store is never scanned linearly; the column index answers
-/// occupancy in one probe.
-#[allow(clippy::too_many_arguments)]
-pub fn raid(
-    haven: &crate::terrain::Haven,
-    cc: &CombatContent,
-    bc: &BuildContent,
-    dc: &DeployContent,
-    seed: u64,
-    attacker: &Player,
-    pieces: &mut Pieces,
-    deploys: &mut Deploys,
-    budget: &mut usize,
-    events: &mut EventQueue,
-) -> bool {
-    if !attacker.active || attacker.hp == 0 {
-        return false;
-    }
-    let Some(def) = cc.held_struct(held_item(attacker)) else {
-        return false;
-    };
-    let reach = def.reach_cm as f32 * 0.01;
-    let reach2 = reach * reach;
-    let px = attacker.body.qx as f32 * POS_XZ_Q;
-    let feet_y = attacker.body.qy as f32 * POS_Y_Q;
-    let pz = attacker.body.qz as f32 * POS_XZ_Q;
-    let (fx, fz) = yaw_dir(attacker.frame.yaw);
-
-    // Planar reach + aim cone against one anchor — the node scan's shape,
-    // written once for both stores.
-    let aimed_at = |ax: f32, az: f32| -> Option<f32> {
-        let (dx, dz) = (ax - px, az - pz);
-        let d2 = dx * dx + dz * dz;
-        if d2 > reach2 {
-            return None;
-        }
-        let aimed = d2 <= POINT_BLANK_M2 || dx * fx + dz * fz > CONE_COS * d2.sqrt();
-        aimed.then_some(d2)
-    };
-    // The storey-overlap test `collide::cell_edges_block` uses: the level
-    // is reachable when the attacker's capsule spans any of its height.
-    let storey_ok = |base: f32, level: u8| -> bool {
-        let bottom = base + level as f32 * LEVEL_H_M;
-        feet_y < bottom + LEVEL_H_M && feet_y + CAPSULE_HEIGHT_M > bottom
-    };
-
-    let mut best: Option<(f32, Target)> = None;
-
-    // --- deployables: first, so an equidistant piece cannot displace one.
-    for (di, rec) in deploys.entries().iter().enumerate() {
-        let Some(d2) = aimed_at_rec(&aimed_at, rec.cx, rec.cz, rec.loc) else {
-            continue;
-        };
-        if !storey_ok(
-            col_base_y(seed, haven, pieces.cols(), rec.cx, rec.cz),
-            rec.level,
-        ) {
-            continue;
-        }
-        if best.is_none_or(|(bd2, _)| d2 < bd2) {
-            best = Some((d2, Target::Deploy(di)));
-        }
-    }
-
-    // --- pieces, through the column index (never the store).
-    let pcx = crate::fmath::floor_i32(px / BUILD_CELL_M);
-    let pcz = crate::fmath::floor_i32(pz / BUILD_CELL_M);
-    let mut dcz = -RAID_CELL_RING;
-    while dcz <= RAID_CELL_RING {
-        let mut dcx = -RAID_CELL_RING;
-        while dcx <= RAID_CELL_RING {
-            let (cx, cz) = (pcx + dcx, pcz + dcz);
-            dcx += 1;
-            if cx < 0 || cz < 0 || cx >= MAX_BUILD_COORD as i32 || cz >= MAX_BUILD_COORD as i32 {
-                continue;
-            }
-            let (cx, cz) = (cx as u16, cz as u16);
-            let m = pieces.cols().get(cx, cz);
-            let mut base: Option<f32> = None;
-            for (loc, mask) in [
-                (LOC_PLANE, m.planes),
-                (LOC_RISER, m.stairs),
-                (
-                    LOC_EDGE_XLO,
-                    m.walls_xlo | m.doors_xlo | m.wins_xlo | m.frames_xlo,
-                ),
-                (
-                    LOC_EDGE_ZLO,
-                    m.walls_zlo | m.doors_zlo | m.wins_zlo | m.frames_zlo,
-                ),
-                (crate::build::LOC_TRI_XLO_ZLO, m.tri_xlo_zlo),
-                (crate::build::LOC_TRI_XHI_ZLO, m.tri_xhi_zlo),
-                (crate::build::LOC_TRI_XLO_ZHI, m.tri_xlo_zhi),
-                (crate::build::LOC_TRI_XHI_ZHI, m.tri_xhi_zhi),
-                (crate::build::LOC_DIAG_A, m.diag_a),
-                (crate::build::LOC_DIAG_B, m.diag_b),
-            ] {
-                if mask == 0 {
-                    continue;
-                }
-                let (ax, az) = anchor(cx, cz, loc);
-                let Some(d2) = aimed_at(ax, az) else { continue };
-                if best.is_some_and(|(bd2, _)| d2 >= bd2) {
-                    continue; // an equal or nearer target already stands
-                }
-                let base =
-                    *base.get_or_insert_with(|| col_base_y(seed, haven, pieces.cols(), cx, cz));
-                for level in 0..MAX_BUILD_LEVELS as u8 {
-                    if mask & (1 << level) == 0 || !storey_ok(base, level) {
-                        continue;
-                    }
-                    best = Some((d2, Target::Piece { cx, cz, level, loc }));
-                    // A 1.7 m capsule spans at most two 3 m storeys; the
-                    // lower one is the one the feet are in, and the pick
-                    // has to be a rule, not an ordering accident.
-                    break;
-                }
-            }
-        }
-        dcz += 1;
-    }
-
-    match best {
-        None => false,
-        Some((_, Target::Deploy(di))) => {
-            // **The mark, before the damage** — `ranged::step` and
-            // `gather::swing` both push the scuff and then charge for it,
-            // and a swing that fells the thing it struck still struck it.
-            //
-            // The point is `collide::deploy_stop`'s own clamp: the box
-            // point nearest the raider. A raider is necessarily OUTSIDE
-            // the volume (`collide::deploy_blocked` keeps a capsule out of
-            // one), so that point is on the surface rather than inside it.
-            // An archetype with no volume gets no mark: there is no
-            // surface to put one on, and a `None` here is the same refusal
-            // `gather::skin_point` makes for a node with no skin.
-            let rec = deploys.entries()[di];
-            if let Some((hw, h, hd)) = crate::deploy::solid_vol(dc.defs[rec.row as usize].arch) {
-                let floor = col_base_y(seed, haven, pieces.cols(), rec.cx, rec.cz)
-                    + rec.level as f32 * LEVEL_H_M;
-                let (cxm, czm) = (
-                    rec.cx as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5,
-                    rec.cz as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5,
-                );
-                push_mark(
-                    events,
-                    (
-                        cxm + (px - cxm).clamp(-hw, hw),
-                        (feet_y + crate::gather::EYE_M).clamp(floor, floor + h),
-                        czm + (pz - czm).clamp(-hd, hd),
-                    ),
-                );
-            }
-            damage_deploy(dc, pieces, deploys, di, def.structure, events);
-            true
-        }
-        Some((_, Target::Piece { cx, cz, level, loc })) => {
-            // The index the column index promised: an address the masks
-            // report occupied is in the store, but the lookup is fallible
-            // by type and refusing beats indexing on a promise.
-            match pieces.find_index(cx, cz, level, loc) {
-                Some(i) => {
-                    // Hard side and soft side (hard/soft v0,
-                    // `reference/BUILDING.md` §7b.5): a melee swing on an
-                    // edge piece's HARD face lands `HARD_SIDE_STRUCTURE`,
-                    // whatever the tool — the reference's own rule as a
-                    // raider meets it. Planes and risers have no sides;
-                    // the satchel does not care either (`charge.rs` — a
-                    // blast is a point, not a stance). The rule itself is
-                    // `build::structure_price`, shared with the shot path
-                    // (`World::chip`) rather than copied into it.
-                    let rec = pieces.entries()[i];
-                    // The scuff, before the bill — `piece_mark`'s doc has
-                    // the surface each loc puts it on. Reached only past
-                    // `find_index`, so it means "this swing bit a piece
-                    // that is in the store" rather than "a button was
-                    // down": the `None` arm below breaks nothing and marks
-                    // nothing, exactly as a refused gather swing leaves
-                    // the bark clean.
-                    push_mark(
-                        events,
-                        piece_mark(
-                            &PieceHit { cx, cz, level, loc },
-                            col_base_y(seed, haven, pieces.cols(), cx, cz),
-                            px,
-                            pz,
-                            feet_y + crate::gather::EYE_M,
-                        ),
-                    );
-                    let amount = crate::build::structure_price(
-                        &rec,
-                        bc.pieces[rec.row as usize].shape,
-                        px,
-                        pz,
-                        def.structure,
-                    );
-                    damage_piece(dc, bc, pieces, deploys, i, amount, budget, events);
-                    true
-                }
-                None => false,
-            }
-        }
-    }
-}
-
-/// Where a landed raid swing leaves its scuff: a point **on the struck
-/// piece's own surface**, nearest the raider's stance.
-///
-/// `gather::skin_point` is this function's sibling and its reason —
-/// a swing that bites a tree marks the bark, and until now a swing that
-/// bit a *wall* marked nothing at all (`NOW.md` §0mk item 1, and the
-/// merge-gate judge's second ranked gap on 2026-08-28: a raider could not
-/// see whether the raid was working). `EV_IMPACT` is reused rather than
-/// joined by a second event, for the reason its own doc gives: the fact is
-/// *a surface was struck at this point*, which belongs to no one verb.
-/// So a mark on a plank costs no wire byte, no `PROTO_VER` bump and no
-/// client line — `render/decal.rs` was already the single reader.
-///
-/// **Every arm returns a point the piece actually occupies**, which is the
-/// whole of the correctness claim and what `tests/mark.rs` rebuilds from
-/// published parts:
-///
-/// * A **slab** (the plane and the four triangles) is walkable ground at
-///   `floor` — `collide::piece_ground` reads exactly that y — so the mark
-///   sits at that height. The plane takes the raider's own x/z clamped
-///   into the cell, because the whole rectangle is surface. A **triangle**
-///   takes its centroid instead: a rectangle's clamp can land in the half
-///   the triangle does not occupy, and a mark floating beside a plate is
-///   worse than a mark in the middle of it.
-/// * A **straight wall** is degenerate in one axis and free along the
-///   other, so it takes the edge's own coordinate on the pinned axis and
-///   the clamped stance along the free one. Its height is the strike,
-///   clamped into the storey — a wall two storeys up is reachable by
-///   `storey_ok` from below, and the clamp is what keeps that mark on the
-///   wall rather than under it.
-/// * A **diagonal wall** takes the cell centre, where the two diagonals
-///   cross and where `build::anchor` already measures reach to. Both
-///   diagonals pass through it, so it is on the piece for either.
-/// * The **riser** is the ramp `collide::piece_ground` describes — rising
-///   toward +Z across the storey — evaluated at the clamped stance, so the
-///   mark is on the tread rather than in the air above it.
-///
-/// **What it deliberately does not do**: nothing here reads the aim
-/// direction, so the mark is the nearest point of the piece and not the
-/// point the swing was pointed at. Reach is measured to `build::anchor`
-/// and a swing lands or does not; where on a 3 m plank it lands is not a
-/// fact this arm has, and inventing a ray for it would be inventing a
-/// mechanic. The visible cost is on a plane, where two raiders standing on
-/// opposite corners mark opposite corners — which is right — and on a
-/// triangle and a diagonal, where every swing marks one spot.
-///
-/// **`pub` for its gate, and for nothing else** — no caller outside this
-/// module exists. `tests/mark.rs` needs the point for all ten `loc` arms
-/// and the probe fixture has piece rows for six of them, so a gate that
-/// could only reach it through `raid` would be a gate on six. It rebuilds
-/// the surface from `build::anchor`, the two cell constants and the
-/// `LOC_TRI_*` half definitions — published parts this function does not
-/// share a line with — because `tests/lattice.rs`'s naive side called the
-/// function under test and carried the mutant with it (`CLAUDE.md`).
-///
-/// The address arrives as a [`PieceHit`] rather than four loose numbers,
-/// which is the same trap one level down: `cx`/`cz` are both `u16` and
-/// `level`/`loc` are both `u8`, so a transposition at a call site
-/// type-checks and puts the mark on a real address somewhere else in the
-/// base. It is the type the shot path already names for this four-part
-/// address, so a shot and a swing carry a wall's identity the same way.
-pub fn piece_mark(at: &PieceHit, base: f32, px: f32, pz: f32, strike_y: f32) -> (f32, f32, f32) {
-    let x0 = at.cx as f32 * BUILD_CELL_M;
-    let z0 = at.cz as f32 * BUILD_CELL_M;
-    let floor = base + at.level as f32 * LEVEL_H_M;
-    let mx = px.clamp(x0, x0 + BUILD_CELL_M);
-    let mz = pz.clamp(z0, z0 + BUILD_CELL_M);
-    // The storey the wall spans; `storey_ok` let the swing reach a level
-    // the eye is not inside, so this clamp is load-bearing and not a
-    // formality.
-    let wall_y = strike_y.clamp(floor, floor + LEVEL_H_M);
-    let (ax, az) = anchor(at.cx, at.cz, at.loc);
-    match at.loc {
-        LOC_PLANE => (mx, floor, mz),
-        LOC_RISER => (mx, floor + (mz - z0) / BUILD_CELL_M * LEVEL_H_M, mz),
-        LOC_EDGE_XLO => (x0, wall_y, mz),
-        LOC_EDGE_ZLO => (mx, wall_y, z0),
-        crate::build::LOC_DIAG_A | crate::build::LOC_DIAG_B => (ax, wall_y, az),
-        // The four triangles, and any loc this scan cannot produce: the
-        // centroid `anchor` already returns, at the slab's own height.
-        _ => (ax, floor, az),
-    }
-}
-
-/// Push the scuff a landed structure hit leaves, at a point already solved
-/// to be on the struck surface.
-///
-/// One body for the piece arm and the deployable arm because the two would
-/// otherwise hand-copy the quantize-and-push — `build::structure_price`'s
-/// own doc is this module's receipt for what that costs, and the payload
-/// here is `reference/FINDINGS.md` §1's positional trap in its sharpest
-/// form (`a`'s low half and `b` are two axes of one point in one unit).
-/// `tests/event_roles.rs` role-checks it; one emit site is one thing for
-/// it to check.
-#[inline]
-fn push_mark(events: &mut EventQueue, m: (f32, f32, f32)) {
-    let qx = crate::fmath::floor_i32(m.0 / POS_XZ_Q);
-    let qy = crate::fmath::floor_i32(m.1 / POS_Y_Q);
-    let qz = crate::fmath::floor_i32(m.2 / POS_XZ_Q);
-    events.push(
-        crate::world::EV_IMPACT,
-        (crate::ranged::SURF_BUILT as u32) << 24 | qx as u32,
-        qz as u32,
-        qy as u32,
-    );
-}
-
-/// `aimed_at` against a store record's address — the anchor lookup the two
-/// scans would otherwise repeat.
-#[inline]
-fn aimed_at_rec(
-    aimed_at: &impl Fn(f32, f32) -> Option<f32>,
-    cx: u16,
-    cz: u16,
-    loc: u8,
-) -> Option<f32> {
-    let (ax, az) = anchor(cx, cz, loc);
-    aimed_at(ax, az)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::gather::ItemStack;
-    use crate::limits::{INV_SLOTS, MAX_REMOVALS_PER_TICK};
 
-    /// One tick's structural removal budget, as `World::tick` hands it
-    /// out — these fixtures never approach it (build.rs owns the tests
-    /// that do).
-    fn tick_budget() -> usize {
-        MAX_REMOVALS_PER_TICK
-    }
-
-    use crate::movement::Body;
-    use crate::world::{EV_DEPLOY_REMOVED, EV_PIECE_REMOVED, EV_STRUCT_HIT};
-
-    const SEED: u64 = 20260731;
-
-    /// The solved authored sites for `SEED`, memoized.
-    ///
-    /// `terrain::haven` is a few thousand `height` taps and these cases call
-    /// the carved-ground path from nearly every assertion, so resolving it
-    /// once per suite is the difference between a fast test and a slow one.
-    /// It is a pure function of the seed, so caching it cannot change a result.
-    fn hv() -> &'static crate::terrain::Haven {
-        static HV: std::sync::OnceLock<crate::terrain::Haven> = std::sync::OnceLock::new();
-        HV.get_or_init(|| crate::terrain::haven(SEED))
-    }
-    const CX: u16 = 341;
-    const CZ: u16 = 341;
-    /// Wire yaw facing +X — LUT index 64 of 256 (yaw_lut.rs: index 0 is
-    /// +Z, increasing index rotates toward +X).
-    const YAW_PLUS_X: u16 = 64 << 8;
-    const YAW_MINUS_X: u16 = 192 << 8;
-
-    fn cc() -> CombatContent {
-        CombatContent::probe_fixture()
-    }
-
-    /// The one `EV_STRUCT_HIT` in the ring — and it is a *search* rather
-    /// than `entries()[0]` because a landed swing now pushes its scuff
-    /// first (`piece_mark`). Refusing zero and refusing two keeps this
-    /// stronger than the index it replaced: an index cannot see a double
-    /// emit, and `tests/event_roles.rs` §4's first cut is this repo's own
-    /// receipt for reading the wrong slot.
-    fn struct_hit(ev: &EventQueue) -> crate::world::SimEvent {
-        let mut found = None;
-        for e in ev.entries() {
-            if e.code == EV_STRUCT_HIT {
-                assert!(found.is_none(), "two EV_STRUCT_HIT on one swing");
-                found = Some(*e);
-            }
-        }
-        found.expect("a landed swing bills exactly one EV_STRUCT_HIT")
-    }
-
-    fn last(ev: &EventQueue) -> (u8, u32, u32, u32) {
-        let e = ev.entries()[ev.len() - 1];
-        (e.code, e.a, e.b, e.c)
-    }
-
-    /// The raid rig: a wood foundation (fixture row 0, 100 hp) at
-    /// (CX, CZ) and a raider standing on it holding fixture item 0 —
-    /// 34 structure damage a swing, so three swings take it.
-    fn rig() -> (
-        CombatContent,
-        BuildContent,
-        DeployContent,
-        Pieces,
-        Deploys,
-        Player,
-    ) {
-        let bc = BuildContent::probe_fixture();
-        let dc = DeployContent::probe_fixture();
-        let mut pieces = Pieces::new();
-        let deploys = Deploys::new();
-        let mut builder = raider(CX, CZ);
-        builder.inv[0] = ItemStack {
-            item: 0,
-            count: 99,
-            cond: 0,
-        };
-        let mut ev = EventQueue::default();
-        crate::build::place(
-            SEED,
-            hv(),
-            &bc,
-            &deploys,
-            &mut pieces,
-            &mut builder,
-            0,
-            0,
-            CX,
-            CZ,
-            0,
-            LOC_PLANE,
-            false,
-            &mut ev,
-        );
-        assert_eq!(pieces.len(), 1, "the rig needs its foundation");
-        (
-            CombatContent::probe_fixture(),
-            bc,
-            dc,
-            pieces,
-            deploys,
-            raider(CX, CZ),
-        )
-    }
-
-    /// A player standing at the center of build cell (cx, cz), holding
-    /// fixture item 0 and facing +x.
-    fn raider(cx: u16, cz: u16) -> Player {
-        let mut p = Player {
-            id: 7,
-            active: true,
-            hp: 100,
-            body: Body::at(
-                SEED,
-                hv(),
-                (cx as f32 + 0.5) * BUILD_CELL_M,
-                (cz as f32 + 0.5) * BUILD_CELL_M,
-            ),
-            ..Player::default()
-        };
-        p.inv[0] = ItemStack {
-            item: 0,
-            count: 1,
-            cond: 0,
-        };
-        p
-    }
-
-    fn codes(ev: &EventQueue) -> Vec<u8> {
-        ev.entries().iter().map(|e| e.code).collect()
-    }
-
-    #[test]
-    fn three_swings_fell_a_hundred_hp_foundation() {
-        let (cc, bc, dc, mut pieces, mut deploys, p) = rig();
-        let mut ev = EventQueue::default();
-
-        // 100 hp, 34 a swing: 66, 32, gone.
-        for expect_left in [66u32, 32] {
-            ev.clear();
-            assert!(raid(
-                hv(),
-                &cc,
-                &bc,
-                &dc,
-                SEED,
-                &p,
-                &mut pieces,
-                &mut deploys,
-                &mut tick_budget(),
-                &mut ev
-            ));
-            let e = struct_hit(&ev);
-            assert_eq!(e.a, crate::gather::cell_key(CX, CZ));
-            assert_eq!(e.b, LOC_PLANE as u32);
-            assert_eq!(
-                e.c,
-                (34 << 16) | expect_left,
-                "damage dealt << 16 | hp left"
-            );
-            assert_eq!(pieces.len(), 1, "still standing");
-        }
-
-        ev.clear();
-        assert!(raid(
-            hv(),
-            &cc,
-            &bc,
-            &dc,
-            SEED,
-            &p,
-            &mut pieces,
-            &mut deploys,
-            &mut tick_budget(),
-            &mut ev
-        ));
-        assert_eq!(
-            struct_hit(&ev).c,
-            32 << 16,
-            "the last swing deals only the hp that was left, and leaves zero"
-        );
-        // The scuff leads the bill and the bill leads the collapse — one
-        // swing's whole story, in order, and the mark is pinned here
-        // rather than merely tolerated.
-        assert_eq!(
-            codes(&ev),
-            [crate::world::EV_IMPACT, EV_STRUCT_HIT, EV_PIECE_REMOVED]
-        );
-        assert!(pieces.is_empty(), "the foundation fell");
-
-        // Nothing left to hit: the swing finds no target at all.
-        ev.clear();
-        assert!(!raid(
-            hv(),
-            &cc,
-            &bc,
-            &dc,
-            SEED,
-            &p,
-            &mut pieces,
-            &mut deploys,
-            &mut tick_budget(),
-            &mut ev
-        ));
-        assert!(ev.is_empty());
-    }
-
-    /// Hard/soft v0 (`reference/BUILDING.md` §7b.5): the same tool, the
-    /// same wall, two stances — full structure damage from the soft side,
-    /// `HARD_SIDE_STRUCTURE` from the hard one. The wall was placed from
-    /// inside the cell, so its soft face is the +x side the builder stood
-    /// on; the foundation (a plane) stays sideless and keeps taking full
-    /// damage from anywhere, which the base rig's own tests already pin.
-    #[test]
-    fn the_soft_side_pays_full_and_the_hard_side_pays_one() {
-        let (cc, bc, dc, mut pieces, mut deploys, _) = rig();
-        // The wall on the cell's west edge, placed by a builder standing
-        // at the cell centre — east of the edge, so soft faces east.
-        let mut builder = raider(CX, CZ);
-        builder.inv[0] = ItemStack {
-            item: 0,
-            count: 99,
-            cond: 0,
-        };
-        let mut ev = EventQueue::default();
-        crate::build::place(
-            SEED,
-            hv(),
-            &bc,
-            &deploys,
-            &mut pieces,
-            &mut builder,
-            0,
-            1,
-            CX,
-            CZ,
-            0,
-            crate::build::LOC_EDGE_XLO,
-            false,
-            &mut ev,
-        );
-        let wall = pieces.find(CX, CZ, 0, crate::build::LOC_EDGE_XLO).unwrap();
-        assert_eq!(wall.facing, 1, "soft faces the builder's side (+x)");
-        let wall_hp = wall.hp;
-
-        let x0 = CX as f32 * BUILD_CELL_M;
-        let z0 = CZ as f32 * BUILD_CELL_M;
-        // Both attackers face +Z (default yaw) at the wall's anchor,
-        // 0.3 m to either side of the edge plane.
-        let mut soft = raider(CX, CZ);
-        soft.body = Body::at(SEED, hv(), x0 + 0.3, z0 + 0.5);
-        let mut hard = raider(CX, CZ);
-        hard.body = Body::at(SEED, hv(), x0 - 0.3, z0 + 0.5);
-
-        ev.clear();
-        assert!(raid(
-            hv(),
-            &cc,
-            &bc,
-            &dc,
-            SEED,
-            &soft,
-            &mut pieces,
-            &mut deploys,
-            &mut tick_budget(),
-            &mut ev
-        ));
-        let e = struct_hit(&ev);
-        assert_eq!(
-            e.c >> 16,
-            34,
-            "the soft side takes the tool's whole structure damage"
-        );
-
-        ev.clear();
-        assert!(raid(
-            hv(),
-            &cc,
-            &bc,
-            &dc,
-            SEED,
-            &hard,
-            &mut pieces,
-            &mut deploys,
-            &mut tick_budget(),
-            &mut ev
-        ));
-        let e = struct_hit(&ev);
-        assert_eq!(
-            e.c >> 16,
-            HARD_SIDE_STRUCTURE as u32,
-            "the hard side takes one, whatever the tool"
-        );
-        assert_eq!(
-            e.c & 0xFFFF,
-            (wall_hp - 34 - HARD_SIDE_STRUCTURE) as u32,
-            "both swings landed on the one wall"
-        );
-    }
-
-    /// **A swing at a solid deployable marks its FACE**, not its middle
-    /// and not the raider's own feet.
-    ///
-    /// `piece_mark`'s sibling arm: a deployable has an archetype volume
-    /// rather than a storey, so the point is `collide::deploy_stop`'s own
-    /// clamp — the box point nearest the raider — and this case stands
-    /// well outside the hearth on −x so that clamp is the binding thing.
-    /// Under a mutant that drops it the mark is at the raider's own x,
-    /// 1.2 m out in the air; under one that returns the cell centre it is
-    /// inside the box. Both are asserted against here, in metres decoded
-    /// back off the event.
-    #[test]
-    fn a_swing_at_a_hearth_marks_the_face_it_struck() {
-        let (cc, bc, dc, mut pieces, mut deploys, _) = rig();
-        let mut ev = EventQueue::default();
-        let mut owner = raider(CX, CZ);
-        owner.inv[1] = ItemStack {
-            item: 2,
-            count: 9,
-            cond: 0,
-        };
-        crate::deploy::place_deploy(
-            SEED,
-            hv(),
-            &dc,
-            &bc,
-            &mut pieces,
-            &mut deploys,
-            &mut owner,
-            0,
-            0,
-            CX,
-            CZ,
-            0,
-            LOC_PLANE,
-            &mut ev,
-        );
-        assert_eq!(deploys.len(), 1, "the rig needs its hearth");
-        let (hw, h, _) = crate::deploy::solid_vol(dc.defs[0].arch).expect("a hearth is solid");
-
-        // Stand off the hearth's −x face, inside the fixture's 2 m reach,
-        // facing +x at it. `Body::at` bypasses movement, which is what
-        // lets the stance be chosen rather than walked to.
-        let cxm = CX as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5;
-        let czm = CZ as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5;
-        let mut p = raider(CX, CZ);
-        p.body = Body::at(SEED, hv(), cxm - 1.2, czm);
-        p.frame.yaw = YAW_PLUS_X;
-
-        ev.clear();
-        assert!(raid(
-            hv(),
-            &cc,
-            &bc,
-            &dc,
-            SEED,
-            &p,
-            &mut pieces,
-            &mut deploys,
-            &mut tick_budget(),
-            &mut ev
-        ));
-        let m = ev.entries()[0];
-        assert_eq!(m.code, crate::world::EV_IMPACT, "the scuff leads the bill");
-        assert_eq!(
-            (m.a >> 24) as u8,
-            crate::ranged::SURF_BUILT,
-            "a deployable is built surface, exactly as it is to an arrow"
-        );
-        // Decoded back to metres — `world.rs`' own role line: a = SURF << 24
-        // | x, b = z, c = y signed. One quantum of slack per axis and no
-        // more; `POS_XZ_Q` is 3 cm and the claim is about a 0.6 m half-width.
-        let mx = (m.a & 0x00ff_ffff) as f32 * POS_XZ_Q;
-        let my = m.c as i32 as f32 * POS_Y_Q;
-        let floor = col_base_y(SEED, hv(), pieces.cols(), CX, CZ);
-        assert!(
-            fabs(mx - (cxm - hw)) <= POS_XZ_Q,
-            "the mark sits on the hearth's -x face at {}, not at {mx}",
-            cxm - hw
-        );
-        assert!(
-            (floor - POS_Y_Q..=floor + h + POS_Y_Q).contains(&my),
-            "{my} is outside the hearth's own band [{floor}, {}]",
-            floor + h
-        );
-    }
-
-    #[test]
-    fn a_swing_out_of_reach_or_behind_you_breaks_nothing() {
-        let (cc, bc, dc, mut pieces, mut deploys, _) = rig();
-        let mut ev = EventQueue::default();
-
-        // Four cells away — 12 m, far past the fixture's 2 m reach.
-        let far = raider(CX + 4, CZ);
-        assert!(!raid(
-            hv(),
-            &cc,
-            &bc,
-            &dc,
-            SEED,
-            &far,
-            &mut pieces,
-            &mut deploys,
-            &mut tick_budget(),
-            &mut ev
-        ));
-
-        // In reach but aimed away: one cell at +x (3 m; the anchor is 3 m
-        // at −x of them) facing +x, so the foundation is behind.
-        let mut turned = raider(CX + 1, CZ);
-        turned.frame.yaw = 0;
-        assert!(!raid(
-            hv(),
-            &cc,
-            &bc,
-            &dc,
-            SEED,
-            &turned,
-            &mut pieces,
-            &mut deploys,
-            &mut tick_budget(),
-            &mut ev
-        ));
-
-        assert!(ev.is_empty(), "no event, and no phantom damage");
-        assert_eq!(pieces.entries()[0].hp, 100, "untouched");
-    }
-
-    #[test]
-    fn the_deployable_wins_the_tie_and_falls_first() {
-        let (cc, bc, dc, mut pieces, mut deploys, p) = rig();
-        let mut ev = EventQueue::default();
-        // A hearth (fixture row 0, 100 hp) on the foundation — the same
-        // address, so both are equidistant from the swing.
-        let mut owner = raider(CX, CZ);
-        owner.inv[0] = ItemStack {
-            item: 0,
-            count: 99,
-            cond: 0,
-        };
-        owner.inv[1] = ItemStack {
-            item: 2,
-            count: 9,
-            cond: 0,
-        }; // the hearth's own item
-        crate::deploy::place_deploy(
-            SEED,
-            hv(),
-            &dc,
-            &bc,
-            &mut pieces,
-            &mut deploys,
-            &mut owner,
-            0,
-            0,
-            CX,
-            CZ,
-            0,
-            LOC_PLANE,
-            &mut ev,
-        );
-        assert_eq!(deploys.len(), 1, "the rig needs its hearth");
-
-        for _ in 0..3 {
-            ev.clear();
-            assert!(raid(
-                hv(),
-                &cc,
-                &bc,
-                &dc,
-                SEED,
-                &p,
-                &mut pieces,
-                &mut deploys,
-                &mut tick_budget(),
-                &mut ev
-            ));
-            assert_eq!(
-                struct_hit(&ev).b & crate::world::STRUCT_DEPLOY_BIT,
-                crate::world::STRUCT_DEPLOY_BIT,
-                "the hearth takes it, never the foundation under it"
-            );
-        }
-        assert!(deploys.is_empty(), "the hearth fell in three");
-        assert_eq!(
-            pieces.entries()[0].hp,
-            100,
-            "the foundation never took a point while the hearth stood"
-        );
-
-        // With the hearth gone the same swing reaches the foundation.
-        ev.clear();
-        assert!(raid(
-            hv(),
-            &cc,
-            &bc,
-            &dc,
-            SEED,
-            &p,
-            &mut pieces,
-            &mut deploys,
-            &mut tick_budget(),
-            &mut ev
-        ));
-        assert_eq!(pieces.entries()[0].hp, 66);
-    }
-
-    #[test]
-    fn a_locked_door_is_no_longer_a_vault() {
-        // The gap this slice closes, stated as a test: a door locked
-        // against a stranger opens to force. Breaking it must also unseal
-        // the edge — a breach nobody can walk through is not a breach.
-        let bc = BuildContent::probe_fixture();
-        let dc = DeployContent::probe_fixture();
-        let mut pieces = Pieces::new();
-        let mut deploys = Deploys::new();
-        let mut ev = EventQueue::default();
-        let mut owner = raider(CX, CZ);
-        owner.inv[0] = ItemStack {
-            item: 0,
-            count: 99,
-            cond: 0,
-        };
-        owner.inv[4] = ItemStack {
-            item: 4,
-            count: 9,
-            cond: 0,
-        };
-        owner.inv[5] = ItemStack {
-            item: 7,
-            count: 2,
-            cond: 0,
-        };
-        crate::build::place(
-            SEED,
-            hv(),
-            &bc,
-            &deploys,
-            &mut pieces,
-            &mut owner,
-            0,
-            0,
-            CX,
-            CZ,
-            0,
-            LOC_PLANE,
-            false,
-            &mut ev,
-        );
-        crate::build::place(
-            SEED,
-            hv(),
-            &bc,
-            &deploys,
-            &mut pieces,
-            &mut owner,
-            0,
-            3,
-            CX,
-            CZ,
-            0,
-            LOC_EDGE_XLO,
-            false,
-            &mut ev,
-        );
-        assert_eq!(pieces.len(), 2, "foundation + doorway");
-        crate::deploy::place_deploy(
-            SEED,
-            hv(),
-            &dc,
-            &bc,
-            &mut pieces,
-            &mut deploys,
-            &mut owner,
-            0,
-            2,
-            CX,
-            CZ,
-            0,
-            LOC_EDGE_XLO,
-            &mut ev,
-        );
-        assert_eq!(deploys.len(), 1, "the door hangs in the doorway");
-        // Bolt the code lock on (row 5) and arm it — lock v1: a door is
-        // bare until somebody pays for the security.
-        crate::deploy::place_deploy(
-            SEED,
-            hv(),
-            &dc,
-            &bc,
-            &mut pieces,
-            &mut deploys,
-            &mut owner,
-            0,
-            5,
-            CX,
-            CZ,
-            0,
-            LOC_EDGE_XLO,
-            &mut ev,
-        );
-        crate::deploy::lock_op(
-            &dc,
-            &crate::gather::GatherContent::probe_fixture(),
-            &mut deploys,
-            &mut owner,
-            CX,
-            CZ,
-            0,
-            LOC_EDGE_XLO,
-            crate::deploy::ACCESS_OP_SET_CODE,
-            1234,
-            0,
-            &mut ev,
-            &mut [ItemStack::default(); INV_SLOTS],
-        );
-        assert!(deploys.entries()[0].locked, "and it is locked");
-        assert_ne!(
-            pieces.cols().get(CX, CZ).shut_xlo,
-            0,
-            "a shut door seals its edge"
-        );
-
-        // A stranger outside, one cell at −x, facing the door: the lock
-        // refuses the use verb…
-        let mut foe = raider(CX - 1, CZ);
-        foe.id = 9;
-        foe.frame.yaw = YAW_PLUS_X;
-        ev.clear();
-        crate::deploy::use_door(
-            &dc,
-            &mut pieces,
-            &mut deploys,
-            &mut foe,
-            CX,
-            CZ,
-            0,
-            LOC_EDGE_XLO,
-            &mut ev,
-        );
-        assert_eq!(
-            last(&ev).2,
-            crate::deploy::REFUSE_D_OWNER,
-            "the lock still holds against the use verb"
-        );
-        assert_ne!(pieces.cols().get(CX, CZ).shut_xlo, 0, "still sealed");
-
-        // …and the swing does not care. 60 hp, 34 a swing: two.
-        ev.clear();
-        assert!(raid(
-            hv(),
-            &cc(),
-            &bc,
-            &dc,
-            SEED,
-            &foe,
-            &mut pieces,
-            &mut deploys,
-            &mut tick_budget(),
-            &mut ev
-        ));
-        assert_eq!(
-            ev.entries()[0].b & crate::world::STRUCT_DEPLOY_BIT,
-            crate::world::STRUCT_DEPLOY_BIT,
-            "the door, not the doorway it hangs in"
-        );
-        assert_eq!(ev.entries()[0].c, (34 << 16) | 26);
-        assert!(raid(
-            hv(),
-            &cc(),
-            &bc,
-            &dc,
-            SEED,
-            &foe,
-            &mut pieces,
-            &mut deploys,
-            &mut tick_budget(),
-            &mut ev
-        ));
-        assert!(deploys.is_empty(), "the door fell to force");
-        assert_eq!(
-            pieces.cols().get(CX, CZ).shut_xlo,
-            0,
-            "and the edge is open — the raider can walk in"
-        );
-        assert_eq!(pieces.len(), 2, "the frame it hung in still stands");
-
-        // The frame next, and it must not cascade a door that is gone.
-        // The raider walks IN through the edge the fallen door opened
-        // first: the doorway's soft face is the builder's side (hard/soft
-        // v0), and from the street its hard face pays `HARD_SIDE_STRUCTURE`
-        // a swing — the melee raid the rule exists to slow. Standing
-        // inside, aimed back out at the frame, the swings land whole.
-        // Just inside the edge, not the cell centre: the centre is the
-        // foundation's own anchor, and the nearest pick would hand the
-        // swings to the slab underfoot.
-        foe.body = Body::at(
-            SEED,
-            hv(),
-            CX as f32 * BUILD_CELL_M + 0.4,
-            (CZ as f32 + 0.5) * BUILD_CELL_M,
-        );
-        foe.frame.yaw = YAW_MINUS_X;
-        ev.clear();
-        for _ in 0..3 {
-            raid(
-                hv(),
-                &cc(),
-                &bc,
-                &dc,
-                SEED,
-                &foe,
-                &mut pieces,
-                &mut deploys,
-                &mut tick_budget(),
-                &mut ev,
-            );
-        }
-        assert_eq!(pieces.len(), 1, "the doorway fell; the foundation stands");
-        assert!(
-            !codes(&ev).contains(&EV_DEPLOY_REMOVED),
-            "no deployable was left to cascade"
-        );
-        assert!(codes(&ev).contains(&EV_PIECE_REMOVED));
-    }
-
-    #[test]
-    fn a_storey_out_of_the_capsule_is_out_of_reach() {
-        // The vertical rule is the movement collider's own: you can hit
-        // what could block you. Lift the swinger two storeys and the
-        // foundation under them stops being a target.
-        let (cc, bc, dc, mut pieces, mut deploys, ground) = rig();
-        let mut ev = EventQueue::default();
-        assert!(raid(
-            hv(),
-            &cc,
-            &bc,
-            &dc,
-            SEED,
-            &ground,
-            &mut pieces,
-            &mut deploys,
-            &mut tick_budget(),
-            &mut ev
-        ));
-        assert_eq!(pieces.entries()[0].hp, 66, "from the ground, reachable");
-
-        let mut aloft = ground;
-        // +6 m in the 1 cm position quantum (movement::POS_Y_Q): two
-        // storeys of LEVEL_H_M, well clear of a 1.7 m capsule.
-        aloft.body.qy += 600;
-        ev.clear();
-        assert!(!raid(
-            hv(),
-            &cc,
-            &bc,
-            &dc,
-            SEED,
-            &aloft,
-            &mut pieces,
-            &mut deploys,
-            &mut tick_budget(),
-            &mut ev
-        ));
-        assert_eq!(pieces.entries()[0].hp, 66, "two storeys up, untouched");
-        assert!(ev.is_empty());
-    }
-
-    #[test]
-    fn inert_structure_damage_never_touches_a_base() {
-        let (_, bc, dc, mut pieces, mut deploys, p) = rig();
-        let cc = CombatContent::EMPTY;
-        let mut ev = EventQueue::default();
-        assert!(!raid(
-            hv(),
-            &cc,
-            &bc,
-            &dc,
-            SEED,
-            &p,
-            &mut pieces,
-            &mut deploys,
-            &mut tick_budget(),
-            &mut ev
-        ));
-        assert_eq!(pieces.entries()[0].hp, 100);
-        assert!(ev.is_empty());
-    }
-
-    #[test]
-    fn a_dead_or_empty_handed_raider_breaks_nothing() {
-        let (cc, bc, dc, mut pieces, mut deploys, _) = rig();
-        let mut ev = EventQueue::default();
-
-        let mut dead = raider(CX, CZ);
-        dead.hp = 0;
-        assert!(!raid(
-            hv(),
-            &cc,
-            &bc,
-            &dc,
-            SEED,
-            &dead,
-            &mut pieces,
-            &mut deploys,
-            &mut tick_budget(),
-            &mut ev
-        ));
-
-        let mut empty = raider(CX, CZ);
-        empty.inv[0] = ItemStack::default();
-        assert!(!raid(
-            hv(),
-            &cc,
-            &bc,
-            &dc,
-            SEED,
-            &empty,
-            &mut pieces,
-            &mut deploys,
-            &mut tick_budget(),
-            &mut ev
-        ));
-
-        let mut gone = raider(CX, CZ);
-        gone.active = false;
-        assert!(!raid(
-            hv(),
-            &cc,
-            &bc,
-            &dc,
-            SEED,
-            &gone,
-            &mut pieces,
-            &mut deploys,
-            &mut tick_budget(),
-            &mut ev
-        ));
-
-        assert_eq!(pieces.entries()[0].hp, 100);
-        assert!(ev.is_empty());
-    }
-
-    #[test]
-    fn a_swing_that_hit_a_player_never_also_hits_the_wall() {
-        // The tick's rule, asserted where it lives: `Strike::Hit` is not
-        // `Strike::Missed`, so `world::tick` never passes the arm on.
-        let cc = CombatContent::probe_fixture();
-        let mut players = [Player::default(); MAX_PLAYERS];
-        for (i, p) in players.iter_mut().take(2).enumerate() {
-            p.id = i as u32 + 1;
-            p.active = true;
-            p.hp = 100;
-            p.inv[0] = ItemStack {
-                item: 0,
-                count: 1,
-                cond: 0,
-            };
-            p.body = Body::at(SEED, hv(), 512.0, 512.0);
-        }
-        let mut ev = EventQueue::default();
-        assert_eq!(
-            strike(&cc, 0, &mut players, &mut ev, &Rewind::new(), 0, 0),
-            Strike::Hit
-        );
-        assert_eq!(players[1].hp, 66);
-        assert_eq!(
-            strike(&cc, 0, &mut players, &mut ev, &Rewind::new(), 0, 0),
-            Strike::Hit
-        );
-        assert_eq!(
-            strike(&cc, 0, &mut players, &mut ev, &Rewind::new(), 0, 0),
-            Strike::Killed {
-                victim: 1,
-                // The two bodies stand on the same point, so the blow lands
-                // at zero range — and the weapon is the fixture's item 0,
-                // which is what the death screen will name.
-                item: 0,
-                range_cm: 0,
-            },
-            "the third of three"
-        );
-        assert_eq!(
-            strike(&cc, 0, &mut players, &mut ev, &Rewind::new(), 0, 0),
-            Strike::Missed,
-            "a corpse is not a target, and the arm is free for a wall"
-        );
-    }
+    // The raid pick's cases — three swings fell a foundation, the soft side
+    // pays full and the hard side one, the deployable wins the tie, a
+    // locked door is no longer a vault, a storey out of the capsule is out
+    // of reach — used to live here against a hand-built rig, because
+    // `combat::raid` was a function this module owned. The pick is
+    // `melee::cast` now and the bill is `World::chip`, so those claims are
+    // held where the two meet: `tests/melee_aim.rs`, through the world.
 
     #[test]
     fn held_melee_refuses_hands_junk_and_the_table_edge() {
@@ -2598,6 +1342,36 @@ mod tests {
         assert_eq!(held_item(&p), NO_ITEM, "an empty slot is an empty hand");
     }
 
+    /// The fixture's melee rows carry the shipped ladder, and the inert
+    /// table carries the identity — so a counted gate crosses a head band
+    /// with a club, and `EMPTY` cannot double a zero into something.
+    #[test]
+    fn the_fixture_melee_rows_carry_the_ladder_and_empty_carries_the_identity() {
+        let cc = CombatContent::probe_fixture();
+        let spear = cc.held_melee(0).expect("item 0 is the fixture's spear");
+        assert_eq!((spear.headshot_mult, spear.limb_pct), (2, 50));
+        assert_eq!(
+            part_damage(
+                spear.damage,
+                Part::Head,
+                spear.headshot_mult,
+                spear.limb_pct
+            ),
+            spear.damage * 2
+        );
+        assert_eq!(
+            part_damage(
+                spear.damage,
+                Part::Limb,
+                spear.headshot_mult,
+                spear.limb_pct
+            ),
+            spear.damage / 2
+        );
+        let e = CombatContent::EMPTY.melee[0];
+        assert_eq!((e.headshot_mult, e.limb_pct), (1, 100));
+    }
+
     #[test]
     fn inert_content_never_hurts_anyone() {
         let cc = CombatContent::EMPTY;
@@ -2613,11 +1387,65 @@ mod tests {
             };
         }
         let mut ev = EventQueue::default();
+        // A hit the cast would have handed over, at a body one metre out.
+        let ray = crate::melee::ray(&players[0].body, 0, 128, 2000.0);
+        let hit = crate::ranged::BodyHit {
+            t: 0.5,
+            slot: 1,
+            enter: 0.3,
+            exit: 0.7,
+            qy: players[1].body.qy,
+        };
         assert_eq!(
-            strike(&cc, 0, &mut players, &mut ev, &Rewind::new(), 0, 0),
+            strike_body(&cc, 0, &hit, &ray, 1.0, &mut players, &mut ev),
             Strike::Missed
         );
         assert_eq!(players[1].hp, 100);
         assert!(ev.is_empty());
+    }
+
+    /// The landing scores the span the way a bullet does: a level swing
+    /// between two bodies on one ground crosses the head band and pays the
+    /// row's multiplier; the same swing clipped by a wall at the shins is a
+    /// leg and pays the percent.
+    #[test]
+    fn the_landing_pays_the_ladder_off_the_span_it_is_handed() {
+        let cc = CombatContent::probe_fixture();
+        let mut players = [Player::default(); MAX_PLAYERS];
+        for (i, p) in players.iter_mut().take(2).enumerate() {
+            p.id = i as u32 + 1;
+            p.active = true;
+            p.hp = cc.player_hp;
+            p.hp_max = cc.player_hp;
+            p.inv[0] = ItemStack {
+                item: 0,
+                count: 1,
+                cond: 0,
+            };
+        }
+        let def = cc.held_melee(0).unwrap();
+        // Level, from the eye: the ray runs at 1.6 m the whole way, inside
+        // the head band of a body standing on the same ground.
+        let ray = crate::melee::ray(&players[0].body, 0, 128, 2000.0);
+        let hit = crate::ranged::BodyHit {
+            t: 0.5,
+            slot: 1,
+            enter: 0.3,
+            exit: 0.7,
+            qy: players[1].body.qy,
+        };
+        let mut ev = EventQueue::default();
+        assert_eq!(
+            strike_body(&cc, 0, &hit, &ray, 1.0, &mut players, &mut ev),
+            Strike::Hit
+        );
+        let e = ev
+            .entries()
+            .iter()
+            .find(|e| e.code == EV_HIT)
+            .expect("a hit");
+        assert_eq!(crate::world::hit_part(e.c), Part::Head);
+        assert_eq!(crate::world::hit_damage(e.c), def.damage * 2);
+        assert_eq!(players[1].hp, cc.player_hp - def.damage * 2);
     }
 }

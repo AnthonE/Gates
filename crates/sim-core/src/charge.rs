@@ -367,7 +367,7 @@ fn falloff(full: u16, d_cm: i64, blast_cm: u16) -> u16 {
 /// swap-removes and a held index would point at a stranger's wall.
 ///
 /// `budget` is the tick's shared `MAX_REMOVALS_PER_TICK`, taken by
-/// reference for the reason `combat::raid` takes it: a blast that brings a
+/// reference for the reason `World::chip` takes it: a blast that brings a
 /// wall down spends the same structural-removal allowance a swing does,
 /// and a tick that has spent it leaves the wall standing at one hp for the
 /// next one. Wall 4 does not get a second allowance because the damage
@@ -490,7 +490,8 @@ fn detonate(
         dz += 1;
     }
     // Deployables: one pass over the store, addresses only — the same
-    // full scan `combat::raid` makes per swing.
+    // full scan `combat::raid` used to make per swing (a swing is a ray now
+    // and asks the column index instead; a blast still has no direction).
     for rec in deploys.entries() {
         if n >= BLAST_TARGET_CAP {
             break;

@@ -70,7 +70,29 @@ const STACK_MAX: u16 = 100;
 /// the swing target unambiguous. Panics rather than skipping — a seed that
 /// offers no isolated node is a setup failure, and a skipped case that
 /// reports success is the worst bug class (CLAUDE.md).
-fn find_isolated(seed: u64, want: Occupant) -> ((f32, f32), u16) {
+/// Where the swinger looks: `(yaw, pitch)` on the wire's scales. A swing
+/// is a ray since melee aim v1, so standing at a node is not enough — the
+/// fixture has to look at it, 0.7 m up its base from an eye 1.6 m up.
+type Aim = (u16, u8);
+
+/// The pitch byte pointing closest along `(run, rise)`, off the sim's own
+/// LUT — no trig, because the crate's clippy walls bind this suite.
+fn pitch_toward(rise: f32, run: f32) -> u8 {
+    let len = (rise * rise + run * run).sqrt();
+    let mut best = 128u8;
+    let mut best_dot = f32::MIN;
+    for b in 0..=255u8 {
+        let (ch, sv) = sim_core::pitch_dir(b);
+        let dot = (ch * run + sv * rise) / len;
+        if dot > best_dot {
+            best_dot = dot;
+            best = b;
+        }
+    }
+    best
+}
+
+fn find_isolated(seed: u64, want: Occupant) -> ((f32, f32), Aim) {
     let table = ScatterTable::alpha_default();
     let haven = terrain::haven(seed);
     for cz in 40..216i32 {
@@ -117,20 +139,21 @@ fn find_isolated(seed: u64, want: Occupant) -> ((f32, f32), u16) {
                     best_yaw = yaw;
                 }
             }
-            return ((px, pz), best_yaw);
+            let eye = py + sim_core::ranged::ARROW_EYE_MM as f32 / 1000.0;
+            return ((px, pz), (best_yaw, pitch_toward(s.y + 0.7 - eye, 1.2)));
         }
     }
     panic!("seed {seed} offers no isolated {want:?} — test setup failure");
 }
 
-fn hold_primary(yaw: u16, seq: u16) -> Command {
+fn hold_primary(aim: Aim, seq: u16) -> Command {
     Command::Input {
         id: 1,
         frame: InputFrame {
             seq,
             buttons: BTN_PRIMARY,
-            yaw,
-            pitch: 0,
+            yaw: aim.0,
+            pitch: aim.1,
             move_x: 0,
             move_z: 0,
             sel: 0,

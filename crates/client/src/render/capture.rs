@@ -794,7 +794,8 @@ fn verb_pass(
                         continue;
                     }
                     // Skip anything with no skin: a bush is swingable and
-                    // leaves no mark by design (`gather::skin_point`), so
+                    // leaves no mark by design (`gather::land` marks off
+                    // `terrain::occupant_volume`, which gives it none), so
                     // walking at one would photograph the absence of the
                     // thing this pass exists to show.
                     if terrain::occupant_volume(sl.occupant).0 <= 0.0 {
