@@ -885,6 +885,15 @@ existence. The crate that WAS a web build is gone (operator, 2026-08-08:
 1,635-line C-ABI bridge and the 1,266-line `ci/client_smoke.mjs` that drove
 it are deleted, and what that gate actually asserted is
 `crates/client-core/tests/wire.rs`.
+**And a fresh box is missing an eighth**, added 2026-09-05 with the asset
+triage and paid for on 2026-09-08: `ci/measure_glb.py` and
+`ci/flatten_charts.py` need **numpy and Pillow**. They are the good kind of
+red — both exit nonzero and print `SKIP: PIL is not installed, the albedo
+cases did not run` rather than passing on three cases that never ran — so the
+symptom is `GATE FAIL: asset triage` on a clean tree with the reason one line
+above it. `pip install Pillow`. Read the line above the failure, not the
+failure.
+
 All of them are the same class — a wall that cannot run is not a wall, so
 install them rather than trimming the feature.
 
