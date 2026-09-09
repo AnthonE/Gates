@@ -68,14 +68,25 @@ Three measurements off our own tree, all seed-independent (§7):
    64 m² is 156 stems/ha. A closed canopy (40 % cover) needs ~225 stems/ha at
    our own crown radii. **No weight anyone can write reaches a closed forest
    on this grid** — it is short by 1.44×, before the overstatement above.
-3. **Our forest floor is emptier than our meadow.** `ScatterTable::
-   alpha_default` gives Forest a bush weight of **50‰ against Meadow's 70‰**
-   (`terrain.rs:2745`). Devblog 67's entire forest change was the opposite
-   move — *"Made forests appear thicker by adding more bushes."*
+3. **Our forest floor is emptier than our meadow, and it could not be fixed
+   where it lived.** `ScatterTable::alpha_default` gives Forest a bush weight
+   of **50‰ against Meadow's 70‰** (`terrain.rs:2745`). Devblog 67's entire
+   forest change was the opposite move — *"Made forests appear thicker by
+   adding more bushes."*
 
-Point 3 is the cheapest thing on this page: it is a two-number edit, and §8's
-gate 3 goes **red on the tree as it stands today**, which makes it a finding
-rather than a proposal.
+⚠ **Point 3 was written here as "the cheapest thing on this page, a two-number
+edit". That was wrong, and the correction is the most useful line in the
+file.** Raising the weight was tried on 2026-09-09 and
+`tests/scatter.rs::test_no_biome_row_saturates` refused it: a biome row is
+capped at `1000 / max(clump)` = **370‰**, the Forest row already spends 350,
+and its fixed costs (tree 260, stone 12, rock 28) leave the bush **70.4‰ —
+exactly the Meadow's weight**. So on the scatter grid the forest's understory
+can at best TIE the open field's, and only by spending the row to its rail.
+**The grid is full**, which is §1.2's ceiling arriving a second time and much
+sharper: it is not only that a closed canopy is unreachable, it is that there
+is no room for a second layer at all. The understory went to the clutter
+population instead (§9.1), where the element count is fixed and a new kind
+costs nothing.
 
 ---
 
@@ -354,9 +365,16 @@ stays green while the forest stops existing. This is the same defect shape as
 silent about the structure.
 
 **Gate 3 — the understory is denser inside the forest than outside it.**
-Assert forest shrub-layer occupancy > meadow's. One line, and it is **red on
-the tree today** (50‰ vs 70‰, §1). Devblog 67 is the whole argument for
-which direction it should point.
+✅ **Built 2026-09-09, and not where this line first said to put it.** Written
+as "assert forest shrub-layer occupancy > meadow's, one line", it turned out
+to be unsatisfiable on the scatter grid at any weight (§1.3's correction), so
+the gate moved onto the clutter layer along with the layer itself:
+`sim-core/tests/forest.rs::the_forest_understory_is_thicker_than_the_meadows`
+measures `Clutter::Brush` per hectare and reads **~3,100 in forest against
+34–132 in meadow**. A second gate beside it
+(`the_brush_is_a_split_of_the_litter_channel_and_nothing_else`) pins the
+implementation against the declared share and proves the split does not leak
+into the other three channels.
 
 **Gate 4 — the edge exists.** Assert that cells within N m of a
 forest/meadow boundary carry a different occupant mix from forest-core cells.
@@ -400,21 +418,35 @@ claims to hold.
 
 ## 9 · What it means for us
 
-### 9.1 · The ceiling is the whole story, and it now has a number
+### 9.1 · The ceiling is the whole story — and the layer that answers it is not on the grid
 
 `PLANTS.md` §3.2 said the ceiling was the open half and listed three ways to
 raise it. §1.2 prices it: **a closed canopy is unreachable on the 8 m grid at
-any weight**, short by 1.44× before the crown-radius overstatement. So the
-choice is not "should we raise the ceiling" but which of `PLANTS.md`'s three
-options to buy, and its own costs still stand — a second occupant per cell
-breaks `gather::cell_key` (wire, save, client mirror), and halving
-`CELL_SIZE` quadruples the live `SlotLives` rows against `TERRAIN.md` §6.
+any weight**, short by 1.44× before the crown-radius overstatement. §1.3
+prices the second half: **the row is full too**, with 20.4‰ of slack and an
+understory needing about twice that. So the choice is not "should we raise the
+ceiling" but which of `PLANTS.md`'s three options to buy, and its own costs
+still stand — a second occupant per cell breaks `gather::cell_key` (wire,
+save, client mirror), and halving `CELL_SIZE` quadruples the live `SlotLives`
+rows against `TERRAIN.md` §6.
 
-**Nothing in this doc changes those costs, and this doc does not pick.** What
-it adds is that "leave it" — option 3 — is now a decision with a stated
-consequence rather than a shrug: it means our Forest biome stays parkland,
-and the word forest stays aspirational. That belongs to the operator, in
-`DECISIONS.md` §open, before anyone touches a weight.
+**What the 2026-09-09 slice found is that one of the two missing layers never
+needed that grid at all.** The scatter grid is for things the sim knows about
+— harvestable, collidable, saved, on the wire. An understory is scenery, and
+the clutter population is already the right shape for it: a **fixed**
+`CLUTTER_PER_TILE` draw at 721 elements per 256 m² (~28,000 per hectare of
+budget against the scatter grid's 156 ceiling), no `cell_key`, no `SlotLives`,
+no wire byte, no save. `Clutter::Brush` is therefore free in the only sense
+that matters — it does not add an element, it changes what a share of the
+forest-litter channel *is* — and it moved **neither golden**, so it cost no
+wipe.
+
+**The canopy half is untouched and still belongs to the operator.** Stems are
+6,000 triangles each and the grid caps them at 156/ha; that is the expensive
+half, it needs §8 gate 7's count cap before it can move at all (§5 step 4),
+and "leave it" remains a decision with a stated consequence rather than a
+shrug: our Forest biome stays parkland at ~39 stems/ha and under 7 % canopy
+cover. That belongs in `DECISIONS.md` §open before anyone touches a weight.
 
 ### 9.2 · The edge is the cheapest structural win and it is a sim-core slice
 
@@ -461,10 +493,15 @@ it.
 
 ### 9.6 · Ranked, and what is not owed
 
-1. **Gate 3** — one line, red today, no design question attached.
-2. **Gates 1 and 2** — the two numbers that would have caught this whole doc.
+1. ~~**Gate 3**~~ and ~~**gates 1 and 2**~~ — **built 2026-09-09**
+   (`sim-core/tests/forest.rs`), along with the understory itself as
+   `Clutter::Brush` and its mesh gate (`client/tests/brush.rs`). What that
+   slice learned is §1.3: the grid could not carry the layer.
+2. **Someone has to look at it.** 120‰ of the litter channel at 0.75 m is
+   arithmetic that passes; whether it reads as an understory is a person
+   booting the game, which `CLAUDE.md` makes the visual gate on purpose.
 3. **Species into `Slot`** (§9.3) — unblocks gate 6 and the `Alt` mechanic.
-4. **The edge** (§9.2) — the cheapest structural win, with gate 4.
+4. **The edge** (§9.2) — the cheapest structural win left, with gate 4.
 5. **Gate 7 and the LOD cap** — required *before* any density rise (§5.4).
 6. **The `CELL_SIZE` decision** (§9.1) — operator's, and not a code task.
 

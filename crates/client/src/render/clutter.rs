@@ -38,6 +38,27 @@ pub const CLUTTER_FILLS_PER_FRAME: usize = 1;
 /// inside `ART.md` §1's measured 20–40 cm band.
 pub const TUFT_H: f32 = 0.34;
 
+/// A brush clump's height at scale 1, metres. **(knob)**
+///
+/// **The understory band, and the number is chosen against what already
+/// exists rather than picked.** Before `Clutter::Brush` the tallest thing this
+/// population grew was a 0.34 m tuft and the tallest thing on the forest floor
+/// at all was the scatter bush at ~7.9 per hectare, so `reference/PLANTS.md`
+/// §2's 0.5–2 m shrub layer was empty in both systems. 0.75 m is the bottom of
+/// that band: high enough to break a sightline along the ground and to read as
+/// a second storey over the turf, low enough that it never reads as a tree and
+/// never hides a player standing up.
+///
+/// It draws through [`card`] and therefore through the **same masked material
+/// and the same grass atlas as a tuft** — which is why this is honestly called
+/// brush and not a shrub. `card` scales width with height (`half_w` is
+/// `hj * CARD_ASPECT * 0.5`), so a taller card is a proportionally wider one
+/// and no leaf on the atlas is stretched — the distortion `BUSH_CARD_HALF`
+/// exists to refuse, avoided here for free. A leafy shrub wants the bush atlas
+/// and a third material per tile; that is a separate slice, and this one buys
+/// the layer's HEIGHT without it.
+pub const BRUSH_H: f32 = 0.75;
+
 /// A standing litter stalk's height at scale 1, metres.
 ///
 /// **Why the litter channel stands up at all.** `sim-core`'s own density law
@@ -534,7 +555,7 @@ fn litter(s: &mut Soup, at: Vec3, yaw: f32, scale: f32, seed: u32) {
 /// cutout means a card rendered as an opaque grey quad, and for an opaque
 /// solid means an alpha test against a texture it has no UVs for.
 pub fn masked(kind: Clutter) -> bool {
-    matches!(kind, Clutter::Tuft)
+    matches!(kind, Clutter::Tuft | Clutter::Brush)
 }
 
 pub fn element_mesh(e: &ClutterElem) -> Mesh {
@@ -562,6 +583,10 @@ fn element(s: &mut Soup, e: &ClutterElem) {
             seed,
         ),
         Clutter::Twig => litter(s, at, yaw, e.scale, seed),
+        // The same builder as the tuft at more than twice the height — see
+        // `BRUSH_H` for why that is the whole of the change, and why this arm
+        // must stay beside `Tuft` in `masked` rather than being remembered to.
+        Clutter::Brush => card(s, at, yaw, seed, BRUSH_H * e.scale),
         Clutter::Shard => chip(
             s,
             at,

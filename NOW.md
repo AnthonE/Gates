@@ -755,31 +755,32 @@ highland blend is a ridged multifractal). Four things it did not do.
    designed cliffs. `tests/contour.rs` gates the mechanism instead.
 
 
-## 0fst · The forest is parkland, and every gate is blind to it *(sim lane)*
+## 0fst · The forest, after understory v0 *(sim + client lane)*
 
-`reference/FORESTS.md` (2026-09-09) is how the reference game seeds one, read
-against ours. Its §8 proposes seven gates; **none exist**, because every
-scatter gate we have is island-wide and a total is blind to per-biome
-structure. Four things, in cost order.
+`reference/FORESTS.md` §8 asked for seven gates; **three are built and so is
+the understory** (`DECISIONS.md` §open, forest structure v0 — `tests/forest.rs`,
+`client/tests/brush.rs`, every band mutant-proven).
 
-1. **The understory is inverted, and this is the two-number one.** Forest
-   bush weight is 50‰ against Meadow's 70‰ (`terrain.rs:2745`) — our forest
-   floor is thinner than our meadow's. Their Devblog 67 forest pass was the
-   opposite move. §8's gate 3 is one assert and is **red today**, so the
-   weight is a spoken call first (`DECISIONS.md` §open), then the gate.
-2. **~7 % canopy cover, and the cell caps it, not the table.** Measured on
-   three seeds: 38.6–39.2 stems/ha in all-forest windows, ≤7.0 % cover using
-   the radius *ceilings* as crowns. One occupant per 64 m² is 156 stems/ha;
-   a closed canopy needs ~225. **No weight reaches a forest on this grid.**
-   Raising it is `PLANTS.md` §3.2's three priced options — operator's call.
-3. **Species is not a sim fact**, so it cannot be gated or made spatial.
-   Both rings pick it as `slot.yaw % pool` (`props.rs:2037`, `props.rs:1977`).
-   Moving the draw into `Slot` off the same cell hash costs one field, keeps
-   the client mirroring free, and unlocks their `Alt`-style painted stands.
-4. **The LOD budget is a print, not a cap.** Ours switches on distance alone
-   at 80 m (`tree.rs:870`), so a clump inside it has no ceiling — and
-   clumping works (dispersion ~3.0). Theirs caps mesh-trees by *count* and
-   bills the rest to billboards. Gate 7 lands before any density rise.
+1. **Nobody has looked at it.** `Clutter::Brush` puts ~3,100 clumps/ha of
+   0.75 m brush on the forest floor (that band was empty in both populations)
+   and every check on it is arithmetic. Whether it reads as understory or as
+   tall grass is a person booting the game; 120‰ and 0.75 m are what a frame
+   would settle. `§LOOK`.
+2. **The scatter grid is full — the finding.** The forest's bush ceiling is
+   **70.4‰**, exactly the meadow's weight, so it cannot carry an understory
+   at any weight without taking the canopy down to pay. The canopy is still
+   parkland — **~39 stems/ha, under 7 % cover** against the 10 % that makes
+   the word true — and raising it needs `PLANTS.md` §3.2 *and* item 5 first.
+3. **Species is not a sim fact**, so it cannot be gated or made spatial —
+   both rings pick it as `slot.yaw % pool` (`props.rs:2037`, `props.rs:1977`).
+   Into `Slot` off the same cell hash: one field, client mirrors it free,
+   unlocks their `Alt`-style painted stands (§8 gate 6).
+4. **No forest EDGE exists** (§8 gate 4). Theirs is a separate mask with its
+   own plant list — `Forestside`, "small trees and bushes" — and it is what
+   makes a treeline read as a treeline instead of a density gradient.
+5. **The LOD budget is a print, not a cap** — distance alone at 80 m
+   (`tree.rs:870`), so a clump inside it has no ceiling. Theirs caps
+   mesh-trees by *count*. Gate 7 lands before any density rise.
 
 
 ## Sim, content and gameplay verbs *(systems lane)*
