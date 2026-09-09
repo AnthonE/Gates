@@ -106,6 +106,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwayland-dev libasound2-dev libudev-dev
+      # Same as `gates.yml` and `nightly.yml`: `ci/measure_glb.py` imports numpy
+      # at module scope and `ci/flatten_charts.py` wants Pillow, and both say
+      # SKIP and exit nonzero without one rather than pass on cases that never
+      # ran. Absent here from the asset triage gate's landing (5209b4c) until
+      # 2026-09-09 — and this is the workflow where it would have cost the
+      # most, because the gates here are what a TAG re-earns: the next release
+      # cut would have died at `GATE FAIL: asset triage` on a green tree.
+      - name: numpy and Pillow, for the asset triage self-tests
+        run: pip3 install numpy pillow
       - name: the gates
         run: ./ci/gates.sh
 
