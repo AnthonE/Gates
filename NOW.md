@@ -755,6 +755,33 @@ highland blend is a ridged multifractal). Four things it did not do.
    designed cliffs. `tests/contour.rs` gates the mechanism instead.
 
 
+## 0fst · The forest is parkland, and every gate is blind to it *(sim lane)*
+
+`reference/FORESTS.md` (2026-09-09) is how the reference game seeds one, read
+against ours. Its §8 proposes seven gates; **none exist**, because every
+scatter gate we have is island-wide and a total is blind to per-biome
+structure. Four things, in cost order.
+
+1. **The understory is inverted, and this is the two-number one.** Forest
+   bush weight is 50‰ against Meadow's 70‰ (`terrain.rs:2745`) — our forest
+   floor is thinner than our meadow's. Their Devblog 67 forest pass was the
+   opposite move. §8's gate 3 is one assert and is **red today**, so the
+   weight is a spoken call first (`DECISIONS.md` §open), then the gate.
+2. **~7 % canopy cover, and the cell caps it, not the table.** Measured on
+   three seeds: 38.6–39.2 stems/ha in all-forest windows, ≤7.0 % cover using
+   the radius *ceilings* as crowns. One occupant per 64 m² is 156 stems/ha;
+   a closed canopy needs ~225. **No weight reaches a forest on this grid.**
+   Raising it is `PLANTS.md` §3.2's three priced options — operator's call.
+3. **Species is not a sim fact**, so it cannot be gated or made spatial.
+   Both rings pick it as `slot.yaw % pool` (`props.rs:2037`, `props.rs:1977`).
+   Moving the draw into `Slot` off the same cell hash costs one field, keeps
+   the client mirroring free, and unlocks their `Alt`-style painted stands.
+4. **The LOD budget is a print, not a cap.** Ours switches on distance alone
+   at 80 m (`tree.rs:870`), so a clump inside it has no ceiling — and
+   clumping works (dispersion ~3.0). Theirs caps mesh-trees by *count* and
+   bills the rest to billboards. Gate 7 lands before any density rise.
+
+
 ## Sim, content and gameplay verbs *(systems lane)*
 
 
