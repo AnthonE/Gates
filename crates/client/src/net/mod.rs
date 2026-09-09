@@ -30,6 +30,11 @@
 //! is the one async act, and it deliberately stays a free function in
 //! `lib.rs` rather than a trait method.
 
+/// The join handshake with the transport taken out of it — pure, and
+/// compiled on every target because a web `connect` drives the same three
+/// functions rather than copying them.
+pub mod handshake;
+
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native;
 

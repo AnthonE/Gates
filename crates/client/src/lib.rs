@@ -87,10 +87,12 @@ use client_core::core::{ClientCore, Ingest};
 // would be a breaking change for a refactor that is meant to be invisible.
 pub use net::SendError;
 use net::{datagram_lane, drain_datagram, drain_lane, DatagramRx, Wire};
-use protocol::{
-    decode_refuse, decode_welcome, encode_hello, peek_kind, Hello, Welcome, KIND_REFUSE,
-    KIND_WELCOME, MAX_EVENT_MSG_BYTES, MAX_STREAM_MSG_BYTES, PROTO_VER,
-};
+// **Eight names left this list when the handshake moved to `net::handshake`**
+// — every decoder and every message kind. What stays is the two frame-size
+// bounds, which belong to the framing this file still owns, and `Welcome`,
+// which is a field on `Session`. That the import list shrank to exactly the
+// I/O half is the evidence the extraction was complete rather than partial.
+use protocol::{Welcome, MAX_EVENT_MSG_BYTES, MAX_STREAM_MSG_BYTES};
 use sim_core::limits::{ACTION_RING_CAP, DATAGRAM_BUDGET_BYTES};
 use wtransport::config::IpBindConfig;
 use wtransport::endpoint::endpoint_side::Client;
@@ -359,91 +361,26 @@ impl Session {
             .map_err(|e| format!("open_bi: {e}"))?;
         let (mut send, mut recv) = opening.await.map_err(|e| format!("open_bi await: {e}"))?;
 
+        // **The handshake's rules are in `net::handshake` and its SEQUENCE is
+        // here**, which is the split that lets a browser share the first
+        // without inheriting wtransport with it. Six lines below touch the
+        // transport; everything they carry is pure and testable with no
+        // socket (`net::handshake`'s header has the measurement).
         let mut msg = [0u8; MAX_STREAM_MSG_BYTES];
-        let len = encode_hello(
-            &Hello {
-                proto_ver: PROTO_VER,
-                ver: protocol::version::VER,
-                build: protocol::version::BUILD,
-            },
-            &mut msg,
-        )
-        .map_err(|e| format!("encode hello: {e:?}"))?;
+        let len = net::handshake::hello(&mut msg)?;
         write_frame(&mut send, &msg[..len]).await?;
 
         // The challenge: a nonce this shard chose for this connection.
         let (reply, reply_len) = read_frame::<MAX_STREAM_MSG_BYTES>(&mut recv)
             .await
             .ok_or_else(|| "no challenge".to_string())?;
-        let reply = &reply[..reply_len];
-        match peek_kind(reply) {
-            Ok(protocol::KIND_CHALLENGE) => {}
-            Ok(KIND_REFUSE) => {
-                let r = decode_refuse(reply).map_err(|e| format!("refuse: {e:?}"))?;
-                return Err(match protocol::refuse_text(r.code) {
-                    Some(why) => format!("refused: {why}"),
-                    None => format!("refused: code {}", r.code),
-                });
-            }
-            other => return Err(format!("expected a challenge, got {other:?}")),
-        }
-        let challenge =
-            protocol::decode_challenge(reply).map_err(|e| format!("challenge: {e:?}"))?;
-
-        // **The domain is the host we dialled, never anything the server
-        // said.** That is the whole of SIWE's domain binding: a signature
-        // collected by one shard is not valid at another because the two
-        // messages differ, and letting the server name itself would hand
-        // that away.
-        let domain = server.rsplit_once(':').map(|(h, _)| h).unwrap_or(server);
-        let auth = if address.is_guest() {
-            protocol::Auth::default()
-        } else {
-            // **This process no longer composes the message, and that is the
-            // fix.** It used to build the SIWE text here and hand it to the
-            // launcher's `sign`, which refused every one: `sign` classifies a
-            // message by its first line (`elo <family>`) and EIP-4361 begins
-            // with a domain. The refusal became `None`, `None` means "connect
-            // as a guest", and a `require_auth` shard answered REFUSE_AUTH —
-            // so every login failed as if the signature were wrong, when the
-            // message was one the launcher would never sign.
-            //
-            // `prove` is the verb: the LAUNCHER writes every word, which is
-            // what stops a game smuggling a sentence into a signature, and it
-            // needs no consent prompt for the same reason. We hand over three
-            // inert values and the shard rebuilds the text from the ones it
-            // already knows (`protocol::siwe_message`).
-            let mut hex = [0u8; protocol::NONCE_BYTES * 2];
-            for (i, b) in challenge.nonce.iter().enumerate() {
-                const H: &[u8; 16] = b"0123456789abcdef";
-                hex[i * 2] = H[(b >> 4) as usize];
-                hex[i * 2 + 1] = H[(b & 0xf) as usize];
-            }
-            let nonce = core::str::from_utf8(&hex).map_err(|_| "nonce hex".to_string())?;
-            match sign(domain, nonce, challenge.issued_at) {
-                Some(signature) => protocol::Auth { address, signature },
-                None => protocol::Auth::default(),
-            }
-        };
-        let len =
-            protocol::encode_auth(&auth, &mut msg).map_err(|e| format!("encode auth: {e:?}"))?;
+        let len = net::handshake::auth_for(&reply[..reply_len], server, address, sign, &mut msg)?;
         write_frame(&mut send, &msg[..len]).await?;
 
         let (reply, reply_len) = read_frame::<MAX_STREAM_MSG_BYTES>(&mut recv)
             .await
             .ok_or_else(|| "no handshake reply".to_string())?;
-        let reply = &reply[..reply_len];
-        let welcome = match peek_kind(reply) {
-            Ok(KIND_WELCOME) => decode_welcome(reply).map_err(|e| format!("welcome: {e:?}"))?,
-            Ok(KIND_REFUSE) => {
-                let r = decode_refuse(reply).map_err(|e| format!("refuse: {e:?}"))?;
-                return Err(match protocol::refuse_text(r.code) {
-                    Some(why) => format!("refused: {why}"),
-                    None => format!("refused: code {}", r.code),
-                });
-            }
-            other => return Err(format!("unexpected handshake reply: {other:?}")),
-        };
+        let welcome = net::handshake::welcome_from(&reply[..reply_len])?;
 
         // The event lane reads on its own task. NOT in the select! below:
         // a cancelled read drops a half-read frame and desyncs the stream
