@@ -84,19 +84,37 @@ adds is the **HTTP/3 session layer**: an extended-CONNECT handshake
 published row, and a per-datagram session-id prefix against the 1 100-byte
 budget.
 
-**That layer now has no user, and it is not free.** The one remotely
-triggerable panic this project has ever pinned around lives *in* it — two
-bytes on the CONNECT stream (#317) — which is why we are on a git rev of an
-unreleased third party rather than a published crate, and §2.2's own ⚠ says
-nothing records or gates that the pin contains the fix. The self-signed cert
-rules we enforce (P-256, 14-day validity) are WebTransport-spec rules written
-for browsers.
+⚠ **This paragraph used to argue for deleting that layer, and its premise
+is now false.** It read *"that layer now has no user, and it is not free"* —
+true only while there was no browser client. **A browser cannot open a raw
+QUIC connection**: WebTransport over HTTP/3 is the only path a page has, so
+the HTTP/3 layer is precisely the thing that makes a web build possible.
+The operator chose the web build on 2026-09-09 (`DECISIONS.md`), `NOW.md`
+§0wt is **struck**, and the layer stays. The corrected reading of the same
+facts:
 
-**Not changed here, because it is a flag-day, not a refactor.** The handshake
-is the thing that would change, so there is no version to negotiate — an old
-client would simply fail to connect, and two platform depots plus a public
-shard are live. `NOW.md` §0wt carries it, with the window: bundle it with the
-next `min_client` floor raise, which is already a flag-day.
+- **The cert rules are load-bearing, not vestigial.** P-256 and 14-day
+  validity on the self-signed path are WebTransport **spec** rules written
+  for browsers, and a browser is now a client we intend to serve. The same
+  goes for the `https://{addr}` URL shape `elo-shardlist-v1` publishes and
+  the per-datagram session-id prefix against the 1 100-byte budget — costs
+  with a purpose rather than costs with no user.
+- **The `wtransport` pin is permanent, and that promotes a debt.** The one
+  remotely triggerable panic this project has ever pinned around lives *in*
+  this layer — two bytes on the CONNECT stream (#317) — which is why we are
+  on a git rev of an unreleased third party rather than a published crate.
+  §2.2's own ⚠ says nothing records or gates that `rev = a11e6a8e…`
+  descends from that fix. That was tolerable while the plan was to drop the
+  layer; it is not tolerable now that the plan is to keep it forever, so it
+  is a standing debt rather than a deferred tidy-up.
+
+**What was right and stays right:** `wtransport` is quinn, we enable its
+`quinn` feature in both crates, and `QuicTransportConfig` / `IpBindConfig`
+in `net.rs` are quinn's own types — the QUIC underneath is ordinary QUIC and
+we already reach past the wrapper for it. Dropping the wrapper *would* have
+been a flag-day rather than a refactor (the handshake changes, so nothing
+negotiates and an old client simply fails). None of that is in question; what
+changed is that we no longer want to.
 
 ### 2.1 · The "real UDP" fine print — congestion control, measured
 
