@@ -2733,6 +2733,35 @@ a public shard are live, and `elo-shardlist-v1` publishes the url shape.
 with the next touch of the wtransport pin. Wants the operator's word on
 timing — publishing and floor raises are operator acts.
 
+⚠ **Its premise is now in question — do not execute this before §0web is
+spoken.** A browser cannot open a raw QUIC connection; WebTransport over
+HTTP/3 is the only path a page has. So "that layer now has no user"
+(`NETCODE.md` §2.2) is true only while there is no web client, and executing
+this **permanently forecloses one**. The two are mutually exclusive and both
+are flag-days. `findings/web-build-20260909.md` §6.
+
+
+## 0web · A web build is asked about — the assessment is written, the call is not
+
+Operator, 2026-09-09: *"people dont wanna download gates."*
+**`findings/web-build-20260909.md`** is the measured assessment. Unspoken —
+research, not a queue, and it collides with §0wt (above), which must be
+settled first.
+
+The three findings that change the shape of the question:
+- **The server needs no change.** We already speak literal WebTransport
+  (`lib.rs:468/474/588` map 1:1 onto the browser API) and already serve
+  browser-shaped certs (`server/src/net.rs:365`).
+- **`client-core` builds to wasm clean today**, measured — `cargo build -p
+  client-core --release --target wasm32-unknown-unknown`, 12.59 s, no edits.
+  With `sim-core` and `protocol` already gated on that target, the whole
+  game-logic half is portable and proven.
+- **The download does not get smaller** (`du -sh assets/` → 92M). It gets
+  *ceremonyless*. Anyone selling it as a size win is wrong by week one.
+
+Cheapest thing that pays either way: a `Transport` trait behind `Session`'s
+four public methods — no wire change, no behaviour change (§7 step 1).
+
 
 ## 0wd · A new world register is proposed — blocked on the operator's word
 
