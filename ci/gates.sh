@@ -190,17 +190,27 @@ $NICE cargo clippy -p client --features render --all-targets -- -D warnings \
 $NICE cargo test -p client --features render \
   || fail "native client suites"
 
-# **The only wasm in this repo, and it is not a client** (operator,
-# 2026-08-08: "we use desktop build no more web"). `sim-core` and the
-# `protocol` it needs are built for a second, deliberately hostile target so
-# the gate below can diff their state hashes against native byte for byte —
-# CLAUDE.md wall 1's enforcement, which is worth exactly as much with no
-# browser in existence as it was with one. `client-core` used to be built
-# here too, for its C-ABI bridge; both are gone.
-echo "== gate: wasm build (sim-core + protocol -> wasm32-unknown-unknown, the determinism target)"
+# **Wall 1's enforcement, and since 2026-09-09 also the web build's floor.**
+# `sim-core` and the `protocol` it needs are built for a second, deliberately
+# hostile target so the gate below can diff their state hashes against native
+# byte for byte — worth exactly as much with no browser in existence as with
+# one, which is why it long outlived the browser client that first needed it.
+#
+# **`client-core` is back on this line** (operator, 2026-09-09: a browser
+# client is being built; `findings/web-build-20260909.md`). It was dropped
+# when its C-ABI bridge was deleted, and on 2026-09-09 it was measured
+# wasm-clean by hand again — 12.59 s, no edits. A hand measurement is not a
+# wall: nothing stopped the next path dependency from putting a socket, a
+# clock or a thread into the one crate that holds prediction, and the whole
+# web build rests on it staying portable. Now something does.
+#
+# Costs ~2.7 s for all three (measured 2026-09-09) and cannot move the parity
+# digests below: none of the three declares a `[features]` section, so there
+# is no feature for cargo to unify and `sim_core.wasm`'s bytes are unchanged.
+echo "== gate: wasm build (sim-core + protocol + client-core -> wasm32-unknown-unknown)"
 rustup target list --installed | grep -q '^wasm32-unknown-unknown$' \
   || fail "wasm32-unknown-unknown target not installed"
-$NICE cargo build -p sim-core -p protocol --release --target wasm32-unknown-unknown \
+$NICE cargo build -p sim-core -p protocol -p client-core --release --target wasm32-unknown-unknown \
   || fail "wasm build"
 
 echo "== gate: test_parity_wasm (native vs wasm, byte-equal digests)"

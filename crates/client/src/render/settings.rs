@@ -1074,7 +1074,7 @@ pub fn apply_window(settings: Res<Settings>, mut window: Query<&mut Window, With
 /// A resource rather than a `Local` so a test can read it and so the reset on
 /// a settings change has somewhere to live.
 #[derive(Resource, Default)]
-pub struct FrameDeadline(pub Option<std::time::Instant>);
+pub struct FrameDeadline(pub Option<bevy::platform::time::Instant>);
 
 /// Hold the render loop to `Settings::max_fps`.
 ///
@@ -1103,7 +1103,8 @@ pub struct FrameDeadline(pub Option<std::time::Instant>);
 /// Runs in `Last` because a cap has to be the final thing a frame does; put
 /// it earlier and it sleeps *before* the render it is supposed to be pacing.
 pub fn limit_frames(settings: Res<Settings>, mut deadline: ResMut<FrameDeadline>) {
-    use std::time::{Duration, Instant};
+    use bevy::platform::time::Instant;
+    use core::time::Duration;
     if settings.max_fps == 0 {
         // Uncapped: drop the deadline so re-enabling the cap starts from now
         // rather than from a stale instant, which would otherwise spend one
@@ -1114,6 +1115,15 @@ pub fn limit_frames(settings: Res<Settings>, mut deadline: ResMut<FrameDeadline>
     let frame = Duration::from_nanos(1_000_000_000 / settings.max_fps as u64);
     let now = Instant::now();
     let target = deadline.0.unwrap_or(now);
+    // **The sleep is native-only, and its absence on web is not a gap.**
+    // A browser paces the frame itself — the render loop is
+    // `requestAnimationFrame`, which fires at the display's rate and cannot
+    // be outrun — so there is no core to give back and nothing to cap. The
+    // deadline arithmetic below still runs on both, because it is what keeps
+    // `FrameDeadline` honest if a player moves the slider; only the blocking
+    // call is conditional. Blocking a browser's main thread is also the one
+    // thing a page must never do, so this is a refusal rather than a stub.
+    #[cfg(not(target_arch = "wasm32"))]
     if now < target {
         std::thread::sleep(target - now);
     }

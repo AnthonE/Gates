@@ -430,7 +430,27 @@ ruzstd = { version = "0.8", optional = true }
 sim-core = { path = "../sim-core" }
 protocol = { path = "../protocol" }
 client-core = { path = "../client-core" }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-util"] }
+# **`sync` is declared because we USE it, and it was arriving by accident.**
+# `tokio::sync::mpsc` is 25 sites across `lib.rs`, `render/boot.rs`,
+# `render/hub.rs` and `render/menu.rs` — the thread-to-frame handback for
+# every connect, and the three `Session` lane channels. It compiled anyway
+# because `sync` is a standalone tokio feature (`sync = []`) that none of the
+# four we asked for implies (`rt-multi-thread = ["rt"]`), so some crate deeper
+# in the graph was turning it on for us and our own namespace worked by that
+# crate's choice rather than ours.
+#
+# That is a latent manifest bug independent of any browser: a dependency
+# re-cutting its features moves a namespace we call directly, and the error
+# lands as `could not find sync in tokio` in OUR files, which reads as a code
+# problem. It matters more now — the wasm build drops wtransport, and quinn
+# is the likeliest current provider (`findings/web-build-20260909.md` §10.2).
+#
+# ⚠ The other three are the ones the web build must NOT keep, and they fail
+# two different ways: `rt-multi-thread` is a hard `compile_error!` on
+# `target_family = "wasm"` (tokio-1.53.1/src/lib.rs:467-479), while `time`
+# compiles clean and PANICS at runtime on a target with no timer. A future
+# edit adding `time` back to a wasm feature set is green and dies in play.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-util", "sync"] }
 # Same pin as the server, and for the same reason (CLAUDE.md traps,
 # NETCODE.md §2.2): crates.io tops out at 0.7.1, which has the two-byte
 # remote panic. The client speaks the identical transport the browser does,
