@@ -9,8 +9,8 @@
 use sim_core::terrain::{
     self, Clutter, ClutterElem, Haven, Occupant, ScatterTable, CELL_SIZE, CLUTTER_BASE_PER_TILE,
     CLUTTER_CELLS_PER_SIDE, CLUTTER_CELLS_PER_TILE, CLUTTER_CELL_M, CLUTTER_NONE, CLUTTER_PER_TILE,
-    CLUTTER_RICH_PER_TILE, CLUTTER_TILE_M, LAND_MIN_H, OCCUPANT_R_M, SKIRT_BAND_M, SKIRT_MAX,
-    SKIRT_MIN, SKIRT_MIN_R_M, SKIRT_PER_TILE, SKIRT_SCAN_CELLS, SKIRT_TILE_CELLS,
+    CLUTTER_RICH_PER_TILE, CLUTTER_SLOTS, CLUTTER_TILE_M, LAND_MIN_H, OCCUPANT_R_M, SKIRT_BAND_M,
+    SKIRT_MAX, SKIRT_MIN, SKIRT_MIN_R_M, SKIRT_PER_TILE, SKIRT_SCAN_CELLS, SKIRT_TILE_CELLS,
 };
 
 /// Is clutter CELL (cx, cz) inside any live site's carve blend?
@@ -554,7 +554,14 @@ fn test_each_kind_stands_on_its_own_splat_channel() {
                 if e.kind == Clutter::None {
                     continue;
                 }
-                let k = e.kind as usize - 1;
+                // The CHANNEL it was drawn from, not `kind as usize - 1`:
+                // `Clutter::Brush` is a sub-draw of channel 2 rather than a
+                // channel of its own, so the subtraction that held for every
+                // kind up to `Shard` is wrong for exactly one variant and
+                // would index off the end of `sums`. Brush and Twig share
+                // channel 2's row here, which is what this test means by "its
+                // own splat channel" — the ground identity, not the mesh.
+                let k = terrain::clutter_channel(e.kind);
                 let w = terrain::splat(seed, e.x, e.z);
                 for (c, acc) in sums[k].iter_mut().enumerate() {
                     *acc += w[c] as f64;
@@ -1182,8 +1189,8 @@ fn skirt_mix(
     table: &ScatterTable,
     haven: &Haven,
     tiles: &[(i32, i32)],
-) -> ([usize; 5], usize) {
-    let mut by_kind = [0usize; 5];
+) -> ([usize; CLUTTER_SLOTS], usize) {
+    let mut by_kind = [0usize; CLUTTER_SLOTS];
     let mut total = 0usize;
     for &(tx, tz) in tiles {
         let mut buf = [CLUTTER_NONE; SKIRT_PER_TILE];
