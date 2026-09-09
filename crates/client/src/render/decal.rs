@@ -121,6 +121,45 @@ pub const SIZE_M: f32 = 0.22;
 /// nothing beyond it.
 pub const DEPTH_FADE_M: f32 = 0.35;
 
+/// How far a placed mark is lifted off the surface along its own normal,
+/// metres. **Zero, and the zero is the point.**
+///
+/// This was `DEPTH_FADE_M * 0.5` from the first decal in the tree until
+/// 2026-09-09, on a comment claiming the quad had to "sit inside the
+/// projection volume". **A `ForwardDecal` has no projection volume.** Read
+/// `bevy_pbr-0.18.1/src/decal/forward_decal.wgsl`: there is no bounds
+/// discard anywhere in it, and the blend is
+///
+/// ```wgsl
+/// let alpha = saturate(1.0 - (normal_depth * inv_depth_fade_factor));
+/// ```
+///
+/// — maximal at **zero** separation and gone at [`DEPTH_FADE_M`]. So the
+/// lift was not admission to a volume, it was a flat ×0.5 on the alpha of
+/// every mark in the game, permanently, and it was invisible to every gate
+/// here because no gate in this repo reads a texel of a frame.
+///
+/// It cost a second thing that is worse, because it depends on where you
+/// stand. The same shader shifts the sample by
+/// `delta_uv = normal_depth * Vt.xy / view_steepness` — a parallax term
+/// proportional to `tan θ` of the view against the normal — so a lifted
+/// quad walks its own scuff sideways as the camera swings off-axis, and
+/// past a modest angle the mark leaves the quad it is drawn on entirely.
+/// At the old lift that displacement passes [`SIZE_M`] / 2 well inside the
+/// angles a standing player looks at nearby ground from.
+///
+/// Nothing is bought by a lift, either: `ForwardDecalMaterialExt::
+/// specialize` sets `depth_compare = CompareFunction::Always`
+/// (`forward.rs:128`), so a decal **cannot** z-fight with the surface it
+/// lies on, which is the only thing an offset is usually for.
+///
+/// Kept as a named constant rather than deleted so the gate has something
+/// to read and a re-introduced offset reddens
+/// `tests/decal.rs::a_mark_sits_on_its_surface_so_bevys_fade_gives_it_full_alpha`
+/// instead of quietly dimming the game again. Documented default, not a
+/// spoken knob (`CLAUDE.md` §loop discipline).
+pub const MARK_LIFT_M: f32 = 0.0;
+
 /// Frames the prewarm mark is left visible at startup.
 ///
 /// **This exists because of a live trap with nothing else watching it.**
@@ -348,13 +387,36 @@ fn scuff_texture() -> Image {
 /// rather than a guess (`ranged::SURF_*`). Dark rather than black —
 /// `ART.md` rule 3 forbids a crushed shadow, and a mark is a surface like
 /// any other: it is lit by the same sky the thing under it is.
-fn tint(surf: u8) -> Color {
+/// `pub` for `tests/decal.rs`'s contrast gate and for nothing else — the
+/// same reason `terrain::clutter_rich_draw` is (`CLAUDE.md`: rebuild the law
+/// from published parts, never by calling the thing under test).
+pub fn tint(surf: u8) -> Color {
     match surf {
         // Turned earth: darker and warmer than the litter around it.
         SURF_GROUND => Color::srgb(0.19, 0.14, 0.10),
         // Exposed heartwood under bark — lighter than the trunk, which is
         // what makes a hit on a tree read at all.
-        SURF_WORLD => Color::srgb(0.42, 0.31, 0.19),
+        //
+        // ⚠ **It was 0.42/0.31/0.19 until 2026-09-09, and that is DARKER
+        // than the trunk**, so the comment above described an intention the
+        // value contradicted. Linear luma 0.089 against `bark`'s measured
+        // 0.107 (`assets/textures/MANIFEST.md`'s prop-bind table, which
+        // `tests/manifest_measured.rs` pins to the shipped pixels) — a
+        // ratio of 1.20, i.e. no contrast at all, on a photograph whose own
+        // sd is 0.068. The mark was inside the bark's noise.
+        //
+        // The comment was not wrong when it was written; it was written
+        // against `tree.rs`'s `BARK_LO`/`BARK_HI` vertex constants, and the
+        // trunk stopped being shaded by those when it got a photograph and
+        // `band(.., mean1 = true)` normalised them to a unit-luminance hue
+        // field carrying no brightness of its own.
+        //
+        // The replacement is derived rather than picked: `SURF_BUILT`
+        // already stands 2.13× off `twig` (0.0785 against 0.167, and every
+        // piece enters the world as twig), so `SURF_WORLD` is set to the
+        // same ratio against bark — linear luma 0.233, 2.17×. A number
+        // taken from a sibling that works is not an invented one.
+        SURF_WORLD => Color::srgb(0.62, 0.50, 0.34),
         // Splintered timber: the same wood, greyer for the cut face.
         SURF_BUILT => Color::srgb(0.36, 0.30, 0.24),
         // Unreachable — the decoder refuses a fourth kind — but a mark is
@@ -622,10 +684,11 @@ pub fn mark(
             step: -1,
             warm: 0,
         };
-        // Lifted off the surface along its own normal by a fraction of the
-        // decal's reach, so the quad sits inside the projection volume
-        // rather than exactly on the plane it is projecting onto.
-        let pos = at + n * (DEPTH_FADE_M * 0.5);
+        // On the surface. `MARK_LIFT_M`'s doc has the whole argument: the
+        // shader's alpha peaks at zero separation and `depth_compare` is
+        // `Always`, so there is nothing an offset buys and half the mark's
+        // alpha to lose by taking one.
+        let pos = at + n * MARK_LIFT_M;
         place(&mut q, &mut materials, &pool, ix, pos, n, surf, 1.0);
     }
 }

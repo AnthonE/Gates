@@ -981,8 +981,19 @@ a `±Y` normal instead of a wall's. Item 1 was behind it and is now free.
    fires up instead; the two answers are 1.4 m apart and `surf` cannot tell
    them apart, so the assertion is on y. Proven red under that mutant.
 
-⚠ **Nobody has seen a decal**: no `ForwardDecal` renders under lavapipe at
-any size, alpha or orientation. One boot on a real GPU settles it.
+✅ **The boot happened and it was not lavapipe** (decal contrast v0,
+2026-09-09). The operator chopped a tree on a real GPU and saw no mark, which
+retires this line's guess: `ForwardDecal` renders fine, and TWO arithmetic
+defects made every mark in the game hard-to-impossible to see since 2026-08-16.
+`MARK_LIFT_M` was `DEPTH_FADE_M * 0.5`, on a comment claiming the quad had to
+sit inside a projection volume that `forward_decal.wgsl` does not have — the
+shader's alpha is *maximal at zero separation*, so the lift was a flat ×0.5 plus
+a `tan θ` parallax that walks the scuff off its own quad. And `tint(SURF_WORLD)`
+was DARKER than bark (0.089 against a measured 0.107) while its comment said
+lighter, so a tree mark sat inside the bark photograph's own noise.
+`tests/decal.rs` gates both in arithmetic. **Still unlooked-at**: whether the
+new tint reads as heartwood, and whether the other two surfaces improved
+visibly now they draw at full alpha (`§LOOK`).
 
 
 ## 0wc · What world containers v0 still owes *(systems lane)*
@@ -2356,11 +2367,13 @@ Two of these are not taste, they are unresolved defects:
   the mark, the hp readout and the collapse arriving together. It shares
   the decal blocker directly below: if no decal draws, an arrow chipping a
   wall is a wall silently losing hp.
-- **No `ForwardDecal` renders under lavapipe at any size, alpha or
-  orientation** (§0mk). The sim's half is confirmed to the centimetre; the
-  frame shows no mark. That is a claim about this box — the client logs
-  *"Too many textures in mesh pipeline view layout"* on boot — and one boot on
-  real hardware settles whether every decal in the tree works or none does.
+- ✅ **Settled 2026-09-09, and the guess was wrong** (§0mk). The operator
+  chopped a tree on a real GPU and saw no mark. It was never lavapipe and never
+  the texture-layout line: `MARK_LIFT_M` dimmed every decal in the game to half
+  alpha and slid it off its own quad at angle, and the `SURF_WORLD` tint was
+  darker than the bark it landed on while claiming to be lighter. Both fixed and
+  gated arithmetically. **What is now owed is a second look** — does a chopped
+  trunk show heartwood, and do ground and wall marks read at full alpha?
 - **The sea's tangent `w` is `-1` and the ground's is `+1`** for the identical
   planar XZ parameterisation (§0pf item 4). One of them flips the ripple map's
   green channel. Look, do not guess.

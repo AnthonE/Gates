@@ -51,6 +51,17 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwayland-dev libasound2-dev libudev-dev
+      # Same reason as `gates.yml`, and it was missing here from the day the
+      # asset triage gate landed (5209b4c) until 2026-09-09: `ci/measure_glb.py`
+      # imports numpy at module scope and `ci/flatten_charts.py` wants Pillow,
+      # so `gates first` died in two seconds on `ModuleNotFoundError: No module
+      # named 'numpy'` — three nightlies in a row, each of them SKIPPING the
+      # release-server build and upload below it. The gate was behaving
+      # correctly (a suite that cannot run says so and exits nonzero rather
+      # than passing on cases that never ran); the drift was that one workflow
+      # installed the decoder and the other did not.
+      - name: numpy and Pillow, for the asset triage self-tests
+        run: pip3 install numpy pillow
       - name: gates first
         run: ./ci/gates.sh
       - name: build server (release)
