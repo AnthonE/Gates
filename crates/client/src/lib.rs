@@ -69,12 +69,24 @@ pub mod sound;
 // in the renderer tier where nobody looks at it (`ui/mod.rs`).
 pub mod ui;
 
+// The transport seam (`findings/web-build-20260909.md` §10.3). Unconditional
+// for `ui`'s reason exactly: what a connected session asks of a transport is
+// one synchronous call, the lane plumbing under it is pure, and both are the
+// half a browser build has to re-express — so they belong where every target
+// compiles them rather than inside the native session below.
+pub mod net;
+
 // The render path. Feature-gated because Bevy is several hundred crates and
 // the code tier must not pay for it (`crates/client/Cargo.toml`).
 #[cfg(feature = "render")]
 pub mod render;
 
 use client_core::core::{ClientCore, Ingest};
+// Moved to `net` on 2026-09-09, re-exported rather than relocated in the
+// public API: `SendError` is what `send_action` returns and renaming its path
+// would be a breaking change for a refactor that is meant to be invisible.
+pub use net::SendError;
+use net::{datagram_lane, drain_datagram, drain_lane, DatagramRx, Wire};
 use protocol::{
     decode_refuse, decode_welcome, encode_hello, peek_kind, Hello, Welcome, KIND_REFUSE,
     KIND_WELCOME, MAX_EVENT_MSG_BYTES, MAX_STREAM_MSG_BYTES, PROTO_VER,
@@ -82,7 +94,7 @@ use protocol::{
 use sim_core::limits::{ACTION_RING_CAP, DATAGRAM_BUDGET_BYTES};
 use wtransport::config::IpBindConfig;
 use wtransport::endpoint::endpoint_side::Client;
-use wtransport::{ClientConfig, Connection, Endpoint, RecvStream, SendStream};
+use wtransport::{ClientConfig, Endpoint, RecvStream, SendStream};
 
 /// Stream framing: `u16` LE length prefix per message. Byte-identical to
 /// `server::net::{read_frame, write_frame}` and to `web/src/net.js`, and
@@ -235,24 +247,6 @@ pub fn client_endpoint(server: &str, cert_hash: Option<&str>) -> Result<Endpoint
     }
 }
 
-/// Why an action could not be queued. Both arms are states a panel draws
-/// rather than errors it swallows: a full lane means the sim is behind and
-/// the move has NOT been sent, and a closed one means the session is over.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SendError {
-    Full,
-    Closed,
-}
-
-impl std::fmt::Display for SendError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SendError::Full => write!(f, "the server is behind - try again"),
-            SendError::Closed => write!(f, "disconnected"),
-        }
-    }
-}
-
 /// What the session hands a renderer each frame. Deliberately small: the
 /// renderer reads the core, it does not own it.
 pub struct Frame {
@@ -288,7 +282,11 @@ pub struct Session {
     /// drained two messages would keep only the second one's word.
     pub applied2: u32,
     pub welcome: Welcome,
-    connection: std::sync::Arc<Connection>,
+    /// The transport's send half — the ONE thing in a connected session that
+    /// a browser cannot share (`net`'s header has the measurement). A
+    /// cfg-selected concrete type, so this struct names no transport and
+    /// needs no cfg of its own.
+    wire: net::ActiveWire,
     /// The C→S half of the bidi stream, held for the life of the session by
     /// a writer task rather than by this struct.
     ///
@@ -323,122 +321,6 @@ pub struct Session {
     /// purpose: a connection does not come back, and a flag that cleared
     /// itself would let one hopeful frame un-say it.
     closed: bool,
-}
-
-/// Drain one lane without blocking, handing each message to `each`; answer
-/// whether the lane's sender has hung up.
-///
-/// **The buffered last words land before the hangup is reported** — tokio's
-/// mpsc yields everything queued ahead of the drop before it answers
-/// `Disconnected`, and the test below pins that, because the whole disconnect
-/// path leans on it: the facts the server sent in its final flush (a kick's
-/// toast, the last snapshot) must reach the core before the client declares
-/// the session over, or the reason for the hangup is the first thing lost.
-fn drain_lane(rx: &mut tokio::sync::mpsc::Receiver<Vec<u8>>, mut each: impl FnMut(&[u8])) -> bool {
-    use tokio::sync::mpsc::error::TryRecvError;
-    loop {
-        match rx.try_recv() {
-            Ok(bytes) => each(&bytes),
-            Err(TryRecvError::Empty) => return false,
-            Err(TryRecvError::Disconnected) => return true,
-        }
-    }
-}
-
-/// The shared handle to the datagram ring — see [`datagram_lane`].
-type DatagramRx = std::sync::Arc<std::sync::Mutex<DgRing>>;
-
-/// The datagram ring's storage: `CLIENT_DG_RING` reusable buffers, oldest
-/// first from `head`. Payload `Vec`s are cleared and refilled in place, so
-/// after warm-up neither side of the lane allocates.
-struct DgRing {
-    bufs: [Vec<u8>; sim_core::limits::CLIENT_DG_RING],
-    head: usize,
-    len: usize,
-    /// Snapshots overwritten before a frame drained them — wall 4's
-    /// stated policy (drop-oldest), counted rather than silent.
-    dropped: u64,
-    closed: bool,
-}
-
-impl DgRing {
-    fn push(&mut self, bytes: &[u8]) {
-        let cap = sim_core::limits::CLIENT_DG_RING;
-        if self.len == cap {
-            self.head = (self.head + 1) % cap;
-            self.len -= 1;
-            self.dropped += 1;
-        }
-        let at = (self.head + self.len) % cap;
-        self.bufs[at].clear();
-        self.bufs[at].extend_from_slice(bytes);
-        self.len += 1;
-    }
-}
-
-/// The datagram lane: **a bounded ring, drained whole every frame**
-/// (netcode v2 S2; `limits::CLIENT_DG_RING`, drop-oldest, counted).
-///
-/// This was a depth-one latest-wins `watch`, and that shape was honest
-/// about exactly one consumer: the OWN body, whose snapshot genuinely
-/// replaces its predecessor. Every OTHER body is reconstructed by the
-/// interpolator from the samples in between, so each collapsed pair was a
-/// hole in someone's motion — at ≤ 30 fps against 30 Hz snapshots, half
-/// the stream never reached `client-core` at all — and S5's arrival-jitter
-/// estimator cannot measure a network through a slot that conflates
-/// arrival with the render loop. Delivery is in arrival order; dropping
-/// the OLDEST under a stall keeps the freshest world, which is the half of
-/// latest-wins that was worth keeping.
-///
-/// **Why dropping old snapshots remains safe** (the watch's argument,
-/// re-checked): the server deltas only against an ACKED snapshot
-/// (`server::client::baseline` takes `newest_acked`), removed ids ride
-/// every snapshot until acked, and `nudge`/`last_executed_seq`/the v60
-/// gauges are levels in every header, not edges. Nothing on this lane is
-/// exactly-once.
-fn datagram_lane() -> DatagramRx {
-    std::sync::Arc::new(std::sync::Mutex::new(DgRing {
-        bufs: std::array::from_fn(|_| Vec::with_capacity(DATAGRAM_BUDGET_BYTES)),
-        head: 0,
-        len: 0,
-        dropped: 0,
-        closed: false,
-    }))
-}
-
-/// Hand over every pending datagram, oldest first, and answer whether the
-/// lane is finished — closed AND empty, so the last snapshots land in (or
-/// before) the same drain that reports the hangup, the property
-/// `the_last_words_land_before_the_hangup_is_reported` pins on the
-/// reliable lane. A poisoned lock reads as gone: the reader task panicking
-/// mid-push is a dead lane, not a recoverable state.
-///
-/// **The payloads are swapped out, not copied, and processed after the
-/// lock drops.** `each` here is `ClientCore::on_datagram` — a whole
-/// snapshot decode — and holding the ring's mutex across it would block
-/// the reader task for the span (the watch this replaced documented the
-/// same rule for its read guard). The swap trades `Vec` pointers with the
-/// session-owned `scratch`, so the frame path allocates nothing after
-/// warm-up: the ring refills the swapped-in buffers in place.
-fn drain_datagram(rx: &DatagramRx, scratch: &mut [Vec<u8>], mut each: impl FnMut(&[u8])) -> bool {
-    let cap = sim_core::limits::CLIENT_DG_RING;
-    let (n, gone) = {
-        let Ok(mut r) = rx.lock() else {
-            return true;
-        };
-        let n = r.len.min(scratch.len());
-        for (k, s) in scratch.iter_mut().enumerate().take(n) {
-            let i = (r.head + k) % cap;
-            std::mem::swap(&mut r.bufs[i], s);
-        }
-        r.head = (r.head + n) % cap;
-        r.len -= n;
-        (n, r.closed && r.len == 0)
-    };
-    for b in scratch.iter().take(n) {
-        each(b);
-    }
-    gone
 }
 
 impl Session {
@@ -619,7 +501,7 @@ impl Session {
             applied: 0,
             applied2: 0,
             welcome,
-            connection,
+            wire: net::native::NativeWire::new(connection),
             actions: act_tx,
             events,
             datagrams,
@@ -706,9 +588,10 @@ impl Session {
 
         let len = self.core.poll_input(&mut self.input_buf);
         if len > 0 {
-            // send_datagram, never send_datagram_wait (CLAUDE.md traps): a
-            // congestion stall must cost freshness, not latency.
-            let _ = self.connection.send_datagram(&self.input_buf[..len]);
+            // The drop-oldest rule and the reason for it moved with the call
+            // (`net::native`); what stays here is that this is the only line
+            // in a frame that touches the transport at all.
+            self.wire.send_datagram(&self.input_buf[..len]);
         }
 
         Frame {
@@ -720,7 +603,8 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
-    use super::{drain_datagram, drain_lane, is_loopback_host};
+    use super::is_loopback_host;
+    use crate::net::{drain_datagram, drain_lane};
 
     /// **Which addresses get the carve-out, exhaustively enough to be
     /// evidence.** `tls_posture.rs` proves the two postures over a real
