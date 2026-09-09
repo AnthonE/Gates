@@ -2724,27 +2724,54 @@ on the command line is the workaround; joining from the Servers window works.
    not taken.
 
 
-## 0wt · Dropping the HTTP/3 layer needs an operator-chosen flag-day *(server lane)*
+## 0wt · Dropping the HTTP/3 layer — **STRUCK**, do not pick this up
 
-We are not missing real QUIC — `wtransport` is quinn and `net.rs` already
-uses `QuicTransportConfig` / `IpBindConfig`. What is vestigial is the HTTP/3
-session layer on top: extended-CONNECT, the `https://{addr}` URL shape, a
-session-id prefix on every datagram against the 1 100-byte budget.
+Operator, 2026-09-09: a browser client is being built, and **a browser cannot
+open a raw QUIC connection** — WebTransport over HTTP/3 is the only path a
+page has. This item proposed deleting exactly that layer, so executing it
+would foreclose the web build permanently. `DECISIONS.md` 2026-09-09 has the
+call and the three consequences; `NETCODE.md` §2.2 is corrected.
 
-The case is not speed. Our one remote-panic trap lives in that layer (#317),
-which is why we depend on a git rev of an unreleased crate — and
-`NETCODE.md` §2.2's ⚠ still says nothing records or gates that
-`rev = a11e6a8e…` descends from the fix. Removing the layer retires the pin,
-the trap and the browser-shaped cert rules in one move.
+Kept as a stub rather than deleted because the argument was good and will be
+re-derived by somebody who has not read the decision. One thing it was right
+about survives as a debt, now permanent rather than deferred: **nothing
+records or gates that `rev = a11e6a8e…` contains the #317 fix**, and the pin
+is forever now. That is §0web's to carry.
 
-The seam is thin (client `connect`, server `accept`, `tls_posture.rs`,
-`botclient.rs`, `Shard::url`); **the cost is the flag-day** — the handshake
-changes, so nothing negotiates and an old client just fails. Two depots and
-a public shard are live, and `elo-shardlist-v1` publishes the url shape.
 
-**Not its own pass.** Bundle it with the next `min_client` floor raise, or
-with the next touch of the wtransport pin. Wants the operator's word on
-timing — publishing and floor raises are operator acts.
+## 0web · The browser client — **spoken, in progress** *(client lane)*
+
+Operator, 2026-09-09: *"i want to start building it."* `DECISIONS.md` has the
+call, **`findings/web-build-20260909.md`** the measured assessment. §0wt is
+struck (above) — the HTTP/3 layer is what makes this possible.
+
+Three findings that shape it, each re-runnable:
+- **The server needs no change.** `client/src/lib.rs:468/474/588` already map
+  1:1 onto `new WebTransport` / `createBidirectionalStream` /
+  `datagrams.readable`; `server/src/net.rs:365` already serves browser-shaped
+  certs. The whole cost is client-side.
+- **`client-core` builds to wasm clean** — `cargo build -p client-core
+  --release --target wasm32-unknown-unknown`, 12.59 s, no edits — and
+  `sim-core`/`protocol` are gated on that target every pass. The game-logic
+  half is portable and proven.
+- **The download does not shrink** (`du -sh assets/` → 92M). It loses the
+  *ceremony*: no installer, no launcher, no depot, no trust prompt.
+
+Order (§7 of the note): (1) a `Transport` trait behind `Session`'s four
+public methods — no wire change, no behaviour change; (2) tokio/wtransport/
+ureq behind a `native` cargo feature until `cargo build -p client --target
+wasm32-unknown-unknown --no-default-features` reaches our code; (3) a
+wasi-sdk sysroot for `basis-universal`, which does **not** build for wasm
+today (measured: `'stdlib.h' file not found`); (4) the `web-sys` transport;
+(5) Bevy on WebGL2/WebGPU — the largest unknown, nothing has run it.
+
+Carried from struck §0wt: nothing gates that `wtransport rev = a11e6a8e…`
+contains the #317 fix, and that pin is permanent now.
+
+Not decided: where the page is served, so whether it gets COOP/COEP and
+threads (§4.1 — without them a chunk's 5.153 ms lands on the frame), and how
+a web player authenticates (§5). Ships guest-playable or waits on a platform
+act that is not this repo's.
 
 
 ## 0wd · A new world register is proposed — blocked on the operator's word
