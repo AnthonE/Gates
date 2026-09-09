@@ -755,6 +755,34 @@ highland blend is a ridged multifractal). Four things it did not do.
    designed cliffs. `tests/contour.rs` gates the mechanism instead.
 
 
+## 0fst · The forest, after understory v0 *(sim + client lane)*
+
+`reference/FORESTS.md` §8 asked for seven gates; **three are built and so is
+the understory** (`DECISIONS.md` §open, forest structure v0 — `tests/forest.rs`,
+`client/tests/brush.rs`, every band mutant-proven).
+
+1. **Nobody has looked at it.** `Clutter::Brush` puts ~3,100 clumps/ha of
+   0.75 m brush on the forest floor (that band was empty in both populations)
+   and every check on it is arithmetic. Whether it reads as understory or as
+   tall grass is a person booting the game; 120‰ and 0.75 m are what a frame
+   would settle. `§LOOK`.
+2. **The scatter grid is full — the finding.** The forest's bush ceiling is
+   **70.4‰**, exactly the meadow's weight, so it cannot carry an understory
+   at any weight without taking the canopy down to pay. The canopy is still
+   parkland — **~39 stems/ha, under 7 % cover** against the 10 % that makes
+   the word true — and raising it needs `PLANTS.md` §3.2 *and* item 5 first.
+3. **Species is not a sim fact**, so it cannot be gated or made spatial —
+   both rings pick it as `slot.yaw % pool` (`props.rs:2037`, `props.rs:1977`).
+   Into `Slot` off the same cell hash: one field, client mirrors it free,
+   unlocks their `Alt`-style painted stands (§8 gate 6).
+4. **No forest EDGE exists** (§8 gate 4). Theirs is a separate mask with its
+   own plant list — `Forestside`, "small trees and bushes" — and it is what
+   makes a treeline read as a treeline instead of a density gradient.
+5. **The LOD budget is a print, not a cap** — distance alone at 80 m
+   (`tree.rs:870`), so a clump inside it has no ceiling. Theirs caps
+   mesh-trees by *count*. Gate 7 lands before any density rise.
+
+
 ## Sim, content and gameplay verbs *(systems lane)*
 
 

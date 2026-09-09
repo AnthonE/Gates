@@ -2750,6 +2750,20 @@ impl ScatterTable {
                 // Meadow: buildable, sparse trees.
                 [70, 15, 0, 0, 70, 25, 0],
                 // Forest: wood, cover.
+                //
+                // ⚠ **The bush weight cannot carry the understory, and the
+                // number that says so is 70.4.** A forest floor thicker than
+                // the open meadow's is the reference's own forest pass
+                // (Devblog 67) and this row read 50 against Meadow's 70 —
+                // inverted. Raising it was tried on 2026-09-09 and is not
+                // possible here: `tests/scatter.rs::test_no_biome_row_saturates`
+                // caps a row at `1000 / max(clump)` = 370‰, this row's fixed
+                // costs (tree 260, stone 12, rock 28) spend 300, and the 70.4‰
+                // left is exactly the Meadow's bush weight. So the forest can
+                // at best TIE the field here, and only by spending the row to
+                // its rail. The understory went to `Clutter::Brush` instead,
+                // which is a fixed-count population with no such ceiling.
+                // `reference/FORESTS.md` §9.1.
                 [260, 12, 0, 0, 50, 28, 0],
                 // Highland: the ore, the exposure.
                 [20, 70, 60, 45, 10, 80, 0],
@@ -3337,8 +3351,15 @@ pub fn scatter_row(table: &ScatterTable, h: f32, moist: f32, sl: f32) -> [u16; O
     row
 }
 
-/// What one clutter cell grew. Index order is the splat's channel order, so
-/// `kind as usize - 1` indexes the weight that produced it.
+/// What one clutter cell grew.
+///
+/// ⚠ **`kind as usize - 1` is NO LONGER the splat channel** — it was, for
+/// every variant up to `Shard`, and two files indexed the weights that way.
+/// [`Brush`](Clutter::Brush) is the first kind that is a *sub-draw* of a
+/// channel rather than a channel, so the map is [`clutter_channel`] and the
+/// arithmetic identity is retired. It is retired rather than preserved
+/// because preserving it would mean giving brush a channel of its own, and
+/// the splat has exactly four.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum Clutter {
@@ -3351,7 +3372,73 @@ pub enum Clutter {
     Twig = 3,
     /// Rock channel: angular scree off the cliff mask.
     Shard = 4,
+    /// Forest-litter channel, standing: the **understory**, and the only
+    /// clutter kind that is a sub-draw of a channel rather than one.
+    ///
+    /// **Why this is not a `ScatterTable` row.** The obvious place for a
+    /// shrub layer is the scatter grid beside the bush, and the grid cannot
+    /// hold one — measured, not assumed. `tests/scatter.rs`'s
+    /// `test_no_biome_row_saturates` caps a biome row at `1000 / max(clump)`
+    /// = **370‰**, the Forest row already spends 350 of it, and its fixed
+    /// costs (tree, stone, rock) leave the bush **70.4‰** — which is exactly
+    /// the Meadow's bush weight. So on the scatter grid the forest cannot be
+    /// given a thicker understory than the open field at any weight, without
+    /// taking the canopy down to pay for it (`reference/FORESTS.md` §1.2,
+    /// §9.1). The clutter population has no such ceiling: it is a fixed
+    /// `CLUTTER_PER_TILE` draw, so this kind costs no extra element — it
+    /// changes what a share of the litter channel *is*.
+    ///
+    /// Height is the point. The tallest thing this population grew was
+    /// `TUFT_H` at 0.34 m and the standing litter stalk is 0.19, so the
+    /// 0.5–2 m shrub band `reference/PLANTS.md` §2 counts as missing was
+    /// missing from *both* systems — the scatter bush at ~7.9 per hectare was
+    /// the only thing in it. This is the layer that makes a treeline opaque
+    /// and moving through woods feel different from crossing a meadow, which
+    /// for a survival game is a gameplay property and not a visual one.
+    Brush = 5,
 }
+
+/// Buckets an array indexed by `Clutter as usize` needs — the largest
+/// discriminant plus one, not the variant count.
+///
+/// Named here for the reason `tests/scatter.rs`'s `OCCUPANT_SLOTS` is derived
+/// rather than typed: `examples/terrain_stats.rs` once carried a literal
+/// `[0u32; 10]` through the commit that added `HavenShelter = 10` and panicked
+/// on the first haven cell of every seed. `Brush = 5` did the same thing to
+/// `tests/clutter.rs`'s `[0usize; 5]`, which is what this constant now stands
+/// in front of.
+pub const CLUTTER_SLOTS: usize = Clutter::Brush as usize + 1;
+
+/// The splat channel a clutter kind was drawn from.
+///
+/// **One place, because the identity it replaces was arithmetic and is now a
+/// map.** Until [`Clutter::Brush`] every kind satisfied `kind as usize - 1 ==
+/// channel`, and `tests/clutter.rs` and `client/tests/cover.rs` both leaned on
+/// it. Brush comes out of channel 2's own share, so the subtraction is wrong
+/// for exactly one variant — the shape `CLAUDE.md`'s positional-payload trap
+/// warns about, where a wrong index compiles, runs, and is checked by nothing.
+/// `None` has no channel and answers `usize::MAX` rather than panicking, so a
+/// caller that forgets to filter it indexes out of bounds loudly instead of
+/// reading channel 0.
+pub fn clutter_channel(kind: Clutter) -> usize {
+    match kind {
+        Clutter::Pebble => 0,
+        Clutter::Tuft => 1,
+        Clutter::Twig | Clutter::Brush => 2,
+        Clutter::Shard => 3,
+        Clutter::None => usize::MAX,
+    }
+}
+
+/// Share of the forest-litter channel that stands up as [`Clutter::Brush`]
+/// rather than lying down as [`Clutter::Twig`], per mille. **(knob)**
+///
+/// Spent out of channel 2's own interval rather than drawn again, so this
+/// costs **no new entropy**: `clutter_cell`'s hash is fully committed (its own
+/// comment names bits 0..7 as "this draw's one unspent slice"), and a second
+/// hash for a sub-kind would be a per-element cost on the densest population
+/// in the game.
+pub const BRUSH_SHARE_PERMILLE: u32 = 120;
 
 /// One resolved clutter element. Deliberately the same shape as `Slot` minus
 /// the things clutter does not have (an occupant identity the sim knows, a
@@ -3472,12 +3559,28 @@ pub fn kind_from_splat(w: [u8; 4], roll_bits: u64) -> Clutter {
     let mut acc = 0u32;
     let mut k = Clutter::Shard;
     for (i, v) in w.iter().enumerate() {
+        let lo = acc;
         acc += *v as u32;
         if roll < acc {
             k = match i {
                 0 => Clutter::Pebble,
                 1 => Clutter::Tuft,
-                2 => Clutter::Twig,
+                // The forest floor's own share, split in place: the bottom
+                // `BRUSH_SHARE_PERMILLE` of channel 2's interval stands up.
+                // **Sub-dividing the interval rather than rolling again** is
+                // what makes the understory free — `roll` is already uniform
+                // over `[lo, acc)`, so its position inside the channel is
+                // uniform too, and the caller's hash has no spare bits to
+                // spend (`clutter_cell`). Both products stay well inside u32:
+                // a channel weight is a byte, so the worst case is
+                // 255 × 1000.
+                2 => {
+                    if (roll - lo) * 1_000 < *v as u32 * BRUSH_SHARE_PERMILLE {
+                        Clutter::Brush
+                    } else {
+                        Clutter::Twig
+                    }
+                }
                 _ => Clutter::Shard,
             };
             break;
