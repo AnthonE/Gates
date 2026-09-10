@@ -1,0 +1,143 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Gates — web client (transport probe)</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 24px; background: #14120f; color: #d8d2c6;
+         font: 14px/1.55 "Roboto Condensed", system-ui, sans-serif; }
+  main { max-width: 46rem; margin: 0 auto; }
+  h1 { font-size: 1.4rem; margin: 0 0 .25rem; letter-spacing: .02em; }
+  p.sub { margin: 0 0 1.5rem; color: #8d8577; }
+  label { display: block; margin: .6rem 0 .2rem; color: #8d8577; font-size: .85rem; }
+  input { width: 100%; box-sizing: border-box; padding: .5rem .6rem; background: #1e1b17;
+          border: 1px solid #3a352c; border-radius: 3px; color: inherit; font: inherit; }
+  button { margin-top: 1rem; padding: .55rem 1.4rem; background: #6b5a3e; color: #f2ede3;
+           border: 0; border-radius: 3px; font: inherit; cursor: pointer; }
+  button:disabled { opacity: .45; cursor: default; }
+  #log { margin-top: 1.5rem; padding: .9rem 1rem; background: #100e0c; border: 1px solid #2a251f;
+         border-radius: 3px; white-space: pre-wrap; min-height: 7rem;
+         font-family: ui-monospace, monospace; font-size: 12.5px; }
+  .bad { color: #d98b6a; }
+  .good { color: #9db87a; }
+  footer { margin-top: 1.6rem; color: #6d665b; font-size: 12px; }
+</style>
+<main>
+  <h1>Gates — web client</h1>
+  <p class="sub">The transport probe. It joins a shard over WebTransport, drives the real
+     client core, and sends real input. There is no renderer yet — click the readout to
+     capture the mouse, then use <b>WASD</b>; the eye position is the proof that input
+     reached the shard and prediction came back.</p>
+
+  <label for="server">Shard (host:port)</label>
+  <input id="server" value="127.0.0.1:4433" spellcheck="false">
+
+  <label for="hash">Certificate SHA-256 — required for a self-signed dev shard, which prints it at boot</label>
+  <input id="hash" placeholder="aa:bb:cc:… (leave empty for a public shard with a real chain)" spellcheck="false">
+
+  <label for="id">Identity (optional, 0x… — joins as a guest either way until a browser wallet exists)</label>
+  <input id="id" placeholder="0x…" spellcheck="false">
+
+  <button id="go">Join</button>
+  <div id="log">idle.</div>
+
+  <footer>
+    A browser cannot skip certificate validation, so there is no loopback carve-out here —
+    that is the one place this client is stricter than the desktop one.
+  </footer>
+</main>
+
+<script type="module">
+import init, { Gates } from "./client_web.js";
+
+const log = document.getElementById("log");
+const go = document.getElementById("go");
+const say = (text, cls) => { log.textContent = text; log.className = cls ?? ""; };
+
+// WebTransport is the only path a page has to a QUIC shard, and it is not
+// everywhere yet. Say so before the button is pressed rather than after.
+if (!("WebTransport" in window)) {
+  say("This browser has no WebTransport. Gates speaks QUIC and a page has no other way to reach it.", "bad");
+  go.disabled = true;
+}
+
+await init();
+
+go.addEventListener("click", async () => {
+  go.disabled = true;
+  const server = document.getElementById("server").value.trim();
+  const hash = document.getElementById("hash").value.trim() || undefined;
+  const id = document.getElementById("id").value.trim() || undefined;
+  say(`connecting to ${server}…`);
+
+  let g;
+  try {
+    g = await Gates.join(server, hash, id);
+  } catch (e) {
+    // The message is already right for a browser — `client::refusal_sentence`
+    // overrides the shared wording wherever it names something a page cannot
+    // do — so this displays it rather than deciding anything from it.
+    //
+    // The page used to read `String(e).includes("auth")` here, against a
+    // sentence containing no "auth", and told a player in a tab to open the
+    // elo launcher. `e.code` is the shard's own REFUSE_* number when a shard
+    // answered at all; branch on that if this ever needs to branch.
+    // `crates/client/tests/refusals.rs` fails if this file matches on text.
+    say(e.message ?? String(e), "bad");
+    go.disabled = false;
+    return;
+  }
+
+  say(`in the world — player ${g.player_id}, seed ${g.seed}`, "good");
+
+  // ── input ────────────────────────────────────────────────────────────────
+  // Keys and mouse pixels only. Which way is right is arithmetic and it lives
+  // in Rust (`client::look::control`) — this page deliberately derives nothing,
+  // because that arithmetic shipped inverted on two clients at once and a
+  // third copy in JavaScript would be the third chance.
+  const keys = new Set();
+  let dx = 0, dy = 0;
+  addEventListener("keydown", (e) => { if (!e.repeat) keys.add(e.code); });
+  addEventListener("keyup", (e) => keys.delete(e.code));
+  addEventListener("blur", () => keys.clear());   // a lost window is keys up
+  log.style.cursor = "pointer";
+  log.title = "click to capture the mouse (Esc releases it)";
+  log.addEventListener("click", () => log.requestPointerLock());
+  addEventListener("mousemove", (e) => {
+    if (document.pointerLockElement === log) { dx += e.movementX; dy += e.movementY; }
+  });
+
+  // The page owns the frame loop; `pump` is synchronous and never awaits, which
+  // is what lets it be called from here at all.
+  let last = performance.now();
+  const frame = (now) => {
+    // Input first: the core takes the LEVEL and `pump`'s `advance` is what
+    // mints a frame from it, so a frame pumped before its input was set sends
+    // the previous one.
+    g.input(dx, dy, keys.has("KeyW"), keys.has("KeyS"),
+            keys.has("KeyA"), keys.has("KeyD"), 0, 0, false);
+    dx = 0; dy = 0;
+
+    const steps = g.pump(now - last);
+    last = now;
+    if (g.closed) {
+      say("the shard hung up.", "bad");
+      go.disabled = false;
+      return;
+    }
+    // `snapshots` says the S→C lane works; `eye` moving under WASD says the
+    // C→S lane and the predictor do. A page that showed only the first would
+    // look identical with its input lane silently clamped, which is exactly
+    // what this build did before 2026-09-10.
+    const [x, y, z] = g.eye;
+    const [overMtu, backpressured] = g.refused;
+    const held = [...keys].filter((k) => k.startsWith("Key")).map((k) => k.slice(3)).join("");
+    say(`in the world — player ${g.player_id}, seed ${g.seed}\n`
+      + `eye  ${x.toFixed(1)} ${y.toFixed(1)} ${z.toFixed(1)}${held ? "   [" + held + "]" : ""}\n`
+      + `snapshots ${g.snapshots}   ·   sim steps this frame ${steps}\n`
+      + `dropped ${g.dropped}   ·   refused ${overMtu} over-MTU, ${backpressured} backpressured`,
+      "good");
+    requestAnimationFrame(frame);
+  };
+  requestAnimationFrame(frame);
+});
+</script>

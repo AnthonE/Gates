@@ -129,9 +129,36 @@
 //! recompute what it verifies against. `prove` arrived with the 2026-08-09
 //! re-vendor and has no call site here yet.
 
+// **The launcher door is desktop-only, and the fix needs no vendored byte.**
+//
+// `elo_overlay.rs` carries seven `cfg(unix)`/`cfg(windows)` pairs with no
+// third arm (`findings/web-build-20260909.md` §10.4) — a Unix socket on one
+// side, a named pipe on the other, and nothing a page could be. It is
+// vendored byte-for-byte from `AnthonE/scry-forge` and `CLAUDE.md` §vendored
+// forbids patching it here, because a patch applied in this repo fixes Gates
+// and leaves every other game on the broken copy.
+//
+// So the cfg goes on the `mod` declaration instead of in the file. That works
+// for two reasons worth writing down. The re-exported names below have zero
+// call sites outside this module — and, the load-bearing one, the drift pin
+// (`vendored_sdk_has_not_been_edited_here`) reaches the file through
+// `include_bytes!`, which READS it rather than compiling it. So cfg-ing the
+// module out cost that gate nothing: it still runs under `cargo test -p
+// client`, exactly where it ran before, over exactly the same bytes.
+//
+// Precisely, because the tempting sentence here is wrong: the gate is a
+// `#[cfg(test)]` test, so it runs where tests run, which is natively. The
+// claim is not "the pin runs on wasm" — it is that **the pin does not depend
+// on the vendored module being compiled**, so a target that cannot compile it
+// does not quietly lose the check. (`the_launchers_door_has_not_moved_under_us`
+// beside it DOES name `overlay::SOCKET_ENV`, so it would not build under
+// `cargo test --target wasm32` — which nothing does, and which is worth
+// knowing before somebody tries.)
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "elo_overlay.rs"]
 pub mod overlay;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub use overlay::{play_message, Overlay, Proof, SignError, Signature};
 
 /// This game's slug in the elo catalog — the key its manifest, its depot and
@@ -201,12 +228,14 @@ impl Player {
 
 /// The connected launcher, if one answered. Held so a later slice can ask for
 /// a signature; dropped with the game.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct Elo {
     pub player: Player,
     pub servers_url: Option<String>,
     overlay: Option<Overlay>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Elo {
     /// Ask the launcher who is playing. Runs ONCE, before the window opens.
     ///
@@ -501,6 +530,7 @@ mod tests {
 /// r ‖ s ‖ v. A short or long one is refused rather than padded, because a
 /// padded signature recovers a *different* address, and the failure would
 /// present as "the shard says I am somebody else".
+#[cfg(not(target_arch = "wasm32"))]
 pub fn sign_siwe(domain: &str, nonce: &str, issued_at: u64) -> Option<protocol::Signature> {
     let mut elo = Elo::discover(None, env!("CARGO_PKG_VERSION"));
     let proof = elo
@@ -513,7 +543,39 @@ pub fn sign_siwe(domain: &str, nonce: &str, issued_at: u64) -> Option<protocol::
     parse_signature(&proof.signature)
 }
 
+/// The browser's signer: a guest, always — **for now, and deliberately not a
+/// blocker** (`findings/web-build-20260909.md` §5).
+///
+/// Same name and same signature as the desktop function above, so
+/// `Session::connect`'s call site reads identically on both targets and the
+/// day a browser wallet lands it is this body that changes and nothing else.
+///
+/// `None` is the honest answer rather than a stub. The desktop signer reaches
+/// a *local* launcher over a *local* socket, deliberately so that no key is
+/// ever in the game process (`CLAUDE.md` §vendored); a page has no local
+/// launcher, and the routes that could replace it — a browser wallet, an elo
+/// web session — are platform questions upstream of this repo. Meanwhile
+/// `Session::connect` already treats `None` as "join as a guest", which
+/// `lib.rs` documents as what a declined prompt or an absent launcher should
+/// do rather than failing the connection. The absent-launcher case IS the web
+/// case, and it was already handled.
+///
+/// ⚠ **The one thing a caller must get right is the message on refusal.** A
+/// shard with `require_auth` answers `REFUSE_AUTH` to a guest, and per
+/// `CLAUDE.md`'s vendoring trap that lands looking like a bad signature. A web
+/// player who hits a locked shard has to be told *this shard needs an
+/// account* — never "login failed", which would send them looking for a
+/// launcher that cannot exist in their browser.
+#[cfg(target_arch = "wasm32")]
+pub fn sign_siwe(_domain: &str, _nonce: &str, _issued_at: u64) -> Option<protocol::Signature> {
+    None
+}
+
 /// `0x…` hex → 65 bytes. Refuses anything else.
+// Follows `sign_siwe` off wasm because it is that function's second half and
+// has no other caller. The browser wallet slice that gives the web
+// `sign_siwe` a body will want it back, and un-gating it is the same edit.
+#[cfg(any(not(target_arch = "wasm32"), test))]
 pub(crate) fn parse_signature(hex: &str) -> Option<protocol::Signature> {
     let body = hex.strip_prefix("0x").or_else(|| hex.strip_prefix("0X"))?;
     if body.len() != protocol::SIGNATURE_BYTES * 2 {

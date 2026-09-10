@@ -213,6 +213,38 @@ rustup target list --installed | grep -q '^wasm32-unknown-unknown$' \
 $NICE cargo build -p sim-core -p protocol -p client-core --release --target wasm32-unknown-unknown \
   || fail "wasm build"
 
+# **The browser client, and this gate is the reason the configuration will not
+# rot** (2026-09-10; `findings/web-build-20260909.md` §10.5 asked for it by
+# name). `client`'s `native` feature is default-ON, so every other line in this
+# file — every `cargo test --workspace`, every `-p client` clippy — builds the
+# desktop configuration and says nothing whatever about the browser one. Until
+# this line existed there was no `--no-default-features` anywhere in `ci/`, in
+# `.github/workflows/` or in any manifest, which means the wasm build would
+# have been born untested and broken by the second commit that touched a
+# platform call, with every gate green. That is this repo's named worst bug
+# class.
+#
+# `-p client-web` is a superset and one invocation: it forces `client` to
+# resolve with `default-features = false` (its own manifest asks for that, and
+# `client`'s `compile_error!` pair refuses the wrong combination in a
+# sentence), so this compiles the whole browser client — the transport in
+# `client/src/net/web.rs`, the `cfg`'d halves of `elo.rs` and `discord.rs`, and
+# the entry module a page loads.
+#
+# **Clippy, not just a build, and on THIS target specifically.** Everything
+# under `cfg(target_arch = "wasm32")` is invisible to every other lint run in
+# this file — the native clippy above cannot see a single line of the web
+# transport. A warning there would otherwise reach a player before it reached
+# a gate.
+#
+# What it does NOT do is run the thing. That needs a browser, and no gate in
+# this repo starts one; `ci/build_web.sh` is how a person gets a page to open.
+echo "== gate: browser client (client + client-web -> wasm32, --no-default-features)"
+$NICE cargo clippy -p client-web --target wasm32-unknown-unknown --all-targets -- -D warnings \
+  || fail "clippy (browser client)"
+$NICE cargo build -p client-web --release --target wasm32-unknown-unknown \
+  || fail "browser client build"
+
 echo "== gate: test_parity_wasm (native vs wasm, byte-equal digests)"
 command -v node >/dev/null || fail "node missing — parity gate cannot run"
 native_out="$(mktemp)"

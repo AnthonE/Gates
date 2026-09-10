@@ -148,11 +148,40 @@ fn civil_from_days(days: u64) -> (u64, u64, u64) {
 /// 1970. Not in the sim and not on a gate — [`stamp`] names a file with it and
 /// nothing else reads it, so a wrong clock costs a wrong filename and no
 /// determinism (`CLAUDE.md` wall 1 is about `sim-core`, which this is not).
+///
+/// ⚠ **The desktop arm here was a live wasm trap, and this module is compiled
+/// on every target** (`lib.rs` declares it unconditionally — the screenshot
+/// PATH rules are pure and belong to the code tier; `render/shot.rs` is the
+/// Bevy half). `std::time::SystemTime::now()` does not fail on
+/// `wasm32-unknown-unknown`, it **panics** — `RuntimeError: unreachable`, with
+/// no message and no line — and every gate in this repo was green over it,
+/// because the compile gate cannot see a call that compiles.
+///
+/// That is the whole silent class: `std::fs` returns `Err` and
+/// `std::env::var` returns `None` on this target, both benign, while
+/// `SystemTime::now`, `Instant::now`, `thread::spawn` and `process::id` all
+/// abort. `crates/client/tests/platform_calls.rs` is the scan that names them.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// The browser's clock. Same contract, same units, different platform.
+///
+/// A page HAS a wall clock — it is just not `std::time`'s — so this is a real
+/// answer rather than a stub returning 0. `Date.now()` is milliseconds since
+/// the epoch as an `f64`; a negative value is a clock set before 1970 and
+/// answers 0, exactly as the desktop arm's `duration_since` error does.
+#[cfg(target_arch = "wasm32")]
+pub fn now_secs() -> u64 {
+    let ms = js_sys::Date::now();
+    if ms < 0.0 {
+        return 0;
+    }
+    (ms / 1000.0) as u64
 }
 
 /// The first free name for this stamp, or `None` when [`PER_STAMP`] is spent.

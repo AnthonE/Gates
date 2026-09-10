@@ -202,6 +202,85 @@ pub fn free_pitch_after(
     (offset - dy * rad_per_px).clamp(-limit - body, limit - body)
 }
 
+/// The camera angles a first-person client carries between frames.
+///
+/// Radians, world convention, and the only mutable state one step of control
+/// needs — everything else in [`control`] is a pure function of this frame's
+/// input.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Aim {
+    pub yaw: f32,
+    pub pitch: f32,
+}
+
+/// A frame of raw input, before any of this module's rules have touched it.
+///
+/// Deliberately in the units a window hands you — pixels of mouse movement and
+/// keys that are down — because the whole point of [`control`] is that the
+/// caller does not convert anything.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Raw {
+    /// Mouse movement since the last frame, in pixels.
+    pub dx_px: f32,
+    pub dy_px: f32,
+    /// The player's inverted-pitch setting.
+    pub invert_pitch: bool,
+    pub forward: bool,
+    pub back: bool,
+    pub left: bool,
+    pub right: bool,
+    /// `BTN_*` bits already decided by the caller — what a click MEANS is
+    /// modal (a panel may eat it, a held item may turn it into a placement)
+    /// and that decision is not this function's.
+    pub buttons: u8,
+    /// The hotbar slot. `ClientCore::set_input` clamps it into range.
+    pub sel: u8,
+}
+
+/// One step of first-person control: raw input in, the six arguments
+/// [`ClientCore::set_input`](client_core::core::ClientCore::set_input) takes
+/// out, in its order.
+///
+/// **This exists so that a client which is not the Bevy one never derives the
+/// axis mapping itself**, and the reason is the bug in this module's header:
+/// the mapping shipped inverted on both clients, in two places, and the strafe
+/// half went unnoticed for months. A second client re-deriving `(-r, f)` from
+/// prose is that bug's second chance. `crates/client-web` calls this and does
+/// no arithmetic of its own.
+///
+/// It composes the published helpers above rather than restating them —
+/// `yaw_after`, `pitch_after`, `move_axes`, `yaw_u16`, `pitch_u8` — so there
+/// is one copy of each rule, and what this adds is only the ORDER the six come
+/// out in. That order is what `crates/client/tests/control.rs` gates, by
+/// driving a real `ClientCore` and reading the `InputState` back: a swapped
+/// pair here type-checks perfectly, since four of the six are integers.
+///
+/// The Bevy client keeps its own gather (`render/input.rs`) and does not call
+/// this: it has free-look, panel modality and a held-item state machine layered
+/// on top, none of which belong in a function this small. What both share is
+/// the helpers, which is the level the arithmetic actually lives at.
+pub fn control(aim: &mut Aim, raw: Raw) -> (u8, u16, u8, i8, i8, u8) {
+    aim.yaw = yaw_after(aim.yaw, raw.dx_px, MOUSE_RAD_PER_PX);
+    aim.pitch = pitch_after(
+        aim.pitch,
+        raw.dy_px,
+        MOUSE_RAD_PER_PX,
+        raw.invert_pitch,
+        PITCH_LIMIT,
+    );
+    let fwd = i32::from(raw.forward) - i32::from(raw.back);
+    let right = i32::from(raw.right) - i32::from(raw.left);
+    let (move_x, move_z) = move_axes(fwd, right);
+    (
+        raw.buttons,
+        yaw_u16(aim.yaw),
+        pitch_u8(aim.pitch),
+        move_x,
+        move_z,
+        raw.sel,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -41,5 +41,34 @@
 # byte of any digest — the parity gate's native and wasm hashes are
 # identical either side of it, which is the check that would have caught it
 # if it did.
+#
+# **`--cfg=web_sys_unstable_apis` is the browser client's, and it is a
+# build-invocation fact rather than a manifest one** (2026-09-10). `web-sys`
+# gates `WebTransport` and every type around it behind that cfg — 36 sites in
+# `gen_WebTransport.rs` alone — because the spec is still a draft. Without it
+# the feature list in `crates/client/Cargo.toml` resolves, the crate compiles,
+# and the *names* simply do not exist, which lands as `cannot find type
+# WebTransport in web_sys`: a missing-import error for something that is
+# imported. It lives here rather than in a `RUSTFLAGS` somebody has to
+# remember, so `cargo build -p client --target wasm32-unknown-unknown
+# --no-default-features` just works — the same reason the stack size does.
+#
+# It reaches every crate built for this target, including the three the parity
+# gate builds. That is harmless and worth stating: none of them depends on
+# `web-sys`, so no source reads the cfg and no byte of `sim_core.wasm` moves.
+# The check for that claim is the parity gate itself, which diffs native
+# against wasm digests and would say so.
+#
+# ⚠ **`--cfg getrandom_backend="wasm_js"` is NOT here, deliberately.** The
+# render build will need it (`findings/web-build-20260909.md` §10.2 item 4:
+# `getrandom` >=0.3 refuses this target by default and `uuid` drags it in
+# through six Bevy crates). But setting it while the matching `wasm_js`
+# feature is off is itself a build error, and `getrandom` is not in the
+# no-render graph at all — so it belongs in the commit that puts Bevy on the
+# web, next to the feature that makes it legal.
 [target.wasm32-unknown-unknown]
-rustflags = ["-C", "link-arg=-zstack-size=4194304"]
+rustflags = [
+    "-C",
+    "link-arg=-zstack-size=4194304",
+    "--cfg=web_sys_unstable_apis",
+]

@@ -286,7 +286,7 @@ pub struct Connecting {
     /// reach back into the app for it. It was a field nobody wrote until
     /// 2026-08-09 — see [`begin_connect`] for what that cost.
     pub address: protocol::Address,
-    pub rx: Option<std::sync::mpsc::Receiver<Result<crate::Session, String>>>,
+    pub rx: Option<std::sync::mpsc::Receiver<Result<crate::Session, crate::JoinError>>>,
     /// Seconds spent on this attempt. Accumulated from Bevy's frame delta
     /// rather than an `Instant`, so the screen has one clock and it is the
     /// renderer's.
@@ -1356,7 +1356,9 @@ pub fn begin_connect(rt: NonSend<Rt>, who: Res<Who>, mut connecting: NonSendMut<
             Ok(endpoint) => {
                 crate::Session::connect(&endpoint, &addr, address, crate::elo::sign_siwe).await
             }
-            Err(e) => Err(e),
+            // An endpoint that would not build never reached a shard, so there
+            // is no code to carry — `Failed` is the honest arm.
+            Err(e) => Err(crate::JoinError::Failed(e)),
         };
         let _ = tx.send(result);
     });
@@ -1433,9 +1435,11 @@ pub fn poll_connect(
     let got = match rx.try_recv() {
         Ok(got) => got,
         Err(std::sync::mpsc::TryRecvError::Empty) => return,
-        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-            Err("the connect attempt did not finish".to_string())
-        }
+        // The connect thread died without sending — no shard answered, so
+        // there is no refusal code to carry.
+        Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(crate::JoinError::Failed(
+            "the connect attempt did not finish".to_string(),
+        )),
     };
     connecting.rx = None;
     match got {

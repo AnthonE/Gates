@@ -96,9 +96,30 @@
 //! gate the day `Verb::Recycler` landed.
 
 use std::fmt;
+// **The platform half of this module is desktop-only, and the pure half is
+// not** (2026-09-10, the browser floor). Discord's rich presence is reached
+// over a local IPC socket — a Unix socket or a Windows named pipe — and a page
+// has neither, so `Pipe`, `worker`, `socket_paths` and the clock they use are
+// `cfg`'d off for wasm32 while everything that merely *builds a payload*
+// (`Activity`, `frame`, the JSON writers, `join_secret`) compiles everywhere.
+//
+// The split runs where it does because that is where the platform actually
+// is, not where it was convenient: `start()` keeps its signature and answers
+// `None` in a tab, which is the same answer it already gives on a desktop
+// with no Discord installed. Nothing downstream learns a new state.
+#[cfg(not(target_arch = "wasm32"))]
 use std::io::{Read, Write};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
+// `mpsc::sync_channel` builds the pair, and only the worker's own loop waits
+// on one with a timeout — both desktop-side, so both are named here rather
+// than above.
+#[cfg(any(not(target_arch = "wasm32"), test))]
+use std::sync::mpsc;
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::mpsc::RecvTimeoutError;
+use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use sim_core::terrain::Biome;
 
@@ -113,7 +134,12 @@ pub const APP_ID_ENV: &str = "GATES_DISCORD_APP_ID";
 pub const LARGE_IMAGE: &str = "gates";
 
 /// Opcodes. Only two are ever sent from our side; a third arrives.
+// Both are the IPC opcodes `Pipe` writes, so they follow it off wasm — kept
+// for `tests/` on every target because `frame(opcode, payload)` is pure and
+// its suite names them.
+#[cfg(any(not(target_arch = "wasm32"), test))]
 const OP_HANDSHAKE: u32 = 0;
+#[cfg(any(not(target_arch = "wasm32"), test))]
 const OP_FRAME: u32 = 1;
 
 /// How many IPC endpoints to try. Discord numbers them 0..=9 so several
@@ -580,6 +606,7 @@ fn read_json_string(body: &str) -> String {
 /// those are searched too; a player on a sandboxed Discord is otherwise
 /// silently unreachable. Windows takes no directory at all: named pipes live
 /// in their own namespace.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn socket_paths() -> Vec<String> {
     let mut out = Vec::with_capacity(IPC_SLOTS as usize);
     if cfg!(windows) {
@@ -610,6 +637,7 @@ pub fn socket_paths() -> Vec<String> {
 /// Seconds since the epoch, or 0 if the clock is before it. Only ever used
 /// for Discord's elapsed counter, so a nonsense clock costs a wrong timer and
 /// never a panic.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -688,6 +716,7 @@ pub fn test_link() -> (Link, Receiver<Activity>, SyncSender<Addr>) {
 ///
 /// `None` means dark and is the shipping default: no application id in the
 /// environment, no thread, no socket, no cost.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn start() -> Option<Link> {
     let app_id = app_id()?;
     let (tx, rx) = mpsc::sync_channel(QUEUE_CAP);
@@ -708,6 +737,24 @@ pub fn start() -> Option<Link> {
 
 /// The worker loop. Never panics and never blocks the game: every failure
 /// path means "no presence", the same outcome as Discord not being installed.
+/// The browser's answer: dark, always.
+///
+/// **A third arm rather than a `cfg` on the caller**, which is the whole point
+/// — `render/presence.rs` imports seven names from this module and drives them
+/// against a `Option<Link>`, and `None` is a state it has handled since the
+/// day it was written (it is what a desktop with no Discord returns). So the
+/// browser costs that file no `cfg` and no new branch.
+///
+/// It is also not a stub for something later. Discord's rich presence is
+/// reached over a local IPC socket; a page cannot open one, and the Discord
+/// web API that could stand in for it is a different product with a different
+/// consent flow. `None` is the correct and permanent answer here.
+#[cfg(target_arch = "wasm32")]
+pub fn start() -> Option<Link> {
+    None
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn worker(app_id: String, rx: Receiver<Activity>, joins: SyncSender<Addr>) {
     let pid = std::process::id();
     let start_unix = now_unix();
@@ -778,6 +825,7 @@ fn worker(app_id: String, rx: Receiver<Activity>, joins: SyncSender<Addr>) {
 /// shape the vendored elo SDK got wrong: it named `std::os::unix::net`
 /// unconditionally and therefore could not compile for Windows at all, with
 /// every gate in both repos green (`CLAUDE.md`, the vendoring note).
+#[cfg(not(target_arch = "wasm32"))]
 struct Pipe {
     #[cfg(unix)]
     sock: std::os::unix::net::UnixStream,
@@ -785,6 +833,7 @@ struct Pipe {
     sock: std::fs::File,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Pipe {
     /// Connect to the first endpoint that answers, handshake, subscribe to
     /// join events, and start the reader. `None` when Discord is not

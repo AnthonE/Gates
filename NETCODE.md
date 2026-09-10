@@ -5,8 +5,17 @@
 > Facepunch actually shipped for the same four mechanics — citations inline.
 > Everything here is buildable as written; knobs are marked **(knob)**.
 >
-> **The client is native (Bevy) and the browser one is deleted** (operator,
-> 2026-08-06). Almost nothing in this file turned on that — the replication
+> **The client is native (Bevy), and since 2026-09-10 the same Rust also
+> compiles to `wasm32` and speaks the browser's own `WebTransport`** (operator,
+> 2026-09-09, 2026-09-10; `findings/web-build-20260909.md`). The three.js
+> browser client is deleted and stays deleted — what came back is a compile
+> target, not a codebase, and **nothing in this file changes for it**: the
+> server is unmodified, the wire is unmodified, and §2.2's certificate rules
+> were WebTransport spec rules all along, which is why the shard already
+> satisfied them. See §2.2's ⚠ for the one live consequence: the HTTP/3 layer
+> can no longer be dropped.
+>
+> Almost nothing in this file turned on the original deletion — the replication
 > classes, the budgets and the lag-comp arithmetic are properties of the
 > traffic, not the client — so the edit was narrow and is confined to §2:
 > four JS-API queue knobs that no longer have an API, the

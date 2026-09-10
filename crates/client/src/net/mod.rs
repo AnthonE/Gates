@@ -13,12 +13,17 @@
 //! touching the transport, and they are not covered by that count. They own
 //! their own halves of the connection and outlive the call that made them, so
 //! they belong to whatever built them — which is why `connect`, not this
-//! file, is the half a web build still has to write.
+//! file, was the half a web build still had to write.
 //!
-//! So [`Wire`] has one method, and that is the honest size of the seam
-//! rather than a stub of a larger one. A web transport fills the same
-//! [`DatagramRx`] ring from a `ReadableStream` reader and pushes events into
-//! the same `mpsc`; what it cannot share is the send.
+//! So [`Wire`] has one method, and that is the honest size of the seam rather
+//! than a stub of a larger one. **The prediction it was written on held**
+//! (2026-09-10): [`web`] fills the same [`DatagramRx`] ring from a
+//! `ReadableStream` reader and pushes events into the same `mpsc`, and the one
+//! thing it could not share was the send. What the measurement did NOT
+//! predict is the other cost of a browser — that a `ReadableStream` has no
+//! `read_exact`, so the stream lane owes a framing state machine that
+//! wtransport gave the desktop client for free. That is [`frame`], and it is
+//! the largest piece of code in this directory.
 //!
 //! **Every method here is synchronous, and that is load-bearing.**
 //! `Session`'s whole per-frame surface refuses to await on purpose — a frame
@@ -35,8 +40,17 @@
 /// functions rather than copying them.
 pub mod handshake;
 
-#[cfg(not(target_arch = "wasm32"))]
+/// The stream lane's framing, with no transport under it. Shared by both
+/// builds — natively `read_exact` makes the decoder half unnecessary, but the
+/// ENCODER is the same bytes on both and now that is one function rather than
+/// two that agree by inspection.
+pub mod frame;
+
+#[cfg(feature = "native")]
 pub mod native;
+
+#[cfg(target_arch = "wasm32")]
+pub mod web;
 
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 
@@ -63,8 +77,56 @@ pub trait Wire {
 /// real: a trait object cannot take `impl FnMut` drains and would force an
 /// allocation on a hot path, and a generic would leak a type parameter into
 /// `render::Net` and every signature that names a session.
-#[cfg(not(target_arch = "wasm32"))]
+///
+/// **The two arms are selected by different things, and that is deliberate.**
+/// `native` is a cargo feature, because `wtransport` is an optional dependency
+/// that a `--no-default-features` build turns off; `wasm32` is a target,
+/// because a page's transport is a property of the platform and not of a flag.
+/// The `compile_error!` pair in `lib.rs` is what proves exactly one of them
+/// holds, so this alias is total without a fallback arm that could quietly win
+/// on a build nobody meant to make.
+#[cfg(feature = "native")]
 pub type ActiveWire = native::NativeWire;
+
+#[cfg(all(target_arch = "wasm32", not(feature = "native")))]
+pub type ActiveWire = web::WebWire;
+
+/// Parse the dotted hex SHA-256 the shard prints at boot (`aa:bb:cc:...`)
+/// into the 32 bytes a certificate pin is made of.
+///
+/// **Ours because the browser build cannot borrow wtransport's.** Natively
+/// this is `"…".parse::<wtransport::tls::Sha256Digest>()`, one line inside
+/// `client_endpoint`; a page has no wtransport, and `serverCertificateHashes`
+/// wants the raw bytes. Written here rather than in `net/web.rs` for one
+/// reason: it is pure, so putting it on every target is what lets
+/// `tests/framing.rs` run it on the box you are sitting at instead of only in
+/// a browser.
+///
+/// Deliberately strict — exactly 32 groups of exactly two hex digits,
+/// separated by single colons, nothing else. A pin is a security control and
+/// a lenient parser for one is how a truncated paste becomes a shorter
+/// secret. Whitespace at the ends is trimmed because a copied line carries
+/// it; nothing inside is.
+pub fn parse_cert_digest(text: &str) -> Option<[u8; 32]> {
+    let text = text.trim();
+    let mut out = [0u8; 32];
+    let mut groups = 0usize;
+    for (i, group) in text.split(':').enumerate() {
+        if i >= out.len() || group.len() != 2 {
+            return None;
+        }
+        // `from_str_radix` accepts a leading `+`, which is not a hex digit
+        // and would make `+f` parse as 15. Refused explicitly rather than
+        // trusted, because the whole value of this function is that it is
+        // strict.
+        if !group.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        out[i] = u8::from_str_radix(group, 16).ok()?;
+        groups = i + 1;
+    }
+    (groups == out.len()).then_some(out)
+}
 
 /// Why an action could not be queued. Both arms are states a panel draws
 /// rather than errors it swallows: a full lane means the sim is behind and
