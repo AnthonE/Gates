@@ -2739,39 +2739,40 @@ records or gates that `rev = a11e6a8e…` contains the #317 fix**, and the pin
 is forever now. That is §0web's to carry.
 
 
-## 0web · The browser client — **spoken, in progress** *(client lane)*
+## 0web · The browser client — **spoken, transport DONE, renderer next** *(client lane)*
 
-Operator, 2026-09-09: *"i want to start building it."* `DECISIONS.md` has the
-call, **`findings/web-build-20260909.md`** the measured assessment. §0wt is
-struck (above) — the HTTP/3 layer is what makes this possible.
+Operator, 2026-09-09 (*"i want to start building it"*) and 2026-09-10. The
+measured assessment is **`findings/web-build-20260909.md`**; §11 is what has
+landed. §0wt is struck — the HTTP/3 layer is what makes this possible.
 
-Three findings that shape it, each re-runnable:
-- **The server needs no change.** `client/src/lib.rs:468/474/588` already map
-  1:1 onto `new WebTransport` / `createBidirectionalStream` /
-  `datagrams.readable`; `server/src/net.rs:365` already serves browser-shaped
-  certs. The whole cost is client-side.
-- **`client-core` builds to wasm clean** — `cargo build -p client-core
-  --release --target wasm32-unknown-unknown`, 12.59 s, no edits — and
-  `sim-core`/`protocol` are gated on that target every pass. The game-logic
-  half is portable and proven.
-- **The download does not shrink** (`du -sh assets/` → 92M). It loses the
-  *ceremony*: no installer, no launcher, no depot, no trust prompt.
+**Landed 2026-09-10, gated** (`ci/gates.sh`, the browser-client gate — clippy
+and build for `wasm32`, which is the only line in that file that compiles the
+non-default configuration at all): the manifest split by target, `client`'s
+platform halves cfg'd, `net/web.rs`'s `WebTransport` transport with the
+`maxDatagramSize` clamp `CLAUDE.md` has asked for since the first browser
+client, and `crates/client-web` — the module a page loads. `ci/build_web.sh`
+produces it; **512 KB of wasm, 174 KB gzipped**, headless.
 
-Order (§7 of the note): (1) a `Transport` trait behind `Session`'s four
-public methods — no wire change, no behaviour change; (2) tokio/wtransport/
-ureq behind a `native` cargo feature until `cargo build -p client --target
-wasm32-unknown-unknown --no-default-features` reaches our code; (3) a
-wasi-sdk sysroot for `basis-universal`, which does **not** build for wasm
-today (measured: `'stdlib.h' file not found`); (4) the `web-sys` transport;
-(5) Bevy on WebGL2/WebGPU — the largest unknown, nothing has run it.
+**Nobody has opened it.** It compiles, clippy is clean and the framing is
+gated under four mutants (`crates/client/tests/framing.rs`), but no browser in
+this repo's history has ever run a gate and none should — so the handshake
+completing against a live shard is an operator act, and it is the next thing
+worth doing because it is cheap and it retires the transport question whole.
 
-Carried from struck §0wt: nothing gates that `wtransport rev = a11e6a8e…`
-contains the #317 fix, and that pin is permanent now.
+What remains, in order: (1) open the page against a dev shard, `--cert-hash`
+in hand — a page cannot skip validation, so that flag is required where it is
+optional natively; (2) `basis-universal` patched to build `transcoder/` only
+(§2.3, spiked, standalone); (3) **Bevy on WebGL2/WebGPU — the largest unknown
+left**: §10.1 proved the dependency stack compiles for the target and nothing
+has drawn a frame; `Session` is not `Send` on wasm, so `render::Net` needs
+`NonSend` there.
 
 Not decided: where the page is served, so whether it gets COOP/COEP and
-threads (§4.1 — without them a chunk's 5.153 ms lands on the frame), and how
-a web player authenticates (§5). Ships guest-playable or waits on a platform
-act that is not this repo's.
+threads (§4.1 — without them a chunk's 5.153 ms lands on the frame), and how a
+web player authenticates (§5 — it ships guest-only until a browser wallet
+exists; a `require_auth` shard must say *this shard needs an account*, never
+"login failed"). Carried from struck §0wt: nothing gates that `wtransport rev
+= a11e6a8e…` contains the #317 fix, and that pin is permanent now.
 
 
 ## 0wd · A new world register is proposed — blocked on the operator's word

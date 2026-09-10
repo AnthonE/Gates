@@ -6,6 +6,12 @@ members = [
     "crates/server",
     "crates/client-core",
     "crates/client",
+    # The browser client's entry module. A member rather than an exclusion so
+    # that ONE `Cargo.lock` resolves `wasm-bindgen`, which has to agree with
+    # the `wasm-bindgen` CLI that generates the JS glue — see its manifest.
+    # It has no dependencies and no source on a native target, so a native
+    # `--workspace` build links an empty `.so` and nothing else.
+    "crates/client-web",
     "crates/content",
 ]
 

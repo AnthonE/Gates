@@ -14,9 +14,25 @@ Great Work board, coins from its economy — importing none of its code.
 **The skeleton is the product**: determinism, netcode, and the hot-path
 laws outrank every feature.
 
-**The browser client is deleted** (operator, 2026-08-06: cut, then *"we have
-it all backed up on github… we dont need it locally"*). `web/` and its eleven
-gates are out of the tree. The native client is the only client.
+**The JavaScript browser client is deleted, and a Rust one is being built in
+its place — those are two different sentences and this paragraph used to
+conflate them.** `web/` and its eleven gates were cut (operator, 2026-08-06:
+*"we have it all backed up on github… we dont need it locally"*) and stay cut.
+What came back is the TARGET, not the codebase: the operator asked for a web
+build on 2026-09-09 (*"people dont wanna download gates"*), and since
+2026-09-10 `crates/client` compiles to `wasm32-unknown-unknown` and
+`crates/client-web` is the module a page loads. It is the same Rust — the same
+`ClientCore`, the same `protocol`, the same handshake — reaching the browser's
+own `WebTransport` instead of wtransport, and the seam between the two is one
+trait with one method (`client/src/net/`).
+
+⚠ **So the line that mattered has moved: "the native client is the only
+client" is retired, and "never restore `web/` to the tree" is not.** A
+JavaScript reimplementation of the sim is the thing that can never come back;
+a second compile target for the Rust one costs a `cfg` and is gated
+(`ci/gates.sh`, the browser-client gate). And **§0wt is struck** — a browser
+cannot open a raw QUIC connection, so the HTTP/3 layer this repo twice
+proposed deleting is now permanent (`NETCODE.md` §2.2, corrected).
 
 It is not lost — it is in git history, on GitHub, and readable when a question
 about a verb needs it: `git show <commit>:web/src/interact.js`. That matters
@@ -179,6 +195,18 @@ do not rediscover)
   sends nothing** — clamp every send against the live value. Browser-only as
   a *silent* failure; the native client speaks wtransport directly and the
   MTU ceiling is still real, so the clamp stays on both paths.
+  ✅ **Enforced on the browser path since 2026-09-10, and still not on the
+  native one.** `net/web.rs::WebWire::send_datagram` reads
+  `datagrams.maxDatagramSize` per send — live, because path MTU moves — and
+  REFUSES an oversized payload rather than truncating it, counting the refusal
+  so a lane that has quietly stopped reaching the shard is a number rather
+  than a player who cannot move. Truncation is not the softer option: every
+  payload here is an encoded message whose decoder checks its length, so half
+  of one is not a smaller message. `Session::pump` still sends
+  `input_buf[..len]` with no clamp at all (`findings/web-build-20260909.md`
+  §10.3 found it and deliberately left it), which is safe only because
+  `DATAGRAM_BUDGET_BYTES = 1100` sits under the 1,200-byte QUIC floor — a
+  constant holding a rule up, which is what this list exists to warn about.
 - `send_datagram()` (drop-oldest), never `send_datagram_wait()` — a
   congestion stall must cost freshness, not latency.
 - **Quantize both sides** or prediction drifts by rounding: the server
@@ -894,15 +922,24 @@ well as `x11`), `libasound2-dev` (`bevy_audio` → cpal → `alsa-sys`),
 `libudev-dev` (`bevy_gilrs`) — each dies as a `pkg-config` panic 40 lines into
 a build script. To RUN a `--capture` probe: `libxkbcommon-x11-0` (winit
 panics in `EventLoop::new`), `mesa-vulkan-drivers` + `libvulkan1`, and
-`Xvfb`. Plus `rustup target add wasm32-unknown-unknown` for the parity gate
-— **which is not a web build**: `sim-core` compiles to a second target so
-`test_parity_wasm` can diff its state hashes against native byte for byte,
-which is wall 1's enforcement and is worth the same with no browser in
-existence. The crate that WAS a web build is gone (operator, 2026-08-08:
-*"we use desktop build no more web"*) — `client-wasm` is `client-core`, its
-1,635-line C-ABI bridge and the 1,266-line `ci/client_smoke.mjs` that drove
-it are deleted, and what that gate actually asserted is
-`crates/client-core/tests/wire.rs`.
+`Xvfb`. Plus `rustup target add wasm32-unknown-unknown`, which since
+2026-09-10 two different gates need and which used to need saying carefully:
+the parity gate is **not** a web build (`sim-core` compiles to a second,
+deliberately hostile target so `test_parity_wasm` can diff its state hashes
+against native byte for byte — wall 1's enforcement, worth the same with no
+browser in existence), while the browser-client gate beside it **is** one. The
+same target, installed once, for two unrelated reasons; keep them apart when
+reading a failure.
+
+⚠ **`client-wasm` is still gone and `client-web` is not it.** The old crate
+was a 1,635-line hand-written C ABI over `client-core`, driven by a
+1,266-line `ci/client_smoke.mjs`, and it was deleted with the JavaScript
+client (operator, 2026-08-08: *"we use desktop build no more web"*); what that
+gate actually asserted is `crates/client-core/tests/wire.rs`, which stayed.
+The new crate has no ABI in it at all — `client` is an ordinary dependency and
+`wasm_bindgen` writes the glue — so nothing about that deletion is being
+undone. If you find yourself hand-writing a bridge, you are rebuilding the
+thing that was thrown away.
 **And a fresh box is missing an eighth**, added 2026-09-05 with the asset
 triage and paid for on 2026-09-08: `ci/measure_glb.py` and
 `ci/flatten_charts.py` need **numpy and Pillow**. They are the good kind of

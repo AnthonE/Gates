@@ -7,11 +7,17 @@ skeleton is the product: determinism, netcode, and the hot-path laws outrank
 every feature. This file is the whole onboarding; any harness that can read a
 file and run a shell can contribute.
 
-**The browser client is deleted** (operator, 2026-08-06). This file said
-"browser survival game, three.js client" for months after that; `web/` is not
-in the tree and the native client is the only client. `CLAUDE.md` has the
-detail, including how to read the deleted one out of git history when a
-question about a verb needs it.
+**The three.js browser client is deleted** (operator, 2026-08-06). This file
+said "browser survival game, three.js client" for months after that; `web/` is
+not in the tree and never comes back.
+
+**But "native is the only client" is retired as of 2026-09-10** (operator,
+2026-09-09: *"people dont wanna download gates"*). The same Rust client now
+compiles to `wasm32-unknown-unknown` and speaks the browser's own
+`WebTransport` — one codebase, two targets, gated in `ci/gates.sh`. The rule
+that survives is the one that mattered: **no second implementation of the
+client**, in any language. `CLAUDE.md` has the detail, including how to read
+the deleted one out of git history when a question about a verb needs it.
 
 ## The 90-second start
 

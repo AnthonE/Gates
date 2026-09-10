@@ -16,7 +16,30 @@ publish.workspace = true
 # and the renderer tier is where that cost belongs (the same tier the
 # browser gates are vacating).
 [features]
-default = []
+# **`native` means "this build has a desktop platform under it"**, and the one
+# thing it buys is `wtransport` — the transport a page cannot have
+# (`findings/web-build-20260909.md` §6: quinn owns a UDP socket and a tab has
+# none). It is default-ON, so every existing invocation in `ci/gates.sh`, every
+# `cargo test --workspace` and every `cargo run` is unchanged; the browser build
+# is the one that passes `--no-default-features`.
+#
+# **Why a feature here and target tables below.** The two mechanisms are not
+# interchangeable and this manifest deliberately uses both:
+#
+# - A *target table* is the right tool when the platform decides and the
+#   builder has no say — `tokio`'s runtime, `ureq`'s blocking socket. Nobody
+#   can pass a flag that gets those wrong, which is why they are not features.
+# - A *feature* is the right tool for `[[bin]] required-features`, which is the
+#   only lever cargo gives for "do not build this binary here". Both player
+#   binaries open an OS window or a terminal, so neither exists in a tab, and
+#   without this they would be compiled for wasm32 and fail inside
+#   `#[tokio::main]`.
+#
+# `lib.rs` holds a `compile_error!` pair proving exactly one transport is
+# selected, because the two mechanisms agreeing is otherwise a convention and
+# `CLAUDE.md` says a law without a gate is a mood.
+default = ["native"]
+native = ["dep:wtransport"]
 # `ureq` rides the render feature because the ONLY thing that fetches a shard
 # list is the menu, and the menu is drawn. The parser (`shardlist.rs`) is
 # unconditional on purpose: it reads bytes off the network, so wall 4's
@@ -46,14 +69,31 @@ render = [
 # `--features hot` is opting into a dev build.
 hot = ["render", "bevy/file_watcher"]
 
+# Both player binaries carry `native`: each drives `client_endpoint` and each
+# is a program with a terminal or an OS window around it. Without the
+# requirement, `cargo build -p client --target wasm32-unknown-unknown` compiles
+# them and dies inside `#[tokio::main]` — an error about a macro, for a binary
+# that was never meant to exist on that target.
 [[bin]]
 name = "client"
 path = "src/main.rs"
+required-features = ["native"]
 
 [[bin]]
 name = "gates"
 path = "src/bin/gates.rs"
-required-features = ["render"]
+required-features = ["render", "native"]
+
+# **Declared rather than auto-discovered, which is the point.** `src/bin/
+# soundbank.rs` was an autobin: cargo picked it up with no manifest row, so it
+# carried no `required-features` and nothing said where it may be built. It
+# links no transport — `sound::synth` is pure — but it writes `.wav` files to a
+# path off `std::env::args`, which is a desktop act, and an autobin is a target
+# nobody declared and therefore nobody scoped.
+[[bin]]
+name = "soundbank"
+path = "src/bin/soundbank.rs"
+required-features = ["native"]
 
 # The rig bench (`src/bin/modelview.rs`): a glTF loaded against the sim's own
 # 1.8 m capsule, its clips listed by name, nothing connected. It links Bevy and
@@ -388,10 +428,6 @@ bevy = { version = "0.18", optional = true, features = [
 # `rustls` rather than a system TLS: the same reason wtransport carries its
 # own — one trust store the build controls, on a box that may have no
 # OpenSSL. Blocking on purpose; the menu fetches on a thread, never a frame.
-ureq = { version = "3", optional = true, default-features = false, features = [
-    "rustls",
-    "gzip",
-] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # The conifer generator: ez-tree's algorithm, ported to Rust and Bevy
@@ -450,7 +486,15 @@ client-core = { path = "../client-core" }
 # `target_family = "wasm"` (tokio-1.53.1/src/lib.rs:467-479), while `time`
 # compiles clean and PANICS at runtime on a target with no timer. A future
 # edit adding `time` back to a wasm feature set is green and dies in play.
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-util", "sync"] }
+#
+# **Only `sync` is declared here; the other four moved to the target table at
+# the foot of this file** (2026-09-10, the browser floor). That is not a
+# tidy-up — it is the difference between a platform fact and a build option.
+# `sync` is pure channel code and tokio supports it on wasm, so it belongs on
+# every target; `rt-multi-thread` is a hard `compile_error!` there, and `time`
+# is the nastier one, because it compiles clean and PANICS at runtime on a
+# target with no timer. A feature could be passed wrong. A target cannot.
+tokio = { version = "1", features = ["sync"] }
 # Same pin as the server, and for the same reason (CLAUDE.md traps,
 # NETCODE.md §2.2): crates.io tops out at 0.7.1, which has the two-byte
 # remote panic. The client speaks the identical transport the browser does,
@@ -472,7 +516,115 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-ut
 # in client code with this line deleted. `ci/gates.sh`'s `-p client` clippy
 # line is the only place a manifest change would bite, and a wall that only
 # holds under one of two invocations is not a wall.
-wtransport = { git = "https://github.com/BiagioFesta/wtransport", rev = "a11e6a8e7ff33c6eef522d308007da55d1df9f81", features = [
+# The dependency line itself is in the target table below — it is `optional`
+# and behind `cfg(not(target_arch = "wasm32"))` both, which is belt and braces
+# on purpose: the feature is what a `--no-default-features` build turns off,
+# and the target table is what makes a build that FORGETS that flag fail on a
+# missing name rather than on 48 errors inside `mio`.
+
+# ---------------------------------------------------------------------------
+# The platform floor: everything below is unreachable from a browser tab, and
+# the *target* decides — not a feature, so no invocation can get it wrong.
+#
+# `findings/web-build-20260909.md` §10.2 is why this table exists rather than
+# a longer feature list. The measured blockers were never things a builder
+# chooses between: `mio` refuses the target outright (48 errors, reproduced
+# 2026-09-10 as the baseline for this slice), quinn owns a UDP socket, and
+# `ureq` opens a `TcpStream`. A tab has none of the three and never will.
+# ---------------------------------------------------------------------------
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The runtime half of tokio. Unioned with the `sync` above by cargo, so a
+# native build sees exactly the five features it saw before this split.
+#
+# ⚠ `mio` is NOT ours and deleting our tokio line would not have moved it
+# (§10.2 item 1): we never asked for `tokio/net`, and mio arrives through
+# wtransport -> quinn's `runtime-tokio`. Both leave together because both are
+# in this table, which is the only reason the wasm build gets past the first
+# dependency at all.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-util"] }
+# The shard list (`elo-shardlist-v1`, docs/LAUNCHER.md §6 in AnthonE/scry).
+# `rustls` rather than a system TLS: the same reason wtransport carries its
+# own — one trust store the build controls, on a box that may have no
+# OpenSSL. Blocking on purpose; the menu fetches on a thread, never a frame.
+#
+# **Still optional and still switched on by `render`**, because the only
+# thing that fetches a shard list is the menu and the menu is drawn — that
+# has not changed. What changed is that the switch now only reaches a target
+# where a blocking socket exists. Cargo allows a feature to name an optional
+# dependency that lives in a target table, and on a target the `cfg` excludes
+# the feature simply enables nothing (probed 2026-09-10 before this landed).
+# The browser's shard list is `fetch`, and `shardlist.rs`'s parser — the half
+# that reads bytes off the network and therefore the half wall 4 cares about —
+# is unconditional and shared.
+ureq = { version = "3", optional = true, default-features = false, features = [
+    "rustls",
+    "gzip",
+] }
+# Same pin as the server, and for the same reason (CLAUDE.md traps,
+# NETCODE.md §2.2): crates.io tops out at 0.7.1, which has the two-byte
+# remote panic. The client speaks the identical transport the browser does,
+# so no server change is owed to this crate.
+#
+# **`dangerous-configuration` buys exactly ONE call now, and it is the
+# loopback carve-out** (operator, DECISIONS.md 2026-08-10). It used to gate
+# the client's whole trust posture — `with_no_cert_validation()` on every
+# connect, on every player binary — and the validating paths that replaced it
+# need nothing from this feature: `with_native_certs` and
+# `with_server_certificate_hashes` are both unconditional in the pinned rev.
+# So the feature could not simply be dropped, but what it now enables is a
+# single arm of a `match` on the address being dialled (`src/lib.rs`), gated
+# by `crates/server/tests/tls_posture.rs`.
+#
+# **Removing it here would not be a compile gate anyway**, which is why the
+# gate is a test: `cargo … --workspace` unifies features, the server asks for
+# `dangerous-configuration` too, and the dangerous call would keep compiling
+# in client code with this line deleted. `ci/gates.sh`'s `-p client` clippy
+# line is the only place a manifest change would bite, and a wall that only
+# holds under one of two invocations is not a wall.
+#
+# ⚠ **The pin is permanent now** (operator, 2026-09-09): a browser cannot open
+# a raw QUIC connection, so WebTransport over HTTP/3 is the only path a page
+# has and `NOW.md` §0wt — which proposed deleting that layer — is struck.
+wtransport = { git = "https://github.com/BiagioFesta/wtransport", rev = "a11e6a8e7ff33c6eef522d308007da55d1df9f81", optional = true, features = [
     "dangerous-configuration",
     "quinn",
+] }
+
+# ---------------------------------------------------------------------------
+# The browser floor. Nothing below is linked on a desktop build.
+#
+# All four are already in `Cargo.lock` and have been since Bevy 0.18 landed —
+# they arrive through wgpu 27 and winit 0.30's own web backends
+# (`findings/web-build-20260909.md` §1). Naming them here costs no new
+# download and no new version to keep: the renderer's dependency graph already
+# contained its browser path before anything asked it to.
+# ---------------------------------------------------------------------------
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+# **Every type is behind a feature**, so this list is the browser API surface
+# the client is allowed to touch, written down. It is deliberately the
+# transport and nothing else — no DOM, no canvas, no fetch — because
+# `net/web.rs` is the only module that speaks to the platform and the day that
+# stops being true is the day this list grows and somebody has to say why.
+web-sys = { version = "0.3", features = [
+    "WebTransport",
+    "WebTransportOptions",
+    "WebTransportHash",
+    "WebTransportBidirectionalStream",
+    "WebTransportDatagramDuplexStream",
+    "WebTransportCloseInfo",
+    "WebTransportSendStream",
+    "WebTransportReceiveStream",
+    "ReadableStream",
+    "ReadableStreamDefaultReader",
+    "ReadableStreamReadResult",
+    "WritableStream",
+    "WritableStreamDefaultWriter",
+    # The one non-transport entry, and it earns its place: a page has no
+    # stderr. Two lanes refuse a frame and end a session (`net/web.rs`), and
+    # without a console line those refusals would be a client that quietly
+    # stopped, on somebody else's machine, with nothing to read.
+    "console",
 ] }

@@ -1,0 +1,44 @@
+[package]
+name = "client-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# **The browser's entry point, and a separate crate for one measured reason.**
+#
+# `wasm-bindgen` needs a `cdylib` to hand JS a module, and `crate-type` is a
+# property of a crate rather than of a target — so putting `cdylib` on `client`
+# would link a `.so` on every native build too, on the code tier, on every
+# gate. This is the shape the deleted `client-wasm` crate had for the same
+# reason, and it is worth saying plainly that this is NOT that: `client-wasm`
+# was a 1,635-line hand-written C ABI, and there is no ABI here at all.
+# `client` is an ordinary dependency and every line in `src/` is glue.
+#
+# `rlib` beside `cdylib` so `cargo test` can see it. There is nothing to test
+# in here and that is deliberate: the parts of the browser client worth gating
+# — the stream framing, the certificate-pin parser — live in `client`, where a
+# box with no browser can run them (`crates/client/tests/framing.rs`).
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# **Nothing is a dependency on a native target, and the source is empty
+# there.** A workspace member cannot opt out of `cargo build --workspace`, so
+# the alternative was excluding this crate from the workspace — which means a
+# second `Cargo.lock`, which means `wasm-bindgen` the crate and `wasm-bindgen`
+# the CLI free to resolve to different versions. That mismatch produces a
+# module that loads and then fails on a call, which is a far worse day than
+# linking an empty `.so`.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# **`default-features = false` is load-bearing rather than tidiness.**
+# `client`'s default is the `native` feature, which carries wtransport; asking
+# for it here would drag quinn and mio into a wasm build and fail exactly the
+# way the 2026-09-10 baseline did. `client`'s own `compile_error!` pair says so
+# in a sentence if anyone tries it.
+client = { path = "../client", default-features = false }
+protocol = { path = "../protocol" }
+wasm-bindgen = "0.2"
+# The `async fn` in `#[wasm_bindgen] impl` expands to a call into this crate,
+# so it is a dependency of the MACRO rather than of any line written here.
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["console"] }

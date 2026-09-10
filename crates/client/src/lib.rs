@@ -13,6 +13,24 @@
 //! The wire is unchanged and no server change is owed. `wtransport` has a
 //! client side, so this speaks the identical transport the browser speaks,
 //! against the same shard, at the same `PROTO_VER`.
+//!
+//! **And since 2026-09-10 there are two builds of it** (operator, 2026-09-09:
+//! a browser client; `findings/web-build-20260909.md`). The sentence above
+//! turned out to be load-bearing rather than incidental — "the identical
+//! transport the browser speaks" was written about wtransport and is now
+//! literally true of a `WebTransport` object in a tab. What splits is this
+//! file and nothing else in the crate: `client_endpoint` and the wtransport
+//! half of `connect` are `#[cfg(feature = "native")]`, the browser's
+//! `connect` sits beside them under `#[cfg(target_arch = "wasm32")]`, and
+//! everything from `send_action` down — the lanes, the pump, the core — is
+//! shared source with no cfg on it at all.
+//!
+//! Read the two `connect`s as a pair. They are deliberately the same
+//! sequence in the same order, they call the same three pure functions out of
+//! [`net::handshake`], and they end by building the same struct; a change to
+//! one that is not made to the other is a client that can join from a desktop
+//! and not from a page, or the reverse, and no gate can see that because each
+//! target only ever compiles one of them.
 
 pub mod args;
 // The settings file: path, format, version, and the unknown-key policy. NOT
@@ -81,6 +99,34 @@ pub mod net;
 #[cfg(feature = "render")]
 pub mod render;
 
+// **Exactly one transport, proved rather than assumed.**
+//
+// `net::ActiveWire` has two arms and they are chosen by different mechanisms —
+// a cargo feature for the desktop one (because `wtransport` is an optional
+// dependency) and a target for the browser one (because a page's transport is
+// not a flag). Two mechanisms that must agree is a convention, and `CLAUDE.md`
+// says a law without a gate is a mood, so here is the gate: it is a
+// `compile_error!` rather than a test because the failure it prevents is a
+// build that does not exist, and there is nothing to run.
+//
+// The first arm is the one somebody will actually hit: `cargo build -p client
+// --target wasm32-unknown-unknown` with the default features still on. Without
+// this, that build spends two minutes and dies in 48 errors inside `mio`, a
+// crate we never asked for (it arrives through quinn) — the exact diagnosis
+// `findings/web-build-20260909.md` §10.2 had to be written to correct.
+#[cfg(all(feature = "native", target_arch = "wasm32"))]
+compile_error!(
+    "the `native` feature cannot be built for wasm32: it carries wtransport, and quinn owns a \
+     UDP socket a page does not have. Build the browser client with \
+     `--no-default-features` (see findings/web-build-20260909.md)."
+);
+#[cfg(not(any(feature = "native", target_arch = "wasm32")))]
+compile_error!(
+    "this build of `client` has no transport: the `native` feature is off and the target is not \
+     wasm32, so `net::ActiveWire` names nothing. Either build for wasm32 or leave the default \
+     features on."
+);
+
 use client_core::core::{ClientCore, Ingest};
 // Moved to `net` on 2026-09-09, re-exported rather than relocated in the
 // public API: `SendError` is what `send_action` returns and renaming its path
@@ -94,8 +140,11 @@ use net::{datagram_lane, drain_datagram, drain_lane, DatagramRx, Wire};
 // I/O half is the evidence the extraction was complete rather than partial.
 use protocol::{Welcome, MAX_EVENT_MSG_BYTES, MAX_STREAM_MSG_BYTES};
 use sim_core::limits::{ACTION_RING_CAP, DATAGRAM_BUDGET_BYTES};
+#[cfg(feature = "native")]
 use wtransport::config::IpBindConfig;
+#[cfg(feature = "native")]
 use wtransport::endpoint::endpoint_side::Client;
+#[cfg(feature = "native")]
 use wtransport::{ClientConfig, Endpoint, RecvStream, SendStream};
 
 /// Stream framing: `u16` LE length prefix per message. Byte-identical to
@@ -104,6 +153,7 @@ use wtransport::{ClientConfig, Endpoint, RecvStream, SendStream};
 /// depend on the `server` crate — that would ship the authoritative sim
 /// inside the client binary. If a third copy ever appears, that is the
 /// signal to lift this into `protocol` where the rest of the wire lives.
+#[cfg(feature = "native")]
 async fn write_frame(send: &mut SendStream, payload: &[u8]) -> Result<(), String> {
     let len = (payload.len() as u16).to_le_bytes();
     send.write_all(&len).await.map_err(|e| e.to_string())?;
@@ -111,6 +161,14 @@ async fn write_frame(send: &mut SendStream, payload: &[u8]) -> Result<(), String
     Ok(())
 }
 
+/// **The browser has no counterpart to this function and that is the whole
+/// asymmetry of the port.** `read_exact` is what a QUIC stream API gives you
+/// and a `ReadableStreamDefaultReader` does not: it yields whatever arrived,
+/// so the same job over there is a state machine that carries its own residue
+/// ([`net::frame::FrameBuf`], pure and gated in `tests/framing.rs`). The two
+/// read the same bytes off the same wire; only one of them gets to be four
+/// lines.
+#[cfg(feature = "native")]
 async fn read_frame<const N: usize>(recv: &mut RecvStream) -> Option<([u8; N], usize)> {
     let mut len_buf = [0u8; 2];
     recv.read_exact(&mut len_buf).await.ok()?;
@@ -205,6 +263,7 @@ pub fn is_loopback_host(server: &str) -> bool {
 /// a certificate before it will pin one. So the number the shard has printed
 /// since the browser days — vestigial for a year, since nothing read it —
 /// becomes the dev path, and no second trust store has to exist.
+#[cfg(feature = "native")]
 pub fn client_endpoint(server: &str, cert_hash: Option<&str>) -> Result<Endpoint<Client>, String> {
     // Refused here, at endpoint construction, rather than surfacing as a
     // handshake failure ten seconds later: a typo'd digest and a genuinely
@@ -325,6 +384,14 @@ pub struct Session {
     closed: bool,
 }
 
+/// The desktop half of the session: connecting.
+///
+/// Split into its own `impl` block rather than cfg'd method-by-method so
+/// that the browser twin below reads as a peer of it — two whole join
+/// sequences side by side, each complete, rather than one function with
+/// arms in it. They must stay in step; a diff that touches one and not the
+/// other is the failure this arrangement is trying to make visible.
+#[cfg(feature = "native")]
 impl Session {
     /// Connect, handshake, and start the event-lane reader.
     ///
@@ -450,7 +517,125 @@ impl Session {
             closed: false,
         })
     }
+}
 
+/// The browser half of the session: connecting.
+///
+/// **Read this against the `impl` above, not on its own.** It is the same
+/// sequence — open, open a bidi stream, hello, challenge, auth, welcome,
+/// three tasks, build the struct — driving the same three pure functions out
+/// of [`net::handshake`], and it ends by constructing the same fields in the
+/// same order. Every difference below is a difference the platform forced,
+/// and each one is commented where it happens.
+///
+/// The signature differs in one place and it is not cosmetic: there is no
+/// `endpoint` parameter, because a page has no endpoint to build. Trust is
+/// decided inside [`net::web::open`] from `cert_hash` and the browser's own
+/// root store, which is why `crates/client/tests/tls_callsite.rs` — a gate
+/// whose whole subject is that `client_endpoint`'s address is the address
+/// `connect` then dials — has nothing to say about this path. There are not
+/// two addresses here to disagree.
+#[cfg(target_arch = "wasm32")]
+impl Session {
+    pub async fn connect(
+        server: &str,
+        cert_hash: Option<&str>,
+        address: protocol::Address,
+        // The same inversion the desktop client uses: `(domain, nonce hex,
+        // issued_at)`, never a message this process composed. On a page the
+        // signer is a browser wallet rather than the elo launcher, and the
+        // reason the three values stay inert is identical — a game that can
+        // compose the sentence it asks you to sign is a game that can ask you
+        // to sign anything.
+        sign: impl FnOnce(&str, &str, u64) -> Option<protocol::Signature>,
+    ) -> Result<Self, String> {
+        use wasm_bindgen_futures::{spawn_local, JsFuture};
+        use web_sys::WritableStreamDefaultWriter;
+
+        let transport = net::web::open(server, cert_hash).await?;
+
+        let bidi = JsFuture::from(transport.create_bidirectional_stream())
+            .await
+            .map_err(|e| net::web::js_err("open_bi", &e))?;
+        let writer = WritableStreamDefaultWriter::new(&bidi.writable())
+            .map_err(|e| net::web::js_err("stream writer", &e))?;
+        // `MAX_STREAM_MSG_BYTES` for the handshake, exactly as the desktop
+        // path reads `read_frame::<MAX_STREAM_MSG_BYTES>` — the ceiling is a
+        // property of the lane, not of the transport.
+        let mut reader = net::web::FrameReader::<MAX_STREAM_MSG_BYTES>::new(&bidi.readable())?;
+
+        let mut msg = [0u8; MAX_STREAM_MSG_BYTES];
+        let len = net::handshake::hello(&mut msg)?;
+        net::web::write_frame(&writer, &msg[..len]).await?;
+
+        // The challenge: a nonce this shard chose for this connection.
+        let reply = reader
+            .next()
+            .await
+            .ok_or_else(|| "no challenge".to_string())?;
+        let len = net::handshake::auth_for(&reply, server, address, sign, &mut msg)?;
+        net::web::write_frame(&writer, &msg[..len]).await?;
+
+        let reply = reader
+            .next()
+            .await
+            .ok_or_else(|| "no handshake reply".to_string())?;
+        let welcome = net::handshake::welcome_from(&reply)?;
+
+        // **The reader is handed on rather than rebuilt, and that is the one
+        // place this path can lose data that the desktop one cannot.**
+        // `read_exact` stops on the byte it was asked for; a browser read
+        // returns whatever arrived, so the chunk that completed `welcome` may
+        // already hold the first event frames. `rekey` carries that residue
+        // across the change of ceiling (128 -> 320) — building a fresh reader
+        // here instead would drop those bytes with nothing to show for it,
+        // and the symptom would be a rare missing event at join, which is
+        // about the worst bug shape available.
+        let (tx, events) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+        let mut ev_reader = reader.rekey::<MAX_EVENT_MSG_BYTES>();
+        spawn_local(async move {
+            while let Some(bytes) = ev_reader.next().await {
+                if tx.send(bytes).await.is_err() {
+                    return;
+                }
+            }
+        });
+
+        // Datagrams: the browser's chunk IS the datagram, so there is no
+        // framing on this lane and the ring's policy is untouched — bounded,
+        // drop-oldest, counted, the same `DgRing` the desktop client fills.
+        let datagrams = datagram_lane();
+        net::web::spawn_datagram_reader(transport.datagrams().readable(), datagrams.clone());
+
+        // The action lane's writer, bounded at `ACTION_RING_CAP` for the
+        // reason the desktop one is: the client may not hold more in flight
+        // than the sim will accept in a burst, and a full queue is REPORTED
+        // rather than dropped.
+        let (act_tx, act_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(ACTION_RING_CAP);
+        net::web::spawn_action_writer(writer, act_rx);
+
+        let wire = net::web::WebWire::new(&transport)?;
+        let core = ClientCore::new(welcome.seed, welcome.player_id, welcome.tick);
+        Ok(Self {
+            core,
+            applied: 0,
+            applied2: 0,
+            welcome,
+            wire,
+            actions: act_tx,
+            events,
+            datagrams,
+            snapshots: 0,
+            input_buf: [0u8; DATAGRAM_BUDGET_BYTES],
+            dg_scratch: (0..sim_core::limits::CLIENT_DG_RING)
+                .map(|_| Vec::with_capacity(DATAGRAM_BUDGET_BYTES))
+                .collect(),
+            closed: false,
+        })
+    }
+}
+
+impl Session {
     /// Whether the shard has hung up on this session. `pump` keeps working
     /// after it turns true — the drains are no-ops and the datagram send goes
     /// nowhere — so a caller may notice at its own cadence; what it must not

@@ -6,9 +6,12 @@
 > shell. This file drops at the repo root and is the design of record until
 > superseded.
 
-> **The browser client is deleted** (operator, 2026-08-06; the crate that
-> still said otherwise went 2026-08-08). This file was written for a
-> three.js page and every claim that depended on one has been corrected in
+> **The three.js browser client is deleted** (operator, 2026-08-06; the crate
+> that still said otherwise went 2026-08-08) — and since 2026-09-10 the native
+> Rust client compiles to `wasm32` as well, so *"the only client"* below now
+> means one CODEBASE rather than one target (`NOW.md` §0web,
+> `findings/web-build-20260909.md`). No JavaScript came back and none may.
+> This file was written for a three.js page and every claim that depended on one has been corrected in
 > place — §1 pillar 2, §5.1, §9, §11, §14. Where a number was *chosen*
 > because the target was a browser it now says so rather than being
 > silently reused. `CLAUDE.md` has the posture, including how to read the
@@ -229,7 +232,10 @@ gates/
                    # the browser; both went with the web client (operator,
                    # 2026-08-08). The desktop client links it as an rlib
                    # and compiles no wasm.
-    client/        # the Bevy desktop client: the only client.
+    client/        # the client. Desktop by default; `--no-default-features`
+                   # builds the same crate for wasm32 (2026-09-10) and
+                   # `client-web/` is the module a page loads. One codebase,
+                   # two targets, one `Wire` trait between them.
                    # SECOND CLASS as of DECISIONS.md 2026-08-05: the demo
                    # and the playable link, not the product. Allowed to
                    # sit below ART.md's bar; points at unarmed shards.
@@ -514,10 +520,14 @@ built:
 
 ## 9 · Client
 
-**The native Rust + Bevy client is the only client** (operator, 2026-08-05;
-`RENDER.md` owns its path). `web/` is **deleted** — not retiring, not
-compiling, not gated (operator, 2026-08-06; the `client-wasm` crate that
-still implied otherwise went 2026-08-08). **Every budget below was
+**The native Rust + Bevy client is the only client CODEBASE** (operator,
+2026-08-05; `RENDER.md` owns its path) — and as of 2026-09-10 it builds for
+two targets, the desktop and the browser (operator, 2026-09-09; `NOW.md`
+§0web). `web/` is **deleted** — not retiring, not compiling, not gated
+(operator, 2026-08-06; the `client-wasm` crate that still implied otherwise
+went 2026-08-08) — and a second implementation of the client is what stays
+forbidden, not a second `--target`. The web build today is the transport and
+no renderer; Bevy on WebGL2 is the open half. **Every budget below was
 nonetheless chosen for the browser**, and they are not yet re-derived for a
 desktop binary on a real GPU, so a native measurement that exceeds one is
 evidence about the budget, not automatically a defect. Re-deriving them is

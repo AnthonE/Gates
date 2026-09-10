@@ -1980,6 +1980,7 @@ dependencies = [
  "content",
  "fastrand",
  "image",
+ "js-sys",
  "ktx2",
  "protocol",
  "ruzstd",
@@ -1988,6 +1989,9 @@ dependencies = [
  "sim-core",
  "tokio",
  "ureq",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
  "wtransport",
 ]
 
@@ -1997,6 +2001,17 @@ version = "0.8.0"
 dependencies = [
  "protocol",
  "sim-core",
+]
+
+[[package]]
+name = "client-web"
+version = "0.8.0"
+dependencies = [
+ "client",
+ "protocol",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]
