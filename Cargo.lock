@@ -2008,6 +2008,7 @@ name = "client-web"
 version = "0.8.0"
 dependencies = [
  "client",
+ "js-sys",
  "protocol",
  "wasm-bindgen",
  "wasm-bindgen-futures",

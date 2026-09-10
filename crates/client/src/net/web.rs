@@ -320,10 +320,19 @@ pub(crate) fn spawn_action_writer(
                 // A caller handed this lane more than the protocol's own
                 // ceiling. Refused rather than split: the reliable lane is
                 // exactly-once and half a message is not a smaller one.
+                //
+                // **And the session ends, matching the desktop arm exactly.**
+                // This used to `continue`, which is the friendlier-looking
+                // arm and the wrong one: nothing on the reliable lane is
+                // droppable, so skipping a message leaves the client believing
+                // it sent an action the shard never saw. `lib.rs`'s writer task
+                // returns on the same condition, and returning here drops the
+                // writer, which finishes the C→S direction — a loud failure
+                // instead of a quiet divergence, on both platforms.
                 web_sys::console::error_1(&JsValue::from_str(
-                    "gates: action lane refused an oversized message",
+                    "gates: action lane refused an oversized message - ending the session",
                 ));
-                continue;
+                return;
             };
             let chunk = Uint8Array::new_with_length(n as u32);
             chunk.copy_from(&out[..n]);

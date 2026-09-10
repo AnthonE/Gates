@@ -112,7 +112,7 @@ async fn shard(ip: IpAddr) -> ShardHandle {
 async fn join(
     endpoint_addr: &str,
     endpoint: &wtransport::Endpoint<wtransport::endpoint::endpoint_side::Client>,
-) -> Result<client::Session, String> {
+) -> Result<client::Session, client::JoinError> {
     tokio::time::timeout(
         Duration::from_secs(10),
         client::Session::connect(
@@ -123,7 +123,7 @@ async fn join(
         ),
     )
     .await
-    .map_err(|_| "the connect never resolved".to_string())?
+    .map_err(|_| client::JoinError::Failed("the connect never resolved".to_string()))?
 }
 
 /// **Claim 1.** A shard the client did not self-sign for, at an address that
@@ -148,7 +148,7 @@ async fn a_non_loopback_shard_with_an_unpinned_certificate_is_refused() {
     // is load-bearing: `Session::connect` stamps `connect:` only on the
     // `endpoint.connect` failure, before a Hello is written.
     assert!(
-        err.starts_with("connect:"),
+        err.to_string().starts_with("connect:"),
         "refused, but not at the certificate: {err}"
     );
 
@@ -198,7 +198,7 @@ async fn a_pin_that_does_not_match_is_refused() {
         .err()
         .expect("a pin for another certificate must not admit this one");
     assert!(
-        err.starts_with("connect:"),
+        err.to_string().starts_with("connect:"),
         "refused, but not at the certificate: {err}"
     );
 

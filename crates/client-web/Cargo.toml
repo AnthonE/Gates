@@ -41,4 +41,7 @@ wasm-bindgen = "0.2"
 # The `async fn` in `#[wasm_bindgen] impl` expands to a call into this crate,
 # so it is a dependency of the MACRO rather than of any line written here.
 wasm-bindgen-futures = "0.4"
+# `js_sys::Error` and `Reflect::set` — how a refusal reaches the page carrying
+# the shard's own code instead of only a sentence to match on.
+js-sys = "0.3"
 web-sys = { version = "0.3", features = ["console"] }

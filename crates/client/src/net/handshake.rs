@@ -30,24 +30,100 @@ use protocol::{
     KIND_WELCOME, PROTO_VER,
 };
 
-/// Turn a refusal frame into the sentence a player sees, or `None` if this
-/// frame is not one. Shared by both steps below, because a shard may refuse
-/// at either.
-fn refusal(frame: &[u8]) -> Option<String> {
-    match peek_kind(frame) {
-        Ok(KIND_REFUSE) => {
-            let r = decode_refuse(frame).ok()?;
-            Some(match protocol::refuse_text(r.code) {
-                Some(why) => format!("refused: {why}"),
-                None => format!("refused: code {}", r.code),
-            })
+/// Why a join did not happen.
+///
+/// **The refusal carries its CODE, and that is the whole point of this type.**
+/// It used to be flattened into a `String` at the moment it was decoded, which
+/// left every caller with only prose to work with — and a caller that has only
+/// prose has to match on prose. That is not hypothetical: the browser page
+/// shipped on 2026-09-10 branching on `String(e).includes("auth")`, against a
+/// sentence reading *"this shard needs a signed identity — sign in through the
+/// elo launcher"*, which contains no `auth` anywhere. The branch was dead, so a
+/// player in a tab was told to open a launcher that cannot exist in a tab —
+/// exactly the misdirection `findings/web-build-20260909.md` §5 says must not
+/// be got wrong, shipped in the same slice that quoted it.
+///
+/// Prose-matching is the defect, so the fix is not a better substring. A code
+/// is a number the shard actually sent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JoinError {
+    /// The shard said no, with the `REFUSE_*` code it sent.
+    Refused(u8),
+    /// Everything else — a transport failure, a malformed frame, an encoder
+    /// that refused its own buffer. No code, because none was received.
+    Failed(String),
+}
+
+/// Whether a player on THIS build could reach an elo launcher at all.
+///
+/// A property of the platform, not of whether one happens to be running: a
+/// desktop player with no launcher installed can install one, and a player in
+/// a tab cannot. That distinction is the only axis on which the two sentence
+/// tables below differ, and it is why this is a `cfg!` rather than a runtime
+/// probe — `Display` has nothing to probe with, and the answer never changes
+/// for a given binary.
+pub const LAUNCHER_REACHABLE: bool = cfg!(not(target_arch = "wasm32"));
+
+/// The sentence a player sees for a refusal code.
+///
+/// `protocol::refuse_text` is the shared table and stays the authority; this
+/// wraps it and overrides only where the shared wording assumes a door the
+/// reader does not have. `crates/client/tests/refusals.rs` holds it to that:
+/// every `REFUSE_*` constant the protocol declares must have a sentence on
+/// both sides, no browser sentence may mention a launcher, and the two tables
+/// may differ only for codes listed there with a reason.
+pub fn refusal_sentence(code: u8, launcher_reachable: bool) -> String {
+    // The overrides. There is exactly one today, so this is an `if` rather
+    // than a `match` with a lone arm (clippy's `single_match`, and it is
+    // right — a one-armed match here would be a shape claiming to be a table).
+    // The second one turns it into a `match` and that is the moment to write
+    // the table.
+    //
+    // `REFUSE_AUTH`'s shared wording is "sign in through the elo launcher".
+    // There is no launcher in a tab, and no browser wallet either
+    // (`elo::sign_siwe`'s wasm arm returns `None` by construction), so on this
+    // platform that sentence names an act the reader cannot perform. The
+    // honest one states the shard's requirement and points somewhere real.
+    if !launcher_reachable && code == protocol::REFUSE_AUTH {
+        return "refused: this shard needs an account, and a browser cannot sign in yet \
+                - try a shard that takes guests"
+            .to_string();
+    }
+    match protocol::refuse_text(code) {
+        Some(why) => format!("refused: {why}"),
+        // A code this build has no sentence for. Still shows the number rather
+        // than swallowing it, because a shard refusing for a reason we cannot
+        // name is a build skew and the number is what identifies it.
+        None => format!("refused: code {code}"),
+    }
+}
+
+impl std::fmt::Display for JoinError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            JoinError::Refused(code) => f.write_str(&refusal_sentence(*code, LAUNCHER_REACHABLE)),
+            JoinError::Failed(why) => f.write_str(why),
         }
+    }
+}
+
+impl From<String> for JoinError {
+    fn from(why: String) -> Self {
+        JoinError::Failed(why)
+    }
+}
+
+/// The `REFUSE_*` code in a refusal frame, or `None` if this frame is not one.
+/// Shared by both steps below, because a shard may refuse at either.
+fn refusal(frame: &[u8]) -> Option<u8> {
+    match peek_kind(frame) {
+        Ok(KIND_REFUSE) => Some(decode_refuse(frame).ok()?.code),
         _ => None,
     }
 }
 
 /// Step 1 — the opening frame. Writes into `buf`, answers its length.
-pub fn hello(buf: &mut [u8]) -> Result<usize, String> {
+pub fn hello(buf: &mut [u8]) -> Result<usize, JoinError> {
     encode_hello(
         &Hello {
             proto_ver: PROTO_VER,
@@ -56,7 +132,7 @@ pub fn hello(buf: &mut [u8]) -> Result<usize, String> {
         },
         buf,
     )
-    .map_err(|e| format!("encode hello: {e:?}"))
+    .map_err(|e| JoinError::Failed(format!("encode hello: {e:?}")))
 }
 
 /// Step 2 — read the shard's challenge, answer with the auth frame.
@@ -75,13 +151,26 @@ pub fn auth_for(
     // inversion is the whole fix.
     sign: impl FnOnce(&str, &str, u64) -> Option<protocol::Signature>,
     buf: &mut [u8],
-) -> Result<usize, String> {
+) -> Result<usize, JoinError> {
     match peek_kind(frame) {
         Ok(protocol::KIND_CHALLENGE) => {}
-        Ok(KIND_REFUSE) => return Err(refusal(frame).unwrap_or_else(|| "refused".into())),
-        other => return Err(format!("expected a challenge, got {other:?}")),
+        // A frame that says REFUSE but does not decode is still a refusal, and
+        // its code is the one thing we could not read — so it reports as a
+        // failure with the reason, never as a refusal with an invented code.
+        Ok(KIND_REFUSE) => {
+            return Err(match refusal(frame) {
+                Some(code) => JoinError::Refused(code),
+                None => JoinError::Failed("refused, but the frame did not decode".into()),
+            })
+        }
+        other => {
+            return Err(JoinError::Failed(format!(
+                "expected a challenge, got {other:?}"
+            )))
+        }
     }
-    let challenge = protocol::decode_challenge(frame).map_err(|e| format!("challenge: {e:?}"))?;
+    let challenge = protocol::decode_challenge(frame)
+        .map_err(|e| JoinError::Failed(format!("challenge: {e:?}")))?;
 
     let domain = server.rsplit_once(':').map(|(h, _)| h).unwrap_or(server);
     let auth = if address.is_guest() {
@@ -107,21 +196,29 @@ pub fn auth_for(
             hex[i * 2] = H[(b >> 4) as usize];
             hex[i * 2 + 1] = H[(b & 0xf) as usize];
         }
-        let nonce = core::str::from_utf8(&hex).map_err(|_| "nonce hex".to_string())?;
+        let nonce =
+            core::str::from_utf8(&hex).map_err(|_| JoinError::Failed("nonce hex".to_string()))?;
         match sign(domain, nonce, challenge.issued_at) {
             Some(signature) => protocol::Auth { address, signature },
             None => protocol::Auth::default(),
         }
     };
-    protocol::encode_auth(&auth, buf).map_err(|e| format!("encode auth: {e:?}"))
+    protocol::encode_auth(&auth, buf).map_err(|e| JoinError::Failed(format!("encode auth: {e:?}")))
 }
 
 /// Step 3 — the shard's answer: a welcome, or the reason it said no.
-pub fn welcome_from(frame: &[u8]) -> Result<Welcome, String> {
+pub fn welcome_from(frame: &[u8]) -> Result<Welcome, JoinError> {
     match peek_kind(frame) {
-        Ok(KIND_WELCOME) => decode_welcome(frame).map_err(|e| format!("welcome: {e:?}")),
-        Ok(KIND_REFUSE) => Err(refusal(frame).unwrap_or_else(|| "refused".into())),
-        other => Err(format!("unexpected handshake reply: {other:?}")),
+        Ok(KIND_WELCOME) => {
+            decode_welcome(frame).map_err(|e| JoinError::Failed(format!("welcome: {e:?}")))
+        }
+        Ok(KIND_REFUSE) => Err(match refusal(frame) {
+            Some(code) => JoinError::Refused(code),
+            None => JoinError::Failed("refused, but the frame did not decode".into()),
+        }),
+        other => Err(JoinError::Failed(format!(
+            "unexpected handshake reply: {other:?}"
+        ))),
     }
 }
 
@@ -267,15 +364,24 @@ mod tests {
         let at_auth = auth_for(frame, "h:1", Address::GUEST, |_, _, _| None, &mut buf)
             .expect_err("a refusal is not an auth");
         let at_welcome = welcome_from(frame).expect_err("a refusal is not a welcome");
-        assert!(at_auth.starts_with("refused"), "{at_auth}");
+        // **The CODE, not the sentence.** This used to assert
+        // `at_auth.starts_with("refused")` and that the shard's stated reason
+        // appeared somewhere in the text — a test matching on prose, checking
+        // a function whose whole job had become flattening a code into prose.
+        // It passed happily while the browser page's own prose-match was dead.
+        assert_eq!(
+            at_auth,
+            JoinError::Refused(protocol::REFUSE_VERSION),
+            "a refusal must carry the code the shard sent"
+        );
         assert_eq!(
             at_auth, at_welcome,
             "one refusal reads the same at either step"
         );
-        // The text is the shard's stated reason, not a code, when we have one.
+        // And it still reaches a player as that shard's stated reason.
         assert!(
             protocol::refuse_text(protocol::REFUSE_VERSION)
-                .is_some_and(|why| at_auth.contains(why)),
+                .is_some_and(|why| at_auth.to_string().contains(why)),
             "{at_auth}"
         );
     }
@@ -300,6 +406,13 @@ mod tests {
         // and the message has to say what actually came so a report is useful.
         let stray = challenge_frame([0u8; protocol::NONCE_BYTES], 0);
         let err = welcome_from(&stray).expect_err("not a welcome");
-        assert!(err.contains("unexpected handshake reply"), "{err}");
+        assert!(
+            matches!(err, JoinError::Failed(_)),
+            "a protocol error is not a refusal - there is no code to report: {err}"
+        );
+        assert!(
+            err.to_string().contains("unexpected handshake reply"),
+            "{err}"
+        );
     }
 }

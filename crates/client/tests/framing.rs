@@ -234,3 +234,39 @@ fn a_certificate_pin_is_thirty_two_bytes_of_dotted_hex_or_nothing() {
         );
     }
 }
+
+/// **The client encodes a length prefix in exactly one place.**
+///
+/// `src/lib.rs`'s `write_frame` hand-rolled its own `to_le_bytes` pair until
+/// 2026-09-10 while two doc comments already claimed the layout was
+/// byte-identical across the two transports — three copies agreeing by
+/// inspection, described as an enforcement. It calls `encode_into` now, and
+/// this is what keeps that true.
+///
+/// **State the limit, because a proxy that reads as a proof is worse than no
+/// gate.** This is a file-scoped scan for one spelling. It is green under
+/// `to_ne_bytes`, under a hand-rolled `[n as u8, (n >> 8) as u8]`, and under a
+/// second writer added to `net/native.rs`, which is outside its scope. What
+/// would actually hold the invariant is lifting the encoder into `protocol`
+/// beside the rest of the wire and gating the call sites — `frame.rs`'s own
+/// header says that is the signal to watch for, and a third copy appearing is
+/// it. Until then this catches the one regression anybody is likely to make:
+/// re-inlining the prefix at the site that had it.
+#[test]
+fn the_length_prefix_is_encoded_in_one_place() {
+    let path = std::path::Path::new("src/lib.rs");
+    let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let code: String = text
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !code.contains("to_le_bytes"),
+        "src/lib.rs encodes a length prefix of its own. The stream lane's framing is \
+         `net::frame::encode_into` on both transports — that is what makes the two \
+         `write_frame`s provably the same bytes rather than the same by inspection, and \
+         it is what refuses an empty frame and a payload past 65,535 instead of \
+         truncating it into a permanent desync."
+    );
+}

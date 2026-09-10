@@ -2759,20 +2759,29 @@ this repo's history has ever run a gate and none should — so the handshake
 completing against a live shard is an operator act, and it is the next thing
 worth doing because it is cheap and it retires the transport question whole.
 
-What remains, in order: (1) open the page against a dev shard, `--cert-hash`
-in hand — a page cannot skip validation, so that flag is required where it is
-optional natively; (2) `basis-universal` patched to build `transcoder/` only
-(§2.3, spiked, standalone); (3) **Bevy on WebGL2/WebGPU — the largest unknown
-left**: §10.1 proved the dependency stack compiles for the target and nothing
-has drawn a frame; `Session` is not `Send` on wasm, so `render::Net` needs
-`NonSend` there.
+What remains, in order: (1) open the page against a dev shard built from the
+SAME commit, `--cert-hash` in hand — a page cannot skip validation, so that
+flag is required where it is optional natively, and the shard checks
+`PROTO_VER` before auth; (2) `basis-universal` transcoder-only, which is
+**more than the build-list change §2.3 called it** — `transcoder_init` calls
+into the encoder, so a stripped fork does not link (§2.3's ⚠); (3) **Bevy on
+WebGL2 — the largest unknown left**, and smaller than it looked: with
+`basis-universal` out of the graph the build reaches our code and stops in
+**three files** (`render/{boot,hub,menu}.rs`), the other ~39k lines
+type-checking. `render::Net` needs nothing — it is already
+`insert_non_send_resource` at 44 sites.
 
-Not decided: where the page is served, so whether it gets COOP/COEP and
-threads (§4.1 — without them a chunk's 5.153 ms lands on the frame), and how a
-web player authenticates (§5 — it ships guest-only until a browser wallet
-exists; a `require_auth` shard must say *this shard needs an account*, never
-"login failed"). Carried from struck §0wt: nothing gates that `wtransport rev
-= a11e6a8e…` contains the #317 fix, and that pin is permanent now.
+⚠ **COOP/COEP is struck as a reason to decide hosting** (2026-09-10): Bevy 0.18
+keys threading on `target_arch` at three sites, so cross-origin isolation buys
+zero milliseconds and the streaming re-budget is unconditional (§4.1's ⚠).
+Hosting is still undecided for the reasons that are real — the cert path, CORS,
+and a CSP on the obvious origin that blocks WebAssembly outright.
+
+Not decided: how a web player authenticates (§5 — guest-only until a browser
+wallet exists), and **whether there is anywhere to send them**: the only shard
+in the published list runs `require_auth`, so a page can reach nothing public
+even with a correct message. Carried from struck §0wt: nothing gates that
+`wtransport rev = a11e6a8e…` contains the #317 fix, and that pin is permanent.
 
 
 ## 0wd · A new world register is proposed — blocked on the operator's word

@@ -23,8 +23,10 @@
 </style>
 <main>
   <h1>Gates — web client</h1>
-  <p class="sub">The transport probe. It joins a shard over WebTransport and drives the
-     real client core. There is no renderer yet.</p>
+  <p class="sub">The transport probe. It joins a shard over WebTransport, drives the real
+     client core, and sends real input. There is no renderer yet — click the readout to
+     capture the mouse, then use <b>WASD</b>; the eye position is the proof that input
+     reached the shard and prediction came back.</p>
 
   <label for="server">Shard (host:port)</label>
   <input id="server" value="127.0.0.1:4433" spellcheck="false">
@@ -71,22 +73,50 @@ go.addEventListener("click", async () => {
   try {
     g = await Gates.join(server, hash, id);
   } catch (e) {
-    // A shard that requires an account refuses a guest, and that must not read
-    // as a login failure: there is no launcher in a tab to sign in through.
-    const why = String(e);
-    say(why.includes("auth")
-      ? `${why}\n\nThis shard needs an account. A page has no elo launcher to sign with, so it can only join shards that take guests.`
-      : why, "bad");
+    // The message is already right for a browser — `client::refusal_sentence`
+    // overrides the shared wording wherever it names something a page cannot
+    // do — so this displays it rather than deciding anything from it.
+    //
+    // The page used to read `String(e).includes("auth")` here, against a
+    // sentence containing no "auth", and told a player in a tab to open the
+    // elo launcher. `e.code` is the shard's own REFUSE_* number when a shard
+    // answered at all; branch on that if this ever needs to branch.
+    // `crates/client/tests/refusals.rs` fails if this file matches on text.
+    say(e.message ?? String(e), "bad");
     go.disabled = false;
     return;
   }
 
   say(`in the world — player ${g.player_id}, seed ${g.seed}`, "good");
 
+  // ── input ────────────────────────────────────────────────────────────────
+  // Keys and mouse pixels only. Which way is right is arithmetic and it lives
+  // in Rust (`client::look::control`) — this page deliberately derives nothing,
+  // because that arithmetic shipped inverted on two clients at once and a
+  // third copy in JavaScript would be the third chance.
+  const keys = new Set();
+  let dx = 0, dy = 0;
+  addEventListener("keydown", (e) => { if (!e.repeat) keys.add(e.code); });
+  addEventListener("keyup", (e) => keys.delete(e.code));
+  addEventListener("blur", () => keys.clear());   // a lost window is keys up
+  log.style.cursor = "pointer";
+  log.title = "click to capture the mouse (Esc releases it)";
+  log.addEventListener("click", () => log.requestPointerLock());
+  addEventListener("mousemove", (e) => {
+    if (document.pointerLockElement === log) { dx += e.movementX; dy += e.movementY; }
+  });
+
   // The page owns the frame loop; `pump` is synchronous and never awaits, which
   // is what lets it be called from here at all.
   let last = performance.now();
   const frame = (now) => {
+    // Input first: the core takes the LEVEL and `pump`'s `advance` is what
+    // mints a frame from it, so a frame pumped before its input was set sends
+    // the previous one.
+    g.input(dx, dy, keys.has("KeyW"), keys.has("KeyS"),
+            keys.has("KeyA"), keys.has("KeyD"), 0, 0, false);
+    dx = 0; dy = 0;
+
     const steps = g.pump(now - last);
     last = now;
     if (g.closed) {
@@ -94,10 +124,18 @@ go.addEventListener("click", async () => {
       go.disabled = false;
       return;
     }
-    // `snapshots` is the number that says the transport works: it only climbs
-    // when a datagram arrived, decoded and was applied.
+    // `snapshots` says the S→C lane works; `eye` moving under WASD says the
+    // C→S lane and the predictor do. A page that showed only the first would
+    // look identical with its input lane silently clamped, which is exactly
+    // what this build did before 2026-09-10.
+    const [x, y, z] = g.eye;
+    const [overMtu, backpressured] = g.refused;
+    const held = [...keys].filter((k) => k.startsWith("Key")).map((k) => k.slice(3)).join("");
     say(`in the world — player ${g.player_id}, seed ${g.seed}\n`
-      + `snapshots ${g.snapshots}   ·   sim steps this frame ${steps}`, "good");
+      + `eye  ${x.toFixed(1)} ${y.toFixed(1)} ${z.toFixed(1)}${held ? "   [" + held + "]" : ""}\n`
+      + `snapshots ${g.snapshots}   ·   sim steps this frame ${steps}\n`
+      + `dropped ${g.dropped}   ·   refused ${overMtu} over-MTU, ${backpressured} backpressured`,
+      "good");
     requestAnimationFrame(frame);
   };
   requestAnimationFrame(frame);

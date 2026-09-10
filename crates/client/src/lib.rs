@@ -29,8 +29,22 @@
 //! sequence in the same order, they call the same three pure functions out of
 //! [`net::handshake`], and they end by building the same struct; a change to
 //! one that is not made to the other is a client that can join from a desktop
-//! and not from a page, or the reverse, and no gate can see that because each
-//! target only ever compiles one of them.
+//! and not from a page, or the reverse.
+//!
+//! ⚠ **This paragraph used to end "and no gate can see that, because each
+//! target only ever compiles one of them", and the second half is true while
+//! the first is false.** No *compile* can see it — `cargo test --workspace`
+//! never builds the wasm arm at all, since `client-web` is empty natively —
+//! but a source scan compiles nothing and reads both arms on any target.
+//! `crates/client/tests/connect_twins.rs` is that scan, and it was written the
+//! day after this sentence was, having stopped somebody from looking for
+//! exactly one day. A plausible impossibility claim costs more than an
+//! unmentioned gap.
+//!
+//! What it checks is what rustc cannot: the handshake sequence, the lane
+//! depths, the frame ceilings, and the VALUES the session literal gives each
+//! field. The field SET needs no gate — `Session` is one non-cfg'd struct, so
+//! a missing field is `E0063` on that arm's own build.
 
 pub mod args;
 // The settings file: path, format, version, and the unknown-key policy. NOT
@@ -132,6 +146,11 @@ use client_core::core::{ClientCore, Ingest};
 // public API: `SendError` is what `send_action` returns and renaming its path
 // would be a breaking change for a refactor that is meant to be invisible.
 pub use net::SendError;
+// **The join's failure, carrying the shard's own refusal CODE.** Re-exported
+// at the crate root beside `SendError` for the same reason: it is what a
+// public method returns, and a caller should not have to name a private
+// module's path to match on it.
+pub use net::handshake::{refusal_sentence, JoinError, LAUNCHER_REACHABLE};
 use net::{datagram_lane, drain_datagram, drain_lane, DatagramRx, Wire};
 // **Eight names left this list when the handshake moved to `net::handshake`**
 // — every decoder and every message kind. What stays is the two frame-size
@@ -155,10 +174,31 @@ use wtransport::{ClientConfig, Endpoint, RecvStream, SendStream};
 /// signal to lift this into `protocol` where the rest of the wire lives.
 #[cfg(feature = "native")]
 async fn write_frame(send: &mut SendStream, payload: &[u8]) -> Result<(), String> {
-    let len = (payload.len() as u16).to_le_bytes();
-    send.write_all(&len).await.map_err(|e| e.to_string())?;
-    send.write_all(payload).await.map_err(|e| e.to_string())?;
-    Ok(())
+    // **One encoder for both transports, which the comment above claimed
+    // before it was true.** This wrote its own `to_le_bytes` prefix until
+    // 2026-09-10, so the doc line saying the layout is "byte-identical to
+    // `server::net::write_frame` and to the browser's" rested on three copies
+    // agreeing by inspection — `CLAUDE.md`'s ⚠ about a doc that reads as
+    // enforced while nothing checks.
+    //
+    // It also silently accepted two payloads the browser refuses, and the
+    // second is the expensive one: an empty frame went out as `[0, 0]`, and a
+    // payload past 65,535 was TRUNCATED by `as u16` into a length prefix that
+    // does not describe it — a permanent stream desync rather than a dropped
+    // message. `encode_into` refuses both.
+    //
+    // One `write_all` rather than two: a QUIC stream is a byte stream, so
+    // coalescing was always the transport's business, and the browser's
+    // `WritableStream` counts each write as a queued chunk. Same bytes on the
+    // wire either way; one fewer syscall per action.
+    let mut out = [0u8; MAX_STREAM_MSG_BYTES + net::frame::LEN_PREFIX_BYTES];
+    let n = net::frame::encode_into(&mut out, payload).ok_or_else(|| {
+        format!(
+            "frame: {} bytes does not fit the stream lane",
+            payload.len()
+        )
+    })?;
+    send.write_all(&out[..n]).await.map_err(|e| e.to_string())
 }
 
 /// **The browser has no counterpart to this function and that is the whole
@@ -415,7 +455,7 @@ impl Session {
         // launcher needs, never a message this process composed. See the
         // `prove` block below for why that inversion is the whole fix.
         sign: impl FnOnce(&str, &str, u64) -> Option<protocol::Signature>,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, JoinError> {
         let url = format!("https://{server}");
         let connection = endpoint
             .connect(&url)
@@ -548,7 +588,7 @@ impl Session {
         // compose the sentence it asks you to sign is a game that can ask you
         // to sign anything.
         sign: impl FnOnce(&str, &str, u64) -> Option<protocol::Signature>,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, JoinError> {
         use wasm_bindgen_futures::{spawn_local, JsFuture};
         use web_sys::WritableStreamDefaultWriter;
 
@@ -636,6 +676,42 @@ impl Session {
 }
 
 impl Session {
+    /// What the browser transport has REFUSED to send, and why.
+    ///
+    /// `(over_mtu, backpressured)` — datagrams dropped because the payload
+    /// exceeded the live `maxDatagramSize`, and because the writer's queue was
+    /// already full.
+    ///
+    /// **This exists because `findings/web-build-20260909.md` §11.3 promised
+    /// it and nothing provided it.** The doc said, twice, that the MTU refusal
+    /// is *"counted, so a lane that has quietly stopped reaching the shard is
+    /// a number somebody can read rather than a player who cannot move"* — and
+    /// a whole-repo grep for those counters returned their declarations, their
+    /// initialisers, and the two halves of their own increments. Nothing on
+    /// any target could read either one. A promise a doc makes and the tree
+    /// does not keep is the exact ⚠ `CLAUDE.md` spends a paragraph on, and it
+    /// was made here.
+    ///
+    /// ⚠ **`cfg`'d off natively rather than answering `(0, 0)`**, deliberately.
+    /// `NativeWire` has no clamp to count — `wtransport`'s `send_datagram`
+    /// returns an `Err` this client discards, `TooLarge` included — so a
+    /// permanent zero would read as *measured, and fine*, which is worse than
+    /// no number at all. Giving the desktop side a real counter is its own
+    /// slice and it is owed.
+    #[cfg(target_arch = "wasm32")]
+    pub fn wire_counts(&self) -> (u64, u64) {
+        (self.wire.over_mtu.get(), self.wire.backpressured.get())
+    }
+
+    /// Snapshots the ring dropped before a frame drained them — wall 4's
+    /// stated drop-oldest policy, as an observable rather than a comment.
+    ///
+    /// A poisoned lock answers 0: the reader task having panicked is a dead
+    /// session, which `closed()` is the thing to ask about.
+    pub fn datagrams_dropped(&self) -> u64 {
+        self.datagrams.lock().map(|r| r.dropped).unwrap_or(0)
+    }
+
     /// Whether the shard has hung up on this session. `pump` keeps working
     /// after it turns true — the drains are no-ops and the datagram send goes
     /// nowhere — so a caller may notice at its own cadence; what it must not

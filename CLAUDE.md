@@ -202,11 +202,21 @@ do not rediscover)
   so a lane that has quietly stopped reaching the shard is a number rather
   than a player who cannot move. Truncation is not the softer option: every
   payload here is an encoded message whose decoder checks its length, so half
-  of one is not a smaller message. `Session::pump` still sends
-  `input_buf[..len]` with no clamp at all (`findings/web-build-20260909.md`
-  §10.3 found it and deliberately left it), which is safe only because
-  `DATAGRAM_BUDGET_BYTES = 1100` sits under the 1,200-byte QUIC floor — a
-  constant holding a rule up, which is what this list exists to warn about.
+  of one is not a smaller message. **And the counter has a reader**, which took
+  two goes: the doc promised one twice while `over_mtu` and `backpressured` had
+  no accessor on any target, so what read as coverage was prose.
+  `Session::wire_counts` and the page's `refused` readout are it.
+  ⚠ **Do NOT answer the remaining half by clamping inside `Session::pump`.**
+  Measured 2026-09-10: the largest datagram `poll_input` can produce is **74
+  bytes** against a 1,100-byte budget — every field is fixed-width and the frame
+  count is capped at `MAX_INPUT_FRAMES = 10` three times over — a ~15× margin,
+  and `protocol_golden`'s `.unwrap()` already reddens on both growth mutations.
+  The clamp belongs where the live `max_datagram_size()` is, which is the
+  `Wire`. What is genuinely owed is smaller and different: `net/native.rs`
+  discards wtransport's `Err`, `TooLarge` included, so the DESKTOP side counts
+  nothing; and `client-core`'s `poll_input` swallows an overflow with
+  `.unwrap_or(0)` *after* clearing `input_due`, destroying that tick's input
+  silently.
 - `send_datagram()` (drop-oldest), never `send_datagram_wait()` — a
   congestion stall must cost freshness, not latency.
 - **Quantize both sides** or prediction drifts by rounding: the server
