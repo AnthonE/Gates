@@ -1975,11 +1975,11 @@ pub async fn client_handshake(
     } else {
         let mut text = [0u8; protocol::SIWE_MESSAGE_MAX];
         // Checksummed, because that is what the shard recomputes and what a
-        // real launcher signs — see `auth::checksum_hex`. A lowercase address
+        // real launcher signs — see `Address::to_checksum_hex`. A lowercase address
         // here would differ from the server's text by up to 40 characters and
         // land as `WrongSigner`, which is the same trap the comment above
         // describes one field over.
-        let checksummed = crate::auth::checksum_hex(&address);
+        let checksummed = address.to_checksum_hex();
         let addr = core::str::from_utf8(&checksummed).map_err(|_| "address hex".to_string())?;
         let tlen = protocol::siwe_message(
             domain,

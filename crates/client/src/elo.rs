@@ -543,39 +543,92 @@ pub fn sign_siwe(domain: &str, nonce: &str, issued_at: u64) -> Option<protocol::
     parse_signature(&proof.signature)
 }
 
-/// The browser's signer: a guest, always — **for now, and deliberately not a
-/// blocker** (`findings/web-build-20260909.md` §5).
+/// The browser's signer: the visitor's own wallet, asked once, for one
+/// message.
 ///
-/// Same name and same signature as the desktop function above, so
-/// `Session::connect`'s call site reads identically on both targets and the
-/// day a browser wallet lands it is this body that changes and nothing else.
+/// **This is where the desktop inversion cannot hold, and the reason is the
+/// platform rather than a preference.** The elo launcher has a `prove` verb —
+/// we hand it three inert values and IT writes every word, so a game cannot
+/// smuggle a sentence into a signature. `window.ethereum` has no such verb:
+/// `personal_sign` takes text or nothing. So the text is composed on this side
+/// — in Rust, by [`crate::net::handshake::Proof::message`], through the same
+/// `protocol::siwe_message` the shard calls to rebuild what it verifies.
 ///
-/// `None` is the honest answer rather than a stub. The desktop signer reaches
-/// a *local* launcher over a *local* socket, deliberately so that no key is
-/// ever in the game process (`CLAUDE.md` §vendored); a page has no local
-/// launcher, and the routes that could replace it — a browser wallet, an elo
-/// web session — are platform questions upstream of this repo. Meanwhile
-/// `Session::connect` already treats `None` as "join as a guest", which
-/// `lib.rs` documents as what a declined prompt or an absent launcher should
-/// do rather than failing the connection. The absent-launcher case IS the web
-/// case, and it was already handled.
+/// Two things replace the launcher's guarantee, and they are the standard ones
+/// for a page:
 ///
-/// ⚠ **The one thing a caller must get right is the message on refusal.** A
-/// shard with `require_auth` answers `REFUSE_AUTH` to a guest, and per
-/// `CLAUDE.md`'s vendoring trap that lands looking like a bad signature. A web
-/// player who hits a locked shard has to be told *this shard needs an
-/// account* — never "login failed", which would send them looking for a
-/// launcher that cannot exist in their browser.
+/// - **The wallet renders the message and the human approves it.** EIP-4361 is
+///   a format wallets parse and display; the text says in its own second
+///   paragraph that it authorises nothing and moves no funds.
+/// - **The shard recomputes.** A page that composed something else does not get
+///   a login, it gets `WrongSigner`. `crates/server/tests/siwe_wire.rs` runs a
+///   real signature over this exact text through the real verifier, and pins
+///   the two mutants that matter — a lowercase address and another shard's
+///   domain — as refused.
+///
+/// What is deliberately NOT done here is a JavaScript reimplementation of the
+/// message. `protocol` compiles to wasm; a second copy of a byte-exact format
+/// whose only symptom on drift is every login failing as `WrongSigner` is the
+/// two-implementations trap `CLAUDE.md` records paying for twice.
+///
+/// `signer` is a JS function the page supplies: `(text: string) => Promise<
+/// string>`, resolving to a `0x…` 65-byte signature — which is exactly the
+/// shape of the platform's own `Deck.wallet.sign(message, address)`
+/// (`watchtower/js/deck-shim.js` in `AnthonE/scry-forge`), so a page on
+/// elopros.com passes the wallet object it already has.
+///
+/// ⚠ **An error here is an error, never a silent guest join**, and that is a
+/// deliberate divergence from the desktop arm. Natively a declined prompt or an
+/// absent launcher becomes `None` and the shard decides — right, because both
+/// mean "no identity was offered". In a page the signer only exists because the
+/// player pressed connect, so a rejection is a thing they just did: reporting it
+/// as `REFUSE_AUTH`'s *this shard needs an account* would land the message two
+/// hops from its cause, which is the failure `CLAUDE.md`'s vendoring trap is
+/// about. A guest join in a browser is expressed by passing no signer at all.
 #[cfg(target_arch = "wasm32")]
-pub fn sign_siwe(_domain: &str, _nonce: &str, _issued_at: u64) -> Option<protocol::Signature> {
-    None
+pub async fn sign_siwe_web(
+    signer: &js_sys::Function,
+    address: protocol::Address,
+    proof: &crate::net::handshake::Proof,
+) -> Result<protocol::Signature, String> {
+    use wasm_bindgen::JsValue;
+
+    let text = proof.message(address);
+    let answer = signer
+        .call1(&JsValue::NULL, &JsValue::from_str(&text))
+        .map_err(|e| crate::net::web::js_err("the wallet refused to be asked", &e))?;
+
+    // A signer that answered synchronously is accepted as well as one that
+    // returned a promise: `Promise::resolve` wraps a plain value, so a page
+    // may hand over either without this caring which.
+    let resolved = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&answer))
+        .await
+        // The wallet's own words. A rejection is `4001 User rejected the
+        // request`, and a player who just pressed Cancel must read that and
+        // not a sentence about the shard.
+        .map_err(|e| crate::net::web::js_err("the wallet did not sign", &e))?;
+
+    let hex = resolved
+        .as_string()
+        .ok_or_else(|| "the wallet answered with something that is not a string".to_string())?;
+    parse_signature(&hex).ok_or_else(|| {
+        format!(
+            "the wallet answered {} characters, and a signature is 0x followed by {} hex digits",
+            hex.len(),
+            protocol::SIGNATURE_BYTES * 2
+        )
+    })
 }
 
 /// `0x…` hex → 65 bytes. Refuses anything else.
-// Follows `sign_siwe` off wasm because it is that function's second half and
-// has no other caller. The browser wallet slice that gives the web
-// `sign_siwe` a body will want it back, and un-gating it is the same edit.
-#[cfg(any(not(target_arch = "wasm32"), test))]
+//
+// Un-gated 2026-09-10, as its own note said it would be: it was `#[cfg(not(
+// wasm32))]` because it was `sign_siwe`'s second half and the browser had no
+// signer to have a second half of. `sign_siwe_web` above is that signer, and
+// it parses what a wallet hands back with this — the same 65 bytes, the same
+// refusal of a short or long one. A padded signature recovers a DIFFERENT
+// address, so the failure it prevents presents as "the shard says I am
+// somebody else".
 pub(crate) fn parse_signature(hex: &str) -> Option<protocol::Signature> {
     let body = hex.strip_prefix("0x").or_else(|| hex.strip_prefix("0X"))?;
     if body.len() != protocol::SIGNATURE_BYTES * 2 {

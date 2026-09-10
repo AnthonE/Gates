@@ -287,3 +287,109 @@ async fn a_guest_still_plays_where_guests_are_taken() {
         .shutdown
         .store(true, std::sync::atomic::Ordering::Relaxed);
 }
+
+// ── the browser's half ───────────────────────────────────────────────────────
+//
+// Everything above signs text composed by `server::net::client_handshake`.
+// A page cannot use that: `window.ethereum` has no `prove` verb, so the text
+// is built in the client crate (`client::net::handshake::Proof::message`) and
+// handed to the wallet as a finished string. That is a SECOND construction of
+// the same bytes, which is the shape this file's own header says refuses every
+// login while both sides look correct alone — so it is gated here, against the
+// shard's real verifier rather than against a rebuild of it.
+
+/// **A signature over the text a browser wallet is shown verifies at the
+/// shard.** The whole browser identity path in one assertion.
+///
+/// `Proof::message` is what a page hands `personal_sign`; `wallet_sign` is
+/// EIP-191 exactly as a wallet does it; `server::auth::verify` is the shard's
+/// own function, unmodified. Nothing here rebuilds the message a second time,
+/// which is the trap `CLAUDE.md` records under `lattice.rs`: a naive rebuild
+/// that calls the thing under test carries the same mutant on both sides.
+#[test]
+fn a_signature_over_the_browsers_own_text_verifies_at_the_shard() {
+    let sk = key(11);
+    let address = address_of(&sk);
+    let nonce = [0x5Au8; protocol::NONCE_BYTES];
+    let issued_at = 1_700_000_000;
+
+    let proof = client::net::handshake::Proof {
+        domain: DOMAIN.to_string(),
+        nonce,
+        issued_at,
+    };
+    let auth = protocol::Auth {
+        address,
+        signature: wallet_sign(&sk, &proof.message(address)),
+    };
+    assert!(
+        server::auth::verify(DOMAIN, &nonce, issued_at, &auth).is_ok(),
+        "the shard must accept a signature over the text a page shows its wallet"
+    );
+}
+
+/// **The case in the address is inside the signed bytes, and this proves it.**
+///
+/// EIP-4361 wants the EIP-55 spelling and the shard rebuilds with it
+/// (`Address::to_checksum_hex`), so a page that signed the lowercase form
+/// recovers a different digest and is refused — as `WrongSigner`, which reads
+/// as "somebody else signed this" and not as "one character is the wrong
+/// case". That is the whole reason `to_checksum_hex` moved into `protocol`
+/// instead of being reimplemented for the browser.
+///
+/// The mutant, run rather than described: build the message the wrong way and
+/// watch the real verifier refuse it.
+#[test]
+fn the_lowercase_address_is_refused_which_is_why_the_checksum_is_shared() {
+    let sk = key(11);
+    let address = address_of(&sk);
+    let nonce = [0x5Au8; protocol::NONCE_BYTES];
+    let issued_at = 1_700_000_000;
+
+    let lower = address.to_hex();
+    let mut text = [0u8; protocol::SIWE_MESSAGE_MAX];
+    let n = protocol::siwe_message(
+        DOMAIN,
+        std::str::from_utf8(&lower).unwrap(),
+        protocol::SLUG,
+        &nonce,
+        issued_at,
+        &mut text,
+    );
+    let auth = protocol::Auth {
+        address,
+        signature: wallet_sign(&sk, std::str::from_utf8(&text[..n]).unwrap()),
+    };
+    assert_eq!(
+        server::auth::verify(DOMAIN, &nonce, issued_at, &auth),
+        Err(server::auth::AuthError::WrongSigner),
+        "a lowercase address must not verify — if it does, the case stopped \
+         reaching the signed bytes and every wallet spelling would pass"
+    );
+}
+
+/// The domain binding, from the browser's side: a page that signed for one
+/// shard cannot present it at another. Same rule as
+/// `a_signature_for_another_shard_is_refused` above, over the text a wallet
+/// actually sees.
+#[test]
+fn the_browsers_text_is_bound_to_the_shard_it_was_collected_for() {
+    let sk = key(11);
+    let address = address_of(&sk);
+    let nonce = [0x5Au8; protocol::NONCE_BYTES];
+    let issued_at = 1_700_000_000;
+
+    let elsewhere = client::net::handshake::Proof {
+        domain: "evil.example".to_string(),
+        nonce,
+        issued_at,
+    };
+    let auth = protocol::Auth {
+        address,
+        signature: wallet_sign(&sk, &elsewhere.message(address)),
+    };
+    assert_eq!(
+        server::auth::verify(DOMAIN, &nonce, issued_at, &auth),
+        Err(server::auth::AuthError::WrongSigner)
+    );
+}

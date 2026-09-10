@@ -40,9 +40,11 @@ use client::refusal_sentence;
 /// way `tests/sound.rs` makes `pop_chat`'s exemption cost one.
 const MAY_DIFFER: &[(&str, &str)] = &[(
     "REFUSE_AUTH",
-    "the shared sentence says `sign in through the elo launcher`. A page has no \
-     local launcher and `elo::sign_siwe`'s wasm arm returns `None` by construction, \
-     so on the browser that sentence names an act the reader cannot perform.",
+    "the shared sentence says `sign in through the elo launcher`. A page has no local \
+     launcher and never will — the launcher is a desktop process reached over a local \
+     socket — so on the browser that sentence names an act the reader cannot perform. \
+     The browser sentence points at the door a page DOES have: a wallet extension, \
+     signing the same SIWE message through `elo::sign_siwe_web`.",
 )];
 
 /// Every `pub const REFUSE_<NAME>: u8 = <n>;` the protocol declares, read out
@@ -113,9 +115,10 @@ fn every_refusal_code_has_a_sentence_on_both_platforms() {
 /// proven, since the sentence it refuses is the one that shipped.
 ///
 /// `elo` and `wallet` are deliberately NOT refused: buying a copy on elo is
-/// something a browser player can do, and a wallet is the route that will
-/// eventually give a page an identity. The word that names an impossible act
-/// is `launcher`.
+/// something a browser player can do, and a wallet is how a page proves an
+/// identity — since 2026-09-10 that is built (`elo::sign_siwe_web`), so a
+/// sentence naming one points at a real door. The word that names an
+/// impossible act is `launcher`.
 #[test]
 fn no_browser_refusal_points_a_player_at_a_launcher() {
     for (name, code) in declared_codes() {
@@ -123,9 +126,9 @@ fn no_browser_refusal_points_a_player_at_a_launcher() {
         assert!(
             !said.to_ascii_lowercase().contains("launcher"),
             "{name}'s browser sentence tells a player in a tab to use the elo launcher: \
-             {said:?}. There is no launcher in a page and there is no browser wallet yet, \
-             so this names an act the reader cannot perform — the exact misdirection \
-             findings/web-build-20260909.md §5 is about."
+             {said:?}. There is no launcher in a page — a page's signer is a wallet \
+             extension — so this names an act the reader cannot perform: the exact \
+             misdirection findings/web-build-20260909.md §5 is about."
         );
     }
 }

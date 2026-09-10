@@ -10,3 +10,13 @@ publish.workspace = true
 # the caps in limits.rs. Pure and wasm-clean; protocol adds no game logic
 # on top (DESIGN.md §4).
 sim-core = { path = "../sim-core" }
+# **EIP-55, and it is here because `siwe_message` is here.** That function
+# takes the checksummed address as text and its own doc says the caller must
+# have keccak to produce it — which was true of exactly one caller (the
+# server) until a browser needed to build the same message. A second
+# implementation of a byte-exact format is what this repo has paid for
+# twice, so the function moved here instead, beside the message it is part
+# of. `tiny-keccak` is no_std, pure Rust, has no transitive dependencies and
+# was already in the lock file for the server; it costs this crate nothing
+# on the wasm target, which is the one that made the move necessary.
+tiny-keccak = { version = "2", features = ["keccak"] }

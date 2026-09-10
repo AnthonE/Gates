@@ -2739,7 +2739,7 @@ records or gates that `rev = a11e6a8e…` contains the #317 fix**, and the pin
 is forever now. That is §0web's to carry.
 
 
-## 0web · The browser client — **spoken, transport DONE, renderer next** *(client lane)*
+## 0web · The browser client — **spoken; transport and identity DONE, renderer next** *(client lane)*
 
 Operator, 2026-09-09 (*"i want to start building it"*) and 2026-09-10. The
 measured assessment is **`findings/web-build-20260909.md`**; §11 is what has
@@ -2777,11 +2777,29 @@ zero milliseconds and the streaming re-budget is unconditional (§4.1's ⚠).
 Hosting is still undecided for the reasons that are real — the cert path, CORS,
 and a CSP on the obvious origin that blocks WebAssembly outright.
 
-Not decided: how a web player authenticates (§5 — guest-only until a browser
-wallet exists), and **whether there is anywhere to send them**: the only shard
-in the published list runs `require_auth`, so a page can reach nothing public
-even with a correct message. Carried from struck §0wt: nothing gates that
-`wtransport rev = a11e6a8e…` contains the #317 fix, and that pin is permanent.
+**Identity is decided and built** (operator, 2026-09-10 — *"the wallet stuff so
+we don't have to have a guest yard"*; `DECISIONS.md`). A page signs the shard's
+SIWE challenge with the visitor's extension wallet: `Proof::message` composes
+the text in Rust through the same `protocol::siwe_message` the shard rebuilds
+it with, `elo::sign_siwe_web` awaits `personal_sign`, and
+`Address::to_checksum_hex` moved to `protocol` so one EIP-55 serves both sides.
+Gated where it can be proven — `server/tests/siwe_wire.rs` runs a real
+wallet-shaped signature over that exact text through the shard's own verifier,
+with a lowercase address and a foreign domain pinned as refused. No guest shard
+is owed. ⚠ **The launcher relay cannot ever carry this**: elo's
+`meter/signin.py::_guard_ask_text` refuses SIWE by name, deliberately, so a
+player whose only key is inside the desktop launcher has no web door.
+
+What still blocks a public join, and neither is code here:
+1. **The live shard is `PROTO_VER` 61 and this tree is 62** (`git show
+   a2ac3fa49:crates/protocol/src/lib.rs`). Version is checked before auth, so a
+   page from HEAD is refused before the wallet is ever asked. A redeploy
+   (`ci/deploy_shard.sh`) is an operator act.
+2. **Nobody has opened the page with a wallet in it.** Every claim above is
+   arithmetic and a code-tier gate; `personal_sign` has never been called.
+
+Carried from struck §0wt: nothing gates that `wtransport rev = a11e6a8e…`
+contains the #317 fix, and that pin is permanent.
 
 
 ## 0wd · A new world register is proposed — blocked on the operator's word

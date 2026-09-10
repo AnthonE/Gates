@@ -581,13 +581,17 @@ impl Session {
         server: &str,
         cert_hash: Option<&str>,
         address: protocol::Address,
-        // The same inversion the desktop client uses: `(domain, nonce hex,
-        // issued_at)`, never a message this process composed. On a page the
-        // signer is a browser wallet rather than the elo launcher, and the
-        // reason the three values stay inert is identical — a game that can
-        // compose the sentence it asks you to sign is a game that can ask you
-        // to sign anything.
-        sign: impl FnOnce(&str, &str, u64) -> Option<protocol::Signature>,
+        // **The page's wallet, or `None` for a guest.** `(text) => Promise<0x…>`
+        // — see `elo::sign_siwe_web`, which is the only thing that calls it.
+        //
+        // The desktop twin takes the three inert values and lets the LAUNCHER
+        // compose the sentence, which is what stops a game smuggling text into
+        // a signature. `window.ethereum` has no verb for that: a wallet signs
+        // text or nothing. So the text is composed on our side, in Rust, by
+        // the same `protocol::siwe_message` the shard rebuilds it with — and
+        // the wallet renders it for the human, which is a page's version of
+        // the same guarantee. `elo::sign_siwe_web` argues it in full.
+        sign: Option<&js_sys::Function>,
     ) -> Result<Self, JoinError> {
         use wasm_bindgen_futures::{spawn_local, JsFuture};
         use web_sys::WritableStreamDefaultWriter;
@@ -613,7 +617,24 @@ impl Session {
             .next()
             .await
             .ok_or_else(|| "no challenge".to_string())?;
-        let len = net::handshake::auth_for(&reply, server, address, sign, &mut msg)?;
+        // **`auth_for`'s two halves, with an `await` between them** — the one
+        // place this arm cannot use the shared composition, because a wallet
+        // signature is a Promise and the nonce only exists mid-handshake, so
+        // it cannot be pre-signed. Both halves are the same pure functions the
+        // desktop path composes, and `net::handshake`'s
+        // `the_two_step_path_and_the_composition_agree` holds the two
+        // assemblies to producing byte-identical frames.
+        let want = net::handshake::proof_wanted(&reply, server, address)?;
+        let signature = match (&want, sign) {
+            (Some(proof), Some(f)) => Some(elo::sign_siwe_web(f, address, proof).await?),
+            // A guest address, or a page that offered no wallet: nothing is
+            // signed and nothing is claimed, exactly as a declined prompt or an
+            // absent launcher does on the desktop. A shard with `require_auth`
+            // answers `REFUSE_AUTH` at the next step, and `refusal_sentence`
+            // turns that into a sentence naming an act a page can perform.
+            _ => None,
+        };
+        let len = net::handshake::auth_frame(address, signature, &mut msg)?;
         net::web::write_frame(&writer, &msg[..len]).await?;
 
         let reply = reader

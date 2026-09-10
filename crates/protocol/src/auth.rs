@@ -104,6 +104,52 @@ impl Address {
         out
     }
 
+    /// EIP-55: the same 42 characters as [`Address::to_hex`], re-cased.
+    ///
+    /// A hex digit goes uppercase when the matching nibble of `keccak256` over
+    /// the **lowercase hex text** (no `0x`) is 8 or more. Digits `0-9` have no
+    /// case and are left alone.
+    ///
+    /// **This is not an alternative rendering — it is part of [`siwe_message`]**,
+    /// which takes the address as text and whose doc says the caller must have
+    /// keccak to produce it. The identity we store stays lowercase (see
+    /// [`Address::to_hex`] for why, and it is load-bearing: a save filed under a
+    /// checksummed key would depend on how the address was capitalised where it
+    /// came from). The *message* is elo's, and elo's launcher binds the
+    /// checksummed spelling into the bytes it signs, because EIP-4361 requires
+    /// it and reference SIWE parsers reject an all-lowercase address outright.
+    /// So the case matters in exactly one place — recomputing what was signed —
+    /// and nowhere else.
+    ///
+    /// ⚠ **It lives here rather than in the server because it now has two
+    /// callers.** It was `server::auth::checksum_hex` while the only thing that
+    /// ever recomputed the signed bytes was the shard; a browser client builds
+    /// the same message to hand to a wallet, and copying twenty lines of a
+    /// byte-exact format into a second crate is the two-implementations-of-one-
+    /// format shape `CLAUDE.md` records paying for twice. One function, in the
+    /// crate that already owns the message.
+    pub fn to_checksum_hex(&self) -> [u8; 42] {
+        let lower = self.to_hex();
+        let h = keccak256(&lower[2..]); // the hex text, without `0x`
+        let mut out = lower;
+        for i in 0..40 {
+            let c = out[2 + i];
+            if !c.is_ascii_alphabetic() {
+                continue;
+            }
+            // Nibble i of the digest: high nibble for even i, low for odd.
+            let nib = if i % 2 == 0 {
+                h[i / 2] >> 4
+            } else {
+                h[i / 2] & 0xf
+            };
+            if nib >= 8 {
+                out[2 + i] = c.to_ascii_uppercase();
+            }
+        }
+        out
+    }
+
     /// Parse `0x…` (either case) into an address. `None` on any other shape
     /// — length, prefix or a non-hex digit. Used by `--identity` and by
     /// anything reading an address out of a file.
@@ -266,6 +312,21 @@ pub fn siwe_message(
 /// (`scry_broker::protocol::CHAIN_ID`) — we recompute their message, so a
 /// number we preferred here would simply fail to verify.
 pub const CHAIN_ID: u64 = 4663;
+
+/// keccak256, for [`Address::to_checksum_hex`] and nothing else.
+///
+/// Deliberately private. `server::auth` keeps its own copy of these four lines
+/// for the two jobs that are its own — a public key to an address, and the
+/// EIP-191 envelope digest — and neither belongs in a crate that only says how
+/// bytes cross the wire.
+fn keccak256(data: &[u8]) -> [u8; 32] {
+    use tiny_keccak::{Hasher, Keccak};
+    let mut k = Keccak::v256();
+    let mut out = [0u8; 32];
+    k.update(data);
+    k.finalize(&mut out);
+    out
+}
 
 /// Ceiling for [`siwe_message`]: the fixed text is ~220 bytes, the address
 /// 42, the nonce 64 hex, the timestamp ≤ 20, and `domain` appears twice and
@@ -553,5 +614,75 @@ mod tests {
         let a = core::str::from_utf8(&hex).expect("utf-8");
         let n = siwe_message(&long, a, "gates", &[0; NONCE_BYTES], 0, &mut buf);
         assert!(n >= SIWE_MESSAGE_MAX, "an over-long domain should saturate");
+    }
+
+    /// The four canonical EIP-55 vectors from the spec itself.
+    ///
+    /// Pinned against published values rather than against our own output,
+    /// because a checksum that is self-consistent and wrong re-cases every
+    /// address the same way and fails every login identically — which reads
+    /// as "signing is broken" and not as "this function is wrong".
+    ///
+    /// Moved here with the function from `server::auth` (2026-09-10), when a
+    /// browser client became the second caller.
+    #[test]
+    fn checksum_matches_the_eip55_vectors() {
+        for want in [
+            "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed",
+            "0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359",
+            "0xdbF03B407c01E7cD3CBea99509d93f8DDDC8C6FB",
+            "0xD1220A0cf47c7B9Be7A2E6BA89F429762e7b9aDb",
+        ] {
+            let a = Address::from_hex(want.as_bytes()).expect("a valid address");
+            let got = a.to_checksum_hex();
+            assert_eq!(
+                core::str::from_utf8(&got).expect("utf-8"),
+                want,
+                "EIP-55 vector"
+            );
+        }
+    }
+
+    /// The address the launcher reports for the dev wallet, re-cased here.
+    /// This is the one that actually has to match in production.
+    #[test]
+    fn the_dev_wallet_rechecksums_to_what_the_launcher_reports() {
+        let a = Address::from_hex(b"0x24445efddb08d4938e3e3627042b2cf4063d9092").unwrap();
+        assert_eq!(
+            core::str::from_utf8(&a.to_checksum_hex()).unwrap(),
+            "0x24445EFddB08d4938E3E3627042B2Cf4063d9092"
+        );
+    }
+
+    /// The case is the whole point: a lowercase address in the message is a
+    /// **different signature**, so the two spellings must not be swappable.
+    ///
+    /// Proven against the vectors rather than asserted in prose, because the
+    /// failure this guards is silent — every login fails identically and
+    /// reads as "signing is broken" rather than as a re-cased address.
+    #[test]
+    fn the_lowercase_and_checksummed_spellings_build_different_messages() {
+        let a = Address::from_hex(b"0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed").unwrap();
+        let (mut lo, mut hi) = ([0u8; SIWE_MESSAGE_MAX], [0u8; SIWE_MESSAGE_MAX]);
+        let lower = a.to_hex();
+        let sum = a.to_checksum_hex();
+        let n1 = siwe_message(
+            "shard",
+            core::str::from_utf8(&lower).unwrap(),
+            "gates",
+            &[0; NONCE_BYTES],
+            5,
+            &mut lo,
+        );
+        let n2 = siwe_message(
+            "shard",
+            core::str::from_utf8(&sum).unwrap(),
+            "gates",
+            &[0; NONCE_BYTES],
+            5,
+            &mut hi,
+        );
+        assert_eq!(n1, n2, "same length, only the case differs");
+        assert_ne!(lo[..n1], hi[..n2], "the case must reach the signed bytes");
     }
 }

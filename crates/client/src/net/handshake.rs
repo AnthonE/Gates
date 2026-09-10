@@ -80,13 +80,24 @@ pub fn refusal_sentence(code: u8, launcher_reachable: bool) -> String {
     // the table.
     //
     // `REFUSE_AUTH`'s shared wording is "sign in through the elo launcher".
-    // There is no launcher in a tab, and no browser wallet either
-    // (`elo::sign_siwe`'s wasm arm returns `None` by construction), so on this
-    // platform that sentence names an act the reader cannot perform. The
-    // honest one states the shard's requirement and points somewhere real.
+    // There is no launcher in a tab, so on this platform that sentence names
+    // an act the reader cannot perform. The honest one states the shard's
+    // requirement and points at the door a page actually has.
+    //
+    // ⚠ **This sentence changed on 2026-09-10 and the old one is now wrong,
+    // not merely worse.** It read *"a browser cannot sign in yet - try a shard
+    // that takes guests"*, which was true while `elo::sign_siwe`'s wasm arm
+    // returned `None` by construction. `elo::sign_siwe_web` gives it a body:
+    // a page with a wallet signs the same SIWE message the desktop client
+    // does. Telling that player to go and find a different shard would send
+    // them away from a door they can open.
+    //
+    // It still has to cover both ways a shard says `REFUSE_AUTH` — a guest on
+    // a locked shard, and a signature that recovered somebody else — so it
+    // names the requirement rather than guessing which happened.
     if !launcher_reachable && code == protocol::REFUSE_AUTH {
-        return "refused: this shard needs an account, and a browser cannot sign in yet \
-                - try a shard that takes guests"
+        return "refused: this shard needs a signed identity - connect a wallet in this \
+                browser and join again"
             .to_string();
     }
     match protocol::refuse_text(code) {
@@ -135,23 +146,103 @@ pub fn hello(buf: &mut [u8]) -> Result<usize, JoinError> {
     .map_err(|e| JoinError::Failed(format!("encode hello: {e:?}")))
 }
 
-/// Step 2 — read the shard's challenge, answer with the auth frame.
+/// What the shard is asking this client to prove: the three inert values,
+/// decoded out of its challenge.
+///
+/// **Three values and never a message.** The launcher (desktop) or the wallet
+/// (browser) composes the sentence; we hand over the parts. See [`auth_for`]
+/// for the incident that made that inversion the rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Proof {
+    /// The SIWE domain — the host we dialled with its port stripped.
+    pub domain: String,
+    /// The shard's nonce, raw. Rendered as lowercase hex by
+    /// [`Proof::nonce_hex`] for a signer that wants text, and passed as bytes
+    /// to [`protocol::siwe_message`] by [`Proof::message`] — one value, two
+    /// renderings, rather than a hex string somebody has to parse back.
+    pub nonce: [u8; protocol::NONCE_BYTES],
+    /// Unix seconds, the shard's own `Issued At`.
+    pub issued_at: u64,
+}
+
+impl Proof {
+    /// The nonce as lowercase hex — what the elo launcher's `prove` takes.
+    pub fn nonce_hex(&self) -> String {
+        const H: &[u8; 16] = b"0123456789abcdef";
+        let mut out = String::with_capacity(protocol::NONCE_BYTES * 2);
+        for b in self.nonce {
+            out.push(H[(b >> 4) as usize] as char);
+            out.push(H[(b & 0xf) as usize] as char);
+        }
+        out
+    }
+
+    /// **The exact text a browser wallet is asked to sign.**
+    ///
+    /// Only a browser needs this, and it is the one place the desktop
+    /// inversion cannot hold: the elo launcher composes its own sentence and
+    /// we hand it three inert values, but `window.ethereum` has no `prove`
+    /// verb — a wallet signs text or nothing. So the text is built HERE, in
+    /// Rust, through [`protocol::siwe_message`] — the same function the shard
+    /// calls to rebuild what it verifies (`server::auth::verify`).
+    ///
+    /// ⚠ **The point is that the page never composes it.** A JS
+    /// reimplementation of an EIP-4361 message would be a second copy of a
+    /// byte-exact format whose only symptom on drift is every login failing
+    /// as `WrongSigner`, which reads as "signing is broken" rather than as
+    /// one wrong space. `protocol` already compiles to wasm; the module hands
+    /// the finished string to the wallet and the human reads it there.
+    /// `crates/server/tests/siwe_wire.rs` runs a signature over THIS text
+    /// through the real shard.
+    ///
+    /// The address is EIP-55 checksummed, which is load-bearing rather than
+    /// cosmetic: the case is inside the signed bytes, so a lowercase spelling
+    /// recovers a different digest and is refused. See
+    /// [`protocol::Address::to_checksum_hex`].
+    pub fn message(&self, address: protocol::Address) -> String {
+        let sum = address.to_checksum_hex();
+        // `to_checksum_hex` writes ASCII hex and `0x`, so this cannot fail;
+        // the fallback keeps the signature total rather than panicking a page.
+        let addr = core::str::from_utf8(&sum).unwrap_or("0x");
+        let mut text = [0u8; protocol::SIWE_MESSAGE_MAX];
+        let n = protocol::siwe_message(
+            &self.domain,
+            addr,
+            protocol::SLUG,
+            &self.nonce,
+            self.issued_at,
+            &mut text,
+        )
+        .min(protocol::SIWE_MESSAGE_MAX);
+        String::from_utf8_lossy(&text[..n]).into_owned()
+    }
+}
+
+/// Step 2a — read the shard's challenge and say what must be signed.
+///
+/// `Ok(None)` is a **guest**: nothing to prove, nothing to ask a signer for.
+/// A shard with `require_auth` will refuse that at step 3, which is the right
+/// place to learn it.
 ///
 /// `server` is the `host:port` **we dialled**, and the domain is taken from
 /// it rather than from anything the shard said. That is the whole of SIWE's
 /// domain binding: a signature collected by one shard is not valid at another
 /// because the two messages differ, and letting the server name itself would
 /// hand that away.
-pub fn auth_for(
+///
+/// ⚠ **This is half of what used to be [`auth_for`], and the split exists for
+/// one reason: a browser signature cannot be obtained synchronously.**
+/// `window.ethereum.request` returns a Promise and the nonce only exists
+/// mid-handshake, so it cannot be pre-signed. Making this function `async`
+/// would have been the obvious fix and is the one this module's header
+/// forbids — a `Send` future natively, a non-`Send` one in a page. So the
+/// *awaiting* stays in whichever `connect` is driving, where `async` already
+/// lives, and both halves of the rule stay pure and testable with no shard.
+pub fn proof_wanted(
     frame: &[u8],
     server: &str,
     address: protocol::Address,
-    // `(domain, nonce hex, issued_at)` — the three inert values the launcher
-    // needs, never a message this process composed. See below for why that
-    // inversion is the whole fix.
-    sign: impl FnOnce(&str, &str, u64) -> Option<protocol::Signature>,
-    buf: &mut [u8],
-) -> Result<usize, JoinError> {
+) -> Result<Option<Proof>, JoinError> {
     match peek_kind(frame) {
         Ok(protocol::KIND_CHALLENGE) => {}
         // A frame that says REFUSE but does not decode is still a refusal, and
@@ -172,38 +263,75 @@ pub fn auth_for(
     let challenge = protocol::decode_challenge(frame)
         .map_err(|e| JoinError::Failed(format!("challenge: {e:?}")))?;
 
+    if address.is_guest() {
+        return Ok(None);
+    }
+
     let domain = server.rsplit_once(':').map(|(h, _)| h).unwrap_or(server);
-    let auth = if address.is_guest() {
-        protocol::Auth::default()
-    } else {
-        // **This process does not compose the message, and that is the fix.**
-        // It used to build the SIWE text here and hand it to the launcher's
-        // `sign`, which refused every one: `sign` classifies a message by its
-        // first line (`elo <family>`) and EIP-4361 begins with a domain. The
-        // refusal became `None`, `None` means "connect as a guest", and a
-        // `require_auth` shard answered REFUSE_AUTH — so every login failed as
-        // if the signature were wrong, when the message was one the launcher
-        // would never sign.
-        //
-        // `prove` is the verb: the LAUNCHER writes every word, which is what
-        // stops a game smuggling a sentence into a signature, and it needs no
-        // consent prompt for the same reason. We hand over three inert values
-        // and the shard rebuilds the text from the ones it already knows
-        // (`protocol::siwe_message`).
-        let mut hex = [0u8; protocol::NONCE_BYTES * 2];
-        for (i, b) in challenge.nonce.iter().enumerate() {
-            const H: &[u8; 16] = b"0123456789abcdef";
-            hex[i * 2] = H[(b >> 4) as usize];
-            hex[i * 2 + 1] = H[(b & 0xf) as usize];
-        }
-        let nonce =
-            core::str::from_utf8(&hex).map_err(|_| JoinError::Failed("nonce hex".to_string()))?;
-        match sign(domain, nonce, challenge.issued_at) {
-            Some(signature) => protocol::Auth { address, signature },
-            None => protocol::Auth::default(),
-        }
+    Ok(Some(Proof {
+        domain: domain.to_string(),
+        nonce: challenge.nonce,
+        issued_at: challenge.issued_at,
+    }))
+}
+
+/// Step 2b — the auth frame, from whatever the signer answered.
+///
+/// `None` means "connect as a guest", which is what a declined prompt, an
+/// absent launcher, a locked wallet or a guest address all produce. It is
+/// deliberately not an error here: a shard that takes guests will admit one,
+/// and a shard that does not answers `REFUSE_AUTH` at step 3 with a code the
+/// caller can turn into the right sentence.
+pub fn auth_frame(
+    address: protocol::Address,
+    signature: Option<protocol::Signature>,
+    buf: &mut [u8],
+) -> Result<usize, JoinError> {
+    let auth = match signature {
+        Some(signature) => protocol::Auth { address, signature },
+        None => protocol::Auth::default(),
     };
     protocol::encode_auth(&auth, buf).map_err(|e| JoinError::Failed(format!("encode auth: {e:?}")))
+}
+
+/// Step 2 — read the shard's challenge, answer with the auth frame.
+///
+/// **The synchronous composition of [`proof_wanted`] and [`auth_frame`]**, for
+/// a caller whose signer answers without awaiting — which is the desktop
+/// client, where the elo launcher is reached over a blocking local socket. A
+/// browser calls the two halves with an `await` between them; there is one
+/// implementation of each rule either way, and this function holds no rule of
+/// its own.
+///
+/// `server` is the `host:port` **we dialled** — see [`proof_wanted`] for the
+/// domain binding that depends on it.
+///
+/// **This process does not compose the message, and that is the fix.**
+/// It used to build the SIWE text here and hand it to the launcher's
+/// `sign`, which refused every one: `sign` classifies a message by its
+/// first line (`elo <family>`) and an EIP-4361 message begins with a domain.
+/// The refusal became `None`, `None` means "connect as a guest", and a
+/// `require_auth` shard answered REFUSE_AUTH — so every login failed as
+/// if the signature were wrong, when the message was one the launcher
+/// would never sign.
+///
+/// `prove` is the verb: the LAUNCHER writes every word, which is what
+/// stops a game smuggling a sentence into a signature, and it needs no
+/// consent prompt for the same reason. We hand over three inert values
+/// and the shard rebuilds the text from the ones it already knows
+/// (`protocol::siwe_message`).
+pub fn auth_for(
+    frame: &[u8],
+    server: &str,
+    address: protocol::Address,
+    // `(domain, nonce hex, issued_at)` — the three inert values the launcher
+    // needs, never a message this process composed.
+    sign: impl FnOnce(&str, &str, u64) -> Option<protocol::Signature>,
+    buf: &mut [u8],
+) -> Result<usize, JoinError> {
+    let signature = proof_wanted(frame, server, address)?
+        .and_then(|p| sign(&p.domain, &p.nonce_hex(), p.issued_at));
+    auth_frame(address, signature, buf)
 }
 
 /// Step 3 — the shard's answer: a welcome, or the reason it said no.
@@ -414,5 +542,105 @@ mod tests {
             err.to_string().contains("unexpected handshake reply"),
             "{err}"
         );
+    }
+
+    /// **The guard on the split, and it is the one that matters.** The desktop
+    /// path composes ([`auth_for`]); a page runs the same two halves with an
+    /// `await` between them because a wallet signature is a Promise. Two call
+    /// sequences over one pair of rules is exactly the shape
+    /// `tests/connect_twins.rs` exists to watch, and this is its code-tier
+    /// half: given the same challenge and the same signature, the frame is
+    /// byte-identical whichever way it was assembled.
+    ///
+    /// Proven by construction rather than by inspection — `auth_for` is
+    /// written as the composition — but a future edit that "optimises" one
+    /// side reddens here, which is the point.
+    #[test]
+    fn the_two_step_path_and_the_composition_agree() {
+        let frame = challenge_frame([7; protocol::NONCE_BYTES], 1_700_000_000);
+        let sig = protocol::Signature([9; protocol::SIGNATURE_BYTES]);
+
+        let mut composed = [0u8; MAX_STREAM_MSG_BYTES];
+        let a = auth_for(
+            &frame,
+            "shard.example:4433",
+            someone(),
+            |_, _, _| Some(sig),
+            &mut composed,
+        )
+        .expect("composed");
+
+        // The way a page must do it: decode, hand the three values out, come
+        // back with a signature, encode.
+        let want = proof_wanted(&frame, "shard.example:4433", someone())
+            .expect("decodes")
+            .expect("not a guest");
+        assert_eq!(want.domain, "shard.example");
+        assert_eq!(want.issued_at, 1_700_000_000);
+        let mut stepped = [0u8; MAX_STREAM_MSG_BYTES];
+        let b = auth_frame(someone(), Some(sig), &mut stepped).expect("stepped");
+
+        assert_eq!(composed[..a], stepped[..b], "the two paths must agree");
+
+        // ⚠ **The equality above is satisfied by both paths being equally
+        // wrong**, because both run through `auth_frame`. That is
+        // `CLAUDE.md`'s `lattice.rs` trap — a rebuild that calls the function
+        // under test carries the same mutant on both sides — and it was
+        // committed here and caught by running the mutant: `auth_frame`
+        // ignoring its signature and always encoding a guest passed every
+        // assertion in this file.
+        //
+        // So the frame is DECODED, through the protocol's own reader, and the
+        // values are the ones that went in. A browser that silently joined as
+        // a guest with a signature in hand would reach a `require_auth` shard
+        // as `REFUSE_AUTH` — a refusal naming the shard for a defect in the
+        // client.
+        let got = protocol::decode_auth(&composed[..a]).expect("the frame decodes");
+        assert_eq!(got.address, someone(), "the claimed address must survive");
+        assert_eq!(got.signature.0, sig.0, "the signature must reach the wire");
+        assert!(!got.address.is_guest(), "a signed join is not a guest join");
+    }
+
+    /// The other half of the same claim: **no signature means a guest frame**,
+    /// and the address is dropped with it rather than travelling as a claim
+    /// nobody proved.
+    #[test]
+    fn an_unsigned_join_carries_no_address_at_all() {
+        let mut buf = [0u8; MAX_STREAM_MSG_BYTES];
+        let n = auth_frame(someone(), None, &mut buf).expect("encodes");
+        let got = protocol::decode_auth(&buf[..n]).expect("decodes");
+        assert!(
+            got.address.is_guest(),
+            "an unsigned join must not carry the address it could not prove"
+        );
+    }
+
+    /// A guest has nothing to prove, so no signer is consulted and no nonce is
+    /// rendered. `None` rather than an error: a shard that takes guests admits
+    /// one, and a shard that does not says so at step 3 with a code.
+    #[test]
+    fn a_guest_has_nothing_to_prove() {
+        let frame = challenge_frame([1; protocol::NONCE_BYTES], 42);
+        assert_eq!(
+            proof_wanted(&frame, "shard.example:4433", Address::GUEST).expect("decodes"),
+            None
+        );
+    }
+
+    /// The nonce reaches the signer as lowercase hex of the full 32 bytes —
+    /// the shape `protocol::siwe_message` writes, so a signer that passes it
+    /// through unchanged produces bytes the shard can rebuild.
+    #[test]
+    fn the_nonce_is_lowercase_hex_of_every_byte() {
+        let mut nonce = [0u8; protocol::NONCE_BYTES];
+        nonce[0] = 0xAB;
+        nonce[protocol::NONCE_BYTES - 1] = 0x0F;
+        let frame = challenge_frame(nonce, 1);
+        let p = proof_wanted(&frame, "s:1", someone()).unwrap().unwrap();
+        let hex = p.nonce_hex();
+        assert_eq!(hex.len(), protocol::NONCE_BYTES * 2);
+        assert!(hex.starts_with("ab"), "{hex}");
+        assert!(hex.ends_with("0f"), "{hex}");
+        assert!(!hex.chars().any(|c| c.is_ascii_uppercase()));
     }
 }

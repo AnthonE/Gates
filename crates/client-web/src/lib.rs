@@ -61,23 +61,45 @@ impl Gates {
     /// (`client::net::web::open` has the table). A public shard with a real
     /// chain needs nothing — the browser trusts it outright.
     ///
-    /// `identity` is `0x…` and is accepted so the shape is there, but it is
-    /// **not yet load-bearing**: with no launcher in a page there is nothing
-    /// to sign the challenge, so a declared address joins as a guest with a
-    /// claim nobody checked. That is the same posture `--identity` has
-    /// natively when the launcher is absent, and the honest one until a
-    /// browser wallet lands (`client::elo::sign_siwe`, the wasm arm).
+    /// `identity` is the `0x…` address the player is claiming, and `sign` is
+    /// the wallet that proves it: `(text: string) => Promise<"0x…">`, which is
+    /// the shape of the platform's own `Deck.wallet.sign(message, address)`
+    /// (`watchtower/js/deck-shim.js` in `AnthonE/scry-forge`) with the address
+    /// already bound. A page on elopros.com passes the wallet it already has.
     ///
-    /// ⚠ A shard with `require_auth` will answer `REFUSE_AUTH` to a guest, and
-    /// the message must read *this shard needs an account* rather than a login
+    /// **Both or neither.** An address with no wallet is refused here rather
+    /// than joining as a guest under a claim nobody checked — that shape is
+    /// right on the desktop, where `--identity` with no launcher running means
+    /// "I have no signer", and wrong in a page, where the only way to have an
+    /// address at all is to have connected the wallet that holds it. Passing
+    /// neither is a guest, which a shard that takes guests admits.
+    ///
+    /// ⚠ A shard with `require_auth` answers `REFUSE_AUTH` to a guest, and the
+    /// message must read *this shard needs an account* rather than a login
     /// failure — the trap `CLAUDE.md` records for the vendored launcher, which
-    /// lands two hops from its cause.
+    /// lands two hops from its cause. `client::refusal_sentence` owns that
+    /// wording and `crates/client/tests/refusals.rs` holds it to the codes the
+    /// protocol declares.
     pub async fn join(
         server: String,
         cert_hash: Option<String>,
         identity: Option<String>,
+        sign: Option<js_sys::Function>,
     ) -> Result<Gates, JsValue> {
-        let address = match identity.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let declared = identity.as_deref().map(str::trim).filter(|s| !s.is_empty());
+        if declared.is_some() != sign.is_some() {
+            // Said out loud rather than coerced either way. Silently dropping
+            // the address would join as a guest and hit `REFUSE_AUTH` on a
+            // locked shard — a refusal whose stated cause is the shard when
+            // the real cause is this call. Silently ignoring the wallet would
+            // be the same bug wearing the other hat.
+            return Err(JsValue::from_str(
+                "join needs an address and a wallet together, or neither: an address \
+                 with nothing to sign for it is a claim no shard will take, and a \
+                 wallet with no address has nothing to prove",
+            ));
+        }
+        let address = match declared {
             None => protocol::Address::GUEST,
             Some(a) => protocol::Address::from_hex(a.as_bytes()).ok_or_else(|| {
                 JsValue::from_str(
@@ -85,14 +107,10 @@ impl Gates {
                 )
             })?,
         };
-        let session = client::Session::connect(
-            &server,
-            cert_hash.as_deref(),
-            address,
-            client::elo::sign_siwe,
-        )
-        .await
-        .map_err(join_error)?;
+        let session =
+            client::Session::connect(&server, cert_hash.as_deref(), address, sign.as_ref())
+                .await
+                .map_err(join_error)?;
         let last = client::Frame {
             tick: 0,
             snapshots: 0,
