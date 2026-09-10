@@ -1435,9 +1435,11 @@ pub fn poll_connect(
     let got = match rx.try_recv() {
         Ok(got) => got,
         Err(std::sync::mpsc::TryRecvError::Empty) => return,
-        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-            Err("the connect attempt did not finish".to_string())
-        }
+        // The connect thread died without sending — no shard answered, so
+        // there is no refusal code to carry.
+        Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(crate::JoinError::Failed(
+            "the connect attempt did not finish".to_string(),
+        )),
     };
     connecting.rx = None;
     match got {

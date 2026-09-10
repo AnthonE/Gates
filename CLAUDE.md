@@ -296,6 +296,18 @@ do not rediscover)
   pointed at. Same shape for any `pub enum` or archetype table read from
   `render::`. When you add a variant, grep the feature-gated modules for
   its type before believing a green workspace run.
+  ⚠ **It fired again on 2026-09-10, and the shape is wider than "adding a
+  variant".** `Session::connect`'s error type changed from `String` to
+  `JoinError`; two of its three call sites were fixed, and the third — a
+  `match` arm in `render/menu.rs` building `Err(String)` for a dead connect
+  thread — is behind the feature. `cargo test --workspace`, `cargo test -p
+  client`, `cargo clippy -p client --all-targets` and both wasm builds were all
+  green over it, and it was red at the Bevy gate: the same five minutes, for a
+  TYPE rather than an enum. So the rule is not about variants — it is that
+  **`--all-targets` does not mean all targets**, and any change to a signature
+  `render::` touches needs `cargo clippy -p client --features render
+  --all-targets` before it is believed. That invocation is the only one in this
+  repo that compiles those files.
 - **Two of the same component in one Bevy bundle is a RUNTIME panic, and
   every gate in this repo is blind to it.** `(DeathRoot, ui::screen(bg),
   Node { padding })` is the obvious way to take a shared layout and move one
