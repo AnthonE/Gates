@@ -59,6 +59,43 @@ pub struct ClientClock {
     pub resyncs: u64,
 }
 
+/// A frame time this crate is willing to act on: never negative, never more
+/// than a second.
+///
+/// **The ceiling was always here; the floor is new and was found by opening
+/// the page** (2026-09-11). `ClientClock::advance` clamped inline, so the
+/// clock was safe and every caller upstream of it was not — `ClientCore::
+/// advance` spent the RAW `dt_ms` on three things before handing it over, and
+/// one of them is `PLAYOUT_SLEW_PER_S * dt_ms / 1000.0` used as `clamp(-step,
+/// step)`. A negative frame time makes that `min > max`, which is a **panic**,
+/// which in a tab is the whole module gone.
+///
+/// A negative frame time is not hypothetical and not a browser quirk to work
+/// around in the page: `requestAnimationFrame` is handed the timestamp of the
+/// frame's *start*, which can precede a `performance.now()` read taken moments
+/// earlier, so the first frame's delta is routinely below zero. Natively it
+/// cannot happen — Bevy's delta is monotonic — which is exactly why no gate in
+/// this repo had ever seen it and why the browser died on frame one every
+/// time.
+///
+/// So the rule lives here, in one function both layers call, rather than as a
+/// `Math.max(0, …)` in a page: a caller that has to remember a guard is a
+/// caller that will forget it, and the next transport gets it for free.
+pub fn sane_dt(dt_ms: f64) -> f64 {
+    // NaN included: `clamp` panics on a NaN bound but propagates a NaN input,
+    // and a NaN frame time would poison `now_ms` forever. `max` then `min`
+    // returns the floor for NaN rather than carrying it.
+    if dt_ms.is_nan() {
+        return 0.0;
+    }
+    dt_ms.clamp(0.0, MAX_FRAME_MS)
+}
+
+/// The most real time one frame may claim to have taken. Beyond it the clock
+/// discards the excess and flags a resync rather than flooding the shard with
+/// stale inputs — a tab that slept for a minute must not sprint on waking.
+pub const MAX_FRAME_MS: f64 = 1000.0;
+
 impl ClientClock {
     pub fn new(server_tick: u32) -> Self {
         Self {
@@ -76,7 +113,7 @@ impl ClientClock {
     /// discarded and flags a resync — sprinting after a tab sleep would
     /// flood the server with stale inputs.
     pub fn advance(&mut self, dt_ms: f64) -> u32 {
-        let dt = dt_ms.clamp(0.0, 1000.0);
+        let dt = sane_dt(dt_ms);
         self.server_est += dt / TICK_MS;
         self.acc_ms += dt;
         let period = TICK_MS * self.period_scale;

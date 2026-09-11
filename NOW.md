@@ -2795,8 +2795,12 @@ What still blocks a public join, and neither is code here:
    a2ac3fa49:crates/protocol/src/lib.rs`). Version is checked before auth, so a
    page from HEAD is refused before the wallet is ever asked. A redeploy
    (`ci/deploy_shard.sh`) is an operator act.
-2. **Nobody has opened the page with a wallet in it.** Every claim above is
-   arithmetic and a code-tier gate; `personal_sign` has never been called.
+2. ~~Nobody has opened the page with a wallet in it.~~ **Done 2026-09-11**
+   (findings §14): headless Chromium, real WebTransport, a stub wallet, against
+   a `require_auth` shard — guest refused with the right sentence, signed join
+   admitted, 60 snapshots in 2 s, W moved the body 4.10 m, no drops. It found a
+   panic on frame one (`clock::sane_dt`, fixed and gated). Still unproven: a
+   REAL wallet's UI, and there is still no renderer.
 
 Carried from struck §0wt: nothing gates that `wtransport rev = a11e6a8e…`
 contains the #317 fix, and that pin is permanent.
