@@ -124,12 +124,12 @@ const EXEMPT: &[(&str, &str)] = &[
 /// site it was watching is still the site it meant. Renumber deliberately,
 /// after reading what is actually at the new line.
 const KNOWN: &[(&str, u32, &str)] = &[
-    ("src/render/boot.rs", 120, "the launcher handshake's thread"),
+    ("src/render/boot.rs", 114, "the launcher handshake's thread"),
     ("src/render/hub.rs", 41, "the title manifest fetch thread"),
-    ("src/render/menu.rs", 255, "the shard-list fetch thread"),
+    ("src/render/menu.rs", 236, "the shard-list fetch thread"),
     (
         "src/render/menu.rs",
-        376,
+        357,
         // ⚠ This read "the connect future's runtime thread" until 2026-09-11
         // and named the wrong function: the connect future does not spawn a
         // thread at all, it goes on the tokio runtime `Rt` holds. This is
