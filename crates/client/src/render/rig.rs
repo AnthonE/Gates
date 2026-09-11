@@ -26,7 +26,10 @@ use bevy::camera::Exposure;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::core_pipeline::Skybox;
 use bevy::light::{light_consts::lux, EnvironmentMapLight, SunDisk};
-use bevy::pbr::{Atmosphere, AtmosphereSettings, ScatteringMedium};
+use bevy::pbr::ScatteringMedium;
+// Both follow their one use site off wasm32 — see the inserts in `setup`.
+#[cfg(not(target_arch = "wasm32"))]
+use bevy::pbr::{Atmosphere, AtmosphereSettings};
 // Follows its one use site off wasm32 — see the insert below for why a
 // browser must never receive this component.
 #[cfg(not(target_arch = "wasm32"))]
@@ -180,6 +183,12 @@ pub fn setup(
     // physical quantity and the horizon seam cannot open (which is the exact
     // seam the browser rig spent 200 lines of comment hand-fitting).
     let medium = media.add(ScatteringMedium::default().with_density_multiplier(AIR_DENSITY));
+    // Built on every target because the handle is one asset and the
+    // alternative is `cfg`-ing a system parameter, which changes the system's
+    // arity per target for no gain. Nothing consumes it in a browser — see
+    // the atmosphere insert below for why that component cannot be there.
+    #[cfg(target_arch = "wasm32")]
+    let _ = medium;
 
     let eye = commands
         .spawn((
@@ -192,15 +201,6 @@ pub fn setup(
                 far: FAR_M,
                 ..default()
             }),
-            Atmosphere::earthlike(medium),
-            AtmosphereSettings {
-                // The island is 2 km across, not 32 km. Fitting the aerial-view
-                // LUT to the world we actually draw is what puts its slices where
-                // the geometry is instead of spending all 32 of them on the first
-                // 6% of the frustum.
-                aerial_view_lut_max_distance: FAR_M,
-                ..default()
-            },
             // Sunlit exterior, pulled 0.8 stop off Bevy's `Exposure::SUNLIGHT`
             // (ev100 15). MEASURED, not chosen: the first native capture read
             // p50 61 / p90 111 / sky 97 against the reference median's 91 / 170 /
@@ -334,6 +334,40 @@ pub fn setup(
     // reason — this is the other half, because the rig spawns the DEFAULT
     // tier rather than the player's and would insert it before `apply` ever
     // runs.
+    // ⚠ **The atmosphere is the second component WebGL2 cannot receive**, and
+    // it is the one with a visible cost rather than a quiet one.
+    //
+    // Same mechanism as the AO below — `mesh_view_layout_atmosphere` wants one
+    // storage buffer in the fragment stage and the limit is zero — and the
+    // same misleading politeness: `AtmospherePlugin` DECLINES to load on this
+    // backend ("GPU lacks support for compute shaders") and says so in the
+    // log, so it reads as handled. It is not: the component still shapes the
+    // mesh-view layout, so leaving it on the camera kills the module while the
+    // log says the feature is merely off.
+    //
+    // **What a browser loses by this is real and is not a bug to fix here.**
+    // `Atmosphere::earthlike` is what reddens the sun on its way down and what
+    // `ART.md` §1's "distant hills lighten, desaturate and go blue" describes
+    // the output of. Without it the sky is `fill.rs`'s hemisphere and the
+    // haze is gone, so a browser frame is flatter than a desktop one on
+    // purpose. Restoring it needs WebGPU (compute), which is a second build
+    // artifact and a later decision — `bevy/webgpu` is NOT a switch to flip
+    // here, because every WebGL workaround in the engine is spelled
+    // `not(feature = "webgpu")` and enabling it disables all of them with no
+    // runtime fallback.
+    #[cfg(not(target_arch = "wasm32"))]
+    commands.entity(eye).insert((
+        Atmosphere::earthlike(medium),
+        AtmosphereSettings {
+            // The island is 2 km across, not 32 km. Fitting the aerial-view
+            // LUT to the world we actually draw is what puts its slices where
+            // the geometry is instead of spending all 32 of them on the first
+            // 6% of the frustum.
+            aerial_view_lut_max_distance: FAR_M,
+            ..default()
+        },
+    ));
+
     #[cfg(not(target_arch = "wasm32"))]
     commands.entity(eye).insert(
         // **AO is how the fill's cost gets paid back.** Raising the ambient to
