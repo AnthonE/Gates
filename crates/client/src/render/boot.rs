@@ -43,14 +43,8 @@ use bevy::prelude::*;
 
 use super::screen::{Connecting, Direct, Menu, Screen, Who};
 use super::{hub, icons, ui};
-use crate::elo::{Elo, Player};
+use crate::elo::Elo;
 use crate::ui::boot::{Boot, Next};
-
-impl Default for Who {
-    fn default() -> Self {
-        Self(Player::Anonymous)
-    }
-}
 
 /// The splash's own state: the model, plus the in-flight handshake.
 ///

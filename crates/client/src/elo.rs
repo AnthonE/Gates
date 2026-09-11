@@ -389,6 +389,11 @@ mod tests {
     /// hearing about it from a player. Scraped from the source text rather than
     /// asserted against `default_socket()`, because the Windows arm is
     /// `#[cfg(windows)]` and a compile on this box cannot see it at all.
+    // Native-only: it exercises the elo launcher, which is a desktop process
+    // on a local socket. A page has no launcher, and since 2026-09-11 the
+    // wasm render build compiles far enough for `--all-targets` to reach
+    // this module at all — so the guard is new, not the fact.
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn the_launchers_door_has_not_moved_under_us() {
         assert_eq!(overlay::SOCKET_ENV, "ELO_LAUNCHER_SOCKET");
@@ -410,6 +415,11 @@ mod tests {
         }
     }
 
+    // Native-only: it exercises the elo launcher, which is a desktop process
+    // on a local socket. A page has no launcher, and since 2026-09-11 the
+    // wasm render build compiles far enough for `--all-targets` to reach
+    // this module at all — so the guard is new, not the fact.
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn no_launcher_is_a_normal_state_and_yields_a_playable_game() {
         // The socket env is pointed at nothing, which is what a machine with

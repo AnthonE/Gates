@@ -188,7 +188,12 @@ required-features = ["render"]
 [[test]]
 name = "packed_maps"
 path = "tests/packed_maps.rs"
-required-features = ["render"]
+# `native` beside `render`: this decodes a shipped KTX2 through the SAME
+# `basis-universal` transcoder Bevy uses, and that crate is native-only (it is
+# C++, and wasm32-unknown-unknown has no C sysroot). The test is about what a
+# packed map decodes to, which is a property of the file rather than of a
+# target, so proving it on the desktop build proves it.
+required-features = ["render", "native"]
 
 [[test]]
 name = "gaps"

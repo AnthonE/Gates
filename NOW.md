@@ -2739,7 +2739,7 @@ records or gates that `rev = a11e6a8e…` contains the #317 fix**, and the pin
 is forever now. That is §0web's to carry.
 
 
-## 0web · The browser client — **spoken; transport and identity DONE, renderer next** *(client lane)*
+## 0web · The browser client — **spoken; transport, identity and the wasm render tier DONE; a frame next** *(client lane)*
 
 Operator, 2026-09-09 (*"i want to start building it"*) and 2026-09-10. The
 measured assessment is **`findings/web-build-20260909.md`**; §11 is what has
@@ -2752,6 +2752,31 @@ platform halves cfg'd, `net/web.rs`'s `WebTransport` transport with the
 `maxDatagramSize` clamp `CLAUDE.md` has asked for since the first browser
 client, and `crates/client-web` — the module a page loads. `ci/build_web.sh`
 produces it; **512 KB of wasm, 174 KB gzipped**, headless.
+
+**Landed 2026-09-11**: `--features render` compiles for `wasm32`, gated by
+`ci/gates.sh`'s new browser-renderer line. Three commits — the C++ texture
+path out of the wasm graph; the state machine out of `menu.rs` into
+`render/screen.rs` (a pure move: 76 native errors to 0, wasm unchanged at 14);
+then `menu`/`hub`/`boot` cfg'd off wasm behind one `add_desktop_front_end`
+call. **And Bevy 0.18 was proved to render in a browser** — a lit cube, 33
+frames, WebGL2 via headless Chromium — which was the unknown that could have
+invalidated all of it (findings §14 for the harness).
+
+What remains, in order:
+1. **A first frame of OUR world.** `client-web` builds no `App` yet; it needs
+   one, the canvas (`Window::canvas`, and `bevy_winit` PANICS if the selector
+   matches nothing), `AssetMetaCheck::Never`, and `ci/build_web.sh` must copy
+   `assets/` — line 50 copies only `index.html`, so assets are 100% missing.
+2. **Two runtime gaps the cut created**, both written at the site that made
+   them (`render/mod.rs`, beside `add_desktop_front_end`): `Screen::Boot` has
+   no exit on wasm, and `Screen::Menu` is a dead end because the `Session` is
+   one-shot there.
+3. **Two WebGL2 arithmetic walls**: a surface over 2048 is refused outright
+   (so 1080p at devicePixelRatio 2 draws nothing), and `ground_splat.wgsl`
+   declares exactly 16 textures against a 16-per-stage limit.
+4. **Models are ABSENT, not white**, until a web asset variant exists —
+   `bevy_gltf` fails fast on wasm32 (loader/mod.rs:596) and 93 KTX2 images are
+   92.68% of what loads.
 
 **Nobody has opened it.** It compiles, clippy is clean and the framing is
 gated under four mutants (`crates/client/tests/framing.rs`), but no browser in

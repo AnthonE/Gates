@@ -26,6 +26,7 @@
 use bevy::prelude::*;
 
 use crate::elo::Player;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::shardlist::{self, Shard};
 use crate::ui::hub::Section;
 use crate::ui::servers::{Favourites, Filter, Listing};
@@ -88,10 +89,16 @@ pub struct Menu {
     /// resource, which drags every system that touches the status line onto
     /// the main thread for no benefit. tokio's is `Sync`, its unbounded
     /// sender is not async, and tokio is already a dependency.
+    // Native-only, because their only writer is: a page fetches no shard
+    // list — it IS the shard list, the player having chosen the address
+    // before Bevy started. Carrying them on wasm would be two fields
+    // nothing can ever fill, which clippy calls dead and is right to.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fetch: Option<tokio::sync::mpsc::UnboundedReceiver<Result<Vec<Shard>, String>>>,
     /// The in-flight round of status polls, one per row that names an
     /// endpoint. Collected as a batch rather than per row so the frame does
     /// one `try_recv` however many shards are listed.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) status_poll:
         Option<tokio::sync::mpsc::UnboundedReceiver<Vec<(usize, shardlist::Status)>>>,
 }
@@ -165,3 +172,34 @@ pub struct Who(pub Player);
 /// construction arguments.
 #[derive(Resource)]
 pub struct Direct(pub String);
+
+// The constructors came across with the types. `Menu::new`'s empty-state
+// sentence names the desktop's two ways to get a shard list, which is
+// correct for the only target that draws it — a browser constructs this
+// resource and never reads it, because the page is the menu there.
+impl Menu {
+    pub fn new(direct: &str, servers_url: Option<String>) -> Self {
+        Self {
+            rows: vec![Listing::direct(direct)],
+            status: match &servers_url {
+                Some(u) => format!("fetching the shard list from {u}"),
+                // The honest empty state, and it names what would fill it.
+                None => "no shard list to fetch - pass --servers URL, or start \
+                         the game from the elo launcher's Servers window"
+                    .into(),
+            },
+            dirty: false,
+            servers_url,
+            #[cfg(not(target_arch = "wasm32"))]
+            fetch: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            status_poll: None,
+        }
+    }
+}
+
+impl Default for Who {
+    fn default() -> Self {
+        Self(Player::Anonymous)
+    }
+}

@@ -86,25 +86,6 @@ use crate::shardlist::{self, Shard, MAX_DOC_BYTES};
 use crate::ui::hub::{Hub, Section};
 use crate::ui::servers::{self, Cat, Listing};
 
-impl Menu {
-    pub fn new(direct: &str, servers_url: Option<String>) -> Self {
-        Self {
-            rows: vec![Listing::direct(direct)],
-            status: match &servers_url {
-                Some(u) => format!("fetching the shard list from {u}"),
-                // The honest empty state, and it names what would fill it.
-                None => "no shard list to fetch - pass --servers URL, or start \
-                         the game from the elo launcher's Servers window"
-                    .into(),
-            },
-            dirty: false,
-            servers_url,
-            fetch: None,
-            status_poll: None,
-        }
-    }
-}
-
 impl Nav {
     const ALL: [Nav; 6] = [
         Nav::Play,
