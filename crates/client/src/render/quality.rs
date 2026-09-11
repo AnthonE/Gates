@@ -81,6 +81,36 @@ pub struct Tier {
 /// is easiest to switch off — a shadow cascade is a whole extra rasterization
 /// of the forest, and the tree LOD distance decides how much forest that is.
 pub fn tier(q: Quality) -> Tier {
+    // ⚠ **WebGL2 cannot run the top two tiers at all, and the failure is a
+    // PANIC rather than a degradation** — so this is a clamp on the ladder
+    // and not a default a player may override.
+    //
+    // Measured 2026-09-11 in a real browser, on the first frame:
+    //
+    //     In Device::create_bind_group_layout,
+    //       label = 'mesh_view_layout_depth_normal_atmosphere'
+    //       Too many bindings of type StorageBuffers in Stage FRAGMENT,
+    //       limit is 0, count was 1
+    //
+    // The chain is indirect, which is why it is written down. `ssao: Some(..)`
+    // inserts `ScreenSpaceAmbientOcclusion`, which carries
+    // `#[require(DepthPrepass, NormalPrepass)]`. Those prepasses build a
+    // mesh-view layout that wants one storage buffer in the fragment stage,
+    // and `downlevel_webgl2_defaults()` sets
+    // `max_storage_buffers_per_shader_stage` to **zero**. Bevy's own SSAO
+    // plugin already declines to load on this backend (it needs storage
+    // TEXTURES, also zero) and says so politely in the log — but the
+    // `#[require]` still fires, so the tier pays for two prepasses that feed
+    // nothing and then dies building their layout.
+    //
+    // So a browser gets `Low`'s frame whatever the settings screen says.
+    // Selecting High there is not a crash you can choose into; it is a
+    // setting with no effect, which is the honest of the two.
+    #[cfg(target_arch = "wasm32")]
+    let q = {
+        let _ = q;
+        Quality::Low
+    };
     match q {
         Quality::High => Tier {
             ssao: Some(ScreenSpaceAmbientOcclusionQualityLevel::Medium),

@@ -26,7 +26,11 @@ use bevy::camera::Exposure;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::core_pipeline::Skybox;
 use bevy::light::{light_consts::lux, EnvironmentMapLight, SunDisk};
-use bevy::pbr::{Atmosphere, AtmosphereSettings, ScatteringMedium, ScreenSpaceAmbientOcclusion};
+use bevy::pbr::{Atmosphere, AtmosphereSettings, ScatteringMedium};
+// Follows its one use site off wasm32 — see the insert below for why a
+// browser must never receive this component.
+#[cfg(not(target_arch = "wasm32"))]
+use bevy::pbr::ScreenSpaceAmbientOcclusion;
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use bevy::render::view::{ColorGrading, Msaa};
@@ -177,126 +181,161 @@ pub fn setup(
     // seam the browser rig spent 200 lines of comment hand-fitting).
     let medium = media.add(ScatteringMedium::default().with_density_multiplier(AIR_DENSITY));
 
-    commands.spawn((
-        super::WorldEntity,
-        EyeCam,
-        Camera3d::default(),
-        Projection::Perspective(PerspectiveProjection {
-            fov: FOV_DEG.to_radians(),
-            near: 0.1,
-            far: FAR_M,
-            ..default()
-        }),
-        Atmosphere::earthlike(medium),
-        AtmosphereSettings {
-            // The island is 2 km across, not 32 km. Fitting the aerial-view
-            // LUT to the world we actually draw is what puts its slices where
-            // the geometry is instead of spending all 32 of them on the first
-            // 6% of the frustum.
-            aerial_view_lut_max_distance: FAR_M,
-            ..default()
-        },
-        // Sunlit exterior, pulled 0.8 stop off Bevy's `Exposure::SUNLIGHT`
-        // (ev100 15). MEASURED, not chosen: the first native capture read
-        // p50 61 / p90 111 / sky 97 against the reference median's 91 / 170 /
-        // 128 (`ci/native_bar.py`, both sides through one estimator), which is
-        // most of a stop of missing image. This is the rig's exposure and
-        // nothing else sets one: if a surface is blown, its albedo is wrong
-        // (`ART.md` §4).
-        // **Grouped, and it has to be.** Bevy implements `Bundle` for tuples
-        // up to 16 elements and this camera reached exactly 16; a 17th fails
-        // as "`(..., ..., ...)` is not a `Bundle`" pointing at the `spawn`
-        // rather than at the component that overflowed it. The tonal three —
-        // what the scene is exposed at, the curve it is mapped through, and
-        // the grade applied after — are one nested tuple, which is also the
-        // grouping `ART.md` rule 5 describes: one owner for the transfer.
-        (
-            Exposure { ev100: 14.2 },
-            // Chosen by measurement in a later slice, not by name (`RENDER.md`
-            // §4 R2/R5). TonyMcMapface is Bevy's default and is neutral with a
-            // gentle roll-off; what it is NOT is the browser's Khronos PBR
-            // Neutral, whose `x - 6.25x²` toe under 0.08 squared the shadows and
-            // delivered a face arriving at linear 0.02 as 8/255.
-            Tonemapping::TonyMcMapface,
-            // **The tonal instrument, and it is deliberately at identity.**
+    let eye = commands
+        .spawn((
+            super::WorldEntity,
+            EyeCam,
+            Camera3d::default(),
+            Projection::Perspective(PerspectiveProjection {
+                fov: FOV_DEG.to_radians(),
+                near: 0.1,
+                far: FAR_M,
+                ..default()
+            }),
+            Atmosphere::earthlike(medium),
+            AtmosphereSettings {
+                // The island is 2 km across, not 32 km. Fitting the aerial-view
+                // LUT to the world we actually draw is what puts its slices where
+                // the geometry is instead of spending all 32 of them on the first
+                // 6% of the frustum.
+                aerial_view_lut_max_distance: FAR_M,
+                ..default()
+            },
+            // Sunlit exterior, pulled 0.8 stop off Bevy's `Exposure::SUNLIGHT`
+            // (ev100 15). MEASURED, not chosen: the first native capture read
+            // p50 61 / p90 111 / sky 97 against the reference median's 91 / 170 /
+            // 128 (`ci/native_bar.py`, both sides through one estimator), which is
+            // most of a stop of missing image. This is the rig's exposure and
+            // nothing else sets one: if a surface is blown, its albedo is wrong
+            // (`ART.md` §4).
+            // **Grouped, and it has to be.** Bevy implements `Bundle` for tuples
+            // up to 16 elements and this camera reached exactly 16; a 17th fails
+            // as "`(..., ..., ...)` is not a `Bundle`" pointing at the `spawn`
+            // rather than at the component that overflowed it. The tonal three —
+            // what the scene is exposed at, the curve it is mapped through, and
+            // the grade applied after — are one nested tuple, which is also the
+            // grouping `ART.md` rule 5 describes: one owner for the transfer.
+            (
+                Exposure { ev100: 14.2 },
+                // Chosen by measurement in a later slice, not by name (`RENDER.md`
+                // §4 R2/R5). TonyMcMapface is Bevy's default and is neutral with a
+                // gentle roll-off; what it is NOT is the browser's Khronos PBR
+                // Neutral, whose `x - 6.25x²` toe under 0.08 squared the shadows and
+                // delivered a face arriving at linear 0.02 as 8/255.
+                Tonemapping::TonyMcMapface,
+                // **The tonal instrument, and it is deliberately at identity.**
+                //
+                // Until now there was no grading stage of any kind in this client:
+                // `rg 'ColorGrading|AutoExposure' crates/client/src` returned nothing,
+                // so the frame's transfer was a fixed `ev100` and a tone curve and
+                // there was no third thing to turn. That matters because `RENDER.md`
+                // §0's own measured gap against the reference set is *exactly* a
+                // grading gap — the darks read ~30 luma too bright, the highlights ~15
+                // too dim, and chroma-per-luma is ~32% short — and a missing
+                // instrument is why `NOW.md` §0fill has been re-deferred pass after
+                // pass with the cause already solved.
+                //
+                // **Identity, not a grade**, and the distinction is the whole reason
+                // this is safe to land unlooked-at. Every field below is Bevy's
+                // default, so the frame does not move by one level from this line; it
+                // exists so the next pass has a knob to turn instead of a slice to
+                // build. Choosing the values is the coupled owner's job with the game
+                // open — `CLAUDE.md` measured three parallel passes at that making
+                // things worse 60→66 and one sequential owner cutting them to 26 —
+                // and the numbers go to `DECISIONS.md` §open when they are chosen,
+                // never invented here.
+                ColorGrading::default(),
+            ),
+            // **The sky fill, and it is a HEMISPHERE now** (`fill.rs`) — `ART.md`
+            // §4 asks for one in those words ("sky half cool blue, earth half
+            // warm"), and the line below used to say why we could not have it:
+            // Bevy's `AmbientLight` is a uniform term, so the sky-half/earth-half
+            // split was "owed to a later slice". This is that slice, and the debt
+            // is paid without a custom material — `environment_map.wgsl` samples
+            // its diffuse cubemap BY THE WORLD NORMAL, so a cubemap holding
+            // `fill_at(n)` is a hemisphere light exactly.
             //
-            // Until now there was no grading stage of any kind in this client:
-            // `rg 'ColorGrading|AutoExposure' crates/client/src` returned nothing,
-            // so the frame's transfer was a fixed `ev100` and a tone curve and
-            // there was no third thing to turn. That matters because `RENDER.md`
-            // §0's own measured gap against the reference set is *exactly* a
-            // grading gap — the darks read ~30 luma too bright, the highlights ~15
-            // too dim, and chroma-per-luma is ~32% short — and a missing
-            // instrument is why `NOW.md` §0fill has been re-deferred pass after
-            // pass with the cause already solved.
+            // The magnitude is unchanged where it can be seen: `fill_at(+Y)` is
+            // the same irradiance the uniform term delivered, so open ground
+            // facing the sky does not move. What moves is down-facing faces, which
+            // now receive the ground's own warm bounce instead of a blue sky they
+            // are not looking at — the mechanism behind the visual judge's "the
+            // tree base measures flat within ±5% right up to the trunk", which is
+            // `ART.md` rule 2's decal edge stated as a number.
             //
-            // **Identity, not a grade**, and the distinction is the whole reason
-            // this is safe to land unlooked-at. Every field below is Bevy's
-            // default, so the frame does not move by one level from this line; it
-            // exists so the next pass has a knob to turn instead of a slice to
-            // build. Choosing the values is the coupled owner's job with the game
-            // open — `CLAUDE.md` measured three parallel passes at that making
-            // things worse 60→66 and one sequential owner cutting them to 26 —
-            // and the numbers go to `DECISIONS.md` §open when they are chosen,
-            // never invented here.
-            ColorGrading::default(),
-        ),
-        // **The sky fill, and it is a HEMISPHERE now** (`fill.rs`) — `ART.md`
-        // §4 asks for one in those words ("sky half cool blue, earth half
-        // warm"), and the line below used to say why we could not have it:
-        // Bevy's `AmbientLight` is a uniform term, so the sky-half/earth-half
-        // split was "owed to a later slice". This is that slice, and the debt
-        // is paid without a custom material — `environment_map.wgsl` samples
-        // its diffuse cubemap BY THE WORLD NORMAL, so a cubemap holding
-        // `fill_at(n)` is a hemisphere light exactly.
-        //
-        // The magnitude is unchanged where it can be seen: `fill_at(+Y)` is
-        // the same irradiance the uniform term delivered, so open ground
-        // facing the sky does not move. What moves is down-facing faces, which
-        // now receive the ground's own warm bounce instead of a blue sky they
-        // are not looking at — the mechanism behind the visual judge's "the
-        // tree base measures flat within ±5% right up to the trunk", which is
-        // `ART.md` rule 2's decal edge stated as a number.
-        //
-        // Indirect-only and occlusion-weighted for free: `pbr_functions.wgsl`
-        // accumulates `environment_light.diffuse * diffuse_occlusion`, and the
-        // SSAO below is folded into `diffuse_occlusion` by `min()`. That is
-        // §4's occlusion law — both halves of it — without a line of WGSL.
-        EnvironmentMapLight {
-            diffuse_map: fill_map.clone(),
-            // The same map. A hemisphere IS the low-frequency environment a
-            // rough surface reflects, and every ground material here is
-            // 0.92 perceptual roughness, so the specular lookup wants exactly
-            // this and nothing sharper. One mip, so `smallest_specular_mip_
-            // level = mip_level_count - 1 = 0` and the roughness-to-mip term
-            // resolves to level 0 rather than reading past the end.
-            specular_map: fill_map,
-            intensity: super::fill::peak_lux(),
-            rotation: Quat::IDENTITY,
-            affects_lightmapped_mesh_diffuse: false,
-        },
-        // What is LEFT of the uniform term: the night floor, and nothing else.
-        // `day_night` drives this to zero across dawn as the hemisphere above
-        // takes over, so the two never both carry the day — which would double
-        // the fill. At night it is the whole fill, unchanged from what this
-        // shipped: `NIGHT_AMBIENT_LUX` at the sky's own chroma.
-        //
-        // Zero at noon is not a hole in `ART.md` rule 3's "no pure black":
-        // the hemisphere's earth half is a much better floor than a uniform
-        // term ever was, because it is nonzero in every direction and warm
-        // where the ground is.
-        AmbientLight {
-            color: Color::srgb(0.80, 0.85, 0.95),
-            brightness: 0.0,
-            affects_lightmapped_meshes: false,
-        },
-        // ── The three post terms, and they belong to this owner too ──────
-        //
-        // MSAA OFF is not a preference: `bevy_pbr`'s SSAO node checks it and
-        // warns that "SSAO is being used which requires Msaa::Off". Off costs
-        // nothing here because SMAA below is a post-process resolve, not a
-        // sample-count one.
-        Msaa::Off,
+            // Indirect-only and occlusion-weighted for free: `pbr_functions.wgsl`
+            // accumulates `environment_light.diffuse * diffuse_occlusion`, and the
+            // SSAO below is folded into `diffuse_occlusion` by `min()`. That is
+            // §4's occlusion law — both halves of it — without a line of WGSL.
+            EnvironmentMapLight {
+                diffuse_map: fill_map.clone(),
+                // The same map. A hemisphere IS the low-frequency environment a
+                // rough surface reflects, and every ground material here is
+                // 0.92 perceptual roughness, so the specular lookup wants exactly
+                // this and nothing sharper. One mip, so `smallest_specular_mip_
+                // level = mip_level_count - 1 = 0` and the roughness-to-mip term
+                // resolves to level 0 rather than reading past the end.
+                specular_map: fill_map,
+                intensity: super::fill::peak_lux(),
+                rotation: Quat::IDENTITY,
+                affects_lightmapped_mesh_diffuse: false,
+            },
+            // What is LEFT of the uniform term: the night floor, and nothing else.
+            // `day_night` drives this to zero across dawn as the hemisphere above
+            // takes over, so the two never both carry the day — which would double
+            // the fill. At night it is the whole fill, unchanged from what this
+            // shipped: `NIGHT_AMBIENT_LUX` at the sky's own chroma.
+            //
+            // Zero at noon is not a hole in `ART.md` rule 3's "no pure black":
+            // the hemisphere's earth half is a much better floor than a uniform
+            // term ever was, because it is nonzero in every direction and warm
+            // where the ground is.
+            AmbientLight {
+                color: Color::srgb(0.80, 0.85, 0.95),
+                brightness: 0.0,
+                affects_lightmapped_meshes: false,
+            },
+            // ── The three post terms, and they belong to this owner too ──────
+            //
+            // MSAA OFF is not a preference: `bevy_pbr`'s SSAO node checks it and
+            // warns that "SSAO is being used which requires Msaa::Off". Off costs
+            // nothing here because SMAA below is a post-process resolve, not a
+            // sample-count one.
+            Msaa::Off,
+            // SMAA rather than FXAA (blurrier) or TAA (needs motion vectors and a
+            // temporal history a fresh-process capture does not have). Nothing in
+            // this client had ANY anti-aliasing before: every pine edge, every
+            // grass blade and every granite facet was a hard stair.
+            Smaa::default(),
+            // Bloom, and its first job is the sun. `SunDisk`'s own doc says it:
+            // "In order to cause the sun to 'glow' and light up the surrounding
+            // sky, enable bloom in your post-processing pipeline." The disk has
+            // been rendering all along — a 9 mrad white dot with nothing around
+            // it. NATURAL is the energy-conserving preset with no threshold, so
+            // it scatters what is genuinely bright instead of hunting for pixels
+            // over a cutoff.
+            Bloom::NATURAL,
+            Transform::from_xyz(0.0, EYE_HEIGHT, 0.0),
+        ))
+        .id();
+
+    // ⚠ **Ambient occlusion is inserted, not bundled, and on WebGL2 it is not
+    // inserted at all.** It was an element of the tuple above until
+    // 2026-09-11, which made it unconditional — and in a browser that is a
+    // PANIC on the first frame rather than a feature that degrades.
+    //
+    // The chain, measured in a real browser: `ScreenSpaceAmbientOcclusion`
+    // carries `#[require(DepthPrepass, NormalPrepass)]`, those build a
+    // mesh-view layout wanting one storage buffer in the fragment stage, and
+    // `downlevel_webgl2_defaults()` allows **zero**. Bevy's SSAO plugin
+    // already declines to load on this backend and logs so; the `#[require]`
+    // fires regardless, so the cost is paid and then the layout kills the
+    // module. `quality::tier` clamps the browser to `Low` for the same
+    // reason — this is the other half, because the rig spawns the DEFAULT
+    // tier rather than the player's and would insert it before `apply` ever
+    // runs.
+    #[cfg(not(target_arch = "wasm32"))]
+    commands.entity(eye).insert(
         // **AO is how the fill's cost gets paid back.** Raising the ambient to
         // reach `ART.md` rule 3's 0.30 floor lifted the whole frame including
         // the darks — p10 went 41.9 → 64.9 against a reference of 41.0. That
@@ -325,21 +364,11 @@ pub fn setup(
                 .expect("the default tier carries ambient occlusion"),
             ..default()
         },
-        // SMAA rather than FXAA (blurrier) or TAA (needs motion vectors and a
-        // temporal history a fresh-process capture does not have). Nothing in
-        // this client had ANY anti-aliasing before: every pine edge, every
-        // grass blade and every granite facet was a hard stair.
-        Smaa::default(),
-        // Bloom, and its first job is the sun. `SunDisk`'s own doc says it:
-        // "In order to cause the sun to 'glow' and light up the surrounding
-        // sky, enable bloom in your post-processing pipeline." The disk has
-        // been rendering all along — a 9 mrad white dot with nothing around
-        // it. NATURAL is the energy-conserving preset with no threshold, so
-        // it scatters what is genuinely bright instead of hunting for pixels
-        // over a cutoff.
-        Bloom::NATURAL,
-        Transform::from_xyz(0.0, EYE_HEIGHT, 0.0),
-    ));
+    );
+    // Silences the unused binding on the target that skips the insert; the
+    // entity is still spawned and still the eye, it simply gains nothing more.
+    #[cfg(target_arch = "wasm32")]
+    let _ = eye;
 
     commands.spawn((
         super::WorldEntity,

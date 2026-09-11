@@ -35,7 +35,12 @@ crate-type = ["cdylib", "rlib"]
 # for it here would drag quinn and mio into a wasm build and fail exactly the
 # way the 2026-09-10 baseline did. `client`'s own `compile_error!` pair says so
 # in a sentence if anyone tries it.
-client = { path = "../client", default-features = false }
+# **`render` is on, and `default-features = false` still is too.** The two are
+# not in tension: the default is `native`, which carries wtransport and quinn
+# and cannot build here; `render` is the Bevy half, which since 2026-09-11
+# does. `client`'s own `compile_error!` pair refuses the wrong combination in
+# a sentence rather than 48 errors inside `mio`.
+client = { path = "../client", default-features = false, features = ["render"] }
 protocol = { path = "../protocol" }
 wasm-bindgen = "0.2"
 # The `async fn` in `#[wasm_bindgen] impl` expands to a call into this crate,
@@ -45,3 +50,11 @@ wasm-bindgen-futures = "0.4"
 # the shard's own code instead of only a sentence to match on.
 js-sys = "0.3"
 web-sys = { version = "0.3", features = ["console"] }
+# **The App is built and run from here, so this crate names Bevy directly** —
+# `client` does not re-export it. Default features, deliberately: cargo unions
+# features across the graph, so this resolves to exactly the set `client`
+# already asks for on this target (its own row is the authority, including
+# which of them are native-only) and adds no crate to the build. Declaring it
+# `default-features = false` would be the wrong kind of tidy — it buys nothing
+# and hides where `DefaultPlugins` comes from.
+bevy = "0.18"

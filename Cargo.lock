@@ -2007,6 +2007,7 @@ dependencies = [
 name = "client-web"
 version = "0.8.0"
 dependencies = [
+ "bevy",
  "client",
  "js-sys",
  "protocol",

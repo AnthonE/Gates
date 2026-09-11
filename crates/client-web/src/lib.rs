@@ -244,6 +244,111 @@ impl Gates {
     pub fn closed(&self) -> bool {
         self.session.closed()
     }
+
+    /// Hand the world to Bevy and start drawing. **Consumes the session.**
+    ///
+    /// `self` by value because the `Session` moves into the ECS: `Net` owns it
+    /// for the life of the app, and a `Gates` left behind holding a copy would
+    /// be a second owner of a single-consumer lane. The page's handle is gone
+    /// after this call, which is the honest shape — the join is over and the
+    /// renderer is the thing that is live.
+    ///
+    /// **The page must stop pumping.** `Session::pump` drains `ClientCore`'s
+    /// own-fact rings destructively and `render/input.rs` now calls it from a
+    /// Bevy system every frame; two drivers would each see half the hits,
+    /// toasts and refusals. That is the single-consumer defect `CLAUDE.md`
+    /// records merging cleanly and breaking silently, so the page's
+    /// `requestAnimationFrame` loop is deleted rather than left dormant.
+    ///
+    /// ⚠ **`run()` does not return on this platform.** Bevy's wasm arm hands
+    /// the loop to `requestAnimationFrame` and returns immediately, so the
+    /// `App` has to be owned by the loop rather than by this frame — which is
+    /// what `run()` arranges. Nothing after it executes.
+    pub fn play(self, canvas: String) {
+        use bevy::asset::AssetMetaCheck;
+        use bevy::prelude::*;
+        use bevy::window::WindowResolution;
+        use client::render::{GatesRenderPlugin, Net, Start, WorldId};
+
+        let Gates { session, .. } = self;
+        let server = session.welcome.seed.to_string();
+        let seed = session.welcome.seed;
+
+        let mut app = App::new();
+        app.add_plugins(
+            DefaultPlugins
+                .set(AssetPlugin {
+                    // **No `.meta` probe.** Bevy's default is `Always`, which
+                    // fires a second request for `<path>.meta` before every
+                    // asset; there are no `.meta` files in this tree, so on a
+                    // page that is one wasted round trip per asset on the
+                    // critical path, each answered 404.
+                    meta_check: AssetMetaCheck::Never,
+                    // Deliberately NOT the desktop's `current_dir()` rewrite
+                    // (`bin/gates.rs`): the default is already the relative
+                    // string "assets", which the wasm reader joins into a
+                    // page-relative URL. A filesystem path here would produce
+                    // requests nothing serves.
+                    ..default()
+                })
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        // `bevy_winit` runs `document.query_selector` and
+                        // PANICS if it matches nothing, so the element must be
+                        // in the document before this call.
+                        canvas: Some(canvas),
+                        // ⚠ **The backing store is capped and this is a
+                        // no-frame failure, not a quality one.** WebGL2's
+                        // `max_texture_dimension_2d` is 2048 and wgpu REFUSES
+                        // `configure_surface` above it, while Bevy passes the
+                        // resolution straight through with only `.max(1)`. An
+                        // ordinary 1080p display at devicePixelRatio 2 asks
+                        // for 3840 and gets nothing at all — no error a player
+                        // can read, just a canvas that never paints.
+                        // Physical pixels, and the scale override is the
+                        // half that actually binds: without it winit takes
+                        // the canvas size times `devicePixelRatio`, so a
+                        // retina display doubles this behind your back and
+                        // lands over the ceiling.
+                        resolution: WindowResolution::new(1280, 720)
+                            .with_scale_factor_override(1.0),
+                        fit_canvas_to_parent: false,
+                        ..default()
+                    }),
+                    ..default()
+                }),
+        );
+
+        // **Before `add_plugins`, and the order is load-bearing.**
+        // `OnEnter(Screen::Loading)` runs before `Startup`, and `sky::setup`
+        // takes a non-optional `Res<WorldId>` — so a `WorldId` inserted later
+        // does not arrive late, it makes that system silently not run.
+        app.insert_resource(WorldId::new(seed));
+        app.insert_non_send_resource(Net {
+            session,
+            sel: 0,
+            light: false,
+        });
+
+        // `connected: true` is what puts the app in `Screen::Loading` rather
+        // than `Screen::Boot` — the plugin already branches on it, so the
+        // browser needs no `insert_state` of its own. It is also the truth:
+        // the page joined before Bevy existed.
+        app.add_plugins(GatesRenderPlugin {
+            start: Start {
+                direct: server,
+                servers_url: None,
+                connected: true,
+                chosen: true,
+                identity: None,
+                // There is no launcher in a tab and there never will be.
+                no_launcher: true,
+                no_hud: false,
+            },
+            capture: None,
+        });
+        app.run();
+    }
 }
 
 /// Turn a join failure into something the page can BRANCH on rather than read.

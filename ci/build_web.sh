@@ -49,6 +49,33 @@ wasm-bindgen --target web --no-typescript \
   target/wasm32-unknown-unknown/release/client_web.wasm
 cp crates/client-web/web/index.html "$out/"
 
+# **The assets, staged from `git ls-files` and never from a walk.**
+#
+# Bevy's wasm asset reader turns `AssetPlugin::file_path` ("assets") into a
+# page-relative URL, so every `asset_server.load("textures/…")` is a fetch for
+# `/assets/textures/…`. Until this existed the output directory held the page
+# and the module and nothing else, so that was 100% of asset requests 404ing —
+# not a hosting question for later, a missing step here.
+#
+# ⚠ **`cp -r assets "$out/"` is the bug this repo has already paid for once.**
+# `ci/depot.py` staged with `shutil.copytree` and produced a **1.6 GB** depot
+# against a 124 MB one, having swept in `assets/textures/candidates/` — 1.3 GB
+# of raw sourcing downloads that `.gitignore` deliberately keeps out of the
+# tree, and unvetted by construction, so it was a route around the licence
+# rail as well as a 13× download. Every gate was green, because an untracked
+# file is invisible to all of them. `git ls-files` makes `.gitignore` the one
+# author of what ships and refuses to fall back to a walk.
+echo "== staging assets/ (tracked files only)"
+command -v git >/dev/null || { echo "git missing - refusing to stage by walking" >&2; exit 1; }
+count=0
+while IFS= read -r -d '' f; do
+  mkdir -p "$out/$(dirname "$f")"
+  cp "$f" "$out/$f"
+  count=$((count + 1))
+done < <(git ls-files -z assets/)
+[ "$count" -gt 0 ] || { echo "git ls-files staged nothing from assets/ - refusing" >&2; exit 1; }
+printf "   %d tracked asset files, %s\n" "$count" "$(du -sh "$out/assets" | cut -f1)"
+
 # The size, printed rather than asserted. `findings/web-build-20260909.md` §4.2
 # is the standing warning that a web build does not beat a depot on bytes — it
 # beats it on ceremony — and this number is the headless floor, with no

@@ -28,10 +28,10 @@
 </style>
 <main>
   <h1>Gates — web client</h1>
-  <p class="sub">The transport probe. It joins a shard over WebTransport, drives the real
-     client core, and sends real input. There is no renderer yet — click the readout to
-     capture the mouse, then use <b>WASD</b>; the eye position is the proof that input
-     reached the shard and prediction came back.</p>
+  <p class="sub">Gates in a tab. It joins a shard over WebTransport with your own wallet,
+     then hands the live session to the renderer — the same Rust client the desktop build
+     runs, compiled to WebAssembly. Connect a wallet if the shard requires one; a shard
+     that takes guests will let you in without.</p>
 
   <label for="server">Shard (host:port)</label>
   <input id="server" value="127.0.0.1:4433" spellcheck="false">
@@ -55,9 +55,24 @@
     A browser cannot skip certificate validation, so there is no loopback carve-out here —
     that is the one place this client is stricter than the desktop one. The signature your
     wallet shows you is built in Rust by the same function the shard uses to check it; this
-    page never composes it.
+    page never composes it. Models do not draw yet: their textures are KTX2/UASTC and the
+    transcoder is C++, which does not build for this target.
   </footer>
 </main>
+
+<!-- **In the document before `play()` is called, always.** `bevy_winit` does
+     `document.query_selector` and PANICS with "Cannot find element" if it
+     matches nothing, so this is markup rather than something JS creates. It
+     starts hidden and is revealed on a successful join; do NOT call
+     `getContext` on it from here — wgpu takes the context and a second holder
+     of it is a black canvas.
+
+     The CSS size is fixed to the backing store rather than `100%`: the
+     renderer pins its resolution under WebGL2's 2048 ceiling (see
+     `Gates::play`), and letting CSS stretch the element would hand winit a
+     different number to multiply by `devicePixelRatio`. -->
+<canvas id="gates" width="1280" height="720" hidden
+        style="display:block;margin:0 auto;width:1280px;height:720px"></canvas>
 
 <script type="module">
 import init, { Gates } from "./client_web.js";
@@ -188,57 +203,23 @@ go.addEventListener("click", async () => {
     return;
   }
 
-  say(`in the world — player ${g.player_id}, seed ${g.seed}`, "good");
+  say(`in the world — player ${g.player_id}, seed ${g.seed} — starting the renderer…`, "good");
 
-  // ── input ────────────────────────────────────────────────────────────────
-  // Keys and mouse pixels only. Which way is right is arithmetic and it lives
-  // in Rust (`client::look::control`) — this page deliberately derives nothing,
-  // because that arithmetic shipped inverted on two clients at once and a
-  // third copy in JavaScript would be the third chance.
-  const keys = new Set();
-  let dx = 0, dy = 0;
-  addEventListener("keydown", (e) => { if (!e.repeat) keys.add(e.code); });
-  addEventListener("keyup", (e) => keys.delete(e.code));
-  addEventListener("blur", () => keys.clear());   // a lost window is keys up
-  log.style.cursor = "pointer";
-  log.title = "click to capture the mouse (Esc releases it)";
-  log.addEventListener("click", () => log.requestPointerLock());
-  addEventListener("mousemove", (e) => {
-    if (document.pointerLockElement === log) { dx += e.movementX; dy += e.movementY; }
-  });
-
-  // The page owns the frame loop; `pump` is synchronous and never awaits, which
-  // is what lets it be called from here at all.
-  let last = performance.now();
-  const frame = (now) => {
-    // Input first: the core takes the LEVEL and `pump`'s `advance` is what
-    // mints a frame from it, so a frame pumped before its input was set sends
-    // the previous one.
-    g.input(dx, dy, keys.has("KeyW"), keys.has("KeyS"),
-            keys.has("KeyA"), keys.has("KeyD"), 0, 0, false);
-    dx = 0; dy = 0;
-
-    const steps = g.pump(now - last);
-    last = now;
-    if (g.closed) {
-      say("the shard hung up.", "bad");
-      go.disabled = false;
-      return;
-    }
-    // `snapshots` says the S→C lane works; `eye` moving under WASD says the
-    // C→S lane and the predictor do. A page that showed only the first would
-    // look identical with its input lane silently clamped, which is exactly
-    // what this build did before 2026-09-10.
-    const [x, y, z] = g.eye;
-    const [overMtu, backpressured] = g.refused;
-    const held = [...keys].filter((k) => k.startsWith("Key")).map((k) => k.slice(3)).join("");
-    say(`in the world — player ${g.player_id}, seed ${g.seed}\n`
-      + `eye  ${x.toFixed(1)} ${y.toFixed(1)} ${z.toFixed(1)}${held ? "   [" + held + "]" : ""}\n`
-      + `snapshots ${g.snapshots}   ·   sim steps this frame ${steps}\n`
-      + `dropped ${g.dropped}   ·   refused ${overMtu} over-MTU, ${backpressured} backpressured`,
-      "good");
-    requestAnimationFrame(frame);
-  };
-  requestAnimationFrame(frame);
+  // ── hand over to Bevy ────────────────────────────────────────────────────
+  // The page's job ends here. It owned the frame loop while there was no
+  // renderer — `g.pump(now - last)` out of a `requestAnimationFrame` — and
+  // that loop is GONE rather than dormant: `pump` drains the client core's
+  // own-fact rings destructively, `render/input.rs` calls it from a Bevy
+  // system every frame, and two drivers would each see half the hits, toasts
+  // and refusals. One drain, one owner — `CLAUDE.md` records that exact defect
+  // merging cleanly and breaking the game's sound silently.
+  //
+  // Input goes with it: winit reads the canvas's own keyboard and pointer
+  // events, so the WASD handling this page used to do is Bevy's too.
+  document.getElementById("gates").hidden = false;
+  document.querySelector("main").hidden = true;
+  // `play` CONSUMES the session and never returns — Bevy's wasm arm hands the
+  // loop to requestAnimationFrame and `run()` does not come back.
+  g.play("#gates");
 });
 </script>
