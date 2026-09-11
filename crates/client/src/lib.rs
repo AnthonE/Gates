@@ -140,6 +140,17 @@ compile_error!(
      wasm32, so `net::ActiveWire` names nothing. Either build for wasm32 or leave the default \
      features on."
 );
+// The third of the set, and it exists because the failure is otherwise
+// illegible. `hot = ["render", "bevy/file_watcher"]` and `bevy_asset`'s file
+// watcher is itself a `compile_error!` on wasm32 — so the mistake lands as an
+// error inside a dependency, about a feature the author did not name, rather
+// than here about the one they did. A dev-loop feature asking to watch a
+// filesystem a page does not have is worth one sentence at the door.
+#[cfg(all(feature = "hot", target_arch = "wasm32"))]
+compile_error!(
+    "the `hot` feature cannot be built for wasm32: it is asset hot-reload, which watches a \
+     filesystem a page does not have. Build the browser client without it."
+);
 
 use client_core::core::{ClientCore, Ingest};
 // Moved to `net` on 2026-09-09, re-exported rather than relocated in the
