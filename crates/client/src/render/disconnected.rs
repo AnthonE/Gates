@@ -36,7 +36,7 @@
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
-use super::menu::{Connecting, Menu, Screen};
+use super::screen::{Connecting, Menu, Screen};
 use super::{ui, Net};
 
 /// Why the player is looking at this screen, captured at the moment the

@@ -463,7 +463,7 @@ pub fn drive(
     // no diagnosis — the same "worst bug class" the tail check below exists
     // for, arriving as a crash instead of an empty directory.
     net: Option<NonSend<super::Net>>,
-    screen: Res<State<super::menu::Screen>>,
+    screen: Res<State<super::screen::Screen>>,
 ) {
     cap.frame += 1;
     look.frozen = true;
@@ -482,7 +482,7 @@ pub fn drive(
     // be read as a slow build. A shard seated with `population` makes this
     // likelier, not less — a raider's charge does not check who is standing
     // beside the base.
-    if *screen.get() == super::menu::Screen::Dead {
+    if *screen.get() == super::screen::Screen::Dead {
         eprintln!(
             "capture: the probe DIED at frame {} — {} frame(s) written, the rest are \
              not coming. Nothing below this line is evidence about a build. Pin \

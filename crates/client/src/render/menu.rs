@@ -77,77 +77,14 @@
 
 use bevy::prelude::*;
 
-use super::boot::Who;
 use super::hub::HubState;
+// The types this screen drives now live beside the state machine they are
+// part of, because a browser build keeps them and does not keep this file.
+use super::screen::{Browse, Connecting, Menu, Nav, Screen, Who};
 use super::ui;
 use crate::shardlist::{self, Shard, MAX_DOC_BYTES};
 use crate::ui::hub::{Hub, Section};
-use crate::ui::servers::{self, Cat, Favourites, Filter, Listing};
-
-/// Where the client is. `Boot` is the default because the *absence* of a
-/// warmed client is the state every launch starts in, including the two that
-/// have already chosen a shard — they leave it for `Connecting` rather than
-/// for `Menu`, which is one bit and lives in `crate::ui::boot`.
-#[derive(States, Default, Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Screen {
-    /// The splash. The window exists, the client is warming, and nothing has
-    /// been asked of the player yet. `boot`.
-    #[default]
-    Boot,
-    Menu,
-    Connecting,
-    /// The welcome has landed and the rings are filling. `loading`.
-    Loading,
-    InWorld,
-    /// The Esc menu. The world is still connected and still pumping. `pause`.
-    Paused,
-    /// This body died and has not answered the respawn yet. The world is
-    /// still connected, still pumping and still streaming behind the wash —
-    /// what stops is `input::gather`, so a corpse does not walk or swing.
-    /// `death`.
-    Dead,
-    /// The island map. A screen you read: the pointer is released, the world
-    /// keeps pumping behind it, and `input::gather` stands down. `map`.
-    Map,
-    /// Reachable from `Menu` and from `Paused`; `settings::Settings::back`
-    /// carries which. `settings`.
-    Settings,
-    /// The shard hung up mid-play — the INVOLUNTARY half of leaving, where
-    /// `pause::Verb::Disconnect` is the verb a player takes. The world is
-    /// torn down on entry (the session under it is dead, and a live world
-    /// drawn over a dead wire is a lie), and the screen names the reason
-    /// before offering the way back. `disconnected`.
-    Disconnected,
-}
-
-/// The menu's whole state. A plain resource — no gameplay state, no session.
-#[derive(Resource)]
-pub struct Menu {
-    pub rows: Vec<Listing>,
-    /// What the screen says under the table. Always something: a menu that
-    /// is empty and silent about why is the defect both repos call a dark
-    /// panel that cannot say what would light it.
-    pub status: String,
-    /// Set when the drawn screen no longer matches this resource. An explicit
-    /// flag rather than a `Local` row count, because a count starts at zero
-    /// and would make the first frame in the menu rebuild what `setup` had
-    /// just spawned — the screen built twice on every entry.
-    pub dirty: bool,
-    pub servers_url: Option<String>,
-    /// The in-flight shard-list fetch. `None` once it has been collected.
-    ///
-    /// **tokio's channel, not `std::sync::mpsc`**, and the reason is a Bevy
-    /// one: a `Resource` must be `Send + Sync`, and `std`'s `Receiver` is
-    /// `Send` but *not* `Sync`. Holding one here makes `Menu` a non-send
-    /// resource, which drags every system that touches the status line onto
-    /// the main thread for no benefit. tokio's is `Sync`, its unbounded
-    /// sender is not async, and tokio is already a dependency.
-    fetch: Option<tokio::sync::mpsc::UnboundedReceiver<Result<Vec<Shard>, String>>>,
-    /// The in-flight round of status polls, one per row that names an
-    /// endpoint. Collected as a batch rather than per row so the frame does
-    /// one `try_recv` however many shards are listed.
-    status_poll: Option<tokio::sync::mpsc::UnboundedReceiver<Vec<(usize, shardlist::Status)>>>,
-}
+use crate::ui::servers::{self, Cat, Listing};
 
 impl Menu {
     pub fn new(direct: &str, servers_url: Option<String>) -> Self {
@@ -166,40 +103,6 @@ impl Menu {
             status_poll: None,
         }
     }
-}
-
-/// What the player has narrowed the list to, and which nav entry is open.
-///
-/// Split from [`Menu`] because the two change for different reasons and at
-/// very different rates: `Menu` moves when the network answers, this moves on
-/// every keystroke. One resource for both would mark the fetch's own change
-/// detection dirty on every letter typed into the search box.
-#[derive(Resource, Default)]
-pub struct Browse {
-    pub nav: Nav,
-    pub filter: Filter,
-    pub favourites: Favourites,
-}
-
-/// The nav column, in the reference's own order.
-///
-/// **The three middle entries are the launcher's, not ours** (operator,
-/// 2026-08-09: NEWS is the elo community, and the item store and
-/// workshop are part of that setup too). The first cut left all three off on
-/// the grounds that nothing was behind them — wrong about the product, not
-/// about the rule. `crate::ui::hub` owns which of four states each is in;
-/// what a pane must never do is draw a greyed row that says nothing.
-///
-/// The one entry the reference has that we still do not is `RUST+`, its
-/// companion app. There is no equivalent to be honest about.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Nav {
-    #[default]
-    Play,
-    /// A launcher-backed section: NEWS, ITEM STORE, WORKSHOP.
-    Hub(Section),
-    Settings,
-    Quit,
 }
 
 impl Nav {
@@ -271,27 +174,6 @@ pub const STATUS_TIMEOUT_S: u64 = 4;
 /// hung client. Esc cancels immediately regardless, which is the half that
 /// needs no number.
 pub const CONNECT_TIMEOUT_S: f32 = 20.0;
-
-/// The in-flight connection attempt. Held here rather than awaited inline:
-/// `block_on` in a system freezes the window for the whole of a failing
-/// connect, which on an unreachable host is seconds of a frozen title
-/// screen and reads exactly like a crash.
-#[derive(Default)]
-pub struct Connecting {
-    pub addr: String,
-    /// The address this connect claims (`Address::GUEST` for none).
-    ///
-    /// Written by [`begin_connect`] from `Who` and then copied into the task,
-    /// because the connect runs on the runtime, off the frame, and must not
-    /// reach back into the app for it. It was a field nobody wrote until
-    /// 2026-08-09 — see [`begin_connect`] for what that cost.
-    pub address: protocol::Address,
-    pub rx: Option<std::sync::mpsc::Receiver<Result<crate::Session, crate::JoinError>>>,
-    /// Seconds spent on this attempt. Accumulated from Bevy's frame delta
-    /// rather than an `Instant`, so the screen has one clock and it is the
-    /// renderer's.
-    pub waited_s: f32,
-}
 
 /// The tokio runtime, owned for the life of the app.
 ///

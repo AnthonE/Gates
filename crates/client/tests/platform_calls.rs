@@ -110,19 +110,33 @@ const EXEMPT: &[(&str, &str)] = &[
 /// what it is waiting on. A site that leaves this list must leave it in the
 /// commit that guards it.
 ///
-/// **Every entry here is in `render/`, and that is the whole content of the
-/// list**: `--features render` does not build for wasm32 yet (it is blocked on
-/// `basis-universal`; `findings/web-build-20260909.md` §2.3), so these cannot
-/// be exercised. They are written down so the slice that puts the renderer on
-/// the web inherits a list rather than a search.
+/// **Every entry here is in `render/`, and every one is in a module a browser
+/// build does not keep.** All four sit in `menu.rs`, `hub.rs` or `boot.rs` —
+/// the desktop front end, which reaches a local launcher over a unix socket
+/// and fetches over a blocking one. In a tab the page owns the shard address,
+/// the wallet and the join, so these three modules are cfg'd off wasm32
+/// rather than ported, and every row here leaves with them.
+///
+/// ⚠ **The line numbers are exact and this list is therefore fragile by
+/// design** — that is the trade the scan makes for being able to name a
+/// precise site. Moving code in these files reddens the gate, which is the
+/// correct behaviour and not a defect: it is the gate asking whether the
+/// site it was watching is still the site it meant. Renumber deliberately,
+/// after reading what is actually at the new line.
 const KNOWN: &[(&str, u32, &str)] = &[
-    ("src/render/boot.rs", 129, "the launcher handshake's thread"),
-    ("src/render/hub.rs", 41, "the shard-list fetch thread"),
-    ("src/render/menu.rs", 373, "the shard-list fetch thread"),
+    ("src/render/boot.rs", 120, "the launcher handshake's thread"),
+    ("src/render/hub.rs", 41, "the title manifest fetch thread"),
+    ("src/render/menu.rs", 255, "the shard-list fetch thread"),
     (
         "src/render/menu.rs",
-        494,
-        "the connect future's runtime thread",
+        376,
+        // ⚠ This read "the connect future's runtime thread" until 2026-09-11
+        // and named the wrong function: the connect future does not spawn a
+        // thread at all, it goes on the tokio runtime `Rt` holds. This is
+        // `begin_status_poll`'s batch — one thread for every row that names a
+        // status endpoint. An annotation nobody re-reads is how a list stops
+        // describing what it pins.
+        "the status-poll round's thread",
     ),
 ];
 

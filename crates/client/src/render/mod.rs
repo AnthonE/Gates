@@ -76,6 +76,9 @@ pub mod loading;
 pub mod map;
 pub mod menu;
 pub mod mobs;
+/// The app's state machine and the resources that carry it — shared by every
+/// screen, and by targets that have no screens at all. See the module docs.
+pub mod screen;
 // The mip chains for `assets/textures/`. Bevy builds none for an ordinary
 // image format, and a one-level photograph minified across the island is the
 // static the operator saw. Derived off `AssetEvent::Added`, not a list.
@@ -121,7 +124,9 @@ pub mod anim;
 pub mod verbs;
 pub mod viewmodel;
 
-pub use menu::{Menu, Rt, Screen};
+pub use screen::{Menu, Screen};
+// `Rt` is the tokio runtime and stays native-only; see `screen`'s header.
+pub use menu::Rt;
 pub use settings::Settings;
 
 /// Marks an entity the WORLD owns, as opposed to one a menu owns.
@@ -417,9 +422,9 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<bodies::Bodies>()
             .init_resource::<mobs::Herd>()
             .init_resource::<menu::Picked>()
-            .init_resource::<menu::Browse>()
+            .init_resource::<screen::Browse>()
             .init_resource::<hub::HubState>()
-            .init_resource::<boot::Who>()
+            .init_resource::<screen::Who>()
             .init_resource::<pause::Chosen>()
             .init_resource::<viewmodel::Motion>()
             .init_resource::<verbs::Aimed>()
@@ -441,7 +446,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<audio::Sound>()
             .init_resource::<audio::LastHp>()
             .init_resource::<water::Sea>()
-            .insert_non_send_resource(menu::Connecting::default());
+            .insert_non_send_resource(screen::Connecting::default());
 
         // Settings come off disk ONCE, here — before the first frame, so the
         // fov, vsync and volumes a player picked last run are what the first
@@ -456,7 +461,7 @@ impl Plugin for GatesRenderPlugin {
             // The starred shards come off the same file and land on the
             // browser's own resource — a favourite is not a knob, and
             // `settings::save_on_change` is the one writer for both.
-            app.insert_resource(menu::Browse {
+            app.insert_resource(screen::Browse {
                 favourites,
                 ..default()
             });
@@ -497,7 +502,7 @@ impl Plugin for GatesRenderPlugin {
             &self.start.direct,
             self.start.servers_url.clone(),
         ))
-        .insert_resource(boot::Direct(self.start.direct.clone()))
+        .insert_resource(screen::Direct(self.start.direct.clone()))
         .insert_resource(boot::Warmup::new(
             self.start.chosen,
             self.start.identity.clone(),
@@ -514,7 +519,7 @@ impl Plugin for GatesRenderPlugin {
         if self.start.connected {
             if let Some(mut c) = app
                 .world_mut()
-                .get_non_send_resource_mut::<menu::Connecting>()
+                .get_non_send_resource_mut::<screen::Connecting>()
             {
                 c.addr = self.start.direct.clone();
             }

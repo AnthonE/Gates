@@ -238,7 +238,7 @@ pub type Addr = Text<80>;
 // ── what the player is doing ─────────────────────────────────────────────────
 
 /// Which screen the player is on, as a closed set. Deliberately coarser than
-/// `render::menu::Screen`: `Paused` and `Map` are not facts a stranger needs,
+/// `render::screen::Screen`: `Paused` and `Map` are not facts a stranger needs,
 /// and "on the island" is true for all three.
 ///
 /// The exhaustive match over this type is [`State::doing`], **in this file**,
