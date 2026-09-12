@@ -399,7 +399,19 @@ pub fn setup(
             ..default()
         },
     );
-    // Silences the unused binding on the target that skips the insert; the
+    // **No depth prepass in a browser either, and it was tried** (2026-09-12).
+    // On the desktop `ScreenSpaceAmbientOcclusion` is `#[require(DepthPrepass,
+    // NormalPrepass)]`, so the depth the forward decals read arrives with the
+    // AO (`decal.rs`'s header; `tests/decal.rs` holds `rig.rs` to it). With
+    // the AO gone on wasm32 the decal shader failed to compile, and
+    // `DepthPrepass` alone — a texture binding, which WebGL2 has — was
+    // inserted here to put the depth back. It did: the shader compiled, and
+    // the PIPELINE was then refused, because `ForwardDecalMaterialExt`'s
+    // uniform is 4 bytes and WebGL2 wants 16 — a fatal wgpu error on the
+    // first mark, where the compile failure had been a logged line. So the
+    // prepass stays off and the mark pool is empty on this target
+    // (`decal::setup`); the depth would feed nothing a browser draws.
+    // Silences the unused binding on the target that skips the inserts; the
     // entity is still spawned and still the eye, it simply gains nothing more.
     #[cfg(target_arch = "wasm32")]
     let _ = eye;

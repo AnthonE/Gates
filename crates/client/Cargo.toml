@@ -68,6 +68,11 @@ render = [
 # frames nobody can reproduce. `ci/gates.sh` builds `render`; a human running
 # `--features hot` is opting into a dev build.
 hot = ["render", "bevy/file_watcher"]
+# The web asset variant (`src/webassets.rs`, `src/bin/web_assets.rs`): the
+# KTX2 transcoder and a PNG encoder, and deliberately NOT Bevy — a build
+# script pays a minute for this instead of the renderer's ten. Native only:
+# the transcoder is C++, which is the whole reason the variant exists.
+webassets = ["dep:basis-universal", "dep:ktx2", "dep:ruzstd", "dep:png"]
 
 # Both player binaries carry `native`: each drives `client_endpoint` and each
 # is a program with a terminal or an OS window around it. Without the
@@ -116,6 +121,11 @@ required-features = ["render", "native"]
 # reports elapsed time, and a gate that waits on a clock is not a gate on this
 # box. It exists so `findings/client-frame-20260819.md`'s numbers can be
 # re-run rather than trusted, which is that directory's one rule.
+[[bin]]
+name = "web_assets"
+path = "src/bin/web_assets.rs"
+required-features = ["webassets"]
+
 [[example]]
 name = "frame_cost"
 path = "examples/frame_cost.rs"
@@ -322,6 +332,26 @@ name = "sun"
 path = "tests/sun.rs"
 required-features = ["render"]
 
+[[test]]
+name = "sky"
+path = "tests/sky.rs"
+required-features = ["render"]
+
+[[test]]
+name = "mipmap_retouch"
+path = "tests/mipmap_retouch.rs"
+required-features = ["render"]
+
+[[test]]
+name = "web"
+path = "tests/web.rs"
+required-features = ["render"]
+
+[[test]]
+name = "bank"
+path = "tests/bank.rs"
+required-features = ["render"]
+
 # Where the green goes: the material-side chain's hue invariance, the detail
 # map's neutrality, and the moisture-band mosaic that explains why three
 # visual reports called the island one painted material. Pure arithmetic plus
@@ -484,6 +514,8 @@ fastrand = { version = "2", optional = true }
 # resolves to nothing.
 ktx2 = { version = "0.4", optional = true }
 ruzstd = { version = "0.8", optional = true }
+# The web asset variant's encoder. Already in the lock through `image`.
+png = { version = "0.18", optional = true }
 sim-core = { path = "../sim-core" }
 protocol = { path = "../protocol" }
 client-core = { path = "../client-core" }
@@ -665,4 +697,13 @@ web-sys = { version = "0.3", features = [
     # without a console line those refusals would be a client that quietly
     # stopped, on somebody else's machine, with nothing to read.
     "console",
+    # `render/web.rs`: the viewport (`Window`), the canvas's transform
+    # (`Document` → `Element` → `HtmlElement` → `CssStyleDeclaration`), and
+    # the reload that hands a finished session back to the page (`Location`).
+    "Window",
+    "Document",
+    "Element",
+    "HtmlElement",
+    "CssStyleDeclaration",
+    "Location",
 ] }

@@ -52,6 +52,7 @@ use bevy::render::render_resource::{
     Extent3d, TextureDimension, TextureFormat, TextureViewDescriptor, TextureViewDimension,
 };
 
+use super::fill::linear_to_srgb;
 use super::rig::{EyeCam, CAPTURE_DAY_FRAC};
 use super::WorldId;
 
@@ -83,6 +84,86 @@ pub const CLOUD_NITS: f32 = 26_000.0;
 /// is one value reads as fog, and it is the lit top that carries the p90.
 const CLOUD_TOP: [f32; 3] = [1.0, 0.99, 0.97];
 const CLOUD_BASE: [f32; 3] = [0.42, 0.45, 0.52];
+
+// ── The browser's sky (browser sky v0 — DECISIONS.md §open) ─────────────────
+//
+// **Natively the atmosphere paints the sky and every clear texel of this
+// cubemap must stay ZERO** — the skybox pipeline has `blend: None`, so a
+// non-zero clear texel is a second sky added to `AtmosphereNode`'s own. In a
+// browser there is no atmosphere at all (`rig.rs`: `mesh_view_layout_
+// atmosphere` wants a storage buffer and WebGL2 allows none), so the same
+// zero texel is the CLEAR COLOUR, and the first island a browser drew had
+// white cumulus floating on black (`findings/web-build-20260909.md` §15.7).
+// A page therefore bakes its sky INTO the deck: clouds composited over a
+// clear-sky radiance rather than over nothing. Same texels, same rotation —
+// a sky graded by elevation alone is invariant under `deck_rotation`'s yaw,
+// so nothing the desktop does to the deck is wrong for the browser's.
+//
+// What the browser still does not get, said out loud: aerial perspective on
+// the terrain (the haze is the atmosphere's, and this paints none), a sun
+// disk, and a sky that reddens at dusk — `day_night` scales the whole deck
+// by `daylight`, so a browser dusk dims rather than colours.
+
+/// Whether the deck carries a clear sky behind the clouds. Zero texels
+/// natively, for the reason above; a sky in a browser.
+pub const BAKE_BACKDROP: bool = cfg!(target_arch = "wasm32");
+
+/// The horizon's luminance over the zenith's. A clear sky is brightest at
+/// the horizon, where the eye looks through the most air: measured skies
+/// put it at two to three times the zenith (Preetham et al.'s clear-sky
+/// model at moderate turbidity), and the reference frames read the same way
+/// — `ART.md` §1's "distant hills lighten" is this gradient landing on the
+/// ground rather than the sky.
+pub const HORIZON_GAIN: f32 = 2.4;
+
+/// How far the horizon's colour is pulled toward neutral, `0..1`. Haze
+/// scatters every wavelength, so the horizon is greyer than the zenith's
+/// blue as well as brighter; at 0 the sky is one hue top to bottom.
+pub const HORIZON_DESAT: f32 = 0.65;
+
+/// The floor on `1 / (elevation + AIR_FLOOR)`, the air-mass curve the
+/// gradient follows. A plane-parallel atmosphere's path length is `1/sin(e)`
+/// and diverges at the horizon; the floor is what a curved one does to it —
+/// Kasten & Young's air mass tops out near 38 at the horizon, i.e. a floor
+/// near `1/38`. Larger reads as a broader, softer horizon band.
+pub const AIR_FLOOR: f32 = 0.12;
+
+/// Clear-sky radiance in world direction `d`, linear, **in the deck's texel
+/// units** — `1.0` is one `CLOUD_NITS`, the same scale the clouds are stored
+/// in, so the two composite in one space.
+///
+/// Zenith first, and it is DERIVED: `fill::sky_lux()` is the irradiance the
+/// sky delivers to an up-facing surface, and a uniform sky of radiance `L`
+/// delivers `π·L`, so the zenith is `sky_lux / π` per channel. The horizon
+/// is that, `HORIZON_GAIN` brighter and `HORIZON_DESAT` greyer, reached
+/// along the air-mass curve; below the horizon the backdrop holds the
+/// horizon colour flat (the sea and the land cover nearly all of it).
+pub fn backdrop_at(d: Vec3) -> [f32; 3] {
+    let sky = super::fill::sky_lux();
+    let zenith = [
+        sky[0] / core::f32::consts::PI,
+        sky[1] / core::f32::consts::PI,
+        sky[2] / core::f32::consts::PI,
+    ];
+    let lum = super::fill::luminance(zenith);
+    // The horizon: the zenith's luminance times the gain, with its chroma
+    // pulled toward grey by the desaturation.
+    let mut horizon = [0.0f32; 3];
+    for c in 0..3 {
+        let grey = zenith[c] + (lum - zenith[c]) * HORIZON_DESAT;
+        horizon[c] = grey * HORIZON_GAIN;
+    }
+    // Air mass, normalised so `w` is 0 at the zenith and 1 at the horizon.
+    let e = d.y.clamp(0.0, 1.0);
+    let m = 1.0 / (e + AIR_FLOOR);
+    let w = (m - 1.0 / (1.0 + AIR_FLOOR)) / (1.0 / AIR_FLOOR - 1.0 / (1.0 + AIR_FLOOR));
+    let w = w.clamp(0.0, 1.0);
+    [
+        (zenith[0] + (horizon[0] - zenith[0]) * w) / CLOUD_NITS,
+        (zenith[1] + (horizon[1] - zenith[1]) * w) / CLOUD_NITS,
+        (zenith[2] + (horizon[2] - zenith[2]) * w) / CLOUD_NITS,
+    ]
+}
 
 fn hash3(seed: u64, x: i32, y: i32, z: i32) -> f32 {
     let mut h = seed
@@ -226,8 +307,17 @@ pub fn deck_rotation(frac: f32) -> Quat {
     Quat::from_rotation_y(super::rig::sun_azimuth(frac) - super::rig::RIG_SUN_AZIMUTH)
 }
 
-/// Build the cloud cubemap for a seed.
+/// Build the cloud cubemap for a seed, for this target: clear texels are
+/// zero on the desktop and a sky in a browser ([`BAKE_BACKDROP`]).
 pub fn cloud_cubemap(seed: u64) -> Image {
+    cloud_cubemap_with(seed, BAKE_BACKDROP)
+}
+
+/// Build the cloud cubemap for a seed, with or without a sky behind the
+/// clouds. Both bakes are reachable natively so `tests/sky.rs` can hold the
+/// browser's to the desktop's: identical wherever a cloud is opaque, the
+/// backdrop exactly wherever the desktop's texel is zero.
+pub fn cloud_cubemap_with(seed: u64, backdrop: bool) -> Image {
     let n = SKY_FACE;
     let mut data = vec![0u8; (n * n * 6 * 4) as usize];
 
@@ -239,12 +329,29 @@ pub fn cloud_cubemap(seed: u64) -> Image {
                 let d = cube_dir(face, x, y, n);
                 let i = (((face as u32 * n + y) * n + x) * 4) as usize;
 
+                // The clear sky behind this texel: nothing natively, the
+                // backdrop in a browser. Written through one closure so the
+                // three "no cloud here" exits below cannot disagree about it.
+                let clear = |data: &mut [u8]| {
+                    if !backdrop {
+                        return;
+                    }
+                    let sky = backdrop_at(d);
+                    for c in 0..3 {
+                        data[i + c] =
+                            (linear_to_srgb(sky[c].clamp(0.0, 1.0)) * 255.0).round() as u8;
+                    }
+                    data[i + 3] = 255;
+                };
+
                 // Below the horizon there is no deck. Everything stays ZERO —
                 // and that is a hard requirement, not tidiness: the skybox
                 // pipeline has `blend: None`, so it REPLACES the background,
                 // and any non-zero clear-sky texel becomes a second sky added
-                // to the atmosphere's own.
+                // to the atmosphere's own. (A browser has no atmosphere to
+                // add to, which is what `backdrop` is.)
                 if d.y <= 0.045 {
+                    clear(&mut data);
                     continue;
                 }
 
@@ -260,6 +367,7 @@ pub fn cloud_cubemap(seed: u64) -> Image {
                 // Coverage, softened so edges are wisps rather than a cutout.
                 let cov = ((f - (1.0 - CLOUD_COVER)) / 0.22).clamp(0.0, 1.0);
                 if cov <= 0.0 {
+                    clear(&mut data);
                     continue;
                 }
                 // Fade the last few degrees into the horizon so the deck does
@@ -274,19 +382,20 @@ pub fn cloud_cubemap(seed: u64) -> Image {
                 let f_sun = fbm(seed, px + toward.x * e, pz + toward.y * e);
                 let lit = ((f - f_sun) * 6.0 + 0.5).clamp(0.0, 1.0);
 
+                // Composited over the clear sky where there is one, and over
+                // zero where there is not — `cov` is the same coverage
+                // either way, so an opaque cloud is byte-identical on both
+                // targets and a wisp's edge blends into the sky rather than
+                // into black.
+                let sky = if backdrop { backdrop_at(d) } else { [0.0; 3] };
                 let mut rgb = [0.0f32; 3];
                 for c in 0..3 {
-                    rgb[c] = (CLOUD_BASE[c] + (CLOUD_TOP[c] - CLOUD_BASE[c]) * lit) * cov;
+                    let cloud = CLOUD_BASE[c] + (CLOUD_TOP[c] - CLOUD_BASE[c]) * lit;
+                    rgb[c] = cloud * cov + sky[c] * (1.0 - cov);
                 }
                 // sRGB encode: the cubemap is sampled as `Rgba8UnormSrgb`.
                 for c in 0..3 {
-                    let v = rgb[c].clamp(0.0, 1.0);
-                    let s = if v <= 0.0031308 {
-                        v * 12.92
-                    } else {
-                        1.055 * v.powf(1.0 / 2.4) - 0.055
-                    };
-                    data[i + c] = (s * 255.0).round() as u8;
+                    data[i + c] = (linear_to_srgb(rgb[c].clamp(0.0, 1.0)) * 255.0).round() as u8;
                 }
                 data[i + 3] = 255;
             }

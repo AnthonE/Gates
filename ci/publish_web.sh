@@ -25,7 +25,9 @@
 # What serves it: `scry-forge/deploy/nginx/elopros.com.conf`, `location ^~
 # /games/gates/`, whose `alias` is `<root>/current/` and whose CSP is the
 # reason the page works there at all ('wasm-unsafe-eval', and the shard in
-# `connect-src`). After the first publish the store's play button is ONE
+# `connect-src`, and `gzip_static` for the `client_web_bg.wasm.gz` the build
+# writes beside the module — 34 MB raw is 8.6 MB on the wire that way). After
+# the first publish the store's play button is ONE
 # field away — `play_url` on the Gates listing, set from the dev desk or in
 # `watchtower/listings/listings.json` — and it is deliberately not set before
 # the files exist, because that field is the promise that the game runs.

@@ -274,6 +274,20 @@ impl Gates {
         let server = session.welcome.seed.to_string();
         let seed = session.welcome.seed;
 
+        // The backing store: the viewport in device pixels, scaled down
+        // uniformly under WebGL2's 2048 cap — `client::render::web::fit`,
+        // and its header for why the canvas is then STRETCHED back over the
+        // viewport with a CSS transform rather than sized to it. Read here,
+        // before the window exists, because the first `configure_surface`
+        // is the one that must not exceed the cap: winit's `ResizeObserver`
+        // sets the backing store from the CSS box times `devicePixelRatio`,
+        // so the scale override below has to be that ratio for the box Bevy
+        // asks for (`physical / override`) to come back as `physical`.
+        let (css_w, css_h, dpr) = client::render::web::viewport().unwrap_or((1280.0, 720.0, 1.0));
+        let fit = client::render::web::fit(css_w, css_h, dpr);
+        let (pw, ph) = fit.physical;
+        client::render::web::stretch_canvas(&canvas, fit.stretch);
+
         let mut app = App::new();
         app.add_plugins(
             DefaultPlugins
@@ -296,7 +310,7 @@ impl Gates {
                         // `bevy_winit` runs `document.query_selector` and
                         // PANICS if it matches nothing, so the element must be
                         // in the document before this call.
-                        canvas: Some(canvas),
+                        canvas: Some(canvas.clone()),
                         // ⚠ **The backing store is capped and this is a
                         // no-frame failure, not a quality one.** WebGL2's
                         // `max_texture_dimension_2d` is 2048 and wgpu REFUSES
@@ -304,14 +318,20 @@ impl Gates {
                         // resolution straight through with only `.max(1)`. An
                         // ordinary 1080p display at devicePixelRatio 2 asks
                         // for 3840 and gets nothing at all — no error a player
-                        // can read, just a canvas that never paints.
-                        // Physical pixels, and the scale override is the
-                        // half that actually binds: without it winit takes
-                        // the canvas size times `devicePixelRatio`, so a
-                        // retina display doubles this behind your back and
-                        // lands over the ceiling.
-                        resolution: WindowResolution::new(1280, 720)
-                            .with_scale_factor_override(1.0),
+                        // can read, just a canvas that never paints. `fit`
+                        // above is the clamp; `web::follow_viewport` keeps it
+                        // as the window changes.
+                        //
+                        // Physical pixels, and the override is `devicePixelRatio`
+                        // itself: Bevy asks winit for a CSS box of
+                        // `physical / override`, and the observer hands back
+                        // `box × devicePixelRatio` — the two cancel exactly
+                        // only when the override IS the ratio. It was 1.0 in
+                        // the first build, which drew a retina canvas at half
+                        // size. Not `fit_canvas_to_parent`: that lets the
+                        // observer size the store from the viewport directly,
+                        // which is the over-the-cap request in one step.
+                        resolution: WindowResolution::new(pw, ph).with_scale_factor_override(dpr),
                         fit_canvas_to_parent: false,
                         ..default()
                     }),
@@ -324,6 +344,8 @@ impl Gates {
         // takes a non-optional `Res<WorldId>` — so a `WorldId` inserted later
         // does not arrive late, it makes that system silently not run.
         app.insert_resource(WorldId::new(seed));
+        // The element winit draws into, for `web::follow_viewport`'s stretch.
+        app.insert_resource(client::render::web::Canvas(canvas.clone()));
         app.insert_non_send_resource(Net {
             session,
             sel: 0,

@@ -41,7 +41,15 @@ const RIG: &str = include_str!("../src/render/rig.rs");
 #[test]
 fn the_camera_still_carries_the_prepass_a_forward_decal_needs() {
     let has_ssao = RIG.contains("ScreenSpaceAmbientOcclusion {");
-    let has_explicit = RIG.contains("DepthPrepass");
+    // A CODE line, not a comment: `rig.rs` has named `DepthPrepass` in prose
+    // since the AO landed, and `RIG.contains("DepthPrepass")` was green on
+    // that prose alone — a gate satisfied by a sentence about the thing it
+    // gates. The browser's explicit insert is the first code line to carry
+    // the name (2026-09-12).
+    let has_explicit = RIG
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .any(|l| l.contains("insert(DepthPrepass)"));
     assert!(
         has_ssao || has_explicit,
         "`render/rig.rs` no longer spawns the camera with either \

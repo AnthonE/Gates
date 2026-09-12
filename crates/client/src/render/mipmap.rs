@@ -130,9 +130,18 @@ use bevy::image::Image;
 use bevy::prelude::*;
 use bevy::render::render_resource::TextureFormat;
 
-/// The directory whose textures get a chain, and the whole of the membership
-/// test. A directory rather than a list of roles: see the module header.
-pub const MIPPED_DIR: &str = "textures/";
+/// The asset directories whose images get a chain.
+///
+/// `textures/` is the photographs. `models/` is the browser's: the web asset
+/// variant re-embeds every model's maps as PNG (`crate::webassets`), which
+/// `bevy_image` gives no chain, so a browser's rocks and nodes would alias
+/// at range exactly as the ground once did. The desktop's models are KTX2
+/// with their chain in the file and are skipped by [`wants`] on the level
+/// count they already carry, so listing the directory costs it nothing.
+pub const MIPPED_DIRS: [&str; 2] = ["textures/", "models/"];
+/// The photographs' directory — the first of [`MIPPED_DIRS`], kept by name
+/// for the readers that meant exactly that.
+pub const MIPPED_DIR: &str = MIPPED_DIRS[0];
 
 /// How many images are given a chain per frame.
 ///
@@ -524,12 +533,20 @@ pub fn enqueue(
         let Some(path) = path.path().to_str().map(str::to_owned) else {
             continue;
         };
-        if !path.starts_with(MIPPED_DIR) {
+        if !MIPPED_DIRS.iter().any(|d| path.starts_with(d)) {
             continue;
         }
         pending.0.push(*id);
     }
 }
+
+/// Images that got their chain THIS frame, for [`retouch`].
+///
+/// Cleared by `retouch` once the materials over them have been touched, so
+/// the vector never grows past one frame's `PER_FRAME`; the buffer itself is
+/// kept, which is what makes the pair allocation-free after the first frame.
+#[derive(Resource, Default)]
+pub struct Chained(pub Vec<AssetId<Image>>);
 
 /// Give up to [`PER_FRAME`] pending images their chain.
 ///
@@ -538,6 +555,7 @@ pub fn enqueue(
 /// `remove(0)` would shift the tail every frame.
 pub fn drain(
     mut pending: ResMut<Pending>,
+    mut chained: ResMut<Chained>,
     mut images: ResMut<Assets<Image>>,
     assets: Res<AssetServer>,
 ) {
@@ -576,5 +594,75 @@ pub fn drain(
         // field directly rather than going through it.
         image.texture_descriptor.mip_level_count = levels(w, h);
         image.data = Some(data);
+        chained.0.push(id);
     }
+}
+
+/// Whether `mat` binds the image `id` in any slot the standard shader reads.
+///
+/// Every field, and listed rather than derived because `StandardMaterial`
+/// has no "images I hold" iterator: a slot missed here is a material that
+/// keeps a one-level map with every gate green, which is exactly the defect
+/// [`retouch`] exists to end. The four this client actually sets are the
+/// first four; the rest are there so a material a later slice authors is
+/// covered without that slice knowing this function exists.
+pub fn binds(mat: &StandardMaterial, id: AssetId<Image>) -> bool {
+    [
+        &mat.base_color_texture,
+        &mat.normal_map_texture,
+        &mat.metallic_roughness_texture,
+        &mat.occlusion_texture,
+        &mat.emissive_texture,
+        &mat.depth_map,
+    ]
+    .into_iter()
+    .any(|slot| slot.as_ref().is_some_and(|h| h.id() == id))
+}
+
+/// Re-prepare every `StandardMaterial` bound to an image that just got its
+/// chain — **the half of the mip pass the desktop's direct-connect path and
+/// every browser frame were missing.**
+///
+/// `bevy_pbr` prepares a material's bind group once, from the GPU image as
+/// it stood, and never again on `AssetEvent<Image>::Modified`: `drain`
+/// re-uploads the image with its chain, and a material created before that
+/// frame keeps binding the ONE-LEVEL texture view forever. The ground is out
+/// of it by construction (`textures::stack_ground` builds its arrays after
+/// every chain lands), and the menu path is out of it by luck — `Startup`
+/// loads warm while a player reads the menu, so the chains land before any
+/// prop material exists. A `--server` launch, the capture probe and a page
+/// have no menu: their prop materials are created the frame the world
+/// streams in, which is the frame the maps are still pending, and every
+/// boulder, node and bush drew from level 0 at any distance (`NOW.md` §0web
+/// item 3, and this module's own ⚠ about the far mountain).
+///
+/// `Assets::get_mut` is the whole mechanism: it marks the asset modified,
+/// and `bevy_pbr` re-extracts and re-prepares a modified material against
+/// the image as it stands now. Nothing about the material changes.
+///
+/// Runs after [`drain`] and touches nothing on a frame nothing was chained;
+/// on one that was, it walks every material once. `touched` is a reused
+/// buffer for the same reason `Chained` is — a `Vec` built per frame would
+/// be a per-frame allocation on the client, which the trap list forbids.
+pub fn retouch(
+    mut chained: ResMut<Chained>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut touched: Local<Vec<AssetId<StandardMaterial>>>,
+) {
+    if chained.0.is_empty() {
+        return;
+    }
+    touched.clear();
+    for (mat_id, mat) in materials.iter() {
+        if chained.0.iter().any(|img| binds(mat, *img)) {
+            touched.push(mat_id);
+        }
+    }
+    for mat_id in touched.iter() {
+        // `get_mut` is the touch: it queues `AssetEvent::Modified`, which is
+        // what `bevy_pbr` re-prepares on. The material's fields are not
+        // changed, and `None` (dropped since `iter`) is simply nothing to do.
+        let _ = materials.get_mut(*mat_id);
+    }
+    chained.0.clear();
 }

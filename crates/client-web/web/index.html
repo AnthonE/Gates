@@ -1,43 +1,51 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Gates — web client (transport probe)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gates</title>
 <style>
   :root { color-scheme: dark; }
-  body { margin: 0; padding: 24px; background: #14120f; color: #d8d2c6;
-         font: 14px/1.55 "Roboto Condensed", system-ui, sans-serif; }
-  main { max-width: 46rem; margin: 0 auto; }
-  h1 { font-size: 1.4rem; margin: 0 0 .25rem; letter-spacing: .02em; }
-  p.sub { margin: 0 0 1.5rem; color: #8d8577; }
-  label { display: block; margin: .6rem 0 .2rem; color: #8d8577; font-size: .85rem; }
-  input { width: 100%; box-sizing: border-box; padding: .5rem .6rem; background: #1e1b17;
-          border: 1px solid #3a352c; border-radius: 3px; color: inherit; font: inherit; }
-  button { margin-top: 1rem; padding: .55rem 1.4rem; background: #6b5a3e; color: #f2ede3;
+  html, body { height: 100%; }
+  body { margin: 0; background: #14120f; color: #d8d2c6;
+         font: 15px/1.55 "Roboto Condensed", system-ui, sans-serif; }
+  body.playing { overflow: hidden; }
+  main { max-width: 34rem; margin: 0 auto; padding: 8vh 24px 24px; }
+  h1 { font-size: 2.2rem; margin: 0 0 .2rem; letter-spacing: .04em; font-weight: 700; }
+  p.sub { margin: 0 0 1.6rem; color: #8d8577; }
+  button { padding: .55rem 1.4rem; background: #6b5a3e; color: #f2ede3;
            border: 0; border-radius: 3px; font: inherit; cursor: pointer; }
   button.ghost { background: #2a251f; color: #b8b0a2; }
   button:disabled { opacity: .45; cursor: default; }
+  #go { font-size: 1.35rem; padding: .8rem 2.6rem; letter-spacing: .06em; font-weight: 700;
+        width: 100%; }
+  #status { margin: .9rem 0 0; min-height: 1.5em; color: #b8b0a2; }
+  #status.bad { color: #d98b6a; }
+  #status.good { color: #9db87a; }
+  #who { margin-top: 1.4rem; padding: .7rem .9rem; background: #191612; border: 1px solid #2a251f;
+         border-radius: 3px; font-size: 13.5px; }
   .row { display: flex; gap: .6rem; flex-wrap: wrap; align-items: center; }
-  #who { margin-top: 1rem; padding: .7rem .9rem; background: #191612; border: 1px solid #2a251f;
-         border-radius: 3px; font-size: 13px; }
-  #log { margin-top: 1.5rem; padding: .9rem 1rem; background: #100e0c; border: 1px solid #2a251f;
-         border-radius: 3px; white-space: pre-wrap; min-height: 7rem;
-         font-family: ui-monospace, monospace; font-size: 12.5px; }
-  .bad { color: #d98b6a; }
-  .good { color: #9db87a; }
-  .dim { color: #6d665b; }
-  footer { margin-top: 1.6rem; color: #6d665b; font-size: 12px; }
+  #account.good { color: #9db87a; }
+  #account.dim { color: #6d665b; }
+  details { margin-top: 1.4rem; }
+  summary { cursor: pointer; color: #8d8577; font-size: .9rem; user-select: none; }
+  label { display: block; margin: .6rem 0 .2rem; color: #8d8577; font-size: .85rem; }
+  input { width: 100%; box-sizing: border-box; padding: .5rem .6rem; background: #1e1b17;
+          border: 1px solid #3a352c; border-radius: 3px; color: inherit; font: inherit; }
+  footer { margin-top: 1.6rem; color: #6d665b; font-size: 12.5px; }
+  footer a { color: #8d8577; }
+  /* The canvas is fixed at the page's origin and STRETCHED over the viewport
+     by a transform the renderer sets (`client::render::web`): winit sizes
+     its CSS box at the backing store over devicePixelRatio, and that box is
+     what the pointer and the resize observer measure, so the box itself is
+     never told to be bigger. */
+  #gates { position: fixed; left: 0; top: 0; transform-origin: 0 0; display: block; }
 </style>
 <main>
-  <h1>Gates — web client</h1>
-  <p class="sub">Gates in a tab. It joins a shard over WebTransport with your own wallet,
-     then hands the live session to the renderer — the same Rust client the desktop build
-     runs, compiled to WebAssembly. Connect a wallet if the shard requires one; a shard
-     that takes guests will let you in without.</p>
+  <h1>Gates</h1>
+  <p class="sub">A survival island, in a tab. Nothing to install — the same game the desktop
+     build runs, drawn by your browser.</p>
 
-  <label for="server">Shard (host:port)</label>
-  <input id="server" value="127.0.0.1:4433" spellcheck="false">
-
-  <label for="hash">Certificate SHA-256 — required for a self-signed dev shard, which prints it at boot</label>
-  <input id="hash" placeholder="aa:bb:cc:… (leave empty for a public shard with a real chain)" spellcheck="false">
+  <button id="go">Play</button>
+  <p id="status">idle.</p>
 
   <div id="who">
     <div class="row">
@@ -46,17 +54,18 @@
     </div>
   </div>
 
-  <div class="row">
-    <button id="go">Join</button>
-  </div>
-  <div id="log">idle.</div>
+  <details id="advanced">
+    <summary>Advanced — which shard, and its certificate</summary>
+    <label for="server">Shard (host:port)</label>
+    <input id="server" value="127.0.0.1:4433" spellcheck="false">
+    <label for="hash">Certificate SHA-256 — required for a self-signed dev shard, which prints it at boot</label>
+    <input id="hash" placeholder="aa:bb:cc:… (leave empty for a public shard with a real chain)" spellcheck="false">
+  </details>
 
   <footer>
-    A browser cannot skip certificate validation, so there is no loopback carve-out here —
-    that is the one place this client is stricter than the desktop one. The signature your
-    wallet shows you is built in Rust by the same function the shard uses to check it; this
-    page never composes it. Models do not draw yet: their textures are KTX2/UASTC and the
-    transcoder is C++, which does not build for this target.
+    Click the world to capture the mouse; <kbd>Esc</kbd> gives it back and opens the menu.
+    Your wallet signs a sign-in message the shard composes and checks — this page never
+    writes it. Models do not draw in a browser yet; the island, its trees and its ground do.
   </footer>
 </main>
 
@@ -67,12 +76,10 @@
      `getContext` on it from here — wgpu takes the context and a second holder
      of it is a black canvas.
 
-     The CSS size is fixed to the backing store rather than `100%`: the
-     renderer pins its resolution under WebGL2's 2048 ceiling (see
-     `Gates::play`), and letting CSS stretch the element would hand winit a
-     different number to multiply by `devicePixelRatio`. -->
-<canvas id="gates" width="1280" height="720" hidden
-        style="display:block;margin:0 auto;width:1280px;height:720px"></canvas>
+     No width/height attributes and no CSS size: the renderer decides the
+     backing store from the viewport under WebGL2's 2048 ceiling
+     (`client::render::web::fit`) and winit writes both. -->
+<canvas id="gates" hidden></canvas>
 
 <!-- The page's own script is a FILE, not an inline block: a Content-Security-
      Policy of `script-src 'self'` — the origin's — refuses an inline module,
