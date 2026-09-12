@@ -2739,7 +2739,7 @@ records or gates that `rev = a11e6a8e…` contains the #317 fix**, and the pin
 is forever now. That is §0web's to carry.
 
 
-## 0web · The browser client — **spoken; transport, identity, the wasm render tier and the loading screen in a real browser DONE; a world frame next** *(client lane)*
+## 0web · The browser client — **spoken; transport, identity, the wasm render tier and a frame of the island in a real browser DONE; a sky, decals and models next** *(client lane)*
 
 Operator, 2026-09-09 (*"i want to start building it"*) and 2026-09-10. The
 measured assessment is **`findings/web-build-20260909.md`**; §11 is what has
@@ -2774,38 +2774,42 @@ never sampled the mip chain (`render/mipmap.rs`'s ⚠, and the item below). In
 a browser: wallet join, then **the loading screen drew** — the first frame of
 this UI a browser has shown — then the first tree killed the page.
 
+**Landed 2026-09-12, later the same day** (findings §15.7): `VisibilityRange`
+cannot be bound on WebGL2 (Bevy 0.18.1 keeps a 16-byte `min_binding_size` on
+the 1,024-byte uniform fallback; no point release fixes it), so a browser tree
+carries none — `tree::lod_band` hands back nothing there and
+`tree::swap_by_distance` swaps the pair for the hull by hand, gated
+`tests/tree_swap.rs`. **Then the island drew in headless Chromium**: the
+three-array ground on the mountain, trees, grass, clutter, the HUD.
+
 What remains, in order:
-1. **`VisibilityRange` cannot be used on WebGL2** — Bevy 0.18.1's view layout
-   keeps `min_binding_size = 16` for the uniform fallback of a 1,024-byte
-   table, wgpu refuses `pbr_opaque_mesh_pipeline` on the first tree, and no
-   point release fixes it. Fix is wasm-only: a system swapping a tree's near
-   pair and far hull by `TreeLod`'s distances, no crossfade (findings §15.6).
-2. **A ground frame in a browser.** The arrays fit by arithmetic; the ground
-   pipeline has not been created in a browser yet (`GROUND 0/25` when it died).
-3. **`DepthPrepass` alone on the browser camera**, so Bevy's forward decals
+1. **A sky.** `sky.rs` is a cloud cubemap the ATMOSPHERE composites onto its
+   sky, and the browser has no atmosphere (§15.1), so the backdrop is the
+   clear colour: black with clouds on it. A clear colour or a dome, wasm-only.
+2. **`DepthPrepass` alone on the browser camera**, so Bevy's forward decals
    compile there (a texture, not a storage buffer — the marks are a compile
    failure today, not a crash).
-4. **A material prepared before its maps' chains land keeps the one-level
+3. **A material prepared before its maps' chains land keeps the one-level
    upload forever** — `bevy_pbr` never re-prepares on `AssetEvent<Image>`.
    The ground is out of it by construction; every prop `StandardMaterial` on
    a direct-connect path (the probe, `--server`, the browser) is still in it.
    Create after `textures::layer_ready`, or touch the materials after
    `mipmap::drain`.
-5. **Two runtime gaps the cut created**, written at the site (`render/mod.rs`,
+4. **Two runtime gaps the cut created**, written at the site (`render/mod.rs`,
    beside `add_desktop_front_end`): `Screen::Boot` has no exit on wasm, and
    `Screen::Menu` is a dead end because the `Session` is one-shot there.
-6. **Surface over 2048 is refused outright** on WebGL2, so 1080p at
+5. **Surface over 2048 is refused outright** on WebGL2, so 1080p at
    devicePixelRatio 2 draws nothing.
-7. **Models are ABSENT** until a web asset variant exists — 47 glTF loads fail
+6. **Models are ABSENT** until a web asset variant exists — 47 glTF loads fail
    as `format requires transcoding: Uastc(Rgb)`.
-8. **77 MB of wasm** (13.8 MB gzipped) for the render tier against 512 KB
+7. **77 MB of wasm** (13.8 MB gzipped) for the render tier against 512 KB
    headless — profile, strip and `wasm-opt` before anyone is asked to load it.
-9. The audio bank's 11.7 MB WAV synthesis inside `Plugin::build` stalls the
+8. The audio bank's 11.7 MB WAV synthesis inside `Plugin::build` stalls the
    tab; pointer lock (`document.pointerLockElement`) for the look.
 
-**Somebody has opened it** — three times now (findings §14, §15.6): the
-handshake, the wallet join and the loading screen are proven in headless
-Chromium against a shard built from the same commit. Still true: no browser
+**Somebody has opened it** — four times now (findings §14, §15.6, §15.7):
+the handshake, the wallet join, the loading screen and a frame of the island
+are proven in headless Chromium against a shard built from the same commit. Still true: no browser
 runs a gate in this repo and none should, so every one of those is an act a
 person repeats, not a wall.
 

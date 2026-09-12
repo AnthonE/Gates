@@ -836,7 +836,9 @@ pub fn fits_sim_bounds(bark: &Mesh, needles: &Mesh) -> bool {
 //
 // `TERRAIN.md` §4 queues a billboard and this is not it. It is the step
 // before: one opaque hull per variant, lathed through the tree's OWN vertices,
-// swapped in by `VisibilityRange` past [`TREE_LOD_SWAP_M`]. Two reasons it is
+// swapped in by `VisibilityRange` past [`TREE_LOD_SWAP_M`] — on the desktop;
+// a browser swaps it by [`swap_by_distance`], because WebGL2 cannot bind the
+// table `VisibilityRange` dithers by (`lod_band` says why). Two reasons it is
 // worth landing first.
 //
 // **The arithmetic.** `tests/tree.rs` has printed the debt since the generator
@@ -980,6 +982,15 @@ impl TreeLod {
         }
     }
 
+    /// Where the near pair gives way to the hull, metres from the eye — the
+    /// start of the near band's end margin, which `tests/tree.rs` holds equal
+    /// to the start of the far band's start margin. [`swap_by_distance`]
+    /// swaps here with no fade; the desktop fades across `TREE_LOD_FADE_M`
+    /// from here.
+    pub fn swap_m(&self) -> f32 {
+        self.near.end_margin.start
+    }
+
     /// Which band a tree part belongs in, or `None` for a part that carries
     /// no range at all.
     ///
@@ -992,6 +1003,74 @@ impl TreeLod {
             super::props::FellPart::Far => Some(&self.far),
             super::props::FellPart::Trunk | super::props::FellPart::Canopy => Some(&self.near),
             super::props::FellPart::Stump | super::props::FellPart::Vanish => None,
+        }
+    }
+}
+
+/// A tree part's LOD band as the component it carries: the `VisibilityRange`
+/// itself on the desktop, and **nothing in a browser**.
+///
+/// WebGL2 has no storage buffers, so `visibility_ranges` — the table
+/// `VisibilityRange` dithers by, view binding 14 — becomes a 1,024-byte
+/// uniform array on that target, and Bevy 0.18.1's view layout keeps the
+/// storage case's `min_binding_size` of 16 for it. wgpu refuses every pipeline
+/// that reads the table (`pbr_opaque_mesh_pipeline` with
+/// `VISIBILITY_RANGE_DITHER`), which is the pipeline of the first tree to
+/// stream in; no 0.18 point release fixes it
+/// (`findings/web-build-20260909.md` §15.6). A pipeline that never touches the
+/// binding is untouched, so the browser's answer is to never ask: no tree
+/// part carries the component there, and [`swap_by_distance`] toggles
+/// `Visibility` by hand instead. Both spawn sites in `props::spawn_slot` go
+/// through this one function so the two targets cannot disagree about which
+/// parts are banded.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn lod_band(range: &VisibilityRange) -> VisibilityRange {
+    range.clone()
+}
+
+/// See the desktop half above: a browser tree carries no `VisibilityRange`.
+#[cfg(target_arch = "wasm32")]
+pub fn lod_band(_range: &VisibilityRange) {}
+
+/// The LOD swap a browser does by hand — [`lod_band`] says why it has to.
+///
+/// Every frame in the world, each tree part that would carry a
+/// `VisibilityRange` on the desktop is shown or hidden by its distance from
+/// the eye: the trunk and canopy inside [`TreeLod::swap_m`], the hull
+/// outside it. The distance is the part's own origin, which is the shared
+/// pivot `props::spawn_slot` gives all three — the same point the desktop's
+/// ranges measure from (`use_aabb: false`). No crossfade: a browser swaps
+/// abruptly where the desktop fades over `TREE_LOD_FADE_M`, and that is
+/// written here rather than hidden.
+///
+/// **Only the three banded parts.** The stump and a vanishing prop are the
+/// fell system's to show and hide (`props::apply_fell`), which never writes
+/// `Visibility` on a trunk, a canopy or a hull — so the two never fight over
+/// one entity. Written only on a change, because a `Visibility` write
+/// re-extracts the entity.
+///
+/// Compiled on every target and **gated to wasm32 by its run condition**
+/// (`render/mod.rs`), so `tests/tree_swap.rs` can drive it natively.
+pub fn swap_by_distance(
+    lod: Res<TreeLod>,
+    eye: Res<super::Eye>,
+    mut parts: Query<(&super::props::Fellable, &GlobalTransform, &mut Visibility)>,
+) {
+    let swap2 = lod.swap_m() * lod.swap_m();
+    for (f, gt, mut vis) in parts.iter_mut() {
+        let near_part = match f.part {
+            super::props::FellPart::Trunk | super::props::FellPart::Canopy => true,
+            super::props::FellPart::Far => false,
+            super::props::FellPart::Stump | super::props::FellPart::Vanish => continue,
+        };
+        let is_near = (gt.translation() - eye.pos).length_squared() < swap2;
+        let want = if is_near == near_part {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        if *vis != want {
+            *vis = want;
         }
     }
 }

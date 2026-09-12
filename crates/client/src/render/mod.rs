@@ -965,6 +965,16 @@ impl Plugin for GatesRenderPlugin {
         // streamer, and a sea that froze while the Esc menu was up would
         // resume with a visible jump in every wave.
         .add_systems(Update, water::animate.run_if(world_running))
+        // A browser's tree LOD, by hand: WebGL2 cannot bind the table
+        // `VisibilityRange` dithers by, so no tree part carries one there and
+        // this swaps the near pair for the hull by distance (`tree::band`).
+        .add_systems(
+            Update,
+            tree::swap_by_distance
+                .after(props::stream)
+                .run_if(|| cfg!(target_arch = "wasm32"))
+                .run_if(world_running),
+        )
         // Input writes what the sim reads, so it runs on the two screens where
         // the player is still *in* the world and nowhere else: a player
         // reading a settings pane must not be swinging an axe.
