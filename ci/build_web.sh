@@ -53,7 +53,7 @@ wasm-bindgen --target web --no-typescript \
   --remove-producers-section \
   --out-dir "$out" \
   target/wasm32-unknown-unknown/web/client_web.wasm
-cp crates/client-web/web/index.html "$out/"
+cp crates/client-web/web/index.html crates/client-web/web/app.js "$out/"
 
 # **The assets, staged from `git ls-files` and never from a walk.**
 #

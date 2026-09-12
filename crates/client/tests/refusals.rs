@@ -173,7 +173,8 @@ fn an_unknown_code_is_reported_as_a_number() {
 
 /// **The page does not decide what a refusal MEANS by reading it.**
 ///
-/// A source scan over `crates/client-web/web/index.html`, in
+/// A source scan over `crates/client-web/web/app.js` (the page's script, a
+/// file because a `script-src 'self'` CSP refuses an inline module), in
 /// `tests/tls_callsite.rs`'s shape and for its reason: the defect is a call
 /// site, not a value, so the instrument is a grep for the call site. The page
 /// is not Rust and no compiler will ever look at it, which makes it the one
@@ -189,7 +190,7 @@ fn an_unknown_code_is_reported_as_a_number() {
 /// exact: reading the error to work out what happened.
 #[test]
 fn the_browser_page_reads_no_refusal_to_decide_what_it_was() {
-    let path = Path::new("../client-web/web/index.html");
+    let path = Path::new("../client-web/web/app.js");
     let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     // Comments may quote these freely — every one of them is *about* this
     // rule — so whole-line comments go first, exactly as `code_of` does it.
@@ -201,7 +202,7 @@ fn the_browser_page_reads_no_refusal_to_decide_what_it_was() {
 
     let at = code.find("catch (e) {").unwrap_or_else(|| {
         panic!(
-            "index.html no longer catches the join's failure where this gate looks - it is \
+            "app.js no longer catches the join's failure where this gate looks - it is \
              watching a ghost. Re-point it at whatever handles a refused join."
         )
     });
@@ -246,7 +247,7 @@ fn the_browser_page_reads_no_refusal_to_decide_what_it_was() {
     ] {
         assert!(
             !handler.contains(banned),
-            "index.html's join handler calls {banned} - it is testing a message's TEXT to \
+            "app.js's join handler calls {banned} - it is testing a message's TEXT to \
              decide what happened. That is the defect this file exists for: the sentence it \
              matched was reworded out from under it and the branch died silently, so a \
              player in a tab was told to open a launcher that cannot exist in one. \

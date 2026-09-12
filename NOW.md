@@ -2809,6 +2809,14 @@ What remains, in order:
 8. The audio bank's 11.7 MB WAV synthesis inside `Plugin::build` stalls the
    tab; pointer lock (`document.pointerLockElement`) for the look.
 
+**Publishing is built and is an operator act**: `ci/publish_web.sh` lands
+`target/web/` on the origin as `<build>/` and flips `current`; the location
+that serves it is `scry-forge/deploy/nginx/elopros.com.conf` (`/games/gates/`,
+its own CSP) and the page dials `game.elopros.com:61234` when served from
+`elopros.com` (`?server=` overrides). Three things wait on a person: that
+publish, the shard's redeploy to protocol 62 (`ci/deploy_shard.sh`), and
+`play_url` on the listing — flipped after the files exist, never before.
+
 **Somebody has opened it** — four times now (findings §14, §15.6, §15.7):
 the handshake, the wallet join, the loading screen and a frame of the island
 are proven in headless Chromium against a shard built from the same commit. Still true: no browser
