@@ -2739,75 +2739,69 @@ records or gates that `rev = a11e6a8e…` contains the #317 fix**, and the pin
 is forever now. That is §0web's to carry.
 
 
-## 0web · The browser client — **spoken; transport, identity, the wasm render tier and a frame of the island in a real browser DONE; a sky, decals and models next** *(client lane)*
+## 0web · The browser client — **spoken; transport, identity, the renderer, a sky, models and a playable page DONE in headless Chromium; a real GPU and a real wallet next** *(client lane)*
 
 Operator, 2026-09-09 (*"i want to start building it"*) and 2026-09-10. The
-measured assessment is **`findings/web-build-20260909.md`**; §11 is what has
-landed. §0wt is struck — the HTTP/3 layer is what makes this possible.
+measured assessment is **`findings/web-build-20260909.md`**; §11–§17 is what
+has landed, §17 is the newest. §0wt is struck — the HTTP/3 layer is what
+makes this possible.
 
-**Landed 2026-09-10, gated** (`ci/gates.sh`, the browser-client gate — clippy
-and build for `wasm32`, which is the only line in that file that compiles the
-non-default configuration at all): the manifest split by target, `client`'s
-platform halves cfg'd, `net/web.rs`'s `WebTransport` transport with the
-`maxDatagramSize` clamp `CLAUDE.md` has asked for since the first browser
-client, and `crates/client-web` — the module a page loads. `ci/build_web.sh`
-produces it; **512 KB of wasm, 174 KB gzipped**, headless.
+**Landed 2026-09-10/11/12** (findings §11–§16): the transport, the wallet
+sign-in, the wasm render tier, the three-array ground, the hand-swapped tree
+LOD, the 34 MB / 8.6 MB-gzipped module, and the first frame of the island.
 
-**Landed 2026-09-11**: `--features render` compiles for `wasm32`, gated by
-`ci/gates.sh`'s new browser-renderer line. Three commits — the C++ texture
-path out of the wasm graph; the state machine out of `menu.rs` into
-`render/screen.rs` (a pure move: 76 native errors to 0, wasm unchanged at 14);
-then `menu`/`hub`/`boot` cfg'd off wasm behind one `add_desktop_front_end`
-call. **And Bevy 0.18 was proved to render in a browser** — a lit cube, 33
-frames, WebGL2 via headless Chromium — which was the unknown that could have
-invalidated all of it (findings §14 for the harness).
+**Landed 2026-09-12, later** (findings §17), each gated natively and looked
+at in headless Chromium (SwiftShader) against a shard from the same commit:
+1. **A sky** — the deck bakes a clear sky behind its clouds on wasm32
+   (`sky::backdrop_at`; browser sky v0, `DECISIONS.md` §open); the desktop's
+   deck is byte-unchanged (`tests/sky.rs`).
+2. **Models draw** — `ci/build_web.sh` converts the STAGED models' KTX2 maps
+   to 512² PNG (`webassets.rs`, 82 → 32 MB) and `mipmap` chains `models/`;
+   47 glTF failures → 0, a hand holding a textured rock in the frame.
+3. **Materials re-prepare when their chains land** (`mipmap::retouch`,
+   `tests/mipmap_retouch.rs`) — the desktop's `--server` and capture paths
+   had the same defect.
+4. **The page is the menu**: `Screen::Menu` and `AppExit` hand control back
+   (`web::hand_back` → `gatesLeft` → reload with the reason on the status
+   line); the surface follows the viewport under the 2048 cap (`web::fit`,
+   `tests/web.rs`); one PLAY button, the shard fields behind ADVANCED.
+5. **The audio bank is one cue a frame on wasm32** (`tests/bank.rs`).
+6. **Mouse look turns the view** and the pointer lock, when granted, holds
+   through a drag and releases on Escape — zero panics across four runs.
 
-**Landed 2026-09-12** (findings §15): `client-web` hands the session to
-Bevy in a tab (`Gates::play`), `build_web.sh` stages assets from `git
-ls-files`, three storage-buffer walls are routed around (SSAO, atmosphere,
-the prepasses — each "not loaded" log line was still fatal), and the ground's
-sixteen textures are **three `texture_2d_array`s** (`textures::GroundArrays`),
-because WebGL2's 16 sampled textures are counted per stage across every bind
-group. Measured natively, before/after, against the harness's own noise floor:
-the near ground is unchanged and the far mountain is BETTER — the old material
-never sampled the mip chain (`render/mipmap.rs`'s ⚠, and the item below). In
-a browser: wallet join, then **the loading screen drew** — the first frame of
-this UI a browser has shown — then the first tree killed the page.
-
-**Landed 2026-09-12, later the same day** (findings §15.7): `VisibilityRange`
-cannot be bound on WebGL2 (Bevy 0.18.1 keeps a 16-byte `min_binding_size` on
-the 1,024-byte uniform fallback; no point release fixes it), so a browser tree
-carries none — `tree::lod_band` hands back nothing there and
-`tree::swap_by_distance` swaps the pair for the hull by hand, gated
-`tests/tree_swap.rs`. **Then the island drew in headless Chromium**: the
-three-array ground on the mountain, trees, grass, clutter, the HUD.
+**Decals: closed as NOT POSSIBLE with Bevy's forward decal on WebGL2**, and
+it was measured rather than assumed. `DepthPrepass` alone made the shader
+compile; the pipeline was then refused (`ForwardDecalMaterialExt`'s uniform
+is 4 bytes, WebGL2 wants 16) and a refused pipeline is the module gone. The
+mark pool is empty on wasm32 (`decal::setup`); a 16-byte extension means a
+copy of `forward_decal.wgsl` this tree does not carry.
 
 What remains, in order:
-1. **A sky.** `sky.rs` is a cloud cubemap the ATMOSPHERE composites onto its
-   sky, and the browser has no atmosphere (§15.1), so the backdrop is the
-   clear colour: black with clouds on it. A clear colour or a dome, wasm-only.
-2. **`DepthPrepass` alone on the browser camera**, so Bevy's forward decals
-   compile there (a texture, not a storage buffer — the marks are a compile
-   failure today, not a crash).
-3. **A material prepared before its maps' chains land keeps the one-level
-   upload forever** — `bevy_pbr` never re-prepares on `AssetEvent<Image>`.
-   The ground is out of it by construction; every prop `StandardMaterial` on
-   a direct-connect path (the probe, `--server`, the browser) is still in it.
-   Create after `textures::layer_ready`, or touch the materials after
-   `mipmap::drain`.
-4. **Two runtime gaps the cut created**, written at the site (`render/mod.rs`,
-   beside `add_desktop_front_end`): `Screen::Boot` has no exit on wasm, and
-   `Screen::Menu` is a dead end because the `Session` is one-shot there.
-5. **Surface over 2048 is refused outright** on WebGL2, so 1080p at
-   devicePixelRatio 2 draws nothing.
-6. **Models are ABSENT** until a web asset variant exists — 47 glTF loads fail
-   as `format requires transcoding: Uastc(Rgb)`.
-7. **34 MB of wasm, 8.6 MB gzipped** (findings §16) — down from 77 / 13.8
-   with the `web` profile, and 29 MB of it is code. `wasm-opt` (binaryen is
-   not on this box) and the feature trim §0x owes the desktop are what is
-   left; the 92 MB of staged assets is the larger download.
-8. The audio bank's 11.7 MB WAV synthesis inside `Plugin::build` stalls the
-   tab; pointer lock (`document.pointerLockElement`) for the look.
+1. **A real GPU and a real wallet.** Every browser frame so far is
+   SwiftShader; the sky's colour, the stretch on a retina display and the
+   load time are unmeasured on hardware, and `personal_sign` has only ever
+   been a stub's.
+2. ~~The winit panic seen once~~ — **root-caused**: an out-of-memory abort
+   under a pointer-event flood headless Chromium produces once the lock is
+   granted (§17.6, and item 7 below).
+3. `wasm-opt -Os` was measured: 34.0 → 30.0 MB raw and 8.57 → 8.97 MB
+   **gzipped** — larger where it matters, so `build_web.sh` runs it only
+   when a `wasm-opt` is on the box or named by `WASM_OPT`.
+4. The web tier's UI is magnified by `stretch` where the cap binds, and a
+   DPR change mid-session costs a UI-scale change (`web.rs`'s header).
+5. Aerial perspective, a sun disk and a coloured dusk are the atmosphere's
+   and a browser has none; a dome shader is the next step if the sky reads
+   flat on a GPU.
+6. **The wasm heap is ~700 MB in the world** (findings §17.6), 500 MB of it
+   in the first six seconds — every image keeps a main-world copy
+   (`RenderAssetUsages::default()`), and a page has one 32-bit heap.
+   `RENDER_WORLD` only for the model maps and the photographs is the first
+   cut. `web::heap_report` prints the split every two seconds in a browser.
+7. **A granted pointer lock in headless Chromium is a pointer-event flood**
+   (§17.6: ~30k raw updates a second, stationary), and Bevy's message
+   buffers are unbounded, so the page hits the 4 GB ceiling in a minute. A
+   hardware mouse cannot produce it; a real browser has not been asked.
+   If it ever does, the cap belongs in winit's coalesced-event iteration.
 
 **Publishing is built and is an operator act**: `ci/publish_web.sh` lands
 `target/web/` on the origin as `<build>/` and flips `current`; the location
@@ -2817,42 +2811,14 @@ its own CSP) and the page dials `game.elopros.com:61234` when served from
 publish, the shard's redeploy to protocol 62 (`ci/deploy_shard.sh`), and
 `play_url` on the listing — flipped after the files exist, never before.
 
-**Somebody has opened it** — four times now (findings §14, §15.6, §15.7):
-the handshake, the wallet join, the loading screen and a frame of the island
-are proven in headless Chromium against a shard built from the same commit. Still true: no browser
-runs a gate in this repo and none should, so every one of those is an act a
-person repeats, not a wall.
-
-⚠ **COOP/COEP is struck as a reason to decide hosting** (2026-09-10): Bevy 0.18
-keys threading on `target_arch` at three sites, so cross-origin isolation buys
-zero milliseconds and the streaming re-budget is unconditional (§4.1's ⚠).
-Hosting is still undecided for the reasons that are real — the cert path, CORS,
-and a CSP on the obvious origin that blocks WebAssembly outright.
-
 **Identity is decided and built** (operator, 2026-09-10 — *"the wallet stuff so
-we don't have to have a guest yard"*; `DECISIONS.md`). A page signs the shard's
-SIWE challenge with the visitor's extension wallet: `Proof::message` composes
-the text in Rust through the same `protocol::siwe_message` the shard rebuilds
-it with, `elo::sign_siwe_web` awaits `personal_sign`, and
-`Address::to_checksum_hex` moved to `protocol` so one EIP-55 serves both sides.
-Gated where it can be proven — `server/tests/siwe_wire.rs` runs a real
-wallet-shaped signature over that exact text through the shard's own verifier,
-with a lowercase address and a foreign domain pinned as refused. No guest shard
-is owed. ⚠ **The launcher relay cannot ever carry this**: elo's
-`meter/signin.py::_guard_ask_text` refuses SIWE by name, deliberately, so a
-player whose only key is inside the desktop launcher has no web door.
-
-What still blocks a public join, and neither is code here:
-1. **The live shard is `PROTO_VER` 61 and this tree is 62** (`git show
-   a2ac3fa49:crates/protocol/src/lib.rs`). Version is checked before auth, so a
-   page from HEAD is refused before the wallet is ever asked. A redeploy
-   (`ci/deploy_shard.sh`) is an operator act.
-2. ~~Nobody has opened the page with a wallet in it.~~ **Done 2026-09-11**
-   (findings §14): headless Chromium, real WebTransport, a stub wallet, against
-   a `require_auth` shard — guest refused with the right sentence, signed join
-   admitted, 60 snapshots in 2 s, W moved the body 4.10 m, no drops. It found a
-   panic on frame one (`clock::sane_dt`, fixed and gated). Still unproven: a
-   REAL wallet's UI, and there is still no renderer.
+we don't have to have a guest yard"*; `DECISIONS.md`): the page signs the
+shard's SIWE challenge with the visitor's extension wallet through
+`protocol::siwe_message`, gated `server/tests/siwe_wire.rs`. ⚠ **The launcher
+relay cannot carry this** (`meter/signin.py::_guard_ask_text` refuses SIWE by
+name), so a player whose only key is inside the desktop launcher has no web
+door. No browser runs a gate in this repo and none should (`CLAUDE.md`); the
+harness that produced every frame above lives outside the tree.
 
 Carried from struck §0wt: nothing gates that `wtransport rev = a11e6a8e…`
 contains the #317 fix, and that pin is permanent.

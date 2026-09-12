@@ -112,6 +112,10 @@ pub mod net;
 // the code tier must not pay for it (`crates/client/Cargo.toml`).
 #[cfg(feature = "render")]
 pub mod render;
+// The web asset variant: KTX2 → PNG at build time, where the transcoder
+// exists. Its own feature, so `ci/build_web.sh` builds no Bevy for it.
+#[cfg(feature = "webassets")]
+pub mod webassets;
 
 // **Exactly one transport, proved rather than assumed.**
 //

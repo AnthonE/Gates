@@ -298,6 +298,28 @@ pub fn setup(
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<ForwardDecalMaterial<StandardMaterial>>>,
 ) {
+    // ⚠ **No marks in a browser, and the reason is measured rather than
+    // assumed** (2026-09-12). `ForwardDecalMaterialExt` is one `f32` in a
+    // uniform, and WebGL2 has no `BUFFER_BINDINGS_NOT_16_BYTE_ALIGNED`, so
+    // wgpu refuses the pipeline outright — *"the type given for group 3
+    // binding 200 has a size of 4 … must have a size that is a multiple of
+    // 16"* — and a refused pipeline is a fatal wgpu error, i.e. the module
+    // gone on the prewarm draw of the very first mark. Without a depth
+    // prepass on the camera the shader failed to COMPILE instead
+    // (`prepass_depth` undefined, `findings/web-build-20260909.md` §15.6),
+    // which never reached the pipeline and so never panicked: the two walls
+    // are stacked, and taking down the first exposed the second. The
+    // extension is Bevy's type and its shader reads that field by name, so a
+    // 16-byte padding is a copy of `forward_decal.wgsl` this tree does not
+    // carry yet. An empty pool: `land` finds no free mark and drops the
+    // impact, which is the pool's overflow policy applied at zero.
+    // A runtime `cfg!` rather than an attribute, so the pool's code below
+    // stays reachable to the compiler on every target — an attribute split
+    // turned every helper this function feeds into dead code under the
+    // browser's clippy wall, one at a time.
+    if cfg!(target_arch = "wasm32") {
+        return;
+    }
     let tex = images.add(scuff_texture());
     for ix in 0..MARKS {
         let mat = materials.add(ExtendedMaterial {

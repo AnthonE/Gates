@@ -43,8 +43,11 @@ have="$(wasm-bindgen --version | awk '{print $2}')"
 # release never pays and its profile is tuned for the wrong thing. The size
 # line at the end is the measurement; `findings/web-build-20260909.md` §16
 # records what each profile knob bought.
-echo "== building client-web for wasm32-unknown-unknown (profile: web)"
-cargo build -p client-web --profile web --target wasm32-unknown-unknown
+# `WEB_PROFILE=release` keeps the function names for the day a browser stack
+# is the thing being read (findings §16); the default is what ships.
+profile="${WEB_PROFILE:-web}"
+echo "== building client-web for wasm32-unknown-unknown (profile: $profile)"
+cargo build -p client-web --profile "$profile" --target wasm32-unknown-unknown
 
 echo "== generating the JS glue into $out"
 rm -rf "$out"
@@ -52,7 +55,7 @@ mkdir -p "$out"
 wasm-bindgen --target web --no-typescript \
   --remove-producers-section \
   --out-dir "$out" \
-  target/wasm32-unknown-unknown/web/client_web.wasm
+  "target/wasm32-unknown-unknown/$profile/client_web.wasm"
 cp crates/client-web/web/index.html crates/client-web/web/app.js "$out/"
 
 # **The assets, staged from `git ls-files` and never from a walk.**
@@ -81,6 +84,37 @@ while IFS= read -r -d '' f; do
 done < <(git ls-files -z assets/)
 [ "$count" -gt 0 ] || { echo "git ls-files staged nothing from assets/ - refusing" >&2; exit 1; }
 printf "   %d tracked asset files, %s\n" "$count" "$(du -sh "$out/assets" | cut -f1)"
+
+# **The web asset variant: the staged models' KTX2 maps become PNG.** The
+# UASTC transcoder is C++ and is not in the browser build, so every model's
+# glTF load failed there as `format requires transcoding` — 47 of them, and
+# the island had no rocks, nodes, sites or held items. The conversion runs
+# where the transcoder exists (natively, here) over the STAGED copy, in
+# place, so the tree's files and every gate over them are untouched and the
+# client needs no path seam. `crates/client/src/webassets.rs` is the whole
+# argument, including why level 1 (512²) and not level 0.
+echo "== converting the staged models for the browser (KTX2 -> PNG)"
+cargo run -q -p client --features webassets --bin web_assets -- "$out/assets/models"
+
+# **`wasm-opt`, when the box has one.** binaryen is what actually shrinks a
+# Bevy module (findings §16 — the profile knobs bought four percent, the
+# names section was the rest). Not required: a box without it ships the
+# bindgen output, and says so, rather than failing a build over a tool the
+# page does not need to run. `WASM_OPT=/path/to/wasm-opt` names one that is
+# not on `$PATH` — the `binaryen` npm package ships one as
+# `node_modules/binaryen/bin/wasm-opt`.
+opt="${WASM_OPT:-$(command -v wasm-opt || true)}"
+if [ -n "$opt" ] && [ -x "$opt" ]; then
+  before=$(stat -c%s "$out/client_web_bg.wasm")
+  echo "== wasm-opt -Os ($opt)"
+  "$opt" -Os --enable-bulk-memory --enable-nontrapping-float-to-int \
+    --enable-mutable-globals --enable-sign-ext --enable-reference-types \
+    -o "$out/client_web_bg.wasm.opt" "$out/client_web_bg.wasm"
+  mv "$out/client_web_bg.wasm.opt" "$out/client_web_bg.wasm"
+  printf "   wasm-opt: %d -> %d bytes\n" "$before" "$(stat -c%s "$out/client_web_bg.wasm")"
+else
+  echo "== wasm-opt: not installed, shipping the bindgen output (npm i binaryen, or WASM_OPT=…)"
+fi
 
 # The size, printed rather than asserted. `findings/web-build-20260909.md` §4.2
 # is the standing warning that a web build does not beat a depot on bytes — it

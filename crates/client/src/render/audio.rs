@@ -192,18 +192,116 @@ pub const MUSIC_FADE_S: f32 = 1.2;
 /// resource has the same bug. `textures::load` is a `Startup` system today and
 /// gets away with it only because nothing reads `Textures` until `Update`.
 pub fn build_bank(app: &mut App) {
-    let wavs = synth::bank();
+    build_bank_with(app, SPREAD_BANK);
+}
+
+/// Whether the bank is synthesized over frames rather than inside
+/// `Plugin::build` (audio spread v0 — `DECISIONS.md` §open).
+///
+/// **A browser tab is one thread and `build` runs on it.** The 11.7 MB of
+/// WAV above is ~0.8 s of arithmetic in a native release build and several
+/// times that in wasm, with no SIMD and `opt-level = "s"` — paid before the
+/// first frame, while the page shows a canvas that has not painted, which
+/// reads as a hung tab (`NOW.md` §0web item 8). Natively the same cost lands
+/// on the loading screen next to the pipeline warm-up and has never been
+/// the thing anyone waited on, so the desktop keeps the whole bank at build:
+/// `music.rs`'s ordering argument (`OnEnter(Loading)` before `Startup`) is
+/// about the RESOURCE existing, and the resource exists either way — what
+/// spreads is the bytes behind the handles.
+pub const SPREAD_BANK: bool = cfg!(target_arch = "wasm32");
+
+/// Build the bank whole, or reserve its handles and fill them one cue a
+/// frame through [`synthesize`]. Both arms are reachable natively so
+/// `tests/bank.rs` can drive the spread one.
+pub fn build_bank_with(app: &mut App, spread: bool) {
     let handles = {
         let mut sources = app.world_mut().resource_mut::<Assets<AudioSource>>();
-        wavs.map(|bytes| {
-            sources.add(AudioSource {
-                bytes: bytes.into(),
+        if spread {
+            // The handles exist from here; `bevy_audio` leaves an
+            // `AudioPlayer` whose source has no asset yet queued and starts
+            // it the frame the asset lands, so a bed spawned on the first
+            // frame of the loading screen simply starts a few frames late.
+            core::array::from_fn(|_| sources.reserve_handle())
+        } else {
+            synth::bank().map(|bytes| {
+                sources.add(AudioSource {
+                    bytes: bytes.into(),
+                })
             })
-        })
+        }
     };
     app.insert_resource(Bank { handles });
+    if spread {
+        app.insert_resource(Synth { next: 0 });
+    }
     app.insert_resource(DefaultSpatialScale(SpatialScale::new(SPATIAL_SCALE)));
     debug_assert!(clamp_holds(), "audio: SPATIAL_SCALE lets rodio attenuate");
+}
+
+/// The cues still to synthesize. Present only while the bank is being
+/// spread, which is what gates [`synthesize`] (`resource_exists`).
+#[derive(Resource, Debug)]
+pub struct Synth {
+    /// Index into [`synth_order`] of the next cue to render.
+    next: usize,
+}
+
+impl Synth {
+    /// How many cues are still owed. Zero is a whole bank.
+    pub fn remaining(&self) -> usize {
+        CUE_COUNT.saturating_sub(self.next)
+    }
+}
+
+/// The order a spread bank fills in: the three beds first, because they are
+/// the cues playing from the first frame of the loading screen, then the
+/// rest in `Cue::ALL` order. Every cue exactly once — `tests/bank.rs` holds
+/// it to the enum.
+pub fn synth_order() -> [Cue; CUE_COUNT] {
+    let mut order = [Cue::ALL[0]; CUE_COUNT];
+    let mut n = 0;
+    for cue in BEDS {
+        order[n] = cue;
+        n += 1;
+    }
+    for cue in Cue::ALL {
+        if !BEDS.contains(&cue) {
+            order[n] = cue;
+            n += 1;
+        }
+    }
+    debug_assert_eq!(n, CUE_COUNT);
+    order
+}
+
+/// Render one cue a frame into its reserved handle until the bank is whole.
+///
+/// One cue, not a byte budget: the score's pieces are the expensive ones
+/// (`synth::bank`'s own measurement — nine pieces are most of the 0.8 s) and
+/// splitting a piece across frames would mean a partial WAV nobody can play.
+/// A frame that renders a piece is a long frame on the loading screen, which
+/// is where every one of them lands; a frame that renders a footstep is not.
+pub fn synthesize(
+    mut synth: ResMut<Synth>,
+    bank: Res<Bank>,
+    mut sources: ResMut<Assets<AudioSource>>,
+) {
+    if synth.next >= CUE_COUNT {
+        return;
+    }
+    let cue = synth_order()[synth.next];
+    let handle = &bank.handles[cue.idx()];
+    // A reserved handle's id is live until the handle drops, and `Bank`
+    // holds every one for the life of the app, so this cannot fail on a
+    // stale generation; if it ever did, a missing cue is a silent one and
+    // not a crash.
+    let _ = sources.insert(
+        handle.id(),
+        AudioSource {
+            bytes: synth::wav(cue).into(),
+        },
+    );
+    synth.next += 1;
 }
 
 /// Put the ears on the camera, and start the bed.

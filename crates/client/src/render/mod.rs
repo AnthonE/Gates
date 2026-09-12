@@ -137,6 +137,10 @@ pub mod ui;
 // The sea: a graded volume with a swell on it. `reference/WATER.md` is the
 // research, `TERRAIN.md` §4 is what it replaces.
 pub mod water;
+// What a browser build does where the desktop has a window and a menu: the
+// surface fitted under WebGL2's 2048 cap, and the page taking over where
+// `Screen::Menu` would have drawn. Compiled everywhere, in effect on wasm32.
+pub mod web;
 // The in-world keys: what the crosshair is on, and what E/G/H do about it.
 pub mod anim;
 pub mod verbs;
@@ -614,30 +618,53 @@ impl Plugin for GatesRenderPlugin {
         #[cfg(not(target_arch = "wasm32"))]
         add_desktop_front_end(app);
 
-        // ⚠ **Two runtime gaps this cut creates, neither of which any compiler
-        // or gate in this repo can see.** Written here rather than in a doc
-        // because this is the line that made them true, and both are owed
-        // before a browser build is playable rather than merely drawing:
+        // **Two runtime gaps this cut created, both closed the way the
+        // architecture implied** — written here because this is the line
+        // that made them true, and no compiler or gate could see either:
         //
         // 1. `Screen::Boot` is the `#[default]` and `boot::update` is the only
-        //    system that leaves it — so on wasm32 the app would sit in `Boot`
-        //    forever with nothing drawing. The web entry point must
-        //    `insert_state(Screen::Loading)`, which it can, because the page
-        //    has already joined and holds a live `Session` before Bevy starts.
-        //    Nothing instantiates this plugin on wasm32 yet, which is the only
-        //    reason it is not already a bug.
+        //    system that leaves it, so a wasm32 app would sit in `Boot`
+        //    forever. The web entry point starts `connected`, which is what
+        //    puts `insert_state` above on `Loading` — the page has already
+        //    joined and holds a live `Session` before Bevy starts.
         //
-        // 2. `Screen::Menu` becomes a DEAD END. Three systems a browser build
+        // 2. `Screen::Menu` is a DEAD END here. Three systems a browser build
         //    keeps still send players there — `loading::update` on Escape,
         //    `pause`'s quit-to-menu and `disconnected`'s Back — and on this
-        //    target nothing draws it, so a player who leaves the world gets a
-        //    black screen that reads as a crash. It is not enough to point
-        //    them elsewhere either: the `Session` is ONE-SHOT here, because
-        //    `world_teardown` drops `Net`, which drops the `WebTransport`, and
-        //    a page cannot re-dial without the wallet handshake it did before
-        //    Bevy started. The honest answer is the architecture's own — the
-        //    page is the menu, so leaving the world hands control back to the
-        //    PAGE rather than to another Bevy screen.
+        //    target nothing draws it. Nor can the app re-dial: the `Session`
+        //    is ONE-SHOT, because `world_teardown` drops `Net`, which drops
+        //    the `WebTransport`, and a page cannot re-dial without the wallet
+        //    handshake it did before Bevy started. So the page is the menu:
+        //    entering `Menu` hands control back to the PAGE (`web::
+        //    leave_to_page`), and an `AppExit` — which on wasm32 is a frozen
+        //    canvas, not a closed window — does the same (`web::exit_to_page`).
+        //    `tests/web.rs` holds these two registrations to this comment.
+        app.add_systems(
+            OnEnter(Screen::Menu),
+            web::leave_to_page.run_if(|| cfg!(target_arch = "wasm32")),
+        )
+        .add_systems(
+            Last,
+            web::exit_to_page.run_if(|| cfg!(target_arch = "wasm32")),
+        )
+        // The surface under WebGL2's cap, following the viewport
+        // (`web.rs`'s header). Every frame, a DOM read; a write on a change.
+        .add_systems(
+            Update,
+            web::follow_viewport.run_if(|| cfg!(target_arch = "wasm32")),
+        )
+        // What the browser's one heap holds, every couple of seconds
+        // (`web::heap_report`): the line to read when a tab dies silently.
+        .add_systems(
+            Update,
+            web::heap_report.run_if(|| cfg!(target_arch = "wasm32")),
+        )
+        // The bank, one cue a frame, while `Synth` says some are owed —
+        // which is only ever on wasm32 (`audio::SPREAD_BANK`).
+        .add_systems(
+            Update,
+            audio::synthesize.run_if(resource_exists::<audio::Synth>),
+        );
 
         // ---- the loading screen --------------------------------------
         // `loading::update` runs AFTER the streamers (`Stream`), so the bar
@@ -793,6 +820,10 @@ impl Plugin for GatesRenderPlugin {
                     // screen.
                     mipmap::enqueue,
                     mipmap::drain.after(mipmap::enqueue),
+                    // Every material bound to an image that just got its
+                    // chain is re-prepared, or it keeps the one-level upload
+                    // forever (`mipmap::retouch`'s header).
+                    mipmap::retouch.after(mipmap::drain),
                     // The ground's sixteen photographs become three texture
                     // arrays once each has its chain — after `drain`, so a
                     // chain finished this frame is stacked this frame, and
@@ -801,6 +832,7 @@ impl Plugin for GatesRenderPlugin {
                 ),
             )
             .init_resource::<mipmap::Pending>()
+            .init_resource::<mipmap::Chained>()
             .init_resource::<tree::TreeLod>()
             // **The frame cap, and it must be `Last` and unconditional.**
             // `Last` because a cap has to be the final thing a frame does —

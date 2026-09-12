@@ -1,22 +1,48 @@
 import init, { Gates } from "./client_web.js";
 
-const log = document.getElementById("log");
+const status = document.getElementById("status");
 const go = document.getElementById("go");
 const connect = document.getElementById("connect");
 const account = document.getElementById("account");
-const say = (text, cls) => { log.textContent = text; log.className = cls ?? ""; };
+const advanced = document.getElementById("advanced");
+const say = (text, cls) => { status.textContent = text; status.className = cls ?? ""; };
 
 /* ── where to dial ─────────────────────────────────────────────────────────
    Served from elopros.com the page dials the public shard, whose Let's
    Encrypt chain a browser trusts outright, so the hash field stays empty;
    served from anywhere else (a checkout, `python3 -m http.server`) it dials
    the dev default and expects the self-signed shard's hash. `?server=` and
-   `?hash=` override either, which is what a join link is. */
+   `?hash=` override either, which is what a join link is. The fields live
+   behind ADVANCED: a player on the origin never needs them, and a developer
+   off it gets them open, because a dev shard's hash has to be typed. */
 const q = new URLSearchParams(location.search);
 const onOrigin = /(^|\.)elopros\.com$/.test(location.hostname);
 document.getElementById("server").value =
   q.get("server") || (onOrigin ? "game.elopros.com:61234" : "127.0.0.1:4433");
 document.getElementById("hash").value = q.get("hash") || "";
+advanced.open = !onOrigin && !q.has("server");
+
+/* ── coming back ───────────────────────────────────────────────────────────
+   The page is the menu on this target: leaving the world — the Esc menu's
+   DISCONNECT, Escape on the loading screen, the shard hanging up, QUIT —
+   hands control back here (`client::render::web::hand_back`) by calling
+   `gatesLeft(status)`. The renderer cannot be handed a second session on
+   the same canvas (Bevy's `run()` never returns on wasm and a second `App`
+   over the first's context is two owners of one WebGL context), so the
+   page notes why and RELOADS, and says so on the way back in. Without the
+   hook the renderer reloads by itself and the reason is lost. */
+const LEFT = "gates.left";
+window.gatesLeft = (why) => {
+  try { sessionStorage.setItem(LEFT, String(why || "left the world")); } catch {}
+  location.reload();
+};
+try {
+  const why = sessionStorage.getItem(LEFT);
+  if (why) {
+    sessionStorage.removeItem(LEFT);
+    say(why + " — press Play to go back in.");
+  }
+} catch {}
 
 // WebTransport is the only path a page has to a QUIC shard, and it is not
 // everywhere yet. Say so before the button is pressed rather than after.
@@ -108,7 +134,11 @@ if (wallet.has() && typeof window.ethereum.on === "function") {
 }
 showAccount();
 
-await init();
+// The module's exports, kept on the window for a person with the console
+// open: `gatesWasm.memory.buffer.byteLength` is the wasm heap, which is the
+// number to read when a tab dies with no message (an out-of-memory abort in
+// wasm is a bare `RuntimeError: unreachable`).
+window.gatesWasm = await init();
 
 go.addEventListener("click", async () => {
   go.disabled = true;
@@ -150,7 +180,11 @@ go.addEventListener("click", async () => {
   // merging cleanly and breaking the game's sound silently.
   //
   // Input goes with it: winit reads the canvas's own keyboard and pointer
-  // events, so the WASD handling this page used to do is Bevy's too.
+  // events, so the WASD handling this page used to do is Bevy's too. The
+  // pointer is captured on the first click inside the world, by the same
+  // click-to-capture rule the desktop has (`ui::pointer`), and released on
+  // Escape by the browser and the game together.
+  document.body.classList.add("playing");
   document.getElementById("gates").hidden = false;
   document.querySelector("main").hidden = true;
   // `play` CONSUMES the session and never returns — Bevy's wasm arm hands the
