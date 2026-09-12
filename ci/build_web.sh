@@ -121,6 +121,17 @@ fi
 # beats it on ceremony — and this number is the headless floor, with no
 # renderer and no assets in it.
 raw=$(stat -c%s "$out/client_web_bg.wasm")
-gz=$(gzip -9 -c "$out/client_web_bg.wasm" | wc -c)
-printf "   client_web_bg.wasm  %d bytes raw, %d gzipped\n" "$raw" "$gz"
+# Written beside the module rather than measured and thrown away: the
+# origin's `gzip_static` (`scry-forge/deploy/nginx/elopros.com.conf`, the
+# `/games/gates/` block) serves this file to a browser that accepts gzip —
+# with the Content-Length a streaming compressor cannot send, and no CPU
+# spent per request on a 34 MB file. `-n` leaves the timestamp and name out
+# of the header, so an unchanged module gzips to identical bytes and
+# `publish_web.sh`'s `--link-dest` hard-links it across publishes like every
+# other unchanged file. Without it the origin falls back to compressing on
+# the fly; without either, measured 2026-09-12, the module went over the
+# wire raw.
+gzip -9 -n -c "$out/client_web_bg.wasm" > "$out/client_web_bg.wasm.gz"
+gz=$(stat -c%s "$out/client_web_bg.wasm.gz")
+printf "   client_web_bg.wasm  %d bytes raw, %d gzipped (.wasm.gz beside it)\n" "$raw" "$gz"
 echo "== done: python3 -m http.server 8080 --directory $out"
