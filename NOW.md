@@ -2804,7 +2804,7 @@ What remains, in order:
    If it ever does, the cap belongs in winit's coalesced-event iteration.
 
 **Publishing is built and is an operator act**: `ci/publish_web.sh` lands
-`target/web/` on the origin as `<build>/` and flips `current`; the location
+`target/webdist/` on the origin as `<build>/` and flips `current`; the location
 that serves it is `scry-forge/deploy/nginx/elopros.com.conf` (`/games/gates/`,
 its own CSP) and the page dials `game.elopros.com:61234` when served from
 `elopros.com` (`?server=` overrides). Three things wait on a person: that

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Build the browser client into a directory a static server can serve.
 #
-#   ./ci/build_web.sh [outdir]        # default: target/web
+#   ./ci/build_web.sh [outdir]        # default: target/webdist
 #
 # Then serve it and open it. `http://localhost` is a secure context, which is
 # what WebTransport requires of the PAGE; the shard it dials is `https://`
 # either way.
 #
-#   python3 -m http.server 8080 --directory target/web
+#   python3 -m http.server 8080 --directory target/webdist
 #
 # **Not a gate and it never will be.** It needs `wasm-bindgen`, and what it
 # produces has to be looked at in a browser — `CLAUDE.md` is explicit that no
@@ -18,7 +18,27 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-out="${1:-target/web}"
+# **Not `target/web`, and this is not cosmetic.** `[profile.web]` in the root
+# `Cargo.toml` makes `target/web/` cargo's own host-artifact directory for that
+# profile, so `ci/gates.sh`'s `cargo build -p client-web --profile web` drops
+# `deps/`, `build/`, `examples/` and `incremental/` straight into it — AFTER
+# this script has staged and left. Measured 2026-09-12: a page staged at 85 MB
+# was 222 MB and 743 files once the gates had run, and the publish that nearly
+# went out carried .rlib, .rmeta, .so and the absolute build paths inside the
+# .d files onto a public web root. The staging directory and a profile
+# directory must not be the same path.
+out="${1:-target/webdist}"
+
+# A named outdir can re-make the same mistake, so ask rather than type: the
+# profile list comes out of Cargo.toml, and `debug`/`release` are cargo's own
+# two whether or not they are written there.
+for p in $(sed -n 's/^\[profile\.\([A-Za-z0-9_-]*\)\]$/\1/p' Cargo.toml) debug release; do
+  [ "${out%/}" = "target/$p" ] && {
+    echo "refusing to stage into target/$p — cargo owns that path for profile" >&2
+    echo "'$p', and its artifacts would land in the page after this script exits." >&2
+    exit 1
+  }
+done
 
 # **The CLI and the crate must be the same version.** wasm-bindgen generates
 # glue against an ABI it also emits into the module, and a mismatch produces a

@@ -2,7 +2,7 @@
 # Publish the browser client to the origin: elopros.com/games/gates/.
 #
 #   ./ci/publish_web.sh                  # build, stage, upload, flip `current`
-#   ./ci/publish_web.sh --no-build       # upload what target/web already holds
+#   ./ci/publish_web.sh --no-build       # upload what target/webdist already holds
 #   ./ci/publish_web.sh --dry-run        # everything but the upload and the flip
 #   ./ci/publish_web.sh --host morr      # the origin's ssh alias (default: morr)
 #
@@ -49,21 +49,39 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+OUT="${OUT:-target/webdist}"
+
 if [ "$BUILD" = 1 ]; then
-  ./ci/build_web.sh target/web
+  ./ci/build_web.sh "$OUT"
 fi
 for f in index.html app.js client_web.js client_web_bg.wasm; do
-  [ -f "target/web/$f" ] || { echo "target/web/$f is missing — run ./ci/build_web.sh" >&2; exit 1; }
+  [ -f "$OUT/$f" ] || { echo "$OUT/$f is missing — run ./ci/build_web.sh" >&2; exit 1; }
 done
+
+# **Refuse a staged tree with cargo in it.** `build_web.sh` stages from
+# `git ls-files` and is careful, but what it leaves can be polluted after it
+# exits — `target/web` was both the page and cargo's `[profile.web]` host
+# directory until 2026-09-12, so one `ci/gates.sh` run put `deps/`, `build/`
+# and `incremental/` inside a tree that was about to be uploaded, with every
+# gate green because an artifact nobody tracks is invisible to all of them.
+# The directory moved, and this refuses the shape rather than that one path:
+# a publish is the last place to find out, so it is the place that checks.
+junk="$(find "$OUT" \( -name '*.rlib' -o -name '*.rmeta' -o -name '*.d' \
+  -o -name '*.so' -o -name '.fingerprint' -o -name 'incremental' \) -print -quit)"
+[ -z "$junk" ] || {
+  echo "$OUT holds build artifacts ($junk) — that is cargo's output, not the page." >&2
+  echo "Rebuild it clean: ./ci/build_web.sh $OUT" >&2
+  exit 1
+}
 
 # The same id the depot carries, from the same function, so the two never
 # name one commit two ways.
 # The module is the "binary" here: on a dirty tree the id carries its content
 # hash, so two different builds cannot share one directory name.
-ID="$(python3 -c 'import sys, pathlib; sys.path.insert(0, "ci"); import depot; print(depot.build_id(pathlib.Path("target/web/client_web_bg.wasm")))')"
+ID="$(OUT="$OUT" python3 -c 'import os, sys, pathlib; sys.path.insert(0, "ci"); import depot; print(depot.build_id(pathlib.Path(os.environ["OUT"]) / "client_web_bg.wasm"))')"
 DEST="$ROOT/$ID"
 echo "== build $ID"
-echo "   $(du -sh target/web | cut -f1) staged, $(find target/web -type f | wc -l) files"
+echo "   $(du -sh "$OUT" | cut -f1) staged, $(find "$OUT" -type f | wc -l) files"
 echo "== to $HOST:$DEST  (current -> $ID after the upload)"
 
 if [ "$DRY" = 1 ]; then
@@ -75,7 +93,7 @@ fi
 ssh -o BatchMode=yes "$HOST" "mkdir -p '$ROOT'"
 # `--link-dest` is relative to the DESTINATION directory: `../current` is the
 # build being served now, and every unchanged file becomes a hard link to it.
-rsync -a --info=stats1 --link-dest="../current" target/web/ "$HOST:$DEST/"
+rsync -a --info=stats1 --link-dest="../current" "$OUT/" "$HOST:$DEST/"
 # Flip last, atomically: a new symlink beside the old one, then one rename.
 ssh -o BatchMode=yes "$HOST" "ln -sfn '$ID' '$ROOT/current.new' && mv -T '$ROOT/current.new' '$ROOT/current' && ls -l '$ROOT/current'"
 

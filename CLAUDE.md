@@ -707,6 +707,25 @@ do not rediscover)
   **The general shape: a build step that enumerates by walking is only as
   correct as the tidiness of the box it runs on, which is not a property
   anything asserts.**
+- **A staging directory that is also a cargo profile directory gets cargo's
+  artifacts in it, and the pollution arrives AFTER the careful step.**
+  `ci/build_web.sh` stages the page from `git ls-files` — the fix the depot
+  entry above bought — and still nearly shipped build internals, because its
+  output directory was `target/web` and `[profile.web]` makes that cargo's own
+  host-artifact path. `ci/gates.sh` builds `--profile web`, so running the
+  gates after the page build dropped `deps/`, `build/`, `examples/` and
+  `incremental/` inside the tree about to be uploaded: **85 MB became 222 MB
+  and 743 files**, carrying `.rlib`, `.rmeta`, `.so` and the absolute build
+  paths inside `.d` files onto a public web root. Every gate was green, again,
+  because an untracked artifact is invisible to all of them — and the staging
+  step could not have caught it, having already exited. Two fixes, and the
+  second is the load-bearing one: the directory moved off the collision
+  (`target/webdist`, with `build_web.sh` refusing any `target/<profile>` it
+  reads out of `Cargo.toml`), and **`publish_web.sh` now refuses a staged tree
+  with cargo in it**, because a publish is the last place to find out and
+  therefore the place that has to check. Found by one number not matching
+  (`du` said 85 MB at build, 222 MB at publish); the general shape is that
+  **staging correctly is not the same as staying staged.**
 - **Measuring what a build needs is not meeting it, and the depot shipped a
   Windows game nobody could start.** `ci/depot.py` was written under a Linux
   rule stated in its own docstring — bundle nothing, the machine provides it —
