@@ -793,6 +793,11 @@ impl Plugin for GatesRenderPlugin {
                     // screen.
                     mipmap::enqueue,
                     mipmap::drain.after(mipmap::enqueue),
+                    // The ground's sixteen photographs become three texture
+                    // arrays once each has its chain — after `drain`, so a
+                    // chain finished this frame is stacked this frame, and
+                    // the arrays exist before a world is ever entered.
+                    textures::stack_ground.after(mipmap::drain),
                 ),
             )
             .init_resource::<mipmap::Pending>()

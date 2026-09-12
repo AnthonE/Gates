@@ -6,10 +6,22 @@
 // `StandardMaterial` has one base-colour slot, which is the limitation this
 // file exists to remove.
 //
-// **All three channels are now the photograph's** — albedo relief (101–104),
-// normal (105–108) and, since 2026-08-16, roughness (110–113). The roughness
-// maps were the last third and they were the cheapest: they had been loaded,
-// uploaded and resident since the day the set landed, and nothing sampled them.
+// **All three channels are now the photograph's** — albedo relief, normal
+// and, since 2026-08-16, roughness. The roughness maps were the last third and
+// they were the cheapest: they had been loaded, uploaded and resident since the
+// day the set landed, and nothing sampled them.
+//
+// **Three `texture_2d_array`s, not sixteen textures** (2026-09-12). A
+// fragment stage may hold 16 sampled textures on WebGL2, counted across EVERY
+// bind group in the pipeline — the view's shadow and environment maps,
+// `StandardMaterial`'s six slots, and this material — and sixteen ground maps
+// put this group alone at 22; the browser refused the pipeline layout. A layer
+// costs no binding, so each identity is a layer of its family's array, in
+// `terrain::splat`'s order: albedo (4 layers), normal (4), and roughness with
+// AO behind it (8: roughness 0–3, AO 4–7, `textures::AO_LAYER0`). A layer
+// samples exactly as the standalone texture did — same filter, same chain,
+// same bytes — so this is one shader for the desktop and the browser, and
+// the native before/after capture is what says the desktop frame did not move.
 //
 // **Why the maps contribute LUMINANCE and never colour.** `ART.md` §7 bounds a
 // mean-placing correction: a sourced map's colour deviation may not be
@@ -72,35 +84,25 @@ struct GroundSplat {
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> splat: GroundSplat;
-@group(#{MATERIAL_BIND_GROUP}) @binding(101) var albedo_sand: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(102) var albedo_grass: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(103) var albedo_litter: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(104) var albedo_rock: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(105) var normal_sand: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(106) var normal_grass: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(107) var normal_litter: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(108) var normal_rock: texture_2d<f32>;
-// **One sampler for all twelve.** Every map wants the same tiling/anisotropy
-// descriptor, and a sampler each would put this material at 24 samplers in the
-// fragment stage on top of `StandardMaterial`'s own — far over the 16 a
-// downlevel adapter guarantees. Textures are the cheap axis here and samplers
-// are the one with a floor under it, which is why the roughness slice added
-// four of the first and none of the second.
-@group(#{MATERIAL_BIND_GROUP}) @binding(109) var ground_sampler: sampler;
-// The roughness maps. Greyscale, loaded `is_srgb = false` because a roughness
-// map is DATA — decoding one as sRGB would bend every value toward the dark end
-// and the ground would read uniformly glossy.
-@group(#{MATERIAL_BIND_GROUP}) @binding(110) var rough_sand: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(111) var rough_grass: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(112) var rough_litter: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(113) var rough_rock: texture_2d<f32>;
-// Ambient occlusion, per identity — `ART.md` §4's MEDIUM scale, the one
-// occlusion term a light rig cannot supply. All four shipped in every depot and
-// were sampled by nothing until 2026-08-25.
-@group(#{MATERIAL_BIND_GROUP}) @binding(114) var ao_sand: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(115) var ao_grass: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(116) var ao_litter: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(117) var ao_rock: texture_2d<f32>;
+// The four albedo photographs, one layer each: sand 0 · grass 1 · litter 2 ·
+// rock 3, the same order everywhere in this file.
+@group(#{MATERIAL_BIND_GROUP}) @binding(101) var albedo_maps: texture_2d_array<f32>;
+// **One sampler for every layer of every array.** Every map wants the same
+// tiling/anisotropy descriptor, and a sampler each would have put this
+// material at 32 samplers in the fragment stage on top of `StandardMaterial`'s
+// own — far over the 16 a downlevel adapter guarantees. Textures were called
+// the cheap axis here until WebGL2 said 16 of those too (the header), which is
+// why the maps are arrays now and this is still one sampler.
+@group(#{MATERIAL_BIND_GROUP}) @binding(102) var ground_sampler: sampler;
+// The tangent-space normal maps, same layer order.
+@group(#{MATERIAL_BIND_GROUP}) @binding(103) var normal_maps: texture_2d_array<f32>;
+// Roughness at layers 0–3 and ambient occlusion at 4–7 (`textures::AO_LAYER0`).
+// Both greyscale and loaded `is_srgb = false` because a roughness map is DATA —
+// decoding one as sRGB would bend every value toward the dark end and the
+// ground would read uniformly glossy. AO is `ART.md` §4's MEDIUM scale, the
+// one occlusion term a light rig cannot supply; all four shipped in every depot
+// and were sampled by nothing until 2026-08-25.
+@group(#{MATERIAL_BIND_GROUP}) @binding(104) var rough_ao_maps: texture_2d_array<f32>;
 
 const LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
 
@@ -156,10 +158,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let uv1 = in.uv * splat.tile.y;
     let uv2 = in.uv * splat.tile.z;
     let uv3 = in.uv * splat.tile.w;
-    var a0 = textureSample(albedo_sand, ground_sampler, uv0);
-    var a1 = textureSample(albedo_grass, ground_sampler, uv1);
-    var a2 = textureSample(albedo_litter, ground_sampler, uv2);
-    var a3 = textureSample(albedo_rock, ground_sampler, uv3);
+    var a0 = textureSample(albedo_maps, ground_sampler, uv0, 0);
+    var a1 = textureSample(albedo_maps, ground_sampler, uv1, 1);
+    var a2 = textureSample(albedo_maps, ground_sampler, uv2, 2);
+    var a3 = textureSample(albedo_maps, ground_sampler, uv3, 3);
 
     // --- Biplanar: the second tap a slope needs -----------------------------
     //
@@ -226,13 +228,13 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // this tap's gradient backwards, which cost ~80× (materials v4); it is
         // silent, it is a blur rather than an error, and no gate that reads
         // values can see it. `tests/ground_tiling.rs` scrapes for it instead.
-        a0 = mix(a0, textureSampleGrad(albedo_sand, ground_sampler, wall_uv * splat.tile.x, wall_ddx * splat.tile.x, wall_ddy * splat.tile.x), wall_mix);
-        a1 = mix(a1, textureSampleGrad(albedo_grass, ground_sampler, wall_uv * splat.tile.y, wall_ddx * splat.tile.y, wall_ddy * splat.tile.y), wall_mix);
-        a2 = mix(a2, textureSampleGrad(albedo_litter, ground_sampler, wall_uv * splat.tile.z, wall_ddx * splat.tile.z, wall_ddy * splat.tile.z), wall_mix);
-        a3 = mix(a3, textureSampleGrad(albedo_rock, ground_sampler, wall_uv * splat.tile.w, wall_ddx * splat.tile.w, wall_ddy * splat.tile.w), wall_mix);
+        a0 = mix(a0, textureSampleGrad(albedo_maps, ground_sampler, wall_uv * splat.tile.x, 0, wall_ddx * splat.tile.x, wall_ddy * splat.tile.x), wall_mix);
+        a1 = mix(a1, textureSampleGrad(albedo_maps, ground_sampler, wall_uv * splat.tile.y, 1, wall_ddx * splat.tile.y, wall_ddy * splat.tile.y), wall_mix);
+        a2 = mix(a2, textureSampleGrad(albedo_maps, ground_sampler, wall_uv * splat.tile.z, 2, wall_ddx * splat.tile.z, wall_ddy * splat.tile.z), wall_mix);
+        a3 = mix(a3, textureSampleGrad(albedo_maps, ground_sampler, wall_uv * splat.tile.w, 3, wall_ddx * splat.tile.w, wall_ddy * splat.tile.w), wall_mix);
     }
     // **The relief stays the top tap's alone**, so the wall costs four fetches
-    // and not twelve. `to_gradient` reads a tangent-space normal as a gradient
+    // and not sixteen. `to_gradient` reads a tangent-space normal as a gradient
     // over the XZ heightfield, which is what lets the four blend as one
     // surface; a normal sampled on a VERTICAL plane describes a surface whose
     // up is world ±X or ±Z, and there is no honest reading of it as a height
@@ -333,10 +335,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // `ground_splat::ROUGH_MEAN` records what the four now measure and the gate
     // re-measures it, so a source swap changes the surface loudly.
     let rough_map = vec4<f32>(
-        textureSample(rough_sand, ground_sampler, uv0).r,
-        textureSample(rough_grass, ground_sampler, uv1).r,
-        textureSample(rough_litter, ground_sampler, uv2).r,
-        textureSample(rough_rock, ground_sampler, uv3).r,
+        textureSample(rough_ao_maps, ground_sampler, uv0, 0).r,
+        textureSample(rough_ao_maps, ground_sampler, uv1, 1).r,
+        textureSample(rough_ao_maps, ground_sampler, uv2, 2).r,
+        textureSample(rough_ao_maps, ground_sampler, uv3, 3).r,
     );
     // Wet ground is smoother — `WET_VALUE`'s missing third. `terrain_mesh.rs`
     // states the physics and then states why it could not have it: roughness
@@ -357,10 +359,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 
     // The relief, blended as gradients and applied on the mesh's own written
     // tangent frame.
-    let g = to_gradient(unpack_normal(textureSample(normal_sand, ground_sampler, uv0))) * bw.x
-        + to_gradient(unpack_normal(textureSample(normal_grass, ground_sampler, uv1))) * bw.y
-        + to_gradient(unpack_normal(textureSample(normal_litter, ground_sampler, uv2))) * bw.z
-        + to_gradient(unpack_normal(textureSample(normal_rock, ground_sampler, uv3))) * bw.w;
+    let g = to_gradient(unpack_normal(textureSample(normal_maps, ground_sampler, uv0, 0))) * bw.x
+        + to_gradient(unpack_normal(textureSample(normal_maps, ground_sampler, uv1, 1))) * bw.y
+        + to_gradient(unpack_normal(textureSample(normal_maps, ground_sampler, uv2, 2))) * bw.z
+        + to_gradient(unpack_normal(textureSample(normal_maps, ground_sampler, uv3, 3))) * bw.w;
     let nt = normalize(vec3(g, 1.0));
     let tbn = calculate_tbn_mikktspace(pbr_input.world_normal, in.world_tangent);
     pbr_input.N = normalize(tbn * nt);
@@ -382,13 +384,15 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // diffuse one reused" — applying this to specular is visibly wrong at
     // grazing angles. `pbr_input.specular_occlusion` is left as Bevy computed
     // it from SSAO.
+    // Layers 4–7 of the rough/AO array: `textures::AO_LAYER0` plus the
+    // identity, and `tests/ground_tiling.rs` holds these literals to it.
     let ao = dot(
         bw,
         vec4<f32>(
-            textureSample(ao_sand, ground_sampler, uv0).r,
-            textureSample(ao_grass, ground_sampler, uv1).r,
-            textureSample(ao_litter, ground_sampler, uv2).r,
-            textureSample(ao_rock, ground_sampler, uv3).r,
+            textureSample(rough_ao_maps, ground_sampler, uv0, 4).r,
+            textureSample(rough_ao_maps, ground_sampler, uv1, 5).r,
+            textureSample(rough_ao_maps, ground_sampler, uv2, 6).r,
+            textureSample(rough_ao_maps, ground_sampler, uv3, 7).r,
         ),
     );
     pbr_input.diffuse_occlusion = min(pbr_input.diffuse_occlusion, vec3<f32>(ao));

@@ -56,10 +56,11 @@
 //!
 //! ## The fourth map: ambient occlusion (2026-08-25)
 //!
-//! Bindings 114–117. All four ground identities publish an `<role>_ao.jpg`,
-//! all four were git-tracked and staged into every depot by `ci/depot.py`, and
-//! **this shader sampled twelve textures and none of them** — `occlusion_
-//! texture` appeared zero times in `crates/`. `ART.md` §4 names this exact
+//! Layers 4–7 of the rough/AO array (bindings 114–117 until 2026-09-12). All
+//! four ground identities publish an `<role>_ao.jpg`, all four were
+//! git-tracked and staged into every depot by `ci/depot.py`, and **this
+//! shader sampled twelve textures and none of them** — `occlusion_texture`
+//! appeared zero times in `crates/`. `ART.md` §4 names this exact
 //! term as the one scale a light rig cannot supply ("Medium … `indirectDiffuse
 //! *= ao`, indirect only") and as the unblock for the ambient floor: raising
 //! the fill lands everywhere including in the darks, while AO removes it only
@@ -77,6 +78,24 @@
 //! **Diffuse only.** §4 again: "specular occlusion is a separate term, not the
 //! diffuse one reused"; applying it to specular is visibly wrong at grazing
 //! angles. `specular_occlusion` is left as Bevy computed it.
+//!
+//! ## Sixteen textures became three arrays (2026-09-12)
+//!
+//! Bindings 101–117 were sixteen `texture_2d`s and one sampler, and the
+//! sampler paragraph below was right about the axis that binds on a desktop
+//! adapter and wrong about the one that binds in a browser: WebGL2's
+//! `max_sampled_textures_per_shader_stage` is **16, per stage, summed over
+//! every bind group in the pipeline** — the view's shadow and environment
+//! maps, `StandardMaterial`'s six slots and ours — and the material group
+//! alone was 22. The browser refused the pipeline layout before a frame.
+//! `textures::GroundArrays` is the answer: four layers of one
+//! `texture_2d_array` cost one binding, roughness and AO share an array
+//! (same size, format and sampler; `textures::AO_LAYER0`), and the ground is
+//! three sampled textures. **Same texels, same filter, same chain** — a layer
+//! samples exactly as the standalone texture did, which is what lets this stay
+//! ONE shader for both targets rather than a web variant, and the native
+//! before/after capture is the measurement (`findings/web-build-20260909.md`
+//! §15).
 //!
 //! ⚠ **Nothing compiles this shader.** `tests/ground_splat.rs` holds the
 //! bindings equal across the WGSL and the Rust struct — both scraped now,
@@ -99,7 +118,7 @@ use bevy::shader::ShaderRef;
 use super::terrain_mesh::{
     ALBEDO_LUMA_FLOOR, GROUND_ALBEDO, GROUND_TILE_M, WET_SATURATION, WET_VALUE,
 };
-use super::textures::GroundMaps;
+use super::textures::GroundArrays;
 
 /// The shader, resolved against the asset root `bin/gates.rs` sets.
 pub const SHADER: &str = "shaders/ground_splat.wgsl";
@@ -314,121 +333,64 @@ pub const WALL_ON: f32 = std::f32::consts::FRAC_1_SQRT_2;
 /// owns them. Proposed default, not spoken.
 pub const WALL_SHARPNESS: f32 = 8.0;
 
-/// Four albedo maps, four normal maps, four roughness maps, four AO maps — and
-/// one sampler.
+/// Three arrays — albedo, normal, roughness-with-AO — and one sampler.
 ///
-/// **One sampler for sixteen textures, and that is the constraint that
-/// scales.** Each map wants the identical tiling and anisotropy descriptor
-/// `textures::tiling` builds, and a sampler each would put this bind group at
-/// 32 in the fragment stage before `StandardMaterial`'s own are counted — far
-/// over the 16 a downlevel adapter guarantees. Textures are the cheap axis
-/// (Bevy asks the adapter for its own limits, and every desktop adapter is far
-/// past 16); samplers are the one with a hard floor under it. So the roughness
-/// slice cost four bindings and zero samplers, and the AO slice cost four more
-/// and **zero** again.
+/// **One sampler for every layer, and that is the constraint that scales.**
+/// Each map wants the identical tiling and anisotropy descriptor
+/// `textures::tiling` builds, and a sampler each would have put this bind
+/// group at 32 in the fragment stage before `StandardMaterial`'s own were
+/// counted — far over the 16 a downlevel adapter guarantees. That argument
+/// was made about samplers and it turned out to be true of TEXTURES too, on
+/// the one adapter that is exactly the floor (WebGL2; the module header). So
+/// the sixteen maps are three `texture_2d_array`s now, and the count this
+/// material adds to the fragment stage is three textures and one sampler.
 ///
-/// ⚠ **The roughness slice cost no new VRAM and the AO slice DOES**, which is
-/// the one place these two otherwise-identical changes differ.
-/// `textures::MapSet::load` had always loaded `<role>_rough.jpg`, so those four
-/// were resident and uploaded from the day the maps landed — paid for and
+/// ⚠ **The roughness slice cost no new VRAM and the AO slice DID**, which is
+/// the one place those two otherwise-identical changes differed.
+/// `textures::MapSet::load` had always loaded `<role>_rough.jpg`, so those
+/// four were resident and uploaded from the day the maps landed — paid for and
 /// unread, and binding them was free. `<role>_ao.jpg` was **not** loaded by
-/// anything: it shipped in the depot and never reached the GPU. So AO is four
-/// genuinely new 1K uploads here (and three more on the prop side), which is
-/// real and small and worth not misremembering as free.
+/// anything until 2026-08-25. The arrays reverse that once more: the sixteen
+/// sources are dropped once the three arrays exist (`textures::stack_ground`),
+/// so the ground's residency is the arrays alone.
 #[derive(Asset, AsBindGroup, TypePath, Clone)]
 pub struct GroundSplat {
     #[uniform(100)]
     pub params: GroundSplatParams,
-    #[texture(101)]
-    pub albedo_sand: Handle<Image>,
-    #[texture(102)]
-    pub albedo_grass: Handle<Image>,
-    #[texture(103)]
-    pub albedo_litter: Handle<Image>,
-    /// **This one field carries the shared sampler too**, at binding 109. The
-    /// derive refuses a `sampler` attribute with no `texture` beside it, so the
-    /// one sampler all eight maps use has to hang off one of them; which one is
-    /// arbitrary and stable, and they are loaded with an identical descriptor.
-    #[texture(104)]
-    #[sampler(109)]
-    pub albedo_rock: Handle<Image>,
-    #[texture(105)]
-    pub normal_sand: Handle<Image>,
-    #[texture(106)]
-    pub normal_grass: Handle<Image>,
-    #[texture(107)]
-    pub normal_litter: Handle<Image>,
-    #[texture(108)]
-    pub normal_rock: Handle<Image>,
-    // 109 is the shared sampler, declared above on `albedo_rock`.
-    #[texture(110)]
-    pub rough_sand: Handle<Image>,
-    #[texture(111)]
-    pub rough_grass: Handle<Image>,
-    #[texture(112)]
-    pub rough_litter: Handle<Image>,
-    #[texture(113)]
-    pub rough_rock: Handle<Image>,
-    /// Ambient occlusion, per identity. **`ART.md` §4's MEDIUM scale** — the
-    /// one occlusion term a light rig cannot supply, "between a surface's own
-    /// features … what a fetched `*_ao.jpg` carries", indirect only.
+    /// The four albedo photographs, `Rgba8UnormSrgb`, in `terrain::splat`'s
+    /// order — **and the shared sampler, at 102.** The derive refuses a
+    /// `sampler` attribute with no `texture` beside it, so the one sampler
+    /// every array uses hangs off this one; which one is arbitrary and
+    /// stable, and the arrays are built with an identical descriptor.
+    #[texture(101, dimension = "2d_array")]
+    #[sampler(102)]
+    pub albedo: Handle<Image>,
+    /// The four tangent-space normal maps, `Rgba8Unorm`.
+    #[texture(103, dimension = "2d_array")]
+    pub normal: Handle<Image>,
+    /// Roughness at layers `0..4`, ambient occlusion at `AO_LAYER0..8`, both
+    /// greyscale `Rgba8Unorm` — a roughness map is DATA, loaded
+    /// `is_srgb = false`, and so is AO.
     ///
-    /// All four ground sources publish one and all four shipped in every depot
-    /// unread until 2026-08-25: `occlusion_texture` appeared zero times in
-    /// `crates/`, and this shader sampled twelve textures and none of them.
-    /// `Option` is not needed here where `MapSet::ao` has one — every ground
-    /// role is in `textures::ROLES_WITH_AO`, and `GroundSplat::new` asserts it
-    /// rather than silently binding a default handle, which would sample BLACK
-    /// and put the whole island in shadow.
-    #[texture(114)]
-    pub ao_sand: Handle<Image>,
-    #[texture(115)]
-    pub ao_grass: Handle<Image>,
-    #[texture(116)]
-    pub ao_litter: Handle<Image>,
-    #[texture(117)]
-    pub ao_rock: Handle<Image>,
+    /// AO is **`ART.md` §4's MEDIUM scale** — the one occlusion term a light
+    /// rig cannot supply, indirect only. Every ground role is in
+    /// `textures::ROLES_WITH_AO`, and `textures::stack_ground` panics on one
+    /// that is not rather than stacking an unresolved handle, which would
+    /// sample BLACK and put the whole island in shadow.
+    #[texture(104, dimension = "2d_array")]
+    pub rough_ao: Handle<Image>,
 }
 
 impl GroundSplat {
-    /// Bind the four ground identities' maps, in `terrain::splat`'s order.
-    pub fn new(maps: &GroundMaps) -> Self {
+    /// Bind the three arrays `textures::stack_ground` built.
+    pub fn new(arrays: &GroundArrays) -> Self {
         Self {
             params: GroundSplatParams::new(),
-            albedo_sand: maps.sand.albedo.clone(),
-            albedo_grass: maps.grass.albedo.clone(),
-            albedo_litter: maps.litter.albedo.clone(),
-            albedo_rock: maps.rock.albedo.clone(),
-            normal_sand: maps.sand.normal.clone(),
-            normal_grass: maps.grass.normal.clone(),
-            normal_litter: maps.litter.normal.clone(),
-            normal_rock: maps.rock.normal.clone(),
-            rough_sand: maps.sand.rough.clone(),
-            rough_grass: maps.grass.rough.clone(),
-            rough_litter: maps.litter.rough.clone(),
-            rough_rock: maps.rock.rough.clone(),
-            // **`expect`, not `unwrap_or_default`.** An unresolved handle in a
-            // texture slot samples as black, and a black occlusion map puts the
-            // entire island in full shadow — a spectacular failure that would
-            // look like a lighting bug rather than a missing file. Every ground
-            // role is in `textures::ROLES_WITH_AO`, so this cannot fire without
-            // that list and `assets/textures/` having drifted apart, and it is
-            // better to say so at boot than to draw a black world.
-            ao_sand: ao(&maps.sand, "sand"),
-            ao_grass: ao(&maps.grass, "grass"),
-            ao_litter: ao(&maps.litter, "litter"),
-            ao_rock: ao(&maps.rock, "rock"),
+            albedo: arrays.albedo.clone(),
+            normal: arrays.normal.clone(),
+            rough_ao: arrays.rough_ao.clone(),
         }
     }
-}
-
-/// One ground role's AO handle, or a loud failure.
-fn ao(m: &super::textures::MapSet, role: &str) -> Handle<Image> {
-    m.ao.clone().unwrap_or_else(|| {
-        panic!(
-            "ground identity `{role}` has no AO map — every ground role must be              in textures::ROLES_WITH_AO with a matching assets/textures/             {role}_ao.jpg, or the splat shader samples an unresolved handle as              BLACK and the island draws in full shadow"
-        )
-    })
 }
 
 impl MaterialExtension for GroundSplat {
