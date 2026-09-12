@@ -40,6 +40,7 @@ use client::render::terrain_mesh::{
     GRAIN_SHARE, GROUND_TILE_M, GROUND_TILE_MAX_M, GROUND_TILE_MIN_M,
     SAND_GRAIN_SHARE_AT_PUBLISHED, UV_PER_M,
 };
+use client::render::textures::AO_LAYER0;
 
 const SHADER: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -258,6 +259,13 @@ fn the_multiplier_puts_each_identity_at_its_own_tile() {
 /// same class as the browser shipping this tap's gradient backwards at ~80×
 /// (`DECISIONS.md`, materials v4).
 ///
+/// **The identity is a LAYER now, not a texture name** (2026-09-12): every
+/// tap is `textureSample(<family>_maps, ground_sampler, uvK, K)`, so the
+/// thing to hold is that the layer literal and the UV agree — and, for the
+/// rough/AO array, that AO sits at `AO_LAYER0 + K` and never at `K`, because
+/// an AO tap at layer 0–3 reads ROUGHNESS and the island goes dark only where
+/// a surface is smooth, which does not look like a wrong layer.
+///
 /// A tap the scrape cannot classify fails loudly rather than being skipped.
 #[test]
 fn every_tap_uses_its_identitys_uv() {
@@ -270,66 +278,71 @@ fn every_tap_uses_its_identitys_uv() {
         "splat.tile.w",
     ];
 
+    // `(family, identity)` → planar taps seen; every family × identity must
+    // be sampled exactly once, and the albedo wall tap once more.
+    let mut planar = [[0u32; 4]; 4];
+    let mut wall = [0u32; 4];
     let mut checked = 0;
-    for (k, role) in ROLES.iter().enumerate() {
-        for family in ["albedo", "normal", "rough", "ao"] {
-            let map = format!("{family}_{role}");
-            let taps: Vec<&str> = wgsl
-                .lines()
-                .map(str::trim)
-                .filter(|l| !l.starts_with("//") && l.contains(&format!("{map},")))
-                .collect();
-            assert!(
-                !taps.is_empty(),
-                "no tap of `{map}` found in the shader — either the map was \
-                 dropped or this scrape stopped matching, and a scrape that \
-                 matches nothing passes for the wrong reason"
-            );
-            for tap in taps {
-                if tap.contains("textureSampleGrad") {
-                    // The wall tap: uv AND both gradients scaled by this
-                    // identity's component, three occurrences on the line.
-                    let n = tap.matches(comp[k]).count();
-                    assert!(
-                        n == 3,
-                        "{map}: its wall tap scales {} thing(s) by {} and must \
-                         scale exactly three — the UV and both gradients.\n  \
-                         {tap}",
-                        n,
+    for tap in taps(&wgsl) {
+        let (family, layer, args) = classify(&tap);
+        let k = (layer % 4) as usize;
+        let role = ROLES[k];
+        match args.as_slice() {
+            // textureSample(maps, sampler, uv, layer)
+            [_, sampler, uv, _] => {
+                assert_eq!(*sampler, "ground_sampler", "{tap}");
+                assert_eq!(
+                    *uv, uv_of[k],
+                    "{family}/{role}: layer {layer} is sampled at `{uv}`, not \
+                     `{}`. Every tap of an identity's maps must share one UV or \
+                     its relief stops being registered with the colour it came \
+                     from.\n  {tap}",
+                    uv_of[k]
+                );
+                planar[family][k] += 1;
+            }
+            // textureSampleGrad(maps, sampler, uv, layer, ddx, ddy)
+            [_, sampler, uv, _, ddx, ddy] => {
+                assert_eq!(*sampler, "ground_sampler", "{tap}");
+                assert_eq!(family, 0, "only the albedo has a wall tap\n  {tap}");
+                for (what, expr) in [("uv", uv), ("ddx", ddx), ("ddy", ddy)] {
+                    assert_eq!(
+                        expr.matches(comp[k]).count(),
+                        1,
+                        "{role}: its wall tap's {what} is `{expr}`, which must \
+                         scale by {} exactly once — the UV and both gradients \
+                         pick the mip together.\n  {tap}",
                         comp[k]
                     );
-                    for other in comp.iter().enumerate().filter(|(j, _)| *j != k) {
+                    for (j, other) in comp.iter().enumerate().filter(|(j, _)| *j != k) {
                         assert!(
-                            !tap.contains(other.1),
-                            "{map}: its wall tap mentions {}, which belongs to \
-                             {}.\n  {tap}",
-                            other.1,
-                            ROLES[other.0]
-                        );
-                    }
-                } else {
-                    assert!(
-                        tap.contains(uv_of[k]),
-                        "{map}: sampled at a UV that is not `{}`. Every tap of \
-                         an identity's maps must share one UV or its relief \
-                         stops being registered with the colour it came \
-                         from.\n  {tap}",
-                        uv_of[k]
-                    );
-                    for other in uv_of.iter().enumerate().filter(|(j, _)| *j != k) {
-                        assert!(
-                            !tap.contains(other.1),
-                            "{map}: sampled at `{}`, which belongs to {}.\n  \
-                             {tap}",
-                            other.1,
-                            ROLES[other.0]
+                            !expr.contains(other),
+                            "{role}: its wall tap's {what} mentions {other}, \
+                             which belongs to {}.\n  {tap}",
+                            ROLES[j]
                         );
                     }
                 }
-                checked += 1;
+                wall[k] += 1;
             }
+            _ => panic!("a texture tap this scrape cannot classify: {tap}"),
+        }
+        checked += 1;
+    }
+    for (f, name) in FAMILIES.iter().enumerate() {
+        for (k, role) in ROLES.iter().enumerate() {
+            assert_eq!(
+                planar[f][k], 1,
+                "{name}/{role}: sampled {} times planar — every identity's \
+                 every map is sampled exactly once from the top",
+                planar[f][k]
+            );
         }
     }
+    assert_eq!(
+        wall, [1; 4],
+        "each albedo layer gets exactly one wall tap: {wall:?}"
+    );
     // 4 identities × (albedo + normal + rough + ao) = 16 planar taps, plus the
     // 4 albedo wall taps. A drop below this is the scrape going blind.
     assert!(
@@ -337,6 +350,86 @@ fn every_tap_uses_its_identitys_uv() {
         "only {checked} taps classified — expected at least 20 (16 planar + 4 \
          wall). The scrape has gone blind rather than the shader being right."
     );
+}
+
+/// The families in the order [`classify`] numbers them.
+const FAMILIES: [&str; 4] = ["albedo", "normal", "rough", "ao"];
+
+/// Every `textureSample…(` call in the fragment, as its text through the
+/// matching close paren. Comments are dropped first so a tap in prose is not
+/// a tap.
+fn taps(wgsl: &str) -> Vec<String> {
+    let code: String = wgsl
+        .lines()
+        .map(|l| l.split("//").next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut out = Vec::new();
+    let mut rest = code.as_str();
+    while let Some(i) = rest.find("textureSample") {
+        let from = &rest[i..];
+        let open = from.find('(').expect("textureSample without a paren");
+        let mut depth = 0i32;
+        let mut close = None;
+        for (j, c) in from[open..].char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(open + j);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let close = close.expect("unbalanced textureSample call");
+        out.push(from[..=close].to_string());
+        rest = &from[close..];
+    }
+    out
+}
+
+/// One tap as `(family index, layer, args)`: the family from the array the
+/// tap names, the layer from its literal, and the arguments split at the
+/// call's own depth. Roughness and AO share `rough_ao_maps` and are told
+/// apart by the layer against `AO_LAYER0`.
+fn classify(tap: &str) -> (usize, u32, Vec<&str>) {
+    let open = tap.find('(').unwrap();
+    let inner = &tap[open + 1..tap.len() - 1];
+    let mut args = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0;
+    for (i, c) in inner.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            ',' if depth == 0 => {
+                args.push(inner[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    args.push(inner[start..].trim());
+    let layer: u32 = args
+        .get(3)
+        .unwrap_or_else(|| panic!("no layer argument in {tap}"))
+        .parse()
+        .unwrap_or_else(|e| panic!("the layer of `{tap}` is not a literal: {e}"));
+    let family = match args[0] {
+        "albedo_maps" => 0,
+        "normal_maps" => 1,
+        "rough_ao_maps" if layer < AO_LAYER0 => 2,
+        "rough_ao_maps" => 3,
+        other => panic!("a tap of `{other}` this scrape cannot classify: {tap}"),
+    };
+    assert!(
+        layer < if family >= 2 { 2 * AO_LAYER0 } else { 4 },
+        "{tap}: layer {layer} is past the end of its array"
+    );
+    (family, layer, args)
 }
 
 /// Leg 5. The recorded grain shares are the shipped files' own.

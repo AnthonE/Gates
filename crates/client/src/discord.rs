@@ -134,10 +134,15 @@ pub const APP_ID_ENV: &str = "GATES_DISCORD_APP_ID";
 pub const LARGE_IMAGE: &str = "gates";
 
 /// Opcodes. Only two are ever sent from our side; a third arrives.
-// Both are the IPC opcodes `Pipe` writes, so they follow it off wasm — kept
-// for `tests/` on every target because `frame(opcode, payload)` is pure and
-// its suite names them.
-#[cfg(any(not(target_arch = "wasm32"), test))]
+// Both are the IPC opcodes `Pipe` writes, so they follow it off wasm. ⚠ The
+// two are NOT symmetric and this comment claimed they were until 2026-09-11:
+// `OP_FRAME` is named by the `frame(opcode, payload)` suite, which is pure and
+// runs on every target, so it is kept under `test`. `OP_HANDSHAKE` has no test
+// user at all — its only reader is `Pipe::write` on the native path — so
+// keeping it under `test` made it dead code the moment a wasm `--all-targets`
+// run could see it, which is the day the renderer started compiling for that
+// target.
+#[cfg(not(target_arch = "wasm32"))]
 const OP_HANDSHAKE: u32 = 0;
 #[cfg(any(not(target_arch = "wasm32"), test))]
 const OP_FRAME: u32 = 1;
@@ -238,7 +243,7 @@ pub type Addr = Text<80>;
 // ── what the player is doing ─────────────────────────────────────────────────
 
 /// Which screen the player is on, as a closed set. Deliberately coarser than
-/// `render::menu::Screen`: `Paused` and `Map` are not facts a stranger needs,
+/// `render::screen::Screen`: `Paused` and `Map` are not facts a stranger needs,
 /// and "on the island" is true for all three.
 ///
 /// The exhaustive match over this type is [`State::doing`], **in this file**,
@@ -1219,6 +1224,10 @@ mod tests {
 
     // ── the rest ─────────────────────────────────────────────────────────
 
+    // Native-only: `socket_paths` enumerates Discord's IPC sockets, which
+    // are a desktop concept. Reachable from a wasm `--all-targets` run only
+    // since the render build started compiling for that target.
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn the_socket_list_is_bounded_and_ordered() {
         let paths = socket_paths();

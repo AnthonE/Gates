@@ -42,8 +42,8 @@
 use bevy::prelude::*;
 
 use super::clutter::{ClutterRing, RING_TILES};
-use super::menu::{Connecting, Menu, Screen};
 use super::props::PropRing;
+use super::screen::{Connecting, Menu, Screen};
 use super::terrain_mesh::{Ring, RING_CHUNKS};
 use super::{ui, Eye, WorldId};
 use crate::ui::load::Progress;

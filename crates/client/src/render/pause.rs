@@ -30,7 +30,7 @@
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
-use super::menu::{Connecting, Menu, Screen};
+use super::screen::{Connecting, Menu, Screen};
 use super::settings::Settings;
 use super::{ui, Net};
 

@@ -105,7 +105,11 @@ required-features = ["native"]
 [[bin]]
 name = "modelview"
 path = "src/bin/modelview.rs"
-required-features = ["render"]
+# `native` beside `render` for the reason `gates` carries it: this opens a
+# window and reads a path off the filesystem, so it is a desktop target and a
+# wasm build with `render` on must not attempt it. `native` is a default
+# feature, so nothing about a desktop build changes.
+required-features = ["render", "native"]
 
 # The CPU cost probe (`examples/frame_cost.rs`): what a streaming frame spends
 # on the ground, the population and the sea. Not a gate and never will be — it
@@ -184,7 +188,12 @@ required-features = ["render"]
 [[test]]
 name = "packed_maps"
 path = "tests/packed_maps.rs"
-required-features = ["render"]
+# `native` beside `render`: this decodes a shipped KTX2 through the SAME
+# `basis-universal` transcoder Bevy uses, and that crate is native-only (it is
+# C++, and wasm32-unknown-unknown has no C sysroot). The test is about what a
+# packed map decodes to, which is a property of the file rather than of a
+# target, so proving it on the desktop build proves it.
+required-features = ["render", "native"]
 
 [[test]]
 name = "gaps"
@@ -417,11 +426,20 @@ content = { path = "../content" }
 # runs once per texture at load rather than per frame.
 # Same failure shape as `jpeg` above and worth stating in the same breath: a
 # missing feature here does not fail the build, it draws the white fallback.
+#
+# ⚠ **`basis-universal` is NOT in this list and that is deliberate** — it is
+# the one feature here that is a C++ library rather than Rust, and
+# `wasm32-unknown-unknown` has no C sysroot, so `basis-universal-sys`'s build
+# script dies on `'stdlib.h' file not found` before a line of ours is read.
+# It is enabled for native only, in the target table below. `ktx2` and
+# `zstd_rust` stay here because both are pure Rust: the browser build can read
+# a KTX2 container and refuse its UASTC payload for want of a transcoder,
+# which is a legible failure, where dropping the container parser too would
+# make it an unknown format.
 bevy = { version = "0.18", optional = true, features = [
     "jpeg",
     "wav",
     "ktx2",
-    "basis-universal",
     "zstd_rust",
 ] }
 # The shard list (`elo-shardlist-v1`, docs/LAUNCHER.md §6 in AnthonE/scry).
@@ -460,7 +478,10 @@ fastrand = { version = "2", optional = true }
 # them; the test does, and it is the only reader of what a packed map actually
 # decodes to — which is how every normal map in the tree shipped bent for
 # three weeks with every other gate green (`ci/ktx_pack.py`'s header).
-basis-universal = { version = "0.3", optional = true }
+# ⚠ `basis-universal` moved to the not-wasm32 table below for the reason the
+# `bevy` row above states. `ktx2` and `ruzstd` stay here: both are pure Rust,
+# and a feature naming an optional dep costs nothing on a target where it
+# resolves to nothing.
 ktx2 = { version = "0.4", optional = true }
 ruzstd = { version = "0.8", optional = true }
 sim-core = { path = "../sim-core" }
@@ -533,6 +554,23 @@ tokio = { version = "1", features = ["sync"] }
 # `ureq` opens a `TcpStream`. A tab has none of the three and never will.
 # ---------------------------------------------------------------------------
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# **The GPU-compressed texture path, native only.** Cargo unions features
+# across target tables, so a desktop build sees exactly the bevy feature set it
+# saw before this split; a browser build sees the same list minus the one C++
+# feature. This is the same mechanism `ureq` below already relies on — a
+# feature (`render`) naming an optional dependency that lives in an excluded
+# target table enables nothing there rather than erroring.
+#
+# ⚠ **The price is stated rather than discovered**: with no transcoder, a
+# `.glb` whose textures are KTX2/UASTC does not draw white on this target — it
+# fails to load AT ALL. `bevy_gltf`'s loader takes the serial branch on wasm32
+# (`loader/mod.rs:596`, `gltf.textures().len() == 1 || cfg!(target_arch =
+# "wasm32")`) and propagates the texture error out of `load_gltf`; the tolerant
+# `warn!` arm is inside the `not(wasm32)` branch. So every shipped model is
+# absent in a browser until a web asset variant exists, and the manifest's
+# older "draws the white fallback" line is a NATIVE fact only.
+bevy = { version = "0.18", optional = true, features = ["basis-universal"] }
+basis-universal = { version = "0.3", optional = true }
 # The runtime half of tokio. Unioned with the `sync` above by cargo, so a
 # native build sees exactly the five features it saw before this split.
 #

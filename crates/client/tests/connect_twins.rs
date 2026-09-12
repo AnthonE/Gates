@@ -32,7 +32,7 @@
 //! | `closed: false` → `closed: true` | the struct-literal comparison |
 //! | the event lane `64` → `8` | the channel-depth comparison |
 //! | `FrameReader::<MAX_STREAM_MSG_BYTES>` → `MAX_EVENT_MSG_BYTES` | the ceiling sequence |
-//! | dropping the `auth_for` step | the handshake sequence |
+//! | dropping the auth step (`auth_for`, or either half of it) | the handshake sequence |
 //!
 //! The third is the one worth naming: it makes the browser handshake read at
 //! 320 bytes where the desktop reads at 128 — a lane ceiling silently widened
@@ -123,26 +123,52 @@ fn squash(v: Vec<String>) -> Vec<String> {
     out
 }
 
-/// **The same three rules, in the same order.**
+/// `auth_for` written out as the two halves it is composed of.
+///
+/// **The one asymmetry this gate tolerates, and it is forced.** A browser
+/// signature is a Promise and the shard's nonce only exists mid-handshake, so
+/// it cannot be pre-signed — the page must decode the challenge, `await` a
+/// wallet, and then encode. `net::handshake::auth_for` is the synchronous
+/// composition of exactly those two functions, for a desktop signer that
+/// answers without awaiting.
+///
+/// So this expansion is not a licence for the two paths to differ: it says
+/// they drive the same rules in the same order and lets one of them stop in
+/// the middle. That the two assemblies produce the SAME BYTES is a separate,
+/// exact claim, and it is gated where the functions live —
+/// `net::handshake::tests::the_two_step_path_and_the_composition_agree` builds
+/// an auth frame both ways from one challenge and compares them.
+fn expand(steps: Vec<String>) -> Vec<String> {
+    steps
+        .into_iter()
+        .flat_map(|s| match s.as_str() {
+            "auth_for" => vec!["proof_wanted".to_string(), "auth_frame".to_string()],
+            _ => vec![s],
+        })
+        .collect()
+}
+
+/// **The same rules, in the same order.**
 ///
 /// `net::handshake` is the pure half of the join — the version check, the SIWE
 /// domain binding, the refusal decode — extracted precisely so both transports
-/// drive one copy of it. That is only true while both actually call all three.
+/// drive one copy of it. That is only true while both actually call all of it.
 #[test]
 fn both_twins_drive_the_same_handshake_in_the_same_order() {
     let (native, web) = twins();
-    let a = names_after(&native, "net::handshake::");
-    let b = names_after(&web, "net::handshake::");
+    let a = expand(names_after(&native, "net::handshake::"));
+    let b = expand(names_after(&web, "net::handshake::"));
     assert_eq!(
         a,
-        vec!["hello", "auth_for", "welcome_from"],
+        vec!["hello", "proof_wanted", "auth_frame", "welcome_from"],
         "the desktop connect no longer drives the handshake this gate knows about"
     );
     assert_eq!(
         a, b,
         "the two connects drive different handshake steps, or drive them in a different \
          order.\n  desktop: {a:?}\n  browser: {b:?}\nEach target compiles only its own arm, \
-         so nothing else in this repo can see this."
+         so nothing else in this repo can see this. (`auth_for` counts as \
+         `proof_wanted` then `auth_frame` — see `expand`.)"
     );
 }
 

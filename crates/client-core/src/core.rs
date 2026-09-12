@@ -3056,6 +3056,15 @@ impl ClientCore {
     /// carry two 30 Hz ticks would otherwise decay twice as fast as one
     /// that carried one.
     pub fn advance(&mut self, dt_ms: f64) -> u32 {
+        // **Once, at the top, before anything spends it.** This used to hand
+        // the raw value to three consumers and only the third (`Clock::
+        // advance`) guarded it — so a negative frame time moved `now_ms`
+        // backwards, decayed the prediction error by a negative amount, and
+        // panicked outright on the slew below, where `max_step` goes negative
+        // and `clamp(-max_step, max_step)` is `min > max`. See
+        // `clock::sane_dt` for why a browser produces one on frame one and
+        // why the native client never could.
+        let dt_ms = clock::sane_dt(dt_ms);
         self.now_ms += dt_ms;
         // The playout delay slews toward its jitter-derived target
         // (netcode v2 S5): floor + K jitters of margin, bounded by the
@@ -3309,6 +3318,62 @@ mod tests {
             (before - c.playout_ticks()).abs() < 0.01,
             "a single frame slid the world by a visible amount"
         );
+    }
+
+    /// **A frame time below zero is survivable, and before 2026-09-11 it was a
+    /// panic.** Found by opening the browser page, which is the only place it
+    /// occurs: `requestAnimationFrame` hands the callback the timestamp of the
+    /// frame's *start*, which can precede a `performance.now()` read taken
+    /// moments before it, so `now - last` is routinely negative on the first
+    /// frame. Every native caller derives `dt` from a monotonic clock, so no
+    /// gate in this repo could have produced one.
+    ///
+    /// The panic was not in the clock — `ClientClock::advance` has always
+    /// clamped — it was in this function spending the raw value first, on
+    /// `max_step = PLAYOUT_SLEW_PER_S * dt_ms / 1000.0` used as
+    /// `clamp(-max_step, max_step)`. Negative `max_step` is `min > max`, which
+    /// `f64::clamp` panics on, and a panic in wasm is the whole module gone:
+    /// the page reported a completed join and then froze forever.
+    ///
+    /// Proven red under reverting `clock::sane_dt` in `advance` — it aborts the
+    /// test binary rather than failing it, which is the shape of the defect.
+    #[test]
+    fn a_frame_time_below_zero_is_survived_rather_than_panicked_on() {
+        let mut c = ClientCore::new(1, 1, 100);
+        for _ in 0..120 {
+            c.advance(1000.0 / 60.0);
+        }
+        let settled = c.playout_ticks();
+        let clock_before = c.render_tick();
+
+        // The browser's first frame, as measured: about six milliseconds of
+        // rAF timestamp arriving before the `performance.now()` beside it.
+        let steps = c.advance(-5.85);
+        assert_eq!(steps, 0, "time that did not pass buys no sim steps");
+        assert!(
+            (c.playout_ticks() - settled).abs() < 1e-9,
+            "a negative frame must not slew the playout delay"
+        );
+        assert!(
+            c.render_tick() >= clock_before,
+            "the render clock must never run backwards: {} -> {}",
+            clock_before,
+            c.render_tick()
+        );
+
+        // NaN is the other value `clamp` refuses, and it would poison `now_ms`
+        // permanently rather than for one frame.
+        let steps = c.advance(f64::NAN);
+        assert_eq!(steps, 0);
+        assert!(
+            c.render_tick().is_finite(),
+            "a NaN frame poisoned the clock"
+        );
+
+        // And the client still works afterwards, which is the point: the bad
+        // frame is discarded, not fatal.
+        let steps = c.advance(1000.0 / 30.0);
+        assert_eq!(steps, 1, "a normal frame after a bad one still ticks");
     }
 
     /// Every `APPLIED_*` flag of word 0, in bit order. A new flag added

@@ -242,8 +242,33 @@ $NICE cargo build -p sim-core -p protocol -p client-core --release --target wasm
 echo "== gate: browser client (client + client-web -> wasm32, --no-default-features)"
 $NICE cargo clippy -p client-web --target wasm32-unknown-unknown --all-targets -- -D warnings \
   || fail "clippy (browser client)"
-$NICE cargo build -p client-web --release --target wasm32-unknown-unknown \
+# `--profile web` — the profile `ci/build_web.sh` ships (root `Cargo.toml`), so
+# what this gate links is the module a page loads and not a sibling of it.
+$NICE cargo build -p client-web --profile web --target wasm32-unknown-unknown \
   || fail "browser client build"
+
+# **The RENDERER for the browser, under `--all-targets`.** `client-web` has
+# carried `render` since 2026-09-11 (it hands the session to Bevy in a tab),
+# so the build above already codegens `crates/client/src/render/` — ~41k
+# lines, the whole Bevy half — for wasm32. What that build does not compile is
+# the crate's TEST targets, and a test target is where a `cfg` split shows
+# first: an arm nobody compiles is an arm that rots by the second commit,
+# which is this repo's named worst bug class — `CLAUDE.md` records it firing
+# twice on exactly this seam (a `Verb` variant, then a `connect` signature),
+# both green on `cargo test --workspace` and red only at the Bevy gate.
+#
+# **Clippy and not a build, deliberately.** `cargo check`/clippy type-checks
+# without codegen; the thing that gets broken here is a signature, a cfg or an
+# import, and all three are check-time. The line above is what links.
+#
+# ⚠ `--all-targets` matters and is why three `#[test]` fns in `elo.rs` and
+# `discord.rs` carry a wasm guard: they exercise the elo launcher, which is a
+# desktop process on a local socket. They were unreachable until this gate
+# existed, which is the shape of every entry on it.
+echo "== gate: browser renderer (client --features render -> wasm32, check tier)"
+$NICE cargo clippy -p client --no-default-features --features render \
+  --target wasm32-unknown-unknown --all-targets -- -D warnings \
+  || fail "clippy (browser renderer)"
 
 echo "== gate: test_parity_wasm (native vs wasm, byte-equal digests)"
 command -v node >/dev/null || fail "node missing — parity gate cannot run"

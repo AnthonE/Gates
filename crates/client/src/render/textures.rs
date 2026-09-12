@@ -29,9 +29,15 @@
 //! client pays it once from disk. Re-sourcing at 2K/4K is a later slice and
 //! this module is where it lands; nothing else has to change.
 
-use bevy::asset::AssetServer;
-use bevy::image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor};
+use bevy::asset::{AssetServer, RenderAssetUsages};
+use bevy::image::{
+    ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor,
+    TextureFormatPixelInfo,
+};
 use bevy::prelude::*;
+use bevy::render::render_resource::{
+    Extent3d, TextureDataOrder, TextureDimension, TextureViewDescriptor, TextureViewDimension,
+};
 
 /// One material's three maps, as the ground and the props want them.
 ///
@@ -178,6 +184,13 @@ pub const GROUND_DETAIL_GAIN: f32 = 4.0579;
 /// sand · grass · forest litter · rock. Only one of them can be sampled by a
 /// `StandardMaterial` (it has one base-colour slot), which is exactly the
 /// limitation a splat material exists to remove — see `RENDER.md`.
+///
+/// **This is the LOADING shape, not the binding one.** The ground material
+/// binds [`GroundArrays`], which [`stack_ground`] builds out of these once
+/// every map has its mip chain — and then removes this resource, because
+/// sixteen source textures whose every texel is also in an array are ~56 MB
+/// of VRAM held for nobody. `PropMaps` shares the `rock` handles, so those
+/// three stay resident either way.
 #[derive(Resource)]
 pub struct GroundMaps {
     pub sand: MapSet,
@@ -241,4 +254,318 @@ pub fn load(mut commands: Commands, assets: Res<AssetServer>) {
         stone: MapSet::load(&assets, "stone"),
         metal: MapSet::load(&assets, "metal"),
     });
+}
+
+// ── The ground's arrays ─────────────────────────────────────────────────────
+
+/// The ground's sixteen maps as three `texture_2d_array`s — what
+/// `ground_splat::GroundSplat` binds.
+///
+/// **Why arrays and not sixteen textures.** How many sampled textures a
+/// fragment stage may hold is a hard limit with a floor of 16 on a downlevel
+/// adapter, and WebGL2 IS that floor (`downlevel_webgl2_defaults`:
+/// `max_sampled_textures_per_shader_stage = 16`). It is counted per STAGE and
+/// summed over every bind group in the pipeline layout — the view's shadow and
+/// environment maps, `StandardMaterial`'s six slots, and ours — so sixteen
+/// ground textures put the material group alone at 22 and the browser refused
+/// the pipeline before it drew a frame (2026-09-11). A layer costs no
+/// binding: four albedo maps are one texture here where they were four, and
+/// roughness and AO — same size, same format, same sampler — share one array
+/// ([`AO_LAYER0`]), so the whole ground is THREE sampled textures. The
+/// sampler argument in `ground_splat.rs` stands: it is still one for all of
+/// them.
+///
+/// **The desktop draws the same texels.** A layer of a `2d_array` samples
+/// exactly as the standalone texture did — same filter, same chain, same
+/// anisotropy, same bytes ([`stack`] copies them) — so this is one shader for
+/// both targets rather than a web variant, and the native before/after
+/// capture is what says so (`findings/web-build-20260909.md` §15).
+///
+/// `RENDER_WORLD` only: an array's one job is to be uploaded, and the CPU
+/// copy it was built from is the sources' — which are dropped with
+/// [`GroundMaps`] once this exists.
+#[derive(Resource, Clone)]
+pub struct GroundArrays {
+    /// `Rgba8UnormSrgb`, four layers in `terrain::splat`'s order.
+    pub albedo: Handle<Image>,
+    /// `Rgba8Unorm`, four layers.
+    pub normal: Handle<Image>,
+    /// `Rgba8Unorm`, eight layers: roughness at `0..4`, AO at
+    /// [`AO_LAYER0`]`..8`, each in `terrain::splat`'s order.
+    pub rough_ao: Handle<Image>,
+}
+
+/// The first AO layer of [`GroundArrays::rough_ao`]; roughness is the four
+/// below it. The shader indexes these as literals and `tests/ground_tiling.rs`
+/// holds them to this constant.
+pub const AO_LAYER0: u32 = 4;
+// The layer list `stack_ground` builds puts AO after four roughness layers;
+// this is the one place the two are tied together.
+const _: () = assert!(AO_LAYER0 == 4);
+
+/// Whether a source image may be a layer yet: it has the chain
+/// `mipmap::drain` gives it, or it is one that pass will never touch.
+///
+/// **Derived from the mip pass's own predicate, never from the event it
+/// reacts to.** An image is in `Assets<Image>` one frame before its `Added`
+/// event reaches `mipmap::enqueue`, so "loaded and not pending" is true for
+/// exactly one frame on an image that is about to get a chain — and an array
+/// built in that window carries single-level layers with every gate green.
+/// `mipmap::wants` is the one test that cannot disagree with `drain`, because
+/// `drain` calls it.
+pub fn layer_ready(image: &Image) -> bool {
+    image.texture_descriptor.mip_level_count > 1 || !super::mipmap::wants(image)
+}
+
+/// Why a set of images cannot be one array.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StackError {
+    /// No layers at all.
+    Empty,
+    /// The layer named has no CPU-side data to copy.
+    NoData(usize),
+    /// The layer named is not a plain single-layer 2D image.
+    NotPlane(usize),
+    /// The layer named disagrees with layer 0 about the property named.
+    Mismatch { layer: usize, what: &'static str },
+    /// The layer named holds fewer or more bytes than its own descriptor says
+    /// a chain of its size holds.
+    Bytes {
+        layer: usize,
+        want: usize,
+        got: usize,
+    },
+}
+
+/// Bytes one layer's whole chain holds: `mips` levels of a `w × h` image at
+/// `bpp` bytes a texel, level 0 included. `mipmap::chain_bytes` is this with
+/// the full chain and RGBA8 filled in.
+pub fn layer_bytes(w: u32, h: u32, mips: u32, bpp: usize) -> usize {
+    (0..mips)
+        .map(|lvl| ((w >> lvl).max(1) as usize) * ((h >> lvl).max(1) as usize) * bpp)
+        .sum()
+}
+
+/// Stack `layers` into one `2d_array` image — chains and all, layer-major.
+///
+/// Every layer must agree with the first about size, format, mip count and
+/// sampler, or the result would sample one identity at a different density or
+/// through a different transfer function from the rest; a set that disagrees
+/// is refused whole rather than resampled, because "fits" here is a fact about
+/// the FILES (`assets/textures/MANIFEST.md`) and the fix is to re-source the
+/// set, not to stretch one member of it.
+///
+/// **Layer-major is wgpu's default and it is what a concatenation of chains
+/// IS**: `Layer0Mip0 Layer0Mip1 … Layer1Mip0 …`, exactly the order
+/// `mipmap::chain` writes one image's levels in. Stated on the image rather
+/// than left to the default, so a reader of `data` knows what they are
+/// looking at.
+pub fn stack(layers: &[&Image]) -> Result<Image, StackError> {
+    let first = *layers.first().ok_or(StackError::Empty)?;
+    let d0 = &first.texture_descriptor;
+    let bpp = d0
+        .format
+        .pixel_size()
+        .map_err(|_| StackError::NotPlane(0))?;
+    let want = layer_bytes(d0.size.width, d0.size.height, d0.mip_level_count, bpp);
+    let mut data = Vec::with_capacity(want * layers.len());
+    for (i, layer) in layers.iter().enumerate() {
+        let d = &layer.texture_descriptor;
+        if d.dimension != TextureDimension::D2 || d.size.depth_or_array_layers != 1 {
+            return Err(StackError::NotPlane(i));
+        }
+        if d.size.width != d0.size.width || d.size.height != d0.size.height {
+            return Err(StackError::Mismatch {
+                layer: i,
+                what: "size",
+            });
+        }
+        if d.format != d0.format {
+            return Err(StackError::Mismatch {
+                layer: i,
+                what: "format",
+            });
+        }
+        if d.mip_level_count != d0.mip_level_count {
+            return Err(StackError::Mismatch {
+                layer: i,
+                what: "mip count",
+            });
+        }
+        if layer.sampler != first.sampler {
+            return Err(StackError::Mismatch {
+                layer: i,
+                what: "sampler",
+            });
+        }
+        let bytes = layer.data.as_ref().ok_or(StackError::NoData(i))?;
+        if bytes.len() != want {
+            return Err(StackError::Bytes {
+                layer: i,
+                want,
+                got: bytes.len(),
+            });
+        }
+        data.extend_from_slice(bytes);
+    }
+    let mut image = Image::new_uninit(
+        Extent3d {
+            width: d0.size.width,
+            height: d0.size.height,
+            depth_or_array_layers: layers.len() as u32,
+        },
+        TextureDimension::D2,
+        d0.format,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    // The count and the buffer are set together, as `mipmap::drain` sets them:
+    // `Image::new` checks `data` against level 0 alone and would refuse a
+    // chain.
+    image.texture_descriptor.mip_level_count = d0.mip_level_count;
+    image.data = Some(data);
+    image.data_order = TextureDataOrder::LayerMajor;
+    image.sampler = first.sampler.clone();
+    // Without this the view is created `D2` over a texture with layers, and
+    // the bind group refuses it at draw — loudly on desktop, and on WebGL2 as
+    // a texture that silently samples nothing.
+    image.texture_view_descriptor = Some(TextureViewDescriptor {
+        dimension: Some(TextureViewDimension::D2Array),
+        ..Default::default()
+    });
+    Ok(image)
+}
+
+/// One family's slot in [`Stacking`], its name for the panic message, and the
+/// handles of its layers in order.
+type Family<'a> = (
+    &'a mut Option<Handle<Image>>,
+    &'static str,
+    &'a [&'a Handle<Image>],
+);
+
+/// What [`stack_ground`] has built so far. `Local` state: three slots, filled
+/// one a frame.
+#[derive(Default)]
+pub struct Stacking {
+    albedo: Option<Handle<Image>>,
+    normal: Option<Handle<Image>>,
+    rough_ao: Option<Handle<Image>>,
+}
+
+/// Stack one family if all its layers are ready. `None` while any is not.
+///
+/// # Panics
+///
+/// If the layers are all loaded and cannot be one array — a size, format or
+/// sampler that disagrees within a family is a file swap that broke the set,
+/// and drawing the island untextured over it would look like a lighting bug.
+/// Saying so at boot is the same posture `GroundSplat::new` took for a missing
+/// AO map.
+fn try_stack(
+    images: &mut Assets<Image>,
+    family: &str,
+    layers: &[&Handle<Image>],
+) -> Option<Handle<Image>> {
+    // The wait costs no allocation: only a frame that builds collects.
+    if !layers
+        .iter()
+        .all(|h| images.get(*h).is_some_and(layer_ready))
+    {
+        return None;
+    }
+    let refs: Vec<&Image> = layers.iter().filter_map(|h| images.get(*h)).collect();
+    let image = stack(&refs).unwrap_or_else(|e| {
+        panic!(
+            "the ground's {family} maps cannot be one texture array: {e:?}. Every layer must share one size, format, mip count and sampler — re-source the SET (assets/textures/MANIFEST.md), never one identity of it"
+        )
+    });
+    Some(images.add(image))
+}
+
+/// Build [`GroundArrays`] out of [`GroundMaps`] — one family a frame, once
+/// every one of a family's maps has had its mip pass — then drop the sources.
+///
+/// Runs after `mipmap::drain` in the same frame, so a chain finished this
+/// frame is stacked this frame. **One family a frame, deliberately**: the
+/// albedo array alone is ~22 MB of texels copied, and `CLAUDE.md`'s stream-in
+/// rule is that a frame pays for one of those, never three. Every frame after
+/// the sources are dropped is one `Option` read.
+pub fn stack_ground(
+    mut commands: Commands,
+    maps: Option<Res<GroundMaps>>,
+    mut images: ResMut<Assets<Image>>,
+    mut stacking: Local<Stacking>,
+) {
+    let Some(maps) = maps else {
+        return;
+    };
+    let sets = [&maps.sand, &maps.grass, &maps.litter, &maps.rock];
+    // `expect`, not `unwrap_or_default`, and the reason is unchanged from when
+    // this check lived on the material: an unresolved handle samples as BLACK,
+    // and a black occlusion layer puts the whole island in shadow — a failure
+    // that reads as a lighting bug rather than a missing file. Every ground
+    // role is in `ROLES_WITH_AO`, so this fires only when that list and
+    // `assets/textures/` have drifted apart, and boot is the place to say so.
+    let ao = |k: usize| -> &Handle<Image> {
+        sets[k].ao.as_ref().unwrap_or_else(|| {
+            panic!(
+                "ground identity #{k} has no AO map — every ground role must be in textures::ROLES_WITH_AO with a matching assets/textures/<role>_ao.jpg, or the splat shader samples an unresolved layer as BLACK and the island draws in full shadow"
+            )
+        })
+    };
+    let albedo = [
+        &sets[0].albedo,
+        &sets[1].albedo,
+        &sets[2].albedo,
+        &sets[3].albedo,
+    ];
+    let normal = [
+        &sets[0].normal,
+        &sets[1].normal,
+        &sets[2].normal,
+        &sets[3].normal,
+    ];
+    // Roughness first, AO from `AO_LAYER0` — the layer order the shader
+    // indexes by literal.
+    let rough_ao = [
+        &sets[0].rough,
+        &sets[1].rough,
+        &sets[2].rough,
+        &sets[3].rough,
+        ao(0),
+        ao(1),
+        ao(2),
+        ao(3),
+    ];
+
+    let s = &mut *stacking;
+    let families: [Family; 3] = [
+        (&mut s.albedo, "albedo", &albedo),
+        (&mut s.normal, "normal", &normal),
+        (&mut s.rough_ao, "rough/AO", &rough_ao),
+    ];
+    for (slot, family, layers) in families {
+        if slot.is_some() {
+            continue;
+        }
+        let Some(handle) = try_stack(&mut images, family, layers) else {
+            // Not every layer has its chain yet; nothing later in the list is
+            // tried, so the order is fixed and a family is never skipped.
+            return;
+        };
+        *slot = Some(handle);
+        // One a frame.
+        break;
+    }
+    let (Some(albedo), Some(normal), Some(rough_ao)) =
+        (s.albedo.clone(), s.normal.clone(), s.rough_ao.clone())
+    else {
+        return;
+    };
+    commands.insert_resource(GroundArrays {
+        albedo,
+        normal,
+        rough_ao,
+    });
+    commands.remove_resource::<GroundMaps>();
 }

@@ -104,6 +104,26 @@
 //! change (37 files re-encoded, the depot's contents, `MANIFEST.md`'s
 //! measured table, and `manifest_measured.rs` re-based on a new decoder). The
 //! cost here is one extra upload of ~100 MB spread over the loading screen.
+//!
+//! ⚠ **And a re-upload does not reach a material that was prepared before
+//! it.** Nothing in `bevy_pbr` listens to `AssetEvent<Image>`: a material's
+//! bind group is built once, on the first frame every image it binds is
+//! resident, and is never rebuilt when one of those images is modified — so a
+//! material created while its photographs are one level deep keeps the
+//! one-level upload forever, chain or no chain. Measured 2026-09-12
+//! (`findings/web-build-20260909.md` §15.4): on every direct-connect path —
+//! the capture probe, `--server`, the browser — the ground material was
+//! created on the first world frame and the far mountain drew exactly the
+//! static this header describes, with the chains sitting in images nothing
+//! sampled; the menu path hid it, because a player reading the menu gives the
+//! chains their frames before a world exists. The ground is out of it by
+//! construction now: `textures::stack_ground` builds its arrays after this
+//! pass, from images that are born chained (`textures::layer_ready`).
+//! **Every `StandardMaterial` that binds a `textures/` map is still exposed**
+//! whenever it is created before its maps' chains land — props on those same
+//! paths — and the fix is one of two shapes: create after `layer_ready`, as
+//! the ground does, or touch each material holding the image after [`drain`],
+//! which forces the re-prepare. `NOW.md` §0web carries it.
 
 use bevy::asset::AssetId;
 use bevy::image::Image;

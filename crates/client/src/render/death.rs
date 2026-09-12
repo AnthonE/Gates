@@ -25,7 +25,7 @@ use crate::ui::death::{note, rows, sentence, wake_at, woke, Death, Wake};
 use crate::ui::map;
 
 use super::hud::Toast;
-use super::menu::Screen;
+use super::screen::Screen;
 use super::{ui, Net, WorldId};
 
 /// Everything this screen owns.

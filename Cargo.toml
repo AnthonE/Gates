@@ -38,6 +38,25 @@ version = "0.8.0"
 lto = "thin"
 codegen-units = 1
 
+# The browser build. `ci/build_web.sh` builds `client-web` with this profile
+# and nothing else does: a page is DOWNLOADED and then compiled by the browser,
+# so bytes are the cost a native release never pays. `--release` gave 73 MB of
+# wasm (13.8 MB gzipped) on 2026-09-12; what this changes and what each buys
+# is measured in `findings/web-build-20260909.md` §16 — do not tune it by
+# feel, rerun the script and read the size line it prints.
+[profile.web]
+inherits = "release"
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+# `true` (symbols), not `"debuginfo"`: the `name` section alone was 32.9 MB
+# of a 70.3 MB module, measured — a browser panic keeps its message and its
+# file:line through `console_error_panic_hook`, and only the frames below it
+# turn into `wasm-function[N]`. Build with `--release` instead when a stack
+# with names in it is the thing being read.
+strip = true
+panic = "abort"
+
 # **Dependencies carry no debug info, and this is the disk fix.**
 #
 # Measured 2026-08-06: `target/debug/deps` was **30G**, of which **16.9G was

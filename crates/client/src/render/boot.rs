@@ -41,30 +41,15 @@
 
 use bevy::prelude::*;
 
-use super::menu::{Connecting, Menu, Screen};
+use super::screen::{Connecting, Direct, Menu, Screen, Who};
 use super::{hub, icons, ui};
-use crate::elo::{Elo, Player};
+use crate::elo::Elo;
 use crate::ui::boot::{Boot, Next};
-
-/// Who the launcher says is playing.
-///
-/// **Moved off `gates.rs` and into a state**, which is the whole point of
-/// this module: it used to be resolved before the window by a blocking
-/// socket call. Not gameplay state — nothing in the sim reads it and nothing
-/// can — so "Bevy draws, it does not decide" is untouched.
-#[derive(Resource)]
-pub struct Who(pub Player);
-
-impl Default for Who {
-    fn default() -> Self {
-        Self(Player::Anonymous)
-    }
-}
 
 /// The splash's own state: the model, plus the in-flight handshake.
 ///
 /// Non-send-free on purpose — the receiver is tokio's for the reason
-/// `menu::Menu` states about its own: a `Resource` must be `Send + Sync` and
+/// `screen::Menu` states about its own: a `Resource` must be `Send + Sync` and
 /// `std`'s `Receiver` is not `Sync`.
 #[derive(Resource)]
 pub struct Warmup {
@@ -344,9 +329,3 @@ pub fn teardown(
     // never ends looks exactly like a screen that is still working.
     info!("gates: warmed up - leaving the splash");
 }
-
-/// The address this binary was started with. Held as a resource so the splash
-/// can hand it to the connect screen without reaching into the plugin's own
-/// construction arguments.
-#[derive(Resource)]
-pub struct Direct(pub String);

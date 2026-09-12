@@ -29,7 +29,7 @@ use bevy::tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
 use sim_core::terrain::{self, SEA_LEVEL};
 
 use super::ground_splat::{GroundMaterial, GroundSplat};
-use super::textures::GroundMaps;
+use super::textures::GroundArrays;
 use super::{Eye, WorldEntity, WorldId};
 
 /// Near-chunk edge, metres.
@@ -483,7 +483,7 @@ impl Ring {
 /// forces the whole `ExtendedMaterial` non-bindless — see `ground_splat.rs`.
 fn ground_material(
     materials: &mut Assets<GroundMaterial>,
-    maps: &GroundMaps,
+    arrays: &GroundArrays,
 ) -> Handle<GroundMaterial> {
     materials.add(ExtendedMaterial {
         base: StandardMaterial {
@@ -522,7 +522,7 @@ fn ground_material(
             reflectance: super::fresnel::DIELECTRIC,
             ..default()
         },
-        extension: GroundSplat::new(maps),
+        extension: GroundSplat::new(arrays),
     })
 }
 
@@ -1037,27 +1037,41 @@ pub fn heightfield(
 }
 
 /// Stream the near ring, and build the far mesh once.
+///
+/// `arrays` is `Option` because `textures::stack_ground` builds it a few
+/// frames after the photographs land, and the far mesh's ~190 ms build is
+/// queued on the first frame regardless — the two overlap. What waits on the
+/// arrays is the LANDING: a mesh is spawned only once there is a material to
+/// draw it with, so `far_done` — the flag that ends the loading screen — keeps
+/// meaning "the island is up and drawable", not "queued" and not "up but
+/// untextured". A finished build sits in its task until then, and the tasks
+/// are bounded by the ring.
 pub fn stream(
     mut commands: Commands,
     mut ring: ResMut<Ring>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<GroundMaterial>>,
     world: Res<WorldId>,
-    maps: Res<GroundMaps>,
+    arrays: Option<Res<GroundArrays>>,
     eye: Res<Eye>,
 ) {
-    let ground = ring
-        .ground
-        .get_or_insert_with(|| ground_material(&mut materials, &maps))
-        .clone();
+    let ground = match ring.ground.clone() {
+        Some(g) => Some(g),
+        None => arrays.as_deref().map(|a| {
+            let g = ground_material(&mut materials, a);
+            ring.ground = Some(g.clone());
+            g
+        }),
+    };
     let pool = AsyncComputeTaskPool::get();
     let (seed, haven) = (world.seed, world.haven);
 
     // ── Land whatever finished ────────────────────────────────────────────
     //
     // Polled at the TOP, so a mesh that completed while the last frame was
-    // drawn reaches the world on this one rather than a frame later.
-    if let Some(task) = ring.far_task.as_mut() {
+    // drawn reaches the world on this one rather than a frame later. Only
+    // with a material in hand: see the doc comment.
+    if let (Some(ground), Some(task)) = (&ground, ring.far_task.as_mut()) {
         if let Some(mesh) = block_on(future::poll_once(task)) {
             ring.far_task = None;
             commands.spawn((
@@ -1095,6 +1109,9 @@ pub fn stream(
     // be a per-frame heap allocation — the exact thing the rest of this pass
     // took out of `decal::fade` and `ghost::track`.
     for _ in 0..CHUNK_LANDS_PER_FRAME {
+        let Some(ground) = &ground else {
+            break;
+        };
         let Some(key) = ring
             .near_tasks
             .iter()

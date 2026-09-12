@@ -49,7 +49,7 @@ use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use crate::report::{self, Build, Kind, Netstat, Place, Report, Vitals, TITLE_MAX};
 use crate::shot;
 
-use super::menu::Screen;
+use super::screen::Screen;
 use super::Net;
 
 /// The key. `F7` because the two function keys this client already binds are
@@ -196,8 +196,8 @@ pub fn keys(
     mut commands: Commands,
     mut reports: ResMut<Reports>,
     net: Option<NonSend<Net>>,
-    who: Option<Res<super::boot::Who>>,
-    direct: Option<Res<super::boot::Direct>>,
+    who: Option<Res<super::screen::Who>>,
+    direct: Option<Res<super::screen::Direct>>,
     screen: Res<State<Screen>>,
     time: Res<Time>,
     mut keyboard: ResMut<ButtonInput<KeyCode>>,
@@ -329,8 +329,8 @@ fn file(
     commands: &mut Commands,
     reports: &mut Reports,
     net: Option<&Net>,
-    who: Option<&super::boot::Who>,
-    direct: Option<&super::boot::Direct>,
+    who: Option<&super::screen::Who>,
+    direct: Option<&super::screen::Direct>,
     screen: &State<Screen>,
 ) -> Option<std::path::PathBuf> {
     let _ = commands;

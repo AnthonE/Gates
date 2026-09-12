@@ -35,34 +35,23 @@ use client::render::ground_splat::GroundMaterial;
 use client::render::terrain_mesh::{
     self, Chunk, Ring, Static, CHUNK_BUILDS_PER_FRAME, RING_CHUNKS,
 };
-use client::render::textures::{GroundMaps, MapSet};
+use client::render::textures::GroundArrays;
 use client::render::{Eye, WorldId};
 
 /// The seed the shard ships and every capture is shot on.
 const SEED: u64 = 20260731;
 
-fn maps() -> GroundMaps {
+fn arrays() -> GroundArrays {
     // Handles, never files: `stream` puts them in a material and nothing here
-    // renders, so a default handle is as good as a loaded image and costs no
-    // asset server round trip.
-    let set = || MapSet {
+    // renders, so a default handle is as good as a stacked array and costs no
+    // asset server round trip. Present from the first frame, which is what
+    // makes every claim below about the MESHES: `stream` lands nothing until
+    // this resource exists (`tests/ground_arrays.rs` is where that wait is
+    // gated), so a fixture without it would measure the wait and not the ring.
+    GroundArrays {
         albedo: Handle::default(),
         normal: Handle::default(),
-        rough: Handle::default(),
-        // `Some`, like every real ground role. This said `None` for one day
-        // between the AO slot landing on `MapSet` and the ground shader
-        // actually sampling it, with a comment asserting the shader did not —
-        // and `GroundSplat::new` panics on a ground role with no AO map, on
-        // purpose, because an unresolved handle in that slot samples BLACK and
-        // would draw the whole island in shadow. So the fixture has to carry
-        // one, exactly as it carries the other three.
-        ao: Some(Handle::default()),
-    };
-    GroundMaps {
-        sand: set(),
-        grass: set(),
-        litter: set(),
-        rock: set(),
+        rough_ao: Handle::default(),
     }
 }
 
@@ -73,7 +62,7 @@ fn app() -> App {
     app.init_asset::<Image>();
     app.init_asset::<GroundMaterial>();
     app.insert_resource(WorldId::new(SEED));
-    app.insert_resource(maps());
+    app.insert_resource(arrays());
     app.init_resource::<Ring>();
     app.insert_resource(Eye {
         pos: Vec3::new(1024.0, 10.0, 1024.0),

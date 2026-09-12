@@ -2135,7 +2135,7 @@ pub fn spawn_slot(
             Topple { t: -1.0 },
             Mesh3d(mesh),
             MeshMaterial3d(material),
-            lod.near.clone(),
+            tree::lod_band(&lod.near),
             transform,
         ));
     } else if harvestable {
@@ -2204,7 +2204,7 @@ pub fn spawn_slot(
             Topple { t: -1.0 },
             Mesh3d(a.needles[variant].clone()),
             MeshMaterial3d(a.needle[tint].clone()),
-            lod.near.clone(),
+            tree::lod_band(&lod.near),
             transform,
         ));
     }
@@ -2228,7 +2228,7 @@ pub fn spawn_slot(
             Topple { t: -1.0 },
             Mesh3d(a.impostors[variant].clone()),
             MeshMaterial3d(a.foliage[tint].clone()),
-            lod.far.clone(),
+            tree::lod_band(&lod.far),
             transform,
         ));
     }

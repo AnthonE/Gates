@@ -19,7 +19,7 @@
 use bevy::prelude::*;
 use client::args::{self, Parsed};
 use client::elo::Player;
-use client::render::boot::Who;
+use client::render::screen::Who;
 use client::render::{GatesRenderPlugin, Net, Rt, Start, WorldId};
 use client::{client_endpoint, Session};
 

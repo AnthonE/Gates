@@ -40,7 +40,7 @@ use sim_core::terrain;
 
 use crate::discord::{self, Activity, Addr, Link, Place, ShardName, State};
 
-use super::menu::{Connecting, Menu, Screen};
+use super::screen::{Connecting, Menu, Screen};
 use super::settings::Settings;
 use super::{Eye, WorldId};
 
@@ -50,7 +50,7 @@ use super::{Eye, WorldId};
 /// build costs nothing per frame rather than a branch per frame.
 /// **A non-send resource, and not by preference**: [`Link`] holds a
 /// `std::sync::mpsc::Receiver`, which is `Send` but `!Sync`, so it cannot be
-/// a `Resource`. `menu::Connecting` is a non-send resource in this module
+/// a `Resource`. `screen::Connecting` is a non-send resource in this module
 /// for the same class of reason, and the frame is single-threaded for both.
 pub struct Presence(Link);
 

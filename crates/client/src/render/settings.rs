@@ -49,8 +49,8 @@ use super::quality;
 use crate::config::{self, Persisted, Quality};
 use crate::ui::servers::Favourites;
 
-use super::menu::Screen;
 use super::rig::{EyeCam, FOV_DEG};
+use super::screen::Screen;
 use super::ui;
 
 /// Bounds and steps for the two numeric settings (`DECISIONS.md` §open,
@@ -432,7 +432,7 @@ pub fn load() -> (Settings, Favourites, Option<Disk>) {
 /// could take one.
 pub fn save_on_change(
     settings: Res<Settings>,
-    browse: Res<super::menu::Browse>,
+    browse: Res<super::screen::Browse>,
     disk: Option<ResMut<Disk>>,
 ) {
     let Some(mut disk) = disk else {

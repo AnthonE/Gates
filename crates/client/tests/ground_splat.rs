@@ -2,10 +2,11 @@
 //! GPU boundary.
 //!
 //! Four identities now carry four photographs (`render/ground_splat.rs` +
-//! `assets/shaders/ground_splat.wgsl`), which puts arithmetic in a place no
-//! Rust test can execute. So this gate checks the three things that CAN be
-//! checked without a GPU, and each one is a real failure that has a way of
-//! going unnoticed:
+//! `assets/shaders/ground_splat.wgsl`) — stacked into three texture arrays
+//! since 2026-09-12 (`tests/ground_arrays.rs` gates the stacking) — which puts
+//! arithmetic in a place no Rust test can execute. So this gate checks the
+//! three things that CAN be checked without a GPU, and each one is a real
+//! failure that has a way of going unnoticed:
 //!
 //! 1. **The gains are the shipped files' own.** They are constants in Rust and
 //!    they describe four `.jpg`s; swap a source and the constant is silently
@@ -159,26 +160,15 @@ fn the_shader_and_the_rust_side_bind_the_same_slots() {
     // What `GroundSplat`'s `AsBindGroup` derive declares, in the order the
     // struct declares it. This list is the thing under test — if you add a
     // texture to the struct, this fails until it is added here AND to the
-    // shader, which is the point.
+    // shader, which is the point. (Sixteen `texture_2d`s at 101–117 until
+    // 2026-09-12; three `texture_2d_array`s since, for the reason
+    // `the_ground_binds_three_sampled_textures` states.)
     let want: Vec<(u32, &str)> = vec![
         (100, "splat"),
-        (101, "albedo_sand"),
-        (102, "albedo_grass"),
-        (103, "albedo_litter"),
-        (104, "albedo_rock"),
-        (105, "normal_sand"),
-        (106, "normal_grass"),
-        (107, "normal_litter"),
-        (108, "normal_rock"),
-        (109, "ground_sampler"),
-        (110, "rough_sand"),
-        (111, "rough_grass"),
-        (112, "rough_litter"),
-        (113, "rough_rock"),
-        (114, "ao_sand"),
-        (115, "ao_grass"),
-        (116, "ao_litter"),
-        (117, "ao_rock"),
+        (101, "albedo_maps"),
+        (102, "ground_sampler"),
+        (103, "normal_maps"),
+        (104, "rough_ao_maps"),
     ];
 
     // ── And the RUST struct, which this gate never actually read ────────
@@ -191,8 +181,8 @@ fn the_shader_and_the_rust_side_bind_the_same_slots() {
     // `CLAUDE.md`'s hand-kept-mirror trap exactly, and the whole failure this
     // suite exists to prevent is a binding index nothing announces at runtime.
     //
-    // Indices only, not names: binding 109 is the shared sampler, which the
-    // derive hangs off the `albedo_rock` FIELD while the shader calls it
+    // Indices only, not names: binding 102 is the shared sampler, which the
+    // derive hangs off the `albedo` FIELD while the shader calls it
     // `ground_sampler` — the two sides legitimately disagree about that one
     // name and agreeing about the number is the thing that matters.
     let rust_src = std::fs::read_to_string(concat!(
@@ -207,10 +197,16 @@ fn the_shader_and_the_rust_side_bind_the_same_slots() {
                 .match_indices(attr)
                 .map(|(i, _)| (i, &rust_src[i + attr.len()..]))
         }) {
+            // The index is the first argument; `#[texture(101, dimension =
+            // "2d_array")]` carries more after the comma and the number is
+            // still the number.
             let num = rest
                 .split_once(')')
                 .unwrap_or_else(|| panic!("unterminated {attr} in ground_splat.rs"))
-                .0;
+                .0
+                .split(',')
+                .next()
+                .unwrap_or_default();
             rust_slots.push(
                 num.trim()
                     .parse()
@@ -243,15 +239,10 @@ fn the_shader_and_the_rust_side_bind_the_same_slots() {
 
 /// Leg 2b. The sampler count stays at one, however many maps arrive.
 ///
-/// Twelve maps with a sampler each would put this bind group at 24 samplers in
+/// Sixteen maps with a sampler each would put this bind group at 32 samplers in
 /// the fragment stage before `StandardMaterial`'s own are counted, far over the
 /// 16 a downlevel adapter guarantees. That is a runtime validation failure on a
 /// stricter adapter and nothing else in the tree would catch it.
-///
-/// **This is the axis that binds, and the roughness slice is the proof.** It
-/// added four textures and zero samplers; textures are cheap here because Bevy
-/// asks the adapter for its own limits, and samplers are the one with a hard
-/// floor under them. A future map set must arrive the same way.
 #[test]
 fn every_map_shares_one_sampler() {
     let src = std::fs::read_to_string(SHADER).expect("shader");
@@ -259,6 +250,44 @@ fn every_map_shares_one_sampler() {
     assert_eq!(
         n, 1,
         "{n} samplers declared in ground_splat.wgsl — it must stay 1"
+    );
+}
+
+/// Leg 2c. The ground binds three sampled textures, all of them arrays.
+///
+/// **Textures were "the cheap axis" here until the browser said otherwise.**
+/// `max_sampled_textures_per_shader_stage` is 16 on WebGL2 — counted per
+/// stage and summed over every bind group in the pipeline layout, so the
+/// view's shadow and environment maps and `StandardMaterial`'s six slots are
+/// in the same budget as this material. Sixteen `texture_2d`s put the
+/// material group alone at 22 and wgpu refused the pipeline layout before a
+/// frame (2026-09-11). Three arrays is what fits with margin; a fourth
+/// sampled texture here is the browser question re-opened, and a `texture_2d`
+/// is one identity drawn outside its family's array — either fails here
+/// rather than in a browser nobody on the gate box is running.
+#[test]
+fn the_ground_binds_three_sampled_textures() {
+    let src = std::fs::read_to_string(SHADER).expect("shader");
+    let code = || {
+        src.lines()
+            .map(|l| l.split("//").next().unwrap_or(""))
+            .filter(|l| l.contains("@binding("))
+    };
+    let arrays = code()
+        .filter(|l| l.contains(": texture_2d_array<f32>;"))
+        .count();
+    let planes = code().filter(|l| l.contains(": texture_2d<f32>;")).count();
+    let others = code()
+        .filter(|l| l.contains(": texture_") && !l.contains("texture_2d_array<f32>;"))
+        .count();
+    assert_eq!(
+        (arrays, planes, others),
+        (3, 0, 0),
+        "ground_splat.wgsl declares {arrays} texture_2d_array, {planes} \
+         texture_2d and {others} other texture bindings — it must be exactly \
+         three arrays and nothing else. WebGL2 holds the whole fragment stage \
+         to 16 sampled textures across every bind group, and three is what \
+         leaves the view's and StandardMaterial's share."
     );
 }
 

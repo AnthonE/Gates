@@ -7,8 +7,8 @@
 //! location, so a chosen one would group with real panics under an empty
 //! location and quietly poison the only duplicate key that is worth anything.
 
-use client::render::menu::Screen;
 use client::render::report::{screen_slug, KINDS};
+use client::render::screen::Screen;
 use client::report::Kind;
 
 #[test]

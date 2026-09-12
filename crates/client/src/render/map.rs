@@ -19,7 +19,7 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
 use crate::ui::map::{self, MarkKind, GRID_COLS, GRID_LETTERS};
 
-use super::menu::Screen;
+use super::screen::Screen;
 use super::{ui, Net, WorldId};
 
 /// Map texture resolution. 512 over a 2048 m island is 4 m a pixel — finer

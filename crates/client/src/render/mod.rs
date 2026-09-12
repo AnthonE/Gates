@@ -26,6 +26,12 @@ pub mod bodies;
 // The boot splash. The window is the first thing a double-click gets now, and
 // the launcher handshake and connect happen behind it as states rather than
 // before it as preconditions.
+// **Desktop only.** This module reaches a local elo launcher over a unix
+// socket / fetches over a blocking one / owns a tokio runtime — none of
+// which a page has. In a browser the PAGE is the menu: it owns the shard
+// address, the wallet and the join, and hands the Bevy app a live
+// `Session`. See `render/screen.rs` for the half both targets keep.
+#[cfg(not(target_arch = "wasm32"))]
 pub mod boot;
 pub mod capture;
 pub mod icons;
@@ -66,6 +72,12 @@ pub mod tracer;
 // Generated held-item geometry: the meshes behind `ui::hold::HeldSrc::Gen`
 // rows and the viewmodel's two-primitive stand-in tool.
 pub mod heldgen;
+// **Desktop only.** This module reaches a local elo launcher over a unix
+// socket / fetches over a blocking one / owns a tokio runtime — none of
+// which a page has. In a browser the PAGE is the menu: it owns the shard
+// address, the wallet and the join, and hands the Bevy app a live
+// `Session`. See `render/screen.rs` for the half both targets keep.
+#[cfg(not(target_arch = "wasm32"))]
 pub mod hub;
 pub mod hud;
 pub mod impact;
@@ -74,8 +86,17 @@ pub mod loading;
 // The island map. Painted from the same `terrain::splat_from` the ground
 // blends by, so the map and the world are one worldgen seen two ways.
 pub mod map;
+// **Desktop only.** This module reaches a local elo launcher over a unix
+// socket / fetches over a blocking one / owns a tokio runtime — none of
+// which a page has. In a browser the PAGE is the menu: it owns the shard
+// address, the wallet and the join, and hands the Bevy app a live
+// `Session`. See `render/screen.rs` for the half both targets keep.
+#[cfg(not(target_arch = "wasm32"))]
 pub mod menu;
 pub mod mobs;
+/// The app's state machine and the resources that carry it — shared by every
+/// screen, and by targets that have no screens at all. See the module docs.
+pub mod screen;
 // The mip chains for `assets/textures/`. Bevy builds none for an ordinary
 // image format, and a one-level photograph minified across the island is the
 // static the operator saw. Derived off `AssetEvent::Added`, not a list.
@@ -121,7 +142,10 @@ pub mod anim;
 pub mod verbs;
 pub mod viewmodel;
 
-pub use menu::{Menu, Rt, Screen};
+pub use screen::{Menu, Screen};
+// `Rt` is the tokio runtime and stays native-only; see `screen`'s header.
+#[cfg(not(target_arch = "wasm32"))]
+pub use menu::Rt;
 pub use settings::Settings;
 
 /// Marks an entity the WORLD owns, as opposed to one a menu owns.
@@ -416,10 +440,8 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<structures::StructRing>()
             .init_resource::<bodies::Bodies>()
             .init_resource::<mobs::Herd>()
-            .init_resource::<menu::Picked>()
-            .init_resource::<menu::Browse>()
-            .init_resource::<hub::HubState>()
-            .init_resource::<boot::Who>()
+            .init_resource::<screen::Browse>()
+            .init_resource::<screen::Who>()
             .init_resource::<pause::Chosen>()
             .init_resource::<viewmodel::Motion>()
             .init_resource::<verbs::Aimed>()
@@ -441,7 +463,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<audio::Sound>()
             .init_resource::<audio::LastHp>()
             .init_resource::<water::Sea>()
-            .insert_non_send_resource(menu::Connecting::default());
+            .insert_non_send_resource(screen::Connecting::default());
 
         // Settings come off disk ONCE, here — before the first frame, so the
         // fov, vsync and volumes a player picked last run are what the first
@@ -456,7 +478,7 @@ impl Plugin for GatesRenderPlugin {
             // The starred shards come off the same file and land on the
             // browser's own resource — a favourite is not a knob, and
             // `settings::save_on_change` is the one writer for both.
-            app.insert_resource(menu::Browse {
+            app.insert_resource(screen::Browse {
                 favourites,
                 ..default()
             });
@@ -497,8 +519,12 @@ impl Plugin for GatesRenderPlugin {
             &self.start.direct,
             self.start.servers_url.clone(),
         ))
-        .insert_resource(boot::Direct(self.start.direct.clone()))
-        .insert_resource(boot::Warmup::new(
+        .insert_resource(screen::Direct(self.start.direct.clone()));
+        // `Warmup` is the splash's own state and the splash is desktop-only:
+        // what it warms is a blocking `Elo::discover` round trip. A page has
+        // no launcher to greet, and it has already joined before Bevy starts.
+        #[cfg(not(target_arch = "wasm32"))]
+        app.insert_resource(boot::Warmup::new(
             self.start.chosen,
             self.start.identity.clone(),
             // A capture run has already resolved its player and must not
@@ -506,6 +532,10 @@ impl Plugin for GatesRenderPlugin {
             // depends on what else is running on the box is not a gate.
             self.start.no_launcher || self.start.connected,
         ));
+        // The two resources the desktop front end owns outright.
+        #[cfg(not(target_arch = "wasm32"))]
+        app.init_resource::<menu::Picked>()
+            .init_resource::<hub::HubState>();
         // The direct address is also what the loading and pause screens name,
         // and on a capture start nothing has been "picked" — so the field
         // those screens read is seeded here rather than left empty. Every
@@ -514,7 +544,7 @@ impl Plugin for GatesRenderPlugin {
         if self.start.connected {
             if let Some(mut c) = app
                 .world_mut()
-                .get_non_send_resource_mut::<menu::Connecting>()
+                .get_non_send_resource_mut::<screen::Connecting>()
             {
                 c.addr = self.start.direct.clone();
             }
@@ -575,54 +605,39 @@ impl Plugin for GatesRenderPlugin {
         // has the whole argument for compiling them in.
         ui::build_fonts(app);
 
-        // ---- the boot splash -----------------------------------------
-        // The first screen a double-click gets. `update` is the only system
-        // that can leave it, and it leaves on observable state — see `boot`.
-        app.add_systems(OnEnter(Screen::Boot), (boot::begin_greet, boot::setup))
-            .add_systems(OnExit(Screen::Boot), boot::teardown)
-            .add_systems(Update, boot::update.run_if(in_state(Screen::Boot)));
+        // ---- the desktop front end -----------------------------------
+        // The splash, the menu and the connect screen, in one guarded call
+        // rather than twenty `cfg`s. A browser reaches none of these states:
+        // the page owns the shard address, the wallet and the join, and the
+        // app starts already in `Loading` with a live `Session` (see the
+        // `insert_state` below).
+        #[cfg(not(target_arch = "wasm32"))]
+        add_desktop_front_end(app);
 
-        // ---- the menu ------------------------------------------------
-        // `world_teardown` first: entering the menu from a live world is the
-        // disconnect path, and the menu must not be built over a world that
-        // is still drawing behind it.
-        app.add_systems(
-            OnEnter(Screen::Menu),
-            (world_teardown, menu::begin_fetch, menu::setup).chain(),
-        )
-        .add_systems(OnExit(Screen::Menu), menu::teardown)
-        .add_systems(
-            Update,
-            (
-                menu::poll_fetch,
-                // The title manifest, beside the shard list: both are
-                // documents a menu waits on, both raise a dirty flag, and
-                // `menu::rebuild` at the end of this chain is the one redraw.
-                hub::poll,
-                // The count half, after the list half: `poll_fetch` is what
-                // creates the rows a poll addresses by index, and both raise
-                // the one `dirty` flag `rebuild` below acts on.
-                menu::begin_status_poll,
-                menu::poll_status,
-                menu::click,
-                menu::keys,
-                menu::take_pick,
-                // Last, so a click, a keystroke and a landed fetch all reach
-                // the screen on the frame they happen rather than the next.
-                menu::rebuild,
-            )
-                .chain()
-                .run_if(in_state(Screen::Menu)),
-        )
-        .add_systems(
-            OnEnter(Screen::Connecting),
-            (menu::begin_connect, menu::connecting_screen),
-        )
-        .add_systems(OnExit(Screen::Connecting), menu::teardown)
-        .add_systems(
-            Update,
-            menu::poll_connect.run_if(in_state(Screen::Connecting)),
-        );
+        // ⚠ **Two runtime gaps this cut creates, neither of which any compiler
+        // or gate in this repo can see.** Written here rather than in a doc
+        // because this is the line that made them true, and both are owed
+        // before a browser build is playable rather than merely drawing:
+        //
+        // 1. `Screen::Boot` is the `#[default]` and `boot::update` is the only
+        //    system that leaves it — so on wasm32 the app would sit in `Boot`
+        //    forever with nothing drawing. The web entry point must
+        //    `insert_state(Screen::Loading)`, which it can, because the page
+        //    has already joined and holds a live `Session` before Bevy starts.
+        //    Nothing instantiates this plugin on wasm32 yet, which is the only
+        //    reason it is not already a bug.
+        //
+        // 2. `Screen::Menu` becomes a DEAD END. Three systems a browser build
+        //    keeps still send players there — `loading::update` on Escape,
+        //    `pause`'s quit-to-menu and `disconnected`'s Back — and on this
+        //    target nothing draws it, so a player who leaves the world gets a
+        //    black screen that reads as a crash. It is not enough to point
+        //    them elsewhere either: the `Session` is ONE-SHOT here, because
+        //    `world_teardown` drops `Net`, which drops the `WebTransport`, and
+        //    a page cannot re-dial without the wallet handshake it did before
+        //    Bevy started. The honest answer is the architecture's own — the
+        //    page is the menu, so leaving the world hands control back to the
+        //    PAGE rather than to another Bevy screen.
 
         // ---- the loading screen --------------------------------------
         // `loading::update` runs AFTER the streamers (`Stream`), so the bar
@@ -778,6 +793,11 @@ impl Plugin for GatesRenderPlugin {
                     // screen.
                     mipmap::enqueue,
                     mipmap::drain.after(mipmap::enqueue),
+                    // The ground's sixteen photographs become three texture
+                    // arrays once each has its chain — after `drain`, so a
+                    // chain finished this frame is stacked this frame, and
+                    // the arrays exist before a world is ever entered.
+                    textures::stack_ground.after(mipmap::drain),
                 ),
             )
             .init_resource::<mipmap::Pending>()
@@ -945,6 +965,16 @@ impl Plugin for GatesRenderPlugin {
         // streamer, and a sea that froze while the Esc menu was up would
         // resume with a visible jump in every wave.
         .add_systems(Update, water::animate.run_if(world_running))
+        // A browser's tree LOD, by hand: WebGL2 cannot bind the table
+        // `VisibilityRange` dithers by, so no tree part carries one there and
+        // this swaps the near pair for the hull by distance (`tree::band`).
+        .add_systems(
+            Update,
+            tree::swap_by_distance
+                .after(props::stream)
+                .run_if(|| cfg!(target_arch = "wasm32"))
+                .run_if(world_running),
+        )
         // Input writes what the sim reads, so it runs on the two screens where
         // the player is still *in* the world and nowhere else: a player
         // reading a settings pane must not be swinging an axe.
@@ -1233,4 +1263,64 @@ impl Plugin for GatesRenderPlugin {
             );
         }
     }
+}
+
+/// The splash, the menu and the connect screen — every screen a player sees
+/// BEFORE there is a world, and every one of them desktop-only.
+///
+/// Lifted out of `build` whole so the browser cut is one decision at one call
+/// site. Each system here reaches something a page does not have: `boot`
+/// greets a local launcher over a unix socket, `menu` fetches a shard list
+/// over a blocking one and owns the tokio runtime the connect future runs on,
+/// and `hub` opens links through the launcher.
+#[cfg(not(target_arch = "wasm32"))]
+fn add_desktop_front_end(app: &mut App) {
+    // ---- the boot splash -----------------------------------------
+    // The first screen a double-click gets. `update` is the only system
+    // that can leave it, and it leaves on observable state — see `boot`.
+    app.add_systems(OnEnter(Screen::Boot), (boot::begin_greet, boot::setup))
+        .add_systems(OnExit(Screen::Boot), boot::teardown)
+        .add_systems(Update, boot::update.run_if(in_state(Screen::Boot)));
+
+    // ---- the menu ------------------------------------------------
+    // `world_teardown` first: entering the menu from a live world is the
+    // disconnect path, and the menu must not be built over a world that
+    // is still drawing behind it.
+    app.add_systems(
+        OnEnter(Screen::Menu),
+        (world_teardown, menu::begin_fetch, menu::setup).chain(),
+    )
+    .add_systems(OnExit(Screen::Menu), menu::teardown)
+    .add_systems(
+        Update,
+        (
+            menu::poll_fetch,
+            // The title manifest, beside the shard list: both are
+            // documents a menu waits on, both raise a dirty flag, and
+            // `menu::rebuild` at the end of this chain is the one redraw.
+            hub::poll,
+            // The count half, after the list half: `poll_fetch` is what
+            // creates the rows a poll addresses by index, and both raise
+            // the one `dirty` flag `rebuild` below acts on.
+            menu::begin_status_poll,
+            menu::poll_status,
+            menu::click,
+            menu::keys,
+            menu::take_pick,
+            // Last, so a click, a keystroke and a landed fetch all reach
+            // the screen on the frame they happen rather than the next.
+            menu::rebuild,
+        )
+            .chain()
+            .run_if(in_state(Screen::Menu)),
+    )
+    .add_systems(
+        OnEnter(Screen::Connecting),
+        (menu::begin_connect, menu::connecting_screen),
+    )
+    .add_systems(OnExit(Screen::Connecting), menu::teardown)
+    .add_systems(
+        Update,
+        menu::poll_connect.run_if(in_state(Screen::Connecting)),
+    );
 }
