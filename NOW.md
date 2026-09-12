@@ -2802,8 +2802,10 @@ What remains, in order:
    devicePixelRatio 2 draws nothing.
 6. **Models are ABSENT** until a web asset variant exists — 47 glTF loads fail
    as `format requires transcoding: Uastc(Rgb)`.
-7. **77 MB of wasm** (13.8 MB gzipped) for the render tier against 512 KB
-   headless — profile, strip and `wasm-opt` before anyone is asked to load it.
+7. **34 MB of wasm, 8.6 MB gzipped** (findings §16) — down from 77 / 13.8
+   with the `web` profile, and 29 MB of it is code. `wasm-opt` (binaryen is
+   not on this box) and the feature trim §0x owes the desktop are what is
+   left; the 92 MB of staged assets is the larger download.
 8. The audio bank's 11.7 MB WAV synthesis inside `Plugin::build` stalls the
    tab; pointer lock (`document.pointerLockElement`) for the look.
 

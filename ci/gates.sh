@@ -242,26 +242,24 @@ $NICE cargo build -p sim-core -p protocol -p client-core --release --target wasm
 echo "== gate: browser client (client + client-web -> wasm32, --no-default-features)"
 $NICE cargo clippy -p client-web --target wasm32-unknown-unknown --all-targets -- -D warnings \
   || fail "clippy (browser client)"
-$NICE cargo build -p client-web --release --target wasm32-unknown-unknown \
+# `--profile web` — the profile `ci/build_web.sh` ships (root `Cargo.toml`), so
+# what this gate links is the module a page loads and not a sibling of it.
+$NICE cargo build -p client-web --profile web --target wasm32-unknown-unknown \
   || fail "browser client build"
 
-# **The RENDERER for the browser, and it is a different configuration from the
-# line above.** `client-web` resolves `client` with `default-features = false`
-# and NO `render`, so everything in `crates/client/src/render/` — ~41k lines,
-# the whole Bevy half — is invisible to every other line in this file on this
-# target. Until 2026-09-11 that half did not compile for wasm32 at all; now it
-# does, and an arm nobody compiles is an arm that rots by the second commit.
-# That is this repo's named worst bug class, and `CLAUDE.md` records it firing
-# twice on exactly this seam (a `Verb` variant, then a `connect` signature) —
+# **The RENDERER for the browser, under `--all-targets`.** `client-web` has
+# carried `render` since 2026-09-11 (it hands the session to Bevy in a tab),
+# so the build above already codegens `crates/client/src/render/` — ~41k
+# lines, the whole Bevy half — for wasm32. What that build does not compile is
+# the crate's TEST targets, and a test target is where a `cfg` split shows
+# first: an arm nobody compiles is an arm that rots by the second commit,
+# which is this repo's named worst bug class — `CLAUDE.md` records it firing
+# twice on exactly this seam (a `Verb` variant, then a `connect` signature),
 # both green on `cargo test --workspace` and red only at the Bevy gate.
 #
 # **Clippy and not a build, deliberately.** `cargo check`/clippy type-checks
-# without codegen; a release wasm build of the Bevy graph is ~250 crates and
-# minutes, and it would be paid on every gate run to catch a link error in a
-# crate that links nothing — `client` is an rlib here. The thing that gets
-# broken is a signature, a cfg or an import, and all three are check-time.
-# `client-web` above is what actually links, and when it grows the renderer
-# (`findings/web-build-20260909.md`) it is that line that will codegen it.
+# without codegen; the thing that gets broken here is a signature, a cfg or an
+# import, and all three are check-time. The line above is what links.
 #
 # ⚠ `--all-targets` matters and is why three `#[test]` fns in `elo.rs` and
 # `discord.rs` carry a wasm guard: they exercise the elo launcher, which is a

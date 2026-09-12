@@ -38,15 +38,21 @@ have="$(wasm-bindgen --version | awk '{print $2}')"
   exit 1
 }
 
-echo "== building client-web for wasm32-unknown-unknown"
-cargo build -p client-web --release --target wasm32-unknown-unknown
+# **The `web` profile, not `--release`** (root `Cargo.toml`): a page is
+# downloaded and then compiled by the browser, so bytes are a cost the native
+# release never pays and its profile is tuned for the wrong thing. The size
+# line at the end is the measurement; `findings/web-build-20260909.md` §16
+# records what each profile knob bought.
+echo "== building client-web for wasm32-unknown-unknown (profile: web)"
+cargo build -p client-web --profile web --target wasm32-unknown-unknown
 
 echo "== generating the JS glue into $out"
 rm -rf "$out"
 mkdir -p "$out"
 wasm-bindgen --target web --no-typescript \
+  --remove-producers-section \
   --out-dir "$out" \
-  target/wasm32-unknown-unknown/release/client_web.wasm
+  target/wasm32-unknown-unknown/web/client_web.wasm
 cp crates/client-web/web/index.html "$out/"
 
 # **The assets, staged from `git ls-files` and never from a walk.**
