@@ -3,6 +3,7 @@
 #
 #   ./ci/deploy_shard.sh          # show what would happen, change nothing
 #   ./ci/deploy_shard.sh --go     # actually deploy
+#   ./ci/deploy_shard.sh --go --strand-clients   # deploy a wire published clients cannot speak
 #
 # **This is an OPERATOR ACT** (`CLAUDE.md`: "deploying to the public shard").
 # It is a dry run by default for the same reason `ci/publish.sh` is — the
@@ -43,8 +44,66 @@ UNIT=gates-shard.service
 CFG=shard-public.toml
 HOOK=/etc/letsencrypt/renewal-hooks/deploy/copy-gates-cert.sh
 
-GO=0; [ "${1:-}" = "--go" ] && GO=1
+GO=0; STRAND=0
+for a in "$@"; do
+  case "$a" in --go) GO=1 ;; --strand-clients) STRAND=1 ;; esac
+done
 run() { if [ "$GO" = 1 ]; then echo "+ $*"; "$@" || exit 1; else echo "  would run: $*"; fi; }
+
+echo "== 0. who this wire strands =="
+# ⚠ **A deploy that moves PROTO_VER strands every client already published on
+# the old number, and this script's own verify cannot see it** — the shard
+# comes up, binds, answers status.json and proves its cert, and every player
+# who installed last week is REFUSE_VERSION. That is 2026-09-12: the shard
+# went to 62 for the browser client and both live desktop depots were 61. So
+# read what players actually run — the depot pointers and the page's
+# `current` on the origin — ask each build's commit for its PROTO_VER, and
+# refuse to strand anybody unless told to.
+want=$(grep -oP 'pub const PROTO_VER: u16 = \K[0-9]+' crates/protocol/src/lib.rs)
+report=$(python3 - "$want" <<'PY'
+import json, re, subprocess, sys
+want = sys.argv[1]
+try:
+    out = subprocess.run(
+        ["ssh", "-o", "BatchMode=yes", "morr",
+         "cat /data/apps/scry-data/depots/gates/published.json; echo; "
+         "readlink /data/apps/scry-data/gates-web/current"],
+        capture_output=True, text=True, timeout=30)
+except subprocess.TimeoutExpired:
+    print("UNKNOWN morr did not answer in 30 s"); sys.exit(0)
+if out.returncode != 0:
+    print("UNKNOWN could not read the published clients from morr: " + out.stderr.strip()[:200]); sys.exit(0)
+lines = out.stdout.splitlines()
+try:
+    clients = [("depot " + p, b) for p, b in json.loads(lines[0]).items()]
+except (IndexError, json.JSONDecodeError):
+    print("UNKNOWN published.json did not parse"); sys.exit(0)
+if len(lines) > 1 and lines[1].strip():
+    clients.append(("web page", lines[1].strip()))
+for name, build in clients:
+    m = re.search(r"-g([0-9a-f]{7,40})", build)
+    src = subprocess.run(["git", "show", m.group(1) + ":crates/protocol/src/lib.rs"],
+                         capture_output=True, text=True) if m else None
+    p = re.search(r"pub const PROTO_VER: u16 = (\d+)", src.stdout) if src and src.returncode == 0 else None
+    got = p.group(1) if p else None
+    if got is None:
+        print(f"UNKNOWN {name} {build}: its commit is not in this clone (git fetch)")
+    elif got != want:
+        print(f"STRANDED {name} {build} speaks proto {got}")
+    else:
+        print(f"ok {name} {build} speaks proto {got}")
+PY
+)
+printf '%s\n' "$report" | sed 's/^/  /'
+if printf '%s\n' "$report" | grep -qE '^(STRANDED|UNKNOWN)'; then
+  if [ "$STRAND" = 1 ]; then
+    echo "  !! deploying proto $want over those anyway (--strand-clients) — republish them next"
+  else
+    echo "  !! proto $want would refuse the clients above at the handshake. Deploy anyway"
+    echo "     only on purpose, and republish them after: re-run with --strand-clients."
+    exit 1
+  fi
+fi
 
 echo "== 1. build =="
 if [ "$GO" = 1 ]; then

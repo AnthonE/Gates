@@ -63,6 +63,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shlex
 import subprocess
 import sys
@@ -80,6 +81,8 @@ DEFAULT_DEPOTS = "/data/apps/scry-data/depots"
 DEFAULT_API = "https://elopros.com/api"   # scry.moreright.xyz retired 2026-08-20 (410)
 NOTARY = "0x0C15fA7829458118e3d26229F58FE0443f8b792c"  # ScryNotary, chain 4663
 NOTARY_CHAIN = 4663
+# Where the public shard says which wire it speaks (`server/src/status.rs`, `proto`).
+STATUS_URL = "https://game.elopros.com/gates/status.json"
 
 
 def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
@@ -322,6 +325,34 @@ def notarize(host: str, depots: str, build: str, digest: str, label: str,
         print("   " + out.replace("\n", "\n   "))
 
 
+def refuse_wire_mismatch(url: str, strand: bool) -> None:
+    """A build players install has to speak the wire of the shard they will reach.
+
+    Nothing else relates the two, and the version numbers are deliberately
+    independent (`crates/protocol/src/version.rs`). On 2026-09-12 a shard
+    deploy moved to proto 62 under a live 61 depot and every launcher join
+    became REFUSE_VERSION with every check here green. So this asks the shard,
+    not a doc: its `proto` against the PROTO_VER this tree builds.
+    """
+    src = (Path(__file__).resolve().parent.parent / "crates/protocol/src/lib.rs").read_text()
+    want = int(re.search(r"pub const PROTO_VER: u16 = (\d+)", src).group(1))
+    p = run(["curl", "-s", "--max-time", "15", url])
+    try:
+        live = json.loads(p.stdout).get("proto")
+    except (json.JSONDecodeError, AttributeError):
+        live = None
+    if live == want:
+        print(f"   wire ok: the public shard speaks proto {live}, and so does this build")
+        return
+    why = (f"the public shard ({url}) speaks proto {live} and this build speaks {want}"
+           if live is not None else f"the public shard ({url}) does not report its proto")
+    if strand:
+        print(f"   !! {why} — publishing anyway (--strand)")
+        return
+    sys.exit(f"publish: {why}. A player who installs it cannot join (REFUSE_VERSION). "
+             "Deploy the shard first (ci/deploy_shard.sh), or pass --strand if that is the point.")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--platform", default=depot_mod.PLATFORM, choices=sorted(TARGETS))
@@ -335,6 +366,9 @@ def main() -> int:
                     help="the origin is THIS box — run the steps here, no ssh")
     ap.add_argument("--depots", default=DEFAULT_DEPOTS, help="depot root on the origin")
     ap.add_argument("--api", default=DEFAULT_API, help="public API base to confirm against")
+    ap.add_argument("--status-url", default=STATUS_URL, help="the public shard's status.json")
+    ap.add_argument("--strand", action="store_true",
+                    help="publish even though the public shard speaks another proto")
     a = ap.parse_args()
     if a.local:
         # One assignment, so every step below takes the same road. `ssh()` and
@@ -345,6 +379,7 @@ def main() -> int:
     build = depot_mod.build_id()
     print(f"== {SLUG} {a.platform} · commit {sha} · build {build}"
           + ("  [DRY RUN]" if a.dry_run else ""))
+    refuse_wire_mismatch(a.status_url, a.strand)
 
     refuse_legacy_collision(a.host, a.depots, build, a.platform)
     stage = package(a.platform, do_build=not a.no_build)

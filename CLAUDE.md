@@ -217,6 +217,20 @@ do not rediscover)
   nothing; and `client-core`'s `poll_input` swallows an overflow with
   `.unwrap_or(0)` *after* clearing `input_due`, destroying that tick's input
   silently.
+- **A stub that answers faster than the thing it stands in for passes every
+  deadline, and the handshake had one sized for a machine.** The shard gave
+  the challenge's *signed* reply the same 5 s `HANDSHAKE_TIMEOUT` as the rest
+  of the handshake. A headless run whose stub wallet signed in milliseconds
+  reached the island; the operator's first real MetaMask join, 2026-09-13,
+  died as `stream write: Connection lost.` and left nothing in the shard's
+  log, because the timeout path bumps `handshake_errors` and the stats line
+  never printed it. A person reading a wallet prompt is the slowest party in
+  the handshake, so that step has its own deadline now
+  (`protocol::SIGN_WAIT_SECS`), the page names it when it runs out, and the
+  line prints `handshake errors`. The repro was the same stub told to take
+  12 s (`~/gates-browser-smoke/slow-signer.mjs` on morr). **When a test puts a
+  fast fake where a human goes, make the fake as slow as the human** before
+  believing any timeout it passed.
 - `send_datagram()` (drop-oldest), never `send_datagram_wait()` — a
   congestion stall must cost freshness, not latency.
 - **Quantize both sides** or prediction drifts by rounding: the server

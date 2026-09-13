@@ -649,13 +649,32 @@ impl Session {
             // turns that into a sentence naming an act a page can perform.
             _ => None,
         };
+        // A person signed that, and a person is slow. If the shard gave up
+        // waiting (`protocol::SIGN_WAIT_SECS`) the stream is dead and the
+        // browser's own words are "Connection lost." — true, and no use to
+        // somebody who just approved a wallet prompt. Say what most likely
+        // happened, and keep the browser's words after it.
+        let signed = signature.is_some();
+        let waited = |e: String| {
+            if signed {
+                format!(
+                    "the shard stopped waiting for your wallet: approve the signature within {} s \
+                     of pressing Play, then press Play again ({e})",
+                    protocol::SIGN_WAIT_SECS
+                )
+            } else {
+                e
+            }
+        };
         let len = net::handshake::auth_frame(address, signature, &mut msg)?;
-        net::web::write_frame(&writer, &msg[..len]).await?;
+        net::web::write_frame(&writer, &msg[..len])
+            .await
+            .map_err(waited)?;
 
         let reply = reader
             .next()
             .await
-            .ok_or_else(|| "no handshake reply".to_string())?;
+            .ok_or_else(|| waited("no handshake reply".to_string()))?;
         let welcome = net::handshake::welcome_from(&reply)?;
 
         // **The reader is handed on rather than rebuilt, and that is the one

@@ -73,6 +73,15 @@ pub const SIGNATURE_BYTES: usize = 65;
 /// The server's per-connection nonce. 32 bytes because that is what SIWE
 /// implementations use and there is no reason to be interesting about it.
 pub const NONCE_BYTES: usize = 32;
+/// How long a shard waits for the SIGNED reply to its challenge, in seconds.
+///
+/// A person answers this one, not a machine: the page hands the SIWE text to
+/// a wallet extension and somebody reads it and approves it. The shard used to
+/// give that the same 5 s as the rest of the handshake, and on 2026-09-13 a
+/// browser join with a real MetaMask died as `stream write: Connection lost.`
+/// while a stub wallet that signed in milliseconds sailed through. Shared so
+/// the page can say the number when it runs out. `DECISIONS.md` §open.
+pub const SIGN_WAIT_SECS: u64 = 60;
 
 impl Address {
     /// The all-zero address, which is **a guest and never a player**. A

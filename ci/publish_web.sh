@@ -5,6 +5,7 @@
 #   ./ci/publish_web.sh --no-build       # upload what target/webdist already holds
 #   ./ci/publish_web.sh --dry-run        # everything but the upload and the flip
 #   ./ci/publish_web.sh --host morr      # the origin's ssh alias (default: morr)
+#   ./ci/publish_web.sh --strand         # publish a page the live shard will refuse
 #
 # **An OPERATOR ACT** (CLAUDE.md §loop discipline: publishing the page or the
 # link is never the loop's). The loop can build the page; a person publishes
@@ -38,16 +39,39 @@ HOST="morr"
 ROOT="/data/apps/scry-data/gates-web"
 BUILD=1
 DRY=0
+STRAND=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-build) BUILD=0 ;;
     --dry-run) DRY=1 ;;
     --host) HOST="$2"; shift ;;
+    --strand) STRAND=1 ;;
     --root) ROOT="$2"; shift ;;
     *) echo "unknown flag: $1" >&2; exit 2 ;;
   esac
   shift
 done
+
+# **Refuse a page the public shard cannot talk to**, before the build rather
+# than after it. A page served from elopros.com dials game.elopros.com, and a
+# page on another PROTO_VER is REFUSE_VERSION at the handshake — so ask that
+# shard which wire it speaks (`server/src/status.rs`, `proto`) and compare it
+# with the number this tree builds. Nothing else relates the two: on 2026-09-12
+# a shard deploy stranded the live desktop depots with every check green.
+STATUS_URL="${STATUS_URL:-https://game.elopros.com/gates/status.json}"
+want="$(grep -oP 'pub const PROTO_VER: u16 = \K[0-9]+' crates/protocol/src/lib.rs)"
+live="$(curl -s --max-time 15 "$STATUS_URL" | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("proto", ""))
+except Exception: print("")')"
+if [ "$live" = "$want" ]; then
+  echo "== wire ok: the public shard speaks proto $live, and so does this page"
+elif [ "$STRAND" = 1 ]; then
+  echo "== !! the public shard speaks proto ${live:-<unreported>} and this page $want — publishing anyway (--strand)"
+else
+  echo "the public shard ($STATUS_URL) speaks proto ${live:-<unreported>} and this page speaks $want:" >&2
+  echo "every join would be REFUSE_VERSION. Deploy the shard first (ci/deploy_shard.sh), or pass --strand." >&2
+  exit 1
+fi
 
 OUT="${OUT:-target/webdist}"
 

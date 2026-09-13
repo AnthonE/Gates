@@ -44,7 +44,7 @@ pub mod version;
 
 pub use auth::{
     siwe_message, Address, Auth, Challenge, Signature, ADDRESS_BYTES, DOMAIN_MAX, NONCE_BYTES,
-    SIGNATURE_BYTES, SIWE_MESSAGE_MAX,
+    SIGNATURE_BYTES, SIGN_WAIT_SECS, SIWE_MESSAGE_MAX,
 };
 pub use bits::WireError;
 use bits::{BitReader, BitWriter};

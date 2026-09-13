@@ -11,7 +11,7 @@
 //! (`stats.rs` L5: diagnostics are numbers, not strings):
 //!
 //! ```json
-//! {"players":3,"max_players":100,"tick":123456,
+//! {"players":3,"max_players":100,"proto":62,"tick":123456,
 //!  "dg_out_bytes":0,"dg_out_pkts":0,"dg_in_bytes":0,"dg_in_pkts":0,
 //!  "stream_out_bytes":0,"stream_out_frames":0,
 //!  "stream_in_bytes":0,"stream_in_frames":0,
@@ -28,6 +28,10 @@
 //!   sim loop mirrors from `ShardCore::connected` each tick. A gauge and
 //!   not `joins - leaves`, because that pair legitimately drifts
 //!   (`stats.rs` says how).
+//! - `proto` — `protocol::PROTO_VER`, the wire this shard speaks. What a
+//!   publish reads before shipping a client (`ci/publish_web.sh`,
+//!   `ci/publish_depot.py`): a client on another number is `REFUSE_VERSION`
+//!   at the handshake, and nothing else relates a shard to a published build.
 //! - `max_players` — `sim_core::limits::MAX_PLAYERS`, the cap the shard
 //!   actually enforces (the same source `ci/shardlist.py` pins for the same
 //!   stated reason: a published cap that disagrees with the enforced one is
@@ -215,7 +219,7 @@ fn answer(mut stream: TcpStream, stats: &ShardStats) -> std::io::Result<()> {
     }
     hist.push(']');
     let body = format!(
-        "{{\"players\":{},\"max_players\":{},\"tick\":{},\
+        "{{\"players\":{},\"max_players\":{},\"proto\":{},\"tick\":{},\
          \"dg_out_bytes\":{},\"dg_out_pkts\":{},\
          \"dg_in_bytes\":{},\"dg_in_pkts\":{},\
          \"stream_out_bytes\":{},\"stream_out_frames\":{},\
@@ -227,6 +231,7 @@ fn answer(mut stream: TcpStream, stats: &ShardStats) -> std::io::Result<()> {
          \"favour_clamped\":{},\"favour_disagree\":{}}}",
         ShardStats::get(&stats.players),
         sim_core::limits::MAX_PLAYERS,
+        protocol::PROTO_VER,
         ShardStats::get(&stats.current_tick),
         ShardStats::get(&stats.net_dg_out_bytes),
         ShardStats::get(&stats.net_dg_out_count),

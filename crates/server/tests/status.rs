@@ -240,3 +240,15 @@ fn connected_counts_occupancy() {
     let _ = core.disconnect(0);
     assert_eq!(core.connected(), 1);
 }
+
+/// The wire the shard speaks rides the document (2026-09-13). A publish reads
+/// it before shipping a client, because a client on another `PROTO_VER` is
+/// `REFUSE_VERSION` at the handshake and nothing else relates the two.
+#[test]
+fn names_the_wire_it_speaks() {
+    let addr = start(Arc::new(ShardStats::default()));
+    let resp = exchange(addr, b"GET /status.json HTTP/1.1\r\nHost: t\r\n\r\n");
+    let text = String::from_utf8(resp).expect("the response is text");
+    let body = text.split("\r\n\r\n").nth(1).expect("a body after headers");
+    assert_eq!(field(body, "proto"), u64::from(protocol::PROTO_VER));
+}

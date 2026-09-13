@@ -41,6 +41,13 @@ use wtransport::{Connection, Endpoint, Identity, RecvStream, SendStream, ServerC
 const PLAYER_ID_GEN_MASK: u32 = 0x007F_FFFF;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+/// The challenge's signed reply gets its own, longer deadline, because a
+/// person answers it (`protocol::SIGN_WAIT_SECS`). The slot it holds is still
+/// counted in `in_flight`, so `ADMIT_RETRY_AT` / `ADMIT_REFUSE_AT` still bound
+/// how many may wait at once; what grew is how long one may. The QUIC session
+/// outlives the wait on the transport's 10 s keep-alive.
+const SIGN_WAIT: Duration = Duration::from_secs(protocol::SIGN_WAIT_SECS);
+const _: () = assert!(protocol::SIGN_WAIT_SECS > HANDSHAKE_TIMEOUT.as_secs());
 /// Writer poll cadence: how often per-connection outbound rings drain.
 /// Latency floor for a snapshot, far under the 66 ms snapshot interval.
 const WRITER_POLL: Duration = Duration::from_millis(2);
@@ -1173,8 +1180,17 @@ async fn handshake_task(
     let challenge = protocol::Challenge { nonce, issued_at };
 
     let mut send = send;
-    let exchange = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
-        write_challenge(&mut send, &challenge).await?;
+    // Two deadlines, because two different things answer. Writing the
+    // challenge is this machine's work and keeps the handshake's 5 s; the
+    // reply waits on a wallet prompt and a person reading it, which is
+    // `SIGN_WAIT`. One budget for both refused every human signer.
+    let wrote =
+        tokio::time::timeout(HANDSHAKE_TIMEOUT, write_challenge(&mut send, &challenge)).await;
+    let Ok(Ok(_)) = wrote else {
+        ShardStats::bump(&stats.handshake_errors);
+        return;
+    };
+    let exchange = tokio::time::timeout(SIGN_WAIT, async {
         let (buf, len) = read_frame(&mut recv).await.ok_or(())?;
         protocol::decode_auth(&buf[..len]).map_err(|_| ())
     })
@@ -1218,8 +1234,8 @@ async fn handshake_task(
     // On its own blocking thread rather than inline: `ureq` is synchronous
     // and this task shares a tokio worker with every other handshake in
     // flight, so a slow origin would stall strangers who are not waiting on
-    // it. `HANDSHAKE_TIMEOUT` already bounds the whole task above, and
-    // `entitle::Config::timeout` bounds the call itself.
+    // it. `entitle::Config::timeout` bounds the call itself, and it has to:
+    // no handshake deadline covers this step.
     //
     // **`Unknown` admits.** The only value that refuses is a definite
     // on-chain zero; an outage must not become a shard nobody can join.
