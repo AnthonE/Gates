@@ -2848,10 +2848,14 @@ still does not cache the module: no credential on either box, and a cache rule
 needs a purge-on-publish beside it.
 
 **The first real session read the page as grey and heard nothing, and each had
-one cause** (2026-09-13). *Silent:* `cpal`'s Web Audio host sits behind its
-implicit `wasm-bindgen` feature and nothing enabled it, so every page had the
-null host; `client-web/Cargo.toml` names it, and "No audio device found" is gone
-from a headless run. *Grey:* the backdrop took its colour from the fill's
+one cause** (2026-09-13). *Silent:* the page's CSP allows `'wasm-unsafe-eval'`
+and not `'unsafe-eval'`, and `cpal` probes for Web Audio with `eval`, so on
+elopros.com it found no device. An A/B of one build settled it: served with the
+header it logged "No audio device found", served without it did not. `web/app.js`
+answers exactly that probe and the CSP stays strict. ⚠ The first diagnosis here
+blamed a missing `cpal` feature and was wrong (the glue imported the same 309
+functions either way), and a Playwright `page.evaluate` showing eval working was
+exempt from the page's CSP, which is why it proved nothing. *Grey:* the backdrop took its colour from the fill's
 near-white tint (clear sky saturation 0.02). It is the air's inscattering off
 `rig::island_medium` now, and a page gets its only possible haze, a `DistanceFog`
 of that same air. Measured on an unpublished build against the live shard:

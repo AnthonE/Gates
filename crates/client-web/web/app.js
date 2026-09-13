@@ -1,5 +1,31 @@
 import init, { Gates } from "./client_web.js";
 
+/* ── the one eval this page answers, without 'unsafe-eval' ─────────────────
+   `cpal` (under `bevy_audio` → `rodio`) decides whether the browser has Web
+   Audio with `js_sys::eval("typeof AudioContext !== 'undefined'")` (cpal
+   0.15.3, `host/webaudio/mod.rs`). This page's CSP allows 'wasm-unsafe-eval'
+   and NOT 'unsafe-eval' (scry-forge's nginx block for /games/gates/), so that
+   eval throws, cpal counts the throw as "no Web Audio", and `bevy_audio` logs
+   "No audio device found": a silent game with every check green. Measured
+   2026-09-13 as an A/B of one build — served without the header it found its
+   device, served with it it did not.
+
+   Loosening the policy would re-enable eval for everything on the page to
+   answer one question, so the page answers that question instead. The glue
+   calls `eval` by its global name at call time; this returns the real answer
+   to exactly cpal's string and hands every other string to the ORIGINAL eval,
+   where the browser applies the CSP exactly as before — so nothing gains an
+   eval it did not have, and the refusal is the browser's own.
+
+   ⚠ It delegates rather than throwing, and that is measured, not tidy: the
+   first version threw its own EvalError and broke Playwright, whose
+   `evaluate` and `waitForFunction` compile their predicates through the page's
+   global `eval` (and are exempt from the CSP). */
+const CPAL_WEBAUDIO_PROBE = "typeof AudioContext !== 'undefined'";
+const originalEval = globalThis.eval;
+globalThis.eval = (src) =>
+  src === CPAL_WEBAUDIO_PROBE ? typeof AudioContext !== "undefined" : originalEval(src);
+
 const status = document.getElementById("status");
 const go = document.getElementById("go");
 const connect = document.getElementById("connect");
