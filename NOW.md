@@ -2834,9 +2834,18 @@ morr) and leaves a sleeper on the shard per run.
 
 **The same deploy stranded the desktop client, and it is republished**: the
 2026-09-04 depots spoke proto 61, so every launcher join was `REFUSE_VERSION`
-until Linux and Windows went out at `0.8.0-g6b207f004` (notarized 2026-09-13). Nothing
-relates a shard deploy to the depots; `publish_depot.py` checks the tree, not
-the wire.
+until Linux and Windows went out at `0.8.0-g6b207f004` (notarized 2026-09-13). Since `063a312` the tooling relates the two:
+`status.json` names its `proto`, both publish scripts refuse a mismatch, and
+`deploy_shard.sh` refuses to strand a published client.
+
+**The first real sign-in failed, and the headless test could not have seen
+it** (2026-09-13). The shard gave a person's wallet signature the 5 s the rest
+of the handshake gets, while the stub signed in milliseconds. `SIGN_WAIT_SECS`
+is 60 now, verified live: a wallet taking 12 s and 40 s joined, and one taking
+70 s got the page's new sentence while the shard counted `handshake errors 1`.
+Run `slow-signer.mjs` beside `smoke.mjs` after any handshake change. Cloudflare
+still does not cache the module: no credential on either box, and a cache rule
+needs a purge-on-publish beside it.
 
 **Identity is decided and built** (operator, 2026-09-10 — *"the wallet stuff so
 we don't have to have a guest yard"*; `DECISIONS.md`): the page signs the
