@@ -58,6 +58,42 @@
 //! the furthest from whatever the player is looking at now, so recycling
 //! it is invisible while refusing the newest would drop the mark from the
 //! shot they just took — the one impact they are actually watching for.
+//!
+//! # A browser draws a MESH mark, because it cannot draw a decal (2026-09-13)
+//!
+//! From 2026-09-12 this pool was **empty on wasm32** — `setup` returned
+//! before spawning a slot, on two measured walls: `ForwardDecal` needs the
+//! depth prepass, and its extension's 4-byte uniform is refused outright by
+//! WebGL2. That was the right call about the decal and the wrong call about
+//! the mark: the operator plays the browser build now, chopped a tree in it
+//! and reported *"i still dont see decals on trees"* (2026-09-13), and no
+//! arithmetic in this file could have been wrong enough to explain a pool
+//! with no entities in it.
+//!
+//! So on wasm32 a slot is a plain `StandardMaterial` quad instead — the same
+//! scuff mask, the same tint, alpha-blended, lifted [`MESH_MARK_LIFT_M`] off
+//! the surface along its normal so it never fights the depth of the thing
+//! it lies on, and **curved to the trunk** for a world hit
+//! ([`curved_patch`]): a flat 22 cm sticker on a 24 cm-radius trunk floats
+//! 3 cm off the bark at its edges, and a patch bent to the sim's own
+//! collision radius does not. What a mesh mark loses against the decal is
+//! projection — it does not wrap a bump in the ground — and that costs
+//! nothing at 22 cm on this terrain. The desktop keeps the decal, which a
+//! person has looked at; the browser's mark has not been looked at by anyone
+//! and `NOW.md` §LOOK says so.
+//!
+//! # The weak spot is drawn on the thing (2026-09-13)
+//!
+//! `EV_WEAK_MARK` has crossed the wire since gather v0 and been decoded into
+//! `ClientCore::{mark_cell, mark8}` for as long, and the only thing that
+//! ever drew it was two words on the HUD prompt while the player happened
+//! to be standing in the sector. The reference's mechanic is an X ON THE
+//! TREE that moves after every hit, and a player who has never seen one
+//! cannot chase it. [`weak_spot`] puts a cross on the node's skin, on the
+//! side the sector faces, pulsing; it brightens and holds when the player
+//! stands where it points. Our sector is about *stance* and not aim
+//! (`gather.rs`'s `WEAK_COS`), which is exactly why the mark faces the
+//! sector: standing where you can see it square-on is standing in it.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::image::ImageSampler;
@@ -66,14 +102,19 @@ use bevy::pbr::ExtendedMaterial;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
+use bevy::mesh::{Indices, PrimitiveTopology};
+
 use super::feed::Feed;
+use super::impact::{skin_radius, strike_height};
 use super::{Eye, WorldId};
 use sim_core::build::{self, BUILD_CELL_M, LEVEL_H_M};
 use sim_core::collide::{ColIndex, PLANE_THICKNESS_M};
+use sim_core::gather::NO_CELL;
 use sim_core::limits::{MAX_BUILD_COORD, MAX_BUILD_LEVELS};
 use sim_core::movement::{POS_XZ_Q, POS_Y_Q};
 use sim_core::ranged::{SURF_BUILT, SURF_GROUND, SURF_WORLD};
-use sim_core::terrain;
+use sim_core::terrain::{self, Occupant, Slot};
+use sim_core::yaw_dir;
 
 /// Marks drawable at once.
 ///
@@ -182,6 +223,33 @@ pub const PREWARM_FRAMES: u32 = 8;
 /// runs; low enough that nobody sees it against ground.
 pub const PREWARM_ALPHA: f32 = 0.02;
 
+/// How far a **mesh** mark (the browser's, see the header) stands off its
+/// surface along the normal, metres. Not `MARK_LIFT_M`'s question: that one
+/// is about a decal's blend, which peaks at zero separation; this one is
+/// about a quad's depth test against the surface it lies on, which at zero
+/// separation is a coin toss per pixel. One centimetre resolves that at
+/// every distance a mark is visible from and is invisible as a float.
+pub const MESH_MARK_LIFT_M: f32 = 0.01;
+
+/// Segments across a curved mesh mark — eight chords over a 22 cm arc on a
+/// 24 cm radius is a sagitta under a millimetre, which the lift above
+/// already covers.
+pub const MESH_MARK_SEGMENTS: u32 = 8;
+
+/// The weak-spot cross's footprint, metres. Larger than a scuff: it is a
+/// target to be read from where a swing is taken, not a record of one.
+pub const WEAK_MARK_SIZE_M: f32 = 0.30;
+
+/// How fast the weak-spot cross breathes while the player is outside its
+/// sector, Hz — slow enough to read as an invitation and not an alarm.
+pub const WEAK_MARK_PULSE_HZ: f32 = 1.4;
+
+/// The cross's alpha at the bottom and top of the pulse. It holds at the
+/// top while the player stands in the sector, which is the one bit of
+/// feedback the mechanic needs: *here, and you are in the right place*.
+pub const WEAK_MARK_ALPHA_LO: f32 = 0.45;
+pub const WEAK_MARK_ALPHA_HI: f32 = 0.95;
+
 /// The mark texture's side, texels. A soft round scuff carries no detail
 /// worth more than this, and the whole set is one 64×64 RGBA — 16 KB.
 const MARK_TEX: u32 = 64;
@@ -220,7 +288,16 @@ struct Mark {
 pub struct Marks {
     slots: [Mark; MARKS],
     entities: Vec<Entity>,
+    /// The decal path's materials — one per slot, empty on wasm32.
     materials: Vec<Handle<ForwardDecalMaterial<StandardMaterial>>>,
+    /// The mesh path's materials — one per slot, empty on the desktop. The
+    /// two vectors are never both filled; which one is says which kind of
+    /// mark this build draws.
+    mesh_materials: Vec<Handle<StandardMaterial>>,
+    /// The mesh path's two quads: flat for ground and built surfaces,
+    /// curved to a trunk for a world hit ([`curved_patch`]).
+    flat: Handle<Mesh>,
+    curved: Handle<Mesh>,
     /// Whether the prewarm draw has been asked for yet. One-shot: the
     /// pipeline needs specializing once per run, not once per world.
     warmed: bool,
@@ -229,6 +306,19 @@ pub struct Marks {
     /// only has to be approximately right to be invisible and this costs
     /// one add.
     hand: usize,
+    /// The weak-spot cross: one entity, its material on whichever path this
+    /// build draws, and the alpha step last written so the pulse costs a
+    /// write only when the quantized value moves.
+    weak: Option<Entity>,
+    weak_material: Handle<ForwardDecalMaterial<StandardMaterial>>,
+    weak_mesh_material: Handle<StandardMaterial>,
+    weak_step: i32,
+    /// The cell the cross was last placed for, so the scatter is asked
+    /// once per mark and not once per frame.
+    weak_cell: u32,
+    weak_mark8: u8,
+    weak_at: Vec3,
+    weak_normal: Vec3,
 }
 
 impl Default for Marks {
@@ -237,8 +327,19 @@ impl Default for Marks {
             slots: [Mark::default(); MARKS],
             entities: Vec::new(),
             materials: Vec::new(),
+            mesh_materials: Vec::new(),
+            flat: Handle::default(),
+            curved: Handle::default(),
             warmed: false,
             hand: 0,
+            weak: None,
+            weak_material: Handle::default(),
+            weak_mesh_material: Handle::default(),
+            weak_step: -1,
+            weak_cell: NO_CELL,
+            weak_mark8: 0,
+            weak_at: Vec3::ZERO,
+            weak_normal: Vec3::Y,
         }
     }
 }
@@ -264,8 +365,13 @@ pub fn forget_in(commands: &mut Commands, pool: &mut Marks) {
     for &e in &pool.entities {
         commands.entity(e).insert(Visibility::Hidden);
     }
+    if let Some(e) = pool.weak {
+        commands.entity(e).insert(Visibility::Hidden);
+    }
     pool.slots = [Mark::default(); MARKS];
     pool.hand = 0;
+    pool.weak_cell = NO_CELL;
+    pool.weak_step = -1;
 }
 
 impl Marks {
@@ -296,9 +402,13 @@ pub fn setup(
     mut commands: Commands,
     mut pool: ResMut<Marks>,
     mut images: ResMut<Assets<Image>>,
+    mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ForwardDecalMaterial<StandardMaterial>>>,
+    mut standard: ResMut<Assets<StandardMaterial>>,
 ) {
-    // ⚠ **No marks in a browser, and the reason is measured rather than
+    let tex = images.add(scuff_texture());
+    let cross = images.add(cross_texture());
+    // ⚠ **No DECALS in a browser, and the reason is measured rather than
     // assumed** (2026-09-12). `ForwardDecalMaterialExt` is one `f32` in a
     // uniform, and WebGL2 has no `BUFFER_BINDINGS_NOT_16_BYTE_ALIGNED`, so
     // wgpu refuses the pipeline outright — *"the type given for group 3
@@ -311,18 +421,39 @@ pub fn setup(
     // are stacked, and taking down the first exposed the second. The
     // extension is Bevy's type and its shader reads that field by name, so a
     // 16-byte padding is a copy of `forward_decal.wgsl` this tree does not
-    // carry yet. An empty pool: `land` finds no free mark and drops the
-    // impact, which is the pool's overflow policy applied at zero.
-    // A runtime `cfg!` rather than an attribute, so the pool's code below
-    // stays reachable to the compiler on every target — an attribute split
-    // turned every helper this function feeds into dead code under the
-    // browser's clippy wall, one at a time.
-    if cfg!(target_arch = "wasm32") {
-        return;
+    // carry.
+    //
+    // **So a browser slot is a mesh mark** — the header's account. A runtime
+    // `cfg!` rather than an attribute, so both paths stay reachable to the
+    // compiler on every target: an attribute split turned every helper this
+    // function feeds into dead code under the browser's clippy wall, one at
+    // a time, and the mesh path is the one no gate here can run.
+    let mesh_marks = cfg!(target_arch = "wasm32");
+    if mesh_marks {
+        pool.flat = meshes.add(flat_quad());
+        pool.curved = meshes.add(curved_patch(
+            terrain::occupant_volume(Occupant::Tree).0 / SIZE_M,
+            MESH_MARK_SEGMENTS,
+        ));
     }
-    let tex = images.add(scuff_texture());
-    for ix in 0..MARKS {
-        let mat = materials.add(ExtendedMaterial {
+    let mesh_material = |standard: &mut Assets<StandardMaterial>, tex: &Handle<Image>| {
+        standard.add(StandardMaterial {
+            base_color: Color::srgba(1.0, 1.0, 1.0, 0.0),
+            base_color_texture: Some(tex.clone()),
+            perceptual_roughness: 0.95,
+            metallic: 0.0,
+            alpha_mode: AlphaMode::Blend,
+            // A mark is seen from the side it was made on; the flip is for
+            // the curved patch's chords, whose winding a tangent rotation
+            // may turn.
+            double_sided: true,
+            cull_mode: None,
+            ..default()
+        })
+    };
+    let decal_material = |materials: &mut Assets<ForwardDecalMaterial<StandardMaterial>>,
+                          tex: &Handle<Image>| {
+        materials.add(ExtendedMaterial {
             base: StandardMaterial {
                 base_color: Color::srgba(1.0, 1.0, 1.0, 0.0),
                 base_color_texture: Some(tex.clone()),
@@ -337,18 +468,136 @@ pub fn setup(
             extension: ForwardDecalMaterialExt {
                 depth_fade_factor: DEPTH_FADE_M,
             },
-        });
-        let entity = commands
+        })
+    };
+    for ix in 0..MARKS {
+        let entity = if mesh_marks {
+            let mat = mesh_material(&mut standard, &tex);
+            let e = commands
+                .spawn((
+                    Mesh3d(pool.flat.clone()),
+                    MeshMaterial3d(mat.clone()),
+                    Transform::from_scale(Vec3::splat(SIZE_M)),
+                    Visibility::Hidden,
+                ))
+                .id();
+            pool.mesh_materials.push(mat);
+            e
+        } else {
+            let mat = decal_material(&mut materials, &tex);
+            let e = commands
+                .spawn((
+                    ForwardDecal,
+                    MeshMaterial3d(mat.clone()),
+                    Transform::from_scale(Vec3::splat(SIZE_M)),
+                    Visibility::Hidden,
+                ))
+                .id();
+            pool.materials.push(mat);
+            e
+        };
+        pool.entities.push(entity);
+        pool.slots[ix] = Mark::default();
+    }
+    // The weak-spot cross — one of whichever kind this build draws, on the
+    // same two materials with the other mask.
+    pool.weak = Some(if mesh_marks {
+        let mat = mesh_material(&mut standard, &cross);
+        pool.weak_mesh_material = mat.clone();
+        commands
             .spawn((
-                ForwardDecal,
-                MeshMaterial3d(mat.clone()),
-                Transform::from_scale(Vec3::splat(SIZE_M)),
+                WeakSpot,
+                Mesh3d(pool.curved.clone()),
+                MeshMaterial3d(mat),
+                Transform::from_scale(Vec3::splat(WEAK_MARK_SIZE_M)),
                 Visibility::Hidden,
             ))
-            .id();
-        pool.entities.push(entity);
-        pool.materials.push(mat);
-        pool.slots[ix] = Mark::default();
+            .id()
+    } else {
+        let mat = decal_material(&mut materials, &cross);
+        pool.weak_material = mat.clone();
+        commands
+            .spawn((
+                WeakSpot,
+                ForwardDecal,
+                MeshMaterial3d(mat),
+                Transform::from_scale(Vec3::splat(WEAK_MARK_SIZE_M)),
+                Visibility::Hidden,
+            ))
+            .id()
+    });
+}
+
+/// The weak-spot cross's entity. A marker so [`weak_spot`]'s query is the
+/// one entity and not every transform on the island.
+#[derive(Component)]
+pub struct WeakSpot;
+
+/// The flat mesh mark: the decal's own quad, built the same way —
+/// `Rectangle` rotated from +Z onto +Y, so local +Y is the normal and
+/// [`place`] can lay both kinds of mark with one rotation.
+pub fn flat_quad() -> Mesh {
+    Rectangle::from_size(Vec2::ONE)
+        .mesh()
+        .build()
+        .rotated_by(Quat::from_rotation_arc(Vec3::Z, Vec3::Y))
+}
+
+/// The curved mesh mark: the same unit quad bent about its local **Z** axis
+/// to a cylinder of radius `r` (mesh units — the caller divides the trunk's
+/// metres by the scale the mark is drawn at), so laid on a trunk with local
+/// Z up the trunk it follows the bark instead of standing off it at the
+/// edges. Local +Y is still the outward normal at the centre; the edges
+/// bend to −Y, into the surface, which is where the bark is.
+///
+/// Pure — `tests/decal.rs` holds every vertex to the cylinder.
+pub fn curved_patch(r: f32, segments: u32) -> Mesh {
+    let n = segments.max(1) as usize;
+    let mut pos = Vec::with_capacity((n + 1) * 2);
+    let mut nrm = Vec::with_capacity((n + 1) * 2);
+    let mut uv = Vec::with_capacity((n + 1) * 2);
+    for i in 0..=n {
+        let u = i as f32 / n as f32;
+        let theta = (u - 0.5) / r;
+        let (sin, cos) = theta.sin_cos();
+        let x = r * sin;
+        let y = r * (cos - 1.0);
+        // Two rows: local z = −0.5 and +0.5, the axis of the bend.
+        for (z, v) in [(-0.5f32, 1.0f32), (0.5, 0.0)] {
+            pos.push([x, y, z]);
+            nrm.push([sin, cos, 0.0]);
+            uv.push([u, v]);
+        }
+    }
+    let mut idx = Vec::with_capacity(n * 6);
+    for i in 0..n as u32 {
+        let a = i * 2;
+        let (b, c, d) = (a + 1, a + 2, a + 3);
+        // Front face toward +Y, the decal quad's own: (b−a)×(c−a) is +Y.
+        idx.extend_from_slice(&[a, b, c, b, d, c]);
+    }
+    let mut m = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
+    );
+    m.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
+    m.insert_attribute(Mesh::ATTRIBUTE_NORMAL, nrm);
+    m.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
+    m.insert_indices(Indices::U32(idx));
+    m
+}
+
+/// Which mesh a mesh mark on `surf` takes, and the rotation that lays it:
+/// a world hit is a trunk, so its patch is the curved one and it must be
+/// turned with local Z up the trunk's axis, not merely its normal onto the
+/// surface. Everything else is flat and only the normal matters.
+pub fn mesh_pose(surf: u8, normal: Vec3) -> (bool, Quat) {
+    if surf == SURF_WORLD && normal.y.abs() < 0.99 {
+        let n = normal.with_y(0.0).normalize_or(Vec3::Z);
+        let x = n.cross(Vec3::Y).normalize_or(Vec3::X);
+        (true, Quat::from_mat3(&Mat3::from_cols(x, n, Vec3::Y)))
+    } else {
+        (false, Quat::from_rotation_arc(Vec3::Y, normal))
     }
 }
 
@@ -402,6 +651,58 @@ fn scuff_texture() -> Image {
     img.sampler = ImageSampler::linear();
     img
 }
+
+/// The weak-spot mask: two soft bars crossed at right angles, white. The
+/// reference's own glyph for the mechanic, and the one shape nothing else in
+/// the world makes on a trunk — a scuff is round, bark is streaked, and a
+/// cross reads as *put* rather than *happened*.
+pub fn cross_texture() -> Image {
+    let n = MARK_TEX as usize;
+    let mut data = vec![0u8; n * n * 4];
+    let c = (n as f32 - 1.0) * 0.5;
+    // Bar half-width and the soft shoulder past it, as fractions of the
+    // half-side.
+    const HALF_W: f32 = 0.13;
+    const SOFT: f32 = 0.08;
+    for y in 0..n {
+        for x in 0..n {
+            let (px, py) = ((x as f32 - c) / c, (y as f32 - c) / c);
+            // Distance to each diagonal, in the same units.
+            let d1 = (px - py).abs() * std::f32::consts::FRAC_1_SQRT_2;
+            let d2 = (px + py).abs() * std::f32::consts::FRAC_1_SQRT_2;
+            let bar = |d: f32| ((HALF_W + SOFT - d) / SOFT).clamp(0.0, 1.0);
+            let a = bar(d1).max(bar(d2));
+            // The same transparent padding the scuff carries, so the quad's
+            // corners never draw.
+            let edge = (px * px + py * py).sqrt();
+            let pad = ((0.95 - edge) / 0.15).clamp(0.0, 1.0);
+            let i = (y * n + x) * 4;
+            data[i] = 255;
+            data[i + 1] = 255;
+            data[i + 2] = 255;
+            data[i + 3] = (a * pad * 255.0) as u8;
+        }
+    }
+    let mut img = Image::new(
+        Extent3d {
+            width: MARK_TEX,
+            height: MARK_TEX,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+    );
+    img.sampler = ImageSampler::linear();
+    img
+}
+
+/// The cross's colour: pale and warm, chosen to stand off bark, granite and
+/// ore alike the way `tint` stands its scuffs off — and off the scuffs
+/// themselves, because a player has to tell the mark they are chasing
+/// from the marks they have made.
+pub const WEAK_TINT: Color = Color::srgb(0.98, 0.86, 0.52);
 
 /// What colour a mark on this surface is.
 ///
@@ -641,6 +942,11 @@ fn plane_face(world: &WorldId, cols: &ColIndex, x: f32, y: f32, z: f32) -> Optio
 /// single-consumer and a second caller would silently starve the first.
 /// That is CLAUDE.md's clean-merge trap, and a pool that draws things is
 /// exactly the kind of second reader that caused it.
+// Eight parameters, which clippy counts: the two material stores are the two
+// paths this build may draw a mark on (the header), and folding them into one
+// `SystemParam` would hide which of the eight a reader has to think about —
+// `bodies::stream`'s allow and argument.
+#[allow(clippy::too_many_arguments)]
 pub fn mark(
     mut pool: ResMut<Marks>,
     feed: Res<Feed>,
@@ -653,7 +959,8 @@ pub fn mark(
     net: NonSend<super::Net>,
     eye: Res<Eye>,
     mut materials: ResMut<Assets<ForwardDecalMaterial<StandardMaterial>>>,
-    mut q: Query<(&mut Transform, &mut Visibility)>,
+    mut standard: ResMut<Assets<StandardMaterial>>,
+    mut q: Query<(&mut Transform, &mut Visibility, &mut Mesh3d)>,
 ) {
     // The prewarm draw, once per run and before any arrow needs it. Placed
     // on the ground a few metres ahead of the eye rather than at the feet:
@@ -677,6 +984,7 @@ pub fn mark(
         place(
             &mut q,
             &mut materials,
+            &mut standard,
             &pool,
             ix,
             Vec3::new(ahead.x, y, ahead.z),
@@ -711,15 +1019,17 @@ pub fn mark(
         // `Always`, so there is nothing an offset buys and half the mark's
         // alpha to lose by taking one.
         let pos = at + n * MARK_LIFT_M;
-        place(&mut q, &mut materials, &pool, ix, pos, n, surf, 1.0);
+        place(&mut q, &mut materials, &mut standard, &pool, ix, pos, n, surf, 1.0);
     }
 }
 
-/// Point one slot's entity at a surface and set its colour.
+/// Point one slot's entity at a surface and set its colour — on whichever
+/// path this build draws (the header).
 #[allow(clippy::too_many_arguments)]
 fn place(
-    q: &mut Query<(&mut Transform, &mut Visibility)>,
+    q: &mut Query<(&mut Transform, &mut Visibility, &mut Mesh3d)>,
     materials: &mut Assets<ForwardDecalMaterial<StandardMaterial>>,
+    standard: &mut Assets<StandardMaterial>,
     pool: &Marks,
     ix: usize,
     pos: Vec3,
@@ -730,20 +1040,38 @@ fn place(
     let Some(&entity) = pool.entities.get(ix) else {
         return;
     };
-    let Ok((mut tf, mut vis)) = q.get_mut(entity) else {
+    let Ok((mut tf, mut vis, mut mesh)) = q.get_mut(entity) else {
         return;
     };
-    tf.translation = pos;
-    // The decal projects along its own local **−Y**: `ForwardDecalPlugin`
-    // builds its quad by rotating a `Rectangle` from +Z onto +Y, so local
-    // +Y is the projection axis and aligning it with the surface normal is
-    // what lays the mark flat on that surface.
-    tf.rotation = Quat::from_rotation_arc(Vec3::Y, normal);
+    if let Some(mat) = pool.mesh_materials.get(ix) {
+        // A mesh mark: lifted off the surface, and bent to a trunk.
+        let (curved, rot) = mesh_pose(surf, normal);
+        tf.translation = pos + normal * MESH_MARK_LIFT_M;
+        tf.rotation = rot;
+        let want = if curved { &pool.curved } else { &pool.flat };
+        if mesh.0 != *want {
+            mesh.0 = want.clone();
+        }
+        if let Some(m) = standard.get_mut(mat) {
+            m.base_color = tint(surf).with_alpha(alpha);
+        }
+    } else {
+        tf.translation = pos;
+        // The decal projects along its own local **−Y**: `ForwardDecalPlugin`
+        // builds its quad by rotating a `Rectangle` from +Z onto +Y, so local
+        // +Y is the projection axis and aligning it with the surface normal is
+        // what lays the mark flat on that surface.
+        tf.rotation = Quat::from_rotation_arc(Vec3::Y, normal);
+        if let Some(m) = pool
+            .materials
+            .get(ix)
+            .and_then(|h| materials.get_mut(h))
+        {
+            m.base.base_color = tint(surf).with_alpha(alpha);
+        }
+    }
     tf.scale = Vec3::splat(SIZE_M);
     *vis = Visibility::Visible;
-    if let Some(m) = materials.get_mut(&pool.materials[ix]) {
-        m.base.base_color = tint(surf).with_alpha(alpha);
-    }
 }
 
 /// Age every live mark, fade its tail, and release the slot.
@@ -751,10 +1079,8 @@ pub fn fade(
     mut pool: ResMut<Marks>,
     time: Res<Time>,
     mut materials: ResMut<Assets<ForwardDecalMaterial<StandardMaterial>>>,
-    mut q: Query<(
-        &mut Visibility,
-        &MeshMaterial3d<ForwardDecalMaterial<StandardMaterial>>,
-    )>,
+    mut standard: ResMut<Assets<StandardMaterial>>,
+    mut q: Query<&mut Visibility>,
 ) {
     let dt = time.delta_secs();
     // Destructure once for disjoint field borrows rather than cloning the
@@ -764,14 +1090,18 @@ pub fn fade(
     // and `water::stream` already use exactly this reborrow for exactly this
     // reason, so it is the house pattern rather than a new one.
     let Marks {
-        slots, entities, ..
+        slots,
+        entities,
+        materials: decal_mats,
+        mesh_materials,
+        ..
     } = &mut *pool;
     for (ix, entity) in entities.iter().enumerate() {
         let m = slots[ix];
         if m.left <= 0.0 {
             continue;
         }
-        let Ok((mut vis, mat)) = q.get_mut(*entity) else {
+        let Ok(mut vis) = q.get_mut(*entity) else {
             continue;
         };
 
@@ -803,9 +1133,127 @@ pub fn fade(
             continue;
         }
         slots[ix].step = step;
-        if let Some(asset) = materials.get_mut(&mat.0) {
-            asset.base.base_color = asset.base.base_color.with_alpha(step as f32 / ALPHA_STEPS);
+        let a = step as f32 / ALPHA_STEPS;
+        if let Some(asset) = decal_mats.get(ix).and_then(|h| materials.get_mut(h)) {
+            asset.base.base_color = asset.base.base_color.with_alpha(a);
         }
+        if let Some(asset) = mesh_materials.get(ix).and_then(|h| standard.get_mut(h)) {
+            asset.base_color = asset.base_color.with_alpha(a);
+        }
+    }
+}
+
+/// Where the weak-spot cross for `slot` sits and which way it faces, from
+/// the mark's own heading: on the occupant's collision skin, on the side
+/// the sector faces, at the height a swing lands. The point and the sector
+/// are the same fact — `in_weak_sector` tests the swinger's bearing from
+/// the slot against `yaw_dir(mark8)`, and this puts the cross on the skin
+/// along that very bearing — so a player who can see the cross square-on
+/// is standing where the bonus pays.
+///
+/// `None` for an occupant with no skin (a bush), which the sim never marks.
+pub fn weak_spot_pose(slot: &Slot, mark8: u8) -> Option<(Vec3, Vec3)> {
+    let occ = slot.occupant as u8;
+    let r = skin_radius(occ) * slot.scale;
+    if r <= 0.0 {
+        return None;
+    }
+    let (wx, wz) = yaw_dir((mark8 as u16) << 8);
+    let (_, top) = terrain::occupant_volume(slot.occupant);
+    // A hand under the top, so a knee-high node's cross is on its flank and
+    // not its crown.
+    let h = strike_height(occ).min(top * slot.scale - 0.15).max(0.15);
+    let n = Vec3::new(wx, 0.0, wz);
+    Some((Vec3::new(slot.x, slot.y + h, slot.z) + n * r, n))
+}
+
+/// The cross's alpha at time `t`: breathing between the two bounds outside
+/// the sector, held at the top inside it.
+pub fn weak_spot_alpha(t: f32, in_sector: bool) -> f32 {
+    if in_sector {
+        return WEAK_MARK_ALPHA_HI;
+    }
+    let phase = (t * WEAK_MARK_PULSE_HZ * std::f32::consts::TAU).sin() * 0.5 + 0.5;
+    WEAK_MARK_ALPHA_LO + (WEAK_MARK_ALPHA_HI - WEAK_MARK_ALPHA_LO) * phase
+}
+
+/// Draw the weak-spot cross on the node the sim marked for this player, or
+/// hide it — the header's account.
+///
+/// Reads `ClientCore::{mark_cell, mark8}` directly rather than through
+/// `Feed`, and that is not a second drain: they are latched fields the core
+/// keeps current, not a ring anyone pops (`clear_mark_if` retires them when
+/// the node is harvested or the chase restarts). `verbs::resolve` reads the
+/// same two the same way for the HUD's suffix.
+#[allow(clippy::too_many_arguments)]
+pub fn weak_spot(
+    mut pool: ResMut<Marks>,
+    net: Option<NonSend<super::Net>>,
+    world: Option<Res<WorldId>>,
+    in_weak: Res<super::verbs::InWeak>,
+    time: Res<Time>,
+    mut materials: ResMut<Assets<ForwardDecalMaterial<StandardMaterial>>>,
+    mut standard: ResMut<Assets<StandardMaterial>>,
+    mut q: Query<(&mut Transform, &mut Visibility), With<WeakSpot>>,
+) {
+    let Some(entity) = pool.weak else { return };
+    let Ok((mut tf, mut vis)) = q.get_mut(entity) else {
+        return;
+    };
+    let hide = |vis: &mut Visibility, pool: &mut Marks| {
+        if *vis != Visibility::Hidden {
+            *vis = Visibility::Hidden;
+        }
+        pool.weak_cell = NO_CELL;
+    };
+    let (Some(net), Some(world)) = (net, world) else {
+        hide(&mut vis, &mut pool);
+        return;
+    };
+    let core = &net.session.core;
+    if core.mark_cell == NO_CELL {
+        hide(&mut vis, &mut pool);
+        return;
+    }
+    // The scatter is asked once per (cell, heading), not once per frame:
+    // the heading moves on every landed hit and the cell on every new
+    // chase, and a frame in between is a transform copy.
+    if pool.weak_cell != core.mark_cell || pool.weak_mark8 != core.mark8 {
+        let (cx, cz) = ((core.mark_cell >> 16) as i32, (core.mark_cell & 0xFFFF) as i32);
+        let slot = terrain::scatter(world.seed, &world.table, &world.haven, cx, cz);
+        let Some((at, n)) = weak_spot_pose(&slot, core.mark8) else {
+            hide(&mut vis, &mut pool);
+            return;
+        };
+        pool.weak_cell = core.mark_cell;
+        pool.weak_mark8 = core.mark8;
+        pool.weak_at = at;
+        pool.weak_normal = n;
+        pool.weak_step = -1;
+    }
+    let (at, n) = (pool.weak_at, pool.weak_normal);
+    if pool.mesh_materials.is_empty() {
+        tf.translation = at + n * MARK_LIFT_M;
+        tf.rotation = Quat::from_rotation_arc(Vec3::Y, n);
+    } else {
+        let (_, rot) = mesh_pose(SURF_WORLD, n);
+        tf.translation = at + n * MESH_MARK_LIFT_M;
+        tf.rotation = rot;
+    }
+    tf.scale = Vec3::splat(WEAK_MARK_SIZE_M);
+    *vis = Visibility::Visible;
+    let alpha = weak_spot_alpha(time.elapsed_secs(), in_weak.0);
+    let step = (alpha * ALPHA_STEPS) as i32;
+    if step == pool.weak_step {
+        return;
+    }
+    pool.weak_step = step;
+    let a = step as f32 / ALPHA_STEPS;
+    if let Some(m) = materials.get_mut(&pool.weak_material) {
+        m.base.base_color = WEAK_TINT.with_alpha(a);
+    }
+    if let Some(m) = standard.get_mut(&pool.weak_mesh_material) {
+        m.base_color = WEAK_TINT.with_alpha(a);
     }
 }
 

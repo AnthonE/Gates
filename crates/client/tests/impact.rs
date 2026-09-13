@@ -16,10 +16,13 @@
 
 use bevy::math::Vec3;
 use client::render::impact::{
-    gather_burst, strike_height, struck, Burst, Chips, Matter, Struck, CHIP_BURST,
-    CHIP_GRAVITY_MPS2 as GRAVITY, CHIP_LIFE_S, CHIP_POOL, CHIP_SIZE_M,
+    gather_burst, impact_cue, same_blow, skin_radius, strike_height, struck, Burst, Chips,
+    Contact, ContactKind, Contacts, Matter, Struck, CHIP_BURST, CHIP_GRAVITY_MPS2 as GRAVITY,
+    CHIP_LIFE_S, CHIP_POOL, CHIP_SIZE_M, CONTACT_CAP, SAME_BLOW_M,
 };
+use client::sound::Cue;
 use client::ui::interact::SwingPick;
+use sim_core::build::{MAT_METAL, MAT_STONE, MAT_TWIG, MAT_WOOD};
 use sim_core::terrain::Occupant;
 
 fn burst_at(at: Vec3, away: Vec3) -> Burst {
@@ -417,37 +420,171 @@ fn only_a_swing_throws_chips_and_a_payout_does_not() {
         x: 10.0,
         y: 2.0,
         z: -4.0,
+        scale: 1.0,
         ..SwingPick::default()
     };
+    // The swinger, a couple of metres off the trunk on its +z side.
+    let from = Vec3::new(10.0, 3.6, -2.0);
     // The whole point: no swing, no chips — however much arrived.
     assert!(
-        gather_burst(false, &pick).is_none(),
+        gather_burst(false, &pick, from).is_none(),
         "a payout with no swing behind it throws debris — that is the \
          backpack-loot defect back"
     );
     // A swing at open air throws nothing either, because the pick is what
     // says whether anything was in reach.
     let empty = SwingPick::default();
-    assert!(gather_burst(true, &empty).is_none());
+    assert!(gather_burst(true, &empty, from).is_none());
 
-    // A swing at a node throws its own matter, from the node's own place.
-    let b = gather_burst(true, &pick).expect("a swing at a tree throws chips");
+    // A swing at a node throws its own matter, from the node's SKIN on the
+    // swinger's side — not from its axis, which for a stone node is most of
+    // a metre inside the rock (2026-09-13).
+    let b = gather_burst(true, &pick, from).expect("a swing at a tree throws chips");
     assert_eq!(b.matter, Matter::Wood);
+    let r = skin_radius(Occupant::Tree as u8);
+    let planar = ((b.at.x - pick.x).powi(2) + (b.at.z - pick.z).powi(2)).sqrt();
     assert!(
-        (b.at.x - pick.x).abs() < 1e-6 && (b.at.z - pick.z).abs() < 1e-6,
-        "the burst is not at the node the pick named"
+        (planar - r).abs() < 1e-4,
+        "the burst is {planar:.3} m off the trunk's axis; the bark is at {r:.3}"
+    );
+    assert!(
+        b.at.z > pick.z && b.away.z > 0.9,
+        "the burst is on the far side of the trunk from the swinger, or thrown into it"
     );
     assert!(
         b.at.y > pick.y,
         "the chips come off the ground under the tree rather than the trunk"
     );
 
-    // And what it is made of follows the occupant, not the position.
+    // And what it is made of follows the occupant, not the position — and
+    // so does the skin: a stone node's is the sim's own 0.91 m, scaled.
     pick.occupant = Occupant::StoneNode as u8;
-    assert_eq!(
-        gather_burst(true, &pick).expect("a swing at stone").matter,
-        Matter::Stone
+    pick.scale = 1.1;
+    let b = gather_burst(true, &pick, from).expect("a swing at stone");
+    assert_eq!(b.matter, Matter::Stone);
+    let planar = ((b.at.x - pick.x).powi(2) + (b.at.z - pick.z).powi(2)).sqrt();
+    assert!(
+        (planar - skin_radius(Occupant::StoneNode as u8) * 1.1).abs() < 1e-4,
+        "a scaled node's burst is not on its scaled skin ({planar:.3})"
     );
+    // A bush has no skin and is struck at its centre.
+    pick.occupant = Occupant::Bush as u8;
+    let b = gather_burst(true, &pick, from).expect("a swing at a bush");
+    assert!((b.at.x - pick.x).abs() < 1e-6 && (b.at.z - pick.z).abs() < 1e-6);
+}
+
+/// The skin every swingable occupant is struck on is the sim's own
+/// collision radius, and a bush — passable, no skin — is zero.
+#[test]
+fn a_swing_lands_on_the_sims_own_skin() {
+    for o in [
+        Occupant::Tree,
+        Occupant::StoneNode,
+        Occupant::MetalNode,
+        Occupant::SulfurNode,
+        Occupant::BarrelSlot,
+    ] {
+        assert_eq!(
+            skin_radius(o as u8),
+            sim_core::terrain::occupant_volume(o).0,
+            "{o:?}'s strike skin is not its collision skin"
+        );
+    }
+    assert_eq!(skin_radius(Occupant::Bush as u8), 0.0);
+    assert_eq!(skin_radius(0), 0.0);
+}
+
+/// A landed node swing reaches the client as `EV_SWING` and `EV_IMPACT` in
+/// one frame, and the first cut threw a burst for each. The rule that folds
+/// them: an impact within reach of the pick's slot is the pick's own blow.
+#[test]
+fn a_blow_the_wire_reports_twice_is_one_blow() {
+    let pick = SwingPick {
+        occupant: Occupant::StoneNode as u8,
+        cx: 40,
+        cz: 90,
+        x: 10.0,
+        y: 2.0,
+        z: -4.0,
+        scale: 1.0,
+        ..SwingPick::default()
+    };
+    // On the node's skin, a metre from its axis: the same blow.
+    assert!(same_blow(&pick, Vec3::new(10.9, 2.5, -4.0)));
+    // Past the widest skin at the widest scale: somebody else's.
+    assert!(!same_blow(&pick, Vec3::new(10.0 + SAME_BLOW_M + 0.5, 2.5, -4.0)));
+    // No pick, no blow to be the same as — an impact with nothing behind it
+    // is always its own contact.
+    assert!(!same_blow(&SwingPick::default(), Vec3::ZERO));
+    // And the bound itself covers the largest thing a swing can pick.
+    let widest = [
+        Occupant::Tree,
+        Occupant::StoneNode,
+        Occupant::MetalNode,
+        Occupant::SulfurNode,
+        Occupant::BarrelSlot,
+    ]
+    .iter()
+    .map(|o| skin_radius(*o as u8))
+    .fold(0.0f32, f32::max);
+    assert!(
+        SAME_BLOW_M > widest * 1.25,
+        "SAME_BLOW_M = {SAME_BLOW_M} is inside a scaled skin of {:.3}",
+        widest * 1.25
+    );
+}
+
+/// Each matter has the sound of itself, and the two that do not have a
+/// reason: a body is voiced by the hitmarker, a plant by nothing worth a
+/// wrong waveform. `Cue::ImpactWood` had no producer at all from audio v0 to
+/// 2026-09-13; this is the map that gives it one.
+#[test]
+fn each_matter_has_the_sound_of_itself() {
+    assert_eq!(impact_cue(Matter::Wood), Some(Cue::ImpactWood));
+    assert_eq!(impact_cue(Matter::Stone), Some(Cue::ImpactStone));
+    assert_eq!(impact_cue(Matter::Metal), Some(Cue::ImpactMetal));
+    assert_eq!(impact_cue(Matter::Dirt), Some(Cue::ImpactStone));
+    assert_eq!(impact_cue(Matter::Flesh), None);
+    assert_eq!(impact_cue(Matter::Plant), None);
+    // Every cue this map hands out is positional: an impact is a place.
+    for m in Matter::ALL {
+        if let Some(c) = impact_cue(m) {
+            assert!(c.def().positional, "{c:?} is played at a point and is not positional");
+        }
+    }
+}
+
+/// A built piece's debris and sound follow its tier, and twig is wood.
+#[test]
+fn a_piece_is_made_of_its_tier() {
+    assert_eq!(Matter::of_piece(MAT_TWIG), Matter::Wood);
+    assert_eq!(Matter::of_piece(MAT_WOOD), Matter::Wood);
+    assert_eq!(Matter::of_piece(MAT_STONE), Matter::Stone);
+    assert_eq!(Matter::of_piece(MAT_METAL), Matter::Metal);
+    assert_eq!(Matter::of_piece(200), Matter::Dirt, "an unknown tier is the honest default");
+}
+
+/// The contact list is bounded, drop-newest, and counts what it dropped.
+#[test]
+fn the_contact_list_is_bounded_and_says_so() {
+    let mut c = Contacts::default();
+    assert!(c.is_empty());
+    for i in 0..(CONTACT_CAP + 5) {
+        c.push(Contact {
+            at: Vec3::new(i as f32, 0.0, 0.0),
+            away: Vec3::Y,
+            matter: Matter::Wood,
+            kind: ContactKind::Impact,
+        });
+    }
+    assert_eq!(c.len(), CONTACT_CAP);
+    assert_eq!(c.dropped, 5, "the overflow was silent");
+    assert_eq!(c.iter().count(), CONTACT_CAP);
+    // The newest were the ones dropped: the last kept is the cap-th.
+    assert_eq!(c.iter().last().unwrap().at.x, (CONTACT_CAP - 1) as f32);
+    c.clear();
+    assert!(c.is_empty());
+    assert_eq!(c.dropped, 5, "clear forgets the count, so a frame's drops are invisible");
 }
 
 /// The strike height puts the chips on the thing, not in the grass under it.
