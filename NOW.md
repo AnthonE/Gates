@@ -1802,6 +1802,14 @@ worthless assertion in the first draft.
    `Occupant` variants plus scatter rows.
 6. **The needle card is generated** (`tree::needle_image`); `WANTED.md` §9.5
    is the swap, the highest-value texture on that page.
+7. ✅ **The double hull (2026-09-13).** Every tree in every chunk walked into
+   after spawn wore the outer ring's hull over its real self — the outer
+   retain never asked whether the near ring had taken the chunk. Fixed in
+   `props::stream`, gated by `tests/ring_handoff.rs` (an eye that moves);
+   `CLAUDE.md` traps has the shape. Two things it leaves: **the capture probe
+   should walk one chunk before it shoots**, because a frame from the spawn
+   chunk cannot contain a hand-off defect; and the browser's 55 m rung now
+   rests on its own argument, not on the frame that moved it (`quality.rs`).
 
 
 ## 0a · The clutter ring still ends on a line *(client lane)*
@@ -2096,6 +2104,33 @@ dust and the impact cue read it (`DECISIONS.md` §open, impact fx v1). Left:
    `bevy_feathers` (~5,400 lines of screens into a data-driven plugin) and
    the freegameui.net MCP (403s here, bypasses `bake_icons.py` and
    `tests/ui.rs` §G, pre-coloured kits fight tint-at-draw).
+
+
+## 0cq · The craft panel beside the reference's — pictures, words, and the closed menu *(client lane)*
+
+`reference/CRAFTING.md` (2026-09-13) audits `MENUS.md`'s HAVE against two of
+the operator's frames of the reference. Every number on ours is right and
+gated; the gaps are what is a picture, what is a word, and what the HUD says
+with the menu closed. §9.1 ranks twelve. The first five are draws, no wire:
+
+1. **Nothing on the HUD while the menu is closed** — Devblog 62's notice.
+   `ClientCore` already holds `jobs` and `craft_eta_ticks` (`EventMsg::CraftQ`);
+   the head job's picture and countdown as a chip beside the hotbar.
+2. **The queue strip is words** (`Wooden Spear x1 · 10.0s click to cancel`);
+   theirs is the picture with a green `⏱ 14s` chip. `build_queue`, one site.
+3. **Locked is the word `LOCKED`**; theirs a padlock glyph over the dimmed
+   picture. One game-icons silhouette.
+4. **Craft-done is a feed line**; theirs a `note.inv` beside the vitals.
+   `Cue::CraftDone` already chimes; only the drawing moves.
+5. **CRAFT dims when short**; the one plugin the community wrote for this
+   panel paints it green. A palette knob — `DECISIONS.md` §open, not code.
+6. **Cells are white glyphs; theirs are renders of the item.** A pipeline,
+   not a bigger icon set: shoot our own glTFs to item images at bake time
+   (`modelview --shot` already does the shot), glyph as the fallback.
+7. Then content + wire in one `PROTO_VER` turn — the class byte (§0w item 1)
+   and a description column (`items.toml` has none; the catalog is names
+   only) — then two sim verbs: fast-track by task id (§1.1/1.4), the bench
+   rebate (§0tt).
 
 
 ## 0w · The native menus — the rail and the untested gesture *(client lane)*

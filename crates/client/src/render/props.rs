@@ -339,6 +339,26 @@ impl PropRing {
     pub fn outer_len(&self) -> usize {
         self.outer.len()
     }
+    /// Chunks held by BOTH rings — a near chunk with the outer ring's hulls
+    /// still standing in it. Zero is the only correct answer once the rings
+    /// have settled, and `tests/ring_handoff.rs` holds it there with an eye
+    /// that moves. Under the retain this repo shipped from the outer ring's
+    /// landing until 2026-09-13, the outer ring settled at 111 chunks where
+    /// 96 belong — the 15 the near ring had taken over, still held.
+    pub fn overlap(&self) -> usize {
+        self.built
+            .keys()
+            .filter(|k| self.outer.contains_key(*k))
+            .count()
+    }
+    /// Is this chunk key in the near ring?
+    pub fn near_holds(&self, key: (i32, i32)) -> bool {
+        self.built.contains_key(&key)
+    }
+    /// Is this chunk key in the outer ring?
+    pub fn outer_holds(&self, key: (i32, i32)) -> bool {
+        self.outer.contains_key(&key)
+    }
 }
 
 /// Chunks in a full outer ring — the 11×11 block minus the near 5×5 it wraps.
@@ -1828,6 +1848,20 @@ pub fn stream(
             if ring.built.contains_key(&key) {
                 continue;
             }
+            // **The hand-off.** A chunk the player has walked into may still
+            // be the outer ring's — one hull per tree, no `VisibilityRange`,
+            // never culled — and this frame builds the four-entity tree on
+            // the same cells. Take the hull chunk down here, in the same
+            // frame, or the two stand together: an opaque faceted dome over
+            // every real tree, at arm's length, on both targets, in every
+            // chunk entered after spawn. That was the operator's 2026-09-13
+            // frame, and it had been true since the outer ring landed
+            // (`tests/ring_handoff.rs`). Same frame, so there is never a
+            // frame with both; one despawn beside one build is inside the
+            // budget the ground pays every frame.
+            if let Some(hulls) = ring.outer.remove(&key) {
+                commands.entity(hulls).despawn();
+            }
             let parent = commands
                 .spawn((
                     super::WorldEntity,
@@ -1879,9 +1913,18 @@ pub fn stream(
     // arrive.
     let mut dropped_outer = 0usize;
     ring.outer.retain(|(bx, bz), e| {
-        if dropped_outer >= 1
-            || ((*bx - cx).abs() <= OUTER_RADIUS && (*bz - cz).abs() <= OUTER_RADIUS)
-        {
+        let dx = (*bx - cx).abs();
+        let dz = (*bz - cz).abs();
+        // Two questions, not one. Until 2026-09-13 this asked only *is the
+        // chunk still inside my radius*, which every chunk the player walks
+        // INTO answers yes — so the hull chunk stayed while the near ring
+        // built the real trees on top of it. The hand-off above retires it
+        // on the frame the near chunk is built; this is the same rule stated
+        // where the ring's membership is decided, so neither site can be
+        // right alone.
+        let in_outer = dx <= OUTER_RADIUS && dz <= OUTER_RADIUS;
+        let in_near = dx <= NEAR_RADIUS && dz <= NEAR_RADIUS;
+        if dropped_outer >= 1 || (in_outer && !in_near) {
             return true;
         }
         dropped_outer += 1;
