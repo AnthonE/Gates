@@ -2807,9 +2807,25 @@ What remains, in order:
 `target/webdist/` on the origin as `<build>/` and flips `current`; the location
 that serves it is `scry-forge/deploy/nginx/elopros.com.conf` (`/games/gates/`,
 its own CSP) and the page dials `game.elopros.com:61234` when served from
-`elopros.com` (`?server=` overrides). Three things wait on a person: that
-publish, the shard's redeploy to protocol 62 (`ci/deploy_shard.sh`), and
-`play_url` on the listing — flipped after the files exist, never before.
+`elopros.com` (`?server=` overrides).
+
+**Two of the three landed 2026-09-12** (operator, that day; `DECISIONS.md`).
+The shard is redeployed and reports `0.8.0-g60bb40241 · proto v62` on a fresh
+island — the wipe that cost is the DECISIONS row. The page is published at
+`0.8.0-g3f909a76c` and **is served**: the nginx location was committed to
+`scry-forge` and never installed, so the first publish 404'd with the site's
+own CSP on it; installing it answers `application/wasm`, `content-encoding:
+gzip` at 8.57 MB, and the page's `'wasm-unsafe-eval'` policy.
+⚠ `cf-cache-status: DYNAMIC` — Cloudflare is not caching the module, so 8.6 MB
+crosses the origin on every load; that is the edge's setting, and the nginx
+block's own ⚠ asks for it to be checked.
+
+**`play_url` on the listing is the one thing still waiting**, deliberately:
+it is `None` in `scry-deploy/watchtower/listings/listings.json`, it is the
+house's field rather than `scry.json`'s (`_listing` says so), and
+`publish_web.sh` calls it *the promise that the game runs*. Nobody has opened
+this page on a real GPU or signed with a real wallet — item 1 below — so the
+promise is not ours to make yet.
 
 **Identity is decided and built** (operator, 2026-09-10 — *"the wallet stuff so
 we don't have to have a guest yard"*; `DECISIONS.md`): the page signs the
