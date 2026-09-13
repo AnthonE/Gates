@@ -80,6 +80,10 @@ pub struct Tier {
 /// order of removal is what the arithmetic says is expensive rather than what
 /// is easiest to switch off — a shadow cascade is a whole extra rasterization
 /// of the forest, and the tree LOD distance decides how much forest that is.
+/// `Medium`'s tree swap distance, metres — named because a browser borrows it
+/// (`tier`'s wasm32 arm), so the two uses cannot drift apart.
+pub const MEDIUM_TREE_LOD_SWAP_M: f32 = 55.0;
+
 pub fn tier(q: Quality) -> Tier {
     // ⚠ **WebGL2 cannot run the top two tiers at all, and the failure is a
     // PANIC rather than a degradation** — so this is a clamp on the ladder
@@ -111,7 +115,7 @@ pub fn tier(q: Quality) -> Tier {
         let _ = q;
         Quality::Low
     };
-    match q {
+    let t = match q {
         Quality::High => Tier {
             ssao: Some(ScreenSpaceAmbientOcclusionQualityLevel::Medium),
             smaa: true,
@@ -131,7 +135,7 @@ pub fn tier(q: Quality) -> Tier {
             cascades: 3,
             shadow_m: 140.0,
             shadow_map_px: 2048,
-            tree_lod_swap_m: 55.0,
+            tree_lod_swap_m: MEDIUM_TREE_LOD_SWAP_M,
         },
         Quality::Low => Tier {
             ssao: None,
@@ -145,7 +149,22 @@ pub fn tier(q: Quality) -> Tier {
             shadow_map_px: 1024,
             tree_lod_swap_m: 35.0,
         },
-    }
+    };
+    // **A browser takes `Low` for WebGL2's sake and `Medium`'s trees for its
+    // own.** The clamp above is a feature wall — SSAO, and through it the
+    // prepasses, cannot exist on that backend — and the tree swap is not: it
+    // is a triangle budget, and `Low`'s 35 m is sized for a machine that
+    // cannot hold the frame. At 35 m the first real browser session
+    // (2026-09-13) read as a forest of hulls right up to the player, beside a
+    // desktop that swaps at 80. So the page keeps every term WebGL2 forces
+    // and borrows `Medium`'s distance, the next rung rather than a number of
+    // its own (`DECISIONS.md` §open, tree LOD v0).
+    #[cfg(target_arch = "wasm32")]
+    let t = Tier {
+        tree_lod_swap_m: MEDIUM_TREE_LOD_SWAP_M,
+        ..t
+    };
+    t
 }
 
 impl Tier {

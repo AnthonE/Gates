@@ -50,6 +50,16 @@ wasm-bindgen-futures = "0.4"
 # the shard's own code instead of only a sentence to match on.
 js-sys = "0.3"
 web-sys = { version = "0.3", features = ["console"] }
+# **`cpal`'s Web Audio host sits behind a feature nothing else in the graph
+# enables, and until 2026-09-13 that made every browser silent.** `bevy_audio`
+# pulls `cpal` through `rodio` with default features only. cpal 0.15 declares
+# its `wasm-bindgen` dependency `optional` and compiles `host::webaudio` only
+# under the implicit feature of that name, so this build had the null host and
+# `bevy_audio` logged "No audio device found". That line is true, and it was
+# read at the time as headless Chromium having no sound card. Named here, in the
+# one crate that only ever builds for wasm32; cargo unions the feature onto the
+# single cpal the graph already resolves, so nothing native changes.
+cpal = { version = "0.15", features = ["wasm-bindgen"] }
 # **The App is built and run from here, so this crate names Bevy directly** —
 # `client` does not re-export it. Default features, deliberately: cargo unions
 # features across the graph, so this resolves to exactly the set `client`

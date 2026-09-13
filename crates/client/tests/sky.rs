@@ -18,10 +18,12 @@
 #![cfg(feature = "render")]
 
 use bevy::math::Vec3;
+use bevy::pbr::FogFalloff;
 use client::render::fill::{linear_to_srgb, luminance, srgb_to_linear};
+use client::render::rig::{island_medium, AIR_DENSITY};
 use client::render::sky::{
-    backdrop_at, cloud_cubemap_with, cube_dir, AIR_FLOOR, BAKE_BACKDROP, HORIZON_DESAT,
-    HORIZON_GAIN, SKY_FACE,
+    air_chroma, backdrop_at, browser_haze, cloud_cubemap_with, cube_dir, ground_air, haze_color,
+    AIR_FLOOR, BAKE_BACKDROP, CLOUD_NITS, HORIZON_DESAT, HORIZON_GAIN, SKY_FACE,
 };
 
 const SEED: u64 = 20_260_731;
@@ -199,25 +201,130 @@ fn the_backdrop_brightens_and_greys_toward_the_horizon() {
     );
 }
 
-/// The zenith is derived from the fill and not typed: the fill's sky
-/// irradiance over π, in the deck's units.
+/// The zenith's BRIGHTNESS is derived from the fill and not typed: the fill's
+/// sky irradiance over π, in the deck's units. Its colour stopped being the
+/// fill's on 2026-09-13 (`the_browser_zenith_is_the_colour_the_air_scatters`);
+/// until then this held all three channels to the fill's near-white tint.
 #[test]
-fn the_zenith_is_the_fills_sky_over_pi() {
+fn the_zenith_is_the_fills_brightness_over_pi() {
     let zenith = backdrop_at(Vec3::Y);
-    let sky = client::render::fill::sky_lux();
-    for c in 0..3 {
-        let want = sky[c] / core::f32::consts::PI / client::render::sky::CLOUD_NITS;
-        assert!(
-            (zenith[c] - want).abs() < 1e-6,
-            "channel {c}: {} against {want}",
-            zenith[c]
-        );
-    }
+    let want = luminance(client::render::fill::sky_lux()) / core::f32::consts::PI / CLOUD_NITS;
+    let got = luminance(zenith);
+    assert!(
+        (got / want - 1.0).abs() < 1e-4,
+        "zenith luminance {got} against the fill's {want}"
+    );
     // And it lands inside the texel range with room for the horizon's gain,
-    // or the sky would clip to white where the eye looks most.
+    // in EVERY channel: the bake clamps each one, so a blue that clipped while
+    // the luminance did not would bend the hue where the eye looks most.
     let lh = luminance(backdrop_at(Vec3::X));
     assert!(lh < 1.0, "the horizon clips at {lh} of CLOUD_NITS");
+    for (name, rgb) in [("zenith", zenith), ("horizon", backdrop_at(Vec3::X))] {
+        for c in 0..3 {
+            assert!(rgb[c] < 1.0, "the {name} clips in channel {c}: {rgb:?}");
+        }
+    }
     // Round trip the encoder this file compares through.
     let v = 0.3f32;
     assert!((srgb_to_linear(linear_to_srgb(v)) - v).abs() < 1e-5);
+}
+
+/// The air at the ground is Bevy's published earthlike medium at
+/// `AIR_DENSITY` — rebuilt here from the numbers in
+/// `bevy_pbr::medium::ScatteringMedium::earthlike`, never from the function
+/// under test. Counting the ozone tent, or leaving absorption out of
+/// extinction, each moves a channel.
+#[test]
+fn ground_air_is_the_published_medium_at_the_ground() {
+    let (ext, scat) = ground_air(&island_medium());
+    let rayleigh = Vec3::new(5.802e-6, 13.558e-6, 33.100e-6);
+    let (mie_abs, mie_scat) = (Vec3::splat(3.996e-6), Vec3::splat(0.444e-6));
+    let want_scat = (rayleigh + mie_scat) * AIR_DENSITY;
+    let want_ext = (rayleigh + mie_scat + mie_abs) * AIR_DENSITY;
+    for (got, want, what) in [
+        (ext, want_ext, "extinction"),
+        (scat, want_scat, "inscattering"),
+    ] {
+        // Relative: these are f32 near 1e-5, where one rounding is ~1e-12
+        // absolute. Counting the ozone tent moves red and green by 6-10%.
+        let rel = ((got - want) / want).abs().max_element();
+        assert!(
+            rel < 1e-5,
+            "{what} is {got:?}; the published air at the ground is {want:?} ({rel} off)"
+        );
+    }
+}
+
+/// The browser's zenith is the colour the air scatters, at the fill's
+/// luminance — and it is BLUE. Borrowing the fill's near-white tint gave a
+/// blue lead of 0.42 and a sky the first real GPU drew as grey (2026-09-13).
+#[test]
+fn the_browser_zenith_is_the_colour_the_air_scatters() {
+    let zenith = backdrop_at(Vec3::Y);
+    let l = luminance(zenith);
+    let want_l = luminance(client::render::fill::sky_lux()) / core::f32::consts::PI / CLOUD_NITS;
+    assert!(
+        (l / want_l - 1.0).abs() < 1e-4,
+        "zenith luminance {l} against the fill's {want_l}"
+    );
+    let c = air_chroma();
+    let (_, s) = ground_air(&island_medium());
+    let ls = luminance(s.to_array());
+    for i in 0..3 {
+        assert!(
+            (zenith[i] / l - c[i]).abs() < 1e-4,
+            "zenith channel {i} is not the air's chroma"
+        );
+        assert!(
+            (c[i] - s.to_array()[i] / ls).abs() < 1e-5,
+            "air_chroma channel {i} is not the air's"
+        );
+    }
+    let blue_lead = (zenith[2] - zenith[0]) / l;
+    assert!(
+        blue_lead > 1.5,
+        "the zenith's blue lead is {blue_lead}: the sky has gone back toward the fill's grey"
+    );
+}
+
+/// The browser's haze is the desktop's air, coloured by the sky's own horizon,
+/// dimmed with the day, and carries no sun glow nobody owns.
+#[test]
+fn the_browser_haze_is_the_desktops_air_and_the_skys_horizon() {
+    let fog = browser_haze(1.0);
+    let (ext, scat) = ground_air(&island_medium());
+    match fog.falloff {
+        FogFalloff::Atmospheric {
+            extinction,
+            inscattering,
+        } => {
+            assert_eq!(
+                extinction, ext,
+                "the haze's extinction is not the island's air"
+            );
+            assert_eq!(
+                inscattering, scat,
+                "the haze's inscattering is not the island's air"
+            );
+        }
+        other => panic!("the browser haze is not atmospheric: {other:?}"),
+    }
+    let h = backdrop_at(Vec3::X);
+    let c = fog.color.to_linear();
+    for (got, want) in [(c.red, h[0]), (c.green, h[1]), (c.blue, h[2])] {
+        assert!(
+            (got - want).abs() < 1e-6,
+            "the haze is not the sky's horizon: {c:?} against {h:?}"
+        );
+    }
+    assert_eq!(
+        fog.directional_light_color,
+        bevy::color::Color::NONE,
+        "the haze grew a sun glow"
+    );
+    let night = haze_color(0.0).to_linear();
+    assert!(
+        night.red == 0.0 && night.green == 0.0 && night.blue == 0.0,
+        "the haze glows at night"
+    );
 }

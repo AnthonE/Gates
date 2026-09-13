@@ -26,6 +26,7 @@ use bevy::camera::Exposure;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::core_pipeline::Skybox;
 use bevy::light::{light_consts::lux, EnvironmentMapLight, SunDisk};
+use bevy::pbr::DistanceFog;
 use bevy::pbr::ScatteringMedium;
 // Both follow their one use site off wasm32 — see the inserts in `setup`.
 #[cfg(not(target_arch = "wasm32"))]
@@ -138,6 +139,14 @@ pub const FAR_M: f32 = 2000.0;
 /// what the whole set tolerates.
 pub const AIR_DENSITY: f32 = 1.6;
 
+/// The island's air: earthlike, thickened by [`AIR_DENSITY`]. One function
+/// because two consumers read it — the desktop's atmosphere (`setup`) and the
+/// browser's haze and sky colour (`sky::browser_haze`, `sky::air_chroma`) —
+/// and a medium written twice is two airs that drift.
+pub fn island_medium() -> ScatteringMedium {
+    ScatteringMedium::default().with_density_multiplier(AIR_DENSITY)
+}
+
 /// The camera, and the only camera.
 #[derive(Component)]
 pub struct EyeCam;
@@ -182,7 +191,7 @@ pub fn setup(
     // a fog colour over the result, so the sky and the haze stay the same
     // physical quantity and the horizon seam cannot open (which is the exact
     // seam the browser rig spent 200 lines of comment hand-fitting).
-    let medium = media.add(ScatteringMedium::default().with_density_multiplier(AIR_DENSITY));
+    let medium = media.add(island_medium());
     // Built on every target because the handle is one asset and the
     // alternative is `cfg`-ing a system parameter, which changes the system's
     // arity per target for no gain. Nothing consumes it in a browser — see
@@ -411,10 +420,11 @@ pub fn setup(
     // first mark, where the compile failure had been a logged line. So the
     // prepass stays off and the mark pool is empty on this target
     // (`decal::setup`); the depth would feed nothing a browser draws.
-    // Silences the unused binding on the target that skips the inserts; the
-    // entity is still spawned and still the eye, it simply gains nothing more.
+    // What a browser gains instead of the atmosphere: a haze made of the same
+    // air, and the only haze on that target (`sky::browser_haze`). `day_night`
+    // dims it with the deck.
     #[cfg(target_arch = "wasm32")]
-    let _ = eye;
+    commands.entity(eye).insert(super::sky::browser_haze(1.0));
 
     commands.spawn((
         super::WorldEntity,
@@ -668,6 +678,16 @@ impl DayPin {
     }
 }
 
+/// What `day_night` drives on the camera: the two fills, the deck and, in a
+/// browser, the haze. Named because four terms is past clippy's
+/// `type_complexity` line.
+type CamLight = (
+    &'static mut AmbientLight,
+    &'static mut EnvironmentMapLight,
+    Option<&'static mut Skybox>,
+    Option<&'static mut DistanceFog>,
+);
+
 /// Drive the rig from the server's clock. Runs every frame; the queries
 /// are empty until `setup` has spawned the rig, which makes the system a
 /// no-op on every screen that is not the world.
@@ -675,14 +695,7 @@ pub fn day_night(
     feed: Res<super::feed::Feed>,
     pin: Res<DayPin>,
     mut sun: Query<(&mut Transform, &mut DirectionalLight), With<Sun>>,
-    mut cam: Query<
-        (
-            &mut AmbientLight,
-            &mut EnvironmentMapLight,
-            Option<&mut Skybox>,
-        ),
-        With<EyeCam>,
-    >,
+    mut cam: Query<CamLight, With<EyeCam>>,
 ) {
     let frac = sim_core::world::day_frac(pin.tick(feed.server_tick_est));
     let light = daylight(frac);
@@ -694,7 +707,7 @@ pub fn day_night(
         // a sun that is under the ground anyway.
         d.shadows_enabled = light > 0.0;
     }
-    if let Ok((mut amb, mut env, sky)) = cam.single_mut() {
+    if let Ok((mut amb, mut env, sky, fog)) = cam.single_mut() {
         // **The handover, and the two terms are complements by construction.**
         // The hemisphere carries the day and the uniform term carries the
         // night, and each is scaled by the same `light` so their sum is
@@ -709,6 +722,11 @@ pub fn day_night(
         // per-frame multiply replaces a per-frame 24 KB bake.
         amb.brightness = NIGHT_AMBIENT_LUX * (1.0 - light);
         env.intensity = super::fill::peak_lux() * light;
+        // A browser's haze is the sky's own horizon, so it dims with the deck.
+        // The desktop has no fog and this is `None` there.
+        if let Some(mut fog) = fog {
+            fog.color = super::sky::haze_color(light);
+        }
         if let Some(mut sky) = sky {
             // At night clouds are dark from below anyway.
             sky.brightness = super::sky::CLOUD_NITS * light;

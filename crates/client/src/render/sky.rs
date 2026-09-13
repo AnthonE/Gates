@@ -47,6 +47,8 @@
 use bevy::asset::RenderAssetUsages;
 use bevy::core_pipeline::Skybox;
 use bevy::image::Image;
+use bevy::math::curve::Curve;
+use bevy::pbr::{DistanceFog, Falloff, FogFalloff, ScatteringMedium};
 use bevy::prelude::*;
 use bevy::render::render_resource::{
     Extent3d, TextureDimension, TextureFormat, TextureViewDescriptor, TextureViewDimension,
@@ -99,9 +101,9 @@ const CLOUD_BASE: [f32; 3] = [0.42, 0.45, 0.52];
 // a sky graded by elevation alone is invariant under `deck_rotation`'s yaw,
 // so nothing the desktop does to the deck is wrong for the browser's.
 //
-// What the browser still does not get, said out loud: aerial perspective on
-// the terrain (the haze is the atmosphere's, and this paints none), a sun
-// disk, and a sky that reddens at dusk — `day_night` scales the whole deck
+// What the browser still does not get, said out loud: the atmosphere's own
+// aerial perspective (a browser gets [`browser_haze`] instead — the same air
+// as a `DistanceFog`, and the only haze on that target), a sun disk, and a sky that reddens at dusk — `day_night` scales the whole deck
 // by `daylight`, so a browser dusk dims rather than colours.
 
 /// Whether the deck carries a clear sky behind the clouds. Zero texels
@@ -134,18 +136,19 @@ pub const AIR_FLOOR: f32 = 0.12;
 ///
 /// Zenith first, and it is DERIVED: `fill::sky_lux()` is the irradiance the
 /// sky delivers to an up-facing surface, and a uniform sky of radiance `L`
-/// delivers `π·L`, so the zenith is `sky_lux / π` per channel. The horizon
+/// delivers `π·L`, so the zenith's LUMINANCE is `sky_lux / π`, and its colour
+/// is the air's own ([`air_chroma`]) rather than the fill's near-white tint,
+/// which read as a grey sky on the first GPU that drew it. The horizon
 /// is that, `HORIZON_GAIN` brighter and `HORIZON_DESAT` greyer, reached
 /// along the air-mass curve; below the horizon the backdrop holds the
 /// horizon colour flat (the sea and the land cover nearly all of it).
 pub fn backdrop_at(d: Vec3) -> [f32; 3] {
-    let sky = super::fill::sky_lux();
-    let zenith = [
-        sky[0] / core::f32::consts::PI,
-        sky[1] / core::f32::consts::PI,
-        sky[2] / core::f32::consts::PI,
-    ];
-    let lum = super::fill::luminance(zenith);
+    // Brightness from the fill, colour from the air. The fill's tint is an
+    // ambient term's and nearly white on purpose; a sky that borrowed it
+    // measured saturation 0.02 and read as overcast (2026-09-13).
+    let lum = super::fill::luminance(super::fill::sky_lux()) / core::f32::consts::PI;
+    let chroma = air_chroma();
+    let zenith = [chroma[0] * lum, chroma[1] * lum, chroma[2] * lum];
     // The horizon: the zenith's luminance times the gain, with its chroma
     // pulled toward grey by the desaturation.
     let mut horizon = [0.0f32; 3];
@@ -163,6 +166,77 @@ pub fn backdrop_at(d: Vec3) -> [f32; 3] {
         (zenith[1] + (horizon[1] - zenith[1]) * w) / CLOUD_NITS,
         (zenith[2] + (horizon[2] - zenith[2]) * w) / CLOUD_NITS,
     ]
+}
+
+/// The air at ground level, per metre, as `(extinction, inscattering)`: each
+/// term of `medium` at its density where the falloff parameter is `1`, the
+/// dense end — each arm below is `bevy_pbr::medium::Falloff::sample` (private)
+/// evaluated at `p = 1`, written out because that function is not `pub`: the
+/// exponential's formula is exactly `1` there, a tent is wherever `1` sits on
+/// its slope, and a curve is asked. Extinction is what a term removes,
+/// absorption plus scattering; inscattering is what it sends on, scattering.
+///
+/// **Earthlike at the ground is Rayleigh and Mie, and not ozone**: its tent
+/// peaks at `0.75` and is `0.3` wide, so it is zero at `1`. The browser's haze
+/// and its sky colour both read this off `rig::island_medium`, the medium the
+/// desktop's atmosphere renders — a browser frame is thinner than a desktop
+/// one, but it is made of the same air.
+pub fn ground_air(medium: &ScatteringMedium) -> (Vec3, Vec3) {
+    let (mut extinction, mut inscattering) = (Vec3::ZERO, Vec3::ZERO);
+    for term in &medium.terms {
+        let k = match term.falloff {
+            Falloff::Linear | Falloff::Exponential { .. } => 1.0,
+            Falloff::Tent { center, width } => {
+                (1.0 - (1.0 - center).abs() / (width * 0.5).max(f32::EPSILON)).max(0.0)
+            }
+            Falloff::Curve(ref curve) => curve.sample(1.0).unwrap_or(0.0),
+        };
+        extinction += (term.absorption + term.scattering) * k;
+        inscattering += term.scattering * k;
+    }
+    (extinction, inscattering)
+}
+
+/// The colour the air scatters, linear, at luminance 1: [`ground_air`]'s
+/// inscattering normalised. Density scales how much air there is and not what
+/// colour it is, so this does not move with `rig::AIR_DENSITY`. Computed once,
+/// because the browser's bake asks for it once per texel.
+pub fn air_chroma() -> [f32; 3] {
+    static CHROMA: std::sync::OnceLock<[f32; 3]> = std::sync::OnceLock::new();
+    *CHROMA.get_or_init(|| {
+        let (_, s) = ground_air(&super::rig::island_medium());
+        let l = super::fill::luminance(s.to_array());
+        [s.x / l, s.y / l, s.z / l]
+    })
+}
+
+/// The browser haze's colour at `light` (0 night .. 1 day): the sky's own
+/// horizon, so a distant hill fades INTO the sky behind it and not into a
+/// second colour, and dimmed with the day exactly as the deck is.
+pub fn haze_color(light: f32) -> Color {
+    let h = backdrop_at(Vec3::X);
+    Color::linear_rgb(h[0] * light, h[1] * light, h[2] * light)
+}
+
+/// The browser's aerial perspective: a `DistanceFog` made of the desktop's air.
+///
+/// **On the desktop this would be a second owner of haze, and this file's
+/// header refuses one** — the atmosphere hazes the terrain and the deck
+/// itself. A browser has no atmosphere (`rig.rs`), so it has no first owner,
+/// and until 2026-09-13 its distant hills arrived with no air on them at all.
+/// The falloff is `Atmospheric`, with [`ground_air`]'s two coefficients off
+/// `rig::island_medium`, so no number here is one anybody chose: a few percent
+/// of blue per kilometre, thin at island scale, as the desktop's air is.
+pub fn browser_haze(light: f32) -> DistanceFog {
+    let (extinction, inscattering) = ground_air(&super::rig::island_medium());
+    DistanceFog {
+        color: haze_color(light),
+        falloff: FogFalloff::Atmospheric {
+            extinction,
+            inscattering,
+        },
+        ..default()
+    }
 }
 
 fn hash3(seed: u64, x: i32, y: i32, z: i32) -> f32 {

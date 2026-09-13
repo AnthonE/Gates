@@ -2847,6 +2847,20 @@ Run `slow-signer.mjs` beside `smoke.mjs` after any handshake change. Cloudflare
 still does not cache the module: no credential on either box, and a cache rule
 needs a purge-on-publish beside it.
 
+**The first real session read the page as grey and heard nothing, and each had
+one cause** (2026-09-13). *Silent:* `cpal`'s Web Audio host sits behind its
+implicit `wasm-bindgen` feature and nothing enabled it, so every page had the
+null host; `client-web/Cargo.toml` names it, and "No audio device found" is gone
+from a headless run. *Grey:* the backdrop took its colour from the fill's
+near-white tint (clear sky saturation 0.02). It is the air's inscattering off
+`rig::island_medium` now, and a page gets its only possible haze, a `DistanceFog`
+of that same air. Measured on an unpublished build against the live shard:
+clear sky **saturation 0.24, blue lead 0.53**, where the desktop atmosphere reads
+**0.27 / 0.58**. That was at daylight 0.28, so compare chroma across hours, not
+luma. A browser swaps trees at `Medium`'s 55 m. **Next, and still open:** the
+desktop's sun reaches the ground through the atmosphere's transmittance and a
+browser's is pure white, so a browser's lit ground reads cooler.
+
 **Identity is decided and built** (operator, 2026-09-10 — *"the wallet stuff so
 we don't have to have a guest yard"*; `DECISIONS.md`): the page signs the
 shard's SIWE challenge with the visitor's extension wallet through

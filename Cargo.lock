@@ -2010,6 +2010,7 @@ version = "0.8.0"
 dependencies = [
  "bevy",
  "client",
+ "cpal",
  "js-sys",
  "protocol",
  "wasm-bindgen",
