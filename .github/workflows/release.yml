@@ -79,7 +79,7 @@ jobs:
     # budget between the two releases and nothing was watching the margin.
     # The failure mode is the reason this is generous rather than tight: a
     # timeout here reads as "the release is broken" and is really a clock.
-    timeout-minutes: 60
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
         with:

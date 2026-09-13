@@ -2834,7 +2834,7 @@ morr) and leaves a sleeper on the shard per run.
 
 **The same deploy stranded the desktop client, and it is republished**: the
 2026-09-04 depots spoke proto 61, so every launcher join was `REFUSE_VERSION`
-until Linux and Windows went out at `0.8.0-g6b207f004` (not notarized). Nothing
+until Linux and Windows went out at `0.8.0-g6b207f004` (notarized 2026-09-13). Nothing
 relates a shard deploy to the depots; `publish_depot.py` checks the tree, not
 the wire.
 
@@ -2850,16 +2850,6 @@ harness that produced every frame above lives outside the tree.
 Carried from struck §0wt: nothing gates that `wtransport rev = a11e6a8e…`
 contains the #317 fix, and that pin is permanent.
 
-
-## 0ci · `gates.yml`'s 45-minute cap marks passing push runs cancelled
-
-Found 2026-09-13: the push runs for `60bb402` and `3f909a7` read **cancelled**
-while the step "the gates" finished `success` — the cap lands during *Post cache
-cargo*. So a cancelled run on `main` is not evidence of red, and `nightly` is no
-refuge: it runs `ci/gates.sh` under the same 45-minute cap and finished
-`6b207f0` in 44:51, nine seconds inside it.
-Raise `timeout-minutes`, or save the cache before the suite. Same class as the
-v0.4.0 `release.yml` cap.
 
 ## 0wd · A new world register is proposed — blocked on the operator's word
 
