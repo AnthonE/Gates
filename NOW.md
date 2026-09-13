@@ -112,6 +112,32 @@ data maps for three weeks. The tooling landed; the assets did not:
    sim truth and the operator's call. §LOOK: nobody has seen a flattened albedo
    or a straight normal in a frame.
 
+## 0rock · Rock is one tier drawn everywhere alike, and the cliff is bare *(sim + art lane)*
+
+`reference/ROCKS.md` (2026-09-13), measured with `examples/rock_stats.rs` on
+three seeds: rock stands at 3.7–4.7/ha in beach, meadow and forest and only
+2.4–3× that in highland; the cliff cell is vetoed (the reference's *first*
+tier) and its foot carries no more rock or ore than open highland (7.3 vs
+7.4 per 100 cells); ore is no nearer a rock than a bush is (82–95 % against
+the controls' 83–90 % in all-highland windows); rock dispersion is 1.1–1.6
+against the trees' 3.0 — **exactly what a shared rate field predicts at 0.6
+rocks per window**, so scatter clumping v0 cannot reach rock at any weight.
+The reference places biggest-first (formations → boulders → small rocks, ore
+around formations) and re-seeds ~16 meshes through ~25 populations keyed by
+biome × role × size. Ranked in its §9.7:
+
+1. **§0rk first** — nothing about rock is worth looking at on a bent normal
+   map and a ball.
+2. **Rock kind + species into `Slot`** (`ROCKS.md` §9.1, `FORESTS.md` §9.3):
+   the biome row picks the mesh family, not the yaw. One golden move for both.
+3. **Rock seeding v0** (§9.2): a coarse-grid parent draw for formations;
+   boulders, small rocks and ore weighted by distance to the parent and to
+   the cliff mask; totals conserved (the bay-slots pattern) so `CONTENT.md`
+   §4 and `haven_prize` hold. Gates in §9.6. A wipe — the operator's.
+4. **Cliff tier v0** (§9.3): `Occupant::Cliff` on the cell the veto empties,
+   a box-list volume off the cell's own slope so ledges are climbable; the
+   mesh waits on the register. Tint and the base blend are `§LOOK`'s.
+
 ## 0anim · The animals cannot be bought until the client can move one *(client lane)*
 
 Asked 2026-09-02 whether the generator can rig. **It can, and it will not rig
