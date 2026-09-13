@@ -205,7 +205,7 @@ fn three_swings_kill_and_the_count_is_the_content_s() {
     for seq in 0..expect_hits {
         swing_once(&mut w, 1, yaw, seq);
         hits += 1;
-        if w.players[1].deaths > 0 {
+        if w.players[1].wounded || w.players[1].deaths > 0 {
             break;
         }
         assert_eq!(
@@ -220,12 +220,24 @@ fn three_swings_kill_and_the_count_is_the_content_s() {
     }
     assert_eq!(
         hits, expect_hits,
-        "kill took {hits} swings, not {expect_hits}"
+        "the fall took {hits} swings, not {expect_hits}"
     );
+    // Since wounded v0 the lethal swing lays the body down rather than
+    // killing it (`World::down_or_die`): the crawl has `WOUNDED_HP` and no
+    // death yet, and one more blow is the death the third one used to be.
+    assert!(
+        w.players[1].wounded,
+        "the lethal swing did not lay the body down"
+    );
+    assert_eq!(w.players[1].hp, sim_core::wound::WOUNDED_HP);
+    assert_eq!(w.players[1].deaths, 0);
+    cool_down(&mut w);
+    swing_once(&mut w, 1, yaw, expect_hits);
     assert_eq!(w.players[1].deaths, 1);
-    // Since wire v16 the third swing ends the body rather than replacing
-    // it: the corpse waits on the death screen until its own player
-    // answers, so "a respawn is a whole body" is asserted after the answer.
+    // Since wire v16 the finishing swing ends the body rather than
+    // replacing it: the corpse waits on the death screen until its own
+    // player answers, so "a respawn is a whole body" is asserted after the
+    // answer.
     assert!(
         w.players[1].dead,
         "the kill did not put up the death screen"
@@ -401,6 +413,16 @@ fn death_takes_the_beach_and_everything_on_you() {
     w.players[1].hp = 1; // one swing from the end
 
     swing_once(&mut w, 1, yaw, 0);
+    // Wounded v0: the first lethal swing lays the body down and the second
+    // is the death. Everything the screen is made of is already on the
+    // record after the first (`tests/wounded.rs`); this test is about the
+    // death and the beach, so it finishes the job.
+    assert!(
+        w.players[1].wounded && !w.players[1].dead,
+        "the lethal swing is a fall now"
+    );
+    cool_down(&mut w);
+    swing_once(&mut w, 1, yaw, 1);
 
     // The death screen first: the body is down, holding the sentence the
     // wire encodes off it, and it has not moved (wire v16, world.rs).

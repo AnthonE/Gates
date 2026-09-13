@@ -511,7 +511,16 @@ fn four_arrows_kill_and_the_kill_names_the_bow() {
         }
     }
     let k = killed.expect("four arrows at 30 did not kill a 100 hp body");
-    assert_eq!(deaths, 1, "one death, announced once");
+    // `EV_DEATH` is `World::die`'s since wounded v0 (`gun.rs` says why);
+    // the flight step reports the kill and announces nothing.
+    assert_eq!(
+        deaths, 0,
+        "the flight's own harness hears no death — the world announces it"
+    );
+    assert!(
+        !k.head,
+        "a chest shot, so the world would lay the body down rather than kill it"
+    );
     assert_eq!(k.victim, 1);
     assert_eq!(k.by, 1, "the kill is credited to the shooter's id");
     assert_eq!(k.item, BOW, "the death screen names the bow, not the arrow");
@@ -521,7 +530,8 @@ fn four_arrows_kill_and_the_kill_names_the_bow() {
         k.range_cm
     );
     assert_eq!(players[1].hp, 0);
-    assert_eq!(players[1].deaths, 1);
+    // Counted by `World::die` since wounded v0 (`gun.rs` says the same).
+    assert_eq!(players[1].deaths, 0);
 }
 
 /// An empty quiver fires nothing, and the arm is still the bow's — the

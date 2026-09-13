@@ -59,6 +59,32 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
 
 # Buildable now — a loop can pick any of these
 
+## 0wnd · Down is built; the hands that pick you up are not *(sim+client lane)*
+
+Wounded v0 landed 2026-09-13 (`DECISIONS.md` §open "wounded v0",
+`reference/WOUNDED.md` §9): a lethal swing, bite or body shot lays the body
+down for 40–50 s at 10 hp, it crawls at a third of a walk and may open a
+door, and at the end a hashed roll (20 % + up to 25 % for full meters)
+stands it up or makes the corpse. What the minute still cannot do, in the
+order it earns its keep:
+
+1. **Revive by hand** — `RPC_Assist`'s shape (`WOUNDED.md` §2.6): a verb
+   aimed at a downed body, held 6 s without moving, prolonging the clock
+   when broken off and suspending the roll while held. New action on the
+   wire, a hold counter on the target, a `Verb` in the pick — and the
+   feature-gated match trap (`CLAUDE.md`).
+2. **Syringe / bandage on a downed body** — `Command::Consume` with a
+   target; `content/consumables.toml` already prices both.
+3. **Medkit in the belt = 100 %**, consumed only on a failed roll.
+4. **Refusals while down are silent**: `live_slot_of` refuses with no
+   event. Each refused verb's own `REFUSE_*` is the honest fix.
+5. **A drag clip and a voice** — a remote crawl slides `Death01`'s pose
+   (`render/anim.rs`), and the fall reuses `Cue::Death`.
+6. **The odds on screen are the odds at the fall**; the sim re-reads the
+   meters at the roll. Say so on the line, or resend.
+7. **§LOOK**: `CRAWL_EYE_M`, `WOUND_ROLL_RAD`, `WOUND_DROP_S`, the
+   vignette — never seen. Boot the game and go down.
+
 ## 0site · Site art v0 landed — three things it left *(art + sim lane)*
 
 `assets/models/site/{shelter,canopy}.glb` draw the pad and the waystations
@@ -2334,6 +2360,11 @@ right call and it is not free: it means every slice landed since is *gated as
 arithmetic and unseen*, and the list below is what has accumulated. **Do not
 build a replacement pixel gate.** One session with the client open closes most
 of it.
+
+**Newest, 2026-09-13 — go down and look** (§0wnd, `render/wounded.rs`): the
+camera's drop to `CRAWL_EYE_M` and its roll, the vignette, the two-number
+line, and a remote body's fallen pose sliding at a crawl. Five knobs, none
+seen; `reference/WOUNDED.md` §9.5 is the checklist.
 
 Two of these are not taste, they are unresolved defects:
 

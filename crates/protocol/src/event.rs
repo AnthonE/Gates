@@ -319,7 +319,28 @@ const SUB_RELOAD: u32 = 54;
 /// than as a shot, so without it the HUD would have to infer emptiness from
 /// a shot that never came, which is the same silence as a dropped datagram.
 const SUB_RELOAD_REFUSED: u32 = 55;
-const SUB_MAX: u32 = SUB_RELOAD_REFUSED;
+/// `EV_WOUNDED` (v63): you went down — the ticks until the roll and the
+/// chance of getting up at it, per mille. Own-fact, `SUB_RESPAWN`'s
+/// audience: the one body on the ground. The two numbers are the whole of
+/// the screen (`reference/WOUNDED.md` §2.5 — the reference showed neither
+/// for eight years and then made showing them a feature); the client
+/// counts the first down at the tick rate it already runs and prints the
+/// second as it was read at the fall (`sim-core/world.rs` `EV_WOUNDED`).
+const SUB_WOUNDED: u32 = 56;
+/// `EV_RECOVERED` (v63): you got up — the chance the roll beat, per mille,
+/// and the hp you stand with. Own-fact, `SUB_WOUNDED`'s audience. The
+/// other end of the crawl is `SUB_DEATH`, which is broadcast, and the
+/// asymmetry is the point: a kill is the feed's business, a recovery is
+/// yours.
+const SUB_RECOVERED: u32 = 57;
+const SUB_MAX: u32 = SUB_RECOVERED;
+/// Width of the recovery chance on both wounded messages: per mille, so
+/// 0..=1000 in ten bits. `sim_core::wound::recover_chance_pm` tops out at
+/// 450 by construction; the field is sized to the unit rather than to
+/// today's ceiling so a re-tuned bonus cannot outgrow the wire in silence.
+const CHANCE_PM_BITS: u32 = 10;
+const CHANCE_PM_MAX: u32 = 1000;
+const _: () = assert!(CHANCE_PM_MAX < (1 << CHANCE_PM_BITS));
 /// Width of `SUB_IMPACT`'s surface field, and how many values it may say.
 ///
 /// **`SURF_KINDS` is derived from the sim's own last kind rather than
@@ -1123,6 +1144,16 @@ pub enum EventMsg {
     /// player who is not told that has no way to learn it except by
     /// looking around at a beach they did not choose.
     Respawn { on_bag: bool },
+    /// You went down (wounded v0, wire v63): `ticks` until the roll and the
+    /// `chance_pm` of getting up at it, per mille. Own-fact — the body on
+    /// the ground, and only it; everyone else learns it from the `wounded`
+    /// bit on the snapshot. What the client owes on it is a clock and a
+    /// number, not a screen: the crawl is played from `InWorld`.
+    Wounded { ticks: u16, chance_pm: u16 },
+    /// You got up: the `chance_pm` the roll beat and the `hp` you stand
+    /// with. Own-fact, `Wounded`'s audience. The failed roll arrives as
+    /// `Death`, exactly as the blow would have.
+    Recovered { chance_pm: u16, hp: u16 },
     /// A death backpack landed at a world position — broadcast, because a
     /// bag on the ground is a world fact like a placement. What is inside
     /// is deliberately absent: v0 has no container UI, the take is
@@ -2656,6 +2687,35 @@ pub fn encode_event_respawn(on_bag: bool, buf: &mut [u8]) -> Result<usize, WireE
     Ok(w.finish())
 }
 
+/// A body went down, own-fact — see `EventMsg::Wounded`. A chance past
+/// one thousand per mille is a sim bug surfacing and is refused rather
+/// than sent as a certainty the roll cannot honour.
+pub fn encode_event_wounded(
+    ticks: u16,
+    chance_pm: u16,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if chance_pm as u32 > CHANCE_PM_MAX {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_WOUNDED)?;
+    w.write(ticks as u32, 16)?;
+    w.write(chance_pm as u32, CHANCE_PM_BITS)?;
+    Ok(w.finish())
+}
+
+/// A body got up, own-fact — see `EventMsg::Recovered`. Same bound on the
+/// chance as `encode_event_wounded`.
+pub fn encode_event_recovered(chance_pm: u16, hp: u16, buf: &mut [u8]) -> Result<usize, WireError> {
+    if chance_pm as u32 > CHANCE_PM_MAX {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_RECOVERED)?;
+    w.write(chance_pm as u32, CHANCE_PM_BITS)?;
+    w.write(hp as u32, 16)?;
+    Ok(w.finish())
+}
+
 /// Relay one chat line to one recipient. The text is already sanitized
 /// (`ChatText` has no other constructor), so this cannot put a line on
 /// the wire the C→S decoder would have refused.
@@ -3514,6 +3574,25 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
         SUB_RESPAWN => EventMsg::Respawn {
             on_bag: r.read_bit()?,
         },
+        SUB_WOUNDED => {
+            let ticks = r.read(16)? as u16;
+            let chance_pm = r.read(CHANCE_PM_BITS)? as u16;
+            // Ten bits hold 1023 and the unit stops at 1000: the encoder
+            // refuses the gap on our side, and this refuses it from the
+            // next sender's.
+            if chance_pm as u32 > CHANCE_PM_MAX {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Wounded { ticks, chance_pm }
+        }
+        SUB_RECOVERED => {
+            let chance_pm = r.read(CHANCE_PM_BITS)? as u16;
+            let hp = r.read(16)? as u16;
+            if chance_pm as u32 > CHANCE_PM_MAX {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Recovered { chance_pm, hp }
+        }
         SUB_BAG_DROPPED => {
             let b = read_bag(&mut r)?;
             EventMsg::BagDropped {
@@ -4860,6 +4939,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/lib.rs"),
         },
         Module {
+            file: "wound.rs",
+            src: include_str!("../../sim-core/src/wound.rs"),
+        },
+        Module {
             file: "backpack.rs",
             src: include_str!("../../sim-core/src/backpack.rs"),
         },
@@ -5614,6 +5697,12 @@ mod wire_domains {
         /// here, by whoever adds the width.
         const MAGNITUDES: &[&str] = &[
             "SUB_BITS",
+            // A per-mille chance (wounded v0): a unit, not an enumeration.
+            // `wound::recover_chance_pm` tops out at 450 by arithmetic and
+            // the field holds 1000, so a re-tuned bonus cannot outgrow it
+            // without also breaking the unit; the encoder refuses past
+            // 1000 either way.
+            "CHANCE_PM_BITS",
             "MOVE_SLOT_BITS",
             "INV_COUNT_BITS",
             "INV_SLOT_BITS",

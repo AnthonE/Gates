@@ -1826,6 +1826,14 @@ pub fn feedback(
     for h in feed.hurt_from() {
         toast.hurt(h.from, h.damage);
     }
+    // The crawl's two sentences (wounded v0). The standing readout is
+    // `render/wounded.rs`'s; these are the moments either side of it.
+    if let Some((ticks, chance_pm)) = feed.wounded {
+        toast.warn(crate::ui::wounded::down_line(ticks, chance_pm));
+    }
+    if let Some((chance_pm, hp)) = feed.recovered {
+        toast.say(crate::ui::wounded::up_line(chance_pm, hp));
+    }
 
     // Refusals. Each store answers a different verb, and the reason codes are
     // integers by wall 3 — turning one into a sentence is the client's job

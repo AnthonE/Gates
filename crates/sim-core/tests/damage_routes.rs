@@ -126,13 +126,24 @@ const FUNNEL_FN: &str = "debit";
 
 /// Writes to a **player's** hp that are not damage, keyed by the enclosing
 /// `fn`. Each carries why armor will never be asked about it.
-const NOT_DAMAGE: &[(&str, &str, &str)] = &[(
-    "survival.rs",
-    "step",
-    "a HEAL — a gain, not a loss. It is already guarded by `if !died`, so a \
-     consumable cannot outrun a death that happened earlier in the same tick, \
-     and there is nothing here for a reducer to reduce",
-)];
+const NOT_DAMAGE: &[(&str, &str, &str)] = &[
+    (
+        "survival.rs",
+        "step",
+        "a HEAL — a gain, not a loss. It is already guarded by `if !died`, so a \
+         consumable cannot outrun a death that happened earlier in the same tick, \
+         and there is nothing here for a reducer to reduce",
+    ),
+    (
+        "world.rs",
+        "down_or_die",
+        "the FALL (wounded v0, `wound.rs`) — the funnel has just taken the body to \
+         zero on a blow that lays it down rather than killing it, and this hands \
+         `WOUNDED_HP` back to be lost again. A gain after the loss, never a loss: \
+         the blow was reduced by armor on its way through `hurt`, and there is \
+         nothing left here for a reducer to reduce",
+    ),
+];
 
 /// Every `Player { … }` literal outside tests, keyed by the enclosing `fn`.
 /// A body being made, never a body being hurt.

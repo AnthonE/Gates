@@ -476,7 +476,15 @@ const TICKS: u64 = 900;
 /// this surface at all. And the smasher looks straight down (its frame is
 /// the one this script edits), because standing on a drum no longer lands a
 /// swing by proximity. Deliberate, regenerated in the commit that caused it.
-const GOLDEN_FINAL_HASH: u64 = 0x565A_4CF4_EC7B_B375;
+///
+/// Moved `0x565A_4CF4_EC7B_B375` → `0x1B27_3424_6B8D_180F` at wounded v0
+/// (2026-09-13), and this one is behavioural in the plainest way: a lethal
+/// blow from a swing, a bite or a body shot no longer makes a corpse on the
+/// tick it lands. The body goes down for 40–50 s, crawls, and either gets
+/// up or dies on a hashed roll — so every bot death in this run moves by a
+/// minute or does not happen, every bag stands up later, and `Player` grew
+/// three hashed fields. Deliberate, regenerated in the commit that caused it.
+const GOLDEN_FINAL_HASH: u64 = 0x1B27_3424_6B8D_180F;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -524,7 +532,12 @@ const GOLDEN_FINAL_HASH: u64 = 0x565A_4CF4_EC7B_B375;
 /// what the bots gather, smash and chip changed from the first swing of the
 /// run, which is the behavioural shape — the trace moved from where the
 /// change started, not by a constant.
-const GOLDEN_TRACE_HASH: u64 = 0x31F6_CAD0_C685_6B34;
+///
+/// Moved `0x31F6_CAD0_C685_6B34` → `0xB15A_3FBC_430E_392A` at wounded v0
+/// (2026-09-13), beside `GOLDEN_FINAL_HASH` and for its reason: the first
+/// lethal blow of the run is a fall now and not a death, so the path
+/// diverges from that tick.
+const GOLDEN_TRACE_HASH: u64 = 0xB15A_3FBC_430E_392A;
 
 /// Fold a stamped trace into one number.
 ///

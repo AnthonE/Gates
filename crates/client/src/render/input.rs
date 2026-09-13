@@ -336,7 +336,15 @@ pub fn gather(
     // flipping a latch nobody can see.
     let toggles_light = crate::ui::hold::held_model_in_hand(&core.catalog, &core.inv, net.sel)
         .is_some_and(|i| crate::ui::hold::HELD_MODELS[i].light.is_some());
-    if swings && mouse.pressed(MouseButton::Left) {
+    // **Down (wounded v0): no swing, no sprint, no jump** — the sim strips
+    // the same three bits from a downed body's frame (`wound::crawl_frame`)
+    // and so does the predictor, so stripping them here changes no
+    // prediction; what it changes is the viewmodel's swing cadence and the
+    // swing cue below, both of which read the byte this sends rather than
+    // the mouse. A downed player clicking hears nothing and sees no arm,
+    // which is the truth.
+    let downed = core.wounded;
+    if swings && !downed && mouse.pressed(MouseButton::Left) {
         buttons |= BTN_PRIMARY;
     }
     // The swing, heard here rather than in `render/audio.rs` because this is
@@ -345,7 +353,7 @@ pub fn gather(
     // swing an axe. `just_pressed`, not `pressed`: the cue's own cooldown
     // paces a held button, and a per-frame push would spend the whole cue
     // queue on one held mouse button.
-    if swings && mouse.just_pressed(MouseButton::Left) {
+    if swings && !downed && mouse.just_pressed(MouseButton::Left) {
         sound.play(crate::sound::mixer::Request::own(crate::sound::Cue::Swing));
         // The score's *small* bump, and it is here for the same reason the
         // cue is: this is the only place that knows a swing was a swing and
@@ -410,6 +418,9 @@ pub fn gather(
     if net.light {
         buttons |= BTN_LIGHT;
     }
+    if downed {
+        buttons &= !(BTN_SPRINT | BTN_JUMP);
+    }
 
     net.session.core.set_input(
         buttons,
@@ -468,7 +479,22 @@ pub fn place_eye(
         *announced = true;
         info!("gates: the shard placed us at {x:.1}, {y:.1}, {z:.1} — building the world");
     }
-    eye.pos = Vec3::new(x, y + EYE_HEIGHT, z);
+    // **The fall, and the getting up** (wounded v0, `render/wounded.rs`):
+    // one-pole toward the wire's fact, so the camera drops fast and settles
+    // slowly, and comes back up the same way. A `Local` would do, but the
+    // roll in `rig::follow_eye` wants the same fraction, so it lives on
+    // `Eye`. Frame-rate independent by the exponent, not by a per-frame
+    // step.
+    // A corpse's eyes stay where they fell — Devblog 53's *"for a few
+    // seconds you'll continue to see through your ragdoll corpse eyes"* —
+    // so a failed roll does not lift the camera back to standing height
+    // behind the death screen; the respawn does.
+    let core = &net.session.core;
+    let want = if core.wounded || core.dead { 1.0 } else { 0.0 };
+    let k = 1.0 - (-time.delta_secs() / super::wounded::WOUND_DROP_S).exp();
+    eye.down += (want - eye.down) * k;
+    let height = EYE_HEIGHT - (EYE_HEIGHT - super::wounded::CRAWL_EYE_M) * eye.down;
+    eye.pos = Vec3::new(x, y + height, z);
     // **The one place the head's offset is added to the body's angles.**
     // Both are zero unless free look is held, so this is the identity it has
     // always been the rest of the time. Adding it anywhere else — or reading

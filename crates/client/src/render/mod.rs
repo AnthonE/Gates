@@ -145,6 +145,7 @@ pub mod web;
 pub mod anim;
 pub mod verbs;
 pub mod viewmodel;
+pub mod wounded;
 
 pub use screen::{Menu, Screen};
 // `Rt` is the tokio runtime and stays native-only; see `screen`'s header.
@@ -243,6 +244,14 @@ pub struct Eye {
     pub pos: Vec3,
     pub yaw: f32,
     pub pitch: f32,
+    /// **How far down the body is**, 0 standing to 1 on the ground, eased
+    /// by `input::place_eye` toward `ClientCore::wounded` at
+    /// `wounded::WOUND_DROP_S` (wounded v0). `place_eye` spends it on the
+    /// eye's height and `rig::follow_eye` on the view's roll; nothing that
+    /// talks to the sim reads it, because a lowered eye is a picture and
+    /// not a fact — the sim casts a swing from `ARROW_EYE_MM` regardless,
+    /// and a downed body has no swing to cast.
+    pub down: f32,
 }
 
 /// Eye height above the capsule's feet, metres (`DECISIONS.md` §open, client
@@ -435,6 +444,7 @@ impl Plugin for GatesRenderPlugin {
         app.add_plugins(MaterialPlugin::<ground_splat::GroundMaterial>::default());
         app.insert_resource(day_pin)
             .init_resource::<Eye>()
+            .init_resource::<wounded::Crawl>()
             .init_resource::<collider_debug::ShowColliders>()
             .init_resource::<hud::ShowDiagnostics>()
             .init_resource::<input::Look>()
@@ -1187,6 +1197,15 @@ impl Plugin for GatesRenderPlugin {
                 .after(input::place_eye)
                 .before(Stream)
                 .run_if(world_running),
+        )
+        // The crawl's screen (wounded v0): the vignette and the two numbers.
+        // After the drain for `bodies::stream`'s reason — it reads this
+        // frame's `Feed::wounded` — and under `world_running` rather than
+        // `InWorld` so a fall that lands with the Esc menu up still starts
+        // the clock. Not in the `Stream` tuple, which is at Bevy's limit.
+        .add_systems(
+            Update,
+            wounded::overlay.after(feed::drain).run_if(world_running),
         )
         // The rig follows the server's clock (day/night v0). After the
         // drain so it reads this frame's tick estimate, not last frame's.

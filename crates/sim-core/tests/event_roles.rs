@@ -99,11 +99,13 @@ use sim_core::world::{
     EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
     EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_HURT, EV_IMPACT, EV_KNOCK,
     EV_KNOWN, EV_MAX, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED,
-    EV_PIECE_REPAIRED, EV_RELOAD, EV_RELOAD_REFUSED, EV_RESEARCH, EV_RESEARCH_REFUSED, EV_RESPAWN,
-    EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_SWING, EV_TRUST,
-    EV_VITALS, EV_WEAK_MARK, PRESENCE_ASLEEP, PRESENCE_AWAKE, PRESENCE_GONE, PRESENCE_MAX,
-    STRUCT_DEPLOY_BIT, TRUST_AUTH, TRUST_CONT, TRUST_DOOR, TRUST_VERB_MAX,
+    EV_PIECE_REPAIRED, EV_RECOVERED, EV_RELOAD, EV_RELOAD_REFUSED, EV_RESEARCH,
+    EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK,
+    EV_STRUCT_HIT, EV_SWING, EV_TRUST, EV_VITALS, EV_WEAK_MARK, EV_WOUNDED, PRESENCE_ASLEEP,
+    PRESENCE_AWAKE, PRESENCE_GONE, PRESENCE_MAX, STRUCT_DEPLOY_BIT, TRUST_AUTH, TRUST_CONT,
+    TRUST_DOOR, TRUST_VERB_MAX,
 };
+use sim_core::wound::{recover_chance_pm, recovers, WOUNDED_HP, WOUND_MAX_TICKS, WOUND_MIN_TICKS};
 use sim_core::yaw_dir;
 
 /// The solved authored sites for `seed` — what `terrain::ground` needs in order
@@ -1106,6 +1108,96 @@ fn the_hit_and_the_health_name_opposite_players() {
         "EV_HIT is the attacker's fact and EV_HEALTH is the victim's — if \
          they ever name the same player, one of them is emitting the wrong id"
     );
+}
+
+/// `EV_WOUNDED: a = player id, b = ticks until the roll, c = chance of
+/// getting up, per mille` (wounded v0).
+///
+/// Three fields, three different magnitudes: an id under 256 here, a clock
+/// in the 1,200–1,500 band, odds in the 200–450 band. A swap of any pair
+/// puts a number outside its band, and the check below asks each field for
+/// its own.
+#[test]
+fn wounded_names_the_body_then_the_clock_then_the_odds() {
+    let mut w = duel_world();
+    // One blow from the floor: the fixture spear is not a one-hit kill on
+    // a full body, and the event under test is the one on the LETHAL blow.
+    w.players[1].hp = 1;
+    until(&mut w, EV_WOUNDED);
+    let e = only(&w, EV_WOUNDED);
+    distinct3(e, "EV_WOUNDED");
+    assert_eq!(e.a, VICTIM, "EV_WOUNDED.a is the body that went down");
+    assert!(
+        (WOUND_MIN_TICKS..=WOUND_MAX_TICKS).contains(&e.b),
+        "EV_WOUNDED.b is the clock, in ticks: {}",
+        e.b
+    );
+    let v = &w.players[1];
+    assert_eq!(
+        e.c,
+        recover_chance_pm(v.food, v.water, w.survival.max_food, w.survival.max_water),
+        "EV_WOUNDED.c is the chance, per mille, read off the meters"
+    );
+    assert!(v.wounded && !v.dead, "the body is down and not dead");
+    assert_eq!(v.hp, WOUNDED_HP, "with the crawl's hp");
+    assert_eq!(v.deaths, 0, "and it has not died");
+    assert_eq!(
+        count(&w, EV_DEATH),
+        0,
+        "a wound is not a death, so no feed line"
+    );
+    assert_eq!(
+        w.players[1].wound_until,
+        w.tick - 1 + e.b as u64,
+        "b names the roll's tick"
+    );
+}
+
+/// `EV_RECOVERED: a = player id, b = the chance the roll was made against,
+/// per mille, c = the hp the body stands up with`.
+///
+/// The roll is a hash the test cannot rig, so the clock is moved to a tick
+/// the hash is known to favour — the field is `pub` for exactly this kind
+/// of test — and the attacker stands down while it runs.
+#[test]
+fn recovered_names_the_body_then_the_odds_then_the_hp() {
+    let mut w = duel_world();
+    w.players[1].hp = 1;
+    until(&mut w, EV_WOUNDED);
+    let v = w.players[1];
+    let chance = recover_chance_pm(v.food, v.water, w.survival.max_food, w.survival.max_water);
+    // The next tick to run is `w.tick`; find one soon after it that rolls
+    // a recovery and aim the clock at it.
+    let lucky = (w.tick..w.tick + 200)
+        .find(|&t| recovers(SEED, VICTIM, t, chance))
+        .expect("a 20%+ roll lands inside 200 tries");
+    w.players[1].wound_until = lucky;
+    // The attacker stands down: a bare `tick(&[])` re-applies the stored
+    // frame, and a spear that keeps swinging finishes a crawl at 10 hp
+    // long before any roll.
+    w.players[0].frame = InputFrame::default();
+    while w.tick <= lucky {
+        w.tick(&[]);
+    }
+    let e = only(&w, EV_RECOVERED);
+    distinct3(e, "EV_RECOVERED");
+    assert_eq!(e.a, VICTIM, "EV_RECOVERED.a is the body that got up");
+    assert_eq!(
+        e.b, chance,
+        "EV_RECOVERED.b is the chance it was rolled against"
+    );
+    assert_eq!(
+        e.c, WOUNDED_HP as u32,
+        "EV_RECOVERED.c is the hp it stands with"
+    );
+    let v = &w.players[1];
+    assert!(!v.wounded && !v.dead, "the body is standing");
+    assert_eq!(
+        v.rewound_until,
+        lucky + sim_core::wound::REWOUND_TICKS,
+        "and owes the minute"
+    );
+    assert_eq!(count(&w, EV_DEATH), 0);
 }
 
 /// `EV_DEATH: a = the player who died, b = the player who killed them`.
@@ -3921,7 +4013,7 @@ fn swing_names_the_swinger_and_nothing_else() {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 43] = [
+    const COVERED: [(&str, u8); 45] = [
         ("EV_GATHER", EV_GATHER),
         ("EV_GATHER_REFUSED", EV_GATHER_REFUSED),
         ("EV_SLOT_HARVESTED", EV_SLOT_HARVESTED),
@@ -3965,6 +4057,8 @@ fn coverage_is_stated_not_implied() {
         ("EV_HURT", EV_HURT),
         ("EV_RELOAD", EV_RELOAD),
         ("EV_RELOAD_REFUSED", EV_RELOAD_REFUSED),
+        ("EV_WOUNDED", EV_WOUNDED),
+        ("EV_RECOVERED", EV_RECOVERED),
     ];
     /// What is knowingly still byte-golden only: nothing, since the last
     /// five landed. The seat stays — named, not just counted — so the next
