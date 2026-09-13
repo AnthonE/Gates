@@ -2820,12 +2820,23 @@ gzip` at 8.57 MB, and the page's `'wasm-unsafe-eval'` policy.
 crosses the origin on every load; that is the edge's setting, and the nginx
 block's own ⚠ asks for it to be checked.
 
-**`play_url` on the listing is the one thing still waiting**, deliberately:
-it is `None` in `scry-deploy/watchtower/listings/listings.json`, it is the
-house's field rather than `scry.json`'s (`_listing` says so), and
-`publish_web.sh` calls it *the promise that the game runs*. Nobody has opened
-this page on a real GPU or signed with a real wallet — item 1 below — so the
-promise is not ours to make yet.
+**The third landed 2026-09-13, after the path was driven** (operator: *"Do
+both and make sure i can run browser"*). `play_url` is set as a keeper-signed
+store-desk overlay (`POST /api/store/title`; `revert` drops it), not a file
+edit, and it was signed only once a headless run from morr had gone page →
+wasm → WebTransport to `game.elopros.com:61234` → SIWE with a throwaway wallet
+→ the island, vitals draining across eight minutes. ⚠ **Headless is
+SwiftShader at ~0.8 fps**, and the ground queues one chunk per frame, so the
+load is ~1 min at 640×360 and still the loading screen at 85 s at 1280×720 —
+look at a frame before trusting a short run. A real GPU and a real wallet are
+still item 1. The harness is outside the tree (`~/gates-browser-smoke/` on
+morr) and leaves a sleeper on the shard per run.
+
+**The same deploy stranded the desktop client, and it is republished**: the
+2026-09-04 depots spoke proto 61, so every launcher join was `REFUSE_VERSION`
+until Linux and Windows went out at `0.8.0-g6b207f004` (not notarized). Nothing
+relates a shard deploy to the depots; `publish_depot.py` checks the tree, not
+the wire.
 
 **Identity is decided and built** (operator, 2026-09-10 — *"the wallet stuff so
 we don't have to have a guest yard"*; `DECISIONS.md`): the page signs the
@@ -2839,6 +2850,16 @@ harness that produced every frame above lives outside the tree.
 Carried from struck §0wt: nothing gates that `wtransport rev = a11e6a8e…`
 contains the #317 fix, and that pin is permanent.
 
+
+## 0ci · `gates.yml`'s 45-minute cap marks passing push runs cancelled
+
+Found 2026-09-13: the push runs for `60bb402` and `3f909a7` read **cancelled**
+while the step "the gates" finished `success` — the cap lands during *Post cache
+cargo*. So a cancelled run on `main` is not evidence of red, and `nightly` is no
+refuge: it runs `ci/gates.sh` under the same 45-minute cap and finished
+`6b207f0` in 44:51, nine seconds inside it.
+Raise `timeout-minutes`, or save the cache before the suite. Same class as the
+v0.4.0 `release.yml` cap.
 
 ## 0wd · A new world register is proposed — blocked on the operator's word
 
