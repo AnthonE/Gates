@@ -571,6 +571,18 @@ do not rediscover)
   pass — found by running the mutants, six of seven caught and the bound was
   the reason), and it prints the whole table as measured so nobody re-derives
   one by hand again.
+  ⚠ **And a statistic over a UV-unwrapped texture is a mean over the
+  background too, unless someone made it not one.** `ci/rock_kit.py`'s
+  first bake read roughness **0.52** for a map made of 0.72–0.96: the
+  whole-image mean, 60 % of which was the black outside the islands — and
+  `measure_glb.py`'s luma reads a delivery the same way, over whatever the
+  generator left there. The kit fills the empty texels with the rock's own
+  mean so the two readings agree by construction. Two orientation facts from
+  the same day, measured rather than assumed: Blender's pixel 0 is the
+  **bottom**-left of a saved PNG, and its glTF exporter writes `v' = 1 − v`
+  — the kit's first normal and ORM maps were upside down against the albedo
+  Blender saved itself, and no whole-image number could see it; the
+  chart-contrast reading (0.011 → 0.140) is what did.
 - **A seam is not a z-fight fix, and a gate can ask the depth buffer's
   question without a GPU.** Every drawn piece stopped 4 cm short of its cell
   from the browser client on, on the claim that two abutting floors z-fight.
@@ -1004,6 +1016,10 @@ cases did not run` rather than passing on three cases that never ran — so the
 symptom is `GATE FAIL: asset triage` on a clean tree with the reason one line
 above it. `pip install Pillow`. Read the line above the failure, not the
 failure.
+**And a ninth, for the rock kit (2026-09-14):** `pip install bpy==4.5.0` —
+Blender as a Python module, Python 3.11, ~370 MB, no GUI — which
+`ci/rock_kit.py`'s `gen`, `edit` and `preview` need. Without it they print
+`SKIP` and exit 2; the `--self-test` the gate runs needs numpy alone.
 
 All of them are the same class — a wall that cannot run is not a wall, so
 install them rather than trimming the feature.

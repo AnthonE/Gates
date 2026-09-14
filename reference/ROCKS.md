@@ -703,7 +703,9 @@ thing it claims (`CLAUDE.md`'s `lattice.rs` entry).
 3. **Rock seeding v0** (§9.2 + §9.4 + gates 1–5) — the sim slice; the
    operator's, because it is a wipe.
 4. **Cliff tier v0** (§9.3 + gate 6) — the slot and the massing; the mesh
-   when the register is decided.
+   when the register is decided, and the generator for it already exists:
+   `ci/rock_kit.py gen --kind slab` (2026-09-14), refused by the triage's
+   boulder depth band until `measure_glb.py` has a slab row.
 5. **Tint and base blend** (§9.5) — client, `§LOOK`.
 6. **Waterside and offshore rock** (§9.1's veto exception) — its own
    slice, after 3.

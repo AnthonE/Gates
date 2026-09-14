@@ -90,6 +90,24 @@ Flagging these so you do not pay for a model that nothing can index:
 
 Everything else in §2–§8 has a slot that already indexes it.
 
+
+### 0.4 · The Blender stage — `ci/rock_kit.py`
+
+The fourth tool, beside `meshy_gen.py` → `measure_glb.py` → `import_meshy.py`
+→ `ktx_pack.py`, and it slots in at either end. **`gen`** makes a seeded kit
+piece inside the volume the sim blocks (read off `sim-core` the way the
+triage reads it, never typed), bakes normal / albedo / roughness / AO from its
+own high-poly and exports this section's contract — `.glb`, metres, ORM
+packed, tangents — plus a sidecar with the seed and every parameter.
+**`edit`** takes a delivery *before* `ktx_pack.py` (PNG/JPEG maps still in
+it) and decimates, voxel-remeshes, cuts the buried bottom, re-bakes onto
+fresh UVs and re-fits it to the row. Both hand the result to the SAME triage.
+Use it for the tiers a sampler cannot hit — a cliff slab that abuts its
+neighbour, a formation that fits a box list, anything scaled per instance —
+and to edit what Meshy hands back; keep Meshy for singles.
+`reference/ROCKS.md` §9 is why; `MANIFEST.md` §rock_kit is the rail and what
+it measured when it landed.
+
 ---
 
 ## 1 · Already covered — do not spend credits here
@@ -141,12 +159,15 @@ Sizes are the **full extents at scale 1.0**; the terrain applies a per-slot
 | 2.4 | ~~**Metal node**~~ | 1.83 ⌀ × 1.25 | 1,364 | ✅ **COVERED 2026-09-02** — `assets/models/prop/node_metal.glb`. ⚠ The size column said 2.0 × 2.0 × 2.0; the sim blocks a **cylinder** r=0.9148 by 1.2538 tall (`OCCUPANT_R_M`/`_TOP_M`, measured off the blob), so it is a low wide outcrop and not a cube. Same rock, with dark ore seams and a metallic glint. `ART.md`: a node's identity is the glint its reflectance gives it. |
 | 2.5 | ~~**Sulfur node**~~ | 1.83 ⌀ × 1.25 | 1,490 | ✅ **COVERED 2026-09-02** — `assets/models/prop/node_sulfur.glb`. ⚠ The size column said 2.0 × 2.0 × 2.0; the sim blocks a **cylinder** r=0.9148 by 1.2538 tall (`OCCUPANT_R_M`/`_TOP_M`, measured off the blob), so it is a low wide outcrop and not a cube. Same rock, yellow crystalline crust in the fissures. |
 | 2.6 | **Berry bush** | 1.4 × 1.4 × 1.4 | ≤ 800 | A green sphere today, and the fix is ez-tree's three `bush_*` presets, not a model. **Do not buy — §1.** |
-| 2.7 | **Boulder** | 2.23 ⌀ × 1.98 | 2,662–2,670 | ⚠ **RE-ROLL QUEUED 2026-09-05 for `rock_a`** — a 1.17 ball at luma 0.344, which is an ore node's silhouette and value; it re-rolls as a *formation* (`MANIFEST.md` §prop). ✅ Covered 2026-09-02 — a **pool of three**, `prop/rock_{a,b,c}.glb`, indexed by yaw. One mesh was 1,054 identical boulders on the shipped seed. Same cylinder caveat as 2.3: the sim blocks r=1.1145 by 1.5403, not a 3 m cube. |
+| 2.7 | **Boulder** | 2.23 ⌀ × 1.98 | 2,662–2,670 | ⚠ **RE-ROLL QUEUED 2026-09-05 for `rock_a`** — a 1.17 ball at luma 0.344, which is an ore node's silhouette and value; it re-rolls as a *formation* (`MANIFEST.md` §prop). ✅ Covered 2026-09-02 — a **pool of three**, `prop/rock_{a,b,c}.glb`, indexed by yaw. One mesh was 1,054 identical boulders on the shipped seed. Same cylinder caveat as 2.3: the sim blocks r=1.1145 by 1.5403, not a 3 m cube. **`ci/rock_kit.py gen --occupant Rock` makes a keeper on every seed tried (1–3, 2026-09-14): r 1.1145 exact, angular in plan, chart contrast under 0.02, byte-deterministic — a re-roll candidate for `rock_a` that nobody has looked at (`§LOOK`).** |
 | 2.8 | ~~**Loot barrel**~~ | 0.585 ⌀ × 0.88 | 758 | ✅ **COVERED 2026-09-02** — `prop/barrel.glb`. The size column said 0.9 ⌀ × 0.95; the sim blocks 0.585 × 0.88 (the measured 55-gallon drum, `DECISIONS.md` barrel proportions v1). |
 | 2.9 | ~~**Supply crate**~~ | 1.1 × 0.8 × 0.8 | 522 | ✅ **COVERED 2026-09-02** — `prop/crate.glb`. A BOX row: `OCCUPANT_R_M` 0.6801 is exactly hypot(0.55, 0.40), so it imports `--fit-axes`. |
 | 2.10 | ~~**Cache box**~~ | 0.9 × 0.55 × 0.7 | 479 | ✅ **COVERED 2026-09-02** — `prop/cache.glb`. Prompted as *visibly poorer* than 2.9 — mismatched split planks and rope where the crate has iron banding — because a loot table is chosen by which of the two you opened. |
 | 2.11 | ~~**Haven shelter**~~ | 7.0 × 9.2 × 7.0 | 4,140 | ✅ **COVERED 2026-09-01** — `assets/models/site/shelter.glb` (`MANIFEST.md`). ⚠ The size column above was WRONG and this row is the correction: it read 7.2 × 5.6 × 7.2 where `SHELTER_BOXES` bounds are 7.0 × 9.2 × 7.0 — **3.6 m short on height**, which is the axis the tower lives on, so it was a spec nobody could have hit. Read the box table, never this file, for a volume the sim collides with. |
 | 2.12 | ~~**Waystation canopy**~~ | 5.6 × 4.1 × 5.6 | 3,801 | ✅ **COVERED 2026-09-01** — `assets/models/site/canopy.glb`. Same correction as 2.11: this row said 3.8 × 2.1 × 3.8 against `WAYSTATION_CANOPY_BOXES`' 5.6 × 4.1 × 5.6 — wrong on every axis, by 1.8 / 2.0 / 1.8 m. The ≤ 2 k triangle target is exceeded and deliberately not enforced — `tests/site_assets.rs` gates 12 k, because a structure that stands twice on an island and never instances is not what presses `RENDER.md` §6's frame ceiling. |
+| 2.13 | **Rock formation** | *no sim row yet* — `ROCKS.md` §9.2 | ≤ 6 k | The highland parent: a climbable landmark the ore gathers around. **Generated, not bought** — `ci/rock_kit.py gen --kind formation --size W H D` builds one inside any box (a 6 × 4 × 6 m trial keeps every band, 2026-09-14). The size is the sim's to publish (`Occupant::Formation`, a box list with ledges), so nothing ships until it does. |
+| 2.14 | **Cliff slab** (cliff / micro-cliff / overhang) | *no sim row yet* — `ROCKS.md` §9.3 | ≤ 4 k | Devblog 54's three placements as three slope bands, one piece scaled per instance. `rock_kit.py gen --kind slab --size 8 5 3` builds one; ⚠ **the triage refuses it today** — `measure_glb.py`'s depth band is the boulder's and a slab is a wafer by design — so the triage needs a slab row the day `Occupant::Cliff` lands, and not before. |
+| 2.15 | **Small rock** | *no sim row yet* — `ROCKS.md` §9.1 | ≤ 600 | The tier between the clutter shard and the boulder, the one every reference frame has strewn downslope of a formation. `rock_kit.py gen --kind small`. |
 
 ---
 
