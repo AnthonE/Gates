@@ -53,6 +53,10 @@ render = [
     "dep:basis-universal",
     "dep:ktx2",
     "dep:ruzstd",
+    # The native audio output seam (`render/audio_out.rs`). Lives in the
+    # not-wasm32 table below, so on a browser build this line enables nothing —
+    # `ureq`'s mechanism, and probed the same way.
+    "dep:cpal",
 ]
 # Asset hot-reload for the dev loop: edit a file under `assets/` and Bevy
 # reloads it into the running client instead of asking for a rebuild and a
@@ -130,6 +134,18 @@ required-features = ["webassets"]
 name = "frame_cost"
 path = "examples/frame_cost.rs"
 required-features = ["render"]
+
+[[example]]
+name = "tree_look"
+path = "examples/tree_look.rs"
+# `native` too: the bench opens a window and shoots to disk, so the browser
+# renderer gate (`ci/gates.sh`, wasm32 check tier) must not compile it.
+required-features = ["render", "native"]
+
+[[example]]
+name = "tree_sweep"
+path = "examples/tree_sweep.rs"
+required-features = ["render", "native"]
 
 # The fell gate needs the render module, so it carries the same requirement
 # the binary does — and therefore runs in the renderer tier, not the code one.
@@ -351,6 +367,23 @@ required-features = ["render"]
 name = "bank"
 path = "tests/bank.rs"
 required-features = ["render"]
+# The native output seam: `audio_out` is `cfg(not(wasm32))`, and the file
+# guards itself the same way so the wasm32 renderer lint does not open it.
+# `Feed::fill` against `Renderer::render` through every callback length and
+# channel count, with no device.
+[[test]]
+name = "engine_out"
+path = "tests/engine_out.rs"
+required-features = ["render", "native"]
+
+# The callback body allocates nothing: `Feed::fill` under a counting
+# `GlobalAlloc`. One test per binary, for `sound/tests/engine_alloc.rs`'s
+# reason — the allocator is process-wide, and the harness's own threads for
+# any other test in the binary would land in the count.
+[[test]]
+name = "engine_out_alloc"
+path = "tests/engine_out_alloc.rs"
+required-features = ["render", "native"]
 
 # Where the green goes: the material-side chain's hue invariance, the detail
 # map's neutrality, and the moisture-band mosaic that explains why three
@@ -391,6 +424,8 @@ image = { version = "0.25", default-features = false, features = ["jpeg"] }
 content = { path = "../content" }
 
 [dependencies]
+# The audio model, its own crate so the browser's AudioWorklet can link it alone.
+sound = { path = "../sound" }
 # Default features for now. Trimming is still a follow-up — but the list of
 # what to trim has changed and the old one is now wrong in a load-bearing way:
 # **`bevy_ui` is not dead weight, it is the whole interaction surface.** Every
@@ -398,19 +433,24 @@ content = { path = "../content" }
 # menu, settings, the HUD, inventory, crafting, the build wheel, chat, the map
 # and the death screen — about 5,400 lines and 78 `Node` sites across
 # `render/*.rs` and `render/panels/`.
-# **`bevy_audio` is no longer on that list and this comment used to say it
-# was.** Audio v0 landed: `render/audio.rs` uses `AudioSource`,
-# `SpatialListener`, `PlaybackSettings` and `Volume`, so it is load-bearing
-# and **alsa is a real requirement**. The old wording ("nothing makes a
-# sound") survived four lines above the paragraph below explaining why `wav`
-# is mandatory for `sound/synth.rs` — a contradiction inside one comment
-# block, and following it would have silenced every cue while compiling
-# clean. Corrected here rather than in `NOW.md` alone, because this file is
-# what someone edits when they do the trim.
+# **`bevy_audio` is compiled and its `AudioPlugin` is DISABLED in both
+# desktop binaries** (`bin/gates.rs`, `bin/modelview.rs`), and this paragraph
+# has now been wrong in both directions: it once said the crate was dead
+# weight while `render/audio.rs` played every cue through it, and it then
+# said it was load-bearing while the cpal seam was being built. Since the
+# audio engine slice the device is opened by **`cpal` directly**
+# (`render/audio_out.rs`, the row in the not-wasm32 table below), so
+# **alsa is still a real requirement — through cpal**, and `bevy_audio` is a
+# trim candidate again (`NOW.md` §0x); `wav` is inert with it, since the
+# decoder never runs. Neither is removed here: a feature change invalidates
+# every Bevy artifact, and the paragraph below explaining why `wav` was once
+# mandatory stays as the record of why it is in the list at all. Corrected
+# here rather than in `NOW.md` alone, because this file is what someone edits
+# when they do the trim.
 #
 # Genuinely unused, by grep: `bevy_gilrs` (no `Gamepad` reference anywhere,
-# and the only real system-dep win — `libudev`) and `vorbis` (we generate WAV
-# in memory). `RENDER.md` §9 carries the reasoning.
+# and the only real system-dep win — `libudev`) and `vorbis` (we generate the
+# bank in memory). `RENDER.md` §9 carries the reasoning.
 #
 # **`bevy_gltf`, `bevy_scene` and `bevy_animation` came OFF this list on
 # 2026-08-07 and the line above did not follow them** — re-checked 2026-08-09.
@@ -603,6 +643,16 @@ tokio = { version = "1", features = ["sync"] }
 # older "draws the white fallback" line is a NATIVE fact only.
 bevy = { version = "0.18", optional = true, features = ["basis-universal"] }
 basis-universal = { version = "0.3", optional = true }
+# The native audio output seam (`render/audio_out.rs`): the engine renders
+# inside cpal's own device callback. Already in `Cargo.lock` at this exact
+# version through rodio, and alsa is already a build requirement — this names
+# the dependency we now call directly rather than through `bevy_audio`, whose
+# `AudioPlugin` the desktop binaries disable. Optional and on `render` like
+# `ureq`: the module is behind the feature and `cfg`'d off wasm32 at its
+# `mod`, so a headless `cargo test --workspace` never links it and a browser
+# build never sees it. cpal 0.15 has no default features and ALSA is its
+# Linux host, so this adds no feature and no crate.
+cpal = { version = "0.15", optional = true }
 # The runtime half of tokio. Unioned with the `sync` above by cargo, so a
 # native build sees exactly the five features it saw before this split.
 #

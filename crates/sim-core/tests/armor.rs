@@ -169,6 +169,9 @@ fn face_off(w: &mut World) -> u16 {
 
 /// Swings until player 1 falls, and answers how many landed. Bounded so a
 /// swing that stops connecting fails as a count rather than as a hang.
+/// "Falls" is the lethal blow — since wounded v0 that lays the body down
+/// rather than killing it, and the count this file is about is the count
+/// to the ground either way.
 fn swings_to_kill(w: &mut World, yaw: u16) -> u32 {
     let mut hits = 0u32;
     for seq in 1..=40u16 {
@@ -178,7 +181,7 @@ fn swings_to_kill(w: &mut World, yaw: u16) -> u32 {
             favour: 0,
         }]);
         hits += 1;
-        if w.players[1].hp == 0 {
+        if w.players[1].wounded || w.players[1].hp == 0 {
             return hits;
         }
         for _ in 0..SWING_INTERVAL_TICKS {
@@ -473,6 +476,22 @@ fn the_keypad_shock_is_not_blunted_by_armor() {
     assert!(!took.died, "the keypad killed somebody");
 }
 
+/// The blow after the fall. Since wounded v0 `swings_to_kill` ends on a
+/// crawl, not a corpse; the tests below are about what a *corpse* drops,
+/// so they finish the job the way a killer does — wait out the cadence,
+/// swing once more.
+fn finish_off(w: &mut World, yaw: u16) {
+    for _ in 0..SWING_INTERVAL_TICKS {
+        w.tick(&[]);
+    }
+    w.tick(&[Command::Input {
+        id: 1,
+        frame: swing_frame(w, 99, yaw),
+        favour: 0,
+    }]);
+    assert!(w.players[1].dead, "the finishing blow did not land");
+}
+
 // ---------------------------------------------------------------------
 // 4 · Death: a corpse drops its plates.
 // ---------------------------------------------------------------------
@@ -495,6 +514,7 @@ fn a_corpse_drops_what_it_was_wearing() {
     // slots rather than out of its inventory.
     w.players[1].inv = [ItemStack::default(); INV_SLOTS];
     swings_to_kill(&mut w, yaw);
+    finish_off(&mut w, yaw);
 
     assert_eq!(w.players[1].hp, 0, "the body did not fall");
     assert_eq!(
@@ -538,6 +558,7 @@ fn a_full_pack_does_not_destroy_the_plates() {
     w.players[1].worn[0] = one(HEADWRAP);
     w.players[1].worn[1] = one(PLATE);
     swings_to_kill(&mut w, yaw);
+    finish_off(&mut w, yaw);
 
     let found: Vec<u16> = w
         .backpacks

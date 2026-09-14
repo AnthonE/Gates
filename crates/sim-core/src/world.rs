@@ -707,6 +707,35 @@ pub const EV_RELOAD: u8 = 42;
 /// the reload path, so a held trigger cannot flood the lane.
 pub const EV_RELOAD_REFUSED: u8 = 43;
 
+/// EV_WOUNDED: a = player id, b = ticks until the roll, c = chance of
+/// getting up at that roll, per mille (`wound::recover_chance_pm`, read
+/// off the meters as the body fell). Own-fact, `EV_HEALTH`'s audience: the
+/// one body that went down is the only one this concerns, and every other
+/// client learns it from the `wounded` bit on the snapshot (wire v63).
+///
+/// **The two numbers are the screen** — the reference showed neither for
+/// eight years and then made showing them a feature (`reference/WOUNDED.md`
+/// §2.5): a timer you can see is a decision you can make. `b` is in ticks
+/// and not seconds because the client counts down at the tick rate it
+/// already runs; `c` is the chance *now*, and the sim re-reads the meters
+/// at the roll, so the number can drift a point or two over the minute
+/// (`WOUNDED.md` §9.4 says so rather than sending it again).
+///
+/// Bounded by the funnel: one per lethal blow per body, and a body that is
+/// already down cannot go down again (`World::down_or_die`).
+pub const EV_WOUNDED: u8 = 44;
+
+/// EV_RECOVERED: a = player id, b = the chance the roll was made against,
+/// per mille, c = the hp the body stands up with. Own-fact, `EV_WOUNDED`'s
+/// audience and its posture: the one message that says the crawl ended
+/// upright rather than in `EV_DEATH`. `c` is what the vitals bar will read
+/// next and rides here rather than only on a following `EV_HEALTH` because
+/// the sentence the client owes is *you got up, with this much* and one
+/// event should be able to say it.
+///
+/// One per recovery, at most once per `wound::WOUND_MIN_TICKS` per body.
+pub const EV_RECOVERED: u8 = 45;
+
 /// The highest code above, named rather than counted: the event codes are
 /// `1..=EV_MAX` with no gaps, and `test_event_roles`'s coverage ledger
 /// scans that range. It lived in that test as a literal `25`, which meant a
@@ -714,7 +743,7 @@ pub const EV_RELOAD_REFUSED: u8 = 43;
 /// classified it. Tying it to the last constant closes half of that; the
 /// other half is the ledger's own `every_event_code_is_in_range`, which
 /// parses this file and fails if a code is declared past this line.
-pub const EV_MAX: u8 = EV_RELOAD_REFUSED;
+pub const EV_MAX: u8 = EV_RECOVERED;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -1082,6 +1111,33 @@ pub struct Player {
     /// by, and a shard that drifted on it would nominate a different
     /// victim on its next replayed session.
     pub slept_at: u64,
+    /// **Down, not dead** (wounded v0, `wound.rs`; `reference/WOUNDED.md`
+    /// §9). A lethal blow from an eligible source lays the body here
+    /// instead of in `dead`: it keeps its slot, its inventory and its
+    /// position, moves on `wound::crawl_frame` and nothing else, refuses
+    /// every verb `live_slot_of` guards, and waits on `wound_until`.
+    ///
+    /// Read where agency is decided (`tick`, `live_slot_of`) and by the
+    /// wire (`EntityState::wounded`), exactly as `sleeping` is. Hashed:
+    /// two shards that disagree about whether a body is standing disagree
+    /// about every tick after.
+    ///
+    /// While this is set, `death_by` / `death_cause` / `death_item` /
+    /// `death_range_cm` hold the blow that put the body down — the same
+    /// four facts the death screen is made of, written early, because a
+    /// failed roll is that death and `die` needs them then. `wound_tick`
+    /// clears them on a recovery.
+    pub wounded: bool,
+    /// The tick the roll happens (`wound::recovers`): `wounded`'s clock.
+    /// Zero when standing. Hashed with it.
+    pub wound_until: u64,
+    /// The tick until which a second lethal blow kills outright rather
+    /// than laying the body down again — `wound::REWOUND_TICKS` after a
+    /// recovery (Devblog 71's minute; `WOUNDED.md` §2.7). Zero means no
+    /// window, which is why it is an *until* and not a *since*: a *since*
+    /// of zero would read as "recovered at tick 0" and refuse every fresh
+    /// body its first wound for the shard's first minute. Hashed.
+    pub rewound_until: u64,
     /// The sub-point remainder of a burning torch (torch fuel v0,
     /// `light.rs`). Hundredths×ticks, drained against `light::BURN_DEN`.
     ///
@@ -1134,6 +1190,9 @@ impl Default for Player {
             death_range_cm: 0,
             sleeping: false,
             slept_at: 0,
+            wounded: false,
+            wound_until: 0,
+            rewound_until: 0,
             light_acc: 0,
         }
     }
@@ -1921,6 +1980,17 @@ impl World {
     /// frame and keeps flowing so prediction and the server agree about a
     /// body that is standing still (the tick zeroes what it acts on).
     pub fn live_slot_of(&self, id: u32) -> Option<usize> {
+        self.slot_of(id)
+            .filter(|&s| !self.players[s].dead && !self.players[s].wounded)
+    }
+
+    /// The slot of a player who is **conscious** — standing or down, but
+    /// not a corpse. What a downed body may still do is the reference's
+    /// short list (`reference/WOUNDED.md` §2.3): move slowly, look, and
+    /// work a door. `Command::Use` resolves through this so a crawler can
+    /// reach the door of their own base; everything that spends a hand
+    /// stays on `live_slot_of`.
+    pub fn awake_slot_of(&self, id: u32) -> Option<usize> {
         self.slot_of(id).filter(|&s| !self.players[s].dead)
     }
 
@@ -2399,6 +2469,113 @@ impl World {
         );
     }
 
+    /// A lethal blow landed: lay the body down, or make the corpse.
+    ///
+    /// **Every kill site goes through here, and the choice is the
+    /// reference's** (`wound::wounds` — a predicate on the hit, not on the
+    /// player): a swing, a bite and a body shot put a body on the ground
+    /// for `wound::span_ticks` with `WOUNDED_HP` left; a headshot, a blast,
+    /// the clock and the sea call `die` as they always did. Three more
+    /// things send a blow straight to `die` whatever dealt it — a body
+    /// already down (the second blow is the finishing one), a sleeper
+    /// (nobody is there to crawl, and the reference refuses it too), and
+    /// a body inside its `rewound_until` window (Devblog 71's minute).
+    ///
+    /// The fall writes hp — the one write to a player's hp outside the
+    /// funnel that is not a heal, classified in `tests/damage_routes.rs`
+    /// as exactly that: the funnel took the body to zero on this blow and
+    /// this hands a little back to be lost again. `EV_HEALTH` follows so
+    /// the bar reads the crawl's hp and not the zero the emit site just
+    /// announced; `EV_WOUNDED` carries the clock and the odds.
+    #[allow(clippy::too_many_arguments)]
+    fn down_or_die(
+        &mut self,
+        slot: usize,
+        by: u32,
+        cause: u8,
+        item: u16,
+        range_cm: u16,
+        head: bool,
+    ) {
+        let p = &self.players[slot];
+        let eligible = crate::wound::wounds(cause, head)
+            && !p.wounded
+            && !p.sleeping
+            && !p.dead
+            && self.tick >= p.rewound_until;
+        if !eligible {
+            self.die(slot, by, cause, item, range_cm);
+            return;
+        }
+        let (id, hp_max) = (p.id, p.hp_max);
+        let span = crate::wound::span_ticks(self.seed, id, self.tick);
+        let chance = crate::wound::recover_chance_pm(
+            p.food,
+            p.water,
+            self.survival.max_food,
+            self.survival.max_water,
+        );
+        let q = &mut self.players[slot];
+        q.wounded = true;
+        q.wound_until = self.tick + span as u64;
+        q.hp = crate::wound::WOUNDED_HP;
+        q.death_by = by;
+        q.death_cause = cause;
+        q.death_item = item;
+        q.death_range_cm = range_cm;
+        self.events.push(EV_WOUNDED, id, span, chance);
+        self.events.push(
+            EV_HEALTH,
+            id,
+            crate::wound::WOUNDED_HP as u32,
+            hp_max as u32,
+        );
+    }
+
+    /// A down body's clock, one tick: nothing until `wound_until`, then the
+    /// roll. Returns `true` if the roll made a corpse (the slot has been
+    /// rebuilt and the caller must not touch it again this tick).
+    ///
+    /// The odds are re-read off the meters *now* rather than kept from the
+    /// fall — the reference's "based on your food and water levels" is a
+    /// statement about the roll, and a body that drank on the way down
+    /// (it cannot, today, but the rule should not depend on that) would
+    /// otherwise be rolled against a stale number. A recovery clears the
+    /// four downing facts: the screen they were kept for never opened.
+    fn wound_tick(&mut self, slot: usize) -> bool {
+        let p = self.players[slot];
+        if self.tick < p.wound_until {
+            return false;
+        }
+        let chance = crate::wound::recover_chance_pm(
+            p.food,
+            p.water,
+            self.survival.max_food,
+            self.survival.max_water,
+        );
+        if crate::wound::recovers(self.seed, p.id, self.tick, chance) {
+            let q = &mut self.players[slot];
+            q.wounded = false;
+            q.wound_until = 0;
+            q.rewound_until = self.tick + crate::wound::REWOUND_TICKS;
+            q.death_by = 0;
+            q.death_cause = 0;
+            q.death_item = NO_ITEM;
+            q.death_range_cm = 0;
+            let hp = q.hp;
+            self.events.push(EV_RECOVERED, p.id, chance, hp as u32);
+            return false;
+        }
+        self.die(
+            slot,
+            p.death_by,
+            p.death_cause,
+            p.death_item,
+            p.death_range_cm,
+        );
+        true
+    }
+
     /// Death, v3: the body falls **and stays down**. What you were carrying
     /// is lying where you fell, the kill is already counted and announced
     /// (combat.rs, survival.rs), and the consequence splits in two — this
@@ -2429,6 +2606,20 @@ impl World {
         // A copy of the body as it fell: the bag is built from it after
         // the slot is already being written, and `Player` is `Copy`.
         let body = self.players[slot];
+        // **The announcement and the count live here** (wounded v0), and
+        // not at the eight sites that reach the funnel. Until 2026-09-13
+        // every kill site pushed `EV_DEATH` itself on the funnel's `died`
+        // and `combat::debit` counted the death — which was right while a
+        // lethal debit and a corpse were the same event. They are not any
+        // more: a lethal blow from an eligible source lays the body down
+        // (`down_or_die`), and a kill feed that announced every such blow
+        // would credit a kill to a raider whose victim got up a minute
+        // later. A death is a corpse, so the corpse's builder says it and
+        // counts it, once, and the broadcast lands before the bag drop
+        // below for a reason the client owns: `own_bag_pending` is armed
+        // by `Death` and spent by the first `BagDropped` after it.
+        self.events.push(EV_DEATH, body.id, by, 0);
+        let deaths = body.deaths.saturating_add(1);
         self.backpacks
             .drop_for(&self.backpack, &body, self.tick, &mut self.events);
         self.players[slot] = Player {
@@ -2438,7 +2629,7 @@ impl World {
             frame: body.frame,
             hp: 0,
             hp_max: body.hp_max,
-            deaths: body.deaths,
+            deaths,
             dead: true,
             death_by: by,
             death_cause: cause,
@@ -2820,6 +3011,17 @@ impl World {
                     // stored: a body that logged off dead wakes on a
                     // beach, so `wake` owns that record, not this one.
                     dead: false,
+                    // From the save (wounded v0, store format 6): a body
+                    // that was down when its record was taken comes back
+                    // down, with its clock. Usually moot — a leaver's body
+                    // stays in the world as a sleeper and the roll resolves
+                    // there — but a record taken by the autosave sweep mid-
+                    // crawl and restored after a wipe of the world would
+                    // otherwise stand the player up for free, and `persist.rs`
+                    // says why that is the wrong direction.
+                    wounded: s.wounded,
+                    wound_until: s.wound_until,
+                    rewound_until: s.rewound_until,
                     frame: InputFrame::default(),
                     next_swing: 0,
                     // Not from the save, and for `next_swing`'s reason one
@@ -3401,7 +3603,9 @@ impl World {
                 level,
                 loc,
             } => {
-                if let Some(slot) = self.live_slot_of(id) {
+                // `awake_slot_of`, not `live_slot_of`: a door is the one
+                // verb a downed body keeps (wounded v0).
+                if let Some(slot) = self.awake_slot_of(id) {
                     // One key, two verbs, picked by what stands at the
                     // address — the reference's own E menu, where a door
                     // offers open/close and a fire offers ignite/
@@ -3837,6 +4041,13 @@ impl World {
                     self.die(i, id, DEATH_BY_CLOCK, NO_ITEM, 0);
                     continue;
                 }
+                // A sleeper that was down when its owner left keeps its
+                // clock: the roll comes at `wound_until` exactly as it
+                // would have with them watching, because logging off
+                // must not be a way to stop the die from being cast.
+                if self.players[i].wounded && self.wound_tick(i) {
+                    continue;
+                }
                 let frame = InputFrame {
                     seq: self.players[i].frame.seq,
                     yaw: self.players[i].frame.yaw,
@@ -3844,6 +4055,58 @@ impl World {
                     sel: self.players[i].frame.sel,
                     ..InputFrame::default()
                 };
+                movement::step(
+                    seed,
+                    &self.haven,
+                    self.pieces.cols(),
+                    &mut crate::occupy::Occupants {
+                        table: &self.scatter,
+                        haven: &self.haven,
+                        harvested: &self.slot_lives,
+                        cache: &mut self.slot_cache,
+                    },
+                    &mut self.players[i].body,
+                    &frame,
+                );
+                continue;
+            }
+            // Down (wounded v0): the clock, the roll, the crawl, and none
+            // of the verbs. The clock first for the live body's reason
+            // below; the roll before the step so a body that dies on it
+            // does not also crawl a tick; the crawl on the same frame the
+            // client's predictor crawls (`wound::crawl_frame`), which is
+            // what keeps the two agreeing about a body on the ground. The
+            // arm, the bow, the craft queue and the torch are skipped as
+            // a sleeper's are — a downed player has dropped what they
+            // held, and `held` on the wire says so (`server/core.rs`).
+            if self.players[i].wounded {
+                if survival::step(&self.survival, &mut self.players[i], &mut self.events)
+                    == survival::Step::Died
+                {
+                    let id = self.players[i].id;
+                    self.die(i, id, DEATH_BY_CLOCK, NO_ITEM, 0);
+                    continue;
+                }
+                if self.wound_tick(i) {
+                    continue;
+                }
+                if let Some(prev) = catchup[i] {
+                    let prev = crate::wound::crawl_frame(&prev);
+                    movement::step(
+                        seed,
+                        &self.haven,
+                        self.pieces.cols(),
+                        &mut crate::occupy::Occupants {
+                            table: &self.scatter,
+                            haven: &self.haven,
+                            harvested: &self.slot_lives,
+                            cache: &mut self.slot_cache,
+                        },
+                        &mut self.players[i].body,
+                        &prev,
+                    );
+                }
+                let frame = crate::wound::crawl_frame(&self.players[i].frame);
                 movement::step(
                     seed,
                     &self.haven,
@@ -4004,7 +4267,8 @@ impl World {
                             &mut self.events,
                         ) {
                             let by = self.players[i].id;
-                            self.die(victim, by, DEATH_BY_HAND, item, range_cm);
+                            // A swing wounds whatever it hit (`wound::wounds`).
+                            self.down_or_die(victim, by, DEATH_BY_HAND, item, range_cm, false);
                         }
                     }
                     melee::Reached::Mob(m) => {
@@ -4205,8 +4469,9 @@ impl World {
             );
             if died {
                 let by = mob::mob_id(b.mob_slot as usize);
-                self.events.push(EV_DEATH, victim_id, by, 0);
-                self.die(victim, by, DEATH_BY_MOB, NO_ITEM, b.range_cm);
+                // `EV_DEATH` is `die`'s now (wounded v0) — a bite that
+                // lays a body down is not a kill until the roll says so.
+                self.down_or_die(victim, by, DEATH_BY_MOB, NO_ITEM, b.range_cm, false);
             }
         }
 
@@ -4274,7 +4539,7 @@ impl World {
             // Was `DEATH_BY_ARROW` from hitscan v0 to arrow recovery v1,
             // under the refusal that constant's doc states and this bump
             // lifts. A rifle no longer reports an arrow.
-            self.die(k.victim, k.by, DEATH_BY_BULLET, k.item, k.range_cm);
+            self.down_or_die(k.victim, k.by, DEATH_BY_BULLET, k.item, k.range_cm, k.head);
         }
         let (n_kills, n_chips) = ranged::step(
             seed,
@@ -4299,7 +4564,7 @@ impl World {
             self.chip(c, &mut removals);
         }
         for k in kills.iter().take(n_kills) {
-            self.die(k.victim, k.by, DEATH_BY_ARROW, k.item, k.range_cm);
+            self.down_or_die(k.victim, k.by, DEATH_BY_ARROW, k.item, k.range_cm, k.head);
         }
         self.slot_lives.respawn_due(tick, &mut self.events);
         // Bags time out on the sim's clock, before the tick advances, so
@@ -4488,6 +4753,15 @@ impl World {
             db[10] = p.sleeping as u8;
             db[11..19].copy_from_slice(&p.slept_at.to_le_bytes());
             h.update(&db);
+            // Down (wounded v0), in its own buffer for `dead`'s reason:
+            // whether a body is on the ground decides its speed, its
+            // verbs and whether a roll is coming, and the two ticks beside
+            // it decide when and whether the next blow is a death.
+            let mut wb = [0u8; 17];
+            wb[0] = p.wounded as u8;
+            wb[1..9].copy_from_slice(&p.wound_until.to_le_bytes());
+            wb[9..17].copy_from_slice(&p.rewound_until.to_le_bytes());
+            h.update(&wb);
             for s in p.inv.iter() {
                 let mut sb = [0u8; 6];
                 sb[0..2].copy_from_slice(&s.item.to_le_bytes());

@@ -977,7 +977,15 @@ conifer: a full 328-tree scatter ring at 5.9 k tris a tree is 1.9 M, and
 `crates/client/tests/tree.rs` *printed* the ring rather than asserting it,
 precisely because 1.5 M is the number this table is unsure of.
 
-**It fits now — 1.94 M → 510 k, landed 2026-08-20** (`DECISIONS.md` §open,
+**Then the forest became a forest and the distance stopped bounding anything
+(forest density v1, 2026-09-14).** The ring's p90 is 811 trees now and the
+80 m disc plus its fade holds up to ~360 — 2.1 M before a hull — so
+`tree::TREE_LOD_CAP` bounds the drawn pair by COUNT (`tree::cap_swap` pulls
+the swap in to the distance holding 180, and out again after) and the gates
+in `tests/tree.rs` / `tests/outer_ring.rs` hold both rings under 1.5 M at
+the densest eye on the island, at mesh ceilings. `FORESTS.md` §8 gate 7.
+
+**It fit first — 1.94 M → 510 k, landed 2026-08-20** (`DECISIONS.md` §open,
 tree LOD v0). Past `TREE_LOD_SWAP_M` a tree is one opaque hull lathed through
 its own vertices (`tree::impostor_of`, 105 tris) instead of a 5.9 k bark mesh
 plus an alpha-masked canopy, swapped by `VisibilityRange` with a 15 m dithered
@@ -1157,20 +1165,27 @@ missing it survivable.
   inventory, crafting, build wheel, chat, the map and the death screen). It
   then named **`bevy_audio`** as genuinely unused, correctly identifying the
   blocker as *asset licensing, not the API* — and that is exactly the blocker
-  the audio slice removed on 2026-08-06. `crates/client/src/sound/synth.rs`
+  the audio slice removed on 2026-08-06. `crates/sound/src/synth.rs`
   GENERATES the bank from arithmetic at boot, so there is no sample to
   license, and the client makes sound. `wav` had to be **added** to the
-  feature set: Bevy's defaults enable `bevy_audio` and `vorbis` only, so a
-  generated WAV would have panicked with `UnrecognizedFormat` at the moment
-  it played. Audio's boundary rule is this document's rule one surface over —
-  **Bevy plays, it does not decide** — with the model in
-  `crates/client/src/sound/` (pure, code tier, 63 assertions) and
-  `render/audio.rs` owning nothing but the bank, the listener and the voices.
+  feature set when the bank was WAV that `bevy_audio` decoded; since audio
+  engine v0 (2026-09-13) that decoder never runs and since 2026-09-14
+  neither does its plugin — `render/audio_out.rs` opens the device through
+  **cpal** and renders `sound::engine::Renderer` inside the device callback
+  at the DEVICE rate (rodio's sink re-bootstrapped a resampler every 512
+  samples inside that callback, which is why it went), and `AudioPlugin` is
+  not added by either desktop binary — so `bevy_audio` and `wav` are both
+  inert and trim candidates (`NOW.md` §0x), not removals here. Audio's
+  boundary rule is this document's rule one surface over — **cpal calls, the
+  engine renders, Bevy draws** — with the model AND the samples in
+  `crates/sound/src/` (pure, code tier) and `render/audio.rs` owning nothing
+  but the bank's hand-over, the producers and the frame's command buffer.
   **The score (2026-08-11) is the same rule under load**: `sound::music` is a
   gap-and-intensity director (`reference/AUDIO.md` §8) that decides which
-  piece plays and when, headless and testable; `render/audio.rs::music` spawns
-  what it names and holds the level. It is also the one audio system with no
-  run condition at all, because the menus have music and have no world.
+  piece plays and when, headless and testable; `render/audio.rs::music` sends
+  what it names to a held slot and holds the level. It is also the one audio
+  system with no run condition at all, because the menus have music and have
+  no world.
   **`bevy_gltf`, `bevy_scene` and `bevy_animation` stopped being unused with
   the mannequin** (2026-08-07, `render/anim.rs`) — this paragraph named all
   three as trim candidates and only the reasoning survives. Trimming is a build-time and payload win, not a picture win — it

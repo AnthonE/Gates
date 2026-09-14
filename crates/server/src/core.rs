@@ -20,13 +20,13 @@ use protocol::{
     encode_event_inv, encode_event_knock, encode_event_known, encode_event_move_refused,
     encode_event_moved, encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
     encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
-    encode_event_reload, encode_event_reload_refused, encode_event_removed, encode_event_research,
-    encode_event_research_refused, encode_event_research_rows, encode_event_respawn,
-    encode_event_shot, encode_event_slot_change, encode_event_slot_sync, encode_event_stock,
-    encode_event_struct_hit, encode_event_swing, encode_event_vitals, encode_event_weak_mark,
-    ActionMsg, ChatMsg, EntityState, InputDatagram, InvSlot, ItemCatalog, SnapshotEncoder,
-    SnapshotHeader, WireBag, WireError, BAG_SYNC_BATCH, CONT_SYNC_BATCH, DEPLOY_SYNC_BATCH,
-    MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
+    encode_event_recovered, encode_event_reload, encode_event_reload_refused, encode_event_removed,
+    encode_event_research, encode_event_research_refused, encode_event_research_rows,
+    encode_event_respawn, encode_event_shot, encode_event_slot_change, encode_event_slot_sync,
+    encode_event_stock, encode_event_struct_hit, encode_event_swing, encode_event_vitals,
+    encode_event_weak_mark, encode_event_wounded, ActionMsg, ChatMsg, EntityState, InputDatagram,
+    InvSlot, ItemCatalog, SnapshotEncoder, SnapshotHeader, WireBag, WireError, BAG_SYNC_BATCH,
+    CONT_SYNC_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::backpack::BAG_GONE_MAX;
 use sim_core::build::{damage_band, BuildContent, PieceRec, LOC_PLANE};
@@ -49,9 +49,9 @@ use sim_core::world::{
     EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
     EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_HURT, EV_IMPACT, EV_KNOCK,
     EV_KNOWN, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED,
-    EV_PIECE_REPAIRED, EV_RELOAD, EV_RELOAD_REFUSED, EV_RESEARCH, EV_RESEARCH_REFUSED, EV_RESPAWN,
-    EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_SWING, EV_VITALS,
-    EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
+    EV_PIECE_REPAIRED, EV_RECOVERED, EV_RELOAD, EV_RELOAD_REFUSED, EV_RESEARCH,
+    EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK,
+    EV_STRUCT_HIT, EV_SWING, EV_VITALS, EV_WEAK_MARK, EV_WOUNDED, STRUCT_DEPLOY_BIT,
 };
 
 /// A piece row's baked maximum hp, or 0 if the row is past the table.
@@ -2041,6 +2041,35 @@ impl ShardCore {
                         Err(_) => ShardStats::bump(&stats.encode_range_errors),
                     }
                 }
+                EV_WOUNDED | EV_RECOVERED => {
+                    // Own-fact, `EV_RESPAWN`'s audience and its posture
+                    // (wounded v0): the one body on the ground is the only
+                    // one this concerns — everyone else reads the `wounded`
+                    // bit off the snapshot — and what it closes or opens
+                    // is not a screen but a clock on the HUD. The sim's
+                    // fields are `u32`; the clock is under 1,500 and the
+                    // odds under 1,000, so the narrowing cannot truncate,
+                    // and the encoder refuses odds past the unit anyway.
+                    let Some(slot) = self.client_slot_of(ev.a) else {
+                        continue; // that player left this tick
+                    };
+                    let enc = if ev.code == EV_WOUNDED {
+                        encode_event_wounded(ev.b as u16, ev.c as u16, &mut self.ev_buf)
+                    } else {
+                        encode_event_recovered(ev.b as u16, ev.c as u16, &mut self.ev_buf)
+                    };
+                    match enc {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            } else {
+                                self.clients[slot].ev_resync();
+                                ShardStats::bump(&stats.ev_resyncs);
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
                 EV_MOVED | EV_MOVE_REFUSED => {
                     // Own-fact, `EV_RESPAWN`'s audience: a move inside your
                     // own inventory is nobody else's business, and a move
@@ -3733,10 +3762,16 @@ impl ShardCore {
             grounded: p.body.grounded,
             sleeping: p.sleeping,
             dead: p.dead,
+            wounded: p.wounded,
             yaw: p.frame.yaw,
             pitch: p.frame.pitch,
-            held: Self::held_of(p),
-            lit: sim_core::light::is_lit(p, gc),
+            // A downed body has dropped what it held (wounded v0 — the
+            // reference's rule, `reference/WOUNDED.md` §2.3), so the hand
+            // reads empty and the flame is out, whatever the hotbar says.
+            // The sim skips the arm and the torch for it (`tick`'s wounded
+            // branch); this is the wire agreeing.
+            held: if p.wounded { None } else { Self::held_of(p) },
+            lit: !p.wounded && sim_core::light::is_lit(p, gc),
         }
     }
 
@@ -3787,6 +3822,7 @@ impl ShardCore {
             grounded: m.body.grounded,
             sleeping: false,
             dead: false,
+            wounded: false,
             yaw: m.yaw,
             pitch: 0,
             // Six of twelve now. A pig has no hotbar, so the hand is

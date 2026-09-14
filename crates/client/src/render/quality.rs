@@ -154,11 +154,19 @@ pub fn tier(q: Quality) -> Tier {
     // own.** The clamp above is a feature wall — SSAO, and through it the
     // prepasses, cannot exist on that backend — and the tree swap is not: it
     // is a triangle budget, and `Low`'s 35 m is sized for a machine that
-    // cannot hold the frame. At 35 m the first real browser session
-    // (2026-09-13) read as a forest of hulls right up to the player, beside a
-    // desktop that swaps at 80. So the page keeps every term WebGL2 forces
-    // and borrows `Medium`'s distance, the next rung rather than a number of
-    // its own (`DECISIONS.md` §open, tree LOD v0).
+    // cannot hold the frame, which a browser on an ordinary desktop is not.
+    // So the page keeps every term WebGL2 forces and borrows `Medium`'s
+    // distance, the next rung rather than a number of its own
+    // (`DECISIONS.md` §open, tree LOD v0).
+    //
+    // ⚠ This rung was first moved on 2026-09-13 because the first real
+    // browser session "read as a forest of hulls right up to the player",
+    // and that reading was wrong about the CAUSE: a hull at arm's length is
+    // inside any swap distance, so no distance can put it there. Those were
+    // the outer ring's hulls, left standing in every chunk the player walked
+    // into (`props::stream`'s hand-off, fixed the same day —
+    // `tests/ring_handoff.rs`). The distance stays on the argument above, not
+    // on that frame.
     #[cfg(target_arch = "wasm32")]
     let t = Tier {
         tree_lod_swap_m: MEDIUM_TREE_LOD_SWAP_M,
@@ -248,9 +256,12 @@ pub fn apply(
     if shadow_map.size != t.shadow_map_px {
         shadow_map.size = t.shadow_map_px;
     }
-    let want = TreeLod::at(t.tree_lod_swap_m);
-    if *lod != want {
-        *lod = want;
+    // The tier, not the bands: `tree::cap_swap` may be holding the bands
+    // under the tier this frame, and that is not a reason to rewrite them.
+    // A tier that did move resets the bands to it, and the cap pulls them in
+    // again on its next run if the stand still needs it.
+    if lod.tier_m != t.tree_lod_swap_m {
+        *lod = TreeLod::at(t.tree_lod_swap_m);
     }
 }
 

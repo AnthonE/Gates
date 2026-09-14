@@ -29,6 +29,16 @@
 //! the fix for the hand-kept-mirror problem. `CLAUDE.md` has both failures in
 //! its trap list; this is the one where the exact gate is the wrong gate.
 //!
+//! **And it covers `../sound/src`** — the pure audio model and the sample
+//! renderer, split out of this crate (audio engine v0) precisely so the
+//! browser's `AudioWorklet` can link it alone. A worklet is a wasm module
+//! with no clock and no threads at all, so a trap there is the same trap one
+//! module over, and a scan that stopped at this crate's boundary would have
+//! gone green over the crate that moved out from under it. `render/audio_out.rs`
+//! is scanned too: it is `cfg`'d off wasm32 at its `mod` in `render/mod.rs`
+//! (like `elo_overlay`), holds none of the needles, and stays in the walk
+//! rather than in EXEMPT because nothing about it needs exempting.
+//!
 //! Two exclusions, both by name and both loud:
 //! - `src/elo_overlay.rs` is VENDORED from `AnthonE/scry-forge` and unpatchable
 //!   here (`CLAUDE.md` §vendored). It is `cfg`'d off wasm at its `mod`
@@ -257,11 +267,22 @@ fn unguarded(path: &Path) -> Vec<(u32, String)> {
 fn no_unguarded_call_traps_a_wasm_module() {
     let mut files = Vec::new();
     rs_files(Path::new("src"), &mut files);
+    // The audio model's own crate, keyed as `../sound/src/<file>` so a KNOWN
+    // entry there is spelled the way the scan names it.
+    rs_files(Path::new("../sound/src"), &mut files);
     files.sort();
     assert!(
         files.len() > 20,
         "the scan found only {} files under src/ — it is reading the wrong tree",
         files.len()
+    );
+    assert!(
+        files.iter().any(|p| p
+            .to_string_lossy()
+            .replace('\\', "/")
+            .starts_with("../sound/src/")),
+        "the scan found nothing under ../sound/src — the audio crate moved, or the walk is \
+         not reaching it, and either way the worklet's module is unscanned"
     );
 
     // The exemptions are checked for existence, so a rename turns them into a

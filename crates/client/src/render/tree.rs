@@ -118,13 +118,17 @@ pub const SPECIES: [SpeciesDef; 2] = [
         leaf_lo: NEEDLE_LO,
         leaf_hi: NEEDLE_HI,
     },
-    // **Shorter than the conifer and much wider**, which is the whole read: a
-    // pine is a spire and a broadleaf is a dome, and if the two shared a
-    // silhouette envelope there would be no point having both. 5.4 m against
-    // 6.6 keeps the conifer as the thing that breaks the skyline.
+    // **Shorter than the conifer**, which is the whole read: a pine is a
+    // spire and a broadleaf is not, and if the two shared a silhouette
+    // envelope there would be no point having both. 11 m against 14 keeps
+    // the conifer as the thing that breaks the skyline. It was 5.4 against
+    // 6.6 until forest scale v0 (2026-09-14); both share the 2.9 m crown
+    // ceiling now, so at this height the broadleaf is a birch's column
+    // rather than the dome it was — which is the species the reference's
+    // `Alt` mask paints (`FORESTS.md` §3).
     SpeciesDef {
         tree_type: TreeType::Deciduous,
-        height_m: 5.4,
+        height_m: 11.0,
         max_r_m: BROADLEAF_MAX_R,
         leaf_lo: BROADLEAF_LO,
         leaf_hi: BROADLEAF_HI,
@@ -226,10 +230,15 @@ fn conifer_settings() -> TreeMeshSettings {
             // "dead sticks" result `props.js` measured when it cut branches to
             // save triangles.
             levels: BranchRecursionLevel::One,
-            // Just past horizontal. Droop is the ANGLE's job here and NOT the
-            // branch force's — see `force` below.
-            angle: [0.0, 96.0, 0.0, 0.0],
-            children: [60, 0, 0],
+            // Past horizontal, drooping: a pine's limbs hang. Droop is the
+            // ANGLE's job here and NOT the branch force's — see `force`
+            // below. 104° since forest scale v0, from 96; ez-tree's own pine
+            // preset droops to 110.
+            angle: [0.0, 104.0, 0.0, 0.0],
+            // 72 limbs at 12 cards each: the same 5,900 triangles as 60 at
+            // 16, spread over more limbs, because at 14 m a limb is the
+            // thing the eye counts.
+            children: [72, 0, 0],
             // **The force points UP, and must.** A straight-down direction is
             // the documented way to get a willow, and it is a trap: the crate
             // builds one global `Quat::from_rotation_arc(Vec3::Y, dir)` and
@@ -270,16 +279,28 @@ fn conifer_settings() -> TreeMeshSettings {
             // Coverage (card area × count ÷ frontal silhouette) went 1.20 at
             // 0.18/11 to 16.0 here — and radius, which is the sim's business,
             // barely moved because shorter limbs paid for the larger cards.
-            length: [6.6, 1.05, 0.0, 0.0],
-            trunk_base_radius: 0.20,
+            //
+            // **Re-swept at 14 m for forest scale v0** (`examples/tree_sweep.rs`,
+            // 2026-09-14, three shipped seeds and twelve more): a 2.2 m limb
+            // read 2.92 / 2.86 / 2.96 m on the shipped seeds against the
+            // 2.9 ceiling, 1.9 read 2.73, and **1.8 reads 2.61 / 2.58 / 2.66**
+            // (2.70 over all eighteen) — an 8 % margin. The trunk radius is
+            // the sim's number: `tests/tree.rs` holds the widest shipped
+            // trunk to `OCCUPANT_R_M[Tree]` within a millimetre, and 0.2540
+            // puts variant 0 at 0.2390 m. (Scaled from 0.20 → 0.1887 at this
+            // height; the fit is linear in it. One of the twelve extra seeds
+            // reads 0.2406, so a fourth seed would need re-sweeping.)
+            length: [14.0, 1.8, 0.0, 0.0],
+            trunk_base_radius: 0.2540,
             radius_factor: [1.0, 0.13, 0.0, 0.0],
             sections: [10, 4, 0, 0],
             segments: [7, 4, 0, 0],
-            // Limbs start at 10% of the trunk, not the preset's 27%. On a
-            // 6.6 m tree 27% is 1.8 m — above eye level, so a player walking
-            // the forest sees a colonnade of poles. `props.js` measured the
-            // same thing and moved it for the same reason.
-            start: [0.0, 0.10, 0.0, 0.0],
+            // Limbs start at 20% of the trunk — 2.8 m on a 14 m tree, which
+            // is the bare trunk the reference's pines show below the crown
+            // and clear of `TRUNK_MEASURE_H_M`. It was 10% on the 6.6 m tree
+            // (0.66 m), because 27% there was 1.8 m: eye level, a colonnade
+            // of poles. The height is what changed the right answer.
+            start: [0.0, 0.20, 0.0, 0.0],
             taper: [0.92, 0.90, 0.0, 0.0],
             twist: [0.02, 0.0, 0.0, 0.0],
         },
@@ -291,11 +312,13 @@ fn conifer_settings() -> TreeMeshSettings {
             // Card SIZE dominates coverage (it is squared) and card COUNT
             // fills the envelope those cards span. Both push radius, which is
             // why the limbs above had to shorten to pay for them — see there.
-            // 0.55 m is a real branchlet's size against a 6.6 m tree, which is
-            // what the mask draws: a sprig cluster, not one needle.
-            count: 16,
+            // 1.15 m is a real branchlet's size against a 14 m tree (it was
+            // 0.55 against 6.6, the same fraction), which is what the mask
+            // draws: a sprig cluster, not one needle. 12 per limb × 72 limbs
+            // is the 16 × 60 it replaced, in triangles.
+            count: 12,
             start: 0.0,
-            size: 0.55,
+            size: 1.15,
             size_variance: 0.4,
         },
     }
@@ -332,7 +355,13 @@ fn broadleaf_settings() -> TreeMeshSettings {
         tree_type: TreeType::Deciduous,
         branch: BranchParams {
             levels: BranchRecursionLevel::Two,
-            angle: [0.0, 52.0, 44.0, 0.0],
+            // **Steep, since forest scale v0** — 36° / 32° from 52 / 44. At
+            // 11 m the 2.9 m crown ceiling is a column, not a dome, and the
+            // sweep (`examples/tree_sweep.rs`, 2026-09-14) could not get
+            // under it by shortening limbs alone: half-length limbs at the
+            // old angles still read 3.0–3.2 m. Closing the angles is what a
+            // birch does anyway; its limbs leave the trunk steeply.
+            angle: [0.0, 36.0, 32.0, 0.0],
             children: [6, 7, 0],
             force: BranchForce {
                 direction: Vec3::Y,
@@ -343,8 +372,14 @@ fn broadleaf_settings() -> TreeMeshSettings {
             // [0] is proportion only — `fit_to_bounds` normalises height away.
             // [1] and [2] are what set the crown's WIDTH, which is the sim's
             // business through `BROADLEAF_MAX_R`; swept against the gate.
-            length: [4.5, 1.75, 1.0, 0.0],
-            trunk_base_radius: 0.22,
+            // Limbs at 0.38 / 0.20 of the 4.5 trunk unit, from 1.75 / 1.0:
+            // with the angles above this reads 2.68 m on the shipped seeds
+            // and 2.89 over eighteen — the widest thing in the pool by a
+            // hair, under the ceiling. The trunk is 0.11 from 0.22 for the
+            // doubled height: 0.234 m at the base, inside the sim's cylinder,
+            // which the conifer now sets (`OCCUPANT_R_M[Tree]`).
+            length: [4.5, 0.38, 0.20, 0.0],
+            trunk_base_radius: 0.11,
             radius_factor: [1.0, 0.42, 0.34, 0.0],
             sections: [10, 5, 3, 0],
             segments: [7, 5, 3, 0],
@@ -361,7 +396,10 @@ fn broadleaf_settings() -> TreeMeshSettings {
             angle: 48.0,
             count: 11,
             start: 0.0,
-            size: 0.42,
+            // 0.60 m at 11 m, from 0.42 at 5.4: smaller as a fraction of the
+            // tree, because a card's size adds to the crown radius directly
+            // and the ceiling did not grow with the height.
+            size: 0.60,
             size_variance: 0.35,
         },
     }
@@ -586,6 +624,14 @@ pub fn needle_image() -> Image {
         }
     }
 
+    alpha_card(data)
+}
+
+/// A finished alpha card from a level-0 RGBA buffer: the coverage-preserved
+/// mip chain, the descriptor that carries it, and the trilinear sampler.
+/// Shared by [`needle_image`] and [`leaf_image`], because a second species'
+/// card that built its own chain would be the first place the two drifted.
+fn alpha_card(data: Vec<u8>) -> Image {
     // Levels 1..n, coverage-preserved. See [`needle_mips`] for why a plain box
     // filter is the wrong tool for an alpha-tested mask.
     let levels = needle_mips(&data, NEEDLE_TEX);
@@ -631,6 +677,77 @@ pub fn needle_image() -> Image {
         ..default()
     });
     img
+}
+
+/// The alpha card a BROADLEAF canopy is made of — generated at boot beside
+/// [`needle_image`], and for the same reasons.
+///
+/// **A species is a silhouette AND a card, and until forest scale v0 the
+/// broadleaf had only the first.** Both species wore the needle sprig, so on
+/// the lavapipe bench (`examples/tree_look.rs`, 2026-09-14) the 11 m broadleaf
+/// read as a second, yellower conifer — a column of sprigs — and the whole
+/// reason the pool has two species (`reference/PLANTS.md` §6.1) was lost at
+/// any distance the card was legible. This is a cluster of rounded leaves on
+/// a short stem, two of them mirrored across the card the way the sprig is,
+/// so a `Double` billboard shows two outlines and not one twice.
+///
+/// Denser than the sprig on purpose: a leaf cluster is mostly leaf where a
+/// sprig is mostly air, and `tests/tree.rs` holds the two cards apart on
+/// exactly that — the same file's cut-out and mip-chain gates run over this
+/// card as they do over the needle's.
+pub fn leaf_image() -> Image {
+    let n = NEEDLE_TEX as usize;
+    let mut data = vec![0u8; n * n * 4];
+    let size = NEEDLE_TEX as f32;
+
+    // Two clusters, mirrored about the centre line.
+    for (sx, dir) in [(0.28f32, 1.0f32), (0.72, -1.0)] {
+        let stem_x = sx * size;
+        // A short stem from the card's base, thin.
+        let stem_top = size * 0.58;
+        let steps = stem_top.ceil() as u32;
+        for st in 0..=steps {
+            let u = st as f32 / steps.max(1) as f32;
+            stamp(&mut data, n, stem_x, 1.0 + u * stem_top, 0.8);
+        }
+        // Seven leaves up the stem, alternating sides and pointing outward
+        // and up, plus a terminal leaf on the tip. Each leaf is an oval:
+        // stamped along its axis with a width that swells to the middle.
+        let leaves: [(f32, f32, f32); 8] = [
+            // (t along the stem, side, length in texels). Big leaves: the
+            // gate in `tests/tree.rs` holds this card DENSER than the sprig,
+            // and the first draft at 11–15 texels was thinner (562 opaque
+            // texels against the sprig's 786), which on the bench was a
+            // broadleaf you could see the sky through.
+            (0.10, 1.0, 19.0),
+            (0.22, -1.0, 19.0),
+            (0.36, 1.0, 18.0),
+            (0.48, -1.0, 18.0),
+            (0.62, 1.0, 17.0),
+            (0.74, -1.0, 16.0),
+            (0.86, 1.0, 15.0),
+            (1.00, 0.0, 15.0),
+        ];
+        for (t, side, len) in leaves {
+            let base_y = 1.0 + t * stem_top;
+            // Leaves leave the stem at ~40° and the terminal one goes straight up.
+            let (dx, dy) = if side == 0.0 {
+                (0.0, 1.0)
+            } else {
+                (side * dir * 0.78, 0.63)
+            };
+            let segs = len.ceil() as u32 * 2;
+            for sg in 0..=segs {
+                let u = sg as f32 / segs.max(1) as f32;
+                let px = stem_x + dx * u * len;
+                let py = base_y + dy * u * len;
+                // An oval: widest in the middle, pointed at both ends.
+                let w = (std::f32::consts::PI * u).sin() * 4.8 + 0.5;
+                stamp(&mut data, n, px, py, w);
+            }
+        }
+    }
+    alpha_card(data)
 }
 
 /// Alpha cutoff the canopy's `AlphaMode::Mask` tests against, as a byte.
@@ -798,8 +915,8 @@ pub fn min_y(meshes: &[&Mesh]) -> f32 {
 /// this the bark mesh is trunk AND limbs, and a radial max over both is a
 /// number about branches — measured at 0.86 m on a pine and 2.38 m on a
 /// broadleaf inside the capsule's own height band. Below it every species is
-/// a single tapering column: the generator starts limbs at 10 % of the pine's
-/// trunk (0.66 m) and 22 % of the broadleaf's (1.19 m), both comfortably
+/// a single tapering column: the generator starts limbs at 20 % of the pine's
+/// trunk (2.8 m) and 22 % of the broadleaf's (2.4 m), both comfortably
 /// clear. `tests/tree.rs` asserts the result stays trunk-scale, so a future
 /// species that puts a limb on the ground fails loudly rather than quietly
 /// inflating the cylinder the sim blocks with.
@@ -871,6 +988,44 @@ pub fn fits_sim_bounds(bark: &Mesh, needles: &Mesh) -> bool {
 /// it is not 120 (168 trees, ~709 k) or 160 (288, ~1.22 M).
 pub const TREE_LOD_SWAP_M: f32 = 80.0;
 
+/// The most trees whose near pair may be drawn at once — fully or in the
+/// crossfade — and the reason the forest could be made a forest. **(knob)**
+///
+/// **This is `reference/FORESTS.md` §8 gate 7: the frame budget as a cap,
+/// not a print.** [`TREE_LOD_SWAP_M`] alone bounds nothing — a distance is a
+/// disc, and what a disc holds is the forest's business, which forest
+/// density v1 (2026-09-14) took from ~39 to ~94 stems/ha with stands at
+/// ~134. Measured on the shipped seed after it (`sim-core/examples/
+/// ring_census.rs`): the 80 m disc plus its 15 m fade holds 278 trees at
+/// the p90 eye and 357 at the densest, and a tree is up to
+/// [`CONIFER_MAX_TRIS`] — 357 × 5,900 is 2.1 M, over `DESIGN.md` §9's 1.5 M
+/// for the whole frame before a hull or a blade of grass is counted. Before
+/// v1 the same disc held 82 at p90 and the distance was enough.
+///
+/// 180 × 6,000 ([`CONIFER_MAX_TRIS`], the ceiling; the generator emits
+/// ~5,900) = 1.08 M. With every other tree in both rings a hull at
+/// [`IMPOSTOR_MAX_TRIS`] (1,086 near at the shipped seed's densest ring,
+/// ~2,430 outer at `OUTER_RADIUS` 4) the trees total under 1.46 M at the
+/// worst eye on the island, which `tests/tree.rs` and `tests/outer_ring.rs`
+/// hold as arithmetic — at ceilings, not at the measured means, which is
+/// why it is 180 and not the 200 the means would admit. The price is where
+/// the swap lands when the cap binds: [`cap_swap`] pulls it to the distance
+/// holding exactly this many, less the fade — ~61 m at the p90 eye, ~50 m
+/// in the densest stand the shipped field makes (~134 stems/ha), and never
+/// under 44 m at any density the 8 m grid can produce (156 stems/ha fills
+/// 180 by 61 m, less the fade and the step). `tests/tree_cap.rs` holds that
+/// floor. A tree 14 m tall is still a tree at 50 m; the hull it becomes is
+/// `NOW.md` §0t's "hull pixels" item, which this makes worth more, not less.
+pub const TREE_LOD_CAP: usize = 180;
+
+/// The step [`cap_swap`] moves the swap in, metres. Not a knob: a
+/// quantization, so a walking eye in a stand does not reband the whole ring
+/// on every frame the cap's distance drifts a centimetre. At a sprint's
+/// ~5 m/s that is a reband every few frames in a dense stand and none
+/// anywhere the cap does not bind, and a reband is `quality::reband_trees`'s
+/// three `VisibilityRange` writes per near tree.
+pub const TREE_LOD_CAP_STEP_M: f32 = 2.0;
+
 /// How wide the crossfade between the two LODs is, metres. **(knob)**
 ///
 /// Bevy dithers across this band rather than cutting, which is what stops the
@@ -937,7 +1092,11 @@ pub const IMPOSTOR_MAX_TRIS: usize = IMPOSTOR_BANDS * IMPOSTOR_SIDES * 2;
 /// **A resource because the swap distance is a graphics tier** (`config::
 /// Quality`, `render/quality.rs`): `props::stream` reads it when a chunk
 /// streams in and `quality::reband_trees` rewrites the trees already standing,
-/// so both halves come from this one value.
+/// so both halves come from this one value. **And since forest density v1
+/// the bands can sit UNDER the tier** — [`cap_swap`] pulls them in when more
+/// than [`TREE_LOD_CAP`] trees would draw their near pair, and lets them back
+/// out to the tier when fewer would. `tier_m` is where the tier put them;
+/// [`Self::swap_m`] is where they are.
 /// `Debug` is deliberately absent: `VisibilityRange` does not implement it,
 /// so a derive here would be a wrapper around a type that cannot print. The
 /// two `Range<f32>`s inside it print perfectly well and the gates name them
@@ -946,6 +1105,9 @@ pub const IMPOSTOR_MAX_TRIS: usize = IMPOSTOR_BANDS * IMPOSTOR_SIDES * 2;
 pub struct TreeLod {
     pub near: VisibilityRange,
     pub far: VisibilityRange,
+    /// The graphics tier's swap distance, metres — the bands' ceiling.
+    /// `quality::apply` writes it with the tier and nothing else does.
+    pub tier_m: f32,
 }
 
 impl Default for TreeLod {
@@ -956,20 +1118,29 @@ impl Default for TreeLod {
 }
 
 impl TreeLod {
-    /// The pair for a given swap distance. The fade width and the reach do
-    /// not move with it: the fade is how long a crossfade takes to walk
-    /// through and the reach is the prop ring's diagonal, and neither is a
-    /// function of where the swap happens.
+    /// The pair for a given swap distance, with that distance as the tier.
+    /// The fade width and the reach do not move with it: the fade is how
+    /// long a crossfade takes to walk through and the reach is the prop
+    /// ring's diagonal, and neither is a function of where the swap happens.
     pub fn at(swap_m: f32) -> Self {
-        let fade_end = swap_m + TREE_LOD_FADE_M;
+        let (near, far) = Self::bands(swap_m);
         Self {
-            near: VisibilityRange {
+            near,
+            far,
+            tier_m: swap_m,
+        }
+    }
+
+    fn bands(swap_m: f32) -> (VisibilityRange, VisibilityRange) {
+        let fade_end = swap_m + TREE_LOD_FADE_M;
+        (
+            VisibilityRange {
                 // No near margin: a tree you stand in is its own geometry.
                 start_margin: 0.0..0.0,
                 end_margin: swap_m..fade_end,
                 use_aabb: false,
             },
-            far: VisibilityRange {
+            VisibilityRange {
                 start_margin: swap_m..fade_end,
                 // `use_aabb` stays false on BOTH, which is Bevy's own note
                 // about crossfading: the two LODs have different AABBs and a
@@ -979,6 +1150,18 @@ impl TreeLod {
                 end_margin: TREE_LOD_REACH_M..(TREE_LOD_REACH_M + TREE_LOD_FADE_M),
                 use_aabb: false,
             },
+        )
+    }
+
+    /// Move the bands to `swap_m`, clamped to the tier, leaving the tier
+    /// where it is. [`cap_swap`]'s write; a no-op when the bands are already
+    /// there, so a caller can guard a `ResMut` on the comparison.
+    pub fn contract(&mut self, swap_m: f32) {
+        let at = swap_m.min(self.tier_m).max(0.0);
+        if at != self.swap_m() {
+            let (near, far) = Self::bands(at);
+            self.near = near;
+            self.far = far;
         }
     }
 
@@ -986,7 +1169,7 @@ impl TreeLod {
     /// start of the near band's end margin, which `tests/tree.rs` holds equal
     /// to the start of the far band's start margin. [`swap_by_distance`]
     /// swaps here with no fade; the desktop fades across `TREE_LOD_FADE_M`
-    /// from here.
+    /// from here. At or under [`Self::tier_m`], never above it.
     pub fn swap_m(&self) -> f32 {
         self.near.end_margin.start
     }
@@ -1031,6 +1214,66 @@ pub fn lod_band(range: &VisibilityRange) -> VisibilityRange {
 /// See the desktop half above: a browser tree carries no `VisibilityRange`.
 #[cfg(target_arch = "wasm32")]
 pub fn lod_band(_range: &VisibilityRange) {}
+
+/// The count cap: pull the swap in when more than [`TREE_LOD_CAP`] trees
+/// would draw their near pair, and let it back out to the tier when fewer
+/// would. Both targets, every frame the world runs, before
+/// `quality::reband_trees` (which applies the bands it writes) and before
+/// [`swap_by_distance`] (which reads them on a browser).
+///
+/// **The measure is every tree that draws ANY near geometry** — inside the
+/// swap and inside the fade past it, where Bevy dithers both LODs and the
+/// vertex work is the full pair. So the bound is on distance from the eye
+/// to the (`TREE_LOD_CAP` + 1)-th nearest trunk, less the fade: the
+/// `TREE_LOD_CAP` trunks nearer than it are the drawn set, exactly. One
+/// trunk per tree, and the trunk's origin is the shared pivot every part of
+/// the tree measures from (`use_aabb: false`) — the same distance
+/// `VisibilityRange` will then evaluate.
+///
+/// **Allocation-free after warmup** (CLAUDE.md's client hot-path rule): the
+/// scratch is a `Local<Vec>` that `clear`s and keeps its capacity, so it
+/// grows to the largest near ring it ever sees and never again;
+/// `select_nth_unstable_by` is in place. Quantized to
+/// [`TREE_LOD_CAP_STEP_M`] and written only on a change, because the write
+/// is what `reband_trees` costs.
+///
+/// **One-frame lag on a freshly streamed chunk, stated rather than hidden.**
+/// A part spawned this frame has an identity `GlobalTransform` until
+/// `PostUpdate` propagates it, so its trunk reads as standing at the origin
+/// — far outside any reach — and is not counted until the next frame. The
+/// bound can therefore be exceeded for one frame by one chunk's trees, which
+/// is the same one-chunk-a-frame budget the streamer itself pays.
+pub fn cap_swap(
+    eye: Res<super::Eye>,
+    trunks: Query<(&super::props::Fellable, &GlobalTransform)>,
+    mut lod: ResMut<TreeLod>,
+    mut d2: Local<Vec<f32>>,
+) {
+    let tier = lod.tier_m;
+    let reach = tier + TREE_LOD_FADE_M;
+    d2.clear();
+    for (f, gt) in trunks.iter() {
+        if f.part != super::props::FellPart::Trunk {
+            continue;
+        }
+        let d = (gt.translation() - eye.pos).length_squared();
+        if d < reach * reach {
+            d2.push(d);
+        }
+    }
+    let want = if d2.len() > TREE_LOD_CAP {
+        let (_, nth, _) = d2.select_nth_unstable_by(TREE_LOD_CAP, f32::total_cmp);
+        let edge = nth.sqrt() - TREE_LOD_FADE_M;
+        (edge / TREE_LOD_CAP_STEP_M).floor() * TREE_LOD_CAP_STEP_M
+    } else {
+        tier
+    };
+    let want = want.min(tier).max(0.0);
+    // `swap_m` reads through `Deref` and marks nothing; only the write does.
+    if want != lod.swap_m() {
+        lod.contract(want);
+    }
+}
 
 /// The LOD swap a browser does by hand — [`lod_band`] says why it has to.
 ///
@@ -1220,10 +1463,16 @@ pub fn impostor_of(bark: &Mesh, needles: &Mesh, variant: usize) -> Mesh {
     for bin in 0..IMPOSTOR_BANDS {
         let (y0, y1) = (bin as f32 * step, (bin + 1) as f32 * step);
         let (r0, r1) = (ring[bin], ring[bin + 1]);
-        // Normals blend toward the trunk axis by the same `PINE_NORMAL_BLEND`
-        // the near canopy uses, for the same reason: a tree is a volume that
-        // scatters, not a stack of plates.
-        let axis = Vec3::new(0.0, (y0 + y1) * 0.5, 0.0);
+        // Flat facets here; the blend toward the trunk axis is applied to the
+        // finished mesh below, per VERTEX, by the canopy's own
+        // `blend_canopy_normals`. ⚠ It used to be done per band, through
+        // `Soup::tri`'s `volume_center` set to the band's mid-height on the
+        // axis — so a band's bottom ring tilted its normals down and its top
+        // ring tilted them up, every ring flipped, and on the bench
+        // (2026-09-14, `examples/tree_look.rs`) the hull shaded as a stack of
+        // discs: exactly the "not a tree" the tip-closing below exists to
+        // avoid, from the shading rather than the outline. A horizontal
+        // radial has no tilt to flip.
         for side in 0..IMPOSTOR_SIDES {
             let a0 = side as f32 / IMPOSTOR_SIDES as f32 * std::f32::consts::TAU;
             let a1 = (side + 1) as f32 / IMPOSTOR_SIDES as f32 * std::f32::consts::TAU;
@@ -1235,14 +1484,16 @@ pub fn impostor_of(bark: &Mesh, needles: &Mesh, variant: usize) -> Mesh {
             // tangents and mikktspace REFUSES a degenerate triangle, so this
             // is a panic at boot rather than a wasted triangle.
             if r0 > f32::EPSILON {
-                s.tri(b0, t0, b1, color, Some(axis), PINE_NORMAL_BLEND);
+                s.tri(b0, t0, b1, color, None, 0.0);
             }
             if r1 > f32::EPSILON {
-                s.tri(b1, t0, t1, color, Some(axis), PINE_NORMAL_BLEND);
+                s.tri(b1, t0, t1, color, None, 0.0);
             }
         }
     }
-    s.mesh()
+    let mut hull = s.mesh();
+    blend_canopy_normals(&mut hull);
+    hull
 }
 
 /// Every triangle of a mesh as three corners. Skips an out-of-range index

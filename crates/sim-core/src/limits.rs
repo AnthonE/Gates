@@ -444,12 +444,21 @@ pub const CHAT_RING_CAP: usize = 4;
 pub const CHAT_LOCAL_CM: i64 = 2_000;
 
 /// Sparse slot-life store (harvested/damaged scatter slots). Sized past
-/// the ~8–12 k live slots a seed produces (TERRAIN.md §6) so harvested
-/// entries always fit. Overflow policy: **evict** — standing-damage
-/// entries only, lowest hits first (the evicted node heals); harvested
-/// entries are never evicted, and a store somehow full of them refuses
-/// the hit. Proposed default, DECISIONS.md §open (gather bounds row).
-pub const MAX_SLOT_LIVES: usize = 16_384;
+/// the ~14–17 k live slots a seed produces (TERRAIN.md §6, since forest
+/// density v1 on 2026-09-14 — it was 16,384 past ~8–12 k before, and
+/// `tests/scatter.rs::test_scatter_density_preserved` holds the band under
+/// this cap so the sizing cannot drift apart from what it is sized for) so
+/// harvested entries always fit. Overflow policy: **evict** —
+/// standing-damage entries only, lowest hits first (the evicted node
+/// heals); harvested entries are never evicted, and a store somehow full
+/// of them refuses the hit. Proposed default, DECISIONS.md §open (gather
+/// bounds row).
+///
+/// A save carries at most this many entries (`worldsave.rs` `count32`), so
+/// a file written under the wider cap with more than the old 16,384 does
+/// not load on a shard built before it — the cap is a bound, not a layout,
+/// and `WORLD_SAVE_FORMAT` did not move for it.
+pub const MAX_SLOT_LIVES: usize = 32_768;
 
 /// Lines in the direct-mapped memo of `terrain::scatter` that makes the
 /// occupant collision query affordable (occupy.rs). Sized past the

@@ -59,6 +59,32 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
 
 # Buildable now — a loop can pick any of these
 
+## 0wnd · Down is built; the hands that pick you up are not *(sim+client lane)*
+
+Wounded v0 landed 2026-09-13 (`DECISIONS.md` §open "wounded v0",
+`reference/WOUNDED.md` §9): a lethal swing, bite or body shot lays the body
+down for 40–50 s at 10 hp, it crawls at a third of a walk and may open a
+door, and at the end a hashed roll (20 % + up to 25 % for full meters)
+stands it up or makes the corpse. What the minute still cannot do, in the
+order it earns its keep:
+
+1. **Revive by hand** — `RPC_Assist`'s shape (`WOUNDED.md` §2.6): a verb
+   aimed at a downed body, held 6 s without moving, prolonging the clock
+   when broken off and suspending the roll while held. New action on the
+   wire, a hold counter on the target, a `Verb` in the pick — and the
+   feature-gated match trap (`CLAUDE.md`).
+2. **Syringe / bandage on a downed body** — `Command::Consume` with a
+   target; `content/consumables.toml` already prices both.
+3. **Medkit in the belt = 100 %**, consumed only on a failed roll.
+4. **Refusals while down are silent**: `live_slot_of` refuses with no
+   event. Each refused verb's own `REFUSE_*` is the honest fix.
+5. **A drag clip and a voice** — a remote crawl slides `Death01`'s pose
+   (`render/anim.rs`), and the fall reuses `Cue::Death`.
+6. **The odds on screen are the odds at the fall**; the sim re-reads the
+   meters at the roll. Say so on the line, or resend.
+7. **§LOOK**: `CRAWL_EYE_M`, `WOUND_ROLL_RAD`, `WOUND_DROP_S`, the
+   vignette — never seen. Boot the game and go down.
+
 ## 0site · Site art v0 landed — three things it left *(art + sim lane)*
 
 `assets/models/site/{shelter,canopy}.glb` draw the pad and the waystations
@@ -791,11 +817,15 @@ the understory** (`DECISIONS.md` §open, forest structure v0 — `tests/forest.r
    and every check on it is arithmetic. Whether it reads as understory or as
    tall grass is a person booting the game; 120‰ and 0.75 m are what a frame
    would settle. `§LOOK`.
-2. **The scatter grid is full — the finding.** The forest's bush ceiling is
-   **70.4‰**, exactly the meadow's weight, so it cannot carry an understory
-   at any weight without taking the canopy down to pay. The canopy is still
-   parkland — **~39 stems/ha, under 7 % cover** against the 10 % that makes
-   the word true — and raising it needs `PLANTS.md` §3.2 *and* item 5 first.
+2. ✅ **The canopy is a forest (forest density v1, 2026-09-14)** — the
+   operator's *"when can we get forest fr?"*. The rail was the grove field's
+   peak, not the cell: `ScatterTable::clump_cap` holds the Forest's field at
+   its mean and the row went 350 → 700‰. **~94 stems/ha** (from ~39), 43 %
+   of the forest at ~134/ha, ~20 % cover (from ~7 %). `DECISIONS.md` §open
+   has every number and what it leaves the operator: nobody has stood in it
+   on a GPU, and cover is closed by the crown now (§0t item 2), not stems.
+   The bush ceiling finding stands as history — the understory stays in
+   `Clutter::Brush`, which has no ceiling to spend.
 3. **Species is not a sim fact**, so it cannot be gated or made spatial —
    both rings pick it as `slot.yaw % pool` (`props.rs:2037`, `props.rs:1977`).
    Into `Slot` off the same cell hash: one field, client mirrors it free,
@@ -803,9 +833,11 @@ the understory** (`DECISIONS.md` §open, forest structure v0 — `tests/forest.r
 4. **No forest EDGE exists** (§8 gate 4). Theirs is a separate mask with its
    own plant list — `Forestside`, "small trees and bushes" — and it is what
    makes a treeline read as a treeline instead of a density gradient.
-5. **The LOD budget is a print, not a cap** — distance alone at 80 m
-   (`tree.rs:870`), so a clump inside it has no ceiling. Theirs caps
-   mesh-trees by *count*. Gate 7 lands before any density rise.
+5. ✅ **The LOD budget is a cap (2026-09-14)** — `tree::TREE_LOD_CAP` = 180
+   trees drawing their near pair, `tree::cap_swap` pulling the swap in past
+   it and out again after (`tests/tree_cap.rs`). Landed with the density
+   rise it was required before. What it leaves: the swap sits at ~50–61 m
+   in a stand, so the hull's look at that range (§0t item 1b) matters more.
 
 
 ## Sim, content and gameplay verbs *(systems lane)*
@@ -866,8 +898,10 @@ Items 1–3 are a **spoken operator call**, not a builder's proposal — 2026-08
    is on one screen and nobody has seen the pose. The *victim's* half landed
    as `EV_HURT` (wire v57, §0hrt); a **bystander** flinch is still refused on
    fan-out grounds (`DECISIONS.md` §open "attacker-side flinch v0").
-2. **No positional hit sound** — a flesh impact needs a waveform `sound/
-   synth.rs` does not generate. Nobody has heard `Cue::RemoteSwing` either.
+2. **No positional FLESH sound** — a flesh impact needs a waveform `sound/
+   synth.rs` does not generate (`impact::impact_cue` answers `None` for it
+   on purpose; wood, stone and metal are positional since 2026-09-13).
+   Nobody has heard `Cue::RemoteSwing` either.
 3. **A gun is heard but not seen** — the crack landed (gun report v0, wire
    v54): `ranged::hitscan` raises `EV_SHOT` at `speed == 0` and the mixer
    plays it at the shooter, 100 m against a bow's 40 m. No muzzle flash and
@@ -1020,6 +1054,16 @@ lighter, so a tree mark sat inside the bark photograph's own noise.
 new tint reads as heartwood, and whether the other two surfaces improved
 visibly now they draw at full alpha (`§LOOK`).
 
+✅ **And the browser had NO marks at all** (browser marks + weak spot v0,
+`DECISIONS.md` §open, 2026-09-13). The operator's *"i still dont see decals
+on trees"* was the page: `decal::setup` returned on wasm32 before spawning a
+slot, because a `ForwardDecal` cannot run under WebGL2 (two measured walls,
+in the file). A browser slot is a mesh mark now — the same mask, lifted
+`MESH_MARK_LIFT_M`, bent to the trunk's collision radius for a world hit —
+and the desktop keeps the decal. The weak spot is drawn on the node too
+(`decal::weak_spot`, a pulsing cross on the skin where `mark8` points),
+where it had only ever been two words on the prompt. Both unseen (`§LOOK`).
+
 
 ## 0wc · What world containers v0 still owes *(systems lane)*
 
@@ -1060,7 +1104,7 @@ visibly now they draw at full alpha (`§LOOK`).
    more tuning of `night_spook_cm` — it is a night-only roster variant
    (Minecraft and Valheim gate *spawns* on darkness). The judge's gap 1
    wanted a warmth stat; `survival.rs:60` still records no temperature.
-4. **The growl radius has no gate.** `sound/mod.rs:565` names §0pr as
+4. **The growl radius has no gate.** `crates/sound/src/lib.rs:565` names §0pr as
    holding it: `CUES[Growl].radius_m` (14 m) must stay inside the wolf's
    night notice radius (15 m), and a `mobs.toml` edit reddens nothing.
 
@@ -1288,7 +1332,7 @@ Offence landed (`sim-core/charge.rs`, `tests/blast.rs`, `DEATH_BY_CHARGE`).
 What it still cannot do:
 
 1. **No detonation sound and no detonation visual.** The `Cue` enum
-   (`client/src/sound/mod.rs:96`) has no blast voice, and there is no
+   (`crates/sound/src/lib.rs:96`) has no blast voice, and there is no
    `EV_BLAST` — the client learns of a blast only through `EV_STRUCT_HIT`
    and `EV_HEALTH`, so a near-miss is silent. Audio lane; wants either a
    cue keyed off the existing events or an event of its own.
@@ -1785,26 +1829,49 @@ worthless assertion in the first draft.
    map), so the midground is flat green shapes and this ring multiplied them by
    four. `WANTED.md` §9.5's leaf texture is the cheapest fix and serves the
    bush too. **Highest-value item here.**
-2. **The harvest sweep got denser and that was a named cost.**
+2. **The harvest sweep got denser and that was a named cost — twice now.**
    `harvest_changed` measured 1,500 props × a full 16,384 set at 2.34 ms and
    warned that a denser ring is the case that worsens. Outer hulls carry
    `Fellable` for correctness, so the count roughly doubles on frames where the
-   harvested set moves. The real fix is that `HarvestedSet::contains` is a
-   linear scan. Unmeasured on a GPU.
+   harvested set moves. **Forest density v1 (2026-09-14) moved both ends of
+   that product**: the near ring's p90 is 811 trees from 328, and
+   `MAX_SLOT_LIVES` is 32,768 from 16,384, so the 2.34 ms above is a floor on
+   the worst case rather than a reading of it. The real fix is that
+   `HarvestedSet::contains` is a linear scan. Unmeasured on a GPU.
 3. **Only trees.** Boulders and barrels still stop at `NEAR_RADIUS` — a
    sub-pixel lump costs an entity and changes no silhouette.
 
 
 ## 0t · the forest — what it still owes *(client lane)*
 
-1. **The broadleaf has never been LOOKED at.** `SPECIES` is two rows, pool 6;
-   every check on it is arithmetic. Boot it and look — likely wrong are
-   `children`/`angle[1]` and leaf `count`/`size`; `PLANTS.md` §3.1 has
-   ez-tree's 15 presets to take real numbers from. A species is a row.
-2. **The density ceiling** — one occupant per 8 m `CELL_SIZE` cell.
-   `PLANTS.md` §3.2 prices the three ways up; all sim-core, none cheap, the
-   cheapest (`CELL_SIZE` 8 → 4) quadruples live `SlotLives` rows against
-   `TERRAIN.md` §6's budget. Not a rendering change.
+1. **Both species are twice as tall (forest scale v0, 2026-09-14)** —
+   `DECISIONS.md` §open has the numbers and the two rails that did not move.
+   Seen on the lavapipe bench (`examples/tree_look.rs`), not in the game.
+   What it leaves, in order: **(a)** `OCCUPANT_TOP_M[Tree]` is still 5.7 m,
+   so a 14 m trunk is drawn to the top and blocked to 5.7 — one sim row,
+   `shoot.rs` pins it; **(b)** the far hull is twice the pixels at the same
+   80 m swap, so `tree.rs`'s band table wants re-reading at 14 m (its
+   stacked-disc shading is fixed — the normals blend to a horizontal radial
+   now, not to each band's own centre); **(c)** the
+   broadleaf is a birch's column now, and a birch wants white bark — a second
+   bark map is a `CANDIDATES.md` row, not a code change; **(d)** cover only
+   moved ~7 % → ~9 %, because stems are the grid's — item 2 is the lever.
+   `examples/tree_sweep.rs` is how a settings block is checked against the
+   seeds before it is typed; `PLANTS.md` §3.1's presets are its shapes. The
+   broadleaf wears its own generated card now (`tree::leaf_image`) — the
+   first bench frames had it reading as a yellower conifer in the sprig.
+   **(d) is closed by density v1** (~7 → ~20 %); **(b) matters more now**:
+   the count cap parks the swap at ~50–61 m inside a stand, so the hull is
+   what a player sees past that. And the outer treeline is 288 m (from
+   352) to stay under a 1.5 M frame budget `DESIGN.md` §9 calls browser-era
+   — re-deriving it for a desktop GPU buys `OUTER_RADIUS` 5 back.
+2. **The crown, now that stems are a forest (density v1, 2026-09-14).**
+   At ~94 stems/ha cover is ~20 % and closing a canopy is r², not stems:
+   `TREE_MAX_R` 2.9 → 4.0 takes it past 35 % (a closed canopy is 40 %). It
+   moves `SPAWN_CLEAR_M` (4.5 → ~6.0) and so the beach spawn search and
+   both goldens, one sim row and a sweep of `examples/tree_sweep.rs` for
+   wider limbs — `reference/FORESTS.md` §1.2 priced it. `CELL_SIZE` 8 → 4
+   is no longer the lever: the grid has room the row was not using.
 3. **The billboard LOD is optional now, not owed** — `impostor_of`'s 105-tri
    hull took the p90 ring 1.94 M → 510 k, under `DESIGN.md` §9's 1.5 M.
    `TERRAIN.md` §4's octahedral billboard is the cheaper end, still unbuilt.
@@ -1813,8 +1880,17 @@ worthless assertion in the first draft.
 5. **Sub-canopy empty, shrub layer one blob** (`Occupant::Bush`, `PLANTS.md`
    §2): ez-tree's `bush_*` presets and a small tree at 40 % are new
    `Occupant` variants plus scatter rows.
-6. **The needle card is generated** (`tree::needle_image`); `WANTED.md` §9.5
-   is the swap, the highest-value texture on that page.
+6. **Both cards are generated** (`tree::needle_image`, `tree::leaf_image`);
+   `WANTED.md` §9.5 is the swap, the highest-value texture on that page, and
+   it is two textures now.
+7. ✅ **The double hull (2026-09-13).** Every tree in every chunk walked into
+   after spawn wore the outer ring's hull over its real self — the outer
+   retain never asked whether the near ring had taken the chunk. Fixed in
+   `props::stream`, gated by `tests/ring_handoff.rs` (an eye that moves);
+   `CLAUDE.md` traps has the shape. Two things it leaves: **the capture probe
+   should walk one chunk before it shoots**, because a frame from the spawn
+   chunk cannot contain a hand-off defect; and the browser's 55 m rung now
+   rests on its own argument, not on the frame that moved it (`quality.rs`).
 
 
 ## 0a · The clutter ring still ends on a line *(client lane)*
@@ -1850,8 +1926,8 @@ worthless assertion in the first draft.
    are the expensive half and the payoff is the sky.
 4. **Underwater is audio-only.** A colour grade under the surface is a
    second owner of the frame's haze; it wants the lighting owner.
-5. **The submerged duck is not a filter** — rodio gives gain, rate and
-   panning; a real low-pass needs a DSP node.
+5. **The submerged duck is not a filter** — the engine gives gain, rate and
+   a pan; a real low-pass needs a DSP stage in `sound::engine`.
 6. **`Splash` is the only producer of the waterline** — no stroke, no
    wake, no interactive deformation.
 
@@ -1984,6 +2060,27 @@ is §0win's, not this item's.
    verb works. Noted at the call site, not built.
 
 
+## 0fx · What impact fx v1 left *(client lane)*
+
+`impact::contacts` resolves every blow into one bounded list; chips, sparks,
+dust and the impact cue read it (`DECISIONS.md` §open, impact fx v1). Left:
+
+1. **Nobody has seen any of it** — `§LOOK` item 0. The three most likely
+   words: sparks too many, dust too opaque, the whoosh now a beat late
+   against a click that used to answer instantly.
+2. **A deployable's matter is a guess.** `struct_point` reads a piece's tier
+   off the mirror and answers `Wood` for a deployable, because `DeployDef`
+   carries no material. A furnace hit throws wood chips. The def wants a
+   material byte, which is a content-schema question (`CONTENT.md`).
+3. **Flesh still has no positional cue** (§0pvp item 2) and no cloud by
+   choice; a mark on flesh is refused by design (§0mk).
+4. **Sparks do not bounce and dust does not sink into a wall.** Both are a
+   collision query away and neither is worth one until a person has looked.
+5. **The remote swinger's whoosh and the tree's thock are two cues at two
+   points** (`RemoteSwing` at the body, `ImpactWood` at the trunk) with no
+   link between them; a disclosure model that wants one sound per blow is a
+   later call.
+
 ## 0x · The client makes sound — what it cannot yet hear *(client lane)*
 
 1. **Nobody has heard it and nothing scores it** — `ART.md` has no audio
@@ -1993,16 +2090,30 @@ is §0win's, not this item's.
    `music::PIECES`; swapping in recorded pieces is one function
    (`synth::render`'s music arm). Two bumps we cannot take: weapon equipped,
    projectile near-miss.
-3. **The `--capture` run is still by hand** and is the only proof most audio
-   systems execute. `tests/music.rs` is the cheaper shape — any audio system
-   with no world in its arguments could be gated that way.
+3. **The audio systems are gated headless, and the device path is not.**
+   `tests/bank.rs` proves the bank crosses whole or one cue a frame;
+   `tests/music.rs` that a piece becomes a `Play`/`Gain`/`Stop`;
+   `crates/sound/tests/engine.rs` the renderer's samples; `tests/engine_out.rs`
+   that `Feed::fill` equals the renderer through any callback length and
+   channel count with NO device; `engine_out_alloc.rs` that the callback body
+   allocates nothing. **cpal opening, the callback firing, the rate the device
+   actually runs at — only a person booting the game proves those**; a
+   `--capture` run proves only that `open()` does not panic without a device.
 4. **Two cues have no producer:** `ImpactWood`/`ImpactMetal` need to know
    WHAT was hit, and `UiClick` appears only as the mixer's placeholder
    `Request` — it wants a hook in the per-screen click handlers.
+3. **The `--capture` run is still by hand** and is the only proof most audio
+   systems execute. `tests/music.rs` is the cheaper shape — any audio system
+   with no world in its arguments could be gated that way.
+4. ✅ **The three impact cues have a producer** (2026-09-13, impact fx v1):
+   `audio::impacts` plays the matter's cue at the contact point off
+   `impact::Contacts`, which knows WHAT was hit. Still owed: `UiClick`
+   appears only as the mixer's placeholder `Request` — it wants a hook in
+   the per-screen click handlers.
 5. **No occlusion**; the prerequisite is a geometry query, and the correct
    one is the sim's (`collide.rs`), not a raycast against render meshes.
 6. **Crickets** are a content-free companion pass — a night-gated `Cue`, the
-   bird layer's shape with the predicate inverted (`render/audio.rs:672`).
+   bird layer's shape with the predicate inverted (`render/audio.rs:1039`).
 
 
 ## 0x · The native client — the feature trim and the dropped anchors *(client lane)*
@@ -2010,11 +2121,16 @@ is §0win's, not this item's.
 1. **Trim Bevy's default features — with a verified build, not a guess.**
    `crates/client/Cargo.toml` still takes bevy with defaults on. Unused by
    grep: `bevy_gilrs` (no `Gamepad` anywhere — the one real system-dep win,
-   `libudev`) and `vorbis` (the bank is WAV we generate). Load-bearing:
-   `bevy_audio`, `bevy_gltf`/`bevy_animation`, x11 and wayland. Attempted
-   2026-08-06 and backed out on disk, not code — and a green compile is not
-   evidence: Bevy answers a missing decoder with a white fallback. Wants
-   headroom and a `--capture` run someone looks at.
+   `libudev`) and `vorbis` (the bank is generated). **`bevy_audio` is
+   compiled and DISABLED natively** — `AudioPlugin` is off in both desktop
+   binaries since the cpal seam (`render/audio_out.rs` opens the device
+   itself) — so it is a trim candidate again, and `alsa` stays through cpal.
+   Load-bearing: `bevy_gltf`/`bevy_animation`, x11 and wayland. The `wav`
+   feature is inert (the decoder never runs) and joins the list rather than
+   leaving here: a feature change invalidates every Bevy artifact. Attempted 2026-08-06 and
+   backed out on disk, not code — and a green compile is not evidence: Bevy
+   answers a missing decoder with a white fallback. Wants headroom and a
+   `--capture` run someone looks at.
 2. **World-space anchors are still dropped.** The HUD half landed
    (`hud::readout` pins the struct-hit fraction and the charge clock under
    the toast); the wall's own number at the wall itself and a clock on the
@@ -2086,6 +2202,33 @@ is §0win's, not this item's.
    `bevy_feathers` (~5,400 lines of screens into a data-driven plugin) and
    the freegameui.net MCP (403s here, bypasses `bake_icons.py` and
    `tests/ui.rs` §G, pre-coloured kits fight tint-at-draw).
+
+
+## 0cq · The craft panel beside the reference's — pictures, words, and the closed menu *(client lane)*
+
+`reference/CRAFTING.md` (2026-09-13) audits `MENUS.md`'s HAVE against two of
+the operator's frames of the reference. Every number on ours is right and
+gated; the gaps are what is a picture, what is a word, and what the HUD says
+with the menu closed. §9.1 ranks twelve. The first five are draws, no wire:
+
+1. **Nothing on the HUD while the menu is closed** — Devblog 62's notice.
+   `ClientCore` already holds `jobs` and `craft_eta_ticks` (`EventMsg::CraftQ`);
+   the head job's picture and countdown as a chip beside the hotbar.
+2. **The queue strip is words** (`Wooden Spear x1 · 10.0s click to cancel`);
+   theirs is the picture with a green `⏱ 14s` chip. `build_queue`, one site.
+3. **Locked is the word `LOCKED`**; theirs a padlock glyph over the dimmed
+   picture. One game-icons silhouette.
+4. **Craft-done is a feed line**; theirs a `note.inv` beside the vitals.
+   `Cue::CraftDone` already chimes; only the drawing moves.
+5. **CRAFT dims when short**; the one plugin the community wrote for this
+   panel paints it green. A palette knob — `DECISIONS.md` §open, not code.
+6. **Cells are white glyphs; theirs are renders of the item.** A pipeline,
+   not a bigger icon set: shoot our own glTFs to item images at bake time
+   (`modelview --shot` already does the shot), glyph as the fallback.
+7. Then content + wire in one `PROTO_VER` turn — the class byte (§0w item 1)
+   and a description column (`items.toml` has none; the catalog is names
+   only) — then two sim verbs: fast-track by task id (§1.1/1.4), the bench
+   rebate (§0tt).
 
 
 ## 0w · The native menus — the rail and the untested gesture *(client lane)*
@@ -2360,6 +2503,11 @@ arithmetic and unseen*, and the list below is what has accumulated. **Do not
 build a replacement pixel gate.** One session with the client open closes most
 of it.
 
+**Newest, 2026-09-13 — go down and look** (§0wnd, `render/wounded.rs`): the
+camera's drop to `CRAWL_EYE_M` and its roll, the vignette, the two-number
+line, and a remote body's fallen pose sliding at a crawl. Five knobs, none
+seen; `reference/WOUNDED.md` §9.5 is the checklist.
+
 Two of these are not taste, they are unresolved defects:
 
 - **The ground's whole surface changed** (§0gs). A new `rock` texture, a macro
@@ -2405,6 +2553,15 @@ Two of these are not taste, they are unresolved defects:
 
 Then, in the order a player would notice:
 
+0. **The blow, whole** (impact fx v1 and browser marks + weak spot v0,
+   2026-09-13 — `§0fx`, `§0mk`). Five things landed as arithmetic in one
+   session and none has been seen or heard: the swing cue now fires with the
+   stroke rather than the click (spam the button: one whoosh per arm swing);
+   sparks off a pick on stone and metal (a shower or a firework?); dust off
+   every solid blow (weight or smoke?); the thock/crunch/clank at the point
+   of contact; the browser's mesh mark on a trunk; and the weak-spot cross,
+   pulsing, that should brighten when the prompt gains its `WEAK SPOT`.
+   Every number is a `DECISIONS.md` §open default waiting on exactly this.
 1. **A remote body's swing** (§0sw) — the arc has never been on a screen. The
    failure it would catch is a clip-table array width that panics the first
    time somebody swings near you.
@@ -2790,7 +2947,9 @@ at in headless Chromium (SwiftShader) against a shard from the same commit:
    (`web::hand_back` → `gatesLeft` → reload with the reason on the status
    line); the surface follows the viewport under the 2048 cap (`web::fit`,
    `tests/web.rs`); one PLAY button, the shard fields behind ADVANCED.
-5. **The audio bank is one cue a frame on wasm32** (`tests/bank.rs`).
+5. **The audio bank is one cue a frame on wasm32** (`tests/bank.rs`); the
+   spread bank installs each cue's PCM into the engine, which a page does
+   not flush anywhere yet — the worklet is the next stage.
 6. **Mouse look turns the view** and the pointer lock, when granted, holds
    through a drag and releases on Escape — zero panics across four runs.
 

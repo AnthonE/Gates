@@ -217,3 +217,25 @@ go.addEventListener("click", async () => {
   // loop to requestAnimationFrame and `run()` does not come back.
   g.play("#gates");
 });
+
+/* ── the main thread's stalls, counted ─────────────────────────────────────
+   `findings/browser-audio-20260913.md` §4: the audio hiccup is either a long
+   task on the one thread the tab has (cpal's output timer fires late and the
+   buffer is scheduled in the past) or the JS garbage that timer makes. The
+   renderer's own `web::heap_report` prints `dt` every two seconds; this
+   prints what happens BETWEEN those prints — every task over 50 ms, as a
+   count and the longest — with the JS heap beside it where Chrome exposes it.
+   Read the two lines together next to the hiccup. */
+if (typeof PerformanceObserver !== "undefined") {
+  let longTasks = 0, longestMs = 0;
+  try {
+    new PerformanceObserver((list) => {
+      for (const e of list.getEntries()) { longTasks += 1; longestMs = Math.max(longestMs, e.duration); }
+    }).observe({ type: "longtask", buffered: true });
+    setInterval(() => {
+      const heap = performance.memory ? ` · js heap ${(performance.memory.usedJSHeapSize / 1e6).toFixed(0)} MB` : "";
+      console.info(`page: long tasks ${longTasks} (longest ${longestMs.toFixed(0)} ms)${heap}`);
+      longTasks = 0; longestMs = 0;
+    }, 5000);
+  } catch {}
+}

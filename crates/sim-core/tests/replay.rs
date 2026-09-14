@@ -476,7 +476,24 @@ const TICKS: u64 = 900;
 /// this surface at all. And the smasher looks straight down (its frame is
 /// the one this script edits), because standing on a drum no longer lands a
 /// swing by proximity. Deliberate, regenerated in the commit that caused it.
-const GOLDEN_FINAL_HASH: u64 = 0x565A_4CF4_EC7B_B375;
+///
+/// Moved `0x565A_4CF4_EC7B_B375` → `0x1B27_3424_6B8D_180F` at wounded v0
+/// (2026-09-13), and this one is behavioural in the plainest way: a lethal
+/// blow from a swing, a bite or a body shot no longer makes a corpse on the
+/// tick it lands. The body goes down for 40–50 s, crawls, and either gets
+/// up or dies on a hashed roll — so every bot death in this run moves by a
+/// minute or does not happen, every bag stands up later, and `Player` grew
+/// three hashed fields. Deliberate, regenerated in the commit that caused it.
+///
+/// **Moved again to `0x9F04_B1F1_D777_382C` where wounded v0 met forest density v1 in one
+/// merge window** (2026-09-14): worldgen changed too (`ScatterTable`'s Forest
+/// row and its capped field), so which cells hold a tree moved across ~45% of
+/// the land and everything the bots gather, walk around and stand next to
+/// moved with it. That half is the cheap kind — no verb, no ordering and no
+/// rule — but it composes with the crawl rather than replacing it, so the
+/// merged digest is neither branch's. The equality assert above it stayed
+/// green on the same run, which is what says both halves are deterministic.
+const GOLDEN_FINAL_HASH: u64 = 0x9F04_B1F1_D777_382C;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -524,7 +541,17 @@ const GOLDEN_FINAL_HASH: u64 = 0x565A_4CF4_EC7B_B375;
 /// what the bots gather, smash and chip changed from the first swing of the
 /// run, which is the behavioural shape — the trace moved from where the
 /// change started, not by a constant.
-const GOLDEN_TRACE_HASH: u64 = 0x31F6_CAD0_C685_6B34;
+///
+/// Moved `0x31F6_CAD0_C685_6B34` → `0xB15A_3FBC_430E_392A` at wounded v0
+/// (2026-09-13), beside `GOLDEN_FINAL_HASH` and for its reason: the first
+/// lethal blow of the run is a fall now and not a death, so the path
+/// diverges from that tick.
+///
+/// Moved again to `0x495D_2707_041A_185B` in the merge window that brought forest
+/// density v1 alongside it (2026-09-14), beside `GOLDEN_FINAL_HASH` and for
+/// its reason: the scatter changed under the run, so it moved from the first
+/// stamped tick as well — the worldgen shape on top of the behavioural one.
+const GOLDEN_TRACE_HASH: u64 = 0x495D_2707_041A_185B;
 
 /// Fold a stamped trace into one number.
 ///

@@ -42,7 +42,7 @@ use client::render::props::{
 };
 use client::render::terrain_mesh::{far_ground_y, FAR_DROP, FAR_STEP, NEAR_RADIUS};
 use client::render::textures::{MapSet, PropMaps};
-use client::render::tree::IMPOSTOR_MAX_TRIS;
+use client::render::tree::{CONIFER_MAX_TRIS, IMPOSTOR_MAX_TRIS, TREE_LOD_CAP};
 use client::render::WorldId;
 use sim_core::terrain::{self, Occupant, Slot};
 
@@ -52,10 +52,22 @@ const SEED: u64 = 20260731;
 const KEY: u32 = (137u32 << 16) | 42;
 const YAW: u8 = 137;
 
-/// Trees inside the NEAR ring at the measured p90, from `tests/tree.rs`.
-/// Restated rather than imported because that suite's constant is private to
-/// it; the budget arithmetic below is meaningless without it.
-const RING_TREES_P90: usize = 328;
+/// Trees inside the NEAR ring at the measured p90, from `tests/tree.rs` —
+/// `cargo run --release -p sim-core --example ring_census` on the shipped
+/// seed. Restated rather than imported because that suite's constant is
+/// private to it; the budget arithmetic below is meaningless without it.
+/// 328 until forest density v1 (2026-09-14).
+const RING_TREES_P90: usize = 811;
+
+/// …and the densest near ring on the shipped seed, from the same sweep.
+const RING_TREES_MAX: usize = 1_086;
+
+/// The near ring's own worst-case share of the frame with the cap in: the
+/// cap's trees at a conifer's ceiling plus every other tree in the densest
+/// ring as a hull. `tests/tree.rs` computes the same number off the meshes;
+/// this restates the bound the cap is sized to.
+const NEAR_TREE_TRIS_MAX: usize =
+    TREE_LOD_CAP * CONIFER_MAX_TRIS + (RING_TREES_MAX - TREE_LOD_CAP) * IMPOSTOR_MAX_TRIS;
 
 /// The outer ring has to be OUTSIDE the near one. Both are consts, so this is a
 /// compile error rather than a test failure — and clippy is right that an
@@ -310,10 +322,18 @@ fn the_far_height_matches_the_mesh_at_its_own_vertices() {
 /// **The budget.** The whole argument for the wider ring is that a hull is
 /// cheap; this is that argument as arithmetic, so it goes red if either half
 /// of it stops being true.
+///
+/// Re-derived at forest density v1 (2026-09-14): the near ring's p90 went
+/// 328 → 811 and its share of the frame is bounded by `TREE_LOD_CAP` now
+/// rather than by the distance alone, so the claim is the whole-frame one —
+/// every tree in both rings, at the p90 eye and at the densest, under
+/// `DESIGN.md` §9's 1.5 M. It held at `OUTER_RADIUS` 5 before v1 and does
+/// not after it (an 11×11 annulus is ~3,100 hulls at p90), which is why the
+/// radius is 4.
 #[test]
 fn the_outer_ring_fits_the_frame() {
     // Area scaling off the near ring's own measured tree count. The outer ring
-    // is every chunk of the 11×11 block that the 5×5 does not already hold.
+    // is every chunk of the (2R+1)² block that the 5×5 does not already hold.
     let near_chunks = ((2 * NEAR_RADIUS + 1) * (2 * NEAR_RADIUS + 1)) as usize;
     assert_eq!(
         OUTER_CHUNKS,
@@ -321,24 +341,37 @@ fn the_outer_ring_fits_the_frame() {
     );
     let outer_trees = RING_TREES_P90 * OUTER_CHUNKS / near_chunks;
     let outer_tris = outer_trees * IMPOSTOR_MAX_TRIS;
+    let outer_trees_max = RING_TREES_MAX * OUTER_CHUNKS / near_chunks;
+    let outer_tris_max = outer_trees_max * IMPOSTOR_MAX_TRIS;
 
-    // `DESIGN.md` §9's whole-frame ceiling, and the near ring's own share of
-    // it after the LOD landed (`RENDER.md`: 1.94 M → 510 k).
+    // `DESIGN.md` §9's whole-frame ceiling.
     const FRAME_TRIS: usize = 1_500_000;
-    const NEAR_TREE_TRIS: usize = 510_000;
+    println!(
+        "outer ring: {outer_trees} hulls at p90 ({outer_tris} tris), {outer_trees_max} at the \
+         densest ({outer_tris_max}); near ring worst case {NEAR_TREE_TRIS_MAX}; total at the \
+         worst {}",
+        outer_tris_max + NEAR_TREE_TRIS_MAX
+    );
     assert!(
-        outer_tris + NEAR_TREE_TRIS < FRAME_TRIS / 2,
-        "the outer ring adds {outer_trees} trees at {IMPOSTOR_MAX_TRIS} tris = \
-         {outer_tris}, and with the near ring's {NEAR_TREE_TRIS} that is more \
-         than half the frame's {FRAME_TRIS} — trees are not the only thing in \
-         a frame, so half is the share this ring may take"
+        outer_tris_max + NEAR_TREE_TRIS_MAX < FRAME_TRIS,
+        "the outer ring adds {outer_trees_max} trees at {IMPOSTOR_MAX_TRIS} tris = \
+         {outer_tris_max} at the densest eye, and with the near ring's capped \
+         {NEAR_TREE_TRIS_MAX} that is over the frame's {FRAME_TRIS} — the cap, \
+         the hull or the radius has to give, not the rail"
+    );
+    // And the ring is still the cheap half: at p90 it costs under a fifth of
+    // the frame on its own, which is the share a horizon may take.
+    assert!(
+        outer_tris < FRAME_TRIS / 5,
+        "the outer ring alone is {outer_tris} tris at p90 — more than a fifth \
+         of the frame for a treeline"
     );
 
     // One entity each, which is what makes the count affordable at all.
     assert!(
-        outer_trees < 2_000,
-        "{outer_trees} outer trees is {outer_trees} entities Bevy sweeps for \
-         visibility every frame; past ~2,000 this wants instancing rather than \
+        outer_trees_max < 2_500,
+        "{outer_trees_max} outer trees is {outer_trees_max} entities Bevy sweeps for \
+         visibility every frame; past ~2,500 this wants instancing rather than \
          a wider radius"
     );
 }

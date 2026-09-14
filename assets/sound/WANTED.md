@@ -2,7 +2,7 @@
 
 Every sound this client plays, as a sourcing worklist. **Owns nothing** —
 `assets/models/WANTED.md`'s shape for audio. The enum is the authority
-(`crates/client/src/sound/mod.rs::Cue`, 40 cues); this file is read against
+(`crates/sound/src/lib.rs::Cue`, 40 cues); this file is read against
 it, and **the command is the claim, not the count**:
 
 ```
@@ -101,9 +101,9 @@ one GOOD take per surface is enough. Retriggers every ~0.85 m of stride.
 | file | len | fires | character |
 |---|---|---|---|
 | `05_Swing` | 0.26 s | every melee/tool swing (own) | air whoosh, band sweeping UP 400→2600 Hz, envelope peaks ⅓ in — a moving band, not a hiss; **no impact in it** |
-| ★ `06_ImpactWood` | 0.30 s | hitting a tree (positional, 40 m) — *bank ready, producer owed* (`NOW.md` §0x item 4) | deep solid thock ~185 Hz, fast decay, dry, a little debris |
-| ★ `07_ImpactStone` | 0.26 s | hitting rock/ore (40 m); **also reused** as the puff when a felled trunk despawns (`render/audio.rs`) | gritty crunch, mostly noise, little ring, hard attack |
-| `08_ImpactMetal` | 0.55 s | hitting metal (48 m) — *producer owed* | clank with **inharmonic** ring (620 + 1370 Hz — deliberately not a musical interval), bright transient |
+| ★ `06_ImpactWood` | 0.30 s | hitting a tree, a twig or wood piece (positional, 40 m) — `render/audio.rs::impacts`, off the contact list every blow resolves into (2026-09-13; *producer owed* from audio v0 until then) | deep solid thock ~185 Hz, fast decay, dry, a little debris |
+| ★ `07_ImpactStone` | 0.26 s | hitting rock/ore, a stone piece or the ground (40 m) — `audio::impacts`; **also reused** as the puff when a felled trunk despawns (`render/audio.rs`) | gritty crunch, mostly noise, little ring, hard attack |
+| `08_ImpactMetal` | 0.55 s | hitting a metal node, a barrel or a metal piece (48 m) — `audio::impacts` | clank with **inharmonic** ring (620 + 1370 Hz — deliberately not a musical interval), bright transient |
 
 ### 1.3 · Interface signals — fixed pitch, learned as symbols
 

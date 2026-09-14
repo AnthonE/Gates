@@ -61,14 +61,14 @@ pub use event::{
     encode_event_inv, encode_event_knock, encode_event_known, encode_event_move_refused,
     encode_event_moved, encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
     encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
-    encode_event_reload, encode_event_reload_refused, encode_event_removed, encode_event_research,
-    encode_event_research_refused, encode_event_research_rows, encode_event_respawn,
-    encode_event_shot, encode_event_slot_change, encode_event_slot_sync, encode_event_stock,
-    encode_event_struct_hit, encode_event_swing, encode_event_vitals, encode_event_weak_mark,
-    shot_is_instant, EventMsg, InvSlot, ItemCatalog, ItemRow, WireBag, BAG_SYNC_BATCH,
-    CATALOG_BATCH, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES,
-    MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH,
-    SLOT_SYNC_BATCH,
+    encode_event_recovered, encode_event_reload, encode_event_reload_refused, encode_event_removed,
+    encode_event_research, encode_event_research_refused, encode_event_research_rows,
+    encode_event_respawn, encode_event_shot, encode_event_slot_change, encode_event_slot_sync,
+    encode_event_stock, encode_event_struct_hit, encode_event_swing, encode_event_vitals,
+    encode_event_weak_mark, encode_event_wounded, shot_is_instant, EventMsg, InvSlot, ItemCatalog,
+    ItemRow, WireBag, BAG_SYNC_BATCH, CATALOG_BATCH, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH,
+    DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH,
+    PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSHOT_ENTITIES};
@@ -824,7 +824,21 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// (a first foundation, or a freehand one) and refuses it past half a wall
 /// either way (`build::plate_for`); a placement that sends 0 behaves as
 /// every placement did under v61. Nothing else moved.
-pub const PROTO_VER: u16 = 62;
+///
+/// **v63 — wounded v0 (a body falls down instead of dying;
+/// `reference/WOUNDED.md` §9).** One layout move and two additions.
+/// `EntityState` gains `wounded:1` after `dead`, unconditional in both
+/// encoders for `dead`'s reason (v48): it is a state a body entering AOI
+/// has to be able to learn, and it flips too rarely to be worth a change
+/// flag. On the event lane, `SUB_WOUNDED` (the clock in ticks and the odds
+/// per mille — the two numbers the reference put on screen in 2023) and
+/// `SUB_RECOVERED` (the odds it beat and the hp it stands with), both
+/// own-fact, unicast to the one body they are about. `EV_DEATH` moved from
+/// the kill sites into `World::die` behind the same bump with no wire shape
+/// of its own: a lethal blow is no longer always a death, so the feed hears
+/// the corpse and not the blow. Every snapshot fixture moves by one bit per
+/// entity; `hello` carries the version.
+pub const PROTO_VER: u16 = 63;
 
 /// This game's slug in the elo catalog.
 ///
@@ -2693,6 +2707,27 @@ pub struct EntityState {
     /// the server tests — which is the objection that keeps a *sleeper*
     /// standing (`client/render/anim.rs`).
     pub dead: bool,
+    /// **This body is down and not dead** (wounded v0, wire v63): a lethal
+    /// blow from an eligible source laid it on the ground for most of a
+    /// minute (`sim-core/wound.rs`; `reference/WOUNDED.md` §9). One bit,
+    /// sent on every record beside [`Self::dead`] and for its reason at
+    /// one remove: the body keeps its slot, its position and its facing,
+    /// moves at a crawl, and without this bit a client draws it walking
+    /// upright at a third of a walk's speed — which reads as lag, not as
+    /// a person on the ground you could finish or spare.
+    ///
+    /// Unconditional rather than delta-gated, exactly as `sleeping` and
+    /// `dead` are: it flips twice per down at most, so a change flag would
+    /// spend a bit to save a bit. A state and not an event for `dead`'s
+    /// reason too — a body entering AOI mid-crawl has to be able to learn
+    /// it, and `EV_WOUNDED` is own-fact and already spent.
+    ///
+    /// **A downed body IS a target**, unlike a corpse: it has hp, the
+    /// funnel debits it, and the next lethal blow makes the corpse. The
+    /// client's pose for this bit is the fallen one, and the sim still
+    /// tests the standing capsule against it — the same gap `sleeping`
+    /// has, accepted the same way for a body that lasts under a minute.
+    pub wounded: bool,
     pub yaw: u16,
     pub pitch: u8,
     /// **What this body is holding**, as the content item id in its
@@ -2754,6 +2789,7 @@ impl EntityState {
         grounded: false,
         sleeping: false,
         dead: false,
+        wounded: false,
         yaw: 0,
         pitch: 0,
         held: None,
@@ -2997,6 +3033,7 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
         self.w.write_bit(e.grounded)?;
         self.w.write_bit(e.sleeping)?;
         self.w.write_bit(e.dead)?;
+        self.w.write_bit(e.wounded)?;
         if pos_changed {
             self.w
                 .write((dx + DPOS_XZ_BIAS as i64) as u32, DPOS_XZ_BITS)?;
@@ -3026,6 +3063,7 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
         self.w.write_bit(e.grounded)?;
         self.w.write_bit(e.sleeping)?;
         self.w.write_bit(e.dead)?;
+        self.w.write_bit(e.wounded)?;
         self.write_vel(e.qvy)?;
         self.w.write(e.yaw as u32, 16)?;
         self.w.write(e.pitch as u32, 8)?;
@@ -3199,6 +3237,7 @@ fn decode_entity(
         let grounded = r.read_bit()?;
         let sleeping = r.read_bit()?;
         let dead = r.read_bit()?;
+        let wounded = r.read_bit()?;
         let qvy = read_vel(r)?;
         return Ok(EntityState {
             id,
@@ -3209,6 +3248,7 @@ fn decode_entity(
             grounded,
             sleeping,
             dead,
+            wounded,
             yaw: r.read(16)? as u16,
             pitch: r.read(8)? as u8,
             held: read_held(r)?,
@@ -3230,6 +3270,7 @@ fn decode_entity(
     e.grounded = r.read_bit()?;
     e.sleeping = r.read_bit()?;
     e.dead = r.read_bit()?;
+    e.wounded = r.read_bit()?;
     if pos_changed {
         // wrapping: baseline values are the decoder's own prior state, but
         // totality on arbitrary bytes must hold regardless.
@@ -3313,6 +3354,7 @@ mod tests {
             grounded: true,
             sleeping: false,
             dead: false,
+            wounded: false,
             yaw: 0x1234,
             pitch: 7,
             held: None,
@@ -3413,18 +3455,19 @@ mod tests {
         let mut enc = SnapshotEncoder::begin(&mut buf, &hdr, &baseline).expect("begin");
         for b in &baseline {
             // Identical to its baseline record: a found delta writes the id
-            // plus eight flag bits and nothing else — six until v48 added
+            // plus nine flag bits and nothing else — six until v48 added
             // `dead` beside `sleeping`, seven until v56 added
-            // `hand_changed` beside `look_changed`.
+            // `hand_changed` beside `look_changed`, eight until v63 added
+            // `wounded` beside `dead`.
             assert_eq!(enc.add_entity(b), Ok(()), "entity {} did not fit", b.id);
         }
         let len = enc.finish().expect("finish");
-        // 64 entities × (32 id bits + 8 delta bits) plus the header. An
-        // at-rest absolute record is 32 + 85 (1 is_delta + 17 + 14 + 17 +
-        // 3 flags + 1 at-rest + 16 + 8 + `HELD_BITS` + 1 lit), so a single
+        // 64 entities × (32 id bits + 9 delta bits) plus the header. An
+        // at-rest absolute record is 32 + 86 (1 is_delta + 17 + 14 + 17 +
+        // 4 flags + 1 at-rest + 16 + 8 + `HELD_BITS` + 1 lit), so a single
         // missed lookup adds 77 bits and this bound catches it.
         let head_bits = KIND_BITS + 32 + 8 + 16 + 2 + 4 + 3 + COUNT_BITS * 2;
-        let want = (head_bits as usize + MAX_SNAPSHOT_ENTITIES * 40).div_ceil(8);
+        let want = (head_bits as usize + MAX_SNAPSHOT_ENTITIES * 41).div_ceil(8);
         assert_eq!(
             len, want,
             "the encoder wrote {len} B where {want} B is every entity delta-coded \

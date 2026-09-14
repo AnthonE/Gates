@@ -150,7 +150,12 @@ pub const SAVE_MAGIC: [u8; 8] = *b"GATESAV\0";
 /// Four bytes, and they buy the same thing `food_acc` buys — a restore
 /// that zeroed the remainder would hand back six seconds of flame on
 /// every reconnect (`sim-core/light.rs`).
-pub const SAVE_FORMAT: u16 = 5;
+/// **6 — a body that was down stays down** (wounded v0): the scalar head
+/// grew `wounded` and its two clocks, 64 → 81 B, so the record went
+/// 272 → 289. Saved because a crawl is a live body with a die still to be
+/// cast, and a record that forgot it would make logging off the one way
+/// to dodge the roll (`persist.rs` says the rest).
+pub const SAVE_FORMAT: u16 = 6;
 
 /// Header size. Fixed so record `i` is at a computable offset.
 pub const SAVE_HEADER_BYTES: usize = 48;
@@ -868,7 +873,9 @@ mod tests {
         // inventory slot is six bytes since item durability v0). 328 → 340
         // at SAVE_FORMAT 4: two worn slots at the same stride (armor v0).
         // 340 → 344 at SAVE_FORMAT 5: the torch's remainder (torch fuel v0).
-        assert_eq!(SAVE_RECORD_BYTES, 344);
+        // 344 → 361 at SAVE_FORMAT 6: the crawl and its two clocks
+        // (wounded v0).
+        assert_eq!(SAVE_RECORD_BYTES, 361);
         let head = encode_header(7, 0xdead_beef);
         assert_eq!(
             u16::from_le_bytes([head[10], head[11]]) as usize,
