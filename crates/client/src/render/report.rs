@@ -46,9 +46,10 @@ use bevy::prelude::*;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot};
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
-use crate::report::{self, Build, Kind, Netstat, Place, Report, Vitals, TITLE_MAX};
+use crate::report::{self, Audio, Build, Kind, Netstat, Place, Report, Vitals, TITLE_MAX};
 use crate::shot;
 
+use super::audio::Diag;
 use super::screen::Screen;
 use super::Net;
 
@@ -204,6 +205,9 @@ pub fn keys(
     mut chars: MessageReader<KeyboardInput>,
     mut cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
     chat: Option<Res<super::chat::Chat>>,
+    // The audio seam's last report. Not optional: the engine exists from
+    // plugin build, on the menus too, and a report filed anywhere carries it.
+    engine: Res<super::audio::Engine>,
 ) {
     if reports.notice_left > 0.0 {
         reports.notice_left -= time.delta_secs();
@@ -265,6 +269,7 @@ pub fn keys(
             who.as_deref(),
             direct.as_deref(),
             &screen,
+            Some(&engine.diag),
         );
         if let Some(png) = png {
             commands
@@ -324,7 +329,10 @@ fn release(cursor: &mut Query<&mut CursorOptions, With<PrimaryWindow>>, screen: 
 ///
 /// Every fact is read rather than kept: this function is the only place the
 /// live session is touched, so there is no second copy of "what the netcode
-/// believed" to drift from `ClientCore`'s own counters.
+/// believed" to drift from `ClientCore`'s own counters — and the audio
+/// seam's `diag` is the same rule one seam over, copied in by the flush
+/// rather than read off the audio thread here.
+#[allow(clippy::too_many_arguments)]
 fn file(
     commands: &mut Commands,
     reports: &mut Reports,
@@ -332,11 +340,21 @@ fn file(
     who: Option<&super::screen::Who>,
     direct: Option<&super::screen::Direct>,
     screen: &State<Screen>,
+    diag: Option<&Diag>,
 ) -> Option<std::path::PathBuf> {
     let _ = commands;
     let dir = reports.dir.clone()?;
     let at = shot::now_secs();
     let mut r = Report::new(reports.kind(), &reports.text, "", at, Build::here());
+    r.audio = diag.map(|d| Audio {
+        alive: d.alive,
+        routed: d.routed,
+        live_thread: d.live_thread,
+        blocks: d.stats.blocks,
+        backlog: d.backlog,
+        ring_dropped: d.ring_dropped,
+        refused: d.stats.refused,
+    });
 
     if let Some(net) = net {
         let core = &net.session.core;

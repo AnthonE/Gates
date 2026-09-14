@@ -22,6 +22,11 @@ use crate::Session;
 // pure and not feature-gated for the same reason `ui` is not: a mixer testable
 // only by a windowed run with a sound card is a mixer with no gate.
 pub mod audio;
+// The native output: the engine inside cpal's device callback, and the flush
+// that moves each frame's commands across to it. A page reaches the same
+// renderer through an `AudioWorklet`, so nothing here is for wasm32.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod audio_out;
 pub mod bodies;
 // The boot splash. The window is the first thing a double-click gets now, and
 // the launcher handshake and connect happen behind it as states rather than
@@ -482,6 +487,9 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<hud::Readout>()
             .init_resource::<feed::Feed>()
             .init_resource::<audio::Sound>()
+            // Before `audio::build_bank` below: the bank is installed
+            // through it.
+            .init_resource::<audio::Engine>()
             .init_resource::<audio::LastHp>()
             .init_resource::<water::Sea>()
             .insert_non_send_resource(screen::Connecting::default());
@@ -614,10 +622,27 @@ impl Plugin for GatesRenderPlugin {
         // runs before `Startup`** on a connected start — Bevy schedules the
         // first state transition with `insert_startup_before(PreStartup, …)` —
         // so a `Startup` system cannot supply a resource that an `OnEnter`
-        // system reads, and `audio::setup` reads the bank. See
+        // system reads, and `audio::setup` writes the engine's buffer. See
         // `audio::build_bank`; the first capture run after the audio slice
         // died on exactly this.
         audio::build_bank(app);
+        // The output, natively: cpal's stream over the engine, opened now so
+        // the commands `audio::setup` queues before the first `PostUpdate`
+        // wait in the ring rather than being skipped (or, with no device, are
+        // dropped and counted); `open` also writes the device rate into
+        // `Engine::out_rate`, and `flush` is what moves each frame's buffer
+        // across (`audio_out.rs`).
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let native = audio_out::open(app);
+            // Non-send: `rtrb`'s ends are `Send` and not `Sync` (see `Native`).
+            app.insert_non_send_resource(native);
+            app.add_systems(PostUpdate, audio_out::flush);
+        }
+        // A page has no reader for the buffer until its worklet lands:
+        // emptied every frame so it cannot fill and count phantom drops.
+        #[cfg(target_arch = "wasm32")]
+        app.add_systems(PostUpdate, audio::clear);
         // The build wheel's rings, rasterised once. Ten images, and the
         // reason they are not made on demand is that the wheel rebuilds every
         // time the pointer crosses a wedge — several times a second while
@@ -1010,8 +1035,9 @@ impl Plugin for GatesRenderPlugin {
         )
         // The cloud deck hangs on the camera, so it waits for the rig too.
         .add_systems(OnEnter(Screen::Loading), sky::setup.after(rig::setup))
-        // The listener IS the camera, so the ears wait for the rig as well.
-        .add_systems(OnEnter(Screen::Loading), audio::setup.after(rig::setup))
+        // The beds, from the loading screen's first frame at zero. No camera
+        // is needed: the pan is computed per start from `Eye` in `pump`.
+        .add_systems(OnEnter(Screen::Loading), audio::setup)
         // **The score runs everywhere, which is why it is registered on its
         // own and not with the audio block below.** `sound::music` is a
         // gap-and-intensity director (`reference/AUDIO.md` §8) and the menus
@@ -1029,8 +1055,8 @@ impl Plugin for GatesRenderPlugin {
             OnEnter(Screen::Loading),
             audio::music_mode(crate::sound::music::Mode::World),
         )
-        // Leaving a shard resets the step odometer and the bed's fade. The
-        // bed entity itself is a `WorldEntity` and goes with the rest.
+        // Leaving a shard stops the beds, cuts the voices and resets the step
+        // odometer; the music slots are left to ring out (`audio::teardown`).
         .add_systems(OnEnter(Screen::Menu), audio::teardown.after(world_teardown))
         // The sea's caches are one island's depths; the next island's would
         // be read off them until the eye happened to cross a snap cell.

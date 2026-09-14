@@ -288,7 +288,13 @@ pub fn heap_report(
     images: Res<Assets<Image>>,
     meshes: Res<Assets<Mesh>>,
     materials: Res<Assets<StandardMaterial>>,
-    sources: Res<Assets<bevy::audio::AudioSource>>,
+    // The engine's side of the seam rather than an asset count: what has
+    // landed, what the ledger has sounding, what the audio thread last
+    // reported (`Diag`: its own live count, its blocks, the ring's backlog,
+    // whether it is alive) and what the frame buffer dropped — readable
+    // without `AudioPlugin`, which a page does not use.
+    bank: Res<super::audio::Bank>,
+    engine: Res<super::audio::Engine>,
     entities: Query<Entity>,
     time: Res<Time>,
     // The input-side message buffers, whose length is this frame's and the
@@ -308,12 +314,19 @@ pub fn heap_report(
     #[cfg(not(target_arch = "wasm32"))]
     let heap_mb = 0.0;
     bevy::log::info!(
-        "web: heap {heap_mb:.0} MB · images {} · meshes {} · materials {} · audio {} · entities {} · \
-         motion {} · cursor {} · raw {} · dt {:.0} ms",
+        "web: heap {heap_mb:.0} MB · images {} · meshes {} · materials {} · audio {} installed \
+         {} live {} thread {} blocks {} backlog alive {} {} dropped · entities {} · motion {} · \
+         cursor {} · raw {} · dt {:.0} ms",
         images.len(),
         meshes.len(),
         materials.len(),
-        sources.len(),
+        bank.count(),
+        engine.live.count(),
+        engine.diag.live_thread,
+        engine.diag.stats.blocks,
+        engine.diag.backlog,
+        engine.diag.alive,
+        engine.dropped,
         entities.iter().count(),
         motion.len(),
         cursor.len(),
