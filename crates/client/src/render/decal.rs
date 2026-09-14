@@ -1019,7 +1019,17 @@ pub fn mark(
         // `Always`, so there is nothing an offset buys and half the mark's
         // alpha to lose by taking one.
         let pos = at + n * MARK_LIFT_M;
-        place(&mut q, &mut materials, &mut standard, &pool, ix, pos, n, surf, 1.0);
+        place(
+            &mut q,
+            &mut materials,
+            &mut standard,
+            &pool,
+            ix,
+            pos,
+            n,
+            surf,
+            1.0,
+        );
     }
 }
 
@@ -1062,11 +1072,7 @@ fn place(
         // +Y is the projection axis and aligning it with the surface normal is
         // what lays the mark flat on that surface.
         tf.rotation = Quat::from_rotation_arc(Vec3::Y, normal);
-        if let Some(m) = pool
-            .materials
-            .get(ix)
-            .and_then(|h| materials.get_mut(h))
-        {
+        if let Some(m) = pool.materials.get(ix).and_then(|h| materials.get_mut(h)) {
             m.base.base_color = tint(surf).with_alpha(alpha);
         }
     }
@@ -1219,7 +1225,10 @@ pub fn weak_spot(
     // the heading moves on every landed hit and the cell on every new
     // chase, and a frame in between is a transform copy.
     if pool.weak_cell != core.mark_cell || pool.weak_mark8 != core.mark8 {
-        let (cx, cz) = ((core.mark_cell >> 16) as i32, (core.mark_cell & 0xFFFF) as i32);
+        let (cx, cz) = (
+            (core.mark_cell >> 16) as i32,
+            (core.mark_cell & 0xFFFF) as i32,
+        );
         let slot = terrain::scatter(world.seed, &world.table, &world.haven, cx, cz);
         let Some((at, n)) = weak_spot_pose(&slot, core.mark8) else {
             hide(&mut vis, &mut pool);

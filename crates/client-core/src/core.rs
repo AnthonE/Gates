@@ -1186,6 +1186,23 @@ pub struct ClientCore {
     pub own_death_item: u16,
     pub own_death_range_cm: u16,
     pub woke_on_bag: bool,
+    /// **Down, not dead** (wounded v0, wire v63): set by the `Wounded`
+    /// naming this body, cleared by `Recovered`, by the `Death` that ends a
+    /// failed roll, and by `Respawn`. Read every frame by the render layer
+    /// — the camera drops, the overlay counts, the input crawls — and by
+    /// the predictor through `Predictor::crawl`, which this keeps in step.
+    /// `wound_ticks` and `wound_chance_pm` are the last `Wounded`'s two
+    /// numbers, held rather than ringed because there is one crawl at a
+    /// time and the overlay reads them for its whole length.
+    pub wounded: bool,
+    pub wound_ticks: u16,
+    pub wound_chance_pm: u16,
+    /// The frame's facts for the two destructive readers below — one slot
+    /// each, not a ring, because a body cannot go down twice or get up
+    /// twice between two drains, and a second `Wounded` before the first
+    /// was read would be the same fact restated.
+    wounded_fact: Option<(u16, u16)>,
+    recovered_fact: Option<(u16, u16)>,
     /// **The bags this player has placed**, as the server last stated
     /// them, with each one's cooldown state at send time (wire v43).
     ///
@@ -1442,6 +1459,11 @@ impl ClientCore {
             own_death_item: sim_core::gather::NO_ITEM,
             own_death_range_cm: 0,
             woke_on_bag: false,
+            wounded: false,
+            wound_ticks: 0,
+            wound_chance_pm: 0,
+            wounded_fact: None,
+            recovered_fact: None,
             own_bags: [BagAnchor::default(); BAG_CAP],
             own_bags_count: 0,
             own_bag: 0,
@@ -2334,6 +2356,9 @@ impl ClientCore {
                 // sentence on it.
                 if victim == self.player_id {
                     self.dead = true;
+                    // A failed roll ends the crawl in a corpse (wounded v0).
+                    self.wounded = false;
+                    self.predict.crawl = false;
                     self.own_bag_pending = true;
                     self.own_death_killer = killer;
                     self.own_death_cause = cause;
@@ -2344,8 +2369,31 @@ impl ClientCore {
             }
             EventMsg::Respawn { on_bag } => {
                 self.dead = false;
+                self.wounded = false;
+                self.predict.crawl = false;
                 self.woke_on_bag = on_bag;
                 flags |= APPLIED_RESPAWN;
+            }
+            EventMsg::Wounded { ticks, chance_pm } => {
+                // Down (wounded v0). The predictor crawls from this frame
+                // on; the sim already crawled the same frames from the
+                // tick it fell, and the gap between the two reconciles as
+                // one ordinary misprediction. `APPLIED_HEALTH` rather than
+                // a flag of its own: the readers re-read `wounded` each
+                // frame, and the health readout this travels with is the
+                // one that changes on the bar.
+                self.wounded = true;
+                self.wound_ticks = ticks;
+                self.wound_chance_pm = chance_pm;
+                self.wounded_fact = Some((ticks, chance_pm));
+                self.predict.crawl = true;
+                flags |= APPLIED_HEALTH;
+            }
+            EventMsg::Recovered { chance_pm, hp } => {
+                self.wounded = false;
+                self.recovered_fact = Some((chance_pm, hp));
+                self.predict.crawl = false;
+                flags |= APPLIED_HEALTH;
             }
             EventMsg::Shot {
                 shooter,
@@ -2785,6 +2833,20 @@ impl ClientCore {
         self.hit_head = (self.hit_head + 1) % TOAST_RING;
         self.hit_len -= 1;
         Some(h)
+    }
+
+    /// This frame's fall, if this body went down since the last drain:
+    /// `(ticks until the roll, chance per mille)` — `EventMsg::Wounded`'s
+    /// two numbers. Destructive, one reader (`render/feed.rs`).
+    pub fn pop_wounded(&mut self) -> Option<(u16, u16)> {
+        self.wounded_fact.take()
+    }
+
+    /// This frame's recovery, if this body got up since the last drain:
+    /// `(chance per mille it beat, hp it stands with)`. Destructive, one
+    /// reader (`render/feed.rs`).
+    pub fn pop_recovered(&mut self) -> Option<(u16, u16)> {
+        self.recovered_fact.take()
     }
 
     /// Oldest buffered death, if any: the victim's id, with the killer

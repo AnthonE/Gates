@@ -16,9 +16,9 @@
 
 use bevy::math::Vec3;
 use client::render::impact::{
-    gather_burst, impact_cue, same_blow, skin_radius, strike_height, struck, Burst, Chips,
-    Contact, ContactKind, Contacts, Matter, Struck, CHIP_BURST, CHIP_GRAVITY_MPS2 as GRAVITY,
-    CHIP_LIFE_S, CHIP_POOL, CHIP_SIZE_M, CONTACT_CAP, SAME_BLOW_M,
+    gather_burst, impact_cue, same_blow, skin_radius, strike_height, struck, Burst, Chips, Contact,
+    ContactKind, Contacts, Matter, Struck, CHIP_BURST, CHIP_GRAVITY_MPS2 as GRAVITY, CHIP_LIFE_S,
+    CHIP_POOL, CHIP_SIZE_M, CONTACT_CAP, SAME_BLOW_M,
 };
 use client::sound::Cue;
 use client::ui::interact::SwingPick;
@@ -512,7 +512,10 @@ fn a_blow_the_wire_reports_twice_is_one_blow() {
     // On the node's skin, a metre from its axis: the same blow.
     assert!(same_blow(&pick, Vec3::new(10.9, 2.5, -4.0)));
     // Past the widest skin at the widest scale: somebody else's.
-    assert!(!same_blow(&pick, Vec3::new(10.0 + SAME_BLOW_M + 0.5, 2.5, -4.0)));
+    assert!(!same_blow(
+        &pick,
+        Vec3::new(10.0 + SAME_BLOW_M + 0.5, 2.5, -4.0)
+    ));
     // No pick, no blow to be the same as — an impact with nothing behind it
     // is always its own contact.
     assert!(!same_blow(&SwingPick::default(), Vec3::ZERO));
@@ -549,7 +552,10 @@ fn each_matter_has_the_sound_of_itself() {
     // Every cue this map hands out is positional: an impact is a place.
     for m in Matter::ALL {
         if let Some(c) = impact_cue(m) {
-            assert!(c.def().positional, "{c:?} is played at a point and is not positional");
+            assert!(
+                c.def().positional,
+                "{c:?} is played at a point and is not positional"
+            );
         }
     }
 }
@@ -561,7 +567,11 @@ fn a_piece_is_made_of_its_tier() {
     assert_eq!(Matter::of_piece(MAT_WOOD), Matter::Wood);
     assert_eq!(Matter::of_piece(MAT_STONE), Matter::Stone);
     assert_eq!(Matter::of_piece(MAT_METAL), Matter::Metal);
-    assert_eq!(Matter::of_piece(200), Matter::Dirt, "an unknown tier is the honest default");
+    assert_eq!(
+        Matter::of_piece(200),
+        Matter::Dirt,
+        "an unknown tier is the honest default"
+    );
 }
 
 /// The contact list is bounded, drop-newest, and counts what it dropped.
@@ -584,7 +594,10 @@ fn the_contact_list_is_bounded_and_says_so() {
     assert_eq!(c.iter().last().unwrap().at.x, (CONTACT_CAP - 1) as f32);
     c.clear();
     assert!(c.is_empty());
-    assert_eq!(c.dropped, 5, "clear forgets the count, so a frame's drops are invisible");
+    assert_eq!(
+        c.dropped, 5,
+        "clear forgets the count, so a frame's drops are invisible"
+    );
 }
 
 /// The strike height puts the chips on the thing, not in the grass under it.

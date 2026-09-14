@@ -117,6 +117,11 @@ pub struct RemoteState {
     /// player for an extra ~100 ms after the server stopped treating it as
     /// one.
     pub dead: bool,
+    /// This body is down and not dead (`world.rs` `Player::wounded`, wire
+    /// v63). Newer sample, `dead`'s reason and direction. It does NOT stop
+    /// extrapolation the way `dead` and `sleeping` do: a downed body
+    /// crawls, so its last velocity is still a guess worth making.
+    pub wounded: bool,
     /// **What this body is holding** — the content item id in its selected
     /// hotbar slot, or `None` for an empty hand (`protocol::EntityState`,
     /// wire v56). Taken from the newer sample for `sleeping`'s reason: an
@@ -139,6 +144,7 @@ fn dequant(s: &Sample, out: &mut RemoteState) {
     out.pitch = s.e.pitch as f32;
     out.sleeping = s.e.sleeping;
     out.dead = s.e.dead;
+    out.wounded = s.e.wounded;
     out.held = s.e.held;
     out.lit = s.e.lit;
 }
@@ -387,6 +393,7 @@ impl Interp {
                 // one.
                 out.sleeping = s1.e.sleeping;
                 out.dead = s1.e.dead;
+                out.wounded = s1.e.wounded;
                 out.held = s1.e.held;
                 out.lit = s1.e.lit;
                 out.live = true;
@@ -417,6 +424,7 @@ mod tests {
             grounded: true,
             sleeping: false,
             dead: false,
+            wounded: false,
             yaw,
             pitch: 100,
             held: None,

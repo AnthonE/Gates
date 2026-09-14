@@ -66,16 +66,20 @@ use crate::world::Player;
 /// bytes and there are `WEAR_SLOTS` of them since `SAVE_FORMAT` 4 (armor
 /// v0): 256 → 268. You log off in your armor, you log in in your armor —
 /// the same sentence `hp` gets, and the alternative (a naked wake) would
-/// make logging out a way to lose a plate.
+/// make logging out a way to lose a plate. The head grew the crawl and its
+/// two clocks at `SAVE_FORMAT` 6 (wounded v0): 272 → 289 — you log off on
+/// the ground, you log in on the ground, and the alternative would make
+/// logging out a way to dodge the roll.
 pub const PLAYER_SAVE_BYTES: usize =
     SCALARS_BYTES + CRAFT_QUEUE * 4 + INV_SLOTS * 6 + WEAR_SLOTS * 6;
 
 /// The fixed head of the record: body, meters, heal, counters, the
-/// blueprint mask and the torch's remainder. 52 → 60 at research v0 and
-/// 60 → 64 at torch fuel v0, each of which took `SAVE_FORMAT` with it
-/// (`store.rs`) — a record whose layout moves without the format version
-/// is the one bug the header check exists to catch.
-const SCALARS_BYTES: usize = 64;
+/// blueprint mask, the torch's remainder, and the crawl with its two
+/// clocks. 52 → 60 at research v0, 60 → 64 at torch fuel v0 and 64 → 81 at
+/// wounded v0, each of which took `SAVE_FORMAT` with it (`store.rs`) — a
+/// record whose layout moves without the format version is the one bug the
+/// header check exists to catch.
+const SCALARS_BYTES: usize = 81;
 
 /// Vertical sanity bound on a decoded body, in centimetres of `POS_Y_Q`
 /// (±1000 m). Not a gameplay limit — the island's own heights are inside a
@@ -175,6 +179,24 @@ pub struct PlayerSave {
     /// wakes on the ring at `deaths`, which is the beach it would have got
     /// for pressing "beach".
     pub dead: bool,
+    /// **This body was down when it was saved** (wounded v0, format 6),
+    /// with the tick its roll comes at and the tick until which a second
+    /// down is a death (`world.rs` `Player::wounded` and its two clocks).
+    ///
+    /// Saved, where `dead` is a single bit that restores to a beach, and
+    /// the two differ for a reason: a corpse's record cannot be restored
+    /// (its screen is a broadcast and its position is a death site), but a
+    /// crawl is a live body with a die still to be cast, and a save that
+    /// forgot it would make a shard restart — or, through the store, a
+    /// log-off — the one way to dodge the roll. `state_hash` folds all
+    /// three, so a world save without them restores a world that hashes
+    /// differently from the one written (`tests/combat_storm.rs`'s round
+    /// trip is what said so). The ticks are absolute sim ticks; a record
+    /// that outlives its shard's clock rolls at once, which is the lenient
+    /// direction.
+    pub wounded: bool,
+    pub wound_until: u64,
+    pub rewound_until: u64,
     /// The 6 hotbar + 24 backpack rows (ALPHA.md §1), canonical-empty.
     pub inv: [ItemStack; INV_SLOTS],
     /// What the body was wearing, indexed by slot (`combat::WEAR_HEAD`,
@@ -259,6 +281,9 @@ impl PlayerSave {
             grounded: false,
         },
         dead: false,
+        wounded: false,
+        wound_until: 0,
+        rewound_until: 0,
         inv: [ItemStack {
             item: 0,
             count: 0,
@@ -297,6 +322,9 @@ impl PlayerSave {
         Self {
             body: p.body,
             dead: p.dead,
+            wounded: p.wounded,
+            wound_until: p.wound_until,
+            rewound_until: p.rewound_until,
             inv: p.inv,
             worn: p.worn,
             jobs: p.jobs,
@@ -341,6 +369,9 @@ impl PlayerSave {
         out[48..52].copy_from_slice(&self.heal_acc.to_le_bytes());
         out[52..60].copy_from_slice(&self.known.to_le_bytes());
         out[60..64].copy_from_slice(&self.light_acc.to_le_bytes());
+        out[64] = self.wounded as u8;
+        out[65..73].copy_from_slice(&self.wound_until.to_le_bytes());
+        out[73..81].copy_from_slice(&self.rewound_until.to_le_bytes());
         let mut at = SCALARS_BYTES;
         for j in self.jobs.iter() {
             out[at..at + 2].copy_from_slice(&j.recipe.to_le_bytes());
@@ -473,6 +504,13 @@ impl PlayerSave {
             // drains it back under `BURN_DEN`, which is six seconds of
             // light and not worth a rule.
             light_acc: u32_at(60),
+            // The crawl (format 6). The bit is a bool and refused as one;
+            // the two ticks are unvalidated for `light_acc`'s reason — every
+            // value is a legal tick, and a forged one buys a roll now or a
+            // minute's grace, neither worth a rule.
+            wounded: bool_at(64)?,
+            wound_until: u64::from_le_bytes(src[65..73].try_into().expect("8 bytes at 65")),
+            rewound_until: u64::from_le_bytes(src[73..81].try_into().expect("8 bytes at 73")),
         })
     }
 }
@@ -495,6 +533,11 @@ mod tests {
                 grounded: false,
             },
             dead: false,
+            // Down, with two distinct clocks, so the three bytes-and-
+            // sixteen the head grew at format 6 are each pinned below.
+            wounded: true,
+            wound_until: 0x0102_0304_0506_0708,
+            rewound_until: 0x1112_1314_1516_1718,
             inv: [ItemStack::default(); INV_SLOTS],
             worn: [ItemStack::default(); WEAR_SLOTS],
             jobs: [CraftJob::default(); CRAFT_QUEUE],
@@ -578,9 +621,10 @@ mod tests {
     /// this test is here to make somebody read (`store.rs` `SAVE_FORMAT`).
     /// 256 → 268 at `SAVE_FORMAT` 4: two worn stacks (armor v0).
     /// 268 → 272 at `SAVE_FORMAT` 5: the torch's remainder (torch fuel v0).
+    /// 272 → 289 at `SAVE_FORMAT` 6: the crawl and its two clocks (wounded v0).
     #[test]
     fn the_record_is_the_size_the_format_declares() {
-        assert_eq!(PLAYER_SAVE_BYTES, 272, "the on-disk record size moved");
+        assert_eq!(PLAYER_SAVE_BYTES, 289, "the on-disk record size moved");
         assert_eq!(INV_SLOTS, 30);
         assert_eq!(CRAFT_QUEUE, 4);
         assert_eq!(WEAR_SLOTS, 2);
@@ -632,14 +676,28 @@ mod tests {
             "known at 52"
         );
         // The two arrays start where the head ends, in declaration order.
-        assert_eq!(&buf[64..66], &2u16.to_le_bytes(), "jobs[0].recipe at 64");
-        assert_eq!(&buf[66..68], &5u16.to_le_bytes(), "jobs[0].remaining at 66");
-        assert_eq!(&buf[80..82], &5u16.to_le_bytes(), "inv[0].item at 80");
-        assert_eq!(&buf[82..84], &42u16.to_le_bytes(), "inv[0].count at 82");
         assert_eq!(
-            &buf[84..86],
+            buf[64], 1,
+            "wounded at 64 — the crawl closes the head (format 6)"
+        );
+        assert_eq!(
+            &buf[65..73],
+            &0x0102_0304_0506_0708u64.to_le_bytes(),
+            "wound_until at 65"
+        );
+        assert_eq!(
+            &buf[73..81],
+            &0x1112_1314_1516_1718u64.to_le_bytes(),
+            "rewound_until at 73 — and 81 is where the arrays start now"
+        );
+        assert_eq!(&buf[81..83], &2u16.to_le_bytes(), "jobs[0].recipe at 81");
+        assert_eq!(&buf[83..85], &5u16.to_le_bytes(), "jobs[0].remaining at 83");
+        assert_eq!(&buf[97..99], &5u16.to_le_bytes(), "inv[0].item at 97");
+        assert_eq!(&buf[99..101], &42u16.to_le_bytes(), "inv[0].count at 99");
+        assert_eq!(
+            &buf[101..103],
             &0x2233u16.to_le_bytes(),
-            "inv[0].cond at 84 — the slot stride is 6 since format 3"
+            "inv[0].cond at 101 — the slot stride is 6 since format 3"
         );
         // The worn slots close the record (format 4), and they are pinned
         // here rather than left to the round trip for this block's stated
@@ -648,18 +706,18 @@ mod tests {
         // walk them with one shared `.chain()` — which means the two halves
         // agree about a wrong offset by construction and only an
         // independent decoder can say so.
-        assert_eq!(&buf[260..262], &9u16.to_le_bytes(), "worn[0].item at 260");
-        assert_eq!(&buf[262..264], &1u16.to_le_bytes(), "worn[0].count at 262");
+        assert_eq!(&buf[277..279], &9u16.to_le_bytes(), "worn[0].item at 277");
+        assert_eq!(&buf[279..281], &1u16.to_le_bytes(), "worn[0].count at 279");
         assert_eq!(
-            &buf[264..266],
+            &buf[281..283],
             &0x4455u16.to_le_bytes(),
-            "worn[0].cond at 264"
+            "worn[0].cond at 281"
         );
-        assert_eq!(&buf[266..268], &11u16.to_le_bytes(), "worn[1].item at 266");
+        assert_eq!(&buf[283..285], &11u16.to_le_bytes(), "worn[1].item at 283");
         assert_eq!(
-            &buf[270..272],
+            &buf[287..289],
             &0x6677u16.to_le_bytes(),
-            "worn[1].cond at 270 — and 272 is the whole record"
+            "worn[1].cond at 287 — and 289 is the whole record"
         );
     }
 
@@ -703,38 +761,41 @@ mod tests {
             bent(&|b| b[18..20].copy_from_slice(&u16::MAX.to_le_bytes())),
             Err(SaveError::HpOverMax)
         );
+        // The crawl bit (format 6) is a bool and refused as one.
+        assert_eq!(bent(&|b| b[64] = 2), Err(SaveError::NotABool));
         // The one that would panic the sim thread: a recipe row that does
-        // not exist, indexed unchecked by `craft::step`.
+        // not exist, indexed unchecked by `craft::step`. The arrays start
+        // at `SCALARS_BYTES`, which moved 64 → 81 at format 6.
         assert_eq!(
-            bent(&|b| b[64..66].copy_from_slice(&(MAX_RECIPES as u16).to_le_bytes())),
+            bent(&|b| b[81..83].copy_from_slice(&(MAX_RECIPES as u16).to_le_bytes())),
             Err(SaveError::BadCraftJob)
         );
         assert_eq!(
-            bent(&|b| b[66..68].copy_from_slice(&(CRAFT_COUNT_MAX + 1).to_le_bytes())),
+            bent(&|b| b[83..85].copy_from_slice(&(CRAFT_COUNT_MAX + 1).to_le_bytes())),
             Err(SaveError::BadCraftJob)
         );
         // A gap before a live job: job 0 emptied, jobs 1 still live.
         assert_eq!(
-            bent(&|b| b[66..68].copy_from_slice(&0u16.to_le_bytes())),
+            bent(&|b| b[83..85].copy_from_slice(&0u16.to_le_bytes())),
             Err(SaveError::SparseCraftQueue)
         );
         // An item past the table, and a non-canonical empty.
         assert_eq!(
-            bent(&|b| b[80..82].copy_from_slice(&(MAX_ITEM_DEFS as u16).to_le_bytes())),
+            bent(&|b| b[97..99].copy_from_slice(&(MAX_ITEM_DEFS as u16).to_le_bytes())),
             Err(SaveError::BadItemStack)
         );
         assert_eq!(
-            bent(&|b| b[82..84].copy_from_slice(&0u16.to_le_bytes())),
+            bent(&|b| b[99..101].copy_from_slice(&0u16.to_le_bytes())),
             Err(SaveError::BadItemStack)
         );
         // The cond half of canonical empty (format 3): inv[1] is a zeroed
-        // slot in the fixture, at offset 86; condition on an empty slot is
+        // slot in the fixture, at offset 103; condition on an empty slot is
         // state nothing can see and is refused exactly as "0 of item 7"
         // always was. This is the check nobody would think of — a slot
         // emptied by a path that forgot to zero `cond` hashes differently
         // from the sim's own empty (wall 5).
         assert_eq!(
-            bent(&|b| b[90..92].copy_from_slice(&7u16.to_le_bytes())),
+            bent(&|b| b[107..109].copy_from_slice(&7u16.to_le_bytes())),
             Err(SaveError::BadItemStack),
             "an empty slot may not carry condition"
         );

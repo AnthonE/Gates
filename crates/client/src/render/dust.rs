@@ -322,7 +322,11 @@ pub fn puff_texture() -> Image {
     let mut data = vec![0u8; n * n * 4];
     let c = (n as f32 - 1.0) * 0.5;
     // (centre x, centre y, radius) as fractions of the half-side.
-    let lobes = [(0.0f32, 0.0f32, 0.62f32), (0.28, 0.18, 0.48), (-0.24, -0.22, 0.44)];
+    let lobes = [
+        (0.0f32, 0.0f32, 0.62f32),
+        (0.28, 0.18, 0.48),
+        (-0.24, -0.22, 0.44),
+    ];
     for y in 0..n {
         for x in 0..n {
             let (px, py) = ((x as f32 - c) / c, (y as f32 - c) / c);

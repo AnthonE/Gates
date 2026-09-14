@@ -341,7 +341,10 @@ fn a_curved_mark_lies_on_the_cylinder_it_was_bent_to() {
             "vertex {p:?} is {d:.4} from the axis, not {r:.4}"
         );
         assert!(p[1] <= 1e-6, "vertex {p:?} bends OUT of the surface");
-        assert!((-0.5..=0.5).contains(&p[0]), "the patch is wider than the unit quad");
+        assert!(
+            (-0.5..=0.5).contains(&p[0]),
+            "the patch is wider than the unit quad"
+        );
         centre_seen |= p[0].abs() < 1e-6 && p[1].abs() < 1e-6;
     }
     assert!(centre_seen, "no vertex sits on the surface at the centre");
@@ -364,7 +367,10 @@ fn a_world_mark_is_bent_and_stands_up_the_trunk() {
     let n = Vec3::new(0.6, 0.0, 0.8);
     let (curved, rot) = mesh_pose(sim_core::ranged::SURF_WORLD, n);
     assert!(curved, "a trunk hit took the flat quad");
-    assert!((rot * Vec3::Y).dot(n) > 0.9999, "the patch's normal is off the trunk's");
+    assert!(
+        (rot * Vec3::Y).dot(n) > 0.9999,
+        "the patch's normal is off the trunk's"
+    );
     assert!(
         (rot * Vec3::Z).dot(Vec3::Y) > 0.9999,
         "the patch's bend axis is not up the trunk — it wraps the wrong way"
@@ -402,8 +408,14 @@ fn the_weak_spot_sits_on_the_skin_facing_its_sector() {
         let (at, n) = weak_spot_pose(&slot, mark8).expect("a tree carries a mark");
         let r = skin_radius(Occupant::Tree as u8);
         let planar = ((at.x - slot.x).powi(2) + (at.z - slot.z).powi(2)).sqrt();
-        assert!((planar - r).abs() < 1e-4, "the cross is {planar:.3} m out; the bark is at {r:.3}");
-        assert!(n.y == 0.0 && (n.length() - 1.0).abs() < 1e-4, "the cross does not face out");
+        assert!(
+            (planar - r).abs() < 1e-4,
+            "the cross is {planar:.3} m out; the bark is at {r:.3}"
+        );
+        assert!(
+            n.y == 0.0 && (n.length() - 1.0).abs() < 1e-4,
+            "the cross does not face out"
+        );
         assert!(at.y > slot.y && at.y < slot.y + occupant_volume(Occupant::Tree).1);
         // Standing 1.5 m out along the cross's normal IS the sector…
         let stand = Vec3::new(slot.x, 0.0, slot.z) + n * 1.5;
@@ -449,10 +461,20 @@ fn the_weak_spot_breathes_and_holds_bright_in_the_sector() {
         let a = weak_spot_alpha(t, false);
         lo = lo.min(a);
         hi = hi.max(a);
-        assert_eq!(weak_spot_alpha(t, true), WEAK_MARK_ALPHA_HI, "in the sector it does not hold");
+        assert_eq!(
+            weak_spot_alpha(t, true),
+            WEAK_MARK_ALPHA_HI,
+            "in the sector it does not hold"
+        );
     }
-    assert!((lo - WEAK_MARK_ALPHA_LO).abs() < 0.01, "the pulse bottoms at {lo:.3}");
-    assert!((hi - WEAK_MARK_ALPHA_HI).abs() < 0.01, "the pulse peaks at {hi:.3}");
+    assert!(
+        (lo - WEAK_MARK_ALPHA_LO).abs() < 0.01,
+        "the pulse bottoms at {lo:.3}"
+    );
+    assert!(
+        (hi - WEAK_MARK_ALPHA_HI).abs() < 0.01,
+        "the pulse peaks at {hi:.3}"
+    );
     let (target, scuff) = (WEAK_MARK_SIZE_M, client::render::decal::SIZE_M);
     assert!(target > scuff, "the target is smaller than a scuff");
 }
@@ -472,7 +494,11 @@ fn the_cross_mask_is_two_bars_and_padded() {
     assert!(alpha(0.0, 0.0) > 240, "the crossing is thin");
     assert!(alpha(0.5, 0.5) > 200, "the diagonal is thin");
     assert!(alpha(-0.5, 0.5) > 200, "the other diagonal is thin");
-    assert_eq!(alpha(0.55, 0.0), 0, "between the bars is not clear — it is a disc, not a cross");
+    assert_eq!(
+        alpha(0.55, 0.0),
+        0,
+        "between the bars is not clear — it is a disc, not a cross"
+    );
     assert_eq!(alpha(0.0, 0.55), 0);
 }
 

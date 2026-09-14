@@ -619,6 +619,13 @@ pub fn feed(net: NonSend<Net>, feed: Res<super::feed::Feed>, mut sound: ResMut<S
             sound.play(Request::own(Cue::Death));
         }
     }
+    // Going down is the same sound as dying (wounded v0), and on purpose:
+    // the reference shipped ONE wounded sound (Devblog 57) and the blow that
+    // put you on the ground would have been the death a minute ago. A voice
+    // of its own is a `synth.rs` row and a bank entry; `NOW.md` §0wnd.
+    if feed.wounded.is_some() {
+        sound.play(Request::own(Cue::Death));
+    }
     for _ in feed.gathered() {
         sound.play(Request::own(Cue::Gather));
     }

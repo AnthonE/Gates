@@ -29,7 +29,11 @@ fn the_pool_is_bounded_and_says_so() {
         p.ignite(&burst_at(Vec3::ZERO, Vec3::Y, Matter::Metal));
     }
     assert_eq!(p.bursts, 40, "every burst was taken, none refused");
-    assert_eq!(p.live(), SPARK_POOL, "a saturated pool draws exactly its cap");
+    assert_eq!(
+        p.live(),
+        SPARK_POOL,
+        "a saturated pool draws exactly its cap"
+    );
     assert!(
         p.stolen >= (40 * SPARK_BURST_METAL - SPARK_POOL) as u64,
         "past the cap every spark has to come from an older one, got {} steals",
@@ -58,7 +62,11 @@ fn only_stone_and_metal_spark() {
     }
     let mut p = Sparks::default();
     p.ignite(&burst_at(Vec3::ZERO, Vec3::Y, Matter::Metal));
-    assert_eq!(p.live(), SPARK_BURST_METAL, "one metal burst is its full count");
+    assert_eq!(
+        p.live(),
+        SPARK_BURST_METAL,
+        "one metal burst is its full count"
+    );
 }
 
 /// A shower leaves the face it came off, every spark of it.
@@ -105,7 +113,10 @@ fn a_spark_streaks_along_its_velocity_and_cools() {
                 "a streak drew {:.3} m long, outside its band",
                 scale.x
             );
-            assert!(scale.y <= SPARK_WIDTH_M && scale.y == scale.z, "a streak is round");
+            assert!(
+                scale.y <= SPARK_WIDTH_M && scale.y == scale.z,
+                "a streak is round"
+            );
             assert!(
                 rung >= *last,
                 "spark {i} went from rung {} back to {rung} — it warmed up",
@@ -125,8 +136,15 @@ fn a_spark_streaks_along_its_velocity_and_cools() {
         }
         p.step(dt);
     }
-    assert!(seen_hot && seen_cold, "the ladder was not walked end to end");
-    assert_eq!(first_width, Some(SPARK_WIDTH_M), "a spark starts full width");
+    assert!(
+        seen_hot && seen_cold,
+        "the ladder was not walked end to end"
+    );
+    assert_eq!(
+        first_width,
+        Some(SPARK_WIDTH_M),
+        "a spark starts full width"
+    );
     assert!(
         last_width.unwrap() < SPARK_WIDTH_M * 0.5,
         "the last frame drew a spark still {:.4} m wide — it pops instead of going out",
@@ -199,7 +217,10 @@ fn sparks_slow_down_fall_and_go_out() {
     };
     let r0 = rise(&mut p);
     let r1 = rise(&mut p);
-    assert!(r1 < r0, "the shower climbs faster over time — nothing pulls it down");
+    assert!(
+        r1 < r0,
+        "the shower climbs faster over time — nothing pulls it down"
+    );
     for _ in 0..((SPARK_LIFE_S * 1.4 / dt) as usize) {
         p.step(dt);
     }
@@ -211,7 +232,10 @@ fn sparks_slow_down_fall_and_go_out() {
 #[test]
 fn the_heat_ladder_is_hot_and_monotone() {
     let lum = |c: &[f32; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
-    assert!(lum(&SPARK_HEAT[0]) > 1.0, "the hottest rung is not HDR; nothing will bloom");
+    assert!(
+        lum(&SPARK_HEAT[0]) > 1.0,
+        "the hottest rung is not HDR; nothing will bloom"
+    );
     for w in SPARK_HEAT.windows(2) {
         assert!(
             lum(&w[0]) > lum(&w[1]),
@@ -242,7 +266,10 @@ fn two_bursts_are_not_the_same_burst() {
         .collect();
     assert_eq!(first.len(), second.len());
     assert!(
-        first.iter().zip(&second).any(|(a, b)| a.distance(*b) > 1e-3),
+        first
+            .iter()
+            .zip(&second)
+            .any(|(a, b)| a.distance(*b) > 1e-3),
         "the second burst is the first one again — a canned effect"
     );
 }

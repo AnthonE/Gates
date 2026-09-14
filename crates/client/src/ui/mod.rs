@@ -94,3 +94,4 @@ pub mod slots;
 pub mod structure;
 pub mod swing;
 pub mod techtree;
+pub mod wounded;
