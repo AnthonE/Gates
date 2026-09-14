@@ -77,12 +77,16 @@ pub mod heldgen;
 // which a page has. In a browser the PAGE is the menu: it owns the shard
 // address, the wallet and the join, and hands the Bevy app a live
 // `Session`. See `render/screen.rs` for the half both targets keep.
+/// The two debris layers beside the chip burst (2026-09-13): the hot one and
+/// the soft one, both fed off `impact::Contacts`.
+pub mod dust;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hub;
 pub mod hud;
 pub mod impact;
 pub mod input;
 pub mod loading;
+pub mod sparks;
 // The island map. Painted from the same `terrain::splat_from` the ground
 // blends by, so the map and the world are one worldgen seen two ways.
 pub mod map;
@@ -471,6 +475,9 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<tracer::Tracers>()
             .init_resource::<decal::Marks>()
             .init_resource::<impact::Chips>()
+            .init_resource::<impact::Contacts>()
+            .init_resource::<sparks::Sparks>()
+            .init_resource::<dust::Dust>()
             .init_resource::<hud::Toast>()
             .init_resource::<hud::Readout>()
             .init_resource::<feed::Feed>()
@@ -590,6 +597,9 @@ impl Plugin for GatesRenderPlugin {
                 // blow must not spawn an entity inside a fight
                 // (`impact.rs`).
                 impact::setup,
+                // The spark and dust pools, the chip pool's reason exactly.
+                sparks::setup,
+                dust::setup,
                 // The shared warm mesh. Before anything that could create a
                 // material, so `prewarm::warm` never sees an `Added` it has
                 // no mesh to draw against.
@@ -741,7 +751,13 @@ impl Plugin for GatesRenderPlugin {
             )
             .add_systems(
                 OnEnter(Screen::Disconnected),
-                (map::forget, viewmodel::forget, impact::forget),
+                (
+                    map::forget,
+                    viewmodel::forget,
+                    impact::forget,
+                    sparks::forget,
+                    dust::forget,
+                ),
             )
             .add_systems(OnExit(Screen::Disconnected), disconnected::teardown)
             .add_systems(
@@ -780,7 +796,13 @@ impl Plugin for GatesRenderPlugin {
             )
             .add_systems(
                 OnEnter(Screen::Menu),
-                (map::forget, viewmodel::forget, impact::forget),
+                (
+                    map::forget,
+                    viewmodel::forget,
+                    impact::forget,
+                    sparks::forget,
+                    dust::forget,
+                ),
             );
 
         // ---- settings ------------------------------------------------
@@ -930,13 +952,23 @@ impl Plugin for GatesRenderPlugin {
                 // claimed, which is what releases the prewarm slot.
                 decal::mark.after(feed::drain),
                 decal::fade.after(decal::mark),
-                // The impact burst, the same two halves for the same
-                // reasons. `strike` reads the drained feed AND the frame's
-                // swing pick, so it follows both — a burst resolved against
-                // last frame's pick is a burst at the node you were looking
-                // at before you turned.
-                impact::strike.after(feed::drain).after(verbs::resolve),
+                // The weak-spot cross, off the core's latched mark and the
+                // frame's sector answer — after the resolver that writes
+                // `InWeak`, so the cross brightens on the frame the prompt
+                // gains its suffix and not the one after.
+                decal::weak_spot.after(verbs::resolve),
+                // The impact burst, in three halves now. `contacts` reads
+                // the drained feed AND the frame's swing pick, so it follows
+                // both — a burst resolved against last frame's pick is a
+                // burst at the node you were looking at before you turned.
+                // `strike` throws every debris layer off that one list, and
+                // the three `fly`s advance whatever is live, including the
+                // burst just thrown, so a blow's first frame already moves.
+                impact::contacts.after(feed::drain).after(verbs::resolve),
+                impact::strike.after(impact::contacts),
                 impact::fly.after(impact::strike),
+                sparks::fly.after(impact::strike),
+                dust::fly.after(impact::strike),
             )
                 .run_if(world_running)
                 .run_if(move || !plate),
@@ -1226,6 +1258,10 @@ impl Plugin for GatesRenderPlugin {
                 // do by it.
                 audio::water,
                 audio::feed,
+                // The matter struck, at the point it was struck — off the
+                // contact list the debris is thrown from, and after the
+                // resolver that fills it.
+                audio::impacts.after(impact::contacts),
                 // The second positional cue: placements off the feed's
                 // broadcast-only ring (the join-flood guard is the core's).
                 audio::place,

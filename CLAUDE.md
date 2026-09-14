@@ -588,6 +588,20 @@ do not rediscover)
   written. **A rule about feet is not a rule about rays**, same slice:
   `collide::piece_ground`'s step lid is right for a body and, fed a ray's
   own height, declared a hit half a metre under every ceiling.
+- **A path switched OFF for one target reads as handled, and on that target
+  it is the defect.** `decal::setup` returned before spawning a slot on
+  wasm32 (2026-09-12, for two measured WebGL2 walls a `ForwardDecal` cannot
+  clear), with the reason written in full above the `return` — correct about
+  the decal, and the next session the operator played was the browser: *"i
+  still dont see decals on trees"* (2026-09-13), three days after the desktop's
+  marks were fixed and gated. Every gate was green, because an empty pool
+  refuses nothing and draws nothing, and the sentence explaining why it was
+  empty read as coverage. Same shape as `rig.rs`'s atmosphere note — Bevy
+  *"declines to load"* a plugin and logs so, and the log reads as the feature
+  being merely off. The question when a target loses a path is not whether
+  the loss is documented but what that target draws INSTEAD; when the answer
+  is nothing, it is a `NOW.md` item naming the target, not a comment. The
+  browser draws a mesh mark now (`decal.rs`'s header).
 - **A judge names the symptom; fix the cause.** Optimizing the judge's
   literal sentence is how a loop circles for three passes — elsewhere,
   "untextured" was really diffuse contrast crushed by an earlier fix for

@@ -718,6 +718,10 @@ pub struct SwingPick {
     pub x: f32,
     pub y: f32,
     pub z: f32,
+    /// The slot's own scale, carried out for the same reason `x`/`y`/`z`
+    /// are: `render::impact` places a burst on the occupant's collision
+    /// skin, which is `occupant_volume` × this. Zero when nothing is picked.
+    pub scale: f32,
 }
 
 /// The noun the prompt names for a swing pick, or `""` for a whiff.
@@ -831,6 +835,7 @@ fn pick_of(at: SwingAim, cx: u16, cz: u16, s: Slot) -> SwingPick {
         x: s.x,
         y: s.y,
         z: s.z,
+        scale: s.scale,
     }
 }
 

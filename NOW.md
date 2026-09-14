@@ -867,8 +867,10 @@ Items 1–3 are a **spoken operator call**, not a builder's proposal — 2026-08
    is on one screen and nobody has seen the pose. The *victim's* half landed
    as `EV_HURT` (wire v57, §0hrt); a **bystander** flinch is still refused on
    fan-out grounds (`DECISIONS.md` §open "attacker-side flinch v0").
-2. **No positional hit sound** — a flesh impact needs a waveform `sound/
-   synth.rs` does not generate. Nobody has heard `Cue::RemoteSwing` either.
+2. **No positional FLESH sound** — a flesh impact needs a waveform `sound/
+   synth.rs` does not generate (`impact::impact_cue` answers `None` for it
+   on purpose; wood, stone and metal are positional since 2026-09-13).
+   Nobody has heard `Cue::RemoteSwing` either.
 3. **A gun is heard but not seen** — the crack landed (gun report v0, wire
    v54): `ranged::hitscan` raises `EV_SHOT` at `speed == 0` and the mixer
    plays it at the shooter, 100 m against a bow's 40 m. No muzzle flash and
@@ -1020,6 +1022,16 @@ lighter, so a tree mark sat inside the bark photograph's own noise.
 `tests/decal.rs` gates both in arithmetic. **Still unlooked-at**: whether the
 new tint reads as heartwood, and whether the other two surfaces improved
 visibly now they draw at full alpha (`§LOOK`).
+
+✅ **And the browser had NO marks at all** (browser marks + weak spot v0,
+`DECISIONS.md` §open, 2026-09-13). The operator's *"i still dont see decals
+on trees"* was the page: `decal::setup` returned on wasm32 before spawning a
+slot, because a `ForwardDecal` cannot run under WebGL2 (two measured walls,
+in the file). A browser slot is a mesh mark now — the same mask, lifted
+`MESH_MARK_LIFT_M`, bent to the trunk's collision radius for a world hit —
+and the desktop keeps the decal. The weak spot is drawn on the node too
+(`decal::weak_spot`, a pulsing cross on the skin where `mark8` points),
+where it had only ever been two words on the prompt. Both unseen (`§LOOK`).
 
 
 ## 0wc · What world containers v0 still owes *(systems lane)*
@@ -1985,6 +1997,27 @@ is §0win's, not this item's.
    verb works. Noted at the call site, not built.
 
 
+## 0fx · What impact fx v1 left *(client lane)*
+
+`impact::contacts` resolves every blow into one bounded list; chips, sparks,
+dust and the impact cue read it (`DECISIONS.md` §open, impact fx v1). Left:
+
+1. **Nobody has seen any of it** — `§LOOK` item 0. The three most likely
+   words: sparks too many, dust too opaque, the whoosh now a beat late
+   against a click that used to answer instantly.
+2. **A deployable's matter is a guess.** `struct_point` reads a piece's tier
+   off the mirror and answers `Wood` for a deployable, because `DeployDef`
+   carries no material. A furnace hit throws wood chips. The def wants a
+   material byte, which is a content-schema question (`CONTENT.md`).
+3. **Flesh still has no positional cue** (§0pvp item 2) and no cloud by
+   choice; a mark on flesh is refused by design (§0mk).
+4. **Sparks do not bounce and dust does not sink into a wall.** Both are a
+   collision query away and neither is worth one until a person has looked.
+5. **The remote swinger's whoosh and the tree's thock are two cues at two
+   points** (`RemoteSwing` at the body, `ImpactWood` at the trunk) with no
+   link between them; a disclosure model that wants one sound per blow is a
+   later call.
+
 ## 0x · The client makes sound — what it cannot yet hear *(client lane)*
 
 1. **Nobody has heard it and nothing scores it** — `ART.md` has no audio
@@ -1997,9 +2030,11 @@ is §0win's, not this item's.
 3. **The `--capture` run is still by hand** and is the only proof most audio
    systems execute. `tests/music.rs` is the cheaper shape — any audio system
    with no world in its arguments could be gated that way.
-4. **Two cues have no producer:** `ImpactWood`/`ImpactMetal` need to know
-   WHAT was hit, and `UiClick` appears only as the mixer's placeholder
-   `Request` — it wants a hook in the per-screen click handlers.
+4. ✅ **The three impact cues have a producer** (2026-09-13, impact fx v1):
+   `audio::impacts` plays the matter's cue at the contact point off
+   `impact::Contacts`, which knows WHAT was hit. Still owed: `UiClick`
+   appears only as the mixer's placeholder `Request` — it wants a hook in
+   the per-screen click handlers.
 5. **No occlusion**; the prerequisite is a geometry query, and the correct
    one is the sim's (`collide.rs`), not a raycast against render meshes.
 6. **Crickets** are a content-free companion pass — a night-gated `Cue`, the
@@ -2411,6 +2446,15 @@ Two of these are not taste, they are unresolved defects:
 
 Then, in the order a player would notice:
 
+0. **The blow, whole** (impact fx v1 and browser marks + weak spot v0,
+   2026-09-13 — `§0fx`, `§0mk`). Five things landed as arithmetic in one
+   session and none has been seen or heard: the swing cue now fires with the
+   stroke rather than the click (spam the button: one whoosh per arm swing);
+   sparks off a pick on stone and metal (a shower or a firework?); dust off
+   every solid blow (weight or smoke?); the thock/crunch/clank at the point
+   of contact; the browser's mesh mark on a trunk; and the weak-spot cross,
+   pulsing, that should brighten when the prompt gains its `WEAK SPOT`.
+   Every number is a `DECISIONS.md` §open default waiting on exactly this.
 1. **A remote body's swing** (§0sw) — the arc has never been on a screen. The
    failure it would catch is a clip-table array width that panics the first
    time somebody swings near you.

@@ -664,7 +664,7 @@ fn a_second_swinger_is_not_locked_out_by_the_first() {
 fn the_remote_swing_has_a_producer_and_the_local_one_is_not_it() {
     const AUDIO: &str = include_str!("../src/render/audio.rs");
     const REGISTER: &str = include_str!("../src/render/mod.rs");
-    const INPUT: &str = include_str!("../src/render/input.rs");
+    const VIEWMODEL: &str = include_str!("../src/render/viewmodel.rs");
 
     assert!(
         AUDIO.contains("Cue::RemoteSwing,"),
@@ -681,7 +681,7 @@ fn the_remote_swing_has_a_producer_and_the_local_one_is_not_it() {
     // full gain at both ears with no pan, so every swing on the island would
     // arrive as if it were in your hands.
     assert!(
-        INPUT.contains("Cue::Swing"),
+        VIEWMODEL.contains("Request::own(crate::sound::Cue::Swing)"),
         "the local swing lost its producer"
     );
     for (name, src) in [("render/audio.rs", AUDIO)] {
@@ -694,6 +694,58 @@ fn the_remote_swing_has_a_producer_and_the_local_one_is_not_it() {
             );
         }
     }
+}
+
+/// The local swing is heard where the ARM moves and not where the MOUSE
+/// clicks (2026-09-13).
+///
+/// `render/input.rs` played `Cue::Swing` on `just_pressed` from audio v0,
+/// while the arm (`viewmodel::animate`) swung at the sim's own cadence —
+/// one stroke per `SWING_INTERVAL_TICKS` however fast the button was
+/// worked. Spam the click and the ear got a whoosh per press over an arm
+/// that moved once every 1.27 s: the operator's *"sound doesnt sync with
+/// animation if i spam attack"*. The fix is one trigger for both, and this
+/// holds the call site there: the cue's producer is the stroke's start,
+/// and the input system no longer has one.
+///
+/// Text, because both producers are behind `--features render`, and the
+/// defect is a call site rather than a value (`CLAUDE.md`'s single-drain
+/// trap, whose gate is the same shape).
+#[test]
+fn the_local_swing_is_heard_where_the_arm_moves_and_not_on_the_click() {
+    const INPUT: &str = include_str!("../src/render/input.rs");
+    const VIEWMODEL: &str = include_str!("../src/render/viewmodel.rs");
+    let code = |src: &'static str| {
+        src.lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+    };
+    assert!(
+        code(INPUT).iter().all(|l| !l.contains("Cue::Swing")),
+        "render/input.rs plays the swing cue on the click again — a press is \
+         not a swing, and the arm will not agree with it"
+    );
+    let play = code(VIEWMODEL)
+        .iter()
+        .filter(|l| l.contains("Request::own(crate::sound::Cue::Swing)"))
+        .count();
+    assert_eq!(
+        play, 1,
+        "viewmodel.rs plays the swing cue {play} times; it is one line at the \
+         stroke's start"
+    );
+    // And the score's small bump moved with it: a swing is one musical
+    // event, and it is the same event the cue is.
+    assert!(
+        code(VIEWMODEL)
+            .iter()
+            .any(|l| l.contains("music.bump(crate::sound::music::BUMP_SWING)")),
+        "the swing's music bump is no longer beside the swing cue"
+    );
+    assert!(
+        code(INPUT).iter().all(|l| !l.contains("BUMP_SWING")),
+        "render/input.rs bumps the score on the click"
+    );
 }
 
 /// The mixer hears a remote step where the body is and not past the radius:

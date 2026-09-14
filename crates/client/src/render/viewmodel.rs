@@ -40,7 +40,9 @@
 //! What replaces it mirrors the sim's rule rather than guessing at it —
 //! `BTN_PRIMARY` down and `tick >= next_swing` — over the tick estimate
 //! [`Feed`] already carries. It still decides nothing (`RENDER.md` §1): it
-//! picks a pose, on the same liberty `render::input`'s swing cue has taken
+//! picks a pose, and the swing cue takes the same liberty — from the same
+//! line, since 2026-09-13; it used to fire on the mouse press and drifted from
+//! the arm the moment a player clicked faster than the sim swings
 //! since audio v0.
 //!
 //! [`Feed`] stays as a **backstop, gated on the arm being at rest**: a hit
@@ -165,7 +167,7 @@ pub const VIEWMODEL_SWAY_MAX: f32 = 0.16;
 ///     VIEWMODEL_SWING_WINDUP)·VIEWMODEL_SWING_ATTACK` = 0.35 of the
 ///     stroke, so 0.16 s in. That is the half `SWING_CLIP_S` cannot
 ///     satisfy: the sim resolves your own swing on the frame the button
-///     goes down and `render::input` plays the cue there, so an apex a
+///     goes down and `animate` plays the cue there, so an apex a
 ///     third of a second later reads as the picture lagging the sound.
 ///     A remote body has no such constraint — nothing of theirs is
 ///     synchronised to your speakers.
@@ -760,6 +762,10 @@ pub struct Motion {
     /// mouse button into a chop at the sim's cadence instead of a blur at
     /// the frame rate. See [`crate::ui::swing`].
     cadence: crate::ui::swing::SwingCadence,
+    /// Strokes started since the session began — every one of them is one
+    /// `Cue::Swing`, so this is the count a test of the sound's cadence
+    /// would read. Wraps rather than saturates; it is a counter, not a sum.
+    pub strokes: u32,
 }
 
 /// Spawn the held item under the camera, once.
@@ -1526,6 +1532,10 @@ pub fn load_models(
 }
 
 /// Integrate the three motions and write the one transform.
+// Eight parameters, which clippy counts — the mixer is the eighth, and it is
+// here because the swing's sound is a fact about the stroke this system
+// starts (`bodies::stream`'s allow and the same argument).
+#[allow(clippy::too_many_arguments)]
 pub fn animate(
     time: Res<Time>,
     eye: Res<Eye>,
@@ -1535,6 +1545,10 @@ pub fn animate(
     // out of every probe frame.
     net: Option<NonSend<Net>>,
     mut m: ResMut<Motion>,
+    // The swing's own sound, played HERE and nowhere else — see the stroke
+    // trigger below. `Option` for `net`'s reason: a capture run has no
+    // mixer to speak of and the arm still has to move in every probe frame.
+    mut sound: Option<ResMut<super::audio::Sound>>,
     // `Without<HeldItem>` is not decoration: two `&mut Transform` queries in
     // one system have to be PROVABLY disjoint, and two different `With`
     // markers do not prove it — an entity could carry both.
@@ -1613,6 +1627,26 @@ pub fn animate(
     let landed_at_rest = m.swing <= 0.0 && (feed.hits > 0 || !feed.gathered().is_empty());
     if predicted || landed_at_rest {
         m.swing = 1.0;
+        m.strokes = m.strokes.wrapping_add(1);
+        // **The whoosh is a fact about the arm, so it fires with the arm**
+        // (2026-09-13). `render::input` played it on every mouse press from
+        // audio v0 until then, and a press is not a swing: the sim takes one
+        // per `SWING_INTERVAL_TICKS` however fast the button is worked, so a
+        // player spamming the click heard a whoosh a click over an arm that
+        // moved once every 1.27 s — *"sound doesnt sync with animation if i
+        // spam attack"*. The stroke, the cue and the score's small bump now
+        // start on one line, at the sim's cadence, and cannot disagree. The
+        // panel guard `input.rs` used to cite is already upstream of this:
+        // `BTN_PRIMARY` is not set while a panel eats the click, so
+        // `swinging` is false and the cadence never fires.
+        //
+        // `swing_apex_s` is 0.16 s in and `synth::whoosh` peaks a third of
+        // the way through its 0.26 s, so starting the cue with the stroke
+        // puts its loudest sample within a frame of the arm's apex.
+        if let Some(sound) = sound.as_deref_mut() {
+            sound.play(crate::sound::mixer::Request::own(crate::sound::Cue::Swing));
+            sound.music.bump(crate::sound::music::BUMP_SWING);
+        }
     }
     if m.swing > 0.0 {
         m.swing = (m.swing - dt / VIEWMODEL_SWING_S).max(0.0);

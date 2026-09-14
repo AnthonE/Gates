@@ -86,7 +86,6 @@ pub fn gather(
     mouse: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
-    mut sound: ResMut<super::audio::Sound>,
     // `Option`, because a capture run does not register the menus at all —
     // and a probe harness that could open one is a gate whose frames depend
     // on a keystroke (`render/panels/mod.rs`).
@@ -347,22 +346,18 @@ pub fn gather(
     if swings && !downed && mouse.pressed(MouseButton::Left) {
         buttons |= BTN_PRIMARY;
     }
-    // The swing, heard here rather than in `render/audio.rs` because this is
-    // the only place that knows a panel is not eating the click — the
-    // `panel_open` return above is what makes closing an inventory not also
-    // swing an axe. `just_pressed`, not `pressed`: the cue's own cooldown
-    // paces a held button, and a per-frame push would spend the whole cue
-    // queue on one held mouse button.
-    if swings && !downed && mouse.just_pressed(MouseButton::Left) {
-        sound.play(crate::sound::mixer::Request::own(crate::sound::Cue::Swing));
-        // The score's *small* bump, and it is here for the same reason the
-        // cue is: this is the only place that knows a swing was a swing and
-        // not a click that closed a panel. `reference/AUDIO.md` §8's
-        // published order puts a weapon in play at the bottom — ours is the
-        // swing rather than the equip because a swing is an event and an
-        // equipped-weapon state is not (`sound::music::BUMP_SWING`).
-        sound.music.bump(crate::sound::music::BUMP_SWING);
-    }
+    // **The swing is no longer heard here.** From audio v0 to 2026-09-13
+    // this block played `Cue::Swing` on `just_pressed`, on the argument that
+    // only this system knows a panel is not eating the click — true, and
+    // the `BTN_PRIMARY` bit above already carries that knowledge to the sim
+    // and to everything that reads `ClientCore::buttons`. What it got wrong
+    // is the CADENCE: a press is not a swing. The sim takes one swing per
+    // `SWING_INTERVAL_TICKS` however fast the button is worked, and the arm
+    // (`viewmodel::animate`) draws exactly those, so a player spamming the
+    // button heard a whoosh per click over an arm that moved once — the
+    // operator's *"sound doesnt sync with animation if i spam attack"*. The
+    // cue and the score's bump now fire where the stroke starts, so the
+    // sound is a fact about the arm and not about the mouse.
 
     // Hotbar 1–6. `set_input` clamps into range, so an out-of-range key
     // cannot reach the wire.
