@@ -30,8 +30,9 @@
 //! overflow only a little more often than the fill ticks (8 against 6),
 //! because once the store is empty a `Loot` finds nothing and costs
 //! nothing. Averaged, the verb looks ordinary. The real number is the
-//! **worst tick: 291 events refused against a 256-slot ring** — one tick
-//! throwing away more than the ring can hold.
+//! **worst tick: 312 events refused against a 256-slot ring** — one tick
+//! throwing away more than the ring can hold. (291 before wounded v0;
+//! re-measured 2026-09-13 with the fourth kit stack `KEEPSAKE2` explains.)
 //!
 //! ## What it is
 //!
@@ -42,7 +43,9 @@
 //! * **Fill.** The duel storm exactly as the sibling runs it: two
 //!   `brawl_step` commands per body per tick, nobody looting. Not a second
 //!   copy of that gate — this file's *precondition*. Measured, an empty
-//!   store reaches `MAX_BACKPACKS` at **tick 172**; `FILL_TICKS` is 250.
+//!   store reaches `MAX_BACKPACKS` at **tick 191** (172 before wounded v0:
+//!   a lethal blow is a fall now and the finishing blow comes a cadence
+//!   later); `FILL_TICKS` is 250.
 //! * **Bursts.** Every `LOOT_PERIOD` ticks thereafter, `LOOT_BURST` ticks
 //!   in which every body still fights *and* also reaches for the ground:
 //!   one `brawl_step` and one `Command::Loot` each per tick, so the store
@@ -97,7 +100,7 @@
 //!    table can only have come out of bags.
 //! 4. **Every burst took a full store to zero**, with the slowest drain
 //!    finishing on tick 5 of 8 — margin, not a fit, and gated as such.
-//! 5. **The ring's worst tick refuses more than the ring holds** (291 of
+//! 5. **The ring's worst tick refuses more than the ring holds** (312 of
 //!    256), and every burst reaches it.
 //! 6. **Drop-newest, with its consequence made observable.** At least
 //!    `bursts_to_zero * MAX_BACKPACKS` = 1,024 bags left the store — ground
@@ -218,17 +221,18 @@ const _: () = assert!(PLAYERS == MAX_PLAYERS);
 
 /// Long enough to fill the 256-bag store through `World::die` and evict
 /// from it. Measured (`cap_reached_tick`): an empty world reaches the cap
-/// on **tick 172**, so 250 is margin rather than a fit — a fill phase that
-/// only just made it would turn a content change into a mystery.
+/// on **tick 191** (172 before wounded v0), so 250 is margin rather than a
+/// fit — a fill phase that only just made it would turn a content change
+/// into a mystery.
 const FILL_TICKS: u64 = 250;
 
 /// How long one burst of looting lasts. Measured (`slowest_drain`): the
-/// slowest of the four drains a full store on its **5th** tick, and
+/// slowest of the four drains a full store on its **6th** tick, and
 /// `test_loot_storm` asserts that margin rather than trusting it — at 5
 /// this was a fit, and one burst of four finished a tick short.
 const LOOT_BURST: u64 = 8;
 /// Burst to burst. Leaves 192 quiet ticks for the fight to stand the store
-/// back up, against the 172 an empty world needed from a standing start —
+/// back up, against the 191 an empty world needed from a standing start —
 /// and unlike that one this is not asserted by arithmetic but by
 /// `bursts_from_full`, which is the honest way round: the refill happens
 /// under a different world (bodies mid-duel, bags mid-despawn) than the
@@ -282,6 +286,24 @@ const KEEPSAKE: u16 = 2;
 /// remainder over fresh slots. A single call still moves all 250 (the
 /// fresh-slot loop walks every slot), so the drain is not slowed.
 const KEEPSAKE_COUNT: u16 = 250;
+/// A second keepsake kind in a fourth kit slot (wounded v0, 2026-09-13),
+/// and the reason is a measurement rather than a want. The burst's worst
+/// tick used to refuse 291 events against the 256-slot ring; once a
+/// lethal blow lays a body down instead of killing it, a fifth of the
+/// population is on the ground at any moment of a burst (`min_standing`
+/// read 79), a downed body cannot loot (`live_slot_of` refuses it), and
+/// the same fixture's worst tick refused 223 — under the ring, so
+/// assertion 5 went red for a reason that had nothing to do with the verb
+/// it measures. One more stack per bag puts one more `EV_GATHER` on every
+/// loot, which is the smallest change that keeps the transient this file
+/// exists to press above the ring with 79 looters instead of 100. Same
+/// long bag life as `KEEPSAKE` (items under 4); **one unit, not 250** —
+/// a second over-stacked keepsake filled looters' packs three slots
+/// faster, left partial bags standing, and pushed the slowest drain to
+/// all `LOOT_BURST` of its ticks (measured: 6 → 8). One unit merges into
+/// a partial stack on the way in and costs the drain nothing.
+const KEEPSAKE2: u16 = 3;
+const KEEPSAKE2_COUNT: u16 = 1;
 /// The fixture's hitscan firearm and its round.
 const GUN: u16 = 6;
 const ROUND: u16 = 7;
@@ -296,8 +318,8 @@ const WEAPON_SLOT: u8 = 0;
 /// clears — so slots `KIT_SLOTS..` are the withdrawal's work and nobody
 /// else's. That is what makes the ceiling assertion below a statement
 /// about `loot_nearest` rather than about the fixture's own kit, which it
-/// deliberately over-stacks.
-const KIT_SLOTS: usize = 3;
+/// deliberately over-stacks. Four since wounded v0 (`KEEPSAKE2`).
+const KIT_SLOTS: usize = 4;
 
 /// `probe_fixture`'s ladder with every node put back to `NodeDef::INERT`.
 ///
@@ -384,6 +406,11 @@ fn restock(inv: &mut [ItemStack], shooter: bool) {
     inv[2] = ItemStack {
         item: KEEPSAKE,
         count: KEEPSAKE_COUNT,
+        cond: 0,
+    };
+    inv[3] = ItemStack {
+        item: KEEPSAKE2,
+        count: KEEPSAKE2_COUNT,
         cond: 0,
     };
 }

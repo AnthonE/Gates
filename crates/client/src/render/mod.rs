@@ -82,12 +82,16 @@ pub mod heldgen;
 // which a page has. In a browser the PAGE is the menu: it owns the shard
 // address, the wallet and the join, and hands the Bevy app a live
 // `Session`. See `render/screen.rs` for the half both targets keep.
+/// The two debris layers beside the chip burst (2026-09-13): the hot one and
+/// the soft one, both fed off `impact::Contacts`.
+pub mod dust;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hub;
 pub mod hud;
 pub mod impact;
 pub mod input;
 pub mod loading;
+pub mod sparks;
 // The island map. Painted from the same `terrain::splat_from` the ground
 // blends by, so the map and the world are one worldgen seen two ways.
 pub mod map;
@@ -150,6 +154,7 @@ pub mod web;
 pub mod anim;
 pub mod verbs;
 pub mod viewmodel;
+pub mod wounded;
 
 pub use screen::{Menu, Screen};
 // `Rt` is the tokio runtime and stays native-only; see `screen`'s header.
@@ -248,6 +253,14 @@ pub struct Eye {
     pub pos: Vec3,
     pub yaw: f32,
     pub pitch: f32,
+    /// **How far down the body is**, 0 standing to 1 on the ground, eased
+    /// by `input::place_eye` toward `ClientCore::wounded` at
+    /// `wounded::WOUND_DROP_S` (wounded v0). `place_eye` spends it on the
+    /// eye's height and `rig::follow_eye` on the view's roll; nothing that
+    /// talks to the sim reads it, because a lowered eye is a picture and
+    /// not a fact — the sim casts a swing from `ARROW_EYE_MM` regardless,
+    /// and a downed body has no swing to cast.
+    pub down: f32,
 }
 
 /// Eye height above the capsule's feet, metres (`DECISIONS.md` §open, client
@@ -440,6 +453,7 @@ impl Plugin for GatesRenderPlugin {
         app.add_plugins(MaterialPlugin::<ground_splat::GroundMaterial>::default());
         app.insert_resource(day_pin)
             .init_resource::<Eye>()
+            .init_resource::<wounded::Crawl>()
             .init_resource::<collider_debug::ShowColliders>()
             .init_resource::<hud::ShowDiagnostics>()
             .init_resource::<input::Look>()
@@ -466,6 +480,9 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<tracer::Tracers>()
             .init_resource::<decal::Marks>()
             .init_resource::<impact::Chips>()
+            .init_resource::<impact::Contacts>()
+            .init_resource::<sparks::Sparks>()
+            .init_resource::<dust::Dust>()
             .init_resource::<hud::Toast>()
             .init_resource::<hud::Readout>()
             .init_resource::<feed::Feed>()
@@ -588,6 +605,9 @@ impl Plugin for GatesRenderPlugin {
                 // blow must not spawn an entity inside a fight
                 // (`impact.rs`).
                 impact::setup,
+                // The spark and dust pools, the chip pool's reason exactly.
+                sparks::setup,
+                dust::setup,
                 // The shared warm mesh. Before anything that could create a
                 // material, so `prewarm::warm` never sees an `Added` it has
                 // no mesh to draw against.
@@ -756,7 +776,13 @@ impl Plugin for GatesRenderPlugin {
             )
             .add_systems(
                 OnEnter(Screen::Disconnected),
-                (map::forget, viewmodel::forget, impact::forget),
+                (
+                    map::forget,
+                    viewmodel::forget,
+                    impact::forget,
+                    sparks::forget,
+                    dust::forget,
+                ),
             )
             .add_systems(OnExit(Screen::Disconnected), disconnected::teardown)
             .add_systems(
@@ -795,7 +821,13 @@ impl Plugin for GatesRenderPlugin {
             )
             .add_systems(
                 OnEnter(Screen::Menu),
-                (map::forget, viewmodel::forget, impact::forget),
+                (
+                    map::forget,
+                    viewmodel::forget,
+                    impact::forget,
+                    sparks::forget,
+                    dust::forget,
+                ),
             );
 
         // ---- settings ------------------------------------------------
@@ -945,13 +977,23 @@ impl Plugin for GatesRenderPlugin {
                 // claimed, which is what releases the prewarm slot.
                 decal::mark.after(feed::drain),
                 decal::fade.after(decal::mark),
-                // The impact burst, the same two halves for the same
-                // reasons. `strike` reads the drained feed AND the frame's
-                // swing pick, so it follows both — a burst resolved against
-                // last frame's pick is a burst at the node you were looking
-                // at before you turned.
-                impact::strike.after(feed::drain).after(verbs::resolve),
+                // The weak-spot cross, off the core's latched mark and the
+                // frame's sector answer — after the resolver that writes
+                // `InWeak`, so the cross brightens on the frame the prompt
+                // gains its suffix and not the one after.
+                decal::weak_spot.after(verbs::resolve),
+                // The impact burst, in three halves now. `contacts` reads
+                // the drained feed AND the frame's swing pick, so it follows
+                // both — a burst resolved against last frame's pick is a
+                // burst at the node you were looking at before you turned.
+                // `strike` throws every debris layer off that one list, and
+                // the three `fly`s advance whatever is live, including the
+                // burst just thrown, so a blow's first frame already moves.
+                impact::contacts.after(feed::drain).after(verbs::resolve),
+                impact::strike.after(impact::contacts),
                 impact::fly.after(impact::strike),
+                sparks::fly.after(impact::strike),
+                dust::fly.after(impact::strike),
             )
                 .run_if(world_running)
                 .run_if(move || !plate),
@@ -1214,6 +1256,15 @@ impl Plugin for GatesRenderPlugin {
                 .before(Stream)
                 .run_if(world_running),
         )
+        // The crawl's screen (wounded v0): the vignette and the two numbers.
+        // After the drain for `bodies::stream`'s reason — it reads this
+        // frame's `Feed::wounded` — and under `world_running` rather than
+        // `InWorld` so a fall that lands with the Esc menu up still starts
+        // the clock. Not in the `Stream` tuple, which is at Bevy's limit.
+        .add_systems(
+            Update,
+            wounded::overlay.after(feed::drain).run_if(world_running),
+        )
         // The rig follows the server's clock (day/night v0). After the
         // drain so it reads this frame's tick estimate, not last frame's.
         .add_systems(
@@ -1233,6 +1284,10 @@ impl Plugin for GatesRenderPlugin {
                 // do by it.
                 audio::water,
                 audio::feed,
+                // The matter struck, at the point it was struck — off the
+                // contact list the debris is thrown from, and after the
+                // resolver that fills it.
+                audio::impacts.after(impact::contacts),
                 // The second positional cue: placements off the feed's
                 // broadcast-only ring (the join-flood guard is the core's).
                 audio::place,

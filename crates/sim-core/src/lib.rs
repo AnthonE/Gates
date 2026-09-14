@@ -41,6 +41,7 @@ pub mod terrain;
 pub mod world;
 pub mod worldcont;
 pub mod worldsave;
+pub mod wound;
 mod yaw_lut;
 
 pub use pitch_lut::pitch_dir;

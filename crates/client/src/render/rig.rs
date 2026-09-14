@@ -766,4 +766,12 @@ pub fn follow_eye(eye: Res<Eye>, mut cam: Query<&mut Transform, With<EyeCam>>) {
     let cp = eye.pitch.cos();
     let dir = Vec3::new(eye.yaw.sin() * cp, eye.pitch.sin(), eye.yaw.cos() * cp);
     t.look_to(dir, Vec3::Y);
+    // Down (wounded v0): the horizon tilts with the body, by the same eased
+    // fraction `place_eye` lowered the eye by. A roll about the view axis
+    // and nothing else, so what is under the crosshair does not move — the
+    // sim answers no verb from a downed body but a door, and the door stays
+    // where it was looked at.
+    if eye.down > 0.0 {
+        t.rotate_local_z(super::wounded::WOUND_ROLL_RAD * eye.down);
+    }
 }

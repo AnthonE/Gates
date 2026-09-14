@@ -292,7 +292,7 @@ pub fn stream(
                     // `dead` is the v48 bit: a corpse keeps its slot until
                     // its owner leaves the death screen, so without it a
                     // killed player is drawn standing at idle.
-                    anim.observe(pos, time.delta_secs(), rs.sleeping, rs.dead);
+                    anim.observe(pos, time.delta_secs(), rs.sleeping, rs.dead, rs.wounded);
                     anim.pitch = wire_pitch_to_radians(rs.pitch);
                     // **The one thing the sim sends that state cannot
                     // imply.** Everything else here is derived — the gait
@@ -337,7 +337,7 @@ pub fn stream(
             }
             None => {
                 let mut anim = BodyAnim::default();
-                anim.observe(pos, 0.0, rs.sleeping, rs.dead);
+                anim.observe(pos, 0.0, rs.sleeping, rs.dead, rs.wounded);
                 anim.pitch = wire_pitch_to_radians(rs.pitch);
                 // A body that enters AOI on the same frame it swings still
                 // gets its arc; without this the first swing of every
@@ -602,7 +602,10 @@ pub fn hand_wants(
     catalog: &protocol::ItemCatalog,
     rs: &client_core::interp::RemoteState,
 ) -> (Option<usize>, Option<usize>) {
-    if rs.dead {
+    // A downed body has dropped what it held (wounded v0) — the server
+    // already sends `held: None` for one, so this is belt and braces on
+    // the same fact rather than a second decision.
+    if rs.dead || rs.wounded {
         return (None, None);
     }
     (

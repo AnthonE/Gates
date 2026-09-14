@@ -570,7 +570,7 @@ impl BodyAnim {
     /// The low pass is on the SPEED and not on the position: smoothing the
     /// position would fight the interpolator, which is already the authority
     /// on where the body is (`bodies.rs` header).
-    pub fn observe(&mut self, pos: Vec3, dt: f32, sleeping: bool, dead: bool) {
+    pub fn observe(&mut self, pos: Vec3, dt: f32, sleeping: bool, dead: bool, wounded: bool) {
         // The one-shot's clock, run here because this is the one function
         // every live body passes through every frame with a `dt` in hand.
         // `bodies::stream` calls this BEFORE it hears the frame's swings,
@@ -597,6 +597,19 @@ impl BodyAnim {
         // for the same reason the sim puts `hp == 0` above `sleeping`: a
         // sleeper who is killed is a corpse, not a sleeper.
         if dead {
+            self.clip = Some(Clip::Death);
+            return;
+        }
+        // **Down is drawn as the fall, held** (wounded v0). The rig has no
+        // crawl clip (`assets/models/mannequin.gltf` — `Crouch_Fwd_Loop` is
+        // the nearest and a crouch is not a person on the ground), so a
+        // downed body plays `Death01` once and keeps its last pose, exactly
+        // as a corpse does; a crawl then slides the fallen pose across the
+        // ground at a third of a walk, which is the defect this file's
+        // header names and the honest v0 until a drag clip lands
+        // (`NOW.md` §0wnd). Above `Sleep` for the sim's reason: a sleeper
+        // that is down is down.
+        if wounded {
             self.clip = Some(Clip::Death);
             return;
         }
@@ -1136,7 +1149,7 @@ mod tests {
         let mut p = a.last.unwrap_or(Vec3::ZERO);
         for _ in 0..frames {
             p.x += speed * dt;
-            a.observe(p, dt, false, false);
+            a.observe(p, dt, false, false, false);
         }
     }
 
@@ -1177,7 +1190,7 @@ mod tests {
             let wobble = if i % 2 == 0 { 0.2 } else { -0.2 };
             p.x += (ANIM_JOG_MPS + wobble) * dt;
             let before = a.clip;
-            a.observe(p, dt, false, false);
+            a.observe(p, dt, false, false, false);
             if a.clip != before {
                 changes += 1;
             }
@@ -1190,7 +1203,7 @@ mod tests {
     fn a_sleeper_is_a_sleeper_whatever_its_speed() {
         let mut a = BodyAnim::default();
         step(&mut a, 6.0, 60);
-        a.observe(a.last.unwrap(), 1.0 / 60.0, true, false);
+        a.observe(a.last.unwrap(), 1.0 / 60.0, true, false, false);
         assert_eq!(a.clip, Some(Clip::Sleep));
     }
 
@@ -1209,7 +1222,7 @@ mod tests {
             let mut p = a.last.unwrap_or(Vec3::ZERO);
             for _ in 0..120 {
                 p.x += mps * dt;
-                a.observe(p, dt, sleeping, true);
+                a.observe(p, dt, sleeping, true, false);
             }
             assert_eq!(
                 a.clip,
@@ -1229,12 +1242,12 @@ mod tests {
         let dt = 1.0 / 60.0;
         let mut p = Vec3::ZERO;
         for _ in 0..60 {
-            a.observe(p, dt, false, true);
+            a.observe(p, dt, false, true, false);
         }
         assert_eq!(a.clip, Some(Clip::Death));
         for _ in 0..120 {
             p.x += 4.0 * dt;
-            a.observe(p, dt, false, false);
+            a.observe(p, dt, false, false, false);
         }
         assert_eq!(a.clip, Some(Clip::Jog));
     }
@@ -1246,10 +1259,10 @@ mod tests {
         // nothing else resets), and the only ordering that does not draw a
         // dead man finishing his punch is death over swing over gait.
         let mut a = BodyAnim::default();
-        a.observe(Vec3::ZERO, 1.0 / 60.0, false, false);
+        a.observe(Vec3::ZERO, 1.0 / 60.0, false, false, false);
         a.swing();
         assert!(a.swing_s > 0.0);
-        a.observe(Vec3::ZERO, 1.0 / 60.0, false, true);
+        a.observe(Vec3::ZERO, 1.0 / 60.0, false, true, false);
         assert_eq!(a.clip, Some(Clip::Death));
         // The clock is still running — the point is that the ranking prefers
         // the corpse anyway. **This is the real function `drive` calls**, not
@@ -1266,7 +1279,7 @@ mod tests {
         // and `ranged` skip `hp == 0`, but a blow already in flight when
         // the victim died lands on the same tick the corpse appears.
         let mut a = BodyAnim::default();
-        a.observe(Vec3::ZERO, 1.0 / 60.0, false, true);
+        a.observe(Vec3::ZERO, 1.0 / 60.0, false, true, false);
         a.flinch();
         assert!(a.flinch_s > 0.0, "the flinch clock was not started");
         assert_eq!(a.wants(), Some(Clip::Death), "a corpse flinched");
@@ -1281,7 +1294,7 @@ mod tests {
         // an arc that shows its first tenth of a second, disappears for a
         // third of one, and then starts over.
         let mut a = BodyAnim::default();
-        a.observe(Vec3::ZERO, 1.0 / 60.0, false, false);
+        a.observe(Vec3::ZERO, 1.0 / 60.0, false, false, false);
         a.swing();
         let seq = a.transient_seq;
         a.flinch();
@@ -1291,7 +1304,7 @@ mod tests {
 
         // Run the flinch out: the gait comes back, not the swing.
         for _ in 0..(60.0 * FLINCH_CLIP_S) as usize + 2 {
-            a.observe(Vec3::ZERO, 1.0 / 60.0, false, false);
+            a.observe(Vec3::ZERO, 1.0 / 60.0, false, false, false);
         }
         assert_eq!(a.wants(), Some(Clip::Idle), "the dead arc came back");
     }
@@ -1303,7 +1316,7 @@ mod tests {
         // for a third of a second would be watching a different fight from
         // everyone else. Newest wins.
         let mut a = BodyAnim::default();
-        a.observe(Vec3::ZERO, 1.0 / 60.0, false, false);
+        a.observe(Vec3::ZERO, 1.0 / 60.0, false, false, false);
         a.flinch();
         a.swing();
         assert_eq!(a.wants(), Some(Clip::Swing));
@@ -1316,12 +1329,12 @@ mod tests {
         // because `observe` counted its clock down, which is the same shape
         // the swing uses and the reason neither needs `.repeat()`.
         let mut a = BodyAnim::default();
-        a.observe(Vec3::ZERO, 1.0 / 60.0, false, false);
+        a.observe(Vec3::ZERO, 1.0 / 60.0, false, false, false);
         a.flinch();
         let frames = (FLINCH_CLIP_S * 60.0).ceil() as usize;
         for i in 0..frames {
             assert_eq!(a.wants(), Some(Clip::Flinch), "flinch ended at frame {i}");
-            a.observe(Vec3::ZERO, 1.0 / 60.0, false, false);
+            a.observe(Vec3::ZERO, 1.0 / 60.0, false, false, false);
         }
         assert_eq!(a.wants(), Some(Clip::Idle), "the flinch outlived its clip");
     }
@@ -1333,7 +1346,7 @@ mod tests {
         // body is otherwise the least legible attack in the game, because
         // nothing about the target changes at all.
         let mut a = BodyAnim::default();
-        a.observe(Vec3::ZERO, 1.0 / 60.0, true, false);
+        a.observe(Vec3::ZERO, 1.0 / 60.0, true, false, false);
         assert_eq!(a.clip, Some(Clip::Sleep));
         a.flinch();
         assert_eq!(a.wants(), Some(Clip::Flinch));

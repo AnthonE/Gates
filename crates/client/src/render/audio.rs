@@ -593,6 +593,40 @@ pub fn remote_steps(
     }
 }
 
+/// The matter a blow met, heard at the point it met it.
+///
+/// **Three cues with no producer, from audio v0 to 2026-09-13.**
+/// `Cue::ImpactWood`, `ImpactStone` and `ImpactMetal` were in the bank, in
+/// the table and in `assets/sound/WANTED.md` as *"producer owed"*, and a
+/// landed hatchet blow was voiced by `Cue::Gather` alone — the interface's
+/// tick for a payout, non-positional, the same click for a tree and a rock.
+/// So hitting wood did not sound like wood, and a swing that connected but
+/// paid nothing (a refused tool, a barrel) made no sound at all past the
+/// whoosh. `tests/sound.rs`'s own words: *a cue with no producer is a table
+/// row that ships silence*.
+///
+/// Off `impact::Contacts` rather than off the feed directly, and that is the
+/// point of the list: `impact::contacts` has already resolved *where* and
+/// *on what* for the chips, the sparks and the dust, so the thock cannot
+/// land on a different blow from the debris — and the one de-duplication
+/// rule (`impact::same_blow`) is applied once, there, instead of a second
+/// time here. A flesh contact is `None` from `impact_cue` by design: the
+/// hitmarker and the victim's own hurt cue already voice it (`NOW.md`
+/// §0pvp item 2 stays open for a flesh waveform).
+///
+/// Positional even for the swinger's own blow, `shots`' argument: an
+/// impact is a thing that happens at a place, and the place is at arm's
+/// length. Everyone else's swings and every arrow's stop are the same cue
+/// at their own points, which is the disclosure the reference relies on —
+/// a chop in the next clearing is heard as a chop.
+pub fn impacts(contacts: Res<super::impact::Contacts>, mut sound: ResMut<Sound>) {
+    for c in contacts.iter() {
+        if let Some(cue) = super::impact::impact_cue(c.matter) {
+            sound.play(Request::at(cue, [c.at.x, c.at.y, c.at.z]));
+        }
+    }
+}
+
 /// Another player's swing — the second sound that decides fights, and until
 /// this system nothing produced it: a remote's arm moved in silence.
 ///
@@ -606,7 +640,9 @@ pub fn remote_steps(
 ///
 /// - **Your own swing cannot reach here.** `bodies::stream` skips
 ///   `core.player_id`, so no entity carries it — the local arm stays
-///   [`Cue::Swing`], non-positional, exactly once (`render::input`). Without
+///   [`Cue::Swing`], non-positional, exactly once (`viewmodel::animate`, at
+///   the sim's own cadence — it was `render::input`'s press until
+///   2026-09-13, and a press is not a swing). Without
 ///   that you would hear your own swing twice, once at each ear and once at
 ///   your feet.
 /// - **A swinger outside AOI cannot either.** No body, no transform, no
@@ -746,6 +782,13 @@ pub fn feed(net: NonSend<Net>, feed: Res<super::feed::Feed>, mut sound: ResMut<S
         if victim == net.session.core.player_id {
             sound.play(Request::own(Cue::Death));
         }
+    }
+    // Going down is the same sound as dying (wounded v0), and on purpose:
+    // the reference shipped ONE wounded sound (Devblog 57) and the blow that
+    // put you on the ground would have been the death a minute ago. A voice
+    // of its own is a `synth.rs` row and a bank entry; `NOW.md` §0wnd.
+    if feed.wounded.is_some() {
+        sound.play(Request::own(Cue::Death));
     }
     for _ in feed.gathered() {
         sound.play(Request::own(Cue::Gather));

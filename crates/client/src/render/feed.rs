@@ -138,6 +138,15 @@ pub struct Feed {
     /// `HitFact::part` is `None` for a structure, and a `Some(Chest)`
     /// there would promote a leg hit landed in the same frame.
     pub hit_part: Option<Part>,
+    /// **You went down this frame** (wounded v0): `(ticks to the roll,
+    /// chance per mille)` from `EventMsg::Wounded`, or `None`. One slot,
+    /// not a list — a body goes down at most once between two drains.
+    /// Three readers: the overlay starts its clock, the HUD toasts it, the
+    /// mixer plays the fall.
+    pub wounded: Option<(u16, u16)>,
+    /// **You got up this frame**: `(chance beaten per mille, hp)` from
+    /// `EventMsg::Recovered`, or `None`.
+    pub recovered: Option<(u16, u16)>,
     /// What this frame's own hits landed on, oldest first — an
     /// **own-fact**, because `EV_HIT` is unicast to the attacker.
     ///
@@ -435,6 +444,8 @@ impl Feed {
         self.n_impacts = 0;
         self.n_swings = 0;
         self.n_placed = 0;
+        self.wounded = None;
+        self.recovered = None;
     }
 
     fn push_refusal(&mut self, which: Refused, code: u8, item: u16) {
@@ -503,6 +514,10 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
             feed.n_deaths += 1;
         }
     }
+    // The crawl's two facts (wounded v0). Single slots on the core, so
+    // there is nothing to cap: `take()` is the whole drain.
+    feed.wounded = core.pop_wounded();
+    feed.recovered = core.pop_recovered();
     while let Some(t) = core.pop_research_toast() {
         if feed.n_learned < FEED_CAP {
             let n = feed.n_learned;

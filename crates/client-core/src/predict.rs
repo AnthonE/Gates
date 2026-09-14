@@ -91,12 +91,23 @@ pub struct Predictor {
     /// sub-quantum jiggle, mostly the residue of starved-tick decay,
     /// invisible under the smoothing. Same rewind, different ledger.
     pub corrections_minor: u64,
+    /// **This body is down, so its frames step as a crawl** (wounded v0).
+    /// Set by `ClientCore` from `EventMsg::Wounded`/`Recovered`/`Death`,
+    /// read by `step` and by `reconcile`'s replay, and applied through the
+    /// same `wound::crawl_frame` the sim applies to the same frames — one
+    /// function, so the two cannot disagree about how fast a crawl is.
+    /// The tail keeps the RAW frames (that is what the wire carries and
+    /// what the sim crawls itself); the flag decides at the step. The
+    /// tick or two between the sim's fall and this flag's arrival replays
+    /// as an ordinary misprediction and reconciles like one.
+    pub crawl: bool,
 }
 
 impl Predictor {
     pub fn new(seed: u64) -> Self {
         Self {
             seed,
+            crawl: false,
             started: false,
             body: Body::default(),
             prev: Body::default(),
@@ -147,7 +158,12 @@ impl Predictor {
             // (where the camera was at the last tick boundary, where it is
             // at this one), and `eye_position` walks between them.
             self.prev = self.body;
-            movement::step(self.seed, haven, cols, occ, &mut self.body, &frame);
+            let stepped = if self.crawl {
+                sim_core::wound::crawl_frame(&frame)
+            } else {
+                frame
+            };
+            movement::step(self.seed, haven, cols, occ, &mut self.body, &stepped);
             self.record(frame.seq);
         }
     }
@@ -238,7 +254,12 @@ impl Predictor {
         for i in 0..self.tail_len {
             let f = self.tail[i];
             self.prev = self.body;
-            movement::step(self.seed, haven, cols, occ, &mut self.body, &f);
+            let stepped = if self.crawl {
+                sim_core::wound::crawl_frame(&f)
+            } else {
+                f
+            };
+            movement::step(self.seed, haven, cols, occ, &mut self.body, &stepped);
             self.record(f.seq);
         }
         if self.started {
@@ -387,6 +408,7 @@ mod tests {
             grounded: p.body.grounded,
             sleeping: p.sleeping,
             dead: p.dead,
+            wounded: p.wounded,
             yaw: p.frame.yaw,
             pitch: p.frame.pitch,
             // The predictor reconciles the OWN body, whose hand this

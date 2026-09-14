@@ -89,7 +89,7 @@ use crate::collide::Part;
 use crate::gather::NO_ITEM;
 use crate::limits::{MAX_ITEM_DEFS, MAX_PLAYERS, MAX_WEAPON_AMMO, WEAR_SLOTS};
 use crate::movement::POS_Y_Q;
-use crate::world::{EventQueue, Player, EV_DEATH, EV_HEALTH, EV_HIT, EV_HURT};
+use crate::world::{EventQueue, Player, EV_HEALTH, EV_HIT, EV_HURT};
 
 /// One item's melee row. `damage == 0` ⇒ the item is not a weapon (the
 /// whole table starts that way), so a bare hand and a stack of wood are
@@ -829,8 +829,9 @@ pub struct Hurt {
 /// the fourth, which is the shape the reference ecosystem's payload bugs
 /// actually took.
 ///
-/// **What the funnel owns is the body, and nothing else.** Two writes: the
-/// hp and the death count. It does not push an event and it does not lay
+/// **What the funnel owns is the body, and nothing else.** One write: the
+/// hp (the death count moved to `World::die` with wounded v0, because a
+/// lethal debit is no longer always a death). It does not push an event and it does not lay
 /// the corpse down, because neither is uniform across the routes and
 /// pretending otherwise would ship a bug every test would pass:
 ///
@@ -1079,13 +1080,13 @@ fn debit(v: &mut Player, raw: u16) -> Hurt {
     // funnel to hold it.
     let died = before > 0 && raw >= before;
     v.hp = before - dealt;
-    if died {
-        // A death is counted where it happens. Without it a death is
-        // invisible to `spawn_pos_n(id, deaths)`, so a body goes back to
-        // the identical beach; the count is also what the scoreboard and
-        // the wire's `deaths` field read.
-        v.deaths = v.deaths.saturating_add(1);
-    }
+    // **Not counted here any more** (wounded v0). This is where the count
+    // lived while a lethal debit and a corpse were the same event; a lethal
+    // debit from a swing, a bite or a body shot now lays the body down
+    // instead (`World::down_or_die`), and a `deaths` that walked the spawn
+    // ring for a player who got up a minute later would beach them
+    // somewhere new for a death they did not have. `World::die` counts,
+    // once, where the corpse is made.
     Hurt {
         dealt,
         left: v.hp,
@@ -1279,7 +1280,10 @@ pub fn strike_body(
     events.push(EV_HURT, victim_id, sector as u32, dmg as u32);
     events.push(EV_HEALTH, victim_id, left as u32, cc.player_hp as u32);
     if died {
-        events.push(EV_DEATH, victim_id, attacker_id, 0);
+        // No `EV_DEATH` here (wounded v0): the world decides whether this
+        // blow made a corpse or a crawl, and announces the first from
+        // `die`. `Killed` still means what it says to the caller — the
+        // funnel took the body to zero on this blow.
         return Strike::Killed {
             victim: hit.slot,
             item: weapon,

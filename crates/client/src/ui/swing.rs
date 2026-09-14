@@ -29,10 +29,13 @@
 //!
 //! **It decides nothing** (`RENDER.md` §1). No gameplay state hangs off
 //! this — it picks a pose. The sim is still the only thing that says
-//! whether a swing happened, and the client's own audio cue has taken this
-//! same liberty since audio v0 (`render::input` plays `Cue::Swing` on the
-//! press). What is new is only that the *picture* now agrees with the
-//! sound.
+//! whether a swing happened. The client's own audio cue takes the same
+//! liberty from the same line: `render::viewmodel::animate` plays
+//! `Cue::Swing` on the frame this predictor fires. It used to fire on the
+//! mouse press (`render::input`, audio v0 → 2026-09-13), which agreed with
+//! this predictor exactly as long as nobody clicked faster than the sim
+//! swings — spam the button and the ear heard a whoosh per click over an
+//! arm that moved once per interval. One trigger for both is the fix.
 //!
 //! ## Why it is here and not in the Bevy system
 //!

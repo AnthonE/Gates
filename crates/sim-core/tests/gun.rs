@@ -293,7 +293,17 @@ fn five_shots_kill_and_the_kill_names_the_gun() {
 
     let k = killed.expect("five shots at 20 did not kill a 100 hp body");
     assert_eq!(hits, 5, "a hundred points at twenty a shot is five hits");
-    assert_eq!(deaths, 1, "one death, announced once");
+    // The funnel reports the kill and announces nothing: `EV_DEATH` is
+    // `World::die`'s since wounded v0, because a lethal body shot lays the
+    // body down and only the world knows whether this one made a corpse.
+    assert_eq!(
+        deaths, 0,
+        "the shot's own harness hears no death — the world announces it"
+    );
+    assert!(
+        !k.head,
+        "a chest shot, so the world would lay the body down rather than kill it"
+    );
     assert_eq!(k.victim, 1);
     assert_eq!(k.by, 1, "the kill is credited to the shooter's id");
     assert_eq!(k.item, GUN, "the death screen names the gun, not the round");
@@ -303,7 +313,9 @@ fn five_shots_kill_and_the_kill_names_the_gun() {
         k.range_cm
     );
     assert_eq!(players[1].hp, 0);
-    assert_eq!(players[1].deaths, 1);
+    // Counted by `World::die` since wounded v0, and this harness has no
+    // world: the funnel reports, the corpse's builder counts.
+    assert_eq!(players[1].deaths, 0);
     // The magazine paid, not the pack (reload v1): `face_off` loads six
     // and five leave the cylinder. The pack is asserted too, because a gun
     // that debited both would spend two rounds for one shot and neither
@@ -745,7 +757,13 @@ fn a_firearm_kill_reports_a_bullet_and_not_an_arrow() {
     }]);
 
     let v = &w.players[1];
-    assert!(v.dead, "the shot did not land — the geometry moved");
+    // A chest shot lays the body down since wounded v0; the four facts the
+    // screen is made of are written at the fall (`World::down_or_die`),
+    // so the cause is checkable on the crawl exactly as it was on the corpse.
+    assert!(
+        v.wounded && !v.dead,
+        "the shot did not land — the geometry moved (or a body shot killed outright)"
+    );
     assert_eq!(
         v.death_cause, DEATH_BY_BULLET,
         "a firearm kill must report a bullet"

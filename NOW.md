@@ -59,6 +59,32 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
 
 # Buildable now — a loop can pick any of these
 
+## 0wnd · Down is built; the hands that pick you up are not *(sim+client lane)*
+
+Wounded v0 landed 2026-09-13 (`DECISIONS.md` §open "wounded v0",
+`reference/WOUNDED.md` §9): a lethal swing, bite or body shot lays the body
+down for 40–50 s at 10 hp, it crawls at a third of a walk and may open a
+door, and at the end a hashed roll (20 % + up to 25 % for full meters)
+stands it up or makes the corpse. What the minute still cannot do, in the
+order it earns its keep:
+
+1. **Revive by hand** — `RPC_Assist`'s shape (`WOUNDED.md` §2.6): a verb
+   aimed at a downed body, held 6 s without moving, prolonging the clock
+   when broken off and suspending the roll while held. New action on the
+   wire, a hold counter on the target, a `Verb` in the pick — and the
+   feature-gated match trap (`CLAUDE.md`).
+2. **Syringe / bandage on a downed body** — `Command::Consume` with a
+   target; `content/consumables.toml` already prices both.
+3. **Medkit in the belt = 100 %**, consumed only on a failed roll.
+4. **Refusals while down are silent**: `live_slot_of` refuses with no
+   event. Each refused verb's own `REFUSE_*` is the honest fix.
+5. **A drag clip and a voice** — a remote crawl slides `Death01`'s pose
+   (`render/anim.rs`), and the fall reuses `Cue::Death`.
+6. **The odds on screen are the odds at the fall**; the sim re-reads the
+   meters at the roll. Say so on the line, or resend.
+7. **§LOOK**: `CRAWL_EYE_M`, `WOUND_ROLL_RAD`, `WOUND_DROP_S`, the
+   vignette — never seen. Boot the game and go down.
+
 ## 0site · Site art v0 landed — three things it left *(art + sim lane)*
 
 `assets/models/site/{shelter,canopy}.glb` draw the pad and the waystations
@@ -841,8 +867,10 @@ Items 1–3 are a **spoken operator call**, not a builder's proposal — 2026-08
    is on one screen and nobody has seen the pose. The *victim's* half landed
    as `EV_HURT` (wire v57, §0hrt); a **bystander** flinch is still refused on
    fan-out grounds (`DECISIONS.md` §open "attacker-side flinch v0").
-2. **No positional hit sound** — a flesh impact needs a waveform `sound/
-   synth.rs` does not generate. Nobody has heard `Cue::RemoteSwing` either.
+2. **No positional FLESH sound** — a flesh impact needs a waveform `sound/
+   synth.rs` does not generate (`impact::impact_cue` answers `None` for it
+   on purpose; wood, stone and metal are positional since 2026-09-13).
+   Nobody has heard `Cue::RemoteSwing` either.
 3. **A gun is heard but not seen** — the crack landed (gun report v0, wire
    v54): `ranged::hitscan` raises `EV_SHOT` at `speed == 0` and the mixer
    plays it at the shooter, 100 m against a bow's 40 m. No muzzle flash and
@@ -994,6 +1022,16 @@ lighter, so a tree mark sat inside the bark photograph's own noise.
 `tests/decal.rs` gates both in arithmetic. **Still unlooked-at**: whether the
 new tint reads as heartwood, and whether the other two surfaces improved
 visibly now they draw at full alpha (`§LOOK`).
+
+✅ **And the browser had NO marks at all** (browser marks + weak spot v0,
+`DECISIONS.md` §open, 2026-09-13). The operator's *"i still dont see decals
+on trees"* was the page: `decal::setup` returned on wasm32 before spawning a
+slot, because a `ForwardDecal` cannot run under WebGL2 (two measured walls,
+in the file). A browser slot is a mesh mark now — the same mask, lifted
+`MESH_MARK_LIFT_M`, bent to the trunk's collision radius for a world hit —
+and the desktop keeps the decal. The weak spot is drawn on the node too
+(`decal::weak_spot`, a pulsing cross on the skin where `mark8` points),
+where it had only ever been two words on the prompt. Both unseen (`§LOOK`).
 
 
 ## 0wc · What world containers v0 still owes *(systems lane)*
@@ -1959,6 +1997,27 @@ is §0win's, not this item's.
    verb works. Noted at the call site, not built.
 
 
+## 0fx · What impact fx v1 left *(client lane)*
+
+`impact::contacts` resolves every blow into one bounded list; chips, sparks,
+dust and the impact cue read it (`DECISIONS.md` §open, impact fx v1). Left:
+
+1. **Nobody has seen any of it** — `§LOOK` item 0. The three most likely
+   words: sparks too many, dust too opaque, the whoosh now a beat late
+   against a click that used to answer instantly.
+2. **A deployable's matter is a guess.** `struct_point` reads a piece's tier
+   off the mirror and answers `Wood` for a deployable, because `DeployDef`
+   carries no material. A furnace hit throws wood chips. The def wants a
+   material byte, which is a content-schema question (`CONTENT.md`).
+3. **Flesh still has no positional cue** (§0pvp item 2) and no cloud by
+   choice; a mark on flesh is refused by design (§0mk).
+4. **Sparks do not bounce and dust does not sink into a wall.** Both are a
+   collision query away and neither is worth one until a person has looked.
+5. **The remote swinger's whoosh and the tree's thock are two cues at two
+   points** (`RemoteSwing` at the body, `ImpactWood` at the trunk) with no
+   link between them; a disclosure model that wants one sound per blow is a
+   later call.
+
 ## 0x · The client makes sound — what it cannot yet hear *(client lane)*
 
 1. **Nobody has heard it and nothing scores it** — `ART.md` has no audio
@@ -1980,6 +2039,14 @@ is §0win's, not this item's.
 4. **Two cues have no producer:** `ImpactWood`/`ImpactMetal` need to know
    WHAT was hit, and `UiClick` appears only as the mixer's placeholder
    `Request` — it wants a hook in the per-screen click handlers.
+3. **The `--capture` run is still by hand** and is the only proof most audio
+   systems execute. `tests/music.rs` is the cheaper shape — any audio system
+   with no world in its arguments could be gated that way.
+4. ✅ **The three impact cues have a producer** (2026-09-13, impact fx v1):
+   `audio::impacts` plays the matter's cue at the contact point off
+   `impact::Contacts`, which knows WHAT was hit. Still owed: `UiClick`
+   appears only as the mixer's placeholder `Request` — it wants a hook in
+   the per-screen click handlers.
 5. **No occlusion**; the prerequisite is a geometry query, and the correct
    one is the sim's (`collide.rs`), not a raycast against render meshes.
 6. **Crickets** are a content-free companion pass — a night-gated `Cue`, the
@@ -2346,6 +2413,11 @@ arithmetic and unseen*, and the list below is what has accumulated. **Do not
 build a replacement pixel gate.** One session with the client open closes most
 of it.
 
+**Newest, 2026-09-13 — go down and look** (§0wnd, `render/wounded.rs`): the
+camera's drop to `CRAWL_EYE_M` and its roll, the vignette, the two-number
+line, and a remote body's fallen pose sliding at a crawl. Five knobs, none
+seen; `reference/WOUNDED.md` §9.5 is the checklist.
+
 Two of these are not taste, they are unresolved defects:
 
 - **The ground's whole surface changed** (§0gs). A new `rock` texture, a macro
@@ -2391,6 +2463,15 @@ Two of these are not taste, they are unresolved defects:
 
 Then, in the order a player would notice:
 
+0. **The blow, whole** (impact fx v1 and browser marks + weak spot v0,
+   2026-09-13 — `§0fx`, `§0mk`). Five things landed as arithmetic in one
+   session and none has been seen or heard: the swing cue now fires with the
+   stroke rather than the click (spam the button: one whoosh per arm swing);
+   sparks off a pick on stone and metal (a shower or a firework?); dust off
+   every solid blow (weight or smoke?); the thock/crunch/clank at the point
+   of contact; the browser's mesh mark on a trunk; and the weak-spot cross,
+   pulsing, that should brighten when the prompt gains its `WEAK SPOT`.
+   Every number is a `DECISIONS.md` §open default waiting on exactly this.
 1. **A remote body's swing** (§0sw) — the arc has never been on a screen. The
    failure it would catch is a clip-table array width that panics the first
    time somebody swings near you.
