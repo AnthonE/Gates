@@ -77,16 +77,16 @@ pub mod heldgen;
 // which a page has. In a browser the PAGE is the menu: it owns the shard
 // address, the wallet and the join, and hands the Bevy app a live
 // `Session`. See `render/screen.rs` for the half both targets keep.
+/// The two debris layers beside the chip burst (2026-09-13): the hot one and
+/// the soft one, both fed off `impact::Contacts`.
+pub mod dust;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hub;
 pub mod hud;
 pub mod impact;
-/// The two debris layers beside the chip burst (2026-09-13): the hot one and
-/// the soft one, both fed off `impact::Contacts`.
-pub mod dust;
-pub mod sparks;
 pub mod input;
 pub mod loading;
+pub mod sparks;
 // The island map. Painted from the same `terrain::splat_from` the ground
 // blends by, so the map and the world are one worldgen seen two ways.
 pub mod map;

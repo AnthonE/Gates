@@ -41,7 +41,11 @@ fn the_pool_is_bounded_and_says_so() {
 /// no blood in it, and a cloud off a person would be that.
 #[test]
 fn every_solid_matter_puffs_and_flesh_does_not() {
-    assert_eq!(burst_size(Matter::Flesh), 0, "a blow on a body raised a cloud");
+    assert_eq!(
+        burst_size(Matter::Flesh),
+        0,
+        "a blow on a body raised a cloud"
+    );
     for m in [
         Matter::Wood,
         Matter::Stone,
@@ -115,7 +119,11 @@ fn a_puff_grows_thins_and_goes_out() {
 #[test]
 fn a_puff_rises_and_stops_drifting() {
     let mut p = Dust::default();
-    p.ignite(&burst_at(Vec3::ZERO, Vec3::new(1.0, 0.0, 0.0), Matter::Stone));
+    p.ignite(&burst_at(
+        Vec3::ZERO,
+        Vec3::new(1.0, 0.0, 0.0),
+        Matter::Stone,
+    ));
     let dt = 1.0 / 60.0;
     let sample = |p: &mut Dust| -> (f32, f32) {
         let a: Vec<Vec3> = (0..DUST_POOL)
@@ -162,7 +170,10 @@ fn the_alpha_step_writes_only_when_it_moves() {
     assert!(moved0, "the first write of a slot is a write");
     assert!(!moved1, "the same alpha again is a write");
     assert_eq!(a0, a1);
-    assert!((a0 - 0.30).abs() < 0.05, "quantized alpha {a0} is far from 0.30");
+    assert!(
+        (a0 - 0.30).abs() < 0.05,
+        "quantized alpha {a0} is far from 0.30"
+    );
     let (_, moved2) = p.alpha_step(0, 0.10);
     assert!(moved2, "a fade that moved a fifth did not write");
 }
@@ -173,17 +184,31 @@ fn the_alpha_step_writes_only_when_it_moves() {
 fn the_mask_is_padded_transparent_at_its_edges() {
     let img = puff_texture();
     let w = img.texture_descriptor.size.width as usize;
-    let data = img.data.as_ref().expect("a generated image carries its bytes");
+    let data = img
+        .data
+        .as_ref()
+        .expect("a generated image carries its bytes");
     let alpha = |x: usize, y: usize| data[(y * w + x) * 4 + 3];
-    assert_eq!(alpha(0, 0), 0, "a corner texel is opaque — the quad's edge will draw");
+    assert_eq!(
+        alpha(0, 0),
+        0,
+        "a corner texel is opaque — the quad's edge will draw"
+    );
     assert_eq!(alpha(w - 1, 0), 0);
     assert_eq!(alpha(0, w - 1), 0);
-    assert!(alpha(w / 2, w / 2) > 200, "the centre is thin: {}", alpha(w / 2, w / 2));
+    assert!(
+        alpha(w / 2, w / 2) > 200,
+        "the centre is thin: {}",
+        alpha(w / 2, w / 2)
+    );
     // And it is not a perfect disc: the three lobes leave the mask
     // asymmetric, which is what keeps a puff from reading as a lens flare.
     let left = alpha(w / 4, w / 2);
     let right = alpha(3 * w / 4, w / 2);
-    assert_ne!(left, right, "the mask is radially symmetric — it will read as a flare");
+    assert_ne!(
+        left, right,
+        "the mask is radially symmetric — it will read as a flare"
+    );
 }
 
 /// The billboard's normal is +Y whatever way it faces, so it is lit like
@@ -191,12 +216,10 @@ fn the_mask_is_padded_transparent_at_its_edges() {
 #[test]
 fn a_billboard_is_lit_as_the_ground_is() {
     let m: Mesh = billboard_mesh();
-    let Some(VertexAttributeValues::Float32x3(pos)) = m.attribute(Mesh::ATTRIBUTE_POSITION)
-    else {
+    let Some(VertexAttributeValues::Float32x3(pos)) = m.attribute(Mesh::ATTRIBUTE_POSITION) else {
         panic!("no positions");
     };
-    let Some(VertexAttributeValues::Float32x3(nrm)) = m.attribute(Mesh::ATTRIBUTE_NORMAL)
-    else {
+    let Some(VertexAttributeValues::Float32x3(nrm)) = m.attribute(Mesh::ATTRIBUTE_NORMAL) else {
         panic!("no normals");
     };
     assert_eq!(pos.len(), 4);
