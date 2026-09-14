@@ -47,8 +47,19 @@ use super::{Eye, Net, WorldId};
 /// point and the trunk does not, so a trunk run to full height leaves a bare
 /// spike above the canopy on every tree in the forest.
 pub const PINE_TRUNK_H: f32 = 5.7;
-/// Overall height — the top whorl's apex.
-pub const PINE_H: f32 = 6.6;
+/// Overall height — the conifer's apex, and `SPECIES[0].height_m`.
+///
+/// **14 m since forest scale v0 (2026-09-14), from 6.6.** The reference's
+/// pines stand eight to ten player heights; ours stood 3.7, and the operator's
+/// frame read them as small before anything else. The crown ceiling did not
+/// move with it — `PINE_MAX_R` now equals `TREE_MAX_R`, which is what the sim's
+/// spawn clearance is derived from, so no sim number moved — and the trunk is
+/// held to the sim's cylinder by `tests/tree.rs`. `examples/tree_sweep.rs` is
+/// the bench the limb length and trunk radius were swept on, over the three
+/// shipped seeds and twelve more. ⚠ `PINE_TRUNK_H` above is the whorl
+/// builder's and the sim's `OCCUPANT_TOP_M[Tree]` row, and it stayed at 5.7:
+/// the trunk above that is drawn and not blocked. `NOW.md` §0t carries it.
+pub const PINE_H: f32 = 14.0;
 /// How far a whorl vertex may be pulled IN toward its axis, as a fraction of
 /// that whorl's radius. It only ever pulls in, never out, which is what keeps
 /// the canopy inside `PINE_MAX_R`.
@@ -58,9 +69,13 @@ pub const PINE_RAGGED: f32 = 0.34;
 /// trunk are five horizontal lines.
 pub const PINE_DROOP: f32 = 0.18;
 /// The radius no part of a pine may exceed, metres — a CEILING, not what it
-/// draws. `world.rs` derives `SPAWN_CLEAR_M = 4.0` from this, so a canopy
-/// that grew past it would invalidate a spoken sim number from the renderer.
-pub const PINE_MAX_R: f32 = 1.7;
+/// draws. `world.rs` derives `SPAWN_CLEAR_M` from `tree::TREE_MAX_R`, the
+/// wider of the two species' ceilings, so a canopy that grew past it would
+/// invalidate a spoken sim number from the renderer. **Equal to the
+/// broadleaf's since forest scale v0**: a 14 m pine at the old 1.7 m would be
+/// a pole, and lifting this to the island-wide ceiling moves nothing in the
+/// sim because the broadleaf already held `TREE_MAX_R` at 2.9.
+pub const PINE_MAX_R: f32 = 2.9;
 /// Odd on purpose: an even count puts a vertex diametrically opposite every
 /// other one, so the ragged pull reads as a squashed circle, not a whorl.
 const PINE_SEGMENTS: usize = 9;
@@ -167,6 +182,12 @@ pub struct PropAssets {
     /// sort themselves. `AlphaMode::Mask` also keeps them in the opaque pass,
     /// so they cast the shadows a forest floor is made of.
     needle: [Handle<StandardMaterial>; TINT_POOL],
+    /// The broadleaf's canopy material: the same alpha-masked shape as
+    /// `needle`, wearing `tree::leaf_image` instead of the sprig. Separate
+    /// for the reason `bush_leaf` is separate from `foliage` — one
+    /// `StandardMaterial` has one map — and because a species is a card as
+    /// much as a silhouette (forest scale v0, 2026-09-14).
+    leaf: [Handle<StandardMaterial>; TINT_POOL],
     /// The conifer trunk's bark. Separate from `foliage`, which the bark half
     /// used to wear for want of anything better — an untextured white surface
     /// whose only colour was the mesh's own trunk band.
@@ -1633,6 +1654,7 @@ pub fn assets(
         })
         .collect();
     let needle_map = images.add(tree::needle_image());
+    let leaf_map = images.add(tree::leaf_image());
     // Hoisted out of the literal below because the two site rows fall back to
     // them: a `photo(...)` written twice would be two materials wearing one
     // photograph, and the second would be invisible to `tests/fresnel.rs`'s
@@ -1738,6 +1760,20 @@ pub fn assets(
                 alpha_mode: AlphaMode::Mask(0.5),
                 // Needles are thin and the sun is behind half of them. Without
                 // this the canopy's lit side is the only side that reads.
+                double_sided: true,
+                ..default()
+            })
+        }),
+        leaf: tint_pool().map(|v| {
+            materials.add(StandardMaterial {
+                base_color: Color::linear_rgb(v, v, v),
+                base_color_texture: Some(leaf_map.clone()),
+                perceptual_roughness: 0.90,
+                reflectance: fresnel::DIELECTRIC,
+                cull_mode: None,
+                // The same cutoff as the needle's, held to the card by the
+                // same gate (`tests/tree.rs`, the mip-chain coverage test).
+                alpha_mode: AlphaMode::Mask(0.5),
                 double_sided: true,
                 ..default()
             })
@@ -2246,7 +2282,9 @@ pub fn spawn_slot(
             fellable(FellPart::Canopy),
             Topple { t: -1.0 },
             Mesh3d(a.needles[variant].clone()),
-            MeshMaterial3d(a.needle[tint].clone()),
+            // The card is the species' — a sprig on a conifer, a leaf
+            // cluster on a broadleaf. Chosen in one place so a gate can ask.
+            MeshMaterial3d(a.canopy_material(variant, key).clone()),
             tree::lod_band(&lod.near),
             transform,
         ));
@@ -2556,6 +2594,7 @@ impl PropAssets {
         for (name, pool) in [
             ("foliage", &self.foliage),
             ("needle", &self.needle),
+            ("leaf", &self.leaf),
             ("rock", &self.rock),
             ("bark", &self.bark),
         ] {
@@ -2611,5 +2650,16 @@ impl PropAssets {
     /// reason.
     pub fn foliage_material(&self, key: u32) -> &Handle<StandardMaterial> {
         &self.foliage[tint_of(key)]
+    }
+    /// The canopy material a tree of this variant draws at this key: the
+    /// needle sprig for a conifer, the leaf cluster for a broadleaf. The one
+    /// place the choice is made, so `spawn_slot` and the gate that reads the
+    /// ECS back cannot disagree.
+    pub fn canopy_material(&self, variant: usize, key: u32) -> &Handle<StandardMaterial> {
+        let tint = tint_of(key);
+        match tree::SPECIES[tree::species_of(variant)].tree_type {
+            bevy_procedural_tree::enums::TreeType::Evergreen => &self.needle[tint],
+            bevy_procedural_tree::enums::TreeType::Deciduous => &self.leaf[tint],
+        }
     }
 }

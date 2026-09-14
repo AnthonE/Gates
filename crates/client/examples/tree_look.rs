@@ -31,11 +31,17 @@ use std::path::PathBuf;
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot};
 
-use client::render::tree::{conifer, impostor_of, needle_image, species_of, CONIFER_POOL};
+use client::render::tree::{
+    conifer, impostor_of, leaf_image, needle_image, species_of, CONIFER_POOL,
+};
 
-/// Row depths: the pair, the hull, both.
-const ROW_Z: [f32; 3] = [0.0, -16.0, -32.0];
-/// Metres between variants along X.
+/// Rows sit side by side along X — the pair, the hull, both — far enough
+/// apart that a row's wide shot has no other row in front of it: at 45 m
+/// with a 70° field of view the frame is ±31 m wide, and the rows are 80 m
+/// apart. (The first draft stacked them in depth, and the middle row's wide
+/// shot was a picture of the front row.)
+const ROW_X: [f32; 3] = [0.0, 80.0, 160.0];
+/// Metres between variants along X within a row.
 const PITCH_M: f32 = 9.0;
 /// Frames held at a pose before its shot, and after the last shot before exit.
 const SETTLE_FRAMES: u32 = 14;
@@ -58,21 +64,28 @@ struct Eye;
 fn poses() -> Vec<(String, Vec3, Vec3)> {
     let mut v = Vec::new();
     let names = ["pair", "hull", "both"];
-    for (ri, z) in ROW_Z.iter().enumerate() {
+    for (ri, rx) in ROW_X.iter().enumerate() {
         for (species, var) in [("conifer", 0usize), ("broadleaf", 3usize)] {
-            let x = var as f32 * PITCH_M;
-            // Arm's length: 5 m back, eye at 1.6 m, looking a little up into the crown.
+            let x = rx + var as f32 * PITCH_M;
+            // Arm's length: 6 m back, eye at 1.6 m, looking up into a crown
+            // that starts three metres over the eye on a 14 m tree.
             v.push((
-                format!("{}_{}_5m", names[ri], species),
-                Vec3::new(x + 1.2, 1.6, z + 5.0),
-                Vec3::new(x, 2.6, *z),
+                format!("{}_{}_6m", names[ri], species),
+                Vec3::new(x + 1.2, 1.6, 6.0),
+                Vec3::new(x, 6.5, 0.0),
+            ));
+            // Whole tree, 18 m back.
+            v.push((
+                format!("{}_{}_18m", names[ri], species),
+                Vec3::new(x + 2.0, 1.6, 18.0),
+                Vec3::new(x, 6.5, 0.0),
             ));
         }
-        // The whole row from 26 m.
+        // The whole row from 45 m.
         v.push((
             format!("{}_wide", names[ri]),
-            Vec3::new(2.5 * PITCH_M, 3.5, z + 26.0),
-            Vec3::new(2.5 * PITCH_M, 3.0, *z),
+            Vec3::new(rx + 2.5 * PITCH_M, 5.0, 45.0),
+            Vec3::new(rx + 2.5 * PITCH_M, 6.5, 0.0),
         ));
     }
     v
@@ -140,16 +153,17 @@ fn stage(
         Transform::from_rotation(Quat::from_euler(EulerRot::YXZ, 2.4, -0.5, 0.0)),
     ));
     commands.spawn((
-        Mesh3d(meshes.add(Plane3d::default().mesh().size(400.0, 400.0))),
+        Mesh3d(meshes.add(Plane3d::default().mesh().size(600.0, 400.0))),
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: Color::srgb(0.30, 0.34, 0.20),
             perceptual_roughness: 0.95,
             ..default()
         })),
-        Transform::from_xyz(2.5 * PITCH_M, 0.0, -16.0),
+        Transform::from_xyz(80.0 + 2.5 * PITCH_M, 0.0, 0.0),
     ));
 
     let needle_map = images.add(needle_image());
+    let leaf_map = images.add(leaf_image());
     let bark = materials.add(StandardMaterial {
         base_color: Color::srgb(0.42, 0.31, 0.21),
         perceptual_roughness: 0.92,
@@ -157,6 +171,17 @@ fn stage(
     });
     let needle = materials.add(StandardMaterial {
         base_color_texture: Some(needle_map),
+        alpha_mode: AlphaMode::Mask(0.5),
+        cull_mode: None,
+        double_sided: true,
+        perceptual_roughness: 0.86,
+        ..default()
+    });
+    // The broadleaf's card — the same choice `PropAssets::canopy_material`
+    // makes in the game, by species. The first run of this bench gave every
+    // variant the sprig and the broadleaf read as a yellower conifer.
+    let leaf = materials.add(StandardMaterial {
+        base_color_texture: Some(leaf_map),
         alpha_mode: AlphaMode::Mask(0.5),
         cull_mode: None,
         double_sided: true,
@@ -184,14 +209,14 @@ fn stage(
         let bark_h = meshes.add(bark_mesh);
         let needle_h = meshes.add(needle_mesh);
         let far_h = meshes.add(far_mesh);
-        let x = v as f32 * PITCH_M;
-        for (ri, z) in ROW_Z.iter().enumerate() {
-            let at = Transform::from_xyz(x, 0.0, *z);
+        for (ri, rx) in ROW_X.iter().enumerate() {
+            let at = Transform::from_xyz(rx + v as f32 * PITCH_M, 0.0, 0.0);
             let pair = ri == 0 || ri == 2;
             let hull = ri == 1 || ri == 2;
             if pair {
+                let card = if species_of(v) == 0 { &needle } else { &leaf };
                 commands.spawn((Mesh3d(bark_h.clone()), MeshMaterial3d(bark.clone()), at));
-                commands.spawn((Mesh3d(needle_h.clone()), MeshMaterial3d(needle.clone()), at));
+                commands.spawn((Mesh3d(needle_h.clone()), MeshMaterial3d(card.clone()), at));
             }
             if hull {
                 commands.spawn((Mesh3d(far_h.clone()), MeshMaterial3d(foliage.clone()), at));

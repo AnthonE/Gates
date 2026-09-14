@@ -319,3 +319,57 @@ fn the_swap_actually_crossfades() {
          rather than dithering across {TREE_LOD_FADE_M} m"
     );
 }
+
+/// **The canopy wears its species' card, read back off the ECS.** A conifer's
+/// canopy is the needle sprig and a broadleaf's is the leaf cluster; both
+/// species wore the sprig until forest scale v0 (2026-09-14), and nothing
+/// could see it because every tree gate measured a mesh and a card is a
+/// material. `PropAssets::canopy_material` is the one place the choice is
+/// made; this holds `spawn_slot` to it and the two species apart.
+#[test]
+fn the_canopy_wears_its_species_card() {
+    let (mut app, a) = fixture();
+    // Two yaws that land on the two species: `spawn_slot` picks
+    // `yaw % pool`, and `tree::species_of` groups the pool three per species.
+    let pool = a.pine_variants();
+    let mut handles = Vec::new();
+    for yaw in [0u8, 3u8] {
+        let variant = yaw as usize % pool;
+        let s = Slot {
+            yaw,
+            ..slot(Occupant::Tree)
+        };
+        let (_, kids) = spawned(&mut app, &a, &s);
+        let canopy_mesh = a.needle_mesh(variant).clone();
+        let mut found = None;
+        for k in kids {
+            let e = app.world().entity(k);
+            let mesh = e.get::<Mesh3d>().expect("every tree part draws a mesh");
+            if mesh.0 == canopy_mesh {
+                found = Some(
+                    e.get::<MeshMaterial3d<StandardMaterial>>()
+                        .expect("the canopy has a material")
+                        .0
+                        .clone(),
+                );
+            }
+        }
+        let got = found.expect("the canopy part was spawned");
+        assert_eq!(
+            got,
+            *a.canopy_material(variant, KEY),
+            "variant {variant}'s canopy wears a material that is not \
+             `canopy_material`'s — the choice is made in two places"
+        );
+        handles.push((client::render::tree::species_of(variant), got));
+    }
+    assert_ne!(
+        handles[0].0, handles[1].0,
+        "the two yaws landed on one species; the pool or its grouping moved"
+    );
+    assert_ne!(
+        handles[0].1, handles[1].1,
+        "a conifer and a broadleaf wear the same card — the broadleaf is a \
+         yellower conifer again"
+    );
+}

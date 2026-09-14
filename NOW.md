@@ -1784,10 +1784,22 @@ worthless assertion in the first draft.
 
 ## 0t · the forest — what it still owes *(client lane)*
 
-1. **The broadleaf has never been LOOKED at.** `SPECIES` is two rows, pool 6;
-   every check on it is arithmetic. Boot it and look — likely wrong are
-   `children`/`angle[1]` and leaf `count`/`size`; `PLANTS.md` §3.1 has
-   ez-tree's 15 presets to take real numbers from. A species is a row.
+1. **Both species are twice as tall (forest scale v0, 2026-09-14)** —
+   `DECISIONS.md` §open has the numbers and the two rails that did not move.
+   Seen on the lavapipe bench (`examples/tree_look.rs`), not in the game.
+   What it leaves, in order: **(a)** `OCCUPANT_TOP_M[Tree]` is still 5.7 m,
+   so a 14 m trunk is drawn to the top and blocked to 5.7 — one sim row,
+   `shoot.rs` pins it; **(b)** the far hull is twice the pixels at the same
+   80 m swap, so `tree.rs`'s band table wants re-reading at 14 m (its
+   stacked-disc shading is fixed — the normals blend to a horizontal radial
+   now, not to each band's own centre); **(c)** the
+   broadleaf is a birch's column now, and a birch wants white bark — a second
+   bark map is a `CANDIDATES.md` row, not a code change; **(d)** cover only
+   moved ~7 % → ~9 %, because stems are the grid's — item 2 is the lever.
+   `examples/tree_sweep.rs` is how a settings block is checked against the
+   seeds before it is typed; `PLANTS.md` §3.1's presets are its shapes. The
+   broadleaf wears its own generated card now (`tree::leaf_image`) — the
+   first bench frames had it reading as a yellower conifer in the sprig.
 2. **The density ceiling** — one occupant per 8 m `CELL_SIZE` cell.
    `PLANTS.md` §3.2 prices the three ways up; all sim-core, none cheap, the
    cheapest (`CELL_SIZE` 8 → 4) quadruples live `SlotLives` rows against
@@ -1800,8 +1812,9 @@ worthless assertion in the first draft.
 5. **Sub-canopy empty, shrub layer one blob** (`Occupant::Bush`, `PLANTS.md`
    §2): ez-tree's `bush_*` presets and a small tree at 40 % are new
    `Occupant` variants plus scatter rows.
-6. **The needle card is generated** (`tree::needle_image`); `WANTED.md` §9.5
-   is the swap, the highest-value texture on that page.
+6. **Both cards are generated** (`tree::needle_image`, `tree::leaf_image`);
+   `WANTED.md` §9.5 is the swap, the highest-value texture on that page, and
+   it is two textures now.
 7. ✅ **The double hull (2026-09-13).** Every tree in every chunk walked into
    after spawn wore the outer ring's hull over its real self — the outer
    retain never asked whether the near ring had taken the chunk. Fixed in

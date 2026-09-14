@@ -23,8 +23,9 @@ use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::*;
 use client::render::terrain_mesh::{CHUNK_M, NEAR_RADIUS};
 use client::render::tree::{
-    bounds, conifer, impostor_of, min_y, needle_image, species_of, tris, TreeLod, CONIFER_MAX_TRIS,
-    CONIFER_POOL, IMPOSTOR_MAX_TRIS, SPECIES, TREE_LOD_FADE_M, TREE_LOD_SWAP_M, TREE_MAX_R,
+    bounds, conifer, impostor_of, leaf_image, min_y, needle_image, species_of, tris, TreeLod,
+    CONIFER_MAX_TRIS, CONIFER_POOL, IMPOSTOR_MAX_TRIS, SPECIES, TREE_LOD_FADE_M, TREE_LOD_SWAP_M,
+    TREE_MAX_R,
 };
 
 /// Trees inside the client's 5×5×64 m prop ring, p90 over 100 eye positions
@@ -438,30 +439,67 @@ fn the_two_lod_bands_meet_and_the_far_one_outlasts_the_ring() {
 
 #[test]
 fn the_needle_card_is_actually_cut_out() {
+    card_is_cut_out(needle_image(), "needle");
+}
+
+/// The broadleaf's card, held to the same two bounds — and to a third that is
+/// the whole reason it exists: it is DENSER than the sprig, and it is not the
+/// sprig. Both species wore the needle card until forest scale v0, and the
+/// broadleaf read as a second conifer on the bench.
+#[test]
+fn the_leaf_card_is_actually_cut_out_and_is_not_the_needle() {
+    card_is_cut_out(leaf_image(), "leaf");
+    let leaf = level0_alphas(&leaf_image());
+    let needle = level0_alphas(&needle_image());
+    assert_eq!(leaf.len(), needle.len(), "the two cards are one size");
+    let opaque = |a: &[u8]| a.iter().filter(|&&v| v > 128).count();
+    assert!(
+        opaque(&leaf) > opaque(&needle),
+        "the leaf card ({} opaque texels) is not denser than the sprig ({}) — a \
+         leaf cluster is mostly leaf where a sprig is mostly air",
+        opaque(&leaf),
+        opaque(&needle)
+    );
+    let differ = leaf
+        .iter()
+        .zip(needle.iter())
+        .filter(|(l, n)| (**l > 128) != (**n > 128))
+        .count();
+    assert!(
+        differ * 100 / leaf.len() > 15,
+        "the two cards differ on only {}% of texels — the broadleaf is wearing \
+         the sprig again",
+        differ * 100 / leaf.len()
+    );
+}
+
+fn level0_alphas(img: &bevy::prelude::Image) -> Vec<u8> {
+    let data = img.data.as_ref().expect("card has no data");
+    let w = img.texture_descriptor.size.width as usize;
+    data[..w * w * 4].chunks_exact(4).map(|p| p[3]).collect()
+}
+
+fn card_is_cut_out(img: bevy::prelude::Image, what: &str) {
     // An `AlphaMode::Mask` material with a fully opaque map is an opaque quad,
     // which is the hull `props.js` spent three passes rejecting — and it would
     // look like a solid green square, not like an error. So: the map must have
-    // real transparency, and it must have real coverage.
-    let img = needle_image();
-    let data = img.data.as_ref().expect("needle image has no data");
-    // LEVEL 0 ONLY. `data` carries the whole mip chain since the chain landed,
-    // and reading all of it would average the base card together with a 1×1
-    // texel — this assertion is about the card the artist sees.
-    let w = img.texture_descriptor.size.width as usize;
-    let level0 = &data[..w * w * 4];
-    let alphas: Vec<u8> = level0.chunks_exact(4).map(|p| p[3]).collect();
+    // real transparency, and it must have real coverage. LEVEL 0 ONLY: the
+    // data carries the whole mip chain, and reading all of it would average
+    // the base card together with a 1×1 texel — this is about the card the
+    // artist sees.
+    let alphas = level0_alphas(&img);
     let opaque = alphas.iter().filter(|&&a| a > 128).count();
     let clear = alphas.iter().filter(|&&a| a < 16).count();
     let total = alphas.len();
 
     assert!(
         clear * 100 / total > 30,
-        "only {}% of the needle card is transparent — that is a quad, not a sprig",
+        "only {}% of the {what} card is transparent — that is a quad, not a card",
         clear * 100 / total
     );
     assert!(
         opaque * 100 / total > 5,
-        "only {}% of the needle card is opaque — the canopy would be invisible",
+        "only {}% of the {what} card is opaque — the canopy would be invisible",
         opaque * 100 / total
     );
 }
@@ -580,7 +618,17 @@ fn the_limbs_reach_past_the_trunk_and_that_is_the_intent() {
 /// from full detail.
 #[test]
 fn the_needle_chain_holds_its_coverage() {
-    let img = needle_image();
+    chain_holds_its_coverage(needle_image(), "needle");
+}
+
+/// The leaf card rides the same chain builder and is held to the same band —
+/// the gate exists so a second card cannot ship with a chain that goes bald.
+#[test]
+fn the_leaf_chain_holds_its_coverage() {
+    chain_holds_its_coverage(leaf_image(), "leaf");
+}
+
+fn chain_holds_its_coverage(img: bevy::prelude::Image, what: &str) {
     let data = img.data.as_ref().expect("needle image has no data");
     let w0 = img.texture_descriptor.size.width;
     let levels = img.texture_descriptor.mip_level_count;
@@ -590,7 +638,7 @@ fn the_needle_chain_holds_its_coverage() {
     assert_eq!(
         levels,
         w0.ilog2() + 1,
-        "needle mask has {levels} mip levels for a {w0}² card — the chain must \
+        "{what} mask has {levels} mip levels for a {w0}² card — the chain must \
          reach 1×1 or minification falls off the end of it"
     );
 
@@ -614,7 +662,7 @@ fn the_needle_chain_holds_its_coverage() {
             base = cov;
             assert!(
                 base > 0.0,
-                "level 0 of the needle mask has no coverage at all"
+                "level 0 of the {what} mask has no coverage at all"
             );
         } else if w >= 4 {
             // Below 4×4 there are sixteen texels and exact coverage is not
@@ -624,7 +672,7 @@ fn the_needle_chain_holds_its_coverage() {
             let ratio = cov / base;
             assert!(
                 (0.55..=1.75).contains(&ratio),
-                "needle mip level {level} ({w}²) tests to {ratio:.2}× level 0's \
+                "{what} mip level {level} ({w}²) tests to {ratio:.2}× level 0's \
                  coverage ({cov:.3} against {base:.3}) — outside 0.55..1.75 the \
                  canopy visibly thickens or goes bald at that range"
             );
