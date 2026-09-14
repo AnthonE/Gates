@@ -575,7 +575,8 @@ fn detonate(
             player_hp as u32,
         );
         if died {
-            events.push(crate::world::EV_DEATH, victim_id, c.owner, 0);
+            // `EV_DEATH` is `World::die`'s now (wounded v0); a blast never
+            // wounds, so the world will make the corpse and say so.
             kills.push(slot as u8, c.owner, d.clamp(0, u16::MAX as i64) as u16);
         }
     }

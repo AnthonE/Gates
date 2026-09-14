@@ -240,6 +240,9 @@ fn facing_turns_the_quad_to_the_eye() {
             pos: Vec3::ZERO,
             yaw,
             pitch,
+            // Standing (wounded v0's `down` is the camera's drop fraction,
+            // and a quad faces the eye wherever the eye is).
+            down: 0.0,
         };
         let cp = pitch.cos();
         let look = Vec3::new(yaw.sin() * cp, pitch.sin(), yaw.cos() * cp);

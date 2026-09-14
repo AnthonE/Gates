@@ -43,6 +43,11 @@
 // The forest layer — sparse bird calls over the beds. `reference/AUDIO.md`
 // §3's *layers*, as distinct from its beds.
 pub mod birds;
+// The sample renderer — the audio thread's half. Everything above it decides
+// WHAT is heard; this is the one thing that turns the decision into samples,
+// on both targets, and it is here rather than in `render/` so that the
+// arithmetic a player actually hears is gated headless like the rest.
+pub mod engine;
 // What the mixer is told when the health bar moves. Pure, and deliberately
 // takes the *fall* as well as the event: three of the sim's seven damage
 // routes announce nothing, on purpose, and a mixer fed only `EV_HURT` goes
@@ -63,10 +68,11 @@ pub mod water;
 // exactly the cue it is handed back.
 pub mod voice;
 
-/// The mixer's output sample rate, Hz.
+/// The bank's sample rate, Hz.
 ///
 /// One rate for the whole bank because [`synth`] generates every cue at boot
-/// and rodio resamples whatever it is handed — a second rate would buy
+/// and [`engine::rate`] resamples it to whatever the device runs at — the one
+/// resample in the chain, inside the renderer — so a second rate would buy
 /// nothing and would make the seam arithmetic in [`synth::loop_seam`] take a
 /// parameter it does not need.
 pub const SAMPLE_RATE: u32 = 44_100;
@@ -182,7 +188,7 @@ pub enum Cue {
     ///
     /// The pair with [`Cue::Growl`] is **two registers of one animal, chosen
     /// by distance**, and the distance is not a third number: it is this
-    /// cue's sibling's own [`CueDef::radius_m`]. See [`crate::sound::voice`].
+    /// cue's sibling's own [`CueDef::radius_m`]. See [`crate::voice`].
     Howl,
     /// The wolf's near voice: the threat, at the short end.
     ///
@@ -745,10 +751,12 @@ const M_CALM: CueDef = music_row(0.55);
 const M_TENSE: CueDef = music_row(0.78);
 const M_COMBAT: CueDef = music_row(1.0);
 
-/// The furthest any cue carries, metres. Read by `render/audio.rs` to pick the
-/// spatial scale, and asserted against [`CUES`] in `tests/sound.rs` — the two
-/// must not drift, because a cue with a radius past this one would fall off
-/// the far side of rodio's clamp and get *louder* with distance.
+/// The furthest any cue carries, metres — the table's own ceiling, asserted
+/// against [`CUES`] in `tests/sound.rs`: the cull, the AOI arithmetic and the
+/// reference's published radii are all stated against it, so a row that
+/// carried further would be a row the rest of the model does not know about.
+/// (It also used to derive `render/audio.rs`'s spatial scale for rodio's
+/// clamp; the engine pans now and that half is gone.)
 ///
 /// **Set by [`Cue::ShotGun`] since v54**, at the reference's own hundred
 /// metres; the falling tree's 96 m held it before that (this line said 88 m
@@ -886,7 +894,7 @@ pub struct SnapshotDef {
 ///
 /// **What `Submerged` cannot do, said plainly.** Real submerged audio is a
 /// steep low-pass: the top end goes, and that is a filter. We have no DSP
-/// node — rodio gives us gain, rate and panning — so the substitution is to
+/// stage — the engine gives us gain, rate and a pan — so the substitution is to
 /// duck the game bus and crossfade to a bed that is *generated* dark
 /// (`synth::under`). That is the same kind of substitution as pitch jitter
 /// standing in for a recorded variation bank (`reference/AUDIO.md` §9.5): a

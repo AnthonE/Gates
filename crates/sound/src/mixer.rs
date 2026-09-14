@@ -22,6 +22,15 @@
 
 use super::{falloff, Cue, Mix, CUE_COUNT, CUE_QUEUE_CAP, STARTS_PER_FRAME, VOICE_CAP};
 
+/// The band a diegetic cue's playback rate may wander in, as the mixer's
+/// speed about 1.0 — inclusive at both ends. Below it a voice holds a slot for
+/// minutes; above it a cue is a click. The renderer refuses a rate outside
+/// this same band scaled to its device (`engine::Renderer::apply`, counted in
+/// `bad_cmd`), so the two halves of the seam agree about what a rate may be
+/// (`DECISIONS.md` §open, audio engine v0).
+pub const SPEED_MIN: f32 = 0.25;
+pub const SPEED_MAX: f32 = 4.0;
+
 /// A cue somebody wants heard this frame.
 #[derive(Clone, Copy, Debug)]
 pub struct Request {
@@ -283,7 +292,7 @@ impl Mixer {
                 // voice that never ends, which would hold a slot in
                 // `VOICE_CAP` for the life of the process.
                 speed: if var > 0.0 {
-                    (1.0 + self.roll() * var).clamp(0.25, 4.0)
+                    (1.0 + self.roll() * var).clamp(SPEED_MIN, SPEED_MAX)
                 } else {
                     1.0
                 },

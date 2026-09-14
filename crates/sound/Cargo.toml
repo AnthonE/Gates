@@ -1,0 +1,21 @@
+[package]
+name = "sound"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# The client's audio MODEL — the cue table, the mixer, the cadences and the
+# generated bank — as a crate of its own rather than `client::sound`, because
+# the renderer it will hold has to compile into a second wasm module for the
+# browser's AudioWorklet, which links neither the client's transport nor
+# Bevy. Everything here is pure: no clock, no I/O, no threads
+# (`crates/client/tests/platform_calls.rs` walks this tree too, so a clock or
+# a thread here is red there), so the same crate is what
+# `crates/client/tests/sound.rs` drives headless.
+[dependencies]
+sim-core = { path = "../sim-core" }
+# The house SPSC ring (`crates/server/src/anomaly.rs`): the seam between the
+# game thread and the audio render thread is a bounded lock-free queue, and
+# a second implementation of one is the bug class the server already paid for.
+rtrb = "0.3"

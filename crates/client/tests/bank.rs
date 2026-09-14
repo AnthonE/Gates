@@ -1,39 +1,39 @@
-//! The sound bank, spread across frames — `audio::build_bank_with` and
-//! `audio::synthesize` (audio spread v0, `DECISIONS.md` §open; `NOW.md`
-//! §0web item 8).
+//! The sound bank, whole or spread across frames, into the engine —
+//! `audio::build_bank_with` and `audio::synthesize` (audio spread v0 and
+//! audio engine v0, `DECISIONS.md` §open; `NOW.md` §0web item 5).
 //!
-//! The desktop builds the whole bank inside `Plugin::build`; a browser tab
-//! reserves the handles there and renders one cue a frame, because 11.7 MB
-//! of synthesis on the one thread a page has is a tab that reads as hung.
-//! Both arms are reachable natively so the spread one is driven here: every
-//! handle exists from the first frame, the beds land first, every cue lands
-//! exactly once with the same bytes the whole bank would have held, and a
-//! frame after the last cue does nothing. The mutants run: rendering into
-//! `Cue::ALL[next]` instead of `synth_order()[next]` (the bytes check goes
-//! red on the first bed), and skipping the `next >= CUE_COUNT` guard (the
-//! last frame goes red on an index panic).
+//! The desktop installs the whole bank inside `Plugin::build`; a browser tab
+//! renders one cue a frame, because ~12 MB of synthesis on the one thread a
+//! page has is a tab that reads as hung. Both arms are reachable natively so
+//! the spread one is driven here: nothing lands at build, the beds land
+//! first, every cue lands exactly once with the same samples the whole bank
+//! holds, and a frame after the last cue does nothing. No `AudioPlugin`, no
+//! asset, no device: what crosses is `Engine::take_installs`, which is what
+//! `audio_out::flush` reads on a real boot.
+//!
+//! The mutants run: rendering `Cue::ALL[next]` instead of
+//! `synth_order()[next]` (the samples check goes red on the first bed), and
+//! skipping the `next >= CUE_COUNT` guard (the last frame goes red on an
+//! index panic).
 #![cfg(feature = "render")]
 
-use bevy::asset::{AssetPlugin, Assets};
-use bevy::audio::AudioSource;
 use bevy::prelude::*;
-use client::render::audio::{build_bank_with, synth_order, synthesize, Bank, Synth, BEDS};
-use client::sound::{synth, Cue, CUE_COUNT};
+use client::render::audio::{build_bank_with, synth_order, synthesize, Bank, Engine, Synth, BEDS};
+use client::sound::{synth, Cue, CUE_COUNT, SAMPLE_RATE};
 
 fn app() -> App {
     let mut app = App::new();
-    app.add_plugins((MinimalPlugins, AssetPlugin::default()))
-        .init_asset::<AudioSource>();
+    app.add_plugins(MinimalPlugins).init_resource::<Engine>();
     app.add_systems(Update, synthesize.run_if(resource_exists::<Synth>));
     app
 }
 
-fn present(app: &App, cue: Cue) -> Option<Vec<u8>> {
-    let bank = app.world().resource::<Bank>();
-    app.world()
-        .resource::<Assets<AudioSource>>()
-        .get(&bank.get(cue))
-        .map(|s| s.bytes.to_vec())
+/// What crossed to the engine since the last call, in install order.
+fn landed(app: &mut App) -> Vec<(Cue, Box<[i16]>)> {
+    app.world_mut()
+        .resource_mut::<Engine>()
+        .take_installs()
+        .collect()
 }
 
 #[test]
@@ -44,12 +44,31 @@ fn the_desktop_bank_is_whole_at_build() {
         app.world().get_resource::<Synth>().is_none(),
         "a whole bank owes nothing"
     );
-    for cue in Cue::ALL {
-        assert!(
-            present(&app, cue).is_some(),
-            "{cue:?} is missing from the whole bank"
+    let bank = app.world().resource::<Bank>();
+    assert_eq!(bank.count(), CUE_COUNT, "the whole bank is not whole");
+    let got = landed(&mut app);
+    assert_eq!(got.len(), CUE_COUNT, "the engine was not handed every cue");
+    let mut seen = [false; CUE_COUNT];
+    for (cue, pcm) in &got {
+        assert!(!seen[cue.idx()], "{cue:?} was installed twice");
+        seen[cue.idx()] = true;
+        assert_eq!(
+            pcm.as_ref(),
+            synth::pcm(*cue).as_ref(),
+            "{cue:?} was installed with different samples"
+        );
+        let bank = app.world().resource::<Bank>();
+        assert!(bank.installed(*cue), "{cue:?} landed but the bank says not");
+        assert_eq!(
+            bank.len_s(*cue),
+            pcm.len() as f32 / SAMPLE_RATE as f32,
+            "{cue:?}: the ledger's length is not the samples'"
         );
     }
+    assert!(seen.iter().all(|s| *s), "a cue never reached the engine");
+    // Nothing is owed after the flush, and nothing is refused.
+    assert!(landed(&mut app).is_empty());
+    assert_eq!(app.world().resource::<Engine>().install_refused, 0);
 }
 
 #[test]
@@ -57,41 +76,52 @@ fn the_spread_bank_fills_one_cue_a_frame_beds_first_and_then_stops() {
     let mut app = app();
     build_bank_with(&mut app, true);
     assert_eq!(app.world().resource::<Synth>().remaining(), CUE_COUNT);
-    // Every handle exists from the start and no asset does.
-    for cue in Cue::ALL {
-        assert!(
-            present(&app, cue).is_none(),
-            "{cue:?} was rendered at build"
-        );
-    }
+    // Nothing has landed at build.
+    assert_eq!(app.world().resource::<Bank>().count(), 0);
+    assert!(landed(&mut app).is_empty(), "a cue was rendered at build");
     let order = synth_order();
     for (frame, cue) in order.iter().enumerate() {
         app.update();
-        let got =
-            present(&app, *cue).unwrap_or_else(|| panic!("frame {frame}: {cue:?} did not land"));
+        let got = landed(&mut app);
         assert_eq!(
-            got,
-            synth::wav(*cue),
-            "frame {frame}: {cue:?} holds different bytes"
+            got.len(),
+            1,
+            "frame {frame}: {} cues crossed instead of one",
+            got.len()
+        );
+        let (landed_cue, pcm) = &got[0];
+        assert_eq!(
+            landed_cue, cue,
+            "frame {frame}: {landed_cue:?} landed, not {cue:?}"
+        );
+        assert_eq!(
+            pcm.as_ref(),
+            synth::pcm(*cue).as_ref(),
+            "frame {frame}: {cue:?} holds different samples"
         );
         assert_eq!(
             app.world().resource::<Synth>().remaining(),
             CUE_COUNT - frame - 1
         );
+        let bank = app.world().resource::<Bank>();
+        assert_eq!(bank.count(), frame + 1);
+        assert!(bank.installed(*cue));
         // Nothing past this frame's cue has landed yet.
         for later in &order[frame + 1..] {
             assert!(
-                present(&app, *later).is_none(),
+                !bank.installed(*later),
                 "frame {frame}: {later:?} landed early"
             );
         }
     }
     // A whole bank, and a frame after the last cue changes nothing.
-    for cue in Cue::ALL {
-        assert!(present(&app, cue).is_some());
-    }
+    assert_eq!(app.world().resource::<Bank>().count(), CUE_COUNT);
     app.update();
     assert_eq!(app.world().resource::<Synth>().remaining(), 0);
+    assert!(
+        landed(&mut app).is_empty(),
+        "a frame past the last cue rendered"
+    );
 }
 
 #[test]

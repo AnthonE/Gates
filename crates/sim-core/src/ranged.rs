@@ -137,8 +137,8 @@ use crate::rewind::{Rewind, RewindPose};
 use crate::spent::{SpentArrows, SpentRec};
 use crate::terrain;
 use crate::world::{
-    EventQueue, Player, EV_DEATH, EV_HEALTH, EV_HIT, EV_HURT, EV_IMPACT, EV_RELOAD,
-    EV_RELOAD_REFUSED, EV_SHOT,
+    EventQueue, Player, EV_HEALTH, EV_HIT, EV_HURT, EV_IMPACT, EV_RELOAD, EV_RELOAD_REFUSED,
+    EV_SHOT,
 };
 use crate::yaw_lut::yaw_dir;
 
@@ -442,6 +442,11 @@ pub struct Kill {
     pub by: u32,
     pub item: u16,
     pub range_cm: u16,
+    /// The shot crossed the head band. Carried out because it is the one
+    /// fact `World::down_or_die` needs that the funnel does not report: a
+    /// body shot lays the body down, a headshot kills (wounded v0 —
+    /// `reference/WOUNDED.md` §2.2, Devblog 53's rule).
+    pub head: bool,
 }
 
 /// Every arrow in the air on the shard. A flat array with a free-slot scan
@@ -825,12 +830,14 @@ pub fn step(
             );
             events.push(EV_HEALTH, vid, left, vmax);
             if died {
-                events.push(EV_DEATH, vid, a.owner, 0);
+                // `EV_DEATH` is `die`'s (wounded v0): this arrow may have
+                // laid the body down rather than killed it.
                 kills[n_kills] = Kill {
                     victim: j,
                     by: a.owner,
                     item: a.item,
                     range_cm,
+                    head: part == crate::collide::Part::Head,
                 };
                 n_kills += 1;
             }
@@ -1702,12 +1709,13 @@ pub fn hitscan(
             events.push(EV_HURT, vid, sector as u32, dmg as u32);
             events.push(EV_HEALTH, vid, left, vmax);
             if died {
-                events.push(EV_DEATH, vid, id, 0);
+                // `EV_DEATH` is `die`'s (wounded v0), as for the arrow.
                 kills[n_kills] = Kill {
                     victim: j,
                     by: id,
                     item,
                     range_cm,
+                    head: part == crate::collide::Part::Head,
                 };
                 n_kills += 1;
             }

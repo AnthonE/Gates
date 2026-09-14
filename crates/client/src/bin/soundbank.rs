@@ -34,7 +34,7 @@ fn main() {
     for cue in Cue::ALL {
         let wav = synth::wav(cue);
         // `{:?}` on the cue is its variant name, which is the only name a cue
-        // has — there is deliberately no string table (`sound/mod.rs`).
+        // has — there is deliberately no string table (`crates/sound/src/lib.rs`).
         let path = dir.join(format!("{:02}_{:?}.wav", cue.idx(), cue));
         if let Err(e) = std::fs::write(&path, &wav) {
             eprintln!("soundbank: cannot write {}: {e}", path.display());

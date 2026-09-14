@@ -59,6 +59,32 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
 
 # Buildable now — a loop can pick any of these
 
+## 0wnd · Down is built; the hands that pick you up are not *(sim+client lane)*
+
+Wounded v0 landed 2026-09-13 (`DECISIONS.md` §open "wounded v0",
+`reference/WOUNDED.md` §9): a lethal swing, bite or body shot lays the body
+down for 40–50 s at 10 hp, it crawls at a third of a walk and may open a
+door, and at the end a hashed roll (20 % + up to 25 % for full meters)
+stands it up or makes the corpse. What the minute still cannot do, in the
+order it earns its keep:
+
+1. **Revive by hand** — `RPC_Assist`'s shape (`WOUNDED.md` §2.6): a verb
+   aimed at a downed body, held 6 s without moving, prolonging the clock
+   when broken off and suspending the roll while held. New action on the
+   wire, a hold counter on the target, a `Verb` in the pick — and the
+   feature-gated match trap (`CLAUDE.md`).
+2. **Syringe / bandage on a downed body** — `Command::Consume` with a
+   target; `content/consumables.toml` already prices both.
+3. **Medkit in the belt = 100 %**, consumed only on a failed roll.
+4. **Refusals while down are silent**: `live_slot_of` refuses with no
+   event. Each refused verb's own `REFUSE_*` is the honest fix.
+5. **A drag clip and a voice** — a remote crawl slides `Death01`'s pose
+   (`render/anim.rs`), and the fall reuses `Cue::Death`.
+6. **The odds on screen are the odds at the fall**; the sim re-reads the
+   meters at the roll. Say so on the line, or resend.
+7. **§LOOK**: `CRAWL_EYE_M`, `WOUND_ROLL_RAD`, `WOUND_DROP_S`, the
+   vignette — never seen. Boot the game and go down.
+
 ## 0site · Site art v0 landed — three things it left *(art + sim lane)*
 
 `assets/models/site/{shelter,canopy}.glb` draw the pad and the waystations
@@ -1053,7 +1079,7 @@ where it had only ever been two words on the prompt. Both unseen (`§LOOK`).
    more tuning of `night_spook_cm` — it is a night-only roster variant
    (Minecraft and Valheim gate *spawns* on darkness). The judge's gap 1
    wanted a warmth stat; `survival.rs:60` still records no temperature.
-4. **The growl radius has no gate.** `sound/mod.rs:565` names §0pr as
+4. **The growl radius has no gate.** `crates/sound/src/lib.rs:565` names §0pr as
    holding it: `CUES[Growl].radius_m` (14 m) must stay inside the wolf's
    night notice radius (15 m), and a `mobs.toml` edit reddens nothing.
 
@@ -1281,7 +1307,7 @@ Offence landed (`sim-core/charge.rs`, `tests/blast.rs`, `DEATH_BY_CHARGE`).
 What it still cannot do:
 
 1. **No detonation sound and no detonation visual.** The `Cue` enum
-   (`client/src/sound/mod.rs:96`) has no blast voice, and there is no
+   (`crates/sound/src/lib.rs:96`) has no blast voice, and there is no
    `EV_BLAST` — the client learns of a blast only through `EV_STRUCT_HIT`
    and `EV_HEALTH`, so a near-miss is silent. Audio lane; wants either a
    cue keyed off the existing events or an event of its own.
@@ -1778,12 +1804,15 @@ worthless assertion in the first draft.
    map), so the midground is flat green shapes and this ring multiplied them by
    four. `WANTED.md` §9.5's leaf texture is the cheapest fix and serves the
    bush too. **Highest-value item here.**
-2. **The harvest sweep got denser and that was a named cost.**
+2. **The harvest sweep got denser and that was a named cost — twice now.**
    `harvest_changed` measured 1,500 props × a full 16,384 set at 2.34 ms and
    warned that a denser ring is the case that worsens. Outer hulls carry
    `Fellable` for correctness, so the count roughly doubles on frames where the
-   harvested set moves. The real fix is that `HarvestedSet::contains` is a
-   linear scan. Unmeasured on a GPU.
+   harvested set moves. **Forest density v1 (2026-09-14) moved both ends of
+   that product**: the near ring's p90 is 811 trees from 328, and
+   `MAX_SLOT_LIVES` is 32,768 from 16,384, so the 2.34 ms above is a floor on
+   the worst case rather than a reading of it. The real fix is that
+   `HarvestedSet::contains` is a linear scan. Unmeasured on a GPU.
 3. **Only trees.** Boulders and barrels still stop at `NEAR_RADIUS` — a
    sub-pixel lump costs an entity and changes no silhouette.
 
@@ -1872,8 +1901,8 @@ worthless assertion in the first draft.
    are the expensive half and the payoff is the sky.
 4. **Underwater is audio-only.** A colour grade under the surface is a
    second owner of the frame's haze; it wants the lighting owner.
-5. **The submerged duck is not a filter** — rodio gives gain, rate and
-   panning; a real low-pass needs a DSP node.
+5. **The submerged duck is not a filter** — the engine gives gain, rate and
+   a pan; a real low-pass needs a DSP stage in `sound::engine`.
 6. **`Splash` is the only producer of the waterline** — no stroke, no
    wake, no interactive deformation.
 
@@ -2036,6 +2065,18 @@ dust and the impact cue read it (`DECISIONS.md` §open, impact fx v1). Left:
    `music::PIECES`; swapping in recorded pieces is one function
    (`synth::render`'s music arm). Two bumps we cannot take: weapon equipped,
    projectile near-miss.
+3. **The audio systems are gated headless, and the device path is not.**
+   `tests/bank.rs` proves the bank crosses whole or one cue a frame;
+   `tests/music.rs` that a piece becomes a `Play`/`Gain`/`Stop`;
+   `crates/sound/tests/engine.rs` the renderer's samples; `tests/engine_out.rs`
+   that `Feed::fill` equals the renderer through any callback length and
+   channel count with NO device; `engine_out_alloc.rs` that the callback body
+   allocates nothing. **cpal opening, the callback firing, the rate the device
+   actually runs at — only a person booting the game proves those**; a
+   `--capture` run proves only that `open()` does not panic without a device.
+4. **Two cues have no producer:** `ImpactWood`/`ImpactMetal` need to know
+   WHAT was hit, and `UiClick` appears only as the mixer's placeholder
+   `Request` — it wants a hook in the per-screen click handlers.
 3. **The `--capture` run is still by hand** and is the only proof most audio
    systems execute. `tests/music.rs` is the cheaper shape — any audio system
    with no world in its arguments could be gated that way.
@@ -2047,7 +2088,7 @@ dust and the impact cue read it (`DECISIONS.md` §open, impact fx v1). Left:
 5. **No occlusion**; the prerequisite is a geometry query, and the correct
    one is the sim's (`collide.rs`), not a raycast against render meshes.
 6. **Crickets** are a content-free companion pass — a night-gated `Cue`, the
-   bird layer's shape with the predicate inverted (`render/audio.rs:672`).
+   bird layer's shape with the predicate inverted (`render/audio.rs:1039`).
 
 
 ## 0x · The native client — the feature trim and the dropped anchors *(client lane)*
@@ -2055,11 +2096,16 @@ dust and the impact cue read it (`DECISIONS.md` §open, impact fx v1). Left:
 1. **Trim Bevy's default features — with a verified build, not a guess.**
    `crates/client/Cargo.toml` still takes bevy with defaults on. Unused by
    grep: `bevy_gilrs` (no `Gamepad` anywhere — the one real system-dep win,
-   `libudev`) and `vorbis` (the bank is WAV we generate). Load-bearing:
-   `bevy_audio`, `bevy_gltf`/`bevy_animation`, x11 and wayland. Attempted
-   2026-08-06 and backed out on disk, not code — and a green compile is not
-   evidence: Bevy answers a missing decoder with a white fallback. Wants
-   headroom and a `--capture` run someone looks at.
+   `libudev`) and `vorbis` (the bank is generated). **`bevy_audio` is
+   compiled and DISABLED natively** — `AudioPlugin` is off in both desktop
+   binaries since the cpal seam (`render/audio_out.rs` opens the device
+   itself) — so it is a trim candidate again, and `alsa` stays through cpal.
+   Load-bearing: `bevy_gltf`/`bevy_animation`, x11 and wayland. The `wav`
+   feature is inert (the decoder never runs) and joins the list rather than
+   leaving here: a feature change invalidates every Bevy artifact. Attempted 2026-08-06 and
+   backed out on disk, not code — and a green compile is not evidence: Bevy
+   answers a missing decoder with a white fallback. Wants headroom and a
+   `--capture` run someone looks at.
 2. **World-space anchors are still dropped.** The HUD half landed
    (`hud::readout` pins the struct-hit fraction and the charge clock under
    the toast); the wall's own number at the wall itself and a clock on the
@@ -2431,6 +2477,11 @@ right call and it is not free: it means every slice landed since is *gated as
 arithmetic and unseen*, and the list below is what has accumulated. **Do not
 build a replacement pixel gate.** One session with the client open closes most
 of it.
+
+**Newest, 2026-09-13 — go down and look** (§0wnd, `render/wounded.rs`): the
+camera's drop to `CRAWL_EYE_M` and its roll, the vignette, the two-number
+line, and a remote body's fallen pose sliding at a crawl. Five knobs, none
+seen; `reference/WOUNDED.md` §9.5 is the checklist.
 
 Two of these are not taste, they are unresolved defects:
 
@@ -2871,7 +2922,9 @@ at in headless Chromium (SwiftShader) against a shard from the same commit:
    (`web::hand_back` → `gatesLeft` → reload with the reason on the status
    line); the surface follows the viewport under the 2048 cap (`web::fit`,
    `tests/web.rs`); one PLAY button, the shard fields behind ADVANCED.
-5. **The audio bank is one cue a frame on wasm32** (`tests/bank.rs`).
+5. **The audio bank is one cue a frame on wasm32** (`tests/bank.rs`); the
+   spread bank installs each cue's PCM into the engine, which a page does
+   not flush anywhere yet — the worklet is the next stage.
 6. **Mouse look turns the view** and the pointer lock, when granted, holds
    through a drag and releases on Escape — zero panics across four runs.
 

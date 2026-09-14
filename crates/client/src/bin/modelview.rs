@@ -148,14 +148,22 @@ fn main() -> AppExit {
     // Never a watcher: a bench that reloads under a shot is a shot nobody can
     // reproduce (`client/Cargo.toml`'s `hot` feature says the same thing).
     assets.watch_for_changes_override = Some(false);
-    app.add_plugins(DefaultPlugins.set(assets).set(WindowPlugin {
-        primary_window: Some(Window {
-            title: "gates — modelview".into(),
-            resolution: (1280u32, 720u32).into(),
-            ..default()
-        }),
-        ..default()
-    }));
+    // bevy_audio's rodio stream would open the device a second time and mix
+    // nothing: the engine owns the device through cpal (`render/audio_out.rs`).
+    app.add_plugins(
+        DefaultPlugins
+            .build()
+            .disable::<bevy::audio::AudioPlugin>()
+            .set(assets)
+            .set(WindowPlugin {
+                primary_window: Some(Window {
+                    title: "gates — modelview".into(),
+                    resolution: (1280u32, 720u32).into(),
+                    ..default()
+                }),
+                ..default()
+            }),
+    );
     app.insert_resource(ClearColor(Color::srgb(0.16, 0.17, 0.19)));
     app.insert_resource(opts);
     app.insert_resource(Bench {

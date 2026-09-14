@@ -69,7 +69,7 @@
 use crate::gather::NO_ITEM;
 use crate::limits::{MAX_ITEM_DEFS, TICK_HZ};
 use crate::world::{
-    EventQueue, Player, EV_CONSUMED, EV_CONSUME_REFUSED, EV_DEATH, EV_DRANK, EV_HEALTH, EV_VITALS,
+    EventQueue, Player, EV_CONSUMED, EV_CONSUME_REFUSED, EV_DRANK, EV_HEALTH, EV_VITALS,
 };
 
 /// How far a mouthful reaches, planar. Not a knob of its own: it is
@@ -345,7 +345,6 @@ pub fn step(sc: &SurvivalContent, p: &mut Player, events: &mut EventQueue) -> St
     }
 
     if died {
-        died_by_the_world(p, events);
         return Step::Died;
     }
     if (p.food, p.water, p.hp) != before {
@@ -355,26 +354,10 @@ pub fn step(sc: &SurvivalContent, p: &mut Player, events: &mut EventQueue) -> St
     Step::Quiet
 }
 
-/// The module's one death **announcement**: a body the world itself
-/// finished off, by starving, by drying out, or by a mouthful of salt
-/// water. **One place**, so the two ways this module can kill cannot
-/// disagree about what a death is — a bug would otherwise exist twice.
-///
-/// ⚠ **The count is no longer taken here.** It moved into
-/// `combat::hurt_unreduced`, which is where both of this module's debits
-/// now go, so the rule this doc used to state locally — a death is counted
-/// where it happens, or it is invisible to `spawn_pos_n(id, deaths)` — is
-/// stated once for every route in the crate instead of once per module.
-/// Both of its callers fire on a `died` the funnel just returned, so the
-/// count and the announcement still cannot come apart.
-///
-/// Self-inflicted by the world: victim and killer are the same id, which
-/// `EV_DEATH`'s own doc comment already anticipated ("equal to `a` if that
-/// ever becomes possible"). This is that.
-#[inline]
-fn died_by_the_world(p: &Player, events: &mut EventQueue) {
-    events.push(EV_DEATH, p.id, p.id, 0);
-}
+// The clock's deaths are announced by `World::die`, with every other
+// death's (wounded v0) — this module reports `Step::Died` and nothing
+// else. It used to push `EV_DEATH` here through `died_by_the_world`,
+// which was right while a lethal debit and a corpse were the same event.
 
 /// Max hp for a player mid-heal. The survival module never learns
 /// `CombatContent`, so the ceiling a heal clamps to is the hp the player
@@ -585,7 +568,6 @@ pub fn drink(sc: &SurvivalContent, seed: u64, p: &mut Player, events: &mut Event
     // used to spell out by hand now lives in `combat::debit`, which is the
     // one place that can state it once for every route.
     if took.died {
-        died_by_the_world(p, events);
         return Step::Died;
     }
     Step::Changed

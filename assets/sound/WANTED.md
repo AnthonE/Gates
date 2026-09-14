@@ -2,7 +2,7 @@
 
 Every sound this client plays, as a sourcing worklist. **Owns nothing** —
 `assets/models/WANTED.md`'s shape for audio. The enum is the authority
-(`crates/client/src/sound/mod.rs::Cue`, 40 cues); this file is read against
+(`crates/sound/src/lib.rs::Cue`, 40 cues); this file is read against
 it, and **the command is the claim, not the count**:
 
 ```

@@ -730,7 +730,7 @@ mod carried_through_death {
     /// a field a death is *allowed* to erase — the inventory (the backpack
     /// takes it), the meters and health (a respawn is a whole body), the
     /// craft queue, the weak-spot chase, and the death record itself.
-    pub const RE_DERIVED: [&str; 29] = [
+    pub const RE_DERIVED: [&str; 32] = [
         "body",
         "inv",
         // **The corpse does not keep its plates.** `worn` is here rather
@@ -785,6 +785,14 @@ mod carried_through_death {
         "death_range_cm",
         "sleeping",
         "slept_at",
+        // **A corpse is not down, it is dead** (wounded v0). The crawl and
+        // its two clocks end at the corpse: the roll that failed is the
+        // death, and a respawned body owes nobody the minute a recovered
+        // one does — `rewound_until` is a rule about being *revived* and
+        // downed again, not about dying.
+        "wounded",
+        "wound_until",
+        "rewound_until",
         // **A corpse is not holding a torch up.** `light_acc` is the
         // sub-point remainder of a flame, and the flame is derived from a
         // held stack the backpack has just taken (`inv`, four lines up),

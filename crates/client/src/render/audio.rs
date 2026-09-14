@@ -1,70 +1,63 @@
-//! The Bevy half of the client's audio: the bank, the listener, the voices,
-//! and the two systems that turn what happened into what is heard.
+//! The Bevy half of the client's audio: the bank, the producers, and the
+//! frame's command buffer to the renderer.
 //!
 //! **Bevy plays; it does not decide.** Every level, every cull and every
 //! cadence in here came out of `crate::sound`, which is pure and tested
-//! headless. This file owns four things and no others: loading the bank into
-//! `Assets<AudioSource>`, putting a [`SpatialListener`] on the camera,
-//! spawning an entity per voice the mixer asked for, and holding the one
-//! looping entity that is the bed.
+//! headless — and since audio engine v0 so does every SAMPLE: the mixer's
+//! choices leave this file as bounded [`Cmd`]s to `sound::engine::Renderer`,
+//! which is the audio thread on both targets (natively inside cpal's
+//! callback in `render/audio_out.rs`; in the browser an `AudioWorklet`).
+//! This file owns three things and no others: installing the generated bank
+//! into the engine, the producers that turn what happened into requests, and
+//! the [`Engine`] buffer those requests leave through.
 //!
-//! ## The rodio finding, and why `SPATIAL_SCALE` is what it is
+//! ## The rules, and the finding they replaced
 //!
-//! **Bevy's spatial audio attenuates by `min(1/d², 1)` in world units, and in
-//! a metre-scale world that makes everything past ~5 m inaudible.** It is
-//! rodio's `Spatial::set_positions`: the per-ear gain is a panning term in
-//! [0.5, 1.0] multiplied by `(1/dist_sq).min(1.0)`. At 10 m that second term
-//! is 1/100 — 40 dB down — and at 30 m it is −59 dB. A tree falling 40 m away
-//! would be silent, and no amount of turning the cue's gain up fixes it,
-//! because the law is inverse-square and our falloff is not.
+//! - **The engine pans.** `engine::start_cmd` turns a mixer `Start` into two
+//!   ear gains against `look::right_dir`'s vector — the client owns the yaw
+//!   convention and the engine takes the vector, never a yaw.
+//! - **`Start.gain` is the client's one distance law.** `sound::falloff`
+//!   already put the cue gain, the caller's gain, the falloff and the bus
+//!   into it, and nothing downstream attenuates again.
+//! - **The game thread decides and sends bounded commands; the renderer
+//!   owns time.** A bed's fade, a snapshot crossfade and a music orphan's
+//!   [`MUSIC_FADE_S`] are computed here per frame and sent as gain TARGETS
+//!   the renderer ramps to across one block; it runs no law of its own. Why
+//!   this shape is `findings/browser-audio-20260913.md`: the previous path
+//!   made every play a `bevy_audio` entity — a decoder and a sink per cue,
+//!   mixed in a callback that in a tab is a `setTimeout` on the main thread.
 //!
-//! The fix is not to fight it: it is to **clamp it out and own the law**.
-//! Bevy scales the emitter *and* both ears by `DefaultSpatialScale` before
-//! handing them to rodio, so a scale of `1/128` puts every audible emitter
-//! (nothing carries past `sound::MAX_AUDIBLE_M` = 96 m) inside one scaled
-//! unit, where `(1/dist_sq).min(1.0)` is exactly 1.0. What survives is the
-//! panning term — which is scale-invariant, because it is a ratio of ear
-//! distances over the ear gap, and both scale together. So:
-//!
-//! - **rodio pans.** That is all it does.
-//! - **`sound::falloff` attenuates**, through `PlaybackSettings::volume`, and
-//!   it is the only distance law in the client.
-//!
-//! Getting this wrong is not a subtle bug — it is "the game has no sound past
-//! a few metres" — and nothing in the API says so.
+//! History, one paragraph: until 2026-09-13 rodio did the panning, and it
+//! attenuates spatial audio by `min(1/d², 1)` in world units — everything
+//! past ~5 m inaudible in a metre-scale world — so this file carried a
+//! `SPATIAL_SCALE = 1/128` that shrank every emitter inside that clamp and an
+//! `EAR_GAP_M` for the head it panned with. Both retired with that path
+//! (`DECISIONS.md` §open, audio v0); the pan is `engine::pan` now, and there
+//! is nothing left to clamp out.
 
-use bevy::audio::{
-    AudioSource, DefaultSpatialScale, PlaybackMode, SpatialListener, SpatialScale, Volume,
-};
 use bevy::prelude::*;
 
 use crate::sound::birds::{self, Birds};
+use crate::sound::engine::{self, Cmd, Live, Stats, HELD_BEDS, HELD_MUSIC};
 use crate::sound::mixer::{Mixer, Request, Start};
 use crate::sound::music::{self, Director};
 use crate::sound::steps::Steps;
 use crate::sound::voice::Voices;
 use crate::sound::water::Waterline;
 use crate::sound::{
-    synth, Cue, Mix, Snapshot, SnapshotDef, Snapshots, CUE_COUNT, MAX_AUDIBLE_M, VOICE_CAP,
+    synth, Cue, Mix, Snapshot, SnapshotDef, Snapshots, CUE_COUNT, SAMPLE_RATE, VOICE_CAP,
 };
 
-use super::rig::EyeCam;
 use super::{Eye, Net};
 
-/// The scale handed to rodio, so its own inverse-square law clamps to 1 for
-/// every audible emitter and only its panning survives. See the header.
-///
-/// 128 rather than 100 (`MAX_AUDIBLE_M`) because rodio measures from each EAR,
-/// not from the listener's centre — at the far edge of the radius an ear is
-/// half the ear gap further out, and the margin keeps the clamp exact rather
-/// than approximately exact. The margin is what absorbed v54's gunshot: 96 m
-/// became 100 m and `clamp_holds` did not have to move.
-pub const SPATIAL_SCALE: f32 = 1.0 / 128.0;
-
-/// Distance between the listener's ears, metres. Bevy defaults to **4.0**,
-/// which is a head the size of a car; a real one is ~0.22 m. It changes the
-/// panning curve's sharpness, not its range (`DECISIONS.md` §open, audio v0).
-pub const EAR_GAP_M: f32 = 0.22;
+/// Commands a frame may hand the renderer. Overflow policy: **drop the newest
+/// and count it** ([`Engine::dropped`]) — the mixer's rule one queue up, and
+/// for its reason: a cue's value is that it happened, so the earlier asks
+/// win. A frame's worst case is arithmetic and well under it — three bed
+/// gains, `STARTS_PER_FRAME` starts, one music play and four music gains or
+/// stops, plus three loops or three stops and a cut on a screen transition
+/// (`DECISIONS.md` §open, audio engine v0).
+pub const CMD_FRAME_CAP: usize = 32;
 
 /// How fast a bed's gain follows the world, per second. A bed that snapped
 /// would click every time the tree count under the camera changed by one.
@@ -78,16 +71,175 @@ pub const BED_FADE_PER_S: f32 = 0.5;
 /// The looping beds, in the order [`Sound::bed_gain`] indexes them.
 pub const BEDS: [Cue; 3] = [Cue::BedWind, Cue::BedSurf, Cue::BedUnder];
 
-/// The generated bank: one `AudioSource` per [`Cue`], in `Cue::ALL` order.
+/// What of the generated bank has reached the engine, and how long each cue
+/// is — the number the live ledger ([`Engine::live`]) predicts a voice's end
+/// from, because the renderer frees a voice by sample count and the game
+/// thread never reads it back per frame.
 #[derive(Resource)]
 pub struct Bank {
-    handles: [Handle<AudioSource>; CUE_COUNT],
+    installed: [bool; CUE_COUNT],
+    len_s: [f32; CUE_COUNT],
+}
+
+impl Default for Bank {
+    fn default() -> Self {
+        Self {
+            installed: [false; CUE_COUNT],
+            len_s: [0.0; CUE_COUNT],
+        }
+    }
 }
 
 impl Bank {
-    pub fn get(&self, cue: Cue) -> Handle<AudioSource> {
-        self.handles[cue.idx()].clone()
+    /// Has this cue's PCM been handed to the engine?
+    pub fn installed(&self, cue: Cue) -> bool {
+        self.installed[cue.idx()]
     }
+
+    /// The cue's length in seconds at the bank's rate; zero until it lands.
+    pub fn len_s(&self, cue: Cue) -> f32 {
+        self.len_s[cue.idx()]
+    }
+
+    /// How many cues have landed.
+    pub fn count(&self) -> usize {
+        self.installed.iter().filter(|b| **b).count()
+    }
+
+    fn land(&mut self, cue: Cue, samples: usize) {
+        self.installed[cue.idx()] = true;
+        self.len_s[cue.idx()] = samples as f32 / SAMPLE_RATE as f32;
+    }
+}
+
+/// The audio thread's side of the seam, as the game thread last saw it.
+///
+/// Every number here has a reader, which is what makes them counters and
+/// not prose. The fault counters — `ring_dropped`, `install_refused`,
+/// `unrouted`, `stream_errors`, and `stats.{refused, unbanked, cut,
+/// bad_cmd, dropped, reinstall_refused, return_dropped}` — are printed by
+/// [`pump`] once per new increment; the gauges — `live_thread`, `alive`,
+/// `routed`, `backlog`, `stats.blocks` — are on the F7 report's audio table
+/// (`render/report.rs`) and in `web::heap_report`'s line.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Diag {
+    /// One-shots sounding on the audio thread at its last block.
+    pub live_thread: u32,
+    /// Has a device callback filled a buffer yet? False for the life of a
+    /// run on a box with no device — every capture run, CI.
+    pub alive: bool,
+    /// Is there an audio thread to drain the rings at all? False on a box
+    /// with no device, where the flush drops and counts (`unrouted`)
+    /// instead of filling a ring nobody reads.
+    pub routed: bool,
+    /// Commands waiting in the native ring — how far behind the audio
+    /// thread is.
+    pub backlog: usize,
+    /// Commands the native ring refused (`engine::Out::ring_dropped`).
+    pub ring_dropped: u32,
+    /// Installs the native install ring refused.
+    pub install_refused: u32,
+    /// Commands and installs dropped at the flush for want of an output.
+    pub unrouted: u32,
+    /// Errors the device stream reported since it opened.
+    pub stream_errors: u32,
+    /// The renderer's own counters, off its one-slot mailbox.
+    pub stats: Stats,
+}
+
+/// The game thread's per-frame command buffer to the renderer.
+///
+/// **Bounded** (`CLAUDE.md` wall 4) at [`CMD_FRAME_CAP`], drop-newest and
+/// counted. Every push is a `Copy` into a fixed array and nothing here
+/// allocates after `Default`. `render/audio_out.rs::flush` empties it into
+/// the native seam every `PostUpdate`; on wasm32 [`clear`] empties it until
+/// the worklet lands.
+#[derive(Resource)]
+pub struct Engine {
+    frame: [Cmd; CMD_FRAME_CAP],
+    n: usize,
+    /// Commands dropped at the frame buffer since start.
+    pub dropped: u32,
+    /// Cues waiting to cross to the audio thread. Allocated ONCE to
+    /// `CUE_COUNT` and only ever filled at build (the whole bank) or one a
+    /// frame (the spread bank), never per play — a cue is installed once per
+    /// boot, so the capacity is the bound, and a push past it is refused and
+    /// counted in [`Engine::install_refused`] rather than grown.
+    installs: Vec<(Cue, Box<[i16]>)>,
+    /// Installs refused at the frame buffer since start.
+    pub install_refused: u32,
+    /// The mixer's `live`: what the renderer has sounding, predicted here
+    /// from what was started (`sound::engine::Live`).
+    pub live: Live,
+    /// What the audio thread reported last, copied in by the flush.
+    pub diag: Diag,
+    /// The renderer's rate, Hz — what every `Start`'s rate is computed
+    /// against. [`SAMPLE_RATE`] until `audio_out::open` writes the device's
+    /// at plugin build; the worklet stage will write the page's. Read each
+    /// frame by [`pump`], so a `Start` already in the ring when it moves
+    /// plays at the old rate for that one frame, which is accepted.
+    pub out_rate: u32,
+}
+
+impl Default for Engine {
+    fn default() -> Self {
+        Self {
+            frame: [Cmd::CutVoices; CMD_FRAME_CAP],
+            n: 0,
+            dropped: 0,
+            installs: Vec::with_capacity(CUE_COUNT),
+            install_refused: 0,
+            live: Live::new(),
+            diag: Diag::default(),
+            out_rate: SAMPLE_RATE,
+        }
+    }
+}
+
+impl Engine {
+    /// Queue a command for this frame's flush.
+    pub fn push(&mut self, cmd: Cmd) {
+        if self.n >= CMD_FRAME_CAP {
+            self.dropped = self.dropped.saturating_add(1);
+            return;
+        }
+        self.frame[self.n] = cmd;
+        self.n += 1;
+    }
+
+    /// Queue a cue's samples for this frame's flush.
+    pub fn install(&mut self, cue: Cue, pcm: Box<[i16]>) {
+        if self.installs.len() >= CUE_COUNT {
+            self.install_refused = self.install_refused.saturating_add(1);
+            return;
+        }
+        self.installs.push((cue, pcm));
+    }
+
+    /// The frame's commands, in the order they were pushed; the buffer is
+    /// empty afterwards. What the flush reads, and what the tests read.
+    pub fn take(&mut self) -> impl Iterator<Item = Cmd> + '_ {
+        let n = core::mem::take(&mut self.n);
+        self.frame[..n].iter().copied()
+    }
+
+    /// The cues waiting to cross, in install order; empty afterwards. A
+    /// drain, so the vector keeps its one allocation.
+    pub fn take_installs(&mut self) -> impl Iterator<Item = (Cue, Box<[i16]>)> + '_ {
+        self.installs.drain(..)
+    }
+
+    /// Commands waiting for the flush.
+    pub fn pending(&self) -> usize {
+        self.n
+    }
+}
+
+/// Until the browser's worklet lands, wasm32 has no reader for the buffer:
+/// this empties it every frame so it cannot fill and count phantom drops.
+pub fn clear(mut engine: ResMut<Engine>) {
+    engine.n = 0;
+    engine.installs.clear();
 }
 
 /// What anything in the client asks for a sound through.
@@ -117,9 +269,20 @@ pub struct Sound {
     /// state, not a function of a frame.
     bed_gain: [f32; BEDS.len()],
     bed_target: [f32; BEDS.len()],
+    /// The level each bed was last SENT. A standing player sends nothing:
+    /// the renderer holds a target until it is given another, so a gain
+    /// equal to the last one is a command with no content.
+    bed_sent: [f32; BEDS.len()],
     /// The snapshot crossfade, and this frame's resolved mixer state.
     snapshots: Snapshots,
     snap: SnapshotDef,
+    /// The pieces sounding, one per held music slot (`engine::HELD_MUSIC`),
+    /// and the round-robin cursor: with four slots the one a new piece
+    /// overwrites has always ended (two overlap by the tail, a transition
+    /// adds one orphan, one spare), and if it has not the renderer counts
+    /// the cut (`Diag::stats.cut`) rather than this file assuming.
+    music_slots: [MusicSlot; HELD_MUSIC],
+    next_music: usize,
 }
 
 impl Sound {
@@ -129,27 +292,20 @@ impl Sound {
     }
 }
 
-/// A sounding voice. Counted every frame so the mixer knows its own headroom.
-#[derive(Component)]
-pub struct Voice;
-
-/// One looping bed, and which one.
-#[derive(Component)]
-pub struct Bed(pub Cue);
-
-/// A piece of music that is playing.
+/// A piece of music on one of the engine's held music slots.
 ///
-/// **Deliberately not a [`Voice`] and deliberately not a
-/// [`super::WorldEntity`]**, and both are load-bearing:
+/// **Deliberately a held slot and not a one-shot voice, and deliberately
+/// untouched by [`teardown`]**, and both are load-bearing:
 ///
-/// - Not a `Voice`, so music does not count against `VOICE_CAP` and cannot
+/// - A held slot, so music does not count against `VOICE_CAP` and cannot
 ///   be the reason an axe was refused (`sound::mixer` refuses to start a
 ///   music cue at all — `Cue::is_music`).
-/// - Not a `WorldEntity`, so leaving a world does not cut a piece off
+/// - Not cut on leaving a world (`teardown` stops the beds and the voices
+///   and leaves the music slots alone), so a piece is not cut off
 ///   mid-phrase. A menu piece rings out over the loading screen, which is
 ///   how music is supposed to carry a transition.
-#[derive(Component)]
-pub struct MusicVoice {
+#[derive(Clone, Copy, Debug)]
+struct MusicSlot {
     /// Which piece this is, so its level comes from the cue table like every
     /// other level in the client rather than from a constant here.
     cue: Cue,
@@ -159,6 +315,26 @@ pub struct MusicVoice {
     /// Set when a screen change orphaned this piece: the director under it
     /// has been reset, and something else is about to start on top of it.
     ending: bool,
+    /// Seconds until the renderer frees the slot on its own — the bank's
+    /// length, counted down here so the slot is released without reading
+    /// the audio thread back.
+    left_s: f32,
+    /// The level last sent, so a steady piece sends nothing.
+    sent: f32,
+    active: bool,
+}
+
+impl Default for MusicSlot {
+    fn default() -> Self {
+        Self {
+            cue: Cue::ALL[0],
+            fade: 1.0,
+            ending: false,
+            left_s: 0.0,
+            sent: 0.0,
+            active: false,
+        }
+    }
 }
 
 /// How long an orphaned piece takes to fade out, seconds.
@@ -179,13 +355,14 @@ pub const MUSIC_FADE_S: f32 = 1.2;
 /// `insert_startup_before(PreStartup, StateTransition)` — so on a start that
 /// opens directly on `Screen::Loading` (which is every `--capture` and every
 /// `--server` launch) **`OnEnter(Loading)` runs BEFORE `Startup`**. The bank
-/// was a `Startup` system and [`setup`] takes `Res<Bank>`; the first probe run
+/// was a `Startup` system and [`setup`] took `Res<Bank>`; the first probe run
 /// after the audio slice died on *"Parameter failed validation: Resource does
-/// not exist"* with the system name compiled out.
+/// not exist"* with the system name compiled out. `setup` reads [`Engine`]
+/// now and [`pump`] reads [`Bank`], and the argument is unchanged.
 ///
 /// Building it here removes the ordering question rather than answering it:
 /// the resource exists before any schedule runs at all. The cost is the same
-/// ~1.5 MB of arithmetic, paid a few milliseconds earlier.
+/// ~12 MB of arithmetic, paid a few milliseconds earlier.
 ///
 /// The hazard is general and this file is not the only place it can bite —
 /// anything hung on `OnEnter(Loading)` that reads a `Startup`-inserted
@@ -198,8 +375,8 @@ pub fn build_bank(app: &mut App) {
 /// Whether the bank is synthesized over frames rather than inside
 /// `Plugin::build` (audio spread v0 — `DECISIONS.md` §open).
 ///
-/// **A browser tab is one thread and `build` runs on it.** The 11.7 MB of
-/// WAV above is ~0.8 s of arithmetic in a native release build and several
+/// **A browser tab is one thread and `build` runs on it.** The ~12 MB of
+/// PCM above is ~0.8 s of arithmetic in a native release build and several
 /// times that in wasm, with no SIMD and `opt-level = "s"` — paid before the
 /// first frame, while the page shows a canvas that has not painted, which
 /// reads as a hung tab (`NOW.md` §0web item 8). Natively the same cost lands
@@ -207,35 +384,32 @@ pub fn build_bank(app: &mut App) {
 /// the thing anyone waited on, so the desktop keeps the whole bank at build:
 /// `music.rs`'s ordering argument (`OnEnter(Loading)` before `Startup`) is
 /// about the RESOURCE existing, and the resource exists either way — what
-/// spreads is the bytes behind the handles.
+/// spreads is when each cue's samples reach the engine.
 pub const SPREAD_BANK: bool = cfg!(target_arch = "wasm32");
 
-/// Build the bank whole, or reserve its handles and fill them one cue a
-/// frame through [`synthesize`]. Both arms are reachable natively so
+/// Build the bank whole into the engine, or hand it over one cue a frame
+/// through [`synthesize`]. Both arms are reachable natively so
 /// `tests/bank.rs` can drive the spread one.
+///
+/// A spread bank's beds are asked for before they exist: [`setup`] sends
+/// its three `Loop`s on the loading screen's first frame, and the renderer
+/// remembers a loop whose cue has not landed and starts it from sample 0
+/// the block it does (`engine::Cmd::Loop`) — so a bed on a page starts a
+/// few frames late rather than never, with nothing here to remember.
 pub fn build_bank_with(app: &mut App, spread: bool) {
-    let handles = {
-        let mut sources = app.world_mut().resource_mut::<Assets<AudioSource>>();
-        if spread {
-            // The handles exist from here; `bevy_audio` leaves an
-            // `AudioPlayer` whose source has no asset yet queued and starts
-            // it the frame the asset lands, so a bed spawned on the first
-            // frame of the loading screen simply starts a few frames late.
-            core::array::from_fn(|_| sources.reserve_handle())
-        } else {
-            synth::bank().map(|bytes| {
-                sources.add(AudioSource {
-                    bytes: bytes.into(),
-                })
-            })
+    let mut bank = Bank::default();
+    if !spread {
+        let mut engine = app.world_mut().resource_mut::<Engine>();
+        for (i, pcm) in synth::pcm_bank().into_iter().enumerate() {
+            let cue = Cue::ALL[i];
+            bank.land(cue, pcm.len());
+            engine.install(cue, pcm);
         }
-    };
-    app.insert_resource(Bank { handles });
+    }
+    app.insert_resource(bank);
     if spread {
         app.insert_resource(Synth { next: 0 });
     }
-    app.insert_resource(DefaultSpatialScale(SpatialScale::new(SPATIAL_SCALE)));
-    debug_assert!(clamp_holds(), "audio: SPATIAL_SCALE lets rodio attenuate");
 }
 
 /// The cues still to synthesize. Present only while the bank is being
@@ -274,74 +448,64 @@ pub fn synth_order() -> [Cue; CUE_COUNT] {
     order
 }
 
-/// Render one cue a frame into its reserved handle until the bank is whole.
+/// Render one cue a frame into the engine until the bank is whole.
 ///
 /// One cue, not a byte budget: the score's pieces are the expensive ones
-/// (`synth::bank`'s own measurement — nine pieces are most of the 0.8 s) and
-/// splitting a piece across frames would mean a partial WAV nobody can play.
-/// A frame that renders a piece is a long frame on the loading screen, which
-/// is where every one of them lands; a frame that renders a footstep is not.
-pub fn synthesize(
-    mut synth: ResMut<Synth>,
-    bank: Res<Bank>,
-    mut sources: ResMut<Assets<AudioSource>>,
-) {
+/// (`synth::pcm_bank`'s own measurement — nine pieces are most of the 0.8 s)
+/// and splitting a piece across frames would mean a partial cue nobody can
+/// play. A frame that renders a piece is a long frame on the loading screen,
+/// which is where every one of them lands; a frame that renders a footstep
+/// is not.
+pub fn synthesize(mut synth: ResMut<Synth>, mut bank: ResMut<Bank>, mut engine: ResMut<Engine>) {
     if synth.next >= CUE_COUNT {
         return;
     }
     let cue = synth_order()[synth.next];
-    let handle = &bank.handles[cue.idx()];
-    // A reserved handle's id is live until the handle drops, and `Bank`
-    // holds every one for the life of the app, so this cannot fail on a
-    // stale generation; if it ever did, a missing cue is a silent one and
-    // not a crash.
-    let _ = sources.insert(
-        handle.id(),
-        AudioSource {
-            bytes: synth::wav(cue).into(),
-        },
-    );
+    let pcm = synth::pcm(cue);
+    bank.land(cue, pcm.len());
+    engine.install(cue, pcm);
     synth.next += 1;
 }
 
-/// Put the ears on the camera, and start the bed.
+/// Start the beds.
 ///
-/// Runs on entering `Screen::Loading` after `rig::setup`, like the HUD and the
-/// sky: the listener is the camera, and there is no camera before the rig.
-pub fn setup(mut commands: Commands, bank: Res<Bank>, cam: Query<Entity, With<EyeCam>>) {
-    let Ok(cam) = cam.single() else {
-        return;
-    };
-    commands.entity(cam).insert(SpatialListener::new(EAR_GAP_M));
-
+/// Runs on entering `Screen::Loading`. The ears need no camera any more —
+/// the pan is computed per start from `Eye` in [`pump`] — so nothing here
+/// waits on the rig.
+pub fn setup(mut sound: ResMut<Sound>, mut engine: ResMut<Engine>) {
     // Every bed starts SILENT and fades in. Entering a world at full ambience
     // on the first frame of the loading screen is the audio version of the
     // world popping in, and the fade is already the mechanism.
     //
-    // **All three run from the first frame, at zero.** A bed spawned on demand
-    // would start its 10.5 s loop wherever the player happened to break the
-    // surface, so the submerged bed would open on a bubble or on nothing; and
-    // a voice started under an already-open snapshot has no silence to fade
-    // up from.
-    for cue in BEDS {
-        commands.spawn((
-            super::WorldEntity,
-            Bed(cue),
-            AudioPlayer(bank.get(cue)),
-            PlaybackSettings {
-                mode: PlaybackMode::Loop,
-                volume: Volume::SILENT,
-                ..default()
-            },
-        ));
+    // **All three run from the first frame, at zero.** A bed started on
+    // demand would begin its 10.5 s loop wherever the player happened to
+    // break the surface, so the submerged bed would open on a bubble or on
+    // nothing; and a voice started under an already-open snapshot has no
+    // silence to fade up from. Slots 0..HELD_BEDS by convention (the
+    // renderer enforces only `slot < HELD`); the music slots follow.
+    for (i, cue) in BEDS.iter().enumerate() {
+        engine.push(Cmd::Loop {
+            slot: i as u8,
+            cue: *cue,
+            gain: 0.0,
+        });
     }
+    sound.bed_sent = [0.0; BEDS.len()];
 }
 
-/// Reset what the world owned. The bed and the listener go with the camera
-/// (`WorldEntity`), but the step odometer is in a resource that outlives the
-/// world — and a stale one measures the distance between two worlds as ground
-/// covered and fires a burst of footsteps on the first frame of the next.
-pub fn teardown(mut sound: ResMut<Sound>, mut last_hp: ResMut<LastHp>) {
+/// Reset what the world owned: stop the beds, cut every one-shot, and reset
+/// the odometer — which is in a resource that outlives the world, and a
+/// stale one measures the distance between two worlds as ground covered and
+/// fires a burst of footsteps on the first frame of the next.
+///
+/// Music is not touched: a piece rings out over the transition
+/// ([`MusicSlot`]), and [`music_mode`] decides whether it fades.
+pub fn teardown(mut sound: ResMut<Sound>, mut engine: ResMut<Engine>, mut last_hp: ResMut<LastHp>) {
+    for i in 0..BEDS.len() {
+        engine.push(Cmd::Stop { slot: i as u8 });
+    }
+    engine.push(Cmd::CutVoices);
+    engine.live.cut();
     sound.steps.reset();
     // The herd's clocks too: a countdown carried into the next island would
     // voice its animals on this island's schedule. The forest layer's clock
@@ -619,6 +783,13 @@ pub fn feed(net: NonSend<Net>, feed: Res<super::feed::Feed>, mut sound: ResMut<S
             sound.play(Request::own(Cue::Death));
         }
     }
+    // Going down is the same sound as dying (wounded v0), and on purpose:
+    // the reference shipped ONE wounded sound (Devblog 57) and the blow that
+    // put you on the ground would have been the death a minute ago. A voice
+    // of its own is a `synth.rs` row and a bank entry; `NOW.md` §0wnd.
+    if feed.wounded.is_some() {
+        sound.play(Request::own(Cue::Death));
+    }
     for _ in feed.gathered() {
         sound.play(Request::own(Cue::Gather));
     }
@@ -860,8 +1031,9 @@ pub fn hurt(
 /// The forest layer rides along: [`bed`] already walks the props and already
 /// scores the cover, so a bird costs a countdown and an index. See
 /// `sound::birds` for why a layer is not a bed turned down.
-// Seven: the mix state to write, where the ears are, which island this is, the
-// cover query, the clock, the player's sliders, and the sinks to move.
+// Nine: the mix state to write, where the ears are, which island this is, the
+// cover query, the clock, the player's sliders, the tick, the day pin, and
+// the engine the levels leave through.
 #[allow(clippy::too_many_arguments)]
 pub fn bed(
     mut sound: ResMut<Sound>,
@@ -872,7 +1044,7 @@ pub fn bed(
     settings: Res<super::Settings>,
     feed: Res<super::feed::Feed>,
     pin: Res<super::rig::DayPin>,
-    mut sinks: Query<(&Bed, &mut AudioSink)>,
+    mut engine: ResMut<Engine>,
 ) {
     // How much cover is within earshot, 0..1. `COVER_FULL` scatter slots
     // inside the radius is "in the woods"; none is "on the beach".
@@ -970,15 +1142,22 @@ pub fn bed(
         };
     }
 
+    // The level is a TARGET the renderer ramps to across its next block;
+    // the fade above is the law and it stays here. Sent only when it moved:
+    // a standing player sends nothing, and the buffer's cap is sized on
+    // that.
     let snap = sound.snap;
     let mix = mix_of(&settings).under(&snap);
-    for (bed, mut sink) in sinks.iter_mut() {
-        let Some(i) = BEDS.iter().position(|c| *c == bed.0) else {
-            continue;
-        };
-        let def = bed.0.def();
-        let level = sound.bed_gain[i] * snap.bed(bed.0) * def.gain * mix.bus_gain(def.bus);
-        sink.set_volume(Volume::Linear(level));
+    for (i, cue) in BEDS.iter().enumerate() {
+        let def = cue.def();
+        let level = sound.bed_gain[i] * snap.bed(*cue) * def.gain * mix.bus_gain(def.bus);
+        if level != sound.bed_sent[i] {
+            sound.bed_sent[i] = level;
+            engine.push(Cmd::Gain {
+                slot: i as u8,
+                gain: level,
+            });
+        }
     }
 }
 
@@ -1014,43 +1193,45 @@ pub fn water(net: NonSend<Net>, eye: Res<Eye>, time: Res<Time>, mut sound: ResMu
 /// plays on the menus too — `sound::music::Mode::Menu` is what makes that a
 /// different behaviour rather than a different code path.
 ///
-/// Starting a piece is a spawn and nothing else: the previous piece is left
-/// alone to ring out under it, which is the whole of `reference/AUDIO.md`
-/// §8's transition design. `PlaybackMode::Despawn` collects it when its tail
-/// ends.
+/// Starting a piece is a `Play` on the next music slot and nothing else: the
+/// previous piece is left alone to ring out under it, which is the whole of
+/// `reference/AUDIO.md` §8's transition design. The renderer frees the slot
+/// when the piece ends and the countdown here releases it the same frame,
+/// so the stop it sends then lands on a free slot and is a no-op by the
+/// engine's own rule.
 pub fn music(
-    mut commands: Commands,
     mut sound: ResMut<Sound>,
+    mut engine: ResMut<Engine>,
     bank: Res<Bank>,
     time: Res<Time>,
     settings: Res<super::Settings>,
-    mut voices: Query<(Entity, &mut MusicVoice, &mut AudioSink)>,
 ) {
     let dt = time.delta_secs();
     let mix = mix_of(&settings);
     if let Some(piece) = sound.music.tick(dt) {
+        let i = sound.next_music;
+        sound.next_music = (i + 1) % HELD_MUSIC;
         let def = piece.cue.def();
-        commands.spawn((
-            MusicVoice {
-                cue: piece.cue,
-                fade: 1.0,
-                ending: false,
-            },
-            AudioPlayer(bank.get(piece.cue)),
-            PlaybackSettings {
-                mode: PlaybackMode::Despawn,
-                // **Its real level, not silence.** A spawn is not queryable
-                // until the next flush, so the loop below cannot reach this
-                // voice this frame — starting it silent would put a step from
-                // zero to full one frame into every piece, which is the click
-                // `synth::edges` exists to prevent at the other end of the
-                // same sample. The loop's job is to FOLLOW the slider, not to
-                // set the opening level.
-                volume: Volume::Linear(def.gain * mix.bus_gain(def.bus)),
-                spatial: false,
-                ..default()
-            },
-        ));
+        // **Its real level, not silence.** A `Play` sets the slot's gain
+        // immediately and the loop below only sends a CHANGE, so starting
+        // it silent would put a step from zero to full one frame into every
+        // piece, which is the click `synth::edges` exists to prevent at the
+        // other end of the same sample. The loop's job is to FOLLOW the
+        // slider, not to set the opening level.
+        let level = def.gain * mix.bus_gain(def.bus);
+        sound.music_slots[i] = MusicSlot {
+            cue: piece.cue,
+            fade: 1.0,
+            ending: false,
+            left_s: bank.len_s(piece.cue),
+            sent: level,
+            active: true,
+        };
+        engine.push(Cmd::Play {
+            slot: (HELD_BEDS + i) as u8,
+            cue: piece.cue,
+            gain: level,
+        });
     }
 
     let step = if MUSIC_FADE_S > 0.0 {
@@ -1058,18 +1239,30 @@ pub fn music(
     } else {
         1.0
     };
-    for (e, mut voice, mut sink) in voices.iter_mut() {
-        if voice.ending {
-            voice.fade -= step;
-            if voice.fade <= 0.0 {
-                commands.entity(e).despawn();
-                continue;
-            }
+    for (i, slot) in sound.music_slots.iter_mut().enumerate() {
+        if !slot.active {
+            continue;
         }
-        let def = voice.cue.def();
-        sink.set_volume(Volume::Linear(
-            def.gain * mix.bus_gain(def.bus) * voice.fade,
-        ));
+        slot.left_s -= dt;
+        if slot.ending {
+            slot.fade -= step;
+        }
+        if slot.fade <= 0.0 || slot.left_s <= 0.0 {
+            slot.active = false;
+            engine.push(Cmd::Stop {
+                slot: (HELD_BEDS + i) as u8,
+            });
+            continue;
+        }
+        let def = slot.cue.def();
+        let level = def.gain * mix.bus_gain(def.bus) * slot.fade;
+        if level != slot.sent {
+            slot.sent = level;
+            engine.push(Cmd::Gain {
+                slot: (HELD_BEDS + i) as u8,
+                gain: level,
+            });
+        }
     }
 }
 
@@ -1082,51 +1275,66 @@ pub fn music(
 /// it.** Leaving a world does (the menu has no gap), so the old piece fades;
 /// joining one does not (`music::FIRST_GAP_S` is half a minute), so the menu
 /// piece rings out over the loading screen, which is what music is for.
-pub fn music_mode(mode: music::Mode) -> impl Fn(ResMut<Sound>, Query<&mut MusicVoice>) {
-    move |mut sound: ResMut<Sound>, mut voices: Query<&mut MusicVoice>| {
+pub fn music_mode(mode: music::Mode) -> impl Fn(ResMut<Sound>) {
+    move |mut sound: ResMut<Sound>| {
         sound.music.reset(mode);
         if sound.music.next_in_s() > crate::sound::music::PIECE_S {
             return;
         }
-        for mut v in voices.iter_mut() {
-            v.ending = true;
+        for slot in sound.music_slots.iter_mut() {
+            if slot.active {
+                slot.ending = true;
+            }
         }
     }
 }
 
 /// Resolve the frame and start what the mixer chose.
 ///
-/// The voice count is the live entity count, not a number this file keeps: an
-/// entity with `PlaybackMode::Despawn` goes away when its sample ends, and
-/// nothing tells us when that was. Counting the query is exact and costs a
-/// length.
-// Eight: the world to spawn into, the mixer, the bank, the listener, the
-// clock, the mix, the live voice count, and the drop counter's last report.
-// Every one is a distinct source this frame reads.
+/// The voice count is the ledger's (`engine::Live`) first: the game thread
+/// started every voice, it knows each cue's length and rate, and the
+/// renderer's end law is arithmetic. It is **stale by design** — ticked
+/// before the mixer sees it, the mixer's own starts landing after, and each
+/// `Start` reaching the renderer only at the next device callback, one
+/// buffer period later — so the renderer can hold a voice the ledger has
+/// already retired. The pool tolerates `engine::VOICE_SLACK_FRAMES` frames
+/// of that (`engine::VOICE_SLOTS`), and the audio thread's own last count
+/// (`Diag::live_thread`) is taken as a FLOOR under the ledger's, so the
+/// mixer's room shrinks when the renderer is genuinely fuller than
+/// predicted. Past the slack the renderer refuses rather than steals, and
+/// the refusal is printed below.
+// Seven: the mixer, the engine, the bank's lengths, the listener, the clock,
+// the mix, and the counters' last report. Every one is a distinct source
+// this frame reads.
 #[allow(clippy::too_many_arguments)]
 pub fn pump(
-    mut commands: Commands,
     mut sound: ResMut<Sound>,
+    mut engine: ResMut<Engine>,
     bank: Res<Bank>,
     eye: Res<Eye>,
     time: Res<Time>,
     settings: Res<super::Settings>,
-    voices: Query<(), With<Voice>>,
-    mut reported: Local<u32>,
+    mut reported: Local<Reported>,
 ) {
     let mix = mix_of(&settings).under(&sound.snap);
-    // **One frame stale, deliberately.** A voice spawned through `Commands`
-    // is not queryable until the next flush, so `live` is last frame's count
-    // and the pool can overshoot by at most one frame's budget —
-    // `VOICE_CAP + STARTS_PER_FRAME - 1`. Reading it exactly would mean
-    // tracking spawns in a counter that then has to learn when a `Despawn`
-    // playback ended, which nothing tells us; a bounded overshoot of four is
-    // the cheaper correct answer.
-    let live = voices.iter().count();
+    let dt = time.delta_secs();
+    engine.live.tick(dt);
+    let live = engine.live.count().max(engine.diag.live_thread as usize);
+    // The renderer's rate: the device's once `audio_out::open` has written
+    // it, the bank's until then.
+    let out_rate = engine.out_rate;
     let listener = [eye.pos.x, eye.pos.y, eye.pos.z];
-    let dt_ms = time.delta_secs() * 1000.0;
-    // Copied out because `starts` borrows the mixer and spawning needs the
-    // world — at most `STARTS_PER_FRAME` of them, on the stack, no allocation.
+    // The ears' right, in world XZ, off the client's one yaw convention
+    // (`look::right_dir`, gated against Bevy's own `Transform::right()` in
+    // `tests/look.rs`) — the engine takes the vector and never a yaw.
+    let right = {
+        let (x, z) = crate::look::right_dir(crate::look::yaw_u16(eye.yaw));
+        [x, z]
+    };
+    let dt_ms = dt * 1000.0;
+    // Copied out because `starts` borrows the mixer and the ledger is on
+    // another resource — at most `STARTS_PER_FRAME` of them, on the stack,
+    // no allocation.
     let mut chosen = [None::<Start>; crate::sound::STARTS_PER_FRAME];
     {
         let starts = sound.mixer.tick(dt_ms, listener, live, &mix);
@@ -1135,33 +1343,16 @@ pub fn pump(
         }
     }
     for start in chosen.into_iter().flatten() {
-        let pb = PlaybackSettings {
-            mode: PlaybackMode::Despawn,
-            volume: Volume::Linear(start.gain),
-            speed: start.speed,
-            spatial: start.at.is_some(),
-            ..default()
-        };
-        let mut e = commands.spawn((
-            super::WorldEntity,
-            Voice,
-            AudioPlayer(bank.get(start.cue)),
-            pb,
-        ));
-        match start.at {
-            // A spatial player with no `Transform` warns and plays at the
-            // origin — the reference's own placement-at-world-origin bug
-            // (`reference/AUDIO.md` §6), one API down. The mixer already
-            // refuses a positional cue with no position; this is the second
-            // half of the same rule.
-            Some(p) => {
-                e.insert(Transform::from_xyz(p[0], p[1], p[2]));
-            }
-            None => {
-                // Non-spatial voices still need a place in the hierarchy;
-                // they are not parented to anything and never move.
-                e.insert(Transform::default());
-            }
+        // The rate is the mixer's speed resampled to the renderer's rate —
+        // `engine::rate` is the one resampler in the chain (`audio_out.rs`).
+        engine.push(engine::start_cmd(&start, listener, right, out_rate));
+        // The ledger counts what the renderer will actually sound: a cue
+        // that has not landed (a spread bank's first frames) is silence
+        // there, counted as `unbanked`, and must not hold a ledger slot for
+        // its length. The ledger's own refusal (`false`) is the renderer's
+        // refusal one frame early and needs no second count.
+        if bank.installed(start.cue) {
+            engine.live.start(bank.len_s(start.cue), start.speed);
         }
     }
     // A dropped request is a caller over `CUE_QUEUE_CAP`, which is a bug in
@@ -1169,13 +1360,125 @@ pub fn pump(
     // once per new drop and never asserted: the counter is cumulative, so a
     // `debug_assert` would turn one legitimately busy frame — a mass respawn
     // felling thirty slots at once — into a panic on every frame after it.
-    if sound.mixer.dropped > *reported {
-        *reported = sound.mixer.dropped;
+    if sound.mixer.dropped > reported.mixer {
+        reported.mixer = sound.mixer.dropped;
         warn!(
             "sound: {} cue requests dropped since start - a caller is over CUE_QUEUE_CAP",
             sound.mixer.dropped
         );
     }
+    // The seam's counters, the same way — once per new increment — and
+    // **gated on the audio thread being alive.** On a box with no device
+    // (every capture run, CI) there is no audio thread: the flush drops and
+    // counts, and one line below says so rather than a warning a frame.
+    let diag = engine.diag;
+    if diag.alive {
+        if engine.dropped > reported.frame {
+            reported.frame = engine.dropped;
+            warn!(
+                "audio: {} commands dropped at the frame buffer since start - a frame is over CMD_FRAME_CAP",
+                engine.dropped
+            );
+        }
+        if diag.ring_dropped > reported.ring {
+            reported.ring = diag.ring_dropped;
+            warn!(
+                "audio: {} commands dropped at the native ring since start - the audio thread is behind",
+                diag.ring_dropped
+            );
+        }
+        if diag.stats.refused > reported.refused {
+            reported.refused = diag.stats.refused;
+            warn!(
+                "audio: {} starts refused by the renderer since start - the pool is fuller than \
+                 the ledger and its VOICE_SLACK_FRAMES of callback latency allow for",
+                diag.stats.refused
+            );
+        }
+        if engine.install_refused + diag.install_refused > reported.install {
+            reported.install = engine.install_refused + diag.install_refused;
+            warn!(
+                "audio: {} installs refused at the rings since start - a frame handed over more \
+                 than a bank",
+                reported.install
+            );
+        }
+        if diag.stats.reinstall_refused > reported.reinstall {
+            reported.reinstall = diag.stats.reinstall_refused;
+            warn!(
+                "audio: {} installs refused by the renderer since start - a cue was handed over \
+                 twice, and the second copy came back to be dropped here",
+                diag.stats.reinstall_refused
+            );
+        }
+        if diag.stats.return_dropped > reported.returns {
+            reported.returns = diag.stats.return_dropped;
+            warn!(
+                "audio: {} refused installs freed on the audio thread since start - the return \
+                 ring was full, so the flush is not reclaiming",
+                diag.stats.return_dropped
+            );
+        }
+        if diag.stats.cut > reported.cut {
+            reported.cut = diag.stats.cut;
+            warn!(
+                "audio: {} plays or loops landed on a busy held slot since start - the game \
+                 thread's slot round-robin is wrong",
+                diag.stats.cut
+            );
+        }
+        if diag.stats.unbanked > reported.unbanked {
+            reported.unbanked = diag.stats.unbanked;
+            warn!(
+                "audio: {} starts or plays landed before their cue's samples since start - \
+                 silence, counted (a spread bank's first frames, or a start that raced its \
+                 install across the seam)",
+                diag.stats.unbanked
+            );
+        }
+        if diag.stats.bad_cmd > reported.bad_cmd {
+            reported.bad_cmd = diag.stats.bad_cmd;
+            warn!(
+                "audio: {} commands refused by the renderer as malformed since start - a gain \
+                 or a rate outside its band, or a slot past HELD",
+                diag.stats.bad_cmd
+            );
+        }
+    } else if !diag.routed && !reported.said_none && diag.unrouted > 0 {
+        reported.said_none = true;
+        info!(
+            "audio output: none - {} commands dropped at the flush since start",
+            diag.unrouted
+        );
+    }
+    // Not gated on `alive`: a device that went away is exactly the case
+    // where the callback has stopped.
+    if diag.stream_errors > reported.stream_errors {
+        reported.stream_errors = diag.stream_errors;
+        warn!(
+            "audio: {} errors on the device stream since start - the device went away or the \
+             backend faulted",
+            diag.stream_errors
+        );
+    }
+}
+
+/// [`pump`]'s memory of what it has already said, so each counter's new
+/// increment is printed once.
+#[derive(Default)]
+pub struct Reported {
+    mixer: u32,
+    frame: u32,
+    ring: u32,
+    refused: u32,
+    install: u32,
+    reinstall: u32,
+    returns: u32,
+    cut: u32,
+    unbanked: u32,
+    bad_cmd: u32,
+    stream_errors: u32,
+    said_none: bool,
 }
 
 /// The settings screen's three sliders as a [`Mix`].
@@ -1190,12 +1493,3 @@ fn mix_of(s: &super::Settings) -> Mix {
 
 /// The frame budget must not exceed the pool it draws from.
 const _: () = assert!(crate::sound::STARTS_PER_FRAME <= VOICE_CAP);
-
-/// The spatial scale must keep every audible emitter inside rodio's clamp, or
-/// the header's whole argument is void. Not a `const` assert because float
-/// comparison is not const-evaluable; a debug assert on the first frame of
-/// audio is early enough, and `tests/sound.rs` asserts the same relation
-/// against `MAX_AUDIBLE_M` where it runs in the code tier.
-pub fn clamp_holds() -> bool {
-    SPATIAL_SCALE * (MAX_AUDIBLE_M + EAR_GAP_M) < 1.0
-}
