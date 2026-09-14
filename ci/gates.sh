@@ -239,12 +239,16 @@ $NICE cargo build -p sim-core -p protocol -p client-core --release --target wasm
 #
 # What it does NOT do is run the thing. That needs a browser, and no gate in
 # this repo starts one; `ci/build_web.sh` is how a person gets a page to open.
-echo "== gate: browser client (client + client-web -> wasm32, --no-default-features)"
-$NICE cargo clippy -p client-web --target wasm32-unknown-unknown --all-targets -- -D warnings \
+echo "== gate: browser client (client + client-web + sound-worklet -> wasm32, --no-default-features)"
+$NICE cargo clippy -p client-web -p sound-worklet --target wasm32-unknown-unknown --all-targets -- -D warnings \
   || fail "clippy (browser client)"
 # `--profile web` — the profile `ci/build_web.sh` ships (root `Cargo.toml`), so
 # what this gate links is the module a page loads and not a sibling of it.
-$NICE cargo build -p client-web --profile web --target wasm32-unknown-unknown \
+# `sound-worklet` is the audio thread's module — a second cdylib, the renderer
+# alone with its own memory, for the `AudioWorklet` — and these two lines are
+# the only ones in CI that compile it: it is wasm-only at the file, so the
+# native runs above see an empty crate.
+$NICE cargo build -p client-web -p sound-worklet --profile web --target wasm32-unknown-unknown \
   || fail "browser client build"
 
 # **The RENDERER for the browser, under `--all-targets`.** `client-web` has

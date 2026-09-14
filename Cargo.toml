@@ -16,6 +16,14 @@ members = [
     # It has no dependencies and no source on a native target, so a native
     # `--workspace` build links an empty `.so` and nothing else.
     "crates/client-web",
+    # The audio thread's module: a second cdylib with its own linear memory,
+    # loaded by an `AudioWorklet`. A worklet's global scope shares no memory
+    # with the page and has no atomics at this Bevy version (`findings/
+    # web-build-20260909.md` §4.1), so the page's module cannot be reused —
+    # this one links `sound` alone. Same register as `client-web`: empty on a
+    # native target, a member so ONE `Cargo.lock` keeps `wasm-bindgen` the
+    # crate and the CLI agreeing.
+    "crates/sound-worklet",
     "crates/content",
 ]
 

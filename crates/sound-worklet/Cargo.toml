@@ -1,0 +1,39 @@
+[package]
+name = "sound-worklet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# **The browser's audio thread, and a second cdylib for one measured reason.**
+#
+# A page's sound runs inside an `AudioWorkletProcessor`, whose global scope is
+# a different agent from the page: it shares memory only under cross-origin
+# isolation plus an atomics-enabled build, and `findings/web-build-20260909.md`
+# §4.1 measured that the second half does not exist at this Bevy version — it
+# loses threading at three `target_arch`-keyed sites that no header and no
+# `-Ctarget-feature` flips. So the worklet cannot reach into `client-web`'s
+# memory, and it cannot load `client-web` either: that module links Bevy and
+# WebTransport into a ~37 MB module, and a worklet has no DOM, no `fetch` and
+# no `TextDecoder` to load it with. What the worklet needs is `crates/sound`'s
+# `Renderer` and nothing else, so that is what this crate links — into its own
+# linear memory, with a frame's commands crossing as 16-byte records over
+# `postMessage` and each cue's bank crossing once (`src/lib.rs`).
+#
+# `rlib` beside `cdylib` so `cargo test` can see it. Every line in `src/` is
+# glue — pointers in, pointers out — and the renderer it wraps is gated
+# headless in `crates/sound/tests/`; the JS half is
+# `crates/client-web/web/worklet.js`, which only copies.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# **Nothing is a dependency on a native target, and the source is empty
+# there** — `crates/client-web/Cargo.toml`'s register, for its reason: a
+# workspace member cannot opt out of `cargo build --workspace`, and excluding
+# the crate would mean a second `Cargo.lock`, which means `wasm-bindgen` the
+# crate and `wasm-bindgen` the CLI free to resolve to different versions —
+# a module that loads and then fails on a call. A native `--workspace` build
+# links an empty `.so` here instead, which is the cheaper day.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+sound = { path = "../sound" }
+wasm-bindgen = "0.2"

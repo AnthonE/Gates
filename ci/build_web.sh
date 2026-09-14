@@ -69,6 +69,16 @@ profile="${WEB_PROFILE:-web}"
 echo "== building client-web for wasm32-unknown-unknown (profile: $profile)"
 cargo build -p client-web --profile "$profile" --target wasm32-unknown-unknown
 
+# **The audio thread's module, on its own line so a failure names it.**
+# `crates/sound-worklet` is a second cdylib: the sample renderer alone, with
+# its own linear memory, for the `AudioWorklet` — a worklet's global scope
+# shares no memory with the page and cannot load the page's module (no DOM,
+# no fetch, no TextDecoder in that scope), so the renderer ships twice, and
+# the page's copy is the game thread's half of the seam. Same profile, so the
+# module a page loads is the one `ci/gates.sh` links.
+echo "== building sound-worklet for wasm32-unknown-unknown (profile: $profile)"
+cargo build -p sound-worklet --profile "$profile" --target wasm32-unknown-unknown
+
 echo "== generating the JS glue into $out"
 rm -rf "$out"
 mkdir -p "$out"
@@ -77,6 +87,46 @@ wasm-bindgen --target web --no-typescript \
   --out-dir "$out" \
   "target/wasm32-unknown-unknown/$profile/client_web.wasm"
 cp crates/client-web/web/index.html crates/client-web/web/app.js "$out/"
+
+echo "== generating the worklet's glue into $out"
+wasm-bindgen --target web --no-typescript \
+  --remove-producers-section \
+  --out-dir "$out" \
+  "target/wasm32-unknown-unknown/$profile/sound_worklet.wasm"
+cp crates/client-web/web/worklet.js "$out/"
+
+# **The worklet's glue must construct no decoder at import.** An
+# `AudioWorkletGlobalScope` has no `TextDecoder` and no `TextEncoder`: a
+# module-level `new TextDecoder(...)` throws when the worklet script is
+# evaluated, BEFORE `registerProcessor` runs, and the page's sound is then
+# silently gone — `addModule` rejects and nothing about the game is red.
+# wasm-bindgen emits its decoder guarded (`typeof TextDecoder !== 'undefined'
+# ? new TextDecoder(...) : …`, one line), and that is the shape checked here
+# on the GENERATED file, because the guard is the tool's and a tool's output
+# is not a fact about its next version. The Rust side crosses no strings, so
+# a decoder is unused at worst; an unguarded one is refused either way.
+for kind in TextDecoder TextEncoder; do
+  bad="$(grep -n "new $kind(" "$out/sound_worklet.js" | grep -v "typeof $kind" || true)"
+  if [ -n "$bad" ]; then
+    echo "$out/sound_worklet.js constructs a $kind unguarded:" >&2
+    echo "$bad" >&2
+    echo "An AudioWorkletGlobalScope has no $kind: this throws at import, before" >&2
+    echo "registerProcessor, and the page's sound is silently gone. Guard it or drop it." >&2
+    exit 1
+  fi
+  guarded="$(grep -c "typeof $kind" "$out/sound_worklet.js" || true)"
+  echo "   $kind: no unguarded construction ($guarded guarded reference(s))"
+done
+# A worklet cannot fetch, and it must not decide what to load — the page
+# compiles the module and hands it over in `processorOptions`. Refused here
+# so the file cannot grow a loader.
+if grep -q "fetch(" "$out/worklet.js"; then
+  echo "$out/worklet.js calls fetch(): a worklet cannot, and it must not decide what to load." >&2
+  exit 1
+fi
+# Parse it: a syntax error in a worklet module is `addModule` rejecting, which
+# no gate in this repo can see. `node` is already what `ci/gates.sh` needs.
+node --check "$out/worklet.js"
 
 # **The assets, staged from `git ls-files` and never from a walk.**
 #
@@ -124,14 +174,19 @@ cargo run -q -p client --features webassets --bin web_assets -- "$out/assets/mod
 # not on `$PATH` — the `binaryen` npm package ships one as
 # `node_modules/binaryen/bin/wasm-opt`.
 opt="${WASM_OPT:-$(command -v wasm-opt || true)}"
+# Both modules: the worklet's is small, and shrinking it is still worth a
+# line — it is downloaded by the same page, and the two go through one loop
+# so a flag added for one cannot be forgotten on the other.
 if [ -n "$opt" ] && [ -x "$opt" ]; then
-  before=$(stat -c%s "$out/client_web_bg.wasm")
   echo "== wasm-opt -Os ($opt)"
-  "$opt" -Os --enable-bulk-memory --enable-nontrapping-float-to-int \
-    --enable-mutable-globals --enable-sign-ext --enable-reference-types \
-    -o "$out/client_web_bg.wasm.opt" "$out/client_web_bg.wasm"
-  mv "$out/client_web_bg.wasm.opt" "$out/client_web_bg.wasm"
-  printf "   wasm-opt: %d -> %d bytes\n" "$before" "$(stat -c%s "$out/client_web_bg.wasm")"
+  for m in client_web_bg sound_worklet_bg; do
+    before=$(stat -c%s "$out/$m.wasm")
+    "$opt" -Os --enable-bulk-memory --enable-nontrapping-float-to-int \
+      --enable-mutable-globals --enable-sign-ext --enable-reference-types \
+      -o "$out/$m.wasm.opt" "$out/$m.wasm"
+    mv "$out/$m.wasm.opt" "$out/$m.wasm"
+    printf "   wasm-opt: %s.wasm %d -> %d bytes\n" "$m" "$before" "$(stat -c%s "$out/$m.wasm")"
+  done
 else
   echo "== wasm-opt: not installed, shipping the bindgen output (npm i binaryen, or WASM_OPT=…)"
 fi
@@ -140,7 +195,6 @@ fi
 # is the standing warning that a web build does not beat a depot on bytes — it
 # beats it on ceremony — and this number is the headless floor, with no
 # renderer and no assets in it.
-raw=$(stat -c%s "$out/client_web_bg.wasm")
 # Written beside the module rather than measured and thrown away: the
 # origin's `gzip_static` (`scry-forge/deploy/nginx/elopros.com.conf`, the
 # `/games/gates/` block) serves this file to a browser that accepts gzip —
@@ -150,8 +204,11 @@ raw=$(stat -c%s "$out/client_web_bg.wasm")
 # `publish_web.sh`'s `--link-dest` hard-links it across publishes like every
 # other unchanged file. Without it the origin falls back to compressing on
 # the fly; without either, measured 2026-09-12, the module went over the
-# wire raw.
-gzip -9 -n -c "$out/client_web_bg.wasm" > "$out/client_web_bg.wasm.gz"
-gz=$(stat -c%s "$out/client_web_bg.wasm.gz")
-printf "   client_web_bg.wasm  %d bytes raw, %d gzipped (.wasm.gz beside it)\n" "$raw" "$gz"
+# wire raw. The worklet's module gets the same `.gz` beside it: the origin's
+# `gzip_static` rule is per file, not per page.
+for m in client_web_bg sound_worklet_bg; do
+  gzip -9 -n -c "$out/$m.wasm" > "$out/$m.wasm.gz"
+  printf "   %-22s %d bytes raw, %d gzipped (.wasm.gz beside it)\n" "$m.wasm" \
+    "$(stat -c%s "$out/$m.wasm")" "$(stat -c%s "$out/$m.wasm.gz")"
+done
 echo "== done: python3 -m http.server 8080 --directory $out"

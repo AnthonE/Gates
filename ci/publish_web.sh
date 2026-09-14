@@ -27,8 +27,9 @@
 # /games/gates/`, whose `alias` is `<root>/current/` and whose CSP is the
 # reason the page works there at all ('wasm-unsafe-eval', and the shard in
 # `connect-src`, and `gzip_static` for the `client_web_bg.wasm.gz` the build
-# writes beside the module — 34 MB raw is 8.6 MB on the wire that way). After
-# the first publish the store's play button is ONE
+# writes beside the module — 34 MB raw is 8.6 MB on the wire that way — and
+# for the `sound_worklet_bg.wasm.gz` beside the audio thread's module, the
+# same rule per file). After the first publish the store's play button is ONE
 # field away — `play_url` on the Gates listing, set from the dev desk or in
 # `watchtower/listings/listings.json` — and it is deliberately not set before
 # the files exist, because that field is the promise that the game runs.
@@ -78,7 +79,10 @@ OUT="${OUT:-target/webdist}"
 if [ "$BUILD" = 1 ]; then
   ./ci/build_web.sh "$OUT"
 fi
-for f in index.html app.js client_web.js client_web_bg.wasm; do
+# The page, its module, and the audio thread's module with its worklet
+# script: a build that staged the first four and not the last three is a page
+# whose `addModule` 404s and whose sound is silently gone.
+for f in index.html app.js client_web.js client_web_bg.wasm worklet.js sound_worklet.js sound_worklet_bg.wasm; do
   [ -f "$OUT/$f" ] || { echo "$OUT/$f is missing — run ./ci/build_web.sh" >&2; exit 1; }
 done
 

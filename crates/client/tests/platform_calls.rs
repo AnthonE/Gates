@@ -39,6 +39,14 @@
 //! (like `elo_overlay`), holds none of the needles, and stays in the walk
 //! rather than in EXEMPT because nothing about it needs exempting.
 //!
+//! **And `../sound-worklet/src`** — the worklet's own crate, the module the
+//! browser's audio thread runs (browser audio v0). It is
+//! `#![cfg(target_arch = "wasm32")]` at the file, so a trap there never even
+//! compiles natively and no native test could ever hit it: this scan is the
+//! only gate it has. A worklet is the case the table above is written for —
+//! no clock, no threads — and a trapped module there is a page whose sound
+//! is silently gone.
+//!
 //! Two exclusions, both by name and both loud:
 //! - `src/elo_overlay.rs` is VENDORED from `AnthonE/scry-forge` and unpatchable
 //!   here (`CLAUDE.md` §vendored). It is `cfg`'d off wasm at its `mod`
@@ -270,6 +278,9 @@ fn no_unguarded_call_traps_a_wasm_module() {
     // The audio model's own crate, keyed as `../sound/src/<file>` so a KNOWN
     // entry there is spelled the way the scan names it.
     rs_files(Path::new("../sound/src"), &mut files);
+    // The worklet's own crate — wasm-only at the file, so this scan is the
+    // only gate a trap there has.
+    rs_files(Path::new("../sound-worklet/src"), &mut files);
     files.sort();
     assert!(
         files.len() > 20,
@@ -283,6 +294,14 @@ fn no_unguarded_call_traps_a_wasm_module() {
             .starts_with("../sound/src/")),
         "the scan found nothing under ../sound/src — the audio crate moved, or the walk is \
          not reaching it, and either way the worklet's module is unscanned"
+    );
+    assert!(
+        files.iter().any(|p| p
+            .to_string_lossy()
+            .replace('\\', "/")
+            .starts_with("../sound-worklet/src/")),
+        "the scan found nothing under ../sound-worklet/src — the worklet crate moved, or the \
+         walk is not reaching it, and it has no other gate"
     );
 
     // The exemptions are checked for existence, so a rename turns them into a
