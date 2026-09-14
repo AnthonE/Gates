@@ -63,7 +63,8 @@ const BED_FADE_SECS: f32 = 1.5;
 /// LFO's rate is derived from, so a gust is continuous across the join.
 const BED_LOOP_SECS: f32 = BED_SECS - BED_FADE_SECS;
 
-/// Generate the whole bank, in [`Cue::ALL`] order. Called once, at startup.
+/// The whole bank as decoded PCM, in [`Cue::ALL`] order — what
+/// [`crate::engine::Renderer`] plays from. Called once, at startup.
 ///
 /// **Measured 2026-08-11: 11.7 MB of WAV in ~0.8 s release, ~3.9 s debug** —
 /// and the score is nearly all of both. Nine pieces at
@@ -79,19 +80,42 @@ const BED_LOOP_SECS: f32 = BED_SECS - BED_FADE_SECS;
 /// replaced; reverted rather than kept on the theory that it should have
 /// helped. The real lever is not an optimization at all: the day recorded
 /// pieces replace `score`, this cost leaves with it.
-pub fn bank() -> [Vec<u8>; CUE_COUNT] {
-    core::array::from_fn(|i| wav(Cue::ALL[i]))
+///
+/// The array itself is 45 fat pointers, under a kilobyte, and the ~12 MB of
+/// samples is inside the boxes: nothing here builds the bank in a stack
+/// frame, which is `CLAUDE.md`'s wasm shadow-stack trap (`crate::boxed_array`
+/// in sim-core exists for it) and matters twice over now that this crate is
+/// built for the browser's audio thread as well as the page.
+///
+/// The WAV form of a cue is [`wav`], the 44-byte header over exactly these
+/// samples — `bin/soundbank.rs` writes it for a person to listen to. There
+/// is no WAV bank any more: `synth::bank()` fed the `bevy_audio` decoder and
+/// left with it (audio engine v0); the engine reads PCM.
+pub fn pcm_bank() -> [Box<[i16]>; CUE_COUNT] {
+    core::array::from_fn(|i| pcm(Cue::ALL[i]))
 }
 
-/// One cue, as 16-bit mono PCM in a WAV container.
+/// One cue, decoded: 16-bit mono PCM at [`SAMPLE_RATE`], no container.
+///
+/// i16 rather than f32 at half the footprint, and not a rounding worry: every
+/// cue is normalized to [`PEAK`] first, so the quantization step is 1/32768
+/// of a full-scale sample against a bank whose quietest tails are already
+/// faded to zero by `edges`. The clamp is the one `to_wav16` always applied,
+/// moved to the one place a sample becomes an integer.
+pub fn pcm(cue: Cue) -> Box<[i16]> {
+    let mut s = render(cue);
+    normalize(&mut s, PEAK);
+    to_i16(&s)
+}
+
+/// One cue, as 16-bit mono PCM in a WAV container: the 44-byte header over
+/// exactly the samples [`pcm`] returns.
 ///
 /// WAV rather than Ogg because we are the encoder: a container we write in 44
 /// bytes beats pulling a Vorbis encoder into the client to compress something
 /// that was generated in memory and will be decoded back in memory.
 pub fn wav(cue: Cue) -> Vec<u8> {
-    let mut s = render(cue);
-    normalize(&mut s, PEAK);
-    to_wav16(&s)
+    to_wav16(&pcm(cue))
 }
 
 /// The sample buffer for a cue, before normalization.
@@ -1673,12 +1697,27 @@ fn normalize(buf: &mut [f32], peak: f32) {
     }
 }
 
+/// f32 samples to 16-bit integers.
+fn to_i16(samples: &[f32]) -> Box<[i16]> {
+    samples
+        .iter()
+        .map(|s| {
+            // Clamped, not wrapped: a sample past full scale must be a flat
+            // top, not a sign flip, which is the difference between a loud
+            // sound and a catastrophic one. `normalize` should have made
+            // this unreachable and the clamp is what makes "should" not
+            // matter.
+            (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16
+        })
+        .collect()
+}
+
 /// 16-bit mono PCM in a WAV container.
 ///
 /// Written by hand because it is 44 bytes and the alternative is a crate. The
 /// layout is the canonical one: `RIFF` size `WAVE`, a 16-byte `fmt ` chunk
 /// declaring PCM/mono/[`SAMPLE_RATE`], then `data`.
-fn to_wav16(samples: &[f32]) -> Vec<u8> {
+fn to_wav16(samples: &[i16]) -> Vec<u8> {
     let bytes = samples.len() * 2;
     let mut out = Vec::with_capacity(44 + bytes);
     let sr = SAMPLE_RATE;
@@ -1695,12 +1734,7 @@ fn to_wav16(samples: &[f32]) -> Vec<u8> {
     out.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
     out.extend_from_slice(b"data");
     out.extend_from_slice(&(bytes as u32).to_le_bytes());
-    for s in samples {
-        // Clamped, not wrapped: a sample past full scale must be a flat top,
-        // not a sign flip, which is the difference between a loud sound and a
-        // catastrophic one. `normalize` should have made this unreachable and
-        // the clamp is what makes "should" not matter.
-        let v = (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
+    for v in samples {
         out.extend_from_slice(&v.to_le_bytes());
     }
     out

@@ -1157,20 +1157,27 @@ missing it survivable.
   inventory, crafting, build wheel, chat, the map and the death screen). It
   then named **`bevy_audio`** as genuinely unused, correctly identifying the
   blocker as *asset licensing, not the API* — and that is exactly the blocker
-  the audio slice removed on 2026-08-06. `crates/client/src/sound/synth.rs`
+  the audio slice removed on 2026-08-06. `crates/sound/src/synth.rs`
   GENERATES the bank from arithmetic at boot, so there is no sample to
   license, and the client makes sound. `wav` had to be **added** to the
-  feature set: Bevy's defaults enable `bevy_audio` and `vorbis` only, so a
-  generated WAV would have panicked with `UnrecognizedFormat` at the moment
-  it played. Audio's boundary rule is this document's rule one surface over —
-  **Bevy plays, it does not decide** — with the model in
-  `crates/client/src/sound/` (pure, code tier, 63 assertions) and
-  `render/audio.rs` owning nothing but the bank, the listener and the voices.
+  feature set when the bank was WAV that `bevy_audio` decoded; since audio
+  engine v0 (2026-09-13) that decoder never runs and since 2026-09-14
+  neither does its plugin — `render/audio_out.rs` opens the device through
+  **cpal** and renders `sound::engine::Renderer` inside the device callback
+  at the DEVICE rate (rodio's sink re-bootstrapped a resampler every 512
+  samples inside that callback, which is why it went), and `AudioPlugin` is
+  not added by either desktop binary — so `bevy_audio` and `wav` are both
+  inert and trim candidates (`NOW.md` §0x), not removals here. Audio's
+  boundary rule is this document's rule one surface over — **cpal calls, the
+  engine renders, Bevy draws** — with the model AND the samples in
+  `crates/sound/src/` (pure, code tier) and `render/audio.rs` owning nothing
+  but the bank's hand-over, the producers and the frame's command buffer.
   **The score (2026-08-11) is the same rule under load**: `sound::music` is a
   gap-and-intensity director (`reference/AUDIO.md` §8) that decides which
-  piece plays and when, headless and testable; `render/audio.rs::music` spawns
-  what it names and holds the level. It is also the one audio system with no
-  run condition at all, because the menus have music and have no world.
+  piece plays and when, headless and testable; `render/audio.rs::music` sends
+  what it names to a held slot and holds the level. It is also the one audio
+  system with no run condition at all, because the menus have music and have
+  no world.
   **`bevy_gltf`, `bevy_scene` and `bevy_animation` stopped being unused with
   the mannequin** (2026-08-07, `render/anim.rs`) — this paragraph named all
   three as trim candidates and only the reasoning survives. Trimming is a build-time and payload win, not a picture win — it

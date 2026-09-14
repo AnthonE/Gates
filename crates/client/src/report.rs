@@ -383,6 +383,32 @@ pub struct Vitals {
     pub dead: bool,
 }
 
+/// What the audio thread last reported — the seam's gauges, so a report that
+/// says "no sound" carries whether there was an output at all, whether its
+/// callback ever ran, and how far behind it was.
+///
+/// Every field is a counter the client was already keeping
+/// (`render/audio.rs::Diag`, filled by `render/audio_out.rs::flush`) —
+/// [`Netstat`]'s rule, and for its reason: a measurement added for a report
+/// is a measurement nobody has been watching.
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+pub struct Audio {
+    /// Has a device callback ever filled a buffer?
+    pub alive: bool,
+    /// Was an output opened at all? False on a box with no device.
+    pub routed: bool,
+    /// One-shots the audio thread had live at its last block.
+    pub live_thread: u32,
+    /// Blocks the renderer has rendered.
+    pub blocks: u64,
+    /// Commands waiting in the game→audio ring at the report.
+    pub backlog: usize,
+    /// Commands that ring refused since start.
+    pub ring_dropped: u32,
+    /// Starts the renderer refused for want of a voice since start.
+    pub refused: u32,
+}
+
 /// Where a panic happened, when the report was written by the hook.
 #[derive(Clone, Debug, Serialize)]
 pub struct Crash {
@@ -418,6 +444,10 @@ pub struct Report {
     pub place: Option<Place>,
     pub net: Option<Netstat>,
     pub vitals: Option<Vitals>,
+    /// The audio seam's gauges. Present whenever the Bevy half files a
+    /// report — the audio thread exists on the menus too — and absent from
+    /// the panic hook's, which has no world to read.
+    pub audio: Option<Audio>,
     /// The screenshot's **file name**, never its path. See the module header.
     pub shot: Option<String>,
     pub crash: Option<Crash>,
@@ -450,6 +480,7 @@ impl Report {
             place: None,
             net: None,
             vitals: None,
+            audio: None,
             shot: None,
             crash: None,
             wallet: None,
@@ -689,6 +720,27 @@ impl Report {
             row(&mut s, "water", &v.water.to_string());
             row(&mut s, "dead", if v.dead { "yes" } else { "no" });
             s.push('\n');
+        }
+
+        if let Some(a) = &self.audio {
+            s.push_str("## What the audio thread reported\n\n| | |\n|---|---|\n");
+            row(
+                &mut s,
+                "output present",
+                if a.routed { "yes" } else { "no" },
+            );
+            row(&mut s, "alive", if a.alive { "yes" } else { "no" });
+            row(&mut s, "voices live", &a.live_thread.to_string());
+            row(&mut s, "blocks rendered", &a.blocks.to_string());
+            row(&mut s, "ring backlog", &a.backlog.to_string());
+            row(&mut s, "ring dropped", &a.ring_dropped.to_string());
+            row(&mut s, "starts refused", &a.refused.to_string());
+            s.push('\n');
+            s.push_str(
+                "`output present` is whether a device opened at all; `alive` is whether its \
+                 callback has ever run. A report about silence with either at `no` is about the \
+                 box, not the mix (`render/audio_out.rs`).\n\n",
+            );
         }
 
         s.push_str("## Screenshot\n\n");

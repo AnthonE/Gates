@@ -1035,7 +1035,7 @@ visibly now they draw at full alpha (`§LOOK`).
    more tuning of `night_spook_cm` — it is a night-only roster variant
    (Minecraft and Valheim gate *spawns* on darkness). The judge's gap 1
    wanted a warmth stat; `survival.rs:60` still records no temperature.
-4. **The growl radius has no gate.** `sound/mod.rs:565` names §0pr as
+4. **The growl radius has no gate.** `crates/sound/src/lib.rs:565` names §0pr as
    holding it: `CUES[Growl].radius_m` (14 m) must stay inside the wolf's
    night notice radius (15 m), and a `mobs.toml` edit reddens nothing.
 
@@ -1263,7 +1263,7 @@ Offence landed (`sim-core/charge.rs`, `tests/blast.rs`, `DEATH_BY_CHARGE`).
 What it still cannot do:
 
 1. **No detonation sound and no detonation visual.** The `Cue` enum
-   (`client/src/sound/mod.rs:96`) has no blast voice, and there is no
+   (`crates/sound/src/lib.rs:96`) has no blast voice, and there is no
    `EV_BLAST` — the client learns of a blast only through `EV_STRUCT_HIT`
    and `EV_HEALTH`, so a near-miss is silent. Audio lane; wants either a
    cue keyed off the existing events or an event of its own.
@@ -1825,8 +1825,8 @@ worthless assertion in the first draft.
    are the expensive half and the payoff is the sky.
 4. **Underwater is audio-only.** A colour grade under the surface is a
    second owner of the frame's haze; it wants the lighting owner.
-5. **The submerged duck is not a filter** — rodio gives gain, rate and
-   panning; a real low-pass needs a DSP node.
+5. **The submerged duck is not a filter** — the engine gives gain, rate and
+   a pan; a real low-pass needs a DSP stage in `sound::engine`.
 6. **`Splash` is the only producer of the waterline** — no stroke, no
    wake, no interactive deformation.
 
@@ -1968,16 +1968,22 @@ is §0win's, not this item's.
    `music::PIECES`; swapping in recorded pieces is one function
    (`synth::render`'s music arm). Two bumps we cannot take: weapon equipped,
    projectile near-miss.
-3. **The `--capture` run is still by hand** and is the only proof most audio
-   systems execute. `tests/music.rs` is the cheaper shape — any audio system
-   with no world in its arguments could be gated that way.
+3. **The audio systems are gated headless, and the device path is not.**
+   `tests/bank.rs` proves the bank crosses whole or one cue a frame;
+   `tests/music.rs` that a piece becomes a `Play`/`Gain`/`Stop`;
+   `crates/sound/tests/engine.rs` the renderer's samples; `tests/engine_out.rs`
+   that `Feed::fill` equals the renderer through any callback length and
+   channel count with NO device; `engine_out_alloc.rs` that the callback body
+   allocates nothing. **cpal opening, the callback firing, the rate the device
+   actually runs at — only a person booting the game proves those**; a
+   `--capture` run proves only that `open()` does not panic without a device.
 4. **Two cues have no producer:** `ImpactWood`/`ImpactMetal` need to know
    WHAT was hit, and `UiClick` appears only as the mixer's placeholder
    `Request` — it wants a hook in the per-screen click handlers.
 5. **No occlusion**; the prerequisite is a geometry query, and the correct
    one is the sim's (`collide.rs`), not a raycast against render meshes.
 6. **Crickets** are a content-free companion pass — a night-gated `Cue`, the
-   bird layer's shape with the predicate inverted (`render/audio.rs:672`).
+   bird layer's shape with the predicate inverted (`render/audio.rs:1039`).
 
 
 ## 0x · The native client — the feature trim and the dropped anchors *(client lane)*
@@ -1985,11 +1991,16 @@ is §0win's, not this item's.
 1. **Trim Bevy's default features — with a verified build, not a guess.**
    `crates/client/Cargo.toml` still takes bevy with defaults on. Unused by
    grep: `bevy_gilrs` (no `Gamepad` anywhere — the one real system-dep win,
-   `libudev`) and `vorbis` (the bank is WAV we generate). Load-bearing:
-   `bevy_audio`, `bevy_gltf`/`bevy_animation`, x11 and wayland. Attempted
-   2026-08-06 and backed out on disk, not code — and a green compile is not
-   evidence: Bevy answers a missing decoder with a white fallback. Wants
-   headroom and a `--capture` run someone looks at.
+   `libudev`) and `vorbis` (the bank is generated). **`bevy_audio` is
+   compiled and DISABLED natively** — `AudioPlugin` is off in both desktop
+   binaries since the cpal seam (`render/audio_out.rs` opens the device
+   itself) — so it is a trim candidate again, and `alsa` stays through cpal.
+   Load-bearing: `bevy_gltf`/`bevy_animation`, x11 and wayland. The `wav`
+   feature is inert (the decoder never runs) and joins the list rather than
+   leaving here: a feature change invalidates every Bevy artifact. Attempted 2026-08-06 and
+   backed out on disk, not code — and a green compile is not evidence: Bevy
+   answers a missing decoder with a white fallback. Wants headroom and a
+   `--capture` run someone looks at.
 2. **World-space anchors are still dropped.** The HUD half landed
    (`hud::readout` pins the struct-hit fraction and the charge clock under
    the toast); the wall's own number at the wall itself and a clock on the
@@ -2765,7 +2776,9 @@ at in headless Chromium (SwiftShader) against a shard from the same commit:
    (`web::hand_back` → `gatesLeft` → reload with the reason on the status
    line); the surface follows the viewport under the 2048 cap (`web::fit`,
    `tests/web.rs`); one PLAY button, the shard fields behind ADVANCED.
-5. **The audio bank is one cue a frame on wasm32** (`tests/bank.rs`).
+5. **The audio bank is one cue a frame on wasm32** (`tests/bank.rs`); the
+   spread bank installs each cue's PCM into the engine, which a page does
+   not flush anywhere yet — the worklet is the next stage.
 6. **Mouse look turns the view** and the pointer lock, when granted, holds
    through a drag and releases on Escape — zero panics across four runs.
 

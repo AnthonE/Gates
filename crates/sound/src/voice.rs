@@ -48,7 +48,7 @@ use super::{Cue, CUES};
 
 /// Mean seconds between one pig's snorts (`DECISIONS.md` §open,
 /// "pig voice v0"). Not measured against anything — an opening value in
-/// `CONTENT.md`'s sense, like every number in `sound/mod.rs`.
+/// `CONTENT.md`'s sense, like every number in `crates/sound/src/lib.rs`.
 pub const SNORT_PERIOD_S: f32 = 9.0;
 
 /// Mean seconds between one wolf's howls (`DECISIONS.md` §open, "wolf voice

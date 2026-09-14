@@ -47,10 +47,11 @@ fn cue_table_is_dense_and_in_order() {
     }
 }
 
-/// `MAX_AUDIBLE_M` is read by `render/audio.rs` to pick the spatial scale that
-/// clamps rodio's own inverse-square law out. If a cue ever carries further
-/// than it, that cue falls off the far side of the clamp and gets LOUDER with
-/// distance — so the two must not drift.
+/// `MAX_AUDIBLE_M` is the table's own ceiling: the cull, the AOI arithmetic
+/// and the reference's published radii are all stated against it, so a row
+/// that carried further would be a row the rest of the model does not know
+/// about. It used to be the number `render/audio.rs`'s spatial scale was
+/// derived from, too; the engine pans now and that half is gone.
 #[test]
 fn no_cue_carries_past_max_audible() {
     for cue in Cue::ALL {
@@ -61,11 +62,8 @@ fn no_cue_carries_past_max_audible() {
             d.radius_m
         );
     }
-    // And the scale `render/audio.rs` picks must actually hold, asserted here
-    // because float comparison is not const-evaluable at the definition site.
-    let spatial_scale = 1.0f32 / 128.0;
-    let ear_gap = 0.22f32;
-    assert!(spatial_scale * (MAX_AUDIBLE_M + ear_gap) < 1.0);
+    // The `SPATIAL_SCALE · (MAX_AUDIBLE_M + EAR_GAP_M) < 1` relation this
+    // test also held retired with rodio's pan (audio engine v0).
 }
 
 /// Signal cues must not wobble: a symbol that changes pitch every time takes
@@ -2774,12 +2772,53 @@ fn the_hurt_cue_has_exactly_one_producer_and_it_reads_both_witnesses() {
 
     // And nothing else in the client builds a hurt request by hand. A second
     // producer would bypass the coverage guarantee entirely, and it would do
-    // it without touching a line this file otherwise reads.
-    let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut stack = vec![src_dir];
+    // it without touching a line this file otherwise reads. Both crates:
+    // the model moved to `crates/sound` and the exemption has to point at a
+    // file the walk actually visits, or it exempts nothing and the count
+    // below rests on prose.
     let mut found = 0usize;
+    let mut exempted = 0usize;
+    for (p, text) in sources_of_both_crates() {
+        // `sound/src/hurt.rs` is the owner; it is allowed to name the cue.
+        if p.ends_with("sound/src/hurt.rs") {
+            exempted += 1;
+            continue;
+        }
+        for line in text.lines() {
+            assert!(
+                !line.contains("Request::own(Cue::Hurt") && !line.contains("Request::at(Cue::Hurt"),
+                "{} builds a hurt request by hand: {}",
+                p.display(),
+                line.trim()
+            );
+            // Code, not comments: a doc line naming the cue is not a
+            // producer and must not be what keeps this walk non-vacuous.
+            if !line.trim_start().starts_with("//") {
+                found += line.matches("Cue::Hurt").count();
+            }
+        }
+    }
+    assert_eq!(exempted, 1, "the walk did not visit sound/src/hurt.rs");
+    // Anti-vacuity: the scan must actually be walking a tree with the cue in
+    // it, or an empty walk would pass this test forever.
+    assert!(
+        found > 0,
+        "the source walk found no code naming Cue::Hurt at all - it is not \
+         reading the tree it thinks it is"
+    );
+}
+
+/// Every `.rs` under `crates/client/src` and `crates/sound/src`, with its
+/// text — the two trees a hand-built request could hide in, since the model
+/// left the client crate. Loud on an unreadable tree rather than empty.
+fn sources_of_both_crates() -> Vec<(std::path::PathBuf, String)> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut stack = vec![root.join("src"), root.join("../sound/src")];
+    let mut out = Vec::new();
     while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).expect("readable src tree") {
+        for entry in
+            std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()))
+        {
             let p = entry.expect("readable entry").path();
             if p.is_dir() {
                 stack.push(p);
@@ -2788,30 +2827,17 @@ fn the_hurt_cue_has_exactly_one_producer_and_it_reads_both_witnesses() {
             if p.extension().is_none_or(|e| e != "rs") {
                 continue;
             }
-            // `sound/hurt.rs` is the owner; it is allowed to name the cue.
-            if p.ends_with("hurt.rs") {
-                continue;
-            }
             let text = std::fs::read_to_string(&p).expect("readable source");
-            for line in text.lines() {
-                assert!(
-                    !line.contains("Request::own(Cue::Hurt")
-                        && !line.contains("Request::at(Cue::Hurt"),
-                    "{} builds a hurt request by hand: {}",
-                    p.display(),
-                    line.trim()
-                );
-                found += line.matches("Cue::Hurt").count();
-            }
+            out.push((p, text));
         }
     }
-    // Anti-vacuity: the scan must actually be walking a tree with the cue in
-    // it, or an empty walk would pass this test forever.
     assert!(
-        found > 0,
-        "the source walk found no mention of Cue::Hurt at all - it is not \
-         reading the tree it thinks it is"
+        out.iter().any(|(p, _)| p.ends_with("sound/src/lib.rs"))
+            && out.iter().any(|(p, _)| p.ends_with("render/audio.rs")),
+        "the walk is not reading both crates: {} files",
+        out.len()
     );
+    out
 }
 
 // ─── The hitmarker's rung (v58) ────────────────────────────────────────────
@@ -2969,42 +2995,38 @@ fn the_hit_cue_has_exactly_one_producer_and_it_reads_the_rung() {
          headshot in a frame with two body hits stops reading as one"
     );
 
-    // Nothing else in the client builds a hit request by hand.
-    let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut stack = vec![src_dir];
+    // Nothing else in either crate builds a hit request by hand.
     let mut found = 0usize;
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).expect("readable src tree") {
-            let p = entry.expect("readable entry").path();
-            if p.is_dir() {
-                stack.push(p);
-                continue;
+    let mut exempted = 0usize;
+    for (p, text) in sources_of_both_crates() {
+        // `sound/src/hit.rs` is the owner and `sound/src/synth.rs` names the
+        // cues to render them; both are allowed to.
+        if p.ends_with("sound/src/hit.rs") || p.ends_with("sound/src/synth.rs") {
+            exempted += 1;
+            continue;
+        }
+        for line in text.lines() {
+            for cue in ["Cue::Hit", "Cue::HitHead", "Cue::HitLimb"] {
+                assert!(
+                    !line.contains(&format!("Request::own({cue})"))
+                        && !line.contains(&format!("Request::at({cue})")),
+                    "{} builds a hitmarker request by hand: {}",
+                    p.display(),
+                    line.trim()
+                );
             }
-            if p.extension().is_none_or(|e| e != "rs") {
-                continue;
-            }
-            // `sound/hit.rs` is the owner; it is allowed to name the cues.
-            if p.ends_with("sound/hit.rs") || p.ends_with("sound/synth.rs") {
-                continue;
-            }
-            let text = std::fs::read_to_string(&p).expect("readable source");
-            for line in text.lines() {
-                for cue in ["Cue::Hit", "Cue::HitHead", "Cue::HitLimb"] {
-                    assert!(
-                        !line.contains(&format!("Request::own({cue})"))
-                            && !line.contains(&format!("Request::at({cue})")),
-                        "{} builds a hitmarker request by hand: {}",
-                        p.display(),
-                        line.trim()
-                    );
-                }
+            if !line.trim_start().starts_with("//") {
                 found += line.matches("Cue::Hit").count();
             }
         }
     }
+    assert_eq!(
+        exempted, 2,
+        "the walk did not visit both sound/src/hit.rs and sound/src/synth.rs"
+    );
     assert!(
         found > 0,
-        "the source walk found no mention of Cue::Hit at all - it is not \
+        "the source walk found no code naming Cue::Hit at all - it is not \
          reading the tree it thinks it is"
     );
 }

@@ -225,6 +225,9 @@ fn sources() -> Vec<(&'static str, &'static str)> {
     walk(&root.join("src"), &mut v);
     walk(&root.join("../client/src"), &mut v);
     walk(&root.join("../client-core/src"), &mut v);
+    // The client's pure sound model moved to its own crate (audio engine v0);
+    // `water.rs`'s shore probe is a raw reader and lives there now.
+    walk(&root.join("../sound/src"), &mut v);
     assert!(
         v.len() > 20,
         "the scrape found only {} source files — it is pointed at the wrong tree",

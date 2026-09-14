@@ -126,7 +126,14 @@ fn main() -> AppExit {
             assets.file_path = repo.to_string_lossy().into_owned();
         }
     }
-    app.add_plugins(DefaultPlugins.set(assets));
+    // bevy_audio's rodio stream would open the device a second time and mix
+    // nothing: the engine owns the device through cpal (`render/audio_out.rs`).
+    app.add_plugins(
+        DefaultPlugins
+            .build()
+            .disable::<bevy::audio::AudioPlugin>()
+            .set(assets),
+    );
     app.insert_resource(Who(who));
     // The runtime outlives every session, which is why it is its own
     // resource now: on the menu path there is no session yet to hold it.
