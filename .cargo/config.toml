@@ -1,7 +1,12 @@
 # The wasm shadow stack, stated rather than defaulted.
 #
-# `World` is 317 kB — fixed-capacity by design (wall 4), and `probe_parity`
-# builds one on the stack per sequence.
+# `World` is 55 kB — fixed-capacity by design (wall 4), and
+# `probe_parity` builds one on the stack per sequence. (315 kB until two
+# changes met in one merge window: wounded v0 added the crawl and its clocks
+# to `Player`, and forest density v1 moved `SlotLives`' table onto the heap
+# when `MAX_SLOT_LIVES` doubled — so the number fell rather than rose, and
+# neither branch's own figure was the merged one. The gate below caught both,
+# which is the whole of why it exists.)
 #
 # ⚠ That number said **434 kB** from 2026-08-08 until 2026-08-30, when the
 # rewind ring's slice measured it and found the note 122 kB stale. Nothing

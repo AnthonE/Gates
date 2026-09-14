@@ -47,8 +47,19 @@ use super::{Eye, Net, WorldId};
 /// point and the trunk does not, so a trunk run to full height leaves a bare
 /// spike above the canopy on every tree in the forest.
 pub const PINE_TRUNK_H: f32 = 5.7;
-/// Overall height — the top whorl's apex.
-pub const PINE_H: f32 = 6.6;
+/// Overall height — the conifer's apex, and `SPECIES[0].height_m`.
+///
+/// **14 m since forest scale v0 (2026-09-14), from 6.6.** The reference's
+/// pines stand eight to ten player heights; ours stood 3.7, and the operator's
+/// frame read them as small before anything else. The crown ceiling did not
+/// move with it — `PINE_MAX_R` now equals `TREE_MAX_R`, which is what the sim's
+/// spawn clearance is derived from, so no sim number moved — and the trunk is
+/// held to the sim's cylinder by `tests/tree.rs`. `examples/tree_sweep.rs` is
+/// the bench the limb length and trunk radius were swept on, over the three
+/// shipped seeds and twelve more. ⚠ `PINE_TRUNK_H` above is the whorl
+/// builder's and the sim's `OCCUPANT_TOP_M[Tree]` row, and it stayed at 5.7:
+/// the trunk above that is drawn and not blocked. `NOW.md` §0t carries it.
+pub const PINE_H: f32 = 14.0;
 /// How far a whorl vertex may be pulled IN toward its axis, as a fraction of
 /// that whorl's radius. It only ever pulls in, never out, which is what keeps
 /// the canopy inside `PINE_MAX_R`.
@@ -58,9 +69,13 @@ pub const PINE_RAGGED: f32 = 0.34;
 /// trunk are five horizontal lines.
 pub const PINE_DROOP: f32 = 0.18;
 /// The radius no part of a pine may exceed, metres — a CEILING, not what it
-/// draws. `world.rs` derives `SPAWN_CLEAR_M = 4.0` from this, so a canopy
-/// that grew past it would invalidate a spoken sim number from the renderer.
-pub const PINE_MAX_R: f32 = 1.7;
+/// draws. `world.rs` derives `SPAWN_CLEAR_M` from `tree::TREE_MAX_R`, the
+/// wider of the two species' ceilings, so a canopy that grew past it would
+/// invalidate a spoken sim number from the renderer. **Equal to the
+/// broadleaf's since forest scale v0**: a 14 m pine at the old 1.7 m would be
+/// a pole, and lifting this to the island-wide ceiling moves nothing in the
+/// sim because the broadleaf already held `TREE_MAX_R` at 2.9.
+pub const PINE_MAX_R: f32 = 2.9;
 /// Odd on purpose: an even count puts a vertex diametrically opposite every
 /// other one, so the ragged pull reads as a squashed circle, not a whorl.
 const PINE_SEGMENTS: usize = 9;
@@ -167,6 +182,12 @@ pub struct PropAssets {
     /// sort themselves. `AlphaMode::Mask` also keeps them in the opaque pass,
     /// so they cast the shadows a forest floor is made of.
     needle: [Handle<StandardMaterial>; TINT_POOL],
+    /// The broadleaf's canopy material: the same alpha-masked shape as
+    /// `needle`, wearing `tree::leaf_image` instead of the sprig. Separate
+    /// for the reason `bush_leaf` is separate from `foliage` — one
+    /// `StandardMaterial` has one map — and because a species is a card as
+    /// much as a silhouette (forest scale v0, 2026-09-14).
+    leaf: [Handle<StandardMaterial>; TINT_POOL],
     /// The conifer trunk's bark. Separate from `foliage`, which the bark half
     /// used to wear for want of anything better — an untextured white surface
     /// whose only colour was the mesh's own trunk band.
@@ -297,12 +318,26 @@ pub enum FellPart {
 /// became **one 105-triangle opaque hull**, ~55× cheaper, and nobody re-derived
 /// the radius the old cost had chosen.
 ///
-/// **5, and the arithmetic is the reason.** An 11×11 ring is 96 chunks beyond
-/// the near 25, 3.84× the area, so at the ring's own measured p90 of 328 trees
-/// it is ~1,260 more — every one of them past [`tree::TREE_LOD_SWAP_M`] by
-/// construction and therefore a hull. 1,260 × 105 = **~132 k triangles**
-/// against trees currently costing 510 k and `DESIGN.md` §9's 1.5 M for the
-/// whole frame. `tests/outer_ring.rs` holds that arithmetic.
+/// **It was 5, and the arithmetic was the reason.** An 11×11 ring is 96
+/// chunks beyond the near 25, 3.84× the area, so at the ring's then-measured
+/// p90 of 328 trees it was ~1,260 more — every one of them past
+/// [`tree::TREE_LOD_SWAP_M`] by construction and therefore a hull. 1,260 ×
+/// 105 = ~132 k triangles against trees then costing 510 k and `DESIGN.md`
+/// §9's 1.5 M for the whole frame.
+///
+/// **4 since forest density v1 (2026-09-14), by the same arithmetic on the
+/// new forest.** The near ring's p90 is 811 trees now and its densest 1,086
+/// (`sim-core/examples/ring_census.rs`, shipped seed), so an 11×11 annulus
+/// would be ~3,100 hulls at p90 and ~4,200 at the worst — 350–470 k
+/// triangles on top of the ~1.2 M the near ring is allowed
+/// (`tree::TREE_LOD_CAP` at a conifer's ceiling plus its own hulls), which
+/// is over the 1.5 M that the whole frame is still budgeted at. A 9×9 ring
+/// is 56 outer chunks, 2.24× the near area: ~1,820 hulls at p90, ~2,430 at
+/// the worst, under 280 k, and the trees total under 1.5 M at every eye on
+/// the island.
+/// The treeline reaches 288 m instead of 352. `tests/outer_ring.rs` holds
+/// the arithmetic; `DESIGN.md` §9's number is browser-era and re-deriving it
+/// for a desktop GPU is what buys the radius back (`NOW.md` §0t).
 ///
 /// **Widening `NEAR_RADIUS` instead would have been the wrong lever**, and
 /// this is the part worth writing down. That constant is read by the ground
@@ -311,7 +346,7 @@ pub enum FellPart {
 /// tree is FOUR entities (trunk, canopy, hidden stump, hull) where an outer
 /// one is a single hull with no `Topple` and no `VisibilityRange`. Same
 /// picture, an order of magnitude more of everything else.
-pub const OUTER_RADIUS: i32 = 5;
+pub const OUTER_RADIUS: i32 = 4;
 
 /// What the scatter ring has spawned, one parent entity per chunk.
 #[derive(Resource, Default)]
@@ -339,9 +374,29 @@ impl PropRing {
     pub fn outer_len(&self) -> usize {
         self.outer.len()
     }
+    /// Chunks held by BOTH rings — a near chunk with the outer ring's hulls
+    /// still standing in it. Zero is the only correct answer once the rings
+    /// have settled, and `tests/ring_handoff.rs` holds it there with an eye
+    /// that moves. Under the retain this repo shipped from the outer ring's
+    /// landing until 2026-09-13, the outer ring settled at 111 chunks where
+    /// 96 belong — the 15 the near ring had taken over, still held.
+    pub fn overlap(&self) -> usize {
+        self.built
+            .keys()
+            .filter(|k| self.outer.contains_key(*k))
+            .count()
+    }
+    /// Is this chunk key in the near ring?
+    pub fn near_holds(&self, key: (i32, i32)) -> bool {
+        self.built.contains_key(&key)
+    }
+    /// Is this chunk key in the outer ring?
+    pub fn outer_holds(&self, key: (i32, i32)) -> bool {
+        self.outer.contains_key(&key)
+    }
 }
 
-/// Chunks in a full outer ring — the 11×11 block minus the near 5×5 it wraps.
+/// Chunks in a full outer ring — the (2R+1)² block minus the near 5×5 it wraps.
 pub const OUTER_CHUNKS: usize = ((2 * OUTER_RADIUS + 1) * (2 * OUTER_RADIUS + 1)
     - (2 * NEAR_RADIUS + 1) * (2 * NEAR_RADIUS + 1)) as usize;
 
@@ -1613,6 +1668,7 @@ pub fn assets(
         })
         .collect();
     let needle_map = images.add(tree::needle_image());
+    let leaf_map = images.add(tree::leaf_image());
     // Hoisted out of the literal below because the two site rows fall back to
     // them: a `photo(...)` written twice would be two materials wearing one
     // photograph, and the second would be invisible to `tests/fresnel.rs`'s
@@ -1718,6 +1774,20 @@ pub fn assets(
                 alpha_mode: AlphaMode::Mask(0.5),
                 // Needles are thin and the sun is behind half of them. Without
                 // this the canopy's lit side is the only side that reads.
+                double_sided: true,
+                ..default()
+            })
+        }),
+        leaf: tint_pool().map(|v| {
+            materials.add(StandardMaterial {
+                base_color: Color::linear_rgb(v, v, v),
+                base_color_texture: Some(leaf_map.clone()),
+                perceptual_roughness: 0.90,
+                reflectance: fresnel::DIELECTRIC,
+                cull_mode: None,
+                // The same cutoff as the needle's, held to the card by the
+                // same gate (`tests/tree.rs`, the mip-chain coverage test).
+                alpha_mode: AlphaMode::Mask(0.5),
                 double_sided: true,
                 ..default()
             })
@@ -1828,6 +1898,20 @@ pub fn stream(
             if ring.built.contains_key(&key) {
                 continue;
             }
+            // **The hand-off.** A chunk the player has walked into may still
+            // be the outer ring's — one hull per tree, no `VisibilityRange`,
+            // never culled — and this frame builds the four-entity tree on
+            // the same cells. Take the hull chunk down here, in the same
+            // frame, or the two stand together: an opaque faceted dome over
+            // every real tree, at arm's length, on both targets, in every
+            // chunk entered after spawn. That was the operator's 2026-09-13
+            // frame, and it had been true since the outer ring landed
+            // (`tests/ring_handoff.rs`). Same frame, so there is never a
+            // frame with both; one despawn beside one build is inside the
+            // budget the ground pays every frame.
+            if let Some(hulls) = ring.outer.remove(&key) {
+                commands.entity(hulls).despawn();
+            }
             let parent = commands
                 .spawn((
                     super::WorldEntity,
@@ -1879,9 +1963,18 @@ pub fn stream(
     // arrive.
     let mut dropped_outer = 0usize;
     ring.outer.retain(|(bx, bz), e| {
-        if dropped_outer >= 1
-            || ((*bx - cx).abs() <= OUTER_RADIUS && (*bz - cz).abs() <= OUTER_RADIUS)
-        {
+        let dx = (*bx - cx).abs();
+        let dz = (*bz - cz).abs();
+        // Two questions, not one. Until 2026-09-13 this asked only *is the
+        // chunk still inside my radius*, which every chunk the player walks
+        // INTO answers yes — so the hull chunk stayed while the near ring
+        // built the real trees on top of it. The hand-off above retires it
+        // on the frame the near chunk is built; this is the same rule stated
+        // where the ring's membership is decided, so neither site can be
+        // right alone.
+        let in_outer = dx <= OUTER_RADIUS && dz <= OUTER_RADIUS;
+        let in_near = dx <= NEAR_RADIUS && dz <= NEAR_RADIUS;
+        if dropped_outer >= 1 || (in_outer && !in_near) {
             return true;
         }
         dropped_outer += 1;
@@ -2203,7 +2296,9 @@ pub fn spawn_slot(
             fellable(FellPart::Canopy),
             Topple { t: -1.0 },
             Mesh3d(a.needles[variant].clone()),
-            MeshMaterial3d(a.needle[tint].clone()),
+            // The card is the species' — a sprig on a conifer, a leaf
+            // cluster on a broadleaf. Chosen in one place so a gate can ask.
+            MeshMaterial3d(a.canopy_material(variant, key).clone()),
             tree::lod_band(&lod.near),
             transform,
         ));
@@ -2513,6 +2608,7 @@ impl PropAssets {
         for (name, pool) in [
             ("foliage", &self.foliage),
             ("needle", &self.needle),
+            ("leaf", &self.leaf),
             ("rock", &self.rock),
             ("bark", &self.bark),
         ] {
@@ -2568,5 +2664,16 @@ impl PropAssets {
     /// reason.
     pub fn foliage_material(&self, key: u32) -> &Handle<StandardMaterial> {
         &self.foliage[tint_of(key)]
+    }
+    /// The canopy material a tree of this variant draws at this key: the
+    /// needle sprig for a conifer, the leaf cluster for a broadleaf. The one
+    /// place the choice is made, so `spawn_slot` and the gate that reads the
+    /// ECS back cannot disagree.
+    pub fn canopy_material(&self, variant: usize, key: u32) -> &Handle<StandardMaterial> {
+        let tint = tint_of(key);
+        match tree::SPECIES[tree::species_of(variant)].tree_type {
+            bevy_procedural_tree::enums::TreeType::Evergreen => &self.needle[tint],
+            bevy_procedural_tree::enums::TreeType::Deciduous => &self.leaf[tint],
+        }
     }
 }

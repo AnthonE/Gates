@@ -441,12 +441,18 @@ that matters — it does not add an element, it changes what a share of the
 forest-litter channel *is* — and it moved **neither golden**, so it cost no
 wipe.
 
-**The canopy half is untouched and still belongs to the operator.** Stems are
-6,000 triangles each and the grid caps them at 156/ha; that is the expensive
-half, it needs §8 gate 7's count cap before it can move at all (§5 step 4),
-and "leave it" remains a decision with a stated consequence rather than a
-shrug: our Forest biome stays parkland at ~39 stems/ha and under 7 % canopy
-cover. That belongs in `DECISIONS.md` §open before anyone touches a weight.
+**The canopy half moved on 2026-09-14, on the operator's word** (*"when can
+we get forest fr?"* — the third time the frame had been put beside ours).
+Stems are 6,000 triangles each and the grid caps them at 156/ha; the count
+cap §5 step 4 asks for landed in the same slice (`tree::TREE_LOD_CAP`, gate 7
+below) and paid for it. The rail was not the grid but the field: the Forest
+row could not pass 370‰ under a field peaking at 2.7× its mean, so
+`ScatterTable::clump_cap` holds the Forest's field at its mean and
+re-normalizes, and the row went to 700‰. Measured **~94 stems/ha**, 43 % of
+the forest's ground at ~134/ha, clearings untouched — which is ~20 % canopy
+cover at the shipped crown radius, over FAO's 10 % and still short of a
+closed 40 %. What closes it now is the crown, not the stem count
+(`NOW.md` §0t). `DECISIONS.md` §open "forest density v1".
 
 ### 9.2 · The edge is the cheapest structural win and it is a sim-core slice
 
@@ -502,8 +508,12 @@ it.
    booting the game, which `CLAUDE.md` makes the visual gate on purpose.
 3. **Species into `Slot`** (§9.3) — unblocks gate 6 and the `Alt` mechanic.
 4. **The edge** (§9.2) — the cheapest structural win left, with gate 4.
-5. **Gate 7 and the LOD cap** — required *before* any density rise (§5.4).
-6. **The `CELL_SIZE` decision** (§9.1) — operator's, and not a code task.
+5. ~~**Gate 7 and the LOD cap**~~ — **built 2026-09-14** with the density
+   rise it was required before (`tree::cap_swap`, `client/tests/tree_cap.rs`;
+   `DECISIONS.md` §open "forest density v1"). The swap contracts to the
+   distance holding `TREE_LOD_CAP` trees, never under ~49 m on this grid.
+6. **The `CELL_SIZE` decision** (§9.1) — operator's, and not a code task,
+   and less pressing than it was: the row, not the cell, was the ceiling.
 
 **Not owed by this doc:** any number reaching `content/`. Every band in §8 is
 a proposal and belongs in `DECISIONS.md` §open before it lands, per

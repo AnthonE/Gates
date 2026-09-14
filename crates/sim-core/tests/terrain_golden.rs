@@ -64,7 +64,16 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// at sea level. The road ring, the haven solve and the clutter waterline
 /// veto are all gated on that and all stayed green through the change without
 /// a tolerance moving.
-const GOLDEN_TERRAIN_HASH: u64 = 0x9033_206F_0ECB_E2A4;
+///
+/// **Moved `0x9033_206F_0ECB_E2A4` → `0x700C_77A5_8F33_97B4` at forest density
+/// v1** (2026-09-14, operator: *"when can we get forest fr?"*). The Forest
+/// row went 350 → 700‰ with its grove field capped at the field's mean and
+/// re-normalized (`ScatterTable::clump_cap`), so roughly every other Forest
+/// cell that drew nothing draws a tree: ~39 → ~94 stems/ha, the scatter half
+/// of this digest on ~45% of the land. Heights did not move — the change is
+/// entirely in `scatter`, and `probe_terrain`'s height window would read the
+/// same. Deliberate, regenerated in the commit that caused it.
+const GOLDEN_TERRAIN_HASH: u64 = 0x700C_77A5_8F33_97B4;
 
 #[test]
 fn test_terrain_golden() {
@@ -227,7 +236,8 @@ fn test_terrain_shape_sanity() {
     assert!(min_h < -5.0, "no sea floor: min sampled height {min_h}");
     assert!(max_h > 40.0, "no relief: max sampled height {max_h}");
 
-    // TERRAIN.md §6: ~8–12k live slots per seed. The band is the doc's; a
+    // TERRAIN.md §6: ~14–17k live slots per seed since forest density v1
+    // (~8–12k before it). The band is the doc's and `tests/scatter.rs`'s; a
     // seed outside it means the scatter weights drifted, not the seed.
     let table = ScatterTable::alpha_default();
     let haven = terrain::haven(GOLDEN_SEED);
@@ -257,8 +267,8 @@ fn test_terrain_shape_sanity() {
         }
     }
     assert!(
-        (8_000..=12_000).contains(&live),
-        "live slots {live} outside TERRAIN.md §6's 8–12k band (trees {trees}, ore {ore}, barrels {barrels})"
+        (13_000..=19_000).contains(&live),
+        "live slots {live} outside TERRAIN.md §6's 13–19k band (trees {trees}, ore {ore}, barrels {barrels})"
     );
     assert!(trees > 1_000, "island needs wood: {trees} trees");
     assert!(ore > 300, "island needs ore: {ore} nodes");

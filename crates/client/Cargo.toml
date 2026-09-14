@@ -135,6 +135,18 @@ name = "frame_cost"
 path = "examples/frame_cost.rs"
 required-features = ["render"]
 
+[[example]]
+name = "tree_look"
+path = "examples/tree_look.rs"
+# `native` too: the bench opens a window and shoots to disk, so the browser
+# renderer gate (`ci/gates.sh`, wasm32 check tier) must not compile it.
+required-features = ["render", "native"]
+
+[[example]]
+name = "tree_sweep"
+path = "examples/tree_sweep.rs"
+required-features = ["render", "native"]
+
 # The fell gate needs the render module, so it carries the same requirement
 # the binary does — and therefore runs in the renderer tier, not the code one.
 # The conifer's bounds gate: pure geometry, headless, no GPU — but it imports

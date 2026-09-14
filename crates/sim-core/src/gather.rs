@@ -571,19 +571,23 @@ pub struct SlotLife {
 
 /// The server's "one bit + one timer per slot" (TERRAIN.md §2), stored
 /// sparsely: only touched slots occupy an entry. Capacity exceeds the
-/// ~8–12 k live slots a seed produces (TERRAIN.md §6), so harvested
+/// ~14–17 k live slots a seed produces (TERRAIN.md §6), so harvested
 /// entries always fit; overflow can only involve standing-damage records,
 /// which evict lowest-hits-first (the evicted node heals to pristine —
 /// bounded memory priced as forgiveness, never unbounded growth).
+///
+/// The table is boxed (`crate::boxed_array`): at 32,768 × 16 bytes it is
+/// half a MiB, and wasm32's shadow stack is one — CLAUDE.md's trap, and
+/// the store that would have been the fourth to find it.
 pub struct SlotLives {
-    entries: [SlotLife; MAX_SLOT_LIVES],
+    entries: Box<[SlotLife; MAX_SLOT_LIVES]>,
     len: usize,
 }
 
 impl SlotLives {
     pub fn new() -> Self {
         Self {
-            entries: [SlotLife::default(); MAX_SLOT_LIVES],
+            entries: crate::boxed_array(SlotLife::default()),
             len: 0,
         }
     }

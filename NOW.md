@@ -792,11 +792,15 @@ the understory** (`DECISIONS.md` §open, forest structure v0 — `tests/forest.r
    and every check on it is arithmetic. Whether it reads as understory or as
    tall grass is a person booting the game; 120‰ and 0.75 m are what a frame
    would settle. `§LOOK`.
-2. **The scatter grid is full — the finding.** The forest's bush ceiling is
-   **70.4‰**, exactly the meadow's weight, so it cannot carry an understory
-   at any weight without taking the canopy down to pay. The canopy is still
-   parkland — **~39 stems/ha, under 7 % cover** against the 10 % that makes
-   the word true — and raising it needs `PLANTS.md` §3.2 *and* item 5 first.
+2. ✅ **The canopy is a forest (forest density v1, 2026-09-14)** — the
+   operator's *"when can we get forest fr?"*. The rail was the grove field's
+   peak, not the cell: `ScatterTable::clump_cap` holds the Forest's field at
+   its mean and the row went 350 → 700‰. **~94 stems/ha** (from ~39), 43 %
+   of the forest at ~134/ha, ~20 % cover (from ~7 %). `DECISIONS.md` §open
+   has every number and what it leaves the operator: nobody has stood in it
+   on a GPU, and cover is closed by the crown now (§0t item 2), not stems.
+   The bush ceiling finding stands as history — the understory stays in
+   `Clutter::Brush`, which has no ceiling to spend.
 3. **Species is not a sim fact**, so it cannot be gated or made spatial —
    both rings pick it as `slot.yaw % pool` (`props.rs:2037`, `props.rs:1977`).
    Into `Slot` off the same cell hash: one field, client mirrors it free,
@@ -804,9 +808,11 @@ the understory** (`DECISIONS.md` §open, forest structure v0 — `tests/forest.r
 4. **No forest EDGE exists** (§8 gate 4). Theirs is a separate mask with its
    own plant list — `Forestside`, "small trees and bushes" — and it is what
    makes a treeline read as a treeline instead of a density gradient.
-5. **The LOD budget is a print, not a cap** — distance alone at 80 m
-   (`tree.rs:870`), so a clump inside it has no ceiling. Theirs caps
-   mesh-trees by *count*. Gate 7 lands before any density rise.
+5. ✅ **The LOD budget is a cap (2026-09-14)** — `tree::TREE_LOD_CAP` = 180
+   trees drawing their near pair, `tree::cap_swap` pulling the swap in past
+   it and out again after (`tests/tree_cap.rs`). Landed with the density
+   rise it was required before. What it leaves: the swap sits at ~50–61 m
+   in a stand, so the hull's look at that range (§0t item 1b) matters more.
 
 
 ## Sim, content and gameplay verbs *(systems lane)*
@@ -1798,26 +1804,49 @@ worthless assertion in the first draft.
    map), so the midground is flat green shapes and this ring multiplied them by
    four. `WANTED.md` §9.5's leaf texture is the cheapest fix and serves the
    bush too. **Highest-value item here.**
-2. **The harvest sweep got denser and that was a named cost.**
+2. **The harvest sweep got denser and that was a named cost — twice now.**
    `harvest_changed` measured 1,500 props × a full 16,384 set at 2.34 ms and
    warned that a denser ring is the case that worsens. Outer hulls carry
    `Fellable` for correctness, so the count roughly doubles on frames where the
-   harvested set moves. The real fix is that `HarvestedSet::contains` is a
-   linear scan. Unmeasured on a GPU.
+   harvested set moves. **Forest density v1 (2026-09-14) moved both ends of
+   that product**: the near ring's p90 is 811 trees from 328, and
+   `MAX_SLOT_LIVES` is 32,768 from 16,384, so the 2.34 ms above is a floor on
+   the worst case rather than a reading of it. The real fix is that
+   `HarvestedSet::contains` is a linear scan. Unmeasured on a GPU.
 3. **Only trees.** Boulders and barrels still stop at `NEAR_RADIUS` — a
    sub-pixel lump costs an entity and changes no silhouette.
 
 
 ## 0t · the forest — what it still owes *(client lane)*
 
-1. **The broadleaf has never been LOOKED at.** `SPECIES` is two rows, pool 6;
-   every check on it is arithmetic. Boot it and look — likely wrong are
-   `children`/`angle[1]` and leaf `count`/`size`; `PLANTS.md` §3.1 has
-   ez-tree's 15 presets to take real numbers from. A species is a row.
-2. **The density ceiling** — one occupant per 8 m `CELL_SIZE` cell.
-   `PLANTS.md` §3.2 prices the three ways up; all sim-core, none cheap, the
-   cheapest (`CELL_SIZE` 8 → 4) quadruples live `SlotLives` rows against
-   `TERRAIN.md` §6's budget. Not a rendering change.
+1. **Both species are twice as tall (forest scale v0, 2026-09-14)** —
+   `DECISIONS.md` §open has the numbers and the two rails that did not move.
+   Seen on the lavapipe bench (`examples/tree_look.rs`), not in the game.
+   What it leaves, in order: **(a)** `OCCUPANT_TOP_M[Tree]` is still 5.7 m,
+   so a 14 m trunk is drawn to the top and blocked to 5.7 — one sim row,
+   `shoot.rs` pins it; **(b)** the far hull is twice the pixels at the same
+   80 m swap, so `tree.rs`'s band table wants re-reading at 14 m (its
+   stacked-disc shading is fixed — the normals blend to a horizontal radial
+   now, not to each band's own centre); **(c)** the
+   broadleaf is a birch's column now, and a birch wants white bark — a second
+   bark map is a `CANDIDATES.md` row, not a code change; **(d)** cover only
+   moved ~7 % → ~9 %, because stems are the grid's — item 2 is the lever.
+   `examples/tree_sweep.rs` is how a settings block is checked against the
+   seeds before it is typed; `PLANTS.md` §3.1's presets are its shapes. The
+   broadleaf wears its own generated card now (`tree::leaf_image`) — the
+   first bench frames had it reading as a yellower conifer in the sprig.
+   **(d) is closed by density v1** (~7 → ~20 %); **(b) matters more now**:
+   the count cap parks the swap at ~50–61 m inside a stand, so the hull is
+   what a player sees past that. And the outer treeline is 288 m (from
+   352) to stay under a 1.5 M frame budget `DESIGN.md` §9 calls browser-era
+   — re-deriving it for a desktop GPU buys `OUTER_RADIUS` 5 back.
+2. **The crown, now that stems are a forest (density v1, 2026-09-14).**
+   At ~94 stems/ha cover is ~20 % and closing a canopy is r², not stems:
+   `TREE_MAX_R` 2.9 → 4.0 takes it past 35 % (a closed canopy is 40 %). It
+   moves `SPAWN_CLEAR_M` (4.5 → ~6.0) and so the beach spawn search and
+   both goldens, one sim row and a sweep of `examples/tree_sweep.rs` for
+   wider limbs — `reference/FORESTS.md` §1.2 priced it. `CELL_SIZE` 8 → 4
+   is no longer the lever: the grid has room the row was not using.
 3. **The billboard LOD is optional now, not owed** — `impostor_of`'s 105-tri
    hull took the p90 ring 1.94 M → 510 k, under `DESIGN.md` §9's 1.5 M.
    `TERRAIN.md` §4's octahedral billboard is the cheaper end, still unbuilt.
@@ -1826,8 +1855,17 @@ worthless assertion in the first draft.
 5. **Sub-canopy empty, shrub layer one blob** (`Occupant::Bush`, `PLANTS.md`
    §2): ez-tree's `bush_*` presets and a small tree at 40 % are new
    `Occupant` variants plus scatter rows.
-6. **The needle card is generated** (`tree::needle_image`); `WANTED.md` §9.5
-   is the swap, the highest-value texture on that page.
+6. **Both cards are generated** (`tree::needle_image`, `tree::leaf_image`);
+   `WANTED.md` §9.5 is the swap, the highest-value texture on that page, and
+   it is two textures now.
+7. ✅ **The double hull (2026-09-13).** Every tree in every chunk walked into
+   after spawn wore the outer ring's hull over its real self — the outer
+   retain never asked whether the near ring had taken the chunk. Fixed in
+   `props::stream`, gated by `tests/ring_handoff.rs` (an eye that moves);
+   `CLAUDE.md` traps has the shape. Two things it leaves: **the capture probe
+   should walk one chunk before it shoots**, because a frame from the spawn
+   chunk cannot contain a hand-off defect; and the browser's 55 m rung now
+   rests on its own argument, not on the frame that moved it (`quality.rs`).
 
 
 ## 0a · The clutter ring still ends on a line *(client lane)*
@@ -2139,6 +2177,33 @@ dust and the impact cue read it (`DECISIONS.md` §open, impact fx v1). Left:
    `bevy_feathers` (~5,400 lines of screens into a data-driven plugin) and
    the freegameui.net MCP (403s here, bypasses `bake_icons.py` and
    `tests/ui.rs` §G, pre-coloured kits fight tint-at-draw).
+
+
+## 0cq · The craft panel beside the reference's — pictures, words, and the closed menu *(client lane)*
+
+`reference/CRAFTING.md` (2026-09-13) audits `MENUS.md`'s HAVE against two of
+the operator's frames of the reference. Every number on ours is right and
+gated; the gaps are what is a picture, what is a word, and what the HUD says
+with the menu closed. §9.1 ranks twelve. The first five are draws, no wire:
+
+1. **Nothing on the HUD while the menu is closed** — Devblog 62's notice.
+   `ClientCore` already holds `jobs` and `craft_eta_ticks` (`EventMsg::CraftQ`);
+   the head job's picture and countdown as a chip beside the hotbar.
+2. **The queue strip is words** (`Wooden Spear x1 · 10.0s click to cancel`);
+   theirs is the picture with a green `⏱ 14s` chip. `build_queue`, one site.
+3. **Locked is the word `LOCKED`**; theirs a padlock glyph over the dimmed
+   picture. One game-icons silhouette.
+4. **Craft-done is a feed line**; theirs a `note.inv` beside the vitals.
+   `Cue::CraftDone` already chimes; only the drawing moves.
+5. **CRAFT dims when short**; the one plugin the community wrote for this
+   panel paints it green. A palette knob — `DECISIONS.md` §open, not code.
+6. **Cells are white glyphs; theirs are renders of the item.** A pipeline,
+   not a bigger icon set: shoot our own glTFs to item images at bake time
+   (`modelview --shot` already does the shot), glyph as the fallback.
+7. Then content + wire in one `PROTO_VER` turn — the class byte (§0w item 1)
+   and a description column (`items.toml` has none; the catalog is names
+   only) — then two sim verbs: fast-track by task id (§1.1/1.4), the bench
+   rebate (§0tt).
 
 
 ## 0w · The native menus — the rail and the untested gesture *(client lane)*

@@ -39,6 +39,13 @@ use sim_core::terrain::{
 /// not a gate.
 const SEEDS: [u64; 4] = [0, 1, 7, 12345];
 
+/// TERRAIN.md §6's live-slot band, the world's density budget. **(knob)**
+/// Set from the four seeds' spread at forest density v1 (see
+/// `test_scatter_density_preserved`), roughly ±15% around it as the
+/// 8,000–12,000 band was around ~9,700.
+const LIVE_SLOTS_MIN: u32 = 13_000;
+const LIVE_SLOTS_MAX: u32 = 19_000;
+
 /// Window half-width in cells. 5x5 cells is 40 m, which is the range
 /// `TERRAIN.md` §1 stage 6 is talking about when it asks forest for "cover,
 /// low visibility": the question is whether a player standing here can see
@@ -225,11 +232,24 @@ fn test_scatter_density_preserved() {
         // TERRAIN.md §6. `tests/terrain_golden.rs` holds the same band on
         // the shipped seed; this holds it on four, because a field with a
         // seed-dependent mean would pass there and fail in play.
+        //
+        // 8,000–12,000 until forest density v1 (2026-09-14) raised the
+        // Forest row 350 → 700‰; measured 16,020 / 16,666 / 14,743 /
+        // 15,660 after it, against 9,825 / 10,033 / 9,337 / 9,770 before.
+        // The band is what `limits::MAX_SLOT_LIVES` is sized past.
         assert!(
-            (8_000..=12_000).contains(&live),
+            (LIVE_SLOTS_MIN..=LIVE_SLOTS_MAX).contains(&live),
             "seed {seed}: {live} live slots is outside TERRAIN.md §6's \
-             8,000–12,000 — the clump field is meant to move density around, \
-             not change how much there is (check `CLUMP_NORM`)."
+             {LIVE_SLOTS_MIN}–{LIVE_SLOTS_MAX} — the clump field is meant to move \
+             density around, not change how much there is (check `CLUMP_NORM` \
+             and the capped biomes' `clump_cap_norm`), and a row change that \
+             moves this moves `MAX_SLOT_LIVES`'s sizing with it."
+        );
+        assert!(
+            live < sim_core::limits::MAX_SLOT_LIVES as u32,
+            "seed {seed}: {live} live slots but the slot-life store holds \
+             {} — a fully harvested island would not fit its own save.",
+            sim_core::limits::MAX_SLOT_LIVES
         );
         assert!(
             f.counts[Occupant::Tree as usize] > 1_000,
@@ -293,12 +313,25 @@ fn test_clump_normalizer_holds() {
 
 /// The field cannot silently clip the density it is supposed to preserve.
 ///
-/// The row is scaled by up to `max(clump)` and the draw compares a
-/// per-mille roll against the running total, so once a scaled row reaches
-/// 1,000 the tail entries stop being reachable and the extra weight
-/// evaporates — density would fall while every mean above still read 1.0.
-/// Nothing else in the suite can see that, because it looks exactly like a
-/// slightly thinner forest.
+/// The row is scaled by up to `max(clump)` — **as each biome keeps it**,
+/// held to `ScatterTable::clump_cap[b]` and re-normalized — and the draw
+/// compares a per-mille roll against the running total, so once a scaled
+/// row reaches 1,000 the tail entries stop being reachable and the extra
+/// weight evaporates — density would fall while every mean above still
+/// read 1.0. Nothing else in the suite can see that, because it looks
+/// exactly like a slightly thinner forest.
+///
+/// Two halves. The pure bound: each biome's row total at the field's
+/// measured peak through that biome's cap. The blend is a convex mix of
+/// those four scaled rows (`scatter_draw_row` scales before it blends), so
+/// the largest of them bounds every cell — up to per-entry rounding, which
+/// is the second half: the shipped seeds are swept cell by cell and the row
+/// each land cell actually draws against is held under the rail too.
+///
+/// **The Forest row is 700‰ against a field that peaks at 2.7**, which
+/// would be 1,890 uncapped; the cap is what makes it 936. A cap that
+/// stopped binding (`FOREST_CLUMP_CAP` back at the peak) fails the first
+/// half on this row; a normalizer typed too high fails both.
 #[test]
 fn test_no_biome_row_saturates() {
     let table = ScatterTable::alpha_default();
@@ -318,16 +351,121 @@ fn test_no_biome_row_saturates() {
     }
     for (b, row) in table.weights.iter().enumerate() {
         let total: u32 = row.iter().map(|&w| u32::from(w)).sum();
-        let scaled = total as f32 * hi;
-        println!("biome {b}: row total {total} per-mille, x{hi:.3} = {scaled:.0}");
+        let factor = hi.min(table.clump_cap[b]) * table.clump_cap_norm[b];
+        let scaled = total as f32 * factor;
+        println!(
+            "biome {b}: row total {total} per-mille, field peak x{hi:.3} as kept x{factor:.3} = {scaled:.0}"
+        );
         assert!(
             scaled < 1_000.0,
             "biome {b}: its weight row totals {total} per-mille and the clump \
-             field peaks at {hi:.3}, so a grove cell asks for {scaled:.0} of \
-             1,000. Past the rail the last entries in the row become \
-             unreachable and density falls with nothing reporting it — lower \
-             `CLUMP_NORM`'s ceiling or the row, do not raise the rail."
+             field peaks at {hi:.3} — {factor:.3} through this biome's cap — so \
+             a grove cell asks for {scaled:.0} of 1,000. Past the rail the last \
+             entries in the row become unreachable and density falls with \
+             nothing reporting it — lower the cap, `CLUMP_NORM`'s ceiling or \
+             the row, do not raise the rail."
         );
+    }
+
+    // On the ground: the row a cell draws against, every land cell of every
+    // gate seed, at the field's value there. The convexity argument above is
+    // exact before rounding and this is what holds the rounding.
+    for seed in SEEDS {
+        let haven = terrain::haven(seed);
+        let mut worst = 0u32;
+        for gz in 0..CELLS_PER_SIDE {
+            for gx in 0..CELLS_PER_SIDE {
+                let x = gx as f32 * CELL_SIZE + CELL_SIZE * 0.5;
+                let z = gz as f32 * CELL_SIZE + CELL_SIZE * 0.5;
+                let h = terrain::ground(seed, &haven, x, z);
+                if h < LAND_MIN_H {
+                    continue;
+                }
+                let row = terrain::scatter_draw_row(
+                    &table,
+                    h,
+                    terrain::moisture(seed, x, z),
+                    terrain::ground_slope(seed, &haven, x, z),
+                    terrain::clump(seed, x, z),
+                );
+                worst = worst.max(row.iter().map(|&w| u32::from(w)).sum());
+            }
+        }
+        println!("seed {seed}: the densest drawn row asks for {worst} of 1,000");
+        assert!(
+            worst < 1_000,
+            "seed {seed}: a cell draws against a row totalling {worst} per-mille \
+             — past the rail, so its tail entries are unreachable there."
+        );
+    }
+}
+
+/// `ScatterTable::clump_cap_norm` is re-derived here rather than trusted, on
+/// the grid the constant's doc comment claims it was measured on — the same
+/// gate `test_clump_normalizer_holds` is for `CLUMP_NORM`, one level down.
+///
+/// A capped biome draws against `min(clump, cap) × norm`, and `norm` is the
+/// reciprocal of the island mean of `min(clump, cap)`: a number that is
+/// right when written and wrong the moment the field's shaping or the cap
+/// moves, silently taking that biome's density with it. So the gate does
+/// the division again, per seed, with the field's own wobble as tolerance.
+///
+/// And the cap has to BIND, or it is a comment: the share of cells the field
+/// reads at or above it is the share of the biome standing at its scaled
+/// ceiling, which is the whole reason a cap exists. Measured 43.3% on the
+/// four seeds at the shipped cap; a cap at the field's peak reads 1.7% and
+/// fails here, while passing the mean check above trivially (norm 1.0).
+#[test]
+fn test_clump_cap_normalizer_holds() {
+    let table = ScatterTable::alpha_default();
+    let n = f64::from(CELLS_PER_SIDE) * f64::from(CELLS_PER_SIDE);
+    for b in 0..4 {
+        let cap = table.clump_cap[b];
+        let norm = table.clump_cap_norm[b];
+        if !cap.is_finite() {
+            assert!(
+                norm == 1.0,
+                "biome {b}: no cap, so the field's own mean (1.0 by `CLUMP_NORM`) \
+                 is the mean and the normalizer must be exactly 1.0, not {norm}"
+            );
+            continue;
+        }
+        for seed in SEEDS {
+            let (mut sum, mut at) = (0f64, 0u32);
+            for gz in 0..CELLS_PER_SIDE {
+                for gx in 0..CELLS_PER_SIDE {
+                    let g = terrain::clump(
+                        seed,
+                        gx as f32 * CELL_SIZE + CELL_SIZE * 0.5,
+                        gz as f32 * CELL_SIZE + CELL_SIZE * 0.5,
+                    );
+                    sum += f64::from(g.min(cap));
+                    at += u32::from(g >= cap);
+                }
+            }
+            let mean = sum / n * f64::from(norm);
+            let share = f64::from(at) / n;
+            println!(
+                "biome {b} seed {seed}: min(clump, {cap}) x {norm} means {mean:.4}, \
+                 at the cap on {:.1}% of cells",
+                share * 100.0
+            );
+            assert!(
+                (0.97..=1.03).contains(&mean),
+                "biome {b} seed {seed}: the capped field means {mean:.4} after its \
+                 normalizer, so it multiplies this biome's density by that. \
+                 `clump_cap_norm[{b}]` is the reciprocal of the mean of \
+                 `min(clump, cap)` and has drifted — re-derive it \
+                 (`examples/clump_cap.rs`)."
+            );
+            assert!(
+                share >= 0.25,
+                "biome {b} seed {seed}: the field is at or above its cap on only \
+                 {:.1}% of cells — the cap is not binding, so this biome has no \
+                 stands at its ceiling and the cap is a comment.",
+                share * 100.0
+            );
+        }
     }
 }
 

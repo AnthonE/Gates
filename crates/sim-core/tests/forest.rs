@@ -21,7 +21,11 @@
 //! at 70.4‰, which is the Meadow's weight exactly, so the gate now measures
 //! the layer where it actually fits — `Clutter::Brush`. The history is kept
 //! because the arithmetic that closed the scatter route is the finding, and
-//! someone will otherwise re-propose the two-number edit.
+//! someone will otherwise re-propose the two-number edit. **The rail moved
+//! on 2026-09-14** (`ScatterTable::clump_cap` holds the Forest's field at
+//! its mean and re-normalizes, so the row may total 748‰), and the tree took
+//! the room — the understory stays where it is, because a fixed-count layer
+//! has no ceiling to spend.
 //!
 //! **What a gate here may and may not assert.** These are *distribution*
 //! gates, and a band wide enough to hold both the current tree and the
@@ -384,33 +388,40 @@ fn the_forest_is_a_different_place_from_the_meadow() {
 /// How many times denser the forest's canopy must be than the meadow's.
 /// **(knob)**
 ///
-/// Measured **3.482 / 3.454 / 3.565 / 3.211** against the table's own 260 : 70
-/// = 3.71, the shortfall being the splat blend described above. 2.5 leaves
-/// 22 % under the worst island and is well clear of a flattened table's 1.0,
+/// Measured **7.607 / 7.245 / 7.985 / 7.045** at forest density v1
+/// (2026-09-14) against the table's own 640 : 70 = 9.14, the shortfall
+/// being the splat blend described above — it was 3.482 / 3.454 / 3.565 /
+/// 3.211 against 260 : 70 before, and the floor was 2.5. 5.0 leaves 29 %
+/// under the worst island and is well clear of a flattened table's 1.0,
 /// which is the pair of cases it has to separate.
-const FOREST_CONTRAST_MIN: f64 = 2.5;
+const FOREST_CONTRAST_MIN: f64 = 5.0;
 
 /// **Gate 1's sim half — each biome's stem density holds a stated band.**
 ///
 /// A contrast ratio alone is satisfiable by making the *meadow* emptier, so
 /// the ratio needs an anchor underneath it. This is that anchor, and it is
 /// two-sided on purpose: the floor catches a forest quietly thinning, and
-/// the ceiling catches a density rise landing without the LOD work that has
-/// to pay for it (`reference/FORESTS.md` §5 step 4 — the reference bought
-/// its density with cheaper meshes first, and §8 gate 7 is the count cap we
-/// still do not have; today's LOD switches on distance alone, so a clump
-/// inside 80 m has no ceiling at all).
+/// the ceiling catches a density rise that outran the frame's count cap
+/// (`reference/FORESTS.md` §8 gate 7 — built 2026-09-14 as
+/// `client::render::tree::TREE_LOD_CAP`, the same slice that raised this
+/// floor; `client/tests/tree_cap.rs` is its gate and the cap is sized off
+/// the density this band admits).
 ///
-/// **The floor is not a claim that the forest is good.** Measured, it is
-/// ~39 stems/ha, which `reference/FORESTS.md` §1.1 prices at under 7 %
-/// canopy cover — below the 10 % that makes the word "forest" true. This
-/// gate holds what ships so it cannot silently get worse; raising it is a
-/// separate call with a real cost (`reference/PLANTS.md` §3.2's three priced
-/// options), and the ceiling is here so that call is made deliberately
-/// rather than arrived at.
+/// **The floor is the operator's call, 2026-09-14** (*"when can we get
+/// forest fr?"*). It was ~39 stems/ha, which `reference/FORESTS.md` §1.1
+/// prices at under 7 % canopy cover — below the 10 % that makes the word
+/// "forest" true — and it held there because the saturation rail capped
+/// the Forest row at 370‰ (`ScatterTable::clump_cap` is the way past it).
+/// Measured **96.29 / 92.91 / 94.70 / 93.02** after; the grid's own ceiling
+/// is 156.25/ha, and the rail admits ~110/ha for the tree entry alone, so
+/// the ceiling below is the most the shipped field can hand a row before
+/// something structural (`CELL_SIZE`, `CLUMP_FLOOR`) moves.
 ///
-/// Mutant: dropping Forest's tree weight 260 → 200‰ fails the floor; raising
-/// it to 400‰ fails the ceiling. Both keep island-wide live slots in band.
+/// Mutant: dropping Forest's tree weight 640 → 520‰ (~76/ha) fails the
+/// floor; the ceiling cannot be reached by a weight (the const block in
+/// `terrain.rs` refuses a row that saturates), so its mutant is the field:
+/// `CLUMP_FLOOR` 0.15 → 0.6 lifts the capped mean and the normalizer with
+/// it, and this reads the rise. Both keep island-wide live slots in band.
 #[test]
 fn each_biomes_density_holds_its_band() {
     for seed in SEEDS {
@@ -447,12 +458,12 @@ fn each_biomes_density_holds_its_band() {
 /// The band the forest's canopy density must sit in, stems per hectare.
 /// **(knob)**
 ///
-/// Measured **37.07–38.31** on the four seeds when the band was set (and
-/// 38.6–39.2 on the three the doc swept independently). The floor is
-/// slack enough for an atypical island and tight enough that losing a fifth
-/// of the forest reddens it; the ceiling is `reference/FORESTS.md` §8 gate
-/// 7's tripwire rather than a design target — it is roughly half the grid's
-/// 156.25/ha ceiling, so there is real headroom to spend once the draw
-/// budget can bound itself.
-const FOREST_STEMS_MIN: f64 = 32.0;
-const FOREST_STEMS_MAX: f64 = 80.0;
+/// Measured **92.91–96.29** on the four seeds when the band was set at
+/// forest density v1 (37.07–38.31 when it was 32–80). The floor is slack
+/// enough for an atypical island and tight enough that losing a fifth of
+/// the forest reddens it; the ceiling is `reference/FORESTS.md` §8 gate 7's
+/// tripwire rather than a design target — the client's count cap is sized
+/// against this band, so a forest past it is a forest the cap was not
+/// measured for.
+const FOREST_STEMS_MIN: f64 = 80.0;
+const FOREST_STEMS_MAX: f64 = 120.0;

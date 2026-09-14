@@ -977,7 +977,15 @@ conifer: a full 328-tree scatter ring at 5.9 k tris a tree is 1.9 M, and
 `crates/client/tests/tree.rs` *printed* the ring rather than asserting it,
 precisely because 1.5 M is the number this table is unsure of.
 
-**It fits now — 1.94 M → 510 k, landed 2026-08-20** (`DECISIONS.md` §open,
+**Then the forest became a forest and the distance stopped bounding anything
+(forest density v1, 2026-09-14).** The ring's p90 is 811 trees now and the
+80 m disc plus its fade holds up to ~360 — 2.1 M before a hull — so
+`tree::TREE_LOD_CAP` bounds the drawn pair by COUNT (`tree::cap_swap` pulls
+the swap in to the distance holding 180, and out again after) and the gates
+in `tests/tree.rs` / `tests/outer_ring.rs` hold both rings under 1.5 M at
+the densest eye on the island, at mesh ceilings. `FORESTS.md` §8 gate 7.
+
+**It fit first — 1.94 M → 510 k, landed 2026-08-20** (`DECISIONS.md` §open,
 tree LOD v0). Past `TREE_LOD_SWAP_M` a tree is one opaque hull lathed through
 its own vertices (`tree::impostor_of`, 105 tris) instead of a 5.9 k bark mesh
 plus an alpha-masked canopy, swapped by `VisibilityRange` with a 15 m dithered

@@ -51,6 +51,9 @@ this tree:
    p90 of 328 trees in the draw ring = 1.97 M against `DESIGN.md` §9's 1.5 M.
    `tests/tree.rs` prints the arithmetic so it cannot be forgotten, and
    `NOW.md` §0t item 1 has queued the billboard LOD that fixes it.
+   *(Overtaken twice: the far hull landed 2026-08-20, and forest density v1
+   on 2026-09-14 took the ring's p90 to 811 and made the budget a COUNT —
+   `tree::TREE_LOD_CAP`. `reference/FORESTS.md` §9.1 is current.)*
 
 Point 1 is the one to act on, and §6.1 is why it is nearly free.
 
@@ -158,7 +161,8 @@ sim-core with real costs:
    per cell is baked into the wire, the save and the client mirror. Large.
 2. **A smaller `CELL_SIZE`.** 8 → 4 m quadruples max density and also
    quadruples the cell count and the live `SlotLives` rows, against
-   `TERRAIN.md` §6's 8–12 k budget. Also re-derives the clutter skirt's
+   `TERRAIN.md` §6's budget (14–17 k since forest density v1, which found
+   the row and not the cell was the ceiling). Also re-derives the clutter skirt's
    `SKIRT_TILE_CELLS * 8 == CLUTTER_TILE_M` assert.
 3. **Leave it.** One stem per 64 m² is a real forest density for mature
    conifers; what it cannot draw is a young dense stand.
@@ -249,7 +253,7 @@ Anchors for anyone re-checking this doc:
 | tree variants | 3 seeds | `tree::CONIFER_POOL` |
 | tree height / max radius | 6.6 m / 1.7 m | `props::PINE_H`, `PINE_MAX_R` |
 | triangles per tree | ≤ 6,000 | `tree::CONIFER_MAX_TRIS` |
-| trees in ring, p90 / max | 328 / 446 | `tests/tree.rs` |
+| trees in ring, p90 / max | 811 / 1,086 since forest density v1 (328 / 446 before) | `tests/tree.rs`, `sim-core/examples/ring_census.rs` |
 | frame ceiling | 1.5 M tris | `DESIGN.md` §9 |
 | scatter grid | 8 m cell, one occupant, ±3 m jitter | `terrain::CELL_SIZE`, `terrain::scatter` |
 | occupant kinds | 7 rolled | `terrain::OCCUPANT_KINDS` |
