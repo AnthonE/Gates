@@ -138,6 +138,31 @@ data maps for three weeks. The tooling landed; the assets did not:
    sim truth and the operator's call. §LOOK: nobody has seen a flattened albedo
    or a straight normal in a frame.
 
+## 0rock · Rock is one tier drawn everywhere alike, and the cliff is bare *(sim + art lane)*
+
+`reference/ROCKS.md` (2026-09-13), measured with `examples/rock_stats.rs` on
+three seeds: rock stands at 3.7–4.7/ha in beach, meadow and forest and only
+2.4–3× that in highland; the cliff cell is vetoed (the reference's *first*
+tier) and its foot carries no more rock or ore than open highland; ore is no
+nearer a rock than a bush is; rock dispersion is 1.1–1.6 against the trees'
+3.0 — **exactly what a shared rate field predicts at 0.6 rocks per window**,
+so scatter clumping v0 cannot reach rock at any weight. Ranked in its §9.7:
+
+1. **§0rk first** — nothing about rock is worth looking at on a bent normal
+   map and a ball. ✅ **The pipeline for the re-roll exists** (2026-09-14):
+   `ci/rock_kit.py gen --occupant Rock` makes a keeper on every seed tried,
+   byte-deterministic, maps straight; `MANIFEST.md` §rock_kit has the
+   numbers. **Nobody has looked** — the previews sit unseen (`§LOOK`).
+2. **Rock kind + species into `Slot`** (§9.1, `FORESTS.md` §9.3): the biome
+   row picks the mesh family, not the yaw. One golden move for both.
+3. **Rock seeding v0** (§9.2): a coarse-grid parent draw for formations;
+   boulders, small rocks and ore weighted by distance to the parent and to
+   the cliff mask; totals conserved so `CONTENT.md` §4 and `haven_prize`
+   hold. Gates in §9.6. A wipe — the operator's.
+4. **Cliff tier v0** (§9.3): `Occupant::Cliff` on the cell the veto empties,
+   a box-list volume off its own slope; `rock_kit.py gen --kind slab` builds
+   the mesh once `measure_glb.py` has a slab row. Tint and blend: `§LOOK`.
+
 ## 0anim · The animals cannot be bought until the client can move one *(client lane)*
 
 Asked 2026-09-02 whether the generator can rig. **It can, and it will not rig

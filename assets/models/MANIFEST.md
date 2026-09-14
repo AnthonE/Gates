@@ -498,6 +498,55 @@ import height is `2 × (OCCUPANT_TOP_M − lift)`, so a lower lift buries more o
 the same blocked volume and the collision does not move; at the shipped lift
 of 0.5 the height is 1.25 m.
 
+## `ci/rock_kit.py` — the Blender stage, and the rail a generated piece lands on
+
+**Our own work, on no licence at all.** A piece `rock_kit.py gen` makes is
+authored by a script in this tree from a seed; Blender's GPL covers the
+program and not what it exports, so no vendor, no plan, no `NOTICE` entry —
+the provenance is the sidecar. Landed 2026-09-14 and **nothing from it ships
+yet**: every file below stayed in a scratch directory and was measured there.
+`WANTED.md` §0.4 says when to reach for it instead of Meshy;
+`reference/ROCKS.md` §9 is why the cliff and formation tiers need it.
+
+The pipeline is the prop pipeline with one command swapped:
+`rock_kit.py gen` (or `meshy_gen.py` → `rock_kit.py edit`) → `measure_glb.py`
+→ `import_meshy.py --fit-radius --center` (a no-op on a kit piece: measured
+`x1.000 y1.000 z1.000`, origin kept) → `ktx_pack.py`. The sidecar
+`<file>.glb.json` carries what a row here needs — `tool`, `script_sha256`,
+`seed`, `kind`, `target_m` and where it was read from, every derived noise
+parameter, `blender`, `measured` (the triage's own numbers) and `verdict` —
+so a row is transcribed, not remembered.
+
+**Measured on the Rock row** (`occupant_volume`: r 1.1145, top 1.5403, lift
+0.55, so a 2.229 × 1.981 × 2.229 m target), 1024² maps, 2,352 triangles, one
+box of four cores, ~50 s a piece with three preview renders:
+
+| piece | plan | spread | luma | chart | MB | `measure_glb.py` |
+|---|---|---|---|---|---|---|
+| `gen --seed 1` | 1.820 | 0.133 | 0.210 | 0.006 | 1.2 | KEEP |
+| `gen --seed 2` | 1.452 | 0.114 | 0.209 | 0.004 | 0.9 | KEEP |
+| `gen --seed 3` | 1.452 | 0.109 | 0.209 | 0.008 | 1.2 | KEEP |
+| `edit` of seed 1 to 882 tris, rebaked | 1.830 | 0.124 | 0.210 | 0.012 | 0.4 | KEEP |
+| `gen --kind formation --size 6 4 6` (5,428 tris) | 2.412 | 0.307 | 0.210 | 0.009 | 1.5 | KEEP |
+| `gen --kind slab --size 8 5 3` (1,574 tris) | 3.051 | 0.252 | 0.209 | 0.001 | 1.1 | **reject: depth/width 0.38** — the boulder's band; a slab has no row yet |
+
+Every boulder sits on the row exactly (radius 1.1145, height 1.9806, the
+importer's factors 1.000), the normal maps decode to X/Y means 0.499 / 0.502
+with 100 % of texels unit length, roughness reads 0.84 over the rock, and the
+same seed regenerates a **byte-identical GLB** (three maps and the blob
+compared). Nobody has looked at one.
+
+**Three things it found, each now in the script and one in `CLAUDE.md`'s
+trap list.** Blender's `Image.pixels` starts at the **bottom**-left, so a map
+written from that buffer is upside down against the albedo Blender saves
+itself; its glTF exporter writes `v' = 1 − v`; and a whole-image mean over a
+baked map is a mean over the empty space outside the UV islands (roughness
+read 0.52 for a map of 0.72–0.96 at 60 % coverage). The kit builds its
+coverage mask with `glbcharts.rasterize`, calibrates the albedo's luma over
+the covered texels only, and fills the rest with the rock's own mean — so
+`measure_glb.py`'s whole-image luma and the surface's mean are one number by
+construction. A Meshy delivery's background is whatever the generator left.
+
 ## `held/` — what the viewmodel puts in your hand
 
 **The surface these were waiting on turned out to already exist.** They were
