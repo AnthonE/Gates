@@ -1401,7 +1401,10 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
     }
 
     // --- harvested terrain ------------------------------------------------
-    let mut slots = [SlotLife::default(); MAX_SLOT_LIVES];
+    // On the heap for the reason `SlotLives` itself is: half a MiB in a
+    // frame is over wasm32's shadow stack, and this decoder runs under
+    // `test_parity_wasm`.
+    let mut slots: Box<[SlotLife; MAX_SLOT_LIVES]> = crate::boxed_array(SlotLife::default());
     for s in slots.iter_mut().take(n_slots) {
         let cx = r.u16()?;
         let cz = r.u16()?;
@@ -1547,7 +1550,7 @@ mod tests {
             + 64 * 201                      // world containers: 21 + 30 six-byte stacks
             + 64 * 25                       // charges
             + 512 * 22                      // spent arrows (format 10)
-            + 16_384 * 14; // harvested slots
+            + 32_768 * 14; // harvested slots
                            // 54 -> 56 at format 5: a ninth section count is a `u16` in the head.
                            // 56 -> 62 at format 10: a tenth count, plus the
                            // spent store's `u32` eviction counter beside the
@@ -1600,8 +1603,14 @@ mod tests {
         // It buys a magazine keyed by weapon row rather than a fourth
         // field on `ItemStack`, which would have widened every stack in
         // every store instead (format 7 is what that costs: 31 kB).
+        // Moved 645_326 → 874_702 at forest density v1 (2026-09-14), and
+        // NOT at a format: `MAX_SLOT_LIVES` 16,384 → 32,768 because the
+        // forest now puts ~14–17 k live slots on an island. A cap is a bound
+        // and not a layout — an old file still reads — so the format did
+        // not move; a new file with more than 16,384 harvested slots is
+        // what an old shard refuses (`CountOverCap`).
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 645_326,
+            WORLD_SAVE_MAX_BYTES, 874_702,
             "the world save ceiling moved"
         );
     }

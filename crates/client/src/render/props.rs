@@ -318,12 +318,26 @@ pub enum FellPart {
 /// became **one 105-triangle opaque hull**, ~55× cheaper, and nobody re-derived
 /// the radius the old cost had chosen.
 ///
-/// **5, and the arithmetic is the reason.** An 11×11 ring is 96 chunks beyond
-/// the near 25, 3.84× the area, so at the ring's own measured p90 of 328 trees
-/// it is ~1,260 more — every one of them past [`tree::TREE_LOD_SWAP_M`] by
-/// construction and therefore a hull. 1,260 × 105 = **~132 k triangles**
-/// against trees currently costing 510 k and `DESIGN.md` §9's 1.5 M for the
-/// whole frame. `tests/outer_ring.rs` holds that arithmetic.
+/// **It was 5, and the arithmetic was the reason.** An 11×11 ring is 96
+/// chunks beyond the near 25, 3.84× the area, so at the ring's then-measured
+/// p90 of 328 trees it was ~1,260 more — every one of them past
+/// [`tree::TREE_LOD_SWAP_M`] by construction and therefore a hull. 1,260 ×
+/// 105 = ~132 k triangles against trees then costing 510 k and `DESIGN.md`
+/// §9's 1.5 M for the whole frame.
+///
+/// **4 since forest density v1 (2026-09-14), by the same arithmetic on the
+/// new forest.** The near ring's p90 is 811 trees now and its densest 1,086
+/// (`sim-core/examples/ring_census.rs`, shipped seed), so an 11×11 annulus
+/// would be ~3,100 hulls at p90 and ~4,200 at the worst — 350–470 k
+/// triangles on top of the ~1.2 M the near ring is allowed
+/// (`tree::TREE_LOD_CAP` at a conifer's ceiling plus its own hulls), which
+/// is over the 1.5 M that the whole frame is still budgeted at. A 9×9 ring
+/// is 56 outer chunks, 2.24× the near area: ~1,820 hulls at p90, ~2,430 at
+/// the worst, under 280 k, and the trees total under 1.5 M at every eye on
+/// the island.
+/// The treeline reaches 288 m instead of 352. `tests/outer_ring.rs` holds
+/// the arithmetic; `DESIGN.md` §9's number is browser-era and re-deriving it
+/// for a desktop GPU is what buys the radius back (`NOW.md` §0t).
 ///
 /// **Widening `NEAR_RADIUS` instead would have been the wrong lever**, and
 /// this is the part worth writing down. That constant is read by the ground
@@ -332,7 +346,7 @@ pub enum FellPart {
 /// tree is FOUR entities (trunk, canopy, hidden stump, hull) where an outer
 /// one is a single hull with no `Topple` and no `VisibilityRange`. Same
 /// picture, an order of magnitude more of everything else.
-pub const OUTER_RADIUS: i32 = 5;
+pub const OUTER_RADIUS: i32 = 4;
 
 /// What the scatter ring has spawned, one parent entity per chunk.
 #[derive(Resource, Default)]
@@ -382,7 +396,7 @@ impl PropRing {
     }
 }
 
-/// Chunks in a full outer ring — the 11×11 block minus the near 5×5 it wraps.
+/// Chunks in a full outer ring — the (2R+1)² block minus the near 5×5 it wraps.
 pub const OUTER_CHUNKS: usize = ((2 * OUTER_RADIUS + 1) * (2 * OUTER_RADIUS + 1)
     - (2 * NEAR_RADIUS + 1) * (2 * NEAR_RADIUS + 1)) as usize;
 

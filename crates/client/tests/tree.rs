@@ -24,20 +24,36 @@ use bevy::prelude::*;
 use client::render::terrain_mesh::{CHUNK_M, NEAR_RADIUS};
 use client::render::tree::{
     bounds, conifer, impostor_of, leaf_image, min_y, needle_image, species_of, tris, TreeLod,
-    CONIFER_MAX_TRIS, CONIFER_POOL, IMPOSTOR_MAX_TRIS, SPECIES, TREE_LOD_FADE_M, TREE_LOD_SWAP_M,
-    TREE_MAX_R,
+    CONIFER_MAX_TRIS, CONIFER_POOL, IMPOSTOR_MAX_TRIS, SPECIES, TREE_LOD_CAP, TREE_LOD_FADE_M,
+    TREE_LOD_SWAP_M, TREE_MAX_R,
 };
 
-/// Trees inside the client's 5×5×64 m prop ring, p90 over 100 eye positions
-/// sampled across the island off `sim_core::terrain::scatter`. Recorded here
-/// because the budget assertion below is meaningless without it.
-const RING_TREES_P90: usize = 328;
+/// Trees inside the client's 5×5×64 m prop ring, p90 over 271 land eye
+/// positions on the shipped seed (20260731), off `sim_core::terrain::scatter`
+/// — `cargo run --release -p sim-core --example ring_census` is the command,
+/// and the numbers here are its print, never typed from memory. Recorded
+/// because the budget assertion below is meaningless without them.
+///
+/// 328 until forest density v1 (2026-09-14); the four gate seeds read
+/// 842–966 at p90 and 1,024–1,080 at the densest ring.
+const RING_TREES_P90: usize = 811;
 
-/// …and how many of those are inside [`TREE_LOD_SWAP_M`], from the same
-/// sweep. The band table in `the_far_band_is_an_impostor_and_the_ring_fits`
-/// is the rest of it; this is the row the budget arithmetic uses, so it is a
-/// constant rather than a number inside the test.
-const NEAR_TREES_AT_SWAP: usize = 82;
+/// The densest ring on the shipped seed, from the same sweep — the worst
+/// case the cap arithmetic below is held at, where the p90 is the typical.
+const RING_TREES_MAX: usize = 1_086;
+
+/// …and how many trees draw ANY near geometry at the p90 eye — inside
+/// [`TREE_LOD_SWAP_M`] plus the [`TREE_LOD_FADE_M`] crossfade, where both
+/// LODs are resident — from the same sweep. 198 are inside the swap alone;
+/// this is the count `TREE_LOD_CAP` is measured against, so it is the row
+/// the budget arithmetic uses. (82 inside the swap before v1, when the
+/// distance was enough on its own.)
+const NEAR_TREES_DRAWN_P90: usize = 278;
+
+/// …and at the densest eye on the shipped seed (357 with the fade; the four
+/// gate seeds reach 361). Over the cap, which is the whole reason the cap
+/// exists.
+const NEAR_TREES_DRAWN_MAX: usize = 357;
 
 #[test]
 fn every_variant_fits_the_volume_the_sim_blocks() {
@@ -151,8 +167,8 @@ fn every_variant_is_rooted_at_the_ground() {
 #[test]
 fn the_pool_is_distinct_silhouettes() {
     // `ART.md` rule 7: no two identical instances adjacent. Yaw and scale
-    // vary per slot, but at the measured p90 of 328 trees in the draw ring one
-    // silhouette repeated 328 times reads as one silhouette repeated.
+    // vary per slot, but at the measured p90 of 811 trees in the draw ring one
+    // silhouette repeated 811 times reads as one silhouette repeated.
     let shapes: Vec<(f32, f32)> = (0..CONIFER_POOL)
         .map(|v| {
             let (bark, needles) = conifer(v);
@@ -184,21 +200,27 @@ fn one_tree_stays_inside_its_triangle_ceiling() {
 }
 
 /// **The ring fits now, and the number this used to print is why the LOD
-/// exists.**
+/// exists — and why, since forest density v1, it is a COUNT and not only a
+/// distance.**
 ///
 /// This test asserted the opposite for as long as the generator has shipped:
 /// a full-detail conifer at the ring's p90 does not fit `DESIGN.md` §9's 1.5 M
-/// and no parameter change makes it fit — measured, by distance band: 40 m
-/// holds 21 trees (~89 k tris), 80 m holds 82 (~350 k), 120 m holds 168
-/// (~709 k), 160 m holds 288 (~1.22 M). It printed the debt rather than
-/// asserting it away, so it could not be forgotten by anyone reading a green
-/// suite.
+/// and no parameter change makes it fit — measured, by distance band on the
+/// old forest: 40 m holds 21 trees (~89 k tris), 80 m holds 82 (~350 k),
+/// 120 m holds 168 (~709 k), 160 m holds 288 (~1.22 M). It printed the debt
+/// rather than asserting it away, so it could not be forgotten by anyone
+/// reading a green suite.
 ///
 /// `tree::impostor_of` is the answer to it and the arithmetic below is the
 /// whole claim: everything past [`TREE_LOD_SWAP_M`] costs a hull instead of a
-/// tree. Both halves are asserted — the ring fits, AND it would not fit
-/// without the swap — because a gate that only checks the good number stays
-/// green if the impostor quietly becomes a copy of the tree.
+/// tree. Then the forest was made a forest (~39 → ~94 stems/ha) and the 80 m
+/// disc stopped being enough — it holds 278 trees at p90 and 357 at the
+/// worst, which is 2.1 M before a hull — so [`TREE_LOD_CAP`] bounds the
+/// drawn pair by count and the swap distance is where the cap lands. Three
+/// halves are asserted — the ring fits at p90, it fits at the densest eye
+/// on the island, AND it would not fit without the swap — because a gate
+/// that only checks the good number stays green if the impostor quietly
+/// becomes a copy of the tree.
 #[test]
 fn the_far_band_is_an_impostor_and_the_ring_fits() {
     // The band table above is measured AT 80 m. If the knob moves, the tree
@@ -207,7 +229,8 @@ fn the_far_band_is_an_impostor_and_the_ring_fits() {
         (TREE_LOD_SWAP_M - 80.0).abs() < 1e-6,
         "TREE_LOD_SWAP_M is {TREE_LOD_SWAP_M} m and the p90 band table in this \
          gate was measured at 80 m — re-measure the tree count at the new \
-         distance rather than reusing {NEAR_TREES_AT_SWAP}"
+         distance (`sim-core/examples/ring_census.rs`) rather than reusing \
+         {NEAR_TREES_DRAWN_P90}"
     );
 
     // Worst case over the pool rather than variant 0: the budget is paid by
@@ -221,17 +244,37 @@ fn the_far_band_is_an_impostor_and_the_ring_fits() {
     }
 
     let was = per_tree * RING_TREES_P90;
-    let now = per_tree * NEAR_TREES_AT_SWAP + per_far * (RING_TREES_P90 - NEAR_TREES_AT_SWAP);
+    let drawn_p90 = NEAR_TREES_DRAWN_P90.min(TREE_LOD_CAP);
+    let now = per_tree * drawn_p90 + per_far * (RING_TREES_P90 - drawn_p90);
+    let drawn_max = NEAR_TREES_DRAWN_MAX.min(TREE_LOD_CAP);
+    let worst = per_tree * drawn_max + per_far * (RING_TREES_MAX - drawn_max);
     println!(
         "conifer {per_tree} tris/tree · impostor {per_far} tris · ring at p90 \
          {RING_TREES_P90} trees: {was} tris full detail -> {now} with the \
-         {TREE_LOD_SWAP_M} m swap ({:.1}x)",
+         {TREE_LOD_SWAP_M} m swap and the {TREE_LOD_CAP}-tree cap ({:.1}x); \
+         densest ring {RING_TREES_MAX} trees -> {worst}",
         was as f32 / now.max(1) as f32
     );
     assert!(
         now < 1_500_000,
         "the ring costs {now} tris with the LOD in — past DESIGN.md §9's 1.5 M, \
          which is the ceiling this LOD exists to get under"
+    );
+    assert!(
+        worst < 1_500_000,
+        "the densest ring on the island costs {worst} tris with the LOD and the \
+         cap in — past DESIGN.md §9's 1.5 M. The cap is what bounds this; if \
+         the forest got denser, the cap is what moves, not the rail"
+    );
+    // And the cap is doing work: without it the densest eye is over budget,
+    // which is the premise of `tree::cap_swap` and of `tests/tree_cap.rs`.
+    let uncapped =
+        per_tree * NEAR_TREES_DRAWN_MAX + per_far * (RING_TREES_MAX - NEAR_TREES_DRAWN_MAX);
+    assert!(
+        uncapped > 1_500_000,
+        "the densest eye draws only {uncapped} tris with no cap, so the cap is \
+         not what keeps the frame under budget — re-measure the census before \
+         believing TREE_LOD_CAP still matters"
     );
     assert!(
         was > 1_500_000,

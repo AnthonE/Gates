@@ -148,6 +148,20 @@ fn carriageway_is_clear_and_the_shoulder_carries_barrels() {
     // Measured worst: 103 barrels, 52.2% of occupied shoulder cells; the
     // margin is ~20% for coastline variation (DECISIONS.md §open: coast road
     // v0), so 80 and 42%.
+    //
+    // **The ratio was re-measured at forest density v1 (2026-09-14) and the
+    // count was not, which is the point of keeping both.** The road draw
+    // fires before the biome table is consulted, so the barrel COUNT is
+    // invariant to the table — measured identical across the change (111 /
+    // 123 / 149 / 96 → 95 per seed, the one cell a blended forest-edge row
+    // now hands to a tree ahead of its barrel entry). The RATIO is not: a
+    // shoulder cell whose road roll fails draws the biome row, and a forest
+    // section's row now puts a tree on ~86% of its cells where it put one on
+    // a quarter, so what stands beside the barrels tripled. Measured 46 / 37
+    // / 49 / 39% after (56 / 50 / 64 / 52% before); the same ~20% margin
+    // under the worst is 30%. A road through a forest is lined with trees.
+    // What this floor still catches is the mechanism: a barrel branch that
+    // ran AFTER the table would read ~10% here, not 37.
     assert!(
         worst_shoulder_barrels >= 80,
         "worst seed puts only {worst_shoulder_barrels} barrels on the road \
@@ -155,10 +169,10 @@ fn carriageway_is_clear_and_the_shoulder_carries_barrels() {
          pay, so nobody walks it"
     );
     assert!(
-        worst_ratio >= 0.42,
-        "barrels are only {:.0}% of what stands on the shoulder (measured 52% \
-         when this floor was set) — the road draw is being outvoted by the \
-         biome table",
+        worst_ratio >= 0.30,
+        "barrels are only {:.0}% of what stands on the shoulder (measured 37% \
+         at the worst seed when this floor was set, 52% before forest density \
+         v1) — the road draw is being outvoted by the biome table",
         worst_ratio * 100.0
     );
 }

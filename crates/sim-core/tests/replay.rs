@@ -476,7 +476,14 @@ const TICKS: u64 = 900;
 /// this surface at all. And the smasher looks straight down (its frame is
 /// the one this script edits), because standing on a drum no longer lands a
 /// swing by proximity. Deliberate, regenerated in the commit that caused it.
-const GOLDEN_FINAL_HASH: u64 = 0x565A_4CF4_EC7B_B375;
+///
+/// **Moved `0x565A_4CF4_EC7B_B375` → `0x9B6A_EF8D_69AC_6FF7` at forest density
+/// v1** (2026-09-14), and it is the cheap kind again: worldgen changed
+/// (`ScatterTable`'s Forest row and its capped field), so which cells hold a
+/// tree changed across ~45% of the land, and everything the bots gather,
+/// walk around and stand next to moved with it. No verb, no ordering and no
+/// rule changed; the equality assert above it stayed green on the same run.
+const GOLDEN_FINAL_HASH: u64 = 0x9B6A_EF8D_69AC_6FF7;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -524,7 +531,12 @@ const GOLDEN_FINAL_HASH: u64 = 0x565A_4CF4_EC7B_B375;
 /// what the bots gather, smash and chip changed from the first swing of the
 /// run, which is the behavioural shape — the trace moved from where the
 /// change started, not by a constant.
-const GOLDEN_TRACE_HASH: u64 = 0x31F6_CAD0_C685_6B34;
+///
+/// Moved `0x31F6_CAD0_C685_6B34` → `0xD9A5_FA5D_C6DA_36B9` at forest density v1
+/// (2026-09-14), beside `GOLDEN_FINAL_HASH` and for its reason: the scatter
+/// changed under the run, so it moved from the first stamped tick — the
+/// worldgen shape, not the behavioural one.
+const GOLDEN_TRACE_HASH: u64 = 0xD9A5_FA5D_C6DA_36B9;
 
 /// Fold a stamped trace into one number.
 ///

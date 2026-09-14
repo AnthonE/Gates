@@ -280,6 +280,25 @@ Stages, in order — each cheap, each deterministic:
    null in closed form rather than remembering a number. Knobs and the full
    measurement set: `DECISIONS.md` §open "scatter clumping v0".
 
+   **The field's peak was also the forest's ceiling, and forest density v1
+   (2026-09-14) is what moved it.** A row scaled by a field that peaks at
+   2.7× its mean may total at most 370‰ before a grove cell asks for more
+   than the roll can give, and that rail held the Forest at 260‰ trees —
+   ~39 stems/ha, parkland — from the day the field landed. The way past it
+   is per biome: `ScatterTable::clump_cap` holds the field a biome draws
+   against to a ceiling (the Forest's is the field's own mean, 1.0) and
+   `clump_cap_norm` re-normalizes what is left to mean 1, so the biome's
+   row is still its mean density and the rail is now `1000 / (cap × norm)`
+   — 748‰ for the Forest, whose row went to 700. Each biome's row meets its
+   own field BEFORE the splat blends them (`scatter_draw_row`), so the
+   blend stays a convex mix of four bounded rows. Measured: **~94 stems/ha**
+   in the Forest biome (92.9–96.3 over the four gate seeds), **43 % of its
+   ground at the scaled ceiling** (~134/ha, one tree on six cells in seven),
+   the clearing floor untouched at ~8/ha, dispersion **4.7–5.5**. Live slots
+   14.7–16.7 k, which is what `limits::MAX_SLOT_LIVES` is now sized past.
+   `DECISIONS.md` §open "forest density v1"; `sim-core/examples/clump_cap.rs`
+   is where the cap's value comes from.
+
    **That last line is now closed, and the fix was to stop classifying.** The
    residual here read "`biome()` is still a hard classifier, so a biome
    boundary is still a step in *composition* even though density now ramps
@@ -527,7 +546,7 @@ The reads a survival map must produce, and which stage buys each:
 | height grid | 1 m authoritative; server caches sampled chunks LRU |
 | relief amplitude | ~90 m, sea level at 0 |
 | chunks | 64 m, aligned with the netcode grid — one grid, everywhere |
-| scatter cells | 8 m (≈ 65 k cells; ~8–12 k live slots per seed) |
+| scatter cells | 8 m (≈ 65 k cells; ~14–17 k live slots per seed since forest density v1, ~8–12 k before it) |
 | clutter cells | 0.64 m (≈ 10 M cells; total coverage on land, streamed in 16 m tiles) |
 | clutter richness | 2nd stratum, rate `RICH_ACCEPT_MAX` = 32 in 256 by splat×clump; ≤ 96 per tile (frame-budget-bound, not design); dispersion 1.40 @ 3.2 m → 8.51 @ 12.8 m |
 | prop skirts | annulus from the footprint edge out `SKIRT_BAND_M` = 0.45 m; 3–16 elements by reach; ≤ 256 per tile (measured max 40) |

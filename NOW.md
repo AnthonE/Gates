@@ -766,11 +766,15 @@ the understory** (`DECISIONS.md` §open, forest structure v0 — `tests/forest.r
    and every check on it is arithmetic. Whether it reads as understory or as
    tall grass is a person booting the game; 120‰ and 0.75 m are what a frame
    would settle. `§LOOK`.
-2. **The scatter grid is full — the finding.** The forest's bush ceiling is
-   **70.4‰**, exactly the meadow's weight, so it cannot carry an understory
-   at any weight without taking the canopy down to pay. The canopy is still
-   parkland — **~39 stems/ha, under 7 % cover** against the 10 % that makes
-   the word true — and raising it needs `PLANTS.md` §3.2 *and* item 5 first.
+2. ✅ **The canopy is a forest (forest density v1, 2026-09-14)** — the
+   operator's *"when can we get forest fr?"*. The rail was the grove field's
+   peak, not the cell: `ScatterTable::clump_cap` holds the Forest's field at
+   its mean and the row went 350 → 700‰. **~94 stems/ha** (from ~39), 43 %
+   of the forest at ~134/ha, ~20 % cover (from ~7 %). `DECISIONS.md` §open
+   has every number and what it leaves the operator: nobody has stood in it
+   on a GPU, and cover is closed by the crown now (§0t item 2), not stems.
+   The bush ceiling finding stands as history — the understory stays in
+   `Clutter::Brush`, which has no ceiling to spend.
 3. **Species is not a sim fact**, so it cannot be gated or made spatial —
    both rings pick it as `slot.yaw % pool` (`props.rs:2037`, `props.rs:1977`).
    Into `Slot` off the same cell hash: one field, client mirrors it free,
@@ -778,9 +782,11 @@ the understory** (`DECISIONS.md` §open, forest structure v0 — `tests/forest.r
 4. **No forest EDGE exists** (§8 gate 4). Theirs is a separate mask with its
    own plant list — `Forestside`, "small trees and bushes" — and it is what
    makes a treeline read as a treeline instead of a density gradient.
-5. **The LOD budget is a print, not a cap** — distance alone at 80 m
-   (`tree.rs:870`), so a clump inside it has no ceiling. Theirs caps
-   mesh-trees by *count*. Gate 7 lands before any density rise.
+5. ✅ **The LOD budget is a cap (2026-09-14)** — `tree::TREE_LOD_CAP` = 180
+   trees drawing their near pair, `tree::cap_swap` pulling the swap in past
+   it and out again after (`tests/tree_cap.rs`). Landed with the density
+   rise it was required before. What it leaves: the swap sits at ~50–61 m
+   in a stand, so the hull's look at that range (§0t item 1b) matters more.
 
 
 ## Sim, content and gameplay verbs *(systems lane)*
@@ -1800,10 +1806,18 @@ worthless assertion in the first draft.
    seeds before it is typed; `PLANTS.md` §3.1's presets are its shapes. The
    broadleaf wears its own generated card now (`tree::leaf_image`) — the
    first bench frames had it reading as a yellower conifer in the sprig.
-2. **The density ceiling** — one occupant per 8 m `CELL_SIZE` cell.
-   `PLANTS.md` §3.2 prices the three ways up; all sim-core, none cheap, the
-   cheapest (`CELL_SIZE` 8 → 4) quadruples live `SlotLives` rows against
-   `TERRAIN.md` §6's budget. Not a rendering change.
+   **(d) is closed by density v1** (~7 → ~20 %); **(b) matters more now**:
+   the count cap parks the swap at ~50–61 m inside a stand, so the hull is
+   what a player sees past that. And the outer treeline is 288 m (from
+   352) to stay under a 1.5 M frame budget `DESIGN.md` §9 calls browser-era
+   — re-deriving it for a desktop GPU buys `OUTER_RADIUS` 5 back.
+2. **The crown, now that stems are a forest (density v1, 2026-09-14).**
+   At ~94 stems/ha cover is ~20 % and closing a canopy is r², not stems:
+   `TREE_MAX_R` 2.9 → 4.0 takes it past 35 % (a closed canopy is 40 %). It
+   moves `SPAWN_CLEAR_M` (4.5 → ~6.0) and so the beach spawn search and
+   both goldens, one sim row and a sweep of `examples/tree_sweep.rs` for
+   wider limbs — `reference/FORESTS.md` §1.2 priced it. `CELL_SIZE` 8 → 4
+   is no longer the lever: the grid has room the row was not using.
 3. **The billboard LOD is optional now, not owed** — `impostor_of`'s 105-tri
    hull took the p90 ring 1.94 M → 510 k, under `DESIGN.md` §9's 1.5 M.
    `TERRAIN.md` §4's octahedral billboard is the cheaper end, still unbuilt.

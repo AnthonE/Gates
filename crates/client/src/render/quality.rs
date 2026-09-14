@@ -256,9 +256,12 @@ pub fn apply(
     if shadow_map.size != t.shadow_map_px {
         shadow_map.size = t.shadow_map_px;
     }
-    let want = TreeLod::at(t.tree_lod_swap_m);
-    if *lod != want {
-        *lod = want;
+    // The tier, not the bands: `tree::cap_swap` may be holding the bands
+    // under the tier this frame, and that is not a reason to rewrite them.
+    // A tier that did move resets the bands to it, and the cap pulls them in
+    // again on its next run if the stand still needs it.
+    if lod.tier_m != t.tree_lod_swap_m {
+        *lod = TreeLod::at(t.tree_lod_swap_m);
     }
 }
 

@@ -988,6 +988,44 @@ pub fn fits_sim_bounds(bark: &Mesh, needles: &Mesh) -> bool {
 /// it is not 120 (168 trees, ~709 k) or 160 (288, ~1.22 M).
 pub const TREE_LOD_SWAP_M: f32 = 80.0;
 
+/// The most trees whose near pair may be drawn at once — fully or in the
+/// crossfade — and the reason the forest could be made a forest. **(knob)**
+///
+/// **This is `reference/FORESTS.md` §8 gate 7: the frame budget as a cap,
+/// not a print.** [`TREE_LOD_SWAP_M`] alone bounds nothing — a distance is a
+/// disc, and what a disc holds is the forest's business, which forest
+/// density v1 (2026-09-14) took from ~39 to ~94 stems/ha with stands at
+/// ~134. Measured on the shipped seed after it (`sim-core/examples/
+/// ring_census.rs`): the 80 m disc plus its 15 m fade holds 278 trees at
+/// the p90 eye and 357 at the densest, and a tree is up to
+/// [`CONIFER_MAX_TRIS`] — 357 × 5,900 is 2.1 M, over `DESIGN.md` §9's 1.5 M
+/// for the whole frame before a hull or a blade of grass is counted. Before
+/// v1 the same disc held 82 at p90 and the distance was enough.
+///
+/// 180 × 6,000 ([`CONIFER_MAX_TRIS`], the ceiling; the generator emits
+/// ~5,900) = 1.08 M. With every other tree in both rings a hull at
+/// [`IMPOSTOR_MAX_TRIS`] (1,086 near at the shipped seed's densest ring,
+/// ~2,430 outer at `OUTER_RADIUS` 4) the trees total under 1.46 M at the
+/// worst eye on the island, which `tests/tree.rs` and `tests/outer_ring.rs`
+/// hold as arithmetic — at ceilings, not at the measured means, which is
+/// why it is 180 and not the 200 the means would admit. The price is where
+/// the swap lands when the cap binds: [`cap_swap`] pulls it to the distance
+/// holding exactly this many, less the fade — ~61 m at the p90 eye, ~50 m
+/// in the densest stand the shipped field makes (~134 stems/ha), and never
+/// under 44 m at any density the 8 m grid can produce (156 stems/ha fills
+/// 180 by 61 m, less the fade and the step). `tests/tree_cap.rs` holds that
+/// floor. A tree 14 m tall is still a tree at 50 m; the hull it becomes is
+/// `NOW.md` §0t's "hull pixels" item, which this makes worth more, not less.
+pub const TREE_LOD_CAP: usize = 180;
+
+/// The step [`cap_swap`] moves the swap in, metres. Not a knob: a
+/// quantization, so a walking eye in a stand does not reband the whole ring
+/// on every frame the cap's distance drifts a centimetre. At a sprint's
+/// ~5 m/s that is a reband every few frames in a dense stand and none
+/// anywhere the cap does not bind, and a reband is `quality::reband_trees`'s
+/// three `VisibilityRange` writes per near tree.
+pub const TREE_LOD_CAP_STEP_M: f32 = 2.0;
+
 /// How wide the crossfade between the two LODs is, metres. **(knob)**
 ///
 /// Bevy dithers across this band rather than cutting, which is what stops the
@@ -1054,7 +1092,11 @@ pub const IMPOSTOR_MAX_TRIS: usize = IMPOSTOR_BANDS * IMPOSTOR_SIDES * 2;
 /// **A resource because the swap distance is a graphics tier** (`config::
 /// Quality`, `render/quality.rs`): `props::stream` reads it when a chunk
 /// streams in and `quality::reband_trees` rewrites the trees already standing,
-/// so both halves come from this one value.
+/// so both halves come from this one value. **And since forest density v1
+/// the bands can sit UNDER the tier** — [`cap_swap`] pulls them in when more
+/// than [`TREE_LOD_CAP`] trees would draw their near pair, and lets them back
+/// out to the tier when fewer would. `tier_m` is where the tier put them;
+/// [`Self::swap_m`] is where they are.
 /// `Debug` is deliberately absent: `VisibilityRange` does not implement it,
 /// so a derive here would be a wrapper around a type that cannot print. The
 /// two `Range<f32>`s inside it print perfectly well and the gates name them
@@ -1063,6 +1105,9 @@ pub const IMPOSTOR_MAX_TRIS: usize = IMPOSTOR_BANDS * IMPOSTOR_SIDES * 2;
 pub struct TreeLod {
     pub near: VisibilityRange,
     pub far: VisibilityRange,
+    /// The graphics tier's swap distance, metres — the bands' ceiling.
+    /// `quality::apply` writes it with the tier and nothing else does.
+    pub tier_m: f32,
 }
 
 impl Default for TreeLod {
@@ -1073,20 +1118,29 @@ impl Default for TreeLod {
 }
 
 impl TreeLod {
-    /// The pair for a given swap distance. The fade width and the reach do
-    /// not move with it: the fade is how long a crossfade takes to walk
-    /// through and the reach is the prop ring's diagonal, and neither is a
-    /// function of where the swap happens.
+    /// The pair for a given swap distance, with that distance as the tier.
+    /// The fade width and the reach do not move with it: the fade is how
+    /// long a crossfade takes to walk through and the reach is the prop
+    /// ring's diagonal, and neither is a function of where the swap happens.
     pub fn at(swap_m: f32) -> Self {
-        let fade_end = swap_m + TREE_LOD_FADE_M;
+        let (near, far) = Self::bands(swap_m);
         Self {
-            near: VisibilityRange {
+            near,
+            far,
+            tier_m: swap_m,
+        }
+    }
+
+    fn bands(swap_m: f32) -> (VisibilityRange, VisibilityRange) {
+        let fade_end = swap_m + TREE_LOD_FADE_M;
+        (
+            VisibilityRange {
                 // No near margin: a tree you stand in is its own geometry.
                 start_margin: 0.0..0.0,
                 end_margin: swap_m..fade_end,
                 use_aabb: false,
             },
-            far: VisibilityRange {
+            VisibilityRange {
                 start_margin: swap_m..fade_end,
                 // `use_aabb` stays false on BOTH, which is Bevy's own note
                 // about crossfading: the two LODs have different AABBs and a
@@ -1096,6 +1150,18 @@ impl TreeLod {
                 end_margin: TREE_LOD_REACH_M..(TREE_LOD_REACH_M + TREE_LOD_FADE_M),
                 use_aabb: false,
             },
+        )
+    }
+
+    /// Move the bands to `swap_m`, clamped to the tier, leaving the tier
+    /// where it is. [`cap_swap`]'s write; a no-op when the bands are already
+    /// there, so a caller can guard a `ResMut` on the comparison.
+    pub fn contract(&mut self, swap_m: f32) {
+        let at = swap_m.min(self.tier_m).max(0.0);
+        if at != self.swap_m() {
+            let (near, far) = Self::bands(at);
+            self.near = near;
+            self.far = far;
         }
     }
 
@@ -1103,7 +1169,7 @@ impl TreeLod {
     /// start of the near band's end margin, which `tests/tree.rs` holds equal
     /// to the start of the far band's start margin. [`swap_by_distance`]
     /// swaps here with no fade; the desktop fades across `TREE_LOD_FADE_M`
-    /// from here.
+    /// from here. At or under [`Self::tier_m`], never above it.
     pub fn swap_m(&self) -> f32 {
         self.near.end_margin.start
     }
@@ -1148,6 +1214,66 @@ pub fn lod_band(range: &VisibilityRange) -> VisibilityRange {
 /// See the desktop half above: a browser tree carries no `VisibilityRange`.
 #[cfg(target_arch = "wasm32")]
 pub fn lod_band(_range: &VisibilityRange) {}
+
+/// The count cap: pull the swap in when more than [`TREE_LOD_CAP`] trees
+/// would draw their near pair, and let it back out to the tier when fewer
+/// would. Both targets, every frame the world runs, before
+/// `quality::reband_trees` (which applies the bands it writes) and before
+/// [`swap_by_distance`] (which reads them on a browser).
+///
+/// **The measure is every tree that draws ANY near geometry** — inside the
+/// swap and inside the fade past it, where Bevy dithers both LODs and the
+/// vertex work is the full pair. So the bound is on distance from the eye
+/// to the (`TREE_LOD_CAP` + 1)-th nearest trunk, less the fade: the
+/// `TREE_LOD_CAP` trunks nearer than it are the drawn set, exactly. One
+/// trunk per tree, and the trunk's origin is the shared pivot every part of
+/// the tree measures from (`use_aabb: false`) — the same distance
+/// `VisibilityRange` will then evaluate.
+///
+/// **Allocation-free after warmup** (CLAUDE.md's client hot-path rule): the
+/// scratch is a `Local<Vec>` that `clear`s and keeps its capacity, so it
+/// grows to the largest near ring it ever sees and never again;
+/// `select_nth_unstable_by` is in place. Quantized to
+/// [`TREE_LOD_CAP_STEP_M`] and written only on a change, because the write
+/// is what `reband_trees` costs.
+///
+/// **One-frame lag on a freshly streamed chunk, stated rather than hidden.**
+/// A part spawned this frame has an identity `GlobalTransform` until
+/// `PostUpdate` propagates it, so its trunk reads as standing at the origin
+/// — far outside any reach — and is not counted until the next frame. The
+/// bound can therefore be exceeded for one frame by one chunk's trees, which
+/// is the same one-chunk-a-frame budget the streamer itself pays.
+pub fn cap_swap(
+    eye: Res<super::Eye>,
+    trunks: Query<(&super::props::Fellable, &GlobalTransform)>,
+    mut lod: ResMut<TreeLod>,
+    mut d2: Local<Vec<f32>>,
+) {
+    let tier = lod.tier_m;
+    let reach = tier + TREE_LOD_FADE_M;
+    d2.clear();
+    for (f, gt) in trunks.iter() {
+        if f.part != super::props::FellPart::Trunk {
+            continue;
+        }
+        let d = (gt.translation() - eye.pos).length_squared();
+        if d < reach * reach {
+            d2.push(d);
+        }
+    }
+    let want = if d2.len() > TREE_LOD_CAP {
+        let (_, nth, _) = d2.select_nth_unstable_by(TREE_LOD_CAP, f32::total_cmp);
+        let edge = nth.sqrt() - TREE_LOD_FADE_M;
+        (edge / TREE_LOD_CAP_STEP_M).floor() * TREE_LOD_CAP_STEP_M
+    } else {
+        tier
+    };
+    let want = want.min(tier).max(0.0);
+    // `swap_m` reads through `Deref` and marks nothing; only the write does.
+    if want != lod.swap_m() {
+        lod.contract(want);
+    }
+}
 
 /// The LOD swap a browser does by hand — [`lod_band`] says why it has to.
 ///

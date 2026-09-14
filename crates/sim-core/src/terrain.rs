@@ -2736,9 +2736,42 @@ pub const OCCUPANT_KINDS: usize = 7;
 /// Data-shaped on purpose: the content pass (M1) feeds this from
 /// `content/*.toml`; until then the alpha default below is the documented
 /// default (DECISIONS.md §open) and the golden pins it.
+///
+/// **A row is the biome's MEAN density, and the grove field moves it
+/// around** (`clump`, TERRAIN.md §1 stage 9). The field peaks at
+/// `CLUMP_NORM` = 2.7× the mean, so a row that draws against it whole can
+/// total at most `1000 / 2.7` = 370‰ before a grove cell asks for more than
+/// the roll can give and the row's tail entries stop being reachable
+/// (`tests/scatter.rs::test_no_biome_row_saturates`). That rail is what
+/// held the Forest at 260‰ trees — ~39 stems/ha, parkland — from the field's
+/// landing to 2026-09-14. [`Self::clump_cap`] is the way past it.
 #[derive(Clone, Copy)]
 pub struct ScatterTable {
     pub weights: [[u16; OCCUPANT_KINDS]; 4],
+    /// Per biome, the ceiling the grove field is held to before it scales
+    /// this biome's row — the field's own units, where the island mean is
+    /// 1.0. `f32::INFINITY` is no ceiling: the biome draws against the field
+    /// exactly as `clump` returns it, bit for bit.
+    ///
+    /// **Why a cap and not a gentler field.** The rail above is set by the
+    /// field's PEAK, and a forest wants its row near the roll's whole range:
+    /// a stand at the ceiling of the 8 m grid on most of its ground, with
+    /// real clearings between. Compressing the field's swing toward 1
+    /// buys the peak down but takes the clearings with it — at a third of
+    /// the swing a "clearing" still carries two thirds of the mean, which
+    /// is a thinner forest and not an opening. A cap keeps the low tail
+    /// whole and flattens only the top, so a forest is dense stands with
+    /// bald ground between them, which is the shape the reference's own
+    /// forest reads as (`reference/FORESTS.md` §3).
+    pub clump_cap: [f32; 4],
+    /// Per biome, the reciprocal of the island mean of `min(clump, cap)` —
+    /// so a capped field still redistributes this biome's density without
+    /// spending it, exactly as `CLUMP_NORM` does for the whole field. `1.0`
+    /// where the cap is infinite (the mean of the field itself is 1.0 by
+    /// `CLUMP_NORM`'s construction). **Measured, never chosen**, and
+    /// `tests/scatter.rs::test_clump_cap_normalizer_holds` re-derives it
+    /// the way `test_clump_normalizer_holds` re-derives `CLUMP_NORM`.
+    pub clump_cap_norm: [f32; 4],
 }
 
 impl ScatterTable {
@@ -2749,28 +2782,83 @@ impl ScatterTable {
                 [0, 0, 0, 0, 20, 30, 250],
                 // Meadow: buildable, sparse trees.
                 [70, 15, 0, 0, 70, 25, 0],
-                // Forest: wood, cover.
+                // Forest: wood, cover — and since 2026-09-14 a forest rather
+                // than a parkland. **The row totals 700‰ against a field the
+                // cap below holds to `FOREST_CLUMP_CAP × FOREST_CLUMP_NORM`,
+                // and the product stays under 1000** — the const block after
+                // this table holds the arithmetic, so a row that would
+                // saturate does not compile.
                 //
-                // ⚠ **The bush weight cannot carry the understory, and the
-                // number that says so is 70.4.** A forest floor thicker than
-                // the open meadow's is the reference's own forest pass
-                // (Devblog 67) and this row read 50 against Meadow's 70 —
-                // inverted. Raising it was tried on 2026-09-09 and is not
-                // possible here: `tests/scatter.rs::test_no_biome_row_saturates`
-                // caps a row at `1000 / max(clump)` = 370‰, this row's fixed
-                // costs (tree 260, stone 12, rock 28) spend 300, and the 70.4‰
-                // left is exactly the Meadow's bush weight. So the forest can
-                // at best TIE the field here, and only by spending the row to
-                // its rail. The understory went to `Clutter::Brush` instead,
-                // which is a fixed-count population with no such ceiling.
-                // `reference/FORESTS.md` §9.1.
-                [260, 12, 0, 0, 50, 28, 0],
+                // ⚠ **The bush weight still cannot carry the understory.**
+                // The rail that refused it on 2026-09-09 (a row capped at
+                // `1000 / max(clump)` = 370‰) is the same rail the tree
+                // weight was held under, and the cap moved it for every
+                // entry alike; the tree took the room, on purpose, because a
+                // canopy is what the operator's frame was missing and the
+                // understory already lives where there is no ceiling at all
+                // (`Clutter::Brush`, a fixed-count population;
+                // `reference/FORESTS.md` §9.1). The bush is a harvestable
+                // slot (berries, cloth) and keeps a presence here so a forest
+                // still pays cloth; the meadow is where it is thick.
+                [640, 12, 0, 0, 20, 28, 0],
                 // Highland: the ore, the exposure.
                 [20, 70, 60, 45, 10, 80, 0],
             ],
+            clump_cap: [
+                f32::INFINITY,
+                f32::INFINITY,
+                FOREST_CLUMP_CAP,
+                f32::INFINITY,
+            ],
+            clump_cap_norm: [1.0, 1.0, FOREST_CLUMP_NORM, 1.0],
         }
     }
 }
+
+/// Where the Forest biome's grove field is held, in the field's own units
+/// (island mean 1.0, peak `CLUMP_NORM` = 2.7). **(knob)**, DECISIONS.md
+/// §open "forest density v1".
+///
+/// **The field's own mean, so that every above-average cell is a stand.**
+/// Under the cap, a cell whose field reads at or above it draws the row at
+/// its scaled ceiling — the densest stand the 8 m grid can hold — and every
+/// cell below keeps the field's own gradient down to the clearing floor.
+/// Measured on the four gate seeds (`examples/clump_cap.rs`): at 1.0 the
+/// field is at or above the cap on **43.3%** of cells, its mean under the
+/// cap is 0.7476, and the rail admits a 748‰ row. The shipped Forest row
+/// totals 700, so its scaled ceiling is 700 × 1.0 × 1.3376 = 936‰; the tree
+/// alone stands at 640 × 1.3376 = 856‰ of a cell in a stand, which is
+/// ~134 stems/ha against the grid's 156 ceiling, and at ~8 stems/ha on the
+/// clearing floor (`CLUMP_FLOOR`² × `CLUMP_NORM` = 0.061 of the mean).
+pub const FOREST_CLUMP_CAP: f32 = 1.0;
+
+/// Reciprocal of the island mean of `min(clump, FOREST_CLUMP_CAP)`, measured
+/// on the 65,536-cell 8 m grid over the four gate seeds — the same
+/// derivation, tolerance and gate as `CLUMP_NORM`, one level down. A
+/// measurement, not a knob: move [`FOREST_CLUMP_CAP`] and this is re-read
+/// from `examples/clump_cap.rs`, never re-typed from memory;
+/// `tests/scatter.rs::test_clump_cap_normalizer_holds` fails if the two
+/// disagree by more than the field's own seed-to-seed wobble.
+///
+/// Measured: `min(clump, 1.0)` means 0.7476 over the four seeds together
+/// (per seed 0.7469 / 0.7466 / 0.7452 / 0.7517 — `test_clump_cap_normalizer_holds`
+/// prints them), and 1.3376 is its reciprocal.
+pub const FOREST_CLUMP_NORM: f32 = 1.3376;
+
+const _: () = {
+    // The saturation rail as arithmetic on the shipped table, so a Forest
+    // row that would leave its tail entries unreachable in a grove does not
+    // compile. `tests/scatter.rs::test_no_biome_row_saturates` holds the
+    // same bound from the FIELD's measured peak rather than the constant
+    // — this is the half that runs at `cargo check`.
+    let t = ScatterTable::alpha_default();
+    let row = t.weights[Biome::Forest as usize];
+    let total = (row[0] + row[1] + row[2] + row[3] + row[4] + row[5] + row[6]) as f32;
+    assert!(total * FOREST_CLUMP_CAP * FOREST_CLUMP_NORM < 1000.0);
+    // And the cap is a cap: at or under the field's own peak.
+    assert!(FOREST_CLUMP_CAP <= CLUMP_NORM);
+    assert!(FOREST_CLUMP_NORM >= 1.0);
+};
 
 /// A resolved scatter slot: potential, not state (TERRAIN.md §2). The
 /// server owns harvested/standing bits elsewhere; this is the backdrop.
@@ -3012,7 +3100,6 @@ fn scatter_in<C: Corners>(
     }
 
     if occupant == Occupant::None {
-        let row = scatter_row(table, hy, moisture_in(c, seed, x, z), sl);
         // The grove/clearing field scales the whole row, not the tree entry
         // alone: a clearing is a clearing, not a clearing with the rocks
         // left standing in it. It also leaves the mix a biome draws
@@ -3022,11 +3109,19 @@ fn scatter_in<C: Corners>(
         // Deliberately below the road and the pad: a shoulder barrel is the
         // road's own rate (`ROAD_BARREL_PERMILLE`) and a pad crate is
         // authored, and neither is weather. Only the biome draw is.
+        //
+        // Per biome, not per row: each biome's weights meet the field as
+        // that biome keeps it (`ScatterTable::clump_cap`) BEFORE the splat
+        // blends them, so a forest cell at the cap and the meadow cell
+        // beside it each draw their own ceiling and the band between them
+        // is a convex mix of the two — which is what keeps the saturation
+        // rail a statement about four pure rows (`scatter_draw_row`).
         let g = clump_in(c, seed, x, z);
+        let row = scatter_draw_row(table, hy, moisture_in(c, seed, x, z), sl, g);
         let roll = (h % 1000) as u16;
         let mut acc = 0u16;
         for (i, w) in row.iter().enumerate() {
-            acc += floor_i32(*w as f32 * g).clamp(0, 1000) as u16;
+            acc += *w;
             if roll < acc {
                 occupant = match i {
                     0 => Occupant::Tree,
@@ -3326,7 +3421,7 @@ fn splat_in<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> [u8; 4] {
 ///
 /// - **Convex.** The weights sum to ~255 and divide back out, so every entry
 ///   lands between the smallest and largest row entry and the row total
-///   between the smallest and largest row total (180 Meadow … 350 Forest).
+///   between the smallest and largest row total (180 Meadow … 700 Forest).
 ///   `test_no_biome_row_saturates` therefore still bounds the blended row
 ///   without being told about it: a convex blend cannot reach a rail that
 ///   all four pure rows sit below.
@@ -3336,19 +3431,66 @@ fn splat_in<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> [u8; 4] {
 ///
 /// It costs no taps. `h`, `moist` and `sl` are all already resolved by
 /// `scatter`'s own vetoes above the call, so the mix is a few multiplies.
+///
+/// **This is composition, not density.** What a cell actually draws
+/// against is [`scatter_draw_row`], the same blend with each biome's row
+/// first scaled by the grove field as that biome keeps it. This is the
+/// blend of the authored rows themselves — every biome at a factor of
+/// exactly 1 — kept as the public statement of the mix, and it is NOT
+/// `scatter_draw_row` at `g = 1`: a capped biome's factor at the field's
+/// mean is `clump_cap_norm`, above 1, because its cap has moved density
+/// from the field's peak into the rest of the biome.
 pub fn scatter_row(table: &ScatterTable, h: f32, moist: f32, sl: f32) -> [u16; OCCUPANT_KINDS] {
-    let w = splat_from(h, moist, sl);
+    blend_rows(table, splat_from(h, moist, sl), [1.0; 4])
+}
+
+/// The splat-weighted blend of the four rows, each scaled by its own factor
+/// — the one arithmetic both [`scatter_row`] and [`scatter_draw_row`] are.
+fn blend_rows(table: &ScatterTable, w: [u8; 4], gb: [f32; 4]) -> [u16; OCCUPANT_KINDS] {
     let mut row = [0u16; OCCUPANT_KINDS];
     for (i, out) in row.iter_mut().enumerate() {
         let mut acc = 0.0f32;
         for (b, ch) in w.iter().enumerate() {
-            acc += table.weights[b][i] as f32 * *ch as f32;
+            acc += table.weights[b][i] as f32 * gb[b] * *ch as f32;
         }
         // `splat_from` rounds to bytes summing to ~255, so dividing by 255
         // inverts its own normalization to within that rounding.
         *out = floor_i32(acc * (1.0 / 255.0) + 0.5).clamp(0, 1000) as u16;
     }
     row
+}
+
+/// The row a cell draws against: [`scatter_row`]'s blend, with every
+/// biome's weights scaled by the grove field `g` **as that biome keeps it**
+/// — held to `ScatterTable::clump_cap[b]` and re-normalized by
+/// `clump_cap_norm[b]` — before the splat mixes them.
+///
+/// Scale-then-blend rather than blend-then-scale, and the order is the
+/// whole point. Blend first and the forest's cap would have to be applied
+/// to a row that is part meadow, and the bound on the result stops being a
+/// statement about pure rows. Scale each biome's row by its own factor and
+/// the blend is a convex combination of four per-biome scaled totals, so
+/// **the largest pure-biome total at the field's peak bounds every cell on
+/// the island**, rounding aside — `test_no_biome_row_saturates` checks the
+/// four pure bounds from the field's measured peak, and sweeps the shipped
+/// seeds cell by cell to hold the rounding.
+///
+/// A biome with no cap (`INFINITY`, norm `1.0`) meets the field bit for bit
+/// as `clump` returned it: `min(g, INFINITY)` is `g` and `g × 1.0` is `g`
+/// under IEEE 754, so the three uncapped rows draw exactly what they drew
+/// before the cap existed.
+pub fn scatter_draw_row(
+    table: &ScatterTable,
+    h: f32,
+    moist: f32,
+    sl: f32,
+    g: f32,
+) -> [u16; OCCUPANT_KINDS] {
+    let mut gb = [0.0f32; 4];
+    for (b, out) in gb.iter_mut().enumerate() {
+        *out = g.min(table.clump_cap[b]) * table.clump_cap_norm[b];
+    }
+    blend_rows(table, splat_from(h, moist, sl), gb)
 }
 
 /// What one clutter cell grew.

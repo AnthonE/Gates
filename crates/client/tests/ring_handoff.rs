@@ -3,7 +3,7 @@
 //! **The prop streamer is two rings with two owners, and every gate on it
 //! stood still.** `props::stream` keeps a 5×5 near ring of full-detail trees
 //! (trunk, canopy, hidden stump, and a hull `VisibilityRange` opens past the
-//! swap distance) inside an 11×11 outer ring of hull-only trees that carry
+//! swap distance) inside a wider outer ring of hull-only trees that carry
 //! no range at all — out there nothing is ever shown in a hull's place, so
 //! it is simply visible. That is correct exactly as long as no chunk is in
 //! both rings.

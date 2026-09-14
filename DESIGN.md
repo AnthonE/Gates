@@ -560,7 +560,12 @@ evidence about the budget, not automatically a defect. Re-deriving them is
     table. The first real pressure on it is already recorded: a full
     328-tree scatter ring at 5.9 k tris a conifer is 1.9 M
     (`crates/client/tests/tree.rs`), which is over 1.5 M and may or may not
-    be over what the hardware minds.
+    be over what the hardware minds. Since forest density v1 (2026-09-14)
+    the ring's p90 is 811 and the number is held by a COUNT cap on trees
+    drawing their full mesh (`tree::TREE_LOD_CAP`), sized so both tree rings
+    total under 1.5 M at the densest eye on the island — and the outer
+    treeline ring gave up a chunk of radius to stay under it. Re-deriving
+    this number for a desktop GPU is what buys that radius back.
 - **Feel order** (the skeleton's client acceptance): input latency ≤ 1
   frame to predicted response; corrections invisible at ≤ 150 ms RTT with
   5% loss (the test harness's netem profile). Unchanged by the move.

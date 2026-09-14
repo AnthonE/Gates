@@ -1029,13 +1029,23 @@ impl Plugin for GatesRenderPlugin {
         // streamer, and a sea that froze while the Esc menu was up would
         // resume with a visible jump in every wave.
         .add_systems(Update, water::animate.run_if(world_running))
+        // The tree count cap (`reference/FORESTS.md` §8 gate 7): after the
+        // streamer has spawned this frame's chunk, before `reband_trees`
+        // applies the bands it may move and before a browser reads them.
+        .add_systems(
+            Update,
+            tree::cap_swap
+                .after(props::stream)
+                .before(quality::reband_trees)
+                .run_if(world_running),
+        )
         // A browser's tree LOD, by hand: WebGL2 cannot bind the table
         // `VisibilityRange` dithers by, so no tree part carries one there and
         // this swaps the near pair for the hull by distance (`tree::band`).
         .add_systems(
             Update,
             tree::swap_by_distance
-                .after(props::stream)
+                .after(tree::cap_swap)
                 .run_if(|| cfg!(target_arch = "wasm32"))
                 .run_if(world_running),
         )
