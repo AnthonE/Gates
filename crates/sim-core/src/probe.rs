@@ -85,7 +85,7 @@ fn hash_scatter_window(h: &mut Xxh3, seed: u64, haven: &terrain::Haven, x: f32, 
     for cz in cz0..cz0 + PROBE_WINDOW_CELLS {
         for cx in cx0..cx0 + PROBE_WINDOW_CELLS {
             let s = terrain::scatter(seed, &table, haven, cx, cz);
-            h.update(&[s.occupant as u8, s.yaw]);
+            h.update(&[s.occupant as u8, s.yaw, s.species]);
             hash_f32(h, s.x);
             hash_f32(h, s.y);
             hash_f32(h, s.z);
@@ -206,7 +206,7 @@ pub extern "C" fn probe_terrain(seed: u64) -> u64 {
     for cz in 120..136i32 {
         for cx in 120..136i32 {
             let s = terrain::scatter(seed, &table, &haven, cx, cz);
-            h.update(&[s.occupant as u8, s.yaw]);
+            h.update(&[s.occupant as u8, s.yaw, s.species]);
             h.update(&s.x.to_bits().to_le_bytes());
             h.update(&s.y.to_bits().to_le_bytes());
             h.update(&s.z.to_bits().to_le_bytes());

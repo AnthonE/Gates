@@ -403,6 +403,7 @@ fn the_weak_spot_sits_on_the_skin_facing_its_sector() {
         z: -40.0,
         yaw: 0,
         scale: 1.0,
+        species: 0,
     };
     for mark8 in [0u8, 0x40, 0x9C, 0xF3] {
         let (at, n) = weak_spot_pose(&slot, mark8).expect("a tree carries a mark");
@@ -434,6 +435,7 @@ fn the_weak_spot_sits_on_the_skin_facing_its_sector() {
     let node = Slot {
         occupant: Occupant::StoneNode,
         scale: 1.1,
+        species: 0,
         ..slot
     };
     let (at, _) = weak_spot_pose(&node, 0x40).unwrap();

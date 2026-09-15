@@ -20,6 +20,29 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// Pinned fingerprint for GOLDEN_SEED. Regenerates only with an intentional
 /// worldgen change, in the same commit (CLAUDE.md walls 5/6 discipline).
 ///
+/// Regenerated here from `0x700C_77A5_8F33_97B4` for **world structure v1**
+/// (2026-09-15) — the largest deliberate worldgen change since the shape
+/// pass, and five mechanisms rather than one:
+///
+/// - `MOIST_FREQ` 1/700 -> 1/240 at three octaves, so the Forest biome is
+///   ~20 woods rather than one continent. This moves the biome, the splat
+///   and therefore the scatter mix at most land samples.
+/// - A **shore terrace** in `height` (`terrain::shore_terrace`): every
+///   sample with `0 < h < 16` is reshaped. `f(0) = 0` exactly, so the h = 0
+///   set — the coastline — is bit-for-bit where it was, and `f(h) = h`
+///   outside the band, so nothing above 16 m moved at all.
+/// - A **second coastline term** (`COAST_BAY_FREQ`/`COAST_BAY_WOBBLE`),
+///   which DOES move the h = 0 set: this is the part that changes the
+///   island's outline, and with it where the road ring and the three
+///   authored sites land.
+/// - The **treeline transfer** (`EDGE_TREE_TO_BUSH`), which moves the
+///   occupant on some border cells and no positions.
+/// - `Slot::species`, a new byte this probe hashes.
+///
+/// Anything but the coast term is bounded and the bounds are asserted next
+/// door: `tests/relief.rs` holds the terrace's joins exactly, and
+/// `tests/forest.rs` holds what the moisture field and the transfer did.
+///
 /// Regenerated here from `0xA217_658A_C65D_F3CB` because **the site carve was
 /// armed** (operator, 2026-08-16): `SITE_STAMP_STRENGTH` 0.0 → 1.0, so the pad
 /// and both waystations now MAKE their flat ground instead of standing on
@@ -73,7 +96,7 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// of this digest on ~45% of the land. Heights did not move — the change is
 /// entirely in `scatter`, and `probe_terrain`'s height window would read the
 /// same. Deliberate, regenerated in the commit that caused it.
-const GOLDEN_TERRAIN_HASH: u64 = 0x700C_77A5_8F33_97B4;
+const GOLDEN_TERRAIN_HASH: u64 = 0xAA93_9FA3_DF14_702C;
 
 #[test]
 fn test_terrain_golden() {

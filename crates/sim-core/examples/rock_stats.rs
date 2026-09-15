@@ -257,13 +257,22 @@ fn main() {
         // The binomial null `tests/scatter.rs` and `terrain_stats` use:
         // 25 cells, each an independent draw at the window's own rate.
         let null = mean * (1.0 - mean / 25.0);
-        (windows, mean, if null > 0.0 { var / null } else { 0.0 }, clusters3)
+        (
+            windows,
+            mean,
+            if null > 0.0 { var / null } else { 0.0 },
+            clusters3,
+        )
     };
     // For a count drawn cell by cell against a shared random rate,
     // var = null + mean² × CV²(rate), so CV² = (dispersion − 1) × null / mean².
     let (_, tmean, tdisp, _) = window_stats(2, Occupant::Tree);
     let tnull = tmean * (1.0 - tmean / 25.0);
-    let cv2 = if tmean > 0.0 { (tdisp - 1.0) * tnull / (tmean * tmean) } else { 0.0 };
+    let cv2 = if tmean > 0.0 {
+        (tdisp - 1.0) * tnull / (tmean * tmean)
+    } else {
+        0.0
+    };
     println!(
         "grove field, off the forest's trees: mean {tmean:.3} per 40 m window, dispersion {tdisp:.3} (binomial null 1.000), CV² {cv2:.3}"
     );

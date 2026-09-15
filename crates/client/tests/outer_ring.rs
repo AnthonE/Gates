@@ -51,6 +51,10 @@ const SEED: u64 = 20260731;
 
 const KEY: u32 = (137u32 << 16) | 42;
 const YAW: u8 = 137;
+/// The species the fixture slot carries. Named rather than repeated, because
+/// `want_variant` and the `Slot` literals must agree or the gate checks a
+/// mesh nobody asked for.
+const SPECIES: u8 = 0;
 
 /// Trees inside the NEAR ring at the measured p90, from `tests/tree.rs` —
 /// `cargo run --release -p sim-core --example ring_census` on the shipped
@@ -128,6 +132,20 @@ fn spawned(app: &mut App, a: &PropAssets, s: &Slot, w: &WorldId) -> Vec<Entity> 
         .map(|c| c.iter().collect::<Vec<_>>())
         .unwrap_or_default()
 }
+/// The pool index a slot draws, re-derived here from the two published
+/// constants rather than by calling `props.rs`.
+///
+/// **Deliberately a second implementation of the law** — `client/tests/ground.rs`'s
+/// discipline and `CLAUDE.md`'s `lattice.rs` entry: a gate that asks the code
+/// under test what the answer is checks that code against itself. The law is
+/// `reference/FORESTS.md` §9.3's: the pool is `terrain::SLOT_SPECIES` groups
+/// of `tree::SEEDS_PER_SPECIES`, species picks the group and yaw picks within
+/// it. Until world structure v1 it was `yaw % pool`, which made a tree's KIND
+/// a function of its ROTATION.
+fn want_variant(species: u8, yaw: u8, pool: usize) -> usize {
+    let per = pool / terrain::SLOT_SPECIES as usize;
+    (species as usize) * per + (yaw as usize) % per
+}
 
 /// **One entity, and it is the hull.**
 ///
@@ -145,6 +163,7 @@ fn an_outer_tree_is_one_hull_and_nothing_else() {
         z: 704.0,
         yaw: YAW,
         scale: 1.05,
+        species: 0,
     };
     let kids = spawned(&mut app, &a, &s, &w);
 
@@ -158,7 +177,7 @@ fn an_outer_tree_is_one_hull_and_nothing_else() {
     );
 
     let e = app.world().entity(kids[0]);
-    let variant = YAW as usize % a.pine_variants();
+    let variant = want_variant(SPECIES, YAW, a.pine_variants());
     assert_eq!(
         e.get::<Mesh3d>().map(|m| m.0.clone()),
         Some(a.impostor_mesh(variant).clone()),
@@ -266,6 +285,7 @@ fn an_outer_tree_stands_on_the_far_mesh() {
         z: pz,
         yaw: YAW,
         scale: 1.0,
+        species: 0,
     };
     let kids = spawned(&mut app, &a, &s, &w);
     let got = app

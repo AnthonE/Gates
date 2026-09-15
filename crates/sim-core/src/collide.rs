@@ -2160,7 +2160,23 @@ mod tests {
         let base = col_base_y(SEED, hv(), &ColIndex::new(), CX, CZ);
 
         // Walk +Z up the ramp: feet rise monotonically to base + storey.
+        //
+        // **Seated on the column's own base, not on the terrain under it.**
+        // `Body::at` puts the feet on the ground, and `col_base_y` quantizes,
+        // so whether the walker starts above or below the foundation it is
+        // about to walk onto is a property of the LANDSCAPE — which made this
+        // fixture a terrain test wearing a ramp test's name. It broke on the
+        // shore terrace (world structure v1): the same cell's ground fell
+        // 12.38 m -> 10.47 m, the walker spawned 0.63 m UNDER the plane
+        // instead of 0.31 m over it, and by the time it had stepped up onto
+        // the foundation the ramp's foot was behind it — every rise from
+        // there on was a 0.75 m step against `STEP_UP` = 0.6, so it crossed
+        // the cell on the flat and the assertion below read 11 against 14.
+        // The sim was right at every step; the fixture was standing in the
+        // wrong place. A body that is on the storey it is about to climb from
+        // is what this test has always meant to start with.
         let mut b = body_at(1024.5, CZ as f32 * BUILD_CELL_M + 0.2);
+        b.qy = crate::movement::quant_y(base);
         let mut last_y = pos(&b).1;
         let mut top_y = last_y;
         for _ in 0..180 {

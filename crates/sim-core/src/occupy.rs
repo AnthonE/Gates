@@ -112,6 +112,7 @@ const EMPTY_SLOT: Slot = Slot {
     z: 0.0,
     yaw: 0,
     scale: 1.0,
+    species: 0,
 };
 
 /// No cell can key to this: `cx` and `cz` are each bounded by

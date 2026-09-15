@@ -61,15 +61,52 @@ Stages, in order — each cheap, each deterministic:
    linear clamp (a clamp put two more contour rings at its two rails). This
    is our answer to what the reference game calls "pseudo-erosion"
    (Devblog 63).
+4c. **The shore terrace** (`terrain::shore_terrace`, world structure v1) —
+   the finished height, reshaped in a band above the waterline so the island
+   has a beach to walk up. Measured before it existed: the ground cleared 2 m
+   in a median of **5.0 m** of walking and `biome()` called **1.1% of land**
+   Beach, which is a kerb. It is a *berm* profile and not a flattened
+   waterline — the swell crests at 0.87 m and `LAND_MIN_H` is 0.6 m for that
+   reason, so flattening the gradient AT the water widens the washed band by
+   the same factor and produces tidal flats that carry nothing and open the
+   road ring (measured: 115 m of flat, four open bearings). Instead the
+   gradient is untouched at h = 0, dips to `SHORE_TERRACE_K` at
+   0.21 x `SHORE_TERRACE_H`, and is paid back by a shoulder above — a swash
+   zone, a berm, then a low bluff. Three properties, each gated in
+   `tests/relief.rs`: `f(0) = 0` exactly, so the coastline does not move;
+   `f(h) = h` outside the band, so nothing above it does either; and C1 at
+   both joins, because the renderer takes its normal from this field's
+   gradient and a C0 join at the water's edge is a shading line where every
+   player stands.
 5. **Masks** (derived, not stored): slope from finite differences → cliff
    mask (slope > ~50° **(knob)**: unclimbable, unbuildable, distinct
    material); beach mask (height within ~2 m of sea level); moisture =
-   an independent low-freq noise channel.
+   an independent low-freq noise channel — **1/240 m at three octaves since
+   world structure v1**, where it was 1/700 at two. On a 2,048 m island that
+   was one and a half wavelengths, so "the Forest biome" came out as three to
+   six connected masses with up to 98% of all forest inside one of them: a
+   continent, not a wood. At 1/240 it is ~20 woods with clearings between
+   them (`sim-core/tests/forest.rs`, `examples/biome_map`).
 6. **Biomes from (height, moisture, slope)** — alpha ships four:
    **beach** (spawn zone, barrels wash up), **meadow** (buildable, sparse
    trees, hemp), **forest** (wood, cover, low visibility), **highland**
    (stone/ore nodes, exposure, weather later). Each is a material blend +
    a scatter table, nothing more — biomes are data.
+   **The boundary between two of them is data too, since world structure
+   v1**: where the splat's grass and litter channels are within a factor of
+   each other — by construction the treeline, and the same contour `biome()`
+   switches on — a share of the row's tree weight is handed to its bush
+   weight (`EDGE_TREE_TO_BUSH`). A *transfer*, so the row total and every
+   saturation bound are untouched and the border is scrubbier rather than
+   thinner: measured 26 stems + 30 bushes per hectare against the forest
+   core's 94 + 4, in a band 15 m wide. This is `reference/FORESTS.md` §3.1's
+   `Forestside` and its §8 gate 4.
+   **And a slot carries a species** (`Slot::species`, 0..`SLOT_SPECIES`) —
+   drawn from the cell hash against a 620 m painted field, so a region is
+   *dominated* by one kind rather than pure (measured 90–96% at the field's
+   rails). Species used to be `slot.yaw % pool` on the client, which tied a
+   tree's KIND to its ROTATION and made §8's gate 6 unwritable; it is a sim
+   fact now, and the client mirrors it for free.
 7. **The coast road** — the monument-less loot route: a ring offset ~40 m
    inland from the coastline, flattened a few meters wide, dirt material,
    **barrel spawn slots along it**. It does what Rust's roads do — pulls
@@ -550,7 +587,11 @@ The reads a survival map must produce, and which stage buys each:
 | clutter cells | 0.64 m (≈ 10 M cells; total coverage on land, streamed in 16 m tiles) |
 | clutter richness | 2nd stratum, rate `RICH_ACCEPT_MAX` = 32 in 256 by splat×clump; ≤ 96 per tile (frame-budget-bound, not design); dispersion 1.40 @ 3.2 m → 8.51 @ 12.8 m |
 | prop skirts | annulus from the footprint edge out `SKIRT_BAND_M` = 0.45 m; 3–16 elements by reach; ≤ 256 per tile (measured max 40) |
-| biomes | 4 (beach/meadow/forest/highland) |
+| biomes | 4 (beach/meadow/forest/highland); moisture at 1/240 m × 3 octaves, ~20 woods per island |
+| beach | 1.9–6.4% of land, median 9.5–13.5 m from waterline to the 2 m contour (1.1% and 5.0 m before the shore terrace) |
+| coastline | radius ~890 m, roughness 1.69–2.15 m between adjacent bearings ~7.8 m apart (0.84–1.21 without `COAST_BAY_WOBBLE`) |
+| treeline | a tree→bush transfer where the splat's grass and litter channels meet; ~15 m wide, 26 stems + 30 bushes/ha against the core's 94 + 4 |
+| species | 2 per slot, painted by a 620 m field; 90–96% dominance at its rails |
 | roads | 1 coast ring, ~4 m wide |
 | authored sites | 3 — one haven pad + 2 waystations, all on the ring |
 | pad containers | 5 `crate` on a 10 m ring, 2.64× the shoulder's density |

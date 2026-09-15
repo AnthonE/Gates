@@ -28,7 +28,7 @@ use bevy::prelude::*;
 use client::render::props::{assets, spawn_slot, FellPart, Fellable, PropAssets};
 use client::render::textures::{MapSet, PropMaps};
 use client::render::tree::{TreeLod, TREE_LOD_FADE_M, TREE_LOD_SWAP_M};
-use sim_core::terrain::{Occupant, Slot};
+use sim_core::terrain::{self, Occupant, Slot};
 
 /// The cell this fixture's slot claims. Any key works — the LOD does not read
 /// it — but a felled tree does, so it is the shape `gather::cell_key` packs.
@@ -37,6 +37,10 @@ const KEY: u32 = (137u32 << 16) | 42;
 /// A yaw that is neither 0 nor a multiple of the pool size, so `spawn_slot`'s
 /// `variant` is a real choice rather than always the first mesh.
 const YAW: u8 = 137;
+/// The species the fixture slot carries. Named rather than repeated, because
+/// `want_variant` and the `Slot` literals must agree or the gate checks a
+/// mesh nobody asked for.
+const SPECIES: u8 = 0;
 
 fn fixture() -> (App, PropAssets) {
     let mut app = App::new();
@@ -82,6 +86,7 @@ fn slot(occupant: Occupant) -> Slot {
         z: -7.25,
         yaw: YAW,
         scale: 1.05,
+        species: 0,
     }
 }
 
@@ -104,6 +109,20 @@ fn spawned(app: &mut App, a: &PropAssets, s: &Slot) -> (Entity, Vec<Entity>) {
         .unwrap_or_default();
     (parent, kids)
 }
+/// The pool index a slot draws, re-derived here from the two published
+/// constants rather than by calling `props.rs`.
+///
+/// **Deliberately a second implementation of the law** — `client/tests/ground.rs`'s
+/// discipline and `CLAUDE.md`'s `lattice.rs` entry: a gate that asks the code
+/// under test what the answer is checks that code against itself. The law is
+/// `reference/FORESTS.md` §9.3's: the pool is `terrain::SLOT_SPECIES` groups
+/// of `tree::SEEDS_PER_SPECIES`, species picks the group and yaw picks within
+/// it. Until world structure v1 it was `yaw % pool`, which made a tree's KIND
+/// a function of its ROTATION.
+fn want_variant(species: u8, yaw: u8, pool: usize) -> usize {
+    let per = pool / terrain::SLOT_SPECIES as usize;
+    (species as usize) * per + (yaw as usize) % per
+}
 
 #[test]
 fn a_spawned_tree_carries_both_lod_bands() {
@@ -123,7 +142,7 @@ fn a_spawned_tree_carries_both_lod_bands() {
 
     let lod = TreeLod::default();
     let (near, far) = (&lod.near, &lod.far);
-    let variant = YAW as usize % a.pine_variants();
+    let variant = want_variant(SPECIES, YAW, a.pine_variants());
     let want_far = a.impostor_mesh(variant).clone();
     let want_trunk = a.pine_mesh(variant).clone();
     let want_canopy = a.needle_mesh(variant).clone();
@@ -191,7 +210,9 @@ fn a_spawned_tree_carries_both_lod_bands() {
 fn the_hull_topples_as_the_trunk_does() {
     let (mut app, a) = fixture();
     let (_, kids) = spawned(&mut app, &a, &slot(Occupant::Tree));
-    let want_far = a.impostor_mesh(YAW as usize % a.pine_variants()).clone();
+    let want_far = a
+        .impostor_mesh(want_variant(SPECIES, YAW, a.pine_variants()))
+        .clone();
 
     let hull = kids
         .iter()
@@ -220,16 +241,15 @@ fn the_hull_topples_as_the_trunk_does() {
     // Same pivot and same bearing as the trunk, so the two fall as one thing:
     // a second bearing or a second pivot is a tree that breaks in half across
     // the swap distance.
-    let trunk = kids
-        .iter()
-        .copied()
-        .find(|k| {
-            app.world()
-                .entity(*k)
-                .get::<Mesh3d>()
-                .is_some_and(|m| m.0 == *a.pine_mesh(YAW as usize % a.pine_variants()))
-        })
-        .expect("the tree spawned no trunk");
+    let trunk =
+        kids.iter()
+            .copied()
+            .find(|k| {
+                app.world().entity(*k).get::<Mesh3d>().is_some_and(|m| {
+                    m.0 == *a.pine_mesh(want_variant(SPECIES, YAW, a.pine_variants()))
+                })
+            })
+            .expect("the tree spawned no trunk");
     let t = app.world().entity(trunk).get::<Fellable>().unwrap();
     assert_eq!(
         (f.base_y, f.yaw),
@@ -329,14 +349,18 @@ fn the_swap_actually_crossfades() {
 #[test]
 fn the_canopy_wears_its_species_card() {
     let (mut app, a) = fixture();
-    // Two yaws that land on the two species: `spawn_slot` picks
-    // `yaw % pool`, and `tree::species_of` groups the pool three per species.
+    // **Two SPECIES, not two yaws.** This used to walk `yaw` over 0 and 3 and
+    // rely on `spawn_slot` picking `yaw % pool` to land in two different
+    // groups of three — which is exactly the tie between a tree's kind and
+    // its rotation that world structure v1 cut (`reference/FORESTS.md` §9.3).
+    // The slot carries its species now, so the fixture asks for the two
+    // species directly and the yaw is free to be anything.
     let pool = a.pine_variants();
     let mut handles = Vec::new();
-    for yaw in [0u8, 3u8] {
-        let variant = yaw as usize % pool;
+    for species in 0..terrain::SLOT_SPECIES {
+        let variant = want_variant(species, YAW, pool);
         let s = Slot {
-            yaw,
+            species,
             ..slot(Occupant::Tree)
         };
         let (_, kids) = spawned(&mut app, &a, &s);

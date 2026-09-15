@@ -493,7 +493,7 @@ const TICKS: u64 = 900;
 /// rule — but it composes with the crawl rather than replacing it, so the
 /// merged digest is neither branch's. The equality assert above it stayed
 /// green on the same run, which is what says both halves are deterministic.
-const GOLDEN_FINAL_HASH: u64 = 0x9F04_B1F1_D777_382C;
+const GOLDEN_FINAL_HASH: u64 = 0xE6DA_E259_BBB5_510E;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -551,7 +551,7 @@ const GOLDEN_FINAL_HASH: u64 = 0x9F04_B1F1_D777_382C;
 /// density v1 alongside it (2026-09-14), beside `GOLDEN_FINAL_HASH` and for
 /// its reason: the scatter changed under the run, so it moved from the first
 /// stamped tick as well — the worldgen shape on top of the behavioural one.
-const GOLDEN_TRACE_HASH: u64 = 0x495D_2707_041A_185B;
+const GOLDEN_TRACE_HASH: u64 = 0xAAC5_FD41_0C03_9940;
 
 /// Fold a stamped trace into one number.
 ///

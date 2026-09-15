@@ -690,6 +690,14 @@ fn test_scatter_mix_is_convex_and_the_island_uses_it() {
             hi[k] = hi[k].max(row[k]);
         }
     }
+    // The span of the one pair the treeline moves weight inside of.
+    let mut pair_lo = u16::MAX;
+    let mut pair_hi = 0u16;
+    for row in table.weights.iter() {
+        let p = row[terrain::ROW_TREE] + row[terrain::ROW_BUSH];
+        pair_lo = pair_lo.min(p);
+        pair_hi = pair_hi.max(p);
+    }
 
     for seed in SEEDS {
         let mut land = 0u32;
@@ -706,7 +714,27 @@ fn test_scatter_mix_is_convex_and_the_island_uses_it() {
                 let sl = terrain::slope(seed, x, z);
                 let w = terrain::splat_from(h, terrain::moisture(seed, x, z), sl);
                 let row = terrain::scatter_row(&table, h, terrain::moisture(seed, x, z), sl);
+                // Every entry the treeline does not touch is still strictly
+                // convex, and so is the PAIR it moves weight between — which
+                // is the claim that actually protects the saturation bound,
+                // because `test_no_biome_row_saturates` is about totals and a
+                // transfer inside a row moves none.
+                //
+                // ⚠ **`ROW_TREE` and `ROW_BUSH` are exempt individually and
+                // that is the feature, not a loosened gate** (world structure
+                // v1). `EDGE_TREE_TO_BUSH` hands tree weight to bush on the
+                // treeline, so a border cell legitimately carries more bush
+                // than any authored row does — 75 against the [10, 70] the
+                // four rows span, measured. What must still hold, and is
+                // asserted below, is that the transfer went where it said:
+                // the pair's SUM stays inside the pure rows' span, so nothing
+                // leaked into stone, sulfur or a barrel, and the row total is
+                // untouched. Dropping the pair from the sweep entirely would
+                // have been the loosening; this is a different exact claim.
                 for k in 0..terrain::OCCUPANT_KINDS {
+                    if k == terrain::ROW_TREE || k == terrain::ROW_BUSH {
+                        continue;
+                    }
                     assert!(
                         row[k] >= lo[k] && row[k] <= hi[k],
                         "seed {seed} cell ({gx},{gz}): blended entry {k} is {}, \
@@ -719,6 +747,15 @@ fn test_scatter_mix_is_convex_and_the_island_uses_it() {
                         hi[k]
                     );
                 }
+                let pair = row[terrain::ROW_TREE] + row[terrain::ROW_BUSH];
+                assert!(
+                    pair >= pair_lo && pair <= pair_hi,
+                    "seed {seed} cell ({gx},{gz}): tree+bush is {pair}, outside \
+                     the [{pair_lo}, {pair_hi}] its four authored rows span. The \
+                     treeline is a TRANSFER between those two entries, so their \
+                     sum is convex even where neither is — a sum outside the \
+                     span means weight was created or leaked in from elsewhere."
+                );
                 // "In a transition" = no single ground identity owns the
                 // cell outright. This is the share of the island the change
                 // can reach at all, and it is reported because a fix that

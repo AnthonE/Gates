@@ -55,6 +55,56 @@ const SPAWN: (f32, f32) = (1024.0, 1024.0);
 const CX: u16 = 341;
 const CZ: u16 = 341;
 
+/// The nearest origin to `(cx0, cz0)` whose whole `w x h` block of build
+/// cells takes a foundation AND lies inside one plate window. Panics rather
+/// than returning a partial answer: a fixture that silently laid fewer pieces
+/// than it asked for is the defect this exists to prevent.
+///
+/// **Two rules, because `place` has two.** `foundation_terrain_ok` is the
+/// per-cell one; the other is the plate latch (`build::plate_for`), which
+/// refuses a foundation whose neighbours' plates sit more than
+/// `PLATE_RISE_MAX_BANDS` over its own terrain band. A slab 24 cells long
+/// crosses 72 m of ground, so screening cell by cell is not enough — the
+/// three refusals world structure v1 produced here were all
+/// `REFUSE_B_PLATE_HIGH` on the slab's far column, not terrain failures.
+/// Holding the whole block's band SPREAD inside the window is the condition
+/// that makes "lay 192 in a row" a fact about the fixture rather than a hope
+/// about the landscape.
+fn buildable_block(seed: u64, cx0: u16, cz0: u16, w: u16, h: u16) -> (u16, u16) {
+    let hv = hv(seed);
+    let ok = |cx: u16, cz: u16| {
+        let (ax, az) = sim_core::build::anchor(cx, cz, LOC_PLANE);
+        sim_core::build::foundation_terrain_ok(seed, hv, ax, az)
+    };
+    let flat = |bx: u16, bz: u16| {
+        let mut lo = i32::MAX;
+        let mut hi = i32::MIN;
+        for i in 0..w {
+            for j in 0..h {
+                let b = sim_core::build::terrain_band(seed, hv, bx + i, bz + j);
+                lo = lo.min(b);
+                hi = hi.max(b);
+            }
+        }
+        hi - lo <= sim_core::build::PLATE_RISE_MAX_BANDS.min(sim_core::build::PLATE_SINK_MAX_BANDS)
+    };
+    for r in 0..96i32 {
+        for dz in -r..=r {
+            for dx in -r..=r {
+                if dx.abs() != r && dz.abs() != r {
+                    continue; // ring, not disc
+                }
+                let bx = (i32::from(cx0) + dx).clamp(0, 900) as u16;
+                let bz = (i32::from(cz0) + dz).clamp(0, 900) as u16;
+                if (0..w).all(|i| (0..h).all(|j| ok(bx + i, bz + j))) && flat(bx, bz) {
+                    return (bx, bz);
+                }
+            }
+        }
+    }
+    panic!("no {w}x{h} buildable block within 96 cells of ({cx0},{cz0})");
+}
+
 fn id_of(slot: usize) -> u32 {
     (1 << 8) | slot as u32
 }
@@ -1217,8 +1267,21 @@ fn a_cliff_cannot_run_the_piece_cursor_off_the_store() {
     // gate. The upkeep hour `place` stamps from the tick it is handed is
     // the only thing telling the two halves apart.
     let builder = sim_core::limits::MAX_PLAYERS - 1;
+    // **The block is FOUND, not written down.** This lays a solid
+    // `ceil(n/24) x 24` slab of foundations and then asserts it laid every
+    // one, so it needs that many buildable cells in a row — and `(CX, CZ)`
+    // is the spawn cell, which is a guarantee about ONE cell. World
+    // structure v1 moved the ground under this slab and three of its 192
+    // cells failed `foundation_terrain_ok`; nothing about the piece store or
+    // the cursor was involved, the fixture had just outgrown the flat it was
+    // standing on. Scanning for an origin whose whole slab is buildable is
+    // the same fix `alloc_zero`'s `buildable_cell` and `client/tests/ground.rs`'s
+    // coast chunk carry: a fixture that needs a property of the world should
+    // look for it.
+    let rows = (DOOMED + STANDING).div_ceil(24) as u16;
+    let (bx, bz) = buildable_block(SEED, CX, CZ, rows, 24);
     for k in 0..DOOMED + STANDING {
-        let (cx, cz) = (CX + (k as u16) / 24, CZ + (k as u16) % 24);
+        let (cx, cz) = (bx + (k as u16) / 24, bz + (k as u16) % 24);
         let (ax, az) = sim_core::build::anchor(cx, cz, LOC_PLANE);
         let p = &mut core.world.players[builder];
         p.body = sim_core::movement::Body::at(SEED, hv(SEED), ax, az);

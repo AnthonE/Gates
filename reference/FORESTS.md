@@ -378,9 +378,14 @@ into the other three channels.
 
 **Gate 4 — the edge exists.** Assert that cells within N m of a
 forest/meadow boundary carry a different occupant mix from forest-core cells.
-**This gate is unwritable until the mechanism lands** (§9.2) — named here so
-the feature arrives with its gate rather than after it, which is the rule
-that made `event_roles.rs` worth writing.
+~~This gate is unwritable until the mechanism lands~~ — ✅ **the mechanism
+landed and so did the gate, 2026-09-15** (world structure v1;
+`sim-core/tests/forest.rs::the_treeline_is_scrub_and_the_forest_core_is_not`).
+Ours is a transfer inside the weight row rather than a second plant list, so
+the gate asserts BOTH directions: the border thins to 26 stems/ha against the
+core's 94 **and** thickens to 30 bushes/ha against its 4, in a band 15 m wide.
+Naming it here before it was writable is what made it arrive with the
+feature, which was the point.
 
 **Gate 5 — size classes.** Assert a forest window's height histogram covers
 ≥ K classes. Today it is 1, and `Slot::scale`'s ±10 % is not a class. This
@@ -394,6 +399,13 @@ the `Slot` (drawn from the same cell hash, so the client keeps mirroring it
 for free) or this gate is impossible forever. **Naming the precondition is
 the deliverable here** — the gate is one assert once species is a sim fact,
 and no amount of client-side testing substitutes.
+✅ **Both halves landed 2026-09-15** (world structure v1). `Slot::species` is
+the sim fact, drawn from the cell hash against a 620 m field, and
+`the_species_region_is_dominated_and_not_pure` is the gate — and it turned
+out to want a CEILING as well as a floor, which the proposal did not
+anticipate: a railed region measures 90–96 % its own species, and a region
+that measured 100 % would be §3.2's paint rather than a draw. The minority IS
+the mechanic.
 
 **Gate 7 — the frame budget as a cap, not a print.** Assert that the count of
 mesh-LOD trees in the draw ring cannot exceed a constant, by construction. §6
@@ -506,8 +518,22 @@ it.
 2. **Someone has to look at it.** 120‰ of the litter channel at 0.75 m is
    arithmetic that passes; whether it reads as an understory is a person
    booting the game, which `CLAUDE.md` makes the visual gate on purpose.
-3. **Species into `Slot`** (§9.3) — unblocks gate 6 and the `Alt` mechanic.
-4. **The edge** (§9.2) — the cheapest structural win left, with gate 4.
+3. ~~**Species into `Slot`**~~ (§9.3) and ~~**the edge**~~ (§9.2) — **both
+   built 2026-09-15** (world structure v1), with gates 6 and 4 beside them.
+   The edge cost less than §9.2 priced it at: expressed as a *transfer*
+   between two entries of the weight row it needs no new occupant kind AND no
+   new bound, because a row total that does not move leaves
+   `test_no_biome_row_saturates` true by construction. What it did cost was
+   the one thing §9.2 did not mention — `test_scatter_mix_is_convex` asserts
+   per-ENTRY convexity, which a transfer breaks on purpose, so that gate now
+   asserts the pair's sum instead and says why.
+4. **A scale the classifier can see** — not on this list, and it should have
+   been. The forest was **3–6 connected patches with up to 98 % of it inside
+   one**, which no gate in §8 could see and no density knob could fix:
+   `MOIST_FREQ` was 1/700 on a 2,048 m island. It is 1/240 × 3 octaves now,
+   ~20 woods, and `the_forest_is_woods_rather_than_one_continent` is the gate
+   §8 was missing. Worth remembering that seven proposed gates all measured
+   the CONTENTS of the biome and none its SHAPE.
 5. ~~**Gate 7 and the LOD cap**~~ — **built 2026-09-14** with the density
    rise it was required before (`tree::cap_swap`, `client/tests/tree_cap.rs`;
    `DECISIONS.md` §open "forest density v1"). The swap contracts to the

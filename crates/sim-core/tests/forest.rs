@@ -467,3 +467,346 @@ fn each_biomes_density_holds_its_band() {
 /// measured for.
 const FOREST_STEMS_MIN: f64 = 80.0;
 const FOREST_STEMS_MAX: f64 = 120.0;
+
+// ── World structure v1: the edge, the species paint, and the stand count ───
+//
+// `reference/FORESTS.md` §8's gates 4 and 6 were both written UNWRITABLE —
+// each named a mechanism that had to exist first, which is the point of
+// naming them. Both mechanisms landed in world structure v1, so both gates
+// are written here, and the third below is the one the moisture change is
+// actually for: a forest that is *many* woods rather than one continent is a
+// property of the SET of forest cells, and no per-cell or island-wide number
+// can see it.
+
+/// How close to the middle of the grass/litter transition a cell has to be to
+/// count as "on the treeline" for this file. Read off the splat exactly as
+/// `terrain::edge_factor` does — one definition of where a forest stops, per
+/// that function's own doc.
+fn edge_of(seed: u64, haven: &terrain::Haven, x: f32, z: f32) -> f32 {
+    let h = terrain::ground(seed, haven, x, z);
+    let w = terrain::splat_from(
+        h,
+        terrain::moisture(seed, x, z),
+        terrain::ground_slope(seed, haven, x, z),
+    );
+    let (a, b) = (f64::from(w[1]), f64::from(w[2]));
+    if a + b <= 0.0 {
+        return 0.0;
+    }
+    (4.0 * a * b / ((a + b) * (a + b))) as f32
+}
+
+/// **Gate 4 — the edge exists** (`reference/FORESTS.md` §8).
+///
+/// "Cells within N m of a forest/meadow boundary carry a different occupant
+/// mix from forest-core cells." Their `Forestside` is a separate plant list
+/// of small trees and bushes; ours is a transfer inside the weight row
+/// (`terrain::EDGE_TREE_TO_BUSH`), so what must show is a mix that has moved
+/// AWAY from trees and TOWARD bushes while the ground is still forest ground.
+///
+/// Mutant, run: `EDGE_TREE_TO_BUSH = 0.0`. The treeline still thins on its
+/// own, because the splat blend already mixes the meadow's row in — 53
+/// stems/ha against the core's 94, **1.76x** — and that is exactly why the
+/// floor is 2.5 and not 1.2. The bush half moves further: 7/ha against the
+/// core's 3 without the transfer, against 32 and 4 with it. Swapping
+/// `ROW_TREE`/`ROW_BUSH` at the transfer site inverts both ratios and the
+/// tree floor catches that one.
+#[test]
+fn the_treeline_is_scrub_and_the_forest_core_is_not() {
+    for seed in SEEDS {
+        let haven = terrain::haven(seed);
+        let (mut e_cells, mut e_tree, mut e_bush) = (0u32, 0u32, 0u32);
+        let (mut c_cells, mut c_tree, mut c_bush) = (0u32, 0u32, 0u32);
+        for cz in 0..CELLS_PER_SIDE {
+            for cx in 0..CELLS_PER_SIDE {
+                let x = cx as f32 * CELL_SIZE + CELL_SIZE * 0.5;
+                let z = cz as f32 * CELL_SIZE + CELL_SIZE * 0.5;
+                if terrain::ground(seed, &haven, x, z) < LAND_MIN_H {
+                    continue;
+                }
+                let occ =
+                    terrain::scatter(seed, &ScatterTable::alpha_default(), &haven, cx, cz).occupant;
+                let e = edge_of(seed, &haven, x, z);
+                // Core: the litter channel owns the cell outright. Edge: the
+                // two channels are within a factor of ~3 of each other.
+                let w = terrain::splat_from(
+                    terrain::ground(seed, &haven, x, z),
+                    terrain::moisture(seed, x, z),
+                    terrain::ground_slope(seed, &haven, x, z),
+                );
+                if e >= 0.5 && w[2] > 0 {
+                    e_cells += 1;
+                    match occ {
+                        Occupant::Tree => e_tree += 1,
+                        Occupant::Bush => e_bush += 1,
+                        _ => {}
+                    }
+                } else if u32::from(w[2]) > u32::from(w[1]) * 4 {
+                    c_cells += 1;
+                    match occ {
+                        Occupant::Tree => c_tree += 1,
+                        Occupant::Bush => c_bush += 1,
+                        _ => {}
+                    }
+                }
+            }
+        }
+        assert!(
+            e_cells > 200 && c_cells > 200,
+            "seed {seed}: {e_cells} treeline / {c_cells} core cells — one \
+             population is too small for the comparison below to mean anything"
+        );
+        let per = |n: u32, d: u32| f64::from(n) / f64::from(d) * (10_000.0 / CELL_AREA_M2);
+        let (et, eb) = (per(e_tree, e_cells), per(e_bush, e_cells));
+        let (ct, cb) = (per(c_tree, c_cells), per(c_bush, c_cells));
+        println!(
+            "seed {seed}: treeline {e_cells} cells — {et:.0} tree/ha {eb:.0} bush/ha | \
+             core {c_cells} cells — {ct:.0} tree/ha {cb:.0} bush/ha"
+        );
+        assert!(
+            ct / et >= EDGE_THINNING_MIN,
+            "seed {seed}: the treeline carries {et:.0} stems/ha against the \
+             core's {ct:.0} — only {:.2}x thinner, under the \
+             {EDGE_THINNING_MIN}x floor. A border that draws the core's own \
+             mix is a density gradient, not a treeline \
+             (reference/FORESTS.md §3.1).",
+            ct / et
+        );
+        assert!(
+            eb / cb.max(0.01) >= EDGE_SCRUB_MIN,
+            "seed {seed}: the treeline carries {eb:.0} bushes/ha against the \
+             core's {cb:.0} — only {:.2}x, under the {EDGE_SCRUB_MIN}x floor. \
+             The transfer is supposed to put INTO the border what it takes \
+             out; thinning alone is a clearing.",
+            eb / cb.max(0.01)
+        );
+        assert!(
+            et > 0.0,
+            "seed {seed}: the treeline carries no trees at all — `Forestside` \
+             is small trees AND bushes, and a bare ring around every wood is a \
+             different defect from the one this replaced"
+        );
+    }
+}
+
+/// Floor on core-to-edge stem thinning. Measured **3.10–3.44x** on the four
+/// seeds at `EDGE_TREE_TO_BUSH = 0.62`; floored ~20% under the worst so
+/// coastline and moisture variance cannot trip it, and proven red with the
+/// transfer at 0.
+const EDGE_THINNING_MIN: f64 = 2.5;
+/// Floor on edge-to-core bush enrichment, same derivation. Measured
+/// **7.0–8.4x**, which is the larger of the two effects because the core's
+/// bush density is small.
+const EDGE_SCRUB_MIN: f64 = 4.0;
+
+/// **Gate 6 — species distribution** (`reference/FORESTS.md` §8).
+///
+/// That gate was impossible while species was `slot.yaw % pool` on the
+/// client: "no `sim-core` test can assert anything about species", and naming
+/// the precondition was the deliverable. `Slot::species` is the precondition,
+/// met — so this is the gate, and it is one assert exactly as §8 predicted.
+///
+/// The claim is not "a draw happened" but **"a region is dominated"**, which
+/// is §3.2's `Alt`: where the field says one species, the trees standing
+/// there are mostly that species, and the minority is still present.
+///
+/// Mutants: draw species from a bare hash bit instead of the field (both
+/// shares collapse to ~50% and both floors go red), or invert the comparison
+/// (the two shares swap and both go red).
+#[test]
+fn a_species_region_is_dominated_and_not_pure() {
+    for seed in SEEDS {
+        let haven = terrain::haven(seed);
+        // [species 0, species 1] counted where the field is at each rail.
+        let mut lo = [0u32; 2];
+        let mut hi = [0u32; 2];
+        let mut seen = [0u32; 2];
+        for cz in 0..CELLS_PER_SIDE {
+            for cx in 0..CELLS_PER_SIDE {
+                let s = terrain::scatter(seed, &ScatterTable::alpha_default(), &haven, cx, cz);
+                if s.occupant != Occupant::Tree {
+                    continue;
+                }
+                assert!(
+                    (s.species as usize) < terrain::SLOT_SPECIES as usize,
+                    "seed {seed}: slot species {} is outside 0..{}",
+                    s.species,
+                    terrain::SLOT_SPECIES
+                );
+                seen[s.species as usize] += 1;
+                let share = terrain::species_share(seed, s.x, s.z);
+                if share < SPECIES_RAIL_LO {
+                    lo[s.species as usize] += 1;
+                } else if share > SPECIES_RAIL_HI {
+                    hi[s.species as usize] += 1;
+                }
+            }
+        }
+        let lo_n = lo[0] + lo[1];
+        let hi_n = hi[0] + hi[1];
+        assert!(
+            lo_n > 100 && hi_n > 100,
+            "seed {seed}: {lo_n} trees where the field rails low and {hi_n} \
+             where it rails high — the field spends too little of the island \
+             at its own ends for this to be a measurement of anything"
+        );
+        let dom_lo = f64::from(lo[0]) / f64::from(lo_n);
+        let dom_hi = f64::from(hi[1]) / f64::from(hi_n);
+        println!(
+            "seed {seed}: species {seen:?} islandwide; share<{SPECIES_RAIL_LO} -> \
+             {:.0}% species 0; share>{SPECIES_RAIL_HI} -> {:.0}% species 1",
+            dom_lo * 100.0,
+            dom_hi * 100.0
+        );
+        assert!(
+            dom_lo >= SPECIES_DOMINANCE_MIN && dom_hi >= SPECIES_DOMINANCE_MIN,
+            "seed {seed}: a region the field calls species 0 is only \
+             {:.0}% species 0 and one it calls species 1 only {:.0}% — under \
+             the {:.0}% floor the paint is not painting, and a forest cannot \
+             have a birch stand you can walk out of.",
+            dom_lo * 100.0,
+            dom_hi * 100.0,
+            SPECIES_DOMINANCE_MIN * 100.0
+        );
+        assert!(
+            dom_lo <= SPECIES_DOMINANCE_MAX && dom_hi <= SPECIES_DOMINANCE_MAX,
+            "seed {seed}: a railed region is {:.0}%/{:.0}% pure, over the \
+             {:.0}% ceiling — the draw has stopped being a draw and become a \
+             paint, which is the hard-edged `Alt` region §3.2 says theirs is \
+             NOT.",
+            dom_lo * 100.0,
+            dom_hi * 100.0,
+            SPECIES_DOMINANCE_MAX * 100.0
+        );
+        assert!(
+            seen[0] > 0 && seen[1] > 0,
+            "seed {seed}: species {seen:?} — an island with one species on it"
+        );
+    }
+}
+
+/// Where the species field counts as railed. Not 0 and 1: `species_share`
+/// clamps, so its extremes are reached over real area, and a rail this test
+/// can find has to be inside them.
+const SPECIES_RAIL_LO: f32 = 0.15;
+const SPECIES_RAIL_HI: f32 = 0.85;
+/// Floor on how dominant a railed region's own species is. Measured
+/// **90–95%** across the four seeds; floored well under so field variance
+/// cannot trip it, and red at ~50% under a bare-hash draw.
+const SPECIES_DOMINANCE_MIN: f64 = 0.75;
+/// Ceiling on the same, so the draw stays a draw. A region that is 100% one
+/// species is a stencil, and the minority IS the mechanic
+/// (`reference/FORESTS.md` §3.2).
+const SPECIES_DOMINANCE_MAX: f64 = 0.99;
+
+/// **The forest is many woods, not one continent** — the property the
+/// moisture scale exists for, and the one every other gate in this file is
+/// blind to.
+///
+/// `each_biomes_density_holds_its_band` and `the_forest_is_a_different_place_
+/// from_the_meadow` are both satisfied by a forest that is a single
+/// island-spanning mass, because a density and a contrast are averages over
+/// a SET and say nothing about its shape. Measured before world structure v1
+/// (`examples/biome_map`, three seeds): **3–6 connected patches, with 63–98%
+/// of all forest inside one of them**. That is a continent with a tree on it.
+///
+/// Mutants: `MOIST_FREQ` back to 1/700 (patches fall to 3–7 and the largest
+/// share goes over 60%), or `MOIST_OCTAVES` to 1.
+#[test]
+fn the_forest_is_woods_rather_than_one_continent() {
+    for seed in SEEDS {
+        let haven = terrain::haven(seed);
+        let n = (CELLS_PER_SIDE * CELLS_PER_SIDE) as usize;
+        let mut is_forest = vec![false; n];
+        let mut total = 0u32;
+        for cz in 0..CELLS_PER_SIDE {
+            for cx in 0..CELLS_PER_SIDE {
+                let x = cx as f32 * CELL_SIZE + CELL_SIZE * 0.5;
+                let z = cz as f32 * CELL_SIZE + CELL_SIZE * 0.5;
+                let h = terrain::ground(seed, &haven, x, z);
+                if h < LAND_MIN_H {
+                    continue;
+                }
+                if terrain::biome(h, terrain::moisture(seed, x, z)) == Biome::Forest {
+                    is_forest[(cz * CELLS_PER_SIDE + cx) as usize] = true;
+                    total += 1;
+                }
+            }
+        }
+        // Four-neighbour flood fill. A wood is a place you can walk across
+        // without leaving it, which is what connectivity means here.
+        let mut seen = vec![false; n];
+        let mut patches: Vec<u32> = Vec::new();
+        let mut stack: Vec<i32> = Vec::new();
+        for start in 0..n {
+            if !is_forest[start] || seen[start] {
+                continue;
+            }
+            let mut size = 0u32;
+            seen[start] = true;
+            stack.push(start as i32);
+            while let Some(p) = stack.pop() {
+                size += 1;
+                let (cx, cz) = (p % CELLS_PER_SIDE, p / CELLS_PER_SIDE);
+                for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    let (jx, jz) = (cx + dx, cz + dz);
+                    if jx < 0 || jz < 0 || jx >= CELLS_PER_SIDE || jz >= CELLS_PER_SIDE {
+                        continue;
+                    }
+                    let j = (jz * CELLS_PER_SIDE + jx) as usize;
+                    if is_forest[j] && !seen[j] {
+                        seen[j] = true;
+                        stack.push(j as i32);
+                    }
+                }
+            }
+            patches.push(size);
+        }
+        // Copses of a cell or two are noise on the classifier's contour, not
+        // woods; count the ones big enough to stand in.
+        let woods = patches.iter().filter(|&&s| s >= WOOD_MIN_CELLS).count();
+        let largest = patches.iter().copied().max().unwrap_or(0);
+        let share = f64::from(largest) / f64::from(total.max(1));
+        println!(
+            "seed {seed}: {total} forest cells in {} patches — {woods} of them \
+             >= {WOOD_MIN_CELLS} cells; largest {largest} ({:.0}% of all forest)",
+            patches.len(),
+            share * 100.0
+        );
+        assert!(
+            woods >= WOODS_MIN,
+            "seed {seed}: only {woods} woods of {WOOD_MIN_CELLS}+ cells — \
+             under the {WOODS_MIN} floor the Forest biome is a continent, and \
+             every density gate in this file is happy with that"
+        );
+        assert!(
+            share <= LARGEST_WOOD_MAX,
+            "seed {seed}: {:.0}% of all forest is inside ONE patch, over the \
+             {:.0}% ceiling. A player who walks out of that one has left the \
+             forest for good.",
+            share * 100.0,
+            LARGEST_WOOD_MAX * 100.0
+        );
+    }
+}
+
+/// Smallest patch that counts as a wood rather than a speck on the
+/// classifier's contour: 24 cells is ~0.15 ha, about 40 m across.
+const WOOD_MIN_CELLS: u32 = 24;
+/// Floor on how many woods an island has. Measured **12 / 16 / 29 / 17** on
+/// the four gate seeds at `MOIST_FREQ = 1/240`, 3 octaves. Floored a third
+/// under the worst of those, because seed 0 is the atypical island this
+/// file's header warns about and a band that only just holds it is a pin.
+const WOODS_MIN: usize = 8;
+/// Ceiling on the share of all forest inside one patch. Measured
+/// **0.54 / 0.38 / 0.16 / 0.22** on the same seeds.
+///
+/// ⚠ **Both of these bands are wider than the measurement, on purpose, and
+/// the mutant is what makes them gates rather than decoration.** Run at the
+/// 1/700 × 2-octave field they replaced, the same four seeds read **4 / 3 /
+/// 3 / 2 woods** and **0.98 / 0.69 / 0.99 / 0.97** of all forest inside one
+/// patch — every seed red on both halves, by a factor rather than a margin.
+/// A band fitted to the current numbers would have caught that too, and
+/// would then have gone red on the next island that happened to be seed 0,
+/// which sits at 12 woods and 0.54.
+const LARGEST_WOOD_MAX: f64 = 0.70;

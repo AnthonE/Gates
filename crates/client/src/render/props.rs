@@ -2036,6 +2036,52 @@ pub fn stream(
     }
 }
 
+/// Which member of a species-grouped mesh pool a slot draws.
+///
+/// **This is `reference/FORESTS.md` §8's gate 6 and `reference/ROCKS.md`
+/// §9.1 arriving at the same call.** Both rings used to say
+/// `slot.yaw % pool.len()`, which made a prop's KIND a function of its
+/// ROTATION: two conifers could not stand side by side facing different
+/// ways, a birch region was inexpressible, and no `sim-core` test could
+/// assert anything about species because the decision lived here.
+/// `terrain::Slot::species` is that decision now — drawn from the cell hash
+/// against a painted low-frequency field — and this is the only place the
+/// client turns it into an index.
+///
+/// The pool is split into [`terrain::SLOT_SPECIES`] contiguous groups, so
+/// **appending a seed to a species does not re-species the trees already
+/// standing** — the same reason `tree::species_of` groups by species rather
+/// than interleaving. Yaw still picks WITHIN a group, which is what it was
+/// always good for: three conifers that are not the same mesh.
+///
+/// A pool that does not divide by `SLOT_SPECIES` gives the last group the
+/// remainder rather than panicking or wrapping, because a pool is whatever
+/// the asset directory happened to hold and a missing `.glb` must not be a
+/// crash.
+fn species_variant(slot: &terrain::Slot, pool: usize) -> usize {
+    if pool == 0 {
+        return 0;
+    }
+    let groups = (terrain::SLOT_SPECIES as usize).min(pool);
+    let sp = (slot.species as usize).min(groups - 1);
+    let per = pool / groups;
+    let lo = sp * per;
+    // The last group keeps the remainder.
+    let len = if sp + 1 == groups { pool - lo } else { per };
+    lo + (slot.yaw as usize) % len.max(1)
+}
+
+const _: () = {
+    // The tree pool is grouped by species on BOTH sides of this seam and the
+    // two groupings have to be the same one. `tree::species_of` divides a
+    // variant by `SEEDS_PER_SPECIES`; `species_variant` multiplies a species
+    // by the group size. They agree iff the sim ships exactly as many species
+    // as the client has — and if they stop agreeing nothing fails loudly:
+    // `% pool` still indexes, and what you get is a forest whose painted
+    // regions do not line up with the trees in them.
+    assert!(terrain::SLOT_SPECIES as usize == tree::SPECIES.len());
+};
+
 /// One far tree: a single entity, and everything it deliberately is not.
 ///
 /// A near tree is FOUR entities — a trunk that topples, a canopy that topples
@@ -2067,7 +2113,7 @@ pub fn spawn_outer_tree(
     key: u32,
     world: &WorldId,
 ) {
-    let variant = (slot.yaw as usize) % a.impostors.len();
+    let variant = species_variant(slot, a.impostors.len());
     let yaw = slot.yaw as f32 / 256.0 * std::f32::consts::TAU;
     // **`far_ground_y`, never `slot.y`.** Out here the ground a player sees is
     // the 8 m far mesh sitting `FAR_DROP` below the real heightfield, so
@@ -2127,7 +2173,7 @@ pub fn spawn_slot(
     let lift = archetype_lift(slot.occupant);
     let (mesh, material) = match slot.occupant {
         Occupant::Tree => {
-            variant = (slot.yaw as usize) % a.pines.len();
+            variant = species_variant(slot, a.pines.len());
             (a.pines[variant].clone(), a.bark[tint].clone())
         }
         // Each node takes its own model where one exists and the shared blob
@@ -2151,16 +2197,19 @@ pub fn spawn_slot(
             variant = (slot.yaw as usize) % a.bush_cards.len();
             (a.bush.clone(), a.foliage[tint].clone())
         }
-        // **Indexed by yaw, exactly as the conifer pool is**, so two boulders
-        // side by side do not present the same silhouette and two players in
-        // one clearing see the same one. `tint` still selects the material on
-        // the fallback arm; a generated variant brings its own, so its
-        // variety is three shapes rather than four greys.
+        // **Indexed by species then yaw, exactly as the conifer pool is** —
+        // `reference/ROCKS.md` §9.1, "the biome row picks the mesh family,
+        // not the yaw". Two boulders side by side still do not present the
+        // same silhouette and two players in one clearing still see the same
+        // one; what changed is that a region now has a rock family rather
+        // than every outcrop being an independent coin flip. `tint` still
+        // selects the material on the fallback arm; a generated variant
+        // brings its own.
         Occupant::Rock => {
             if a.rocks.is_empty() {
                 (a.boulder.clone(), a.rock[tint].clone())
             } else {
-                variant = (slot.yaw as usize) % a.rocks.len();
+                variant = species_variant(slot, a.rocks.len());
                 a.rocks[variant].clone()
             }
         }

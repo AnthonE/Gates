@@ -62,6 +62,7 @@ fn at_origin(occupant: Occupant) -> Slot {
         z: 0.0,
         yaw: 0,
         scale: 1.0,
+        species: 0,
     }
 }
 
@@ -1171,6 +1172,7 @@ fn the_placed_canopy_is_solid_and_clears_its_caches_at_every_site() {
                 z: kz,
                 yaw: kyaw,
                 scale: 1.0,
+                species: 0,
             };
             // A post is where a post should be: the body at a post's local
             // corner is stopped, which is the cheapest proof the frame the

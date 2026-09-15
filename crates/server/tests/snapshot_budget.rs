@@ -1273,6 +1273,36 @@ fn press_primary(core: &mut ShardCore, slots: &[usize], seq: &mut u16, pitch: u8
 /// One tick, returning the `(slot, swinger)` pairs the event lane carried.
 /// Every other lane is accepted and dropped — this is the event-lane twin
 /// of `snapshot_round`, which drops everything that is not a snapshot.
+/// [`swing_round`], plus how many Event-lane frames the round put on the wire
+/// in total — swings and everything else.
+///
+/// The filter's skip counter does not know what an event MEANS: it bumps once
+/// per connection that did not get a frame, whatever that frame was. So a
+/// claim of the form "skips = swings x (N-1)" is only true while a swing is
+/// the only thing announced, and `the_swing_filter_counts_what_it_skipped`
+/// said so in a comment ("a level swing on an empty grid reaches nothing").
+/// World structure v1 put ground inside one swinger's ray and the round
+/// started carrying two `Impact` frames as well — 2,590 skips against the
+/// 2,520 the swings alone owed, which is the fixture's premise failing and
+/// not the filter. Counting frames is the claim that was always meant.
+fn swing_round_frames(core: &mut ShardCore, stats: &ShardStats) -> (Vec<(usize, u32)>, usize) {
+    let mut ev: Vec<(usize, Vec<u8>)> = Vec::new();
+    core.tick_bare(stats, |lane, slot, bytes| {
+        if lane == Lane::Event {
+            ev.push((slot, bytes.to_vec()));
+        }
+        true
+    });
+    let swings = ev
+        .iter()
+        .filter_map(|(slot, bytes)| match protocol::decode_event(bytes) {
+            Ok(protocol::EventMsg::Swing { swinger }) => Some((*slot, swinger)),
+            _ => None,
+        })
+        .collect();
+    (swings, ev.len())
+}
+
 fn swing_round(core: &mut ShardCore, stats: &ShardStats) -> Vec<(usize, u32)> {
     let mut ev: Vec<(usize, Vec<u8>)> = Vec::new();
     core.tick_bare(stats, |lane, slot, bytes| {
@@ -1343,27 +1373,35 @@ fn the_swing_filter_counts_what_it_skipped() {
     let before = ShardStats::get(&stats.ev_interest_skipped);
     let mut seq = 1u16;
     let mut swings: Vec<(usize, u32)> = Vec::new();
+    let mut frames = 0usize;
     let all: Vec<usize> = (0..SPARSE_N).collect();
     for _ in 0..SWING_INTERVAL_TICKS + 4 {
         // Level, and the arithmetic below is why. A swing is a ray since
         // melee aim v1 (2026-09-05), so pitch 0 drives it into the ground
         // at the swinger's own feet — which lands an `EV_IMPACT` mark
         // beside every `EV_SWING`, and this gate's whole claim is that a
-        // swing puts EXACTLY ONE frame on the wire. A level swing on an
-        // empty grid reaches nothing and announces only itself.
+        // frame on the wire costs a skip at every other connection. A level
+        // swing on mostly empty ground reaches nothing and announces only
+        // itself — mostly, and `swing_round_frames` is why that word is
+        // there.
         press_primary(&mut core, &all, &mut seq, PITCH_LEVEL);
-        swings.extend(swing_round(&mut core, &stats));
+        let (round, n) = swing_round_frames(&mut core, &stats);
+        swings.extend(round);
+        frames += n;
     }
     let skipped = ShardStats::get(&stats.ev_interest_skipped) - before;
 
     assert!(!swings.is_empty(), "nothing swung");
-    // Under the filter each swing puts exactly one frame on the wire, so
-    // the frames counted above ARE the swings, and each owed a skip to
-    // every other connection.
+    // Under the filter each event frame reaches exactly the one connection
+    // that can see it, so every frame owed a skip to every OTHER connection.
+    // Counted over frames rather than over swings: the skip counter cannot
+    // tell a swing from an impact, so neither may the arithmetic — see
+    // `swing_round_frames`.
     assert_eq!(
         skipped,
-        swings.len() as u64 * (SPARSE_N as u64 - 1),
-        "{} swings should have skipped {} connections each",
+        frames as u64 * (SPARSE_N as u64 - 1),
+        "{frames} event frames ({} of them swings) should have skipped {} \
+         connections each",
         swings.len(),
         SPARSE_N - 1
     );

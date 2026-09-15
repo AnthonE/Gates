@@ -13,6 +13,7 @@
 // (same reasoning, same allow, as `examples/probe.rs`).
 #![allow(clippy::disallowed_macros)]
 
+use sim_core::fmath::fabs;
 use sim_core::terrain::{
     self, Occupant, RoadBand, ScatterTable, CELLS_PER_SIDE, CELL_SIZE, CLIFF_SLOPE_RATIO,
     ISLAND_SIZE, ROAD_BARREL_PERMILLE, ROAD_BAY_BARREL_PERMILLE, ROAD_HALF_W, ROAD_INLAND_M,
@@ -236,6 +237,7 @@ fn the_road_runs_inland_of_the_shoreline() {
     let mut min_h = f32::MAX;
     let mut worst_inland_lo = f32::MAX;
     let mut worst_inland_hi = 0.0f32;
+    let mut worst_nearest = f32::MAX;
 
     for seed in SEEDS {
         for b in 0..BEARINGS {
@@ -251,16 +253,41 @@ fn the_road_runs_inland_of_the_shoreline() {
                     // First crossing, so a sandbar further out cannot flatter
                     // the answer — this is the distance a player actually
                     // walks from the road to the sea.
+                    // Two different questions, and until world structure v1
+                    // gave the coast headlands and coves they had one answer.
+                    //
+                    // `road_band` promises ONE thing: the shoreline crossing
+                    // that lies ~`ROAD_INLAND_M` out along this radial is
+                    // inside the carriageway window. On a near-circular coast
+                    // the first water a seaward walk meets IS that crossing,
+                    // so the old single walk tested the promise. A cove cuts
+                    // the same radial closer in — the road is then on a spit
+                    // with water on two sides — and the first crossing stops
+                    // being the one `road_band` placed against. Reading it as
+                    // the offset reports a road that "moved", which it did
+                    // not: what appeared is a second shore.
+                    //
+                    // So: `inland` is the crossing NEAREST the stated offset,
+                    // which is exactly what `road_band` claims and is held to
+                    // the same tolerance it always was; `nearest` is the
+                    // first water in any direction along the radial, held to
+                    // a floor that only says the loop is not in the surf.
                     let mut inland = f32::MAX;
+                    let mut nearest = f32::MAX;
                     let mut step = 0.0f32;
                     while step <= ROAD_INLAND_M + 20.0 {
                         let rr = d + step;
                         if terrain::height(seed, c + ux * rr, c + uz * rr) <= SEA_LEVEL {
-                            inland = step;
-                            break;
+                            if nearest == f32::MAX {
+                                nearest = step;
+                            }
+                            if fabs(step - ROAD_INLAND_M) < fabs(inland - ROAD_INLAND_M) {
+                                inland = step;
+                            }
                         }
                         step += MARCH_M;
                     }
+                    worst_nearest = worst_nearest.min(nearest);
                     assert!(
                         inland < f32::MAX,
                         "seed {seed:#x} bearing {b} r {d:.0}: no water within \
@@ -277,8 +304,10 @@ fn the_road_runs_inland_of_the_shoreline() {
     }
 
     println!(
-        "road placement: {checked} carriageway samples; sea is {worst_inland_lo:.0}-\
-         {worst_inland_hi:.0} m seaward (target {ROAD_INLAND_M} m); lowest road ground {min_h:.2} m"
+        "road placement: {checked} carriageway samples; the crossing it was \
+         placed against is {worst_inland_lo:.0}-{worst_inland_hi:.0} m seaward \
+         (target {ROAD_INLAND_M} m); nearest water on any radial \
+         {worst_nearest:.0} m; lowest road ground {min_h:.2} m"
     );
     assert!(
         min_h > SEA_LEVEL,
@@ -295,7 +324,25 @@ fn the_road_runs_inland_of_the_shoreline() {
          outside {ROAD_INLAND_M} ± {ROAD_SHOULDER_HALF_W} m — the ring is no longer \
          a fixed offset from the coastline"
     );
+    // CLAIM 2 — and a cove on the other side is still not the surf. Measured
+    // 24 m at the worst of 1,036 carriageway samples over four seeds once the
+    // coast had coves in it (world structure v1); the floor is under that
+    // with room, and its job is to catch a road that starts hugging an inlet
+    // rather than to pin the number.
+    assert!(
+        worst_nearest >= ROAD_NEAREST_WATER_MIN_M,
+        "the nearest water to the road is {worst_nearest:.0} m — under the \
+         {ROAD_NEAREST_WATER_MIN_M} m floor the loop is running along the \
+         inside of an inlet, not inland of the coast"
+    );
 }
+
+/// Floor on the nearest water to the carriageway, metres, in ANY direction
+/// along its own radial — as opposed to the crossing `road_band` placed the
+/// road against, which `ROAD_INLAND_M ± ROAD_SHOULDER_HALF_W` above still
+/// pins exactly. A cove reaching across a radial is why the two numbers are
+/// not the same one (world structure v1, 2026-09-15); measured worst 24 m.
+const ROAD_NEAREST_WATER_MIN_M: f32 = 18.0;
 
 /// The road's own numbers stay coherent with the scatter grid it vetoes
 /// against. A carriageway narrower than a scatter cell would let slots
@@ -595,12 +642,21 @@ fn bays_concentrate_the_route_without_enriching_it() {
     );
 }
 
-/// Floor on the bay:open barrel-rate ratio. Knobs give 430/170 = 2.53x;
-/// measured worst realized 2.29x across the four gate seeds, floored ~15%
-/// under it — low enough that coastline variance cannot trip it, high enough
-/// that halving the gap between the two rates does
-/// (DECISIONS.md §open: bay slots v0).
-const BAY_RATIO_MIN: f32 = 1.95;
+/// Floor on the bay:open barrel-rate ratio. Knobs give 430/170 = 2.53x
+/// (DECISIONS.md §open: bay slots v0); what is asserted is the REALIZED
+/// ratio, which is lower because a shoulder cell that declines the road's own
+/// draw can still roll a barrel off its biome row.
+///
+/// **Re-measured 2026-09-15 for world structure v1, which moved the
+/// coastline.** `in_bay` classifies off the shore's own shape, so a second
+/// wobble term at 260 m re-sorts which stretches are sheltered. The four gate
+/// seeds now read **3.20 / 2.41 / 1.92 / 3.39** where the worst had been
+/// 2.29 — the mechanism is untouched (on the worst seed the bay still pays
+/// 197‰ against the open coast's 102‰), the spread widened. The floor keeps
+/// its old derivation, ~15% under the measured worst, so it is still low
+/// enough that coastline variance cannot trip it and high enough that halving
+/// the gap between the two knobs does.
+const BAY_RATIO_MIN: f32 = 1.63;
 
 /// How far either conservation claim may drift, in per-mille. The two rates
 /// are set against the MEASURED sheltered share, which moves with the seed's

@@ -159,6 +159,7 @@ fn slot_at_origin(occupant: Occupant) -> Slot {
         z: 0.0,
         yaw: 0,
         scale: 1.0,
+        species: 0,
     }
 }
 

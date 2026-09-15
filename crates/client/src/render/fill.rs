@@ -150,7 +150,21 @@ pub const SKY_FILL_LUX: f32 = lux::AMBIENT_DAYLIGHT * 1.7;
 /// move is small — granite 0.0916 → 0.0900, 1.7% of its own value — which is
 /// the shape to expect, because the shaping curve's knots did not move and
 /// `SPLAT_ALPINE_BAND` therefore still opens on the same ground.
-pub const GROUND_MIX: [f32; 4] = [0.011_323, 0.518_633, 0.380_086, 0.089_958];
+/// ⚠ **Re-measured 2026-09-15 from `[0.011_323, 0.518_633, 0.380_086,
+/// 0.089_958]` for **world structure v1**, and this one is a big move in one
+/// channel: **sand 0.0113 → 0.0434, nearly four times its weight.** That is
+/// the shore terrace — the island has a beach now, 9.5–13.5 m of it instead
+/// of 5.0 (`DECISIONS.md` §open), and a beach is sand on the ground where
+/// there was grass. Litter falls 0.380 → 0.351 with the moisture field's
+/// rescale and granite is unmoved at 0.0935, because `SPLAT_ALPINE_BAND`
+/// opens on height and the terrace is the identity above 16 m.
+///
+/// **It makes the island brighter, and that is stated rather than absorbed.**
+/// Sand is the brightest of the four identities, so quadrupling its weight
+/// lifts the island-weighted mean linear luma 0.10715 → 0.10960 (+2.3%) with
+/// no albedo moved — `tests/ground_mix.rs::the_mean_luma_is_held_against_the_
+/// island_not_the_quadrant` carries the number and the reason.
+pub const GROUND_MIX: [f32; 4] = [0.043_425, 0.512_346, 0.350_701, 0.093_528];
 
 /// sRGB → linear, the exact piecewise transfer (not the 2.2 approximation).
 pub fn srgb_to_linear(v: f32) -> f32 {
