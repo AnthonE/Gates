@@ -192,6 +192,26 @@ pub fn resolve(
         }
         None => (SwingPick::default(), false),
     };
+    // A loose stack (ground items v0), last of the three `E` picks.
+    //
+    // **Outside the island block on purpose**: `core.island()` holds the
+    // core mutably (it owns the scatter cache), and this pick needs no
+    // island at all — a loose stack is a set the server states, not
+    // something derived from the seed. So it resolves here, after that
+    // borrow ends, which is also the right place in the chain.
+    //
+    // **Not aim-weighted**, so it can only ever be a fallback: a player
+    // looking at a box with a sack at their feet means the box, and
+    // `resolve_take` has no aim to lose that tie with. Third, so a
+    // deployable wins and an authored container wins — both are things
+    // you walked to on purpose, and a sack is the thing you are standing
+    // in.
+    if aimed.0.is_none() {
+        let take = interact::resolve_take(x, z, core.ground_items());
+        if take.verb != interact::Verb::None {
+            aimed.0 = take;
+        }
+    }
     near.0 = structure::nearest(
         (x, z),
         core.pieces.entries(),
@@ -477,6 +497,20 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
             }) {
                 open_panel(ui);
             }
+        }
+        // A loose stack (ground items v0). **The same payload-free
+        // `encode_action_pickup` the `V` key sends** — one opcode for
+        // "pick up the thing at my feet", which is what keeps the CHOICE
+        // in the sim: the prompt named the nearest stack because
+        // `resolve_take` uses the sim's own rule, so the key and the line
+        // above it cannot disagree.
+        //
+        // No panel: there is nothing to open. What the player gets is the
+        // `EV_GATHER` toast every other payout arrives as, and the sack
+        // stops being drawn on the next sync — which is server truth
+        // rather than this side guessing that the take worked.
+        Verb::Take => {
+            send(net, toast, "take", protocol::encode_action_pickup);
         }
         // The bench's `E` opens the tree and sends nothing (tech tree
         // v0): the panel is drawn from tables already dripped, and the

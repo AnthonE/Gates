@@ -2216,6 +2216,9 @@ const NET_LINE_PERIOD_S: f32 = 0.25;
 // the near structure, the look, the pad, and the two text nodes.
 #[allow(clippy::too_many_arguments)]
 pub fn prompt(
+    // The catalog arrived with `Verb::Take` (ground items v0): a loose
+    // stack's prompt names the item, and the name lives here.
+    net: NonSend<super::Net>,
     aimed: Res<Aimed>,
     swung: Res<super::verbs::Swung>,
     in_weak: Res<super::verbs::InWeak>,
@@ -2243,7 +2246,7 @@ pub fn prompt(
         let want = if pad.0.is_open() {
             String::new()
         } else {
-            match aimed.0.prompt() {
+            match aimed.0.prompt(&net.session.core.catalog) {
                 s if !s.is_empty() => s,
                 _ => match swing_prompt_weak(swung.0.occupant, in_weak.0) {
                     s if !s.is_empty() => s,
@@ -3315,7 +3318,11 @@ mod tests {
         use sim_core::terrain::Occupant;
 
         let silent = Pick::default();
-        assert_eq!(silent.prompt(), "", "a whiffed E must say nothing");
+        assert_eq!(
+            silent.prompt(&protocol::ItemCatalog::EMPTY),
+            "",
+            "a whiffed E must say nothing"
+        );
 
         // Where E is silent, the swing speaks.
         assert_eq!(swing_prompt(Occupant::Tree as u8), "[LMB] CHOP TREE");
@@ -3332,7 +3339,10 @@ mod tests {
                 verb: v,
                 ..Default::default()
             };
-            assert!(!p.prompt().is_empty(), "{v:?} must claim the prompt");
+            assert!(
+                !p.prompt(&protocol::ItemCatalog::EMPTY).is_empty(),
+                "{v:?} must claim the prompt"
+            );
         }
 
         // And a swing at nothing is silent rather than "[LMB] ".

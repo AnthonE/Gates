@@ -2155,21 +2155,40 @@ fn a_box_prompt_advertises_its_keypad_like_a_door() {
         ..Default::default()
     };
     // Bare: the verb alone — no keypad to name (lock v1's door rule).
-    assert_eq!(p.prompt(), "[E] OPEN BOX");
+    assert_eq!(p.prompt(&protocol::ItemCatalog::EMPTY), "[E] OPEN BOX");
     // Bolted but not armed: the keypad is named, LOCKED is not claimed.
     p.has_lock = true;
-    assert!(p.prompt().contains("[L] KEYPAD"), "{}", p.prompt());
     assert!(
-        !p.prompt().contains("LOCKED"),
+        p.prompt(&protocol::ItemCatalog::EMPTY)
+            .contains("[L] KEYPAD"),
+        "{}",
+        p.prompt(&protocol::ItemCatalog::EMPTY)
+    );
+    assert!(
+        !p.prompt(&protocol::ItemCatalog::EMPTY).contains("LOCKED"),
         "an unarmed lock is not a locked box: {}",
-        p.prompt()
+        p.prompt(&protocol::ItemCatalog::EMPTY)
     );
     // Armed: both, and `E` still offers the open — whether it succeeds is
     // the sim's verdict, not the prompt's.
     p.locked = true;
-    assert!(p.prompt().contains("LOCKED"), "{}", p.prompt());
-    assert!(p.prompt().contains("[L] KEYPAD"), "{}", p.prompt());
-    assert!(p.prompt().starts_with("[E] OPEN BOX"), "{}", p.prompt());
+    assert!(
+        p.prompt(&protocol::ItemCatalog::EMPTY).contains("LOCKED"),
+        "{}",
+        p.prompt(&protocol::ItemCatalog::EMPTY)
+    );
+    assert!(
+        p.prompt(&protocol::ItemCatalog::EMPTY)
+            .contains("[L] KEYPAD"),
+        "{}",
+        p.prompt(&protocol::ItemCatalog::EMPTY)
+    );
+    assert!(
+        p.prompt(&protocol::ItemCatalog::EMPTY)
+            .starts_with("[E] OPEN BOX"),
+        "{}",
+        p.prompt(&protocol::ItemCatalog::EMPTY)
+    );
 }
 
 #[test]
@@ -5150,5 +5169,182 @@ fn the_craft_browser_is_behind_the_looting_check() {
         code.contains("quick_move("),
         "`inv.rs` does not call the quick-move — the whole gesture is in \
          `ui::slots` and this file is the only thing that can fire it"
+    );
+}
+
+// §U · the loose stack's prompt (ground items v0)
+//
+// Two rules, and the first is the one that makes the prompt trustworthy.
+//
+// `ui::interact::resolve_take` is the only resolver here that ignores the
+// crosshair, because `grounditem::take_nearest` does — and two stacks out
+// of one barrel land inside a metre of each other, so an aimed prompt
+// would routinely name the far sack and hand over the near one. The
+// second rule is that the line names the ITEM: the sack on the ground is
+// one generic mesh whatever is inside it, so the words are the only thing
+// that says whether to stop.
+mod take {
+    use client::ui::interact::{resolve_take, Verb};
+    use protocol::event::WireGItem;
+    use sim_core::backpack::LOOT_REACH_M;
+    use sim_core::movement::{quant_xz, POS_XZ_Q};
+
+    fn at(x: f32, z: f32, id: u32, item: u16, count: u16) -> WireGItem {
+        WireGItem {
+            id,
+            qx: quant_xz(x),
+            qy: 0,
+            qz: quant_xz(z),
+            item,
+            count,
+        }
+    }
+
+    /// Nothing on the ground is no prompt — not an empty one.
+    #[test]
+    fn an_empty_island_offers_nothing() {
+        let p = resolve_take(100.0, 100.0, &[]);
+        assert_eq!(p.verb, Verb::None);
+        assert_eq!(
+            p.prompt(&protocol::ItemCatalog::EMPTY),
+            "",
+            "a prompt for nothing is worse than silence"
+        );
+    }
+
+    /// **Nearest wins, and the crosshair is not consulted.** The far stack
+    /// is the one a look-weighted pick would take, so this fixture puts
+    /// them on opposite sides of the player.
+    #[test]
+    fn the_nearest_stack_wins_whatever_the_player_faces() {
+        let items = [at(103.0, 100.0, 11, 3, 20), at(100.5, 100.0, 22, 5, 7)];
+        let p = resolve_take(100.0, 100.0, &items);
+        assert_eq!(p.verb, Verb::Take);
+        assert_eq!(
+            p.handle, 22,
+            "the pick is not the nearest stack — the prompt would name one \
+             stack and the sim's `take_nearest` would hand over another"
+        );
+        assert_eq!((p.item, p.count), (5, 7), "and it carries that stack");
+    }
+
+    /// The reach is the sim's, so the prompt cannot promise a take the sim
+    /// refuses for distance.
+    #[test]
+    fn a_stack_past_the_sims_own_arm_offers_nothing() {
+        let just_in = at(100.0 + LOOT_REACH_M - 0.2, 100.0, 1, 3, 1);
+        let just_out = at(100.0 + LOOT_REACH_M + 0.5, 100.0, 2, 3, 1);
+        assert_eq!(
+            resolve_take(100.0, 100.0, &[just_in]).verb,
+            Verb::Take,
+            "a stack inside the arm is takeable"
+        );
+        assert_eq!(
+            resolve_take(100.0, 100.0, &[just_out]).verb,
+            Verb::None,
+            "a stack past the arm is not"
+        );
+    }
+
+    /// Ties go to the lower index — `GroundItems::nearest`'s rule, so the
+    /// two agree about which of two stacks on one point is picked.
+    #[test]
+    fn a_tie_goes_to_the_lower_index() {
+        let items = [at(101.0, 100.0, 7, 1, 1), at(101.0, 100.0, 8, 1, 1)];
+        assert_eq!(resolve_take(100.0, 100.0, &items).handle, 7);
+    }
+
+    /// **The line names the item and the count.** A sack holding 4 cloth
+    /// and a sack holding 300 metal are the same picture, so the words are
+    /// the whole of what a player acts on.
+    #[test]
+    fn the_prompt_names_what_is_in_the_sack() {
+        let mut cat = protocol::ItemCatalog::EMPTY;
+        cat.set(
+            9,
+            b"Metal Fragments",
+            protocol::ItemRow {
+                cond_max: 0,
+                armor_pct: 0,
+                wear_slot: 0,
+                stack_max: 1000,
+            },
+        )
+        .unwrap();
+        let p = resolve_take(100.0, 100.0, &[at(100.2, 100.0, 1, 9, 300)]);
+        let line = p.prompt(&cat);
+        assert!(line.starts_with("[E] TAKE"), "{line}");
+        assert!(
+            line.contains("METAL FRAGMENTS"),
+            "the prompt does not name the item: {line}"
+        );
+        assert!(
+            line.contains("×300"),
+            "the prompt does not say how many: {line}"
+        );
+    }
+
+    /// A name that has not dripped in yet reads as `#id` — the inventory
+    /// panel's own fallback — rather than making the prompt disappear.
+    #[test]
+    fn an_unnamed_item_still_offers_the_take() {
+        let p = resolve_take(100.0, 100.0, &[at(100.2, 100.0, 1, 42, 2)]);
+        let line = p.prompt(&protocol::ItemCatalog::EMPTY);
+        assert!(line.starts_with("[E] TAKE"), "{line}");
+        assert!(line.contains("×2"), "{line}");
+    }
+
+    /// The quantum is the sim's: a stack's wire position is in body quanta,
+    /// so the distance the prompt measures is the distance the sim measures.
+    #[test]
+    fn the_prompt_measures_in_the_sims_own_quanta() {
+        // One quantum east: inside any arm, and proves the conversion is
+        // applied rather than the raw integer being compared to metres.
+        let one_q = WireGItem {
+            id: 5,
+            qx: quant_xz(100.0) + 1,
+            qy: 0,
+            qz: quant_xz(100.0),
+            item: 1,
+            count: 1,
+        };
+        let p = resolve_take(100.0, 100.0, &[one_q]);
+        assert_eq!(p.verb, Verb::Take);
+        // And the same integer read as metres would be ~3,334 m away.
+        assert!(
+            (one_q.qx as f32 * POS_XZ_Q - 100.0).abs() < 0.05,
+            "the fixture is not one quantum away"
+        );
+    }
+}
+
+/// **The loose stacks are drawn, and `E` sends the pickup.** Both are
+/// draws and dispatches, so the gate is a grep for the call site — §F's
+/// rule: the defect is a call site, not a value.
+#[test]
+fn the_loose_stacks_reach_the_renderer_and_the_key() {
+    let structures =
+        std::fs::read_to_string("src/render/structures.rs").expect("render/structures.rs");
+    assert!(
+        structures.contains("core.ground_items()"),
+        "`structures.rs` does not stream the loose stacks — a scattered \
+         barrel would be invisible, which is the whole slice"
+    );
+    assert!(
+        structures.contains("gitem_mesh"),
+        "the loose stacks have no mesh of their own — sharing the bag's \
+         would make a one-stack sack and a body's whole inventory the same \
+         silhouette"
+    );
+    let verbs = std::fs::read_to_string("src/render/verbs.rs").expect("render/verbs.rs");
+    assert!(
+        verbs.contains("resolve_take("),
+        "`verbs.rs` never resolves the take pick, so the prompt can never \
+         name a stack"
+    );
+    assert!(
+        verbs.contains("Verb::Take => {"),
+        "`E` has no arm for a loose stack — and this is the match the \
+         `--features render` gate is the only thing that compiles"
     );
 }
