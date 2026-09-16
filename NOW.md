@@ -2137,6 +2137,8 @@ dust and the impact cue read it (`DECISIONS.md` §open, impact fx v1). Left:
 1. **Nobody has heard it and nothing scores it** — `ART.md` has no audio
    section and this box has no device. `cargo run -p client --bin soundbank
    -- <dir>` writes every cue to WAV; sourcing is `assets/sound/WANTED.md`.
+   The browser is the cheapest place to fix that: open the page, because
+   `ci/build_web.sh` now stages a worklet and plays a fixture through it.
 2. **The score is programmer art.** `synth::score` generates the nine
    `music::PIECES`; swapping in recorded pieces is one function
    (`synth::render`'s music arm). Two bumps we cannot take: weapon equipped,
@@ -2998,9 +3000,12 @@ at in headless Chromium (SwiftShader) against a shard from the same commit:
    (`web::hand_back` → `gatesLeft` → reload with the reason on the status
    line); the surface follows the viewport under the 2048 cap (`web::fit`,
    `tests/web.rs`); one PLAY button, the shard fields behind ADVANCED.
-5. **The audio bank is one cue a frame on wasm32** (`tests/bank.rs`); the
-   spread bank installs each cue's PCM into the engine, which a page does
-   not flush anywhere yet — the worklet is the next stage.
+5. **The audio bank is one cue a frame on wasm32** (`tests/bank.rs`), and
+   since 2026-09-16 there is a reader for it: `render/audio_web.rs` posts
+   each frame's installs and commands to an `AudioWorklet` running the same
+   `sound::engine::Renderer` the desktop runs (browser audio v0). Bit-
+   identical to the native path under `ci/check_worklet.mjs`; **unheard in a
+   real tab** — §0x item 1's caveat, on this target too.
 6. **Mouse look turns the view** and the pointer lock, when granted, holds
    through a drag and releases on Escape — zero panics across four runs.
 
@@ -3032,7 +3037,28 @@ What remains, in order:
    (`RenderAssetUsages::default()`), and a page has one 32-bit heap.
    `RENDER_WORLD` only for the model maps and the photographs is the first
    cut. `web::heap_report` prints the split every two seconds in a browser.
-7. **A granted pointer lock in headless Chromium is a pointer-event flood**
+7. **The worklet is unheard and unmeasured in a tab.** Browser audio v0
+   landed 2026-09-16 and closed the two-day silence, but every number about
+   it comes from `ci/check_worklet.mjs` under node: bit-identical samples, a
+   56-byte report, six mutants caught. What nobody has is the thing
+   `findings/browser-audio-20260913.md` §4 asked for — the hiccup, measured
+   with a real GC and a real audio thread. `app.js`'s long-task counter and
+   `web::heap_report` print beside each other for exactly this; read them in
+   a tab next to a footstep. Open too: `REPORT_EVERY = 96` is a guess at a
+   cadence, and nothing yet plots `Diag::stats.dropped` against frame time.
+   ⚠ **Check the CSP on the FIRST live load, before anything else.** The page
+   has been silenced by that header once already (2026-09-13, cpal's `eval`),
+   and the worklet adds two fresh demands on it that no gate here can test:
+   `audioWorklet.addModule("./audio.js")` is governed by **`script-src`**, and
+   instantiating the posted `WebAssembly.Module` inside the worklet needs
+   `wasm-unsafe-eval` to apply in that scope too (worklets inherit the
+   document's policy). `'wasm-unsafe-eval'` is already in
+   `scry-forge/deploy/nginx/elopros.com.conf`'s `/games/gates/` block, so the
+   second is expected to hold and the first is expected to be `'self'` —
+   **expected, not measured.** A refusal shows as `audio output: none - the
+   page built no AudioWorklet` on the console with the game otherwise fine,
+   and `startAudio`'s `console.warn` carries the browser's own reason.
+8. **A granted pointer lock in headless Chromium is a pointer-event flood**
    (§17.6: ~30k raw updates a second, stationary), and Bevy's message
    buffers are unbounded, so the page hits the 4 GB ceiling in a minute. A
    hardware mouse cannot produce it; a real browser has not been asked.

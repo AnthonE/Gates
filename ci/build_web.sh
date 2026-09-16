@@ -78,6 +78,61 @@ wasm-bindgen --target web --no-typescript \
   "target/wasm32-unknown-unknown/$profile/client_web.wasm"
 cp crates/client-web/web/index.html crates/client-web/web/app.js "$out/"
 
+# ── the audio thread's module ───────────────────────────────────────────────
+# The game's sound is rendered in Rust inside an `AudioWorkletProcessor`, which
+# runs in a scope with no DOM, no `fetch` and no shared memory with the page —
+# so it cannot be a corner of `client_web.wasm` (that module is Bevy and the
+# transport, and none of it belongs in a callback with 2.7 ms to fill 128
+# frames). `crates/sound-worklet` is a second, small cdylib over `sound`.
+#
+# **`--target no-modules`, and that is not a preference.** The glue it emits
+# defines one global and contains no `import`, so the processor is a single
+# script — an `AudioWorkletGlobalScope` has no module graph worth relying on,
+# and static `import` inside a worklet has been uneven across browsers for
+# years. The concatenation below is what `addModule` loads; the `.wasm` beside
+# it is fetched and compiled by the PAGE and posted down the port, because a
+# worklet cannot fetch anything itself.
+echo "== building sound-worklet for the AudioWorklet (profile: $profile)"
+cargo build -p sound-worklet --profile "$profile" --target wasm32-unknown-unknown
+wk="$(mktemp -d)"
+trap 'rm -rf "$wk"' EXIT
+wasm-bindgen --target no-modules --no-typescript \
+  --remove-producers-section \
+  --out-dir "$wk" \
+  "target/wasm32-unknown-unknown/$profile/sound_worklet.wasm"
+cp "$wk/sound_worklet_bg.wasm" "$out/"
+cat "$wk/sound_worklet.js" crates/client-web/web/audio-processor.js > "$out/audio.js"
+# The glue has to have defined the global the processor calls, or the
+# concatenation is two halves that load and then do nothing — silence with a
+# 200 on every request, which is this page's recurring failure shape.
+grep -q "registerProcessor" "$out/audio.js" || {
+  echo "audio.js lost the processor registration" >&2; exit 1; }
+grep -q "wasm_bindgen" "$out/audio.js" || {
+  echo "audio.js has no wasm_bindgen global - wrong --target?" >&2; exit 1; }
+printf "   audio.js %d bytes, sound_worklet_bg.wasm %d bytes\n" \
+  "$(stat -c%s "$out/audio.js")" "$(stat -c%s "$out/sound_worklet_bg.wasm")"
+
+# **Play the module before shipping it, where there is a node to do it with.**
+# Not a browser and not a gate (`ci/gates.sh` has never needed node), but this
+# is the one check that crosses the wasm ABI for real: it replays a
+# Rust-authored fixture through the staged `audio.js` and compares every
+# sample against what a native `Renderer` produced. Everything it catches —
+# the glue not loading outside a DOM, `initSync` taking another shape,
+# `out_ptr` at the wrong array, a detached view after the bank grows memory —
+# is SILENCE with every Rust gate green, which is how the browser lost its
+# sound for two days in the first place. A box with no node says so and ships;
+# a box with one and a failing check does not ship.
+if command -v node >/dev/null; then
+  echo "== checking the audio module (fixture replay, no browser)"
+  fxdir="$(mktemp -d)"; trap 'rm -rf "$wk" "$fxdir"' EXIT
+  cargo run -q -p sound --example worklet_fixture -- "$fxdir/fixture.bin" \
+    || { echo "could not build the worklet fixture" >&2; exit 1; }
+  node ci/check_worklet.mjs "$out/audio.js" "$out/sound_worklet_bg.wasm" "$fxdir/fixture.bin" \
+    || { echo "the staged audio module does not render what this tree renders" >&2; exit 1; }
+else
+  echo "== audio module check: no node, shipping unplayed (node ci/check_worklet.mjs …)"
+fi
+
 # **The assets, staged from `git ls-files` and never from a walk.**
 #
 # Bevy's wasm asset reader turns `AssetPlugin::file_path` ("assets") into a
@@ -125,13 +180,15 @@ cargo run -q -p client --features webassets --bin web_assets -- "$out/assets/mod
 # `node_modules/binaryen/bin/wasm-opt`.
 opt="${WASM_OPT:-$(command -v wasm-opt || true)}"
 if [ -n "$opt" ] && [ -x "$opt" ]; then
-  before=$(stat -c%s "$out/client_web_bg.wasm")
   echo "== wasm-opt -Os ($opt)"
-  "$opt" -Os --enable-bulk-memory --enable-nontrapping-float-to-int \
-    --enable-mutable-globals --enable-sign-ext --enable-reference-types \
-    -o "$out/client_web_bg.wasm.opt" "$out/client_web_bg.wasm"
-  mv "$out/client_web_bg.wasm.opt" "$out/client_web_bg.wasm"
-  printf "   wasm-opt: %d -> %d bytes\n" "$before" "$(stat -c%s "$out/client_web_bg.wasm")"
+  for m in client_web_bg sound_worklet_bg; do
+    before=$(stat -c%s "$out/$m.wasm")
+    "$opt" -Os --enable-bulk-memory --enable-nontrapping-float-to-int \
+      --enable-mutable-globals --enable-sign-ext --enable-reference-types \
+      -o "$out/$m.wasm.opt" "$out/$m.wasm"
+    mv "$out/$m.wasm.opt" "$out/$m.wasm"
+    printf "   wasm-opt: %s %d -> %d bytes\n" "$m" "$before" "$(stat -c%s "$out/$m.wasm")"
+  done
 else
   echo "== wasm-opt: not installed, shipping the bindgen output (npm i binaryen, or WASM_OPT=…)"
 fi
@@ -152,6 +209,7 @@ raw=$(stat -c%s "$out/client_web_bg.wasm")
 # the fly; without either, measured 2026-09-12, the module went over the
 # wire raw.
 gzip -9 -n -c "$out/client_web_bg.wasm" > "$out/client_web_bg.wasm.gz"
+gzip -9 -n -c "$out/sound_worklet_bg.wasm" > "$out/sound_worklet_bg.wasm.gz"
 gz=$(stat -c%s "$out/client_web_bg.wasm.gz")
 printf "   client_web_bg.wasm  %d bytes raw, %d gzipped (.wasm.gz beside it)\n" "$raw" "$gz"
 echo "== done: python3 -m http.server 8080 --directory $out"
