@@ -253,6 +253,19 @@ $NICE cargo clippy -p client-web --target wasm32-unknown-unknown --all-targets -
 $NICE cargo build -p client-web --profile web --target wasm32-unknown-unknown \
   || fail "browser client build"
 
+# **The audio thread's module, which is a SECOND wasm artifact and therefore a
+# second thing that can rot unnoticed.** `client-web` does not depend on
+# `sound-worklet` — they are two cdylibs a page loads separately — so nothing
+# above compiles it, and a `sound::worklet` change that breaks the bindgen
+# wrapper would be green here and silent in a tab. That is the shape this
+# whole slice exists to stop: the browser went mute for two days
+# (2026-09-14 → 16) with every gate in this file passing.
+echo "== gate: audio worklet (sound-worklet -> wasm32)"
+$NICE cargo clippy -p sound-worklet --target wasm32-unknown-unknown --all-targets -- -D warnings \
+  || fail "clippy (audio worklet)"
+$NICE cargo build -p sound-worklet --profile web --target wasm32-unknown-unknown \
+  || fail "audio worklet build"
+
 # **The RENDERER for the browser, under `--all-targets`.** `client-web` has
 # carried `render` since 2026-09-11 (it hands the session to Bevy in a tab),
 # so the build above already codegens `crates/client/src/render/` — ~41k

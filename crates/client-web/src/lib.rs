@@ -291,6 +291,20 @@ impl Gates {
         let mut app = App::new();
         app.add_plugins(
             DefaultPlugins
+                .build()
+                // **`bevy_audio` off here too, and on this target it was
+                // actively costing something.** The engine owns the output
+                // through an `AudioWorklet` (`render/audio_web.rs`), so
+                // `AudioPlugin` has nothing to mix — no entity has carried an
+                // `AudioPlayer` since the cpal seam (2026-09-14). Left
+                // enabled it still opened cpal's only wasm host, which is a
+                // `setTimeout` loop **on the main thread** allocating a fresh
+                // `AudioBuffer` and source node every ~46 ms
+                // (`findings/browser-audio-20260913.md` §2) — i.e. exactly the
+                // per-period garbage that note blames for the hiccup, running
+                // for a mixer with nothing in it. The desktop binaries have
+                // disabled it since the seam; this one was missed.
+                .disable::<bevy::audio::AudioPlugin>()
                 .set(AssetPlugin {
                     // **No `.meta` probe.** Bevy's default is `Always`, which
                     // fires a second request for `<path>.meta` before every

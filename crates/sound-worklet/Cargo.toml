@@ -1,0 +1,33 @@
+[package]
+name = "sound-worklet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# **The second wasm module: the one the browser's audio thread runs.**
+#
+# An `AudioWorkletProcessor` lives in a global scope of its own — no DOM, no
+# `fetch`, no window, and no shared memory with the page — so it cannot be a
+# corner of `client-web`: that module is Bevy and the transport and 30-odd MB
+# of renderer, and none of it may be linked into a callback that has 2.9 ms to
+# fill 128 frames. This crate links `sound` and `wasm-bindgen` and nothing
+# else.
+#
+# **There is no logic here.** Every decision on the browser's audio path is
+# `sound::worklet`, which `crates/sound/tests/worklet.rs` drives on a box with
+# no browser; this file is the `#[wasm_bindgen]` wrapper, and a line of
+# reasoning that appears here rather than there is a line no gate can reach.
+# Same division as `client-web`, for the same reason, and deliberately NOT the
+# deleted `client-wasm`'s hand-written C ABI.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# Nothing is a dependency on a native target and the source is empty there —
+# `client-web`'s arrangement, and its manifest carries the full argument: a
+# workspace member cannot opt out of `cargo build --workspace`, and excluding
+# it instead would mean a second `Cargo.lock` and a `wasm-bindgen` crate free
+# to disagree with the `wasm-bindgen` CLI that generates the glue.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+sound = { path = "../sound" }
+wasm-bindgen = "0.2"

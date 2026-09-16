@@ -646,6 +646,34 @@ do not rediscover)
   the loss is documented but what that target draws INSTEAD; when the answer
   is nothing, it is a `NOW.md` item naming the target, not a comment. The
   browser draws a mesh mark now (`decal.rs`'s header).
+  ⚠ **It fired again four days later, on sound, and the twist is that the
+  commit SAID SO.** The cpal seam (2026-09-14) moved the client's audio off
+  `bevy_audio` onto its own renderer in a device callback and deleted the old
+  play path on both targets; natively `audio_out::flush` reads the command
+  buffer, and on wasm32 `render/mod.rs` registered `audio::clear` — a system
+  whose entire job was to **empty that buffer so it could not count phantom
+  drops**. The browser then built the whole bank, decided every cue, filled
+  the buffer and binned it every frame, in silence, with `ci/gates.sh` green,
+  for two days. Its own merge message ends *"Nobody has heard it; the browser
+  still flushes nothing until the worklet lands."* So the lesson is not that
+  the loss was undocumented — it was documented twice, in a comment and in a
+  commit — it is that **a sentence explaining an absence reads as coverage to
+  everyone downstream, including whoever wrote it.** What the entry above asks
+  for is the check: when a target loses a path, the question is what it does
+  INSTEAD, and "nothing" is an item with that target's name on it. Fixed by
+  `render/audio_web.rs` (browser audio v0, 2026-09-16), and the fix carries
+  two gates the original had no equivalent of — `crates/sound/tests/worklet.rs`
+  for the arithmetic and `ci/check_worklet.mjs` for the ABI, because every
+  Rust test in this tree passes with the browser's audio module unbuildable.
+  ⚠ **And the same slice left a second target half-done, which is this
+  entry's other half**: `bin/gates.rs` and `bin/modelview.rs` disabled
+  `AudioPlugin` and `client-web` did not, so the page kept opening cpal's
+  wasm host — a main-thread `setTimeout` allocating an `AudioBuffer` and a
+  source node every ~46 ms — to mix a graph nothing had put a sound in. Not
+  silence this time but pure waste, invisible for the same reason: nothing
+  asserts which plugins a target builds. **When a plugin is disabled for a
+  reason, grep every `DefaultPlugins` in the workspace**, not the binaries
+  you happened to be thinking about.
 - **A judge names the symptom; fix the cause.** Optimizing the judge's
   literal sentence is how a loop circles for three passes — elsewhere,
   "untextured" was really diffuse contrast crushed by an earlier fix for
@@ -1127,8 +1155,10 @@ inside `winit` at `App::run` with every gate already green. **Then ask the
 second question for each** — and the answer moved under this entry once
 already, which is its own lesson: this paragraph used to say `alsa` was
 requested and unused, then that `bevy_audio` was load-bearing, and now
-**`bevy_audio` is compiled and its `AudioPlugin` is DISABLED in both desktop
-binaries**; what is load-bearing is **cpal**, output only, through
+**`bevy_audio` is compiled and its `AudioPlugin` is DISABLED on every target**
+— `bin/gates.rs`, `bin/modelview.rs` and, since 2026-09-16, `client-web`,
+which had been missed and was paying for it (the decal-trap entry's second
+half); what is load-bearing is **cpal**, output only, through
 `render/audio_out.rs` — so `alsa` earns its keep through cpal, and
 `bevy_audio` is a trim candidate again. `wayland` (and `x11`) are real — a shipped desktop
 client faces both. `libudev` is `bevy_gilrs`, which grep still shows

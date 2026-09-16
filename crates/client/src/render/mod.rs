@@ -27,6 +27,11 @@ pub mod audio;
 // renderer through an `AudioWorklet`, so nothing here is for wasm32.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod audio_out;
+// The browser's output: the same renderer inside an `AudioWorklet`, and the
+// flush that posts each frame's commands to it. `audio_out`'s twin, in the
+// same shape and with the same refusal policy.
+#[cfg(target_arch = "wasm32")]
+pub mod audio_web;
 pub mod bodies;
 // The boot splash. The window is the first thing a double-click gets now, and
 // the launcher handshake and connect happen behind it as states rather than
@@ -641,10 +646,26 @@ impl Plugin for GatesRenderPlugin {
             app.insert_non_send_resource(native);
             app.add_systems(PostUpdate, audio_out::flush);
         }
-        // A page has no reader for the buffer until its worklet lands:
-        // emptied every frame so it cannot fill and count phantom drops.
+        // The output, in a tab: the `AudioWorklet` the page built inside the
+        // PLAY click, found here and posted to every `PostUpdate`. Opened at
+        // the same point as the native device and for the same reason — the
+        // commands `audio::setup` queues before the first flush wait in the
+        // processor's queue rather than being skipped — and `open` writes the
+        // `AudioContext`'s rate into `Engine::out_rate`, which is what every
+        // `Start` is built against (`audio_web.rs`).
+        //
+        // ⚠ **This registered `audio::clear` from the cpal seam (2026-09-14)
+        // to 2026-09-16**, a system whose whole job was to empty the command
+        // buffer because nothing on this target read it. The browser was
+        // silent for two days with every gate green.
         #[cfg(target_arch = "wasm32")]
-        app.add_systems(PostUpdate, audio::clear);
+        {
+            let web = audio_web::open(app);
+            // Non-send: a `MessagePort` and a `Closure` are `JsValue`s, which
+            // are neither `Send` nor `Sync` (see `Web`).
+            app.insert_non_send_resource(web);
+            app.add_systems(PostUpdate, audio_web::flush);
+        }
         // The build wheel's rings, rasterised once. Ten images, and the
         // reason they are not made on demand is that the wheel rebuilds every
         // time the pointer crosses a wedge — several times a second while
