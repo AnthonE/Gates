@@ -134,6 +134,15 @@ echo "== gate: asset triage (ci/measure_glb.py: shape, value and chart bands)"
 $NICE python3 ci/measure_glb.py --self-test || fail "asset triage"
 echo "== gate: chart repair (ci/flatten_charts.py: the UV islands agree afterwards)"
 $NICE python3 ci/flatten_charts.py --self-test || fail "chart repair"
+# The un-packer, which exists because the raw deliveries are gitignored: it is
+# the only way back to a map once a model has been packed, so a defect in the
+# packer is un-fixable if this one is wrong. Its self-test bends a synthetic
+# tangent-space field the way the packer did and requires the unit-length
+# fraction back — a physical property of a normal map, not an identity about
+# the curve. The fixture's spread is MEASURED off a real map (0.041 in -1..1);
+# a looser one quietly survives the bend and tests nothing.
+echo "== gate: map un-bake (ci/unbake_ktx.py --self-test: the packer's curve inverts)"
+$NICE python3 ci/unbake_ktx.py --self-test || fail "map un-bake"
 # The Blender stage's bpy-free half: the target read off sim-core, the fit
 # arithmetic, the ORM layout and the sidecar — what `ci/rock_kit.py` shares
 # between `gen` and `edit`. Needs numpy only; the bpy commands say SKIP and
