@@ -534,10 +534,15 @@ ring, the haven pad. Regenerated goldens in the same commit, and single-lane
 
 ### 8.4 · Monument placement is partly unbuilt
 
-`TERRAIN.md` §7 shows the haven pad selector **finds** flat ground rather
-than **carving** it — best natural site measured at 3.76 m of relief. Every
-monument in §3 is a large flat footprint on generated terrain, so they all
-want the carve that does not exist. The Golden Spine is the exception: it
+~~`TERRAIN.md` §7 shows the haven pad selector **finds** flat ground rather
+than **carving** it~~ — **stale since 2026-08-16 and corrected 2026-09-16.**
+The carve exists and is armed: `SITE_STAMP_STRENGTH = 1.0`
+(`crates/sim-core/src/terrain.rs`), so an authored site MAKES its flat ground
+rather than standing on whatever the argmax found, its reach is bounded by
+`SiteFootprint::blend_m`, and `sim-core/tests/carve.rs` §C holds that no
+ground outside that band moves by one bit. What every monument in §3 wants is
+therefore built. What is *not* built is the placement that would put one
+somewhere worth carving — see `reference/ROADS.md` §9.2 and `NOW.md` §0rd. The Golden Spine is the exception: it
 rides the road, which is already generated and already gated.
 
 ### 8.5 · Extraction and world states are one system or they are two

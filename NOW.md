@@ -805,6 +805,39 @@ treeline (`DECISIONS.md` §open, world structure v1). What is still open:
    from the 8 m grid's staircase. Both were replaced by metrics that
    separate. **A band whose two populations touch is not a gate.**
 
+## 0rd · More roads is blocked on more monuments, and that is measured *(sim lane)*
+
+`reference/ROADS.md` (2026-09-16, tier 1 fetched whole). Their order is
+**monuments first, roads routed to them through ports each monument
+declares**; ours is the inverse — sites are chosen ON the ring by
+construction (`terrain.rs:1859`). Measured with `examples/second_road.rs`:
+
+- **38% of walkable land is over 300 m of walking from any road** (p50 218 m,
+  p90 570 m). Devblog 189's "huge areas of wasteland", on our island.
+- A chord between two of our sites **saves 3–5% of the walk** — three sites
+  on one ring subtend small angles, so every road between them runs beside
+  the ring. There is nowhere for a new road to go until a site is inland.
+- A straight road across our interior is **flatter than the shipped ring**
+  (0.247 against 0.450 mean slope): the remap curve's shelves.
+
+Build order (§9.2), each blocked on the one above:
+
+1. **Inland site placement** — a solve over the island, not the ring, with a
+   distribution objective, a **pairwise** separation rule and a tier field.
+   `reference/MONUMENTS.md` §9.3's list unchanged, now with a reason.
+2. **Ports** — an in/out bearing per site, one byte off the ring phase's hash.
+3. **Side roads** — ring to port, as `PathData`'s shape: a polyline solved
+   once inside `haven()`, queried as point-to-segment distance. No tap, no
+   trig. ⚠ Makes a road a function of `(seed, x, z, Haven)` — the move
+   `scatter` already made when the pad began vetoing cells.
+4. **Gates 1–4** (§8) with mutants: reach; one piece to the ring's own 79%
+   bar; a side road goes somewhere; no road over water or cliff.
+
+⚠ **Spokes to the map centre are the wrong shape** — the reach table says how
+much road the island wants, not where it goes. **Not builder work:** what an
+inland site looks like (`WORLD.md` §9.1 — the register is the operator's).
+
+
 ## 0fst · The forest, after world structure v1 *(sim + client lane)*
 
 `reference/FORESTS.md` §8 asked for seven gates; **six are built**, plus the
