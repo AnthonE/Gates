@@ -2312,6 +2312,27 @@ impl World {
                 .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_WEAR, addr);
             return;
         }
+        // A loot-only container takes nothing a player hands it
+        // (`inventory::takes_deposits`, wire v64 — today that is
+        // `CONT_WORLD` alone). Asked here for the third time on this
+        // verb, after the wear slot and the oven, because it is the same
+        // question those two are: what may enter this container. It is
+        // the cheapest of the three — a kind, no content behind it — and
+        // `deposit_refused` carries the case for *which* container, which
+        // is the refill timer: one deposited stack disarms it
+        // (`worldcont::set_slot` keys the timer on the record going
+        // empty), so without this a single player parks one wood in the
+        // haven pad's crate and that crate never pays anybody again.
+        //
+        // **Both landing sites**, which is the trap the wear check above
+        // states in full and the reason this arrives beside it rather
+        // than a version later: a take OUT of a crate onto an occupied
+        // slot is a SWAP, and a swap puts the occupant *into* the crate.
+        if inventory::deposit_refused(from_kind, to_kind, src, dst) {
+            self.events
+                .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_NO_INPUT, addr);
+            return;
+        }
 
         // 4. Plan. This is the whole of the validation, and it holds no
         //    reference to anything it could damage.

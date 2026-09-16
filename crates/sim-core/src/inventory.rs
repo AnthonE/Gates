@@ -94,6 +94,12 @@ pub const CONT_BOX: u8 = 2;
 /// The one asymmetry with a bag and a box: a world container **refills**.
 /// It is furniture that outlives being emptied, so an emptied one carries
 /// the tick it may roll again rather than despawning.
+///
+/// And that refill is why it is the one kind [`takes_deposits`] refuses
+/// (wire v64): the timer arms on the record going empty, so one stack put
+/// back disarms it and a crate nobody can empty is a crate nobody can be
+/// paid by. Open to anyone who can reach it, then, and closed to
+/// everything anyone hands it.
 pub const CONT_WORLD: u8 = 3;
 /// The highest kind the sim understands, and — since world containers v0
 /// — the highest value the two wire bits can hold. There is no forgeable

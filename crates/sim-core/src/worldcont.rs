@@ -32,6 +32,16 @@
 //!    container kind, so `inventory::plan_move` resolves a crate exactly
 //!    the way it resolves a box, with the same refusals and the same
 //!    per-tick `ContSync` diff. Not one line of `plan_move` moved for this.
+//!
+//! **It takes nothing, and that is this file's rule rather than the move
+//! verb's** (`inventory::takes_deposits`, wire v64). A deposit would
+//! disarm the refill — `set_slot` below keys the timer on the record going
+//! empty, so one stack put back sets `refill_at` to 0 — which turns a
+//! shared piece of scenery into one player's locker for as long as the
+//! stack sits there. The refusal is asked in `world.rs` beside the oven's
+//! and the wear slot's, because all three are the same question (what may
+//! enter this container) and `plan_move` decides arithmetic and only
+//! arithmetic.
 
 use crate::gather::{cell_key, GatherContent, ItemStack, RESPAWN_MIN_TICKS, RESPAWN_RANGE_TICKS};
 use crate::limits::{INV_SLOTS, MAX_WORLD_CONTS};

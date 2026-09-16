@@ -26,8 +26,13 @@
 //!    nothing.
 //! 3. **It refills.** A bag despawns and a box stands empty forever; a
 //!    crate is furniture that comes back. The timer arms on the transition
-//!    to empty and only on the transition, or a player could hold it off
-//!    forever by putting one item back.
+//!    to empty and only on the transition — and since wire v64 nothing a
+//!    player does can even reach that transition from the other side,
+//!    because a crate takes no deposits (`REFUSE_M_NO_INPUT`). The two
+//!    together are why the hold this file used to bound is now impossible
+//!    rather than merely finite; see
+//!    `nothing_a_player_puts_back_can_postpone_the_refill`, which pinned
+//!    the defect for three weeks.
 //! 4. **It has no removal path.** Every other container store swap-removes,
 //!    and this one never does, so nothing may assume a record's index is
 //!    stable *or* that it can vanish.
@@ -35,7 +40,7 @@
 use sim_core::backpack::BackpackContent;
 use sim_core::gather::{cell_key, GatherContent, ItemStack, RESPAWN_MIN_TICKS};
 use sim_core::inventory::{
-    CONT_SELF, CONT_WORLD, REFUSE_M_NO_CONTAINER, REFUSE_M_REACH, REFUSE_M_SLOT,
+    CONT_SELF, CONT_WORLD, REFUSE_M_NO_CONTAINER, REFUSE_M_NO_INPUT, REFUSE_M_REACH, REFUSE_M_SLOT,
 };
 use sim_core::limits::{INV_SLOTS, MAX_ITEM_DEFS, MAX_WORLD_CONTS};
 use sim_core::loot::{LootContent, LootEntryDef, LootTableDef, LOOT_CACHE, LOOT_CRATE};
@@ -570,12 +575,26 @@ fn an_emptied_crate_refills_when_its_tick_comes_and_not_before() {
     assert_eq!(w.world_conts.len(), 1, "still one record for the cell");
 }
 
-/// Putting one item back and taking it out again must not restart the
-/// clock. The timer arms on the *transition* to empty, so a player camping
-/// a crate cannot hold its refill off forever — which is what a naive
-/// "arm it whenever it is empty" would allow.
+/// Nothing a player does can postpone the refill, because nothing a player
+/// does can put anything **in** (`REFUSE_M_NO_INPUT`, wire v64).
+///
+/// ⚠ **This test was the inverse of itself until 2026-09-16 and it passed.**
+/// It put one item back, asserted the timer *cleared* ("a container with
+/// something in it is not waiting to refill"), took the item out again and
+/// asserted the clock re-armed a full window from then — i.e. it pinned
+/// the thing the file's own header calls the failure it exists to prevent
+/// ("a player could hold it off forever by putting one item back") and
+/// merely proved the hold could not be made *unbounded*. One stack held
+/// the pad's crate off for as long as the stack sat there, which on a
+/// populated shard is the crate never paying anybody again, and the
+/// operator named it from the other side: *"you can't put stuff into some
+/// containers as a player"*.
+///
+/// The deposit is refused now, so the honest assertion is the stronger
+/// one: the timer set by the emptying is the timer that fires, byte for
+/// byte, whatever a camper tries in between.
 #[test]
-fn a_put_back_and_a_re_take_do_not_postpone_the_refill() {
+fn nothing_a_player_puts_back_can_postpone_the_refill() {
     let mut w = world();
     let (cx, cz, x, z) = find_slot(&w, Occupant::CrateSlot);
     join_at(&mut w, x, z);
@@ -587,37 +606,160 @@ fn a_put_back_and_a_re_take_do_not_postpone_the_refill() {
         }
     }
     let armed = w.world_conts.entries()[0].refill_at;
-    assert!(armed > 0);
+    assert!(armed > 0, "emptying the crate armed the refill");
 
-    // Put one back — the container is no longer empty, so the timer clears.
+    // Put one back: refused, and the crate is still empty and still due.
+    put_back(&mut w, cx, cz, 0, 0, 1);
+    assert_eq!(
+        answers(&w),
+        vec![(EV_MOVE_REFUSED, REFUSE_M_NO_INPUT)],
+        "a crate answers a deposit with its own reason, once"
+    );
+    assert!(
+        w.world_conts.entries()[0].is_empty(),
+        "a refused deposit left a stack in the crate"
+    );
+    assert_eq!(
+        w.world_conts.entries()[0].refill_at,
+        armed,
+        "a refused deposit moved the refill clock"
+    );
+
+    // And the refill still arrives on the tick the emptying set, not a
+    // window after the camper gave up.
+    advance_to(&mut w, armed);
+    open(&mut w, cx, cz);
+    assert_eq!(
+        units(&w, 0, 2),
+        4,
+        "the refill rolled on the clock the emptying set"
+    );
+    assert_eq!(w.world_conts.len(), 1);
+}
+
+// --------------------------------------------------------- loot-only
+
+/// A move the other way: `CONT_SELF` -> `CONT_WORLD`, which is what a
+/// player dragging something into the crate's panel sends.
+fn put_back(w: &mut World, cx: u16, cz: u16, from_slot: u8, to_slot: u8, count: u16) {
     w.tick(&[Command::Move {
         id: PLAYER,
         cont: cell_key(cx, cz),
         from_kind: CONT_SELF,
-        from_slot: 0,
+        from_slot,
         to_kind: CONT_WORLD,
-        to_slot: 0,
-        count: 1,
+        to_slot,
+        count,
     }]);
+}
+
+/// The rule in the three shapes it has to hold in, because the second is
+/// the one a first implementation misses.
+///
+/// 1. **The deposit**, refused and announced.
+/// 2. **The swap back**, refused — a take out of the crate onto an
+///    occupied slot holding a *different* item is `MovePlan::Swap`, and a
+///    swap puts the occupant into the crate. Refusing only the forward
+///    direction admits the deposit by the back door, which is the trap
+///    `world.rs`'s wear check states in full one screen up.
+/// 3. **Rearranging inside it**, allowed — the stack is already in there,
+///    so this is not a deposit and a rule that refused it would make a
+///    crate's panel unable to tidy itself.
+#[test]
+fn a_crate_gives_loot_and_takes_none() {
+    let mut w = world();
+    let (cx, cz, x, z) = find_slot(&w, Occupant::CrateSlot);
+    join_at(&mut w, x, z);
+    open(&mut w, cx, cz);
+
+    // 1 · the deposit. Slot 0 of the crate is occupied by the roll, so
+    //     aim at a slot that is not, to prove the refusal is the
+    //     container's and not `plan_move`'s no-room.
+    let free = (0..INV_SLOTS)
+        .find(|&s| w.world_conts.entries()[0].items[s].count == 0)
+        .expect("the roll leaves the crate's tail empty");
+    w.players[0].inv[5] = ItemStack {
+        item: 1,
+        count: 7,
+        cond: 0,
+    };
+    let before = w.world_conts.entries()[0].items;
+    put_back(&mut w, cx, cz, 5, free as u8, 7);
     assert_eq!(
-        w.world_conts.entries()[0].refill_at,
-        0,
-        "a container with something in it is not waiting to refill"
+        answers(&w),
+        vec![(EV_MOVE_REFUSED, REFUSE_M_NO_INPUT)],
+        "a deposit into an empty crate slot was not the container's refusal"
+    );
+    assert_eq!(
+        w.world_conts.entries()[0].items,
+        before,
+        "a refused deposit still landed"
+    );
+    assert_eq!(
+        w.players[0].inv[5].count, 7,
+        "and the player paid for it out of their own pack"
     );
 
-    // Take it out again on a later tick: the clock restarts from *now*,
-    // which is the honest reading — the crate was not empty in between.
-    // What must not happen is the refill arriving early, and what must not
-    // happen is the record multiplying.
-    let then = w.tick + 100;
-    advance_to(&mut w, then);
-    take(&mut w, cx, cz, 0, 0, 1);
-    let rearmed = w.world_conts.entries()[0].refill_at;
-    assert!(
-        rearmed >= w.tick + RESPAWN_MIN_TICKS,
-        "the re-arm is still a full window out"
+    // 2 · the swap back. Take out of an occupied crate slot onto an
+    //     occupied inventory slot holding something else: the plan is a
+    //     swap, so the player's stack would travel INTO the crate.
+    let held = w.world_conts.entries()[0].items[0];
+    assert!(held.count > 0 && held.item != 1, "the roll is not item 1");
+    let before = w.world_conts.entries()[0].items;
+    take(&mut w, cx, cz, 0, 5, held.count);
+    assert_eq!(
+        answers(&w),
+        vec![(EV_MOVE_REFUSED, REFUSE_M_NO_INPUT)],
+        "a swap out of a crate is a deposit wearing a withdrawal's clothes"
     );
-    assert_eq!(w.world_conts.len(), 1);
+    assert_eq!(
+        w.world_conts.entries()[0].items,
+        before,
+        "the swap moved the crate's side anyway"
+    );
+    assert_eq!(
+        w.players[0].inv[5],
+        ItemStack {
+            item: 1,
+            count: 7,
+            cond: 0
+        },
+        "the player's stack was swapped into the crate"
+    );
+
+    // 3 · rearranging inside it. Crate slot 0 -> the empty tail slot: not
+    //     a deposit, so it goes through.
+    take_within(&mut w, cx, cz, 0, free as u8, held.count);
+    let answered = answers(&w);
+    assert_eq!(answered.len(), 1, "a tidy answers exactly once");
+    assert_eq!(
+        answered[0].0, EV_MOVED,
+        "a move inside the crate was read as a deposit into it ({:?})",
+        answered[0]
+    );
+    assert_eq!(
+        w.world_conts.entries()[0].items[free],
+        held,
+        "the tidy did not land"
+    );
+    assert_eq!(
+        w.world_conts.entries()[0].items[0].count,
+        0,
+        "and the stack is in one place"
+    );
+}
+
+/// A move inside one crate: `CONT_WORLD` -> `CONT_WORLD`, the tidy.
+fn take_within(w: &mut World, cx: u16, cz: u16, from_slot: u8, to_slot: u8, count: u16) {
+    w.tick(&[Command::Move {
+        id: PLAYER,
+        cont: cell_key(cx, cz),
+        from_kind: CONT_WORLD,
+        from_slot,
+        to_kind: CONT_WORLD,
+        to_slot,
+        count,
+    }]);
 }
 
 // ------------------------------------------------------------------- caps
