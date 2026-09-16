@@ -43,6 +43,7 @@
 
 #import bevy_pbr::{
     forward_io::{VertexOutput, FragmentOutput},
+    mesh_view_bindings::view,
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{
         apply_pbr_lighting,
@@ -62,12 +63,12 @@ struct GroundSplat {
     gain: vec4<f32>,
     // x = WET_VALUE, y = WET_SATURATION, z = ALBEDO_LUMA_FLOOR, w = blend depth.
     tune: vec4<f32>,
-    // x = HEIGHT_INFLUENCE, y = NORMAL_Z_FLOOR, z = WET_ROUGH, w reserved.
+    // x = HEIGHT_INFLUENCE, y = NORMAL_Z_FLOOR, z = WET_ROUGH, w = road aggregate share.
     // Passed in rather than declared here: a knob that lives only in a shader
     // is one the knob registry cannot see, and `ci/gates.sh` refuses its
     // `DECISIONS.md` row.
     blend: vec4<f32>,
-    // x = WALL_ON, y = WALL_SHARPNESS, z = UV_PER_M, w reserved.
+    // x = WALL_ON, y = WALL_SHARPNESS, z = UV_PER_M, w = pavement relief.
     // ⚠ This struct's field list and order must match `GroundSplatParams`
     // exactly — a uniform whose two sides disagree about layout is garbage in
     // every field after the first mismatch, and nothing about that failure
@@ -81,6 +82,12 @@ struct GroundSplat {
     // share one; drawing them all at 4 m put `forrest_ground_01` at 2× life
     // size and `brown_mud_leaves_01` at 3×.
     tile: vec4<f32>,
+    // xyz linear albedo; w fine-aggregate UV multiplier.
+    pavement: vec4<f32>,
+    // xyz linear albedo; w bounded edge erosion.
+    road_dirt: vec4<f32>,
+    // x/y = fade start/end; the far lattice cannot resolve the road.
+    road_lod: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> splat: GroundSplat;
@@ -139,7 +146,7 @@ fn unpack_normal(t: vec4<f32>) -> vec3<f32> {
 }
 
 @fragment
-fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
+fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     // Everything the standard path sets up — view vector, flags, the lot. Its
     // `base_color` is left holding the vertex `COLOR`, which here is the weight
     // vector rather than a colour; every write below is an assignment, so none
@@ -158,6 +165,13 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let uv1 = in.uv * splat.tile.y;
     let uv2 = in.uv * splat.tile.z;
     let uv3 = in.uv * splat.tile.w;
+    // A separate, fixed projection: interpolating UV scale would sweep many
+    // texture repeats across the verge. Only the sampled surfaces are blended.
+    let uv_road = in.uv * splat.tile.w * splat.pavement.w;
+    let road_albedo = textureSample(albedo_maps, ground_sampler, uv_road, 3);
+    let road_normal = textureSample(normal_maps, ground_sampler, uv_road, 3);
+    let road_rough = textureSample(rough_ao_maps, ground_sampler, uv_road, 3).r;
+    let road_ao = textureSample(rough_ao_maps, ground_sampler, uv_road, 7).r;
     var a0 = textureSample(albedo_maps, ground_sampler, uv0, 0);
     var a1 = textureSample(albedo_maps, ground_sampler, uv1, 1);
     var a2 = textureSample(albedo_maps, ground_sampler, uv2, 2);
@@ -296,13 +310,29 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let h = w + relief * splat.blend.x;
     let peak = max(max(h.x, h.y), max(h.z, h.w)) - splat.tune.w;
     let b = max(h - vec4(peak), vec4(0.0));
-    let bw = b / max(b.x + b.y + b.z + b.w, 1e-4);
+    let terrain_bw = b / max(b.x + b.y + b.z + b.w, 1e-4);
+    // Erode only the edge: centres stay covered, off-road stays untouched.
+    // Dust is the existing road splat underneath, so a broken edge exposes a
+    // shoulder rather than a black transparent seam. No independent noise.
+    let road_grain = dot(road_albedo.rgb, LUMA) * splat.gain.w;
+    let wear = clamp(road_grain - 1.0, -1.0, 1.0) * splat.road_dirt.w;
+    let road_fade = 1.0 - smoothstep(splat.road_lod.x, splat.road_lod.y,
+        length(in.world_position.xz - view.world_position.xz));
+    let paving = clamp(road.x + wear * 4.0 * road.x * (1.0 - road.x), 0.0, 1.0) * road_fade;
+    let dirt = clamp(road.y, 0.0, 1.0) * (1.0 - paving) * road_fade;
+    let ground = 1.0 - paving - dirt;
+    // Both road tiers use fine aggregate. The branch mixes in loose grit;
+    // borrowing the terrain's 4 m scree here made it read as cobblestones.
+    // These same weights own colour grain, roughness and occlusion.
+    let bw = terrain_bw * ground + vec4(dirt * (1.0 - splat.blend.w), 0.0, 0.0, 0.0);
+    let road_weight = paving + dirt * splat.blend.w;
 
     // The authored colour, per pixel rather than per vertex.
     var base = vec3(0.0);
     for (var i = 0u; i < 4u; i = i + 1u) {
-        base = base + splat.identity[i].xyz * bw[i];
+        base = base + splat.identity[i].xyz * terrain_bw[i];
     }
+    base = base * ground + splat.pavement.xyz * paving + splat.road_dirt.xyz * dirt;
     // The macro break-up, then the waterline — in that order, so a wet vertex
     // keeps its own grain instead of having it multiplied back in at full dry
     // strength. `terrain_mesh::vertex_color` states why.
@@ -311,7 +341,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 
     // The photograph, last: a scalar field with a mean of 1, so it contributes
     // relief and not colour.
-    let lit = dot(bw, grain);
+    let lit = dot(bw, grain) + road_weight * road_grain;
     pbr_input.material.base_color = vec4(base * lit, 1.0);
 
     // **Roughness, per texel.** Until 110–113 landed this was `Σ wᵢ·roughᵢ`
@@ -346,8 +376,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // that shader. Same shape as the value keep in `wetted`, one line below the
     // one that darkens and saturates the same texel.
     //
-    // **No clamp here, deliberately.** The result is provably in [0, 1]: `bw`
-    // sums to 1, a texture sample is in [0, 1] by format, so the dot is a
+    // **No clamp here, deliberately.** The result is provably in [0, 1]:
+    // `sum(bw) + road_weight = 1`, a texture sample is in [0, 1] by format, so this is a
     // convex combination of values in range, and `wet_keep` is in
     // [`WET_ROUGH`, 1]. `apply_pbr_lighting` applies Filament's 0.089 floor
     // itself (`bevy_pbr`'s `pbr_lighting.wgsl`) — restating that number here
@@ -355,7 +385,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // drift `CLAUDE.md` names twice. `tests/ground_splat.rs` holds our knob
     // clear of it instead, which is the half that IS ours.
     let wet_keep = 1.0 - in.uv_b.y * (1.0 - splat.blend.z);
-    pbr_input.material.perceptual_roughness = dot(bw, rough_map) * wet_keep;
+    pbr_input.material.perceptual_roughness = (dot(bw, rough_map) + road_weight * road_rough) * wet_keep;
 
     // The relief, blended as gradients and applied on the mesh's own written
     // tangent frame.
@@ -363,7 +393,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         + to_gradient(unpack_normal(textureSample(normal_maps, ground_sampler, uv1, 1))) * bw.y
         + to_gradient(unpack_normal(textureSample(normal_maps, ground_sampler, uv2, 2))) * bw.z
         + to_gradient(unpack_normal(textureSample(normal_maps, ground_sampler, uv3, 3))) * bw.w;
-    let nt = normalize(vec3(g, 1.0));
+    // Binder flattens loose aggregate relief. Blend gradients from fixed
+    // projections so the verge retains the ground's original relief.
+    let road_g = to_gradient(unpack_normal(road_normal));
+    let road_relief = paving * splat.wall.w + dirt * splat.blend.w;
+    let nt = normalize(vec3(g + road_g * road_relief, 1.0));
     let tbn = calculate_tbn_mikktspace(pbr_input.world_normal, in.world_tangent);
     pbr_input.N = normalize(tbn * nt);
 
@@ -395,7 +429,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             textureSample(rough_ao_maps, ground_sampler, uv3, 7).r,
         ),
     );
-    pbr_input.diffuse_occlusion = min(pbr_input.diffuse_occlusion, vec3<f32>(ao));
+    pbr_input.diffuse_occlusion = min(pbr_input.diffuse_occlusion, vec3<f32>(ao + road_weight * road_ao));
 
     out.color = apply_pbr_lighting(pbr_input);
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);

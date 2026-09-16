@@ -28,7 +28,7 @@ use bevy::prelude::*;
 use bevy::tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
 use sim_core::terrain::{self, SEA_LEVEL};
 
-use super::ground_splat::{GroundMaterial, GroundSplat};
+use super::ground_splat::{road_coverage, GroundMaterial, GroundSplat, ATTRIBUTE_ROAD};
 use super::textures::GroundArrays;
 use super::{Eye, WorldEntity, WorldId};
 
@@ -806,6 +806,7 @@ pub fn heightfield(
     let mut colors = Vec::with_capacity(count);
     let mut uvs = Vec::with_capacity(count);
     let mut mods = Vec::with_capacity(count);
+    let mut roads = Vec::with_capacity(count);
     let mut tangents = Vec::with_capacity(count);
 
     // The central-difference arm. Half a step keeps the gradient local to the
@@ -965,13 +966,18 @@ pub fn heightfield(
             // annulus; inside that band every vertex pays one real tap. The
             // near ring is 1 m and small, the far mesh is the whole island.
             //
-            // `road_band`, not `ring_band`: a side road is a road and has to
-            // be painted as one, and it costs nothing extra here — the ring's
-            // answer is asked first and a side road is a point-to-segment
-            // distance with no tap at all.
-            if step <= terrain::ROAD_HALF_W {
+            let coverage = if step <= terrain::ROAD_HALF_W {
+                let ring = terrain::ring_band_memo(&mut lat, seed, x, z);
+                let side = terrain::side_band(haven, x, z);
+                // The sim owns which band wins at a junction. Re-querying
+                // the ring here hits this vertex's existing lattice entries;
+                // keeping a second priority rule in the renderer could drift.
                 w = terrain::splat_road(w, terrain::road_band_memo(&mut lat, seed, haven, x, z));
-            }
+                road_coverage(ring, side)
+            } else {
+                [0.0; 2]
+            };
+            roads.push(coverage);
             // The gradient the normal was just built from, as a rise/run — the
             // waterline band is a horizontal distance and this is what converts
             // it. Free: `hx` and `hz` are already in hand.
@@ -1014,10 +1020,11 @@ pub fn heightfield(
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+    mesh.insert_attribute(ATTRIBUTE_ROAD, roads);
     // The two scalar modifiers. `UV_1` because it is the one remaining
     // interpolated slot Bevy's standard vertex stage already forwards to the
-    // fragment (`forward_io::VertexOutput::uv_b`) — no custom vertex shader,
-    // and `ATTRIBUTE_TANGENT` and the normal path stay exactly as they were.
+    // fragment (`forward_io::VertexOutput::uv_b`). Road coverage has its own
+    // attribute; neither the tangent frame nor these modifiers are repurposed.
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, mods);
     mesh.insert_indices(Indices::U32(indices));
     // Tangents, because a normal map without them is not a normal map: Bevy's
