@@ -54,48 +54,23 @@ use client::ui::hold::{HeldSrc, HELD_MODELS};
 /// the packer, X/Y means 0.212. Remove an entry when its file is re-packed
 /// (`ci/ktx_pack.py`, which now refuses to produce this) — the test then
 /// holds it to neutral.
-const BENT_BY_THE_PACKER: &[&str] = &[
-    "models/deploy/bag.glb",
-    "models/deploy/box.glb",
-    "models/deploy/fire.glb",
-    "models/deploy/hearth.glb",
-    "models/deploy/workbench.glb",
-    "models/held/building_plan.glb",
-    "models/held/hammer.glb",
-    "models/held/hunting_bow.glb",
-    "models/held/rock.glb",
-    "models/held/stone_hatchet.glb",
-    "models/held/stone_pickaxe.glb",
-    "models/held/wooden_spear.glb",
-    "models/prop/barrel.glb",
-    "models/prop/cache.glb",
-    "models/prop/crate.glb",
-    "models/prop/node_metal.glb",
-    "models/prop/node_stone.glb",
-    "models/prop/node_sulfur.glb",
-    "models/prop/rock_a.glb",
-    "models/prop/rock_b.glb",
-    "models/prop/rock_c.glb",
-    "models/site/canopy.glb",
-    "models/site/shelter.glb",
-];
+///
+/// **Empty since 2026-09-16.** All 23 were re-packed; the sources they were
+/// packed from no longer exist (`assets/models/To Examine/` is gitignored and
+/// was never in a clone), so each model's maps were decoded back out of its
+/// own KTX2 by `ci/unbake_ktx.py` and the packer's sRGB→linear was inverted.
+/// The list stays as a named empty rather than being deleted: it is the shape
+/// the next packer defect gets recorded in, and an empty one cannot rot.
+const BENT_BY_THE_PACKER: &[&str] = &[];
 
 /// The scatter props' and sites' albedo chart contrast as shipped, measured
 /// 2026-09-05. A listed file must still read within `PIN_TOL` of its pin;
 /// remove the entry when it is re-packed through `ci/flatten_charts.py`.
-const PATCHY_AS_SHIPPED: &[(&str, f64)] = &[
-    ("models/prop/rock_a.glb", 0.139),
-    ("models/prop/rock_b.glb", 0.147),
-    ("models/prop/rock_c.glb", 0.089),
-    ("models/prop/node_stone.glb", 0.309),
-    ("models/prop/node_metal.glb", 0.178),
-    ("models/prop/node_sulfur.glb", 0.143),
-    ("models/prop/barrel.glb", 0.328),
-    ("models/prop/crate.glb", 0.179),
-    ("models/prop/cache.glb", 0.132),
-    ("models/site/shelter.glb", 0.210),
-    ("models/site/canopy.glb", 0.082),
-];
+///
+/// **Empty since 2026-09-16** — all eleven were flattened in the same pass
+/// as the normal-map repair above. Worst residual is the crate at 0.045
+/// against a `CHART_CONTRAST_MAX` of 0.06.
+const PATCHY_AS_SHIPPED: &[(&str, f64)] = &[];
 const PIN_TOL: f64 = 0.01;
 
 /// The one packed model with no normal map: the character, whose delivery

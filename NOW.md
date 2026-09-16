@@ -122,15 +122,29 @@ contrast 0.09–0.36); and **every normal map in the tree decodes bent** — X/Y
 means 0.212, not 0.5 — because `ci/ktx_pack.py` let `ktx create` linearise the
 data maps for three weeks. The tooling landed; the assets did not:
 
-1. **Re-pack all 23 models from their raw deliveries** on the box with `ktx`:
-   `ci/flatten_charts.py` → `ci/ktx_pack.py` (which now refuses a bent map).
-   Then delete each file's entry from `tests/packed_maps.rs`'s two lists — the
-   gate holds it neutral and chart-flat from then on. Roughness moves with it
-   (0.41 stored where ~0.67 was delivered): expect every prop to read matter.
-2. **Re-roll the stone node and the boulder pool's first entry** with the two
-   prompts in `MANIFEST.md` §prop, and select with `ci/measure_glb.py` — rock_a
-   and node_stone are proven rejects, and metal and sulfur fail the round band
-   too. Remove each landed file's pin from `tests/prop_assets.rs`.
+1. ✅ **All 23 re-packed 2026-09-16.** Not from the raw deliveries — those are
+   in gitignored `To Examine/` and absent from every clone, so `ci/unbake_ktx.py`
+   decodes each model's maps back out of its own KTX2 and inverts the packer's
+   curve. Normals 0.212 → 0.498; **unit-length texels 0.00–0.93 % → 99.42–100 %**,
+   which is a physical check the arithmetic cannot fake. Chart contrast fell in
+   the same pass (worst residual 0.045 < 0.06). Both `packed_maps.rs` lists are
+   empty. Geometry byte-identical, so no shape pin moved. `§LOOK`: unseen.
+2. **Re-roll the stone node and the boulder pool's first entry.** No
+   `MESHY_API_KEY` on this box, so §0rock item 1's kit was tried instead and
+   **it cannot make the node at all** — measured 2026-09-16, and the reason is
+   structural rather than a bad seed: `rock_kit.py`'s `boulder` squash is
+   `(1.0, 0.62..0.82, ..)` with the comment *"never a ball in plan"*, which is
+   right for a boulder and is exactly what the node's round band forbids
+   (the sim blocks a CYLINDER). Plan ratio came back **1.82** on `boulder` and
+   **1.330 / 1.335 / 1.339** on `small` across three seeds against a ceiling of
+   1.2 — that tight a spread is the kind, not the roll. A `dome` kind (or a
+   widened `small` squash) is a number, so it is `DECISIONS.md` §open's, not a
+   loop's. The **formation** for rock_a did come back KEEP (plan 2.201, luma
+   0.21, chart 0.024, r 1.1145 exact) and is **not landed on purpose**: its
+   previews read as a fractured outcrop from the broad side and as a **shark
+   fin** down the narrow axis, which is `vantages.mjs`'s lesson with a
+   different gate — measured KEEP, visual reject. Both candidates and their
+   previews are in the pass notes; the swap is `§LOOK`'s call.
 3. **The formation levers, measured and parked.** Tilt is out at these
    tolerances: rock_b and rock_c leave the blocked cylinder past **3°**. A
    cluster per slot waits for a slab, because the top gate holds the main part

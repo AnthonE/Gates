@@ -498,6 +498,47 @@ import height is `2 × (OCCUPANT_TOP_M − lift)`, so a lower lift buries more o
 the same blocked volume and the collision does not move; at the shipped lift
 of 0.5 the height is 1.25 m.
 
+### 2026-09-16 · all 23 re-packed, and the sources were gone
+
+The operator read a frame again: the rock texture is *"janky"*, the ore *"still
+a square thing"*. The first half is repaired here; the second is a shape and is
+still open below.
+
+**The blocker nobody had hit yet: there is nothing to re-pack FROM.** §0rk item
+1 says to re-pack "from their raw deliveries", which live in `assets/models/To
+Examine/` — gitignored on purpose, ~600 MB, and therefore absent from every
+clone. The only surviving copy of a prop's maps is the KTX2 already inside its
+own `.glb`. `ci/unbake_ktx.py` is that missing step: decode level 0 back
+through `ktx extract`, invert the packer's sRGB→linear on the data maps, emit a
+PNG-imaged GLB for `flatten_charts.py` and `ktx_pack.py` to take from there.
+
+**The inversion is exact, and two readings say so without being fitted:**
+
+| | shipped | repaired | why that is the right number |
+|---|---|---|---|
+| normal X/Y | 0.212 | 0.498 | a tangent-space map centres on 0.500 |
+| roughness | 0.411 | 0.673 | §prop above, written three weeks earlier: "~0.67 was delivered" |
+
+**And one check that is not arithmetic at all.** A tangent-space normal map is
+a field of UNIT vectors — a property of what the file means, which a subtly
+wrong curve cannot satisfy. Across the 23: **0.00–0.93 % of texels decoded to
+unit length before, 99.42–100 % after.** That is `--verify`'s bar and it is
+`packed_maps.rs`'s own 90 %.
+
+Chart contrast fell everywhere in the same pass, worst residual the crate at
+0.045 against a `CHART_CONTRAST_MAX` of 0.06 (rock_a 0.139 → 0.000, node_stone
+0.309 → 0.033, barrel 0.328 → 0.041). Both lists in `packed_maps.rs` are empty
+now, kept as named empties because an empty list cannot rot.
+
+⚠ **Geometry is byte-identical** — the accessor blocks hash the same before and
+after on every file spot-checked, so no collision volume, no shape pin and no
+`prop_assets.rs` row moved. This repair is textures and nothing else. The cost
+is one extra UASTC generation (worst texel error 0.0026, pure 8-bit
+quantisation), which is the price of having thrown the sources away and is far
+below the 41° bend it removes.
+
+⚠ **Nobody has seen it in a frame** (`§LOOK`). Every number here is a decode.
+
 ## `ci/rock_kit.py` — the Blender stage, and the rail a generated piece lands on
 
 **Our own work, on no licence at all.** A piece `rock_kit.py gen` makes is
