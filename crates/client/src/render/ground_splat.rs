@@ -110,9 +110,15 @@
 //! without touching Bevy.
 
 use bevy::asset::Asset;
-use bevy::pbr::{ExtendedMaterial, MaterialExtension, StandardMaterial};
+use bevy::mesh::{MeshVertexAttribute, MeshVertexBufferLayoutRef};
+use bevy::pbr::{
+    ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline,
+    StandardMaterial,
+};
 use bevy::prelude::*;
-use bevy::render::render_resource::{AsBindGroup, ShaderType};
+use bevy::render::render_resource::{
+    AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError, VertexFormat,
+};
 use bevy::shader::ShaderRef;
 
 use super::terrain_mesh::{
@@ -122,6 +128,61 @@ use super::textures::GroundArrays;
 
 /// The shader, resolved against the asset root `bin/gates.rs` sets.
 pub const SHADER: &str = "shaders/ground_splat.wgsl";
+
+/// Signed cross-road distance, cyclic dash phase, and validity.
+pub const ATTRIBUTE_MARKINGS: MeshVertexAttribute =
+    MeshVertexAttribute::new("RoadMarkings", 0x7061696e, VertexFormat::Float32x4);
+
+/// Independent road coverage, ring then branch. Keep UV0's tangent frame and
+/// UV1's macro/wetness modifiers intact; packed floats do not interpolate.
+pub const ATTRIBUTE_ROAD: MeshVertexAttribute =
+    MeshVertexAttribute::new("RoadCoverage", 0x726f6164, VertexFormat::Float32x2);
+
+/// Proposed material defaults, DECISIONS.md §open, road surface v1.
+/// Linear reflectances stay inside ART.md §5's band. Aggregate comes from
+/// the existing CC0 Gravel004 map, at pavement grading rather than scree size.
+pub const ROAD_PAVEMENT_ALBEDO: [f32; 3] = [0.065, 0.070, 0.072];
+pub const ROAD_DIRT_ALBEDO: [f32; 3] = [0.18, 0.135, 0.085];
+pub const ROAD_AGGREGATE_TILE_M: f32 = 1.0;
+/// Restrained erosion of the interpolated edge by the aggregate's own relief.
+pub const ROAD_EDGE_WEAR: f32 = 0.12;
+/// Binder flattens the photographed loose aggregate's relief on pavement.
+pub const ROAD_PAVEMENT_RELIEF: f32 = 0.25;
+/// Equal grit/aggregate mixture on the unpaved branch.
+pub const ROAD_DIRT_AGGREGATE: f32 = 0.5;
+/// Fade the new surface over the outermost guaranteed complete chunk. The
+/// nearest edge of the 5×5 terrain ring is two chunks from the camera; its
+/// sub-chunk movement can only move the other edges farther away.
+pub const ROAD_FADE_END_M: f32 =
+    super::terrain_mesh::CHUNK_M * super::terrain_mesh::NEAR_RADIUS as f32;
+pub const ROAD_FADE_START_M: f32 = ROAD_FADE_END_M - super::terrain_mesh::CHUNK_M;
+
+/// Proposed worn paint reflectances and coverage, DECISIONS.md road markings v1.
+pub const ROAD_PAINT_YELLOW: [f32; 3] = [0.42, 0.32, 0.09];
+pub const ROAD_PAINT_WHITE: [f32; 3] = [0.50, 0.48, 0.42];
+pub const ROAD_PAINT_OPACITY: f32 = 0.65;
+/// Four float ulps tolerate interpolation rounding, not material blending.
+pub const ROAD_PAINT_VALID_EPS: f32 = 4.0 * f32::EPSILON;
+
+/// Coverage follows the sim's published bands. The ring wins a junction;
+/// shoulders remain dusty ground rather than extending the paved width.
+pub fn road_coverage(
+    ring: sim_core::terrain::RoadBand,
+    side: sim_core::terrain::RoadBand,
+) -> [f32; 2] {
+    use sim_core::terrain::{RoadBand, ROAD_WEAR_SHOULDER};
+    let pavement = if ring == RoadBand::Carriageway {
+        1.0
+    } else {
+        0.0
+    };
+    let dirt = match side {
+        RoadBand::Carriageway => 1.0,
+        RoadBand::Shoulder => ROAD_WEAR_SHOULDER,
+        RoadBand::Off => 0.0,
+    };
+    [pavement, dirt * (1.0 - pavement)]
+}
 
 /// The ground material as the world actually uses it.
 pub type GroundMaterial = ExtendedMaterial<StandardMaterial, GroundSplat>;
@@ -245,7 +306,7 @@ pub struct GroundSplatParams {
     /// w = [`BLEND_DEPTH`].
     pub tune: Vec4,
     /// x = [`HEIGHT_INFLUENCE`], y = [`NORMAL_Z_FLOOR`], z = [`WET_ROUGH`],
-    /// w reserved.
+    /// w = [`ROAD_DIRT_AGGREGATE`].
     ///
     /// **These are here rather than as WGSL `const`s because a knob that lives
     /// only in a shader is a knob nothing can cross-check.** `ci/gates.sh`'s
@@ -254,7 +315,7 @@ pub struct GroundSplatParams {
     /// intended, and the reason to pass them through the uniform.
     pub blend: Vec4,
     /// x = [`WALL_ON`], y = [`WALL_SHARPNESS`],
-    /// z = [`super::terrain_mesh::UV_PER_M`], w reserved.
+    /// z = [`super::terrain_mesh::UV_PER_M`], w = [`ROAD_PAVEMENT_RELIEF`].
     ///
     /// `z` is the ground's own projection scale, sent rather than repeated: the
     /// wall tap builds a UV in metres and must land on the same texel density
@@ -270,6 +331,17 @@ pub struct GroundSplatParams {
     /// re-spreads it. Sand and rock are drawn at the 4 m reference, so their
     /// entries are exactly `1.0` and their sampling is bit-unchanged.
     pub tile: Vec4,
+    /// xyz = pavement linear albedo; w = aggregate UV multiplier.
+    pub pavement: Vec4,
+    /// xyz = branch linear albedo; w = edge wear.
+    pub road_dirt: Vec4,
+    /// x/y = distance fade start/end, derived from the terrain ring.
+    pub road_lod: Vec4,
+    /// xyz = paint reflectance; w = maximum worn coverage.
+    pub paint_yellow: Vec4,
+    pub paint_white: Vec4,
+    /// x/y = stripe width and radial edge offset; z = validity roundoff tolerance.
+    pub paint_geometry: Vec4,
 }
 
 impl GroundSplatParams {
@@ -286,9 +358,50 @@ impl GroundSplatParams {
             identity,
             gain: Vec4::from_array(GRAIN_GAIN),
             tune: Vec4::new(WET_VALUE, WET_SATURATION, ALBEDO_LUMA_FLOOR, BLEND_DEPTH),
-            blend: Vec4::new(HEIGHT_INFLUENCE, NORMAL_Z_FLOOR, WET_ROUGH, 0.0),
-            wall: Vec4::new(WALL_ON, WALL_SHARPNESS, super::terrain_mesh::UV_PER_M, 0.0),
+            blend: Vec4::new(
+                HEIGHT_INFLUENCE,
+                NORMAL_Z_FLOOR,
+                WET_ROUGH,
+                ROAD_DIRT_AGGREGATE,
+            ),
+            wall: Vec4::new(
+                WALL_ON,
+                WALL_SHARPNESS,
+                super::terrain_mesh::UV_PER_M,
+                ROAD_PAVEMENT_RELIEF,
+            ),
             tile: Vec4::from_array(tile_multipliers()),
+            pavement: Vec4::new(
+                ROAD_PAVEMENT_ALBEDO[0],
+                ROAD_PAVEMENT_ALBEDO[1],
+                ROAD_PAVEMENT_ALBEDO[2],
+                GROUND_TILE_M[3] / ROAD_AGGREGATE_TILE_M,
+            ),
+            road_dirt: Vec4::new(
+                ROAD_DIRT_ALBEDO[0],
+                ROAD_DIRT_ALBEDO[1],
+                ROAD_DIRT_ALBEDO[2],
+                ROAD_EDGE_WEAR,
+            ),
+            road_lod: Vec4::new(ROAD_FADE_START_M, ROAD_FADE_END_M, 0.0, 0.0),
+            paint_yellow: Vec4::new(
+                ROAD_PAINT_YELLOW[0],
+                ROAD_PAINT_YELLOW[1],
+                ROAD_PAINT_YELLOW[2],
+                ROAD_PAINT_OPACITY,
+            ),
+            paint_white: Vec4::new(
+                ROAD_PAINT_WHITE[0],
+                ROAD_PAINT_WHITE[1],
+                ROAD_PAINT_WHITE[2],
+                ROAD_PAINT_OPACITY,
+            ),
+            paint_geometry: Vec4::new(
+                super::road_markings::ROAD_PAINT_WIDTH_M,
+                super::road_markings::ROAD_EDGE_OFFSET_M,
+                ROAD_PAINT_VALID_EPS,
+                0.0,
+            ),
         }
     }
 }
@@ -394,6 +507,29 @@ impl GroundSplat {
 }
 
 impl MaterialExtension for GroundSplat {
+    fn vertex_shader() -> ShaderRef {
+        "shaders/ground_vertex.wgsl".into()
+    }
+
+    fn specialize(
+        _pipeline: &MaterialExtensionPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        layout: &MeshVertexBufferLayoutRef,
+        _key: MaterialExtensionKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        // Extend the existing layout: the prepass assigns different locations
+        // from the forward pass and must keep its own mapping. Both layouts
+        // use the complete interleaved mesh stride. Unused attributes are legal.
+        let road = layout.0.get_layout(&[
+            ATTRIBUTE_ROAD.at_shader_location(8),
+            ATTRIBUTE_MARKINGS.at_shader_location(9),
+        ])?;
+        descriptor.vertex.buffers[0]
+            .attributes
+            .extend(road.attributes);
+        Ok(())
+    }
+
     fn fragment_shader() -> ShaderRef {
         SHADER.into()
     }

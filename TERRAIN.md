@@ -150,6 +150,28 @@ Stages, in order — each cheap, each deterministic:
    so no clutter moves and no golden moves — and only where `step <=
    ROAD_HALF_W`, because an 8 m far lattice cannot resolve a 4 m ribbon and
    would draw the loop as a dashed line.
+   **Road surface v1 (2026-09-16)** keeps that splat as the dusty substrate
+   and adds independent client coverage from the same ring/side bands: charcoal
+   aggregate pavement on the ring, warm grit and aggregate on the branch.
+   The ring wins a junction. All PBR channels blend at the same edge, with
+   bounded erosion from the aggregate photograph; fixed texture projections
+   avoid stretching the grain across the verge. The near-mesh guard, widths,
+   clutter, terrain heights and coarse-mesh behavior are unchanged. This is a
+   first material pass; the proposed
+   defaults and GPU cost are in `DECISIONS.md` §open, road surface v1. The new
+   surface fades to the existing substrate across the outermost guaranteed
+   near chunk (currently 64–128 m from the eye); a continuous distant paved
+   ribbon remains open because the 8 m far lattice cannot resolve its width.
+   **Road markings v1 (2026-09-16)** adds faded yellow centre dashes and white
+   edge lines to the near ring. A bounded client-only chart of the first live
+   outward crossing supplies continuous coordinates shared by all chunks;
+   ambiguous crossings, disconnected ends and branch mouths remain unmarked.
+   Its samples are validated against the sim, which still owns road coverage.
+   Markings inherit the surface fade and aggregate wear. The cache is built
+   once on a native worker or in browser frame batches, then discarded with
+   the world; it changes no height, collision, scatter or route. Proposed
+   dimensions, filtering, memory and startup costs are in `DECISIONS.md`
+   §open, road markings v1. Authored cracks and grading remain open.
    **Still open**: the flattening (it needs a mask inside `height` — that is
    the representation decision the block defers, and nothing forced it yet).
    `DECISIONS.md` §open "coast road v0" and "bay slots v0" have the knobs and
@@ -320,12 +342,20 @@ Stages, in order — each cheap, each deterministic:
    `ROADS.md` §9.3 priced in advance. `ring_band` is the ring-only half, and
    it is what every site solver calls — a solver asking about a road that is a
    consequence of its own answer would be circular.
-   ⚠ **And the ring is not a loop**, which this work measured on the way past:
-   the shipped coast ring is 79% / 39% / 52% in one WALKABLE piece across
-   three seeds, broken at the cliffs it crosses. The side road's first draft
-   delivered a player to an 11-cell fragment of it; `SIDE_ROAD_RING_RUN`
-   refuses such a junction now. Nothing gates the ring's own continuity
-   (`NOW.md` §0rd).
+   **At intersections, either carriageway wins over either shoulder.**
+   `road_band` applies this union to scatter, clutter and material consumers;
+   ring-first shoulder priority left vegetation across the side road. The
+   actual-junction sweep in `tests/side_road.rs` checks both overlap directions
+   and direct/memo parity. This changes narrow junction masks, not site or
+   road coordinates; the terrain golden does not sample those overlaps.
+   ⚠ **The ring's continuity remains unproved.** The earlier 79% / 39% / 52%
+   largest-component figures depend on raster spacing and adjacency. The
+   finer `examples/road_route.rs` probe finds predicate-confirmed cliffed
+   carriageway samples on two seeds, but none on seed 42 despite its 39%
+   result. Neither observation alone proves the whole ribbon impassable.
+   `SIDE_ROAD_RING_RUN` still rejects short local junction runs; it does not
+   certify global circulation. The offline alternative and its integration
+   limits are in `findings/road-network-prototype-20260916.md` (`NOW.md` §0rd).
 9. **Scatter pass** — per 8 m cell, one hash draw decides occupant
    (tree / stone node / metal node / sulfur node / bush / rock / barrel
    slot / nothing), plus jittered offset, yaw, and scale from the same

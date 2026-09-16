@@ -22,6 +22,7 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | file | source icon |
 |---|---|
 | `animal_fat.png` | `lorc/meat` |
+| `backpack.png` | `delapouite/backpack` |
 | `bandage.png` | `lorc/bandage-roll` |
 | `berries.png` | `delapouite/berries-bowl` |
 | `building_plan.png` | `delapouite/notebook` |
@@ -40,8 +41,10 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | `hammer.png` | `lorc/claw-hammer` |
 | `hearth.png` | `delapouite/fireplace` |
 | `hunting_bow.png` | `delapouite/bow-arrow` |
+| `junk.png` | `delapouite/two-coins` |
 | `large_box.png` | `delapouite/cargo-crate` |
 | `low_grade_fuel.png` | `delapouite/jerrycan` |
+| `map_site.png` | `delapouite/hut` |
 | `medkit.png` | `delapouite/first-aid-kit` |
 | `metal_arrow.png` | `delapouite/split-arrows` |
 | `metal_door.png` | `delapouite/closed-doors` |
@@ -51,7 +54,6 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | `metal_pickaxe.png` | `delapouite/mining-helmet` |
 | `metal_spear.png` | `lorc/barbed-spear` |
 | `mushrooms.png` | `delapouite/mushrooms` |
-| `junk.png` | `delapouite/two-coins` |
 | `pistol_round.png` | `delapouite/heavy-bullets` |
 | `raw_meat.png` | `delapouite/steak` |
 | `recycler.png` | `lorc/recycle` |
@@ -110,3 +112,4 @@ more (`ci/bake_icons.py` fetches from GitHub).
 | file | source |
 |---|---|
 | `burnt_meat.png` | `ci/icons/burnt_meat.svg` (ours) |
+| `map_player.png` | `ci/icons/map_player.svg` (ours) |

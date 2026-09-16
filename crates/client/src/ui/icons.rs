@@ -60,7 +60,7 @@ pub fn icon_stem(
 /// not do I/O to find out what it has — and because a gate can then compare
 /// it against the directory and fail on either half drifting
 /// (`tests/ui.rs` §G).
-pub const STEMS: [&str; 75] = [
+pub const STEMS: [&str; 78] = [
     // the shape wheel
     "shape_foundation",
     "shape_tri_foundation",
@@ -141,6 +141,16 @@ pub const STEMS: [&str; 75] = [
     "raw_meat",
     "cooked_meat",
     "burnt_meat",
+    // The map screen's markers (`ui::map::MarkKind::icon`). Not items, for
+    // the same reason the vitals below are not: they name something on the
+    // ISLAND — a site the worldgen placed, the player themselves — which the
+    // content will never carry a row for. `sleeping_bag` and `hearth` are
+    // deliberately absent from this group and reused from the item set above:
+    // a bed on the map and a bed in your inventory are the same object, and
+    // two files would be two drawings of it waiting to diverge.
+    "map_site",
+    "map_player",
+    "backpack",
     // The three vitals, bottom right. Not items — these are the only stems
     // that name a HUD readout rather than something a player can hold, and
     // they are here because `tests/ui.rs` §G holds this list equal to the

@@ -163,6 +163,7 @@ pub fn setup(
     world: Res<WorldId>,
     mut island: ResMut<super::map::Island>,
     mut images: ResMut<Assets<Image>>,
+    icons: Option<Res<super::icons::Icons>>,
 ) {
     let core = &net.session.core;
     let line = sentence(
@@ -188,7 +189,7 @@ pub fn setup(
     // Painted once per seed and shared with `Screen::Map` — the same
     // texture, so this costs a handle clone on every death after the
     // first open of either screen.
-    let texture = has_bag.then(|| island.texture(&mut images, world.seed));
+    let texture = has_bag.then(|| island.texture(&mut images, world.seed, &world.haven));
 
     commands
         .spawn((
@@ -254,7 +255,7 @@ pub fn setup(
                     // same way is that the next kind added to `Marks` gets
                     // the same stacking on both screens.
                     for m in marks.a[..marks.count].iter().rev() {
-                        super::map::spawn_mark(frame, m);
+                        super::map::spawn_mark(frame, m, icons.as_deref());
                     }
                 });
                 root.spawn((

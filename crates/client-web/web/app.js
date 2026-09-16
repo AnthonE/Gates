@@ -166,8 +166,73 @@ showAccount();
 // wasm is a bare `RuntimeError: unreachable`).
 window.gatesWasm = await init();
 
+/* ── the audio thread, opened inside the gesture ────────────────────────────
+   The game's sound is rendered in Rust inside an `AudioWorkletProcessor`
+   (`crates/sound/src/worklet.rs`; the page-side seam is
+   `client/src/render/audio_web.rs`). This function builds it and leaves the
+   result on `globalThis.gatesAudio`, where the renderer looks for it.
+
+   ⚠ **`new AudioContext()` must happen inside a user gesture**, and that is
+   why this is called at the TOP of the PLAY handler rather than beside the
+   renderer: a context created without one starts `suspended`, and a suspended
+   context is silence with no error raised anywhere — the same shape as the
+   two audio bugs this page has already shipped (the CSP `eval` above, and the
+   worklet-less flush that followed it). Everything up to the first `await`
+   runs synchronously in the click, so the context is `running` before the
+   join is even dialled; the async half — `addModule`, compiling the module —
+   finishes while the shard handshake is in flight.
+
+   A browser that refuses any of it is left with no `gatesAudio`, which
+   `audio_web::open` reports once as `audio output: none` and then drops every
+   command and counts it. A tab with no sound still plays. */
+async function startAudio() {
+  const ctx = new AudioContext({ latencyHint: "interactive" });
+  try {
+    /* `addModule` loads the CONCATENATION of the sound-worklet glue and
+       `audio-processor.js` (see `ci/build_web.sh`) — one script, no imports,
+       because a worklet scope has no module graph worth relying on. */
+    await ctx.audioWorklet.addModule("./audio.js");
+    /* Compiled HERE and posted down the port: a worklet scope has no `fetch`,
+       and a `WebAssembly.Module` is structured-cloneable. `compile` of an
+       ArrayBuffer rather than `compileStreaming` of the response, because the
+       latter needs the server to say `application/wasm` and a checkout served
+       by `python3 -m http.server` does not. */
+    const res = await fetch("./sound_worklet_bg.wasm");
+    if (!res.ok) throw new Error(`sound_worklet_bg.wasm: ${res.status}`);
+    const module = await WebAssembly.compile(await res.arrayBuffer());
+    const node = new AudioWorkletNode(ctx, "gates-audio", {
+      numberOfInputs: 0,
+      numberOfOutputs: 1,
+      outputChannelCount: [2],
+    });
+    node.port.onmessageerror = () => console.warn("gates audio: a message did not decode");
+    node.connect(ctx.destination);
+    node.port.postMessage({ kind: "init", module, rate: ctx.sampleRate });
+    /* The renderer reads `rate` to build every playback rate against
+       (`engine::rate` is then the only resample in the chain) and `port` to
+       post to. Nothing else here is the game's business. */
+    globalThis.gatesAudio = { context: ctx, node, port: node.port, rate: ctx.sampleRate };
+    /* A belt-and-braces resume: some browsers suspend a context when the tab
+       is hidden and do not resume it on return, and a click inside the canvas
+       is a gesture we already get for pointer lock. */
+    const wake = () => { if (ctx.state === "suspended") ctx.resume().catch(() => {}); };
+    addEventListener("pointerdown", wake, { passive: true });
+    addEventListener("keydown", wake, { passive: true });
+    console.info(`gates audio: AudioWorklet at ${ctx.sampleRate} Hz`);
+  } catch (e) {
+    /* Never fatal. The game is playable silent, and `audio_web::open` says so
+       once on the console rather than the page. */
+    console.warn("gates audio: none -", (e && e.message) || e);
+    try { await ctx.close(); } catch {}
+    delete globalThis.gatesAudio;
+  }
+}
+
 go.addEventListener("click", async () => {
   go.disabled = true;
+  // Synchronously inside the click — see `startAudio`. Awaited just before
+  // the renderer takes over, so the processor exists before Bevy looks for it.
+  const audio = startAudio();
   const server = document.getElementById("server").value.trim();
   const hash = document.getElementById("hash").value.trim() || undefined;
   say(address ? `connecting to ${server} as ${short(address)}…` : `connecting to ${server} as a guest…`);
@@ -213,6 +278,12 @@ go.addEventListener("click", async () => {
   document.body.classList.add("playing");
   document.getElementById("gates").hidden = false;
   document.querySelector("main").hidden = true;
+  // The worklet has to exist before `render::audio_web::open` looks for it:
+  // that runs inside the plugin build, and a `gatesAudio` that lands one tick
+  // later is a whole session with no sound and a line on the console saying
+  // the page built no AudioWorklet. Never throws — `startAudio` swallows its
+  // own failure, because a silent game still plays.
+  await audio;
   // `play` CONSUMES the session and never returns — Bevy's wasm arm hands the
   // loop to requestAnimationFrame and `run()` does not come back.
   g.play("#gates");
