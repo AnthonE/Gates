@@ -2554,7 +2554,15 @@ arithmetic and unseen*, and the list below is what has accumulated. **Do not
 build a replacement pixel gate.** One session with the client open closes most
 of it.
 
-**Newest, 2026-09-13 — go down and look** (§0wnd, `render/wounded.rs`): the
+**Newest, 2026-09-16 — hold G and look** (§0mp): the map screen changed in
+five ways at once and every one of them is a judgement a frame settles —
+whether the road's casing reads as a road or as a scratch, whether 256 grid
+labels are an index or a mesh drawn over the island, whether an 18 px badge
+crowds a base's worth of beds into one blob, and whether the site names
+collide with each other. `cargo run -p client --example map_png` draws the
+island half of it with no GPU; the nodes on top of it need the game.
+
+**2026-09-13 — go down and look** (§0wnd, `render/wounded.rs`): the
 camera's drop to `CRAWL_EYE_M` and its roll, the vignette, the two-number
 line, and a remote body's fallen pose sliding at a crawl. Five knobs, none
 seen; `reference/WOUNDED.md` §9.5 is the checklist.
@@ -2709,6 +2717,30 @@ the default frame did not move — which is why it could land unlooked-at.
    five minutes is the intended floor for a common-only bag now the kit
    guarantees one.
 
+
+## 0mp · The map became a chart — what it still is not *(client lane + operator)*
+
+Map legibility v2 landed 2026-09-16 (`DECISIONS.md` §open; `reference/MAP.md`
+§9.1): roads painted, a label in all 256 grid cells, pictures on the markers,
+the authored tier named, the player an arrow that points. What is left:
+
+1. **Player-placed markers — the real feature gap.** The reference gives each
+   player five, with a colour, an icon and a label, shared to a team
+   (`reference/MAP.md` §3). Ours has none. It needs a wire message and a cap,
+   so it is not a builder's edit; `protocol` lane.
+2. **A marker with a CLOCK or a RADIUS** (§4). No wire and nothing yet that
+   would use one — but `MarkKind::BedSpent` already solves the clock case with
+   a *weight* instead, which is the cheaper answer to copy first.
+3. **Should the grid labels be toggleable?** Theirs ship OFF behind a button
+   (§1). Ours are always on because that is what was asked for. Operator.
+4. **Waystation and inland share one word and one glyph** — `resolve_marks`
+   does not distinguish them because the ground does not (same canopy). If
+   they should read differently on the map, that is an icon and a spoken call.
+5. **`MAP_PX` is 512 (4 m a pixel) and the roads would be crisper at 1024.**
+   Measured: the paint is 263 ms at 512 and **1.06 s at 1024**, so this is a
+   real trade and not a free knob. `prepaint` hides it behind the loading bar
+   either way, which is what makes 1024 arguable at all.
+6. **Nobody has seen it.** §LOOK.
 
 ## 0a · Is the map's marked set the right one? *(operator — a taste call)*
 

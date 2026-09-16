@@ -31,7 +31,7 @@
 
 use client::look::{bearing_deg, bearing_of, right_dir, yaw_u16, MOUSE_RAD_PER_PX};
 use client::ui::map::{self, GRID_M};
-use sim_core::terrain::ISLAND_SIZE;
+use sim_core::terrain::{self, ISLAND_SIZE};
 use sim_core::yaw_dir;
 
 /// The four cardinals as world-XZ unit directions, taken from the decision
@@ -184,7 +184,11 @@ fn the_painted_island_is_lit_from_the_upper_left() {
     let seed = 20260731u64;
     let size = 192usize;
     let mut buf = vec![0u8; size * size * 4];
-    map::paint(seed, size, &mut buf);
+    // The roads are painted too, and they take the same hillshade — a
+    // ribbon drawn flat would have shown up here as a pile of pixels with
+    // no correlation to the light, which is a thing this test can see and
+    // is one of the reasons it is worth its runtime.
+    map::paint(seed, &terrain::haven(seed), size, &mut buf);
 
     let step = ISLAND_SIZE / size as f32;
     let half = step * 0.5;

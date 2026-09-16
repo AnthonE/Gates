@@ -221,6 +221,37 @@ ITEMS = {
 # and the reason it lost there is the reason it wins here: it says *meal* and
 # not *meat*. A hunger vital is about eating rather than about a cut, so the
 # two read as different things in a frame holding both.
+# The MAP screen's markers, and the one place in this file where the picture
+# has to survive being 14 px wide.
+#
+# **Its own map for `VITALS`' structural reason**, not for tidiness: `ITEMS`
+# is held equal to `content/items.toml` and a stem in it that no item declares
+# exits nonzero. A map marker names a thing on the ISLAND — a site the
+# worldgen placed, the player themselves — which the content will never carry
+# a row for. Two of the five markers are already here (`sleeping_bag`,
+# `hearth`) and are deliberately NOT duplicated: a bed on the map and a bed in
+# your inventory are the same object, and two files would be two drawings of
+# it waiting to diverge.
+#
+# `map_site` serves BOTH authored tiers, because `ui::map::MarkKind::fill`
+# already decided that the haven and a waystation are one class of thing
+# tiered by size, and the renderer separates them by extent. A second drawing
+# would be a second channel saying what size already says.
+# It is a HUT rather than a pin or a tower because the haven on the ground is
+# `Occupant::HavenShelter` and a waystation is `Occupant::WaystationCanopy` —
+# a little building silhouette is what is actually standing there, and this
+# file's own rule is that a drawing of the wrong thing loses to a plainer
+# right one.
+#
+# `map_player` is the one icon in the set that is drawn ROTATED
+# (`render::map`'s marker takes the compass's yaw), so it was picked for
+# having an unambiguous point: an arrowhead says which way it is facing at
+# 14 px, where a disc, a pin or a chevron-in-a-circle do not.
+MAP = {
+    "map_site": "delapouite/hut",
+    "backpack": "delapouite/backpack",
+}
+
 VITALS = {
     "vital_hp": "sbed/health-normal",
     "vital_water": "sbed/water-drop",
@@ -284,6 +315,14 @@ VITALS = {
 OURS = {
     "burnt_meat": "burnt_meat",
 }
+
+# Ours, and NOT an item — so it cannot live in `OURS`, which is held equal to
+# `content/items.toml` the same way `ITEMS` is. `map_player` is the marker the
+# map screen spins by the compass's yaw; the archive has no compact glyph that
+# points up, and the file itself says which five were probed.
+OURS_UI = {
+    "map_player": "map_player",
+}
 OURS_SRC = ROOT / "ci/icons"
 
 ITEMS_TOML = (ROOT / "content/items.toml").read_text()
@@ -307,9 +346,11 @@ if unknown:
 ALL = dict(SHAPES)
 ALL.update(VERBS)
 ALL.update(VITALS)
+ALL.update(MAP)
 for item_id, icon in ITEMS.items():
     ALL[norm(BY_ID[item_id])] = icon
 MINE = {norm(BY_ID[item_id]): f for item_id, f in OURS.items()}
+MINE.update(OURS_UI)
 # Bake a subset by stem when asked: `python3 ci/bake_icons.py raw_meat`.
 #
 # **Prefer that to a full run when you are adding an item.** The committed
