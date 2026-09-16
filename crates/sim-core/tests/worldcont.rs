@@ -1027,3 +1027,149 @@ fn a_save_cannot_move_a_crate_to_your_feet() {
     let mut ok = Box::new(world());
     ok.load(&blob).expect("the unedited save is legal");
 }
+
+/// **A crate that has been looted at all is on the clock** — the half
+/// yesterday's deposit refusal did not cover, and the one normal play
+/// walks into.
+///
+/// ⚠ **Measured before the fix**: a crate with one unit taken out of a
+/// stack of four carried `refill_at == 0` and held the same three units
+/// **960,003 ticks later** — nine game-hours — because the timer armed on
+/// the *transition to empty* and a leftover stack is not empty. Nothing
+/// sweeps, by design (`worldcont.rs` header, item 2), so the only thing
+/// that could ever restart such a crate was another player taking the
+/// last unit of the junk somebody else left. On a populated shard that is
+/// the haven pad degrading to permanent husks, and the destination
+/// gradient the whole risk/reward walk rests on quietly stopping paying.
+///
+/// **It is the reference's own unfixed problem, read off their plugin
+/// market**: `LootBouncer` exists to *"empty the containers when players
+/// do not pick up all the items"*, and its enhanced fork says why in its
+/// own title — *"prevent spawn blocking and improve roadside loot
+/// respawn"*. Server owners patch vanilla for this. We do not have to:
+/// nothing can put items INTO a crate any more (wire v64), so the reason
+/// the arming was narrowed to the empty transition — *"a player could
+/// hold it off forever by putting one item back"* — is gone, and the
+/// first take can arm it.
+#[test]
+fn a_crate_with_one_unit_taken_is_already_on_the_clock() {
+    let mut w = world();
+    let (cx, cz, x, z) = find_slot(&w, Occupant::CrateSlot);
+    join_at(&mut w, x, z);
+    open(&mut w, cx, cz);
+
+    let held = w.world_conts.entries()[0].items[0];
+    assert!(held.count > 1, "the fixture rolls a stack to take part of");
+    take(&mut w, cx, cz, 0, 0, 1);
+
+    let armed = w.world_conts.entries()[0].refill_at;
+    assert!(
+        !w.world_conts.entries()[0].is_empty(),
+        "the point of this case is that the crate is NOT empty"
+    );
+    assert!(
+        armed >= w.tick + RESPAWN_MIN_TICKS,
+        "a partly-looted crate is not on the clock, so it never refills"
+    );
+
+    // And the roll it is due arrives, replacing what was left behind.
+    advance_to(&mut w, armed);
+    open(&mut w, cx, cz);
+    assert_eq!(
+        units(&w, 0, 2),
+        4,
+        "the refill did not roll the table over the leftovers"
+    );
+    assert_eq!(
+        w.world_conts.entries()[0].refill_at,
+        0,
+        "and disarmed the timer"
+    );
+}
+
+/// **A take that MERGES out of a crate is not a deposit**, and for one day
+/// it was refused as one.
+///
+/// `deposit_refused`'s backward arm read only `dst.count > 0` — "a swap
+/// could happen here" — and a swap is not the only thing an occupied
+/// destination means. `plan_move` swaps only two *different* items; the
+/// same item is a merge, and a merge out of a crate moves nothing into
+/// it. So the second unit of wood taken into the slot the first one
+/// filled came back as `REFUSE_M_NO_INPUT`: *that crate gives loot and
+/// takes none*, about a stack leaving the crate.
+///
+/// The quick-move (`ui::slots::quick_move`) aims at the same-item slot
+/// first, so this was not a corner — it was **every second right-click on
+/// a crate**. Found by `a_second_take_does_not_move_the_clock`, which was
+/// written for the refill clock and hit this on its way there; the case
+/// that should have caught it is this one, and it did not exist because
+/// `a_crate_gives_loot_and_takes_none`'s swap case pins two different
+/// items on purpose.
+#[test]
+fn a_take_that_merges_out_of_a_crate_is_not_a_deposit() {
+    let mut w = world();
+    let (cx, cz, x, z) = find_slot(&w, Occupant::CrateSlot);
+    join_at(&mut w, x, z);
+    open(&mut w, cx, cz);
+
+    let held = w.world_conts.entries()[0].items[0];
+    assert!(held.count >= 3, "the fixture rolls a stack worth splitting");
+
+    // One unit into an empty slot, then another into the same slot.
+    take(&mut w, cx, cz, 0, 0, 1);
+    assert_eq!(w.players[0].inv[0].count, 1, "the first take landed");
+    take(&mut w, cx, cz, 0, 0, 1);
+
+    let answered = answers(&w);
+    assert_eq!(answered.len(), 1, "the second take answers once");
+    assert_eq!(
+        answered[0].0, EV_MOVED,
+        "a merge out of a crate was read as a deposit into it ({:?})",
+        answered[0]
+    );
+    assert_eq!(
+        w.players[0].inv[0].count, 2,
+        "the merge did not land in the slot the first take filled"
+    );
+    assert_eq!(
+        w.world_conts.entries()[0].items[0].count,
+        held.count - 2,
+        "and the crate is two units lighter"
+    );
+}
+
+/// The other half of the same rule: **taking more does not push the clock
+/// out.** A crate is armed once, by whatever disturbed it first, and
+/// every take after that reads the same tick — otherwise a player with
+/// nothing better to do could keep a crate shut by visiting it.
+#[test]
+fn a_second_take_does_not_move_the_clock() {
+    let mut w = world();
+    let (cx, cz, x, z) = find_slot(&w, Occupant::CrateSlot);
+    join_at(&mut w, x, z);
+    open(&mut w, cx, cz);
+
+    take(&mut w, cx, cz, 0, 0, 1);
+    let armed = w.world_conts.entries()[0].refill_at;
+    assert!(armed > 0);
+
+    let later = w.tick + 200;
+    advance_to(&mut w, later);
+    take(&mut w, cx, cz, 0, 0, 1);
+    assert_eq!(
+        w.world_conts.entries()[0].refill_at,
+        armed,
+        "the second take re-armed the clock 200 ticks later"
+    );
+
+    // Including the take that empties it — the case the old rule was
+    // written around, which must still not re-arm.
+    let rest = w.world_conts.entries()[0].items[0].count;
+    take(&mut w, cx, cz, 0, 0, rest);
+    assert!(w.world_conts.entries()[0].is_empty());
+    assert_eq!(
+        w.world_conts.entries()[0].refill_at,
+        armed,
+        "emptying it re-armed the clock that the first take had set"
+    );
+}

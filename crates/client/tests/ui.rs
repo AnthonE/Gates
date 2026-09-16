@@ -5045,6 +5045,45 @@ mod quick {
         );
     }
 
+    /// **The second right-click on a crate**, which is the case that broke
+    /// for a day (2026-09-16, `sim_core::inventory::deposit_refused`'s
+    /// backward arm). The first click lands a stack in an empty slot; the
+    /// second aims at that same slot, because a quick-move merges first —
+    /// and a merge *out of* a loot-only crate moves nothing into it, so it
+    /// must go through. It came back `REFUSE_M_NO_INPUT` instead: *that
+    /// crate gives loot and takes none*, said about a stack leaving the
+    /// crate.
+    ///
+    /// The gate lives here as well as in `sim-core` because the panel
+    /// asks the same predicate before the wire (`move_args` step 6), so
+    /// the bug had two independent copies of itself and one fix. A crate
+    /// is the only kind that can show it: a bag and a box take deposits,
+    /// so the arm is never reached for them.
+    #[test]
+    fn a_second_right_click_on_a_crate_merges_instead_of_being_refused() {
+        let mut cont = empty();
+        cont[0] = stack(WOOD, 40);
+        let mut inv = empty();
+        // What the first right-click left: a stack of wood in the pack.
+        inv[0] = stack(WOOD, 20);
+        let args = sent(quick_move(
+            CONT_WORLD,
+            BAG,
+            CONT_WORLD,
+            0,
+            &catalog(),
+            &inv,
+            &cont,
+            &[ItemStack::default(); WEAR_SLOTS],
+        ));
+        assert_eq!(
+            (args.to_kind, args.to_slot, args.count),
+            (CONT_SELF, 0, 40),
+            "the second take out of a crate did not merge into the pile \
+             the first one made"
+        );
+    }
+
     /// An empty slot is not a gesture. Right-clicking nothing must not
     /// send a move the sim would answer `REFUSE_M_EMPTY` to.
     #[test]

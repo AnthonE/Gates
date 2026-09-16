@@ -210,9 +210,35 @@ pub fn takes_deposits(kind: u8) -> bool {
 /// `REFUSE_M_EMPTY`'s to answer and an empty destination cannot swap, so
 /// neither is this reason's business. Mutants for all four combinations
 /// are in `sim-core/tests/inventory_move.rs`.
+///
+/// ⚠ **The backward arm needs `dst.item != src.item` and shipped for one
+/// day without it** (2026-09-16, found the same day by a test written for
+/// something else — a crate's refill clock — which is the only reason it
+/// is not still in the tree). `dst.count > 0` alone reads as "a swap can
+/// happen here", and a swap is not the only thing an occupied
+/// destination means: [`plan_move`] answers `Swap` **only** when the two
+/// items differ, and answers `Transfer` for a same-item merge. So a
+/// second take of wood out of a crate, into the inventory slot the first
+/// take filled, was refused with `REFUSE_M_NO_INPUT` — *that crate gives
+/// loot and takes none*, said about a stack leaving the crate. The
+/// quick-move made it the common case rather than a corner: it aims at
+/// the same-item slot first, so the SECOND right-click on a crate always
+/// hit it.
+///
+/// The check that would have caught it a day earlier is the one
+/// `a_crate_gives_loot_and_takes_none` did not make: its swap case pins
+/// `held.item != 1` deliberately, to *be* a swap, and nothing walked the
+/// other branch. A rule about two directions wants a case per direction
+/// **per plan** — `a_take_that_merges_out_of_a_crate_is_not_a_deposit` is
+/// that missing case.
 pub fn deposit_refused(from_kind: u8, to_kind: u8, src: ItemStack, dst: ItemStack) -> bool {
     let forward = !takes_deposits(to_kind) && from_kind != to_kind && src.count > 0;
-    let swapped_back = !takes_deposits(from_kind) && to_kind != from_kind && dst.count > 0;
+    // Only a SWAP sends anything backwards, and only two different items
+    // swap (`plan_move`'s same-item branch returns a `Transfer` before the
+    // swap arm is reached, and a partial onto a different item is
+    // `REFUSE_M_NO_ROOM` rather than either).
+    let swapped_back =
+        !takes_deposits(from_kind) && to_kind != from_kind && dst.count > 0 && dst.item != src.item;
     forward || swapped_back
 }
 
