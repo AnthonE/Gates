@@ -938,3 +938,60 @@ fn a_column_with_two_plates_is_refused() {
         "a column with two floors loaded instead of refusing"
     );
 }
+
+/// **Loose stacks survive the save** (format 14, `grounditem.rs`), and this
+/// gate exists because the round-trip assertion above would have passed
+/// without them.
+///
+/// `state_hash` folds the store, so a world with litter on it that came
+/// back without it hashes differently — that is the whole mechanism. But
+/// `a_quiet_world` smashes no barrel, so the store is empty in it, and an
+/// unsaved section would have been invisible to every assertion in this
+/// file: the trap `CLAUDE.md` calls a gate that is exact and aimed at
+/// nothing. This one puts three stacks on the ground first.
+#[test]
+fn loose_stacks_come_back_with_the_world() {
+    let mut w = a_quiet_world();
+    // `armed()` leaves the despawn ladder inert (this suite never needed
+    // one), and an inert ladder disarms the store whole — so the fixture
+    // arms it here rather than the assertion below passing on a store
+    // that refused to take anything.
+    w.backpack = sim_core::backpack::BackpackContent::probe_fixture();
+    let bc = w.backpack;
+    let (qx, qz) = (w.players[0].body.qx, w.players[0].body.qz);
+    let mut items = [sim_core::gather::ItemStack::default(); sim_core::limits::INV_SLOTS];
+    for (k, slot) in items.iter_mut().enumerate().take(3) {
+        *slot = sim_core::gather::ItemStack {
+            item: k as u16 + 1,
+            count: (k as u16 + 1) * 4,
+            cond: 0,
+        };
+    }
+    let (seed, tick) = (w.seed, w.tick);
+    let haven = w.haven;
+    let made = w
+        .ground_items
+        .scatter(&bc, seed, &haven, 0x4321, qx, qz, &items, tick);
+    assert_eq!(made, 3, "the fixture put nothing on the ground");
+    let before: Vec<_> = w.ground_items.entries().to_vec();
+    let next_id = w.ground_items.next_id();
+
+    let back = round_trip(&w);
+
+    assert_eq!(
+        back.state_hash(),
+        w.state_hash(),
+        "a world with litter on it did not come back identical"
+    );
+    assert_eq!(
+        back.ground_items.entries(),
+        &before[..],
+        "the stacks came back changed"
+    );
+    assert_eq!(
+        back.ground_items.next_id(),
+        next_id,
+        "the loader did not derive `next_id` past every id it installed — \
+         the next barrel would mint a live id a second time"
+    );
+}

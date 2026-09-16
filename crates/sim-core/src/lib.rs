@@ -16,6 +16,7 @@ pub mod craft;
 pub mod deploy;
 pub mod fmath;
 pub mod gather;
+pub mod grounditem;
 pub mod input;
 pub mod inventory;
 pub mod light;

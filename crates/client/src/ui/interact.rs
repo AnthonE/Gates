@@ -32,12 +32,14 @@
 //! Picking a target outside it costs a round trip and a refusal — the
 //! quantize-both-sides law (`CLAUDE.md`) applied to reach.
 
-use protocol::event::WireBag;
+use protocol::event::{ItemCatalog, WireBag};
+use sim_core::backpack::LOOT_REACH_M;
 use sim_core::build::BUILD_CELL_M;
 use sim_core::deploy::{
     box_key, DeployContent, DeployRec, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE,
     ARCH_HEARTH, ARCH_RECYCLER, ARCH_RESEARCH, ARCH_WORKBENCH, ARCH_WORKBENCH2, ARCH_WORKBENCH3,
 };
+use sim_core::movement::POS_XZ_Q;
 
 pub use sim_core::build::BUILD_REACH_M as REACH_M;
 
@@ -90,6 +92,23 @@ pub enum Verb {
     /// their occupant selects, and the prompt names a KIND. What the
     /// player is told apart is what is inside.
     Crate,
+    /// A loose stack lying on the ground (`sim-core/grounditem.rs`) — what
+    /// a smashed barrel left behind.
+    ///
+    /// **The second verb here that is not a deployable**, `Crate`'s
+    /// company, and it is resolved by a third scan for the same reason:
+    /// a loose stack is neither a record the deploy sync sent nor a
+    /// terrain occupant, it is a set the server states outright
+    /// (`ClientCore::ground_items`).
+    ///
+    /// ⚠ **And it is the one verb whose pick is NOT aim-weighted.** Every
+    /// other prompt here takes the thing you are looking at; this one
+    /// takes the nearest in reach, because that is what the sim's own
+    /// `take_nearest` does — and two stacks out of one barrel land a
+    /// metre apart, so an aimed prompt would routinely name the far sack
+    /// and hand you the near one. A prompt that can promise what the key
+    /// will do is worth more than one that follows the crosshair.
+    Take,
     /// A workbench, any rung (tech tree v0). One verb for three
     /// archetypes, `Fire`'s argument again: the prompt names a KIND, and
     /// which level you are standing at is the sim's business — the tree
@@ -135,6 +154,11 @@ impl Verb {
             // stays total.
             Verb::Crate => 8,
             Verb::TechTree => 9,
+            // Last, and unreachable for `Crate`'s reason twice over: a
+            // loose stack is neither a deployable nor an occupant, so it
+            // cannot tie with anything this function orders. The rung
+            // exists so the order stays total.
+            Verb::Take => 10,
         }
     }
 
@@ -152,6 +176,11 @@ impl Verb {
             Verb::Research => "RESEARCH TABLE",
             Verb::Crate => "CRATE",
             Verb::TechTree => "WORKBENCH",
+            // The KIND, for the same reason as every other row — and the
+            // prompt overrides it with the item's own name, which is the
+            // one place a generic word is not enough (the sack on the
+            // ground is the same mesh whatever is in it).
+            Verb::Take => "ITEM",
         }
     }
 }
@@ -168,7 +197,20 @@ pub struct Pick {
     /// set waiting to drift (`ui::keypad::lock_target`).
     pub arch: u8,
     /// The container handle: a bag id, or a box's packed `box_key`.
+    ///
+    /// `Verb::Take` puts the loose stack's id here, which is **not** sent
+    /// anywhere: the take is payload-free and the sim picks (`grounditem.rs`).
+    /// It is carried so the HUD can tell one stack from another between
+    /// frames without re-resolving.
     pub handle: u32,
+    /// What a `Verb::Take` pick is a stack OF, and how many. Zero for
+    /// every other verb.
+    ///
+    /// On the `Pick` rather than looked up by the HUD because the prompt
+    /// is composed in exactly one place, which is this file's rule for
+    /// every other dynamic word in a prompt (`open`, `lit`, `locked`).
+    pub item: u16,
+    pub count: u16,
     pub cx: u16,
     pub cz: u16,
     pub level: u8,
@@ -209,7 +251,17 @@ impl Pick {
     /// is stated without claiming the press will fail, because the wire
     /// carries the lock bit but never the owner and only the server knows
     /// whether this door is yours.
-    pub fn prompt(&self) -> String {
+    /// The line under the crosshair.
+    ///
+    /// **`catalog` arrived with `Verb::Take`** (ground items v0) and it is
+    /// the first dynamic *word* any prompt here needed rather than a
+    /// dynamic state: every other row names a KIND, which is a constant,
+    /// but a sack on the ground is one mesh whatever is inside it — so the
+    /// item's own name is the only thing that tells a player whether to
+    /// stop. `ItemCatalog::EMPTY` is a legitimate argument: a name that
+    /// has not dripped in yet reads as `#id`, exactly as it does in the
+    /// inventory panel, rather than making the prompt disappear.
+    pub fn prompt(&self, catalog: &ItemCatalog) -> String {
         match self.verb {
             Verb::None => String::new(),
             Verb::Door => format!(
@@ -267,8 +319,57 @@ impl Pick {
             // and opens nothing — what `E` does here is show the tree
             // (tech tree v0), so the prompt names the thing you get.
             Verb::TechTree => "[E] TECH TREE".to_string(),
+            // Not "OPEN": a loose stack has nothing to open, and the
+            // count is the half of this line a player acts on — a sack
+            // holding 4 cloth and a sack holding 300 metal are the same
+            // picture. `×` and the same `item_label` the panels use, so
+            // one item has one name everywhere.
+            Verb::Take => format!(
+                "[E] TAKE {} ×{}",
+                crate::ui::craft::item_label(catalog, self.item).to_uppercase(),
+                self.count
+            ),
             v => format!("[E] OPEN {}", v.label()),
         }
+    }
+}
+
+/// The loose stack `E` would take, or a `None` pick.
+///
+/// **Nearest-in-reach, and deliberately blind to the crosshair** — the one
+/// resolver here that does not weight by aim, because
+/// `grounditem::take_nearest` does not either. The rule it has to satisfy
+/// is *the prompt names what the key will take*, and two stacks out of one
+/// barrel land inside a metre of each other: an aimed pick would put
+/// `TAKE WOOD ×20` on screen and hand over the stone at your feet.
+///
+/// Reach is the sim's own `LOOT_REACH_M` — the arm a bag, a box, a door
+/// and a hearth feed already share — read from `sim_core` rather than
+/// restated, so the prompt cannot promise a take the sim will refuse for
+/// distance. Ties go to the lower index, which is `nearest`'s rule too.
+pub fn resolve_take(x: f32, z: f32, items: &[protocol::event::WireGItem]) -> Pick {
+    let mut best: Option<(usize, f32)> = None;
+    for (i, g) in items.iter().enumerate() {
+        let dx = g.qx as f32 * POS_XZ_Q - x;
+        let dz = g.qz as f32 * POS_XZ_Q - z;
+        let d2 = dx * dx + dz * dz;
+        if d2 > LOOT_REACH_M * LOOT_REACH_M {
+            continue;
+        }
+        match best {
+            Some((_, bd2)) if bd2 <= d2 => {}
+            _ => best = Some((i, d2)),
+        }
+    }
+    match best {
+        Some((i, _)) => Pick {
+            verb: Verb::Take,
+            handle: items[i].id,
+            item: items[i].item,
+            count: items[i].count,
+            ..Pick::default()
+        },
+        None => Pick::default(),
     }
 }
 
@@ -498,7 +599,7 @@ mod tests {
         let far = [rec(100, 100, 0)];
         let p = resolve(Aim::new(0.0, 0.0, 0.0, 1.0), &far, &defs, have, &[]);
         assert!(p.is_none());
-        assert_eq!(p.prompt(), "");
+        assert_eq!(p.prompt(&ItemCatalog::EMPTY), "");
     }
 
     /// The judge's case, and the whole reason for two ranks: standing between
@@ -606,23 +707,35 @@ mod tests {
         };
         // Bare: nothing but the verb. A door nobody has secured has no
         // keypad to name and is not locked (lock v1).
-        assert_eq!(p.prompt(), "[E] OPEN DOOR");
+        assert_eq!(p.prompt(&ItemCatalog::EMPTY), "[E] OPEN DOOR");
         p.open = true;
-        assert_eq!(p.prompt(), "[E] CLOSE DOOR");
+        assert_eq!(p.prompt(&ItemCatalog::EMPTY), "[E] CLOSE DOOR");
         // Bolted but not armed: the keypad exists, the door is not shut.
         // This is the state the two-bit prompt could not say, and the
         // reason `has_lock` is on the wire at all.
         p.has_lock = true;
-        assert!(p.prompt().contains("[L] KEYPAD"), "{}", p.prompt());
         assert!(
-            !p.prompt().contains("LOCKED"),
+            p.prompt(&ItemCatalog::EMPTY).contains("[L] KEYPAD"),
+            "{}",
+            p.prompt(&ItemCatalog::EMPTY)
+        );
+        assert!(
+            !p.prompt(&ItemCatalog::EMPTY).contains("LOCKED"),
             "an unarmed lock is not a locked door: {}",
-            p.prompt()
+            p.prompt(&ItemCatalog::EMPTY)
         );
         // Armed: both.
         p.locked = true;
-        assert!(p.prompt().contains("LOCKED"), "{}", p.prompt());
-        assert!(p.prompt().contains("[L] KEYPAD"), "{}", p.prompt());
+        assert!(
+            p.prompt(&ItemCatalog::EMPTY).contains("LOCKED"),
+            "{}",
+            p.prompt(&ItemCatalog::EMPTY)
+        );
+        assert!(
+            p.prompt(&ItemCatalog::EMPTY).contains("[L] KEYPAD"),
+            "{}",
+            p.prompt(&ItemCatalog::EMPTY)
+        );
     }
 
     #[test]
@@ -632,7 +745,10 @@ mod tests {
                 verb,
                 ..Pick::default()
             };
-            assert!(!p.prompt().is_empty(), "{verb:?} has no prompt");
+            assert!(
+                !p.prompt(&ItemCatalog::EMPTY).is_empty(),
+                "{verb:?} has no prompt"
+            );
             assert!(!verb.label().is_empty(), "{verb:?} has no label");
         }
     }

@@ -526,8 +526,14 @@ pub fn keys(
     }
 
     // Typing into the search box. Only while the inventory screen is up, so
-    // the world's own binds are untouched everywhere else.
-    if ui.panel == Panel::Inventory {
+    // the world's own binds are untouched everywhere else — **and only
+    // while the box is drawn**, which since the crafting half went away
+    // under a container (`inv::build_screen`) is not the same condition.
+    // The `else` branch below already states why: a keystroke that lands
+    // in a box nobody can see arrives in it the moment the box comes back,
+    // so a player who typed while looting would close the crate onto a
+    // recipe list filtered by whatever they pressed.
+    if ui.panel == Panel::Inventory && !crate::ui::slots::looting(core.cont_kind) {
         let mut changed = false;
         for ev in chars.read() {
             if !ev.state.is_pressed() {
@@ -555,8 +561,9 @@ pub fn keys(
             ui.dirty = true;
         }
     } else {
-        // Drain, so a keystroke pressed with the panel shut does not arrive
-        // in the search box the moment it opens.
+        // Drain, so a keystroke pressed with the panel shut — or with a
+        // container over it — does not arrive in the search box the moment
+        // the box is drawn again.
         chars.clear();
     }
 

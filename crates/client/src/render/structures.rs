@@ -491,7 +491,26 @@ const DOOR_LOCKED: Color = Color::srgb(0.235, 0.247, 0.267);
 /// The death backpack (`backpack.rs`) — a low canvas bundle where a body
 /// fell, in the sleeping bag's cloth.
 const BAG_SIZE: [f32; 3] = [0.6, 0.35, 0.45];
+
+/// A loose stack on the ground (`grounditem.rs`) — **one generic sack for
+/// every item**, which is the operator's own call (*"we could just make it
+/// generic now"*) and is what keeps this slice off the model queue
+/// (`assets/models/WANTED.md`): a per-item mesh is 60 assets, and the
+/// thing a player needs first is *something is lying there*.
+///
+/// Smaller than a bag on purpose, and that is the only thing about it a
+/// player has to read at distance: a bag is a body's whole inventory and
+/// a sack is one stack out of a barrel, so the two must not be the same
+/// silhouette. Half a bag's footprint, two thirds its height.
+const GITEM_SIZE: [f32; 3] = [0.3, 0.24, 0.3];
 const BAG_COLOR: Color = Color::srgb(0.627, 0.416, 0.235);
+
+/// A loose stack's sack: **lighter and greyer than the bag's canvas**, so
+/// the two objects are told apart by value as well as by size — the read
+/// `ART.md` rule 3 asks for at distance, where hue goes first. Sized off
+/// the bag's own colour rather than picked fresh: the same material
+/// family, one step toward the ground it lies on.
+const GITEM_COLOR: Color = Color::srgb(0.745, 0.667, 0.545);
 
 /// A grid address: the key both placed stores are addressed by.
 pub type Addr = (u16, u16, u8, u8);
@@ -570,6 +589,8 @@ pub struct Kit {
     door_locked: Handle<StandardMaterial>,
     bag_mesh: Handle<Mesh>,
     bag_mat: Handle<StandardMaterial>,
+    gitem_mesh: Handle<Mesh>,
+    gitem_mat: Handle<StandardMaterial>,
 }
 
 #[derive(Resource, Default)]
@@ -577,6 +598,7 @@ pub struct StructRing {
     pieces: HashMap<Addr, Live>,
     deploys: HashMap<Addr, Live>,
     bags: HashMap<u32, Live>,
+    gitems: HashMap<u32, Live>,
     kit: Option<Kit>,
     gen: u64,
 }
@@ -1860,6 +1882,17 @@ pub fn build_kit(
             perceptual_roughness: 0.95,
             ..default()
         }),
+        gitem_mesh: meshes.add(Cuboid::new(GITEM_SIZE[0], GITEM_SIZE[1], GITEM_SIZE[2])),
+        // Its own material rather than the bag's, for one reason that is
+        // not taste: `prewarm.rs` specializes a pipeline per material, so
+        // sharing one would be free and *this* is the slice that puts a
+        // new object on the ground at a distance — a sack the same colour
+        // as a death bag is the one thing a player must not misread.
+        gitem_mat: materials.add(StandardMaterial {
+            base_color: GITEM_COLOR,
+            perceptual_roughness: 0.9,
+            ..default()
+        }),
     }
 }
 
@@ -2101,6 +2134,61 @@ pub fn stream(
         );
     }
     ring.bags.retain(|_, live| {
+        if live.seen == gen {
+            return true;
+        }
+        commands.entity(live.entity).despawn();
+        false
+    });
+
+    // ---- loose stacks ---------------------------------------------------
+    // A stack never moves either — the sim computes its resting place once
+    // (`grounditem::rest_spot`) and the wire carries that. So a known id
+    // is left alone, exactly like a bag, and the retain below is what
+    // takes one away when somebody else picks it up.
+    //
+    // **`row` carries the item id**, which is reuse of `Live`'s existing
+    // field rather than a sixth store — nothing reads it for a stack
+    // today, and the day a draw wants to vary by item it is already here.
+    // The COUNT is deliberately not stored: `dmg` is a `u8` and a stack
+    // reaches 1,000, so a field that could hold it would be a widening
+    // for a number nothing on this side reads (the prompt reads
+    // `core.ground_items()` directly, which is server truth).
+    for g in core.ground_items() {
+        if let Some(live) = ring.gitems.get_mut(&g.id) {
+            live.seen = gen;
+            continue;
+        }
+        // Half its height up, the bag's own correction: the sim rests it
+        // ON the ground, and a cuboid's origin is its middle.
+        let pos = Vec3::new(
+            g.qx as f32 * POS_XZ_Q,
+            g.qy as f32 * POS_Y_Q + GITEM_SIZE[1] * 0.5,
+            g.qz as f32 * POS_XZ_Q,
+        );
+        let entity = commands
+            .spawn((
+                super::WorldEntity,
+                Mesh3d(kit.gitem_mesh.clone()),
+                MeshMaterial3d(kit.gitem_mat.clone()),
+                Transform::from_translation(pos),
+            ))
+            .id();
+        ring.gitems.insert(
+            g.id,
+            Live {
+                entity,
+                seen: gen,
+                row: g.item as u8,
+                open: false,
+                locked: false,
+                dmg: 0,
+                own: 0,
+                plate: 0,
+            },
+        );
+    }
+    ring.gitems.retain(|_, live| {
         if live.seen == gen {
             return true;
         }

@@ -773,6 +773,14 @@ drip, which is why that one was a bump and not a panel edit.
 6. **Armor still does not wear out.** §9.4's condition, now that the
    catalog carries `cond_max` beside the reduction: a worn piece has both
    halves on the client and debits neither. `§0dur` owns it.
+7. **A right-click does not equip** (2026-09-16). With a container open a
+   right-click now moves a stack across (`ui::slots::quick_move`); with
+   nothing open it consumes, and on a helmet it does nothing. The
+   reference wears the piece — which for us is the same `CONT_WEAR` move
+   the drag already sends, so it is `quick_move`'s `!looting` branch
+   asking `wearable_here` first. Left out because the operator asked for
+   the container gesture and a third meaning for one button is a taste
+   call, not because it is hard.
 
 ## 0gs · What ground surface v1 left open *(client lane)*
 
@@ -1131,12 +1139,47 @@ where it had only ever been two words on the prompt. Both unseen (`§LOOK`).
 ## 0wc · What world containers v0 still owes *(systems lane)*
 
 1. **Nobody has opened one in the running game** — the prompt, the panel
-   title, the drag out of a 30-slot grid, an emptied crate. Route: derive
-   the anchor as `container_wire.rs:1307` does, set `dev_spawn` in
-   `shard.toml` (`server/src/config.rs:361`), boot. §0p3 has the command.
+   title, the drag out of a 30-slot grid, an emptied crate, and since
+   2026-09-16 three more: the crafting half gone, a right-click taking a
+   stack, and a crate's cells going red under a drag it will refuse.
+   Route: derive the anchor as `container_wire.rs:1307` does, set
+   `dev_spawn` in `shard.toml` (`server/src/config.rs:361`), boot. §0p3
+   has the command.
+1b. ✅ **A crate takes no deposits** (2026-09-16, wire v64,
+   `REFUSE_M_NO_INPUT`) — the operator's call, and it closed a live
+   defect: the refill arms on the record going empty, so one stack put
+   back held a crate shut for everybody. The residual is that the **box
+   and the bag are the only kinds that take one**, and `takes_deposits`
+   is a `kind != CONT_WORLD` today — the reference keys the same
+   predicate per *container instance* (`CanAcceptItem`), which is what a
+   furnace's fuel slot or a vending machine would need.
 2. **An emptied crate says nothing at a distance**, so a wasted trip is
    normal on a populated shard. Wants a lid state on the mesh
    (`render/props.rs` has one `crate_box`) or a shorter refill window.
+   `reference/LOOT.md` §9.4 adds the reference's read: theirs is *gone*
+   when emptied, which is the distance signal — and names why we cannot
+   simply copy it (the crate's position is a pure function of the seed and
+   the client draws it from that function, so absence has to ride the
+   wire: one bit per crate in AOI).
+2b. ✅ **A smashed barrel scatters loose stacks** (ground items v0,
+   2026-09-16, spoken: *"yea lets cook it"*). Built: `grounditem.rs`, wire
+   v65, save format 14, a generic sack per stack, `E` naming the item and
+   the count. What it left, in the order it is worth doing:
+   - **Nobody has seen it** (`§LOOK`). Two sacks on a beach, a prompt that
+     names them, one taken and the other still there. The mesh is a
+     cuboid, the colour is one step off the bag's, and no frame in
+     `findings/` has either.
+   - **The tumble the operator deferred** (*"eventually… or roll a bit"*).
+     `rest_spot` is a landing spot; a watchable fall wants the settle in
+     the SIM (`reference/LOOT.md` §9.3) and either a per-tick position on
+     the wire or a spawn+velocity the client re-integrates through the
+     same function. The second is cheaper and is the one to price first.
+   - **The barrel pays 1–2 stacks** (`content/loot.toml` `rolls_max = 2`),
+     so "3d objects" is often one object. Raising it is a balance pass
+     `ci/haven_prize.mjs` gates, not a code change.
+   - **No per-item mesh** (`assets/models/WANTED.md` is not queued for
+     this): the sack is generic by decision, and the prompt is what
+     distinguishes stacks. A picture per item is 60 assets.
 3. **The guard has no loot tier of its own** — `guard.rs`'s
    `a_guard_pays_what_a_wolf_pays` holds it to a wolf's meat and fat. A
    tier wants a third species, and a third kind still falls through to
@@ -2290,6 +2333,26 @@ dust and the impact cue read it (`DECISIONS.md` §open, impact fx v1). Left:
 4. **Fourteen distinct font sizes is not a scale** (`font`/`font_bold` sites
    in `render/`). Collapsing to five may not be done blind: they were
    budgeted against 720p and the first cut clipped a column at both ends.
+4b. **There is no way to craft while looting** — the stated cost of the
+   operator's 2026-09-16 call. The reference's answer is a tab strip
+   (INVENTORY / CRAFTING over one screen); ours would be two buttons in
+   `inv::header` and a `Ui` field, and it is a *taste* call about whether
+   the screen wants tabs at all before it is a slice. Not a defect:
+   closing the container gets you there today.
+4d. ✅ **A quick-move prefers the main grid over the belt** (2026-09-16).
+   It filled the belt first, because our belt is slots `0..HOTBAR_SLOTS`
+   of the same array (`inventory.rs`: one array, one verb) and "the first
+   free slot" is therefore a quick-use slot. Left as an unsourced taste
+   call for one day and then **settled by research, not taste**: the
+   reference's belt is a *separate container* (`containerBelt` beside
+   `containerMain`, `reference/LOOT.md` §5), so a quick-move there cannot
+   reach it at all. The belt is the fallback for a full grid.
+4c. **The quick-move moves one slot per click**, so a stack that half fits
+   leaves a remainder and a second right-click carries it on. The wire's
+   move verb addresses one slot, so a whole-stack scatter would be N
+   commands; the reference's hover-loot (hold a key, sweep the pointer,
+   everything transfers) is the same shape and the next ergonomic step —
+   both want a `take all` verb argued for before either is built.
 5. **Surveyed and refused, do not re-survey:** `bevy_hui`, `bevy_lunex`,
    `bevy_feathers` (~5,400 lines of screens into a data-driven plugin) and
    the freegameui.net MCP (403s here, bypasses `bake_icons.py` and
@@ -2595,6 +2658,23 @@ arithmetic and unseen*, and the list below is what has accumulated. **Do not
 build a replacement pixel gate.** One session with the client open closes most
 of it.
 
+**Newest, 2026-09-16 — smash a barrel and look at what falls out** (§0wc
+2b, ground items v0): loose stacks are a new object class on the ground —
+one generic sack, lighter and smaller than a death bag, resting on the
+terrain under its own scatter offset. The frame answers three things no
+gate can: whether a sack reads as *loot* rather than as debris, whether
+one is findable in grass (the clutter layer landed since the bag's mesh
+was last looked at), and whether the size difference from a bag is legible
+at ten metres. The prompt names the item and the count, so a scatter of two
+is also the first test of reading two stacks apart by words alone.
+
+**2026-09-16 — open a bag and right-click** (§0p2, §0wc): the
+inventory screen has two shapes now, and only one of them has ever been on
+a screen. With a container open the crafting half is not drawn, the title
+reads `LOOTING`, the hint line names a different gesture, and three panels
+sit in the row where §0eq item 5 already asked whether two fit at 1280.
+The gesture itself is gated as arithmetic (`tests/ui.rs` §T) and the thing
+a frame answers is whether the screen reads as *emptier* or as *broken*.
 **Newest, 2026-09-16 — look at ONE tree, then a stand of them** (§0t, canopy
 grain v0). Four things to judge, in order: does a near crown read as needles
 rather than fern fronds; does it have a dark INSIDE and a lit outside; does it

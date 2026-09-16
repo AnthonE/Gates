@@ -32,6 +32,16 @@
 //!    container kind, so `inventory::plan_move` resolves a crate exactly
 //!    the way it resolves a box, with the same refusals and the same
 //!    per-tick `ContSync` diff. Not one line of `plan_move` moved for this.
+//!
+//! **It takes nothing, and that is this file's rule rather than the move
+//! verb's** (`inventory::takes_deposits`, wire v64). A deposit would
+//! disarm the refill — `set_slot` below keys the timer on the record going
+//! empty, so one stack put back sets `refill_at` to 0 — which turns a
+//! shared piece of scenery into one player's locker for as long as the
+//! stack sits there. The refusal is asked in `world.rs` beside the oven's
+//! and the wear slot's, because all three are the same question (what may
+//! enter this container) and `plan_move` decides arithmetic and only
+//! arithmetic.
 
 use crate::gather::{cell_key, GatherContent, ItemStack, RESPAWN_MIN_TICKS, RESPAWN_RANGE_TICKS};
 use crate::limits::{INV_SLOTS, MAX_WORLD_CONTS};
@@ -194,24 +204,45 @@ impl WorldConts {
 
     /// Write one slot. Out of range writes nothing.
     ///
-    /// Emptying the last stack arms the refill timer here rather than in
-    /// the move verb, because this is the one function every write goes
-    /// through: a container emptied by a take and a container emptied by
-    /// any future verb both land on the same line.
+    /// **Any write arms the refill, and nothing disarms it but the roll.**
+    /// Here rather than in the move verb because this is the one function
+    /// every write goes through: a crate stripped by a take, a crate left
+    /// half-full, and a crate emptied by any future verb all land on the
+    /// same line.
+    ///
+    /// ⚠ **It armed on the transition to EMPTY until 2026-09-16, and that
+    /// is the shape of two defects rather than one.** The rule was written
+    /// against a real exploit — *"a player could hold the refill off
+    /// forever by putting one item back"* — and it shut that door by
+    /// keying the clock on emptiness, which left the door beside it wide
+    /// open: a crate with a leftover stack in it is not empty, so it was
+    /// never on the clock at all. Measured: one unit taken out of a stack
+    /// of four, and the same three units still sitting there 960,003 ticks
+    /// later (`a_crate_with_one_unit_taken_is_already_on_the_clock`).
+    /// Nothing sweeps, by design (this module's header, item 2), so the
+    /// only thing that could restart such a crate was a later player
+    /// bothering to take somebody else's junk. **No malice needed** —
+    /// taking what you want and leaving the rest is how looting works,
+    /// and it killed the crate permanently.
+    ///
+    /// It is the reference's own unfixed problem: `LootBouncer` exists to
+    /// *"empty the containers when players do not pick up all the items"*
+    /// and its fork names the consequence, *"prevent spawn blocking"*.
+    /// What lets us simply fix it is wire v64 — a crate
+    /// [`crate::inventory::takes_deposits`] refuses takes nothing in, so
+    /// the exploit the old rule defended against cannot be performed, and
+    /// the clock can arm on the first disturbance.
+    ///
+    /// The `refill_at == 0` guard is what keeps it armed **once**: every
+    /// take after the first reads the tick the first one set, so visiting
+    /// a crate repeatedly cannot push its roll away.
     pub fn set_slot(&mut self, i: usize, s: usize, v: ItemStack, tick: u64, refill_ticks: u64) {
         if i >= self.len || s >= INV_SLOTS {
             return;
         }
         self.entries[i].items[s] = v;
-        if self.entries[i].is_empty() {
-            // Only arm it on the transition. Re-arming on every write to an
-            // already-empty container would let a player hold the refill
-            // off forever by putting one item in and taking it back out.
-            if self.entries[i].refill_at == 0 {
-                self.entries[i].refill_at = tick + refill_ticks;
-            }
-        } else {
-            self.entries[i].refill_at = 0;
+        if self.entries[i].refill_at == 0 {
+            self.entries[i].refill_at = tick + refill_ticks;
         }
     }
 

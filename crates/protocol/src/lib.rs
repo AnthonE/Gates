@@ -57,18 +57,19 @@ pub use event::{
     encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
     encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
     encode_event_door, encode_event_drank, encode_event_gather, encode_event_gather_refused,
-    encode_event_health, encode_event_hit, encode_event_hurt, encode_event_impact,
-    encode_event_inv, encode_event_knock, encode_event_known, encode_event_move_refused,
-    encode_event_moved, encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
-    encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
-    encode_event_recovered, encode_event_reload, encode_event_reload_refused, encode_event_removed,
-    encode_event_research, encode_event_research_refused, encode_event_research_rows,
-    encode_event_respawn, encode_event_shot, encode_event_slot_change, encode_event_slot_sync,
-    encode_event_stock, encode_event_struct_hit, encode_event_swing, encode_event_vitals,
-    encode_event_weak_mark, encode_event_wounded, shot_is_instant, EventMsg, InvSlot, ItemCatalog,
-    ItemRow, WireBag, BAG_SYNC_BATCH, CATALOG_BATCH, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH,
-    DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH,
-    PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH, SLOT_SYNC_BATCH,
+    encode_event_gitem_sync, encode_event_health, encode_event_hit, encode_event_hurt,
+    encode_event_impact, encode_event_inv, encode_event_knock, encode_event_known,
+    encode_event_move_refused, encode_event_moved, encode_event_oven, encode_event_piece_defs,
+    encode_event_piece_placed, encode_event_piece_repaired, encode_event_piece_sync,
+    encode_event_recipes, encode_event_recovered, encode_event_reload, encode_event_reload_refused,
+    encode_event_removed, encode_event_research, encode_event_research_refused,
+    encode_event_research_rows, encode_event_respawn, encode_event_shot, encode_event_slot_change,
+    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_swing,
+    encode_event_vitals, encode_event_weak_mark, encode_event_wounded, shot_is_instant, EventMsg,
+    InvSlot, ItemCatalog, ItemRow, WireBag, WireGItem, BAG_SYNC_BATCH, CATALOG_BATCH,
+    CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, MAX_EVENT_MSG_BYTES,
+    MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH,
+    SLOT_SYNC_BATCH,
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSHOT_ENTITIES};
@@ -838,7 +839,62 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// of its own: a lethal blow is no longer always a death, so the feed hears
 /// the corpse and not the blow. Every snapshot fixture moves by one bit per
 /// entity; `hello` carries the version.
-pub const PROTO_VER: u16 = 63;
+///
+/// **v64 — the loot-only container and the stack ceiling** (the operator's
+/// three inventory calls, `DECISIONS.md` 2026-09-16). Two changes, one
+/// layout move between them.
+///
+/// `ItemRow` gains `stack_max:16` — the catalog's fourth column, for the
+/// reason v46 and v52 already record: the client links no content crate, so
+/// a number it must *reason* about rides this table or does not exist. The
+/// number here is `GatherContent::stack_max_of`, and what could not be done
+/// without it is the panel choosing a destination slot by itself
+/// (`ui::slots::quick_move`): `plan_move` refuses a partial merge rather
+/// than clamping, so picking a slot means measuring `cap - dst.count`
+/// first, and a client with no `cap` can only ever aim at an empty one.
+/// `ItemRow::coherent` now also refuses a condition ceiling on a stack of
+/// more than one (durability V7), which both ends check because a forged
+/// row would aim a quick-move at a merge the sim will refuse.
+///
+/// `REFUSE_M_NO_INPUT` = 10 is the tenth move refusal and moves **no bit**:
+/// `REFUSE_M_BITS` has been 4 since v28 and held nine. It turns the version
+/// on v18's precedent, stated two screens up — *a widened meaning is a wire
+/// change even when the layout is byte-identical* — and `event.rs`'s
+/// `DOMAINS` pin is the thing that forced this sentence to be written. The
+/// consequence it protects against is small and silent: a v63 client
+/// answers `Malformed` to the tenth reason, drops the message, and shows a
+/// drag snapping back with no word about why.
+///
+/// Fixtures are keyed `v64_*`: all 107 renamed, and **two** differ in bytes
+/// from their v63 selves — `v64_event_catalog` (the new column, eight rows
+/// of it) and `v64_hello` (the version number). A third file in that diff
+/// would mean the layout moved somewhere nobody looked.
+///
+/// **v65 — ground items v0** (the operator, 2026-09-16: *"lets cook it"*).
+/// One addition and no layout move: `SUB_GITEM_SYNC` (58 of the 64 the
+/// six-bit subtype field holds), the loose-stack walk — `SUB_BAG_SYNC`'s
+/// shape one store over, plus the two fields a bag deliberately does not
+/// carry. A bag's contents answer a `ContSync` when you open it; a loose
+/// stack has nothing to open, so **what it is and how many** ARE the
+/// object and ride the record. `cond` stays behind: nothing on screen
+/// reads a loose stack's condition, and durability V7 makes a
+/// condition-carrying stack a stack of one, so the pip has nothing to
+/// divide.
+///
+/// Nothing else moved — no action opcode (`Command::Pickup` was arrow
+/// recovery's and takes a loose stack first), no event code (a take pays
+/// in `EV_GATHER`, a scatter is silent), and no existing message's bytes.
+/// Fixtures are keyed `v65_*`: all 107 renamed plus **one new**, and
+/// exactly two of the renamed differ in bytes — none, in fact, beyond
+/// `v65_hello`, which carries the version. A third file in that diff
+/// would mean the layout moved somewhere nobody looked.
+///
+/// ⚠ **The save format moved in the same slice** (13 → 14,
+/// `worldsave.rs`), which `PROTO_VER` says nothing about and a reader of
+/// this list would not otherwise see: the new store is hashed, so it is
+/// saved, so a live shard's `island.world` no longer loads — a wipe, and
+/// an operator act.
+pub const PROTO_VER: u16 = 65;
 
 /// This game's slug in the elo catalog.
 ///

@@ -631,6 +631,25 @@ pub const SYNC_SCAN_PER_TICK: usize = 256;
 /// loss. Proposed default, DECISIONS.md §open (death backpack v0).
 pub const MAX_BACKPACKS: usize = 256;
 
+/// Loose stacks lying on the ground at once (`grounditem.rs`: what a
+/// smashed barrel leaves behind). **Its own cap and not a share of
+/// `MAX_BACKPACKS`**, which is the whole of what splitting the stores
+/// bought — a barrel-heavy shard used to evict somebody's death bag to
+/// make room for three units of cloth, because the 2026-08 row put both
+/// in one store and said so (*"a barrel-heavy shard can evict an old
+/// death bag. Raise the cap or split the stores if that is wrong."*).
+///
+/// Sized off what the island can produce: our barrels roll 1–2 stacks
+/// (`content/loot.toml`), so 256 is over a hundred barrels' worth lying
+/// around unclaimed at once, against a despawn ladder that clears the
+/// common tier in minutes. Overflow policy: **evict** the stack nearest
+/// its own despawn — `MAX_BACKPACKS`' policy and for its reason (refusing
+/// would quietly eat loot a player paid three swings for), and unlike
+/// `MAX_WORLD_CONTS` an eviction here cannot dupe, because a loose stack
+/// holds no timer anybody can re-roll. Proposed default, DECISIONS.md
+/// §open (ground items v0).
+pub const MAX_GROUND_ITEMS: usize = 256;
+
 /// Deployed storage boxes standing at once (`deploy.rs`, `ARCH_BOX`).
 /// Held in its own dense list beside the hearths, for the same reason:
 /// `DeployRec` is the struct the wire mirrors, so contents may not ride

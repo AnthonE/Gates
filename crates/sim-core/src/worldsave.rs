@@ -73,12 +73,13 @@ use crate::build::PieceRec;
 use crate::charge::ChargeRec;
 use crate::deploy::{BoxRec, DeployRec, HearthRec};
 use crate::gather::{ItemStack, SlotLife, NO_ITEM};
+use crate::grounditem::GroundItemRec;
 use crate::input::InputFrame;
 use crate::limits::HOTBAR_SLOTS;
 use crate::limits::{
     BOX_SLOTS, HEARTH_CREW_CAP, HEARTH_STOCK_ROWS, INV_SLOTS, LOCK_AUTH_CAP, LOCK_GUEST_CAP,
-    MAX_BACKPACKS, MAX_BOXES, MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_DEPLOYS, MAX_HEARTHS,
-    MAX_LIVE_CHARGES, MAX_LOCKS, MAX_MAGS, MAX_PIECES, MAX_PLAYERS, MAX_SLOT_LIVES,
+    MAX_BACKPACKS, MAX_BOXES, MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_DEPLOYS, MAX_GROUND_ITEMS,
+    MAX_HEARTHS, MAX_LIVE_CHARGES, MAX_LOCKS, MAX_MAGS, MAX_PIECES, MAX_PLAYERS, MAX_SLOT_LIVES,
     MAX_SPENT_ARROWS, MAX_WORLD_CONTS,
 };
 use crate::lock::{LockRec, CODE_MAX, CODE_NONE};
@@ -175,7 +176,7 @@ use crate::worldcont::WorldContRec;
 /// players moved again. Saved for 12's reason exactly: `state_hash` folds
 /// all three, and `tests/combat_storm.rs`'s round trip went red the day
 /// they were left out.
-pub const WORLD_SAVE_FORMAT: u16 = 13;
+pub const WORLD_SAVE_FORMAT: u16 = 14;
 
 /// Fixed head: format, tick, the three sweep cursors, the eviction counter,
 /// the next bag id, and the ten section counts.
@@ -190,10 +191,11 @@ pub const WORLD_SAVE_FORMAT: u16 = 13;
 /// wrong-seek the day the layout grows; naming the constant is what makes
 /// the next section free.
 pub const HEAD_BYTES: usize = 2 + 8 + 4 * 3 + 8 + 4 + 4 + SECTION_COUNTS;
-/// Ten `u16` counts and one `u32` (`slot_lives`, whose cap is 16 384 and
+/// Eleven `u16` counts and one `u32` (`slot_lives`, whose cap is 16 384 and
 /// so does not fit a `u16` with room to be over-cap and *refused* rather
 /// than wrapping — the count has to be able to say an illegal number).
-/// The ninth is `world_conts` (format 5), the tenth `spent` (format 10).
+/// The ninth is `world_conts` (format 5), the tenth `spent` (format 10),
+/// the eleventh `ground_items` (format 14).
 /// **Public for `HEAD_BYTES`' reason, and it was made public the day that
 /// reason came true a third time.** `tests/worldsave.rs` spelled the offset
 /// of the first section count as a hand-copied `34`, which was right until
@@ -201,7 +203,7 @@ pub const HEAD_BYTES: usize = 2 + 8 + 4 * 3 + 8 + 4 + 4 + SECTION_COUNTS;
 /// the byte-poke landed in the eviction counter and the test failed with
 /// "a player count past MAX_PLAYERS was accepted" rather than with anything
 /// about the head. The offset is `HEAD_BYTES - SECTION_COUNTS` now.
-pub const SECTION_COUNTS: usize = 10 * 2 + 4;
+pub const SECTION_COUNTS: usize = 11 * 2 + 4;
 
 /// One body: everything `PlayerSave` already validates, plus every
 /// remaining field `World::state_hash` reads off a player.
@@ -299,6 +301,13 @@ const SLOT_LIFE_BYTES: usize = 14;
 /// also the bound that makes the encode a *bounded* piece of work in the
 /// sense wall 4 means: the sim thread's cost is O(live records) with a
 /// ceiling nothing can exceed, not O(whatever the world grew to).
+/// One loose stack (format 14): 4 id + three `i32` coordinates + a
+/// six-byte `ItemStack` + the despawn deadline. The same 30 bytes
+/// `state_hash` folds per record, and deliberately so — a digest and a
+/// save that disagreed about a record's shape is how a reload changes a
+/// hash.
+pub const GROUND_ITEM_BYTES: usize = 4 + 12 + 6 + 8;
+
 pub const WORLD_SAVE_MAX_BYTES: usize = HEAD_BYTES
     + MAX_PLAYERS * PLAYER_BYTES
     + MAX_PIECES * PIECE_BYTES
@@ -310,6 +319,7 @@ pub const WORLD_SAVE_MAX_BYTES: usize = HEAD_BYTES
     + MAX_WORLD_CONTS * WORLD_CONT_BYTES
     + MAX_LIVE_CHARGES * CHARGE_BYTES
     + MAX_SPENT_ARROWS * SPENT_BYTES
+    + MAX_GROUND_ITEMS * GROUND_ITEM_BYTES
     + MAX_SLOT_LIVES * SLOT_LIFE_BYTES;
 
 /// Why a world was refused. Integer-shaped like every refusal in this crate
@@ -495,6 +505,7 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
     o.u16(w.world_conts.len() as u16);
     o.u16(w.charges.len() as u16);
     o.u16(w.spent.len() as u16);
+    o.u16(w.ground_items.len() as u16);
     o.u32(w.slot_lives.len() as u32);
 
     for p in w.players.iter().filter(|p| p.active) {
@@ -666,6 +677,25 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         o.u16(a.round);
         o.u64(a.ready_at);
     }
+    // Loose stacks on the ground (format 14, `grounditem.rs`). Saved
+    // rather than swept on reboot because they are **hashed**: a save
+    // whose reload changed `state_hash` is what `tests/worldsave.rs`
+    // exists to refuse, and a take out of one mutates an inventory, so
+    // this is canonical state and not litter. `next_id` rides the
+    // records rather than the head — unlike a bag's, because the loader
+    // can derive it (`GroundItems::restore` advances past every id it
+    // installs) and a head field that duplicates a derivable one is a
+    // second place for it to be wrong.
+    for g in w.ground_items.entries() {
+        o.u32(g.id);
+        o.i32(g.qx);
+        o.i32(g.qy);
+        o.i32(g.qz);
+        o.u16(g.stack.item);
+        o.u16(g.stack.count);
+        o.u16(g.stack.cond);
+        o.u64(g.expires);
+    }
     for s in w.slot_lives.entries() {
         o.u16(s.cx);
         o.u16(s.cz);
@@ -822,6 +852,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
     let n_conts = r.count(MAX_WORLD_CONTS)?;
     let n_charges = r.count(MAX_LIVE_CHARGES)?;
     let n_spent = r.count(MAX_SPENT_ARROWS)?;
+    let n_gitems = r.count(MAX_GROUND_ITEMS)?;
     let n_slots = r.count32(MAX_SLOT_LIVES)?;
 
     let max_item = crate::limits::MAX_ITEM_DEFS;
@@ -1415,6 +1446,56 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         };
     }
 
+    // --- loose stacks on the ground (format 14) ---------------------------
+    // Two claims checked rather than trusted, which is the world
+    // container's posture and not the spent arrow's — a loose stack has
+    // both an address a player walks to AND an item id a take hands over:
+    //
+    // 1. **It lies on the island**, in the body's own quanta. A forged
+    //    coordinate is what `in_reach` squares, and the `f32` there is
+    //    sized for an island rather than for `i32::MAX`.
+    // 2. **The item is one the content table has.** A forged index would
+    //    hand back a stack of whatever item sits at that rank — the same
+    //    check the arrow's `round` gets, for the same reason.
+    //
+    // A zero count is refused too: `GroundItems::restore` would drop it,
+    // and a record the loader silently discards makes the loaded world
+    // hash differently from the file, which is the one thing a save may
+    // never do.
+    let mut gitems = [GroundItemRec::default(); MAX_GROUND_ITEMS];
+    for g in gitems.iter_mut().take(n_gitems) {
+        let id = r.u32()?;
+        let qx = r.i32()?;
+        let qy = r.i32()?;
+        let qz = r.i32()?;
+        let item = r.u16()?;
+        let count = r.u16()?;
+        let cond = r.u16()?;
+        let expires = r.u64()?;
+        let side_q = (terrain::ISLAND_SIZE / crate::movement::POS_XZ_Q) as i64 + 1;
+        if i64::from(qx) < 0
+            || i64::from(qx) > side_q
+            || i64::from(qz) < 0
+            || i64::from(qz) > side_q
+        {
+            return Err(WorldSaveError::AddressOutOfRange);
+        }
+        if item as usize >= max_item {
+            return Err(WorldSaveError::BadContentRow);
+        }
+        if id == 0 || count == 0 {
+            return Err(WorldSaveError::BadContentRow);
+        }
+        *g = GroundItemRec {
+            id,
+            qx,
+            qy,
+            qz,
+            stack: ItemStack { item, count, cond },
+            expires,
+        };
+    }
+
     // --- harvested terrain ------------------------------------------------
     // On the heap for the reason `SlotLives` itself is: half a MiB in a
     // frame is over wasm32's shadow stack, and this decoder runs under
@@ -1462,6 +1543,14 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
     w.world_conts.restore(&conts[..n_conts]);
     w.charges.restore(&charges[..n_charges]);
     w.spent.restore(&spent[..n_spent], spent_evictions);
+    // Cleared and refilled, so a load into a world that already had litter
+    // on it is the file's world and not the union of two.
+    w.ground_items = crate::grounditem::GroundItems::new();
+    for g in gitems.iter().take(n_gitems) {
+        if !w.ground_items.restore(*g) {
+            return Err(WorldSaveError::AddressOutOfRange);
+        }
+    }
     w.slot_lives.restore(&slots[..n_slots]);
     // The collision index is derived, so it is rebuilt rather than stored —
     // and the doors are the half that is easy to forget, because a door's
@@ -1555,7 +1644,7 @@ mod tests {
         // is 9 + 12 stacks = 57, and 55 is what you get by forgetting that
         // a stack is four bytes and not two. A constant a reader cannot
         // re-derive is a constant nobody checks twice.
-        let by_hand = 62                    // head
+        let by_hand = 64                    // head (format 14: eleven section counts)
             + 100 * 373                     // players (6 B a stack, 2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13)
             + 8_192 * 21                    // pieces + plate + placement tick
             + 1_024 * 33                    // deploys + bag_ready + placed
@@ -1566,12 +1655,21 @@ mod tests {
             + 64 * 201                      // world containers: 21 + 30 six-byte stacks
             + 64 * 25                       // charges
             + 512 * 22                      // spent arrows (format 10)
+            + 256 * 30                      // loose ground stacks (format 14)
             + 32_768 * 14; // harvested slots
                            // 54 -> 56 at format 5: a ninth section count is a `u16` in the head.
                            // 56 -> 62 at format 10: a tenth count, plus the
                            // spent store's `u32` eviction counter beside the
-                           // body one.
-        assert_eq!(HEAD_BYTES, 62);
+                           // body one. 62 -> 64 at format 14: an eleventh
+                           // count for the loose stacks. No head field beside
+                           // it — `next_id` is derived by the loader from the
+                           // ids it installs (`GroundItems::restore`), unlike
+                           // a bag's, and a head field duplicating a
+                           // derivable one is a second place for it to be
+                           // wrong.
+        assert_eq!(HEAD_BYTES, 64);
+        // 4 id + 12 position + 6 stack + 8 deadline.
+        assert_eq!(GROUND_ITEM_BYTES, 30);
         // Three millimetre coordinates, the round, and the ready deadline.
         assert_eq!(SPENT_BYTES, 22);
         // A world container is 201: 4 cell + 8 quantized position + 1 table
@@ -1631,8 +1729,14 @@ mod tests {
         // merge window and the ceiling is the sum of them**: 229,376 bytes
         // of harvested slots on top of 1,700 of crawl, which is why neither
         // branch's own number is the one here.
+        // 876_402 → 884_084 at format 14 (ground items v0): 256 loose
+        // stacks × 30 bytes, plus the eleventh section count in the head.
+        // A format bump this time and not just a cap: the layout grew, so
+        // an old file no longer reads — which on a live shard means a
+        // wipe, and that is an operator act (`DECISIONS.md`, and
+        // `store.rs`'s own refusal says whose call it is).
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 876_402,
+            WORLD_SAVE_MAX_BYTES, 884_084,
             "the world save ceiling moved"
         );
     }

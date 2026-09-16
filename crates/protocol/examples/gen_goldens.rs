@@ -15,12 +15,13 @@ use protocol::{
     encode_event_consume_refused, encode_event_consumed, encode_event_craft_done,
     encode_event_craft_q, encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
     encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
-    encode_event_door, encode_event_gather, encode_event_health, encode_event_hit,
-    encode_event_hurt, encode_event_inv, encode_event_knock, encode_event_piece_defs,
-    encode_event_piece_placed, encode_event_piece_repaired, encode_event_piece_sync,
-    encode_event_recipes, encode_event_removed, encode_event_slot_change, encode_event_slot_sync,
-    encode_event_stock, encode_event_struct_hit, encode_event_vitals, encode_event_weak_mark,
-    encode_hello, encode_input, encode_refuse, encode_snapshot, encode_welcome, goldens,
+    encode_event_door, encode_event_gather, encode_event_gitem_sync, encode_event_health,
+    encode_event_hit, encode_event_hurt, encode_event_inv, encode_event_knock,
+    encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_repaired,
+    encode_event_piece_sync, encode_event_recipes, encode_event_removed, encode_event_slot_change,
+    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_vitals,
+    encode_event_weak_mark, encode_hello, encode_input, encode_refuse, encode_snapshot,
+    encode_welcome, goldens,
 };
 use protocol::{
     encode_action_consume, encode_action_container, encode_action_drink, encode_action_move,
@@ -240,6 +241,12 @@ fn main() {
     let (reset, recs) = goldens::event_bag_sync();
     let len = encode_event_bag_sync(reset, &recs, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[46], &buf[..len]);
+    // 107: the loose-stack batch (ground items v0). The index is the last
+    // in `FIXTURES` because that array is appended to and never inserted
+    // into — see its own note.
+    let (reset, recs) = goldens::event_gitem_sync();
+    let len = encode_event_gitem_sync(reset, &recs, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[107], &buf[..len]);
 
     let (id, why) = goldens::event_bag_removed();
     let len = encode_event_bag_removed(id, why, &mut buf).unwrap();

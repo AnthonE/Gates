@@ -113,6 +113,28 @@ impl BackpackContent {
         c
     }
 
+    /// How long a **single stack** of `item` lives on the ground, in
+    /// ticks: the base, raised to that item's own rung.
+    ///
+    /// The same ladder `lifetime_ticks` walks, asked about one item
+    /// instead of a container's worth — `grounditem.rs` needs it because
+    /// a loose stack is one item by construction, and it reads this
+    /// rather than the `despawn_ticks` array directly so the floor and
+    /// the out-of-table rule are stated once. **Deliberately not a second
+    /// ladder**: a rare stack lying in the grass lives exactly as long as
+    /// a rare bag, which is what stops a player gaming the two against
+    /// each other.
+    pub fn stack_life_ticks(&self, item: u16) -> u32 {
+        let mut life = self.base_ticks;
+        if (item as usize) < MAX_ITEM_DEFS {
+            let t = self.despawn_ticks[item as usize];
+            if t > life {
+                life = t;
+            }
+        }
+        life
+    }
+
     /// How long a bag holding `items` lives, in ticks: the base, raised
     /// to the longest-lived thing inside. An empty bag never gets made,
     /// so the base is a floor, not a common case.

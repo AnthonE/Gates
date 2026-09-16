@@ -282,6 +282,55 @@ fn the_shipped_catalog_carries_every_condition_ceiling() {
     );
 }
 
+/// The same shape for `stack_max` (wire v64), and the reason it is its own
+/// gate rather than a line in the one above: this column is the only one
+/// on this table that the **sim charges**. `cond_max` and the armor pair
+/// are numbers a panel draws; `stack_max` is what
+/// `inventory::plan_move` measures a merge against, so a catalog that
+/// drips a ceiling one higher than the sim's makes the panel aim a
+/// quick-move at room that is not there — and the player sees *it does
+/// not fit there* on a right-click that looked obviously fine.
+///
+/// Read against the **baked** `GatherContent`, not against `item.stack`.
+/// That is deliberate and it is the whole assertion: `bake_gather` is
+/// where the authored `u32` narrows to the `u16` both the sim and the wire
+/// carry, so comparing against the authored number would leave the one
+/// conversion in the chain untested while looking stricter.
+#[test]
+fn the_shipped_catalog_carries_the_ceiling_the_sim_charges() {
+    let content = content::Content::load_dir(&content_dir()).expect("shipped content loads");
+    let tables = server::net::bake_all(&content).expect("shipped content bakes");
+
+    let mut stackable = 0usize;
+    for item in &content.items {
+        let idx = content.item_index(&item.id).expect("own id resolves") as usize;
+        let charged = tables.gather.stack_max_of(idx as u16);
+        assert_eq!(
+            tables.catalog.stack_max(idx),
+            charged,
+            "`{}` stacks to {} in the table the sim charges and the catalog \
+             drips {} — a quick-move would aim at the wrong room",
+            item.id,
+            charged,
+            tables.catalog.stack_max(idx)
+        );
+        assert!(
+            charged >= 1,
+            "`{}` stacks to 0, which reads as `REFUSE_M_UNSTACKABLE` and as \
+             a row that has not arrived yet — content should have refused it",
+            item.id
+        );
+        if charged > 1 {
+            stackable += 1;
+        }
+    }
+    assert!(
+        stackable > 0,
+        "no shipped item stacks past 1 — the merge half of every quick-move \
+         is untested by this content set and this gate is passing for free"
+    );
+}
+
 /// (5) The armor columns' behavioural half (wire v52), the same shape one
 /// version later — and the same reason: **the client links no content
 /// crate**, so the wear panel's protection total is whatever the catalog
