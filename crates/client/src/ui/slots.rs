@@ -48,12 +48,20 @@ use protocol::{encode_action_move, WireError};
 use sim_core::combat::{ARMOR_MAX_PCT, WEAR_BODY, WEAR_HEAD};
 use sim_core::deploy::{box_key, DeployContent, DeployRec, ARCH_BOX};
 use sim_core::gather::ItemStack;
-use sim_core::inventory::{is_own, CONT_BOX, CONT_MAX, CONT_SELF, CONT_WEAR, CONT_WORLD};
+use sim_core::inventory::{
+    deposit_refused, is_own, CONT_BOX, CONT_MAX, CONT_SELF, CONT_WEAR, CONT_WORLD,
+};
 use sim_core::limits::{HOTBAR_SLOTS, INV_SLOTS, WEAR_SLOTS};
 
 /// Slots addressable in a container of `kind` — `sim_core::inventory`'s
 /// `slots_in`, re-exported rather than mirrored so the two cannot drift.
 pub use sim_core::inventory::slots_in;
+/// May a player put something into a container of this kind — the sim's
+/// own predicate, re-exported for [`slots_in`]'s reason. The panel draws
+/// the answer *before* the release (a red edge on a crate's cells), and a
+/// second list of which containers are loot-only is the drift this
+/// re-export exists to make impossible.
+pub use sim_core::inventory::takes_deposits;
 
 /// Rows of six below the belt, so 6 + 24 = `INV_SLOTS`. The reference frame
 /// (the reference `inventory.jpeg`) is the same shape and for the same reason:
@@ -118,6 +126,19 @@ pub enum Grab {
     Half,
     /// Ctrl-drag: a single unit.
     One,
+    /// **As much as the destination was measured to take** — minted only
+    /// by [`quick_move`], never by a drag, which is why it carries a
+    /// number where the other three carry a rule.
+    ///
+    /// The number comes off the catalog's `stack_max` and the destination
+    /// slot's own count, so it is *the room that is there* rather than a
+    /// hope: `plan_move` refuses a merge of `count > room` outright
+    /// instead of clamping (a clamp is the silent divergence the whole
+    /// move verb exists to avoid), so the panel has to do the measuring
+    /// before it sends. Still bounded by `held` below, like the other
+    /// three — a count no stack can back is refused by [`move_args`]
+    /// whatever asked for it.
+    Fit(u16),
 }
 
 impl Grab {
@@ -128,6 +149,7 @@ impl Grab {
             Grab::All => held,
             Grab::Half => held.div_ceil(2),
             Grab::One => held.min(1),
+            Grab::Fit(n) => n.min(held),
         }
     }
 }
@@ -208,7 +230,12 @@ impl MoveArgs {
 ///    `deploy.rs`'s `box_index` has no zero guard and a box at cell (0,0)
 ///    level 0 packs to handle 0, so sending 0 for "no container known"
 ///    would move items in a stranger's box rather than being refused.
-/// 6. **A count of zero, or more than the source holds.** The sim does not
+/// 6. **A deposit into a container that takes none** (`takes_deposits`,
+///    wire v64), on both of a move's landing sites — a swap out of a
+///    loot-only crate puts the occupant *into* it. The sim's predicate,
+///    not a second list; the panel says the crate's own sentence before
+///    a release ever reaches this ladder.
+/// 7. **A count of zero, or more than the source holds.** The sim does not
 ///    clamp — a clamp is the silent divergence this verb exists to avoid —
 ///    so a count the client cannot back with a stack is refused here.
 #[allow(clippy::too_many_arguments)]
@@ -263,7 +290,37 @@ pub fn move_args(
     if !is_own(ground) && handle == 0 {
         return None;
     }
-    // 6 · the count, read from the source container's own view.
+    // 6 · the container that takes nothing a player hands it
+    //     (`REFUSE_M_NO_INPUT`, wire v64). Asked with the sim's own
+    //     predicate and on both of a move's landing sites, because a
+    //     swap out of a crate deposits the occupant into it.
+    //
+    //     **The panel prints the sentence before it reaches here.**
+    //     `refusal_text(REFUSE_M_NO_INPUT)` is what a release over a
+    //     crate says, so the player hears the crate's own words and not
+    //     this ladder's generic "cannot be addressed". This step is the
+    //     backstop for that, and for every other caller: without it a
+    //     quick-move aimed at a crate would cross the wire to be refused,
+    //     which is the round trip this whole file exists to save.
+    let src_view: &[ItemStack] = match from_kind {
+        CONT_SELF => inv,
+        CONT_WEAR => worn,
+        _ => cont,
+    };
+    let dst_view: &[ItemStack] = match to_kind {
+        CONT_SELF => inv,
+        CONT_WEAR => worn,
+        _ => cont,
+    };
+    if deposit_refused(
+        from_kind,
+        to_kind,
+        src_view.get(from_slot).copied().unwrap_or_default(),
+        dst_view.get(to_slot).copied().unwrap_or_default(),
+    ) {
+        return None;
+    }
+    // 7 · the count, read from the source container's own view.
     //
     //     Three views since the body moved off the ground subscription
     //     (`NOW.md` §0eq item 4): the pack, the body, and whatever is
@@ -276,12 +333,11 @@ pub fn move_args(
     //     `get` rather than an index: step 3 already bounded `from_slot`
     //     against `slots_in(from_kind)`, but `worn` is a slice and its
     //     width is no longer proved by its type.
-    let src: &[ItemStack] = match from_kind {
-        CONT_SELF => inv,
-        CONT_WEAR => worn,
-        _ => cont,
-    };
-    let held = src.get(from_slot).map_or(0, |s| s.count);
+    //
+    //     `src_view` is the same pick step 6 already made — one `match`
+    //     rather than two. Two copies of "which array holds this kind"
+    //     is the shape that put a helmet's count where a box's belonged.
+    let held = src_view.get(from_slot).map_or(0, |s| s.count);
     let count = grab.units(held);
     if count == 0 || count > held {
         return None;
@@ -376,6 +432,233 @@ pub fn worn_pct(catalog: &ItemCatalog, worn: &[ItemStack]) -> u32 {
 /// `wearable_in`, taken at both copies rather than one.
 pub fn wearable_here(catalog: &ItemCatalog, item: u16, s: usize) -> bool {
     s < WEAR_SLOTS && catalog.wear_slot(item as usize) as usize == s + 1
+}
+
+/// Is a ground container open — is the player **looting**?
+///
+/// One name for a state two parts of the screen key off: the container
+/// grid is drawn, and the crafting half is not (`screen_title`). `is_own`
+/// rather than `!= CONT_SELF`, which is `sim_core`'s own distinction and
+/// the reason it exists — the body is a container the player carries, and
+/// it is never what `ClientCore::cont_kind` holds, so the two spellings
+/// agree today and only one of them keeps agreeing.
+pub fn looting(cont_kind: u8) -> bool {
+    !is_own(cont_kind)
+}
+
+/// The screen title over the inventory panel.
+///
+/// **`CRAFTING` only when the crafting half is actually drawn.** The title
+/// names the region under it (this file's own rule, and why it stopped
+/// saying `INVENTORY` — the grids have their own heads), so with a
+/// container open and the recipe browser gone, `CRAFTING` would label a
+/// row of grids and `INVENTORY` would be the screen's third `INVENTORY`.
+///
+/// The operator, 2026-09-16, looking at the crafting panel over a bag's
+/// slots: *"we shouldnt show crafting"*. So the word names the verb the
+/// screen is for instead, which is the one thing on it that is not also a
+/// heading somewhere else.
+pub fn screen_title(cont_kind: u8) -> &'static str {
+    if looting(cont_kind) {
+        "LOOTING"
+    } else {
+        "CRAFTING"
+    }
+}
+
+/// What a right-click on a slot with no drag resolves to.
+///
+/// Three outcomes and the gesture has all three, which is why this is one
+/// value rather than an `if` inside a Bevy system: the whole decision is
+/// testable from the code tier (`tests/ui.rs` §T) and the system does
+/// nothing but send what it is handed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Quick {
+    /// Send this move. The destination slot is the panel's own pick — see
+    /// [`quick_move`] for how it is measured.
+    Send(MoveArgs),
+    /// No container is open, so the gesture keeps its old meaning: use
+    /// the item in this **inventory** slot (`ACT_CONSUME`).
+    Use(usize),
+    /// Nothing to send, and this is the line to print. Never silence: a
+    /// panel that cannot say why it did nothing is the dark-panel defect,
+    /// and a right-click that looks like it failed is exactly where a
+    /// player assumes the game is broken.
+    Refused(&'static str),
+}
+
+/// Where a right-click sends a stack, with a container open.
+///
+/// **The gesture the operator asked for** (2026-09-16: *"right clicking
+/// should put it into ur inventory u dont have to drag"*), and it is the
+/// reference's too — a right-click on a slot in an open loot panel
+/// transfers the stack rather than using it.
+///
+/// The rule is one sentence: **with a ground container open, a right-click
+/// moves a stack to the other side.** Out of the container into the pack,
+/// out of the pack (or off the body) into the container. With nothing
+/// open it is [`Quick::Use`], which is the gesture this panel already had.
+///
+/// ## Picking the slot is the whole of the work
+///
+/// `plan_move` refuses a merge it cannot complete (`count > room` is
+/// `REFUSE_M_NO_ROOM`, never a clamp), so a destination is only a
+/// destination if the arithmetic is done first:
+///
+/// 1. **The first slot holding the same item with room**, and the count is
+///    that room — so right-clicking 40 wood into a pack holding 990 of a
+///    1,000 stack moves ten and leaves thirty, rather than being refused.
+///    Same-item first, because the alternative scatters a resource across
+///    fresh slots beside the pile it belongs in, which is the thing that
+///    makes a quick-move worse than a drag.
+/// 2. **Otherwise the first empty slot**, and the count is the whole
+///    stack. An empty slot always takes it: the source stack was built
+///    under the sim's own ceiling.
+/// 3. **Otherwise nothing**, with a line saying so.
+///
+/// ⚠ **A `stack_max` of 0 means "I do not know", not "unstackable"** —
+/// an undelivered catalog row reads as zero, and the two are
+/// indistinguishable here by construction (`ItemRow::stack_max`). Such a
+/// ceiling measures no room anywhere, so step 1 finds nothing and the
+/// stack lands in an empty slot, where the count needs no ceiling to be
+/// safe and the sim answers `REFUSE_M_UNSTACKABLE` if the item genuinely
+/// has no ladder. Reading 0 as unstackable *here* would instead refuse
+/// every quick-move for the first seconds of a session while the catalog
+/// drips in — the shape that is hardest to reproduce and easiest to
+/// ship, which is why there is a gate on it
+/// (`an_undripped_row_lands_in_an_empty_slot_rather_than_refusing`) even
+/// though no current branch can get it wrong.
+///
+/// One move, one slot, because the wire's move verb addresses one slot.
+/// A stack that half fits leaves a remainder in place and a second
+/// right-click moves it on — which is honest, and is what the sim would
+/// have to be asked twice for anyway.
+#[allow(clippy::too_many_arguments)]
+pub fn quick_move(
+    cont_kind: u8,
+    cont_handle: u32,
+    from_kind: u8,
+    from_slot: usize,
+    catalog: &ItemCatalog,
+    inv: &[ItemStack; INV_SLOTS],
+    cont: &[ItemStack; INV_SLOTS],
+    worn: &[ItemStack],
+) -> Quick {
+    let view = |kind: u8| -> &[ItemStack] {
+        match kind {
+            CONT_SELF => inv,
+            CONT_WEAR => worn,
+            _ => cont,
+        }
+    };
+    let src = view(from_kind).get(from_slot).copied().unwrap_or_default();
+
+    // Nothing open: the old gesture, and only out of the pack. A
+    // right-click on a worn piece with no container open stays inert
+    // rather than becoming an unequip nobody asked for.
+    if !looting(cont_kind) {
+        return if from_kind == CONT_SELF {
+            Quick::Use(from_slot)
+        } else {
+            Quick::Refused("nothing is open to move that into")
+        };
+    }
+    if src.count == 0 {
+        return Quick::Refused("there is nothing in that slot");
+    }
+
+    // The other side. A move addresses one ground container
+    // (`move_args` step 2), so the pack is where anything in the
+    // container goes and the container is where anything on the player
+    // goes — including off the body, which is the reference's rule too.
+    let to_kind = if is_own(from_kind) {
+        cont_kind
+    } else {
+        CONT_SELF
+    };
+    if !takes_deposits(to_kind) {
+        return Quick::Refused(refusal_text(sim_core::inventory::REFUSE_M_NO_INPUT as u8));
+    }
+
+    let dst = view(to_kind);
+    let cap = catalog.stack_max(src.item as usize);
+    let width = slots_in(to_kind);
+    let mut empty = None;
+    for slot in 0..width {
+        let there = dst.get(slot).copied().unwrap_or_default();
+        if there.count == 0 {
+            if empty.is_none() {
+                empty = Some(slot);
+            }
+            continue;
+        }
+        // A merge. **An unknown ceiling refuses one by construction**
+        // rather than by a guard: `cap` is 0 for a row that has not
+        // dripped in, `there.count` is at least 1 in this branch, and
+        // `saturating_sub` floors at zero — so an `if cap > 0` beside
+        // this would read as load-bearing and change nothing. Same
+        // sentence `plan_move` writes about the same call, one crate
+        // over.
+        if there.item == src.item {
+            let room = cap.saturating_sub(there.count);
+            if room > 0 {
+                return finish(
+                    cont_handle,
+                    from_kind,
+                    from_slot,
+                    to_kind,
+                    slot,
+                    Grab::Fit(room),
+                    inv,
+                    cont,
+                    worn,
+                );
+            }
+        }
+    }
+    match empty {
+        Some(slot) => finish(
+            cont_handle,
+            from_kind,
+            from_slot,
+            to_kind,
+            slot,
+            Grab::All,
+            inv,
+            cont,
+            worn,
+        ),
+        None => Quick::Refused("no room for that on the other side"),
+    }
+}
+
+/// Marshal a picked destination through [`move_args`], so a quick-move is
+/// held to every refusal a drag is — in the same order, by the same
+/// constructor. **The panel has no second road to `MoveArgs`**, which is
+/// what keeps the ordering trap closed for a gesture that picks its own
+/// target.
+#[allow(clippy::too_many_arguments)]
+fn finish(
+    bag: u32,
+    from_kind: u8,
+    from_slot: usize,
+    to_kind: u8,
+    to_slot: usize,
+    grab: Grab,
+    inv: &[ItemStack; INV_SLOTS],
+    cont: &[ItemStack; INV_SLOTS],
+    worn: &[ItemStack],
+) -> Quick {
+    match move_args(
+        bag, from_kind, from_slot, to_kind, to_slot, grab, inv, cont, worn,
+    ) {
+        Some(args) => Quick::Send(args),
+        // Unreachable through the walk above, and reported rather than
+        // swallowed if it ever is: a slot this side picked and this side
+        // then refused is a bug in the picking, and a silent one would
+        // read to a player as a right-click that does nothing.
+        None => Quick::Refused("that move cannot be addressed from here"),
+    }
 }
 
 /// The container panel's title. `CONT_SELF` has no panel, so it is named

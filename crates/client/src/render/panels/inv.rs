@@ -1,11 +1,22 @@
 //! The inventory screen: your slots, the open container's, and the drag
 //! between them.
 //!
-//! The whole screen is one tree — crafting on the left, the detail pane on
-//! the right, the queue under them, your inventory and the container along
-//! the bottom — because that is what the reference `inventory.jpeg` is. A
-//! player pulls something out of a box and crafts with it without closing
-//! anything.
+//! The whole screen is one tree, and **what is in it depends on whether a
+//! container is open.** With nothing open it is the crafting screen —
+//! the recipe browser, the detail pane, the queue — over your slots and
+//! your body. With a container open the crafting half is not drawn at all
+//! and the container's grid takes the room (the operator, 2026-09-16:
+//! *"we shouldnt show crafting"*).
+//!
+//! ⚠ **That is a reversal, and the paragraph it replaced was the argument
+//! for the other side**: *"a player pulls something out of a box and
+//! crafts with it without closing anything"*, measured against the
+//! reference `inventory.jpeg`. It was a fair reading of a frame with no
+//! loot panel in it — the reference's *loot* frame puts the container
+//! where the crafting tab was, so the thing we copied from a screenshot
+//! was the half of their layout that does not survive opening a box. The
+//! cost is real and stated: to craft you close the container, because this
+//! screen has no tab strip (`NOW.md` §0p2).
 //!
 //! ## The gestures, and why they are three and not one
 //!
@@ -14,13 +25,17 @@
 //! | left-drag | the whole stack |
 //! | right-drag | half, rounded up |
 //! | ctrl-left-drag | one unit |
-//! | right-click, no drag | use the item (`ACT_CONSUME`) |
+//! | right-click, no drag, nothing open | use the item (`ACT_CONSUME`) |
+//! | right-click, no drag, container open | move it across ([`crate::ui::slots::quick_move`]) |
 //!
-//! All four are the same wire verb with a different `count`, except the
-//! last, which falls out for free: a right-press released on the slot it
-//! started on is a move to its own address, [`crate::ui::slots::move_args`]
-//! refuses exactly that, and the refusal is the branch. So the gesture set
-//! costs one `if` rather than a mode.
+//! All four drags are the same wire verb with a different `count`. The
+//! fifth row is the same verb again and it is the one the operator asked
+//! for — *"right clicking should put it into ur inventory u dont have to
+//! drag"* — and what makes it a quick-move rather than a second path is
+//! that the panel picks the destination slot and then marshals it through
+//! `move_args` like any drag. Both no-drag rows fall out of one `if`: a
+//! right-press released on the slot it started on is a move to its own
+//! address, which `move_args` refuses, and that refusal is the branch.
 //!
 //! ## The three regions are titled, and the container's says what it is
 //!
@@ -74,8 +89,9 @@ use super::{
 use crate::render::icons::Icons;
 use crate::ui::craft::{cell_abbrev, item_label, CELL_LINE_CHARS};
 use crate::ui::slots::{
-    container_cols, container_name, container_title, count_badge, ghost_origin, move_args,
-    pip_fraction, refusal_text, slots_in, wear_slot_label, wearable_here, worn_pct, Drag, Grab,
+    container_cols, container_name, container_title, count_badge, ghost_origin, looting, move_args,
+    pip_fraction, quick_move, refusal_text, screen_title, slots_in, takes_deposits,
+    wear_slot_label, wearable_here, worn_pct, Drag, Grab, Quick,
 };
 
 /// One addressable cell. `kind` is a `CONT_*`, so the same component serves
@@ -106,20 +122,37 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: 
             BackgroundColor(SCRIM),
         ))
         .with_children(|root| {
-            header(root, ui);
+            header(root, ui, core);
 
-            // The upper half: crafting, then the detail pane.
-            root.spawn(Node {
-                flex_direction: FlexDirection::Row,
-                column_gap: Val::Px(8.0),
-                ..default()
-            })
-            .with_children(|row| {
-                craft::build_browser(row, ui, core, icons);
-                craft::build_detail(row, ui, core);
-            });
+            // The upper half: crafting, then the detail pane — **and not
+            // while a container is open** (the operator, 2026-09-16:
+            // *"we shouldnt show crafting"*, looking at the recipe
+            // browser drawn over a bag's slots).
+            //
+            // The reference's loot frame is the same shape: the panel you
+            // opened takes the screen and crafting is behind a tab. We
+            // have no tab, so the crafting half is reachable by closing
+            // the container — which is the cost, and `NOW.md` §0p2
+            // carries it rather than this file inventing a tab strip.
+            //
+            // It is a `build_screen` branch rather than a `Visibility`
+            // toggle because `panels::rebuild` tears this tree down and
+            // respawns it on every change: a hidden browser would still
+            // cost its ~40 cells of nodes and would still be the thing
+            // `ui.query`'s keystrokes went to.
+            if !looting(core.cont_kind) {
+                root.spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    column_gap: Val::Px(8.0),
+                    ..default()
+                })
+                .with_children(|row| {
+                    craft::build_browser(row, ui, core, icons);
+                    craft::build_detail(row, ui, core);
+                });
 
-            craft::build_queue(root, ui, core);
+                craft::build_queue(root, ui, core);
+            }
 
             // The lower half: your slots, your body, and the container if
             // one is open.
@@ -142,7 +175,7 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: 
             .with_children(|row| {
                 own_grid(row, core, icons);
                 wear_panel(row, core, icons);
-                if core.cont_kind != CONT_SELF {
+                if looting(core.cont_kind) {
                     container_grid(row, core, icons);
                 }
             });
@@ -153,10 +186,17 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: 
             // promising a round trip that does not exist is worse than a hint
             // that is merely incomplete.
             root.spawn((
-                Text::new(
+                Text::new(if looting(core.cont_kind) {
+                    // What the gesture DOES here, which is not what it
+                    // does with nothing open. A hint line that names the
+                    // other mode is worse than no hint: it is a promise.
+                    "drag to move   -   right-click moves it across   \
+                     -   right-drag takes half   -   ctrl-drag takes one   \
+                     -   Tab or Esc closes"
+                } else {
                     "drag to move   -   right-drag takes half   -   ctrl-drag takes one   \
-                     -   right-click uses   -   Tab or Esc closes",
-                ),
+                     -   right-click uses   -   Tab or Esc closes"
+                }),
                 font(12.0),
                 TextColor(TEXT_DIM),
                 Node {
@@ -167,12 +207,21 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: 
         });
 }
 
-fn header(root: &mut ChildSpawnerCommands, ui: &Ui) {
+fn header(root: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore) {
     // **`CRAFTING`, not `INVENTORY`.** It sits directly over the recipe
     // browser, the detail pane and the queue, which are what the top half of
     // this screen is; the inventory has its own head on the grid it names,
     // and a title that labels the region under it can only be one of the two.
-    root.spawn((Text::new("CRAFTING"), font_bold(26.0), TextColor(TEXT)));
+    //
+    // Which is exactly why it is not a constant any more: with a container
+    // open there IS no recipe browser under it, so the word is
+    // `ui::slots::screen_title`'s to choose and `LOOTING` is what it
+    // chooses (`tests/ui.rs` §T).
+    root.spawn((
+        Text::new(screen_title(core.cont_kind)),
+        font_bold(26.0),
+        TextColor(TEXT),
+    ));
     // Always drawn, even empty: the line's job is to have somewhere to say
     // why something did not happen, and a line that appears and disappears
     // makes the panel jump when it does.
@@ -719,8 +768,18 @@ pub fn drag_pointer(
         // slot would make dragging wood across the screen look like an
         // error.
         let takes = ui.drag.and_then(|d| {
-            (cell.kind == CONT_WEAR && d.kind != CONT_WEAR)
-                .then(|| wearable_here(&core.catalog, d.stack.item, cell.slot))
+            if cell.kind == CONT_WEAR && d.kind != CONT_WEAR {
+                Some(wearable_here(&core.catalog, d.stack.item, cell.slot))
+            } else if !takes_deposits(cell.kind) && d.kind != cell.kind {
+                // The second kind with an opinion, and the cheapest: a
+                // loot-only crate refuses every item, so the answer needs
+                // no catalog and is always `false`. Drawn the same way —
+                // red only under the pointer — so dragging *across* a
+                // crate on the way to the pack is not a screen of errors.
+                Some(false)
+            } else {
+                None
+            }
         });
         let want = match takes {
             Some(true) => LINE_HOT,
@@ -804,12 +863,47 @@ pub fn drag_pointer(
         return;
     };
 
-    // Right-press, released where it started: use the item. Falls out of the
-    // move refusing its own address rather than being a separate mode.
+    // Right-press, released where it started: the **quick-move**, or the
+    // use it has always been when nothing is open. Falls out of the move
+    // refusing its own address rather than being a separate mode, exactly
+    // as it did when `use` was the only thing it could mean.
+    //
+    // `Grab::Half` is the marker for "this was the right button" (the
+    // press handler mints it), not a count — a quick-move measures its
+    // own. Every branch of the decision is `ui::slots::quick_move`'s, so
+    // this arm sends what it is handed and decides nothing.
     if target.kind == drag.kind && target.slot == drag.slot {
-        if drag.grab == Grab::Half && drag.kind == CONT_SELF {
-            use_item(&mut ui, &net, drag.slot);
+        if drag.grab == Grab::Half {
+            match quick_move(
+                core.cont_kind,
+                core.cont_handle,
+                drag.kind,
+                drag.slot,
+                &core.catalog,
+                &core.inv,
+                &core.cont,
+                &core.worn,
+            ) {
+                Quick::Send(args) => send_move(&mut ui, &net, args),
+                Quick::Use(slot) => use_item(&mut ui, &net, slot),
+                Quick::Refused(why) => ui.say(why),
+            }
         }
+        return;
+    }
+
+    // A loot-only container says the crate's own sentence rather than this
+    // side's generic one. `move_args` refuses the move too (its step 6),
+    // so this is about the WORDS: `refusal_text` is the sim's table, so
+    // the line a player reads is identical whether the panel caught it or
+    // the shard did.
+    if sim_core::inventory::deposit_refused(
+        drag.kind,
+        target.kind,
+        cell_stack(core, drag.kind, drag.slot),
+        cell_stack(core, target.kind, target.slot),
+    ) {
+        ui.say(refusal_text(sim_core::inventory::REFUSE_M_NO_INPUT as u8));
         return;
     }
 
@@ -831,6 +925,15 @@ pub fn drag_pointer(
         return;
     };
 
+    send_move(&mut ui, &net, args);
+}
+
+/// Put a validated move on the wire. **One call site for `MoveArgs::encode`
+/// in this file**, shared by the drag and the quick-move, which is the same
+/// reason `MoveArgs` exists at all: the argument order is written down once
+/// (in `ui::slots`) and a second marshalling path here would be a second
+/// place to transpose two `u8`s.
+fn send_move(ui: &mut Ui, net: &super::super::Net, args: crate::ui::slots::MoveArgs) {
     let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
     match args.encode(&mut buf) {
         Ok(len) => match net.session.send_action(&buf[..len]) {

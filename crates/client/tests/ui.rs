@@ -29,6 +29,12 @@
 //!   defect is a call site, not a value.** A `TextFont` literal compiles,
 //!   passes clippy, and draws in Bevy's debug mono next to forty words that
 //!   are not — which is exactly how all forty of them got there.
+//! - **§T the right-click**, because a quick-move is a destination slot
+//!   and a count — the panel doing what a player would otherwise drag —
+//!   and both are refusable arithmetic the moment a stack is partly full.
+//!
+//! (§G onward are titled where they start; this list is the reading order
+//! for the four that are not obvious from a test name, not an index.)
 
 use client::ui::build::{self, Rings, MATERIALS, SHAPES};
 use client::ui::craft::{self, Cat, Facts};
@@ -4703,5 +4709,349 @@ fn the_paperdoll_is_as_wide_as_the_body_is() {
         "the wear panel does not walk `WEAR_SLOTS` — a hardcoded pair of \
          cells draws two slots of however many the sim has, and \
          `reference/ARMOR.md` §9.3 has three more queued"
+    );
+}
+
+// §T · the right-click — where a quick-move lands, and what the screen is
+// called while it can happen
+//
+// The operator's two inventory calls of 2026-09-16 (*"we shouldnt show
+// crafting"*, *"right clicking should put it into ur inventory u dont have
+// to drag"*), and both of them are arithmetic wearing a gesture's clothes.
+//
+// The interesting half is the DESTINATION. `plan_move` refuses a merge it
+// cannot complete rather than clamping it, so a panel that picks its own
+// target has to measure the room first — which is why the catalog carries
+// `stack_max` since wire v64, and why the cases below are about slots and
+// counts rather than about a click.
+mod quick {
+    use client::ui::slots::{looting, quick_move, screen_title, MoveArgs, Quick};
+    use protocol::event::ItemCatalog;
+    use sim_core::gather::ItemStack;
+    use sim_core::inventory::{CONT_BAG, CONT_SELF, CONT_WEAR, CONT_WORLD};
+    use sim_core::limits::{INV_SLOTS, WEAR_SLOTS};
+
+    const BAG: u32 = 0x00BA_6666;
+    /// A resource: stacks to a thousand, carries no condition.
+    const WOOD: u16 = 3;
+    /// A tool: one per slot, and a condition, so V7 holds on its row.
+    const HATCHET: u16 = 9;
+    /// An item the catalog has not dripped yet — every column reads zero.
+    const UNKNOWN: u16 = 11;
+
+    fn catalog() -> ItemCatalog {
+        let mut c = ItemCatalog::EMPTY;
+        c.set(
+            WOOD as usize,
+            b"Wood",
+            protocol::ItemRow {
+                cond_max: 0,
+                armor_pct: 0,
+                wear_slot: 0,
+                stack_max: 1000,
+            },
+        )
+        .expect("a resource row is coherent");
+        c.set(
+            HATCHET as usize,
+            b"Hatchet",
+            protocol::ItemRow {
+                cond_max: 10_000,
+                armor_pct: 0,
+                wear_slot: 0,
+                stack_max: 1,
+            },
+        )
+        .expect("V7: a condition item stacks to one");
+        c.count = HATCHET + 1;
+        c
+    }
+
+    fn empty() -> [ItemStack; INV_SLOTS] {
+        [ItemStack::default(); INV_SLOTS]
+    }
+
+    fn stack(item: u16, count: u16) -> ItemStack {
+        ItemStack {
+            item,
+            count,
+            cond: 0,
+        }
+    }
+
+    /// A quick-move out of an open bag's slot 0.
+    fn from_bag(inv: &[ItemStack; INV_SLOTS], cont: &[ItemStack; INV_SLOTS], slot: usize) -> Quick {
+        quick_move(
+            CONT_BAG,
+            BAG,
+            CONT_BAG,
+            slot,
+            &catalog(),
+            inv,
+            cont,
+            &[ItemStack::default(); WEAR_SLOTS],
+        )
+    }
+
+    /// A quick-move out of the player's own slot, with `cont_kind` open.
+    fn from_pack(
+        cont_kind: u8,
+        inv: &[ItemStack; INV_SLOTS],
+        cont: &[ItemStack; INV_SLOTS],
+        slot: usize,
+    ) -> Quick {
+        quick_move(
+            cont_kind,
+            BAG,
+            CONT_SELF,
+            slot,
+            &catalog(),
+            inv,
+            cont,
+            &[ItemStack::default(); WEAR_SLOTS],
+        )
+    }
+
+    fn sent(q: Quick) -> MoveArgs {
+        match q {
+            Quick::Send(args) => args,
+            other => panic!("expected a move, got {other:?}"),
+        }
+    }
+
+    /// The title names the region under it, and with a container open
+    /// there is no recipe browser under it to name.
+    #[test]
+    fn the_screen_is_called_crafting_only_while_crafting_is_drawn() {
+        assert_eq!(screen_title(CONT_SELF), "CRAFTING");
+        assert!(!looting(CONT_SELF), "nothing open is not looting");
+        // The body is a container the player carries, so it is not a
+        // reason to hide the crafting half — and `is_own` is what says so
+        // rather than a `!= CONT_SELF` that was true until armor v1.
+        assert_eq!(screen_title(CONT_WEAR), "CRAFTING");
+        assert!(!looting(CONT_WEAR), "your own body is not a loot panel");
+        for open in [CONT_BAG, sim_core::inventory::CONT_BOX, CONT_WORLD] {
+            assert_eq!(screen_title(open), "LOOTING", "kind {open}");
+            assert!(looting(open), "kind {open} is a ground container");
+        }
+    }
+
+    /// With nothing open the gesture keeps the only meaning it had.
+    #[test]
+    fn a_right_click_with_nothing_open_still_uses_the_item() {
+        let mut inv = empty();
+        inv[4] = stack(WOOD, 5);
+        assert_eq!(from_pack(CONT_SELF, &inv, &empty(), 4), Quick::Use(4));
+        // And off the body it does nothing rather than unequipping, which
+        // is a verb nobody has asked for and the wire has no opinion on.
+        assert!(matches!(
+            quick_move(
+                CONT_SELF,
+                0,
+                CONT_WEAR,
+                0,
+                &catalog(),
+                &inv,
+                &empty(),
+                &[stack(HATCHET, 1), ItemStack::default()],
+            ),
+            Quick::Refused(_)
+        ));
+    }
+
+    /// The operator's ask, in its simplest shape: a stack in a bag, a
+    /// right-click, and it is in the pack without a drag.
+    #[test]
+    fn a_right_click_in_a_bag_sends_the_stack_to_the_pack() {
+        let mut cont = empty();
+        cont[0] = stack(WOOD, 40);
+        let args = sent(from_bag(&empty(), &cont, 0));
+        assert_eq!(
+            args,
+            MoveArgs {
+                bag: BAG,
+                from_kind: CONT_BAG,
+                from_slot: 0,
+                to_kind: CONT_SELF,
+                to_slot: 0,
+                count: 40,
+            },
+            "a quick-move out of a bag did not aim at the first free slot"
+        );
+    }
+
+    /// **The merge, which is the whole reason `stack_max` is on the wire.**
+    /// The pack already holds wood with room for ten more; the right-click
+    /// must top that slot up rather than open a second wood stack beside
+    /// it — and it must ask for the room, not for the stack, because
+    /// `plan_move` refuses the whole 40 with `REFUSE_M_NO_ROOM`.
+    #[test]
+    fn a_quick_move_tops_up_the_pile_it_belongs_in() {
+        let mut inv = empty();
+        inv[0] = stack(HATCHET, 1); // slot 0 is taken by something else
+        inv[3] = stack(WOOD, 990);
+        let mut cont = empty();
+        cont[0] = stack(WOOD, 40);
+        let args = sent(from_bag(&inv, &cont, 0));
+        assert_eq!(
+            (args.to_slot, args.count),
+            (3, 10),
+            "the quick-move ignored 10 units of room in the pile and \
+             either scattered a second stack or asked for a count the sim \
+             refuses"
+        );
+    }
+
+    /// A ceiling of zero is *unknown*, not *unstackable* — an undelivered
+    /// catalog row reads the same as one with no ladder, and only one of
+    /// the two readings is safe. Unknown skips the merge and lands on an
+    /// empty slot, where no ceiling is needed.
+    #[test]
+    fn an_undripped_row_lands_in_an_empty_slot_rather_than_refusing() {
+        let mut inv = empty();
+        inv[0] = stack(UNKNOWN, 3);
+        let mut cont = empty();
+        cont[0] = stack(UNKNOWN, 4);
+        let args = sent(from_bag(&inv, &cont, 0));
+        assert_ne!(
+            args.to_slot, 0,
+            "a merge was aimed with a ceiling nobody has sent yet"
+        );
+        assert_eq!(args.count, 4, "the whole stack goes to an empty slot");
+        assert_eq!(
+            inv[args.to_slot as usize].count, 0,
+            "the slot it picked was not empty"
+        );
+    }
+
+    /// The count is bounded by the stack as well as by the room: 5 units
+    /// into a slot with 995 of room is a move of 5, and `Grab::Fit` is
+    /// what makes that true without a second clamp.
+    #[test]
+    fn the_count_never_exceeds_what_the_source_holds() {
+        let mut inv = empty();
+        inv[2] = stack(WOOD, 5);
+        let mut cont = empty();
+        cont[7] = stack(WOOD, 5);
+        let args = sent(from_pack(CONT_BAG, &inv, &cont, 2));
+        assert_eq!(
+            (args.to_kind, args.to_slot, args.count),
+            (CONT_BAG, 7, 5),
+            "a top-up asked for the room rather than for the stack"
+        );
+    }
+
+    /// Nowhere to put it is a sentence, never silence.
+    #[test]
+    fn a_full_other_side_says_so() {
+        let mut cont = empty();
+        cont[0] = stack(WOOD, 40);
+        // Every inventory slot full of something that cannot merge.
+        let inv = [stack(HATCHET, 1); INV_SLOTS];
+        match from_bag(&inv, &cont, 0) {
+            Quick::Refused(why) => assert!(
+                why.contains("room"),
+                "the line does not say what is wrong: {why}"
+            ),
+            other => panic!("a full pack accepted a quick-move: {other:?}"),
+        }
+    }
+
+    /// A crate gives loot and takes none, and the panel says the sim's own
+    /// sentence rather than crossing the wire to be told.
+    #[test]
+    fn a_quick_move_into_a_crate_is_refused_here_in_the_crates_own_words() {
+        let mut inv = empty();
+        inv[1] = stack(WOOD, 12);
+        match from_pack(CONT_WORLD, &inv, &empty(), 1) {
+            Quick::Refused(why) => assert_eq!(
+                why,
+                client::ui::slots::refusal_text(sim_core::inventory::REFUSE_M_NO_INPUT as u8),
+                "the panel invented its own words for the sim's refusal"
+            ),
+            other => panic!("a deposit into a crate was sent: {other:?}"),
+        }
+    }
+
+    /// And out of one still works, which is the half a rule about crates
+    /// could break by being written one direction too wide.
+    #[test]
+    fn a_quick_move_out_of_a_crate_still_pays() {
+        let mut cont = empty();
+        cont[5] = stack(WOOD, 60);
+        let args = sent(quick_move(
+            CONT_WORLD,
+            BAG,
+            CONT_WORLD,
+            5,
+            &catalog(),
+            &empty(),
+            &cont,
+            &[ItemStack::default(); WEAR_SLOTS],
+        ));
+        assert_eq!(
+            (args.from_kind, args.to_kind, args.count, args.bag),
+            (CONT_WORLD, CONT_SELF, 60, BAG),
+            "taking out of a crate stopped working, or lost its handle"
+        );
+    }
+
+    /// The body is a source like any other: a right-click on a worn piece
+    /// with a container open puts it in the container, which is the
+    /// reference's rule (wearing is a container move, so unwearing is one
+    /// too) and costs nothing here because `is_own` already groups them.
+    #[test]
+    fn a_right_click_on_a_worn_piece_sends_it_to_the_open_container() {
+        let args = sent(quick_move(
+            CONT_BAG,
+            BAG,
+            CONT_WEAR,
+            0,
+            &catalog(),
+            &empty(),
+            &empty(),
+            &[stack(HATCHET, 1), ItemStack::default()],
+        ));
+        assert_eq!(
+            (args.from_kind, args.to_kind, args.count),
+            (CONT_WEAR, CONT_BAG, 1),
+            "the body is not a source the quick-move reads"
+        );
+    }
+
+    /// An empty slot is not a gesture. Right-clicking nothing must not
+    /// send a move the sim would answer `REFUSE_M_EMPTY` to.
+    #[test]
+    fn a_right_click_on_an_empty_slot_sends_nothing() {
+        assert!(matches!(from_bag(&empty(), &empty(), 0), Quick::Refused(_)));
+    }
+}
+
+/// **The crafting half is not drawn while a container is open, and the
+/// title is not a literal.** Both are draws, so the gate is a grep for the
+/// call site — `tests/sound.rs`'s rule, and §F's: the defect is a call
+/// site and not a value, and no headless test can open a panel.
+#[test]
+fn the_craft_browser_is_behind_the_looting_check() {
+    let code = inv_code();
+    assert!(
+        code.contains("if !looting(core.cont_kind)"),
+        "`inv.rs` draws the recipe browser unconditionally — the operator \
+         asked for it gone while a container is open, and a `Visibility` \
+         toggle would still take the keystrokes"
+    );
+    assert!(
+        code.contains("screen_title(core.cont_kind)"),
+        "`inv.rs` heads the screen with a literal again — the word depends \
+         on whether the crafting half is under it, which is arithmetic"
+    );
+    assert!(
+        !code.contains("Text::new(\"CRAFTING\")"),
+        "the old constant title is still in `inv.rs`"
+    );
+    assert!(
+        code.contains("quick_move("),
+        "`inv.rs` does not call the quick-move — the whole gesture is in \
+         `ui::slots` and this file is the only thing that can fire it"
     );
 }
