@@ -112,6 +112,7 @@ fn the_shipped_pairs_are_floored_at_the_constant_they_always_were() {
 /// that a `const _` somewhere agreed.
 #[test]
 fn the_separation_table_is_symmetric_and_satisfiable() {
+    let kinds = [SiteKind::Haven, SiteKind::Waystation, SiteKind::Inland];
     for (a, row) in SITE_SEP_M.iter().enumerate() {
         for (b, sep) in row.iter().enumerate() {
             assert_eq!(
@@ -127,6 +128,11 @@ fn the_separation_table_is_symmetric_and_satisfiable() {
                 "SITE_SEP_M[{a}][{b}] is {sep} — a floor at or under zero is \
                  no floor, and one past the island's own diagonal can never \
                  be met by any pair at all"
+            );
+            assert!(
+                *sep > terrain::site_footprint(kinds[a]).blend_m
+                    + terrain::site_footprint(kinds[b]).blend_m,
+                "site tiers {a} and {b} can overlap their graded ground"
             );
         }
     }
@@ -300,7 +306,7 @@ fn an_inland_site_stands_clear_of_the_road_it_is_defined_as_being_off() {
             // The blend radius, not the site radius: the carve reaches that
             // far and `carve.rs` §C holds it there, so that is the disc the
             // road may not be inside.
-            let fp = terrain::WAYSTATION_FOOTPRINT;
+            let fp = terrain::site_footprint(ws.kind);
             for b in 0..8u16 {
                 let (dx, dz) = sim_core::yaw_dir((b * 32) << 8);
                 let (px, pz) = (ws.x + dx * fp.blend_m, ws.z + dz * fp.blend_m);
@@ -382,7 +388,7 @@ fn an_inland_site_is_further_from_the_ring_than_the_ring_reaches() {
 /// caches on every seed, and is invisible to the const block — which is the
 /// whole distance between a rule and a gate.
 #[test]
-fn an_inland_site_stands_its_canopy_and_nothing_to_rob() {
+fn an_inland_site_is_a_depot_without_scattered_canopy_or_rewards() {
     let table = terrain::ScatterTable::alpha_default();
     for seed in SWEEP {
         let hv = terrain::haven(seed);
@@ -408,9 +414,9 @@ fn an_inland_site_stands_its_canopy_and_nothing_to_rob() {
                 }
             }
             assert_eq!(
-                canopies, 1,
+                canopies, 0,
                 "seed {seed:#x}: an inland site stands {canopies} canopies — \
-                 the canopy IS the site, so zero is an empty clearing"
+                 the depot kit replaces the old canopy"
             );
             assert_eq!(
                 containers,

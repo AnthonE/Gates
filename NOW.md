@@ -2555,14 +2555,21 @@ touching a balance number and do not re-derive the list here.
    model threat as trip shape, never as a rate multiplier (rows 5, 6).
 
 
-## 0n2 · Monuments — the solver is two hand-written tiers *(world lane)*
+## 0n2 · Monuments — the depot is the first kit; the roster still needs variety *(world lane)*
 
 Read `reference/MONUMENTS.md` §9 first (§0: the weakest provenance here).
 
-1. **§9.3, the solver.** `haven()` + `pick_minor` give two kinds of site, the
-   separation floor is one hand-asserted constant (`WAYSTATION_MIN_SEP_M`,
-   `sim-core/src/terrain.rs:1033`), no reservation ledger — §1's starvation
-   shape at five tiers. **The trigger is a third destination kind.**
+1. **The reservation ledger and third kind already exist.** `SiteLedger`,
+   typed footprints and the pair-separation table cover Haven, Waystation and
+   Inland. The inland depot now chooses its location with two usable road
+   approaches, and publishes the solid kit and its gate ports to both client
+   targets. The old “two kinds, no ledger” description was stale.
+   **Next:** quarry and relay kits with distinct terrain needs, then choose
+   the whole roster together. The current 600 m separation and 300 m inland
+   search radius cannot support a useful larger inland roster by increasing
+   `INLAND_SITES` alone. Re-derive placement and reward budgets together:
+   minor caches currently total four against Haven's five; the depot has no
+   loot or guards. Production coast-ring continuity remains §0rd.
 2. **Arrows pass through every deployable** — `sim-core/src/ranged.rs` never
    asks the solid nibbles, same class as its piece gap.
 3. **Whether a sleeper blocks is unanswered** (§0y item 1) — a design call.

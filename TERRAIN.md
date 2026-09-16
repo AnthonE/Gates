@@ -316,9 +316,13 @@ Stages, in order — each cheap, each deterministic:
    **It carries no containers, and that is a consequence rather than a
    choice**: the ladder two paragraphs up has exactly one crate of headroom
    (4 against 5), so a third container-bearing minor site fails the const
-   block. What it carries is the waystation's canopy — the same massing, no
-   new archetype, no new mesh — standing somewhere a player had no reason to
-   walk. `INLAND_GUARDS = 0` follows the prize by const assert.
+   block. The first version reused the waystation canopy. It now carries an
+   industrial depot: a warehouse, roof monitor, lower loading canopy,
+   cargo yard and two opposite gates. `sim_core::depot::DEPOT_PARTS` owns the
+   semantic solid parts; both client targets draw that same table. The larger
+   compound has its own typed footprint and bounded collision query, rather
+   than exceeding the scatter system's proven 3 × 3 neighbourhood.
+   `INLAND_GUARDS = 0` still follows the prize by const assert.
    **The bracket is the part worth reading twice.** It was first written as
    the geometric limit — `ROAD_R_MIN` less the shoulder less the site radius,
    579.99 m — which correctly answers "where does the footprint stop touching
@@ -333,11 +337,20 @@ Stages, in order — each cheap, each deterministic:
    works exactly once. A road to the interior has no such curve, so this tier
    is the reference's own shape instead: a PATH, solved once in `haven()` and
    stored on `Haven`, queried as a point-to-segment distance with no terrain
-   tap at all. Its site end is the site's RIM rather than its centre, which is
-   what a connection point is and what keeps a carriageway off the canopy; its
-   ring end is the first carriageway point on a bearing whose whole line is
-   walkable. **Unserved land falls 38.2% → 28.3% and the p90 walk 572 → 451
-   m**, measured both ways on the same island (`examples/side_road`).
+   tap at all. The depot now publishes two opposite gate ports, and the solve
+   chooses a site and its road pair together. It tries the best sixteen of the
+   existing 128 inland candidates in deterministic score order, requiring
+   both approaches to reach distinct ring junctions. Sixteen bearings provide
+   eight opposing pairs; shortest total length wins within each candidate.
+   Validation samples the final carved ground across the whole carriageway
+   (five lateral samples, one-metre longitudinal pitch), including both edges.
+   Scatter clearance includes each occupant's scaled collision radius, so a
+   shoulder rock or trunk cannot protrude into the reserved carriageway.
+   An incomplete pair makes the island incomplete; it cannot quietly become
+   a dead-end depot. The yard's graded through lane connects the two ports.
+   The original **one-spur** experiment reduced unserved land from 38.2% to
+   28.3% and the p90 walk from 572 to 451 m (`examples/side_road`); those are
+   historical measurements, not measurements of this two-road layout.
    ⚠ **`road_band` therefore takes a `&Haven` now**, which is the cost
    `ROADS.md` §9.3 priced in advance. `ring_band` is the ring-only half, and
    it is what every site solver calls — a solver asking about a road that is a
@@ -673,12 +686,11 @@ The reads a survival map must produce, and which stage buys each:
 | coastline | radius ~890 m, roughness 1.69–2.15 m between adjacent bearings ~7.8 m apart (0.84–1.21 without `COAST_BAY_WOBBLE`) |
 | treeline | a tree→bush transfer where the splat's grass and litter channels meet; ~15 m wide, 26 stems + 30 bushes/ha against the core's 94 + 4 |
 | species | 2 per slot, painted by a 620 m field; 90–96% dominance at its rails |
-| roads | 1 coast ring, ~4 m wide |
 | authored sites | 4 — one haven pad + 2 waystations on the ring + 1 inland site at most 300 m from the island centre |
-| roads | 2 tiers: the coast ring (a predicate — `ring_band`) + 1 side road per inland site (a solved segment on `Haven` — `side_band`). `road_band` is both and takes a `&Haven`; the site search asks `ring_band`, because a side road is a consequence of where a site landed |
+| roads | 2 tiers, ~4 m wide: the coast ring (`ring_band`) + 2 opposite side roads per inland depot (solved segments on `Haven`, `side_band`). `road_band` unions their carriageways. Placement tries depot/road pairs against the ring before accepting the inland site |
 | pad containers | 5 `crate` on a 10 m ring, 2.64× the shoulder's density |
 | waystation containers | 2 `cache` on a 6.5 m ring, ≥ 600 m from every other site |
-| inland containers | none — `INLAND_CRATES = 0`, a consequence of the ladder's one crate of headroom. The site is its canopy |
+| inland containers | none — `INLAND_CRATES = 0`, a consequence of the ladder's one crate of headroom. The depot's cargo is scenery |
 | greyboxes | 2 kinds, one per tier: the pad's enclosed 7 m block to a 9.2 m tower, and the waystation's open canopy — 4 posts, one knee-high parapet, 4.1 m — standing in a gap in that 6.5 m ring rather than at the site centre, which is the road. **These are the numbers the sim blocks** (`terrain::WAYSTATION_CANOPY_BOXES`, gated by `sim-core/tests/{waystation,solid}.rs`); the mesh that draws them is no longer held to them — see §7 |
 | tier prices | E[items] per container barrel 14.3 < cache 20.8 < crate 33.1; per site pad 165 > waystation 42 > inland 0 (`ci/haven_prize.mjs`) |
 | node respawn | 20–45 min jittered, privilege-vetoed **(knob)** |

@@ -148,6 +148,12 @@ fn hash_scatter_window(h: &mut Xxh3, seed: u64, haven: &terrain::Haven, x: f32, 
 #[no_mangle]
 pub extern "C" fn probe_sites(seed: u64) -> u64 {
     let mut h = Xxh3::new();
+    for part in &crate::depot::DEPOT_PARTS {
+        h.update(&[part.kind as u8]);
+        for value in part.bounds {
+            hash_f32(&mut h, value);
+        }
+    }
     let haven = terrain::haven(seed);
     hash_f32(&mut h, haven.x);
     hash_f32(&mut h, haven.z);
@@ -183,6 +189,18 @@ pub extern "C" fn probe_sites(seed: u64) -> u64 {
         // two tiers differ in what they SPAWN rather than in where they
         // stand, so nothing else in this digest could see it.
         h.update(&[ws.phase, ws.live as u8, ws.kind as u8]);
+        if crate::depot::is_depot(ws) {
+            for part in &crate::depot::DEPOT_PARTS {
+                let b = part.bounds;
+                let (x, z) = crate::depot::to_world(ws, (b[0] + b[3]) * 0.5, (b[2] + b[5]) * 0.5);
+                let y = ws.floor_y + (b[1] + b[4]) * 0.5;
+                h.update(&[crate::depot::blocks(&haven, x, z, y, 0.01, 0.01) as u8]);
+                hash_f32(
+                    &mut h,
+                    crate::depot::ground(&haven, x, z, ws.floor_y + b[4]),
+                );
+            }
+        }
         // The tier's own count, so a site that stands no containers hashes
         // no anchors rather than hashing a ring nothing will build.
         let mut c = 0i32;

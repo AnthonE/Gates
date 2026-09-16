@@ -78,8 +78,11 @@ fn cells() -> impl Iterator<Item = (u16, u16)> {
 
 fn center_h(seed: u64, cx: u16, cz: u16) -> f32 {
     let half = BUILD_CELL_M * 0.5;
-    terrain::height(
+    // Foundations stand on the graded surface. The depot's blend reaches
+    // buildable cells in this scan; raw height is the buried pre-carve land.
+    terrain::ground(
         seed,
+        hv(seed),
         cx as f32 * BUILD_CELL_M + half,
         cz as f32 * BUILD_CELL_M + half,
     )
@@ -210,7 +213,7 @@ fn a_lone_foundation_is_always_steppable() {
     }
 }
 
-/// The lattice never moves a floor more than half a quantum off the raw
+/// The lattice never moves a floor more than half a quantum off the ground
 /// sample — the bound on how far the ground can visibly disagree with the
 /// slab that claims to sit on it.
 #[test]

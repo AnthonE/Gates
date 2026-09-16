@@ -20,7 +20,7 @@
 //!   §H the carve never builds a wall — the gradient it ADDS stays bounded
 
 use sim_core::fmath::fabs;
-use sim_core::terrain::{self, Haven, HAVEN_FOOTPRINT, SITE_STAMP_STRENGTH, WAYSTATION_FOOTPRINT};
+use sim_core::terrain::{self, Haven, HAVEN_FOOTPRINT, SITE_STAMP_STRENGTH};
 
 /// The `tests/haven.rs` seed list, for the same reason it gives: "a seed that
 /// fails is a bug in the generator, not a reroll".
@@ -79,7 +79,7 @@ fn sites(h: &Haven) -> Vec<(f32, f32, f32, terrain::SiteFootprint)> {
     // this the shape a new tier gets silently dropped by.
     for ws in h.minor.iter() {
         if ws.live {
-            v.push((ws.x, ws.z, ws.floor_y, WAYSTATION_FOOTPRINT));
+            v.push((ws.x, ws.z, ws.floor_y, *terrain::site_footprint(ws.kind)));
         }
     }
     v
@@ -496,8 +496,12 @@ fn the_armed_carve_never_worsens_a_structures_footing() {
             if !ws.live {
                 continue;
             }
-            let (kx, kz, _) = terrain::waystation_canopy(ws);
-            anchors.push(("waystation canopy", terrain::WAYSTATION_CANOPY_R_M, kx, kz));
+            if sim_core::depot::is_depot(ws) {
+                anchors.push(("depot", sim_core::depot::FOOTPRINT.stamp_m, ws.x, ws.z));
+            } else {
+                let (kx, kz, _) = terrain::waystation_canopy(ws);
+                anchors.push(("waystation canopy", terrain::WAYSTATION_CANOPY_R_M, kx, kz));
+            }
         }
         for (name, rad, cx, cz) in anchors {
             let (mut rlo, mut rhi) = (f32::INFINITY, f32::NEG_INFINITY);

@@ -140,7 +140,9 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// of this digest on ~45% of the land. Heights did not move — the change is
 /// entirely in `scatter`, and `probe_terrain`'s height window would read the
 /// same. Deliberate, regenerated in the commit that caused it.
-const GOLDEN_TERRAIN_HASH: u64 = 0xD068_06D7_B0DD_146F;
+// Procedural depot: typed footprint, opposite road pair, volume clearing,
+// and explicit authored-part/collision samples in probe_sites.
+const GOLDEN_TERRAIN_HASH: u64 = 0x3FE5_E361_BCF1_E0E9;
 
 #[test]
 fn test_terrain_golden() {
@@ -248,14 +250,16 @@ fn test_golden_covers_authored_sites() {
             );
             let w = window_occupants(seed, &h, ws.x, ws.z);
             let (shelters, crates, caches) = (w.shelters, w.crates, w.caches);
-            // The canopy FIRST, because on a tier that stands no containers
-            // it is the only thing separating this window from empty sea.
+            // Coastal canopies remain in the scatter digest. The inland depot
+            // parts and their collision samples are hashed by probe_sites.
             assert_eq!(
-                w.canopies, 1,
+                w.canopies,
+                i32::from(ws.kind == terrain::SiteKind::Waystation),
                 "seed {seed:#x}: the golden's window at lesser site {i} \
                  ({:?}) holds {} canopies — a site the digest cannot see is \
                  the hole this gate exists to refuse",
-                ws.kind, w.canopies
+                ws.kind,
+                w.canopies
             );
             assert_eq!(
                 caches,

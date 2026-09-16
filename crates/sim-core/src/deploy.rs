@@ -1553,6 +1553,10 @@ pub fn place_deploy(
         return;
     }
     let (ax, az) = cell_center(cx, cz);
+    if crate::depot::reserves(haven, ax, az, crate::build::BUILD_CELL_M * 1.5) {
+        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_SPOT, 0);
+        return;
+    }
     let (px, pz) = player_xz(p);
     let (dx, dz) = (ax - px, az - pz);
     if dx * dx + dz * dz > crate::build::BUILD_REACH_M * crate::build::BUILD_REACH_M {

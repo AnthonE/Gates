@@ -5318,6 +5318,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/deploy.rs"),
         },
         Module {
+            file: "depot.rs",
+            src: include_str!("../../sim-core/src/depot.rs"),
+        },
+        Module {
             file: "fmath.rs",
             src: include_str!("../../sim-core/src/fmath.rs"),
         },
