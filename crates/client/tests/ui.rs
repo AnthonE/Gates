@@ -4755,7 +4755,7 @@ mod quick {
     use protocol::event::ItemCatalog;
     use sim_core::gather::ItemStack;
     use sim_core::inventory::{CONT_BAG, CONT_SELF, CONT_WEAR, CONT_WORLD};
-    use sim_core::limits::{INV_SLOTS, WEAR_SLOTS};
+    use sim_core::limits::{HOTBAR_SLOTS, INV_SLOTS, WEAR_SLOTS};
 
     const BAG: u32 = 0x00BA_6666;
     /// A resource: stacks to a thousand, carries no condition.
@@ -4887,6 +4887,14 @@ mod quick {
 
     /// The operator's ask, in its simplest shape: a stack in a bag, a
     /// right-click, and it is in the pack without a drag.
+    ///
+    /// **Slot `HOTBAR_SLOTS`, not slot 0** — the first free slot of the
+    /// main grid rather than of the whole array. Our belt is the array's
+    /// first six slots and the reference's is a separate container
+    /// (`reference/LOOT.md` §5), so a quick-move that took slot 0 would
+    /// fill the row the scroll wheel cycles with looted junk — a bug the
+    /// reference cannot have, because a quick-move there addresses
+    /// `containerMain` and cannot reach `containerBelt` at all.
     #[test]
     fn a_right_click_in_a_bag_sends_the_stack_to_the_pack() {
         let mut cont = empty();
@@ -4899,10 +4907,34 @@ mod quick {
                 from_kind: CONT_BAG,
                 from_slot: 0,
                 to_kind: CONT_SELF,
-                to_slot: 0,
+                to_slot: HOTBAR_SLOTS as u8,
                 count: 40,
             },
-            "a quick-move out of a bag did not aim at the first free slot"
+            "a quick-move out of a bag did not aim at the first free slot \
+             of the grid — slot 0 is a belt slot"
+        );
+    }
+
+    /// **And the belt is a fallback, not a refusal.** With the grid full
+    /// the gesture still has to be able to move something, or a nearly
+    /// full pack would make right-clicking silently useless — so the belt
+    /// is last rather than excluded.
+    #[test]
+    fn the_belt_takes_it_when_the_grid_is_full() {
+        let mut cont = empty();
+        cont[0] = stack(WOOD, 40);
+        let mut inv = empty();
+        // Every grid slot full of something that cannot merge; belt slot 3
+        // is the only hole.
+        for slot in inv.iter_mut() {
+            *slot = stack(HATCHET, 1);
+        }
+        inv[3] = ItemStack::default();
+        let args = sent(from_bag(&inv, &cont, 0));
+        assert_eq!(
+            (args.to_kind, args.to_slot),
+            (CONT_SELF, 3),
+            "a full grid made the quick-move refuse instead of using the belt"
         );
     }
 

@@ -511,9 +511,13 @@ pub enum Quick {
 ///    Same-item first, because the alternative scatters a resource across
 ///    fresh slots beside the pile it belongs in, which is the thing that
 ///    makes a quick-move worse than a drag.
-/// 2. **Otherwise the first empty slot**, and the count is the whole
-///    stack. An empty slot always takes it: the source stack was built
-///    under the sim's own ceiling.
+/// 2. **Otherwise the first empty slot of the main grid**, and the count
+///    is the whole stack. An empty slot always takes it: the source stack
+///    was built under the sim's own ceiling. The **belt is last**, for the
+///    reason the loop states — the reference's belt is a separate
+///    container and cannot be a quick-move's target at all
+///    (`reference/LOOT.md` §5, §9.5), and ours is six slots of the same
+///    array, so the order is where that difference has to be expressed.
 /// 3. **Otherwise nothing**, with a line saying so.
 ///
 /// ⚠ **A `stack_max` of 0 means "I do not know", not "unstackable"** —
@@ -584,10 +588,29 @@ pub fn quick_move(
     let cap = catalog.stack_max(src.item as usize);
     let width = slots_in(to_kind);
     let mut empty = None;
+    let mut empty_belt = None;
     for slot in 0..width {
         let there = dst.get(slot).copied().unwrap_or_default();
         if there.count == 0 {
-            if empty.is_none() {
+            // **The belt is remembered separately, and it loses.** Our belt
+            // is `inv[0..HOTBAR_SLOTS]` of the same array as the pack — one
+            // container, one move verb, which is `inventory.rs`'s
+            // deliberate simplification and is load-bearing in
+            // `hold::held_in_hand`. The reference cannot have this
+            // question: its belt is a *separate container*
+            // (`containerBelt` beside `containerMain`, `reference/LOOT.md`
+            // §5), so a quick-move out of a crate cannot reach it.
+            //
+            // Ours can, and "the first free slot" would mean the row the
+            // scroll wheel cycles: loot a bag and your hands fill with
+            // junk. So the grid is preferred and the belt is the fallback
+            // for when the grid is full — which keeps the gesture able to
+            // move everything that fits, without deciding what you hold.
+            if to_kind == CONT_SELF && slot < HOTBAR_SLOTS {
+                if empty_belt.is_none() {
+                    empty_belt = Some(slot);
+                }
+            } else if empty.is_none() {
                 empty = Some(slot);
             }
             continue;
@@ -616,7 +639,7 @@ pub fn quick_move(
             }
         }
     }
-    match empty {
+    match empty.or(empty_belt) {
         Some(slot) => finish(
             cont_handle,
             from_kind,

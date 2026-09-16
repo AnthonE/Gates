@@ -1136,6 +1136,26 @@ where it had only ever been two words on the prompt. Both unseen (`§LOOK`).
 2. **An emptied crate says nothing at a distance**, so a wasted trip is
    normal on a populated shard. Wants a lid state on the mesh
    (`render/props.rs` has one `crate_box`) or a shorter refill window.
+   `reference/LOOT.md` §9.4 adds the reference's read: theirs is *gone*
+   when emptied, which is the distance signal — and names why we cannot
+   simply copy it (the crate's position is a pure function of the seed and
+   the client draws it from that function, so absence has to ride the
+   wire: one bit per crate in AOI).
+2b. **A smashed barrel stands up a container, where the reference scatters
+   items on the ground** (the operator, 2026-09-16: *"when u break a barrel
+   it drops loot as 3d objects… we could just make it generic now but
+   eventually loot can fall down and out of reach kinda thing. or roll a
+   bit"*). **Not spoken yet — a proposal.** `reference/LOOT.md` §9.3 sizes
+   it: a capped `WorldItems` store, a settle (gravity + the drop velocity
+   `Item.Drop`'s own signature hands out — this is the *"roll"*, and it
+   must be the sim's, because a client-side tumble over a server-side
+   resting place is two truths about a thing you can pick up), one
+   `PROTO_VER` turn for a sync lane and a pickup verb, a generic mesh for
+   every item, and §3's rarity despawn ladder reused rather than a new
+   knob. **The death bag stays a container** — the reference consolidates a
+   corpse for cost and `backpack.rs` cites that decision — so the split to
+   build is theirs: a thing you break scatters, a thing that dies leaves a
+   container.
 3. **The guard has no loot tier of its own** — `guard.rs`'s
    `a_guard_pays_what_a_wolf_pays` holds it to a wolf's meat and fat. A
    tier wants a third species, and a third kind still falls through to
@@ -2274,16 +2294,14 @@ dust and the impact cue read it (`DECISIONS.md` §open, impact fx v1). Left:
    `inv::header` and a `Ui` field, and it is a *taste* call about whether
    the screen wants tabs at all before it is a slice. Not a defect:
    closing the container gets you there today.
-4d. **A quick-move out of a container fills the BELT first** — our belt is
-   slots `0..HOTBAR_SLOTS` of `CONT_SELF` (`inventory.rs`: one array, one
-   verb), so "the first free slot" is a quick-use slot and looting a bag
-   puts junk where the scroll wheel cycles. The fix is one walk-order line
-   in `ui::slots::quick_move` (prefer `HOTBAR_SLOTS..`, fall back to the
-   belt when the grid is full); it is left undone because it is a **taste
-   call** — a spear landing on the belt is convenient, and a belt of loot
-   is not. ⚠ Not sourced: the reference's own target container is *not* in
-   the hook table and no primary source here names it, so the memory that
-   it targets "main" is memory. One frame answers it.
+4d. ✅ **A quick-move prefers the main grid over the belt** (2026-09-16).
+   It filled the belt first, because our belt is slots `0..HOTBAR_SLOTS`
+   of the same array (`inventory.rs`: one array, one verb) and "the first
+   free slot" is therefore a quick-use slot. Left as an unsourced taste
+   call for one day and then **settled by research, not taste**: the
+   reference's belt is a *separate container* (`containerBelt` beside
+   `containerMain`, `reference/LOOT.md` §5), so a quick-move there cannot
+   reach it at all. The belt is the fallback for a full grid.
 4c. **The quick-move moves one slot per click**, so a stack that half fits
    leaves a remainder and a second right-click carries it on. The wire's
    move verb addresses one slot, so a whole-stack scatter would be N
