@@ -1817,8 +1817,10 @@ Landed: grass cards (`clutter::card`) and bush leaf cards
 a box filter does not — measured 0.30× after one halving on a fixture built to
 match. Gates: `tests/{grass_card,bush_card}.rs`, `tests/mipmap.rs`.
 
-1. **The conifer's needle mask is still GENERATED** (`tree::needle_image`) and
-   `reference/PLANTS.md` §6.4 calls it "the weakest link in the canopy today".
+1. **The conifer's needle mask is still GENERATED** (`tree::needle_image`) —
+   `reference/PLANTS.md` §6.4 calls it "the weakest link in the canopy today"
+   and canopy grain v0 (2026-09-16) is why that is no longer true: at 256² it
+   draws a 4 mm needle instead of a 34 mm one, which was the fern read.
    Set 9.5 (Conifer sprig atlas, 14 rows) is fetched-and-waiting; the swap is
    an atlas plus a `base_color` change, because the generated mask is white
    and a photograph brings its own colour.
@@ -1931,17 +1933,34 @@ worthless assertion in the first draft.
 5. **Sub-canopy empty, shrub layer one blob** (`Occupant::Bush`, `PLANTS.md`
    §2): ez-tree's `bush_*` presets and a small tree at 40 % are new
    `Occupant` variants plus scatter rows.
-6. **Both cards are generated** (`tree::needle_image`, `tree::leaf_image`);
-   `WANTED.md` §9.5 is the swap, the highest-value texture on that page, and
-   it is two textures now.
-7. ✅ **The double hull (2026-09-13).** Every tree in every chunk walked into
-   after spawn wore the outer ring's hull over its real self — the outer
-   retain never asked whether the near ring had taken the chunk. Fixed in
-   `props::stream`, gated by `tests/ring_handoff.rs` (an eye that moves);
-   `CLAUDE.md` traps has the shape. Two things it leaves: **the capture probe
-   should walk one chunk before it shoots**, because a frame from the spawn
-   chunk cannot contain a hand-off defect; and the browser's 55 m rung now
-   rests on its own argument, not on the frame that moved it (`quality.rs`).
+6. **Both cards are still generated** (`tree::needle_image`,
+   `tree::leaf_image`) but they are no longer the defect: canopy grain v0
+   (2026-09-16) redraws both at 256², a **4 mm** needle where the 64² card
+   could not draw anything under 34 mm, and an 11 cm leaf where it drew 37 cm. `WANTED.md` §9.5 is still the swap and still the best texture on
+   that page; it is an upgrade now rather than a rescue.
+7. **What canopy grain v0 left, and it is all one question: is it enough?**
+   Coverage was held at the fern card's own 0.192 / 0.255 deliberately, so
+   the canopy is the same DENSITY at a finer grain — and card coverage is now
+   the one density lever that costs the sim nothing (item 2's `TREE_MAX_R`
+   does). If a booted frame still shows sky through a near crown, raise
+   `TWIGS` / `NEEDLES_PER_TWIG` (**not** `AXIS_NEEDLES` — swept, it is
+   saturated: nearly tripling it moves coverage by about a tenth) and widen the band in
+   `tests/tree.rs::the_cards_hold_the_density_the_forest_was_built_at`; that
+   is the whole edit. **Nobody has seen any of it** — `§LOOK`. Four known
+   leftovers: **the broadleaf's leaf is 11 cm and a birch's is 3–7**, because a
+   1.25 m card needs 672 leaves at 6 cm and 672 of them comb into a pinnate
+   FROND (measured, and looked at — `canopy_probe`'s `dump_alpha`); the fix is
+   a smaller card, which is `BROADLEAF_MAX_R` and so the sim's. The canopy
+   palette was not touched (`NEEDLE_HI` is luma 111
+   against `ART.md` §3's lit grass at 59–70, and the occlusion moved the
+   RANGE rather than the top end); `CANOPY_AO_GAMMA` is the one invented
+   number in the slice; and the outer ring's hulls get the shade match but
+   are still untextured (§0out item 1).
+8. ✅ **The double hull (2026-09-13)**, fixed in `props::stream` and gated by
+   `tests/ring_handoff.rs`. Two leftovers: **the capture probe should walk one
+   chunk before it shoots** (a frame from the spawn chunk cannot contain a
+   hand-off defect), and the browser's 55 m rung now rests on its own
+   argument rather than on the frame that moved it (`quality.rs`).
 
 
 ## 0a · The clutter ring still ends on a line *(client lane)*
@@ -2554,7 +2573,17 @@ arithmetic and unseen*, and the list below is what has accumulated. **Do not
 build a replacement pixel gate.** One session with the client open closes most
 of it.
 
-**Newest, 2026-09-13 — go down and look** (§0wnd, `render/wounded.rs`): the
+**Newest, 2026-09-16 — look at ONE tree, then a stand of them** (§0t, canopy
+grain v0). Four things to judge, in order: does a near crown read as needles
+rather than fern fronds; does it have a dark INSIDE and a lit outside; does it
+have a lit top and a shaded underside; and — the one number deliberately not
+moved — can you still see too much sky through it, in which case the fix is
+the card counts in `tree.rs` and nothing in the sim. The broadleaf's leaves
+went from 37 cm to 11 cm, so judge that species separately — and see §0t item 7
+for why they are not the 3–7 cm a birch actually has. Everything here is
+arithmetic-gated and none of it has been drawn.
+
+**2026-09-13 — go down and look** (§0wnd, `render/wounded.rs`): the
 camera's drop to `CRAWL_EYE_M` and its roll, the vignette, the two-number
 line, and a remote body's fallen pose sliding at a crawl. Five knobs, none
 seen; `reference/WOUNDED.md` §9.5 is the checklist.

@@ -23,9 +23,9 @@ use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::*;
 use client::render::terrain_mesh::{CHUNK_M, NEAR_RADIUS};
 use client::render::tree::{
-    bounds, conifer, impostor_of, leaf_image, min_y, needle_image, species_of, tris, TreeLod,
-    CONIFER_MAX_TRIS, CONIFER_POOL, IMPOSTOR_MAX_TRIS, SPECIES, TREE_LOD_CAP, TREE_LOD_FADE_M,
-    TREE_LOD_SWAP_M, TREE_MAX_R,
+    bounds, canopy_shade, conifer, impostor_of, leaf_image, min_y, needle_image, species_of, tris,
+    TreeLod, CONIFER_MAX_TRIS, CONIFER_POOL, IMPOSTOR_MAX_TRIS, SPECIES, TREE_LOD_CAP,
+    TREE_LOD_FADE_M, TREE_LOD_SWAP_M, TREE_MAX_R,
 };
 
 /// Trees inside the client's 5×5×64 m prop ring, p90 over 271 land eye
@@ -729,4 +729,381 @@ fn chain_holds_its_coverage(img: bevy::prelude::Image, what: &str) {
         "the mip chain's declared levels and the buffer's length disagree — \
          wgpu would read past the end of the last level"
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Canopy grain v0 (2026-09-16). The operator's frames read as a forest of tree
+// ferns under a flat green plate; these four gates hold the mechanisms that
+// answer it. Each was proven red under the defect it names — `NOW.md` §0t.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The MEASURED median world-space edge of one canopy card, metres.
+///
+/// **Not `LeafParams::size`.** That is in the generator's own units and
+/// `fit_to_bounds` rescales the mesh after the cards are built, by 0.91 on the
+/// conifer and **2.13** on the broadleaf. Every statement about how big a thing
+/// on this card is in millimetres divides by this, so reading the authored
+/// number instead is how the broadleaf's leaves came to be 38 cm long with
+/// a comment beside them saying 0.60 m (`tree::leaf_image`).
+fn card_edge_m(variant: usize) -> f32 {
+    let (_, needles) = conifer(variant);
+    let Some(VertexAttributeValues::Float32x3(p)) = needles.attribute(Mesh::ATTRIBUTE_POSITION)
+    else {
+        panic!("canopy mesh has no positions");
+    };
+    let mut e: Vec<f32> = p
+        .chunks_exact(4)
+        .map(|q| {
+            let a = Vec3::from_array(q[0]);
+            (Vec3::from_array(q[1]) - a)
+                .length()
+                .max((Vec3::from_array(q[3]) - a).length())
+        })
+        .collect();
+    e.sort_by(|x, y| x.partial_cmp(y).expect("card edge is NaN"));
+    e[e.len() / 2]
+}
+
+/// Level 0's coverage, the median width of one opaque run along a row, and the
+/// card's side in texels.
+///
+/// **The side is returned rather than assumed.** A millimetre figure is
+/// `run × card_m / side`, and hard-coding `NEEDLE_TEX`'s current value here
+/// would make every such figure silently wrong the next time the card's
+/// resolution moves — which is the same class of mistake as reading
+/// `LeafParams::size` as metres, one file over.
+fn grain(img: &Image) -> (f32, usize, usize) {
+    let w = img.texture_descriptor.size.width as usize;
+    let d = img.data.as_ref().expect("mask has no data");
+    let lvl0 = &d[..w * w * 4];
+    let hit = lvl0.chunks_exact(4).filter(|p| p[3] > 128).count();
+    let mut runs: Vec<usize> = vec![];
+    for row in 0..w {
+        let mut run = 0usize;
+        for col in 0..w {
+            if lvl0[(row * w + col) * 4 + 3] > 128 {
+                run += 1;
+            } else if run > 0 {
+                runs.push(run);
+                run = 0;
+            }
+        }
+        if run > 0 {
+            runs.push(run);
+        }
+    }
+    runs.sort_unstable();
+    assert!(!runs.is_empty(), "mask is empty");
+    (hit as f32 / (w * w) as f32, runs[runs.len() / 2], w)
+}
+
+/// **A needle is 1–2 mm wide and a frond is not, and the mask could not tell
+/// the difference until it had the texels to.**
+///
+/// The 64² card at 16.9 mm per texel could draw nothing finer than a 34 mm
+/// stripe, and drew them 23 cm long: measured median run width **34 mm**
+/// (`examples/canopy_probe.rs`, 2026-09-16), which is why the canopy read as
+/// fern fans. This holds the median opaque run — the width of one drawn
+/// element — to something a conifer could actually grow.
+///
+/// ⚠ **The bound is in MILLIMETRES OF TREE, not texels**, and that is the
+/// whole point: a texel count says nothing without the card's world size
+/// beside it, and it was exactly that missing division that let a 38 cm leaf
+/// ship under a comment claiming 0.60 m.
+#[test]
+fn the_canopy_elements_are_the_size_of_real_ones() {
+    // A conifer needle: 1–2 mm real, and `NEEDLE_W` draws the finest line that
+    // survives the 0.5 alpha cut at all. Anything over a centimetre is a frond.
+    let (_, run, side) = grain(&needle_image());
+    let mm = run as f32 * card_edge_m(0) * 1000.0 / side as f32;
+    assert!(
+        (2.0..=10.0).contains(&mm),
+        "the needle mask's median element is {mm:.1} mm of tree ({run} texels) \
+         — a conifer needle is 1–2 mm and the 64² card drew 34 mm fronds; \
+         outside 2–10 mm this canopy is made of the wrong thing"
+    );
+
+    // The leaf card's elements fuse where they overlap, so a run measures the
+    // spray as much as one leaf. What it still catches is the old defect: the
+    // 64² card's 118 mm run WAS a single leaf, 37 cm long.
+    let (_, lrun, lside) = grain(&leaf_image());
+    let lmm = lrun as f32 * card_edge_m(3) * 1000.0 / lside as f32;
+    assert!(
+        lmm <= 90.0,
+        "the leaf mask's median element is {lmm:.0} mm of tree ({lrun} texels) \
+         — the 64² card's 118 mm was a single leaf 37 cm long"
+    );
+}
+
+/// **Coverage is the density and grain is not allowed to move it.**
+///
+/// What reaches the frame through `AlphaMode::Mask` is the share of texels over
+/// the cut, so coverage IS how opaque a canopy is. Rebuilding both masks at
+/// 256² was a change of grain, and these bands are the fern card's own numbers
+/// — 0.192 needle, 0.255 leaf — so the forest neither thinned nor thickened
+/// under it. They are also the lever if it needs to: `TREE_MAX_R` is the sim's
+/// (`NOW.md` §0t item 2) and this is free.
+///
+/// ⚠ **The bands are ±7 % and CENTRED on the shipped value, and both of those
+/// came from mutants walking through a first draft.** At ±15 % (0.17–0.22)
+/// tripling `AXIS_NEEDLES` passed — which turned out to say something about
+/// the KNOB rather than the gate, and is the useful half: swept in isolation,
+/// `AXIS_NEEDLES` 120 → 320 moves coverage only **0.178 → 0.202**, because
+/// axis needles land on ground the twigs already cover, while `TWIGS` and
+/// `NEEDLES_PER_TWIG` each move it ~0.145 → ~0.228 over the same relative
+/// range. So a density retune goes through the twig counts; the axis count is
+/// nearly saturated and cannot deliver one. Then the tightened band was left
+/// centred on the value it was derived at rather than the value that shipped
+/// — 0.188 against 0.185, after the twig jitter landed — and `TWIGS 23` came
+/// to rest on **0.201, the inclusive rail exactly**, and passed. A band is a
+/// claim about a distance from a number, so it has to be re-centred whenever
+/// that number moves.
+#[test]
+fn the_cards_hold_the_density_the_forest_was_built_at() {
+    let (needle, _, _) = grain(&needle_image());
+    assert!(
+        (0.172..=0.198).contains(&needle),
+        "the needle mask tests to {needle:.3} coverage against the 0.185 it is \
+         built at and the 0.192 the canopy's stem counts and crown radii were \
+         swept at — outside this band the forest is a different density, not a \
+         different grain"
+    );
+    let (leaf, _, _) = grain(&leaf_image());
+    assert!(
+        (0.241..=0.271).contains(&leaf),
+        "the leaf mask tests to {leaf:.3} coverage against 0.256"
+    );
+    // `tests/tree.rs`'s older gate says the leaf card must be the denser of the
+    // two — a cluster is mostly leaf, a sprig mostly air — and two independent
+    // bands could both pass while crossing.
+    assert!(
+        leaf > needle,
+        "the leaf card ({leaf:.3}) must stay denser than the needle card \
+         ({needle:.3}) or the two species stop reading apart"
+    );
+}
+
+/// Canopy vertex colours binned by how deep inside the crown they sit, at a
+/// fixed height — `(buried, exposed)` mean linear luma.
+///
+/// **Held at a fixed height on purpose.** `band` ramps the canopy on `y`, so a
+/// depth statistic taken across the whole tree mixes the two axes and a cone's
+/// widest vertices are also its lowest and darkest — which is how the conifer
+/// measured its rim *darker* than its core before this landed, 0.077 against
+/// 0.129, and read as evidence of nothing.
+fn depth_luma(variant: usize) -> (f64, f64) {
+    let (_, needles) = conifer(variant);
+    let Some(VertexAttributeValues::Float32x3(p)) = needles.attribute(Mesh::ATTRIBUTE_POSITION)
+    else {
+        panic!("no positions")
+    };
+    let Some(VertexAttributeValues::Float32x4(c)) = needles.attribute(Mesh::ATTRIBUTE_COLOR) else {
+        panic!("no colours")
+    };
+    let (lo, hi) = p
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(l, h), v| (l.min(v[1]), h.max(v[1])));
+    // The middle third of the crown: enough vertices to mean anything, narrow
+    // enough that the height ramp is near-constant across it.
+    let (y0, y1) = (lo + (hi - lo) * 0.40, lo + (hi - lo) * 0.60);
+    let r_at = |v: &[f32; 3]| (v[0] * v[0] + v[2] * v[2]).sqrt();
+    let band: Vec<usize> = (0..p.len())
+        .filter(|&i| p[i][1] >= y0 && p[i][1] <= y1)
+        .collect();
+    assert!(
+        band.len() > 100,
+        "only {} vertices in the slice",
+        band.len()
+    );
+    let rmax = band.iter().map(|&i| r_at(&p[i])).fold(0.0f32, f32::max);
+    let luma =
+        |i: usize| 0.2126 * c[i][0] as f64 + 0.7152 * c[i][1] as f64 + 0.0722 * c[i][2] as f64;
+    let mean = |f: &dyn Fn(f32) -> bool| {
+        let v: Vec<usize> = band
+            .iter()
+            .copied()
+            .filter(|&i| f(r_at(&p[i]) / rmax))
+            .collect();
+        assert!(!v.is_empty(), "empty depth bin");
+        v.iter().map(|&i| luma(i)).sum::<f64>() / v.len() as f64
+    };
+    (mean(&|t| t < 0.35), mean(&|t| t > 0.80))
+}
+
+/// **A canopy is a VOLUME and this tree had no inside.**
+///
+/// `band` ramps the needle mesh on height alone, so before `occlude_canopy`
+/// every needle at a given height was the same colour whether it was buried
+/// against the trunk or out at a limb tip: measured 0.156 → 0.147 core to rim
+/// on the broadleaf, **6 % across the whole crown**. Real foliage is a dark
+/// interior under a lit shell, and that contrast is what makes the reference's
+/// crowns read as masses rather than as cut-outs.
+///
+/// Proven red by deleting the `occlude_canopy` call: the ratio falls to
+/// 1.01–1.03 on both species, against the 1.9× floor here.
+#[test]
+fn the_crown_is_darker_inside_than_out() {
+    for variant in [0usize, 3] {
+        let (buried, exposed) = depth_luma(variant);
+        let ratio = exposed / buried;
+        assert!(
+            ratio >= 1.9,
+            "variant {variant}: the crown's core reads {buried:.4} against its \
+             rim's {exposed:.4} — only {ratio:.2}× — at one height, where a \
+             foliage mass is several times darker inside. A canopy with no \
+             interior is the flat green plate `NOW.md` §0t is about"
+        );
+        // And it must not invert: the floor is a floor, not a hole.
+        assert!(
+            buried > 0.0,
+            "variant {variant}: the crown's core is fully black — \
+             `CANOPY_AO_FLOOR` is `ART.md` rule 3's 0.30 and must be honoured"
+        );
+    }
+}
+
+/// **A canopy whose normals are all horizontal has no top and no bottom.**
+///
+/// `blend_canopy_normals` built its volume normal as `Vec3::new(x, 0.0, z)` —
+/// no vertical component anywhere — and at `PINE_NORMAL_BLEND = 0.7` that
+/// leaves at most 30 % of a card's own facing. A key at `ART.md` §4's 30–40°
+/// then lands on every canopy vertex at nearly the same `N·L`, which is a flat
+/// green cut-out by construction and cannot be fixed by any light rig.
+///
+/// The crown is an ellipsoid; its normal turns up at the apex and down under
+/// the skirt. **Proven red by the accident of running it**: a mutant loop left
+/// the old field in the tree and this gate was the only thing that said so,
+/// at n.y = 0.062 against the 0.30 floor.
+#[test]
+fn the_canopy_has_a_top_and_an_underside() {
+    for variant in [0usize, 3] {
+        let (_, needles) = conifer(variant);
+        let Some(VertexAttributeValues::Float32x3(p)) = needles.attribute(Mesh::ATTRIBUTE_POSITION)
+        else {
+            panic!("no positions")
+        };
+        let Some(VertexAttributeValues::Float32x3(n)) = needles.attribute(Mesh::ATTRIBUTE_NORMAL)
+        else {
+            panic!("no normals")
+        };
+        // The crown's highest tenth of VERTICES must face up on average and
+        // its lowest tenth must face down — that is the whole of what was
+        // missing. **By count, not by height**: a conifer is a cone, so the
+        // top tenth of its HEIGHT holds seventeen vertices and a mean over
+        // those is noise rather than a measurement.
+        let mut by_y: Vec<usize> = (0..p.len()).collect();
+        by_y.sort_by(|&a, &b| p[a][1].partial_cmp(&p[b][1]).expect("height is NaN"));
+        let tenth = (p.len() / 10).max(20);
+        let mean_y =
+            |idx: &[usize]| -> f32 { idx.iter().map(|&i| n[i][1]).sum::<f32>() / idx.len() as f32 };
+        let top = mean_y(&by_y[p.len() - tenth..]);
+        let bottom = mean_y(&by_y[..tenth]);
+        assert!(
+            top >= 0.30,
+            "variant {variant}: the crown's top decile averages n.y = {top:.3} \
+             — a canopy apex faces the sky, and at the old purely-radial field \
+             this reads 0.062 and the tree has no lit top"
+        );
+        assert!(
+            bottom <= -0.10,
+            "variant {variant}: the crown's bottom decile averages n.y = \
+             {bottom:.3} — the underside is the face `ART.md` §5 says every \
+             judge catches, and it cannot read if it faces sideways"
+        );
+    }
+}
+
+/// Mean linear luma of a mesh's vertex colours above `frac` of its own height.
+fn upper_luma(m: &Mesh, frac: f32) -> f64 {
+    let Some(VertexAttributeValues::Float32x3(p)) = m.attribute(Mesh::ATTRIBUTE_POSITION) else {
+        panic!("no positions")
+    };
+    let Some(VertexAttributeValues::Float32x4(c)) = m.attribute(Mesh::ATTRIBUTE_COLOR) else {
+        panic!("no colours")
+    };
+    let hi = p.iter().fold(f32::MIN, |h, v| h.max(v[1]));
+    let v: Vec<f64> = (0..p.len())
+        .filter(|&i| p[i][1] >= hi * frac)
+        .map(|i| 0.2126 * c[i][0] as f64 + 0.7152 * c[i][1] as f64 + 0.0722 * c[i][2] as f64)
+        .collect();
+    assert!(v.len() > 50, "only {} vertices above {frac}", v.len());
+    v.iter().sum::<f64>() / v.len() as f64
+}
+
+/// **The hull and the tree it replaces must agree about how dark a canopy is.**
+///
+/// `impostor_of` rebuilds its colour from `SpeciesDef`'s ramps rather than from
+/// the canopy's vertices, which is right — the bark half is mean-1 for a
+/// photograph and copying it would give a white hull — and it means
+/// `occlude_canopy` reached one side of the swap and not the other. Left alone
+/// that is a tree that gets ~1.9× brighter the moment it crosses
+/// `TREE_LOD_SWAP_M`: the colour pop [`BARK_BAND_TOP_FRAC`]'s own comment says
+/// "no gate in this repo could see".
+///
+/// Now one can. `canopy_mean_shade` reads the shade off the canopy that ships,
+/// so the hull follows it without a second number to keep in step. Proven red
+/// by dropping the `canopy_k` multiply: 1.92× on the conifer, 1.90× on the
+/// broadleaf, against the 1.25 allowed here.
+#[test]
+fn the_far_hull_wears_the_shade_of_the_canopy_it_replaces() {
+    for variant in [0usize, 3] {
+        let (bark, needles) = conifer(variant);
+        let hull = impostor_of(&bark, &needles, variant);
+        // The top quarter: all canopy on both meshes, so the hull's bark blend
+        // is not in the comparison.
+        let near = upper_luma(&needles, 0.75);
+        let far = upper_luma(&hull, 0.75);
+        let ratio = far / near;
+        assert!(
+            (0.80..=1.25).contains(&ratio),
+            "variant {variant}: the far hull's canopy reads {far:.4} against the \
+             near tree's {near:.4} — {ratio:.2}× — so a tree changes brightness \
+             as it crosses TREE_LOD_SWAP_M"
+        );
+    }
+}
+
+/// **The crown's radius profile is per-HEIGHT, and until this gate that claim
+/// was prose.**
+///
+/// `occlude_canopy` normalises a vertex's radius against `R(y)` — the crown's
+/// own width at that height — and its doc comment says why in full: against one
+/// global maximum instead, a cone's apex is narrow, so every vertex up there
+/// reads buried and **the top of every conifer goes dark**, which is the
+/// reverse of the truth and the most exposed part of the tree.
+///
+/// ⚠ **That paragraph was written, and the mutant walked straight through the
+/// five gates beside it.** Swapping `radius_at(v[1])` for `crown_extent(p).2`
+/// passed all twenty-one, because every one of them samples the middle of the
+/// crown where the two agree. This is the trap `CLAUDE.md` names twice — a doc
+/// reading as covered while nothing checks it — caught the only way it can be,
+/// by running the mutant rather than by writing the comment more carefully.
+///
+/// The statistic is the mean shade `occlude_canopy` actually applied, read off
+/// the mesh that ships (`tree::canopy_shade`) against `band`'s ramp, which is
+/// not the thing under test. The apex is more exposed than mid-crown, so it
+/// must come out no darker. Measured: **1.06 / 1.26** on the two species, and
+/// **0.93 / 0.98** under the global-radius mutant — a sign flip, not a margin.
+#[test]
+fn the_crown_profile_follows_the_silhouette_and_not_one_radius() {
+    for variant in [0usize, 3] {
+        let apex = canopy_shade(variant, 0.85, 1.0);
+        let mid = canopy_shade(variant, 0.40, 0.60);
+        let ratio = apex / mid;
+        assert!(
+            ratio >= 1.02,
+            "variant {variant}: the crown's apex carries {apex:.4} of its ramp \
+             against mid-crown's {mid:.4} — {ratio:.3}× — so the top of the tree \
+             is being treated as BURIED. `occlude_canopy` must normalise against \
+             the crown's radius at each height, never against one global maximum"
+        );
+        // And the apex must not be crushed on its own account: a gamma that
+        // buries the whole crown would keep the ratio and lose the tree.
+        assert!(
+            apex >= 0.45,
+            "variant {variant}: the crown's apex carries only {apex:.4} of its \
+             own colour ramp — `CANOPY_AO_GAMMA` has darkened the lit top of \
+             the tree, which is not what the depth term is for"
+        );
+    }
 }

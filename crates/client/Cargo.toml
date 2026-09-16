@@ -147,6 +147,14 @@ name = "tree_sweep"
 path = "examples/tree_sweep.rs"
 required-features = ["render", "native"]
 
+[[example]]
+name = "canopy_probe"
+path = "examples/canopy_probe.rs"
+# `render` for the generator and `native` for the same reason `tree_sweep`
+# takes it: the workspace clippy gate builds every example with NO features,
+# and an example that reaches into `client::render` does not compile there.
+required-features = ["render", "native"]
+
 # The fell gate needs the render module, so it carries the same requirement
 # the binary does — and therefore runs in the renderer tier, not the code one.
 # The conifer's bounds gate: pure geometry, headless, no GPU — but it imports
