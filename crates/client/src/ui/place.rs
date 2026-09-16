@@ -696,6 +696,9 @@ pub fn verdict(
     // Reach, measured to the ANCHOR — the sim's own corner, via the sim's own
     // function. See the header.
     let (ax, az) = anchor(t.cx, t.cz, t.loc);
+    if sim_core::depot::reserves(site.haven, ax, az, BUILD_CELL_M * 1.5) {
+        return Verdict::No("spot taken");
+    }
     let (dx, dz) = (ax - site.at.0, az - site.at.1);
     if dx * dx + dz * dz > BUILD_REACH_M * BUILD_REACH_M {
         return Verdict::No("out of reach");
@@ -1016,6 +1019,9 @@ pub fn deploy_verdict(t: Target, row: u8, site: &DeploySite<'_>) -> DeployVerdic
     // REACH, measured to the sim's own point via the sim's own function —
     // the cell CENTRE for every loc, where build reach uses the anchor.
     let (ax, az) = cell_center(t.cx, t.cz);
+    if sim_core::depot::reserves(site.haven, ax, az, BUILD_CELL_M * 1.5) {
+        return DeployVerdict::No("spot taken");
+    }
     let (dx, dz) = (ax - site.at.0, az - site.at.1);
     if dx * dx + dz * dz > BUILD_REACH_M * BUILD_REACH_M {
         return DeployVerdict::No("out of reach");
@@ -1239,6 +1245,59 @@ mod tests {
     fn the_level_is_clamped_to_the_grids_ceiling() {
         let t = target(9.0, 9.0, 0.0, 1.0, SHAPE_WALL, 250);
         assert!((t.level as usize) < MAX_BUILD_LEVELS);
+    }
+
+    #[test]
+    fn depot_reservation_refuses_both_previews_before_reach_or_cost() {
+        let seed = 20260731;
+        let haven = sim_core::terrain::haven(seed);
+        let depot = haven
+            .minor
+            .iter()
+            .find(|w| sim_core::depot::is_depot(w))
+            .unwrap();
+        let t = Target {
+            cx: (depot.x / BUILD_CELL_M) as u16,
+            cz: (depot.z / BUILD_CELL_M) as u16,
+            level: 0,
+            loc: LOC_PLANE,
+        };
+        let content = free_table(SHAPE_FOUNDATION);
+        let inv = empty_inv();
+        let cols = sim_core::collide::ColIndex::new();
+        let site = Site {
+            seed,
+            haven: &haven,
+            at: (0.0, 0.0),
+            taken: &[],
+            cols: &cols,
+            content: &content,
+            inv: &inv,
+        };
+        assert_eq!(
+            verdict(t, 0, SHAPE_FOUNDATION, &site, false, 0),
+            Verdict::No("spot taken")
+        );
+        let mut defs = DeployContent::EMPTY;
+        defs.def_count = 1;
+        defs.defs[0].hp = 100;
+        defs.defs[0].placement = PLACE_GROUND;
+        let deploy = DeploySite {
+            seed,
+            haven: &haven,
+            at: (0.0, 0.0),
+            pieces: &[],
+            piece_defs: &content,
+            piece_have: 1,
+            deploys: &[],
+            deploy_defs: &defs,
+            deploy_have: 1,
+            inv: &inv,
+        };
+        assert_eq!(
+            deploy_verdict(t, 0, &deploy),
+            DeployVerdict::No("spot taken")
+        );
     }
 
     #[test]

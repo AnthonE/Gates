@@ -29,10 +29,11 @@ use client::ui::map::{Mark, MarkKind};
 
 /// Every kind. A `match` over each one so a kind added without a row here
 /// fails to compile rather than going unspawned.
-const KINDS: [MarkKind; 7] = [
+const KINDS: [MarkKind; 8] = [
     MarkKind::None,
     MarkKind::Haven,
     MarkKind::Waystation,
+    MarkKind::Depot,
     MarkKind::Bed,
     MarkKind::BedSpent,
     MarkKind::Hearth,
@@ -164,4 +165,30 @@ fn a_mark_with_no_icon_is_still_a_mark() {
             .count();
         assert_eq!(pictures, 0, "{kind:?} drew a picture with no icons loaded");
     }
+}
+
+/// The depot uses the current destination badge API, including its label,
+/// rather than restoring the former bare-square marker implementation.
+#[test]
+fn depot_badge_is_hollow_and_names_the_freight_destination() {
+    let (app, parent) = draw(MarkKind::Depot, true);
+    let badge = children(&app, parent)[0];
+    let colour = app.world().entity(badge).get::<BackgroundColor>().unwrap();
+    let (haven_app, haven_parent) = draw(MarkKind::Haven, true);
+    let haven_badge = children(&haven_app, haven_parent)[0];
+    let haven_colour = haven_app
+        .world()
+        .entity(haven_badge)
+        .get::<BackgroundColor>()
+        .unwrap();
+    assert_eq!(colour.0, haven_colour.0);
+    let label_row = children(&app, badge)
+        .into_iter()
+        .find(|e| !app.world().entity(*e).contains::<ImageNode>())
+        .expect("destination label row");
+    let text = children(&app, label_row)
+        .into_iter()
+        .find_map(|e| app.world().entity(e).get::<Text>().map(|t| t.0.clone()))
+        .expect("destination text");
+    assert_eq!(text, "DEPOT");
 }

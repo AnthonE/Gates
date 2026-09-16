@@ -513,6 +513,8 @@ pub enum MarkKind {
     Haven,
     /// A waystation: the lesser tier of the same search.
     Waystation,
+    /// The inland freight depot: an industrial destination.
+    Depot,
     /// A deployed sleeping bag: where you WAKE.
     Bed,
     /// One of **your own** bags whose cooldown has not lapsed — a bed the
@@ -536,9 +538,8 @@ impl MarkKind {
     /// shared one would vanish over exactly that biome, and the test below
     /// holds every fill a measured distance off every ground colour.
     ///
-    /// Haven and waystation share one fill on purpose: they are one class of
-    /// thing (an authored destination, tiered), and the renderer separates
-    /// the tiers by size. Bed, hearth and bag are the browser layer's own
+    /// Authored destinations share one fill; labels name the place and size
+    /// distinguishes the haven. Bed, hearth and bag are the browser layer's own
     /// colours: cool blue for the thing you sleep on, ember for fire, straw
     /// for loot.
     pub fn fill(self) -> [f32; 3] {
@@ -546,7 +547,7 @@ impl MarkKind {
             // Never drawn: `Marks::count` bounds every reader. Black, so a
             // bug that draws it anyway is visible instead of plausible.
             MarkKind::None => [0.0, 0.0, 0.0],
-            MarkKind::Haven | MarkKind::Waystation => [232.0, 228.0, 218.0],
+            MarkKind::Haven | MarkKind::Waystation | MarkKind::Depot => [232.0, 228.0, 218.0],
             // A spent bag is the SAME blue as a ready one: the colour says
             // "this is a bed of yours", and the renderer's shape says
             // whether it will answer. Two blues would be the one channel a
@@ -576,9 +577,8 @@ impl MarkKind {
     /// `sleeping_bag` and `hearth` are the item set's own files — a bed on
     /// the map and a bed in your inventory are the same object, and two
     /// drawings of it would be two things to keep in step. `map_site` serves
-    /// BOTH authored tiers because [`MarkKind::fill`] already decided they
-    /// are one class of thing separated by size, and a second drawing would
-    /// be a second channel saying what the size says.
+    /// authored destinations; their labels distinguish haven, waystation and
+    /// depot, and size distinguishes the haven.
     ///
     /// `None` only for [`MarkKind::None`], which is never drawn — every live
     /// kind has a picture, and the exhaustive `match` is what keeps that true
@@ -588,7 +588,7 @@ impl MarkKind {
     pub fn icon(self) -> Option<&'static str> {
         match self {
             MarkKind::None => None,
-            MarkKind::Haven | MarkKind::Waystation => Some("map_site"),
+            MarkKind::Haven | MarkKind::Waystation | MarkKind::Depot => Some("map_site"),
             MarkKind::Bed | MarkKind::BedSpent => Some("sleeping_bag"),
             MarkKind::Hearth => Some("hearth"),
             MarkKind::Backpack => Some("backpack"),
@@ -606,14 +606,13 @@ impl MarkKind {
     /// somebody died; naming those would print the same three words a dozen
     /// times over the island and bury the two places that are landmarks.
     ///
-    /// The lesser tiers share one word for [`MarkKind::fill`]'s reason: the
-    /// map does not distinguish a waystation from an inland site, because
-    /// `resolve_marks` does not either (the ground does not — the same canopy
-    /// stands on both).
+    /// The inland depot has its own name because its warehouse and through
+    /// yard are a distinct destination from a coastal waystation canopy.
     pub fn site_label(self) -> Option<&'static str> {
         match self {
             MarkKind::Haven => Some("HAVEN"),
             MarkKind::Waystation => Some("WAYSTATION"),
+            MarkKind::Depot => Some("DEPOT"),
             MarkKind::None
             | MarkKind::Bed
             | MarkKind::BedSpent
@@ -722,13 +721,13 @@ pub fn resolve_marks(
     out.dropped = 0;
 
     out.push(MarkKind::Haven, haven.x, haven.z);
-    // **One mark kind for every lesser tier, deliberately.** An inland site
-    // is a waystation's massing standing somewhere else — the same canopy,
-    // the same footprint — so the map says the same thing the ground does.
-    // Giving the interior tier its own glyph is an icon and a spoken call,
-    // not a builder's edit (`assets/icons/CREDITS.md` is the rail).
-    for w in &haven.minor {
-        out.push(MarkKind::Waystation, w.x, w.z);
+    for w in haven.minor.iter().filter(|w| w.live) {
+        let kind = if sim_core::depot::is_depot(w) {
+            MarkKind::Depot
+        } else {
+            MarkKind::Waystation
+        };
+        out.push(kind, w.x, w.z);
     }
 
     let have = have.min(defs.def_count);
@@ -1115,8 +1114,15 @@ mod tests {
             );
         }
         for (k, m) in out.a[1..AUTHORED].iter().enumerate() {
-            assert_eq!(m.kind, MarkKind::Waystation);
             let w = &haven.minor[k];
+            assert_eq!(
+                m.kind,
+                if sim_core::depot::is_depot(w) {
+                    MarkKind::Depot
+                } else {
+                    MarkKind::Waystation
+                }
+            );
             assert_eq!((m.px, m.py), world_to_map(w.x, w.z, 1));
         }
     }
@@ -1413,6 +1419,7 @@ mod tests {
         for kind in [
             MarkKind::Haven,
             MarkKind::Waystation,
+            MarkKind::Depot,
             MarkKind::Bed,
             MarkKind::BedSpent,
             MarkKind::Hearth,
@@ -1574,11 +1581,12 @@ mod tests {
 
     /// Every kind. The `match` is what keeps it honest: a kind added without
     /// a row here fails to compile rather than going unchecked.
-    fn all_kinds() -> [MarkKind; 7] {
+    fn all_kinds() -> [MarkKind; 8] {
         let all = [
             MarkKind::None,
             MarkKind::Haven,
             MarkKind::Waystation,
+            MarkKind::Depot,
             MarkKind::Bed,
             MarkKind::BedSpent,
             MarkKind::Hearth,
@@ -1589,6 +1597,7 @@ mod tests {
                 MarkKind::None
                 | MarkKind::Haven
                 | MarkKind::Waystation
+                | MarkKind::Depot
                 | MarkKind::Bed
                 | MarkKind::BedSpent
                 | MarkKind::Hearth
@@ -1614,9 +1623,10 @@ mod tests {
         // the picture say "a bed of yours" and the WEIGHT says whether it
         // will answer.
         assert_eq!(MarkKind::Bed.icon(), MarkKind::BedSpent.icon());
-        // Both authored tiers share one for `fill`'s other reason: they are
-        // one class of thing, separated by size at the draw.
+        // Authored destinations share a picture; name and size distinguish
+        // their place in the world.
         assert_eq!(MarkKind::Haven.icon(), MarkKind::Waystation.icon());
+        assert_eq!(MarkKind::Haven.icon(), MarkKind::Depot.icon());
     }
 
     /// Only an authored destination is named. A label on a bed or a bag
@@ -1624,10 +1634,11 @@ mod tests {
     /// two places that are landmarks.
     #[test]
     fn only_the_authored_tier_is_named() {
+        assert_eq!(MarkKind::Depot.site_label(), Some("DEPOT"));
         for k in all_kinds() {
             assert_eq!(
                 k.site_label().is_some(),
-                matches!(k, MarkKind::Haven | MarkKind::Waystation),
+                matches!(k, MarkKind::Haven | MarkKind::Waystation | MarkKind::Depot),
                 "{k:?} is the wrong way round about carrying a name"
             );
         }

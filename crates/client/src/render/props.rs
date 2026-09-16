@@ -565,6 +565,10 @@ impl Default for Soup {
 }
 
 impl Soup {
+    pub(super) fn is_empty(&self) -> bool {
+        self.pos.is_empty()
+    }
+
     /// A soup whose box projection tiles `scale` times per metre.
     pub(super) fn tiling(scale: f32) -> Self {
         Self {
