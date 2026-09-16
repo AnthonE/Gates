@@ -46,7 +46,7 @@ use bevy::prelude::*;
 use bevy::window::{PresentMode, PrimaryWindow, WindowMode};
 
 use super::quality;
-use crate::config::{self, Persisted, Quality};
+use crate::config::{self, Ao, Persisted, Quality};
 use crate::ui::servers::Favourites;
 
 use super::rig::{EyeCam, FOV_DEG};
@@ -63,6 +63,19 @@ pub const FOV_STEP_DEG: f32 = 5.0;
 pub const SENS_MIN: f32 = 0.25;
 pub const SENS_MAX: f32 = 3.0;
 pub const SENS_STEP: f32 = 0.05;
+
+/// Which preset a fresh install lands on, per target.
+///
+/// Native is the frame that shipped; a browser is what the page has been
+/// drawing since it existed. Written beside [`quality::default_gfx`] rather
+/// than derived from it because the two are a pair — the preset NAME the
+/// screen shows and the VALUES the renderer gets — and `tests/quality.rs`
+/// fails if they stop agreeing.
+#[cfg(target_arch = "wasm32")]
+pub const DEFAULT_PRESET: Quality = Quality::Low;
+/// See the wasm32 arm.
+#[cfg(not(target_arch = "wasm32"))]
+pub const DEFAULT_PRESET: Quality = Quality::High;
 
 /// Volume sliders run 0..1 in tenths — the reference's `audio.master`,
 /// `audio.game` and `audio.ambience` are 0..1 convars and its options screen
@@ -82,9 +95,17 @@ pub const CATEGORIES: [&str; 7] = [
 #[derive(Resource)]
 pub struct Settings {
     pub fov_deg: f32,
-    /// How much the renderer is asked to do — `render/quality.rs` is the
-    /// table, `config::Quality` is the ladder and the file format.
+    /// **The preset last picked, which is not the same thing as what the
+    /// renderer is doing** — [`Self::gfx`] is. This field survives a player
+    /// moving an individual row so that the QUALITY stepper has somewhere to
+    /// step FROM, and so that an older build reading the file (which knows
+    /// `quality` and none of the rows) lands on a frame somebody designed
+    /// rather than on the default.
     pub quality: Quality,
+    /// **What the renderer is actually asked for**, one field per row on the
+    /// GRAPHICS tab. `render/quality.rs` owns the type, the preset table and
+    /// the per-target clamp.
+    pub gfx: quality::Gfx,
     /// A multiplier on `input::MOUSE_RAD_PER_PX`, not a replacement for it.
     pub sensitivity: f32,
     pub invert_look: bool,
@@ -124,10 +145,14 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             fov_deg: FOV_DEG,
-            // The frame the client drew before tiers existed. Anything else
-            // as a default would be a visual change nobody asked for,
-            // arriving as a side effect of a performance feature.
-            quality: Quality::default(),
+            // The frame the client drew before tiers existed — and in a
+            // browser, the frame the page has drawn since it existed.
+            // Anything else as a default would be a visual change nobody
+            // asked for, arriving as a side effect of a performance feature.
+            // `quality::default_gfx` is the one owner of that per-target
+            // choice; this pair must agree, and `tests/quality.rs` says so.
+            quality: DEFAULT_PRESET,
+            gfx: quality::default_gfx(),
             sensitivity: 1.0,
             invert_look: false,
             vsync: true,
@@ -195,7 +220,17 @@ impl Default for Settings {
 /// match rather than five queries.
 #[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Knob {
+    /// The preset. Writes every row below it at once; the rows below then
+    /// move off it one at a time, and this row reads CUSTOM when they have.
     Quality,
+    Shadows,
+    ShadowDistance,
+    ShadowCascades,
+    ShadowMapPx,
+    Ambient,
+    Smaa,
+    Bloom,
+    TreeLod,
     DiscordPresence,
     DiscordShareServer,
     Vsync,
@@ -224,13 +259,54 @@ impl Settings {
             // on the far end of the ladder from where they were looking —
             // which for this knob means the frame changing completely on a
             // click that was meant to nudge it.
+            //
+            // **Stepping this row REWRITES every row below it**, which is
+            // what makes it a preset rather than a label. It steps from the
+            // preset the rows currently match if they match one, so a player
+            // who moved a single row and then clicks + lands on the rung
+            // above the one they were customizing rather than on the rung
+            // above whatever they last pressed.
             Knob::Quality => {
-                let at = Quality::LADDER
-                    .iter()
-                    .position(|q| *q == self.quality)
+                let at = self
+                    .preset_name()
+                    .or(Some(self.quality))
+                    .and_then(|q| Quality::LADDER.iter().position(|l| *l == q))
                     .unwrap_or(Quality::LADDER.len() - 1) as i32;
                 let want = (at + delta.signum()).clamp(0, Quality::LADDER.len() as i32 - 1);
                 self.quality = Quality::LADDER[want as usize];
+                self.gfx = quality::effective(quality::preset(self.quality));
+            }
+            Knob::Shadows => self.gfx.shadows = !self.gfx.shadows,
+            Knob::ShadowDistance => {
+                self.gfx.shadow_m =
+                    step_ladder(&quality::SHADOW_M_LADDER, self.gfx.shadow_m, delta);
+            }
+            // Clamped to what the TARGET can draw, not to a taste range: a
+            // browser stops at one (`quality::max_cascades`), and a stepper
+            // that let a player click past the ceiling would be offering a
+            // number the engine silently discards — which is the exact bug
+            // this slice exists to fix.
+            Knob::ShadowCascades => {
+                let want = self.gfx.cascades as i32 + delta.signum();
+                self.gfx.cascades = want.clamp(1, quality::max_cascades() as i32) as usize;
+            }
+            Knob::ShadowMapPx => {
+                let want = step_ladder(&quality::SHADOW_PX_LADDER, self.gfx.shadow_map_px, delta);
+                self.gfx.shadow_map_px = want.min(quality::max_shadow_map_px());
+            }
+            Knob::Ambient => {
+                let at = Ao::LADDER
+                    .iter()
+                    .position(|a| *a == self.gfx.ao)
+                    .unwrap_or(0) as i32;
+                let want = (at + delta.signum()).clamp(0, Ao::LADDER.len() as i32 - 1);
+                self.gfx.ao = Ao::LADDER[want as usize];
+            }
+            Knob::Smaa => self.gfx.smaa = !self.gfx.smaa,
+            Knob::Bloom => self.gfx.bloom = !self.gfx.bloom,
+            Knob::TreeLod => {
+                self.gfx.tree_lod_swap_m =
+                    step_ladder(&quality::TREE_LOD_LADDER, self.gfx.tree_lod_swap_m, delta);
             }
             Knob::Vsync => self.vsync = !self.vsync,
             Knob::MaxFps => self.max_fps = step_fps(self.max_fps, delta),
@@ -276,10 +352,50 @@ impl Settings {
         self.dirty = true;
     }
 
+    /// The defaults with one preset applied to **both** graphics halves.
+    ///
+    /// **It exists because `Settings { quality: Low, ..default() }` is a
+    /// footgun now and was not before.** `quality` used to be the whole of
+    /// the graphics state; it is a label on [`Self::gfx`] today, so that
+    /// struct-update expression builds a settings object claiming LOW and
+    /// drawing HIGH. Every caller that means "a player on this rung" wants
+    /// this.
+    pub fn with_preset(q: Quality) -> Self {
+        Self {
+            quality: q,
+            gfx: quality::effective(quality::preset(q)),
+            ..Self::default()
+        }
+    }
+
+    /// The preset the graphics rows currently spell out exactly, if any.
+    ///
+    /// **`None` is CUSTOM**, and it is derived rather than tracked by a flag
+    /// for the reason this screen already applies to its derived fact rows: a
+    /// flag is a second copy of the truth, and the copy is what goes stale. A
+    /// player who pulls a row off HIGH and then puts it back is on HIGH
+    /// again, with nothing to reset.
+    pub fn preset_name(&self) -> Option<Quality> {
+        Quality::LADDER
+            .into_iter()
+            .find(|q| quality::effective(quality::preset(*q)) == self.gfx)
+    }
+
     /// What the control on this row currently reads.
     fn value(&self, knob: Knob) -> String {
         match knob {
-            Knob::Quality => self.quality.name().to_uppercase(),
+            Knob::Quality => match self.preset_name() {
+                Some(q) => q.name().to_uppercase(),
+                None => "CUSTOM".to_string(),
+            },
+            Knob::Shadows => on_off(self.gfx.shadows),
+            Knob::ShadowDistance => format!("{:.0}", self.gfx.shadow_m),
+            Knob::ShadowCascades => format!("{}", self.gfx.cascades),
+            Knob::ShadowMapPx => format!("{}", self.gfx.shadow_map_px),
+            Knob::Ambient => self.gfx.ao.name().to_uppercase(),
+            Knob::Smaa => on_off(self.gfx.smaa),
+            Knob::Bloom => on_off(self.gfx.bloom),
+            Knob::TreeLod => format!("{:.0}", self.gfx.tree_lod_swap_m),
             Knob::Vsync => on_off(self.vsync),
             Knob::MaxFps => {
                 if self.max_fps == 0 {
@@ -319,6 +435,23 @@ impl Settings {
             vol_music: self.vol_music,
             discord_presence: self.discord_presence,
             discord_share_server: self.discord_share_server,
+            // Every row written out, always. `GfxFile`'s `None` means "the
+            // file did not say", which is a state only an OLDER file (or a
+            // test) can be in — the game always knows what it is drawing, so
+            // the game always writes it. That is also what makes the
+            // preset/row disagreement survivable: a player on HIGH who pulled
+            // the shadows in gets both facts on disk, and neither is inferred
+            // at the next boot.
+            gfx: config::GfxFile {
+                ao: Some(self.gfx.ao),
+                smaa: Some(self.gfx.smaa),
+                bloom: Some(self.gfx.bloom),
+                shadows: Some(self.gfx.shadows),
+                shadow_m: Some(self.gfx.shadow_m),
+                shadow_cascades: Some(self.gfx.cascades as u8),
+                shadow_map_px: Some(self.gfx.shadow_map_px as u16),
+                tree_lod_m: Some(self.gfx.tree_lod_swap_m),
+            },
         }
     }
 
@@ -337,6 +470,7 @@ impl Settings {
             // the default), so unlike every numeric row above there is no
             // out-of-range state to sanitize here.
             quality: p.quality,
+            gfx: gfx_from_file(p.quality, p.gfx),
             sensitivity: step(p.sensitivity, SENS_STEP).clamp(SENS_MIN, SENS_MAX),
             invert_look: p.invert_look,
             vsync: p.vsync,
@@ -368,6 +502,68 @@ impl Settings {
             ..Self::default()
         }
     }
+}
+
+/// **The preset, then whatever the file overrode** — the one place a settings
+/// file's graphics half is resolved.
+///
+/// The order is what makes an old file upgrade for free: a file written
+/// before the rows existed carries none of them, every field is `None`, and
+/// the player gets exactly the preset column they had. A file written by this
+/// build carries all eight and the preset contributes nothing.
+///
+/// Sanitizing is here beside the steppers, which is this module's standing
+/// rule (`config::parse`'s own header says range work does not live there,
+/// because two sanitizers drift). Three different rules, each for a reason:
+///
+///   * **Clamped to the ladder's ends but honoured in between** — the
+///     distances. [`MAX_FPS_LADDER`]'s posture: a hand-edited `shadow_m =
+///     120` is a distance a person could mean, and [`step_ladder`] steps off
+///     it correctly. What is refused is the range outside, where the builder
+///     that consumes it starts asserting.
+///   * **Snapped to a rung** — the shadow map size, and this one is not
+///     taste. `calculate_cascade` divides an integer cascade diameter by it
+///     and notes that a power of two is what keeps the texel size exactly
+///     representable; an off-power size makes shadow edges crawl as the
+///     camera moves, which is a defect nobody would connect back to the file
+///     they edited.
+///   * **Clamped to what the TARGET can draw** — the cascade count, from
+///     [`quality::max_cascades`] rather than from a number written here.
+fn gfx_from_file(preset: Quality, f: config::GfxFile) -> quality::Gfx {
+    let base = quality::effective(quality::preset(preset));
+    let span = |ladder: &[f32], v: f32| v.clamp(ladder[0], ladder[ladder.len() - 1]);
+    quality::Gfx {
+        ao: f.ao.unwrap_or(base.ao),
+        smaa: f.smaa.unwrap_or(base.smaa),
+        bloom: f.bloom.unwrap_or(base.bloom),
+        shadows: f.shadows.unwrap_or(base.shadows),
+        shadow_m: span(
+            &quality::SHADOW_M_LADDER,
+            f.shadow_m.unwrap_or(base.shadow_m),
+        ),
+        cascades: (f.shadow_cascades.map(usize::from).unwrap_or(base.cascades))
+            .clamp(1, quality::max_cascades()),
+        shadow_map_px: nearest_px(
+            f.shadow_map_px
+                .map(usize::from)
+                .unwrap_or(base.shadow_map_px),
+        ),
+        tree_lod_swap_m: span(
+            &quality::TREE_LOD_LADDER,
+            f.tree_lod_m.unwrap_or(base.tree_lod_swap_m),
+        ),
+    }
+}
+
+/// The rung of [`quality::SHADOW_PX_LADDER`] nearest `px`, then capped at what
+/// this target can allocate. See [`gfx_from_file`] for why this one snaps
+/// where the distances do not.
+fn nearest_px(px: usize) -> usize {
+    let best = quality::SHADOW_PX_LADDER
+        .into_iter()
+        .min_by_key(|rung| rung.abs_diff(px))
+        .unwrap_or(1024);
+    best.min(quality::max_shadow_map_px())
 }
 
 /// What is on the disk right now, held so [`save_on_change`] can tell a real
@@ -505,6 +701,31 @@ fn step_fps(v: u16, delta: i32) -> u16 {
     MAX_FPS_LADDER[next as usize]
 }
 
+/// One click along a ladder of rungs, clamped at both ends rather than
+/// wrapping — [`step_fps`]'s rule, for [`step_fps`]'s reason: a wrap puts the
+/// far end of the ladder one click from where the player was looking.
+///
+/// **Phrased as "the next rung strictly past `v`" rather than as an index
+/// step**, which is what makes a value the ladder does not carry behave. A
+/// hand-edited settings file said something and it is not this function's
+/// place to discard it, so a `shadow_m = 120` sits between two rungs — and
+/// index-stepping from "the nearest rung at or above" would send `+` to 200,
+/// skipping the 140 it is sitting just below. Searching past `v` sends it to
+/// 140 and to 90, which is what a player watching the number expects.
+///
+/// The ascending-ladder assumption is the caller's, and `tests/quality.rs`
+/// asserts it of every ladder this file steps. (It is why [`MAX_FPS_LADDER`]
+/// keeps its own stepper: 0 means *uncapped* and sits LAST, so that ladder is
+/// not ordered by value.)
+fn step_ladder<T: Copy + PartialOrd>(ladder: &[T], v: T, delta: i32) -> T {
+    let last = ladder.len() - 1;
+    match delta.signum() {
+        1 => ladder[ladder.iter().position(|r| *r > v).unwrap_or(last)],
+        -1 => ladder[ladder.iter().rposition(|r| *r < v).unwrap_or(0)],
+        _ => v,
+    }
+}
+
 /// One click of a volume slider, rounded onto the step and clamped to 0..1.
 fn step_vol(v: f32, delta: i32) -> f32 {
     let steps = ((v + delta as f32 * VOL_STEP) / VOL_STEP).round();
@@ -520,6 +741,44 @@ fn on_off(b: bool) -> String {
         "ON".to_string()
     } else {
         "OFF".to_string()
+    }
+}
+
+/// What this target refuses of what the player asked for, in a sentence.
+///
+/// **Derived by diffing the choice against [`quality::effective`]**, never
+/// written out per target — a hand-kept list of "what the browser cannot do"
+/// is the mirror-goes-stale defect `CLAUDE.md` names three times, and this
+/// screen would be the last place anybody looked for it. So a clamp that is
+/// added to `effective` shows up here the same day, and a clamp that is
+/// removed stops being claimed.
+fn target_note(s: &Settings) -> String {
+    let want = s.gfx;
+    let got = quality::effective(want);
+    let mut notes: Vec<String> = Vec::new();
+    if got.cascades != want.cascades {
+        notes.push(format!(
+            "{} shadow cascade{} - the engine supports no more here",
+            got.cascades,
+            if got.cascades == 1 { "" } else { "s" }
+        ));
+    }
+    if got.shadow_map_px != want.shadow_map_px {
+        notes.push(format!("shadow map held at {}px", got.shadow_map_px));
+    }
+    if got.ao != want.ao {
+        notes.push(format!("ambient occlusion {}", got.ao.name()));
+    }
+    if got.tree_lod_swap_m != want.tree_lod_swap_m {
+        notes.push(format!(
+            "far trees held out to {:.0} m",
+            got.tree_lod_swap_m
+        ));
+    }
+    if notes.is_empty() {
+        "everything above is what the renderer gets".to_string()
+    } else {
+        notes.join(", ")
     }
 }
 
@@ -576,36 +835,42 @@ fn rows(cat: usize) -> Vec<Row> {
         // the renderer does, or it becomes the most confidently wrong thing
         // in the game.
         "GRAPHICS" => vec![
-            Row::Number("QUALITY", Knob::Quality, "the renderer's budget"),
-            Row::FactOf("  ambient occlusion", |s| {
-                match quality::tier(s.quality).ssao {
-                    Some(q) => format!("SSAO {q:?}").to_lowercase(),
-                    None => "off".to_string(),
+            Row::Number("QUALITY", Knob::Quality, "a preset for the rows below"),
+            Row::Toggle("SHADOWS", Knob::Shadows),
+            Row::Number("  distance", Knob::ShadowDistance, "metres"),
+            Row::Number("  cascades", Knob::ShadowCascades, "slices of it"),
+            Row::Number("  shadow map", Knob::ShadowMapPx, "texels a side"),
+            // **The row that answers the question this slice was asked**
+            // ("shadow stuff is kinda garbage with distance"), and it is
+            // derived rather than written out because the answer is
+            // arithmetic on the three rows above it — see
+            // `quality::far_texel_m`. A shadow edge cannot be finer than one
+            // texel, so this is the size of the stair-step at the far end of
+            // the last cascade, in centimetres of world.
+            Row::FactOf("  detail at the far edge", |s| {
+                let g = quality::effective(s.gfx);
+                if !g.shadows {
+                    return "no shadows".to_string();
                 }
-            }),
-            Row::FactOf("  anti-aliasing", |s| {
-                if quality::tier(s.quality).smaa {
-                    "SMAA".to_string()
-                } else {
-                    "off".to_string()
-                }
-            }),
-            Row::FactOf("  bloom", |s| {
-                on_off(quality::tier(s.quality).bloom).to_string()
-            }),
-            Row::FactOf("  shadows", |s| {
-                let t = quality::tier(s.quality);
                 format!(
-                    "{} cascades to {:.0} m at {}px",
-                    t.cascades, t.shadow_m, t.shadow_map_px
+                    "{:.0} cm per texel at {:.0} m  -  {:.0} MiB",
+                    quality::far_texel_m(g, s.fov_deg) * 100.0,
+                    g.shadow_m,
+                    quality::shadow_vram_mb(g),
                 )
             }),
-            Row::FactOf("  far trees", |s| {
-                format!(
-                    "one hull past {:.0} m",
-                    quality::tier(s.quality).tree_lod_swap_m
-                )
-            }),
+            Row::Number("AMBIENT OCCLUSION", Knob::Ambient, "contact shading"),
+            Row::Toggle("ANTI-ALIASING (SMAA)", Knob::Smaa),
+            Row::Toggle("BLOOM", Knob::Bloom),
+            Row::Number("FAR TREES", Knob::TreeLod, "metres to the hull"),
+            // **What this TARGET does with the rows above, where it differs.**
+            // A setting that silently does nothing is worse than one that is
+            // honestly refused — `CLAUDE.md`'s own trap list says a path
+            // switched off for one target reads as handled, and the browser
+            // shadow bug this slice fixes was exactly that: two cascades
+            // asked for, one drawn, a `warn!` into a console nobody reads.
+            // Absent on the desktop, where nothing is clamped.
+            Row::FactOf("  on this machine", target_note),
             Row::Number("FIELD OF VIEW", Knob::Fov, "vertical degrees"),
             // Still fixed, and still a fact: the rings decide which tiles
             // EXIST, so moving one is a streaming change rather than a draw
@@ -972,7 +1237,13 @@ fn spawn_row(
                             ),
                             (
                                 Node {
-                                    width: Val::Px(52.0),
+                                    // Wide enough for the longest value any
+                                    // stepper produces - "UNCAPPED" on the
+                                    // fps row, "MEDIUM" on ambient occlusion
+                                    // - because the pane clips and a value
+                                    // that overflowed would sit under the
+                                    // "+" it belongs to.
+                                    width: Val::Px(84.0),
                                     justify_content: JustifyContent::Center,
                                     ..default()
                                 },
@@ -1247,6 +1518,42 @@ mod tests {
         }
     }
 
+    /// **Every row actually produces its value**, on every preset.
+    ///
+    /// `build` is the only thing that calls a `FactOf`'s function, and
+    /// `build` needs a `Commands`. So a derived row that panicked — an index
+    /// off a ladder, a divide by a zeroed map size — or that quietly resolved
+    /// to nothing would reach the player and not a gate: `CLAUDE.md`'s "a
+    /// spawn is a claim you have to run", one layer up. This runs the value
+    /// side of every row in every category, which is what a settings screen
+    /// mostly IS.
+    #[test]
+    fn every_row_can_state_its_value() {
+        for q in Quality::LADDER {
+            let mut s = Settings::with_preset(q);
+            // …and once with shadows off, which is the branch the far-edge
+            // readout short-circuits on.
+            for shadows in [true, false] {
+                s.gfx.shadows = shadows;
+                for (cat, name) in CATEGORIES.iter().enumerate() {
+                    s.cat = cat;
+                    for row in rows(cat) {
+                        let (label, value) = match row {
+                            Row::Note(t) => ("note", t.to_string()),
+                            Row::Fact(l, v) => (l, v.to_string()),
+                            Row::FactOf(l, of) => (l, of(&s)),
+                            Row::Toggle(l, k) | Row::Number(l, k, _) => (l, s.value(k)),
+                        };
+                        assert!(
+                            !value.trim().is_empty(),
+                            "{name} row {label:?} states nothing"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn the_defaults_are_the_rig_the_client_ships() {
         // A settings screen that opens on a value the renderer is not using
@@ -1382,5 +1689,193 @@ mod tests {
         // and the first click wrote a file the player never asked for.
         let d = Settings::default().persisted();
         assert_eq!(Settings::from_persisted(d).persisted(), d);
+    }
+
+    /// The fresh-install pair agrees with itself.
+    ///
+    /// `DEFAULT_PRESET` is the NAME the QUALITY row shows and
+    /// `quality::default_gfx` is what the renderer gets. They are written in
+    /// two places because they are two different kinds of thing; if they ever
+    /// disagreed, a fresh install would open the settings screen reading
+    /// CUSTOM, which is the one value no default should ever show.
+    #[test]
+    fn a_fresh_install_reads_as_a_preset_and_not_as_custom() {
+        let s = Settings::default();
+        assert_eq!(
+            s.preset_name(),
+            Some(DEFAULT_PRESET),
+            "the defaults resolve to {:?} while the QUALITY row would say {:?}",
+            s.preset_name(),
+            DEFAULT_PRESET
+        );
+        assert_eq!(s.value(Knob::Quality), DEFAULT_PRESET.name().to_uppercase());
+    }
+
+    /// **A settings file written before the graphics rows existed gets
+    /// exactly the preset it had.**
+    ///
+    /// The whole upgrade path, in one assertion. `GfxFile::default()` is
+    /// eight `None`s, which is what `config::parse` hands back for a file
+    /// that never mentioned a row — and the answer has to be the preset
+    /// column, not the row defaults, or every player with a settings file
+    /// would have booted into a frame nobody chose.
+    #[test]
+    fn an_older_file_upgrades_to_the_preset_it_named() {
+        for q in Quality::LADDER {
+            assert_eq!(
+                gfx_from_file(q, config::GfxFile::default()),
+                quality::effective(quality::preset(q)),
+                "a file that said only `quality = \"{}\"` must resolve to \
+                 that preset exactly",
+                q.name()
+            );
+        }
+    }
+
+    /// The upgrade end to end, down the path the game actually takes.
+    ///
+    /// `an_older_file_upgrades_to_the_preset_it_named` checks the resolver and
+    /// `config`'s own suite checks the parser; this is the two joined, with
+    /// the SAME defaults `load` passes — which is the argument that made the
+    /// parser's half wrong in the first draft (`config::parse`'s comment).
+    #[test]
+    fn a_file_from_before_the_rows_boots_into_the_preset_it_named() {
+        for q in Quality::LADDER {
+            let text = format!("version = 1\nquality = \"{}\"\n", q.name());
+            let loaded = config::parse(&text, Settings::default().persisted());
+            let s = Settings::from_persisted(loaded.values);
+            assert_eq!(
+                s.gfx,
+                quality::effective(quality::preset(q)),
+                "a pre-rows file naming {q:?} booted into something else"
+            );
+            assert_eq!(
+                s.preset_name(),
+                Some(q),
+                "…and the QUALITY row would not even say {q:?}"
+            );
+        }
+    }
+
+    /// A hand-edited file cannot reach a state the screen cannot.
+    ///
+    /// The three sanitizing rules, each tested at the value that would have
+    /// hurt: a distance past the ladder (which `CascadeShadowConfigBuilder`
+    /// would have had opinions about), a shadow map that is not a power of
+    /// two (shadow edges crawl under a moving camera), and a cascade count
+    /// past what this target draws (silently discarded by the engine, which
+    /// is the bug this slice exists to fix).
+    #[test]
+    fn a_hand_edited_graphics_row_lands_where_a_click_could_have_put_it() {
+        let wild = config::GfxFile {
+            ao: Some(Ao::Ultra),
+            smaa: Some(true),
+            bloom: Some(true),
+            shadows: Some(true),
+            shadow_m: Some(5000.0),
+            shadow_cascades: Some(99),
+            shadow_map_px: Some(3000),
+            tree_lod_m: Some(1.0),
+        };
+        let g = gfx_from_file(Quality::High, wild);
+        assert_eq!(
+            g.shadow_m,
+            quality::SHADOW_M_LADDER[quality::SHADOW_M_LADDER.len() - 1]
+        );
+        assert_eq!(
+            g.tree_lod_swap_m,
+            quality::TREE_LOD_LADDER[0],
+            "a tree swap under the ladder must land on its bottom rung"
+        );
+        assert!(
+            quality::SHADOW_PX_LADDER.contains(&g.shadow_map_px)
+                && g.shadow_map_px.is_power_of_two(),
+            "3000 texels is not a rung and not a power of two; it resolved to \
+             {}",
+            g.shadow_map_px
+        );
+        assert!(
+            g.cascades >= 1 && g.cascades <= quality::max_cascades(),
+            "99 cascades resolved to {}, which this target cannot draw",
+            g.cascades
+        );
+        // And a negative distance — the one a `-` in front of a number gets
+        // you — is the bottom rung rather than a builder assertion.
+        let low = gfx_from_file(
+            Quality::High,
+            config::GfxFile {
+                shadow_m: Some(-1.0),
+                ..config::GfxFile::default()
+            },
+        );
+        assert_eq!(low.shadow_m, quality::SHADOW_M_LADDER[0]);
+    }
+
+    /// Every row the screen can move survives a trip through the file.
+    ///
+    /// Not a round trip of the defaults (`loading_the_defaults_changes_
+    /// nothing` is that one) — this moves each row OFF its preset first, so a
+    /// key that was never written, or was written and never read back, shows
+    /// up as a row that reset itself at the next launch.
+    #[test]
+    fn every_graphics_row_survives_a_launch() {
+        let mut s = Settings::with_preset(Quality::High);
+        s.adjust(Knob::ShadowDistance, -1);
+        s.adjust(Knob::ShadowCascades, -1);
+        s.adjust(Knob::ShadowMapPx, -1);
+        s.adjust(Knob::Ambient, 1);
+        s.adjust(Knob::Smaa, 0);
+        s.adjust(Knob::Bloom, 0);
+        s.adjust(Knob::TreeLod, -1);
+        s.adjust(Knob::Shadows, 0);
+        assert_eq!(s.preset_name(), None, "the fixture moved nothing");
+
+        let text = config::serialize(&s.persisted(), config::SETTINGS_VERSION, &[], &[]);
+        let back =
+            Settings::from_persisted(config::parse(&text, Settings::default().persisted()).values);
+        assert_eq!(
+            back.gfx, s.gfx,
+            "a row did not survive the file:\nwrote {:?}\nread  {:?}\n{text}",
+            s.gfx, back.gfx
+        );
+        assert_eq!(
+            back.quality, s.quality,
+            "the preset label must survive too — it is what an older build, \
+             which knows `quality` and none of the rows, lands on"
+        );
+    }
+
+    /// The "on this machine" row is DERIVED from the clamp, never written out.
+    ///
+    /// A hand-kept list of what a target refuses is the mirror-goes-stale
+    /// defect `CLAUDE.md` names three times, and this screen would be the
+    /// last place anybody looked for it. So: when nothing is clamped the row
+    /// says so, and when something is it names the value the renderer
+    /// actually got.
+    #[test]
+    fn the_target_note_reads_the_clamp_rather_than_a_list() {
+        let plain = Settings::default();
+        assert_eq!(
+            quality::effective(plain.gfx),
+            plain.gfx,
+            "the shipped default must not be clamped on the target that \
+             ships it — if it is, the default is a lie"
+        );
+        assert_eq!(
+            target_note(&plain),
+            "everything above is what the renderer gets"
+        );
+
+        // A value no stepper can reach, which is the only way to exercise
+        // the clamp on the target that does not have one.
+        let mut clamped = Settings::default();
+        clamped.gfx.cascades = quality::max_cascades() + 1;
+        let note = target_note(&clamped);
+        assert!(
+            note.contains(&format!("{}", quality::max_cascades())),
+            "the note must name the count the renderer actually got, got \
+             {note:?}"
+        );
+        assert_ne!(note, "everything above is what the renderer gets");
     }
 }
