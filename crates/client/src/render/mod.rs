@@ -742,8 +742,15 @@ impl Plugin for GatesRenderPlugin {
             .add_systems(OnExit(Screen::Loading), loading::teardown)
             .add_systems(
                 Update,
-                loading::update
-                    .after(Stream)
+                (
+                    // The island is painted here rather than on the first
+                    // `G` — 263 ms in release, on a screen you open while
+                    // running. `map::prepaint`'s own note has the
+                    // measurement and why the loading screen is where it
+                    // goes.
+                    map::prepaint,
+                    loading::update.after(Stream),
+                )
                     .run_if(in_state(Screen::Loading)),
             );
 
