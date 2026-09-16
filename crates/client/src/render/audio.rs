@@ -151,9 +151,9 @@ pub struct Diag {
 ///
 /// **Bounded** (`CLAUDE.md` wall 4) at [`CMD_FRAME_CAP`], drop-newest and
 /// counted. Every push is a `Copy` into a fixed array and nothing here
-/// allocates after `Default`. `render/audio_out.rs::flush` empties it into
-/// the native seam every `PostUpdate`; on wasm32 [`clear`] empties it until
-/// the worklet lands.
+/// allocates after `Default`. A flush empties it every `PostUpdate` into
+/// whichever seam this target has: `render/audio_out.rs::flush` into cpal's
+/// ring, `render/audio_web.rs::flush` into the `AudioWorklet`'s port.
 #[derive(Resource)]
 pub struct Engine {
     frame: [Cmd; CMD_FRAME_CAP],
@@ -233,13 +233,6 @@ impl Engine {
     pub fn pending(&self) -> usize {
         self.n
     }
-}
-
-/// Until the browser's worklet lands, wasm32 has no reader for the buffer:
-/// this empties it every frame so it cannot fill and count phantom drops.
-pub fn clear(mut engine: ResMut<Engine>) {
-    engine.n = 0;
-    engine.installs.clear();
 }
 
 /// What anything in the client asks for a sound through.

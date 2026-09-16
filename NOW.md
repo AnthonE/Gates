@@ -805,56 +805,38 @@ treeline (`DECISIONS.md` §open, world structure v1). What is still open:
    from the 8 m grid's staircase. Both were replaced by metrics that
    separate. **A band whose two populations touch is not a gate.**
 
-## 0rd · The interior has a site and a road; the ring itself is in pieces *(sim lane)*
+## 0rd · Coastal routing is measured; production integration remains *(sim lane)*
 
-`reference/ROADS.md` (2026-09-16, tier 1 fetched whole). Their order is
-**monuments first, roads routed to them through ports each monument
-declares**; ours is the inverse — sites are chosen ON the ring by
-construction (`terrain.rs:1859`). Measured with `examples/second_road.rs`:
+`reference/ROADS.md` §2.1 adds the 2020 ring/branch rewrite and roadside-site
+exception to the older monuments-first account. The runnable experiment is
+`cargo run --release -p sim-core --example road_route`; measurements and
+limits live in `findings/road-network-prototype-20260916.md`.
 
-- **38% of walkable land is over 300 m of walking from any road** (p50 218 m,
-  p90 570 m). Devblog 189's "huge areas of wasteland", on our island.
-- A chord between two of our sites **saves 3–5% of the walk** — three sites
-  on one ring subtend small angles, so every road between them runs beside
-  the ring. There is nowhere for a new road to go until a site is inland.
-- A straight road across our interior is **flatter than the shipped ring**
-  (0.247 against 0.450 mean slope): the remap curve's shelves.
+The three sampled candidates retain all coastal site/junction anchors and
+pass independent full-width/joint terrain checks. They are **not shipped
+roads**. Old raster component percentages alone do not prove cliff breaks;
+the note separates predicate-confirmed defects from trace/sampling artifacts.
 
-**Step 1 landed 2026-09-16** (`INLAND_SITES = 1`, site roster + inland site
-v0): one authored place solved over the island rather than the ring, at most
-`ROAD_REACH_M` = 300 m from the centre, filling on 16 of 16 seeds. It carries
-the waystation's canopy and **no containers** — the ladder has one crate of
-headroom (4 < 5), so arming them is a spoken re-pricing, not an edit.
-⚠ **The bracket was nearly wrong and the mutant is the record**: written as
-the geometric limit (579.99 m) it put **7 of 16 seeds 20 m from the ring's
-shoulder**, which is a tier that looks built and opens nothing.
+Next, in order:
+1. Choose bounded stored geometry, query indexing, startup budget and failure
+   policy from a broader seed sweep; hash the paths and prove native/wasm parity.
+2. Validate actual obstacles, monument entrances, swept turns and player
+   passage. Smooth the angular candidate only with the same clearance checks.
+3. Integrate scatter, bay/barrel placement and client tier masks from the same
+   road geometry; keep the destination/route reward gates and assess save/world
+   compatibility before any rollout.
+4. Add a second useful inland connection; then optimize site distribution as
+   a set rather than increasing locally scored sites one by one.
 
-**Step 3 landed the same day** (side road v0): one segment per inland site,
-from the site's rim to the ring, solved once in `haven()` and queried as a
-point-to-segment distance. `road_band` takes a `&Haven` now; `ring_band` is
-the ring-only half the site search may ask. Unserved land **38.2% → 28.3%**,
-p90 walk 572 → 451 m. `probe.rs` walks each road's own length, which closes
-the wall-5 hole the bracket left. §8's four gates are `tests/side_road.rs`.
+The client surface pass now adds pavement, an earthy branch and faded ring
+markings (`TERRAIN.md` §1 stage 7). The next material candidate is surveyed in
+`findings/road-materials-20260916.md`: CC0 asphalt with explicit scale and
+texture-memory costs. No new texture assets ship yet. Road grading, authored
+cracks and a distant ribbon remain separate work; paint cannot fix routing.
 
-What is left, in order:
-
-1. **The ring is not a loop.** New measurement and the biggest of these: the
-   shipped coast ring is **79% / 39% / 52% in one walkable piece** across
-   three seeds, broken where it crosses cliffs — 4, 18 and 11 components. The
-   side road had to be taught to refuse a junction on a fragment
-   (`SIDE_ROAD_RING_RUN`) because its first draft landed on an 11-cell stub.
-   Nothing gates the ring's own continuity, and a circulation loop that is not
-   a loop is a bigger reach problem than the interior was.
-2. **Redundancy** (`ROADS.md` §6, Devblog 180) — our side road is a dead end.
-   A second road off the same site, refused the first's junction, is the
-   smallest version of their own stated next step.
-3. **Distribution, not local score** — `pick_minor` minimizes the pad's own
-   flatness score, where Devblog 188 optimizes the whole SET. Identical at one
-   inland site, not at five. `reference/MONUMENTS.md` §9.3.
-
-⚠ **Spokes to the map centre are the wrong shape** — the reach table says how
-much road the island wants, not where it goes. **Not builder work:** what an
-inland site looks like (`WORLD.md` §9.1 — the register is the operator's).
+The inland site still has no containers. Arming rewards and choosing its
+world register remain separate operator decisions; centre-directed spokes
+are still not a substitute for destinations.
 
 
 ## 0fst · The forest, after world structure v1 *(sim + client lane)*
@@ -2137,6 +2119,8 @@ dust and the impact cue read it (`DECISIONS.md` §open, impact fx v1). Left:
 1. **Nobody has heard it and nothing scores it** — `ART.md` has no audio
    section and this box has no device. `cargo run -p client --bin soundbank
    -- <dir>` writes every cue to WAV; sourcing is `assets/sound/WANTED.md`.
+   The browser is the cheapest place to fix that: open the page, because
+   `ci/build_web.sh` now stages a worklet and plays a fixture through it.
 2. **The score is programmer art.** `synth::score` generates the nine
    `music::PIECES`; swapping in recorded pieces is one function
    (`synth::render`'s music arm). Two bumps we cannot take: weapon equipped,
@@ -3030,9 +3014,12 @@ at in headless Chromium (SwiftShader) against a shard from the same commit:
    (`web::hand_back` → `gatesLeft` → reload with the reason on the status
    line); the surface follows the viewport under the 2048 cap (`web::fit`,
    `tests/web.rs`); one PLAY button, the shard fields behind ADVANCED.
-5. **The audio bank is one cue a frame on wasm32** (`tests/bank.rs`); the
-   spread bank installs each cue's PCM into the engine, which a page does
-   not flush anywhere yet — the worklet is the next stage.
+5. **The audio bank is one cue a frame on wasm32** (`tests/bank.rs`), and
+   since 2026-09-16 there is a reader for it: `render/audio_web.rs` posts
+   each frame's installs and commands to an `AudioWorklet` running the same
+   `sound::engine::Renderer` the desktop runs (browser audio v0). Bit-
+   identical to the native path under `ci/check_worklet.mjs`; **unheard in a
+   real tab** — §0x item 1's caveat, on this target too.
 6. **Mouse look turns the view** and the pointer lock, when granted, holds
    through a drag and releases on Escape — zero panics across four runs.
 
@@ -3064,7 +3051,28 @@ What remains, in order:
    (`RenderAssetUsages::default()`), and a page has one 32-bit heap.
    `RENDER_WORLD` only for the model maps and the photographs is the first
    cut. `web::heap_report` prints the split every two seconds in a browser.
-7. **A granted pointer lock in headless Chromium is a pointer-event flood**
+7. **The worklet is unheard and unmeasured in a tab.** Browser audio v0
+   landed 2026-09-16 and closed the two-day silence, but every number about
+   it comes from `ci/check_worklet.mjs` under node: bit-identical samples, a
+   56-byte report, six mutants caught. What nobody has is the thing
+   `findings/browser-audio-20260913.md` §4 asked for — the hiccup, measured
+   with a real GC and a real audio thread. `app.js`'s long-task counter and
+   `web::heap_report` print beside each other for exactly this; read them in
+   a tab next to a footstep. Open too: `REPORT_EVERY = 96` is a guess at a
+   cadence, and nothing yet plots `Diag::stats.dropped` against frame time.
+   ⚠ **Check the CSP on the FIRST live load, before anything else.** The page
+   has been silenced by that header once already (2026-09-13, cpal's `eval`),
+   and the worklet adds two fresh demands on it that no gate here can test:
+   `audioWorklet.addModule("./audio.js")` is governed by **`script-src`**, and
+   instantiating the posted `WebAssembly.Module` inside the worklet needs
+   `wasm-unsafe-eval` to apply in that scope too (worklets inherit the
+   document's policy). `'wasm-unsafe-eval'` is already in
+   `scry-forge/deploy/nginx/elopros.com.conf`'s `/games/gates/` block, so the
+   second is expected to hold and the first is expected to be `'self'` —
+   **expected, not measured.** A refusal shows as `audio output: none - the
+   page built no AudioWorklet` on the console with the game otherwise fine,
+   and `startAudio`'s `console.warn` carries the browser's own reason.
+8. **A granted pointer lock in headless Chromium is a pointer-event flood**
    (§17.6: ~30k raw updates a second, stationary), and Bevy's message
    buffers are unbounded, so the page hits the 4 GB ceiling in a minute. A
    hardware mouse cannot produce it; a real browser has not been asked.

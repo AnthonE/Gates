@@ -283,6 +283,7 @@ fn every_tap_uses_its_identitys_uv() {
     let mut planar = [[0u32; 4]; 4];
     let mut wall = [0u32; 4];
     let mut checked = 0;
+    let mut road = [0u32; 4];
     for tap in taps(&wgsl) {
         let (family, layer, args) = classify(&tap);
         let k = (layer % 4) as usize;
@@ -291,15 +292,20 @@ fn every_tap_uses_its_identitys_uv() {
             // textureSample(maps, sampler, uv, layer)
             [_, sampler, uv, _] => {
                 assert_eq!(*sampler, "ground_sampler", "{tap}");
-                assert_eq!(
-                    *uv, uv_of[k],
-                    "{family}/{role}: layer {layer} is sampled at `{uv}`, not \
+                if *uv == "uv_road" {
+                    assert_eq!(k, 3, "road aggregate must sample the rock layer: {tap}");
+                    road[family] += 1;
+                } else {
+                    assert_eq!(
+                        *uv, uv_of[k],
+                        "{family}/{role}: layer {layer} is sampled at `{uv}`, not \
                      `{}`. Every tap of an identity's maps must share one UV or \
                      its relief stops being registered with the colour it came \
                      from.\n  {tap}",
-                    uv_of[k]
-                );
-                planar[family][k] += 1;
+                        uv_of[k]
+                    );
+                    planar[family][k] += 1;
+                }
             }
             // textureSampleGrad(maps, sampler, uv, layer, ddx, ddy)
             [_, sampler, uv, _, ddx, ddy] => {
@@ -343,6 +349,15 @@ fn every_tap_uses_its_identitys_uv() {
         wall, [1; 4],
         "each albedo layer gets exactly one wall tap: {wall:?}"
     );
+    assert_eq!(
+        road, [1; 4],
+        "road aggregate needs every channel registered: {road:?}"
+    );
+    assert!(
+        wgsl.contains("let uv_road = in.uv * splat.tile.w * splat.pavement.w;"),
+        "road projection must have fixed world scale, independent of coverage"
+    );
+    assert_eq!(checked, 24, "16 terrain + 4 wall + 4 road taps");
     // 4 identities × (albedo + normal + rough + ao) = 16 planar taps, plus the
     // 4 albedo wall taps. A drop below this is the scrape going blind.
     assert!(

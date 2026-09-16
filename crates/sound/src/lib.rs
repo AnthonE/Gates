@@ -67,6 +67,12 @@ pub mod water;
 // asks it what the species in that roster slot says at that range, and plays
 // exactly the cue it is handed back.
 pub mod voice;
+// The browser's half of the audio seam: the byte protocol a `postMessage`
+// carries, and the `AudioWorkletProcessor`'s renderer-plus-scratch. Here
+// rather than in `crates/sound-worklet` — which is nothing but the
+// `#[wasm_bindgen]` wrapper a browser loads — so that every decision on the
+// path is gated by `cargo test --workspace` on a box with no browser.
+pub mod worklet;
 
 /// The bank's sample rate, Hz.
 ///

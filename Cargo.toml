@@ -10,6 +10,10 @@ members = [
     # has to compile into a second wasm module for the browser's AudioWorklet
     # without the client's transport or Bevy.
     "crates/sound",
+    # The browser audio thread's module. Its own cdylib rather than a corner
+    # of `client-web` because an `AudioWorkletProcessor` must not link Bevy or
+    # the transport — see its manifest. Empty on a native target.
+    "crates/sound-worklet",
     # The browser client's entry module. A member rather than an exclusion so
     # that ONE `Cargo.lock` resolves `wasm-bindgen`, which has to agree with
     # the `wasm-bindgen` CLI that generates the JS glue — see its manifest.

@@ -21,10 +21,12 @@ so the host answers here, as it did for `FORESTS.md` (2026-09-09) and
 pages `procedural_generation_customization`, `map` and `Map_Data` were
 fetched and are quoted verbatim below.
 
-**One tier-3 source is marked where it is used**: the ring road's width, lane
-count and size threshold come from a community news site (Rustafied,
-2020-02-06), not from Facepunch. It is the only place those numbers appear and
-they are flagged every time they are quoted.
+**The first pass used one tier-3 source**, Rustafied (2020-02-06), for lane
+counts and the size threshold. **Follow-up, 2026-09-16:** the official
+February 2020 update and its screenshots were fetched and inspected; §2.1
+upgrades the lane counts and corrects the placement-order claim. No road
+width in metres has been established. The historical size threshold below
+is not a verified present-day rule.
 
 **This is the clean sourcing tier and that is deliberate** — `AUDIO.md`'s
 posture. Everything here is a public devblog or a public wiki page: no
@@ -92,7 +94,8 @@ The shape of the family, from `wiki.facepunch.com/rust/map`:
 **A ring, and branches off it to the places worth going.** That is the whole
 topology in one sentence, and it is the sentence this repo needed.
 
-⚠ **Tier 3 for the numbers** (Rustafied, 2020-02-06): the ring road is
+⚠ **Original tier-3 evidence** (Rustafied, 2020-02-06; lane counts now
+confirmed by §2.1): the ring road is
 > "a 2 lane paved street which goes around the outskirts of each Rust island"
 
 on
@@ -104,17 +107,45 @@ on
 to individual monuments. Also from the same page, and worth more to us than
 the widths: **"building is no longer allowed on the roads themselves."**
 
-**Their size threshold is bigger than our whole island.** Ours is 2,048 m
-(`terrain::ISLAND_SIZE`); at that size they ship no ring road at all. This is
+**That historical size threshold is bigger than our whole island.** Ours is
+2,048 m (`terrain::ISLAND_SIZE`), below the cited threshold. This is
 not an argument against ours — our ring is the spine of the alpha design
 (`TERRAIN.md` §5) — but it is a real scale difference and it is why their
 branch counts cannot be copied as numbers.
+
+### 2.1 · The 2020 rewrite and the visible surface
+
+**Primary-source correction, 2026-09-16.** Facepunch's
+[February 2020 update](https://rust.facepunch.com/news/february-2020)
+documents a later rewrite: a two-lane ring with single-lane branches,
+slightly curved authored meshes for terrain blending, and supermarket,
+gas-station and warehouse placement along the ring. Thus §3's and §9.1's
+monuments-first account describes the older system, not every monument tier.
+
+**Observed in its screenshots**, not measured material parameters:
+
+- [Junction](https://files.facepunch.com/andre/Screen%20Shot%202020-01-30%20at%2009.19.39.png):
+  grey cracked pavement, faded dashed yellow centre marks, worn white edges,
+  and a flared junction with interrupted centre markings.
+- [Roadside entrance](https://files.facepunch.com/andre/Screen%20Shot%202020-01-30%20at%2009.31.15.png):
+  exposed aggregate and dirt shoulders blend into vegetation; the road bends
+  gently past the forecourt. Pavement has broad wear and fine surface grain,
+  rather than a flat black fill.
+
+These images establish neither physical widths nor marking spacing. They
+remain outside the repository; links are references, not shippable assets.
+
+**Gravel branches remain a Gates proposal.**
+[Devblog 189](https://rust.facepunch.com/news/devblog-189)'s road-visual section
+describes alternating dirt/asphalt as a future intention, not a shipped
+rule. These sources do not establish a universal asphalt-main/gravel-side
+material split. `ART.md` still owns our visual bar.
 
 ---
 
 ## 3 · Monuments are placed first. Roads are routed to them.
 
-This is the order, and we have it backwards.
+This was the 2017 order. §2.1 records the later roadside-tier exception.
 
 Devblog 188:
 
