@@ -305,7 +305,7 @@ fn an_inland_site_stands_clear_of_the_road_it_is_defined_as_being_off() {
                 let (dx, dz) = sim_core::yaw_dir((b * 32) << 8);
                 let (px, pz) = (ws.x + dx * fp.blend_m, ws.z + dz * fp.blend_m);
                 assert_eq!(
-                    terrain::road_band(seed, px, pz),
+                    terrain::ring_band(seed, px, pz),
                     terrain::RoadBand::Off,
                     "seed {seed:#x}: an inland site's carve reaches the road at \
                      ({px:.0}, {pz:.0}) — the tier is defined as the one the \

@@ -544,7 +544,7 @@ fn the_road_is_walkable_with_volume_on() {
             let mut hit = None;
             let mut d = ROAD_R_MIN;
             while d <= ROAD_R_MAX {
-                if terrain::road_band(seed, c + ux * d, c + uz * d) == RoadBand::Carriageway {
+                if terrain::ring_band(seed, c + ux * d, c + uz * d) == RoadBand::Carriageway {
                     hit = Some(d);
                     break;
                 }
@@ -567,7 +567,7 @@ fn the_road_is_walkable_with_volume_on() {
             while d <= entry + 2.0 * terrain::ROAD_HALF_W + 1.0 {
                 let (x, z) = (c + ux * d, c + uz * d);
                 d += STEP;
-                if terrain::road_band(seed, x, z) != RoadBand::Carriageway {
+                if terrain::ring_band(seed, x, z) != RoadBand::Carriageway {
                     run = 0.0;
                     continue;
                 }

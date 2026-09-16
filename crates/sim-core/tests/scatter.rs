@@ -568,7 +568,7 @@ fn test_clump_leaves_authored_slots_alone() {
                 let s = terrain::scatter(seed, &table, &haven, cx, cz);
                 if s.occupant != Occupant::None
                     && s.occupant != Occupant::CrateSlot
-                    && terrain::road_band(seed, s.x, s.z) == terrain::RoadBand::Carriageway
+                    && terrain::road_band(seed, &haven, s.x, s.z) == terrain::RoadBand::Carriageway
                 {
                     on_road += 1;
                 }

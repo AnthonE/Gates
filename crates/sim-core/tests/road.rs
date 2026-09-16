@@ -50,7 +50,7 @@ fn road_ring_is_closed_on_every_bearing() {
             let mut hits = 0usize;
             let mut d = ROAD_R_MIN;
             while d <= ROAD_R_MAX {
-                if terrain::road_band(seed, c + ux * d, c + uz * d) == RoadBand::Carriageway {
+                if terrain::ring_band(seed, c + ux * d, c + uz * d) == RoadBand::Carriageway {
                     hits += 1;
                     r_lo = r_lo.min(d);
                     r_hi = r_hi.max(d);
@@ -112,7 +112,10 @@ fn carriageway_is_clear_and_the_shoulder_carries_barrels() {
                     continue;
                 }
                 live += 1;
-                match terrain::road_band(seed, s.x, s.z) {
+                // `road_band`, not `ring_band`: this is classifying what
+                // `scatter` actually emitted, and a barrel on a side road's
+                // shoulder is a real barrel on a real road.
+                match terrain::road_band(seed, &haven, s.x, s.z) {
                     RoadBand::Carriageway => on_carriageway += 1,
                     RoadBand::Shoulder => {
                         shoulder_cells += 1;
@@ -194,7 +197,7 @@ fn the_road_is_walkable_along_its_length() {
             let mut d = ROAD_R_MIN;
             while d <= ROAD_R_MAX {
                 let (x, z) = (c + ux * d, c + uz * d);
-                if terrain::road_band(seed, x, z) == RoadBand::Carriageway {
+                if terrain::ring_band(seed, x, z) == RoadBand::Carriageway {
                     let s = terrain::slope(seed, x, z);
                     sampled += 1;
                     worst_slope = worst_slope.max(s);
@@ -245,7 +248,7 @@ fn the_road_runs_inland_of_the_shoreline() {
             let mut d = ROAD_R_MIN;
             while d <= ROAD_R_MAX {
                 let (x, z) = (c + ux * d, c + uz * d);
-                if terrain::road_band(seed, x, z) == RoadBand::Carriageway {
+                if terrain::ring_band(seed, x, z) == RoadBand::Carriageway {
                     let h = terrain::height(seed, x, z);
                     min_h = min_h.min(h);
                     // Walk seaward from the road and find the water, rather
@@ -429,7 +432,7 @@ fn bays_are_arcs_of_coast_not_speckle() {
             let mut found = false;
             while d <= ROAD_R_MAX {
                 let (px, pz) = (c + ux * d, c + uz * d);
-                if terrain::road_band(seed, px, pz) == RoadBand::Carriageway {
+                if terrain::ring_band(seed, px, pz) == RoadBand::Carriageway {
                     ring.push(terrain::in_bay(seed, px, pz));
                     found = true;
                     break;
@@ -527,7 +530,7 @@ fn bays_concentrate_the_route_without_enriching_it() {
                 // the same distortion, so the ratio between them is clean.
                 let x = cx as f32 * CELL_SIZE + CELL_SIZE * 0.5;
                 let z = cz as f32 * CELL_SIZE + CELL_SIZE * 0.5;
-                if terrain::road_band(seed, x, z) != RoadBand::Shoulder {
+                if terrain::ring_band(seed, x, z) != RoadBand::Shoulder {
                     continue;
                 }
                 let barrel =
@@ -751,7 +754,7 @@ fn the_road_override_keeps_the_weights_normalized() {
                 if terrain::height(seed, x, z) < SEA_LEVEL {
                     continue;
                 }
-                let band = terrain::road_band(seed, x, z);
+                let band = terrain::ring_band(seed, x, z);
                 let w = terrain::splat_road(terrain::splat(seed, x, z), band);
                 let sum: u32 = w.iter().map(|v| *v as u32).sum();
                 assert!(

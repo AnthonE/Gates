@@ -4,8 +4,8 @@
 //! Plus shape sanity: the generator must produce an island, not a puddle.
 
 use sim_core::probe::{
-    probe_road_point, probe_terrain, probe_window_origin, PROBE_ROAD_BEARINGS, PROBE_ROAD_RADII,
-    PROBE_WINDOW_CELLS,
+    probe_road_point, probe_side_road_point, probe_terrain, probe_window_origin,
+    PROBE_ROAD_BEARINGS, PROBE_ROAD_RADII, PROBE_SIDE_ROAD_SAMPLES, PROBE_WINDOW_CELLS,
 };
 use sim_core::terrain::{self, Occupant, ScatterTable, CELLS_PER_SIDE};
 
@@ -20,7 +20,29 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// Pinned fingerprint for GOLDEN_SEED. Regenerates only with an intentional
 /// worldgen change, in the same commit (CLAUDE.md walls 5/6 discipline).
 ///
-/// Regenerated here from `0xAA93_9FA3_DF14_702C` for **the inland site**
+/// Regenerated here from `0x17FA_A7E3_3CAE_FB50` for **the side road**
+/// (2026-09-16, `reference/ROADS.md` §9.2.2–3): the inland site now has a
+/// road to it, and `road_band` stopped being a pure function of
+/// `(seed, x, z)`.
+///
+/// **Three things move it and nothing else can**, in falling order of size:
+///
+/// - `scatter` and the clutter population veto the carriageway and draw
+///   barrels on the shoulder, and there are now ~330 more road cells per
+///   island in the interior. That is the bulk of it.
+/// - `probe_sites` hashes each road's polyline and then walks it, 129 band
+///   samples apiece — bytes that did not exist before, so the digest would
+///   move on shape alone.
+/// - `splat_road` paints the new band, which `probe_terrain`'s height window
+///   does not see but its scatter windows do.
+///
+/// **What does NOT move it is every existing site**, and that is structural
+/// rather than lucky: `solve_side_roads` runs after `pick_minor`, and every
+/// solver that chooses a site calls `ring_band` — the ring half, which is the
+/// same function it always called under a new name. A site cannot be moved by
+/// a road that is a consequence of where it landed.
+///
+/// Regenerated from `0xAA93_9FA3_DF14_702C` for **the inland site**
 /// (2026-09-16, `reference/ROADS.md` §9.2.1): `INLAND_SITES` 0 -> 1, so
 /// `Haven::minor` is three slots instead of two and the third holds a site
 /// the road ring is not the reference curve for.
@@ -118,7 +140,7 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// of this digest on ~45% of the land. Heights did not move — the change is
 /// entirely in `scatter`, and `probe_terrain`'s height window would read the
 /// same. Deliberate, regenerated in the commit that caused it.
-const GOLDEN_TERRAIN_HASH: u64 = 0x17FA_A7E3_3CAE_FB50;
+const GOLDEN_TERRAIN_HASH: u64 = 0xD068_06D7_B0DD_146F;
 
 #[test]
 fn test_terrain_golden() {
@@ -273,7 +295,9 @@ fn test_golden_covers_authored_sites() {
             let mut hit = false;
             for r in 0..PROBE_ROAD_RADII {
                 let (px, pz) = probe_road_point(b, r);
-                if terrain::road_band(seed, px, pz) != terrain::RoadBand::Off {
+                // `ring_band`: this sweep is the RING's coverage, and a
+                // side road crossing a radial would flatter it.
+                if terrain::ring_band(seed, px, pz) != terrain::RoadBand::Off {
                     hit = true;
                 }
             }
@@ -288,6 +312,38 @@ fn test_golden_covers_authored_sites() {
              {bearings_hit} of {PROBE_ROAD_BEARINGS} bearings — the radial \
              step is too coarse to cross it, so those bearings hash a constant"
         );
+
+        // And the side-road half of `probe_sites`, for exactly the same
+        // reason and against a harder failure: that sweep walks a polyline
+        // whose two ends are stored floats, so a road that came back dead —
+        // or one whose ends collapsed to the same point — would sample one
+        // spot 129 times and hash a constant that looks like coverage. This
+        // is the count of samples that land on the road's own surface.
+        for (i, road) in h.roads.iter().enumerate() {
+            assert!(
+                road.live,
+                "seed {seed:#x}: side road {i} is dead, so the parity surface \
+                 is sampling the island's origin 129 times (tests/road.rs \
+                 owns whether a seed is allowed a dead road)"
+            );
+            let mut on = 0i32;
+            for k in 0..PROBE_SIDE_ROAD_SAMPLES {
+                let (sx, sz) = probe_side_road_point(road, k);
+                if terrain::side_band(&h, sx, sz) == terrain::RoadBand::Carriageway {
+                    on += 1;
+                }
+            }
+            // Every sample but the two endpoints is strictly inside the
+            // segment, and `ROAD_HALF_W` is 2 m, so a walk along the line
+            // itself is on the carriageway at every one of them. A floor of
+            // "nearly all" rather than "all" leaves the ends their rounding.
+            assert!(
+                on >= PROBE_SIDE_ROAD_SAMPLES - 2,
+                "seed {seed:#x}: only {on} of {PROBE_SIDE_ROAD_SAMPLES} \
+                 samples along side road {i} land on its own carriageway — \
+                 the sweep is not walking the road it names"
+            );
+        }
     }
 }
 

@@ -305,6 +305,27 @@ Stages, in order — each cheap, each deterministic:
    bracket is `ROAD_R_MIN − ROAD_REACH_M` = 300 m now, where `ROAD_REACH_M` is
    the distance the ring's own service band reaches, and `tests/sites.rs`
    asserts the distance rather than the radius so the two cannot drift apart.
+   **And it has a road, since the same day** (`SIDE_ROADS`, `reference/
+   ROADS.md` §9.2.2–3). The ring is a PREDICATE — never ask where it is, only
+   am I on it — and that inverts a curve the terrain already draws, which
+   works exactly once. A road to the interior has no such curve, so this tier
+   is the reference's own shape instead: a PATH, solved once in `haven()` and
+   stored on `Haven`, queried as a point-to-segment distance with no terrain
+   tap at all. Its site end is the site's RIM rather than its centre, which is
+   what a connection point is and what keeps a carriageway off the canopy; its
+   ring end is the first carriageway point on a bearing whose whole line is
+   walkable. **Unserved land falls 38.2% → 28.3% and the p90 walk 572 → 451
+   m**, measured both ways on the same island (`examples/side_road`).
+   ⚠ **`road_band` therefore takes a `&Haven` now**, which is the cost
+   `ROADS.md` §9.3 priced in advance. `ring_band` is the ring-only half, and
+   it is what every site solver calls — a solver asking about a road that is a
+   consequence of its own answer would be circular.
+   ⚠ **And the ring is not a loop**, which this work measured on the way past:
+   the shipped coast ring is 79% / 39% / 52% in one WALKABLE piece across
+   three seeds, broken at the cliffs it crosses. The side road's first draft
+   delivered a player to an 11-cell fragment of it; `SIDE_ROAD_RING_RUN`
+   refuses such a junction now. Nothing gates the ring's own continuity
+   (`NOW.md` §0rd).
 9. **Scatter pass** — per 8 m cell, one hash draw decides occupant
    (tree / stone node / metal node / sulfur node / bush / rock / barrel
    slot / nothing), plus jittered offset, yaw, and scale from the same
@@ -624,6 +645,7 @@ The reads a survival map must produce, and which stage buys each:
 | species | 2 per slot, painted by a 620 m field; 90–96% dominance at its rails |
 | roads | 1 coast ring, ~4 m wide |
 | authored sites | 4 — one haven pad + 2 waystations on the ring + 1 inland site at most 300 m from the island centre |
+| roads | 2 tiers: the coast ring (a predicate — `ring_band`) + 1 side road per inland site (a solved segment on `Haven` — `side_band`). `road_band` is both and takes a `&Haven`; the site search asks `ring_band`, because a side road is a consequence of where a site landed |
 | pad containers | 5 `crate` on a 10 m ring, 2.64× the shoulder's density |
 | waystation containers | 2 `cache` on a 6.5 m ring, ≥ 600 m from every other site |
 | inland containers | none — `INLAND_CRATES = 0`, a consequence of the ladder's one crate of headroom. The site is its canopy |

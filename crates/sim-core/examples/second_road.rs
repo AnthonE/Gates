@@ -183,7 +183,7 @@ fn main() {
         for ix in 0..N {
             let i = iz * N + ix;
             on_ring[i] = land[i]
-                && terrain::road_band(seed, ix as f32 * STEP, iz as f32 * STEP)
+                && terrain::ring_band(seed, ix as f32 * STEP, iz as f32 * STEP)
                     != terrain::RoadBand::Off;
         }
     }

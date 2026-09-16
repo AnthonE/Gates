@@ -155,8 +155,8 @@ fn every_memo_twin_agrees_with_its_plain_form() {
                 "splat at ({x}, {z})"
             );
             assert_eq!(
-                terrain::road_band(s, x, z),
-                terrain::road_band_memo(&mut lat, s, x, z),
+                terrain::road_band(s, &haven, x, z),
+                terrain::road_band_memo(&mut lat, s, &haven, x, z),
                 "road_band at ({x}, {z})"
             );
         }
@@ -463,7 +463,7 @@ fn refused_by_the_law(seed: u64, haven: &Haven, cx: i32, cz: i32) -> bool {
     if y < LAND_MIN_H {
         return true;
     }
-    if terrain::road_band(seed, d.x, d.z) == terrain::RoadBand::Carriageway {
+    if terrain::road_band(seed, haven, d.x, d.z) == terrain::RoadBand::Carriageway {
         return true;
     }
     if d.roll >= terrain::clutter_richness_at(seed, haven, d.x, d.z, y) {
@@ -563,12 +563,16 @@ fn the_early_out_refuses_exactly_what_the_rate_refuses() {
                 let rd = terrain::clutter_rich_draw(s, cx, cz);
                 let (x, z) = (rd.x, rd.z);
                 let d2 = (x - c) * (x - c) + (z - c) * (z - c);
-                // The bracket `road_band` itself answers inside; anything
-                // outside it is off the ring in one compare.
+                // The bracket the RING answers inside; anything outside it
+                // is off the ring in one compare. A side road lives inside
+                // `ROAD_R_MIN` and is asked for separately, below, because
+                // this bracket cannot see it — the same hole `probe.rs`'s
+                // side-road sweep exists to close, one file over.
                 let ring = (terrain::ROAD_R_MIN * terrain::ROAD_R_MIN)
                     ..=(terrain::ROAD_R_MAX * terrain::ROAD_R_MAX);
-                if ring.contains(&d2)
-                    && terrain::road_band(s, x, z) == terrain::RoadBand::Carriageway
+                if (ring.contains(&d2)
+                    && terrain::ring_band(s, x, z) == terrain::RoadBand::Carriageway)
+                    || terrain::side_band(&haven, x, z) == terrain::RoadBand::Carriageway
                 {
                     let e = terrain::clutter_rich_cell(s, &haven, cx, cz);
                     assert_eq!(

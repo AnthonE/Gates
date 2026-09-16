@@ -327,22 +327,59 @@ Every one is arithmetic over `terrain`, no clock and no pixels.
 under a stated bound. This is the number that says a road network exists for
 the player rather than for the map, it is what §7 measures, and nothing in
 this repo asserts it today. Mutant: delete a road tier; it must redden.
+✅ **BUILT as a dose-response rather than a bound**, which is the one design
+change this list needed: a bound is satisfied by an island that got smaller
+and drifts every time worldgen moves. The gate measures the island BOTH ways —
+with the side road and with it switched off — and asserts the difference, so
+the mutant this line asks for is the control arm and runs every time.
+Measured: unserved land falls 38.2% → 28.3%, p90 walk 572 → 451 m.
+⚠ **What it cannot see, measured**: truncating the road to a 5 m stub at the
+site still moves unserved by 6.9–8.4 points against the full road's 7.8–11.9,
+and the two sets overlap, so no floor separates them. Most of the gain is from
+a road cell existing in the interior AT ALL. The stub is gate 2's and gate 3's
+to catch, and they do.
 
 **Gate 2 — the network is one piece, to the bar the ring already sets.**
 Assert the largest walkable component of the whole road set holds ≥ the share
 the coast ring alone holds (79% measured). Mutant: route a side road through a
 cliff band; the component splits.
+⚠ **CORRECTED 2026-09-16 — that wording is wrong and fails on a correct
+road.** Adding cells to any component that is not the largest lowers the
+largest one's SHARE arithmetically, whatever the road did: on three sweep
+seeds the ring's own largest component is 2,595 / 1,326 / 1,647 cells of
+3,257 / 3,382 / 3,173, so two of three side roads join a component that is not
+the biggest and the share falls while the network strictly improves. **And
+79% was itself a sampling artifact** at the wrong grid — the first draft of
+the gate read the shipped ring as 7.6% in one piece at 8 m, because a 4 m
+ribbon sampled every 8 m along a curve gives diagonal neighbours and a
+4-neighbour flood cannot join them. The gate asserts what the sentence meant:
+the road is in one component WITH ring, and that component holds **more ring
+than road** — you do not walk the length of a road to arrive at less road.
+✅ **BUILT** — `tests/side_road.rs::a_side_road_joins_more_ring_than_it_is`,
+and it caught the defect below before the road shipped.
 
 **Gate 3 — a side road goes somewhere.** Assert every side road's endpoints
 are a ring point and a site port, and that its length is meaningfully shorter
 than walking the ring between the same two points. This is §7.2's 3% failure,
 gated. Mutant: connect two on-ring sites; the ratio collapses toward 1.
+✅ **BUILT, with the second half replaced.** The endpoint half is exact
+(`every_inland_site_has_a_road_and_both_ends_are_what_they_claim`: the port is
+`WAYSTATION_RADIUS_M` from the site's centre on the bearing the road carries,
+to a millimetre, and the ring end is on the carriageway). The ratio half does
+not apply to an inland site — it is not ON the ring, so there is no "walking
+the ring between the same two points" to compare against — and what stands in
+its place is a length floor derived from the tier's own definition
+(`ROAD_REACH_M` less the rim) plus gate 1's control arm.
 
 **Gate 4 — no road crosses water or cliff.** Devblog 189's fix, as an
 assertion: sample every road centre line and require land above `LAND_MIN_H`
 and slope under `CLIFF_SLOPE_RATIO`. Ours already has the shape of this for
 the ring (`tests/road.rs::the_road_is_walkable_along_its_length`) and it
 should cover every tier.
+✅ **BUILT** — `a_side_road_crosses_neither_water_nor_cliff`, walking every
+metre where the solve samples every eight, so a solve coarse enough to step
+over a 6 m inlet passes its own check and fails the gate. 9,525 samples over
+16 seeds: lowest 0.83 m, steepest 0.888 against a 1.192 cliff ratio.
 
 **Gate 5 — the ladder survives.** `ci/haven_prize.mjs` holds the destination
 above the route in expected items per site. A second road tier must not
@@ -409,13 +446,20 @@ not, there is nowhere for a new road to go.
    thing; at five they are not, and §9.3 of `MONUMENTS.md` is still the gap.
    The tier carries no containers — the ladder in `terrain.rs`'s const block
    has one crate of headroom, so arming it is a spoken re-pricing.
-2. **Ports.** Each site publishes an in/out bearing (§4). One byte, off the
-   same hash the ring phase already uses.
-3. **Side roads** from the ring to each inland site's port, stored as §5's
-   polyline: nodes solved once at `haven()` time, held in the same
-   fixed-capacity struct, queried as point-to-segment distance. No height tap,
-   no trig, no state — and the client mirrors it for free exactly as it
-   mirrors `Haven` today.
+2. **Ports.** ✅ **BUILT 2026-09-16** (`SideRoad::port`), and NOT as this
+   line proposed. A port off a hash would be a rotation nobody chose; the port
+   is the bearing the road's own search settled on, and the point it names is
+   on the site's RIM (`WAYSTATION_RADIUS_M`) rather than at its centre — which
+   is what a connection point IS (§4), and what keeps a carriageway from
+   running over the canopy the site is made of. Only the inland tier has one:
+   a ring site needs no port because no side road ends there, and an unused
+   field is a claim nothing enforces.
+3. **Side roads** ✅ **BUILT 2026-09-16** from the ring to each inland site's
+   port, stored as §5's polyline — one segment, solved once inside `haven()`,
+   held on `Haven` and queried as point-to-segment distance. No height tap, no
+   trig, no state, and the client mirrors it for free exactly as it mirrors
+   `Haven` today. The cost §9.3 priced is paid: `road_band` takes a `&Haven`
+   and `ring_band` is the ring-only half a solver may ask.
 4. **Trails** last, if at all. Their third tier exists at a map scale four
    times ours.
 
@@ -448,15 +492,22 @@ and cannot gate.
 
 1. ~~**Inland site placement** (§9.2.1)~~ — ✅ built 2026-09-16, and gates 6
    and 7 with it. Everything below was blocked on it and is not now.
-2. **Ports and side roads** (§9.2.2–3) — the payload, and where the reach
-   numbers in §7 get spent.
-3. **Gates 1–4** (§8) with their mutants, landed with the mechanisms. ⚠ And
-   gate 1 is the one that cannot be written yet for a reason worth stating: a
-   reach number needs a road to the inland site, and the site has no road.
-   The tier as it stands opens the interior to a PLACE, not to a route.
+2. ~~**Ports and side roads** (§9.2.2–3)~~ — ✅ built 2026-09-16. Unserved
+   land 38.2% → 28.3%, p90 walk 572 → 451 m.
+3. ~~**Gates 1–4** (§8) with their mutants~~ — ✅ built with the mechanisms
+   (`tests/side_road.rs`, five tests, five mutants run). Two of the four had
+   to be restated rather than implemented: see the ⚠ marks in §8.
 4. **Redundancy** (§6's Devblog 180 quote) — connect a dead end back to the
-   ring so the network forms circles. Their own stated next step, and ours.
-5. **Trails** — a scale we do not have.
+   ring so the network forms circles. Their own stated next step, and now ours
+   in a specific form: our side road is a dead end at the site, and the ring
+   it joins is itself in 4–18 walkable pieces. A second road off the same
+   site, refused the first one's junction, is the smallest version of this.
+5. **The ring's own fragments** — not in this doc's first draft and the
+   measurement is new: the shipped coast ring is **79% / 39% / 52% in one
+   walkable piece** across three seeds, broken where it crosses cliffs. A loop
+   that is not a loop is a bigger reach problem than the interior was, and
+   nothing gates it.
+6. **Trails** — a scale we do not have.
 
 **Not owed by this doc:** any number reaching `content/`, and any decision
 about what an inland site LOOKS like. The visual register is `WORLD.md`'s and

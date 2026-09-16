@@ -365,6 +365,8 @@ impl Scratch<Barren> {
                 // pass through, and an inert site is what `in_waystation`
                 // tests for first.
                 minor: terrain::empty_minor(),
+                // No side road either, for the same reason.
+                roads: [terrain::SideRoad::NONE; terrain::SIDE_ROADS],
             },
             harvested: Barren,
             cache: SlotCache::new(),

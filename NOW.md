@@ -805,7 +805,7 @@ treeline (`DECISIONS.md` §open, world structure v1). What is still open:
    from the 8 m grid's staircase. Both were replaced by metrics that
    separate. **A band whose two populations touch is not a gate.**
 
-## 0rd · The first site off the ring is built; the road to it is not *(sim lane)*
+## 0rd · The interior has a site and a road; the ring itself is in pieces *(sim lane)*
 
 `reference/ROADS.md` (2026-09-16, tier 1 fetched whole). Their order is
 **monuments first, roads routed to them through ports each monument
@@ -829,24 +829,28 @@ headroom (4 < 5), so arming them is a spoken re-pricing, not an edit.
 the geometric limit (579.99 m) it put **7 of 16 seeds 20 m from the ring's
 shoulder**, which is a tier that looks built and opens nothing.
 
-Build order (§9.2), each blocked on the one above:
+**Step 3 landed the same day** (side road v0): one segment per inland site,
+from the site's rim to the ring, solved once in `haven()` and queried as a
+point-to-segment distance. `road_band` takes a `&Haven` now; `ring_band` is
+the ring-only half the site search may ask. Unserved land **38.2% → 28.3%**,
+p90 walk 572 → 451 m. `probe.rs` walks each road's own length, which closes
+the wall-5 hole the bracket left. §8's four gates are `tests/side_road.rs`.
 
-1. ~~**Inland site placement**~~ — done. What it did NOT bring is Devblog
-   188's *distribution* objective: ours minimizes the pad's own local score,
-   where theirs optimizes the whole set. Identical at one site, not at five —
-   `reference/MONUMENTS.md` §9.3 is still the gap.
-2. **Ports** — an in/out bearing per site, one byte off the ring phase's hash.
-3. **Side roads** — ring to port, as `PathData`'s shape: a polyline solved
-   once inside `haven()`, queried as point-to-segment distance. No tap, no
-   trig. ⚠ Makes a road a function of `(seed, x, z, Haven)` — the move
-   `scatter` already made when the pad began vetoing cells.
-   ⚠ **And it must close a wall-5 hole**: `probe.rs::probe_road_point` is
-   bracketed to `ROAD_R_MIN..ROAD_R_MAX`, so an inland road would be hashed by
-   nothing and could differ native vs wasm with every gate green.
-4. **Gates 1–4** (§8) with mutants: reach; one piece to the ring's own 79%
-   bar; a side road goes somewhere; no road over water or cliff. ⚠ Gate 1
-   cannot be written before step 3: the inland tier opens the interior to a
-   PLACE, not to a route, so the reach table above is unmoved by it.
+What is left, in order:
+
+1. **The ring is not a loop.** New measurement and the biggest of these: the
+   shipped coast ring is **79% / 39% / 52% in one walkable piece** across
+   three seeds, broken where it crosses cliffs — 4, 18 and 11 components. The
+   side road had to be taught to refuse a junction on a fragment
+   (`SIDE_ROAD_RING_RUN`) because its first draft landed on an 11-cell stub.
+   Nothing gates the ring's own continuity, and a circulation loop that is not
+   a loop is a bigger reach problem than the interior was.
+2. **Redundancy** (`ROADS.md` §6, Devblog 180) — our side road is a dead end.
+   A second road off the same site, refused the first's junction, is the
+   smallest version of their own stated next step.
+3. **Distribution, not local score** — `pick_minor` minimizes the pad's own
+   flatness score, where Devblog 188 optimizes the whole SET. Identical at one
+   inland site, not at five. `reference/MONUMENTS.md` §9.3.
 
 ⚠ **Spokes to the map centre are the wrong shape** — the reach table says how
 much road the island wants, not where it goes. **Not builder work:** what an

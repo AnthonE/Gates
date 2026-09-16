@@ -640,7 +640,7 @@ fn test_carriageway_grows_grit_not_grass() {
                 if e.kind == Clutter::None {
                     continue;
                 }
-                if terrain::road_band(seed, e.x, e.z) != terrain::RoadBand::Carriageway {
+                if terrain::road_band(seed, haven, e.x, e.z) != terrain::RoadBand::Carriageway {
                     continue;
                 }
                 on_road += 1;
@@ -1466,6 +1466,7 @@ fn sites_parked_offshore() -> Haven {
         phase: 0,
         shelter: 0,
         minor: terrain::empty_minor(),
+        roads: [terrain::SideRoad::NONE; terrain::SIDE_ROADS],
     }
 }
 

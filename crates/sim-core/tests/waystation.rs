@@ -146,9 +146,9 @@ fn every_site_stands_on_the_ring() {
         let haven = terrain::haven(seed);
         for w in ring_tier(&haven) {
             assert_ne!(
-                terrain::road_band(seed, w.x, w.z),
+                terrain::ring_band(seed, w.x, w.z),
                 terrain::RoadBand::Off,
-                "seed {seed}: a waystation stands off the road entirely"
+                "seed {seed}: a waystation stands off the ring entirely"
             );
             let r = dist(w.x, w.z, c, c);
             assert!(
@@ -296,7 +296,7 @@ fn every_site_carries_its_containers() {
                     "seed {seed}: a placed waystation crate was scaled"
                 );
                 assert_ne!(
-                    terrain::road_band(seed, s.x, s.z),
+                    terrain::road_band(seed, &haven, s.x, s.z),
                     terrain::RoadBand::Carriageway,
                     "seed {seed}: a waystation crate stands on the \
                      carriageway — the ring rotation search is what prevents \
@@ -454,7 +454,7 @@ fn the_zones_are_clear_and_would_not_have_been() {
                 if terrain::in_waystation(&haven, ccx, ccz)
                     && terrain::height(seed, ccx, ccz) >= LAND_MIN_H
                     && terrain::slope(seed, ccx, ccz) <= CLIFF_SLOPE_RATIO
-                    && terrain::road_band(seed, ccx, ccz) != RoadBand::Carriageway
+                    && terrain::road_band(seed, &haven, ccx, ccz) != RoadBand::Carriageway
                 {
                     opportunity += 1;
                 }
@@ -567,7 +567,7 @@ fn the_tiers_pay_in_order() {
             for cz in 0..CELLS_PER_SIDE {
                 let x = cx as f32 * CELL_SIZE + 4.0;
                 let z = cz as f32 * CELL_SIZE + 4.0;
-                if terrain::road_band(seed, x, z) != terrain::RoadBand::Shoulder {
+                if terrain::road_band(seed, &haven, x, z) != terrain::RoadBand::Shoulder {
                     continue;
                 }
                 shoulder_cells += 1;
@@ -680,7 +680,7 @@ fn every_site_carries_its_canopy_clear_of_the_road() {
                 (kx - ux * e, kz - uz * e),
             ] {
                 assert_ne!(
-                    terrain::road_band(seed, sx, sz),
+                    terrain::road_band(seed, &haven, sx, sz),
                     terrain::RoadBand::Carriageway,
                     "seed {seed}: site {w}'s canopy footprint touches the \
                      carriageway — the road surface is not clear, so the \
