@@ -181,9 +181,18 @@ or component a player wants — there is no *crude-oil tail* nobody would
 carry, so we do not currently rely on players finishing a job they have no
 reason to finish. Worth re-checking whenever a table grows a junk row.
 
-### §9.3 · Loose world items — the slice, sized honestly
+### §9.3 · Loose world items — **BUILT 2026-09-16** (ground items v0)
 
-The operator's *"generic now, roll later"*. What it is:
+The operator's *"generic now, roll later"*, spoken the same day this doc
+was written (*"yea lets cook it"*) and built the same day. What landed is
+items 1, 3, 4, 5 and 6 below; **item 2 is the half that was deferred on
+purpose** — the settle is a pure landing spot (`grounditem::rest_spot`,
+whose height is `terrain::ground`, so loot lands downhill or over a lip)
+rather than a tumble a player watches. `NOW.md` §0wc 2b carries the rest,
+and the rule this section states about item 2 is the one a later slice
+must keep.
+
+What it is:
 
 1. **A store** — `WorldItems`, capped in `limits.rs` with a stated overflow
    policy (wall 4), holding `(qx, qy, qz, ItemStack, despawn_at)`.

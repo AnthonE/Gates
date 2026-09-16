@@ -1141,21 +1141,25 @@ where it had only ever been two words on the prompt. Both unseen (`§LOOK`).
    simply copy it (the crate's position is a pure function of the seed and
    the client draws it from that function, so absence has to ride the
    wire: one bit per crate in AOI).
-2b. **A smashed barrel stands up a container, where the reference scatters
-   items on the ground** (the operator, 2026-09-16: *"when u break a barrel
-   it drops loot as 3d objects… we could just make it generic now but
-   eventually loot can fall down and out of reach kinda thing. or roll a
-   bit"*). **Not spoken yet — a proposal.** `reference/LOOT.md` §9.3 sizes
-   it: a capped `WorldItems` store, a settle (gravity + the drop velocity
-   `Item.Drop`'s own signature hands out — this is the *"roll"*, and it
-   must be the sim's, because a client-side tumble over a server-side
-   resting place is two truths about a thing you can pick up), one
-   `PROTO_VER` turn for a sync lane and a pickup verb, a generic mesh for
-   every item, and §3's rarity despawn ladder reused rather than a new
-   knob. **The death bag stays a container** — the reference consolidates a
-   corpse for cost and `backpack.rs` cites that decision — so the split to
-   build is theirs: a thing you break scatters, a thing that dies leaves a
-   container.
+2b. ✅ **A smashed barrel scatters loose stacks** (ground items v0,
+   2026-09-16, spoken: *"yea lets cook it"*). Built: `grounditem.rs`, wire
+   v65, save format 14, a generic sack per stack, `E` naming the item and
+   the count. What it left, in the order it is worth doing:
+   - **Nobody has seen it** (`§LOOK`). Two sacks on a beach, a prompt that
+     names them, one taken and the other still there. The mesh is a
+     cuboid, the colour is one step off the bag's, and no frame in
+     `findings/` has either.
+   - **The tumble the operator deferred** (*"eventually… or roll a bit"*).
+     `rest_spot` is a landing spot; a watchable fall wants the settle in
+     the SIM (`reference/LOOT.md` §9.3) and either a per-tick position on
+     the wire or a spawn+velocity the client re-integrates through the
+     same function. The second is cheaper and is the one to price first.
+   - **The barrel pays 1–2 stacks** (`content/loot.toml` `rolls_max = 2`),
+     so "3d objects" is often one object. Raising it is a balance pass
+     `ci/haven_prize.mjs` gates, not a code change.
+   - **No per-item mesh** (`assets/models/WANTED.md` is not queued for
+     this): the sack is generic by decision, and the prompt is what
+     distinguishes stacks. A picture per item is 60 assets.
 3. **The guard has no loot tier of its own** — `guard.rs`'s
    `a_guard_pays_what_a_wolf_pays` holds it to a wolf's meat and fat. A
    tier wants a third species, and a third kind still falls through to
@@ -2613,7 +2617,17 @@ arithmetic and unseen*, and the list below is what has accumulated. **Do not
 build a replacement pixel gate.** One session with the client open closes most
 of it.
 
-**Newest, 2026-09-16 — open a bag and right-click** (§0p2, §0wc): the
+**Newest, 2026-09-16 — smash a barrel and look at what falls out** (§0wc
+2b, ground items v0): loose stacks are a new object class on the ground —
+one generic sack, lighter and smaller than a death bag, resting on the
+terrain under its own scatter offset. The frame answers three things no
+gate can: whether a sack reads as *loot* rather than as debris, whether
+one is findable in grass (the clutter layer landed since the bag's mesh
+was last looked at), and whether the size difference from a bag is legible
+at ten metres. The prompt names the item and the count, so a scatter of two
+is also the first test of reading two stacks apart by words alone.
+
+**2026-09-16 — open a bag and right-click** (§0p2, §0wc): the
 inventory screen has two shapes now, and only one of them has ever been on
 a screen. With a container open the crafting half is not drawn, the title
 reads `LOOTING`, the hint line names a different gesture, and three panels
