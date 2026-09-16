@@ -5180,6 +5180,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/gather.rs"),
         },
         Module {
+            file: "grounditem.rs",
+            src: include_str!("../../sim-core/src/grounditem.rs"),
+        },
+        Module {
             file: "input.rs",
             src: include_str!("../../sim-core/src/input.rs"),
         },

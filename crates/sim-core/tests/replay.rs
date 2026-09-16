@@ -493,7 +493,17 @@ const TICKS: u64 = 900;
 /// rule — but it composes with the crawl rather than replacing it, so the
 /// merged digest is neither branch's. The equality assert above it stayed
 /// green on the same run, which is what says both halves are deterministic.
-const GOLDEN_FINAL_HASH: u64 = 0xE6DA_E259_BBB5_510E;
+/// **Regenerated 2026-09-16 for ground items v0** — the newest reason, and
+/// the cheapest kind to read: a smashed barrel scatters loose stacks
+/// instead of standing a container up, so the bots' beach swings now write
+/// into `ground_items` instead of `backpacks`. Two halves move the digest.
+/// The new store folds bytes at all (the `next_id > 1` skip means it folds
+/// none on a world where no barrel ever burst — this script bursts
+/// plenty), and the *positions* differ: a bag stood at the barrel's own
+/// quantized spot, where each stack now finds its own ground height at its
+/// own scatter offset. The equality assert above stayed green on the same
+/// run, which is what says the new arithmetic is deterministic.
+const GOLDEN_FINAL_HASH: u64 = 0xBDDA_55EC_7B48_46AF;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -551,7 +561,7 @@ const GOLDEN_FINAL_HASH: u64 = 0xE6DA_E259_BBB5_510E;
 /// density v1 alongside it (2026-09-14), beside `GOLDEN_FINAL_HASH` and for
 /// its reason: the scatter changed under the run, so it moved from the first
 /// stamped tick as well — the worldgen shape on top of the behavioural one.
-const GOLDEN_TRACE_HASH: u64 = 0xAAC5_FD41_0C03_9940;
+const GOLDEN_TRACE_HASH: u64 = 0x8249_9F33_59E1_6668;
 
 /// Fold a stamped trace into one number.
 ///
@@ -1373,19 +1383,23 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
     );
     // The barrel loop ran on this surface, and the golden below is only
     // evidence of the roll while this holds. Bots swing on a beach where a
-    // quarter of the cells hold a barrel, so an empty container store means
-    // the smash never fired and the pinned hash has quietly stopped
-    // watching it — the exact failure the loot slice found here, where the
-    // gate went green because the fixture was unarmed rather than because
-    // the code was right.
-    // `next_id` is monotonic from 1, so it counts containers *created*
-    // rather than containers still standing — the fixture's despawn ladder
-    // is short enough that an end-state count would read zero on a surface
+    // quarter of the cells hold a barrel, so an empty store means the
+    // smash never fired and the pinned hash has quietly stopped watching
+    // it — the exact failure the loot slice found here, where the gate
+    // went green because the fixture was unarmed rather than because the
+    // code was right.
+    //
+    // **`ground_items` since 2026-09-16, where it read `backpacks`**: a
+    // smashed barrel scatters loose stacks instead of standing a container
+    // up (ground items v0), so the store that counts the smashes moved.
+    // `next_id` is monotonic from 1, so it counts stacks *created* rather
+    // than stacks still lying there — the fixture's despawn ladder is
+    // short enough that an end-state count would read zero on a surface
     // that smashed plenty.
-    let made = world.backpacks.next_id() - 1;
+    let made = world.ground_items.next_id() - 1;
     assert!(
         made >= 2,
-        "only {made} containers stood up in {TICKS} ticks — the barrel smash \
+        "only {made} stacks scattered in {TICKS} ticks — the barrel smash \
          is not running on this surface and the golden no longer covers it"
     );
     (hashes, world.state_hash())

@@ -1748,6 +1748,11 @@ pub struct World {
     /// in the tick at all — a world container is touched only by the verb
     /// that opens it and the move that empties it.
     pub world_conts: crate::worldcont::WorldConts,
+    /// Loose stacks on the ground (`grounditem.rs`: what a smashed barrel
+    /// leaves behind). Sim state, hashed and saved, and — like
+    /// `world_conts` — it costs the tick nothing but one bounded expiry
+    /// sweep over the live entries.
+    pub ground_items: crate::grounditem::GroundItems,
     /// Upkeep/decay sweep cursors (deploy.rs) — sim state, hashed.
     pub sweep_piece: u32,
     pub sweep_deploy: u32,
@@ -1835,6 +1840,7 @@ impl World {
             backpacks: Box::new(Backpacks::new()),
             rewind: crate::rewind::Rewind::new(),
             world_conts: crate::worldcont::WorldConts::new(),
+            ground_items: crate::grounditem::GroundItems::new(),
             sweep_piece: 0,
             sweep_deploy: 0,
             sweep_support: 0,
@@ -3885,13 +3891,41 @@ impl World {
             }
             Command::Pickup { id } => {
                 if let Some(slot) = self.live_slot_of(id) {
-                    crate::spent::pickup(
-                        &mut self.spent,
+                    // **Two stores, one verb, and the loose stack goes
+                    // first** (ground items v0). A spent arrow and a
+                    // dropped stack are one thing to a player — something
+                    // on the ground you bend down for — and they are one
+                    // thing in the reference too (an arrow lying in the
+                    // grass is a `WorldItem`, `reference/LOOT.md` §2).
+                    // Splitting them into two opcodes would put the choice
+                    // of WHICH on the client, where it can disagree with
+                    // the sim's own pick; one verb keeps the decision here.
+                    //
+                    // The stack is tried first because it is the one with a
+                    // prompt: ground items cross the wire, so `E` can name
+                    // what it is about to take, and a prompt that said
+                    // *Wood ×34* and produced an arrow would be a lie the
+                    // arrow path cannot tell (`V` is blind by design).
+                    let mut spill = [ItemStack::default(); INV_SLOTS];
+                    let took = self.ground_items.take_nearest(
                         &self.gather,
-                        self.tick,
                         &mut self.players[slot],
+                        &mut spill,
                         &mut self.events,
                     );
+                    if took.is_none() {
+                        crate::spent::pickup(
+                            &mut self.spent,
+                            &self.gather,
+                            self.tick,
+                            &mut self.players[slot],
+                            &mut self.events,
+                        );
+                    }
+                    // A take into a full pack spills at the feet, the same
+                    // drain every other payout uses — six producers, one
+                    // drain (`backpack.rs`).
+                    self.drain_spill(slot, &mut spill);
                 }
             }
             Command::OpenWorldCont { id, cont } => {
@@ -4355,35 +4389,44 @@ impl World {
                 // this is where the container store lives: gather owns the
                 // slot bit, loot owns the table, and neither owns the other.
                 //
-                // An empty roll stands nothing up — `stand_up` refuses it —
-                // and that is correct rather than a lost drop: the barrel
-                // still broke, still respawns on its timer, and the player
-                // still paid three swings for a bad table.
+                // An empty roll scatters nothing, and that is correct
+                // rather than a lost drop: the barrel still broke, still
+                // respawns on its timer, and the player still paid three
+                // swings for a bad table.
+                //
+                // **It scatters loose stacks rather than standing a bag
+                // up** (ground items v0, the operator 2026-09-16), which
+                // reverses the 2026-08 row *"barrel loot lands in the
+                // ground-container store"* on the condition that row
+                // itself named. `qy` is unused here on purpose: each stack
+                // finds its own ground height at its own landing spot
+                // (`grounditem::rest_spot`), so loot can come to rest
+                // downhill of the barrel rather than floating at the
+                // height the barrel stood at.
                 let mut items = [ItemStack::default(); INV_SLOTS];
-                self.loot.roll_into(
-                    LOOT_BARREL,
-                    &self.gather,
-                    seed,
-                    cell_key(cx, cz),
-                    tick,
-                    &mut items,
-                );
-                let owner = self.players[i].id;
-                self.backpacks.stand_up(
+                let key = cell_key(cx, cz);
+                self.loot
+                    .roll_into(LOOT_BARREL, &self.gather, seed, key, tick, &mut items);
+                let _ = qy;
+                self.ground_items.scatter(
                     &self.backpack,
+                    seed,
+                    &self.haven,
+                    key,
                     qx,
-                    qy,
                     qz,
-                    owner,
                     &items,
                     tick,
-                    &mut self.events,
                 );
             }
-            // Drain the tick's spill. After the barrel arm on purpose: a
-            // smashed barrel's bag stands at arm's length, so a spill in
-            // the same tick merges into it instead of minting a second
-            // container a step away.
+            // Drain the tick's spill. **After the barrel arm, and the
+            // reason changed with ground items v0**: it used to be so a
+            // spill merged into the bag the barrel had just stood up at
+            // arm's length. A barrel no longer stands one up, so a spill
+            // in the same tick mints its own bag at the player's feet —
+            // which is the same place it would have landed, one object
+            // further out. The ordering is kept because a spill is still
+            // the tick's last word about the pack.
             self.drain_spill(i, &mut spill);
         }
         // Fuses burn after the player loop that can light one and before
@@ -4592,6 +4635,11 @@ impl World {
         // a bag dropped at tick T with a lifetime of L is gone the tick
         // its own `expires` names and not one later.
         self.backpacks.expire_due(tick, &mut self.events);
+        // Loose stacks on the same clock and in the same place, so a
+        // barrel's scatter and a body's bag cannot disagree about when
+        // "expires" means. Silent — a loose stack is scenery and the
+        // client's next sync simply does not carry it (`grounditem.rs`).
+        self.ground_items.expire_due(tick);
         deploy::upkeep_sweep(
             &self.deploy,
             &self.build,
@@ -5142,6 +5190,42 @@ impl World {
         // thing, and every downstream client keyed on it would agree with
         // neither.
         h.update(&self.backpacks.next_id().to_le_bytes());
+        // Loose stacks on the ground (`grounditem.rs`). Hashed for the
+        // reason every store here is: a take mutates an inventory, so two
+        // replays that disagreed about where a stack lies — or about
+        // whether one is still there — would disagree about what a player
+        // is carrying one command later. This is why the store is also
+        // *saved* (format 14) rather than swept on reboot: a world save
+        // whose reload changed this digest is the thing
+        // `tests/worldsave.rs` exists to refuse.
+        //
+        // **Skipped whole while no barrel has ever burst**, which is the
+        // arrow idiom two blocks up and kept for its reason:
+        // `GOLDEN_FINAL_HASH` should be evidence about the script it pins,
+        // not about a store existing. `next_id > 1` is the history term —
+        // monotonic, so a store that filled and was then emptied by
+        // pickups still folds its bytes, exactly as `spent`'s eviction
+        // counter does.
+        if !self.ground_items.is_empty() || self.ground_items.next_id() > 1 {
+            h.update(&(self.ground_items.len() as u64).to_le_bytes());
+            for g in self.ground_items.entries() {
+                // 30 bytes, and the whole `expires` in it: a truncated
+                // tick would call two stacks equal right up until one of
+                // them vanished, which is the trap `refill_at` names one
+                // store down.
+                let mut buf = [0u8; 30];
+                buf[0..4].copy_from_slice(&g.id.to_le_bytes());
+                buf[4..8].copy_from_slice(&g.qx.to_le_bytes());
+                buf[8..12].copy_from_slice(&g.qy.to_le_bytes());
+                buf[12..16].copy_from_slice(&g.qz.to_le_bytes());
+                buf[16..18].copy_from_slice(&g.stack.item.to_le_bytes());
+                buf[18..20].copy_from_slice(&g.stack.count.to_le_bytes());
+                buf[20..22].copy_from_slice(&g.stack.cond.to_le_bytes());
+                buf[22..30].copy_from_slice(&g.expires.to_le_bytes());
+                h.update(&buf);
+            }
+            h.update(&self.ground_items.next_id().to_le_bytes());
+        }
         // World containers (`worldcont.rs`). Every field is hashed
         // including `refill_at`: two shards whose crates were emptied on
         // different ticks agree about the contents (both empty) and

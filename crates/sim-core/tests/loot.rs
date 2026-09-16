@@ -1,6 +1,14 @@
 //! The barrel loop, end to end: swing at a barrel → it comes apart after
-//! its content-declared hits → the table rolls into a container standing
-//! where the barrel stood → the existing loot verb empties it.
+//! its content-declared hits → the table rolls into **loose stacks lying
+//! where it stood** → the pickup verb takes them one at a time.
+//!
+//! ⚠ **The middle step changed on 2026-09-16** (ground items v0, the
+//! operator's call) and this file is where the old shape was pinned: a
+//! barrel used to stand up a `backpack.rs` container, and the assertions
+//! below used to read `w.backpacks`. What they read now is
+//! `w.ground_items`, and the interesting difference is not the store — it
+//! is that a stack finds **its own ground height at its own landing spot**
+//! rather than floating at the height the barrel stood at.
 //!
 //! Every number here comes out of a `probe_fixture`, never `content/`
 //! (CLAUDE.md wall 7): `LootContent::probe_fixture` is two weighted rows
@@ -19,7 +27,7 @@ use sim_core::fmath::fabs;
 use sim_core::gather::{cell_key, GatherContent, ItemStack};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::loot::{LootContent, LOOT_BARREL};
-use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q};
+use sim_core::movement::{Body, POS_XZ_Q};
 use sim_core::terrain::{self, Occupant};
 use sim_core::world::{Command, World, EV_BAG_DROPPED};
 
@@ -123,19 +131,19 @@ fn swing(w: &mut World, seq: &mut u16) {
     *seq = seq.wrapping_add(1);
 }
 
-/// Swings until a container stands up, returning how many landed swings it
+/// Swings until the barrel scatters, returning how many landed swings it
 /// took. Panics rather than looping forever.
 fn smash(w: &mut World) -> u32 {
     let mut seq = 0u16;
     let mut landed = 0u32;
-    let before = w.backpacks.len();
+    let before = w.ground_items.len();
     for _ in 0..MAX_STEPS {
         let hits_before = w.slot_lives.len();
         swing(w, &mut seq);
-        if w.slot_lives.len() > hits_before || w.backpacks.len() > before {
+        if w.slot_lives.len() > hits_before || w.ground_items.len() > before {
             landed += 1;
         }
-        if w.backpacks.len() > before {
+        if w.ground_items.len() > before {
             return landed;
         }
     }
@@ -143,33 +151,48 @@ fn smash(w: &mut World) -> u32 {
 }
 
 #[test]
-fn a_barrel_comes_apart_into_a_container_where_it_stood() {
-    let (x, y, z) = barrel_pos();
+fn a_barrel_comes_apart_into_loose_stacks_where_it_stood() {
+    let (x, _, z) = barrel_pos();
     let mut w = barrel_world();
     smash(&mut w);
 
-    assert_eq!(w.backpacks.len(), 1, "exactly one container per barrel");
-    let c = w.backpacks.entries()[0];
-    // The sim sims on the values it transmits: the container's address is
-    // the barrel's own quantized position, so the client draws the loot
-    // where it drew the barrel rather than where the smasher stood.
-    assert_eq!(c.qx, sim_core::movement::quant_xz(x), "container x");
-    assert_eq!(c.qy, sim_core::movement::quant_y(y), "container y");
-    assert_eq!(c.qz, sim_core::movement::quant_xz(z), "container z");
-    let px = w.players[0].body.qx as f32 * POS_XZ_Q;
     assert!(
-        fabs(c.qx as f32 * POS_XZ_Q - px) < 2.0,
-        "the container is out of the smasher's reach"
+        !w.ground_items.is_empty(),
+        "the barrel scattered nothing — the roll did not run"
     );
-    assert!(
-        c.items.iter().any(|s| s.count > 0),
-        "the container stood up empty — the roll did not run"
-    );
-    assert!(c.expires > w.tick, "the container despawns in the past");
-    assert!(
-        fabs(c.qy as f32 * POS_Y_Q - y) < 1.0,
-        "the container is not at the barrel's height"
-    );
+    let span = sim_core::grounditem::SCATTER_R_M * 1.4143; // the square's corner
+    for g in w.ground_items.entries() {
+        assert!(g.stack.count > 0, "an empty stack reached the ground");
+        assert!(g.expires > w.tick, "a stack despawns in the past");
+        let gx = g.qx as f32 * POS_XZ_Q;
+        let gz = g.qz as f32 * POS_XZ_Q;
+        assert!(
+            fabs(gx - x) <= span && fabs(gz - z) <= span,
+            "a stack landed {:.2} m / {:.2} m from the barrel, past the \
+             scatter radius",
+            fabs(gx - x),
+            fabs(gz - z)
+        );
+        // **Its own ground height at its own spot**, which is the whole of
+        // the operator's *"fall down"* in v0: a stack that lands over a
+        // lip lies where the lip is, not at the height the barrel stood
+        // at. Exact, because both sides call `terrain::ground`.
+        assert_eq!(
+            g.qy,
+            sim_core::movement::quant_y(terrain::ground(SEED, hv(SEED), gx, gz)),
+            "a stack is not resting on the ground under it"
+        );
+        // And still inside the arm that takes it, so one swing's loot
+        // never needs a walk.
+        let px = w.players[0].body.qx as f32 * POS_XZ_Q;
+        let pz = w.players[0].body.qz as f32 * POS_XZ_Q;
+        let d2 = (gx - px) * (gx - px) + (gz - pz) * (gz - pz);
+        let reach = sim_core::backpack::LOOT_REACH_M;
+        assert!(
+            d2 <= reach * reach,
+            "a stack landed out of the smasher's reach"
+        );
+    }
 }
 
 #[test]
@@ -185,7 +208,7 @@ fn the_loot_does_not_land_in_the_smashers_hands() {
         w.players[0].inv.iter().all(|s| s.count == 0),
         "smashing a barrel filled the inventory directly"
     );
-    assert!(w.backpacks.entries()[0].items.iter().any(|s| s.count > 0));
+    assert!(w.ground_items.entries().iter().any(|g| g.stack.count > 0));
 }
 
 #[test]
@@ -203,6 +226,7 @@ fn the_barrel_takes_the_hits_its_content_declares() {
 fn a_smashed_barrel_is_harvested_and_holds_a_respawn_timer() {
     let mut w = barrel_world();
     smash(&mut w);
+    let paid = w.ground_items.len();
     let life = w
         .slot_lives
         .entries()
@@ -224,50 +248,74 @@ fn a_smashed_barrel_is_harvested_and_holds_a_respawn_timer() {
         swing(&mut w, &mut seq);
     }
     assert_eq!(
-        w.backpacks.len(),
-        1,
+        w.ground_items.len(),
+        paid,
         "the harvested barrel smashed a second time"
     );
 }
 
+/// **A scatter is silent on the event lane, and a bag was not.**
+///
+/// The old shape pushed `EV_BAG_DROPPED` with the smasher as the owner,
+/// which bought two things: a feed line, and a marker on the smasher's own
+/// map (`ui::map::resolve_marks` draws standing bags). Ground items give
+/// up both deliberately — litter on the map is noise, and the client
+/// learns about a stack from the sync that draws it rather than from an
+/// announcement. The server watches `(next_id, len)` to know the store
+/// moved, which is a complete fingerprint because every insert bumps
+/// `next_id` (`server/core.rs`); a count alone would miss one-in-one-out.
+///
+/// Gated rather than left implicit: an event per expiring stack is the
+/// obvious thing for a later reader to add, and it would spend the
+/// reliable lane on scenery.
 #[test]
-fn the_container_announces_itself_and_the_smasher_owns_it() {
+fn a_scatter_says_nothing_on_the_event_lane() {
     let mut w = barrel_world();
     smash(&mut w);
-    let dropped: Vec<_> = w
-        .events
-        .entries()
-        .iter()
-        .filter(|e| e.code == EV_BAG_DROPPED)
-        .collect();
-    assert_eq!(dropped.len(), 1, "the container did not announce itself");
-    assert_eq!(dropped[0].a, w.backpacks.entries()[0].id, "a is the id");
-    assert_eq!(dropped[0].b, PLAYER, "b is the owner — here, the smasher");
+    assert!(
+        !w.ground_items.is_empty(),
+        "nothing scattered, so this proves nothing"
+    );
+    assert!(
+        !w.events.entries().iter().any(|e| e.code == EV_BAG_DROPPED),
+        "a scattered stack announced itself as a bag"
+    );
 }
 
+/// **The existing pickup verb takes a scattered stack** — no new opcode
+/// ships with this slice. `Command::Pickup` was arrow recovery's
+/// (`spent.rs`), payload-free and nearest-in-reach, which is exactly the
+/// shape a loose stack wants; the sim tries the stack first and falls
+/// through to the arrow, so one key serves both and the choice of which
+/// never reaches the client.
+///
+/// One press takes **one** stack, which is the reference's rule
+/// (`WorldItem.Pickup` is an RPC per entity) and is why this presses once
+/// per stack rather than once.
 #[test]
-fn the_existing_loot_verb_empties_a_smashed_barrel() {
-    // No new verb ships with this: the container is the store the move
-    // and loot paths already resolve, so the client half is a panel and
-    // not a protocol.
+fn the_pickup_verb_takes_a_scattered_stack() {
     let mut w = barrel_world();
     for s in w.players[0].inv.iter_mut() {
         *s = ItemStack::default();
     }
     smash(&mut w);
-    let held: u32 = w.backpacks.entries()[0]
-        .items
+    let on_ground: u32 = w
+        .ground_items
+        .entries()
         .iter()
-        .map(|s| s.count as u32)
+        .map(|g| g.stack.count as u32)
         .sum();
-    assert!(held > 0);
+    let stacks = w.ground_items.len();
+    assert!(on_ground > 0 && stacks > 0);
 
-    w.tick(&[Command::Loot { id: PLAYER }]);
+    for _ in 0..stacks {
+        w.tick(&[Command::Pickup { id: PLAYER }]);
+    }
     let got: u32 = w.players[0].inv.iter().map(|s| s.count as u32).sum();
-    assert_eq!(got, held, "the loot verb did not move the whole container");
+    assert_eq!(got, on_ground, "the pickup verb did not take every stack");
     assert!(
-        w.backpacks.is_empty(),
-        "an emptied container is supposed to leave"
+        w.ground_items.is_empty(),
+        "a taken stack is supposed to leave the ground"
     );
 }
 
@@ -282,7 +330,7 @@ fn inert_loot_content_leaves_barrels_standing() {
     for _ in 0..200 {
         swing(&mut w, &mut seq);
     }
-    assert!(w.backpacks.is_empty(), "an inert table still paid loot");
+    assert!(w.ground_items.is_empty(), "an inert table still paid loot");
     assert_eq!(
         w.slot_lives.len(),
         0,
