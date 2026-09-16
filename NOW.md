@@ -59,6 +59,30 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
 
 # Buildable now — a loop can pick any of these
 
+## 0gfx · Graphics rows landed — three things they left *(client lane)*
+
+Eight settable rows + the preset ladder shipped 2026-09-16 (`DECISIONS.md`
+§open, graphics rows v0); the browser's one-cascade bug is fixed. What remains:
+
+1. **SMAA and bloom have never run in a browser.** They are choosable there
+   now and the DEFAULT is unchanged (`preset(Low)` has both off), so nothing
+   that ships today moved — but Bevy's SMAA wants a standalone
+   `TextureFormat::Stencil8` attachment and nobody has asked WebGL2 for one.
+   `quality::effective` refuses SSAO by measurement and these two by nothing.
+   **The test is one click in the page**, not a gate: turn each on, look, and
+   if it dies, they join the clamp with the reason beside them.
+2. **The 8 m far mesh casts shadows onto the 1 m near mesh.** Measured on
+   seed 20260731: the far sheet rides ABOVE the drawn near ground on 10.6 % of
+   the island's land, mean +0.19 m, worst **+2.26 m** — and +0.67 m inside
+   90 m of the spawn. It is a caster (`terrain_mesh.rs`, the `Static` spawn,
+   no `NotShadowCaster`), so those patches lay coarse false shadow at 8 m
+   resolution. `NotShadowCaster` is NOT the fix — it would also delete the
+   real terrain shadows between the near ring's 160 m and `High`'s 200 m.
+   Re-measure with `far_ground_y` minus `terrain::ground` before choosing.
+3. **A render scale is still the biggest unclaimed lever on a weak GPU** and
+   still not a row: Bevy renders to the window surface, so it needs an
+   off-screen `Image` target and a blit — its own slice, not a table entry.
+
 ## 0wnd · Down is built; the hands that pick you up are not *(sim+client lane)*
 
 Wounded v0 landed 2026-09-13 (`DECISIONS.md` §open "wounded v0",
@@ -122,15 +146,29 @@ contrast 0.09–0.36); and **every normal map in the tree decodes bent** — X/Y
 means 0.212, not 0.5 — because `ci/ktx_pack.py` let `ktx create` linearise the
 data maps for three weeks. The tooling landed; the assets did not:
 
-1. **Re-pack all 23 models from their raw deliveries** on the box with `ktx`:
-   `ci/flatten_charts.py` → `ci/ktx_pack.py` (which now refuses a bent map).
-   Then delete each file's entry from `tests/packed_maps.rs`'s two lists — the
-   gate holds it neutral and chart-flat from then on. Roughness moves with it
-   (0.41 stored where ~0.67 was delivered): expect every prop to read matter.
-2. **Re-roll the stone node and the boulder pool's first entry** with the two
-   prompts in `MANIFEST.md` §prop, and select with `ci/measure_glb.py` — rock_a
-   and node_stone are proven rejects, and metal and sulfur fail the round band
-   too. Remove each landed file's pin from `tests/prop_assets.rs`.
+1. ✅ **All 23 re-packed 2026-09-16.** Not from the raw deliveries — those are
+   in gitignored `To Examine/` and absent from every clone, so `ci/unbake_ktx.py`
+   decodes each model's maps back out of its own KTX2 and inverts the packer's
+   curve. Normals 0.212 → 0.498; **unit-length texels 0.00–0.93 % → 99.42–100 %**,
+   which is a physical check the arithmetic cannot fake. Chart contrast fell in
+   the same pass (worst residual 0.045 < 0.06). Both `packed_maps.rs` lists are
+   empty. Geometry byte-identical, so no shape pin moved. `§LOOK`: unseen.
+2. **Re-roll the stone node and the boulder pool's first entry.** No
+   `MESHY_API_KEY` on this box, so §0rock item 1's kit was tried instead and
+   **it cannot make the node at all** — measured 2026-09-16, and the reason is
+   structural rather than a bad seed: `rock_kit.py`'s `boulder` squash is
+   `(1.0, 0.62..0.82, ..)` with the comment *"never a ball in plan"*, which is
+   right for a boulder and is exactly what the node's round band forbids
+   (the sim blocks a CYLINDER). Plan ratio came back **1.82** on `boulder` and
+   **1.330 / 1.335 / 1.339** on `small` across three seeds against a ceiling of
+   1.2 — that tight a spread is the kind, not the roll. A `dome` kind (or a
+   widened `small` squash) is a number, so it is `DECISIONS.md` §open's, not a
+   loop's. The **formation** for rock_a did come back KEEP (plan 2.201, luma
+   0.21, chart 0.024, r 1.1145 exact) and is **not landed on purpose**: its
+   previews read as a fractured outcrop from the broad side and as a **shark
+   fin** down the narrow axis, which is `vantages.mjs`'s lesson with a
+   different gate — measured KEEP, visual reject. Both candidates and their
+   previews are in the pass notes; the swap is `§LOOK`'s call.
 3. **The formation levers, measured and parked.** Tilt is out at these
    tolerances: rock_b and rock_c leave the blocked cylinder past **3°**. A
    cluster per slot waits for a slab, because the top gate holds the main part
@@ -813,56 +851,38 @@ treeline (`DECISIONS.md` §open, world structure v1). What is still open:
    from the 8 m grid's staircase. Both were replaced by metrics that
    separate. **A band whose two populations touch is not a gate.**
 
-## 0rd · The interior has a site and a road; the ring itself is in pieces *(sim lane)*
+## 0rd · Coastal routing is measured; production integration remains *(sim lane)*
 
-`reference/ROADS.md` (2026-09-16, tier 1 fetched whole). Their order is
-**monuments first, roads routed to them through ports each monument
-declares**; ours is the inverse — sites are chosen ON the ring by
-construction (`terrain.rs:1859`). Measured with `examples/second_road.rs`:
+`reference/ROADS.md` §2.1 adds the 2020 ring/branch rewrite and roadside-site
+exception to the older monuments-first account. The runnable experiment is
+`cargo run --release -p sim-core --example road_route`; measurements and
+limits live in `findings/road-network-prototype-20260916.md`.
 
-- **38% of walkable land is over 300 m of walking from any road** (p50 218 m,
-  p90 570 m). Devblog 189's "huge areas of wasteland", on our island.
-- A chord between two of our sites **saves 3–5% of the walk** — three sites
-  on one ring subtend small angles, so every road between them runs beside
-  the ring. There is nowhere for a new road to go until a site is inland.
-- A straight road across our interior is **flatter than the shipped ring**
-  (0.247 against 0.450 mean slope): the remap curve's shelves.
+The three sampled candidates retain all coastal site/junction anchors and
+pass independent full-width/joint terrain checks. They are **not shipped
+roads**. Old raster component percentages alone do not prove cliff breaks;
+the note separates predicate-confirmed defects from trace/sampling artifacts.
 
-**Step 1 landed 2026-09-16** (`INLAND_SITES = 1`, site roster + inland site
-v0): one authored place solved over the island rather than the ring, at most
-`ROAD_REACH_M` = 300 m from the centre, filling on 16 of 16 seeds. It carries
-the waystation's canopy and **no containers** — the ladder has one crate of
-headroom (4 < 5), so arming them is a spoken re-pricing, not an edit.
-⚠ **The bracket was nearly wrong and the mutant is the record**: written as
-the geometric limit (579.99 m) it put **7 of 16 seeds 20 m from the ring's
-shoulder**, which is a tier that looks built and opens nothing.
+Next, in order:
+1. Choose bounded stored geometry, query indexing, startup budget and failure
+   policy from a broader seed sweep; hash the paths and prove native/wasm parity.
+2. Validate actual obstacles, monument entrances, swept turns and player
+   passage. Smooth the angular candidate only with the same clearance checks.
+3. Integrate scatter, bay/barrel placement and client tier masks from the same
+   road geometry; keep the destination/route reward gates and assess save/world
+   compatibility before any rollout.
+4. Add a second useful inland connection; then optimize site distribution as
+   a set rather than increasing locally scored sites one by one.
 
-**Step 3 landed the same day** (side road v0): one segment per inland site,
-from the site's rim to the ring, solved once in `haven()` and queried as a
-point-to-segment distance. `road_band` takes a `&Haven` now; `ring_band` is
-the ring-only half the site search may ask. Unserved land **38.2% → 28.3%**,
-p90 walk 572 → 451 m. `probe.rs` walks each road's own length, which closes
-the wall-5 hole the bracket left. §8's four gates are `tests/side_road.rs`.
+The client surface pass now adds pavement, an earthy branch and faded ring
+markings (`TERRAIN.md` §1 stage 7). The next material candidate is surveyed in
+`findings/road-materials-20260916.md`: CC0 asphalt with explicit scale and
+texture-memory costs. No new texture assets ship yet. Road grading, authored
+cracks and a distant ribbon remain separate work; paint cannot fix routing.
 
-What is left, in order:
-
-1. **The ring is not a loop.** New measurement and the biggest of these: the
-   shipped coast ring is **79% / 39% / 52% in one walkable piece** across
-   three seeds, broken where it crosses cliffs — 4, 18 and 11 components. The
-   side road had to be taught to refuse a junction on a fragment
-   (`SIDE_ROAD_RING_RUN`) because its first draft landed on an 11-cell stub.
-   Nothing gates the ring's own continuity, and a circulation loop that is not
-   a loop is a bigger reach problem than the interior was.
-2. **Redundancy** (`ROADS.md` §6, Devblog 180) — our side road is a dead end.
-   A second road off the same site, refused the first's junction, is the
-   smallest version of their own stated next step.
-3. **Distribution, not local score** — `pick_minor` minimizes the pad's own
-   flatness score, where Devblog 188 optimizes the whole SET. Identical at one
-   inland site, not at five. `reference/MONUMENTS.md` §9.3.
-
-⚠ **Spokes to the map centre are the wrong shape** — the reach table says how
-much road the island wants, not where it goes. **Not builder work:** what an
-inland site looks like (`WORLD.md` §9.1 — the register is the operator's).
+The inland site still has no containers. Arming rewards and choosing its
+world register remain separate operator decisions; centre-directed spokes
+are still not a substitute for destinations.
 
 
 ## 0fst · The forest, after world structure v1 *(sim + client lane)*
@@ -1860,8 +1880,10 @@ Landed: grass cards (`clutter::card`) and bush leaf cards
 a box filter does not — measured 0.30× after one halving on a fixture built to
 match. Gates: `tests/{grass_card,bush_card}.rs`, `tests/mipmap.rs`.
 
-1. **The conifer's needle mask is still GENERATED** (`tree::needle_image`) and
-   `reference/PLANTS.md` §6.4 calls it "the weakest link in the canopy today".
+1. **The conifer's needle mask is still GENERATED** (`tree::needle_image`) —
+   `reference/PLANTS.md` §6.4 calls it "the weakest link in the canopy today"
+   and canopy grain v0 (2026-09-16) is why that is no longer true: at 256² it
+   draws a 4 mm needle instead of a 34 mm one, which was the fern read.
    Set 9.5 (Conifer sprig atlas, 14 rows) is fetched-and-waiting; the swap is
    an atlas plus a `base_color` change, because the generated mask is white
    and a photograph brings its own colour.
@@ -1974,17 +1996,34 @@ worthless assertion in the first draft.
 5. **Sub-canopy empty, shrub layer one blob** (`Occupant::Bush`, `PLANTS.md`
    §2): ez-tree's `bush_*` presets and a small tree at 40 % are new
    `Occupant` variants plus scatter rows.
-6. **Both cards are generated** (`tree::needle_image`, `tree::leaf_image`);
-   `WANTED.md` §9.5 is the swap, the highest-value texture on that page, and
-   it is two textures now.
-7. ✅ **The double hull (2026-09-13).** Every tree in every chunk walked into
-   after spawn wore the outer ring's hull over its real self — the outer
-   retain never asked whether the near ring had taken the chunk. Fixed in
-   `props::stream`, gated by `tests/ring_handoff.rs` (an eye that moves);
-   `CLAUDE.md` traps has the shape. Two things it leaves: **the capture probe
-   should walk one chunk before it shoots**, because a frame from the spawn
-   chunk cannot contain a hand-off defect; and the browser's 55 m rung now
-   rests on its own argument, not on the frame that moved it (`quality.rs`).
+6. **Both cards are still generated** (`tree::needle_image`,
+   `tree::leaf_image`) but they are no longer the defect: canopy grain v0
+   (2026-09-16) redraws both at 256², a **4 mm** needle where the 64² card
+   could not draw anything under 34 mm, and an 11 cm leaf where it drew 37 cm. `WANTED.md` §9.5 is still the swap and still the best texture on
+   that page; it is an upgrade now rather than a rescue.
+7. **What canopy grain v0 left, and it is all one question: is it enough?**
+   Coverage was held at the fern card's own 0.192 / 0.255 deliberately, so
+   the canopy is the same DENSITY at a finer grain — and card coverage is now
+   the one density lever that costs the sim nothing (item 2's `TREE_MAX_R`
+   does). If a booted frame still shows sky through a near crown, raise
+   `TWIGS` / `NEEDLES_PER_TWIG` (**not** `AXIS_NEEDLES` — swept, it is
+   saturated: nearly tripling it moves coverage by about a tenth) and widen the band in
+   `tests/tree.rs::the_cards_hold_the_density_the_forest_was_built_at`; that
+   is the whole edit. **Nobody has seen any of it** — `§LOOK`. Four known
+   leftovers: **the broadleaf's leaf is 11 cm and a birch's is 3–7**, because a
+   1.25 m card needs 672 leaves at 6 cm and 672 of them comb into a pinnate
+   FROND (measured, and looked at — `canopy_probe`'s `dump_alpha`); the fix is
+   a smaller card, which is `BROADLEAF_MAX_R` and so the sim's. The canopy
+   palette was not touched (`NEEDLE_HI` is luma 111
+   against `ART.md` §3's lit grass at 59–70, and the occlusion moved the
+   RANGE rather than the top end); `CANOPY_AO_GAMMA` is the one invented
+   number in the slice; and the outer ring's hulls get the shade match but
+   are still untextured (§0out item 1).
+8. ✅ **The double hull (2026-09-13)**, fixed in `props::stream` and gated by
+   `tests/ring_handoff.rs`. Two leftovers: **the capture probe should walk one
+   chunk before it shoots** (a frame from the spawn chunk cannot contain a
+   hand-off defect), and the browser's 55 m rung now rests on its own
+   argument rather than on the frame that moved it (`quality.rs`).
 
 
 ## 0a · The clutter ring still ends on a line *(client lane)*
@@ -2180,6 +2219,8 @@ dust and the impact cue read it (`DECISIONS.md` §open, impact fx v1). Left:
 1. **Nobody has heard it and nothing scores it** — `ART.md` has no audio
    section and this box has no device. `cargo run -p client --bin soundbank
    -- <dir>` writes every cue to WAV; sourcing is `assets/sound/WANTED.md`.
+   The browser is the cheapest place to fix that: open the page, because
+   `ci/build_web.sh` now stages a worklet and plays a fixture through it.
 2. **The score is programmer art.** `synth::score` generates the nine
    `music::PIECES`; swapping in recorded pieces is one function
    (`synth::render`'s music arm). Two bumps we cannot take: weapon equipped,
@@ -2634,6 +2675,22 @@ reads `LOOTING`, the hint line names a different gesture, and three panels
 sit in the row where §0eq item 5 already asked whether two fit at 1280.
 The gesture itself is gated as arithmetic (`tests/ui.rs` §T) and the thing
 a frame answers is whether the screen reads as *emptier* or as *broken*.
+**Newest, 2026-09-16 — look at ONE tree, then a stand of them** (§0t, canopy
+grain v0). Four things to judge, in order: does a near crown read as needles
+rather than fern fronds; does it have a dark INSIDE and a lit outside; does it
+have a lit top and a shaded underside; and — the one number deliberately not
+moved — can you still see too much sky through it, in which case the fix is
+the card counts in `tree.rs` and nothing in the sim. The broadleaf's leaves
+went from 37 cm to 11 cm, so judge that species separately — and see §0t item 7
+for why they are not the 3–7 cm a birch actually has. Everything here is
+arithmetic-gated and none of it has been drawn.
+**Newest, 2026-09-16 — hold G and look** (§0mp): the map screen changed in
+five ways at once and every one of them is a judgement a frame settles —
+whether the road's casing reads as a road or as a scratch, whether 256 grid
+labels are an index or a mesh drawn over the island, whether an 18 px badge
+crowds a base's worth of beds into one blob, and whether the site names
+collide with each other. `cargo run -p client --example map_png` draws the
+island half of it with no GPU; the nodes on top of it need the game.
 
 **2026-09-13 — go down and look** (§0wnd, `render/wounded.rs`): the
 camera's drop to `CRAWL_EYE_M` and its roll, the vignette, the two-number
@@ -2790,6 +2847,30 @@ the default frame did not move — which is why it could land unlooked-at.
    five minutes is the intended floor for a common-only bag now the kit
    guarantees one.
 
+
+## 0mp · The map became a chart — what it still is not *(client lane + operator)*
+
+Map legibility v2 landed 2026-09-16 (`DECISIONS.md` §open; `reference/MAP.md`
+§9.1): roads painted, a label in all 256 grid cells, pictures on the markers,
+the authored tier named, the player an arrow that points. What is left:
+
+1. **Player-placed markers — the real feature gap.** The reference gives each
+   player five, with a colour, an icon and a label, shared to a team
+   (`reference/MAP.md` §3). Ours has none. It needs a wire message and a cap,
+   so it is not a builder's edit; `protocol` lane.
+2. **A marker with a CLOCK or a RADIUS** (§4). No wire and nothing yet that
+   would use one — but `MarkKind::BedSpent` already solves the clock case with
+   a *weight* instead, which is the cheaper answer to copy first.
+3. **Should the grid labels be toggleable?** Theirs ship OFF behind a button
+   (§1). Ours are always on because that is what was asked for. Operator.
+4. **Waystation and inland share one word and one glyph** — `resolve_marks`
+   does not distinguish them because the ground does not (same canopy). If
+   they should read differently on the map, that is an icon and a spoken call.
+5. **`MAP_PX` is 512 (4 m a pixel) and the roads would be crisper at 1024.**
+   Measured: the paint is 263 ms at 512 and **1.06 s at 1024**, so this is a
+   real trade and not a free knob. `prepaint` hides it behind the loading bar
+   either way, which is what makes 1024 arguable at all.
+6. **Nobody has seen it.** §LOOK.
 
 ## 0a · Is the map's marked set the right one? *(operator — a taste call)*
 
@@ -3079,9 +3160,12 @@ at in headless Chromium (SwiftShader) against a shard from the same commit:
    (`web::hand_back` → `gatesLeft` → reload with the reason on the status
    line); the surface follows the viewport under the 2048 cap (`web::fit`,
    `tests/web.rs`); one PLAY button, the shard fields behind ADVANCED.
-5. **The audio bank is one cue a frame on wasm32** (`tests/bank.rs`); the
-   spread bank installs each cue's PCM into the engine, which a page does
-   not flush anywhere yet — the worklet is the next stage.
+5. **The audio bank is one cue a frame on wasm32** (`tests/bank.rs`), and
+   since 2026-09-16 there is a reader for it: `render/audio_web.rs` posts
+   each frame's installs and commands to an `AudioWorklet` running the same
+   `sound::engine::Renderer` the desktop runs (browser audio v0). Bit-
+   identical to the native path under `ci/check_worklet.mjs`; **unheard in a
+   real tab** — §0x item 1's caveat, on this target too.
 6. **Mouse look turns the view** and the pointer lock, when granted, holds
    through a drag and releases on Escape — zero panics across four runs.
 
@@ -3113,7 +3197,28 @@ What remains, in order:
    (`RenderAssetUsages::default()`), and a page has one 32-bit heap.
    `RENDER_WORLD` only for the model maps and the photographs is the first
    cut. `web::heap_report` prints the split every two seconds in a browser.
-7. **A granted pointer lock in headless Chromium is a pointer-event flood**
+7. **The worklet is unheard and unmeasured in a tab.** Browser audio v0
+   landed 2026-09-16 and closed the two-day silence, but every number about
+   it comes from `ci/check_worklet.mjs` under node: bit-identical samples, a
+   56-byte report, six mutants caught. What nobody has is the thing
+   `findings/browser-audio-20260913.md` §4 asked for — the hiccup, measured
+   with a real GC and a real audio thread. `app.js`'s long-task counter and
+   `web::heap_report` print beside each other for exactly this; read them in
+   a tab next to a footstep. Open too: `REPORT_EVERY = 96` is a guess at a
+   cadence, and nothing yet plots `Diag::stats.dropped` against frame time.
+   ⚠ **Check the CSP on the FIRST live load, before anything else.** The page
+   has been silenced by that header once already (2026-09-13, cpal's `eval`),
+   and the worklet adds two fresh demands on it that no gate here can test:
+   `audioWorklet.addModule("./audio.js")` is governed by **`script-src`**, and
+   instantiating the posted `WebAssembly.Module` inside the worklet needs
+   `wasm-unsafe-eval` to apply in that scope too (worklets inherit the
+   document's policy). `'wasm-unsafe-eval'` is already in
+   `scry-forge/deploy/nginx/elopros.com.conf`'s `/games/gates/` block, so the
+   second is expected to hold and the first is expected to be `'self'` —
+   **expected, not measured.** A refusal shows as `audio output: none - the
+   page built no AudioWorklet` on the console with the game otherwise fine,
+   and `startAudio`'s `console.warn` carries the browser's own reason.
+8. **A granted pointer lock in headless Chromium is a pointer-event flood**
    (§17.6: ~30k raw updates a second, stationary), and Bevy's message
    buffers are unbounded, so the page hits the 4 GB ceiling in a minute. A
    hardware mouse cannot produce it; a real browser has not been asked.

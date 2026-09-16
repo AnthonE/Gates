@@ -994,13 +994,43 @@ swap, so an impostor that quietly became a copy of the tree goes red.
 
 Two notes that outlive the number. **The triangle count is the smaller half of
 the win**: SSAO carries `#[require(DepthPrepass, NormalPrepass)]`, so the same
-geometry is rasterized in two prepasses, the main pass and each of §R5's four
-shadow cascades — and `bevy_light`'s `check_dir_light_mesh_visibility` consults
+geometry is rasterized in two prepasses, the main pass and each of the sun's
+shadow cascades (four at `Quality::High`, a settings row since 2026-09-16, and
+one in a browser whatever the row says — §6.x) — and `bevy_light`'s `check_dir_light_mesh_visibility` consults
 `VisibleEntityRanges` exactly as the camera's own check does, so the swap is
 paid back in every one of them. **And none of it is measured on a GPU** (the
 paragraph above), so this is counts × passes like every other budget here.
 The billboard (`TERRAIN.md` §4) is still unbuilt and is still the cheaper end;
 the hull is the step that needed no new material, no bake and no render target.
+
+### 6.x · Shadow detail is the LAST cascade's ortho box, and it was 627 m
+
+Measured 2026-09-16 off `bevy_light::cascade`'s own arithmetic
+(`quality::far_texel_m`, gated against `CascadeShadowConfig::bounds` and a
+hand-written golden), at `fov_deg` 75 and 16:9:
+
+| config | last cascade | ortho box | metres / texel |
+|---|---|---|---|
+| `High` 4 × 200 m @ 2048 | 62.6 → 200 m | 627 m | **0.306** |
+| `Medium` 3 × 140 m @ 2048 | 32.8 → 140 m | 439 m | 0.214 |
+| `Low` 2 × 90 m @ 1024 | 9.6 → 90 m | 282 m | 0.275 |
+| `High` 4 × 200 m @ **4096** | 62.6 → 200 m | 627 m | 0.153 |
+| a browser, 1 × 90 m @ 2048 | 0.2 → 90 m | 282 m | 0.138 |
+
+Cascade 0 is 1.86 cm/texel at every tier, so the near field was never the
+problem. The last one is, and the mechanism is that `calculate_cascade_bounds`
+is **geometric** from `CASCADE_FIRST_M` to the maximum distance: four cascades
+from 12 m to 200 m splits 12 / 30.7 / 78.3 / 200, and the last slice is 137 m
+deep through a 106°-wide frustum, which Bevy then fits with the larger of the
+slice's body and far-plane diagonals. A shadow edge cannot be finer than one
+texel, so 30 cm is the size of the stair-step past 60 m. **The levers are the
+count, the distance and the map size — all three are settings rows now**, and
+the screen prints this number and the megabytes beside them.
+
+⚠ **`MAX_CASCADES_PER_LIGHT` is 4, and 1 on WebGL2** — see `CLAUDE.md`'s trap
+list. The browser cannot be given more cascades, so its lever is the map size
+and the fact that its single cascade must cover the whole distance rather than
+stopping at `CASCADE_FIRST_M`.
 
 Every constant this path invents beyond these is **PROPOSED** and goes to
 `DECISIONS.md` §open in the commit that ships it — as a `` `NAME = value` ``

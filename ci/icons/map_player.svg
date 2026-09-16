@@ -1,0 +1,32 @@
+<!--
+  Map player arrow — ours, not game-icons.net.
+
+  **It is authored because the archive has no compact marker that points
+  UP.** This is the one icon in the set that ships rotated: `render::map`
+  spins it by the compass's own yaw, so the drawing's rest orientation is
+  load-bearing in a way no inventory picture is — north at rotation zero, or
+  every bearing on the map is wrong by a constant nobody can see. Probed
+  `lorc/arrowhead` (a spear at 45°), `delapouite/plain-arrow` (points DOWN,
+  and is already `wooden_arrow` in this set), `lorc/arrow-flights`,
+  `lorc/arrow-cluster` and `delapouite/direction-sign`; the nearest hits are
+  either weapons — confusable with `metal_spear` and `wooden_spear`, which
+  ship beside it — or off-axis. `ci/bake_icons.py`'s own rule: a drawing of
+  ours beats a picture of the wrong thing.
+
+  **A kite, not a triangle.** A plain isoceles triangle at 14 px reads as a
+  play button and its heading is ambiguous end-for-end at a glance; pulling
+  the base into a notch gives the tail a concavity, so the point is the only
+  convex vertex and the direction is unmistakable. Same grammar every
+  compass rose and every GPS cursor uses, and it survives the 45° rotations
+  where a triangle's flat base starts reading as an edge of something else.
+
+  Drawn in the 512 box the rest of the set uses, symmetric about x = 256 so
+  the rotation pivots on the drawing's own axis rather than on a bias, and
+  centred on y = 256 so a rotation about the node's centre keeps the marker
+  on the player instead of walking it around a circle.
+
+  No attribution is owed for this file; `assets/icons/CREDITS.md` says so.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <path fill="#fff" d="M256 74 L430 438 L256 356 L82 438 Z"/>
+</svg>

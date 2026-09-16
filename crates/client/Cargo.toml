@@ -147,6 +147,14 @@ name = "tree_sweep"
 path = "examples/tree_sweep.rs"
 required-features = ["render", "native"]
 
+[[example]]
+name = "canopy_probe"
+path = "examples/canopy_probe.rs"
+# `render` for the generator and `native` for the same reason `tree_sweep`
+# takes it: the workspace clippy gate builds every example with NO features,
+# and an example that reaches into `client::render` does not compile there.
+required-features = ["render", "native"]
+
 # The fell gate needs the render module, so it carries the same requirement
 # the binary does — and therefore runs in the renderer tier, not the code one.
 # The conifer's bounds gate: pure geometry, headless, no GPU — but it imports
@@ -433,8 +441,10 @@ sound = { path = "../sound" }
 # menu, settings, the HUD, inventory, crafting, the build wheel, chat, the map
 # and the death screen — about 5,400 lines and 78 `Node` sites across
 # `render/*.rs` and `render/panels/`.
-# **`bevy_audio` is compiled and its `AudioPlugin` is DISABLED in both
-# desktop binaries** (`bin/gates.rs`, `bin/modelview.rs`), and this paragraph
+# **`bevy_audio` is compiled and its `AudioPlugin` is DISABLED on every
+# target** (`bin/gates.rs`, `bin/modelview.rs`, and `client-web` since
+# 2026-09-16 — the page had been left mixing an empty graph through cpal's
+# main-thread timer, `CLAUDE.md`'s decal-trap entry), and this paragraph
 # has now been wrong in both directions: it once said the crate was dead
 # weight while `render/audio.rs` played every cue through it, and it then
 # said it was load-bearing while the cpal seam was being built. Since the
@@ -747,6 +757,12 @@ web-sys = { version = "0.3", features = [
     # without a console line those refusals would be a client that quietly
     # stopped, on somebody else's machine, with nothing to read.
     "console",
+    # The audio seam's channel to the `AudioWorkletProcessor`. The page builds
+    # the context and the node inside the PLAY click (a gesture, or the
+    # context starts suspended and silent); this client only talks down the
+    # port it left behind — `render/audio_web.rs`.
+    "MessagePort",
+    "MessageEvent",
     # `render/web.rs`: the viewport (`Window`), the canvas's transform
     # (`Document` → `Element` → `HtmlElement` → `CssStyleDeclaration`), and
     # the reload that hands a finished session back to the page (`Location`).

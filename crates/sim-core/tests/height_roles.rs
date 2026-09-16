@@ -189,6 +189,14 @@ const RAW_READERS: &[(&str, &str, &str)] = &[
     ),
     // ---- the client --------------------------------------------------------
     (
+        "road_markings.rs",
+        "shore_height",
+        "locator: the visual chart locates the same raw shoreline crossing as \
+         `ring_band`, then assigns road-distance coordinates. A carved read \
+         could move paint away from that authoritative ring. It never seats \
+         a vertex: `terrain_mesh::heightfield` still reads carved `ground`.",
+    ),
+    (
         "map.rs",
         "paint",
         "carve-blind: the minimap depicts the island at ~2 m a pixel and the whole \

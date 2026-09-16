@@ -50,6 +50,77 @@ pub const SEA_SHALLOW: [f32; 3] = [47.0, 106.0, 142.0];
 /// Open water at [`DEEP_M`] and below.
 pub const SEA_DEEP: [f32; 3] = [23.0, 50.0, 74.0];
 
+/// The road SURFACE. **A near-NEUTRAL pale, and the neutrality is half the
+/// argument.**
+///
+/// The four ground colours above spend two channels on purpose — hue to
+/// separate the identities, value held close so the hillshade does the work.
+/// That leaves exactly one channel unspent, and it is the one that says *not
+/// ground*: every biome colour here is saturated and nothing else on the
+/// island is. So a desaturated ribbon reads as an authored route over sand,
+/// grass, litter and rock alike, without taking a hue that would read as a
+/// fifth biome.
+///
+/// It is the LIGHT half of a light-surface-in-dark-casing pair
+/// ([`ROAD_CASING`]), which is the other half of the argument and the one
+/// this island forces: the ring hugs the coast, so the road spends most of
+/// its length on [`SAND`] and still has to cross [`LITTER`]. Warm rather than
+/// dead grey (`r > g > b`) because a blue-grey beside a beach reads as wet
+/// and the eye starts looking for a river.
+///
+/// **Mid, not pale, and a gate is why.** The first draft of this pair put the
+/// surface at `[206, 198, 184]` — nearly white, for maximum contrast against
+/// grass — and `marker_fills_are_not_the_ground_palette` went red: the haven's
+/// fill is `[232, 228, 218]`, so the island's one authored destination would
+/// have vanished on the road that leads to it, which is exactly where its
+/// marker stands. The casing below is what actually carries the road's
+/// legibility; the surface only has to not be the ground, so it can afford to
+/// sit where nothing else does.
+pub const ROAD: [f32; 3] = [180.0, 172.0, 158.0];
+
+/// The road CASING: the dark line the grow pass draws just outside the
+/// surface.
+///
+/// Darker than every ground colour — [`LITTER`] is the darkest at luma 93 and
+/// this is 68 — so the pair contains both extremes of the palette's value
+/// range and cannot lose against either end of it. That is the whole job: a
+/// single-tone road has to pick a fight with sand or with forest litter, and
+/// on this island the ring road crosses both.
+pub const ROAD_CASING: [f32; 3] = [74.0, 68.0, 61.0];
+
+/// How much of [`ROAD`] the SHOULDER takes, against the ground it crosses.
+///
+/// **Not a taste call — it is what makes the ribbon a surface rather than a
+/// drawn line.** The carriageway is `ROAD_HALF_W * 2` = 4 m and the shoulder
+/// 10 m; at this map's 4 m pixel that is one pixel and two and a half. Half,
+/// so the two bands the terrain actually has stay legibly different, which is
+/// also what a shoulder is on the ground: road, thinning.
+pub const ROAD_SHOULDER_MIX: f32 = 0.5;
+
+/// The shoulder is a BLEND and the grow is a fraction, refused at compile
+/// time rather than in a test.
+///
+/// Both ends are silent failures that leave every road gate green. A mix of 0
+/// paints nothing but the one-pixel carriageway and the ribbon breaks into
+/// dashes; a mix of 1 makes the shoulder the road and deletes the distinction
+/// the terrain actually has. A grow of 0 removes the widening — the only
+/// reason the road is legible at map scale — and a grow of 1 makes the casing
+/// as strong as the surface, so the road reads as a dark line with a light
+/// core rather than as a surface with an edge.
+const _: () = {
+    assert!(ROAD_SHOULDER_MIX > 0.0 && ROAD_SHOULDER_MIX < 1.0);
+    assert!(ROAD_GROW > 0.0 && ROAD_GROW <= 1.0);
+};
+
+/// How much coverage a road pixel hands to the pixel beside it.
+///
+/// The road is drawn wider than scale, which is what every printed map does
+/// and the only reason a road symbol is legible at all — see [`paint`]. One
+/// pixel of grow at this strength turns a 1–3 px ribbon into a 3–5 px one
+/// with a casing, and the strength is below 1 so the casing reads as an edge
+/// rather than as more road.
+pub const ROAD_GROW: f32 = 0.85;
+
 /// The hillshade's light, as a unit vector in world axes (**x WEST**, y up,
 /// z north).
 ///
@@ -95,8 +166,33 @@ pub fn grid_label(x: f32, z: f32) -> String {
     }
     let col = (((ISLAND_SIZE - x) / GRID_M) as usize).min(GRID_COLS - 1);
     let row = (((ISLAND_SIZE - z) / GRID_M) as usize).min(GRID_COLS - 1);
-    let letter = GRID_LETTERS.as_bytes()[col] as char;
-    format!("{letter}{}", row + 1)
+    grid_cell_label(col, row)
+}
+
+/// The label a grid CELL carries — `"A1"` at the north-west corner,
+/// `"P16"` at the south-east.
+///
+/// **Split out of [`grid_label`] rather than duplicated, and that is the
+/// point of it existing at all.** The map screen prints this in all 256
+/// cells and the readout above the island prints the one the player is
+/// standing in; a second copy of `letter` + `row + 1` in the render layer is
+/// the hand-kept mirror `CLAUDE.md` records going stale twice, and the way it
+/// would fail here is the worst available: every cell labelled, the player's
+/// readout labelled, and the two disagreeing by one about which square you
+/// are in — a map that is right about everything and lies when you read it
+/// out to somebody.
+///
+/// Column and row both count from the north-west, which is `+x, +z` in world
+/// axes (`DECISIONS.md` 2026-08-15) — see [`grid_label`], which applies the
+/// two flips, and [`paint`], which applies the same two to the image.
+///
+/// Letters are the horizontal axis and numbers the vertical, which is the
+/// reference game's convention too (Devblog 181: *"lettered along the
+/// horizontal axis, and numbered along the vertical axis"*) and therefore
+/// the one a player arriving from it can already read.
+pub fn grid_cell_label(col: usize, row: usize) -> String {
+    let letter = GRID_LETTERS.as_bytes()[col.min(GRID_COLS - 1)] as char;
+    format!("{letter}{}", row.min(GRID_COLS - 1) + 1)
 }
 
 /// Where a world position lands on a `size`-pixel map, in pixels.
@@ -136,14 +232,96 @@ pub fn world_to_map(x: f32, z: f32, size: usize) -> (f32, f32) {
 ///    one every time. Sampling at centres puts `(i, j)` strictly inside the
 ///    pixel it painted, on both axes, with no boundary to tip over.
 ///
-/// One pass, ~`size²` height taps plus an apron. Called once per session on
-/// the first open, never per frame: the island is a function of the seed and
-/// the seed does not change inside a session.
-pub fn paint(seed: u64, size: usize, out: &mut [u8]) {
+/// **The roads are painted here and not drawn as nodes**, and that is the
+/// fourth positional fact: a road placed by the UI layer would be a second
+/// projection of the same world, which is the defect the three above exist to
+/// prevent. `terrain::road_band` is the law every other consumer asks — the
+/// shading vertex, the scatter veto, the clutter tile — so the map answers
+/// from it too and cannot draw grass down the middle of a road the ground has
+/// cleared. It needs the `Haven` because a side road is SOLVED rather than
+/// inverted (`terrain::road_band`'s own note); both callers hold one already.
+///
+/// ## The height field is sampled ONCE per pixel, not five times
+///
+/// **Measured, because the comment that used to sit here was not.** It said
+/// "~`size²` height taps" and claimed the work was "done once, on the first
+/// open, off the join path", and both halves were wrong in the same
+/// direction: every pixel took five taps — its own, plus four for the central
+/// differences — and at the shipped 512 that is 1.3 M taps and **525 ms in
+/// release**. The map is opened by HOLDING `G` while the world runs, so that
+/// is a ~16-frame freeze the first time a player reaches for it, and nothing
+/// in this repo had ever timed it.
+///
+/// The four extra taps were each a re-computation of a neighbouring PIXEL's
+/// own sample: pixel `i`'s `x + step` is pixel `i + 1`'s centre, exactly, at
+/// the map's own step. So the rows are sampled into a three-row rolling
+/// window with a one-cell apron and the differences read their neighbours —
+/// `size² + 4size + 4` taps for the whole island, and the loop keeps
+/// `O(size)` scratch rather than `O(size²)`.
+///
+/// **That is a 5× cut in TAPS and a 2.3× cut in TIME, and the two are worth
+/// keeping apart** — 613 ms (with the road pass this slice also added) down
+/// to 263. The gap is the rest of the per-pixel work, which the window does
+/// not touch: `moisture` is a second noise field with no neighbour to share,
+/// `splat_from` and the blend are arithmetic, and `road_band` is its own
+/// ~88 ms. A "5× faster" written here would be the drift `CLAUDE.md` records
+/// twice — a number that was true of one thing, quoted about another.
+///
+/// **It is not bit-identical to the five-tap form and does not need to be.**
+/// `half + (i+1) * step` and `(half + i * step) + step` are the same real
+/// number and can differ by an ulp as floats; the grid form is the more
+/// regular of the two (its samples are uniformly spaced by construction) and
+/// nothing downstream of a map pixel is a golden, a hash or a replay. Wall 5
+/// is about sim state, and this file is not in `sim-core`.
+///
+/// ## The road is drawn WIDER than it is, on purpose
+///
+/// The carriageway is 4 m against this map's 4 m pixel, so painted at scale
+/// it is a one-pixel line chasing a 6 km ring: it breaks into dashes and
+/// disappears against the sand it runs on for most of its length. Drawing a
+/// road wider than scale is what every printed map does and it is the reason
+/// a road symbol is legible at all — so the band is sampled once per pixel
+/// into a coverage field and then GROWN by one pixel in image space, which
+/// costs no further height taps.
+///
+/// The grown edge is not painted the same colour as the middle. It is the
+/// standard road symbol — a light surface inside a dark casing — and it is
+/// here for a reason particular to this island rather than for tradition:
+/// our ring road hugs the coast, so it spends most of its length on [`SAND`],
+/// which is the lightest ground colour there is, and crosses [`LITTER`],
+/// which is the darkest. A single-tone ribbon has to lose against one of
+/// them. A ribbon that contains both extremes cannot.
+pub fn paint(seed: u64, haven: &Haven, size: usize, out: &mut [u8]) {
     assert!(out.len() >= size * size * 4, "buffer too small for the map");
     let step = ISLAND_SIZE / size as f32;
     let half = step * 0.5;
     let inv2s = 1.0 / (2.0 * step);
+    // The rolling window is `size + 2` wide: pixel column `i` is grid column
+    // `i + 1`, and the two apron columns are the differences at the edges.
+    let n = size + 2;
+    let gx = |k: usize| half + (k as f32 - 1.0) * step;
+
+    let mut rows = [vec![0.0f32; n], vec![0.0f32; n], vec![0.0f32; n]];
+    let fill = |row: &mut Vec<f32>, j: i64| {
+        let z = half + j as f32 * step;
+        for (k, h) in row.iter_mut().enumerate() {
+            *h = terrain::height(seed, gx(k), z);
+        }
+    };
+    fill(&mut rows[0], -1);
+    fill(&mut rows[1], 0);
+    fill(&mut rows[2], 1);
+    // `prev`, `cur`, `next` as indices into `rows`, rotated per row rather
+    // than copied — three `Vec`s of `n` floats for the whole island.
+    let (mut prev, mut cur, mut next) = (0usize, 1usize, 2usize);
+
+    // The road's coverage and the hillshade it will be multiplied by, kept
+    // for the grow pass below. Water gets `shade = 0`, which is the sentinel
+    // that keeps the grown edge out of the sea: a coverage field dilated
+    // without it would put a casing pixel on the water at every river mouth
+    // the ring crosses.
+    let mut cov = vec![0.0f32; size * size];
+    let mut shade_of = vec![0.0f32; size * size];
 
     for j in 0..size {
         let z = half + j as f32 * step;
@@ -151,17 +329,16 @@ pub fn paint(seed: u64, size: usize, out: &mut [u8]) {
         for i in 0..size {
             let x = half + i as f32 * step;
             let px = size - 1 - i;
-            let h = terrain::height(seed, x, z);
+            let h = rows[cur][i + 1];
 
-            // Central differences at the map's own step. A smoothed slope
-            // rather than `terrain::slope`'s ±1 m one — which is correct for a
-            // map, and is also what the ground mesh feeds the splat law at its
-            // own step, so the map and the world disagree no more than two
-            // chunk resolutions of the world already do.
-            let dhdx =
-                (terrain::height(seed, x + step, z) - terrain::height(seed, x - step, z)) * inv2s;
-            let dhdz =
-                (terrain::height(seed, x, z + step) - terrain::height(seed, x, z - step)) * inv2s;
+            // Central differences at the map's own step, read off the
+            // neighbours' samples. A smoothed slope rather than
+            // `terrain::slope`'s ±1 m one — which is correct for a map, and is
+            // also what the ground mesh feeds the splat law at its own step,
+            // so the map and the world disagree no more than two chunk
+            // resolutions of the world already do.
+            let dhdx = (rows[cur][i + 2] - rows[cur][i]) * inv2s;
+            let dhdz = (rows[next][i + 1] - rows[prev][i + 1]) * inv2s;
 
             let (r, g, b) = if h <= SEA_LEVEL {
                 // Water: one ramp from shelf to floor, and NO hillshade. The
@@ -195,6 +372,13 @@ pub fn paint(seed: u64, size: usize, out: &mut [u8]) {
                 let lambert = (-dhdx * LIGHT[0] + LIGHT[1] + -dhdz * LIGHT[2]) * inv;
                 let shade =
                     (SHADE_FLOOR + SHADE_GAIN * lambert).clamp(SHADE_CLAMP.0, SHADE_CLAMP.1);
+                let o = py * size + px;
+                shade_of[o] = shade;
+                cov[o] = match terrain::road_band(seed, haven, x, z) {
+                    terrain::RoadBand::Off => 0.0,
+                    terrain::RoadBand::Shoulder => ROAD_SHOULDER_MIX,
+                    terrain::RoadBand::Carriageway => 1.0,
+                };
                 (mix(0) * shade, mix(1) * shade, mix(2) * shade)
             };
 
@@ -203,6 +387,68 @@ pub fn paint(seed: u64, size: usize, out: &mut [u8]) {
             out[o + 1] = g.clamp(0.0, 255.0) as u8;
             out[o + 2] = b.clamp(0.0, 255.0) as u8;
             out[o + 3] = 255;
+        }
+        if j + 1 < size {
+            // Rotate, then re-fill what was `prev` as the new `next`. One
+            // row of taps per row of pixels.
+            let done = prev;
+            prev = cur;
+            cur = next;
+            next = done;
+            fill(&mut rows[next], j as i64 + 2);
+        }
+    }
+
+    paint_roads(size, &cov, &shade_of, out);
+}
+
+/// Grow the road one pixel and composite it: casing on the grown edge,
+/// surface in the middle.
+///
+/// Image-space and therefore free of height taps, which is the whole reason
+/// the widening happens here and not by supersampling the band — a 2×2
+/// supersample of `road_band` costs four times the road pass's 88 ms and buys
+/// a ribbon no wider, only smoother at the same one pixel.
+///
+/// `shade` doubles as the land mask (`0.0` is water, which no land pixel can
+/// be — `SHADE_CLAMP.0` is 0.45), so the grow cannot put a casing pixel on
+/// the sea where the ring runs out to a headland.
+fn paint_roads(size: usize, cov: &[f32], shade: &[f32], out: &mut [u8]) {
+    for y in 0..size {
+        for x in 0..size {
+            let o = y * size + x;
+            if shade[o] <= 0.0 {
+                continue; // water: the road never reaches it
+            }
+            // The largest coverage among the four neighbours, which is what
+            // the middle of the road hands to the pixel outside it.
+            let mut near = 0.0f32;
+            let mut look = |dx: isize, dy: isize| {
+                let (nx, ny) = (x as isize + dx, y as isize + dy);
+                if nx >= 0 && ny >= 0 && (nx as usize) < size && (ny as usize) < size {
+                    near = near.max(cov[ny as usize * size + nx as usize]);
+                }
+            };
+            look(-1, 0);
+            look(1, 0);
+            look(0, -1);
+            look(0, 1);
+            let core = cov[o];
+            // The casing is what the grow ADDS: a pixel already on the road
+            // gets none, so the dark line lands strictly outside the surface
+            // rather than under it.
+            let edge = (near * ROAD_GROW - core).max(0.0);
+            if core <= 0.0 && edge <= 0.0 {
+                continue;
+            }
+            let s = shade[o];
+            let p = o * 4;
+            for c in 0..3 {
+                let mut v = out[p + c] as f32;
+                v += (ROAD_CASING[c] * s - v) * edge;
+                v += (ROAD[c] * s - v) * core;
+                out[p + c] = v.clamp(0.0, 255.0) as u8;
+            }
         }
     }
 }
@@ -309,6 +555,70 @@ impl MarkKind {
             MarkKind::Bed | MarkKind::BedSpent => [127.0, 179.0, 255.0],
             MarkKind::Hearth => [255.0, 157.0, 92.0],
             MarkKind::Backpack => [232.0, 215.0, 106.0],
+        }
+    }
+
+    /// The picture a mark draws, as a file stem in `assets/icons/`.
+    ///
+    /// **A picture is a THIRD channel and it is the one that survives a
+    /// glance.** Shape and colour already separate the kinds
+    /// (`render::map::spawn_mark`), and both are abstractions a player has to
+    /// have learnt: an orange diamond means hearth only once somebody has
+    /// told you so. A fireplace means fireplace. The reference game's map is
+    /// legible at a glance for exactly this reason and ours was a field of
+    /// coloured confetti — the operator's own frame, 2026-09-16.
+    ///
+    /// Shape and colour are KEPT rather than replaced: an icon at 14 px is
+    /// a silhouette, and a silhouette over a hillshaded island needs a badge
+    /// under it to read at all. So the badge is the old marker and the icon
+    /// is what is now inside it.
+    ///
+    /// `sleeping_bag` and `hearth` are the item set's own files — a bed on
+    /// the map and a bed in your inventory are the same object, and two
+    /// drawings of it would be two things to keep in step. `map_site` serves
+    /// BOTH authored tiers because [`MarkKind::fill`] already decided they
+    /// are one class of thing separated by size, and a second drawing would
+    /// be a second channel saying what the size says.
+    ///
+    /// `None` only for [`MarkKind::None`], which is never drawn — every live
+    /// kind has a picture, and the exhaustive `match` is what keeps that true
+    /// when a kind is added. `tests/map.rs` holds each stem against what
+    /// `assets/icons/` actually ships, because a stem with no file draws an
+    /// empty badge and nothing else would say so.
+    pub fn icon(self) -> Option<&'static str> {
+        match self {
+            MarkKind::None => None,
+            MarkKind::Haven | MarkKind::Waystation => Some("map_site"),
+            MarkKind::Bed | MarkKind::BedSpent => Some("sleeping_bag"),
+            MarkKind::Hearth => Some("hearth"),
+            MarkKind::Backpack => Some("backpack"),
+        }
+    }
+
+    /// The word printed under a mark, or `None` for a mark that gets none.
+    ///
+    /// **Only the authored tier is named, and that is the rule rather than a
+    /// budget.** The reference game labels its monuments and nothing else
+    /// (Devblog 149, *"Monuments are labeled on the map"*), and the reason is
+    /// the one that applies here: a name is worth its clutter when it is the
+    /// same name on every player's map — something you can say out loud to
+    /// somebody who has never stood there. A bed is yours, a bag is where
+    /// somebody died; naming those would print the same three words a dozen
+    /// times over the island and bury the two places that are landmarks.
+    ///
+    /// The lesser tiers share one word for [`MarkKind::fill`]'s reason: the
+    /// map does not distinguish a waystation from an inland site, because
+    /// `resolve_marks` does not either (the ground does not — the same canopy
+    /// stands on both).
+    pub fn site_label(self) -> Option<&'static str> {
+        match self {
+            MarkKind::Haven => Some("HAVEN"),
+            MarkKind::Waystation => Some("WAYSTATION"),
+            MarkKind::None
+            | MarkKind::Bed
+            | MarkKind::BedSpent
+            | MarkKind::Hearth
+            | MarkKind::Backpack => None,
         }
     }
 }
@@ -698,7 +1008,7 @@ mod tests {
         let seed = 42u64;
         let size = 96usize;
         let mut buf = vec![0u8; size * size * 4];
-        paint(seed, size, &mut buf);
+        paint(seed, &terrain::haven(seed), size, &mut buf);
 
         // Find a land sample and a sea sample by asking the terrain directly,
         // then check the painted pixel at each agrees about which it is.
@@ -734,7 +1044,7 @@ mod tests {
     fn every_pixel_is_opaque_and_none_is_left_black() {
         let size = 48;
         let mut buf = vec![0u8; size * size * 4];
-        paint(7, size, &mut buf);
+        paint(7, &terrain::haven(7), size, &mut buf);
         for p in buf.chunks_exact(4) {
             assert_eq!(p[3], 255, "a transparent pixel");
             assert!(
@@ -1089,9 +1399,17 @@ mod tests {
     /// No marker fill may sit near a ground colour — a marker that shares
     /// one vanishes over exactly that biome. Measured, not eyeballed: every
     /// live kind keeps at least one channel 40 steps off every ground colour.
+    ///
+    /// [`ROAD`] is in the list because it IS one now, and it is the one that
+    /// would bite hardest: the ring is where players walk, so a marker that
+    /// matched it would disappear on exactly the part of the island the map
+    /// is most often read about. It is also the closest call in the table —
+    /// `Backpack`'s straw is 59 from `SAND` by euclidean distance and passes
+    /// on the per-channel rule this test actually states, which is why the
+    /// rule is per-channel and written down rather than re-derived.
     #[test]
     fn marker_fills_are_not_the_ground_palette() {
-        let grounds = [SAND, GRASS, LITTER, ROCK, SEA_SHALLOW, SEA_DEEP];
+        let grounds = [SAND, GRASS, LITTER, ROCK, SEA_SHALLOW, SEA_DEEP, ROAD];
         for kind in [
             MarkKind::Haven,
             MarkKind::Waystation,
@@ -1105,6 +1423,213 @@ mod tests {
                 let apart = (0..3).any(|c| (f[c] - g[c]).abs() >= 40.0);
                 assert!(apart, "{kind:?} fill {f:?} vanishes over {g:?}");
             }
+        }
+    }
+
+    // ── The roads ─────────────────────────────────────────────────────────
+    //
+    // Painted from `terrain::road_band` — the same law the shading vertex,
+    // the scatter veto and the clutter tile ask. What is gated here is NOT
+    // that law (it has `sim-core/tests/road.rs` and `side_road.rs`); it is
+    // that `paint` plumbed it through: the right band at the right pixel,
+    // over land only, three bands that are three different pictures.
+
+    /// How far off neutral a colour is. The channel [`ROAD`]'s own doc says
+    /// it spends — every ground identity here is saturated and the road is
+    /// the only thing on the island that is not, so this reads the blend
+    /// back out without needing the ground colour the blend started from.
+    fn saturation(c: [f32; 3]) -> f32 {
+        let max = c[0].max(c[1]).max(c[2]);
+        let min = c[0].min(c[1]).min(c[2]);
+        if max <= 0.0 {
+            return 0.0;
+        }
+        (max - min) / max
+    }
+
+    /// The shard's own seed, so a number measured here is about the island a
+    /// player actually walks.
+    const SEED: u64 = 20260731;
+    /// 8 m a pixel — the terrain cell exactly, so nothing measured is
+    /// limited by the image.
+    const PAINT_PX: usize = 256;
+
+    /// Every land sample, with its band and the saturation it was painted at.
+    fn road_scan() -> [(f32, usize); 3] {
+        let haven = terrain::haven(SEED);
+        let mut buf = vec![0u8; PAINT_PX * PAINT_PX * 4];
+        paint(SEED, &haven, PAINT_PX, &mut buf);
+        let step = ISLAND_SIZE / PAINT_PX as f32;
+        let half = step * 0.5;
+        let mut out = [(0.0f32, 0usize); 3];
+        for j in 0..PAINT_PX {
+            let z = half + j as f32 * step;
+            for i in 0..PAINT_PX {
+                let x = half + i as f32 * step;
+                if terrain::height(SEED, x, z) <= SEA_LEVEL {
+                    // A road may never reach the water, and both halves have
+                    // to break for it to: `ring_band_in` refuses a sample
+                    // below `LAND_MIN_H`, and `paint` only asks on land.
+                    assert_ne!(
+                        terrain::road_band(SEED, &haven, x, z),
+                        terrain::RoadBand::Carriageway,
+                        "a road reached the water at ({x:.0}, {z:.0})"
+                    );
+                    continue;
+                }
+                let (fx, fy) = world_to_map(x, z, PAINT_PX);
+                let o = (fy as usize * PAINT_PX + fx as usize) * 4;
+                let s = saturation([buf[o] as f32, buf[o + 1] as f32, buf[o + 2] as f32]);
+                let k = match terrain::road_band(SEED, &haven, x, z) {
+                    terrain::RoadBand::Off => 0,
+                    terrain::RoadBand::Shoulder => 1,
+                    terrain::RoadBand::Carriageway => 2,
+                };
+                out[k].0 += s;
+                out[k].1 += 1;
+            }
+        }
+        out
+    }
+
+    /// The road is on the map, it is on the land, and the island around it
+    /// still has its palette.
+    ///
+    /// That last clause is the one doing work: every assertion about the
+    /// road being NEUTRAL is satisfied by a map that lost its colour
+    /// altogether, which is the `water_carry.rs` shape `CLAUDE.md` records —
+    /// a gate green because the thing it measures never happened.
+    #[test]
+    fn the_ring_road_is_painted_and_it_is_on_the_land() {
+        let bands = road_scan();
+        assert!(
+            bands[2].1 > 200,
+            "only {} carriageway pixels — the ring road is not on the map",
+            bands[2].1
+        );
+        let ground = bands[0].0 / bands[0].1 as f32;
+        assert!(
+            ground > 0.20,
+            "the land off the road has a mean saturation of {ground:.3} — the \
+             palette is washed out and every road assertion here is vacuous"
+        );
+    }
+
+    /// Three bands, three different pictures, in the right order.
+    ///
+    /// A shoulder mix of 0 paints nothing and a mix of 1 makes the shoulder
+    /// the road; both are green on the test above, which is why this exists.
+    #[test]
+    fn the_shoulder_sits_between_the_carriageway_and_the_ground() {
+        let bands = road_scan();
+        let mean = |k: usize| {
+            assert!(bands[k].1 > 60, "band {k} has only {} samples", bands[k].1);
+            bands[k].0 / bands[k].1 as f32
+        };
+        let (off, shoulder, road) = (mean(0), mean(1), mean(2));
+        assert!(
+            off > shoulder && shoulder > road,
+            "saturation must fall ground -> shoulder -> carriageway: \
+             {off:.3} / {shoulder:.3} / {road:.3}"
+        );
+    }
+
+    // ── The grid's labels ─────────────────────────────────────────────────
+
+    /// All 256 cells are distinct, and the cell label agrees with the
+    /// readout the player reads out loud.
+    ///
+    /// **The agreement is the point.** The map screen prints a label in every
+    /// cell and the line above the island prints the one square the player is
+    /// standing in; they come off one function so a second copy in the render
+    /// layer cannot drift. The way that would fail is the worst available — a
+    /// map right about everything that lies by one square when you read it to
+    /// somebody.
+    #[test]
+    fn every_cell_is_its_own_square_and_the_readout_agrees() {
+        let mut seen = std::collections::HashSet::new();
+        for row in 0..GRID_COLS {
+            for col in 0..GRID_COLS {
+                let label = grid_cell_label(col, row);
+                assert!(seen.insert(label.clone()), "two cells both read {label}");
+                // This cell's centre in world axes, through the two flips —
+                // and it has to come back naming this cell.
+                let x = ISLAND_SIZE - (col as f32 + 0.5) * GRID_M;
+                let z = ISLAND_SIZE - (row as f32 + 0.5) * GRID_M;
+                assert_eq!(
+                    grid_label(x, z),
+                    label,
+                    "the readout and the cell label disagree at ({col}, {row})"
+                );
+            }
+        }
+        assert_eq!(seen.len(), GRID_COLS * GRID_COLS);
+        // A1 is the north-west corner, which is the convention the compass
+        // strip and both image flips rest on.
+        assert_eq!(grid_cell_label(0, 0), "A1");
+        assert_eq!(grid_label(ISLAND_SIZE - 1.0, ISLAND_SIZE - 1.0), "A1");
+    }
+
+    // ── The markers' pictures and names ───────────────────────────────────
+
+    /// Every kind. The `match` is what keeps it honest: a kind added without
+    /// a row here fails to compile rather than going unchecked.
+    fn all_kinds() -> [MarkKind; 7] {
+        let all = [
+            MarkKind::None,
+            MarkKind::Haven,
+            MarkKind::Waystation,
+            MarkKind::Bed,
+            MarkKind::BedSpent,
+            MarkKind::Hearth,
+            MarkKind::Backpack,
+        ];
+        for k in all {
+            match k {
+                MarkKind::None
+                | MarkKind::Haven
+                | MarkKind::Waystation
+                | MarkKind::Bed
+                | MarkKind::BedSpent
+                | MarkKind::Hearth
+                | MarkKind::Backpack => {}
+            }
+        }
+        all
+    }
+
+    /// Every drawn kind asks for a picture, and only the never-drawn one
+    /// does not. That the file exists is `tests/ui.rs` §H's half — this is
+    /// the half that does not need the filesystem.
+    #[test]
+    fn every_drawn_mark_asks_for_a_picture() {
+        for k in all_kinds() {
+            assert_eq!(
+                k.icon().is_none(),
+                k == MarkKind::None,
+                "{k:?} is the wrong way round about having an icon"
+            );
+        }
+        // The two beds share a drawing for `fill`'s reason: the colour and
+        // the picture say "a bed of yours" and the WEIGHT says whether it
+        // will answer.
+        assert_eq!(MarkKind::Bed.icon(), MarkKind::BedSpent.icon());
+        // Both authored tiers share one for `fill`'s other reason: they are
+        // one class of thing, separated by size at the draw.
+        assert_eq!(MarkKind::Haven.icon(), MarkKind::Waystation.icon());
+    }
+
+    /// Only an authored destination is named. A label on a bed or a bag
+    /// would print the same word a dozen times over the island and bury the
+    /// two places that are landmarks.
+    #[test]
+    fn only_the_authored_tier_is_named() {
+        for k in all_kinds() {
+            assert_eq!(
+                k.site_label().is_some(),
+                matches!(k, MarkKind::Haven | MarkKind::Waystation),
+                "{k:?} is the wrong way round about carrying a name"
+            );
         }
     }
 

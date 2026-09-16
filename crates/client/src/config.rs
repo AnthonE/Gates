@@ -102,6 +102,88 @@ impl Quality {
     pub const LADDER: [Quality; 3] = [Quality::Low, Quality::Medium, Quality::High];
 }
 
+/// How much ambient occlusion, as a name a settings file can carry.
+///
+/// **A name and not a number, for [`Quality`]'s reason exactly**: the file is
+/// something a person may open, and `ao = 2` would be a line nobody can
+/// hand-edit. `render/quality.rs` maps it to Bevy's own quality level; the
+/// spellings here are the file format and nothing else.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Ao {
+    #[default]
+    Off,
+    Low,
+    Medium,
+    High,
+    Ultra,
+}
+
+impl Ao {
+    pub fn name(self) -> &'static str {
+        match self {
+            Ao::Off => "off",
+            Ao::Low => "low",
+            Ao::Medium => "medium",
+            Ao::High => "high",
+            Ao::Ultra => "ultra",
+        }
+    }
+
+    /// The inverse. `None` for anything else — [`Quality::from_name`]'s
+    /// posture: an unknown name keeps whatever the preset resolved to rather
+    /// than guessing which end was meant.
+    pub fn from_name(s: &str) -> Option<Self> {
+        match s {
+            "off" => Some(Ao::Off),
+            "low" => Some(Ao::Low),
+            "medium" => Some(Ao::Medium),
+            "high" => Some(Ao::High),
+            "ultra" => Some(Ao::Ultra),
+            _ => None,
+        }
+    }
+
+    /// Cheapest first, for the stepper.
+    pub const LADDER: [Ao; 5] = [Ao::Off, Ao::Low, Ao::Medium, Ao::High, Ao::Ultra];
+}
+
+/// What the file said about each individual graphics row — **`None` means the
+/// key was absent**, not that the row is off.
+///
+/// **That distinction is the whole reason this type is a bag of `Option`s.**
+/// `quality` is a PRESET: it names a whole column of the table in
+/// `render/quality.rs`, and every row below can then be moved off it. So a
+/// file carries both, and the two can disagree on purpose — a player on HIGH
+/// who pulled the shadow distance in has a file that says `quality = "high"`
+/// and `shadow_m = 90`. Resolution is "the preset, then whatever the file
+/// overrode", and it has to be order-independent inside the file, which a
+/// parser writing straight into concrete fields cannot be: a `shadow_m` line
+/// above the `quality` line would be overwritten by the preset.
+///
+/// It also buys the upgrade for free. A settings file written before this
+/// existed carries none of these keys, so every field is `None` and the
+/// player gets exactly the preset they had — no migration, no version bump
+/// (the header's rule is that the stamp moves when a key is *renamed or
+/// changes meaning*, and adding one is neither).
+///
+/// **Range and step are deliberately not enforced here**, the same as every
+/// other numeric key in this module: the bounds live beside the steppers in
+/// `render/settings.rs`, and two sanitizers drift.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub struct GfxFile {
+    pub ao: Option<Ao>,
+    pub smaa: Option<bool>,
+    pub bloom: Option<bool>,
+    /// Whether the sun casts at all. Separate from the distance so that
+    /// turning shadows off and on again does not cost the player the
+    /// distance they had picked.
+    pub shadows: Option<bool>,
+    pub shadow_m: Option<f32>,
+    pub shadow_cascades: Option<u8>,
+    pub shadow_map_px: Option<u16>,
+    pub tree_lod_m: Option<f32>,
+}
+
 /// The values that survive a restart. A plain struct rather than the
 /// render module's `Settings` because that type also carries UI state (the
 /// selected rail row, where Esc returns to) that has no business on disk —
@@ -146,6 +228,9 @@ pub struct Persisted {
     /// opt-in is what "enables it" means, and `reference/VOICE.md` §9.1 is
     /// what the other default costs.
     pub discord_share_server: bool,
+    /// The individual graphics rows, where the file overrode the preset.
+    /// See [`GfxFile`] — a `None` is a key the file did not carry.
+    pub gfx: GfxFile,
 }
 
 /// What a parse hands back: the values (defaults where the file was silent
@@ -174,7 +259,21 @@ pub struct Loaded {
 /// Range clamping is deliberately not here — the bounds live beside the
 /// steppers in `render/settings.rs`, and two clamps drift.
 pub fn parse(text: &str, defaults: Persisted) -> Loaded {
-    let mut v = defaults;
+    // **The graphics half starts EMPTY, whatever the caller's defaults say,
+    // and that is not tidiness — it is the contract.** [`GfxFile`]'s `None`
+    // means *the file did not carry this key*, which is what
+    // `render/settings.rs` resolves against the preset. Inheriting it from
+    // `defaults` would make that impossible to express: the real caller
+    // passes `Settings::default().persisted()`, which fills all eight with
+    // `Some`, so an older file carrying no rows would have come back reading
+    // as though it had asked for the DEFAULT preset's rows — a player whose
+    // file said `quality = "low"` would have booted into HIGH's shadows.
+    // Every other field inherits, because for those a default IS the answer
+    // to an absent key.
+    let mut v = Persisted {
+        gfx: GfxFile::default(),
+        ..defaults
+    };
     let mut version = SETTINGS_VERSION;
     let mut favourites: Vec<String> = Vec::new();
     // (key, full line) so a duplicated unknown key keeps only its last value
@@ -219,6 +318,22 @@ pub fn parse(text: &str, defaults: Persisted) -> Loaded {
             "vol_music" => num(&mut v.vol_music, value),
             "discord_presence" => flag(&mut v.discord_presence, value),
             "discord_share_server" => flag(&mut v.discord_share_server, value),
+            // ── the individual graphics rows ──────────────────────────────
+            //
+            // Each writes into an `Option`, so "absent" and "present and
+            // false" stay different things — see [`GfxFile`]. A key that IS
+            // present but unparseable stays `None`, which is this module's
+            // standing policy one line up: a known key with a bad value
+            // keeps the default (here, the preset's value) and is not
+            // preserved, because the next save rewrites it.
+            "ao" => v.gfx.ao = Ao::from_name(value).or(v.gfx.ao),
+            "smaa" => opt_flag(&mut v.gfx.smaa, value),
+            "bloom" => opt_flag(&mut v.gfx.bloom, value),
+            "shadows" => opt_flag(&mut v.gfx.shadows, value),
+            "shadow_m" => opt_num(&mut v.gfx.shadow_m, value),
+            "shadow_cascades" => opt_count(&mut v.gfx.shadow_cascades, value),
+            "shadow_map_px" => opt_count(&mut v.gfx.shadow_map_px, value),
+            "tree_lod_m" => opt_num(&mut v.gfx.tree_lod_m, value),
             // A comma-separated list, because the format is `key = value` and
             // a list of ids does not earn a second one. An id may not contain
             // a comma — `shardlist::parse` caps every field at
@@ -279,6 +394,38 @@ fn count(slot: &mut u16, value: &str) {
     }
 }
 
+/// [`num`] into an `Option`: a key the file carried and could be read.
+///
+/// The three `opt_*` helpers exist rather than reusing the three above with a
+/// scratch variable because the distinction they carry is the point — a
+/// graphics row's `None` means *the preset decides*, and a helper that had to
+/// be handed a default would have destroyed that on the way in.
+fn opt_num(slot: &mut Option<f32>, value: &str) {
+    if let Ok(n) = value.parse::<f32>() {
+        if n.is_finite() {
+            *slot = Some(n);
+        }
+    }
+}
+
+/// See [`opt_num`].
+fn opt_flag(slot: &mut Option<bool>, value: &str) {
+    match value {
+        "true" => *slot = Some(true),
+        "false" => *slot = Some(false),
+        _ => {}
+    }
+}
+
+/// See [`opt_num`]. Generic over the width because the two counts that use it
+/// are a cascade index and a texel count, which are not the same size and
+/// have no business sharing one.
+fn opt_count<T: std::str::FromStr>(slot: &mut Option<T>, value: &str) {
+    if let Ok(n) = value.parse::<T>() {
+        *slot = Some(n);
+    }
+}
+
 /// Is this something a future build could plausibly have written as a key?
 /// ASCII word characters only — the preserve policy is for another version's
 /// knobs, not for arbitrary bytes to ride the file forever.
@@ -312,6 +459,35 @@ pub fn serialize(v: &Persisted, version: u32, favourites: &[String], unknown: &[
         "discord_share_server = {}\n",
         v.discord_share_server
     ));
+    // The individual graphics rows. Written only where the caller has a value
+    // — `render/settings.rs` always has one for every row, so a file the game
+    // wrote carries all eight, and the `Option` is what lets a *test* (or a
+    // future caller) write a file that leans on the preset for the rest.
+    // Absent is not "off": see [`GfxFile`].
+    if let Some(ao) = v.gfx.ao {
+        s.push_str(&format!("ao = \"{}\"\n", ao.name()));
+    }
+    if let Some(b) = v.gfx.smaa {
+        s.push_str(&format!("smaa = {b}\n"));
+    }
+    if let Some(b) = v.gfx.bloom {
+        s.push_str(&format!("bloom = {b}\n"));
+    }
+    if let Some(b) = v.gfx.shadows {
+        s.push_str(&format!("shadows = {b}\n"));
+    }
+    if let Some(n) = v.gfx.shadow_m {
+        s.push_str(&format!("shadow_m = {n}\n"));
+    }
+    if let Some(n) = v.gfx.shadow_cascades {
+        s.push_str(&format!("shadow_cascades = {n}\n"));
+    }
+    if let Some(n) = v.gfx.shadow_map_px {
+        s.push_str(&format!("shadow_map_px = {n}\n"));
+    }
+    if let Some(n) = v.gfx.tree_lod_m {
+        s.push_str(&format!("tree_lod_m = {n}\n"));
+    }
     // Written unconditionally, empty list included: a `favourites = ""` line
     // is how un-starring the last shard *sticks*. Omitting the key when the
     // list is empty would leave the previous file's line in place on a
@@ -419,6 +595,11 @@ mod tests {
             vol_music: 1.0,
             discord_presence: false,
             discord_share_server: true,
+            // Empty on purpose: the overlay tests below are about the
+            // preset/override mechanics, and a fixture that already carried
+            // an override could not tell "the file said so" from "the
+            // fixture did".
+            gfx: GfxFile::default(),
         }
     }
 
@@ -437,6 +618,16 @@ mod tests {
             vol_music: 0.45,
             discord_presence: true,
             discord_share_server: false,
+            gfx: GfxFile {
+                ao: Some(Ao::Ultra),
+                smaa: Some(false),
+                bloom: Some(true),
+                shadows: Some(false),
+                shadow_m: Some(140.0),
+                shadow_cascades: Some(3),
+                shadow_map_px: Some(4096),
+                tree_lod_m: Some(55.0),
+            },
         }
     }
 
@@ -478,6 +669,155 @@ mod tests {
         assert_eq!(back.values, changed());
         assert_eq!(back.version, SETTINGS_VERSION);
         assert_eq!(back.unknown, unknown);
+    }
+
+    /// **A file written before the graphics rows existed carries none of
+    /// them, and must resolve to exactly its preset.**
+    ///
+    /// This is the upgrade path and it is the reason [`GfxFile`] is a bag of
+    /// `Option`s rather than eight concrete fields: absent has to be
+    /// distinguishable from off, or every player who had a settings file on
+    /// the day this landed would have booted with shadows disabled and
+    /// ambient occlusion off — a visual change nobody chose, arriving as a
+    /// side effect of a settings feature.
+    #[test]
+    fn an_older_file_carries_no_graphics_rows_and_says_so() {
+        let old = "version = 1\nquality = \"medium\"\nfov_deg = 90\n";
+        let got = parse(old, defaults()).values;
+        assert_eq!(got.quality, Quality::Medium);
+        assert_eq!(
+            got.gfx,
+            GfxFile::default(),
+            "a file that never mentioned the rows must hand back eight \
+             `None`s — `render/settings.rs` then fills them from the preset, \
+             and `Some(false)` here would mean the file said OFF"
+        );
+        // And none of those keys is preserved as an unknown: they are ours,
+        // we simply did not find them.
+        assert!(parse(old, defaults()).unknown.is_empty());
+    }
+
+    /// The same upgrade, through the defaults the GAME passes rather than
+    /// this file's fixture.
+    ///
+    /// **The first draft of the test above could not have failed.** It parses
+    /// over `defaults()`, whose `gfx` is eight `None`s — while the real call
+    /// is `config::load(path, Settings::default().persisted())`, and that
+    /// fills all eight with `Some`. So a `parse` that inherited the graphics
+    /// half from its defaults would have passed the fixture and, in the game,
+    /// handed a `quality = "low"` file the DEFAULT preset's rows. `CLAUDE.md`:
+    /// a gate can be exact and aimed at nothing.
+    #[test]
+    fn an_older_file_upgrades_even_when_the_caller_defaults_every_row() {
+        let full = Persisted {
+            gfx: GfxFile {
+                ao: Some(Ao::High),
+                smaa: Some(true),
+                bloom: Some(true),
+                shadows: Some(true),
+                shadow_m: Some(200.0),
+                shadow_cascades: Some(4),
+                shadow_map_px: Some(2048),
+                tree_lod_m: Some(80.0),
+            },
+            ..defaults()
+        };
+        let got = parse("quality = \"low\"\n", full).values;
+        assert_eq!(got.quality, Quality::Low);
+        assert_eq!(
+            got.gfx,
+            GfxFile::default(),
+            "the caller's own graphics rows leaked into what the FILE said, \
+             so an older file would resolve to the default preset's rows \
+             instead of the one it named"
+        );
+    }
+
+    /// The preset and the rows disagree on purpose, and both survive a save.
+    ///
+    /// A player on HIGH who pulled the shadow distance in has a file saying
+    /// `quality = "high"` and `shadow_m = 90`. Neither is inferred at the
+    /// next boot: the preset is what an older build (which knows `quality`
+    /// and none of the rows) would land on, and the rows are what this build
+    /// draws.
+    #[test]
+    fn a_row_moved_off_its_preset_survives_a_save() {
+        let mut v = defaults();
+        v.quality = Quality::High;
+        v.gfx = GfxFile {
+            shadow_m: Some(90.0),
+            shadow_cascades: Some(2),
+            ..GfxFile::default()
+        };
+        let text = serialize(&v, SETTINGS_VERSION, &[], &[]);
+        assert!(text.contains("quality = \"high\""), "{text}");
+        assert!(text.contains("shadow_m = 90"), "{text}");
+        assert!(text.contains("shadow_cascades = 2"), "{text}");
+        assert!(
+            !text.contains("bloom ="),
+            "a row the caller had no value for must not be invented: {text}"
+        );
+        let back = parse(&text, defaults()).values;
+        assert_eq!(back.quality, Quality::High);
+        assert_eq!(back.gfx.shadow_m, Some(90.0));
+        assert_eq!(back.gfx.shadow_cascades, Some(2));
+        assert_eq!(back.gfx.bloom, None);
+    }
+
+    /// **Order inside the file cannot matter**, which is the property that
+    /// made the `Option`s necessary rather than merely tidy.
+    ///
+    /// A parser that wrote the preset straight into concrete fields would
+    /// have the preset overwrite any row that appeared ABOVE it — so a
+    /// hand-edited file with `shadow_m` on line one and `quality` on line two
+    /// would silently lose the edit.
+    #[test]
+    fn a_row_above_the_preset_is_not_eaten_by_it() {
+        let a = parse("shadow_m = 140\nquality = \"low\"\n", defaults()).values;
+        let b = parse("quality = \"low\"\nshadow_m = 140\n", defaults()).values;
+        assert_eq!(a, b, "the file's line order changed what it means");
+        assert_eq!(a.quality, Quality::Low);
+        assert_eq!(a.gfx.shadow_m, Some(140.0));
+    }
+
+    /// `ao` is the second key on this file that is a NAME, so it gets
+    /// `quality`'s two failure modes pinned: a spelling nobody ships, and a
+    /// case nobody typed.
+    #[test]
+    fn ambient_occlusion_is_a_name_and_an_unknown_one_is_absent() {
+        for a in Ao::LADDER {
+            let mut want = defaults();
+            want.gfx.ao = Some(a);
+            let text = serialize(&want, SETTINGS_VERSION, &[], &[]);
+            assert!(text.contains(&format!("ao = \"{}\"", a.name())), "{text}");
+            assert_eq!(parse(&text, defaults()).values.gfx.ao, Some(a));
+        }
+        for bad in ["MEDIUM", "none", "", "2", "of"] {
+            assert_eq!(
+                parse(&format!("ao = {bad}"), defaults()).values.gfx.ao,
+                None,
+                "`ao = {bad}` must leave the row to the preset rather than \
+                 guessing which end was meant"
+            );
+        }
+    }
+
+    /// A bad value on a graphics key leaves that row to the preset and costs
+    /// nothing else — [`a_bad_value_on_a_known_key_costs_that_key_only`] for
+    /// the rows, including the two non-finite floats the renderer must never
+    /// see.
+    #[test]
+    fn a_bad_graphics_value_leaves_that_row_to_the_preset() {
+        let text = "shadow_m = NaN\nshadow_cascades = -1\nshadow_map_px = lots\n\
+                    bloom = maybe\ntree_lod_m = inf\nsmaa = true\n";
+        let got = parse(text, defaults()).values;
+        assert_eq!(got.gfx.shadow_m, None);
+        assert_eq!(got.gfx.shadow_cascades, None);
+        assert_eq!(got.gfx.shadow_map_px, None);
+        assert_eq!(got.gfx.bloom, None);
+        assert_eq!(got.gfx.tree_lod_m, None);
+        // The good line beside them still landed.
+        assert_eq!(got.gfx.smaa, Some(true));
     }
 
     #[test]

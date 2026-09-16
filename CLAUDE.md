@@ -120,6 +120,7 @@ pays the same doors and earns the same coins as a human.
 | `reference/ROCKS.md` | how the reference game **weaves rock into its world** — placement, not the mesh: the cliff as a MESH placed on steep ground (Devblog 54: cliffs "wherever the terrain falls off very steeply", micro cliffs on slight falls, overhangs on beaches; 2024: two cliff types, "easy to traverse"), rock as a hierarchy placed biggest-first (Devblog 91: formations → boulders near them → smaller rocks near those) with the **ore hung off the formations** (103/105: "clear indicators for where they can go"), ~16 source meshes re-seeded through ~25 populations keyed by biome × role × size, and the terrain-blend shader plus biome-tinted rock colour that make a mesh belong to its ground. **§9 what it means for us** is the biome-seeding plan | **owns nothing** — research, not law, tier 1 fetched whole 2026-09-13 (`SOURCES.md` §0: probe; both hosts answered from this box). **§7/§8 are the payload**: `sim-core/examples/rock_stats.rs` measures rock at ~4/ha in *every* biome, the cliff cell bare by veto and its foot no rockier than open highland (7.3 vs 7.4 per 100 cells), ore no nearer a rock than a bush is, and rock dispersion at 1.1–1.6 against the trees' 3.0 — **exactly what a shared rate field predicts at 0.6 rocks per window**, so scatter clumping v0 cannot reach rock and §9.2 is a parent–child draw on a coarse grid. §9.3 is the cliff tier as a slot with a box-list volume; the mesh waits on the register (`WORLD.md` §9.1) |
 | `reference/FORESTS.md` | how the reference game **seeds a forest** — placement, where `PLANTS.md` is generation: the splat → topology → `SpawnFilter` → quadtree chain, the forest as a **vocabulary of masks** rather than one bit (`Forestside` is a separate plant list at the border, `Alt` paints a birch region, `Field` gets different species entirely), populations keyed by biome × role × **size class**, variety as a decrementing quota rather than a per-draw roll, the order they built it in (distribution → edge → understory → cheaper meshes → *then* density), and their frame budget as a **count cap** where ours was a print until 2026-09-14 (`tree::TREE_LOD_CAP`, §8 gate 7) | **owns nothing** — research, not law, and **tier 1 fetched whole** (§0 corrects `DOORS.md`'s proxy caveat: `rust.facepunch.com` was reachable 2026-09-09 — probe, per `SOURCES.md` §0). **§8 is the payload**: seven proposed gates, because every gate we had was island-wide and an island-wide total is blind to per-biome structure. **Four are built** (`sim-core/tests/forest.rs`, plus gate 7 as `client/tests/tree_cap.rs`) plus the understory itself as `Clutter::Brush` — `DECISIONS.md` §open, forest structure v0 and forest density v1. ⚠ **§1.3 carries the correction that matters**: gate 3 was written as "a two-number edit" and is not — the forest's bush ceiling is **70.4‰, exactly the meadow's weight**, so the scatter grid cannot hold an understory at any weight and the layer went to the clutter population, which is a fixed-count draw and moved no golden. §7's arithmetic stands: the Forest biome is ~7 % canopy cover and the 8 m cell caps *any* weight below a closed forest |
 | `reference/CRAFTING.md` | how the reference game **tells a player what crafting is doing**: the queue as an object on the player with **task ids** (cancel and fast-track name a job, not an index), ingredients collected at enqueue, the blueprint gate as a second object asked separately, the 2015 redesign the current screen descends from (Devblog 62 — and its one sentence: *"a notice on your HUD, so you can see how long is left on your craft without having to keep opening the inventory menu"*), the `note.craft_add / craft_start / craft_done / inv` client-command vocabulary the server drives the indicators with, the bench ladder as a halving time rebate read off a fetched wiki page (30/15/7/7 s), what four plugins add and therefore what vanilla under-signals (a green CRAFT), and **§9 what it means for us** | **owns nothing** — research, not law, and a mixed provenance §0 ranks: the devblogs and the wiki were **fetched whole** (both hosts reachable 2026-09-13), umod was 403 so every plugin but one is a search summary, and §3 is read off two of the operator's frames the way `MENUS.md` was. Written because the operator put those frames beside ours and `MENUS.md` had already scored the panel HAVE — **§9.1 is the twelve-gap audit**, and its first five are draws with no wire (the closed-menu chip first) |
+| `reference/MAP.md` | how the reference game draws **the map screen**: the grid as a lettered/numbered overlay that is **off by default** (Devblog 181 — *"lettered along the horizontal axis, and numbered along the vertical"*, 150 m a square, and the post's own *"a little bit ugly right now"*), monuments **labelled** while a vending machine gets an unnamed green dot (Devblog 149), player-placed markers capped at five with a colour, an icon and a label shared to a team, markers that carry a **clock** or a **radius**, and the map held rather than toggled | **owns nothing** — research, not law, and the *cleanest* sourcing in this directory after `DURABILITY.md`: three tier-1 devblogs **fetched whole** 2026-09-16, nothing decompiled, and §0 names what they do not contain (the icon design, the typeface, the zoom, how the texture is made) rather than guessing. The wiki's `rust/map` page is about the WORLD and not the screen; §0 records that so nobody fetches it twice. **§9.1 is built the same day** (map legibility v2) and §9.2 is the four things that deliberately were not — the largest being player-placed markers, which need a wire message |
 | `reference/SOURCES.md` | the research **reading list**: which document settles which question, in priority order, with tiers 1–3 marked ANSWERED, tier 4 (the threat/logistics decomposition) half-closed 2026-08-14 — the violence paper is read at primary tier (`RIPLIST.md` §5.6, and it settles threat *shape*, not the magnitude; the session numbers stay open) — and **§3b the systems queue** (logistics by wipe stage, events, progression, clans, industry, moderation, trade) as the standing research worklist | **owns nothing** — a worklist for research the way `RIPLIST.md` is one for numbers. ⚠ Its §0 header is the load-bearing part and has been rewritten **in both directions**: reachability is a property of the container, not of the hosts, so *probe* rather than trusting either the "every Rust domain 403s" claim or the "they are open" one — both were honest measurements, on different boxes, days apart |
 | `assets/models/WANTED.md` | the 3D object inventory: 63 meshes and 6 texture sets with sizes read off the code, the glTF/origin/ORM pipeline rules, and what is already covered | **owns nothing** — a sourcing worklist, `RIPLIST.md`'s shape. `MANIFEST.md` records what ships; this records what does not exist yet |
 | `assets/textures/CANDIDATES.md` | the texture sourcing queue for the six foliage/bark sets: 84 candidate rows (80 CC0, 4 CC-BY) with licence, fetch mode and the measurement columns still empty, plus `fetch_gates_texture_candidates.py`, the csv/xlsx it reads and `CANDIDATES_CC_BY.md`'s draft notices | **owns nothing** — `WANTED.md`'s shape for pixels rather than meshes, and the measurement still decides (`ART.md` §7's estimator, never the fetcher's). The 1.3 GB it downloads is gitignored; `assets/textures/MANIFEST.md` records what ships |
@@ -357,7 +358,7 @@ do not rediscover)
   --all-targets` before it is believed. That invocation is the only one in this
   repo that compiles those files.
 - **Two of the same component in one Bevy bundle is a RUNTIME panic, and
-  every gate in this repo is blind to it.** `(DeathRoot, ui::screen(bg),
+  until 2026-09-16 every gate in this repo was blind to it.** `(DeathRoot, ui::screen(bg),
   Node { padding })` is the obvious way to take a shared layout and move one
   field, and it does not merge and does not replace: Bevy 0.18 dies at spawn
   with *"has duplicate components"*, inside a command queue, naming the
@@ -372,6 +373,17 @@ do not rediscover)
   compile, because `Node` holds types with destructors. The general rule:
   **a spawn is not type-checked for duplicates, so a bundle assembled out of
   two helpers is a claim you have to run.**
+  ✅ **And one bundle is run now, which is the shape to copy rather than the
+  coverage to trust.** `crates/client/tests/map_marks.rs` drives
+  `render::map::spawn_mark` for every `MarkKind` through a real `App`
+  (`MinimalPlugins` + `AssetPlugin`, no window, no GPU, `tests/prewarm.rs`'s
+  fixture) and the panic lands inside `App::update` — proven by adding a
+  second `Node` to the badge, which reddens all three tests with the same
+  *"has duplicate components"* and the same `<Enable the debug feature to see
+  the name>`. It cost ~90 lines and it covers **one** function. Every other
+  spawn in `render::` is still a claim nobody has run, so the rule above is
+  unchanged for them; what changed is that the cheap way to check one is
+  written down and working.
 - **A sweep window that agrees with itself across every case is still not
   validated, and this one nearly wiped a live shard.** On 2026-08-14 a pass
   measured 40 islands and concluded the shipped seed was the flattest of them —
@@ -647,6 +659,63 @@ do not rediscover)
   the loss is documented but what that target draws INSTEAD; when the answer
   is nothing, it is a `NOW.md` item naming the target, not a comment. The
   browser draws a mesh mark now (`decal.rs`'s header).
+  ⚠ **It fired again four days later, on sound, and the twist is that the
+  commit SAID SO.** The cpal seam (2026-09-14) moved the client's audio off
+  `bevy_audio` onto its own renderer in a device callback and deleted the old
+  play path on both targets; natively `audio_out::flush` reads the command
+  buffer, and on wasm32 `render/mod.rs` registered `audio::clear` — a system
+  whose entire job was to **empty that buffer so it could not count phantom
+  drops**. The browser then built the whole bank, decided every cue, filled
+  the buffer and binned it every frame, in silence, with `ci/gates.sh` green,
+  for two days. Its own merge message ends *"Nobody has heard it; the browser
+  still flushes nothing until the worklet lands."* So the lesson is not that
+  the loss was undocumented — it was documented twice, in a comment and in a
+  commit — it is that **a sentence explaining an absence reads as coverage to
+  everyone downstream, including whoever wrote it.** What the entry above asks
+  for is the check: when a target loses a path, the question is what it does
+  INSTEAD, and "nothing" is an item with that target's name on it. Fixed by
+  `render/audio_web.rs` (browser audio v0, 2026-09-16), and the fix carries
+  two gates the original had no equivalent of — `crates/sound/tests/worklet.rs`
+  for the arithmetic and `ci/check_worklet.mjs` for the ABI, because every
+  Rust test in this tree passes with the browser's audio module unbuildable.
+  ⚠ **And the same slice left a second target half-done, which is this
+  entry's other half**: `bin/gates.rs` and `bin/modelview.rs` disabled
+  `AudioPlugin` and `client-web` did not, so the page kept opening cpal's
+  wasm host — a main-thread `setTimeout` allocating an `AudioBuffer` and a
+  source node every ~46 ms — to mix a graph nothing had put a sound in. Not
+  silence this time but pure waste, invisible for the same reason: nothing
+  asserts which plugins a target builds. **When a plugin is disabled for a
+  reason, grep every `DefaultPlugins` in the workspace**, not the binaries
+  you happened to be thinking about.
+- **An engine limit that TRUNCATES instead of refusing is invisible on the
+  target that has it, and this one deleted every shadow past 12 m in the
+  browser.** `bevy_pbr::render::light::MAX_CASCADES_PER_LIGHT` is 4 — and
+  **1** under `all(feature = "webgl", target_arch = "wasm32",
+  not(feature = "webgpu"))`, which is exactly what this client builds for the
+  page (`bevy`'s `default_platform` turns on `webgl2`; we take the defaults).
+  Ask for two cascades there and Bevy does not error and does not rescale:
+  `prepare_lights` takes `.min(MAX_CASCADES_PER_LIGHT)` of the bounds list and
+  keeps the **first**, whose far bound is `rig::CASCADE_FIRST_M`. So from the
+  page's first day every shadow in the world stopped dead **12 m** from the
+  player, with the ground beyond it lit as if nothing stood on it — and the
+  operator read it as "shadow stuff is kinda garbage with distance", which is
+  what a shadow system that ends at arm's length looks like from inside the
+  game. The engine `warn!`s once, into a console nobody reads. `ci/gates.sh`
+  was green, including the browser-renderer gate, because a request Bevy
+  silently truncates type-checks perfectly.
+  Two things to carry. **First: when a config is a LIST the engine consumes,
+  find out what it does with a list that is too long, per target** — "clamps
+  the count" and "keeps the first n and drops the rest" are indistinguishable
+  in a signature and only one of them is a feature. **Second: the fix is not a
+  smaller request, it is a differently SHAPED one.** Asking for one cascade
+  makes `calculate_cascade_bounds` short-circuit to `[maximum_distance]` and
+  ignore the first-bound split entirely, so the browser's single cascade
+  covers the whole 90 m; asking for two and being given one covers 12.
+  Gated by `client/tests/quality.rs::every_cascade_asked_for_is_a_cascade_the_
+  engine_will_draw`, which is target-independent by construction — the same
+  code either side of the `cfg`, with a different ceiling — so a native run
+  proves the mechanism that was broken.
+
 - **A judge names the symptom; fix the cause.** Optimizing the judge's
   literal sentence is how a loop circles for three passes — elsewhere,
   "untextured" was really diffuse contrast crushed by an earlier fix for
@@ -1128,8 +1197,10 @@ inside `winit` at `App::run` with every gate already green. **Then ask the
 second question for each** — and the answer moved under this entry once
 already, which is its own lesson: this paragraph used to say `alsa` was
 requested and unused, then that `bevy_audio` was load-bearing, and now
-**`bevy_audio` is compiled and its `AudioPlugin` is DISABLED in both desktop
-binaries**; what is load-bearing is **cpal**, output only, through
+**`bevy_audio` is compiled and its `AudioPlugin` is DISABLED on every target**
+— `bin/gates.rs`, `bin/modelview.rs` and, since 2026-09-16, `client-web`,
+which had been missed and was paying for it (the decal-trap entry's second
+half); what is load-bearing is **cpal**, output only, through
 `render/audio_out.rs` — so `alsa` earns its keep through cpal, and
 `bevy_audio` is a trim candidate again. `wayland` (and `x11`) are real — a shipped desktop
 client faces both. `libudev` is `bevy_gilrs`, which grep still shows
