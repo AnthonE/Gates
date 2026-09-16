@@ -84,6 +84,8 @@ const k = {
   waystations: rustConst(terrainSrc, "WAYSTATIONS"),
   wsCrates: rustConst(terrainSrc, "WAYSTATION_CRATES"),
   wsRadius: rustConst(terrainSrc, "WAYSTATION_RADIUS_M"),
+  inlandSites: rustConst(terrainSrc, "INLAND_SITES"),
+  inlandCrates: rustConst(terrainSrc, "INLAND_CRATES"),
   cellSize: rustConst(terrainSrc, "CELL_SIZE"),
   roadHalfW: rustConst(terrainSrc, "ROAD_HALF_W"),
   shoulderHalfW: rustConst(terrainSrc, "ROAD_SHOULDER_HALF_W"),
@@ -338,15 +340,24 @@ const roadItemsUnder = (r) =>
 const site = {
   pad: k.crates * ev.crate,
   waystation: k.wsCrates * ev.cache,
+  // Zero today, and it is in this object rather than assumed away because
+  // that is the whole claim: the inland tier stands somewhere a player had no
+  // reason to walk and pays nothing for the trip. Arming `INLAND_CRATES` is a
+  // re-pricing of the ladder, and this is one of the two places that says so
+  // (the other is `terrain.rs`'s const block, which counts containers where
+  // this counts items).
+  inland: k.inlandCrates * ev.cache,
 };
-const tierTotal = k.waystations * site.waystation;
+const tierTotal =
+  k.waystations * site.waystation + k.inlandSites * site.inland;
 const roadUnderPad = roadItemsUnder(k.padRadius);
 const roadUnderWs = roadItemsUnder(k.wsRadius);
 
 console.log(
   `haven prize: per site — pad ${k.crates}x crate = ${site.pad.toFixed(1)} items, ` +
     `waystation ${k.wsCrates}x cache = ${site.waystation.toFixed(1)}, ` +
-    `whole lesser tier ${k.waystations}x = ${tierTotal.toFixed(1)}`,
+    `inland ${k.inlandCrates}x cache = ${site.inland.toFixed(1)}, ` +
+    `whole lesser tier = ${tierTotal.toFixed(1)}`,
 );
 console.log(
   `haven prize: against the shoulder each site replaces — pad ${(site.pad / roadUnderPad).toFixed(1)}x ` +
@@ -376,8 +387,20 @@ check(
 // exactly why it needs saying here as well as there.
 check(
   tierTotal < site.pad,
-  `the ${k.waystations} waystations pay ${tierTotal.toFixed(1)} items between them against the ` +
-    `pad's ${site.pad.toFixed(1)} — added up, the lesser tier outpays the destination`,
+  `the lesser tier's ${k.waystations + k.inlandSites} sites pay ${tierTotal.toFixed(1)} items ` +
+    `between them against the pad's ${site.pad.toFixed(1)} — added up, the lesser tier outpays ` +
+    `the destination`,
+);
+// The inland tier is off the road by definition, so it replaces no shoulder
+// and the "pays back what it costs the road" check above has nothing to say
+// about it. What it owes instead is the other direction: a site that pays
+// must be reachable, and this one is reached by nothing yet — no side road
+// exists. Until one does, a container here would be a free crate on the
+// quietest place on the island.
+check(
+  site.inland === 0,
+  `an inland site pays ${site.inland.toFixed(1)} items and no road leads to it — ` +
+    `arm INLAND_CRATES together with the side road, not before it`,
 );
 
 console.log(`haven prize: ${checks} checks passed`);

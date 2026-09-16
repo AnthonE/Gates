@@ -197,9 +197,10 @@ async fn main() {
     // quiet about how much island it had built.
     match server::boot::check_seed(seed) {
         Ok(live) => println!(
-            "island ok: {live}/{} authored sites (haven pad + {} waystations)",
+            "island ok: {live}/{} authored sites (haven pad + {} waystations + {} inland)",
             server::boot::AUTHORED_SITES,
-            sim_core::terrain::WAYSTATIONS
+            sim_core::terrain::WAYSTATIONS,
+            sim_core::terrain::INLAND_SITES
         ),
         Err(e) => {
             eprintln!("shard: {e}");

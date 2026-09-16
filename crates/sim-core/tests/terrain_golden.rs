@@ -20,7 +20,29 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// Pinned fingerprint for GOLDEN_SEED. Regenerates only with an intentional
 /// worldgen change, in the same commit (CLAUDE.md walls 5/6 discipline).
 ///
-/// Regenerated here from `0x700C_77A5_8F33_97B4` for **world structure v1**
+/// Regenerated here from `0xAA93_9FA3_DF14_702C` for **the inland site**
+/// (2026-09-16, `reference/ROADS.md` §9.2.1): `INLAND_SITES` 0 -> 1, so
+/// `Haven::minor` is three slots instead of two and the third holds a site
+/// the road ring is not the reference curve for.
+///
+/// **The reach is bounded and the bound is stated**, because "a new site
+/// moved the golden" could hide anything. Three things move it and nothing
+/// else can:
+///
+/// - `probe_sites` hashes `minor` as an array, so a third entry is three more
+///   floats and a `kind` byte per site — a change of SHAPE, which would move
+///   the digest even if every existing site were bit-identical, and they are:
+///   `pick_minor`'s ring loop is untouched and runs first, and the pad is
+///   resolved before either.
+/// - `probe_scatter` hashes a window at every entry of `minor`, so it now
+///   covers one more disc.
+/// - The inland site carves, like every site (`site_sweep`, `stamp_of`, both
+///   of which iterate the array), so ground inside one more `blend_m` moves.
+///   `tests/carve.rs` §C holds that nothing outside any footprint changes at
+///   all, bit for bit, islandwide — and it CAUGHT this one, because its site
+///   list read `0..WAYSTATIONS` and the new disc read as a leak.
+///
+/// Regenerated from `0x700C_77A5_8F33_97B4` for **world structure v1**
 /// (2026-09-15) — the largest deliberate worldgen change since the shape
 /// pass, and five mechanisms rather than one:
 ///
@@ -96,7 +118,7 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// of this digest on ~45% of the land. Heights did not move — the change is
 /// entirely in `scatter`, and `probe_terrain`'s height window would read the
 /// same. Deliberate, regenerated in the commit that caused it.
-const GOLDEN_TERRAIN_HASH: u64 = 0xAA93_9FA3_DF14_702C;
+const GOLDEN_TERRAIN_HASH: u64 = 0x17FA_A7E3_3CAE_FB50;
 
 #[test]
 fn test_terrain_golden() {
@@ -114,21 +136,36 @@ fn test_terrain_golden() {
 /// position — over exactly the cells `probe_window_origin` hands the digest,
 /// never a second copy of that arithmetic. A coverage test that recomputes
 /// the window is a test of itself.
-fn window_occupants(seed: u64, haven: &terrain::Haven, x: f32, z: f32) -> (i32, i32, i32) {
+#[derive(Default)]
+struct Authored {
+    shelters: i32,
+    crates: i32,
+    caches: i32,
+    /// **Counted since the inland tier landed, and it is what keeps this gate
+    /// from being green over nothing.** That tier stands no containers
+    /// (`terrain::INLAND_CRATES`), so every count above reads zero at its
+    /// window — which is exactly what an empty window reads, and exactly the
+    /// failure the doc below says this test exists to refuse. The canopy is
+    /// the one occupant every lesser site owes.
+    canopies: i32,
+}
+
+fn window_occupants(seed: u64, haven: &terrain::Haven, x: f32, z: f32) -> Authored {
     let table = ScatterTable::alpha_default();
     let (cx0, cz0) = probe_window_origin(x, z);
-    let (mut shelters, mut crates, mut caches) = (0i32, 0i32, 0i32);
+    let mut a = Authored::default();
     for cz in cz0..cz0 + PROBE_WINDOW_CELLS {
         for cx in cx0..cx0 + PROBE_WINDOW_CELLS {
             match terrain::scatter(seed, &table, haven, cx, cz).occupant {
-                Occupant::HavenShelter => shelters += 1,
-                Occupant::CrateSlot => crates += 1,
-                Occupant::CacheSlot => caches += 1,
+                Occupant::HavenShelter => a.shelters += 1,
+                Occupant::CrateSlot => a.crates += 1,
+                Occupant::CacheSlot => a.caches += 1,
+                Occupant::WaystationCanopy => a.canopies += 1,
                 _ => {}
             }
         }
     }
-    (shelters, crates, caches)
+    a
 }
 
 /// The golden's COVERAGE, asserted as a count rather than trusted.
@@ -155,7 +192,8 @@ fn test_golden_covers_authored_sites() {
 
         // Sites are `WAYSTATION_MIN_SEP_M` (600 m) apart and a window is
         // 128 m across, so no window can be counting a neighbour's crates.
-        let (shelters, crates, caches) = window_occupants(seed, &h, h.x, h.z);
+        let w = window_occupants(seed, &h, h.x, h.z);
+        let (shelters, crates, caches) = (w.shelters, w.crates, w.caches);
         assert_eq!(
             shelters, 1,
             "seed {seed:#x}: the pad's greybox is not inside the golden's window at the pad"
@@ -181,17 +219,29 @@ fn test_golden_covers_authored_sites() {
         for (i, ws) in h.minor.iter().enumerate() {
             assert!(
                 ws.live,
-                "seed {seed:#x}: waystation {i} is not live, so the parity \
-                 surface is covering `Waystation::NONE` at the island corner \
-                 rather than a site (tests/waystation.rs owns the tier itself)"
+                "seed {seed:#x}: lesser site {i} ({:?}) is not live, so the \
+                 parity surface is covering `Waystation::NONE` at the island \
+                 corner rather than a site (tests/waystation.rs owns the tier)",
+                ws.kind
             );
-            let (shelters, crates, caches) = window_occupants(seed, &h, ws.x, ws.z);
+            let w = window_occupants(seed, &h, ws.x, ws.z);
+            let (shelters, crates, caches) = (w.shelters, w.crates, w.caches);
+            // The canopy FIRST, because on a tier that stands no containers
+            // it is the only thing separating this window from empty sea.
+            assert_eq!(
+                w.canopies, 1,
+                "seed {seed:#x}: the golden's window at lesser site {i} \
+                 ({:?}) holds {} canopies — a site the digest cannot see is \
+                 the hole this gate exists to refuse",
+                ws.kind, w.canopies
+            );
             assert_eq!(
                 caches,
-                terrain::WAYSTATION_CRATES,
-                "seed {seed:#x}: the golden's window at waystation {i} holds \
-                 {caches} of {} containers",
-                terrain::WAYSTATION_CRATES
+                terrain::site_crates(ws.kind),
+                "seed {seed:#x}: the golden's window at lesser site {i} \
+                 ({:?}) holds {caches} of {} containers",
+                ws.kind,
+                terrain::site_crates(ws.kind)
             );
             // The pad's own container kind is the pad's alone, for the same
             // reason its greybox is: a `CrateSlot` here would be the lesser
@@ -199,7 +249,7 @@ fn test_golden_covers_authored_sites() {
             // the two kinds were split.
             assert_eq!(
                 crates, 0,
-                "seed {seed:#x}: waystation {i} stands {crates} of the pad's \
+                "seed {seed:#x}: lesser site {i} stands {crates} of the pad's \
                  own container kind — the lesser tier is paying the \
                  destination's loot table"
             );
@@ -208,7 +258,7 @@ fn test_golden_covers_authored_sites() {
             // lesser tier exists to create depends on it staying there.
             assert_eq!(
                 shelters, 0,
-                "seed {seed:#x}: waystation {i} grew a shelter — the tier \
+                "seed {seed:#x}: lesser site {i} grew a shelter — the tier \
                  gradient says the greybox belongs to the pad alone"
             );
         }

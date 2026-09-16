@@ -524,7 +524,16 @@ fn test_clump_leaves_authored_slots_alone() {
         // them together — which this did while both tiers placed `CrateSlot`
         // — cannot see a crate appearing where a cache should, which is the
         // whole tier gradient landing on the wrong table.
-        let live = terrain::haven(seed).minor.iter().filter(|w| w.live).count() as u32;
+        let minor = terrain::haven(seed).minor;
+        let live = minor.iter().filter(|w| w.live).count() as u32;
+        // Summed over the live sites' TIERS — the inland one owes no cache
+        // (`terrain::INLAND_CRATES`), so a flat `live * WAYSTATION_CRATES`
+        // would demand a container the ladder refuses it.
+        let caches: u32 = minor
+            .iter()
+            .filter(|w| w.live)
+            .map(|w| terrain::site_crates(w.kind) as u32)
+            .sum();
         assert_eq!(
             f.counts[Occupant::CrateSlot as usize],
             HAVEN_CRATES as u32,
@@ -533,10 +542,9 @@ fn test_clump_leaves_authored_slots_alone() {
         );
         assert_eq!(
             f.counts[Occupant::CacheSlot as usize],
-            live * terrain::WAYSTATION_CRATES as u32,
-            "seed {seed}: the lesser tier's {live} site(s) do not carry \
-             {} cache(s) apiece — same rule one tier down.",
-            terrain::WAYSTATION_CRATES
+            caches,
+            "seed {seed}: the lesser tier's {live} site(s) do not carry the \
+             {caches} cache(s) their tiers owe — same rule one tier down."
         );
         assert_eq!(
             f.counts[Occupant::HavenShelter as usize],

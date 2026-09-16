@@ -353,6 +353,25 @@ side road the ring's own barrel rate.
 current floor is one constant asserted by hand against two tiers. Assert a
 pairwise rule over ALL sites whatever their tier. Mutant: add a third tier
 with no rule; two sites land inside each other.
+✅ **BUILT** — `SITE_SEP_M`, `SiteLedger` and `tests/sites.rs`
+(`the_shipped_pairs_are_floored_at_the_constant_they_always_were`,
+`every_shipped_island_satisfies_its_own_roster`). The mutant run was the
+ulp one: moving every entry 600.0 → 600.00006 reddens that file and is
+invisible to twenty other tests.
+
+**Gate 7 — an inland site is inland, and inland means the ring does not
+reach it.** Not in this doc's first draft, and it is the one that caught a
+real defect: §9.2.1's bracket is easy to write as the geometric limit (where
+does the footprint stop touching the road) rather than as the service one
+(where does the ring stop serving the land), and the two differ by 280 m.
+Mutant: restore the geometric bracket; **7 of 16 seeds place at 580 m, 20 m
+from the ring's shoulder.**
+✅ **BUILT** — `ROAD_REACH_M`, and `tests/sites.rs`
+(`an_inland_site_stands_clear_of_the_road_it_is_defined_as_being_off`,
+`an_inland_site_is_further_from_the_ring_than_the_ring_reaches`). Two gates
+rather than one, because the first stays GREEN under that mutant — a site at
+580 m really is clear of the band — which is exactly why a negative
+definition needs the positive claim beside it.
 
 ⚠ **A warning that applies to all of them**, from `CLAUDE.md`'s `lattice.rs`
 entry: run the mutant. A reach or connectivity band wide enough to hold both
@@ -377,10 +396,19 @@ not, there is nowhere for a new road to go.
 
 ### 9.2 · What to build, in the reference's own order
 
-1. **Inland sites.** A placement solve over the ISLAND rather than the ring,
-   with a distribution objective in the spirit of Devblog 188 ("fits the most
-   monuments"), a pairwise separation rule and an explicit tier field — which
-   is `MONUMENTS.md` §9.3's list, unchanged, now with a reason to build it.
+1. **Inland sites.** ✅ **BUILT 2026-09-16** (`INLAND_SITES = 1`,
+   `terrain::pick_minor`'s second loop). A placement solve over the ISLAND
+   rather than the ring — a polar lattice of `INLAND_CANDIDATES = 32`
+   bearings × `INLAND_RADII = 4` radii inside `INLAND_R_MAX` — with the
+   pairwise separation rule and the explicit tier field that landed as the
+   roster, which is `MONUMENTS.md` §9.3's list. Fills on 16 of 16 seeds.
+   **What did NOT land is Devblog 188's distribution objective**: ours is the
+   pad's own score (footprint relief plus a height weight), minimized greedily
+   against the roster, which is a *local* quality measure where theirs
+   optimizes the whole set's count. At one inland site the two are the same
+   thing; at five they are not, and §9.3 of `MONUMENTS.md` is still the gap.
+   The tier carries no containers — the ladder in `terrain.rs`'s const block
+   has one crate of headroom, so arming it is a spoken re-pricing.
 2. **Ports.** Each site publishes an in/out bearing (§4). One byte, off the
    same hash the ring phase already uses.
 3. **Side roads** from the ring to each inland site's port, stored as §5's
@@ -418,10 +446,14 @@ and cannot gate.
 
 ### 9.5 · Ranked, and what is not owed
 
-1. **Inland site placement** (§9.2.1) — everything else is blocked on it.
+1. ~~**Inland site placement** (§9.2.1)~~ — ✅ built 2026-09-16, and gates 6
+   and 7 with it. Everything below was blocked on it and is not now.
 2. **Ports and side roads** (§9.2.2–3) — the payload, and where the reach
    numbers in §7 get spent.
-3. **Gates 1–4** (§8) with their mutants, landed with the mechanisms.
+3. **Gates 1–4** (§8) with their mutants, landed with the mechanisms. ⚠ And
+   gate 1 is the one that cannot be written yet for a reason worth stating: a
+   reach number needs a road to the inland site, and the site has no road.
+   The tier as it stands opens the interior to a PLACE, not to a route.
 4. **Redundancy** (§6's Devblog 180 quote) — connect a dead end back to the
    ring so the network forms circles. Their own stated next step, and ours.
 5. **Trails** — a scale we do not have.

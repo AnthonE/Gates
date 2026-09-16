@@ -1519,7 +1519,16 @@ const _: () = {
     // less than the one destination — the rule that fixes `WAYSTATIONS` at
     // two, and the reason a third site is a compile error rather than a
     // balance discussion.
-    assert!(WAYSTATIONS as i32 * WAYSTATION_CRATES < HAVEN_CRATES);
+    //
+    // **Summed over the tiers, not over the site count**, which is the
+    // difference `INLAND_SITES` turns on: the inland tier is in this sum at
+    // `INLAND_CRATES = 0`, so it is here and it adds nothing. Give it
+    // containers and this line reads 6 against 5 and fails, which is the
+    // point — the third site could land because it changed nothing about
+    // what the second tier PAYS.
+    assert!(
+        WAYSTATIONS as i32 * WAYSTATION_CRATES + INLAND_SITES as i32 * INLAND_CRATES < HAVEN_CRATES
+    );
     // THE GRADIENT, half two: and it pays less PER SQUARE METRE, so the pad
     // is not merely bigger but richer. `containers / (π r²)` with the π
     // cancelled off both sides, which is why this reads cross-multiplied. The
@@ -1611,6 +1620,12 @@ pub struct Waystation {
     /// could disagree with the site the shard actually booted.
     pub canopy: u8,
     pub live: bool,
+    /// Which tier this is. **A lesser site is no longer only a waystation**:
+    /// `SiteKind::Inland` shares this struct, this array and every consumer
+    /// of it, and differs in where it may stand and what it carries. Sharing
+    /// the struct is the point — a parallel array would be fifteen call sites
+    /// that each have to remember the second one exists.
+    pub kind: SiteKind,
 }
 
 impl Waystation {
@@ -1624,6 +1639,7 @@ impl Waystation {
         phase: 0,
         canopy: 0,
         live: false,
+        kind: SiteKind::Waystation,
     };
 }
 
@@ -1672,7 +1688,7 @@ pub struct Haven {
     /// the whole of "where the authored sites are", and `Haven` is now that
     /// answer rather than one pad: the pad is `x`/`z`, the lesser tier is
     /// here, and no signature moved.
-    pub minor: [Waystation; WAYSTATIONS],
+    pub minor: [Waystation; MINOR_SITES],
 }
 
 /// The altitude a site's floor is cut to — **the level of lowest error over
@@ -1762,7 +1778,7 @@ fn haven_ring_phase(seed: u64, x: f32, z: f32) -> Option<u8> {
             relief: 0.0,
             phase,
             shelter: 0,
-            minor: [Waystation::NONE; WAYSTATIONS],
+            minor: empty_minor(),
         };
         let mut k = 0i32;
         let mut ok = true;
@@ -1809,7 +1825,7 @@ fn haven_shelter_bearing(seed: u64, x: f32, z: f32, phase: u8) -> Option<u8> {
         relief: 0.0,
         phase,
         shelter: 0,
-        minor: [Waystation::NONE; WAYSTATIONS],
+        minor: empty_minor(),
     };
     let mut t = 0i32;
     while t < HAVEN_SHELTER_TRIES {
@@ -1979,7 +1995,7 @@ pub fn haven(seed: u64) -> Haven {
             relief,
             phase,
             shelter,
-            minor: [Waystation::NONE; WAYSTATIONS],
+            minor: empty_minor(),
         };
 
         if relaxed.is_none() || score < relaxed_score {
@@ -2003,7 +2019,7 @@ pub fn haven(seed: u64) -> Haven {
         relief: 0.0,
         phase: 0,
         shelter: 0,
-        minor: [Waystation::NONE; WAYSTATIONS],
+        minor: empty_minor(),
     });
     // The pad is resolved before the lesser tier is chosen, and that order is
     // the design: a waystation is defined as "far from the destination", so
@@ -2054,11 +2070,132 @@ pub const SITE_KINDS: usize = 3;
 
 /// Authored sites off the road ring, in the island's interior.
 ///
-/// **Zero in commit A on purpose.** The roster, the pairwise table and the
-/// ledger land first and are asserted to move nothing (`tests/sites.rs`);
-/// the site that uses them is the next commit. A mechanism that arrives with
-/// its first consumer cannot be shown to have cost nothing.
-pub const INLAND_SITES: usize = 0;
+/// **One, and it is the smallest number that is not zero** — `reference/
+/// ROADS.md` §9.2.1. Their side roads branch off the ring "to connect nearby
+/// monuments" (Devblog 180) and ours had nothing to branch to: every site was
+/// chosen ON the ring by construction, so a road between any two of them
+/// saved 3–5% of the walk (§7.2, measured). This is the first site the ring
+/// is not the reference curve for.
+///
+/// It is also what makes the interior reachable at all: 38% of walkable land
+/// was over 300 m of walking from any road, which is Devblog 189's "huge
+/// areas of wasteland" measured on our own island.
+pub const INLAND_SITES: usize = 1;
+
+/// Containers an inland site stands. **Zero, and it is a consequence rather
+/// than an omission.**
+///
+/// The lesser tier is defined by the ladder in the const block above
+/// [`WAYSTATIONS`]: everything below the pad, added up, still pays less than
+/// the one destination. That sum is `2 × 2 = 4` against `HAVEN_CRATES = 5`
+/// and has exactly one container of headroom — so a third container-bearing
+/// minor site reads 6 against 5 and the assert fires. Arming this is
+/// therefore not an edit here; it is a spoken re-pricing of the ladder, which
+/// is the operator's call and not a builder's.
+///
+/// What the site IS, meanwhile, is its canopy: the massing the ring tier
+/// already ships, standing somewhere a player had no reason to walk
+/// (`reference/ROADS.md` §9.2.1).
+pub const INLAND_CRATES: i32 = 0;
+
+/// How many containers a site of this tier stands.
+///
+/// **One answer, read by both the rule and the spawner.** The ladder assert
+/// sums this and `scatter` loops it, so "the inland tier carries no crates"
+/// is stated once and a tier that starts carrying them cannot get past the
+/// const block by being added only to the spawner.
+pub const fn site_crates(kind: SiteKind) -> i32 {
+    match kind {
+        SiteKind::Haven => HAVEN_CRATES,
+        SiteKind::Waystation => WAYSTATION_CRATES,
+        SiteKind::Inland => INLAND_CRATES,
+    }
+}
+
+/// An empty lesser roster: every slot inert, **each already carrying the tier
+/// that owns it**.
+///
+/// The tier is on the dead slot on purpose. `Waystation::NONE` is one value,
+/// so a roster filled with it would say every empty slot is a waystation —
+/// and the first reader to need the distinction is the boot refusal, which
+/// has to tell an operator whether the ROAD RING or the INTERIOR came up
+/// short, because those are two different things to do about it. The
+/// alternative is a reader that knows slots 0..`WAYSTATIONS` are the ring
+/// tier, which is the index convention `Haven::minor`'s own doc says a new
+/// tier gets silently skipped by.
+pub const fn empty_minor() -> [Waystation; MINOR_SITES] {
+    let mut out = [Waystation::NONE; MINOR_SITES];
+    let mut i = WAYSTATIONS;
+    while i < MINOR_SITES {
+        out[i].kind = SiteKind::Inland;
+        i += 1;
+    }
+    out
+}
+
+/// Lesser sites of every kind, which is the length of [`Haven::minor`].
+///
+/// **The array's length is this, and every loop over it is bounded by the
+/// array** — see `in_waystation`. A count that some loops used and others
+/// re-derived is exactly how a new tier gets silently skipped.
+pub const MINOR_SITES: usize = WAYSTATIONS + INLAND_SITES;
+
+/// How far a player walks off a road before the land reads as unserved,
+/// metres (knob, DECISIONS.md §open: inland site v0).
+///
+/// This is the threshold `examples/second_road.rs` measures our island's
+/// wasteland at, and the 38% [`INLAND_SITES`] cites is the share measured at
+/// it: walk-to-nearest-road over walkable land is p50 218 m, p90 570 m, so
+/// 300 m sits between the median walk and the long tail. It is a spoken
+/// number, not a derived one — hence the registry row.
+pub const ROAD_REACH_M: f32 = 300.0;
+
+/// The outermost radius an inland site may stand at, metres.
+///
+/// **Not "as far out as it can legally go".** The first draft of this
+/// constant was the geometric limit — `ROAD_R_MIN` less the shoulder less
+/// the site radius, 579.99 m — which is the right answer to "where does the
+/// footprint stop touching the road" and the wrong answer to "where is
+/// inland". A site at 580 m stands 20 m from the ring's shoulder: its side
+/// road would be 20 m long and would open nothing, and opening the interior
+/// is the whole of why [`INLAND_SITES`] is not zero.
+///
+/// So the bracket is the ring's own service band, subtracted:
+/// [`ROAD_REACH_M`] in from the innermost radius the road can occupy.
+///
+/// **Tightening it costs nothing, which is measured and was not obvious.**
+/// `examples/inland_scan` sweeps the bracket against the roster's 600 m
+/// floor: the share of the disc that clears every ring site goes 45.6% at
+/// 580 m → 60.4% at 400 m → **76.5% at 300 m**, and the lattice finds a
+/// candidate on 16 of 16 seeds at every one of them. The inner disc is
+/// FURTHER from the ring, so the constraint that looked like it would
+/// starve the tier is the one that relaxes.
+pub const INLAND_R_MAX: f32 = ROAD_R_MIN - ROAD_REACH_M;
+
+/// Bearings the inland scan tries. Half the pad's [`HAVEN_CANDIDATES`]
+/// because the pad is choosing a point on a one-dimensional curve and this
+/// is choosing one in a disc — the same budget buys a coarser sweep of a
+/// bigger space, and [`INLAND_RADII`] spends the other half of it.
+pub const INLAND_CANDIDATES: i32 = 32;
+/// Radii tried per bearing, evenly spaced out to [`INLAND_R_MAX`]. Four
+/// rings at 145 / 290 / 435 / 580 m on the shipped bracket.
+pub const INLAND_RADII: i32 = 4;
+
+const _: () = {
+    // An inland site must have somewhere to be: a band that closed to nothing
+    // would leave `INLAND_SITES` permanently unfilled and the boot refusal
+    // would fire on every seed.
+    assert!(INLAND_R_MAX > WAYSTATION_RADIUS_M);
+    // The geometric limit the first draft used, kept as the wall it always
+    // should have been: whatever `ROAD_REACH_M` is set to, an inland site's
+    // scatter mask may not reach the road's broad phase. Widen the road and
+    // this fires rather than quietly overlapping it.
+    assert!(INLAND_R_MAX <= ROAD_R_MIN - ROAD_SHOULDER_HALF_W - WAYSTATION_RADIUS_M);
+    // And it must be able to clear the roster from at least the far side of
+    // the island, or no seed could ever place one.
+    assert!(INLAND_R_MAX + ROAD_R_MAX > WAYSTATION_MIN_SEP_M);
+    assert!(INLAND_CANDIDATES > 0 && INLAND_RADII > 0);
+};
 
 /// How far apart two sites must stand, metres, indexed `[a][b]` by
 /// [`SiteKind`]. Symmetric, and the const block below refuses a table that
@@ -2217,8 +2354,8 @@ impl SiteLedger {
 /// breaks and the remaining entries stay `Waystation::NONE`, `live == false`.
 /// `tests/waystation.rs` asserts a full tier on every seed it sweeps, so a
 /// short one is a finding rather than a silent degradation.
-fn pick_minor(seed: u64, pad: &Haven, cand: &[(f32, f32, f32, f32)]) -> [Waystation; WAYSTATIONS] {
-    let mut out = [Waystation::NONE; WAYSTATIONS];
+fn pick_minor(seed: u64, pad: &Haven, cand: &[(f32, f32, f32, f32)]) -> [Waystation; MINOR_SITES] {
+    let mut out = empty_minor();
     // The pad is the roster's first entry, which is the same statement the
     // old inline test made by comparing against `pad` before the taken list.
     let mut roster = SiteLedger::new();
@@ -2251,6 +2388,7 @@ fn pick_minor(seed: u64, pad: &Haven, cand: &[(f32, f32, f32, f32)]) -> [Waystat
                 phase,
                 canopy,
                 live: true,
+                kind: SiteKind::Waystation,
             });
             take_score = score;
         }
@@ -2261,6 +2399,93 @@ fn pick_minor(seed: u64, pad: &Haven, cand: &[(f32, f32, f32, f32)]) -> [Waystat
                 // next candidate is tested against — the ledger IS the
                 // "every site already taken" the doc above describes.
                 roster.take(SiteKind::Waystation, w.x, w.z);
+                out[filled] = w;
+                filled += 1;
+            }
+            None => break,
+        }
+    }
+
+    // ── The inland tier ───────────────────────────────────────────────────
+    //
+    // The same greedy argmin, over a different candidate set: a polar
+    // lattice in the interior instead of the pad scan's shoreline solutions.
+    // It runs AFTER the ring tier and reads the same roster, which is the
+    // order `SiteKind`'s own doc calls load-bearing — an inland site may not
+    // displace a site on the road, because the road is what a player is
+    // walking when they find it.
+    //
+    // Candidates are generated here rather than recorded by the pad scan
+    // because the pad scan never visits the interior: every one of its 64
+    // solutions is a shoreline crossing stepped `ROAD_INLAND_M` back, so its
+    // candidate array is a sampling of the ring and nothing else. This is
+    // the first site the ring is not the reference curve for
+    // (`reference/ROADS.md` §9.2.1).
+    // **The tier owns its slots, not the fill order.** `filled` above stops
+    // wherever the ring tier ran out, and writing an inland site into the gap
+    // would make `minor[0]` a waystation on most seeds and an inland site on
+    // the ones whose ring was short — an index that means two things. Every
+    // reader tests `live`, so a hole is already the understood shape.
+    let mut filled = WAYSTATIONS;
+    let c = ISLAND_SIZE * 0.5;
+    while filled < MINOR_SITES {
+        let mut take: Option<Waystation> = None;
+        let mut take_score = 0.0f32;
+
+        let mut b = 0i32;
+        while b < INLAND_CANDIDATES {
+            let (dx, dz) =
+                crate::yaw_lut::yaw_dir((b as u16 * (256 / INLAND_CANDIDATES) as u16) << 8);
+            b += 1;
+            let mut k = 1i32;
+            while k <= INLAND_RADII {
+                let r = INLAND_R_MAX * (k as f32 / INLAND_RADII as f32);
+                k += 1;
+                let x = c + dx * r;
+                let z = c + dz * r;
+                let y = height(seed, x, z);
+                if y < LAND_MIN_H {
+                    continue;
+                }
+                // The pad's own score, deliberately: the lesser tier has
+                // always been ranked by it (the ring tier's candidates carry
+                // the score the pad scan gave them), and a second scoring
+                // function would mean two tiers disagreeing about what a
+                // good site is for no reason anyone spoke.
+                let score = haven_relief(seed, x, z) + HAVEN_HEIGHT_W * (y - LAND_MIN_H);
+                if take.is_some() && score >= take_score {
+                    continue;
+                }
+                if !roster.clears(SiteKind::Inland, x, z) {
+                    continue;
+                }
+                // The ring tier's check chain, unchanged and reused rather
+                // than copied. Inland it is weaker than it looks — there is
+                // no road inside `ROAD_R_MIN`, so the carriageway test is
+                // vacuous — but it still answers the question this struct
+                // needs answered: which rotation the site stands at, and
+                // which gap its canopy occupies.
+                let (phase, canopy) = match waystation_ring_phase(seed, x, z) {
+                    Some(p) => p,
+                    None => continue,
+                };
+                take = Some(Waystation {
+                    x,
+                    z,
+                    y,
+                    floor_y: site_floor_y(seed, x, z, WAYSTATION_FOOTPRINT.stamp_m),
+                    phase,
+                    canopy,
+                    live: true,
+                    kind: SiteKind::Inland,
+                });
+                take_score = score;
+            }
+        }
+
+        match take {
+            Some(w) => {
+                roster.take(SiteKind::Inland, w.x, w.z);
                 out[filled] = w;
                 filled += 1;
             }
@@ -2301,6 +2526,11 @@ fn waystation_ring_phase(seed: u64, x: f32, z: f32) -> Option<(u8, u8)> {
             phase,
             canopy: 0,
             live: true,
+            // Inert too — nothing in this chain branches on the tier. That is
+            // deliberate and is why the inland tier reuses it: the footprint
+            // a lesser site reserves is the same footprint whatever stands
+            // on it, and what differs by tier is what gets SPAWNED there.
+            kind: SiteKind::Waystation,
         };
         let mut k = 0i32;
         let mut ok = true;
@@ -2356,6 +2586,7 @@ fn waystation_canopy_bearing(seed: u64, x: f32, z: f32, phase: u8) -> Option<u8>
         phase,
         canopy: 0,
         live: true,
+        kind: SiteKind::Waystation,
     };
     let c = ISLAND_SIZE * 0.5;
     let mut t = 0i32;
@@ -2423,10 +2654,14 @@ pub fn waystation_crate(ws: &Waystation, k: i32) -> (f32, f32, u8) {
 /// Squared compare throughout, `in_haven`'s posture and `SPAWN.md` §9.4's
 /// point: the squared form is the acceptance test, not an optimization of one.
 pub fn in_waystation(haven: &Haven, x: f32, z: f32) -> bool {
-    let mut w = 0usize;
-    while w < WAYSTATIONS {
-        let ws = &haven.minor[w];
-        w += 1;
+    // **Bounded by the ARRAY, not by `WAYSTATIONS`.** Every loop over the
+    // lesser tier in this file used to run `while w < WAYSTATIONS`, which is
+    // the same number only while the two agree — and the day a second kind of
+    // lesser site lands they stop agreeing, silently, with the new site
+    // skipped by whichever loops nobody remembered. Iterating the slice makes
+    // that unrepresentable (`reference/MONUMENTS.md` §9.3's starvation shape,
+    // one level down).
+    for ws in haven.minor.iter() {
         if !ws.live {
             continue;
         }
@@ -2456,28 +2691,24 @@ pub fn in_waystation(haven: &Haven, x: f32, z: f32) -> bool {
 /// lane's file: sim-core can say what "complete" means, and only the server
 /// can decide that an incomplete island is a refusal to start.
 pub fn sites_complete(haven: &Haven) -> bool {
-    let mut w = 0usize;
-    while w < WAYSTATIONS {
-        if !haven.minor[w].live {
+    for ws in haven.minor.iter() {
+        if !ws.live {
             return false;
         }
-        w += 1;
     }
     true
 }
 
 /// How many of this seed's authored sites are live, pad included — the
-/// number a boot-time refusal wants to print next to `WAYSTATIONS + 1`.
+/// number a boot-time refusal wants to print next to `MINOR_SITES + 1`.
 /// The pad always exists (`haven` returns the best candidate on the ring
 /// unconditionally), so the floor is 1.
 pub fn sites_live(haven: &Haven) -> u32 {
     let mut n = 1u32;
-    let mut w = 0usize;
-    while w < WAYSTATIONS {
-        if haven.minor[w].live {
+    for ws in haven.minor.iter() {
+        if ws.live {
             n += 1;
         }
-        w += 1;
     }
     n
 }
@@ -2764,10 +2995,7 @@ const _: () = {
 /// tile. The `sqrt` runs only for a point actually inside a footprint.
 pub fn site_sweep(haven: &Haven, x: f32, z: f32) -> f32 {
     let mut s = sweep_of(&HAVEN_FOOTPRINT, haven.x, haven.z, x, z);
-    let mut w = 0usize;
-    while w < WAYSTATIONS {
-        let ws = &haven.minor[w];
-        w += 1;
+    for ws in haven.minor.iter() {
         if !ws.live {
             continue;
         }
@@ -2880,10 +3108,7 @@ pub fn site_stamp_with(strength: f32, haven: &Haven, raw: f32, x: f32, z: f32) -
         x,
         z,
     );
-    let mut w = 0usize;
-    while w < WAYSTATIONS {
-        let ws = &haven.minor[w];
-        w += 1;
+    for ws in haven.minor.iter() {
         if !ws.live {
             continue;
         }
@@ -3465,10 +3690,7 @@ fn scatter_in<C: Corners>(
     // holds `WAYSTATION_CRATE_R_M < CELL_SIZE`: a displacement under one cell
     // moves a floor-divided index by at most one, whatever the site's
     // alignment inside its own cell. That is a proof, not a margin.
-    let mut w = 0usize;
-    while w < WAYSTATIONS {
-        let ws = &haven.minor[w];
-        w += 1;
+    for ws in haven.minor.iter() {
         if !ws.live {
             continue;
         }
@@ -3499,8 +3721,11 @@ fn scatter_in<C: Corners>(
                 species: 0,
             };
         }
+        // The tier decides how many, and `site_crates` is where that is
+        // written down — an inland site runs zero passes here and stands its
+        // canopy alone.
         let mut k = 0i32;
-        while k < WAYSTATION_CRATES {
+        while k < site_crates(ws.kind) {
             let (ax, az, yaw) = waystation_crate(ws, k);
             k += 1;
             if (ax * (1.0 / CELL_SIZE)) as i32 != cell_x

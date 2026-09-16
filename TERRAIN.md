@@ -278,6 +278,33 @@ Stages, in order — each cheap, each deterministic:
    the pad 15.4× that opportunity cost, a waystation 5.7×, and the whole
    lesser tier still under the one destination. A yields edit moves that
    number; it could not move containers per m².
+   **And there is a third kind of place since 2026-09-16, in the interior**
+   (`INLAND_SITES = 1`, `reference/ROADS.md` §9.2.1). Every site above is on
+   the road ring *by construction* — the argmax's candidates are shoreline
+   crossings stepped `ROAD_INLAND_M` inland — so the island had no authored
+   reason to leave it, and `examples/second_road.rs` measured what that cost:
+   **38% of walkable land is over 300 m of walking from any road.** The
+   inland tier is the first site the ring is not the reference curve for. It
+   is solved over a polar lattice in the interior rather than out of the
+   pad's candidate list (`INLAND_CANDIDATES = 32` bearings ×
+   `INLAND_RADII = 4` radii), against the same roster and the same 600 m
+   floor — which turns out to be *easier* to satisfy inside, not harder: 76.5%
+   of the disc clears against 45.6% at the island's mid-radius, because the
+   inner disc is further from every ring site (`examples/inland_scan`).
+   **It carries no containers, and that is a consequence rather than a
+   choice**: the ladder two paragraphs up has exactly one crate of headroom
+   (4 against 5), so a third container-bearing minor site fails the const
+   block. What it carries is the waystation's canopy — the same massing, no
+   new archetype, no new mesh — standing somewhere a player had no reason to
+   walk. `INLAND_GUARDS = 0` follows the prize by const assert.
+   **The bracket is the part worth reading twice.** It was first written as
+   the geometric limit — `ROAD_R_MIN` less the shoulder less the site radius,
+   579.99 m — which correctly answers "where does the footprint stop touching
+   the road" and does not answer "where is inland": a site at 580 m stands 20
+   m from the ring's shoulder. Measured, **7 of 16 seeds landed there.** The
+   bracket is `ROAD_R_MIN − ROAD_REACH_M` = 300 m now, where `ROAD_REACH_M` is
+   the distance the ring's own service band reaches, and `tests/sites.rs`
+   asserts the distance rather than the radius so the two cannot drift apart.
 9. **Scatter pass** — per 8 m cell, one hash draw decides occupant
    (tree / stone node / metal node / sulfur node / bush / rock / barrel
    slot / nothing), plus jittered offset, yaw, and scale from the same
@@ -596,11 +623,12 @@ The reads a survival map must produce, and which stage buys each:
 | treeline | a tree→bush transfer where the splat's grass and litter channels meet; ~15 m wide, 26 stems + 30 bushes/ha against the core's 94 + 4 |
 | species | 2 per slot, painted by a 620 m field; 90–96% dominance at its rails |
 | roads | 1 coast ring, ~4 m wide |
-| authored sites | 3 — one haven pad + 2 waystations, all on the ring |
+| authored sites | 4 — one haven pad + 2 waystations on the ring + 1 inland site at most 300 m from the island centre |
 | pad containers | 5 `crate` on a 10 m ring, 2.64× the shoulder's density |
 | waystation containers | 2 `cache` on a 6.5 m ring, ≥ 600 m from every other site |
+| inland containers | none — `INLAND_CRATES = 0`, a consequence of the ladder's one crate of headroom. The site is its canopy |
 | greyboxes | 2 kinds, one per tier: the pad's enclosed 7 m block to a 9.2 m tower, and the waystation's open canopy — 4 posts, one knee-high parapet, 4.1 m — standing in a gap in that 6.5 m ring rather than at the site centre, which is the road. **These are the numbers the sim blocks** (`terrain::WAYSTATION_CANOPY_BOXES`, gated by `sim-core/tests/{waystation,solid}.rs`); the mesh that draws them is no longer held to them — see §7 |
-| tier prices | E[items] per container barrel 14.3 < cache 20.8 < crate 33.1; per site pad 165 > waystation 42 (`ci/haven_prize.mjs`) |
+| tier prices | E[items] per container barrel 14.3 < cache 20.8 < crate 33.1; per site pad 165 > waystation 42 > inland 0 (`ci/haven_prize.mjs`) |
 | node respawn | 20–45 min jittered, privilege-vetoed **(knob)** |
 
 ### Stage 10 · Ground clutter — the layer below the scatter grid

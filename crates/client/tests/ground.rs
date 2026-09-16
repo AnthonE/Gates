@@ -67,9 +67,21 @@ const SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 type Attrs = (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 4]>, Vec<[f32; 2]>);
 
 /// `heightfield`'s body with every share taken back out — nine taps a vertex,
-/// `terrain::splat` resolving its own height and slope. This is what the
+/// each from the PUBLISHED law and none of them shared. This is what the
 /// optimised path has to reproduce exactly.
+///
+/// ⚠ **`ground`, not `height`, and this side read `height` until 2026-09-16.**
+/// The mesh draws the CARVED surface — `heightfield` takes a `&Haven` and
+/// every tap in it is `ground_memo` — so a naive rebuilt on raw terrain is
+/// only equal to it where no site's carve reaches, and every fixture in this
+/// file was such a place by accident. The inland site (`INLAND_SITES = 1`)
+/// landed 30 m from the far patch's vertex 165, whose normal arm at `x − d`
+/// falls 26.2 m from that site against a `blend_m` of 27.01, and the gate
+/// went red for exactly the right reason with the wrong side at fault. Same
+/// family as the coast-road fixture two entries up in `CLAUDE.md`: a gate can
+/// be exact, bit-for-bit, and aimed at raw ground while the mesh draws carved.
 fn naive(seed: u64, ox: f32, oz: f32, n: usize, step: f32, drop: f32) -> Attrs {
+    let haven = hv(seed);
     let d = (step * 0.5).max(0.5);
     let mut positions = Vec::with_capacity(n * n);
     let mut normals = Vec::with_capacity(n * n);
@@ -79,11 +91,13 @@ fn naive(seed: u64, ox: f32, oz: f32, n: usize, step: f32, drop: f32) -> Attrs {
         for ix in 0..n {
             let x = ox + ix as f32 * step;
             let z = oz + iz as f32 * step;
-            let y = terrain::height(seed, x, z);
+            let y = terrain::ground(seed, haven, x, z);
             positions.push([x, y - drop, z]);
 
-            let hx = terrain::height(seed, x + d, z) - terrain::height(seed, x - d, z);
-            let hz = terrain::height(seed, x, z + d) - terrain::height(seed, x, z - d);
+            let hx =
+                terrain::ground(seed, haven, x + d, z) - terrain::ground(seed, haven, x - d, z);
+            let hz =
+                terrain::ground(seed, haven, x, z + d) - terrain::ground(seed, haven, x, z - d);
             // glam's own `normalize`, not a restatement of it: this gate is
             // about which points were sampled, and a hand-rolled reciprocal
             // would fail on a rounding difference that has nothing to do with
@@ -91,10 +105,23 @@ fn naive(seed: u64, ox: f32, oz: f32, n: usize, step: f32, drop: f32) -> Attrs {
             let n_v = Vec3::new(-hx, 2.0 * d, -hz).normalize();
             normals.push([n_v.x, n_v.y, n_v.z]);
 
-            // `terrain::splat` — the whole point of the comparison. It
-            // re-derives the height and takes four fresh taps for the slope;
-            // the shipped path hands `splat_from` the two it already has.
-            let mut w = terrain::splat(seed, x, z);
+            // `splat_from` over three numbers this side resolved for itself —
+            // the whole point of the comparison. `ground`, `moisture` and
+            // `ground_slope` are the published laws and each takes its own
+            // fresh taps (nine between them); the shipped path hands the same
+            // function two numbers it already had in a shared row. What is
+            // under test is whether those two are the right ones.
+            //
+            // It was `terrain::splat` until 2026-09-16, which resolves its own
+            // RAW height and raw slope — see this function's own note. The
+            // shipped path has fed `splat_from` the carved pair since the
+            // carve was armed, and `terrain_mesh`'s `sl` branch says so in as
+            // many words.
+            let mut w = terrain::splat_from(
+                y,
+                terrain::moisture(seed, x, z),
+                terrain::ground_slope(seed, haven, x, z),
+            );
             // …and the road, on the same guard the shipped path applies it
             // under. `road_band` is the published law rather than a rebuild of
             // it: what this side is proving is that the optimised path asks it
@@ -330,6 +357,115 @@ fn a_near_chunk_on_the_coast_road_is_bit_identical_too() {
         NEAR_N,
         step,
         0.0,
+    );
+}
+
+/// **A patch the carve actually reaches into, at both pitches.**
+///
+/// Every other fixture in this file stands on raw ground by accident: the
+/// four near chunk origins are at the island's centre and past its corners,
+/// and the two far patches missed every site's blend until the inland tier
+/// landed 30 m from one of them. So the carved half of `heightfield` — every
+/// tap in it is `ground_memo`, not `height_memo` — was under a gate that could
+/// not see it, and the naive side was quietly rebuilding a different island.
+///
+/// The patch is FOUND rather than written down, `CLAUDE.md`'s rule for the
+/// coast-road fixture below: the seed decides where its own inland site is,
+/// and the carve-touched vertex count is asserted so a site that moves cannot
+/// quietly empty the fixture out.
+///
+/// Both pitches, because they are different code: the near ring's 1 m lattice
+/// puts the slope arm on the vertex grid and takes the `grid_slope` fast
+/// branch, and the far pitch's 8 m cannot, so it takes the fallback.
+///
+/// **Mutants, run — and one of the three survives, which is the honest half.**
+/// Pointing the vertex rows at `height_memo` reddens this test and the far
+/// pitch (4 others stay green); pointing the normal's shared x-arm at
+/// `height_memo` does the same. But pointing the `sl` FALLBACK at
+/// `terrain::slope_memo` — the exact swap the comment above that branch warns
+/// against — **stays green everywhere**, and the reason is not a hole in this
+/// fixture. Measured over an 81 × 81 m window on this seed's inland site:
+/// 2,445 points where `ground_slope` and `slope` differ, worst |Δ| 0.0599,
+/// and **zero of them change a splat byte.** A site is chosen for flatness by
+/// construction, so its carve barely moves the gradient, and `splat_from`
+/// quantizes to `u8`. The swap has no observable consequence at a site; a
+/// fixture that reddened on it would have to be somewhere no site can be.
+#[test]
+fn a_patch_over_a_carved_site_is_bit_identical_too() {
+    let h = hv(SEED);
+    let site = h
+        .minor
+        .iter()
+        .find(|w| w.live && w.kind == terrain::SiteKind::Inland)
+        .expect("the seed's inland site — this fixture is about the carve");
+
+    // How many of a patch's vertices have a carve under their SLOPE ARM, not
+    // merely under themselves: that is the thing the fallback resolves, and a
+    // vertex whose centre is carved while its arms are not would leave the
+    // mutant invisible again.
+    let touched = |ox: f32, oz: f32, n: usize, step: f32| {
+        let mut k = 0usize;
+        for iz in 0..n {
+            for ix in 0..n {
+                let (x, z) = (ox + ix as f32 * step, oz + iz as f32 * step);
+                let carved = |px: f32, pz: f32| {
+                    terrain::ground(SEED, h, px, pz).to_bits()
+                        != terrain::height(SEED, px, pz).to_bits()
+                };
+                if carved(x + 1.0, z)
+                    || carved(x - 1.0, z)
+                    || carved(x, z + 1.0)
+                    || carved(x, z - 1.0)
+                {
+                    k += 1;
+                }
+            }
+        }
+        k
+    };
+
+    // The near chunk that holds the site: the chunk grid's own cell, so this
+    // is a chunk the streamer really builds and not a patch invented for the
+    // test.
+    let step = CHUNK_M / (NEAR_N - 1) as f32;
+    let (ox, oz) = (
+        (site.x / CHUNK_M).floor() * CHUNK_M,
+        (site.z / CHUNK_M).floor() * CHUNK_M,
+    );
+    let near_hits = touched(ox, oz, NEAR_N, step);
+    // The blend disc is 27.01 m across the radius and a chunk is 64 m, so a
+    // chunk holding the site centre holds most of it. A handful would mean the
+    // site sits in a corner and the fixture is nearly empty again.
+    assert!(
+        near_hits >= 512,
+        "the near chunk over the inland site has only {near_hits} vertices with          a carve under a slope arm — this is testing raw ground, which is the          defect it was written for"
+    );
+    compare(
+        &format!("near chunk over the inland site at ({ox}, {oz}), {near_hits} carved"),
+        ox,
+        oz,
+        NEAR_N,
+        step,
+        0.0,
+    );
+
+    // And the far pitch, centred on the same site so the fallback runs inside
+    // the carve. 65 vertices at 8 m is a 512 m span; the disc is 54 m across,
+    // so the count here is tens rather than hundreds and the floor says so.
+    let span = (65 - 1) as f32 * FAR_STEP;
+    let (fx, fz) = (site.x - span * 0.5, site.z - span * 0.5);
+    let far_hits = touched(fx, fz, 65, FAR_STEP);
+    assert!(
+        far_hits >= 16,
+        "the far patch over the inland site has only {far_hits} vertices with a          carve under a slope arm — the fallback branch is not being exercised          inside a carve, which is the whole point of this half"
+    );
+    compare(
+        &format!("far patch over the inland site at ({fx}, {fz}), {far_hits} carved"),
+        fx,
+        fz,
+        65,
+        FAR_STEP,
+        0.15,
     );
 }
 

@@ -152,9 +152,15 @@ pub extern "C" fn probe_sites(seed: u64) -> u64 {
         hash_f32(&mut h, ws.z);
         hash_f32(&mut h, ws.y);
         hash_f32(&mut h, ws.floor_y);
-        h.update(&[ws.phase, ws.live as u8]);
+        // `kind` rides with the geometry for the same reason `live` does: a
+        // site that moved tier without moving is a worldgen answer, and the
+        // two tiers differ in what they SPAWN rather than in where they
+        // stand, so nothing else in this digest could see it.
+        h.update(&[ws.phase, ws.live as u8, ws.kind as u8]);
+        // The tier's own count, so a site that stands no containers hashes
+        // no anchors rather than hashing a ring nothing will build.
         let mut c = 0i32;
-        while c < terrain::WAYSTATION_CRATES {
+        while c < terrain::site_crates(ws.kind) {
             let (ax, az, yaw) = terrain::waystation_crate(ws, c);
             hash_f32(&mut h, ax);
             hash_f32(&mut h, az);

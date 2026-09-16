@@ -2,9 +2,9 @@
 //!
 //! Content validates at boot (CLAUDE.md wall 7) and so does the config. The
 //! island did not. `terrain::haven(seed)` resolves the authored sites — the
-//! haven pad plus `WAYSTATIONS` lesser ones — and `pick_minor` leaves a
-//! waystation dead when no candidate on the road ring clears
-//! `WAYSTATION_MIN_SEP_M`. That is the right call, and `terrain.rs` says why:
+//! haven pad plus `MINOR_SITES` lesser ones, across two tiers — and
+//! `pick_minor` leaves a slot dead when no candidate its tier can reach
+//! clears `WAYSTATION_MIN_SEP_M`. That is the right call, and `terrain.rs` says why:
 //! a site placed too close to another is worse than a site missing. It is
 //! also *silent*, and a shard boots whatever seed `shard.toml` names, so a
 //! seed the ring cannot fill ships an island a third smaller with no counter,
@@ -30,14 +30,20 @@
 //! certificate, and a test can reach it on a box without IPv6 — which this
 //! one is (`CLAUDE.md`: `bot_smoke` is red here for that reason alone).
 
-use sim_core::terrain::{self, Haven, WAYSTATIONS, WAYSTATION_MIN_SEP_M};
+use sim_core::terrain::{
+    self, Haven, SiteKind, INLAND_SITES, MINOR_SITES, WAYSTATIONS, WAYSTATION_MIN_SEP_M,
+};
 
 /// Every authored site an island is supposed to carry: the haven pad, which
 /// `haven()` returns unconditionally, plus the lesser tier. This is the
 /// number `sites_live` counts up to — it includes the pad, which is the
 /// opposite convention from `tests/waystation.rs`, where `live` counts
 /// waystations alone against `WAYSTATIONS`.
-pub const AUTHORED_SITES: u32 = WAYSTATIONS as u32 + 1;
+///
+/// **Every lesser tier, not just the ring one.** It was `WAYSTATIONS + 1`
+/// while the ring was the only lesser tier; `MINOR_SITES` is the length of
+/// `Haven::minor`, which is the thing `sites_live` actually walks.
+pub const AUTHORED_SITES: u32 = MINOR_SITES as u32 + 1;
 
 /// Refuse an island whose authored sites are short, and report how many are
 /// live when they are not.
@@ -54,15 +60,32 @@ pub fn check_island(seed: u64, haven: &Haven) -> Result<u32, String> {
         debug_assert_eq!(live, AUTHORED_SITES);
         return Ok(live);
     }
-    let dead = WAYSTATIONS - haven.minor.iter().filter(|w| w.live).count();
+    // Counted per TIER, off the dead slot's own `kind` rather than off its
+    // index — `terrain::empty_minor` is what makes that readable. The two
+    // tiers fail for different reasons and an operator does different things
+    // about them, so a message that said "waystations" for a short interior
+    // would send them to look at the road ring.
+    let dead_ring = dead_of(haven, SiteKind::Waystation);
+    let dead_inland = dead_of(haven, SiteKind::Inland);
     Err(format!(
         "island refused: seed {seed} fills {live} of {AUTHORED_SITES} authored sites \
-         — {dead} of {WAYSTATIONS} waystations found no candidate on the road ring \
+         — {dead_ring} of {WAYSTATIONS} waystations found no candidate on the road ring, \
+         {dead_inland} of {INLAND_SITES} inland sites none in the interior, \
          clearing WAYSTATION_MIN_SEP_M = {WAYSTATION_MIN_SEP_M} m. A short tier is \
          a deliberate refusal to crowd two sites together, not a defect, but it \
          ships a smaller island in silence: pick another seed, or move the floor \
          and register the knob."
     ))
+}
+
+/// Dead slots of one tier. The dead slot carries its own `kind`
+/// (`terrain::empty_minor`), so this is a filter and not an index range.
+fn dead_of(haven: &Haven, kind: SiteKind) -> usize {
+    haven
+        .minor
+        .iter()
+        .filter(|w| !w.live && w.kind == kind)
+        .count()
 }
 
 /// `check_island` against the island the seed actually generates. What the
@@ -107,7 +130,7 @@ mod tests {
     #[test]
     fn an_empty_tier_counts_the_pad_alone() {
         let mut haven = terrain::haven(20_260_731);
-        haven.minor = [Waystation::NONE; WAYSTATIONS];
+        haven.minor = terrain::empty_minor();
         assert_eq!(terrain::sites_live(&haven), 1, "the pad always survives");
         let err = check_island(9, &haven).expect_err("an empty tier must refuse");
         assert!(
@@ -117,6 +140,11 @@ mod tests {
         assert!(
             err.contains(&format!("{WAYSTATIONS} of {WAYSTATIONS} waystations")),
             "an empty tier must say all of them are dead: {err}"
+        );
+        assert!(
+            err.contains(&format!("{INLAND_SITES} of {INLAND_SITES} inland")),
+            "an empty roster must count the interior tier separately, or the \
+             operator is sent to look at the road ring: {err}"
         );
     }
 }

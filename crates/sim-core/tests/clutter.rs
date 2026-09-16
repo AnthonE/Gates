@@ -40,10 +40,10 @@ fn in_any_blend(haven: &Haven, cx: i32, cz: i32) -> bool {
     if d2(haven.x, haven.z) < (hf.blend_m + pad) * (hf.blend_m + pad) {
         return true;
     }
-    (0..terrain::WAYSTATIONS).any(|w| {
-        let ws = &haven.minor[w];
-        ws.live && d2(ws.x, ws.z) < (wf.blend_m + pad) * (wf.blend_m + pad)
-    })
+    haven
+        .minor
+        .iter()
+        .any(|ws| ws.live && d2(ws.x, ws.z) < (wf.blend_m + pad) * (wf.blend_m + pad))
 }
 
 const SEEDS: [u64; 3] = [0x0047_4154_4553, 1, 0xDEAD_BEEF];
@@ -1465,7 +1465,7 @@ fn sites_parked_offshore() -> Haven {
         relief: 0.0,
         phase: 0,
         shelter: 0,
-        minor: [terrain::Waystation::NONE; terrain::WAYSTATIONS],
+        minor: terrain::empty_minor(),
     }
 }
 

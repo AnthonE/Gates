@@ -1160,8 +1160,7 @@ fn the_canopy_plates_are_overhead() {
 fn the_placed_canopy_is_solid_and_clears_its_caches_at_every_site() {
     for seed in [1u64, 42, 20_260_804, 0xDEAD_BEEF] {
         let haven = terrain::haven(seed);
-        for w in 0..terrain::WAYSTATIONS {
-            let ws = haven.minor[w];
+        for (w, ws) in haven.minor.iter().copied().enumerate() {
             assert!(ws.live, "seed {seed:#x}: site {w} is not live");
             let (kx, kz, kyaw) = terrain::waystation_canopy(&ws);
             let feet = terrain::height(seed, kx, kz);
@@ -1192,7 +1191,10 @@ fn the_placed_canopy_is_solid_and_clears_its_caches_at_every_site() {
             // centre, 6.5 m from each cache, and the eave reached 2.8 m of
             // that on the diagonal.
             let (cache_r, _) = terrain::occupant_volume(Occupant::CacheSlot);
-            for k in 0..terrain::WAYSTATION_CRATES {
+            // The tier's own count — an inland site stands no caches, so
+            // this loop runs zero times there and the canopy claim above is
+            // the whole of what that site owes.
+            for k in 0..terrain::site_crates(ws.kind) {
                 let (ax, az, _) = terrain::waystation_crate(&ws, k);
                 assert!(
                     !terrain::slot_blocks(&slot, ax, az, feet, cache_r, CAPSULE_HEIGHT_M),

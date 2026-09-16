@@ -60,7 +60,7 @@ fn no_haven() -> Haven {
         relief: 0.0,
         phase: 0,
         shelter: 0,
-        minor: [terrain::Waystation::NONE; terrain::WAYSTATIONS],
+        minor: terrain::empty_minor(),
     }
 }
 
@@ -86,7 +86,7 @@ fn ring_phase(seed: u64, x: f32, z: f32) -> Option<u8> {
             relief: 0.0,
             phase,
             shelter: 0,
-            minor: [terrain::Waystation::NONE; terrain::WAYSTATIONS],
+            minor: terrain::empty_minor(),
         };
         let ok = (0..HAVEN_CRATES).all(|k| {
             let (ax, az, _) = terrain::haven_crate(&probe, k);
@@ -618,14 +618,21 @@ fn the_pad_carries_the_containers_it_placed() {
         // The other half of the partition, so the sweep pins the whole island
         // and not just the pad. `tests/waystation.rs` owns the lesser tier's
         // own geometry; this only refuses to let it go uncounted here.
+        // Summed over the live sites' own tiers — an inland site owes zero
+        // (`terrain::INLAND_CRATES`), so a flat `live * WAYSTATION_CRATES`
+        // would demand caches the ladder forbids it to stand.
         let live = haven.minor.iter().filter(|w| w.live).count();
+        let want: usize = haven
+            .minor
+            .iter()
+            .filter(|w| w.live)
+            .map(|w| terrain::site_crates(w.kind) as usize)
+            .sum();
         assert_eq!(
-            minor_found,
-            live * terrain::WAYSTATION_CRATES as usize,
-            "seed {seed}: {minor_found} cache(s) stand on {live} waystation(s) \
-             against {} apiece — same silent-drop failure as the pad's, one \
-             tier down",
-            terrain::WAYSTATION_CRATES
+            minor_found, want,
+            "seed {seed}: {minor_found} cache(s) stand on {live} lesser site(s) \
+             against {want} owed by their tiers — same silent-drop failure as \
+             the pad's, one tier down"
         );
     }
 
@@ -941,7 +948,7 @@ fn the_pad_carries_the_shelter_at_its_center() {
             relief: 0.0,
             phase: 0,
             shelter: HAVEN_SHELTER_YAW_STEP as u8,
-            minor: [terrain::Waystation::NONE; terrain::WAYSTATIONS],
+            minor: terrain::empty_minor(),
         };
         let (px, pz, _) = terrain::haven_shelter(&probe);
         if (0..HAVEN_CRATES).any(|k| {

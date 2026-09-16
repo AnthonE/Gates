@@ -136,13 +136,29 @@ pub const fn kind_of(slot: usize) -> u8 {
 pub const HAVEN_GUARDS: usize = 4;
 pub const WAYSTATION_GUARDS: usize = 2;
 
+/// Guards an inland site keeps. **Zero, and it follows from the prize.**
+///
+/// The risk chain is the prize chain's shadow (`ci/haven_prize.mjs`, and the
+/// const block below) — that is what the two asserts under [`SITE_GUARDS`]
+/// say in the other direction, that the pad may not be cheaper to rob than a
+/// waystation and that a waystation may not be free. `terrain::INLAND_CRATES`
+/// is 0, so the inland site pays nothing and there is nothing to keep; the
+/// assert below is what stops the two drifting apart.
+pub const INLAND_GUARDS: usize = 0;
+
 /// Roster slots spent guarding, across every site. A stated number and not
 /// a hashed draw, for `WOLF_SLOT_EVERY`'s reason: a gate counts it instead
 /// of sampling it. The pad's four plus [`terrain::WAYSTATIONS`] at
 /// [`WAYSTATION_GUARDS`] each is **8 of the 16 wolves**, leaving 8 hunting
 /// the island — two fewer than guards v0 left, which is the price of the
 /// gradient and is paid out of the free roster rather than out of the cap.
-pub const SITE_GUARDS: usize = HAVEN_GUARDS + terrain::WAYSTATIONS * WAYSTATION_GUARDS;
+///
+/// **Summed per tier, not per site**, which is the difference
+/// `terrain::INLAND_SITES` turns on: the inland tier is in this sum at
+/// [`INLAND_GUARDS`] = 0, so a third authored place landed without moving
+/// the eight that hunt.
+pub const SITE_GUARDS: usize =
+    HAVEN_GUARDS + terrain::WAYSTATIONS * WAYSTATION_GUARDS + terrain::INLAND_SITES * INLAND_GUARDS;
 
 const _: () = assert!(
     SITE_GUARDS * WOLF_SLOT_EVERY <= MAX_MOBS,
@@ -163,9 +179,31 @@ const _: () = assert!(
     "a waystation keeps no guards, so the middle tier of the prize chain is \
      free to rob and only the pad costs anything"
 );
+// The same sentence for the tier that pays nothing, in both directions: a
+// site with nothing to steal keeps nobody, and a site that starts paying
+// starts keeping someone. Arming `terrain::INLAND_CRATES` without arming
+// this is the shape that would ship a free crate on the quietest site on the
+// island.
+const _: () = assert!(
+    (terrain::INLAND_CRATES == 0) == (INLAND_GUARDS == 0),
+    "the inland tier's guards and its containers disagree — the risk chain \
+     is the prize chain's shadow (ci/haven_prize.mjs)"
+);
+// `guard_site_of` below maps every non-pad guard ordinal onto the WAYSTATION
+// block of `Haven::minor`, so the mapping is complete only while that block
+// is the whole of the non-pad roster. Arming `INLAND_GUARDS` fires this
+// rather than silently homing an inland guard at `minor[0]`.
+const _: () = assert!(
+    SITE_GUARDS - HAVEN_GUARDS == terrain::WAYSTATIONS * WAYSTATION_GUARDS,
+    "the guard roster reaches past the tier guard_site_of can address"
+);
 
 /// Which authored site a roster slot keeps, or `None` for the free roster.
 /// **Site 0 is the haven pad; 1..=`WAYSTATIONS` index [`Haven::minor`].**
+///
+/// That range is the WAYSTATION block of `minor`, not all of it — the inland
+/// tier occupies the slots after it and keeps nobody ([`INLAND_GUARDS`]).
+/// The const block above is what holds the two in step.
 ///
 /// Guards are drawn from the *predator* slots and are not a species: a
 /// guard is a wolf that lives at a destination, so `kind_of` still answers
@@ -205,6 +243,10 @@ fn footprint_of(site: usize) -> terrain::SiteFootprint {
     if site == 0 {
         terrain::HAVEN_FOOTPRINT
     } else {
+        // Every lesser tier presents the same footprint — the inland site is
+        // a waystation's massing standing somewhere else — so this stays one
+        // branch. It is `WAYSTATION_FOOTPRINT` that `site_sweep` and the
+        // carve read for every entry of `minor` too.
         terrain::WAYSTATION_FOOTPRINT
     }
 }

@@ -23,7 +23,7 @@ use protocol::event::WireBag;
 use sim_core::build::BUILD_CELL_M;
 use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, ARCH_BAG, ARCH_HEARTH, BAG_CAP};
 use sim_core::movement::POS_XZ_Q;
-use sim_core::terrain::{self, Haven, ISLAND_SIZE, SEA_LEVEL, WAYSTATIONS};
+use sim_core::terrain::{self, Haven, ISLAND_SIZE, MINOR_SITES, SEA_LEVEL};
 
 /// Metres per grid square. 2048 / 128 = 16 squares a side.
 pub const GRID_M: f32 = 128.0;
@@ -253,7 +253,7 @@ const _: () = assert!(
 /// assert above's reason: two of the three terms are other crates'
 /// constants.
 const _: () = assert!(
-    1 + WAYSTATIONS + 1 + BAG_CAP <= MAP_MARKS_MAX,
+    1 + MINOR_SITES + 1 + BAG_CAP <= MAP_MARKS_MAX,
     "the own tier outgrew the marker cap — a player's own bed would be dropped"
 );
 
@@ -412,6 +412,11 @@ pub fn resolve_marks(
     out.dropped = 0;
 
     out.push(MarkKind::Haven, haven.x, haven.z);
+    // **One mark kind for every lesser tier, deliberately.** An inland site
+    // is a waystation's massing standing somewhere else — the same canopy,
+    // the same footprint — so the map says the same thing the ground does.
+    // Giving the interior tier its own glyph is an icon and a spoken call,
+    // not a builder's edit (`assets/icons/CREDITS.md` is the rail).
     for w in &haven.minor {
         out.push(MarkKind::Waystation, w.x, w.z);
     }
@@ -742,10 +747,11 @@ mod tests {
     // ---- the markers ----------------------------------------------------
 
     use sim_core::deploy::{DeployDef, ARCH_BOX, ARCH_DOOR, ARCH_FIRE};
-    use sim_core::terrain::WAYSTATIONS;
+    use sim_core::terrain::MINOR_SITES;
 
-    /// `1 + WAYSTATIONS` authored marks lead every resolve.
-    const AUTHORED: usize = 1 + WAYSTATIONS;
+    /// `1 + MINOR_SITES` authored marks lead every resolve — the pad plus
+    /// every lesser tier, which is what `Haven::minor` holds.
+    const AUTHORED: usize = 1 + MINOR_SITES;
 
     fn defs_with(arches: &[u8]) -> (DeployContent, u16) {
         let mut d = DeployContent::EMPTY;
@@ -778,7 +784,7 @@ mod tests {
         let mut out = Marks::default();
         resolve_marks(&mut out, &haven, &[], &defs, have, &[], 0, &[]);
 
-        assert_eq!(out.count, AUTHORED, "haven + {WAYSTATIONS} waystations");
+        assert_eq!(out.count, AUTHORED, "haven + {MINOR_SITES} lesser sites");
         assert_eq!(out.dropped, 0);
         assert_eq!(out.a[0].kind, MarkKind::Haven);
         let (px, py) = world_to_map(haven.x, haven.z, 1);

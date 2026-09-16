@@ -83,6 +83,15 @@ const RAW_READERS: &[(&str, &str, &str)] = &[
     ),
     (
         "terrain.rs",
+        "pick_minor",
+        "locator: `haven`'s argmax one tier down. It gained a raw read when the \
+         inland tier landed — the ring tier scores candidates the pad scan \
+         already measured, and the interior lattice is this function's own to \
+         sample. Same reason as `haven`: the site's `y` is what the carve is \
+         derived FROM, so reading the carved surface here is direct recursion.",
+    ),
+    (
+        "terrain.rs",
         "site_floor_y",
         "locator: it CHOOSES the altitude a site's floor is cut to, by minimax \
          over the raw ground. Reading the carve here would have the datum \
