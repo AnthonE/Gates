@@ -320,12 +320,20 @@ Stages, in order — each cheap, each deterministic:
    `ROADS.md` §9.3 priced in advance. `ring_band` is the ring-only half, and
    it is what every site solver calls — a solver asking about a road that is a
    consequence of its own answer would be circular.
-   ⚠ **And the ring is not a loop**, which this work measured on the way past:
-   the shipped coast ring is 79% / 39% / 52% in one WALKABLE piece across
-   three seeds, broken at the cliffs it crosses. The side road's first draft
-   delivered a player to an 11-cell fragment of it; `SIDE_ROAD_RING_RUN`
-   refuses such a junction now. Nothing gates the ring's own continuity
-   (`NOW.md` §0rd).
+   **At intersections, either carriageway wins over either shoulder.**
+   `road_band` applies this union to scatter, clutter and material consumers;
+   ring-first shoulder priority left vegetation across the side road. The
+   actual-junction sweep in `tests/side_road.rs` checks both overlap directions
+   and direct/memo parity. This changes narrow junction masks, not site or
+   road coordinates; the terrain golden does not sample those overlaps.
+   ⚠ **The ring's continuity remains unproved.** The earlier 79% / 39% / 52%
+   largest-component figures depend on raster spacing and adjacency. The
+   finer `examples/road_route.rs` probe finds predicate-confirmed cliffed
+   carriageway samples on two seeds, but none on seed 42 despite its 39%
+   result. Neither observation alone proves the whole ribbon impassable.
+   `SIDE_ROAD_RING_RUN` still rejects short local junction runs; it does not
+   certify global circulation. The offline alternative and its integration
+   limits are in `findings/road-network-prototype-20260916.md` (`NOW.md` §0rd).
 9. **Scatter pass** — per 8 m cell, one hash draw decides occupant
    (tree / stone node / metal node / sulfur node / bush / rock / barrel
    slot / nothing), plus jittered offset, yaw, and scale from the same

@@ -1036,10 +1036,17 @@ pub fn road_band_memo(lat: &mut Lattice, seed: u64, haven: &Haven, x: f32, z: f3
 
 fn road_band_in<C: Corners>(co: &mut C, seed: u64, haven: &Haven, x: f32, z: f32) -> RoadBand {
     let ring = ring_band_in(co, seed, x, z);
-    if ring != RoadBand::Off {
+    if ring == RoadBand::Carriageway {
         return ring;
     }
-    side_band(haven, x, z)
+    // Either carriageway clears the junction, even where it crosses the
+    // other road's shoulder. A ring-first shoulder cuts across a side road.
+    let side = side_band(haven, x, z);
+    if side == RoadBand::Carriageway || ring == RoadBand::Off {
+        side
+    } else {
+        ring
+    }
 }
 
 /// The coast ring alone, as a pure function of `(seed, x, z)` — no state, no
