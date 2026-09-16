@@ -735,6 +735,14 @@ drip, which is why that one was a bump and not a panel edit.
 6. **Armor still does not wear out.** §9.4's condition, now that the
    catalog carries `cond_max` beside the reduction: a worn piece has both
    halves on the client and debits neither. `§0dur` owns it.
+7. **A right-click does not equip** (2026-09-16). With a container open a
+   right-click now moves a stack across (`ui::slots::quick_move`); with
+   nothing open it consumes, and on a helmet it does nothing. The
+   reference wears the piece — which for us is the same `CONT_WEAR` move
+   the drag already sends, so it is `quick_move`'s `!looting` branch
+   asking `wearable_here` first. Left out because the operator asked for
+   the container gesture and a third meaning for one button is a taste
+   call, not because it is hard.
 
 ## 0gs · What ground surface v1 left open *(client lane)*
 
@@ -1111,9 +1119,20 @@ where it had only ever been two words on the prompt. Both unseen (`§LOOK`).
 ## 0wc · What world containers v0 still owes *(systems lane)*
 
 1. **Nobody has opened one in the running game** — the prompt, the panel
-   title, the drag out of a 30-slot grid, an emptied crate. Route: derive
-   the anchor as `container_wire.rs:1307` does, set `dev_spawn` in
-   `shard.toml` (`server/src/config.rs:361`), boot. §0p3 has the command.
+   title, the drag out of a 30-slot grid, an emptied crate, and since
+   2026-09-16 three more: the crafting half gone, a right-click taking a
+   stack, and a crate's cells going red under a drag it will refuse.
+   Route: derive the anchor as `container_wire.rs:1307` does, set
+   `dev_spawn` in `shard.toml` (`server/src/config.rs:361`), boot. §0p3
+   has the command.
+1b. ✅ **A crate takes no deposits** (2026-09-16, wire v64,
+   `REFUSE_M_NO_INPUT`) — the operator's call, and it closed a live
+   defect: the refill arms on the record going empty, so one stack put
+   back held a crate shut for everybody. The residual is that the **box
+   and the bag are the only kinds that take one**, and `takes_deposits`
+   is a `kind != CONT_WORLD` today — the reference keys the same
+   predicate per *container instance* (`CanAcceptItem`), which is what a
+   furnace's fuel slot or a vending machine would need.
 2. **An emptied crate says nothing at a distance**, so a wasted trip is
    normal on a populated shard. Wants a lid state on the mesh
    (`render/props.rs` has one `crate_box`) or a shorter refill window.
@@ -2249,6 +2268,18 @@ dust and the impact cue read it (`DECISIONS.md` §open, impact fx v1). Left:
 4. **Fourteen distinct font sizes is not a scale** (`font`/`font_bold` sites
    in `render/`). Collapsing to five may not be done blind: they were
    budgeted against 720p and the first cut clipped a column at both ends.
+4b. **There is no way to craft while looting** — the stated cost of the
+   operator's 2026-09-16 call. The reference's answer is a tab strip
+   (INVENTORY / CRAFTING over one screen); ours would be two buttons in
+   `inv::header` and a `Ui` field, and it is a *taste* call about whether
+   the screen wants tabs at all before it is a slice. Not a defect:
+   closing the container gets you there today.
+4c. **The quick-move moves one slot per click**, so a stack that half fits
+   leaves a remainder and a second right-click carries it on. The wire's
+   move verb addresses one slot, so a whole-stack scatter would be N
+   commands; the reference's hover-loot (hold a key, sweep the pointer,
+   everything transfers) is the same shape and the next ergonomic step —
+   both want a `take all` verb argued for before either is built.
 5. **Surveyed and refused, do not re-survey:** `bevy_hui`, `bevy_lunex`,
    `bevy_feathers` (~5,400 lines of screens into a data-driven plugin) and
    the freegameui.net MCP (403s here, bypasses `bake_icons.py` and
@@ -2554,7 +2585,15 @@ arithmetic and unseen*, and the list below is what has accumulated. **Do not
 build a replacement pixel gate.** One session with the client open closes most
 of it.
 
-**Newest, 2026-09-13 — go down and look** (§0wnd, `render/wounded.rs`): the
+**Newest, 2026-09-16 — open a bag and right-click** (§0p2, §0wc): the
+inventory screen has two shapes now, and only one of them has ever been on
+a screen. With a container open the crafting half is not drawn, the title
+reads `LOOTING`, the hint line names a different gesture, and three panels
+sit in the row where §0eq item 5 already asked whether two fit at 1280.
+The gesture itself is gated as arithmetic (`tests/ui.rs` §T) and the thing
+a frame answers is whether the screen reads as *emptier* or as *broken*.
+
+**2026-09-13 — go down and look** (§0wnd, `render/wounded.rs`): the
 camera's drop to `CRAWL_EYE_M` and its roll, the vignette, the two-number
 line, and a remote body's fallen pose sliding at a crawl. Five knobs, none
 seen; `reference/WOUNDED.md` §9.5 is the checklist.
