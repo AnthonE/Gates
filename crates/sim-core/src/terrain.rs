@@ -2014,6 +2014,185 @@ pub fn haven(seed: u64) -> Haven {
     pad
 }
 
+// ── The site roster (`reference/ROADS.md` §9.2, `MONUMENTS.md` §9.3) ───────
+//
+// `MONUMENTS.md` §9.3 names three things a third kind of authored place needs
+// and we did not have, and this is them: a pairwise separation rule, a
+// reservation ledger, and an explicit tier. Its own words for what we had —
+// "the separation floor is one constant asserted against the two tiers' radii
+// by hand … there is no reservation ledger … order is already load-bearing
+// and already right, by accident of having only two tiers."
+//
+// **Nothing here changes where a site lands.** Every entry of [`SITE_SEP_M`]
+// is `WAYSTATION_MIN_SEP_M`, the ledger walks its entries in the order
+// `pick_minor` already walked them (the pad, then each waystation as it was
+// taken), and it compares the same squared distance against the same squared
+// floor. The goldens are unmoved and `tests/sites.rs` is what says so —
+// **the bit-equality of the table, not the digest.** A digest can only see a
+// separation change if some real pair happens to sit within an ulp of 600 m,
+// which nothing guarantees, so the golden is the weaker witness here.
+
+/// What kind of authored place a site is.
+///
+/// **Ordered by tier, and the order is load-bearing**: the pad resolves
+/// first and nothing after it may move it (`haven`). That was true before
+/// this enum existed, by accident of there being only two kinds;
+/// `MONUMENTS.md` §9.3 asks for it to become explicit "before a third row
+/// makes it implicit", and this is that.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum SiteKind {
+    /// The destination. One per island, resolved first.
+    Haven = 0,
+    /// The lesser tier on the road ring.
+    Waystation = 1,
+    /// Off the ring, in the interior — `reference/ROADS.md` §9.2.
+    Inland = 2,
+}
+
+pub const SITE_KINDS: usize = 3;
+
+/// Authored sites off the road ring, in the island's interior.
+///
+/// **Zero in commit A on purpose.** The roster, the pairwise table and the
+/// ledger land first and are asserted to move nothing (`tests/sites.rs`);
+/// the site that uses them is the next commit. A mechanism that arrives with
+/// its first consumer cannot be shown to have cost nothing.
+pub const INLAND_SITES: usize = 0;
+
+/// How far apart two sites must stand, metres, indexed `[a][b]` by
+/// [`SiteKind`]. Symmetric, and the const block below refuses a table that
+/// is not.
+///
+/// **A matrix rather than a third constant**, which is `MONUMENTS.md` §9.3's
+/// "a third kind needs a pairwise rule, not a third constant". Every entry
+/// is [`WAYSTATION_MIN_SEP_M`] today — the table starts as the constant it
+/// replaces, so the mechanism lands without moving a site — and each pair
+/// that later wants its own floor is a spoken entry rather than an arithmetic
+/// consequence of how many sites there are. That last part is deliberate: a
+/// floor derived from the site COUNT would silently re-space the tier that
+/// already ships the moment a new one is added.
+pub const SITE_SEP_M: [[f32; SITE_KINDS]; SITE_KINDS] = [
+    [
+        WAYSTATION_MIN_SEP_M,
+        WAYSTATION_MIN_SEP_M,
+        WAYSTATION_MIN_SEP_M,
+    ],
+    [
+        WAYSTATION_MIN_SEP_M,
+        WAYSTATION_MIN_SEP_M,
+        WAYSTATION_MIN_SEP_M,
+    ],
+    [
+        WAYSTATION_MIN_SEP_M,
+        WAYSTATION_MIN_SEP_M,
+        WAYSTATION_MIN_SEP_M,
+    ],
+];
+
+/// How many authored sites one island may carry — the ledger's capacity, and
+/// wall 4's cap for this path. Derived from the roster rather than typed.
+pub const MAX_SITES: usize = 1 + WAYSTATIONS + INLAND_SITES;
+
+const _: () = {
+    // Symmetric, because "A is far enough from B" and "B is far enough from
+    // A" are the same sentence and a table that disagrees with itself would
+    // make the answer depend on which site was placed first.
+    let mut a = 0;
+    while a < SITE_KINDS {
+        let mut b = 0;
+        while b < SITE_KINDS {
+            assert!(SITE_SEP_M[a][b] == SITE_SEP_M[b][a]);
+            assert!(SITE_SEP_M[a][b] > 0.0);
+            b += 1;
+        }
+        a += 1;
+    }
+    // Every candidate lies inside the island, so a floor above its diagonal
+    // could never be met by any pair at all.
+    let mut a = 0;
+    while a < SITE_KINDS {
+        let mut b = 0;
+        while b < SITE_KINDS {
+            assert!(SITE_SEP_M[a][b] < ISLAND_SIZE);
+            b += 1;
+        }
+        a += 1;
+    }
+};
+
+/// The sites already taken, and the only thing that decides whether another
+/// may stand somewhere.
+///
+/// Fixed capacity ([`MAX_SITES`]), no allocation, and a stated overflow
+/// policy: [`Self::take`] REFUSES past the cap and says so in its return
+/// value rather than dropping silently, because a site that vanished without
+/// a word is the failure `tests/waystation.rs` exists to make audible.
+#[derive(Clone, Copy)]
+pub struct SiteLedger {
+    x: [f32; MAX_SITES],
+    z: [f32; MAX_SITES],
+    kind: [SiteKind; MAX_SITES],
+    n: usize,
+}
+
+impl Default for SiteLedger {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SiteLedger {
+    pub const fn new() -> Self {
+        Self {
+            x: [0.0; MAX_SITES],
+            z: [0.0; MAX_SITES],
+            kind: [SiteKind::Haven; MAX_SITES],
+            n: 0,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.n
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.n == 0
+    }
+
+    /// Whether a `kind` site at `(x, z)` clears every site already taken.
+    ///
+    /// Walks in insertion order and returns on the first violation — which is
+    /// exactly what `pick_minor` did inline, in exactly that order, so this
+    /// is bit-identical to the code it replaces while the table is uniform.
+    pub fn clears(&self, kind: SiteKind, x: f32, z: f32) -> bool {
+        let mut i = 0usize;
+        while i < self.n {
+            let sep = SITE_SEP_M[kind as usize][self.kind[i] as usize];
+            let dx = x - self.x[i];
+            let dz = z - self.z[i];
+            if dx * dx + dz * dz < sep * sep {
+                return false;
+            }
+            i += 1;
+        }
+        true
+    }
+
+    /// Reserve a site. Returns false if the roster is full — wall 4's
+    /// overflow policy, stated rather than silent.
+    pub fn take(&mut self, kind: SiteKind, x: f32, z: f32) -> bool {
+        if self.n >= MAX_SITES {
+            return false;
+        }
+        self.x[self.n] = x;
+        self.z[self.n] = z;
+        self.kind[self.n] = kind;
+        self.n += 1;
+        true
+    }
+}
+
 /// Choose the lesser tier out of the pad search's own scored candidates.
 ///
 /// Greedy, `WAYSTATIONS` times: take the best-scoring candidate that clears
@@ -2040,7 +2219,10 @@ pub fn haven(seed: u64) -> Haven {
 /// short one is a finding rather than a silent degradation.
 fn pick_minor(seed: u64, pad: &Haven, cand: &[(f32, f32, f32, f32)]) -> [Waystation; WAYSTATIONS] {
     let mut out = [Waystation::NONE; WAYSTATIONS];
-    let sep2 = WAYSTATION_MIN_SEP_M * WAYSTATION_MIN_SEP_M;
+    // The pad is the roster's first entry, which is the same statement the
+    // old inline test made by comparing against `pad` before the taken list.
+    let mut roster = SiteLedger::new();
+    roster.take(SiteKind::Haven, pad.x, pad.z);
     let mut filled = 0usize;
 
     while filled < WAYSTATIONS {
@@ -2054,23 +2236,7 @@ fn pick_minor(seed: u64, pad: &Haven, cand: &[(f32, f32, f32, f32)]) -> [Waystat
             if take.is_some() && score >= take_score {
                 continue;
             }
-            let dx = x - pad.x;
-            let dz = z - pad.z;
-            if dx * dx + dz * dz < sep2 {
-                continue;
-            }
-            let mut j = 0usize;
-            let mut clear = true;
-            while j < filled {
-                let ex = x - out[j].x;
-                let ez = z - out[j].z;
-                if ex * ex + ez * ez < sep2 {
-                    clear = false;
-                    break;
-                }
-                j += 1;
-            }
-            if !clear {
+            if !roster.clears(SiteKind::Waystation, x, z) {
                 continue;
             }
             let (phase, canopy) = match waystation_ring_phase(seed, x, z) {
@@ -2091,6 +2257,10 @@ fn pick_minor(seed: u64, pad: &Haven, cand: &[(f32, f32, f32, f32)]) -> [Waystat
 
         match take {
             Some(w) => {
+                // Reserve before the next pass, so the roster is what the
+                // next candidate is tested against — the ledger IS the
+                // "every site already taken" the doc above describes.
+                roster.take(SiteKind::Waystation, w.x, w.z);
                 out[filled] = w;
                 filled += 1;
             }
