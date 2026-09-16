@@ -47,10 +47,19 @@ use sim_core::terrain::CELL_SIZE;
 const SEED: u64 = 20260731;
 
 /// The densest eye on that island at the 80 m swap, from
-/// `cargo run --release -p sim-core --example ring_census`: 246 trees inside
-/// 80 m, 357 inside the fade. Over the cap by a wide margin, which is what
+/// `cargo run --release -p sim-core --example ring_census`: **223 trees inside
+/// 80 m, 313 inside the fade**. Over the cap by a wide margin, which is what
 /// makes it the fixture and not a pin.
-const DENSEST_EYE: (f32, f32) = (676.0, 292.0);
+///
+/// ⚠ **Re-run and moved 2026-09-15 from `(676, 292)`** — world structure v1
+/// re-scaled the moisture field, so the Forest biome is ~20 woods instead of
+/// three masses and the densest stand on this island is somewhere else. The
+/// census is the command behind this constant precisely so that moving it is
+/// a re-measurement rather than a search: the failure message names the
+/// command, and it was followed. The island's p50 eye also fell (63 trees
+/// inside the swap, from 95) because the same forest is now spread over
+/// clearings — the CAP is unmoved and still the thing under test.
+const DENSEST_EYE: (f32, f32) = (1348.0, 1252.0);
 
 /// Frames the near ring is given to build around a placed eye — one chunk a
 /// frame, 25 chunks, with room. A count, not a clock.

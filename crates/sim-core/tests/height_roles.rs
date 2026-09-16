@@ -65,9 +65,26 @@ const RAW_READERS: &[(&str, &str, &str)] = &[
     ),
     (
         "terrain.rs",
-        "road_band",
-        "locator: defines where the ring runs, and `haven()` calls it — a carved \
-         read here is direct recursion.",
+        "ring_band",
+        "locator: `road_band`'s ring half, renamed when the side road landed — \
+         same function, same reason. It defines where the ring runs and the \
+         site search calls it, so a carved read here is direct recursion.",
+    ),
+    (
+        "terrain.rs",
+        "ring_run",
+        "locator: it walks the ring to decide whether a junction is on a real \
+         stretch of it or on a fragment. Reading the carved surface would ask \
+         about ground the sites it is choosing between have not made yet.",
+    ),
+    (
+        "terrain.rs",
+        "solve_side_roads",
+        "locator: it CHOOSES where a road runs, which is the same kind of \
+         answer `haven` and `pick_minor` give. The walkability it tests is the \
+         raw ground, deliberately — a road is refused for the hill that is \
+         there, not for the one a carve would leave, and every carve on the \
+         island is a consequence of a site this road is being built to reach.",
     ),
     (
         "terrain.rs",
@@ -80,6 +97,15 @@ const RAW_READERS: &[(&str, &str, &str)] = &[
         "haven",
         "locator: the stage 8 argmax — the shoreline march, the bisect and the \
          candidate's own y. This is the function the carve is derived FROM.",
+    ),
+    (
+        "terrain.rs",
+        "pick_minor",
+        "locator: `haven`'s argmax one tier down. It gained a raw read when the \
+         inland tier landed — the ring tier scores candidates the pad scan \
+         already measured, and the interior lattice is this function's own to \
+         sample. Same reason as `haven`: the site's `y` is what the carve is \
+         derived FROM, so reading the carved surface here is direct recursion.",
     ),
     (
         "terrain.rs",

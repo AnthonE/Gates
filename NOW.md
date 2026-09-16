@@ -153,8 +153,12 @@ so scatter clumping v0 cannot reach rock at any weight. Ranked in its §9.7:
    `ci/rock_kit.py gen --occupant Rock` makes a keeper on every seed tried,
    byte-deterministic, maps straight; `MANIFEST.md` §rock_kit has the
    numbers. **Nobody has looked** — the previews sit unseen (`§LOOK`).
-2. **Rock kind + species into `Slot`** (§9.1, `FORESTS.md` §9.3): the biome
-   row picks the mesh family, not the yaw. One golden move for both.
+2. ✅ **Rock kind + species into `Slot`** (§9.1, `FORESTS.md` §9.3) —
+   **built 2026-09-15** with world structure v1, one golden move for both as
+   §9.1 predicted. `render/props.rs::species_variant` is the one place the
+   client turns a slot's species into a pool index. What it leaves: the rock
+   pool is two meshes, so "family" is a coin a region flips, and the field is
+   shared with the trees (§0fst item 4).
 3. **Rock seeding v0** (§9.2): a coarse-grid parent draw for formations;
    boulders, small rocks and ore weighted by distance to the parent and to
    the cliff mask; totals conserved so `CONTENT.md` §4 and `haven_prize`
@@ -774,71 +778,110 @@ so a fifth needs a vertex channel that does not exist. `map_palette.rs`
 already reddens on the arity, which is the one free part.
 
 
-## 0wg · What worldgen shape v1 left open *(sim+client lane)*
+## 0wg · What worldgen shape v1 and world structure v1 left open *(sim+client lane)*
 
-The island stopped rendering as a contour map (`DECISIONS.md` §open, worldgen
-shape v1: `remap` is a monotone cubic, detail rides after the curve, the
-highland blend is a ridged multifractal). Four things it did not do.
+The island stopped rendering as a contour map, then got a coast, woods and a
+treeline (`DECISIONS.md` §open, world structure v1). What is still open:
 
-1. **Nobody has booted it** — the whole slice is hillshades of
-   `terrain::height` and arithmetic gates. The operator's screenshot has not
-   been re-shot, and `--features render` does not build on the container it
-   landed in (three `-dev` packages, `CLAUDE.md` §container). Belongs to
-   `§LOOK`, and it is the only item there that is a *regression* risk rather
-   than an unseen feature: the shape under every prop, tree and clutter tile
-   moved.
-2. **The lowlands are still flat**, and that is a choice this slice made
-   rather than a defect it missed. Detail is weighted by `shelf²`, so a 14 m
-   shelf keeps 2.6% of `DETAIL_AMP` where the summit keeps all of it — bought
-   deliberately, because a linear weight costs the doorway, the wolf hunt and
-   the replay build floor at ~8 m (measured, three gates, clean dose-response).
-   If the flats should have relief, the answer is not a bigger amplitude, it
-   is relief that does not fight `foundation_terrain_ok` — a field that varies
-   *between* build cells and is flat *within* one.
-3. **18.75 m is the finest relief worldgen may author**, because `FAR_STEP` is
-   8 m and the far mesh cannot resolve below ~16 m of wavelength. Anything
-   finer wants the far mesh's step to come down first, which is a budget
-   question nobody has costed.
-4. **The statistical contour gate does not exist and should not be rebuilt**
-   until someone has a metric that separates. Binning |∇‖∇h‖| by elevation was
-   built and measured: 3.58–4.65× the median before the fix, 1.54–3.52× after,
-   overlapping over four seeds, because it cannot tell a crease from the LUT's
-   designed cliffs. `tests/contour.rs` gates the mechanism instead.
+1. **Nobody has booted either slice** — both are hillshades, arithmetic gates
+   and top-down maps (`examples/biome_map`). The beach, the coves, the scrub
+   band and the painted species regions have never been seen from the ground.
+   `§LOOK`. World structure v1 also **invalidates every saved world**: a
+   wipe, and the operator's.
+2. **The lowlands are still flat**, a choice rather than a defect: detail is
+   weighted by `shelf²`, bought because a linear weight costs the doorway,
+   the wolf hunt and the replay build floor at ~8 m. If the flats should have
+   relief, the answer is a field that varies *between* build cells and is
+   flat *within* one — not a bigger amplitude.
+3. **18.75 m is the finest relief worldgen may author** (`FAR_STEP` is 8 m).
+   Finer wants the far mesh's step down first, which nobody has costed.
+4. **The terrace costs 2.9% of the island's buildable 3×3s**, accepted rather
+   than minimised: its shoulder lands at 0.79 × `SHORE_TERRACE_H` and 48% of
+   the island's land sits between 10 and 20 m. Re-open it with
+   `examples/buildable` and `examples/biome_map`, not by feel.
+5. **Two statistical gates were tried and refused**, and the pair is the
+   lesson: |∇‖∇h‖| binned by elevation cannot tell a crease from a designed
+   cliff, and coastline perimeter over an equal-area disc cannot tell a cove
+   from the 8 m grid's staircase. Both were replaced by metrics that
+   separate. **A band whose two populations touch is not a gate.**
+
+## 0rd · The interior has a site and a road; the ring itself is in pieces *(sim lane)*
+
+`reference/ROADS.md` (2026-09-16, tier 1 fetched whole). Their order is
+**monuments first, roads routed to them through ports each monument
+declares**; ours is the inverse — sites are chosen ON the ring by
+construction (`terrain.rs:1859`). Measured with `examples/second_road.rs`:
+
+- **38% of walkable land is over 300 m of walking from any road** (p50 218 m,
+  p90 570 m). Devblog 189's "huge areas of wasteland", on our island.
+- A chord between two of our sites **saves 3–5% of the walk** — three sites
+  on one ring subtend small angles, so every road between them runs beside
+  the ring. There is nowhere for a new road to go until a site is inland.
+- A straight road across our interior is **flatter than the shipped ring**
+  (0.247 against 0.450 mean slope): the remap curve's shelves.
+
+**Step 1 landed 2026-09-16** (`INLAND_SITES = 1`, site roster + inland site
+v0): one authored place solved over the island rather than the ring, at most
+`ROAD_REACH_M` = 300 m from the centre, filling on 16 of 16 seeds. It carries
+the waystation's canopy and **no containers** — the ladder has one crate of
+headroom (4 < 5), so arming them is a spoken re-pricing, not an edit.
+⚠ **The bracket was nearly wrong and the mutant is the record**: written as
+the geometric limit (579.99 m) it put **7 of 16 seeds 20 m from the ring's
+shoulder**, which is a tier that looks built and opens nothing.
+
+**Step 3 landed the same day** (side road v0): one segment per inland site,
+from the site's rim to the ring, solved once in `haven()` and queried as a
+point-to-segment distance. `road_band` takes a `&Haven` now; `ring_band` is
+the ring-only half the site search may ask. Unserved land **38.2% → 28.3%**,
+p90 walk 572 → 451 m. `probe.rs` walks each road's own length, which closes
+the wall-5 hole the bracket left. §8's four gates are `tests/side_road.rs`.
+
+What is left, in order:
+
+1. **The ring is not a loop.** New measurement and the biggest of these: the
+   shipped coast ring is **79% / 39% / 52% in one walkable piece** across
+   three seeds, broken where it crosses cliffs — 4, 18 and 11 components. The
+   side road had to be taught to refuse a junction on a fragment
+   (`SIDE_ROAD_RING_RUN`) because its first draft landed on an 11-cell stub.
+   Nothing gates the ring's own continuity, and a circulation loop that is not
+   a loop is a bigger reach problem than the interior was.
+2. **Redundancy** (`ROADS.md` §6, Devblog 180) — our side road is a dead end.
+   A second road off the same site, refused the first's junction, is the
+   smallest version of their own stated next step.
+3. **Distribution, not local score** — `pick_minor` minimizes the pad's own
+   flatness score, where Devblog 188 optimizes the whole SET. Identical at one
+   inland site, not at five. `reference/MONUMENTS.md` §9.3.
+
+⚠ **Spokes to the map centre are the wrong shape** — the reach table says how
+much road the island wants, not where it goes. **Not builder work:** what an
+inland site looks like (`WORLD.md` §9.1 — the register is the operator's).
 
 
-## 0fst · The forest, after understory v0 *(sim + client lane)*
+## 0fst · The forest, after world structure v1 *(sim + client lane)*
 
-`reference/FORESTS.md` §8 asked for seven gates; **three are built and so is
-the understory** (`DECISIONS.md` §open, forest structure v0 — `tests/forest.rs`,
-`client/tests/brush.rs`, every band mutant-proven).
+`reference/FORESTS.md` §8 asked for seven gates; **six are built**, plus the
+understory, the LOD cap, the edge and the species paint.
 
-1. **Nobody has looked at it.** `Clutter::Brush` puts ~3,100 clumps/ha of
-   0.75 m brush on the forest floor (that band was empty in both populations)
-   and every check on it is arithmetic. Whether it reads as understory or as
-   tall grass is a person booting the game; 120‰ and 0.75 m are what a frame
-   would settle. `§LOOK`.
-2. ✅ **The canopy is a forest (forest density v1, 2026-09-14)** — the
-   operator's *"when can we get forest fr?"*. The rail was the grove field's
-   peak, not the cell: `ScatterTable::clump_cap` holds the Forest's field at
-   its mean and the row went 350 → 700‰. **~94 stems/ha** (from ~39), 43 %
-   of the forest at ~134/ha, ~20 % cover (from ~7 %). `DECISIONS.md` §open
-   has every number and what it leaves the operator: nobody has stood in it
-   on a GPU, and cover is closed by the crown now (§0t item 2), not stems.
-   The bush ceiling finding stands as history — the understory stays in
-   `Clutter::Brush`, which has no ceiling to spend.
-3. **Species is not a sim fact**, so it cannot be gated or made spatial —
-   both rings pick it as `slot.yaw % pool` (`props.rs:2037`, `props.rs:1977`).
-   Into `Slot` off the same cell hash: one field, client mirrors it free,
-   unlocks their `Alt`-style painted stands (§8 gate 6).
-4. **No forest EDGE exists** (§8 gate 4). Theirs is a separate mask with its
-   own plant list — `Forestside`, "small trees and bushes" — and it is what
-   makes a treeline read as a treeline instead of a density gradient.
-5. ✅ **The LOD budget is a cap (2026-09-14)** — `tree::TREE_LOD_CAP` = 180
-   trees drawing their near pair, `tree::cap_swap` pulling the swap in past
-   it and out again after (`tests/tree_cap.rs`). Landed with the density
-   rise it was required before. What it leaves: the swap sits at ~50–61 m
-   in a stand, so the hull's look at that range (§0t item 1b) matters more.
-
+1. **Nobody has looked at any of it.** ~3,000 brush clumps/ha on the forest
+   floor, a 15 m scrub treeline at 26 stems + 30 bushes/ha, species regions
+   90–96 % one kind. All arithmetic. Whether the scrub band reads as a
+   treeline or as a moat is a person booting the game. `§LOOK`.
+2. **Gate 5 — size classes — is the one §8 gate still unbuilt.** A forest
+   window covers 1 height class and `Slot::scale`'s ±10 % is not a class.
+   `FORESTS.md` §9.4 is the design; `Slot::species` is the precedent (one
+   byte off the same hash). The gate is what stops it shipping as a wider
+   wobble.
+3. **The edge has no MESH.** The transfer moves weight tree→bush and the bush
+   is the bush; theirs is "small trees and bushes". Once gate 5 exists a
+   treeline should draw the small class — the mechanism is there, the art
+   is not.
+4. **One species field serves every occupant**, so a birch region and a
+   granite region are the same region. A second channel is one `CH_*` and one
+   fBm read (`ROCKS.md` §9.1).
+5. **`SLOT_SPECIES` is 2, held by a const block.** A third species is a slice,
+   not a number: the draw is a bool against `species_share` and
+   `render/tree::SPECIES` must grow with it (the const assert in `props.rs`
+   makes that a compile error rather than a forest whose paint is off by one).
 
 ## Sim, content and gameplay verbs *(systems lane)*
 
@@ -1734,6 +1777,14 @@ against `ART.md` §5's "blades catch a rim of sun at their tips".
    false** — Bevy multiplies `metallic` (default 0.0) by the map's B channel.
    It needs a LEVEL call: the map whole loses the authored `rock 0.88` /
    `ore_stone 0.80` split; mean-placing wants 1.44 and Bevy clamps at 1.0.
+6. **The island got 2.3% brighter and nobody chose that** (world structure v1,
+   2026-09-15). `GROUND_MIX` is a MEASUREMENT of the island, and the shore
+   terrace took sand's share 0.0113 → 0.0434 — sand being the brightest of the
+   four identities, the island-weighted mean linear luma went 0.10715 →
+   **0.10960** with no albedo touched (`client/tests/ground_mix.rs` carries
+   both numbers and the reason). Not urgent and not a defect; it belongs to
+   whoever next owns the coupled set, because the gap that re-place was pinned
+   to has moved under it again.
 
 
 ## 0gi · What the island still cannot show: no occluder at blade scale *(client lane)*

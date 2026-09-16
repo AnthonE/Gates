@@ -112,6 +112,7 @@ const EMPTY_SLOT: Slot = Slot {
     z: 0.0,
     yaw: 0,
     scale: 1.0,
+    species: 0,
 };
 
 /// No cell can key to this: `cx` and `cz` are each bounded by
@@ -363,7 +364,9 @@ impl Scratch<Barren> {
                 // No lesser tier either: `Barren` has already made every slot
                 // pass through, and an inert site is what `in_waystation`
                 // tests for first.
-                minor: [terrain::Waystation::NONE; terrain::WAYSTATIONS],
+                minor: terrain::empty_minor(),
+                // No side road either, for the same reason.
+                roads: [terrain::SideRoad::NONE; terrain::SIDE_ROADS],
             },
             harvested: Barren,
             cache: SlotCache::new(),

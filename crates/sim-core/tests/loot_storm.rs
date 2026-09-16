@@ -221,23 +221,41 @@ const _: () = assert!(PLAYERS == MAX_PLAYERS);
 
 /// Long enough to fill the 256-bag store through `World::die` and evict
 /// from it. Measured (`cap_reached_tick`): an empty world reaches the cap
-/// on **tick 191** (172 before wounded v0), so 250 is margin rather than a
-/// fit — a fill phase that only just made it would turn a content change
-/// into a mystery.
-const FILL_TICKS: u64 = 250;
+/// on **tick 202** (191 before world structure v1, 172 before wounded v0),
+/// so 280 is margin rather than a fit — a fill phase that only just made it
+/// would turn a content change into a mystery.
+const FILL_TICKS: u64 = 280;
 
 /// How long one burst of looting lasts. Measured (`slowest_drain`): the
 /// slowest of the four drains a full store on its **6th** tick, and
 /// `test_loot_storm` asserts that margin rather than trusting it — at 5
 /// this was a fit, and one burst of four finished a tick short.
-const LOOT_BURST: u64 = 8;
-/// Burst to burst. Leaves 192 quiet ticks for the fight to stand the store
-/// back up, against the 191 an empty world needed from a standing start —
+///
+/// ⚠ **A drain races a refill, so "8 > 6" is not the whole bound.** The
+/// fight is still killing bodies during a burst — `loot_storm`'s own trap
+/// entry in `CLAUDE.md` is about exactly that — so a burst has to out-empty
+/// the store's inflow as well as beat its size. With `LOOT_PERIOD` at 260
+/// the world does ~25% more fighting per period than it did at 200, and at 8
+/// one of the four bursts stopped reaching zero: 3,611 gathers against 1,789
+/// deaths, min held 0 on the other three. 12 is twice the measured drain,
+/// which is the margin that covers the inflow rather than only the depth.
+const LOOT_BURST: u64 = 12;
+/// Burst to burst. Leaves 252 quiet ticks for the fight to stand the store
+/// back up, against the 202 an empty world needs from a standing start —
 /// and unlike that one this is not asserted by arithmetic but by
 /// `bursts_from_full`, which is the honest way round: the refill happens
 /// under a different world (bodies mid-duel, bags mid-despawn) than the
 /// first fill did, so a number carried over from it would be a guess.
-const LOOT_PERIOD: u64 = 200;
+///
+/// ⚠ **It was 200, and 200 was a fit that stopped fitting.** 192 quiet ticks
+/// against a 191-tick standing-start fill is a one-tick margin, and world
+/// structure v1 moved the fill to 202: two of four bursts then opened against
+/// a part-filled store and `bursts_from_full` said so. Nothing about the
+/// store regressed — `peak_bags` still reached the cap and the drains still
+/// hit zero — the schedule had simply been running with no room. 252 is 25%
+/// over the measured fill, which is the margin `FILL_TICKS` carries for the
+/// same number.
+const LOOT_PERIOD: u64 = 260;
 /// The whole storm — `FILL_TICKS` then `BURSTS` periods.
 const BURSTS: usize = 4;
 const TICKS: u64 = FILL_TICKS + LOOT_PERIOD * BURSTS as u64;

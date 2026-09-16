@@ -57,6 +57,32 @@ pub fn probe_road_point(bearing: u16, radius_ix: i32) -> (f32, f32) {
     (c + dx * d, c + dz * d)
 }
 
+/// Samples along each side road's own length.
+///
+/// Sized like [`PROBE_ROAD_RADII`] and for its reason: the step has to be
+/// under the road's widest band so a sample cannot fall between two answers.
+/// A side road is at most `ROAD_R_MAX` long from a port inside
+/// `INLAND_R_MAX`, which is 1,000 m, and 129 samples put one every 7.8 m
+/// against a 10 m shoulder. It is a count rather than a pitch so the byte
+/// count of this digest does not depend on how long a seed's road came out.
+pub const PROBE_SIDE_ROAD_SAMPLES: i32 = 129;
+
+/// World position of one side-road sample: `i / (N-1)` of the way from the
+/// port to the ring.
+///
+/// Public and shared with the coverage test for `probe_road_point`'s reason —
+/// a test that recomputes the sweep is a test of itself. A dead road has both
+/// ends at the origin, so every sample of it is the same point and the digest
+/// carries `Off` 129 times, which is an honest answer about an island with no
+/// road rather than a hole.
+pub fn probe_side_road_point(road: &terrain::SideRoad, i: i32) -> (f32, f32) {
+    let t = i as f32 / (PROBE_SIDE_ROAD_SAMPLES - 1) as f32;
+    (
+        road.px + (road.rx - road.px) * t,
+        road.pz + (road.rz - road.pz) * t,
+    )
+}
+
 /// Origin cell of the probe's scatter window around a world position.
 ///
 /// Public because `tests/terrain_golden.rs` asserts the digest's coverage
@@ -85,7 +111,7 @@ fn hash_scatter_window(h: &mut Xxh3, seed: u64, haven: &terrain::Haven, x: f32, 
     for cz in cz0..cz0 + PROBE_WINDOW_CELLS {
         for cx in cx0..cx0 + PROBE_WINDOW_CELLS {
             let s = terrain::scatter(seed, &table, haven, cx, cz);
-            h.update(&[s.occupant as u8, s.yaw]);
+            h.update(&[s.occupant as u8, s.yaw, s.species]);
             hash_f32(h, s.x);
             hash_f32(h, s.y);
             hash_f32(h, s.z);
@@ -152,9 +178,15 @@ pub extern "C" fn probe_sites(seed: u64) -> u64 {
         hash_f32(&mut h, ws.z);
         hash_f32(&mut h, ws.y);
         hash_f32(&mut h, ws.floor_y);
-        h.update(&[ws.phase, ws.live as u8]);
+        // `kind` rides with the geometry for the same reason `live` does: a
+        // site that moved tier without moving is a worldgen answer, and the
+        // two tiers differ in what they SPAWN rather than in where they
+        // stand, so nothing else in this digest could see it.
+        h.update(&[ws.phase, ws.live as u8, ws.kind as u8]);
+        // The tier's own count, so a site that stands no containers hashes
+        // no anchors rather than hashing a ring nothing will build.
         let mut c = 0i32;
-        while c < terrain::WAYSTATION_CRATES {
+        while c < terrain::site_crates(ws.kind) {
             let (ax, az, yaw) = terrain::waystation_crate(ws, c);
             hash_f32(&mut h, ax);
             hash_f32(&mut h, az);
@@ -163,16 +195,46 @@ pub extern "C" fn probe_sites(seed: u64) -> u64 {
         }
     }
     // The road itself, on the same bracket that hid the sites — it is what
-    // the three of them stand on and what carries the barrel band.
+    // the sites on the ring stand on and what carries the barrel band.
+    //
+    // ⚠ **That bracket is `ROAD_R_MIN..ROAD_R_MAX` and a side road is not in
+    // it**, which is a wall-5 hole and not a coverage nicety: a road solved
+    // in the interior could differ between native and wasm with this digest,
+    // `test_replay` and `test_parity_wasm` all green, and `client-core` reads
+    // the wasm answer while the server reads the native one. The sweep below
+    // is what closes it, and it is a SEPARATE sweep rather than a widened
+    // bracket because widening this one would re-hash 400 m of open interior
+    // to reach 5 m of road.
     let mut b = 0u16;
     while b < 256 {
         let mut r = 0i32;
         while r < PROBE_ROAD_RADII {
             let (px, pz) = probe_road_point(b, r);
-            h.update(&[terrain::road_band(seed, px, pz) as u8]);
+            h.update(&[terrain::road_band(seed, &haven, px, pz) as u8]);
             r += 1;
         }
         b += 256 / PROBE_ROAD_BEARINGS;
+    }
+
+    // Every side road, along its own length. The polyline first — it is the
+    // solved answer, and two ends that moved would move everything below —
+    // then the band it produces, sampled at `PROBE_SIDE_ROAD_SAMPLES` points
+    // walked from the port to the ring. Sampling the band rather than only
+    // the endpoints is the half that matters: the endpoints are stored floats
+    // and `side_band` is arithmetic over them, so a divergence in the
+    // arithmetic would otherwise be invisible.
+    for road in haven.roads.iter() {
+        hash_f32(&mut h, road.px);
+        hash_f32(&mut h, road.pz);
+        hash_f32(&mut h, road.rx);
+        hash_f32(&mut h, road.rz);
+        h.update(&[road.port, road.live as u8]);
+        let mut i = 0i32;
+        while i < PROBE_SIDE_ROAD_SAMPLES {
+            let (sx, sz) = probe_side_road_point(road, i);
+            h.update(&[terrain::road_band(seed, &haven, sx, sz) as u8]);
+            i += 1;
+        }
     }
     h.digest()
 }
@@ -206,7 +268,7 @@ pub extern "C" fn probe_terrain(seed: u64) -> u64 {
     for cz in 120..136i32 {
         for cx in 120..136i32 {
             let s = terrain::scatter(seed, &table, &haven, cx, cz);
-            h.update(&[s.occupant as u8, s.yaw]);
+            h.update(&[s.occupant as u8, s.yaw, s.species]);
             h.update(&s.x.to_bits().to_le_bytes());
             h.update(&s.y.to_bits().to_le_bytes());
             h.update(&s.z.to_bits().to_le_bytes());

@@ -548,6 +548,13 @@ one occupant dense enough to feel it.
 
 ### 9.1 · Biome seeding is a kind per row, not a count per row
 
+✅ **Built 2026-09-15** (world structure v1). `Slot::species` carries the mesh
+family for every occupant that has one, so a rock's kind is drawn from the
+same painted field a tree's is and `render/props.rs::species_variant` is the
+one place the client turns it into a pool index — the yaw still picks WITHIN
+a family, which is what it was always good for. The golden move §9.1 asked
+for was one move for both, exactly as written.
+
 The reference's answer to "which rock stands here" is a population per
 (biome × role × size) over a small shared mesh set, tinted by biome. In our
 terms — where **the mix IS the splat** is already the law for the clutter

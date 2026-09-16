@@ -964,8 +964,13 @@ pub fn heightfield(
             // cheap reject covers only the island outside a 600–1000 m
             // annulus; inside that band every vertex pays one real tap. The
             // near ring is 1 m and small, the far mesh is the whole island.
+            //
+            // `road_band`, not `ring_band`: a side road is a road and has to
+            // be painted as one, and it costs nothing extra here — the ring's
+            // answer is asked first and a side road is a point-to-segment
+            // distance with no tap at all.
             if step <= terrain::ROAD_HALF_W {
-                w = terrain::splat_road(w, terrain::road_band_memo(&mut lat, seed, x, z));
+                w = terrain::splat_road(w, terrain::road_band_memo(&mut lat, seed, haven, x, z));
             }
             // The gradient the normal was just built from, as a rise/run — the
             // waterline band is a horizontal distance and this is what converts

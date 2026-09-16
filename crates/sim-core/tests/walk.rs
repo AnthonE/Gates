@@ -377,6 +377,7 @@ fn the_shelter_walls_stop_a_body_and_the_door_does_not() {
             z: sz,
             yaw: yaw8,
             scale: 1.0,
+            species: 0,
         };
         let cols = ColIndex::new();
 

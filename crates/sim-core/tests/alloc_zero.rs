@@ -391,6 +391,26 @@ fn test_alloc_zero() {
         };
         (cell(b.qx), cell(b.qz))
     };
+    // **Stand the builder on ground a foundation is allowed on**, found by
+    // the same outward scan the staged bag uses rather than trusted to the
+    // spawn.
+    //
+    // The spawn ring puts a body in the Beach biome by design
+    // (`World::spawn_pos`), and `FOUNDATION_MIN_H_M` is 1.5 m precisely so
+    // the shore cannot hold a base. Those two were compatible only while the
+    // beach was 5 m wide: world structure v1's shore terrace made it 11 m,
+    // and bot 1 spawned at 1.10 m — dry land, walkable, and refused by
+    // `foundation_terrain_ok` every tick of the warmup. Nothing was wrong
+    // with the sim and nothing was wrong with the rule; the fixture had been
+    // relying on a beach too narrow to stand in.
+    {
+        let (cx, cz) = builder_cell(&world);
+        let (bx, bz) = {
+            let c = buildable_cell(&world, SEED, cx, cz);
+            cell_center(c.0, c.1)
+        };
+        world.players[0].body = sim_core::movement::Body::at(SEED, hv(SEED), bx, bz);
+    }
     for t in 0..30u16 {
         let cmds = tick_cmds(&mut rng, &mut yaws, t, builder_cell(&world));
         world.tick(&cmds);
@@ -466,18 +486,54 @@ fn test_alloc_zero() {
     // a swing fells it in three, so the damage write AND the removal path
     // both land inside the counted window. It targets a piece the builder
     // has already walked away from, so bot 1's own asserts stay clear.
+    // **A plane that stands proud of its own ground, and the cheapest such.**
+    // A column's floor is quantized (`build::column_floor_y`), so a
+    // foundation can sit *under* the dirt at its anchor by up to the plate
+    // step — and a swing is a ray since melee aim v1, so a buried slab is one
+    // the ray meets terrain in front of. World structure v1 moved the ground
+    // at this cell to 1.61 m over a floor at 1.50 m and the raid landed
+    // **one** hit in 300 ticks; "the first plane in the store" had been
+    // standing in for "a plane the raider can see". Pick on the property that
+    // was always meant, and then on hit points, so the three-swing arithmetic
+    // in the comment above is about the piece actually chosen.
+    let plane_floor = |p: &sim_core::build::PieceRec| {
+        sim_core::build::column_floor_y(
+            SEED,
+            hv(SEED),
+            p.cx,
+            p.cz,
+            world.pieces.cols().plate(p.cx, p.cz).unwrap_or(0),
+        ) + f32::from(p.level) * sim_core::build::LEVEL_H_M
+    };
     let target = *world
         .pieces
         .entries()
         .iter()
-        .find(|p| p.loc == LOC_PLANE)
-        .expect("the warmup must leave a plane piece for the raider");
+        .filter(|p| p.loc == LOC_PLANE)
+        .filter(|p| {
+            let (x, z) = cell_center(p.cx, p.cz);
+            plane_floor(p) >= sim_core::terrain::ground(SEED, hv(SEED), x, z)
+        })
+        .min_by_key(|p| p.hp)
+        .expect("the warmup must leave the raider a plane that is not buried");
     world.players[4].body = sim_core::movement::Body::at(
         SEED,
         hv(SEED),
         (target.cx as f32 + 0.5) * sim_core::build::BUILD_CELL_M,
         (target.cz as f32 + 0.5) * sim_core::build::BUILD_CELL_M,
     );
+    // **On the piece's own storey, not on the ground under it.**
+    // `Body::at` seats the feet on the heightfield, and a column's floor is
+    // the terrain band PLUS the plate its first piece latched
+    // (`build::column_floor_y`) — so "stood on a plane piece" was only true
+    // while those two happened to be within `STEP_UP` of each other. World
+    // structure v1 moved the terrain under this cell and they stopped being:
+    // the raider stood at 1.61 m swinging under a floor it could not reach,
+    // landing **one** structure hit in 300 ticks where the window needs
+    // three, and the removal path this gate exists to count never ran. The
+    // sim was correct throughout. Seat it where a body standing on that
+    // piece actually is.
+    world.players[4].body.qy = sim_core::movement::quant_y(plane_floor(&target));
     world.players[4].inv[0] = ItemStack {
         item: 0,
         count: 1,

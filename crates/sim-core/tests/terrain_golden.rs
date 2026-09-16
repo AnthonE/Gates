@@ -4,8 +4,8 @@
 //! Plus shape sanity: the generator must produce an island, not a puddle.
 
 use sim_core::probe::{
-    probe_road_point, probe_terrain, probe_window_origin, PROBE_ROAD_BEARINGS, PROBE_ROAD_RADII,
-    PROBE_WINDOW_CELLS,
+    probe_road_point, probe_side_road_point, probe_terrain, probe_window_origin,
+    PROBE_ROAD_BEARINGS, PROBE_ROAD_RADII, PROBE_SIDE_ROAD_SAMPLES, PROBE_WINDOW_CELLS,
 };
 use sim_core::terrain::{self, Occupant, ScatterTable, CELLS_PER_SIDE};
 
@@ -19,6 +19,73 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 
 /// Pinned fingerprint for GOLDEN_SEED. Regenerates only with an intentional
 /// worldgen change, in the same commit (CLAUDE.md walls 5/6 discipline).
+///
+/// Regenerated here from `0x17FA_A7E3_3CAE_FB50` for **the side road**
+/// (2026-09-16, `reference/ROADS.md` §9.2.2–3): the inland site now has a
+/// road to it, and `road_band` stopped being a pure function of
+/// `(seed, x, z)`.
+///
+/// **Three things move it and nothing else can**, in falling order of size:
+///
+/// - `scatter` and the clutter population veto the carriageway and draw
+///   barrels on the shoulder, and there are now ~330 more road cells per
+///   island in the interior. That is the bulk of it.
+/// - `probe_sites` hashes each road's polyline and then walks it, 129 band
+///   samples apiece — bytes that did not exist before, so the digest would
+///   move on shape alone.
+/// - `splat_road` paints the new band, which `probe_terrain`'s height window
+///   does not see but its scatter windows do.
+///
+/// **What does NOT move it is every existing site**, and that is structural
+/// rather than lucky: `solve_side_roads` runs after `pick_minor`, and every
+/// solver that chooses a site calls `ring_band` — the ring half, which is the
+/// same function it always called under a new name. A site cannot be moved by
+/// a road that is a consequence of where it landed.
+///
+/// Regenerated from `0xAA93_9FA3_DF14_702C` for **the inland site**
+/// (2026-09-16, `reference/ROADS.md` §9.2.1): `INLAND_SITES` 0 -> 1, so
+/// `Haven::minor` is three slots instead of two and the third holds a site
+/// the road ring is not the reference curve for.
+///
+/// **The reach is bounded and the bound is stated**, because "a new site
+/// moved the golden" could hide anything. Three things move it and nothing
+/// else can:
+///
+/// - `probe_sites` hashes `minor` as an array, so a third entry is three more
+///   floats and a `kind` byte per site — a change of SHAPE, which would move
+///   the digest even if every existing site were bit-identical, and they are:
+///   `pick_minor`'s ring loop is untouched and runs first, and the pad is
+///   resolved before either.
+/// - `probe_scatter` hashes a window at every entry of `minor`, so it now
+///   covers one more disc.
+/// - The inland site carves, like every site (`site_sweep`, `stamp_of`, both
+///   of which iterate the array), so ground inside one more `blend_m` moves.
+///   `tests/carve.rs` §C holds that nothing outside any footprint changes at
+///   all, bit for bit, islandwide — and it CAUGHT this one, because its site
+///   list read `0..WAYSTATIONS` and the new disc read as a leak.
+///
+/// Regenerated from `0x700C_77A5_8F33_97B4` for **world structure v1**
+/// (2026-09-15) — the largest deliberate worldgen change since the shape
+/// pass, and five mechanisms rather than one:
+///
+/// - `MOIST_FREQ` 1/700 -> 1/240 at three octaves, so the Forest biome is
+///   ~20 woods rather than one continent. This moves the biome, the splat
+///   and therefore the scatter mix at most land samples.
+/// - A **shore terrace** in `height` (`terrain::shore_terrace`): every
+///   sample with `0 < h < 16` is reshaped. `f(0) = 0` exactly, so the h = 0
+///   set — the coastline — is bit-for-bit where it was, and `f(h) = h`
+///   outside the band, so nothing above 16 m moved at all.
+/// - A **second coastline term** (`COAST_BAY_FREQ`/`COAST_BAY_WOBBLE`),
+///   which DOES move the h = 0 set: this is the part that changes the
+///   island's outline, and with it where the road ring and the three
+///   authored sites land.
+/// - The **treeline transfer** (`EDGE_TREE_TO_BUSH`), which moves the
+///   occupant on some border cells and no positions.
+/// - `Slot::species`, a new byte this probe hashes.
+///
+/// Anything but the coast term is bounded and the bounds are asserted next
+/// door: `tests/relief.rs` holds the terrace's joins exactly, and
+/// `tests/forest.rs` holds what the moisture field and the transfer did.
 ///
 /// Regenerated here from `0xA217_658A_C65D_F3CB` because **the site carve was
 /// armed** (operator, 2026-08-16): `SITE_STAMP_STRENGTH` 0.0 → 1.0, so the pad
@@ -73,7 +140,7 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// of this digest on ~45% of the land. Heights did not move — the change is
 /// entirely in `scatter`, and `probe_terrain`'s height window would read the
 /// same. Deliberate, regenerated in the commit that caused it.
-const GOLDEN_TERRAIN_HASH: u64 = 0x700C_77A5_8F33_97B4;
+const GOLDEN_TERRAIN_HASH: u64 = 0xD068_06D7_B0DD_146F;
 
 #[test]
 fn test_terrain_golden() {
@@ -91,21 +158,36 @@ fn test_terrain_golden() {
 /// position — over exactly the cells `probe_window_origin` hands the digest,
 /// never a second copy of that arithmetic. A coverage test that recomputes
 /// the window is a test of itself.
-fn window_occupants(seed: u64, haven: &terrain::Haven, x: f32, z: f32) -> (i32, i32, i32) {
+#[derive(Default)]
+struct Authored {
+    shelters: i32,
+    crates: i32,
+    caches: i32,
+    /// **Counted since the inland tier landed, and it is what keeps this gate
+    /// from being green over nothing.** That tier stands no containers
+    /// (`terrain::INLAND_CRATES`), so every count above reads zero at its
+    /// window — which is exactly what an empty window reads, and exactly the
+    /// failure the doc below says this test exists to refuse. The canopy is
+    /// the one occupant every lesser site owes.
+    canopies: i32,
+}
+
+fn window_occupants(seed: u64, haven: &terrain::Haven, x: f32, z: f32) -> Authored {
     let table = ScatterTable::alpha_default();
     let (cx0, cz0) = probe_window_origin(x, z);
-    let (mut shelters, mut crates, mut caches) = (0i32, 0i32, 0i32);
+    let mut a = Authored::default();
     for cz in cz0..cz0 + PROBE_WINDOW_CELLS {
         for cx in cx0..cx0 + PROBE_WINDOW_CELLS {
             match terrain::scatter(seed, &table, haven, cx, cz).occupant {
-                Occupant::HavenShelter => shelters += 1,
-                Occupant::CrateSlot => crates += 1,
-                Occupant::CacheSlot => caches += 1,
+                Occupant::HavenShelter => a.shelters += 1,
+                Occupant::CrateSlot => a.crates += 1,
+                Occupant::CacheSlot => a.caches += 1,
+                Occupant::WaystationCanopy => a.canopies += 1,
                 _ => {}
             }
         }
     }
-    (shelters, crates, caches)
+    a
 }
 
 /// The golden's COVERAGE, asserted as a count rather than trusted.
@@ -132,7 +214,8 @@ fn test_golden_covers_authored_sites() {
 
         // Sites are `WAYSTATION_MIN_SEP_M` (600 m) apart and a window is
         // 128 m across, so no window can be counting a neighbour's crates.
-        let (shelters, crates, caches) = window_occupants(seed, &h, h.x, h.z);
+        let w = window_occupants(seed, &h, h.x, h.z);
+        let (shelters, crates, caches) = (w.shelters, w.crates, w.caches);
         assert_eq!(
             shelters, 1,
             "seed {seed:#x}: the pad's greybox is not inside the golden's window at the pad"
@@ -158,17 +241,29 @@ fn test_golden_covers_authored_sites() {
         for (i, ws) in h.minor.iter().enumerate() {
             assert!(
                 ws.live,
-                "seed {seed:#x}: waystation {i} is not live, so the parity \
-                 surface is covering `Waystation::NONE` at the island corner \
-                 rather than a site (tests/waystation.rs owns the tier itself)"
+                "seed {seed:#x}: lesser site {i} ({:?}) is not live, so the \
+                 parity surface is covering `Waystation::NONE` at the island \
+                 corner rather than a site (tests/waystation.rs owns the tier)",
+                ws.kind
             );
-            let (shelters, crates, caches) = window_occupants(seed, &h, ws.x, ws.z);
+            let w = window_occupants(seed, &h, ws.x, ws.z);
+            let (shelters, crates, caches) = (w.shelters, w.crates, w.caches);
+            // The canopy FIRST, because on a tier that stands no containers
+            // it is the only thing separating this window from empty sea.
+            assert_eq!(
+                w.canopies, 1,
+                "seed {seed:#x}: the golden's window at lesser site {i} \
+                 ({:?}) holds {} canopies — a site the digest cannot see is \
+                 the hole this gate exists to refuse",
+                ws.kind, w.canopies
+            );
             assert_eq!(
                 caches,
-                terrain::WAYSTATION_CRATES,
-                "seed {seed:#x}: the golden's window at waystation {i} holds \
-                 {caches} of {} containers",
-                terrain::WAYSTATION_CRATES
+                terrain::site_crates(ws.kind),
+                "seed {seed:#x}: the golden's window at lesser site {i} \
+                 ({:?}) holds {caches} of {} containers",
+                ws.kind,
+                terrain::site_crates(ws.kind)
             );
             // The pad's own container kind is the pad's alone, for the same
             // reason its greybox is: a `CrateSlot` here would be the lesser
@@ -176,7 +271,7 @@ fn test_golden_covers_authored_sites() {
             // the two kinds were split.
             assert_eq!(
                 crates, 0,
-                "seed {seed:#x}: waystation {i} stands {crates} of the pad's \
+                "seed {seed:#x}: lesser site {i} stands {crates} of the pad's \
                  own container kind — the lesser tier is paying the \
                  destination's loot table"
             );
@@ -185,7 +280,7 @@ fn test_golden_covers_authored_sites() {
             // lesser tier exists to create depends on it staying there.
             assert_eq!(
                 shelters, 0,
-                "seed {seed:#x}: waystation {i} grew a shelter — the tier \
+                "seed {seed:#x}: lesser site {i} grew a shelter — the tier \
                  gradient says the greybox belongs to the pad alone"
             );
         }
@@ -200,7 +295,9 @@ fn test_golden_covers_authored_sites() {
             let mut hit = false;
             for r in 0..PROBE_ROAD_RADII {
                 let (px, pz) = probe_road_point(b, r);
-                if terrain::road_band(seed, px, pz) != terrain::RoadBand::Off {
+                // `ring_band`: this sweep is the RING's coverage, and a
+                // side road crossing a radial would flatter it.
+                if terrain::ring_band(seed, px, pz) != terrain::RoadBand::Off {
                     hit = true;
                 }
             }
@@ -215,6 +312,38 @@ fn test_golden_covers_authored_sites() {
              {bearings_hit} of {PROBE_ROAD_BEARINGS} bearings — the radial \
              step is too coarse to cross it, so those bearings hash a constant"
         );
+
+        // And the side-road half of `probe_sites`, for exactly the same
+        // reason and against a harder failure: that sweep walks a polyline
+        // whose two ends are stored floats, so a road that came back dead —
+        // or one whose ends collapsed to the same point — would sample one
+        // spot 129 times and hash a constant that looks like coverage. This
+        // is the count of samples that land on the road's own surface.
+        for (i, road) in h.roads.iter().enumerate() {
+            assert!(
+                road.live,
+                "seed {seed:#x}: side road {i} is dead, so the parity surface \
+                 is sampling the island's origin 129 times (tests/road.rs \
+                 owns whether a seed is allowed a dead road)"
+            );
+            let mut on = 0i32;
+            for k in 0..PROBE_SIDE_ROAD_SAMPLES {
+                let (sx, sz) = probe_side_road_point(road, k);
+                if terrain::side_band(&h, sx, sz) == terrain::RoadBand::Carriageway {
+                    on += 1;
+                }
+            }
+            // Every sample but the two endpoints is strictly inside the
+            // segment, and `ROAD_HALF_W` is 2 m, so a walk along the line
+            // itself is on the carriageway at every one of them. A floor of
+            // "nearly all" rather than "all" leaves the ends their rounding.
+            assert!(
+                on >= PROBE_SIDE_ROAD_SAMPLES - 2,
+                "seed {seed:#x}: only {on} of {PROBE_SIDE_ROAD_SAMPLES} \
+                 samples along side road {i} land on its own carriageway — \
+                 the sweep is not walking the road it names"
+            );
+        }
     }
 }
 

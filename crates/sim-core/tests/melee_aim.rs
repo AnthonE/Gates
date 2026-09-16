@@ -40,6 +40,7 @@ use sim_core::fmath::fabs;
 use sim_core::gather::{GatherContent, ItemStack};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q};
+use sim_core::terrain;
 use sim_core::world::{Command, World, EV_STRUCT_HIT, EV_SWING};
 use sim_core::yaw_dir;
 
@@ -101,7 +102,7 @@ fn duel() -> Box<World> {
     w.combat = CombatContent::probe_fixture();
     w.build = BuildContent::probe_fixture();
     w.deploy = DeployContent::probe_fixture();
-    w.dev_spawn = Some(w.spawn_pos(1));
+    w.dev_spawn = Some(level_ground(SEED));
     w.tick(&[Command::Join { id: 1 }, Command::Join { id: 2 }]);
     for p in w.players.iter_mut().take(2) {
         // Wood and stone for the build verbs.
@@ -158,6 +159,61 @@ fn feet(w: &World, i: usize) -> (f32, f32, f32) {
 fn stand_east_of_attacker(w: &mut World, i: usize, dist: f32) {
     let (ax, _, az) = feet(w, 0);
     w.players[i].body = Body::at(SEED, hv(SEED), ax + dist, az);
+}
+
+/// Where the duel stands: the flattest east-west run this island has, found
+/// rather than written down.
+///
+/// **Every assertion in this file is about the RAY and none is about the
+/// hill.** `Body::at` seats each body on the heightfield at its own spot, so
+/// the metres between two duellists also buy whatever the ground does over
+/// them — and the suite's arithmetic (eye height, slant range, which body
+/// part a given pitch meets first) is written for two people on one level.
+/// Seating the second body level by hand does not work: `swing_at` ticks, and
+/// the tick puts it back on the ground.
+///
+/// So the fixture picks its ground instead. World structure v1 tilted what
+/// was under the spawn and `the_reach_is_spent_along_the_look_not_across_the_ground`
+/// read 17 damage where it asserts 0 — the boots were out of reach exactly as
+/// its own precondition says, and the look at them grazed the shin on a
+/// slope. Nothing about the sim was wrong; the duel was on a hill. Same
+/// lesson as `client/tests/ground.rs`' coast chunk: a fixture that needs a
+/// property of the world should FIND it, because a coordinate that happened
+/// to have that property is a coordinate that will stop having it.
+fn level_ground(seed: u64) -> (f32, f32) {
+    let h = hv(seed);
+    // Only the run the duels actually use has to be flat, with margin.
+    const RUN_M: f32 = 3.0;
+    let mut best = (terrain::ISLAND_SIZE * 0.5, terrain::ISLAND_SIZE * 0.5);
+    let mut best_drop = f32::MAX;
+    let mut z = 320.0f32;
+    while z < 1728.0 {
+        let mut x = 320.0f32;
+        while x < 1728.0 {
+            let y0 = terrain::ground(seed, h, x, z);
+            if y0 >= terrain::LAND_MIN_H + 2.0 {
+                let mut drop = 0.0f32;
+                let mut d = 0.5f32;
+                while d <= RUN_M {
+                    let dy = terrain::ground(seed, h, x + d, z) - y0;
+                    drop = drop.max(if dy < 0.0 { -dy } else { dy });
+                    d += 0.5;
+                }
+                if drop < best_drop {
+                    best_drop = drop;
+                    best = (x, z);
+                }
+            }
+            x += 8.0;
+        }
+        z += 8.0;
+    }
+    assert!(
+        best_drop < 0.02,
+        "no east-west run flatter than {best_drop:.3} m over {RUN_M} m — the \
+         duel cannot be staged level and every slant in this file is a lie"
+    );
+    best
 }
 
 /// The pitch byte pointing closest along `(run, rise)` — a scan of the sim's
@@ -453,7 +509,28 @@ fn the_part_ladder_is_the_swings_too() {
 #[test]
 fn the_reach_is_spent_along_the_look_not_across_the_ground() {
     let mut w = duel();
-    let run = SPEAR_REACH_M * 0.95;
+    // **Measured, not a fraction of the reach.** Sweeping the separation in
+    // 5 cm steps on level ground (`duel` stages it there — see
+    // `level_ground`) the three looks read:
+    //
+    // | run | head | chest | boots |
+    // |---|---|---|---|
+    // | 1.50–1.95 | 68 | 34 | **17** |
+    // | **2.00–2.30** | 68 | 34 | **0** |
+    // | 2.35–2.40 | 68 | 0 | 0 |
+    // | 2.45+ | 0 | 0 | 0 |
+    //
+    // The window where the chest lands and the boots do not is 2.00–2.30 m,
+    // and this test used to stand at `SPEAR_REACH_M * 0.95` = 1.90 — outside
+    // it. It passed anyway, because the duel was staged on a slope and the
+    // tilt pushed the boots-look past the capsule. The claim was right and
+    // the fixture was not: at 1.90 m on the level, a look at the boots clips
+    // the shin inside the arm's 2 m, which is a 0.4 m capsule doing exactly
+    // what a capsule does. World structure v1 flattened the ground under the
+    // spawn and the accident stopped happening.
+    //
+    // 2.15 is the middle of the measured window, 15 cm from either edge.
+    let run = SPEAR_REACH_M * 1.075;
     stand_east_of_attacker(&mut w, 1, run);
 
     let chest = look_at_height(&w, 1.0);

@@ -20,9 +20,7 @@
 //!   §H the carve never builds a wall — the gradient it ADDS stays bounded
 
 use sim_core::fmath::fabs;
-use sim_core::terrain::{
-    self, Haven, HAVEN_FOOTPRINT, SITE_STAMP_STRENGTH, WAYSTATIONS, WAYSTATION_FOOTPRINT,
-};
+use sim_core::terrain::{self, Haven, HAVEN_FOOTPRINT, SITE_STAMP_STRENGTH, WAYSTATION_FOOTPRINT};
 
 /// The `tests/haven.rs` seed list, for the same reason it gives: "a seed that
 /// fails is a bug in the generator, not a reroll".
@@ -73,8 +71,13 @@ fn sites(h: &Haven) -> Vec<(f32, f32, f32, terrain::SiteFootprint)> {
     // raw height at its centre (`site_floor_y`, the reference's terrain
     // anchoring). `y` is a selection input and means something else.
     let mut v = vec![(h.x, h.z, h.floor_y, HAVEN_FOOTPRINT)];
-    for w in 0..WAYSTATIONS {
-        let ws = &h.minor[w];
+    // Iterate the ARRAY, not `0..WAYSTATIONS`. This read the ring tier alone
+    // until the inland one landed, and §C caught it immediately: a site
+    // missing from this list is ground `carved` moves and the sweep then
+    // asserts was never touched, so the skip surfaces as the carve leaking
+    // rather than as a helper that is short. `Haven::minor`'s own doc calls
+    // this the shape a new tier gets silently dropped by.
+    for ws in h.minor.iter() {
         if ws.live {
             v.push((ws.x, ws.z, ws.floor_y, WAYSTATION_FOOTPRINT));
         }
@@ -489,8 +492,7 @@ fn the_armed_carve_never_worsens_a_structures_footing() {
         let mut anchors: Vec<(&str, f32, f32, f32)> = Vec::new();
         let (sx, sz, _) = terrain::haven_shelter(&h);
         anchors.push(("haven shelter", terrain::SHELTER_CORNER_R_M, sx, sz));
-        for w in 0..WAYSTATIONS {
-            let ws = &h.minor[w];
+        for ws in h.minor.iter() {
             if !ws.live {
                 continue;
             }

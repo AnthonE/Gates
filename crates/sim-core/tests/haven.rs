@@ -60,7 +60,8 @@ fn no_haven() -> Haven {
         relief: 0.0,
         phase: 0,
         shelter: 0,
-        minor: [terrain::Waystation::NONE; terrain::WAYSTATIONS],
+        minor: terrain::empty_minor(),
+        roads: [terrain::SideRoad::NONE; terrain::SIDE_ROADS],
     }
 }
 
@@ -86,12 +87,13 @@ fn ring_phase(seed: u64, x: f32, z: f32) -> Option<u8> {
             relief: 0.0,
             phase,
             shelter: 0,
-            minor: [terrain::Waystation::NONE; terrain::WAYSTATIONS],
+            minor: terrain::empty_minor(),
+            roads: [terrain::SideRoad::NONE; terrain::SIDE_ROADS],
         };
         let ok = (0..HAVEN_CRATES).all(|k| {
             let (ax, az, _) = terrain::haven_crate(&probe, k);
             terrain::height(seed, ax, az) >= LAND_MIN_H
-                && terrain::road_band(seed, ax, az) != RoadBand::Carriageway
+                && terrain::ring_band(seed, ax, az) != RoadBand::Carriageway
         });
         if ok {
             return Some(phase);
@@ -186,7 +188,7 @@ fn the_pad_stands_on_the_road_it_terminates() {
         let h = terrain::haven(seed);
 
         assert!(
-            terrain::road_band(seed, h.x, h.z) != RoadBand::Off,
+            terrain::ring_band(seed, h.x, h.z) != RoadBand::Off,
             "seed {seed}: pad at ({}, {}) is off the road — haven() took its \
              relaxed fallback, which this gate asserts is unreachable",
             h.x,
@@ -360,7 +362,7 @@ fn the_shipped_site_is_the_best_candidate_on_the_ring() {
                 c + dz * (cross - ROAD_INLAND_M),
             );
             let y = terrain::height(seed, x, z);
-            if y < LAND_MIN_H || terrain::road_band(seed, x, z) == RoadBand::Off {
+            if y < LAND_MIN_H || terrain::ring_band(seed, x, z) == RoadBand::Off {
                 continue;
             }
             // The same check chain the selector applies. It has to be here:
@@ -618,14 +620,21 @@ fn the_pad_carries_the_containers_it_placed() {
         // The other half of the partition, so the sweep pins the whole island
         // and not just the pad. `tests/waystation.rs` owns the lesser tier's
         // own geometry; this only refuses to let it go uncounted here.
+        // Summed over the live sites' own tiers — an inland site owes zero
+        // (`terrain::INLAND_CRATES`), so a flat `live * WAYSTATION_CRATES`
+        // would demand caches the ladder forbids it to stand.
         let live = haven.minor.iter().filter(|w| w.live).count();
+        let want: usize = haven
+            .minor
+            .iter()
+            .filter(|w| w.live)
+            .map(|w| terrain::site_crates(w.kind) as usize)
+            .sum();
         assert_eq!(
-            minor_found,
-            live * terrain::WAYSTATION_CRATES as usize,
-            "seed {seed}: {minor_found} cache(s) stand on {live} waystation(s) \
-             against {} apiece — same silent-drop failure as the pad's, one \
-             tier down",
-            terrain::WAYSTATION_CRATES
+            minor_found, want,
+            "seed {seed}: {minor_found} cache(s) stand on {live} lesser site(s) \
+             against {want} owed by their tiers — same silent-drop failure as \
+             the pad's, one tier down"
         );
     }
 
@@ -708,7 +717,7 @@ fn the_pad_outpays_the_road_that_leads_to_it() {
                 // depend on where its slot's jitter happened to land.
                 let x = cx as f32 * CELL_SIZE + CELL_SIZE * 0.5;
                 let z = cz as f32 * CELL_SIZE + CELL_SIZE * 0.5;
-                if terrain::road_band(seed, x, z) != RoadBand::Shoulder {
+                if terrain::ring_band(seed, x, z) != RoadBand::Shoulder {
                     continue;
                 }
                 shoulder_cells += 1;
@@ -851,7 +860,7 @@ fn the_pad_carries_the_shelter_at_its_center() {
         // reason it is off center at all, and the condition `tests/road.rs`
         // caught when this first shipped at the pad's middle.
         assert!(
-            terrain::road_band(seed, sx, sz) != RoadBand::Carriageway,
+            terrain::ring_band(seed, sx, sz) != RoadBand::Carriageway,
             "seed {seed}: the shelter stands on the carriageway, blocking \
              the road the pad is reached by"
         );
@@ -941,7 +950,8 @@ fn the_pad_carries_the_shelter_at_its_center() {
             relief: 0.0,
             phase: 0,
             shelter: HAVEN_SHELTER_YAW_STEP as u8,
-            minor: [terrain::Waystation::NONE; terrain::WAYSTATIONS],
+            minor: terrain::empty_minor(),
+            roads: [terrain::SideRoad::NONE; terrain::SIDE_ROADS],
         };
         let (px, pz, _) = terrain::haven_shelter(&probe);
         if (0..HAVEN_CRATES).any(|k| {

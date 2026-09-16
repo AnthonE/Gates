@@ -22,9 +22,9 @@
 #![allow(clippy::disallowed_macros)]
 
 use sim_core::terrain::{
-    self, Occupant, RoadBand, ScatterTable, Waystation, CELLS_PER_SIDE, CELL_SIZE,
-    CLIFF_SLOPE_RATIO, HAVEN_CRATES, HAVEN_RADIUS_M, LAND_MIN_H, ROAD_R_MAX, ROAD_R_MIN,
-    WAYSTATIONS, WAYSTATION_CRATES, WAYSTATION_CRATE_R_M, WAYSTATION_MIN_SEP_M,
+    self, Occupant, RoadBand, ScatterTable, SiteKind, Waystation, CELLS_PER_SIDE, CELL_SIZE,
+    CLIFF_SLOPE_RATIO, HAVEN_CRATES, HAVEN_RADIUS_M, INLAND_SITES, LAND_MIN_H, ROAD_R_MAX,
+    ROAD_R_MIN, WAYSTATIONS, WAYSTATION_CRATES, WAYSTATION_CRATE_R_M, WAYSTATION_MIN_SEP_M,
     WAYSTATION_RADIUS_M,
 };
 
@@ -73,6 +73,18 @@ fn dist(ax: f32, az: f32, bx: f32, bz: f32) -> f32 {
 /// behaviour and the wrong thing to ship silently — a seed that quietly
 /// generated one site instead of two would look exactly like a working island
 /// until someone counted. So a short tier is a FAILURE here, not a shrug.
+///
+/// **This file owns the RING tier and only it.** `Haven::minor` carries every
+/// lesser tier since the inland site landed, so every sweep below filters on
+/// `SiteKind::Waystation` — an inland site is off the ring by definition and
+/// would fail `every_site_stands_on_the_ring` as its first act.
+/// `tests/sites.rs` owns the interior tier's own claims.
+fn ring_tier(h: &terrain::Haven) -> impl Iterator<Item = &Waystation> {
+    h.minor
+        .iter()
+        .filter(|w| w.live && w.kind == SiteKind::Waystation)
+}
+
 #[test]
 fn every_seed_gets_a_full_tier() {
     let mut sites = Vec::new();
@@ -85,7 +97,7 @@ fn every_seed_gets_a_full_tier() {
              of the seed or it is not replayable"
         );
 
-        let live = a.minor.iter().filter(|w| w.live).count();
+        let live = ring_tier(&a).count();
         assert_eq!(
             live, WAYSTATIONS,
             "seed {seed}: {live} of {WAYSTATIONS} waystations placed. The \
@@ -95,7 +107,7 @@ fn every_seed_gets_a_full_tier() {
              seed's ring, not that fewer sites are acceptable"
         );
 
-        for w in a.minor.iter().filter(|w| w.live) {
+        for w in ring_tier(&a) {
             assert!(
                 w.x.is_finite() && w.z.is_finite() && w.y.is_finite(),
                 "seed {seed}: a waystation carries a non-finite coordinate"
@@ -132,11 +144,11 @@ fn every_site_stands_on_the_ring() {
 
     for seed in SEEDS {
         let haven = terrain::haven(seed);
-        for w in haven.minor.iter().filter(|w| w.live) {
+        for w in ring_tier(&haven) {
             assert_ne!(
-                terrain::road_band(seed, w.x, w.z),
+                terrain::ring_band(seed, w.x, w.z),
                 terrain::RoadBand::Off,
-                "seed {seed}: a waystation stands off the road entirely"
+                "seed {seed}: a waystation stands off the ring entirely"
             );
             let r = dist(w.x, w.z, c, c);
             assert!(
@@ -178,14 +190,19 @@ fn the_sites_are_separate_places() {
 
     for seed in SEEDS {
         let haven = terrain::haven(seed);
+        // EVERY lesser tier here, unlike the ring sweeps above: the floor is
+        // the roster's and applies to any pair of authored places, so
+        // narrowing this to the ring tier would be the one narrowing that
+        // loses coverage rather than gains correctness.
         let live: Vec<&Waystation> = haven.minor.iter().filter(|w| w.live).collect();
 
         for (i, w) in live.iter().enumerate() {
             let d = dist(w.x, w.z, haven.x, haven.z);
             assert!(
                 d >= WAYSTATION_MIN_SEP_M,
-                "seed {seed}: a waystation is {d:.0} m from the pad, inside \
-                 the {WAYSTATION_MIN_SEP_M} m floor"
+                "seed {seed}: a {:?} site is {d:.0} m from the pad, inside \
+                 the {WAYSTATION_MIN_SEP_M} m floor",
+                w.kind
             );
             worst = worst.min(d);
             if worst == d {
@@ -195,8 +212,10 @@ fn the_sites_are_separate_places() {
                 let e = dist(w.x, w.z, other.x, other.z);
                 assert!(
                     e >= WAYSTATION_MIN_SEP_M,
-                    "seed {seed}: two waystations are {e:.0} m apart, inside \
-                     the {WAYSTATION_MIN_SEP_M} m floor"
+                    "seed {seed}: a {:?} and a {:?} site are {e:.0} m apart, \
+                     inside the {WAYSTATION_MIN_SEP_M} m floor",
+                    w.kind,
+                    other.kind
                 );
                 worst = worst.min(e);
                 if worst == e {
@@ -230,7 +249,15 @@ fn every_site_carries_its_containers() {
 
     for seed in SWEEP_SEEDS {
         let haven = terrain::haven(seed);
+        // Summed over the live sites' own tiers, so a site that stands no
+        // containers is asked for none rather than counted as short.
         let live = haven.minor.iter().filter(|w| w.live).count();
+        let want: usize = haven
+            .minor
+            .iter()
+            .filter(|w| w.live)
+            .map(|w| terrain::site_crates(w.kind) as usize)
+            .sum();
         let mut found = 0usize;
 
         for cx in 0..CELLS_PER_SIDE {
@@ -269,7 +296,7 @@ fn every_site_carries_its_containers() {
                     "seed {seed}: a placed waystation crate was scaled"
                 );
                 assert_ne!(
-                    terrain::road_band(seed, s.x, s.z),
+                    terrain::road_band(seed, &haven, s.x, s.z),
                     terrain::RoadBand::Carriageway,
                     "seed {seed}: a waystation crate stands on the \
                      carriageway — the ring rotation search is what prevents \
@@ -278,10 +305,9 @@ fn every_site_carries_its_containers() {
             }
         }
         assert_eq!(
-            found,
-            live * WAYSTATION_CRATES as usize,
-            "seed {seed}: {found} cache(s) stand across {live} waystation(s) \
-             against {WAYSTATION_CRATES} apiece. Fewer means two anchors \
+            found, want,
+            "seed {seed}: {found} cache(s) stand across {live} lesser site(s) \
+             against the {want} their tiers owe. Fewer means two anchors \
              landed in one scatter cell and the second was dropped without a \
              word — widen WAYSTATION_CRATE_R_M until the separation below \
              clears one cell diagonal"
@@ -292,7 +318,7 @@ fn every_site_carries_its_containers() {
     // `waystation_crate`, so it costs no sweep.
     for seed in SEEDS {
         let haven = terrain::haven(seed);
-        for w in haven.minor.iter().filter(|w| w.live) {
+        for w in ring_tier(&haven) {
             let mut pts = [(0.0f32, 0.0f32); 256];
             for k in 0..WAYSTATION_CRATES {
                 let (ax, az, yaw) = terrain::waystation_crate(w, k);
@@ -373,10 +399,12 @@ fn every_site_carries_its_containers() {
 /// the scale it is true at — and the two things it was standing in for are
 /// asked exactly, per seed, instead:
 ///
-///   - `furnished`: every seed finds `WAYSTATIONS * (WAYSTATION_CRATES + 1)`
-///     authored slots inside the zones, its caches and its canopy and nothing
-///     else. A broken `in_waystation`, a dead site, a dropped anchor or a
-///     canopy that stopped being emitted all read as a wrong count here.
+///   - `furnished`: every seed finds one canopy per live lesser site plus
+///     `terrain::site_crates` caches under it — summed over the TIERS, so the
+///     inland site contributes its canopy and no crate (`INLAND_CRATES = 0`).
+///     Its caches and its canopy and nothing else. A broken `in_waystation`, a
+///     dead site, a dropped anchor or a canopy that stopped being emitted all
+///     read as a wrong count here.
 ///   - `opportunity`: the control arm HAD a chance to put something in the
 ///     zone — the zone covers at least one scatter cell whose ground the
 ///     control would not have vetoed outright. This is the half a bare
@@ -393,14 +421,18 @@ fn the_zones_are_clear_and_would_not_have_been() {
     let table = ScatterTable::alpha_default();
     let mut total_cleared = 0usize;
     let mut worst_opportunity = usize::MAX;
-    let want_furnished = WAYSTATIONS * (WAYSTATION_CRATES as usize + 1);
+    // Per tier, not per site: one canopy each, and each tier's own crate
+    // count. Derived from `site_crates` so a tier that starts paying moves
+    // this expectation with it rather than reddening it.
+    let want_furnished = WAYSTATIONS * (WAYSTATION_CRATES as usize + 1)
+        + INLAND_SITES * (terrain::site_crates(SiteKind::Inland) as usize + 1);
 
     for seed in SWEEP_SEEDS {
         let haven = terrain::haven(seed);
         // Same pad, same everything, no lesser tier — so the only difference
         // between the two sweeps is the thing under test.
         let mut control = haven;
-        control.minor = [Waystation::NONE; WAYSTATIONS];
+        control.minor = terrain::empty_minor();
 
         let mut inside = 0usize;
         let mut cleared = 0usize;
@@ -422,7 +454,7 @@ fn the_zones_are_clear_and_would_not_have_been() {
                 if terrain::in_waystation(&haven, ccx, ccz)
                     && terrain::height(seed, ccx, ccz) >= LAND_MIN_H
                     && terrain::slope(seed, ccx, ccz) <= CLIFF_SLOPE_RATIO
-                    && terrain::road_band(seed, ccx, ccz) != RoadBand::Carriageway
+                    && terrain::road_band(seed, &haven, ccx, ccz) != RoadBand::Carriageway
                 {
                     opportunity += 1;
                 }
@@ -458,8 +490,8 @@ fn the_zones_are_clear_and_would_not_have_been() {
         assert_eq!(
             furnished, want_furnished,
             "seed {seed}: {furnished} authored slot(s) inside the zones against \
-             {want_furnished} — every live site owes {WAYSTATION_CRATES} caches \
-             and one canopy, so a wrong count here is a dead site, a dropped \
+             {want_furnished} — every live site owes one canopy and its tier's \
+             own cache count, so a wrong count here is a dead site, a dropped \
              anchor, or a zone predicate that is not on the site at all"
         );
         assert!(
@@ -535,7 +567,7 @@ fn the_tiers_pay_in_order() {
             for cz in 0..CELLS_PER_SIDE {
                 let x = cx as f32 * CELL_SIZE + 4.0;
                 let z = cz as f32 * CELL_SIZE + 4.0;
-                if terrain::road_band(seed, x, z) != terrain::RoadBand::Shoulder {
+                if terrain::road_band(seed, &haven, x, z) != terrain::RoadBand::Shoulder {
                     continue;
                 }
                 shoulder_cells += 1;
@@ -599,8 +631,13 @@ fn every_site_carries_its_canopy_clear_of_the_road() {
 
     for seed in SEEDS {
         let haven = terrain::haven(seed);
-        for w in 0..WAYSTATIONS {
-            let ws = haven.minor[w];
+        // EVERY lesser tier, and this one had to be widened rather than
+        // narrowed: `waystation_canopy` is one function and its geometry
+        // claims — the offset, the facing, the zone margin, one cell per
+        // occupant — are tier-independent. Read `0..WAYSTATIONS` and the
+        // inland site's canopy, the only thing that site IS, would have no
+        // gate on its placement at all.
+        for (w, ws) in haven.minor.iter().copied().enumerate() {
             if !ws.live {
                 continue;
             }
@@ -643,7 +680,7 @@ fn every_site_carries_its_canopy_clear_of_the_road() {
                 (kx - ux * e, kz - uz * e),
             ] {
                 assert_ne!(
-                    terrain::road_band(seed, sx, sz),
+                    terrain::road_band(seed, &haven, sx, sz),
                     terrain::RoadBand::Carriageway,
                     "seed {seed}: site {w}'s canopy footprint touches the \
                      carriageway — the road surface is not clear, so the \
@@ -670,7 +707,7 @@ fn every_site_carries_its_canopy_clear_of_the_road() {
 
             // One cell, one occupant.
             let kcell = cell_of(kx, kz);
-            for k in 0..WAYSTATION_CRATES {
+            for k in 0..terrain::site_crates(ws.kind) {
                 let (ax, az, _) = terrain::waystation_crate(&ws, k);
                 assert_ne!(
                     cell_of(ax, az),

@@ -9,8 +9,9 @@
 use sim_core::terrain::{
     self, Clutter, ClutterElem, Haven, Occupant, ScatterTable, CELL_SIZE, CLUTTER_BASE_PER_TILE,
     CLUTTER_CELLS_PER_SIDE, CLUTTER_CELLS_PER_TILE, CLUTTER_CELL_M, CLUTTER_NONE, CLUTTER_PER_TILE,
-    CLUTTER_RICH_PER_TILE, CLUTTER_SLOTS, CLUTTER_TILE_M, LAND_MIN_H, OCCUPANT_R_M, SKIRT_BAND_M,
-    SKIRT_MAX, SKIRT_MIN, SKIRT_MIN_R_M, SKIRT_PER_TILE, SKIRT_SCAN_CELLS, SKIRT_TILE_CELLS,
+    CLUTTER_RICH_PER_TILE, CLUTTER_SLOTS, CLUTTER_TILE_M, LAND_MIN_H, OCCUPANT_R_M, SEA_LEVEL,
+    SKIRT_BAND_M, SKIRT_MAX, SKIRT_MIN, SKIRT_MIN_R_M, SKIRT_PER_TILE, SKIRT_SCAN_CELLS,
+    SKIRT_TILE_CELLS,
 };
 
 /// Is clutter CELL (cx, cz) inside any live site's carve blend?
@@ -39,10 +40,10 @@ fn in_any_blend(haven: &Haven, cx: i32, cz: i32) -> bool {
     if d2(haven.x, haven.z) < (hf.blend_m + pad) * (hf.blend_m + pad) {
         return true;
     }
-    (0..terrain::WAYSTATIONS).any(|w| {
-        let ws = &haven.minor[w];
-        ws.live && d2(ws.x, ws.z) < (wf.blend_m + pad) * (wf.blend_m + pad)
-    })
+    haven
+        .minor
+        .iter()
+        .any(|ws| ws.live && d2(ws.x, ws.z) < (wf.blend_m + pad) * (wf.blend_m + pad))
 }
 
 const SEEDS: [u64; 3] = [0x0047_4154_4553, 1, 0xDEAD_BEEF];
@@ -639,7 +640,7 @@ fn test_carriageway_grows_grit_not_grass() {
                 if e.kind == Clutter::None {
                     continue;
                 }
-                if terrain::road_band(seed, e.x, e.z) != terrain::RoadBand::Carriageway {
+                if terrain::road_band(seed, haven, e.x, e.z) != terrain::RoadBand::Carriageway {
                     continue;
                 }
                 on_road += 1;
@@ -1464,7 +1465,8 @@ fn sites_parked_offshore() -> Haven {
         relief: 0.0,
         phase: 0,
         shelter: 0,
-        minor: [terrain::Waystation::NONE; terrain::WAYSTATIONS],
+        minor: terrain::empty_minor(),
+        roads: [terrain::SideRoad::NONE; terrain::SIDE_ROADS],
     }
 }
 
@@ -1563,10 +1565,35 @@ fn test_an_authored_site_sweeps_its_own_floor() {
                     if e0.kind == Clutter::None {
                         // Sea or off-island: the control has nothing to say and
                         // the site cannot have added anything.
-                        assert_eq!(
+                        //
+                        // ⚠ **`Clutter::None` is not "sea" — it is also the
+                        // waterline veto**, and the two were read as one here
+                        // until world structure v1 put a cell 1 mm under the
+                        // line next to a waystation (seed 0x1, cell
+                        // (806,2404): raw 0.599 m against `LAND_MIN_H` 0.600,
+                        // carved 0.781 m, site sweep 0.000). The carve lifting
+                        // ground it reaches is the carve working; calling that
+                        // "an element in the sea" was the proxy speaking, not
+                        // the claim. So the exemption is stated and it is
+                        // narrow: the control is under the LAND LINE rather
+                        // than under the SEA, and the carved ground is over
+                        // it. Anything actually below `SEA_LEVEL` on the
+                        // control still may not grow a thing, which is the
+                        // sentence this test came here to say.
+                        let raw = terrain::ground(seed, &far, e.x, e.z);
+                        let carved = terrain::ground(seed, &haven, e.x, e.z);
+                        let lifted_onto_land =
+                            (SEA_LEVEL..LAND_MIN_H).contains(&raw) && carved >= LAND_MIN_H;
+                        assert!(
+                            e.kind == Clutter::None || lifted_onto_land,
+                            "seed {seed:#x}: the sweep created a {:?} at \
+                             ({:.2},{:.2}) where the control has nothing — \
+                             control ground {raw:.3} m, carved {carved:.3} m. \
+                             The carve may lift ground over the land line; it \
+                             may not put clutter on the sea.",
                             e.kind,
-                            Clutter::None,
-                            "seed {seed:#x}: the sweep created an element in the sea"
+                            e.x,
+                            e.z
                         );
                     } else {
                         let sweep = terrain::site_sweep(&haven, e0.x, e0.z);

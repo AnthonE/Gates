@@ -61,15 +61,52 @@ Stages, in order — each cheap, each deterministic:
    linear clamp (a clamp put two more contour rings at its two rails). This
    is our answer to what the reference game calls "pseudo-erosion"
    (Devblog 63).
+4c. **The shore terrace** (`terrain::shore_terrace`, world structure v1) —
+   the finished height, reshaped in a band above the waterline so the island
+   has a beach to walk up. Measured before it existed: the ground cleared 2 m
+   in a median of **5.0 m** of walking and `biome()` called **1.1% of land**
+   Beach, which is a kerb. It is a *berm* profile and not a flattened
+   waterline — the swell crests at 0.87 m and `LAND_MIN_H` is 0.6 m for that
+   reason, so flattening the gradient AT the water widens the washed band by
+   the same factor and produces tidal flats that carry nothing and open the
+   road ring (measured: 115 m of flat, four open bearings). Instead the
+   gradient is untouched at h = 0, dips to `SHORE_TERRACE_K` at
+   0.21 x `SHORE_TERRACE_H`, and is paid back by a shoulder above — a swash
+   zone, a berm, then a low bluff. Three properties, each gated in
+   `tests/relief.rs`: `f(0) = 0` exactly, so the coastline does not move;
+   `f(h) = h` outside the band, so nothing above it does either; and C1 at
+   both joins, because the renderer takes its normal from this field's
+   gradient and a C0 join at the water's edge is a shading line where every
+   player stands.
 5. **Masks** (derived, not stored): slope from finite differences → cliff
    mask (slope > ~50° **(knob)**: unclimbable, unbuildable, distinct
    material); beach mask (height within ~2 m of sea level); moisture =
-   an independent low-freq noise channel.
+   an independent low-freq noise channel — **1/240 m at three octaves since
+   world structure v1**, where it was 1/700 at two. On a 2,048 m island that
+   was one and a half wavelengths, so "the Forest biome" came out as three to
+   six connected masses with up to 98% of all forest inside one of them: a
+   continent, not a wood. At 1/240 it is ~20 woods with clearings between
+   them (`sim-core/tests/forest.rs`, `examples/biome_map`).
 6. **Biomes from (height, moisture, slope)** — alpha ships four:
    **beach** (spawn zone, barrels wash up), **meadow** (buildable, sparse
    trees, hemp), **forest** (wood, cover, low visibility), **highland**
    (stone/ore nodes, exposure, weather later). Each is a material blend +
    a scatter table, nothing more — biomes are data.
+   **The boundary between two of them is data too, since world structure
+   v1**: where the splat's grass and litter channels are within a factor of
+   each other — by construction the treeline, and the same contour `biome()`
+   switches on — a share of the row's tree weight is handed to its bush
+   weight (`EDGE_TREE_TO_BUSH`). A *transfer*, so the row total and every
+   saturation bound are untouched and the border is scrubbier rather than
+   thinner: measured 26 stems + 30 bushes per hectare against the forest
+   core's 94 + 4, in a band 15 m wide. This is `reference/FORESTS.md` §3.1's
+   `Forestside` and its §8 gate 4.
+   **And a slot carries a species** (`Slot::species`, 0..`SLOT_SPECIES`) —
+   drawn from the cell hash against a 620 m painted field, so a region is
+   *dominated* by one kind rather than pure (measured 90–96% at the field's
+   rails). Species used to be `slot.yaw % pool` on the client, which tied a
+   tree's KIND to its ROTATION and made §8's gate 6 unwritable; it is a sim
+   fact now, and the client mirrors it for free.
 7. **The coast road** — the monument-less loot route: a ring offset ~40 m
    inland from the coastline, flattened a few meters wide, dirt material,
    **barrel spawn slots along it**. It does what Rust's roads do — pulls
@@ -241,6 +278,54 @@ Stages, in order — each cheap, each deterministic:
    the pad 15.4× that opportunity cost, a waystation 5.7×, and the whole
    lesser tier still under the one destination. A yields edit moves that
    number; it could not move containers per m².
+   **And there is a third kind of place since 2026-09-16, in the interior**
+   (`INLAND_SITES = 1`, `reference/ROADS.md` §9.2.1). Every site above is on
+   the road ring *by construction* — the argmax's candidates are shoreline
+   crossings stepped `ROAD_INLAND_M` inland — so the island had no authored
+   reason to leave it, and `examples/second_road.rs` measured what that cost:
+   **38% of walkable land is over 300 m of walking from any road.** The
+   inland tier is the first site the ring is not the reference curve for. It
+   is solved over a polar lattice in the interior rather than out of the
+   pad's candidate list (`INLAND_CANDIDATES = 32` bearings ×
+   `INLAND_RADII = 4` radii), against the same roster and the same 600 m
+   floor — which turns out to be *easier* to satisfy inside, not harder: 76.5%
+   of the disc clears against 45.6% at the island's mid-radius, because the
+   inner disc is further from every ring site (`examples/inland_scan`).
+   **It carries no containers, and that is a consequence rather than a
+   choice**: the ladder two paragraphs up has exactly one crate of headroom
+   (4 against 5), so a third container-bearing minor site fails the const
+   block. What it carries is the waystation's canopy — the same massing, no
+   new archetype, no new mesh — standing somewhere a player had no reason to
+   walk. `INLAND_GUARDS = 0` follows the prize by const assert.
+   **The bracket is the part worth reading twice.** It was first written as
+   the geometric limit — `ROAD_R_MIN` less the shoulder less the site radius,
+   579.99 m — which correctly answers "where does the footprint stop touching
+   the road" and does not answer "where is inland": a site at 580 m stands 20
+   m from the ring's shoulder. Measured, **7 of 16 seeds landed there.** The
+   bracket is `ROAD_R_MIN − ROAD_REACH_M` = 300 m now, where `ROAD_REACH_M` is
+   the distance the ring's own service band reaches, and `tests/sites.rs`
+   asserts the distance rather than the radius so the two cannot drift apart.
+   **And it has a road, since the same day** (`SIDE_ROADS`, `reference/
+   ROADS.md` §9.2.2–3). The ring is a PREDICATE — never ask where it is, only
+   am I on it — and that inverts a curve the terrain already draws, which
+   works exactly once. A road to the interior has no such curve, so this tier
+   is the reference's own shape instead: a PATH, solved once in `haven()` and
+   stored on `Haven`, queried as a point-to-segment distance with no terrain
+   tap at all. Its site end is the site's RIM rather than its centre, which is
+   what a connection point is and what keeps a carriageway off the canopy; its
+   ring end is the first carriageway point on a bearing whose whole line is
+   walkable. **Unserved land falls 38.2% → 28.3% and the p90 walk 572 → 451
+   m**, measured both ways on the same island (`examples/side_road`).
+   ⚠ **`road_band` therefore takes a `&Haven` now**, which is the cost
+   `ROADS.md` §9.3 priced in advance. `ring_band` is the ring-only half, and
+   it is what every site solver calls — a solver asking about a road that is a
+   consequence of its own answer would be circular.
+   ⚠ **And the ring is not a loop**, which this work measured on the way past:
+   the shipped coast ring is 79% / 39% / 52% in one WALKABLE piece across
+   three seeds, broken at the cliffs it crosses. The side road's first draft
+   delivered a player to an 11-cell fragment of it; `SIDE_ROAD_RING_RUN`
+   refuses such a junction now. Nothing gates the ring's own continuity
+   (`NOW.md` §0rd).
 9. **Scatter pass** — per 8 m cell, one hash draw decides occupant
    (tree / stone node / metal node / sulfur node / bush / rock / barrel
    slot / nothing), plus jittered offset, yaw, and scale from the same
@@ -406,8 +491,11 @@ monuments on visible circular plateaus for a decade because a footprint was a
 radius — and `tests/clutter.rs` §S refuses a hard circle explicitly.
 
 Rows this struct gains when a reader exists: build-block (open for the
-operator), a height stamp (there is no carve — §1 stage 8 finds flat ground
-rather than making it), nav, water.
+operator), nav, water. ⚠ **The height stamp is no longer on that list and
+this line said it was until 2026-09-16** — the carve is armed
+(`SITE_STAMP_STRENGTH = 1.0`), so a site MAKES its flat ground rather than
+finding it, and §1 stage 8 says so twenty lines up. Two passages of this file
+disagreed about the same mechanism.
 
 ## 3 · Collision (server truth, client prediction — same code)
 
@@ -550,13 +638,19 @@ The reads a survival map must produce, and which stage buys each:
 | clutter cells | 0.64 m (≈ 10 M cells; total coverage on land, streamed in 16 m tiles) |
 | clutter richness | 2nd stratum, rate `RICH_ACCEPT_MAX` = 32 in 256 by splat×clump; ≤ 96 per tile (frame-budget-bound, not design); dispersion 1.40 @ 3.2 m → 8.51 @ 12.8 m |
 | prop skirts | annulus from the footprint edge out `SKIRT_BAND_M` = 0.45 m; 3–16 elements by reach; ≤ 256 per tile (measured max 40) |
-| biomes | 4 (beach/meadow/forest/highland) |
+| biomes | 4 (beach/meadow/forest/highland); moisture at 1/240 m × 3 octaves, ~20 woods per island |
+| beach | 1.9–6.4% of land, median 9.5–13.5 m from waterline to the 2 m contour (1.1% and 5.0 m before the shore terrace) |
+| coastline | radius ~890 m, roughness 1.69–2.15 m between adjacent bearings ~7.8 m apart (0.84–1.21 without `COAST_BAY_WOBBLE`) |
+| treeline | a tree→bush transfer where the splat's grass and litter channels meet; ~15 m wide, 26 stems + 30 bushes/ha against the core's 94 + 4 |
+| species | 2 per slot, painted by a 620 m field; 90–96% dominance at its rails |
 | roads | 1 coast ring, ~4 m wide |
-| authored sites | 3 — one haven pad + 2 waystations, all on the ring |
+| authored sites | 4 — one haven pad + 2 waystations on the ring + 1 inland site at most 300 m from the island centre |
+| roads | 2 tiers: the coast ring (a predicate — `ring_band`) + 1 side road per inland site (a solved segment on `Haven` — `side_band`). `road_band` is both and takes a `&Haven`; the site search asks `ring_band`, because a side road is a consequence of where a site landed |
 | pad containers | 5 `crate` on a 10 m ring, 2.64× the shoulder's density |
 | waystation containers | 2 `cache` on a 6.5 m ring, ≥ 600 m from every other site |
+| inland containers | none — `INLAND_CRATES = 0`, a consequence of the ladder's one crate of headroom. The site is its canopy |
 | greyboxes | 2 kinds, one per tier: the pad's enclosed 7 m block to a 9.2 m tower, and the waystation's open canopy — 4 posts, one knee-high parapet, 4.1 m — standing in a gap in that 6.5 m ring rather than at the site centre, which is the road. **These are the numbers the sim blocks** (`terrain::WAYSTATION_CANOPY_BOXES`, gated by `sim-core/tests/{waystation,solid}.rs`); the mesh that draws them is no longer held to them — see §7 |
-| tier prices | E[items] per container barrel 14.3 < cache 20.8 < crate 33.1; per site pad 165 > waystation 42 (`ci/haven_prize.mjs`) |
+| tier prices | E[items] per container barrel 14.3 < cache 20.8 < crate 33.1; per site pad 165 > waystation 42 > inland 0 (`ci/haven_prize.mjs`) |
 | node respawn | 20–45 min jittered, privilege-vetoed **(knob)** |
 
 ### Stage 10 · Ground clutter — the layer below the scatter grid
@@ -693,10 +787,13 @@ client (`DECISIONS.md` 2026-08-06), so nothing photographs this at all now.
   the **argmax**, re-derived by an independent 0.05 m march with no candidate
   allowed to score better, and that the exclusion zone is non-vacuous against
   a control haven parked off-island. "Exists and is flat" is now a number.
-  What it cannot assert yet is that the pad is *carved* flat: v0 finds a flat
-  site rather than making one (§1 stage 8), so this suite measures the
-  generator's best natural ground, and the 3.76 m is the argument for the
-  carve rather than evidence it happened.
+  ⚠ **What this suite measures is the generator's best NATURAL ground, and
+  that is no longer the ground a player stands on** — corrected 2026-09-16.
+  The 3.76 m was the argument for the carve; the carve landed 2026-08-16
+  (`SITE_STAMP_STRENGTH = 1.0`) and `tests/carve.rs` is what asserts the pad
+  is flat afterwards. This suite stays useful for what it actually holds —
+  that the argmax picks well over raw terrain — and stops being cited for a
+  gap that is closed.
 - `tests/clutter.rs` §S: the authored sites sweep their own floor, measured
   against the same seed rendered with the site list parked offshore, so all
   three claims are exact rather than statistical — the floor is grit and

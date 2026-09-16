@@ -52,6 +52,13 @@
 //! Every assertion here is counted or structural, so it is worth the same on
 //! this box as on the reference VPS.
 
+// The measurements ARE this file's output, exactly as in `tests/forest.rs`
+// and `tests/scatter.rs`: the L5 wall bans format/print in SIM code, and a
+// test harness is not sim code. Every number in the doc comments below was
+// read off a run of this file, and a gate whose measurement is invisible is
+// one nobody can re-derive.
+#![allow(clippy::disallowed_macros)]
+
 use sim_core::terrain::{self, Biome, CLIFF_SLOPE_RATIO};
 
 /// The rock channel of the splat — `splat_from`'s fourth byte.
@@ -335,3 +342,321 @@ fn the_sweep_covers_the_island_and_not_one_quadrant() {
          before trusting any number in this file."
     );
 }
+
+// ── World structure v1: the shore terrace and the coastline ────────────────
+
+/// **The terrace's mechanism, as arithmetic** — not as a statistic over the
+/// island.
+///
+/// `tests/contour.rs`'s lesson: the property that matters here is a
+/// *derivative*, and a sweep of the island cannot separate a crease from the
+/// cliffs worldgen exists to make. `terrain::shore_terrace_slope` is the
+/// derivative in closed form, so every claim the terrace is bought for can be
+/// checked exactly and in microseconds:
+///
+/// - `f(0) = 0` — the coastline does not move by one bit, so the land mask,
+///   `road_band`'s crossings and the island's area are untouched.
+/// - `f'(0) = 1` and `f'(H) = 1` — C¹ at both joins, which is the whole of
+///   why a beach does not draw a shading line at the water's edge. The
+///   renderer takes its normal from this function's gradient.
+/// - `f(h) = h` outside — no constant offset hiding above the band, so the
+///   shelves, the treeline and the summit are where they were.
+/// - `f' = SHORE_TERRACE_K` at the berm, `0.21 × H` up, and `f' > 0`
+///   everywhere — monotone, so the heightfield has no fold in it.
+///
+/// Mutants: any change to the kernel's exponent breaks the C¹ joins; a K at
+/// or below 0 breaks monotonicity (and the const block in `terrain.rs`
+/// refuses to compile); dropping the terrace entirely makes the berm read 1.
+#[test]
+fn the_shore_terrace_is_a_berm_and_is_c1_at_both_joins() {
+    let h = terrain::SHORE_TERRACE_H;
+    let k = terrain::SHORE_TERRACE_K;
+
+    assert!(
+        terrain::shore_terrace(0.0) == 0.0,
+        "the terrace moved the waterline to {} — f(0) must be exactly 0 or \
+         the coastline, the land mask and every shoreline crossing move with it",
+        terrain::shore_terrace(0.0)
+    );
+    for probe in [-40.0f32, -h, -0.001, 0.0, h, h + 0.001, 40.0, 200.0] {
+        assert!(
+            terrain::shore_terrace(probe) == probe,
+            "outside [0, H] the terrace must be the identity; f({probe}) = {}",
+            terrain::shore_terrace(probe)
+        );
+        assert!(
+            terrain::shore_terrace_slope(probe) == 1.0,
+            "outside [0, H] the terrace's slope must be exactly 1; f'({probe}) = {}",
+            terrain::shore_terrace_slope(probe)
+        );
+    }
+
+    // C¹ at both joins, as a limit taken from the inside. `fabs` is the
+    // crate's own, and the tolerance is f32 noise on a degree-4 polynomial,
+    // not slack in the claim.
+    for (edge, name) in [(0.0f32, "waterline"), (h, "top of the band")] {
+        let inside = if edge == 0.0 { 1e-3 } else { h - 1e-3 };
+        let d = terrain::shore_terrace_slope(inside);
+        assert!(
+            sim_core::fmath::fabs(d - 1.0) < 1e-3,
+            "the terrace's slope is {d} just inside the {name} and 1 just \
+             outside it — a C⁰ join, which is a shading line at exactly the \
+             elevation every player stands at (CLAUDE.md's contour-map entry)"
+        );
+    }
+
+    // The berm: the flattest point, at 0.21132 × H by the kernel's own
+    // algebra, reads exactly the knob.
+    let berm = h * 0.211_324_87;
+    let at_berm = terrain::shore_terrace_slope(berm);
+    assert!(
+        sim_core::fmath::fabs(at_berm - k) < 1e-3,
+        "the berm's gradient is {at_berm}, not the {k} `SHORE_TERRACE_K` \
+         declares — the knob and the shape have come apart, and DECISIONS.md \
+         §open is describing a terrace this code does not draw"
+    );
+
+    // Monotone, swept fine enough that the shoulder cannot hide a fold.
+    let mut worst = f32::MAX;
+    let mut at = 0.0f32;
+    let mut probe = -1.0f32;
+    while probe <= h + 1.0 {
+        let d = terrain::shore_terrace_slope(probe);
+        if d < worst {
+            worst = d;
+            at = probe;
+        }
+        probe += h * 0.0005;
+    }
+    assert!(
+        worst > 0.0,
+        "the terrace's slope bottoms at {worst} at h = {at} — a heightfield \
+         that folds back on itself, which nothing downstream can represent"
+    );
+    assert!(
+        sim_core::fmath::fabs(worst - k) < 1e-3,
+        "the terrace's minimum gradient is {worst} at h = {at}, not the {k} \
+         the knob declares"
+    );
+    println!("shore terrace: H {h} K {k}; berm f'({berm:.2}) = {at_berm:.4}; min {worst:.4}");
+}
+
+/// **And the beach it buys is a beach** — the measurement half, over the
+/// whole seed set rather than the shipped island.
+///
+/// The terrace is a mechanism; whether it produces a coast is a fact about
+/// the generator, and before it the answer was **1.1% of land and a 5.0 m
+/// walk** from the waterline to the 2 m contour. Both are asserted because
+/// they can fail independently: a share without a width is a marsh, and a
+/// width without a share is one flat bay.
+///
+/// Mutant, run: `SHORE_TERRACE_K = 0.999` (the terrace off in all but name)
+/// takes the median width to **4.5–6.0 m** across the eight seeds, red on
+/// every one. It takes the share to 0.7–2.0%, which is red on six of eight —
+/// see `BEACH_SHARE_MIN` for why that half is kept as a tripwire rather than
+/// read as the gate.
+#[test]
+fn the_island_has_a_beach_to_walk_up() {
+    let mut worst_share = f32::MAX;
+    let mut worst_width = f32::MAX;
+    for seed in seed_set().into_iter().take(8) {
+        let haven = terrain::haven(seed);
+        let (mut land, mut beach) = (0u32, 0u32);
+        for cz in 0..terrain::CELLS_PER_SIDE {
+            for cx in 0..terrain::CELLS_PER_SIDE {
+                let x = cx as f32 * terrain::CELL_SIZE + terrain::CELL_SIZE * 0.5;
+                let z = cz as f32 * terrain::CELL_SIZE + terrain::CELL_SIZE * 0.5;
+                let h = terrain::ground(seed, &haven, x, z);
+                if h < terrain::LAND_MIN_H {
+                    continue;
+                }
+                land += 1;
+                if terrain::biome(h, terrain::moisture(seed, x, z)) == terrain::Biome::Beach {
+                    beach += 1;
+                }
+            }
+        }
+        let share = beach as f32 / land.max(1) as f32;
+
+        // The width, walked: bisect the waterline on each of 180 radials,
+        // then step inland to the 2 m contour. The median is what a player
+        // meets; a mean would be carried by one flat bay.
+        let c = terrain::ISLAND_SIZE * 0.5;
+        let mut widths: Vec<f32> = Vec::new();
+        for b in 0..180usize {
+            let t = b as f32 / 180.0 * 4.0;
+            let (ux, uz) = match t as i32 {
+                0 => (1.0, t - 0.5),
+                1 => (1.5 - t, 0.5),
+                2 => (-1.0, 2.5 - t),
+                _ => (t - 3.5, -0.5),
+            };
+            let n = (ux * ux + uz * uz).sqrt();
+            let (ux, uz) = (ux / n, uz / n);
+            let (mut lo, mut hi) = (200.0f32, 1150.0f32);
+            if terrain::height(seed, c + ux * lo, c + uz * lo) < 0.0 {
+                continue;
+            }
+            if terrain::height(seed, c + ux * hi, c + uz * hi) > 0.0 {
+                continue;
+            }
+            for _ in 0..34 {
+                let mid = (lo + hi) * 0.5;
+                if terrain::height(seed, c + ux * mid, c + uz * mid) > 0.0 {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            let mut step = 0.0f32;
+            while step < 300.0 {
+                if terrain::height(seed, c + ux * (lo - step), c + uz * (lo - step)) > 2.0 {
+                    widths.push(step);
+                    break;
+                }
+                step += 0.5;
+            }
+        }
+        assert!(
+            widths.len() > 100,
+            "seed {seed:#x}: only {} radials found a shore — the sweep, not \
+             the island",
+            widths.len()
+        );
+        widths.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let median = widths[widths.len() / 2];
+        println!(
+            "seed {seed:#x}: beach {:.1}% of land, waterline->2 m median {median:.1} m",
+            share * 100.0
+        );
+        worst_share = worst_share.min(share);
+        worst_width = worst_width.min(median);
+    }
+    assert!(
+        worst_share >= BEACH_SHARE_MIN,
+        "the thinnest island gives the beach {:.1}% of its land, under the \
+         {:.1}% floor — before the shore terrace this was 1.1%, which is a \
+         kerb and not a coast",
+        worst_share * 100.0,
+        BEACH_SHARE_MIN * 100.0
+    );
+    assert!(
+        worst_width >= BEACH_WIDTH_MIN_M,
+        "the narrowest island's shore reaches 2 m in {worst_width:.1} m of \
+         walking, under the {BEACH_WIDTH_MIN_M} m floor — it was 5.0 m before \
+         the terrace, which is two paces from sea to grass"
+    );
+}
+
+/// Floor on the Beach biome's share of land.
+///
+/// ⚠ **This one does NOT separate, and it is asserted anyway for a different
+/// reason — stated so nobody reads it as the terrace's gate.** Measured over
+/// the eight seeds: **1.9–6.4%** as shipped, **0.7–2.0%** with the terrace
+/// off. The bands touch, because the share is as much about how much low
+/// ground an island happens to have as about how wide its shore is. What it
+/// does catch is the Beach biome disappearing outright — a moved
+/// `BEACH_MAX_H`, a classifier edit — which nothing else here would notice.
+/// The width below is the statistic that separates.
+const BEACH_SHARE_MIN: f32 = 0.015;
+/// Floor on the median walk from waterline to the 2 m contour, metres.
+/// Measured **9.5–13.5 m** as shipped and **4.5–6.0 m** with the terrace off,
+/// over the same eight seeds — two bands with a clean gap, and the floor is
+/// in it.
+const BEACH_WIDTH_MIN_M: f32 = 8.0;
+
+/// **The coastline is not a disc.**
+///
+/// `continent` wobbles a circle, and with one 900 m term on a ~5,600 m
+/// circumference that is one and a half lobes: measured, the shore radius
+/// had an sd of **30 m on a mean of 892** and the land mask's perimeter was
+/// 1.30x an equal-area disc — most of that 1.30 being the 8 m grid's own
+/// staircase rather than structure. `COAST_BAY_FREQ`/`COAST_BAY_WOBBLE` are
+/// the second term, and this is what says they are still doing their job.
+///
+/// Perimeter-to-disc is the honest statistic here rather than the radius's
+/// sd: sd is blind to the SCALE of the wobble — one slow 200 m lobe and
+/// twenty 40 m coves read the same — where a perimeter counts the coastline
+/// a player would actually walk.
+///
+/// Mutant: `COAST_BAY_WOBBLE = 0.0` takes the ratio to 1.29–1.32 and the
+/// floor is red on every seed.
+#[test]
+fn the_coastline_has_headlands_and_coves() {
+    let mut worst = f32::MAX;
+    for seed in seed_set().into_iter().take(8) {
+        // The shore radius on 720 evenly spaced bearings, bisected. What is
+        // measured is the step between ADJACENT bearings — ~7.8 m of arc at
+        // this radius — so the statistic is the coastline's roughness at the
+        // scale a person standing on it can see, and it is blind to the slow
+        // lobe `COAST_FREQ` already had.
+        let c = terrain::ISLAND_SIZE * 0.5;
+        let mut r: Vec<f32> = Vec::new();
+        for b in 0..720usize {
+            let t = b as f32 / 720.0 * 4.0;
+            let (ux, uz) = match t as i32 {
+                0 => (1.0, t - 0.5),
+                1 => (1.5 - t, 0.5),
+                2 => (-1.0, 2.5 - t),
+                _ => (t - 3.5, -0.5),
+            };
+            let n = (ux * ux + uz * uz).sqrt();
+            let (ux, uz) = (ux / n, uz / n);
+            let (mut lo, mut hi) = (400.0f32, 1150.0f32);
+            if terrain::height(seed, c + ux * lo, c + uz * lo) < 0.0
+                || terrain::height(seed, c + ux * hi, c + uz * hi) > 0.0
+            {
+                continue;
+            }
+            for _ in 0..34 {
+                let mid = (lo + hi) * 0.5;
+                if terrain::height(seed, c + ux * mid, c + uz * mid) > 0.0 {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            r.push(lo);
+        }
+        assert!(
+            r.len() > 600,
+            "seed {seed:#x}: only {} bearings found a single shore crossing \
+             — the sweep, not the island",
+            r.len()
+        );
+        let mut sum = 0.0f32;
+        for i in 0..r.len() {
+            let d = r[(i + 1) % r.len()] - r[i];
+            sum += if d < 0.0 { -d } else { d };
+        }
+        let rough = sum / r.len() as f32;
+        let mean = r.iter().sum::<f32>() / r.len() as f32;
+        println!(
+            "seed {seed:#x}: shore r mean {mean:.0} m, roughness {rough:.2} m per \
+             {:.1} m of arc",
+            2.0 * core::f32::consts::PI * mean / r.len() as f32
+        );
+        worst = worst.min(rough);
+    }
+    assert!(
+        worst >= COAST_ROUGHNESS_MIN_M,
+        "the smoothest island's shore moves {worst:.2} m between adjacent \
+         bearings, under the {COAST_ROUGHNESS_MIN_M} m floor — that is the \
+         round island `COAST_BAY_WOBBLE` was added to retire"
+    );
+}
+
+/// Floor on how far the shore radius moves between adjacent bearings, metres
+/// per ~7.8 m of arc — the coastline's roughness at the scale a person on it
+/// can see. Measured **1.69–2.15 m** as shipped and **0.84–1.21 m** with
+/// `COAST_BAY_WOBBLE` at zero, over eight seeds; the floor is in the gap.
+///
+/// **Chosen over perimeter-to-equal-area-disc, which was tried and does not
+/// separate.** That ratio reads 1.329–1.421 as shipped and 1.29–1.32 with the
+/// bay term at zero: the bands touch, because most of both is the 8 m grid's
+/// own staircase rather than coastline. A gate whose two populations overlap
+/// reads as coverage and is not one — `NOW.md` §0wg item 4 is the same
+/// finding about the contour statistic, and the rule there is that a metric
+/// which cannot separate should not be shipped. This one separates by a
+/// factor.
+const COAST_ROUGHNESS_MIN_M: f32 = 1.45;
