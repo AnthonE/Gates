@@ -249,9 +249,19 @@ pub struct ShardHandle {
 /// charged off table B. Every gate would be green: the golden pins what
 /// this function produced, and the sim's own armor suite never reads the
 /// catalog. One table, one reader.
+///
+/// `gather` (wire v64) is there for exactly the same reason and it is the
+/// stronger case of the two, because the number is one the sim *charges*:
+/// `stack_max` is what `inventory::plan_move` measures every merge
+/// against, and the client now aims a quick-move with it. Read off the
+/// baked table rather than off `item.stack`, so a client that decides
+/// "this slot has room for 40 more" is reading the same `u16` the sim will
+/// refuse it against, down to the conversion — `bake_gather`'s
+/// `u16::try_from` is the one place that narrowing happens.
 pub fn bake_catalog(
     content: &content::Content,
     combat: &sim_core::combat::CombatContent,
+    gather: &sim_core::gather::GatherContent,
 ) -> Result<ItemCatalog, String> {
     let mut cat = ItemCatalog::EMPTY;
     cat.count = content.items.len() as u16;
@@ -271,17 +281,21 @@ pub fn bake_catalog(
                 cond_max,
                 armor_pct: armor.reduction_pct,
                 wear_slot: armor.slot,
+                stack_max: gather.stack_max_of(idx as u16),
             },
         )
         .map_err(|_| {
             format!(
                 "catalog: item `{}` name `{}` is empty or over {} bytes, or its \
-                 armor row ({} % in slot {}) is one the sim cannot mean",
+                 row (armor {} % in slot {}, condition {} on a stack of {}) is one \
+                 the sim cannot mean",
                 item.id,
                 item.name,
                 protocol::MAX_ITEM_NAME_BYTES,
                 armor.reduction_pct,
-                armor.slot
+                armor.slot,
+                cond_max,
+                gather.stack_max_of(idx as u16),
             )
         })?;
     }
@@ -324,11 +338,11 @@ pub struct SimTables {
 /// Bake every table a shard needs, or refuse the boot naming the one that
 /// failed. The single place the list of tables is written down.
 pub fn bake_all(content: &content::Content) -> Result<SimTables, String> {
-    // Combat is baked into a local first because the catalog reads its
-    // armor rows rather than re-deriving them (`bake_catalog`).
+    // Combat and gather are baked into locals first because the catalog
+    // reads their rows rather than re-deriving them (`bake_catalog`).
     let combat = content.bake_combat()?;
+    let gather = content.bake_gather()?;
     Ok(SimTables {
-        gather: content.bake_gather()?,
         craft: content.bake_craft()?,
         build: content.bake_building()?,
         deploy: content.bake_deployables()?,
@@ -339,8 +353,9 @@ pub fn bake_all(content: &content::Content) -> Result<SimTables, String> {
         loot: content.bake_loot()?,
         mobs: content.bake_mobs()?,
         research: content.bake_research()?,
-        catalog: bake_catalog(content, &combat)?,
+        catalog: bake_catalog(content, &combat, &gather)?,
         combat,
+        gather,
     })
 }
 

@@ -171,6 +171,45 @@ pub fn slots_in(kind: u8) -> usize {
     }
 }
 
+/// May a player put something **into** a container of this kind?
+///
+/// `false` for `CONT_WORLD` and true for everything else, which is one
+/// line and three facts. It is the reference's `CanAcceptItem` asked of
+/// the container rather than of the item (`REFUSE_M_NO_INPUT` carries the
+/// source line); it is keyed on the KIND, so no content is behind it and
+/// no client needs a table to predict it; and it is the *only* place the
+/// answer is written down, so the sim and the panel cannot disagree about
+/// which container is loot-only (`client/src/ui/slots.rs` re-exports this
+/// the way it re-exports [`slots_in`] and [`is_own`]).
+///
+/// Taking OUT is untouched, and so is rearranging what is already inside:
+/// this asks about the direction a player adds in.
+pub fn takes_deposits(kind: u8) -> bool {
+    kind != CONT_WORLD
+}
+
+/// Would this move put a stack into a container that [`takes_deposits`]
+/// refuses — in **either** of the two directions a move can deposit?
+///
+/// A move is two writes, and when both slots are occupied `plan_move`
+/// answers `MovePlan::Swap`, which sends `dst` backwards into
+/// `from_slot`. So a take OUT of a loot-only crate onto an occupied slot
+/// would put the occupant *into* the crate: refused in one direction and
+/// admitted in the other, by one verb. That is the trap the wear check in
+/// `world.rs` names in full, taken here at the same time rather than a
+/// version later.
+///
+/// The two occupancy guards are the reason the stacks are parameters
+/// rather than the counts being assumed: an empty source is
+/// `REFUSE_M_EMPTY`'s to answer and an empty destination cannot swap, so
+/// neither is this reason's business. Mutants for all four combinations
+/// are in `sim-core/tests/inventory_move.rs`.
+pub fn deposit_refused(from_kind: u8, to_kind: u8, src: ItemStack, dst: ItemStack) -> bool {
+    let forward = !takes_deposits(to_kind) && from_kind != to_kind && src.count > 0;
+    let swapped_back = !takes_deposits(from_kind) && to_kind != from_kind && dst.count > 0;
+    forward || swapped_back
+}
+
 /// Why a move was refused — the `b` field of `EV_MOVE_REFUSED`. Zero is
 /// reserved as "no reason", so the encoder can refuse it the way
 /// `encode_event_consume_refused` already refuses a zero reason.
@@ -237,10 +276,34 @@ pub const REFUSE_M_OVEN: u32 = 8;
 /// correct — only the drag was wrong. Collapsing them would tell the
 /// client to redraw a container that never changed.
 pub const REFUSE_M_WEAR: u32 = 9;
+/// The destination **is a container that takes nothing a player hands
+/// it** — [`takes_deposits`], and today that is `CONT_WORLD` alone.
+///
+/// The reference's shape for this is a predicate on the container asked
+/// of the item and the slot (`ItemContainer.CanAcceptItem(Item, Int32)`,
+/// in the hook table at `reference/rust-systems.txt:632`, specialized by
+/// the vending machine as `CanVendingAcceptItem`), which is the shape the
+/// oven and the wear slot above already have. This is the third instance
+/// and the first that answers on the container's KIND rather than on the
+/// item, so it needs no content behind it.
+///
+/// **Why the crate and not the box.** An authored world container is
+/// scenery that refills, and the refill is armed by the record going
+/// empty (`worldcont::set_slot`). One deposited stack therefore disarms
+/// it — `refill_at` back to 0 — so a single player parking one wood in
+/// the haven pad's crate stops that crate paying loot to anybody, for as
+/// long as the stack sits there. A box is the opposite: storage is what
+/// it is for, and a bag is a countdown nobody can hold open.
+///
+/// Distinct from `REFUSE_M_OVEN`, which is the same verb asked of
+/// content: an oven refuses the *item* and would take the next one, and
+/// its sentence names fuel. This one is about the container and no item
+/// changes the answer.
+pub const REFUSE_M_NO_INPUT: u32 = 10;
 /// The largest reason above. Four bits hold `1..=15`, which is what the
 /// wire spends (widened from three with `PROTO_VER` 28, oven v0), and a
 /// reason added past 15 needs the width to move again.
-pub const REFUSE_M_MAX: u32 = REFUSE_M_WEAR;
+pub const REFUSE_M_MAX: u32 = REFUSE_M_NO_INPUT;
 
 /// What a validated move will do. Constructed only by `plan_move`, so a
 /// value of this type *is* the proof that every check passed — the

@@ -39,7 +39,9 @@ use sim_core::limits::{
 use sim_core::research::{ResearchRow, NO_RECIPE};
 
 /// Longest event-lane message. Sized by the worst subtype (a full catalog
-/// batch ≈ 280 B since v46's per-row `cond_max`, a full slot-sync batch
+/// batch ≈ 296 B since v64's per-row `stack_max` — it was ≈ 280 B from
+/// v46's `cond_max`, and `catalog_batches_walk_the_table_within_cap` is
+/// the one that measures rather than remembers — a full slot-sync batch
 /// ≈ 258 B) with headroom; the client-side framer refuses past it.
 /// Registered in DECISIONS.md §open.
 pub const MAX_EVENT_MSG_BYTES: usize = 320;
@@ -589,6 +591,23 @@ pub struct ItemRow {
     /// `combat::WEAR_NONE` (not armor), `WEAR_HEAD` or `WEAR_BODY` —
     /// one-based, so a zeroed row is inert rather than a headpiece.
     pub wear_slot: u8,
+    /// The stack ceiling — `GatherContent::stack_max_of`, the number
+    /// `inventory::plan_move` measures every merge against. 0 ⇒ the item
+    /// has no ladder (`REFUSE_M_UNSTACKABLE`), which is also what a row
+    /// past the drip watermark reads as, so a client must treat 0 as *I
+    /// do not know this yet* rather than as a fact.
+    ///
+    /// **v64, and for this table's recurring reason:** the client links
+    /// no content crate, so a number it must reason about rides here or
+    /// does not exist. What could not be done without it is a quick-move
+    /// — the panel picking the destination slot itself — because
+    /// `plan_move` refuses a partial merge (`count > room` is
+    /// `REFUSE_M_NO_ROOM`, never a clamp), so choosing a slot means
+    /// measuring `cap - dst.count` first. Without the column the panel
+    /// could only ever aim at an empty slot, which is a right-click that
+    /// scatters five stacks of wood across five slots beside the pile it
+    /// should have joined.
+    pub stack_max: u16,
 }
 
 impl ItemRow {
@@ -596,15 +615,28 @@ impl ItemRow {
         cond_max: 0,
         armor_pct: 0,
         wear_slot: 0,
+        stack_max: 0,
     };
 
     /// Is this pair one the sim could mean? A reduction with no slot pays
     /// nobody, so it is refused at both ends of the wire rather than
     /// silently dripped into a client that would add it to a total.
+    ///
+    /// **And durability V7 is checked here since v64**: a condition
+    /// ceiling on a stack of more than one is a row `content`'s own
+    /// validator refuses (`content/src/validate.rs`, V7, *first because
+    /// everything else leans on it*), and it is the invariant
+    /// `inventory::resolve` names as the reason a merge is never asked to
+    /// reconcile two conditions. Now that the ceiling is on the wire, a
+    /// forged row saying *this hatchet stacks to 30* would make a client
+    /// aim a quick-move at a merge the sim will refuse — so both ends
+    /// refuse the row instead. A `stack_max` of 0 stays legal: that is
+    /// the inert row every undelivered index reads as.
     pub fn coherent(&self) -> bool {
         self.wear_slot as usize <= WEAR_SLOTS
             && self.armor_pct as u32 <= ARMOR_MAX_PCT
             && (self.wear_slot != WEAR_NONE || self.armor_pct == 0)
+            && (self.cond_max == 0 || self.stack_max <= 1)
     }
 }
 
@@ -626,6 +658,10 @@ impl ItemRow {
 /// and carried by no message, so a blunted hit and a soft one were
 /// identical on screen and the wear panel could not say what a set was
 /// worth (NOW.md §0eq.2). Two columns, nine bits a row.
+///
+/// v64 added `stack_max` for the third turn of the same argument, and the
+/// field's own doc has the case. Sixteen bits a row, and the batch's
+/// worst case is what the note on [`MAX_EVENT_MSG_BYTES`] tracks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ItemCatalog {
     pub names: [[u8; MAX_ITEM_NAME_BYTES]; MAX_ITEM_DEFS],
@@ -696,6 +732,15 @@ impl ItemCatalog {
     /// that is not armor.
     pub fn wear_slot(&self, idx: usize) -> u8 {
         self.row(idx).wear_slot
+    }
+
+    /// The stack ceiling for one item index; 0 out of table and 0 for a
+    /// row that has not dripped in yet, matching the inert-row
+    /// convention. A reader deciding where a stack may go must treat 0 as
+    /// "unknown", never as "unstackable" — the two are indistinguishable
+    /// here by construction, and only one of them is safe to act on.
+    pub fn stack_max(&self, idx: usize) -> u16 {
+        self.row(idx).stack_max
     }
 }
 
@@ -1414,6 +1459,13 @@ pub fn encode_event_catalog(
         w.write(row.cond_max as u32, 16)?;
         w.write(row.armor_pct as u32, ARMOR_PCT_BITS)?;
         w.write(row.wear_slot as u32, WEAR_SLOT_BITS)?;
+        // Sixteen, like `cond_max` above it and unlike the two bitfields
+        // between them: the value is a `u16` in `GatherContent`, so a
+        // full-width field is the one shape that needs no range check and
+        // cannot truncate a ceiling into a smaller one. Ten bits would
+        // hold today's largest authored stack (1,000) and would silently
+        // become wrong the day content names 1,024.
+        w.write(row.stack_max as u32, 16)?;
     }
     Ok((w.finish(), count))
 }
@@ -2869,6 +2921,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     cond_max: r.read(16)? as u16,
                     armor_pct: r.read(ARMOR_PCT_BITS)? as u8,
                     wear_slot: r.read(WEAR_SLOT_BITS)? as u8,
+                    stack_max: r.read(16)? as u16,
                 };
                 // Both fields fit their widths by construction; what the
                 // width cannot say is that 91 % is over the cap or that a
@@ -3816,6 +3869,7 @@ mod tests {
                     cond_max: 0,
                     armor_pct: 20,
                     wear_slot: WEAR_NONE,
+                    stack_max: 1,
                 },
             ),
             Err(WireError::Range),
@@ -3829,6 +3883,7 @@ mod tests {
                     cond_max: 0,
                     armor_pct: ARMOR_MAX_PCT as u8 + 1,
                     wear_slot: WEAR_BODY,
+                    stack_max: 1,
                 },
             ),
             Err(WireError::Range),
@@ -3842,6 +3897,7 @@ mod tests {
                     cond_max: 0,
                     armor_pct: 10,
                     wear_slot: WEAR_SLOTS as u8 + 1,
+                    stack_max: 1,
                 },
             ),
             Err(WireError::Range),
@@ -3857,6 +3913,7 @@ mod tests {
                 cond_max: 0,
                 armor_pct: 20,
                 wear_slot: WEAR_BODY,
+                stack_max: 1,
             },
         )
         .unwrap();
@@ -3900,6 +3957,112 @@ mod tests {
         );
     }
 
+    /// Durability V7 on the wire (v64): a condition ceiling on a stack of
+    /// more than one is refused by `set`, by the encoder, and by the
+    /// decoder against bytes this crate cannot produce.
+    ///
+    /// The invariant is `content`'s (validator V7, *first because
+    /// everything else leans on it*) and `inventory::resolve` names it as
+    /// the reason a merge is never asked to reconcile two conditions. It
+    /// only became the wire's business at v64, when the ceiling arrived
+    /// here: a row claiming *this hatchet stacks to 30* makes a client
+    /// measure 29 units of room in a slot holding one hatchet and aim a
+    /// quick-move at it, and the sim answers `REFUSE_M_NO_ROOM` — a
+    /// refusal the panel drew as obviously fine.
+    ///
+    /// **The forged bytes are LOCATED, not counted** — the same technique
+    /// the wear-slot half of `a_reduction_with_no_slot_never_reaches_a_panel`
+    /// uses, and for the same reason: a hand-counted bit offset is a
+    /// second copy of the layout and rots the next time a column lands
+    /// above this one.
+    #[test]
+    fn a_condition_on_a_stack_of_more_than_one_is_refused_at_both_ends() {
+        let mut cat = ItemCatalog::EMPTY;
+        cat.count = 1;
+        assert_eq!(
+            cat.set(
+                0,
+                b"Stacking Hatchet",
+                ItemRow {
+                    cond_max: 5_000,
+                    armor_pct: 0,
+                    wear_slot: WEAR_NONE,
+                    stack_max: 30,
+                },
+            ),
+            Err(WireError::Range),
+            "a condition item that stacks past one was installed"
+        );
+
+        // Locate `stack_max`'s bits: two encodings of one row differing in
+        // nothing else, XORed. Both are cond-free, so both are coherent
+        // and the encoder will produce them.
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let plain = ItemRow {
+            cond_max: 0,
+            armor_pct: 0,
+            wear_slot: WEAR_NONE,
+            stack_max: 1,
+        };
+        cat.set(0, b"Hatchet", plain).unwrap();
+        let (one_len, _) = encode_event_catalog(&cat, 0, &mut buf).unwrap();
+        let one = buf;
+        cat.set(
+            0,
+            b"Hatchet",
+            ItemRow {
+                stack_max: u16::MAX,
+                ..plain
+            },
+        )
+        .unwrap();
+        let (wide_len, _) = encode_event_catalog(&cat, 0, &mut buf).unwrap();
+        assert_eq!(
+            one_len, wide_len,
+            "the two ceilings encode at different widths"
+        );
+        let mut mask = [0u8; MAX_EVENT_MSG_BYTES];
+        let mut moved = 0u32;
+        for i in 0..one_len {
+            mask[i] = one[i] ^ buf[i];
+            moved += mask[i].count_ones();
+        }
+        assert_eq!(
+            moved, 15,
+            "1 and u16::MAX differ in fifteen bits; the mask found {moved}, \
+             so it is not the ceiling's field alone"
+        );
+
+        // A legal V7 row — a condition, a stack of one — encodes, and the
+        // same bits set on top of it claim a stack of 65,535 with the
+        // condition still on it. Nothing in this crate can produce that
+        // message; the decoder still has to refuse it.
+        cat.set(
+            0,
+            b"Hatchet",
+            ItemRow {
+                cond_max: 5_000,
+                stack_max: 1,
+                ..plain
+            },
+        )
+        .unwrap();
+        let (len, _) = encode_event_catalog(&cat, 0, &mut buf).unwrap();
+        assert_eq!(len, one_len, "the V7 row moved the layout");
+        assert!(
+            decode_event(&buf[..len]).is_ok(),
+            "a condition item stacking to one is the shape content ships"
+        );
+        for i in 0..len {
+            buf[i] ^= mask[i];
+        }
+        assert_eq!(
+            decode_event(&buf[..len]),
+            Err(WireError::Malformed),
+            "a condition ceiling on a stack of 65,535 was installed from the wire"
+        );
+    }
+
     #[test]
     fn catalog_batches_walk_the_table_within_cap() {
         let mut cat = ItemCatalog::EMPTY;
@@ -3918,6 +4081,12 @@ mod tests {
                 } else {
                     (i % 2 + 1) as u8
                 },
+                // The width's corner on every row `coherent` lets carry
+                // one (v64): this test's job is the message CAP, so the
+                // ceiling column wants its widest legal value here, and
+                // V7 pins the odd rows — the ones given a condition
+                // above — to a stack of 1.
+                stack_max: if i % 2 == 0 { u16::MAX } else { 1 },
             };
             cat.set(i, &name, row).unwrap();
         }
@@ -5134,12 +5303,25 @@ mod wire_domains {
             prefix: "pub const REFUSE_M_",
             ty: ": u32 = ",
             exempt: &["MAX"],
-            min_members: 8,
+            min_members: 9,
             bits: REFUSE_M_BITS,
             // 8 -> 9 at wire v51 (armor v1): `REFUSE_M_WEAR` is the
             // reason a wear slot gives for "that is not what goes here",
             // and the pin fired on it exactly as its message promised.
-            live_max: 9,
+            //
+            // 9 -> 10 at wire v64 (loot-only containers): a world crate
+            // takes nothing a player hands it, and `REFUSE_M_NO_INPUT`
+            // is what it answers. Not one bit moved — four bits held ten
+            // as comfortably as they held nine — so this pin is the whole
+            // of why the version turned. What a v63 client does with the
+            // tenth is the quiet failure this row exists to price: the
+            // decoder answers `Malformed`, `on_stream` counts it and
+            // returns `Err`, and the client drops the message
+            // (`client/src/lib.rs`'s `if let Ok(flags)`). So the drag
+            // snaps back with no refusal, no toast and no line — the
+            // dark-panel defect, arriving as a version skew rather than
+            // as a bug in the panel.
+            live_max: 10,
         },
         Domain {
             what: "wear slot",

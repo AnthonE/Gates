@@ -306,8 +306,8 @@ pub fn move_args(
 /// this side's.
 pub fn refusal_text(reason: u8) -> &'static str {
     use sim_core::inventory::{
-        REFUSE_M_COUNT, REFUSE_M_EMPTY, REFUSE_M_NO_CONTAINER, REFUSE_M_NO_ROOM, REFUSE_M_OVEN,
-        REFUSE_M_REACH, REFUSE_M_SLOT, REFUSE_M_UNSTACKABLE, REFUSE_M_WEAR,
+        REFUSE_M_COUNT, REFUSE_M_EMPTY, REFUSE_M_NO_CONTAINER, REFUSE_M_NO_INPUT, REFUSE_M_NO_ROOM,
+        REFUSE_M_OVEN, REFUSE_M_REACH, REFUSE_M_SLOT, REFUSE_M_UNSTACKABLE, REFUSE_M_WEAR,
     };
     match reason as u32 {
         REFUSE_M_SLOT => "that slot is not addressable",
@@ -325,6 +325,11 @@ pub fn refusal_text(reason: u8) -> &'static str {
         // reaches this arm is the disagreement — a stale catalog, or a
         // slot the server knows about and this build does not.
         REFUSE_M_WEAR => "that is not what goes in that slot",
+        // The container's own refusal (v64). Named after the crate
+        // because `CONT_WORLD` is the only kind that gives it today and
+        // `container_title` calls that panel `CRATE` — the word on the
+        // screen and the word in the line are the same one.
+        REFUSE_M_NO_INPUT => "that crate gives loot and takes none",
         _ => "refused",
     }
 }

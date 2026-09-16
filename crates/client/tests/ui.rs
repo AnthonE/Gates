@@ -4224,6 +4224,7 @@ fn catalog_for(cc: &combat::CombatContent) -> protocol::ItemCatalog {
                 cond_max: 0,
                 armor_pct: a.reduction_pct,
                 wear_slot: a.slot,
+                stack_max: 1,
             },
         )
         .expect("a fixture row the sim already validated is coherent");
@@ -4413,6 +4414,7 @@ fn a_stack_past_the_last_wear_slot_is_worth_nothing() {
         cond_max: 0,
         armor_pct: 25,
         wear_slot: WEAR_SLOTS as u8 + 1,
+        stack_max: 1,
     };
     assert!(
         !cat.rows[ghost as usize].coherent(),
@@ -4487,6 +4489,7 @@ fn nothing_is_wearable_in_a_slot_the_body_does_not_have() {
         cond_max: 0,
         armor_pct: 25,
         wear_slot: WEAR_SLOTS as u8 + 1,
+        stack_max: 1,
     };
     assert!(
         !slots::wearable_here(&cat, ghost, WEAR_SLOTS),

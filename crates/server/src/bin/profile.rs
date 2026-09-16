@@ -135,7 +135,8 @@ fn build_core(a: &Args) -> ShardCore {
     bake!(loot, bake_loot);
     bake!(mob, bake_mobs);
     bake!(research, bake_research);
-    core.catalog = match server::net::bake_catalog(&content, &core.world.combat) {
+    core.catalog = match server::net::bake_catalog(&content, &core.world.combat, &core.world.gather)
+    {
         Ok(c) => c,
         Err(e) => {
             eprintln!("profile: catalog bake refused: {e}");

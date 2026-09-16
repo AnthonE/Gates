@@ -838,7 +838,37 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// of its own: a lethal blow is no longer always a death, so the feed hears
 /// the corpse and not the blow. Every snapshot fixture moves by one bit per
 /// entity; `hello` carries the version.
-pub const PROTO_VER: u16 = 63;
+///
+/// **v64 — the loot-only container and the stack ceiling** (the operator's
+/// three inventory calls, `DECISIONS.md` 2026-09-16). Two changes, one
+/// layout move between them.
+///
+/// `ItemRow` gains `stack_max:16` — the catalog's fourth column, for the
+/// reason v46 and v52 already record: the client links no content crate, so
+/// a number it must *reason* about rides this table or does not exist. The
+/// number here is `GatherContent::stack_max_of`, and what could not be done
+/// without it is the panel choosing a destination slot by itself
+/// (`ui::slots::quick_move`): `plan_move` refuses a partial merge rather
+/// than clamping, so picking a slot means measuring `cap - dst.count`
+/// first, and a client with no `cap` can only ever aim at an empty one.
+/// `ItemRow::coherent` now also refuses a condition ceiling on a stack of
+/// more than one (durability V7), which both ends check because a forged
+/// row would aim a quick-move at a merge the sim will refuse.
+///
+/// `REFUSE_M_NO_INPUT` = 10 is the tenth move refusal and moves **no bit**:
+/// `REFUSE_M_BITS` has been 4 since v28 and held nine. It turns the version
+/// on v18's precedent, stated two screens up — *a widened meaning is a wire
+/// change even when the layout is byte-identical* — and `event.rs`'s
+/// `DOMAINS` pin is the thing that forced this sentence to be written. The
+/// consequence it protects against is small and silent: a v63 client
+/// answers `Malformed` to the tenth reason, drops the message, and shows a
+/// drag snapping back with no word about why.
+///
+/// Fixtures are keyed `v64_*`: all 107 renamed, and **two** differ in bytes
+/// from their v63 selves — `v64_event_catalog` (the new column, eight rows
+/// of it) and `v64_hello` (the version number). A third file in that diff
+/// would mean the layout moved somewhere nobody looked.
+pub const PROTO_VER: u16 = 64;
 
 /// This game's slug in the elo catalog.
 ///
