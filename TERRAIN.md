@@ -150,6 +150,18 @@ Stages, in order — each cheap, each deterministic:
    so no clutter moves and no golden moves — and only where `step <=
    ROAD_HALF_W`, because an 8 m far lattice cannot resolve a 4 m ribbon and
    would draw the loop as a dashed line.
+   **Road surface v1 (2026-09-16)** keeps that splat as the dusty substrate
+   and adds independent client coverage from the same ring/side bands: charcoal
+   aggregate pavement on the ring, warm grit and aggregate on the branch.
+   The ring wins a junction. All PBR channels blend at the same edge, with
+   bounded erosion from the aggregate photograph; fixed texture projections
+   avoid stretching the grain across the verge. The near-mesh guard, widths,
+   clutter, terrain heights and coarse-mesh behavior are unchanged. This is a
+   first material pass, without painted lines or authored cracks; the proposed
+   defaults and GPU cost are in `DECISIONS.md` §open, road surface v1. The new
+   surface fades to the existing substrate across the outermost guaranteed
+   near chunk (currently 64–128 m from the eye); a continuous distant paved
+   ribbon remains open because the 8 m far lattice cannot resolve its width.
    **Still open**: the flattening (it needs a mask inside `height` — that is
    the representation decision the block defers, and nothing forced it yet).
    `DECISIONS.md` §open "coast road v0" and "bay slots v0" have the knobs and
