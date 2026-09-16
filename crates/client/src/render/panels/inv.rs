@@ -89,9 +89,9 @@ use super::{
 use crate::render::icons::Icons;
 use crate::ui::craft::{cell_abbrev, item_label, CELL_LINE_CHARS};
 use crate::ui::slots::{
-    container_cols, container_name, container_title, count_badge, ghost_origin, looting, move_args,
-    pip_fraction, quick_move, refusal_text, screen_title, slots_in, takes_deposits,
-    wear_slot_label, wearable_here, worn_pct, Drag, Grab, Quick,
+    container_bar, container_cols, container_name, container_title, count_badge, ghost_origin,
+    looting, move_args, pip_fraction, quick_move, refusal_text, screen_title, slots_in,
+    takes_deposits, wear_slot_label, wearable_here, worn_pct, Drag, Grab, Quick,
 };
 
 /// One addressable cell. `kind` is a `CONT_*`, so the same component serves
@@ -307,7 +307,9 @@ fn container_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Ico
     ))
     .with_children(|col| {
         section(col, container_title(kind));
-        name_bar(col, &name);
+        if let Some(bar) = container_bar(kind, &name) {
+            name_bar(col, bar);
+        }
         grid(col, core, icons, kind, 0, n, container_cols(kind));
     });
 }

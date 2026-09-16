@@ -2274,6 +2274,16 @@ dust and the impact cue read it (`DECISIONS.md` §open, impact fx v1). Left:
    `inv::header` and a `Ui` field, and it is a *taste* call about whether
    the screen wants tabs at all before it is a slice. Not a defect:
    closing the container gets you there today.
+4d. **A quick-move out of a container fills the BELT first** — our belt is
+   slots `0..HOTBAR_SLOTS` of `CONT_SELF` (`inventory.rs`: one array, one
+   verb), so "the first free slot" is a quick-use slot and looting a bag
+   puts junk where the scroll wheel cycles. The fix is one walk-order line
+   in `ui::slots::quick_move` (prefer `HOTBAR_SLOTS..`, fall back to the
+   belt when the grid is full); it is left undone because it is a **taste
+   call** — a spear landing on the belt is convenient, and a belt of loot
+   is not. ⚠ Not sourced: the reference's own target container is *not* in
+   the hook table and no primary source here names it, so the memory that
+   it targets "main" is memory. One frame answers it.
 4c. **The quick-move moves one slot per click**, so a stack that half fits
    leaves a remainder and a second right-click carries it on. The wire's
    move verb addresses one slot, so a whole-stack scatter would be N

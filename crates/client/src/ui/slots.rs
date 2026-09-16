@@ -681,6 +681,24 @@ pub fn container_title(kind: u8) -> &'static str {
     }
 }
 
+/// The name bar's text, or `None` when it would only repeat the head.
+///
+/// **Two of the three ground kinds have no instance name to give.** A
+/// bag's handle is an id and a crate's is a cell key, so neither resolves
+/// through the deploy set and [`container_name`] answers with the generic
+/// title for both (`tests/ui.rs` §P states that, deliberately) — and the
+/// panel drew that title twice, once as the section head and once in the
+/// bar under it. `BAG` over `BAG`, in the operator's own 2026-09-16
+/// frame, which is the defect `panels/inv.rs`'s own doc names about the
+/// word `INVENTORY` arriving one panel later.
+///
+/// A box gets the same treatment when its def row has not dripped in yet:
+/// `container_name` falls back to `BOX`, and a bar repeating it says
+/// nothing while looking like it should.
+pub fn container_bar(kind: u8, name: &str) -> Option<&str> {
+    (name != container_title(kind)).then_some(name)
+}
+
 /// What wear-container slot `s` is called, for the paperdoll's caption.
 ///
 /// **Keyed on the sim's own constants, not on the index.** `Player::worn`

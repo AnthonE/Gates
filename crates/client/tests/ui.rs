@@ -4045,6 +4045,32 @@ mod loot {
         );
     }
 
+    /// **And a bar that would only repeat the head is not drawn at all.**
+    /// The test above is the reason this one exists: two of the three
+    /// ground kinds have no instance name to give, so `container_name`
+    /// answers with the generic title and the panel drew it twice — `BAG`
+    /// as the section head, `BAG` again in the bar under it, which is in
+    /// the operator's own 2026-09-16 frame. A box whose def row has not
+    /// dripped in yet falls back the same way and is covered here too,
+    /// because that one is a *timing* case and the only one nobody would
+    /// reproduce by hand.
+    #[test]
+    fn a_bar_that_only_repeats_the_head_is_not_drawn() {
+        use client::ui::slots::container_bar;
+        assert_eq!(container_bar(CONT_BAG, "BAG"), None);
+        assert_eq!(container_bar(CONT_WORLD, "CRATE"), None);
+        assert_eq!(
+            container_bar(CONT_BOX, "BOX"),
+            None,
+            "a box with no def row yet"
+        );
+        assert_eq!(
+            container_bar(CONT_BOX, "LARGE BOX"),
+            Some("LARGE BOX"),
+            "the one case the bar exists for stopped being drawn"
+        );
+    }
+
     /// The badge carries its `x`, and a single is not drawn — a bare `3` in
     /// the corner of a picture of an arrow is ambiguous with a tier, and a
     /// screen of tools each labelled `1` reads as a screen of numbers.
