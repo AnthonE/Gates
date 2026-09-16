@@ -443,8 +443,11 @@ monuments on visible circular plateaus for a decade because a footprint was a
 radius — and `tests/clutter.rs` §S refuses a hard circle explicitly.
 
 Rows this struct gains when a reader exists: build-block (open for the
-operator), a height stamp (there is no carve — §1 stage 8 finds flat ground
-rather than making it), nav, water.
+operator), nav, water. ⚠ **The height stamp is no longer on that list and
+this line said it was until 2026-09-16** — the carve is armed
+(`SITE_STAMP_STRENGTH = 1.0`), so a site MAKES its flat ground rather than
+finding it, and §1 stage 8 says so twenty lines up. Two passages of this file
+disagreed about the same mechanism.
 
 ## 3 · Collision (server truth, client prediction — same code)
 
@@ -734,10 +737,13 @@ client (`DECISIONS.md` 2026-08-06), so nothing photographs this at all now.
   the **argmax**, re-derived by an independent 0.05 m march with no candidate
   allowed to score better, and that the exclusion zone is non-vacuous against
   a control haven parked off-island. "Exists and is flat" is now a number.
-  What it cannot assert yet is that the pad is *carved* flat: v0 finds a flat
-  site rather than making one (§1 stage 8), so this suite measures the
-  generator's best natural ground, and the 3.76 m is the argument for the
-  carve rather than evidence it happened.
+  ⚠ **What this suite measures is the generator's best NATURAL ground, and
+  that is no longer the ground a player stands on** — corrected 2026-09-16.
+  The 3.76 m was the argument for the carve; the carve landed 2026-08-16
+  (`SITE_STAMP_STRENGTH = 1.0`) and `tests/carve.rs` is what asserts the pad
+  is flat afterwards. This suite stays useful for what it actually holds —
+  that the argmax picks well over raw terrain — and stops being cited for a
+  gap that is closed.
 - `tests/clutter.rs` §S: the authored sites sweep their own floor, measured
   against the same seed rendered with the site list parked offshore, so all
   three claims are exact rather than statistical — the floor is grit and

@@ -2807,9 +2807,26 @@ pub fn max_cut(fp: &SiteFootprint) -> f32 {
 // footprints — so the disjointness is asserted rather than eyeballed off the
 // current numbers. `WAYSTATION_MIN_SEP_M` is the floor `haven`'s second tier
 // is selected against, pad-to-waystation and waystation-to-waystation alike.
+//
+// ⚠ **It asserts `blend_m` and asserted `scatter_m` until 2026-09-16, which
+// was the wrong quantity — but the disjointness was never actually at risk,
+// and saying which of those two things is true matters.** `stamp_of` fades to
+// zero at `blend_m` (`scatter_m + SITE_BLEND_M`), not at `scatter_m`, so this
+// block was checking a 31.0 m combined radius over stamps that reach 55.0 m:
+// it named a disc smaller than the one being summed. What it was NOT was a
+// hole, because the waystation block near `WAYSTATION_MIN_SEP_M` already
+// asserts a floor of `2 x (HAVEN_RADIUS_M + WAYSTATION_RADIUS_M)` = 62.0 m
+// for its own unrelated reason ("separation means the walk and not the
+// geometry") — stricter than the 55.0 m the carve needs, so overlap has
+// always been refused, 1,300 lines away and by accident.
+//
+// Corrected anyway, because an assert that guards a sum should name the
+// radius that sum reaches: the next tier will pick its separation by reading
+// one of these blocks, and this is the one whose comment promises the carve
+// is disjoint.
 const _: () = {
-    assert!(WAYSTATION_MIN_SEP_M > HAVEN_FOOTPRINT.scatter_m + WAYSTATION_FOOTPRINT.scatter_m);
-    assert!(WAYSTATION_MIN_SEP_M > WAYSTATION_FOOTPRINT.scatter_m * 2.0);
+    assert!(WAYSTATION_MIN_SEP_M > HAVEN_FOOTPRINT.blend_m + WAYSTATION_FOOTPRINT.blend_m);
+    assert!(WAYSTATION_MIN_SEP_M > WAYSTATION_FOOTPRINT.blend_m * 2.0);
 };
 
 /// The narrowest blend an armed carve may have, metres.

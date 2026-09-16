@@ -39,12 +39,50 @@ use sim_core::terrain::{
 /// not a gate.
 const SEEDS: [u64; 4] = [0, 1, 7, 12345];
 
+/// The seeds the density band is measured over — **wider than [`SEEDS`] on
+/// purpose, and the widening is the point.**
+///
+/// `SEEDS` is also the basis of the measured constants in this file
+/// (`CLUMP_NORM`, `FOREST_CLUMP_NORM`), so adding to it would move numbers
+/// that were derived on it. The density band derives from nothing but
+/// islands, so it can and should see more of them — and until 2026-09-16 it
+/// saw four while `tests/haven.rs` and `tests/waystation.rs` swept a
+/// DIFFERENT four (`SWEEP_SEEDS = [1, 42, 20_260_804, 0xDEAD_BEEF]`).
+/// Nothing swept both, and two of theirs sat outside this band with no change
+/// to the tree at all. A gate that holds a world-wide budget on a quarter of
+/// the worlds the repo already generates is holding it on the wrong set.
+const DENSITY_SEEDS: [u64; 8] = [0, 1, 7, 42, 12345, 20_260_731, 20_260_804, 0xDEAD_BEEF];
+
 /// TERRAIN.md §6's live-slot band, the world's density budget. **(knob)**
-/// Set from the four seeds' spread at forest density v1 (see
-/// `test_scatter_density_preserved`), roughly ±15% around it as the
-/// 8,000–12,000 band was around ~9,700.
-const LIVE_SLOTS_MIN: u32 = 13_000;
-const LIVE_SLOTS_MAX: u32 = 19_000;
+///
+/// **Re-derived 2026-09-16 from `13_000..=19_000`, over eight seeds instead
+/// of four, and the re-derivation is a correction rather than a widening.**
+/// The band was set at forest density v1 against a measurement of
+/// 16,020 / 16,666 / 14,743 / 15,660. World structure v1 (2026-09-15) moved
+/// the island under it — the Beach row went 300 → 145‰ over four times the
+/// beach, the moisture field rescaled, the treeline transferred tree weight
+/// to bush — and live slots fell 10–17% to:
+///
+/// | seed | live | | seed | live |
+/// |---|---|---|---|---|
+/// | 0 | 14,514 | | 42 | **12,913** |
+/// | 1 | 13,802 | | 20260731 | 14,319 |
+/// | 7 | 13,249 | | 20260804 | 13,592 |
+/// | 12345 | 13,890 | | 0xDEADBEEF | **12,978** |
+///
+/// ⚠ **Two of those are under the old floor and the gate did not notice**,
+/// because they are `tests/haven.rs`'s sweep seeds and not this file's. The
+/// real margin on seed 7 was 249 slots — 1.9%, not the ~12% the old comment
+/// implied. Nothing was red; the band had simply stopped describing the
+/// islands this repo makes, which is `CLAUDE.md`'s prose-drift trap arriving
+/// in a constant instead of a paragraph.
+///
+/// Set the way the old one was: ~12% under the measured minimum, ~14% over
+/// the measured maximum, so it still reddens on a row change that moves
+/// density (proven — halving the Forest tree row reads 9,824 on seed 0) and
+/// no longer sits 1.9% off an island the repo already generates.
+const LIVE_SLOTS_MIN: u32 = 11_400;
+const LIVE_SLOTS_MAX: u32 = 16_500;
 
 /// Window half-width in cells. 5x5 cells is 40 m, which is the range
 /// `TERRAIN.md` §1 stage 6 is talking about when it asks forest for "cover,
@@ -217,7 +255,7 @@ fn test_scatter_clusters() {
 /// that makes `CLUMP_NORM` a derivation instead of a preference.
 #[test]
 fn test_scatter_density_preserved() {
-    for seed in SEEDS {
+    for seed in DENSITY_SEEDS {
         let f = build(seed);
         let live: u32 = f.counts[1..].iter().sum();
         println!(
@@ -230,13 +268,12 @@ fn test_scatter_density_preserved() {
             f.counts[Occupant::CrateSlot as usize],
         );
         // TERRAIN.md §6. `tests/terrain_golden.rs` holds the same band on
-        // the shipped seed; this holds it on four, because a field with a
-        // seed-dependent mean would pass there and fail in play.
-        //
-        // 8,000–12,000 until forest density v1 (2026-09-14) raised the
-        // Forest row 350 → 700‰; measured 16,020 / 16,666 / 14,743 /
-        // 15,660 after it, against 9,825 / 10,033 / 9,337 / 9,770 before.
-        // The band is what `limits::MAX_SLOT_LIVES` is sized past.
+        // the shipped seed; this holds it on EIGHT, because a field with a
+        // seed-dependent mean would pass there and fail in play — and
+        // because four of these eight are the ones `tests/haven.rs` sweeps,
+        // which this gate could not see until 2026-09-16. `LIVE_SLOTS_MIN`
+        // carries the measurement and what moved it. The band is what
+        // `limits::MAX_SLOT_LIVES` is sized past.
         assert!(
             (LIVE_SLOTS_MIN..=LIVE_SLOTS_MAX).contains(&live),
             "seed {seed}: {live} live slots is outside TERRAIN.md §6's \
