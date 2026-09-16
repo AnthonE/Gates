@@ -54,6 +54,16 @@ pub const SLOT_SYNC_BATCH: usize = 64;
 /// Item names one catalog message carries.
 pub const CATALOG_BATCH: usize = 8;
 
+/// Loose ground stacks one sync message carries (ground items v0).
+/// Sixteen × 14 B is ~230 B, inside `MAX_EVENT_MSG_BYTES` with the
+/// headroom the catalog batch leaves. Overflow policy: the next message
+/// continues the walk, exactly as the bag walk does — and the walk
+/// restarts whenever the store moves, which for litter is often, so a
+/// batch much larger than this would spend a tick's lane on a set the
+/// next barrel invalidates. Proposed default, DECISIONS.md §open (ground
+/// items v0).
+pub const GITEM_SYNC_BATCH: usize = 16;
+
 /// Recipe rows one recipes message carries (a full row is ~22 B; four
 /// keep the drip well under the message cap).
 pub const RECIPE_BATCH: usize = 4;
@@ -335,7 +345,13 @@ const SUB_WOUNDED: u32 = 56;
 /// asymmetry is the point: a kill is the feed's business, a recovery is
 /// yours.
 const SUB_RECOVERED: u32 = 57;
-const SUB_MAX: u32 = SUB_RECOVERED;
+/// One batch of the loose-stack walk (ground items v0, wire v65) — what a
+/// smashed barrel left lying on the island. `BAG_SYNC`'s shape one store
+/// over, plus the two fields a bag deliberately does not carry: **what the
+/// stack is and how many**, because a loose stack has no panel to open and
+/// the client has to draw and name the thing itself.
+const SUB_GITEM_SYNC: u32 = 58;
+const SUB_MAX: u32 = SUB_GITEM_SYNC;
 /// Width of the recovery chance on both wounded messages: per mille, so
 /// 0..=1000 in ten bits. `sim_core::wound::recover_chance_pm` tops out at
 /// 450 by construction; the field is sized to the unit rather than to
@@ -531,6 +547,11 @@ const ARCH_BITS: u32 = 4;
 const PLACEMENT_BITS: u32 = 3;
 const STOCK_COUNT_BITS: u32 = 3;
 const BAG_SYNC_COUNT_BITS: u32 = 5;
+/// Width of the loose-stack batch count. Five bits for `GITEM_SYNC_BATCH`'s
+/// 16, same as the bag's and with the same spare — the batch is what the
+/// drip sends per tick, not what the store holds.
+const GITEM_SYNC_COUNT_BITS: u32 = 5;
+const _: () = assert!(GITEM_SYNC_BATCH < (1usize << GITEM_SYNC_COUNT_BITS));
 /// Own-bag count (`SUB_BAGS`). `BAG_CAP` is 8 and a *count* of 8 needs
 /// four bits, so 9..15 are forgeable and the decoder refuses them —
 /// `CONT_COUNT_BITS`' posture, written down because "8 fits in three
@@ -1211,6 +1232,15 @@ pub enum EventMsg {
     BagSync {
         reset: bool,
         recs: [WireBag; BAG_SYNC_BATCH],
+        count: u8,
+    },
+    /// One batch of the loose-stack walk (ground items v0). `reset` clears
+    /// the client's set first, and the walk restarts whenever the store
+    /// moves — which for litter is every barrel, so a client's set is
+    /// rebuilt rather than diffed.
+    GItemSync {
+        reset: bool,
+        recs: [WireGItem; GITEM_SYNC_BATCH],
         count: u8,
     },
     /// The contents of the container this client has open — the answer to
@@ -2396,6 +2426,86 @@ impl WireBag {
     }
 }
 
+/// One loose stack on the ground, narrowed to what crosses (ground items
+/// v0, wire v65).
+///
+/// **`item` and `count` ride where a bag's do not**, and the asymmetry is
+/// the whole difference between the two stores: a bag is a container you
+/// open, so its contents answer a `ContSync` when you do, and shipping
+/// them unasked would put the shard's loot on every wire. A loose stack
+/// has nothing to open — the client draws the thing itself and the prompt
+/// names it — so those two fields ARE the object. `cond` deliberately
+/// stays behind: nothing on screen reads a loose stack's condition, and
+/// durability V7 means a stack carrying one is a stack of exactly 1, so
+/// the pip has nothing to divide either.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WireGItem {
+    pub id: u32,
+    pub qx: i32,
+    pub qy: i32,
+    pub qz: i32,
+    pub item: u16,
+    pub count: u16,
+}
+
+impl WireGItem {
+    pub fn of(g: &sim_core::grounditem::GroundItemRec) -> Self {
+        Self {
+            id: g.id,
+            qx: g.qx,
+            qy: g.qy,
+            qz: g.qz,
+            item: g.stack.item,
+            count: g.stack.count,
+        }
+    }
+}
+
+/// A loose stack's position rides the same windows a bag's and a body's do
+/// — the same quanta — and a stack outside the island is a server bug
+/// surfacing, refused here rather than drawn in somebody's base. `count`
+/// of zero is refused too: an empty stack is a record the sim cannot hold
+/// (`GroundItems::scatter` skips them), so it would be the encoder
+/// inventing one.
+fn write_gitem(w: &mut BitWriter, g: &WireGItem) -> Result<(), WireError> {
+    if !(0..(1i64 << POS_XZ_BITS)).contains(&(g.qx as i64))
+        || !(0..(1i64 << POS_XZ_BITS)).contains(&(g.qz as i64))
+        || !(0..(1i64 << POS_Y_BITS)).contains(&(g.qy as i64 + POS_Y_BIAS as i64))
+        || g.count == 0
+        || g.item as usize >= MAX_ITEM_DEFS
+    {
+        return Err(WireError::Range);
+    }
+    w.write(g.id, 32)?;
+    w.write(g.qx as u32, POS_XZ_BITS)?;
+    w.write((g.qy + POS_Y_BIAS) as u32, POS_Y_BITS)?;
+    w.write(g.qz as u32, POS_XZ_BITS)?;
+    // Sixteen, like every other item id on this lane (`encode_event_inv`,
+    // the catalog, the slot syncs) rather than a narrower field derived
+    // from `MAX_ITEM_DEFS`: one width for one meaning, so a table that
+    // grows past a packed field cannot silently truncate an id.
+    w.write(g.item as u32, 16)?;
+    w.write(g.count as u32, 16)?;
+    Ok(())
+}
+
+fn read_gitem(r: &mut BitReader) -> Result<WireGItem, WireError> {
+    let g = WireGItem {
+        id: r.read(32)?,
+        qx: r.read(POS_XZ_BITS)? as i32,
+        qy: r.read(POS_Y_BITS)? as i32 - POS_Y_BIAS,
+        qz: r.read(POS_XZ_BITS)? as i32,
+        item: r.read(16)? as u16,
+        count: r.read(16)? as u16,
+    };
+    // The client's own door: a zero count would draw a picture of nothing
+    // and offer a prompt that takes nothing.
+    if g.count == 0 {
+        return Err(WireError::Malformed);
+    }
+    Ok(g)
+}
+
 /// A bag's position must sit inside the same windows an entity's does —
 /// they are the same quanta, and a bag outside the island is a server bug
 /// surfacing, refused here rather than wrapped into someone's base.
@@ -2443,6 +2553,26 @@ pub fn encode_event_bag_sync(
     w.write(recs.len() as u32, BAG_SYNC_COUNT_BITS)?;
     for b in recs {
         write_bag(&mut w, b)?;
+    }
+    Ok(w.finish())
+}
+
+/// One batch of the loose-stack walk — `encode_event_bag_sync`'s shape one
+/// store over. An empty batch is legal only as a `reset`, which is how the
+/// server says *the ground is clear now* without a record to point at.
+pub fn encode_event_gitem_sync(
+    reset: bool,
+    recs: &[WireGItem],
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if recs.len() > GITEM_SYNC_BATCH || (recs.is_empty() && !reset) {
+        return Err(WireError::Cap);
+    }
+    let mut w = begin(buf, SUB_GITEM_SYNC)?;
+    w.write_bit(reset)?;
+    w.write(recs.len() as u32, GITEM_SYNC_COUNT_BITS)?;
+    for g in recs {
+        write_gitem(&mut w, g)?;
     }
     Ok(w.finish())
 }
@@ -3666,6 +3796,22 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 *rec = read_bag(&mut r)?;
             }
             EventMsg::BagSync {
+                reset,
+                recs,
+                count: count as u8,
+            }
+        }
+        SUB_GITEM_SYNC => {
+            let reset = r.read_bit()?;
+            let count = r.read(GITEM_SYNC_COUNT_BITS)? as usize;
+            if count > GITEM_SYNC_BATCH || (count == 0 && !reset) {
+                return Err(WireError::Malformed);
+            }
+            let mut recs = [WireGItem::default(); GITEM_SYNC_BATCH];
+            for rec in recs.iter_mut().take(count) {
+                *rec = read_gitem(&mut r)?;
+            }
+            EventMsg::GItemSync {
                 reset,
                 recs,
                 count: count as u8,
@@ -5184,6 +5330,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/grounditem.rs"),
         },
         Module {
+            file: "grounditem.rs",
+            src: include_str!("../../sim-core/src/grounditem.rs"),
+        },
+        Module {
             file: "input.rs",
             src: include_str!("../../sim-core/src/input.rs"),
         },
@@ -5913,6 +6063,12 @@ mod wire_domains {
             "DEPLOY_DEFS_COUNT_BITS",
             "STOCK_COUNT_BITS",
             "BAG_SYNC_COUNT_BITS",
+            // The loose-stack batch (ground items v0): a length bounded by
+            // `GITEM_SYNC_BATCH`, which is this module's own constant and
+            // not a sim-core enumeration — so a magnitude, exactly like
+            // the bag batch beside it, and guarded the same way by the
+            // compile-time assert at the declaration.
+            "GITEM_SYNC_COUNT_BITS",
             // A count bounded by `BAG_CAP`, which is a sim-core *cap* and
             // not an enumeration — `INV_COUNT_BITS`' and
             // `STOCK_COUNT_BITS`' shape, so it is classified with them.

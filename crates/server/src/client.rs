@@ -251,6 +251,27 @@ pub struct ClientNetState {
     pub bag_sync_cursor: usize,
     /// The next bag batch carries the reset bit.
     pub bag_sync_reset: bool,
+    /// Loose-stack walk cursor (ground items v0), the bag walk's
+    /// semantics — the store swap-removes, so a take or a despawn
+    /// mid-walk restarts it.
+    pub gitem_sync_cursor: usize,
+    /// The next loose-stack batch carries the reset bit.
+    pub gitem_sync_reset: bool,
+    /// What the store looked like when this client's walk was last
+    /// complete: `(next_id, len)`.
+    ///
+    /// **A fingerprint rather than a length**, and that is the whole
+    /// reason this field exists: litter churns — every barrel adds, every
+    /// take and every despawn removes — and a length alone is steady
+    /// across one-in-one-out, which is exactly the shape `CLAUDE.md`'s
+    /// ring-handoff trap describes ("its settle returned on ring COUNTS,
+    /// which the old code keeps steady while the sets are wrong"). Every
+    /// insert bumps `next_id`, so the pair is complete.
+    ///
+    /// It is a *cursor*, not sim state: nothing hashes it, a reboot
+    /// restarts it at zero and the client re-walks, which is correct
+    /// rather than merely harmless.
+    pub gitem_seen: (u32, usize),
     /// Which ground container this client has open, or `CONT_SELF` for
     /// none, with `open_cont_handle` naming it (a bag id, or a packed
     /// `box_key`) exactly as `Command::Move` names one.
@@ -362,6 +383,9 @@ impl ClientNetState {
             deploy_sync_cursor: 0,
             deploy_sync_reset: true,
             bag_sync_cursor: 0,
+            gitem_sync_cursor: 0,
+            gitem_sync_reset: true,
+            gitem_seen: (0, 0),
             bag_sync_reset: true,
             open_cont_kind: CONT_SELF,
             open_cont_handle: 0,
@@ -400,6 +424,9 @@ impl ClientNetState {
         self.deploy_sync_reset = true;
         self.bag_sync_cursor = 0;
         self.bag_sync_reset = true;
+        self.gitem_sync_cursor = 0;
+        self.gitem_sync_reset = true;
+        self.gitem_seen = (0, 0);
         // The open container is *closed*, not resynced. Every other line
         // here restarts a walk the client is owed; this one is the only
         // piece of event-lane state the client can hold an opinion about,

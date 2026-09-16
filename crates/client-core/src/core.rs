@@ -12,6 +12,7 @@ use crate::predict::Predictor;
 use crate::view::{Applied, ClientView};
 use protocol::{
     decode_event, encode_input, ChatText, EventMsg, InputDatagram, ItemCatalog, WireBag, WireError,
+    WireGItem,
 };
 use sim_core::build::{BuildContent, PieceRec};
 use sim_core::collide::{ColIndex, Part};
@@ -22,7 +23,7 @@ use sim_core::input::InputFrame;
 use sim_core::inventory::{CONT_SELF, CONT_WEAR};
 use sim_core::limits::{
     CRAFT_QUEUE, HEARTH_STOCK_ROWS, HOTBAR_SLOTS, INV_SLOTS, MAX_BACKPACKS, MAX_BOXES, MAX_DEPLOYS,
-    MAX_PIECES, MAX_SLOT_LIVES, WEAR_SLOTS,
+    MAX_GROUND_ITEMS, MAX_PIECES, MAX_SLOT_LIVES, WEAR_SLOTS,
 };
 use sim_core::movement::POS_XZ_Q;
 use sim_core::occupy::{Harvested, Occupants, SlotCache};
@@ -298,6 +299,74 @@ pub const APPLIED2_SPILL: u32 = 1 << 4;
 /// that wants "what do I own" can read the field any time — it is a
 /// latched set, not a ring, and it is only ever replaced whole.
 pub const APPLIED2_BAGS: u32 = 1 << 5;
+
+/// The loose-stack set changed (`EventMsg::GItemSync`, wire v65) — re-read
+/// `ground_items()`. Word 1 for `APPLIED2_CHARGE`'s reason.
+///
+/// Raised on a reset as well as on an insert, because a reset with no
+/// records **is** the message that says the ground is clear: the last
+/// stack was taken or despawned, and a client that only watched inserts
+/// would keep drawing it.
+pub const APPLIED2_GITEMS: u32 = 1 << 6;
+
+/// The client's mirror of the loose stacks lying on the ground (ground
+/// items v0). `BagSet`'s shape one store over, with one difference that
+/// matters: **a stack's identity is its id and its contents ride with
+/// it**, so `insert` replaces a record it already holds rather than
+/// skipping it. A bag never moves and never changes, so a repeat there is
+/// a no-op; a loose stack's `count` is the thing the prompt reads, and a
+/// server that re-sends one has re-sent it for a reason.
+pub struct GItemSet {
+    recs: Box<[WireGItem]>,
+    len: usize,
+}
+
+impl GItemSet {
+    fn new() -> Self {
+        Self {
+            recs: vec![WireGItem::default(); MAX_GROUND_ITEMS].into_boxed_slice(),
+            len: 0,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn entries(&self) -> &[WireGItem] {
+        &self.recs[..self.len]
+    }
+
+    fn clear(&mut self) {
+        self.len = 0;
+    }
+
+    /// True if the set changed. An id already held is **replaced**, so a
+    /// partly-taken stack's new count reaches the prompt.
+    fn insert(&mut self, rec: WireGItem) -> bool {
+        if let Some(i) = self.recs[..self.len].iter().position(|r| r.id == rec.id) {
+            if self.recs[i] == rec {
+                return false;
+            }
+            self.recs[i] = rec;
+            return true;
+        }
+        if self.len == self.recs.len() {
+            // Bounded like the server's store, so this is unreachable
+            // while both caps agree — and dropped rather than panicking
+            // if they ever stop, which is the sync walk's existing
+            // bounded-staleness posture (`HarvestedSet`).
+            return false;
+        }
+        self.recs[self.len] = rec;
+        self.len += 1;
+        true
+    }
+}
 
 /// The client's mirror of the server's harvested-cell set — which scatter
 /// slots currently have no node standing. Bounded like the server's store
@@ -1259,6 +1328,9 @@ pub struct ClientCore {
     /// Standing death backpacks, server truth (no prediction: a bag
     /// appears when a body falls, which the client cannot foresee).
     pub bags: BagSet,
+    /// Loose stacks on the ground, as the server last stated them
+    /// (ground items v0). Read through `ground_items()`.
+    pub gitems: GItemSet,
     /// Deployable records the last `on_stream` call added or replaced.
     deploy_changes: [DeployRec; protocol::DEPLOY_SYNC_BATCH],
     n_deploy_changes: usize,
@@ -1480,6 +1552,7 @@ impl ClientCore {
             build_refusal_len: 0,
             deploys: DeploySet::new(),
             bags: BagSet::new(),
+            gitems: GItemSet::new(),
             deploy_changes: [DeployRec::default(); protocol::DEPLOY_SYNC_BATCH],
             n_deploy_changes: 0,
             deploy_defs: DeployContent::EMPTY,
@@ -1547,6 +1620,18 @@ impl ClientCore {
     /// that has not been told it owns a bag must not claim one.
     pub fn own_bags(&self) -> &[BagAnchor] {
         &self.own_bags[..self.own_bags_count]
+    }
+
+    /// The loose stacks the server last said are lying on the ground
+    /// (ground items v0). What the renderer draws a mesh for and what
+    /// `ui::interact` resolves the take prompt against.
+    ///
+    /// Server truth, never predicted: a stack is an object anybody can
+    /// take, so a client that drew its own guess would offer a prompt for
+    /// something that is already in somebody else's pack — the container
+    /// divergence one store over, in a shape a player walks up to.
+    pub fn ground_items(&self) -> &[WireGItem] {
+        self.gitems.entries()
     }
 
     /// Whether any own bag's cooldown had lapsed as of the last `Bags`
@@ -1953,6 +2038,17 @@ impl ClientCore {
                 for &rec in recs.iter().take(count as usize) {
                     if self.bags.insert(rec) {
                         flags |= APPLIED_BAGS;
+                    }
+                }
+            }
+            EventMsg::GItemSync { reset, recs, count } => {
+                if reset {
+                    self.gitems.clear();
+                    self.applied2 |= APPLIED2_GITEMS;
+                }
+                for &rec in recs.iter().take(count as usize) {
+                    if self.gitems.insert(rec) {
+                        self.applied2 |= APPLIED2_GITEMS;
                     }
                 }
             }

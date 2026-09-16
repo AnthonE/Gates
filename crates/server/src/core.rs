@@ -16,17 +16,18 @@ use protocol::{
     encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
     encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
     encode_event_door, encode_event_drank, encode_event_gather, encode_event_gather_refused,
-    encode_event_health, encode_event_hit, encode_event_hurt, encode_event_impact,
-    encode_event_inv, encode_event_knock, encode_event_known, encode_event_move_refused,
-    encode_event_moved, encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
-    encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
-    encode_event_recovered, encode_event_reload, encode_event_reload_refused, encode_event_removed,
-    encode_event_research, encode_event_research_refused, encode_event_research_rows,
-    encode_event_respawn, encode_event_shot, encode_event_slot_change, encode_event_slot_sync,
-    encode_event_stock, encode_event_struct_hit, encode_event_swing, encode_event_vitals,
-    encode_event_weak_mark, encode_event_wounded, ActionMsg, ChatMsg, EntityState, InputDatagram,
-    InvSlot, ItemCatalog, SnapshotEncoder, SnapshotHeader, WireBag, WireError, BAG_SYNC_BATCH,
-    CONT_SYNC_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
+    encode_event_gitem_sync, encode_event_health, encode_event_hit, encode_event_hurt,
+    encode_event_impact, encode_event_inv, encode_event_knock, encode_event_known,
+    encode_event_move_refused, encode_event_moved, encode_event_oven, encode_event_piece_defs,
+    encode_event_piece_placed, encode_event_piece_repaired, encode_event_piece_sync,
+    encode_event_recipes, encode_event_recovered, encode_event_reload, encode_event_reload_refused,
+    encode_event_removed, encode_event_research, encode_event_research_refused,
+    encode_event_research_rows, encode_event_respawn, encode_event_shot, encode_event_slot_change,
+    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_swing,
+    encode_event_vitals, encode_event_weak_mark, encode_event_wounded, ActionMsg, ChatMsg,
+    EntityState, InputDatagram, InvSlot, ItemCatalog, SnapshotEncoder, SnapshotHeader, WireBag,
+    WireError, WireGItem, BAG_SYNC_BATCH, CONT_SYNC_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH,
+    MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::backpack::BAG_GONE_MAX;
 use sim_core::build::{damage_band, BuildContent, PieceRec, LOC_PLANE};
@@ -3093,6 +3094,53 @@ impl ShardCore {
                         let c = &mut self.clients[slot];
                         c.bag_sync_reset = false;
                         c.bag_sync_cursor = at + n;
+                    } else {
+                        return;
+                    }
+                }
+                Err(_) => ShardStats::bump(&stats.encode_range_errors),
+            }
+        }
+
+        // Loose-stack walk (ground items v0), drip-fed like the bag walk.
+        //
+        // **Keyed on the store's fingerprint rather than on an event**,
+        // which is the one thing this walk does differently and the
+        // reason is in `grounditem.rs`: a scatter and a despawn are both
+        // silent, because litter does not deserve the reliable lane.
+        // `(next_id, len)` is complete — every insert bumps `next_id`, so
+        // a barrel that dropped one stack while a player took another
+        // still reads as a change where a length would not.
+        let c = &self.clients[slot];
+        let fp = (
+            self.world.ground_items.next_id(),
+            self.world.ground_items.len(),
+        );
+        if c.gitem_seen != fp {
+            let c = &mut self.clients[slot];
+            c.gitem_sync_cursor = 0;
+            c.gitem_sync_reset = true;
+            c.gitem_seen = fp;
+        }
+        let c = &self.clients[slot];
+        let n_gitems = self.world.ground_items.len();
+        if c.gitem_sync_reset || c.gitem_sync_cursor < n_gitems {
+            let at = c.gitem_sync_cursor.min(n_gitems);
+            let n = GITEM_SYNC_BATCH.min(n_gitems - at);
+            let mut batch = [WireGItem::default(); GITEM_SYNC_BATCH];
+            for (i, g) in self.world.ground_items.entries()[at..][..n]
+                .iter()
+                .enumerate()
+            {
+                batch[i] = WireGItem::of(g);
+            }
+            match encode_event_gitem_sync(c.gitem_sync_reset, &batch[..n], &mut self.ev_buf) {
+                Ok(len) => {
+                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                        ShardStats::bump(&stats.ev_sent);
+                        let c = &mut self.clients[slot];
+                        c.gitem_sync_reset = false;
+                        c.gitem_sync_cursor = at + n;
                     } else {
                         return;
                     }
