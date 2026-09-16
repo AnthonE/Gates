@@ -27,8 +27,14 @@ use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use bevy::tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
 use sim_core::terrain::{self, SEA_LEVEL};
+use std::sync::Arc;
 
-use super::ground_splat::{road_coverage, GroundMaterial, GroundSplat, ATTRIBUTE_ROAD};
+use super::ground_splat::{
+    road_coverage, GroundMaterial, GroundSplat, ATTRIBUTE_MARKINGS, ATTRIBUTE_ROAD,
+};
+use super::road_markings::RoadChart;
+#[cfg(target_arch = "wasm32")]
+use super::road_markings::RoadChartBuilder;
 use super::textures::GroundArrays;
 use super::{Eye, WorldEntity, WorldId};
 
@@ -397,6 +403,10 @@ pub struct Ring {
     near_tasks: HashMap<(i32, i32), Task<Mesh>>,
     ground: Option<Handle<GroundMaterial>>,
     far_task: Option<Task<Mesh>>,
+    road_chart: Option<Arc<RoadChart>>,
+    road_task: Option<Task<Arc<RoadChart>>>,
+    #[cfg(target_arch = "wasm32")]
+    road_builder: Option<RoadChartBuilder>,
     far_started: bool,
     far_done: bool,
 }
@@ -421,7 +431,12 @@ impl Ring {
     }
     /// Builds in flight — for a test that has to say "one task per chunk, ever".
     pub fn in_flight(&self) -> usize {
-        self.near_tasks.len() + usize::from(self.far_task.is_some())
+        let tasks = self.near_tasks.len()
+            + usize::from(self.far_task.is_some())
+            + usize::from(self.road_task.is_some());
+        #[cfg(target_arch = "wasm32")]
+        let tasks = tasks + usize::from(self.road_builder.is_some());
+        tasks
     }
     /// The far mesh alone. Read by the loading screen, which reports the near
     /// ring as a fraction and this as the bit it is: the whole island at 8 m
@@ -1021,6 +1036,7 @@ pub fn heightfield(
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
     mesh.insert_attribute(ATTRIBUTE_ROAD, roads);
+    mesh.insert_attribute(ATTRIBUTE_MARKINGS, vec![[0.0f32; 4]; count]);
     // The two scalar modifiers. `UV_1` because it is the one remaining
     // interpolated slot Bevy's standard vertex stage already forwards to the
     // fragment (`forward_io::VertexOutput::uv_b`). Road coverage has its own
@@ -1077,6 +1093,33 @@ pub fn stream(
     };
     let pool = AsyncComputeTaskPool::get();
     let (seed, haven) = (world.seed, world.haven);
+    // Native builds once on a worker. Browser construction advances only one
+    // bounded batch per app frame, guaranteeing an event-loop turn between
+    // batches (an async yield can be repolled inside the same microtask).
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if let Some(task) = ring.road_task.as_mut() {
+            if let Some(chart) = block_on(future::poll_once(task)) {
+                ring.road_chart = Some(chart);
+                ring.road_task = None;
+            }
+        }
+        if ring.road_chart.is_none() && ring.road_task.is_none() {
+            ring.road_task = Some(pool.spawn(async move {
+                Arc::new(RoadChart::build(seed, CHUNK_M / (NEAR_N - 1) as f32))
+            }));
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    if ring.road_chart.is_none() {
+        let builder = ring
+            .road_builder
+            .get_or_insert_with(|| RoadChartBuilder::new(seed, CHUNK_M / (NEAR_N - 1) as f32));
+        if let Some(chart) = builder.advance() {
+            ring.road_chart = Some(Arc::new(chart));
+            ring.road_builder = None;
+        }
+    }
 
     // ── Land whatever finished ────────────────────────────────────────────
     //
@@ -1174,6 +1217,9 @@ pub fn stream(
     ring.near_tasks
         .retain(|(bx, bz), _| (*bx - cx).abs() <= NEAR_RADIUS && (*bz - cz).abs() <= NEAR_RADIUS);
 
+    let Some(chart) = ring.road_chart.clone() else {
+        return;
+    };
     let mut queued = 0usize;
     for dz in -NEAR_RADIUS..=NEAR_RADIUS {
         for dx in -NEAR_RADIUS..=NEAR_RADIUS {
@@ -1191,11 +1237,39 @@ pub fn stream(
             let ox = key.0 as f32 * CHUNK_M;
             let oz = key.1 as f32 * CHUNK_M;
             let step = CHUNK_M / (NEAR_N - 1) as f32;
+            let chart = chart.clone();
             ring.near_tasks.insert(
                 key,
-                pool.spawn(async move { heightfield(seed, &haven, ox, oz, NEAR_N, step, 0.0) }),
+                pool.spawn(async move {
+                    let mut mesh = heightfield(seed, &haven, ox, oz, NEAR_N, step, 0.0);
+                    apply_road_markings(&mut mesh, &chart, &haven);
+                    mesh
+                }),
             );
             queued += 1;
         }
     }
+}
+
+/// Coordinates on a support band, with independent validity. Rejecting any
+/// triangle that interpolates validity below one (apart from float roundoff) keeps absent coordinates
+/// from manufacturing a stripe at zero. Far meshes never call this function.
+pub fn apply_road_markings(mesh: &mut Mesh, chart: &RoadChart, haven: &terrain::Haven) {
+    let Some(bevy::mesh::VertexAttributeValues::Float32x3(positions)) =
+        mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+    else {
+        return;
+    };
+    let markings: Vec<[f32; 4]> = positions
+        .iter()
+        .map(|p| {
+            if terrain::side_band(haven, p[0], p[2]) != terrain::RoadBand::Off {
+                return [0.0; 4];
+            }
+            chart
+                .at(p[0], p[2])
+                .map_or([0.0; 4], |c| [c.across, c.phase[0], c.phase[1], 1.0])
+        })
+        .collect();
+    mesh.insert_attribute(ATTRIBUTE_MARKINGS, markings);
 }

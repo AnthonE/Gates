@@ -1,5 +1,5 @@
 // Terrain-only vertex stage. Bevy still owns every transform and PBR varying;
-// this adds one independent interpolant without stealing UVs or splat weights.
+// this adds road interpolants without stealing UVs or splat weights.
 #import bevy_pbr::{
     mesh_functions,
     forward_io::Vertex,
@@ -21,10 +21,11 @@ struct GroundVertexOutput {
     @location(7) @interpolate(flat) visibility_range_dither: i32,
 #endif
     @location(8) road: vec2<f32>,
+    @location(9) markings: vec4<f32>,
 }
 
 @vertex
-fn vertex(in: Vertex, @location(8) road: vec2<f32>) -> GroundVertexOutput {
+fn vertex(in: Vertex, @location(8) road: vec2<f32>, @location(9) markings: vec4<f32>) -> GroundVertexOutput {
     var out: GroundVertexOutput;
     let world_from_local = mesh_functions::get_world_from_local(in.instance_index);
     out.world_position = mesh_functions::mesh_position_local_to_world(
@@ -44,5 +45,6 @@ fn vertex(in: Vertex, @location(8) road: vec2<f32>) -> GroundVertexOutput {
         in.instance_index, world_from_local[3]);
 #endif
     out.road = road;
+    out.markings = markings;
     return out;
 }
