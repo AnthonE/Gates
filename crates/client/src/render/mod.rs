@@ -137,6 +137,8 @@ pub mod shot;
 // `crate::report` owns what goes in them; this owns nodes, keys and the live
 // facts. Beside `shot` because they share a directory and a keypress.
 pub mod report;
+/// Bounded client-only coordinates for paint on the authoritative road.
+pub mod road_markings;
 pub mod sky;
 // What players built. Distinct from `props`, which is the world the seed
 // makes: this is the world other players made, and it arrives on the wire.

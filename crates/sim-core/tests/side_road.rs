@@ -583,3 +583,49 @@ fn a_side_road_joins_more_ring_than_it_is() {
         }
     }
 }
+
+/// At a junction, either road's cleared surface must beat the other's
+/// shoulder. Returning the ring's Shoulder early left a transverse strip of
+/// vegetation and shoulder slots across an otherwise valid side carriageway.
+#[test]
+fn a_carriageway_wins_over_the_other_roads_shoulder_at_a_junction() {
+    let step = ROAD_HALF_W / 2.0;
+    let span = (ROAD_SHOULDER_HALF_W / step) as i32;
+    let mut side_over_ring = 0;
+    let mut ring_over_side = 0;
+    for seed in SEEDS {
+        let h = terrain::haven(seed);
+        let mut lattice = terrain::Lattice::new();
+        for r in h.roads.iter().filter(|r| r.live) {
+            let len = ((r.px - r.rx) * (r.px - r.rx) + (r.pz - r.rz) * (r.pz - r.rz)).sqrt();
+            let (ux, uz) = ((r.px - r.rx) / len, (r.pz - r.rz) / len);
+            for along in -span..=span * 2 {
+                for across in -span..=span {
+                    let x = r.rx + ux * along as f32 * step - uz * across as f32 * step;
+                    let z = r.rz + uz * along as f32 * step + ux * across as f32 * step;
+                    let ring = terrain::ring_band(seed, x, z);
+                    let side = terrain::side_band(&h, x, z);
+                    let both = terrain::road_band(seed, &h, x, z);
+                    assert_eq!(
+                        terrain::road_band_memo(&mut lattice, seed, &h, x, z),
+                        both,
+                        "seed {seed} at ({x}, {z}): direct and memo junction masks disagree"
+                    );
+                    if ring == RoadBand::Shoulder && side == RoadBand::Carriageway {
+                        side_over_ring += 1;
+                        assert_eq!(both, RoadBand::Carriageway, "seed {seed} at ({x}, {z}): the ring shoulder interrupts the side carriageway");
+                    }
+                    if side == RoadBand::Shoulder && ring == RoadBand::Carriageway {
+                        ring_over_side += 1;
+                        assert_eq!(both, RoadBand::Carriageway, "seed {seed} at ({x}, {z}): the side shoulder interrupts the ring carriageway");
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        side_over_ring > 0 && ring_over_side > 0,
+        "the junction sweep must exercise both overlap directions"
+    );
+    println!("junction overlaps: {side_over_ring} side surfaces over ring shoulders, {ring_over_side} ring surfaces over side shoulders; direct and memo agree");
+}
