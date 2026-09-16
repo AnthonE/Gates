@@ -83,6 +83,11 @@ fn app_pinned(pin: DayPin) -> App {
     app.add_plugins(MinimalPlugins);
     app.init_resource::<Feed>();
     app.insert_resource(pin);
+    // `day_night` reads the player's SHADOWS row so that a sun the player
+    // turned off does not come back at the next sunrise (`rig.rs`, one
+    // writer). The defaults have it on, which is what every assertion below
+    // about `shadows_enabled` is written against.
+    app.init_resource::<client::render::Settings>();
     app.add_systems(Update, day_night);
     // The rig's two entities, at their spawn-time shapes.
     app.world_mut().spawn((
@@ -437,4 +442,64 @@ fn the_pin_reaches_the_sun_and_the_ambient() {
     set_tick(&mut live, 40_500);
     let d = read(&mut live);
     assert_ne!(c, d, "an unpinned run must still follow the server's clock");
+}
+
+/// **The player's SHADOWS row survives the next sunrise.**
+///
+/// `day_night` writes `shadows_enabled` every frame because the sun has to go
+/// dark at night — so it is the ONE writer of that field, and the settings row
+/// is ANDed in here rather than written by `quality::apply`. Two systems
+/// writing one field is `CLAUDE.md`'s clean-merge-that-is-not-correct: both
+/// halves are right alone, git merges them without a conflict, and whichever
+/// ran second would win. The symptom would be a player who turned shadows off
+/// and found them back at dawn, with nothing red anywhere.
+#[test]
+fn the_sun_obeys_the_settings_row_at_every_hour() {
+    let mut app = app();
+    // Noon, shadows on: the baseline every other assertion here rests on.
+    set_tick(&mut app, tick_at(DAY_PORTION * 0.5));
+    assert!(
+        sun_casts(&mut app),
+        "the noon sun must cast with the row on"
+    );
+
+    app.world_mut()
+        .resource_mut::<client::render::Settings>()
+        .gfx
+        .shadows = false;
+    set_tick(&mut app, tick_at(DAY_PORTION * 0.5));
+    assert!(
+        !sun_casts(&mut app),
+        "the SHADOWS row is off and the noon sun is still casting — the row \
+         does nothing"
+    );
+
+    // Through a night and back into daylight: the hour must not restore it.
+    set_tick(&mut app, tick_at(DAY_PORTION + (1.0 - DAY_PORTION) * 0.5));
+    assert!(!sun_casts(&mut app), "a sun under the ground casts nothing");
+    set_tick(&mut app, tick_at(DAY_PORTION * 0.25));
+    assert!(
+        !sun_casts(&mut app),
+        "the next morning turned the player's shadows back on"
+    );
+
+    // And back on is back on, at an hour that has daylight in it.
+    app.world_mut()
+        .resource_mut::<client::render::Settings>()
+        .gfx
+        .shadows = true;
+    set_tick(&mut app, tick_at(DAY_PORTION * 0.25));
+    assert!(
+        sun_casts(&mut app),
+        "turning the row back on must restore it"
+    );
+}
+
+fn sun_casts(app: &mut App) -> bool {
+    let world = app.world_mut();
+    world
+        .query_filtered::<&DirectionalLight, With<Sun>>()
+        .single(world)
+        .unwrap()
+        .shadows_enabled
 }

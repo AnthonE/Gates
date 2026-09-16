@@ -59,6 +59,30 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
 
 # Buildable now — a loop can pick any of these
 
+## 0gfx · Graphics rows landed — three things they left *(client lane)*
+
+Eight settable rows + the preset ladder shipped 2026-09-16 (`DECISIONS.md`
+§open, graphics rows v0); the browser's one-cascade bug is fixed. What remains:
+
+1. **SMAA and bloom have never run in a browser.** They are choosable there
+   now and the DEFAULT is unchanged (`preset(Low)` has both off), so nothing
+   that ships today moved — but Bevy's SMAA wants a standalone
+   `TextureFormat::Stencil8` attachment and nobody has asked WebGL2 for one.
+   `quality::effective` refuses SSAO by measurement and these two by nothing.
+   **The test is one click in the page**, not a gate: turn each on, look, and
+   if it dies, they join the clamp with the reason beside them.
+2. **The 8 m far mesh casts shadows onto the 1 m near mesh.** Measured on
+   seed 20260731: the far sheet rides ABOVE the drawn near ground on 10.6 % of
+   the island's land, mean +0.19 m, worst **+2.26 m** — and +0.67 m inside
+   90 m of the spawn. It is a caster (`terrain_mesh.rs`, the `Static` spawn,
+   no `NotShadowCaster`), so those patches lay coarse false shadow at 8 m
+   resolution. `NotShadowCaster` is NOT the fix — it would also delete the
+   real terrain shadows between the near ring's 160 m and `High`'s 200 m.
+   Re-measure with `far_ground_y` minus `terrain::ground` before choosing.
+3. **A render scale is still the biggest unclaimed lever on a weak GPU** and
+   still not a row: Bevy renders to the window surface, so it needs an
+   off-screen `Image` target and a blit — its own slice, not a table entry.
+
 ## 0wnd · Down is built; the hands that pick you up are not *(sim+client lane)*
 
 Wounded v0 landed 2026-09-13 (`DECISIONS.md` §open "wounded v0",

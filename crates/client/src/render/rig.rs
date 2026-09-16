@@ -339,10 +339,10 @@ pub fn setup(
     // `downlevel_webgl2_defaults()` allows **zero**. Bevy's SSAO plugin
     // already declines to load on this backend and logs so; the `#[require]`
     // fires regardless, so the cost is paid and then the layout kills the
-    // module. `quality::tier` clamps the browser to `Low` for the same
-    // reason — this is the other half, because the rig spawns the DEFAULT
-    // tier rather than the player's and would insert it before `apply` ever
-    // runs.
+    // module. `quality::effective` refuses the row on that target for the
+    // same reason — this is the other half, because the rig spawns the
+    // DEFAULT settings rather than the player's and would insert it before
+    // `apply` ever runs.
     // ⚠ **The atmosphere is the second component WebGL2 cannot receive**, and
     // it is the one with a visible cost rather than a quiet one.
     //
@@ -437,12 +437,18 @@ pub fn setup(
             shadows_enabled: true,
             ..default()
         },
-        // Four cascades to 200 m — the near ring is 5×5 chunks of 64 m, so
-        // 160 m from the player to its corner and shadows past the ring have
-        // nothing standing in them. **Both numbers are `Quality::High`'s row
-        // now**, and the shape of the split ([`CASCADE_MIN_M`] and its two
-        // neighbours) is what does not move between tiers.
-        super::quality::tier(crate::config::Quality::default()).cascades(),
+        // Four cascades to 200 m on the desktop — the near ring is 5×5
+        // chunks of 64 m, so 160 m from the player to its corner and shadows
+        // past the ring have nothing standing in them. **Both numbers are a
+        // settings row now**, and the shape of the split ([`CASCADE_MIN_M`]
+        // and its two neighbours) is what a player may not move.
+        //
+        // `default_gfx`, not a preset by name: it is already resolved for
+        // this target, and a browser gets ONE cascade because that is all
+        // `bevy_pbr` supports there (`quality::max_cascades`). The config
+        // this spawn writes is the one the frame draws with until
+        // `quality::apply` first runs.
+        super::quality::components(super::quality::default_gfx()).cascades(),
         // The disk in the sky. It renders by default through the atmosphere
         // (`SunDisk::EARTH` is what an absent component resolves to), and it
         // is stated explicitly here for two reasons: it is a member of the
@@ -694,6 +700,7 @@ type CamLight = (
 pub fn day_night(
     feed: Res<super::feed::Feed>,
     pin: Res<DayPin>,
+    settings: Res<super::Settings>,
     mut sun: Query<(&mut Transform, &mut DirectionalLight), With<Sun>>,
     mut cam: Query<CamLight, With<EyeCam>>,
 ) {
@@ -705,7 +712,19 @@ pub fn day_night(
         // A light at zero illuminance still schedules its cascades;
         // shadows off at night saves the passes and no shadow is cast by
         // a sun that is under the ground anyway.
-        d.shadows_enabled = light > 0.0;
+        //
+        // **One writer, two reasons.** The player's SHADOWS row is ANDed in
+        // here rather than written by `quality::apply`, because two systems
+        // writing one field is the shape `CLAUDE.md`'s trap list calls a
+        // clean merge that is not a correct one: whichever ran second would
+        // win, and a player who turned shadows off would have them back at
+        // the next sunrise.
+        //
+        // Through `effective` rather than off `settings.gfx` directly: no
+        // target refuses shadows outright today, and "what this machine
+        // actually draws" is the only question this field should ever be
+        // answering.
+        d.shadows_enabled = light > 0.0 && super::quality::effective(settings.gfx).shadows;
     }
     if let Ok((mut amb, mut env, sky, fog)) = cam.single_mut() {
         // **The handover, and the two terms are complements by construction.**

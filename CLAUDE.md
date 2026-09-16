@@ -686,6 +686,35 @@ do not rediscover)
   asserts which plugins a target builds. **When a plugin is disabled for a
   reason, grep every `DefaultPlugins` in the workspace**, not the binaries
   you happened to be thinking about.
+- **An engine limit that TRUNCATES instead of refusing is invisible on the
+  target that has it, and this one deleted every shadow past 12 m in the
+  browser.** `bevy_pbr::render::light::MAX_CASCADES_PER_LIGHT` is 4 — and
+  **1** under `all(feature = "webgl", target_arch = "wasm32",
+  not(feature = "webgpu"))`, which is exactly what this client builds for the
+  page (`bevy`'s `default_platform` turns on `webgl2`; we take the defaults).
+  Ask for two cascades there and Bevy does not error and does not rescale:
+  `prepare_lights` takes `.min(MAX_CASCADES_PER_LIGHT)` of the bounds list and
+  keeps the **first**, whose far bound is `rig::CASCADE_FIRST_M`. So from the
+  page's first day every shadow in the world stopped dead **12 m** from the
+  player, with the ground beyond it lit as if nothing stood on it — and the
+  operator read it as "shadow stuff is kinda garbage with distance", which is
+  what a shadow system that ends at arm's length looks like from inside the
+  game. The engine `warn!`s once, into a console nobody reads. `ci/gates.sh`
+  was green, including the browser-renderer gate, because a request Bevy
+  silently truncates type-checks perfectly.
+  Two things to carry. **First: when a config is a LIST the engine consumes,
+  find out what it does with a list that is too long, per target** — "clamps
+  the count" and "keeps the first n and drops the rest" are indistinguishable
+  in a signature and only one of them is a feature. **Second: the fix is not a
+  smaller request, it is a differently SHAPED one.** Asking for one cascade
+  makes `calculate_cascade_bounds` short-circuit to `[maximum_distance]` and
+  ignore the first-bound split entirely, so the browser's single cascade
+  covers the whole 90 m; asking for two and being given one covers 12.
+  Gated by `client/tests/quality.rs::every_cascade_asked_for_is_a_cascade_the_
+  engine_will_draw`, which is target-independent by construction — the same
+  code either side of the `cfg`, with a different ceiling — so a native run
+  proves the mechanism that was broken.
+
 - **A judge names the symptom; fix the cause.** Optimizing the judge's
   literal sentence is how a loop circles for three passes — elsewhere,
   "untextured" was really diffuse contrast crushed by an earlier fix for
