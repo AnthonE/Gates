@@ -828,6 +828,12 @@ Next, in order:
 4. Add a second useful inland connection; then optimize site distribution as
    a set rather than increasing locally scored sites one by one.
 
+The client surface pass now adds pavement, an earthy branch and faded ring
+markings (`TERRAIN.md` §1 stage 7). The next material candidate is surveyed in
+`findings/road-materials-20260916.md`: CC0 asphalt with explicit scale and
+texture-memory costs. No new texture assets ship yet. Road grading, authored
+cracks and a distant ribbon remain separate work; paint cannot fix routing.
+
 The inland site still has no containers. Arming rewards and choosing its
 world register remain separate operator decisions; centre-directed spokes
 are still not a substitute for destinations.

@@ -157,11 +157,21 @@ Stages, in order — each cheap, each deterministic:
    bounded erosion from the aggregate photograph; fixed texture projections
    avoid stretching the grain across the verge. The near-mesh guard, widths,
    clutter, terrain heights and coarse-mesh behavior are unchanged. This is a
-   first material pass, without painted lines or authored cracks; the proposed
+   first material pass; the proposed
    defaults and GPU cost are in `DECISIONS.md` §open, road surface v1. The new
    surface fades to the existing substrate across the outermost guaranteed
    near chunk (currently 64–128 m from the eye); a continuous distant paved
    ribbon remains open because the 8 m far lattice cannot resolve its width.
+   **Road markings v1 (2026-09-16)** adds faded yellow centre dashes and white
+   edge lines to the near ring. A bounded client-only chart of the first live
+   outward crossing supplies continuous coordinates shared by all chunks;
+   ambiguous crossings, disconnected ends and branch mouths remain unmarked.
+   Its samples are validated against the sim, which still owns road coverage.
+   Markings inherit the surface fade and aggregate wear. The cache is built
+   once on a native worker or in browser frame batches, then discarded with
+   the world; it changes no height, collision, scatter or route. Proposed
+   dimensions, filtering, memory and startup costs are in `DECISIONS.md`
+   §open, road markings v1. Authored cracks and grading remain open.
    **Still open**: the flattening (it needs a mask inside `height` — that is
    the representation decision the block defers, and nothing forced it yet).
    `DECISIONS.md` §open "coast road v0" and "bay slots v0" have the knobs and

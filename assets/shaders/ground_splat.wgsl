@@ -88,6 +88,9 @@ struct GroundSplat {
     road_dirt: vec4<f32>,
     // x/y = fade start/end; the far lattice cannot resolve the road.
     road_lod: vec4<f32>,
+    paint_yellow: vec4<f32>,
+    paint_white: vec4<f32>,
+    paint_geometry: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> splat: GroundSplat;
@@ -145,8 +148,16 @@ fn unpack_normal(t: vec4<f32>) -> vec3<f32> {
     return normalize(t.xyz * 2.0 - 1.0);
 }
 
+// Analytic box filter preserves a thin stripe's area at grazing angles.
+fn paint_line(distance: f32, width: f32, footprint: f32) -> f32 {
+    let half = width * 0.5;
+    let pixel = max(footprint, 1e-5);
+    return clamp((min(distance + pixel * 0.5, half)
+        - max(distance - pixel * 0.5, -half)) / pixel, 0.0, 1.0);
+}
+
 @fragment
-fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @builtin(front_facing) is_front: bool) -> FragmentOutput {
+fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) markings: vec4<f32>, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     // Everything the standard path sets up — view vector, flags, the lot. Its
     // `base_color` is left holding the vertex `COLOR`, which here is the weight
     // vector rather than a colour; every write below is an assignment, so none
@@ -333,6 +344,31 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @builtin(front_facin
         base = base + splat.identity[i].xyz * terrain_bw[i];
     }
     base = base * ground + splat.pavement.xyz * paving + splat.road_dirt.xyz * dirt;
+    // Coordinates extend into the shoulder; validity is independent. A
+    // triangle touching a rejected interval or branch mouth stays unpainted.
+    // Phase is cyclic; no wrapped scalar can create a seam stripe.
+    let footprint = fwidth(markings.x);
+    // Use BOTH phase components: the cosine derivative alone vanishes at
+    // each dash centre and would alias when several dashes fit in a pixel.
+    let phase = markings.yz;
+    let phase_dx = dpdx(phase);
+    let phase_dy = dpdy(phase);
+    let phase_len2 = max(dot(phase, phase), 1e-5);
+    let phase_footprint = (abs(phase.y * phase_dx.x - phase.x * phase_dx.y)
+        + abs(phase.y * phase_dy.x - phase.x * phase_dy.y)) / phase_len2;
+    let phase_pixel = max(fwidth(markings.z), 1e-5);
+    let resolved_dash = smoothstep(-phase_pixel * 0.5, phase_pixel * 0.5, markings.z);
+    // A half-period footprint is the Nyquist limit. Fade from quarter-period
+    // resolution to the exact mean coverage (equal paint and gap lengths).
+    let dash = mix(resolved_dash, 0.5,
+        smoothstep(1.57079632679, 3.14159265359, phase_footprint));
+    let center_paint = paint_line(markings.x, splat.paint_geometry.x, footprint) * dash;
+    let edge_paint = paint_line(abs(markings.x) - splat.paint_geometry.y,
+        splat.paint_geometry.x, footprint);
+    let paint_valid = step(1.0 - splat.paint_geometry.z, markings.w);
+    let worn_paint = paving * paint_valid * clamp(road_grain, 0.0, 1.0);
+    base = mix(base, splat.paint_yellow.xyz, center_paint * worn_paint * splat.paint_yellow.w);
+    base = mix(base, splat.paint_white.xyz, edge_paint * worn_paint * splat.paint_white.w);
     // The macro break-up, then the waterline — in that order, so a wet vertex
     // keeps its own grain instead of having it multiplied back in at full dry
     // strength. `terrain_mesh::vertex_color` states why.
