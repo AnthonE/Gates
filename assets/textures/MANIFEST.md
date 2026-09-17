@@ -292,3 +292,16 @@ node types differ by roughness and reflectance only.
 may stay procedural — `.claude/skills/threejs-procedural-vegetation` covers
 trunks, recursive branches, leaf cards and species presets, which is a long way
 above a stack of cones without shipping a single binary.
+
+### Depot concrete (2026-09-16)
+
+`concrete_{albedo,normal,rough,ao}.jpg`: Poly Haven
+[Concrete Wall 003](https://polyhaven.com/a/concrete_wall_003), **CC0**.
+Photography by Dimitrios Savva; processing by Rico Cilliers. Original 1K JPEG
+Diffuse / nor_gl / Rough / AO downloads, unchanged except local role names;
+source API download hashes verified before import. Published physical tile:
+**3 × 3 m**. Used for depot plinths and weathered painted details, not the
+horizontal yard (the wall's vertical stains are inappropriate there). Albedo
+loads as sRGB; OpenGL normal, roughness and AO load as linear data. Materials
+explicitly use metallic zero, so the greyscale roughness's G channel can occupy
+StandardMaterial's combined slot without its B channel introducing metal.

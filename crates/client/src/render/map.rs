@@ -515,8 +515,7 @@ pub fn setup(
         });
 }
 
-/// One mark: a badge with a PICTURE in it, and a name under it for the two
-/// kinds that have one.
+/// One mark: a badge with a PICTURE in it, and a name for authored destinations.
 ///
 /// **The picture is the channel that carries this screen now**, and the two
 /// it replaces are re-ranked rather than deleted. What was here was colour
@@ -568,7 +567,7 @@ pub fn spawn_mark(
     // which is why this is a `match` and not `is_authored`.
     let hollow = matches!(
         m.kind,
-        MarkKind::Haven | MarkKind::Waystation | MarkKind::BedSpent
+        MarkKind::Haven | MarkKind::Waystation | MarkKind::Depot | MarkKind::BedSpent
     );
     let mut node = Node {
         position_type: PositionType::Absolute,

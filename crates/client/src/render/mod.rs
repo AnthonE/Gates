@@ -62,6 +62,8 @@ pub mod feed;
 // The death screen. Dying used to end the session: `dead` was set and read
 // by nothing, and `ACT_RESPAWN` had no key.
 pub mod death;
+/// Authored depot geometry read directly from the authoritative sim kit.
+pub mod depot;
 // The involuntary disconnect. The shard hanging up mid-play used to leave
 // the client in a dead world; `pause::Disconnect` is the verb the PLAYER
 // takes, and this is the state for when the shard takes it.
@@ -1186,7 +1188,7 @@ impl Plugin for GatesRenderPlugin {
             (
                 input::place_eye,
                 (
-                    terrain_mesh::stream,
+                    (terrain_mesh::stream, depot::spawn),
                     // The sea re-centres like a ring does, and for the same
                     // reason: it reads `Eye::pos`, so it belongs where the
                     // other things that read it are.
