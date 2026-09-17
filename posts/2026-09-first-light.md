@@ -361,3 +361,20 @@ screen is the visual test, and that person plays most nights.
 
 - The browser's unused audio host, which was allocating a buffer every 46 ms to
   mix a graph that nothing had put a sound into
+
+---
+
+## About the frames in this post
+
+Shot on seed 20260731 — the island the public shard runs — with the client's
+own probe harness, and rendered by **lavapipe, a CPU rasteriser**. They are
+what the game looks like; they say nothing whatsoever about how fast it runs.
+
+```sh
+./ci/scene.sh --population 2 --settle 420 --kit item.hatchet_stone:1  # with the HUD
+./ci/scene.sh --population 0 --no-hud                                 # clean plates
+cargo run -p client --example map_png -- 20260731 1400 island.ppm     # the map, no GPU
+```
+
+`findings/capture-20260917.md` has what the run established, including why the
+default population of six kills the camera before its first shot.

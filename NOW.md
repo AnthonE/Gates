@@ -352,9 +352,13 @@ thing the probe cannot photograph:
 1. **The viewmodel is drawn at TRUE scale 0.52 m from the eye**, so a 0.6 m
    hatchet fills about three-quarters of the frame height. That is
    physically right and it reads as oversized — most games push the
-   viewmodel back and shrink it. `VIEWMODEL_HOLD` is the knob and it has
-   never been judged against a frame with a real model in it, because until
-   now there was no frame.
+   viewmodel back and shrink it. `VIEWMODEL_HOLD` is the knob.
+   ✅ **The frame this item was waiting for exists** (2026-09-17,
+   `findings/capture-20260917.md`): six of them, `--population 2`, hatchet in
+   slot 0. The hatchet and forearm take roughly the lower-right QUARTER of
+   every one. So the measurement is confirmed at a real model and the item is
+   now purely the operator's taste call — shrink it, push it back, or keep
+   true scale and accept it.
 2. ✅ **"The grip reads as beside the fist rather than in it" was a
    MEASUREMENT, not a taste call, and it is closed** (2026-09-01). This item
    blamed the rig's missing finger bones and `VIEWMODEL_PALM`'s occlusion
