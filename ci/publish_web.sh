@@ -78,7 +78,11 @@ OUT="${OUT:-target/webdist}"
 if [ "$BUILD" = 1 ]; then
   ./ci/build_web.sh "$OUT"
 fi
-for f in index.html app.js client_web.js client_web_bg.wasm; do
+# build.json and the fonts are as required as the module: without the first
+# the page draws no progress bar for a 34 MB download, and without the second
+# it renders in system-ui while the game behind it is Roboto Condensed.
+for f in index.html app.js client_web.js client_web_bg.wasm build.json \
+         fonts/robotocondensed-400.woff2 fonts/robotocondensed-700.woff2; do
   [ -f "$OUT/$f" ] || { echo "$OUT/$f is missing — run ./ci/build_web.sh" >&2; exit 1; }
 done
 

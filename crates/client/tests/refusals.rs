@@ -181,7 +181,13 @@ fn an_unknown_code_is_reported_as_a_number() {
 /// place in this repo where a dead branch can live indefinitely.
 ///
 /// ⚠ **Scoped to the join's `catch` block, and that scope is the gate's
-/// correctness rather than a convenience.** The first draft banned string
+/// correctness rather than a convenience** — which is also how it was found
+/// to be scoped to somebody else's: `code.find("catch (e) {")` takes the FIRST
+/// one in the file and the wallet-connect handler is declared above the join,
+/// so for as long as this test has existed it has been reading three lines
+/// about a refused extension prompt. It anchors on `async function join(`
+/// now. A gate that passes on the wrong block is worse than no gate, because
+/// the green tick is what stops anyone looking. The first draft banned string
 /// matching anywhere in the file and immediately failed on
 /// `k.startsWith("Key")` — the page filtering DOM key codes, which is a
 /// browser API contract and has nothing to do with our sentences. A gate that
@@ -200,12 +206,27 @@ fn the_browser_page_reads_no_refusal_to_decide_what_it_was() {
         .collect::<Vec<_>>()
         .join("\n");
 
-    let at = code.find("catch (e) {").unwrap_or_else(|| {
+    // ⚠ **ANCHORED ON THE JOIN, because `catch (e) {` alone found the wrong
+    // one.** This took the FIRST such catch in the file, and the first one has
+    // never been the join's: the wallet-connect handler is declared above it
+    // and catches the extension talking about its own prompt. So the gate has
+    // been reading a three-line block that says `wallet.refusal(e)` and
+    // passing on it, while the handler it was written to watch went unread.
+    // The join is a named function now (`async function join()`), which gives
+    // this something to anchor on that is not "the first of its kind".
+    let join = code.find("async function join(").unwrap_or_else(|| {
         panic!(
-            "app.js no longer catches the join's failure where this gate looks - it is \
-             watching a ghost. Re-point it at whatever handles a refused join."
+            "app.js has no `async function join(` - this gate anchors on it to find the \
+             handler that catches a refused join. Re-point it at whatever does that now."
         )
     });
+    let at = join
+        + code[join..].find("catch (e) {").unwrap_or_else(|| {
+            panic!(
+                "app.js no longer catches the join's failure where this gate looks - it is \
+                 watching a ghost. Re-point it at whatever handles a refused join."
+            )
+        });
     let bytes = code.as_bytes();
     let open = at + code[at..].find('{').expect("the catch opens a block");
     let mut depth = 0usize;

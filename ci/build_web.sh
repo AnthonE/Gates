@@ -78,6 +78,24 @@ wasm-bindgen --target web --no-typescript \
   "target/wasm32-unknown-unknown/$profile/client_web.wasm"
 cp crates/client-web/web/index.html crates/client-web/web/app.js "$out/"
 
+# ── the page's own face ─────────────────────────────────────────────────────
+# Roboto Condensed is what `crates/client/src/render/ui.rs` sets the whole game
+# in, and the page named it in a CSS font stack for weeks while shipping no
+# font file — so every visitor read the launcher in system-ui while the game
+# behind it was condensed. These are that same Apache-2.0 face out of
+# `crates/client/fonts/`, subset to Latin-1 plus the marks the page sets and
+# converted to woff2 (~12 KB each against the 113 KB TTF). Regenerate them the
+# same way if the page ever needs a glyph it has not got:
+#   pip install fonttools brotli
+#   pyftsubset crates/client/fonts/RobotoCondensed-Bold.ttf --flavor=woff2 \
+#     --unicodes='U+0020-007E,U+00A0-00FF,…' --layout-features=kern,liga,calt,tnum \
+#     --output-file=crates/client-web/web/fonts/robotocondensed-700.woff2
+# The licence travels with them, which is the whole of what Apache-2.0 asks.
+mkdir -p "$out/fonts"
+cp crates/client-web/web/fonts/robotocondensed-400.woff2 \
+   crates/client-web/web/fonts/robotocondensed-700.woff2 "$out/fonts/"
+cp crates/client/fonts/LICENSE-ROBOTO.txt "$out/fonts/"
+
 # ── the audio thread's module ───────────────────────────────────────────────
 # The game's sound is rendered in Rust inside an `AudioWorkletProcessor`, which
 # runs in a scope with no DOM, no `fetch` and no shared memory with the page —
@@ -212,4 +230,28 @@ gzip -9 -n -c "$out/client_web_bg.wasm" > "$out/client_web_bg.wasm.gz"
 gzip -9 -n -c "$out/sound_worklet_bg.wasm" > "$out/sound_worklet_bg.wasm.gz"
 gz=$(stat -c%s "$out/client_web_bg.wasm.gz")
 printf "   client_web_bg.wasm  %d bytes raw, %d gzipped (.wasm.gz beside it)\n" "$raw" "$gz"
+# ── what the page needs to draw an honest progress bar ──────────────────────
+# **`content-length` is not the denominator**, and a page that believes it is
+# draws a bar that reaches 400%. The origin serves the `.gz` written just above
+# (`gzip_static`), so the header a browser sees is the COMPRESSED length while
+# the body it reads is DECODED — and nothing at runtime can recover the decoded
+# size from the response. It is known HERE, after wasm-opt has had its say, so
+# the build writes it down. `crates/client-web/web/app.js` reads this file
+# first and falls back to counting megabytes with no bar when it is absent,
+# which is what an older publish looks like.
+#
+# The stamp beside it is the only way a person looking at a page can say which
+# publish they have — `publish_web.sh` lands builds as `<root>/<build>/` and
+# flips `current`, so the directory name is on the server and not in the page.
+cat > "$out/build.json" <<JSON
+{
+  "wasm_bytes": $raw,
+  "wasm_gz_bytes": $gz,
+  "profile": "$profile",
+  "proto": $(sed -n 's/^pub const PROTO_VER: u16 = \([0-9]*\);.*/\1/p' crates/protocol/src/lib.rs | head -1),
+  "built": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+JSON
+printf "   build.json: %s decoded, %s gzipped\n" "$raw" "$gz"
+
 echo "== done: python3 -m http.server 8080 --directory $out"

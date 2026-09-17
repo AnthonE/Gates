@@ -1,73 +1,611 @@
 <!doctype html>
+<html lang="en">
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Gates</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Gates — in your browser · Elo Pros</title>
+<meta name="description" content="Wake with nothing on a hostile island. Gates in a browser tab — the same Rust client the desktop build runs, nothing to install.">
+<meta name="theme-color" content="#14120f">
+<!-- The origin's, and a 404 off it. Both are fine: the share card only
+     matters when somebody pastes the elopros.com url, and a dev checkout
+     serving this page over `python3 -m http.server` shares nothing. -->
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Elo Pros">
+<meta property="og:title" content="Gates — in your browser">
+<meta property="og:description" content="Wake with nothing on a hostile island. Gates in a browser tab — the same Rust client the desktop build runs, nothing to install.">
+<meta property="og:url" content="https://elopros.com/games/gates/">
+<meta property="og:image" content="https://elopros.com/art/store/gates-card.png">
+<meta name="twitter:card" content="summary_large_image">
+
+<!-- ⚠ INLINE, and it has to be: this page is served under a CSP of
+     `style-src 'self' 'unsafe-inline'` and `script-src 'self'` — a stylesheet
+     FILE would be fine too, but it would be a second round trip and a second
+     line in `ci/build_web.sh`'s staging list for one page's worth of rules.
+     The page's SCRIPT is a file for the opposite reason: 'unsafe-inline' is
+     not in script-src and an inline module is refused. -->
 <style>
-  :root { color-scheme: dark; }
-  html, body { height: 100%; }
-  body { margin: 0; background: #14120f; color: #d8d2c6;
-         font: 15px/1.55 "Roboto Condensed", system-ui, sans-serif; }
-  body.playing { overflow: hidden; }
-  main { max-width: 34rem; margin: 0 auto; padding: 8vh 24px 24px; }
-  h1 { font-size: 2.2rem; margin: 0 0 .2rem; letter-spacing: .04em; font-weight: 700; }
-  p.sub { margin: 0 0 1.6rem; color: #8d8577; }
-  button { padding: .55rem 1.4rem; background: #6b5a3e; color: #f2ede3;
-           border: 0; border-radius: 3px; font: inherit; cursor: pointer; }
-  button.ghost { background: #2a251f; color: #b8b0a2; }
-  button:disabled { opacity: .45; cursor: default; }
-  #go { font-size: 1.35rem; padding: .8rem 2.6rem; letter-spacing: .06em; font-weight: 700;
-        width: 100%; }
-  #status { margin: .9rem 0 0; min-height: 1.5em; color: #b8b0a2; }
-  #status.bad { color: #d98b6a; }
-  #status.good { color: #9db87a; }
-  #who { margin-top: 1.4rem; padding: .7rem .9rem; background: #191612; border: 1px solid #2a251f;
-         border-radius: 3px; font-size: 13.5px; }
-  .row { display: flex; gap: .6rem; flex-wrap: wrap; align-items: center; }
-  #account.good { color: #9db87a; }
-  #account.dim { color: #6d665b; }
-  details { margin-top: 1.4rem; }
-  summary { cursor: pointer; color: #8d8577; font-size: .9rem; user-select: none; }
-  label { display: block; margin: .6rem 0 .2rem; color: #8d8577; font-size: .85rem; }
-  input { width: 100%; box-sizing: border-box; padding: .5rem .6rem; background: #1e1b17;
-          border: 1px solid #3a352c; border-radius: 3px; color: inherit; font: inherit; }
-  footer { margin-top: 1.6rem; color: #6d665b; font-size: 12.5px; }
-  footer a { color: #8d8577; }
-  /* The canvas is fixed at the page's origin and STRETCHED over the viewport
-     by a transform the renderer sets (`client::render::web`): winit sizes
-     its CSS box at the backing store over devicePixelRatio, and that box is
-     what the pointer and the resize observer measure, so the box itself is
-     never told to be bigger. */
-  #gates { position: fixed; left: 0; top: 0; transform-origin: 0 0; display: block; }
+/* ── the faces ───────────────────────────────────────────────────────────────
+   Roboto Condensed is the game's own face — `crates/client/src/render/ui.rs`
+   sets every label, heading, number and button in it, and this page named it
+   in a font stack for weeks while shipping no font file, so every visitor read
+   the page in system-ui. The woff2s beside this file are that same Apache-2.0
+   Roboto Condensed, subset to Latin-1 plus the marks this page sets (~12 KB
+   each; `ci/build_web.sh` stages them). `swap` so a slow font never blanks the
+   page — the fallback stack is condensed-ish where a platform has one. */
+@font-face { font-family: "Roboto Condensed"; font-style: normal; font-weight: 400;
+  font-display: swap; src: url("fonts/robotocondensed-400.woff2") format("woff2"); }
+@font-face { font-family: "Roboto Condensed"; font-style: normal; font-weight: 700;
+  font-display: swap; src: url("fonts/robotocondensed-700.woff2") format("woff2"); }
+
+/* ── the palette ─────────────────────────────────────────────────────────────
+   EVERY VALUE IS THE GAME'S OWN, transcribed from the constants in
+   `crates/client/src/render/ui.rs` — which were themselves sampled off the
+   reference's inventory frame rather than invented. The point of copying them
+   rather than picking nice ones: this page is the front door of the main menu,
+   so pressing Play should not change the colour of the product. If a constant
+   moves there, move it here; `grep -n 'pub const BG' crates/client/src/render/ui.rs`
+   is the other end.
+
+     --bg      BG          the screen behind everything
+     --scrim   SCRIM       the wash over the backdrop, .82 — the whole contrast
+                           budget of the front end
+     --pane    PANE_BG     --panel PANEL_BG   the two translucent grounds
+     --rule    RULE        hairlines
+     --mark    MARK        the wordmark block: the one saturated thing here
+     --accent  ACCENT      the reference's cool-blue selection, and this page's
+                           one filled control. NOT the store's green: Elo Pros
+                           reserves a solid green fill for an act that moves
+                           money or a state armed on chain, and pressing Play
+                           is neither.
+
+   The --elo-* row is the PLATFORM's chrome (scry-forge `css/store.css`), and
+   it is confined to the bar across the top on purpose — that bar is Elo Pros
+   speaking, everything under it is Gates. */
+:root {
+  color-scheme: dark;
+  --bg: #1b1916;
+  --scrim: rgba(14, 13, 11, .82);
+  --panel: rgba(37, 34, 30, .90);
+  --pane: rgba(22, 20, 18, .86);
+  --rule: rgba(191, 184, 158, .28);
+  --rule-soft: rgba(191, 184, 158, .14);
+  --mark: #cd3e2d;
+  --accent: #3982ba;
+  --accent-hi: #4a94cc;
+  --title: #edebe6;
+  --text: #ebe6d9;
+  --dim: rgba(189, 184, 173, .85);
+  --faint: rgba(158, 153, 143, .80);
+  --nav: rgba(158, 153, 145, .65);
+  --bad: #d98b6a;
+  --good: #9db87a;
+
+  /* the platform bar, from scry-forge css/store.css */
+  --elo-hull: #0e1210;
+  --elo-line: #2b332c;
+  --elo-ink: #e8f0e9;
+  --elo-muted: #a0aa95;
+  --elo-green: #00c805;
+
+  --face: "Roboto Condensed", "Liberation Sans Narrow", "Arial Narrow", system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html { -webkit-text-size-adjust: 100%; }
+html, body { min-height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 400 16px/1.55 var(--face);
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+  overflow-x: hidden;
+}
+
+/* ── the backdrop ────────────────────────────────────────────────────────────
+   `assets/menu/backdrop.jpg` is the footage the NATIVE main menu draws behind
+   its nav (`ui.rs::backdrop`), staged into this directory by the same build,
+   so the browser's front end and the desktop's are the same screen. Two rules
+   it inherits from there and neither is decoration:
+
+     · ABSENT IS A SUPPORTED STATE. A trimmed checkout may not have it; the
+       layer simply does not paint and `--bg` shows through, which is what the
+       menu looked like before footage existed.
+     · THE SCRIM IS NOT OPTIONAL. It is what makes this a menu rather than a
+       screenshot with type on it.
+
+   `fixed` rather than a scrolling layer: the page is short, and a backdrop
+   that slides under the panes reads as a parallax trick nobody asked for. */
+.stage {
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  background: url("assets/menu/backdrop.jpg") center 42% / cover no-repeat, var(--bg);
+  /* The footage is 1280×720 and every viewport that matters is wider, so it is
+     always an upscale. A small blur is not styling over that — it is what
+     turns a soft image into a deliberately soft one, and the `scale` keeps the
+     blur's own feathered edge off the frame. Free: one fixed layer, composited
+     once, never animated. */
+  filter: saturate(.85) blur(1.5px);
+  transform: scale(1.03);
+}
+/* ⚠ THE SCRIM IS GRADED HERE AND FLAT IN THE NATIVE MENU (`ui.rs::SCRIM`,
+   .82 everywhere), and the difference is deliberate rather than drift. The
+   menu's screen is a sparse nav column down the left with open frame beside
+   it, so a flat wash can be heavy and still leave footage visible. This page
+   has type and two panels across the whole width: at .82 flat the footage
+   went to about a fifth of its luma and the backdrop stopped being worth
+   downloading. So the wash is light where the page is open (the hero) and
+   reaches the menu's own .82 where the panes sit. Same colour, same floor —
+   only the distribution moved. */
+.stage::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg,
+    rgba(14, 13, 11, .74) 0%,
+    rgba(14, 13, 11, .58) 26%,
+    rgba(14, 13, 11, .72) 58%,
+    rgba(14, 13, 11, .88) 100%);
+}
+
+/* ── the platform bar ────────────────────────────────────────────────────────
+   Elo Pros speaking, in Elo Pros' own chrome, and nothing else on this page
+   wears it. It carries the two things a player arriving here actually needs
+   that the game cannot tell them: where they are, and who they are signed in
+   as. `position: sticky` so the account chip is reachable on a phone without
+   scrolling back up. */
+.top {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: rgba(14, 18, 16, .92);
+  border-bottom: 1px solid var(--elo-line);
+  backdrop-filter: blur(8px);
+}
+.top-in {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 0 20px;
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.pros {
+  font-weight: 700;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+  font-size: 14px;
+  color: var(--elo-ink);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.pros:hover { color: var(--elo-green); }
+.crumb-sep { color: var(--elo-muted); opacity: .5; }
+.crumb {
+  color: var(--elo-muted);
+  text-decoration: none;
+  font-size: 14px;
+  letter-spacing: .04em;
+  white-space: nowrap;
+}
+.crumb:hover { color: var(--elo-ink); text-decoration: underline; }
+.top-sp { flex: 1 1 auto; }
+
+/* The account chip. One element in three states, written by `showAccount()`:
+     data-state="away"  nobody is signed in
+     data-state="here"  a wallet resumed or connected
+     data-state="none"  this browser has no wallet extension at all
+   It is an <a> on the origin (your account is a real page there) and inert
+   off it — `app.js` strips the href rather than shipping a dead link. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--elo-line);
+  border-radius: 3px;
+  background: rgba(18, 22, 19, .8);
+  color: var(--elo-muted);
+  font-size: 13.5px;
+  font-variant-numeric: tabular-nums;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.chip:hover { border-color: #3a453c; color: var(--elo-ink); }
+.chip[data-state="here"] { color: var(--elo-ink); }
+.chip-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: #4a4f47;
+  flex: 0 0 auto;
+}
+.chip[data-state="here"] .chip-dot { background: var(--elo-green); }
+.chip-sub { color: var(--elo-muted); }
+@media (max-width: 560px) { .chip-sub { display: none; } }
+
+/* ── the shell ───────────────────────────────────────────────────────────── */
+.shell {
+  flex: 1 0 auto;
+  width: 100%;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: clamp(28px, 6vh, 64px) 20px 40px;
+  display: flex;
+  flex-direction: column;
+  /* `safe` is the whole reason this is not a plain `center`: a flex container
+     that centres content taller than itself overflows in BOTH directions, and
+     the half above the top edge is unreachable — no scrollbar goes there. With
+     `safe` the browser falls back to flex-start exactly when that would
+     happen, which is every short window and most phones in landscape. */
+  justify-content: safe center;
+  gap: 26px;
+}
+
+/* the wordmark — `ui.rs::wordmark()`: a block, then the word */
+.mark-row { display: flex; align-items: center; gap: 14px; }
+.mark {
+  width: clamp(30px, 7vw, 42px);
+  aspect-ratio: 1;
+  background: var(--mark);
+  flex: 0 0 auto;
+}
+h1 {
+  font-weight: 700;
+  font-size: clamp(38px, 9vw, 60px);
+  line-height: .95;
+  letter-spacing: .02em;
+  color: var(--title);
+  text-shadow: 0 1px 0 rgba(0,0,0,.85);
+}
+.tag {
+  max-width: 46ch;
+  color: var(--dim);
+  font-size: clamp(15px, 1.6vw, 17px);
+  text-shadow: 0 1px 2px rgba(0,0,0,.6);
+  margin-top: -14px;
+}
+
+/* ── the act ─────────────────────────────────────────────────────────────── */
+.act { display: flex; flex-direction: column; gap: 12px; max-width: 460px; }
+#go {
+  appearance: none;
+  border: 0;
+  border-radius: 3px;
+  background: var(--accent);
+  color: #f3f8fc;
+  font: 700 clamp(20px, 2.6vw, 25px)/1 var(--face);
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  padding: 20px 28px;
+  min-height: 62px;
+  width: 100%;
+  cursor: pointer;
+  box-shadow: 0 2px 0 rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.14);
+  transition: background .12s ease;
+}
+#go:hover:not(:disabled) { background: var(--accent-hi); }
+#go:active:not(:disabled) { transform: translateY(1px); box-shadow: 0 1px 0 rgba(0,0,0,.45); }
+#go:focus-visible { outline: 2px solid var(--title); outline-offset: 3px; }
+#go:disabled { background: #2f3a42; color: rgba(215,225,232,.55); cursor: default; box-shadow: none; }
+/* The queued press: pressing Play while the module is still landing is a
+   promise the page keeps, so the button says so instead of looking broken. */
+#go[data-armed="1"]:disabled { background: #2b4d68; color: #cfe3f2; }
+
+/* The download bar. Hidden until there is a real number behind it — an
+   indeterminate stripe over an unknown quantity is a decoration that claims
+   to be a measurement. */
+.bar {
+  height: 4px;
+  background: rgba(0,0,0,.45);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.bar[hidden] { display: none; }
+.bar > i {
+  display: block;
+  height: 100%;
+  width: var(--p, 0%);
+  background: var(--accent);
+  transition: width .18s linear;
+}
+#status {
+  min-height: 1.5em;
+  color: var(--dim);
+  font-size: 14.5px;
+  text-shadow: 0 1px 2px rgba(0,0,0,.6);
+}
+#status.bad { color: var(--bad); }
+#status.good { color: var(--good); }
+
+/* ── the two panes ───────────────────────────────────────────────────────────
+   PANE_BG over the footage, RULE hairlines, and they stack on a phone. The
+   native menu's panels are translucent for the reason its own comment gives:
+   opaque ones cover the frame and the footage stops being worth having. */
+.panes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
+  gap: 14px;
+  max-width: 940px;
+}
+.pane {
+  background: var(--pane);
+  border: 1px solid var(--rule-soft);
+  border-radius: 3px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.pane h2 {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+/* one shard row — the type IS the control, `ui.rs::nav_item`'s rule */
+.shards { display: flex; flex-direction: column; gap: 6px; }
+.shard {
+  appearance: none;
+  text-align: left;
+  width: 100%;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--nav);
+  font: 400 15px/1.3 var(--face);
+  padding: 9px 10px;
+  min-height: 44px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.shard:hover { background: rgba(71, 67, 60, .55); color: var(--text); }
+.shard:focus-visible { outline: 2px solid var(--accent-hi); outline-offset: 1px; }
+.shard[aria-pressed="true"] {
+  color: var(--title);
+  background: rgba(57, 130, 186, .16);
+  border-color: rgba(57, 130, 186, .5);
+}
+.shard-name { font-weight: 700; letter-spacing: .02em; }
+.shard-meta { color: var(--faint); font-size: 13px; }
+.shard-count {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  color: var(--faint);
+  white-space: nowrap;
+}
+.shard-count[data-live="1"] { color: var(--good); }
+
+/* the sign-in pane */
+.who-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+#account { font-size: 14.5px; color: var(--faint); overflow-wrap: anywhere; }
+#account.good { color: var(--text); }
+#account .addr { font-weight: 700; color: var(--title); font-variant-numeric: tabular-nums; }
+.ghost {
+  appearance: none;
+  background: rgba(43, 39, 35, .9);
+  color: var(--text);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  font: 400 14.5px/1 var(--face);
+  padding: 0 14px;
+  min-height: 40px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ghost:hover:not(:disabled) { background: rgba(71, 67, 60, .95); }
+.ghost:focus-visible { outline: 2px solid var(--accent-hi); outline-offset: 2px; }
+.ghost:disabled { opacity: .45; cursor: default; }
+.note { font-size: 13.5px; color: var(--faint); }
+
+/* ── advanced ────────────────────────────────────────────────────────────── */
+details {
+  border-top: 1px solid var(--rule-soft);
+  padding-top: 10px;
+  margin-top: 2px;
+}
+summary {
+  cursor: pointer;
+  color: var(--faint);
+  font-size: 13.5px;
+  letter-spacing: .03em;
+  list-style: none;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+summary::-webkit-details-marker { display: none; }
+summary::before { content: "▸"; font-size: 11px; transition: transform .12s ease; }
+details[open] summary::before { transform: rotate(90deg); }
+summary:hover { color: var(--text); }
+label {
+  display: block;
+  margin: 12px 0 4px;
+  color: var(--faint);
+  font-size: 12.5px;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+input {
+  width: 100%;
+  padding: 10px 11px;
+  min-height: 42px;
+  background: rgba(14, 13, 11, .75);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  color: var(--text);
+  font: 400 14.5px/1.3 var(--face);
+}
+input:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+.hint { margin-top: 5px; font-size: 12.5px; color: var(--faint); }
+
+/* ── the keys, and the honest note ───────────────────────────────────────── */
+.keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 22px;
+  color: var(--dim);
+  font-size: 14px;
+  max-width: 940px;
+  text-shadow: 0 1px 2px rgba(0,0,0,.6);
+}
+.keys span { display: inline-flex; align-items: center; gap: 7px; }
+kbd {
+  font: 700 12px/1 var(--face);
+  letter-spacing: .04em;
+  background: rgba(43, 39, 35, .95);
+  border: 1px solid var(--rule);
+  border-bottom-width: 2px;
+  border-radius: 3px;
+  padding: 4px 6px;
+  color: var(--title);
+}
+
+.foot {
+  border-top: 1px solid var(--rule-soft);
+  background: rgba(14, 13, 11, .55);
+}
+.foot-in {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 18px 20px calc(18px + env(safe-area-inset-bottom));
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  align-items: center;
+  font-size: 13.5px;
+  color: var(--faint);
+}
+.foot-in a { color: var(--dim); text-decoration: none; }
+.foot-in a:hover { color: var(--title); text-decoration: underline; }
+.foot-said { flex: 1 1 320px; min-width: 0; }
+
+/* ── playing ─────────────────────────────────────────────────────────────────
+   One rule takes the page away instead of four `hidden` writes: the renderer
+   owns the viewport from the moment it starts, and anything still painted
+   under a fixed, stretched canvas is a scrollbar waiting to happen. `app.js`
+   sets `body.playing` and unhides the canvas; nothing else needs to move. */
+body.playing { overflow: hidden; }
+body.playing > :not(#gates) { display: none !important; }
+
+/* The canvas is fixed at the page's origin and STRETCHED over the viewport
+   by a transform the renderer sets (`client::render::web`): winit sizes
+   its CSS box at the backing store over devicePixelRatio, and that box is
+   what the pointer and the resize observer measure, so the box itself is
+   never told to be bigger. */
+#gates { position: fixed; left: 0; top: 0; transform-origin: 0 0; display: block; }
+
+/* ── the thumb ───────────────────────────────────────────────────────────────
+   Every control on this page is already 40 px or more except the plain links
+   in the two bars, which are type and size themselves. On a pointer that is
+   correct; on a thumb it is a 21 px target. TWO CONDITIONS, because
+   neither alone is enough. `pointer: coarse` is the honest one — it asks what
+   the person is touching the screen WITH, so a touch laptop is covered and a
+   narrow desktop window is not — but it is also the one an emulated capture
+   cannot be relied on to report, and a rule the frames cannot show is a rule
+   nobody re-checks. The width clause makes it visible, and costs a desktop
+   nobody resizes that far exactly nothing. */
+@media (pointer: coarse), (max-width: 760px) {
+  .pros, .crumb, .foot-in a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+  .foot-in { gap: 0 20px; }
+  summary { min-height: 44px; }
+  .shard { min-height: 52px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
+}
 </style>
-<main>
-  <h1>Gates</h1>
-  <p class="sub">A survival island, in a tab. Nothing to install — the same game the desktop
-     build runs, drawn by your browser.</p>
 
-  <button id="go">Play</button>
-  <p id="status">idle.</p>
+<div class="stage" aria-hidden="true"></div>
 
-  <div id="who">
-    <div class="row">
-      <button id="connect" class="ghost">Connect wallet</button>
-      <span id="account" class="dim">not connected — a shard that takes guests will still let you in</span>
-    </div>
+<header class="top">
+  <div class="top-in">
+    <a class="pros" href="/" id="home">Elo Pros</a>
+    <span class="crumb-sep" aria-hidden="true">/</span>
+    <a class="crumb" href="/gates.html" id="listing">Gates</a>
+    <span class="top-sp"></span>
+    <!-- painted by app.js — see `showAccount()` -->
+    <a class="chip" id="chip" data-state="away" href="/profile.html">
+      <span class="chip-dot" aria-hidden="true"></span>
+      <span id="chip-text">sign in</span>
+    </a>
+  </div>
+</header>
+
+<main class="shell">
+  <div class="mark-row">
+    <div class="mark" aria-hidden="true"></div>
+    <h1>GATES</h1>
+  </div>
+  <p class="tag">A survival island, in a tab. The same Rust client the desktop
+    build runs, compiled for your browser — nothing to install.</p>
+
+  <div class="act">
+    <button id="go" type="button" disabled>Play</button>
+    <div class="bar" id="bar" hidden><i id="barfill"></i></div>
+    <p id="status">starting up…</p>
   </div>
 
-  <details id="advanced">
-    <summary>Advanced — which shard, and its certificate</summary>
-    <label for="server">Shard (host:port)</label>
-    <input id="server" value="127.0.0.1:4433" spellcheck="false">
-    <label for="hash">Certificate SHA-256 — required for a self-signed dev shard, which prints it at boot</label>
-    <input id="hash" placeholder="aa:bb:cc:… (leave empty for a public shard with a real chain)" spellcheck="false">
-  </details>
+  <div class="panes">
+    <section class="pane">
+      <h2>Shard</h2>
+      <div class="shards" id="shards" role="group" aria-label="which shard to join">
+        <p class="note" id="shards-wait">looking for the shard list…</p>
+      </div>
 
-  <footer>
-    Click the world to capture the mouse; <kbd>Esc</kbd> gives it back and opens the menu.
-    Your wallet signs a sign-in message the shard composes and checks — this page never
-    writes it. Models do not draw in a browser yet; the island, its trees and its ground do.
-  </footer>
+      <details id="advanced">
+        <summary>Advanced — dial a shard by address</summary>
+        <label for="server">Shard (host:port)</label>
+        <input id="server" value="127.0.0.1:4433" spellcheck="false" autocapitalize="off" autocomplete="off">
+        <label for="hash">Certificate SHA-256</label>
+        <input id="hash" placeholder="aa:bb:cc:… (empty for a public shard)" spellcheck="false" autocapitalize="off" autocomplete="off">
+        <p class="hint">A self-signed dev shard prints its hash at boot. A public
+          shard has a real chain and needs none.</p>
+      </details>
+    </section>
+
+    <section class="pane" id="who">
+      <h2>Sign-in</h2>
+      <p id="account">checking your wallet…</p>
+      <div class="who-row">
+        <button id="connect" class="ghost" type="button">Connect wallet</button>
+        <button id="guest" class="ghost" type="button" hidden>Play as a guest</button>
+      </div>
+      <p class="note">Your wallet signs a sign-in message the shard composes and
+        checks — this page never writes it. Signing costs nothing and moves
+        nothing.</p>
+    </section>
+  </div>
+
+  <div class="keys">
+    <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move</span>
+    <span><kbd>click</kbd> capture the mouse</span>
+    <span><kbd>Esc</kbd> give it back, and open the menu</span>
+  </div>
 </main>
+
+<footer class="foot">
+  <div class="foot-in">
+    <span class="foot-said">Models do not draw in a browser yet; the island, its
+      trees and its ground do.</span>
+    <a href="/gates.html">the listing</a>
+    <a href="/download.html">desktop build</a>
+    <a href="https://github.com/AnthonE/Gates" rel="noopener noreferrer" target="_blank">source</a>
+  </div>
+</footer>
 
 <!-- **In the document before `play()` is called, always.** `bevy_winit` does
      `document.query_selector` and PANICS with "Cannot find element" if it
@@ -85,3 +623,4 @@
      Policy of `script-src 'self'` — the origin's — refuses an inline module,
      and this page is meant to be served under one. -->
 <script type="module" src="app.js"></script>
+</html>
