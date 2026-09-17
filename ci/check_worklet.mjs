@@ -89,9 +89,23 @@ const registerProcessor = (_name, cls) => { Processor = cls; };
 
 /* `new Function` rather than an import: the served file is a classic script
    (the glue's `let wasm_bindgen` is top-level) and this is how a worklet runs
-   it — as a body, with the scope's own globals injected. */
+   it — as a body, with the scope's own globals injected.
+
+   ⚠ **And with node's own globals taken AWAY.** Node has `TextDecoder`,
+   `fetch` and timers; an `AudioWorkletGlobalScope` has none of them (they are
+   `[Exposed=(Window,Worker)]`). This check ran with them in reach, so it
+   passed a glue whose first top-level statement is `new TextDecoder(…)` —
+   which throws in the worklet before `registerProcessor` is reached, so the
+   page built no processor and played silence (Chromium 151, measured
+   2026-09-17). Each name below is a parameter bound to `undefined`, which is
+   what the glue sees in a browser. */
+const ABSENT_IN_WORKLET = [
+  "TextDecoder", "TextEncoder", "fetch", "XMLHttpRequest", "document", "window",
+  "self", "location", "setTimeout", "setInterval", "queueMicrotask",
+  "performance", "crypto",
+];
 const src = readFileSync(audioJs, "utf8");
-new Function("AudioWorkletProcessor", "registerProcessor", src)(
+new Function("AudioWorkletProcessor", "registerProcessor", ...ABSENT_IN_WORKLET, src)(
   AudioWorkletProcessor, registerProcessor,
 );
 if (!Processor) { console.error("FAIL: audio.js registered no processor"); process.exit(1); }
@@ -99,9 +113,9 @@ if (!Processor) { console.error("FAIL: audio.js registered no processor"); proce
 const proc = new Processor();
 const deliver = (m) => proc.port.onmessage({ data: m });
 
-/* The page's job: compile and post. A worklet cannot fetch. */
-const module = new WebAssembly.Module(readFileSync(wasmPath));
-deliver({ kind: "init", module, rate: outRate });
+/* The page's job: fetch and post the bytes. A worklet cannot fetch, and a
+   compiled Module does not cross into one (`app.js`). */
+deliver({ kind: "init", bytes: new Uint8Array(readFileSync(wasmPath)).buffer, rate: outRate });
 deliver({ kind: "cmds", bytes: cmdBytes });
 
 const errors = fromWorklet.filter((m) => m.kind === "error");

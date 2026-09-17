@@ -90,8 +90,8 @@ cp crates/client-web/web/index.html crates/client-web/web/app.js "$out/"
 # script — an `AudioWorkletGlobalScope` has no module graph worth relying on,
 # and static `import` inside a worklet has been uneven across browsers for
 # years. The concatenation below is what `addModule` loads; the `.wasm` beside
-# it is fetched and compiled by the PAGE and posted down the port, because a
-# worklet cannot fetch anything itself.
+# it is fetched by the PAGE and its bytes posted down the port, because a
+# worklet cannot fetch anything itself (`app.js` says why not a compiled Module).
 echo "== building sound-worklet for the AudioWorklet (profile: $profile)"
 cargo build -p sound-worklet --profile "$profile" --target wasm32-unknown-unknown
 wk="$(mktemp -d)"
@@ -101,7 +101,10 @@ wasm-bindgen --target no-modules --no-typescript \
   --out-dir "$wk" \
   "target/wasm32-unknown-unknown/$profile/sound_worklet.wasm"
 cp "$wk/sound_worklet_bg.wasm" "$out/"
-cat "$wk/sound_worklet.js" crates/client-web/web/audio-processor.js > "$out/audio.js"
+# The prelude goes FIRST: it supplies the `TextDecoder` a worklet scope lacks
+# and the glue constructs at top level (`audio-prelude.js` has the measurement).
+cat crates/client-web/web/audio-prelude.js "$wk/sound_worklet.js" \
+  crates/client-web/web/audio-processor.js > "$out/audio.js"
 # The glue has to have defined the global the processor calls, or the
 # concatenation is two halves that load and then do nothing — silence with a
 # 200 on every request, which is this page's recurring failure shape.

@@ -188,18 +188,23 @@ window.gatesWasm = await init();
 async function startAudio() {
   const ctx = new AudioContext({ latencyHint: "interactive" });
   try {
-    /* `addModule` loads the CONCATENATION of the sound-worklet glue and
-       `audio-processor.js` (see `ci/build_web.sh`) — one script, no imports,
-       because a worklet scope has no module graph worth relying on. */
+    /* `addModule` loads the CONCATENATION of `audio-prelude.js`, the
+       sound-worklet glue and `audio-processor.js` (see `ci/build_web.sh`) —
+       one script, no imports, because a worklet scope has no module graph
+       worth relying on. */
     await ctx.audioWorklet.addModule("./audio.js");
-    /* Compiled HERE and posted down the port: a worklet scope has no `fetch`,
-       and a `WebAssembly.Module` is structured-cloneable. `compile` of an
-       ArrayBuffer rather than `compileStreaming` of the response, because the
-       latter needs the server to say `application/wasm` and a checkout served
-       by `python3 -m http.server` does not. */
+    /* Fetched HERE, because a worklet scope has no `fetch`, and posted down
+       the port as BYTES, transferred, for the worklet to compile itself.
+       ⚠ **Not as a compiled `WebAssembly.Module`**, which is what this did
+       first and it never arrived: Chromium 151 does not deserialize a Module
+       in the AudioWorklet scope, so the processor got `messageerror`, never
+       ran `init`, and the page was silent (measured 2026-09-17). The module is
+       ~240 KB, well inside any synchronous-compile limit, and the page's
+       `'wasm-unsafe-eval'` reaches the worklet, which inherits the page's
+       CSP. */
     const res = await fetch("./sound_worklet_bg.wasm");
     if (!res.ok) throw new Error(`sound_worklet_bg.wasm: ${res.status}`);
-    const module = await WebAssembly.compile(await res.arrayBuffer());
+    const bytes = await res.arrayBuffer();
     const node = new AudioWorkletNode(ctx, "gates-audio", {
       numberOfInputs: 0,
       numberOfOutputs: 1,
@@ -207,7 +212,7 @@ async function startAudio() {
     });
     node.port.onmessageerror = () => console.warn("gates audio: a message did not decode");
     node.connect(ctx.destination);
-    node.port.postMessage({ kind: "init", module, rate: ctx.sampleRate });
+    node.port.postMessage({ kind: "init", bytes, rate: ctx.sampleRate }, [bytes]);
     /* The renderer reads `rate` to build every playback rate against
        (`engine::rate` is then the only resample in the chain) and `port` to
        post to. Nothing else here is the game's business. */
