@@ -926,6 +926,15 @@ fn rows(cat: usize) -> Vec<Row> {
 /// **CROUCH is listed as doing nothing on purpose.** `BTN_CROUCH` crosses the
 /// wire and no sim code reads it (`sim-core/input.rs`), so the row states that
 /// rather than implying a stance the player will go looking for.
+///
+/// **No mouse button interacts, opens or loots, and this list said one did**
+/// (operator, 2026-09-17: *"mouse button shouldnt be the loot button it should
+/// be 'E'. LMB is pretty much just swing or use item"*). The binding was
+/// already `E` everywhere — `verbs::keys` is the only thing that opens a door,
+/// a box, a fire, a recycler, a crate, a bag or a loose stack — so what was
+/// wrong was the LABEL: `USE / ATTACK` advertised a verb the left button has
+/// never had. Left is the swing, the plan's place and the hammer's repair, and
+/// what it spends is the item in your hand, never the thing in front of you.
 pub const BINDS: [(&str, &str); 20] = [
     ("MOVE", "W A S D"),
     ("SPRINT", "Left Shift"),
@@ -939,8 +948,8 @@ pub const BINDS: [(&str, &str); 20] = [
         "Hold Left Alt (the head turns, the body does not)",
     ),
     ("LOOK", "Mouse (click to capture the pointer)"),
-    ("USE / ATTACK", "Left Mouse"),
-    ("INTERACT / OPEN", "E"),
+    ("ATTACK / USE HELD ITEM", "Left Mouse"),
+    ("INTERACT / OPEN / LOOT", "E"),
     ("HOTBAR", "1 - 6, or the scroll wheel"),
     ("INVENTORY / CRAFTING", "Tab, I or Q  (Tab or Esc closes)"),
     ("MAP", "Hold G"),

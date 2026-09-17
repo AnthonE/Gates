@@ -3690,8 +3690,8 @@ const BIND_IDENTS: [(&str, &[&str]); 20] = [
     ("JUMP", &["Space"]),
     ("FREE LOOK", &["AltLeft"]),
     ("LOOK", &[]),
-    ("USE / ATTACK", &["MouseButton::Left"]),
-    ("INTERACT / OPEN", &["KeyE"]),
+    ("ATTACK / USE HELD ITEM", &["MouseButton::Left"]),
+    ("INTERACT / OPEN / LOOT", &["KeyE"]),
     (
         "HOTBAR",
         &["Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6"],
