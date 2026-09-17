@@ -851,6 +851,36 @@ treeline (`DECISIONS.md` §open, world structure v1). What is still open:
    from the 8 m grid's staircase. Both were replaced by metrics that
    separate. **A band whose two populations touch is not a gate.**
 
+## 0ring · The coast ring is broken by cliffs, and the fix needs a stored path *(sim lane)*
+
+**Diagnosed and gated 2026-09-17, not fixed.** 3.8% of the ring is ground
+nobody can stand on (90.7–100.0% standable, mean 96.2% over 12 seeds,
+`tests/road.rs::the_ring_is_ground_a_player_can_stand_on`), and that is the
+ONLY cause: ablating the cliff cells takes the biggest unbroken arc 54.4% →
+94.8%, ablating radial gaps moves nothing. At a cliff cell the ground climbs
+**3.8–35× more steeply across the road than along it**, so the road's length
+is walkable and the road is cut into a slope with no shelf.
+
+1. **The fix is a road BENCH in `ground()`** — the reference's own answer
+   (`ROADS.md` §6, Devblog 189 *"no more gaps between roads and terrain"*).
+2. **It is blocked on the ring becoming a stored path.** A bench needs a
+   continuous centre line to key its target height off, and the predicate's
+   centre line is `r_shore(θ) − 40`, which FORKS on 0–470 bearings a seed —
+   keying a height on it would cut a C⁰ crease into the frame, which is the
+   contour trap in `CLAUDE.md`. A solved per-bearing radius is continuous by
+   construction, and it makes `ring_band` a table lookup instead of 3–6 height
+   taps, which is what pays for the bench.
+3. **Two cheap fixes are measured DEAD, do not re-propose them.**
+   `ROAD_INLAND_M` swept 12–90 m: the mean arc peaks at 70 m (54% → 76%) but
+   seed 0x845fed is immune at every offset, so the offset is not it. A
+   foreshortening correction (the width is measured radially, the road runs
+   along the coast) is worth 1.06× — the coast is near-tangential — and
+   changes nothing.
+4. **Two instruments are unreliable and the gate's doc says why**: `yaw_dir`
+   is a 256-entry LUT, so an angular sweep on it samples 256 bearings however
+   many steps it claims; and a component count over ring cells reads 43.5% at
+   a 2 m grid against 13.3% at 4 m. Use the standable share.
+
 ## 0rd · Coastal routing is measured; production integration remains *(sim lane)*
 
 **Side road bend v0 landed 2026-09-17** (operator: *"a road going straight

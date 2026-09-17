@@ -786,3 +786,128 @@ fn the_road_override_keeps_the_weights_normalized() {
          almost nothing"
     );
 }
+
+// ── The ring's walkable share (`reference/ROADS.md` §9.5 item 5) ───────────
+
+/// **What share of the coast ring is ground a player can stand on.**
+///
+/// `ROADS.md` §9.5 named "the ring's own fragments" as a bigger reach problem
+/// than the interior was and said *"nothing gates it"*. This is that gate, and
+/// it is **not** the metric that section proposed — the two instruments that
+/// look obvious were both measured and thrown away, which is most of this
+/// test's value:
+///
+/// 1. **An angular sweep built on `yaw_dir` measures 256 bearings however many
+///    steps it claims.** The LUT has 256 entries (`yaw_lut.rs`), so a
+///    4,096-step sweep samples every 20.9 m of arc at r=850 against a 4 m
+///    carriageway, and adjacent "bearings" are mostly the same direction. A
+///    first pass read the ring as 9.3% in one piece with *radial gaps* as the
+///    dominant cause; at true resolution (`examples/ring_breaks.rs`, real
+///    trig, 8,192 steps) it is 54.4% and radial gaps are **0–2 per seed**,
+///    p99 gap 0.0 m. Both of the first numbers were the LUT.
+/// 2. **A "largest connected component" count measures the GRID.** Over ring
+///    cells with an 8-neighbour flood the same islands read **43.5% at a 2 m
+///    grid and 13.3% at 4 m** — a 4 m ribbon sampled at 4 m is a broken chain
+///    of cells whatever the terrain does. `ROADS.md` §8 gate 2 already carries
+///    this warning in the other direction; it applies to the ring itself.
+///
+/// What IS stable across both grids, to a tenth of a point, is the share of
+/// carriageway cells whose ground a player can stand on: 97.3% mean, 94.4%
+/// worst, identical at 2 m and 4 m. So that is what this asserts. It is also
+/// the direct measure of the CAUSE: `examples/ring_breaks.rs` ablates the
+/// cliff cells out and the biggest arc goes 54.4% → **94.8%** mean, five of
+/// eight seeds to 99.8–100%, while ablating the radial gaps moves nothing.
+/// The ring is broken by unwalkable ground and by nothing else.
+///
+/// **The fix this floor is waiting for is a road bench**, and the measurement
+/// that says so is `examples/ring_breaks.rs`'s gradient split: at a cliff cell
+/// the ground climbs 3.8–35× more steeply ACROSS the road than along it (198
+/// radial against 0 tangential on the shipped seed). The road's length is
+/// walkable; the road is cut into a slope with no shelf under it. `NOW.md`
+/// §0ring has what that costs.
+#[test]
+fn the_ring_is_ground_a_player_can_stand_on() {
+    /// Measured 2026-09-17 over the twelve seeds below: **90.7–100.0%**, mean
+    /// 96.2%, and the worst island is `0x5eed` rather than any of the eight
+    /// `examples/ring_breaks.rs` sweeps (which bottom out at 94.4%) — which is
+    /// why this gate runs a wider set than the rest of the file. The floor
+    /// sits under the worst of those with room to move, because it is a
+    /// REGRESSION guard and not a target; the print is what a later pass
+    /// reads rather than this number.
+    const WALKABLE_FLOOR: f32 = 0.85;
+    /// 2 m, half the carriageway's radial width, so no cell of it is skipped.
+    const GRID: f32 = 2.0;
+    /// Wider than the file's `SEEDS` on purpose: the share moves 90.7–100.0%
+    /// across islands, so four of them cannot say where the floor belongs.
+    const RING_SEEDS: [u64; 12] = [
+        0x0047_4154_4553,
+        0x1,
+        0xDEAD_BEEF,
+        0x5EED,
+        20_260_731,
+        42,
+        555_555,
+        31_337,
+        8_675_309,
+        20_260_804,
+        123_456_789,
+        987_654_321,
+    ];
+
+    let n = (ISLAND_SIZE / GRID) as usize;
+    let mut worst = 1.0f32;
+    let mut worst_seed = 0u64;
+    let mut sum = 0.0f32;
+    for seed in RING_SEEDS {
+        let (mut cells, mut walk) = (0u32, 0u32);
+        for iz in 0..n {
+            for ix in 0..n {
+                let (x, z) = (ix as f32 * GRID, iz as f32 * GRID);
+                if terrain::ring_band(seed, x, z) != RoadBand::Carriageway {
+                    continue;
+                }
+                cells += 1;
+                // Re-derived from `height`/`slope`, not from any road helper:
+                // the question is whether the GROUND under the road holds a
+                // player, and a road helper has no opinion about that.
+                if terrain::height(seed, x, z) >= terrain::LAND_MIN_H
+                    && terrain::slope(seed, x, z) <= CLIFF_SLOPE_RATIO
+                {
+                    walk += 1;
+                }
+            }
+        }
+        assert!(
+            cells > 1_000,
+            "seed {seed:#x}: only {cells} carriageway cells at a {GRID} m grid \
+             — the sweep found no ring, so its share means nothing"
+        );
+        let share = walk as f32 / cells as f32;
+        sum += share;
+        println!(
+            "seed {seed:#x}: {walk}/{cells} carriageway cells are standable \
+             ({:.1}%)",
+            100.0 * share
+        );
+        if share < worst {
+            worst = share;
+            worst_seed = seed;
+        }
+    }
+    assert!(
+        worst >= WALKABLE_FLOOR,
+        "seed {worst_seed:#x}: only {:.1}% of the coast ring is ground a \
+         player can stand on, against a floor of {:.0}%. The ring is the \
+         circulation loop; a stretch of it on a cliff face cuts the loop",
+        100.0 * worst,
+        100.0 * WALKABLE_FLOOR
+    );
+    println!(
+        "ring: worst island is {:.1}% standable (seed {worst_seed:#x}), mean \
+         {:.1}% over {} islands, floor {:.0}%",
+        100.0 * worst,
+        100.0 * sum / RING_SEEDS.len() as f32,
+        RING_SEEDS.len(),
+        100.0 * WALKABLE_FLOOR
+    );
+}
