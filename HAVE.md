@@ -223,11 +223,15 @@ further behind than it is.
 - **No teams, no vending, no vehicles, no electricity** — cut from v1 in
   `DESIGN.md` §2, not missing by accident.
 - **Two animals, one biome's worth of variety.** The roster is thin.
-- **Nobody has played it on a machine with a GPU in a while.** `NOW.md`
-  §LOOK is 27 items whose only blocker is a person booting it and looking —
-  the swing, the death pose, the far forest, the whole audio bank. This is the
-  single largest thing between the tree and a playtest, and it is deliberate:
-  there is no pixel gate and a person is the visual gate.
+- **The desktop client is played and the browser one is not.** The operator
+  plays this regularly (`DECISIONS.md` 2026-09-17) — the visual gate is a
+  person, deliberately, and it runs. What has genuinely never been seen on
+  hardware is the **browser** build: every frame of it so far is SwiftShader in
+  a headless test, so its sky colour, its load time and its look on a
+  high-DPI display are unmeasured. ⚠ This bullet claimed nobody played the game
+  at all until 2026-09-17; `NOW.md` §LOOK carries why that was wrong and what
+  the real gap is (answers with no channel back into the tree, not an act
+  nobody performs).
 - **No soak.** Wall 3 holds on clippy alone; nothing has run for four hours.
 
 ---

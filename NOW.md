@@ -2655,15 +2655,33 @@ builder; they sit at the bottom of the file so a pass reaches pickable work
 first.
 
 
-## LOOK · Boot it on a GPU and look — the act 27 items are waiting on *(operator)*
+## LOOK · Questions a frame settles, waiting on an answer *(operator)*
 
-**This is the queue's largest single blocker and it had never been counted.**
-`CLAUDE.md` retired the pixel gate on purpose — `vantages.mjs` passed all 36
-checks on a beige smear — and says the visual gate is a person. That is the
-right call and it is not free: it means every slice landed since is *gated as
-arithmetic and unseen*, and the list below is what has accumulated. **Do not
-build a replacement pixel gate.** One session with the client open closes most
-of it.
+⚠ **Re-headed 2026-09-17, because the old header was false and this file was
+the last to know.** It read *"Boot it on a GPU and look — the act 27 items are
+waiting on"*, and said of its entries that *"none of it has been drawn"*.
+The operator plays this game (*"I played this game last night… I'm constantly
+testing it all the time"*, `DECISIONS.md` 2026-09-17) and **`DECISIONS.md`
+already proved it** — *"shadow stuff is kinda garbage with distance"*, *"trees
+need help"*, *"ive tried to go over it a few times now"*, *"check out how our
+map looks vs rust"*, four reports off frames in three days, each of which
+became a landed slice. The loop wrote *unseen* because **the loop cannot see**,
+and it read the absence of a record as the absence of the act. That is the same
+error as every other dated state claim this repo has had to retract, with an
+extra insult in it: it told the one person doing the looking that nobody was.
+
+**So the list below is not work waiting to start. It is a set of QUESTIONS
+whose answers exist or could exist in one session and have no way back into the
+tree except the operator typing them.** Each entry names a judgement a frame
+settles — *does a near crown read as needles rather than fern fronds* — and
+what is missing is the answer, not the act.
+
+Two consequences for whoever picks this up. **Write each item as a question
+with a place for its answer**, so a reply is one line and not an essay. And
+**an item whose answer has already been spoken is done** — check
+`DECISIONS.md` for the sentence before assuming an item is open. **Do not build
+a replacement pixel gate** (`CLAUDE.md`); that rule is untouched and this
+correction does not soften it.
 
 **Newest, 2026-09-16 — smash a barrel and look at what falls out** (§0wc
 2b, ground items v0): loose stacks are a new object class on the ground —

@@ -15,20 +15,23 @@ metres from your feet.
 
 ## What this is
 
-Gates is a survival game. You wake on a beach with a rock and a torch on a
-two-kilometre island, and everything after that is yours: chop, mine, craft,
-build, lock a door, and find out whether the person walking up the beach wants
-to trade or wants your bag.
+If you have played Rust you already have the shape of it. You wake on a beach
+with a rock and a torch, everything you own is on your back, and the most
+dangerous thing on the island is somebody who spawned twenty minutes before
+you did.
 
-It is written in Rust, top to bottom — an authoritative server, a native
-desktop client, and now a browser build, all sharing one simulation. The
-simulation is the product. It is deterministic to the bit: the same island and
-the same inputs produce the same world on your machine and ours, every time,
-and there is a test that proves it by compiling the whole thing to a second
-platform and comparing the results byte for byte.
+Gates is that, on a two-kilometre procedurally generated island, written in
+Rust the language from the server down. Three things make it its own game
+rather than a copy, and all three turn up in this post:
 
-This is the first of these posts. There is a lot of game in here that has
-never been written about, so this one does double duty.
+- The simulation is **deterministic to the bit** — same seed and same inputs,
+  same world on your machine and ours, proven by a test that compiles the whole
+  thing to a second platform and diffs the results byte for byte.
+- There is exactly **one implementation of it**, so the desktop build and the
+  browser build cannot drift apart.
+- It **runs in a browser tab**, which as of this month is a true sentence.
+
+First post, so it covers a little more ground than the next one will.
 
 ---
 
@@ -279,16 +282,20 @@ to find out.
 Published here on purpose, because a list of wins with nothing underneath it
 is a sales page.
 
-- **Nobody has played this on a GPU in a while.** There are 27 separate things
-  waiting on one person booting the game on real hardware and looking at it.
-  We deliberately do not have an automated visual test — we had one, and it
-  passed all 36 of its checks on a beige smear with no sky, no horizon and
-  nothing in it. A person looking at the screen is the visual test.
 - **There is no wipe.** No scheduled reset, which means blueprints surviving a
-  wipe is a feature with nothing to survive.
-- **There is no soak test.** Nothing in this project has run for four hours
-  straight.
+  wipe is a feature with nothing to survive. This is the one that has to land
+  before the monthly rhythm these posts are on means anything in the world.
+- **There is no soak test.** Nothing here has run for four hours straight.
 - **Two animals.** A pig and a wolf. The roster is thin and we know it.
+- **No teams, no vehicles, no electricity.** Cut from v1 deliberately rather
+  than missing by accident — informal groups work fine on day one, and the
+  other two are a different game's worth of systems.
+
+There is also no automated visual test, and that is a decision rather than a
+gap. We had one. It passed all 36 of its checks on a beige smear with no sky,
+no horizon and nothing in it — which is what a statistic about pixels can tell
+you about whether a frame is a picture of anything. A person looking at the
+screen is the visual test, and that person plays most nights.
 
 ---
 
