@@ -658,6 +658,48 @@ impl SlotLives {
         Some(&mut self.entries[at])
     }
 
+    /// Mark the slot at `(cx, cz)` **gone until `until`** — the one door
+    /// into this store for anything that is not a gather swing, and the
+    /// reason a world container can despawn without a second store, a
+    /// second timer or a second wire message (`world::set_cont_slot`,
+    /// operator 2026-09-16: *"when u do loot a crate they despawn after
+    /// that"*).
+    ///
+    /// **`until` is the caller's number and is never re-rolled here.** A
+    /// crate hands the refill tick it already rolled
+    /// (`worldcont::refill_ticks`), so the thing stands again exactly when
+    /// its loot comes back; rolling a fresh window inside this function is
+    /// how the two would drift into two facts about one object.
+    ///
+    /// Returns whether the mark landed, which is `false` in three cases
+    /// and each is deliberate rather than an error:
+    ///
+    /// 1. **`until == 0`** — that value *means* standing, so writing it
+    ///    would be a lie the whole store reads as truth.
+    /// 2. **Already harvested** — the earlier claim keeps its own tick, so
+    ///    two producers cannot extend each other's window. Nothing today
+    ///    can reach a cell twice (a barrel is not a container and a
+    ///    container is not swingable, `interact::openable`'s complement),
+    ///    but the arm is the answer rather than a panic if one ever does.
+    /// 3. **The store is full of harvested entries** — `find_or_insert`'s
+    ///    own bounded posture, arithmetically unreachable because capacity
+    ///    exceeds the island's slot count.
+    ///
+    /// The caller announces it: pushing `EV_SLOT_HARVESTED` from in here
+    /// would need the occupant, which this store has never known.
+    pub fn harvest(&mut self, cx: u16, cz: u16, until: u64) -> bool {
+        if until == 0 {
+            return false;
+        }
+        match self.find_or_insert(cx, cz) {
+            Some(e) if e.respawn_at == 0 => {
+                e.respawn_at = until;
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Release every entry whose respawn tick has arrived, reporting each
     /// via `events` (EV_SLOT_RESPAWNED). Swap-remove keeps the store
     /// dense; the order it produces is deterministic like everything else.
@@ -1181,6 +1223,36 @@ mod tests {
         assert_eq!(lives.len(), MAX_SLOT_LIVES);
         assert!(lives.find(1, 0).is_none(), "standing lowest-hits evicted");
         assert!(lives.find(0, 0).is_some(), "harvested survives eviction");
+    }
+
+    /// `harvest` is the door a world container despawns through, and each
+    /// of its three refusals is here because no caller can reach it today
+    /// — which is exactly when an arm rots. A crate is the only user and
+    /// it always passes a future tick on a standing cell.
+    #[test]
+    fn harvest_marks_a_standing_slot_and_refuses_the_three_it_says_it_does() {
+        let mut lives = SlotLives::new();
+        assert!(lives.harvest(4, 5, 900), "a standing cell takes the mark");
+        assert!(lives.is_harvested(4, 5));
+        assert_eq!(lives.find(4, 5).unwrap().respawn_at, 900, "the given tick");
+
+        // Already gone: the earlier claim keeps its own deadline, so a
+        // second producer cannot extend somebody else's window.
+        assert!(!lives.harvest(4, 5, 5_000), "a second mark landed");
+        assert_eq!(lives.find(4, 5).unwrap().respawn_at, 900);
+
+        // `0` MEANS standing, so writing it would be a lie the store reads
+        // as truth — and it would leave an entry that `respawn_due` never
+        // releases and `is_harvested` reports as standing.
+        assert!(!lives.harvest(6, 7, 0), "zero is not a deadline");
+        assert!(lives.find(6, 7).is_none(), "and it minted no entry");
+
+        // A standing DAMAGED cell can still be marked: the crate's cell
+        // carries no hits, but nothing in the signature says so and a
+        // refusal here would be a crate that never despawns.
+        lives.find_or_insert(8, 9).unwrap().hits = 3;
+        assert!(lives.harvest(8, 9, 400));
+        assert_eq!(lives.find(8, 9).unwrap().hits, 3, "hits are not cleared");
     }
 
     #[test]

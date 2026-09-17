@@ -2111,6 +2111,40 @@ impl World {
                 let refill = crate::worldcont::refill_ticks(self.seed, c.cx, c.cz, self.tick);
                 self.world_conts
                     .set_slot(ci, s as usize, v, self.tick, refill);
+                // **And an emptied crate stops standing there** (operator,
+                // 2026-09-16: *"when u do loot a crate they despawn after
+                // that"* — the reference removes one when it is emptied,
+                // `reference/LOOT.md` §1).
+                //
+                // The bit is `gather::SlotLives`, which already means *is
+                // the slot in this cell currently gone?* — so this one
+                // call is the whole feature: `occupy` stops letting the
+                // crate block a body, hold a ray or carry ground **on both
+                // sides** (the client mirrors the set), `interact::
+                // resolve_open` stops offering the verb, the drip closes
+                // the panel, the mesh takes `FellPart::Vanish`, the sweep
+                // brings it back, and a late joiner is handed the set.
+                // §9.4 priced this as one new bit per crate in AOI; the
+                // lane a smashed barrel rides was the answer.
+                //
+                // **Emptied, not merely taken from** — a crate with loot
+                // left in it that vanished would destroy that loot, and
+                // `is_empty` is the same transition the refill arms on, so
+                // there is one predicate rather than two that must agree.
+                let rec = self.world_conts.entries()[ci];
+                if rec.is_empty() {
+                    let occ = crate::worldcont::occupant_of(rec.table as usize);
+                    if let Some(occ) = occ {
+                        if self.slot_lives.harvest(rec.cx, rec.cz, rec.refill_at) {
+                            self.events.push(
+                                EV_SLOT_HARVESTED,
+                                cell_key(rec.cx, rec.cz),
+                                occ as u32,
+                                0,
+                            );
+                        }
+                    }
+                }
             }
             inventory::CONT_WEAR => self.players[slot].worn[s as usize] = v,
             _ => self.players[slot].inv[s as usize] = v,
@@ -3930,17 +3964,35 @@ impl World {
             }
             Command::OpenWorldCont { id, cont } => {
                 if let Some(slot) = self.live_slot_of(id) {
-                    self.world_conts.open(
-                        self.seed,
-                        &self.scatter,
-                        &self.haven,
-                        &self.loot,
-                        &self.gather,
-                        self.tick,
-                        (cont >> 16) as u16,
-                        (cont & 0xFFFF) as u16,
-                        &self.players[slot],
-                    );
+                    let (cx, cz) = ((cont >> 16) as u16, (cont & 0xFFFF) as u16);
+                    // **The fourth silent refusal: it is not there.**
+                    // `worldcont::open` re-derives the occupant from
+                    // worldgen, which is a pure function of the seed and
+                    // therefore says a despawned crate is still a crate —
+                    // so the standing/gone bit has to be asked here, and
+                    // it is asked through the predicate the client used to
+                    // hide it rather than a second opinion about the same
+                    // fact (`occupy::Harvested`, both sides).
+                    //
+                    // Silent like the other three, and for the same
+                    // reason: the drip closes the panel on the next tick,
+                    // so there is nothing a new event would add. It also
+                    // cannot deadlock the refill — the mark ends at the
+                    // record's own `refill_at`, so the first open after
+                    // the sweep rolls the table.
+                    if !self.slot_lives.is_harvested(cx, cz) {
+                        self.world_conts.open(
+                            self.seed,
+                            &self.scatter,
+                            &self.haven,
+                            &self.loot,
+                            &self.gather,
+                            self.tick,
+                            cx,
+                            cz,
+                            &self.players[slot],
+                        );
+                    }
                 }
             }
             Command::Move {

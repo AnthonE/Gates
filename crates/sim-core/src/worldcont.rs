@@ -7,9 +7,13 @@
 //! it has an address for as long as its loot lies on the ground and then it
 //! is gone. A crate is the opposite — it is furniture that outlives being
 //! emptied, it stands at a cell terrain authored rather than at a position
-//! something died at, and it must still be there, and still openable, on
-//! the next visit. A bag record cannot say that: it carries an `owner` and
-//! an `expires`, and the whole of its lifetime is a countdown.
+//! something died at, and it must be there, and openable, again. A bag
+//! record cannot say that: it carries an `owner` and an `expires`, and the
+//! whole of its lifetime is a countdown. (*Again*, not *still* — since
+//! 2026-09-17 an emptied crate is away for its refill window, which is the
+//! ⚠ on `WorldConts` below. The argument for a store rather than a bag is
+//! unchanged and is in fact stronger: what comes back has to have been
+//! remembered.)
 //!
 //! So the record here is the smallest thing that can: **the cell it stands
 //! at, the table it rolls, what is currently inside, and when it may roll
@@ -27,7 +31,10 @@
 //!    kind. An emptied container carries the tick it may roll again, and
 //!    the refill happens inside `open` — the one moment anybody can tell
 //!    the difference. A sweep would visit 64 records every tick to change
-//!    something no player is looking at.
+//!    something no player is looking at. (The sweep that puts an emptied
+//!    crate back on screen is `gather::SlotLives::respawn_due`, which
+//!    walks the slots it already walks for every felled pine — this store
+//!    is not in it and gained no tick of its own.)
 //! 3. **It does not invent a move verb.** `CONT_WORLD` is a third ground
 //!    container kind, so `inventory::plan_move` resolves a crate exactly
 //!    the way it resolves a box, with the same refusals and the same
@@ -122,12 +129,45 @@ pub fn table_of(o: Occupant) -> Option<usize> {
     }
 }
 
+/// `table_of` read backwards: which occupant rolls this table.
+///
+/// It exists for one caller and the reason is worth stating, because the
+/// obvious alternative is cheaper to type and wrong. `EV_SLOT_HARVESTED.b`
+/// is an **occupant** ordinal, and a record stores its `table` rather than
+/// the occupant it came from — so the despawn announcement
+/// (`world::set_cont_slot`) either asks this, or re-derives the cell
+/// through `terrain::scatter`, which is ~60 `noise2` evaluations for a byte
+/// we already had (`occupy.rs`'s cold-scatter argument, in the move verb's
+/// path).
+///
+/// `a_table_names_the_occupant_that_rolls_it` holds the two sides
+/// round-trip, so a third container kind cannot land in one and not the
+/// other; `slot_harvested_on_an_emptied_crate_names_the_crate` is why the
+/// mapping being *right* is gated and not only its totality — the two
+/// ordinals are adjacent, so a swap is plausible in both directions.
+pub fn occupant_of(table: usize) -> Option<Occupant> {
+    match table {
+        LOOT_CRATE => Some(Occupant::CrateSlot),
+        LOOT_CACHE => Some(Occupant::CacheSlot),
+        _ => None,
+    }
+}
+
 /// Dense, insertion-ordered, fixed capacity — `Backpacks`' shape.
 ///
 /// Unlike every other container store there is **no removal path**, so no
-/// swap-remove and no sync-walk restart contract: an authored container
-/// does not stop existing. Records only ever appear (first open) and empty
-/// out.
+/// swap-remove and no sync-walk restart contract: a RECORD does not stop
+/// existing. They only ever appear (first open) and empty out.
+///
+/// ⚠ **The container does stop existing, and the two are not the same
+/// sentence** (2026-09-17). An emptied crate despawns until it refills —
+/// operator, *"when u do loot a crate they despawn after that"* — and that
+/// is the slot's standing bit in `gather::SlotLives`, the one a smashed
+/// barrel has always used, marked by `world::set_cont_slot` until this
+/// record's own `refill_at`. So the index stays stable, the deadline stays
+/// here, and what goes away is the thing you can see and walk into. That
+/// split is the whole reason the despawn cost no new store, no new timer
+/// and no wire change; `reference/LOOT.md` §9.4 has the arithmetic.
 pub struct WorldConts {
     entries: Box<[WorldContRec; MAX_WORLD_CONTS]>,
     len: usize,

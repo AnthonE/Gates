@@ -36,6 +36,14 @@
 //! 4. **It has no removal path.** Every other container store swap-removes,
 //!    and this one never does, so nothing may assume a record's index is
 //!    stable *or* that it can vanish.
+//! 5. **The record and the object are two different things** (2026-09-16).
+//!    An emptied crate *despawns* — operator, *"when u do loot a crate they
+//!    despawn after that"* — and point 4 still holds while it does: the
+//!    record stays exactly where it is, holding the loot's deadline, and
+//!    what goes away is the slot's standing bit in `gather::SlotLives`, the
+//!    one a smashed barrel has always used. So this store has no removal
+//!    path and the world has a removal, which is not a contradiction and
+//!    is the only reason the despawn cost no new lane.
 
 use sim_core::backpack::BackpackContent;
 use sim_core::gather::{cell_key, GatherContent, ItemStack, RESPAWN_MIN_TICKS};
@@ -43,10 +51,14 @@ use sim_core::inventory::{
     CONT_SELF, CONT_WORLD, REFUSE_M_NO_CONTAINER, REFUSE_M_NO_INPUT, REFUSE_M_REACH, REFUSE_M_SLOT,
 };
 use sim_core::limits::{INV_SLOTS, MAX_ITEM_DEFS, MAX_WORLD_CONTS};
-use sim_core::loot::{LootContent, LootEntryDef, LootTableDef, LOOT_CACHE, LOOT_CRATE};
+use sim_core::loot::{
+    LootContent, LootEntryDef, LootTableDef, LOOT_BARREL, LOOT_CACHE, LOOT_CRATE,
+};
 use sim_core::movement::{quant_xz, Body};
 use sim_core::terrain::{self, Occupant, ScatterTable, CELLS_PER_SIDE};
-use sim_core::world::{Command, World, EV_MOVED, EV_MOVE_REFUSED};
+use sim_core::world::{
+    Command, World, EV_MOVED, EV_MOVE_REFUSED, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED,
+};
 use sim_core::worldsave::{WorldSaveError, WORLD_SAVE_MAX_BYTES};
 
 /// The solved authored sites for `seed` — what `terrain::ground` needs in order
@@ -229,6 +241,24 @@ fn answers(w: &World) -> Vec<(u8, u32)> {
         .iter()
         .filter(|e| e.code == EV_MOVED || e.code == EV_MOVE_REFUSED)
         .map(|e| (e.code, e.b))
+        .collect()
+}
+
+/// The standing/gone lane of this tick, as `(code, cell key)`.
+///
+/// Deliberately **not** `answers` with two more codes in its filter:
+/// `answers` maps `e.b`, which for a move is the refusal reason, and for
+/// `EV_SLOT_HARVESTED` is the occupant — so folding the two together would
+/// read an occupant ordinal as a refusal code and compare fine. Two lanes,
+/// two readers, each mapping the field its own events put the cell in
+/// (`world.rs`'s `/// EV_*: a = … b = …` lines, which `event_roles.rs`
+/// holds the producers to).
+fn slot_events(w: &World) -> Vec<(u8, u32)> {
+    w.events
+        .entries()
+        .iter()
+        .filter(|e| e.code == EV_SLOT_HARVESTED || e.code == EV_SLOT_RESPAWNED)
+        .map(|e| (e.code, e.a))
         .collect()
 }
 
@@ -551,7 +581,10 @@ fn an_emptied_crate_refills_when_its_tick_comes_and_not_before() {
         "emptying it armed the refill at least the barrel's minimum out"
     );
 
-    // Looking at it early changes nothing.
+    // Looking at it early changes nothing — and since the despawn landed
+    // there is nothing to look at: the open is refused because the crate
+    // is not standing there (`a_crate_that_has_despawned_cannot_be_opened`).
+    // Both readings want the same assertion, which is why it is unchanged.
     open(&mut w, cx, cz);
     assert!(
         w.world_conts.entries()[0].is_empty(),
@@ -559,8 +592,16 @@ fn an_emptied_crate_refills_when_its_tick_comes_and_not_before() {
     );
 
     // Past the tick, the next open finds it stocked again.
+    //
+    // ⚠ **`due + 1`, and the extra tick is the sweep's order rather than a
+    // rounding error.** `World::tick` runs the commands first and
+    // `slot_lives.respawn_due` after them, so on tick `due` the crate is
+    // still marked gone when the open is processed and is released at the
+    // end of that same tick. A smashed barrel has always come back on
+    // exactly this schedule; the crate shares it because it shares the
+    // store. This line read `due` until the despawn landed.
     let due = w.world_conts.entries()[0].refill_at;
-    advance_to(&mut w, due);
+    advance_to(&mut w, due + 1);
     open(&mut w, cx, cz);
     assert_eq!(
         units(&w, 0, 2),
@@ -625,9 +666,18 @@ fn nothing_a_player_puts_back_can_postpone_the_refill() {
         "a refused deposit moved the refill clock"
     );
 
-    // And the refill still arrives on the tick the emptying set, not a
+    // And the refill still arrives on the clock the emptying set, not a
     // window after the camper gave up.
-    advance_to(&mut w, armed);
+    //
+    // `armed + 1` for the despawn's sweep order, not because the deadline
+    // moved: the emptied crate is gone until `armed`, `respawn_due` runs
+    // after the tick's commands, so `armed` is the last tick an open is
+    // refused and `armed + 1` is the first that rolls
+    // (`an_emptied_crate_refills_when_its_tick_comes_and_not_before`
+    // carries the same note). The assertion that matters is unchanged —
+    // `armed` is still the number the *emptying* set, and a camper's
+    // refused deposit never touched it.
+    advance_to(&mut w, armed + 1);
     open(&mut w, cx, cz);
     assert_eq!(
         units(&w, 0, 2),
@@ -1172,4 +1222,242 @@ fn a_second_take_does_not_move_the_clock() {
         armed,
         "emptying it re-armed the clock that the first take had set"
     );
+}
+
+// ------------------------------------------------------- the crate despawns
+
+/// Empty the container at record 0 the way a player does — through the move
+/// verb, one stack at a time — rather than by writing its store.
+///
+/// The route matters: the harvest happens inside `World::set_cont_slot`, so
+/// a fixture that called `world_conts.set_slot` directly would empty the
+/// crate and skip the whole feature, and every assertion below would be
+/// about a crate nothing had despawned.
+fn empty_it(w: &mut World, cx: u16, cz: u16) {
+    for s in 0..INV_SLOTS {
+        let held = w.world_conts.entries()[0].items[s];
+        if held.count > 0 {
+            take(w, cx, cz, s as u8, s as u8, held.count);
+        }
+    }
+}
+
+/// **An emptied crate is GONE, not standing-and-empty** (operator,
+/// 2026-09-16: *"and when u do loot a crate they despawn after that"*).
+///
+/// The reference removes a crate when it is emptied (`reference/LOOT.md`
+/// §1), and §9.4 priced our version as "one bit per crate in AOI, and the
+/// client draws a lid or an absence" — an over-estimate by a whole lane.
+/// The bit already existed: `gather::SlotLives` *is* "is the slot in this
+/// cell currently gone?", it is already mirrored on the client
+/// (`HarvestedSet`), already synced to a late joiner, already saved, and
+/// `occupy` already asks it before a slot may block a body, hold a ray or
+/// carry ground. A smashed barrel has ridden it since world structure v1.
+#[test]
+fn an_emptied_crate_stops_standing_there() {
+    let mut w = world();
+    let (cx, cz, x, z) = find_slot(&w, Occupant::CrateSlot);
+    join_at(&mut w, x, z);
+    open(&mut w, cx, cz);
+    assert!(
+        !w.slot_lives.is_harvested(cx, cz),
+        "a crate you have merely opened is still furniture"
+    );
+
+    empty_it(&mut w, cx, cz);
+
+    assert!(
+        w.slot_lives.is_harvested(cx, cz),
+        "the emptied crate is still standing there"
+    );
+    // **The two timers are one number.** The harvest takes the tick the
+    // record already rolled rather than rolling a second, so a crate that
+    // came back before its loot did (or long after) is arithmetically
+    // impossible rather than merely untested — two facts about one object
+    // is the drift `CLAUDE.md` warns about twice.
+    let rec = w.world_conts.entries()[0];
+    assert_eq!(
+        w.slot_lives.find(cx, cz).expect("a life record").respawn_at,
+        rec.refill_at,
+        "the crate stands again exactly when its loot comes back"
+    );
+    // And it is announced on the lane every client already applies.
+    // `EV_SLOT_HARVESTED` carries the cell alone on the wire (the client
+    // re-derives the occupant from shared worldgen), which is why nothing
+    // about this slice moves `PROTO_VER`.
+    assert!(
+        slot_events(&w).contains(&(EV_SLOT_HARVESTED, cell_key(cx, cz))),
+        "nobody was told the crate went away: {:?}",
+        slot_events(&w)
+    );
+}
+
+/// The half-looted crate is the case that must NOT vanish: it still holds
+/// loot, and a despawn would take that loot with it.
+///
+/// This is the one assertion that separates "emptied" from "taken from",
+/// and the clock is deliberately checked beside it — the refill arms on the
+/// first take (`a_crate_with_one_unit_taken_is_already_on_the_clock`) and
+/// the despawn does not, so the two triggers are provably different even
+/// though both live in `set_cont_slot`.
+#[test]
+fn a_crate_with_loot_left_in_it_stays_standing() {
+    let mut w = world();
+    let (cx, cz, x, z) = find_slot(&w, Occupant::CrateSlot);
+    join_at(&mut w, x, z);
+    open(&mut w, cx, cz);
+
+    let s = (0..INV_SLOTS)
+        .find(|&s| w.world_conts.entries()[0].items[s].count > 1)
+        .expect("the fixture needs a stack to take one of");
+    take(&mut w, cx, cz, s as u8, 0, 1);
+
+    assert!(
+        !w.world_conts.entries()[0].is_empty(),
+        "loot is still in it"
+    );
+    assert_ne!(
+        w.world_conts.entries()[0].refill_at,
+        0,
+        "one unit taken arms the clock"
+    );
+    assert!(
+        !w.slot_lives.is_harvested(cx, cz),
+        "a crate with loot in it despawned, which destroys the loot"
+    );
+}
+
+/// Opening a crate that is not there is the **fourth** silent refusal, and
+/// it is refused by the predicate the client used to hide it rather than a
+/// second opinion about the same fact.
+///
+/// `worldcont::open` re-derives the occupant through `terrain::scatter`,
+/// which is a pure function of the seed and therefore says a despawned
+/// crate is still a crate — so without the check the open would roll the
+/// table into a container nobody can see, on a cell whose mesh is gone.
+#[test]
+fn a_crate_that_has_despawned_cannot_be_opened() {
+    let mut w = world();
+    let (cx, cz, x, z) = find_slot(&w, Occupant::CrateSlot);
+    join_at(&mut w, x, z);
+    open(&mut w, cx, cz);
+    empty_it(&mut w, cx, cz);
+    let armed = w.world_conts.entries()[0].refill_at;
+
+    open(&mut w, cx, cz);
+    assert!(
+        w.world_conts.entries()[0].is_empty(),
+        "an open reached a crate that is not standing there and rolled it"
+    );
+    assert_eq!(
+        w.world_conts.entries()[0].refill_at,
+        armed,
+        "the open moved the refill deadline of a crate that is not there"
+    );
+    assert!(
+        w.slot_lives.is_harvested(cx, cz),
+        "the open cleared the harvest"
+    );
+    assert_eq!(
+        w.world_conts.len(),
+        1,
+        "and it did not mint a second record"
+    );
+
+    // ⚠ **The tick the refill is due is the only tick this refusal is
+    // load-bearing, and the first draft of this test could not see it.**
+    // While the deadline is in the future an open on a gone crate is a
+    // no-op anyway — `open` only rolls when `tick >= refill_at` — so
+    // deleting the check above passed every assertion written before this
+    // one (run as a mutant: 26/26 green). On tick `refill_at` itself the
+    // two disagree: `open` would roll, and `respawn_due` has not run yet,
+    // so the loot would come out of a crate every client is still drawing
+    // as absent. That is the whole of what the check buys, so it is the
+    // whole of what has to be asserted.
+    let due = w.world_conts.entries()[0].refill_at;
+    advance_to(&mut w, due);
+    open(&mut w, cx, cz);
+    assert_eq!(
+        units(&w, 0, 2),
+        0,
+        "the crate paid out on the tick it was still gone"
+    );
+    assert_eq!(
+        w.world_conts.entries()[0].refill_at,
+        due,
+        "and disarmed the deadline a tick early"
+    );
+
+    // One tick later the sweep has released it and the same open pays, so
+    // the refusal is a tick of patience rather than a crate that can never
+    // be opened again.
+    advance_to(&mut w, due + 1);
+    open(&mut w, cx, cz);
+    assert_eq!(units(&w, 0, 2), 4, "the crate never came back");
+}
+
+/// The round trip: gone, then back, then full — on the barrel's clock and
+/// through the barrel's sweep, with no timer of its own anywhere.
+#[test]
+fn the_crate_comes_back_when_the_slot_does() {
+    let mut w = world();
+    let (cx, cz, x, z) = find_slot(&w, Occupant::CrateSlot);
+    join_at(&mut w, x, z);
+    open(&mut w, cx, cz);
+    empty_it(&mut w, cx, cz);
+    let due = w.world_conts.entries()[0].refill_at;
+
+    // One tick short: still gone, and nothing has been announced.
+    advance_to(&mut w, due);
+    assert!(
+        w.slot_lives.is_harvested(cx, cz),
+        "the slot was released before its tick"
+    );
+
+    // The sweep runs at the end of tick `due`, so `due + 1` is the first
+    // tick a player could see it standing (the same order the refill test
+    // above documents).
+    advance_to(&mut w, due + 1);
+    assert!(
+        !w.slot_lives.is_harvested(cx, cz),
+        "the sweep never released the slot"
+    );
+    assert!(
+        slot_events(&w).contains(&(EV_SLOT_RESPAWNED, cell_key(cx, cz))),
+        "and nobody was told it was back: {:?}",
+        slot_events(&w)
+    );
+
+    open(&mut w, cx, cz);
+    assert_eq!(
+        units(&w, 0, 2),
+        4,
+        "the crate that came back is empty — the refill and the respawn \
+         disagree about the tick"
+    );
+    assert!(
+        !w.slot_lives.is_harvested(cx, cz),
+        "and the refill re-marked it gone"
+    );
+}
+
+/// `table_of` and `occupant_of` are one mapping read from both ends, so a
+/// third container kind cannot land in one and not the other — which would
+/// be a crate that despawns with no occupant to name in the announcement,
+/// i.e. a crate that quietly never despawns at all.
+#[test]
+fn a_table_names_the_occupant_that_rolls_it() {
+    for o in [Occupant::CrateSlot, Occupant::CacheSlot] {
+        let t = sim_core::worldcont::table_of(o).expect("a container rolls a table");
+        assert_eq!(
+            sim_core::worldcont::occupant_of(t),
+            Some(o),
+            "{o:?} does not round-trip through its table"
+        );
+    }
+    // And nothing else answers, in either direction: the barrel is the
+    // near miss, because it pays loot and is not a container
+    // (`interact::openable`'s complement).
+    assert_eq!(sim_core::worldcont::table_of(Occupant::BarrelSlot), None);
+    assert_eq!(sim_core::worldcont::occupant_of(LOOT_BARREL), None);
 }

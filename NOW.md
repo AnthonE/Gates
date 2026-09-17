@@ -1153,14 +1153,23 @@ where it had only ever been two words on the prompt. Both unseen (`§LOOK`).
    is a `kind != CONT_WORLD` today — the reference keys the same
    predicate per *container instance* (`CanAcceptItem`), which is what a
    furnace's fuel slot or a vending machine would need.
-2. **An emptied crate says nothing at a distance**, so a wasted trip is
-   normal on a populated shard. Wants a lid state on the mesh
-   (`render/props.rs` has one `crate_box`) or a shorter refill window.
-   `reference/LOOT.md` §9.4 adds the reference's read: theirs is *gone*
-   when emptied, which is the distance signal — and names why we cannot
-   simply copy it (the crate's position is a pure function of the seed and
-   the client draws it from that function, so absence has to ride the
-   wire: one bit per crate in AOI).
+2. ✅ **An emptied crate despawns** (2026-09-17, the third sentence of the
+   loot call). The reference's distance signal taken whole: it is *gone*
+   when emptied, so a picked-over site reads as one. §9.4 priced it as a
+   new AOI bit and was wrong — `gather::SlotLives` already means "the slot
+   in this cell is gone", so the mark, the mesh, the verb, the collision,
+   the panel close and the respawn are all the barrel's existing lane; no
+   wire change, no knob. What it leaves, in order: **nobody has seen it**
+   (§LOOK); **a gone crate's cell is now buildable**, because `occupy`
+   asks one question and the answer feeds drawing, collision AND
+   placement — so a player can foundation over the pad's crate and deny
+   its refill, where before the empty crate still blocked. Pre-existing
+   for the other seven harvestable occupants (fell a pine, build on it),
+   new only in that a crate is a *shared reward*; the fix, if it is one,
+   is a no-build rule around the haven rather than a second "gone"
+   predicate. And the **cache** rides the same code with no fixture of
+   its own — `find_slot(Occupant::CacheSlot)` exists, the despawn tests
+   all use the crate.
 2b. ✅ **A smashed barrel scatters loose stacks** (ground items v0,
    2026-09-16, spoken: *"yea lets cook it"*). Built: `grounditem.rs`, wire
    v65, save format 14, a generic sack per stack, `E` naming the item and
@@ -2657,6 +2666,17 @@ right call and it is not free: it means every slice landed since is *gated as
 arithmetic and unseen*, and the list below is what has accumulated. **Do not
 build a replacement pixel gate.** One session with the client open closes most
 of it.
+
+**Newest, 2026-09-17 — empty the pad's crate and watch it go** (§0wc item
+2): the crate vanishes the moment its last stack leaves, and the panel
+shuts in the same tick. Two judgements no gate can make. Does an object
+disappearing under your own hands read as *looted* or as a bug — a barrel
+earns its exit with a smash and a crate just stops existing, so this is
+the first thing in the game that despawns in silence while you look at it;
+if it reads wrong the fix is a cue (`sound/src/lib.rs::Cue`) or a lid
+state on the mesh, not a knob. And from twenty metres, does a pad with two
+of its five crates gone read as *picked over* — which is the whole point
+of taking the reference's model — or just as a pad missing furniture?
 
 **Newest, 2026-09-16 — smash a barrel and look at what falls out** (§0wc
 2b, ground items v0): loose stacks are a new object class on the ground —

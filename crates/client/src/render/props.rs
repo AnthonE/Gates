@@ -2140,6 +2140,41 @@ pub fn spawn_outer_tree(
     ));
 }
 
+/// Whether an occupant can stop standing there, and therefore has to be
+/// spawned with a [`FellPart::Vanish`] so it can be taken off screen.
+///
+/// **Every gatherable node carries the harvested bit, not just trees.**
+/// `gather::node_index` covers `Occupant` 1..=5 and a barrel shares the same
+/// `SlotLives` entry and the same `EV_SLOT_HARVESTED`, so a smashed barrel
+/// and a mined ore node are as gone as a felled pine. Tagging only trees
+/// left both standing on screen after the server had removed them.
+///
+/// **And since 2026-09-16 the two world containers are in it too**, because
+/// an emptied crate despawns until it refills (`World::set_cont_slot`) and
+/// rides that same bit. Left out, they would be the same defect the
+/// paragraph above records: a crate you can walk through, cannot open, and
+/// can still see.
+///
+/// Lifted out of `spawn_slot`'s body to be a claim a gate can ask —
+/// `tests/fell.rs` holds it against `worldcont::table_of`, so a third
+/// container kind is that test's failure rather than a crate standing in an
+/// emptied world. A hand-kept list is exactly the mirror `CLAUDE.md` warns
+/// goes stale, so the list is here and the *question* is asked of the sim.
+pub fn harvestable(o: Occupant) -> bool {
+    matches!(
+        o,
+        Occupant::Tree
+            | Occupant::StoneNode
+            | Occupant::MetalNode
+            | Occupant::SulfurNode
+            | Occupant::Bush
+            | Occupant::Rock
+            | Occupant::BarrelSlot
+            | Occupant::CrateSlot
+            | Occupant::CacheSlot
+    )
+}
+
 /// Draw one scatter slot as a child of its chunk.
 ///
 /// **Public because the LOD is a spawn-site claim.** Every gate in this repo
@@ -2237,21 +2272,7 @@ pub fn spawn_slot(
         rotation: Quat::from_rotation_y(yaw),
         scale: Vec3::splat(slot.scale),
     };
-    // **Every gatherable node carries the harvested bit, not just trees.**
-    // `gather::node_index` covers `Occupant` 1..=5 and a barrel shares the same
-    // `SlotLives` entry and the same `EV_SLOT_HARVESTED`, so a smashed barrel
-    // and a mined ore node are as gone as a felled pine. Tagging only trees
-    // left both standing on screen after the server had removed them.
-    let harvestable = matches!(
-        slot.occupant,
-        Occupant::Tree
-            | Occupant::StoneNode
-            | Occupant::MetalNode
-            | Occupant::SulfurNode
-            | Occupant::Bush
-            | Occupant::Rock
-            | Occupant::BarrelSlot
-    );
+    let harvestable = harvestable(slot.occupant);
     let is_tree = slot.occupant == Occupant::Tree;
     // One constructor for all three parts: every field but `part` is the same
     // for the trunk, the canopy and the stump, and writing them out three

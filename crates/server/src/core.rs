@@ -3233,7 +3233,25 @@ impl ShardCore {
                         .world
                         .world_conts
                         .index_of(handle)
-                        .filter(|&i| self.world.world_conts.in_reach(i, p)),
+                        .filter(|&i| self.world.world_conts.in_reach(i, p))
+                        // **And it has to still be standing there.** An
+                        // emptied crate despawns until it refills
+                        // (`World::set_cont_slot`), and the record does
+                        // not go anywhere when it does — this store has
+                        // no removal path by design — so "gone" is the
+                        // harvested bit and not an absent index. Without
+                        // this the panel would stay open on a crate the
+                        // player can no longer see, which is the stale
+                        // panel the `None` arm below exists to prevent:
+                        // the next drag would refuse and read as the game
+                        // breaking. It resolves `None`, so the close is
+                        // the one every other despawn already sends.
+                        .filter(|_| {
+                            !self
+                                .world
+                                .slot_lives
+                                .is_harvested((handle >> 16) as u16, (handle & 0xFFFF) as u16)
+                        }),
                     // **The body does not ride here any more.** It had
                     // this arm from armor v1 to 2026-08-28 and resolved
                     // to `Some(0)` — no store, no reach, no lock, the one

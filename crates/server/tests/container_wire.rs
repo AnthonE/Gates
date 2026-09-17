@@ -1823,3 +1823,136 @@ fn a_wear_panel_is_drawn_from_the_body_not_the_backpack() {
         "the client's mirror of the body must agree with the store"
     );
 }
+
+/// Take one stack out of the open world container, through real action
+/// bytes — the same lane a player's drag arrives on.
+fn take_from_crate(core: &mut ShardCore, slot: usize, key: u32, from: u8, to: u8, count: u16) {
+    let mut buf = [0u8; 32];
+    let n = protocol::encode_action_move(key, CONT_WORLD, from, CONT_SELF, to, count, &mut buf)
+        .expect("a shape the wire takes");
+    let msg = protocol::decode_action(&buf[..n]).expect("round trips");
+    core.push_action(slot, msg);
+}
+
+/// **A crate emptied under an open panel shuts it**, because the crate is
+/// not there any more (operator, 2026-09-16: *"when u do loot a crate they
+/// despawn after that"*).
+///
+/// This is the sixth thing a container view can get wrong and the first
+/// five could not see it, because it is the one case where **the record
+/// stays**: this store has no removal path by design, so "gone" is not an
+/// absent index the way a despawned bag is. The drip resolves the handle,
+/// finds the record, proves reach — and every one of those still answers
+/// `Some` for a crate whose mesh the client has already taken off screen.
+/// Without the harvested filter the player is left holding a panel over
+/// nothing, which is exactly the stale view the `None` arm exists to
+/// prevent: the next drag refuses and reads as the game breaking.
+///
+/// It is driven end to end on purpose — the take is real action bytes, so
+/// the sim's despawn (`World::set_cont_slot`) and the drip's close are
+/// asserted as one thing rather than as two halves that might not meet.
+#[test]
+fn a_crate_emptied_under_an_open_panel_shuts_it() {
+    let stats = ShardStats::default();
+    let table = ScatterTable::alpha_default();
+    let haven = terrain::haven(SEED);
+    let (cx, cz, x, z) = a_pad_crate(&table, &haven);
+
+    let mut core = Box::new(ShardCore::new(SEED));
+    core.world.gather = GatherContent::probe_fixture();
+    core.world.loot = crate_fixture();
+    core.world.dev_spawn = Some((x, z));
+    core.catalog = ItemCatalog::EMPTY;
+    let mut clients = two_clients(&mut core, &stats);
+    let w0 = world_slot(&core, id_of(0));
+    core.world.players[w0].body = Body::at(SEED, hv(SEED), x, z);
+
+    let key = cell_key(cx, cz);
+    let mut seen = Vec::new();
+    ask(&mut core, 0, CONT_WORLD, key);
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients, &mut seen);
+    }
+    assert_eq!(syncs(&seen).len(), 1, "the open paid: {:?}", syncs(&seen));
+    assert_eq!(clients[0].1.cont_kind, CONT_WORLD, "the panel is open");
+    assert!(
+        !core.world.slot_lives.is_harvested(cx, cz),
+        "the crate is standing there before it is emptied"
+    );
+
+    // Empty it the way a player does: one action per tick, which is the
+    // hand every action spends (`core.rs`'s one-per-client-per-tick).
+    let mut after = Vec::new();
+    for s in 0..INV_SLOTS {
+        let held = core.world.world_conts.slot(0, s);
+        if held.count == 0 {
+            continue;
+        }
+        take_from_crate(&mut core, 0, key, s as u8, s as u8, held.count);
+        pump(&mut core, &stats, &mut clients, &mut after);
+    }
+    assert!(
+        core.world.world_conts.entries()[0].is_empty(),
+        "the fixture never emptied the crate, so this test proves nothing"
+    );
+    let got: u16 = core.world.players[w0]
+        .inv
+        .iter()
+        .filter(|st| st.item == CRATE_LOOT)
+        .map(|st| st.count)
+        .sum();
+    assert_eq!(got as u32, CRATE_ROLLS, "the looter did not get it");
+
+    // **The claim.** The record is still in the store at the same index —
+    // that is the whole reason a reach check and an index lookup cannot
+    // answer this — and the panel is shut anyway.
+    assert_eq!(
+        core.world.world_conts.len(),
+        1,
+        "the record must NOT have been removed; the standing bit is the fact"
+    );
+    assert!(
+        core.world.slot_lives.is_harvested(cx, cz),
+        "the sim never despawned the crate"
+    );
+    //
+    // The close rides the SAME tick as the take that emptied it — the drip
+    // runs after the sim inside one `tick_bare`, so there is no frame in
+    // which the panel is open over a crate that has gone. That is why this
+    // reads `after` rather than pumping again, which is what the first
+    // draft did and why it read `[]`.
+    let sent = syncs(&after);
+    let closes: Vec<_> = sent
+        .iter()
+        .filter(|(_, kind, handle, reset, rows)| {
+            (*kind, *handle, *reset, rows.len()) == (CONT_SELF, 0, true, 0)
+        })
+        .collect();
+    assert_eq!(
+        closes.len(),
+        1,
+        "emptying it must shut the panel exactly once: {sent:?}"
+    );
+    assert_eq!(
+        sent.last().map(|(_, kind, ..)| *kind),
+        Some(CONT_SELF),
+        "the close must be the LAST thing said about the panel, not \
+         followed by another view of a crate that is not there: {sent:?}"
+    );
+    assert_eq!(
+        (clients[0].1.cont_kind, clients[0].1.cont_handle),
+        (CONT_SELF, 0),
+        "the client's panel closed with it"
+    );
+
+    // And it stays shut rather than re-sending the close forever.
+    let mut quiet = Vec::new();
+    for _ in 0..5 {
+        pump(&mut core, &stats, &mut clients, &mut quiet);
+    }
+    assert!(
+        syncs(&quiet).is_empty(),
+        "a shut panel must be silent: {:?}",
+        syncs(&quiet)
+    );
+}

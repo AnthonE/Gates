@@ -225,21 +225,48 @@ arithmetic, invisible), then the wire, then the client mesh. The physics the
 operator defers is item 2, and it is worth noticing that item 2 is *also*
 the cheapest half — the expensive parts are the lane and the streamer.
 
-### §9.4 · An emptied crate still looks full (`NOW.md` §0wc item 2)
+### §9.4 · An emptied crate looked full — **BUILT 2026-09-17**
 
 Their crate is *gone* when emptied, which is a distance signal: you can see
-a picked-over site. Ours stands identical whether it holds three stacks or
-nothing, so a wasted walk is normal on a populated shard.
+a picked-over site. Ours stood identical whether it held three stacks or
+nothing, so a wasted walk was normal on a populated shard.
 
-Their junkpile-lifetime model (§4) is the alternative worth naming: a
+Their junkpile-lifetime model (§4) is still the alternative worth naming: a
 container with a *lifetime* rather than a refill needs no "is it empty"
 broadcast at all, because it is either there or not. Ours cannot take that
-— the crate's position is a pure function of the seed
-(`worldcont.rs`, "It does not place anything") and the client draws it from
-the same function — so the honest options are a **state on the wire**
-(one bit per crate in AOI, and the client draws a lid or an absence) or a
-**shorter window**. The first is the reference's read; the second is cheap
-and unmeasured.
+— the crate's position is a pure function of the seed (`worldcont.rs`, "It
+does not place anything") and the client draws it from the same function.
+
+⚠ **What this section got wrong is worth keeping, because the error was a
+PRICE and it deferred the feature for a day.** It read the options as a
+**state on the wire** (one bit per crate in AOI, the client drawing a lid
+or an absence) or a **shorter window**, and the first turned out to cost
+nothing: `gather::SlotLives` already answers *"is the slot in this cell
+currently gone?"*, and a smashed barrel has ridden it since world structure
+v1. It is on the wire (`EV_SLOT_HARVESTED`, the cell alone — the client
+re-derives the occupant from shared worldgen, so nothing about this moved
+`PROTO_VER`), mirrored on the client (`HarvestedSet`), handed to a late
+joiner by the sync walk, saved, and asked by `occupy` before a slot may
+block a body, hold a ray or carry ground — **on both sides**, which is the
+quantize-both-sides law and the reason the client needed no prediction of
+its own for this.
+
+So the whole of it is one call at the sim's single `CONT_WORLD` write
+(`World::set_cont_slot`): when the record goes empty, harvest its cell
+**until the refill tick the record already rolled**. One number for both
+facts, so a crate cannot come back before or after its loot. Everything
+else follows from consumers that already existed — the mesh takes
+`FellPart::Vanish` (`props::harvestable`), `resolve_open` stops offering
+the verb, the drip closes the panel on the path a despawned bag uses, and
+`respawn_due` announces it standing again.
+
+Two things it cost, both stated rather than found later: a crate is
+openable **one tick after** its deadline (the sweep runs after the tick's
+commands, exactly as a barrel always has), and the sim needed a fourth
+silent refusal on `OpenWorldCont` — `worldcont::open` re-derives the
+occupant from the seed, so it would otherwise roll loot into a container
+nobody can see on that one tick. `NOW.md` §0wc item 2 is closed; the
+shorter window was not needed and is not taken.
 
 ### §9.5 · The belt is their own container, and ours is six slots of one
 

@@ -1300,6 +1300,77 @@ fn slot_harvested_on_a_node_names_the_occupant_not_the_table_row() {
     );
 }
 
+/// The same event on an **emptied crate**, which is the third producer and
+/// therefore the third chance to put the cell where the occupant goes.
+///
+/// It is worth its own case rather than trusting the two above, because
+/// this producer is the only one that does not have the occupant in hand:
+/// a gather swing knows what it hit, and `world::set_cont_slot` holds a
+/// record that stores its loot *table*, so the ordinal is read back
+/// through `worldcont::occupant_of`. A wrong mapping there is a wrong `b`
+/// with the right shape — `CrateSlot` is 9 and `CacheSlot` 10, adjacent,
+/// both plausible — and nothing else in this tree would notice.
+#[test]
+fn slot_harvested_on_an_emptied_crate_names_the_crate() {
+    let mut w = duel_world();
+    w.loot = LootContent::probe_fixture();
+    let (x, z, cx, cz) = scanned_slot(&w, terrain::Occupant::CrateSlot);
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
+
+    // Open it to mint the record. The probe fixture leaves the crate's
+    // table inert, so what it rolls is nothing — which is the whole reason
+    // the stack below is written in by hand rather than rolled: this gate
+    // is about the announcement's fields, and a loot fixture would be a
+    // second thing that could fail.
+    w.tick(&[Command::OpenWorldCont {
+        id: ATTACKER,
+        cont: cell_key(cx, cz),
+    }]);
+    assert_eq!(w.world_conts.len(), 1, "the open minted the record");
+    let refill = 9_999_999;
+    w.world_conts.set_slot(
+        0,
+        0,
+        ItemStack {
+            item: 2,
+            count: 3,
+            cond: 0,
+        },
+        w.tick,
+        refill,
+    );
+
+    // Empty it through the verb, which is the only path that harvests.
+    w.tick(&[Command::Move {
+        id: ATTACKER,
+        cont: cell_key(cx, cz),
+        from_kind: inventory::CONT_WORLD,
+        from_slot: 0,
+        to_kind: CONT_SELF,
+        to_slot: 1,
+        count: 3,
+    }]);
+    assert!(w.world_conts.entries()[0].is_empty(), "the take emptied it");
+
+    let ev = only(&w, EV_SLOT_HARVESTED);
+    assert_ne!(
+        ev.a, ev.b,
+        "EV_SLOT_HARVESTED carries the same value twice, so this check \
+         cannot see a swap"
+    );
+    assert_eq!(
+        ev.b,
+        terrain::Occupant::CrateSlot as u32,
+        "EV_SLOT_HARVESTED.b is the occupant ordinal — a CRATE, not its \
+         loot table (LOOT_CRATE = 1) and not the cache next to it"
+    );
+    assert_eq!(
+        ev.a,
+        cell_key(cx, cz),
+        "EV_SLOT_HARVESTED.a is the cell key"
+    );
+}
+
 /// `EV_BAG_DROPPED: a = backpack id, b = the player whose body it came off`.
 ///
 /// Two small integers from different spaces — bag ids and player ids both

@@ -29,11 +29,12 @@ use std::time::Duration;
 use bevy::asset::AssetPlugin;
 use bevy::prelude::*;
 use client::render::props::{
-    apply_fell, assets, fall, fell_bearing, fell_rotation, FellPart, Fellable, PropAssets, Topple,
-    FELL_FALL_S, STUMP_LIFT_M,
+    self, apply_fell, assets, fall, fell_bearing, fell_rotation, FellPart, Fellable, PropAssets,
+    Topple, FELL_FALL_S, STUMP_LIFT_M,
 };
 use client::render::textures::{MapSet, PropMaps};
 use client::render::tree::CONIFER_POOL;
+use sim_core::terrain::Occupant;
 
 /// The variant this fixture's tree spawned as. **Deliberately not variant 0
 /// and deliberately not `KEY % variants`**: the first cut of `apply_fell`
@@ -554,5 +555,63 @@ fn a_node_that_leaves_no_stump_simply_disappears() {
         *app.world().get::<Visibility>(e).unwrap(),
         Visibility::Inherited,
         "a respawned node comes back"
+    );
+}
+
+/// **Everything the sim can mark gone has to be spawned as something that
+/// can vanish**, and the list at the spawn site is the only place that can
+/// get that wrong.
+///
+/// `props::harvestable` is a hand-written `matches!` — exactly the mirror
+/// `CLAUDE.md` warns goes stale — so the question is asked of the sim
+/// instead of retyped here: `worldcont::table_of` claims the occupants a
+/// player can empty, and an emptied container despawns
+/// (`World::set_cont_slot`). A third container kind is therefore this
+/// test's failure rather than a crate standing in an emptied world, which
+/// is what `CrateSlot` and `CacheSlot` themselves were until 2026-09-16.
+///
+/// The walk is a linked `match` rather than a written-out array: a twelfth
+/// `Occupant` has to be given an arm before this compiles, so the
+/// enumeration cannot silently skip the variant somebody just added.
+#[test]
+fn every_container_the_sim_can_empty_is_drawn_as_something_that_can_vanish() {
+    fn after(o: Occupant) -> Option<Occupant> {
+        match o {
+            Occupant::None => Some(Occupant::Tree),
+            Occupant::Tree => Some(Occupant::StoneNode),
+            Occupant::StoneNode => Some(Occupant::MetalNode),
+            Occupant::MetalNode => Some(Occupant::SulfurNode),
+            Occupant::SulfurNode => Some(Occupant::Bush),
+            Occupant::Bush => Some(Occupant::Rock),
+            Occupant::Rock => Some(Occupant::BarrelSlot),
+            Occupant::BarrelSlot => Some(Occupant::CrateSlot),
+            Occupant::CrateSlot => Some(Occupant::CacheSlot),
+            Occupant::CacheSlot => Some(Occupant::HavenShelter),
+            Occupant::HavenShelter => Some(Occupant::WaystationCanopy),
+            Occupant::WaystationCanopy => None,
+        }
+    }
+
+    let mut o = Some(Occupant::None);
+    let (mut seen, mut containers) = (0, 0);
+    while let Some(k) = o {
+        seen += 1;
+        if sim_core::worldcont::table_of(k).is_some() {
+            containers += 1;
+            assert!(
+                props::harvestable(k),
+                "{k:?} is a container a player can empty, and an emptied \
+                 container despawns — so it must spawn with a `Vanish` part \
+                 or it is a crate you can walk through, cannot open, and can \
+                 still see"
+            );
+        }
+        o = after(k);
+    }
+    assert_eq!(seen, 12, "the occupant walk is not visiting every variant");
+    assert_eq!(
+        containers, 2,
+        "the number of openable containers moved — read the assertion above \
+         before widening this one"
     );
 }
