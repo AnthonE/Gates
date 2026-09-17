@@ -447,8 +447,13 @@ fn run(seed: u64, step: f32, geometry: bool) -> Result<(), &'static str> {
     println!("seed={seed} haven=({:.2},{:.2})", h.x, h.z);
     for r in h.roads.iter().filter(|r| r.live) {
         println!(
-            "side port=({:.2},{:.2}) junction=({:.2},{:.2})",
-            r.px, r.pz, r.rx, r.rz
+            "side port=({:.2},{:.2}) junction=({:.2},{:.2}) path={:.1}m bend={:.1}m",
+            r.px,
+            r.pz,
+            r.rx,
+            r.rz,
+            r.path_len(),
+            r.bend_m()
         );
     }
     let mut baseline = Vec::new();

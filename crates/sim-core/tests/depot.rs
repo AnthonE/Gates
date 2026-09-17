@@ -90,29 +90,34 @@ fn carriageways_clear_real_capsules_over_final_ground_including_both_edges() {
         let mut cache = SlotCache::new();
         let mut occ = occupants(&h, &table, &mut cache);
         for road in h.roads {
-            let dx = road.rx - road.px;
-            let dz = road.rz - road.pz;
-            let len = (dx * dx + dz * dz).sqrt();
-            let n = (len * 2.0) as usize + 1;
-            for i in 0..=n {
-                let t = i as f32 / n as f32;
-                for cross in -2..=2 {
-                    // Body centres remain inside the carriageway by their radius.
-                    let off = cross as f32 * (terrain::ROAD_HALF_W - CAPSULE_RADIUS_M) * 0.5;
-                    let (x, z) = (
-                        road.px + dx * t + dz / len * off,
-                        road.pz + dz * t - dx / len * off,
-                    );
-                    let y = terrain::ground(seed, &h, x, z);
-                    assert!(y >= terrain::LAND_MIN_H, "seed {seed} water {x},{z}");
-                    assert!(
-                        terrain::ground_slope(seed, &h, x, z) <= terrain::CLIFF_SLOPE_RATIO,
-                        "seed {seed} slope {x},{z}"
-                    );
-                    assert!(
-                        !occ.blocks(seed, x, z, y),
-                        "seed {seed} blocked road {x},{z}"
-                    );
+            // Leg by leg on each leg's OWN bearing. It walked the chord until
+            // the bend landed, and a chord is not where the road is.
+            for k in 1..terrain::SIDE_ROAD_POINTS {
+                let (ax, az) = road.node(k - 1);
+                let (bx, bz) = road.node(k);
+                let (ex, ez) = (bx - ax, bz - az);
+                let len = (ex * ex + ez * ez).sqrt();
+                if len <= 0.0 {
+                    continue;
+                }
+                let n = (len * 2.0) as usize + 1;
+                for i in 0..=n {
+                    let t = i as f32 / n as f32;
+                    for cross in -2..=2 {
+                        // Body centres remain inside the carriageway by their radius.
+                        let off = cross as f32 * (terrain::ROAD_HALF_W - CAPSULE_RADIUS_M) * 0.5;
+                        let (x, z) = (ax + ex * t + ez / len * off, az + ez * t - ex / len * off);
+                        let y = terrain::ground(seed, &h, x, z);
+                        assert!(y >= terrain::LAND_MIN_H, "seed {seed} water {x},{z}");
+                        assert!(
+                            terrain::ground_slope(seed, &h, x, z) <= terrain::CLIFF_SLOPE_RATIO,
+                            "seed {seed} slope {x},{z}"
+                        );
+                        assert!(
+                            !occ.blocks(seed, x, z, y),
+                            "seed {seed} blocked road {x},{z}"
+                        );
+                    }
                 }
             }
         }

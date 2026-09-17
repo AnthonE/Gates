@@ -140,9 +140,26 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// of this digest on ~45% of the land. Heights did not move — the change is
 /// entirely in `scatter`, and `probe_terrain`'s height window would read the
 /// same. Deliberate, regenerated in the commit that caused it.
+/// **Moved `0x3FE5_E361_BCF1_E0E9` → `0xD518_44D9_C579_E6AE` at side road
+/// bend v0** (2026-09-17, operator: *"just a road going straight across the
+/// world. it did not look good at all"*). `SideRoad` stopped being two points
+/// and became a five-node polyline: the endpoints are untouched — the gate
+/// approach and the ring junction are the same metres they were — and the
+/// three interior nodes carry a hashed lateral, re-validated against the same
+/// corridor test and falling back to the chord when none fits.
+///
+/// Three inputs to this digest move and it is worth knowing which, because
+/// only one of them is the road. `probe_side_road_point` walks the road's own
+/// legs by arc length instead of interpolating the chord, so the side-road
+/// half of the digest is sampling a different set of POINTS. `scatter`'s
+/// road veto clears props out of the bent carriageway rather than the chord,
+/// which moves occupants within about `SIDE_ROAD_BEND_M + ROAD_HALF_W` of two
+/// roads. Heights did not move at all: nothing here touches `height`,
+/// `remap` or a site's floor, and `probe_terrain`'s height window reads the
+/// same bits it read before.
 // Procedural depot: typed footprint, opposite road pair, volume clearing,
 // and explicit authored-part/collision samples in probe_sites.
-const GOLDEN_TERRAIN_HASH: u64 = 0x3FE5_E361_BCF1_E0E9;
+const GOLDEN_TERRAIN_HASH: u64 = 0xD518_44D9_C579_E6AE;
 
 #[test]
 fn test_terrain_golden() {

@@ -68,19 +68,42 @@ pub fn probe_road_point(bearing: u16, radius_ix: i32) -> (f32, f32) {
 pub const PROBE_SIDE_ROAD_SAMPLES: i32 = 129;
 
 /// World position of one side-road sample: `i / (N-1)` of the way from the
-/// port to the ring.
+/// port to the ring **along the road**, not along its chord.
+///
+/// By ARC LENGTH rather than by leg index, so the pitch between two samples
+/// is the same everywhere and the 7.8 m the constant above argues for is
+/// still what it is. Walking by leg index would put `PROBE_SIDE_ROAD_SAMPLES
+/// / (SIDE_ROAD_POINTS - 1)` samples on each leg whatever its length, and the
+/// digest would sample a short leg finely and a long one coarsely for no
+/// reason a reader could see.
 ///
 /// Public and shared with the coverage test for `probe_road_point`'s reason —
-/// a test that recomputes the sweep is a test of itself. A dead road has both
-/// ends at the origin, so every sample of it is the same point and the digest
+/// a test that recomputes the sweep is a test of itself. A dead road has every
+/// node at the origin, so every sample of it is the same point and the digest
 /// carries `Off` 129 times, which is an honest answer about an island with no
 /// road rather than a hole.
 pub fn probe_side_road_point(road: &terrain::SideRoad, i: i32) -> (f32, f32) {
     let t = i as f32 / (PROBE_SIDE_ROAD_SAMPLES - 1) as f32;
-    (
-        road.px + (road.rx - road.px) * t,
-        road.pz + (road.rz - road.pz) * t,
-    )
+    let mut want = road.path_len() * t;
+    let last = terrain::SIDE_ROAD_POINTS - 1;
+    let (mut ax, mut az) = road.node(0);
+    for k in 1..=last {
+        let (bx, bz) = road.node(k);
+        let (ex, ez) = (bx - ax, bz - az);
+        let len = (ex * ex + ez * ez).sqrt();
+        if want <= len || k == last {
+            let f = if len > 0.0 {
+                (want / len).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            return (ax + ex * f, az + ez * f);
+        }
+        want -= len;
+        ax = bx;
+        az = bz;
+    }
+    road.node(last)
 }
 
 /// Origin cell of the probe's scatter window around a world position.

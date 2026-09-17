@@ -336,8 +336,12 @@ Stages, in order — each cheap, each deterministic:
    am I on it — and that inverts a curve the terrain already draws, which
    works exactly once. A road to the interior has no such curve, so this tier
    is the reference's own shape instead: a PATH, solved once in `haven()` and
-   stored on `Haven`, queried as a point-to-segment distance with no terrain
-   tap at all. The depot now publishes two opposite gate ports, and the solve
+   stored on `Haven`, queried as a point-to-**polyline** distance with no
+   terrain tap at all — `SIDE_ROAD_POINTS` nodes, which is `ROADS.md` §4's
+   own "take the polyline" and was a degenerate two-node one until side road
+   bend v0 (`DECISIONS.md` 2026-09-17). The ends are the solve's answers; the
+   three between them carry a hashed lateral that `road_corridor_clear` has
+   accepted, so the road stops reading as a ruler drawn across the island. The depot now publishes two opposite gate ports, and the solve
    chooses a site and its road pair together. It tries the best sixteen of the
    existing 128 inland candidates in deterministic score order, requiring
    both approaches to reach distinct ring junctions. Sixteen bearings provide
@@ -687,7 +691,7 @@ The reads a survival map must produce, and which stage buys each:
 | treeline | a tree→bush transfer where the splat's grass and litter channels meet; ~15 m wide, 26 stems + 30 bushes/ha against the core's 94 + 4 |
 | species | 2 per slot, painted by a 620 m field; 90–96% dominance at its rails |
 | authored sites | 4 — one haven pad + 2 waystations on the ring + 1 inland site at most 300 m from the island centre |
-| roads | 2 tiers, ~4 m wide: the coast ring (`ring_band`) + 2 opposite side roads per inland depot (solved segments on `Haven`, `side_band`). `road_band` unions their carriageways. Placement tries depot/road pairs against the ring before accepting the inland site |
+| roads | 2 tiers, ~4 m wide: the coast ring (`ring_band`) + 2 opposite side roads per inland depot (solved 5-node polylines on `Haven`, `side_band`). `road_band` unions their carriageways. Placement tries depot/road pairs against the ring before accepting the inland site |
 | pad containers | 5 `crate` on a 10 m ring, 2.64× the shoulder's density |
 | waystation containers | 2 `cache` on a 6.5 m ring, ≥ 600 m from every other site |
 | inland containers | none — `INLAND_CRATES = 0`, a consequence of the ladder's one crate of headroom. The depot's cargo is scenery |

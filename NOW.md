@@ -853,6 +853,23 @@ treeline (`DECISIONS.md` §open, world structure v1). What is still open:
 
 ## 0rd · Coastal routing is measured; production integration remains *(sim lane)*
 
+**Side road bend v0 landed 2026-09-17** (operator: *"a road going straight
+across the world… it did not look good at all"*). `SideRoad` is a 5-node
+polyline; the ends are unchanged and three hashed interior nodes are
+re-validated by `road_corridor_clear`. 31 of 32 sweep roads bend 25.2–56.6 m.
+Three things it left:
+
+1. **Nobody has looked at it.** §LOOK. The bend is arithmetic — whether 45 m
+   over 750 m reads as a road or as a wobble is a frame, and
+   `SIDE_ROAD_BEND_M` is a knob to turn after that.
+2. **The wander is cosmetic, not terrain-seeking** — deliberate, because our
+   interior does not fight a road (`ROADS.md` §7.1). A v1 that biases a node
+   toward lower ground is the obvious next shape and needs a gate that can
+   tell it from the hash.
+3. **The 180° pairing is the BUILDING** (`depot.rs:28` — both gates on the
+   yard's local Z axis), so two approaches will always leave opposite. Only a
+   second gate face or a second inland site changes that.
+
 `reference/ROADS.md` §2.1 adds the 2020 ring/branch rewrite and roadside-site
 exception to the older monuments-first account. The runnable experiment is
 `cargo run --release -p sim-core --example road_route`; measurements and
@@ -2664,6 +2681,17 @@ right call and it is not free: it means every slice landed since is *gated as
 arithmetic and unseen*, and the list below is what has accumulated. **Do not
 build a replacement pixel gate.** One session with the client open closes most
 of it.
+
+**Newest, 2026-09-17 — stand at the depot and look down its road** (§0rd,
+side road bend v0). The straight road is the one thing on this list that was
+reported from a frame rather than waiting for one, so it is the only entry
+here with a before. Three judgements: does a 25–57 m wander over 620–1,050 m
+read as a road that goes somewhere, or as a straight road someone nudged;
+does the gate approach still look square-on where the apron meets it
+(`bend_taper` is near zero there on purpose); and does the far end of the
+wander ever disappear behind the terrain, which is the thing that would make
+it worth more than `SIDE_ROAD_BEND_M = 60`. `cargo run -p client --example
+map_png` draws the island half with no GPU and is the cheap first look.
 
 **Newest, 2026-09-16 — smash a barrel and look at what falls out** (§0wc
 2b, ground items v0): loose stacks are a new object class on the ground —

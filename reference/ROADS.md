@@ -509,7 +509,7 @@ Haven)`** — exactly as `scatter` already did when the pad started vetoing
 cells. Every call site that resolves a road today would need the haven
 threaded, which `scatter` and `clutter` already carry.
 
-### 9.4 · One thing of ours to keep
+### 9.4 · One thing of ours to keep — and the half of it that was wrong
 
 Their roads wander because their terrain fights them; Devblog 50's first
 version took "pretty crazy routes". Ours does not have that problem (§7.1),
@@ -518,6 +518,32 @@ way a fitted spline is not. **We should not import the spline.** Straight
 segments with a port at each end give us §6's T and Y for free — three
 segments meeting at a ring point IS a T — without a search we cannot afford
 and cannot gate.
+
+⚠ **Everything above is about GRADE and COST, and it was read as being about
+shape.** It is kept as written because it is still true and still the reason
+there is no solver here. What it never claimed — and what nobody checked for
+three weeks — is how the result LOOKS. The operator booted the game on
+2026-09-17 and reported *"just a road going straight across the world. it did
+not look good at all"*, and the shipped seed says why in one line: both of the
+depot's approaches land on `z = 899.3`, an axis-aligned chord **1,760 m across
+a 2,048 m island**. A section arguing that we do not need their search is not
+an argument that a ruler is acceptable, and this one was cited as though it
+were.
+
+So `SideRoad` is a five-node polyline since side road bend v0
+(`DECISIONS.md` 2026-09-17), and **the paragraph above still holds over it**:
+there is no spline, no fitted curve and no search. The straight solve picks
+the same junction it always did; the three interior nodes take a hashed
+lateral capped by `SIDE_ROAD_BEND_M`, each candidate re-validated by the same
+`road_corridor_clear` that admitted the chord, and the fallback is the chord —
+so the worst case is exactly the road this section designed. §6's T and Y are
+unaffected: a leg meeting a ring point is still a leg meeting a ring point.
+
+One thing this correction does **not** fix, because it is not a road problem:
+the two approaches leave the yard 180° apart and always will, since
+`depot.rs`'s two gates share the compound's local Z axis. The pairing is the
+building. What changed is that the road no longer follows the line between
+them.
 
 ### 9.5 · Ranked, and what is not owed
 

@@ -95,7 +95,9 @@ fn main() {
     for &seed in SEEDS.iter() {
         let h = terrain::haven(seed);
         let r = h.roads[0];
-        let len = ((r.rx - r.px) * (r.rx - r.px) + (r.rz - r.pz) * (r.rz - r.pz)).sqrt();
+        // The road, not its chord — they stopped being the same number at
+        // side road bend v0 and this column says how far you actually walk.
+        let len = r.path_len();
         let (d0, s0) = reach(seed, &h, false);
         let (d1, s1) = reach(seed, &h, true);
         let (a50, a90, aov) = stats(&d0);

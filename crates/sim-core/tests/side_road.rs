@@ -19,6 +19,7 @@
 // The measurements are this file's output, as in `tests/forest.rs`.
 #![allow(clippy::disallowed_macros)]
 
+use sim_core::fmath::fabs;
 use sim_core::terrain::{
     self, Haven, RoadBand, CLIFF_SLOPE_RATIO, ISLAND_SIZE, LAND_MIN_H, ROAD_HALF_W, ROAD_R_MAX,
     ROAD_R_MIN, ROAD_SHOULDER_HALF_W,
@@ -208,52 +209,275 @@ fn a_side_road_crosses_neither_water_nor_cliff() {
 /// chose, and this tests `side_band`, the point-to-segment arithmetic every
 /// consumer actually calls. A road whose stored ends were right and whose
 /// distance function was wrong would pass the first and fail this.
+/// Point-to-polyline distance, written from the PUBLISHED nodes and sharing
+/// no code with the thing it checks.
+///
+/// `CLAUDE.md`'s `lattice.rs` entry: a naive rebuild that calls the function
+/// under test is a rebuild of nothing, and `SideRoad::node` is `pub` for
+/// exactly this — the shape is published, the arithmetic over it is this
+/// file's own. Run the mutant: point `side_band_of` at the chord
+/// (`seg_dist2(r.px, r.pz, r.rx, r.rz, ..)`) and this reddens on every seed.
+fn naive_dist(r: &terrain::SideRoad, x: f32, z: f32) -> f32 {
+    let mut best = f32::MAX;
+    for k in 1..terrain::SIDE_ROAD_POINTS {
+        let (ax, az) = r.node(k - 1);
+        let (bx, bz) = r.node(k);
+        let (ex, ez) = (bx - ax, bz - az);
+        let len2 = ex * ex + ez * ez;
+        let t = if len2 > 0.0 {
+            (((x - ax) * ex + (z - az) * ez) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let (qx, qz) = (x - ax - ex * t, z - az - ez * t);
+        best = best.min((qx * qx + qz * qz).sqrt());
+    }
+    best
+}
+
+/// What the two widths say a distance means.
+fn band_at(d: f32) -> RoadBand {
+    if d <= ROAD_HALF_W {
+        RoadBand::Carriageway
+    } else if d <= ROAD_SHOULDER_HALF_W {
+        RoadBand::Shoulder
+    } else {
+        RoadBand::Off
+    }
+}
+
 #[test]
 fn the_side_band_is_a_road_on_the_line_and_off_it_beside() {
+    // Two float paths cannot be trusted to agree on which side of a threshold
+    // a point exactly ON it falls, so samples within this of either width are
+    // not asserted. It is 1 mm against widths of 2 m and 5 m, so what it
+    // excuses is rounding and not a band.
+    const BAND_EDGE_EPS_M: f32 = 0.001;
+    let mut checked = 0u64;
+    let mut skipped = 0u64;
     for seed in SEEDS {
         let h = terrain::haven(seed);
         for (i, r) in h.roads.iter().filter(|r| r.live).enumerate() {
-            let len = ((r.rx - r.px) * (r.rx - r.px) + (r.rz - r.pz) * (r.rz - r.pz)).sqrt();
-            let (ux, uz) = ((r.rx - r.px) / len, (r.rz - r.pz) / len);
-            // The perpendicular, which is what the widths are measured along.
-            let (nx, nz) = (-uz, ux);
-            for k in 0..=64 {
-                let t = k as f32 / 64.0;
-                let (x, z) = (r.px + (r.rx - r.px) * t, r.pz + (r.rz - r.pz) * t);
-                assert_eq!(
-                    terrain::side_band(&h, x, z),
-                    RoadBand::Carriageway,
-                    "seed {seed:#x}: road {i} is not its own carriageway at \
-                     t={t:.2}"
-                );
-                // Just inside each width, and just outside the widest.
-                let inside_shoulder = ROAD_HALF_W + (ROAD_SHOULDER_HALF_W - ROAD_HALF_W) * 0.5;
-                for s in [1.0f32, -1.0] {
-                    let p = |d: f32| (x + nx * d * s, z + nz * d * s);
-                    let (ax, az) = p(inside_shoulder);
+            // ON THE LINE — every point between two nodes is this road's
+            // carriageway. Distance-free by construction, so it holds
+            // whatever any distance function does with a point off the road.
+            for k in 1..terrain::SIDE_ROAD_POINTS {
+                let (ax, az) = r.node(k - 1);
+                let (bx, bz) = r.node(k);
+                for j in 0..=32 {
+                    let t = j as f32 / 32.0;
+                    let (x, z) = (ax + (bx - ax) * t, az + (bz - az) * t);
                     assert_eq!(
-                        terrain::side_band(&h, ax, az),
-                        RoadBand::Shoulder,
-                        "seed {seed:#x}: road {i} has no shoulder at \
-                         {inside_shoulder:.1} m, t={t:.2}"
+                        terrain::side_band(&h, x, z),
+                        RoadBand::Carriageway,
+                        "seed {seed:#x}: road {i} is not its own carriageway \
+                         on leg {k} at t={t:.2}"
                     );
-                    let (bx, bz) = p(ROAD_SHOULDER_HALF_W + 1.0);
-                    // Off — unless the ring or another road is there, which
-                    // near the ring end it will be, so the ring's own answer
-                    // is excluded by asking `side_band` for a point that is
-                    // one metre past the widest band of EVERY road.
-                    assert_eq!(
-                        terrain::side_band(&h, bx, bz),
-                        RoadBand::Off,
-                        "seed {seed:#x}: road {i} is still a road {:.1} m off \
-                         its centre line at t={t:.2}",
-                        ROAD_SHOULDER_HALF_W + 1.0
-                    );
+                }
+            }
+            // BESIDE IT — a swept neighbourhood, each sample classified by
+            // this file's own distance rather than by an offset the test
+            // assumed would land in a band. `side_band_of` and not
+            // `side_band`, so the other approach's own band is not this
+            // road's failure.
+            for k in 1..terrain::SIDE_ROAD_POINTS {
+                let (ax, az) = r.node(k - 1);
+                let (bx, bz) = r.node(k);
+                let (ex, ez) = (bx - ax, bz - az);
+                let len = (ex * ex + ez * ez).sqrt();
+                let (nx, nz) = (-ez / len, ex / len);
+                for j in 0..=24 {
+                    let t = j as f32 / 24.0;
+                    let (cx, cz) = (ax + ex * t, az + ez * t);
+                    for step in -24i32..=24 {
+                        let off = step as f32 * 0.5;
+                        let (x, z) = (cx + nx * off, cz + nz * off);
+                        let d = naive_dist(r, x, z);
+                        if fabs(d - ROAD_HALF_W) < BAND_EDGE_EPS_M
+                            || fabs(d - ROAD_SHOULDER_HALF_W) < BAND_EDGE_EPS_M
+                        {
+                            skipped += 1;
+                            continue;
+                        }
+                        assert_eq!(
+                            terrain::side_band_of(r, x, z),
+                            band_at(d),
+                            "seed {seed:#x}: road {i} leg {k} at {d:.3} m off \
+                             the road reads as the wrong band"
+                        );
+                        checked += 1;
+                    }
                 }
             }
         }
     }
-    println!("side_band: carriageway on the line, shoulder beside it, off past it");
+    assert!(checked > 100_000, "the sweep did not sweep: {checked}");
+    println!(
+        "side_band: {checked} samples agree with an independent \
+         point-to-polyline distance ({skipped} within {BAND_EDGE_EPS_M} m of a width, \
+         not asserted)"
+    );
+}
+
+/// **Every live road actually bends**, and no further than it is allowed to.
+///
+/// The `water_carry.rs` lesson in `CLAUDE.md`: the suites above check that a
+/// road is walkable and that its band is its band, and BOTH are satisfied by
+/// a `bend_side_road` that returns its input. This is the one assertion that
+/// is not — and the ceiling half of it is what
+/// `scatter`'s bounding-box reject is allowed to assume.
+#[test]
+fn every_live_road_bends_and_stays_inside_its_ceiling() {
+    // **The fallback is real and it is not hidden.** One road in this sweep
+    // (seed 0x845fed) fails its corridor at 60, 30 AND 15 m and keeps its
+    // chord. Extending the ladder two rungs does rescue it — measured — and
+    // what it buys is a 5.2 m wander over 770 m, which is 0.7% and is
+    // straight to anyone looking at it. A gate that went green on that would
+    // be green for the wrong reason, so the ladder stops where a bend is
+    // still worth having and this counts the roads it cannot help.
+    //
+    // The separation that makes it a gate: 1 of 32 here, 32 of 32 under a
+    // `bend_side_road` that returns its input.
+    let mut least = f32::MAX;
+    let mut most = 0.0f32;
+    let (mut roads, mut flat) = (0u32, 0u32);
+    for seed in SEEDS {
+        let h = terrain::haven(seed);
+        for (i, r) in h.roads.iter().filter(|r| r.live).enumerate() {
+            let bend = r.bend_m();
+            let chord = ((r.rx - r.px) * (r.rx - r.px) + (r.rz - r.pz) * (r.rz - r.pz)).sqrt();
+            // The ceiling is the load-bearing half: `scatter`'s bounding-box
+            // reject assumes it, and a node past it is a prop left standing
+            // in the carriageway.
+            assert!(
+                bend <= terrain::SIDE_ROAD_BEND_M,
+                "seed {seed:#x}: road {i} bends {bend:.1} m, past the \
+                 {:.1} m ceiling `scatter`'s reject assumes",
+                terrain::SIDE_ROAD_BEND_M
+            );
+            if bend <= 0.0 {
+                flat += 1;
+            } else {
+                // A bent road is longer than its chord — the same claim
+                // stated as a cost rather than as a shape.
+                assert!(r.path_len() > chord, "seed {seed:#x}: road {i}");
+                least = least.min(bend);
+                most = most.max(bend);
+            }
+            roads += 1;
+        }
+    }
+    assert!(
+        flat * 4 < roads,
+        "{flat} of {roads} roads kept their chord — the bend is the exception \
+         now, not the rule"
+    );
+    // And the island the shard ships is not allowed to be one of them: it is
+    // the frame the operator is looking at.
+    let shipped = terrain::haven(20_260_731);
+    for (i, r) in shipped.roads.iter().filter(|r| r.live).enumerate() {
+        assert!(
+            r.bend_m() > 0.0,
+            "seed 20260731 road {i} is a chord — this is the island on the \
+             screen when the straight road was reported"
+        );
+    }
+    println!(
+        "bend: {roads} roads, {} bent {least:.1}–{most:.1} m off their own \
+         chords, {flat} kept the chord",
+        roads - flat
+    );
+}
+
+/// **Every node is inside the chord's box grown by the ceiling** — the
+/// assumption `scatter` rejects against, asserted where a reader can find it.
+///
+/// A box that is too tight does not fail loudly: it leaves a boulder standing
+/// in the carriageway on the outside of a bend. **This test is not what
+/// catches that** — it holds the NODE claim the box is built on. The mutant
+/// (drop the `+ SIDE_ROAD_BEND_M` in `scatter`) leaves `test_terrain_golden`
+/// green and reddens only `tests/depot.rs`'s
+/// `carriageways_clear_real_capsules_over_final_ground_including_both_edges`,
+/// which walks a capsule down the road. Both halves are needed and neither
+/// substitutes for the other, which is the `ring_handoff.rs` entry in
+/// `CLAUDE.md`: a probe that stands where it spawned certifies the spawn.
+#[test]
+fn every_node_is_inside_the_chords_box_grown_by_the_bend_ceiling() {
+    for seed in SEEDS {
+        let h = terrain::haven(seed);
+        for (i, r) in h.roads.iter().filter(|r| r.live).enumerate() {
+            let (lo_x, hi_x) = (r.px.min(r.rx), r.px.max(r.rx));
+            let (lo_z, hi_z) = (r.pz.min(r.rz), r.pz.max(r.rz));
+            for k in 0..terrain::SIDE_ROAD_POINTS {
+                let (x, z) = r.node(k);
+                assert!(
+                    x >= lo_x - terrain::SIDE_ROAD_BEND_M
+                        && x <= hi_x + terrain::SIDE_ROAD_BEND_M
+                        && z >= lo_z - terrain::SIDE_ROAD_BEND_M
+                        && z <= hi_z + terrain::SIDE_ROAD_BEND_M,
+                    "seed {seed:#x}: road {i} node {k} at ({x:.1}, {z:.1}) is \
+                     outside its own chord box grown by {:.1} m",
+                    terrain::SIDE_ROAD_BEND_M
+                );
+            }
+        }
+    }
+}
+
+/// **The two approaches are not one straight line across the island** —
+/// the defect this slice exists to retire, as arithmetic.
+///
+/// Operator, 2026-09-17, on seed 20260731: *"just a road going straight
+/// across the world. it did not look good at all"*. Both ring junctions and
+/// both gates sat on `z = 899.3`, an axis-aligned chord 1,760 m long across
+/// a 2,048 m island — and they still WILL sit on one line, because
+/// `depot.rs`'s two gates share the yard's local Z axis and the pairing is
+/// the building rather than a choice. What may not happen again is the road
+/// following it.
+#[test]
+fn the_pair_is_never_one_line_across_the_island() {
+    // A road's own width. Under this the two approaches read as one stroke
+    // with a yard in the middle, which is what was on the screen.
+    let floor = ROAD_SHOULDER_HALF_W * 2.0;
+    let mut worst = f32::MAX;
+    let mut worst_seed = 0;
+    for seed in SEEDS {
+        let h = terrain::haven(seed);
+        let live: Vec<_> = h.roads.iter().filter(|r| r.live).collect();
+        if live.len() < 2 {
+            continue;
+        }
+        let (a, b) = (live[0], live[1]);
+        // The through-line: junction to junction, which is what a player
+        // standing at the depot sees running away in both directions.
+        let (ex, ez) = (b.rx - a.rx, b.rz - a.rz);
+        let len2 = ex * ex + ez * ez;
+        assert!(len2 > 0.0, "seed {seed:#x}: both junctions at one point");
+        let mut off = 0.0f32;
+        for r in [a, b] {
+            for k in 0..terrain::SIDE_ROAD_POINTS {
+                let (x, z) = r.node(k);
+                let (px, pz) = (x - a.rx, z - a.rz);
+                let t = (px * ex + pz * ez) / len2;
+                let (qx, qz) = (px - ex * t, pz - ez * t);
+                off = off.max((qx * qx + qz * qz).sqrt());
+            }
+        }
+        assert!(
+            off > floor,
+            "seed {seed:#x}: the two approaches stay within {off:.1} m of one \
+             line between their junctions — under {floor:.1} m that is the \
+             ruler across the island again"
+        );
+        if off < worst {
+            worst = off;
+            worst_seed = seed;
+        }
+    }
+    println!(
+        "pair: the flattest island's approaches still leave their \
+         through-line by {worst:.1} m (seed {worst_seed:#x}, floor {floor:.1})"
+    );
 }
 
 // ─────────────────────────── §8 gates 1 and 2: reach, and one piece ───────
