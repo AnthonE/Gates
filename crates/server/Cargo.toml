@@ -10,7 +10,7 @@ content = { path = "../content" }
 sim-core = { path = "../sim-core" }
 protocol = { path = "../protocol" }
 client-core = { path = "../client-core" }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-util", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-util", "signal", "sync"] }
 # SIWE verification: recover the signer of a `personal_sign` signature and
 # derive its Ethereum address. Two small, ubiquitous crates and no way to do
 # this without them — hand-rolling secp256k1 is not a thing anyone should do.

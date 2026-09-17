@@ -359,7 +359,18 @@ pub fn bake_all(content: &content::Content) -> Result<SimTables, String> {
     })
 }
 
-/// Boot a shard: bind, spawn the sim thread and the accept loop, return.
+/// Stop threads if startup fails or its future is cancelled before handoff.
+struct PendingStartup(Option<Arc<AtomicBool>>);
+
+impl Drop for PendingStartup {
+    fn drop(&mut self) {
+        if let Some(shutdown) = &self.0 {
+            shutdown.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Boot a shard: bind, initialize the sim, then start accepting connections.
 /// The caller owns process lifetime; `shutdown` stops the sim thread.
 /// `tables` is the content bake (CLAUDE.md wall 7) — data the world runs
 /// on, handed over before the first tick like the seed.
@@ -438,6 +449,8 @@ pub async fn spawn_shard(
         .local_addr()
         .map_err(|e| format!("local_addr: {e}"))?;
     let shutdown = Arc::new(AtomicBool::new(false));
+    let mut pending = PendingStartup(Some(shutdown.clone()));
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     let slots = Arc::new(SlotTable::new(MAX_PLAYERS));
 
     let (ctrl_tx, ctrl_rx) = RingBuffer::<Connect>::new(CTRL_RING_CAP);
@@ -513,6 +526,7 @@ pub async fn spawn_shard(
                     slots,
                     stats,
                     shutdown,
+                    ready_tx,
                 )
             })
             .map_err(|e| format!("sim thread spawn: {e}"))?;
@@ -530,6 +544,12 @@ pub async fn spawn_shard(
             .spawn(move || store_thread(file, write_rx, world_file, world_rx, world_done_tx, stats))
             .map_err(|e| format!("store thread spawn: {e}"))?;
     }
+
+    // The control ring bounds arrivals between ticks, not arrivals during
+    // world construction. Do not admit clients until its consumer is ready.
+    ready_rx
+        .await
+        .map_err(|_| "sim thread stopped during initialization".to_owned())?;
 
     tokio::spawn(accept_loop(
         endpoint,
@@ -557,6 +577,7 @@ pub async fn spawn_shard(
         shutdown.clone(),
     ));
 
+    pending.0 = None;
     Ok(ShardHandle {
         local_addr,
         cert_hash,
@@ -2079,6 +2100,7 @@ fn sim_thread(
     slots: Arc<SlotTable>,
     stats: Arc<ShardStats>,
     shutdown: Arc<AtomicBool>,
+    ready: tokio::sync::oneshot::Sender<()>,
 ) {
     let mut core = ShardCore::new(seed);
     core.world.dev_spawn = dev_spawn;
@@ -2152,6 +2174,11 @@ fn sim_thread(
     links.resize_with(MAX_PLAYERS, || None);
     let mut links = links.into_boxed_slice();
 
+    // Startup-only notification: no channel wake or drop enters the tick.
+    // A cancelled startup has no accept loop and must not leave a sim alive.
+    if ready.send(()).is_err() {
+        return;
+    }
     let tick_dur = Duration::from_nanos(1_000_000_000 / TICK_HZ as u64);
     let mut next = Instant::now();
     // The boundary loop: clock read and sleep live here and only here;
