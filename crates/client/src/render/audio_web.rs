@@ -29,7 +29,7 @@
 //! processor and builds the node inside that click, where the gesture is a
 //! fact rather than a hope, and leaves the result on `globalThis.gatesAudio`.
 //! It also means the two async steps a worklet needs — `addModule` and
-//! `WebAssembly.compile` — finish before Bevy's plugin builds, so nothing
+//! fetching the module's bytes — finish before Bevy's plugin builds, so nothing
 //! here is async and there is no frame where the game is running and the
 //! audio thread is not.
 //!
