@@ -255,7 +255,7 @@ impl Occupants<'_> {
     pub fn ground(&mut self, seed: u64, x: f32, z: f32, feet_y: f32) -> f32 {
         let pcx = floor_i32(x / CELL_SIZE);
         let pcz = floor_i32(z / CELL_SIZE);
-        let mut best = crate::collide::NO_SURFACE;
+        let mut best = crate::depot::ground(self.haven, x, z, feet_y);
         let mut dz = -terrain::OCCUPANT_PROBE_CELLS;
         while dz <= terrain::OCCUPANT_PROBE_CELLS {
             let mut dx = -terrain::OCCUPANT_PROBE_CELLS;
@@ -304,6 +304,9 @@ impl Occupants<'_> {
             "the 3x3 probe is proved complete against the capsule radius; a \
              wider query needs OCCUPANT_PROBE_CELLS re-proved with it"
         );
+        if crate::depot::blocks(self.haven, x, z, feet_y, r, h) {
+            return true;
+        }
         let pcx = floor_i32(x / CELL_SIZE);
         let pcz = floor_i32(z / CELL_SIZE);
         let mut dz = -terrain::OCCUPANT_PROBE_CELLS;

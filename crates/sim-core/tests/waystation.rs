@@ -421,11 +421,10 @@ fn the_zones_are_clear_and_would_not_have_been() {
     let table = ScatterTable::alpha_default();
     let mut total_cleared = 0usize;
     let mut worst_opportunity = usize::MAX;
-    // Per tier, not per site: one canopy each, and each tier's own crate
-    // count. Derived from `site_crates` so a tier that starts paying moves
-    // this expectation with it rather than reddening it.
+    // Coastal sites retain their canopy and caches. The inland depot
+    // is queried separately and emits no scatter archetype or reward.
     let want_furnished = WAYSTATIONS * (WAYSTATION_CRATES as usize + 1)
-        + INLAND_SITES * (terrain::site_crates(SiteKind::Inland) as usize + 1);
+        + INLAND_SITES * (terrain::site_crates(SiteKind::Inland) as usize);
 
     for seed in SWEEP_SEEDS {
         let haven = terrain::haven(seed);
@@ -490,7 +489,7 @@ fn the_zones_are_clear_and_would_not_have_been() {
         assert_eq!(
             furnished, want_furnished,
             "seed {seed}: {furnished} authored slot(s) inside the zones against \
-             {want_furnished} — every live site owes one canopy and its tier's \
+             {want_furnished} — coastal sites owe one canopy and their tier's \
              own cache count, so a wrong count here is a dead site, a dropped \
              anchor, or a zone predicate that is not on the site at all"
         );
@@ -631,14 +630,10 @@ fn every_site_carries_its_canopy_clear_of_the_road() {
 
     for seed in SEEDS {
         let haven = terrain::haven(seed);
-        // EVERY lesser tier, and this one had to be widened rather than
-        // narrowed: `waystation_canopy` is one function and its geometry
-        // claims — the offset, the facing, the zone margin, one cell per
-        // occupant — are tier-independent. Read `0..WAYSTATIONS` and the
-        // inland site's canopy, the only thing that site IS, would have no
-        // gate on its placement at all.
+        // Coastal canopies retain their placement and exclusion guarantees;
+        // tests/depot.rs checks the inland compound's distinct geometry.
         for (w, ws) in haven.minor.iter().copied().enumerate() {
-            if !ws.live {
+            if !ws.live || ws.kind == SiteKind::Inland {
                 continue;
             }
             let (kx, kz, kyaw) = terrain::waystation_canopy(&ws);

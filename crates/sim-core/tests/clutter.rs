@@ -36,14 +36,13 @@ fn in_any_blend(haven: &Haven, cx: i32, cz: i32) -> bool {
     let pad = CLUTTER_CELL_M;
     let d2 = |sx: f32, sz: f32| (x - sx) * (x - sx) + (z - sz) * (z - sz);
     let hf = terrain::HAVEN_FOOTPRINT;
-    let wf = terrain::WAYSTATION_FOOTPRINT;
     if d2(haven.x, haven.z) < (hf.blend_m + pad) * (hf.blend_m + pad) {
         return true;
     }
-    haven
-        .minor
-        .iter()
-        .any(|ws| ws.live && d2(ws.x, ws.z) < (wf.blend_m + pad) * (wf.blend_m + pad))
+    haven.minor.iter().any(|ws| {
+        let fp = terrain::site_footprint(ws.kind);
+        ws.live && d2(ws.x, ws.z) < (fp.blend_m + pad) * (fp.blend_m + pad)
+    })
 }
 
 const SEEDS: [u64; 3] = [0x0047_4154_4553, 1, 0xDEAD_BEEF];
@@ -1474,7 +1473,7 @@ fn sites_parked_offshore() -> Haven {
 fn sites_of(haven: &Haven) -> Vec<(f32, f32, terrain::SiteFootprint)> {
     let mut v = vec![(haven.x, haven.z, terrain::HAVEN_FOOTPRINT)];
     for ws in haven.minor.iter().filter(|w| w.live) {
-        v.push((ws.x, ws.z, terrain::WAYSTATION_FOOTPRINT));
+        v.push((ws.x, ws.z, *terrain::site_footprint(ws.kind)));
     }
     v
 }

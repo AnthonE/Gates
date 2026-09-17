@@ -14,6 +14,7 @@ pub mod collide;
 pub mod combat;
 pub mod craft;
 pub mod deploy;
+pub mod depot;
 pub mod fmath;
 pub mod gather;
 pub mod grounditem;

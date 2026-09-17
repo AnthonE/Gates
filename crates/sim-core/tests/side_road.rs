@@ -21,7 +21,7 @@
 
 use sim_core::terrain::{
     self, Haven, RoadBand, CLIFF_SLOPE_RATIO, ISLAND_SIZE, LAND_MIN_H, ROAD_HALF_W, ROAD_R_MAX,
-    ROAD_R_MIN, ROAD_SHOULDER_HALF_W, WAYSTATION_RADIUS_M,
+    ROAD_R_MIN, ROAD_SHOULDER_HALF_W,
 };
 
 /// The cheap per-seed checks run the sixteen `tests/haven.rs` sweeps.
@@ -57,7 +57,7 @@ const MM: f32 = 1.0e-3;
 /// **Every inland site has a road, and both of its ends are what they claim.**
 ///
 /// §8 gate 3: "assert every side road's endpoints are a ring point and a site
-/// port". Both halves are exact — the port is `WAYSTATION_RADIUS_M` from the
+/// port". Both halves are exact — the port is `sim_core::depot::PORT_Z` from the
 /// site's centre on the bearing the road carries, and the ring end is on the
 /// carriageway — so both are asserted at a millimetre rather than a band.
 ///
@@ -78,10 +78,10 @@ fn every_inland_site_has_a_road_and_both_ends_are_what_they_claim() {
             .filter(|w| w.live && w.kind == terrain::SiteKind::Inland)
             .collect();
         assert_eq!(
-            sites.len(),
+            sites.len() * 2,
             terrain::SIDE_ROADS,
             "seed {seed:#x}: {} inland sites against {} roads — the two are \
-             one-to-one by construction and `solve_side_roads` indexes on it",
+             two-to-one by construction and `solve_side_roads` indexes on it",
             sites.len(),
             terrain::SIDE_ROADS
         );
@@ -92,13 +92,13 @@ fn every_inland_site_has_a_road_and_both_ends_are_what_they_claim() {
                  site reached the ring on walkable ground, which is a finding \
                  about the solve rather than a seed to shrug at"
             );
-            let site = sites[i];
+            let site = sites[i / 2];
 
             // The site end is the port: on the rim, on the carried bearing.
             let (dx, dz) = sim_core::yaw_dir((r.port as u16) << 8);
             let want = (
-                site.x + dx * WAYSTATION_RADIUS_M,
-                site.z + dz * WAYSTATION_RADIUS_M,
+                site.x + dx * sim_core::depot::PORT_Z,
+                site.z + dz * sim_core::depot::PORT_Z,
             );
             let off =
                 ((r.px - want.0) * (r.px - want.0) + (r.pz - want.1) * (r.pz - want.1)).sqrt();
@@ -134,7 +134,7 @@ fn every_inland_site_has_a_road_and_both_ends_are_what_they_claim() {
             // It cannot be shorter than the gap between the site's rim and
             // the ring's innermost radius, which is `ROAD_REACH_M` less the
             // rim — the tier's own definition, arriving as a length.
-            let floor = terrain::ROAD_REACH_M - WAYSTATION_RADIUS_M;
+            let floor = terrain::ROAD_REACH_M - sim_core::depot::PORT_Z;
             assert!(
                 len >= floor,
                 "seed {seed:#x}: road {i} is {len:.0} m long against a floor \
@@ -175,8 +175,8 @@ fn a_side_road_crosses_neither_water_nor_cliff() {
             for k in 0..=n {
                 let t = k as f32 / n as f32;
                 let (x, z) = (r.px + (r.rx - r.px) * t, r.pz + (r.rz - r.pz) * t);
-                let y = terrain::height(seed, x, z);
-                let s = terrain::slope(seed, x, z);
+                let y = terrain::ground(seed, &h, x, z);
+                let s = terrain::ground_slope(seed, &h, x, z);
                 samples += 1;
                 lowest = lowest.min(y);
                 worst_slope = worst_slope.max(s);

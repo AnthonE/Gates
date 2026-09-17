@@ -1681,6 +1681,10 @@ pub fn place(
         return;
     }
     let (ax, az) = anchor(cx, cz, loc);
+    if crate::depot::reserves(haven, ax, az, BUILD_CELL_M * 1.5) {
+        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SPOT, 0);
+        return;
+    }
     let px = p.body.qx as f32 * crate::movement::POS_XZ_Q;
     let pz = p.body.qz as f32 * crate::movement::POS_XZ_Q;
     let (dx, dz) = (ax - px, az - pz);
