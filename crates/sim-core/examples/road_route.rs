@@ -329,7 +329,7 @@ fn audit(probe: &mut Probe, path: &[Point], step: f32, carved: bool, ring_only: 
             // traces can jump between branches, so a bad trace alone cannot
             // establish a physical defect in the actual carriageway.
             if !ring_only
-                || terrain::ring_band(probe.seed, center.0, center.1) == RoadBand::Carriageway
+                || terrain::ring_probe(probe.seed, center.0, center.1) == RoadBand::Carriageway
             {
                 let (h, slope) = probe.sample(center, carved);
                 out.center_samples += 1;
@@ -447,8 +447,13 @@ fn run(seed: u64, step: f32, geometry: bool) -> Result<(), &'static str> {
     println!("seed={seed} haven=({:.2},{:.2})", h.x, h.z);
     for r in h.roads.iter().filter(|r| r.live) {
         println!(
-            "side port=({:.2},{:.2}) junction=({:.2},{:.2})",
-            r.px, r.pz, r.rx, r.rz
+            "side port=({:.2},{:.2}) junction=({:.2},{:.2}) path={:.1}m bend={:.1}m",
+            r.px,
+            r.pz,
+            r.rx,
+            r.rz,
+            r.path_len(),
+            r.bend_m()
         );
     }
     let mut baseline = Vec::new();
@@ -459,7 +464,7 @@ fn run(seed: u64, step: f32, geometry: bool) -> Result<(), &'static str> {
             .probe
             .coast((i % 4096) as f32 / 16.0)
             .ok_or("no coast crossing")?;
-        misses += usize::from(terrain::ring_band(seed, p.0, p.1) != RoadBand::Carriageway);
+        misses += usize::from(terrain::ring_probe(seed, p.0, p.1) != RoadBand::Carriageway);
         baseline.push(p);
     }
     for carved in [false, true] {

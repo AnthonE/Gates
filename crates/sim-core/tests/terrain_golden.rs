@@ -140,9 +140,39 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// of this digest on ~45% of the land. Heights did not move — the change is
 /// entirely in `scatter`, and `probe_terrain`'s height window would read the
 /// same. Deliberate, regenerated in the commit that caused it.
+/// **Moved `0x3FE5_E361_BCF1_E0E9` → `0xD518_44D9_C579_E6AE` at side road
+/// bend v0** (2026-09-17, operator: *"just a road going straight across the
+/// world. it did not look good at all"*). `SideRoad` stopped being two points
+/// and became a five-node polyline: the endpoints are untouched — the gate
+/// approach and the ring junction are the same metres they were — and the
+/// three interior nodes carry a hashed lateral, re-validated against the same
+/// corridor test and falling back to the chord when none fits.
+///
+/// Three inputs to this digest move and it is worth knowing which, because
+/// only one of them is the road. `probe_side_road_point` walks the road's own
+/// legs by arc length instead of interpolating the chord, so the side-road
+/// half of the digest is sampling a different set of POINTS. `scatter`'s
+/// road veto clears props out of the bent carriageway rather than the chord,
+/// which moves occupants within about `SIDE_ROAD_BEND_M + ROAD_HALF_W` of two
+/// roads. Heights did not move at all: nothing here touches `height`,
+/// `remap` or a site's floor, and `probe_terrain`'s height window reads the
+/// same bits it read before.
 // Procedural depot: typed footprint, opposite road pair, volume clearing,
 // and explicit authored-part/collision samples in probe_sites.
-const GOLDEN_TERRAIN_HASH: u64 = 0x3FE5_E361_BCF1_E0E9;
+/// **Moved `0xD518_44D9_C579_E6AE` → `0x8411_5D77_B572_EAFF` at ring path
+/// v0** (2026-09-18, operator: *"lets fix the ring being broken into
+/// pieces"*). The coast ring stopped being a predicate on the shoreline and
+/// became a solved polyline stored on `Haven`, free to choose its inland
+/// offset inside `RING_INLAND_MIN..RING_INLAND_MAX` so it can stand on ground
+/// a player can stand on. Measured: the road's standable share 94.2% → 97.9%
+/// and its longest unbroken walkable run 39.9% → 55.6% of the ring.
+///
+/// This is the widest of the three recent worldgen moves and it is worth
+/// saying what it did NOT touch: `height`, `remap` and every site's floor are
+/// bit-unchanged, because nothing here carves. What moved is where the road
+/// IS — and with it every site, since `haven` chooses its pad ON the ring and
+/// now scores all 256 of its nodes rather than 64 re-derived crossings.
+const GOLDEN_TERRAIN_HASH: u64 = 0x8411_5D77_B572_EAFF;
 
 #[test]
 fn test_terrain_golden() {
@@ -301,7 +331,7 @@ fn test_golden_covers_authored_sites() {
                 let (px, pz) = probe_road_point(b, r);
                 // `ring_band`: this sweep is the RING's coverage, and a
                 // side road crossing a radial would flatter it.
-                if terrain::ring_band(seed, px, pz) != terrain::RoadBand::Off {
+                if terrain::ring_band(&h.ring, px, pz) != terrain::RoadBand::Off {
                     hit = true;
                 }
             }

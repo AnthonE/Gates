@@ -367,6 +367,20 @@ fn a_body_caught_inside_an_occupant_can_walk_out() {
 /// which is the claim a player can check.
 #[test]
 fn the_shelter_walls_stop_a_body_and_the_door_does_not() {
+    /// Inside or outside, as a distance from the shelter's centre.
+    ///
+    /// ⚠ **This was a bare 2.5 and the number had no geometry in it.** The
+    /// wall stands at `HAVEN_SHELTER_HALF_M`, so what separates "the door let
+    /// me in" from "a wall stopped me" is the wall, and the bar belongs just
+    /// inside it. Measured over these four seeds: a body that came through
+    /// the door ends **2.31–2.93 m** from the centre and one that walked into
+    /// the back wall ends **3.50–3.57 m**, so the two populations are half a
+    /// metre apart and this sits between them. The old 2.5 fell inside the
+    /// door population rather than between them, and ring path v0 moved the
+    /// pad far enough for seed 12345 to land on the wrong side of it while
+    /// still being comfortably indoors.
+    const INSIDE_M: f32 = terrain::HAVEN_SHELTER_HALF_M - 0.3;
+
     for seed in SEEDS {
         let mut sc = Scratch::live(seed);
         let (sx, sz, yaw8) = terrain::haven_shelter(&sc.haven);
@@ -391,8 +405,9 @@ fn the_shelter_walls_stop_a_body_and_the_door_does_not() {
             movement::step(seed, hv(seed), &cols, &mut sc.occupants(), &mut b, &f);
         }
         let d = dist(&b, &shelter);
+        println!("seed {seed}: door ends {d:.3} m from the centre");
         assert!(
-            d < 2.5,
+            d < INSIDE_M,
             "seed {seed}: the doorway did not admit a body — it pinned at \
              {d:.3} m from the shelter's centre"
         );
@@ -407,8 +422,9 @@ fn the_shelter_walls_stop_a_body_and_the_door_does_not() {
             movement::step(seed, hv(seed), &cols, &mut sc.occupants(), &mut b, &f);
         }
         let d = dist(&b, &shelter);
+        println!("seed {seed}: back wall stops at {d:.3} m from the centre");
         assert!(
-            d > 2.5,
+            d > INSIDE_M,
             "seed {seed}: a body walked in through the back wall, ending \
              {d:.3} m from the shelter's centre"
         );

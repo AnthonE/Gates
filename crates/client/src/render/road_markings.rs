@@ -4,7 +4,7 @@
 //! Secondary crossings remain paved but unmarked. Every connecting interval
 //! is checked against the authoritative ring; ambiguous intervals stay blank.
 
-use sim_core::terrain::{self, Lattice, RoadBand};
+use sim_core::terrain::{self, RoadBand};
 use std::f32::consts::TAU;
 
 /// Proposed visual defaults, DECISIONS.md road markings v1.
@@ -56,48 +56,43 @@ fn point(ux: f32, uz: f32, r: f32) -> (f32, f32) {
     (c + ux * r, c + uz * r)
 }
 
-fn shore_height(lat: &mut Lattice, seed: u64, ux: f32, uz: f32, r: f32) -> f32 {
-    let (x, z) = point(ux, uz, r + terrain::ROAD_INLAND_M);
-    terrain::height_memo(lat, seed, x, z) - terrain::SEA_LEVEL
-}
-
-/// Match the sim's positive-land to nonpositive-sea crossing, with the same
-/// bounded march and bisection already used to place sites on this ring.
-fn first_radius(lat: &mut Lattice, seed: u64, ux: f32, uz: f32) -> Option<f32> {
-    let mut lo = terrain::ROAD_R_MIN;
-    let mut h = shore_height(lat, seed, ux, uz, lo);
-    while lo < terrain::ROAD_R_MAX {
-        let hi = (lo + terrain::HAVEN_MARCH_M).min(terrain::ROAD_R_MAX);
-        let next = shore_height(lat, seed, ux, uz, hi);
-        if h > 0.0 && next <= 0.0 {
-            let mut a = lo;
-            let mut b = hi;
-            for _ in 0..terrain::HAVEN_BISECT_ITERS {
-                let mid = (a + b) * 0.5;
-                if shore_height(lat, seed, ux, uz, mid) > 0.0 {
-                    a = mid;
-                } else {
-                    b = mid;
-                }
-            }
-            let r = (a + b) * 0.5;
-            let (x, z) = point(ux, uz, r);
-            if terrain::ring_band_memo(lat, seed, x, z) == RoadBand::Carriageway {
-                return Some(r);
-            }
-        }
-        lo = hi;
-        h = next;
-    }
-    None
+/// The road's radius on one chart bearing, read off the solved ring.
+///
+/// ⚠ **This used to re-derive it**, marching and bisecting the shoreline the
+/// way `haven` did and taking `shore - ROAD_INLAND_M`, because that WAS the
+/// road's centre line. Since ring path v0 it is not, and a chart built the
+/// old way paints stripes down a road the sim does not have —
+/// `tests/road_markings.rs` caught exactly that, which is the whole reason
+/// its validity check asks the authoritative ring rather than trusting this.
+///
+/// `ROAD_CHART_SAMPLES` is a multiple of `RING_BEARINGS`, so a chart bearing
+/// falls between two nodes and the radius is the polyline's own linear
+/// interpolation — the same shape `ring_band` measures against, and no
+/// `height` tap at all where this was a bisection per bearing.
+fn radius_at(ring: &terrain::RingPath, i: usize) -> f32 {
+    // ⚠ **The two indices run in OPPOSITE directions and the first draft of
+    // this assumed they did not** — which produced a chart whose every
+    // interval failed its own validity check, so the road came out with no
+    // paint on it at all. `direction(i)` here is `(cos a, sin a)` in `(x, z)`
+    // and turns +X toward +Z; the yaw LUT's index 0 is +Z and turns toward
+    // +X. Matching them gives `theta = pi/2 - a`, so the ring index is
+    // `64 - 256 * i / SAMPLES`, decreasing.
+    let n = terrain::RING_BEARINGS as f32;
+    let f = (64.0 - n * i as f32 / ROAD_CHART_SAMPLES as f32).rem_euclid(n);
+    let a = f as usize % terrain::RING_BEARINGS;
+    let b = (a + 1) % terrain::RING_BEARINGS;
+    let t = f - f.floor();
+    ring.r[a] + (ring.r[b] - ring.r[a]) * t
 }
 
 /// Built in bounded batches; native workers and browser cooperative tasks use
 /// the same arithmetic, with no global cache or per-chunk reconstruction.
 pub struct RoadChartBuilder {
-    seed: u64,
+    /// The solved coast ring. Resolved once here rather than threaded from
+    /// the caller: it is a pure function of the seed, so a second copy cannot
+    /// disagree with the sim's, and the chart is built once per world.
+    ring: terrain::RingPath,
     nodes: Vec<Node>,
-    lat: Lattice,
     cursor: usize,
     mesh_step: f32,
 }
@@ -105,9 +100,8 @@ pub struct RoadChartBuilder {
 impl RoadChartBuilder {
     pub fn new(seed: u64, mesh_step: f32) -> Self {
         Self {
-            seed,
+            ring: terrain::solve_ring(seed),
             nodes: vec![Node::default(); ROAD_CHART_SAMPLES],
-            lat: Lattice::new(),
             cursor: 0,
             mesh_step,
         }
@@ -118,10 +112,7 @@ impl RoadChartBuilder {
         while self.cursor < end {
             let i = self.cursor;
             if i < ROAD_CHART_SAMPLES {
-                let (ux, uz) = direction(i);
-                if let Some(r) = first_radius(&mut self.lat, self.seed, ux, uz) {
-                    self.nodes[i].radius = r;
-                }
+                self.nodes[i].radius = radius_at(&self.ring, i);
             } else {
                 self.sample_edge(i - ROAD_CHART_SAMPLES);
             }
@@ -169,8 +160,7 @@ impl RoadChartBuilder {
 
     fn sample_edge(&mut self, i: usize) {
         let nodes = &mut self.nodes;
-        let lat = &mut self.lat;
-        let seed = self.seed;
+        let ring = &self.ring;
         let next = (i + 1) % nodes.len();
         let (a, b) = (nodes[i].radius, nodes[next].radius);
         if a == 0.0 || b == 0.0 {
@@ -196,16 +186,19 @@ impl RoadChartBuilder {
             let a = (i as f32 + t) * TAU / ROAD_CHART_SAMPLES as f32;
             let (uz, ux) = a.sin_cos();
             let r = nodes[i].radius + (nodes[next].radius - nodes[i].radius) * t;
-            if shore_height(lat, seed, ux, uz, r - ROAD_CHART_ERROR_M) <= 0.0
-                || shore_height(lat, seed, ux, uz, r + ROAD_CHART_ERROR_M) > 0.0
-            {
-                valid = false;
-                break;
-            }
+            // ⚠ **A shoreline bracket used to sit here and it is gone.** It
+            // asserted the crossing lay within `ROAD_CHART_ERROR_M` of
+            // `r + ROAD_INLAND_M` — i.e. that this interval really was 40 m
+            // inland — which was the road's definition and is not any more.
+            // Against the solved ring it fails on every interval, and the
+            // symptom is a road with no paint on it at all rather than paint
+            // in the wrong place. What replaces it is the check below, which
+            // was always the stronger of the two: ask the authoritative ring
+            // whether the paint's own three radii are carriageway.
             for offset in [-1.0, 0.0, 1.0] {
                 let q = r + offset * (ROAD_EDGE_OFFSET_M + ROAD_PAINT_WIDTH_M * 0.5);
                 let (x, z) = point(ux, uz, q);
-                if terrain::ring_band_memo(lat, seed, x, z) != RoadBand::Carriageway {
+                if terrain::ring_band(ring, x, z) != RoadBand::Carriageway {
                     valid = false;
                 }
             }
@@ -375,6 +368,9 @@ mod tests {
     fn chart_centres_and_edges_remain_in_authoritative_ring() {
         for seed in [20260731, 42, 0xDEAD_BEEF] {
             let chart = RoadChart::build(seed, 1.0);
+            // The AUTHORITATIVE ring is the solved path — the raw predicate
+            // was it until ring path v0, and the two disagree by design.
+            let ring = terrain::solve_ring(seed);
             let mut checked = 0;
             for i in 0..ROAD_CHART_SAMPLES {
                 let n = chart.nodes[i];
@@ -396,7 +392,7 @@ mod tests {
                 ] {
                     let (x, z) = point(ux, uz, r + offset);
                     assert_eq!(
-                        terrain::ring_band(seed, x, z),
+                        terrain::ring_band(&ring, x, z),
                         RoadBand::Carriageway,
                         "seed={seed} at {x},{z}"
                     );

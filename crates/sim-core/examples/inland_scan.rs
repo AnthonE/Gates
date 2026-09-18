@@ -76,7 +76,7 @@ fn clears(sites: &[(f32, f32)], x: f32, z: f32, sep: f32) -> bool {
 
 fn usable(seed: u64, x: f32, z: f32) -> bool {
     terrain::height(seed, x, z) >= LAND_MIN_H
-        && terrain::ring_band(seed, x, z) != RoadBand::Carriageway
+        && terrain::ring_probe(seed, x, z) != RoadBand::Carriageway
 }
 
 fn main() {

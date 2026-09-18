@@ -45,12 +45,16 @@ fn road_ring_is_closed_on_every_bearing() {
     let mut r_hi = 0.0f32;
 
     for seed in SEEDS {
+        // The solved ROAD, not the raw predicate: these suites are about
+        // where the coast road IS, and since ring path v0 those are two
+        // different questions (`terrain::ring_probe` is the other one).
+        let road_ring = terrain::solve_ring(seed);
         for b in 0..BEARINGS {
             let (ux, uz) = yaw_dir((b * (256 / BEARINGS)) << 8);
             let mut hits = 0usize;
             let mut d = ROAD_R_MIN;
             while d <= ROAD_R_MAX {
-                if terrain::ring_band(seed, c + ux * d, c + uz * d) == RoadBand::Carriageway {
+                if terrain::ring_band(&road_ring, c + ux * d, c + uz * d) == RoadBand::Carriageway {
                     hits += 1;
                     r_lo = r_lo.min(d);
                     r_hi = r_hi.max(d);
@@ -192,12 +196,16 @@ fn the_road_is_walkable_along_its_length() {
     let mut worst_slope = 0.0f32;
 
     for seed in SEEDS {
+        // The solved ROAD, not the raw predicate: these suites are about
+        // where the coast road IS, and since ring path v0 those are two
+        // different questions (`terrain::ring_probe` is the other one).
+        let road_ring = terrain::solve_ring(seed);
         for b in 0..BEARINGS {
             let (ux, uz) = yaw_dir((b * (256 / BEARINGS)) << 8);
             let mut d = ROAD_R_MIN;
             while d <= ROAD_R_MAX {
                 let (x, z) = (c + ux * d, c + uz * d);
-                if terrain::ring_band(seed, x, z) == RoadBand::Carriageway {
+                if terrain::ring_band(&road_ring, x, z) == RoadBand::Carriageway {
                     let s = terrain::slope(seed, x, z);
                     sampled += 1;
                     worst_slope = worst_slope.max(s);
@@ -243,12 +251,16 @@ fn the_road_runs_inland_of_the_shoreline() {
     let mut worst_nearest = f32::MAX;
 
     for seed in SEEDS {
+        // The solved ROAD, not the raw predicate: these suites are about
+        // where the coast road IS, and since ring path v0 those are two
+        // different questions (`terrain::ring_probe` is the other one).
+        let road_ring = terrain::solve_ring(seed);
         for b in 0..BEARINGS {
             let (ux, uz) = yaw_dir((b * (256 / BEARINGS)) << 8);
             let mut d = ROAD_R_MIN;
             while d <= ROAD_R_MAX {
                 let (x, z) = (c + ux * d, c + uz * d);
-                if terrain::ring_band(seed, x, z) == RoadBand::Carriageway {
+                if terrain::ring_band(&road_ring, x, z) == RoadBand::Carriageway {
                     let h = terrain::height(seed, x, z);
                     min_h = min_h.min(h);
                     // Walk seaward from the road and find the water, rather
@@ -278,7 +290,7 @@ fn the_road_runs_inland_of_the_shoreline() {
                     let mut inland = f32::MAX;
                     let mut nearest = f32::MAX;
                     let mut step = 0.0f32;
-                    while step <= ROAD_INLAND_M + 20.0 {
+                    while step <= terrain::RING_INLAND_MAX + 20.0 {
                         let rr = d + step;
                         if terrain::height(seed, c + ux * rr, c + uz * rr) <= SEA_LEVEL {
                             if nearest == f32::MAX {
@@ -295,7 +307,7 @@ fn the_road_runs_inland_of_the_shoreline() {
                         inland < f32::MAX,
                         "seed {seed:#x} bearing {b} r {d:.0}: no water within \
                          {} m seaward — this is not a coast road",
-                        ROAD_INLAND_M + 20.0
+                        terrain::RING_INLAND_MAX + 20.0
                     );
                     worst_inland_lo = worst_inland_lo.min(inland);
                     worst_inland_hi = worst_inland_hi.max(inland);
@@ -316,22 +328,35 @@ fn the_road_runs_inland_of_the_shoreline() {
         min_h > SEA_LEVEL,
         "the road dips to {min_h:.2} m — part of the loop is underwater"
     );
-    // The band is the shoulder width either side of the stated offset: that
-    // is the tolerance `road_band`'s window buys, and nothing wider is
-    // "offset ~40 m inland". A drift outside it means the road stopped
-    // tracking the coastline and started tracking the radial bracket.
+    // ⚠ **This was `ROAD_INLAND_M ± ROAD_SHOULDER_HALF_W` and that premise is
+    // gone.** While the ring was a predicate its centre line WAS a fixed 40 m
+    // inland and anything wider meant it had stopped tracking the coastline.
+    // Ring path v0 gives the solve a window to choose from — because a fixed
+    // 40 m is what put 3.8% of the road on ground nobody can stand on — so
+    // the claim that survives is the one this test is really for: the road
+    // tracks the COASTLINE rather than the radial bracket, which it does iff
+    // its distance to the water stays inside the window the solve was given.
+    // A road tracking the bracket would sit at a constant radius and its
+    // distance to the sea would range over hundreds of metres, not fifty.
+    let lo = terrain::RING_INLAND_MIN - ROAD_SHOULDER_HALF_W;
+    let hi = terrain::RING_INLAND_MAX + ROAD_SHOULDER_HALF_W;
     assert!(
-        worst_inland_lo >= ROAD_INLAND_M - ROAD_SHOULDER_HALF_W
-            && worst_inland_hi <= ROAD_INLAND_M + ROAD_SHOULDER_HALF_W,
-        "the sea is {worst_inland_lo:.0}-{worst_inland_hi:.0} m seaward of the road, \
-         outside {ROAD_INLAND_M} ± {ROAD_SHOULDER_HALF_W} m — the ring is no longer \
-         a fixed offset from the coastline"
+        worst_inland_lo >= lo && worst_inland_hi <= hi,
+        "the sea is {worst_inland_lo:.0}-{worst_inland_hi:.0} m seaward of the \
+         road, outside the {lo:.0}-{hi:.0} m the ring solve may choose from — \
+         the ring is no longer tracking the coastline at all"
     );
     // CLAIM 2 — and a cove on the other side is still not the surf. Measured
     // 24 m at the worst of 1,036 carriageway samples over four seeds once the
-    // coast had coves in it (world structure v1); the floor is under that
-    // with room, and its job is to catch a road that starts hugging an inlet
-    // rather than to pin the number.
+    // coast had coves in it (world structure v1), and **15 m since ring path
+    // v0**, which is not the road hugging an inlet: the solve may stand as
+    // close as `RING_INLAND_MIN` (20 m) by design, and a sample on the far
+    // side of the carriageway is another `ROAD_HALF_W` nearer than that. The
+    // floor moved 18 -> 10 with it. It is deliberately NOT a restatement of
+    // `RING_INLAND_MIN`: this measures the nearest water in ANY direction, so
+    // a cove beside the road is legitimately nearer than the radial offset,
+    // and what the number is for is a road running along the INSIDE of an
+    // inlet — which would read a few metres, not fifteen.
     assert!(
         worst_nearest >= ROAD_NEAREST_WATER_MIN_M,
         "the nearest water to the road is {worst_nearest:.0} m — under the \
@@ -345,7 +370,7 @@ fn the_road_runs_inland_of_the_shoreline() {
 /// road against, which `ROAD_INLAND_M ± ROAD_SHOULDER_HALF_W` above still
 /// pins exactly. A cove reaching across a radial is why the two numbers are
 /// not the same one (world structure v1, 2026-09-15); measured worst 24 m.
-const ROAD_NEAREST_WATER_MIN_M: f32 = 18.0;
+const ROAD_NEAREST_WATER_MIN_M: f32 = 10.0;
 
 /// The road's own numbers stay coherent with the scatter grid it vetoes
 /// against. A carriageway narrower than a scatter cell would let slots
@@ -422,6 +447,10 @@ fn bays_are_arcs_of_coast_not_speckle() {
     let mut worst_share = (f32::MAX, f32::MIN);
 
     for seed in SEEDS {
+        // The solved ROAD, not the raw predicate: these suites are about
+        // where the coast road IS, and since ring path v0 those are two
+        // different questions (`terrain::ring_probe` is the other one).
+        let road_ring = terrain::solve_ring(seed);
         // Classify one point per bearing: the first carriageway crossing on
         // that radial, so the sweep tracks the ring's wobble rather than a
         // circle drawn through it.
@@ -432,7 +461,7 @@ fn bays_are_arcs_of_coast_not_speckle() {
             let mut found = false;
             while d <= ROAD_R_MAX {
                 let (px, pz) = (c + ux * d, c + uz * d);
-                if terrain::ring_band(seed, px, pz) == RoadBand::Carriageway {
+                if terrain::ring_band(&road_ring, px, pz) == RoadBand::Carriageway {
                     ring.push(terrain::in_bay(seed, px, pz));
                     found = true;
                     break;
@@ -530,7 +559,7 @@ fn bays_concentrate_the_route_without_enriching_it() {
                 // the same distortion, so the ratio between them is clean.
                 let x = cx as f32 * CELL_SIZE + CELL_SIZE * 0.5;
                 let z = cz as f32 * CELL_SIZE + CELL_SIZE * 0.5;
-                if terrain::ring_band(seed, x, z) != RoadBand::Shoulder {
+                if terrain::ring_band(&haven.ring, x, z) != RoadBand::Shoulder {
                     continue;
                 }
                 let barrel =
@@ -742,6 +771,10 @@ fn the_road_override_keeps_the_weights_normalized() {
     let mut checked = 0u64;
     let mut on_road = 0u64;
     for seed in SEEDS {
+        // The solved ROAD, not the raw predicate: these suites are about
+        // where the coast road IS, and since ring path v0 those are two
+        // different questions (`terrain::ring_probe` is the other one).
+        let road_ring = terrain::solve_ring(seed);
         // March the ring the way every other test in this file does, so the
         // samples are on the road rather than near it.
         for b in 0..BEARINGS {
@@ -754,7 +787,7 @@ fn the_road_override_keeps_the_weights_normalized() {
                 if terrain::height(seed, x, z) < SEA_LEVEL {
                     continue;
                 }
-                let band = terrain::ring_band(seed, x, z);
+                let band = terrain::ring_band(&road_ring, x, z);
                 let w = terrain::splat_road(terrain::splat(seed, x, z), band);
                 let sum: u32 = w.iter().map(|v| *v as u32).sum();
                 assert!(
@@ -784,5 +817,147 @@ fn the_road_override_keeps_the_weights_normalized() {
         on_road > 1_000,
         "only {on_road} of {checked} samples were on the road — this asserted \
          almost nothing"
+    );
+}
+
+// ── The ring's walkable share (`reference/ROADS.md` §9.5 item 5) ───────────
+
+/// **What share of the coast ring is ground a player can stand on.**
+///
+/// `ROADS.md` §9.5 named "the ring's own fragments" as a bigger reach problem
+/// than the interior was and said *"nothing gates it"*. This is that gate, and
+/// it is **not** the metric that section proposed — the two instruments that
+/// look obvious were both measured and thrown away, which is most of this
+/// test's value:
+///
+/// 1. **An angular sweep built on `yaw_dir` measures 256 bearings however many
+///    steps it claims.** The LUT has 256 entries (`yaw_lut.rs`), so a
+///    4,096-step sweep samples every 20.9 m of arc at r=850 against a 4 m
+///    carriageway, and adjacent "bearings" are mostly the same direction. A
+///    first pass read the ring as 9.3% in one piece with *radial gaps* as the
+///    dominant cause; at true resolution (`examples/ring_breaks.rs`, real
+///    trig, 8,192 steps) it is 54.4% and radial gaps are **0–2 per seed**,
+///    p99 gap 0.0 m. Both of the first numbers were the LUT.
+/// 2. **A "largest connected component" count measures the GRID.** Over ring
+///    cells with an 8-neighbour flood the same islands read **43.5% at a 2 m
+///    grid and 13.3% at 4 m** — a 4 m ribbon sampled at 4 m is a broken chain
+///    of cells whatever the terrain does. `ROADS.md` §8 gate 2 already carries
+///    this warning in the other direction; it applies to the ring itself.
+///
+/// What IS stable across both grids, to a tenth of a point, is the share of
+/// carriageway cells whose ground a player can stand on: 97.3% mean, 94.4%
+/// worst, identical at 2 m and 4 m. So that is what this asserts. It is also
+/// the direct measure of the CAUSE: `examples/ring_breaks.rs` ablates the
+/// cliff cells out and the biggest arc goes 54.4% → **94.8%** mean, five of
+/// eight seeds to 99.8–100%, while ablating the radial gaps moves nothing.
+/// The ring is broken by unwalkable ground and by nothing else.
+///
+/// ⚠ **A road BENCH was the fix this was waiting for, and it turned out not
+/// to be needed.** The gradient split in `examples/ring_breaks.rs` says the
+/// ground climbs 3.8–35× more steeply ACROSS the road than along it (198
+/// radial against 0 tangential on the shipped seed), so the road's length is
+/// walkable and the road is merely cut into a slope — which reads as an
+/// argument for carving a shelf, the reference's own answer (`ROADS.md` §6,
+/// Devblog 189). What it actually needed was for the road to be allowed to
+/// stand somewhere else: a standable radius exists on 99.4% of bearings
+/// inside a 25–65 m inland window against 96.8% at the nominal 38–42 m. Ring
+/// path v0 took that freedom and no terrain was carved. `NOW.md` §0ring.
+#[test]
+fn the_ring_is_ground_a_player_can_stand_on() {
+    /// Measured 2026-09-17 over the twelve seeds below, on the RING AS A
+    /// PREDICATE: **90.7–100.0%**, mean 96.2%. Re-measured 2026-09-18 on the
+    /// solved path (ring path v0): **94.6–99.7%, mean 97.9%**, better on every
+    /// one of the twelve — which is this gate's whole purpose, since the
+    /// slice that moved it was written against this number.
+    ///
+    /// The floor sits under the worst of those with room to move, because it
+    /// is a REGRESSION guard and not a target; the print is what a later pass
+    /// reads rather than this number. It was 0.85 under the predicate.
+    ///
+    /// **Two mutants were run and only one reddens this, which is worth
+    /// knowing before trusting it.** Delete the solve's walkability term
+    /// (`RING_CLIFF_COST`) and the gate fails — that is the mechanism it
+    /// guards. Delete `RING_SPAN_PROBES`, so the solve scores each node and
+    /// not the ~22 m of road either side of it, and the gate PASSES at 93.4%
+    /// worst / 96.9% mean against 94.6% / 97.9% with them. The span probes
+    /// are a real 1.2-point improvement that this floor does not separate,
+    /// and tightening it to 0.94 to catch them would leave no room for the
+    /// regression guard to do its actual job.
+    const WALKABLE_FLOOR: f32 = 0.92;
+    /// 2 m, half the carriageway's radial width, so no cell of it is skipped.
+    const GRID: f32 = 2.0;
+    /// Wider than the file's `SEEDS` on purpose: the share moves 90.7–100.0%
+    /// across islands, so four of them cannot say where the floor belongs.
+    const RING_SEEDS: [u64; 12] = [
+        0x0047_4154_4553,
+        0x1,
+        0xDEAD_BEEF,
+        0x5EED,
+        20_260_731,
+        42,
+        555_555,
+        31_337,
+        8_675_309,
+        20_260_804,
+        123_456_789,
+        987_654_321,
+    ];
+
+    let n = (ISLAND_SIZE / GRID) as usize;
+    let mut worst = 1.0f32;
+    let mut worst_seed = 0u64;
+    let mut sum = 0.0f32;
+    for seed in RING_SEEDS {
+        let road_ring = terrain::solve_ring(seed);
+        let (mut cells, mut walk) = (0u32, 0u32);
+        for iz in 0..n {
+            for ix in 0..n {
+                let (x, z) = (ix as f32 * GRID, iz as f32 * GRID);
+                if terrain::ring_band(&road_ring, x, z) != RoadBand::Carriageway {
+                    continue;
+                }
+                cells += 1;
+                // Re-derived from `height`/`slope`, not from any road helper:
+                // the question is whether the GROUND under the road holds a
+                // player, and a road helper has no opinion about that.
+                if terrain::height(seed, x, z) >= terrain::LAND_MIN_H
+                    && terrain::slope(seed, x, z) <= CLIFF_SLOPE_RATIO
+                {
+                    walk += 1;
+                }
+            }
+        }
+        assert!(
+            cells > 1_000,
+            "seed {seed:#x}: only {cells} carriageway cells at a {GRID} m grid \
+             — the sweep found no ring, so its share means nothing"
+        );
+        let share = walk as f32 / cells as f32;
+        sum += share;
+        println!(
+            "seed {seed:#x}: {walk}/{cells} carriageway cells are standable \
+             ({:.1}%)",
+            100.0 * share
+        );
+        if share < worst {
+            worst = share;
+            worst_seed = seed;
+        }
+    }
+    assert!(
+        worst >= WALKABLE_FLOOR,
+        "seed {worst_seed:#x}: only {:.1}% of the coast ring is ground a \
+         player can stand on, against a floor of {:.0}%. The ring is the \
+         circulation loop; a stretch of it on a cliff face cuts the loop",
+        100.0 * worst,
+        100.0 * WALKABLE_FLOOR
+    );
+    println!(
+        "ring: worst island is {:.1}% standable (seed {worst_seed:#x}), mean \
+         {:.1}% over {} islands, floor {:.0}%",
+        100.0 * worst,
+        100.0 * sum / RING_SEEDS.len() as f32,
+        RING_SEEDS.len(),
+        100.0 * WALKABLE_FLOOR
     );
 }

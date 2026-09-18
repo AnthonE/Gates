@@ -146,7 +146,7 @@ fn every_site_stands_on_the_ring() {
         let haven = terrain::haven(seed);
         for w in ring_tier(&haven) {
             assert_ne!(
-                terrain::ring_band(seed, w.x, w.z),
+                terrain::ring_band(&haven.ring, w.x, w.z),
                 terrain::RoadBand::Off,
                 "seed {seed}: a waystation stands off the ring entirely"
             );

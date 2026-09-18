@@ -65,10 +65,21 @@ const RAW_READERS: &[(&str, &str, &str)] = &[
     ),
     (
         "terrain.rs",
-        "ring_band",
-        "locator: `road_band`'s ring half, renamed when the side road landed — \
-         same function, same reason. It defines where the ring runs and the \
-         site search calls it, so a carved read here is direct recursion.",
+        "ring_probe",
+        "locator: the raw ring predicate — `road_band`'s ring half until ring \
+         path v0 renamed it, same function and same reason. It is now the \
+         terrain question `solve_ring` asks, and a carved read here would be \
+         direct recursion: the carve depends on the sites, the sites on the \
+         ring, the ring on this.",
+    ),
+    (
+        "terrain.rs",
+        "solve_ring",
+        "locator, and the one this gate exists for: it decides WHERE the coast \
+         road runs, choosing an inland offset whose ground a player can stand \
+         on. It reads `height` and `slope` raw because it runs before any site \
+         exists — there is nothing carved yet to read, and asking `ground` \
+         here would be asking about a world this function is an input to.",
     ),
     (
         "terrain.rs",
@@ -188,14 +199,6 @@ const RAW_READERS: &[(&str, &str, &str)] = &[
          of the site solver's output rather than of the generator.",
     ),
     // ---- the client --------------------------------------------------------
-    (
-        "road_markings.rs",
-        "shore_height",
-        "locator: the visual chart locates the same raw shoreline crossing as \
-         `ring_band`, then assigns road-distance coordinates. A carved read \
-         could move paint away from that authoritative ring. It never seats \
-         a vertex: `terrain_mesh::heightfield` still reads carved `ground`.",
-    ),
     (
         "map.rs",
         "paint",

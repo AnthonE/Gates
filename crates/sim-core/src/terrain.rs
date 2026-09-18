@@ -1035,7 +1035,8 @@ pub fn road_band_memo(lat: &mut Lattice, seed: u64, haven: &Haven, x: f32, z: f3
 }
 
 fn road_band_in<C: Corners>(co: &mut C, seed: u64, haven: &Haven, x: f32, z: f32) -> RoadBand {
-    let ring = ring_band_in(co, seed, x, z);
+    let _ = (co, seed);
+    let ring = ring_band(&haven.ring, x, z);
     if ring == RoadBand::Carriageway {
         return ring;
     }
@@ -1049,8 +1050,19 @@ fn road_band_in<C: Corners>(co: &mut C, seed: u64, haven: &Haven, x: f32, z: f32
     }
 }
 
-/// The coast ring alone, as a pure function of `(seed, x, z)` — no state, no
-/// memo, so it costs the same in the server, the wasm client and the golden.
+/// The RAW ring predicate: is this point `ROAD_INLAND_M` inland of the shore?
+///
+/// ⚠ **This is not the road.** It was, until ring path v0 (`DECISIONS.md`
+/// 2026-09-18) — and the rename is deliberate, so that every one of the
+/// twenty-two files that used to call it had to be looked at rather than
+/// silently keeping a second, disagreeing ring. What it answers now is the
+/// question `solve_ring` asks of the terrain: *could a road stand here*. The
+/// road itself is [`ring_band`] against the solved [`RingPath`], and where
+/// the two disagree the path is right — declining ground this predicate
+/// accepts is the entire reason the path exists.
+///
+/// A pure function of `(seed, x, z)` — no state, no memo, so it costs the
+/// same in the server, the wasm client and the golden.
 ///
 /// **Public because the SITE SEARCH has to ask it and cannot ask the other
 /// one.** `haven`, `haven_ring_phase`, `waystation_ring_phase` and
@@ -1059,14 +1071,14 @@ fn road_band_in<C: Corners>(co: &mut C, seed: u64, haven: &Haven, x: f32, z: f32
 /// the ring exists before any site does, and a side road does not exist until
 /// after the site it serves. A solver asking [`road_band`] would be asking
 /// about a road that is a consequence of its own answer.
-pub fn ring_band(seed: u64, x: f32, z: f32) -> RoadBand {
-    ring_band_in(&mut Direct, seed, x, z)
+pub fn ring_probe(seed: u64, x: f32, z: f32) -> RoadBand {
+    ring_probe_in(&mut Direct, seed, x, z)
 }
 
-/// [`ring_band`] against a caller-owned [`Lattice`]. Off the ring it answers
+/// [`ring_probe`] against a caller-owned [`Lattice`]. Off the ring it answers
 /// in one compare and never draws; on it, it is up to six `height` taps.
-pub fn ring_band_memo(lat: &mut Lattice, seed: u64, x: f32, z: f32) -> RoadBand {
-    ring_band_in(lat, seed, x, z)
+pub fn ring_probe_memo(lat: &mut Lattice, seed: u64, x: f32, z: f32) -> RoadBand {
+    ring_probe_in(lat, seed, x, z)
 }
 
 /// Every live side road at a point, as a point-to-segment distance.
@@ -1099,7 +1111,32 @@ pub fn side_band_of(r: &SideRoad, x: f32, z: f32) -> RoadBand {
     if !r.live {
         return RoadBand::Off;
     }
-    let d = seg_dist(r.px, r.pz, r.rx, r.rz, x, z);
+    // **The cheap reject comes first, and it has to**, because `road_band`
+    // falls through to here for everything that is not ring carriageway —
+    // which is nearly the whole island. Four compares against the chord's box
+    // grown by `SIDE_ROAD_BEND_M + ROAD_SHOULDER_HALF_W`, off which no leg of
+    // this road can be within a band: every node is inside the chord's box
+    // grown by the ceiling (proved by the const block, gated by
+    // `every_node_is_inside_the_chords_box_grown_by_the_bend_ceiling`), so a
+    // point outside it by more than the widest band is outside in L∞ and
+    // therefore in L².
+    //
+    // It makes the common case CHEAPER than the two-point version it
+    // replaces, which paid a full `seg_dist` and a `sqrt` at every sample on
+    // the island.
+    let m = ROAD_SHOULDER_HALF_W + SIDE_ROAD_BEND_M;
+    if x < r.px.min(r.rx) - m
+        || x > r.px.max(r.rx) + m
+        || z < r.pz.min(r.rz) - m
+        || z > r.pz.max(r.rz) + m
+    {
+        return RoadBand::Off;
+    }
+    // Squared throughout and rooted once: a polyline of five nodes costs the
+    // same ONE root the two-point version paid, however many legs it grows.
+    // The band compares are on `d` rather than on `d * d` so the two
+    // thresholds keep the meaning `tests/side_road.rs` asserts them with.
+    let d = r.dist2(x, z).sqrt();
     if d <= ROAD_HALF_W {
         RoadBand::Carriageway
     } else if d <= ROAD_SHOULDER_HALF_W {
@@ -1109,14 +1146,19 @@ pub fn side_band_of(r: &SideRoad, x: f32, z: f32) -> RoadBand {
     }
 }
 
-/// Distance from `(x, z)` to the segment `(ax, az)-(bx, bz)`.
+/// SQUARED distance from `(x, z)` to the segment `(ax, az)-(bx, bz)`.
 ///
-/// Wall 1's float set exactly: `+ − × ÷ sqrt clamp`. The degenerate segment
+/// Squared because [`side_band_of`] takes the minimum over several legs and
+/// only the winner is worth a root — and because a degenerate leg (two nodes
+/// at one point, which `SideRoad::NONE` is five times over) has to answer
+/// without one.
+///
+/// Wall 1's float set exactly: `+ − × ÷ clamp`. The degenerate segment
 /// is handled by the `len2 <= 0` branch rather than by a guard on the caller,
-/// because a dead road is `SideRoad::NONE` with both ends at the origin and
+/// because a dead road is `SideRoad::NONE` with every node at the origin and
 /// `side_band` skips it — so this being total is a property of the function
 /// rather than a promise about who calls it.
-fn seg_dist(ax: f32, az: f32, bx: f32, bz: f32, x: f32, z: f32) -> f32 {
+fn seg_dist2(ax: f32, az: f32, bx: f32, bz: f32, x: f32, z: f32) -> f32 {
     let (ex, ez) = (bx - ax, bz - az);
     let len2 = ex * ex + ez * ez;
     let (px, pz) = (x - ax, z - az);
@@ -1126,10 +1168,10 @@ fn seg_dist(ax: f32, az: f32, bx: f32, bz: f32, x: f32, z: f32) -> f32 {
         ((px * ex + pz * ez) / len2).clamp(0.0, 1.0)
     };
     let (qx, qz) = (px - ex * t, pz - ez * t);
-    (qx * qx + qz * qz).sqrt()
+    qx * qx + qz * qz
 }
 
-fn ring_band_in<C: Corners>(co: &mut C, seed: u64, x: f32, z: f32) -> RoadBand {
+fn ring_probe_in<C: Corners>(co: &mut C, seed: u64, x: f32, z: f32) -> RoadBand {
     let c = ISLAND_SIZE * 0.5;
     let dx = x - c;
     let dz = z - c;
@@ -1193,6 +1235,525 @@ fn ring_band_in<C: Corners>(co: &mut C, seed: u64, x: f32, z: f32) -> RoadBand {
         return RoadBand::Off;
     }
     band
+}
+
+// ── The ring as a SOLVED PATH (`DECISIONS.md` §open, ring path v0) ─────────
+//
+// **The ring stopped being a predicate on 2026-09-18, and the reason is a
+// measurement rather than a preference.** `reference/ROADS.md` §1 framed the
+// predicate as our answer to their `PathData` and it was the right answer for
+// three months: inverting a curve the terrain already draws costs no state, no
+// cap and no signature. What it cannot do is DECLINE a piece of ground. The
+// centre line is wherever the shoreline is `ROAD_INLAND_M` out, and where that
+// is a cliff face the road is on the cliff face — 3.8% of the ring over twelve
+// seeds, which `tests/road.rs` gated the day before this landed, and which
+// `examples/ring_breaks.rs` showed is the ONLY thing breaking the loop
+// (ablate it and the biggest unbroken arc goes 54.4% -> 94.8%).
+//
+// A path can decline. The freedom it buys is the inland distance: measured,
+// a standable radius exists on 99.4% of bearings inside a 25–65 m window and
+// 100% inside 15–90 m, against 96.8% at the nominal 38–42 m. So the solve is
+// not "route around the cliff" — there is nothing to route around — it is
+// "stand a little further in, or a little further out, where that is ground".
+//
+// **What this deliberately is NOT**: a terrain carve. `ROADS.md` §6 has the
+// reference bending ground to road (Devblog 189) and this repo nearly did the
+// same; the measurement above says the ground is already there and only the
+// road was pointed at the wrong part of it. A carve was the expensive answer
+// to a question that turned out not to need one, and `NOW.md` §0ring records
+// that so nobody re-proposes it.
+//
+// And it makes the hot path CHEAPER, which is the part to keep in mind before
+// calling it a cost: the predicate spent three to six `height` taps per query
+// and the path spends a bearing lookup and up to five point-to-segment tests,
+// none of which touch the noise field.
+
+/// Bearings the ring is solved at.
+///
+/// **256 because that is the yaw LUT's size** (`yaw_lut.rs`), so a ring index
+/// IS a yaw index and the two can never disagree about where a bearing points.
+/// At the ring's radius it is a node every ~22 m, and the chord it cuts under
+/// the true arc is `r(1 − cos(π/256))` ≈ **7 cm** — a thirtieth of the
+/// carriageway, which is why this is a polyline and not a spline. Nothing
+/// analytic reads the ring's height, so `CLAUDE.md`'s contour trap does not
+/// apply here; if a bench is ever built on it, it will.
+pub const RING_BEARINGS: usize = 256;
+
+/// **(knob)** The closest and furthest inland the solved ring may sit, metres.
+///
+/// `DECISIONS.md` §open. The nominal is still `ROAD_INLAND_M`; this is the
+/// room the solve is allowed to use to find ground. Measured over eight
+/// seeds, the share of bearings with a standable radius is 96.8% at the
+/// nominal 38–42 m, 98.4% at 30–55, **99.4% at 25–65** and 100% at 15–90.
+/// 20–70 takes the room that pays and stops short of a road on the beach or a
+/// road in the interior.
+pub const RING_INLAND_MIN: f32 = 20.0;
+pub const RING_INLAND_MAX: f32 = 70.0;
+
+/// **(knob)** Inland distances tried per shoreline crossing. 6 across a 50 m
+/// window is one every 10 m; the ladder was 11 until every crossing on a
+/// radial became a candidate source and the budget had to be shared.
+pub const RING_INLAND_STEPS: usize = 6;
+
+/// **(knob)** Shoreline crossings a radial may offer candidates from.
+///
+/// **One is not enough and the first draft proved that too.** Taking only the
+/// innermost crossing makes the candidate sets of two adjacent bearings
+/// DISJOINT wherever a radial enters an inlet — at the mouth, one bearing's
+/// first crossing is the inlet's near shore and the next one's is the outer
+/// coast 260 m further out, so the solve had no continuous choice to make and
+/// the bend cap could not bite. This is the same multi-valued shoreline the
+/// predicate forked on; the difference is that a solve can be handed all of
+/// them and pick the branch that keeps the road together.
+pub const RING_CROSSINGS: usize = 4;
+
+/// **(knob)** Candidates kept per bearing, best node cost first. Wall 4: the
+/// DP below is `O(RING_BEARINGS × RING_CANDIDATES³)` and this is the term
+/// that squares, so it is a cap and not a hope.
+pub const RING_CANDIDATES: usize = 24;
+
+/// **(knob)** What the solve pays to stand on ground a player cannot.
+///
+/// A pure penalty in the same units as the others, set high enough that no
+/// admissible amount of the other two can buy it: the widest offset costs
+/// `30 × RING_OFFSET_COST` and the widest single bend `400 × RING_BEND_COST`,
+/// so 10,000 is past both together by an order of magnitude. It is the whole
+/// point of the solve and it is priced like it.
+pub const RING_CLIFF_COST: f32 = 10_000.0;
+
+/// **(knob)** Cost per unit of ground slope under a candidate.
+///
+/// **Walkable is not flat, and the first solve only asked for walkable.**
+/// `CLIFF_SLOPE_RATIO` is 1.19 — about 50° — so a node can clear the cliff
+/// bar and still be a hillside. Measured the day the path landed: with no
+/// slope term the haven pad's rim reached slope **0.50 against the 0.21 it
+/// had been**, because the pad is chosen ON the ring and the ring had settled
+/// for passable. 20 per unit puts a 1.0 slope level with standing 20 m off
+/// the nominal offset, which is the trade a road actually wants.
+pub const RING_SLOPE_COST: f32 = 20.0;
+
+/// **(knob)** Cost per metre away from `ROAD_INLAND_M`. 1.0, so the units
+/// below are metres and the ladder reads as "how far would you walk inland to
+/// avoid this".
+pub const RING_OFFSET_COST: f32 = 1.0;
+
+/// **(knob)** Cost per metre of radius change between adjacent bearings.
+///
+/// 2.0 — twice the offset's, because a road that swings 20 m in 22 m of arc
+/// is a 45° kink and a road that sits 20 m further inland is just a road
+/// further inland. This is the term that makes the result a ROAD rather than
+/// the per-bearing argmin, and `the_ring_does_not_zigzag` gates it.
+pub const RING_BEND_COST: f32 = 2.0;
+
+/// **(knob)** The most the radius may move between adjacent bearings before
+/// it stops being a road, metres.
+///
+/// **A cap, because pricing the bend alone does not work and the first draft
+/// proved it.** At `RING_CLIFF_COST` 10,000 against `RING_BEND_COST` 2.0, the
+/// solve will pay 5,000 m of detour to step around ONE unwalkable node — and
+/// it did: the first run came back with radial jumps of up to **288 m between
+/// adjacent bearings**, a road sprinting inland and back to dodge a rock, and
+/// the standable share barely moved (96.5% against a 96.2% baseline) because
+/// the ground BETWEEN two such nodes is nothing the solve ever looked at.
+///
+/// 12 m over the ~22 m arc between bearings is about 29° off tangential,
+/// which is a road climbing a headland rather than a road turning inland.
+pub const RING_MAX_BEND_M: f32 = 12.0;
+
+/// **(knob)** Cost per metre of bend PAST [`RING_MAX_BEND_M`].
+///
+/// A soft wall rather than a hard one, so the DP stays total: a bearing whose
+/// every candidate is out of reach still has a path, it just pays. 2,000 puts
+/// five metres over the cap level with a cliff, so the solve will bend a
+/// little further to find ground and will not sprint.
+pub const RING_BEND_OVER_COST: f32 = 2_000.0;
+
+/// **(knob)** What a bearing with no shoreline at all pays. Above the widest
+/// offset so a real crossing always wins, below `RING_CLIFF_COST` so closing
+/// the loop still beats standing on a cliff.
+pub const RING_NO_SHORE_COST: f32 = 200.0;
+
+/// **(knob)** Extra walkability probes per candidate, spread along the ring's
+/// own direction either side of the node.
+///
+/// **A node is not a road and scoring one as if it were leaves the gaps
+/// between them unscored** — measured: with node-only scoring the solve put
+/// 98.5% of its NODES on standable ground and only 97.0% of the road, because
+/// the ~22 m between two nodes is terrain nobody looked at. Two extra probes
+/// at ±(half the arc) cover that span for three slope reads instead of one,
+/// which is affordable where a true per-edge score (24² × 256 segments) is
+/// not. It is an approximation and it is a good one only because
+/// `RING_MAX_BEND_M` keeps the segment close to the arc.
+pub const RING_SPAN_PROBES: usize = 2;
+
+/// Segments either side of a point's own bearing that [`ring_band`] tests.
+///
+/// Two, so an index off by one still finds the nearest segment. The index is
+/// exact (`bearing_index` binary-searches the same LUT the nodes are placed
+/// on) and the window is the belt to that braces: a ring that doubles back
+/// inside one sector would otherwise read as Off from a metre away.
+pub const RING_SEG_WINDOW: i32 = 2;
+
+const _: () = {
+    assert!(RING_BEARINGS == 256);
+    assert!(RING_INLAND_MIN > 0.0 && RING_INLAND_MIN < ROAD_INLAND_M);
+    assert!(RING_INLAND_MAX > ROAD_INLAND_M);
+    assert!(RING_INLAND_STEPS >= 2);
+    assert!(RING_CROSSINGS >= 1);
+    assert!(RING_CANDIDATES >= RING_CROSSINGS * 2);
+    assert!(RING_CANDIDATES >= 2);
+    // The penalty ladder has to be strictly ordered or the solve's preferences
+    // are not the ones these doc comments claim.
+    assert!(RING_CLIFF_COST > RING_NO_SHORE_COST);
+    assert!(RING_NO_SHORE_COST > (RING_INLAND_MAX - ROAD_INLAND_M) * RING_OFFSET_COST);
+    assert!(RING_BEND_COST > RING_OFFSET_COST);
+    // Gentleness must never outbid passability.
+    assert!(RING_SLOPE_COST * CLIFF_SLOPE_RATIO < RING_CLIFF_COST);
+    assert!(RING_SEG_WINDOW >= 1);
+    assert!(RING_SPAN_PROBES.is_multiple_of(2));
+    // The wall has to be steep enough that a cliff cannot buy its way far
+    // past it: five metres over is the whole of what a cliff is worth.
+    assert!(RING_MAX_BEND_M > 0.0);
+    assert!(RING_BEND_OVER_COST > RING_CLIFF_COST / 10.0);
+};
+
+/// The coast ring, solved once per seed: a closed polyline of
+/// [`RING_BEARINGS`] nodes, stored as a radius per bearing.
+///
+/// A radius rather than an `(x, z)` pair because the bearing IS the index —
+/// the node for index `i` stands at `ISLAND_SIZE/2 + yaw_dir(i) * r[i]`, so
+/// storing the position too would be storing the index twice and inviting the
+/// two to disagree.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct RingPath {
+    pub r: [f32; RING_BEARINGS],
+}
+
+impl RingPath {
+    /// A ring at the middle of the radial bracket — the shape `Haven::EMPTY`
+    /// and the fixtures need, never one a seed produces.
+    pub const FLAT: RingPath = RingPath {
+        r: [(ROAD_R_MIN + ROAD_R_MAX) * 0.5; RING_BEARINGS],
+    };
+
+    /// World position of node `i`, wrapping.
+    pub fn node(&self, i: i32) -> (f32, f32) {
+        let k = i.rem_euclid(RING_BEARINGS as i32) as usize;
+        let (dx, dz) = crate::yaw_lut::yaw_dir((k as u16) << 8);
+        let c = ISLAND_SIZE * 0.5;
+        (c + dx * self.r[k], c + dz * self.r[k])
+    }
+
+    /// Squared distance from a point to the ring's centre line.
+    ///
+    /// Only the segments within [`RING_SEG_WINDOW`] of the point's own bearing
+    /// are tested, which is what makes this cheap; `the_ring_band_agrees_with_
+    /// the_whole_polyline` checks that against all 256 on a grid.
+    pub fn dist2(&self, x: f32, z: f32) -> f32 {
+        let c = ISLAND_SIZE * 0.5;
+        let i = bearing_index(x - c, z - c) as i32;
+        let mut out = f32::MAX;
+        let mut k = i - RING_SEG_WINDOW;
+        while k <= i + RING_SEG_WINDOW {
+            let (ax, az) = self.node(k);
+            let (bx, bz) = self.node(k + 1);
+            out = out.min(seg_dist2(ax, az, bx, bz, x, z));
+            k += 1;
+        }
+        out
+    }
+}
+
+/// Yaw-LUT index of a direction, trig-free and exact against the table.
+///
+/// **Wall 1 has no `atan2`**, so the index is recovered the way the table was
+/// built: fold the direction into the first octant, where `|x| / |z|` rises
+/// monotonically from 0 to 1 across indices 0..=32, binary-search it there,
+/// then unfold. Eight compares and one divide, against the three to six
+/// `height` taps the predicate this replaces spent.
+///
+/// `(0, 0)` answers 0 rather than panicking — the island centre is 600 m from
+/// any ring and its index is never read for anything but a segment window.
+pub fn bearing_index(dx: f32, dz: f32) -> usize {
+    let (ax, az) = (fabs(dx), fabs(dz));
+    // Octant 0 is [0, 45°) from +Z toward +X: x small, z large, both positive.
+    let (num, den, swapped) = if ax <= az {
+        (ax, az, false)
+    } else {
+        (az, ax, true)
+    };
+    let t = if den > 0.0 { num / den } else { 0.0 };
+    // LUT indices 0..=32 span the first octant; their x/z ratio is increasing.
+    let (mut lo, mut hi) = (0usize, 32usize);
+    while lo + 1 < hi {
+        let mid = (lo + hi) / 2;
+        let (mx, mz) = crate::yaw_lut::yaw_dir((mid as u16) << 8);
+        if mx <= t * mz {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    // Round to the NEARER of the bracketing entries rather than always down.
+    // An exact LUT direction re-enters here as its own ratio and lands on the
+    // boundary, where a floor answers `i - 1` about a third of the time — 68
+    // of 256, measured. It is inside `RING_SEG_WINDOW` either way, but an
+    // index that cannot recover the direction it was built from is a defect
+    // waiting for the next caller that needs it to be exact.
+    let (lx, lz) = crate::yaw_lut::yaw_dir((lo as u16) << 8);
+    let (hx, hz) = crate::yaw_lut::yaw_dir((hi as u16) << 8);
+    let dlo = fabs(t * lz - lx) / lz.max(1.0e-6);
+    let dhi = fabs(t * hz - hx) / hz.max(1.0e-6);
+    let lo = if dhi < dlo { hi } else { lo };
+    let o = if swapped { 64 - lo } else { lo };
+    // Unfold by quadrant. Index 0 is +Z and the table turns toward +X.
+    let q = match (dx >= 0.0, dz >= 0.0) {
+        (true, true) => o,         //   0°..90°
+        (true, false) => 128 - o,  //  90°..180°
+        (false, false) => 128 + o, // 180°..270°
+        (false, true) => 256 - o,  // 270°..360°
+    };
+    q % RING_BEARINGS
+}
+
+/// Where a point stands relative to the solved coast ring.
+///
+/// The band is measured PERPENDICULAR to the road, which the predicate this
+/// replaces could not do — it measured radially, and where the coast turns,
+/// a radial width is a foreshortened one.
+pub fn ring_band(ring: &RingPath, x: f32, z: f32) -> RoadBand {
+    let c = ISLAND_SIZE * 0.5;
+    let (dx, dz) = (x - c, z - c);
+    let d2 = dx * dx + dz * dz;
+    // Broad phase in squared radius, so the whole interior and the whole sea
+    // answer in two compares and no root.
+    let lo = ROAD_R_MIN - RING_INLAND_MAX - ROAD_SHOULDER_HALF_W;
+    let hi = ROAD_R_MAX + ROAD_SHOULDER_HALF_W;
+    if d2 < lo * lo || d2 > hi * hi {
+        return RoadBand::Off;
+    }
+    let d = ring.dist2(x, z).sqrt();
+    if d <= ROAD_HALF_W {
+        RoadBand::Carriageway
+    } else if d <= ROAD_SHOULDER_HALF_W {
+        RoadBand::Shoulder
+    } else {
+        RoadBand::Off
+    }
+}
+
+/// One bearing's candidate centre radii, with the cost of standing on each.
+struct RingCand {
+    r: [f32; RING_CANDIDATES],
+    cost: [f32; RING_CANDIDATES],
+    n: usize,
+}
+
+/// Solve the coast ring for a seed.
+///
+/// Three steps, and the middle one is the whole idea. Per bearing: bisect the
+/// shoreline the way `haven` does; offer a ladder of inland distances against
+/// it as candidate radii; then choose one radius per bearing by a cyclic
+/// shortest path whose edge cost is `|Δr|`, so the answer is a road rather
+/// than 256 independent argmins.
+///
+/// Runs once, at `haven()`. Nothing in the tick repeats it.
+pub fn solve_ring(seed: u64) -> RingPath {
+    let c = ISLAND_SIZE * 0.5;
+    let mut cands: [RingCand; RING_BEARINGS] = core::array::from_fn(|_| RingCand {
+        r: [0.0; RING_CANDIDATES],
+        cost: [0.0; RING_CANDIDATES],
+        n: 0,
+    });
+
+    let mut i = 0usize;
+    while i < RING_BEARINGS {
+        let (dx, dz) = crate::yaw_lut::yaw_dir((i as u16) << 8);
+        // EVERY land->water crossing on this radial, bisected. See
+        // `RING_CROSSINGS` for why one is not enough.
+        let inner = ROAD_R_MIN + RING_INLAND_MIN;
+        let outer = ROAD_R_MAX + RING_INLAND_MAX;
+        let mut shore = [-1.0f32; RING_CROSSINGS];
+        let mut n_shore = 0usize;
+        let mut lo = inner;
+        let mut wet = height(seed, c + dx * inner, c + dz * inner) <= SEA_LEVEL;
+        while lo < outer && n_shore < RING_CROSSINGS {
+            let hi = (lo + HAVEN_MARCH_M).min(outer);
+            let hi_wet = height(seed, c + dx * hi, c + dz * hi) <= SEA_LEVEL;
+            if !wet && hi_wet {
+                // Land -> water inside [lo, hi]: bisect it.
+                let (mut a, mut b) = (lo, hi);
+                let mut k = 0i32;
+                while k < HAVEN_BISECT_ITERS {
+                    let mid = (a + b) * 0.5;
+                    if height(seed, c + dx * mid, c + dz * mid) > SEA_LEVEL {
+                        a = mid;
+                    } else {
+                        b = mid;
+                    }
+                    k += 1;
+                }
+                shore[n_shore] = a;
+                n_shore += 1;
+            }
+            wet = hi_wet;
+            lo = hi;
+        }
+
+        let cand = &mut cands[i];
+        let mut slot = 0usize;
+        while slot < RING_CROSSINGS.max(1) * RING_INLAND_STEPS {
+            let xi = slot / RING_INLAND_STEPS;
+            let s = slot % RING_INLAND_STEPS;
+            slot += 1;
+            if xi > 0 && xi >= n_shore {
+                break;
+            }
+            let f = s as f32 / (RING_INLAND_STEPS - 1) as f32;
+            let (r, base) = if n_shore > 0 {
+                let inland = RING_INLAND_MIN + (RING_INLAND_MAX - RING_INLAND_MIN) * f;
+                (
+                    shore[xi] - inland,
+                    fabs(inland - ROAD_INLAND_M) * RING_OFFSET_COST,
+                )
+            } else {
+                // No shore on this bearing: offer the bracket itself so the
+                // loop can still close, and price it above any real crossing.
+                (
+                    ROAD_R_MIN + (ROAD_R_MAX - ROAD_R_MIN) * f,
+                    RING_NO_SHORE_COST,
+                )
+            };
+            if !(ROAD_R_MIN..=ROAD_R_MAX).contains(&r) {
+                continue;
+            }
+            // The node, and the span it will have to carry either side of it.
+            // Tangential, because that is the direction the road runs.
+            let (tx, tz) = (-dz, dx);
+            let half_arc = r * core::f32::consts::PI / RING_BEARINGS as f32;
+            let mut bad = 0usize;
+            let mut probe = 0usize;
+            while probe <= RING_SPAN_PROBES {
+                let off = if probe == 0 {
+                    0.0
+                } else if probe % 2 == 1 {
+                    half_arc
+                } else {
+                    -half_arc
+                };
+                let (px, pz) = (c + dx * r + tx * off, c + dz * r + tz * off);
+                if height(seed, px, pz) < LAND_MIN_H || slope(seed, px, pz) > CLIFF_SLOPE_RATIO {
+                    bad += 1;
+                }
+                probe += 1;
+            }
+            // Gentleness on top of passability: the probes above answer
+            // "could a player stand here at all", this answers "is this
+            // pleasant ground for a road", and the pad that gets built on the
+            // ring inherits the answer.
+            let cost = base
+                + bad as f32 * RING_CLIFF_COST
+                + slope(seed, c + dx * r, c + dz * r) * RING_SLOPE_COST;
+            if cand.n < RING_CANDIDATES {
+                cand.r[cand.n] = r;
+                cand.cost[cand.n] = cost;
+                cand.n += 1;
+            }
+        }
+        // A bearing with nothing admissible still needs a node, or the ring is
+        // not a ring. The bracket's middle is the honest fallback and it is
+        // priced as the worst thing here.
+        if cand.n == 0 {
+            cand.r[0] = (ROAD_R_MIN + ROAD_R_MAX) * 0.5;
+            cand.cost[0] = RING_CLIFF_COST + RING_NO_SHORE_COST;
+            cand.n = 1;
+        }
+        i += 1;
+    }
+
+    // Cyclic shortest path: for each candidate the first bearing could take,
+    // run the chain and close it back. The best closed loop wins; ties go to
+    // the lower start index, so the answer is order-independent.
+    let mut best_total = f32::MAX;
+    let mut best: RingPath = RingPath::FLAT;
+    let mut dp = vec![0.0f32; RING_BEARINGS * RING_CANDIDATES].into_boxed_slice();
+    let mut from = vec![0u8; RING_BEARINGS * RING_CANDIDATES].into_boxed_slice();
+
+    let mut start = 0usize;
+    while start < cands[0].n {
+        let mut b = 0usize;
+        while b < RING_BEARINGS {
+            let n = cands[b].n;
+            let mut k = 0usize;
+            while k < n {
+                let here = cands[b].cost[k];
+                dp[b * RING_CANDIDATES + k] = if b == 0 {
+                    if k == start {
+                        here
+                    } else {
+                        f32::MAX
+                    }
+                } else {
+                    let mut bestp = f32::MAX;
+                    let mut bestj = 0u8;
+                    let mut j = 0usize;
+                    while j < cands[b - 1].n {
+                        let prev = dp[(b - 1) * RING_CANDIDATES + j];
+                        if prev < f32::MAX {
+                            let dr = fabs(cands[b].r[k] - cands[b - 1].r[j]);
+                            let bend = dr * RING_BEND_COST
+                                + (dr - RING_MAX_BEND_M).max(0.0) * RING_BEND_OVER_COST;
+                            let t = prev + bend;
+                            if t < bestp {
+                                bestp = t;
+                                bestj = j as u8;
+                            }
+                        }
+                        j += 1;
+                    }
+                    from[b * RING_CANDIDATES + k] = bestj;
+                    if bestp == f32::MAX {
+                        f32::MAX
+                    } else {
+                        bestp + here
+                    }
+                };
+                k += 1;
+            }
+            b += 1;
+        }
+        // Close the loop back onto `start`.
+        let last = RING_BEARINGS - 1;
+        let mut k = 0usize;
+        while k < cands[last].n {
+            let tail = dp[last * RING_CANDIDATES + k];
+            if tail < f32::MAX {
+                let dr = fabs(cands[0].r[start] - cands[last].r[k]);
+                let closing =
+                    dr * RING_BEND_COST + (dr - RING_MAX_BEND_M).max(0.0) * RING_BEND_OVER_COST;
+                let total = tail + closing;
+                if total < best_total {
+                    best_total = total;
+                    // Walk the chain back.
+                    let mut path = RingPath::FLAT;
+                    let mut cur = k;
+                    let mut b = last;
+                    loop {
+                        path.r[b] = cands[b].r[cur];
+                        if b == 0 {
+                            break;
+                        }
+                        cur = from[b * RING_CANDIDATES + cur] as usize;
+                        b -= 1;
+                    }
+                    best = path;
+                }
+            }
+            k += 1;
+        }
+        start += 1;
+    }
+    best
 }
 
 // --- Bays: where the route stops being uniform (TERRAIN.md §1 stage 7) ----
@@ -1337,7 +1898,16 @@ fn in_bay_in<C: Corners>(co: &mut C, seed: u64, x: f32, z: f32) -> bool {
 pub const HAVEN_RADIUS_M: f32 = 16.0;
 /// Bearings the argmax scores, evenly spaced around the island. Capped by
 /// `limits::MAX_HAVEN_CANDIDATES` (knob, DECISIONS.md §open: haven pad v0).
-pub const HAVEN_CANDIDATES: i32 = 64;
+///
+/// **256 since ring path v0, which is every node the ring has.** It was 64,
+/// and 64 was the right number while each candidate cost a shoreline march
+/// and a bisection of its own — the search was paying for its own geometry.
+/// It is not any more: the ring already solved every bearing and stored the
+/// answer, so a candidate is an array read and there is no reason to look at
+/// one bearing in four. Measured: at 64 the pad's rim reached slope 0.50
+/// against the 0.21 it had held, because the argmax was choosing from almost
+/// nothing.
+pub const HAVEN_CANDIDATES: i32 = 256;
 /// Rim samples per candidate footprint; with the center that is 9 taps.
 /// Powers of two only — the yaw LUT is indexed by 256 / this (knob).
 pub const HAVEN_PROBES: i32 = 8;
@@ -1754,6 +2324,13 @@ impl Waystation {
 /// so the gate can re-derive it independently and compare.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Haven {
+    /// The solved coast ring (ring path v0).
+    ///
+    /// **First field because it is solved first**, and that ordering is the
+    /// whole reason the site search may ask the real road: `solve_ring` reads
+    /// only the terrain, so unlike the side roads the ring is not a
+    /// consequence of the search's own answer.
+    pub ring: RingPath,
     pub x: f32,
     pub z: f32,
     pub y: f32,
@@ -1874,12 +2451,13 @@ fn haven_relief(seed: u64, x: f32, z: f32) -> f32 {
 /// (`tests/road.rs` requires that surface clear, and the pad is on the road
 /// by construction — see `HAVEN_PHASE_TRIES`). Cheap test first, and the
 /// anchor loop breaks on the first failure, so the common case is one pass.
-fn haven_ring_phase(seed: u64, x: f32, z: f32) -> Option<u8> {
+fn haven_ring_phase(ring: &RingPath, seed: u64, x: f32, z: f32) -> Option<u8> {
     let mut t = 0i32;
     while t < HAVEN_PHASE_TRIES {
         let phase = (t * HAVEN_PHASE_STEP) as u8;
         t += 1;
         let probe = Haven {
+            ring: *ring,
             x,
             z,
             y: 0.0,
@@ -1896,7 +2474,7 @@ fn haven_ring_phase(seed: u64, x: f32, z: f32) -> Option<u8> {
         let mut ok = true;
         while k < HAVEN_CRATES {
             let (ax, az, _) = haven_crate(&probe, k);
-            if height(seed, ax, az) < LAND_MIN_H || ring_band(seed, ax, az) == RoadBand::Carriageway
+            if height(seed, ax, az) < LAND_MIN_H || ring_band(ring, ax, az) == RoadBand::Carriageway
             {
                 ok = false;
                 break;
@@ -1927,8 +2505,9 @@ fn haven_ring_phase(seed: u64, x: f32, z: f32) -> Option<u8> {
 /// alignment fell, not of either radius. A shared cell would silently
 /// delete one of the two. `reference/SPAWN.md` §5: refuse the position,
 /// never patch the object.
-fn haven_shelter_bearing(seed: u64, x: f32, z: f32, phase: u8) -> Option<u8> {
+fn haven_shelter_bearing(ring: &RingPath, seed: u64, x: f32, z: f32, phase: u8) -> Option<u8> {
     let probe = Haven {
+        ring: *ring,
         x,
         z,
         y: 0.0,
@@ -1949,7 +2528,7 @@ fn haven_shelter_bearing(seed: u64, x: f32, z: f32, phase: u8) -> Option<u8> {
         let (dx, dz) = crate::yaw_lut::yaw_dir((bearing as u16) << 8);
         let sx = x + dx * HAVEN_SHELTER_R_M;
         let sz = z + dz * HAVEN_SHELTER_R_M;
-        if height(seed, sx, sz) < LAND_MIN_H || ring_band(seed, sx, sz) == RoadBand::Carriageway {
+        if height(seed, sx, sz) < LAND_MIN_H || ring_band(ring, sx, sz) == RoadBand::Carriageway {
             continue;
         }
         let scx = (sx * (1.0 / CELL_SIZE)) as i32;
@@ -1974,10 +2553,12 @@ fn haven_shelter_bearing(seed: u64, x: f32, z: f32, phase: u8) -> Option<u8> {
 /// Resolve the haven pad for a seed (TERRAIN.md §1 stage 8).
 ///
 /// One candidate per bearing: bisect the shoreline crossing along that
-/// radial, step `ROAD_INLAND_M` back inland — which is the road's own
-/// definition of its center line, inverted, so the site lands on the ring
-/// by construction and `road_band` confirms it rather than being trusted to
-/// agree. Score = footprint relief + `HAVEN_HEIGHT_W` × height above the
+/// radial, step `ROAD_INLAND_M` back inland — which WAS the road's own
+/// definition of its center line, inverted. ⚠ **Since ring path v0 it is a
+/// node of the solved ring instead**: `solve_ring` ran before this search and
+/// already chose a radius per bearing, so the site lands on the road by
+/// construction rather than by re-deriving a definition the road no longer
+/// follows, and `road_band` confirms it as it always did. Score = footprint relief + `HAVEN_HEIGHT_W` × height above the
 /// land line, minimized; the scan runs bearings in ascending order and
 /// takes a strict improvement, so ties go to the lowest index and the
 /// result is order-independent.
@@ -1986,9 +2567,14 @@ fn haven_shelter_bearing(seed: u64, x: f32, z: f32, phase: u8) -> Option<u8> {
 /// seeds — the same posture `World::spawn_pos_n` takes: the best site that
 /// cleared the land line but not `road_band`, then the island center.
 pub fn haven(seed: u64) -> Haven {
+    // **The ring first, and it has to be.** Every site below is chosen ON the
+    // road, so the road has to exist before the search that looks for it —
+    // which it can, because `solve_ring` reads nothing but the terrain. This
+    // is the ordering `ROADS.md` §3 says the reference has and we did not:
+    // theirs places monuments first and routes roads to them, ours solves the
+    // road and hangs sites off it. Neither is a defect; both are one-way.
+    let ring = solve_ring(seed);
     let c = ISLAND_SIZE * 0.5;
-    let inner = ROAD_R_MIN + ROAD_INLAND_M;
-    let outer = ROAD_R_MAX + ROAD_INLAND_M;
     let bearing_step = (256 / HAVEN_CANDIDATES) as u16;
 
     let mut best: Option<Haven> = None;
@@ -2004,7 +2590,12 @@ pub fn haven(seed: u64) -> Haven {
 
     let mut i = 0i32;
     while i < HAVEN_CANDIDATES {
-        let (dx, dz) = crate::yaw_lut::yaw_dir((i as u16 * bearing_step) << 8);
+        // The bearing INDEX, taken before the cursor moves. `i += 1` used to
+        // sit here and the radius lookup below was written under it, which
+        // paired bearing `i`'s direction with bearing `i + 1`'s radius and put
+        // every candidate a step off its own ring.
+        let bi = (i as usize * bearing_step as usize) % RING_BEARINGS;
+        let (dx, dz) = crate::yaw_lut::yaw_dir((bi as u16) << 8);
         i += 1;
 
         // March seaward to the FIRST crossing, then bisect that bracket.
@@ -2012,35 +2603,18 @@ pub fn haven(seed: u64) -> Haven {
         // land is the nearest water going out, and a radial may meet
         // several. Start inland — a bearing whose inner probe is already
         // wet has no shore in the bracket.
-        if height(seed, c + dx * inner, c + dz * inner) <= SEA_LEVEL {
-            continue;
-        }
-        let mut lo = inner;
-        let mut hi = inner;
-        while hi < outer {
-            hi = (lo + HAVEN_MARCH_M).min(outer);
-            if height(seed, c + dx * hi, c + dz * hi) <= SEA_LEVEL {
-                break;
-            }
-            lo = hi;
-        }
-        if height(seed, c + dx * hi, c + dz * hi) > SEA_LEVEL {
-            continue; // dry all the way out: no shore on this bearing
-        }
-        let mut k = 0i32;
-        while k < HAVEN_BISECT_ITERS {
-            let mid = (lo + hi) * 0.5;
-            if height(seed, c + dx * mid, c + dz * mid) > SEA_LEVEL {
-                lo = mid;
-            } else {
-                hi = mid;
-            }
-            k += 1;
-        }
-
-        // `lo` is the landward side of the crossing; the road's center line
-        // is ROAD_INLAND_M in from it.
-        let r = lo - ROAD_INLAND_M;
+        //
+        // ⚠ **This whole march is gone, and its absence is the point.** Until
+        // ring path v0 this loop bisected the shoreline itself and put the
+        // candidate at `shore - ROAD_INLAND_M`, because that WAS the road's
+        // centre line. It is not any more: `solve_ring` chose an inland
+        // offset per bearing, and a point at the nominal 40 m is off the road
+        // wherever the solve moved. Measured, the day the path landed: the
+        // road-legal share of the site search's own bearings fell from 60 of
+        // 64 to **30 of 64** with the march left in, and `tests/haven.rs`
+        // caught it. The ring already did this search and stored the answer,
+        // so the candidate is simply a point ON it.
+        let r = ring.r[bi];
         let x = c + dx * r;
         let z = c + dz * r;
         let y = height(seed, x, z);
@@ -2067,10 +2641,13 @@ pub fn haven(seed: u64) -> Haven {
         // asking it of more candidates cannot change what any of them says —
         // the pad's branch below now reads this value instead of recomputing
         // it, and its site is bit-identical to what it was.
-        // `ring_band`, necessarily: this IS the site search, so the side
-        // roads it would otherwise ask about do not exist yet and are a
-        // consequence of its own answer.
-        let on_road = ring_band(seed, x, z) != RoadBand::Off;
+        // The solved ring, and it is available here for a reason worth
+        // stating: `solve_ring` reads only the terrain, so it runs BEFORE the
+        // site search and the site search may ask the real road. The side
+        // roads still may not be asked about — they are a consequence of this
+        // search's own answer — which is why this is `ring_band` and not
+        // `road_band`.
+        let on_road = ring_band(&ring, x, z) != RoadBand::Off;
         if on_road && n_cand < crate::limits::MAX_HAVEN_CANDIDATES {
             cand[n_cand] = (x, z, y, score);
             n_cand += 1;
@@ -2089,18 +2666,19 @@ pub fn haven(seed: u64) -> Haven {
         // afterwards. It runs on the shipped anchor geometry rather than on
         // a radius of its own, so the constraint cannot drift away from the
         // thing it constrains.
-        let phase = match haven_ring_phase(seed, x, z) {
+        let phase = match haven_ring_phase(&ring, seed, x, z) {
             Some(p) => p,
             None => continue,
         };
         // Same chain, one link further along: a site that cannot stand its
         // structure anywhere is refused rather than shipped without one.
         // Ordered after the ring because the gaps it tries are the ring's.
-        let shelter = match haven_shelter_bearing(seed, x, z, phase) {
+        let shelter = match haven_shelter_bearing(&ring, seed, x, z, phase) {
             Some(b) => b,
             None => continue,
         };
         let site = Haven {
+            ring,
             x,
             z,
             y,
@@ -2129,6 +2707,7 @@ pub fn haven(seed: u64) -> Haven {
     }
 
     let mut pad = best.or(relaxed).unwrap_or(Haven {
+        ring,
         x: c,
         z: c,
         y: height(seed, c, c),
@@ -2166,7 +2745,7 @@ pub fn haven(seed: u64) -> Haven {
 ///
 /// Bounded three ways (wall 4): the step count, the window, and the two
 /// directions. No allocation, no memo, no state.
-fn ring_run(seed: u64, x: f32, z: f32) -> i32 {
+fn ring_run(ring: &RingPath, seed: u64, x: f32, z: f32) -> i32 {
     let c = ISLAND_SIZE * 0.5;
     let rx = x - c;
     let rz = z - c;
@@ -2203,7 +2782,7 @@ fn ring_run(seed: u64, x: f32, z: f32) -> i32 {
             while t <= SIDE_ROAD_RING_WINDOW_M {
                 let rr = r + t;
                 let (px, pz) = (c + ux * rr, c + uz * rr);
-                if ring_band(seed, px, pz) == RoadBand::Carriageway
+                if ring_band(ring, px, pz) == RoadBand::Carriageway
                     && slope(seed, px, pz) <= CLIFF_SLOPE_RATIO
                 {
                     r = rr;
@@ -2229,6 +2808,7 @@ fn ring_run(seed: u64, x: f32, z: f32) -> i32 {
 /// Sixteen bearings per shortlisted site, at most `depot::CANDIDATE_TRIES`
 /// sites. Nothing in the tick repeats this initialization solve.
 fn solve_side_roads(seed: u64, pad: &mut Haven) -> [SideRoad; SIDE_ROADS] {
+    let ring = pad.ring;
     let mut out = [SideRoad::NONE; SIDE_ROADS];
     for index in WAYSTATIONS..MINOR_SITES {
         let ws = pad.minor[index];
@@ -2252,7 +2832,7 @@ fn solve_side_roads(seed: u64, pad: &mut Haven) -> [SideRoad; SIDE_ROADS] {
                 if height(seed, x, z) < LAND_MIN_H {
                     break;
                 }
-                if ring_band_memo(&mut lat, seed, x, z) == RoadBand::Carriageway {
+                if ring_band(&pad.ring, x, z) == RoadBand::Carriageway {
                     hit = Some((x, z));
                     break;
                 }
@@ -2261,17 +2841,22 @@ fn solve_side_roads(seed: u64, pad: &mut Haven) -> [SideRoad; SIDE_ROADS] {
             let Some((rx, rz)) = hit else {
                 continue;
             };
-            if ring_run(seed, rx, rz) < SIDE_ROAD_RING_RUN {
+            if ring_run(&ring, seed, rx, rz) < SIDE_ROAD_RING_RUN {
                 continue;
             }
-            let road = SideRoad {
+            let mut road = SideRoad {
                 px,
                 pz,
                 rx,
                 rz,
+                bx: [0.0; SIDE_ROAD_BENDS],
+                bz: [0.0; SIDE_ROAD_BENDS],
                 port,
                 live: true,
             };
+            // Straight is a polyline whose nodes sit on its chord, so the
+            // pair search below is comparing the same objects it always was.
+            road.straighten();
             candidates[b] = road;
             lengths[b] = t;
         }
@@ -2304,8 +2889,13 @@ fn solve_side_roads(seed: u64, pad: &mut Haven) -> [SideRoad; SIDE_ROADS] {
                 continue;
             }
             let k = (index - WAYSTATIONS) * 2;
-            out[k] = candidates[b];
-            out[k + 1] = candidates[b + half];
+            // The bend is the LAST thing that happens to a road, after both
+            // approaches have proved themselves as chords. Bending before the
+            // pair was chosen would make the choice depend on which offsets
+            // happened to fit, which is a search wearing a shaping function's
+            // clothes — and `ROADS.md` §9.4 is kept precisely on that point.
+            out[k] = bend_side_road(seed, pad, &candidates[b], &mut lat);
+            out[k + 1] = bend_side_road(seed, pad, &candidates[b + half], &mut lat);
             pad.minor[index].phase = candidates[b].port;
             break;
         }
@@ -2316,36 +2906,57 @@ fn solve_side_roads(seed: u64, pad: &mut Haven) -> [SideRoad; SIDE_ROADS] {
 /// Five cross-section samples at one-metre longitudinal pitch, including
 /// both carriageway edges. This bounds the solve; finer tests audit between
 /// these samples. No runtime consumer repeats this search.
+///
+/// **Walks the polyline leg by leg, on each leg's OWN bearing** — it read
+/// `road.port` for the whole road until the bend landed, which is the chord's
+/// bearing and is now nobody's direction of travel but the straight road's.
+///
+/// One thing it deliberately does not sample: the wedge outside a node where
+/// two legs meet. `side_band_of` is a distance to the nearest leg, so the
+/// band rounds that corner with a `ROAD_HALF_W` fillet, and the cross-section
+/// of neither leg reaches into it. At the turn angles `SIDE_ROAD_BEND_M`
+/// admits it is a sliver of a few cm², and the audit that covers it properly
+/// is `tests/side_road.rs`, which walks the BAND rather than the centre line.
 fn road_corridor_clear(seed: u64, pad: &Haven, road: &SideRoad, lat: &mut Lattice) -> bool {
     let obstacles = coastal_obstacles(seed, pad, lat);
-    let (dx, dz) = crate::yaw_lut::yaw_dir((road.port as u16) << 8);
-    let len = ((road.rx - road.px) * (road.rx - road.px)
-        + (road.rz - road.pz) * (road.rz - road.pz))
-        .sqrt();
-    let n = (len / SIDE_ROAD_SAMPLE_M) as usize + 1;
-    for i in 0..=n {
-        let t = len * i as f32 / n as f32;
-        for cross in -2..=2 {
-            let off = cross as f32 * ROAD_HALF_W * 0.5;
-            let x = road.px + dx * t + dz * off;
-            let z = road.pz + dz * t - dx * off;
-            let y = ground_memo(lat, seed, pad, x, z);
-            if y < LAND_MIN_H || ground_slope_memo(lat, seed, pad, x, z) > CLIFF_SLOPE_RATIO {
-                return false;
-            }
-            if obstacles.iter().any(|slot| {
-                slot_blocks(
-                    slot,
-                    x,
-                    z,
-                    y,
-                    crate::collide::CAPSULE_RADIUS_M,
-                    crate::collide::CAPSULE_HEIGHT_M,
-                )
-            }) {
-                return false;
+    let (mut ax, mut az) = road.node(0);
+    for k in 1..SIDE_ROAD_POINTS {
+        let (nx, nz) = road.node(k);
+        let (ex, ez) = (nx - ax, nz - az);
+        let len = (ex * ex + ez * ez).sqrt();
+        if len <= 0.0 {
+            ax = nx;
+            az = nz;
+            continue;
+        }
+        let (dx, dz) = (ex / len, ez / len);
+        let n = (len / SIDE_ROAD_SAMPLE_M) as usize + 1;
+        for i in 0..=n {
+            let t = len * i as f32 / n as f32;
+            for cross in -2..=2 {
+                let off = cross as f32 * ROAD_HALF_W * 0.5;
+                let x = ax + dx * t + dz * off;
+                let z = az + dz * t - dx * off;
+                let y = ground_memo(lat, seed, pad, x, z);
+                if y < LAND_MIN_H || ground_slope_memo(lat, seed, pad, x, z) > CLIFF_SLOPE_RATIO {
+                    return false;
+                }
+                if obstacles.iter().any(|slot| {
+                    slot_blocks(
+                        slot,
+                        x,
+                        z,
+                        y,
+                        crate::collide::CAPSULE_RADIUS_M,
+                        crate::collide::CAPSULE_HEIGHT_M,
+                    )
+                }) {
+                    return false;
+                }
             }
         }
+        ax = nx;
+        az = nz;
     }
     true
 }
@@ -2631,6 +3242,124 @@ pub const SIDE_ROAD_RING_STEP: u16 = 1;
 /// calls it a different road.
 pub const SIDE_ROAD_RING_WINDOW_M: f32 = 20.0;
 
+// ── The bend (`DECISIONS.md` §open, side road bend v0) ────────────────────
+//
+// Everything below buys one thing: the road stops being a ruler. It is a
+// COSMETIC wander and the code says so rather than dressing it as terrain
+// following — our interior does not fight a road (§7.1 of `ROADS.md` measured
+// a straight interior line at 0.247 mean slope against the coast ring's
+// 0.450), so there is no valley here to follow and a v0 that pretended to
+// follow one would be a hash with a better name. What makes it safe is not
+// the shaping but the re-validation: a bent road is a candidate, and a
+// candidate that fails `road_corridor_clear` is discarded for a smaller one.
+
+/// Interior nodes between the gate approach and the ring junction.
+///
+/// Three, so the road can hold an S rather than only an arc — two would make
+/// every road a single curve in one direction, which is a different kind of
+/// uniform. `side_band_of` costs one leg test per node either way and it is
+/// the same cost it paid before as long as the AABB of the whole road is
+/// what a caller rejects against, which is what asking the ring first does.
+pub const SIDE_ROAD_BENDS: usize = 3;
+
+/// Nodes on the road, ends included: the gate, the bends, the junction.
+pub const SIDE_ROAD_POINTS: usize = SIDE_ROAD_BENDS + 2;
+
+/// **(knob)** The widest a node may sit off the road's own chord, metres.
+///
+/// `DECISIONS.md` §open. 60 m against the 704–1,028 m these roads come out
+/// at over the eight sweep seeds is a lateral of about a twelfth of the
+/// length — enough to read as a road that goes somewhere rather than a line
+/// drawn on a map, and small enough that the corridor almost always accepts
+/// it on the first try. It is a CEILING and not a target: `bend_taper` is
+/// below 1 at every node but the middle one, so the shipped maximum is less.
+pub const SIDE_ROAD_BEND_M: f32 = 60.0;
+
+/// **(knob)** How many halvings of [`SIDE_ROAD_BEND_M`] the solve tries
+/// before giving the straight road back.
+///
+/// Three, so the ladder is 60 / 30 / 15 m and the fourth answer is the chord.
+/// Bounded for wall 4's reason and cheap for none: this runs once per road
+/// at `World::new` and never again.
+pub const SIDE_ROAD_BEND_TRIES: u32 = 3;
+
+/// **(knob)** The smallest share of the amplitude a node may draw.
+///
+/// Without a floor the hash hands out offsets near zero and some roads come
+/// out straight by luck, which makes "is it bent" a statistical question
+/// instead of an exact one. With it, `bend_m()` has a provable floor and
+/// `tests/side_road.rs` can assert on it — the `water_carry.rs` lesson in
+/// `CLAUDE.md`: gate the optimisation's EFFECT, not only its correctness.
+pub const SIDE_ROAD_BEND_MIN_SHARE: f32 = 0.4;
+
+/// The hash channel the lateral offsets are drawn from. Its `(x, z)` is
+/// `(port, node index)`, so the two roads of one depot draw differently
+/// (their ports are 128 apart) and a re-solve of the same seed draws the same.
+const CH_SIDE_BEND: u32 = 120;
+
+/// Where node `i` sits along the chord, `0 < t < 1`.
+fn bend_t(i: usize) -> f32 {
+    (i + 1) as f32 / (SIDE_ROAD_BENDS + 1) as f32
+}
+
+/// How much of the amplitude node `i` may draw, by its position along the road.
+///
+/// `t²(1 − t)` normalised to peak at 1. Zero at both ends and NEARLY zero at
+/// the gate end, which is the asymmetry that matters: a road leaves a freight
+/// yard square-on through a `depot::GATE_HALF_W` opening and does its
+/// wandering in the open. A symmetric `t(1 − t)` puts the first node at 0.75
+/// of full amplitude a quarter of the way out, which is a 13° kink where the
+/// apron meets the carriageway.
+fn bend_taper(t: f32) -> f32 {
+    /// 27/4 — the reciprocal of `t²(1 − t)`'s maximum of 4/27 at t = 2/3.
+    const PEAK: f32 = 6.75;
+    t * t * (1.0 - t) * PEAK
+}
+
+/// A hashed lateral in `±[SIDE_ROAD_BEND_MIN_SHARE, 1]`.
+///
+/// Sign off one bit and magnitude off twelve more, rather than one signed
+/// draw, so the floor is on the MAGNITUDE. A signed draw with a floor would
+/// have to reject a band around zero, which is a loop with no bound on it.
+fn bend_unit(h: u64) -> f32 {
+    let span = 1.0 - SIDE_ROAD_BEND_MIN_SHARE;
+    let mag = SIDE_ROAD_BEND_MIN_SHARE + span * (((h >> 17) & 0xFFF) as i32 as f32 / 4095.0);
+    if h & 1 == 0 {
+        -mag
+    } else {
+        mag
+    }
+}
+
+/// The straight road, bent as far as its corridor still allows.
+///
+/// **The fallback is the input**, which is the whole safety argument: the
+/// road handed in has already passed `road_corridor_clear`, so the worst
+/// outcome here is the road this repo shipped yesterday. Nothing about the
+/// ring junction, the gate approach or `ring_run` is re-decided.
+fn bend_side_road(seed: u64, pad: &Haven, straight: &SideRoad, lat: &mut Lattice) -> SideRoad {
+    let (dx, dz) = crate::yaw_lut::yaw_dir((straight.port as u16) << 8);
+    // Left of travel. Which side is arbitrary — `bend_unit` carries the sign
+    // — but it has to be ONE vector for every node, or the taper shapes
+    // three unrelated offsets instead of one curve.
+    let (lx, lz) = (-dz, dx);
+    for shrink in 0..SIDE_ROAD_BEND_TRIES {
+        let amp = SIDE_ROAD_BEND_M / (1u32 << shrink) as f32;
+        let mut bent = *straight;
+        for i in 0..SIDE_ROAD_BENDS {
+            let t = bend_t(i);
+            let h = cell_hash(seed, straight.port as i32, i as i32, CH_SIDE_BEND);
+            let off = amp * bend_taper(t) * bend_unit(h);
+            bent.bx[i] = straight.px + (straight.rx - straight.px) * t + lx * off;
+            bent.bz[i] = straight.pz + (straight.rz - straight.pz) * t + lz * off;
+        }
+        if road_corridor_clear(seed, pad, &bent, lat) {
+            return bent;
+        }
+    }
+    *straight
+}
+
 const _: () = {
     assert!(SIDE_ROAD_BEARINGS > 0 && 256 % SIDE_ROAD_BEARINGS == 0);
     assert!(SIDE_ROAD_RING_RUN > 0 && SIDE_ROAD_RING_STEP > 0);
@@ -2645,16 +3374,43 @@ const _: () = {
     assert!(SIDE_ROAD_SAMPLE_M > 0.0);
     // Two opposite approaches per inland site, indexed by its slot offset.
     assert!(SIDE_ROADS == INLAND_SITES * 2);
+    // A road with no interior node is the chord this slice exists to retire,
+    // and `bend_t` divides by `SIDE_ROAD_BENDS + 1`.
+    assert!(SIDE_ROAD_BENDS > 0);
+    assert!(SIDE_ROAD_POINTS == SIDE_ROAD_BENDS + 2);
+    // A lateral wider than the shoulder would let a bent road's own band
+    // touch the chord it came from, which is one road drawn as two.
+    assert!(SIDE_ROAD_BEND_M > ROAD_SHOULDER_HALF_W);
+    // Wall 4: the ladder is bounded and its last rung is still a real bend.
+    assert!(SIDE_ROAD_BEND_TRIES > 0 && SIDE_ROAD_BEND_TRIES < 8);
+    // A floor of 0 puts a straight road back in the output by luck, which is
+    // what `bend_m()`'s gate exists to make impossible.
+    assert!(SIDE_ROAD_BEND_MIN_SHARE > 0.0 && SIDE_ROAD_BEND_MIN_SHARE <= 1.0);
 };
 
 /// One solved road from the ring to an inland site's port.
 ///
-/// **A segment, not a spline** (`reference/ROADS.md` §9.4). Theirs wander
-/// because their terrain fights them and Devblog 50's first version took
-/// "pretty crazy routes"; ours does not have that problem — a straight line
-/// across our interior is *flatter* than the shipped ring (0.247 against
-/// 0.450 mean slope, `examples/second_road.rs`) — and a straight segment is
-/// legible, free to query, and gateable in a way a fitted spline is not.
+/// **A POLYLINE of `SIDE_ROAD_POINTS` nodes, and it used to be one segment.**
+/// `reference/ROADS.md` §9.4 argued for the segment and the argument was
+/// sound on its own terms — a straight line across our interior is *flatter*
+/// than the shipped ring (0.247 against 0.450 mean slope,
+/// `examples/second_road.rs`), and a segment is free to query and gateable in
+/// a way a fitted spline is not. What it never claimed, and what nobody had
+/// checked, is how it LOOKS. The operator booted the game on 2026-09-17 and
+/// the answer is in `DECISIONS.md`: *"just a road going straight across the
+/// world. it did not look good at all"* — on seed 20260731 the depot's two
+/// approaches both land on `z = 899.3`, an axis-aligned ruler 1,760 m long
+/// across a 2,048 m island.
+///
+/// So §9.4 is overruled on the half it did not address, and kept on the half
+/// it did: **this is still not a spline and still not a search.** The solve
+/// below picks a straight candidate exactly as it always did, and then bends
+/// the INTERIOR nodes by a hashed lateral offset, re-validating each leg
+/// against the same corridor test. The endpoints do not move — the port end
+/// is the yard's gate and the ring end is a junction that passed
+/// `ring_run` — so everything the straight solve proved is still proved, and
+/// the bend can only narrow it (`bend_side_road` falls back to the straight
+/// road, which already passed).
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct SideRoad {
     /// The authored gate approach, `depot::PORT_Z` from the site centre
@@ -2665,9 +3421,22 @@ pub struct SideRoad {
     /// bearing.
     pub rx: f32,
     pub rz: f32,
+    /// The interior nodes, port end to ring end. Stored rather than derived
+    /// for `port`'s reason one field down: they are the answer to a search
+    /// (which offsets passed `road_corridor_clear`), so a reader that
+    /// re-derived them would have to re-run it.
+    ///
+    /// A straight road is not a special case — it is a road whose bends sit
+    /// on its own chord (`straighten`), so every consumer walks one shape.
+    pub bx: [f32; SIDE_ROAD_BENDS],
+    pub bz: [f32; SIDE_ROAD_BENDS],
     /// The bearing from the site's centre out to the ring, as a yaw-LUT
     /// index — carried for `Haven::phase`'s reason: it is the answer to a
     /// search, so a reader that re-derived it would have to re-run the search.
+    ///
+    /// ⚠ **It is the bearing of the road's CHORD, not of the road.** It was
+    /// the same number until the bend landed; a consumer that wants the
+    /// direction of travel at a point wants the leg it is on.
     pub port: u8,
     pub live: bool,
 }
@@ -2678,9 +3447,101 @@ impl SideRoad {
         pz: 0.0,
         rx: 0.0,
         rz: 0.0,
+        bx: [0.0; SIDE_ROAD_BENDS],
+        bz: [0.0; SIDE_ROAD_BENDS],
         port: 0,
         live: false,
     };
+
+    /// Node `i` of the polyline, `0` the port end and
+    /// `SIDE_ROAD_POINTS - 1` the ring end.
+    ///
+    /// Total on purpose: an index past the end answers with the ring end
+    /// rather than panicking, because the alternative is a bounds check on
+    /// the hot path in [`side_band_of`] for a loop whose bound is a const.
+    pub fn node(&self, i: usize) -> (f32, f32) {
+        if i == 0 {
+            (self.px, self.pz)
+        } else if i <= SIDE_ROAD_BENDS {
+            (self.bx[i - 1], self.bz[i - 1])
+        } else {
+            (self.rx, self.rz)
+        }
+    }
+
+    /// Put every interior node back on the chord — the road this one would
+    /// have been before `SIDE_ROAD_BENDS` existed.
+    fn straighten(&mut self) {
+        for i in 0..SIDE_ROAD_BENDS {
+            let t = bend_t(i);
+            self.bx[i] = self.px + (self.rx - self.px) * t;
+            self.bz[i] = self.pz + (self.rz - self.pz) * t;
+        }
+    }
+
+    /// SQUARED distance from a point to the road — the nearest of its legs.
+    ///
+    /// **The one definition of where the road is.** `side_band_of` classifies
+    /// against it and `scatter`'s veto clears props out of it; they were two
+    /// copies of one `seg_dist` call before the road had interior nodes, and
+    /// two copies of a five-node walk is the hand-kept-mirror failure
+    /// `CLAUDE.md` records twice.
+    ///
+    /// Squared, so a caller that only needs a comparison never pays a root.
+    pub fn dist2(&self, x: f32, z: f32) -> f32 {
+        let mut out = f32::MAX;
+        let (mut ax, mut az) = self.node(0);
+        for i in 1..SIDE_ROAD_POINTS {
+            let (bx, bz) = self.node(i);
+            out = out.min(seg_dist2(ax, az, bx, bz, x, z));
+            ax = bx;
+            az = bz;
+        }
+        out
+    }
+
+    /// How far the road actually is to walk, metres — the sum of its legs,
+    /// which is longer than the chord by however much it bends.
+    ///
+    /// Public because two examples and `tests/side_road.rs` report a length
+    /// and the chord stopped being it.
+    pub fn path_len(&self) -> f32 {
+        let mut out = 0.0;
+        let (mut ax, mut az) = self.node(0);
+        for i in 1..SIDE_ROAD_POINTS {
+            let (bx, bz) = self.node(i);
+            let (ex, ez) = (bx - ax, bz - az);
+            out += (ex * ex + ez * ez).sqrt();
+            ax = bx;
+            az = bz;
+        }
+        out
+    }
+
+    /// The largest distance from a node to the road's own chord, metres —
+    /// zero for a straight road and `<= SIDE_ROAD_BEND_M` for any other.
+    ///
+    /// This is the observable the bend gate asserts on, and it exists for the
+    /// `water_carry.rs` reason `CLAUDE.md` records: a suite that only checks
+    /// the road is still walkable is satisfied by never bending anything.
+    pub fn bend_m(&self) -> f32 {
+        let (ex, ez) = (self.rx - self.px, self.rz - self.pz);
+        let len2 = ex * ex + ez * ez;
+        if len2 <= 0.0 {
+            return 0.0;
+        }
+        let mut out = 0.0f32;
+        for i in 0..SIDE_ROAD_BENDS {
+            let (px, pz) = (self.bx[i] - self.px, self.bz[i] - self.pz);
+            // The perpendicular component of the node against the chord. No
+            // clamp: a node is between the ends by construction and an
+            // unclamped reject is the honest number if one ever is not.
+            let t = (px * ex + pz * ez) / len2;
+            let (qx, qz) = (px - ex * t, pz - ez * t);
+            out = out.max((qx * qx + qz * qz).sqrt());
+        }
+        out
+    }
 }
 
 const _: () = {
@@ -2852,6 +3713,9 @@ fn pick_minor(
     pad: &Haven,
     cand: &[(f32, f32, f32, f32)],
 ) -> ([Waystation; MINOR_SITES], [SideRoad; SIDE_ROADS]) {
+    // The pad already carries the solved ring; taking it by reference here
+    // keeps one ring in the solve rather than two that could disagree.
+    let ring = &pad.ring;
     let mut out = empty_minor();
     // The pad is the roster's first entry, which is the same statement the
     // old inline test made by comparing against `pad` before the taken list.
@@ -2873,7 +3737,7 @@ fn pick_minor(
             if !roster.clears(SiteKind::Waystation, x, z) {
                 continue;
             }
-            let (phase, canopy) = match waystation_ring_phase(seed, x, z) {
+            let (phase, canopy) = match waystation_ring_phase(ring, seed, x, z) {
                 Some(p) => p,
                 None => continue,
             };
@@ -2990,7 +3854,7 @@ fn pick_minor(
 /// asking the questions in sequence, 16 phases each offering
 /// `WAYSTATION_CANOPY_TRIES` gaps, is what lets a candidate survive one
 /// blocked gap instead of being thrown away with it.
-fn waystation_ring_phase(seed: u64, x: f32, z: f32) -> Option<(u8, u8)> {
+fn waystation_ring_phase(ring: &RingPath, seed: u64, x: f32, z: f32) -> Option<(u8, u8)> {
     let mut t = 0i32;
     while t < WAYSTATION_PHASE_TRIES {
         let phase = (t * WAYSTATION_PHASE_STEP) as u8;
@@ -3014,7 +3878,7 @@ fn waystation_ring_phase(seed: u64, x: f32, z: f32) -> Option<(u8, u8)> {
         let mut ok = true;
         while k < WAYSTATION_CRATES {
             let (ax, az, _) = waystation_crate(&probe, k);
-            if height(seed, ax, az) < LAND_MIN_H || ring_band(seed, ax, az) == RoadBand::Carriageway
+            if height(seed, ax, az) < LAND_MIN_H || ring_band(ring, ax, az) == RoadBand::Carriageway
             {
                 ok = false;
                 break;
@@ -3022,7 +3886,7 @@ fn waystation_ring_phase(seed: u64, x: f32, z: f32) -> Option<(u8, u8)> {
             k += 1;
         }
         if ok {
-            if let Some(canopy) = waystation_canopy_bearing(seed, x, z, phase) {
+            if let Some(canopy) = waystation_canopy_bearing(ring, seed, x, z, phase) {
                 return Some((phase, canopy));
             }
         }
@@ -3054,7 +3918,7 @@ fn waystation_ring_phase(seed: u64, x: f32, z: f32) -> Option<(u8, u8)> {
 /// it swept, and `tests/waystation.rs` and `tests/scatter.rs` reported the
 /// same two from their own angles. `reference/SPAWN.md` §5: refuse the
 /// position, never patch the object.
-fn waystation_canopy_bearing(seed: u64, x: f32, z: f32, phase: u8) -> Option<u8> {
+fn waystation_canopy_bearing(ring: &RingPath, seed: u64, x: f32, z: f32, phase: u8) -> Option<u8> {
     let probe = Waystation {
         x,
         z,
@@ -3076,7 +3940,7 @@ fn waystation_canopy_bearing(seed: u64, x: f32, z: f32, phase: u8) -> Option<u8>
         let (dx, dz) = crate::yaw_lut::yaw_dir((bearing as u16) << 8);
         let kx = x + dx * WAYSTATION_CANOPY_OFF_M;
         let kz = z + dz * WAYSTATION_CANOPY_OFF_M;
-        if height(seed, kx, kz) < LAND_MIN_H || ring_band(seed, kx, kz) == RoadBand::Carriageway {
+        if height(seed, kx, kz) < LAND_MIN_H || ring_band(ring, kx, kz) == RoadBand::Carriageway {
             continue;
         }
         // The footprint's two extremes across the road's width. `d` is the
@@ -3088,8 +3952,8 @@ fn waystation_canopy_bearing(seed: u64, x: f32, z: f32, phase: u8) -> Option<u8>
         let d = (rx * rx + rz * rz).sqrt();
         let (ux, uz) = (rx / d, rz / d);
         let e = WAYSTATION_CANOPY_R_M;
-        if ring_band(seed, kx + ux * e, kz + uz * e) == RoadBand::Carriageway
-            || ring_band(seed, kx - ux * e, kz - uz * e) == RoadBand::Carriageway
+        if ring_band(ring, kx + ux * e, kz + uz * e) == RoadBand::Carriageway
+            || ring_band(ring, kx - ux * e, kz - uz * e) == RoadBand::Carriageway
         {
             continue;
         }
@@ -4337,13 +5201,30 @@ fn scatter_in<C: Corners>(
     // into the road. Reserve the actual scaled collision volume, with a
     // cheap segment bounding-box reject before the distance calculation.
     let reach = ROAD_HALF_W + occupant_volume(occupant).0 * scale;
+    // The cheap reject is still the CHORD's box, grown by the widest a node
+    // may sit off it. Provable rather than measured — `bend_side_road`'s
+    // offset is `amp * bend_taper * bend_unit` with the last two at most 1
+    // and `amp <= SIDE_ROAD_BEND_M` — and `side_road.rs`'s
+    // `every_node_is_inside_the_chords_box_grown_by_the_bend_ceiling` is what
+    // holds the half this line ASSUMES.
+    //
+    // ⚠ **What catches a box that is too tight is in another file, and the
+    // golden is blind to it.** Dropping the `+ SIDE_ROAD_BEND_M` was run as a
+    // mutant: `test_terrain_golden` stays GREEN — the props it strands are
+    // not in the cells `probe_sites` samples — and the only gate that reddens
+    // is `tests/depot.rs`'s
+    // `carriageways_clear_real_capsules_over_final_ground_including_both_edges`,
+    // which walks a real capsule down the road. So the failure mode is a
+    // boulder standing in the carriageway with the determinism gate happy,
+    // and that walk is the one thing in the way.
+    let box_r = reach + SIDE_ROAD_BEND_M;
     for road in &haven.roads {
         if road.live
-            && x >= road.px.min(road.rx) - reach
-            && x <= road.px.max(road.rx) + reach
-            && z >= road.pz.min(road.rz) - reach
-            && z <= road.pz.max(road.rz) + reach
-            && seg_dist(road.px, road.pz, road.rx, road.rz, x, z) <= reach
+            && x >= road.px.min(road.rx) - box_r
+            && x <= road.px.max(road.rx) + box_r
+            && z >= road.pz.min(road.rz) - box_r
+            && z <= road.pz.max(road.rz) + box_r
+            && road.dist2(x, z).sqrt() <= reach
         {
             return none;
         }

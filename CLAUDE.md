@@ -718,6 +718,28 @@ do not rediscover)
   code either side of the `cfg`, with a different ceiling — so a native run
   proves the mechanism that was broken.
 
+- **An instrument built on a LUT measures the LUT, and three findings in a
+  row came back wrong before anyone checked.** `sim_core::yaw_dir` is a
+  256-entry table indexed by `yaw >> 8` (`yaw_lut.rs`), so a sweep that walks
+  bearings through it samples 256 directions however many steps it claims —
+  a 4,096-step sweep of the coast ring was really one sample every 20.9 m of
+  arc against a 4 m carriageway. On 2026-09-17 that instrument said the ring
+  was 9.3% in one piece, that radial GAPS were the dominant cause, and that
+  cliffs were irrelevant. At true resolution (real trig, which an example may
+  call because it is host code) it is 54.4%, the gaps are 0–2 per seed with a
+  p99 of 0.0 m, and **cliffs are the whole cause** — which is what the doc had
+  said before the measurements talked everyone out of it. Two hypotheses were
+  built and killed on the bad numbers first.
+  The sibling failure in the same pass: **a connected-component count over a
+  4 m ribbon measures the GRID**, reading 43.7% at a 2 m sample and 13.4% at
+  4 m on the same islands. `reference/ROADS.md` §8 already carried that
+  warning about its own first draft and it was not applied to the ring.
+  The rule: **before a sweep earns a finding, check it against something that
+  is not the sweep** — here, that the quantity is stable when the sampling
+  changes. The share of the ring a player can stand on reads 97.3% at both
+  grids; every number that moved with the instrument was the instrument.
+  `sim-core/examples/ring_breaks.rs` carries both traps and demonstrates them.
+
 - **A judge names the symptom; fix the cause.** Optimizing the judge's
   literal sentence is how a loop circles for three passes — elsewhere,
   "untextured" was really diffuse contrast crushed by an earlier fix for

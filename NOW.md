@@ -855,7 +855,47 @@ treeline (`DECISIONS.md` §open, world structure v1). What is still open:
    from the 8 m grid's staircase. Both were replaced by metrics that
    separate. **A band whose two populations touch is not a gate.**
 
+## 0ring · Ring path v0 landed — four things it left *(sim lane)*
+
+**The coast ring is a solved polyline now, not a predicate** (`DECISIONS.md`
+2026-09-18). Standable share 94.2% → **97.9%**, longest unbroken walkable run
+39.9% → **55.6%**, worst island 90.7% → 94.6%
+(`tests/road.rs::the_ring_is_ground_a_player_can_stand_on`, floor 0.92).
+
+1. **Nobody has walked it.** §LOOK. Every number here is arithmetic; whether
+   a road that wanders 20–70 m inland still reads as a COAST road is a frame.
+2. **It is still not one piece** — 55.6% is the longest run, so a lap crosses
+   two or three unwalkable stretches. Closing the last ~2% needs the bench
+   this slice proved it did not need for the first 60%: a shelf cut at the
+   few remaining spots. `RING_BEARINGS` is the natural key for it and the
+   contour trap applies the moment a height is read off the ring.
+3. **It costs 32 ms of the 118 ms `haven()` now spends**, measured once per
+   world build (`World::new`, and the client's load) and never in a tick. Not
+   gated — nothing gates `World::new` on time — so if it ever matters the
+   term to attack is the cyclic DP's loop over start candidates, which is the
+   `K` in `O(B·K³)`.
+4. **`ring_probe` has one caller left** (`solve_ring`) plus the instrument.
+   It is the terrain question, not the road, and `height_roles.rs` says so —
+   but a third caller appearing is worth a second look.
+
 ## 0rd · Coastal routing is measured; production integration remains *(sim lane)*
+
+**Side road bend v0 landed 2026-09-17** (operator: *"a road going straight
+across the world… it did not look good at all"*). `SideRoad` is a 5-node
+polyline; the ends are unchanged and three hashed interior nodes are
+re-validated by `road_corridor_clear`. 31 of 32 sweep roads bend 25.2–56.6 m.
+Three things it left:
+
+1. **Nobody has looked at it.** §LOOK. The bend is arithmetic — whether 45 m
+   over 750 m reads as a road or as a wobble is a frame, and
+   `SIDE_ROAD_BEND_M` is a knob to turn after that.
+2. **The wander is cosmetic, not terrain-seeking** — deliberate, because our
+   interior does not fight a road (`ROADS.md` §7.1). A v1 that biases a node
+   toward lower ground is the obvious next shape and needs a gate that can
+   tell it from the hash.
+3. **The 180° pairing is the BUILDING** (`depot.rs:28` — both gates on the
+   yard's local Z axis), so two approaches will always leave opposite. Only a
+   second gate face or a second inland site changes that.
 
 `reference/ROADS.md` §2.1 adds the 2020 ring/branch rewrite and roadside-site
 exception to the older monuments-first account. The runnable experiment is
@@ -2686,6 +2726,17 @@ with a place for its answer**, so a reply is one line and not an essay. And
 `DECISIONS.md` for the sentence before assuming an item is open. **Do not build
 a replacement pixel gate** (`CLAUDE.md`); that rule is untouched and this
 correction does not soften it.
+
+**Newest, 2026-09-17 — stand at the depot and look down its road** (§0rd,
+side road bend v0). The straight road is the one thing on this list that was
+reported from a frame rather than waiting for one, so it is the only entry
+here with a before. Three judgements: does a 25–57 m wander over 620–1,050 m
+read as a road that goes somewhere, or as a straight road someone nudged;
+does the gate approach still look square-on where the apron meets it
+(`bend_taper` is near zero there on purpose); and does the far end of the
+wander ever disappear behind the terrain, which is the thing that would make
+it worth more than `SIDE_ROAD_BEND_M = 60`. `cargo run -p client --example
+map_png` draws the island half with no GPU and is the cheap first look.
 
 **Newest, 2026-09-16 — smash a barrel and look at what falls out** (§0wc
 2b, ground items v0): loose stacks are a new object class on the ground —
