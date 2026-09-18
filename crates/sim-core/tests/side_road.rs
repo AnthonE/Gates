@@ -114,7 +114,7 @@ fn every_inland_site_has_a_road_and_both_ends_are_what_they_claim() {
             // alone: a side road that ended on ANOTHER side road would be a
             // road to a road.
             assert_eq!(
-                terrain::ring_band(seed, r.rx, r.rz),
+                terrain::ring_band(&h.ring, r.rx, r.rz),
                 RoadBand::Carriageway,
                 "seed {seed:#x}: road {i}'s ring end at ({:.0}, {:.0}) is not \
                  on the coast road's surface",
@@ -338,6 +338,19 @@ fn every_live_road_bends_and_stays_inside_its_ceiling() {
     //
     // The separation that makes it a gate: 1 of 32 here, 32 of 32 under a
     // `bend_side_road` that returns its input.
+    /// What counts as bent, metres.
+    ///
+    /// ⚠ **Not `> 0.0`, and that was a real defect in this gate.** A road that
+    /// fell back to its chord has its nodes placed ON that chord by
+    /// `straighten`, and `bend_m` measures a perpendicular distance in f32 —
+    /// over a 978 m chord the answer is **3.1e-5 m**, not zero. The first
+    /// draft classified that as bent and then asserted `path_len() > chord`
+    /// about it, which is false at the same precision. Any real bend is at
+    /// least `SIDE_ROAD_BEND_MIN_SHARE` of the ladder's last rung — about
+    /// 5.7 m — so a centimetre separates the two by three orders of
+    /// magnitude and cannot be the thing that decides.
+    const BENT_MIN_M: f32 = 0.01;
+
     let mut least = f32::MAX;
     let mut most = 0.0f32;
     let (mut roads, mut flat) = (0u32, 0u32);
@@ -355,12 +368,18 @@ fn every_live_road_bends_and_stays_inside_its_ceiling() {
                  {:.1} m ceiling `scatter`'s reject assumes",
                 terrain::SIDE_ROAD_BEND_M
             );
-            if bend <= 0.0 {
+            if bend <= BENT_MIN_M {
                 flat += 1;
             } else {
                 // A bent road is longer than its chord — the same claim
                 // stated as a cost rather than as a shape.
-                assert!(r.path_len() > chord, "seed {seed:#x}: road {i}");
+                assert!(
+                    r.path_len() > chord,
+                    "seed {seed:#x}: road {i} bends {bend:.3} m off a \
+                     {chord:.1} m chord and yet is not longer than it \
+                     ({:.3} m) — the nodes and the length disagree",
+                    r.path_len()
+                );
                 least = least.min(bend);
                 most = most.max(bend);
             }
@@ -377,7 +396,7 @@ fn every_live_road_bends_and_stays_inside_its_ceiling() {
     let shipped = terrain::haven(20_260_731);
     for (i, r) in shipped.roads.iter().filter(|r| r.live).enumerate() {
         assert!(
-            r.bend_m() > 0.0,
+            r.bend_m() > BENT_MIN_M,
             "seed 20260731 road {i} is a chord — this is the island on the \
              screen when the straight road was reported"
         );
@@ -535,7 +554,7 @@ fn walk(seed: u64, h: &Haven, with_side: bool) -> Walk {
                 continue;
             }
             ok[i] = true;
-            let ring = terrain::ring_band(seed, x, z) != RoadBand::Off;
+            let ring = terrain::ring_band(&h.ring, x, z) != RoadBand::Off;
             on[i] = ring;
             if with_side {
                 for (n, r) in h.roads.iter().enumerate() {
@@ -827,7 +846,7 @@ fn a_carriageway_wins_over_the_other_roads_shoulder_at_a_junction() {
                 for across in -span..=span {
                     let x = r.rx + ux * along as f32 * step - uz * across as f32 * step;
                     let z = r.rz + uz * along as f32 * step + ux * across as f32 * step;
-                    let ring = terrain::ring_band(seed, x, z);
+                    let ring = terrain::ring_band(&h.ring, x, z);
                     let side = terrain::side_band(&h, x, z);
                     let both = terrain::road_band(seed, &h, x, z);
                     assert_eq!(

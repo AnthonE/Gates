@@ -571,7 +571,7 @@ fn the_early_out_refuses_exactly_what_the_rate_refuses() {
                 let ring = (terrain::ROAD_R_MIN * terrain::ROAD_R_MIN)
                     ..=(terrain::ROAD_R_MAX * terrain::ROAD_R_MAX);
                 if (ring.contains(&d2)
-                    && terrain::ring_band(s, x, z) == terrain::RoadBand::Carriageway)
+                    && terrain::ring_band(&haven.ring, x, z) == terrain::RoadBand::Carriageway)
                     || terrain::side_band(&haven, x, z) == terrain::RoadBand::Carriageway
                 {
                     let e = terrain::clutter_rich_cell(s, &haven, cx, cz);

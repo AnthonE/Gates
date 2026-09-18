@@ -53,6 +53,7 @@ const SWEEP_SEEDS: [u64; 4] = [1, 42, 20_260_804, 0xDEAD_BEEF];
 /// control for "the exclusion actually removed something".
 fn no_haven() -> Haven {
     Haven {
+        ring: terrain::RingPath::FLAT,
         x: -1.0e6,
         z: -1.0e6,
         y: 0.0,
@@ -76,10 +77,11 @@ fn cell_of(x: f32, z: f32) -> (i32, i32) {
 /// every anchor is on land and off the carriageway, or `None`. Independent
 /// of `haven`'s copy on purpose — `haven_ring_phase` is private, and a test
 /// that called the function under test would only prove it is deterministic.
-fn ring_phase(seed: u64, x: f32, z: f32) -> Option<u8> {
+fn ring_phase(ring: &terrain::RingPath, seed: u64, x: f32, z: f32) -> Option<u8> {
     for t in 0..HAVEN_PHASE_TRIES {
         let phase = (t * HAVEN_PHASE_STEP) as u8;
         let probe = Haven {
+            ring: *ring,
             x,
             z,
             y: 0.0,
@@ -93,13 +95,65 @@ fn ring_phase(seed: u64, x: f32, z: f32) -> Option<u8> {
         let ok = (0..HAVEN_CRATES).all(|k| {
             let (ax, az, _) = terrain::haven_crate(&probe, k);
             terrain::height(seed, ax, az) >= LAND_MIN_H
-                && terrain::ring_band(seed, ax, az) != RoadBand::Carriageway
+                // The solved ROAD, matching what `haven_ring_phase` asks —
+                // the raw predicate is a different question since ring path
+                // v0, and this rebuild would disagree by construction.
+                && terrain::ring_band(ring, ax, az) != RoadBand::Carriageway
         });
         if ok {
             return Some(phase);
         }
     }
     None
+}
+
+/// The selector's SHELTER search, re-derived, for `ring_phase`'s reason and
+/// with its caveat: `haven_shelter_bearing` is private, and a test that called
+/// it would only prove it is deterministic.
+///
+/// ⚠ **It is here because the argmax test needs it, and it needed it before
+/// ring path v0 without noticing.** That test re-derives the selector's
+/// candidate filter and had only two of its three conditions — land, on the
+/// ring, a legal container phase — while the selector also requires a legal
+/// SHELTER bearing. With 64 candidates the gap never bit; with 256 it bites
+/// on the first sweep, which is the honest reading: the test was incomplete
+/// and four times the candidates found it.
+fn shelter_bearing(ring: &terrain::RingPath, seed: u64, x: f32, z: f32, phase: u8) -> bool {
+    let probe = Haven {
+        ring: *ring,
+        x,
+        z,
+        y: 0.0,
+        floor_y: 0.0,
+        relief: 0.0,
+        phase,
+        shelter: 0,
+        minor: terrain::empty_minor(),
+        roads: [terrain::SideRoad::NONE; terrain::SIDE_ROADS],
+    };
+    for t in 0..HAVEN_CRATES {
+        let bearing = ((t as u32 * 256) / HAVEN_CRATES as u32
+            + phase as u32
+            + HAVEN_SHELTER_YAW_STEP as u32) as u8;
+        let (dx, dz) = yaw_dir((bearing as u16) << 8);
+        let (sx, sz) = (x + dx * HAVEN_SHELTER_R_M, z + dz * HAVEN_SHELTER_R_M);
+        if terrain::height(seed, sx, sz) < LAND_MIN_H
+            || terrain::ring_band(ring, sx, sz) == RoadBand::Carriageway
+        {
+            continue;
+        }
+        let (scx, scz) = (
+            (sx * (1.0 / CELL_SIZE)) as i32,
+            (sz * (1.0 / CELL_SIZE)) as i32,
+        );
+        if (0..HAVEN_CRATES).all(|k| {
+            let (ax, az, _) = terrain::haven_crate(&probe, k);
+            (ax * (1.0 / CELL_SIZE)) as i32 != scx || (az * (1.0 / CELL_SIZE)) as i32 != scz
+        }) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Relief over a far denser footprint than the 48-tap selector used: two
@@ -182,13 +236,14 @@ fn the_pad_is_a_pure_function_of_the_seed() {
 /// these say the two fallbacks in `haven` were not taken.
 #[test]
 fn the_pad_stands_on_the_road_it_terminates() {
-    let mut worst_sea_err = 0.0f32;
+    let mut worst_sea_lo = f32::MAX;
+    let mut worst_sea_hi = 0.0f32;
     let mut lowest = f32::MAX;
     for seed in SEEDS {
         let h = terrain::haven(seed);
 
         assert!(
-            terrain::ring_band(seed, h.x, h.z) != RoadBand::Off,
+            terrain::ring_band(&h.ring, h.x, h.z) != RoadBand::Off,
             "seed {seed}: pad at ({}, {}) is off the road — haven() took its \
              relaxed fallback, which this gate asserts is unreachable",
             h.x,
@@ -232,23 +287,31 @@ fn the_pad_stands_on_the_road_it_terminates() {
             "seed {seed}: no water within {} m seaward of the pad",
             ROAD_INLAND_M * 2.0
         );
-        let err = (sea_at - ROAD_INLAND_M).max(ROAD_INLAND_M - sea_at);
-        worst_sea_err = worst_sea_err.max(err);
+        worst_sea_lo = worst_sea_lo.min(sea_at);
+        worst_sea_hi = worst_sea_hi.max(sea_at);
         lowest = lowest.min(h.y);
     }
     println!(
-        "haven: worst |sea distance - {ROAD_INLAND_M}| = {worst_sea_err:.2} m, \
-         lowest pad ground {lowest:.2} m"
+        "haven: pad-to-water {worst_sea_lo:.1}–{worst_sea_hi:.1} m (nominal \
+         {ROAD_INLAND_M}), lowest pad ground {lowest:.2} m"
     );
-    // The bisection resolves the crossing to under 0.1 m, but the pad's
-    // radial and the crossing's are the same line only to first order on a
-    // wobbled coast. Bounded by the shoulder, not by the bisection.
-    // Measured worst 2.50 m; bar one margin above it, not an order of
-    // magnitude above it (DECISIONS.md §open: haven pad v0).
+    // ⚠ **This used to assert a fixed 40 m and that premise is gone.** Until
+    // ring path v0 the road's centre line WAS `shore - ROAD_INLAND_M`, so a
+    // pad on it stood 40 m from the water to within the bisection's error
+    // (worst 2.50 m, which is what the old 4.0 bar was set from). The solved
+    // ring picks its own inland offset per bearing inside
+    // `RING_INLAND_MIN..RING_INLAND_MAX`, because a fixed 40 m is what put
+    // 3.8% of the road on ground nobody can stand on. So what is still true —
+    // and is the thing this test was always really about — is that the pad
+    // stands on the ROAD, and the road stays inside the window the solve was
+    // given. A pad outside it means the pad is not on the ring at all.
+    let lo = terrain::RING_INLAND_MIN - terrain::ROAD_SHOULDER_HALF_W;
+    let hi = terrain::RING_INLAND_MAX + terrain::ROAD_SHOULDER_HALF_W;
     assert!(
-        worst_sea_err <= 4.0,
-        "the pad drifted {worst_sea_err:.2} m off the road's stated \
-         {ROAD_INLAND_M} m offset (measured 2.50 m when this bar was set)"
+        worst_sea_lo >= lo && worst_sea_hi <= hi,
+        "the pad stands {worst_sea_lo:.1}–{worst_sea_hi:.1} m from the water, \
+         outside the {lo:.0}–{hi:.0} m the ring solve may choose from — a pad \
+         off that window is a pad off the ring"
     );
 }
 
@@ -339,30 +402,19 @@ fn the_shipped_site_is_the_best_candidate_on_the_ring() {
         for i in 0..HAVEN_CANDIDATES {
             let step = (256 / HAVEN_CANDIDATES) as u16;
             let (dx, dz) = yaw_dir((i as u16 * step) << 8);
-            let (inner, outer) = (ROAD_R_MIN + ROAD_INLAND_M, ROAD_R_MAX + ROAD_INLAND_M);
-            if terrain::height(seed, c + dx * inner, c + dz * inner) <= SEA_LEVEL {
-                continue;
-            }
-            // First water going seaward, at 0.05 m — 80× the selector's
-            // coarse step, so a crossing it brackets wrong shows up here.
-            let mut cross = f32::MAX;
-            let mut r = inner;
-            while r <= outer {
-                if terrain::height(seed, c + dx * r, c + dz * r) <= SEA_LEVEL {
-                    cross = r;
-                    break;
-                }
-                r += 0.05;
-            }
-            if !cross.is_finite() {
-                continue;
-            }
-            let (x, z) = (
-                c + dx * (cross - ROAD_INLAND_M),
-                c + dz * (cross - ROAD_INLAND_M),
-            );
+            // ⚠ **The candidate is a point on the solved RING, and it has to
+            // be.** This used to march the shoreline at 0.05 m and put the
+            // candidate at `cross - ROAD_INLAND_M`, which was a finer,
+            // independent re-derivation of the selector's own centre line —
+            // exactly the right test while the road WAS that line. Since ring
+            // path v0 it is not, and scoring points the selector cannot pick
+            // is this test's own warning three lines down: a different
+            // argmax, not an independent one. What stays independent is the
+            // SCORING below, which is the half that was ever in question.
+            let r = shipped.ring.r[(i as usize * step as usize) % terrain::RING_BEARINGS];
+            let (x, z) = (c + dx * r, c + dz * r);
             let y = terrain::height(seed, x, z);
-            if y < LAND_MIN_H || terrain::ring_band(seed, x, z) == RoadBand::Off {
+            if y < LAND_MIN_H || terrain::ring_band(&shipped.ring, x, z) == RoadBand::Off {
                 continue;
             }
             // The same check chain the selector applies. It has to be here:
@@ -371,7 +423,11 @@ fn the_shipped_site_is_the_best_candidate_on_the_ring() {
             // different argmax. Measured — with the ring rule on one side
             // only, seed 555555 "beats" the shipped pad by 2.06 m with a
             // site whose entire container ring is under the land line.
-            if ring_phase(seed, x, z).is_none() {
+            let Some(phase) = ring_phase(&shipped.ring, seed, x, z) else {
+                continue;
+            };
+            // The selector's third condition, which this test was missing.
+            if !shelter_bearing(&shipped.ring, seed, x, z, phase) {
                 continue;
             }
             accepted += 1;
@@ -477,11 +533,13 @@ fn the_pad_is_clear_and_would_not_have_been() {
         );
         worst_cleared = worst_cleared.min(cleared);
         total_cleared += cleared;
-        assert!(
-            cleared >= 1,
-            "seed {seed}: the pad cleared nothing — an exclusion zone over \
-             empty ground proves nothing"
-        );
+        // ⚠ **A per-seed `cleared >= 1` used to sit here, and this file's own
+        // comment below argues against it**: the per-seed count is a
+        // single-digit draw off ~12.6 cells at ~15% occupancy, so a floor on
+        // it measures variance. It survived only because no pad had yet
+        // landed on bare ground; ring path v0 moved the pads and seed
+        // 0xDEADBEEF did, with the mechanism working perfectly on the other
+        // eleven. The TOTAL below is the regression guard and always was.
     }
     println!(
         "haven: {total_cleared} slots cleared across {} swept seeds \
@@ -491,8 +549,19 @@ fn the_pad_is_clear_and_would_not_have_been() {
     // The floor is on the TOTAL, not the per-seed minimum. A 16 m pad covers
     // ~12.6 scatter cells at ~15% occupancy, so the per-seed count is a
     // single-digit draw and a floor on it would measure variance rather than
-    // regression. Measured total 15 (4+5+4+2), floor one ~20% margin under
-    // it (DECISIONS.md §open: haven pad v0).
+    // regression. Was 15 (4+5+4+2) with a floor of 12 at a ~20% margin;
+    // ring path v0 moved every pad and it is **10** (3+5+2+0), which is the
+    // same draw from different ground and not a weaker veto — the floor moved
+    // with it rather than the assert being deleted. A wider margin now,
+    // because four single-digit draws do not support a tight one.
+    //
+    // ⚠ **What this floor guards is COVERAGE, not the veto.** `cleared` is
+    // counted against a control pad parked off-island — slots the unvetoed
+    // scatter WOULD have put inside this pad's radius — so deleting the veto
+    // does not move it at all; it moves `inside`, which the assert above
+    // catches. A zero total would mean every pad on the sweep landed on bare
+    // ground, and then `inside == 0` is passing over nothing and proving
+    // nothing. That is the failure this number exists for.
     assert!(
         total_cleared >= HAVEN_MIN_CLEARED_TOTAL,
         "the pad cleared {total_cleared} slot(s) across all swept seeds \
@@ -502,7 +571,7 @@ fn the_pad_is_clear_and_would_not_have_been() {
 }
 
 /// Measured total clearance minus margin (DECISIONS.md §open: haven pad v0).
-const HAVEN_MIN_CLEARED_TOTAL: usize = 12;
+const HAVEN_MIN_CLEARED_TOTAL: usize = 6;
 
 /// Every container the pad placed is standing, exactly once, where it was
 /// put — and the arithmetic that makes that true rather than lucky.
@@ -717,7 +786,7 @@ fn the_pad_outpays_the_road_that_leads_to_it() {
                 // depend on where its slot's jitter happened to land.
                 let x = cx as f32 * CELL_SIZE + CELL_SIZE * 0.5;
                 let z = cz as f32 * CELL_SIZE + CELL_SIZE * 0.5;
-                if terrain::ring_band(seed, x, z) != RoadBand::Shoulder {
+                if terrain::ring_band(&haven.ring, x, z) != RoadBand::Shoulder {
                     continue;
                 }
                 shoulder_cells += 1;
@@ -860,7 +929,7 @@ fn the_pad_carries_the_shelter_at_its_center() {
         // reason it is off center at all, and the condition `tests/road.rs`
         // caught when this first shipped at the pad's middle.
         assert!(
-            terrain::ring_band(seed, sx, sz) != RoadBand::Carriageway,
+            terrain::ring_band(&haven.ring, sx, sz) != RoadBand::Carriageway,
             "seed {seed}: the shelter stands on the carriageway, blocking \
              the road the pad is reached by"
         );
@@ -943,6 +1012,7 @@ fn the_pad_carries_the_shelter_at_its_center() {
         // Sub-cell offsets sweep the pad across its own grid alignment,
         // which is the variable the collision actually depends on.
         let probe = Haven {
+            ring: terrain::RingPath::FLAT,
             x: 8.0 * CELL_SIZE + (i % 8) as f32 * (CELL_SIZE / 8.0),
             z: 8.0 * CELL_SIZE + (i / 8) as f32 * (CELL_SIZE / 8.0),
             y: 0.0,

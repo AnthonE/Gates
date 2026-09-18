@@ -357,6 +357,8 @@ impl Scratch<Barren> {
             // fixture cares about. No answer here depends on it — `Barren`
             // has already made every slot pass through.
             haven: Haven {
+                // A ring nothing asks about: this fixture is off the island.
+                ring: terrain::RingPath::FLAT,
                 x: -1.0e6,
                 z: -1.0e6,
                 y: 0.0,

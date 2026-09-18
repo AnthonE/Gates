@@ -24,63 +24,85 @@ fn positions(mesh: &Mesh) -> &[[f32; 3]] {
 fn triangle_validity_prevents_false_stripes_at_real_junctions() {
     let mut guarded_marks = 0;
     let mut unguarded_violations = 0;
-    for (seed, ox, oz) in [(20260731, 1146.0, 173.0), (42, 844.0, 248.0)] {
+    // ⚠ **The fixtures are FOUND, not written down.** This swept two hand
+    // picked chunk origins — `(20260731, 1146, 173)` and `(42, 844, 248)` —
+    // chosen when the ring was a shoreline predicate. Ring path v0 moved the
+    // road and both chunks stopped containing any of it, which showed up as
+    // the CONTROL arm going quiet: the guarded half still passed while the
+    // thing it guards against had stopped being reachable. `CLAUDE.md`'s
+    // `ground.rs` entry is the same failure — an exact gate aimed at nothing
+    // — and the same fix: let the seed say where its own road is.
+    for seed in [20260731u64, 42] {
         let haven = terrain::haven(seed);
         let chart = paint::RoadChart::build(seed, 1.0);
-        let mut mesh = terrain_mesh::heightfield(seed, &haven, ox, oz, 13, 1.0, 0.0);
-        terrain_mesh::apply_road_markings(&mut mesh, &chart, &haven);
-        let Some(Indices::U32(indices)) = mesh.indices() else {
-            panic!("indices");
-        };
-        let Some(VertexAttributeValues::Float32x2(roads)) =
-            mesh.attribute(material::ATTRIBUTE_ROAD)
-        else {
-            panic!("roads");
-        };
-        for triangle in indices.chunks_exact(3) {
-            for a in 0..=8 {
-                for b in 0..=8 - a {
-                    let weights = [a as f32 / 8.0, b as f32 / 8.0, (8 - a - b) as f32 / 8.0];
-                    let mut m = [0.0; 4];
-                    let mut p = [0.0; 3];
-                    let mut pavement = 0.0;
-                    for (&index, &w) in triangle.iter().zip(&weights) {
-                        for (value, coordinate) in m.iter_mut().zip(coords(&mesh)[index as usize]) {
-                            *value += coordinate * w;
+        for k in (0..terrain::RING_BEARINGS).step_by(8) {
+            let (nx, nz) = haven.ring.node(k as i32);
+            let (ox, oz) = ((nx - 6.0).floor(), (nz - 6.0).floor());
+            let mut mesh = terrain_mesh::heightfield(seed, &haven, ox, oz, 13, 1.0, 0.0);
+            terrain_mesh::apply_road_markings(&mut mesh, &chart, &haven);
+            let Some(Indices::U32(indices)) = mesh.indices() else {
+                panic!("indices");
+            };
+            let Some(VertexAttributeValues::Float32x2(roads)) =
+                mesh.attribute(material::ATTRIBUTE_ROAD)
+            else {
+                panic!("roads");
+            };
+            for triangle in indices.chunks_exact(3) {
+                for a in 0..=8 {
+                    for b in 0..=8 - a {
+                        let weights = [a as f32 / 8.0, b as f32 / 8.0, (8 - a - b) as f32 / 8.0];
+                        let mut m = [0.0; 4];
+                        let mut p = [0.0; 3];
+                        let mut pavement = 0.0;
+                        for (&index, &w) in triangle.iter().zip(&weights) {
+                            for (value, coordinate) in
+                                m.iter_mut().zip(coords(&mesh)[index as usize])
+                            {
+                                *value += coordinate * w;
+                            }
+                            for (value, coordinate) in
+                                p.iter_mut().zip(positions(&mesh)[index as usize])
+                            {
+                                *value += coordinate * w;
+                            }
+                            pavement += roads[index as usize][0] * w;
                         }
-                        for (value, coordinate) in
-                            p.iter_mut().zip(positions(&mesh)[index as usize])
-                        {
-                            *value += coordinate * w;
+                        let stripe = m[0].abs() <= paint::ROAD_PAINT_WIDTH_M * 0.5
+                            || (m[0].abs() - paint::ROAD_EDGE_OFFSET_M).abs()
+                                <= paint::ROAD_PAINT_WIDTH_M * 0.5;
+                        if !stripe || pavement < 0.5 {
+                            continue;
                         }
-                        pavement += roads[index as usize][0] * w;
-                    }
-                    let stripe = m[0].abs() <= paint::ROAD_PAINT_WIDTH_M * 0.5
-                        || (m[0].abs() - paint::ROAD_EDGE_OFFSET_M).abs()
-                            <= paint::ROAD_PAINT_WIDTH_M * 0.5;
-                    if !stripe || pavement < 0.5 {
-                        continue;
-                    }
-                    let on_road = terrain::ring_band(seed, p[0], p[2]) == RoadBand::Carriageway;
-                    if m[3] >= 1.0 - material::ROAD_PAINT_VALID_EPS {
-                        assert!(on_road, "paint escaped at seed={seed}, {},{}", p[0], p[2]);
-                        guarded_marks += 1;
-                    } else if !on_road {
-                        // Control: removing validity must manufacture an off-road
-                        // stripe in these fixtures even with pavement clipping.
-                        unguarded_violations += 1;
+                        let on_road =
+                            terrain::ring_band(&haven.ring, p[0], p[2]) == RoadBand::Carriageway;
+                        if m[3] >= 1.0 - material::ROAD_PAINT_VALID_EPS {
+                            assert!(on_road, "paint escaped at seed={seed}, {},{}", p[0], p[2]);
+                            guarded_marks += 1;
+                        } else if !on_road {
+                            // Control: removing validity must manufacture an off-road
+                            // stripe in these fixtures even with pavement clipping.
+                            unguarded_violations += 1;
+                        }
                     }
                 }
             }
         }
     }
+    println!(
+        "road markings: {guarded_marks} guarded stripe samples, \
+         {unguarded_violations} that only the validity flag refuses"
+    );
     assert!(
         guarded_marks > 0,
-        "fixture must actually exercise visible paint"
+        "the sweep found no visible paint at all — the fixtures are not on \
+         the road"
     );
     assert!(
         unguarded_violations > 0,
-        "fixture must detect sentinel interpolation"
+        "the sweep found no sample that the validity flag is the only thing \
+         refusing — without one, the guarded assertion above is passing over \
+         a case that never arises and proves nothing"
     );
 }
 

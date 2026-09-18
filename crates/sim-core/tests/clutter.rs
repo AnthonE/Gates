@@ -1456,6 +1456,7 @@ fn test_a_prop_is_skirted_by_exactly_one_tile() {
 /// `occupy.rs` builds the same thing for the same reason.
 fn sites_parked_offshore() -> Haven {
     Haven {
+        ring: terrain::RingPath::FLAT,
         x: -100_000.0,
         z: -100_000.0,
         y: 0.0,

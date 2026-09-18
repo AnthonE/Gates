@@ -57,7 +57,7 @@ fn real_junction_mesh_carries_both_surfaces_only_on_their_bands() {
     assert_eq!(masks(&mesh).len(), positions.len());
     let (mut paved, mut dirt, mut clear) = (0, 0, 0);
     for (&[x, _, z], &[p, d]) in positions.iter().zip(masks(&mesh)) {
-        let ring = terrain::ring_band(seed, x, z);
+        let ring = terrain::ring_band(&haven.ring, x, z);
         let side = terrain::side_band(&haven, x, z);
         if p > 0.0 {
             assert_eq!(ring, RoadBand::Carriageway);

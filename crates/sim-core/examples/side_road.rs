@@ -45,7 +45,7 @@ fn reach(seed: u64, h: &Haven, with_side: bool) -> (Vec<u32>, usize) {
                 continue;
             }
             ok[i] = true;
-            let on = terrain::ring_band(seed, x, z) != RoadBand::Off
+            let on = terrain::ring_probe(seed, x, z) != RoadBand::Off
                 || (with_side && terrain::side_band(h, x, z) != RoadBand::Off);
             if on {
                 dist[i] = 0;

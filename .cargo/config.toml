@@ -1,6 +1,11 @@
 # The wasm shadow stack, stated rather than defaulted.
 #
-# `World` is 55 kB — fixed-capacity by design (wall 4), and
+# `World` is 56 kB — fixed-capacity by design (wall 4), and
+# (55 kB until ring path v0 put the solved coast ring on `Haven`: 256
+# bearings x one f32 radius = 1 kB, the price of the ring being a stored
+# path instead of a predicate. `ring_band` reads it and spends no `height`
+# tap at all, so the kilobyte bought a cheaper hot path as well as a road
+# that can decline a cliff.)
 # `probe_parity` builds one on the stack per sequence. (315 kB until two
 # changes met in one merge window: wounded v0 added the crawl and its clocks
 # to `Player`, and forest density v1 moved `SlotLives`' table onto the heap

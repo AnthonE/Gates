@@ -974,15 +974,21 @@ pub fn heightfield(
             // lattice cannot resolve it: painting the far mesh would sample
             // the ribbon at roughly one vertex in two and draw the island's
             // one navigation landmark as a dashed line — worse than not
-            // drawing it. It is also where the cost is. `road_band` probes
-            // `height` 40 m away along the sample's own radial, which is
-            // outside this patch and therefore always cold in `lat`, and its
-            // cheap reject covers only the island outside a 600–1000 m
-            // annulus; inside that band every vertex pays one real tap. The
-            // near ring is 1 m and small, the far mesh is the whole island.
+            // drawing it.
             //
+            // ⚠ **The cost half of this comment is retired.** It used to say
+            // `road_band` probes `height` 40 m away along the radial, always
+            // cold in `lat`, so every vertex inside the 600–1000 m annulus
+            // paid a real tap — true while the ring was a predicate. Since
+            // ring path v0 it is a table lookup and a handful of
+            // point-to-segment tests, with no `height` tap at all, so what
+            // keeps the guard is the resolution argument above and nothing
+            // else. Do not re-derive a cost claim from this comment.
             let coverage = if step <= terrain::ROAD_HALF_W {
-                let ring = terrain::ring_band_memo(&mut lat, seed, x, z);
+                // The solved road, matching what `road_band_memo` below
+                // splats with — asking the raw predicate here would paint
+                // coverage onto a ring the sim does not have.
+                let ring = terrain::ring_band(&haven.ring, x, z);
                 let side = terrain::side_band(haven, x, z);
                 // The sim owns which band wins at a junction. Re-querying
                 // the ring here hits this vertex's existing lattice entries;

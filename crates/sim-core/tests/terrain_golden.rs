@@ -159,7 +159,20 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// same bits it read before.
 // Procedural depot: typed footprint, opposite road pair, volume clearing,
 // and explicit authored-part/collision samples in probe_sites.
-const GOLDEN_TERRAIN_HASH: u64 = 0xD518_44D9_C579_E6AE;
+/// **Moved `0xD518_44D9_C579_E6AE` → `0x8411_5D77_B572_EAFF` at ring path
+/// v0** (2026-09-18, operator: *"lets fix the ring being broken into
+/// pieces"*). The coast ring stopped being a predicate on the shoreline and
+/// became a solved polyline stored on `Haven`, free to choose its inland
+/// offset inside `RING_INLAND_MIN..RING_INLAND_MAX` so it can stand on ground
+/// a player can stand on. Measured: the road's standable share 94.2% → 97.9%
+/// and its longest unbroken walkable run 39.9% → 55.6% of the ring.
+///
+/// This is the widest of the three recent worldgen moves and it is worth
+/// saying what it did NOT touch: `height`, `remap` and every site's floor are
+/// bit-unchanged, because nothing here carves. What moved is where the road
+/// IS — and with it every site, since `haven` chooses its pad ON the ring and
+/// now scores all 256 of its nodes rather than 64 re-derived crossings.
+const GOLDEN_TERRAIN_HASH: u64 = 0x8411_5D77_B572_EAFF;
 
 #[test]
 fn test_terrain_golden() {
@@ -318,7 +331,7 @@ fn test_golden_covers_authored_sites() {
                 let (px, pz) = probe_road_point(b, r);
                 // `ring_band`: this sweep is the RING's coverage, and a
                 // side road crossing a radial would flatter it.
-                if terrain::ring_band(seed, px, pz) != terrain::RoadBand::Off {
+                if terrain::ring_band(&h.ring, px, pz) != terrain::RoadBand::Off {
                     hit = true;
                 }
             }

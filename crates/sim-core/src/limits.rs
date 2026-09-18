@@ -838,7 +838,7 @@ pub const MAX_LOOT_ROLLS: usize = INV_SLOTS;
 /// best land site, then the island center, both asserted unreachable by
 /// `tests/haven.rs`. Bounded work at world init, never in a tick.
 /// Proposed default, DECISIONS.md §open (haven pad v0).
-pub const MAX_HAVEN_CANDIDATES: usize = 64;
+pub const MAX_HAVEN_CANDIDATES: usize = 256;
 
 /// Sim event ring, cleared every tick — the sim's only output channel
 /// besides state itself (integer codes, CLAUDE.md wall 3). Overflow

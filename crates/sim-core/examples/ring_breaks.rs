@@ -15,10 +15,20 @@
 //! yaw — `ring_band` derives its radial from `(x, z)` — so the continuous
 //! sweep is the honest instrument and the LUT was never part of the law.
 //!
+//! **Its first two sections measure `ring_probe`, the RAW predicate** — the
+//! ring as it was before ring path v0, kept because that is what the
+//! diagnosis was run against and what the traps below are about. The third
+//! section walks the predicate's centre line and the solved `RingPath`'s side
+//! by side, at one pitch, which is the only fair comparison of the two.
+//!
 //! `cargo run --release -p sim-core --example ring_breaks`
 use sim_core::terrain::{
-    self, RoadBand, CLIFF_SLOPE_RATIO, ISLAND_SIZE, LAND_MIN_H, ROAD_HALF_W, ROAD_R_MAX, ROAD_R_MIN,
+    self, RoadBand, CLIFF_SLOPE_RATIO, ISLAND_SIZE, LAND_MIN_H, RING_BEARINGS, ROAD_HALF_W,
+    ROAD_R_MAX, ROAD_R_MIN,
 };
+
+/// Pitch the two centre lines are walked at in the comparison, metres.
+const PITCH: f32 = 2.0;
 
 const SEEDS: [u64; 8] = [
     20_260_731,
@@ -43,7 +53,7 @@ fn runs_on(seed: u64, ux: f32, uz: f32, out: &mut Vec<(f32, bool)>) {
     let mut start = -1.0f32;
     while r <= ROAD_R_MAX + RSTEP {
         let on = r <= ROAD_R_MAX
-            && terrain::ring_band(seed, c + ux * r, c + uz * r) == RoadBand::Carriageway;
+            && terrain::ring_probe(seed, c + ux * r, c + uz * r) == RoadBand::Carriageway;
         if on && start < 0.0 {
             start = r;
         } else if !on && start >= 0.0 {
@@ -99,6 +109,8 @@ fn arc(all: &[Vec<(f32, bool)>], ignore_cliff: bool, tol: f32) -> f32 {
 }
 
 fn main() {
+    compare();
+
     println!(
         "{:>12} {:>6} {:>7} {:>6} {:>7} {:>8} {:>9} {:>9} {:>9}",
         "seed", "forks", "absent", "cliff", "anggap", "breaks", "today", "nocliff", "gap<=25m"
@@ -198,7 +210,7 @@ fn grid_trap() {
             for iz in 0..side {
                 for ix in 0..side {
                     let (x, z) = (ix as f32 * grid, iz as f32 * grid);
-                    if terrain::ring_band(seed, x, z) != RoadBand::Carriageway {
+                    if terrain::ring_probe(seed, x, z) != RoadBand::Carriageway {
                         continue;
                     }
                     cells += 1;
@@ -258,4 +270,102 @@ fn grid_trap() {
             100.0 * walk_t as f32 / cell_t as f32
         );
     }
+}
+
+// ── Both rings, one pitch (ring path v0's before and after) ──────────────
+
+fn standable(seed: u64, x: f32, z: f32) -> bool {
+    terrain::height(seed, x, z) >= LAND_MIN_H && terrain::slope(seed, x, z) <= CLIFF_SLOPE_RATIO
+}
+
+/// (standable share, longest unbroken run in metres, total length in metres)
+fn walk(pts: &[(f32, f32)], seed: u64) -> (f32, f32, f32) {
+    let mut ok: Vec<bool> = Vec::new();
+    let mut seg: Vec<f32> = Vec::new();
+    for i in 0..pts.len() {
+        let (ax, az) = pts[i];
+        let (bx, bz) = pts[(i + 1) % pts.len()];
+        let len = ((bx - ax).powi(2) + (bz - az).powi(2)).sqrt();
+        let n = (len / PITCH) as usize + 1;
+        for k in 0..n {
+            let t = k as f32 / n as f32;
+            ok.push(standable(seed, ax + (bx - ax) * t, az + (bz - az) * t));
+            seg.push(len / n as f32);
+        }
+    }
+    let total: f32 = seg.iter().sum();
+    let good: f32 = seg
+        .iter()
+        .zip(&ok)
+        .filter(|(_, o)| **o)
+        .map(|(s, _)| *s)
+        .sum();
+    let (mut best, mut run) = (0.0f32, 0.0f32);
+    for i in 0..ok.len() * 2 {
+        let j = i % ok.len();
+        if ok[j] {
+            run += seg[j];
+            best = best.max(run)
+        } else {
+            run = 0.0
+        }
+    }
+    (100.0 * good / total, best.min(total), total)
+}
+
+/// The predicate ring's centre line: per bearing, the mid radius of its
+/// innermost carriageway run.
+fn probe_line(seed: u64, steps: usize) -> Vec<(f32, f32)> {
+    let c = ISLAND_SIZE * 0.5;
+    let mut out = Vec::new();
+    for b in 0..steps {
+        let a = b as f32 / steps as f32 * core::f32::consts::TAU;
+        let (uz, ux) = a.sin_cos();
+        let (mut r, mut start) = (ROAD_R_MIN, -1.0f32);
+        while r <= ROAD_R_MAX + 0.5 {
+            let on = r <= ROAD_R_MAX
+                && terrain::ring_probe(seed, c + ux * r, c + uz * r) == RoadBand::Carriageway;
+            if on && start < 0.0 {
+                start = r;
+            } else if !on && start >= 0.0 {
+                let mid = (start + r - 0.5) * 0.5;
+                out.push((c + ux * mid, c + uz * mid));
+                break;
+            }
+            r += 0.5;
+        }
+    }
+    out
+}
+
+fn compare() {
+    println!(
+        "{:>12} {:>22} {:>24}",
+        "seed", "PREDICATE (today)", "SOLVED PATH"
+    );
+    println!(
+        "{:>12} {:>8} {:>7} {:>6} {:>8} {:>7} {:>6}",
+        "", "stand%", "run m", "len m", "stand%", "run m", "len m"
+    );
+    let (mut a0, mut b0, mut a1, mut b1) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+    for seed in SEEDS {
+        let h = terrain::haven(seed);
+        let (ps, pr, pl) = walk(&probe_line(seed, RING_BEARINGS * 8), seed);
+        let solved: Vec<(f32, f32)> = (0..RING_BEARINGS).map(|i| h.ring.node(i as i32)).collect();
+        let (ss, sr, sl) = walk(&solved, seed);
+        a0 += ps;
+        b0 += 100.0 * pr / pl;
+        a1 += ss;
+        b1 += 100.0 * sr / sl;
+        println!("{seed:>12} {ps:>7.1}% {pr:>6.0} {pl:>6.0} {ss:>7.1}% {sr:>6.0} {sl:>6.0}");
+    }
+    let k = SEEDS.len() as f32;
+    println!(
+        "{:>12} {:>7.1}% {:>6.1}%        {:>7.1}% {:>6.1}%   <- mean (run as % of ring)",
+        "",
+        a0 / k,
+        b0 / k,
+        a1 / k,
+        b1 / k
+    );
 }

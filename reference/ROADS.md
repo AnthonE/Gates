@@ -568,7 +568,13 @@ them.
    in a specific form: our side road is a dead end at the site, and the ring
    it joins is itself in 4–18 walkable pieces. A second road off the same
    site, refused the first one's junction, is the smallest version of this.
-5. **The ring's own fragments** — ⚠ **re-measured 2026-09-17 and this row was
+5. ~~**The ring's own fragments**~~ — ✅ **largely BUILT 2026-09-18 as ring
+   path v0** (`DECISIONS.md`): the ring became a solved polyline and its
+   standable share went 94.2% → 97.9%, longest unbroken run 39.9% → 55.6%.
+   §9.3's "ours is a predicate" is retired for the ring; §5's *"take the
+   polyline"* is what shipped. What remains is the last ~2%, which needs a
+   bench — `NOW.md` §0ring item 2. The diagnosis below stands as written:
+   ⚠ **re-measured 2026-09-17 and this row was
    wrong twice, in opposite directions.** Its cause sentence — *"broken where
    it crosses cliffs"* — is **right**, and confirmed: ablate the unwalkable
    cells and the biggest unbroken arc goes 54.4% → **94.8%** mean over eight

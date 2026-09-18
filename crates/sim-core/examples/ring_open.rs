@@ -31,7 +31,7 @@ fn main() {
             let mut hits = 0usize;
             let mut d = ROAD_R_MIN;
             while d <= ROAD_R_MAX {
-                if terrain::ring_band(seed, c + ux * d, c + uz * d) == RoadBand::Carriageway {
+                if terrain::ring_probe(seed, c + ux * d, c + uz * d) == RoadBand::Carriageway {
                     hits += 1;
                     r_lo = r_lo.min(d);
                     r_hi = r_hi.max(d);

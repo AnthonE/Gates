@@ -503,7 +503,12 @@ const TICKS: u64 = 900;
 /// quantized spot, where each stack now finds its own ground height at its
 /// own scatter offset. The equality assert above stayed green on the same
 /// run, which is what says the new arithmetic is deterministic.
-const GOLDEN_FINAL_HASH: u64 = 0xBDDA_55EC_7B48_46AF;
+/// **Moved `0xBDDA_55EC_7B48_46AF` → `0x3B58_3012_344A_B5F2` at ring path v0**
+/// (2026-09-18). The coast ring became a solved path, so the road moved and
+/// every site chosen on it moved with it — the run is played on a different
+/// island and ends in a different state. Deliberate, regenerated in the
+/// commit that caused it.
+const GOLDEN_FINAL_HASH: u64 = 0x3B58_3012_344A_B5F2;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -561,7 +566,12 @@ const GOLDEN_FINAL_HASH: u64 = 0xBDDA_55EC_7B48_46AF;
 /// density v1 alongside it (2026-09-14), beside `GOLDEN_FINAL_HASH` and for
 /// its reason: the scatter changed under the run, so it moved from the first
 /// stamped tick as well — the worldgen shape on top of the behavioural one.
-const GOLDEN_TRACE_HASH: u64 = 0x8249_9F33_59E1_6668;
+/// **Moved `0x8249_9F33_59E1_6668` → `0xB45F_CEC6_104D_4943` at ring path v0**
+/// (2026-09-18), alongside `GOLDEN_FINAL_HASH` and for the same reason: a
+/// different island is a different run. Both moving together is the expected
+/// shape here — a trace that moved while the end state held would be the
+/// interesting case, and it is not this one.
+const GOLDEN_TRACE_HASH: u64 = 0xB45F_CEC6_104D_4943;
 
 /// Fold a stamped trace into one number.
 ///

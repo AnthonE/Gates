@@ -320,6 +320,9 @@ fn the_near_ring_is_bit_identical_to_the_naive_build() {
 fn a_near_chunk_on_the_coast_road_is_bit_identical_too() {
     let step = CHUNK_M / (NEAR_N - 1) as f32;
     let c = terrain::ISLAND_SIZE * 0.5;
+    // The solved ROAD, hoisted: `solve_ring` is a real solve and the sweep
+    // below asks about tens of thousands of points.
+    let ring = terrain::solve_ring(SEED);
     // Walk out along +x from the centre until a chunk's own vertices include
     // carriageway. The ring is a closed loop around the island, so a radial
     // walk meets it whatever the coastline does.
@@ -332,7 +335,7 @@ fn a_near_chunk_on_the_coast_road_is_bit_identical_too() {
         for iz in 0..NEAR_N {
             for ix in 0..NEAR_N {
                 let (x, z) = (ox + ix as f32 * step, oz + iz as f32 * step);
-                if terrain::ring_band(SEED, x, z) == terrain::RoadBand::Carriageway {
+                if terrain::ring_band(&ring, x, z) == terrain::RoadBand::Carriageway {
                     hit += 1;
                 }
             }
