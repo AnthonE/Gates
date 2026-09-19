@@ -462,6 +462,7 @@ impl Plugin for GatesRenderPlugin {
         // material at all, which — as the asset-root trap in `bin/gates.rs`
         // records — is not an error the image shows you.
         app.add_plugins(MaterialPlugin::<ground_splat::GroundMaterial>::default());
+        app.add_plugins(UiMaterialPlugin::<render_scale::OpaqueFrame>::default());
         app.insert_resource(day_pin)
             .init_resource::<Eye>()
             .init_resource::<wounded::Crawl>()

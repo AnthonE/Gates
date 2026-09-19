@@ -9,7 +9,8 @@ use bevy::camera::{visibility::RenderLayers, RenderTarget};
 use bevy::core_pipeline::tonemapping::{DebandDither, Tonemapping};
 use bevy::image::ImageSampler;
 use bevy::prelude::*;
-use bevy::render::render_resource::TextureFormat;
+use bevy::render::render_resource::{AsBindGroup, TextureFormat};
+use bevy::shader::ShaderRef;
 use bevy::ui::FocusPolicy;
 use bevy::window::PrimaryWindow;
 
@@ -28,6 +29,22 @@ pub fn extent(window: UVec2, percent: u8) -> UVec2 {
     let percent = u64::from(percent.clamp(RENDER_SCALE_MIN, RENDER_SCALE_MAX));
     let dim = |n| ((u64::from(n) * percent / 100) as u32).max(1);
     UVec2::new(dim(window.x), dim(window.y))
+}
+
+/// The world image is a completed opaque frame. Native atmosphere preserves
+/// the skybox's zero alpha between clouds; UI alpha blending must not turn
+/// those already-lit pixels into holes in the presentation camera's clear.
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+pub struct OpaqueFrame {
+    #[texture(0)]
+    #[sampler(1)]
+    pub image: Handle<Image>,
+}
+
+impl UiMaterial for OpaqueFrame {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/render_scale.wgsl".into()
+    }
 }
 
 #[derive(Component)]
@@ -62,6 +79,7 @@ pub fn apply(
         With<EyeCam>,
     >,
     mut images: ResMut<Assets<Image>>,
+    mut frames: ResMut<Assets<OpaqueFrame>>,
 ) {
     let Ok(window) = windows.single() else {
         return;
@@ -132,7 +150,9 @@ pub fn apply(
                     height: Val::Percent(100.0),
                     ..default()
                 },
-                ImageNode::new(image.clone()),
+                MaterialNode(frames.add(OpaqueFrame {
+                    image: image.clone(),
+                })),
                 GlobalZIndex(i32::MIN),
                 UiTargetCamera(presentation),
                 FocusPolicy::Pass,

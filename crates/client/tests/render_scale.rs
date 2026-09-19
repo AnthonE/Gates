@@ -5,7 +5,7 @@ use bevy::camera::RenderTarget;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::prelude::*;
 use bevy::window::{PrimaryWindow, WindowResolution};
-use client::render::render_scale::{apply, extent, Presentation, ScaledSurface};
+use client::render::render_scale::{apply, extent, OpaqueFrame, Presentation, ScaledSurface};
 use client::render::rig::EyeCam;
 use client::render::settings::Knob;
 use client::render::{Settings, WorldEntity};
@@ -14,6 +14,7 @@ fn app(scale: u8) -> (App, Entity, Entity) {
     let mut app = App::new();
     app.add_plugins((MinimalPlugins, AssetPlugin::default()))
         .init_asset::<Image>()
+        .init_asset::<OpaqueFrame>()
         .init_resource::<Settings>()
         .add_systems(PostUpdate, apply);
     app.world_mut().resource_mut::<Settings>().gfx.render_scale = scale;
@@ -75,6 +76,17 @@ fn saved_scale_applies_on_join_and_ui_keeps_the_window() {
         surface.camera
     );
     assert_eq!(w.get::<GlobalZIndex>(surface.backdrop).unwrap().0, i32::MIN);
+    let material = &w
+        .get::<MaterialNode<OpaqueFrame>>(surface.backdrop)
+        .unwrap()
+        .0;
+    assert_eq!(
+        w.resource::<Assets<OpaqueFrame>>()
+            .get(material)
+            .unwrap()
+            .image,
+        surface.image
+    );
 }
 
 #[test]

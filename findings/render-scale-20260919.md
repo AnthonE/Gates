@@ -7,7 +7,11 @@ back to the preset; valid integers outside the range clamp to its ends.
 
 Below 100%, the eye renders its existing post effects into an sRGB target.
 A geometry-free presentation camera composes that image and the UI at the
-window's physical resolution. Resizing reuses the image handle; returning
+window's physical resolution. Its material samples RGB and writes alpha one:
+native atmosphere preserves the skybox's zero alpha between clouds, so an
+ordinary ImageNode made holes in an otherwise finished sky. A later native
+headland image exposed this after the first smoke; browser sky texels are
+opaque and could not expose it. The presentation owns opacity, not the sky. Resizing reuses the image handle; returning
 to 100% restores the original window target and releases the presentation
 entities. Leaving the world releases them too. Settled frames do not mark
 the image changed. This adds an image and a composition pass; it reduces
