@@ -370,10 +370,12 @@ sides already agree on it.
   budgeted — the teardown spike is the half everyone forgets**). `web/src`'s
   shipped shape is the starting point: a near ring of 64 m chunks at 1 m
   resolution, a far mesh at 8 m dropped 0.15 m to hide the seam.
-- The far mesh's shadow/depth pass masks only resident near chunks, using
-  one nearest-filtered alpha texel per chunk. A queued chunk does not mask
-  anything; despawning it restores the far caster. The visible overlap is
-  unchanged (`findings/terrain-shadow-handoff-20260918.md`).
+- The far mesh's visible and shadow/depth passes mask only resident near
+  chunks, using one nearest-filtered alpha texel per chunk. A queued chunk
+  does not mask anything; despawning it restores the far surface. Near chunks
+  carry vertical joins to the exact coarse edge, drawn on exposed boundaries
+  only. Adjacency changes rewrite their index tails within the existing
+  streaming budgets; settled frames change no mesh or mask assets.
 - Vertex attributes carry what the material needs: normal from the analytic
   gradient (not from the triangulation — `ci/bump_basis.mjs` **held** that
   arithmetic and is deleted with the browser client; the derivation is
