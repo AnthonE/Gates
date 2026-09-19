@@ -231,6 +231,7 @@ pub enum Knob {
     Smaa,
     Bloom,
     TreeLod,
+    RenderScale,
     DiscordPresence,
     DiscordShareServer,
     Vsync,
@@ -275,6 +276,13 @@ impl Settings {
                 let want = (at + delta.signum()).clamp(0, Quality::LADDER.len() as i32 - 1);
                 self.quality = Quality::LADDER[want as usize];
                 self.gfx = quality::effective(quality::preset(self.quality));
+            }
+            Knob::RenderScale => {
+                use super::render_scale::{RENDER_SCALE_MAX, RENDER_SCALE_MIN, RENDER_SCALE_STEP};
+                self.gfx.render_scale = (i32::from(self.gfx.render_scale)
+                    + delta.signum() * i32::from(RENDER_SCALE_STEP))
+                .clamp(i32::from(RENDER_SCALE_MIN), i32::from(RENDER_SCALE_MAX))
+                    as u8;
             }
             Knob::Shadows => self.gfx.shadows = !self.gfx.shadows,
             Knob::ShadowDistance => {
@@ -395,6 +403,7 @@ impl Settings {
             Knob::Ambient => self.gfx.ao.name().to_uppercase(),
             Knob::Smaa => on_off(self.gfx.smaa),
             Knob::Bloom => on_off(self.gfx.bloom),
+            Knob::RenderScale => format!("{}%", self.gfx.render_scale),
             Knob::TreeLod => format!("{:.0}", self.gfx.tree_lod_swap_m),
             Knob::Vsync => on_off(self.vsync),
             Knob::MaxFps => {
@@ -451,6 +460,7 @@ impl Settings {
                 shadow_cascades: Some(self.gfx.cascades as u8),
                 shadow_map_px: Some(self.gfx.shadow_map_px as u16),
                 tree_lod_m: Some(self.gfx.tree_lod_swap_m),
+                render_scale: Some(self.gfx.render_scale),
             },
         }
     }
@@ -533,6 +543,10 @@ fn gfx_from_file(preset: Quality, f: config::GfxFile) -> quality::Gfx {
     let base = quality::effective(quality::preset(preset));
     let span = |ladder: &[f32], v: f32| v.clamp(ladder[0], ladder[ladder.len() - 1]);
     quality::Gfx {
+        render_scale: f.render_scale.unwrap_or(base.render_scale).clamp(
+            super::render_scale::RENDER_SCALE_MIN,
+            super::render_scale::RENDER_SCALE_MAX,
+        ),
         ao: f.ao.unwrap_or(base.ao),
         smaa: f.smaa.unwrap_or(base.smaa),
         bloom: f.bloom.unwrap_or(base.bloom),
@@ -863,6 +877,11 @@ fn rows(cat: usize) -> Vec<Row> {
             Row::Toggle("ANTI-ALIASING (SMAA)", Knob::Smaa),
             Row::Toggle("BLOOM", Knob::Bloom),
             Row::Number("FAR TREES", Knob::TreeLod, "metres to the hull"),
+            Row::Number(
+                "RENDER SCALE",
+                Knob::RenderScale,
+                "world resolution; HUD stays sharp",
+            ),
             // **What this TARGET does with the rows above, where it differs.**
             // A setting that silently does nothing is worse than one that is
             // honestly refused — `CLAUDE.md`'s own trap list says a path
@@ -1776,6 +1795,7 @@ mod tests {
             shadow_cascades: Some(99),
             shadow_map_px: Some(3000),
             tree_lod_m: Some(1.0),
+            render_scale: Some(0),
         };
         let g = gfx_from_file(Quality::High, wild);
         assert_eq!(
@@ -1877,5 +1897,29 @@ mod tests {
              {note:?}"
         );
         assert_ne!(note, "everything above is what the renderer gets");
+    }
+    #[test]
+    fn render_scale_survives_the_settings_file_and_sanitizes_its_bounds() {
+        let mut s = Settings::default();
+        s.gfx.render_scale = 75;
+        let text = config::serialize(&s.persisted(), 1, &[], &[]);
+        let loaded = config::parse(&text, Settings::default().persisted());
+        let back = Settings::from_persisted(loaded.values);
+        assert_eq!(back.gfx.render_scale, 75);
+        assert_eq!(back.value(Knob::Quality), "CUSTOM");
+        for (input, expected) in [(0, 50), (49, 50), (77, 77), (101, 100), (255, 100)] {
+            let loaded = config::parse(&format!("render_scale = {input}\n"), s.persisted());
+            assert_eq!(
+                Settings::from_persisted(loaded.values).gfx.render_scale,
+                expected
+            );
+        }
+        for invalid in ["-1", "300", "NaN", "inf", "0.5", "nope"] {
+            let loaded = config::parse(&format!("render_scale = {invalid}\n"), s.persisted());
+            assert_eq!(
+                Settings::from_persisted(loaded.values).gfx.render_scale,
+                100
+            );
+        }
     }
 }

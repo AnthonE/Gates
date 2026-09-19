@@ -124,6 +124,7 @@ pub mod panels;
 pub mod pause;
 pub mod prewarm;
 pub mod quality;
+pub mod render_scale;
 // Discord rich presence: which screen means what, and the handoff to the
 // worker. The model — socket, framing, payloads, copy — is `crate::discord`,
 // which is pure and unconditional. Dark unless `GATES_DISCORD_APP_ID` is set.
@@ -870,6 +871,10 @@ impl Plugin for GatesRenderPlugin {
         // two states later. `save_on_change` is ungated for the same reason —
         // it watches the resource, not the screen — and it self-gates on the
         // `Disk` resource, which a capture run never gets.
+        app.add_systems(
+            PostUpdate,
+            render_scale::apply.before(bevy::camera::CameraUpdateSystems),
+        );
         app.add_systems(OnEnter(Screen::Settings), settings::setup)
             .add_systems(OnExit(Screen::Settings), settings::teardown)
             .add_systems(

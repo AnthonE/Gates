@@ -950,6 +950,15 @@ never a number quietly edited into this table.
 | clutter ring | 5×5 tiles of 16 m, 721 elements/tile peak | `sim-core::terrain`, and it is frame-budget-bound, not design-bound |
 | eye height | 1.6 m | `DECISIONS.md` §open, client cosmetics |
 
+**Render scale** (`render/render_scale.rs`, 2026-09-19) reduces the eye's
+physical target dimensions to 50–100%, including its post effects. An sRGB
+image presents the finished world beneath UI drawn at window resolution.
+Every preset remains at 100%; choosing it removes the extra camera and
+restores the direct window target. Resizing reuses the image, and leaving
+a world releases its handles. This reduces pixel work, not terrain streaming,
+geometry or shadow-map cost. `tests/render_scale.rs` covers dimensions,
+resize, saved selection on join, and restoration.
+
 **Every budget above is the GPU's, and the client's CPU frame had never been
 measured at all** — a table of triangle and draw-call ceilings says nothing
 about what the main thread spends before the first draw call is issued. It was

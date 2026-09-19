@@ -182,6 +182,8 @@ pub struct GfxFile {
     pub shadow_cascades: Option<u8>,
     pub shadow_map_px: Option<u16>,
     pub tree_lod_m: Option<f32>,
+    /// Percentage of the window resolution used for the world image.
+    pub render_scale: Option<u8>,
 }
 
 /// The values that survive a restart. A plain struct rather than the
@@ -334,6 +336,7 @@ pub fn parse(text: &str, defaults: Persisted) -> Loaded {
             "shadow_cascades" => opt_count(&mut v.gfx.shadow_cascades, value),
             "shadow_map_px" => opt_count(&mut v.gfx.shadow_map_px, value),
             "tree_lod_m" => opt_num(&mut v.gfx.tree_lod_m, value),
+            "render_scale" => opt_count(&mut v.gfx.render_scale, value),
             // A comma-separated list, because the format is `key = value` and
             // a list of ids does not earn a second one. An id may not contain
             // a comma — `shardlist::parse` caps every field at
@@ -485,6 +488,9 @@ pub fn serialize(v: &Persisted, version: u32, favourites: &[String], unknown: &[
     if let Some(n) = v.gfx.shadow_map_px {
         s.push_str(&format!("shadow_map_px = {n}\n"));
     }
+    if let Some(n) = v.gfx.render_scale {
+        s.push_str(&format!("render_scale = {n}\n"));
+    }
     if let Some(n) = v.gfx.tree_lod_m {
         s.push_str(&format!("tree_lod_m = {n}\n"));
     }
@@ -627,6 +633,7 @@ mod tests {
                 shadow_cascades: Some(3),
                 shadow_map_px: Some(4096),
                 tree_lod_m: Some(55.0),
+                render_scale: Some(75),
             },
         }
     }
@@ -719,6 +726,7 @@ mod tests {
                 shadow_cascades: Some(4),
                 shadow_map_px: Some(2048),
                 tree_lod_m: Some(80.0),
+                render_scale: Some(100),
             },
             ..defaults()
         };

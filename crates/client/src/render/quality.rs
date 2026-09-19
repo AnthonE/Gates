@@ -30,12 +30,10 @@
 //! had pulled the shadows in would be the most confidently wrong thing in the
 //! game.
 //!
-//! ## What is deliberately NOT a row
+//! Render scale has its own target/presentation path in `render_scale.rs`.
+//! It is a graphics row, and every preset retains full resolution.
 //!
-//! **A render scale.** It is the biggest single lever on a weak GPU and it is
-//! not a knob: Bevy renders to the window's surface, so a scaled path means
-//! an off-screen `Image` target and a blit, which is a slice with its own
-//! design rather than a row in the table below. `NOW.md` carries it.
+//! ## What is deliberately NOT a row
 //!
 //! **The clutter and prop rings.** `CLUTTER_RING` and `NEAR_RADIUS` are read
 //! by the streamers to decide which tiles exist, so moving them at runtime is
@@ -95,6 +93,8 @@ pub struct Gfx {
     pub shadow_map_px: usize,
     /// Where a tree stops being its own geometry (`tree::TREE_LOD_SWAP_M`).
     pub tree_lod_swap_m: f32,
+    /// Percentage of each world-image dimension; the HUD stays at window size.
+    pub render_scale: u8,
 }
 
 /// The shadow distances the screen offers, metres, ascending.
@@ -208,6 +208,7 @@ pub const fn max_shadow_map_px() -> usize {
 pub fn preset(q: Quality) -> Gfx {
     match q {
         Quality::High => Gfx {
+            render_scale: super::render_scale::RENDER_SCALE_MAX,
             ao: Ao::Medium,
             smaa: true,
             bloom: true,
@@ -218,6 +219,7 @@ pub fn preset(q: Quality) -> Gfx {
             tree_lod_swap_m: super::tree::TREE_LOD_SWAP_M,
         },
         Quality::Medium => Gfx {
+            render_scale: super::render_scale::RENDER_SCALE_MAX,
             // Low rather than off: `ART.md` §4 pays for the ambient fill with
             // occlusion, and a frame with the fill and no AO is the washed
             // one that measurement rejected (`RENDER.md` §0).
@@ -231,6 +233,7 @@ pub fn preset(q: Quality) -> Gfx {
             tree_lod_swap_m: MEDIUM_TREE_LOD_SWAP_M,
         },
         Quality::Low => Gfx {
+            render_scale: super::render_scale::RENDER_SCALE_MAX,
             ao: Ao::Off,
             // SMAA is a post-process resolve and the cheapest thing here, so
             // it goes last — but it does go: on the tier that exists for a

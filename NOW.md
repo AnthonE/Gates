@@ -59,21 +59,18 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
 
 # Buildable now — a loop can pick any of these
 
-## 0gfx · Graphics rows landed — two things they left *(client lane)*
+## 0gfx · Graphics rows and render scale are built *(client lane)*
 
 Eight settable rows + the preset ladder shipped 2026-09-16 (`DECISIONS.md`
-§open, graphics rows v0); the browser's one-cascade bug is fixed. What remains:
+§open, graphics rows v0); the browser's one-cascade bug is fixed. Render scale
+followed on 2026-09-19: 50–100% world resolution, full-resolution HUD, saved
+with the other rows, and 100% in every preset.
 
-1. **SMAA and bloom have never run in a browser.** They are choosable there
-   now and the DEFAULT is unchanged (`preset(Low)` has both off), so nothing
-   that ships today moved — but Bevy's SMAA wants a standalone
-   `TextureFormat::Stencil8` attachment and nobody has asked WebGL2 for one.
-   `quality::effective` refuses SSAO by measurement and these two by nothing.
-   **The test is one click in the page**, not a gate: turn each on, look, and
-   if it dies, they join the clamp with the reason beside them.
-2. **A render scale is still the biggest unclaimed lever on a weak GPU** and
-   still not a row: Bevy renders to the window surface, so it needs an
-   off-screen `Image` target and a blit — its own slice, not a table entry.
+SMAA and bloom were turned on together in Chromium/WebGL2 at 50%, resized,
+and returned to 100% without a renderer error. The native 50% path was also
+opened against a local shard. These are software-GPU smoke checks, not a
+hardware performance or appearance verdict; `findings/render-scale-20260919.md`
+records the setup. SSAO's measured browser clamp remains in place.
 
 ## 0wnd · Down is built; the hands that pick you up are not *(sim+client lane)*
 
@@ -2875,11 +2872,9 @@ the default frame did not move — which is why it could land unlooked-at.
 1. **Operator: walk the knob down and look.** The ladder's ORDER is arithmetic,
    but where each rung sits is a judgement and the visual gate here is a
    person. Is MEDIUM still the game?
-2. **A render scale is the biggest lever and is not here** — Bevy renders to
-   the window surface, so a scaled path is an off-screen target and a blit, its
-   own slice. Same for the clutter and prop rings, which decide which tiles
-   exist rather than how they draw (`ART.md` rule 4 is a floor a tier may not
-   cross).
+2. **The clutter and prop rings** decide which tiles exist rather than how
+   they draw (`ART.md` rule 4 is a floor a tier may not cross). Render scale
+   landed 2026-09-19; these streaming controls remain separate work.
 
 
 ## 0sun · The sun's bearing sweeps — two calls the operator has not made *(client lane + operator)*
