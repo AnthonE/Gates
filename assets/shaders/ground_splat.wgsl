@@ -46,6 +46,7 @@
     mesh_view_bindings::view,
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{
+        alpha_discard,
         apply_pbr_lighting,
         main_pass_post_lighting_processing,
         calculate_tbn_mikktspace,
@@ -158,11 +159,14 @@ fn paint_line(distance: f32, width: f32, footprint: f32) -> f32 {
 
 @fragment
 fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) markings: vec4<f32>, @builtin(front_facing) is_front: bool) -> FragmentOutput {
-    // Everything the standard path sets up — view vector, flags, the lot. Its
-    // `base_color` is left holding the vertex `COLOR`, which here is the weight
-    // vector rather than a colour; every write below is an assignment, so none
-    // of it survives into the frame.
-    var pbr_input = pbr_input_from_standard_material(in, is_front);
+    // Keep the standard view vector, flags and material coverage. The splat
+    // assigns its surface colour below.
+    // COLOR.a is the rock weight, not opacity. Only the material's resident
+    // chunk mask owns coverage; keep the original weights for the splat below.
+    var material_in = in;
+    material_in.color.a = 1.0;
+    var pbr_input = pbr_input_from_standard_material(material_in, is_front);
+    pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
 
     // One projection, four densities. `in.uv` is the mesh's shared planar XZ
     // UV at the 4 m reference (`terrain_mesh::UV_PER_M`); `splat.tile` spreads

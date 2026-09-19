@@ -298,7 +298,7 @@ fn far_shadows_follow_resident_chunks_through_loading_walking_and_teleporting() 
     let mut app = app();
     let mut chunks = app
         .world_mut()
-        .query::<(&Chunk, &MeshMaterial3d<GroundMaterial>)>();
+        .query::<(&Chunk, &MeshMaterial3d<GroundMaterial>, &Mesh3d)>();
     let mut far = app
         .world_mut()
         .query_filtered::<(&MeshMaterial3d<GroundMaterial>, Has<NotShadowCaster>), With<Static>>();
@@ -352,7 +352,7 @@ fn far_shadows_follow_resident_chunks_through_loading_walking_and_teleporting() 
             }
             let mut keys: Vec<_> = chunks
                 .iter(world)
-                .map(|(chunk, handle)| {
+                .map(|(chunk, handle, _)| {
                     let material = materials.get(&handle.0).unwrap();
                     assert_eq!(material.base.alpha_mode, AlphaMode::Opaque);
                     assert!(material.base.base_color_texture.is_none());
@@ -361,6 +361,60 @@ fn far_shadows_follow_resident_chunks_through_loading_walking_and_teleporting() 
                 .collect();
             keys.sort_unstable();
             if keys != last_keys || *data != last_mask {
+                let meshes = world.resource::<Assets<Mesh>>();
+                for (chunk, _, handle) in chunks.iter(world) {
+                    use bevy::mesh::{Indices, VertexAttributeValues};
+                    let mesh = meshes.get(&handle.0).unwrap();
+                    let Some(VertexAttributeValues::Float32x3(positions)) =
+                        mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+                    else {
+                        panic!("ground positions")
+                    };
+                    let Some(Indices::U32(indices)) = mesh.indices() else {
+                        panic!("ground indices")
+                    };
+                    let n = terrain_mesh::NEAR_N;
+                    let mut triangles = [0; 4];
+                    let x = chunk.0 as f32 * terrain_mesh::CHUNK_M;
+                    let z = chunk.1 as f32 * terrain_mesh::CHUNK_M;
+                    for triangle in indices[(n - 1) * (n - 1) * 6..].chunks_exact(3) {
+                        let p: Vec<_> = triangle.iter().map(|&i| positions[i as usize]).collect();
+                        let edge = if p.iter().all(|v| v[0] == x) {
+                            0
+                        } else if p.iter().all(|v| v[0] == x + terrain_mesh::CHUNK_M) {
+                            1
+                        } else if p.iter().all(|v| v[2] == z) {
+                            2
+                        } else if p.iter().all(|v| v[2] == z + terrain_mesh::CHUNK_M) {
+                            3
+                        } else {
+                            panic!("a seam left the chunk boundary")
+                        };
+                        triangles[edge] += 1;
+                    }
+                    for (edge, neighbor) in [
+                        (chunk.0 - 1, chunk.1),
+                        (chunk.0 + 1, chunk.1),
+                        (chunk.0, chunk.1 - 1),
+                        (chunk.0, chunk.1 + 1),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        let inside =
+                            |(x, z)| x >= 0 && z >= 0 && x < side as i32 && z < side as i32;
+                        let exposed = inside((chunk.0, chunk.1))
+                            && inside(neighbor)
+                            && !keys.contains(&neighbor);
+                        assert_eq!(
+                            triangles[edge],
+                            if exposed { (n - 1) * 4 } else { 0 },
+                            "chunk ({},{}) edge {edge}, residents {keys:?}",
+                            chunk.0,
+                            chunk.1
+                        );
+                    }
+                }
                 for z in 0..side {
                     for x in 0..side {
                         let expected = if keys.contains(&(x as i32, z as i32)) {
@@ -406,6 +460,7 @@ fn far_shadows_follow_resident_chunks_through_loading_walking_and_teleporting() 
         "the test must see streaming transitions"
     );
     let mut image_events = MessageCursor::<AssetEvent<Image>>::default();
+    let mut mesh_events = MessageCursor::<AssetEvent<Mesh>>::default();
     for _ in 0..3 {
         material_events
             .read(
@@ -416,6 +471,9 @@ fn far_shadows_follow_resident_chunks_through_loading_walking_and_teleporting() 
         image_events
             .read(app.world().resource::<Messages<AssetEvent<Image>>>())
             .for_each(drop);
+        mesh_events
+            .read(app.world().resource::<Messages<AssetEvent<Mesh>>>())
+            .for_each(drop);
         app.update();
         assert!(!material_events
             .read(
@@ -425,6 +483,9 @@ fn far_shadows_follow_resident_chunks_through_loading_walking_and_teleporting() 
             .any(|e| matches!(e, AssetEvent::Modified { .. })));
         assert!(!image_events
             .read(app.world().resource::<Messages<AssetEvent<Image>>>())
+            .any(|e| matches!(e, AssetEvent::Modified { .. })));
+        assert!(!mesh_events
+            .read(app.world().resource::<Messages<AssetEvent<Mesh>>>())
             .any(|e| matches!(e, AssetEvent::Modified { .. })));
     }
 }

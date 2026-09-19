@@ -8,7 +8,8 @@
 //! The scheme is the browser's, because it was measured rather than guessed
 //! (`web/src/terrain.js`): one far mesh of the whole island at 8 m built
 //! once, plus a ring of 64 m near chunks at 1 m streamed around the player,
-//! the far mesh dropped 0.15 m so the near↔far boundary cannot z-fight.
+//! the far mesh dropped 0.15 m. Its resident-chunk mask removes the overlap;
+//! `terrain_seam` closes exposed near/far edges at their exact heights.
 //! Adjacent near chunks share exact edge heights — they sample the same
 //! function at the same coordinates — so same-LOD seams cannot crack.
 //!
@@ -38,6 +39,7 @@ use super::ground_splat::{
 use super::road_markings::RoadChart;
 #[cfg(target_arch = "wasm32")]
 use super::road_markings::RoadChartBuilder;
+use super::terrain_seam;
 use super::textures::GroundArrays;
 use super::{Eye, WorldEntity, WorldId};
 
@@ -402,7 +404,7 @@ pub struct Static;
 /// before it finished.
 #[derive(Resource, Default)]
 pub struct Ring {
-    built: HashMap<(i32, i32), Entity>,
+    built: HashMap<(i32, i32), BuiltChunk>,
     near_tasks: HashMap<(i32, i32), Task<Mesh>>,
     ground: Option<Handle<GroundMaterial>>,
     far_ground: Option<Handle<GroundMaterial>>,
@@ -414,6 +416,12 @@ pub struct Ring {
     road_builder: Option<RoadChartBuilder>,
     far_started: bool,
     far_done: bool,
+}
+
+struct BuiltChunk {
+    entity: Entity,
+    mesh: Handle<Mesh>,
+    edges: u8,
 }
 
 /// Chunks in a full near ring — what `is_full` is asserting against, and the
@@ -548,8 +556,7 @@ fn ground_material(
 
 /// One nearest-filtered texel per near chunk. The far mesh keeps casting
 /// until that chunk actually lands, and resumes when the chunk is despawned.
-/// This is a shadow/depth mask only: the forward splat shader replaces the
-/// base colour, including alpha, so the existing visible LOD overlap stays.
+/// The forward splat discards on this mask before replacing the base colour.
 /// Bevy's standard prepass reads this slot in both the camera and shadow views.
 fn far_material(
     materials: &mut Assets<GroundMaterial>,
@@ -1254,36 +1261,47 @@ pub fn stream(
             ring.near_tasks.insert(key, task);
             break;
         };
+        let mesh = meshes.add(mesh);
         let e = commands
             .spawn((
                 WorldEntity,
                 Chunk(key.0, key.1),
-                Mesh3d(meshes.add(mesh)),
+                Mesh3d(mesh.clone()),
                 MeshMaterial3d(ground.clone()),
                 Transform::IDENTITY,
             ))
             .id();
-        ring.built.insert(key, e);
+        ring.built.insert(
+            key,
+            BuiltChunk {
+                entity: e,
+                mesh,
+                edges: 0b1111,
+            },
+        );
         shadow_changed |= shadow_chunk(
             &mut images,
             ring.shadow_mask.as_ref().expect("ground has a mask"),
             key,
             true,
         );
+        refresh_seams(&mut ring, &mut meshes, key);
     }
 
     // Stream out first: a ring that grows before it shrinks peaks at both
     // rings resident, which is the teardown spike in its other form.
     let mut dropped = 0usize;
     let shadow_mask = ring.shadow_mask.clone();
-    ring.built.retain(|(bx, bz), e| {
+    let mut removed = [None; CHUNK_BUILDS_PER_FRAME];
+    ring.built.retain(|(bx, bz), chunk| {
         if dropped >= CHUNK_BUILDS_PER_FRAME
             || ((*bx - cx).abs() <= NEAR_RADIUS && (*bz - cz).abs() <= NEAR_RADIUS)
         {
             return true;
         }
+        removed[dropped] = Some((*bx, *bz));
         dropped += 1;
-        commands.entity(*e).despawn();
+        commands.entity(chunk.entity).despawn();
         shadow_changed |= shadow_chunk(
             &mut images,
             shadow_mask.as_ref().expect("resident ground has a mask"),
@@ -1292,6 +1310,9 @@ pub fn stream(
         );
         false
     });
+    for key in removed.into_iter().flatten() {
+        refresh_seams(&mut ring, &mut meshes, key);
+    }
     // A chunk that left the ring before its build finished. Dropping the
     // `Task` cancels it, which is the whole teardown — and it is not optional:
     // without it a player walking a straight line accumulates one dead task
@@ -1337,10 +1358,26 @@ pub fn stream(
                 pool.spawn(async move {
                     let mut mesh = heightfield(seed, &haven, ox, oz, NEAR_N, step, 0.0);
                     apply_road_markings(&mut mesh, &chart, &haven);
+                    terrain_seam::append(&mut mesh, seed, &haven);
                     mesh
                 }),
             );
             queued += 1;
+        }
+    }
+}
+
+fn refresh_seams(ring: &mut Ring, meshes: &mut Assets<Mesh>, key: (i32, i32)) {
+    // Only this chunk and its four neighbours can change ownership. No
+    // per-frame collection, and a settled ring never modifies a mesh asset.
+    for (dx, dz) in core::iter::once((0, 0)).chain(terrain_seam::NEIGHBORS) {
+        let key = (key.0 + dx, key.1 + dz);
+        let edges = terrain_seam::exposed(key, |neighbor| ring.built.contains_key(&neighbor));
+        if let Some(chunk) = ring.built.get_mut(&key) {
+            if chunk.edges != edges {
+                terrain_seam::set_edges(meshes.get_mut(&chunk.mesh).expect("resident mesh"), edges);
+                chunk.edges = edges;
+            }
         }
     }
 }

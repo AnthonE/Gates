@@ -146,6 +146,7 @@ pub mod sky;
 // makes: this is the world other players made, and it arrives on the wire.
 pub mod structures;
 pub mod terrain_mesh;
+pub mod terrain_seam;
 pub mod textures;
 // The ground's four identities, each with its own photograph. The first WGSL
 // in the tree (`RENDER.md` R4).

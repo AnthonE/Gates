@@ -59,7 +59,7 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
 
 # Buildable now — a loop can pick any of these
 
-## 0gfx · Graphics rows landed — three things they left *(client lane)*
+## 0gfx · Graphics rows landed — two things they left *(client lane)*
 
 Eight settable rows + the preset ladder shipped 2026-09-16 (`DECISIONS.md`
 §open, graphics rows v0); the browser's one-cascade bug is fixed. What remains:
@@ -71,14 +71,7 @@ Eight settable rows + the preset ladder shipped 2026-09-16 (`DECISIONS.md`
    `quality::effective` refuses SSAO by measurement and these two by nothing.
    **The test is one click in the page**, not a gate: turn each on, look, and
    if it dies, they join the clamp with the reason beside them.
-2. **The visible far/near overlap still needs a geometry fix.** The far
-   mesh's shadow/depth pass now hands off to resident near chunks, including
-   through streaming transitions (`tests/ground_async.rs`). Its visible
-   surface still overlaps: on the current island, the bilinear far-height
-   estimate is above ground at 9.87% of sampled land points, up to 2.31 m.
-   Changing that needs a LOD seam treatment, not another shadow setting.
-   Measurement and scope: `findings/terrain-shadow-handoff-20260918.md`.
-3. **A render scale is still the biggest unclaimed lever on a weak GPU** and
+2. **A render scale is still the biggest unclaimed lever on a weak GPU** and
    still not a row: Bevy renders to the window surface, so it needs an
    off-screen `Image` target and a blit — its own slice, not a table entry.
 
