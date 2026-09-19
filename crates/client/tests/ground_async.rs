@@ -286,3 +286,145 @@ fn a_chunk_that_leaves_the_ring_takes_its_build_with_it() {
          of them — a task per chunk crossed is a pool that fills up as the player walks"
     );
 }
+
+#[test]
+fn far_shadows_follow_resident_chunks_through_loading_walking_and_teleporting() {
+    use bevy::ecs::message::MessageCursor;
+    use bevy::image::ImageSampler;
+    use bevy::light::NotShadowCaster;
+    use bevy::render::render_resource::TextureFormat;
+    use sim_core::terrain::ISLAND_SIZE;
+
+    let mut app = app();
+    let mut chunks = app
+        .world_mut()
+        .query::<(&Chunk, &MeshMaterial3d<GroundMaterial>)>();
+    let mut far = app
+        .world_mut()
+        .query_filtered::<(&MeshMaterial3d<GroundMaterial>, Has<NotShadowCaster>), With<Static>>();
+    let side = (ISLAND_SIZE / terrain_mesh::CHUNK_M) as usize;
+    let mut last_keys = Vec::new();
+    let mut last_mask = Vec::new();
+    let mut checked = 0;
+    let mut material_events = MessageCursor::<AssetEvent<GroundMaterial>>::default();
+
+    // Includes a walk across a chunk boundary, a disjoint ring, and the
+    // island's opposite edges: pending chunks and budgeted teardown must not punch
+    // holes in the far shadows before their replacements actually exist.
+    for (cx, cz) in [(16, 16), (17, 16), (24, 24), (31, 31), (0, 0)] {
+        app.world_mut().resource_mut::<Eye>().pos = Vec3::new(
+            cx as f32 * terrain_mesh::CHUNK_M,
+            10.0,
+            cz as f32 * terrain_mesh::CHUNK_M,
+        );
+        app.update();
+        step_until(&mut app, |a| {
+            let world = a.world();
+            let materials = world.resource::<Assets<GroundMaterial>>();
+            let Some((masked_id, masked)) = materials
+                .iter()
+                .find(|(_, m)| m.base.base_color_texture.is_some())
+            else {
+                panic!("the far mesh has no shadow mask");
+            };
+            assert_eq!(masked.base.alpha_mode, AlphaMode::Mask(0.5));
+            let mask = world
+                .resource::<Assets<Image>>()
+                .get(masked.base.base_color_texture.as_ref().unwrap())
+                .unwrap();
+            assert_eq!((mask.width(), mask.height()), (side as u32, side as u32));
+            assert_eq!(mask.texture_descriptor.format, TextureFormat::Rgba8Unorm);
+            assert_eq!(mask.texture_descriptor.mip_level_count, 1);
+            assert_eq!(mask.sampler, ImageSampler::nearest());
+            let data = mask.data.as_ref().unwrap();
+            let refreshed = material_events
+                .read(world.resource::<Messages<AssetEvent<GroundMaterial>>>())
+                .any(|event| {
+                    matches!(event,
+                    AssetEvent::Added { id } | AssetEvent::Modified { id }
+                        if *id == masked_id)
+                });
+            if *data != last_mask {
+                assert!(
+                    refreshed,
+                    "a changed mask must refresh the GPU material binding"
+                );
+            }
+            let mut keys: Vec<_> = chunks
+                .iter(world)
+                .map(|(chunk, handle)| {
+                    let material = materials.get(&handle.0).unwrap();
+                    assert_eq!(material.base.alpha_mode, AlphaMode::Opaque);
+                    assert!(material.base.base_color_texture.is_none());
+                    (chunk.0, chunk.1)
+                })
+                .collect();
+            keys.sort_unstable();
+            if keys != last_keys || *data != last_mask {
+                for z in 0..side {
+                    for x in 0..side {
+                        let expected = if keys.contains(&(x as i32, z as i32)) {
+                            0
+                        } else {
+                            255
+                        };
+                        assert_eq!(
+                            data[(z * side + x) * 4 + 3],
+                            expected,
+                            "far shadow at ({x}, {z}) must follow resident chunks {keys:?}"
+                        );
+                        // Derive the shader's lookup from world metres, not
+                        // from the mask writer's indexing expression.
+                        let uv = Vec2::new(x as f32 + 0.5, z as f32 + 0.5)
+                            * terrain_mesh::CHUNK_M
+                            * terrain_mesh::UV_PER_M;
+                        let mapped = masked.base.uv_transform.transform_point2(uv) * side as f32;
+                        assert_eq!((mapped.x as usize, mapped.y as usize), (x, z));
+                    }
+                }
+                last_keys.clone_from(&keys);
+                last_mask.clone_from(data);
+                checked += 1;
+            }
+            for (handle, disabled) in far.iter(world) {
+                assert!(!disabled, "the distant terrain must still cast shadows");
+                assert_eq!(
+                    materials.get(&handle.0).unwrap().base.base_color_texture,
+                    masked.base.base_color_texture
+                );
+            }
+            world.resource::<Ring>().is_full()
+                && world.resource::<Ring>().in_flight() == 0
+                && keys.iter().all(|&(x, z)| {
+                    (x - cx).abs() <= terrain_mesh::NEAR_RADIUS
+                        && (z - cz).abs() <= terrain_mesh::NEAR_RADIUS
+                })
+        });
+    }
+    assert!(
+        checked >= RING_CHUNKS,
+        "the test must see streaming transitions"
+    );
+    let mut image_events = MessageCursor::<AssetEvent<Image>>::default();
+    for _ in 0..3 {
+        material_events
+            .read(
+                app.world()
+                    .resource::<Messages<AssetEvent<GroundMaterial>>>(),
+            )
+            .for_each(drop);
+        image_events
+            .read(app.world().resource::<Messages<AssetEvent<Image>>>())
+            .for_each(drop);
+        app.update();
+        assert!(!material_events
+            .read(
+                app.world()
+                    .resource::<Messages<AssetEvent<GroundMaterial>>>()
+            )
+            .any(|e| matches!(e, AssetEvent::Modified { .. })));
+        assert!(!image_events
+            .read(app.world().resource::<Messages<AssetEvent<Image>>>())
+            .any(|e| matches!(e, AssetEvent::Modified { .. })));
+    }
+}
