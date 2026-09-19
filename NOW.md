@@ -844,28 +844,25 @@ treeline (`DECISIONS.md` §open, world structure v1). What is still open:
    from the 8 m grid's staircase. Both were replaced by metrics that
    separate. **A band whose two populations touch is not a gate.**
 
-## 0ring · Ring path v0 landed — four things it left *(sim lane)*
+## 0ring · The coast ring has a continuous terrain bench *(sim lane)*
 
-**The coast ring is a solved polyline now, not a predicate** (`DECISIONS.md`
-2026-09-18). Standable share 94.2% → **97.9%**, longest unbroken walkable run
-39.9% → **55.6%**, worst island 90.7% → 94.6%
-(`tests/road.rs::the_ring_is_ground_a_player_can_stand_on`, floor 0.92).
+The solved route landed 2026-09-18. Its remaining steep/wet breaks are
+addressed by a bounded terrain bench (2026-09-19): cached control heights,
+a periodic cubic profile, and a smooth blend back into the island. Existing
+monument approaches retain their terrain, with shallow fill where the road
+would otherwise dip below the land line.
 
-1. **Nobody has walked it.** §LOOK. Every number here is arithmetic; whether
-   a road that wanders 20–70 m inland still reads as a COAST road is a frame.
-2. **It is still not one piece** — 55.6% is the longest run, so a lap crosses
-   two or three unwalkable stretches. Closing the last ~2% needs the bench
-   this slice proved it did not need for the first 60%: a shelf cut at the
-   few remaining spots. `RING_BEARINGS` is the natural key for it and the
-   contour trap applies the moment a height is read off the ring.
-3. **It costs 32 ms of the 118 ms `haven()` now spends**, measured once per
-   world build (`World::new`, and the client's load) and never in a tick. Not
-   gated — nothing gates `World::new` on time — so if it ever matters the
-   term to attack is the cyclic DP's loop over start candidates, which is the
-   `K` in `O(B·K³)`.
-4. **`ring_probe` has one caller left** (`solve_ring`) plus the instrument.
-   It is the terrain question, not the road, and `height_roles.rs` says so —
-   but a third caller appearing is worth a second look.
+`tests/road_continuity.rs` checks the full carriageway, including joints,
+at half-metre intervals over 48 seeds: dry ground, the existing cliff limit,
+and a quarter-metre movement rise check in both directions. It separately
+checks that ground outside the declared road band keeps its original bits.
+The existing road, site-carve and replay gates still apply.
+
+What remains is a player's lap: obstacles, entrances and the appearance of
+a cut through a headland. The bench changes generated ground, so rollout
+needs an operator's world-compatibility decision; no live world is changed
+by building this branch. `findings/road-continuity-20260919.md` records scope
+and validation. The ring solve's startup cost is still ungated.
 
 ## 0rd · Coastal routing is measured; production integration remains *(sim lane)*
 
@@ -910,8 +907,8 @@ Next, in order:
 The client surface pass now adds pavement, an earthy branch and faded ring
 markings (`TERRAIN.md` §1 stage 7). The next material candidate is surveyed in
 `findings/road-materials-20260916.md`: CC0 asphalt with explicit scale and
-texture-memory costs. No new texture assets ship yet. Road grading, authored
-cracks and a distant ribbon remain separate work; paint cannot fix routing.
+texture-memory costs. No new texture assets ship yet. The ring now has terrain grading (§0ring); branch grading, authored
+cracks and a distant ribbon remain separate work.
 
 The inland site still has no containers. Arming rewards and choosing its
 world register remain separate operator decisions; centre-directed spokes

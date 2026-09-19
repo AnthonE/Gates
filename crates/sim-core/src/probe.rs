@@ -178,6 +178,12 @@ pub extern "C" fn probe_sites(seed: u64) -> u64 {
         }
     }
     let haven = terrain::haven(seed);
+    for i in 0..terrain::RING_BEARINGS {
+        hash_f32(&mut h, haven.ring.r[i]);
+        hash_f32(&mut h, haven.ring.y[i]);
+        let (x, z) = haven.ring.node(i as i32);
+        hash_f32(&mut h, terrain::ground(seed, &haven, x, z));
+    }
     hash_f32(&mut h, haven.x);
     hash_f32(&mut h, haven.z);
     hash_f32(&mut h, haven.y);

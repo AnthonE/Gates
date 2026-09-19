@@ -146,12 +146,12 @@ fn the_carve_is_armed_at_the_measured_constants() {
     );
 }
 
-/// Outside every site's blend the ground is untouched — `height`'s own bits.
+/// Outside every site and road blend the ground is untouched — `height`'s own bits.
 ///
 /// This was "the carve is dark, so this holds everywhere" before arming. Armed,
 /// it is the statement that actually matters and it is the one §C bounds: the
-/// carve reshapes a bowl around each destination and **nothing else on the
-/// island**. `to_bits` rather than `==` so a `-0.0` for a `0.0` is caught —
+/// carve reshapes declared footprints only. The ring bench adds a road
+/// footprint; outside their union the island is still bit-identical. `to_bits` rather than `==` so a `-0.0` for a `0.0` is caught —
 /// `ground`'s early return exists precisely so no worldgen height is put
 /// through a `+ 0.0` that could re-sign it.
 #[test]
@@ -170,6 +170,13 @@ fn ground_is_height_to_the_bit_outside_every_blend() {
                     if sites(&h).iter().any(|(ox, oz, _, ofp)| {
                         (x - ox) * (x - ox) + (z - oz) * (z - oz) < ofp.blend_m * ofp.blend_m
                     }) {
+                        j += 1;
+                        continue;
+                    }
+                    // A road now has its own explicit footprint. The wider
+                    // whole-island bound is also held in road_continuity.rs.
+                    let reach = terrain::ROAD_SHOULDER_HALF_W + terrain::RING_BLEND_M;
+                    if h.ring.dist2(x, z) < reach * reach {
                         j += 1;
                         continue;
                     }

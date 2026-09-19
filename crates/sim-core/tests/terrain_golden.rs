@@ -172,7 +172,8 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// bit-unchanged, because nothing here carves. What moved is where the road
 /// IS — and with it every site, since `haven` chooses its pad ON the ring and
 /// now scores all 256 of its nodes rather than 64 re-derived crossings.
-const GOLDEN_TERRAIN_HASH: u64 = 0x8411_5D77_B572_EAFF;
+// 2026-09-19: ring bench changes ground and hashes the cached road profile.
+const GOLDEN_TERRAIN_HASH: u64 = 0xBC90ADC1A4E90596;
 
 #[test]
 fn test_terrain_golden() {

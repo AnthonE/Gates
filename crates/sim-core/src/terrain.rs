@@ -1256,12 +1256,11 @@ fn ring_probe_in<C: Corners>(co: &mut C, seed: u64, x: f32, z: f32) -> RoadBand 
 // not "route around the cliff" — there is nothing to route around — it is
 // "stand a little further in, or a little further out, where that is ground".
 //
-// **What this deliberately is NOT**: a terrain carve. `ROADS.md` §6 has the
-// reference bending ground to road (Devblog 189) and this repo nearly did the
-// same; the measurement above says the ground is already there and only the
-// road was pointed at the wrong part of it. A carve was the expensive answer
-// to a question that turned out not to need one, and `NOW.md` §0ring records
-// that so nobody re-proposes it.
+// The path solve closes most breaks without changing ground. The remaining
+// breaks require a bench (2026-09-19): cached, grade-limited control heights
+// below feed a periodic cubic profile. The solver still reads raw terrain;
+// ground queries blend toward that profile only inside the road's own band.
+// `NOW.md` §0ring and `findings/road-continuity-20260919.md` carry the checks.
 //
 // And it makes the hot path CHEAPER, which is the part to keep in mind before
 // calling it a cost: the predicate spent three to six `height` taps per query
@@ -1274,9 +1273,9 @@ fn ring_probe_in<C: Corners>(co: &mut C, seed: u64, x: f32, z: f32) -> RoadBand 
 /// IS a yaw index and the two can never disagree about where a bearing points.
 /// At the ring's radius it is a node every ~22 m, and the chord it cuts under
 /// the true arc is `r(1 − cos(π/256))` ≈ **7 cm** — a thirtieth of the
-/// carriageway, which is why this is a polyline and not a spline. Nothing
-/// analytic reads the ring's height, so `CLAUDE.md`'s contour trap does not
-/// apply here; if a bench is ever built on it, it will.
+/// carriageway, which is why the horizontal route remains a polyline. Its
+/// vertical profile uses a periodic cubic spline: interpolating heights
+/// linearly would introduce the contour trap at every bearing boundary.
 pub const RING_BEARINGS: usize = 256;
 
 /// **(knob)** The closest and furthest inland the solved ring may sit, metres.
@@ -1394,6 +1393,16 @@ pub const RING_SPAN_PROBES: usize = 2;
 /// inside one sector would otherwise read as Off from a metre away.
 pub const RING_SEG_WINDOW: i32 = 2;
 
+/// **(knob)** Longitudinal grade budget as a share of the walkable slope.
+/// `DECISIONS.md` §open, ring bench v0; reserve covers offset carriageways.
+pub const RING_GRADE_HEADROOM: f32 = 0.8;
+/// **(knob)** Blend from the graded shoulder back to the unmodified island.
+/// `DECISIONS.md` §open, ring bench v0. The road core keeps its existing width.
+pub const RING_BLEND_M: f32 = 12.0;
+/// **(knob)** Preserve each site's approach before blending in road grading.
+/// Multiple of its carved footprint, `DECISIONS.md` §open, ring bench v0.
+pub const RING_SITE_CLEARANCE: f32 = 2.0;
+
 const _: () = {
     assert!(RING_BEARINGS == 256);
     assert!(RING_INLAND_MIN > 0.0 && RING_INLAND_MIN < ROAD_INLAND_M);
@@ -1427,6 +1436,10 @@ const _: () = {
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct RingPath {
     pub r: [f32; RING_BEARINGS],
+    /// Cubic B-spline control heights. Sampled and grade-limited at startup;
+    /// queries never resample terrain or feed a carved height to the solver.
+    pub y: [f32; RING_BEARINGS],
+    pub graded: bool,
 }
 
 impl RingPath {
@@ -1434,6 +1447,8 @@ impl RingPath {
     /// and the fixtures need, never one a seed produces.
     pub const FLAT: RingPath = RingPath {
         r: [(ROAD_R_MIN + ROAD_R_MAX) * 0.5; RING_BEARINGS],
+        y: [0.0; RING_BEARINGS],
+        graded: false,
     };
 
     /// World position of node `i`, wrapping.
@@ -1442,6 +1457,67 @@ impl RingPath {
         let (dx, dz) = crate::yaw_lut::yaw_dir((k as u16) << 8);
         let c = ISLAND_SIZE * 0.5;
         (c + dx * self.r[k], c + dz * self.r[k])
+    }
+
+    /// Cut/fill the carriageway and blend its shoulder into sampled ground.
+    /// The profile is periodic and C1 across bearing boundaries. Combining
+    /// segment masks by a smooth union avoids a nearest-segment crease at bends.
+    pub fn ground(&self, raw: f32, x: f32, z: f32) -> f32 {
+        if !self.graded {
+            return raw;
+        }
+        let c = ISLAND_SIZE * 0.5;
+        let (dx, dz) = (x - c, z - c);
+        let radius2 = dx * dx + dz * dz;
+        let reach = ROAD_SHOULDER_HALF_W + RING_BLEND_M;
+        let lo = ROAD_R_MIN - RING_INLAND_MAX - reach;
+        let hi = ROAD_R_MAX + reach;
+        if radius2 < lo * lo || radius2 > hi * hi {
+            return raw;
+        }
+        let bearing = bearing_index(dx, dz);
+        let mut outside = 1.0;
+        let mut k = bearing as i32 - RING_SEG_WINDOW;
+        while k <= bearing as i32 + RING_SEG_WINDOW {
+            let (ax, az) = self.node(k);
+            let (bx, bz) = self.node(k + 1);
+            let d2 = seg_dist2(ax, az, bx, bz, x, z);
+            if d2 < reach * reach {
+                let t = ((d2.sqrt() - ROAD_SHOULDER_HALF_W) / RING_BLEND_M).clamp(0.0, 1.0);
+                outside *= t * t * (3.0 - 2.0 * t);
+            }
+            k += 1;
+        }
+        if outside == 1.0 {
+            return raw;
+        }
+        // The bearing lookup rounds to nearest; choose the sector containing
+        // the ray, then a cross-ratio interpolant (no atan2 or height taps).
+        let mut i = bearing;
+        let (ax, az) = crate::yaw_lut::yaw_dir((i as u16) << 8);
+        if dx * az - dz * ax < 0.0 {
+            i = (i + RING_BEARINGS - 1) % RING_BEARINGS;
+        }
+        let j = (i + 1) % RING_BEARINGS;
+        let (ax, az) = crate::yaw_lut::yaw_dir((i as u16) << 8);
+        let (bx, bz) = crate::yaw_lut::yaw_dir((j as u16) << 8);
+        let pa = dx * az - dz * ax;
+        let pb = dz * bx - dx * bz;
+        let t = (pa / (pa + pb)).clamp(0.0, 1.0);
+        let u = 1.0 - t;
+        let a = self.y[(i + RING_BEARINGS - 1) % RING_BEARINGS];
+        let b = self.y[i];
+        let c = self.y[j];
+        let d = self.y[(j + 1) % RING_BEARINGS];
+        let target = (u * u * u * a
+            + (3.0 * t * t * t - 6.0 * t * t + 4.0) * b
+            + (-3.0 * t * t * t + 3.0 * t * t + 3.0 * t + 1.0) * c
+            + t * t * t * d)
+            / 6.0;
+        if outside == 0.0 {
+            return target.max(LAND_MIN_H);
+        }
+        raw + (target - raw) * (1.0 - outside)
     }
 
     /// Squared distance from a point to the ring's centre line.
@@ -1753,6 +1829,29 @@ pub fn solve_ring(seed: u64) -> RingPath {
         }
         start += 1;
     }
+    for i in 0..RING_BEARINGS {
+        let (x, z) = best.node(i as i32);
+        best.y[i] = height(seed, x, z).max(LAND_MIN_H);
+    }
+    // Symmetric bounded relaxation conserves the profile's mean height:
+    // a steep pair shares its excess instead of propagating a deep cut around
+    // the loop. B-spline derivatives are convex sums of these differences.
+    for _ in 0..RING_BEARINGS {
+        for i in 0..RING_BEARINGS {
+            let j = (i + 1) % RING_BEARINGS;
+            let (ax, az) = crate::yaw_lut::yaw_dir((i as u16) << 8);
+            let (bx, bz) = crate::yaw_lut::yaw_dir((j as u16) << 8);
+            let span =
+                ((bx - ax) * (bx - ax) + (bz - az) * (bz - az)).sqrt() * best.r[i].min(best.r[j]);
+            let cap = span * CLIFF_SLOPE_RATIO * RING_GRADE_HEADROOM;
+            let delta = best.y[i] - best.y[j];
+            let excess = (fabs(delta) - cap).max(0.0) * 0.5;
+            let shift = if delta < 0.0 { -excess } else { excess };
+            best.y[i] -= shift;
+            best.y[j] += shift;
+        }
+    }
+    best.graded = true;
     best
 }
 
@@ -4641,6 +4740,44 @@ pub fn ground_memo(lat: &mut Lattice, seed: u64, haven: &Haven, x: f32, z: f32) 
 
 fn ground_in<C: Corners>(c: &mut C, seed: u64, haven: &Haven, x: f32, z: f32) -> f32 {
     let raw = height_in(c, seed, x, z);
+    let road = haven.ring.ground(raw, x, z);
+    let raw = if road == raw {
+        raw
+    } else {
+        let mask = |sx: f32, sz: f32, radius: f32| {
+            let dx = x - sx;
+            let dz = z - sz;
+            let t = (((dx * dx + dz * dz).sqrt() - radius * RING_SITE_CLEARANCE) / RING_BLEND_M)
+                .clamp(0.0, 1.0);
+            t * t * (3.0 - 2.0 * t)
+        };
+        let mut weight = mask(haven.x, haven.z, HAVEN_FOOTPRINT.blend_m);
+        for site in &haven.minor {
+            if site.live {
+                weight *= mask(site.x, site.z, site_footprint(site.kind).blend_m);
+            }
+        }
+        let protected = if weight == 0.0 {
+            raw
+        } else if weight == 1.0 {
+            road
+        } else {
+            raw + (road - raw) * weight
+        };
+        // Preserve dry access even where a site's approach overlaps the
+        // sea-facing road edge. Only this shallow fill bypasses protection.
+        if protected < LAND_MIN_H {
+            let d = haven.ring.dist2(x, z).sqrt();
+            let t = ((d - ROAD_SHOULDER_HALF_W) / RING_BLEND_M).clamp(0.0, 1.0);
+            if t == 0.0 {
+                LAND_MIN_H
+            } else {
+                protected + (LAND_MIN_H - protected) * (1.0 - t * t * (3.0 - 2.0 * t))
+            }
+        } else {
+            protected
+        }
+    };
     let s = site_stamp(haven, raw, x, z);
     if s == 0.0 {
         return raw;

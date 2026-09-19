@@ -113,13 +113,20 @@ Stages, in order — each cheap, each deterministic:
    players out of their bases into a circulation loop where they meet —
    with zero monument art. Junk piles at bay mouths get slightly denser
    slots **(knob)**.
-   **Landed** as `terrain::road_band`, and the constraint block below turned
-   out not to bind: the road needs no memo at all, because the ring is never
-   located, only tested against. A sample is on the road iff the shoreline
-   crossing lies in a window around the point `ROAD_INLAND_M` seaward along
-   its own outward radial — three `height` taps, one for most of the island,
-   and it tracks the wobble exactly rather than approximating it with control
-   points. Scatter clears the carriageway and draws barrels on the shoulder.
+   **The route is now stored** (`RingPath`, 2026-09-18): a cyclic solve over
+   raw terrain chooses one radius per yaw bearing. Scatter clears the same
+   carriageway that collision, rendering and barrel placement read. The old
+   shoreline predicate survives only as a solver probe.
+   **A terrain bench closes the remaining gaps** (2026-09-19). The solve
+   caches raw node heights, limits their adjacent grade, and `ground_in`
+   samples a periodic cubic B-spline profile. The shoulder blends back to
+   raw terrain over `RING_BLEND_M`; a smooth union of segment masks avoids
+   seams at bends. The five-segment query is fixed and allocates nothing.
+   Monument approaches suppress grading before their existing stamps apply;
+   shallow fill still keeps the carriageway above `LAND_MIN_H`. Outside the
+   compact road band, ground is bit-identical. `tests/road_continuity.rs`
+   checks dry, walkable centre and edges over 48 seeds, every joint included.
+   This changes world generation and its pinned digests, not the save format.
    **The denser bay slots landed, as a redistribution rather than a raise.**
    `terrain::in_bay` reuses stage 7's own trick — never locate the coastline,
    only test against it: probe `height` at the sample's own shoreline radius
