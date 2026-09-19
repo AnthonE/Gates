@@ -71,14 +71,13 @@ Eight settable rows + the preset ladder shipped 2026-09-16 (`DECISIONS.md`
    `quality::effective` refuses SSAO by measurement and these two by nothing.
    **The test is one click in the page**, not a gate: turn each on, look, and
    if it dies, they join the clamp with the reason beside them.
-2. **The 8 m far mesh casts shadows onto the 1 m near mesh.** Measured on
-   seed 20260731: the far sheet rides ABOVE the drawn near ground on 10.6 % of
-   the island's land, mean +0.19 m, worst **+2.26 m** — and +0.67 m inside
-   90 m of the spawn. It is a caster (`terrain_mesh.rs`, the `Static` spawn,
-   no `NotShadowCaster`), so those patches lay coarse false shadow at 8 m
-   resolution. `NotShadowCaster` is NOT the fix — it would also delete the
-   real terrain shadows between the near ring's 160 m and `High`'s 200 m.
-   Re-measure with `far_ground_y` minus `terrain::ground` before choosing.
+2. **The visible far/near overlap still needs a geometry fix.** The far
+   mesh's shadow/depth pass now hands off to resident near chunks, including
+   through streaming transitions (`tests/ground_async.rs`). Its visible
+   surface still overlaps: on the current island, the bilinear far-height
+   estimate is above ground at 9.87% of sampled land points, up to 2.31 m.
+   Changing that needs a LOD seam treatment, not another shadow setting.
+   Measurement and scope: `findings/terrain-shadow-handoff-20260918.md`.
 3. **A render scale is still the biggest unclaimed lever on a weak GPU** and
    still not a row: Bevy renders to the window surface, so it needs an
    off-screen `Image` target and a blit — its own slice, not a table entry.

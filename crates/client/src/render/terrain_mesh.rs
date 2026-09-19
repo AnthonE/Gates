@@ -21,10 +21,13 @@
 //! browser client, so the arithmetic is still right and nothing checks it.
 
 use bevy::asset::RenderAssetUsages;
+use bevy::image::ImageSampler;
+use bevy::math::Affine2;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::pbr::ExtendedMaterial;
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
 use sim_core::terrain::{self, SEA_LEVEL};
 use std::sync::Arc;
@@ -402,6 +405,8 @@ pub struct Ring {
     built: HashMap<(i32, i32), Entity>,
     near_tasks: HashMap<(i32, i32), Task<Mesh>>,
     ground: Option<Handle<GroundMaterial>>,
+    far_ground: Option<Handle<GroundMaterial>>,
+    shadow_mask: Option<Handle<Image>>,
     far_task: Option<Task<Mesh>>,
     road_chart: Option<Arc<RoadChart>>,
     road_task: Option<Task<Arc<RoadChart>>>,
@@ -447,7 +452,7 @@ impl Ring {
     }
 }
 
-/// The ground's one material. Shared by every chunk so Bevy batches them into
+/// The near ground's material. Shared by every chunk so Bevy batches them into
 /// one draw per pipeline; the identity variation rides the vertices and the
 /// near-field grain rides the photograph.
 ///
@@ -539,6 +544,57 @@ fn ground_material(
         },
         extension: GroundSplat::new(arrays),
     })
+}
+
+/// One nearest-filtered texel per near chunk. The far mesh keeps casting
+/// until that chunk actually lands, and resumes when the chunk is despawned.
+/// This is a shadow/depth mask only: the forward splat shader replaces the
+/// base colour, including alpha, so the existing visible LOD overlap stays.
+/// Bevy's standard prepass reads this slot in both the camera and shadow views.
+fn far_material(
+    materials: &mut Assets<GroundMaterial>,
+    images: &mut Assets<Image>,
+    ground: &Handle<GroundMaterial>,
+) -> (Handle<GroundMaterial>, Handle<Image>) {
+    let side = (terrain::ISLAND_SIZE / CHUNK_M) as u32;
+    let mut mask = Image::new_fill(
+        Extent3d {
+            width: side,
+            height: side,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        &[255; 4],
+        TextureFormat::Rgba8Unorm,
+        RenderAssetUsages::default(),
+    );
+    mask.sampler = ImageSampler::nearest();
+    let mask = images.add(mask);
+    let mut material = materials.get(ground).expect("ground just built").clone();
+    material.base.base_color_texture = Some(mask.clone());
+    // Binary alpha with a midpoint cutoff. Ground UVs are world
+    // metres times UV_PER_M; the mask covers the whole island exactly once.
+    material.base.alpha_mode = AlphaMode::Mask(0.5);
+    material.base.uv_transform =
+        Affine2::from_scale(Vec2::splat(1.0 / (UV_PER_M * terrain::ISLAND_SIZE)));
+    (materials.add(material), mask)
+}
+
+fn shadow_chunk(
+    images: &mut Assets<Image>,
+    mask: &Handle<Image>,
+    key: (i32, i32),
+    near: bool,
+) -> bool {
+    let side = (terrain::ISLAND_SIZE / CHUNK_M) as i32;
+    // The near ring can extend into the sea outside the far mesh's bounds.
+    if key.0 < 0 || key.1 < 0 || key.0 >= side || key.1 >= side {
+        return false;
+    }
+    let image = images.get_mut(mask).expect("the ring owns its shadow mask");
+    let data = image.data.as_mut().expect("the mask keeps its CPU copy");
+    data[((key.1 * side + key.0) as usize) * 4 + 3] = if near { 0 } else { 255 };
+    true
 }
 
 /// One ground vertex's colour: the splat identity mix, the macro break-up,
@@ -1080,11 +1136,13 @@ pub fn heightfield(
 /// meaning "the island is up and drawable", not "queued" and not "up but
 /// untextured". A finished build sits in its task until then, and the tasks
 /// are bounded by the ring.
+#[allow(clippy::too_many_arguments)] // Bevy system parameters.
 pub fn stream(
     mut commands: Commands,
     mut ring: ResMut<Ring>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<GroundMaterial>>,
+    mut images: ResMut<Assets<Image>>,
     world: Res<WorldId>,
     arrays: Option<Res<GroundArrays>>,
     eye: Res<Eye>,
@@ -1093,6 +1151,9 @@ pub fn stream(
         Some(g) => Some(g),
         None => arrays.as_deref().map(|a| {
             let g = ground_material(&mut materials, a);
+            let (far, mask) = far_material(&mut materials, &mut images, &g);
+            ring.far_ground = Some(far);
+            ring.shadow_mask = Some(mask);
             ring.ground = Some(g.clone());
             g
         }),
@@ -1132,7 +1193,8 @@ pub fn stream(
     // Polled at the TOP, so a mesh that completed while the last frame was
     // drawn reaches the world on this one rather than a frame later. Only
     // with a material in hand: see the doc comment.
-    if let (Some(ground), Some(task)) = (&ground, ring.far_task.as_mut()) {
+    let far_ground = ring.far_ground.clone();
+    if let (Some(ground), Some(task)) = (&far_ground, ring.far_task.as_mut()) {
         if let Some(mesh) = block_on(future::poll_once(task)) {
             ring.far_task = None;
             commands.spawn((
@@ -1169,6 +1231,7 @@ pub fn stream(
     // Found rather than collected: the budget is one, and a `Vec` here would
     // be a per-frame heap allocation — the exact thing the rest of this pass
     // took out of `decal::fade` and `ghost::track`.
+    let mut shadow_changed = false;
     for _ in 0..CHUNK_LANDS_PER_FRAME {
         let Some(ground) = &ground else {
             break;
@@ -1201,11 +1264,18 @@ pub fn stream(
             ))
             .id();
         ring.built.insert(key, e);
+        shadow_changed |= shadow_chunk(
+            &mut images,
+            ring.shadow_mask.as_ref().expect("ground has a mask"),
+            key,
+            true,
+        );
     }
 
     // Stream out first: a ring that grows before it shrinks peaks at both
     // rings resident, which is the teardown spike in its other form.
     let mut dropped = 0usize;
+    let shadow_mask = ring.shadow_mask.clone();
     ring.built.retain(|(bx, bz), e| {
         if dropped >= CHUNK_BUILDS_PER_FRAME
             || ((*bx - cx).abs() <= NEAR_RADIUS && (*bz - cz).abs() <= NEAR_RADIUS)
@@ -1214,6 +1284,12 @@ pub fn stream(
         }
         dropped += 1;
         commands.entity(*e).despawn();
+        shadow_changed |= shadow_chunk(
+            &mut images,
+            shadow_mask.as_ref().expect("resident ground has a mask"),
+            (*bx, *bz),
+            false,
+        );
         false
     });
     // A chunk that left the ring before its build finished. Dropping the
@@ -1222,6 +1298,18 @@ pub fn stream(
     // per chunk crossed, each still holding the pool.
     ring.near_tasks
         .retain(|(bx, bz), _| (*bx - cx).abs() <= NEAR_RADIUS && (*bz - cz).abs() <= NEAR_RADIUS);
+
+    if shadow_changed {
+        // Image extraction replaces its GPU view. Like mipmap::retouch, mark
+        // the material modified too so its bind group sees the new view.
+        materials
+            .get_mut(
+                far_ground
+                    .as_ref()
+                    .expect("resident ground has a far material"),
+            )
+            .expect("the ring owns its far material");
+    }
 
     let Some(chart) = ring.road_chart.clone() else {
         return;
