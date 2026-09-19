@@ -1266,6 +1266,9 @@ pub struct ClientCore {
     pub wounded: bool,
     pub wound_ticks: u16,
     pub wound_chance_pm: u16,
+    /// Latest server hold, helper and target are connection ids. Zero ticks
+    /// cancels it; the completion is followed by the ordinary recovery fact.
+    pub assist: (u32, u32, u16),
     /// The frame's facts for the two destructive readers below — one slot
     /// each, not a ring, because a body cannot go down twice or get up
     /// twice between two drains, and a second `Wounded` before the first
@@ -1534,6 +1537,7 @@ impl ClientCore {
             wounded: false,
             wound_ticks: 0,
             wound_chance_pm: 0,
+            assist: (0, 0, 0),
             wounded_fact: None,
             recovered_fact: None,
             own_bags: [BagAnchor::default(); BAG_CAP],
@@ -2454,6 +2458,7 @@ impl ClientCore {
                     self.dead = true;
                     // A failed roll ends the crawl in a corpse (wounded v0).
                     self.wounded = false;
+                    self.assist = (0, 0, 0);
                     self.predict.crawl = false;
                     self.own_bag_pending = true;
                     self.own_death_killer = killer;
@@ -2466,6 +2471,7 @@ impl ClientCore {
             EventMsg::Respawn { on_bag } => {
                 self.dead = false;
                 self.wounded = false;
+                self.assist = (0, 0, 0);
                 self.predict.crawl = false;
                 self.woke_on_bag = on_bag;
                 flags |= APPLIED_RESPAWN;
@@ -2479,14 +2485,23 @@ impl ClientCore {
                 // frame, and the health readout this travels with is the
                 // one that changes on the bar.
                 self.wounded = true;
+                self.assist = (0, 0, 0);
                 self.wound_ticks = ticks;
                 self.wound_chance_pm = chance_pm;
                 self.wounded_fact = Some((ticks, chance_pm));
                 self.predict.crawl = true;
                 flags |= APPLIED_HEALTH;
             }
+            EventMsg::Assist {
+                helper,
+                target,
+                ticks,
+            } => {
+                self.assist = (helper, target, ticks);
+            }
             EventMsg::Recovered { chance_pm, hp } => {
                 self.wounded = false;
+                self.assist = (0, 0, 0);
                 self.recovered_fact = Some((chance_pm, hp));
                 self.predict.crawl = false;
                 flags |= APPLIED_HEALTH;

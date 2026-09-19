@@ -50,26 +50,26 @@ pub use bits::WireError;
 use bits::{BitReader, BitWriter};
 pub use chat::{decode_chat, encode_chat, ChatMsg, ChatText, CHAT_MAX_BYTES};
 pub use event::{
-    decode_event, encode_event_auth, encode_event_bag_dropped, encode_event_bag_removed,
-    encode_event_bag_sync, encode_event_bags, encode_event_build_refused, encode_event_catalog,
-    encode_event_charge_placed, encode_event_chat, encode_event_consume_refused,
-    encode_event_consumed, encode_event_cont_sync, encode_event_craft_done, encode_event_craft_q,
-    encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
-    encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
-    encode_event_door, encode_event_drank, encode_event_gather, encode_event_gather_refused,
-    encode_event_gitem_sync, encode_event_health, encode_event_hit, encode_event_hurt,
-    encode_event_impact, encode_event_inv, encode_event_knock, encode_event_known,
-    encode_event_move_refused, encode_event_moved, encode_event_oven, encode_event_piece_defs,
-    encode_event_piece_placed, encode_event_piece_repaired, encode_event_piece_sync,
-    encode_event_recipes, encode_event_recovered, encode_event_reload, encode_event_reload_refused,
-    encode_event_removed, encode_event_research, encode_event_research_refused,
-    encode_event_research_rows, encode_event_respawn, encode_event_shot, encode_event_slot_change,
-    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_swing,
-    encode_event_vitals, encode_event_weak_mark, encode_event_wounded, shot_is_instant, EventMsg,
-    InvSlot, ItemCatalog, ItemRow, WireBag, WireGItem, BAG_SYNC_BATCH, CATALOG_BATCH,
-    CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, MAX_EVENT_MSG_BYTES,
-    MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH,
-    SLOT_SYNC_BATCH,
+    decode_event, encode_event_assist, encode_event_auth, encode_event_bag_dropped,
+    encode_event_bag_removed, encode_event_bag_sync, encode_event_bags, encode_event_build_refused,
+    encode_event_catalog, encode_event_charge_placed, encode_event_chat,
+    encode_event_consume_refused, encode_event_consumed, encode_event_cont_sync,
+    encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused, encode_event_death,
+    encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
+    encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_gather,
+    encode_event_gather_refused, encode_event_gitem_sync, encode_event_health, encode_event_hit,
+    encode_event_hurt, encode_event_impact, encode_event_inv, encode_event_knock,
+    encode_event_known, encode_event_move_refused, encode_event_moved, encode_event_oven,
+    encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_repaired,
+    encode_event_piece_sync, encode_event_recipes, encode_event_recovered, encode_event_reload,
+    encode_event_reload_refused, encode_event_removed, encode_event_research,
+    encode_event_research_refused, encode_event_research_rows, encode_event_respawn,
+    encode_event_shot, encode_event_slot_change, encode_event_slot_sync, encode_event_stock,
+    encode_event_struct_hit, encode_event_swing, encode_event_vitals, encode_event_weak_mark,
+    encode_event_wounded, shot_is_instant, EventMsg, InvSlot, ItemCatalog, ItemRow, WireBag,
+    WireGItem, BAG_SYNC_BATCH, CATALOG_BATCH, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH,
+    DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES,
+    PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSHOT_ENTITIES};
@@ -894,7 +894,10 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// this list would not otherwise see: the new store is hashed, so it is
 /// saved, so a live shard's `island.world` no longer loads — a wipe, and
 /// an operator act.
-pub const PROTO_VER: u16 = 65;
+/// v66 adds hand revive: Assist selects a body, BTN_ASSIST holds the input,
+/// and the Assist event states the server's progress to both participants.
+/// Existing layouts retain their widths; the meaning of button bit 5 changes.
+pub const PROTO_VER: u16 = 66;
 
 /// This game's slug in the elo catalog.
 ///
@@ -1389,6 +1392,8 @@ const ACT_PICKUP: u32 = 19;
 /// kind — it has a duration the server owns and an outcome the player is
 /// owed a sentence about.
 const ACT_RELOAD: u32 = 20;
+/// Select the body helped while the fresh input hold bit stays set; zero releases.
+const ACT_ASSIST: u32 = 21;
 /// The highest live action code, named rather than counted — the event
 /// lane's `SUB_MAX` discipline, which this lane did not have.
 ///
@@ -1398,7 +1403,7 @@ const ACT_RELOAD: u32 = 20;
 /// prevents is the worst shape of wire drift there is: an action past the
 /// field width truncates into a *live* code, and both ends then agree on
 /// bytes that mean two different things.
-const ACT_MAX: u32 = ACT_RELOAD;
+const ACT_MAX: u32 = ACT_ASSIST;
 const _: () = assert!(
     ACT_MAX < (1 << ACTION_SUB_BITS),
     "an action subtype past the field width would truncate into a live code"
@@ -1531,6 +1536,8 @@ const PLACE_FREEHAND_BITS: u32 = 1;
 /// craft-refused event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ActionMsg {
+    /// Select a wounded body. Input's BTN_ASSIST bit holds or releases it.
+    Assist { target: u32 },
     /// Enqueue `count` crafts of recipe row `recipe`.
     Craft { recipe: u16, count: u16 },
     /// Cancel the queue job at `index`, refunding remaining inputs.
@@ -1860,6 +1867,14 @@ pub fn encode_action_respawn(on_bag: bool, buf: &mut [u8]) -> Result<usize, Wire
 }
 
 /// The reload verb. No payload — see `ActionMsg::Reload`.
+pub fn encode_action_assist(target: u32, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_ASSIST, ACTION_SUB_BITS)?;
+    w.write(target, 32)?;
+    Ok(w.finish())
+}
+
 pub fn encode_action_reload(buf: &mut [u8]) -> Result<usize, WireError> {
     let mut w = BitWriter::new(buf);
     w.write(KIND_ACTION, KIND_BITS)?;
@@ -2451,6 +2466,9 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
         }
         ACT_DRINK => ActionMsg::Drink,
         ACT_RELOAD => ActionMsg::Reload,
+        ACT_ASSIST => ActionMsg::Assist {
+            target: r.read(32)?,
+        },
         ACT_RESPAWN => ActionMsg::Respawn {
             on_bag: r.read_bit()?,
         },
@@ -3941,10 +3959,11 @@ mod tests {
     /// not slip in against a stale one.
     #[test]
     fn the_action_lane_has_the_room_it_claims() {
-        assert_eq!(ACT_MAX, ACT_RELOAD);
+        // Hand revive (v66) spends code 21, leaving ten five-bit codes.
+        assert_eq!(ACT_MAX, ACT_ASSIST);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
-            11,
+            10,
             "the spare action codes moved — say so where the count is written"
         );
     }

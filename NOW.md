@@ -72,30 +72,32 @@ opened against a local shard. These are software-GPU smoke checks, not a
 hardware performance or appearance verdict; `findings/render-scale-20260919.md`
 records the setup. SSAO's measured browser clamp remains in place.
 
-## 0wnd · Down is built; the hands that pick you up are not *(sim+client lane)*
+## 0wnd · Down and hand revive are built *(sim+client lane)*
 
 Wounded v0 landed 2026-09-13 (`DECISIONS.md` §open "wounded v0",
 `reference/WOUNDED.md` §9): a lethal swing, bite or body shot lays the body
 down for 40–50 s at 10 hp, it crawls at a third of a walk and may open a
 door, and at the end a hashed roll (20 % + up to 25 % for full meters)
-stands it up or makes the corpse. What the minute still cannot do, in the
-order it earns its keep:
+stands it up or makes the corpse. Hand revive followed on 2026-09-19:
+aim at an awake wounded player and hold E for six stationary seconds. A
+fresh input hold pauses the wound clock; release, movement, loss of aim or
+cover, and damage interrupt it. Damage ends the gesture; press E again.
+Recovery preserves 10 hp and starts the existing re-wound cooldown. The
+server sends absolute progress only to the participants, retrying a lost
+clear as well as progress. `findings/hand-revive-20260919.md` has the checks.
 
-1. **Revive by hand** — `RPC_Assist`'s shape (`WOUNDED.md` §2.6): a verb
-   aimed at a downed body, held 6 s without moving, prolonging the clock
-   when broken off and suspending the roll while held. New action on the
-   wire, a hold counter on the target, a `Verb` in the pick — and the
-   feature-gated match trap (`CLAUDE.md`).
-2. **Syringe / bandage on a downed body** — `Command::Consume` with a
+What remains:
+
+1. **Syringe / bandage on a downed body** — `Command::Consume` with a
    target; `content/consumables.toml` already prices both.
-3. **Medkit in the belt = 100 %**, consumed only on a failed roll.
-4. **Refusals while down are silent**: `live_slot_of` refuses with no
+2. **Medkit in the belt = 100 %**, consumed only on a failed roll.
+3. **Refusals while down are silent**: `live_slot_of` refuses with no
    event. Each refused verb's own `REFUSE_*` is the honest fix.
-5. **A drag clip and a voice** — a remote crawl slides `Death01`'s pose
+4. **A drag clip and a voice** — a remote crawl slides `Death01`'s pose
    (`render/anim.rs`), and the fall reuses `Cue::Death`.
-6. **The odds on screen are the odds at the fall**; the sim re-reads the
+5. **The odds on screen are the odds at the fall**; the sim re-reads the
    meters at the roll. Say so on the line, or resend.
-7. **§LOOK**: `CRAWL_EYE_M`, `WOUND_ROLL_RAD`, `WOUND_DROP_S`, the
+6. **§LOOK**: `CRAWL_EYE_M`, `WOUND_ROLL_RAD`, `WOUND_DROP_S`, the
    vignette — never seen. Boot the game and go down.
 
 ## 0site · Site art v0 landed — three things it left *(art + sim lane)*

@@ -372,6 +372,11 @@ combat_rewound="$(awk '/^combat /{print $5}' "$native_out")"
 [ -n "$combat_rewound" ] && [ "$combat_rewound" -gt 0 ] \
   || fail "test_parity_wasm: the combat probe fired no rewound shot (count '$combat_rewound') — the gun's lag-comp rewind is not actually on the parity surface"
 
+# A matching digest is insufficient if the hold never reaches recovery.
+assist_recoveries="$(awk '/^assist /{print $3}' "$native_out")"
+[ "$assist_recoveries" = "1" ] \
+  || fail "test_parity_wasm: hand revive completed '$assist_recoveries' recoveries, expected 1"
+
 # WHAT WAS CUT HERE, and what it costs (operator, 2026-08-06).
 #
 # Eleven gates were deleted with the browser client, in two groups.

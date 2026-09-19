@@ -736,6 +736,10 @@ pub const EV_WOUNDED: u8 = 44;
 /// One per recovery, at most once per `wound::WOUND_MIN_TICKS` per body.
 pub const EV_RECOVERED: u8 = 45;
 
+/// Hand-revive progress, addressed to helper and target: a = helper id,
+/// b = wounded target id, c = elapsed ticks (0 cancels, ASSIST_TICKS completes).
+pub const EV_ASSIST: u8 = 46;
+
 /// The highest code above, named rather than counted: the event codes are
 /// `1..=EV_MAX` with no gaps, and `test_event_roles`'s coverage ledger
 /// scans that range. It lived in that test as a literal `25`, which meant a
@@ -743,7 +747,7 @@ pub const EV_RECOVERED: u8 = 45;
 /// classified it. Tying it to the last constant closes half of that; the
 /// other half is the ledger's own `every_event_code_is_in_range`, which
 /// parses this file and fails if a code is declared past this line.
-pub const EV_MAX: u8 = EV_RECOVERED;
+pub const EV_MAX: u8 = EV_ASSIST;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -1138,6 +1142,11 @@ pub struct Player {
     /// of zero would read as "recovered at tick 0" and refuse every fresh
     /// body its first wound for the shard's first minute. Hashed.
     pub rewound_until: u64,
+    /// Connection-local hand intent and target-owned progress. Hashed, but
+    /// discarded on leave/death/restore: a save cannot keep a key held.
+    pub assist_target: u32,
+    pub assist_by: u32,
+    pub assist_ticks: u16,
     /// The sub-point remainder of a burning torch (torch fuel v0,
     /// `light.rs`). Hundredths×ticks, drained against `light::BURN_DEN`.
     ///
@@ -1193,6 +1202,9 @@ impl Default for Player {
             wounded: false,
             wound_until: 0,
             rewound_until: 0,
+            assist_target: 0,
+            assist_by: 0,
+            assist_ticks: 0,
             light_acc: 0,
         }
     }
@@ -1210,6 +1222,11 @@ impl Default for Player {
 // exists to refuse. The size is priced, not accidental.
 #[allow(clippy::large_enum_variant)]
 pub enum Command {
+    /// Select a body for a held hand revive. BTN_ASSIST controls the hold.
+    Assist {
+        id: u32,
+        target: u32,
+    },
     Join {
         id: u32,
     },
@@ -2559,6 +2576,63 @@ impl World {
         );
     }
 
+    fn recover(&mut self, slot: usize, chance: u32) {
+        let q = &mut self.players[slot];
+        q.wounded = false;
+        q.wound_until = 0;
+        q.rewound_until = self.tick + crate::wound::REWOUND_TICKS;
+        q.death_by = 0;
+        q.death_cause = 0;
+        q.death_item = NO_ITEM;
+        q.death_range_cm = 0;
+        q.assist_by = 0;
+        q.assist_ticks = 0;
+        self.events.push(EV_RECOVERED, q.id, chance, q.hp as u32);
+    }
+
+    /// Validate before and after the player/combat steps. No slot ordering
+    /// can complete a revive after its helper moved or was hit this tick.
+    fn assist_valid(&mut self, helper: usize, target: usize) -> bool {
+        let (p, q) = (&self.players[helper], &self.players[target]);
+        if helper == target
+            || !p.active
+            || p.sleeping
+            || p.dead
+            || p.wounded
+            || !p.body.grounded
+            || !crate::assist::holding(&p.frame)
+            || !q.active
+            || q.dead
+            || !q.wounded
+            || q.sleeping
+            || p.assist_target != q.id
+        {
+            return false;
+        }
+        let ray = crate::assist::ray(&p.body, &p.frame);
+        let Some(enter) = crate::assist::aimed(&ray, &q.body) else {
+            return false;
+        };
+        let n = (ray.len_mm / crate::limits::ARROW_STEP_MM as f32) as usize + 1;
+        let (stop, _, _) = crate::ranged::world_stop(
+            self.seed,
+            &self.haven,
+            self.pieces.cols(),
+            &mut crate::occupy::Occupants {
+                table: &self.scatter,
+                haven: &self.haven,
+                harvested: &self.slot_lives,
+                cache: &mut self.slot_cache,
+            },
+            ray.o,
+            ray.s,
+            n,
+            n,
+            0.0,
+        );
+        enter < stop
+    }
+
     /// A down body's clock, one tick: nothing until `wound_until`, then the
     /// roll. Returns `true` if the roll made a corpse (the slot has been
     /// rebuilt and the caller must not touch it again this tick).
@@ -2581,16 +2655,7 @@ impl World {
             self.survival.max_water,
         );
         if crate::wound::recovers(self.seed, p.id, self.tick, chance) {
-            let q = &mut self.players[slot];
-            q.wounded = false;
-            q.wound_until = 0;
-            q.rewound_until = self.tick + crate::wound::REWOUND_TICKS;
-            q.death_by = 0;
-            q.death_cause = 0;
-            q.death_item = NO_ITEM;
-            q.death_range_cm = 0;
-            let hp = q.hp;
-            self.events.push(EV_RECOVERED, p.id, chance, hp as u32);
+            self.recover(slot, chance);
             return false;
         }
         self.die(
@@ -3049,6 +3114,9 @@ impl World {
                     wounded: s.wounded,
                     wound_until: s.wound_until,
                     rewound_until: s.rewound_until,
+                    assist_target: 0,
+                    assist_by: 0,
+                    assist_ticks: 0,
                     frame: InputFrame::default(),
                     next_swing: 0,
                     // Not from the save, and for `next_swing`'s reason one
@@ -3399,6 +3467,11 @@ impl World {
         catchup: &mut [Option<InputFrame>; MAX_PLAYERS],
     ) {
         match *cmd {
+            Command::Assist { id, target } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    self.players[slot].assist_target = target;
+                }
+            }
             Command::Join { id } => self.seat(id, None),
             Command::JoinAs { id, save } => self.seat(id, Some(save)),
             Command::Leave { id } => {
@@ -3409,6 +3482,9 @@ impl World {
                     let now = self.tick;
                     let p = &mut self.players[slot];
                     p.sleeping = true;
+                    p.assist_target = 0;
+                    p.assist_by = 0;
+                    p.assist_ticks = 0;
                     p.slept_at = now;
                     // The last input this body was carrying is dropped down
                     // to its facing. The step below zeroes a sleeper's frame
@@ -4022,6 +4098,32 @@ impl World {
         let mut catchup: [Option<InputFrame>; MAX_PLAYERS] = [None; MAX_PLAYERS];
         for cmd in commands.iter().take(MAX_COMMANDS_PER_TICK) {
             self.apply(cmd, &mut removals, &mut favour, &mut catchup);
+        }
+        // One helper per target. Existing ownership wins; otherwise lowest
+        // slot wins. Two hands never add their time together.
+        let mut assisting = [None; MAX_PLAYERS];
+        let before: [_; MAX_PLAYERS] =
+            core::array::from_fn(|i| (self.players[i].body, self.players[i].hp));
+        for (target, chosen) in assisting.iter_mut().enumerate() {
+            if !self.players[target].active || !self.players[target].wounded {
+                continue;
+            }
+            let previous = self.slot_of(self.players[target].assist_by);
+            if let Some(helper) = previous.filter(|&h| self.assist_valid(h, target)) {
+                *chosen = Some(helper);
+            } else {
+                for helper in 0..MAX_PLAYERS {
+                    if self.assist_valid(helper, target) {
+                        *chosen = Some(helper);
+                        break;
+                    }
+                }
+            }
+            if chosen.is_some() {
+                // Suspend exactly the time held. An interrupted attempt leaves
+                // the remaining wound window intact rather than rolling now.
+                self.players[target].wound_until += 1;
+            }
         }
         let seed = self.seed;
         let tick = self.tick;
@@ -4722,6 +4824,41 @@ impl World {
         // holds end-of-tick poses for `T` and during tick `T + 1` the ring
         // answers for `T` back to `T - REWIND_TICKS + 1`. Derived output:
         // it is not hashed and not saved (`rewind.rs`).
+        for (target, helper) in assisting.iter().copied().enumerate() {
+            let old = self.players[target].assist_by;
+            let helper = helper.filter(|&h| {
+                let (body, hp) = before[h];
+                let p = &self.players[h];
+                body.qx == p.body.qx
+                    && body.qy == p.body.qy
+                    && body.qz == p.body.qz
+                    && p.hp >= hp
+                    && self.assist_valid(h, target)
+                    && catchup[h].is_none_or(|f| crate::assist::holding(&f))
+            });
+            if let Some(helper) = helper {
+                let id = self.players[helper].id;
+                let q = &mut self.players[target];
+                if q.assist_by != id {
+                    q.assist_ticks = 0;
+                }
+                q.assist_by = id;
+                q.assist_ticks += 1;
+                let ticks = q.assist_ticks;
+                self.events.push(EV_ASSIST, id, q.id, ticks as u32);
+                if ticks == crate::assist::ASSIST_TICKS {
+                    self.players[helper].assist_target = 0;
+                    self.recover(target, 1000);
+                }
+            } else {
+                let q = &mut self.players[target];
+                if old != 0 {
+                    self.events.push(EV_ASSIST, old, q.id, 0);
+                }
+                q.assist_by = 0;
+                q.assist_ticks = 0;
+            }
+        }
         self.rewind.write_row(self.tick, &self.players);
         self.tick += 1;
         if self.tick.is_multiple_of(STATE_HASH_INTERVAL) {
@@ -4830,6 +4967,9 @@ impl World {
             wb[0] = p.wounded as u8;
             wb[1..9].copy_from_slice(&p.wound_until.to_le_bytes());
             wb[9..17].copy_from_slice(&p.rewound_until.to_le_bytes());
+            h.update(&p.assist_target.to_le_bytes());
+            h.update(&p.assist_by.to_le_bytes());
+            h.update(&p.assist_ticks.to_le_bytes());
             h.update(&wb);
             for s in p.inv.iter() {
                 let mut sb = [0u8; 6];

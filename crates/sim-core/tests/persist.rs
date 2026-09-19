@@ -730,7 +730,10 @@ mod carried_through_death {
     /// a field a death is *allowed* to erase — the inventory (the backpack
     /// takes it), the meters and health (a respawn is a whole body), the
     /// craft queue, the weak-spot chase, and the death record itself.
-    pub const RE_DERIVED: [&str; 32] = [
+    pub const RE_DERIVED: [&str; 35] = [
+        "assist_target",
+        "assist_by",
+        "assist_ticks", // an interrupted hand hold
         "body",
         "inv",
         // **The corpse does not keep its plates.** `worn` is here rather

@@ -35,14 +35,15 @@ try {
 }
 
 const { instance } = await WebAssembly.instantiate(bytes, {});
-const { probe_terrain, probe_sites, probe_parity, probe_combat, probe_bags } =
+const { probe_terrain, probe_sites, probe_parity, probe_combat, probe_bags, probe_assist } =
   instance.exports;
 if (
   typeof probe_terrain !== "function" ||
   typeof probe_sites !== "function" ||
   typeof probe_parity !== "function" ||
   typeof probe_combat !== "function" ||
-  typeof probe_bags !== "function"
+  typeof probe_bags !== "function" ||
+  typeof probe_assist !== "function"
 ) {
   console.error("GATE FAIL: probe exports missing from sim_core.wasm");
   process.exit(1);
@@ -84,3 +85,6 @@ const bagsHex = "0x" + (b & 0xffffffffn).toString(16).padStart(8, "0");
 console.log(
   `bags ${hex(PARITY_MASTER_SEED)} ${BAGS_SEQUENCES} ${BAGS_TICKS} ${b >> 32n} ${bagsHex}`,
 );
+
+const assist = BigInt.asUintN(64, probe_assist(PARITY_MASTER_SEED));
+console.log(`assist ${hex(PARITY_MASTER_SEED)} ${assist >> 32n} 0x${(assist & 0xffffffffn).toString(16).padStart(8, "0")}`);

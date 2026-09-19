@@ -327,6 +327,8 @@ pub struct ClientNetState {
     /// One decoded C→S action awaiting its command slot (the sim drains
     /// the ring only into an empty hand — defer, never drop).
     pub pending_action: Option<ActionMsg>,
+    /// Last help state successfully queued. A failed cancellation retries.
+    pub last_assist: (u32, u32, u16),
     /// One decoded C→S chat line awaiting its fan-out. Unlike the action
     /// hand this is never deferred: chat is not a transaction, so a line
     /// that can't be said this tick is dropped rather than held (the
@@ -394,6 +396,7 @@ impl ClientNetState {
             last_wear: [ItemStack::default(); WEAR_SLOTS],
             wear_reset: true,
             pending_action: None,
+            last_assist: (0, 0, 0),
             pending_chat: None,
             last_jobs: [CraftJob::default(); CRAFT_QUEUE],
             last_done_at: 0,

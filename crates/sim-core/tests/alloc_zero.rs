@@ -458,6 +458,7 @@ fn test_alloc_zero() {
         "the staged bag did not place — the fixture, not the gate"
     );
 
+    let mut assisted_world = sim_core::probe::assist_probe_world(42);
     let a0 = ALLOCS.load(Ordering::SeqCst);
     let f0 = FREES.load(Ordering::SeqCst);
 
@@ -742,12 +743,19 @@ fn test_alloc_zero() {
             }
         }
     }
+    // A real held/released/completed hand revive, inside the counted window.
+    let assisted = sim_core::probe::run_assist_probe(&mut assisted_world);
     // The hash path must be allocation-free too.
     let h = world.state_hash();
     assert_ne!(h, 0);
 
     let alloc_delta = ALLOCS.load(Ordering::SeqCst) - a0;
     let free_delta = FREES.load(Ordering::SeqCst) - f0;
+    assert_eq!(
+        assisted >> 32,
+        1,
+        "the measured hand hold must recover a body"
+    );
 
     // Read after the counters are captured, so the checks themselves can
     // never be what a future reader blames a nonzero delta on. These are

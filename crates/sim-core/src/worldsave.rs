@@ -962,6 +962,10 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             wounded: save.wounded,
             wound_until: save.wound_until,
             rewound_until: save.rewound_until,
+            // Restored bodies are sleepers; no connection keeps E held.
+            assist_target: 0,
+            assist_by: 0,
+            assist_ticks: 0,
             // No `..Player::default()`, and clippy is what pointed it out:
             // every field is named, so the struct-update syntax was a
             // no-op. Left named on purpose now that it is — **a field added

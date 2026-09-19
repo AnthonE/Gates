@@ -1211,3 +1211,82 @@ pub extern "C" fn probe_combat(master_seed: u64, sequences: u32, ticks: u32) -> 
     h.update(&shots.to_le_bytes());
     ((rewound as u64) << 32) | (h.digest() & 0xFFFF_FFFF)
 }
+
+/// A released hold followed by a complete hand revive. The upper word counts
+/// actual recoveries; the lower word hashes progress, cancellation and state.
+/// Both the parity driver and allocation gate use this live write path.
+#[no_mangle]
+pub extern "C" fn probe_assist(seed: u64) -> u64 {
+    run_assist_probe(&mut assist_probe_world(seed))
+}
+
+/// Startup fixture kept outside the allocation gate's measured window.
+pub fn assist_probe_world(seed: u64) -> World {
+    use crate::movement::{Body, POS_XZ_Q};
+    let mut w = World::new(seed);
+    w.combat = crate::combat::CombatContent::probe_fixture();
+    w.dev_spawn = Some(w.spawn_pos(1));
+    w.tick(&[Command::Join { id: 1 }, Command::Join { id: 2 }]);
+    let a = w.players[0].body;
+    w.players[1].body = Body::at(
+        seed,
+        &w.haven,
+        a.qx as f32 * POS_XZ_Q,
+        a.qz as f32 * POS_XZ_Q + 1.5,
+    );
+    w.tick(&[]);
+    w.players[1].hp = crate::wound::WOUNDED_HP;
+    w.players[1].wounded = true;
+    // The first hold crosses this deadline; releasing must leave time for
+    // another attempt rather than rolling immediately on the old deadline.
+    w.players[1].wound_until = w.tick + 2;
+    w
+}
+
+/// Execute only ticks and hashes; construction belongs to `assist_probe_world`.
+pub fn run_assist_probe(w: &mut World) -> u64 {
+    use crate::input::{InputFrame, BTN_ASSIST};
+    use crate::movement::{POS_XZ_Q, POS_Y_Q};
+    let mut hash = Xxh3::new();
+    let mut recovered = 0u64;
+    for t in 0..crate::assist::ASSIST_TICKS + 46 {
+        let (a, b) = (w.players[0].body, w.players[1].body);
+        let run = (b.qz - a.qz) as f32 * POS_XZ_Q;
+        let rise = (b.qy - a.qy) as f32 * POS_Y_Q + 0.3 - 1.6;
+        let mut pitch = 0;
+        let mut best = f32::MIN;
+        for candidate in 0..=255u8 {
+            let (c, s) = crate::pitch_dir(candidate);
+            let dot = c * run + s * rise;
+            if dot > best {
+                best = dot;
+                pitch = candidate;
+            }
+        }
+        w.tick(&[
+            Command::Assist { id: 1, target: 2 },
+            Command::Input {
+                id: 1,
+                favour: 0,
+                frame: InputFrame {
+                    seq: t,
+                    yaw: 0,
+                    pitch,
+                    buttons: if t == 45 { 0 } else { BTN_ASSIST },
+                    ..InputFrame::default()
+                },
+            },
+        ]);
+        for e in w.events.entries() {
+            if e.code == crate::world::EV_RECOVERED && e.a == 2 {
+                recovered += 1;
+            }
+            hash.update(&[e.code]);
+            hash.update(&e.a.to_le_bytes());
+            hash.update(&e.b.to_le_bytes());
+            hash.update(&e.c.to_le_bytes());
+        }
+        hash.update(&w.state_hash().to_le_bytes());
+    }
+    (recovered << 32) | (hash.digest() & 0xFFFF_FFFF)
+}

@@ -101,7 +101,13 @@ pub fn overlay(
         (false, None) => {}
         (true, None) => spawn(&mut commands, &crawl),
         (true, Some(_)) => {
-            crawl.secs_left = (crawl.secs_left - time.delta_secs()).max(0.0);
+            let (_, target, ticks) = net.session.core.assist;
+            let helping = target == net.session.core.player_id
+                && ticks > 0
+                && ticks < sim_core::assist::ASSIST_TICKS;
+            if !helping {
+                crawl.secs_left = (crawl.secs_left - time.delta_secs()).max(0.0);
+            }
             let whole = crawl.secs_left.ceil() as u32;
             if whole != crawl.shown {
                 crawl.shown = whole;

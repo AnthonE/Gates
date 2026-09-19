@@ -9,8 +9,8 @@ use crate::interest::{self, PIECE_SCAN_BATCH};
 use crate::stats::{self, ShardStats, FAVOUR_DISAGREE_BAND_TICKS};
 use crate::store::PlayerKey;
 use protocol::{
-    encode_event_auth, encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
-    encode_event_bags, encode_event_build_refused, encode_event_catalog,
+    encode_event_assist, encode_event_auth, encode_event_bag_dropped, encode_event_bag_removed,
+    encode_event_bag_sync, encode_event_bags, encode_event_build_refused, encode_event_catalog,
     encode_event_charge_placed, encode_event_chat, encode_event_consume_refused,
     encode_event_consumed, encode_event_cont_sync, encode_event_craft_done, encode_event_craft_q,
     encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
@@ -45,7 +45,7 @@ use sim_core::mob;
 use sim_core::persist::PlayerSave;
 use sim_core::survival::REFUSE_C_MAX;
 use sim_core::world::{
-    Command, Player, World, DEATH_BY_CLOCK, EV_AUTH, EV_BAG_DROPPED, EV_BAG_REMOVED,
+    Command, Player, World, DEATH_BY_CLOCK, EV_ASSIST, EV_AUTH, EV_BAG_DROPPED, EV_BAG_REMOVED,
     EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE,
     EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
     EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_HURT, EV_IMPACT, EV_KNOCK,
@@ -984,6 +984,7 @@ impl ShardCore {
                             continue;
                         }
                     }
+                    ActionMsg::Assist { target } => Command::Assist { id: c.id, target },
                     ActionMsg::Craft { recipe, count } => Command::Craft {
                         id: c.id,
                         recipe,
@@ -2042,6 +2043,10 @@ impl ShardCore {
                         Err(_) => ShardStats::bump(&stats.encode_range_errors),
                     }
                 }
+                // Progress is a diff against authoritative state in drip_client,
+                // including zero after a release. A lost event must not leave
+                // a participant's countdown suspended forever.
+                EV_ASSIST => {}
                 EV_WOUNDED | EV_RECOVERED => {
                     // Own-fact, `EV_RESPAWN`'s audience and its posture
                     // (wounded v0): the one body on the ground is the only
@@ -2771,6 +2776,35 @@ impl ShardCore {
         stats: &ShardStats,
         send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
     ) {
+        let assist = self.live_wslot(slot).map_or((0, 0, 0), |wslot| {
+            let p = &self.world.players[wslot];
+            if p.assist_by != 0 {
+                (p.assist_by, p.id, p.assist_ticks)
+            } else if p.assist_target != 0 {
+                Self::world_slot_of(&self.world, p.assist_target)
+                    .filter(|&target| self.world.players[target].assist_by == p.id)
+                    .map_or((0, 0, 0), |target| {
+                        let q = &self.world.players[target];
+                        (p.id, q.id, q.assist_ticks)
+                    })
+            } else {
+                (0, 0, 0)
+            }
+        });
+        if assist != self.clients[slot].last_assist {
+            match encode_event_assist(assist.0, assist.1, assist.2, &mut self.ev_buf) {
+                Ok(len) => {
+                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                        self.clients[slot].last_assist = assist;
+                        ShardStats::bump(&stats.ev_sent);
+                    } else {
+                        return;
+                    }
+                }
+                Err(_) => ShardStats::bump(&stats.encode_range_errors),
+            }
+        }
+
         // Catalog: names first — toasts and hotbar labels want them early.
         let c = &self.clients[slot];
         if self.catalog.count > 0 && c.catalog_cursor < self.catalog.count as usize {

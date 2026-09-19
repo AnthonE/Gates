@@ -474,6 +474,26 @@ a check**. We start where they ended (Building 3.0):
   despawns oldest-lowest-tier first, loudly in the log. A loot-fountain
   griefer hits the cap, not the tick budget.
 
+### 6.5 · Helping a wounded player
+
+Hand revive v0 (wire v66) combines reliable target selection (`Assist`,
+player id; zero releases) with a fresh input level (`BTN_ASSIST`, bit 5).
+The six-second counter belongs to the target. Reused/decayed input clears
+the level, so a suspended client cannot finish a hold by silence. The sim
+checks grounded, stationary helper movement, live wounded target, quantized
+aim and world cover before and after combat; a damaging debit ends the
+gesture even if healing hides the net hp loss on that tick.
+
+Each connected participant receives its current `(helper, target, ticks)`
+only when it differs from the last successfully queued value. All-zero
+clears the hold. A failed send leaves the shadow unchanged and retries on
+the next tick, including cancellation when nobody is holding any more.
+Bystanders receive the existing wounded snapshot bit. Recovery uses the
+existing own `Recovered` fact. The three hold fields are hashed sim state
+while connected, but a save/restore or sleep clears the gesture; no save
+format changes. `server/tests/assist_wire.rs` exercises real input/action/
+event bytes and both a lost progress update and a lost cancellation.
+
 ## 7 · Interest management (both classes, one grid)
 
 The 64 m grid serves both pipelines: class D snapshot membership *and*

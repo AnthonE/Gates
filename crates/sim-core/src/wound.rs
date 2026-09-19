@@ -15,8 +15,9 @@
 //! decides and this file never touches the queue, the corpse or the clock.
 //! It is *not* the second, incapacitated state the reference keeps for
 //! three triggers this game does not have (being looted alive, a fall, deep
-//! water — `WOUNDED.md` §2.1), not the six-second hands-on revive, not the
-//! syringe, not the medkit-in-belt rule. `WOUNDED.md` §9.6 stages those.
+//! water — `WOUNDED.md` §2.1). The six-second hand revive lives in `assist`
+//! and `World::tick`; the syringe and medkit-in-belt rule remain staged in
+//! `WOUNDED.md` §9.6.
 //!
 //! Wall 1: integer arithmetic and `rng::cell_hash` only. Wall 5: every
 //! random draw is keyed on `(seed, player id, tick)`, so a replay rolls the

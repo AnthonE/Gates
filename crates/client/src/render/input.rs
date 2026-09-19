@@ -41,7 +41,7 @@
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit};
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
-use sim_core::input::{BTN_CROUCH, BTN_JUMP, BTN_LIGHT, BTN_PRIMARY, BTN_SPRINT};
+use sim_core::input::{BTN_ASSIST, BTN_CROUCH, BTN_JUMP, BTN_LIGHT, BTN_PRIMARY, BTN_SPRINT};
 
 use crate::look::{self, FREE_LOOK_YAW_LIMIT, MOUSE_RAD_PER_PX, PITCH_LIMIT};
 
@@ -82,6 +82,8 @@ pub fn gather(
     mut look: ResMut<Look>,
     mut cursor: Query<&mut CursorOptions, With<PrimaryWindow>>,
     settings: Res<super::settings::Settings>,
+    aimed: Option<Res<super::verbs::Aimed>>,
+    screen: Option<Res<State<super::Screen>>>,
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
@@ -412,6 +414,17 @@ pub fn gather(
     }
     if net.light {
         buttons |= BTN_LIGHT;
+    }
+    if !downed
+        && keys.pressed(KeyCode::KeyE)
+        && screen
+            .as_ref()
+            .is_some_and(|s| *s.get() == super::Screen::InWorld)
+        && aimed
+            .as_ref()
+            .is_some_and(|a| a.0.verb == crate::ui::interact::Verb::Assist)
+    {
+        buttons |= BTN_ASSIST;
     }
     if downed {
         buttons &= !(BTN_SPRINT | BTN_JUMP);

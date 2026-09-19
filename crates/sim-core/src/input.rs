@@ -63,10 +63,14 @@ pub const BTN_JUMP: u8 = 1 << 3;
 /// `HELD_MODELS` row, and the `cond` `SUB_INV` gives it).
 pub const BTN_LIGHT: u8 = 1 << 4;
 
-/// Every button bit the sim means — the closed set of the five above.
+/// A live hand-revive hold, cleared by the first starved input reuse.
+/// The reliable Assist action names the target; this bit owns its lifetime.
+pub const BTN_ASSIST: u8 = 1 << 5;
+
+/// Every button bit the sim means — the closed set of the six above.
 ///
 /// The wire carries `buttons` as a full unmasked octet (see the JUMP note),
-/// so bits 5–7 cross intact and mean nothing: no verb reads them, but
+/// so bits 6–7 cross intact and mean nothing: no verb reads them, but
 /// `state_hash` hashes the stored frame, so an unmasked garbage bit would be
 /// client-writable state that no rule owns (NOW.md §5b's forgery slack).
 /// The server refuses a wire frame carrying one (`net.rs` `accept_input`);
@@ -74,7 +78,7 @@ pub const BTN_LIGHT: u8 = 1 << 4;
 /// A new button joins this mask in the same commit that declares its bit,
 /// or every press of it is refused at the door;
 /// `tests/domain_ledger.rs` fails if the two drift apart.
-pub const BTN_MASK: u8 = BTN_SPRINT | BTN_CROUCH | BTN_PRIMARY | BTN_JUMP | BTN_LIGHT;
+pub const BTN_MASK: u8 = BTN_SPRINT | BTN_CROUCH | BTN_PRIMARY | BTN_JUMP | BTN_LIGHT | BTN_ASSIST;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct InputFrame {

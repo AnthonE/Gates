@@ -6,7 +6,9 @@
 // format/print in SIM code; an example binary is not sim code.
 #![allow(clippy::disallowed_macros)]
 
-use sim_core::probe::{probe_bags, probe_combat, probe_parity, probe_sites, probe_terrain};
+use sim_core::probe::{
+    probe_assist, probe_bags, probe_combat, probe_parity, probe_sites, probe_terrain,
+};
 
 // Keep in lockstep with ci/parity.mjs — a mismatch shows up as a diff.
 const TERRAIN_SEEDS: [u64; 3] = [0x0047_4154_4553, 0x1, 0xDEAD_BEEF];
@@ -56,5 +58,11 @@ fn main() {
         "bags {PARITY_MASTER_SEED:#018x} {BAGS_SEQUENCES} {BAGS_TICKS} {} {:#010x}",
         bags >> 32,
         bags & 0xFFFF_FFFF
+    );
+    let assist = probe_assist(PARITY_MASTER_SEED);
+    println!(
+        "assist {PARITY_MASTER_SEED:#018x} {} {:#010x}",
+        assist >> 32,
+        assist & 0xFFFF_FFFF
     );
 }

@@ -351,7 +351,9 @@ const SUB_RECOVERED: u32 = 57;
 /// stack is and how many**, because a loose stack has no panel to open and
 /// the client has to draw and name the thing itself.
 const SUB_GITEM_SYNC: u32 = 58;
-const SUB_MAX: u32 = SUB_GITEM_SYNC;
+/// Help progress/clear state, visible only to the two participants (v66).
+const SUB_ASSIST: u32 = 59;
+const SUB_MAX: u32 = SUB_ASSIST;
 /// Width of the recovery chance on both wounded messages: per mille, so
 /// 0..=1000 in ten bits. `sim_core::wound::recover_chance_pm` tops out at
 /// 450 by construction; the field is sized to the unit rather than to
@@ -775,6 +777,14 @@ impl Default for ItemCatalog {
 /// so equality is well-defined (the goldens compare decoded values).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EventMsg {
+    /// Absolute hand-revive progress for its two participants. All-zero
+    /// fields clear a prior hold; recovery is the existing `Recovered` fact.
+    /// Neither side accumulates network arrivals.
+    Assist {
+        helper: u32,
+        target: u32,
+        ticks: u16,
+    },
     /// Own gather payout: `added` units of `item` landed (or 0 — full
     /// inventory). The toast, not the truth: `Inv` is authoritative.
     Gather { item: u16, added: u16 },
@@ -2886,8 +2896,24 @@ pub fn encode_event_wounded(
     Ok(w.finish())
 }
 
-/// A body got up, own-fact — see `EventMsg::Recovered`. Same bound on the
-/// chance as `encode_event_wounded`.
+/// Absolute help state for a participant; all-zero fields clear a prior hold.
+pub fn encode_event_assist(
+    helper: u32,
+    target: u32,
+    ticks: u16,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if ticks > sim_core::assist::ASSIST_TICKS {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_ASSIST)?;
+    w.write(helper, 32)?;
+    w.write(target, 32)?;
+    w.write(ticks as u32, 16)?;
+    Ok(w.finish())
+}
+
+/// A body got up, own-fact — see `EventMsg::Recovered`.
 pub fn encode_event_recovered(chance_pm: u16, hp: u16, buf: &mut [u8]) -> Result<usize, WireError> {
     if chance_pm as u32 > CHANCE_PM_MAX {
         return Err(WireError::Range);
@@ -3767,6 +3793,19 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 return Err(WireError::Malformed);
             }
             EventMsg::Wounded { ticks, chance_pm }
+        }
+        SUB_ASSIST => {
+            let helper = r.read(32)?;
+            let target = r.read(32)?;
+            let ticks = r.read(16)? as u16;
+            if ticks > sim_core::assist::ASSIST_TICKS {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Assist {
+                helper,
+                target,
+                ticks,
+            }
         }
         SUB_RECOVERED => {
             let chance_pm = r.read(CHANCE_PM_BITS)? as u16;
@@ -5250,6 +5289,10 @@ mod wire_domains {
     /// and that list disagree in either direction.
     const SOURCES: &[Module] = &[
         Module {
+            file: "assist.rs",
+            src: include_str!("../../sim-core/src/assist.rs"),
+        },
+        Module {
             file: "lib.rs",
             src: include_str!("../../sim-core/src/lib.rs"),
         },
@@ -6382,6 +6425,38 @@ mod wire_domains {
                 EventMsg::Known { mask },
                 "the blueprint mask {mask:#x} did not survive the wire"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod assist_bounds {
+    use super::*;
+    #[test]
+    fn progress_has_one_domain_on_both_sides_of_the_wire() {
+        let mut buf = [0; 32];
+        for ticks in [0, 1, sim_core::assist::ASSIST_TICKS] {
+            let n = encode_event_assist(11, 22, ticks, &mut buf).unwrap();
+            assert_eq!(
+                decode_event(&buf[..n]).unwrap(),
+                EventMsg::Assist {
+                    helper: 11,
+                    target: 22,
+                    ticks
+                }
+            );
+        }
+        for ticks in [sim_core::assist::ASSIST_TICKS + 1, u16::MAX] {
+            assert_eq!(
+                encode_event_assist(11, 22, ticks, &mut buf),
+                Err(WireError::Range)
+            );
+            let mut w = begin(&mut buf, SUB_ASSIST).unwrap();
+            w.write(11, 32).unwrap();
+            w.write(22, 32).unwrap();
+            w.write(ticks as u32, 16).unwrap();
+            let n = w.finish();
+            assert_eq!(decode_event(&buf[..n]), Err(WireError::Malformed));
         }
     }
 }

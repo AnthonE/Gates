@@ -192,6 +192,22 @@ pub fn resolve(
         }
         None => (SwingPick::default(), false),
     };
+    if !core.wounded && !core.dead {
+        let help = interact::resolve_assist(
+            SwingAim {
+                x,
+                y,
+                z,
+                yaw,
+                pitch,
+            },
+            core.player_id,
+            &core.view.entities,
+        );
+        if !help.is_none() && (aimed.0.is_none() || help.d2 < aimed.0.d2) {
+            aimed.0 = help;
+        }
+    }
     // A loose stack (ground items v0), last of the three `E` picks.
     //
     // **Outside the island block on purpose**: `core.island()` holds the
@@ -244,6 +260,11 @@ pub fn keys(
     chat: Option<Res<super::chat::Chat>>,
 ) {
     let mut ui = ui;
+    if keys.just_released(KeyCode::KeyE) {
+        send(&net, &mut toast, "release help", |buf| {
+            protocol::encode_action_assist(0, buf)
+        });
+    }
     if ui
         .as_ref()
         .map(|u| u.panel.grabs_pointer())
@@ -397,6 +418,11 @@ pub fn keys(
 /// Dispatch `E` on the resolved pick.
 fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>) {
     match pick.verb {
+        Verb::Assist => {
+            send(net, toast, "help up", |buf| {
+                protocol::encode_action_assist(pick.handle, buf)
+            });
+        }
         Verb::Door => {
             let (cx, cz, level, loc) = (pick.cx, pick.cz, pick.level, pick.loc);
             if send(net, toast, "use", |buf| {

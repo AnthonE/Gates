@@ -117,6 +117,7 @@ pub enum Verb {
     /// proximity token: the first deployable a player could place and
     /// not press.
     TechTree,
+    Assist,
 }
 
 impl Verb {
@@ -159,6 +160,7 @@ impl Verb {
             // cannot tie with anything this function orders. The rung
             // exists so the order stays total.
             Verb::Take => 10,
+            Verb::Assist => 11,
         }
     }
 
@@ -181,6 +183,7 @@ impl Verb {
             // one place a generic word is not enough (the sack on the
             // ground is the same mesh whatever is in it).
             Verb::Take => "ITEM",
+            Verb::Assist => "WOUNDED PLAYER",
         }
     }
 }
@@ -264,6 +267,10 @@ impl Pick {
     pub fn prompt(&self, catalog: &ItemCatalog) -> String {
         match self.verb {
             Verb::None => String::new(),
+            Verb::Assist => format!(
+                "HOLD [E] HELP UP · {} s · STAY STILL",
+                sim_core::assist::ASSIST_TICKS / sim_core::limits::TICK_HZ as u16
+            ),
             Verb::Door => format!(
                 "[E] {} DOOR{}",
                 if self.open { "CLOSE" } else { "OPEN" },
@@ -1070,4 +1077,106 @@ pub fn in_weak_sector(px: f32, pz: f32, nx: f32, nz: f32, mark8: u8) -> bool {
 /// first swing at a fresh node and the hit that announces its mark.
 pub fn mark_is_for(mark_cell: u32, pick: &SwingPick) -> bool {
     mark_cell != NO_CELL && pick.occupant != 0 && mark_cell == cell_key(pick.cx, pick.cz)
+}
+
+/// A downed body is an aimed E target. A nearby loose stack is still the
+/// fallback; it must not absorb the help gesture beside a dropped weapon.
+pub fn resolve_assist(aim: SwingAim, own: u32, entities: &[(u32, protocol::EntityState)]) -> Pick {
+    use sim_core::movement::{quant_xz, quant_y, Body};
+    let body = Body {
+        qx: quant_xz(aim.x),
+        qy: quant_y(aim.y),
+        qz: quant_xz(aim.z),
+        ..Default::default()
+    };
+    let ray = sim_core::assist::ray(
+        &body,
+        &sim_core::input::InputFrame {
+            yaw: aim.yaw,
+            pitch: aim.pitch,
+            ..Default::default()
+        },
+    );
+    let mut best = Pick::default();
+    let mut distance = f32::MAX;
+    for &(id, e) in entities {
+        if id == own || !e.wounded || e.dead || e.sleeping {
+            continue;
+        }
+        let target = Body {
+            qx: e.qx,
+            qy: e.qy,
+            qz: e.qz,
+            ..Default::default()
+        };
+        if let Some(t) = sim_core::assist::aimed(&ray, &target) {
+            if t < distance || (t == distance && id < best.handle) {
+                distance = t;
+                best = Pick {
+                    verb: Verb::Assist,
+                    handle: id,
+                    aimed: true,
+                    d2: (t * sim_core::assist::ASSIST_REACH_M).powi(2),
+                    ..Default::default()
+                };
+            }
+        }
+    }
+    best
+}
+
+#[cfg(test)]
+mod assist_tests {
+    use super::*;
+    use sim_core::movement::{quant_xz, quant_y};
+
+    #[test]
+    fn hand_help_requires_aim_and_live_wounded_presence() {
+        let aim = SwingAim {
+            x: 10.0,
+            y: 0.0,
+            z: 10.0,
+            yaw: 0,
+            pitch: 128,
+        };
+        let target = protocol::EntityState {
+            qx: quant_xz(10.0),
+            qy: quant_y(0.0),
+            qz: quant_xz(11.5),
+            wounded: true,
+            ..Default::default()
+        };
+        let pick = resolve_assist(aim, 1, &[(2, target)]);
+        assert_eq!(pick.verb, Verb::Assist);
+        assert_eq!(pick.handle, 2);
+        assert!(pick.aimed);
+        assert!(pick.prompt(&ItemCatalog::EMPTY).contains("HOLD [E]"));
+        assert!(resolve_assist(aim, 2, &[(2, target)]).is_none());
+        for absent in [
+            protocol::EntityState {
+                wounded: false,
+                ..target
+            },
+            protocol::EntityState {
+                dead: true,
+                ..target
+            },
+            protocol::EntityState {
+                sleeping: true,
+                ..target
+            },
+            protocol::EntityState {
+                qz: quant_xz(14.0),
+                ..target
+            },
+        ] {
+            assert!(resolve_assist(aim, 1, &[(2, absent)]).is_none());
+        }
+        assert!(resolve_assist(SwingAim { yaw: 32768, ..aim }, 1, &[(2, target)]).is_none());
+        // Identity breaks an exact geometric tie, independent of arrival order.
+        assert_eq!(
+            resolve_assist(aim, 1, &[(3, target), (2, target)]).handle,
+            2
+        );
+    }
 }

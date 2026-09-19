@@ -94,7 +94,7 @@ use sim_core::ranged::SURF_GROUND;
 use sim_core::survival::{SurvivalContent, DRINK_REACH_M, REFUSE_C_NOT_FOOD, REFUSE_C_NO_WATER};
 use sim_core::terrain;
 use sim_core::world::{
-    Command, SimEvent, World, DEATH_BY_MAX, EV_AUTH, EV_BAG_DROPPED, EV_BAG_REMOVED,
+    Command, SimEvent, World, DEATH_BY_MAX, EV_ASSIST, EV_AUTH, EV_BAG_DROPPED, EV_BAG_REMOVED,
     EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE,
     EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
     EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_HURT, EV_IMPACT, EV_KNOCK,
@@ -4013,7 +4013,7 @@ fn swing_names_the_swinger_and_nothing_else() {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 45] = [
+    const COVERED: [(&str, u8); 46] = [
         ("EV_GATHER", EV_GATHER),
         ("EV_GATHER_REFUSED", EV_GATHER_REFUSED),
         ("EV_SLOT_HARVESTED", EV_SLOT_HARVESTED),
@@ -4059,6 +4059,7 @@ fn coverage_is_stated_not_implied() {
         ("EV_RELOAD_REFUSED", EV_RELOAD_REFUSED),
         ("EV_WOUNDED", EV_WOUNDED),
         ("EV_RECOVERED", EV_RECOVERED),
+        ("EV_ASSIST", EV_ASSIST),
     ];
     /// What is knowingly still byte-golden only: nothing, since the last
     /// five landed. The seat stays — named, not just counted — so the next
@@ -5100,4 +5101,36 @@ fn trust_verbs_and_presences_are_closed_ledgers() {
             );
         }
     }
+}
+
+#[test]
+fn assist_fields_name_the_helper_target_and_elapsed_ticks() {
+    let mut w = duel_world();
+    w.players[1].wounded = true;
+    w.players[1].hp = sim_core::wound::WOUNDED_HP;
+    w.players[1].wound_until = w.tick + 100;
+    for n in 0..4 {
+        w.tick(&[
+            Command::Assist {
+                id: ATTACKER,
+                target: VICTIM,
+            },
+            Command::Input {
+                id: ATTACKER,
+                frame: InputFrame {
+                    seq: n,
+                    buttons: sim_core::input::BTN_ASSIST,
+                    yaw: 0,
+                    pitch: aim_at(&w, 0, 1),
+                    ..Default::default()
+                },
+                favour: 0,
+            },
+        ]);
+    }
+    let e = only(&w, EV_ASSIST);
+    distinct3(e, "EV_ASSIST");
+    assert_eq!(e.a, ATTACKER);
+    assert_eq!(e.b, VICTIM);
+    assert_eq!(e.c, 4);
 }

@@ -2245,6 +2245,17 @@ pub fn prompt(
         // outranks it.
         let want = if pad.0.is_open() {
             String::new()
+        } else if aimed.0.verb == crate::ui::interact::Verb::Assist
+            && net.session.core.assist.0 == net.session.core.player_id
+            && net.session.core.assist.1 == aimed.0.handle
+            && net.session.core.assist.2 > 0
+        {
+            let remaining =
+                sim_core::assist::ASSIST_TICKS.saturating_sub(net.session.core.assist.2);
+            format!(
+                "HELPING UP · {:.1} s · HOLD [E] · STAY STILL",
+                remaining as f32 / sim_core::limits::TICK_HZ as f32
+            )
         } else {
             match aimed.0.prompt(&net.session.core.catalog) {
                 s if !s.is_empty() => s,

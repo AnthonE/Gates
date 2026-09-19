@@ -1080,6 +1080,11 @@ fn debit(v: &mut Player, raw: u16) -> Hurt {
     // funnel to hold it.
     let died = before > 0 && raw >= before;
     v.hp = before - dealt;
+    if dealt > 0 {
+        // Damage ends the help gesture even if a heal on this same tick
+        // leaves hp above its starting value. The helper must press E again.
+        v.assist_target = 0;
+    }
     // **Not counted here any more** (wounded v0). This is where the count
     // lived while a lethal debit and a corpse were the same event; a lethal
     // debit from a swing, a bite or a body shot now lays the body down

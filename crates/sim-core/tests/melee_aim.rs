@@ -792,3 +792,45 @@ fn the_two_luts_are_the_ones_the_tests_assume() {
     let (_, down) = sim_core::pitch_dir(0);
     assert!(down < -0.999, "pitch 0 is not straight down");
 }
+
+/// The assist uses the same world obstruction as a swing: prove the hold
+/// starts on clear ground, then put an actual wall in that very ray.
+#[test]
+fn a_wall_interrupts_the_hand_helping_the_body_behind_it() {
+    let mut w = duel();
+    let (cx, cz) = two_at_a_buildable_edge(&mut w);
+    w.players[1].wounded = true;
+    w.players[1].hp = sim_core::wound::WOUNDED_HP;
+    w.players[1].wound_until = w.tick + 900;
+    let pitch = look_at_height(&w, 1.0);
+    let held = InputFrame {
+        yaw: YAW_PLUS_X,
+        pitch,
+        buttons: sim_core::input::BTN_ASSIST,
+        ..Default::default()
+    };
+    w.tick(&[
+        Command::Assist { id: 1, target: 2 },
+        Command::Input {
+            id: 1,
+            frame: held,
+            favour: 0,
+        },
+    ]);
+    assert_eq!(
+        w.players[1].assist_ticks, 1,
+        "clear ground must permit help"
+    );
+    place_at(&mut w, cx, cz, PIECE_WALL, LOC_EDGE_XLO);
+    w.tick(&[Command::Input {
+        id: 1,
+        frame: held,
+        favour: 0,
+    }]);
+    assert!(w.pieces.find(cx, cz, GROUND, LOC_EDGE_XLO).is_some());
+    assert!(w.players[1].wounded);
+    assert_eq!(
+        w.players[1].assist_ticks, 0,
+        "help must not pass through a wall"
+    );
+}

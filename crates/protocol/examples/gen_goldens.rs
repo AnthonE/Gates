@@ -247,6 +247,10 @@ fn main() {
     let (reset, recs) = goldens::event_gitem_sync();
     let len = encode_event_gitem_sync(reset, &recs, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[107], &buf[..len]);
+    let len = protocol::encode_action_assist(0x12345678, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[108], &buf[..len]);
+    let len = protocol::encode_event_assist(0x10203040, 0x12345678, 83, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[109], &buf[..len]);
 
     let (id, why) = goldens::event_bag_removed();
     let len = encode_event_bag_removed(id, why, &mut buf).unwrap();

@@ -508,8 +508,9 @@ const TICKS: u64 = 900;
 /// every site chosen on it moved with it — the run is played on a different
 /// island and ends in a different state. Deliberate, regenerated in the
 /// commit that caused it.
-// 2026-09-19: intentional road bench terrain change.
-const GOLDEN_FINAL_HASH: u64 = 0x8A036A527E77BF4C;
+// 2026-09-19: road grading changes generated ground; hand-revive
+// intent/progress also enter the deterministic Player hash.
+const GOLDEN_FINAL_HASH: u64 = 0xCC5EEC4395CC727A;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -572,7 +573,7 @@ const GOLDEN_FINAL_HASH: u64 = 0x8A036A527E77BF4C;
 /// different island is a different run. Both moving together is the expected
 /// shape here — a trace that moved while the end state held would be the
 /// interesting case, and it is not this one.
-const GOLDEN_TRACE_HASH: u64 = 0x841D81132CA0EFC9;
+const GOLDEN_TRACE_HASH: u64 = 0xDC1A26782384F745;
 
 /// Fold a stamped trace into one number.
 ///
