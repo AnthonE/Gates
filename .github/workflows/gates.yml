@@ -27,18 +27,13 @@ on:
 jobs:
   gates:
     runs-on: ubuntu-latest
-    # 75, not 45. On 2026-09-13 the step "the gates" alone took **43:49**, the
-    # 45-minute cap then landed inside *Post cache cargo*, and a run with every
-    # gate green read as cancelled — nightly finished the same suite nine
-    # seconds inside the same cap. It was 45, not 30, before that: the first
-    # green run after the toolchain pin took **27.4 minutes** on a cold cache —
-    # 2.6 minutes under the ceiling of the day — and a
-    # `Cargo.lock` change busts the cache on exactly the commits that are
-    # least like the last one. A gate that trips on a slow runner reports a
-    # hang, not a defect, and `CLAUDE.md`'s own rule is that widening a
-    # timeout is not a fix; that rule is about *waiting on a clock inside a
-    # test*, which this is not — this is a ceiling for a whole compile.
-    timeout-minutes: 75
+    # Run 35478523217 (2026-09-20) had a cold cache: 44 minutes reached
+    # parity, then native + wasm took another 27.5 minutes. The 75-minute
+    # job cap killed the final debug probe after native/wasm had matched.
+    # Allow the whole compile and suite to finish, with room to save the
+    # cache afterward. This is a job ceiling; test timeouts and assertions
+    # remain in ci/gates.sh and its suites. Keep nightly/release in step.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - name: toolchain
