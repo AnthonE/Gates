@@ -1320,6 +1320,13 @@ storey follows the aim (aimed level v0); a first foundation takes the band it
 asked for (foundation height v0, `PROTO_VER` 62). `DECISIONS.md` §open has
 the three rows; `client/tests/gaps.rs` and `storey.rs` are the gates.
 
+✅ **2026-09-20, ceiling headroom**: a floor over stairs used to let the
+capsule climb through it, and a jump could put its head inside a slab.
+Shared movement now stops both at the underside; open stairs still reach
+two upper landings and return. `sim-core/tests/headroom.rs`, allocation and
+native/Wasm parity cover it. This is headless proof; the stair mesh (§0u),
+missing floor frame (§0ps), and stair rotation still need their own work.
+
 1. **A band-boundary wall bases on its canonical cell** and hangs one band over
    the lower plate — an arrow-sized slit. The lower column is the honest base;
    needs `collide` and the renderer together. Rare since the plate, not fixed.

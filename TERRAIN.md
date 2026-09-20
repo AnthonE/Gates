@@ -559,6 +559,12 @@ disagreed about the same mechanism.
 - Rocks and nodes: analytic colliders (sphere/capsule/box per archetype)
   derived from the same slot list — no mesh colliders anywhere.
 - Buildings: AABB/oriented boxes per block (`DESIGN.md` §4).
+  Floor and roof undersides stop upward jumps and reject a stair step without
+  headroom, using the plane flank's capsule footprint (including triangular
+  halves). Contact rounds feet down to a safe position quantum. A slab placed
+  through a body retains the existing escape rule. `sim-core/tests/headroom.rs`
+  covers covered and open stairwells; the same contact paths run in the
+  allocation and native/Wasm parity gates.
 - All of it lives in `sim-core`, so the wasm prediction collides with the
   exact world the server does, including the slot a node just vanished
   from (one in-flight event of skew, max).
