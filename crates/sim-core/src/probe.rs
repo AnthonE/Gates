@@ -1339,6 +1339,14 @@ pub fn headroom_probe() -> HeadroomProbe {
         let plate = (band - terrain_band(HEADROOM_SEED, &haven, cx, HEADROOM_CZ)) as i8;
         cols.add(cx, HEADROOM_CZ, level, loc, shape, plate);
     }
+    // Separated columns exercise all four ramps and their open upper floor
+    // under the same native/Wasm arithmetic gate as the ceiling contacts.
+    for (turn, loc) in STAIR_LOCS.into_iter().enumerate() {
+        let cx = HEADROOM_CX + 3 + turn as u16 * 2;
+        let plate = (band - terrain_band(HEADROOM_SEED, &haven, cx, HEADROOM_CZ)) as i8;
+        cols.add(cx, HEADROOM_CZ, 1, loc, SHAPE_STAIRS, plate);
+        cols.add(cx, HEADROOM_CZ, 2, LOC_PLANE, SHAPE_FLOOR_FRAME, plate);
+    }
     HeadroomProbe {
         haven,
         cols,
@@ -1358,11 +1366,21 @@ pub fn run_headroom_probe(p: &mut HeadroomProbe) -> u64 {
     let underside = base + LEVEL_H_M - PLANE_THICKNESS_M;
     let mut hash = Xxh3::new();
     let mut contacts = 0u64;
-    for route in 0..2 {
+    for route in 0..6 {
         let (dx, dz, rise) = if route == 0 {
             (1.5, 0.09, 0.09)
-        } else {
+        } else if route == 1 {
             (BUILD_CELL_M + 0.6, 0.6, 0.0)
+        } else {
+            let turn = route - 2;
+            let offset = (3 + turn * 2) as f32 * BUILD_CELL_M;
+            let (x, z) = match turn {
+                0 => (1.5, 0.09),
+                1 => (0.09, 1.5),
+                2 => (1.5, 2.91),
+                _ => (2.91, 1.5),
+            };
+            (offset + x, z, LEVEL_H_M + 0.09)
         };
         let mut body = Body {
             qx: quant_xz(HEADROOM_CX as f32 * BUILD_CELL_M + dx),
@@ -1373,13 +1391,23 @@ pub fn run_headroom_probe(p: &mut HeadroomProbe) -> u64 {
         };
         for tick in 0..80 {
             let before = body;
+            let direction = if tick < 20 { 127 } else { -127 };
             let frame = InputFrame {
+                move_x: match route {
+                    3 => direction,
+                    5 => -direction,
+                    _ => 0,
+                },
                 move_z: if route == 0 {
                     if tick < 40 {
                         127
                     } else {
                         -127
                     }
+                } else if route == 2 {
+                    direction
+                } else if route == 4 {
+                    -direction
                 } else {
                     0
                 },

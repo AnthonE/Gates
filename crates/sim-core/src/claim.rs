@@ -86,7 +86,11 @@ fn key(cx: u16, cz: u16) -> u32 {
 fn built(pieces: &Pieces, cx: u16, cz: u16) -> bool {
     let m = pieces.cols().get(cx, cz);
     m.planes
+        | m.floor_frames
         | m.stairs
+        | m.stairs_xhi
+        | m.stairs_zlo
+        | m.stairs_xlo
         | m.walls_xlo
         | m.walls_zlo
         | m.doors_xlo

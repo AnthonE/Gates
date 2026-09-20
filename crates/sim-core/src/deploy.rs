@@ -1569,9 +1569,9 @@ pub fn place_deploy(
     }
     let supported = match def.placement {
         PLACE_GROUND => level == 0 && ground_ok(seed, haven, pieces, cx, cz),
-        PLACE_FOUNDATION => pieces.find(cx, cz, level, LOC_PLANE).is_some(),
+        PLACE_FOUNDATION => pieces.cols().get(cx, cz).planes & (1 << level) != 0,
         PLACE_ANY => {
-            pieces.find(cx, cz, level, LOC_PLANE).is_some()
+            pieces.cols().get(cx, cz).planes & (1 << level) != 0
                 || (level == 0 && ground_ok(seed, haven, pieces, cx, cz))
         }
         PLACE_DOORWAY => pieces

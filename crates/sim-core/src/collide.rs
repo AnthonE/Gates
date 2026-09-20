@@ -13,8 +13,9 @@
 //! base is a choice its first foundation made, not a function of the ground,
 //! and `ColMasks::plate` is where that choice lives. Planes
 //! (foundation/floor/roof) are walkable
-//! surfaces at their base; stairs are a ramp rising toward +Z through the
-//! storey; walls block their edge for the storey they span; doorways
+//! surfaces at their base; floor frames leave the centre open. Stairs rise
+//! through the storey along the direction named by their socket; walls
+//! block their edge for the storey they span; doorways
 //! block only their posts (the 1.2 m opening passes; the lintel never
 //! matters at capsule height until a jump exists). A **closed door**
 //! deployable in a doorway blocks the whole edge like a wall; open doors
@@ -41,7 +42,8 @@
 
 use crate::build::{
     BUILD_CELL_M, LEVEL_H_M, LOC_DIAG_A, LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE,
-    LOC_TRI_XHI_ZHI, LOC_TRI_XHI_ZLO, LOC_TRI_XLO_ZHI, LOC_TRI_XLO_ZLO, SHAPE_DOORWAY, SHAPE_FLOOR,
+    LOC_RISER, LOC_RISER_XHI, LOC_RISER_XLO, LOC_RISER_ZLO, LOC_TRI_XHI_ZHI, LOC_TRI_XHI_ZLO,
+    LOC_TRI_XLO_ZHI, LOC_TRI_XLO_ZLO, SHAPE_DOORWAY, SHAPE_FLOOR, SHAPE_FLOOR_FRAME,
     SHAPE_FOUNDATION, SHAPE_FRAME, SHAPE_ROOF, SHAPE_STAIRS, SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION,
     SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
 };
@@ -219,6 +221,15 @@ pub const WINDOW_HEAD_M: f32 = 2.2;
 /// (`RENDER.md` §8), and a painted jamb a body ghosts through is that lie.
 /// Proposed default, DECISIONS.md §open ("wall frame v0").
 pub const FRAME_RIM_M: f32 = 0.15;
+/// A floor frame uses the same rim as a wall frame (DECISIONS.md §open,
+/// stair rotation and floor openings). Callers also test the outer cell.
+#[inline]
+pub fn floor_frame_solid(dx: f32, dz: f32, radius: f32) -> bool {
+    dx - radius <= FRAME_RIM_M
+        || dz - radius <= FRAME_RIM_M
+        || dx + radius >= BUILD_CELL_M - FRAME_RIM_M
+        || dz + radius >= BUILD_CELL_M - FRAME_RIM_M
+}
 /// How thick a plane piece is under its walk surface, metres — the slab a
 /// floor or a roof hangs below the level plane, and the band its FLANK stops
 /// a body in ([`plane_blocked`]).
@@ -264,7 +275,11 @@ pub const SOLID_NONE: u32 = u32::MAX;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ColMasks {
     pub planes: u8,
+    pub floor_frames: u8,
     pub stairs: u8,
+    pub stairs_xhi: u8,
+    pub stairs_zlo: u8,
+    pub stairs_xlo: u8,
     pub walls_xlo: u8,
     pub walls_zlo: u8,
     pub doors_xlo: u8,
@@ -325,9 +340,23 @@ impl Default for ColMasks {
 }
 
 impl ColMasks {
+    /// Same order as `build::STAIR_LOCS`: +Z, +X, -Z, -X.
+    pub fn stair_masks(&self) -> [u8; 4] {
+        [
+            self.stairs,
+            self.stairs_xhi,
+            self.stairs_zlo,
+            self.stairs_xlo,
+        ]
+    }
+
     pub const EMPTY: Self = Self {
         planes: 0,
+        floor_frames: 0,
         stairs: 0,
+        stairs_xhi: 0,
+        stairs_zlo: 0,
+        stairs_xlo: 0,
         walls_xlo: 0,
         walls_zlo: 0,
         doors_xlo: 0,
@@ -350,7 +379,11 @@ impl ColMasks {
 
     fn is_empty(&self) -> bool {
         (self.planes
+            | self.floor_frames
             | self.stairs
+            | self.stairs_xhi
+            | self.stairs_zlo
+            | self.stairs_xlo
             | self.walls_xlo
             | self.walls_zlo
             | self.doors_xlo
@@ -387,7 +420,11 @@ impl ColMasks {
     #[inline]
     pub fn has_piece(&self) -> bool {
         (self.planes
+            | self.floor_frames
             | self.stairs
+            | self.stairs_xhi
+            | self.stairs_zlo
+            | self.stairs_xlo
             | self.walls_xlo
             | self.walls_zlo
             | self.doors_xlo
@@ -417,7 +454,14 @@ impl ColMasks {
     fn field(&mut self, shape: u8, loc: u8) -> Option<&mut u8> {
         match shape {
             SHAPE_FOUNDATION | SHAPE_FLOOR | SHAPE_ROOF => Some(&mut self.planes),
-            SHAPE_STAIRS => Some(&mut self.stairs),
+            SHAPE_FLOOR_FRAME => Some(&mut self.floor_frames),
+            SHAPE_STAIRS => match loc {
+                LOC_RISER => Some(&mut self.stairs),
+                LOC_RISER_XHI => Some(&mut self.stairs_xhi),
+                LOC_RISER_ZLO => Some(&mut self.stairs_zlo),
+                LOC_RISER_XLO => Some(&mut self.stairs_xlo),
+                _ => None,
+            },
             SHAPE_WALL if loc == LOC_EDGE_XLO => Some(&mut self.walls_xlo),
             SHAPE_WALL if loc == LOC_EDGE_ZLO => Some(&mut self.walls_zlo),
             SHAPE_WALL if loc == LOC_DIAG_A => Some(&mut self.diag_a),
@@ -789,7 +833,9 @@ pub fn piece_ground(
     }
     let m = cols.get(bx as u16, bz as u16);
     let tris = m.tri_xlo_zlo | m.tri_xhi_zlo | m.tri_xlo_zhi | m.tri_xhi_zhi;
-    if m.planes == 0 && m.stairs == 0 && tris == 0 && m.solid == SOLID_NONE {
+    if m.planes | m.floor_frames | m.stairs | m.stairs_xhi | m.stairs_zlo | m.stairs_xlo | tris == 0
+        && m.solid == SOLID_NONE
+    {
         return NO_SURFACE;
     }
     let base = col_base_y(seed, haven, cols, bx as u16, bz as u16);
@@ -821,7 +867,10 @@ pub fn piece_ground(
     for level in 0..MAX_BUILD_LEVELS {
         let bit = 1u8 << level;
         let floor = base + level as f32 * LEVEL_H_M;
-        if m.planes & bit != 0 && floor <= lid && floor > best {
+        if (m.planes & bit != 0 || (m.floor_frames & bit != 0 && floor_frame_solid(dx, dz, 0.0)))
+            && floor <= lid
+            && floor > best
+        {
             best = floor;
         }
         if tris & bit != 0 && floor <= lid && floor > best {
@@ -833,12 +882,16 @@ pub fn piece_ground(
                 best = floor;
             }
         }
-        if m.stairs & bit != 0 {
-            // The ramp rises toward +Z through the storey (scene.js).
-            let frac = ((z - bz as f32 * BUILD_CELL_M) / BUILD_CELL_M).clamp(0.0, 1.0);
-            let ramp = floor + frac * LEVEL_H_M;
-            if ramp <= lid && ramp > best {
-                best = ramp;
+        for (mask, run) in
+            m.stair_masks()
+                .into_iter()
+                .zip([dz, dx, BUILD_CELL_M - dz, BUILD_CELL_M - dx])
+        {
+            if mask & bit != 0 {
+                let ramp = floor + (run / BUILD_CELL_M).clamp(0.0, 1.0) * LEVEL_H_M;
+                if ramp <= lid && ramp > best {
+                    best = ramp;
+                }
             }
         }
         if let Some(arch) = m.solid_at(level) {
@@ -1128,7 +1181,7 @@ fn any_body_plane(
             }
             let m = cols.get(bx as u16, bz as u16);
             let tris = m.tri_xlo_zlo | m.tri_xhi_zlo | m.tri_xlo_zhi | m.tri_xhi_zhi;
-            if m.planes == 0 && tris == 0 {
+            if m.planes | m.floor_frames | tris == 0 {
                 continue;
             }
             // The cell, at the capsule's radius: the clamp-to-rectangle circle
@@ -1158,6 +1211,7 @@ fn any_body_plane(
             for level in 0..MAX_BUILD_LEVELS {
                 let bit = 1u8 << level;
                 let here = m.planes & bit != 0
+                    || (m.floor_frames & bit != 0 && floor_frame_solid(dx, dz, r))
                     || (m.tri_xlo_zlo & bit != 0 && in_half(LOC_TRI_XLO_ZLO))
                     || (m.tri_xhi_zlo & bit != 0 && in_half(LOC_TRI_XHI_ZLO))
                     || (m.tri_xlo_zhi & bit != 0 && in_half(LOC_TRI_XLO_ZHI))
@@ -1241,7 +1295,7 @@ fn cell_planes_stop_shot(
             }
             let m = cols.get(bx as u16, bz as u16);
             let tris = m.tri_xlo_zlo | m.tri_xhi_zlo | m.tri_xlo_zhi | m.tri_xhi_zhi;
-            if m.planes == 0 && tris == 0 {
+            if m.planes | m.floor_frames | tris == 0 {
                 continue;
             }
             let (cxm, czm) = (
@@ -1286,7 +1340,9 @@ fn cell_planes_stop_shot(
                 // arrow found. What the sim does require is that the pick
                 // be a rule rather than an accident, which an `||` chain
                 // read for its address would not have been.
-                let here = if m.planes & bit != 0 {
+                let here = if m.planes & bit != 0
+                    || (m.floor_frames & bit != 0 && floor_frame_solid(dx, dz, r))
+                {
                     Some(LOC_PLANE)
                 } else if m.tri_xlo_zlo & bit != 0 && in_half(LOC_TRI_XLO_ZLO) {
                     Some(LOC_TRI_XLO_ZLO)

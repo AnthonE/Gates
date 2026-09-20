@@ -57,6 +57,132 @@ fn z(b: Body) -> f32 {
 }
 
 #[test]
+fn every_stair_direction_climbs_through_a_floor_frame_and_returns() {
+    use build::{SHAPE_FLOOR_FRAME, STAIR_LOCS};
+    for level in [0, 2] {
+        for (turn, loc) in STAIR_LOCS.into_iter().enumerate() {
+            let mut cols = ColIndex::new();
+            put(&mut cols, CX, CZ, level, LOC_PLANE, SHAPE_FLOOR);
+            put(&mut cols, CX, CZ, level, loc, SHAPE_STAIRS);
+            put(&mut cols, CX, CZ, level + 1, LOC_PLANE, SHAPE_FLOOR_FRAME);
+            let (dx, dz, mx, mz, lx, lz) = match turn {
+                0 => (1.5, 0.09, 0, 127, CX, CZ + 1),
+                1 => (0.09, 1.5, 127, 0, CX + 1, CZ),
+                2 => (1.5, 2.91, 0, -127, CX, CZ - 1),
+                _ => (2.91, 1.5, -127, 0, CX - 1, CZ),
+            };
+            put(&mut cols, lx, lz, level + 1, LOC_PLANE, SHAPE_FLOOR);
+            let mut b = body(dx, dz, level as f32 * LEVEL_H_M + 0.09);
+            let mut sc = Scratch::barren();
+            let (vx, vz) = (mx as f32 / 127.0, mz as f32 / 127.0);
+            let progress = |b: Body| {
+                (b.qx as f32 * POS_XZ_Q - CX as f32 * BUILD_CELL_M - dx) * vx
+                    + (z(b) - CZ as f32 * BUILD_CELL_M - dz) * vz
+            };
+            for _ in 0..100 {
+                movement::step(
+                    SEED,
+                    haven(),
+                    &cols,
+                    &mut sc.occupants(),
+                    &mut b,
+                    &InputFrame {
+                        move_x: mx,
+                        move_z: mz,
+                        ..InputFrame::default()
+                    },
+                );
+                if progress(b) > BUILD_CELL_M + 0.5 {
+                    break;
+                }
+            }
+            assert!(
+                progress(b) > BUILD_CELL_M,
+                "flight {turn}, level {level}: blocked at {b:?}"
+            );
+            assert!(fabs(y(b) - base() - (level + 1) as f32 * LEVEL_H_M) <= POS_Y_Q);
+            for _ in 0..100 {
+                movement::step(
+                    SEED,
+                    haven(),
+                    &cols,
+                    &mut sc.occupants(),
+                    &mut b,
+                    &InputFrame {
+                        move_x: -mx,
+                        move_z: -mz,
+                        ..InputFrame::default()
+                    },
+                );
+                if progress(b) <= 0.1 {
+                    break;
+                }
+            }
+            assert!(progress(b) <= 0.1, "flight {turn}: could not descend");
+            assert!(y(b) < base() + level as f32 * LEVEL_H_M + 0.3);
+        }
+    }
+}
+
+#[test]
+fn a_floor_frame_supports_its_rim_but_leaves_the_centre_open() {
+    use sim_core::collide::{piece_ground, plane_blocked, FRAME_RIM_M, NO_SURFACE};
+    let mut cols = ColIndex::new();
+    put(&mut cols, CX, CZ, 1, LOC_PLANE, build::SHAPE_FLOOR_FRAME);
+    let top = base() + LEVEL_H_M;
+    let (x0, z0) = (CX as f32 * BUILD_CELL_M, CZ as f32 * BUILD_CELL_M);
+    for (dx, dz) in [
+        (1.5, 1.5),
+        (0.07, 1.5),
+        (2.93, 1.5),
+        (1.5, 0.07),
+        (1.5, 2.93),
+    ] {
+        let rim = dx < FRAME_RIM_M
+            || dz < FRAME_RIM_M
+            || dx > BUILD_CELL_M - FRAME_RIM_M
+            || dz > BUILD_CELL_M - FRAME_RIM_M;
+        let ground = piece_ground(SEED, haven(), &cols, x0 + dx, z0 + dz, top);
+        assert_eq!(ground, if rim { top } else { NO_SURFACE });
+        assert_eq!(
+            plane_blocked(SEED, haven(), &cols, x0 + dx, z0 + dz, top - 1.0),
+            rim
+        );
+        assert_eq!(
+            sim_core::collide::shot_blocked(
+                SEED,
+                haven(),
+                &cols,
+                x0 + dx,
+                z0 + dz,
+                x0 + dx,
+                z0 + dz,
+                top - PLANE_THICKNESS_M * 0.5,
+                0.05
+            ),
+            rim
+        );
+    }
+    put(&mut cols, CX, CZ, 0, LOC_PLANE, SHAPE_FOUNDATION);
+    let mut b = body(1.5, 1.5, LEVEL_H_M);
+    let mut sc = Scratch::barren();
+    for _ in 0..100 {
+        movement::step(
+            SEED,
+            haven(),
+            &cols,
+            &mut sc.occupants(),
+            &mut b,
+            &InputFrame::default(),
+        );
+    }
+    assert!(
+        fabs(y(b) - base()) <= POS_Y_Q,
+        "the opening caught a falling body"
+    );
+}
+
+#[test]
 fn a_covered_stairwell_stops_before_the_head_enters_the_floor() {
     let mut cols = ColIndex::new();
     put(&mut cols, CX, CZ, 0, LOC_PLANE, SHAPE_FOUNDATION);

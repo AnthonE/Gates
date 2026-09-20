@@ -559,6 +559,9 @@ disagreed about the same mechanism.
 - Rocks and nodes: analytic colliders (sphere/capsule/box per archetype)
   derived from the same slot list — no mesh colliders anywhere.
 - Buildings: AABB/oriented boxes per block (`DESIGN.md` §4).
+  Stairs rise along their socket’s +Z, +X, −Z or −X direction. A floor frame
+  has the same slab thickness but only a `FRAME_RIM_M` perimeter: its centre
+  passes bodies and shots, while its rim is standable and blocks both.
   Floor and roof undersides stop upward jumps and reject a stair step without
   headroom, using the plane flank's capsule footprint (including triangular
   halves). Contact rounds feet down to a safe position quantum. A slab placed
