@@ -709,7 +709,8 @@ pub const EV_RELOAD_REFUSED: u8 = 43;
 
 /// EV_WOUNDED: a = player id, b = ticks until the roll, c = chance of
 /// getting up at that roll, per mille (`wound::recover_chance_pm`, read
-/// off the meters as the body fell). Own-fact, `EV_HEALTH`'s audience: the
+/// off the meters as the body fell, or 1000 with a recovery item on the
+/// belt). Own-fact, `EV_HEALTH`'s audience: the
 /// one body that went down is the only one this concerns, and every other
 /// client learns it from the `wounded` bit on the snapshot (wire v63).
 ///
@@ -726,7 +727,8 @@ pub const EV_RELOAD_REFUSED: u8 = 43;
 pub const EV_WOUNDED: u8 = 44;
 
 /// EV_RECOVERED: a = player id, b = the chance the roll was made against,
-/// per mille, c = the hp the body stands up with. Own-fact, `EV_WOUNDED`'s
+/// per mille (1000 for a hand revive or belt-item rescue), c = the hp the
+/// body stands up with. Own-fact, `EV_WOUNDED`'s
 /// audience and its posture: the one message that says the crawl ended
 /// upright rather than in `EV_DEATH`. `c` is what the vitals bar will read
 /// next and rides here rather than only on a following `EV_HEALTH` because
@@ -2553,12 +2555,16 @@ impl World {
         }
         let (id, hp_max) = (p.id, p.hp_max);
         let span = crate::wound::span_ticks(self.seed, id, self.tick);
-        let chance = crate::wound::recover_chance_pm(
-            p.food,
-            p.water,
-            self.survival.max_food,
-            self.survival.max_water,
-        );
+        let chance = if self.survival.belt_recovery_slot(p).is_some() {
+            1000
+        } else {
+            crate::wound::recover_chance_pm(
+                p.food,
+                p.water,
+                self.survival.max_food,
+                self.survival.max_water,
+            )
+        };
         let q = &mut self.players[slot];
         q.wounded = true;
         q.wound_until = self.tick + span as u64;
@@ -2656,6 +2662,21 @@ impl World {
         );
         if crate::wound::recovers(self.seed, p.id, self.tick, chance) {
             self.recover(slot, chance);
+            return false;
+        }
+        // Roll first: a natural recovery keeps the kit. Only the belt may
+        // pay for a failed roll, and it pays one unit without starting the
+        // consumable's ordinary heal. The body stands with its crawl hp.
+        if let Some(inv) = self.survival.belt_recovery_slot(&p) {
+            let stack = &mut self.players[slot].inv[inv];
+            let item = stack.item;
+            stack.count -= 1;
+            if stack.count == 0 {
+                *stack = ItemStack::default();
+            }
+            self.events
+                .push(EV_CONSUMED, p.id, ((item as u32) << 16) | inv as u32, 0);
+            self.recover(slot, 1000);
             return false;
         }
         self.die(

@@ -287,7 +287,17 @@ fn helpers_cannot_pool_progress_or_inherit_another_hands_hold() {
 #[test]
 fn the_parity_probe_really_recovers_after_an_interruption() {
     for seed in [42, 0x0047_4154_4553] {
-        assert_eq!(sim_core::probe::probe_assist(seed) >> 32, 1);
+        let mut w = sim_core::probe::assist_probe_world(seed);
+        let outcome = sim_core::probe::run_assist_probe(&mut w);
+        assert_eq!(outcome >> 32, 1);
+        assert_eq!(
+            sim_core::probe::probe_assist(seed),
+            outcome,
+            "replay agrees"
+        );
+        assert_eq!(w.players[1].inv[0].count, 1, "hands keep the kit");
+        assert!(!w.players[2].dead && !w.players[2].wounded);
+        assert_eq!(w.players[2].inv[0], sim_core::gather::ItemStack::default());
     }
 }
 

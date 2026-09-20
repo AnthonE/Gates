@@ -756,6 +756,20 @@ fn test_alloc_zero() {
         1,
         "the measured hand hold must recover a body"
     );
+    assert_eq!(
+        assisted_world.players[1].inv[0].count, 1,
+        "help keeps the kit"
+    );
+    let rescued = &assisted_world.players[2];
+    assert!(
+        !rescued.dead && !rescued.wounded,
+        "the failed roll was rescued"
+    );
+    assert_eq!(
+        rescued.inv[0],
+        ItemStack::default(),
+        "the measured roll spent its kit"
+    );
 
     // Read after the counters are captured, so the checks themselves can
     // never be what a future reader blames a nonzero delta on. These are

@@ -6,7 +6,8 @@
 //! and to do nothing else, and at the end of the window the world rolls a
 //! die: 20 % to get up, plus up to 25 % for a full stomach and a full canteen
 //! (the July 2021 Wounding Update's numbers, taken as `BALANCE.md` §6 says
-//! to). A failed roll is the death the blow would have been. Any hit that
+//! to). A failed roll spends one content-defined recovery item from the
+//! belt, or is the death the blow would have been. Any hit that
 //! empties the crawl's hp is also that death, and so is a second lethal
 //! blow inside a minute of getting up (Devblog 71, 2015: raid revive loops).
 //!
@@ -16,8 +17,8 @@
 //! It is *not* the second, incapacitated state the reference keeps for
 //! three triggers this game does not have (being looted alive, a fall, deep
 //! water — `WOUNDED.md` §2.1). The six-second hand revive lives in `assist`
-//! and `World::tick`; the syringe and medkit-in-belt rule remain staged in
-//! `WOUNDED.md` §9.6.
+//! and `World::tick`; belt recovery lives in `World::wound_tick`. The
+//! syringe remains staged in `WOUNDED.md` §9.6.
 //!
 //! Wall 1: integer arithmetic and `rng::cell_hash` only. Wall 5: every
 //! random draw is keyed on `(seed, player id, tick)`, so a replay rolls the

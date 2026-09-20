@@ -1214,7 +1214,9 @@ pub extern "C" fn probe_combat(master_seed: u64, sequences: u32, ticks: u32) -> 
 
 /// A released hold followed by a complete hand revive. The upper word counts
 /// actual recoveries; the lower word hashes progress, cancellation and state.
-/// Both the parity driver and allocation gate use this live write path.
+/// A second wounded body fails its roll and spends a belt recovery item;
+/// the hand-revived body keeps its own. Both the parity driver and allocation
+/// gate use these live write paths.
 #[no_mangle]
 pub extern "C" fn probe_assist(seed: u64) -> u64 {
     run_assist_probe(&mut assist_probe_world(seed))
@@ -1226,10 +1228,14 @@ pub fn assist_probe_world(seed: u64) -> World {
     let mut w = World::new(seed);
     w.combat = crate::combat::CombatContent::probe_fixture();
     // Set fixture health through the normal join constructor. The probe
-    // measures helping, and neither body needs a separate damage write.
+    // measures recovery, and no body needs a separate damage write.
     w.combat.player_hp = crate::wound::WOUNDED_HP;
     w.dev_spawn = Some(w.spawn_pos(1));
-    w.tick(&[Command::Join { id: 1 }, Command::Join { id: 2 }]);
+    w.tick(&[
+        Command::Join { id: 1 },
+        Command::Join { id: 2 },
+        Command::Join { id: 3 },
+    ]);
     let a = w.players[0].body;
     w.players[1].body = Body::at(
         seed,
@@ -1242,6 +1248,18 @@ pub fn assist_probe_world(seed: u64) -> World {
     // The first hold crosses this deadline; releasing must leave time for
     // another attempt rather than rolling immediately on the old deadline.
     w.players[1].wound_until = w.tick + 2;
+    w.survival.belt_recovery[1] = true;
+    for p in &mut w.players[1..=2] {
+        p.inv[0] = ItemStack {
+            item: 1,
+            count: 1,
+            cond: 0,
+        };
+    }
+    w.players[2].wounded = true;
+    w.players[2].wound_until = (w.tick + 2..w.tick + crate::assist::ASSIST_TICKS as u64)
+        .find(|&t| !crate::wound::recovers(seed, 3, t, crate::wound::RECOVER_BASE_PM))
+        .expect("the probe must exercise a failed natural recovery");
     w
 }
 
