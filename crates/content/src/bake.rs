@@ -1118,6 +1118,12 @@ impl Content {
             }
             let health = u16f(con.health, "health")?;
             let seconds = u16f(con.seconds, "seconds")?;
+            if con.belt_recovery && health == 0 {
+                return Err(format!(
+                    "bake: consumable `{}` belt recovery needs health",
+                    con.id
+                ));
+            }
             if health > 0 && seconds == 0 {
                 return Err(format!("bake: consumable `{}` heals over 0 s", con.id));
             }
@@ -1131,6 +1137,7 @@ impl Content {
                 water: u16f(con.water, "water")?,
                 seconds,
             };
+            sc.belt_recovery[idx] = con.belt_recovery;
         }
         Ok(sc)
     }

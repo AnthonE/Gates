@@ -72,32 +72,30 @@ opened against a local shard. These are software-GPU smoke checks, not a
 hardware performance or appearance verdict; `findings/render-scale-20260919.md`
 records the setup. SSAO's measured browser clamp remains in place.
 
-## 0wnd · Down and hand revive are built *(sim+client lane)*
+## 0wnd · Down, hand revive and medkit recovery are built *(sim+client lane)*
 
-Wounded v0 landed 2026-09-13 (`DECISIONS.md` §open "wounded v0",
-`reference/WOUNDED.md` §9): a lethal swing, bite or body shot lays the body
-down for 40–50 s at 10 hp, it crawls at a third of a walk and may open a
-door, and at the end a hashed roll (20 % + up to 25 % for full meters)
-stands it up or makes the corpse. Hand revive followed on 2026-09-19:
-aim at an awake wounded player and hold E for six stationary seconds. A
-fresh input hold pauses the wound clock; release, movement, loss of aim or
-cover, and damage interrupt it. Damage ends the gesture; press E again.
-Recovery preserves 10 hp and starts the existing re-wound cooldown. The
-server sends absolute progress only to the participants, retrying a lost
-clear as well as progress. `findings/hand-revive-20260919.md` has the checks.
+Wounded v0 (`reference/WOUNDED.md` §9) gives an eligible lethal hit a crawl
+and a timed recovery roll. Hand revive landed 2026-09-19: hold E on an awake
+wounded player for six stationary seconds; fresh input pauses the wound clock.
+Movement, cover, release or damage interrupts. Recovery keeps the current hp
+and starts the re-wound cooldown. `findings/hand-revive-20260919.md` has the checks.
+
+Belt-medkit recovery followed on 2026-09-20: a failed natural roll spends one
+medkit from the belt and recovers with the existing hp. A natural recovery or
+hand revive keeps it; backpack kits do not count and finishing damage still
+kills. `content/consumables.toml` owns eligibility; the fall shows 100%.
 
 What remains:
 
-1. **Syringe / bandage on a downed body** — `Command::Consume` with a
-   target; `content/consumables.toml` already prices both.
-2. **Medkit in the belt = 100 %**, consumed only on a failed roll.
-3. **Refusals while down are silent**: `live_slot_of` refuses with no
+1. **Medicine on a downed body** — `Command::Consume` with a target;
+   content prices bandages and medkits, but has no syringe row yet.
+2. **Refusals while down are silent**: `live_slot_of` refuses with no
    event. Each refused verb's own `REFUSE_*` is the honest fix.
-4. **A drag clip and a voice** — a remote crawl slides `Death01`'s pose
+3. **A drag clip and a voice** — a remote crawl slides `Death01`'s pose
    (`render/anim.rs`), and the fall reuses `Cue::Death`.
-5. **The odds on screen are the odds at the fall**; the sim re-reads the
+4. **The odds on screen are the odds at the fall**; the sim re-reads the
    meters at the roll. Say so on the line, or resend.
-6. **§LOOK**: `CRAWL_EYE_M`, `WOUND_ROLL_RAD`, `WOUND_DROP_S`, the
+5. **§LOOK**: `CRAWL_EYE_M`, `WOUND_ROLL_RAD`, `WOUND_DROP_S`, the
    vignette — never seen. Boot the game and go down.
 
 ## 0site · Site art v0 landed — three things it left *(art + sim lane)*

@@ -695,6 +695,12 @@ pub fn structural(c: &Content) -> Result<(), String> {
     // breach point); non-doors declare none.
     for con in &c.consumables {
         item_exists(&con.id, "consumable")?;
+        if con.belt_recovery && con.health == 0 {
+            return Err(format!(
+                "consumable `{}`: belt recovery needs health",
+                con.id
+            ));
+        }
         if con.health == 0 && con.food == 0 && con.water == 0 {
             return Err(format!("consumable `{}`: does nothing", con.id));
         }

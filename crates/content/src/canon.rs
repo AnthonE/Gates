@@ -189,6 +189,7 @@ pub fn hash(c: &Content) -> u64 {
         h.u(con.food);
         h.u(con.water);
         h.u(con.seconds);
+        h.u(u32::from(con.belt_recovery));
     }
 
     h.s("deployables");
