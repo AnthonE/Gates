@@ -117,6 +117,9 @@ impl ConsumableDef {
 pub struct SurvivalContent {
     /// Indexed by item index (the sorted-rank mapping `bake` owns).
     pub consumable: [ConsumableDef; MAX_ITEM_DEFS],
+    /// Items that save a failed wounded roll when carried on the belt.
+    /// Content opts in; the sim never identifies a medkit by name or index.
+    pub belt_recovery: [bool; MAX_ITEM_DEFS],
     /// Meter ceilings, and what a join grants. Zero is the inert default
     /// and disarms the module: no meter, no drain, no starvation.
     pub max_food: u16,
@@ -148,6 +151,7 @@ impl SurvivalContent {
             water: 0,
             seconds: 0,
         }; MAX_ITEM_DEFS],
+        belt_recovery: [false; MAX_ITEM_DEFS],
         max_food: 0,
         max_water: 0,
         food_span_ticks: 0,
@@ -203,6 +207,19 @@ impl SurvivalContent {
         } else {
             None
         }
+    }
+
+    /// First nonempty recovery stack on the belt, in inventory order.
+    /// The selected hand does not matter; the backpack never qualifies.
+    pub fn belt_recovery_slot(&self, p: &Player) -> Option<usize> {
+        p.inv[..crate::limits::HOTBAR_SLOTS].iter().position(|s| {
+            s.count > 0
+                && self
+                    .belt_recovery
+                    .get(s.item as usize)
+                    .copied()
+                    .unwrap_or(false)
+        })
     }
 
     /// Is this table armed? One read, so the three call sites cannot

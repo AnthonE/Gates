@@ -494,8 +494,12 @@ In the order they earn their keep, each a slice of its own, all in
 2. **A syringe.** The medical tool's ordinary apply-to-target path with the
    target down (§1) — ours is `Command::Consume` with a target, and
    `content/consumables.toml` already prices a bandage and a medkit.
-3. **The medkit in the belt**, consumed only on a failed roll, never after a
-   fall (§2.5). Cheap once 2 exists.
+3. **The medkit in the belt**, consumed only on a failed roll (§2.5).
+   The sim is built (2026-09-20): `SurvivalContent::belt_recovery` opts items
+   in, and `wound_tick` spends the first qualifying belt stack after a failed
+   natural roll. Hands and a natural recovery keep it; a finishing blow
+   still kills. The content schema/bake must arm the flag. Fall damage has
+   no wounded entry path here, so its exemption needs no new predicate.
 4. **A voice of its own for the fall** (`synth.rs` row, bank entry,
    `assets/sound/WANTED.md`), and **a drag clip** so the crawl stops sliding.
 5. **Refusals while down are silent.** `live_slot_of` refuses without an

@@ -27,11 +27,11 @@ use sim_core::backpack::BackpackContent;
 use sim_core::combat::CombatContent;
 use sim_core::gather::{GatherContent, ItemStack, NO_ITEM};
 use sim_core::input::{InputFrame, BTN_PRIMARY, BTN_SPRINT};
-use sim_core::limits::TICK_HZ;
+use sim_core::limits::{HOTBAR_SLOTS, INV_SLOTS, TICK_HZ};
 use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q, WALK_SPEED};
 use sim_core::world::{
-    Command, SimEvent, World, DEATH_BY_HAND, EV_DEATH, EV_HEALTH, EV_HIT, EV_RECOVERED, EV_SWING,
-    EV_WOUNDED,
+    Command, SimEvent, World, DEATH_BY_HAND, EV_CONSUMED, EV_DEATH, EV_HEALTH, EV_HIT,
+    EV_RECOVERED, EV_SWING, EV_WOUNDED,
 };
 use sim_core::wound::{
     crawl_frame, recover_chance_pm, recovers, CRAWL_DIV, REWOUND_TICKS, WOUNDED_HP,
@@ -321,6 +321,187 @@ fn both_ends_of_the_roll_are_reachable() {
         assert_eq!(count(&w, EV_RECOVERED) == 1, want_up);
         assert_eq!(count(&w, EV_DEATH) == 1, !want_up);
     }
+}
+
+const RECOVERY_ITEM: u16 = 1;
+
+fn recovery_item(w: &mut World, slot: usize, count: u16) {
+    w.survival.belt_recovery[RECOVERY_ITEM as usize] = true;
+    w.players[1].inv[slot] = ItemStack {
+        item: RECOVERY_ITEM,
+        count,
+        cond: 0,
+    };
+}
+
+/// Aim the deadline at each face of the natural die. The body must stay
+/// down and keep its inventory on every tick before that deadline.
+fn roll_on(w: &mut World, natural_recovery: bool) -> u64 {
+    let chance = chance_of(w, 1);
+    let t = (w.tick + 2..w.tick + 400)
+        .find(|&t| recovers(SEED, VICTIM, t, chance) == natural_recovery)
+        .unwrap();
+    w.players[1].wound_until = t;
+    let inv = w.players[1].inv;
+    while w.tick < t {
+        w.tick(&[]);
+        assert!(w.players[1].wounded && !w.players[1].dead);
+        assert_eq!(w.players[1].inv, inv, "no early payment");
+        assert_eq!(count(w, EV_CONSUMED) + count(w, EV_RECOVERED), 0);
+    }
+    w.tick(&[]);
+    t
+}
+
+#[test]
+fn a_belt_item_saves_only_failed_rolls_and_every_belt_slot_counts() {
+    for inv in 0..HOTBAR_SLOTS {
+        for natural_recovery in [false, true] {
+            let mut w = duel_world();
+            recovery_item(&mut w, inv, 2);
+            // This must work without selecting the kit.
+            w.players[1].frame.sel = ((inv + 1) % HOTBAR_SLOTS) as u8;
+            swing_until(&mut w, &mut 0, EV_WOUNDED);
+            assert_eq!(only(&w, EV_WOUNDED).c, 1000, "the screen knows the belt");
+            stand_down(&mut w);
+            let t = roll_on(&mut w, natural_recovery);
+            let p = &w.players[1];
+            assert!(!p.dead && !p.wounded);
+            assert_eq!(p.hp, WOUNDED_HP);
+            assert_eq!(
+                p.heal_rem, 0,
+                "a rescue does not also grant the ordinary heal"
+            );
+            assert_eq!(p.deaths, 0);
+            assert_eq!(p.rewound_until, t + REWOUND_TICKS);
+            assert_eq!((p.death_by, p.death_item), (0, NO_ITEM));
+            assert_eq!(p.inv[inv].count, if natural_recovery { 2 } else { 1 });
+            assert_eq!(count(&w, EV_DEATH), 0);
+            assert_eq!(w.backpacks.len(), 0);
+            assert_eq!(count(&w, EV_CONSUMED), u32::from(!natural_recovery));
+            let e = only(&w, EV_RECOVERED);
+            assert_eq!((e.a, e.c), (VICTIM, WOUNDED_HP as u32));
+            assert_eq!(
+                e.b,
+                if natural_recovery {
+                    chance_of(&w, 1)
+                } else {
+                    1000
+                }
+            );
+            if !natural_recovery {
+                let e = only(&w, EV_CONSUMED);
+                assert_eq!(
+                    (e.a, e.b, e.c),
+                    (VICTIM, (RECOVERY_ITEM as u32) << 16 | inv as u32, 0)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn recovery_spends_only_the_first_belt_stack_and_clears_its_last_unit() {
+    let mut w = duel_world();
+    recovery_item(&mut w, 0, 1);
+    recovery_item(&mut w, HOTBAR_SLOTS - 1, 2);
+    recovery_item(&mut w, HOTBAR_SLOTS, 3);
+    swing_until(&mut w, &mut 0, EV_WOUNDED);
+    stand_down(&mut w);
+    roll_on(&mut w, false);
+    assert_eq!(w.players[1].inv[0], ItemStack::default(), "canonical empty");
+    assert_eq!(w.players[1].inv[HOTBAR_SLOTS - 1].count, 2);
+    assert_eq!(w.players[1].inv[HOTBAR_SLOTS].count, 3);
+    assert_eq!(count(&w, EV_CONSUMED), 1);
+}
+
+#[test]
+fn a_backpack_kit_or_an_unflagged_belt_item_cannot_save_a_failed_roll() {
+    for (inv, flagged) in [(HOTBAR_SLOTS, true), (INV_SLOTS - 1, true), (0, false)] {
+        let mut w = duel_world();
+        recovery_item(&mut w, inv, 1);
+        w.survival.belt_recovery[RECOVERY_ITEM as usize] = flagged;
+        swing_until(&mut w, &mut 0, EV_WOUNDED);
+        assert_eq!(only(&w, EV_WOUNDED).c, chance_of(&w, 1));
+        stand_down(&mut w);
+        roll_on(&mut w, false);
+        assert!(w.players[1].dead);
+        assert_eq!(count(&w, EV_CONSUMED) + count(&w, EV_RECOVERED), 0);
+        assert_eq!(only(&w, EV_DEATH).b, ATTACKER);
+    }
+}
+
+#[test]
+fn recovery_ignores_empty_and_invalid_belt_stacks() {
+    let mut w = duel_world();
+    recovery_item(&mut w, 0, 0);
+    w.players[1].inv[1] = ItemStack {
+        item: NO_ITEM,
+        count: 1,
+        cond: 0,
+    };
+    assert_eq!(w.survival.belt_recovery_slot(&w.players[1]), None);
+    recovery_item(&mut w, 2, 1);
+    assert_eq!(w.survival.belt_recovery_slot(&w.players[1]), Some(2));
+}
+
+#[test]
+fn a_finishing_blow_does_not_spend_the_belt_kit_or_prevent_death() {
+    let mut w = duel_world();
+    recovery_item(&mut w, 0, 1);
+    let mut seq = 0;
+    swing_until(&mut w, &mut seq, EV_WOUNDED);
+    swing_until(&mut w, &mut seq, EV_DEATH);
+    assert!(w.players[1].dead);
+    assert_eq!(count(&w, EV_CONSUMED) + count(&w, EV_RECOVERED), 0);
+    assert_eq!(w.backpacks.len(), 1);
+    assert_eq!(w.backpacks.entries()[0].items[0].item, RECOVERY_ITEM);
+    assert_eq!(w.backpacks.entries()[0].items[0].count, 1);
+}
+
+#[test]
+fn a_saved_sleeper_replays_the_same_rescue_and_cannot_spend_the_kit_twice() {
+    let mut w = duel_world();
+    recovery_item(&mut w, HOTBAR_SLOTS - 1, 1);
+    swing_until(&mut w, &mut 0, EV_WOUNDED);
+    w.tick(&[
+        Command::Leave { id: ATTACKER },
+        Command::Leave { id: VICTIM },
+    ]);
+    let t = (w.tick + 2..w.tick + 400)
+        .find(|&t| !recovers(SEED, VICTIM, t, chance_of(&w, 1)))
+        .unwrap();
+    w.players[1].wound_until = t;
+    let mut bytes = vec![0; sim_core::worldsave::WORLD_SAVE_MAX_BYTES];
+    let n = w.save_world(&mut bytes).unwrap();
+    let mut restored = duel_world();
+    restored.survival = w.survival;
+    restored.load(&bytes[..n]).unwrap();
+    assert_eq!(w.state_hash(), restored.state_hash());
+    while w.tick <= t {
+        w.tick(&[]);
+        restored.tick(&[]);
+        assert_eq!(
+            w.state_hash(),
+            restored.state_hash(),
+            "replay after restore"
+        );
+    }
+    assert_eq!(count(&restored, EV_RECOVERED), 1);
+    assert_eq!(count(&restored, EV_CONSUMED), 1);
+    assert!(restored.players[1].sleeping && !restored.players[1].dead);
+    assert_eq!(
+        restored.players[1].inv[HOTBAR_SLOTS - 1],
+        ItemStack::default()
+    );
+    // The canonical empty is accepted by the save reader after recovery too.
+    let n = restored.save_world(&mut bytes).unwrap();
+    restored.load(&bytes[..n]).unwrap();
+    restored.tick(&[]);
+    assert_eq!(
+        count(&restored, EV_CONSUMED) + count(&restored, EV_RECOVERED),
+        0
+    );
 }
 
 #[test]
