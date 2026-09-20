@@ -39,3 +39,10 @@ goldens change because the hashed Player state gains three fields, on top
 of the road grading in the preceding commit. Together they make World
 58 kB; the shadow-stack note follows that measured size. No
 balance item, syringe, bandage target or medkit rule is introduced.
+
+Manual loop: a native client and a second client connected to a local shard
+over QUIC. The second player wounded the first through rock combat and
+held the real action/input stream to recovery. Participant progress reached
+179 before recovery cleared it. Native captures after world loading showed
+the wounded overlay, then its removal with health still 10. This ran on
+seed 20260731 at the headland road near (1486.52, 315.02).
