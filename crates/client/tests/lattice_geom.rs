@@ -18,6 +18,10 @@
 //! the sim's own `piece_ground` against the drawn surface, which is what §A
 //! now does on every pass.
 //!
+//! Since stair visuals v0 this suite checks the stairs' smooth ramp frame.
+//! `stairs.rs` additionally reads the actual tread triangles: horizontal
+//! steps within half a riser of that frame, meeting both landings exactly.
+//!
 //! **The sim side is the sim's own entry points, never a restatement.** §A
 //! calls `collide::piece_ground` through a real `ColIndex`; §C calls
 //! `build::anchor`; §B reads `build::column_floor_y`. A test that re-derived
@@ -126,7 +130,9 @@ fn drawn_solid(shape: u8, addr: (u16, u16, u8, u8), plate: i8, p: Vec3) -> bool 
             let in_box = l.x.abs() <= h.x && l.y.abs() <= h.y && l.z.abs() <= h.z;
             // The prism is the box's NW half, split on the hypotenuse its own
             // mesh is built from (`tri_prism_mesh`): x/h.x + z/h.z ≤ 0.
-            in_box && (part.kind == PartKind::Box || l.x / h.x + l.z / h.z <= 0.0)
+            // Stairs keep this smooth collision frame; tests/stairs.rs
+            // measures the actual treads against it, including both landings.
+            in_box && (part.kind != PartKind::Tri || l.x / h.x + l.z / h.z <= 0.0)
         })
 }
 

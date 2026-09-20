@@ -1324,8 +1324,8 @@ the three rows; `client/tests/gaps.rs` and `storey.rs` are the gates.
 capsule climb through it, and a jump could put its head inside a slab.
 Shared movement now stops both at the underside; open stairs still reach
 two upper landings and return. `sim-core/tests/headroom.rs`, allocation and
-native/Wasm parity cover it. This is headless proof; the stair mesh (§0u),
-missing floor frame (§0ps), and stair rotation still need their own work.
+native/Wasm parity cover it. The stair mesh now has treads (2026-09-20);
+stair rotation and a floor opening (§0ps) are next, in that order.
 
 1. **A band-boundary wall bases on its canonical cell** and hangs one band over
    the lower plate — an arrow-sized slit. The lower column is the honest base;
@@ -2216,14 +2216,9 @@ is §0win's, not this item's.
    ORM packing step would serve terrain+props+pieces at once.
 
 
-## 0u · Stairs are a plate, and a lock cannot be aimed at a door *(client lane)*
+## 0lock · A lock cannot be aimed at a door *(client lane)*
 
-1. **Stairs are still a flat pitched slab** in both the ghost and the standing
-   piece — a ramp drawn as a plate, with no steps in it. Shared between the
-   two, so at least they agree, and `sim-core/tests/base_lattice.rs` holds the
-   tread a player walks to the ramp the sim walks. This is the SHAPE being
-   undetailed, not `§0ps` item 2's missing stair variants.
-2. **A lock aimed at a DOOR is unreachable.** `ui::place::deploy_target`
+1. **A lock aimed at a DOOR is unreachable.** `ui::place::deploy_target`
    special-cases `PLACE_DOORWAY` only, so `PLACE_DOOR` — the code lock's
    placement class (`content/deployables.toml`) — falls through to
    `SHAPE_FOUNDATION` at level 0 and targets the plane. On a box the `L`

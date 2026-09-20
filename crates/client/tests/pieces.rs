@@ -247,6 +247,7 @@ fn a_part_mesh_tiles_by_the_metre() {
             let longest = match kind {
                 PartKind::Box => size.max_element(),
                 PartKind::Tri => size.y.max(size.x.hypot(size.z)),
+                PartKind::Stairs => unreachable!("this test covers boxes and prisms"),
             };
             let want = longest * PIECE_UV_PER_M;
             assert!(
