@@ -1997,8 +1997,12 @@ worthless assertion in the first draft.
    What DID land from that pass: the measurement, the gate
    (`the_impostor_keeps_the_tree_s_outline`) and `IMPOSTOR_GIRTH_Q` 0.9 → 0.99,
    the hull having been 65–72 % of the tree's real outline with its "sub-pixel"
-   rationale expired since forest scale v0. **§LOOK: the wider OPAQUE hull is
-   unseen — whether it now reads as a fatter capsule is the open question.**
+   rationale expired since forest scale v0. ⚠ **And that widening is correct
+   but MARGINAL, measured on screen rather than predicted**: green pixels in
+   the hull band went 17.5 % → 18.4 %, a 5 % relative change where the
+   silhouette arithmetic implied ~20 %, because a stand is overlapping hulls in
+   projection and `∫ 2r dy` is one solid in isolation (§9 of the finding).
+   Width was never the dominant term here — shape and surface are.
 2. **The harvest sweep got denser and that was a named cost — twice now.**
    `harvest_changed` measured 1,500 props × a full 16,384 set at 2.34 ms and
    warned that a denser ring is the case that worsens. Outer hulls carry
