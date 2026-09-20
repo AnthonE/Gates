@@ -1324,8 +1324,12 @@ the three rows; `client/tests/gaps.rs` and `storey.rs` are the gates.
 capsule climb through it, and a jump could put its head inside a slab.
 Shared movement now stops both at the underside; open stairs still reach
 two upper landings and return. `sim-core/tests/headroom.rs`, allocation and
-native/Wasm parity cover it. The stair mesh now has treads (2026-09-20);
-stair rotation and a floor opening (§0ps) are next, in that order.
+native/Wasm parity cover it. The stair mesh now has treads (2026-09-20).
+**Stair placement turns with R/F** through four directions; **Floor Frame**
+in the build wheel leaves a real opening above the flight. Its rim bears
+walls, but its centre cannot hold deployables. Shared movement, projectile,
+save/load and mesh checks cover the opening. Combined playtest is next;
+post-placement hammer rotation remains §0p2.
 
 1. **A band-boundary wall bases on its canonical cell** and hangs one band over
    the lower plate — an arrow-sized slit. The lower column is the honest base;
@@ -2202,7 +2206,7 @@ is §0win's, not this item's.
    renders under lavapipe, so a headless run cannot check marked surfaces.
 2. **11 shapes against the reference's 20** (`BUILDING.md` §7b.1):
    `sim-core/src/build.rs` declares `SHAPE_FOUNDATION`..`SHAPE_TRI_ROOF` only
-   — no half/low wall, floor frame, steps, ramp, 3 of 4 stairs. Rule 6 is
+   — no half/low wall, steps, ramp, 3 of 4 stair shapes. Rule 6 is
    silhouette before surface, so this outranks more material work.
 3. **A base is a hundred identical walls at one rotation** (rule 7).
    `render/structures.rs` sets `uv_transform` from the tier's scale alone; the

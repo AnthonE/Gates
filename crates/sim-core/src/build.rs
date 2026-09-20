@@ -81,6 +81,8 @@ pub const SHAPE_FRAME: u8 = 7;
 pub const SHAPE_TRI_FOUNDATION: u8 = 8;
 pub const SHAPE_TRI_FLOOR: u8 = 9;
 pub const SHAPE_TRI_ROOF: u8 = 10;
+/// A square floor socket with an open centre; the rim bears walls.
+pub const SHAPE_FLOOR_FRAME: u8 = 11;
 
 /// Material codes (schema order: twig → wood → stone → metal). The order
 /// is the ladder: `upgrade` climbs it by comparing these numbers, so a
@@ -194,6 +196,20 @@ pub const LOC_TRI_XHI_ZHI: u8 = 7;
 /// own pass and its own inserts — stated in §open, not smuggled.
 pub const LOC_DIAG_A: u8 = 8;
 pub const LOC_DIAG_B: u8 = 9;
+/// Stair direction is part of its socket, like a triangle's orientation.
+/// The original `LOC_RISER` remains the flight ascending toward +Z.
+pub const LOC_RISER_XHI: u8 = 10;
+pub const LOC_RISER_ZLO: u8 = 11;
+pub const LOC_RISER_XLO: u8 = 12;
+pub const STAIR_LOCS: [u8; 4] = [LOC_RISER, LOC_RISER_XHI, LOC_RISER_ZLO, LOC_RISER_XLO];
+
+#[inline]
+pub fn is_stair_loc(loc: u8) -> bool {
+    matches!(
+        loc,
+        LOC_RISER | LOC_RISER_XHI | LOC_RISER_ZLO | LOC_RISER_XLO
+    )
+}
 
 /// Integer refusal reasons (CLAUDE.md wall 3), carried by
 /// EV_BUILD_REFUSED / the build-refused wire subtype.
@@ -1224,8 +1240,8 @@ pub fn foundation_terrain_ok(seed: u64, haven: &terrain::Haven, ax: f32, az: f32
 /// Whether `loc` is the kind of slot `shape` occupies.
 fn loc_fits_shape(shape: u8, loc: u8) -> bool {
     match shape {
-        SHAPE_FOUNDATION | SHAPE_FLOOR | SHAPE_ROOF => loc == LOC_PLANE,
-        SHAPE_STAIRS => loc == LOC_RISER,
+        SHAPE_FOUNDATION | SHAPE_FLOOR | SHAPE_ROOF | SHAPE_FLOOR_FRAME => loc == LOC_PLANE,
+        SHAPE_STAIRS => is_stair_loc(loc),
         // The wall alone also fits the diagonals (their doc says why the
         // openings do not).
         SHAPE_WALL => {
@@ -1288,6 +1304,11 @@ fn body_conflicts(loc: u8, out: &mut [u8; 5]) -> usize {
 /// overlap it? The `place` refusal triangles v0 added — a spot check
 /// like "the address is taken", not a support rule.
 pub(crate) fn cell_body_conflict(pieces: &Pieces, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
+    if is_stair_loc(loc) {
+        return STAIR_LOCS
+            .iter()
+            .any(|&other| occupied_at(pieces, cx, cz, level, other));
+    }
     let mut c = [0u8; 5];
     let n = body_conflicts(loc, &mut c);
     c.iter()
@@ -1301,7 +1322,7 @@ pub(crate) fn cell_body_conflict(pieces: &Pieces, cx: u16, cz: u16, level: u8, l
 fn supported(pieces: &Pieces, shape: u8, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
     match shape {
         SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION => true,
-        SHAPE_FLOOR | SHAPE_ROOF => {
+        SHAPE_FLOOR | SHAPE_ROOF | SHAPE_FLOOR_FRAME => {
             // An edge piece under any of the cell's four sides. A diagonal
             // wall below deliberately does NOT bear a full plane — its
             // span crosses the middle, not a side.
@@ -1323,7 +1344,8 @@ fn supported(pieces: &Pieces, shape: u8, cx: u16, cz: u16, level: u8, loc: u8) -
                 || edge_at(pieces, e2x, e2z, below, e2l)
                 || pieces.find(cx, cz, below, hyp).is_some()
         }
-        SHAPE_STAIRS => plane_at(pieces, cx, cz, level),
+        // A frame bears its perimeter, not a flight across its empty centre.
+        SHAPE_STAIRS => pieces.cols().get(cx, cz).planes & (1 << level) != 0,
         // The diagonal wall: the cell body it stands across — a full
         // plane or one of its own pair — or the diagonal below it.
         SHAPE_WALL if loc == LOC_DIAG_A || loc == LOC_DIAG_B => {
@@ -1357,11 +1379,9 @@ fn supported(pieces: &Pieces, shape: u8, cx: u16, cz: u16, level: u8, loc: u8) -
 /// A grid address: (cx, cz, level, loc). What the collapse front carries.
 type Addr = (u16, u16, u8, u8);
 
-/// The most addresses `dependents` can name — a plane's seven since
-/// triangles v0 (the four edges, the riser, and the two diagonals), tied
-/// by an edge's seven (two planes and one edge above, and the four
-/// triangle halves whose side it is).
-const MAX_DEPENDENTS: usize = 7;
+/// Four edges, four possible stair directions and two diagonals can
+/// depend on a plane. An edge names at most seven dependents.
+const MAX_DEPENDENTS: usize = 10;
 
 /// The inverse of `supported()`: every address whose support test **reads**
 /// `(cx, cz, level, loc)`. Change one of the two and you must change the
@@ -1397,7 +1417,10 @@ fn dependents(cx: u16, cz: u16, level: u8, loc: u8, out: &mut [Addr; MAX_DEPENDE
             out[4] = (cx, cz.saturating_add(1), level, LOC_EDGE_ZLO);
             out[5] = (cx, cz, level, LOC_DIAG_A);
             out[6] = (cx, cz, level, LOC_DIAG_B);
-            7
+            out[7] = (cx, cz, level, LOC_RISER_XHI);
+            out[8] = (cx, cz, level, LOC_RISER_ZLO);
+            out[9] = (cx, cz, level, LOC_RISER_XLO);
+            10
         }
         LOC_TRI_XLO_ZLO | LOC_TRI_XHI_ZLO | LOC_TRI_XLO_ZHI | LOC_TRI_XHI_ZHI => {
             // Its two side edges (their bears_edge clause reads this half
@@ -1476,8 +1499,11 @@ fn occupied_at(pieces: &Pieces, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
     }
     let m = pieces.cols().get(cx, cz);
     let field = match loc {
-        LOC_PLANE => m.planes,
+        LOC_PLANE => m.planes | m.floor_frames,
         LOC_RISER => m.stairs,
+        LOC_RISER_XHI => m.stairs_xhi,
+        LOC_RISER_ZLO => m.stairs_zlo,
+        LOC_RISER_XLO => m.stairs_xlo,
         LOC_EDGE_XLO => m.walls_xlo | m.doors_xlo | m.wins_xlo | m.frames_xlo,
         LOC_EDGE_ZLO => m.walls_zlo | m.doors_zlo | m.wins_zlo | m.frames_zlo,
         LOC_TRI_XLO_ZLO => m.tri_xlo_zlo,
@@ -1485,7 +1511,8 @@ fn occupied_at(pieces: &Pieces, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
         LOC_TRI_XLO_ZHI => m.tri_xlo_zhi,
         LOC_TRI_XHI_ZHI => m.tri_xhi_zhi,
         LOC_DIAG_A => m.diag_a,
-        _ => m.diag_b,
+        LOC_DIAG_B => m.diag_b,
+        _ => 0,
     };
     field & (1u8 << level) != 0
 }
@@ -1664,7 +1691,7 @@ pub fn place(
         && (!matches!(def.shape, SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION) || level == 0)
         && (!matches!(
             def.shape,
-            SHAPE_FLOOR | SHAPE_ROOF | SHAPE_TRI_FLOOR | SHAPE_TRI_ROOF
+            SHAPE_FLOOR | SHAPE_ROOF | SHAPE_TRI_FLOOR | SHAPE_TRI_ROOF | SHAPE_FLOOR_FRAME
         ) || level >= 1);
     if (cx as usize) >= MAX_BUILD_COORD
         || (cz as usize) >= MAX_BUILD_COORD
@@ -4222,6 +4249,54 @@ mod tests {
             };
         }
         b
+    }
+
+    #[test]
+    fn rotated_stairs_share_one_socket_and_floor_frames_carry_their_edges() {
+        let mut bc = collapse_content();
+        bc.piece_count = SHAPE_FLOOR_FRAME as u16 + 1;
+        bc.pieces[SHAPE_FLOOR_FRAME as usize] = PieceDef {
+            shape: SHAPE_FLOOR_FRAME,
+            ..bc.pieces[SHAPE_FLOOR as usize]
+        };
+        for loc in STAIR_LOCS {
+            let mut pieces = Pieces::new();
+            assert!(try_put(&mut pieces, CX, CZ, 0, LOC_PLANE, SHAPE_FOUNDATION));
+            assert!(try_put(&mut pieces, CX, CZ, 0, loc, SHAPE_STAIRS));
+            for other in STAIR_LOCS {
+                assert!(!try_put(&mut pieces, CX, CZ, 0, other, SHAPE_STAIRS));
+            }
+            assert!(try_put(&mut pieces, CX, CZ, 0, LOC_EDGE_XLO, SHAPE_WALL));
+            assert!(try_put(
+                &mut pieces,
+                CX,
+                CZ,
+                1,
+                LOC_PLANE,
+                SHAPE_FLOOR_FRAME
+            ));
+            // This upper wall relies on the frame, not on a wall below it.
+            assert!(try_put(&mut pieces, CX, CZ, 1, LOC_EDGE_ZLO, SHAPE_WALL));
+            assert!(!try_put(&mut pieces, CX, CZ, 1, loc, SHAPE_STAIRS));
+            assert!(!try_put(&mut pieces, CX, CZ, 1, LOC_PLANE, SHAPE_FLOOR));
+            let i = pieces.find_index(CX, CZ, 0, LOC_PLANE).unwrap();
+            pieces.remove_at(i, SHAPE_FOUNDATION);
+            let mut budget = MAX_COLLAPSE_PIECES;
+            assert_eq!(
+                collapse_from(
+                    &DeployContent::EMPTY,
+                    &bc,
+                    &mut pieces,
+                    &mut Deploys::new(),
+                    (CX, CZ, 0, LOC_PLANE),
+                    &mut budget,
+                    &mut EventQueue::default()
+                ),
+                4
+            );
+            assert!(pieces.is_empty());
+            assert!(!pieces.cols().get(CX, CZ).has_piece());
+        }
     }
 
     /// Put a piece straight in the store, and only where the same

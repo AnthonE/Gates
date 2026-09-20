@@ -57,11 +57,9 @@ const SS: u32 = 3;
 pub const BASE: Handle<Image> = uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5e0");
 
 /// One highlight per shape segment, indexed the same way `SHAPES` is,
-/// because the caller has an index and nothing else. Eleven since
-/// triangles v0 (eight at catalogue v1, six before that) — a wheel
-/// indexing a shorter array than its segment count is a panic waiting on
-/// the newest wedge, which is why the two lengths move in one commit.
-pub const SHAPE_HI: [Handle<Image>; 11] = [
+/// because the caller has an index and nothing else. Its length is the
+/// shape count so adding a wedge cannot leave its highlight out of bounds.
+pub const SHAPE_HI: [Handle<Image>; SHAPES.len()] = [
     uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5e1"),
     uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5e2"),
     uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5e3"),
@@ -73,6 +71,7 @@ pub const SHAPE_HI: [Handle<Image>; 11] = [
     uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5ee"),
     uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5ef"),
     uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5f0"),
+    uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5f1"),
 ];
 
 /// The hammer wheel's base ring — same band, four wedges

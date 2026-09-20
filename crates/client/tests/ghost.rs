@@ -745,6 +745,47 @@ fn needs_support_is_red_on_both_sides() {
 }
 
 #[test]
+fn a_floor_frame_cannot_hold_a_deployable_over_its_hole() {
+    let mut rig = Rig::new();
+    let mut p = rich(CX, CZ);
+    rig.founded(&mut p, CX, CZ);
+    rig.piece(&mut p, 1, CX, CZ, LOC_EDGE_XLO);
+    rig.bc.pieces[2].shape = sim_core::build::SHAPE_FLOOR_FRAME;
+    let mut ev = EventQueue::default();
+    sim_core::build::place(
+        SEED,
+        hv(SEED),
+        &rig.bc,
+        &rig.deploys,
+        &mut rig.pieces,
+        &mut p,
+        0,
+        2,
+        CX,
+        CZ,
+        1,
+        LOC_PLANE,
+        false,
+        0,
+        &mut ev,
+    );
+    assert!(rig.pieces.find(CX, CZ, 1, LOC_PLANE).is_some());
+    for placement in [
+        sim_core::deploy::PLACE_FOUNDATION,
+        sim_core::deploy::PLACE_ANY,
+    ] {
+        rig.dc.defs[ROW_HEARTH as usize].placement = placement;
+        rig.agree_no(
+            &mut p,
+            ROW_HEARTH,
+            at(CX, CZ, 1, LOC_PLANE),
+            REFUSE_D_SUPPORT,
+            "needs support",
+        );
+    }
+}
+
+#[test]
 fn bad_ground_is_red_on_both_sides() {
     let mut rig = Rig::new();
     let mut p = rich(CX, CZ);

@@ -252,6 +252,62 @@ fn round_trip(w: &World) -> Box<World> {
     back
 }
 
+#[test]
+fn rotated_stairs_and_floor_openings_rebuild_their_collision_after_load() {
+    use sim_core::build::{PieceDef, SHAPE_FLOOR_FRAME, SHAPE_STAIRS, STAIR_LOCS};
+    for loc in STAIR_LOCS {
+        let mut w = armed();
+        w.build.piece_count = 9;
+        w.build.pieces[7] = PieceDef {
+            shape: SHAPE_STAIRS,
+            ..w.build.pieces[0]
+        };
+        w.build.pieces[8] = PieceDef {
+            shape: SHAPE_FLOOR_FRAME,
+            ..w.build.pieces[0]
+        };
+        w.dev_spawn = Some(w.spawn_pos(1));
+        w.tick(&[Command::Join { id: 1 }]);
+        kit(&mut w, 0);
+        let (cx, cz) = stand_in_build_cell(&mut w, 0);
+        for (row, level, loc) in [
+            (0, 0, LOC_PLANE),
+            (7, 0, loc),
+            (1, 0, LOC_EDGE_XLO),
+            (8, 1, LOC_PLANE),
+        ] {
+            w.tick(&[Command::Place {
+                id: 1,
+                row,
+                cx,
+                cz,
+                level,
+                loc,
+                freehand: false,
+                plate: 0,
+            }]);
+            assert!(w.pieces.find(cx, cz, level, loc).is_some());
+        }
+        w.tick(&[Command::Leave { id: 1 }]);
+        let mut buf = vec![0; WORLD_SAVE_MAX_BYTES];
+        let n = w.save_world(&mut buf).unwrap();
+        let mut back = armed();
+        back.build = w.build;
+        back.load(&buf[..n]).unwrap();
+        assert_eq!(w.state_hash(), back.state_hash());
+        assert_eq!(w.pieces.cols().get(cx, cz), back.pieces.cols().get(cx, cz));
+        for (dx, dz) in [(0.1, 1.5), (1.5, 0.7), (1.5, 1.5), (2.9, 2.9)] {
+            let x = cx as f32 * BUILD_CELL_M + dx;
+            let z = cz as f32 * BUILD_CELL_M + dz;
+            let feet = sim_core::build::column_floor_y(SEED, hv(SEED), cx, cz, 0) + 3.0;
+            assert_eq!(
+                sim_core::collide::piece_ground(SEED, hv(SEED), w.pieces.cols(), x, z, feet),
+                sim_core::collide::piece_ground(SEED, hv(SEED), back.pieces.cols(), x, z, feet)
+            );
+        }
+    }
+}
+
 /// **The load is the world.** One assertion, and it covers every store the
 /// sim calls state — see the module header for why this is stronger than a
 /// field list and not weaker.

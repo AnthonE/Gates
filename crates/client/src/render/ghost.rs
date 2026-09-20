@@ -23,7 +23,7 @@
 use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 use client_core::core::ClientCore;
-use sim_core::build::{SHAPE_FOUNDATION, SHAPE_TRI_FOUNDATION};
+use sim_core::build::{SHAPE_FOUNDATION, SHAPE_STAIRS, SHAPE_TRI_FOUNDATION, STAIR_LOCS};
 
 use crate::look::yaw_u16;
 use crate::ui::build::{row_for, PLACE_MATERIAL, SHAPES};
@@ -125,6 +125,8 @@ pub struct Ghost {
     /// it persists across placements, because a player raising a base
     /// wants every fresh plate raised the same.
     pub nudge: i8,
+    /// Quarter turns, latched across placements like the selected shape.
+    pub stair_turn: u8,
     /// The band the drawn placement ASKS for — the aimed ground's band plus
     /// [`Ghost::nudge`], from `place::plate_request` — latched beside
     /// `target` for `target`'s reason: `place_key` sends what was drawn.
@@ -153,7 +155,7 @@ pub struct Ghost {
     pub deploy_verdict: DeployVerdict,
 }
 
-/// `R` raises a foundation's asked height a band, `F` lowers it
+/// `R`/`F` turn a stair preview; on a foundation they raise/lower its height
 /// (foundation height v0) — while the building plan is in hand and no
 /// panel owns the pointer, wheel up or not.
 ///
@@ -174,11 +176,28 @@ pub fn height_keys(
     ui: Option<Res<Ui>>,
     mut ghost: ResMut<Ghost>,
 ) {
-    let busy = ui.map(|u| u.panel.grabs_pointer()).unwrap_or(false);
+    let busy = ui
+        .as_ref()
+        .map(|u| u.panel.grabs_pointer())
+        .unwrap_or(false);
     let holding_plan =
         crate::ui::hold::held_in_hand(&net.session.core.catalog, &net.session.core.inv, net.sel)
             .places();
     if busy || !holding_plan {
+        return;
+    }
+    let shape = ui.as_ref().map(|u| SHAPES[u.shape.min(SHAPES.len() - 1)]);
+    if shape == Some(SHAPE_STAIRS) {
+        if keys.just_pressed(KeyCode::KeyR) {
+            ghost.stair_turn = (ghost.stair_turn + 1) % STAIR_LOCS.len() as u8;
+        }
+        if keys.just_pressed(KeyCode::KeyF) {
+            ghost.stair_turn =
+                (ghost.stair_turn + STAIR_LOCS.len() as u8 - 1) % STAIR_LOCS.len() as u8;
+        }
+        return;
+    }
+    if !matches!(shape, Some(SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION)) {
         return;
     }
     if keys.just_pressed(KeyCode::KeyR) {
@@ -265,7 +284,10 @@ pub fn track(
     // The storey is what the ray met (aimed level v0): the wall's face means
     // the storey above it, a floor's edge its own, bare ground the first.
     let level = aim.level_for(shape);
-    let target = place::target_at(aim.at.0, aim.at.1, shape, level);
+    let mut target = place::target_at(aim.at.0, aim.at.1, shape, level);
+    if shape == SHAPE_STAIRS {
+        target.loc = STAIR_LOCS[ghost.stair_turn as usize % STAIR_LOCS.len()];
+    }
     let site = Site {
         seed: world.seed,
         haven: &world.haven,

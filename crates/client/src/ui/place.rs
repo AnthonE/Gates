@@ -435,8 +435,12 @@ fn socket_crossed(
     }
     let (cx, cz) = (cx as u16, cz as u16);
     let here = cols.get(cx, cz);
-    let here_planes =
-        here.planes | here.tri_xlo_zlo | here.tri_xhi_zlo | here.tri_xlo_zhi | here.tri_xhi_zhi;
+    let here_planes = here.planes
+        | here.floor_frames
+        | here.tri_xlo_zlo
+        | here.tri_xhi_zlo
+        | here.tri_xlo_zhi
+        | here.tri_xhi_zhi;
     let mut best: Option<(u8, f32)> = None;
     let (x0, z0) = (cx as f32 * BUILD_CELL_M, cz as f32 * BUILD_CELL_M);
     // Each entry is a neighbour address and how far a point in this cell is
@@ -461,7 +465,12 @@ fn socket_crossed(
             continue;
         }
         let n = cols.get(nx, nz);
-        let planes = n.planes | n.tri_xlo_zlo | n.tri_xhi_zlo | n.tri_xlo_zhi | n.tri_xhi_zhi;
+        let planes = n.planes
+            | n.floor_frames
+            | n.tri_xlo_zlo
+            | n.tri_xhi_zlo
+            | n.tri_xlo_zhi
+            | n.tri_xhi_zhi;
         if planes == 0 {
             continue;
         }
@@ -685,11 +694,13 @@ pub fn verdict(
 ) -> Verdict {
     // Spot taken. `deploy.rs` and `build.rs` both key on the full address, so
     // this is the same comparison the sim's `find` makes.
-    if site
-        .taken
-        .iter()
-        .any(|r| r.cx == t.cx && r.cz == t.cz && r.level == t.level && r.loc == t.loc)
-    {
+    if site.taken.iter().any(|r| {
+        r.cx == t.cx
+            && r.cz == t.cz
+            && r.level == t.level
+            && (r.loc == t.loc
+                || (sim_core::build::is_stair_loc(r.loc) && sim_core::build::is_stair_loc(t.loc)))
+    }) {
         return Verdict::No("spot taken");
     }
 
@@ -1044,15 +1055,18 @@ pub fn deploy_verdict(t: Target, row: u8, site: &DeploySite<'_>) -> DeployVerdic
                 return DeployVerdict::No("bad ground");
             }
         }
-        PLACE_FOUNDATION => {
-            if site.piece_at(t.cx, t.cz, t.level, LOC_PLANE).is_none() {
-                return DeployVerdict::No("needs support");
-            }
-        }
-        PLACE_ANY => {
-            if site.piece_at(t.cx, t.cz, t.level, LOC_PLANE).is_none()
-                && !(t.level == 0 && ground_ok)
-            {
+        PLACE_FOUNDATION | PLACE_ANY => {
+            let floor = match site.piece_at(t.cx, t.cz, t.level, LOC_PLANE) {
+                None => false,
+                Some(r) => {
+                    if (r.row as u16) >= site.piece_have.min(site.piece_defs.piece_count) {
+                        return DeployVerdict::Unknown;
+                    }
+                    site.piece_defs.pieces[r.row as usize].shape
+                        != sim_core::build::SHAPE_FLOOR_FRAME
+                }
+            };
+            if !floor && !(def.placement == PLACE_ANY && t.level == 0 && ground_ok) {
                 return DeployVerdict::No("needs support");
             }
         }
@@ -1342,6 +1356,43 @@ mod tests {
             verdict(t, 0, SHAPE_WALL, &site, false, 0),
             Verdict::No("spot taken")
         );
+    }
+
+    #[test]
+    fn a_rotated_stair_preview_cannot_overlap_another_direction() {
+        let haven = sim_core::terrain::haven(1);
+        let content = free_table(SHAPE_STAIRS);
+        let inv = empty_inv();
+        let cols = sim_core::collide::ColIndex::new();
+        for placed in sim_core::build::STAIR_LOCS {
+            let taken = [PieceRec {
+                cx: 3,
+                cz: 3,
+                loc: placed,
+                ..PieceRec::default()
+            }];
+            let site = Site {
+                seed: 1,
+                haven: &haven,
+                at: (10.5, 10.5),
+                taken: &taken,
+                cols: &cols,
+                content: &content,
+                inv: &inv,
+            };
+            for loc in sim_core::build::STAIR_LOCS {
+                let target = Target {
+                    cx: 3,
+                    cz: 3,
+                    level: 0,
+                    loc,
+                };
+                assert_eq!(
+                    verdict(target, 0, SHAPE_STAIRS, &site, false, 0),
+                    Verdict::No("spot taken")
+                );
+            }
+        }
     }
 
     /// Reach is measured to the anchor, so a cell whose CENTRE is in range

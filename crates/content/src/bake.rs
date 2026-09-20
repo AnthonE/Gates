@@ -15,8 +15,8 @@ use crate::Content;
 use sim_core::backpack::BackpackContent;
 use sim_core::build::{
     BuildContent, PieceDef, MAT_METAL, MAT_STONE, MAT_TWIG, MAT_WOOD, SHAPE_DOORWAY, SHAPE_FLOOR,
-    SHAPE_FOUNDATION, SHAPE_FRAME, SHAPE_ROOF, SHAPE_STAIRS, SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION,
-    SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
+    SHAPE_FLOOR_FRAME, SHAPE_FOUNDATION, SHAPE_FRAME, SHAPE_ROOF, SHAPE_STAIRS, SHAPE_TRI_FLOOR,
+    SHAPE_TRI_FOUNDATION, SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
 };
 use sim_core::combat::{
     AmmoDef, ArmorDef, CombatContent, MeleeDef, RangedDef, ThrowDef, NO_MAG, WEAR_BODY, WEAR_HEAD,
@@ -325,6 +325,7 @@ impl Content {
                     Shape::TriFoundation => SHAPE_TRI_FOUNDATION,
                     Shape::TriFloor => SHAPE_TRI_FLOOR,
                     Shape::TriRoof => SHAPE_TRI_ROOF,
+                    Shape::FloorFrame => SHAPE_FLOOR_FRAME,
                 },
                 material: match p.material {
                     Material::Twig => MAT_TWIG,

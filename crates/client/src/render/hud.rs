@@ -1635,6 +1635,8 @@ pub fn update(
                         sim_core::build::SHAPE_FOUNDATION | sim_core::build::SHAPE_TRI_FOUNDATION
                     ) {
                         "(hold right · R/F height)"
+                    } else if shape == sim_core::build::SHAPE_STAIRS {
+                        "(hold right · R/F rotate)"
                     } else {
                         "(hold right)"
                     };

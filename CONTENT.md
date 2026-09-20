@@ -45,7 +45,7 @@ properly. The short version:
 - **recipe**: output, station (`none|workbench1|workbench2|workbench3|furnace`), inputs, seconds,
   and `blueprint` — locked until researched (see **research** below)
 - **building_piece**: shape (foundation/wall/doorway/window/wall_frame/
-  floor/stairs/roof/tri_foundation/tri_floor/tri_roof — the door is a
+  floor/floor_frame/stairs/roof/tri_foundation/tri_floor/tri_roof — the door is a
   deployable), per-material hp + upgrade cost (wood→stone→metal). One `cost` row
   serves three verbs: build it, upgrade into it, and **mend it** — a repair
   is charged that cost pro-rata against the hp being restored, scaled by
