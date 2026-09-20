@@ -7,7 +7,8 @@
 #![allow(clippy::disallowed_macros)]
 
 use sim_core::probe::{
-    probe_assist, probe_bags, probe_combat, probe_parity, probe_sites, probe_terrain,
+    probe_assist, probe_bags, probe_combat, probe_headroom, probe_parity, probe_sites,
+    probe_terrain,
 };
 
 // Keep in lockstep with ci/parity.mjs — a mismatch shows up as a diff.
@@ -64,5 +65,11 @@ fn main() {
         "assist {PARITY_MASTER_SEED:#018x} {} {:#010x}",
         assist >> 32,
         assist & 0xFFFF_FFFF
+    );
+    let headroom = probe_headroom();
+    println!(
+        "headroom {} {:#010x}",
+        headroom >> 32,
+        headroom & 0xFFFF_FFFF
     );
 }

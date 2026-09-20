@@ -1059,6 +1059,47 @@ pub fn plane_blocked(
     z: f32,
     feet_y: f32,
 ) -> bool {
+    let head = feet_y + CAPSULE_HEIGHT_M;
+    any_body_plane(seed, haven, cols, x, z, |level, top| {
+        feet_y + STEP_UP < top && (level == 0 || head > top - PLANE_THICKNESS_M)
+    })
+}
+
+/// Lowest slab underside at or above the capsule's current head, or `None`
+/// when it can rise freely. Uses the same footprint as `plane_blocked`.
+/// Foundations have no air underneath; slabs already intersecting the body
+/// are ignored so a piece placed around somebody still lets them escape.
+pub(crate) fn piece_ceiling(
+    seed: u64,
+    haven: &crate::terrain::Haven,
+    cols: &ColIndex,
+    x: f32,
+    z: f32,
+    feet_y: f32,
+) -> Option<f32> {
+    let head = feet_y + CAPSULE_HEIGHT_M;
+    let mut lowest: Option<f32> = None;
+    any_body_plane(seed, haven, cols, x, z, |level, top| {
+        let underside = top - PLANE_THICKNESS_M;
+        if level > 0 && head <= underside {
+            lowest = Some(lowest.map_or(underside, |old| old.min(underside)));
+        }
+        false
+    });
+    lowest
+}
+
+/// Visit at most four columns and eight levels, without allocating. Keeping
+/// the footprint here makes a slab's flank and underside agree at cell edges
+/// and at the four triangular half tests.
+fn any_body_plane(
+    seed: u64,
+    haven: &crate::terrain::Haven,
+    cols: &ColIndex,
+    x: f32,
+    z: f32,
+    mut visit: impl FnMut(usize, f32) -> bool,
+) -> bool {
     let r = CAPSULE_RADIUS_M;
     // **Up to FOUR cells, not one, and that is the difference from
     // [`deploy_blocked`].** That function is complete over the candidate's own
@@ -1079,7 +1120,6 @@ pub fn plane_blocked(
         crate::build::build_cell_of(z - r),
         crate::build::build_cell_of(z + r),
     );
-    let head = feet_y + CAPSULE_HEIGHT_M;
     let half = BUILD_CELL_M * 0.5;
     for bx in x0..=x1 {
         for bz in z0..=z1 {
@@ -1126,15 +1166,9 @@ pub fn plane_blocked(
                     continue;
                 }
                 let top = base + level as f32 * LEVEL_H_M;
-                if feet_y + STEP_UP >= top {
-                    continue; // a step, not a wall
+                if visit(level, top) {
+                    return true;
                 }
-                // Level 0 is a foundation and is solid to the ground; anything
-                // above it is a slab with air under it.
-                if level > 0 && head <= top - PLANE_THICKNESS_M {
-                    continue; // passed under
-                }
-                return true;
             }
         }
     }

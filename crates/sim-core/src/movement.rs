@@ -45,8 +45,8 @@ pub const STEP_UP: f32 = 0.6;
 ///   plus a foundation's `PIECE_LIFT_M` (0.3 m) together.
 /// - **Well under `build::LEVEL_H_M` (3.0 m)**, or a wall stops being a wall
 ///   and the entire build/raid premise goes with it. 1.22 m is 41% of a
-///   storey, so no piece is ever cleared by jumping and no interior ceiling
-///   is reachable from its own floor.
+///   storey, so a wall is not cleared by jumping. The capsule's head CAN
+///   reach an interior ceiling; `step` stops that upward motion separately.
 ///
 /// Both bounds are asserted against those constants in `tests/jump.rs`
 /// rather than left to this comment, so moving `STEP_UP` or `LEVEL_H_M`
@@ -108,6 +108,17 @@ impl Body {
 fn climbable(from_y: f32, to_ground: f32, run: f32) -> bool {
     let rise = to_ground - from_y;
     rise <= STEP_UP && rise <= run * CLIFF_SLOPE_RATIO
+}
+
+/// Highest quantized feet position that keeps the head below a slab. Round
+/// down, then check the decoded sum too: float subtraction/division must not
+/// round a contact back inside the ceiling on the next tick.
+fn ceiling_limit(underside: f32) -> i32 {
+    let mut q = floor_i32((underside - collide::CAPSULE_HEIGHT_M) / POS_Y_Q);
+    if q as f32 * POS_Y_Q + collide::CAPSULE_HEIGHT_M > underside {
+        q -= 1;
+    }
+    q
 }
 
 /// One fixed-timestep step of one capsule. Pure: same inputs, same result,
@@ -191,6 +202,9 @@ pub fn step(
     // `test_replay`, `test_terrain_golden` and `test_parity_wasm` are the
     // proof rather than the risk.
     let mut ground_sel = ground_here;
+    // Cache a queried destination ceiling (including "none") for the vertical
+    // pass. A rising step must not sample each column's terrain band twice.
+    let mut ceiling_sel = None;
     // Whether the body is ALREADY inside an occupant, resolved at most once
     // and only if a candidate is vetoed by one. See the veto below.
     let mut inside: Option<bool> = None;
@@ -277,9 +291,27 @@ pub fn step(
                 climbable(y, g, run2.sqrt())
             };
             if ok {
+                let next_ground = g.max(hard);
+                if next_ground > y {
+                    let ceiling = collide::piece_ceiling(
+                        seed,
+                        haven,
+                        cols,
+                        quant_xz(cx) as f32 * POS_XZ_Q,
+                        quant_xz(cz) as f32 * POS_XZ_Q,
+                        y,
+                    );
+                    // A ramp must stop horizontally when its next step has
+                    // no headroom; clamping only y would walk the body into
+                    // the ramp. Test where quantization puts it.
+                    if ceiling.is_some_and(|c| quant_y(next_ground) > ceiling_limit(c)) {
+                        continue;
+                    }
+                    ceiling_sel = Some(ceiling);
+                }
                 nx = cx;
                 nz = cz;
-                ground_sel = g.max(hard);
+                ground_sel = next_ground;
                 break;
             }
         }
@@ -312,6 +344,24 @@ pub fn step(
         if ny <= ground {
             ny = ground;
             vy = 0.0;
+        }
+    }
+    if ny > y {
+        if let Some(ceiling) = ceiling_sel.unwrap_or_else(|| {
+            collide::piece_ceiling(
+                seed,
+                haven,
+                cols,
+                quant_xz(nx) as f32 * POS_XZ_Q,
+                quant_xz(nz) as f32 * POS_XZ_Q,
+                y,
+            )
+        }) {
+            let limit = ceiling_limit(ceiling);
+            if quant_y(ny) > limit {
+                ny = limit as f32 * POS_Y_Q;
+                vy = 0.0;
+            }
         }
     }
     body.grounded = ny <= ground + 0.001;

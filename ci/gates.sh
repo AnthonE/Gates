@@ -377,6 +377,11 @@ assist_recoveries="$(awk '/^assist /{print $3}' "$native_out")"
 [ "$assist_recoveries" = "1" ] \
   || fail "test_parity_wasm: hand revive completed '$assist_recoveries' recoveries, expected 1"
 
+# Both a blocked stair step and a jump contact must reach the ceiling path.
+headroom_contacts="$(awk '/^headroom /{print $2}' "$native_out")"
+[ "$headroom_contacts" = "3" ] \
+  || fail "test_parity_wasm: headroom contact bits '$headroom_contacts', expected 3"
+
 # WHAT WAS CUT HERE, and what it costs (operator, 2026-08-06).
 #
 # Eleven gates were deleted with the browser client, in two groups.

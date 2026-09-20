@@ -1310,3 +1310,113 @@ pub fn run_assist_probe(w: &mut World) -> u64 {
     }
     (recovered << 32) | (hash.digest() & 0xFFFF_FFFF)
 }
+
+/// Shared fixture for the parity and allocation gates. Construction allocates;
+/// `run_headroom_probe` exercises covered stairs and a jump under a triangle.
+pub struct HeadroomProbe {
+    haven: terrain::Haven,
+    cols: crate::collide::ColIndex,
+    scratch: crate::occupy::Scratch<crate::occupy::Barren>,
+}
+
+const HEADROOM_SEED: u64 = 20260731;
+const HEADROOM_CX: u16 = 341;
+const HEADROOM_CZ: u16 = 341;
+
+pub fn headroom_probe() -> HeadroomProbe {
+    use crate::build::*;
+    let haven = terrain::haven(HEADROOM_SEED);
+    let mut cols = crate::collide::ColIndex::new();
+    let band = terrain_band(HEADROOM_SEED, &haven, HEADROOM_CX, HEADROOM_CZ);
+    for (dx, level, loc, shape) in [
+        (0, 0, LOC_PLANE, SHAPE_FOUNDATION),
+        (0, 0, LOC_RISER, SHAPE_STAIRS),
+        (0, 1, LOC_PLANE, SHAPE_FLOOR),
+        (1, 0, LOC_PLANE, SHAPE_FOUNDATION),
+        (1, 1, LOC_TRI_XLO_ZLO, SHAPE_TRI_ROOF),
+    ] {
+        let cx = HEADROOM_CX + dx;
+        let plate = (band - terrain_band(HEADROOM_SEED, &haven, cx, HEADROOM_CZ)) as i8;
+        cols.add(cx, HEADROOM_CZ, level, loc, shape, plate);
+    }
+    HeadroomProbe {
+        haven,
+        cols,
+        scratch: crate::occupy::Scratch::barren(),
+    }
+}
+
+/// Upper word: bit 0 means the covered ramp stopped, bit 1 a jump hit a
+/// ceiling. Lower word: every quantized body state, including the return and
+/// landing. A matching hash with missing contacts cannot pass the gate.
+pub fn run_headroom_probe(p: &mut HeadroomProbe) -> u64 {
+    use crate::build::{column_floor_y, BUILD_CELL_M, LEVEL_H_M};
+    use crate::collide::{CAPSULE_HEIGHT_M, PLANE_THICKNESS_M};
+    use crate::input::{InputFrame, BTN_JUMP};
+    use crate::movement::{self, quant_xz, quant_y, Body, POS_Y_Q, STEP_UP};
+    let base = column_floor_y(HEADROOM_SEED, &p.haven, HEADROOM_CX, HEADROOM_CZ, 0);
+    let underside = base + LEVEL_H_M - PLANE_THICKNESS_M;
+    let mut hash = Xxh3::new();
+    let mut contacts = 0u64;
+    for route in 0..2 {
+        let (dx, dz, rise) = if route == 0 {
+            (1.5, 0.09, 0.09)
+        } else {
+            (BUILD_CELL_M + 0.6, 0.6, 0.0)
+        };
+        let mut body = Body {
+            qx: quant_xz(HEADROOM_CX as f32 * BUILD_CELL_M + dx),
+            qz: quant_xz(HEADROOM_CZ as f32 * BUILD_CELL_M + dz),
+            qy: quant_y(base + rise),
+            qvy: 0,
+            grounded: true,
+        };
+        for tick in 0..80 {
+            let before = body;
+            let frame = InputFrame {
+                move_z: if route == 0 {
+                    if tick < 40 {
+                        127
+                    } else {
+                        -127
+                    }
+                } else {
+                    0
+                },
+                buttons: if route == 1 && tick == 0 { BTN_JUMP } else { 0 },
+                ..InputFrame::default()
+            };
+            movement::step(
+                HEADROOM_SEED,
+                &p.haven,
+                &p.cols,
+                &mut p.scratch.occupants(),
+                &mut body,
+                &frame,
+            );
+            let feet = body.qy as f32 * POS_Y_Q;
+            if route == 0
+                && tick < 40
+                && body.qz == before.qz
+                && body.grounded
+                && feet > base + STEP_UP
+                && feet + CAPSULE_HEIGHT_M <= underside
+            {
+                contacts |= 1;
+            }
+            if route == 1 && before.qvy > 0 && body.qvy == 0 && !body.grounded {
+                contacts |= 2;
+            }
+            for q in [body.qx, body.qy, body.qz, body.qvy] {
+                hash.update(&q.to_le_bytes());
+            }
+            hash.update(&[body.grounded as u8]);
+        }
+    }
+    (contacts << 32) | (hash.digest() & 0xFFFF_FFFF)
+}
+
+#[no_mangle]
+pub extern "C" fn probe_headroom() -> u64 {
+    run_headroom_probe(&mut headroom_probe())
+}
