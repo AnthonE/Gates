@@ -10,8 +10,8 @@ Monument approach masks preserve the existing site-carve gradient walls.
 Where an approach would leave wet carriageway, shallow fill raises the core
 to the existing land line. This is a whole-ring bench, with local cut/fill,
 not a list of special-case coordinates. Terrain outside the 17 m band is
-unchanged. The extra height array grows the World shadow-stack allowance
-from 56 to 57 KiB.
+unchanged. The extra height array grows the measured World size
+from 56 to 57 decimal kB; the configured shadow stack remains 4 MiB.
 
 The continuity test walks centre and both carriageway edges every half
 metre across 48 seeds, including all segment joints. Every sample must be
@@ -29,3 +29,10 @@ ground sampled at nodes. This does not assert obstacle clearance or measure
 frame time. A player's lap and visual assessment of headland cuts remain
 useful. Deployment onto an existing world requires the operator to decide
 world compatibility; this branch performs no wipe or publication.
+
+Manual native view: seed 20260731, (1486.52, 315.02), looking east along
+the route. This is the measured largest centre-line cut in that seed
+(about 7 m). The carriageway and gravel shoulders form a continuous
+surface through the headland. The grade remains visibly steep; this is a
+walkability limit, not a vehicle-road design. The capture used High/75%
+at 1280×720 with the separate render-scale change.
