@@ -1225,6 +1225,9 @@ pub fn assist_probe_world(seed: u64) -> World {
     use crate::movement::{Body, POS_XZ_Q};
     let mut w = World::new(seed);
     w.combat = crate::combat::CombatContent::probe_fixture();
+    // Set fixture health through the normal join constructor. The probe
+    // measures helping, and neither body needs a separate damage write.
+    w.combat.player_hp = crate::wound::WOUNDED_HP;
     w.dev_spawn = Some(w.spawn_pos(1));
     w.tick(&[Command::Join { id: 1 }, Command::Join { id: 2 }]);
     let a = w.players[0].body;
@@ -1235,7 +1238,6 @@ pub fn assist_probe_world(seed: u64) -> World {
         a.qz as f32 * POS_XZ_Q + 1.5,
     );
     w.tick(&[]);
-    w.players[1].hp = crate::wound::WOUNDED_HP;
     w.players[1].wounded = true;
     // The first hold crosses this deadline; releasing must leave time for
     // another attempt rather than rolling immediately on the old deadline.
