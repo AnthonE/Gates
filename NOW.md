@@ -1982,16 +1982,23 @@ out there is the 8 m far mesh minus `FAR_DROP`, measured **0.630 m** off the
 heightfield at worst. Gates: `tests/outer_ring.rs` (4); one mutant caught a
 worthless assertion in the first draft.
 
-1. ✅ **The hull is textured (far hull v1, 2026-09-20).** It wears
-   `canopy_material` — the near tree's own alpha-masked, double-sided needle or
-   leaf card — where it wore untextured opaque `foliage`, and
-   `IMPOSTOR_GIRTH_Q` went 0.9 → 0.99 in the same change because the two are
-   one change: a wider OPAQUE hull is a fatter smooth capsule.
-   `findings/far-hull-20260920.md` has the measurements; the hull was 65–72 %
-   of the tree's real silhouette and the trimmed band was 4–12 px per side at
-   the swap, not the "sub-pixel" its own doc claimed. `WANTED.md` §9.5's leaf
-   photograph is still the upgrade — both cards are generated. **§LOOK: the
-   before is `findings/`'s frames; the after is unseen on a GPU.**
+1. **The hull is STILL untextured, and the obvious fix was tried and
+   reverted the same day** — read this before reaching for it again. It wears
+   `foliage` (vertex-coloured, no map, opaque), so the midground is flat green
+   shapes. Pointing it at `canopy_material` makes the far forest **skeletal**:
+   `tree::needle_image` is a sprig at **0.192 / 0.255** coverage (§0t item 7),
+   correct for a canopy where a dozen overlap and fatal stretched once over a
+   hull, and coverage is scale-invariant so no `uv_scale` recovers it. Frames
+   both ways in `findings/far-hull-20260920.md` §8. **What a hull needs is a
+   BAKED silhouette of the whole tree** — `TERRAIN.md` §4's octahedral
+   billboard, a slice rather than a material swap — and that is now the
+   highest-value item here. `WANTED.md` §9.5's leaf photograph does not solve
+   it either; a photograph of leaves is still not a picture of a tree.
+   What DID land from that pass: the measurement, the gate
+   (`the_impostor_keeps_the_tree_s_outline`) and `IMPOSTOR_GIRTH_Q` 0.9 → 0.99,
+   the hull having been 65–72 % of the tree's real outline with its "sub-pixel"
+   rationale expired since forest scale v0. **§LOOK: the wider OPAQUE hull is
+   unseen — whether it now reads as a fatter capsule is the open question.**
 2. **The harvest sweep got denser and that was a named cost — twice now.**
    `harvest_changed` measured 1,500 props × a full 16,384 set at 2.34 ms and
    warned that a denser ring is the case that worsens. Outer hulls carry
