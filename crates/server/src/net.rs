@@ -1468,7 +1468,7 @@ async fn install(
 /// reachable by a test without a socket.
 ///
 /// The domain refusal is NOW.md §5b's: `buttons` is a full octet on the
-/// wire and the sim means only `BTN_MASK`'s four bits, so a frame carrying
+/// wire and the sim means only the bits in `BTN_MASK`, so a frame carrying
 /// an unknown bit is a value no client of this version can have built —
 /// forged, not mistyped. The whole datagram is refused, exactly as decode
 /// already refuses a forged `sel` (`Malformed` refuses the datagram, not
@@ -2614,9 +2614,14 @@ mod tests {
         );
 
         // A forged in-layout value: decodes, refused, and still counted.
+        // 0x20 became the hand-revive hold in v66. Derive a spare bit so
+        // this fixture keeps testing a value the current wire cannot mean.
+        let unmeant = 1u8 << BTN_MASK.trailing_ones();
+        assert_ne!(unmeant, 0, "the octet is full — this probe needs a new bit");
+        assert_eq!(unmeant & BTN_MASK, 0, "the probe bit must be unmeant");
         let mut dg = InputDatagram::new(0, 0, 0);
         dg.push(InputFrame {
-            buttons: BTN_MASK | 0x20,
+            buttons: BTN_MASK | unmeant,
             ..InputFrame::default()
         })
         .expect("one frame fits");
