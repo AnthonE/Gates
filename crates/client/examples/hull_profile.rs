@@ -55,7 +55,7 @@ fn tris_of(m: &Mesh) -> Vec<(Vec3, f32)> {
     };
     let pos: Vec<Vec3> = p.iter().map(|v| Vec3::from(*v)).collect();
     let idx: Vec<usize> = match m.indices() {
-        Some(i) => i.iter().map(|v| v as usize).collect(),
+        Some(i) => i.iter().collect(),
         None => (0..pos.len()).collect(),
     };
     idx.chunks_exact(3)
