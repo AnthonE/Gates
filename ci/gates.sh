@@ -382,6 +382,11 @@ headroom_contacts="$(awk '/^headroom /{print $2}' "$native_out")"
 [ "$headroom_contacts" = "3" ] \
   || fail "test_parity_wasm: headroom contact bits '$headroom_contacts', expected 3"
 
+# A matching digest must include all four stair turns and four facing flips.
+rotation_actions="$(awk '/^rotation /{print $2}' "$native_out")"
+[ "$rotation_actions" = "8" ] \
+  || fail "test_parity_wasm: rotation completed '$rotation_actions' actions, expected 8"
+
 # WHAT WAS CUT HERE, and what it costs (operator, 2026-08-06).
 #
 # Eleven gates were deleted with the browser client, in two groups.

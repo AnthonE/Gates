@@ -46,7 +46,8 @@ use crate::limits::{
 };
 use crate::terrain;
 use crate::world::{
-    EventQueue, Player, EV_BUILD_REFUSED, EV_PIECE_PLACED, EV_PIECE_REPAIRED, STRUCT_DEPLOY_BIT,
+    EventQueue, Player, EV_BUILD_REFUSED, EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED,
+    STRUCT_DEPLOY_BIT,
 };
 
 /// Shape codes (schema order: CONTENT.md §1 building_piece).
@@ -741,10 +742,9 @@ pub struct PieceRec {
     /// `reference/BUILDING.md` §7b.5): 1 ⇒ soft toward **+axis** (+x for
     /// a west edge, +z for a north edge), 0 ⇒ soft toward −axis. Set once
     /// at placement — soft faces the placer, because you build from
-    /// inside — and never moved (no rotate verb yet: inside the demolish
-    /// window a wrong facing is a free re-place). Meaningful on edge
-    /// shapes only; 0 elsewhere. On the wire (a client says which side
-    /// you are on) and in `state_hash` (a swing's damage reads it).
+    /// inside — and flipped by the hammer inside the demolish window.
+    /// Meaningful on edge shapes only; 0 elsewhere. On the wire (a client
+    /// says which side you are on) and in `state_hash` (a swing's damage reads it).
     pub facing: u8,
     /// Current hp (decay drains it; piece damage lands in M2).
     pub hp: u16,
@@ -912,6 +912,22 @@ impl Pieces {
     fn set_row(&mut self, i: usize, row: u8, hp: u16) {
         self.entries[i].row = row;
         self.entries[i].hp = hp;
+    }
+
+    /// Turn an existing record without changing its dense-store position,
+    /// grade, damage, upkeep or placement clock. Edge facing does not change
+    /// collision; stairs move between their four direction masks.
+    fn set_rotation(&mut self, i: usize, shape: u8, loc: u8) {
+        let rec = self.entries[i];
+        if rec.loc == loc {
+            self.entries[i].facing ^= 1;
+        } else {
+            self.cols.del(rec.cx, rec.cz, rec.level, rec.loc, shape);
+            self.entries[i].loc = loc;
+            self.cols
+                .add(rec.cx, rec.cz, rec.level, loc, shape, rec.plate);
+            self.gen += 1;
+        }
     }
 
     /// Append a record. False ⇒ store full (the caller refuses the
@@ -1886,6 +1902,99 @@ pub fn upgrade(
         EV_PIECE_PLACED,
         crate::gather::cell_key(cx, cz),
         ((level as u32) << 16) | ((loc as u32) << 8) | row as u32,
+        0,
+    );
+}
+
+/// Turn stairs by one quarter-turn or flip an edge's hard/soft face. The
+/// hammer uses demolish's reach, privilege and original placement window;
+/// rotating never renews that window or changes the piece's condition.
+///
+/// A stair keeps its cell and support plane. Its old address is removed
+/// before announcing the new one, so existing piece mirrors and collision
+/// indexes see one flight. Other stair sockets must be empty, exactly as
+/// for placement. Player overlap is not a placement refusal and is not
+/// introduced here either.
+#[allow(clippy::too_many_arguments)]
+pub fn rotate(
+    bc: &BuildContent,
+    deploys: &Deploys,
+    pieces: &mut Pieces,
+    p: &Player,
+    tick: u64,
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+    events: &mut EventQueue,
+) {
+    let Some(i) = pieces.find_index(cx, cz, level, loc) else {
+        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SPOT, 0);
+        return;
+    };
+    let rec = pieces.entries[i];
+    let Some(def) = bc.pieces.get(rec.row as usize).filter(|d| {
+        (rec.row as u16) < bc.piece_count
+            && d.hp != 0
+            && (d.shape == SHAPE_STAIRS || shape_has_facing(d.shape))
+            && loc_fits_shape(d.shape, loc)
+    }) else {
+        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_PIECE, 0);
+        return;
+    };
+    let (ax, az) = anchor(cx, cz, loc);
+    let px = p.body.qx as f32 * crate::movement::POS_XZ_Q;
+    let pz = p.body.qz as f32 * crate::movement::POS_XZ_Q;
+    let (dx, dz) = (ax - px, az - pz);
+    if dx * dx + dz * dz > BUILD_REACH_M * BUILD_REACH_M {
+        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_REACH, 0);
+        return;
+    }
+    if crate::claim::foreign_claim(pieces, deploys, ax, az, p.id) {
+        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_CLAIM, 0);
+        return;
+    }
+    if tick.saturating_sub(pieces.placed_at(i)) > crate::limits::DEMOLISH_WINDOW_TICKS {
+        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_WINDOW, 0);
+        return;
+    }
+    let next = if def.shape == SHAPE_STAIRS {
+        // Exclude this flight from the placement conflict check. Any other
+        // direction consumes the same cell body, even if not the next loc.
+        if STAIR_LOCS
+            .iter()
+            .any(|&other| other != loc && occupied_at(pieces, cx, cz, level, other))
+        {
+            events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SPOT, 0);
+            return;
+        }
+        let next = match loc {
+            LOC_RISER => LOC_RISER_XHI,
+            LOC_RISER_XHI => LOC_RISER_ZLO,
+            LOC_RISER_ZLO => LOC_RISER_XLO,
+            _ => LOC_RISER,
+        };
+        if !supported(pieces, def.shape, cx, cz, level, next) {
+            events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SUPPORT, 0);
+            return;
+        }
+        next
+    } else {
+        loc
+    };
+    pieces.set_rotation(i, def.shape, next);
+    if next != loc {
+        events.push(
+            EV_PIECE_REMOVED,
+            crate::gather::cell_key(cx, cz),
+            ((level as u32) << 16) | ((loc as u32) << 8) | rec.row as u32,
+            0,
+        );
+    }
+    events.push(
+        EV_PIECE_PLACED,
+        crate::gather::cell_key(cx, cz),
+        ((level as u32) << 16) | ((next as u32) << 8) | rec.row as u32,
         0,
     );
 }
@@ -3433,6 +3542,327 @@ mod tests {
         );
         assert_eq!(pieces.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().hp, 40);
         assert_eq!(inv_count(&p.inv, 0), before);
+    }
+
+    #[test]
+    fn hammer_flips_every_sided_shape_without_changing_condition_or_collision() {
+        let mut bc = collapse_content();
+        bc.piece_count = 8;
+        for shape in [SHAPE_WINDOW, SHAPE_FRAME] {
+            bc.pieces[shape as usize] = PieceDef {
+                shape,
+                ..bc.pieces[SHAPE_WALL as usize]
+            };
+        }
+        let p = player_at_cell_center(&[]);
+        let deploys = Deploys::new();
+        for (shape, loc) in [
+            (SHAPE_WALL, LOC_EDGE_XLO),
+            (SHAPE_WALL, LOC_EDGE_ZLO),
+            (SHAPE_WALL, LOC_DIAG_A),
+            (SHAPE_WALL, LOC_DIAG_B),
+            (SHAPE_DOORWAY, LOC_EDGE_XLO),
+            (SHAPE_DOORWAY, LOC_EDGE_ZLO),
+            (SHAPE_WINDOW, LOC_EDGE_XLO),
+            (SHAPE_WINDOW, LOC_EDGE_ZLO),
+            (SHAPE_FRAME, LOC_EDGE_XLO),
+            (SHAPE_FRAME, LOC_EDGE_ZLO),
+        ] {
+            let mut pieces = Pieces::new();
+            let rec = PieceRec {
+                cx: CX,
+                cz: CZ,
+                level: 2,
+                loc,
+                row: shape,
+                facing: 1,
+                hp: 37,
+                uh: 9,
+                plate: 1,
+                ..PieceRec::default()
+            };
+            assert!(pieces.insert(rec, shape, 123));
+            if shape == SHAPE_DOORWAY {
+                pieces.set_door(CX, CZ, 2, loc, true);
+            }
+            let cols = pieces.cols().get(CX, CZ);
+            for (tick, facing) in [(124, 0), (125, 1)] {
+                let mut ev = EventQueue::default();
+                rotate(
+                    &bc,
+                    &deploys,
+                    &mut pieces,
+                    &p,
+                    tick,
+                    CX,
+                    CZ,
+                    2,
+                    loc,
+                    &mut ev,
+                );
+                assert_eq!(pieces.entries(), &[PieceRec { facing, ..rec }]);
+                assert_eq!(pieces.placed(), &[123]);
+                assert_eq!(pieces.cols().get(CX, CZ), cols);
+                assert_eq!(ev.len(), 1);
+                assert_eq!(last(&ev).0, EV_PIECE_PLACED);
+                assert_eq!(last(&ev).1, crate::gather::cell_key(CX, CZ));
+                assert_eq!(last(&ev).2, (2 << 16) | ((loc as u32) << 8) | shape as u32);
+            }
+        }
+    }
+
+    #[test]
+    fn hammer_stair_cycle_moves_collision_and_preserves_the_original_record() {
+        let bc = collapse_content();
+        let mut pieces = Pieces::new();
+        let rec = PieceRec {
+            cx: CX,
+            cz: CZ,
+            level: 2,
+            loc: LOC_RISER,
+            row: SHAPE_STAIRS,
+            hp: 37,
+            uh: 9,
+            plate: 1,
+            ..PieceRec::default()
+        };
+        assert!(pieces.insert(
+            PieceRec {
+                loc: LOC_PLANE,
+                row: SHAPE_FLOOR,
+                ..rec
+            },
+            SHAPE_FLOOR,
+            122
+        ));
+        assert!(pieces.insert(rec, SHAPE_STAIRS, 123));
+        let p = player_at_cell_center(&[]);
+        let deploys = Deploys::new();
+        for (turn, loc) in STAIR_LOCS.into_iter().enumerate() {
+            let next = STAIR_LOCS[(turn + 1) % STAIR_LOCS.len()];
+            let mut ev = EventQueue::default();
+            rotate(
+                &bc,
+                &deploys,
+                &mut pieces,
+                &p,
+                124 + turn as u64,
+                CX,
+                CZ,
+                2,
+                loc,
+                &mut ev,
+            );
+            assert_eq!(pieces.len(), 2);
+            assert_eq!(pieces.entries()[1], PieceRec { loc: next, ..rec });
+            assert_eq!(pieces.placed(), &[122, 123]);
+            assert!(pieces.find(CX, CZ, 2, loc).is_none());
+            assert_eq!(ev.len(), 2);
+            for (e, (code, addr)) in ev
+                .entries()
+                .iter()
+                .zip([(EV_PIECE_REMOVED, loc), (EV_PIECE_PLACED, next)])
+            {
+                assert_eq!(e.code, code);
+                assert_eq!(e.a, crate::gather::cell_key(CX, CZ));
+                assert_eq!(e.b, (2 << 16) | ((addr as u32) << 8) | SHAPE_STAIRS as u32);
+            }
+            let masks = pieces.cols().get(CX, CZ).stair_masks();
+            for (i, mask) in masks.into_iter().enumerate() {
+                assert_eq!(mask, if i == (turn + 1) % 4 { 1 << 2 } else { 0 });
+            }
+            let base = column_floor_y(SEED, hv(), CX, CZ, 1) + 2.0 * LEVEL_H_M;
+            let ground = crate::collide::piece_ground(
+                SEED,
+                hv(),
+                pieces.cols(),
+                CX as f32 * BUILD_CELL_M + 0.5,
+                CZ as f32 * BUILD_CELL_M + 1.0,
+                base + LEVEL_H_M,
+            );
+            assert_eq!(ground, base + [0.5, 2.0, 2.5, 1.0][turn]);
+        }
+        assert_eq!(pieces.entries()[1], rec);
+    }
+
+    #[test]
+    fn hammer_refuses_unsupported_shapes_stair_occupancy_and_missing_support() {
+        let bc = collapse_content();
+        let p = player_at_cell_center(&[]);
+        let deploys = Deploys::new();
+        let mut pieces = Pieces::new();
+        let mut ev = EventQueue::default();
+        rotate(
+            &bc,
+            &deploys,
+            &mut pieces,
+            &p,
+            0,
+            CX,
+            CZ,
+            0,
+            LOC_RISER,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).2, REFUSE_B_SPOT);
+        pieces.insert_for_test(CX, CZ, 0, LOC_PLANE, SHAPE_FOUNDATION, &bc);
+        rotate(
+            &bc,
+            &deploys,
+            &mut pieces,
+            &p,
+            0,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).2, REFUSE_B_PIECE);
+        pieces.insert_for_test(CX, CZ, 0, LOC_RISER, SHAPE_STAIRS, &bc);
+        // A malformed/restored store can have another flight in this cell.
+        // Refuse even when that flight is not the next rotation's address.
+        pieces.insert_for_test(CX, CZ, 0, LOC_RISER_XLO, SHAPE_STAIRS, &bc);
+        let before = pieces.entries().to_vec();
+        rotate(
+            &bc,
+            &deploys,
+            &mut pieces,
+            &p,
+            0,
+            CX,
+            CZ,
+            0,
+            LOC_RISER,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).2, REFUSE_B_SPOT);
+        assert_eq!(pieces.entries(), before);
+        pieces.remove_at(2, SHAPE_STAIRS);
+        pieces.remove_at(0, SHAPE_FOUNDATION);
+        rotate(
+            &bc,
+            &deploys,
+            &mut pieces,
+            &p,
+            0,
+            CX,
+            CZ,
+            0,
+            LOC_RISER,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).2, REFUSE_B_SUPPORT);
+        assert_eq!(pieces.entries()[0].loc, LOC_RISER);
+    }
+
+    #[test]
+    fn hammer_obeys_reach_claim_and_the_original_grace_window() {
+        let (bc, mut pieces, mut deploys, mut ev, mut owner) = walled(&[(0, 99), (2, 2)]);
+        let wall = *pieces.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap();
+        let placed = pieces.placed_at(pieces.find_index(CX, CZ, 0, LOC_EDGE_XLO).unwrap());
+        let mut stranger = player_at_cell_center(&[]);
+        stranger.id = 9;
+        stranger.body.qx += crate::movement::quant_xz(BUILD_REACH_M * 2.0);
+        rotate(
+            &bc,
+            &deploys,
+            &mut pieces,
+            &stranger,
+            placed,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_XLO,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).2, REFUSE_B_REACH);
+        stranger.body = owner.body;
+        // Unclaimed pieces have no owner-only exemption to invent.
+        rotate(
+            &bc,
+            &deploys,
+            &mut pieces,
+            &stranger,
+            placed,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_XLO,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).0, EV_PIECE_PLACED);
+        crate::deploy::place_deploy(
+            SEED,
+            hv(),
+            &DeployContent::probe_fixture(),
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut owner,
+            placed,
+            0,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(deploys.len(), 1);
+        rotate(
+            &bc,
+            &deploys,
+            &mut pieces,
+            &stranger,
+            placed,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_XLO,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).2, REFUSE_B_CLAIM);
+        let expires = placed + crate::limits::DEMOLISH_WINDOW_TICKS;
+        rotate(
+            &bc,
+            &deploys,
+            &mut pieces,
+            &owner,
+            expires,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_XLO,
+            &mut ev,
+        );
+        assert_eq!(
+            last(&ev).0,
+            EV_PIECE_PLACED,
+            "last window tick is inclusive"
+        );
+        assert_eq!(*pieces.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap(), wall);
+        rotate(
+            &bc,
+            &deploys,
+            &mut pieces,
+            &owner,
+            expires + 1,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_XLO,
+            &mut ev,
+        );
+        assert_eq!(
+            last(&ev).2,
+            REFUSE_B_WINDOW,
+            "a turn did not renew the timer"
+        );
+        assert_eq!(*pieces.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap(), wall);
+        assert_eq!(
+            pieces.placed_at(pieces.find_index(CX, CZ, 0, LOC_EDGE_XLO).unwrap()),
+            placed
+        );
     }
 
     /// Privilege, the same rule `place` and `upgrade` already carry: a

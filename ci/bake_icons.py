@@ -95,7 +95,7 @@ SHAPES = {
     "shape_tri_roof": "delapouite/tipi",
 }
 
-# The four verbs on the hammer's wheel, keyed as `ui::hammer::verb_icon`
+# The verbs on the hammer's wheel, keyed as `ui::hammer::verb_icon`
 # names them.
 #
 # **Chosen at the size they are drawn, not off the archive's preview page.**
@@ -116,6 +116,7 @@ VERBS = {
     "verb_repair": "lorc/auto-repair",
     "verb_demolish": "lorc/demolish",
     "verb_pick_up": "lorc/grab",
+    "verb_rotate": "delapouite/clockwise-rotation",
 }
 
 # Every item in `content/items.toml`, by its id minus the `item.` prefix.

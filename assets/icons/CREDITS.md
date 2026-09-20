@@ -86,6 +86,7 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | `verb_demolish.png` | `lorc/demolish` |
 | `verb_pick_up.png` | `lorc/grab` |
 | `verb_repair.png` | `lorc/auto-repair` |
+| `verb_rotate.png` | `delapouite/clockwise-rotation` |
 | `verb_upgrade.png` | `delapouite/upgrade` |
 | `vital_food.png` | `delapouite/hot-meal` |
 | `vital_hp.png` | `sbed/health-normal` |

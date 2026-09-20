@@ -29,6 +29,15 @@ fn id_of(slot: usize) -> u32 {
 /// One lockstep pump (the craft_wire shape): inputs in, tick, events and
 /// snapshots back out through real bytes. Returns per-slot APPLIED flags.
 fn pump(core: &mut ShardCore, stats: &ShardStats, clients: &mut [(usize, ClientCore)]) -> [u32; 4] {
+    pump_filter(core, stats, clients, |_, _| true)
+}
+
+fn pump_filter(
+    core: &mut ShardCore,
+    stats: &ShardStats,
+    clients: &mut [(usize, ClientCore)],
+    mut accept: impl FnMut(usize, &[u8]) -> bool,
+) -> [u32; 4] {
     let mut buf = [0u8; 1100];
     for (slot, c) in clients.iter_mut() {
         c.advance(1000.0 / 30.0);
@@ -43,7 +52,12 @@ fn pump(core: &mut ShardCore, stats: &ShardStats, clients: &mut [(usize, ClientC
     core.tick_bare(stats, |lane, slot, bytes| {
         match lane {
             Lane::Snapshot => snaps.push((slot, bytes.to_vec())),
-            Lane::Event => events.push((slot, bytes.to_vec())),
+            Lane::Event => {
+                if !accept(slot, bytes) {
+                    return false;
+                }
+                events.push((slot, bytes.to_vec()));
+            }
         }
         true
     });
@@ -359,5 +373,240 @@ fn upgrade_rides_the_wire() {
         4
     );
 
+    assert_eq!(ShardStats::get(&stats.encode_range_errors), 0);
+}
+
+/// Exercise the encoded intent, not just the server's decoded-action seam.
+fn rotate(core: &mut ShardCore, slot: usize, loc: u8) {
+    let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
+    let n = protocol::encode_action_rotate(CX, CZ, 0, loc, &mut buf).unwrap();
+    act(core, slot, protocol::decode_action(&buf[..n]).unwrap());
+}
+
+fn rotation_fixture() -> (Box<ShardCore>, ShardStats, Vec<(usize, ClientCore)>) {
+    let stats = ShardStats::default();
+    let mut core = Box::new(ShardCore::new(SEED));
+    core.world.gather = GatherContent::probe_fixture();
+    core.world.build = BuildContent::probe_fixture();
+    let stair_row = core.world.build.piece_count;
+    core.world.build.pieces[stair_row as usize] = sim_core::build::PieceDef {
+        shape: sim_core::build::SHAPE_STAIRS,
+        ..core.world.build.pieces[1]
+    };
+    core.world.build.piece_count += 1;
+    core.world.dev_spawn = Some(SPAWN);
+    assert!(core.connect(0, id_of(0)));
+    assert!(core.connect(1, id_of(1)));
+    let mut clients = vec![
+        (0, ClientCore::new(SEED, id_of(0), 0)),
+        (1, ClientCore::new(SEED, id_of(1), 0)),
+    ];
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    let builder = world_slot(&core, id_of(0));
+    core.world.players[builder].inv[0] = sim_core::gather::ItemStack {
+        item: 0,
+        count: 20,
+        cond: 0,
+    };
+    for (row, loc) in [
+        (0, LOC_PLANE),
+        (1, LOC_EDGE_XLO),
+        (stair_row, sim_core::build::LOC_RISER),
+    ] {
+        act(
+            &mut core,
+            0,
+            ActionMsg::Place {
+                row,
+                cx: CX,
+                cz: CZ,
+                level: 0,
+                loc,
+                freehand: false,
+                plate: 1,
+            },
+        );
+        pump(&mut core, &stats, &mut clients);
+        assert!(core.world.pieces.find(CX, CZ, 0, loc).is_some());
+    }
+    // Damage is fixture setup. Rotation's broadcast must derive the band
+    // from authoritative hp, just as a late joiner's full sync does.
+    let mut budget = sim_core::limits::MAX_REMOVALS_PER_TICK;
+    for i in 1..3 {
+        assert!(!sim_core::deploy::damage_piece(
+            &core.world.deploy,
+            &core.world.build,
+            &mut core.world.pieces,
+            &mut core.world.deploys,
+            i,
+            40,
+            &mut budget,
+            &mut core.world.events,
+        ));
+    }
+    (core, stats, clients)
+}
+
+fn assert_rotation_mirrors(core: &ShardCore, clients: &[(usize, ClientCore)]) {
+    for (slot, client) in clients {
+        assert_eq!(client.pieces.len(), core.world.pieces.len());
+        for rec in core.world.pieces.entries() {
+            let mirrored = client
+                .pieces
+                .entries()
+                .iter()
+                .find(|r| (r.cx, r.cz, r.level, r.loc) == (rec.cx, rec.cz, rec.level, rec.loc))
+                .unwrap_or_else(|| panic!("slot {slot} lost loc {}", rec.loc));
+            assert_eq!(mirrored.row, rec.row);
+            assert_eq!(mirrored.facing, rec.facing);
+            assert_eq!(mirrored.plate, rec.plate);
+            assert_eq!(
+                mirrored.dmg,
+                sim_core::build::damage_band(rec.hp, core.world.build.pieces[rec.row as usize].hp),
+                "slot {slot} lost the damage band at loc {}",
+                rec.loc
+            );
+        }
+        assert_eq!(
+            client.pieces.cols().get(CX, CZ),
+            core.world.pieces.cols().get(CX, CZ)
+        );
+    }
+}
+
+#[test]
+fn rotation_updates_facing_stair_collision_and_late_join_damage() {
+    use sim_core::build::{LOC_RISER, LOC_RISER_XHI, LOC_RISER_XLO, LOC_RISER_ZLO};
+    let (mut core, stats, mut clients) = rotation_fixture();
+    let initial = *core.world.pieces.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap();
+    let clocks = core.world.pieces.placed().to_vec();
+    rotate(&mut core, 0, LOC_EDGE_XLO);
+    let flags = pump(&mut core, &stats, &mut clients);
+    assert_ne!(flags[0] & APPLIED_PIECES, 0);
+    assert_ne!(flags[1] & APPLIED_PIECES, 0);
+    let flipped = core.world.pieces.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap();
+    assert_eq!(flipped.facing, initial.facing ^ 1);
+    assert_eq!(flipped.hp, initial.hp);
+    for (_, client) in &clients {
+        let wall = client
+            .pieces
+            .entries()
+            .iter()
+            .find(|r| r.loc == LOC_EDGE_XLO)
+            .unwrap();
+        assert_eq!(wall.facing, flipped.facing);
+        assert_ne!(wall.dmg, 0, "a facing update visually healed the wall");
+    }
+
+    rotate(&mut core, 0, LOC_RISER);
+    let flags = pump(&mut core, &stats, &mut clients);
+    for flag in flags.iter().take(2) {
+        assert_ne!(flag & client_core::core::APPLIED_PIECE_REMOVED, 0);
+        assert_ne!(flag & APPLIED_PIECES, 0);
+    }
+    assert!(core.world.pieces.find(CX, CZ, 0, LOC_RISER).is_none());
+    assert!(core.world.pieces.find(CX, CZ, 0, LOC_RISER_XHI).is_some());
+    assert_rotation_mirrors(&core, &clients);
+
+    // Two players can address successive orientations in the same tick.
+    // The intermediate placement no longer exists when fanout reads the
+    // final store, but its following removal must still clear each mirror.
+    rotate(&mut core, 0, LOC_RISER_XHI);
+    rotate(&mut core, 1, LOC_RISER_ZLO);
+    pump(&mut core, &stats, &mut clients);
+    assert!(core.world.pieces.find(CX, CZ, 0, LOC_RISER_XLO).is_some());
+    assert_eq!(core.world.pieces.placed(), clocks);
+    assert_rotation_mirrors(&core, &clients);
+
+    assert!(core.connect(2, id_of(2)));
+    clients.push((2, ClientCore::new(SEED, id_of(2), core.world.tick as u32)));
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    assert_rotation_mirrors(&core, &clients);
+
+    // A delayed press against the old address is refused only to its sender.
+    rotate(&mut core, 0, LOC_RISER);
+    pump(&mut core, &stats, &mut clients);
+    assert_eq!(clients[0].1.pop_build_refusal(), Some(REFUSE_B_SPOT as u8));
+    assert_eq!(clients[1].1.pop_build_refusal(), None);
+    assert_rotation_mirrors(&core, &clients);
+    assert_eq!(ShardStats::get(&stats.encode_range_errors), 0);
+}
+
+#[test]
+fn interrupted_rotation_pair_resyncs_the_whole_piece_set() {
+    use sim_core::build::{LOC_RISER, LOC_RISER_XHI, LOC_RISER_ZLO};
+    let (mut core, stats, mut clients) = rotation_fixture();
+    rotate(&mut core, 0, LOC_EDGE_XLO);
+    pump(&mut core, &stats, &mut clients);
+    for (drop_removal, from, to) in [
+        (true, LOC_RISER, LOC_RISER_XHI),
+        (false, LOC_RISER_XHI, LOC_RISER_ZLO),
+    ] {
+        rotate(&mut core, 0, from);
+        let mut blocked = false;
+        pump_filter(&mut core, &stats, &mut clients, |slot, bytes| {
+            if slot != 1 {
+                return true;
+            }
+            if blocked {
+                return false;
+            }
+            let event = protocol::decode_event(bytes).unwrap();
+            blocked = if drop_removal {
+                matches!(event, protocol::EventMsg::PieceRemoved { loc, .. } if loc == from)
+            } else {
+                matches!(event, protocol::EventMsg::PiecePlaced { rec } if rec.loc == to)
+            };
+            !blocked
+        });
+        assert!(blocked, "the intended half of the rotation never arrived");
+        let mut flags = 0;
+        for _ in 0..4 {
+            flags |= pump(&mut core, &stats, &mut clients)[1];
+        }
+        assert_ne!(flags & APPLIED_PIECE_RESET, 0);
+        assert_rotation_mirrors(&core, &clients);
+    }
+    assert!(ShardStats::get(&stats.ev_resyncs) >= 2);
+    assert_eq!(ShardStats::get(&stats.encode_range_errors), 0);
+}
+
+#[test]
+fn rotating_then_demolishing_stairs_preserves_the_raised_base_collision() {
+    use sim_core::build::{LOC_RISER, LOC_RISER_XHI};
+    let (mut core, stats, mut clients) = rotation_fixture();
+    rotate(&mut core, 0, LOC_EDGE_XLO);
+    pump(&mut core, &stats, &mut clients);
+    let plate = core.world.pieces.cols().get(CX, CZ).plate;
+    assert_ne!(plate, 0, "the regression needs a raised supporting plane");
+
+    rotate(&mut core, 0, LOC_RISER);
+    act(
+        &mut core,
+        1,
+        ActionMsg::Demolish {
+            deploy: false,
+            cx: CX,
+            cz: CZ,
+            level: 0,
+            loc: LOC_RISER_XHI,
+        },
+    );
+    pump(&mut core, &stats, &mut clients);
+    assert_eq!(core.world.pieces.len(), 2);
+    assert!(core.world.pieces.find(CX, CZ, 0, LOC_RISER).is_none());
+    assert!(core.world.pieces.find(CX, CZ, 0, LOC_RISER_XHI).is_none());
+    for (slot, client) in &clients {
+        assert_eq!(
+            client.pieces.cols().get(CX, CZ).plate,
+            plate,
+            "slot {slot}: a transient stair overwrote the surviving foundation's collision height"
+        );
+    }
+    assert_rotation_mirrors(&core, &clients);
     assert_eq!(ShardStats::get(&stats.encode_range_errors), 0);
 }

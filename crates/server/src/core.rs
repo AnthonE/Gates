@@ -1050,6 +1050,13 @@ impl ShardCore {
                         level,
                         loc,
                     },
+                    ActionMsg::Rotate { cx, cz, level, loc } => Command::Rotate {
+                        id: c.id,
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                    },
                     ActionMsg::Access {
                         cx,
                         cz,
@@ -1688,19 +1695,19 @@ impl ShardCore {
                         (ev.b >> 16) as u8,
                         (ev.b >> 8) as u8,
                     );
-                    let rec = match self.world.pieces.find(addr.0, addr.1, addr.2, addr.3) {
-                        Some(r) => *r,
-                        // Placed and removed in one tick (a collapse can):
-                        // announce what the event said; the removal event
-                        // follows in this same drain.
-                        None => PieceRec {
-                            cx: addr.0,
-                            cz: addr.1,
-                            level: addr.2,
-                            loc: addr.3,
-                            row: ev.b as u8,
-                            ..PieceRec::default()
-                        },
+                    let Some(r) = self.world.pieces.find(addr.0, addr.1, addr.2, addr.3) else {
+                        // Removed or moved again in this tick: its removal
+                        // still follows in this drain. Inventing a record
+                        // here would reset the client's whole column plate
+                        // to zero even after that transient piece is removed.
+                        continue;
+                    };
+                    let rec = PieceRec {
+                        // Rotation and upgrades reuse this upsert. The
+                        // store's wire-only band stays zero, so derive
+                        // it here exactly as the full-sync walk does.
+                        dmg: damage_band(r.hp, piece_hp_max(&self.world.build, r.row)),
+                        ..*r
                     };
                     match encode_event_piece_placed(&rec, &mut self.ev_buf) {
                         Ok(len) => {
@@ -4168,6 +4175,102 @@ mod tests {
         core.world.tick(&[]);
         assert!(core.world.events.is_empty(), "ring quiet after setup");
         core
+    }
+
+    #[test]
+    fn rotation_event_overflow_resyncs_each_clients_final_stair() {
+        use client_core::core::{ClientCore, APPLIED_PIECE_RESET};
+        use sim_core::build::{SHAPE_STAIRS, STAIR_LOCS};
+        use sim_core::limits::MAX_EVENTS_PER_TICK;
+
+        const BUILD_SEED: u64 = 20_260_731;
+        const CELL: u16 = 341;
+        let stats = ShardStats::default();
+        let mut core = Box::new(ShardCore::new(BUILD_SEED));
+        core.world.dev_spawn = Some((1024.0, 1024.0));
+        core.world.gather = GatherContent::probe_fixture();
+        core.world.build = BuildContent::probe_fixture();
+        let row = core.world.build.piece_count;
+        core.world.build.pieces[row as usize] = sim_core::build::PieceDef {
+            shape: SHAPE_STAIRS,
+            ..core.world.build.pieces[1]
+        };
+        core.world.build.piece_count += 1;
+        let mut mirrors = [
+            ClientCore::new(BUILD_SEED, PLAYER, 0),
+            ClientCore::new(BUILD_SEED, PLAYER + 1, 0),
+        ];
+        for (slot, id) in [PLAYER, PLAYER + 1].into_iter().enumerate() {
+            assert!(core.connect(slot, id));
+        }
+        let mut receive = |lane, slot: usize, bytes: &[u8]| {
+            if lane == Lane::Event {
+                mirrors[slot].on_stream(bytes).unwrap();
+            }
+            true
+        };
+        core.tick_bare(&stats, &mut receive);
+        let builder = core.live_wslot(0).unwrap();
+        core.world.players[builder].inv[0] = ItemStack {
+            item: 0,
+            count: 20,
+            cond: 0,
+        };
+        for (row, loc) in [(0, LOC_PLANE), (row, STAIR_LOCS[0])] {
+            core.push_action(
+                0,
+                ActionMsg::Place {
+                    row,
+                    cx: CELL,
+                    cz: CELL,
+                    level: 0,
+                    loc,
+                    freehand: false,
+                    plate: 0,
+                },
+            );
+            core.tick_bare(&stats, &mut receive);
+        }
+        assert_eq!(core.world.pieces.len(), 2);
+        // Directly exercise the sim command ceiling: more than half the
+        // event cap in paired rotations. An odd count leaves a different
+        // final orientation from the prefix the event ring can retain.
+        let turns = MAX_COMMANDS_PER_TICK - 1;
+        assert!(turns * 2 > MAX_EVENTS_PER_TICK);
+        let commands: Vec<_> = (0..turns)
+            .map(|turn| Command::Rotate {
+                id: PLAYER,
+                cx: CELL,
+                cz: CELL,
+                level: 0,
+                loc: STAIR_LOCS[turn % STAIR_LOCS.len()],
+            })
+            .collect();
+        core.world.tick(&commands);
+        assert!(core.world.events.dropped > 0);
+        let last = STAIR_LOCS[turns % STAIR_LOCS.len()];
+        assert!(core.world.pieces.find(CELL, CELL, 0, last).is_some());
+        let mut flags = [0u32; 2];
+        core.pump_events(&stats, &mut |lane, slot, bytes| {
+            if lane == Lane::Event {
+                flags[slot] |= mirrors[slot].on_stream(bytes).unwrap();
+            }
+            true
+        });
+        for (slot, mirror) in mirrors.iter().enumerate() {
+            assert_ne!(flags[slot] & APPLIED_PIECE_RESET, 0);
+            assert_eq!(mirror.pieces.len(), core.world.pieces.len());
+            assert!(mirror.pieces.entries().iter().any(|r| r.loc == last));
+            assert_eq!(
+                mirror.pieces.cols().get(CELL, CELL),
+                core.world.pieces.cols().get(CELL, CELL)
+            );
+        }
+        assert_eq!(ShardStats::get(&stats.ev_resyncs_dropped), 2);
+        assert_eq!(
+            ShardStats::get(&stats.ev_sim_dropped),
+            core.world.events.dropped as u64
+        );
     }
 
     #[test]
