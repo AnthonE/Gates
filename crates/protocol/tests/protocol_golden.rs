@@ -2170,7 +2170,7 @@ fn the_input_golden_fuzzes_the_whole_button_octet() {
 ///
 /// Written as coverage of a domain **derived from `sim_core::build`**
 /// rather than as a bound copied from the generator, so it stays true if a
-/// store gains a loc: the day `LOC_DIAG_B` is not the top, this goes red
+/// store gains a loc: the day `LOC_RISER_XLO` is not the top, this goes red
 /// on the fixture that no longer reaches it rather than on the constant.
 /// The piece goldens carry a LIVE plate — both signs in the batch, a negative
 /// one in the single placement (build plate v1, wire v49).
@@ -2229,7 +2229,7 @@ fn the_piece_goldens_carry_a_live_plate() {
 
 #[test]
 fn the_loc_fuzz_covers_each_stores_whole_domain() {
-    use sim_core::build::{LOC_DIAG_B, LOC_EDGE_ZLO};
+    use sim_core::build::{LOC_EDGE_ZLO, LOC_RISER_XLO};
 
     let mut seen = [false; 16];
     match decode_event(GOLDEN[fixture_index("_event_piece_sync.bin")]).expect("piece sync decodes")
@@ -2241,14 +2241,14 @@ fn the_loc_fuzz_covers_each_stores_whole_domain() {
         }
         other => panic!("the piece-sync fixture decoded as {other:?}"),
     }
-    for loc in 0..=LOC_DIAG_B {
+    for loc in 0..=LOC_RISER_XLO {
         assert!(
             seen[loc as usize],
             "no piece in the sync golden sits at loc {loc}, so its bytes are \
-             pinned by nothing — the piece store addresses 0..={LOC_DIAG_B}"
+             pinned by nothing — the piece store addresses 0..={LOC_RISER_XLO}"
         );
     }
-    for (loc, hit) in seen.iter().enumerate().skip(LOC_DIAG_B as usize + 1) {
+    for (loc, hit) in seen.iter().enumerate().skip(LOC_RISER_XLO as usize + 1) {
         assert!(
             !*hit,
             "the piece-sync golden carries loc {loc}, which no store can \

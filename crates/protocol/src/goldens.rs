@@ -1048,9 +1048,8 @@ pub fn event_piece_sync() -> (bool, [PieceRec; PIECE_SYNC_BATCH]) {
         cx: rng.next_bounded(1024) as u16,
         cz: rng.next_bounded(1024) as u16,
         level: rng.next_bounded(8) as u8,
-        // All ten live locs since v40, so the batch pins triangle and
-        // diagonal addresses in golden bytes, not just the square four.
-        loc: rng.next_bounded(10) as u8,
+        // Cover every stair direction as well as planes, edges and halves.
+        loc: rng.next_bounded(sim_core::build::LOC_RISER_XLO as u32 + 1) as u8,
         row: rng.next_bounded(32) as u8,
         facing: rng.next_bounded(2) as u8,
         // The whole FIELD, both signs — the batch is where a width is pinned
@@ -1101,11 +1100,8 @@ pub fn event_piece_defs() -> BuildContent {
         // stays pinned at its top by the same row that now pins a
         // catalogue-v1 shape code.
         (sim_core::build::SHAPE_WINDOW, 0, 750, &[(0, 350), (4, 10)]),
-        // The tri roof is 10 — the TOP live code of the 4-bit shape field
-        // since v40 (the frame held this seat while the field was 3 bits),
-        // pinned here the way the roof row pins material's top: a width
-        // that never carries its widest value is a width nothing gates.
-        (sim_core::build::SHAPE_TRI_ROOF, 1, 1750, &[(1, 200)]),
+        // The floor frame pins the top live shape code (11, wire v67).
+        (sim_core::build::SHAPE_FLOOR_FRAME, 1, 1750, &[(1, 200)]),
         // The max-everything row, and the one that pins the TOP of the
         // 2-bit material field: metal is 3 since twig v0, and a fixture
         // that never wrote a 3 would leave the widest rung ungated.
