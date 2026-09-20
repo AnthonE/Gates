@@ -113,6 +113,9 @@ pub struct Ghost {
     /// `structures::part_mesh` builds both, so the preview's triangle is
     /// the piece's.
     tri_mesh: Option<Handle<Mesh>>,
+    /// The same stepped mesh as the standing flight, normalized to unit
+    /// part dimensions like the cube and prism. Built once, never per frame.
+    stair_mesh: Option<Handle<Mesh>>,
     /// The storey the aim resolved this frame (aimed level v0) — a readout
     /// for the HUD, no longer a latch: `R`/`F` stepped it until 2026-09-05,
     /// and only while the wheel was up, which is a storey nobody found.
@@ -205,10 +208,9 @@ pub fn track(
 ) {
     let ghost = &mut *ghost;
     if ghost.mesh.is_none() {
-        // ONE unit cube, scaled per shape — plus the one unit prism the
-        // triangle shapes need (triangles v0). Two meshes, not one per
-        // shape: both carry the standard vertex layout, so the second is
-        // the same pipeline, not a new specialization — the prewarm trap
+        // Unit cube, half-cell prism and stepped ramp, scaled per part.
+        // All carry the standard vertex layout and use the same pipeline,
+        // not new specializations — the prewarm trap
         // (`CLAUDE.md`, `RENDER.md` §2) is about pipelines, not meshes.
         ghost.mesh = Some(meshes.add(Cuboid::new(1.0, 1.0, 1.0)));
         ghost.tri_mesh = Some(meshes.add(structures::part_mesh(&structures::Part {
@@ -217,6 +219,11 @@ pub fn track(
             x_rot: 0.0,
             kind: structures::PartKind::Tri,
             role: structures::PartRole::Body,
+        })));
+        ghost.stair_mesh = Some(meshes.add(structures::part_mesh(&structures::Part {
+            size: Vec3::ONE,
+            kind: structures::PartKind::Stairs,
+            ..default()
         })));
         ghost.ok_mat = Some(materials.add(translucent(GHOST_OK)));
         ghost.no_mat = Some(materials.add(translucent(GHOST_NO)));
@@ -351,8 +358,9 @@ pub fn track(
         commands.entity(root).despawn_related::<Children>();
         let mesh = ghost.mesh.clone().expect("built above");
         let tri = ghost.tri_mesh.clone().expect("built above");
+        let stairs = ghost.stair_mesh.clone().expect("built above");
         // The shared table (`structures::parts_for`): one unit mesh — the
-        // cube, or the prism for a Tri part — scaled per part, where the
+        // cube, prism or stepped ramp — scaled per part, where the
         // piece will use a real-size mesh. Same sizes, same offsets, same
         // pitch, one emit site. The ghost draws BOTH corner posts of an edge
         // piece where the standing piece draws the ones it owns: a preview
@@ -369,6 +377,7 @@ pub fn track(
                 let unit = match part.kind {
                     structures::PartKind::Box => mesh.clone(),
                     structures::PartKind::Tri => tri.clone(),
+                    structures::PartKind::Stairs => stairs.clone(),
                 };
                 c.spawn((
                     Mesh3d(unit),

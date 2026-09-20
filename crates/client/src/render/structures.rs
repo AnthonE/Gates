@@ -719,6 +719,11 @@ pub fn stairs_offset() -> Vec3 {
     )
 }
 
+/// Cosmetic riser count (DECISIONS.md §open, stair visuals v0).
+/// The first and last treads are half-depth landings; the smooth collision
+/// ramp passes through every other tread's centre, at most half a rise away.
+pub const STAIR_RISERS: usize = 20;
+
 /// An edge part's vertical extent under the edge drop: `(height, centre)`
 /// for a band `y0..y1` in storey-local metres, with a foot on the storey base
 /// moved to `-EDGE_DROP_M` and a head on the storey top to
@@ -830,8 +835,10 @@ pub struct Part {
     /// Rotation about the part's local X axis, radians — the stairs' ramp
     /// pitch. Zero for every other shape.
     pub x_rot: f32,
-    /// What fills the extents: a cuboid, or the NW-cornered half-cell
-    /// prism (triangles v0). Orientation is NOT here — the four halves
+    /// What fills the extents: a cuboid, a stepped ramp, or the NW-cornered
+    /// half-cell prism. Stairs retain the smooth ramp's frame and dimensions;
+    /// their horizontal treads deviate by at most half a riser. Orientation
+    /// is NOT here — the four halves
     /// and both diagonals are one drawn object under the quarter- and
     /// eighth-turns [`base_transform`] hangs on the ROOT, exactly as a
     /// north edge has always been the west edge turned.
@@ -852,7 +859,7 @@ pub enum PartRole {
     PostHigh,
 }
 
-/// [`Part::kind`]'s two fillings.
+/// [`Part::kind`]'s mesh fillings.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum PartKind {
     #[default]
@@ -861,6 +868,10 @@ pub enum PartKind {
     /// hypotenuse from (+x, −z) to (−x, +z) in part-local space — scaled
     /// by `size`. [`tri_prism_unit`] is the one mesh.
     Tri,
+    /// Treads and risers in the smooth ramp's local frame. Keeping that
+    /// frame lets the existing placement checks still compare the ramp
+    /// against collision; `tests/stairs.rs` checks the actual tread mesh.
+    Stairs,
 }
 
 impl Part {
@@ -938,14 +949,13 @@ pub fn shape_parts(shape: u8) -> ([Part; MAX_PARTS], usize) {
         }
         SHAPE_STAIRS => (
             [
-                // A ramp through the level. The grid stores no facing, so it
-                // always rises toward +Z (cosmetic v0 — the browser's choice
-                // too), pitched the way the standing piece has always been.
+                // The sim's smooth ramp frame, filled with horizontal treads
+                // by part_mesh. Both the ghost and the standing piece use it.
                 Part {
                     size: Vec3::new(BUILD_CELL_M, SLAB_T, stairs_run()),
                     offset: stairs_offset(),
                     x_rot: -stairs_pitch(),
-                    kind: PartKind::Box,
+                    kind: PartKind::Stairs,
                     role: body,
                 },
                 none,
@@ -1402,6 +1412,11 @@ pub fn part_mesh(part: &Part) -> Mesh {
     match part.kind {
         PartKind::Box => box_mesh(part.size),
         PartKind::Tri => tri_prism_mesh(part.size),
+        PartKind::Stairs => {
+            let mut b = buffers(16 * STAIR_RISERS + 24);
+            stairs_into(&mut b, part.size, Vec3::ZERO);
+            finish(b)
+        }
     }
 }
 
@@ -1423,6 +1438,7 @@ pub fn parts_mesh(parts: &[Part]) -> Mesh {
         match part.kind {
             PartKind::Box => box_into(&mut b, part.size, part.offset),
             PartKind::Tri => tri_prism_into(&mut b, part.size, part.offset),
+            PartKind::Stairs => stairs_into(&mut b, part.size, part.offset),
         }
     }
     finish(b)
@@ -1575,6 +1591,113 @@ fn box_into(b: &mut Buffers, size: Vec3, at: Vec3) {
             n,
             |p| face_tint(n, p.y - at.y, -h.y, h.y),
         );
+    }
+}
+
+/// A closed stepped slab, authored in the cell frame, then moved into the
+/// ramp part's frame. One mesh and one draw per flight, with no buried faces
+/// between steps. UV lengths and face tint are measured before that change
+/// of frame, so a horizontal tread wears the same material as a floor.
+fn stairs_into(b: &mut Buffers, size: Vec3, at: Vec3) {
+    let start = b.0.len();
+    let half = BUILD_CELL_M * 0.5;
+    let run = BUILD_CELL_M / STAIR_RISERS as f32;
+    let rise = LEVEL_H_M / STAIR_RISERS as f32;
+    let depth = SLAB_T / stairs_pitch().cos();
+    let bottom = |z: f32| (z + half) * LEVEL_H_M / BUILD_CELL_M - depth;
+    let mut face = |corners: [Vec3; 4], normal: Vec3| {
+        let first = b.0.len();
+        quad(b, corners, normal, |p| {
+            face_tint(normal, p.y, -depth, LEVEL_H_M)
+        });
+        // Continue the photograph across the flight instead of restarting
+        // the same narrow strip on every tread and riser.
+        for (i, p) in corners.iter().enumerate() {
+            let uv = if normal.y > 0.5 {
+                Vec2::new(p.z + half, p.x + half)
+            } else if normal.y < -0.5 {
+                Vec2::new(p.x + half, (p.z + half) * stairs_run() / BUILD_CELL_M)
+            } else if normal.x != 0.0 {
+                Vec2::new(-normal.x * (p.z + half), p.y)
+            } else {
+                Vec2::new(normal.z * (p.x + half), p.y)
+            };
+            b.3[first + i] = (uv * PIECE_UV_PER_M).to_array();
+        }
+    };
+    for step in 0..=STAIR_RISERS {
+        let z0 = ((step as f32 - 0.5) * run).max(0.0) - half;
+        let z1 = ((step as f32 + 0.5) * run).min(BUILD_CELL_M) - half;
+        let y = step as f32 * rise;
+        // Horizontal tread, with half-depth landings at both ends.
+        face(
+            [
+                Vec3::new(-half, y, z0),
+                Vec3::new(-half, y, z1),
+                Vec3::new(half, y, z1),
+                Vec3::new(half, y, z0),
+            ],
+            Vec3::Y,
+        );
+        // The two flanks follow the same sloped underside, closing each
+        // tread without the internal walls of a stack of boxes.
+        for side in [-1.0, 1.0] {
+            let x = side * half;
+            let mut corners = [
+                Vec3::new(x, bottom(z0), z0),
+                Vec3::new(x, y, z0),
+                Vec3::new(x, y, z1),
+                Vec3::new(x, bottom(z1), z1),
+            ];
+            if side < 0.0 {
+                corners.reverse();
+            }
+            face(corners, Vec3::X * side);
+        }
+        if step < STAIR_RISERS {
+            face(
+                [
+                    Vec3::new(half, y, z1),
+                    Vec3::new(-half, y, z1),
+                    Vec3::new(-half, y + rise, z1),
+                    Vec3::new(half, y + rise, z1),
+                ],
+                Vec3::NEG_Z,
+            );
+        }
+    }
+    // Foot, head and continuous underside.
+    for (z, y, normal) in [(-half, 0.0, Vec3::NEG_Z), (half, LEVEL_H_M, Vec3::Z)] {
+        let mut corners = [
+            Vec3::new(-half, bottom(z), z),
+            Vec3::new(half, bottom(z), z),
+            Vec3::new(half, y, z),
+            Vec3::new(-half, y, z),
+        ];
+        if normal.z < 0.0 {
+            corners.reverse();
+        }
+        face(corners, normal);
+    }
+    let undo_pitch = Quat::from_rotation_x(stairs_pitch());
+    face(
+        [
+            Vec3::new(-half, bottom(-half), -half),
+            Vec3::new(half, bottom(-half), -half),
+            Vec3::new(half, bottom(half), half),
+            Vec3::new(-half, bottom(half), half),
+        ],
+        undo_pitch.inverse() * Vec3::NEG_Y,
+    );
+    // Unit-sized meshes take the same path for the ghost. Scaling them by
+    // Part::size reconstructs the standing piece's exact vertices.
+    let scale = size / Vec3::new(BUILD_CELL_M, SLAB_T, stairs_run());
+    let offset = stairs_offset();
+    for i in start..b.0.len() {
+        b.0[i] = (at + (undo_pitch * (Vec3::from(b.0[i]) - offset)) * scale).to_array();
+        b.1[i] = ((undo_pitch * Vec3::from(b.1[i])) / scale)
+            .normalize()
+            .to_array();
     }
 }
 
