@@ -11,10 +11,10 @@
 # wood 200 / stone 300 / metal 200, and their four shape ratios run off it:
 #
 #   1.0  foundation · wall · stairs      0.7  doorway · window
-#   0.5  floor · roof · wall_frame · tri_foundation · tri_roof
+#   0.5  floor · floor_frame · roof · wall_frame · tri_foundation · tri_roof
 #   0.25 tri_floor
 #
-# So these 44 cells ARE their 44 cells for the eleven shapes we have.
+# So these 48 cells ARE their 48 cells for the twelve shapes we have.
 # Window and wall_frame joined 2026-08-15 (catalogue v1, §9.13): their
 # ratios were already decided by §7b.3 — an opening is 0.7, a mostly-hole
 # frame is 0.5 — so the window's column is the doorway's and the frame's
@@ -390,6 +390,36 @@ cost = [{ item = "item.stone", count = 150 }]
 [[piece]]
 id = "build.tri_roof_metal"
 shape = "tri_roof"
+material = "metal"
+hp = 1000
+cost = [{ item = "item.metal_frags", count = 100 }]
+
+# Floor frames: the floor price and grade hp, with an open centre.
+# The content hash pins the expanded catalogue and its sorted row addresses.
+[[piece]]
+id = "build.floor_frame_twig"
+shape = "floor_frame"
+material = "twig"
+hp = 10
+cost = [{ item = "item.wood", count = 25 }]
+
+[[piece]]
+id = "build.floor_frame_wood"
+shape = "floor_frame"
+material = "wood"
+hp = 250
+cost = [{ item = "item.wood", count = 100 }]
+
+[[piece]]
+id = "build.floor_frame_stone"
+shape = "floor_frame"
+material = "stone"
+hp = 500
+cost = [{ item = "item.stone", count = 150 }]
+
+[[piece]]
+id = "build.floor_frame_metal"
+shape = "floor_frame"
 material = "metal"
 hp = 1000
 cost = [{ item = "item.metal_frags", count = 100 }]
