@@ -3289,6 +3289,13 @@ What remains, in order:
    **expected, not measured.** A refusal shows as `audio output: none - the
    page built no AudioWorklet` on the console with the game otherwise fine,
    and `startAudio`'s `console.warn` carries the browser's own reason.
+   **Measured 2026-09-17, first live load (Chromium 151): the CSP was never the
+   problem, and two other things silenced it.** The glue's top-level
+   `new TextDecoder` threw (a worklet scope has none), so nothing registered;
+   and a posted `WebAssembly.Module` arrives as `messageerror`. Fixed by
+   `audio-prelude.js` and by posting the bytes (`app.js`), both proven under the
+   page's CSP; `check_worklet.mjs` now hides node's globals. Firefox and Safari
+   are still unasked.
 8. **A granted pointer lock in headless Chromium is a pointer-event flood**
    (§17.6: ~30k raw updates a second, stationary), and Bevy's message
    buffers are unbounded, so the page hits the 4 GB ceiling in a minute. A

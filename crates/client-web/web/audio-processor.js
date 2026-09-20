@@ -2,8 +2,9 @@
    The `AudioWorkletProcessor` half of `crates/client/src/render/audio_web.rs`.
 
    **This file is not served as it is written.** `ci/build_web.sh` concatenates
-   the `sound-worklet` module's wasm-bindgen glue in front of it and writes the
-   pair as `audio.js`, which is what `addModule` loads. The glue is generated
+   `audio-prelude.js` and the `sound-worklet` module's wasm-bindgen glue in
+   front of it and writes the three as `audio.js`, which is what `addModule`
+   loads. The glue is generated
    with `--target no-modules` on purpose: it defines one global,
    `wasm_bindgen`, and contains no `import`, so the whole processor is a single
    script with no module graph to resolve. An `AudioWorkletGlobalScope` has no
@@ -12,9 +13,11 @@
    that asks for nothing.
 
    The `.wasm` cannot be fetched from in here either, which is why the page
-   compiles it and posts the `WebAssembly.Module` down the port: a `Module` is
-   structured-cloneable, and `initSync` instantiates it without awaiting, which
-   is what a constructor that cannot be async needs.
+   fetches it and posts the BYTES down the port, and `initSync` compiles and
+   instantiates them without awaiting. Not a compiled `WebAssembly.Module`:
+   Chromium 151 does not deserialize one in this scope (`app.js` has the
+   measurement), and a message that does not decode arrives here as
+   `messageerror`, which is now reported rather than read as silence.
 
    **Nothing here decides anything.** Every refusal, every counter and the
    de-interleave are `sound::worklet`, gated on a box with no browser by
@@ -38,6 +41,8 @@ class GatesAudio extends AudioWorkletProcessor {
     this.view = null;
     this.sinceReport = 0;
     this.port.onmessage = (e) => this.onMessage(e.data);
+    this.port.onmessageerror = () =>
+      this.port.postMessage({ kind: "error", why: "a message did not decode in the worklet" });
   }
 
   onMessage(m) {
@@ -45,7 +50,7 @@ class GatesAudio extends AudioWorkletProcessor {
       if (m.kind === "init") {
         /* `initSync` returns the instance's exports, which is where `memory`
            comes from. Nothing else in this file may touch the wasm heap. */
-        const exports = wasm_bindgen.initSync({ module: m.module });
+        const exports = wasm_bindgen.initSync({ module: m.bytes });
         this.memory = exports.memory;
         this.w = new wasm_bindgen.Worklet(m.rate);
         this.port.postMessage({ kind: "ready" });
