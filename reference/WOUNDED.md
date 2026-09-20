@@ -498,7 +498,8 @@ In the order they earn their keep, each a slice of its own, all in
    The sim is built (2026-09-20): `SurvivalContent::belt_recovery` opts items
    in, and `wound_tick` spends the first qualifying belt stack after a failed
    natural roll. Hands and a natural recovery keep it; a finishing blow
-   still kills. The content schema/bake must arm the flag. Fall damage has
+   still kills. `content/consumables.toml` arms the medkit's `belt_recovery`
+   flag, validated and included in the content hash. Fall damage has
    no wounded entry path here, so its exemption needs no new predicate.
 4. **A voice of its own for the fall** (`synth.rs` row, bank entry,
    `assets/sound/WANTED.md`), and **a drag clip** so the crawl stops sliding.

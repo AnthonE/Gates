@@ -65,7 +65,11 @@ properly. The short version:
   `[[ammo]]`'s own stated reason: it carries no damage column either, so
   one break rate for every round is that posture one step out
 - **armor**: slot, damage reduction %, movement penalty
-- **consumable**: health/food/water deltas over seconds
+- **consumable**: health/food/water deltas over seconds, optional
+  `belt_recovery` (default false; requires a healing row). A flagged item on
+  the belt saves a failed wounded recovery roll by spending one unit, without
+  also applying its ordinary heal. Natural recovery and hand revive keep it.
+  The medkit opts in; the sim reads the flag rather than the item's name.
 - **mob**: one row per animal species — hp, speeds as a percentage of the
   player's own, the leash in metres, **two notice radii** (day and night,
   the only content number the *hour* selects — `night_spook_m`), the

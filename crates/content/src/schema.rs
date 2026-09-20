@@ -397,6 +397,9 @@ pub struct Consumable {
     pub food: u32,
     pub water: u32,
     pub seconds: u32,
+    /// Spend one from the belt only if a wounded recovery roll fails.
+    #[serde(default)]
+    pub belt_recovery: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
