@@ -11,8 +11,8 @@ window's physical resolution. Its material samples RGB and writes alpha one:
 native atmosphere preserves the skybox's zero alpha between clouds, so an
 ordinary ImageNode made holes in an otherwise finished sky. A later native
 headland image exposed this after the first smoke; browser sky texels are
-opaque and could not expose it. The presentation owns opacity, not the sky. Resizing reuses the image handle; returning
-to 100% restores the original window target and releases the presentation
+opaque and could not expose it. The presentation owns opacity, not the sky. Resizing reuses the image
+handle; returning to 100% restores the original window target and releases the presentation
 entities. Leaving the world releases them too. Settled frames do not mark
 the image changed. This adds an image and a composition pass; it reduces
 pixel work, not world generation, streaming, simulation or draw submission.
@@ -30,3 +30,11 @@ to 100%. The world remained visible and the HUD stayed sharp. No fatal page
 errors or failed game requests were reported. Temporary screenshots and
 logs are outside the repository. These checks establish that the paths
 run; they do not measure hardware frame time or replace appearance review.
+
+The opaque presentation was then checked natively at High/75%, 1280×720,
+on the headland road near (1486.52, 315.02). Both sky and clouds were visible
+between the terrain silhouettes, including toward the sun; the previous
+black sky holes were absent.
+The final browser build also completed 100% → 50%, SMAA plus bloom,
+640×360 ↔ 960×720 while scaled, and restoration to 100%. Its final report
+had no fatal page errors or failed requests.
