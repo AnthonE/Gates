@@ -1982,10 +1982,16 @@ out there is the 8 m far mesh minus `FAR_DROP`, measured **0.630 m** off the
 heightfield at worst. Gates: `tests/outer_ring.rs` (4); one mutant caught a
 worthless assertion in the first draft.
 
-1. **The hull is untextured** — it wears `foliage` (white, vertex-coloured, no
-   map), so the midground is flat green shapes and this ring multiplied them by
-   four. `WANTED.md` §9.5's leaf texture is the cheapest fix and serves the
-   bush too. **Highest-value item here.**
+1. ✅ **The hull is textured (far hull v1, 2026-09-20).** It wears
+   `canopy_material` — the near tree's own alpha-masked, double-sided needle or
+   leaf card — where it wore untextured opaque `foliage`, and
+   `IMPOSTOR_GIRTH_Q` went 0.9 → 0.99 in the same change because the two are
+   one change: a wider OPAQUE hull is a fatter smooth capsule.
+   `findings/far-hull-20260920.md` has the measurements; the hull was 65–72 %
+   of the tree's real silhouette and the trimmed band was 4–12 px per side at
+   the swap, not the "sub-pixel" its own doc claimed. `WANTED.md` §9.5's leaf
+   photograph is still the upgrade — both cards are generated. **§LOOK: the
+   before is `findings/`'s frames; the after is unseen on a GPU.**
 2. **The harvest sweep got denser and that was a named cost — twice now.**
    `harvest_changed` measured 1,500 props × a full 16,384 set at 2.34 ms and
    warned that a denser ring is the case that worsens. Outer hulls carry
@@ -1995,8 +2001,20 @@ worthless assertion in the first draft.
    `MAX_SLOT_LIVES` is 32,768 from 16,384, so the 2.34 ms above is a floor on
    the worst case rather than a reading of it. The real fix is that
    `HarvestedSet::contains` is a linear scan. Unmeasured on a GPU.
-3. **Only trees.** Boulders and barrels still stop at `NEAR_RADIUS` — a
-   sub-pixel lump costs an entity and changes no silhouette.
+3. **Only trees, and ⚠ this item's reason is REFUTED.** Boulders and barrels
+   still stop at `NEAR_RADIUS`. The justification was *"a sub-pixel lump costs
+   an entity and changes no silhouette"* — an island-wide average talking,
+   which is the blindness `reference/FORESTS.md` §8 exists about. Per biome:
+   **highland's scatter row is `[20, 70, 60, 45, 10, 80, 0]` — 255 of 285 is
+   rock and ore, 20 is trees** (`terrain.rs:4981`). `NEAR_RADIUS = 2` over
+   `CHUNK_M = 64` ends the full prop set at 128 m, so **a mountainside past
+   128 m draws 7 % of its population and nothing else** — every mountain in
+   the game is bald at distance by construction, and no worldgen number
+   reaches it. Seen 2026-09-20 (`findings/far-hull-20260920.md` §0's clean
+   run). The levers are `NEAR_RADIUS`, or rock hulls in the outer ring the way
+   trees are; §0rock item 4's cliff tier is the third. Compounds with §0gp
+   item 1 — planar XZ smears the texture vertically on a steep face, which is
+   the other half of why that slope reads as a smooth beige wall.
 
 
 ## 0t · the forest — what it still owes *(client lane)*
@@ -2006,10 +2024,15 @@ worthless assertion in the first draft.
    Seen on the lavapipe bench (`examples/tree_look.rs`), not in the game.
    What it leaves, in order: **(a)** `OCCUPANT_TOP_M[Tree]` is still 5.7 m,
    so a 14 m trunk is drawn to the top and blocked to 5.7 — one sim row,
-   `shoot.rs` pins it; **(b)** the far hull is twice the pixels at the same
-   80 m swap, so `tree.rs`'s band table wants re-reading at 14 m (its
-   stacked-disc shading is fixed — the normals blend to a horizontal radial
-   now, not to each band's own centre); **(c)** the
+   `shoot.rs` pins it; **(b) ✅ CONFIRMED and addressed (far hull v1,
+   2026-09-20)** — this item predicted the band table wanted re-reading at
+   14 m and it was right: measured, the hull carried 65–72 % of the tree's
+   silhouette and `IMPOSTOR_GIRTH_Q`'s "sub-pixel" rationale had expired on
+   the date this scale landed. Fixed as a material plus a quantile
+   (`findings/far-hull-20260920.md`); what remains is that the hull is still a
+   lathe and `TERRAIN.md` §4's billboard is still the real answer. (Its
+   stacked-disc shading was already fixed — the normals blend to a horizontal
+   radial, not to each band's own centre); **(c)** the
    broadleaf is a birch's column now, and a birch wants white bark — a second
    bark map is a `CANDIDATES.md` row, not a code change; **(d)** cover only
    moved ~7 % → ~9 %, because stems are the grid's — item 2 is the lever.
@@ -2075,9 +2098,14 @@ worthless assertion in the first draft.
 1. **The fade's recipe**, already proven at the other boundary
    (`sim-core/terrain.rs::swept_here` cites this item): thin
    stochastically by instance hash so the same elements survive at a given
-   range, then scale the survivors to zero. Whether the edge reads at all
-   at that distance is a question for a person with the game booted, not
-   for a guess.
+   range, then scale the survivors to zero. ⚠ **It reads, and the question
+   this item left open is closed** — seen 2026-09-20 on a clean capture
+   (`findings/far-hull-20260920.md` §0): the carpet stops on a straight line
+   across the lower third of the frame and the ground past it is bare. It
+   compounds with the forest, because the understory forest structure v0 put
+   on the forest floor (~3,000 brush clumps/ha, §0fst item 1) lives **only
+   inside this ring**, and the forest is mostly outside it. Not a guess any
+   more; build the fade.
 2. **Beach skirts are thin because of the scatter table, not the skirt
    path** — ~0.22 prop centres a tile on the coast against ~0.95 inland.
    ⚠ Neither ratio is in the tree; both are browser-era measurements and
@@ -2838,9 +2866,15 @@ Then, in the order a player would notice:
    of them are music. `cargo run -p client --bin soundbank -- <dir>`.
 5. **LOW and MEDIUM** (§0gq) — the ladder's order is arithmetic, where each
    rung sits is a judgement. Is MEDIUM still the game?
-6. **The far forest at 80 m** (§0lod) — the hull is opaque where a canopy is
-   mostly air, so it should read *denser* than the near tree. That, not a
-   popping silhouette, is the defect to look for.
+6. ✅ **ANSWERED 2026-09-20, and the prediction was inverted** (§0lod,
+   §0out 1). This entry said the opaque hull "should read *denser* than the
+   near tree". It reads **thinner** — measured at 65–72 % of the tree's
+   silhouette area, because the tree's outline is the reach of its branches
+   and the hull was lathed at the radius 90 % of its *area* sits inside. The
+   right instinct was the one about opacity, aimed one step wrong: a canopy
+   mostly air needs a hull that is also mostly air, which is what it has now.
+   `findings/far-hull-20260920.md`. **The new question is the after**: does
+   the swap still announce itself, now that both LODs wear one card?
 7. **The broadleaf** (§0t item 1) — likeliest wrong are crown spread and leaf
    count/size.
 8. **The announce stack** (§0tq) — whether 0.52 alpha on the deepest row reads
@@ -2858,7 +2892,25 @@ Then, in the order a player would notice:
     exact and gated, and a visible change nobody asked for.
 13. **The collapsed off arm and the sleeper tint** (§0chr item 6), **a spill
     line** (§0sp2), **the map's marked set** (§0a), **a diagonal base**
-    (§0ac item 3), **the clutter ring's hard edge at ~32–45 m** (§0a).
+    (§0ac item 3), ~~**the clutter ring's hard edge at ~32–45 m**~~ — ✅ that
+    last one is **answered**: it reads, plainly, as a straight line across the
+    lower third (§0a item 1, 2026-09-20).
+
+**Three more answered the same day, off `ci/scene.sh` on this box**
+(`findings/far-hull-20260920.md` §0 has the frames and the seven apt packages
+a fresh container needs):
+
+- ✅ **The straight normals and flattened albedos** (§0rk items 1 and 3) have
+  been in a frame now. Rock reads as gravel with grain rather than as a lit
+  patchwork.
+- ✅ **The near crown is needles, not fern fronds** (§0t item 7, canopy grain
+  v0) — ragged, dark inside, lit on top. That question is closed and the
+  answer is good. Its companion is not: sky through a near crown is still
+  worth judging on a GPU.
+- ⚠ **A new one, unasked for**: the first-person hand holds its log with
+  **two untextured blue-grey boxes stuck to it**, one clipping the shaft, in
+  every frame of the run. §0hand's generic stand-in is the likely owner but
+  the doubling and the placement are not explained by it.
 
 And the one that needs a machine rather than a look: **nobody has started the
 Windows build on Windows** (§0win). Its old companion — "nobody has ever

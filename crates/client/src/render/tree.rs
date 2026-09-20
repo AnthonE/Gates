@@ -1462,17 +1462,46 @@ pub const IMPOSTOR_BANDS: usize = 8;
 pub const IMPOSTOR_SIDES: usize = 7;
 
 /// How much of a height band's surface area the hull encloses, as a fraction.
-/// **(knob)**
+/// **(knob)** — `DECISIONS.md` §open, far hull v1.
 ///
-/// **Not `max`, and the first cut of this WAS `max`.** A conifer's outermost
-/// needle card at ground level sits at 1.445 m where 90% of that band's
-/// surface area is inside 0.922 — so taking the widest vertex built a green
-/// drum of the tree's full radius from the ground to 1.65 m, against a tree
-/// whose mass there is half that. One stray card is not a silhouette. 0.9 is
-/// the envelope with the wisps trimmed; the 10% outside it is branch tips
-/// that are sub-pixel at the swap distance, and `tests/tree.rs` holds the
-/// hull inside the tree's own measured radius either way.
-pub const IMPOSTOR_GIRTH_Q: f32 = 0.9;
+/// **Still not `max`, and the reason `max` is wrong is unchanged**: a
+/// conifer's outermost needle card at ground level sits far outside the band's
+/// mass, so taking the widest vertex builds a drum of the tree's full radius
+/// from the ground up. One stray card is not a silhouette, and band 0 already
+/// reads 0.9–2.9× the tree's own width at 0.9.
+///
+/// ⚠ **What DID expire is the other half of this doc, and it expired on a
+/// date.** It read "the 10% outside it is branch tips that are sub-pixel at
+/// the swap distance", written when a conifer was 7 m tall. Forest scale v0
+/// (2026-09-14) doubled that and nobody re-derived the sentence. Measured by
+/// `examples/hull_profile`, the trimmed band is **4–12 px per side** at the
+/// 55 m swap on a 720-row frame — a visible ring of missing canopy around
+/// every far tree, and against the tree's real extent the shipped hull was
+/// 65–72% of the silhouette area and 0.53–0.76 of the width.
+///
+/// **0.99 rather than 0.97 or `max`**, off that probe's sweep: the target
+/// share of the tree's extent goes 0.73–0.81 at 0.90 → 0.83–0.91 at 0.97 →
+/// 0.90–0.98 at 0.99, and the lathe loses a further ~10% to ring smoothing and
+/// the tip closing to a point. ⚠ **0.97 was written here first and the gate
+/// refused it**: it puts variant 4 at 74% of the tree's outline against
+/// `the_impostor_keeps_the_tree_s_outline`'s 75% floor. The floor is the thing
+/// that must not move — one both 0.65 and 0.74 pass is not a gate — so the
+/// quantile did.
+///
+/// **The drum the `max` objection describes does not bite at 0.99 on this
+/// generator, and that is measured rather than assumed**: at band 0 the tree's
+/// extent and its quantile radius are EQUAL on every variant (0.198/0.198,
+/// 1.288/1.288, 0.204/0.206 …), so there is no stray ground-level card for a
+/// higher quantile to reach for. The whole extent/quantile gap lives in the
+/// canopy bands, which is where the width is wanted. `max` stays refused
+/// because that equality is a property of today's trees, not of the rule.
+///
+/// **It is only safe because the hull is alpha-masked now.** Widening an
+/// OPAQUE hull makes a fatter smooth capsule, which is worse than a thin one;
+/// the hull wears the canopy's own masked card (`props::spawn_slot`), so the
+/// extra radius arrives as porous, ragged edge instead of more plastic. Move
+/// one without the other and this number is wrong again.
+pub const IMPOSTOR_GIRTH_Q: f32 = 0.99;
 
 /// Ceiling on one impostor's triangles — the lathe's full count, before the
 /// tip band's degenerate half is dropped. `tests/tree.rs` measures against it.

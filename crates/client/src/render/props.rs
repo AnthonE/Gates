@@ -2135,7 +2135,10 @@ pub fn spawn_outer_tree(
             felled: false,
         },
         Mesh3d(a.impostors[variant].clone()),
-        MeshMaterial3d(a.foliage[tint_of(key)].clone()),
+        // The canopy's own card, for `spawn_slot`'s reason — the outer ring is
+        // the same hull at a greater distance and was the larger half of the
+        // flat-green midground (`NOW.md` §0out item 1).
+        MeshMaterial3d(a.canopy_material(variant, key).clone()),
         Transform {
             translation: Vec3::new(slot.x, y - SINK_M, slot.z),
             rotation: Quat::from_rotation_y(yaw),
@@ -2367,15 +2370,19 @@ pub fn spawn_slot(
     // deliberately left at full detail: it is a few dozen triangles and it
     // only exists after a cut.
     //
-    // The material is `foliage` — untextured, white, vertex-coloured — which
-    // is what the hull's own colours want and what makes the far forest ONE
-    // material at six meshes. The bush already banks on that shader path.
+    // The material is the CANOPY's own — the same alpha-masked, double-sided
+    // needle or leaf card the near tree wears — and it used to be `foliage`,
+    // untextured and opaque. That was the far forest's whole read: smooth
+    // green capsules standing behind ragged trees, `ART.md` rule 6's "a smooth
+    // cone is wrong at any texture budget" with the texture budget already
+    // paid for by the near LOD. Sharing the card also makes the swap a
+    // detail change rather than a species change, which is what a swap is for.
     if is_tree {
         e.with_child((
             fellable(FellPart::Far),
             Topple { t: -1.0 },
             Mesh3d(a.impostors[variant].clone()),
-            MeshMaterial3d(a.foliage[tint].clone()),
+            MeshMaterial3d(a.canopy_material(variant, key).clone()),
             tree::lod_band(&lod.far),
             transform,
         ));

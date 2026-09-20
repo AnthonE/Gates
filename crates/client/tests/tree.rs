@@ -1107,3 +1107,85 @@ fn the_crown_profile_follows_the_silhouette_and_not_one_radius() {
         );
     }
 }
+
+/// The hull carries the tree's OUTLINE, not just a fraction of its mass.
+///
+/// **This is the gate `the_impostor_stands_inside_the_tree_it_replaces` could
+/// not be.** That one compares two scalars — the widest vertex of each — and
+/// it reads 0.49–0.59 whether the hull is a faithful profile or a capsule,
+/// because one number cannot tell a narrow shape from a short one. It was
+/// green on 2026-09-20 over a far forest the operator read as smooth green
+/// bullets standing behind ragged trees (`findings/far-hull-20260920.md`).
+///
+/// So this measures the SILHOUETTE: `∫ 2r dy` over the same height bands
+/// `impostor_of` lathes through, with the tree's radius read at its own
+/// EXTENT — the widest triangle centre in the band — rather than at
+/// `IMPOSTOR_GIRTH_Q`. Reading the tree at the quantile is reading it at the
+/// number the hull solves for, so the two agree by construction (0.89–0.91 on
+/// the shipped hull, against 0.65–0.72 here); `examples/hull_profile` carries
+/// that refutation and its first draft made exactly that mistake.
+///
+/// The floor is what `IMPOSTOR_GIRTH_Q`'s sweep says 0.97 buys with the
+/// lathe's own ~10% loss to ring smoothing and the tip taken off. It fails on
+/// the 0.9 this shipped with, which is the mutant that matters.
+#[test]
+fn the_impostor_keeps_the_tree_s_outline() {
+    /// Read `bounds`-style but per band: the widest triangle centre.
+    fn extent(meshes: &[&Mesh], h: f32, bands: usize) -> Vec<f32> {
+        let step = h / bands as f32;
+        let mut out = vec![0.0f32; bands];
+        for m in meshes {
+            let Some(VertexAttributeValues::Float32x3(p)) =
+                m.attribute(Mesh::ATTRIBUTE_POSITION)
+            else {
+                continue;
+            };
+            let pos: Vec<Vec3> = p.iter().map(|v| Vec3::from(*v)).collect();
+            let idx: Vec<usize> = match m.indices() {
+                Some(i) => i.iter().map(|v| v as usize).collect(),
+                None => (0..pos.len()).collect(),
+            };
+            for t in idx.chunks_exact(3) {
+                let mid = (pos[t[0]] + pos[t[1]] + pos[t[2]]) / 3.0;
+                let bin = ((mid.y.max(0.0) / step) as usize).min(bands - 1);
+                out[bin] = out[bin].max((mid.x * mid.x + mid.z * mid.z).sqrt());
+            }
+        }
+        out
+    }
+    let area = |p: &[f32], h: f32| -> f32 {
+        let step = h / p.len() as f32;
+        p.iter().map(|r| 2.0 * r * step).sum()
+    };
+
+    const BANDS: usize = 8;
+    /// The share of the tree's own visible silhouette the hull must carry.
+    ///
+    /// 0.75 rather than the 0.78–0.82 measured, for the reason every floor in
+    /// this file is loose: the generator moves under it. It is comfortably
+    /// under what 0.97 delivers and comfortably over the 0.65–0.72 that 0.90
+    /// did, which is the whole point — a gate that both values pass is not a
+    /// gate.
+    const FLOOR: f32 = 0.75;
+
+    for v in 0..CONIFER_POOL {
+        let (bark, needles) = conifer(v);
+        let far = impostor_of(&bark, &needles, v);
+        let (th, _) = bounds(&[&bark, &needles]);
+        let tx = extent(&[&bark, &needles], th, BANDS);
+        let fp = extent(&[&far], th, BANDS);
+        let share = area(&fp, th) / area(&tx, th);
+        assert!(
+            share >= FLOOR,
+            "variant {v}'s hull sweeps {:.2} m² against the tree's own outline \
+             at {:.2} m² — {:.0}%, under the {:.0}% floor. The swap drops a \
+             {:.0}% ring of canopy off every far tree, which reads as a \
+             different plant rather than a cheaper one (IMPOSTOR_GIRTH_Q).",
+            area(&fp, th),
+            area(&tx, th),
+            100.0 * share,
+            100.0 * FLOOR,
+            100.0 * (1.0 - share),
+        );
+    }
+}
