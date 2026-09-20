@@ -38,9 +38,9 @@ use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use sim_core::build::{
     BUILD_CELL_M, DMG_BANDS, LEVEL_H_M, LOC_DIAG_A, LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO,
-    LOC_TRI_XHI_ZHI, LOC_TRI_XHI_ZLO, LOC_TRI_XLO_ZHI, LOC_TRI_XLO_ZLO, MAT_METAL, SHAPE_DOORWAY,
-    SHAPE_FRAME, SHAPE_STAIRS, SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION, SHAPE_TRI_ROOF, SHAPE_WALL,
-    SHAPE_WINDOW,
+    LOC_RISER_XHI, LOC_RISER_XLO, LOC_RISER_ZLO, LOC_TRI_XHI_ZHI, LOC_TRI_XHI_ZLO, LOC_TRI_XLO_ZHI,
+    LOC_TRI_XLO_ZLO, MAT_METAL, SHAPE_DOORWAY, SHAPE_FLOOR_FRAME, SHAPE_FRAME, SHAPE_STAIRS,
+    SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION, SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
 };
 use sim_core::collide::{
     ColIndex, DOOR_POST_W_M, FRAME_RIM_M, WALL_THICKNESS_M, WINDOW_HEAD_M, WINDOW_SILL_M,
@@ -890,7 +890,7 @@ pub const MAX_PARTS: usize = 6;
 /// How many shapes the parts table covers: the sim's own last shape, plus
 /// one. A shape past it is drawn as the fallback slab, same as one the
 /// table has no arm for.
-pub const N_SHAPES: usize = SHAPE_TRI_ROOF as usize + 1;
+pub const N_SHAPES: usize = SHAPE_FLOOR_FRAME as usize + 1;
 
 /// Which parts a shape has and where they go — **the one table** both the
 /// standing piece ([`spawn_piece`]) and the build ghost (`ghost::track`)
@@ -916,6 +916,27 @@ pub fn shape_parts(shape: u8) -> ([Part; MAX_PARTS], usize) {
     let [lo, hi] = corner_posts();
     let body = PartRole::Body;
     match shape {
+        SHAPE_FLOOR_FRAME => {
+            let half = BUILD_CELL_M * 0.5;
+            let inset = half - FRAME_RIM_M * 0.5;
+            let inner = BUILD_CELL_M - 2.0 * FRAME_RIM_M;
+            let rail = |size, x, z| Part {
+                size,
+                offset: Vec3::new(x, -SLAB_T * 0.5, z),
+                ..Part::default()
+            };
+            (
+                [
+                    rail(Vec3::new(FRAME_RIM_M, SLAB_T, BUILD_CELL_M), -inset, 0.0),
+                    rail(Vec3::new(FRAME_RIM_M, SLAB_T, BUILD_CELL_M), inset, 0.0),
+                    rail(Vec3::new(inner, SLAB_T, FRAME_RIM_M), 0.0, -inset),
+                    rail(Vec3::new(inner, SLAB_T, FRAME_RIM_M), 0.0, inset),
+                    none,
+                    none,
+                ],
+                4,
+            )
+        }
         SHAPE_WALL => (
             [
                 edge_part(0.0, LEVEL_H_M, between, 0.0, body),
@@ -1802,6 +1823,9 @@ pub fn base_transform(
         LOC_TRI_XHI_ZLO => (Vec3::new(cxm, base_y, czm), -FRAC_PI_2, Vec3::ONE),
         LOC_TRI_XLO_ZHI => (Vec3::new(cxm, base_y, czm), FRAC_PI_2, Vec3::ONE),
         LOC_TRI_XHI_ZHI => (Vec3::new(cxm, base_y, czm), PI, Vec3::ONE),
+        LOC_RISER_XHI => (Vec3::new(cxm, base_y, czm), FRAC_PI_2, Vec3::ONE),
+        LOC_RISER_ZLO => (Vec3::new(cxm, base_y, czm), PI, Vec3::ONE),
+        LOC_RISER_XLO => (Vec3::new(cxm, base_y, czm), -FRAC_PI_2, Vec3::ONE),
         LOC_DIAG_A => (
             Vec3::new(cxm, base_y, czm),
             FRAC_PI_4,

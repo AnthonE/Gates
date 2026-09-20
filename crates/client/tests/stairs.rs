@@ -8,7 +8,7 @@ use bevy::prelude::*;
 use client::render::structures::{
     base_transform, level_base_y, part_mesh, shape_parts, Part, PIECE_UV_PER_M, STAIR_RISERS,
 };
-use sim_core::build::{BUILD_CELL_M, LEVEL_H_M, LOC_RISER, SHAPE_STAIRS};
+use sim_core::build::{BUILD_CELL_M, LEVEL_H_M, SHAPE_STAIRS, STAIR_LOCS};
 use sim_core::collide::{piece_ground, ColIndex};
 use sim_core::terrain;
 
@@ -140,34 +140,77 @@ fn treads_follow_collision_and_join_both_landings_at_every_plate() {
     let part = shape_parts(SHAPE_STAIRS).0[0];
     let mesh = part_mesh(&part);
     let rise = LEVEL_H_M / STAIR_RISERS as f32;
-    for plate in [-3, 0, 3] {
-        for level in [0, 2] {
-            let mut cols = ColIndex::new();
-            cols.add(cx, cz, level, LOC_RISER, SHAPE_STAIRS, plate);
-            let base = level_base_y(seed, &haven, cx, cz, level, plate);
-            let transform =
-                base_transform(seed, &haven, (cx, cz, level, LOC_RISER), plate) * part.transform();
-            let points = positions(&mesh, transform);
-            for sample in 0..=STAIR_RISERS * 8 {
-                let local_z = (sample as f32 * BUILD_CELL_M / (STAIR_RISERS * 8) as f32)
-                    .clamp(0.001, BUILD_CELL_M - 0.001);
-                let z = cz as f32 * BUILD_CELL_M + local_z;
-                for fraction in [0.01, 0.5, 0.99] {
-                    let x = (cx as f32 + fraction) * BUILD_CELL_M;
-                    let walked = piece_ground(seed, &haven, &cols, x, z, base + LEVEL_H_M);
-                    let drawn = top_at(&points, &mesh, x, z);
-                    assert!(drawn.is_finite(), "hole in a tread at {x}, {z}");
-                    assert!(
-                        (walked - drawn).abs() <= rise * 0.5 + 0.001,
-                        "plate {plate}, level {level}: walked {walked}, drawn {drawn}"
-                    );
-                    if sample == 0 {
-                        assert!((drawn - base).abs() < 0.001);
-                    } else if sample == STAIR_RISERS * 8 {
-                        assert!((drawn - base - LEVEL_H_M).abs() < 0.001);
+    for loc in STAIR_LOCS {
+        for plate in [-3, 0, 3] {
+            for level in [0, 2] {
+                let mut cols = ColIndex::new();
+                cols.add(cx, cz, level, loc, SHAPE_STAIRS, plate);
+                let base = level_base_y(seed, &haven, cx, cz, level, plate);
+                let root = base_transform(seed, &haven, (cx, cz, level, loc), plate);
+                let transform = root * part.transform();
+                let points = positions(&mesh, transform);
+                for sample in 0..=STAIR_RISERS * 8 {
+                    let local_z = (sample as f32 * BUILD_CELL_M / (STAIR_RISERS * 8) as f32)
+                        .clamp(0.001, BUILD_CELL_M - 0.001);
+                    for fraction in [0.01, 0.5, 0.99] {
+                        let world = root.transform_point(Vec3::new(
+                            (fraction - 0.5) * BUILD_CELL_M,
+                            0.0,
+                            local_z - BUILD_CELL_M * 0.5,
+                        ));
+                        let (x, z) = (world.x, world.z);
+                        let walked = piece_ground(seed, &haven, &cols, x, z, base + LEVEL_H_M);
+                        let drawn = top_at(&points, &mesh, x, z);
+                        assert!(drawn.is_finite(), "hole in a tread at {x}, {z}");
+                        assert!(
+                            (walked - drawn).abs() <= rise * 0.5 + 0.001,
+                            "plate {plate}, level {level}: walked {walked}, drawn {drawn}"
+                        );
+                        if sample == 0 {
+                            assert!((drawn - base).abs() < 0.001);
+                        } else if sample == STAIR_RISERS * 8 {
+                            assert!((drawn - base - LEVEL_H_M).abs() < 0.001);
+                        }
                     }
                 }
             }
         }
+    }
+}
+
+#[test]
+fn floor_frame_mesh_and_collision_share_the_opening_and_walk_surface() {
+    use client::render::structures::parts_mesh;
+    use sim_core::build::{LOC_PLANE, SHAPE_FLOOR_FRAME};
+    use sim_core::collide::NO_SURFACE;
+    let seed = 20260731;
+    let haven = terrain::haven(seed);
+    let (cx, cz) = (341, 341);
+    let (parts, n) = shape_parts(SHAPE_FLOOR_FRAME);
+    let mesh = parts_mesh(&parts[..n]);
+    for plate in [-3, 0, 3] {
+        let mut cols = ColIndex::new();
+        cols.add(cx, cz, 2, LOC_PLANE, SHAPE_FLOOR_FRAME, plate);
+        let root = base_transform(seed, &haven, (cx, cz, 2, LOC_PLANE), plate);
+        let points = positions(&mesh, root);
+        let top = level_base_y(seed, &haven, cx, cz, 2, plate);
+        let mut open = 0;
+        let mut solid = 0;
+        for ix in 0..60 {
+            for iz in 0..60 {
+                let x = cx as f32 * BUILD_CELL_M + (ix as f32 + 0.5) * BUILD_CELL_M / 60.0;
+                let z = cz as f32 * BUILD_CELL_M + (iz as f32 + 0.5) * BUILD_CELL_M / 60.0;
+                let drawn = top_at(&points, &mesh, x, z);
+                let walked = piece_ground(seed, &haven, &cols, x, z, top);
+                if walked == NO_SURFACE {
+                    open += 1;
+                    assert!(!drawn.is_finite(), "mesh covers the hole at {x}, {z}");
+                } else {
+                    solid += 1;
+                    assert!((drawn - walked).abs() < 0.001, "rim disagrees at {x}, {z}");
+                }
+            }
+        }
+        assert!(open > solid && solid > 0);
     }
 }

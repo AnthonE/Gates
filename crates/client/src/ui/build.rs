@@ -31,8 +31,8 @@
 
 use sim_core::build::{
     BuildContent, MAT_METAL, MAT_STONE, MAT_TWIG, MAT_WOOD, SHAPE_DOORWAY, SHAPE_FLOOR,
-    SHAPE_FOUNDATION, SHAPE_FRAME, SHAPE_ROOF, SHAPE_STAIRS, SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION,
-    SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
+    SHAPE_FLOOR_FRAME, SHAPE_FOUNDATION, SHAPE_FRAME, SHAPE_ROOF, SHAPE_STAIRS, SHAPE_TRI_FLOOR,
+    SHAPE_TRI_FOUNDATION, SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
 };
 use sim_core::craft::inv_count;
 use sim_core::gather::ItemStack;
@@ -44,7 +44,7 @@ use sim_core::limits::INV_SLOTS;
 /// (catalogue v1) follow the doorway, and each triangle (triangles v0)
 /// sits beside the square it halves, which is where a builder's thumb
 /// already is.
-pub const SHAPES: [u8; 11] = [
+pub const SHAPES: [u8; 12] = [
     SHAPE_FOUNDATION,
     SHAPE_TRI_FOUNDATION,
     SHAPE_WALL,
@@ -52,6 +52,7 @@ pub const SHAPES: [u8; 11] = [
     SHAPE_WINDOW,
     SHAPE_FRAME,
     SHAPE_FLOOR,
+    SHAPE_FLOOR_FRAME,
     SHAPE_TRI_FLOOR,
     SHAPE_STAIRS,
     SHAPE_ROOF,
@@ -73,6 +74,7 @@ pub fn shape_label(shape: u8) -> &'static str {
         SHAPE_WINDOW => "Window",
         SHAPE_FRAME => "Wall Frame",
         SHAPE_FLOOR => "Floor",
+        SHAPE_FLOOR_FRAME => "Floor Frame",
         SHAPE_TRI_FLOOR => "Tri Floor",
         SHAPE_STAIRS => "Stairs",
         SHAPE_ROOF => "Roof",
@@ -92,8 +94,9 @@ pub fn shape_blurb(shape: u8) -> &'static str {
         SHAPE_WINDOW => "A wall with an eye. Arrows pass; bodies never do.",
         SHAPE_FRAME => "A wall that is mostly hole, until an insert fills it.",
         SHAPE_FLOOR => "A storey's ceiling and the next one's ground.",
+        SHAPE_FLOOR_FRAME => "An open floor for a stairwell. Walls stand on its rim.",
         SHAPE_TRI_FLOOR => "Half a floor. The cheapest hp a resource buys.",
-        SHAPE_STAIRS => "Reach the storey above.",
+        SHAPE_STAIRS => "Reach the storey above. R/F turns the preview.",
         SHAPE_ROOF => "Cap the top so nothing builds above you.",
         SHAPE_TRI_ROOF => "Cap a triangle. Aim a wall at its slant.",
         _ => "",
@@ -116,6 +119,7 @@ pub fn shape_icon(shape: u8) -> &'static str {
         SHAPE_WINDOW => "shape_window",
         SHAPE_FRAME => "shape_wall_frame",
         SHAPE_FLOOR => "shape_floor",
+        SHAPE_FLOOR_FRAME => "shape_wall_frame",
         SHAPE_TRI_FOUNDATION => "shape_tri_foundation",
         SHAPE_TRI_FLOOR => "shape_tri_floor",
         SHAPE_TRI_ROOF => "shape_tri_roof",
