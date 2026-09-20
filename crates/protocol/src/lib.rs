@@ -897,7 +897,9 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// v66 adds hand revive: Assist selects a body, BTN_ASSIST holds the input,
 /// and the Assist event states the server's progress to both participants.
 /// Existing layouts retain their widths; the meaning of button bit 5 changes.
-pub const PROTO_VER: u16 = 66;
+/// v67 admits three oriented stair sockets and the floor-frame shape.
+/// Field widths stay fixed; these previously refused values change meaning.
+pub const PROTO_VER: u16 = 67;
 
 /// This game's slug in the elo catalog.
 ///
@@ -1462,13 +1464,14 @@ pub(crate) const BUILD_CELL_BITS: u32 = 10;
 pub(crate) const BUILD_LEVEL_BITS: u32 = 3;
 /// Widened 2 → 4 in wire v40 (triangles v0): the piece grid gained four
 /// triangle halves and two diagonals, ten locs where four filled the old
-/// width exactly. Six of the sixteen values are now forgeable — and the
+/// width exactly. V67 uses three more for stair directions, leaving three
+/// unused values — and the
 /// DEPLOY store never widened at all — so every read site range-checks
 /// against [`loc_max`] where none used to have anything to check.
 pub(crate) const BUILD_LOC_BITS: u32 = 4;
 
 /// The widest loc each store can address (triangles v0): pieces gained
-/// the halves and diagonals; deployables still live on the plane and the
+/// the halves, diagonals and stair directions; deployables live on the plane and the
 /// straight edges. One function rather than ten scattered comparisons,
 /// because a store-bit message bounds its loc BY the bit and a site that
 /// picked the wrong constant would admit a forged address into the other
@@ -1477,7 +1480,7 @@ pub(crate) fn loc_max(deploy: bool) -> u8 {
     if deploy {
         sim_core::build::LOC_EDGE_ZLO
     } else {
-        sim_core::build::LOC_DIAG_B
+        sim_core::build::LOC_RISER_XLO
     }
 }
 pub(crate) const PIECE_ROW_BITS: u32 = 8;
