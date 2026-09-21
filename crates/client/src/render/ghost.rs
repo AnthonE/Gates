@@ -105,7 +105,7 @@ pub struct Ghost {
     /// two are never up at once but are driven by different systems, and one
     /// entity shared between them would need a mode flag that could disagree.
     deploy_entity: Option<Entity>,
-    insert_mesh: [Option<Handle<Mesh>>; 2],
+    insert_mesh: [Option<Handle<Mesh>>; 4],
     apron_mesh: Option<Handle<Mesh>>,
     apron_entity: Option<Entity>,
     deploy_mat: Option<Handle<StandardMaterial>>,
@@ -638,6 +638,8 @@ pub fn deploy_track(
     let insert = match arch as u8 {
         sim_core::deploy::ARCH_WINDOW_BARS => Some(0),
         sim_core::deploy::ARCH_GARAGE_DOOR => Some(1),
+        sim_core::deploy::ARCH_WINDOW_GLASS => Some(2),
+        sim_core::deploy::ARCH_WINDOW_SHUTTER => Some(3),
         _ => None,
     };
     let mesh = if let Some(i) = insert {

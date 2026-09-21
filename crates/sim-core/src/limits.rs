@@ -509,9 +509,9 @@ pub const COL_INDEX_SLOTS: usize = 16_384;
 
 /// Deployable definitions the sim preallocates for (the alpha set is 9
 /// rows, content/deployables.toml). The content bake refuses a set past
-/// this; the wire carries the row in 4 bits — exactly this range.
+/// this; the wire carries the row in 5 bits — exactly this range.
 /// Structural cap like `MAX_PIECE_DEFS`.
-pub const MAX_DEPLOY_DEFS: usize = 16;
+pub const MAX_DEPLOY_DEFS: usize = 32;
 
 /// Cost rows one deployable may carry, for pricing its repair. A
 /// deployable's *placement* costs one crafted item; its repair is priced

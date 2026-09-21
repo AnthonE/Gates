@@ -1008,6 +1008,23 @@ impl Pieces {
 
     /// Set or clear the closed-door bit at a doorway edge (deploy.rs owns
     /// when: door placement, the use toggle, and door removal).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn set_insert(
+        &mut self,
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
+        arch: u8,
+        shut: bool,
+    ) {
+        if arch == crate::deploy::ARCH_DOOR {
+            self.set_door(cx, cz, level, loc, shut);
+        } else {
+            self.cols.set_insert(cx, cz, level, loc, arch, shut);
+        }
+    }
+
     pub(crate) fn set_door(&mut self, cx: u16, cz: u16, level: u8, loc: u8, shut: bool) {
         self.cols.set_door(cx, cz, level, loc, shut);
     }

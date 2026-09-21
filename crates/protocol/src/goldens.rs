@@ -40,129 +40,129 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names, keyed by wire version (`PROTO_VER` 10 ⇒ `v10_*`).
 pub const FIXTURES: [&str; 111] = [
-    "v69_input_acks_only.bin",
-    "v69_input_full.bin",
-    "v69_snapshot_keyframe.bin",
-    "v69_snapshot_delta.bin",
-    "v69_snapshot_cap.bin",
-    "v69_hello.bin",
-    "v69_welcome.bin",
-    "v69_refuse_full.bin",
-    "v69_event_gather.bin",
-    "v69_event_inv.bin",
-    "v69_event_slot_harvested.bin",
-    "v69_event_slot_respawned.bin",
-    "v69_event_slot_sync.bin",
-    "v69_event_catalog.bin",
-    "v69_event_weak_mark.bin",
-    "v69_event_craft_q.bin",
-    "v69_event_craft_done.bin",
-    "v69_event_craft_refused.bin",
-    "v69_event_recipes.bin",
-    "v69_action_craft.bin",
-    "v69_action_cancel.bin",
-    "v69_action_place.bin",
-    "v69_event_piece_placed.bin",
-    "v69_event_piece_sync.bin",
-    "v69_event_build_refused.bin",
-    "v69_event_piece_defs.bin",
-    "v69_action_deploy.bin",
-    "v69_action_feed.bin",
-    "v69_event_deploy_placed.bin",
-    "v69_event_deploy_sync.bin",
-    "v69_event_deploy_refused.bin",
-    "v69_event_deploy_defs.bin",
-    "v69_event_piece_removed.bin",
-    "v69_event_deploy_removed.bin",
-    "v69_event_stock.bin",
-    "v69_action_use.bin",
-    "v69_action_access.bin",
-    "v69_event_door.bin",
-    "v69_action_upgrade.bin",
-    "v69_chat.bin",
-    "v69_event_chat.bin",
-    "v69_event_hit.bin",
-    "v69_event_health.bin",
-    "v69_event_death.bin",
-    "v69_action_loot.bin",
-    "v69_event_bag_dropped.bin",
-    "v69_event_bag_sync.bin",
-    "v69_event_bag_removed.bin",
-    "v69_event_struct_hit_piece.bin",
-    "v69_event_struct_hit_deploy.bin",
-    "v69_event_vitals.bin",
-    "v69_event_consumed.bin",
-    "v69_event_consume_refused.bin",
-    "v69_action_consume.bin",
-    "v69_event_drank.bin",
-    "v69_action_drink.bin",
-    "v69_event_respawn.bin",
-    "v69_action_respawn.bin",
-    "v69_action_move.bin",
-    "v69_event_moved.bin",
-    "v69_event_move_refused.bin",
-    "v69_action_move_box.bin",
-    "v69_action_container.bin",
-    "v69_action_container_close.bin",
-    "v69_event_cont_sync.bin",
-    "v69_event_cont_close.bin",
-    "v69_action_repair_piece.bin",
-    "v69_action_repair_deploy.bin",
-    "v69_event_piece_repaired_piece.bin",
-    "v69_event_piece_repaired_deploy.bin",
-    "v69_action_throw_piece.bin",
-    "v69_action_throw_deploy.bin",
-    "v69_event_charge_placed_piece.bin",
-    "v69_event_charge_placed_deploy.bin",
-    "v69_challenge.bin",
-    "v69_auth.bin",
-    "v69_event_oven_lit.bin",
-    "v69_event_oven_out.bin",
+    "v70_input_acks_only.bin",
+    "v70_input_full.bin",
+    "v70_snapshot_keyframe.bin",
+    "v70_snapshot_delta.bin",
+    "v70_snapshot_cap.bin",
+    "v70_hello.bin",
+    "v70_welcome.bin",
+    "v70_refuse_full.bin",
+    "v70_event_gather.bin",
+    "v70_event_inv.bin",
+    "v70_event_slot_harvested.bin",
+    "v70_event_slot_respawned.bin",
+    "v70_event_slot_sync.bin",
+    "v70_event_catalog.bin",
+    "v70_event_weak_mark.bin",
+    "v70_event_craft_q.bin",
+    "v70_event_craft_done.bin",
+    "v70_event_craft_refused.bin",
+    "v70_event_recipes.bin",
+    "v70_action_craft.bin",
+    "v70_action_cancel.bin",
+    "v70_action_place.bin",
+    "v70_event_piece_placed.bin",
+    "v70_event_piece_sync.bin",
+    "v70_event_build_refused.bin",
+    "v70_event_piece_defs.bin",
+    "v70_action_deploy.bin",
+    "v70_action_feed.bin",
+    "v70_event_deploy_placed.bin",
+    "v70_event_deploy_sync.bin",
+    "v70_event_deploy_refused.bin",
+    "v70_event_deploy_defs.bin",
+    "v70_event_piece_removed.bin",
+    "v70_event_deploy_removed.bin",
+    "v70_event_stock.bin",
+    "v70_action_use.bin",
+    "v70_action_access.bin",
+    "v70_event_door.bin",
+    "v70_action_upgrade.bin",
+    "v70_chat.bin",
+    "v70_event_chat.bin",
+    "v70_event_hit.bin",
+    "v70_event_health.bin",
+    "v70_event_death.bin",
+    "v70_action_loot.bin",
+    "v70_event_bag_dropped.bin",
+    "v70_event_bag_sync.bin",
+    "v70_event_bag_removed.bin",
+    "v70_event_struct_hit_piece.bin",
+    "v70_event_struct_hit_deploy.bin",
+    "v70_event_vitals.bin",
+    "v70_event_consumed.bin",
+    "v70_event_consume_refused.bin",
+    "v70_action_consume.bin",
+    "v70_event_drank.bin",
+    "v70_action_drink.bin",
+    "v70_event_respawn.bin",
+    "v70_action_respawn.bin",
+    "v70_action_move.bin",
+    "v70_event_moved.bin",
+    "v70_event_move_refused.bin",
+    "v70_action_move_box.bin",
+    "v70_action_container.bin",
+    "v70_action_container_close.bin",
+    "v70_event_cont_sync.bin",
+    "v70_event_cont_close.bin",
+    "v70_action_repair_piece.bin",
+    "v70_action_repair_deploy.bin",
+    "v70_event_piece_repaired_piece.bin",
+    "v70_event_piece_repaired_deploy.bin",
+    "v70_action_throw_piece.bin",
+    "v70_action_throw_deploy.bin",
+    "v70_event_charge_placed_piece.bin",
+    "v70_event_charge_placed_deploy.bin",
+    "v70_challenge.bin",
+    "v70_auth.bin",
+    "v70_event_oven_lit.bin",
+    "v70_event_oven_out.bin",
     // Appended rather than slotted beside `v30_event_door`: the
     // fixture list is positional (`gen_goldens` indexes it), so a new
     // name in the middle silently renumbers every writer after it.
-    "v69_event_knock.bin",
-    "v69_event_auth.bin",
-    "v69_action_access_crew.bin",
-    "v69_action_demolish.bin",
-    "v69_event_shot.bin",
+    "v70_event_knock.bin",
+    "v70_event_auth.bin",
+    "v70_action_access_crew.bin",
+    "v70_action_demolish.bin",
+    "v70_event_shot.bin",
     // World containers v0 (v37): the fourth container kind. Three
     // fixtures and not one, because `action_move_box`'s own doc records
     // what happens otherwise — the third kind crossed the wire for a
     // whole version with only the *open* pinned, so the bytes that mean
     // "take it out of the box" were checked by nothing. Kind 3 gets its
     // open, its move and its sync in the commit that legalises it.
-    "v69_action_container_world.bin",
-    "v69_action_move_world.bin",
-    "v69_event_cont_sync_world.bin",
+    "v70_action_container_world.bin",
+    "v70_action_move_world.bin",
+    "v70_event_cont_sync_world.bin",
     // The bench ladder + tech tree (v38): the unlock action and the
     // research-rows drip, plus the three research-lane events that had
     // ridden unpinned since v32 — the role gate checked their payloads
     // and nothing checked their bytes, which is the exact seat the v37
     // world-container note called out as empty.
-    "v69_action_unlock.bin",
-    "v69_event_research_rows.bin",
-    "v69_event_research.bin",
-    "v69_event_research_refused.bin",
-    "v69_event_known.bin",
+    "v70_action_unlock.bin",
+    "v70_event_research_rows.bin",
+    "v70_event_research.bin",
+    "v70_event_research_refused.bin",
+    "v70_event_known.bin",
     // The table verb's own action, pinned by the local branch and kept
     // through the 2026-08-15 integration: `encode_action_research` is
     // still live (the client's `verbs.rs` calls it), so
     // `every_encoder_has_a_golden` requires these bytes.
-    "v69_action_research.bin",
+    "v70_action_research.bin",
     // The gather refusal (v42) — appended, because the manifest is
     // positional and a name in the middle silently renumbers every
     // writer after it.
-    "v69_event_gather_refused.bin",
+    "v70_event_gather_refused.bin",
     // Bag choice v0 (v43): the own-fact bag list the death screen shapes
     // itself around. Appended for the same positional reason.
-    "v69_event_bags.bin",
+    "v70_event_bags.bin",
     // Surface marks v0 (v45): where an arrow stopped, and on what.
     // Appended, like the two above — `gen_goldens` writes this list by
     // INDEX, so inserting anywhere but the end silently re-points every
     // fixture after the insertion at another message's bytes.
-    "v69_event_impact.bin",
-    "v69_event_swing.bin",
+    "v70_event_impact.bin",
+    "v70_event_swing.bin",
     // Armor v1 (v51): the fifth container kind, and the first that is
     // carried on the player rather than standing in the world. Four
     // fixtures on the v37 precedent above — its open, its move and its
@@ -170,15 +170,15 @@ pub const FIXTURES: [&str; 111] = [
     // `REFUSE_M_WEAR` is a reason no fixture has ever carried and the
     // refusal message is the only one that pins a container kind inside
     // an *address* rather than as a field of its own.
-    "v69_action_container_wear.bin",
-    "v69_action_move_wear.bin",
-    "v69_event_cont_sync_wear.bin",
-    "v69_event_move_refused_wear.bin",
+    "v70_action_container_wear.bin",
+    "v70_action_move_wear.bin",
+    "v70_event_cont_sync_wear.bin",
+    "v70_event_move_refused_wear.bin",
     // Appended, never inserted: `protocol_golden.rs` and `gen_goldens.rs`
     // address this array by literal index, so a name landing in the middle
     // would silently re-point ~14 existing fixtures at each other's bytes.
-    "v69_action_pickup.bin",
-    "v69_event_hurt.bin",
+    "v70_action_pickup.bin",
+    "v70_event_hurt.bin",
     // Reload v1 (v59): the verb, the magazine's new state, and the refusal
     // that carries the count — the dry click's authoritative "you are at
     // zero".
@@ -192,21 +192,21 @@ pub const FIXTURES: [&str; 111] = [
     // this file already records two blocks up, arrived at alone rather
     // than in a merge: **this list is positional, so a new name appends
     // and never inserts.**
-    "v69_action_reload.bin",
-    "v69_event_reload.bin",
-    "v69_event_reload_refused.bin",
+    "v70_action_reload.bin",
+    "v70_event_reload.bin",
+    "v70_event_reload_refused.bin",
     // Wounded v0 (v63). Appended, per the rule three lines up.
-    "v69_event_wounded.bin",
-    "v69_event_recovered.bin",
+    "v70_event_wounded.bin",
+    "v70_event_recovered.bin",
     // **Appended, never inserted.** `examples/gen_goldens.rs` writes by
     // INDEX into this array, so a name added in the middle silently
     // re-points every fixture after it — 60 files written under their
     // neighbours' names, with the golden test green because it compares
     // each name against what the same index produced.
-    "v69_event_gitem_sync.bin",
-    "v69_action_assist.bin",
-    "v69_event_assist.bin",
-    "v69_action_rotate.bin",
+    "v70_event_gitem_sync.bin",
+    "v70_action_assist.bin",
+    "v70_event_assist.bin",
+    "v70_action_rotate.bin",
 ];
 
 /// The move action: container handle (a bag id, or a packed
@@ -1474,7 +1474,21 @@ pub fn event_deploy_refused() -> u8 {
 /// The deploy-def table (the sim's probe fixture is already the mixed
 /// shape the drip needs: four archetypes over four placements).
 pub fn event_deploy_defs() -> DeployContent {
-    DeployContent::probe_fixture()
+    let mut dc = DeployContent::probe_fixture();
+    for (row, arch) in [
+        (3, sim_core::deploy::ARCH_WINDOW_GLASS),
+        (4, sim_core::deploy::ARCH_WINDOW_SHUTTER),
+    ] {
+        dc.defs[row] = sim_core::deploy::DeployDef {
+            arch,
+            placement: sim_core::deploy::PLACE_WINDOW,
+            hp: 350 + row as u16,
+            item: 30 + row as u16,
+            ..sim_core::deploy::DeployDef::INERT
+        };
+    }
+    dc.def_count = 5;
+    dc
 }
 
 /// The removed-piece address: (cx, cz, level, loc).

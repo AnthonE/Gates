@@ -190,6 +190,8 @@ ITEMS = {
     "door_metal": "delapouite/closed-doors",
     "window_bars_metal": "delapouite/window-bars",
     "garage_door": "delapouite/home-garage",
+    "window_glass": "delapouite/window",
+    "window_shutters": "delapouite/closed-doors",
     "armor_roadsign_body": "lorc/armor-vest",
     "medkit": "delapouite/first-aid-kit",
     "berries": "delapouite/berries-bowl",

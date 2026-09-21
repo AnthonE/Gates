@@ -498,7 +498,7 @@ pub fn resolve(
         }
         let arch = defs.defs[rec.row as usize].arch;
         let verb = match arch {
-            ARCH_DOOR | ARCH_GARAGE_DOOR => Verb::Door,
+            ARCH_DOOR | ARCH_GARAGE_DOOR | sim_core::deploy::ARCH_WINDOW_SHUTTER => Verb::Door,
             ARCH_BOX => Verb::Box,
             ARCH_HEARTH => Verb::Hearth,
             ARCH_FIRE | ARCH_FURNACE => Verb::Fire,

@@ -904,7 +904,10 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// no field width changes and no client-selected orientation crosses.
 /// v69 adds window-bar and garage-door archetypes and their socket classes.
 /// Existing field widths suffice; older peers must not interpret the new domains.
-pub const PROTO_VER: u16 = 69;
+/// v70 adds glass and shutters. Deploy rows widen to 5 bits and definition
+/// totals to 6, admitting the 32-row bounded catalogue. Closed window panes
+/// stop shots where bars leave gaps; shutters use the existing door event.
+pub const PROTO_VER: u16 = 70;
 
 /// This game's slug in the elo catalog.
 ///
@@ -1491,9 +1494,9 @@ pub(crate) fn loc_max(deploy: bool) -> u8 {
     }
 }
 pub(crate) const PIECE_ROW_BITS: u32 = 8;
-/// Deployable rows cross in 4 bits — exactly `MAX_DEPLOY_DEFS`, so the
+/// Deployable rows cross in 5 bits — exactly `MAX_DEPLOY_DEFS`, so the
 /// width itself is the range check.
-pub(crate) const DEPLOY_ROW_BITS: u32 = 4;
+pub(crate) const DEPLOY_ROW_BITS: u32 = 5;
 /// A structure's damage band (`sim_core::build::DMG_BANDS`, wire v44).
 ///
 /// Three bits is the whole width, so — like `DEPLOY_ROW_BITS` — **the width
@@ -2346,7 +2349,7 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
             let cz = r.read(BUILD_CELL_BITS)? as u16;
             let level = r.read(BUILD_LEVEL_BITS)? as u8;
             let loc = r.read(BUILD_LOC_BITS)? as u8;
-            // Deploy rows are width-exact (4 bits = MAX_DEPLOY_DEFS); the
+            // Deploy rows are width-exact (5 bits = MAX_DEPLOY_DEFS); the
             // loc stopped being so at v40, and a deployable never sits on
             // a triangle or a diagonal.
             if loc > loc_max(true) {

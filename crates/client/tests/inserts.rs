@@ -6,13 +6,20 @@ use bevy::prelude::*;
 use client::render::structures::{deploy_transform, insert_mesh, level_base_y};
 use sim_core::build::{BUILD_CELL_M, LEVEL_H_M, LOC_EDGE_XLO, LOC_EDGE_ZLO};
 use sim_core::collide::{DOOR_POST_W_M, FRAME_RIM_M, WINDOW_HEAD_M, WINDOW_SILL_M};
-use sim_core::deploy::{ARCH_GARAGE_DOOR, ARCH_WINDOW_BARS};
+use sim_core::deploy::{
+    ARCH_GARAGE_DOOR, ARCH_WINDOW_BARS, ARCH_WINDOW_GLASS, ARCH_WINDOW_SHUTTER,
+};
 
 #[test]
 fn inserts_fit_both_edge_axes_at_raised_and_upper_storeys() {
     let seed = 20260731;
     let haven = sim_core::terrain::haven(seed);
-    for arch in [ARCH_WINDOW_BARS, ARCH_GARAGE_DOOR] {
+    for arch in [
+        ARCH_WINDOW_BARS,
+        ARCH_GARAGE_DOOR,
+        ARCH_WINDOW_GLASS,
+        ARCH_WINDOW_SHUTTER,
+    ] {
         let mesh = insert_mesh(arch);
         let Some(VertexAttributeValues::Float32x3(points)) =
             mesh.attribute(Mesh::ATTRIBUTE_POSITION)
@@ -32,7 +39,7 @@ fn inserts_fit_both_edge_axes_at_raised_and_upper_storeys() {
                         low = low.min(p);
                         high = high.max(p);
                     }
-                    let (rim, sill, head) = if arch == ARCH_WINDOW_BARS {
+                    let (rim, sill, head) = if arch != ARCH_GARAGE_DOOR {
                         (DOOR_POST_W_M, WINDOW_SILL_M, WINDOW_HEAD_M)
                     } else {
                         (FRAME_RIM_M, 0.0, LEVEL_H_M - FRAME_RIM_M)
@@ -57,5 +64,18 @@ fn inserts_fit_both_edge_axes_at_raised_and_upper_storeys() {
                 }
             }
         }
+    }
+}
+
+#[test]
+fn open_shutters_leave_the_whole_aperture_clear() {
+    let mesh = client::render::structures::open_shutters_mesh();
+    let Some(VertexAttributeValues::Float32x3(points)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+    else {
+        panic!("shutters have no vertices")
+    };
+    let half_opening = BUILD_CELL_M * 0.5 - DOOR_POST_W_M;
+    for p in points {
+        assert!(p[2].abs() >= half_opening - 1e-5);
     }
 }

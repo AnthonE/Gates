@@ -1,9 +1,10 @@
 //! Late definitions and rebuilds must preserve the insert collision a client predicts.
-use client_core::ClientCore;
+use client_core::core::ClientCore;
 use protocol::*;
 use sim_core::build::{BuildContent, PieceRec, LOC_EDGE_XLO, SHAPE_FRAME, SHAPE_WINDOW};
 use sim_core::deploy::{
-    DeployContent, DeployRec, ARCH_GARAGE_DOOR, ARCH_WINDOW_BARS, PLACE_FRAME, PLACE_WINDOW,
+    DeployContent, DeployRec, ARCH_GARAGE_DOOR, ARCH_WINDOW_BARS, ARCH_WINDOW_GLASS,
+    ARCH_WINDOW_SHUTTER, PLACE_FRAME, PLACE_WINDOW,
 };
 
 #[test]
@@ -11,6 +12,8 @@ fn inserts_survive_late_definitions_and_rebuilds_then_unseal_on_removal() {
     for (arch, placement, shape) in [
         (ARCH_WINDOW_BARS, PLACE_WINDOW, SHAPE_WINDOW),
         (ARCH_GARAGE_DOOR, PLACE_FRAME, SHAPE_FRAME),
+        (ARCH_WINDOW_GLASS, PLACE_WINDOW, SHAPE_WINDOW),
+        (ARCH_WINDOW_SHUTTER, PLACE_WINDOW, SHAPE_WINDOW),
     ] {
         let mut c = ClientCore::new(20260731, 7, 0);
         let mut buf = [0; MAX_EVENT_MSG_BYTES];
@@ -50,7 +53,12 @@ fn inserts_survive_late_definitions_and_rebuilds_then_unseal_on_removal() {
         let (n, _) = encode_event_piece_defs(&bc, 0, &mut buf).unwrap();
         c.on_stream(&buf[..n]).unwrap();
         assert!(sealed(&c), "a piece-index rebuild must retain inserts");
-        if arch == ARCH_WINDOW_BARS {
+        let pane = c.pieces.cols().get(cx, cz).panes_xlo & (1 << level) != 0;
+        assert_eq!(
+            pane,
+            matches!(arch, ARCH_WINDOW_GLASS | ARCH_WINDOW_SHUTTER)
+        );
+        if matches!(arch, ARCH_WINDOW_BARS | ARCH_WINDOW_GLASS) {
             assert_eq!(c.predict_door(cx, cz, level, loc), None);
             assert!(sealed(&c), "fixed bars cannot be predicted open");
         } else {

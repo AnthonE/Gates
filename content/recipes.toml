@@ -504,3 +504,23 @@ inputs = [
     { item = "item.metal_frags", count = 300 },
     { item = "item.gears", count = 2 },
 ]
+
+# https://wiki.facepunch.com/rust/item/wall.window.glass.reinforced
+[[recipe]]
+id = "recipe.window_glass"
+output = "item.window_glass"
+count = 1
+station = "workbench2"
+seconds = 15
+blueprint = true
+inputs = [{ item = "item.metal_frags", count = 50 }]
+
+# https://wiki.facepunch.com/rust/item/shutter.wood.a
+[[recipe]]
+id = "recipe.window_shutters"
+output = "item.window_shutters"
+count = 1
+station = "none"
+seconds = 15
+blueprint = true
+inputs = [{ item = "item.wood", count = 200 }]

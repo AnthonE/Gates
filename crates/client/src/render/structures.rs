@@ -47,8 +47,8 @@ use sim_core::collide::{
 };
 use sim_core::deploy::{
     DeployRec, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE, ARCH_GARAGE_DOOR,
-    ARCH_HEARTH, ARCH_RECYCLER, ARCH_RESEARCH, ARCH_WINDOW_BARS, ARCH_WORKBENCH, ARCH_WORKBENCH2,
-    ARCH_WORKBENCH3,
+    ARCH_HEARTH, ARCH_RECYCLER, ARCH_RESEARCH, ARCH_WINDOW_BARS, ARCH_WINDOW_GLASS,
+    ARCH_WINDOW_SHUTTER, ARCH_WORKBENCH, ARCH_WORKBENCH2, ARCH_WORKBENCH3,
 };
 use sim_core::movement::{POS_XZ_Q, POS_Y_Q};
 use sim_core::terrain;
@@ -391,7 +391,7 @@ pub fn deploy_size(arch: usize) -> Vec3 {
 // so these transfer 1:1 with no scale conversion. Nothing in the sim reads
 // this table — `deploy_size` has two callers, the build ghost and its test —
 // so a row is a render fact and moving one costs no wire byte and no replay.
-const DEPLOY: [([f32; 3], Color, f32, f32); 14] = [
+const DEPLOY: [([f32; 3], Color, f32, f32); 16] = [
     // 0 · sleeping bag. A human-length bedroll laid flat: it must be longer
     // than a player is tall or it reads as a floor mat. 1.2 was shorter than
     // the body that spawns on it. The 0.32 thickness is the pillow end, not
@@ -503,6 +503,26 @@ const DEPLOY: [([f32; 3], Color, f32, f32); 14] = [
         0.55,
         0.6,
     ),
+    (
+        [
+            WALL_THICKNESS_M * 0.5,
+            WINDOW_HEAD_M - WINDOW_SILL_M,
+            BUILD_CELL_M - 2.0 * DOOR_POST_W_M,
+        ],
+        Color::WHITE,
+        0.5,
+        0.0,
+    ),
+    (
+        [
+            WALL_THICKNESS_M * 0.5,
+            WINDOW_HEAD_M - WINDOW_SILL_M,
+            BUILD_CELL_M - 2.0 * DOOR_POST_W_M,
+        ],
+        Color::WHITE,
+        0.5,
+        0.0,
+    ),
 ];
 
 /// A locked door wears banded iron: the one bit of door state a passer-by
@@ -611,6 +631,7 @@ pub struct Kit {
     deploy_mesh: [Handle<Mesh>; DEPLOY.len()],
     deploy_mat: [Handle<StandardMaterial>; DEPLOY.len()],
     door_locked: Handle<StandardMaterial>,
+    shutters_open: Handle<Mesh>,
     bag_mesh: Handle<Mesh>,
     bag_mat: Handle<StandardMaterial>,
     gitem_mesh: Handle<Mesh>,
@@ -1923,7 +1944,10 @@ pub fn base_transform(
 pub fn insert_mesh(arch: u8) -> Mesh {
     let (solids, n) = sim_core::deploy::insert_parts(arch);
     let height = deploy_size(arch as usize).y;
-    let sill = if arch == ARCH_WINDOW_BARS {
+    let sill = if matches!(
+        arch,
+        ARCH_WINDOW_BARS | ARCH_WINDOW_GLASS | ARCH_WINDOW_SHUTTER
+    ) {
         WINDOW_SILL_M
     } else {
         0.0
@@ -1945,6 +1969,22 @@ pub fn insert_mesh(arch: u8) -> Mesh {
         }
     });
     parts_mesh(&parts[..n])
+}
+
+/// Proposed visual default, recorded in DECISIONS.md (window fittings v0).
+pub const WINDOW_GLASS_ALPHA: f32 = 0.25;
+
+/// The two shutter leaves fold outside the window aperture. Their width and
+/// hinge positions derive from the existing opening, not a second set of sizes.
+pub fn open_shutters_mesh() -> Mesh {
+    let width = (BUILD_CELL_M - 2.0 * DOOR_POST_W_M) * 0.5;
+    let height = WINDOW_HEAD_M - WINDOW_SILL_M;
+    let thickness = sim_core::deploy::insert_thickness(ARCH_WINDOW_SHUTTER);
+    parts_mesh(&[-1.0, 1.0].map(|side| Part {
+        size: Vec3::new(width, height, thickness),
+        offset: Vec3::new(-width * 0.5, 0.0, side * (width + thickness * 0.5)),
+        ..Part::default()
+    }))
 }
 
 /// The generated mesh for an archetype, or `None` where the greybox cuboid is
@@ -1978,6 +2018,8 @@ pub const DEPLOY_ASSET: [Option<&str>; DEPLOY.len()] = [
     None, // 11 workbench 3 — greybox
     None, // 12 window bars — shared insert geometry
     None, // 13 garage door — shared insert geometry
+    None, // 14 glass — shared insert geometry
+    None, // 15 shutters — shared insert geometry
 ];
 
 /// Build the pool. `pub` for the same reason [`Kit`] is.
@@ -2032,7 +2074,11 @@ pub fn build_kit(
             }
             .from_asset(path),
         ),
-        None if matches!(i as u8, ARCH_WINDOW_BARS | ARCH_GARAGE_DOOR) => {
+        None if matches!(
+            i as u8,
+            ARCH_WINDOW_BARS | ARCH_GARAGE_DOOR | ARCH_WINDOW_GLASS | ARCH_WINDOW_SHUTTER
+        ) =>
+        {
             meshes.add(insert_mesh(i as u8))
         }
         None => {
@@ -2041,6 +2087,12 @@ pub fn build_kit(
         }
     });
     let deploy_mat = std::array::from_fn(|i| match DEPLOY_ASSET[i] {
+        None if i as u8 == ARCH_WINDOW_GLASS => materials.add(StandardMaterial {
+            base_color: Color::WHITE.with_alpha(WINDOW_GLASS_ALPHA),
+            alpha_mode: AlphaMode::Blend,
+            ..default()
+        }),
+        None if i as u8 == ARCH_WINDOW_SHUTTER => tier[MAT_WOOD as usize][0].clone(),
         None if matches!(i as u8, ARCH_WINDOW_BARS | ARCH_GARAGE_DOOR) => {
             tier[MAT_METAL as usize][0].clone()
         }
@@ -2124,6 +2176,7 @@ pub fn build_kit(
         [meshes.add(box_mesh(size)), meshes.add(tri_prism_mesh(size))]
     });
     Kit {
+        shutters_open: meshes.add(open_shutters_mesh()),
         shape_mesh,
         edge_mesh,
         diag_mesh,
@@ -2602,12 +2655,21 @@ pub fn deploy_transform(
     let z0 = cz as f32 * BUILD_CELL_M;
     let y = base_y
         + h * 0.5
-        + if arch == ARCH_WINDOW_BARS {
+        + if matches!(
+            arch,
+            ARCH_WINDOW_BARS | ARCH_WINDOW_GLASS | ARCH_WINDOW_SHUTTER
+        ) {
             WINDOW_SILL_M
         } else {
             0.0
         };
     let quarter = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+
+    if arch == ARCH_WINDOW_SHUTTER {
+        let mut root = base_transform(seed, haven, addr, plate);
+        root.translation.y = y;
+        return root;
+    }
 
     if arch == ARCH_GARAGE_DOOR {
         let mut root = base_transform(seed, haven, addr, plate);
@@ -2668,7 +2730,11 @@ pub fn spawn_deploy(
 
     let mut e = commands.spawn((
         super::WorldEntity,
-        Mesh3d(kit.deploy_mesh[idx].clone()),
+        Mesh3d(if arch == ARCH_WINDOW_SHUTTER && rec.open {
+            kit.shutters_open.clone()
+        } else {
+            kit.deploy_mesh[idx].clone()
+        }),
         MeshMaterial3d(mat),
         transform,
     ));

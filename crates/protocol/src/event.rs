@@ -27,7 +27,7 @@ use sim_core::collide::{Part, PART_BITS};
 use sim_core::combat::{ARMOR_MAX_PCT, HURT_SECTORS, WEAR_NONE};
 use sim_core::craft::{CraftContent, CraftJob, RecipeDef, STATION_MAX};
 use sim_core::deploy::{
-    BagAnchor, DeployContent, DeployDef, DeployRec, ARCH_GARAGE_DOOR, BAG_CAP, PLACE_FRAME,
+    BagAnchor, DeployContent, DeployDef, DeployRec, ARCH_WINDOW_SHUTTER, BAG_CAP, PLACE_FRAME,
 };
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{slots_in, CONT_MAX, CONT_SELF};
@@ -534,7 +534,7 @@ const N_COSTS_BITS: u32 = 2;
 /// quotes no recipe for bakes unpriced and `build::repair` refuses it.
 const DEPLOY_COSTS_BITS: u32 = 3;
 const DEPLOY_SYNC_COUNT_BITS: u32 = 5;
-const DEPLOY_DEFS_TOTAL_BITS: u32 = 5;
+const DEPLOY_DEFS_TOTAL_BITS: u32 = 6;
 const DEPLOY_DEFS_COUNT_BITS: u32 = 4;
 /// Widened 3 → 4 in wire v31: `ARCH_RECYCLER` = 8 is the ninth archetype
 /// (recycler v0) and three bits held exactly eight. Seven of the sixteen
@@ -2052,7 +2052,7 @@ pub fn encode_event_deploy_defs(
     w.write(first as u32, DEPLOY_DEFS_TOTAL_BITS)?;
     w.write(count as u32, DEPLOY_DEFS_COUNT_BITS)?;
     for def in dc.defs[first..first + count].iter() {
-        if def.arch > ARCH_GARAGE_DOOR || def.placement > PLACE_FRAME || def.hp == 0 {
+        if def.arch > ARCH_WINDOW_SHUTTER || def.placement > PLACE_FRAME || def.hp == 0 {
             return Err(WireError::Range);
         }
         if def.n_costs as usize > MAX_DEPLOY_COSTS {
@@ -3436,7 +3436,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 let hp = r.read(16)? as u16;
                 let item = r.read(16)? as u16;
                 let n_costs = r.read(DEPLOY_COSTS_BITS)? as u8;
-                if arch > ARCH_GARAGE_DOOR
+                if arch > ARCH_WINDOW_SHUTTER
                     || placement > PLACE_FRAME
                     || hp == 0
                     || n_costs as usize > MAX_DEPLOY_COSTS
@@ -4794,7 +4794,7 @@ mod tests {
             }
             other => panic!("wrong variant: {other:?}"),
         }
-        // The 16-row cap shape drips in two batches.
+        // Every row at the declared cap must survive the complete batched walk.
         let mut full = DeployContent::EMPTY;
         full.def_count = MAX_DEPLOY_DEFS as u16;
         for i in 0..MAX_DEPLOY_DEFS {
@@ -4806,11 +4806,27 @@ mod tests {
                 ..DeployDef::INERT
             };
         }
-        let (len, took) = encode_event_deploy_defs(&full, 0, &mut buf).unwrap();
-        assert!(len <= MAX_EVENT_MSG_BYTES);
-        assert_eq!(took, DEPLOY_DEFS_BATCH);
-        let (_, took2) = encode_event_deploy_defs(&full, took, &mut buf).unwrap();
-        assert_eq!(took + took2, MAX_DEPLOY_DEFS);
+        let mut first = 0;
+        while first < MAX_DEPLOY_DEFS {
+            let (len, took) = encode_event_deploy_defs(&full, first, &mut buf).unwrap();
+            assert!(len <= MAX_EVENT_MSG_BYTES);
+            assert_eq!(took, DEPLOY_DEFS_BATCH.min(MAX_DEPLOY_DEFS - first));
+            match decode_event(&buf[..len]).unwrap() {
+                EventMsg::DeployDefs {
+                    first: start,
+                    count,
+                    rows,
+                    ..
+                } => {
+                    assert_eq!(start as usize, first);
+                    assert_eq!(count as usize, took);
+                    assert_eq!(&rows[..took], &full.defs[first..first + took]);
+                }
+                other => panic!("wrong variant: {other:?}"),
+            }
+            first += took;
+        }
+        assert_eq!(first, MAX_DEPLOY_DEFS);
     }
 
     #[test]
@@ -4904,9 +4920,9 @@ mod tests {
             "a deploy hit never lands on a triangle"
         );
         assert_eq!(
-            encode_event_struct_hit(true, 0, 0, 0, 0, 16, 1, 1, &mut buf),
+            encode_event_struct_hit(true, 0, 0, 0, 0, MAX_DEPLOY_DEFS as u8, 1, 1, &mut buf),
             Err(WireError::Range),
-            "a deploy row past the 4-bit field"
+            "a deploy row past the declared table"
         );
         assert_eq!(
             encode_event_struct_hit(false, 0, 0, 0, 0, 0, 40, 0, &mut buf),
@@ -5673,9 +5689,9 @@ mod wire_domains {
             prefix: "pub const ARCH_",
             ty: ": u8 = ",
             exempt: &[],
-            min_members: 14,
+            min_members: 16,
             bits: ARCH_BITS,
-            live_max: 13,
+            live_max: 15,
         },
         Domain {
             what: "deploy placement",

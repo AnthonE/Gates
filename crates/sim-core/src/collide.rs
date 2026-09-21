@@ -312,6 +312,9 @@ pub struct ColMasks {
     /// these in lockstep with the door records).
     pub shut_xlo: u8,
     pub shut_zlo: u8,
+    /// Closed window panels seal the aperture; bars leave shooting gaps.
+    pub panes_xlo: u8,
+    pub panes_zlo: u8,
     /// The solid deployable standing on each level's plane, one nibble
     /// per level: the archetype code, or `0xF` for none (deploy collision
     /// v0 — deploy.rs keeps these in lockstep with the deploy records,
@@ -373,6 +376,8 @@ impl ColMasks {
         diag_b: 0,
         shut_xlo: 0,
         shut_zlo: 0,
+        panes_xlo: 0,
+        panes_zlo: 0,
         solid: SOLID_NONE,
         plate: 0,
     };
@@ -651,6 +656,36 @@ impl ColIndex {
     /// doorway decaying it away, or a use toggle). A non-edge loc is a
     /// no-op — the caller validated the address holds a door. Clearing
     /// an emptied column drops its slot like `del`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_insert(&mut self, cx: u16, cz: u16, level: u8, loc: u8, arch: u8, shut: bool) {
+        self.set_door(cx, cz, level, loc, shut);
+        if !shut
+            || !matches!(
+                arch,
+                crate::deploy::ARCH_WINDOW_GLASS | crate::deploy::ARCH_WINDOW_SHUTTER
+            )
+            || !matches!(loc, LOC_EDGE_XLO | LOC_EDGE_ZLO)
+        {
+            return;
+        }
+        let key = Self::key(cx, cz);
+        let mut i = Self::home(key);
+        for _ in 0..COL_INDEX_SLOTS {
+            if self.keys[i] == 0 {
+                return;
+            }
+            if self.keys[i] == key {
+                if loc == LOC_EDGE_XLO {
+                    self.masks[i].panes_xlo |= 1 << level;
+                } else {
+                    self.masks[i].panes_zlo |= 1 << level;
+                }
+                return;
+            }
+            i = (i + 1) & (COL_INDEX_SLOTS - 1);
+        }
+    }
+
     pub fn set_door(&mut self, cx: u16, cz: u16, level: u8, loc: u8, shut: bool) {
         if loc != LOC_EDGE_XLO && loc != LOC_EDGE_ZLO {
             return;
@@ -672,8 +707,10 @@ impl ColIndex {
             let m = &mut self.masks[i];
             if loc == LOC_EDGE_XLO {
                 m.shut_xlo &= !(1 << level);
+                m.panes_xlo &= !(1 << level);
             } else {
                 m.shut_zlo &= !(1 << level);
+                m.panes_zlo &= !(1 << level);
             }
             if self.masks[i].is_empty() {
                 self.remove_slot(i);
@@ -2007,7 +2044,12 @@ fn cell_edges_stop_shot(
             let arch = if doors & bit != 0 {
                 crate::deploy::ARCH_DOOR
             } else if wins & bit != 0 {
-                crate::deploy::ARCH_WINDOW_BARS
+                let panes = if x_plane { m.panes_xlo } else { m.panes_zlo };
+                if panes & bit != 0 {
+                    crate::deploy::ARCH_WINDOW_GLASS
+                } else {
+                    crate::deploy::ARCH_WINDOW_BARS
+                }
             } else {
                 crate::deploy::ARCH_GARAGE_DOOR
             };

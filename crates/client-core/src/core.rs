@@ -487,6 +487,15 @@ impl PieceSet {
     /// live in the deploy mirror, but they seal *pieces*, so the bit
     /// belongs to this index — `ClientCore` is what keeps the two
     /// stores' views of a doorway in step (the sim does the same).
+    #[allow(clippy::too_many_arguments)]
+    fn set_insert(&mut self, cx: u16, cz: u16, level: u8, loc: u8, arch: u8, shut: bool) {
+        if arch == sim_core::deploy::ARCH_DOOR {
+            self.set_door(cx, cz, level, loc, shut);
+        } else {
+            self.cols.set_insert(cx, cz, level, loc, arch, shut);
+        }
+    }
+
     fn set_door(&mut self, cx: u16, cz: u16, level: u8, loc: u8, shut: bool) {
         self.cols.set_door(cx, cz, level, loc, shut);
     }
@@ -2286,7 +2295,14 @@ impl ClientCore {
                 }
                 if let Some(gone) = self.deploys.remove(cx, cz, level, loc) {
                     if is_edge_insert(&self.deploy_defs, self.deploy_defs_have, gone.row) {
-                        self.pieces.set_door(cx, cz, level, loc, false);
+                        self.pieces.set_insert(
+                            cx,
+                            cz,
+                            level,
+                            loc,
+                            self.deploy_defs.defs[gone.row as usize].arch,
+                            false,
+                        );
                     }
                     if solid_arch(&self.deploy_defs, self.deploy_defs_have, gone.row).is_some() {
                         self.pieces.set_solid(cx, cz, level, None);
@@ -2752,8 +2768,14 @@ impl ClientCore {
     /// neither — contributes nothing.
     fn seal_for(&mut self, rec: DeployRec) {
         if is_edge_insert(&self.deploy_defs, self.deploy_defs_have, rec.row) {
-            self.pieces
-                .set_door(rec.cx, rec.cz, rec.level, rec.loc, !rec.open);
+            self.pieces.set_insert(
+                rec.cx,
+                rec.cz,
+                rec.level,
+                rec.loc,
+                self.deploy_defs.defs[rec.row as usize].arch,
+                !rec.open,
+            );
         }
         if let Some(arch) = solid_arch(&self.deploy_defs, self.deploy_defs_have, rec.row) {
             self.pieces.set_solid(rec.cx, rec.cz, rec.level, Some(arch));
@@ -2775,7 +2797,14 @@ impl ClientCore {
         } = self;
         for rec in deploys.entries() {
             if is_edge_insert(deploy_defs, *deploy_defs_have, rec.row) {
-                pieces.set_door(rec.cx, rec.cz, rec.level, rec.loc, !rec.open);
+                pieces.set_insert(
+                    rec.cx,
+                    rec.cz,
+                    rec.level,
+                    rec.loc,
+                    deploy_defs.defs[rec.row as usize].arch,
+                    !rec.open,
+                );
             }
             if let Some(arch) = solid_arch(deploy_defs, *deploy_defs_have, rec.row) {
                 pieces.set_solid(rec.cx, rec.cz, rec.level, Some(arch));

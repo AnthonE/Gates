@@ -590,3 +590,20 @@ stack = 1
 tier = 2
 rarity = "rare"
 slot = "hand"
+
+# Window fittings: Facepunch item tables, 2026-09-21.
+[[item]]
+id = "item.window_glass"
+name = "Glass Window"
+stack = 10
+tier = 2
+rarity = "rare"
+slot = "hand"
+
+[[item]]
+id = "item.window_shutters"
+name = "Wood Shutters"
+stack = 20
+tier = 0
+rarity = "common"
+slot = "hand"

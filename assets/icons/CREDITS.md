@@ -38,6 +38,7 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | `furnace.png` | `delapouite/furnace` |
 | `garage_door.png` | `delapouite/home-garage` |
 | `gears.png` | `lorc/gears` |
+| `glass_window.png` | `delapouite/window` |
 | `gunpowder.png` | `lorc/powder` |
 | `hammer.png` | `lorc/claw-hammer` |
 | `hearth.png` | `delapouite/fireplace` |
@@ -94,6 +95,7 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | `vital_hp.png` | `sbed/health-normal` |
 | `vital_water.png` | `sbed/water-drop` |
 | `wood.png` | `delapouite/log` |
+| `wood_shutters.png` | `delapouite/closed-doors` |
 | `wooden_arrow.png` | `delapouite/plain-arrow` |
 | `wooden_door.png` | `delapouite/door` |
 | `wooden_spear.png` | `lorc/spears` |

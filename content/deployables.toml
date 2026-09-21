@@ -130,3 +130,17 @@ archetype = "garage_door"
 placement = "wall_frame"
 material = "metal"
 hp = 600
+
+# HP: https://wiki.rustclash.com/item/strengthened-glass-window
+[[deployable]]
+id = "item.window_glass"
+archetype = "window_glass"
+placement = "window"
+hp = 350
+
+# HP: https://wiki.rustclash.com/item/wood-shutters
+[[deployable]]
+id = "item.window_shutters"
+archetype = "window_shutter"
+placement = "window"
+hp = 200

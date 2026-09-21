@@ -147,6 +147,10 @@ pub const ARCH_WORKBENCH3: u8 = 11;
 pub const ARCH_WINDOW_BARS: u8 = 12;
 /// A lockable roll-up leaf occupying a wall-frame socket.
 pub const ARCH_GARAGE_DOOR: u8 = 13;
+/// A fixed, transparent insert that stops projectiles.
+pub const ARCH_WINDOW_GLASS: u8 = 14;
+/// A window cover that opens without a lock.
+pub const ARCH_WINDOW_SHUTTER: u8 = 15;
 
 /// The blocked volume of each archetype, `[w, h, d]` full extents in
 /// metres, centred on the deploy's cell centre with its base at the
@@ -169,7 +173,7 @@ pub const ARCH_GARAGE_DOOR: u8 = 13;
 /// the comparison that item said could not exist while the sim had no
 /// table. Sim truth now: a row here is a collision change (wall 5 —
 /// `test_replay` moves with it, deliberately).
-pub const DEPLOY_VOL: [[f32; 3]; 14] = [
+pub const DEPLOY_VOL: [[f32; 3]; 16] = [
     [0.0, 0.0, 0.0],   // 0 bag — walk-over
     [1.2, 1.0, 0.6],   // 1 hearth
     [1.2, 0.65, 0.7],  // 2 box
@@ -184,6 +188,8 @@ pub const DEPLOY_VOL: [[f32; 3]; 14] = [
     [1.8, 1.1, 0.8],   // 11 workbench 3 — the widest bench
     [0.0, 0.0, 0.0],   // window bars — edge insert
     [0.0, 0.0, 0.0],   // garage door — edge insert
+    [0.0, 0.0, 0.0],   // glass — edge insert
+    [0.0, 0.0, 0.0],   // shutters — edge insert, not a solid nibble
 ];
 
 /// The blocked volume of `arch` as `(half_w, h, half_d)`, or `None` for
@@ -199,10 +205,8 @@ pub fn solid_vol(arch: u8) -> Option<(f32, f32, f32)> {
 }
 
 const _: () = {
-    // Every archetype code must fit the collision index's 4-bit nibble
-    // (`collide::ColMasks::solid`), with 0xF left over as its empty
-    // sentinel.
-    assert!(ARCH_GARAGE_DOOR < 0xF);
+    // Only archetypes with a body volume occupy a solid nibble. Edge inserts
+    // have their own masks, so their codes may use the nibble's sentinel.
     // A solid deploy stands at its cell centre, so the movement query
     // tests only the candidate's own build cell. That is complete iff no
     // volume, inflated by the capsule, can reach past the half-cell:
@@ -210,6 +214,7 @@ const _: () = {
     // every row so a fatter row cannot land without re-proving the reach.
     let mut i = 0;
     while i < DEPLOY_VOL.len() {
+        assert!(DEPLOY_VOL[i][1] <= 0.0 || i < 0xF);
         let w = DEPLOY_VOL[i][0];
         let d = DEPLOY_VOL[i][2];
         let half = if w > d { w * 0.5 } else { d * 0.5 };
@@ -296,7 +301,7 @@ pub const fn bench_tier(arch: u8) -> u8 {
 /// loop rewrites its own slots, so a lock on one would be a claim the
 /// sim itself ignores every burn tick.
 pub fn lockable(arch: u8) -> bool {
-    arch_is_door(arch) || arch == ARCH_BOX
+    matches!(arch, ARCH_DOOR | ARCH_GARAGE_DOOR | ARCH_BOX)
 }
 
 /// The one archetype the use verb toggles. Named so `use_door` and
@@ -304,7 +309,7 @@ pub fn lockable(arch: u8) -> bool {
 /// stand at the address: a box carries a lock, but pressing E at one is
 /// the container panel's business, never a leaf toggle.
 pub fn arch_is_door(arch: u8) -> bool {
-    matches!(arch, ARCH_DOOR | ARCH_GARAGE_DOOR)
+    matches!(arch, ARCH_DOOR | ARCH_GARAGE_DOOR | ARCH_WINDOW_SHUTTER)
 }
 
 /// Placement-class codes (schema order).
@@ -331,7 +336,7 @@ pub fn socket_shape(placement: u8) -> Option<u8> {
 /// Inserts share the existing shut bits: the supporting shape determines
 /// the geometry. A window's bit means bars present; a door's means closed.
 pub fn edge_insert(arch: u8) -> bool {
-    arch_is_door(arch) || arch == ARCH_WINDOW_BARS
+    arch_is_door(arch) || matches!(arch, ARCH_WINDOW_BARS | ARCH_WINDOW_GLASS)
 }
 
 /// Authored bar stock width, metres (DECISIONS.md, inserts v0).
@@ -366,6 +371,15 @@ pub fn insert_parts(arch: u8) -> ([InsertPart; WINDOW_BAR_COUNT + 2], usize) {
                 hi: span - rim,
                 bottom: 0.0,
                 top,
+            };
+            (parts, 1)
+        }
+        ARCH_WINDOW_GLASS | ARCH_WINDOW_SHUTTER => {
+            parts[0] = InsertPart {
+                lo: DOOR_POST_W_M,
+                hi: span - DOOR_POST_W_M,
+                bottom: WINDOW_SILL_M,
+                top: WINDOW_HEAD_M,
             };
             (parts, 1)
         }
@@ -1797,7 +1811,7 @@ pub fn place_deploy(
     }
     if edge_insert(def.arch) {
         // Doors place closed and seal their doorway (door v0).
-        pieces.set_door(cx, cz, level, loc, true);
+        pieces.set_insert(cx, cz, level, loc, def.arch, true);
     }
     // A body deploy with a volume becomes movement collision the moment it
     // stands — the same lockstep the shut bit above keeps, one line down
@@ -2013,7 +2027,14 @@ pub fn use_door(
     }
     let open = !deploys.entries[i].open;
     deploys.entries[i].open = open;
-    pieces.set_door(cx, cz, level, loc, !open);
+    pieces.set_insert(
+        cx,
+        cz,
+        level,
+        loc,
+        dc.defs[deploys.entries[i].row as usize].arch,
+        !open,
+    );
     announce_door(deploys, i, p.id, events);
     Some(deploys.entries[i].owner)
 }
@@ -2428,7 +2449,14 @@ fn drop_deploy(
     let rec = deploys.entries[di];
     deploys.remove_at(di, dc);
     if edge_insert(dc.defs[rec.row as usize].arch) {
-        pieces.set_door(rec.cx, rec.cz, rec.level, rec.loc, false);
+        pieces.set_insert(
+            rec.cx,
+            rec.cz,
+            rec.level,
+            rec.loc,
+            dc.defs[rec.row as usize].arch,
+            false,
+        );
     }
     // The blocked volume leaves with the record — the clear half of the
     // lockstep `place_deploy` set. Here rather than at each caller for

@@ -3363,7 +3363,8 @@ impl World {
             let d = self.deploys.entries()[i];
             let arch = self.deploy.defs[d.row as usize].arch;
             if crate::deploy::edge_insert(arch) {
-                self.pieces.set_door(d.cx, d.cz, d.level, d.loc, !d.open);
+                self.pieces
+                    .set_insert(d.cx, d.cz, d.level, d.loc, arch, !d.open);
             }
             // The solid nibble is the shut bit's twin and derived the same
             // way (deploy collision v0): `Pieces::restore` cleared the
