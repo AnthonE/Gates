@@ -35,10 +35,23 @@ The simulation suite covers both edge axes and ground/upper storeys, shooting
 gaps, independent destruction, wrong-socket inventory conservation, locks,
 support removal, save/load and the wall-foot extension. Client tests cover
 real aim rays, late definitions, index rebuilds, refused door prediction and
-mesh bounds at raised foundations and upper floors. Full gates are being run
-before this branch is submitted.
+mesh bounds at raised foundations and upper floors. `./ci/gates.sh` completed
+with ALL GATES GREEN on 2026-09-21, including native renderer tests, browser
+builds and byte-identical native release/debug/Wasm probes. The local log is
+`/tmp/gates-inserts-gates-20260921.log`.
 
 ## Graphical playtest
+
+A matching v69 native client joined a local shard with a saved two-storey
+fixture (21 pieces and four inserts). Captures `0-design.png` and `8-build.png`
+under `/tmp/gates-building-playtest/shots/` show bars seated in both floors'
+windows, a closed garage filling its frame, and the upstairs open garage
+rolled inside its header. These are automated visual-fit captures; they do
+not claim a human has played the lock, firing or hammer interactions.
+Client and shard logs contained no game errors. The local fixture uses a
+copied content directory.
+
+The interactive review route is:
 
 Use a matching local server and client. Build two storeys with the floor-frame
 stairwell, place bars and a garage door upstairs, lock/unlock and open/close it,

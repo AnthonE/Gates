@@ -1,5 +1,5 @@
 //! Late definitions and rebuilds must preserve the insert collision a client predicts.
-use client_core::ClientCore;
+use client_core::core::ClientCore;
 use protocol::*;
 use sim_core::build::{BuildContent, PieceRec, LOC_EDGE_XLO, SHAPE_FRAME, SHAPE_WINDOW};
 use sim_core::deploy::{
