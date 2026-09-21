@@ -23,7 +23,7 @@ fn fixture(arch: u8, loc: u8, level: u8) -> (Box<World>, Player) {
         def.n_costs = 0;
     }
     w.build.pieces[4] = PieceDef {
-        shape: if arch == ARCH_WINDOW_BARS {
+        shape: if arch != ARCH_GARAGE_DOOR {
             SHAPE_WINDOW
         } else {
             SHAPE_FRAME
@@ -36,7 +36,7 @@ fn fixture(arch: u8, loc: u8, level: u8) -> (Box<World>, Player) {
     w.deploy = DeployContent::probe_fixture();
     w.deploy.defs[0] = DeployDef {
         arch,
-        placement: if arch == ARCH_WINDOW_BARS {
+        placement: if arch != ARCH_GARAGE_DOOR {
             PLACE_WINDOW
         } else {
             PLACE_FRAME
@@ -266,7 +266,7 @@ fn garage_door_works_with_the_existing_lock_and_removal_paths() {
 fn wrong_socket_refuses_without_spending_the_item() {
     for arch in [ARCH_WINDOW_BARS, ARCH_GARAGE_DOOR] {
         let (mut w, mut p) = fixture(arch, LOC_EDGE_XLO, 0);
-        w.deploy.defs[0].placement = if arch == ARCH_WINDOW_BARS {
+        w.deploy.defs[0].placement = if arch != ARCH_GARAGE_DOOR {
             PLACE_FRAME
         } else {
             PLACE_WINDOW
@@ -296,7 +296,7 @@ fn save_load_rebuilds_insert_collision_at_both_storeys() {
                     .1
             );
             assert_eq!(back.deploys.entries(), w.deploys.entries());
-            if arch == ARCH_WINDOW_BARS {
+            if arch != ARCH_GARAGE_DOOR {
                 assert!(shot(back.pieces.cols(), LOC_EDGE_ZLO, level, 1.35, 1.6).is_none());
             }
         }
@@ -327,6 +327,68 @@ fn a_lower_adjacent_floor_seals_the_wall_foot_without_moving_its_head() {
             assert!(shot(&cols, loc, level, 1.5, -BUILD_BASE_Q_M - 0.1).is_none());
             cols.del(ox, oz, level, LOC_PLANE, SHAPE_FLOOR);
             assert!(shot(&cols, loc, level, 1.5, -0.25).is_none());
+        }
+    }
+}
+
+#[test]
+fn glass_and_shutters_seal_bar_gaps_and_only_shutters_open() {
+    for arch in [ARCH_WINDOW_GLASS, ARCH_WINDOW_SHUTTER] {
+        for loc in [LOC_EDGE_XLO, LOC_EDGE_ZLO] {
+            for level in [0, 2] {
+                let (mut w, mut p) = fixture(arch, loc, level);
+                let _ = put(&mut w, &mut p, 0, loc, level);
+                assert!(shot(w.pieces.cols(), loc, level, 1.35, 1.6).unwrap().1);
+                let ev = put(&mut w, &mut p, 1, loc, level);
+                assert!(ev.entries().iter().any(|e| e.code == EV_DEPLOY_REFUSED));
+                assert!(!w.deploys.entries()[0].has_lock);
+                let mut ev = EventQueue::default();
+                let toggled = use_door(
+                    &w.deploy,
+                    &mut w.pieces,
+                    &mut w.deploys,
+                    &mut p,
+                    CX,
+                    CZ,
+                    level,
+                    loc,
+                    &mut ev,
+                );
+                if arch == ARCH_WINDOW_SHUTTER {
+                    assert!(toggled.is_some());
+                    assert!(shot(w.pieces.cols(), loc, level, 1.35, 1.6).is_none());
+                    use_door(
+                        &w.deploy,
+                        &mut w.pieces,
+                        &mut w.deploys,
+                        &mut p,
+                        CX,
+                        CZ,
+                        level,
+                        loc,
+                        &mut ev,
+                    );
+                } else {
+                    assert!(toggled.is_none());
+                }
+                assert!(shot(w.pieces.cols(), loc, level, 1.35, 1.6).unwrap().1);
+                let mut bytes = vec![0; worldsave::WORLD_SAVE_MAX_BYTES];
+                let n = worldsave::encode(&w, &mut bytes).unwrap();
+                let mut back = Box::new(World::new(SEED));
+                back.build = w.build;
+                back.deploy = w.deploy;
+                worldsave::decode_into(&mut back, &bytes[..n]).unwrap();
+                assert!(shot(back.pieces.cols(), loc, level, 1.35, 1.6).unwrap().1);
+                assert!(damage_deploy(
+                    &w.deploy,
+                    &mut w.pieces,
+                    &mut w.deploys,
+                    0,
+                    500,
+                    &mut ev
+                ));
+                assert!(shot(w.pieces.cols(), loc, level, 1.35, 1.6).is_none());
+            }
         }
     }
 }

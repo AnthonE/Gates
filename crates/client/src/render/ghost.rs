@@ -23,7 +23,7 @@
 use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 use client_core::core::ClientCore;
-use sim_core::build::{SHAPE_FOUNDATION, SHAPE_STAIRS, SHAPE_TRI_FOUNDATION, STAIR_LOCS};
+use sim_core::build::{SHAPE_FOUNDATION, SHAPE_FOUNDATION_STEPS, SHAPE_TRI_FOUNDATION, STAIR_LOCS};
 
 use crate::look::yaw_u16;
 use crate::ui::build::{row_for, PLACE_MATERIAL, SHAPES};
@@ -105,7 +105,7 @@ pub struct Ghost {
     /// two are never up at once but are driven by different systems, and one
     /// entity shared between them would need a mode flag that could disagree.
     deploy_entity: Option<Entity>,
-    insert_mesh: [Option<Handle<Mesh>>; 2],
+    insert_mesh: [Option<Handle<Mesh>>; 4],
     apron_mesh: Option<Handle<Mesh>>,
     apron_entity: Option<Entity>,
     deploy_mat: Option<Handle<StandardMaterial>>,
@@ -160,7 +160,8 @@ pub struct Ghost {
 
 /// `R`/`F` turn a stair preview; on a foundation they raise/lower its height
 /// (foundation height v0) — while the building plan is in hand and no
-/// panel owns the pointer, wheel up or not.
+/// panel owns the pointer, wheel up or not. Foundation steps also accept
+/// Shift+R/F for height, leaving plain R/F available for their direction.
 ///
 /// **These two keys stepped the STOREY until 2026-09-05**, and only while
 /// the wheel was up. The storey is aimed now (`place::Aim::level_for`, the
@@ -190,7 +191,9 @@ pub fn height_keys(
         return;
     }
     let shape = ui.as_ref().map(|u| SHAPES[u.shape.min(SHAPES.len() - 1)]);
-    if shape == Some(SHAPE_STAIRS) {
+    let step_height = shape == Some(SHAPE_FOUNDATION_STEPS)
+        && (keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight));
+    if shape.is_some_and(sim_core::circulation::is_riser) && !step_height {
         if keys.just_pressed(KeyCode::KeyR) {
             ghost.stair_turn = (ghost.stair_turn + 1) % STAIR_LOCS.len() as u8;
         }
@@ -200,7 +203,7 @@ pub fn height_keys(
         }
         return;
     }
-    if !matches!(shape, Some(SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION)) {
+    if !matches!(shape, Some(SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION)) && !step_height {
         return;
     }
     if keys.just_pressed(KeyCode::KeyR) {
@@ -288,7 +291,7 @@ pub fn track(
     // the storey above it, a floor's edge its own, bare ground the first.
     let level = aim.level_for(shape);
     let mut target = aim.target_for(shape);
-    if shape == SHAPE_STAIRS {
+    if sim_core::circulation::is_riser(shape) {
         target.loc = STAIR_LOCS[ghost.stair_turn as usize % STAIR_LOCS.len()];
     }
     let site = Site {
@@ -372,11 +375,15 @@ pub fn track(
             plate,
         )
     });
-    let diagonal = shape == sim_core::build::SHAPE_WALL
-        && matches!(
-            target.loc,
-            sim_core::build::LOC_DIAG_A | sim_core::build::LOC_DIAG_B
-        );
+    let diagonal = matches!(
+        shape,
+        sim_core::build::SHAPE_WALL
+            | sim_core::build::SHAPE_HALF_WALL
+            | sim_core::build::SHAPE_LOW_WALL
+    ) && matches!(
+        target.loc,
+        sim_core::build::LOC_DIAG_A | sim_core::build::LOC_DIAG_B
+    );
 
     if ghost.built != Some((shape, diagonal)) {
         ghost.built = Some((shape, diagonal));
@@ -404,6 +411,9 @@ pub fn track(
                     structures::PartKind::Box => mesh.clone(),
                     structures::PartKind::Tri => tri.clone(),
                     structures::PartKind::Stairs => stairs.clone(),
+                    structures::PartKind::Circulation(_) | structures::PartKind::TriFrame => {
+                        meshes.add(structures::part_mesh(part))
+                    }
                 };
                 c.spawn((
                     Mesh3d(unit),
@@ -638,6 +648,8 @@ pub fn deploy_track(
     let insert = match arch as u8 {
         sim_core::deploy::ARCH_WINDOW_BARS => Some(0),
         sim_core::deploy::ARCH_GARAGE_DOOR => Some(1),
+        sim_core::deploy::ARCH_WINDOW_GLASS => Some(2),
+        sim_core::deploy::ARCH_WINDOW_SHUTTER => Some(3),
         _ => None,
     };
     let mesh = if let Some(i) = insert {

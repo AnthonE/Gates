@@ -10,6 +10,7 @@ pub mod backpack;
 pub mod bots;
 pub mod build;
 pub mod charge;
+pub mod circulation;
 pub mod claim;
 pub mod collide;
 pub mod combat;

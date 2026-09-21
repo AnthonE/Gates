@@ -229,6 +229,15 @@ pub enum Shape {
     TriRoof,
     /// Square opening for a stairwell, priced like a floor.
     FloorFrame,
+    HalfWall,
+    LowWall,
+    FoundationSteps,
+    Ramp,
+    StairsL,
+    StairsU,
+    StairsSpiral,
+    StairsTriSpiral,
+    TriFloorFrame,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
@@ -450,6 +459,8 @@ pub enum DeployArchetype {
     Workbench3,
     WindowBars,
     GarageDoor,
+    WindowGlass,
+    WindowShutter,
 }
 
 #[derive(Debug, Clone, Deserialize)]

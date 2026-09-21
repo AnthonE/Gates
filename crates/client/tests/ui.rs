@@ -765,11 +765,11 @@ fn segment_zero_is_centred_on_up() {
 #[test]
 fn segments_increase_clockwise() {
     let n = SHAPES.len();
-    // Six segments: 60° each. A quarter turn to the RIGHT is segment 1 or 2,
-    // never 4 or 5 — a wheel that numbered anticlockwise would highlight the
-    // mirror of what the labels say.
+    // The nearest centre to a quarter turn is round(n/4), including
+    // catalogues with 4k+1 wedges. Ceil incorrectly selects the next wedge
+    // for the 21-shape catalogue; clockwise order is still the contract.
     let right = build::segment(1.0, 0.0, n);
-    assert_eq!(right, n.div_ceil(4), "90 deg right: {right}");
+    assert_eq!(right, (n + 2) / 4, "90 deg right: {right}");
     let left = build::segment(-1.0, 0.0, n);
     assert!(
         left > n / 2,

@@ -123,3 +123,11 @@ cost = 30
 [[research]]
 item = "item.garage_door"
 cost = 30
+
+[[research]]
+item = "item.window_glass"
+cost = 30
+
+[[research]]
+item = "item.window_shutters"
+cost = 15

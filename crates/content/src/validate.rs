@@ -966,7 +966,9 @@ pub fn structural(c: &Content) -> Result<(), String> {
         }
         let socket = match d.archetype {
             DeployArchetype::Door => Some(Placement::Doorway),
-            DeployArchetype::WindowBars => Some(Placement::Window),
+            DeployArchetype::WindowBars
+            | DeployArchetype::WindowGlass
+            | DeployArchetype::WindowShutter => Some(Placement::Window),
             DeployArchetype::GarageDoor => Some(Placement::WallFrame),
             _ => None,
         };

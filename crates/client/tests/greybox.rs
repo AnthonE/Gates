@@ -344,11 +344,14 @@ fn every_occupant_is_measured_or_excused() {
 #[test]
 fn every_solid_deploy_blocks_what_it_draws() {
     use client::render::structures::deploy_size;
-    use sim_core::deploy::{solid_vol, ARCH_GARAGE_DOOR, ARCH_WINDOW_BARS, DEPLOY_VOL};
+    use sim_core::deploy::{
+        solid_vol, ARCH_GARAGE_DOOR, ARCH_WINDOW_BARS, ARCH_WINDOW_GLASS, ARCH_WINDOW_SHUTTER,
+        DEPLOY_VOL,
+    };
 
     assert_eq!(
         DEPLOY_VOL.len(),
-        ARCH_GARAGE_DOOR as usize + 1,
+        ARCH_WINDOW_SHUTTER as usize + 1,
         "the sim volume table and the archetype space drifted"
     );
     for (arch, [w, h, d]) in DEPLOY_VOL.iter().enumerate() {
@@ -370,7 +373,13 @@ fn every_solid_deploy_blocks_what_it_draws() {
                 assert!(
                     matches!(
                         arch as u8,
-                        0 | 3 | 6 | 7 | ARCH_WINDOW_BARS | ARCH_GARAGE_DOOR
+                        0 | 3
+                            | 6
+                            | 7
+                            | ARCH_WINDOW_BARS
+                            | ARCH_GARAGE_DOOR
+                            | ARCH_WINDOW_GLASS
+                            | ARCH_WINDOW_SHUTTER
                     ),
                     "arch {arch} became walk-over without the doc's excuse list"
                 );

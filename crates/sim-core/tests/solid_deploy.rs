@@ -26,7 +26,7 @@ use sim_core::build::{foundation_terrain_ok, BuildContent, BUILD_CELL_M, LOC_PLA
 use sim_core::collide::{self, ColIndex, CAPSULE_RADIUS_M, NO_SURFACE};
 use sim_core::deploy::{
     solid_vol, DeployContent, DeployDef, ARCH_BAG, ARCH_BOX, ARCH_FURNACE, ARCH_GARAGE_DOOR,
-    ARCH_WINDOW_BARS, DEPLOY_VOL, PLACE_FOUNDATION,
+    ARCH_WINDOW_BARS, ARCH_WINDOW_GLASS, ARCH_WINDOW_SHUTTER, DEPLOY_VOL, PLACE_FOUNDATION,
 };
 use sim_core::gather::{GatherContent, ItemStack};
 use sim_core::input::{InputFrame, BTN_JUMP};
@@ -617,7 +617,7 @@ fn walking_into_the_shelter_stands_on_the_plinth() {
 fn the_volume_table_covers_every_archetype() {
     assert_eq!(
         DEPLOY_VOL.len(),
-        ARCH_GARAGE_DOOR as usize + 1,
+        ARCH_WINDOW_SHUTTER as usize + 1,
         "a new archetype needs a volume row"
     );
     for (arch, [w, h, d]) in DEPLOY_VOL.iter().enumerate() {
@@ -636,7 +636,16 @@ fn the_volume_table_covers_every_archetype() {
     }
     // The walk-over and socket-only rows, so a bag growing a volume is a
     // decision and not a typo.
-    for arch in [0u8, 3, 6, 7, ARCH_WINDOW_BARS, ARCH_GARAGE_DOOR] {
+    for arch in [
+        0u8,
+        3,
+        6,
+        7,
+        ARCH_WINDOW_BARS,
+        ARCH_GARAGE_DOOR,
+        ARCH_WINDOW_GLASS,
+        ARCH_WINDOW_SHUTTER,
+    ] {
         assert!(
             solid_vol(arch).is_none(),
             "arch {arch} must not grow a freestanding body volume"
