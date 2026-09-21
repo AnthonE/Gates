@@ -841,7 +841,11 @@ pub fn verdict(
 
     // Ground, for a foundation only — every other shape stands on structure
     // and the sim asks a different question of it.
-    if shape == SHAPE_FOUNDATION && !foundation_terrain_ok(site.seed, site.haven, ax, az) {
+    if matches!(
+        shape,
+        SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION | sim_core::build::SHAPE_FOUNDATION_STEPS
+    ) && !foundation_terrain_ok(site.seed, site.haven, ax, az)
+    {
         return Verdict::No("bad ground");
     }
 
@@ -1447,6 +1451,40 @@ mod tests {
     fn the_level_is_clamped_to_the_grids_ceiling() {
         let t = target(9.0, 9.0, 0.0, 1.0, SHAPE_WALL, 250);
         assert!((t.level as usize) < MAX_BUILD_SOCKETS);
+    }
+
+    #[test]
+    fn every_foundation_preview_refuses_bad_ground() {
+        let seed = 20260731;
+        let haven = sim_core::terrain::haven(seed);
+        let cols = sim_core::collide::ColIndex::new();
+        let inv = empty_inv();
+        for (shape, loc) in [
+            (SHAPE_FOUNDATION, LOC_PLANE),
+            (SHAPE_TRI_FOUNDATION, LOC_TRI_XLO_ZLO),
+            (sim_core::build::SHAPE_FOUNDATION_STEPS, LOC_RISER),
+        ] {
+            let t = Target {
+                loc,
+                ..Target::default()
+            };
+            let at = anchor(t.cx, t.cz, loc);
+            assert!(!foundation_terrain_ok(seed, &haven, at.0, at.1));
+            let content = free_table(shape);
+            let site = Site {
+                seed,
+                haven: &haven,
+                at,
+                taken: &[],
+                cols: &cols,
+                content: &content,
+                inv: &inv,
+            };
+            assert_eq!(
+                verdict(t, 0, shape, &site, false, 0),
+                Verdict::No("bad ground")
+            );
+        }
     }
 
     #[test]

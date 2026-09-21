@@ -66,6 +66,7 @@ fn triangle_frame_mesh_has_no_face_across_the_open_centre() {
     else {
         panic!("normals")
     };
+    let mut tops = 0;
     for tri in mesh
         .indices()
         .unwrap()
@@ -76,6 +77,7 @@ fn triangle_frame_mesh_has_no_face_across_the_open_centre() {
         if normals[tri[0]][1] < 0.5 {
             continue;
         }
+        tops += 1;
         let p =
             (Vec3::from(points[tri[0]]) + Vec3::from(points[tri[1]]) + Vec3::from(points[tri[2]]))
                 / 3.0;
@@ -86,4 +88,5 @@ fn triangle_frame_mesh_has_no_face_across_the_open_centre() {
             0.0
         ));
     }
+    assert!(tops > 0, "the frame must draw a top surface");
 }
