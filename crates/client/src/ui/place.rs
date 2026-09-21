@@ -36,8 +36,9 @@ use sim_core::build::{
 };
 use sim_core::craft::inv_count;
 use sim_core::deploy::{
-    box_key, cell_center, loc_fits_placement, lockable, DeployContent, DeployRec, ARCH_BOX,
-    ARCH_LOCK, PLACE_ANY, PLACE_DOOR, PLACE_DOORWAY, PLACE_FOUNDATION, PLACE_GROUND,
+    box_key, cell_center, loc_fits_placement, lockable, socket_shape, DeployContent, DeployRec,
+    ARCH_BOX, ARCH_LOCK, PLACE_ANY, PLACE_DOOR, PLACE_DOORWAY, PLACE_FOUNDATION, PLACE_FRAME,
+    PLACE_GROUND, PLACE_WINDOW,
 };
 use sim_core::gather::ItemStack;
 use sim_core::limits::{INV_SLOTS, MAX_BUILD_COORD, MAX_BUILD_LEVELS};
@@ -113,6 +114,8 @@ pub struct Aim {
     /// The storey the feet stand on — what [`Met::Nothing`] resolves to, so
     /// looking at the sky from an upper floor still builds on that floor.
     pub standing: u8,
+    /// Same-storey continuation selected by a hit below an edge midpoint.
+    pub beside: Option<Target>,
 }
 
 impl Aim {
@@ -133,7 +136,13 @@ impl Aim {
             Met::Ground => 0,
             Met::Floor(l) | Met::Socket(l) => l.min(top),
             Met::Wall(l) => {
-                if shape == SHAPE_STAIRS {
+                if shape == SHAPE_STAIRS
+                    || (self.beside.is_some()
+                        && matches!(
+                            shape,
+                            SHAPE_WALL | SHAPE_DOORWAY | SHAPE_WINDOW | SHAPE_FRAME
+                        ))
+                {
                     l.min(top)
                 } else {
                     l.saturating_add(1).min(top)
@@ -141,6 +150,19 @@ impl Aim {
             }
             Met::Nothing => self.standing.min(top),
         }
+    }
+
+    /// Resolve the build socket from the same hit that selects its storey.
+    pub fn target_for(&self, shape: u8) -> Target {
+        if matches!(
+            shape,
+            SHAPE_WALL | SHAPE_DOORWAY | SHAPE_WINDOW | SHAPE_FRAME
+        ) {
+            if let Some(target) = self.beside {
+                return target;
+            }
+        }
+        target_at(self.at.0, self.at.1, shape, self.level_for(shape))
     }
 
     /// The storey a doorway-class deployable resolves to: the doorway's own,
@@ -203,11 +225,12 @@ pub fn aim_from_look(
             eye[1] + dir[1] * t,
             eye[2] + dir[2] * t,
         ];
-        if let Some(level) = edge_crossed(seed, haven, cols, prev, p) {
+        if let Some((level, beside)) = edge_crossed(seed, haven, cols, prev, p) {
             return Aim {
                 at: clamp_to_reach(planar_feet, (prev[0], prev[2])),
                 met: Met::Wall(level),
                 standing,
+                beside,
             };
         }
         if let Some((level, s)) = socket_crossed(seed, haven, cols, prev, p) {
@@ -217,6 +240,7 @@ pub fn aim_from_look(
                 at: clamp_to_reach(planar_feet, (x, z)),
                 met: Met::Socket(level),
                 standing,
+                beside: None,
             };
         }
         let terrain = sim_core::terrain::ground(seed, haven, p[0], p[2]);
@@ -245,6 +269,7 @@ pub fn aim_from_look(
                 at: clamp_to_reach(planar_feet, (p[0], p[2])),
                 met,
                 standing,
+                beside: None,
             };
         }
         prev = p;
@@ -261,6 +286,7 @@ pub fn aim_from_look(
         ),
         met: Met::Nothing,
         standing,
+        beside: None,
     }
 }
 
@@ -333,16 +359,25 @@ fn edge_crossed(
     cols: &sim_core::collide::ColIndex,
     a: [f32; 3],
     b: [f32; 3],
-) -> Option<u8> {
+) -> Option<(u8, Option<Target>)> {
     let (ax, bx) = (build_cell_of(a[0]), build_cell_of(b[0]));
     let (az, bz) = (build_cell_of(a[2]), build_cell_of(b[2]));
-    let mut best: Option<(f32, u8)> = None;
+    let mut best: Option<(f32, (u8, Option<Target>))> = None;
     if ax != bx {
         let bound = ax.max(bx);
         let s = (bound as f32 * BUILD_CELL_M - a[0]) / (b[0] - a[0]);
         let y = a[1] + (b[1] - a[1]) * s;
         let cz = build_cell_of(a[2] + (b[2] - a[2]) * s);
-        if let Some(l) = edge_level_at(seed, haven, cols, bound, cz, LOC_EDGE_XLO, y) {
+        if let Some(l) = edge_level_at(
+            seed,
+            haven,
+            cols,
+            bound,
+            cz,
+            LOC_EDGE_XLO,
+            y,
+            a[2] + (b[2] - a[2]) * s,
+        ) {
             best = Some((s, l));
         }
     }
@@ -351,7 +386,16 @@ fn edge_crossed(
         let s = (bound as f32 * BUILD_CELL_M - a[2]) / (b[2] - a[2]);
         let y = a[1] + (b[1] - a[1]) * s;
         let cx = build_cell_of(a[0] + (b[0] - a[0]) * s);
-        if let Some(l) = edge_level_at(seed, haven, cols, cx, bound, LOC_EDGE_ZLO, y) {
+        if let Some(l) = edge_level_at(
+            seed,
+            haven,
+            cols,
+            cx,
+            bound,
+            LOC_EDGE_ZLO,
+            y,
+            a[0] + (b[0] - a[0]) * s,
+        ) {
             if best.is_none_or(|(bs, _)| s < bs) {
                 best = Some((s, l));
             }
@@ -364,6 +408,7 @@ fn edge_crossed(
 /// stands there. Every edge shape counts — a doorway's opening included,
 /// because the piece is what the crosshair is on, hole or not: aim through
 /// a doorway and the doorway is what a floor goes over.
+#[allow(clippy::too_many_arguments)]
 fn edge_level_at(
     seed: u64,
     haven: &sim_core::terrain::Haven,
@@ -372,7 +417,8 @@ fn edge_level_at(
     cz: i32,
     loc: u8,
     y: f32,
-) -> Option<u8> {
+    along: f32,
+) -> Option<(u8, Option<Target>)> {
     if !in_grid(cx, cz) {
         return None;
     }
@@ -395,7 +441,45 @@ fn edge_level_at(
         return None;
     }
     let l = l as u8;
-    (mask & (1u8 << l) != 0).then_some(l)
+    if mask & (1u8 << l) == 0 {
+        return None;
+    }
+    // An opening keeps its own insert/top sockets. Only a solid wall's
+    // lower face asks to continue the wall run beside it.
+    let walls = if loc == LOC_EDGE_XLO {
+        m.walls_xlo
+    } else {
+        m.walls_zlo
+    };
+    let beside = if walls & (1 << l) != 0 && rel - l as f32 * LEVEL_H_M < LEVEL_H_M * 0.5 {
+        let start = if loc == LOC_EDGE_XLO { cz } else { cx } as f32 * BUILD_CELL_M;
+        let high = along - start >= BUILD_CELL_M * 0.5;
+        let step = |v: u16| {
+            if high {
+                v.checked_add(1).filter(|v| (*v as usize) < MAX_BUILD_COORD)
+            } else {
+                v.checked_sub(1)
+            }
+        };
+        if loc == LOC_EDGE_XLO {
+            step(cz).map(|cz| Target {
+                cx,
+                cz,
+                level: l,
+                loc,
+            })
+        } else {
+            step(cx).map(|cx| Target {
+                cx,
+                cz,
+                level: l,
+                loc,
+            })
+        }
+    } else {
+        None
+    };
+    Some((l, beside))
 }
 
 /// How far past the shared edge a neighbour's level plane still catches the
@@ -929,7 +1013,10 @@ impl DeployVerdict {
 /// is the aimed storey for doors and locks. Ground/foundation body deploys
 /// use level 0; [`deploy_target_on`] also resolves locks on existing boxes.
 pub fn deploy_target(x: f32, z: f32, fx: f32, fz: f32, placement: u8, level: u8) -> Target {
-    if matches!(placement, PLACE_DOORWAY | PLACE_DOOR) {
+    if matches!(
+        placement,
+        PLACE_DOORWAY | PLACE_DOOR | PLACE_WINDOW | PLACE_FRAME
+    ) {
         target(x, z, fx, fz, SHAPE_DOORWAY, level)
     } else {
         target(x, z, fx, fz, SHAPE_FOUNDATION, 0)
@@ -939,7 +1026,10 @@ pub fn deploy_target(x: f32, z: f32, fx: f32, fz: f32, placement: u8, level: u8)
 /// [`deploy_target`] for an aim POINT — the look-ray variant, split the
 /// way [`target_at`] is and for the same caller.
 pub fn deploy_target_at(ax: f32, az: f32, placement: u8, level: u8) -> Target {
-    if matches!(placement, PLACE_DOORWAY | PLACE_DOOR) {
+    if matches!(
+        placement,
+        PLACE_DOORWAY | PLACE_DOOR | PLACE_WINDOW | PLACE_FRAME
+    ) {
         target_at(ax, az, SHAPE_DOORWAY, level)
     } else {
         target_at(ax, az, SHAPE_FOUNDATION, 0)
@@ -1122,13 +1212,16 @@ pub fn deploy_verdict(t: Target, row: u8, site: &DeploySite<'_>) -> DeployVerdic
                 return DeployVerdict::No("needs support");
             }
         }
-        PLACE_DOORWAY => match site.piece_at(t.cx, t.cz, t.level, t.loc) {
+        PLACE_DOORWAY | PLACE_WINDOW | PLACE_FRAME => match site
+            .piece_at(t.cx, t.cz, t.level, t.loc)
+        {
             None => return DeployVerdict::No("needs support"),
             Some(r) => {
                 if (r.row as u16) >= site.piece_have.min(site.piece_defs.piece_count) {
                     return DeployVerdict::Unknown; // shape not dripped yet
                 }
-                if site.piece_defs.pieces[r.row as usize].shape != SHAPE_DOORWAY {
+                if Some(site.piece_defs.pieces[r.row as usize].shape) != socket_shape(def.placement)
+                {
                     return DeployVerdict::No("needs support");
                 }
             }
@@ -1594,6 +1687,7 @@ mod tests {
             at: (x, z),
             met: Met::Floor(2),
             standing: 0,
+            beside: None,
         };
         assert_eq!(
             deploy_target_on(&aim, PLACE_DOOR, &deploys, &defs, 2),
@@ -1609,6 +1703,7 @@ mod tests {
                 at: point,
                 met: Met::Wall(2),
                 standing: 0,
+                beside: None,
             };
             assert_eq!(
                 deploy_target_on(&aim, PLACE_DOOR, &deploys, &defs, 2),

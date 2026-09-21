@@ -1331,9 +1331,10 @@ walls, but its centre cannot hold deployables. Shared movement, projectile,
 save/load and mesh checks cover the opening. Combined playtest is next;
 post-placement hammer rotation is now built (§0p2).
 
-1. **A band-boundary wall bases on its canonical cell** and hangs one band over
-   the lower plate — an arrow-sized slit. The lower column is the honest base;
-   needs `collide` and the renderer together. Rare since the plate, not fixed.
+1. ✅ **Band-boundary wall feet close the lower gap** (2026-09-21).
+   Collision and the mesh extend to the lower adjacent supporting plane,
+   including upper floors and triangular halves, without lowering openings.
+   `findings/building-inserts-20260921.md` records the regression coverage.
 2. **The flank costs 153 µs a tick and the shot walk now pays too; one memo
    takes most of both back.** `col_base_y` re-samples terrain per cell per
    candidate. `build::terrain_band` is pure in (seed, cell), so a direct-mapped
@@ -1368,8 +1369,8 @@ post-placement hammer rotation is now built (§0p2).
 8. **Nobody has played the three 2026-09-05 slices either**, and each has a
    look or a feel only a person can judge: the corner posts (3 cm proud is a
    guess at the reference's stone corners) and the apron on a stilted plate
-   (gap v1); a wall aimed at a wall's LOWER half stacks on top rather than
-   standing beside it (aimed level v0 — the reference snaps beside); the
+   (gap v1); lower-half wall aim now continues beside it (2026-09-21), with
+   upper-half aim retaining the stacking socket; the
    aimed band stepping half a metre as the crosshair sweeps a sloped cell
    (foundation height v0). The HUD's `+0.5 m` and `(R/F height)` hint are
    the only teaching there is.
@@ -1383,11 +1384,12 @@ post-placement hammer rotation is now built (§0p2).
 
 ## 0ac · The catalogue's inserts, the soft face's look, and the diagonal price *(systems lane)*
 
-1. **The inserts are unbuilt** — bars, glass, shutters, the garage door
-   (`reference/BUILDING.md` §7b.4's second purchase, §9.13's remainder).
-   Each is a deployable pass of its own; `content/building.toml` says so
-   at both socket rows, and `place_deploy` still requires
-   `SHAPE_DOORWAY`.
+1. **Bars and garage doors are built** (2026-09-21): real window/frame
+   sockets, separate damage, bars' shooting gaps, garage lock/toggle/repair/
+   pickup, save/load and client resync. Local native captures show the bars
+   seated in both floors' openings and the garage's open/closed poses.
+   **Glass and shutters remain next.** See
+   `findings/building-inserts-20260921.md` for evidence and playtest scope.
 2. **Soft wall faces are lighter, hard faces darker** (2026-09-20), selected
    from the sim's facing and refreshed on hammer rotation. The shared meshes
    reuse the existing face gains; the playtest should judge their readability.

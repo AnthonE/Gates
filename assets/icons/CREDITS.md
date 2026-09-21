@@ -36,6 +36,7 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | `crossbow.png` | `carl-olsen/crossbow` |
 | `fire_pit.png` | `lorc/campfire` |
 | `furnace.png` | `delapouite/furnace` |
+| `garage_door.png` | `delapouite/home-garage` |
 | `gears.png` | `lorc/gears` |
 | `gunpowder.png` | `lorc/powder` |
 | `hammer.png` | `lorc/claw-hammer` |
@@ -53,6 +54,7 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | `metal_ore.png` | `delapouite/gold-nuggets` |
 | `metal_pickaxe.png` | `delapouite/mining-helmet` |
 | `metal_spear.png` | `lorc/barbed-spear` |
+| `metal_window_bars.png` | `delapouite/window-bars` |
 | `mushrooms.png` | `delapouite/mushrooms` |
 | `pistol_round.png` | `delapouite/heavy-bullets` |
 | `raw_meat.png` | `delapouite/steak` |

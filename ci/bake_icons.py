@@ -188,6 +188,8 @@ ITEMS = {
     "pistol_ammo": "delapouite/heavy-bullets",
     "satchel_charge": "delapouite/dynamite",
     "door_metal": "delapouite/closed-doors",
+    "window_bars_metal": "delapouite/window-bars",
+    "garage_door": "delapouite/home-garage",
     "armor_roadsign_body": "lorc/armor-vest",
     "medkit": "delapouite/first-aid-kit",
     "berries": "delapouite/berries-bowl",

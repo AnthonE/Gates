@@ -79,6 +79,7 @@
 
 use crate::build::{
     BuildContent, Pieces, LEVEL_H_M, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, SHAPE_DOORWAY,
+    SHAPE_FRAME, SHAPE_WINDOW,
 };
 use crate::craft::{inv_count, inv_take};
 use crate::gather::{GatherContent, ItemStack};
@@ -142,6 +143,10 @@ pub const ARCH_RESEARCH: u8 = 9;
 pub const ARCH_WORKBENCH2: u8 = 10;
 /// Workbench level 3 — the top rung, the gate a raid kit stands behind.
 pub const ARCH_WORKBENCH3: u8 = 11;
+/// A fixed insert in a window socket; the gaps remain open to shots.
+pub const ARCH_WINDOW_BARS: u8 = 12;
+/// A lockable roll-up leaf occupying a wall-frame socket.
+pub const ARCH_GARAGE_DOOR: u8 = 13;
 
 /// The blocked volume of each archetype, `[w, h, d]` full extents in
 /// metres, centred on the deploy's cell centre with its base at the
@@ -164,7 +169,7 @@ pub const ARCH_WORKBENCH3: u8 = 11;
 /// the comparison that item said could not exist while the sim had no
 /// table. Sim truth now: a row here is a collision change (wall 5 —
 /// `test_replay` moves with it, deliberately).
-pub const DEPLOY_VOL: [[f32; 3]; 12] = [
+pub const DEPLOY_VOL: [[f32; 3]; 14] = [
     [0.0, 0.0, 0.0],   // 0 bag — walk-over
     [1.2, 1.0, 0.6],   // 1 hearth
     [1.2, 0.65, 0.7],  // 2 box
@@ -177,6 +182,8 @@ pub const DEPLOY_VOL: [[f32; 3]; 12] = [
     [1.5, 0.8, 0.8],   // 9 research table
     [1.6, 1.0, 0.8],   // 10 workbench 2 — taller and deeper than 5
     [1.8, 1.1, 0.8],   // 11 workbench 3 — the widest bench
+    [0.0, 0.0, 0.0],   // window bars — edge insert
+    [0.0, 0.0, 0.0],   // garage door — edge insert
 ];
 
 /// The blocked volume of `arch` as `(half_w, h, half_d)`, or `None` for
@@ -195,7 +202,7 @@ const _: () = {
     // Every archetype code must fit the collision index's 4-bit nibble
     // (`collide::ColMasks::solid`), with 0xF left over as its empty
     // sentinel.
-    assert!(ARCH_WORKBENCH3 < 0xF);
+    assert!(ARCH_GARAGE_DOOR < 0xF);
     // A solid deploy stands at its cell centre, so the movement query
     // tests only the candidate's own build cell. That is complete iff no
     // volume, inflated by the capsule, can reach past the half-cell:
@@ -289,15 +296,15 @@ pub const fn bench_tier(arch: u8) -> u8 {
 /// loop rewrites its own slots, so a lock on one would be a claim the
 /// sim itself ignores every burn tick.
 pub fn lockable(arch: u8) -> bool {
-    arch == ARCH_DOOR || arch == ARCH_BOX
+    arch_is_door(arch) || arch == ARCH_BOX
 }
 
 /// The one archetype the use verb toggles. Named so `use_door` and
 /// `lock_op` can share `door_in_reach` while disagreeing about what may
 /// stand at the address: a box carries a lock, but pressing E at one is
 /// the container panel's business, never a leaf toggle.
-fn arch_is_door(arch: u8) -> bool {
-    arch == ARCH_DOOR
+pub fn arch_is_door(arch: u8) -> bool {
+    matches!(arch, ARCH_DOOR | ARCH_GARAGE_DOOR)
 }
 
 /// Placement-class codes (schema order).
@@ -308,6 +315,107 @@ pub const PLACE_ANY: u8 = 3;
 /// On a door — the only class that wants the address **occupied**, and
 /// occupied by one specific archetype at that.
 pub const PLACE_DOOR: u8 = 4;
+pub const PLACE_WINDOW: u8 = 5;
+pub const PLACE_FRAME: u8 = 6;
+
+/// The structural socket required by an edge insert.
+pub fn socket_shape(placement: u8) -> Option<u8> {
+    match placement {
+        PLACE_DOORWAY => Some(SHAPE_DOORWAY),
+        PLACE_WINDOW => Some(SHAPE_WINDOW),
+        PLACE_FRAME => Some(SHAPE_FRAME),
+        _ => None,
+    }
+}
+
+/// Inserts share the existing shut bits: the supporting shape determines
+/// the geometry. A window's bit means bars present; a door's means closed.
+pub fn edge_insert(arch: u8) -> bool {
+    arch_is_door(arch) || arch == ARCH_WINDOW_BARS
+}
+
+/// Authored bar stock width, metres (DECISIONS.md, inserts v0).
+pub const WINDOW_BAR_M: f32 = 0.06;
+/// Three vertical bars and two rails; bounded at compile time.
+pub const WINDOW_BAR_COUNT: usize = 3;
+
+/// One rectangular insert part in its edge's local frame: along-edge bounds
+/// and height above the column floor. Shared by shots and the renderer.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct InsertPart {
+    pub lo: f32,
+    pub hi: f32,
+    pub bottom: f32,
+    pub top: f32,
+}
+
+/// Closed geometry. Open garage doors roll into their frame's solid header.
+pub fn insert_parts(arch: u8) -> ([InsertPart; WINDOW_BAR_COUNT + 2], usize) {
+    use crate::collide::{DOOR_HEAD_M, DOOR_POST_W_M, FRAME_RIM_M, WINDOW_HEAD_M, WINDOW_SILL_M};
+    let mut parts = [InsertPart::default(); WINDOW_BAR_COUNT + 2];
+    let span = crate::build::BUILD_CELL_M;
+    match arch {
+        ARCH_DOOR | ARCH_GARAGE_DOOR => {
+            let (rim, top) = if arch == ARCH_DOOR {
+                (DOOR_POST_W_M, DOOR_HEAD_M)
+            } else {
+                (FRAME_RIM_M, LEVEL_H_M - FRAME_RIM_M)
+            };
+            parts[0] = InsertPart {
+                lo: rim,
+                hi: span - rim,
+                bottom: 0.0,
+                top,
+            };
+            (parts, 1)
+        }
+        ARCH_WINDOW_BARS => {
+            let width = span - 2.0 * DOOR_POST_W_M;
+            for (i, part) in parts[..WINDOW_BAR_COUNT].iter_mut().enumerate() {
+                let mid = DOOR_POST_W_M + width * (i + 1) as f32 / (WINDOW_BAR_COUNT + 1) as f32;
+                *part = InsertPart {
+                    lo: mid - WINDOW_BAR_M * 0.5,
+                    hi: mid + WINDOW_BAR_M * 0.5,
+                    bottom: WINDOW_SILL_M,
+                    top: WINDOW_HEAD_M,
+                };
+            }
+            parts[WINDOW_BAR_COUNT] = InsertPart {
+                lo: DOOR_POST_W_M,
+                hi: span - DOOR_POST_W_M,
+                bottom: WINDOW_SILL_M,
+                top: WINDOW_SILL_M + WINDOW_BAR_M,
+            };
+            parts[WINDOW_BAR_COUNT + 1] = InsertPart {
+                lo: DOOR_POST_W_M,
+                hi: span - DOOR_POST_W_M,
+                bottom: WINDOW_HEAD_M - WINDOW_BAR_M,
+                top: WINDOW_HEAD_M,
+            };
+            (parts, WINDOW_BAR_COUNT + 2)
+        }
+        _ => (parts, 0),
+    }
+}
+
+/// Thickness across the edge, shared with the rendered insert.
+pub fn insert_thickness(arch: u8) -> f32 {
+    if arch == ARCH_WINDOW_BARS {
+        WINDOW_BAR_M
+    } else {
+        crate::collide::WALL_THICKNESS_M * 0.5
+    }
+}
+
+pub fn insert_solid_at(arch: u8, along: f32, height: f32, radius: f32) -> bool {
+    let (parts, n) = insert_parts(arch);
+    parts[..n].iter().any(|p| {
+        along + radius >= p.lo
+            && along - radius <= p.hi
+            && height + radius >= p.bottom
+            && height - radius <= p.top
+    })
+}
 
 /// Integer refusal reasons (CLAUDE.md wall 3), carried by
 /// EV_DEPLOY_REFUSED / the deploy-refused wire subtype.
@@ -1482,7 +1590,7 @@ fn player_xz(p: &Player) -> (f32, f32) {
 /// exists to close.
 pub fn loc_fits_placement(placement: u8, loc: u8) -> bool {
     match placement {
-        PLACE_DOORWAY => loc == LOC_EDGE_XLO || loc == LOC_EDGE_ZLO,
+        PLACE_DOORWAY | PLACE_WINDOW | PLACE_FRAME => loc == LOC_EDGE_XLO || loc == LOC_EDGE_ZLO,
         // A lock goes where its target lives: a door on a doorway's edge,
         // a box on the plane (locks on boxes, `DOORS.md` §9.8). The
         // support arm below still requires a lockable deployable at the
@@ -1574,9 +1682,9 @@ pub fn place_deploy(
             pieces.cols().get(cx, cz).planes & (1 << level) != 0
                 || (level == 0 && ground_ok(seed, haven, pieces, cx, cz))
         }
-        PLACE_DOORWAY => pieces
+        PLACE_DOORWAY | PLACE_WINDOW | PLACE_FRAME => pieces
             .find(cx, cz, level, loc)
-            .is_some_and(|r| bc.pieces[r.row as usize].shape == SHAPE_DOORWAY),
+            .is_some_and(|r| Some(bc.pieces[r.row as usize].shape) == socket_shape(def.placement)),
         // A lock's support is the thing it bolts to — a door or a box
         // (`lockable`; locks on boxes, `DOORS.md` §9.8). Anyone in reach
         // may bolt one onto a target that has none — including one
@@ -1687,7 +1795,7 @@ pub fn place_deploy(
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_FULL, 0);
         return;
     }
-    if def.arch == ARCH_DOOR {
+    if edge_insert(def.arch) {
         // Doors place closed and seal their doorway (door v0).
         pieces.set_door(cx, cz, level, loc, true);
     }
@@ -2319,7 +2427,7 @@ fn drop_deploy(
 ) {
     let rec = deploys.entries[di];
     deploys.remove_at(di, dc);
-    if dc.defs[rec.row as usize].arch == ARCH_DOOR {
+    if edge_insert(dc.defs[rec.row as usize].arch) {
         pieces.set_door(rec.cx, rec.cz, rec.level, rec.loc, false);
     }
     // The blocked volume leaves with the record — the clear half of the

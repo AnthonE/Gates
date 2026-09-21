@@ -414,6 +414,8 @@ pub enum Placement {
     /// On a door — the only class whose target must be **occupied**, and
     /// occupied by one specific archetype (lock v1).
     Door,
+    Window,
+    WallFrame,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -446,6 +448,8 @@ pub enum DeployArchetype {
     /// `bench_tier` is the one place the rung order is written.
     Workbench2,
     Workbench3,
+    WindowBars,
+    GarageDoor,
 }
 
 #[derive(Debug, Clone, Deserialize)]

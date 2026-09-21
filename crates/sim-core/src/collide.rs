@@ -813,6 +813,41 @@ pub(crate) fn col_base_y(
     crate::build::column_floor_y(seed, haven, cx, cz, cols.plate(cx, cz).unwrap_or(0))
 }
 
+/// How far an edge's solid foot continues to the lower adjoining floor.
+/// Its head and opening sockets stay on the column lattice. Only an actual
+/// supporting plane counts; bare terrain and a triangle's opposite edge do not.
+#[allow(clippy::too_many_arguments)]
+pub fn edge_foot_drop(
+    seed: u64,
+    haven: &crate::terrain::Haven,
+    cols: &ColIndex,
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+    plate: i8,
+) -> f32 {
+    let other = match loc {
+        LOC_EDGE_XLO => cx.checked_sub(1).map(|x| (x, cz)),
+        LOC_EDGE_ZLO => cz.checked_sub(1).map(|z| (cx, z)),
+        _ => None,
+    };
+    let Some((ox, oz)) = other else { return 0.0 };
+    let m = cols.get(ox, oz);
+    let planes = m.planes
+        | m.floor_frames
+        | if loc == LOC_EDGE_XLO {
+            m.tri_xhi_zlo | m.tri_xhi_zhi
+        } else {
+            m.tri_xlo_zhi | m.tri_xhi_zhi
+        };
+    if level as usize >= MAX_BUILD_LEVELS || planes & (1 << level) == 0 {
+        return 0.0;
+    }
+    let here = crate::build::column_floor_y(seed, haven, cx, cz, plate);
+    (here - col_base_y(seed, haven, cols, ox, oz)).max(0.0)
+}
+
 /// The highest built surface under (x, z) the capsule at `feet_y` may
 /// stand on — a plane's top, or the stair ramp's height at this z —
 /// `NO_SURFACE` when none. "May stand on" is the step rule: a surface
@@ -1503,7 +1538,18 @@ fn cell_edges_block(
                 continue;
             }
             let bottom = base + level as f32 * LEVEL_H_M;
-            if feet_y >= bottom + LEVEL_H_M || feet_y + CAPSULE_HEIGHT_M <= bottom {
+            let foot = bottom
+                - edge_foot_drop(
+                    seed,
+                    haven,
+                    cols,
+                    ecx as u16,
+                    ecz as u16,
+                    level as u8,
+                    if x_plane { LOC_EDGE_XLO } else { LOC_EDGE_ZLO },
+                    m.plate,
+                );
+            if feet_y >= bottom + LEVEL_H_M || feet_y + CAPSULE_HEIGHT_M <= foot {
                 continue; // that storey is above the head or below the feet
             }
             let meet = if x_plane {
@@ -1518,7 +1564,7 @@ fn cell_edges_block(
                 edge_meet(pz, s0, z, nz, nx, CAPSULE_RADIUS_M)
             };
             let Some(t) = meet else { continue };
-            let hit = if has_wall {
+            let hit = if has_wall || (feet_y < bottom && foot < bottom) || shuts & bit != 0 {
                 (0.0..=BUILD_CELL_M).contains(&t)
             } else if has_door {
                 // A closed door seals the doorway: full span, like a wall.
@@ -1788,6 +1834,22 @@ pub fn shot_stop(
     y: f32,
     r: f32,
 ) -> Option<PieceHit> {
+    shot_hit(seed, haven, cols, x, z, nx, nz, y, r).map(|(at, _)| at)
+}
+
+/// The shot's address and whether the hit was on its insert rather than frame.
+#[allow(clippy::too_many_arguments)]
+pub fn shot_hit(
+    seed: u64,
+    haven: &crate::terrain::Haven,
+    cols: &ColIndex,
+    x: f32,
+    z: f32,
+    nx: f32,
+    nz: f32,
+    y: f32,
+    r: f32,
+) -> Option<(PieceHit, bool)> {
     let (bx0, bz0) = (
         crate::build::build_cell_of(x),
         crate::build::build_cell_of(z),
@@ -1810,12 +1872,12 @@ pub fn shot_stop(
     // capsule's overlap.
     let hit = cell_diags_block(seed, haven, cols, bx1, bz1, x, z, nx, nz, y, y, true, r);
     if hit.is_some() {
-        return hit;
+        return hit.map(|at| (at, false));
     }
     if bx0 != bx1 || bz0 != bz1 {
         let hit = cell_diags_block(seed, haven, cols, bx0, bz0, x, z, nx, nz, y, y, true, r);
         if hit.is_some() {
-            return hit;
+            return hit.map(|at| (at, false));
         }
     }
     // The planes, at the sample's own point rather than over the sweep.
@@ -1826,7 +1888,7 @@ pub fn shot_stop(
     // ([`cell_planes_stop_shot`]'s doc carries the arithmetic). It reads the
     // destination `(nx, nz)`, which is the sample `ranged::world_stop` is
     // asking about and the same point it hands `Occupants::blocks_volume`.
-    cell_planes_stop_shot(seed, haven, cols, nx, nz, y, r)
+    cell_planes_stop_shot(seed, haven, cols, nx, nz, y, r).map(|at| (at, false))
 }
 
 /// Whether anything built stops the shot — [`shot_stop`] with the address
@@ -1865,7 +1927,7 @@ fn cell_edges_stop_shot(
     nz: f32,
     y: f32,
     r: f32,
-) -> Option<PieceHit> {
+) -> Option<(PieceHit, bool)> {
     let edges = [
         (bx, bz, true),
         (bx + 1, bz, true),
@@ -1906,7 +1968,18 @@ fn cell_edges_stop_shot(
             let bottom = base + level as f32 * LEVEL_H_M;
             // A point is inside exactly one storey; half-open so the
             // boundary altitude resolves the same on both targets.
-            if y < bottom || y >= bottom + LEVEL_H_M {
+            let foot = bottom
+                - edge_foot_drop(
+                    seed,
+                    haven,
+                    cols,
+                    ecx as u16,
+                    ecz as u16,
+                    level as u8,
+                    if x_plane { LOC_EDGE_XLO } else { LOC_EDGE_ZLO },
+                    m.plate,
+                );
+            if y < foot || y >= bottom + LEVEL_H_M {
                 continue;
             }
             let meet = if x_plane {
@@ -1920,29 +1993,37 @@ fn cell_edges_stop_shot(
             };
             let Some(t) = meet else { continue };
             let span = (0.0..=BUILD_CELL_M).contains(&t);
-            let solid = if walls & bit != 0 {
-                span
-            } else if doors & bit != 0 {
-                if shuts & bit != 0 {
-                    span // a closed door seals the doorway for shots too
-                } else {
-                    // Posts, and the lintel a body never had to answer to:
-                    // the drawn 2.1..3.0 band stops an arrow now
-                    // (`DOOR_HEAD_M`'s doc).
-                    span && (doorway_solid_at(t) || y - bottom >= DOOR_HEAD_M)
-                }
+            let solid = span
+                && (y < bottom
+                    || if walls & bit != 0 {
+                        true
+                    } else if doors & bit != 0 {
+                        doorway_solid_at(t) || y - bottom >= DOOR_HEAD_M
+                    } else if wins & bit != 0 {
+                        window_solid_at(t, y - bottom)
+                    } else {
+                        frame_solid_at(t, y - bottom)
+                    });
+            let arch = if doors & bit != 0 {
+                crate::deploy::ARCH_DOOR
             } else if wins & bit != 0 {
-                span && window_solid_at(t, y - bottom)
+                crate::deploy::ARCH_WINDOW_BARS
             } else {
-                span && frame_solid_at(t, y - bottom)
+                crate::deploy::ARCH_GARAGE_DOOR
             };
-            if solid {
-                return Some(PieceHit {
-                    cx: ecx as u16,
-                    cz: ecz as u16,
-                    level: level as u8,
-                    loc: if x_plane { LOC_EDGE_XLO } else { LOC_EDGE_ZLO },
-                });
+            let insert = !solid
+                && shuts & bit != 0
+                && crate::deploy::insert_solid_at(arch, t, y - bottom, r);
+            if solid || insert {
+                return Some((
+                    PieceHit {
+                        cx: ecx as u16,
+                        cz: ecz as u16,
+                        level: level as u8,
+                        loc: if x_plane { LOC_EDGE_XLO } else { LOC_EDGE_ZLO },
+                    },
+                    insert,
+                ));
             }
         }
     }

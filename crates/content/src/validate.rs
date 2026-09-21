@@ -921,10 +921,10 @@ pub fn structural(c: &Content) -> Result<(), String> {
             return Err(format!("deployable `{}`: hp must be ≥ 1", d.id));
         }
         match (d.archetype, d.material) {
-            (DeployArchetype::Door, None) => {
+            (DeployArchetype::Door | DeployArchetype::GarageDoor, None) => {
                 return Err(format!("deployable `{}`: doors declare material", d.id));
             }
-            (DeployArchetype::Door, Some(m)) => {
+            (DeployArchetype::Door | DeployArchetype::GarageDoor, Some(m)) => {
                 let wall = piece_hp(Shape::Wall, m)
                     .ok_or_else(|| format!("deployable `{}`: no {m:?} wall exists", d.id))?;
                 if d.hp >= wall {
@@ -963,6 +963,21 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 ));
             }
             _ => {}
+        }
+        let socket = match d.archetype {
+            DeployArchetype::Door => Some(Placement::Doorway),
+            DeployArchetype::WindowBars => Some(Placement::Window),
+            DeployArchetype::GarageDoor => Some(Placement::WallFrame),
+            _ => None,
+        };
+        if socket.is_some_and(|p| d.placement != p)
+            || (socket.is_none()
+                && matches!(
+                    d.placement,
+                    Placement::Doorway | Placement::Window | Placement::WallFrame
+                ))
+        {
+            return Err(format!("deployable `{}`: insert and socket disagree", d.id));
         }
     }
     // Exactly one lock row, or none. The sim resolves the item to give
