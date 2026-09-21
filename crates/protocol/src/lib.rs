@@ -899,7 +899,10 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// Existing layouts retain their widths; the meaning of button bit 5 changes.
 /// v67 admits three oriented stair sockets and the floor-frame shape.
 /// Field widths stay fixed; these previously refused values change meaning.
-pub const PROTO_VER: u16 = 67;
+/// v68 adds hammer rotation: an address-only action flips an edge facing
+/// or turns a stair. Existing removal/placement records carry the result;
+/// no field width changes and no client-selected orientation crosses.
+pub const PROTO_VER: u16 = 68;
 
 /// This game's slug in the elo catalog.
 ///
@@ -1396,6 +1399,8 @@ const ACT_PICKUP: u32 = 19;
 const ACT_RELOAD: u32 = 20;
 /// Select the body helped while the fresh input hold bit stays set; zero releases.
 const ACT_ASSIST: u32 = 21;
+/// Turn a placed building piece through its next supported orientation.
+const ACT_ROTATE: u32 = 22;
 /// The highest live action code, named rather than counted — the event
 /// lane's `SUB_MAX` discipline, which this lane did not have.
 ///
@@ -1405,7 +1410,7 @@ const ACT_ASSIST: u32 = 21;
 /// prevents is the worst shape of wire drift there is: an action past the
 /// field width truncates into a *live* code, and both ends then agree on
 /// bytes that mean two different things.
-const ACT_MAX: u32 = ACT_ASSIST;
+const ACT_MAX: u32 = ACT_ROTATE;
 const _: () = assert!(
     ACT_MAX < (1 << ACTION_SUB_BITS),
     "an action subtype past the field width would truncate into a live code"
@@ -1647,6 +1652,14 @@ pub enum ActionMsg {
     /// wrong would let a forged frame pay itself.
     Demolish {
         deploy: bool,
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
+    },
+    /// Rotate a building piece once. The sim derives the next orientation
+    /// and checks the grace window, privilege, reach and collision.
+    Rotate {
         cx: u16,
         cz: u16,
         level: u8,
@@ -2222,6 +2235,31 @@ pub fn encode_action_demolish(
     Ok(w.finish())
 }
 
+/// Rotate the building piece at an address; deployables have no rotate verb.
+pub fn encode_action_rotate(
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if cx as usize >= sim_core::limits::MAX_BUILD_COORD
+        || cz as usize >= sim_core::limits::MAX_BUILD_COORD
+        || level as usize >= sim_core::limits::MAX_BUILD_LEVELS
+        || loc > loc_max(false)
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_ROTATE, ACTION_SUB_BITS)?;
+    w.write(cx as u32, BUILD_CELL_BITS)?;
+    w.write(cz as u32, BUILD_CELL_BITS)?;
+    w.write(level as u32, BUILD_LEVEL_BITS)?;
+    w.write(loc as u32, BUILD_LOC_BITS)?;
+    Ok(w.finish())
+}
+
 pub fn encode_action_upgrade(
     cx: u16,
     cz: u16,
@@ -2443,6 +2481,16 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
                 level,
                 loc,
             }
+        }
+        ACT_ROTATE => {
+            let cx = r.read(BUILD_CELL_BITS)? as u16;
+            let cz = r.read(BUILD_CELL_BITS)? as u16;
+            let level = r.read(BUILD_LEVEL_BITS)? as u8;
+            let loc = r.read(BUILD_LOC_BITS)? as u8;
+            if loc > loc_max(false) {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::Rotate { cx, cz, level, loc }
         }
         ACT_LOOT => ActionMsg::Loot,
         ACT_PICKUP => ActionMsg::Pickup,
@@ -3962,13 +4010,57 @@ mod tests {
     /// not slip in against a stale one.
     #[test]
     fn the_action_lane_has_the_room_it_claims() {
-        // Hand revive (v66) spends code 21, leaving ten five-bit codes.
-        assert_eq!(ACT_MAX, ACT_ASSIST);
+        // Hammer rotation (v68) spends code 22, leaving nine five-bit codes.
+        assert_eq!(ACT_MAX, ACT_ROTATE);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
-            10,
+            9,
             "the spare action codes moved — say so where the count is written"
         );
+    }
+
+    #[test]
+    fn rotate_addresses_roundtrip_and_forged_locs_refuse() {
+        let mut buf = [0u8; MAX_STREAM_MSG_BYTES];
+        let cx = (sim_core::limits::MAX_BUILD_COORD - 1) as u16;
+        let level = (sim_core::limits::MAX_BUILD_LEVELS - 1) as u8;
+        for loc in 0..=loc_max(false) {
+            let n = encode_action_rotate(cx, 0, level, loc, &mut buf).unwrap();
+            assert_eq!(
+                decode_action(&buf[..n]),
+                Ok(ActionMsg::Rotate {
+                    cx,
+                    cz: 0,
+                    level,
+                    loc
+                })
+            );
+            for truncated in 0..n {
+                assert!(decode_action(&buf[..truncated]).is_err());
+            }
+        }
+        for (x, z, l, loc) in [
+            (cx + 1, 0, 0, 0),
+            (0, cx + 1, 0, 0),
+            (0, 0, level + 1, 0),
+            (0, 0, 0, loc_max(false) + 1),
+        ] {
+            assert_eq!(
+                encode_action_rotate(x, z, l, loc, &mut buf),
+                Err(WireError::Range)
+            );
+        }
+        for loc in (loc_max(false) as u32 + 1)..(1 << BUILD_LOC_BITS) {
+            let mut w = BitWriter::new(&mut buf);
+            w.write(KIND_ACTION, KIND_BITS).unwrap();
+            w.write(ACT_ROTATE, ACTION_SUB_BITS).unwrap();
+            w.write(0, BUILD_CELL_BITS).unwrap();
+            w.write(0, BUILD_CELL_BITS).unwrap();
+            w.write(0, BUILD_LEVEL_BITS).unwrap();
+            w.write(loc, BUILD_LOC_BITS).unwrap();
+            let n = w.finish();
+            assert_eq!(decode_action(&buf[..n]), Err(WireError::Malformed));
+        }
     }
 
     /// **Every action this crate can encode, it can also decode.**

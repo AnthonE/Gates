@@ -167,6 +167,8 @@ pub(crate) struct Seen {
     pub jobs_count: u8,
     pub recipes_have: u16,
     pub pieces_have: u16,
+    pub deploys_have: u16,
+    pub hammer_target: Option<crate::ui::structure::Target>,
     /// The blueprint mask (tech tree v0). Without it a node clicked to
     /// `Known` only redraws because the junk left `inv` — and a FREE
     /// node, which content permits, would not redraw at all.
@@ -351,6 +353,7 @@ pub fn register(app: &mut App) {
                 // panel and opening the pause screen would happen on the same
                 // key, in the same frame.
                 .before(super::pause::open)
+                .after(super::verbs::resolve)
                 .run_if(in_state(super::Screen::InWorld)),
         )
         // A panel is only ever drawn over a running world, so leaving `InWorld`
@@ -398,9 +401,8 @@ pub fn keys(
     mut keyboard: ResMut<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     // The hammer wheel's release fires at the nearest structure — the same
-    // `Near` the keyboard verbs read, resolved last frame, which is the
-    // frame the player was shown (the wheel holds movement at zero, so the
-    // target under a held wheel does not walk away).
+    // `Near` the keyboard verbs read, resolved before this system so a
+    // removed or upgraded structure cannot leave a stale wheel target.
     near: Res<super::verbs::Near>,
     mut chars: MessageReader<bevy::input::keyboard::KeyboardInput>,
 ) {
@@ -606,48 +608,11 @@ pub fn rebuild(
     // in principle be asked for before it has run. A missing registry draws
     // the labels it drew before rather than an empty ring.
     icons: Option<Res<super::icons::Icons>>,
+    near: Res<super::verbs::Near>,
 ) {
     let core = &net.session.core;
 
-    // Change detection against the core's authoritative view.
-    if ui.panel != Panel::None {
-        let inv: [(u16, u16, u16); sim_core::limits::INV_SLOTS] =
-            std::array::from_fn(|i| (core.inv[i].item, core.inv[i].count, core.inv[i].cond));
-        let cont: [(u16, u16, u16); sim_core::limits::INV_SLOTS] =
-            std::array::from_fn(|i| (core.cont[i].item, core.cont[i].count, core.cont[i].cond));
-        let worn: [(u16, u16, u16); sim_core::limits::WEAR_SLOTS] =
-            std::array::from_fn(|i| (core.worn[i].item, core.worn[i].count, core.worn[i].cond));
-        if inv != ui.seen.inv
-            || cont != ui.seen.cont
-            || worn != ui.seen.worn
-            || core.cont_kind != ui.seen.cont_kind
-            || core.cont_handle != ui.seen.cont_handle
-            || core.jobs != ui.seen.jobs
-            || core.jobs_count != ui.seen.jobs_count
-            || core.recipes_have != ui.seen.recipes_have
-            || core.piece_defs_have != ui.seen.pieces_have
-            || core.known() != ui.seen.known
-            || core.research_have != ui.seen.research_have
-        {
-            // The def tables drip in over the first seconds of a session, so
-            // the derived category facts are rebuilt with them.
-            if core.recipes_have != ui.seen.recipes_have {
-                ui.facts = Facts::build(&core.recipes, &core.deploy_defs);
-            }
-            ui.seen.inv = inv;
-            ui.seen.cont = cont;
-            ui.seen.worn = worn;
-            ui.seen.cont_kind = core.cont_kind;
-            ui.seen.cont_handle = core.cont_handle;
-            ui.seen.jobs = core.jobs;
-            ui.seen.jobs_count = core.jobs_count;
-            ui.seen.recipes_have = core.recipes_have;
-            ui.seen.pieces_have = core.piece_defs_have;
-            ui.seen.known = core.known();
-            ui.seen.research_have = core.research_have;
-            ui.dirty = true;
-        }
-    }
+    detect_changes(&mut ui, core, near.0);
 
     if !ui.dirty {
         return;
@@ -670,18 +635,144 @@ pub fn rebuild(
             let icons = icons.as_deref().unwrap_or(&fallback);
             wheel::build_screen(&mut commands, &ui, core, icons)
         }
-        // No core: the hammer wheel draws four fixed verbs, and what they
-        // would act on is `verbs::Near`'s at release time. Icons it does
-        // want, since 2026-08-09 — the wedges are glyphs now.
         Panel::Hammer => {
             let fallback = super::icons::Icons::default();
             let icons = icons.as_deref().unwrap_or(&fallback);
-            wheel::build_hammer_screen(&mut commands, &ui, icons)
+            wheel::build_hammer_screen(&mut commands, &ui, core, near.0.as_ref(), icons)
         }
         Panel::Tech => {
             let fallback = super::icons::Icons::default();
             let icons = icons.as_deref().unwrap_or(&fallback);
             tech::build_screen(&mut commands, &ui, core, icons)
         }
+    }
+}
+
+/// Observe only the facts panels draw, including the current hammer target.
+fn detect_changes(
+    ui: &mut Ui,
+    core: &client_core::core::ClientCore,
+    near: Option<crate::ui::structure::Target>,
+) {
+    // Change detection against the core's authoritative view.
+    if ui.panel != Panel::None {
+        let inv: [(u16, u16, u16); sim_core::limits::INV_SLOTS] =
+            std::array::from_fn(|i| (core.inv[i].item, core.inv[i].count, core.inv[i].cond));
+        let cont: [(u16, u16, u16); sim_core::limits::INV_SLOTS] =
+            std::array::from_fn(|i| (core.cont[i].item, core.cont[i].count, core.cont[i].cond));
+        let worn: [(u16, u16, u16); sim_core::limits::WEAR_SLOTS] =
+            std::array::from_fn(|i| (core.worn[i].item, core.worn[i].count, core.worn[i].cond));
+        if inv != ui.seen.inv
+            || cont != ui.seen.cont
+            || worn != ui.seen.worn
+            || core.cont_kind != ui.seen.cont_kind
+            || core.cont_handle != ui.seen.cont_handle
+            || core.jobs != ui.seen.jobs
+            || core.jobs_count != ui.seen.jobs_count
+            || core.recipes_have != ui.seen.recipes_have
+            || core.piece_defs_have != ui.seen.pieces_have
+            || core.deploy_defs_have != ui.seen.deploys_have
+            || (ui.panel == Panel::Hammer && near != ui.seen.hammer_target)
+            || core.known() != ui.seen.known
+            || core.research_have != ui.seen.research_have
+        {
+            // The def tables drip in over the first seconds of a session, so
+            // the derived category facts are rebuilt with them.
+            if core.recipes_have != ui.seen.recipes_have {
+                ui.facts = Facts::build(&core.recipes, &core.deploy_defs);
+            }
+            ui.seen.inv = inv;
+            ui.seen.cont = cont;
+            ui.seen.worn = worn;
+            ui.seen.cont_kind = core.cont_kind;
+            ui.seen.cont_handle = core.cont_handle;
+            ui.seen.jobs = core.jobs;
+            ui.seen.jobs_count = core.jobs_count;
+            ui.seen.recipes_have = core.recipes_have;
+            ui.seen.pieces_have = core.piece_defs_have;
+            ui.seen.deploys_have = core.deploy_defs_have;
+            ui.seen.hammer_target = near;
+            ui.seen.known = core.known();
+            ui.seen.research_have = core.research_have;
+            ui.dirty = true;
+        }
+    }
+}
+
+#[cfg(test)]
+mod hammer_refresh_tests {
+    use super::*;
+    use crate::ui::structure::{Store, Target};
+    use client_core::core::ClientCore;
+
+    #[test]
+    fn a_stationary_open_hammer_refreshes_on_target_damage_removal_and_new_defs() {
+        let mut core = ClientCore::new(1, 0, 0);
+        let mut ui = Ui {
+            panel: Panel::Hammer,
+            ..Ui::default()
+        };
+        let target = Target {
+            store: Store::Piece,
+            cx: 7,
+            cz: 9,
+            level: 1,
+            loc: 1,
+            row: 0,
+            dmg: 0,
+            hp_max: 500,
+            side: Some(true),
+        };
+        detect_changes(&mut ui, &core, Some(target));
+        assert!(ui.dirty);
+        ui.dirty = false;
+        detect_changes(&mut ui, &core, Some(target));
+        assert!(!ui.dirty, "a still wheel must not rebuild every frame");
+        let damaged = Target { dmg: 1, ..target };
+        detect_changes(&mut ui, &core, Some(damaged));
+        assert!(ui.dirty, "repair becomes available while the wheel is open");
+        ui.dirty = false;
+        let turned = Target {
+            side: Some(false),
+            ..damaged
+        };
+        detect_changes(&mut ui, &core, Some(turned));
+        assert!(ui.dirty);
+        ui.dirty = false;
+        detect_changes(&mut ui, &core, None);
+        assert!(ui.dirty, "a removed target must not keep its name or price");
+        ui.dirty = false;
+        core.deploy_defs_have = 1;
+        detect_changes(&mut ui, &core, None);
+        assert!(ui.dirty);
+    }
+}
+
+#[cfg(test)]
+mod ordering_tests {
+    use super::*;
+
+    #[test]
+    fn hammer_target_resolution_and_panel_schedule_have_no_ordering_cycle() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::state::app::StatesPlugin));
+        app.init_state::<crate::render::Screen>();
+        register(&mut app);
+        app.add_systems(
+            Update,
+            (
+                crate::render::input::place_eye,
+                crate::render::verbs::resolve.after(crate::render::input::place_eye),
+                crate::render::verbs::keys.after(crate::render::verbs::resolve),
+                crate::render::pause::open,
+                crate::render::chat::keys.before(keys),
+            ),
+        );
+        let world = app.world_mut();
+        world.schedule_scope(Update, |world, schedule| {
+            schedule
+                .initialize(world)
+                .expect("target resolution must precede the wheel without a cycle");
+        });
     }
 }

@@ -1329,7 +1329,7 @@ native/Wasm parity cover it. The stair mesh now has treads (2026-09-20).
 in the build wheel leaves a real opening above the flight. Its rim bears
 walls, but its centre cannot hold deployables. Shared movement, projectile,
 save/load and mesh checks cover the opening. Combined playtest is next;
-post-placement hammer rotation remains §0p2.
+post-placement hammer rotation is now built (§0p2).
 
 1. **A band-boundary wall bases on its canonical cell** and hangs one band over
    the lower plate — an arrow-sized slit. The lower column is the honest base;
@@ -1347,7 +1347,10 @@ post-placement hammer rotation remains §0p2.
    `cell_planes_stop_shot`, gated by `tests/shoot.rs`' floor block. What it
    still does not read is `ColMasks::solid`: see §0mk item 2.
 4. **The half wall** — the reference's answer to the gap a half-storey plate
-   offset leaves on upper floors; `build.rs` has eleven `SHAPE_*`, no half.
+   offset leaves on upper floors. The twelve-shape catalogue has no half;
+   adding one also needs partial-height support and an upper snap socket,
+   because current edges bear the next whole storey. All 48 definition rows
+   are occupied. `findings/building-tools-20260920.md` records the boundary.
 5. **The stepped foundation — and DO NOT widen the plate limits instead.**
    `reference/BUILDING.md` §7c.2 is a published, tested negative result on
    exactly that change: they tried a three-metre gradient on `foundation.steps`
@@ -1385,10 +1388,10 @@ post-placement hammer rotation remains §0p2.
    Each is a deployable pass of its own; `content/building.toml` says so
    at both socket rows, and `place_deploy` still requires
    `SHAPE_DOORWAY`.
-2. **The soft face has no visual identity.** `build::soft_side` prices
-   the swing and labels the HUD prompt; nothing in
-   `render/structures.rs` reads it, so the label is the only tell. Also
-   owed: floor sides (needs a vertical attack direction) and the pairing
+2. **Soft wall faces are lighter, hard faces darker** (2026-09-20), selected
+   from the sim's facing and refreshed on hammer rotation. The shared meshes
+   reuse the existing face gains; the playtest should judge their readability.
+   Still owed: floor sides (needs a vertical attack direction) and the pairing
    with `RIPLIST.md` §2's per-material resistance.
 3. **Triangles want a look and a price call**: a capture pass on a
    diagonal base in the booted game (the person is the visual gate); the
@@ -2204,8 +2207,8 @@ is §0win's, not this item's.
 1. **Damage bands have never been staged**: one row of one material, hit a
    known number of times, photographed at each band. ⚠ §0mk — no decal
    renders under lavapipe, so a headless run cannot check marked surfaces.
-2. **11 shapes against the reference's 20** (`BUILDING.md` §7b.1):
-   `sim-core/src/build.rs` declares `SHAPE_FOUNDATION`..`SHAPE_TRI_ROOF` only
+2. **12 shapes against the reference's 20** (`BUILDING.md` §7b.1):
+   `sim-core/src/build.rs` declares `SHAPE_FOUNDATION`..`SHAPE_FLOOR_FRAME`
    — no half/low wall, steps, ramp, 3 of 4 stair shapes. Rule 6 is
    silhouette before surface, so this outranks more material work.
 3. **A base is a hundred identical walls at one rotation** (rule 7).
@@ -2220,13 +2223,11 @@ is §0win's, not this item's.
    ORM packing step would serve terrain+props+pieces at once.
 
 
-## 0lock · A lock cannot be aimed at a door *(client lane)*
+## 0lock · Lock placement reaches doors and boxes *(client lane)*
 
-1. **A lock aimed at a DOOR is unreachable.** `ui::place::deploy_target`
-   special-cases `PLACE_DOORWAY` only, so `PLACE_DOOR` — the code lock's
-   placement class (`content/deployables.toml`) — falls through to
-   `SHAPE_FOUNDATION` at level 0 and targets the plane. On a box the `L`
-   verb works. Noted at the call site, not built.
+✅ **2026-09-20:** a held code lock resolves the aimed door's edge or a
+lockable box's plane, including upper floors. The ghost validates that same
+address. Check the two targets together in the building playtest.
 
 
 ## 0fx · What impact fx v1 left *(client lane)*
@@ -2357,42 +2358,26 @@ dust and the impact cue read it (`DECISIONS.md` §open, impact fx v1). Left:
 
 ## 0p2 · What the UI still owes *(client lane)*
 
-1. **Rotate is still not a verb** — and the piece HAS a facing now
-   (`PieceRec::facing`, hard/soft v0), so the asymmetry it waited on exists.
-   `ACTION_SUB_BITS` is 5 and `ACT_MAX` is 18: the lane holds it.
-2. **The hammer wheel's centre readout names the verb, not the target or the
-   upgrade's cost** (`panels/wheel.rs`, `hammer::label`/`blurb`). Filling it
-   wants `verbs::Near` at draw time, which `panels::rebuild` does not take.
-3. **Nothing here can photograph a panel.** `render/panels/` (3,540 lines) is
-   unreachable from `--capture`. Wanted: a **viewer, not a gate** — open each
-   panel against a stocked fixture, write a PNG per screen, assert nothing.
-4. **Fourteen distinct font sizes is not a scale** (`font`/`font_bold` sites
-   in `render/`). Collapsing to five may not be done blind: they were
-   budgeted against 720p and the first cut clipped a column at both ends.
-4b. **There is no way to craft while looting** — the stated cost of the
-   operator's 2026-09-16 call. The reference's answer is a tab strip
-   (INVENTORY / CRAFTING over one screen); ours would be two buttons in
-   `inv::header` and a `Ui` field, and it is a *taste* call about whether
-   the screen wants tabs at all before it is a slice. Not a defect:
-   closing the container gets you there today.
-4d. ✅ **A quick-move prefers the main grid over the belt** (2026-09-16).
-   It filled the belt first, because our belt is slots `0..HOTBAR_SLOTS`
-   of the same array (`inventory.rs`: one array, one verb) and "the first
-   free slot" is therefore a quick-use slot. Left as an unsourced taste
-   call for one day and then **settled by research, not taste**: the
-   reference's belt is a *separate container* (`containerBelt` beside
-   `containerMain`, `reference/LOOT.md` §5), so a quick-move there cannot
-   reach it at all. The belt is the fallback for a full grid.
-4c. **The quick-move moves one slot per click**, so a stack that half fits
-   leaves a remainder and a second right-click carries it on. The wire's
-   move verb addresses one slot, so a whole-stack scatter would be N
-   commands; the reference's hover-loot (hold a key, sweep the pointer,
-   everything transfers) is the same shape and the next ergonomic step —
-   both want a `take all` verb argued for before either is built.
-5. **Surveyed and refused, do not re-survey:** `bevy_hui`, `bevy_lunex`,
-   `bevy_feathers` (~5,400 lines of screens into a data-driven plugin) and
-   the freegameui.net MCP (403s here, bypasses `bake_icons.py` and
-   `tests/ui.rs` §G, pre-coloured kits fight tint-at-draw).
+1. ✅ **Rotate** flips wall facing or turns placed stairs inside the placement
+   window (2026-09-20).
+2. ✅ **Hammer feedback:** target name, next upgrade's content cost, and dimmed
+   inapplicable verbs. Repair names full hp; its exact price is not on the
+   wire. `findings/building-tools-20260920.md` carries the combined playtest.
+3. **Panel viewer:** `--capture` cannot photograph panels. Open each against
+   a stocked fixture and write PNGs; a viewer, never a pixel gate.
+4. **Font scale:** fourteen sizes need a deliberate pass; the earlier
+   five-size cut clipped columns at 720p, so do not collapse them blind.
+4b. **Crafting while looting:** the 2026-09-16 separation is intentional.
+   Inventory/crafting tabs (`inv::header` + a `Ui` field) remain a taste call;
+   closing the container reaches crafting today.
+4d. ✅ **Quick-move prefers the main grid**, with the belt as fallback when
+   full (2026-09-16; `reference/LOOT.md` §5's separate containers).
+4c. **Quick-move handles one slot per click.** A partly fitting stack leaves
+   a remainder. Whole-stack scatter and hover-loot need a `take all` verb
+   argued for first; the current wire move addresses one slot.
+5. **Surveyed and refused:** `bevy_hui`, `bevy_lunex`, `bevy_feathers`
+   (replacing the screen implementation) and freegameui.net MCP (403s,
+   bypasses `bake_icons.py`/`tests/ui.rs` §G, pre-coloured kits fight tinting).
 
 
 ## 0cq · The craft panel beside the reference's — pictures, words, and the closed menu *(client lane)*

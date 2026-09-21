@@ -573,3 +573,85 @@ fn a_real_footing_draws_at_its_cached_depth() {
         buckets
     );
 }
+
+/// The actual world-facing normals must select the sim's soft side on both
+/// straight edges and both diagonals. Flipping the bit swaps the surfaces
+/// while leaving every vertex position, UV and index unchanged.
+#[test]
+fn sided_meshes_follow_authoritative_facing_without_moving_geometry() {
+    use client::render::structures::{
+        base_transform, parts_for, sided_parts_mesh, soft_face_positive_x,
+    };
+    use sim_core::build::{
+        PieceRec, LOC_DIAG_A, LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO, SHAPE_DOORWAY, SHAPE_FRAME,
+        SHAPE_WALL, SHAPE_WINDOW,
+    };
+    let haven = sim_core::terrain::haven(1);
+    for loc in [LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_DIAG_A, LOC_DIAG_B] {
+        for shape in [SHAPE_WALL, SHAPE_DOORWAY, SHAPE_WINDOW, SHAPE_FRAME] {
+            if (loc == LOC_DIAG_A || loc == LOC_DIAG_B) && shape != SHAPE_WALL {
+                continue;
+            }
+            let addr = (7, 9, 1, loc);
+            let root = base_transform(1, &haven, addr, 0);
+            let (parts, count) = parts_for(shape, loc);
+            let plain = parts_mesh(&parts[..count]);
+            let mut colors = Vec::new();
+            for facing in 0..=1 {
+                let rec = PieceRec {
+                    cx: 7,
+                    cz: 9,
+                    level: 1,
+                    loc,
+                    facing,
+                    ..PieceRec::default()
+                };
+                let sided =
+                    sided_parts_mesh(&parts[..count], soft_face_positive_x(addr, facing, &root));
+                for attr in [
+                    Mesh::ATTRIBUTE_POSITION,
+                    Mesh::ATTRIBUTE_UV_0,
+                    Mesh::ATTRIBUTE_NORMAL,
+                ] {
+                    assert_eq!(
+                        plain.attribute(attr),
+                        sided.attribute(attr),
+                        "face identity cannot change the blocked shape or texture density"
+                    );
+                }
+                let VertexAttributeValues::Float32x3(normals) =
+                    sided.attribute(Mesh::ATTRIBUTE_NORMAL).unwrap()
+                else {
+                    panic!("normals")
+                };
+                let VertexAttributeValues::Float32x4(tints) =
+                    sided.attribute(Mesh::ATTRIBUTE_COLOR).unwrap()
+                else {
+                    panic!("colors")
+                };
+                let VertexAttributeValues::Float32x4(base) =
+                    plain.attribute(Mesh::ATTRIBUTE_COLOR).unwrap()
+                else {
+                    panic!("base colors")
+                };
+                let mut sides = 0;
+                for ((normal, tint), original) in normals.iter().zip(tints).zip(base) {
+                    if normal[0] == 0.0 {
+                        continue;
+                    }
+                    sides += 1;
+                    let sample = root.translation + root.rotation * Vec3::from_array(*normal);
+                    let soft = sim_core::build::soft_side(&rec, sample.x, sample.z);
+                    assert_eq!(tint[0] > original[0], soft, "loc {loc} facing {facing}");
+                    assert_eq!(tint[0] < original[0], !soft);
+                }
+                assert!(sides > 0);
+                colors.push(tints.clone());
+            }
+            assert_ne!(
+                colors[0], colors[1],
+                "a facing-only rotation must change its appearance"
+            );
+        }
+    }
+}

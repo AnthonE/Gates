@@ -83,7 +83,7 @@ pub const BUILD: [&str; 15] = [
     "nothing to upgrade into",
     "not damaged",
     "cannot be repaired",
-    "too late to take that down",
+    "too late to rotate or demolish",
     "nothing there",
     // The two plate refusals (build plate v1). They are a pair and they are
     // written from the PLAYER's side of the fact: the sim knows "the latched
@@ -416,7 +416,10 @@ mod tests {
         );
         assert_eq!(deploy(REFUSE_D_NOT_EMPTY as u8), "empty it first");
 
-        assert_eq!(build(REFUSE_B_WINDOW as u8), "too late to take that down");
+        assert_eq!(
+            build(REFUSE_B_WINDOW as u8),
+            "too late to rotate or demolish"
+        );
         assert_eq!(build(REFUSE_B_EMPTY as u8), "nothing there");
 
         // Paths rather than a glob: `survival` exports a great deal more

@@ -745,6 +745,11 @@ pub fn hammer_fire(net: &Net, near: &Option<Target>, seg: usize, toast: &mut Toa
     };
     let core = &net.session.core;
     match hammer::act(verb, near.as_ref(), &core.piece_defs, core.piece_defs_have) {
+        Act::Rotate { cx, cz, level, loc } => {
+            send(net, toast, "rotate", |buf| {
+                protocol::encode_action_rotate(cx, cz, level, loc, buf)
+            });
+        }
         Act::Demolish {
             deploy,
             cx,

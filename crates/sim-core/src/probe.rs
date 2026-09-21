@@ -1311,6 +1311,100 @@ pub fn run_assist_probe(w: &mut World) -> u64 {
     (recovered << 32) | (hash.digest() & 0xFFFF_FFFF)
 }
 
+/// A built base for the rotation parity/allocation probe. The existing fixture
+/// rows price it; the stairs and open floor copy those rows with new shapes.
+pub fn rotation_probe_world() -> World {
+    use crate::build::*;
+    let mut w = World::new(HEADROOM_SEED);
+    w.gather = crate::gather::GatherContent::probe_fixture();
+    w.combat = crate::combat::CombatContent::probe_fixture();
+    w.build = BuildContent::probe_fixture();
+    w.build.piece_count = 9;
+    w.build.pieces[7] = PieceDef {
+        shape: SHAPE_STAIRS,
+        ..w.build.pieces[0]
+    };
+    w.build.pieces[8] = PieceDef {
+        shape: SHAPE_FLOOR_FRAME,
+        ..w.build.pieces[0]
+    };
+    w.dev_spawn = Some(anchor(HEADROOM_CX, HEADROOM_CZ, LOC_PLANE));
+    w.tick(&[Command::Join { id: 1 }]);
+    w.players[0].inv[0] = ItemStack {
+        item: 0,
+        count: 100,
+        cond: 0,
+    };
+    for (row, level, loc) in [
+        (0, 0, LOC_PLANE),
+        (7, 0, LOC_RISER),
+        (1, 0, LOC_EDGE_XLO),
+        (8, 1, LOC_PLANE),
+    ] {
+        w.tick(&[Command::Place {
+            id: 1,
+            row,
+            cx: HEADROOM_CX,
+            cz: HEADROOM_CZ,
+            level,
+            loc,
+            freehand: true,
+            plate: 1,
+        }]);
+    }
+    w
+}
+
+/// Four stair turns and four wall flips. The upper word counts actual
+/// placements, so matching hashes cannot hide a probe that only refused.
+/// Construction stays outside the allocation gate's measured window.
+pub fn run_rotation_probe(w: &mut World) -> u64 {
+    use crate::build::*;
+    let mut hash = Xxh3::new();
+    let mut turns = 0u64;
+    for loc in STAIR_LOCS {
+        w.tick(&[
+            Command::Rotate {
+                id: 1,
+                cx: HEADROOM_CX,
+                cz: HEADROOM_CZ,
+                level: 0,
+                loc,
+            },
+            Command::Rotate {
+                id: 1,
+                cx: HEADROOM_CX,
+                cz: HEADROOM_CZ,
+                level: 0,
+                loc: LOC_EDGE_XLO,
+            },
+        ]);
+        for e in w.events.entries() {
+            turns += u64::from(e.code == crate::world::EV_PIECE_PLACED);
+            hash.update(&[e.code]);
+            hash.update(&e.a.to_le_bytes());
+            hash.update(&e.b.to_le_bytes());
+            hash.update(&e.c.to_le_bytes());
+        }
+        hash.update(&w.state_hash().to_le_bytes());
+        // A point away from both diagonals distinguishes the four ramps.
+        // Derived collision is deliberately absent from state_hash.
+        let x = HEADROOM_CX as f32 * BUILD_CELL_M + 0.5;
+        let z = HEADROOM_CZ as f32 * BUILD_CELL_M + 1.0;
+        let feet = column_floor_y(w.seed, &w.haven, HEADROOM_CX, HEADROOM_CZ, 1) + LEVEL_H_M;
+        hash_f32(
+            &mut hash,
+            crate::collide::piece_ground(w.seed, &w.haven, w.pieces.cols(), x, z, feet),
+        );
+    }
+    (turns << 32) | (hash.digest() & 0xFFFF_FFFF)
+}
+
+#[no_mangle]
+pub extern "C" fn probe_rotation() -> u64 {
+    run_rotation_probe(&mut rotation_probe_world())
+}
+
 /// Shared fixture for the parity and allocation gates. Construction allocates;
 /// `run_headroom_probe` exercises covered stairs and a jump under a triangle.
 pub struct HeadroomProbe {

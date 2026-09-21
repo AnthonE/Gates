@@ -7,13 +7,12 @@
 //! nothing rectangular approximates that. Rasterising the annulus once is the
 //! whole fix, and it costs a texture.
 //!
-//! **Baked at plugin-build time, never per frame.** Twelve images — a base
-//! ring and one highlight per segment, for each of the two wheels (the
-//! shapes' six, the hammer's four) — generated beside `ui::build_fonts` and
+//! **Baked at plugin-build time, never per frame.** A base ring and one
+//! highlight per segment, for each wheel, generated beside `ui::build_fonts` and
 //! `audio::build_bank`. A wheel rebuilds whenever the pointer crosses a
 //! segment boundary, which while sweeping is several times a second;
 //! generating a megabyte there would be an allocation on a hot path for a
-//! thing with a handful of possible states. So all twelve are made once and
+//! thing with a handful of possible states. All images are made once and
 //! a rebuild only picks handles.
 //!
 //! **Geometry comes from [`Rings`]**, the same struct `ui::build::pick`
@@ -74,16 +73,17 @@ pub const SHAPE_HI: [Handle<Image>; SHAPES.len()] = [
     uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5f1"),
 ];
 
-/// The hammer wheel's base ring — same band, four wedges
+/// The hammer wheel's base ring — same band, five wedges
 /// (`ui::hammer::VERBS`).
 pub const HAMMER_BASE: Handle<Image> = uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5e7");
 
 /// One highlight per hammer verb, indexed as `VERBS` is.
-pub const HAMMER_HI: [Handle<Image>; 4] = [
+pub const HAMMER_HI: [Handle<Image>; crate::ui::hammer::VERBS.len()] = [
     uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5e8"),
     uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5e9"),
     uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5ea"),
     uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5eb"),
+    uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5f2"),
 ];
 
 /// Which band a pixel is in, in texture units where `rim` maps to `TEX/2`.
@@ -176,7 +176,7 @@ fn bake(rings: Rings, segments: usize, pick: Option<usize>, rgb: [u8; 3]) -> Ima
     )
 }
 
-/// Bake all seventeen, at plugin-build time.
+/// Bake every ring image at plugin-build time.
 pub fn build_rings(app: &mut App) {
     let rings = Rings::default();
     let mut images = app.world_mut().resource_mut::<Assets<Image>>();
@@ -251,15 +251,21 @@ mod tests {
         assert!(!covers(band(6), 150.0, edge + GAP * 0.5, None));
     }
 
-    /// The hammer's four-wedge band draws with the same arithmetic — each
+    /// The hammer's band draws with the same arithmetic — each
     /// wedge covers its own centre angle, `tests/ui.rs` §K's claim about
     /// `hammer::pick` made about what is drawn.
     #[test]
-    fn a_ring_of_four_covers_its_own_centres() {
-        let step = std::f32::consts::TAU / 4.0;
-        for i in 0..4usize {
-            assert!(covers(band(4), 150.0, step * i as f32, Some(i)));
-            assert!(!covers(band(4), 150.0, step * i as f32, Some((i + 1) % 4)));
+    fn the_hammer_ring_covers_its_own_centres() {
+        let count = crate::ui::hammer::VERBS.len();
+        let step = std::f32::consts::TAU / count as f32;
+        for i in 0..count {
+            assert!(covers(band(count), 150.0, step * i as f32, Some(i)));
+            assert!(!covers(
+                band(count),
+                150.0,
+                step * i as f32,
+                Some((i + 1) % count)
+            ));
         }
     }
 }

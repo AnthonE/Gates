@@ -221,7 +221,7 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: 
 
 /// Draw the hammer's wheel — the second radial (`NOW.md` §0p2 item 1).
 ///
-/// The same annulus as the shape wheel, four wedges (`ui::hammer::VERBS`),
+/// The same annulus as the shape wheel, five wedges (`ui::hammer::VERBS`),
 /// and one deliberate difference the drawing makes visible: **the highlight
 /// is only up while a segment is hovered**, because the highlight is the
 /// answer to "what will the release do" and this wheel fires on release
@@ -231,7 +231,13 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: 
 /// do. They were text until 2026-08-09 — `glyph`'s label fallback, which is
 /// still the path when a stem has no file — and four words in four wedges is
 /// the reading, not scanning, defect `render::icons` was written about.
-pub fn build_hammer_screen(commands: &mut Commands, ui: &Ui, icons: &Icons) {
+pub fn build_hammer_screen(
+    commands: &mut Commands,
+    ui: &Ui,
+    core: &ClientCore,
+    near: Option<&crate::ui::structure::Target>,
+    icons: &Icons,
+) {
     let rings = Rings::default();
 
     commands
@@ -296,15 +302,12 @@ pub fn build_hammer_screen(commands: &mut Commands, ui: &Ui, icons: &Icons) {
                     let verb = ui
                         .hover
                         .map(|i| hammer::VERBS[i.min(hammer::VERBS.len() - 1)]);
-                    let (name, line) = match verb {
-                        Some(v) => (hammer::label(v), hammer::blurb(v)),
-                        None => ("Hammer", "sweep to a verb"),
-                    };
+                    let name = verb.map(hammer::label).unwrap_or("Hammer");
                     // The chosen verb's own glyph over its name, the way the
                     // shape wheel's `readout` puts the piece's over its. Only
                     // while a wedge is hovered: with nothing chosen there is
                     // no verb to draw, and the ring behind is already showing
-                    // all four.
+                    // every verb.
                     if let Some(image) = verb.and_then(|v| icons.verb(hammer::verb_icon(v))) {
                         c.spawn((
                             Node {
@@ -327,15 +330,71 @@ pub fn build_hammer_screen(commands: &mut Commands, ui: &Ui, icons: &Icons) {
                         Pickable::IGNORE,
                     ));
                     c.spawn((
+                        Text::new(hammer::target_name(
+                            near,
+                            &core.piece_defs,
+                            core.piece_defs_have,
+                            &core.deploy_defs,
+                            core.deploy_defs_have,
+                            &core.catalog,
+                        )),
+                        font_bold(12.0),
+                        TextColor(BADGE),
+                        Pickable::IGNORE,
+                    ));
+                    let action =
+                        verb.map(|v| hammer::act(v, near, &core.piece_defs, core.piece_defs_have));
+                    let line = match action {
+                        Some(hammer::Act::Say(why)) => why.to_string(),
+                        Some(hammer::Act::Upgrade { .. }) => "Upgrade cost".into(),
+                        Some(hammer::Act::Repair { .. }) => near
+                            .map(|t| {
+                                if t.hp_max > 0 {
+                                    format!("Restores to {} HP · cost depends on damage", t.hp_max)
+                                } else {
+                                    "Waiting for repair details".into()
+                                }
+                            })
+                            .unwrap_or_default(),
+                        _ => verb.map(hammer::blurb).unwrap_or("sweep to a verb").into(),
+                    };
+                    c.spawn((
                         Node {
                             max_width: Val::Px(150.0),
                             ..default()
                         },
-                        Text::new(line.to_string()),
+                        Text::new(line),
                         font(11.0),
                         TextColor(TEXT_DIM),
                         Pickable::IGNORE,
                     ));
+                    if matches!(action, Some(hammer::Act::Upgrade { .. })) {
+                        if let Some(row) = near.and_then(|t| {
+                            hammer::upgrade_row(t, &core.piece_defs, core.piece_defs_have)
+                        }) {
+                            let (lines, n) = costs(&core.piece_defs, row, &core.inv);
+                            for line in lines.iter().take(n) {
+                                c.spawn((
+                                    Text::new(format!(
+                                        "{} {} ({})",
+                                        line.units,
+                                        item_label(&core.catalog, line.item),
+                                        line.have
+                                    )),
+                                    font_bold(11.0),
+                                    TextColor(if line.short() { TEXT_SHORT } else { TEXT_DIM }),
+                                    Pickable::IGNORE,
+                                ));
+                            }
+                        } else {
+                            c.spawn((
+                                Text::new("Waiting for upgrade details"),
+                                font(11.0),
+                                TextColor(TEXT_DIM),
+                                Pickable::IGNORE,
+                            ));
+                        }
+                    }
                 });
 
                 for (i, v) in hammer::VERBS.iter().enumerate() {
@@ -348,11 +407,10 @@ pub fn build_hammer_screen(commands: &mut Commands, ui: &Ui, icons: &Icons) {
                         icons.verb(hammer::verb_icon(*v)),
                         hammer::label(*v),
                         ui.hover == Some(i),
-                        // Every verb is always live. Whether THIS structure
-                        // can take it is `hammer::act`'s answer at release,
-                        // and it needs `verbs::Near`, which this draw does
-                        // not hold — so a greyed wedge here would be a guess.
-                        true,
+                        !matches!(
+                            hammer::act(*v, near, &core.piece_defs, core.piece_defs_have),
+                            hammer::Act::Say(_)
+                        ),
                     );
                 }
             });
@@ -552,5 +610,88 @@ fn readout(
             TextColor(if line.short() { TEXT_SHORT } else { TEXT_DIM }),
             Pickable::IGNORE,
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::structure::{Store, Target};
+    use bevy::ecs::system::RunSystemOnce;
+    use sim_core::build::{BuildContent, PieceDef, LOC_EDGE_XLO, MAT_STONE, MAT_WOOD, SHAPE_WALL};
+
+    #[test]
+    fn every_hammer_verb_builds_real_nodes_with_a_target_and_upgrade_price() {
+        for verb in hammer::VERBS {
+            let mut app = App::new();
+            app.add_plugins(MinimalPlugins);
+            let mut core = ClientCore::new(1, 0, 0);
+            core.piece_defs = BuildContent::EMPTY;
+            core.piece_defs.piece_count = 2;
+            core.piece_defs_have = 2;
+            core.piece_defs.pieces[0] = PieceDef {
+                shape: SHAPE_WALL,
+                material: MAT_WOOD,
+                hp: 500,
+                ..PieceDef::INERT
+            };
+            core.piece_defs.pieces[1] = PieceDef {
+                material: MAT_STONE,
+                n_costs: 1,
+                costs: [(2, 37), (0, 0)],
+                ..core.piece_defs.pieces[0]
+            };
+            let target = Target {
+                store: Store::Piece,
+                cx: 7,
+                cz: 9,
+                level: 1,
+                loc: LOC_EDGE_XLO,
+                row: 0,
+                dmg: 1,
+                hp_max: 500,
+                side: Some(true),
+            };
+            let ui = Ui {
+                panel: Panel::Hammer,
+                hover: hammer::VERBS.iter().position(|v| *v == verb),
+                ..Ui::default()
+            };
+            app.world_mut()
+                .run_system_once(move |mut commands: Commands| {
+                    build_hammer_screen(
+                        &mut commands,
+                        &ui,
+                        &core,
+                        Some(&target),
+                        &Icons::default(),
+                    );
+                })
+                .unwrap();
+            let world = app.world_mut();
+            let words: Vec<String> = world
+                .query::<&Text>()
+                .iter(world)
+                .map(|t| t.0.clone())
+                .collect();
+            assert!(
+                words.iter().any(|s| s == "Wood Wall"),
+                "{verb:?}: {words:?}"
+            );
+            assert!(words.iter().any(|s| s == hammer::label(verb)));
+            if verb == hammer::Verb::Upgrade {
+                assert!(
+                    words
+                        .iter()
+                        .any(|s| s.starts_with("37 ") && s.ends_with("(0)")),
+                    "{words:?}"
+                );
+            }
+            if verb == hammer::Verb::Repair {
+                assert!(words
+                    .iter()
+                    .any(|s| s.contains("500 HP") && s.contains("depends on damage")));
+            }
+        }
     }
 }

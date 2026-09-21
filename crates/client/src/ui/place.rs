@@ -921,15 +921,15 @@ impl DeployVerdict {
 
 /// Which address the held deployable is aimed at, from its placement class.
 ///
-/// A doorway-class deployable (the door) resolves an EDGE the way a wall
+/// Door and lock classes resolve an EDGE the way a wall
 /// does — `place_deploy` requires the doorway piece at the identical
 /// address, so aiming it at the cell body could only ever refuse
 /// (`loc_fits_placement`). Everything else stands on the cell body at
 /// level 0, which is `deploy_key`'s original plane-shape target. `level`
-/// is the ghost's working-level latch and only the doorway class reads it:
-/// a ground/foundation body deploy is sent at level 0 exactly as before.
+/// is the aimed storey for doors and locks. Ground/foundation body deploys
+/// use level 0; [`deploy_target_on`] also resolves locks on existing boxes.
 pub fn deploy_target(x: f32, z: f32, fx: f32, fz: f32, placement: u8, level: u8) -> Target {
-    if placement == PLACE_DOORWAY {
+    if matches!(placement, PLACE_DOORWAY | PLACE_DOOR) {
         target(x, z, fx, fz, SHAPE_DOORWAY, level)
     } else {
         target(x, z, fx, fz, SHAPE_FOUNDATION, 0)
@@ -939,11 +939,63 @@ pub fn deploy_target(x: f32, z: f32, fx: f32, fz: f32, placement: u8, level: u8)
 /// [`deploy_target`] for an aim POINT — the look-ray variant, split the
 /// way [`target_at`] is and for the same caller.
 pub fn deploy_target_at(ax: f32, az: f32, placement: u8, level: u8) -> Target {
-    if placement == PLACE_DOORWAY {
+    if matches!(placement, PLACE_DOORWAY | PLACE_DOOR) {
         target_at(ax, az, SHAPE_DOORWAY, level)
     } else {
         target_at(ax, az, SHAPE_FOUNDATION, 0)
     }
+}
+
+/// A held lock can attach to a box as well as a door. A door at the edge
+/// the ray met wins; otherwise a lockable body in the aimed cell keeps the
+/// old plane target. The build ray can pass through a box's side and meet
+/// the floor behind it, so restricting this to the box footprint would
+/// silently remove that existing placement route.
+pub fn deploy_target_on(
+    aim: &Aim,
+    placement: u8,
+    deploys: &[DeployRec],
+    defs: &DeployContent,
+    have: u16,
+) -> Target {
+    let level = aim.level_for_deploy();
+    let edge = deploy_target_at(aim.at.0, aim.at.1, placement, level);
+    if placement == PLACE_DOOR {
+        if matches!(aim.met, Met::Wall(_))
+            && deploys.iter().any(|rec| {
+                rec.cx == edge.cx
+                    && rec.cz == edge.cz
+                    && rec.level == edge.level
+                    && rec.loc == edge.loc
+                    && (rec.row as u16) < have.min(defs.def_count)
+                    && lockable(defs.defs[rec.row as usize].arch)
+            })
+        {
+            return edge;
+        }
+        let cell = target_at(aim.at.0, aim.at.1, SHAPE_FOUNDATION, 0);
+        for rec in deploys {
+            if rec.level != level
+                || rec.loc != LOC_PLANE
+                || rec.cx != cell.cx
+                || rec.cz != cell.cz
+                || rec.row as u16 >= have.min(defs.def_count)
+            {
+                continue;
+            }
+            let arch = defs.defs[rec.row as usize].arch;
+            if !lockable(arch) {
+                continue;
+            }
+            return Target {
+                cx: rec.cx,
+                cz: rec.cz,
+                level,
+                loc: rec.loc,
+            };
+        }
+    }
+    edge
 }
 
 /// Everything the deploy pre-check reads — the client's mirror, whole.
@@ -1501,6 +1553,174 @@ mod tests {
             let body = deploy_target(40.0, 40.0, a.sin(), a.cos(), PLACE_GROUND, 1);
             assert_eq!(body.loc, LOC_PLANE);
             assert_eq!(body.level, 0, "a body deploy is sent at level 0");
+        }
+    }
+
+    #[test]
+    fn a_held_lock_targets_doors_and_boxes_at_the_aimed_storey() {
+        let mut defs = DeployContent::EMPTY;
+        defs.def_count = 2;
+        defs.defs[0] = sim_core::deploy::DeployDef {
+            arch: sim_core::deploy::ARCH_DOOR,
+            ..sim_core::deploy::DeployDef::INERT
+        };
+        defs.defs[1] = sim_core::deploy::DeployDef {
+            arch: ARCH_BOX,
+            ..sim_core::deploy::DeployDef::INERT
+        };
+        let box_rec = DeployRec {
+            cx: 7,
+            cz: 9,
+            level: 2,
+            loc: LOC_PLANE,
+            row: 1,
+            ..DeployRec::default()
+        };
+        let door = DeployRec {
+            loc: LOC_EDGE_XLO,
+            row: 0,
+            ..box_rec
+        };
+        let deploys = [
+            door,
+            DeployRec {
+                loc: LOC_EDGE_ZLO,
+                ..door
+            },
+            box_rec,
+        ];
+        let (x, z) = cell_center(7, 9);
+        let aim = Aim {
+            at: (x, z),
+            met: Met::Floor(2),
+            standing: 0,
+        };
+        assert_eq!(
+            deploy_target_on(&aim, PLACE_DOOR, &deploys, &defs, 2),
+            Target {
+                cx: 7,
+                cz: 9,
+                level: 2,
+                loc: LOC_PLANE
+            }
+        );
+        for (point, loc) in [((21.0, z), LOC_EDGE_XLO), ((x, 27.0), LOC_EDGE_ZLO)] {
+            let aim = Aim {
+                at: point,
+                met: Met::Wall(2),
+                standing: 0,
+            };
+            assert_eq!(
+                deploy_target_on(&aim, PLACE_DOOR, &deploys, &defs, 2),
+                Target {
+                    cx: 7,
+                    cz: 9,
+                    level: 2,
+                    loc
+                }
+            );
+        }
+        // A box on a different storey or whose def has not arrived cannot
+        // capture the lock intended for an edge.
+        let lower = Aim {
+            met: Met::Floor(1),
+            ..aim
+        };
+        assert_ne!(
+            deploy_target_on(&lower, PLACE_DOOR, &deploys, &defs, 2).loc,
+            LOC_PLANE
+        );
+        assert_ne!(
+            deploy_target_on(&aim, PLACE_DOOR, &deploys, &defs, 1).loc,
+            LOC_PLANE
+        );
+    }
+
+    #[test]
+    fn a_real_box_side_ray_keeps_the_lock_on_the_box_at_ground_and_upper_storeys() {
+        use sim_core::collide::ColIndex;
+        use sim_core::deploy::{DeployDef, ARCH_DOOR};
+        let seed = 20260731;
+        let haven = sim_core::terrain::haven(seed);
+        let (cx, cz) = (341, 341);
+        let (x, z) = cell_center(cx, cz);
+        let mut defs = DeployContent::EMPTY;
+        defs.def_count = 2;
+        defs.defs[0] = DeployDef {
+            arch: ARCH_BOX,
+            ..DeployDef::INERT
+        };
+        defs.defs[1] = DeployDef {
+            arch: ARCH_DOOR,
+            ..DeployDef::INERT
+        };
+        for level in [0, 2] {
+            let mut cols = ColIndex::new();
+            // A raised plate keeps terrain below the ray; floors across the
+            // approach make the real standing-level query meaningful too.
+            for cell in cx - 2..=cx {
+                cols.add(cell, cz, level, LOC_PLANE, sim_core::build::SHAPE_FLOOR, 3);
+            }
+            cols.set_solid(cx, cz, level, Some(ARCH_BOX));
+            let floor = column_floor_y(seed, &haven, cx, cz, 3) + level as f32 * LEVEL_H_M;
+            let feet = [x - 4.0, floor, z];
+            let norm = (1.0f32 + 0.32 * 0.32).sqrt();
+            let aim = aim_from_look(
+                seed,
+                &haven,
+                &cols,
+                [feet[0], floor + 1.6, z],
+                [1.0 / norm, -0.32 / norm, 0.0],
+                feet,
+            );
+            let (hw, _, _) = sim_core::deploy::solid_vol(ARCH_BOX).unwrap();
+            assert!(
+                aim.at.0 > x + hw + AIM_STEP_M,
+                "fixture must hit the floor behind the side, not the top: {aim:?}"
+            );
+            let box_rec = DeployRec {
+                cx,
+                cz,
+                level,
+                loc: LOC_PLANE,
+                ..DeployRec::default()
+            };
+            assert_eq!(
+                deploy_target_on(&aim, PLACE_DOOR, &[box_rec], &defs, 2),
+                Target {
+                    cx,
+                    cz,
+                    level,
+                    loc: LOC_PLANE
+                }
+            );
+
+            // From the same room, a real ray meeting an installed door must
+            // select that edge even though a lockable box shares its cell.
+            cols.add(cx, cz, level, LOC_EDGE_XLO, SHAPE_DOORWAY, 3);
+            let door = DeployRec {
+                loc: LOC_EDGE_XLO,
+                row: 1,
+                ..box_rec
+            };
+            let aim = aim_from_look(
+                seed,
+                &haven,
+                &cols,
+                [x, floor + 1.6, z],
+                [-1.0, 0.0, 0.0],
+                [x, floor, z],
+            );
+            assert_eq!(aim.met, Met::Wall(level));
+            assert_eq!(
+                deploy_target_on(&aim, PLACE_DOOR, &[box_rec, door], &defs, 2),
+                Target {
+                    cx,
+                    cz,
+                    level,
+                    loc: LOC_EDGE_XLO
+                }
+            );
         }
     }
 
