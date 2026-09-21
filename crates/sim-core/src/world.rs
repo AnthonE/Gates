@@ -1481,6 +1481,15 @@ pub enum Command {
         level: u8,
         loc: u8,
     },
+    /// Turn an existing stair flight or flip an edge's hard/soft facing
+    /// inside the original placement's demolish window.
+    Rotate {
+        id: u32,
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
+    },
     /// Run one access op at the address — **who may do this here**.
     /// `deploy::ACCESS_OP_*` names the nine: 0..=5 against the code lock
     /// on a door (`deploy::lock_op`), 6..=8 against the hearth's crew
@@ -3815,6 +3824,28 @@ impl World {
                     // One buffer for both arms: they are two verbs behind
                     // one command and exactly one of them ran.
                     self.drain_spill(slot, &mut spill);
+                }
+            }
+            Command::Rotate {
+                id,
+                cx,
+                cz,
+                level,
+                loc,
+            } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    build::rotate(
+                        &self.build,
+                        &self.deploys,
+                        &mut self.pieces,
+                        &self.players[slot],
+                        self.tick,
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                        &mut self.events,
+                    );
                 }
             }
             Command::Access {

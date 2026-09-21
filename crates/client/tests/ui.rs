@@ -2201,11 +2201,11 @@ fn a_cut_is_marked_and_a_multibyte_name_is_cut_on_chars_not_bytes() {
 }
 
 // ---------------------------------------------------------------------------
-// §K · the hammer's wheel — four live verbs, firing on release
+// §K · the hammer's wheel — live verbs, firing on release
 //
 // The second radial (`NOW.md` §0p2 item 1). What is gated here is what could
-// be silently wrong: the segment set (a rotate wedge would be a dead button;
-// a missing verb would be a mechanic no wheel reaches), the pick arithmetic
+// be silently wrong: the segment set (a missing verb is a mechanic no wheel
+// reaches), the pick arithmetic
 // (§D's, at this ring's own count), and `hammer::act` — the store filters
 // that keep a release named PICK UP from felling a wall, since pick-up and
 // demolish are ONE wire verb split by the store bit (`ACT_DEMOLISH`), which
@@ -2254,19 +2254,14 @@ fn target(store: Store, row: u8, hp: u16, hp_max: u16) -> Target {
 }
 
 #[test]
-fn the_ring_is_four_distinct_verbs_and_rotate_is_not_one() {
-    // Four segments, each verb exactly once. Rotate has no segment and no
-    // variant to give one to — a wedge would teach a verb the game does
-    // not have (§0p2 item 0). Since hard/soft v0 a piece DOES carry a
-    // facing, and rotate stays out on the §open row's stated ground: a
-    // wrong facing inside the grace window is a free re-place, and one
-    // outside it would re-aim a base mid-raid.
-    assert_eq!(hammer::VERBS.len(), 4);
+fn the_ring_has_each_live_verb_once_including_rotate() {
+    assert_eq!(hammer::VERBS.len(), 5);
     for v in [
         HVerb::Upgrade,
         HVerb::Repair,
         HVerb::Demolish,
         HVerb::PickUp,
+        HVerb::Rotate,
     ] {
         assert_eq!(
             hammer::VERBS.iter().filter(|w| **w == v).count(),
@@ -2282,20 +2277,14 @@ fn the_ring_is_four_distinct_verbs_and_rotate_is_not_one() {
 }
 
 #[test]
-fn the_hammer_pick_is_the_shape_wheels_arithmetic_at_four() {
+fn the_hammer_pick_tracks_every_drawn_verb() {
     let r = Rings::default();
     // Dead centre and past the rim release without firing.
     assert_eq!(hammer::pick(0.0, 0.0, r), None);
     assert_eq!(hammer::pick(0.0, r.dead - 1.0, r), None);
     assert_eq!(hammer::pick(0.0, r.rim + 1.0, r), None);
-    // Four quadrants, clockwise from up — and each segment's own centre
-    // angle picks it, the same drawn-vs-picked agreement §D holds for the
-    // shapes.
+    // Every segment's drawn centre must select the same verb.
     let mid = (r.dead + r.rim) * 0.5;
-    assert_eq!(hammer::pick(0.0, mid, r), Some(0));
-    assert_eq!(hammer::pick(mid, 0.0, r), Some(1));
-    assert_eq!(hammer::pick(0.0, -mid, r), Some(2));
-    assert_eq!(hammer::pick(-mid, 0.0, r), Some(3));
     for i in 0..hammer::VERBS.len() {
         let a = build::segment_angle(i, hammer::VERBS.len());
         assert_eq!(hammer::pick(a.sin() * mid, a.cos() * mid, r), Some(i));
@@ -2404,6 +2393,110 @@ fn upgrade_picks_the_next_rung_the_way_u_does() {
             have
         ),
         Act::Say("that is not a building piece")
+    );
+}
+
+#[test]
+fn rotate_sends_the_exact_stair_or_edge_address_and_refuses_other_targets() {
+    let (mut defs, have) = hammer_piece_defs();
+    let piece = target(Store::Piece, 0, 500, 500);
+    for shape in [
+        SHAPE_WALL,
+        sim_core::build::SHAPE_DOORWAY,
+        sim_core::build::SHAPE_WINDOW,
+        sim_core::build::SHAPE_FRAME,
+        sim_core::build::SHAPE_STAIRS,
+    ] {
+        defs.pieces[0].shape = shape;
+        for loc in [
+            sim_core::build::LOC_EDGE_XLO,
+            sim_core::build::LOC_EDGE_ZLO,
+            sim_core::build::LOC_DIAG_A,
+            sim_core::build::LOC_DIAG_B,
+            sim_core::build::LOC_RISER_XLO,
+        ] {
+            let aimed = Target { loc, ..piece };
+            assert_eq!(
+                hammer::act(HVerb::Rotate, Some(&aimed), &defs, have),
+                Act::Rotate {
+                    cx: 7,
+                    cz: 9,
+                    level: 1,
+                    loc
+                }
+            );
+        }
+    }
+    defs.pieces[0].shape = SHAPE_FOUNDATION;
+    assert!(matches!(
+        hammer::act(HVerb::Rotate, Some(&piece), &defs, have),
+        Act::Say(_)
+    ));
+    defs.pieces[0].shape = SHAPE_WALL;
+    assert!(matches!(
+        hammer::act(HVerb::Rotate, Some(&piece), &defs, 0),
+        Act::Say(_)
+    ));
+    assert!(matches!(
+        hammer::act(
+            HVerb::Rotate,
+            Some(&Target {
+                store: Store::Deploy,
+                ..piece
+            }),
+            &defs,
+            have
+        ),
+        Act::Say(_)
+    ));
+}
+
+#[test]
+fn hammer_upgrade_quote_uses_the_received_matching_shape_and_inventory() {
+    let (mut defs, _) = hammer_piece_defs();
+    let piece = target(Store::Piece, 0, 500, 500);
+    // A different shape sits at the expected rung's old index. The actual
+    // wall price is later in the table, so index arithmetic would lie.
+    defs.pieces[3] = PieceDef {
+        n_costs: 1,
+        costs: [(2, 37), (0, 0)],
+        ..defs.pieces[1]
+    };
+    defs.pieces[1].shape = SHAPE_FOUNDATION;
+    defs.piece_count = 4;
+    assert_eq!(hammer::upgrade_row(&piece, &defs, 3), None);
+    assert_eq!(hammer::upgrade_row(&piece, &defs, 4), Some(3));
+    let mut inv = [ItemStack::default(); INV_SLOTS];
+    inv[0] = ItemStack {
+        item: 2,
+        count: 30,
+        ..ItemStack::default()
+    };
+    let (quote, n) = build::costs(&defs, hammer::upgrade_row(&piece, &defs, 4).unwrap(), &inv);
+    assert_eq!(n, 1);
+    assert_eq!((quote[0].item, quote[0].units, quote[0].have), (2, 37, 30));
+    assert!(quote[0].short());
+    assert_eq!(
+        hammer::target_name(
+            Some(&piece),
+            &defs,
+            4,
+            &DeployContent::EMPTY,
+            0,
+            &protocol::ItemCatalog::EMPTY
+        ),
+        "Wood Wall"
+    );
+    assert_eq!(
+        hammer::target_name(
+            None,
+            &defs,
+            4,
+            &DeployContent::EMPTY,
+            0,
+            &protocol::ItemCatalog::EMPTY
+        ),
+        "Nothing in reach"
     );
 }
 

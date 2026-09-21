@@ -460,6 +460,7 @@ fn test_alloc_zero() {
 
     let mut assisted_world = sim_core::probe::assist_probe_world(42);
     let mut headroom = sim_core::probe::headroom_probe();
+    let mut rotation_world = sim_core::probe::rotation_probe_world();
     let a0 = ALLOCS.load(Ordering::SeqCst);
     let f0 = FREES.load(Ordering::SeqCst);
 
@@ -747,12 +748,18 @@ fn test_alloc_zero() {
     // A real held/released/completed hand revive, inside the counted window.
     let assisted = sim_core::probe::run_assist_probe(&mut assisted_world);
     let ceiling_contacts = sim_core::probe::run_headroom_probe(&mut headroom);
+    let rotations = sim_core::probe::run_rotation_probe(&mut rotation_world);
     // The hash path must be allocation-free too.
     let h = world.state_hash();
     assert_ne!(h, 0);
 
     let alloc_delta = ALLOCS.load(Ordering::SeqCst) - a0;
     let free_delta = FREES.load(Ordering::SeqCst) - f0;
+    assert_eq!(
+        rotations >> 32,
+        8,
+        "both hammer turns must land without allocating"
+    );
     assert_eq!(
         ceiling_contacts >> 32,
         3,

@@ -591,7 +591,13 @@ pub fn deploy_track(
     // met — a door aimed at its doorway's frame lands in that doorway,
     // whatever storey it is on (aimed level v0); everything else keeps
     // `deploy_key`'s original plane target at level 0.
-    let t = place::deploy_target_at(aim.at.0, aim.at.1, def.placement, aim.level_for_deploy());
+    let t = place::deploy_target_on(
+        &aim,
+        def.placement,
+        core.deploys.entries(),
+        &core.deploy_defs,
+        core.deploy_defs_have,
+    );
     let verdict = place::deploy_verdict(
         t,
         row,

@@ -692,10 +692,12 @@ Owned by `sim-core/deploy.rs` (the hearth, upkeep, decay) and
     12 raid ✅. **Five of the twelve are the same missing idea** — 3, 4, 5
     are the list, and 9, 11 are the windowed pickup.
 
-⚠ **Items 1, 2, 5, 6, 7 and verbs 3/4/5/8/9/11 landed 2026-08-08/09** —
+⚠ **Items 1, 2, 5, 6, the demolish half of 7, and verbs 3/4/5/9/11 landed 2026-08-08/09** —
 the crew list, the claim volume, per-material decay, demolish. `NOW.md`
 §0aa is the live scorecard; read it before treating anything above as
-outstanding. Items 3, 4 and 8 stand as written.
+outstanding. **Rotate (verb 8) landed 2026-09-20**, with the original
+placement window and no timer reset on rotation (`NOW.md` §0p2).
+Items 3, 4 and 8 stand as written.
 
 The rest of this section is **§7b's half**, added 2026-08-10.
 
@@ -771,9 +773,12 @@ The rest of this section is **§7b's half**, added 2026-08-10.
     our catalogue; §7c.1 is why it matters more now than it did then —
     their half wall exists *specifically* to even out the snap offset on
     the floors above a stepped plate. Ours has the offset and not the
-    piece, so a base that steps carries the gap upward forever. Cheap:
-    one shape code, and `SHAPE_BITS` is 4 with codes to spare since
-    triangles.
+    piece, so a base that steps carries the gap upward forever. A shape
+    code fits in `SHAPE_BITS`, but **the earlier "cheap" estimate omitted
+    the vertical socket**: support and collision currently step in whole
+    storeys. Half-height tops need an address and matching support/collapse
+    rules, and the twelve shapes now fill all 48 piece definition rows
+    (`findings/building-tools-20260920.md`).
 18. **Do not widen the plate limits to fix a slope — add the stepped
     shape.** §7c.2 is a published, tested negative result on precisely
     the change that will keep suggesting itself: a wide vertical

@@ -546,6 +546,8 @@ struct Live {
     /// is stilted over and, without this, keep it there: the loop redraws on a
     /// change, and the plate was not one of the things it compared.
     plate: i8,
+    /// A rotate can change only this bit, keeping address, row and damage.
+    facing: u8,
 }
 
 /// Shared meshes and materials, built once on first use. A base is hundreds
@@ -564,11 +566,11 @@ pub struct Kit {
     /// The straight edge shapes as ONE mesh each, per corner-post ownership
     /// ([`PostOwn::bits`]): body and owned posts baked together
     /// ([`parts_mesh`]), so a wall, a doorway, a window and a frame are each
-    /// one entity with its mesh on it whatever they own. Four variants per
-    /// shape, built once.
-    edge_mesh: [[Option<Handle<Mesh>>; 4]; N_SHAPES],
+    /// one entity with its mesh on it whatever they own. Four ownership
+    /// variants, each with two soft-face orientations, built once per shape.
+    edge_mesh: [[[Option<Handle<Mesh>>; 2]; 4]; N_SHAPES],
     /// The diagonal wall's body ([`diagonal_parts`]) — its own size.
-    diag_mesh: Handle<Mesh>,
+    diag_mesh: [Handle<Mesh>; 2],
     /// The footings, for the shapes whose one part is sized PER ADDRESS
     /// rather than per shape — the foundations, whose skirt depth follows
     /// the terrain under their cell ([`foundation_part`]). Indexed by
@@ -1453,6 +1455,10 @@ pub fn part_mesh(part: &Part) -> Mesh {
 /// six. The offsets are baked and the pitch is not: only the stairs carry
 /// one, and the stairs are one part.
 pub fn parts_mesh(parts: &[Part]) -> Mesh {
+    finish(parts_buffers(parts))
+}
+
+fn parts_buffers(parts: &[Part]) -> Buffers {
     let mut b = buffers(24 * parts.len());
     for part in parts {
         debug_assert!(part.x_rot == 0.0, "a merged part cannot carry a pitch");
@@ -1462,7 +1468,37 @@ pub fn parts_mesh(parts: &[Part]) -> Mesh {
             PartKind::Stairs => stairs_into(&mut b, part.size, part.offset),
         }
     }
+    b
+}
+
+/// A sided wall keeps its geometry, UVs and texture. The soft face wears
+/// the existing lighter top-face gain and the hard face the darker underside
+/// gain; their mean stays one. Two shared meshes per shape/ownership, never
+/// a material or mesh allocated per wall.
+pub fn sided_parts_mesh(parts: &[Part], soft_positive_x: bool) -> Mesh {
+    let mut b = parts_buffers(parts);
+    for (normal, color) in b.1.iter().zip(b.2.iter_mut()) {
+        if normal[0] == 0.0 {
+            continue;
+        }
+        let gain = if (normal[0] > 0.0) == soft_positive_x {
+            FACE_TOP
+        } else {
+            FACE_BOTTOM
+        };
+        for channel in &mut color[..3] {
+            *channel *= gain;
+        }
+    }
     finish(b)
+}
+
+/// Resolve local +X through the actual root rotation and the sim's facing
+/// comparison. This covers both straight axes and both diagonals without a
+/// second hand-written table of which world half is the soft side.
+pub fn soft_face_positive_x(addr: Addr, facing: u8, root: &Transform) -> bool {
+    let sample = root.translation + root.rotation * Vec3::X;
+    sim_core::build::facing_of(addr.3, addr.0, addr.1, sample.x, sample.z) == facing
 }
 
 /// A quad's worth of vertices for one face, appended to the buffers.
@@ -1980,8 +2016,8 @@ pub fn build_kit(
     }
     // The straight edge shapes, merged per ownership: the body and whichever
     // of the two corner posts the piece draws (`post_owner`).
-    let mut edge_mesh: [[Option<Handle<Mesh>>; 4]; N_SHAPES] =
-        std::array::from_fn(|_| [NO_MESH; 4]);
+    let mut edge_mesh: [[[Option<Handle<Mesh>>; 2]; 4]; N_SHAPES] =
+        std::array::from_fn(|_| std::array::from_fn(|_| [NO_MESH; 2]));
     for shape in [SHAPE_WALL, SHAPE_DOORWAY, SHAPE_WINDOW, SHAPE_FRAME] {
         let (parts, n) = shape_parts(shape);
         for own in 0..4u8 {
@@ -1991,10 +2027,13 @@ pub fn build_kit(
                 .copied()
                 .filter(|p| keep.draws(p.role))
                 .collect();
-            edge_mesh[shape as usize][own as usize] = Some(meshes.add(parts_mesh(&owned)));
+            edge_mesh[shape as usize][own as usize] =
+                std::array::from_fn(|side| Some(meshes.add(sided_parts_mesh(&owned, side != 0))));
         }
     }
-    let diag_mesh = meshes.add(part_mesh(&diagonal_parts().0[0]));
+    let diag_mesh = std::array::from_fn(|side| {
+        meshes.add(sided_parts_mesh(&diagonal_parts().0[..1], side != 0))
+    });
     let apron = std::array::from_fn(|own| {
         let (parts, n) = apron_parts(PostOwn::from_bits(own as u8));
         meshes.add(parts_mesh(&parts[..n]))
@@ -2144,6 +2183,7 @@ pub fn stream(
                 && live.dmg == rec.dmg
                 && live.plate == rec.plate
                 && live.own == own
+                && live.facing == rec.facing
             {
                 continue;
             }
@@ -2160,6 +2200,7 @@ pub fn stream(
             def.material,
             rec.dmg,
             rec.plate,
+            rec.facing,
             PostOwn::from_bits(own),
         );
         ring.pieces.insert(
@@ -2173,6 +2214,7 @@ pub fn stream(
                 dmg: rec.dmg,
                 own,
                 plate: rec.plate,
+                facing: rec.facing,
             },
         );
     }
@@ -2231,6 +2273,7 @@ pub fn stream(
                 dmg: 0,
                 own: 0,
                 plate,
+                facing: 0,
             },
         );
     }
@@ -2277,6 +2320,7 @@ pub fn stream(
                 // A bag carries a quantized world position, so it has no
                 // column and no plate to be drawn against.
                 plate: 0,
+                facing: 0,
             },
         );
     }
@@ -2332,6 +2376,7 @@ pub fn stream(
                 dmg: 0,
                 own: 0,
                 plate: 0,
+                facing: 0,
             },
         );
     }
@@ -2355,6 +2400,7 @@ fn spawn_piece(
     material: u8,
     dmg: u8,
     plate: i8,
+    facing: u8,
     own: PostOwn,
 ) -> Entity {
     // Clamped, not `.min(2)`: the table covers every material the sim has
@@ -2370,6 +2416,7 @@ fn spawn_piece(
     // build ghost are the same object in the same pose.
     let root = base_transform(seed, haven, addr, plate);
     let (cx, cz, _, loc) = addr;
+    let soft_side = usize::from(soft_face_positive_x(addr, facing, &root));
 
     // **Every piece is ONE entity with its mesh on it.** Not a style choice:
     // the hammer highlight reads `Transform` + `Mesh3d` off the entity
@@ -2395,11 +2442,10 @@ fn spawn_piece(
             root * part.transform(),
         )
     } else if shape == SHAPE_WALL && (loc == LOC_DIAG_A || loc == LOC_DIAG_B) {
-        let (parts, _) = diagonal_parts();
-        (kit.diag_mesh.clone(), root * parts[0].transform())
+        (kit.diag_mesh[soft_side].clone(), root)
     } else if is_edge_shape(shape) {
         (
-            kit.edge_mesh[(shape as usize).min(N_SHAPES - 1)][own.bits() as usize]
+            kit.edge_mesh[(shape as usize).min(N_SHAPES - 1)][own.bits() as usize][soft_side]
                 .clone()
                 .expect("every edge shape has a mesh per ownership"),
             root,

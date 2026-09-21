@@ -203,6 +203,10 @@ fn main() {
     let len = encode_action_access(cx, cz, level, loc, op, code, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[80], &buf[..len]);
 
+    let (cx, cz, level, loc) = goldens::action_rotate();
+    let len = protocol::encode_action_rotate(cx, cz, level, loc, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[110], &buf[..len]);
+
     let (deploy, cx, cz, level, loc) = goldens::action_demolish();
     let len = encode_action_demolish(deploy, cx, cz, level, loc, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[81], &buf[..len]);
