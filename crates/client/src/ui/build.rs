@@ -34,6 +34,10 @@ use sim_core::build::{
     SHAPE_FLOOR_FRAME, SHAPE_FOUNDATION, SHAPE_FRAME, SHAPE_HALF_WALL, SHAPE_LOW_WALL, SHAPE_ROOF,
     SHAPE_STAIRS, SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION, SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
 };
+use sim_core::build::{
+    SHAPE_FOUNDATION_STEPS, SHAPE_RAMP, SHAPE_STAIRS_L, SHAPE_STAIRS_SPIRAL,
+    SHAPE_STAIRS_TRI_SPIRAL, SHAPE_STAIRS_U, SHAPE_TRI_FLOOR_FRAME,
+};
 use sim_core::craft::inv_count;
 use sim_core::gather::ItemStack;
 use sim_core::limits::INV_SLOTS;
@@ -44,7 +48,7 @@ use sim_core::limits::INV_SLOTS;
 /// (catalogue v1) follow the doorway, and each triangle (triangles v0)
 /// sits beside the square it halves, which is where a builder's thumb
 /// already is.
-pub const SHAPES: [u8; 14] = [
+pub const SHAPES: [u8; 21] = [
     SHAPE_FOUNDATION,
     SHAPE_TRI_FOUNDATION,
     SHAPE_WALL,
@@ -59,6 +63,13 @@ pub const SHAPES: [u8; 14] = [
     SHAPE_STAIRS,
     SHAPE_ROOF,
     SHAPE_TRI_ROOF,
+    SHAPE_FOUNDATION_STEPS,
+    SHAPE_RAMP,
+    SHAPE_STAIRS_L,
+    SHAPE_STAIRS_U,
+    SHAPE_STAIRS_SPIRAL,
+    SHAPE_STAIRS_TRI_SPIRAL,
+    SHAPE_TRI_FLOOR_FRAME,
 ];
 
 /// The middle ring, clockwise from the top: the upgrade ladder in order, so
@@ -83,6 +94,13 @@ pub fn shape_label(shape: u8) -> &'static str {
         SHAPE_STAIRS => "Stairs",
         SHAPE_ROOF => "Roof",
         SHAPE_TRI_ROOF => "Tri Roof",
+        SHAPE_FOUNDATION_STEPS => "Foundation Steps",
+        SHAPE_RAMP => "Ramp",
+        SHAPE_STAIRS_L => "L Stairs",
+        SHAPE_STAIRS_U => "U Stairs",
+        SHAPE_STAIRS_SPIRAL => "Spiral Stairs",
+        SHAPE_STAIRS_TRI_SPIRAL => "Tri Spiral Stairs",
+        SHAPE_TRI_FLOOR_FRAME => "Tri Floor Frame",
         _ => "Piece",
     }
 }
@@ -105,6 +123,13 @@ pub fn shape_blurb(shape: u8) -> &'static str {
         SHAPE_STAIRS => "Reach the storey above. R/F turns the preview.",
         SHAPE_ROOF => "Cap the top so nothing builds above you.",
         SHAPE_TRI_ROOF => "Cap a triangle. Aim a wall at its slant.",
+        SHAPE_FOUNDATION_STEPS => "Steps down from the foundation. R/F turns the preview.",
+        SHAPE_RAMP => "A smooth half-storey ramp. R/F turns the preview.",
+        SHAPE_STAIRS_L => "A full-storey flight with a corner landing.",
+        SHAPE_STAIRS_U => "A full-storey return flight around an open centre.",
+        SHAPE_STAIRS_SPIRAL => "Half a turn, half a storey. Turn the next flight twice.",
+        SHAPE_STAIRS_TRI_SPIRAL => "A half-storey turn on a triangular footprint.",
+        SHAPE_TRI_FLOOR_FRAME => "A triangular rim around an open stairwell.",
         _ => "",
     }
 }
@@ -120,7 +145,9 @@ pub fn shape_blurb(shape: u8) -> &'static str {
 pub fn shape_icon(shape: u8) -> &'static str {
     match shape {
         SHAPE_FOUNDATION => "shape_foundation",
-        SHAPE_WALL | SHAPE_HALF_WALL | SHAPE_LOW_WALL => "shape_wall",
+        SHAPE_WALL => "shape_wall",
+        SHAPE_HALF_WALL => "shape_half_wall",
+        SHAPE_LOW_WALL => "shape_low_wall",
         SHAPE_DOORWAY => "shape_doorway",
         SHAPE_WINDOW => "shape_window",
         SHAPE_FRAME => "shape_wall_frame",
@@ -130,6 +157,13 @@ pub fn shape_icon(shape: u8) -> &'static str {
         SHAPE_TRI_FLOOR => "shape_tri_floor",
         SHAPE_TRI_ROOF => "shape_tri_roof",
         SHAPE_STAIRS => "shape_stairs",
+        SHAPE_FOUNDATION_STEPS => "shape_foundation_steps",
+        SHAPE_RAMP => "shape_ramp",
+        SHAPE_STAIRS_L => "shape_stairs_l",
+        SHAPE_STAIRS_U => "shape_stairs_u",
+        SHAPE_STAIRS_SPIRAL => "shape_stairs_spiral",
+        SHAPE_STAIRS_TRI_SPIRAL => "shape_stairs_tri_spiral",
+        SHAPE_TRI_FLOOR_FRAME => "shape_tri_floor_frame",
         _ => "shape_roof",
     }
 }

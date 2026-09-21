@@ -79,6 +79,12 @@ properly. The short version:
   and hunter, and they differ by content numbers alone: nothing in
   `mob.rs` branches on species. `content/mobs.toml`; the sim's side is
   `sim-core/src/mob.rs` and the design is `reference/ANIMALS.md` §9.
+- **circulation pieces**: `foundation_steps`, `ramp`, `stairs_l`, `stairs_u`,
+  `stairs_spiral`, `stairs_tri_spiral`, `tri_floor_frame`; all four grades.
+  The 21-shape catalogue has 84 rows. Spirals join at half-storeys, L/U
+  stairs join full storeys, and the ramp rises to a half-storey landing.
+  Steps are terrain-supported and leave the existing plate bounds intact.
+  The triangle frame bears its perimeter and leaves its centre open.
 - **partial-height pieces**: `half_wall` and `low_wall` use the same four
   material grades. The half wall bears a floor at its actual top; low cover
   bears none. Half-storey addresses preserve existing whole-storey codes.

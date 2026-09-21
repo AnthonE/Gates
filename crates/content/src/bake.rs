@@ -329,6 +329,13 @@ impl Content {
                     Shape::FloorFrame => SHAPE_FLOOR_FRAME,
                     Shape::HalfWall => sim_core::build::SHAPE_HALF_WALL,
                     Shape::LowWall => sim_core::build::SHAPE_LOW_WALL,
+                    Shape::FoundationSteps => sim_core::build::SHAPE_FOUNDATION_STEPS,
+                    Shape::Ramp => sim_core::build::SHAPE_RAMP,
+                    Shape::StairsL => sim_core::build::SHAPE_STAIRS_L,
+                    Shape::StairsU => sim_core::build::SHAPE_STAIRS_U,
+                    Shape::StairsSpiral => sim_core::build::SHAPE_STAIRS_SPIRAL,
+                    Shape::StairsTriSpiral => sim_core::build::SHAPE_STAIRS_TRI_SPIRAL,
+                    Shape::TriFloorFrame => sim_core::build::SHAPE_TRI_FLOOR_FRAME,
                 },
                 material: match p.material {
                     Material::Twig => MAT_TWIG,

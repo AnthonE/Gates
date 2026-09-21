@@ -910,7 +910,9 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// v71 admits half/low walls and half-storey addresses. Levels widen to
 /// 4 bits while codes 0..7 keep their old height; 8..15 add half a storey.
 /// Piece-definition totals widen to 7 bits for the extended catalogue.
-pub const PROTO_VER: u16 = 71;
+/// v72 adds circulation shapes through triangular floor frame; shape codes
+/// widen from four bits to five. All previous codes keep their meaning.
+pub const PROTO_VER: u16 = 72;
 
 /// This game's slug in the elo catalog.
 ///

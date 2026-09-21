@@ -39,9 +39,9 @@ use bevy::prelude::*;
 use sim_core::build::{
     BUILD_CELL_M, DMG_BANDS, LEVEL_H_M, LOC_DIAG_A, LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO,
     LOC_RISER_XHI, LOC_RISER_XLO, LOC_RISER_ZLO, LOC_TRI_XHI_ZHI, LOC_TRI_XHI_ZLO, LOC_TRI_XLO_ZHI,
-    LOC_TRI_XLO_ZLO, MAT_METAL, SHAPE_DOORWAY, SHAPE_FLOOR_FRAME, SHAPE_FRAME, SHAPE_HALF_WALL,
-    SHAPE_LOW_WALL, SHAPE_STAIRS, SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION, SHAPE_TRI_ROOF,
-    SHAPE_WALL, SHAPE_WINDOW,
+    LOC_TRI_XLO_ZLO, MAT_METAL, MAT_WOOD, SHAPE_DOORWAY, SHAPE_FLOOR_FRAME, SHAPE_FRAME,
+    SHAPE_HALF_WALL, SHAPE_LOW_WALL, SHAPE_STAIRS, SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION,
+    SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
 };
 use sim_core::collide::{
     ColIndex, DOOR_POST_W_M, FRAME_RIM_M, WALL_THICKNESS_M, WINDOW_HEAD_M, WINDOW_SILL_M,
@@ -918,6 +918,8 @@ pub enum PartKind {
     /// frame lets the existing placement checks still compare the ramp
     /// against collision; `tests/stairs.rs` checks the actual tread mesh.
     Stairs,
+    Circulation(u8),
+    TriFrame,
 }
 
 impl Part {
@@ -936,7 +938,7 @@ pub const MAX_PARTS: usize = 6;
 /// How many shapes the parts table covers: the sim's own last shape, plus
 /// one. A shape past it is drawn as the fallback slab, same as one the
 /// table has no arm for.
-pub const N_SHAPES: usize = SHAPE_LOW_WALL as usize + 1;
+pub const N_SHAPES: usize = sim_core::build::SHAPE_TRI_FLOOR_FRAME as usize + 1;
 
 /// Which parts a shape has and where they go — **the one table** both the
 /// standing piece ([`spawn_piece`]) and the build ghost (`ghost::track`)
@@ -976,6 +978,36 @@ pub fn shape_parts(shape: u8) -> ([Part; MAX_PARTS], usize) {
         p
     };
     match shape {
+        shape if shape != SHAPE_STAIRS && sim_core::circulation::is_riser(shape) => (
+            [
+                Part {
+                    size: Vec3::ONE,
+                    kind: PartKind::Circulation(shape),
+                    ..Part::default()
+                },
+                none,
+                none,
+                none,
+                none,
+                none,
+            ],
+            1,
+        ),
+        sim_core::build::SHAPE_TRI_FLOOR_FRAME => (
+            [
+                Part {
+                    size: Vec3::ONE,
+                    kind: PartKind::TriFrame,
+                    ..Part::default()
+                },
+                none,
+                none,
+                none,
+                none,
+                none,
+            ],
+            1,
+        ),
         SHAPE_FLOOR_FRAME => {
             let half = BUILD_CELL_M * 0.5;
             let inset = half - FRAME_RIM_M * 0.5;
@@ -1511,6 +1543,16 @@ pub fn footing_of(seed: u64, haven: &terrain::Haven, cx: u16, cz: u16, plate: i8
 /// depth would otherwise mean a per-address mesh.
 pub fn part_mesh(part: &Part) -> Mesh {
     match part.kind {
+        PartKind::Circulation(shape) => {
+            let mut b = buffers(256);
+            circulation_into(&mut b, shape, Vec3::ZERO);
+            finish(b)
+        }
+        PartKind::TriFrame => {
+            let mut b = buffers(72);
+            tri_frame_into(&mut b, Vec3::ZERO);
+            finish(b)
+        }
         PartKind::Box => box_mesh(part.size),
         PartKind::Tri => tri_prism_mesh(part.size),
         PartKind::Stairs => {
@@ -1544,6 +1586,8 @@ fn parts_buffers(parts: &[Part]) -> Buffers {
             PartKind::Box => box_into(&mut b, part.size, part.offset),
             PartKind::Tri => tri_prism_into(&mut b, part.size, part.offset),
             PartKind::Stairs => stairs_into(&mut b, part.size, part.offset),
+            PartKind::Circulation(shape) => circulation_into(&mut b, shape, part.offset),
+            PartKind::TriFrame => tri_frame_into(&mut b, part.offset),
         }
     }
     b
@@ -2961,4 +3005,187 @@ pub fn is_station(arch: u8) -> bool {
 /// set and would silently start accepting a table as a workbench).
 pub fn is_proximity(arch: u8) -> bool {
     is_station(arch) || arch == ARCH_RESEARCH
+}
+
+/// A convex face, authored counterclockwise from outside. UVs remain metres;
+/// vertical faces keep their grain upright like box_into.
+fn polygon_face(b: &mut Buffers, points: &[Vec3]) {
+    if points.len() < 3 {
+        return;
+    }
+    let cross = (points[1] - points[0]).cross(points[2] - points[0]);
+    if cross.length_squared() < 1e-12 {
+        return;
+    }
+    let normal = cross.normalize();
+    let u = if normal.y.abs() > 0.5 {
+        (points[1] - points[0]).normalize()
+    } else {
+        Vec3::Y.cross(normal).normalize()
+    };
+    let v = normal.cross(u);
+    let base = b.0.len() as u32;
+    for p in points {
+        b.0.push(p.to_array());
+        b.1.push(normal.to_array());
+        let tint = face_tint(normal, p.y, 0.0, LEVEL_H_M);
+        b.2.push([tint, tint, tint, 1.0]);
+        b.3.push([p.dot(u) * PIECE_UV_PER_M, p.dot(v) * PIECE_UV_PER_M]);
+    }
+    for i in 1..points.len() - 1 {
+        b.4.extend([base, base + i as u32, base + i as u32 + 1]);
+    }
+}
+fn patch_slab(
+    b: &mut Buffers,
+    footprint: &[Vec2],
+    top: impl Fn(Vec2) -> f32,
+    bottom: impl Fn(Vec2) -> f32,
+    at: Vec3,
+) {
+    let half = BUILD_CELL_M * 0.5;
+    let vertices = |height: &dyn Fn(Vec2) -> f32| {
+        footprint
+            .iter()
+            .map(|&p| at + Vec3::new(p.x - half, height(p), p.y - half))
+            .collect::<Vec<_>>()
+    };
+    let upper = vertices(&top);
+    let mut lower = vertices(&bottom);
+    polygon_face(b, &upper);
+    for i in 0..upper.len() {
+        let j = (i + 1) % upper.len();
+        polygon_face(b, &[upper[j], upper[i], lower[i], lower[j]]);
+    }
+    lower.reverse();
+    polygon_face(b, &lower);
+}
+fn clipped_patch(x0: f32, z0: f32, x1: f32, z1: f32, triangle: bool) -> Vec<Vec2> {
+    let rectangle = [
+        Vec2::new(x0, z0),
+        Vec2::new(x0, z1),
+        Vec2::new(x1, z1),
+        Vec2::new(x1, z0),
+    ];
+    if !triangle {
+        return rectangle.to_vec();
+    }
+    let mut out = Vec::with_capacity(5);
+    for i in 0..4 {
+        let a = rectangle[i];
+        let c = rectangle[(i + 1) % 4];
+        let da = BUILD_CELL_M - a.x - a.y;
+        let dc = BUILD_CELL_M - c.x - c.y;
+        if da >= 0.0 {
+            out.push(a);
+        }
+        if (da > 0.0 && dc < 0.0) || (da < 0.0 && dc > 0.0) {
+            out.push(a + (c - a) * (da / (da - dc)));
+        }
+    }
+    out
+}
+fn circulation_into(b: &mut Buffers, shape: u8, at: Vec3) {
+    let (patches, n) = sim_core::circulation::patches(shape);
+    for patch in &patches[..n] {
+        let dx = patch.x1 - patch.x0;
+        let dz = patch.z1 - patch.z0;
+        let rise = (dx * patch.sx + dz * patch.sz).abs();
+        let smooth = shape == sim_core::build::SHAPE_RAMP || rise == 0.0;
+        let steps = if smooth {
+            1
+        } else {
+            (rise / LEVEL_H_M * STAIR_RISERS as f32).ceil() as usize
+        };
+        // Endpoint treads meet the landing exactly, as the original flight
+        // does. Interior treads centre on the smooth walk surface.
+        for step in 0..if smooth { 1 } else { steps + 1 } {
+            let t0 = if smooth {
+                0.0
+            } else {
+                ((step as f32 - 0.5) / steps as f32).max(0.0)
+            };
+            let t1 = if smooth {
+                1.0
+            } else {
+                ((step as f32 + 0.5) / steps as f32).min(1.0)
+            };
+            let (x0, x1) = if patch.sx != 0.0 {
+                (patch.x0 + dx * t0, patch.x0 + dx * t1)
+            } else {
+                (patch.x0, patch.x1)
+            };
+            let (z0, z1) = if patch.sz != 0.0 {
+                (patch.z0 + dz * t0, patch.z0 + dz * t1)
+            } else {
+                (patch.z0, patch.z1)
+            };
+            let footprint = clipped_patch(
+                x0,
+                z0,
+                x1,
+                z1,
+                shape == sim_core::build::SHAPE_STAIRS_TRI_SPIRAL,
+            );
+            if footprint.len() < 3 {
+                continue;
+            }
+            let t = step as f32 / steps as f32;
+            let tread = patch.height(
+                if patch.sx != 0.0 {
+                    patch.x0 + dx * t
+                } else {
+                    (x0 + x1) * 0.5
+                },
+                if patch.sz != 0.0 {
+                    patch.z0 + dz * t
+                } else {
+                    (z0 + z1) * 0.5
+                },
+            );
+            patch_slab(
+                b,
+                &footprint,
+                |p| {
+                    if smooth {
+                        patch.height(p.x, p.y)
+                    } else {
+                        tread
+                    }
+                },
+                |p| {
+                    if shape == sim_core::build::SHAPE_FOUNDATION_STEPS {
+                        -SKIRT_MAX_M
+                    } else {
+                        patch.height(p.x, p.y) - SLAB_T
+                    }
+                },
+                at,
+            );
+        }
+    }
+}
+fn tri_frame_into(b: &mut Buffers, at: Vec3) {
+    let r = FRAME_RIM_M;
+    let diagonal = BUILD_CELL_M - r * std::f32::consts::SQRT_2 - r;
+    let outer = [
+        Vec2::ZERO,
+        Vec2::new(0.0, BUILD_CELL_M),
+        Vec2::new(BUILD_CELL_M, 0.0),
+    ];
+    let inner = [
+        Vec2::splat(r),
+        Vec2::new(r, diagonal),
+        Vec2::new(diagonal, r),
+    ];
+    for i in 0..3 {
+        let j = (i + 1) % 3;
+        patch_slab(
+            b,
+            &[outer[i], outer[j], inner[j], inner[i]],
+            |_| 0.0,
+            |_| -SLAB_T,
+            at,
+        );
+    }
 }

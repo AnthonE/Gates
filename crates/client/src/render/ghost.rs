@@ -23,7 +23,7 @@
 use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 use client_core::core::ClientCore;
-use sim_core::build::{SHAPE_FOUNDATION, SHAPE_STAIRS, SHAPE_TRI_FOUNDATION, STAIR_LOCS};
+use sim_core::build::{SHAPE_FOUNDATION, SHAPE_FOUNDATION_STEPS, SHAPE_TRI_FOUNDATION, STAIR_LOCS};
 
 use crate::look::yaw_u16;
 use crate::ui::build::{row_for, PLACE_MATERIAL, SHAPES};
@@ -160,7 +160,8 @@ pub struct Ghost {
 
 /// `R`/`F` turn a stair preview; on a foundation they raise/lower its height
 /// (foundation height v0) — while the building plan is in hand and no
-/// panel owns the pointer, wheel up or not.
+/// panel owns the pointer, wheel up or not. Foundation steps also accept
+/// Shift+R/F for height, leaving plain R/F available for their direction.
 ///
 /// **These two keys stepped the STOREY until 2026-09-05**, and only while
 /// the wheel was up. The storey is aimed now (`place::Aim::level_for`, the
@@ -190,7 +191,9 @@ pub fn height_keys(
         return;
     }
     let shape = ui.as_ref().map(|u| SHAPES[u.shape.min(SHAPES.len() - 1)]);
-    if shape == Some(SHAPE_STAIRS) {
+    let step_height = shape == Some(SHAPE_FOUNDATION_STEPS)
+        && (keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight));
+    if shape.is_some_and(sim_core::circulation::is_riser) && !step_height {
         if keys.just_pressed(KeyCode::KeyR) {
             ghost.stair_turn = (ghost.stair_turn + 1) % STAIR_LOCS.len() as u8;
         }
@@ -200,7 +203,7 @@ pub fn height_keys(
         }
         return;
     }
-    if !matches!(shape, Some(SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION)) {
+    if !matches!(shape, Some(SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION)) && !step_height {
         return;
     }
     if keys.just_pressed(KeyCode::KeyR) {
@@ -288,7 +291,7 @@ pub fn track(
     // the storey above it, a floor's edge its own, bare ground the first.
     let level = aim.level_for(shape);
     let mut target = aim.target_for(shape);
-    if shape == SHAPE_STAIRS {
+    if sim_core::circulation::is_riser(shape) {
         target.loc = STAIR_LOCS[ghost.stair_turn as usize % STAIR_LOCS.len()];
     }
     let site = Site {
@@ -408,6 +411,9 @@ pub fn track(
                     structures::PartKind::Box => mesh.clone(),
                     structures::PartKind::Tri => tri.clone(),
                     structures::PartKind::Stairs => stairs.clone(),
+                    structures::PartKind::Circulation(_) | structures::PartKind::TriFrame => {
+                        meshes.add(structures::part_mesh(part))
+                    }
                 };
                 c.spawn((
                     Mesh3d(unit),

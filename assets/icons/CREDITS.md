@@ -118,3 +118,12 @@ more (`ci/bake_icons.py` fetches from GitHub).
 |---|---|
 | `burnt_meat.png` | `ci/icons/burnt_meat.svg` (ours) |
 | `map_player.png` | `ci/icons/map_player.svg` (ours) |
+| `shape_foundation_steps.png` | `ci/icons/shape_foundation_steps.svg` (ours) |
+| `shape_half_wall.png` | `ci/icons/shape_half_wall.svg` (ours) |
+| `shape_low_wall.png` | `ci/icons/shape_low_wall.svg` (ours) |
+| `shape_ramp.png` | `ci/icons/shape_ramp.svg` (ours) |
+| `shape_stairs_l.png` | `ci/icons/shape_stairs_l.svg` (ours) |
+| `shape_stairs_spiral.png` | `ci/icons/shape_stairs_spiral.svg` (ours) |
+| `shape_stairs_tri_spiral.png` | `ci/icons/shape_stairs_tri_spiral.svg` (ours) |
+| `shape_stairs_u.png` | `ci/icons/shape_stairs_u.svg` (ours) |
+| `shape_tri_floor_frame.png` | `ci/icons/shape_tri_floor_frame.svg` (ours) |

@@ -1460,6 +1460,43 @@ pub fn headroom_probe() -> HeadroomProbe {
             }
         }
     }
+    // Every new circulation kind enters the allocation and native/Wasm
+    // fixture. Each plot uses its own terrain band so a distant hill cannot
+    // bury a flight and silently remove it from the movement coverage.
+    for (i, shape) in [
+        SHAPE_FOUNDATION_STEPS,
+        SHAPE_RAMP,
+        SHAPE_STAIRS_L,
+        SHAPE_STAIRS_U,
+        SHAPE_STAIRS_SPIRAL,
+        SHAPE_STAIRS_TRI_SPIRAL,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let cx = HEADROOM_CX + 20 + i as u16 * 2;
+        let steps = shape == SHAPE_FOUNDATION_STEPS;
+        let plate = if steps { PLATE_RISE_MAX_BANDS as i8 } else { 0 };
+        if !steps {
+            cols.add(cx, HEADROOM_CZ, 1, LOC_PLANE, SHAPE_FLOOR, plate);
+        }
+        cols.add(
+            cx,
+            HEADROOM_CZ,
+            if steps { 0 } else { 1 },
+            LOC_RISER,
+            shape,
+            plate,
+        );
+        cols.add(
+            cx,
+            HEADROOM_CZ,
+            3,
+            LOC_TRI_XHI_ZHI,
+            SHAPE_TRI_FLOOR_FRAME,
+            plate,
+        );
+    }
     HeadroomProbe {
         haven,
         cols,
@@ -1559,6 +1596,85 @@ pub fn run_headroom_probe(p: &mut HeadroomProbe) -> u64 {
                 hash.update(&q.to_le_bytes());
             }
             hash.update(&[body.grounded as u8]);
+        }
+    }
+    // Sweep the lanes and sample projectile contact too, without allocating
+    // paths. Assertions about traversal live in tests/circulation.rs.
+    for route in 0..6 {
+        let cx = HEADROOM_CX + 20 + route * 2;
+        let x = cx as f32 * BUILD_CELL_M + 0.5;
+        let z = HEADROOM_CZ as f32 * BUILD_CELL_M;
+        let own_base = column_floor_y(
+            HEADROOM_SEED,
+            &p.haven,
+            cx,
+            HEADROOM_CZ,
+            p.cols.get(cx, HEADROOM_CZ).plate,
+        );
+        let start_z = match route {
+            4 => 1.5,
+            5 => 2.45,
+            _ => 0.1,
+        };
+        let mut body = Body {
+            qx: quant_xz(x),
+            qz: quant_xz(z + start_z),
+            qy: quant_y(
+                own_base
+                    + if route == 0 {
+                        -LEVEL_H_M * 0.5 + start_z * 0.5
+                    } else {
+                        LEVEL_H_M
+                    },
+            ),
+            qvy: 0,
+            grounded: true,
+        };
+        for tick in 0..80 {
+            let frame = InputFrame {
+                move_z: if (tick < 40) != (route == 5) { 40 } else { -40 },
+                ..InputFrame::default()
+            };
+            movement::step(
+                HEADROOM_SEED,
+                &p.haven,
+                &p.cols,
+                &mut p.scratch.occupants(),
+                &mut body,
+                &frame,
+            );
+            for q in [body.qx, body.qy, body.qz, body.qvy] {
+                hash.update(&q.to_le_bytes());
+            }
+            let stop = crate::collide::shot_stop(
+                HEADROOM_SEED,
+                &p.haven,
+                &p.cols,
+                x,
+                z + 1.0,
+                x,
+                z + 1.1,
+                body.qy as f32 * POS_Y_Q - 0.1,
+                crate::ranged::ARROW_R_M,
+            );
+            hash.update(&[stop.map_or(255, |hit| hit.loc)]);
+        }
+        // Both the open centroid and solid corner of the triangular frame
+        // contribute, so its mask cannot disappear without moving the hash.
+        for offset in [2.0, 2.9] {
+            let at_x = cx as f32 * BUILD_CELL_M + offset;
+            let stop = crate::collide::shot_stop(
+                HEADROOM_SEED,
+                &p.haven,
+                &p.cols,
+                at_x,
+                z + offset,
+                at_x,
+                z + offset,
+                own_base + 3.0 * LEVEL_H_M - 0.1,
+                crate::ranged::ARROW_R_M,
+            );
+            hash.update(&[stop.map_or(255, |hit| hit.loc)]);
         }
     }
     (contacts << 32) | (hash.digest() & 0xFFFF_FFFF)

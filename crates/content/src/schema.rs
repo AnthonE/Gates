@@ -231,6 +231,13 @@ pub enum Shape {
     FloorFrame,
     HalfWall,
     LowWall,
+    FoundationSteps,
+    Ramp,
+    StairsL,
+    StairsU,
+    StairsSpiral,
+    StairsTriSpiral,
+    TriFloorFrame,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]

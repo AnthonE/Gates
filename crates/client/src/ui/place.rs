@@ -31,7 +31,7 @@ use sim_core::build::{
     terrain_band, BuildContent, PieceRec, BUILD_CELL_M, BUILD_REACH_M, LEVEL_H_M, LOC_DIAG_A,
     LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, LOC_RISER, LOC_TRI_XHI_ZHI, LOC_TRI_XHI_ZLO,
     LOC_TRI_XLO_ZHI, LOC_TRI_XLO_ZLO, PLATE_RISE_MAX_BANDS, PLATE_SINK_MAX_BANDS, SHAPE_DOORWAY,
-    SHAPE_FOUNDATION, SHAPE_FRAME, SHAPE_HALF_WALL, SHAPE_LOW_WALL, SHAPE_STAIRS, SHAPE_TRI_FLOOR,
+    SHAPE_FOUNDATION, SHAPE_FRAME, SHAPE_HALF_WALL, SHAPE_LOW_WALL, SHAPE_TRI_FLOOR,
     SHAPE_TRI_FOUNDATION, SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
 };
 use sim_core::craft::inv_count;
@@ -131,14 +131,17 @@ impl Aim {
     /// rather than on the wall.
     pub fn level_for(&self, shape: u8) -> u8 {
         let top = MAX_BUILD_SOCKETS as u8 - 1;
-        if matches!(shape, SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION) {
+        if matches!(
+            shape,
+            SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION | sim_core::build::SHAPE_FOUNDATION_STEPS
+        ) {
             return 0;
         }
         match self.met {
             Met::Ground => 0,
             Met::Floor(l) | Met::Socket(l) => l.min(top),
             Met::Wall(l) | Met::HalfWall(l) | Met::LowWall(l) => {
-                if shape == SHAPE_STAIRS
+                if sim_core::circulation::is_riser(shape)
                     || (self.beside.is_some()
                         && matches!(
                             shape,
@@ -707,7 +710,10 @@ pub fn target_at(ax: f32, az: f32, shape: u8, level: u8) -> Target {
         }
     } else if matches!(
         shape,
-        SHAPE_TRI_FOUNDATION | SHAPE_TRI_FLOOR | SHAPE_TRI_ROOF
+        SHAPE_TRI_FOUNDATION
+            | SHAPE_TRI_FLOOR
+            | SHAPE_TRI_ROOF
+            | sim_core::build::SHAPE_TRI_FLOOR_FRAME
     ) {
         // The half whose centroid is nearest the aim point — the anchors
         // are the sim's own (`build::anchor` at thirds), so the ghost's
@@ -726,14 +732,17 @@ pub fn target_at(ax: f32, az: f32, shape: u8, level: u8) -> Target {
                 loc = cand;
             }
         }
-    } else if shape == SHAPE_STAIRS {
+    } else if sim_core::circulation::is_riser(shape) {
         loc = LOC_RISER;
     }
 
     Target {
         cx: cx as u16,
         cz: cz as u16,
-        level: if shape == SHAPE_FOUNDATION {
+        level: if matches!(
+            shape,
+            SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION | sim_core::build::SHAPE_FOUNDATION_STEPS
+        ) {
             0
         } else {
             level.min(MAX_BUILD_SOCKETS as u8 - 1)
@@ -1404,7 +1413,10 @@ mod tests {
 
     #[test]
     fn stairs_take_the_riser_and_planes_take_the_plane() {
-        assert_eq!(target(9.0, 9.0, 0.0, 1.0, SHAPE_STAIRS, 1).loc, LOC_RISER);
+        assert_eq!(
+            target(9.0, 9.0, 0.0, 1.0, sim_core::build::SHAPE_STAIRS, 1).loc,
+            LOC_RISER
+        );
         assert_eq!(
             target(9.0, 9.0, 0.0, 1.0, SHAPE_FOUNDATION, 1).loc,
             LOC_PLANE
@@ -1537,7 +1549,7 @@ mod tests {
     #[test]
     fn a_rotated_stair_preview_cannot_overlap_another_direction() {
         let haven = sim_core::terrain::haven(1);
-        let content = free_table(SHAPE_STAIRS);
+        let content = free_table(sim_core::build::SHAPE_STAIRS);
         let inv = empty_inv();
         let cols = sim_core::collide::ColIndex::new();
         for placed in sim_core::build::STAIR_LOCS {
@@ -1564,7 +1576,7 @@ mod tests {
                     loc,
                 };
                 assert_eq!(
-                    verdict(target, 0, SHAPE_STAIRS, &site, false, 0),
+                    verdict(target, 0, sim_core::build::SHAPE_STAIRS, &site, false, 0),
                     Verdict::No("spot taken")
                 );
             }

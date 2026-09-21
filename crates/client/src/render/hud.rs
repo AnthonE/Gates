@@ -1613,7 +1613,9 @@ pub fn update(
                         Some(crate::ui::place::Verdict::No(w)) if !w.is_empty() => w,
                         _ => "",
                     };
-                    let level = ghost.as_ref().map(|g| g.level).unwrap_or(0);
+                    let level =
+                        sim_core::build::level_y(ghost.as_ref().map(|g| g.level).unwrap_or(0))
+                            / sim_core::build::LEVEL_H_M;
                     // How far off its own ground the drawn floor stands
                     // (build plate v1's plate, or foundation height v0's
                     // request where nothing else decides) — said in metres,
@@ -1630,12 +1632,14 @@ pub fn update(
                     // something for: a foundation starting a plate. On a
                     // wall the nudge is sent and ignored, and a hint about
                     // it there would teach a key that does nothing.
-                    let keys = if matches!(
+                    let keys = if shape == sim_core::build::SHAPE_FOUNDATION_STEPS {
+                        "(hold right · R/F rotate · Shift+R/F height)"
+                    } else if matches!(
                         shape,
                         sim_core::build::SHAPE_FOUNDATION | sim_core::build::SHAPE_TRI_FOUNDATION
                     ) {
                         "(hold right · R/F height)"
-                    } else if shape == sim_core::build::SHAPE_STAIRS {
+                    } else if sim_core::circulation::is_riser(shape) {
                         "(hold right · R/F rotate)"
                     } else {
                         "(hold right)"

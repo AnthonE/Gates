@@ -256,6 +256,19 @@ pub const PLANE_THICKNESS_M: f32 = 0.3;
 /// drawn lintel was the frame lying to the other sense.
 pub const DOOR_HEAD_M: f32 = 2.1;
 
+/// The triangular floor frame's rim, measured in the same local half-cell
+/// as a triangle plane. Radius expands each rail for capsule/projectile tests.
+pub fn tri_frame_solid(loc: u8, x: f32, z: f32, radius: f32) -> bool {
+    let (x, z) = match loc {
+        LOC_TRI_XHI_ZLO => (BUILD_CELL_M - x, z),
+        LOC_TRI_XLO_ZHI => (x, BUILD_CELL_M - z),
+        LOC_TRI_XHI_ZHI => (BUILD_CELL_M - x, BUILD_CELL_M - z),
+        _ => (x, z),
+    };
+    let rim = FRAME_RIM_M + radius;
+    x <= rim || z <= rim || x + z >= BUILD_CELL_M - rim * std::f32::consts::SQRT_2
+}
+
 /// "No built surface here" sentinel — far below any terrain, so
 /// `max(terrain, piece_ground)` needs no branch.
 pub const NO_SURFACE: f32 = -1.0e9;
@@ -276,6 +289,10 @@ pub const SOLID_NONE: u64 = u64::MAX;
 pub struct ColMasks {
     pub planes: u16,
     pub floor_frames: u16,
+    /// Four-bit circulation kind per socket; zero is the original straight flight.
+    pub riser_kind: u64,
+    /// One flag per triangular half per level: its centre is an opening.
+    pub tri_frames: u64,
     pub stairs: u16,
     pub stairs_xhi: u16,
     pub stairs_zlo: u16,
@@ -364,6 +381,8 @@ impl ColMasks {
     pub const EMPTY: Self = Self {
         planes: 0,
         floor_frames: 0,
+        riser_kind: 0,
+        tri_frames: 0,
         stairs: 0,
         stairs_xhi: 0,
         stairs_zlo: 0,
@@ -486,6 +505,17 @@ impl ColMasks {
         (nib != 0xF).then_some(nib as u8)
     }
 
+    pub fn tri_is_frame(&self, level: u8, loc: u8) -> bool {
+        self.tri_frames & (1 << (level as u32 * 4 + (loc - LOC_TRI_XLO_ZLO) as u32)) != 0
+    }
+    pub fn riser_shape(&self, level: u8) -> u8 {
+        let kind = ((self.riser_kind >> (level as u32 * 4)) & 15) as u8;
+        if kind == 0 {
+            SHAPE_STAIRS
+        } else {
+            crate::build::SHAPE_LOW_WALL + kind
+        }
+    }
     /// Partial-height edges at this address. The mask is also support's source.
     pub fn partial_edges(&self, loc: u8) -> (u16, u16) {
         match loc {
@@ -513,7 +543,7 @@ impl ColMasks {
         match shape {
             SHAPE_FOUNDATION | SHAPE_FLOOR | SHAPE_ROOF => Some(&mut self.planes),
             SHAPE_FLOOR_FRAME => Some(&mut self.floor_frames),
-            SHAPE_STAIRS => match loc {
+            shape if crate::circulation::is_riser(shape) => match loc {
                 LOC_RISER => Some(&mut self.stairs),
                 LOC_RISER_XHI => Some(&mut self.stairs_xhi),
                 LOC_RISER_ZLO => Some(&mut self.stairs_zlo),
@@ -538,7 +568,10 @@ impl ColMasks {
             SHAPE_WINDOW if loc == LOC_EDGE_ZLO => Some(&mut self.wins_zlo),
             SHAPE_FRAME if loc == LOC_EDGE_XLO => Some(&mut self.frames_xlo),
             SHAPE_FRAME if loc == LOC_EDGE_ZLO => Some(&mut self.frames_zlo),
-            SHAPE_TRI_FOUNDATION | SHAPE_TRI_FLOOR | SHAPE_TRI_ROOF => match loc {
+            SHAPE_TRI_FOUNDATION
+            | SHAPE_TRI_FLOOR
+            | SHAPE_TRI_ROOF
+            | crate::build::SHAPE_TRI_FLOOR_FRAME => match loc {
                 LOC_TRI_XLO_ZLO => Some(&mut self.tri_xlo_zlo),
                 LOC_TRI_XHI_ZLO => Some(&mut self.tri_xhi_zlo),
                 LOC_TRI_XLO_ZHI => Some(&mut self.tri_xlo_zhi),
@@ -657,6 +690,21 @@ impl ColIndex {
             i = (i + 1) & (COL_INDEX_SLOTS - 1);
         }
         self.masks[i].plate = plate;
+        if shape == crate::build::SHAPE_TRI_FLOOR_FRAME
+            && (LOC_TRI_XLO_ZLO..=LOC_TRI_XHI_ZHI).contains(&loc)
+        {
+            self.masks[i].tri_frames |= 1 << (level as u32 * 4 + (loc - LOC_TRI_XLO_ZLO) as u32);
+        }
+        if crate::circulation::is_riser(shape) {
+            let kind = if shape == SHAPE_STAIRS {
+                0
+            } else {
+                shape - crate::build::SHAPE_LOW_WALL
+            };
+            let shift = level as u32 * 4;
+            self.masks[i].riser_kind =
+                (self.masks[i].riser_kind & !(15 << shift)) | ((kind as u64) << shift);
+        }
         if let Some(m) = self.masks[i].field(shape, loc) {
             *m |= 1 << level;
         } else if self.masks[i].is_empty() {
@@ -704,6 +752,14 @@ impl ColIndex {
                 break;
             }
             i = (i + 1) & (COL_INDEX_SLOTS - 1);
+        }
+        if shape == crate::build::SHAPE_TRI_FLOOR_FRAME
+            && (LOC_TRI_XLO_ZLO..=LOC_TRI_XHI_ZHI).contains(&loc)
+        {
+            self.masks[i].tri_frames &= !(1 << (level as u32 * 4 + (loc - LOC_TRI_XLO_ZLO) as u32));
+        }
+        if crate::circulation::is_riser(shape) {
+            self.masks[i].riser_kind &= !(15 << (level as u32 * 4));
         }
         if let Some(m) = self.masks[i].field(shape, loc) {
             *m &= !(1 << level);
@@ -1007,23 +1063,35 @@ pub fn piece_ground(
             best = floor;
         }
         if tris & bit != 0 && floor <= lid && floor > best {
-            let on = (m.tri_xlo_zlo & bit != 0 && in_half(LOC_TRI_XLO_ZLO))
-                || (m.tri_xhi_zlo & bit != 0 && in_half(LOC_TRI_XHI_ZLO))
-                || (m.tri_xlo_zhi & bit != 0 && in_half(LOC_TRI_XLO_ZHI))
-                || (m.tri_xhi_zhi & bit != 0 && in_half(LOC_TRI_XHI_ZHI));
+            let on = (m.tri_xlo_zlo & bit != 0
+                && in_half(LOC_TRI_XLO_ZLO)
+                && (!m.tri_is_frame(level as u8, LOC_TRI_XLO_ZLO)
+                    || tri_frame_solid(LOC_TRI_XLO_ZLO, dx, dz, 0.0)))
+                || (m.tri_xhi_zlo & bit != 0
+                    && in_half(LOC_TRI_XHI_ZLO)
+                    && (!m.tri_is_frame(level as u8, LOC_TRI_XHI_ZLO)
+                        || tri_frame_solid(LOC_TRI_XHI_ZLO, dx, dz, 0.0)))
+                || (m.tri_xlo_zhi & bit != 0
+                    && in_half(LOC_TRI_XLO_ZHI)
+                    && (!m.tri_is_frame(level as u8, LOC_TRI_XLO_ZHI)
+                        || tri_frame_solid(LOC_TRI_XLO_ZHI, dx, dz, 0.0)))
+                || (m.tri_xhi_zhi & bit != 0
+                    && in_half(LOC_TRI_XHI_ZHI)
+                    && (!m.tri_is_frame(level as u8, LOC_TRI_XHI_ZHI)
+                        || tri_frame_solid(LOC_TRI_XHI_ZHI, dx, dz, 0.0)));
             if on {
                 best = floor;
             }
         }
-        for (mask, run) in
-            m.stair_masks()
-                .into_iter()
-                .zip([dz, dx, BUILD_CELL_M - dz, BUILD_CELL_M - dx])
-        {
+        for (mask, loc) in m.stair_masks().into_iter().zip(crate::build::STAIR_LOCS) {
             if mask & bit != 0 {
-                let ramp = floor + (run / BUILD_CELL_M).clamp(0.0, 1.0) * LEVEL_H_M;
-                if ramp <= lid && ramp > best {
-                    best = ramp;
+                if let Some(y) =
+                    crate::circulation::surface(m.riser_shape(level as u8), loc, dx, dz)
+                {
+                    let ramp = floor + y;
+                    if ramp <= lid && ramp > best {
+                        best = ramp;
+                    }
                 }
             }
         }
@@ -1314,7 +1382,15 @@ fn any_body_plane(
             }
             let m = cols.get(bx as u16, bz as u16);
             let tris = m.tri_xlo_zlo | m.tri_xhi_zlo | m.tri_xlo_zhi | m.tri_xhi_zhi;
-            if m.planes | m.floor_frames | tris == 0 {
+            if m.planes
+                | m.floor_frames
+                | tris
+                | m.stairs
+                | m.stairs_xhi
+                | m.stairs_zlo
+                | m.stairs_xlo
+                == 0
+            {
                 continue;
             }
             // The cell, at the capsule's radius: the clamp-to-rectangle circle
@@ -1345,16 +1421,41 @@ fn any_body_plane(
                 let bit = 1u16 << level;
                 let here = m.planes & bit != 0
                     || (m.floor_frames & bit != 0 && floor_frame_solid(dx, dz, r))
-                    || (m.tri_xlo_zlo & bit != 0 && in_half(LOC_TRI_XLO_ZLO))
-                    || (m.tri_xhi_zlo & bit != 0 && in_half(LOC_TRI_XHI_ZLO))
-                    || (m.tri_xlo_zhi & bit != 0 && in_half(LOC_TRI_XLO_ZHI))
-                    || (m.tri_xhi_zhi & bit != 0 && in_half(LOC_TRI_XHI_ZHI));
-                if !here {
-                    continue;
-                }
-                let top = base + crate::build::level_y(level as u8);
-                if visit(level, top) {
+                    || (m.tri_xlo_zlo & bit != 0
+                        && in_half(LOC_TRI_XLO_ZLO)
+                        && (!m.tri_is_frame(level as u8, LOC_TRI_XLO_ZLO)
+                            || tri_frame_solid(LOC_TRI_XLO_ZLO, dx, dz, r)))
+                    || (m.tri_xhi_zlo & bit != 0
+                        && in_half(LOC_TRI_XHI_ZLO)
+                        && (!m.tri_is_frame(level as u8, LOC_TRI_XHI_ZLO)
+                            || tri_frame_solid(LOC_TRI_XHI_ZLO, dx, dz, r)))
+                    || (m.tri_xlo_zhi & bit != 0
+                        && in_half(LOC_TRI_XLO_ZHI)
+                        && (!m.tri_is_frame(level as u8, LOC_TRI_XLO_ZHI)
+                            || tri_frame_solid(LOC_TRI_XLO_ZHI, dx, dz, r)))
+                    || (m.tri_xhi_zhi & bit != 0
+                        && in_half(LOC_TRI_XHI_ZHI)
+                        && (!m.tri_is_frame(level as u8, LOC_TRI_XHI_ZHI)
+                            || tri_frame_solid(LOC_TRI_XHI_ZHI, dx, dz, r)));
+                let floor = base + crate::build::level_y(level as u8);
+                if here && visit(level, floor) {
                     return true;
+                }
+                for (mask, loc) in m.stair_masks().into_iter().zip(crate::build::STAIR_LOCS) {
+                    if mask & bit == 0 {
+                        continue;
+                    }
+                    let shape = m.riser_shape(level as u8);
+                    if let Some(y) = crate::circulation::surface(shape, loc, dx, dz) {
+                        let slab_level = if shape == crate::build::SHAPE_FOUNDATION_STEPS {
+                            0
+                        } else {
+                            level.max(1)
+                        };
+                        if visit(slab_level, floor + y) {
+                            return true;
+                        }
+                    }
                 }
             }
         }
@@ -1428,7 +1529,15 @@ fn cell_planes_stop_shot(
             }
             let m = cols.get(bx as u16, bz as u16);
             let tris = m.tri_xlo_zlo | m.tri_xhi_zlo | m.tri_xlo_zhi | m.tri_xhi_zhi;
-            if m.planes | m.floor_frames | tris == 0 {
+            if m.planes
+                | m.floor_frames
+                | tris
+                | m.stairs
+                | m.stairs_xhi
+                | m.stairs_zlo
+                | m.stairs_xlo
+                == 0
+            {
                 continue;
             }
             let (cxm, czm) = (
@@ -1477,37 +1586,64 @@ fn cell_planes_stop_shot(
                     || (m.floor_frames & bit != 0 && floor_frame_solid(dx, dz, r))
                 {
                     Some(LOC_PLANE)
-                } else if m.tri_xlo_zlo & bit != 0 && in_half(LOC_TRI_XLO_ZLO) {
+                } else if m.tri_xlo_zlo & bit != 0
+                    && in_half(LOC_TRI_XLO_ZLO)
+                    && (!m.tri_is_frame(level as u8, LOC_TRI_XLO_ZLO)
+                        || tri_frame_solid(LOC_TRI_XLO_ZLO, dx, dz, r))
+                {
                     Some(LOC_TRI_XLO_ZLO)
-                } else if m.tri_xhi_zlo & bit != 0 && in_half(LOC_TRI_XHI_ZLO) {
+                } else if m.tri_xhi_zlo & bit != 0
+                    && in_half(LOC_TRI_XHI_ZLO)
+                    && (!m.tri_is_frame(level as u8, LOC_TRI_XHI_ZLO)
+                        || tri_frame_solid(LOC_TRI_XHI_ZLO, dx, dz, r))
+                {
                     Some(LOC_TRI_XHI_ZLO)
-                } else if m.tri_xlo_zhi & bit != 0 && in_half(LOC_TRI_XLO_ZHI) {
+                } else if m.tri_xlo_zhi & bit != 0
+                    && in_half(LOC_TRI_XLO_ZHI)
+                    && (!m.tri_is_frame(level as u8, LOC_TRI_XLO_ZHI)
+                        || tri_frame_solid(LOC_TRI_XLO_ZHI, dx, dz, r))
+                {
                     Some(LOC_TRI_XLO_ZHI)
-                } else if m.tri_xhi_zhi & bit != 0 && in_half(LOC_TRI_XHI_ZHI) {
+                } else if m.tri_xhi_zhi & bit != 0
+                    && in_half(LOC_TRI_XHI_ZHI)
+                    && (!m.tri_is_frame(level as u8, LOC_TRI_XHI_ZHI)
+                        || tri_frame_solid(LOC_TRI_XHI_ZHI, dx, dz, r))
+                {
                     Some(LOC_TRI_XHI_ZHI)
                 } else {
                     None
                 };
-                let Some(loc) = here else {
-                    continue;
-                };
-                let top = base + crate::build::level_y(level as u8);
-                if y - r >= top {
-                    continue; // over it
+                let floor = base + crate::build::level_y(level as u8);
+                if let Some(loc) = here {
+                    if y - r < floor && (level == 0 || y + r > floor - PLANE_THICKNESS_M) {
+                        return Some(PieceHit {
+                            cx: bx as u16,
+                            cz: bz as u16,
+                            level: level as u8,
+                            loc,
+                        });
+                    }
                 }
-                // Level 0 is a foundation and is solid to the ground — the
-                // skirt `render/structures.rs` draws is the volume, exactly
-                // as [`plane_blocked`] reads it. Anything above it is a
-                // slab with air under it, and an arrow uses that air.
-                if level > 0 && y + r <= top - PLANE_THICKNESS_M {
-                    continue; // passed under
+                for (mask, loc) in m.stair_masks().into_iter().zip(crate::build::STAIR_LOCS) {
+                    if mask & bit == 0 {
+                        continue;
+                    }
+                    let shape = m.riser_shape(level as u8);
+                    if let Some(dy) = crate::circulation::surface(shape, loc, dx, dz) {
+                        let top = floor + dy;
+                        if y - r < top
+                            && (shape == crate::build::SHAPE_FOUNDATION_STEPS
+                                || y + r > top - PLANE_THICKNESS_M)
+                        {
+                            return Some(PieceHit {
+                                cx: bx as u16,
+                                cz: bz as u16,
+                                level: level as u8,
+                                loc,
+                            });
+                        }
+                    }
                 }
-                return Some(PieceHit {
-                    cx: bx as u16,
-                    cz: bz as u16,
-                    level: level as u8,
-                    loc,
-                });
             }
         }
     }

@@ -86,6 +86,13 @@ pub const SHAPE_TRI_ROOF: u8 = 10;
 pub const SHAPE_FLOOR_FRAME: u8 = 11;
 pub const SHAPE_HALF_WALL: u8 = 12;
 pub const SHAPE_LOW_WALL: u8 = 13;
+pub const SHAPE_FOUNDATION_STEPS: u8 = 14;
+pub const SHAPE_RAMP: u8 = 15;
+pub const SHAPE_STAIRS_L: u8 = 16;
+pub const SHAPE_STAIRS_U: u8 = 17;
+pub const SHAPE_STAIRS_SPIRAL: u8 = 18;
+pub const SHAPE_STAIRS_TRI_SPIRAL: u8 = 19;
+pub const SHAPE_TRI_FLOOR_FRAME: u8 = 20;
 
 /// Vertical position of a socket, preserving every existing whole-storey address.
 pub fn level_y(level: u8) -> f32 {
@@ -1131,6 +1138,18 @@ fn edge_bears(pieces: &Pieces, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
 /// neighbour, because each side has its own pair of touching halves
 /// (triangles v0; the `LOC_TRI_*` doc draws the map).
 fn bears_edge(pieces: &Pieces, bx: u16, bz: u16, level: u8, loc: u8, canonical: bool) -> bool {
+    let m = pieces.cols().get(bx, bz);
+    if m.riser_shape(level) == SHAPE_FOUNDATION_STEPS {
+        let high = match (loc, canonical) {
+            (LOC_EDGE_XLO, true) => m.stairs_xlo,
+            (LOC_EDGE_XLO, false) => m.stairs_xhi,
+            (LOC_EDGE_ZLO, true) => m.stairs_zlo,
+            _ => m.stairs,
+        };
+        if high & (1 << level) != 0 {
+            return true;
+        }
+    }
     if plane_at(pieces, bx, bz, level) {
         return true;
     }
@@ -1312,14 +1331,14 @@ pub fn foundation_terrain_ok(seed: u64, haven: &terrain::Haven, ax: f32, az: f32
 fn loc_fits_shape(shape: u8, loc: u8) -> bool {
     match shape {
         SHAPE_FOUNDATION | SHAPE_FLOOR | SHAPE_ROOF | SHAPE_FLOOR_FRAME => loc == LOC_PLANE,
-        SHAPE_STAIRS => is_stair_loc(loc),
+        shape if crate::circulation::is_riser(shape) => is_stair_loc(loc),
         // The wall alone also fits the diagonals (their doc says why the
         // openings do not).
         SHAPE_WALL | SHAPE_HALF_WALL | SHAPE_LOW_WALL => {
             loc == LOC_EDGE_XLO || loc == LOC_EDGE_ZLO || loc == LOC_DIAG_A || loc == LOC_DIAG_B
         }
         SHAPE_DOORWAY | SHAPE_WINDOW | SHAPE_FRAME => loc == LOC_EDGE_XLO || loc == LOC_EDGE_ZLO,
-        SHAPE_TRI_FOUNDATION | SHAPE_TRI_FLOOR | SHAPE_TRI_ROOF => {
+        SHAPE_TRI_FOUNDATION | SHAPE_TRI_FLOOR | SHAPE_TRI_ROOF | SHAPE_TRI_FLOOR_FRAME => {
             (LOC_TRI_XLO_ZLO..=LOC_TRI_XHI_ZHI).contains(&loc)
         }
         _ => false,
@@ -1417,7 +1436,7 @@ fn vertical_edge_conflict(
 /// triangle foundation is a foundation.
 fn supported(pieces: &Pieces, shape: u8, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
     match shape {
-        SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION => true,
+        SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION | SHAPE_FOUNDATION_STEPS => true,
         SHAPE_FLOOR | SHAPE_ROOF | SHAPE_FLOOR_FRAME => {
             // An edge piece under any of the cell's four sides. A diagonal
             // wall below deliberately does NOT bear a full plane — its
@@ -1428,7 +1447,7 @@ fn supported(pieces: &Pieces, shape: u8, cx: u16, cz: u16, level: u8, loc: u8) -
                     || edge_bears(pieces, cx, cz, level, LOC_EDGE_ZLO)
                     || edge_bears(pieces, cx, cz + 1, level, LOC_EDGE_ZLO))
         }
-        SHAPE_TRI_FLOOR | SHAPE_TRI_ROOF => {
+        SHAPE_TRI_FLOOR | SHAPE_TRI_ROOF | SHAPE_TRI_FLOOR_FRAME => {
             // One of its two sides, or the diagonal wall under its own
             // hypotenuse (triangles v0).
             if level == 0 {
@@ -1440,7 +1459,25 @@ fn supported(pieces: &Pieces, shape: u8, cx: u16, cz: u16, level: u8, loc: u8) -
                 || edge_bears(pieces, cx, cz, level, hyp)
         }
         // A frame bears its perimeter, not a flight across its empty centre.
-        SHAPE_STAIRS => pieces.cols().get(cx, cz).planes & (1 << level) != 0,
+        shape if crate::circulation::is_riser(shape) => {
+            let m = pieces.cols().get(cx, cz);
+            let tri = match loc {
+                LOC_RISER_XHI => LOC_TRI_XLO_ZHI,
+                LOC_RISER_ZLO => LOC_TRI_XHI_ZHI,
+                LOC_RISER_XLO => LOC_TRI_XHI_ZLO,
+                _ => LOC_TRI_XLO_ZLO,
+            };
+            let stacked = matches!(shape, SHAPE_STAIRS_SPIRAL | SHAPE_STAIRS_TRI_SPIRAL)
+                && level_step(level, -1).is_some_and(|below| {
+                    m.riser_shape(below) == shape
+                        && occupied_at(pieces, cx, cz, below, opposite_riser(loc))
+                });
+            stacked
+                || m.planes & (1 << level) != 0
+                || (shape == SHAPE_STAIRS_TRI_SPIRAL
+                    && pieces.find(cx, cz, level, tri).is_some()
+                    && !m.tri_is_frame(level, tri))
+        }
         // The diagonal wall: the cell body it stands across — a full
         // plane or one of its own pair — or the diagonal below it.
         SHAPE_WALL | SHAPE_HALF_WALL | SHAPE_LOW_WALL if loc == LOC_DIAG_A || loc == LOC_DIAG_B => {
@@ -1490,16 +1527,16 @@ const MAX_DEPENDENTS: usize = 14;
 ///   (`bears_edge`), and the diagonal branch probes the body it stands
 ///   across — so a **plane** is read by the riser, the four edges of its
 ///   own cell and the two diagonals, all at its own level;
-/// - the floor/roof branch probes four edges at `level - 1`, the tri
-///   floor/roof branch probes its two sides and its hypotenuse there,
+/// - the floor/roof branch probes four edges at the half and whole sockets
+///   below, the tri floor/roof branch probes its sides and hypotenuse there,
 ///   and the edge branches probe the piece below — so an **edge** is
-///   read by the planes and touching triangle halves one level up in the
+///   read by the planes and touching triangle halves at those top sockets in the
 ///   two cells it adjoins and by the edge directly above it, and a
 ///   **diagonal** by its own pair and the diagonal above;
-/// - a **triangle half** is read by its two side edges and its
-///   hypotenuse at its own level (`bears_edge` / the diag body probe);
-/// - nothing anywhere probes `LOC_RISER`, so a **riser** is read by
-///   nothing: take the stairs out and the floor above still stands.
+/// - a **triangle half** is read by its sides, hypotenuse and triangular
+///   spiral at its own level (`bears_edge` / the body support probes);
+/// - foundation steps bear their high edge; a spiral bears the opposite
+///   flight at the next half socket. Ordinary stairs bear no upper floor.
 ///
 /// Foundations appear here as planes like any other; they are simply never
 /// dropped themselves, because their own clause is unconditional.
@@ -1513,7 +1550,23 @@ fn dependents(cx: u16, cz: u16, level: u8, loc: u8, out: &mut [Addr; MAX_DEPENDE
         }
         n
     } else {
-        dependents_at(cx, cz, level, loc, level, out)
+        let mut n = dependents_at(cx, cz, level, loc, level, out);
+        if is_stair_loc(loc) {
+            if let Some(up) = level_step(level, 1) {
+                out[n] = (cx, cz, up, opposite_riser(loc));
+                n += 1;
+            }
+        }
+        n
+    }
+}
+
+fn opposite_riser(loc: u8) -> u8 {
+    match loc {
+        LOC_RISER => LOC_RISER_ZLO,
+        LOC_RISER_XHI => LOC_RISER_XLO,
+        LOC_RISER_ZLO => LOC_RISER,
+        _ => LOC_RISER_XHI,
     }
 }
 
@@ -1539,7 +1592,10 @@ fn dependents_at(cx: u16, cz: u16, level: u8, loc: u8, up: u8, out: &mut [Addr])
             out[0] = (e1x, e1z, level, e1l);
             out[1] = (e2x, e2z, level, e2l);
             out[2] = (cx, cz, level, hyp);
-            3
+            for (i, riser) in STAIR_LOCS.into_iter().enumerate() {
+                out[3 + i] = (cx, cz, level, riser);
+            }
+            7
         }
         LOC_EDGE_XLO | LOC_EDGE_ZLO => {
             if up >= MAX_BUILD_SOCKETS as u8 {
@@ -1591,6 +1647,22 @@ fn dependents_at(cx: u16, cz: u16, level: u8, loc: u8, up: u8, out: &mut [Addr])
             out[1] = (cx, cz, up, t1);
             out[2] = (cx, cz, up, t2);
             3
+        }
+        LOC_RISER => {
+            out[0] = (cx, cz.saturating_add(1), level, LOC_EDGE_ZLO);
+            1
+        }
+        LOC_RISER_XHI => {
+            out[0] = (cx.saturating_add(1), cz, level, LOC_EDGE_XLO);
+            1
+        }
+        LOC_RISER_ZLO => {
+            out[0] = (cx, cz, level, LOC_EDGE_ZLO);
+            1
+        }
+        LOC_RISER_XLO => {
+            out[0] = (cx, cz, level, LOC_EDGE_XLO);
+            1
         }
         _ => 0,
     }
@@ -1802,10 +1874,18 @@ pub fn place(
     let level_ok = (level as usize) < MAX_BUILD_SOCKETS
         && (!shape_has_facing(def.shape)
             || level_y(level) + wall_height(def.shape) <= MAX_BUILD_LEVELS as f32 * LEVEL_H_M)
-        && (!matches!(def.shape, SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION) || level == 0)
         && (!matches!(
             def.shape,
-            SHAPE_FLOOR | SHAPE_ROOF | SHAPE_TRI_FLOOR | SHAPE_TRI_ROOF | SHAPE_FLOOR_FRAME
+            SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION | SHAPE_FOUNDATION_STEPS
+        ) || level == 0)
+        && (!matches!(
+            def.shape,
+            SHAPE_FLOOR
+                | SHAPE_ROOF
+                | SHAPE_TRI_FLOOR
+                | SHAPE_TRI_ROOF
+                | SHAPE_FLOOR_FRAME
+                | SHAPE_TRI_FLOOR_FRAME
         ) || level >= 1);
     if (cx as usize) >= MAX_BUILD_COORD
         || (cz as usize) >= MAX_BUILD_COORD
@@ -1818,6 +1898,13 @@ pub fn place(
         // player they are one fact.
         || cell_body_conflict(pieces, cx, cz, level, loc)
         || vertical_edge_conflict(pieces, def.shape, cx, cz, level, loc)
+        || (crate::circulation::is_riser(def.shape) && def.shape != SHAPE_FOUNDATION_STEPS
+            && level_y(level) + crate::circulation::rise(def.shape) > crate::limits::MAX_BUILD_LEVELS as f32 * LEVEL_H_M)
+        || (def.shape == SHAPE_FOUNDATION_STEPS && (pieces.cols().get(cx,cz).planes
+            | pieces.cols().get(cx,cz).tri_xlo_zlo | pieces.cols().get(cx,cz).tri_xhi_zlo
+            | pieces.cols().get(cx,cz).tri_xlo_zhi | pieces.cols().get(cx,cz).tri_xhi_zhi) & (1 << level) != 0)
+        || (matches!(loc, LOC_PLANE | LOC_TRI_XLO_ZLO..=LOC_TRI_XHI_ZHI)
+            && pieces.cols().get(cx,cz).riser_shape(level) == SHAPE_FOUNDATION_STEPS)
     {
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SPOT, 0);
         return;
@@ -1838,8 +1925,10 @@ pub fn place(
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_CLAIM, 0);
         return;
     }
-    if matches!(def.shape, SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION)
-        && !foundation_terrain_ok(seed, haven, ax, az)
+    if matches!(
+        def.shape,
+        SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION | SHAPE_FOUNDATION_STEPS
+    ) && !foundation_terrain_ok(seed, haven, ax, az)
     {
         // The anchor is the shape's own: the cell centre for a square,
         // the half's centroid for a triangle — the ground actually under
@@ -2035,7 +2124,7 @@ pub fn rotate(
     let Some(def) = bc.pieces.get(rec.row as usize).filter(|d| {
         (rec.row as u16) < bc.piece_count
             && d.hp != 0
-            && (d.shape == SHAPE_STAIRS || shape_has_facing(d.shape))
+            && (crate::circulation::is_riser(d.shape) || shape_has_facing(d.shape))
             && loc_fits_shape(d.shape, loc)
     }) else {
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_PIECE, 0);
@@ -2057,7 +2146,27 @@ pub fn rotate(
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_WINDOW, 0);
         return;
     }
-    let next = if def.shape == SHAPE_STAIRS {
+    let next = if crate::circulation::is_riser(def.shape) {
+        // Turning a bearing changes which socket it carries. Keep loaded
+        // steps and stacked spiral flights fixed until their load is removed.
+        if def.shape == SHAPE_FOUNDATION_STEPS {
+            let mut deps = [(0, 0, 0, 0); MAX_DEPENDENTS];
+            let n = dependents_at(cx, cz, level, loc, level, &mut deps);
+            if deps[..n]
+                .iter()
+                .any(|&(x, z, l, a)| occupied_at(pieces, x, z, l, a))
+            {
+                events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SUPPORT, 0);
+                return;
+            }
+        }
+        if matches!(def.shape, SHAPE_STAIRS_SPIRAL | SHAPE_STAIRS_TRI_SPIRAL)
+            && level_step(level, 1)
+                .is_some_and(|up| occupied_at(pieces, cx, cz, up, opposite_riser(loc)))
+        {
+            events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SUPPORT, 0);
+            return;
+        }
         // Exclude this flight from the placement conflict check. Any other
         // direction consumes the same cell body, even if not the next loc.
         if STAIR_LOCS

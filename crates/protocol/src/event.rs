@@ -21,7 +21,7 @@ use crate::{
 };
 use sim_core::backpack::BackpackRec;
 use sim_core::build::{
-    BuildContent, PieceDef, PieceRec, DMG_BANDS, LOC_EDGE_ZLO, MAT_METAL, SHAPE_LOW_WALL,
+    BuildContent, PieceDef, PieceRec, DMG_BANDS, LOC_EDGE_ZLO, MAT_METAL, SHAPE_TRI_FLOOR_FRAME,
 };
 use sim_core::collide::{Part, PART_BITS};
 use sim_core::combat::{ARMOR_MAX_PCT, HURT_SECTORS, WEAR_NONE};
@@ -522,9 +522,9 @@ const PIECE_DEFS_TOTAL_BITS: u32 = 7;
 const PIECE_DEFS_COUNT_BITS: u32 = 3;
 /// Widened 3 → 4 in wire v40 (triangles v0): catalogue v1 had saturated
 /// the 3-bit field — its own domain pin said the triangles could not
-/// land without this line. Four of the sixteen values remain unused at v67,
-/// so both ends range-check against `SHAPE_LOW_WALL`.
-const SHAPE_BITS: u32 = 4;
+/// land without this line. Circulation widens it again to five bits in v72;
+/// both ends range-check against `SHAPE_TRI_FLOOR_FRAME`.
+const SHAPE_BITS: u32 = 5;
 const MATERIAL_BITS: u32 = 2;
 const N_COSTS_BITS: u32 = 2;
 /// A deployable's repair-cost row count. Wider than `N_COSTS_BITS` because
@@ -1918,8 +1918,8 @@ pub fn encode_event_piece_defs(
     w.write(first as u32, PIECE_DEFS_TOTAL_BITS)?;
     w.write(count as u32, PIECE_DEFS_COUNT_BITS)?;
     for def in bc.pieces[first..first + count].iter() {
-        // `SHAPE_LOW_WALL` is the top code (floor openings, wire v67).
-        if def.shape > SHAPE_LOW_WALL
+        // `SHAPE_TRI_FLOOR_FRAME` is the top code (circulation, wire v72).
+        if def.shape > SHAPE_TRI_FLOOR_FRAME
             || def.material > MAT_METAL
             || def.hp == 0
             || def.n_costs == 0
@@ -3369,7 +3369,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 let material = r.read(MATERIAL_BITS)? as u8;
                 let hp = r.read(16)? as u16;
                 let n_costs = r.read(N_COSTS_BITS)? as u8;
-                if shape > SHAPE_LOW_WALL
+                if shape > SHAPE_TRI_FLOOR_FRAME
                     || material > MAT_METAL
                     || hp == 0
                     || n_costs == 0
@@ -5361,6 +5361,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/claim.rs"),
         },
         Module {
+            file: "circulation.rs",
+            src: include_str!("../../sim-core/src/circulation.rs"),
+        },
+        Module {
             file: "collide.rs",
             src: include_str!("../../sim-core/src/collide.rs"),
         },
@@ -5648,14 +5652,15 @@ mod wire_domains {
             prefix: "pub const SHAPE_",
             ty: ": u8 = ",
             exempt: &[],
-            min_members: 14,
+            min_members: 21,
             bits: SHAPE_BITS,
             // Moved 5 -> 7 at wire v38 (catalogue v1), saturating the
             // 3-bit field exactly as this pin then warned; v40 is the
             // widening it priced — `SHAPE_BITS` 3 -> 4 for the three
             // triangle shapes (`reference/BUILDING.md` §9.14). The floor
-            // frame takes code 11 at v67; the decoder checks the tail.
-            live_max: 13,
+            // frame takes code 11 at v67. Half/low walls add 12/13 at v71;
+            // circulation ends at 20 in v72. The decoder checks the tail.
+            live_max: 20,
         },
         Domain {
             what: "piece material",

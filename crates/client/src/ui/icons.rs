@@ -60,7 +60,7 @@ pub fn icon_stem(
 /// not do I/O to find out what it has — and because a gate can then compare
 /// it against the directory and fail on either half drifting
 /// (`tests/ui.rs` §G).
-pub const STEMS: [&str; 83] = [
+pub const STEMS: [&str; 92] = [
     // the shape wheel
     "metal_window_bars",
     "garage_door",
@@ -75,6 +75,15 @@ pub const STEMS: [&str; 83] = [
     "shape_floor",
     "shape_tri_floor",
     "shape_stairs",
+    "shape_half_wall",
+    "shape_low_wall",
+    "shape_foundation_steps",
+    "shape_ramp",
+    "shape_stairs_l",
+    "shape_stairs_u",
+    "shape_stairs_spiral",
+    "shape_stairs_tri_spiral",
+    "shape_tri_floor_frame",
     "shape_roof",
     "shape_tri_roof",
     // the hammer wheel's verbs (`ui::hammer::verb_icon`)
