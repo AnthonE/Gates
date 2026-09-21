@@ -85,8 +85,8 @@ use crate::craft::{inv_count, inv_take};
 use crate::gather::{GatherContent, ItemStack};
 use crate::limits::{
     BOX_SLOTS, HEARTH_CREW_CAP, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_BOXES, MAX_BOX_SPILL_PER_TICK,
-    MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_DEPLOYS, MAX_DEPLOY_COSTS, MAX_DEPLOY_DEFS, MAX_HEARTHS,
-    MAX_LOCKS, UPKEEP_SWEEP_PER_TICK,
+    MAX_BUILD_COORD, MAX_BUILD_SOCKETS, MAX_DEPLOYS, MAX_DEPLOY_COSTS, MAX_DEPLOY_DEFS,
+    MAX_HEARTHS, MAX_LOCKS, UPKEEP_SWEEP_PER_TICK,
 };
 use crate::lock::{self, LockRec, Locks, Outcome};
 use crate::roster::{Added, Roster};
@@ -857,7 +857,7 @@ impl BoxRec {
 
 /// Pack a box's grid address into the one container handle the move
 /// command carries. `cx`/`cz` are bounded by `MAX_BUILD_COORD` (1024, so
-/// ten bits each) and `level` by `MAX_BUILD_LEVELS` (8, three bits), which
+/// ten bits each) and `level` by `MAX_BUILD_SOCKETS` (8, three bits), which
 /// is 23 bits inside a `u32` with room to spare.
 ///
 /// Deliberately **not** `gather::cell_key`: that one packs `cx << 16 | cz`
@@ -1568,7 +1568,7 @@ pub fn box_drop_pos(
     (
         x,
         crate::build::column_floor_y(seed, haven, cx, cz, cols.plate(cx, cz).unwrap_or(0))
-            + level as f32 * LEVEL_H_M,
+            + crate::build::level_y(level),
         z,
     )
 }
@@ -1657,7 +1657,7 @@ pub fn place_deploy(
     }
     if (cx as usize) >= MAX_BUILD_COORD
         || (cz as usize) >= MAX_BUILD_COORD
-        || (level as usize) >= MAX_BUILD_LEVELS
+        || (level as usize) >= MAX_BUILD_SOCKETS
         || !loc_fits_placement(def.placement, loc)
         // Every class but one wants the address **empty**; the lock wants
         // it occupied, and by a door (its `supported` arm below says so).

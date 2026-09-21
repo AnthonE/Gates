@@ -327,6 +327,8 @@ impl Content {
                     Shape::TriFloor => SHAPE_TRI_FLOOR,
                     Shape::TriRoof => SHAPE_TRI_ROOF,
                     Shape::FloorFrame => SHAPE_FLOOR_FRAME,
+                    Shape::HalfWall => sim_core::build::SHAPE_HALF_WALL,
+                    Shape::LowWall => sim_core::build::SHAPE_LOW_WALL,
                 },
                 material: match p.material {
                     Material::Twig => MAT_TWIG,

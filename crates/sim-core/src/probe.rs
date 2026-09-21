@@ -1441,6 +1441,25 @@ pub fn headroom_probe() -> HeadroomProbe {
         cols.add(cx, HEADROOM_CZ, 1, loc, SHAPE_STAIRS, plate);
         cols.add(cx, HEADROOM_CZ, 2, LOC_PLANE, SHAPE_FLOOR_FRAME, plate);
     }
+    // Half-storey movement is part of the same native/Wasm and allocation
+    // probe: cross low cover at ground height, then at its actual upper socket.
+    for start in [12, 15] {
+        for dx in [start, start + 1] {
+            let cx = HEADROOM_CX + dx;
+            let plate = (band - terrain_band(HEADROOM_SEED, &haven, cx, HEADROOM_CZ)) as i8;
+            cols.add(
+                cx,
+                HEADROOM_CZ,
+                if start == 12 { 0 } else { 8 },
+                LOC_PLANE,
+                SHAPE_FLOOR,
+                plate,
+            );
+            if dx == start + 1 {
+                cols.add(cx, HEADROOM_CZ, 0, LOC_EDGE_XLO, SHAPE_HALF_WALL, plate);
+            }
+        }
+    }
     HeadroomProbe {
         haven,
         cols,
@@ -1460,11 +1479,18 @@ pub fn run_headroom_probe(p: &mut HeadroomProbe) -> u64 {
     let underside = base + LEVEL_H_M - PLANE_THICKNESS_M;
     let mut hash = Xxh3::new();
     let mut contacts = 0u64;
-    for route in 0..6 {
+    for route in 0..8 {
         let (dx, dz, rise) = if route == 0 {
             (1.5, 0.09, 0.09)
         } else if route == 1 {
             (BUILD_CELL_M + 0.6, 0.6, 0.0)
+        } else if route >= 6 {
+            let cell = if route == 6 { 13 } else { 16 };
+            (
+                cell as f32 * BUILD_CELL_M - 0.6,
+                1.5,
+                if route == 6 { 0.0 } else { LEVEL_H_M * 0.5 },
+            )
         } else {
             let turn = route - 2;
             let offset = (3 + turn * 2) as f32 * BUILD_CELL_M;
@@ -1488,7 +1514,7 @@ pub fn run_headroom_probe(p: &mut HeadroomProbe) -> u64 {
             let direction = if tick < 20 { 127 } else { -127 };
             let frame = InputFrame {
                 move_x: match route {
-                    3 => direction,
+                    3 | 6 | 7 => direction,
                     5 => -direction,
                     _ => 0,
                 },

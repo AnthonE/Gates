@@ -254,11 +254,15 @@ fn the_body_part_ladder_refuses_what_it_names() {
 fn test_content() {
     let c = Content::load_dir(&content_dir()).expect("shipped content must load");
 
-    // The alpha set is present (~45 items, CONTENT §2) and the catalog is
-    // dark until A3 (ALPHA §2).
+    // Preserve the core alpha budget and account for the two new fittings
+    // explicitly; a missing fitting must not hide inside a loose count range.
+    let fittings = ["item.window_glass", "item.window_shutters"];
+    for id in fittings {
+        assert!(c.items.iter().any(|item| item.id == id), "missing {id}");
+    }
     assert!(
-        (40..=60).contains(&c.items.len()),
-        "alpha set is ~45 items, got {}",
+        (40..=60).contains(&(c.items.len() - fittings.len())),
+        "alpha core plus two window fittings, got {} items",
         c.items.len()
     );
     assert!(c.skins.is_empty(), "skin catalog is dark until A3");

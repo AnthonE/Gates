@@ -44,11 +44,11 @@ use crate::build::{
     BUILD_CELL_M, LEVEL_H_M, LOC_DIAG_A, LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE,
     LOC_RISER, LOC_RISER_XHI, LOC_RISER_XLO, LOC_RISER_ZLO, LOC_TRI_XHI_ZHI, LOC_TRI_XHI_ZLO,
     LOC_TRI_XLO_ZHI, LOC_TRI_XLO_ZLO, SHAPE_DOORWAY, SHAPE_FLOOR, SHAPE_FLOOR_FRAME,
-    SHAPE_FOUNDATION, SHAPE_FRAME, SHAPE_ROOF, SHAPE_STAIRS, SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION,
-    SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
+    SHAPE_FOUNDATION, SHAPE_FRAME, SHAPE_HALF_WALL, SHAPE_LOW_WALL, SHAPE_ROOF, SHAPE_STAIRS,
+    SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION, SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
 };
 use crate::fmath::fabs;
-use crate::limits::{COL_INDEX_SLOTS, MAX_BUILD_COORD, MAX_BUILD_LEVELS};
+use crate::limits::{COL_INDEX_SLOTS, MAX_BUILD_COORD, MAX_BUILD_SOCKETS};
 use crate::movement::STEP_UP;
 
 /// Foundation top above the cell-center terrain sample. Was render-only
@@ -264,9 +264,9 @@ pub const NO_SURFACE: f32 = -1.0e9;
 /// at the sentinel. All-ones rather than zero because zero is a real
 /// archetype (`deploy::ARCH_BAG`), which is also why `Default` below is a
 /// hand impl and not a derive.
-pub const SOLID_NONE: u32 = u32::MAX;
+pub const SOLID_NONE: u64 = u64::MAX;
 
-/// Per-column occupancy, one bit per level (MAX_BUILD_LEVELS = 8 fits u8
+/// Per-column occupancy, one bit per level (MAX_BUILD_SOCKETS = 16 fits u16
 /// exactly). Edge masks live in their canonical column (build.rs: low-x/
 /// low-z), so a cell's +x boundary is its +x neighbor's `*_xlo`.
 ///
@@ -274,54 +274,62 @@ pub const SOLID_NONE: u32 = u32::MAX;
 /// since moved (`build.rs`'s `LOC_EDGE_XLO` doc). Axes, now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ColMasks {
-    pub planes: u8,
-    pub floor_frames: u8,
-    pub stairs: u8,
-    pub stairs_xhi: u8,
-    pub stairs_zlo: u8,
-    pub stairs_xlo: u8,
-    pub walls_xlo: u8,
-    pub walls_zlo: u8,
-    pub doors_xlo: u8,
-    pub doors_zlo: u8,
+    pub planes: u16,
+    pub floor_frames: u16,
+    pub stairs: u16,
+    pub stairs_xhi: u16,
+    pub stairs_zlo: u16,
+    pub stairs_xlo: u16,
+    pub half_xlo: u16,
+    pub half_zlo: u16,
+    pub half_diag_a: u16,
+    pub half_diag_b: u16,
+    pub low_xlo: u16,
+    pub low_zlo: u16,
+    pub low_diag_a: u16,
+    pub low_diag_b: u16,
+    pub walls_xlo: u16,
+    pub walls_zlo: u16,
+    pub doors_xlo: u16,
+    pub doors_zlo: u16,
     /// Window edges (catalogue v1): a body-block the movement walk treats
     /// as a wall and the shot walk treats as a wall with an aperture
     /// (`WINDOW_SILL_M..WINDOW_HEAD_M`, jambs at the doorway's posts).
-    pub wins_xlo: u8,
-    pub wins_zlo: u8,
+    pub wins_xlo: u16,
+    pub wins_zlo: u16,
     /// Wall-frame edges: no collision at all until an insert exists — the
     /// bits are here so occupancy (`build::occupied_at`, the collapse
     /// cascade, the claim probe) can see the piece, not so anything
     /// blocks on it.
-    pub frames_xlo: u8,
-    pub frames_zlo: u8,
+    pub frames_xlo: u16,
+    pub frames_zlo: u16,
     /// Triangle half-planes (triangles v0): standable ground over their
     /// own half of the cell, nothing over the other (`piece_ground`'s
     /// half tests). Named by the corner the right angle sits in —
     /// `build::LOC_TRI_*`'s map.
-    pub tri_xlo_zlo: u8,
-    pub tri_xhi_zlo: u8,
-    pub tri_xlo_zhi: u8,
-    pub tri_xhi_zhi: u8,
+    pub tri_xlo_zlo: u16,
+    pub tri_xhi_zlo: u16,
+    pub tri_xlo_zhi: u16,
+    pub tri_xhi_zhi: u16,
     /// Diagonal walls: full-span blocks along their own line, to bodies
     /// and shots alike, wholly inside the cell.
-    pub diag_a: u8,
-    pub diag_b: u8,
+    pub diag_a: u16,
+    pub diag_b: u16,
     /// Closed-door bits: set ⇒ the doorway at this level/edge holds a
     /// closed door deployable and blocks its full span (deploy.rs keeps
     /// these in lockstep with the door records).
-    pub shut_xlo: u8,
-    pub shut_zlo: u8,
+    pub shut_xlo: u16,
+    pub shut_zlo: u16,
     /// Closed window panels seal the aperture; bars leave shooting gaps.
-    pub panes_xlo: u8,
-    pub panes_zlo: u8,
+    pub panes_xlo: u16,
+    pub panes_zlo: u16,
     /// The solid deployable standing on each level's plane, one nibble
     /// per level: the archetype code, or `0xF` for none (deploy collision
     /// v0 — deploy.rs keeps these in lockstep with the deploy records,
     /// exactly as it keeps the shut bits). The *volume* the code names is
     /// `deploy::DEPLOY_VOL`'s row; only archetypes that table gives a
     /// height ever land here.
-    pub solid: u32,
+    pub solid: u64,
     /// The column's **plate**: how many `build::BUILD_BASE_Q_M` bands its
     /// level-0 floor stands above the band its own terrain would give it
     /// (build plate v1, `build::plate_for`). Zero is the old rule exactly —
@@ -344,7 +352,7 @@ impl Default for ColMasks {
 
 impl ColMasks {
     /// Same order as `build::STAIR_LOCS`: +Z, +X, -Z, -X.
-    pub fn stair_masks(&self) -> [u8; 4] {
+    pub fn stair_masks(&self) -> [u16; 4] {
         [
             self.stairs,
             self.stairs_xhi,
@@ -360,6 +368,14 @@ impl ColMasks {
         stairs_xhi: 0,
         stairs_zlo: 0,
         stairs_xlo: 0,
+        half_xlo: 0,
+        half_zlo: 0,
+        half_diag_a: 0,
+        half_diag_b: 0,
+        low_xlo: 0,
+        low_zlo: 0,
+        low_diag_a: 0,
+        low_diag_b: 0,
         walls_xlo: 0,
         walls_zlo: 0,
         doors_xlo: 0,
@@ -389,6 +405,14 @@ impl ColMasks {
             | self.stairs_xhi
             | self.stairs_zlo
             | self.stairs_xlo
+            | self.half_xlo
+            | self.half_zlo
+            | self.half_diag_a
+            | self.half_diag_b
+            | self.low_xlo
+            | self.low_zlo
+            | self.low_diag_a
+            | self.low_diag_b
             | self.walls_xlo
             | self.walls_zlo
             | self.doors_xlo
@@ -430,6 +454,14 @@ impl ColMasks {
             | self.stairs_xhi
             | self.stairs_zlo
             | self.stairs_xlo
+            | self.half_xlo
+            | self.half_zlo
+            | self.half_diag_a
+            | self.half_diag_b
+            | self.low_xlo
+            | self.low_zlo
+            | self.low_diag_a
+            | self.low_diag_b
             | self.walls_xlo
             | self.walls_zlo
             | self.doors_xlo
@@ -454,9 +486,30 @@ impl ColMasks {
         (nib != 0xF).then_some(nib as u8)
     }
 
+    /// Partial-height edges at this address. The mask is also support's source.
+    pub fn partial_edges(&self, loc: u8) -> (u16, u16) {
+        match loc {
+            LOC_EDGE_XLO => (self.half_xlo, self.low_xlo),
+            LOC_EDGE_ZLO => (self.half_zlo, self.low_zlo),
+            LOC_DIAG_A => (self.half_diag_a, self.low_diag_a),
+            LOC_DIAG_B => (self.half_diag_b, self.low_diag_b),
+            _ => (0, 0),
+        }
+    }
+    pub fn edge_height(&self, loc: u8, level: u8) -> f32 {
+        let (half, low) = self.partial_edges(loc);
+        if half & (1 << level) != 0 {
+            crate::build::wall_height(SHAPE_HALF_WALL)
+        } else if low & (1 << level) != 0 {
+            crate::build::wall_height(SHAPE_LOW_WALL)
+        } else {
+            LEVEL_H_M
+        }
+    }
+
     /// The mask a (shape, loc) pair lives in, or None for shapes with no
     /// collision footprint.
-    fn field(&mut self, shape: u8, loc: u8) -> Option<&mut u8> {
+    fn field(&mut self, shape: u8, loc: u8) -> Option<&mut u16> {
         match shape {
             SHAPE_FOUNDATION | SHAPE_FLOOR | SHAPE_ROOF => Some(&mut self.planes),
             SHAPE_FLOOR_FRAME => Some(&mut self.floor_frames),
@@ -467,6 +520,14 @@ impl ColMasks {
                 LOC_RISER_XLO => Some(&mut self.stairs_xlo),
                 _ => None,
             },
+            SHAPE_HALF_WALL if loc == LOC_EDGE_XLO => Some(&mut self.half_xlo),
+            SHAPE_HALF_WALL if loc == LOC_EDGE_ZLO => Some(&mut self.half_zlo),
+            SHAPE_HALF_WALL if loc == LOC_DIAG_A => Some(&mut self.half_diag_a),
+            SHAPE_HALF_WALL if loc == LOC_DIAG_B => Some(&mut self.half_diag_b),
+            SHAPE_LOW_WALL if loc == LOC_EDGE_XLO => Some(&mut self.low_xlo),
+            SHAPE_LOW_WALL if loc == LOC_EDGE_ZLO => Some(&mut self.low_zlo),
+            SHAPE_LOW_WALL if loc == LOC_DIAG_A => Some(&mut self.low_diag_a),
+            SHAPE_LOW_WALL if loc == LOC_DIAG_B => Some(&mut self.low_diag_b),
             SHAPE_WALL if loc == LOC_EDGE_XLO => Some(&mut self.walls_xlo),
             SHAPE_WALL if loc == LOC_EDGE_ZLO => Some(&mut self.walls_zlo),
             SHAPE_WALL if loc == LOC_DIAG_A => Some(&mut self.diag_a),
@@ -786,7 +847,7 @@ impl ColIndex {
             }
             i = (i + 1) & (COL_INDEX_SLOTS - 1);
         }
-        self.masks[i].solid = (self.masks[i].solid & !(0xF << shift)) | ((a as u32 & 0xF) << shift);
+        self.masks[i].solid = (self.masks[i].solid & !(0xF << shift)) | ((a as u64 & 0xF) << shift);
     }
 
     /// Knuth 6.4 R: refill the hole from the probe chain behind it.
@@ -878,7 +939,7 @@ pub fn edge_foot_drop(
         } else {
             m.tri_xlo_zhi | m.tri_xhi_zhi
         };
-    if level as usize >= MAX_BUILD_LEVELS || planes & (1 << level) == 0 {
+    if level as usize >= MAX_BUILD_SOCKETS || planes & (1 << level) == 0 {
         return 0.0;
     }
     let here = crate::build::column_floor_y(seed, haven, cx, cz, plate);
@@ -936,9 +997,9 @@ pub fn piece_ground(
         bx as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5,
         bz as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5,
     );
-    for level in 0..MAX_BUILD_LEVELS {
-        let bit = 1u8 << level;
-        let floor = base + level as f32 * LEVEL_H_M;
+    for level in 0..MAX_BUILD_SOCKETS {
+        let bit = 1u16 << level;
+        let floor = base + crate::build::level_y(level as u8);
         if (m.planes & bit != 0 || (m.floor_frames & bit != 0 && floor_frame_solid(dx, dz, 0.0)))
             && floor <= lid
             && floor > best
@@ -1009,14 +1070,14 @@ pub fn deploy_blocked(
         bx as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5,
         bz as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5,
     );
-    for level in 0..MAX_BUILD_LEVELS {
+    for level in 0..MAX_BUILD_SOCKETS {
         let Some(arch) = m.solid_at(level) else {
             continue;
         };
         let Some((hw, h, hd)) = crate::deploy::solid_vol(arch) else {
             continue;
         };
-        let bottom = base + level as f32 * LEVEL_H_M;
+        let bottom = base + crate::build::level_y(level as u8);
         // A top within STEP_UP of the feet is a step, not a wall — the
         // rule `piece_ground` already applies to every standable surface
         // (its lid), extended here so the horizontal pass admits the move
@@ -1105,14 +1166,14 @@ pub fn deploy_stop(
         bx as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5,
         bz as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5,
     );
-    for level in 0..MAX_BUILD_LEVELS {
+    for level in 0..MAX_BUILD_SOCKETS {
         let Some(arch) = m.solid_at(level) else {
             continue;
         };
         let Some((hw, h, hd)) = crate::deploy::solid_vol(arch) else {
             continue;
         };
-        let bottom = base + level as f32 * LEVEL_H_M;
+        let bottom = base + crate::build::level_y(level as u8);
         // Sphere against the box: [`deploy_blocked`]'s clamp-to-rectangle
         // circle distance with the third axis added, because a shot has an
         // altitude where a body has a storey. Growing the box by `r`
@@ -1280,8 +1341,8 @@ fn any_body_plane(
                 LOC_TRI_XHI_ZLO => dz <= dx,
                 _ => dz >= dx,
             };
-            for level in 0..MAX_BUILD_LEVELS {
-                let bit = 1u8 << level;
+            for level in 0..MAX_BUILD_SOCKETS {
+                let bit = 1u16 << level;
                 let here = m.planes & bit != 0
                     || (m.floor_frames & bit != 0 && floor_frame_solid(dx, dz, r))
                     || (m.tri_xlo_zlo & bit != 0 && in_half(LOC_TRI_XLO_ZLO))
@@ -1291,7 +1352,7 @@ fn any_body_plane(
                 if !here {
                     continue;
                 }
-                let top = base + level as f32 * LEVEL_H_M;
+                let top = base + crate::build::level_y(level as u8);
                 if visit(level, top) {
                     return true;
                 }
@@ -1391,8 +1452,8 @@ fn cell_planes_stop_shot(
                 LOC_TRI_XHI_ZLO => dz <= dx,
                 _ => dz >= dx,
             };
-            for level in 0..MAX_BUILD_LEVELS {
-                let bit = 1u8 << level;
+            for level in 0..MAX_BUILD_SOCKETS {
+                let bit = 1u16 << level;
                 // Which slab, not just whether one — the address is what
                 // `ranged.rs` charges structure damage against, and the OR
                 // this replaced could not say.
@@ -1430,7 +1491,7 @@ fn cell_planes_stop_shot(
                 let Some(loc) = here else {
                     continue;
                 };
-                let top = base + level as f32 * LEVEL_H_M;
+                let top = base + crate::build::level_y(level as u8);
                 if y - r >= top {
                     continue; // over it
                 }
@@ -1549,14 +1610,14 @@ fn cell_edges_block(
         // shot walk (`shot_blocked`) is where the shapes fully diverge.
         let (walls, doors, frames, shuts) = if x_plane {
             (
-                m.walls_xlo | m.wins_xlo,
+                m.walls_xlo | m.half_xlo | m.low_xlo | m.wins_xlo,
                 m.doors_xlo,
                 m.frames_xlo,
                 m.shut_xlo,
             )
         } else {
             (
-                m.walls_zlo | m.wins_zlo,
+                m.walls_zlo | m.half_zlo | m.low_zlo | m.wins_zlo,
                 m.doors_zlo,
                 m.frames_zlo,
                 m.shut_zlo,
@@ -1566,15 +1627,15 @@ fn cell_edges_block(
             continue;
         }
         let base = col_base_y(seed, haven, cols, ecx as u16, ecz as u16);
-        for level in 0..MAX_BUILD_LEVELS {
-            let bit = 1u8 << level;
+        for level in 0..MAX_BUILD_SOCKETS {
+            let bit = 1u16 << level;
             let has_wall = walls & bit != 0;
             let has_door = doors & bit != 0;
             let has_frame = frames & bit != 0;
             if !has_wall && !has_door && !has_frame {
                 continue;
             }
-            let bottom = base + level as f32 * LEVEL_H_M;
+            let bottom = base + crate::build::level_y(level as u8);
             let foot = bottom
                 - edge_foot_drop(
                     seed,
@@ -1586,7 +1647,14 @@ fn cell_edges_block(
                     if x_plane { LOC_EDGE_XLO } else { LOC_EDGE_ZLO },
                     m.plate,
                 );
-            if feet_y >= bottom + LEVEL_H_M || feet_y + CAPSULE_HEIGHT_M <= foot {
+            if feet_y
+                >= bottom
+                    + m.edge_height(
+                        if x_plane { LOC_EDGE_XLO } else { LOC_EDGE_ZLO },
+                        level as u8,
+                    )
+                || feet_y + CAPSULE_HEIGHT_M <= foot
+            {
                 continue; // that storey is above the head or below the feet
             }
             let meet = if x_plane {
@@ -1692,26 +1760,30 @@ fn cell_diags_block(
         return None;
     }
     let m = cols.get(bx as u16, bz as u16);
-    if m.diag_a | m.diag_b == 0 {
+    if m.diag_a | m.diag_b | m.half_diag_a | m.half_diag_b | m.low_diag_a | m.low_diag_b == 0 {
         return None;
     }
     let base = col_base_y(seed, haven, cols, bx as u16, bz as u16);
-    for level in 0..MAX_BUILD_LEVELS {
-        let bit = 1u8 << level;
-        if (m.diag_a | m.diag_b) & bit == 0 {
+    for level in 0..MAX_BUILD_SOCKETS {
+        let bit = 1u16 << level;
+        if (m.diag_a | m.diag_b | m.half_diag_a | m.half_diag_b | m.low_diag_a | m.low_diag_b) & bit
+            == 0
+        {
             continue;
         }
-        let bottom = base + level as f32 * LEVEL_H_M;
-        let outside = if point {
-            lo_y < bottom || lo_y >= bottom + LEVEL_H_M
-        } else {
-            lo_y >= bottom + LEVEL_H_M || hi_y <= bottom
-        };
-        if outside {
-            continue;
-        }
-        for (mask, diag_b) in [(m.diag_a, false), (m.diag_b, true)] {
-            if mask & bit == 0 {
+        let bottom = base + crate::build::level_y(level as u8);
+        for (mask, diag_b) in [
+            (m.diag_a | m.half_diag_a | m.low_diag_a, false),
+            (m.diag_b | m.half_diag_b | m.low_diag_b, true),
+        ] {
+            let top =
+                bottom + m.edge_height(if diag_b { LOC_DIAG_B } else { LOC_DIAG_A }, level as u8);
+            let outside = if point {
+                lo_y < bottom || lo_y >= top
+            } else {
+                lo_y >= top || hi_y <= bottom
+            };
+            if mask & bit == 0 || outside {
                 continue;
             }
             if let Some(t) = diag_meet(bx, bz, diag_b, x, z, nx, nz, r_extra) {
@@ -1978,7 +2050,7 @@ fn cell_edges_stop_shot(
         let m = cols.get(ecx as u16, ecz as u16);
         let (walls, doors, wins, frames, shuts) = if x_plane {
             (
-                m.walls_xlo,
+                m.walls_xlo | m.half_xlo | m.low_xlo,
                 m.doors_xlo,
                 m.wins_xlo,
                 m.frames_xlo,
@@ -1986,7 +2058,7 @@ fn cell_edges_stop_shot(
             )
         } else {
             (
-                m.walls_zlo,
+                m.walls_zlo | m.half_zlo | m.low_zlo,
                 m.doors_zlo,
                 m.wins_zlo,
                 m.frames_zlo,
@@ -1997,12 +2069,12 @@ fn cell_edges_stop_shot(
             continue;
         }
         let base = col_base_y(seed, haven, cols, ecx as u16, ecz as u16);
-        for level in 0..MAX_BUILD_LEVELS {
-            let bit = 1u8 << level;
+        for level in 0..MAX_BUILD_SOCKETS {
+            let bit = 1u16 << level;
             if (walls | doors | wins | frames) & bit == 0 {
                 continue;
             }
-            let bottom = base + level as f32 * LEVEL_H_M;
+            let bottom = base + crate::build::level_y(level as u8);
             // A point is inside exactly one storey; half-open so the
             // boundary altitude resolves the same on both targets.
             let foot = bottom
@@ -2016,7 +2088,13 @@ fn cell_edges_stop_shot(
                     if x_plane { LOC_EDGE_XLO } else { LOC_EDGE_ZLO },
                     m.plate,
                 );
-            if y < foot || y >= bottom + LEVEL_H_M {
+            if y < foot
+                || y >= bottom
+                    + m.edge_height(
+                        if x_plane { LOC_EDGE_XLO } else { LOC_EDGE_ZLO },
+                        level as u8,
+                    )
+            {
                 continue;
             }
             let meet = if x_plane {

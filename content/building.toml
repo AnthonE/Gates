@@ -423,3 +423,59 @@ shape = "floor_frame"
 material = "metal"
 hp = 1000
 cost = [{ item = "item.metal_frags", count = 100 }]
+
+[[piece]]
+id = "build.half_wall_twig"
+shape = "half_wall"
+material = "twig"
+hp = 10
+cost = [{ item = "item.wood", count = 50 }]
+
+[[piece]]
+id = "build.half_wall_wood"
+shape = "half_wall"
+material = "wood"
+hp = 250
+cost = [{ item = "item.wood", count = 200 }]
+
+[[piece]]
+id = "build.half_wall_stone"
+shape = "half_wall"
+material = "stone"
+hp = 500
+cost = [{ item = "item.stone", count = 300 }]
+
+[[piece]]
+id = "build.half_wall_metal"
+shape = "half_wall"
+material = "metal"
+hp = 1000
+cost = [{ item = "item.metal_frags", count = 200 }]
+
+[[piece]]
+id = "build.low_wall_twig"
+shape = "low_wall"
+material = "twig"
+hp = 10
+cost = [{ item = "item.wood", count = 25 }]
+
+[[piece]]
+id = "build.low_wall_wood"
+shape = "low_wall"
+material = "wood"
+hp = 250
+cost = [{ item = "item.wood", count = 100 }]
+
+[[piece]]
+id = "build.low_wall_stone"
+shape = "low_wall"
+material = "stone"
+hp = 500
+cost = [{ item = "item.stone", count = 150 }]
+
+[[piece]]
+id = "build.low_wall_metal"
+shape = "low_wall"
+material = "metal"
+hp = 1000
+cost = [{ item = "item.metal_frags", count = 100 }]

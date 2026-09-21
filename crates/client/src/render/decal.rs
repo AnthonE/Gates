@@ -110,7 +110,7 @@ use super::{Eye, WorldId};
 use sim_core::build::{self, BUILD_CELL_M, LEVEL_H_M};
 use sim_core::collide::{ColIndex, PLANE_THICKNESS_M};
 use sim_core::gather::NO_CELL;
-use sim_core::limits::{MAX_BUILD_COORD, MAX_BUILD_LEVELS};
+use sim_core::limits::{MAX_BUILD_COORD, MAX_BUILD_SOCKETS};
 use sim_core::movement::{POS_XZ_Q, POS_Y_Q};
 use sim_core::ranged::{SURF_BUILT, SURF_GROUND, SURF_WORLD};
 use sim_core::terrain::{self, Occupant, Slot};
@@ -901,12 +901,12 @@ fn plane_face(world: &WorldId, cols: &ColIndex, x: f32, y: f32, z: f32) -> Optio
         bz,
         cols.plate(bx, bz).unwrap_or(0),
     );
-    for level in 0..MAX_BUILD_LEVELS {
-        let bit = 1u8 << level;
+    for level in 0..MAX_BUILD_SOCKETS {
+        let bit = 1u16 << level;
         if (m.planes | tris) & bit == 0 {
             continue;
         }
-        let top = base + level as f32 * LEVEL_H_M;
+        let top = base + sim_core::build::level_y(level as u8);
         if y > top + SLAB_FACE_TOL_M {
             continue; // over this slab
         }

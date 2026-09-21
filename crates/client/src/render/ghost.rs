@@ -372,11 +372,15 @@ pub fn track(
             plate,
         )
     });
-    let diagonal = shape == sim_core::build::SHAPE_WALL
-        && matches!(
-            target.loc,
-            sim_core::build::LOC_DIAG_A | sim_core::build::LOC_DIAG_B
-        );
+    let diagonal = matches!(
+        shape,
+        sim_core::build::SHAPE_WALL
+            | sim_core::build::SHAPE_HALF_WALL
+            | sim_core::build::SHAPE_LOW_WALL
+    ) && matches!(
+        target.loc,
+        sim_core::build::LOC_DIAG_A | sim_core::build::LOC_DIAG_B
+    );
 
     if ghost.built != Some((shape, diagonal)) {
         ghost.built = Some((shape, diagonal));

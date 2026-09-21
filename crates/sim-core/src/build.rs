@@ -41,8 +41,8 @@ use crate::craft::{inv_count, inv_take};
 use crate::deploy::{DeployContent, Deploys, UPKEEP_PERIOD_TICKS};
 use crate::fmath::floor_i32;
 use crate::limits::{
-    MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_COLLAPSE_PIECES, MAX_DEPLOY_COSTS, MAX_PIECES,
-    MAX_PIECE_COSTS, MAX_PIECE_DEFS, SUPPORT_SWEEP_PER_TICK,
+    MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_BUILD_SOCKETS, MAX_COLLAPSE_PIECES, MAX_DEPLOY_COSTS,
+    MAX_PIECES, MAX_PIECE_COSTS, MAX_PIECE_DEFS, SUPPORT_SWEEP_PER_TICK,
 };
 use crate::terrain;
 use crate::world::{
@@ -84,6 +84,35 @@ pub const SHAPE_TRI_FLOOR: u8 = 9;
 pub const SHAPE_TRI_ROOF: u8 = 10;
 /// A square floor socket with an open centre; the rim bears walls.
 pub const SHAPE_FLOOR_FRAME: u8 = 11;
+pub const SHAPE_HALF_WALL: u8 = 12;
+pub const SHAPE_LOW_WALL: u8 = 13;
+
+/// Vertical position of a socket, preserving every existing whole-storey address.
+pub fn level_y(level: u8) -> f32 {
+    (level % MAX_BUILD_LEVELS as u8) as f32 * LEVEL_H_M
+        + (level / MAX_BUILD_LEVELS as u8) as f32 * (LEVEL_H_M * 0.5)
+}
+
+/// Move by half-storeys, returning None outside the bounded vertical lattice.
+pub fn level_step(level: u8, halves: i8) -> Option<u8> {
+    let n = (level % MAX_BUILD_LEVELS as u8) as i16 * 2
+        + (level / MAX_BUILD_LEVELS as u8) as i16
+        + halves as i16;
+    if level as usize >= MAX_BUILD_SOCKETS || n < 0 || n >= MAX_BUILD_SOCKETS as i16 {
+        None
+    } else {
+        Some((n / 2) as u8 + (n % 2) as u8 * MAX_BUILD_LEVELS as u8)
+    }
+}
+
+/// Low walls are cover; half walls bear a socket at their actual top.
+pub fn wall_height(shape: u8) -> f32 {
+    match shape {
+        SHAPE_HALF_WALL => LEVEL_H_M * 0.5,
+        SHAPE_LOW_WALL => LEVEL_H_M / 3.0,
+        _ => LEVEL_H_M,
+    }
+}
 
 /// Material codes (schema order: twig → wood → stone → metal). The order
 /// is the ladder: `upgrade` climbs it by comparing these numbers, so a
@@ -1082,9 +1111,18 @@ fn plane_at(pieces: &Pieces, cx: u16, cz: u16, level: u8) -> bool {
     pieces.find(cx, cz, level, LOC_PLANE).is_some()
 }
 
-/// Whether the edge address holds a wall or doorway.
-fn edge_at(pieces: &Pieces, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
-    pieces.find(cx, cz, level, loc).is_some()
+/// An edge's top must coincide with the socket it carries. Low cover bears none.
+fn edge_bears(pieces: &Pieces, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
+    let m = pieces.cols().get(cx, cz);
+    let (half, low) = m.partial_edges(loc);
+    if let Some(below) = level_step(level, -1) {
+        if half & (1 << below) != 0 {
+            return true;
+        }
+    }
+    level_step(level, -2).is_some_and(|below| {
+        (half | low) & (1 << below) == 0 && pieces.find(cx, cz, below, loc).is_some()
+    })
 }
 
 /// Does the cell body at (bx, bz, level) bear the canonical edge `loc`
@@ -1193,7 +1231,7 @@ pub fn build_cell_of(v: f32) -> i32 {
 pub fn shape_has_facing(shape: u8) -> bool {
     matches!(
         shape,
-        SHAPE_WALL | SHAPE_DOORWAY | SHAPE_WINDOW | SHAPE_FRAME
+        SHAPE_WALL | SHAPE_HALF_WALL | SHAPE_LOW_WALL | SHAPE_DOORWAY | SHAPE_WINDOW | SHAPE_FRAME
     )
 }
 
@@ -1277,7 +1315,7 @@ fn loc_fits_shape(shape: u8, loc: u8) -> bool {
         SHAPE_STAIRS => is_stair_loc(loc),
         // The wall alone also fits the diagonals (their doc says why the
         // openings do not).
-        SHAPE_WALL => {
+        SHAPE_WALL | SHAPE_HALF_WALL | SHAPE_LOW_WALL => {
             loc == LOC_EDGE_XLO || loc == LOC_EDGE_ZLO || loc == LOC_DIAG_A || loc == LOC_DIAG_B
         }
         SHAPE_DOORWAY | SHAPE_WINDOW | SHAPE_FRAME => loc == LOC_EDGE_XLO || loc == LOC_EDGE_ZLO,
@@ -1349,6 +1387,31 @@ pub(crate) fn cell_body_conflict(pieces: &Pieces, cx: u16, cz: u16, level: u8, l
         .any(|&other| occupied_at(pieces, cx, cz, level, other))
 }
 
+fn vertical_edge_conflict(
+    pieces: &Pieces,
+    shape: u8,
+    cx: u16,
+    cz: u16,
+    level: u8,
+    loc: u8,
+) -> bool {
+    if !shape_has_facing(shape) {
+        return false;
+    }
+    let bottom = level_y(level);
+    let top = bottom + wall_height(shape);
+    let m = pieces.cols().get(cx, cz);
+    for other in 0..MAX_BUILD_SOCKETS as u8 {
+        if other != level && occupied_at(pieces, cx, cz, other, loc) {
+            let y = level_y(other);
+            if bottom < y + m.edge_height(loc, other) && y < top {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Support rule v0 for a piece of `shape` at the address. Foundations
 /// carry no support requirement (terrain is their check), and the
 /// triangle foundation is a foundation.
@@ -1360,10 +1423,10 @@ fn supported(pieces: &Pieces, shape: u8, cx: u16, cz: u16, level: u8, loc: u8) -
             // wall below deliberately does NOT bear a full plane — its
             // span crosses the middle, not a side.
             level >= 1
-                && (edge_at(pieces, cx, cz, level - 1, LOC_EDGE_XLO)
-                    || edge_at(pieces, cx + 1, cz, level - 1, LOC_EDGE_XLO)
-                    || edge_at(pieces, cx, cz, level - 1, LOC_EDGE_ZLO)
-                    || edge_at(pieces, cx, cz + 1, level - 1, LOC_EDGE_ZLO))
+                && (edge_bears(pieces, cx, cz, level, LOC_EDGE_XLO)
+                    || edge_bears(pieces, cx + 1, cz, level, LOC_EDGE_XLO)
+                    || edge_bears(pieces, cx, cz, level, LOC_EDGE_ZLO)
+                    || edge_bears(pieces, cx, cz + 1, level, LOC_EDGE_ZLO))
         }
         SHAPE_TRI_FLOOR | SHAPE_TRI_ROOF => {
             // One of its two sides, or the diagonal wall under its own
@@ -1371,17 +1434,16 @@ fn supported(pieces: &Pieces, shape: u8, cx: u16, cz: u16, level: u8, loc: u8) -
             if level == 0 {
                 return false;
             }
-            let below = level - 1;
             let ((e1x, e1z, e1l), (e2x, e2z, e2l), hyp) = tri_bearings(cx, cz, loc);
-            edge_at(pieces, e1x, e1z, below, e1l)
-                || edge_at(pieces, e2x, e2z, below, e2l)
-                || pieces.find(cx, cz, below, hyp).is_some()
+            edge_bears(pieces, e1x, e1z, level, e1l)
+                || edge_bears(pieces, e2x, e2z, level, e2l)
+                || edge_bears(pieces, cx, cz, level, hyp)
         }
         // A frame bears its perimeter, not a flight across its empty centre.
         SHAPE_STAIRS => pieces.cols().get(cx, cz).planes & (1 << level) != 0,
         // The diagonal wall: the cell body it stands across — a full
         // plane or one of its own pair — or the diagonal below it.
-        SHAPE_WALL if loc == LOC_DIAG_A || loc == LOC_DIAG_B => {
+        SHAPE_WALL | SHAPE_HALF_WALL | SHAPE_LOW_WALL if loc == LOC_DIAG_A || loc == LOC_DIAG_B => {
             let (t1, t2) = diag_pair(loc);
             let body_at = |lvl: u8| {
                 plane_at(pieces, cx, cz, lvl)
@@ -1391,16 +1453,17 @@ fn supported(pieces: &Pieces, shape: u8, cx: u16, cz: u16, level: u8, loc: u8) -
             if level == 0 {
                 body_at(0)
             } else {
-                pieces.find(cx, cz, level - 1, loc).is_some() || body_at(level)
+                edge_bears(pieces, cx, cz, level, loc) || body_at(level)
             }
         }
-        SHAPE_WALL | SHAPE_DOORWAY | SHAPE_WINDOW | SHAPE_FRAME => {
+        SHAPE_WALL | SHAPE_HALF_WALL | SHAPE_LOW_WALL | SHAPE_DOORWAY | SHAPE_WINDOW
+        | SHAPE_FRAME => {
             let ((ax, az), other) = edge_neighbors(cx, cz, loc);
             if level == 0 {
                 bears_edge(pieces, ax, az, 0, loc, true)
                     || other.is_some_and(|(bx, bz)| bears_edge(pieces, bx, bz, 0, loc, false))
             } else {
-                edge_at(pieces, cx, cz, level - 1, loc)
+                edge_bears(pieces, cx, cz, level, loc)
                     || bears_edge(pieces, ax, az, level, loc, true)
                     || other.is_some_and(|(bx, bz)| bears_edge(pieces, bx, bz, level, loc, false))
             }
@@ -1414,7 +1477,7 @@ type Addr = (u16, u16, u8, u8);
 
 /// Four edges, four possible stair directions and two diagonals can
 /// depend on a plane. An edge names at most seven dependents.
-const MAX_DEPENDENTS: usize = 10;
+const MAX_DEPENDENTS: usize = 14;
 
 /// The inverse of `supported()`: every address whose support test **reads**
 /// `(cx, cz, level, loc)`. Change one of the two and you must change the
@@ -1441,6 +1504,20 @@ const MAX_DEPENDENTS: usize = 10;
 /// Foundations appear here as planes like any other; they are simply never
 /// dropped themselves, because their own clause is unconditional.
 fn dependents(cx: u16, cz: u16, level: u8, loc: u8, out: &mut [Addr; MAX_DEPENDENTS]) -> usize {
+    if matches!(loc, LOC_EDGE_XLO | LOC_EDGE_ZLO | LOC_DIAG_A | LOC_DIAG_B) {
+        let mut n = 0;
+        for halves in [1, 2] {
+            if let Some(up) = level_step(level, halves) {
+                n += dependents_at(cx, cz, level, loc, up, &mut out[n..]);
+            }
+        }
+        n
+    } else {
+        dependents_at(cx, cz, level, loc, level, out)
+    }
+}
+
+fn dependents_at(cx: u16, cz: u16, level: u8, loc: u8, up: u8, out: &mut [Addr]) -> usize {
     match loc {
         LOC_PLANE => {
             out[0] = (cx, cz, level, LOC_RISER);
@@ -1465,8 +1542,7 @@ fn dependents(cx: u16, cz: u16, level: u8, loc: u8, out: &mut [Addr; MAX_DEPENDE
             3
         }
         LOC_EDGE_XLO | LOC_EDGE_ZLO => {
-            let up = level.saturating_add(1);
-            if up >= MAX_BUILD_LEVELS as u8 {
+            if up >= MAX_BUILD_SOCKETS as u8 {
                 return 0; // nothing can be addressed above the top storey
             }
             out[0] = (cx, cz, up, LOC_PLANE);
@@ -1507,8 +1583,7 @@ fn dependents(cx: u16, cz: u16, level: u8, loc: u8, out: &mut [Addr; MAX_DEPENDE
             }
         }
         LOC_DIAG_A | LOC_DIAG_B => {
-            let up = level.saturating_add(1);
-            if up >= MAX_BUILD_LEVELS as u8 {
+            if up >= MAX_BUILD_SOCKETS as u8 {
                 return 0;
             }
             let (t1, t2) = diag_pair(loc);
@@ -1527,7 +1602,7 @@ fn dependents(cx: u16, cz: u16, level: u8, loc: u8, out: &mut [Addr; MAX_DEPENDE
 /// `col_index_churn_matches_a_naive_shadow` gates that; here it is a
 /// filter in front of `find_index`, never the answer.
 fn occupied_at(pieces: &Pieces, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
-    if level >= MAX_BUILD_LEVELS as u8 {
+    if level >= MAX_BUILD_SOCKETS as u8 {
         return false;
     }
     let m = pieces.cols().get(cx, cz);
@@ -1537,17 +1612,21 @@ fn occupied_at(pieces: &Pieces, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
         LOC_RISER_XHI => m.stairs_xhi,
         LOC_RISER_ZLO => m.stairs_zlo,
         LOC_RISER_XLO => m.stairs_xlo,
-        LOC_EDGE_XLO => m.walls_xlo | m.doors_xlo | m.wins_xlo | m.frames_xlo,
-        LOC_EDGE_ZLO => m.walls_zlo | m.doors_zlo | m.wins_zlo | m.frames_zlo,
+        LOC_EDGE_XLO => {
+            m.half_xlo | m.low_xlo | m.walls_xlo | m.doors_xlo | m.wins_xlo | m.frames_xlo
+        }
+        LOC_EDGE_ZLO => {
+            m.half_zlo | m.low_zlo | m.walls_zlo | m.doors_zlo | m.wins_zlo | m.frames_zlo
+        }
         LOC_TRI_XLO_ZLO => m.tri_xlo_zlo,
         LOC_TRI_XHI_ZLO => m.tri_xhi_zlo,
         LOC_TRI_XLO_ZHI => m.tri_xlo_zhi,
         LOC_TRI_XHI_ZHI => m.tri_xhi_zhi,
-        LOC_DIAG_A => m.diag_a,
-        LOC_DIAG_B => m.diag_b,
+        LOC_DIAG_A => m.diag_a | m.half_diag_a | m.low_diag_a,
+        LOC_DIAG_B => m.diag_b | m.half_diag_b | m.low_diag_b,
         _ => 0,
     };
-    field & (1u8 << level) != 0
+    field & (1u16 << level) != 0
 }
 
 /// Does the piece at store index `i` still have what holds it up? The one
@@ -1720,7 +1799,9 @@ pub fn place(
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_TIER, 0);
         return;
     }
-    let level_ok = (level as usize) < MAX_BUILD_LEVELS
+    let level_ok = (level as usize) < MAX_BUILD_SOCKETS
+        && (!shape_has_facing(def.shape)
+            || level_y(level) + wall_height(def.shape) <= MAX_BUILD_LEVELS as f32 * LEVEL_H_M)
         && (!matches!(def.shape, SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION) || level == 0)
         && (!matches!(
             def.shape,
@@ -1736,6 +1817,7 @@ pub fn place(
         // "spot taken" refusal the address check gives, because to a
         // player they are one fact.
         || cell_body_conflict(pieces, cx, cz, level, loc)
+        || vertical_edge_conflict(pieces, def.shape, cx, cz, level, loc)
     {
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SPOT, 0);
         return;

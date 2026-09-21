@@ -79,6 +79,9 @@ properly. The short version:
   and hunter, and they differ by content numbers alone: nothing in
   `mob.rs` branches on species. `content/mobs.toml`; the sim's side is
   `sim-core/src/mob.rs` and the design is `reference/ANIMALS.md` §9.
+- **partial-height pieces**: `half_wall` and `low_wall` use the same four
+  material grades. The half wall bears a floor at its actual top; low cover
+  bears none. Half-storey addresses preserve existing whole-storey codes.
 - **deployable**: entity archetype (bag, hearth, cupboard, box, furnace,
   workbench, door, lock, recycler, research, window_bars, garage_door,
   window_glass, window_shutter), placement
@@ -147,7 +150,10 @@ It exists as **testing scaffolding** and an operator arms or empties it
 flag because the content hash is already in the WAL header, so a replay
 replays the kit it was played under — a `shard.toml` switch would diverge.
 
-## 2 · The alpha item set (~45 items — this IS the shape of the game)
+## 2 · The alpha item set (~45 core items, plus window fittings)
+
+Glass windows and wood shutters extend the core set (2026-09-21); the
+content test keeps the core budget and checks both additions by id.
 
 **Raw**: wood · stone · metal_ore · sulfur_ore · cloth · fat · charcoal ·
 metal_frags (furnace) · sulfur (furnace) · gunpowder (charcoal+sulfur) ·

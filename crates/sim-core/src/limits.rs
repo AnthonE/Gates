@@ -479,7 +479,7 @@ pub const SLOT_CACHE_SLOTS: usize = 1_024;
 /// triangles v0). The content bake refuses a set past this. Structural
 /// cap like `MAX_ITEM_DEFS`; 48 keeps headroom without widening the
 /// wire's `PIECE_DEFS_TOTAL_BITS` (6 bits, 63).
-pub const MAX_PIECE_DEFS: usize = 48;
+pub const MAX_PIECE_DEFS: usize = 96;
 
 /// Cost rows one building piece may carry (alpha data uses 1). The bake
 /// refuses past it. Structural cap, not a knob.
@@ -500,6 +500,10 @@ pub const MAX_BUILD_COORD: usize = 1_024;
 /// level in 3 bits — exactly this range. Proposed default, DECISIONS.md
 /// §open (build grid row).
 pub const MAX_BUILD_LEVELS: usize = 8;
+/// Whole and half-storey socket addresses. Whole storeys retain codes 0..8;
+/// codes 8..16 sit half a storey above the corresponding whole level.
+pub const MAX_BUILD_SOCKETS: usize = 16;
+const _: () = assert!(MAX_BUILD_SOCKETS == MAX_BUILD_LEVELS * 2);
 
 /// Column-index slots (collide.rs): open-addressed map from build column
 /// to occupancy masks, power of two, 2 × MAX_PIECES so it never passes

@@ -229,6 +229,8 @@ pub enum Shape {
     TriRoof,
     /// Square opening for a stairwell, priced like a floor.
     FloorFrame,
+    HalfWall,
+    LowWall,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]

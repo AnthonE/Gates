@@ -21,7 +21,7 @@ use crate::{
 };
 use sim_core::backpack::BackpackRec;
 use sim_core::build::{
-    BuildContent, PieceDef, PieceRec, DMG_BANDS, LOC_EDGE_ZLO, MAT_METAL, SHAPE_FLOOR_FRAME,
+    BuildContent, PieceDef, PieceRec, DMG_BANDS, LOC_EDGE_ZLO, MAT_METAL, SHAPE_LOW_WALL,
 };
 use sim_core::collide::{Part, PART_BITS};
 use sim_core::combat::{ARMOR_MAX_PCT, HURT_SECTORS, WEAR_NONE};
@@ -32,8 +32,8 @@ use sim_core::deploy::{
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{slots_in, CONT_MAX, CONT_SELF};
 use sim_core::limits::{
-    CRAFT_QUEUE, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_DEPLOY_COSTS,
-    MAX_DEPLOY_DEFS, MAX_ITEM_DEFS, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES,
+    CRAFT_QUEUE, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_BUILD_COORD, MAX_BUILD_SOCKETS,
+    MAX_DEPLOY_COSTS, MAX_DEPLOY_DEFS, MAX_ITEM_DEFS, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES,
     MAX_RECIPE_INPUTS, MAX_RESEARCH_ROWS, WEAR_SLOTS,
 };
 use sim_core::research::{ResearchRow, NO_RECIPE};
@@ -518,12 +518,12 @@ const RECIPE_TICKS_BITS: u32 = 24;
 const STATION_BITS: u32 = 3;
 const N_INPUTS_BITS: u32 = 3;
 const PIECE_SYNC_COUNT_BITS: u32 = 6;
-const PIECE_DEFS_TOTAL_BITS: u32 = 6;
+const PIECE_DEFS_TOTAL_BITS: u32 = 7;
 const PIECE_DEFS_COUNT_BITS: u32 = 3;
 /// Widened 3 → 4 in wire v40 (triangles v0): catalogue v1 had saturated
 /// the 3-bit field — its own domain pin said the triangles could not
 /// land without this line. Four of the sixteen values remain unused at v67,
-/// so both ends range-check against `SHAPE_FLOOR_FRAME`.
+/// so both ends range-check against `SHAPE_LOW_WALL`.
 const SHAPE_BITS: u32 = 4;
 const MATERIAL_BITS: u32 = 2;
 const N_COSTS_BITS: u32 = 2;
@@ -1600,7 +1600,7 @@ pub fn encode_event_bags(bags: &[BagAnchor], buf: &mut [u8]) -> Result<usize, Wi
     for b in bags {
         if b.cx as usize >= MAX_BUILD_COORD
             || b.cz as usize >= MAX_BUILD_COORD
-            || b.level as usize >= MAX_BUILD_LEVELS
+            || b.level as usize >= MAX_BUILD_SOCKETS
         {
             return Err(WireError::Range);
         }
@@ -1712,7 +1712,7 @@ pub fn encode_event_research_rows(
 fn write_piece_rec(w: &mut BitWriter, rec: &PieceRec) -> Result<(), WireError> {
     if rec.cx as usize >= MAX_BUILD_COORD
         || rec.cz as usize >= MAX_BUILD_COORD
-        || rec.level as usize >= MAX_BUILD_LEVELS
+        || rec.level as usize >= MAX_BUILD_SOCKETS
         || rec.loc > loc_max(false)
         || rec.row as usize >= MAX_PIECE_DEFS
         || rec.facing > 1
@@ -1835,7 +1835,7 @@ pub fn encode_event_piece_repaired(
     };
     if cx as usize >= MAX_BUILD_COORD
         || cz as usize >= MAX_BUILD_COORD
-        || level as usize >= MAX_BUILD_LEVELS
+        || level as usize >= MAX_BUILD_SOCKETS
         || loc > loc_max(deploy)
         || (row as u32) >= (1 << row_bits)
         || healed == 0
@@ -1882,7 +1882,7 @@ pub fn encode_event_charge_placed(
     };
     if cx as usize >= MAX_BUILD_COORD
         || cz as usize >= MAX_BUILD_COORD
-        || level as usize >= MAX_BUILD_LEVELS
+        || level as usize >= MAX_BUILD_SOCKETS
         || loc > loc_max(deploy)
         || (row as u32) >= (1 << row_bits)
         || fuse == 0
@@ -1918,8 +1918,8 @@ pub fn encode_event_piece_defs(
     w.write(first as u32, PIECE_DEFS_TOTAL_BITS)?;
     w.write(count as u32, PIECE_DEFS_COUNT_BITS)?;
     for def in bc.pieces[first..first + count].iter() {
-        // `SHAPE_FLOOR_FRAME` is the top code (floor openings, wire v67).
-        if def.shape > SHAPE_FLOOR_FRAME
+        // `SHAPE_LOW_WALL` is the top code (floor openings, wire v67).
+        if def.shape > SHAPE_LOW_WALL
             || def.material > MAT_METAL
             || def.hp == 0
             || def.n_costs == 0
@@ -1951,7 +1951,7 @@ pub fn encode_event_piece_defs(
 fn write_deploy_rec(w: &mut BitWriter, rec: &DeployRec) -> Result<(), WireError> {
     if rec.cx as usize >= MAX_BUILD_COORD
         || rec.cz as usize >= MAX_BUILD_COORD
-        || rec.level as usize >= MAX_BUILD_LEVELS
+        || rec.level as usize >= MAX_BUILD_SOCKETS
         // Still the straight-edge bound: a deployable never sits on a
         // triangle or a diagonal (v40 widened the FIELD, not this store).
         || rec.loc > LOC_EDGE_ZLO
@@ -2096,7 +2096,7 @@ pub fn encode_event_struct_hit(
     };
     if cx as usize >= MAX_BUILD_COORD
         || cz as usize >= MAX_BUILD_COORD
-        || level as usize >= MAX_BUILD_LEVELS
+        || level as usize >= MAX_BUILD_SOCKETS
         || loc > loc_max(deploy)
         || (row as u32) >= (1 << row_bits)
         || left == 0
@@ -2128,7 +2128,7 @@ pub fn encode_event_removed(
 ) -> Result<usize, WireError> {
     if cx as usize >= MAX_BUILD_COORD
         || cz as usize >= MAX_BUILD_COORD
-        || level as usize >= MAX_BUILD_LEVELS
+        || level as usize >= MAX_BUILD_SOCKETS
         || loc > loc_max(!piece)
     {
         return Err(WireError::Range);
@@ -2161,7 +2161,7 @@ pub fn encode_event_stock(
     }
     if cx as usize >= MAX_BUILD_COORD
         || cz as usize >= MAX_BUILD_COORD
-        || level as usize >= MAX_BUILD_LEVELS
+        || level as usize >= MAX_BUILD_SOCKETS
     {
         return Err(WireError::Range);
     }
@@ -2212,7 +2212,7 @@ pub fn encode_event_door(
 fn door_addr_ok(cx: u16, cz: u16, level: u8, loc: u8) -> bool {
     (cx as usize) < MAX_BUILD_COORD
         && (cz as usize) < MAX_BUILD_COORD
-        && (level as usize) < MAX_BUILD_LEVELS
+        && (level as usize) < MAX_BUILD_SOCKETS
         && loc <= LOC_EDGE_ZLO
 }
 
@@ -2294,7 +2294,7 @@ pub fn encode_event_oven(
 ) -> Result<usize, WireError> {
     if cx as usize >= MAX_BUILD_COORD
         || cz as usize >= MAX_BUILD_COORD
-        || level as usize >= MAX_BUILD_LEVELS
+        || level as usize >= MAX_BUILD_SOCKETS
     {
         return Err(WireError::Range);
     }
@@ -3369,7 +3369,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 let material = r.read(MATERIAL_BITS)? as u8;
                 let hp = r.read(16)? as u16;
                 let n_costs = r.read(N_COSTS_BITS)? as u8;
-                if shape > SHAPE_FLOOR_FRAME
+                if shape > SHAPE_LOW_WALL
                     || material > MAT_METAL
                     || hp == 0
                     || n_costs == 0
@@ -4547,7 +4547,7 @@ mod tests {
         let recs: [PieceRec; PIECE_SYNC_BATCH] = core::array::from_fn(|i| PieceRec {
             cx: i as u16 * 31,
             cz: 1023 - i as u16,
-            level: (i % MAX_BUILD_LEVELS) as u8,
+            level: (i % MAX_BUILD_SOCKETS) as u8,
             loc: (i % 4) as u8,
             row: (i % MAX_PIECE_DEFS) as u8,
             ..PieceRec::default()
@@ -4677,7 +4677,7 @@ mod tests {
         let recs: [DeployRec; DEPLOY_SYNC_BATCH] = core::array::from_fn(|i| DeployRec {
             cx: i as u16 * 41,
             cz: 1023 - i as u16,
-            level: (i % MAX_BUILD_LEVELS) as u8,
+            level: (i % MAX_BUILD_SOCKETS) as u8,
             loc: (i % 4) as u8,
             row: (i % MAX_DEPLOY_DEFS) as u8,
             ..DeployRec::default()
@@ -4882,7 +4882,7 @@ mod tests {
             "cell past the grid"
         );
         assert_eq!(
-            encode_event_struct_hit(false, 0, 0, MAX_BUILD_LEVELS as u8, 0, 0, 1, 1, &mut buf),
+            encode_event_struct_hit(false, 0, 0, MAX_BUILD_SOCKETS as u8, 0, 0, 1, 1, &mut buf),
             Err(WireError::Range),
             "level past the grid"
         );
@@ -5648,14 +5648,14 @@ mod wire_domains {
             prefix: "pub const SHAPE_",
             ty: ": u8 = ",
             exempt: &[],
-            min_members: 12,
+            min_members: 14,
             bits: SHAPE_BITS,
             // Moved 5 -> 7 at wire v38 (catalogue v1), saturating the
             // 3-bit field exactly as this pin then warned; v40 is the
             // widening it priced — `SHAPE_BITS` 3 -> 4 for the three
             // triangle shapes (`reference/BUILDING.md` §9.14). The floor
             // frame takes code 11 at v67; the decoder checks the tail.
-            live_max: 11,
+            live_max: 13,
         },
         Domain {
             what: "piece material",

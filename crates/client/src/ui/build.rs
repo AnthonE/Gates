@@ -31,8 +31,8 @@
 
 use sim_core::build::{
     BuildContent, MAT_METAL, MAT_STONE, MAT_TWIG, MAT_WOOD, SHAPE_DOORWAY, SHAPE_FLOOR,
-    SHAPE_FLOOR_FRAME, SHAPE_FOUNDATION, SHAPE_FRAME, SHAPE_ROOF, SHAPE_STAIRS, SHAPE_TRI_FLOOR,
-    SHAPE_TRI_FOUNDATION, SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
+    SHAPE_FLOOR_FRAME, SHAPE_FOUNDATION, SHAPE_FRAME, SHAPE_HALF_WALL, SHAPE_LOW_WALL, SHAPE_ROOF,
+    SHAPE_STAIRS, SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION, SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
 };
 use sim_core::craft::inv_count;
 use sim_core::gather::ItemStack;
@@ -44,10 +44,12 @@ use sim_core::limits::INV_SLOTS;
 /// (catalogue v1) follow the doorway, and each triangle (triangles v0)
 /// sits beside the square it halves, which is where a builder's thumb
 /// already is.
-pub const SHAPES: [u8; 12] = [
+pub const SHAPES: [u8; 14] = [
     SHAPE_FOUNDATION,
     SHAPE_TRI_FOUNDATION,
     SHAPE_WALL,
+    SHAPE_HALF_WALL,
+    SHAPE_LOW_WALL,
     SHAPE_DOORWAY,
     SHAPE_WINDOW,
     SHAPE_FRAME,
@@ -70,6 +72,8 @@ pub fn shape_label(shape: u8) -> &'static str {
         SHAPE_FOUNDATION => "Foundation",
         SHAPE_TRI_FOUNDATION => "Tri Foundation",
         SHAPE_WALL => "Wall",
+        SHAPE_HALF_WALL => "Half Wall",
+        SHAPE_LOW_WALL => "Low Wall",
         SHAPE_DOORWAY => "Doorway",
         SHAPE_WINDOW => "Window",
         SHAPE_FRAME => "Wall Frame",
@@ -87,6 +91,8 @@ pub fn shape_label(shape: u8) -> &'static str {
 /// and it is the only place a new player learns what a piece is *for*.
 pub fn shape_blurb(shape: u8) -> &'static str {
     match shape {
+        SHAPE_HALF_WALL => "A half-storey wall with a floor socket on top.",
+        SHAPE_LOW_WALL => "Low cover. Does not support a floor.",
         SHAPE_FOUNDATION => "The ground floor. Everything else stands on one.",
         SHAPE_TRI_FOUNDATION => "Half a foundation, along the diagonal. Corners, cheaper.",
         SHAPE_WALL => "Secure your base by enclosing it in walls.",
@@ -114,7 +120,7 @@ pub fn shape_blurb(shape: u8) -> &'static str {
 pub fn shape_icon(shape: u8) -> &'static str {
     match shape {
         SHAPE_FOUNDATION => "shape_foundation",
-        SHAPE_WALL => "shape_wall",
+        SHAPE_WALL | SHAPE_HALF_WALL | SHAPE_LOW_WALL => "shape_wall",
         SHAPE_DOORWAY => "shape_doorway",
         SHAPE_WINDOW => "shape_window",
         SHAPE_FRAME => "shape_wall_frame",

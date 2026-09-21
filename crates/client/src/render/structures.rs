@@ -39,8 +39,9 @@ use bevy::prelude::*;
 use sim_core::build::{
     BUILD_CELL_M, DMG_BANDS, LEVEL_H_M, LOC_DIAG_A, LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO,
     LOC_RISER_XHI, LOC_RISER_XLO, LOC_RISER_ZLO, LOC_TRI_XHI_ZHI, LOC_TRI_XHI_ZLO, LOC_TRI_XLO_ZHI,
-    LOC_TRI_XLO_ZLO, MAT_METAL, SHAPE_DOORWAY, SHAPE_FLOOR_FRAME, SHAPE_FRAME, SHAPE_STAIRS,
-    SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION, SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
+    LOC_TRI_XLO_ZLO, MAT_METAL, SHAPE_DOORWAY, SHAPE_FLOOR_FRAME, SHAPE_FRAME, SHAPE_HALF_WALL,
+    SHAPE_LOW_WALL, SHAPE_STAIRS, SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION, SHAPE_TRI_ROOF,
+    SHAPE_WALL, SHAPE_WINDOW,
 };
 use sim_core::collide::{
     ColIndex, DOOR_POST_W_M, FRAME_RIM_M, WALL_THICKNESS_M, WINDOW_HEAD_M, WINDOW_SILL_M,
@@ -612,7 +613,7 @@ pub struct Kit {
     /// variants, each with two soft-face orientations, built once per shape.
     edge_mesh: [[[Option<Handle<Mesh>>; 2]; 4]; N_SHAPES],
     /// The diagonal wall's body ([`diagonal_parts`]) — its own size.
-    diag_mesh: [Handle<Mesh>; 2],
+    diag_mesh: [[Handle<Mesh>; 2]; 3],
     /// The footings, for the shapes whose one part is sized PER ADDRESS
     /// rather than per shape — the foundations, whose skirt depth follows
     /// the terrain under their cell ([`foundation_part`]). Indexed by
@@ -697,7 +698,7 @@ pub fn level_base_y(
     level: u8,
     plate: i8,
 ) -> f32 {
-    sim_core::build::column_floor_y(seed, haven, cx, cz, plate) + level as f32 * LEVEL_H_M
+    sim_core::build::column_floor_y(seed, haven, cx, cz, plate) + sim_core::build::level_y(level)
 }
 
 /// The world XZ of a cell's centre.
@@ -935,7 +936,7 @@ pub const MAX_PARTS: usize = 6;
 /// How many shapes the parts table covers: the sim's own last shape, plus
 /// one. A shape past it is drawn as the fallback slab, same as one the
 /// table has no arm for.
-pub const N_SHAPES: usize = SHAPE_FLOOR_FRAME as usize + 1;
+pub const N_SHAPES: usize = SHAPE_LOW_WALL as usize + 1;
 
 /// Which parts a shape has and where they go — **the one table** both the
 /// standing piece ([`spawn_piece`]) and the build ghost (`ghost::track`)
@@ -958,8 +959,22 @@ pub fn shape_parts(shape: u8) -> ([Part; MAX_PARTS], usize) {
     // The run between the two corner posts, which is what every straight
     // edge body spans: the bodies abut the posts, never overlap them.
     let between = BUILD_CELL_M - post_w();
-    let [lo, hi] = corner_posts();
+    let [mut lo, mut hi] = corner_posts();
+    if matches!(shape, SHAPE_HALF_WALL | SHAPE_LOW_WALL) {
+        let delta = sim_core::build::wall_height(shape) - LEVEL_H_M;
+        for p in [&mut lo, &mut hi] {
+            p.size.y += delta;
+            p.offset.y += delta * 0.5;
+        }
+    }
     let body = PartRole::Body;
+    let wall = || {
+        let mut p = edge_part(0.0, LEVEL_H_M, between, 0.0, body);
+        let delta = sim_core::build::wall_height(shape) - LEVEL_H_M;
+        p.size.y += delta;
+        p.offset.y += delta * 0.5;
+        p
+    };
     match shape {
         SHAPE_FLOOR_FRAME => {
             let half = BUILD_CELL_M * 0.5;
@@ -982,17 +997,7 @@ pub fn shape_parts(shape: u8) -> ([Part; MAX_PARTS], usize) {
                 4,
             )
         }
-        SHAPE_WALL => (
-            [
-                edge_part(0.0, LEVEL_H_M, between, 0.0, body),
-                lo,
-                hi,
-                none,
-                none,
-                none,
-            ],
-            3,
-        ),
+        SHAPE_WALL | SHAPE_HALF_WALL | SHAPE_LOW_WALL => ([wall(), lo, hi, none, none, none], 3),
         SHAPE_DOORWAY => {
             // Two posts hugging each end of the edge, the lintel over what
             // they leave, and the corner posts they abut.
@@ -1143,8 +1148,14 @@ pub fn diagonal_parts() -> ([Part; MAX_PARTS], usize) {
 /// wall on a diagonal is [`diagonal_parts`]. What the ghost and the kit both
 /// read, so a diagonal previews as the object it becomes.
 pub fn parts_for(shape: u8, loc: u8) -> ([Part; MAX_PARTS], usize) {
-    if shape == SHAPE_WALL && (loc == LOC_DIAG_A || loc == LOC_DIAG_B) {
-        diagonal_parts()
+    if matches!(shape, SHAPE_WALL | SHAPE_HALF_WALL | SHAPE_LOW_WALL)
+        && (loc == LOC_DIAG_A || loc == LOC_DIAG_B)
+    {
+        let (mut parts, n) = diagonal_parts();
+        let delta = sim_core::build::wall_height(shape) - LEVEL_H_M;
+        parts[0].size.y += delta;
+        parts[0].offset.y += delta * 0.5;
+        (parts, n)
     } else {
         shape_parts(shape)
     }
@@ -1155,7 +1166,7 @@ pub fn parts_for(shape: u8, loc: u8) -> ([Part; MAX_PARTS], usize) {
 pub fn is_edge_shape(shape: u8) -> bool {
     matches!(
         shape,
-        SHAPE_WALL | SHAPE_DOORWAY | SHAPE_WINDOW | SHAPE_FRAME
+        SHAPE_WALL | SHAPE_HALF_WALL | SHAPE_LOW_WALL | SHAPE_DOORWAY | SHAPE_WINDOW | SHAPE_FRAME
     )
 }
 
@@ -1186,16 +1197,23 @@ pub fn post_owner(cols: &ColIndex, cx: u16, cz: u16, level: u8, loc: u8) -> Post
         LOC_EDGE_ZLO => ((Some(cx), Some(cz)), (cx.checked_add(1), Some(cz)), 1, 3),
         _ => return PostOwn::default(),
     };
+    let height = cols.get(cx, cz).edge_height(loc, level);
     let owns = |corner: Corner, rank: u8| -> bool {
-        // A corner off the grid's far edge belongs to nobody else.
         let (Some(px), Some(pz)) = corner else {
             return true;
         };
-        (0..rank).all(|r| !match r {
-            0 => edge_at(cols, Some(px), Some(pz), level, LOC_EDGE_XLO),
-            1 => edge_at(cols, Some(px), Some(pz), level, LOC_EDGE_ZLO),
-            2 => edge_at(cols, Some(px), pz.checked_sub(1), level, LOC_EDGE_XLO),
-            _ => edge_at(cols, px.checked_sub(1), Some(pz), level, LOC_EDGE_ZLO),
+        let candidates = [
+            (Some(px), Some(pz), LOC_EDGE_XLO),
+            (Some(px), Some(pz), LOC_EDGE_ZLO),
+            (Some(px), pz.checked_sub(1), LOC_EDGE_XLO),
+            (px.checked_sub(1), Some(pz), LOC_EDGE_ZLO),
+        ];
+        candidates.into_iter().enumerate().all(|(r, (x, z, edge))| {
+            if !edge_at(cols, x, z, level, edge) {
+                return true;
+            }
+            let other = cols.get(x.unwrap(), z.unwrap()).edge_height(edge, level);
+            other < height || (other == height && r >= rank as usize)
         })
     };
     PostOwn {
@@ -1255,11 +1273,11 @@ fn edge_at(cols: &ColIndex, cx: Option<u16>, cz: Option<u16>, level: u8, loc: u8
     }
     let m = cols.get(cx, cz);
     let mask = if loc == LOC_EDGE_XLO {
-        m.walls_xlo | m.doors_xlo | m.wins_xlo | m.frames_xlo
+        m.half_xlo | m.low_xlo | m.walls_xlo | m.doors_xlo | m.wins_xlo | m.frames_xlo
     } else {
-        m.walls_zlo | m.doors_zlo | m.wins_zlo | m.frames_zlo
+        m.half_zlo | m.low_zlo | m.walls_zlo | m.doors_zlo | m.wins_zlo | m.frames_zlo
     };
-    mask & (1u8 << level) != 0
+    mask & (1u16 << level) != 0
 }
 
 /// How far below the lowest ground sample under its cell a foundation's
@@ -2146,7 +2164,14 @@ pub fn build_kit(
     // of the two corner posts the piece draws (`post_owner`).
     let mut edge_mesh: [[[Option<Handle<Mesh>>; 2]; 4]; N_SHAPES] =
         std::array::from_fn(|_| std::array::from_fn(|_| [NO_MESH; 2]));
-    for shape in [SHAPE_WALL, SHAPE_DOORWAY, SHAPE_WINDOW, SHAPE_FRAME] {
+    for shape in [
+        SHAPE_WALL,
+        SHAPE_HALF_WALL,
+        SHAPE_LOW_WALL,
+        SHAPE_DOORWAY,
+        SHAPE_WINDOW,
+        SHAPE_FRAME,
+    ] {
         let (parts, n) = shape_parts(shape);
         for own in 0..4u8 {
             let keep = PostOwn::from_bits(own);
@@ -2159,8 +2184,14 @@ pub fn build_kit(
                 std::array::from_fn(|side| Some(meshes.add(sided_parts_mesh(&owned, side != 0))));
         }
     }
-    let diag_mesh = std::array::from_fn(|side| {
-        meshes.add(sided_parts_mesh(&diagonal_parts().0[..1], side != 0))
+    let diag_mesh = std::array::from_fn(|kind| {
+        std::array::from_fn(|side| {
+            let shape = [SHAPE_WALL, SHAPE_HALF_WALL, SHAPE_LOW_WALL][kind];
+            meshes.add(sided_parts_mesh(
+                &parts_for(shape, LOC_DIAG_A).0[..1],
+                side != 0,
+            ))
+        })
     });
     let apron = std::array::from_fn(|own| {
         let (parts, n) = apron_parts(PostOwn::from_bits(own as u8));
@@ -2587,8 +2618,15 @@ fn spawn_piece(
             kit.footing[step][usize::from(tri)].clone(),
             root * part.transform(),
         )
-    } else if shape == SHAPE_WALL && (loc == LOC_DIAG_A || loc == LOC_DIAG_B) {
-        (kit.diag_mesh[soft_side].clone(), root)
+    } else if matches!(shape, SHAPE_WALL | SHAPE_HALF_WALL | SHAPE_LOW_WALL)
+        && (loc == LOC_DIAG_A || loc == LOC_DIAG_B)
+    {
+        let kind = match shape {
+            SHAPE_HALF_WALL => 1,
+            SHAPE_LOW_WALL => 2,
+            _ => 0,
+        };
+        (kit.diag_mesh[kind][soft_side].clone(), root)
     } else if is_edge_shape(shape) {
         (
             kit.edge_mesh[(shape as usize).min(N_SHAPES - 1)][own.bits() as usize][soft_side]
