@@ -3362,7 +3362,7 @@ impl World {
         for i in 0..self.deploys.len() {
             let d = self.deploys.entries()[i];
             let arch = self.deploy.defs[d.row as usize].arch;
-            if arch == crate::deploy::ARCH_DOOR {
+            if crate::deploy::edge_insert(arch) {
                 self.pieces.set_door(d.cx, d.cz, d.level, d.loc, !d.open);
             }
             // The solid nibble is the shut bit's twin and derived the same

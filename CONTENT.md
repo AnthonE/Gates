@@ -80,7 +80,9 @@ properly. The short version:
   `mob.rs` branches on species. `content/mobs.toml`; the sim's side is
   `sim-core/src/mob.rs` and the design is `reference/ANIMALS.md` §9.
 - **deployable**: entity archetype (bag, hearth, cupboard, box, furnace,
-  workbench, door, lock, recycler, research), placement rules, hp
+  workbench, door, lock, recycler, research, window_bars, garage_door), placement
+  rules, hp. Edge inserts require their matching `doorway`, `window` or
+  `wall_frame` socket; a garage door accepts the existing separate lock.
 - **fuel / cook** (`cooking.toml`): what an oven burns — item, seconds per
   unit, byproduct + `byproduct_pct` (hundredths of a unit per unit burned,
   banked and paid whole, never rolled) — and one row per transformation:

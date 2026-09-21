@@ -902,7 +902,9 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// v68 adds hammer rotation: an address-only action flips an edge facing
 /// or turns a stair. Existing removal/placement records carry the result;
 /// no field width changes and no client-selected orientation crosses.
-pub const PROTO_VER: u16 = 68;
+/// v69 adds window-bar and garage-door archetypes and their socket classes.
+/// Existing field widths suffice; older peers must not interpret the new domains.
+pub const PROTO_VER: u16 = 69;
 
 /// This game's slug in the elo catalog.
 ///

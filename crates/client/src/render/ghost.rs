@@ -105,6 +105,9 @@ pub struct Ghost {
     /// two are never up at once but are driven by different systems, and one
     /// entity shared between them would need a mode flag that could disagree.
     deploy_entity: Option<Entity>,
+    insert_mesh: [Option<Handle<Mesh>>; 2],
+    apron_mesh: Option<Handle<Mesh>>,
+    apron_entity: Option<Entity>,
     deploy_mat: Option<Handle<StandardMaterial>>,
     ok_mat: Option<Handle<StandardMaterial>>,
     no_mat: Option<Handle<StandardMaterial>>,
@@ -284,7 +287,7 @@ pub fn track(
     // The storey is what the ray met (aimed level v0): the wall's face means
     // the storey above it, a floor's edge its own, bare ground the first.
     let level = aim.level_for(shape);
-    let mut target = place::target_at(aim.at.0, aim.at.1, shape, level);
+    let mut target = aim.target_for(shape);
     if shape == SHAPE_STAIRS {
         target.loc = STAIR_LOCS[ghost.stair_turn as usize % STAIR_LOCS.len()];
     }
@@ -378,6 +381,7 @@ pub fn track(
     if ghost.built != Some((shape, diagonal)) {
         ghost.built = Some((shape, diagonal));
         commands.entity(root).despawn_related::<Children>();
+        ghost.apron_entity = None;
         let mesh = ghost.mesh.clone().expect("built above");
         let tri = ghost.tri_mesh.clone().expect("built above");
         let stairs = ghost.stair_mesh.clone().expect("built above");
@@ -434,6 +438,53 @@ pub fn track(
                 }
             }
         }
+    }
+    let foot_drop = sim_core::collide::edge_foot_drop(
+        world.seed,
+        &world.haven,
+        core.pieces.cols(),
+        target.cx,
+        target.cz,
+        target.level,
+        target.loc,
+        plate,
+    );
+    let apron = if structures::is_edge_shape(shape)
+        && matches!(
+            target.loc,
+            sim_core::build::LOC_EDGE_XLO | sim_core::build::LOC_EDGE_ZLO
+        ) {
+        structures::edge_apron_transform(target.level, foot_drop)
+    } else {
+        None
+    };
+    if let Some(transform) = apron {
+        let mesh = ghost
+            .apron_mesh
+            .get_or_insert_with(|| {
+                let (parts, n) = structures::apron_parts(structures::PostOwn::BOTH);
+                meshes.add(structures::parts_mesh(&parts[..n]))
+            })
+            .clone();
+        if let Some(e) = ghost.apron_entity {
+            commands
+                .entity(e)
+                .insert((transform, MeshMaterial3d(mat), Visibility::Visible));
+        } else {
+            let e = commands
+                .spawn((
+                    Mesh3d(mesh),
+                    MeshMaterial3d(mat),
+                    NotShadowCaster,
+                    transform,
+                    Visibility::Visible,
+                    ChildOf(root),
+                ))
+                .id();
+            ghost.apron_entity = Some(e);
+        }
+    } else if let Some(e) = ghost.apron_entity {
+        commands.entity(e).insert(Visibility::Hidden);
     }
 }
 
@@ -584,6 +635,18 @@ pub fn deploy_track(
     };
     let arch = def.arch as usize;
     let size = super::structures::deploy_size(arch);
+    let insert = match arch as u8 {
+        sim_core::deploy::ARCH_WINDOW_BARS => Some(0),
+        sim_core::deploy::ARCH_GARAGE_DOOR => Some(1),
+        _ => None,
+    };
+    let mesh = if let Some(i) = insert {
+        ghost.insert_mesh[i]
+            .get_or_insert_with(|| meshes.add(structures::insert_mesh(arch as u8)))
+            .clone()
+    } else {
+        ghost.mesh.clone().expect("built above")
+    };
 
     let [x, y, z] = core.predict.render_position();
     let aim = aim_point(world.seed, &world.haven, core, &look, [x, y, z]);
@@ -631,7 +694,7 @@ pub fn deploy_track(
         // ground placement has no column and answers 0, the terrain rule.
         core.pieces.cols().plate(t.cx, t.cz).unwrap_or(0),
     )
-    .with_scale(size);
+    .with_scale(if insert.is_some() { Vec3::ONE } else { size });
     let mat = if verdict.refused() {
         ghost.no_mat.clone()
     } else {
@@ -641,15 +704,18 @@ pub fn deploy_track(
 
     match ghost.deploy_entity {
         Some(e) => {
-            commands
-                .entity(e)
-                .insert((transform, MeshMaterial3d(mat), Visibility::Visible));
+            commands.entity(e).insert((
+                transform,
+                Mesh3d(mesh.clone()),
+                MeshMaterial3d(mat),
+                Visibility::Visible,
+            ));
         }
         None => {
             let e = commands
                 .spawn((
                     super::WorldEntity,
-                    Mesh3d(ghost.mesh.clone().expect("built above")),
+                    Mesh3d(mesh),
                     MeshMaterial3d(mat),
                     NotShadowCaster,
                     transform,

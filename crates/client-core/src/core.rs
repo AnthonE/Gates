@@ -17,7 +17,7 @@ use protocol::{
 use sim_core::build::{BuildContent, PieceRec};
 use sim_core::collide::{ColIndex, Part};
 use sim_core::craft::CraftContent;
-use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, ARCH_DOOR, BAG_CAP};
+use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, BAG_CAP};
 use sim_core::gather::{cell_key, ItemStack, NO_CELL, NO_ITEM};
 use sim_core::input::InputFrame;
 use sim_core::inventory::{CONT_SELF, CONT_WEAR};
@@ -854,7 +854,13 @@ impl ClientCore {
 /// is what keeps an unknown row from sealing a doorway it doesn't own;
 /// the defs-arrival handler re-derives once the rows land.
 fn is_door(defs: &DeployContent, have: u16, row: u8) -> bool {
-    (row as u16) < have.min(defs.def_count) && defs.defs[row as usize].arch == ARCH_DOOR
+    (row as u16) < have.min(defs.def_count)
+        && sim_core::deploy::arch_is_door(defs.defs[row as usize].arch)
+}
+
+fn is_edge_insert(defs: &DeployContent, have: u16, row: u8) -> bool {
+    (row as u16) < have.min(defs.def_count)
+        && sim_core::deploy::edge_insert(defs.defs[row as usize].arch)
 }
 
 /// The archetype of a solid (movement-blocking) deploy row, or `None` —
@@ -2279,7 +2285,7 @@ impl ClientCore {
                     self.pending_door = None; // predicted a door that's gone
                 }
                 if let Some(gone) = self.deploys.remove(cx, cz, level, loc) {
-                    if is_door(&self.deploy_defs, self.deploy_defs_have, gone.row) {
+                    if is_edge_insert(&self.deploy_defs, self.deploy_defs_have, gone.row) {
                         self.pieces.set_door(cx, cz, level, loc, false);
                     }
                     if solid_arch(&self.deploy_defs, self.deploy_defs_have, gone.row).is_some() {
@@ -2745,7 +2751,7 @@ impl ClientCore {
     /// (deploy collision v0). An open door — and every archetype that is
     /// neither — contributes nothing.
     fn seal_for(&mut self, rec: DeployRec) {
-        if is_door(&self.deploy_defs, self.deploy_defs_have, rec.row) {
+        if is_edge_insert(&self.deploy_defs, self.deploy_defs_have, rec.row) {
             self.pieces
                 .set_door(rec.cx, rec.cz, rec.level, rec.loc, !rec.open);
         }
@@ -2768,7 +2774,7 @@ impl ClientCore {
             ..
         } = self;
         for rec in deploys.entries() {
-            if is_door(deploy_defs, *deploy_defs_have, rec.row) {
+            if is_edge_insert(deploy_defs, *deploy_defs_have, rec.row) {
                 pieces.set_door(rec.cx, rec.cz, rec.level, rec.loc, !rec.open);
             }
             if let Some(arch) = solid_arch(deploy_defs, *deploy_defs_have, rec.row) {

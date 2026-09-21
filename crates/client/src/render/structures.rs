@@ -46,8 +46,9 @@ use sim_core::collide::{
     ColIndex, DOOR_POST_W_M, FRAME_RIM_M, WALL_THICKNESS_M, WINDOW_HEAD_M, WINDOW_SILL_M,
 };
 use sim_core::deploy::{
-    DeployRec, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE, ARCH_HEARTH, ARCH_RECYCLER,
-    ARCH_RESEARCH, ARCH_WORKBENCH, ARCH_WORKBENCH2, ARCH_WORKBENCH3,
+    DeployRec, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE, ARCH_GARAGE_DOOR,
+    ARCH_HEARTH, ARCH_RECYCLER, ARCH_RESEARCH, ARCH_WINDOW_BARS, ARCH_WORKBENCH, ARCH_WORKBENCH2,
+    ARCH_WORKBENCH3,
 };
 use sim_core::movement::{POS_XZ_Q, POS_Y_Q};
 use sim_core::terrain;
@@ -390,7 +391,7 @@ pub fn deploy_size(arch: usize) -> Vec3 {
 // so these transfer 1:1 with no scale conversion. Nothing in the sim reads
 // this table — `deploy_size` has two callers, the build ghost and its test —
 // so a row is a render fact and moving one costs no wire byte and no replay.
-const DEPLOY: [([f32; 3], Color, f32, f32); 12] = [
+const DEPLOY: [([f32; 3], Color, f32, f32); 14] = [
     // 0 · sleeping bag. A human-length bedroll laid flat: it must be longer
     // than a player is tall or it reads as a floor mat. 1.2 was shorter than
     // the body that spawns on it. The 0.32 thickness is the pillow end, not
@@ -482,6 +483,26 @@ const DEPLOY: [([f32; 3], Color, f32, f32); 12] = [
         0.55,
         0.55,
     ), // workbench 3 — the machine bench, metal through
+    (
+        [
+            sim_core::deploy::WINDOW_BAR_M,
+            WINDOW_HEAD_M - WINDOW_SILL_M,
+            BUILD_CELL_M - 2.0 * DOOR_POST_W_M,
+        ],
+        Color::srgb(0.325, 0.353, 0.376),
+        0.55,
+        0.6,
+    ),
+    (
+        [
+            WALL_THICKNESS_M * 0.5,
+            LEVEL_H_M - FRAME_RIM_M,
+            BUILD_CELL_M - 2.0 * FRAME_RIM_M,
+        ],
+        Color::srgb(0.325, 0.353, 0.376),
+        0.55,
+        0.6,
+    ),
 ];
 
 /// A locked door wears banded iron: the one bit of door state a passer-by
@@ -548,6 +569,7 @@ struct Live {
     plate: i8,
     /// A rotate can change only this bit, keeping address, row and damage.
     facing: u8,
+    foot_drop: f32,
 }
 
 /// Shared meshes and materials, built once on first use. A base is hundreds
@@ -1324,6 +1346,23 @@ pub fn foundation_part(
 /// exactly where the skirt is on ground steep enough to cut it.
 pub const APRON_DEPTH_M: f32 = SKIRT_MAX_M;
 
+/// Continue the drawn solid foot to the adjacent lower floor. Ground aprons
+/// retain their buried skirt; upper floors get only the measured height gap.
+pub fn edge_apron_transform(level: u8, foot_drop: f32) -> Option<Transform> {
+    let depth = if level == 0 {
+        APRON_DEPTH_M.max(foot_drop + EDGE_DROP_M)
+    } else if foot_drop > 0.0 {
+        foot_drop + EDGE_DROP_M
+    } else {
+        return None;
+    };
+    let scale = (depth - EDGE_DROP_M) / (APRON_DEPTH_M - EDGE_DROP_M);
+    Some(
+        Transform::from_xyz(0.0, EDGE_DROP_M * (scale - 1.0), 0.0)
+            .with_scale(Vec3::new(1.0, scale, 1.0)),
+    )
+}
+
 /// The apron a ground-storey edge piece hangs from its foot (gap v1): the
 /// wall's own plinth, a wall's thickness across and [`APRON_DEPTH_M`] deep
 /// from [`EDGE_DROP_M`] under the storey base, running between its corner
@@ -1879,6 +1918,35 @@ pub fn base_transform(
         .with_scale(scale)
 }
 
+/// The insert's exact solids, centered for `deploy_transform`.
+/// Built once by both the standing pool and the translucent preview pool.
+pub fn insert_mesh(arch: u8) -> Mesh {
+    let (solids, n) = sim_core::deploy::insert_parts(arch);
+    let height = deploy_size(arch as usize).y;
+    let sill = if arch == ARCH_WINDOW_BARS {
+        WINDOW_SILL_M
+    } else {
+        0.0
+    };
+    let parts: [Part; sim_core::deploy::WINDOW_BAR_COUNT + 2] = std::array::from_fn(|i| {
+        let p = solids[i];
+        Part {
+            size: Vec3::new(
+                sim_core::deploy::insert_thickness(arch),
+                p.top - p.bottom,
+                p.hi - p.lo,
+            ),
+            offset: Vec3::new(
+                0.0,
+                (p.top + p.bottom) * 0.5 - sill - height * 0.5,
+                (p.lo + p.hi) * 0.5 - BUILD_CELL_M * 0.5,
+            ),
+            ..Part::default()
+        }
+    });
+    parts_mesh(&parts[..n])
+}
+
 /// The generated mesh for an archetype, or `None` where the greybox cuboid is
 /// still what draws. Index-aligned with [`DEPLOY`], which is what keeps a new
 /// archetype from silently inheriting its neighbour's model.
@@ -1908,6 +1976,8 @@ pub const DEPLOY_ASSET: [Option<&str>; DEPLOY.len()] = [
     None, // 9 research table — greybox
     None, // 10 workbench 2 — greybox
     None, // 11 workbench 3 — greybox
+    None, // 12 window bars — shared insert geometry
+    None, // 13 garage door — shared insert geometry
 ];
 
 /// Build the pool. `pub` for the same reason [`Kit`] is.
@@ -1962,12 +2032,18 @@ pub fn build_kit(
             }
             .from_asset(path),
         ),
+        None if matches!(i as u8, ARCH_WINDOW_BARS | ARCH_GARAGE_DOOR) => {
+            meshes.add(insert_mesh(i as u8))
+        }
         None => {
             let [w, h, d] = DEPLOY[i].0;
             meshes.add(Cuboid::new(w, h, d))
         }
     });
     let deploy_mat = std::array::from_fn(|i| match DEPLOY_ASSET[i] {
+        None if matches!(i as u8, ARCH_WINDOW_BARS | ARCH_GARAGE_DOOR) => {
+            tier[MAT_METAL as usize][0].clone()
+        }
         Some(path) => assets.load(
             GltfAssetLabel::Material {
                 index: 0,
@@ -2173,6 +2249,16 @@ pub fn stream(
         } else {
             0
         };
+        let foot_drop = sim_core::collide::edge_foot_drop(
+            seed,
+            haven,
+            core.pieces.cols(),
+            rec.cx,
+            rec.cz,
+            rec.level,
+            rec.loc,
+            rec.plate,
+        );
         if let Some(live) = ring.pieces.get_mut(&key) {
             live.seen = gen;
             // An upgrade keeps the address and changes the row; a raid keeps
@@ -2184,6 +2270,7 @@ pub fn stream(
                 && live.plate == rec.plate
                 && live.own == own
                 && live.facing == rec.facing
+                && live.foot_drop == foot_drop
             {
                 continue;
             }
@@ -2202,6 +2289,7 @@ pub fn stream(
             rec.plate,
             rec.facing,
             PostOwn::from_bits(own),
+            foot_drop,
         );
         ring.pieces.insert(
             key,
@@ -2215,6 +2303,7 @@ pub fn stream(
                 own,
                 plate: rec.plate,
                 facing: rec.facing,
+                foot_drop,
             },
         );
     }
@@ -2274,6 +2363,7 @@ pub fn stream(
                 own: 0,
                 plate,
                 facing: 0,
+                foot_drop: 0.0,
             },
         );
     }
@@ -2321,6 +2411,7 @@ pub fn stream(
                 // column and no plate to be drawn against.
                 plate: 0,
                 facing: 0,
+                foot_drop: 0.0,
             },
         );
     }
@@ -2377,6 +2468,7 @@ pub fn stream(
                 own: 0,
                 plate: 0,
                 facing: 0,
+                foot_drop: 0.0,
             },
         );
     }
@@ -2402,6 +2494,7 @@ fn spawn_piece(
     plate: i8,
     facing: u8,
     own: PostOwn,
+    foot_drop: f32,
 ) -> Entity {
     // Clamped, not `.min(2)`: the table covers every material the sim has
     // (`N_TIERS`, gated in `tests/pieces.rs` §A), so this only catches a
@@ -2469,12 +2562,14 @@ fn spawn_piece(
     // child at the root's own frame: the wall's plinth, in the wall's
     // material, owned like its posts. The root keeps the mesh the highlight
     // reads; a child is exactly what the one-entity contract allows.
-    if addr.2 == 0 && is_edge_shape(shape) && matches!(loc, LOC_EDGE_XLO | LOC_EDGE_ZLO) {
-        piece.with_child((
-            Mesh3d(kit.apron[own.bits() as usize].clone()),
-            MeshMaterial3d(mat),
-            Transform::IDENTITY,
-        ));
+    if is_edge_shape(shape) && matches!(loc, LOC_EDGE_XLO | LOC_EDGE_ZLO) {
+        if let Some(apron) = edge_apron_transform(addr.2, foot_drop) {
+            piece.with_child((
+                Mesh3d(kit.apron[own.bits() as usize].clone()),
+                MeshMaterial3d(mat),
+                apron,
+            ));
+        }
     }
     piece.id()
 }
@@ -2505,8 +2600,27 @@ pub fn deploy_transform(
     let (cxm, czm) = cell_center(cx, cz);
     let x0 = cx as f32 * BUILD_CELL_M;
     let z0 = cz as f32 * BUILD_CELL_M;
-    let y = base_y + h * 0.5;
+    let y = base_y
+        + h * 0.5
+        + if arch == ARCH_WINDOW_BARS {
+            WINDOW_SILL_M
+        } else {
+            0.0
+        };
     let quarter = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+
+    if arch == ARCH_GARAGE_DOOR {
+        let mut root = base_transform(seed, haven, addr, plate);
+        root.translation.y = if open {
+            base_y + LEVEL_H_M - FRAME_RIM_M * 0.5
+        } else {
+            y
+        };
+        if open {
+            root.scale.y = FRAME_RIM_M / h;
+        }
+        return root;
+    }
 
     match (loc, open) {
         (LOC_EDGE_XLO, false) => Transform::from_xyz(x0, y, czm),

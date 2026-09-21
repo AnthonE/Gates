@@ -37,7 +37,8 @@ use sim_core::backpack::LOOT_REACH_M;
 use sim_core::build::BUILD_CELL_M;
 use sim_core::deploy::{
     box_key, DeployContent, DeployRec, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE,
-    ARCH_HEARTH, ARCH_RECYCLER, ARCH_RESEARCH, ARCH_WORKBENCH, ARCH_WORKBENCH2, ARCH_WORKBENCH3,
+    ARCH_GARAGE_DOOR, ARCH_HEARTH, ARCH_RECYCLER, ARCH_RESEARCH, ARCH_WORKBENCH, ARCH_WORKBENCH2,
+    ARCH_WORKBENCH3,
 };
 use sim_core::movement::POS_XZ_Q;
 
@@ -497,7 +498,7 @@ pub fn resolve(
         }
         let arch = defs.defs[rec.row as usize].arch;
         let verb = match arch {
-            ARCH_DOOR => Verb::Door,
+            ARCH_DOOR | ARCH_GARAGE_DOOR => Verb::Door,
             ARCH_BOX => Verb::Box,
             ARCH_HEARTH => Verb::Hearth,
             ARCH_FIRE | ARCH_FURNACE => Verb::Fire,

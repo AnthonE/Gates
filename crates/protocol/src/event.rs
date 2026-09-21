@@ -27,7 +27,7 @@ use sim_core::collide::{Part, PART_BITS};
 use sim_core::combat::{ARMOR_MAX_PCT, HURT_SECTORS, WEAR_NONE};
 use sim_core::craft::{CraftContent, CraftJob, RecipeDef, STATION_MAX};
 use sim_core::deploy::{
-    BagAnchor, DeployContent, DeployDef, DeployRec, ARCH_WORKBENCH3, BAG_CAP, PLACE_DOOR,
+    BagAnchor, DeployContent, DeployDef, DeployRec, ARCH_GARAGE_DOOR, BAG_CAP, PLACE_FRAME,
 };
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{slots_in, CONT_MAX, CONT_SELF};
@@ -2052,7 +2052,7 @@ pub fn encode_event_deploy_defs(
     w.write(first as u32, DEPLOY_DEFS_TOTAL_BITS)?;
     w.write(count as u32, DEPLOY_DEFS_COUNT_BITS)?;
     for def in dc.defs[first..first + count].iter() {
-        if def.arch > ARCH_WORKBENCH3 || def.placement > PLACE_DOOR || def.hp == 0 {
+        if def.arch > ARCH_GARAGE_DOOR || def.placement > PLACE_FRAME || def.hp == 0 {
             return Err(WireError::Range);
         }
         if def.n_costs as usize > MAX_DEPLOY_COSTS {
@@ -3436,8 +3436,8 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 let hp = r.read(16)? as u16;
                 let item = r.read(16)? as u16;
                 let n_costs = r.read(DEPLOY_COSTS_BITS)? as u8;
-                if arch > ARCH_WORKBENCH3
-                    || placement > PLACE_DOOR
+                if arch > ARCH_GARAGE_DOOR
+                    || placement > PLACE_FRAME
                     || hp == 0
                     || n_costs as usize > MAX_DEPLOY_COSTS
                 {
@@ -5673,9 +5673,9 @@ mod wire_domains {
             prefix: "pub const ARCH_",
             ty: ": u8 = ",
             exempt: &[],
-            min_members: 12,
+            min_members: 14,
             bits: ARCH_BITS,
-            live_max: 11,
+            live_max: 13,
         },
         Domain {
             what: "deploy placement",
@@ -5685,9 +5685,9 @@ mod wire_domains {
             prefix: "pub const PLACE_",
             ty: ": u8 = ",
             exempt: &[],
-            min_members: 5,
+            min_members: 7,
             bits: PLACEMENT_BITS,
-            live_max: 4,
+            live_max: 6,
         },
         Domain {
             what: "craft station",

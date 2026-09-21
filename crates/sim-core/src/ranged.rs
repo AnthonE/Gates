@@ -1056,8 +1056,8 @@ pub(crate) fn world_stop(
             // a box's base meets the floor it stands on, and there the
             // plane answering first is the honest read: at that altitude
             // the slab is what the arrowhead is in.
-            hit = collide::shot_stop(seed, haven, cols, prev.0, prev.1, px, pz, py, probe)
-                .map(|at| Struck { at, deploy: false })
+            hit = collide::shot_hit(seed, haven, cols, prev.0, prev.1, px, pz, py, probe)
+                .map(|(at, deploy)| Struck { at, deploy })
                 .or_else(|| {
                     collide::deploy_stop(seed, haven, cols, px, pz, py, probe)
                         .map(|at| Struck { at, deploy: true })

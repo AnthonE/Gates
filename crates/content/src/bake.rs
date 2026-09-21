@@ -27,9 +27,10 @@ use sim_core::craft::{
     STATION_WORKBENCH3,
 };
 use sim_core::deploy::{
-    DeployContent, DeployDef, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE, ARCH_HEARTH,
-    ARCH_LOCK, ARCH_RECYCLER, ARCH_RESEARCH, ARCH_WORKBENCH, ARCH_WORKBENCH2, ARCH_WORKBENCH3,
-    PLACE_ANY, PLACE_DOOR, PLACE_DOORWAY, PLACE_FOUNDATION, PLACE_GROUND,
+    DeployContent, DeployDef, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE,
+    ARCH_GARAGE_DOOR, ARCH_HEARTH, ARCH_LOCK, ARCH_RECYCLER, ARCH_RESEARCH, ARCH_WINDOW_BARS,
+    ARCH_WORKBENCH, ARCH_WORKBENCH2, ARCH_WORKBENCH3, PLACE_ANY, PLACE_DOOR, PLACE_DOORWAY,
+    PLACE_FOUNDATION, PLACE_FRAME, PLACE_GROUND, PLACE_WINDOW,
 };
 use sim_core::gather::ItemStack;
 use sim_core::gather::{GatherContent, NodeDef, MAX_TOOLS_PER_NODE, NO_ITEM};
@@ -456,6 +457,8 @@ impl Content {
                     DeployArchetype::Research => ARCH_RESEARCH,
                     DeployArchetype::Workbench2 => ARCH_WORKBENCH2,
                     DeployArchetype::Workbench3 => ARCH_WORKBENCH3,
+                    DeployArchetype::WindowBars => ARCH_WINDOW_BARS,
+                    DeployArchetype::GarageDoor => ARCH_GARAGE_DOOR,
                 },
                 placement: match d.placement {
                     Placement::Ground => PLACE_GROUND,
@@ -463,6 +466,8 @@ impl Content {
                     Placement::Doorway => PLACE_DOORWAY,
                     Placement::Any => PLACE_ANY,
                     Placement::Door => PLACE_DOOR,
+                    Placement::Window => PLACE_WINDOW,
+                    Placement::WallFrame => PLACE_FRAME,
                 },
                 hp,
                 item: self
