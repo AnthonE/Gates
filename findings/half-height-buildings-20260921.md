@@ -24,4 +24,9 @@ are recorded in DECISIONS.md. No foundation plate limit changes.
 
 Targeted support, collapse, save/load, projectile, aiming, content and protocol
 tests pass. The headroom parity/allocation probe also traverses partial-height
-geometry. Full gates and graphical inspection remain required before merge.
+geometry. The matching v72 native capture
+`/tmp/gates-building-complete/shots-partials/0-design.png` shows the two wall
+heights and the triangular frame resting at the half wall's top. Automated
+captures do not judge the controls. The completion gate is `./ci/gates.sh`,
+logged at `/tmp/gates-building-complete-gates.log`; its result is recorded in
+the completion PR.

@@ -29,5 +29,9 @@ fixture, including definitions carrying both new archetypes.
 Targeted simulation, client-core and protocol suites pass. Tests exercise
 both edge axes and ground/upper storeys, shooting through the positions that
 are gaps between bars, open/close, lock refusal, independent damage, save/load,
-late definitions and prediction rollback. Full gates and a matching graphical
-playtest remain required before this branch is finished.
+late definitions and prediction rollback. Matching v72 native captures in
+`/tmp/gates-building-complete/shots-front/0-design.png` show transparent glass,
+closed shutters and an open window beside them. The fixture used unchanged
+copied content. The completion gate is `./ci/gates.sh`, with the local log at
+`/tmp/gates-building-complete-gates.log`; the completion PR records its result.
+These captures inspect geometry and do not claim a human controls playtest.

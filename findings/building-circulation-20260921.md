@@ -28,6 +28,7 @@ Clockwise order, the opposite wedge and every existing assertion remain gated.
 The measured World-size note moves from 58 to 59 kB; the test is unchanged.
 The HUD reports half-storeys as 0.5, 1.5 and so on. R/F turns every flight;
 Shift+R/F adjusts foundation-step height without changing the plate bounds.
+All three foundation previews refuse the same bad ground as the server.
 
 Focused tests cover walking each flight forward and back after every quarter
 turn at ground, half and upper storeys; actual placement, loaded-rotation
@@ -37,10 +38,19 @@ all new circulation kinds for zero-allocation and native/Wasm comparison.
 Renderer tests compare actual transformed top-face triangles to those walk
 surfaces and assert that triangle-frame faces leave the centre open.
 
-The full headless suite passed. A native capture against the matching v72
-shard shows the insert gallery and the new flights, including stacked spirals.
+The full headless suite passed. Matching v72 native captures under
+`/tmp/gates-building-complete/` show the insert gallery (`shots-front/0-design`),
+the new flights and stacked spirals (`shots-back/2-south`), and the partial walls
+with a triangular frame (`shots-partials/0-design`); each filename ends `.png`.
 The fixture used real placement calls for 27 pieces and five inserts with
 unchanged copied content. This is an automated geometry inspection, not a
-human playtest of the controls. Full gates remain required before merge; the
-first renderer-suite build exhausted local disk during linking, with no
-test assertion failure. Disposable build output was cleared before retrying.
+human playtest of the controls.
+
+The completion gate is `./ci/gates.sh`, logged at
+`/tmp/gates-building-complete-gates.log`; the completion PR records its result.
+Two renderer-suite builds exhausted local disk during linking, with no test
+assertion failure. The final local run omits debug symbols through Cargo's
+DEV/TEST debug-profile environment settings, preserving optimization and debug
+assertions, and pins GATES_GIT_SHA to the actual tested commit. That supported
+version override avoids the build script repeatedly watching a nonexistent
+`.git/HEAD` path inside a linked worktree. No gate is skipped.
