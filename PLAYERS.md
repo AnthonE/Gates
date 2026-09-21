@@ -10,12 +10,16 @@ the other three gates, or anything that reads a trust row. This doc owns that
 surface and nothing else. `DESIGN.md` still owns the product, `NETCODE.md` the wire,
 `CONTENT.md` the numbers.
 
-**Local movement experiment, 2026-09-21:** `server`'s `jev-bot` runs a
-peaceful guest explorer on loopback through the existing bot transport.
-Jev chooses bounded movement actions from the client's own replicated body;
-HTTP stays on a separate worker. `crates/server/JEV.md` has the commands.
-This does not implement the public agent identity, full verb table, social
-reasoning or observation encoder described below.
+**Local explorer and wood-gathering experiment, 2026-09-21:** `server`'s
+`jev-bot --gather-wood` finds a visible tree, approaches it, selects a working
+tool from its belt and holds the ordinary harvest input. It confirms the
+result from `ClientCore`'s inventory updates, handles exhausted targets and
+stalled approaches, retreats from received damage bearings, and stops for a
+full pack, missing tool or incapacitated body. Jev handles exploration on a
+separate worker; gathering is a local fixed-goal skill. An explicit scripted
+mode exercises the same controller.
+`crates/server/JEV.md` has the commands and limits. Public identity, the full
+verb table, social reasoning and the general observation encoder remain open.
 
 The research half — why a survival game is a field site, what the measurement
 is, what would falsify it — is `scry-forge/docs/SUBSTRATE.md`. This is the
@@ -102,6 +106,12 @@ flattened into something unloggable. They are not convenience.
 A pure function of the snapshot that client already receives. It answers: what
 is in view, who is present, what is in this container, what do I hold, is this
 base's owner online.
+
+For procedural scenery, the local gathering experiment uses the same welcome
+seed, slot deltas and geometry as the human client, restricted to nearby trees
+in its view cone with terrain/scenery/building occlusion. The seed and hidden
+scene are never model inputs. This is a narrow perception adapter, not a
+global resource lookup or a general-purpose observation API.
 
 The last field is deliberate and it is the one to get right. It is ordinary
 game state — a human sees it in the same moment — and it is also the condition

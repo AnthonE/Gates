@@ -1,6 +1,7 @@
 //! One peaceful local explorer. See crates/server/JEV.md for running it.
 
 use server::botclient::{bot_endpoint, run_driven_bot};
+use server::explorer::Gatherer;
 use server::jev::{
     Action, Decision, DecisionSource, Driver, Jev, Observation, REQUEST_TIMEOUT, THINK_INTERVAL,
 };
@@ -9,12 +10,13 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 const RUN_SECONDS: u64 = 120;
-const USAGE: &str = "jev-bot (--local | --server 127.0.0.1:PORT) [--scripted] [--seconds 120] [--think-ms 1000] [--timeout-ms 3000]\nJev mode requires TYPESAFE_API_KEY. --scripted is an offline movement demo.";
+const USAGE: &str = "jev-bot (--local | --server 127.0.0.1:PORT) [--scripted] [--gather-wood] [--seconds 120] [--think-ms 1000] [--timeout-ms 3000]\nJev mode requires TYPESAFE_API_KEY. --scripted is an offline demo. --gather-wood adds the local harvesting skill.";
 
 struct Options {
     local: bool,
     server: Option<SocketAddr>,
     scripted: bool,
+    gather_wood: bool,
     duration: Duration,
     interval: Duration,
     timeout: Duration,
@@ -26,6 +28,7 @@ impl Options {
             local: false,
             server: None,
             scripted: false,
+            gather_wood: false,
             duration: Duration::from_secs(RUN_SECONDS),
             interval: THINK_INTERVAL,
             timeout: REQUEST_TIMEOUT,
@@ -36,6 +39,7 @@ impl Options {
                 "--help" | "-h" => return Ok(None),
                 "--local" => options.local = true,
                 "--scripted" => options.scripted = true,
+                "--gather-wood" => options.gather_wood = true,
                 "--server" => {
                     options.server = Some(
                         args.next()
@@ -104,8 +108,8 @@ impl DecisionSource for Scripted {
 
 async fn run(options: Options) -> Result<(), String> {
     // Check credentials before booting a shard or opening a player session.
-    let mut driver = if options.scripted {
-        println!("mode: SCRIPTED movement demo; no model calls");
+    let driver = if options.scripted {
+        println!("mode: SCRIPTED exploration; no model calls");
         Driver::new(Scripted, options.interval, options.timeout)?
     } else {
         let key = std::env::var("TYPESAFE_API_KEY")
@@ -117,6 +121,10 @@ async fn run(options: Options) -> Result<(), String> {
             options.timeout,
         )?
     };
+    let mut driver = Gatherer::new(driver);
+    if options.gather_wood {
+        println!("goal: collect wood using visible trees and ordinary player inputs");
+    }
     let shard = if options.local {
         let mut cfg =
             server::config::parse_shard_toml(include_str!("../../../../shard.toml.example"))?;
@@ -153,15 +161,23 @@ async fn run(options: Options) -> Result<(), String> {
         .or(options.server)
         .expect("validated destination");
     let endpoint = bot_endpoint()?;
+    let controller: &mut dyn server::botclient::BotDriver = if options.gather_wood {
+        &mut driver
+    } else {
+        &mut driver.explorer
+    };
     let result = tokio::select! {
-        result = run_driven_bot(&endpoint, address, options.duration, &mut driver) => result.map(Some),
+        result = run_driven_bot(&endpoint, address, options.duration, controller) => result.map(Some),
         signal = tokio::signal::ctrl_c() => signal.map(|_| None).map_err(|e| format!("Ctrl-C: {e}")),
     };
     endpoint.close(0u32.into(), b"agent finished");
     if let Some(shard) = &shard {
         shard.shutdown.store(true, Ordering::Relaxed);
     }
-    println!("agent: {:?}", driver.stats);
+    println!("exploration: {:?}", driver.explorer.stats);
+    if options.gather_wood {
+        println!("gathering: {:?}", driver.stats);
+    }
     if let Some(report) = result? {
         println!(
             "player {}: {} snapshots, {} inputs, executed seq {}, decode errors {}, truncated {}",
@@ -172,8 +188,14 @@ async fn run(options: Options) -> Result<(), String> {
             report.decode_errors,
             report.walk_truncated
         );
-        if report.walk_truncated || report.snapshots_applied == 0 || driver.stats.decisions == 0 {
+        if report.walk_truncated
+            || report.snapshots_applied == 0
+            || (driver.explorer.stats.decisions == 0 && driver.stats.wood_gained == 0)
+        {
             return Err("run did not complete a working decision/snapshot loop".into());
+        }
+        if options.gather_wood && driver.stats.wood_gained == 0 {
+            return Err("collect-wood run ended without a confirmed inventory gain".into());
         }
     }
     Ok(())

@@ -230,6 +230,15 @@ pub struct Driver {
 }
 
 impl Driver {
+    pub(crate) fn snapshot_timeout(&self) -> Duration {
+        self.timeout
+    }
+
+    /// Resume exploration facing the direction a local skill left us facing.
+    pub(crate) fn face(&mut self, yaw: u16) {
+        self.yaw = Some(yaw);
+    }
+
     pub fn new(
         mut source: impl DecisionSource,
         interval: Duration,

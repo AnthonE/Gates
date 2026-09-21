@@ -552,7 +552,35 @@ pub async fn run_bot(
 /// A client-side controller. It may only observe the client's decoded view;
 /// this synchronous call must never wait for inference or do network I/O.
 pub trait BotDriver: Send {
+    /// Session metadata and reliable events are the same bytes a player gets.
+    fn welcome(&mut self, _welcome: &Welcome) {}
+    fn event(&mut self, _bytes: &[u8]) -> Result<(), protocol::WireError> {
+        Ok(())
+    }
     fn frame(&mut self, view: &ClientView, player_id: u32, seq: u16) -> InputFrame;
+}
+
+/// A cancelled or finished bot must not leave its stream reader running.
+struct EventPump(tokio::task::JoinHandle<()>);
+impl Drop for EventPump {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+type DriverEvents = rtrb::Consumer<([u8; protocol::event::MAX_EVENT_MSG_BYTES], usize)>;
+
+fn drain_driver_events(rx: &mut DriverEvents, driver: &mut dyn BotDriver) -> Result<(), String> {
+    for _ in 0..sim_core::limits::EVENT_RING_CAP {
+        let Ok((buf, len)) = rx.pop() else { break };
+        driver
+            .event(&buf[..len])
+            .map_err(|_| "agent rejected an event frame")?;
+    }
+    if rx.is_abandoned() {
+        return Err("agent event lane ended or overflowed".into());
+    }
+    Ok(())
 }
 
 /// Experimental guest controller, confined to a local development shard.
@@ -608,11 +636,23 @@ async fn run_bot_inner(
     // half-read frame on cancellation and desync the stream). The native
     // client does the same (`Session::connect` spawns its lane reader):
     // the pump is independent of the frame loop.
+    if let Some(driver) = driver.as_deref_mut() {
+        driver.welcome(&welcome);
+    }
+    // Fixed storage, shared event-ring cap. Overflow terminates the agent's
+    // session: losing an inventory/harvest delta must never look like success.
+    let (events_tx, mut events_rx) = if driver.is_some() {
+        let (tx, rx) = rtrb::RingBuffer::new(sim_core::limits::EVENT_RING_CAP);
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
     let tally = Arc::new(EventTally::default());
-    {
+    let _event_pump = {
         let tally = tally.clone();
-        tokio::spawn(async move {
+        EventPump(tokio::spawn(async move {
             let mut recv = recv;
+            let mut events_tx = events_tx;
             while let Some((buf, len)) = read_event_frame(&mut recv).await {
                 tally
                     .bytes
@@ -626,9 +666,15 @@ async fn run_bot_inner(
                         tally.decode_errors.fetch_add(1, Ordering::Relaxed);
                     }
                 }
+                if events_tx
+                    .as_mut()
+                    .is_some_and(|tx| tx.push((buf, len)).is_err())
+                {
+                    break;
+                }
             }
-        });
-    }
+        }))
+    };
 
     let mut view = ClientView::new();
     let mut rng = Pcg32::new(welcome.seed ^ 0xB07B_07B0, seed_stream);
@@ -702,6 +748,9 @@ async fn run_bot_inner(
         tokio::select! {
             _ = cadence.tick() => {
                 report.ticks_walked += 1;
+                if let (Some(rx), Some(d)) = (events_rx.as_mut(), driver.as_deref_mut()) {
+                    drain_driver_events(rx, d)?;
+                }
                 let mut f = match driver.as_deref_mut() {
                     Some(d) => d.frame(&view, report.player_id, seq),
                     None => bot_frame(&mut rng, yaw, seq),
@@ -962,6 +1011,9 @@ async fn run_bot_inner(
     while quiet < SETTLE_QUIET_POLLS && report.settle_polls < SETTLE_MAX_POLLS {
         tokio::time::sleep(SETTLE_POLL).await;
         report.settle_polls += 1;
+        if let (Some(rx), Some(d)) = (events_rx.as_mut(), driver.as_deref_mut()) {
+            drain_driver_events(rx, d)?;
+        }
         let seen = tally.received.load(Ordering::Relaxed);
         if seen == last_seen {
             quiet += 1;
@@ -1031,6 +1083,37 @@ pub fn bot_endpoint() -> Result<Endpoint<Client>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn driver_event_handoff_is_bounded_ordered_and_fails_on_a_closed_lane() {
+        #[derive(Default)]
+        struct Seen(usize);
+        impl BotDriver for Seen {
+            fn event(&mut self, bytes: &[u8]) -> Result<(), WireError> {
+                assert_eq!(bytes, &[self.0 as u8]);
+                self.0 += 1;
+                Ok(())
+            }
+            fn frame(&mut self, _: &ClientView, _: u32, _: u16) -> InputFrame {
+                InputFrame::default()
+            }
+        }
+        let cap = sim_core::limits::EVENT_RING_CAP;
+        let (mut tx, mut rx) = rtrb::RingBuffer::new(cap);
+        for i in 0..cap {
+            let mut frame = [0; protocol::event::MAX_EVENT_MSG_BYTES];
+            frame[0] = i as u8;
+            tx.push((frame, 1)).unwrap();
+        }
+        assert!(tx
+            .push(([0; protocol::event::MAX_EVENT_MSG_BYTES], 1))
+            .is_err());
+        let mut seen = Seen::default();
+        drain_driver_events(&mut rx, &mut seen).unwrap();
+        assert_eq!(seen.0, cap);
+        drop(tx);
+        assert!(drain_driver_events(&mut rx, &mut seen).is_err());
+    }
 
     /// The one property that must not drift: a shed is retried, an ANSWER is
     /// not. Proven over both sets rather than the happy case, because the
