@@ -40,6 +40,7 @@ pub mod core;
 pub mod entitle;
 /// Class-S interest: the radius a structural walk streams at (`NETCODE.md` §7).
 pub mod interest;
+pub mod jev;
 pub mod net;
 pub mod population;
 pub mod slot;

@@ -5277,6 +5277,7 @@ dependencies = [
  "k256",
  "protocol",
  "rtrb",
+ "serde_json",
  "sim-core",
  "socket2",
  "tiny-keccak",

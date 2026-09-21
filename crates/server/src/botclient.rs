@@ -546,6 +546,37 @@ pub async fn run_bot(
     duration: Duration,
     raid: Option<RaidRows>,
 ) -> Result<BotReport, String> {
+    run_bot_inner(endpoint, server, seed_stream, duration, raid, None).await
+}
+
+/// A client-side controller. It may only observe the client's decoded view;
+/// this synchronous call must never wait for inference or do network I/O.
+pub trait BotDriver: Send {
+    fn frame(&mut self, view: &ClientView, player_id: u32, seq: u16) -> InputFrame;
+}
+
+/// Experimental guest controller, confined to a local development shard.
+/// Public agent players still need PLAYERS.md's wallet/identity surface.
+pub async fn run_driven_bot(
+    endpoint: &Endpoint<Client>,
+    server: SocketAddr,
+    duration: Duration,
+    driver: &mut dyn BotDriver,
+) -> Result<BotReport, String> {
+    if !server.ip().is_loopback() {
+        return Err("the guest agent prototype requires a loopback shard".into());
+    }
+    run_bot_inner(endpoint, server, 0, duration, None, Some(driver)).await
+}
+
+async fn run_bot_inner(
+    endpoint: &Endpoint<Client>,
+    server: SocketAddr,
+    seed_stream: u64,
+    duration: Duration,
+    raid: Option<RaidRows>,
+    mut driver: Option<&mut dyn BotDriver>,
+) -> Result<BotReport, String> {
     let url = format!("https://{server}");
     let mut connect_sheds = 0;
     let connection = connect_retrying_a_shed(endpoint, &url, &mut connect_sheds).await?;
@@ -560,7 +591,7 @@ pub async fn run_bot(
     let welcome = client_handshake(
         &mut send,
         &mut recv,
-        "bot",
+        if driver.is_some() { "jev-bot" } else { "bot" },
         protocol::Address::GUEST,
         |_| None,
     )
@@ -671,12 +702,18 @@ pub async fn run_bot(
         tokio::select! {
             _ = cadence.tick() => {
                 report.ticks_walked += 1;
-                let mut f = bot_frame(&mut rng, yaw, seq);
+                let mut f = match driver.as_deref_mut() {
+                    Some(d) => d.frame(&view, report.player_id, seq),
+                    None => bot_frame(&mut rng, yaw, seq),
+                };
                 // A raid's selection step rides the input lane, because that
                 // is the only place a hotbar slot exists on the wire.
                 sel_held.apply(&mut f);
                 yaw = f.yaw;
                 seq = seq.wrapping_add(1);
+                if tail.len() == MAX_INPUT_FRAMES {
+                    tail.remove(0);
+                }
                 tail.push(f);
                 // Drop what the server confirmed, then cap to the wire's
                 // redundancy window (drop-oldest, limits.rs).

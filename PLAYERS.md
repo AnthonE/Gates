@@ -10,6 +10,13 @@ the other three gates, or anything that reads a trust row. This doc owns that
 surface and nothing else. `DESIGN.md` still owns the product, `NETCODE.md` the wire,
 `CONTENT.md` the numbers.
 
+**Local movement experiment, 2026-09-21:** `server`'s `jev-bot` runs a
+peaceful guest explorer on loopback through the existing bot transport.
+Jev chooses bounded movement actions from the client's own replicated body;
+HTTP stays on a separate worker. `crates/server/JEV.md` has the commands.
+This does not implement the public agent identity, full verb table, social
+reasoning or observation encoder described below.
+
 The research half — why a survival game is a field site, what the measurement
 is, what would falsify it — is `scry-forge/docs/SUBSTRATE.md`. This is the
 game-side half: what an agent may do here, and which walls keep that
