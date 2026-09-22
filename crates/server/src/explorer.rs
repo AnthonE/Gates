@@ -237,6 +237,8 @@ pub struct SurvivorStats {
     pub targets_seen: u64,
     pub targets_completed: u64,
     pub targets_abandoned: u64,
+    /// Nodes left to a body with a lower id standing at them.
+    pub gave_way: u64,
     pub gather_awards: u64,
     pub refusals: u64,
     pub crafted: u64,
@@ -911,15 +913,27 @@ impl Survivor {
             // Holding primary is the human harvesting verb. Keep a bystander
             // out of the swing: this skill never deliberately attacks a body.
             self.stats.phase = Phase::Harvesting;
-            let bystander = view.entities.iter().any(|(id, other)| {
-                *id != body.id
-                    && !other.dead
-                    && ((other.qx - body.qx) as f32 * POS_XZ_Q)
-                        .hypot((other.qz - body.qz) as f32 * POS_XZ_Q)
-                        <= 2.0 * REACH_M
-            });
+            // The lowest id among the bodies at a node keeps it; the others
+            // give way. Two agents that spawned together and chose alike
+            // would otherwise stand at one tree waiting for each other.
+            let mut bystander = None;
+            for (id, other) in view.entities.iter() {
+                let near = ((other.qx - body.qx) as f32 * POS_XZ_Q)
+                    .hypot((other.qz - body.qz) as f32 * POS_XZ_Q)
+                    <= 2.0 * REACH_M;
+                if *id != body.id && !other.dead && near {
+                    bystander = Some(bystander.map_or(*id, |b: u32| b.min(*id)));
+                }
+            }
+            if bystander.is_some_and(|other| other < body.id) {
+                self.skipped = Some(target.key());
+                self.target = None;
+                self.stats.gave_way += 1;
+                self.recovery = Some((tick, body.yaw.wrapping_add(1 << 14)));
+                return frame;
+            }
             let haven = self.haven.expect("connected haven");
-            if !bystander && visible(core, &haven, body, target) {
+            if bystander.is_none() && visible(core, &haven, body, target) {
                 frame.buttons = BTN_PRIMARY;
             }
         } else {
@@ -2214,6 +2228,17 @@ mod tests {
         assert_eq!(bot.frame_at(&view, 1, 2, now).buttons, 0);
         view.entities.pop();
         assert_eq!(bot.frame_at(&view, 1, 3, now).buttons, BTN_PRIMARY);
+        // A body with a lower id keeps the node: this one gives way and does
+        // not retry it straight away, and it is not counted as stuck.
+        let mut first = *view.get(1).unwrap();
+        first.id = 0;
+        first.qx += quant_xz(REACH_M);
+        view.entities.push((0, first));
+        assert_eq!(bot.frame_at(&view, 1, 4, now).buttons, 0);
+        assert!(bot.target.is_none());
+        assert_eq!(bot.skipped, Some(target.key()));
+        assert_eq!(bot.stats.gave_way, 1);
+        assert_eq!(bot.goal.map(|a| a.abandons), Some(0));
     }
 
     #[test]

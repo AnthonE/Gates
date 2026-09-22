@@ -255,7 +255,7 @@ fn print_report(label: &str, survivor: &Survivor) {
     );
     let s = survivor.stats;
     println!(
-        "{label}survival: {} deaths, {} respawns ({} asks), {} retreats; goals {} done, {} failed, {} interrupted; {} targets finished, {} abandoned; crafted {}, eaten {}, drinks {}, equips {}; {} actions sent",
+        "{label}survival: {} deaths, {} respawns ({} asks), {} retreats; goals {} done, {} failed, {} interrupted; {} targets finished, {} abandoned, {} given way; crafted {}, eaten {}, drinks {}, equips {}; {} actions sent",
         s.deaths,
         s.respawns,
         s.respawn_asks,
@@ -265,6 +265,7 @@ fn print_report(label: &str, survivor: &Survivor) {
         s.goals_interrupted,
         s.targets_completed,
         s.targets_abandoned,
+        s.gave_way,
         s.crafted,
         s.eaten,
         s.drinks,

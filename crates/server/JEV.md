@@ -50,7 +50,8 @@ and a reply naming anything else is refused.
 
 - **gather** — find a visible node of the kind (32 m, 90° cone, line of sight,
   one cell per game tick, at most 8 per frame), approach, hold primary with the best belt tool by name
-  (`TREE_TOOLS`, `NODE_TOOLS`), done when the node falls. A resource seen in
+  (`TREE_TOOLS`, `NODE_TOOLS`), done when the node falls. Where bodies meet at
+  a node, the lowest id keeps it and the others give way. A resource seen in
   the last minute is walked back to. Fails on no tool, nothing found in 20 s,
   three stalled approaches, or a full pack (no room for what the node pays).
 - **craft** — resolve the recipe by the output's catalog name (no station,
