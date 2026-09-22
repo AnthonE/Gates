@@ -1205,10 +1205,11 @@ pub const MOB_WAKE_CM: i64 = 24_000;
 ///
 /// **The array size behind every per-seat table** — `ShardCore::clients`
 /// grows by this, the slot table and the sim thread's link table with it — so
-/// a shard's `spectators_max` can lower it and never raise it. Priced against
-/// the tick: a seat costs what a connected client's netcode costs (interest,
-/// drips, one snapshot encode), measured at ~8 µs of the 33.3 ms budget in
-/// `NETCODE.md` §9's 100-client row, so sixteen seats are ~0.13 ms. Overflow
+/// a shard's `spectate_seats` can lower it and never raise it. Priced against
+/// the tick: a seat runs a connected client's netcode (interest, drips, one
+/// snapshot encode) plus the mirror — ~8 µs per client in `NETCODE.md` §9's
+/// 100-client row, a seat ~1.4× that in a debug ablation, so sixteen are
+/// ~0.2 ms of 33.3 (`bin/profile --spectators` measures it). Overflow
 /// policy: **refuse** at the handshake with `REFUSE_WATCH_FULL`, never evict
 /// a seat already watching. Proposed default, `DECISIONS.md` §open.
 pub const MAX_SPECTATORS: usize = 16;

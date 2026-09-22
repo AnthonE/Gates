@@ -236,10 +236,12 @@ Code: `server/src/net.rs` (the door), `server/src/core.rs` (`Seat`,
   loop closes it with **`REFUSE_WATCH_ENDED` as the close code**.
 - **Caps and cost.** `limits::MAX_SPECTATORS` seats per shard (16), a shard's
   `spectate_seats` below it, and `spectate_per_target` (default 4); overflow
-  is `REFUSE_WATCH_FULL`, never an eviction. A seat costs what a client's
-  netcode costs — §9's 100-client row is ~8 µs each — so sixteen seats are
-  ~0.13 ms of the 33.3 ms tick; the mirror is one compare per seat per
-  event-lane message.
+  is `REFUSE_WATCH_FULL`, never an eviction. A seat runs a client's netcode
+  plus the mirror (one compare per seat per event-lane message): §9's
+  100-client row prices a client at ~8 µs, and a debug-build ablation put a
+  seat at ~1.4× a client, so sixteen are ~0.2 ms of the 33.3 ms tick —
+  **derived, not measured**; `cargo run --release -p server --bin profile --
+  --spectators 16` is the measurement.
 - **No input lane.** A watcher's datagrams are acks only (frame count 0) —
   that is how its snapshots stay delta-coded; one carrying a frame is refused
   and counted (`spectate_input_refused`), and the sim takes nothing but acks
