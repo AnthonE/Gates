@@ -39,7 +39,7 @@ publish.workspace = true
 # selected, because the two mechanisms agreeing is otherwise a convention and
 # `CLAUDE.md` says a law without a gate is a mood.
 default = ["native"]
-native = ["dep:wtransport"]
+native = ["dep:wtransport", "dep:agentkey"]
 # `ureq` rides the render feature because the ONLY thing that fetches a shard
 # list is the menu, and the menu is drawn. The parser (`shardlist.rs`) is
 # unconditional on purpose: it reads bytes off the network, so wall 4's
@@ -719,6 +719,10 @@ wtransport = { git = "https://github.com/BiagioFesta/wtransport", rev = "a11e6a8
     "dangerous-configuration",
     "quinn",
 ] }
+# An agent player's wallet key (`NETCODE.md` §2.4) — **`native` only, and
+# that is the rule it exists to keep**: a page must never hold a key, so the
+# one crate that can load one is not a dependency of the browser build at all.
+agentkey = { path = "../agentkey", optional = true }
 
 # ---------------------------------------------------------------------------
 # The browser floor. Nothing below is linked on a desktop build.

@@ -27,7 +27,7 @@
 
 use protocol::{
     decode_refuse, decode_welcome, encode_hello, peek_kind, Hello, Welcome, KIND_REFUSE,
-    KIND_WELCOME, PROTO_VER,
+    KIND_WELCOME,
 };
 
 /// Why a join did not happen.
@@ -133,17 +133,82 @@ fn refusal(frame: &[u8]) -> Option<u8> {
     }
 }
 
-/// Step 1 — the opening frame. Writes into `buf`, answers its length.
+/// What this session asks the shard to be (wire v73; `NETCODE.md` §2.3).
+///
+/// **Declarations, not grants.** Each variant is what the HELLO says; the
+/// shard decides what it gets. Consent is the one thing a session can grant
+/// alone, and only about itself — which is why a self-declared flag is
+/// enough for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Join {
+    /// A person playing. `watchable` is their opt-in to being spectated; a
+    /// shard admits a watcher of a human only behind its feed delay, and by
+    /// default not at all.
+    Player { watchable: bool },
+    /// A program playing (`HELLO_AGENT`): consent to be watched, and the
+    /// display name its watchers see. An agent pays the same doors — a shard
+    /// that requires identity still requires this one's signature.
+    Agent { name: protocol::Name },
+    /// A read-only seat watching `target` — a proven address, or
+    /// `Address::GUEST` for any watchable agent. No body, no input, no
+    /// actions; the welcome makes this core the target's view.
+    Watch { target: protocol::Address },
+}
+
+impl Join {
+    /// A person playing, not opted in to being watched — what every session
+    /// was before v73 and what every join path that does not ask still is.
+    pub const PLAYER: Self = Self::Player { watchable: false };
+
+    /// This join's hello, at this build's versions.
+    pub fn hello(&self) -> Hello {
+        let mut h = Hello::this_build();
+        match *self {
+            Join::Player { watchable } => {
+                if watchable {
+                    h.flags = protocol::HELLO_WATCHABLE;
+                }
+            }
+            Join::Agent { name } => {
+                h.flags = protocol::HELLO_AGENT;
+                h.name = name;
+            }
+            Join::Watch { target } => {
+                h.flags = protocol::HELLO_SPECTATE;
+                h.target = target;
+            }
+        }
+        h
+    }
+
+    pub fn is_watch(&self) -> bool {
+        matches!(self, Join::Watch { .. })
+    }
+}
+
+/// Step 1 — the opening frame for a plain player. Writes into `buf`, answers
+/// its length. [`hello_as`] with [`Join::PLAYER`].
 pub fn hello(buf: &mut [u8]) -> Result<usize, JoinError> {
-    encode_hello(
-        &Hello {
-            proto_ver: PROTO_VER,
-            ver: protocol::version::VER,
-            build: protocol::version::BUILD,
-        },
-        buf,
-    )
-    .map_err(|e| JoinError::Failed(format!("encode hello: {e:?}")))
+    hello_as(buf, &Join::PLAYER)
+}
+
+/// Step 1 — the opening frame for `join` (v73).
+pub fn hello_as(buf: &mut [u8], join: &Join) -> Result<usize, JoinError> {
+    encode_hello(&join.hello(), buf).map_err(|e| JoinError::Failed(format!("encode hello: {e:?}")))
+}
+
+/// Step 4, a spectator's only — the frame after the welcome, which names the
+/// session being watched (`protocol::Watch`). Anything else there is a
+/// protocol error, named rather than guessed at.
+pub fn watch_from(frame: &[u8]) -> Result<protocol::Watch, JoinError> {
+    match peek_kind(frame) {
+        Ok(protocol::KIND_WATCH) => {
+            protocol::decode_watch(frame).map_err(|e| JoinError::Failed(format!("watch: {e:?}")))
+        }
+        other => Err(JoinError::Failed(format!(
+            "a spectator's welcome must be followed by a watch, got {other:?}"
+        ))),
+    }
 }
 
 /// What the shard is asking this client to prove: the three inert values,
@@ -381,7 +446,9 @@ mod tests {
         let h = protocol::decode_hello(&buf[..n]).expect("round trips");
         // Wall 6: the wire version is the one this build was compiled at, so
         // a stale client is refused at the door rather than quietly misread.
-        assert_eq!(h.proto_ver, PROTO_VER);
+        assert_eq!(h.proto_ver, protocol::PROTO_VER);
+        // And a plain player declares nothing (v73).
+        assert_eq!(h.flags, 0);
     }
 
     /// **The load-bearing rule in this file, and until now it needed a shard
@@ -625,6 +692,53 @@ mod tests {
             proof_wanted(&frame, "shard.example:4433", Address::GUEST).expect("decodes"),
             None
         );
+    }
+
+    /// **Each join says exactly what it is, and a watcher says nothing about
+    /// itself** (v73). Decoded through the protocol's own reader, so a join
+    /// that encoded the wrong flag reddens here rather than as a refusal
+    /// from a shard.
+    #[test]
+    fn each_join_declares_exactly_what_it_is() {
+        let mut buf = [0u8; MAX_STREAM_MSG_BYTES];
+        let name = protocol::Name::new("jev").unwrap();
+        let cases = [
+            (Join::PLAYER, 0u8),
+            (Join::Player { watchable: true }, protocol::HELLO_WATCHABLE),
+            (Join::Agent { name }, protocol::HELLO_AGENT),
+            (Join::Watch { target: someone() }, protocol::HELLO_SPECTATE),
+        ];
+        for (join, flags) in cases {
+            let n = hello_as(&mut buf, &join).expect("encodes");
+            let h = protocol::decode_hello(&buf[..n]).expect("decodes");
+            assert_eq!(h.flags, flags, "{join:?}");
+            assert_eq!(h.is_spectator(), join.is_watch(), "{join:?}");
+            match join {
+                Join::Agent { name: n } => assert_eq!(h.name, n),
+                Join::Watch { target } => {
+                    assert_eq!(h.target, target);
+                    assert!(h.name.is_empty(), "a watcher declares no name");
+                }
+                Join::Player { .. } => assert!(h.target.is_guest() && h.name.is_empty()),
+            }
+        }
+    }
+
+    /// The frame after a spectator's welcome is a watch, or the join fails
+    /// naming what came instead.
+    #[test]
+    fn a_watch_follows_a_spectators_welcome_or_the_join_says_what_did() {
+        let mut b = [0u8; MAX_STREAM_MSG_BYTES];
+        let w = protocol::Watch {
+            address: someone(),
+            agent: true,
+            name: protocol::Name::new("jev").unwrap(),
+        };
+        let n = protocol::encode_watch(&w, &mut b).unwrap();
+        assert_eq!(watch_from(&b[..n]), Ok(w));
+        let stray = challenge_frame([0u8; protocol::NONCE_BYTES], 0);
+        let err = watch_from(&stray).expect_err("not a watch");
+        assert!(err.to_string().contains("watch"), "{err}");
     }
 
     /// The nonce reaches the signer as lowercase hex of the full 32 bytes —

@@ -160,7 +160,15 @@ fn both_twins_drive_the_same_handshake_in_the_same_order() {
     let b = expand(names_after(&web, "net::handshake::"));
     assert_eq!(
         a,
-        vec!["hello", "proof_wanted", "auth_frame", "welcome_from"],
+        // v73: the hello says what the session is (`hello_as`), and a
+        // watcher reads the frame after the welcome (`watch_from`).
+        vec![
+            "hello_as",
+            "proof_wanted",
+            "auth_frame",
+            "welcome_from",
+            "watch_from"
+        ],
         "the desktop connect no longer drives the handshake this gate knows about"
     );
     assert_eq!(

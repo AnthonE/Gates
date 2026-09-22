@@ -21,6 +21,10 @@ members = [
     # `--workspace` build links an empty `.so` and nothing else.
     "crates/client-web",
     "crates/content",
+    # An agent player's wallet key — the one place in this repo a private key
+    # is held. Its own crate so "never in the page" is a dependency edge:
+    # `client` names it under `native` only.
+    "crates/agentkey",
 ]
 
 [workspace.package]

@@ -135,6 +135,8 @@ pub fn parse_cert_digest(text: &str) -> Option<[u8; 32]> {
 pub enum SendError {
     Full,
     Closed,
+    /// This session is a spectator seat (v73): it watches and cannot act.
+    ReadOnly,
 }
 
 impl std::fmt::Display for SendError {
@@ -142,6 +144,7 @@ impl std::fmt::Display for SendError {
         match self {
             SendError::Full => write!(f, "the server is behind - try again"),
             SendError::Closed => write!(f, "disconnected"),
+            SendError::ReadOnly => write!(f, "spectating - a watcher cannot act"),
         }
     }
 }

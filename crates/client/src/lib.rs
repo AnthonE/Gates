@@ -111,6 +111,11 @@ pub mod ui;
 // compiles them rather than inside the native session below.
 pub mod net;
 
+// An agent player's key (`NETCODE.md` §2.4), re-exported for the binaries
+// that load one. Desktop only by construction: see `Cargo.toml`.
+#[cfg(feature = "native")]
+pub use agentkey;
+
 // The render path. Feature-gated because Bevy is several hundred crates and
 // the code tier must not pay for it (`crates/client/Cargo.toml`).
 #[cfg(feature = "render")]
@@ -168,7 +173,7 @@ pub use net::SendError;
 // at the crate root beside `SendError` for the same reason: it is what a
 // public method returns, and a caller should not have to name a private
 // module's path to match on it.
-pub use net::handshake::{refusal_sentence, JoinError, LAUNCHER_REACHABLE};
+pub use net::handshake::{refusal_sentence, Join, JoinError, LAUNCHER_REACHABLE};
 use net::{datagram_lane, drain_datagram, drain_lane, DatagramRx, Wire};
 // **Eight names left this list when the handshake moved to `net::handshake`**
 // — every decoder and every message kind. What stays is the two frame-size
@@ -401,6 +406,13 @@ pub struct Session {
     /// drained two messages would keep only the second one's word.
     pub applied2: u32,
     pub welcome: Welcome,
+    /// **`Some` ⇒ this session is a spectator seat** (wire v73; `NETCODE.md`
+    /// §2.3), and this is who it watches — the shard's own statement of the
+    /// target's proven address, what it declared, and its display name. The
+    /// core is then [`ClientCore::spectator`]: it drives nothing, and
+    /// [`Session::send_action`] refuses locally, so no verb a UI offers can
+    /// reach the wire from a read-only seat.
+    pub watching: Option<protocol::Watch>,
     /// The transport's send half — the ONE thing in a connected session that
     /// a browser cannot share (`net`'s header has the measurement). A
     /// cfg-selected concrete type, so this struct names no transport and
@@ -474,6 +486,62 @@ fn apply_observed_event(
 /// other is the failure this arrangement is trying to make visible.
 #[cfg(feature = "native")]
 impl Session {
+    /// Join as a person playing — [`Session::connect_as`] with
+    /// [`Join::PLAYER`]. The elo launcher's path, and every human join,
+    /// is exactly this and unchanged.
+    pub async fn connect(
+        endpoint: &Endpoint<Client>,
+        server: &str,
+        address: protocol::Address,
+        sign: impl FnOnce(&str, &str, u64) -> Option<protocol::Signature>,
+    ) -> Result<Self, JoinError> {
+        Self::connect_as(endpoint, server, address, &Join::PLAYER, sign).await
+    }
+
+    /// Take a read-only seat watching `target` (v73) — a proven address, or
+    /// `Address::GUEST` for any agent the shard has that consented. The
+    /// watcher is anonymous: it claims no address and signs nothing.
+    pub async fn watch(
+        endpoint: &Endpoint<Client>,
+        server: &str,
+        target: protocol::Address,
+    ) -> Result<Self, JoinError> {
+        Self::connect_as(
+            endpoint,
+            server,
+            protocol::Address::GUEST,
+            &Join::Watch { target },
+            |_, _, _| None,
+        )
+        .await
+    }
+
+    /// Join as an **agent player** (v73; `NETCODE.md` §2.4): declared
+    /// `HELLO_AGENT` with `name`, and proven with `key` — the shard's SIWE
+    /// message signed by the key itself (`agentkey::AgentKey::sign_siwe`),
+    /// never by a launcher, because an agent has none. It pays every door a
+    /// person does: a `require_auth` shard verifies the signature and a
+    /// ticketed one asks the chain about the address it proved.
+    ///
+    /// The endpoint decides trust exactly as for a person
+    /// ([`client_endpoint`]): a pin if given, the platform root store for any
+    /// non-loopback shard, and permissive on loopback only.
+    pub async fn connect_agent(
+        endpoint: &Endpoint<Client>,
+        server: &str,
+        key: &agentkey::AgentKey,
+        name: protocol::Name,
+    ) -> Result<Self, JoinError> {
+        Self::connect_as(
+            endpoint,
+            server,
+            key.address(),
+            &Join::Agent { name },
+            |domain, nonce_hex, issued_at| key.sign_proof_hex(domain, nonce_hex, issued_at),
+        )
+        .await
+    }
+
     /// Connect, handshake, and start the event-lane reader.
     ///
     /// `server` is `host:port` and is deliberately NOT resolved first.
@@ -488,10 +556,13 @@ impl Session {
     /// holds the key and shows the player a consent prompt. Returning `None`
     /// connects as a guest, which is what a declined prompt or an absent
     /// launcher should do rather than failing the connection.
-    pub async fn connect(
+    pub async fn connect_as(
         endpoint: &Endpoint<Client>,
         server: &str,
         address: protocol::Address,
+        // What this session declares itself to be (v73): a player, an agent,
+        // or a watcher. Declarations — the shard decides what each gets.
+        join: &Join,
         // `(domain, nonce hex, issued_at)` — the three inert values the
         // launcher needs, never a message this process composed. See the
         // `prove` block below for why that inversion is the whole fix.
@@ -515,7 +586,7 @@ impl Session {
         // transport; everything they carry is pure and testable with no
         // socket (`net::handshake`'s header has the measurement).
         let mut msg = [0u8; MAX_STREAM_MSG_BYTES];
-        let len = net::handshake::hello(&mut msg)?;
+        let len = net::handshake::hello_as(&mut msg, join)?;
         write_frame(&mut send, &msg[..len]).await?;
 
         // The challenge: a nonce this shard chose for this connection.
@@ -529,6 +600,17 @@ impl Session {
             .await
             .ok_or_else(|| "no handshake reply".to_string())?;
         let welcome = net::handshake::welcome_from(&reply[..reply_len])?;
+        // A watcher is told whose view it has been given, in the frame after
+        // the welcome (v73). Read here, on the handshake's ceiling, before the
+        // event lane takes the stream.
+        let watching = if join.is_watch() {
+            let (reply, reply_len) = read_frame::<MAX_STREAM_MSG_BYTES>(&mut recv)
+                .await
+                .ok_or_else(|| "no watch after the welcome".to_string())?;
+            Some(net::handshake::watch_from(&reply[..reply_len])?)
+        } else {
+            None
+        };
 
         // The event lane reads on its own task. NOT in the select! below:
         // a cancelled read drops a half-read frame and desyncs the stream
@@ -580,12 +662,17 @@ impl Session {
             // is the correct thing to do.
         });
 
-        let core = ClientCore::new(welcome.seed, welcome.player_id, welcome.tick);
+        let core = if watching.is_some() {
+            ClientCore::spectator(welcome.seed, welcome.player_id, welcome.tick)
+        } else {
+            ClientCore::new(welcome.seed, welcome.player_id, welcome.tick)
+        };
         Ok(Self {
             core,
             applied: 0,
             applied2: 0,
             welcome,
+            watching,
             wire: net::native::NativeWire::new(connection),
             actions: act_tx,
             events,
@@ -620,10 +707,41 @@ impl Session {
 /// two addresses here to disagree.
 #[cfg(target_arch = "wasm32")]
 impl Session {
+    /// Join as a person playing — [`Session::connect_as`] with
+    /// [`Join::PLAYER`], the desktop twin's wrapper for the same reason.
     pub async fn connect(
         server: &str,
         cert_hash: Option<&str>,
         address: protocol::Address,
+        sign: Option<&js_sys::Function>,
+    ) -> Result<Self, JoinError> {
+        Self::connect_as(server, cert_hash, address, &Join::PLAYER, sign).await
+    }
+
+    /// Take a read-only seat watching `target` (v73), anonymously — the
+    /// browser spectator (`client-web`'s `watch`, and the page's `?spectate`).
+    pub async fn watch(
+        server: &str,
+        cert_hash: Option<&str>,
+        target: protocol::Address,
+    ) -> Result<Self, JoinError> {
+        Self::connect_as(
+            server,
+            cert_hash,
+            protocol::Address::GUEST,
+            &Join::Watch { target },
+            None,
+        )
+        .await
+    }
+
+    pub async fn connect_as(
+        server: &str,
+        cert_hash: Option<&str>,
+        address: protocol::Address,
+        // What this session declares itself to be (v73) — the desktop twin's
+        // parameter, in the same position.
+        join: &Join,
         // **The page's wallet, or `None` for a guest.** `(text) => Promise<0x…>`
         // — see `elo::sign_siwe_web`, which is the only thing that calls it.
         //
@@ -652,7 +770,7 @@ impl Session {
         let mut reader = net::web::FrameReader::<MAX_STREAM_MSG_BYTES>::new(&bidi.readable())?;
 
         let mut msg = [0u8; MAX_STREAM_MSG_BYTES];
-        let len = net::handshake::hello(&mut msg)?;
+        let len = net::handshake::hello_as(&mut msg, join)?;
         net::web::write_frame(&writer, &msg[..len]).await?;
 
         // The challenge: a nonce this shard chose for this connection.
@@ -704,6 +822,16 @@ impl Session {
             .await
             .ok_or_else(|| waited("no handshake reply".to_string()))?;
         let welcome = net::handshake::welcome_from(&reply)?;
+        // The desktop twin's watch read, on the same reader and ceiling.
+        let watching = if join.is_watch() {
+            let reply = reader
+                .next()
+                .await
+                .ok_or_else(|| "no watch after the welcome".to_string())?;
+            Some(net::handshake::watch_from(&reply)?)
+        } else {
+            None
+        };
 
         // **The reader is handed on rather than rebuilt, and that is the one
         // place this path can lose data that the desktop one cannot.**
@@ -738,12 +866,17 @@ impl Session {
         net::web::spawn_action_writer(writer, act_rx);
 
         let wire = net::web::WebWire::new(&transport)?;
-        let core = ClientCore::new(welcome.seed, welcome.player_id, welcome.tick);
+        let core = if watching.is_some() {
+            ClientCore::spectator(welcome.seed, welcome.player_id, welcome.tick)
+        } else {
+            ClientCore::new(welcome.seed, welcome.player_id, welcome.tick)
+        };
         Ok(Self {
             core,
             applied: 0,
             applied2: 0,
             welcome,
+            watching,
             wire,
             actions: act_tx,
             events,
@@ -842,6 +975,12 @@ impl Session {
         use tokio::sync::mpsc::error::TrySendError;
         if self.observer_failed {
             return Err(SendError::Closed);
+        }
+        // A watcher has no reliable C→S lane: the shard closes a seat on its
+        // first frame there. Refused HERE, so a verb a HUD offers by accident
+        // costs a sentence rather than the seat.
+        if self.watching.is_some() {
+            return Err(SendError::ReadOnly);
         }
         match self.actions.try_send(payload.to_vec()) {
             Ok(()) => Ok(()),

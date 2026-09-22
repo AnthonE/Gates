@@ -912,7 +912,20 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// Piece-definition totals widen to 7 bits for the extended catalogue.
 /// v72 adds circulation shapes through triangular floor frame; shape codes
 /// widen from four bits to five. All previous codes keep their meaning.
-pub const PROTO_VER: u16 = 72;
+///
+/// **v73 — spectators and declared agents** (operator, 2026-09-22: *"i want
+/// it all"*; `NETCODE.md` §2.3). [`Hello`] grows three things after `build`:
+/// an 8-bit `flags` field (`HELLO_AGENT`, `HELLO_WATCHABLE`,
+/// `HELLO_SPECTATE`; any other bit is refused), a 160-bit `target` address
+/// present **only** when `HELLO_SPECTATE` is set, and a self-declared
+/// [`Name`] (5-bit length, 0..=16 printable ASCII bytes; a spectator's must
+/// be empty). One new stream kind, [`KIND_WATCH`] = 10, S→C to a spectator
+/// right after its welcome. Three refusal codes (`REFUSE_WATCH`,
+/// `REFUSE_WATCH_FULL`, `REFUSE_WATCH_ENDED`) are values in the old `u8`.
+/// No datagram layout and no event moved. Fixtures are keyed `v73_*`: all
+/// 111 renamed plus **two new** (`v73_hello_spectate`, `v73_watch`), and the
+/// only renamed file whose bytes differ is `v73_hello`.
+pub const PROTO_VER: u16 = 73;
 
 /// This game's slug in the elo catalog.
 ///
@@ -968,6 +981,10 @@ pub const KIND_CHAT: u32 = 7;
 pub const KIND_CHALLENGE: u32 = 8;
 /// C→S: the address and the signature over the challenge (`auth.rs`).
 pub const KIND_AUTH: u32 = 9;
+/// S→C, to a **spectator only**, immediately after its welcome (v73): who it
+/// is watching ([`Watch`]). Its own kind rather than a welcome field so that a
+/// player's welcome — the message every other path reads — did not move.
+pub const KIND_WATCH: u32 = 10;
 
 /// Longest stream-lane message payload the handshake accepts. Overflow
 /// policy: refuse (`Malformed`) — a hello has no business being big.
@@ -1038,8 +1055,11 @@ pub fn peek_kind(buf: &[u8]) -> Result<u32, WireError> {
 // Stream-lane handshake messages (bidi, DESIGN.md §5.9)
 // ---------------------------------------------------------------------------
 
-/// C→S on the bidi stream: `hello{proto_ver, ver, build}`. The version gate
-/// happens before anything else exists for this client.
+/// C→S on the bidi stream: `hello{proto_ver, ver, build, flags, [target],
+/// name}`. The version gate happens before anything else exists for this
+/// client — and since v73 it reads only the first 20 bits
+/// ([`peek_hello_version`]), so an older client's shorter hello still meets a
+/// posted `REFUSE_VERSION` instead of a decode error.
 ///
 /// **Field order is load-bearing.** `proto_ver` is first because it is the
 /// only field whose meaning is guaranteed across versions: a shard reads 16
@@ -1060,6 +1080,214 @@ pub struct Hello {
     /// different commits, which is the first useful fact when one of them is
     /// reproducing something the other is not.
     pub build: u64,
+    /// What this session declares about itself (v73): `HELLO_*` bits.
+    ///
+    /// **Self-declared, and that is sufficient for what they gate.**
+    /// `HELLO_AGENT` and `HELLO_WATCHABLE` are consent to BE watched, and a
+    /// session can only consent for itself — lying here exposes nobody but
+    /// the liar. `HELLO_SPECTATE` asks for a read-only seat; the shard, not
+    /// this bit, decides whether there is one (`NETCODE.md` §2.3).
+    pub flags: u8,
+    /// Who a spectator asks to watch — on the wire **only** with
+    /// `HELLO_SPECTATE`, and [`Address::GUEST`] there means "any watchable
+    /// agent". Must be `GUEST` on every other hello; the encoder refuses one
+    /// that is not, because the field would not reach the shard.
+    pub target: Address,
+    /// The session's self-declared display name, shown to its spectators.
+    /// Empty on a spectator (refused otherwise: a watcher has no audience).
+    pub name: Name,
+}
+
+/// This session is an agent — a program, not a person (v73). **Consent to be
+/// watched by default** (`NETCODE.md` §2.3): an agent player has an owner and
+/// a public record (`PLAYERS.md`), and its feed is part of that record.
+pub const HELLO_AGENT: u8 = 1 << 0;
+/// This session opts in to being watched (v73). The human half of consent; a
+/// shard admits a watcher of a human only with a feed delay configured.
+pub const HELLO_WATCHABLE: u8 = 1 << 1;
+/// This session asks for a read-only seat watching [`Hello::target`] (v73).
+pub const HELLO_SPECTATE: u8 = 1 << 2;
+/// Every flag this version defines; any other bit is refused at decode.
+pub const HELLO_FLAGS: u8 = HELLO_AGENT | HELLO_WATCHABLE | HELLO_SPECTATE;
+
+impl Hello {
+    /// This build's hello, declaring nothing: a human player, the only
+    /// session shape that existed before v73.
+    pub fn this_build() -> Self {
+        Self {
+            proto_ver: PROTO_VER,
+            ver: version::VER,
+            build: version::BUILD,
+            flags: 0,
+            target: Address::GUEST,
+            name: Name::EMPTY,
+        }
+    }
+
+    pub fn is_spectator(&self) -> bool {
+        self.flags & HELLO_SPECTATE != 0
+    }
+
+    pub fn is_agent(&self) -> bool {
+        self.flags & HELLO_AGENT != 0
+    }
+
+    /// Did this session consent to being watched — as an agent, or by
+    /// opting in? The shard's question about a target, never a grant.
+    pub fn consents_to_watch(&self) -> bool {
+        self.flags & (HELLO_AGENT | HELLO_WATCHABLE) != 0
+    }
+
+    /// The combinations no client of this version builds. A spectator
+    /// declares nothing about itself, because nobody watches a watcher.
+    fn shape_ok(&self) -> bool {
+        if self.flags & !HELLO_FLAGS != 0 {
+            return false;
+        }
+        if self.is_spectator() {
+            self.flags == HELLO_SPECTATE && self.name.is_empty()
+        } else {
+            self.target.is_guest()
+        }
+    }
+}
+
+/// Longest display name a session may declare (v73), in bytes.
+pub const NAME_MAX_BYTES: usize = 16;
+/// The name's length field. Five bits hold 0..=31; 17..=31 are refused.
+const NAME_LEN_BITS: u32 = 5;
+const _: () = assert!(NAME_MAX_BYTES < (1 << NAME_LEN_BITS));
+
+/// A **self-declared** display name: 0..=16 bytes of printable ASCII
+/// (`0x20..=0x7E`). Not an identity — the address is the identity and this
+/// is a label a spectator reads beside it, so two sessions may share one.
+/// ASCII only, because a label drawn in somebody else's HUD is exactly where
+/// look-alike code points would be used to impersonate.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub struct Name {
+    len: u8,
+    bytes: [u8; NAME_MAX_BYTES],
+}
+
+impl Name {
+    pub const EMPTY: Self = Self {
+        len: 0,
+        bytes: [0; NAME_MAX_BYTES],
+    };
+
+    /// `None` for anything longer than [`NAME_MAX_BYTES`] or holding a byte
+    /// outside printable ASCII — refused, never truncated or replaced.
+    pub fn new(s: &str) -> Option<Self> {
+        let b = s.as_bytes();
+        if b.len() > NAME_MAX_BYTES || !b.iter().all(|c| (0x20..=0x7E).contains(c)) {
+            return None;
+        }
+        let mut n = Self::EMPTY;
+        n.bytes[..b.len()].copy_from_slice(b);
+        n.len = b.len() as u8;
+        Some(n)
+    }
+
+    pub fn as_str(&self) -> &str {
+        // Only ever built from printable ASCII (`new` and `read_name` refuse
+        // anything else), so this cannot fail; the fallback keeps it total.
+        core::str::from_utf8(&self.bytes[..self.len as usize]).unwrap_or("")
+    }
+
+    pub fn len(&self) -> usize {
+        self.len as usize
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+impl core::fmt::Debug for Name {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Name({:?})", self.as_str())
+    }
+}
+
+fn write_name(w: &mut BitWriter, n: &Name) -> Result<(), WireError> {
+    w.write(n.len as u32, NAME_LEN_BITS)?;
+    for b in &n.bytes[..n.len as usize] {
+        w.write(*b as u32, 8)?;
+    }
+    Ok(())
+}
+
+fn read_name(r: &mut BitReader) -> Result<Name, WireError> {
+    let len = r.read(NAME_LEN_BITS)? as usize;
+    if len > NAME_MAX_BYTES {
+        return Err(WireError::Malformed);
+    }
+    let mut n = Name::EMPTY;
+    for b in n.bytes.iter_mut().take(len) {
+        let c = r.read(8)? as u8;
+        if !(0x20..=0x7E).contains(&c) {
+            return Err(WireError::Malformed);
+        }
+        *b = c;
+    }
+    n.len = len as u8;
+    Ok(n)
+}
+
+fn write_address(w: &mut BitWriter, a: &Address) -> Result<(), WireError> {
+    for b in a.0.iter() {
+        w.write(*b as u32, 8)?;
+    }
+    Ok(())
+}
+
+fn read_address(r: &mut BitReader) -> Result<Address, WireError> {
+    let mut a = [0u8; ADDRESS_BYTES];
+    for b in a.iter_mut() {
+        *b = r.read(8)? as u8;
+    }
+    Ok(Address(a))
+}
+
+/// S→C, to a spectator right after its welcome (v73, [`KIND_WATCH`]): the
+/// session it is watching. The welcome's `player_id` is that session's body,
+/// so this carries only what a label needs — who, and what they declared.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct Watch {
+    /// The target's **proven** address, or [`Address::GUEST`] for a guest
+    /// agent. Proven means the shard verified its signature; a declared-only
+    /// address never reaches this field.
+    pub address: Address,
+    /// The target declared `HELLO_AGENT`. False only for a human who opted in,
+    /// which a shard admits only behind a feed delay.
+    pub agent: bool,
+    /// The target's self-declared [`Name`] — a label, not an identity.
+    pub name: Name,
+}
+
+pub fn encode_watch(msg: &Watch, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_WATCH, KIND_BITS)?;
+    write_address(&mut w, &msg.address)?;
+    w.write(msg.agent as u32, 1)?;
+    write_name(&mut w, &msg.name)?;
+    Ok(w.finish())
+}
+
+pub fn decode_watch(buf: &[u8]) -> Result<Watch, WireError> {
+    let mut r = BitReader::new(buf);
+    if r.read(KIND_BITS)? != KIND_WATCH {
+        return Err(WireError::Malformed);
+    }
+    let address = read_address(&mut r)?;
+    let agent = r.read(1)? != 0;
+    let name = read_name(&mut r)?;
+    expect_zero_padding(&mut r)?;
+    Ok(Watch {
+        address,
+        agent,
+        name,
+    })
 }
 
 /// S→C: the join bundle v0 — player id, world seed, current server tick.
@@ -1149,6 +1377,23 @@ pub const REFUSE_BUILD: u8 = 4;
 /// sixth of 256 values.
 pub const REFUSE_ADMIN: u8 = 5;
 
+/// A spectator asked to watch somebody it may not (v73): this shard admits no
+/// spectators, nobody by that address is here, or they did not consent.
+///
+/// **One code for all three, on `REFUSE_AUTH`'s reasoning.** "That address
+/// is online but private" is a presence oracle about a person, and the
+/// watcher's next step is identical whichever it was — pick someone else.
+pub const REFUSE_WATCH: u8 = 6;
+/// A spectator's seat exists and is taken (v73): the shard's spectator cap,
+/// or the per-target cap, is full. Distinct from [`REFUSE_WATCH`] because it
+/// names nothing private — the target already consented to being watched —
+/// and because "try again later" is the right advice here and wrong there.
+pub const REFUSE_WATCH_FULL: u8 = 7;
+/// The session a spectator was watching left (v73). Sent as the connection's
+/// **close** code rather than as a refusal frame, the admin kick's shape: the
+/// seat was granted, and it ended.
+pub const REFUSE_WATCH_ENDED: u8 = 8;
+
 /// What to actually say to the player. One implementation, because the two
 /// call sites that print a refusal (the client's connect path and the bot
 /// helper in `server/net.rs`) each formatted `refused: code {n}` from their
@@ -1174,6 +1419,9 @@ pub fn refuse_text(code: u8) -> Option<&'static str> {
         }
         REFUSE_BUILD => "this shard runs a newer release — update the game",
         REFUSE_ADMIN => "an admin removed you from this shard",
+        REFUSE_WATCH => "that player cannot be watched on this shard",
+        REFUSE_WATCH_FULL => "too many people are watching that player — try again later",
+        REFUSE_WATCH_ENDED => "the player you were watching left",
         _ => return None,
     })
 }
@@ -1184,6 +1432,12 @@ pub struct Refuse {
 }
 
 pub fn encode_hello(msg: &Hello, buf: &mut [u8]) -> Result<usize, WireError> {
+    // The encoder refuses what the decoder refuses: a hello no shard would
+    // read is a bug in the caller, and a `Range` here names it at the source
+    // rather than as a handshake that never completes.
+    if !msg.shape_ok() {
+        return Err(WireError::Range);
+    }
     let mut w = BitWriter::new(buf);
     w.write(KIND_HELLO, KIND_BITS)?;
     w.write(msg.proto_ver as u32, 16)?;
@@ -1192,7 +1446,28 @@ pub fn encode_hello(msg: &Hello, buf: &mut [u8]) -> Result<usize, WireError> {
     // first. Two writes, one order, stated here and mirrored in the decoder.
     w.write(msg.build as u32, 32)?;
     w.write((msg.build >> 32) as u32, 32)?;
+    w.write(msg.flags as u32, 8)?;
+    if msg.is_spectator() {
+        write_address(&mut w, &msg.target)?;
+    }
+    write_name(&mut w, &msg.name)?;
     Ok(w.finish())
+}
+
+/// The hello's `proto_ver`, read without trusting a bit after it.
+///
+/// **This is what makes growing [`Hello`] safe for the refusal path**, which
+/// its doc has claimed since v35 and which was only half true: the shard
+/// decoded the whole message first, so an older client's shorter hello failed
+/// to decode and was dropped as a handshake error — the player got a timeout
+/// instead of "update the game". The version is the one field whose meaning
+/// survives every layout, so it is read on its own and compared first.
+pub fn peek_hello_version(buf: &[u8]) -> Result<u16, WireError> {
+    let mut r = BitReader::new(buf);
+    if r.read(KIND_BITS)? != KIND_HELLO {
+        return Err(WireError::Malformed);
+    }
+    Ok(r.read(16)? as u16)
 }
 
 pub fn decode_hello(buf: &[u8]) -> Result<Hello, WireError> {
@@ -1204,12 +1479,31 @@ pub fn decode_hello(buf: &[u8]) -> Result<Hello, WireError> {
     let ver = r.read(32)?;
     let lo = r.read(32)? as u64;
     let hi = r.read(32)? as u64;
+    let flags = r.read(8)? as u8;
+    // Unknown bits refused before they decide how the rest parses: a bit this
+    // version did not define is not a flag this version can honour.
+    if flags & !HELLO_FLAGS != 0 {
+        return Err(WireError::Malformed);
+    }
+    let target = if flags & HELLO_SPECTATE != 0 {
+        read_address(&mut r)?
+    } else {
+        Address::GUEST
+    };
+    let name = read_name(&mut r)?;
     expect_zero_padding(&mut r)?;
-    Ok(Hello {
+    let hello = Hello {
         proto_ver,
         ver,
         build: (hi << 32) | lo,
-    })
+        flags,
+        target,
+        name,
+    };
+    if !hello.shape_ok() {
+        return Err(WireError::Malformed);
+    }
+    Ok(hello)
 }
 
 /// S→C: sign this nonce. Sent after the version gate and before anything
@@ -4183,6 +4477,9 @@ mod tests {
             (REFUSE_TICKET, "REFUSE_TICKET"),
             (REFUSE_BUILD, "REFUSE_BUILD"),
             (REFUSE_ADMIN, "REFUSE_ADMIN"),
+            (REFUSE_WATCH, "REFUSE_WATCH"),
+            (REFUSE_WATCH_FULL, "REFUSE_WATCH_FULL"),
+            (REFUSE_WATCH_ENDED, "REFUSE_WATCH_ENDED"),
         ] {
             assert!(
                 refuse_text(code).is_some(),
@@ -4191,7 +4488,7 @@ mod tests {
         }
         assert_eq!(
             declared.len(),
-            6,
+            9,
             "a REFUSE_* code was added ({declared:?}) — give it a sentence in \
              `refuse_text` and a row in this list, or a player meets it as a number"
         );
@@ -4218,6 +4515,9 @@ mod tests {
             proto_ver: 0xABCD,
             ver: 0x1234_5678,
             build: 0x0011_2233_4455_6677,
+            flags: HELLO_AGENT | HELLO_WATCHABLE,
+            target: Address::GUEST,
+            name: Name::new("jev").unwrap(),
         };
         let mut got = [0u8; MAX_STREAM_MSG_BYTES];
         let len = encode_hello(&msg, &mut got).expect("encodes");
@@ -4232,6 +4532,12 @@ mod tests {
         w.write(0x1234_5678, 32).unwrap();
         w.write(0x4455_6677, 32).unwrap(); // build, low half
         w.write(0x0011_2233, 32).unwrap(); // build, high half
+        w.write(0b011, 8).unwrap(); // flags: agent | watchable
+                                    // No target: it rides only on a spectator's hello.
+        w.write(3, 5).unwrap(); // name length
+        for c in b"jev" {
+            w.write(*c as u32, 8).unwrap();
+        }
         let want_len = w.finish();
 
         assert_eq!(len, want_len, "the hello changed length");
@@ -4245,6 +4551,184 @@ mod tests {
         // parsed, so a client of any other version meets a posted reason
         // instead of a mis-parse.
         assert_eq!(decode_hello(&got[..len]).unwrap(), msg);
+        assert_eq!(peek_hello_version(&got[..len]).unwrap(), 0xABCD);
+    }
+
+    /// The spectator's hello, laid out by hand: the target sits between the
+    /// flags and the (empty) name, and only because `HELLO_SPECTATE` is set.
+    #[test]
+    fn a_spectator_hello_carries_its_target_after_the_flags() {
+        let mut t = [0u8; ADDRESS_BYTES];
+        for (i, b) in t.iter_mut().enumerate() {
+            *b = 0xA0 ^ i as u8;
+        }
+        let msg = Hello {
+            proto_ver: PROTO_VER,
+            ver: 7,
+            build: 9,
+            flags: HELLO_SPECTATE,
+            target: Address(t),
+            name: Name::EMPTY,
+        };
+        let mut got = [0u8; MAX_STREAM_MSG_BYTES];
+        let len = encode_hello(&msg, &mut got).expect("encodes");
+        let mut want = [0u8; MAX_STREAM_MSG_BYTES];
+        let mut w = BitWriter::new(&mut want);
+        w.write(KIND_HELLO, KIND_BITS).unwrap();
+        w.write(PROTO_VER as u32, 16).unwrap();
+        w.write(7, 32).unwrap();
+        w.write(9, 32).unwrap();
+        w.write(0, 32).unwrap();
+        w.write(HELLO_SPECTATE as u32, 8).unwrap();
+        for b in t {
+            w.write(b as u32, 8).unwrap();
+        }
+        w.write(0, 5).unwrap();
+        let want_len = w.finish();
+        assert_eq!(&got[..len], &want[..want_len]);
+        let back = decode_hello(&got[..len]).unwrap();
+        assert_eq!(back, msg);
+        assert!(back.is_spectator() && !back.consents_to_watch());
+    }
+
+    /// **The shapes no client builds are refused at both ends.** Each is a
+    /// value a forged hello could carry to confuse the shard about what the
+    /// session is: an unknown flag, a watcher that also claims to be watched,
+    /// a watcher with a name, a target on a player's hello, a name that is
+    /// too long or not printable ASCII.
+    #[test]
+    fn the_hello_refuses_every_shape_no_client_builds() {
+        let base = Hello::this_build();
+        let mut buf = [0u8; MAX_STREAM_MSG_BYTES];
+        let mut someone = [0u8; ADDRESS_BYTES];
+        someone[3] = 7;
+        for bad in [
+            Hello {
+                flags: 1 << 3,
+                ..base
+            },
+            Hello {
+                flags: HELLO_SPECTATE | HELLO_AGENT,
+                ..base
+            },
+            Hello {
+                flags: HELLO_SPECTATE | HELLO_WATCHABLE,
+                ..base
+            },
+            Hello {
+                flags: HELLO_SPECTATE,
+                name: Name::new("x").unwrap(),
+                ..base
+            },
+            Hello {
+                target: Address(someone),
+                ..base
+            },
+        ] {
+            assert_eq!(
+                encode_hello(&bad, &mut buf),
+                Err(WireError::Range),
+                "{bad:?} must not encode"
+            );
+            // And a hand-built frame of the same shape must not decode. Built
+            // with the bit writer because the encoder above refuses it.
+            let mut raw = [0u8; MAX_STREAM_MSG_BYTES];
+            let mut w = BitWriter::new(&mut raw);
+            w.write(KIND_HELLO, KIND_BITS).unwrap();
+            w.write(bad.proto_ver as u32, 16).unwrap();
+            w.write(bad.ver, 32).unwrap();
+            w.write(bad.build as u32, 32).unwrap();
+            w.write((bad.build >> 32) as u32, 32).unwrap();
+            w.write(bad.flags as u32, 8).unwrap();
+            if bad.flags & HELLO_SPECTATE != 0 {
+                for b in bad.target.0 {
+                    w.write(b as u32, 8).unwrap();
+                }
+            }
+            w.write(bad.name.len() as u32, 5).unwrap();
+            for b in bad.name.as_str().bytes() {
+                w.write(b as u32, 8).unwrap();
+            }
+            let n = w.finish();
+            // A player hello with a target has nowhere to put it on the wire,
+            // so its hand-built twin IS a valid player hello; every other
+            // shape here must be refused.
+            if bad.target.is_guest() || bad.is_spectator() {
+                assert_eq!(
+                    decode_hello(&raw[..n]),
+                    Err(WireError::Malformed),
+                    "{bad:?} must not decode"
+                );
+            }
+        }
+        assert!(Name::new("seventeen-letters").is_none(), "17 bytes");
+        assert!(Name::new("tab\there").is_none(), "control byte");
+        assert!(Name::new("jév").is_none(), "not ASCII");
+        assert_eq!(Name::new("sixteen-letters!").unwrap().len(), 16);
+        // A declared length past the cap is refused rather than clamped.
+        let mut raw = [0u8; MAX_STREAM_MSG_BYTES];
+        let mut w = BitWriter::new(&mut raw);
+        w.write(KIND_HELLO, KIND_BITS).unwrap();
+        w.write(PROTO_VER as u32, 16).unwrap();
+        w.write(0, 32).unwrap();
+        w.write(0, 32).unwrap();
+        w.write(0, 32).unwrap();
+        w.write(0, 8).unwrap();
+        w.write(17, 5).unwrap();
+        for _ in 0..17 {
+            w.write(b'a' as u32, 8).unwrap();
+        }
+        let n = w.finish();
+        assert_eq!(decode_hello(&raw[..n]), Err(WireError::Malformed));
+    }
+
+    /// **An older client's hello still meets the version gate.** A v72 hello
+    /// stops after `build`; the v73 decoder refuses it, and the peek does not,
+    /// which is the whole reason the shard peeks first.
+    #[test]
+    fn a_pre_v73_hello_is_read_for_its_version_only() {
+        let mut raw = [0u8; MAX_STREAM_MSG_BYTES];
+        let mut w = BitWriter::new(&mut raw);
+        w.write(KIND_HELLO, KIND_BITS).unwrap();
+        w.write(72, 16).unwrap();
+        w.write(1_000, 32).unwrap();
+        w.write(0x1111, 32).unwrap();
+        w.write(0x2222, 32).unwrap();
+        let n = w.finish();
+        assert!(decode_hello(&raw[..n]).is_err(), "the old layout");
+        assert_eq!(peek_hello_version(&raw[..n]), Ok(72));
+    }
+
+    /// The watch message round-trips and pins its field order by hand.
+    #[test]
+    fn the_watch_message_writes_its_fields_where_the_doc_says() {
+        let mut a = [0u8; ADDRESS_BYTES];
+        for (i, b) in a.iter_mut().enumerate() {
+            *b = (i as u8).wrapping_mul(11).wrapping_add(1);
+        }
+        let msg = Watch {
+            address: Address(a),
+            agent: true,
+            name: Name::new("jev").unwrap(),
+        };
+        let mut got = [0u8; MAX_STREAM_MSG_BYTES];
+        let len = encode_watch(&msg, &mut got).unwrap();
+        let mut want = [0u8; MAX_STREAM_MSG_BYTES];
+        let mut w = BitWriter::new(&mut want);
+        w.write(KIND_WATCH, KIND_BITS).unwrap();
+        for b in a {
+            w.write(b as u32, 8).unwrap();
+        }
+        w.write(1, 1).unwrap();
+        w.write(3, 5).unwrap();
+        for c in b"jev" {
+            w.write(*c as u32, 8).unwrap();
+        }
+        let want_len = w.finish();
+        assert_eq!(&got[..len], &want[..want_len]);
+        assert!(len <= MAX_STREAM_MSG_BYTES);
+        assert_eq!(decode_watch(&got[..len]).unwrap(), msg);
+        assert_eq!(peek_kind(&got[..len]), Ok(KIND_WATCH));
     }
 
     /// Two codes reading the same is a player who cannot tell which no they
@@ -4258,6 +4742,10 @@ mod tests {
             REFUSE_AUTH,
             REFUSE_TICKET,
             REFUSE_BUILD,
+            REFUSE_ADMIN,
+            REFUSE_WATCH,
+            REFUSE_WATCH_FULL,
+            REFUSE_WATCH_ENDED,
         ];
         for (i, a) in all.iter().enumerate() {
             for b in all.iter().skip(i + 1) {

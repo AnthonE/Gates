@@ -71,6 +71,12 @@ fn main() {
     write_fixture(goldens::FIXTURES[6], &buf[..len]);
     let len = encode_refuse(&goldens::refuse_full(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[7], &buf[..len]);
+    // Spectators v0 (v73): the watcher's hello and the watch message, the
+    // last two in the positional manifest.
+    let len = encode_hello(&goldens::hello_spectate(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[111], &buf[..len]);
+    let len = protocol::encode_watch(&goldens::watch(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[112], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();
