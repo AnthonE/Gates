@@ -32,3 +32,16 @@ not a claim that a person has played the scene on a hardware GPU.
 Resource items without held models still use the pouch. Drop animation and
 physics remain outside this change; no server, protocol or balance changes
 are needed. Publishing the client remains a separate act.
+
+`./ci/gates.sh` finished with **ALL GATES GREEN** on the implementation at
+`5ea39f9`, including every native renderer suite, the full browser build and
+the native/Wasm/debug parity comparisons. The local log is
+`/tmp/gates-loot-gates-complete.log`.
+
+This box needed cache repairs: a stale debug probe omitted the current
+rotation case, and native test linking exhausted the 49 GB volume. Rebuilding
+that executable, clearing inactive incremental caches, stripping native
+executable symbols and temporarily storing test executables in `/dev/shm`
+allowed the unchanged gate to finish. Compiler jobs were limited to two and
+`RUST_MIN_STACK=16777216`; no assertion or source was changed for these
+repairs. Temporary cache links were removed after the successful run.
