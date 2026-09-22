@@ -67,6 +67,11 @@ pub const MAX_ABANDONS: u32 = 3;
 pub const WATER_PROBE_M: [f32; 4] = [8.0, 16.0, 24.0, 32.0];
 /// How long a resource seen in view is remembered once it leaves it.
 pub const RECALL_SECS: u32 = 60;
+/// Sight-window cells examined per call: one per game tick elapsed since
+/// the last call, at most this many. A controller sampled once per slow
+/// rendered frame still sweeps at the game's pace, and a call's work stays
+/// bounded (each cell is at most one sight ray).
+pub const SCAN_CELLS_MAX: u32 = 8;
 
 /// Tool ladders, best first, by catalog name — the player's knowledge of
 /// which tool fells a tree and which breaks rock. Never indices; yields,
@@ -308,6 +313,7 @@ pub struct Survivor {
     water_at: Option<u32>,
     water_yaw: Option<u16>,
     scan: i32,
+    scanned_at: Option<u32>,
     ent_scan: usize,
     /// The nearest resource of each kind last seen, and when.
     recall: [Option<(Target, u32)>; 4],
@@ -352,6 +358,7 @@ impl Survivor {
             water_at: None,
             water_yaw: None,
             scan: 0,
+            scanned_at: None,
             ent_scan: 0,
             recall: [None; 4],
             sensed: false,
@@ -1128,6 +1135,83 @@ impl Survivor {
         let Some(haven) = self.haven else {
             return;
         };
+        let cells = self
+            .scanned_at
+            .map_or(1, |at| tick.wrapping_sub(at).clamp(1, SCAN_CELLS_MAX));
+        self.scanned_at = Some(tick);
+        for _ in 0..cells {
+            self.scan_cell(core, body, &haven, tick);
+        }
+        // Bodies, one per frame, with the same cone and cover checks.
+        let n = view.entities.len();
+        if n > 0 {
+            let i = self.ent_scan % n;
+            self.ent_scan = self.ent_scan.wrapping_add(1);
+            let (id, other) = view.entities[i];
+            if id != player && !other.dead && !other.sleeping {
+                let x = other.qx as f32 * POS_XZ_Q;
+                let z = other.qz as f32 * POS_XZ_Q;
+                if in_cone(body, x, z)
+                    && clear_line(
+                        core,
+                        &haven,
+                        eye(body),
+                        (x, other.qy as f32 * POS_Y_Q + collide::CAPSULE_RADIUS_M, z),
+                    )
+                {
+                    let (d, b) = relative(body, x, z);
+                    let animal = sim_core::mob::slot_of_id(id).is_some();
+                    self.bodies[usize::from(animal)].add(d, b);
+                    if self.body_threat.is_none_or(|t| d < t.0) {
+                        self.body_threat = Some((d, x, z));
+                    }
+                }
+            }
+            if i + 1 >= n {
+                self.senses.players = self.bodies[0];
+                self.senses.animals = self.bodies[1];
+                self.threat = self.body_threat.map(|(_, x, z)| (x, z));
+                self.bodies = [Sighting::default(); 2];
+                self.body_threat = None;
+            }
+        } else {
+            self.senses.players = Sighting::default();
+            self.senses.animals = Sighting::default();
+            self.threat = None;
+        }
+        if self.water_at.is_none_or(|at| tick.wrapping_sub(at) >= TICK_HZ) {
+            self.water_at = Some(tick);
+            let (seed, _) = core.island();
+            let x = body.qx as f32 * POS_XZ_Q;
+            let z = body.qz as f32 * POS_XZ_Q;
+            let mut best: Option<(f32, u16)> = None;
+            for dir in 0..8u16 {
+                let yaw = dir << 13;
+                let (fx, fz) = yaw_dir(yaw);
+                if let Some(&m) = WATER_PROBE_M
+                    .iter()
+                    .find(|&&m| terrain::height(seed, x + fx * m, z + fz * m) < terrain::SEA_LEVEL)
+                {
+                    if best.is_none_or(|b| m < b.0) {
+                        best = Some((m, yaw));
+                    }
+                }
+            }
+            let mut water = Sighting::default();
+            if let Some((m, yaw)) = best {
+                let (fx, fz) = yaw_dir(yaw);
+                let (_, b) = relative(body, x + fx * m, z + fz * m);
+                water.add(m, b);
+            }
+            self.senses.water = water;
+            self.water_yaw = best.map(|b| b.1);
+        }
+    }
+
+    /// Examine the next cell of the sight window; publish the census when a
+    /// sweep completes.
+    fn scan_cell(&mut self, core: &mut ClientCore, body: &EntityState, haven: &Haven, tick: u32) {
+        let haven = *haven;
         let dx = self.scan % SIGHT_WIDTH - SIGHT_CELLS;
         let dz = self.scan / SIGHT_WIDTH - SIGHT_CELLS;
         self.scan = (self.scan + 1) % (SIGHT_WIDTH * SIGHT_WIDTH);
@@ -1195,70 +1279,6 @@ impl Survivor {
             self.senses.bushes = bushes;
             self.sweep = Sweep::default();
             self.sensed = true;
-        }
-        // Bodies, one per frame, with the same cone and cover checks.
-        let n = view.entities.len();
-        if n > 0 {
-            let i = self.ent_scan % n;
-            self.ent_scan = self.ent_scan.wrapping_add(1);
-            let (id, other) = view.entities[i];
-            if id != player && !other.dead && !other.sleeping {
-                let x = other.qx as f32 * POS_XZ_Q;
-                let z = other.qz as f32 * POS_XZ_Q;
-                if in_cone(body, x, z)
-                    && clear_line(
-                        core,
-                        &haven,
-                        eye(body),
-                        (x, other.qy as f32 * POS_Y_Q + collide::CAPSULE_RADIUS_M, z),
-                    )
-                {
-                    let (d, b) = relative(body, x, z);
-                    let animal = sim_core::mob::slot_of_id(id).is_some();
-                    self.bodies[usize::from(animal)].add(d, b);
-                    if self.body_threat.is_none_or(|t| d < t.0) {
-                        self.body_threat = Some((d, x, z));
-                    }
-                }
-            }
-            if i + 1 >= n {
-                self.senses.players = self.bodies[0];
-                self.senses.animals = self.bodies[1];
-                self.threat = self.body_threat.map(|(_, x, z)| (x, z));
-                self.bodies = [Sighting::default(); 2];
-                self.body_threat = None;
-            }
-        } else {
-            self.senses.players = Sighting::default();
-            self.senses.animals = Sighting::default();
-            self.threat = None;
-        }
-        if self.water_at.is_none_or(|at| tick.wrapping_sub(at) >= TICK_HZ) {
-            self.water_at = Some(tick);
-            let (seed, _) = core.island();
-            let x = body.qx as f32 * POS_XZ_Q;
-            let z = body.qz as f32 * POS_XZ_Q;
-            let mut best: Option<(f32, u16)> = None;
-            for dir in 0..8u16 {
-                let yaw = dir << 13;
-                let (fx, fz) = yaw_dir(yaw);
-                if let Some(&m) = WATER_PROBE_M
-                    .iter()
-                    .find(|&&m| terrain::height(seed, x + fx * m, z + fz * m) < terrain::SEA_LEVEL)
-                {
-                    if best.is_none_or(|b| m < b.0) {
-                        best = Some((m, yaw));
-                    }
-                }
-            }
-            let mut water = Sighting::default();
-            if let Some((m, yaw)) = best {
-                let (fx, fz) = yaw_dir(yaw);
-                let (_, b) = relative(body, x + fx * m, z + fz * m);
-                water.add(m, b);
-            }
-            self.senses.water = water;
-            self.water_yaw = best.map(|b| b.1);
         }
     }
 
