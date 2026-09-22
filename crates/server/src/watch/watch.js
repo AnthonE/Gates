@@ -36,6 +36,9 @@ async function poll() {
     else if (state.age_ms > STALE_MS) connection("FEED STALLED");
     else if (state.frame !== shown) {
       const frame = await fetch(`frame.jpg?n=${state.frame}`, { cache: "no-store", signal: abort.signal });
+      // A newer capture won the race. Keep the previous view until the next
+      // poll; this is normal delivery, not a disconnected broadcaster.
+      if (frame.status === 409) return;
       if (!frame.ok) throw new Error("frame changed");
       const blob = await frame.blob(), oldUrl = imageUrl;
       imageUrl = URL.createObjectURL(blob);
