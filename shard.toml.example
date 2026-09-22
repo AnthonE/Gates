@@ -120,8 +120,16 @@ seed = 20260731
 #      deletes every body on the shard, and a player who was raided while
 #      offline comes back from their store record with everything the raid
 #      took. If you run save_file in production, run this too.
+#   3. IT ALSO TURNS ON THE TRUST LOG, in `<world_file>.trust/` beside it:
+#      every trust-bearing verb (a door, a lock, a crew seat, a container),
+#      with each party's wallet and whether the owner was online
+#      (crates/server/src/trustlog.rs; read it with `trust-log <dir>`). It
+#      has no key of its own because its rows are stamped with the world's
+#      tick, which only continues across a restart when the world does.
+#      Bounded at 256 MiB, oldest segments deleted first. A wipe that deletes
+#      the world file should decide about this directory too.
 #
-# DECISIONS.md §open "world persistence v0".
+# DECISIONS.md §open "world persistence v0" and "trust ledger v1".
 # world_file = "island.world"
 
 # How often the world is written, in ticks (30 ticks = 1 second). Default
