@@ -50,8 +50,10 @@ separate worker, and viewers share the last encoded frame. Slow viewers
 cannot queue more captures or control the player.
 
 The loopback origin serves only the page, its CSS/JS, `/state.json` and
-`/frame.jpg`. Frame IDs bind the image to the displayed state; a superseded
-ID returns 409 and the page retries. The page marks frames older than five
+`/frame.jpg`. Each JPEG carries its matching state in an `X-Bot-State`
+response header: one fetch serves both, so a slow connection need not chase
+the next capture. Explicit requests for a superseded frame ID return 409.
+The page marks frames older than five
 seconds as stalled. HTTP has a 16-connection ceiling, an 8 KiB header bound
 and a five-second request deadline; excess connections close. These are
 prototype limits, not a public audience capacity claim. All experimental

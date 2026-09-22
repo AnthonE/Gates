@@ -155,6 +155,23 @@ fn route(header: &[u8]) -> (u16, &'static str) {
     }
 }
 
+fn state(frame: Option<&Frame>) -> String {
+    match frame {
+        None => serde_json::json!({ "ready": false }),
+        Some(f) => serde_json::json!({
+            "ready": true, "frame": f.id, "age_ms": f.at.elapsed().as_millis() as u64,
+            "mode": if f.status.scripted { "Scripted demo" } else { "Jev 1.13.0" },
+            "action": f.status.action(), "seconds": f.status.seconds,
+            "hp": f.status.hp, "hp_max": f.status.hp_max,
+            "wood": f.status.wood, "wood_gained": f.status.gained,
+            "trees": f.status.trees, "retreats": f.status.retreats,
+            "decisions": f.status.decisions, "model_errors": f.status.failures,
+            "decode_errors": f.status.decode_errors,
+        }),
+    }
+    .to_string()
+}
+
 async fn request(
     mut socket: tokio::net::TcpStream,
     frame: Option<Arc<Frame>>,
@@ -193,20 +210,7 @@ async fn request(
         "js" => ("text/javascript; charset=utf-8", include_bytes!("watch.js")),
         "css" => ("text/css; charset=utf-8", include_bytes!("watch.css")),
         "state" => {
-            json = match &frame {
-                None => serde_json::json!({ "ready": false }),
-                Some(f) => serde_json::json!({
-                    "ready": true, "frame": f.id, "age_ms": f.at.elapsed().as_millis() as u64,
-                    "mode": if f.status.scripted { "Scripted demo" } else { "Jev 1.13.0" },
-                    "action": f.status.action(), "seconds": f.status.seconds,
-                    "hp": f.status.hp, "hp_max": f.status.hp_max,
-                    "wood": f.status.wood, "wood_gained": f.status.gained,
-                    "trees": f.status.trees, "retreats": f.status.retreats,
-                    "decisions": f.status.decisions, "model_errors": f.status.failures,
-                    "decode_errors": f.status.decode_errors,
-                }),
-            }
-            .to_string();
+            json = state(frame.as_deref());
             ("application/json", json.as_bytes())
         }
         "frame" => match &frame {
@@ -218,7 +222,14 @@ async fn request(
         },
         _ => ("text/plain", b"Request unavailable"),
     };
-    let headers = format!("HTTP/1.1 {code} Response\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; base-uri 'none'; frame-ancestors 'self'\r\n\r\n", body.len());
+    // One response carries both image and state. A viewer whose round trip
+    // exceeds the capture interval must not chase superseded frame IDs.
+    let metadata = if route == "frame" {
+        format!("X-Bot-State: {}\r\n", state(frame.as_deref()))
+    } else {
+        String::new()
+    };
+    let headers = format!("HTTP/1.1 {code} Response\r\nContent-Type: {kind}\r\nContent-Length: {}\r\n{metadata}Cache-Control: no-store\r\nConnection: close\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; base-uri 'none'; frame-ancestors 'self'\r\n\r\n", body.len());
     socket.write_all(headers.as_bytes()).await?;
     socket.write_all(body).await?;
     socket.shutdown().await
@@ -289,9 +300,26 @@ mod tests {
             std::thread::sleep(POLL);
         }
         let a = get(server.address, "/frame.jpg?n=7");
-        let b = get(server.address, "/frame.jpg?n=7");
-        assert_eq!(a, b, "viewers consume the same encoded image");
+        let b = get(server.address, "/frame.jpg");
         let body = a.windows(4).position(|b| b == b"\r\n\r\n").unwrap() + 4;
+        let other_body = b.windows(4).position(|b| b == b"\r\n\r\n").unwrap() + 4;
+        assert_eq!(
+            &a[body..],
+            &b[other_body..],
+            "viewers consume the same encoded image"
+        );
+        for response in [&a, &b] {
+            let end = response.windows(4).position(|b| b == b"\r\n\r\n").unwrap();
+            let headers = std::str::from_utf8(&response[..end]).unwrap();
+            let metadata = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("X-Bot-State: "))
+                .unwrap();
+            let state: serde_json::Value = serde_json::from_str(metadata).unwrap();
+            assert_eq!(state["frame"], 7);
+            assert_eq!(state["wood"], 42);
+            assert_eq!(state["action"], "Gathering wood");
+        }
         let decoded = image::load_from_memory(&a[body..]).unwrap();
         assert_eq!((decoded.width(), decoded.height()), (WIDTH, HEIGHT));
         assert!(get(server.address, "/frame.jpg?n=6").starts_with(b"HTTP/1.1 409"));

@@ -29,22 +29,26 @@ async function poll() {
   const abort = new AbortController(), timeout = setTimeout(() => abort.abort(), REQUEST_MS);
   try {
     const requestedAt = performance.now();
-    const response = await fetch("state.json", { cache: "no-store", signal: abort.signal });
+    const response = await fetch("frame.jpg", { cache: "no-store", signal: abort.signal });
+    if (response.status === 503) {
+      await response.body?.cancel();
+      connection("WAITING FOR CAMERA");
+      return;
+    }
     if (!response.ok) throw new Error("unavailable");
-    const state = await response.json();
-    if (!state.ready) connection("WAITING FOR CAMERA");
-    else if (state.age_ms > STALE_MS) connection("FEED STALLED");
-    else if (state.frame !== shown) {
-      const frame = await fetch(`frame.jpg?n=${state.frame}`, { cache: "no-store", signal: abort.signal });
-      // A newer capture won the race. Keep the previous view until the next
-      // poll; this is normal delivery, not a disconnected broadcaster.
-      if (frame.status === 409) return;
-      if (!frame.ok) throw new Error("frame changed");
-      const blob = await frame.blob(), oldUrl = imageUrl;
+    // The header belongs to this exact JPEG. No second round trip can race
+    // the next capture, even when a visitor's connection is slower than it.
+    const state = JSON.parse(response.headers.get("X-Bot-State"));
+    const blob = await response.blob();
+    const receivedAt = performance.now();
+    state.age_ms += receivedAt - requestedAt;
+    if (state.age_ms > STALE_MS) connection("FEED STALLED");
+    else if (state.frame !== shown || state.seconds < previous.seconds) {
+      const oldUrl = imageUrl;
       imageUrl = URL.createObjectURL(blob);
       picture.src = imageUrl;
       try { await picture.decode(); } finally { if (oldUrl) URL.revokeObjectURL(oldUrl); }
-      state.age_ms += performance.now() - requestedAt;
+      state.age_ms += performance.now() - receivedAt;
       present(state);
     }
   } catch { connection("FEED OFFLINE"); }
