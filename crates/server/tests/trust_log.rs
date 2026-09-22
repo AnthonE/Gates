@@ -493,6 +493,56 @@ fn an_evicted_owner_keeps_their_wallet_in_the_row() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// **A booted shard's sim thread holds the tap until the shard stops.** The
+/// production path: the tap rides `store::Saves` into `spawn_shard`, and
+/// `net.rs` hands it to the sim thread. If that hand-off is missing, the tap
+/// drops when `spawn_shard` returns and the writer stops within one poll,
+/// while the shard runs on keeping no ledger at all. So after 60 ticks the
+/// writer must still be running, and once the shard stops it must close.
+///
+/// Mutant watched red: `net.rs`'s `core.trust = trust;` removed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_booted_shard_holds_the_trust_tap_until_it_stops() {
+    let dir = scratch("boot");
+    let (tap, mut log) = trustlog::spawn(&dir, ident(), Limits::default()).expect("spawn");
+    let mut saves = server::store::Saves::off();
+    saves.trust = tap;
+    let content_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
+    let content = content::Content::load_dir(&content_dir).expect("shipped content loads");
+    let tables = server::net::bake_all(&content).expect("shipped content bakes");
+    let handle = server::net::spawn_shard(
+        server::config::ShardConfig::ephemeral(0xC0FFEE),
+        tables,
+        saves,
+        server::worldfile::WorldBoot::off(),
+    )
+    .await
+    .expect("shard boots");
+    let end = Instant::now() + WAIT;
+    while ShardStats::get(&handle.stats.current_tick) < 60 {
+        assert!(Instant::now() < end, "the shard never ticked");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        !log.stats.stopped(),
+        "the trust log's writer stopped while the shard runs: the sim thread \
+         never took the tap, and every row is being dropped"
+    );
+    handle
+        .shutdown
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    assert!(
+        log.join_within(WAIT),
+        "the writer never closed after the shard stopped"
+    );
+    let l = read_dir(&dir).expect("read the log");
+    assert!(
+        l.segments[0].closed,
+        "a stopped shard's log ends in a close line"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A shard with no log still counts every row it could not keep.
 #[test]
 fn a_shard_without_a_log_counts_its_rows_unlogged() {
