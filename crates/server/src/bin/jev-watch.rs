@@ -9,10 +9,12 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-const USAGE: &str = "jev-watch [--scripted] [--seconds 120] [--listen 127.0.0.1:8081] [--assets PATH] [--content PATH]\nStarts a temporary local shard and one wood-collecting bot. Requires a graphics display.\nJev requires TYPESAFE_API_KEY; --scripted is an explicitly labelled offline controller.";
+const USAGE: &str = "jev-watch [--scripted] [--seconds 120 | --continuous] [--listen 127.0.0.1:8081] [--assets PATH] [--content PATH]\nStarts a temporary local shard and one wood-collecting bot. Requires a graphics display.\nContinuous runs end on death or disconnect; use a supervisor to restart them.\nJev requires TYPESAFE_API_KEY; --scripted is an explicitly labelled offline controller.";
 
 fn run() -> Result<AppExit, String> {
     let mut scripted = false;
+    let mut continuous = false;
+    let mut timed = false;
     let mut duration = Duration::from_secs(120);
     let mut listen: SocketAddr = "127.0.0.1:8081".parse().expect("loopback");
     let mut content = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../content");
@@ -27,7 +29,9 @@ fn run() -> Result<AppExit, String> {
                 return Ok(AppExit::Success);
             }
             "--scripted" => scripted = true,
+            "--continuous" => continuous = true,
             "--seconds" => {
+                timed = true;
                 let seconds: u64 = args
                     .next()
                     .ok_or("--seconds needs a value")?
@@ -51,6 +55,9 @@ fn run() -> Result<AppExit, String> {
             }
             _ => return Err(format!("unknown argument: {arg}")),
         }
+    }
+    if continuous && timed {
+        return Err("choose --continuous or --seconds, not both".into());
     }
     let assets = assets.canonicalize().map_err(|e| format!("assets: {e}"))?;
     if !assets.is_dir() {
@@ -156,6 +163,9 @@ fn run() -> Result<AppExit, String> {
         ..default()
     });
     app.insert_non_send_resource(controller);
+    if continuous {
+        app.insert_resource(watch::Continuous);
+    }
     app.insert_non_send_resource(capture);
     app.add_systems(Update, watch::lifetime);
     app.add_systems(

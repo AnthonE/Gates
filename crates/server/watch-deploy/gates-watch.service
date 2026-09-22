@@ -7,7 +7,7 @@ Type=simple
 User=master
 WorkingDirectory=/mnt/hive-data/gates-watch/current
 Environment=RUST_MIN_STACK=16777216
-ExecStart=/usr/bin/xvfb-run -a -s "-screen 0 640x360x24" /mnt/hive-data/gates-watch/current/jev-watch --scripted --seconds 120 --listen 127.0.0.1:8081 --assets /mnt/hive-data/gates-watch/assets --content /mnt/hive-data/gates-watch/current/content
+ExecStart=/usr/bin/xvfb-run -a -s "-screen 0 640x360x24" /mnt/hive-data/gates-watch/current/jev-watch --scripted --continuous --listen 127.0.0.1:8081 --assets /mnt/hive-data/gates-watch/assets --content /mnt/hive-data/gates-watch/current/content
 Restart=always
 RestartSec=5
 Nice=10

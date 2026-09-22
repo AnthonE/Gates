@@ -34,6 +34,11 @@ The run lasts 120 seconds **after the world loads**; `--seconds N` accepts
 the duration ends or its session fails; Ctrl-C also ends it and the temporary
 shard. Death is shown on the normal game screen until the run ends.
 
+For an always-running hosted feed, pass `--continuous` instead of `--seconds`.
+There is no play-time limit. Death, disconnection or failed startup ends the
+process, allowing the supervisor to start a fresh run. This restarts a private
+island; it does not save progress or implement in-game respawning.
+
 ## What carries the picture
 
 `jev-watch` embeds the existing Rust `GatesRenderPlugin` and ordinary client
@@ -68,12 +73,11 @@ the loopback origin, preserve the trailing slash, and leave frame/state
 responses uncached. Relative asset/API URLs support that mount. It can also
 be embedded by a page on the same origin; its CSP refuses other origins.
 
-`watch-deploy/gates-watch.service` runs one scripted instance under Xvfb on
-the existing render host. Each run uses the command's existing 120 seconds
-of play time, then systemd starts a fresh private island after five seconds.
-A failed session follows the same restart policy; startup still has its
-300-second ceiling. Viewers reconnect automatically and the page explains
-the loading pauses. This is repeated short runs, not in-game respawning.
+`watch-deploy/gates-watch.service` runs one scripted instance continuously
+under Xvfb on the existing render host. The two-minute demo timer is disabled.
+After death or failure, systemd starts a fresh private island after five
+seconds; startup still has its 300-second ceiling. Viewers reconnect
+automatically and the page explains the loading pauses.
 The service runs at nice level 10 so interactive work takes priority.
 
 The installed bundle is `/mnt/hive-data/gates-watch/current`: a pinned binary
@@ -93,6 +97,23 @@ public page and `frame.jpg` (including its `X-Bot-State` header).
 remove the two watch locations/includes and reload the checked nginx config.
 Continuous hosting was authorized for this slow preview; smooth video,
 large audiences and live Jev remain unvalidated.
+
+## Running cost
+
+The current service uses `--scripted`, so it makes no paid model requests.
+It uses the existing server, with no additional machine provisioned; its
+CPU, memory and viewer bandwidth still consume that server's capacity.
+
+Jev 1.13 is listed at **$0.042 per million input tokens**, with output free
+([TypeSafe models](https://docs.typesafe.ai/models), checked 2026-09-22).
+For illustration, 500 input tokens per decision at one decision per second
+is $1.81/day or $54.43 per 30 days per bot. One decision every five seconds
+at the same size is $10.89 per 30 days. These are arithmetic scenarios, not
+measured usage: actual prompt token counts, decision cadence, pauses and
+provider billing determine the invoice. The current controller asks at most
+once per second while exploring; local harvesting needs no model call.
+No TypeSafe key is configured for the live preview. Enabling paid Jev calls
+requires configuring that server-side key and switching out of scripted mode.
 
 ## Checked locally
 

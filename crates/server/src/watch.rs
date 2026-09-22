@@ -21,6 +21,10 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(300);
 
 type Event = ([u8; MAX_EVENT_MSG_BYTES], usize);
 
+/// Run until death or connection failure; the host supervisor starts the next life.
+#[derive(Resource)]
+pub struct Continuous;
+
 pub struct Controller {
     pub gatherer: Gatherer,
     events: rtrb::Consumer<Event>,
@@ -222,16 +226,21 @@ pub fn drive(
 
 pub fn lifetime(
     controller: NonSend<Controller>,
+    continuous: Option<Res<Continuous>>,
     screen: Res<State<Screen>>,
     net: Option<NonSend<Net>>,
     mut exit: MessageWriter<AppExit>,
 ) {
-    if matches!(screen.get(), Screen::Menu | Screen::Disconnected) {
+    if matches!(screen.get(), Screen::Menu | Screen::Disconnected)
+        || net.as_ref().is_some_and(|n| n.session.closed())
+    {
         eprintln!("jev-watch: the bot's connection ended");
         exit.write(AppExit::error());
-    } else if controller
-        .playing
-        .is_some_and(|t| t.elapsed() >= controller.duration)
+    } else if (continuous.is_some() && net.as_ref().is_some_and(|n| n.session.core.dead))
+        || (continuous.is_none()
+            && controller
+                .playing
+                .is_some_and(|t| t.elapsed() >= controller.duration))
     {
         println!("broadcast gathering: {:?}", controller.gatherer.stats);
         if let Some(net) = net {
@@ -416,6 +425,89 @@ mod tests {
         assert_eq!(session.send_action(&[1]), Err(client::SendError::Closed));
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(shard.stats.input_dg_ok.load(Ordering::Relaxed), 0);
+        shard.shutdown.store(true, Ordering::Relaxed);
+    }
+
+    #[tokio::test]
+    async fn continuous_run_survives_the_timer_but_exits_on_death_or_failure() {
+        use bevy::ecs::system::RunSystemOnce;
+
+        let shard = crate::agent_demo::spawn_local().await.unwrap();
+        let server = shard.local_addr.to_string();
+        let endpoint = client::client_endpoint(&server, Some(&shard.cert_hash)).unwrap();
+        let mut session =
+            client::Session::connect(&endpoint, &server, protocol::Address::GUEST, |_, _, _| None)
+                .await
+                .unwrap();
+        let driver = crate::jev::Driver::new(
+            crate::agent_demo::Scripted,
+            crate::jev::THINK_INTERVAL,
+            crate::jev::REQUEST_TIMEOUT,
+        )
+        .unwrap();
+        let mut controller =
+            Controller::attach(&mut session, Gatherer::new(driver), true, Duration::ZERO).unwrap();
+        controller.playing = Some(Instant::now());
+        let mut world = World::new();
+        world.insert_resource(State::new(Screen::InWorld));
+        world.init_resource::<Messages<AppExit>>();
+        world.insert_resource(Continuous);
+        world.insert_non_send_resource(controller);
+        world.insert_non_send_resource(Net {
+            session,
+            sel: 0,
+            light: false,
+        });
+
+        world.run_system_once(lifetime).unwrap();
+        assert!(world.resource::<Messages<AppExit>>().is_empty());
+
+        world.non_send_resource_mut::<Net>().session.core.dead = true;
+        world.run_system_once(lifetime).unwrap();
+        assert_eq!(
+            world
+                .resource_mut::<Messages<AppExit>>()
+                .drain()
+                .collect::<Vec<_>>(),
+            [AppExit::Success]
+        );
+
+        // The finite CLI mode keeps its duration bound.
+        world.non_send_resource_mut::<Net>().session.core.dead = false;
+        world.remove_resource::<Continuous>();
+        world.run_system_once(lifetime).unwrap();
+        assert_eq!(
+            world
+                .resource_mut::<Messages<AppExit>>()
+                .drain()
+                .collect::<Vec<_>>(),
+            [AppExit::Success]
+        );
+
+        world.insert_resource(Continuous);
+        world.insert_resource(State::new(Screen::Disconnected));
+        world.run_system_once(lifetime).unwrap();
+        assert_eq!(
+            world
+                .resource_mut::<Messages<AppExit>>()
+                .drain()
+                .collect::<Vec<_>>(),
+            [AppExit::error()]
+        );
+
+        // Continuous mode must not hide a renderer that never finishes loading.
+        world.insert_resource(State::new(Screen::Loading));
+        let mut controller = world.non_send_resource_mut::<Controller>();
+        controller.playing = None;
+        controller.created = Instant::now() - STARTUP_TIMEOUT - Duration::from_secs(1);
+        world.run_system_once(lifetime).unwrap();
+        assert_eq!(
+            world
+                .resource_mut::<Messages<AppExit>>()
+                .drain()
+                .collect::<Vec<_>>(),
+            [AppExit::error()]
+        );
         shard.shutdown.store(true, Ordering::Relaxed);
     }
 }
