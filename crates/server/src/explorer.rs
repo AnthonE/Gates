@@ -1513,7 +1513,7 @@ pub fn best_tool(core: &ClientCore, kind: Kind) -> Option<u8> {
         for (slot, stack) in core.inv[..HOTBAR_SLOTS].iter().enumerate() {
             if stack.count > 0
                 && core.catalog.name(stack.item as usize) == name.as_bytes()
-                && (core.catalog.rows[stack.item as usize].cond_max == 0 || stack.cond > 0)
+                && (core.catalog.row(stack.item as usize).cond_max == 0 || stack.cond > 0)
             {
                 return Some(slot as u8);
             }
@@ -1528,7 +1528,7 @@ fn room_for(core: &ClientCore, yields: u64) -> bool {
     core.inv.iter().any(|s| {
         s.count == 0
             || (yields & FoodBook::bit(s.item) != 0
-                && s.count < core.catalog.rows[s.item as usize].stack_max)
+                && s.count < core.catalog.row(s.item as usize).stack_max)
     })
 }
 
@@ -1550,8 +1550,10 @@ fn resolve_recipe(core: &ClientCore, name: Name) -> Option<(u16, u16, u32)> {
 }
 
 fn inputs_ok(core: &ClientCore, recipe: u16) -> bool {
-    let def = core.recipes.recipes[recipe as usize];
-    def.inputs[..usize::from(def.n_inputs)]
+    let Some(def) = core.recipes.recipes.get(recipe as usize) else {
+        return false;
+    };
+    def.inputs[..usize::from(def.n_inputs).min(def.inputs.len())]
         .iter()
         .all(|&(item, need)| count_item(core, item) >= u32::from(need))
 }
