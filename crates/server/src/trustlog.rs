@@ -307,6 +307,19 @@ impl Tap {
         live.flush_gap();
     }
 
+    /// Whether a gap line is waiting for room on the ring.
+    pub fn gap_pending(&self) -> bool {
+        self.live.as_ref().is_some_and(|l| l.gap.is_some())
+    }
+
+    /// Retry a pending gap line. The drain calls this every tick, rows or
+    /// not, so a gap waits at most as long as the ring stays full.
+    pub fn flush_gap(&mut self) {
+        if let Some(live) = self.live.as_mut() {
+            live.flush_gap();
+        }
+    }
+
     /// Put one message on the ring, or count it lost into the pending gap.
     /// [`Tap::drain`] is the production caller; tests call this directly.
     pub fn offer(&mut self, msg: Msg, stats: &ShardStats) {

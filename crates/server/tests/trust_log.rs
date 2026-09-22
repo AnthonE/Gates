@@ -657,6 +657,82 @@ fn back_pressure_is_counted_and_written_as_a_gap() {
     assert_eq!(seen, want);
 }
 
+/// **Under a live consumer, back-pressure never reorders the log.** One tick,
+/// one row, 200 000 ticks into a four-slot ring while another thread drains
+/// it. Whatever the interleaving, what arrives must partition the ticks:
+/// monotonic, each tick either a row or inside exactly one gap, and each
+/// gap's count equal to its span. So no row ever lands ahead of the gap for
+/// rows lost before it.
+///
+/// Correct code cannot fail this, whatever the scheduler does. The mutant it
+/// exists for can only show under a race: a row pushed while a gap is
+/// pending, into a slot the consumer freed between the two pushes. The
+/// single-threaded test above is blind to it by construction, and survived
+/// it. Here it goes red on most runs, never on a correct one.
+#[test]
+fn back_pressure_never_reorders_the_log_under_a_live_consumer() {
+    const TICKS: u64 = 200_000;
+    let stats = ShardStats::default();
+    let (mut tap, mut rx) = Tap::channel(4);
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reader = {
+        let done = done.clone();
+        std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            loop {
+                match rx.pop() {
+                    Ok(m) => seen.push(m),
+                    Err(_) if done.load(std::sync::atomic::Ordering::Acquire) => {
+                        while let Ok(m) = rx.pop() {
+                            seen.push(m);
+                        }
+                        return seen;
+                    }
+                    Err(_) => std::hint::spin_loop(),
+                }
+            }
+        })
+    };
+    for t in 0..TICKS {
+        tap.offer(row(t, 700, 7), &stats);
+    }
+    // The last gap, if one is pending, gets the room the reader makes. The
+    // reader pops until told to stop, so this ends on state, not on a count.
+    while tap.gap_pending() {
+        tap.flush_gap();
+        std::thread::yield_now();
+    }
+    done.store(true, std::sync::atomic::Ordering::Release);
+    let seen = reader.join().expect("the reader thread");
+
+    let mut next = 0u64;
+    let mut lost = 0u64;
+    for m in &seen {
+        match m {
+            Msg::Row(r) => {
+                assert_eq!(r.tick, next, "a row out of order: the log was reordered");
+                next += 1;
+            }
+            Msg::Gap(g) => {
+                assert_eq!(
+                    g.from_tick, next,
+                    "a gap that does not start where the rows stopped"
+                );
+                assert_eq!(
+                    g.ring_full,
+                    g.to_tick - g.from_tick + 1,
+                    "a gap whose count is not its span: rows were pushed while it waited"
+                );
+                lost += g.ring_full;
+                next = g.to_tick + 1;
+            }
+        }
+    }
+    assert_eq!(next, TICKS, "every tick is a row or inside a gap");
+    assert_eq!(lost, ShardStats::get(&stats.trust_ring_drops));
+    assert!(lost > 0, "the fixture never filled the ring, so it proved nothing");
+}
+
 // ---------------------------------------------------------------------------
 // The reader
 // ---------------------------------------------------------------------------
