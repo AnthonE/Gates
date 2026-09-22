@@ -96,7 +96,10 @@ fn shoreline() -> (f32, f32) {
         let mut z = 0.0f32;
         while z < sim_core::terrain::ISLAND_SIZE {
             if (sea..sim_core::terrain::BEACH_MAX_H).contains(&h(x, z))
-                && (h(x + r, z) < sea || h(x - r, z) < sea || h(x, z + r) < sea || h(x, z - r) < sea)
+                && (h(x + r, z) < sea
+                    || h(x - r, z) < sea
+                    || h(x, z + r) < sea
+                    || h(x, z - r) < sea)
             {
                 return (x, z);
             }
@@ -146,14 +149,16 @@ fn own(p: &Player, sc: &SurvivalContent, cc: &CraftContent) -> Own {
         .position(|s| s.count > 0 && sc.row(s.item).is_some())
         .map(|i| i as u8);
     let r = cc.recipes[0];
-    let craftable = r.inputs[..usize::from(r.n_inputs)].iter().all(|&(item, need)| {
-        p.inv
-            .iter()
-            .filter(|s| s.count > 0 && s.item == item)
-            .map(|s| u32::from(s.count))
-            .sum::<u32>()
-            >= u32::from(need)
-    });
+    let craftable = r.inputs[..usize::from(r.n_inputs)]
+        .iter()
+        .all(|&(item, need)| {
+            p.inv
+                .iter()
+                .filter(|s| s.count > 0 && s.item == item)
+                .map(|s| u32::from(s.count))
+                .sum::<u32>()
+                >= u32::from(need)
+        });
     Own {
         qx: p.body.qx,
         qz: p.body.qz,

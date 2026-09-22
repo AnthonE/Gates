@@ -73,8 +73,8 @@ impl Jev {
         }
         let answer = &value["answers"]["goal"];
         let label = answer["choice"].as_str().ok_or("missing Jev choice")?;
-        let goal = Goal::parse(label, summary.options())
-            .ok_or("Jev chose a goal it was not offered")?;
+        let goal =
+            Goal::parse(label, summary.options()).ok_or("Jev chose a goal it was not offered")?;
         let confidence = answer["confidence"]
             .as_f64()
             .filter(|v| v.is_finite() && (0.0..=1.0).contains(v))
@@ -92,10 +92,7 @@ impl Jev {
                 .max_by(|a, b| a.1.total_cmp(&b.1))
         });
         let reason = match runner_up {
-            Some((other, p)) => format!(
-                "Jev {:.2} for {label}; next {other} {p:.2}",
-                confidence
-            ),
+            Some((other, p)) => format!("Jev {:.2} for {label}; next {other} {p:.2}", confidence),
             None => format!("Jev {:.2} for {label}", confidence),
         };
         Ok(Choice {
@@ -191,7 +188,9 @@ mod tests {
     fn the_request_offers_exactly_the_goals_and_nothing_private() {
         let s = summary();
         let request = Jev::request(&s);
-        let criteria = request["questions"]["goal"]["criteria"].as_object().unwrap();
+        let criteria = request["questions"]["goal"]["criteria"]
+            .as_object()
+            .unwrap();
         assert_eq!(criteria.len(), s.options().len());
         assert!(criteria.contains_key("craft:Stone Hatchet"));
         let text = request.to_string();

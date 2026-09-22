@@ -111,7 +111,10 @@ fn the_agent_encodes_only_verbs_the_human_client_encodes() {
         .into_iter()
         .map(String::from)
         .collect();
-    assert_eq!(agent, expected, "the agent's verb set changed; update PLAYERS.md");
+    assert_eq!(
+        agent, expected,
+        "the agent's verb set changed; update PLAYERS.md"
+    );
     assert!(
         agent.is_subset(&human),
         "the agent encodes {:?}, which no human client call site encodes",
@@ -171,9 +174,15 @@ fn shore() -> (f32, f32) {
     for (dx, dz) in [(1.0f32, 0.0f32), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
         for step in 0..600 {
             let (x, z) = (c + dx * step as f32 * 2.0, c + dz * step as f32 * 2.0);
-            let wet = [(0.0, 0.0), (reach, 0.0), (-reach, 0.0), (0.0, reach), (0.0, -reach)]
-                .iter()
-                .any(|(ox, oz)| terrain::height(SEED, x + ox, z + oz) < terrain::SEA_LEVEL);
+            let wet = [
+                (0.0, 0.0),
+                (reach, 0.0),
+                (-reach, 0.0),
+                (0.0, reach),
+                (0.0, -reach),
+            ]
+            .iter()
+            .any(|(ox, oz)| terrain::height(SEED, x + ox, z + oz) < terrain::SEA_LEVEL);
             if wet && terrain::ground(SEED, &haven, x, z) > 0.3 {
                 return (x, z);
             }
@@ -469,7 +478,10 @@ fn a_survivor_plays_a_whole_life_and_the_next_one_in_lockstep() {
         "only the buttons a player's keys produce"
     );
     // Wall 4, the agent's half: its frame loop never allocated.
-    assert_eq!(h.heap_ops, 0, "the agent's frame loop touched the allocator");
+    assert_eq!(
+        h.heap_ops, 0,
+        "the agent's frame loop touched the allocator"
+    );
     println!("{}", h.explain());
     // Far fewer decisions than ticks: goals, not steps.
     assert!(
@@ -500,10 +512,20 @@ fn half_an_hour_alone_keeps_food_and_water_up() {
     assert_eq!(h.bot.stats.deaths, 0, "{}", h.explain());
     // 30 %: the healthy run bottoms out near 39 % water and 59 % food; a
     // body that never learns which food carries water is near 21 % here.
-    assert!(u32::from(food) * 10 >= u32::from(core.max_food) * 3, "food fell to {food}");
-    assert!(u32::from(water) * 10 >= u32::from(core.max_water) * 3, "water fell to {water}");
+    assert!(
+        u32::from(food) * 10 >= u32::from(core.max_food) * 3,
+        "food fell to {food}"
+    );
+    assert!(
+        u32::from(water) * 10 >= u32::from(core.max_water) * 3,
+        "water fell to {water}"
+    );
     assert!(h.bot.gathered_of("Wood") > 0 && h.bot.gathered_of("Stone") > 0);
-    assert!(h.bot.stats.crafted >= 2 && h.bot.stats.eaten > 0, "{}", h.explain());
+    assert!(
+        h.bot.stats.crafted >= 2 && h.bot.stats.eaten > 0,
+        "{}",
+        h.explain()
+    );
     assert!(h.bot.mind.stats.requests * u64::from(TICK_HZ) <= u64::from(h.tick));
     assert_eq!(h.heap_ops, 0);
 }
@@ -534,9 +556,15 @@ fn half_an_hour_with_wildlife_answers_every_death_in_game() {
         "every death is answered: {}",
         h.explain()
     );
-    assert!(longest <= 2 * TICK_HZ, "a death screen stood {longest} ticks");
+    assert!(
+        longest <= 2 * TICK_HZ,
+        "a death screen stood {longest} ticks"
+    );
     if let Some(at_wake) = decisions_at_wake {
-        assert!(h.bot.mind.stats.decisions > at_wake, "no decision after the last wake");
+        assert!(
+            h.bot.mind.stats.decisions > at_wake,
+            "no decision after the last wake"
+        );
     }
     assert!(h.bot.mind.stats.requests * u64::from(TICK_HZ) <= u64::from(h.tick));
     assert_eq!(h.heap_ops, 0);

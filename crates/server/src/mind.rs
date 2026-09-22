@@ -171,7 +171,10 @@ impl Goal {
 
     /// Strict: a label must name one of the goals actually offered.
     pub fn parse(label: &str, offered: &[Goal]) -> Option<Goal> {
-        offered.iter().copied().find(|g| g.label().as_str() == label)
+        offered
+            .iter()
+            .copied()
+            .find(|g| g.label().as_str() == label)
     }
 
     /// What the goal means, in the words a source is given. Worker only.
@@ -836,7 +839,14 @@ impl Mind {
                 }
             })
             .map_err(|e| format!("decision worker: {e}"))?;
-        Ok(Self::with(kind, None, Some(asks), Some(replies), Some(worker), cfg))
+        Ok(Self::with(
+            kind,
+            None,
+            Some(asks),
+            Some(replies),
+            Some(worker),
+            cfg,
+        ))
     }
 
     /// Decisions on the caller's thread. Only for a source whose `decide`
@@ -1059,7 +1069,10 @@ impl Scripted {
             // No sea in sight and no food known to carry water: eating is
             // how the body learns which of its food does.
             if s.offers(Goal::Eat) {
-                return (Goal::Eat, "scripted: water is low, eating to find juicy food");
+                return (
+                    Goal::Eat,
+                    "scripted: water is low, eating to find juicy food",
+                );
             }
             if bush {
                 return (Goal::Forage, "scripted: water is low, berries are in view");
@@ -1086,7 +1099,12 @@ impl Scripted {
             }
         }
         // Alternate the resources, preferring one that is in view.
-        let order = [Goal::GatherWood, Goal::GatherStone, Goal::GatherWood, Goal::GatherOre];
+        let order = [
+            Goal::GatherWood,
+            Goal::GatherStone,
+            Goal::GatherWood,
+            Goal::GatherOre,
+        ];
         let seen = |g: Goal| match g {
             Goal::GatherWood => s.trees.count > 0,
             Goal::GatherStone => s.stone_nodes.count > 0,
@@ -1246,7 +1264,10 @@ mod tests {
         assert!(mind.ask(t0, &s));
         assert!(!mind.ask(t0, &s), "one outstanding");
         assert_eq!(mind.poll(t0).unwrap().goal, Goal::Explore);
-        assert!(!mind.ask(t0 + cfg.interval / 2, &s), "the once-per-second floor");
+        assert!(
+            !mind.ask(t0 + cfg.interval / 2, &s),
+            "the once-per-second floor"
+        );
         assert!(mind.ask(t0 + cfg.interval, &s));
         assert!(mind.poll(t0 + cfg.interval).is_some());
         assert!(!mind.ask(t0 + cfg.interval * 3, &s), "hour ceiling");

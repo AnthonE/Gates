@@ -140,8 +140,8 @@ impl External {
     /// Parse one reply for request `id`. `Ok(None)` is a reply to an older
     /// request, which is skipped rather than failed.
     pub(crate) fn reply(line: &str, id: u64, summary: &Summary) -> Result<Option<Choice>, String> {
-        let value: Value =
-            serde_json::from_str(line.trim_end()).map_err(|_| "external agent sent invalid JSON")?;
+        let value: Value = serde_json::from_str(line.trim_end())
+            .map_err(|_| "external agent sent invalid JSON")?;
         let got = value["id"]
             .as_u64()
             .ok_or("external agent reply has no numeric id")?;
@@ -182,7 +182,10 @@ impl DecisionSource for External {
         let deadline = Instant::now() + self.timeout;
         let mut line = Self::observation(id, summary).to_string();
         line.push('\n');
-        let stdin = self.stdin.as_mut().ok_or("external agent input is closed")?;
+        let stdin = self
+            .stdin
+            .as_mut()
+            .ok_or("external agent input is closed")?;
         if stdin
             .write_all(line.as_bytes())
             .and_then(|_| stdin.flush())
@@ -191,7 +194,10 @@ impl DecisionSource for External {
             self.stdin = None;
             return Err("external agent closed its input".into());
         }
-        let lines = self.lines.as_mut().ok_or("external agent output is closed")?;
+        let lines = self
+            .lines
+            .as_mut()
+            .ok_or("external agent output is closed")?;
         wait(lines, id, deadline, summary, &mut self.stale)
     }
 }
@@ -213,9 +219,7 @@ fn wait(
             Ok(Line::TooLong) => {
                 return Err("external agent reply over the line limit or not UTF-8".into())
             }
-            Err(_) if lines.is_abandoned() => {
-                return Err("external agent closed its output".into())
-            }
+            Err(_) if lines.is_abandoned() => return Err("external agent closed its output".into()),
             Err(_) if Instant::now() >= deadline => {
                 return Err("external agent did not answer in time".into())
             }
@@ -266,9 +270,13 @@ mod tests {
     #[test]
     fn replies_are_strict_and_older_ids_are_skipped() {
         let s = summary();
-        let ok = External::reply(r#"{"id":3,"goal":"craft:Stone Pickaxe","reason":"tool\nnow"}"#, 3, &s)
-            .unwrap()
-            .unwrap();
+        let ok = External::reply(
+            r#"{"id":3,"goal":"craft:Stone Pickaxe","reason":"tool\nnow"}"#,
+            3,
+            &s,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(ok.goal, Goal::Craft(Name::new(b"Stone Pickaxe").unwrap()));
         assert_eq!(ok.reason.as_str(), "tool now");
         assert!(External::reply(r#"{"id":2,"goal":"explore"}"#, 3, &s)
@@ -286,7 +294,10 @@ mod tests {
         }
         let observation = External::observation(9, &s);
         assert_eq!(observation["protocol"], EXTERNAL_PROTOCOL);
-        assert_eq!(observation["options"].as_array().unwrap().len(), s.options().len());
+        assert_eq!(
+            observation["options"].as_array().unwrap().len(),
+            s.options().len()
+        );
     }
 
     #[test]

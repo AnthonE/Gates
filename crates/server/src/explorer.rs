@@ -13,8 +13,8 @@
 
 use crate::botclient::BotDriver;
 use crate::mind::{
-    BodyState, Choice, Goal, History, Mind, Name, Outcome, Report, Sighting, Summary, Trigger,
-    Why, SUMMARY_CRAFTS, SUMMARY_ITEMS,
+    BodyState, Choice, Goal, History, Mind, Name, Outcome, Report, Sighting, Summary, Trigger, Why,
+    SUMMARY_CRAFTS, SUMMARY_ITEMS,
 };
 use client_core::core::{
     ClientCore, APPLIED2_MOVE, APPLIED_DRANK, APPLIED_RESPAWN, APPLIED_VITALS,
@@ -420,7 +420,9 @@ impl Survivor {
 
     /// Units of the named item in the pack now.
     pub fn held(&self, name: &str) -> u32 {
-        self.core.as_deref().map_or(0, |core| amount(core, name.as_bytes()))
+        self.core
+            .as_deref()
+            .map_or(0, |core| amount(core, name.as_bytes()))
     }
 
     /// The summary this body would send now; pure, for display and tests.
@@ -768,7 +770,8 @@ impl Survivor {
         let mut heading = *self.heading.get_or_insert(body.yaw);
         match self.wander_mark {
             Some((at, qx, qz)) if tick.wrapping_sub(at) >= TICK_HZ => {
-                let moved = ((body.qx - qx) as f32 * POS_XZ_Q).hypot((body.qz - qz) as f32 * POS_XZ_Q);
+                let moved =
+                    ((body.qx - qx) as f32 * POS_XZ_Q).hypot((body.qz - qz) as f32 * POS_XZ_Q);
                 if moved < WANDER_STALL_M {
                     heading = heading.wrapping_add(1 << 14);
                 }
@@ -780,7 +783,12 @@ impl Survivor {
         if tick.wrapping_sub(self.wander_turn) >= WANDER_TURN_SECS * TICK_HZ {
             self.wander_turn = tick;
             // A deterministic eighth or quarter turn either way.
-            let turn: [u16; 4] = [0u16.wrapping_sub(1 << 14), 0u16.wrapping_sub(1 << 13), 1 << 13, 1 << 14];
+            let turn: [u16; 4] = [
+                0u16.wrapping_sub(1 << 14),
+                0u16.wrapping_sub(1 << 13),
+                1 << 13,
+                1 << 14,
+            ];
             heading = heading.wrapping_add(turn[(tick.wrapping_mul(2_654_435_761) >> 30) as usize]);
         }
         if into_deeper_water(core, body, heading) {
@@ -923,7 +931,13 @@ impl Survivor {
         Ok(None)
     }
 
-    fn craft(&mut self, core: &mut ClientCore, name: Name, tick: u32, frame: InputFrame) -> InputFrame {
+    fn craft(
+        &mut self,
+        core: &mut ClientCore,
+        name: Name,
+        tick: u32,
+        frame: InputFrame,
+    ) -> InputFrame {
         let Some(active) = self.goal else {
             return frame;
         };
@@ -959,11 +973,14 @@ impl Survivor {
             }
             CraftStep::Equip => {
                 // A better tool belongs on the belt, where a swing uses it.
-                let tool = TREE_TOOLS.contains(&name.as_str()) || NODE_TOOLS.contains(&name.as_str());
+                let tool =
+                    TREE_TOOLS.contains(&name.as_str()) || NODE_TOOLS.contains(&name.as_str());
                 match (tool, equip_move(core, name)) {
                     (true, Some((from, to, count))) => {
                         if self.queue(|buf| {
-                            protocol::encode_action_move(0, CONT_SELF, from, CONT_SELF, to, count, buf)
+                            protocol::encode_action_move(
+                                0, CONT_SELF, from, CONT_SELF, to, count, buf,
+                            )
                         }) {
                             self.stats.phase = Phase::Equipping;
                             self.awaiting = Some((Pending::Equip, tick));
@@ -1185,7 +1202,10 @@ impl Survivor {
             self.senses.animals = Sighting::default();
             self.threat = None;
         }
-        if self.water_at.is_none_or(|at| tick.wrapping_sub(at) >= TICK_HZ) {
+        if self
+            .water_at
+            .is_none_or(|at| tick.wrapping_sub(at) >= TICK_HZ)
+        {
             self.water_at = Some(tick);
             let (seed, _) = core.island();
             let x = body.qx as f32 * POS_XZ_Q;
@@ -1223,7 +1243,8 @@ impl Survivor {
         self.scan = (self.scan + 1) % (SIGHT_WIDTH * SIGHT_WIDTH);
         let cx = (body.qx as f32 * POS_XZ_Q / CELL_SIZE).floor() as i32 + dx;
         let cz = (body.qz as f32 * POS_XZ_Q / CELL_SIZE).floor() as i32 + dz;
-        if (0..terrain::CELLS_PER_SIDE).contains(&cx) && (0..terrain::CELLS_PER_SIDE).contains(&cz) {
+        if (0..terrain::CELLS_PER_SIDE).contains(&cx) && (0..terrain::CELLS_PER_SIDE).contains(&cz)
+        {
             let (seed, island) = core.island();
             let slot = island.cache.slot(seed, island.table, island.haven, cx, cz);
             let target = Target {
@@ -1474,7 +1495,11 @@ impl BotDriver for Survivor {
 }
 
 fn heartbeat_ticks(mind: &Mind) -> u32 {
-    let secs = mind.config().heartbeat.as_secs().min(u64::from(u32::MAX / TICK_HZ));
+    let secs = mind
+        .config()
+        .heartbeat
+        .as_secs()
+        .min(u64::from(u32::MAX / TICK_HZ));
     secs as u32 * TICK_HZ
 }
 
@@ -1669,7 +1694,8 @@ pub fn observe(
                 let Some(name) = Name::new(core.catalog.name(def.output as usize)) else {
                     continue;
                 };
-                let tool = TREE_TOOLS.contains(&name.as_str()) || NODE_TOOLS.contains(&name.as_str());
+                let tool =
+                    TREE_TOOLS.contains(&name.as_str()) || NODE_TOOLS.contains(&name.as_str());
                 let n = s.craftable_len as usize;
                 if tool == tools_first && n < SUMMARY_CRAFTS && !s.craftable[..n].contains(&name) {
                     s.craftable[n] = name;
@@ -2128,7 +2154,10 @@ mod tests {
                 bot.frame_at(&view, 1, 1, now);
             }
             let seen = bot.senses.trees;
-            assert!(seen.count == 0 || [7, 0, 1].contains(&seen.bearing), "{seen:?}");
+            assert!(
+                seen.count == 0 || [7, 0, 1].contains(&seen.bearing),
+                "{seen:?}"
+            );
         }
     }
 
@@ -2188,7 +2217,11 @@ mod tests {
         view.newest_applied = Some(3);
         view.entities[0].1.wounded = true;
         let frame = bot.frame_at(&view, 1, 3, now + timeout);
-        assert_eq!((frame.move_z, frame.buttons), (0, 0), "no recent blow: lie still");
+        assert_eq!(
+            (frame.move_z, frame.buttons),
+            (0, 0),
+            "no recent blow: lie still"
+        );
         assert_eq!(bot.stats.phase, Phase::Wounded);
         assert!(bot.goal.is_none(), "a wound interrupts the goal");
         view.entities[0].1.wounded = false;
@@ -2231,7 +2264,10 @@ mod tests {
         assert!(bot.action(&mut out).is_none());
         view.newest_applied = Some(2 + VERDICT_SECS * TICK_HZ);
         bot.frame_at(&view, 1, 4, now);
-        assert!(bot.action(&mut out).is_some(), "a lost answer is asked again");
+        assert!(
+            bot.action(&mut out).is_some(),
+            "a lost answer is asked again"
+        );
         let n = protocol::event::encode_event_respawn(false, &mut buf).unwrap();
         event(&mut bot, n, &buf);
         view.entities[0].1.dead = false;
@@ -2285,7 +2321,10 @@ mod tests {
         let len = bot.action(&mut out).unwrap();
         assert!(matches!(
             protocol::decode_action(&out[..len]),
-            Ok(protocol::ActionMsg::Craft { recipe: 2, count: 1 })
+            Ok(protocol::ActionMsg::Craft {
+                recipe: 2,
+                count: 1
+            })
         ));
         let mut buf = [0u8; protocol::event::MAX_EVENT_MSG_BYTES];
         let n = protocol::event::encode_event_craft_done(9, 1, &mut buf).unwrap();
@@ -2317,7 +2356,10 @@ mod tests {
             } => {
                 assert_eq!((from_kind, to_kind), (CONT_SELF, CONT_SELF));
                 assert_eq!((from_slot, count), (8, 1));
-                assert!((to_slot as usize) < HOTBAR_SLOTS && to_slot != 4, "not onto the rock");
+                assert!(
+                    (to_slot as usize) < HOTBAR_SLOTS && to_slot != 4,
+                    "not onto the rock"
+                );
             }
             other => panic!("expected a move, got {other:?}"),
         }
@@ -2329,10 +2371,17 @@ mod tests {
         assert_eq!((report.outcome, report.gained), (Outcome::Done, 1));
         assert_eq!(bot.stats.equips, 1);
         // A name with no usable recipe fails without sending anything.
-        goal(&mut bot, Goal::Craft(Name::new(b"Metal Hatchet").unwrap()), 5);
+        goal(
+            &mut bot,
+            Goal::Craft(Name::new(b"Metal Hatchet").unwrap()),
+            5,
+        );
         bot.frame_at(&view, 1, 5, now);
         assert!(bot.action(&mut out).is_none());
-        assert_eq!(bot.memory.last.unwrap().outcome, Outcome::Failed(Why::NoRecipe));
+        assert_eq!(
+            bot.memory.last.unwrap().outcome,
+            Outcome::Failed(Why::NoRecipe)
+        );
     }
 
     #[test]
@@ -2432,7 +2481,10 @@ mod tests {
         let mut shore = None;
         'search: for (dx, dz) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
             for step in 0..600 {
-                let (x, z) = (centre + dx * step as f32 * 2.0, centre + dz * step as f32 * 2.0);
+                let (x, z) = (
+                    centre + dx * step as f32 * 2.0,
+                    centre + dz * step as f32 * 2.0,
+                );
                 if terrain::ground(SEED, &haven, x, z) > 0.2 && water_in_reach(SEED, x, z) {
                     shore = Some((x, z));
                     break 'search;
@@ -2461,7 +2513,10 @@ mod tests {
         event(&mut bot, n, &buf);
         bot.frame_at(&view, 1, 2, now);
         let report = bot.memory.last.unwrap();
-        assert_eq!((report.goal, report.outcome, report.gained), (Goal::Drink, Outcome::Done, 1));
+        assert_eq!(
+            (report.goal, report.outcome, report.gained),
+            (Goal::Drink, Outcome::Done, 1)
+        );
         assert!(bot.senses.water.count > 0, "the probe saw the sea");
     }
 
@@ -2543,7 +2598,10 @@ mod tests {
             "a full pack takes the offer away"
         );
         bot.frame_at(&view, 1, 2, now);
-        assert_eq!(bot.memory.last.unwrap().outcome, Outcome::Failed(Why::PackFull));
+        assert_eq!(
+            bot.memory.last.unwrap().outcome,
+            Outcome::Failed(Why::PackFull)
+        );
         // A stack of the yield with room is still room.
         let core = bot.core.as_mut().unwrap();
         core.inv[7] = ItemStack {
