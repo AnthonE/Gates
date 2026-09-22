@@ -20,15 +20,21 @@ impl DecisionSource for Scripted {
 }
 
 pub async fn spawn_local() -> Result<crate::net::ShardHandle, String> {
+    spawn_local_with_content(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content"),
+    )
+    .await
+}
+
+pub async fn spawn_local_with_content(
+    content_dir: &std::path::Path,
+) -> Result<crate::net::ShardHandle, String> {
     let mut cfg = crate::config::parse_shard_toml(include_str!("../../../shard.toml.example"))?;
     cfg.bind = "127.0.0.1:0".parse().expect("loopback");
     cfg.require_auth = false;
     cfg.population = 0;
     cfg.dev_spawn = Some(sim_core::world::World::new(cfg.seed).spawn_pos(0));
-    let content = content::Content::load_dir(
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content"),
-    )
-    .map_err(|e| format!("content: {e}"))?;
+    let content = content::Content::load_dir(content_dir).map_err(|e| format!("content: {e}"))?;
     crate::net::spawn_shard(
         cfg,
         crate::net::bake_all(&content)?,

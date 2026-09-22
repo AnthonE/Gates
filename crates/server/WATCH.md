@@ -10,6 +10,7 @@ Open **http://127.0.0.1:8081/**. Every viewer watches the same bot, camera and
 run. The page shows its received health and inventory, controller activity,
 trees completed and elapsed play time. Viewing creates no game connection or
 model request. `--assets PATH` selects an existing asset directory;
+`--content PATH` selects a shipped content directory for a standalone binary;
 `--listen 127.0.0.1:PORT` changes the web listener.
 
 The command needs a desktop graphics display. On a headless Linux render
@@ -59,19 +60,39 @@ and a five-second request deadline; excess connections close. These are
 prototype limits, not a public audience capacity claim. All experimental
 delivery defaults are registered in `DECISIONS.md` §Open.
 
-## Website handoff
+## Shared slow preview
 
-The standalone page is ready for a same-origin website route, for example
-`/games/gates/watch/`. A web proxy must strip that prefix when forwarding to
+The operator chose this server's slow preview on 2026-09-22. The public route
+is **https://elopros.com/games/gates/watch/**. A web proxy strips that prefix when forwarding to
 the loopback origin, preserve the trailing slash, and leave frame/state
 responses uncached. Relative asset/API URLs support that mount. It can also
 be embedded by a page on the same origin; its CSP refuses other origins.
 
-Public hosting still needs an operator-selected render host, a supervised
-run/recovery policy, HTTPS routing and an audience/load check. The current
-command is a finite local experiment, and a CPU-only host does not establish
-video throughput. No public website, shard, certificate or domain is changed
-by this PR. Publishing follows `CLAUDE.md` §The loop discipline.
+`watch-deploy/gates-watch.service` runs one scripted instance under Xvfb on
+the existing render host. Each run uses the command's existing 120 seconds
+of play time, then systemd starts a fresh private island after five seconds.
+A failed session follows the same restart policy; startup still has its
+300-second ceiling. Viewers reconnect automatically and the page explains
+the loading pauses. This is repeated short runs, not in-game respawning.
+The service runs at nice level 10 so interactive work takes priority.
+
+The installed bundle is `/mnt/hive-data/gates-watch/current`: a pinned binary
+and its matching `content/`, with render assets at the sibling `assets/`.
+It does not depend on the build checkout at runtime. The render-host nginx
+snippet forwards `/gates/watch/` to loopback; the website's more-specific
+`/games/gates/watch/` route forwards there over verified HTTPS. Both leave
+frames uncached. The website proxy lives in scry-forge's
+`deploy/nginx/elopros.com.conf`. Neither route changes the playable client's
+static files or the public gameplay shard.
+
+After staging a bundle, install the unit and snippet from `watch-deploy/`,
+include the snippet inside the existing render-host HTTPS server, check
+`nginx -t`, then reload nginx and enable `gates-watch.service`. Check the
+public page and `frame.jpg` (including its `X-Bot-State` header).
+`systemctl stop gates-watch` stops only the preview. To roll back routing,
+remove the two watch locations/includes and reload the checked nginx config.
+Continuous hosting was authorized for this slow preview; smooth video,
+large audiences and live Jev remain unvalidated.
 
 ## Checked locally
 

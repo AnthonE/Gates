@@ -9,12 +9,13 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-const USAGE: &str = "jev-watch [--scripted] [--seconds 120] [--listen 127.0.0.1:8081] [--assets PATH]\nStarts a temporary local shard and one wood-collecting bot. Requires a graphics display.\nJev requires TYPESAFE_API_KEY; --scripted is an explicitly labelled offline controller.";
+const USAGE: &str = "jev-watch [--scripted] [--seconds 120] [--listen 127.0.0.1:8081] [--assets PATH] [--content PATH]\nStarts a temporary local shard and one wood-collecting bot. Requires a graphics display.\nJev requires TYPESAFE_API_KEY; --scripted is an explicitly labelled offline controller.";
 
 fn run() -> Result<AppExit, String> {
     let mut scripted = false;
     let mut duration = Duration::from_secs(120);
     let mut listen: SocketAddr = "127.0.0.1:8081".parse().expect("loopback");
+    let mut content = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../content");
     let mut assets = std::env::current_dir()
         .map_err(|e| e.to_string())?
         .join("assets");
@@ -45,6 +46,9 @@ fn run() -> Result<AppExit, String> {
                     .map_err(|_| "invalid listen address")?
             }
             "--assets" => assets = PathBuf::from(args.next().ok_or("--assets needs a directory")?),
+            "--content" => {
+                content = PathBuf::from(args.next().ok_or("--content needs a directory")?)
+            }
             _ => return Err(format!("unknown argument: {arg}")),
         }
     }
@@ -78,7 +82,7 @@ fn run() -> Result<AppExit, String> {
         }
     );
     let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
-    let shard = rt.block_on(server::agent_demo::spawn_local())?;
+    let shard = rt.block_on(server::agent_demo::spawn_local_with_content(&content))?;
     struct Stop(std::sync::Arc<std::sync::atomic::AtomicBool>);
     impl Drop for Stop {
         fn drop(&mut self) {
