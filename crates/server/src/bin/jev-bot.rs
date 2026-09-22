@@ -1,17 +1,20 @@
 //! One local agent player. See crates/server/JEV.md for running it.
 
-use server::agent_demo::{MindArgs, MIND_USAGE};
+use server::agent_demo::{MindArgs, Source, MIND_USAGE};
 use server::botclient::{bot_endpoint, run_driven_bot};
 use server::explorer::Survivor;
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::Duration;
 
 const RUN_SECONDS: u64 = 120;
+/// Most bots one run may start on one island. Plumbing bound.
+const MAX_BOTS: usize = 8;
 
 fn usage() -> String {
     format!(
-        "jev-bot (--local | --server 127.0.0.1:PORT) [--seconds 120] {MIND_USAGE}\nThe bot survives in-game: it answers the death screen, crawls when wounded, gathers, crafts, eats and drinks. The process ends when the run ends or the connection fails."
+        "jev-bot (--local | --server 127.0.0.1:PORT) [--seconds 120] [--bots 1] {MIND_USAGE}\nThe bot survives in-game: it answers the death screen, crawls when wounded, gathers, crafts, eats and drinks. The process ends when the run ends or the connection fails.\n--bots 2..8 starts that many scripted or external agents on one island (each external agent is its own child); Jev stays one bot."
     )
 }
 
@@ -19,6 +22,7 @@ struct Options {
     local: bool,
     server: Option<SocketAddr>,
     duration: Duration,
+    bots: usize,
     mind: MindArgs,
 }
 
@@ -28,6 +32,7 @@ impl Options {
             local: false,
             server: None,
             duration: Duration::from_secs(RUN_SECONDS),
+            bots: 1,
             mind: MindArgs::default(),
         };
         let mut args = std::env::args().skip(1);
@@ -45,6 +50,16 @@ impl Options {
                             .parse()
                             .map_err(|_| "invalid server address")?,
                     )
+                }
+                "--bots" => {
+                    options.bots = args
+                        .next()
+                        .ok_or("--bots needs a count")?
+                        .parse()
+                        .map_err(|_| "invalid bot count")?;
+                    if !(1..=MAX_BOTS).contains(&options.bots) {
+                        return Err(format!("--bots must be 1..{MAX_BOTS}"));
+                    }
                 }
                 "--seconds" => {
                     let value: u64 = args
@@ -66,15 +81,20 @@ impl Options {
         if options.server.is_some_and(|a| !a.ip().is_loopback()) {
             return Err("this guest prototype only joins loopback shards".into());
         }
+        if options.bots > 1 && options.mind.source == Source::Jev {
+            return Err("--bots above 1 runs scripted or external agents; Jev is billed per bot".into());
+        }
         Ok(Some(options))
     }
 }
 
 async fn run(options: Options) -> Result<(), String> {
-    // Check credentials and start the source before booting a shard.
-    let mind = options.mind.build()?;
-    println!("mind: {}", options.mind.label());
-    let mut survivor = Survivor::new(mind);
+    // Check credentials and start every source before booting a shard.
+    let mut minds = Vec::with_capacity(options.bots);
+    for _ in 0..options.bots {
+        minds.push(options.mind.build()?);
+    }
+    println!("mind: {} × {}", options.mind.label(), options.bots);
     let shard = if options.local {
         let handle = server::agent_demo::spawn_local().await?;
         println!(
@@ -92,42 +112,84 @@ async fn run(options: Options) -> Result<(), String> {
         .map(|s| s.local_addr)
         .or(options.server)
         .expect("validated destination");
-    let endpoint = bot_endpoint()?;
-    let result = tokio::select! {
-        result = run_driven_bot(&endpoint, address, options.duration, &mut survivor) => result.map(Some),
-        signal = tokio::signal::ctrl_c() => signal.map(|_| None).map_err(|e| format!("Ctrl-C: {e}")),
+    let endpoint = Arc::new(bot_endpoint()?);
+    let mut fleet = tokio::task::JoinSet::new();
+    for (i, mind) in minds.into_iter().enumerate() {
+        let endpoint = endpoint.clone();
+        let duration = options.duration;
+        fleet.spawn(async move {
+            let mut survivor = Survivor::new(mind);
+            let result = run_driven_bot(&endpoint, address, duration, &mut survivor).await;
+            (i, survivor, result)
+        });
+    }
+    let mut outcomes = Vec::with_capacity(options.bots);
+    let interrupted = tokio::select! {
+        _ = async {
+            while let Some(joined) = fleet.join_next().await {
+                outcomes.push(joined);
+            }
+        } => false,
+        signal = tokio::signal::ctrl_c() => {
+            signal.map_err(|e| format!("Ctrl-C: {e}"))?;
+            true
+        }
     };
+    // Closing the endpoint ends every bot's session promptly, so an
+    // interrupted run still reports what each body did.
     endpoint.close(0u32.into(), b"agent finished");
+    if interrupted {
+        while let Some(joined) = fleet.join_next().await {
+            outcomes.push(joined);
+        }
+        println!("interrupted by Ctrl-C");
+    }
     if let Some(shard) = &shard {
         shard.shutdown.store(true, Ordering::Relaxed);
     }
-    print_report(&survivor);
-    if let Some(report) = result? {
-        println!(
-            "player {}: {} snapshots, {} inputs, {} actions, executed seq {}, decode errors {}, truncated {}",
-            report.player_id,
-            report.snapshots_applied,
-            report.inputs_sent,
-            report.actions_sent,
-            report.last_executed_seq,
-            report.decode_errors + report.event_decode_errors,
-            report.walk_truncated
-        );
-        if report.walk_truncated
-            || report.snapshots_applied == 0
-            || survivor.mind.stats.decisions == 0
-        {
-            return Err("run did not complete a working decision/snapshot loop".into());
+    let mut failed = None;
+    for joined in outcomes {
+        let (i, survivor, result) = joined.map_err(|e| format!("bot task: {e}"))?;
+        let label = if options.bots > 1 {
+            format!("bot {i} ")
+        } else {
+            String::new()
+        };
+        print_report(&label, &survivor);
+        match result {
+            Ok(report) => {
+                println!(
+                    "{label}player {}: {} snapshots, {} inputs, {} actions, executed seq {}, decode errors {}, truncated {}",
+                    report.player_id,
+                    report.snapshots_applied,
+                    report.inputs_sent,
+                    report.actions_sent,
+                    report.last_executed_seq,
+                    report.decode_errors + report.event_decode_errors,
+                    report.walk_truncated
+                );
+                if !interrupted
+                    && (report.walk_truncated
+                        || report.snapshots_applied == 0
+                        || survivor.mind.stats.decisions == 0)
+                {
+                    failed = Some(format!(
+                        "{label}run did not complete a working decision/snapshot loop"
+                    ));
+                }
+            }
+            Err(_) if interrupted => {}
+            Err(e) => failed = Some(format!("{label}{e}")),
         }
     }
-    Ok(())
+    failed.map_or(Ok(()), Err)
 }
 
-fn print_report(survivor: &Survivor) {
+fn print_report(label: &str, survivor: &Survivor) {
     let (hour, hour_cap, day, day_cap) = survivor.mind.guard().counts();
     let m = survivor.mind.stats;
     println!(
-        "mind {}: {} requests, {} decisions, {} failures, {} late, {} input tokens, {} output tokens, {} pauses; this hour {hour}/{hour_cap}, today {day}/{day_cap}",
+        "{label}mind {}: {} requests, {} decisions, {} failures, {} late, {} input tokens, {} output tokens, {} pauses; this hour {hour}/{hour_cap}, today {day}/{day_cap}",
         survivor.mind.kind().label(),
         m.requests,
         m.decisions,
@@ -139,7 +201,7 @@ fn print_report(survivor: &Survivor) {
     );
     let s = survivor.stats;
     println!(
-        "survival: {} deaths, {} respawns ({} asks), {} retreats; goals {} done, {} failed, {} interrupted; {} targets finished, {} abandoned; crafted {}, eaten {}, drinks {}, equips {}; {} actions sent",
+        "{label}survival: {} deaths, {} respawns ({} asks), {} retreats; goals {} done, {} failed, {} interrupted; {} targets finished, {} abandoned; crafted {}, eaten {}, drinks {}, equips {}; {} actions sent",
         s.deaths,
         s.respawns,
         s.respawn_asks,
@@ -166,7 +228,7 @@ fn print_report(survivor: &Survivor) {
                 )
             })
             .collect();
-        println!("gathered: {}", gathered.join(", "));
+        println!("{label}gathered: {}", gathered.join(", "));
         let mut pack: Vec<(String, u32)> = Vec::new();
         for stack in core.inv.iter().filter(|s| s.count > 0) {
             let name = String::from_utf8_lossy(core.catalog.name(stack.item as usize)).into_owned();
@@ -177,7 +239,7 @@ fn print_report(survivor: &Survivor) {
         }
         let pack: Vec<String> = pack.iter().map(|(n, c)| format!("{n} {c}")).collect();
         println!(
-            "pack: {}; health {}/{}, food {}/{}, water {}/{}",
+            "{label}pack: {}; health {}/{}, food {}/{}, water {}/{}",
             pack.join(", "),
             core.hp,
             core.hp_max,
@@ -204,7 +266,7 @@ fn print_report(survivor: &Survivor) {
             )
         })
         .collect();
-    println!("recent goals: {}", goals.join(" | "));
+    println!("{label}recent goals: {}", goals.join(" | "));
 }
 
 #[tokio::main]

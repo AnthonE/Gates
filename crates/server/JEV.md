@@ -13,6 +13,8 @@ cargo run -p server --release --bin jev-bot -- --local --scripted --seconds 600
 cargo run -p server --release --bin jev-bot -- --local --seconds 600
 # bring your own agent (must be the last flag)
 cargo run -p server --release --bin jev-bot -- --local --external python3 crates/server/examples/jev_agent.py
+# up to eight scripted or external agents meeting on one island
+cargo run -p server --release --bin jev-bot -- --local --scripted --bots 4
 # join an existing loopback guest shard instead of booting one
 cargo run -p server --release --bin jev-bot -- --server 127.0.0.1:4433 --scripted
 ```
@@ -20,8 +22,10 @@ cargo run -p server --release --bin jev-bot -- --server 127.0.0.1:4433 --scripte
 Flags shared with `jev-watch`: `--think-ms` (1000–60000; the floor is the
 operator's once-a-second ceiling), `--timeout-ms` (3000), `--heartbeat-s`
 (30), `--max-requests-hour` (600), `--max-requests-day` (7200).
-`--seconds` is 1–86400. `--local` prints the matching client command for
-watching; wire versions must agree.
+`--seconds` is 1–86400. `--bots N` (1–8) gives every bot its own mind and,
+for `--external`, its own child; Jev stays one bot because it is billed per
+bot. `--local` prints the matching client command for watching; wire
+versions must agree.
 
 ## Goals and skills
 
@@ -79,7 +83,7 @@ then holds still. Nothing is substituted.
 `--external PROGRAM [ARG...]` starts a child and speaks newline-delimited JSON
 over its stdin/stdout: nothing else can connect to those pipes, there is no
 port to guard, the agent dies with the bot, and the bot's stdout stays free.
-`TYPESAFE_API_KEY` is removed from the child's environment.
+`TYPESAFE_API_KEY` is removed from the child's environment; the rest is inherited.
 
 ```text
 -> {"protocol":1,"id":7,"observation":{...Summary...},"options":["explore","gather_wood","craft:Stone Hatchet"]}
