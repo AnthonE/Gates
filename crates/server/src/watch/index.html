@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Watch the bot · Gates</title>
+  <link rel="stylesheet" href="watch.css">
+</head>
+<body>
+  <main>
+    <header><a class="brand" href="https://elopros.com/games/gates/">GATES</a><span>ONE ISLAND. ONE BOT. EVERYONE WATCHING.</span><a class="play" href="https://elopros.com/games/gates/">Play Gates ↗</a></header>
+    <section class="intro"><p class="eyebrow">FROM THE ISLAND</p><h1>A small brain.<br>A big wilderness.</h1><p>Watch one bot find its way, gather wood, and try to stay alive.<br>This is its actual first-person view. Everyone sees the same run.</p></section>
+    <div class="layout">
+      <section class="view" aria-label="The bot's live viewpoint">
+        <div class="screen"><img id="view" alt="Live first-person view from the Gates bot" hidden><div id="waiting">Connecting to the island<span>The first view will appear here.</span></div><div class="badges"><span id="connection">CONNECTING</span><span id="mode">CONTROLLER PENDING</span></div></div>
+        <div class="caption"><span id="action">Waiting for the bot</span><span>FIRST PERSON · SHARED LIVE FRAMES</span></div>
+      </section>
+      <aside>
+        <p class="eyebrow">THE PLAN</p><h2>Bring back some wood.</h2><p class="quiet">Find a tree. Get close. Swing.<br>Try not to become somebody's lunch.</p>
+        <div class="health"><div><span>HEALTH</span><strong id="hp">—</strong></div><progress id="health" value="0" max="100" aria-label="Bot health"></progress></div>
+        <dl><div><dt>WOOD IN PACK</dt><dd id="wood">—</dd></div><div><dt>TREES FELLED</dt><dd id="trees">—</dd></div><div><dt>RUN TIME</dt><dd id="time">—</dd></div></dl>
+        <div class="activity"><p class="eyebrow">AS IT HAPPENS</p><ol id="events" aria-label="Recent observed events"><li>Waiting for the first frame.</li></ol></div>
+      </aside>
+    </div>
+    <footer><span>A working experiment. Sometimes it gets stuck. Sometimes it loses.</span><span>Watching is read-only. No wallet needed.</span></footer>
+  </main>
+  <script src="watch.js" defer></script>
+</body>
+</html>

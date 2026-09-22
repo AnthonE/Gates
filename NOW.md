@@ -1509,8 +1509,11 @@ What it still cannot do:
 Local first loop (2026-09-21): `jev-bot --local --scripted --gather-wood`
 finds visible trees, approaches, harvests with a belt tool and confirms wood
 from normal inventory messages. `crates/server/JEV.md` owns the experiment's
-commands and limits. Next: stone → crafting, inventory handling, survival and
-respawn; public identity and the general agent API below remain outstanding.
+commands and limits. The shared first-person frame feed is `jev-watch`
+(`crates/server/WATCH.md`): one local bot, one renderer, a read-only page;
+public hosting and continuous recovery remain open. Next: stone → crafting,
+inventory handling, survival and respawn; public identity and the general
+agent API below remain outstanding.
 
 `PLAYERS.md` has the spec — verb set, observation encoder, four walls. Wall 3
 is built (`EV_TRUST` code 39, `World::log_trust`, six checks in
