@@ -6,8 +6,10 @@ drives deterministic synthetic input and the `bots` bin runs it at scale, so a
 non-human client is already first-class, and **wall 3's event exists**
 (`EV_TRUST`, 2026-08-18) — which is deliberate ordering rather than a
 convenient place to start: the online field cannot be retrofitted onto a
-record already written. What does not exist is the intent API, the verb table,
-the other three gates, or anything that reads a trust row. This doc owns that
+record already written. What does not exist is the social half of the verb
+table or wall 2's gate. Trust rows have a reader since 2026-09-22: each is kept
+in its own sim ring and appended to the shard's trust log with both wallets
+(`server/trustlog.rs`). This doc owns that
 surface and nothing else. `DESIGN.md` still owns the product, `NETCODE.md` the wire,
 `CONTENT.md` the numbers.
 
@@ -16,9 +18,12 @@ survivor on a loopback guest shard. A decision source — Jev, an explicit
 scripted policy, or an operator's own agent over JSON lines — picks goals
 (explore, gather, forage, craft by name, eat, drink, flee, wait); local skills
 carry them out with the human client's inputs and actions over `ClientCore`'s
-received state, and answer the death screen with the respawn verb.
-`crates/server/JEV.md` has the commands and limits. Public identity, the
-social verbs and wall 2 remain open.
+received state, and answer the death screen with the respawn verb. Every jev
+bot declares itself an agent a spectator can follow, unsigned on loopback or
+signed with its own wallet key, paying every door a person does (`NETCODE.md`
+§2.3, §2.4). `crates/server/JEV.md` has the commands and limits. Public play
+needs an operator-provisioned, entitled wallet; the social verbs and wall 2
+remain open.
 
 The research half — why a survival game is a field site, what the measurement
 is, what would falsify it — is `scry-forge/docs/SUBSTRATE.md`. This is the
@@ -70,7 +75,12 @@ the first ladder, not after it.
    **BUILT** — `EV_TRUST` (`world.rs`, 2026-08-18): a = the actor, b = the
    counterparty, c = `TRUST_*` verb << 8 | `PRESENCE_*`, pushed wherever a
    verb answered to somebody else's record — a leaf worked, a lock's code
-   accepted, a hearth crew seat taken, a container moved through. This is the
+   accepted, a hearth crew seat taken, a container moved through. **Recorded
+   too (trust ledger v1, 2026-09-22):** the same row lands in `World::trust`,
+   a per-tick ring no tick can overflow (one `TrustSeat` per command, spent by
+   value), and the shard drains it every tick into `<world_file>.trust/` with
+   each party's wallet, guests marked (gates: `sim-core/tests/trust_ledger.rs`,
+   `server/tests/trust_log.rs`). This is the
    surface that most needs the gate: an `a`/`b` swap at a betrayal site
    silently corrupts the whole record the measurement reads while every other
    wall stays green, and nothing encodes this event, so not even a byte-golden
@@ -125,9 +135,10 @@ The last field is deliberate and it is the one to get right. It is ordinary
 game state — a human sees it in the same moment — and it is also the condition
 the whole measurement turns on (`SUBSTRATE.md` §3). It must be logged at every
 trust-bearing verb from the first shard that runs; retrofitting it makes the
-early record worthless. The **logging** half is built (wall 3 above); the
-encoder does not carry it yet, and neither is a sink for the rows — the sim mints them and
-`ShardCore`'s event drain currently ignores the code.
+early record worthless. The **logging** half is built (wall 3 above), and
+since 2026-09-22 so is its record: every row reaches the shard's trust log
+with both wallets. The encoder does not carry this field yet; the one built
+for the local agent is below.
 
 Built for the local agent as `explorer::observe` → `mind::Summary`: health,
 meters, the pack by name, craftable names, counts and relative bearings of

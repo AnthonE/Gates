@@ -1482,10 +1482,12 @@ loopback island. Jev, the scripted policy or an external agent (JSON lines on
 a child's pipes) picks goals; local skills gather, forage, craft by name and
 equip, eat and drink, and answer the death screen in-game, under a request
 floor of one a second and an hour/day spend guard. `crates/server/JEV.md` and
-`WATCH.md` own commands and limits. The hosted preview still runs the
-step-level bundle until the operator restages it. Next: loot its own death
-bag, cooking, `--bots N` sharing one island, and the wallet signer and
-spectator for public agent players.
+`WATCH.md` own commands and limits. Every jev bot is a watchable agent
+(`NETCODE.md` §2.3): unsigned on loopback, or signed with `--agent-key`
+(§2.4, `tests/jev_door.rs`); `--bots N` shares one island. The hosted
+preview still runs the step-level bundle until the operator restages it.
+Next: loot its own death bag, cooking, and an operator-provisioned wallet
+plus a routable spectate shard for a public agent (operator acts).
 
 `PLAYERS.md` has the spec — verb set, observation encoder, four walls. Wall 3
 is built (`EV_TRUST` code 39, `World::log_trust`, six checks in

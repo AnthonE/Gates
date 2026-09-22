@@ -1,7 +1,8 @@
 # Jev: an agent player on a local island
 
-`jev-bot` plays one guest body on a loopback shard with the same inputs,
-actions and received state as the human client. A decision source picks
+`jev-bot` plays an agent body with the same inputs, actions and received
+state as the human client: a guest on a loopback shard, or a wallet agent on
+any shard that admits it (`NETCODE.md` §2.4). A decision source picks
 **goals**; local skills carry them out. It survives in-game: death is answered
 on the death screen and play goes on, so the process ends only when the run
 ends or the connection fails.
@@ -17,15 +18,26 @@ cargo run -p server --release --bin jev-bot -- --local --external python3 crates
 cargo run -p server --release --bin jev-bot -- --local --scripted --bots 4
 # join an existing loopback guest shard instead of booting one
 cargo run -p server --release --bin jev-bot -- --server 127.0.0.1:4433 --scripted
+# a wallet agent: the key is a 0600 file named by path, never argv
+cargo run -p server --release --bin jev-bot -- --server game.example:61234 --agent-key /path/to/agent.key --scripted
 ```
 
 Flags shared with `jev-watch`: `--think-ms` (1000–60000; the floor is the
 operator's once-a-second ceiling), `--timeout-ms` (3000), `--heartbeat-s`
 (30), `--max-requests-hour` (600), `--max-requests-day` (7200).
 `--seconds` is 1–86400. `--bots N` (1–8) gives every bot its own mind and,
-for `--external`, its own child; Jev stays one bot because it is billed per
-bot. `--local` prints the matching client command for watching; wire
-versions must agree.
+for `--external`, its own child; Jev and a wallet stay one bot (Jev is billed
+per bot; one key is one body). `--agent-name` (default `jev`, 1–16 printable
+ASCII; a fleet is `jev-1`…) is the label spectators see. `--server` takes
+`host:port` and is dialled by name so a real certificate validates;
+`--cert-hash` pins a dev shard's instead.
+
+**Watching.** Every jev bot declares itself an agent (`HELLO_AGENT`), so a
+spectator seat can follow it (`NETCODE.md` §2.3). `--local` opens the local
+shard's seats — loopback, so this machine only — and both bins print the
+query for a Gates web page (`?server=…&hash=…&spectate`, bare for a guest,
+`=0x…` for a wallet) and the desktop command (`--spectate any|0x…`). Wire
+versions must agree. `tests/jev_door.rs` drives the same `agent_demo::Door`.
 
 ## Goals and skills
 
@@ -102,9 +114,10 @@ and exit are failures. `examples/jev_agent.py` is a complete agent.
 No cooking (it needs a kill, a placed fire and oven moves), no looting its own
 death backpack, no building, research, deliberate combat, bags or path
 planner. A full pack stops gathering what cannot fit; crafting frees room.
-Tools and good crafts are known by name, not discovered. The guest is
-loopback-only with the load client's certificate policy; public play needs
-the normal wallet sign-in and entitlement.
+Tools and good crafts are known by name, not discovered. A guest is
+loopback-only; a wallet agent on a public shard needs what `NETCODE.md` §2.4
+lists for the operator to provision — a generated wallet, entitled, its key
+file owned by the service user — and none of it is a loop's act.
 
 At exit `jev-bot` prints the mind's counters (requests, decisions, failures,
 late answers, tokens, pauses, hour/day windows), survival counters (deaths,

@@ -32,6 +32,21 @@ external agent's sanitized 96-character string. [JEV.md](JEV.md) has the goals,
 skills, spend guard and flags. The policy is still rough: it can get stuck,
 and it cannot cook, build, fight back or reconnect.
 
+## Spectator seats — the viewer draws the view
+
+This JPEG feed predates spectator seats (`NETCODE.md` §2.3), which let a
+viewer's own client draw the bot's first-person view on its own GPU from the
+ordinary snapshot stream. The bot declares itself an agent (`--agent-name`,
+default `jev`), unsigned, or signed with `--agent-key PATH` (a `0600` file;
+`NETCODE.md` §2.4). The temporary shard opens its seats, but it listens on
+127.0.0.1, so **only a viewer on this machine can reach them**. At start
+`jev-watch` prints the query a Gates web page takes and the desktop command.
+With `--spectate-page URL` naming a Gates web page (for example the one
+`ci/build_web.sh` stages, served locally), `state.json` carries the full link,
+and the page shows it, labelled same-machine only. The public preview cannot
+reach a loopback shard. Opening a routable shard to remote viewers is the
+operator's call and is not made here.
+
 The temporary shard uses shipped content, a game-selected beach and no saves.
 The run lasts 120 seconds **after the world loads**; `--seconds N` accepts
 1–86400. A startup that exceeds 300 seconds fails. The watcher closes when
