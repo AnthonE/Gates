@@ -1449,7 +1449,7 @@ What it still cannot do:
    re-point them if this item moves.
 
 
-## 5d · The agent player: the trust ledger is minted and nobody reads it *(systems lane)*
+## 5d · The agent player: the trust ledger is kept; the agent API is not *(systems lane)*
 
 Local first loop (2026-09-21): `jev-bot --local --scripted --gather-wood`
 finds visible trees, approaches, harvests with a belt tool and confirms wood
