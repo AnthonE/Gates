@@ -363,6 +363,7 @@ async fn main() {
     // `require_auth = true` proved a joiner carried *something*. It now
     // proves they hold the private key behind the address they claim
     // (`auth.rs`), which is the thing the warning was waiting for.
+
     // **The trust ledger's log** (`server::trustlog`), beside the world file
     // it records: `<world_file>.trust/`. Tied to the world file and not a key
     // of its own because its rows are stamped with the world's tick, and that
@@ -513,13 +514,13 @@ async fn main() {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
                 shutdown(&handle, "SIGINT").await;
-                trust_down(trust_log.as_mut());
+                trust_down(trust_log.as_mut()).await;
                 drain(pop.take()).await;
                 return;
             }
             name = stop.recv() => {
                 shutdown(&handle, name).await;
-                trust_down(trust_log.as_mut());
+                trust_down(trust_log.as_mut()).await;
                 drain(pop.take()).await;
                 return;
             }
@@ -652,11 +653,16 @@ fn trust_line(s: &ShardStats, log: Option<&server::trustlog::TrustLog>) {
 
 /// Wait for the trust log's writer to write its `close` line. It stops once
 /// the sim thread drops its tap, which `shutdown` has already waited for.
-fn trust_down(log: Option<&mut server::trustlog::TrustLog>) {
+/// Polled like `shutdown`'s store flag, so no runtime thread sleeps in it.
+async fn trust_down(log: Option<&mut server::trustlog::TrustLog>) {
     let Some(log) = log else {
         return;
     };
-    if log.join_within(SHUTDOWN_WAIT) {
+    let deadline = Instant::now() + SHUTDOWN_WAIT;
+    while !log.stats.stopped() && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    if log.join_within(Duration::ZERO) {
         println!(
             "shard: trust log closed · {} rows written this boot ({} gaps, {} write errors)",
             server::trustlog::WriterStats::get(&log.stats.rows_written),
