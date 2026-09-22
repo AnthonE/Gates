@@ -201,6 +201,9 @@ pub struct Tap {
 struct Live {
     tx: rtrb::Producer<Msg>,
     /// `ShardCore::identities` at the last refresh, and at the one before.
+    /// Twice `MAX_PLAYERS` wide: bodies are capped at `MAX_PLAYERS`, but a
+    /// keyed join still in the command queue has a key and no body yet, and
+    /// a table that truncated would write a known wallet as a guest.
     now: Box<[(PlayerKey, u32)]>,
     now_n: usize,
     prev: Box<[(PlayerKey, u32)]>,
@@ -240,9 +243,9 @@ impl Tap {
         let blank = (PlayerKey::PLACEHOLDER, 0u32);
         let live = Live {
             tx,
-            now: vec![blank; MAX_PLAYERS].into_boxed_slice(),
+            now: vec![blank; 2 * MAX_PLAYERS].into_boxed_slice(),
             now_n: 0,
-            prev: vec![blank; MAX_PLAYERS].into_boxed_slice(),
+            prev: vec![blank; 2 * MAX_PLAYERS].into_boxed_slice(),
             prev_n: 0,
             gone: vec![(0u32, PlayerKey::PLACEHOLDER); TRUST_GONE_MEMORY].into_boxed_slice(),
             gone_n: 0,
@@ -521,7 +524,6 @@ pub fn spawn(dir: &Path, ident: ShardIdent, limits: Limits) -> std::io::Result<(
         file: open_segment(dir, seq)?,
         seq,
         seg_bytes: 0,
-        rows_this_boot: 0,
         rows_in_buf: 0,
         stats: stats.clone(),
         line: String::with_capacity(512),
@@ -602,7 +604,6 @@ struct Writer {
     file: File,
     seq: u64,
     seg_bytes: u64,
-    rows_this_boot: u64,
     rows_in_buf: u64,
     stats: Arc<WriterStats>,
     line: String,
@@ -631,9 +632,12 @@ impl Writer {
                 while let Ok(m) = rx.pop() {
                     self.take(&m);
                 }
+                // The close line counts rows that reached the OS, so it is
+                // written after them.
+                self.write_out();
                 self.line.clear();
                 self.line.push_str("{\"kind\":\"close\",\"rows\":");
-                push_u64(&mut self.line, self.rows_this_boot);
+                push_u64(&mut self.line, WriterStats::get(&self.stats.rows_written));
                 self.line.push_str("}\n");
                 self.buf.extend_from_slice(self.line.as_bytes());
                 self.write_out();
@@ -652,10 +656,7 @@ impl Writer {
         format_msg(m, &mut self.line);
         self.buf.extend_from_slice(self.line.as_bytes());
         match m {
-            Msg::Row(_) => {
-                self.rows_in_buf += 1;
-                self.rows_this_boot += 1;
-            }
+            Msg::Row(_) => self.rows_in_buf += 1,
             Msg::Gap(_) => {
                 self.stats.gaps_written.fetch_add(1, Ordering::Relaxed);
             }
@@ -971,6 +972,10 @@ pub struct SegmentInfo {
     pub rows: usize,
     /// It ended in a `close` line: a clean shutdown.
     pub closed: bool,
+    /// The `close` line's count: rows this boot handed the OS, across every
+    /// segment the boot wrote (so it equals `rows` only when the boot never
+    /// rotated).
+    pub close_rows: Option<u64>,
     /// Its last line had no newline: a crash cut it.
     pub torn: bool,
 }
@@ -1013,6 +1018,7 @@ pub fn read_segment(seq: u64, bytes: &[u8], log: &mut Log) -> Result<(), String>
         shard: String::new(),
         rows: 0,
         closed: false,
+        close_rows: None,
         torn,
     };
     for (i, line) in lines.iter().enumerate() {
@@ -1062,7 +1068,10 @@ pub fn read_segment(seq: u64, bytes: &[u8], log: &mut Log) -> Result<(), String>
                 v["segment"].as_str().unwrap_or("").to_string(),
                 v["bytes"].as_u64().unwrap_or(0),
             )),
-            "close" => info.closed = true,
+            "close" => {
+                info.closed = true;
+                info.close_rows = v["rows"].as_u64();
+            }
             other => return Err(format!("line {}: unknown kind `{other}`", i + 1)),
         }
     }

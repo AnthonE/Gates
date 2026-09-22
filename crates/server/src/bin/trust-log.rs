@@ -102,7 +102,16 @@ fn run(args: Vec<String>) -> Result<(), String> {
         Mode::Summary => {}
     }
     let s = summarize(rows.iter().copied());
-    println!(
+    // `--jsonl` is for piping into another tool, so its stdout stays pure
+    // JSON and the summary goes to stderr.
+    let say = |line: String| {
+        if mode == Mode::Jsonl {
+            eprintln!("{line}");
+        } else {
+            println!("{line}");
+        }
+    };
+    say(format!(
         "-- {} of {} rows · {} segments ({} closed, {} torn) · {} gap lines ({} rows lost) · {} segments pruned",
         s.rows,
         log.rows.len(),
@@ -115,7 +124,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             .map(|g| g.ring_full + g.sim_overflow)
             .sum::<u64>(),
         log.pruned.len(),
-    );
+    ));
     for (verb, n) in &s.by_verb {
         let split: Vec<String> = s
             .by_verb_presence
@@ -123,7 +132,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             .filter(|((v, _), _)| v == verb)
             .map(|((_, p), k)| format!("{p} {k}"))
             .collect();
-        println!("   {verb:<5} {n:>8}   ({})", split.join(", "));
+        say(format!("   {verb:<5} {n:>8}   ({})", split.join(", ")));
     }
     Ok(())
 }

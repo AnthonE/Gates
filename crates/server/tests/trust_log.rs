@@ -498,6 +498,11 @@ fn rows_survive_a_restart_in_order() {
     let l = read_dir(&dir).expect("read the log");
     assert_eq!(l.segments.len(), 2, "each boot opens its own segment");
     assert!(l.segments.iter().all(|s| s.closed && !s.torn));
+    assert!(
+        l.segments.iter().all(|s| s.close_rows == Some(100)),
+        "each boot's close line counts the rows it handed the OS: {:?}",
+        l.segments
+    );
     assert_eq!(
         l.segments.iter().map(|s| s.boot.clone()).collect::<Vec<_>>(),
         boots

@@ -608,13 +608,18 @@ async fn drain(pop: Option<Population>) {
     }
 }
 
-/// The trust ledger's line on the 10 s report. Silent on a shard that has
-/// neither a log nor a row, so a quiet dev shard's console stays quiet.
+/// The trust ledger's line on the 10 s report. Silent until there is a row,
+/// a loss or a stopped writer, so a quiet shard's console stays quiet.
 fn trust_line(s: &ShardStats, log: Option<&server::trustlog::TrustLog>) {
     use server::trustlog::WriterStats as W;
     let rows = ShardStats::get(&s.trust_rows);
     match log {
-        Some(l) => {
+        Some(l)
+            if rows > 0
+                || l.stats.stopped()
+                || W::get(&l.stats.write_errors) > 0
+                || ShardStats::get(&s.trust_sim_overflow) > 0 =>
+        {
             let w = &l.stats;
             println!(
                 "trust rows {rows} · written {} · gaps {} · dropped {} · sim overflow {} · \
@@ -641,7 +646,7 @@ fn trust_line(s: &ShardStats, log: Option<&server::trustlog::TrustLog>) {
             "trust rows {rows} · unlogged {} (no world_file, so no trust log)",
             ShardStats::get(&s.trust_unlogged)
         ),
-        None => {}
+        _ => {}
     }
 }
 
