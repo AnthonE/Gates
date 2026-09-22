@@ -19,8 +19,8 @@
 
 use sim_core::build::{foundation_terrain_ok, BuildContent, BUILD_CELL_M, LOC_PLANE};
 use sim_core::combat::CombatContent;
-use sim_core::craft::{CraftContent, REFUSE_BLUEPRINT};
-use sim_core::deploy::DeployContent;
+use sim_core::craft::{CraftContent, REFUSE_BLUEPRINT, STATION_WORKBENCH2};
+use sim_core::deploy::{DeployContent, DeployDef, ARCH_WORKBENCH2, PLACE_ANY};
 use sim_core::gather::{GatherContent, ItemStack};
 use sim_core::limits::TICK_HZ;
 use sim_core::persist::PlayerSave;
@@ -506,6 +506,89 @@ fn the_tree_needs_a_bench_and_says_so() {
     ask_unlock(&mut w, GATED_RECIPE);
     assert_eq!(refusal(&w, EV_RESEARCH_REFUSED), Some(REFUSE_R_BENCH));
     assert_eq!(have(&w, COIN), 20, "and asking cost nothing");
+}
+
+/// **A tree unlock states the whole mask it produced**, as the table's
+/// purchase always did. `client-core` takes `SUB_KNOWN` as the authority
+/// and sets no bit off `EV_RESEARCH`, so until 2026-09-22 an unlock was a
+/// purchase the client never heard: the node stayed locked, its child
+/// stayed blocked, and the craft panel kept the recipe LOCKED until a
+/// respawn restated the mask. `WIDE` is already held so the statement has
+/// to carry both halves.
+#[test]
+fn an_unlock_states_the_whole_mask_it_produced() {
+    let mut w = bench_world();
+    w.players[0].known = WIDE;
+    ask_unlock(&mut w, GATED_RECIPE);
+    assert!(knows(w.players[0].known, GATED_RECIPE), "the unlock landed");
+    assert_eq!(
+        announced(&w),
+        Some(WIDE | 1 << GATED_RECIPE),
+        "a tree unlock must state the whole mask it produced, both halves"
+    );
+}
+
+/// The bench check is a RUNG, not a presence: a node whose recipe is
+/// tier 2 refuses at a tier-1 bench standing right there, with the bench
+/// sentence and nothing taken. The client's tab strip hides such a node
+/// (`ui::techtree::tabs`); this is the sim refusing it anyway, because a
+/// hidden button is not a gate.
+#[test]
+fn a_higher_tier_node_refuses_at_a_lower_bench() {
+    let mut w = bench_world();
+    w.craft.recipes[GATED_RECIPE as usize].station = STATION_WORKBENCH2;
+    ask_unlock(&mut w, GATED_RECIPE);
+    assert_eq!(refusal(&w, EV_RESEARCH_REFUSED), Some(REFUSE_R_BENCH));
+    assert_eq!(have(&w, COIN), 20, "a refused unlock costs nothing");
+    assert!(!knows(w.players[0].known, GATED_RECIPE));
+}
+
+/// And the ≥, the other way: a tier-2 bench unlocks a tier-1 node (the
+/// operator's 2026-09-22 call — a higher bench keeps the lower trees as
+/// tabs), and a tier-2 node at its own rung. The tier-2 def is appended
+/// past the shared fixture, `craft::tests`' precedent, so the parity and
+/// replay worlds never see it.
+#[test]
+fn a_higher_bench_unlocks_a_lower_tier_node() {
+    let (mut w, cx, cz) = table_world();
+    let wb2_row = w.deploy.def_count;
+    w.deploy.defs[wb2_row as usize] = DeployDef {
+        arch: ARCH_WORKBENCH2,
+        placement: PLACE_ANY,
+        hp: 80,
+        item: BENCH_ITEM,
+        n_costs: 1,
+        costs: [(0, 20), (0, 0), (0, 0), (0, 0)],
+    };
+    w.deploy.def_count += 1;
+    w.players[0].inv[2] = ItemStack {
+        item: BENCH_ITEM,
+        count: 1,
+        cond: 0,
+    };
+    w.tick(&[Command::PlaceDeploy {
+        id: PLAYER,
+        row: wb2_row,
+        cx: cx + 1,
+        cz,
+        level: 0,
+        loc: LOC_PLANE,
+    }]);
+    assert_eq!(w.deploys.len(), 2, "the tier-2 bench has to stand");
+    w.players[0].inv[2] = ItemStack::default();
+    stock(&mut w);
+
+    ask_unlock(&mut w, GATED_RECIPE);
+    assert!(
+        knows(w.players[0].known, GATED_RECIPE),
+        "a tier-2 bench unlocks a tier-1 node"
+    );
+    w.craft.recipes[NODE_RECIPE as usize].station = STATION_WORKBENCH2;
+    ask_unlock(&mut w, NODE_RECIPE);
+    assert!(
+        knows(w.players[0].known, NODE_RECIPE),
+        "and a tier-2 node at its own rung"
+    );
 }
 
 /// The table ignores the tree: a looted sample researches a node whose

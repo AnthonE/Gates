@@ -1424,16 +1424,17 @@ impl Deploys {
     /// (bench ladder v0). One scan rather than one `arch_near` per rung,
     /// and the ≥ is the reference's own rule: a level-3 bench crafts a
     /// level-1 recipe, so upgrading a bench never costs a verb.
+    ///
+    /// Every caller asks for a rung (1..=3); tier 0 is not one, and asking
+    /// for it answers true.
     pub fn bench_near(&self, dc: &DeployContent, tier: u8, x: f32, z: f32, radius_m: f32) -> bool {
-        let r2 = radius_m * radius_m;
-        self.entries[..self.len].iter().any(|d| {
-            if bench_tier(dc.defs[d.row as usize].arch) < tier {
-                return false;
-            }
-            let (ax, az) = cell_center(d.cx, d.cz);
-            let (dx, dz) = (ax - x, az - z);
-            dx * dx + dz * dz <= r2
-        })
+        self.best_bench_near(dc, x, z, radius_m) >= tier
+    }
+
+    /// The highest workbench rung within `radius_m` (planar) of the point,
+    /// 0 when none stands there — [`best_bench_in`] over this store.
+    pub fn best_bench_near(&self, dc: &DeployContent, x: f32, z: f32, radius_m: f32) -> u8 {
+        best_bench_in(self.entries(), dc, x, z, radius_m)
     }
 
     fn own_bag_count(&self, dc: &DeployContent, owner: u32) -> usize {
@@ -1571,6 +1572,41 @@ pub fn box_drop_pos(
             + crate::build::level_y(level),
         z,
     )
+}
+
+/// The highest workbench rung among `recs` standing within `radius_m`
+/// (planar, to the cell centre) of the point, or 0 when none does — the one
+/// scan behind the tiered station check ([`Deploys::bench_near`]) and the
+/// client's tree panel, which must agree with it about when a bench is
+/// still "here".
+///
+/// A free function over records rather than only a `Deploys` method
+/// because the client keeps the same records in its own mirror
+/// (`client-core`'s `DeploySet`) and asks the same question of them. A row
+/// past the def table reads as no bench rather than an index panic: the
+/// mirror can hold a record whose def has not dripped yet.
+pub fn best_bench_in(recs: &[DeployRec], dc: &DeployContent, x: f32, z: f32, radius_m: f32) -> u8 {
+    let top = bench_tier(ARCH_WORKBENCH3);
+    let r2 = radius_m * radius_m;
+    let mut best = 0u8;
+    for d in recs {
+        let tier = dc
+            .defs
+            .get(d.row as usize)
+            .map_or(0, |def| bench_tier(def.arch));
+        if tier <= best {
+            continue;
+        }
+        let (ax, az) = cell_center(d.cx, d.cz);
+        let (dx, dz) = (ax - x, az - z);
+        if dx * dx + dz * dz <= r2 {
+            best = tier;
+            if best >= top {
+                break;
+            }
+        }
+    }
+    best
 }
 
 /// The point `place_deploy` measures reach to, for every `loc`. `build.rs`

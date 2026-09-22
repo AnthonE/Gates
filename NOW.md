@@ -1351,12 +1351,18 @@ read as 0.5, 1.5, etc. `findings/building-circulation-20260921.md` has evidence.
    up, 75% two up — is unblocked and untaken. `deploy::bench_near`
    answers a bool; it would have to answer "best rung in reach", and
    `craft::enqueue` would read it.
-2. **The panel draws indents, not edges.** `ui/techtree.rs:49` says so in its
-   own comment ("an indent (and one day a line)"); a line renderer between
-   parent and child is cosmetic and waits for a real look at the screen.
-3. **The operator has not seen it** — the tree panel, the two greybox
-   benches, the tier badges. The visual gate is a person (`CLAUDE.md`);
-   boot the game, stand at a bench, press `E`.
+2. ~~**The panel draws indents, not edges.**~~ Stale since the board grew
+   connector lines; and since 2026-09-22 each tab is ONE tier's tree with
+   its roots hanging off the bench (`ui::techtree::layout`), the bench's own
+   tier open and lower tiers as tabs (operator, `DECISIONS.md` 2026-09-22).
+   A tree unlock now restates the mask (`research::unlock` pushed no
+   `EV_KNOWN`, so a bought node stayed locked on screen until a respawn),
+   the panel closes when its bench leaves the station radius, and "learned X"
+   reaches the HUD and the panel's status line.
+3. **The operator has not seen it** — the tree panel, the tabs, the bench
+   root, the tier badges. The visual gate is a person (`CLAUDE.md`);
+   boot the game, stand at a bench, press `E`, buy a node and watch it turn
+   KNOWN.
 
 
 ## 0tree · How deep the research tree goes, and the blueprint nobody can trade *(systems lane)*

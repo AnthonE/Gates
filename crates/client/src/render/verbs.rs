@@ -548,10 +548,14 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
             if let Some(ui) = ui {
                 if ui.panel == Panel::None {
                     ui.panel = Panel::Tech;
-                    // The header's LEVEL badge is the bench actually under
-                    // the crosshair — display only; the sim re-derives the
-                    // demanded rung per node.
+                    // The bench actually under the crosshair: the highest
+                    // tab, and the rung the panel's reach check holds it to.
+                    // The sim still re-derives the demanded rung per node.
                     ui.tech_tier = sim_core::deploy::bench_tier(pick.arch).max(1);
+                    // Opens on the bench's own tree; the lower tiers are
+                    // tabs (operator, 2026-09-22).
+                    ui.tech_tab = ui.tech_tier;
+                    ui.tech_sel = None;
                     ui.dirty = true;
                 }
             }

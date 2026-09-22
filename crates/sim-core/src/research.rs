@@ -337,6 +337,14 @@ pub fn unlock(
     inv_take(&mut p.inv, rc.coin, row.cost as u32);
     p.known |= 1u64 << row.recipe;
     events.push(EV_RESEARCH, p.id, row.recipe as u32, row.cost as u32);
+    // The mask, whole, behind the success — `research`'s own statement,
+    // and missing here until 2026-09-22. `client-core` takes `SUB_KNOWN`
+    // as the authority and deliberately never sets a bit off
+    // `EV_RESEARCH`, so without this line a tree unlock was a purchase the
+    // client never heard: the node stayed locked, its children stayed
+    // blocked and the craft panel kept the recipe LOCKED until some later
+    // door (a respawn, a reconnect, a table research) restated the mask.
+    events.push(EV_KNOWN, p.id, p.known as u32, (p.known >> 32) as u32);
 }
 
 #[cfg(test)]

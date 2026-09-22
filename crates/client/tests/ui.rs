@@ -3250,11 +3250,14 @@ fn the_swing_path_reads_the_island_through_the_memo() {
 // the tables the gates run.
 
 mod techtree_model {
-    use client::ui::techtree::{path_total, rows, state_label, tier_label, NodeState};
-    use sim_core::craft::CraftContent;
+    use client::ui::techtree::{
+        bench_glyph, bench_in_reach, path_total, rows, state_label, tabs, tier_label, NodeState,
+    };
+    use sim_core::craft::{CraftContent, STATION_WORKBENCH2};
+    use sim_core::deploy::{cell_center, DeployContent, DeployRec};
     use sim_core::gather::ItemStack;
     use sim_core::limits::INV_SLOTS;
-    use sim_core::research::{ResearchContent, NO_RECIPE};
+    use sim_core::research::{ResearchContent, NO_RECIPE, TABLE_RADIUS_M};
 
     fn inv_with_coin(count: u16) -> [ItemStack; INV_SLOTS] {
         let mut inv = [ItemStack::default(); INV_SLOTS];
@@ -3282,7 +3285,7 @@ mod techtree_model {
         let mut out = Vec::new();
 
         // Broke and knowing nothing: the root is Short, the child Blocked.
-        rows(&rc, &cc, &inv_with_coin(0), 0, &mut out);
+        rows(&rc, &cc, &inv_with_coin(0), 0, 1, &mut out);
         assert_eq!(out.len(), 2, "both fixture rows draw");
         let root = out.iter().find(|n| n.recipe == 2).unwrap();
         let child = out.iter().find(|n| n.recipe == 1).unwrap();
@@ -3292,7 +3295,7 @@ mod techtree_model {
         assert_eq!(child.requires, 2);
 
         // Funded: the root is Ready, the child still Blocked.
-        rows(&rc, &cc, &inv_with_coin(20), 0, &mut out);
+        rows(&rc, &cc, &inv_with_coin(20), 0, 1, &mut out);
         assert_eq!(
             out.iter().find(|n| n.recipe == 2).unwrap().state,
             NodeState::Ready
@@ -3303,7 +3306,7 @@ mod techtree_model {
         );
 
         // Parent learned: the child opens; the parent reads Known.
-        rows(&rc, &cc, &inv_with_coin(20), 1 << 2, &mut out);
+        rows(&rc, &cc, &inv_with_coin(20), 1 << 2, 1, &mut out);
         assert_eq!(
             out.iter().find(|n| n.recipe == 2).unwrap().state,
             NodeState::Known
@@ -3313,12 +3316,81 @@ mod techtree_model {
             NodeState::Ready
         );
 
-        // And ordering: tiers never descend down the list.
-        let mut last = 0u8;
-        for n in &out {
-            assert!(n.tier >= last, "tiers ascend");
-            last = n.tier;
-        }
+        // And every node on the tab is the tab's tier.
+        assert!(out.iter().all(|n| n.tier == 1), "a tab draws one tier");
+    }
+
+    /// **A tab draws its own tier and nothing else** (operator, 2026-09-22:
+    /// the bench's own tree, lower tiers as tabs). The fixture's root is
+    /// re-gated to the second rung, so tier 1 holds only the child and
+    /// tier 2 only the root — and the child, whose parent is now in another
+    /// tab, still reads Blocked, because the sim still asks for that parent.
+    #[test]
+    fn a_tab_draws_its_own_tier_and_nothing_else() {
+        let (rc, mut cc) = fixture();
+        cc.recipes[2].station = STATION_WORKBENCH2;
+        let mut out = Vec::new();
+
+        rows(&rc, &cc, &inv_with_coin(20), 0, 1, &mut out);
+        assert_eq!(out.len(), 1, "tier 1 holds the child alone");
+        assert_eq!(out[0].recipe, 1);
+        assert_eq!(out[0].state, NodeState::Blocked, "its parent is unlearned");
+
+        rows(&rc, &cc, &inv_with_coin(20), 0, 2, &mut out);
+        assert_eq!(out.len(), 1, "tier 2 holds the root alone");
+        assert_eq!(out[0].recipe, 2);
+        assert_eq!(out[0].tier, 2);
+
+        rows(&rc, &cc, &inv_with_coin(20), 0, 3, &mut out);
+        assert!(out.is_empty(), "nothing is tier 3 here");
+    }
+
+    /// The tabs a bench offers stop at the bench: its own tier and every one
+    /// under it, never a higher tree — the reference's "each level of
+    /// workbench has its own tech tree", with the sim's ≥ making the lower
+    /// ones reachable.
+    #[test]
+    fn the_tabs_stop_at_the_bench_it_was_opened_at() {
+        assert_eq!(tabs(1), 1..=1);
+        assert_eq!(tabs(2), 1..=2);
+        assert_eq!(tabs(3), 1..=3);
+        // Out-of-range rungs clamp rather than opening an empty or a
+        // fourth tree.
+        assert_eq!(tabs(0), 1..=1);
+        assert_eq!(tabs(9), 1..=3);
+        assert_eq!(bench_glyph(1), "workbench");
+        assert_eq!(bench_glyph(2), "workbench_2");
+        assert_eq!(bench_glyph(3), "workbench_3");
+    }
+
+    /// The panel closes when no bench of its rung is in reach — on the sim's
+    /// own scan at the sim's own radius, so it never offers a button
+    /// `research::unlock` would refuse with `REFUSE_R_BENCH`.
+    /// `DeployContent::probe_fixture` row 1 is the tier-1 workbench.
+    #[test]
+    fn the_tree_closes_when_no_bench_of_its_tier_is_in_reach() {
+        let dc = DeployContent::probe_fixture();
+        let bench = DeployRec {
+            cx: 100,
+            cz: 100,
+            row: 1,
+            ..DeployRec::default()
+        };
+        let (x, z) = cell_center(100, 100);
+        let at = [x, 0.0, z];
+        assert!(bench_in_reach(&[bench], &dc, at, 1), "standing at it");
+        assert!(
+            !bench_in_reach(&[bench], &dc, at, 2),
+            "a tier-1 bench is not a tier-2 bench"
+        );
+        let edge = [x + TABLE_RADIUS_M - 0.01, 0.0, z];
+        assert!(bench_in_reach(&[bench], &dc, edge, 1), "just inside");
+        let past = [x + TABLE_RADIUS_M + 0.01, 0.0, z];
+        assert!(!bench_in_reach(&[bench], &dc, past, 1), "just outside");
+        assert!(!bench_in_reach(&[], &dc, at, 1), "no bench at all");
+        // A record whose def has not dripped is no bench — and not a panic.
+        let undripped = DeployRec { row: 200, ..bench };
+        assert!(!bench_in_reach(&[undripped], &dc, at, 1));
     }
 
     /// The path total is the unlearned chain's sum, shrinking as the
@@ -3353,8 +3425,8 @@ mod techtree_model {
 /// overlap, and every edge names a real parent-child pair — the
 /// invariants that keep the drawn graph a picture of the table.
 mod techtree_layout {
-    use client::ui::techtree::layout;
-    use sim_core::craft::CraftContent;
+    use client::ui::techtree::{layout, BENCH};
+    use sim_core::craft::{CraftContent, STATION_WORKBENCH2};
     use sim_core::gather::ItemStack;
     use sim_core::limits::INV_SLOTS;
     use sim_core::research::{ResearchContent, ResearchRow, NO_RECIPE};
@@ -3388,10 +3460,17 @@ mod techtree_layout {
         let cc = CraftContent::probe_fixture();
         let inv = [ItemStack::default(); INV_SLOTS];
         let (mut placed, mut edges) = (Vec::new(), Vec::new());
-        layout(&rc, &cc, &inv, 0, &mut placed, &mut edges);
+        let bench_col = layout(&rc, &cc, &inv, 0, 1, &mut placed, &mut edges);
 
         assert_eq!(placed.len(), 5, "every live row is placed");
-        assert_eq!(edges.len(), 3, "every requires is an edge");
+        let real: Vec<_> = edges.iter().filter(|e| e.parent != BENCH).collect();
+        assert_eq!(real.len(), 3, "every requires is an edge");
+        assert_eq!(
+            edges.len() - real.len(),
+            2,
+            "and each of the two roots hangs off the bench"
+        );
+        assert!(bench_col <= placed.iter().map(|p| p.col).max().unwrap());
 
         // No two nodes share a cell.
         for a in 0..placed.len() {
@@ -3403,7 +3482,7 @@ mod techtree_layout {
             }
         }
         // A child is exactly one row under its parent.
-        for e in &edges {
+        for e in real {
             assert_eq!(
                 placed[e.child].row,
                 placed[e.parent].row + 1,
@@ -3429,6 +3508,56 @@ mod techtree_layout {
         assert!(
             a1.col.max(a2.col) < lo || a1.col.min(a2.col) > hi,
             "subtree blocks stay whole"
+        );
+    }
+
+    /// Every tree grows out of the bench that owns it: row 0 is the bench's
+    /// alone, every root sits on row 1 with an edge from [`BENCH`], and
+    /// nothing else starts at the bench.
+    #[test]
+    fn every_root_hangs_off_the_bench() {
+        let rc = table();
+        let cc = CraftContent::probe_fixture();
+        let inv = [ItemStack::default(); INV_SLOTS];
+        let (mut placed, mut edges) = (Vec::new(), Vec::new());
+        layout(&rc, &cc, &inv, 0, 1, &mut placed, &mut edges);
+        assert!(placed.iter().all(|p| p.row >= 1), "row 0 is the bench's");
+        for (i, p) in placed.iter().enumerate() {
+            let from_bench = edges.iter().any(|e| e.parent == BENCH && e.child == i);
+            assert_eq!(
+                from_bench,
+                p.node.requires == NO_RECIPE,
+                "a root and only a root hangs off the bench"
+            );
+            if from_bench {
+                assert_eq!(p.row, 1, "a root sits right under the bench");
+            }
+        }
+    }
+
+    /// A row whose parent lives in another tab is drawn as a root of this
+    /// one — no line to a node that is not on the board — while its
+    /// `requires` still names the real parent, so the state and the sidebar
+    /// keep telling the truth.
+    #[test]
+    fn a_parent_outside_the_tab_reads_as_a_root() {
+        let rc = table();
+        let mut cc = CraftContent::probe_fixture();
+        // Recipe 1's parent (recipe 2) moves to tier 2.
+        cc.recipes[2].station = STATION_WORKBENCH2;
+        let inv = [ItemStack::default(); INV_SLOTS];
+        let (mut placed, mut edges) = (Vec::new(), Vec::new());
+        layout(&rc, &cc, &inv, 0, 1, &mut placed, &mut edges);
+        let i = placed.iter().position(|p| p.node.recipe == 1).unwrap();
+        assert_eq!(placed[i].node.requires, 2, "the real parent is kept");
+        assert_eq!(placed[i].row, 1, "drawn as a root");
+        assert!(
+            edges.iter().any(|e| e.parent == BENCH && e.child == i),
+            "hanging off the bench"
+        );
+        assert!(
+            placed.iter().all(|p| p.node.recipe != 2),
+            "the tier-2 parent is not on the tier-1 board"
         );
     }
 }

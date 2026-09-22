@@ -128,10 +128,14 @@ pub struct Ui {
     /// The tech tree's selected node — a recipe index, the sidebar's
     /// subject (tech tree v0).
     pub tech_sel: Option<u16>,
-    /// The rung of the bench the tree was opened at — the header's LEVEL
-    /// badge. Display only: the sim re-derives the demanded rung per
-    /// node, so a stale badge can mislabel nothing.
+    /// The rung of the bench the tree was opened at: the highest tab, and
+    /// the rung the panel's reach check holds it to (`keys` closes the tree
+    /// when no bench that high stands within the station radius). The sim
+    /// still re-derives the demanded rung per node.
     pub tech_tier: u8,
+    /// The tab on show — one bench tier's tree, `1..=tech_tier`
+    /// (`ui::techtree::tabs`). Opens on the bench's own tier.
+    pub tech_tab: u8,
     /// Rebuild the panel's node tree on the next frame.
     pub dirty: bool,
     /// Change detection against the core. A menu that rebuilt every frame
@@ -193,6 +197,7 @@ impl Default for Ui {
             hover: None,
             tech_sel: None,
             tech_tier: 1,
+            tech_tab: 1,
             dirty: false,
             seen: Seen::default(),
         }
@@ -354,6 +359,16 @@ pub fn register(app: &mut App) {
                 // key, in the same frame.
                 .before(super::pause::open)
                 .after(super::verbs::resolve)
+                .run_if(in_state(super::Screen::InWorld)),
+        )
+        // The tree's status line hears the sim — a node learned, or why not.
+        // After the drain, because it reads this frame's `Feed`; before the
+        // rebuild, so the sentence is on the board drawn this frame.
+        .add_systems(
+            Update,
+            tech::sync_status
+                .after(super::feed::drain)
+                .before(rebuild)
                 .run_if(in_state(super::Screen::InWorld)),
         )
         // A panel is only ever drawn over a running world, so leaving `InWorld`
@@ -569,10 +584,26 @@ pub fn keys(
         chars.clear();
     }
 
-    // The sim can close a container out from under an open panel — it
-    // despawned, or the player walked out of reach — and the panel is never
-    // authoritative about its own visibility.
-    let _ = &net;
+    // **The tree is a thing you stand at a bench to read.** When no bench of
+    // the rung it was opened at stands within the station radius any more —
+    // demolished, picked up, burned — it closes, on the sim's own scan at the
+    // sim's own radius (`ui::techtree::bench_in_reach`), so it never offers a
+    // button `research::unlock` would refuse for want of a bench. Movement is
+    // zeroed while a panel is up, so a walk-off is not the case this catches;
+    // the bench leaving is.
+    if ui.panel == Panel::Tech
+        && !crate::ui::techtree::bench_in_reach(
+            core.deploys.entries(),
+            &core.deploy_defs,
+            core.predict.position(),
+            ui.tech_tier,
+        )
+    {
+        ui.panel = Panel::None;
+        ui.tech_sel = None;
+        ui.dirty = true;
+        toast.warn("workbench out of reach");
+    }
 }
 
 /// Put the sim's own refusals on the status line.
