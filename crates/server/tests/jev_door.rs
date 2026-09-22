@@ -265,3 +265,38 @@ fn an_open_key_file_is_refused_before_anything_dials() {
     assert!(why.contains("chmod 600"), "{why}");
     let _ = std::fs::remove_file(path);
 }
+
+/// `jev-watch`'s own join: the client `Session` declaring a guest agent,
+/// exactly as the bin builds it, is followed by a seat asking for any agent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_rendered_bots_session_is_watchable_too() {
+    let shard = server::agent_demo::spawn_local().await.expect("boots");
+    let server = shard.local_addr.to_string();
+    let ep = client::client_endpoint(&server, Some(&shard.cert_hash)).expect("endpoint");
+    let name = bot_name("jev", 0, 1).expect("a name");
+    let mut bot = Session::connect_as(
+        &ep,
+        &server,
+        protocol::Address::GUEST,
+        &client::Join::Agent { name },
+        |_, _, _| None,
+    )
+    .await
+    .expect("a guest agent joins a local shard");
+    let mut watcher = seat(&server, &shard.cert_hash, protocol::Address::GUEST).await;
+    let w = watcher.watching.expect("told whose view this is");
+    assert!(w.agent && w.address.is_guest());
+    assert_eq!(w.name.as_str(), "jev");
+    assert_eq!(watcher.welcome.player_id, bot.welcome.player_id);
+    // The seat's feed is the bot's body: it arrives in the seat's view.
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while watcher.core.view.get(bot.welcome.player_id).is_none() {
+            bot.pump(1000.0 / 60.0);
+            watcher.pump(1000.0 / 60.0);
+            tokio::time::sleep(Duration::from_millis(8)).await;
+        }
+    })
+    .await
+    .expect("the bot's body reaches the seat");
+    shard.shutdown.store(true, Ordering::Relaxed);
+}
