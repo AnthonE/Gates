@@ -683,6 +683,10 @@ struct KeySlot {
 /// Seat `i` is connection slot `MAX_PLAYERS + i`.
 #[derive(Clone, Default)]
 struct SeatSlot {
+    /// Granted and not yet swept. A flag of its own rather than
+    /// `conn.is_some()`, so the door (`pick_target`) is a pure function a
+    /// test can drive without a socket.
+    occupied: bool,
     conn: Option<Connection>,
     /// This seat's own claim generation, so a sweep never closes the next
     /// tenant of the seat in the previous one's name.
@@ -881,7 +885,7 @@ async fn accept_loop(
                 // cadence the admin kick uses. A seat whose OWN connection
                 // went is just forgotten.
                 for (i, seat) in seats.iter_mut().enumerate() {
-                    if seat.conn.is_none() {
+                    if !seat.occupied {
                         continue;
                     }
                     let own = slots.load(MAX_PLAYERS + i);
@@ -1626,10 +1630,13 @@ fn pick_target(
 ) -> Result<usize, u8> {
     let mut full = false;
     for (t, k) in keys.iter().enumerate() {
+        // The tenant is this slot's CURRENT one: live, and the generation
+        // it was installed under (a slot is reused, and a stale key row
+        // must not be mistaken for the player now in it).
         let Some(gen) = live(t) else {
             continue;
         };
-        if k.generation != gen || k.conn.is_none() {
+        if k.generation != gen {
             continue;
         }
         if !(k.agent || (k.watchable && human_feeds)) {
@@ -1640,7 +1647,7 @@ fn pick_target(
         }
         let watching = seats
             .iter()
-            .filter(|s| s.conn.is_some() && s.target == t && s.target_gen == gen)
+            .filter(|s| s.occupied && s.target == t && s.target_gen == gen)
             .count();
         if watching >= per_target {
             full = true;
@@ -1751,6 +1758,7 @@ async fn install_spectator(
         return;
     }
     seats[i] = SeatSlot {
+        occupied: true,
         conn: Some(connection.clone()),
         generation,
         target,
@@ -3071,6 +3079,96 @@ mod tests {
         line.drop_oldest();
         assert!(line.push(t0, 20).is_ok());
         assert_eq!(line.pop_due(t0), Some(11));
+    }
+
+    /// **The spectator door, decided without a socket** (`NETCODE.md` §2.3):
+    /// consent, naming by proven address, the per-target cap, "any" skipping
+    /// a full target, and a stale key row never standing in for the slot's
+    /// current tenant. `pick_target` is the whole door, so each rule is one
+    /// case here; `tests/spectate_wire.rs` drives the same rules over a
+    /// socket.
+    #[test]
+    fn the_spectator_door_picks_only_consenting_current_tenants_under_the_cap() {
+        let mut keys: [KeySlot; MAX_PLAYERS] = std::array::from_fn(|_| KeySlot::default());
+        let mut seats: [SeatSlot; MAX_SPECTATORS] = std::array::from_fn(|_| SeatSlot::default());
+        let a = protocol::Address([0xA; protocol::ADDRESS_BYTES]);
+        let b = protocol::Address([0xB; protocol::ADDRESS_BYTES]);
+        let h = protocol::Address([0xC; protocol::ADDRESS_BYTES]);
+        let z = protocol::Address([0xD; protocol::ADDRESS_BYTES]);
+        // 0: a player who declared nothing. 1: an agent. 2: a human who
+        // opted in. 3: an agent whose slot turned over (stale row).
+        for (s, address, agent, watchable) in [
+            (0, b, false, false),
+            (1, a, true, true),
+            (2, h, false, true),
+            (3, z, true, true),
+        ] {
+            keys[s] = KeySlot {
+                generation: 7,
+                address,
+                agent,
+                watchable,
+                ..KeySlot::default()
+            };
+        }
+        let live = |t: usize| match t {
+            0..=2 => Some(7),
+            3 => Some(8), // re-claimed: the row above is the previous tenant's
+            _ => None,
+        };
+        use protocol::{REFUSE_WATCH, REFUSE_WATCH_FULL};
+        assert_eq!(pick_target(&keys, live, &seats, a, false, 2), Ok(1));
+        assert_eq!(
+            pick_target(&keys, live, &seats, protocol::Address::GUEST, false, 2),
+            Ok(1)
+        );
+        assert_eq!(
+            pick_target(&keys, live, &seats, b, false, 2),
+            Err(REFUSE_WATCH),
+            "no consent"
+        );
+        assert_eq!(
+            pick_target(&keys, live, &seats, h, false, 2),
+            Err(REFUSE_WATCH),
+            "no human feeds"
+        );
+        assert_eq!(
+            pick_target(&keys, live, &seats, h, true, 2),
+            Ok(2),
+            "behind a delay"
+        );
+        assert_eq!(
+            pick_target(&keys, live, &seats, z, false, 2),
+            Err(REFUSE_WATCH),
+            "stale row"
+        );
+        // Fill the agent's two seats: by name it is FULL; "any" moves on to
+        // the next consenting player when human feeds run, and is FULL when
+        // there is none.
+        for (i, seat) in seats.iter_mut().take(2).enumerate() {
+            *seat = SeatSlot {
+                occupied: true,
+                generation: i as u32 + 1,
+                target: 1,
+                target_gen: 7,
+                ..SeatSlot::default()
+            };
+        }
+        assert_eq!(
+            pick_target(&keys, live, &seats, a, false, 2),
+            Err(REFUSE_WATCH_FULL)
+        );
+        assert_eq!(
+            pick_target(&keys, live, &seats, protocol::Address::GUEST, false, 2),
+            Err(REFUSE_WATCH_FULL)
+        );
+        assert_eq!(
+            pick_target(&keys, live, &seats, protocol::Address::GUEST, true, 2),
+            Ok(2)
+        );
+        // A seat on a PREVIOUS tenant of slot 1 does not count against this one.
+        seats[1].target_gen = 6;
+        assert_eq!(pick_target(&keys, live, &seats, a, false, 2), Ok(1));
     }
 
     // The admission-gate ordering and the sample period are asserted at
