@@ -23,7 +23,7 @@
 use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 use client_core::core::ClientCore;
-use sim_core::build::{SHAPE_FOUNDATION, SHAPE_STAIRS, SHAPE_TRI_FOUNDATION, STAIR_LOCS};
+use sim_core::build::{SHAPE_FOUNDATION, SHAPE_FOUNDATION_STEPS, SHAPE_TRI_FOUNDATION, STAIR_LOCS};
 
 use crate::look::yaw_u16;
 use crate::ui::build::{row_for, PLACE_MATERIAL, SHAPES};
@@ -105,6 +105,9 @@ pub struct Ghost {
     /// two are never up at once but are driven by different systems, and one
     /// entity shared between them would need a mode flag that could disagree.
     deploy_entity: Option<Entity>,
+    insert_mesh: [Option<Handle<Mesh>>; 4],
+    apron_mesh: Option<Handle<Mesh>>,
+    apron_entity: Option<Entity>,
     deploy_mat: Option<Handle<StandardMaterial>>,
     ok_mat: Option<Handle<StandardMaterial>>,
     no_mat: Option<Handle<StandardMaterial>>,
@@ -157,7 +160,8 @@ pub struct Ghost {
 
 /// `R`/`F` turn a stair preview; on a foundation they raise/lower its height
 /// (foundation height v0) — while the building plan is in hand and no
-/// panel owns the pointer, wheel up or not.
+/// panel owns the pointer, wheel up or not. Foundation steps also accept
+/// Shift+R/F for height, leaving plain R/F available for their direction.
 ///
 /// **These two keys stepped the STOREY until 2026-09-05**, and only while
 /// the wheel was up. The storey is aimed now (`place::Aim::level_for`, the
@@ -187,7 +191,9 @@ pub fn height_keys(
         return;
     }
     let shape = ui.as_ref().map(|u| SHAPES[u.shape.min(SHAPES.len() - 1)]);
-    if shape == Some(SHAPE_STAIRS) {
+    let step_height = shape == Some(SHAPE_FOUNDATION_STEPS)
+        && (keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight));
+    if shape.is_some_and(sim_core::circulation::is_riser) && !step_height {
         if keys.just_pressed(KeyCode::KeyR) {
             ghost.stair_turn = (ghost.stair_turn + 1) % STAIR_LOCS.len() as u8;
         }
@@ -197,7 +203,7 @@ pub fn height_keys(
         }
         return;
     }
-    if !matches!(shape, Some(SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION)) {
+    if !matches!(shape, Some(SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION)) && !step_height {
         return;
     }
     if keys.just_pressed(KeyCode::KeyR) {
@@ -284,8 +290,8 @@ pub fn track(
     // The storey is what the ray met (aimed level v0): the wall's face means
     // the storey above it, a floor's edge its own, bare ground the first.
     let level = aim.level_for(shape);
-    let mut target = place::target_at(aim.at.0, aim.at.1, shape, level);
-    if shape == SHAPE_STAIRS {
+    let mut target = aim.target_for(shape);
+    if sim_core::circulation::is_riser(shape) {
         target.loc = STAIR_LOCS[ghost.stair_turn as usize % STAIR_LOCS.len()];
     }
     let site = Site {
@@ -369,15 +375,20 @@ pub fn track(
             plate,
         )
     });
-    let diagonal = shape == sim_core::build::SHAPE_WALL
-        && matches!(
-            target.loc,
-            sim_core::build::LOC_DIAG_A | sim_core::build::LOC_DIAG_B
-        );
+    let diagonal = matches!(
+        shape,
+        sim_core::build::SHAPE_WALL
+            | sim_core::build::SHAPE_HALF_WALL
+            | sim_core::build::SHAPE_LOW_WALL
+    ) && matches!(
+        target.loc,
+        sim_core::build::LOC_DIAG_A | sim_core::build::LOC_DIAG_B
+    );
 
     if ghost.built != Some((shape, diagonal)) {
         ghost.built = Some((shape, diagonal));
         commands.entity(root).despawn_related::<Children>();
+        ghost.apron_entity = None;
         let mesh = ghost.mesh.clone().expect("built above");
         let tri = ghost.tri_mesh.clone().expect("built above");
         let stairs = ghost.stair_mesh.clone().expect("built above");
@@ -400,6 +411,9 @@ pub fn track(
                     structures::PartKind::Box => mesh.clone(),
                     structures::PartKind::Tri => tri.clone(),
                     structures::PartKind::Stairs => stairs.clone(),
+                    structures::PartKind::Circulation(_) | structures::PartKind::TriFrame => {
+                        meshes.add(structures::part_mesh(part))
+                    }
                 };
                 c.spawn((
                     Mesh3d(unit),
@@ -434,6 +448,53 @@ pub fn track(
                 }
             }
         }
+    }
+    let foot_drop = sim_core::collide::edge_foot_drop(
+        world.seed,
+        &world.haven,
+        core.pieces.cols(),
+        target.cx,
+        target.cz,
+        target.level,
+        target.loc,
+        plate,
+    );
+    let apron = if structures::is_edge_shape(shape)
+        && matches!(
+            target.loc,
+            sim_core::build::LOC_EDGE_XLO | sim_core::build::LOC_EDGE_ZLO
+        ) {
+        structures::edge_apron_transform(target.level, foot_drop)
+    } else {
+        None
+    };
+    if let Some(transform) = apron {
+        let mesh = ghost
+            .apron_mesh
+            .get_or_insert_with(|| {
+                let (parts, n) = structures::apron_parts(structures::PostOwn::BOTH);
+                meshes.add(structures::parts_mesh(&parts[..n]))
+            })
+            .clone();
+        if let Some(e) = ghost.apron_entity {
+            commands
+                .entity(e)
+                .insert((transform, MeshMaterial3d(mat), Visibility::Visible));
+        } else {
+            let e = commands
+                .spawn((
+                    Mesh3d(mesh),
+                    MeshMaterial3d(mat),
+                    NotShadowCaster,
+                    transform,
+                    Visibility::Visible,
+                    ChildOf(root),
+                ))
+                .id();
+            ghost.apron_entity = Some(e);
+        }
+    } else if let Some(e) = ghost.apron_entity {
+        commands.entity(e).insert(Visibility::Hidden);
     }
 }
 
@@ -584,6 +645,20 @@ pub fn deploy_track(
     };
     let arch = def.arch as usize;
     let size = super::structures::deploy_size(arch);
+    let insert = match arch as u8 {
+        sim_core::deploy::ARCH_WINDOW_BARS => Some(0),
+        sim_core::deploy::ARCH_GARAGE_DOOR => Some(1),
+        sim_core::deploy::ARCH_WINDOW_GLASS => Some(2),
+        sim_core::deploy::ARCH_WINDOW_SHUTTER => Some(3),
+        _ => None,
+    };
+    let mesh = if let Some(i) = insert {
+        ghost.insert_mesh[i]
+            .get_or_insert_with(|| meshes.add(structures::insert_mesh(arch as u8)))
+            .clone()
+    } else {
+        ghost.mesh.clone().expect("built above")
+    };
 
     let [x, y, z] = core.predict.render_position();
     let aim = aim_point(world.seed, &world.haven, core, &look, [x, y, z]);
@@ -631,7 +706,7 @@ pub fn deploy_track(
         // ground placement has no column and answers 0, the terrain rule.
         core.pieces.cols().plate(t.cx, t.cz).unwrap_or(0),
     )
-    .with_scale(size);
+    .with_scale(if insert.is_some() { Vec3::ONE } else { size });
     let mat = if verdict.refused() {
         ghost.no_mat.clone()
     } else {
@@ -641,15 +716,18 @@ pub fn deploy_track(
 
     match ghost.deploy_entity {
         Some(e) => {
-            commands
-                .entity(e)
-                .insert((transform, MeshMaterial3d(mat), Visibility::Visible));
+            commands.entity(e).insert((
+                transform,
+                Mesh3d(mesh.clone()),
+                MeshMaterial3d(mat),
+                Visibility::Visible,
+            ));
         }
         None => {
             let e = commands
                 .spawn((
                     super::WorldEntity,
-                    Mesh3d(ghost.mesh.clone().expect("built above")),
+                    Mesh3d(mesh),
                     MeshMaterial3d(mat),
                     NotShadowCaster,
                     transform,

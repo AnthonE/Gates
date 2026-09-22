@@ -29,7 +29,7 @@
 //! does not hold, and the sim's refusal (`REFUSE_B_WINDOW`) already has a
 //! sentence.
 
-use sim_core::build::{shape_has_facing, BuildContent, SHAPE_STAIRS};
+use sim_core::build::{shape_has_facing, BuildContent};
 
 use super::build::Rings;
 use super::structure::{self, Store, Target};
@@ -161,7 +161,7 @@ pub fn act(verb: Verb, near: Option<&Target>, piece_defs: &BuildContent, have: u
             }
             Some(t) => {
                 let shape = piece_defs.pieces[t.row as usize].shape;
-                if !shape_has_facing(shape) && shape != SHAPE_STAIRS {
+                if !shape_has_facing(shape) && !sim_core::circulation::is_riser(shape) {
                     Act::Say("that piece has no rotation")
                 } else {
                     Act::Rotate {

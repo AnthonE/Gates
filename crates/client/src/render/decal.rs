@@ -107,10 +107,10 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use super::feed::Feed;
 use super::impact::{skin_radius, strike_height};
 use super::{Eye, WorldId};
-use sim_core::build::{self, BUILD_CELL_M, LEVEL_H_M};
+use sim_core::build::{self, BUILD_CELL_M};
 use sim_core::collide::{ColIndex, PLANE_THICKNESS_M};
 use sim_core::gather::NO_CELL;
-use sim_core::limits::{MAX_BUILD_COORD, MAX_BUILD_LEVELS};
+use sim_core::limits::{MAX_BUILD_COORD, MAX_BUILD_SOCKETS};
 use sim_core::movement::{POS_XZ_Q, POS_Y_Q};
 use sim_core::ranged::{SURF_BUILT, SURF_GROUND, SURF_WORLD};
 use sim_core::terrain::{self, Occupant, Slot};
@@ -834,7 +834,7 @@ fn facing(world: &WorldId, cols: &ColIndex, x: f32, y: f32, z: f32, surf: u8) ->
 ///
 /// **Derived, like every other arm of [`facing`], and from the mirror the
 /// predictor already holds.** A plane's geometry is not a secret the wire has
-/// to carry: its top is `column_floor_y(cell, plate) + level·LEVEL_H_M` —
+/// to carry: its top is `column_floor_y(cell, plate) + level·sim_core::build::LEVEL_H_M` —
 /// `collide`'s own sentence, computed here from the same `ColIndex` the
 /// client predicts movement against — and the slab hangs
 /// `PLANE_THICKNESS_M` below it. So an impact's height above that column is
@@ -901,12 +901,12 @@ fn plane_face(world: &WorldId, cols: &ColIndex, x: f32, y: f32, z: f32) -> Optio
         bz,
         cols.plate(bx, bz).unwrap_or(0),
     );
-    for level in 0..MAX_BUILD_LEVELS {
-        let bit = 1u8 << level;
+    for level in 0..MAX_BUILD_SOCKETS {
+        let bit = 1u16 << level;
         if (m.planes | tris) & bit == 0 {
             continue;
         }
-        let top = base + level as f32 * LEVEL_H_M;
+        let top = base + sim_core::build::level_y(level as u8);
         if y > top + SLAB_FACE_TOL_M {
             continue; // over this slab
         }
@@ -1420,13 +1420,20 @@ mod tests {
 
         // On the first storey's floor, and on its underside — the ceiling of
         // the room below, which is the half a downward shot never reaches.
-        let up = facing(&world, &cols, mx, base + LEVEL_H_M, mz, SURF_BUILT);
+        let up = facing(
+            &world,
+            &cols,
+            mx,
+            base + sim_core::build::LEVEL_H_M,
+            mz,
+            SURF_BUILT,
+        );
         assert_eq!(up, Vec3::Y, "a mark on the level-1 floor faces {up:?}");
         let down = facing(
             &world,
             &cols,
             mx,
-            base + LEVEL_H_M - PLANE_THICKNESS_M,
+            base + sim_core::build::LEVEL_H_M - PLANE_THICKNESS_M,
             mz,
             SURF_BUILT,
         );
@@ -1443,7 +1450,7 @@ mod tests {
             &world,
             &cols,
             mx + 1.0,
-            base + LEVEL_H_M * 0.5,
+            base + sim_core::build::LEVEL_H_M * 0.5,
             mz,
             SURF_BUILT,
         );
@@ -1460,7 +1467,7 @@ mod tests {
             &world,
             &cols,
             cx as f32 * BUILD_CELL_M + 0.05,
-            base + LEVEL_H_M,
+            base + sim_core::build::LEVEL_H_M,
             mz,
             SURF_BUILT,
         );

@@ -413,7 +413,7 @@ pub fn tick_fuses(
 /// any damage lands. 3×3 columns × 8 levels × (1 plane + 1 riser + 2
 /// edges) is the exact ceiling; the array is that size, so there is no
 /// overflow arm to get wrong.
-const BLAST_TARGET_CAP: usize = 9 * crate::limits::MAX_BUILD_LEVELS * 4;
+const BLAST_TARGET_CAP: usize = 9 * crate::limits::MAX_BUILD_SOCKETS * 4;
 
 #[allow(clippy::too_many_arguments)]
 fn detonate(
@@ -430,12 +430,12 @@ fn detonate(
     kills: &mut BlastKills,
     events: &mut EventQueue,
 ) {
-    use crate::build::{LEVEL_H_M, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, STAIR_LOCS};
-    use crate::limits::{MAX_BUILD_COORD, MAX_BUILD_LEVELS};
+    use crate::build::{LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, STAIR_LOCS};
+    use crate::limits::{MAX_BUILD_COORD, MAX_BUILD_SOCKETS};
 
     let (ax, az) = anchor(c.cx, c.cz, c.loc);
     let ay = crate::collide::col_base_y(seed, haven, pieces.cols(), c.cx, c.cz)
-        + c.level as f32 * LEVEL_H_M;
+        + crate::build::level_y(c.level);
     let blast = c.blast_cm;
 
     // Distance from the epicentre to a point, centimetres. Planar plus
@@ -466,9 +466,9 @@ fn detonate(
             let (cx, cz) = (cx as u16, cz as u16);
             let m = pieces.cols().get(cx, cz);
             let base = crate::collide::col_base_y(seed, haven, pieces.cols(), cx, cz);
-            for level in 0..MAX_BUILD_LEVELS as u8 {
-                let bit = 1u8 << level;
-                let ly = base + level as f32 * LEVEL_H_M;
+            for level in 0..MAX_BUILD_SOCKETS as u8 {
+                let bit = 1u16 << level;
+                let ly = base + crate::build::level_y(level);
                 let mut consider = |loc: u8, present: bool| {
                     if !present || n >= BLAST_TARGET_CAP {
                         return;
@@ -485,8 +485,14 @@ fn detonate(
                 for (loc, mask) in STAIR_LOCS.into_iter().zip(m.stair_masks()) {
                     consider(loc, mask & bit != 0);
                 }
-                consider(LOC_EDGE_XLO, (m.walls_xlo | m.doors_xlo) & bit != 0);
-                consider(LOC_EDGE_ZLO, (m.walls_zlo | m.doors_zlo) & bit != 0);
+                consider(
+                    LOC_EDGE_XLO,
+                    (m.half_xlo | m.low_xlo | m.walls_xlo | m.doors_xlo) & bit != 0,
+                );
+                consider(
+                    LOC_EDGE_ZLO,
+                    (m.half_zlo | m.low_zlo | m.walls_zlo | m.doors_zlo) & bit != 0,
+                );
             }
         }
         dz += 1;
@@ -500,7 +506,7 @@ fn detonate(
         }
         let (tx, tz) = anchor(rec.cx, rec.cz, rec.loc);
         let ly = crate::collide::col_base_y(seed, haven, pieces.cols(), rec.cx, rec.cz)
-            + rec.level as f32 * LEVEL_H_M;
+            + crate::build::level_y(rec.level);
         let d = dist_cm(tx, ly, tz);
         let scaled = falloff(c.structure, d, blast);
         if scaled > 0 {

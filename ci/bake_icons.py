@@ -188,6 +188,10 @@ ITEMS = {
     "pistol_ammo": "delapouite/heavy-bullets",
     "satchel_charge": "delapouite/dynamite",
     "door_metal": "delapouite/closed-doors",
+    "window_bars_metal": "delapouite/window-bars",
+    "garage_door": "delapouite/home-garage",
+    "window_glass": "delapouite/window",
+    "window_shutters": "delapouite/closed-doors",
     "armor_roadsign_body": "lorc/armor-vest",
     "medkit": "delapouite/first-aid-kit",
     "berries": "delapouite/berries-bowl",
@@ -321,7 +325,19 @@ OURS = {
 # `content/items.toml` the same way `ITEMS` is. `map_player` is the marker the
 # map screen spins by the compass's yaw; the archive has no compact glyph that
 # points up, and the file itself says which five were probed.
+# Building silhouettes describe the exact partial height or turn in our
+# catalogue. They use the same white-on-transparent bake as the archive art.
 OURS_UI = {
+    "shape_half_wall": "shape_half_wall",
+    "shape_low_wall": "shape_low_wall",
+    "shape_foundation_steps": "shape_foundation_steps",
+    "shape_ramp": "shape_ramp",
+    "shape_stairs_l": "shape_stairs_l",
+    "shape_stairs_u": "shape_stairs_u",
+    "shape_stairs_spiral": "shape_stairs_spiral",
+    "shape_stairs_tri_spiral": "shape_stairs_tri_spiral",
+    "shape_tri_floor_frame": "shape_tri_floor_frame",
+
     "map_player": "map_player",
 }
 OURS_SRC = ROOT / "ci/icons"

@@ -434,3 +434,43 @@ fn bare_ground_is_the_first_storey() {
     assert_eq!(aim.level_for(SHAPE_WALL), 0);
     assert_eq!(aim.standing, 1, "the feet are still on the first floor up");
 }
+
+#[test]
+fn aiming_at_the_lower_wall_extends_its_nearest_end_on_either_axis() {
+    for loc in [LOC_EDGE_XLO, LOC_EDGE_ZLO] {
+        for high in [false, true] {
+            let mut r = Rig::new();
+            let (ncx, ncz) = if loc == LOC_EDGE_XLO {
+                (CX, if high { CZ + 1 } else { CZ - 1 })
+            } else {
+                (if high { CX + 1 } else { CX - 1 }, CZ)
+            };
+            r.place(ROW_FOUNDATION, CX, CZ, 0, LOC_PLANE).unwrap();
+            r.place(ROW_FOUNDATION, ncx, ncz, 0, LOC_PLANE).unwrap();
+            r.place(ROW_WALL, CX, CZ, 0, loc).unwrap();
+            let (x0, z0) = corner();
+            let along = if high { 2.25 } else { 0.75 };
+            let feet = [x0 + 1.5, r.floor0(), z0 + 1.5];
+            let eye = [feet[0], feet[1] + EYE_M, feet[2]];
+            let at = if loc == LOC_EDGE_XLO {
+                [x0, feet[1] + 0.9, z0 + along]
+            } else {
+                [x0 + along, feet[1] + 0.9, z0]
+            };
+            let aim = r.aim(eye, at, feet);
+            assert!(aim.beside.is_some(), "{aim:?}");
+            let t = aim.target_for(SHAPE_WALL);
+            assert_eq!((t.cx, t.cz, t.level, t.loc), (ncx, ncz, 0, loc));
+            r.place(ROW_WALL, t.cx, t.cz, t.level, t.loc)
+                .expect("beside socket must place");
+            // A held insert still targets the wall that was hit, never its neighbor.
+            let door = deploy_target_at(aim.at.0, aim.at.1, PLACE_DOORWAY, aim.level_for_deploy());
+            assert_eq!((door.cx, door.cz, door.level, door.loc), (CX, CZ, 0, loc));
+            let upper = r.aim(eye, [at[0], feet[1] + 2.7, at[2]], feet);
+            let t = upper.target_for(SHAPE_WALL);
+            assert_eq!((t.cx, t.cz, t.level, t.loc), (CX, CZ, 1, loc));
+            r.place(ROW_WALL, t.cx, t.cz, t.level, t.loc)
+                .expect("upper socket must place");
+        }
+    }
+}

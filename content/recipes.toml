@@ -481,3 +481,46 @@ inputs = [
     { item = "item.cloth", count = 50 },
     { item = "item.lowgrade", count = 10 },
 ]
+
+# https://wiki.facepunch.com/rust/item/wall.window.bars.metal
+# https://wiki.facepunch.com/rust/item/wall.frame.garagedoor
+[[recipe]]
+id = "recipe.window_bars_metal"
+output = "item.window_bars_metal"
+count = 1
+station = "workbench1"
+seconds = 15
+blueprint = true
+inputs = [{ item = "item.metal_frags", count = 25 }]
+
+[[recipe]]
+id = "recipe.garage_door"
+output = "item.garage_door"
+count = 1
+station = "workbench2"
+seconds = 30
+blueprint = true
+inputs = [
+    { item = "item.metal_frags", count = 300 },
+    { item = "item.gears", count = 2 },
+]
+
+# https://wiki.facepunch.com/rust/item/wall.window.glass.reinforced
+[[recipe]]
+id = "recipe.window_glass"
+output = "item.window_glass"
+count = 1
+station = "workbench2"
+seconds = 15
+blueprint = true
+inputs = [{ item = "item.metal_frags", count = 50 }]
+
+# https://wiki.facepunch.com/rust/item/shutter.wood.a
+[[recipe]]
+id = "recipe.window_shutters"
+output = "item.window_shutters"
+count = 1
+station = "none"
+seconds = 15
+blueprint = true
+inputs = [{ item = "item.wood", count = 200 }]

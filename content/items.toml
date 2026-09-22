@@ -573,3 +573,37 @@ stack = 20
 tier = 0
 rarity = "common"
 slot = "hand"
+
+# Socket inserts: Facepunch item tables, checked 2026-09-21.
+[[item]]
+id = "item.window_bars_metal"
+name = "Metal Window Bars"
+stack = 10
+tier = 1
+rarity = "uncommon"
+slot = "hand"
+
+[[item]]
+id = "item.garage_door"
+name = "Garage Door"
+stack = 1
+tier = 2
+rarity = "rare"
+slot = "hand"
+
+# Window fittings: Facepunch item tables, 2026-09-21.
+[[item]]
+id = "item.window_glass"
+name = "Glass Window"
+stack = 10
+tier = 2
+rarity = "rare"
+slot = "hand"
+
+[[item]]
+id = "item.window_shutters"
+name = "Wood Shutters"
+stack = 20
+tier = 0
+rarity = "common"
+slot = "hand"

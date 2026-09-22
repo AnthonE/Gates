@@ -902,7 +902,17 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// v68 adds hammer rotation: an address-only action flips an edge facing
 /// or turns a stair. Existing removal/placement records carry the result;
 /// no field width changes and no client-selected orientation crosses.
-pub const PROTO_VER: u16 = 68;
+/// v69 adds window-bar and garage-door archetypes and their socket classes.
+/// Existing field widths suffice; older peers must not interpret the new domains.
+/// v70 adds glass and shutters. Deploy rows widen to 5 bits and definition
+/// totals to 6, admitting the 32-row bounded catalogue. Closed window panes
+/// stop shots where bars leave gaps; shutters use the existing door event.
+/// v71 admits half/low walls and half-storey addresses. Levels widen to
+/// 4 bits while codes 0..7 keep their old height; 8..15 add half a storey.
+/// Piece-definition totals widen to 7 bits for the extended catalogue.
+/// v72 adds circulation shapes through triangular floor frame; shape codes
+/// widen from four bits to five. All previous codes keep their meaning.
+pub const PROTO_VER: u16 = 72;
 
 /// This game's slug in the elo catalog.
 ///
@@ -1462,11 +1472,11 @@ const MOVE_COUNT_BITS: u32 = 16;
 /// values past the queue refuse at decode like a forged hotbar selector.
 const CANCEL_INDEX_BITS: u32 = 3;
 /// Build-grid field widths (limits.rs: `MAX_BUILD_COORD` 1024 cells,
-/// `MAX_BUILD_LEVELS` 8, four locs, `MAX_PIECE_DEFS` 32 rows). Coord,
+/// `MAX_BUILD_SOCKETS` 16, thirteen locs, `MAX_PIECE_DEFS` 96 rows). Coord,
 /// level, and loc widths are exact; piece rows past the cap refuse at
 /// decode. Shared with the event lane's piece records (`event.rs`).
 pub(crate) const BUILD_CELL_BITS: u32 = 10;
-pub(crate) const BUILD_LEVEL_BITS: u32 = 3;
+pub(crate) const BUILD_LEVEL_BITS: u32 = 4;
 /// Widened 2 → 4 in wire v40 (triangles v0): the piece grid gained four
 /// triangle halves and two diagonals, ten locs where four filled the old
 /// width exactly. V67 uses three more for stair directions, leaving three
@@ -1489,9 +1499,9 @@ pub(crate) fn loc_max(deploy: bool) -> u8 {
     }
 }
 pub(crate) const PIECE_ROW_BITS: u32 = 8;
-/// Deployable rows cross in 4 bits — exactly `MAX_DEPLOY_DEFS`, so the
+/// Deployable rows cross in 5 bits — exactly `MAX_DEPLOY_DEFS`, so the
 /// width itself is the range check.
-pub(crate) const DEPLOY_ROW_BITS: u32 = 4;
+pub(crate) const DEPLOY_ROW_BITS: u32 = 5;
 /// A structure's damage band (`sim_core::build::DMG_BANDS`, wire v44).
 ///
 /// Three bits is the whole width, so — like `DEPLOY_ROW_BITS` — **the width
@@ -1999,7 +2009,7 @@ pub fn encode_action_place(
     if row as usize >= sim_core::limits::MAX_PIECE_DEFS
         || cx as usize >= sim_core::limits::MAX_BUILD_COORD
         || cz as usize >= sim_core::limits::MAX_BUILD_COORD
-        || level as usize >= sim_core::limits::MAX_BUILD_LEVELS
+        || level as usize >= sim_core::limits::MAX_BUILD_SOCKETS
         || loc > loc_max(false)
         || (plate as i32) < -PLATE_BIAS
         || (plate as i32) >= PLATE_BIAS
@@ -2035,7 +2045,7 @@ pub fn encode_action_deploy(
     if row as usize >= sim_core::limits::MAX_DEPLOY_DEFS
         || cx as usize >= sim_core::limits::MAX_BUILD_COORD
         || cz as usize >= sim_core::limits::MAX_BUILD_COORD
-        || level as usize >= sim_core::limits::MAX_BUILD_LEVELS
+        || level as usize >= sim_core::limits::MAX_BUILD_SOCKETS
         || loc > sim_core::build::LOC_EDGE_ZLO
     {
         return Err(WireError::Range);
@@ -2054,7 +2064,7 @@ pub fn encode_action_deploy(
 pub fn encode_action_feed(cx: u16, cz: u16, level: u8, buf: &mut [u8]) -> Result<usize, WireError> {
     if cx as usize >= sim_core::limits::MAX_BUILD_COORD
         || cz as usize >= sim_core::limits::MAX_BUILD_COORD
-        || level as usize >= sim_core::limits::MAX_BUILD_LEVELS
+        || level as usize >= sim_core::limits::MAX_BUILD_SOCKETS
     {
         return Err(WireError::Range);
     }
@@ -2076,7 +2086,7 @@ pub fn encode_action_use(
 ) -> Result<usize, WireError> {
     if cx as usize >= sim_core::limits::MAX_BUILD_COORD
         || cz as usize >= sim_core::limits::MAX_BUILD_COORD
-        || level as usize >= sim_core::limits::MAX_BUILD_LEVELS
+        || level as usize >= sim_core::limits::MAX_BUILD_SOCKETS
         || loc > sim_core::build::LOC_EDGE_ZLO
     {
         return Err(WireError::Range);
@@ -2101,7 +2111,7 @@ pub fn encode_action_repair(
 ) -> Result<usize, WireError> {
     if cx as usize >= sim_core::limits::MAX_BUILD_COORD
         || cz as usize >= sim_core::limits::MAX_BUILD_COORD
-        || level as usize >= sim_core::limits::MAX_BUILD_LEVELS
+        || level as usize >= sim_core::limits::MAX_BUILD_SOCKETS
         || loc > loc_max(deploy)
     {
         return Err(WireError::Range);
@@ -2135,7 +2145,7 @@ pub fn encode_action_throw(
 ) -> Result<usize, WireError> {
     if cx as usize >= sim_core::limits::MAX_BUILD_COORD
         || cz as usize >= sim_core::limits::MAX_BUILD_COORD
-        || level as usize >= sim_core::limits::MAX_BUILD_LEVELS
+        || level as usize >= sim_core::limits::MAX_BUILD_SOCKETS
         || loc > loc_max(deploy)
     {
         return Err(WireError::Range);
@@ -2190,7 +2200,7 @@ pub fn encode_action_access(
     };
     if cx as usize >= sim_core::limits::MAX_BUILD_COORD
         || cz as usize >= sim_core::limits::MAX_BUILD_COORD
-        || level as usize >= sim_core::limits::MAX_BUILD_LEVELS
+        || level as usize >= sim_core::limits::MAX_BUILD_SOCKETS
         || loc > sim_core::build::LOC_EDGE_ZLO
         || op > sim_core::deploy::ACCESS_OP_MAX
     {
@@ -2219,7 +2229,7 @@ pub fn encode_action_demolish(
 ) -> Result<usize, WireError> {
     if cx as usize >= sim_core::limits::MAX_BUILD_COORD
         || cz as usize >= sim_core::limits::MAX_BUILD_COORD
-        || level as usize >= sim_core::limits::MAX_BUILD_LEVELS
+        || level as usize >= sim_core::limits::MAX_BUILD_SOCKETS
         || loc > loc_max(deploy)
     {
         return Err(WireError::Range);
@@ -2245,7 +2255,7 @@ pub fn encode_action_rotate(
 ) -> Result<usize, WireError> {
     if cx as usize >= sim_core::limits::MAX_BUILD_COORD
         || cz as usize >= sim_core::limits::MAX_BUILD_COORD
-        || level as usize >= sim_core::limits::MAX_BUILD_LEVELS
+        || level as usize >= sim_core::limits::MAX_BUILD_SOCKETS
         || loc > loc_max(false)
     {
         return Err(WireError::Range);
@@ -2270,7 +2280,7 @@ pub fn encode_action_upgrade(
 ) -> Result<usize, WireError> {
     if cx as usize >= sim_core::limits::MAX_BUILD_COORD
         || cz as usize >= sim_core::limits::MAX_BUILD_COORD
-        || level as usize >= sim_core::limits::MAX_BUILD_LEVELS
+        || level as usize >= sim_core::limits::MAX_BUILD_SOCKETS
         || loc > loc_max(false)
         || material > sim_core::build::MAT_METAL
     {
@@ -2344,7 +2354,7 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
             let cz = r.read(BUILD_CELL_BITS)? as u16;
             let level = r.read(BUILD_LEVEL_BITS)? as u8;
             let loc = r.read(BUILD_LOC_BITS)? as u8;
-            // Deploy rows are width-exact (4 bits = MAX_DEPLOY_DEFS); the
+            // Deploy rows are width-exact (5 bits = MAX_DEPLOY_DEFS); the
             // loc stopped being so at v40, and a deployable never sits on
             // a triangle or a diagonal.
             if loc > loc_max(true) {
@@ -4023,7 +4033,7 @@ mod tests {
     fn rotate_addresses_roundtrip_and_forged_locs_refuse() {
         let mut buf = [0u8; MAX_STREAM_MSG_BYTES];
         let cx = (sim_core::limits::MAX_BUILD_COORD - 1) as u16;
-        let level = (sim_core::limits::MAX_BUILD_LEVELS - 1) as u8;
+        let level = (sim_core::limits::MAX_BUILD_SOCKETS - 1) as u8;
         for loc in 0..=loc_max(false) {
             let n = encode_action_rotate(cx, 0, level, loc, &mut buf).unwrap();
             assert_eq!(
