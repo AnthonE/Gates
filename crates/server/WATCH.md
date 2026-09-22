@@ -73,8 +73,9 @@ the loopback origin, preserve the trailing slash, and leave frame/state
 responses uncached. Relative asset/API URLs support that mount. It can also
 be embedded by a page on the same origin; its CSP refuses other origins.
 
-`watch-deploy/gates-watch.service` runs one scripted instance continuously
-under Xvfb on the existing render host. The two-minute demo timer is disabled.
+`watch-deploy/gates-watch.service` runs one instance continuously under Xvfb
+on the existing render host. The base unit is explicitly scripted; the live
+host uses `watch-deploy/jev.conf` to select Jev. The two-minute demo timer is disabled.
 After death or failure, systemd starts a fresh private island after five
 seconds; startup still has its 300-second ceiling. Viewers reconnect
 automatically and the page explains the loading pauses.
@@ -95,13 +96,24 @@ include the snippet inside the existing render-host HTTPS server, check
 public page and `frame.jpg` (including its `X-Bot-State` header).
 `systemctl stop gates-watch` stops only the preview. To roll back routing,
 remove the two watch locations/includes and reload the checked nginx config.
-Continuous hosting was authorized for this slow preview; smooth video,
-large audiences and live Jev remain unvalidated.
+Continuous hosting was authorized for this slow preview; smooth video and
+large audiences remain unvalidated.
+
+To enable Jev, install `watch-deploy/jev.conf` as
+`/etc/systemd/system/gates-watch.service.d/jev.conf`. Its required
+`EnvironmentFile=/etc/gates-watch/typesafe.env` contains `TYPESAFE_API_KEY`;
+the file is root-owned, mode 0600, in a root-only directory outside the repo.
+Reload systemd and restart only `gates-watch`. A missing credential fails
+startup; a failed request never substitutes scripted decisions. The live
+operator supplied the key and enabled this configuration on 2026-09-22.
+To explicitly return to scripted mode, remove the drop-in and reload/restart
+the service. Never put the key in the unit, command arguments, page or git.
 
 ## Running cost
 
-The current service uses `--scripted`, so it makes no paid model requests.
-It uses the existing server, with no additional machine provisioned; its
+The live service now uses Jev for exploration and makes paid model requests.
+Explicit `--scripted` runs still make none. It uses the existing server,
+with no additional machine provisioned; its
 CPU, memory and viewer bandwidth still consume that server's capacity.
 
 Jev 1.13 is listed at **$0.042 per million input tokens**, with output free
@@ -112,8 +124,10 @@ at the same size is $10.89 per 30 days. These are arithmetic scenarios, not
 measured usage: actual prompt token counts, decision cadence, pauses and
 provider billing determine the invoice. The current controller asks at most
 once per second while exploring; local harvesting needs no model call.
-No TypeSafe key is configured for the live preview. Enabling paid Jev calls
-requires configuring that server-side key and switching out of scripted mode.
+The first live request using the bot's question and a sample player state
+returned 507 input tokens in 342 ms. At that request size and one request per
+second continuously, the arithmetic is $55.19 per 30 days. This is a sample,
+not a measured monthly rate or spending cap; real usage varies with the run.
 
 ## Checked locally
 
@@ -128,5 +142,8 @@ frames, no horizontal overflow, and the stalled indicator after losing the
 feed. A local Xvfb/llvmpipe run on 2026-09-22 reached the world and moved with
 zero decode errors. Software rendering delivered fewer than one frame per
 second, and that rendered run did not collect wood within 120 seconds; the
-separate real-session harvest test did. Live Jev remains untested without a
-TypeSafe key. There is no pixel gate.
+separate real-session harvest test did. A subsequent continuous scripted run
+confirmed 1,500 wood and three trees with zero decode errors. There is no pixel gate.
+The hosted Jev mode subsequently accepted 19 real model decisions in 35 seconds
+with zero model or decode errors; this validates the connection and controller,
+not general survival competence or a sustained spending rate.
