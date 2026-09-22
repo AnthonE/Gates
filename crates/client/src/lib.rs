@@ -634,12 +634,22 @@ impl Session {
         let dg_ring = datagrams.clone();
         let dg_conn = connection.clone();
         tokio::spawn(async move {
-            while let Ok(dgram) = dg_conn.receive_datagram().await {
-                let Ok(mut r) = dg_ring.lock() else { return };
-                r.push(&dgram);
-            }
+            let why = loop {
+                match dg_conn.receive_datagram().await {
+                    Ok(dgram) => {
+                        let Ok(mut r) = dg_ring.lock() else { return };
+                        r.push(&dgram);
+                    }
+                    Err(e) => break e,
+                }
+            };
             if let Ok(mut r) = dg_ring.lock() {
                 r.closed = true;
+                // The shard's stated reason, when it gave one — a kick, a
+                // sold copy, a watched player leaving (`Session::close_code`).
+                if let wtransport::error::ConnectionError::ApplicationClosed(close) = why {
+                    r.close_code = Some(close.code().into_inner());
+                }
             }
         });
 
@@ -948,6 +958,15 @@ impl Session {
     /// session, which `closed()` is the thing to ask about.
     pub fn datagrams_dropped(&self) -> u64 {
         self.datagrams.lock().map(|r| r.dropped).unwrap_or(0)
+    }
+
+    /// The code the shard closed this session with, if it gave one — a
+    /// `REFUSE_*` value: `REFUSE_WATCH_ENDED` when a watched player left,
+    /// `REFUSE_ADMIN` for a kick, `REFUSE_TICKET` for a sold copy. `None`
+    /// while connected, and for a loss that carried no reason. A poisoned
+    /// lock answers `None`, like `datagrams_dropped`'s 0.
+    pub fn close_code(&self) -> Option<u64> {
+        self.datagrams.lock().ok().and_then(|r| r.close_code)
     }
 
     /// Whether the shard has hung up on this session. `pump` keeps working

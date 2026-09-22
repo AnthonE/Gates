@@ -551,16 +551,32 @@ async fn the_target_leaving_ends_the_seat_with_its_reason() {
     settle_agent(&mut agent).await;
     let (_ep, conn, _send, joined) = raw_watch(&h, k.address()).await;
     joined.expect("seated");
+    // And our own client, which must carry the reason to its screen.
+    let mut watcher = Session::watch(&ep, &server, k.address())
+        .await
+        .expect("seated");
     assert_eq!(
         tokio::time::timeout(Duration::from_secs(10), async {
-            while ShardStats::get(&h.stats.spectators) != 1 {
-                frame(&mut [&mut agent]).await;
+            while ShardStats::get(&h.stats.spectators) != 2 {
+                frame(&mut [&mut agent, &mut watcher]).await;
             }
         })
         .await,
         Ok(())
     );
     drop(agent);
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while !watcher.closed() {
+            frame(&mut [&mut watcher]).await;
+        }
+    })
+    .await
+    .expect("our client notices the seat closing");
+    assert_eq!(
+        watcher.close_code(),
+        Some(protocol::REFUSE_WATCH_ENDED as u64),
+        "the client lost the reason the seat ended"
+    );
     let why = tokio::time::timeout(Duration::from_secs(20), conn.closed())
         .await
         .expect("the seat is closed when its target leaves");
@@ -572,7 +588,7 @@ async fn the_target_leaving_ends_the_seat_with_its_reason() {
         ),
         other => panic!("closed without the reason: {other:?}"),
     }
-    assert_eq!(ShardStats::get(&h.stats.spectate_ended), 1);
+    assert_eq!(ShardStats::get(&h.stats.spectate_ended), 2);
     h.shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 

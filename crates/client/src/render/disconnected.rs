@@ -85,7 +85,18 @@ pub fn watch(
     if !net.session.closed() {
         return;
     }
-    reason.line = line(&connecting.addr);
+    // The shard's own reason when it closed with one — "the player you were
+    // watching left", "an admin removed you" — rather than a bare loss.
+    reason.line = match net
+        .session
+        .close_code()
+        .and_then(|c| u8::try_from(c).ok())
+        .and_then(protocol::refuse_text)
+    {
+        Some(why) if connecting.addr.is_empty() => why.to_string(),
+        Some(why) => format!("{}: {why}", connecting.addr),
+        None => line(&connecting.addr),
+    };
     menu.status = reason.line.clone();
     warn!("gates: {} - leaving the world", reason.line);
     next.set(Screen::Disconnected);

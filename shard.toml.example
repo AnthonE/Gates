@@ -306,3 +306,21 @@ seed = 20260731
 # touches the sim thread or the handshake — only late (and, per loss_pct,
 # missing) datagrams. Never set it on a public shard.
 # netsim = "30,10,1"
+
+# The spectator door (NETCODE.md §2.3): read-only seats that watch a
+# consenting player's view — the viewer's own client joins with
+# `?spectate` in the browser or `--spectate` on the desktop, draws on its
+# own GPU, has no body and sends no input. SHUT by default.
+#
+# Who may be watched is the TARGET's choice, never the watcher's: a session
+# that declared itself an agent consents, a human who opted in is watchable
+# only behind `spectate_human_delay_s` (0, the default, refuses them), and
+# everyone else refuses every watcher with one code. Watchers sign nothing.
+# spectate = true
+#   Seats this shard offers (1..=16, default 16 — limits::MAX_SPECTATORS).
+# spectate_seats = 16
+#   Seats one player may fill (default 4). A popular agent is re-broadcast,
+#   not fanned out from here.
+# spectate_per_target = 4
+#   Seconds a HUMAN's opted-in feed is delayed; 0 refuses human feeds.
+# spectate_human_delay_s = 0
