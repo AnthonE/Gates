@@ -37,7 +37,7 @@ drink needs known water-giving food or the sea plus the health to pay for it —
 and a reply naming anything else is refused.
 
 - **gather** — find a visible node of the kind (32 m, 90° cone, line of sight,
-  one cell per frame), approach, hold primary with the best belt tool by name
+  one cell per game tick, at most 8 per frame), approach, hold primary with the best belt tool by name
   (`TREE_TOOLS`, `NODE_TOOLS`), done when the node falls. A resource seen in
   the last minute is walked back to. Fails on no tool, nothing found in 20 s,
   three stalled approaches, or a full pack (no room for what the node pays).
