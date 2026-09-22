@@ -440,6 +440,29 @@ pub struct Session {
     /// purpose: a connection does not come back, and a flag that cleared
     /// itself would let one hopeful frame un-say it.
     closed: bool,
+    event_observer: Option<EventObserver>,
+    observer_failed: bool,
+}
+
+/// A local observer of accepted reliable messages. Called on the frame thread:
+/// it must not block or allocate. Returning false stops outgoing input and
+/// closes the session, so a bounded observer cannot silently lose inventory.
+type EventObserver = Box<dyn FnMut(&[u8]) -> bool + Send>;
+
+fn apply_observed_event(
+    core: &mut ClientCore,
+    observer: &mut Option<EventObserver>,
+    failed: &mut bool,
+    bytes: &[u8],
+) -> Result<u32, protocol::WireError> {
+    let flags = core.on_stream(bytes)?;
+    if *failed {
+        return Ok(flags);
+    }
+    if let Some(observer) = observer {
+        *failed = !observer(bytes);
+    }
+    Ok(flags)
 }
 
 /// The desktop half of the session: connecting.
@@ -573,6 +596,8 @@ impl Session {
                 .map(|_| Vec::with_capacity(DATAGRAM_BUDGET_BYTES))
                 .collect(),
             closed: false,
+            event_observer: None,
+            observer_failed: false,
         })
     }
 }
@@ -729,11 +754,33 @@ impl Session {
                 .map(|_| Vec::with_capacity(DATAGRAM_BUDGET_BYTES))
                 .collect(),
             closed: false,
+            event_observer: None,
+            observer_failed: false,
         })
     }
 }
 
 impl Session {
+    /// Install one local reader before any received state is applied. It sees each accepted
+    /// reliable message in order, alongside the renderer's normal decoding.
+    /// The callback must be bounded, nonblocking and allocation-free. False
+    /// means it could not keep up: the session stops rather than hiding a gap.
+    pub fn observe_events(
+        &mut self,
+        observer: impl FnMut(&[u8]) -> bool + Send + 'static,
+    ) -> Result<(), &'static str> {
+        if self.event_observer.is_some()
+            || self.core.events_applied != 0
+            || self.core.event_errors != 0
+            || self.snapshots != 0
+            || self.closed
+        {
+            return Err("an event observer must be installed once, before receiving state");
+        }
+        self.event_observer = Some(Box::new(observer));
+        Ok(())
+    }
+
     /// What the browser transport has REFUSED to send, and why.
     ///
     /// `(over_mtu, backpressured)` — datagrams dropped because the payload
@@ -793,6 +840,9 @@ impl Session {
     /// deliberately so.
     pub fn send_action(&self, payload: &[u8]) -> Result<(), SendError> {
         use tokio::sync::mpsc::error::TrySendError;
+        if self.observer_failed {
+            return Err(SendError::Closed);
+        }
         match self.actions.try_send(payload.to_vec()) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(_)) => Err(SendError::Full),
@@ -822,12 +872,14 @@ impl Session {
         });
         let applied = &mut self.applied;
         let applied2 = &mut self.applied2;
+        let observer = &mut self.event_observer;
+        let observer_failed = &mut self.observer_failed;
         let ev_gone = drain_lane(&mut self.events, |bytes| {
             // A malformed message contributes no flags. The `Err` is dropped
             // here exactly as the retired `let _` dropped it — surfacing a
             // decode error is its own slice and not this one's; what changes
             // is that a SUCCESSFUL decode no longer goes unnoticed.
-            if let Ok(flags) = core.on_stream(bytes) {
+            if let Ok(flags) = apply_observed_event(core, observer, observer_failed, bytes) {
                 *applied |= flags;
                 // Read INSIDE the loop, not after it: `applied2()` describes
                 // the message just decoded and is overwritten by the next.
@@ -838,12 +890,12 @@ impl Session {
         // done — the tasks only return on a transport-level failure. OR'd
         // into a latch rather than assigned, so one lane outliving the other
         // by a frame cannot flicker the answer back to alive.
-        self.closed |= dg_gone || ev_gone;
+        self.closed |= dg_gone || ev_gone || self.observer_failed;
 
         let tick = self.core.advance(dt_ms);
 
         let len = self.core.poll_input(&mut self.input_buf);
-        if len > 0 {
+        if len > 0 && !self.observer_failed {
             // The drop-oldest rule and the reason for it moved with the call
             // (`net::native`); what stays here is that this is the only line
             // in a frame that touches the transport at all.
@@ -861,6 +913,61 @@ impl Session {
 mod tests {
     use super::is_loopback_host;
     use crate::net::{drain_datagram, drain_lane};
+
+    #[test]
+    fn event_observer_receives_accepted_bytes_in_order_and_preserves_hud_state() {
+        use super::{apply_observed_event, ClientCore, EventObserver};
+        let (tx, rx) = std::sync::mpsc::sync_channel(2);
+        let mut observer: Option<EventObserver> = Some(Box::new(move |bytes| {
+            let mut copy = [0u8; 16];
+            copy[..bytes.len()].copy_from_slice(bytes);
+            tx.try_send((copy, bytes.len())).is_ok()
+        }));
+        let mut core = ClientCore::new(1, 1, 0);
+        let mut failed = false;
+        let mut expected = Vec::new();
+        for hp in [90, 75] {
+            let mut bytes = [0u8; 16];
+            let n = protocol::event::encode_event_health(hp, 100, &mut bytes).unwrap();
+            expected.push((bytes, n));
+            let flags =
+                apply_observed_event(&mut core, &mut observer, &mut failed, &bytes[..n]).unwrap();
+            assert_ne!(flags & client_core::core::APPLIED_HEALTH, 0);
+            assert_eq!(core.hp, hp);
+        }
+        assert!(apply_observed_event(&mut core, &mut observer, &mut failed, &[]).is_err());
+        assert!(!failed);
+        assert_eq!(rx.try_iter().collect::<Vec<_>>(), expected);
+        assert_eq!(core.hp, 75);
+    }
+
+    #[test]
+    fn a_full_observer_latches_failure_without_stealing_normal_updates() {
+        use super::{apply_observed_event, ClientCore, EventObserver};
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let mut observer: Option<EventObserver> = Some(Box::new(move |_| tx.try_send(()).is_ok()));
+        let mut core = ClientCore::new(1, 1, 0);
+        let mut failed = false;
+        for hp in [90, 80] {
+            let mut bytes = [0u8; 16];
+            let n = protocol::event::encode_event_health(hp, 100, &mut bytes).unwrap();
+            apply_observed_event(&mut core, &mut observer, &mut failed, &bytes[..n]).unwrap();
+        }
+        assert!(failed);
+        rx.try_recv().unwrap();
+        let mut bytes = [0u8; 16];
+        let n = protocol::event::encode_event_health(70, 100, &mut bytes).unwrap();
+        apply_observed_event(&mut core, &mut observer, &mut failed, &bytes[..n]).unwrap();
+        assert!(
+            failed,
+            "making room cannot conceal an earlier missing message"
+        );
+        assert!(rx.try_recv().is_err(), "a broken observer stays stopped");
+        assert_eq!(
+            core.hp, 70,
+            "ordinary HUD decoding still receives the final words"
+        );
+    }
 
     /// **Which addresses get the carve-out, exhaustively enough to be
     /// evidence.** `tls_posture.rs` proves the two postures over a real

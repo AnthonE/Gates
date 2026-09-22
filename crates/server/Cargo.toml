@@ -5,7 +5,18 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+watch = ["dep:client", "client/render", "dep:bevy", "dep:image", "tokio/net"]
+
+[[bin]]
+name = "jev-watch"
+path = "src/bin/jev-watch.rs"
+required-features = ["watch"]
+
 [dependencies]
+client = { path = "../client", optional = true }
+bevy = { version = "0.18", optional = true }
+image = { version = "0.25", optional = true, default-features = false, features = ["jpeg"] }
 content = { path = "../content" }
 sim-core = { path = "../sim-core" }
 protocol = { path = "../protocol" }
@@ -29,6 +40,8 @@ wtransport = { git = "https://github.com/BiagioFesta/wtransport", rev = "a11e6a8
     "quinn",
 ] }
 rtrb = "0.3"
+# Jev's typed HTTP request/response; inference runs on a bot worker only.
+serde_json = "1"
 # The UDP socket buffers NETCODE.md §2.2 asks for, and the readback that says
 # what the OS actually granted. std::net::UdpSocket exposes no setsockopt;
 # quinn already depends on this crate, so it is a direct edge on something

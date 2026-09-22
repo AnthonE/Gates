@@ -5270,13 +5270,16 @@ dependencies = [
 name = "server"
 version = "0.8.0"
 dependencies = [
+ "bevy",
  "client",
  "client-core",
  "content",
  "getrandom 0.2.17",
+ "image",
  "k256",
  "protocol",
  "rtrb",
+ "serde_json",
  "sim-core",
  "socket2",
  "tiny-keccak",

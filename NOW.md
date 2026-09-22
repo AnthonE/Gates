@@ -1451,6 +1451,20 @@ What it still cannot do:
 
 ## 5d · The agent player: the trust ledger is minted and nobody reads it *(systems lane)*
 
+Local first loop (2026-09-21): `jev-bot --local --scripted --gather-wood`
+finds visible trees, approaches, harvests with a belt tool and confirms wood
+from normal inventory messages. `crates/server/JEV.md` owns the experiment's
+commands and limits. The shared first-person frame feed is `jev-watch`
+(`crates/server/WATCH.md`): one local bot, one renderer, a read-only page.
+The operator-selected slow shared preview is live at
+`https://elopros.com/games/gates/watch/` (2026-09-22), with continuous runs,
+supervised recovery after death/failure and verified browser recovery. Next: stone → crafting,
+inventory handling, survival and respawn; public identity and the general
+agent API below remain outstanding.
+
+The host now uses Jev 1.13.0 for exploration with the operator's server-side
+key; live API decisions are verified. Gathering stays a local controller skill.
+
 `PLAYERS.md` has the spec — verb set, observation encoder, four walls. Wall 3
 is built (`EV_TRUST` code 39, `World::log_trust`, six checks in
 `crates/sim-core/tests/event_roles.rs`); the other three are not.
