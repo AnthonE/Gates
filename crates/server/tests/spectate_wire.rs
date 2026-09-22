@@ -243,6 +243,12 @@ async fn a_watcher_sees_what_the_agent_sees() {
     let v = watcher.core.spectate_view().expect("a sample to follow");
     assert!(v.x.is_finite() && v.z.is_finite());
 
+    // The seat's ack-only datagrams do their one job: the shard deltas this
+    // watcher's snapshots against baselines it acked, like a player's.
+    assert!(
+        watcher.core.snapshots_delta > 0,
+        "a live seat never got a delta: its acks are not reaching the shard"
+    );
     // Nothing the watcher did was refused as input, and the seat is counted.
     assert_eq!(ShardStats::get(&h.stats.spectate_input_refused), 0);
     assert_eq!(ShardStats::get(&h.stats.spectate_joins), 1);
@@ -567,5 +573,69 @@ async fn the_target_leaving_ends_the_seat_with_its_reason() {
         other => panic!("closed without the reason: {other:?}"),
     }
     assert_eq!(ShardStats::get(&h.stats.spectate_ended), 1);
+    h.shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// **A human who opted in is watchable only behind the shard's delay.** With
+/// `spectate_human_delay_s` set, the seat is granted, the label says the feed
+/// is a person's (not an agent's), and the delayed stream still carries the
+/// target's body — the delay line is on the shard's egress, so it is a fact
+/// about what the shard sends and not something a modified client can skip.
+/// (The refusal at the default delay of 0 is in
+/// `a_target_that_did_not_consent_cannot_be_watched`.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_humans_feed_is_admitted_only_behind_the_delay() {
+    // Longer than the shard's sent-snapshot ring covers, which is what makes
+    // the delay OBSERVABLE without a clock: every ack this watcher sends
+    // names a snapshot the shard has already forgotten, so every snapshot it
+    // is sent is a zero-state keyframe and never a delta.
+    let ring_s = (sim_core::limits::SENT_SNAPSHOT_RING as u64
+        * sim_core::limits::SNAPSHOT_INTERVAL_TICKS
+        / sim_core::limits::TICK_HZ as u64) as u32;
+    let h = shard(
+        Spectate {
+            seats: 2,
+            per_target: 2,
+            human_delay_s: ring_s + 1,
+        },
+        20_260_929,
+    )
+    .await;
+    let server = h.local_addr.to_string();
+    let ep = endpoint(&h);
+    let (_sk, opted) = person(9);
+    let mut p = Session::connect_as(
+        &ep,
+        &server,
+        opted.address(),
+        &Join::Player { watchable: true },
+        |d, n, i| opted.sign_proof_hex(d, n, i),
+    )
+    .await
+    .expect("a proven player who opted in joins");
+    settle_agent(&mut p).await;
+    let id = p.welcome.player_id;
+    let mut w = Session::watch(&ep, &server, opted.address())
+        .await
+        .expect("seated behind the delay");
+    let watch = w.watching.expect("told whose view");
+    assert!(!watch.agent, "a person's feed, not an agent's");
+    assert!(client::ui::spectate::label(&watch).ends_with("delayed feed"));
+    // The delayed stream arrives, and carries the watched body.
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while w.core.snapshots_applied < 30 || w.core.catalog.count == 0 {
+            frame(&mut [&mut p, &mut w]).await;
+        }
+    })
+    .await
+    .expect("the delayed feed arrives");
+    assert!(sample(&w, id).is_some(), "the watched body is in the feed");
+    // The delay, seen in the bytes: acks older than the shard's ring buy no
+    // baseline, so the whole feed is keyframes.
+    assert_eq!(
+        w.core.snapshots_delta, 0,
+        "a delayed seat got a delta — its feed is not behind the ring"
+    );
+    assert_eq!(w.core.decode_errors + w.core.event_errors, 0);
     h.shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
 }

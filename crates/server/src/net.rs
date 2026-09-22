@@ -3042,6 +3042,37 @@ fn sim_thread(
 mod tests {
     use super::*;
 
+    /// **The human feed's delay line holds every message for exactly its
+    /// delay, in order, and refuses past its bound** — clock-free: every
+    /// instant is handed in, none is read.
+    #[test]
+    fn the_delay_line_releases_each_message_at_its_due_and_not_before() {
+        let t0 = tokio::time::Instant::now();
+        let d = Duration::from_secs(5);
+        let mut line = DelayLine::<u32>::new(3);
+        assert!(line.push(t0 + d, 1).is_ok());
+        assert!(line.push(t0 + Duration::from_secs(1) + d, 2).is_ok());
+        assert!(line.push(t0 + Duration::from_secs(2) + d, 3).is_ok());
+        assert_eq!(line.push(t0 + d, 4), Err(4), "a full line refuses");
+        // Nothing is due before the delay has passed for it.
+        assert_eq!(line.pop_due(t0), None);
+        assert_eq!(line.pop_due(t0 + d - Duration::from_millis(1)), None);
+        // Released in order, each at its own due, never early.
+        assert_eq!(line.pop_due(t0 + d), Some(1));
+        assert_eq!(line.pop_due(t0 + d), None, "the next is not due yet");
+        assert_eq!(line.pop_due(t0 + Duration::from_secs(10)), Some(2));
+        assert_eq!(line.pop_due(t0 + Duration::from_secs(10)), Some(3));
+        assert_eq!(line.pop_due(t0 + Duration::from_secs(10)), None);
+        // Dropping the oldest makes room for the newest (the snapshot lane's
+        // policy; the event lane refuses instead).
+        for i in 0..3 {
+            line.push(t0, 10 + i).unwrap();
+        }
+        line.drop_oldest();
+        assert!(line.push(t0, 20).is_ok());
+        assert_eq!(line.pop_due(t0), Some(11));
+    }
+
     // The admission-gate ordering and the sample period are asserted at
     // COMPILE time beside their constants (`const _: () = assert!(…)`), not
     // here. They were tests until clippy pointed out that an assertion over

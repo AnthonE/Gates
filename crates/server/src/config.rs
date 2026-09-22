@@ -1252,6 +1252,55 @@ mod tests {
 mod auth_cfg_tests {
     use super::*;
 
+    /// The spectator door is shut unless the operator opens it, and opening
+    /// it takes every default at once (`NETCODE.md` §2.3).
+    #[test]
+    fn the_spectator_door_is_shut_by_default_and_opens_whole() {
+        let base = "bind = \"127.0.0.1:1\"\nseed = 7\n";
+        let off = parse_shard_toml(base).unwrap();
+        assert_eq!(off.spectate, Spectate::OFF);
+        assert!(!off.spectate.open());
+        let on = parse_shard_toml(&format!("{base}spectate = true\n")).unwrap();
+        assert_eq!(on.spectate, Spectate::on());
+        assert_eq!(on.spectate.seats, sim_core::limits::MAX_SPECTATORS);
+        assert_eq!(on.spectate.human_delay_s, 0, "human feeds stay refused");
+        let tuned = parse_shard_toml(&format!(
+            "{base}spectate = true\nspectate_seats = 3\nspectate_per_target = 2\n\
+             spectate_human_delay_s = 30\n"
+        ))
+        .unwrap();
+        assert_eq!(
+            tuned.spectate,
+            Spectate {
+                seats: 3,
+                per_target: 2,
+                human_delay_s: 30
+            }
+        );
+    }
+
+    #[test]
+    fn a_spectator_setting_the_door_cannot_honour_is_refused() {
+        let base = "bind = \"127.0.0.1:1\"\nseed = 7\n";
+        for (extra, needle) in [
+            ("spectate_seats = 4\n", "spectate = true"),
+            ("spectate = yes\n", "true or false"),
+            ("spectate = true\nspectate_seats = 0\n", "at least 1"),
+            ("spectate = true\nspectate_seats = 17\n", "MAX_SPECTATORS"),
+            (
+                "spectate = true\nspectate_seats = 2\nspectate_per_target = 3\n",
+                "more than",
+            ),
+            (
+                "spectate = true\nspectate_human_delay_s = 61\n",
+                "delay line",
+            ),
+        ] {
+            let err = parse_shard_toml(&format!("{base}{extra}")).expect_err(extra);
+            assert!(err.contains(needle), "{extra:?}: {err}");
+        }
+    }
+
     /// The default is guests-welcome, and that is load-bearing: every test
     /// in this repo joins a shard with no launcher running.
     #[test]
