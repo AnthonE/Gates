@@ -730,13 +730,16 @@ impl Writer {
             .map(|d| d.as_secs())
             .unwrap_or(0);
         let mut head = String::with_capacity(1024);
-        format_header(&self.ident, &self.boot, self.seq, opened, &self.limits, &mut head);
+        format_header(
+            &self.ident,
+            &self.boot,
+            self.seq,
+            opened,
+            &self.limits,
+            &mut head,
+        );
         let segs = segments(&self.dir)?;
-        let mut closed: u64 = segs
-            .iter()
-            .filter(|s| s.0 != self.seq)
-            .map(|s| s.1)
-            .sum();
+        let mut closed: u64 = segs.iter().filter(|s| s.0 != self.seq).map(|s| s.1).sum();
         for &(seq, bytes) in segs.iter().filter(|s| s.0 != self.seq) {
             if closed + self.limits.segment_bytes <= self.limits.max_bytes {
                 break;
@@ -797,7 +800,9 @@ fn push_u64(out: &mut String, v: u64) {
 fn push_key(out: &mut String, k: &PlayerKey) {
     let b = k.as_bytes();
     out.push('"');
-    if b.iter().all(|&c| c.is_ascii_graphic() && c != b'"' && c != b'\\') {
+    if b.iter()
+        .all(|&c| c.is_ascii_graphic() && c != b'"' && c != b'\\')
+    {
         out.push_str(core::str::from_utf8(b).unwrap_or(""));
     } else {
         use std::fmt::Write as _;
@@ -1226,7 +1231,10 @@ mod tests {
             assert!(verb_name(v).is_some(), "TRUST_* value {v} has no log name");
         }
         for p in 1..=PRESENCE_MAX {
-            assert!(presence_name(p).is_some(), "PRESENCE_* value {p} has no log name");
+            assert!(
+                presence_name(p).is_some(),
+                "PRESENCE_* value {p} has no log name"
+            );
         }
         assert_eq!(verb_name(0), None, "zero is not a verb");
         assert_eq!(presence_name(0), None, "zero is not a presence");
@@ -1256,7 +1264,14 @@ mod tests {
             build: "0.8.0-gabc".into(),
             proto: 72,
         };
-        format_header(&ident, "00ff", 7, 1_790_000_000, &Limits::default(), &mut out);
+        format_header(
+            &ident,
+            "00ff",
+            7,
+            1_790_000_000,
+            &Limits::default(),
+            &mut out,
+        );
         assert!(out.ends_with('\n'));
         let v: serde_json::Value = serde_json::from_str(out.trim_end()).expect("valid JSON");
         assert_eq!(v["kind"], "header");

@@ -4103,7 +4103,9 @@ impl World {
                 count,
             } => {
                 if let Some(slot) = self.live_slot_of(id) {
-                    self.move_item(seat, slot, cont, from_kind, from_slot, to_kind, to_slot, count);
+                    self.move_item(
+                        seat, slot, cont, from_kind, from_slot, to_kind, to_slot, count,
+                    );
                 }
             }
             Command::Respawn { id, on_bag } => {

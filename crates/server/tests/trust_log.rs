@@ -82,12 +82,24 @@ fn wait_written(log: &TrustLog, n: u64) {
 /// Stop a writer by dropping its tap, and wait for its `close` line.
 fn close(tap: Tap, log: &mut TrustLog) {
     drop(tap);
-    assert!(log.join_within(WAIT), "the writer never wrote its close line");
+    assert!(
+        log.join_within(WAIT),
+        "the writer never wrote its close line"
+    );
 }
 
 /// One row as the e2e test compares it: tick, verb, presence, actor id,
 /// actor wallet, actor-is-guest, counterparty id, counterparty wallet.
-type Seen<'a> = (u64, &'a str, &'a str, u32, Option<&'a str>, bool, u32, Option<&'a str>);
+type Seen<'a> = (
+    u64,
+    &'a str,
+    &'a str,
+    u32,
+    Option<&'a str>,
+    bool,
+    u32,
+    Option<&'a str>,
+);
 
 fn party(id: u32, who: Who) -> Party {
     Party { id, who }
@@ -358,9 +370,36 @@ fn a_shard_tick_logs_trust_rows_with_their_wallets() {
     assert_eq!(
         got,
         vec![
-            (t1, "cont", "awake", outsider, Some(OUTSIDER_WALLET), false, owner, Some(OWNER_WALLET)),
-            (t2, "cont", "awake", guest, None, true, owner, Some(OWNER_WALLET)),
-            (t3, "cont", "asleep", outsider, Some(OUTSIDER_WALLET), false, owner, Some(OWNER_WALLET)),
+            (
+                t1,
+                "cont",
+                "awake",
+                outsider,
+                Some(OUTSIDER_WALLET),
+                false,
+                owner,
+                Some(OWNER_WALLET)
+            ),
+            (
+                t2,
+                "cont",
+                "awake",
+                guest,
+                None,
+                true,
+                owner,
+                Some(OWNER_WALLET)
+            ),
+            (
+                t3,
+                "cont",
+                "asleep",
+                outsider,
+                Some(OUTSIDER_WALLET),
+                false,
+                owner,
+                Some(OWNER_WALLET)
+            ),
         ],
         "the log must hold every trust row the shard's ticks minted, in order, \
          with each party's wallet or guest mark"
@@ -401,7 +440,10 @@ fn an_evicted_owner_keeps_their_wallet_in_the_row() {
         assert!(core.connect_as(slot, id_of(1, slot), k, None).is_some());
     }
     tick(&mut core, &stats);
-    assert_eq!(core.world.players.iter().filter(|p| p.active).count(), MAX_PLAYERS);
+    assert_eq!(
+        core.world.players.iter().filter(|p| p.active).count(),
+        MAX_PLAYERS
+    );
     let keyed_box = stand_a_box(&mut core, &stats, &haven, 0, owner, two[0]);
     let guest_box = stand_a_box(&mut core, &stats, &haven, 1, guest_owner, two[1]);
 
@@ -439,7 +481,10 @@ fn an_evicted_owner_keeps_their_wallet_in_the_row() {
         "the evicted owner's wallet must survive the eviction"
     );
     assert_eq!(a.actor.wallet.as_deref(), Some(OUTSIDER_WALLET));
-    assert_eq!((b.presence.as_str(), b.counterparty.id), ("gone", guest_owner));
+    assert_eq!(
+        (b.presence.as_str(), b.counterparty.id),
+        ("gone", guest_owner)
+    );
     assert_eq!(b.counterparty.wallet, None);
     assert!(
         !b.counterparty.guest,
@@ -504,7 +549,10 @@ fn rows_survive_a_restart_in_order() {
         l.segments
     );
     assert_eq!(
-        l.segments.iter().map(|s| s.boot.clone()).collect::<Vec<_>>(),
+        l.segments
+            .iter()
+            .map(|s| s.boot.clone())
+            .collect::<Vec<_>>(),
         boots
     );
     assert_ne!(boots[0], boots[1], "two boots are told apart");
@@ -593,7 +641,11 @@ fn rotation_keeps_the_directory_inside_its_bound() {
         );
     }
     close(tap, &mut log);
-    assert_eq!(ShardStats::get(&stats.trust_ring_drops), 0, "no loss to the ring");
+    assert_eq!(
+        ShardStats::get(&stats.trust_ring_drops),
+        0,
+        "no loss to the ring"
+    );
     let l = read_dir(&dir).expect("read the log");
     assert!(
         WriterStats::get(&log.stats.segments_pruned) > 0,
@@ -621,7 +673,8 @@ fn pruned_before_the_oldest_survivor(l: &trustlog::Log) -> u64 {
     let oldest = l.segments[0].seq;
     // Segment n's opening pruned segments older than n; the survivors hold
     // the lines for every deletion from `oldest`'s opening onwards.
-    let named: std::collections::BTreeSet<&str> = l.pruned.iter().map(|(n, _)| n.as_str()).collect();
+    let named: std::collections::BTreeSet<&str> =
+        l.pruned.iter().map(|(n, _)| n.as_str()).collect();
     (1..oldest)
         .filter(|s| !named.contains(trustlog::segment_name(*s).as_str()))
         .count() as u64
@@ -735,7 +788,10 @@ fn back_pressure_never_reorders_the_log_under_a_live_consumer() {
     }
     assert_eq!(next, TICKS, "every tick is a row or inside a gap");
     assert_eq!(lost, ShardStats::get(&stats.trust_ring_drops));
-    assert!(lost > 0, "the fixture never filled the ring, so it proved nothing");
+    assert!(
+        lost > 0,
+        "the fixture never filled the ring, so it proved nothing"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -754,11 +810,41 @@ fn the_reader_round_trips_and_filters() {
     let (mut tap, mut log) = trustlog::spawn(&dir, ident(), Limits::default()).expect("spawn");
     let (o, x) = (key(OWNER_WALLET), key(OUTSIDER_WALLET));
     let rows = [
-        (10, TRUST_DOOR, PRESENCE_ASLEEP, party(2, Who::Wallet(x)), party(1, Who::Wallet(o))),
-        (11, TRUST_AUTH, PRESENCE_GONE, party(2, Who::Wallet(x)), party(1, Who::Wallet(o))),
-        (12, TRUST_CONT, PRESENCE_AWAKE, party(3, Who::Guest), party(1, Who::Wallet(o))),
-        (13, TRUST_DOOR, PRESENCE_AWAKE, party(1, Who::Wallet(o)), party(2, Who::Wallet(x))),
-        (14, TRUST_CONT, PRESENCE_GONE, party(2, Who::Wallet(x)), party(9, Who::Unresolved)),
+        (
+            10,
+            TRUST_DOOR,
+            PRESENCE_ASLEEP,
+            party(2, Who::Wallet(x)),
+            party(1, Who::Wallet(o)),
+        ),
+        (
+            11,
+            TRUST_AUTH,
+            PRESENCE_GONE,
+            party(2, Who::Wallet(x)),
+            party(1, Who::Wallet(o)),
+        ),
+        (
+            12,
+            TRUST_CONT,
+            PRESENCE_AWAKE,
+            party(3, Who::Guest),
+            party(1, Who::Wallet(o)),
+        ),
+        (
+            13,
+            TRUST_DOOR,
+            PRESENCE_AWAKE,
+            party(1, Who::Wallet(o)),
+            party(2, Who::Wallet(x)),
+        ),
+        (
+            14,
+            TRUST_CONT,
+            PRESENCE_GONE,
+            party(2, Who::Wallet(x)),
+            party(9, Who::Unresolved),
+        ),
     ];
     for (tick, verb, presence, actor, counterparty) in rows {
         tap.offer(
@@ -784,7 +870,13 @@ fn the_reader_round_trips_and_filters() {
     assert_eq!(l.rows[4].counterparty.wallet, None);
     assert!(!l.rows[4].counterparty.guest);
 
-    let pick = |f: Filter| l.rows.iter().filter(|r| f.matches(r)).map(|r| r.tick).collect::<Vec<_>>();
+    let pick = |f: Filter| {
+        l.rows
+            .iter()
+            .filter(|r| f.matches(r))
+            .map(|r| r.tick)
+            .collect::<Vec<_>>()
+    };
     let upper = OWNER_WALLET.to_ascii_uppercase().replace("0X", "0x");
     assert_eq!(
         pick(Filter {
@@ -845,7 +937,11 @@ fn the_reader_round_trips_and_filters() {
         .args(["--wallet", OUTSIDER_WALLET, "--summary"])
         .output()
         .expect("run trust-log");
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("-- 4 of 5 rows"), "{text}");
     assert!(text.contains("door") && text.contains("asleep 1"), "{text}");
@@ -945,6 +1041,9 @@ fn the_drain_allocates_nothing() {
         worst = worst.max(n);
         while rx.pop().is_ok() {}
     }
-    assert_eq!(worst, 0, "a trust drain allocated {worst} times on the sim thread");
+    assert_eq!(
+        worst, 0,
+        "a trust drain allocated {worst} times on the sim thread"
+    );
     assert_eq!(ShardStats::get(&stats.trust_ring_drops), 0);
 }

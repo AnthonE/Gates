@@ -52,8 +52,7 @@ use sim_core::limits::{
 use sim_core::movement::Body;
 use sim_core::trust::TrustRow;
 use sim_core::world::{
-    Command, World, EV_GATHER, EV_TRUST, PRESENCE_ASLEEP, PRESENCE_AWAKE, PRESENCE_GONE,
-    TRUST_CONT,
+    Command, World, EV_GATHER, EV_TRUST, PRESENCE_ASLEEP, PRESENCE_AWAKE, PRESENCE_GONE, TRUST_CONT,
 };
 use sim_core::worldsave::WORLD_SAVE_MAX_BYTES;
 
@@ -300,7 +299,16 @@ fn restock(w: &mut World, bi: usize, flood: bool) {
             let b = w.players[slot_of(w, id)].body;
             let tick = w.tick;
             w.backpacks
-                .stand_up(&w.backpack, b.qx, b.qy, b.qz, id, &full, tick, &mut w.events)
+                .stand_up(
+                    &w.backpack,
+                    b.qx,
+                    b.qy,
+                    b.qz,
+                    id,
+                    &full,
+                    tick,
+                    &mut w.events,
+                )
                 .expect("a flooder's bag stood up");
         }
     }
@@ -410,7 +418,11 @@ fn seats_are_minted_once_inside_the_command_loop() {
         .collect();
     files.sort();
     // Liveness: the scan saw the crate, not an empty directory.
-    assert!(files.len() >= 30, "only {} source files scanned", files.len());
+    assert!(
+        files.len() >= 30,
+        "only {} source files scanned",
+        files.len()
+    );
     assert!(files.iter().any(|(n, _)| n == "world.rs"));
 
     let mut mints = Vec::new();
@@ -597,7 +609,11 @@ fn a_tick_at_the_command_ceiling_fills_the_ring_exactly() {
     for t in over {
         assert_eq!(
             (t.seats, t.rows.len(), t.taken),
-            (MAX_COMMANDS_PER_TICK, MAX_TRUST_ROWS_PER_TICK, MAX_COMMANDS_PER_TICK),
+            (
+                MAX_COMMANDS_PER_TICK,
+                MAX_TRUST_ROWS_PER_TICK,
+                MAX_COMMANDS_PER_TICK
+            ),
             "tick {}: {OVER_MOVES} offered, so the ceiling is applied, seated and \
              logged, and the tail is the caller's to keep",
             t.tick
@@ -612,7 +628,10 @@ fn the_ledger_replays_row_for_row() {
     let a = storm();
     let b = storm();
     assert_eq!(a.hash, b.hash, "two identical storms disagreed on the hash");
-    assert_eq!(a.ticks, b.ticks, "two identical storms minted different rows");
+    assert_eq!(
+        a.ticks, b.ticks,
+        "two identical storms minted different rows"
+    );
 }
 
 /// Neither hashed nor saved (`trust.rs`). A world whose last tick minted a
