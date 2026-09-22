@@ -205,6 +205,12 @@ $NICE cargo clippy -p client --features render --all-targets -- -D warnings \
 $NICE cargo test -p client --features render \
   || fail "native client suites"
 
+echo "== gate: shared bot view (existing renderer + read-only broadcast)"
+$NICE cargo clippy -p server --features watch --all-targets -- -D warnings \
+  || fail "clippy (shared bot view)"
+$NICE cargo test -p server --features watch --lib watch:: \
+  || fail "shared bot view suites"
+
 # **Wall 1's enforcement, and since 2026-09-09 also the web build's floor.**
 # `sim-core` and the `protocol` it needs are built for a second, deliberately
 # hostile target so the gate below can diff their state hashes against native

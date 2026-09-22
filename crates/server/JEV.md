@@ -109,6 +109,9 @@ before it could be useful as a survival player. No server simulation rules,
 wire layouts, balance or public shard configuration change.
 
 API contract checked against https://docs.typesafe.ai/api and
-https://docs.typesafe.ai/models on 2026-09-21. Live Jev quality, latency and
-billing still require a real key; automated tests use a local HTTP peer and
-controlled decision sources.
+https://docs.typesafe.ai/models on 2026-09-22. The operator enabled the shared
+watch host with a real key that day; its first live API check returned the
+pinned model, a valid movement choice, 507 input tokens and 342 ms latency.
+See [WATCH.md](WATCH.md) for the hosted configuration and cost assumptions.
+Broader model quality and sustained billing remain unmeasured; automated
+tests use a local HTTP peer and controlled decision sources.

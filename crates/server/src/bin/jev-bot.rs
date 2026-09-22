@@ -1,10 +1,9 @@
 //! One peaceful local explorer. See crates/server/JEV.md for running it.
 
+use server::agent_demo::Scripted;
 use server::botclient::{bot_endpoint, run_driven_bot};
 use server::explorer::Gatherer;
-use server::jev::{
-    Action, Decision, DecisionSource, Driver, Jev, Observation, REQUEST_TIMEOUT, THINK_INTERVAL,
-};
+use server::jev::{Driver, Jev, REQUEST_TIMEOUT, THINK_INTERVAL};
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -88,24 +87,6 @@ impl Options {
     }
 }
 
-/// An explicit offline demo, never a silent substitute for a failed Jev call.
-struct Scripted;
-impl DecisionSource for Scripted {
-    fn decide(&mut self, observation: Observation) -> Result<Decision, String> {
-        Ok(Decision {
-            action: if observation.moved_m() == Some(0.0)
-                && observation.previous_action != Action::Wait
-            {
-                Action::Right
-            } else {
-                Action::Forward
-            },
-            confidence: 1.0,
-            input_tokens: 0,
-        })
-    }
-}
-
 async fn run(options: Options) -> Result<(), String> {
     // Check credentials before booting a shard or opening a player session.
     let driver = if options.scripted {
@@ -126,25 +107,7 @@ async fn run(options: Options) -> Result<(), String> {
         println!("goal: collect wood using visible trees and ordinary player inputs");
     }
     let shard = if options.local {
-        let mut cfg =
-            server::config::parse_shard_toml(include_str!("../../../../shard.toml.example"))?;
-        cfg.bind = "127.0.0.1:0".parse().expect("loopback");
-        cfg.require_auth = false;
-        cfg.population = 0;
-        // Viewer and bot share a clear beach in this temporary demo. Use
-        // the game's spawn selector rather than hand-picking coordinates.
-        cfg.dev_spawn = Some(sim_core::world::World::new(cfg.seed).spawn_pos(0));
-        let content = content::Content::load_dir(
-            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content"),
-        )
-        .map_err(|e| format!("content: {e}"))?;
-        let handle = server::net::spawn_shard(
-            cfg,
-            server::net::bake_all(&content)?,
-            server::store::Saves::off(),
-            server::worldfile::WorldBoot::off(),
-        )
-        .await?;
+        let handle = server::agent_demo::spawn_local().await?;
         println!(
             "local shard: {} · proto {}",
             handle.local_addr,

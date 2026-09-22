@@ -28,6 +28,7 @@
 
 /// Who may run an admin verb, and what one does (admin v0).
 pub mod admin;
+pub mod agent_demo;
 /// The append-only anomaly log — the evidence an alpha produces.
 pub mod anomaly;
 pub mod auth;
@@ -48,6 +49,8 @@ pub mod slot;
 pub mod stats;
 pub mod status;
 pub mod store;
+#[cfg(feature = "watch")]
+pub mod watch;
 pub mod worldfile;
 /// The client-side snapshot view lives in `client-core` (the native client
 /// and the bots share one implementation); re-exported for the gates.
