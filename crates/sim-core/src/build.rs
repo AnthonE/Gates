@@ -862,9 +862,9 @@ pub struct Pieces {
     entries: Box<[PieceRec; MAX_PIECES]>,
     len: usize,
     cols: Box<crate::collide::ColIndex>,
-    /// Bumped by every insert, removal and restore — the stamp
-    /// `claim::ClaimCache` compares to know whether the base shapes it
-    /// cached can have changed. **Derived-cache plumbing, not state**: it
+    /// Bumped by every insert, removal, upgrade and restore — the stamp
+    /// `claim::ClaimCache` compares to know whether the base shapes (and,
+    /// since upkeep v2, the graded counts) it cached can have changed. **Derived-cache plumbing, not state**: it
     /// is never hashed and never saved, exactly like `cols`, and wall 5
     /// does not rest on its value — only on the cache it invalidates being
     /// a pure function of the pieces, which it is (`claim.rs`). It bumps
@@ -945,9 +945,14 @@ impl Pieces {
     /// and the shape are unchanged by construction, so the column index
     /// and any door sealing that address are deliberately untouched —
     /// upgrading a doorway must not drop the door standing in it.
+    ///
+    /// `gen` moves anyway (upkeep v2): the claim cache counts a base's
+    /// **graded** pieces for its rent, and an upgrade is what turns a
+    /// twig piece into one it counts.
     fn set_row(&mut self, i: usize, row: u8, hp: u16) {
         self.entries[i].row = row;
         self.entries[i].hp = hp;
+        self.gen += 1;
     }
 
     /// Turn an existing record without changing its dense-store position,

@@ -2686,19 +2686,32 @@ impl ShardCore {
                     };
                     let (cx, cz) = ((ev.b >> 16) as u16, ev.b as u16);
                     let level = ev.c as u8;
-                    let Some(hr) = self
+                    let Some(hi) = self
                         .world
                         .deploys
                         .hearths()
                         .iter()
-                        .find(|h| h.cx == cx && h.cz == cz && h.level == level)
+                        .position(|h| h.cx == cx && h.cz == cz && h.level == level)
                     else {
                         continue; // hearth decayed in the same tick
                     };
-                    let mut rows = [(0u16, 0u32); HEARTH_STOCK_ROWS];
+                    let hr = self.world.deploys.hearths()[hi];
+                    // What one upkeep period charges this hearth, per row —
+                    // the sweep's own arithmetic over the claim cache the
+                    // tick just refreshed (upkeep v2's readout). A walk of
+                    // the piece store, asked per feed press and never per
+                    // tick, with an O(1) answer for the base's own pieces.
+                    let bill = sim_core::upkeep::bill(
+                        &self.world.deploy,
+                        &self.world.build,
+                        &self.world.pieces,
+                        &self.world.deploys,
+                        hi,
+                    );
+                    let mut rows = [(0u16, 0u32, 0u32); HEARTH_STOCK_ROWS];
                     let n = self.world.deploy.mat_count as usize;
                     for (m, row) in rows.iter_mut().enumerate().take(n) {
-                        *row = (self.world.deploy.mats[m], hr.stock[m]);
+                        *row = (self.world.deploy.mats[m], hr.stock[m], bill[m]);
                     }
                     match encode_event_stock(cx, cz, level, &rows[..n], &mut self.ev_buf) {
                         Ok(len) => {

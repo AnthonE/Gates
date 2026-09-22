@@ -24,7 +24,7 @@ use sim_core::build::{
 };
 use sim_core::combat::CombatContent;
 use sim_core::craft::CraftContent;
-use sim_core::deploy::{DeployContent, ARCH_DOOR, ARCH_HEARTH};
+use sim_core::deploy::{DeployContent, ARCH_DOOR, ARCH_HEARTH, ARCH_WORKBENCH};
 use sim_core::gather::{GatherContent, ItemStack};
 use sim_core::loot::LootContent;
 use sim_core::movement::{Body, POS_XZ_Q};
@@ -71,6 +71,8 @@ const ROW_DOORWAY: u16 = 3;
 /// Row 1 of `BuildContent::probe_fixture` — a twig wall.
 const ROW_WALL: u16 = 1;
 const DEPLOY_HEARTH: u16 = 0;
+/// Row 1 of `DeployContent::probe_fixture` — a workbench, whose item is 3.
+const DEPLOY_BENCH: u16 = 1;
 const DEPLOY_DOOR: u16 = 2;
 
 fn armed() -> Box<World> {
@@ -670,18 +672,24 @@ fn a_corrupt_world_is_refused_by_reason() {
 /// drops it (`worldsave.rs`: the decoder deliberately distrusts the
 /// mirror bits — **both** of them), and `rebuild_doors` re-derives the
 /// pair from the lock section for the archetypes `lockable` names — so
-/// locked:true on a hearth, which the rebuild never visits, must come
-/// back cleared rather than ridden into the world. The door's byte is
-/// forged too: lockable, but with no lock in the file the rebuild clears
-/// it, which pins the half that already held.
+/// locked:true on a workbench, which the rebuild never visits, must come
+/// back cleared rather than ridden into the world. The door's and the
+/// hearth's bytes are forged too: lockable, but with no lock in the file
+/// the rebuild clears them, which pins the half that already held.
+///
+/// **The witness was the hearth until hearth lock v0 made it lockable**,
+/// at which point the rebuild began clearing its byte too and the mutant
+/// below would have passed unseen — the non-lockable half of this test is
+/// a *role*, and a bench is what plays it now.
 ///
 /// **Mutant-killer**: put the file's `locked` back into the decoded
 /// record (`locked` instead of `locked: false` in `decode_into`) and the
-/// hearth's record loads locked with no lock anywhere — the last
-/// assertion goes red.
+/// bench's record loads locked with no lock anywhere — the last assertion
+/// goes red.
 #[test]
 fn forged_lock_bits_load_cleared_never_trusted() {
-    let w = a_lived_in_world();
+    let mut w = a_lived_in_world();
+    with_a_bench(&mut w);
     assert!(w.deploys.locks().is_empty(), "fixture: no lock in the file");
     let mut blob = vec![0u8; WORLD_SAVE_MAX_BYTES];
     let n = w.save_world(&mut blob).expect("encodes");
@@ -712,8 +720,8 @@ fn forged_lock_bits_load_cleared_never_trusted() {
         );
         blob[at + 16] = 1; // locked := true, hearth and door alike
         match w.deploy.defs[rec.row as usize].arch {
-            ARCH_HEARTH => saw.0 = true,
-            ARCH_DOOR => saw.1 = true,
+            ARCH_WORKBENCH => saw.0 = true,
+            ARCH_DOOR | ARCH_HEARTH => saw.1 = true,
             _ => {}
         }
     }
@@ -732,6 +740,54 @@ fn forged_lock_bits_load_cleared_never_trusted() {
              whatever the file claimed"
         );
     }
+}
+
+/// Stand a workbench on a second foundation beside the lived-in base —
+/// the non-lockable deployable `forged_lock_bits_load_cleared_never_trusted`
+/// needs as its witness. Ground is found with the sim's own predicate, as
+/// `stand_in_build_cell` finds it; the four neighbours are all in reach of
+/// a body standing on the base cell's centre.
+fn with_a_bench(w: &mut World) {
+    let h = w.deploys.hearths()[0];
+    w.players[0].inv[4] = ItemStack {
+        item: 3,
+        count: 1,
+        cond: 0,
+    };
+    for (dx, dz) in [(1i32, 0i32), (0, 1), (-1, 0), (0, -1)] {
+        let (cx, cz) = ((h.cx as i32 + dx) as u16, (h.cz as i32 + dz) as u16);
+        let ax = (cx as f32 + 0.5) * BUILD_CELL_M;
+        let az = (cz as f32 + 0.5) * BUILD_CELL_M;
+        if !foundation_terrain_ok(SEED, hv(SEED), ax, az) {
+            continue;
+        }
+        w.tick(&[Command::Place {
+            id: 1,
+            row: ROW_FOUNDATION,
+            cx,
+            cz,
+            level: 0,
+            loc: LOC_PLANE,
+            freehand: false,
+            plate: 0,
+        }]);
+        w.tick(&[Command::PlaceDeploy {
+            id: 1,
+            row: DEPLOY_BENCH,
+            cx,
+            cz,
+            level: 0,
+            loc: LOC_PLANE,
+        }]);
+        if w.deploys
+            .entries()
+            .iter()
+            .any(|d| w.deploy.defs[d.row as usize].arch == ARCH_WORKBENCH)
+        {
+            return;
+        }
+    }
+    panic!("no neighbour of the lived-in base took a bench");
 }
 
 /// A refused blob leaves the world untouched. The alternative is a shard

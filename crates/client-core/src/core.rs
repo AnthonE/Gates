@@ -1442,9 +1442,11 @@ pub struct ClientCore {
     /// address first and the store only to pick which mesh to stick it to.
     pub charge_placed: (u16, u16, u8, u8, u8, u16),
     pub charge_deploy: bool,
-    /// The last stock ack: hearth address, rows, live row count.
+    /// The last stock ack: hearth address, rows `(item, units, bill)` —
+    /// `bill` being what one upkeep period charges in that material — and
+    /// the live row count.
     pub stock_addr: (u16, u16, u8),
-    pub stock: [(u16, u32); HEARTH_STOCK_ROWS],
+    pub stock: [(u16, u32, u32); HEARTH_STOCK_ROWS],
     pub stock_count: u8,
     /// The `APPLIED2_*` word for the last `on_stream` call, read back by
     /// `applied2()`. Rebuilt from zero on every call for the same reason
@@ -1604,7 +1606,7 @@ impl ClientCore {
             charge_placed: (0, 0, 0, 0, 0, 0),
             charge_deploy: false,
             stock_addr: (0, 0, 0),
-            stock: [(0, 0); HEARTH_STOCK_ROWS],
+            stock: [(0, 0, 0); HEARTH_STOCK_ROWS],
             stock_count: 0,
             applied2: 0,
             known: 0,

@@ -529,6 +529,29 @@ impl Content {
                     self.balance.globals.upkeep_pct_per_day
                 )
             })?;
+        // Upkeep v2. Validation holds the ranges; the bake refuses only
+        // what the baked widths cannot carry.
+        let g = &self.balance.globals;
+        if g.upkeep_steps.len() > sim_core::limits::UPKEEP_STEPS {
+            return Err(format!(
+                "bake: {} upkeep steps exceed the {} the sim carries",
+                g.upkeep_steps.len(),
+                sim_core::limits::UPKEEP_STEPS
+            ));
+        }
+        for (n, [after, permille]) in g.upkeep_steps.iter().enumerate() {
+            dc.upkeep_steps[n] = (
+                u16::try_from(*after)
+                    .map_err(|_| format!("bake: upkeep step {after} overflows u16"))?,
+                u16::try_from(*permille)
+                    .map_err(|_| format!("bake: upkeep rate {permille} overflows u16"))?,
+            );
+        }
+        dc.upkeep_step_count = g.upkeep_steps.len() as u8;
+        dc.inside_decay_pct = u16::try_from(g.inside_decay_pct.unwrap_or(0))
+            .map_err(|_| "bake: inside_decay_pct overflows u16".to_string())?;
+        dc.grief_periods = u16::try_from(g.grief_protection_h)
+            .map_err(|_| "bake: grief_protection_h overflows u16".to_string())?;
         Ok(dc)
     }
 

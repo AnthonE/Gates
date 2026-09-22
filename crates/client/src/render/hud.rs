@@ -1931,15 +1931,16 @@ pub fn feedback(
     for _ in feed.knocks() {
         toast.say("*knock knock*".to_string());
     }
-    for (.., grant) in feed.auths() {
-        toast.say(
-            if *grant == sim_core::lock::GRANT_FULL {
-                "the lock remembers you"
-            } else {
-                "the lock remembers you as a guest"
-            }
-            .to_string(),
-        );
+    for &(cx, cz, level, loc, grant) in feed.auths() {
+        // Whose list moved is the address's archetype: a hearth's crew or a
+        // lock's memory (they share `EV_AUTH`, hearth crew v1). Read off the
+        // mirror, which still holds the hearth after a leave.
+        let at_hearth = core.deploys.entries().iter().any(|r| {
+            (r.cx, r.cz, r.level, r.loc) == (cx, cz, level, loc)
+                && (r.row as u16) < core.deploy_defs_have
+                && core.deploy_defs.defs[r.row as usize].arch == sim_core::deploy::ARCH_HEARTH
+        });
+        toast.say(auth_line(grant, at_hearth).to_string());
     }
     // What the hearth is holding, after you feed it. `stock` is a latched
     // ROW TABLE rather than one value, so the same freshness rule applies —
@@ -2440,14 +2441,27 @@ fn side_line(near: &Option<crate::ui::structure::Target>) -> String {
     }
 }
 
-/// What a fed hearth is holding, or `None` when it is holding nothing.
+/// What a fed hearth holds and how long it keeps its base standing, or
+/// `None` when it holds nothing and is charged nothing.
 ///
-/// The rows are `(item, units)` and the count is authoritative — an empty
-/// hearth acks with zero rows, and saying "0 ×" for a thing that is not there
-/// is the dark-panel defect this repo has a rule against.
-fn stock_line(rows: &[(u16, u32)], catalog: &protocol::event::ItemCatalog) -> Option<String> {
+/// The rows are `(item, units, bill)` — `bill` what one upkeep period
+/// charges in that material (upkeep v2, wire v73) — and the count is
+/// authoritative. Saying "0 ×" for a thing that is not there is the
+/// dark-panel defect this repo has a rule against, so an empty row is
+/// skipped; an empty hearth **with a bill** says so, because that is the
+/// one reading a player most needs and the reference's cupboard leads
+/// with it (*"Your base is not protected and is decaying."*).
+///
+/// The hours are `sim_core::upkeep::lasts`, the sim's own reading: the
+/// least of the billed materials, since the first one to run out is the
+/// first part of the base to rot.
+fn stock_line(rows: &[(u16, u32, u32)], catalog: &protocol::event::ItemCatalog) -> Option<String> {
     let mut parts = Vec::new();
-    for &(item, units) in rows {
+    let mut stock = [0u32; sim_core::limits::HEARTH_STOCK_ROWS];
+    let mut bill = [0u32; sim_core::limits::HEARTH_STOCK_ROWS];
+    let n = rows.len().min(stock.len());
+    for (m, &(item, units, charge)) in rows.iter().take(n).enumerate() {
+        (stock[m], bill[m]) = (units, charge);
         if units == 0 {
             continue;
         }
@@ -2456,10 +2470,43 @@ fn stock_line(rows: &[(u16, u32)], catalog: &protocol::event::ItemCatalog) -> Op
             crate::ui::craft::item_label(catalog, item)
         ));
     }
-    if parts.is_empty() {
-        return None;
+    let held = if parts.is_empty() {
+        "EMPTY".to_string()
+    } else {
+        parts.join(", ")
+    };
+    match sim_core::upkeep::lasts(&stock[..n], &bill[..n]) {
+        None if parts.is_empty() => None,
+        None => Some(format!("HEARTH: {held}")),
+        Some(0) => Some(format!("HEARTH: {held}  ·  NOT PROTECTED — DECAYING")),
+        Some(h) => Some(format!("HEARTH: {held}  ·  PROTECTED {}", periods_label(h))),
     }
-    Some(format!("HEARTH: {}", parts.join(", ")))
+}
+
+/// What an `EV_AUTH` says. At a hearth it is crew standing — joined,
+/// whether by `L` or by the right code at its keypad (hearth lock v0), or
+/// left — and anywhere else it is a lock remembering a hand. The leave used
+/// to read "the lock remembers you as a guest", because a crew leave is the
+/// one `EV_AUTH` carrying no grant and the old line's else-branch caught it.
+fn auth_line(grant: u8, at_hearth: bool) -> &'static str {
+    match (at_hearth, grant) {
+        (true, sim_core::lock::GRANT_NONE) => "you left the hearth's crew",
+        (true, _) => "you're on the hearth's crew",
+        (false, sim_core::lock::GRANT_FULL) => "the lock remembers you",
+        (false, sim_core::lock::GRANT_GUEST) => "the lock remembers you as a guest",
+        (false, _) => "the lock forgets you",
+    }
+}
+
+/// Upkeep periods as a player reads a clock: hours, and days past a day.
+/// One period is one hour (`sim_core::deploy::UPKEEP_PERIOD_TICKS` at the
+/// sim's tick rate), which `a_hearth_says_how_long_its_base_lasts` pins.
+fn periods_label(h: u32) -> String {
+    if h >= 24 {
+        format!("{}D {}H", h / 24, h % 24)
+    } else {
+        format!("{h}H")
+    }
 }
 
 /// What a planted charge says, or `None` for a fuse of zero.
@@ -3224,22 +3271,68 @@ mod tests {
         let cat = catalog_with_names(&[(3, "WOOD"), (4, "CLOTH")]);
         assert_eq!(stock_line(&[], &cat), None, "no rows must say nothing");
         assert_eq!(
-            stock_line(&[(3, 0)], &cat),
+            stock_line(&[(3, 0, 0)], &cat),
             None,
             "a zero row is not a holding"
         );
         assert_eq!(
-            stock_line(&[(3, 120)], &cat),
+            stock_line(&[(3, 120, 0)], &cat),
             Some("HEARTH: 120 × WOOD".to_string())
         );
         assert_eq!(
-            stock_line(&[(3, 120), (4, 5)], &cat),
+            stock_line(&[(3, 120, 0), (4, 5, 0)], &cat),
             Some("HEARTH: 120 × WOOD, 5 × CLOTH".to_string())
         );
         // A zero row between two live ones is skipped, not printed empty.
         assert_eq!(
-            stock_line(&[(3, 120), (4, 0)], &cat),
+            stock_line(&[(3, 120, 0), (4, 0, 0)], &cat),
             Some("HEARTH: 120 × WOOD".to_string())
+        );
+    }
+
+    /// The grant toast names whose list moved, and a crew leave no longer
+    /// reads as a guest pass.
+    #[test]
+    fn an_auth_says_whose_list_moved() {
+        use sim_core::lock::{GRANT_FULL, GRANT_GUEST, GRANT_NONE};
+        assert_eq!(auth_line(GRANT_FULL, true), "you're on the hearth's crew");
+        assert_eq!(auth_line(GRANT_NONE, true), "you left the hearth's crew");
+        assert_eq!(auth_line(GRANT_FULL, false), "the lock remembers you");
+        assert_eq!(
+            auth_line(GRANT_GUEST, false),
+            "the lock remembers you as a guest"
+        );
+    }
+
+    /// Upkeep v2's readout: the hours are the least billed material's, an
+    /// empty hearth with a bill says it is decaying, and a day reads as one.
+    #[test]
+    fn a_hearth_says_how_long_its_base_lasts() {
+        // The label's unit is the sim's period, which is one hour.
+        assert_eq!(
+            sim_core::deploy::UPKEEP_PERIOD_TICKS,
+            3600 * sim_core::limits::TICK_HZ as u64,
+            "an upkeep period stopped being an hour — relabel `periods_label`"
+        );
+        let cat = catalog_with_names(&[(3, "WOOD"), (4, "CLOTH")]);
+        assert_eq!(
+            stock_line(&[(3, 120, 10), (4, 50, 5)], &cat),
+            Some("HEARTH: 120 × WOOD, 50 × CLOTH  ·  PROTECTED 10H".to_string()),
+            "the cloth lasts ten periods and it runs out first"
+        );
+        assert_eq!(
+            stock_line(&[(3, 600, 10)], &cat),
+            Some("HEARTH: 600 × WOOD  ·  PROTECTED 2D 12H".to_string())
+        );
+        assert_eq!(
+            stock_line(&[(3, 120, 10), (4, 0, 5)], &cat),
+            Some("HEARTH: 120 × WOOD  ·  NOT PROTECTED — DECAYING".to_string()),
+            "one billed material missing is a base already rotting"
+        );
+        assert_eq!(
+            stock_line(&[(3, 0, 10)], &cat),
+            Some("HEARTH: EMPTY  ·  NOT PROTECTED — DECAYING".to_string()),
+            "an empty hearth with a bill is the reading that matters most"
         );
     }
 

@@ -591,13 +591,14 @@ fn light_aimed(net: &Net, pick: &Pick, toast: &mut Toast) {
 /// `L` and `K` — the access verb, on whatever the crosshair is on.
 ///
 /// **One key, two stores, because the sim's verb is one verb.** At
-/// anything a lock bolts to — a door or a box, and the set is the sim's
-/// own `deploy::lockable` by way of `ui::keypad::lock_target`, never a
-/// list here — it opens the keypad (which then speaks: six ops share one
-/// action code and which one a press means depends on four digits nobody
-/// has typed yet). At a hearth it sends a crew op immediately: there is
-/// nothing to type, and a pad that asked for four digits at a cupboard
-/// would be asking the wrong question.
+/// anything a lock bolts to — a door, a box, a hearth with a lock on it;
+/// the set is the sim's own `deploy::lockable` by way of
+/// `ui::keypad::lock_target`, never a list here — it opens the keypad
+/// (which then speaks: six ops share one action code and which one a press
+/// means depends on four digits nobody has typed yet). At a bare hearth it sends a crew op immediately: there
+/// is nothing to type. A hearth with a lock bolted on opens its pad like a
+/// door's, because there the four digits ARE the question — the code is
+/// how a crew invites a hand (hearth lock v0).
 ///
 /// `leave` is the `K` half. Passing it in rather than reading the pick
 /// twice is what keeps `K` meaning LOCK at a door and LEAVE at a hearth
@@ -608,7 +609,11 @@ fn light_aimed(net: &Net, pick: &Pick, toast: &mut Toast) {
 /// without the client learning anything about who the lock remembers.
 fn access_aimed(net: &Net, pick: &Pick, pad: &mut Pad, toast: &mut Toast, leave: bool) {
     use crate::ui::keypad::{lock_target, LockTarget};
-    if pick.verb == Verb::Hearth {
+    // A hearth with a lock bolted on takes `L` to its keypad (hearth lock
+    // v0): the right code is the invitation, and the sim puts the hand it
+    // remembers on the crew in the same act. `K` stays the crew's leave on
+    // every hearth, locked or bare — leaving is never a question for a pad.
+    if pick.verb == Verb::Hearth && (leave || !pick.has_lock) {
         let (cx, cz, level) = (pick.cx, pick.cz, pick.level);
         let op = if leave {
             sim_core::deploy::ACCESS_OP_CREW_LEAVE

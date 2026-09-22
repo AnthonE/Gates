@@ -1038,6 +1038,46 @@ pub fn structural(c: &Content) -> Result<(), String> {
         }
     }
 
+    // Upkeep v2. The ladder climbs: its steps strictly ascending and each
+    // rate at least the one below it (first against `upkeep_pct_per_day`),
+    // because a base that got cheaper per piece by growing would make the
+    // reference's lever against sprawl pay the sprawler. A rate over 100 %
+    // a day is a base that costs more to keep than to build, which is not
+    // a number anybody meant.
+    {
+        let g = &c.balance.globals;
+        if g.upkeep_steps.len() > sim_core::limits::UPKEEP_STEPS {
+            return Err(format!(
+                "balance: {} upkeep steps, the sim carries {}",
+                g.upkeep_steps.len(),
+                sim_core::limits::UPKEEP_STEPS
+            ));
+        }
+        let (mut after_prev, mut rate_prev) = (0u32, g.upkeep_pct_per_day * 10);
+        for [after, permille] in &g.upkeep_steps {
+            if *after <= after_prev {
+                return Err(format!(
+                    "balance: upkeep step at {after} pieces does not climb past {after_prev}"
+                ));
+            }
+            if *permille < rate_prev || *permille > 1000 {
+                return Err(format!(
+                    "balance: upkeep step past {after} pieces charges {permille}‰ a day — the \
+                     ladder must not fall below {rate_prev}‰ nor pass 1000‰"
+                ));
+            }
+            (after_prev, rate_prev) = (*after, *permille);
+        }
+        if let Some(p) = g.inside_decay_pct {
+            if p == 0 || p > 100 {
+                return Err(format!(
+                    "balance: inside_decay_pct {p} — a live percent of the ladder rate, 1..=100 \
+                     (leave it out for the full rate)"
+                ));
+            }
+        }
+    }
+
     // Loot: every entry exists, weights and count ranges sane.
     let mut containers = BTreeSet::new();
     for l in &c.loot_tables {

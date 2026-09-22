@@ -59,7 +59,11 @@ the placement and is coloured by the server's own four refusal reasons. You
 can upgrade a piece, repair it, demolish it inside a grace window, hang a
 wooden or metal door on a doorway, and put a **code lock** on the door with a
 remembered authorised list. A hearth claims the ground around it, and the
-claim charges **upkeep** — stop feeding it and the base decays by tier.
+claim charges **upkeep** — stop feeding it and the base decays by tier, the
+roof first (a covered piece rots at a tenth of the rate). Rent rises with the
+base's size, feeding the hearth tells you how long it protects the base, a
+code lock on the hearth is how its crew invites a friend, and a raided
+hearth's stock still buys its base up to a day.
 
 **You store and carry.** 30 inventory slots (6 belt + 24 grid), a wear doll
 with armour that reduces damage, small and large boxes, and full drag-and-drop

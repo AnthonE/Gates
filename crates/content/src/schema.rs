@@ -665,6 +665,25 @@ pub struct Globals {
     /// A map rather than three fields so a fourth grade is a data change
     /// (`Material`'s own set is what validate checks it against).
     pub decay_pct_per_period: BTreeMap<Material, u32>,
+    /// The rent's size ladder (upkeep v2, `sim_core::upkeep::tax`): each
+    /// `[after, permille]` says past `after` graded pieces in one base, each
+    /// further piece's day costs `permille` ‰ of its build cost; the first
+    /// rung is `upkeep_pct_per_day`. Per mille because the reference's top
+    /// rung is 33.3 %. **Defaulted empty**, and empty is the flat rate — a
+    /// `balance.toml` older than the ladder plays the game it played.
+    #[serde(default)]
+    pub upkeep_steps: Vec<[u32; 2]>,
+    /// Percent of its ladder rate an unpaid piece rots at while something
+    /// is built over it (upkeep v2, `sim_core::upkeep::inside`). **Absent is
+    /// the full rate**, v1's game; present, it must be a live percent.
+    #[serde(default)]
+    pub inside_decay_pct: Option<u32>,
+    /// Upkeep periods (hours) a destroyed hearth's stock may still buy the
+    /// building it stood in (upkeep v2, `sim_core::deploy::grieve`).
+    /// **Absent is none** — v1's game, where breaking a hearth left every
+    /// wall unpaid on the next sweep.
+    #[serde(default)]
+    pub grief_protection_h: u32,
     /// Chance in 100 that an arrow is destroyed where it lands rather
     /// than becoming an item on the ground (arrow recovery v0). A
     /// *global* and not an ammo column on purpose: `[[ammo]]` carries no

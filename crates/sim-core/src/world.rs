@@ -4866,6 +4866,18 @@ impl World {
             );
         }
         self.deploys.clear_box_spill();
+        // Hearths that died with stock in them buy their base time
+        // (upkeep v2's grief protection). Here for the spill's reason — the
+        // removal path holds neither the build table nor the clock — and
+        // after every sweep that can remove one, so a hearth broken this
+        // tick by any route is paid out once, this tick.
+        deploy::grieve(
+            &self.deploy,
+            &self.build,
+            &mut self.pieces,
+            &mut self.deploys,
+            tick,
+        );
         // Every body's pose, recorded for tick `tick` — the last thing the
         // tick does, and deliberately *after* the phase note above says
         // positions are final. Three of the four `movement::step` sites are

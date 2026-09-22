@@ -912,7 +912,12 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// Piece-definition totals widen to 7 bits for the extended catalogue.
 /// v72 adds circulation shapes through triangular floor frame; shape codes
 /// widen from four bits to five. All previous codes keep their meaning.
-pub const PROTO_VER: u16 = 72;
+/// v73 puts the hearth's upkeep bill on the feed ack (upkeep v2's readout):
+/// each stock row gains a 32-bit per-period charge after its units, so a
+/// client can say how long a base is protected. Nothing else moved — no
+/// action, no event code, no other message's bytes; the hearth lock rides
+/// the access action and door event it already had.
+pub const PROTO_VER: u16 = 73;
 
 /// This game's slug in the elo catalog.
 ///

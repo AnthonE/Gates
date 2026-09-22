@@ -269,6 +269,26 @@ pub fn hash(c: &Content) -> u64 {
     h.u(g.repair_cost_pct);
     h.u(g.arrow_break_pct);
     h.u(g.arrow_lodge_s);
+    // The decay ladder reaches the sim (`bake_deployables` → `decay_pct`) and
+    // was the fourth field caught outside this walk: two contents rotting a
+    // stone base in five hours and in fifty canonicalised identically. A
+    // `BTreeMap`, so the walk order is the key order and needs no sort.
+    h.s("decay");
+    h.u(g.decay_pct_per_period.len() as u32);
+    for (m, pct) in &g.decay_pct_per_period {
+        h.u(*m as u32);
+        h.u(*pct);
+    }
+    // Upkeep v2's three knobs, each read by the sweep. The ladder in file
+    // order, which validation holds ascending, so order is meaning.
+    h.s("upkeep_v2");
+    h.u(g.upkeep_steps.len() as u32);
+    for [after, permille] in &g.upkeep_steps {
+        h.u(*after);
+        h.u(*permille);
+    }
+    h.u(g.inside_decay_pct.unwrap_or(0));
+    h.u(g.grief_protection_h);
     let b = &c.balance.bands;
     for pair in [
         b.ttk_melee,

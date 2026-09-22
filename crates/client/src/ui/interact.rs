@@ -301,8 +301,14 @@ impl Pick {
             ),
             // The crew keys ride the hearth's prompt because there is
             // nowhere else a player would look for them, and `L` is
-            // already the access key at a door (hearth crew v1).
-            Verb::Hearth => "[E] FEED HEARTH  ·  [L] JOIN CREW  ·  [K] LEAVE".to_string(),
+            // already the access key at a door (hearth crew v1). A lock
+            // bolted on turns `L` into its keypad (hearth lock v0): the
+            // code is how the crew invites a hand, so JOIN would be the
+            // prompt naming a press the pad answers instead.
+            Verb::Hearth => format!(
+                "[E] FEED HEARTH  ·  [L] {}  ·  [K] LEAVE",
+                if self.has_lock { "KEYPAD" } else { "JOIN CREW" }
+            ),
             // Two verbs on one thing, and both named: the panel is where
             // the wood goes and `C` is the match. The state is stated the
             // way a door's is, because it is the same question — which

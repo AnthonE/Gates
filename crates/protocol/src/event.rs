@@ -1094,12 +1094,15 @@ pub enum EventMsg {
     /// is unicast to the attacker.
     Swing { swinger: u32 },
     /// The feed ack: the hearth's stock rows after the transfer, aligned
-    /// to the baked upkeep-material list (item index, units).
+    /// to the baked upkeep-material list — (item index, units, what one
+    /// upkeep period charges in it). The third column is upkeep v2's
+    /// readout (wire v73): `sim_core::upkeep::lasts` over the second and
+    /// third is how long the base is protected.
     Stock {
         cx: u16,
         cz: u16,
         level: u8,
-        rows: [(u16, u32); HEARTH_STOCK_ROWS],
+        rows: [(u16, u32, u32); HEARTH_STOCK_ROWS],
         count: u8,
     },
     /// One chat line, relayed (`chat.rs`). `from` is the speaker's player
@@ -2147,13 +2150,15 @@ pub fn encode_event_removed(
 }
 
 /// The feed ack: `rows` are the hearth's live stock rows, aligned to the
-/// baked upkeep-material list. Empty is legal (a hearth with no priced
-/// materials cannot exist, but the width allows the message shape).
+/// baked upkeep-material list, each `(item, units, bill)` — `bill` is what
+/// one upkeep period charges in that material for everything the hearth
+/// covers (`sim_core::upkeep::bill`). Empty is legal (a hearth with no
+/// priced materials cannot exist, but the width allows the message shape).
 pub fn encode_event_stock(
     cx: u16,
     cz: u16,
     level: u8,
-    rows: &[(u16, u32)],
+    rows: &[(u16, u32, u32)],
     buf: &mut [u8],
 ) -> Result<usize, WireError> {
     if rows.len() > HEARTH_STOCK_ROWS {
@@ -2170,9 +2175,10 @@ pub fn encode_event_stock(
     w.write(cz as u32, BUILD_CELL_BITS)?;
     w.write(level as u32, BUILD_LEVEL_BITS)?;
     w.write(rows.len() as u32, STOCK_COUNT_BITS)?;
-    for &(item, units) in rows {
+    for &(item, units, bill) in rows {
         w.write(item as u32, 16)?;
         w.write(units, 32)?;
+        w.write(bill, 32)?;
     }
     Ok(w.finish())
 }
@@ -3513,9 +3519,9 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             if count > HEARTH_STOCK_ROWS {
                 return Err(WireError::Malformed);
             }
-            let mut rows = [(0u16, 0u32); HEARTH_STOCK_ROWS];
+            let mut rows = [(0u16, 0u32, 0u32); HEARTH_STOCK_ROWS];
             for row in rows.iter_mut().take(count) {
-                *row = (r.read(16)? as u16, r.read(32)?);
+                *row = (r.read(16)? as u16, r.read(32)?, r.read(32)?);
             }
             EventMsg::Stock {
                 cx,
@@ -4931,7 +4937,12 @@ mod tests {
         );
 
         // Stock at the row cap round-trips; past it refuses.
-        let rows = [(0u16, 2_000u32), (5, 0), (9, 123_456), (63, u32::MAX)];
+        let rows = [
+            (0u16, 2_000u32, 7u32),
+            (5, 0, 0),
+            (9, 123_456, u32::MAX),
+            (63, u32::MAX, 1),
+        ];
         let len = encode_event_stock(341, 682, 0, &rows, &mut buf).unwrap();
         match decode_event(&buf[..len]).unwrap() {
             EventMsg::Stock {
@@ -4947,7 +4958,7 @@ mod tests {
             }
             other => panic!("wrong variant: {other:?}"),
         }
-        let too_many = [(0u16, 0u32); HEARTH_STOCK_ROWS + 1];
+        let too_many = [(0u16, 0u32, 0u32); HEARTH_STOCK_ROWS + 1];
         assert_eq!(
             encode_event_stock(0, 0, 0, &too_many, &mut buf),
             Err(WireError::Cap)
@@ -5463,6 +5474,10 @@ mod wire_domains {
         Module {
             file: "terrain.rs",
             src: include_str!("../../sim-core/src/terrain.rs"),
+        },
+        Module {
+            file: "upkeep.rs",
+            src: include_str!("../../sim-core/src/upkeep.rs"),
         },
         Module {
             file: "world.rs",

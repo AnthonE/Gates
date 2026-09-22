@@ -51,6 +51,15 @@ properly. The short version:
   is charged that cost pro-rata against the hp being restored, scaled by
   `globals.repair_cost_pct` (100 = the damage's worth exactly, validated
   1..=100), rounded up and floored at one unit so no repair is ever free.
+  What a piece costs to **keep** is five `globals`, not the row: the day's
+  rent `upkeep_pct_per_day` as the first rung, `upkeep_steps` — `[after,
+  permille]` rungs past a base's graded-piece count, blended over the whole
+  base, validated climbing and ≤ 1000 ‰ — then `decay_pct_per_period` (the
+  per-grade ladder an unpaid piece rots at), `inside_decay_pct` (the % of it
+  a piece with anything built over it rots at) and `grief_protection_h`
+  (hours a destroyed hearth's stock still buys its building). Upkeep v2's
+  three — the steps, the inside rate, the grief hours — may be left out, and
+  left out is the v1 game.
 - **weapon**: kind (`melee|bow|firearm|throwable`), damage, headshot ×,
   **limb %**, rate, range falloff curve, ballistic (speed, drop) or hitscan,
   ammo id. The two body-part columns are the ends of one ladder and are

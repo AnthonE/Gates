@@ -458,12 +458,43 @@ pub fn check(c: &Content) -> Result<Anchors, String> {
     }
 
     // Anchor 3's upkeep face: a solo starter's daily upkeep in farm-min,
-    // charged on the graded pieces only (twig pays none).
+    // charged on the graded pieces only (twig pays none), at the rent the
+    // sim's own ladder charges a base of that many graded pieces (upkeep
+    // v2) — `tax_parts` itself, so the anchor cannot price a ladder the
+    // sweep does not walk.
     for it in &c.balance.starter_base.items {
         starter_upkept += farm_minutes(c, &it.item, f64::from(it.count), 0)?;
     }
-    anchors.upkeep_daily_minutes =
-        starter_upkept * f64::from(c.balance.globals.upkeep_pct_per_day) / 100.0;
+    let graded: u32 = c
+        .balance
+        .starter_base
+        .pieces
+        .iter()
+        .filter(|pc| {
+            c.pieces
+                .iter()
+                .any(|p| p.id == pc.piece && p.material != Material::Twig)
+        })
+        .map(|pc| pc.count)
+        .sum();
+    let steps: Vec<(u16, u16)> = c
+        .balance
+        .globals
+        .upkeep_steps
+        .iter()
+        .map(|[after, permille]| {
+            (
+                u16::try_from(*after).unwrap_or(u16::MAX),
+                u16::try_from(*permille).unwrap_or(u16::MAX),
+            )
+        })
+        .collect();
+    let rent = sim_core::upkeep::tax_parts(
+        u16::try_from(c.balance.globals.upkeep_pct_per_day).unwrap_or(u16::MAX),
+        &steps,
+        graded,
+    );
+    anchors.upkeep_daily_minutes = starter_upkept * rent.num as f64 / rent.den as f64;
     if anchors.upkeep_daily_minutes > f64::from(bands.upkeep_solo_daily_max_min) {
         return Err(format!(
             "band break: daily upkeep {:.1} farm-min, ceiling {}",

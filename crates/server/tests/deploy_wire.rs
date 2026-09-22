@@ -338,9 +338,11 @@ fn deployables_ride_the_wire() {
     let c0 = &clients[0].1;
     assert_eq!(c0.stock_addr, (CX, CZ, 0));
     assert_eq!(c0.stock_count, 2);
-    // 50 − 5 foundation cost = 45 of item 0 fed; all 50 of item 1.
-    assert_eq!(c0.stock[0], (0, 45));
-    assert_eq!(c0.stock[1], (1, 50));
+    // 50 − 5 foundation cost = 45 of item 0 fed; all 50 of item 1. The
+    // third column is the bill (upkeep v2): the one foundation is twig,
+    // which pays no rent, so nothing is charged in either row.
+    assert_eq!(c0.stock[0], (0, 45, 0));
+    assert_eq!(c0.stock[1], (1, 50, 0));
     assert_eq!(
         sim_core::craft::inv_count(&core.world.players[w0].inv, 0),
         0,
@@ -385,6 +387,40 @@ fn deployables_ride_the_wire() {
         core.world.pieces.entries()[0].row,
         5,
         "the spawn foundation never climbed to its stone rung"
+    );
+
+    // Graded now, the foundation pays rent, and the feed ack carries the
+    // bill (upkeep v2's readout, wire v73) — the sim's own reading of the
+    // world, read off the claim cache the tick refreshed, not a client's
+    // guess at it.
+    act(
+        &mut core,
+        0,
+        ActionMsg::Feed {
+            cx: CX,
+            cz: CZ,
+            level: 0,
+        },
+    );
+    let flags = pump(&mut core, &stats, &mut clients);
+    assert_ne!(
+        flags[0] & APPLIED_STOCK,
+        0,
+        "the second stock ack never arrived"
+    );
+    let want = sim_core::upkeep::bill(
+        &core.world.deploy,
+        &core.world.build,
+        &core.world.pieces,
+        &core.world.deploys,
+        0,
+    );
+    let c0 = &clients[0].1;
+    assert!(c0.stock[0].2 > 0, "a graded piece on the claim is billed");
+    assert_eq!(
+        (c0.stock[0].2, c0.stock[1].2),
+        (want[0], want[1]),
+        "the wire's bill is the sim's"
     );
 
     // Decay: unpaid pieces vanish and the removal broadcast reaches every
