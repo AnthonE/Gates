@@ -534,16 +534,8 @@ const DOOR_LOCKED: Color = Color::srgb(0.235, 0.247, 0.267);
 /// fell, in the sleeping bag's cloth.
 const BAG_SIZE: [f32; 3] = [0.6, 0.35, 0.45];
 
-/// A loose stack on the ground (`grounditem.rs`) — **one generic sack for
-/// every item**, which is the operator's own call (*"we could just make it
-/// generic now"*) and is what keeps this slice off the model queue
-/// (`assets/models/WANTED.md`): a per-item mesh is 60 assets, and the
-/// thing a player needs first is *something is lying there*.
-///
-/// Smaller than a bag on purpose, and that is the only thing about it a
-/// player has to read at distance: a bag is a body's whole inventory and
-/// a sack is one stack out of a barrel, so the two must not be the same
-/// silhouette. Half a bag's footprint, two thirds its height.
+/// Fallback pouch envelope for items without a held model. Existing size;
+/// modelled tools share the geometry and scale used by the hand.
 const GITEM_SIZE: [f32; 3] = [0.3, 0.24, 0.3];
 const BAG_COLOR: Color = Color::srgb(0.627, 0.416, 0.235);
 
@@ -639,12 +631,22 @@ pub struct Kit {
     gitem_mat: Handle<StandardMaterial>,
 }
 
+struct LootLive {
+    entity: Entity,
+    seen: u64,
+    item: u16,
+    name: [u8; protocol::MAX_ITEM_NAME_BYTES],
+    wanted: Option<usize>,
+    model: Option<usize>,
+}
+
 #[derive(Resource, Default)]
 pub struct StructRing {
     pieces: HashMap<Addr, Live>,
     deploys: HashMap<Addr, Live>,
     bags: HashMap<u32, Live>,
-    gitems: HashMap<u32, Live>,
+    gitems: HashMap<u32, LootLive>,
+    pending_loot: bool,
     kit: Option<Kit>,
     gen: u64,
 }
@@ -2272,7 +2274,7 @@ pub fn build_kit(
             perceptual_roughness: 0.95,
             ..default()
         }),
-        gitem_mesh: meshes.add(Cuboid::new(GITEM_SIZE[0], GITEM_SIZE[1], GITEM_SIZE[2])),
+        gitem_mesh: meshes.add(super::loot::sack_mesh(GITEM_SIZE)),
         // Its own material rather than the bag's, for one reason that is
         // not taste: `prewarm.rs` specializes a pipeline per material, so
         // sharing one would be free and *this* is the slice that puts a
@@ -2298,15 +2300,9 @@ pub fn build_kit(
 /// is THIS frame's news — the pump raised it and the drain took word and rings
 /// in one move.
 ///
-/// A bit missing from this list is a base that does not redraw, and it
-/// produces no error — so the list is not hand-kept: `client/tests/
-/// frame_gates.rs` reads every `APPLIED*` constant `client_core` publishes,
-/// takes the ones whose NAME says piece, deploy, bag or struct, and fails on
-/// any that is not here. It also fails on a mirror-shaped flag landing in
-/// `client_core`'s SECOND applied word, which this condition does not read —
-/// writing that check is what turned up `APPLIED2_BAGS` and sent someone to
-/// find out whether it was the world's bag store (it is the player's own list,
-/// for the death screen).
+/// `frame_gates.rs` checks both words against the core's published flags.
+/// The catalog is watched separately: a late name can replace a pouch with
+/// the item's shared held model without any new ground-item record.
 pub const STRUCT_APPLIED: u32 = client_core::core::APPLIED_PIECES
     | client_core::core::APPLIED_PIECE_RESET
     | client_core::core::APPLIED_PIECE_REMOVED
@@ -2318,6 +2314,9 @@ pub const STRUCT_APPLIED: u32 = client_core::core::APPLIED_PIECES
     | client_core::core::APPLIED_DEPLOY_DEFS
     | client_core::core::APPLIED_BAGS;
 
+/// Loose stacks use the second word; its bit numbers overlap the first.
+pub const STRUCT_APPLIED2: u32 = client_core::core::APPLIED2_GITEMS;
+
 /// Run condition for [`stream`]: the wire said something about what it draws,
 /// or the ring has not been built yet.
 ///
@@ -2326,10 +2325,15 @@ pub const STRUCT_APPLIED: u32 = client_core::core::APPLIED_PIECES
 /// condition that only watched the news would leave the base a player logged
 /// out inside undrawn until someone hit it.
 pub fn structures_changed(ring: Res<StructRing>, feed: Res<super::feed::Feed>) -> bool {
-    ring.kit.is_none() || feed.applied & STRUCT_APPLIED != 0
+    ring.kit.is_none()
+        || ring.pending_loot
+        || feed.applied & client_core::core::APPLIED_CATALOG != 0
+        || feed.applied & STRUCT_APPLIED != 0
+        || feed.applied2 & STRUCT_APPLIED2 != 0
 }
 
-/// Reconcile all three stores against the core's mirrors.
+/// Reconcile the placed stores, backpacks and loose stacks.
+#[allow(clippy::too_many_arguments)]
 pub fn stream(
     mut commands: Commands,
     mut ring: ResMut<StructRing>,
@@ -2338,6 +2342,7 @@ pub fn stream(
     mut materials: ResMut<Assets<StandardMaterial>>,
     world: Res<WorldId>,
     net: NonSend<Net>,
+    models: Res<super::viewmodel::Models>,
 ) {
     // One reborrow, then field-level borrows. `ResMut`'s `DerefMut` hands out
     // a borrow of the WHOLE resource, so reading `kit` while inserting into
@@ -2551,62 +2556,139 @@ pub fn stream(
         false
     });
 
-    // ---- loose stacks ---------------------------------------------------
-    // A stack never moves either — the sim computes its resting place once
-    // (`grounditem::rest_spot`) and the wire carries that. So a known id
-    // is left alone, exactly like a bag, and the retain below is what
-    // takes one away when somebody else picks it up.
-    //
-    // **`row` carries the item id**, which is reuse of `Live`'s existing
-    // field rather than a sixth store — nothing reads it for a stack
-    // today, and the day a draw wants to vary by item it is already here.
-    // The COUNT is deliberately not stored: `dmg` is a `u8` and a stack
-    // reaches 1,000, so a field that could hold it would be a widening
-    // for a number nothing on this side reads (the prompt reads
-    // `core.ground_items()` directly, which is server truth).
-    for g in core.ground_items() {
-        if let Some(live) = ring.gitems.get_mut(&g.id) {
-            live.seen = gen;
-            continue;
+    ring.pending_loot = sync_loot(
+        &mut commands,
+        &mut ring.gitems,
+        kit,
+        gen,
+        core.ground_items(),
+        &core.catalog,
+        &models,
+        &assets,
+        &meshes,
+        &materials,
+        |x, z| super::loot::surface_y(seed, haven, x, z),
+    );
+}
+
+/// Returns whether a fallback is waiting for a shared model to load.
+#[allow(clippy::too_many_arguments)]
+fn sync_loot(
+    commands: &mut Commands,
+    live: &mut HashMap<u32, LootLive>,
+    kit: &Kit,
+    generation: u64,
+    items: &[protocol::WireGItem],
+    catalog: &protocol::ItemCatalog,
+    models: &super::viewmodel::Models,
+    assets: &AssetServer,
+    meshes: &Assets<Mesh>,
+    materials: &Assets<StandardMaterial>,
+    ground: impl Fn(f32, f32) -> f32,
+) -> bool {
+    let mut pending = false;
+    for g in items {
+        // Normalize only a new/renamed item. Retrying an asynchronous model
+        // must not allocate a name per stack on every loading frame.
+        let raw = catalog.name(g.item as usize);
+        let mut name = [0; protocol::MAX_ITEM_NAME_BYTES];
+        name[..raw.len()].copy_from_slice(raw);
+        let want = match live.get(&g.id) {
+            Some(old) if old.item == g.item && old.name == name => old.wanted,
+            _ => crate::ui::hold::held_model(
+                catalog,
+                sim_core::gather::ItemStack {
+                    item: g.item,
+                    count: g.count,
+                    cond: 0,
+                },
+            ),
+        };
+        if let Some(old) = live.get_mut(&g.id) {
+            if old.item == g.item && old.model.is_some() && old.model == want {
+                old.seen = generation;
+                old.name = name;
+                old.wanted = want;
+                continue;
+            }
         }
-        // Half its height up, the bag's own correction: the sim rests it
-        // ON the ground, and a cuboid's origin is its middle.
-        let pos = Vec3::new(
+        let ready = want.filter(|&i| {
+            let (mesh, mat) = models.row(i);
+            meshes.contains(mesh.id())
+                && materials.contains(mat.id())
+                && (matches!(
+                    crate::ui::hold::HELD_MODELS[i].src,
+                    crate::ui::hold::HeldSrc::Gen(_)
+                ) || assets.is_loaded_with_dependencies(mat.id()))
+        });
+        if let Some(i) = want.filter(|_| ready.is_none()) {
+            let (mesh, mat) = models.row(i);
+            let failed = [mesh.id().untyped(), mat.id().untyped()].iter().any(|&id| {
+                matches!(assets.load_state(id), bevy::asset::LoadState::Failed(_))
+                    || matches!(
+                        assets.get_recursive_dependency_load_state(id),
+                        Some(bevy::asset::RecursiveDependencyLoadState::Failed(_))
+                    )
+            });
+            pending |= !failed;
+        }
+        if let Some(old) = live.get_mut(&g.id) {
+            old.seen = generation;
+            old.name = name;
+            old.wanted = want;
+            if old.item == g.item && old.model == ready {
+                continue;
+            }
+            commands.entity(old.entity).despawn();
+        }
+        let (mesh, mat, scale) = match ready {
+            Some(i) => {
+                let (mesh, mat) = models.row(i);
+                (mesh, mat, crate::ui::hold::HELD_MODELS[i].scale)
+            }
+            None => (kit.gitem_mesh.clone(), kit.gitem_mat.clone(), 1.0),
+        };
+        let position = Vec3::new(
             g.qx as f32 * POS_XZ_Q,
-            g.qy as f32 * POS_Y_Q + GITEM_SIZE[1] * 0.5,
+            g.qy as f32 * POS_Y_Q,
             g.qz as f32 * POS_XZ_Q,
+        );
+        let transform = super::loot::resting_transform(
+            meshes.get(&mesh).expect("ready model or built pouch"),
+            position,
+            g.id,
+            scale,
+            ready.is_some(),
+            &ground,
         );
         let entity = commands
             .spawn((
                 super::WorldEntity,
-                Mesh3d(kit.gitem_mesh.clone()),
-                MeshMaterial3d(kit.gitem_mat.clone()),
-                Transform::from_translation(pos),
+                Mesh3d(mesh),
+                MeshMaterial3d(mat),
+                transform,
             ))
             .id();
-        ring.gitems.insert(
+        live.insert(
             g.id,
-            Live {
+            LootLive {
                 entity,
-                seen: gen,
-                row: g.item as u8,
-                open: false,
-                locked: false,
-                dmg: 0,
-                own: 0,
-                plate: 0,
-                facing: 0,
-                foot_drop: 0.0,
+                seen: generation,
+                item: g.item,
+                name,
+                wanted: want,
+                model: ready,
             },
         );
     }
-    ring.gitems.retain(|_, live| {
-        if live.seen == gen {
+    live.retain(|_, old| {
+        if old.seen == generation {
             return true;
         }
-        commands.entity(live.entity).despawn();
+        commands.entity(old.entity).despawn();
         false
     });
+    pending
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3189,3 +3271,6 @@ fn tri_frame_into(b: &mut Buffers, at: Vec3) {
         );
     }
 }
+#[cfg(test)]
+#[path = "loot_tests.rs"]
+mod loot_tests;

@@ -22,7 +22,7 @@
 //! to check it again.
 
 use client::render::props::HARVEST_APPLIED;
-use client::render::structures::STRUCT_APPLIED;
+use client::render::structures::{STRUCT_APPLIED, STRUCT_APPLIED2};
 
 /// The applied-flag constants `client_core` publishes, as `(name, word, bit)`.
 ///
@@ -66,7 +66,7 @@ fn applied_flags() -> Vec<(String, u8, u32)> {
 
 /// Whether a flag's NAME says it is about the store `structures::stream` draws.
 fn mirror_shaped(name: &str) -> bool {
-    ["PIECE", "DEPLOY", "BAG", "STRUCT"]
+    ["PIECE", "DEPLOY", "BAG", "STRUCT", "GITEM"]
         .iter()
         .any(|k| name.contains(k))
 }
@@ -162,31 +162,28 @@ fn the_structure_change_gate_carries_no_bit_that_means_nothing() {
 
 // ── 3. The second word is not quietly carrying the mirror ──────────────────
 
-/// The run condition reads `Feed::applied` and nothing else. `client_core` has
-/// a second word (`APPLIED2_*`, opened because word 0 filled up), and a
-/// mirror-shaped flag landing in it would be invisible to the condition with
-/// no compile error and no failing test anywhere else.
+/// Loose stacks live in the second word. They must wake the renderer on
+/// inserts AND empty resets without an unrelated building update.
 #[test]
 fn no_second_word_flag_moves_the_mirror_unnoticed() {
     let mut unwatched: Vec<String> = Vec::new();
-    for (name, word, _) in applied_flags() {
+    for (name, word, bit) in applied_flags() {
         if word != 1 || !mirror_shaped(&name) {
             continue;
         }
         if NOT_THE_MIRROR.iter().any(|(n, w, _)| *n == name && *w == 1) {
             continue;
         }
-        unwatched.push(name);
+        if STRUCT_APPLIED2 & (1 << bit) == 0 {
+            unwatched.push(name);
+        }
     }
     assert!(
         unwatched.is_empty(),
         "these flags are in `client_core`'s SECOND applied word and name the \
          store `structures::stream` draws:\n  {unwatched:?}\n\n\
-         `structures_changed` reads `Feed::applied` only, so this bit cannot \
-         reach it. Either widen the condition to `applied2` — which means \
-         widening `STRUCT_APPLIED` into a second constant, because the two \
-         words share bit numbers — or add a row to `NOT_THE_MIRROR` saying why \
-         this one cannot change what is drawn."
+         Add the missing bit to `STRUCT_APPLIED2`, or document why it cannot \
+         change what is drawn in `NOT_THE_MIRROR`."
     );
 }
 

@@ -1192,24 +1192,17 @@ where it had only ever been two words on the prompt. Both unseen (`§LOOK`).
    the client draws it from that function, so absence has to ride the
    wire: one bit per crate in AOI).
 2b. ✅ **A smashed barrel scatters loose stacks** (ground items v0,
-   2026-09-16, spoken: *"yea lets cook it"*). Built: `grounditem.rs`, wire
-   v65, save format 14, a generic sack per stack, `E` naming the item and
-   the count. What it left, in the order it is worth doing:
-   - **Nobody has seen it** (`§LOOK`). Two sacks on a beach, a prompt that
-     names them, one taken and the other still there. The mesh is a
-     cuboid, the colour is one step off the bag's, and no frame in
-     `findings/` has either.
-   - **The tumble the operator deferred** (*"eventually… or roll a bit"*).
-     `rest_spot` is a landing spot; a watchable fall wants the settle in
-     the SIM (`reference/LOOT.md` §9.3) and either a per-tick position on
-     the wire or a spawn+velocity the client re-integrates through the
-     same function. The second is cheaper and is the one to price first.
-   - **The barrel pays 1–2 stacks** (`content/loot.toml` `rolls_max = 2`),
-     so "3d objects" is often one object. Raising it is a balance pass
-     `ci/haven_prize.mjs` gates, not a code change.
-   - **No per-item mesh** (`assets/models/WANTED.md` is not queued for
-     this): the sack is generic by decision, and the prompt is what
-     distinguishes stacks. A picture per item is 60 assets.
+   2026-09-16). **Visibility fixed 2026-09-22:** the renderer now watches
+   `APPLIED2_GITEMS`, including the empty reset when the last stack goes.
+   Existing held models also draw on the ground; unsupported/loading items
+   draw a tied pouch. Terrain placement uses the transformed mesh bounds.
+   What remains:
+   - **A watchable tumble.** `rest_spot` is still a landing spot; any fall
+     must remain authoritative (`reference/LOOT.md` §9.3).
+   - **Most resource items still use the pouch.** Item identity and count
+     remain in the `E` prompt. Shared model coverage follows `HELD_MODELS`.
+   - **Barrels still pay 1–2 stacks.** Changing that is balance work in
+     `content/loot.toml`, held by `ci/haven_prize.mjs`.
 3. **The guard has no loot tier of its own** — `guard.rs`'s
    `a_guard_pays_what_a_wolf_pays` holds it to a wolf's meat and fat. A
    tier wants a third species, and a third kind still falls through to

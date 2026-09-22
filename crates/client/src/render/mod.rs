@@ -98,6 +98,7 @@ pub mod hud;
 pub mod impact;
 pub mod input;
 pub mod loading;
+pub mod loot;
 pub mod sparks;
 // The island map. Painted from the same `terrain::splat_from` the ground
 // blends by, so the map and the world are one worldgen seen two ways.

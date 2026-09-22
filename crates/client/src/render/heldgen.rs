@@ -202,97 +202,174 @@ pub(super) fn head_mesh() -> Mesh {
     s.mesh()
 }
 
-/// The torch: a wrapped head on a stick, authored standing so it is carried
-/// upright (`lay: 0.0` on its row). No flame geometry and no
-/// emissive — `nothing_held_glows` keeps a carried emissive out and still
-/// does. It is no longer inert, though: its row declares a light and the
-/// hand carries a `PointLight` for it (torch light v0), sitting
-/// `FLAME_LIFT_M` above the crown of the wrap below, which is what makes
-/// this head read as the source without being one.
+/// Revolve a profile around +Y. Radial zero closes a cap; a return along
+/// the inner radius leaves an actual bore instead of a painted muzzle.
+fn turned(s: &mut Soup, center: Vec3, profile: &[(f32, f32)], tint: [f32; 3]) {
+    for pair in profile.windows(2) {
+        let [(y0, r0), (y1, r1)] = [pair[0], pair[1]];
+        for side in 0..12 {
+            let angle = |i: usize| i as f32 * std::f32::consts::TAU / 12.0;
+            let point = |y: f32, r: f32, i: usize| {
+                center + Vec3::new(angle(i).cos() * r, y, angle(i).sin() * r)
+            };
+            let a = point(y0, r0, side);
+            let b = point(y1, r1, side);
+            let c = point(y1, r1, side + 1);
+            let d = point(y0, r0, side + 1);
+            let color = |_| [tint[0], tint[1], tint[2], 1.0];
+            if r1 > 0.0 {
+                s.tri(a, b, c, color, None, 0.0);
+            }
+            if r0 > 0.0 {
+                s.tri(a, c, d, color, None, 0.0);
+            }
+        }
+    }
+}
+
+/// A tapered wooden shaft and layered cloth winding. The existing crown,
+/// grip and light socket stay in place; the silhouette now has round edges.
 fn torch_mesh() -> Mesh {
     let mut s = Soup::tiling(3.0);
-    // Absolute albedos, NOT `tint1`: the stand-in's tints are mean-1 because
-    // they multiply a photograph (the handle) or a material whose
-    // `base_color` carries the value (the head). These two meshes pair with
-    // a WHITE-based material and no map, so a mean-1 tint renders wood as
-    // cream — the vertex colour is the whole albedo here and it says so.
-    let grain = [0.30, 0.23, 0.15];
-    // The stick. Slightly slimmer than the stand-in's haft: this one is a
-    // branch, not a tool handle.
-    boxed(
+    turned(
         &mut s,
-        Vec3::new(0.0, 0.19, 0.0),
-        Vec3::new(0.013, 0.19, 0.013),
-        grain,
+        Vec3::ZERO,
+        &[
+            (0.0, 0.0),
+            (0.0, 0.010),
+            (0.08, 0.013),
+            (0.30, 0.011),
+            (0.38, 0.013),
+            (0.38, 0.0),
+        ],
+        [0.30, 0.23, 0.15],
     );
-    // The wrap: rag wound over the head, darker and fatter than the stick,
-    // with a second turn offset so the silhouette is a bundle rather than a
-    // block.
-    let rag = [0.16, 0.14, 0.12];
-    boxed(
+    turned(
         &mut s,
-        Vec3::new(0.0, 0.410, 0.0),
-        Vec3::new(0.028, 0.045, 0.028),
-        rag,
+        Vec3::ZERO,
+        &[
+            (0.356, 0.0),
+            (0.356, 0.018),
+            (0.375, 0.023),
+            (0.410, 0.028),
+            (0.440, 0.025),
+            (0.455, 0.020),
+            (0.455, 0.0),
+        ],
+        [0.16, 0.14, 0.12],
     );
-    boxed(
-        &mut s,
-        Vec3::new(0.004, 0.372, -0.004),
-        Vec3::new(0.022, 0.016, 0.022),
-        rag,
-    );
+    // The wrap's overlapping edges catch light independently of the core.
+    for (y, r) in [
+        (0.370, 0.023),
+        (0.390, 0.027),
+        (0.412, 0.029),
+        (0.434, 0.027),
+    ] {
+        turned(
+            &mut s,
+            Vec3::ZERO,
+            &[
+                (y, r - 0.003),
+                (y + 0.003, r),
+                (y + 0.012, r - 0.001),
+                (y + 0.013, r - 0.004),
+            ],
+            [0.24, 0.21, 0.17],
+        );
+    }
     s.mesh()
 }
 
-/// The revolver, authored BARREL-UP so the table's shared quarter-turn
-/// (a quarter turn of `lay`) points it forward: authored +Y is held −Z (away),
-/// authored +Z is held +Y (up), so height here is depth in hand and the bore
-/// axis is the column. Grip low (its row's `grip_frac`), bore ~3 cm above
-/// the fist, the way a revolver actually sits.
+/// Barrel-up authoring, as before: +Y becomes forward in the hand. A round
+/// cylinder, recessed bore, front sight and open trigger guard carry its read.
 fn revolver_mesh() -> Mesh {
     let mut s = Soup::tiling(1.0);
-    // Absolute albedos — `torch_mesh` says why these are not `tint1`.
     let steel = [0.29, 0.30, 0.33];
     let grain = [0.24, 0.16, 0.10];
-    // The handle the fist closes on. Wood.
-    boxed(
+    // A flared grip heel and narrowed neck rather than a rectangular block.
+    hexa(
         &mut s,
-        Vec3::new(0.0, 0.045, 0.0),
-        Vec3::new(0.014, 0.045, 0.020),
+        [
+            Vec3::new(-0.014, 0.0, -0.020),
+            Vec3::new(0.014, 0.0, -0.020),
+            Vec3::new(0.010, 0.090, -0.012),
+            Vec3::new(-0.010, 0.090, -0.012),
+        ],
+        [
+            Vec3::new(-0.014, 0.0, 0.020),
+            Vec3::new(0.014, 0.0, 0.020),
+            Vec3::new(0.010, 0.090, 0.016),
+            Vec3::new(-0.010, 0.090, 0.016),
+        ],
         grain,
     );
-    // The frame over it.
     boxed(
         &mut s,
         Vec3::new(0.0, 0.105, 0.008),
         Vec3::new(0.013, 0.018, 0.030),
         steel,
     );
-    // The cylinder: the one bulge that says revolver rather than pistol.
-    boxed(
+    turned(
         &mut s,
-        Vec3::new(0.0, 0.150, 0.020),
-        Vec3::new(0.017, 0.026, 0.021),
+        Vec3::new(0.0, 0.0, 0.020),
+        &[
+            (0.124, 0.0),
+            (0.124, 0.018),
+            (0.128, 0.021),
+            (0.172, 0.021),
+            (0.176, 0.018),
+            (0.176, 0.0),
+        ],
         steel,
     );
-    // The barrel, a slim column to the muzzle, bore forward of the cylinder
-    // axis (authored +Z = held up).
-    boxed(
+    turned(
         &mut s,
-        Vec3::new(0.0, 0.213, 0.030),
-        Vec3::new(0.009, 0.048, 0.011),
+        Vec3::new(0.0, 0.0, 0.030),
+        &[
+            (0.168, 0.0),
+            (0.168, 0.011),
+            (0.250, 0.009),
+            (0.261, 0.009),
+            (0.261, 0.005),
+            (0.247, 0.005),
+            (0.247, 0.0),
+        ],
         steel,
     );
-    // The hammer spur, behind the cylinder (authored −Z = held down is
-    // wrong for a spur — it rides the TOP of the frame, held toward the
-    // eye, which authored is −Y... a spur this size reads from silhouette
-    // alone, so it sits where the silhouette wants it: aft of the cylinder).
+    boxed(
+        &mut s,
+        Vec3::new(0.0, 0.251, 0.042),
+        Vec3::new(0.003, 0.007, 0.004),
+        steel,
+    );
     boxed(
         &mut s,
         Vec3::new(0.0, 0.125, -0.014),
         Vec3::new(0.005, 0.012, 0.008),
         steel,
     );
+    // Three sides of the guard; the frame closes the fourth. Open air around
+    // the curved trigger matters more at this scale than engraving.
+    for (c, h) in [
+        (
+            Vec3::new(0.0, 0.132, -0.024),
+            Vec3::new(0.004, 0.003, 0.018),
+        ),
+        (
+            Vec3::new(0.0, 0.116, -0.040),
+            Vec3::new(0.004, 0.016, 0.003),
+        ),
+        (
+            Vec3::new(0.0, 0.101, -0.030),
+            Vec3::new(0.004, 0.003, 0.010),
+        ),
+        (
+            Vec3::new(0.0, 0.115, -0.025),
+            Vec3::new(0.003, 0.006, 0.003),
+        ),
+    ] {
+        boxed(&mut s, c, h, steel);
+    }
     s.mesh()
 }
 
