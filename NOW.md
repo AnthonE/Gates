@@ -79,7 +79,9 @@ Wire v73 (2026-09-22): a viewer's own client watches a consenting player
   with `REFUSE_WATCH_ENDED` as its code; the desktop `Session` reads it
   (`close_code`, and the disconnected screen says why) and the page's
   `WebTransport.closed` is not yet read, so a tab says "left the world".
-- A delayed human feed's line is per seat in memory (≤ ~2 MB at 60 s);
+- A delayed human feed's line is per seat in memory and reserved when the
+  seat opens — 7.1 MB at 60 s, 5.0 MB of it an event line sized for eight
+  messages a tick; reserving that half on demand makes it cost the traffic;
   `status.json` does not publish `spectators`; a seat does not see the
   target's open container panel (the container stream is per connection).
 

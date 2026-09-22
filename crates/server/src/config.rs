@@ -270,7 +270,9 @@ pub const DEFAULT_SPECTATORS_PER_TARGET: usize = 4;
 
 /// The longest a human's feed may be delayed, in seconds. The delay line
 /// holds a spectator's snapshots and events in memory for that long, so the
-/// ceiling bounds it (~2 MB of snapshots per seat at 60 s). Proposed default,
+/// ceiling bounds it: at 60 s a delayed seat reserves 7.1 MB when it opens —
+/// 2.0 MB of snapshots and a 5.0 MB event line sized for eight messages a
+/// tick (entry sizes 1,120 B and 344 B, measured). Proposed default,
 /// `DECISIONS.md` §open.
 pub const SPECTATE_HUMAN_DELAY_MAX_S: u32 = 60;
 
