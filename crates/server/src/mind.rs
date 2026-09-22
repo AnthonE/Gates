@@ -192,7 +192,9 @@ impl Goal {
                 "Craft one {} from materials already in the pack.",
                 name.as_str()
             ),
-            Goal::Eat => "Eat food from the pack until food is mostly full.".into(),
+            Goal::Eat => {
+                "Eat food from the pack until food is mostly full. Much food also restores some water.".into()
+            }
             Goal::Drink => {
                 "Drink until water is mostly full: juicy food from the pack, else the sea, which costs a little health.".into()
             }
@@ -1053,6 +1055,11 @@ impl Scripted {
         if pct(s.water, s.water_max) < low {
             if s.offers(Goal::Drink) {
                 return (Goal::Drink, "scripted: water is low");
+            }
+            // No sea in sight and no food known to carry water: eating is
+            // how the body learns which of its food does.
+            if s.offers(Goal::Eat) {
+                return (Goal::Eat, "scripted: water is low, eating to find juicy food");
             }
             if bush {
                 return (Goal::Forage, "scripted: water is low, berries are in view");

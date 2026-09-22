@@ -60,6 +60,9 @@ static ALLOCATOR: CountAlloc = CountAlloc;
 
 const SEED: u64 = 20260731;
 const ID: u32 = 256;
+/// A second, scripted body the harness can use to deliver a blow — the
+/// test's hazard, never an agent.
+const PUPPET: u32 = 257;
 
 fn root() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -179,11 +182,11 @@ fn shore() -> (f32, f32) {
     panic!("fixture seed has no shore");
 }
 
-fn shard(content: &content::Content, at: (f32, f32)) -> Box<ShardCore> {
+fn shard(content: &content::Content, at: (f32, f32), wildlife: bool) -> Box<ShardCore> {
     let t = server::net::bake_all(content).unwrap();
     let mut core = Box::new(ShardCore::new(SEED));
-    // Every table a real shard installs except wildlife, which would make
-    // this acceptance run a test of the animals.
+    // Every table a real shard installs. Wildlife only where a test says
+    // so: elsewhere it would make an acceptance run a test of the animals.
     core.world.gather = t.gather;
     core.world.craft = t.craft;
     core.world.build = t.build;
@@ -195,6 +198,9 @@ fn shard(content: &content::Content, at: (f32, f32)) -> Box<ShardCore> {
     core.world.spawn_kit = t.spawn_kit;
     core.world.loot = t.loot;
     core.world.research = t.research;
+    if wildlife {
+        core.world.mob = t.mobs;
+    }
     core.catalog = t.catalog;
     core.world.dev_spawn = Some(at);
     assert!(core.connect(0, ID));
@@ -212,12 +218,22 @@ struct Harness {
     heap_ops: usize,
     verbs: BTreeSet<&'static str>,
     buttons: u8,
+    /// While set, the puppet stands on the bot swinging this weapon.
+    puppet: Option<sim_core::gather::ItemStack>,
+    spear: sim_core::gather::ItemStack,
 }
 
 impl Harness {
-    fn new() -> Self {
+    fn new(wildlife: bool) -> Self {
         let content = content::Content::load_dir(&root().join("content")).unwrap();
         let at = scene();
+        let spear = content.item_index("item.spear_wood").unwrap();
+        let catalog = server::net::bake_all(&content).unwrap().catalog;
+        let spear = sim_core::gather::ItemStack {
+            item: spear,
+            count: 1,
+            cond: catalog.cond_max(spear as usize),
+        };
         let mut bot =
             Survivor::new(Mind::inline(Scripted::default(), MindConfig::default()).unwrap());
         use server::botclient::BotDriver;
@@ -228,8 +244,8 @@ impl Harness {
             dev: true,
         });
         Self {
-            shard: shard(&content, at),
-            replay: shard(&content, at),
+            shard: shard(&content, at, wildlife),
+            replay: shard(&content, at, wildlife),
             stats: ShardStats::default(),
             view: ClientView::new(),
             bot,
@@ -238,7 +254,56 @@ impl Harness {
             heap_ops: 0,
             verbs: BTreeSet::new(),
             buttons: 0,
+            puppet: None,
+            spear,
         }
+    }
+
+    /// Join the puppet in both shards; it swings only while `puppet` is set.
+    fn with_puppet(&mut self) {
+        for core in [&mut self.shard, &mut self.replay] {
+            assert!(core.connect(1, PUPPET));
+        }
+    }
+
+    /// Point-blank, like `alloc_zero.rs`'s duel: the puppet is stood on the
+    /// bot each tick and holds primary, so the blow lands wherever the bot
+    /// crawls. Scene staging, applied to both shards alike.
+    fn puppet_step(&mut self, weapon: sim_core::gather::ItemStack) {
+        let body = self
+            .shard
+            .world
+            .players
+            .iter()
+            .find(|p| p.active && p.id == ID)
+            .unwrap()
+            .body;
+        for core in [&mut self.shard, &mut self.replay] {
+            // The join lands on the tick after `connect`.
+            let Some(p) = core
+                .world
+                .players
+                .iter_mut()
+                .find(|p| p.active && p.id == PUPPET)
+            else {
+                return;
+            };
+            p.body = body;
+            p.inv[0] = weapon;
+        }
+        let mut dg = InputDatagram::new(0, 0, sim_core::limits::INTERP_DELAY_TICKS);
+        dg.push(sim_core::input::InputFrame {
+            seq: self.tick as u16,
+            buttons: BTN_PRIMARY,
+            pitch: 128,
+            ..Default::default()
+        })
+        .unwrap();
+        let mut bytes = [0u8; sim_core::limits::DATAGRAM_BUDGET_BYTES];
+        let len = encode_input(&dg, &mut bytes).unwrap();
+        let decoded = decode_input(&bytes[..len]).unwrap();
+        self.shard.push_input(1, &decoded);
+        self.replay.push_input(1, &decoded);
     }
 
     /// Stage the same server-side scene change in both shards.
@@ -287,8 +352,14 @@ impl Harness {
             let again = decode_action(&act[..len]).unwrap();
             self.replay.push_action(0, again);
         }
+        if let Some(weapon) = self.puppet {
+            self.puppet_step(weapon);
+        }
         let (view, bot) = (&mut self.view, &mut self.bot);
-        self.shard.tick_bare(&self.stats, |lane, _, bytes| {
+        self.shard.tick_bare(&self.stats, |lane, slot, bytes| {
+            if slot != 0 {
+                return true;
+            }
             match lane {
                 Lane::Snapshot => {
                     view.apply(bytes).unwrap();
@@ -330,7 +401,7 @@ impl Harness {
 
 #[test]
 fn a_survivor_plays_a_whole_life_and_the_next_one_in_lockstep() {
-    let mut h = Harness::new();
+    let mut h = Harness::new(false);
 
     // 1. Gather both resources, then craft a better tool by name.
     let crafted = h.until(12_000, |b| {
@@ -361,16 +432,16 @@ fn a_survivor_plays_a_whole_life_and_the_next_one_in_lockstep() {
     assert!(fed, "no drink and meal: {}", h.explain());
     assert_ne!(h.bot.memory().food.feeds, 0, "a meal teaches what feeds");
 
-    // 3. Die, answer the death screen in-game, and play on. The pack is
-    //    emptied too: with food in hand the survivor eats its way out of
-    //    starvation, and at 1 hp it rightly refuses salt water.
-    h.stage(|p| {
-        p.hp = 1;
-        p.food = 0;
-        p.water = 0;
-        p.inv = [sim_core::gather::ItemStack::default(); sim_core::limits::INV_SLOTS];
-    });
+    // 3. Go down, die, answer the death screen in-game, and play on. A
+    //    starved body no longer serves: the survivor forages and eats its
+    //    way out even at 1 hp. So a second body stands on it swinging a
+    //    spear — the first blow lays it down, the next one kills.
+    h.with_puppet();
+    h.puppet = Some(h.spear);
+    let downed = h.until(3_000, |b| b.core().is_some_and(|c| c.wounded || c.dead));
+    assert!(downed, "the blow did not land: {}", h.explain());
     let reborn = h.until(3_000, |b| b.stats.deaths >= 1 && b.stats.respawns >= 1);
+    h.puppet = None;
     assert!(reborn, "no in-game respawn: {}", h.explain());
     let died = h
         .bot
@@ -406,4 +477,67 @@ fn a_survivor_plays_a_whole_life_and_the_next_one_in_lockstep() {
         "more than one request a second: {}",
         h.explain()
     );
+}
+
+/// Half an hour of play, the shipped clock, no staging and no animals: the
+/// survivor must keep itself fed and watered on its own. This is the gate
+/// that would have caught an inland body that never learned which food
+/// carries water (it carried 130 mushrooms and let water fall to 17%).
+#[test]
+fn half_an_hour_alone_keeps_food_and_water_up() {
+    let mut h = Harness::new(false);
+    let (mut food, mut water) = (u16::MAX, u16::MAX);
+    for _ in 0..30 * 60 * TICK_HZ {
+        h.step();
+        let core = h.bot.core().unwrap();
+        if core.max_food > 0 {
+            food = food.min(core.food);
+            water = water.min(core.water);
+        }
+    }
+    let core = h.bot.core().unwrap();
+    println!("minimum food {food}, water {water}; {}", h.explain());
+    assert_eq!(h.bot.stats.deaths, 0, "{}", h.explain());
+    // 30 %: the healthy run bottoms out near 39 % water and 59 % food; a
+    // body that never learns which food carries water is near 21 % here.
+    assert!(u32::from(food) * 10 >= u32::from(core.max_food) * 3, "food fell to {food}");
+    assert!(u32::from(water) * 10 >= u32::from(core.max_water) * 3, "water fell to {water}");
+    assert!(h.bot.gathered_of("Wood") > 0 && h.bot.gathered_of("Stone") > 0);
+    assert!(h.bot.stats.crafted >= 2 && h.bot.stats.eaten > 0, "{}", h.explain());
+    assert!(h.bot.mind.stats.requests * u64::from(TICK_HZ) <= u64::from(h.tick));
+    assert_eq!(h.heap_ops, 0);
+}
+
+/// Half an hour with the island's animals. Whether they kill is theirs to
+/// decide; what is gated is that every death is answered in-game within a
+/// few seconds and the body plays on afterwards.
+#[test]
+fn half_an_hour_with_wildlife_answers_every_death_in_game() {
+    let mut h = Harness::new(true);
+    let (mut dead_for, mut longest) = (0u32, 0u32);
+    let mut decisions_at_wake = None;
+    for _ in 0..30 * 60 * TICK_HZ {
+        let respawns = h.bot.stats.respawns;
+        h.step();
+        let dead = h.bot.core().is_some_and(|c| c.dead);
+        dead_for = if dead { dead_for + 1 } else { 0 };
+        longest = longest.max(dead_for);
+        if h.bot.stats.respawns > respawns {
+            decisions_at_wake = Some(h.bot.mind.stats.decisions);
+        }
+    }
+    println!("longest time dead {longest} ticks; {}", h.explain());
+    let dead_now = h.bot.core().is_some_and(|c| c.dead);
+    assert_eq!(
+        h.bot.stats.respawns + u64::from(dead_now),
+        h.bot.stats.deaths,
+        "every death is answered: {}",
+        h.explain()
+    );
+    assert!(longest <= 2 * TICK_HZ, "a death screen stood {longest} ticks");
+    if let Some(at_wake) = decisions_at_wake {
+        assert!(h.bot.mind.stats.decisions > at_wake, "no decision after the last wake");
+    }
+    assert!(h.bot.mind.stats.requests * u64::from(TICK_HZ) <= u64::from(h.tick));
+    assert_eq!(h.heap_ops, 0);
 }
