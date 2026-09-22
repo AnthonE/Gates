@@ -1,9 +1,8 @@
 //! One local agent player. See crates/server/JEV.md for running it.
 
-use server::agent_demo::{MindArgs, Source, MIND_USAGE};
-use server::botclient::{bot_endpoint, run_driven_bot};
+use server::agent_demo::{bot_name, Door, MindArgs, Source, AGENT_NAME, MIND_USAGE};
 use server::explorer::Survivor;
-use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,13 +13,16 @@ const MAX_BOTS: usize = 8;
 
 fn usage() -> String {
     format!(
-        "jev-bot (--local | --server 127.0.0.1:PORT) [--seconds 120] [--bots 1] {MIND_USAGE}\nThe bot survives in-game: it answers the death screen, crawls when wounded, gathers, crafts, eats and drinks. The process ends when the run ends or the connection fails.\n--bots 2..8 starts that many scripted or external agents on one island (each external agent is its own child); Jev stays one bot."
+        "jev-bot (--local | --server HOST:PORT) [--agent-key PATH] [--agent-name jev] [--cert-hash HEX] [--seconds 120] [--bots 1] {MIND_USAGE}\nThe bot survives in-game: it answers the death screen, crawls when wounded, gathers, crafts, eats and drinks. The process ends when the run ends or the connection fails.\nEvery bot declares itself an agent a spectator can follow (NETCODE.md §2.3). Without --agent-key it is a guest on a loopback shard; with it, a wallet agent that signs with the key in that 0600 file and may join any shard that admits it (§2.4). The key is only ever named by path.\n--bots 2..8 starts that many scripted or external guest agents on one island (each external agent is its own child); Jev and a wallet stay one bot."
     )
 }
 
 struct Options {
     local: bool,
-    server: Option<SocketAddr>,
+    server: Option<String>,
+    agent_key: Option<PathBuf>,
+    agent_name: String,
+    cert_hash: Option<String>,
     duration: Duration,
     bots: usize,
     mind: MindArgs,
@@ -31,6 +33,9 @@ impl Options {
         let mut options = Self {
             local: false,
             server: None,
+            agent_key: None,
+            agent_name: AGENT_NAME.into(),
+            cert_hash: None,
             duration: Duration::from_secs(RUN_SECONDS),
             bots: 1,
             mind: MindArgs::default(),
@@ -43,13 +48,20 @@ impl Options {
             match arg.as_str() {
                 "--help" | "-h" => return Ok(None),
                 "--local" => options.local = true,
-                "--server" => {
-                    options.server = Some(
-                        args.next()
-                            .ok_or("missing server address")?
-                            .parse()
-                            .map_err(|_| "invalid server address")?,
-                    )
+                // A name, not a resolved address: the certificate is checked
+                // against the name dialled (`botclient::agent_endpoint`).
+                "--server" => options.server = Some(args.next().ok_or("missing server address")?),
+                // A path only: the key itself never rides argv (`agentkey`).
+                "--agent-key" => {
+                    options.agent_key = Some(PathBuf::from(
+                        args.next().ok_or("--agent-key needs a file path")?,
+                    ))
+                }
+                "--agent-name" => {
+                    options.agent_name = args.next().ok_or("--agent-name needs a name")?
+                }
+                "--cert-hash" => {
+                    options.cert_hash = Some(args.next().ok_or("--cert-hash needs a digest")?)
                 }
                 "--bots" => {
                     options.bots = args
@@ -78,18 +90,38 @@ impl Options {
         if options.local == options.server.is_some() {
             return Err("choose exactly one of --local and --server".into());
         }
-        if options.server.is_some_and(|a| !a.ip().is_loopback()) {
-            return Err("this guest prototype only joins loopback shards".into());
+        if options.local && options.cert_hash.is_some() {
+            return Err("--cert-hash is for --server; a local shard pins its own".into());
         }
         if options.bots > 1 && options.mind.source == Source::Jev {
-            return Err("--bots above 1 runs scripted or external agents; Jev is billed per bot".into());
+            return Err(
+                "--bots above 1 runs scripted or external agents; Jev is billed per bot".into(),
+            );
+        }
+        if options.bots > 1 && options.agent_key.is_some() {
+            return Err("one --agent-key is one body; --bots above 1 runs guest agents".into());
+        }
+        for i in 0..options.bots {
+            bot_name(&options.agent_name, i, options.bots)?;
         }
         Ok(Some(options))
     }
 }
 
 async fn run(options: Options) -> Result<(), String> {
-    // Check credentials and start every source before booting a shard.
+    // Load the key (if any) and start every source before booting a shard:
+    // a refused key or credential costs nothing.
+    let key = options
+        .agent_key
+        .as_deref()
+        .map(Door::load_key)
+        .transpose()?;
+    if key.is_none() {
+        if let Some(server) = &options.server {
+            // A guest must name a loopback shard; say so before anything runs.
+            Door::new(server.clone(), None, None)?;
+        }
+    }
     let mut minds = Vec::with_capacity(options.bots);
     for _ in 0..options.bots {
         minds.push(options.mind.build()?);
@@ -98,28 +130,50 @@ async fn run(options: Options) -> Result<(), String> {
     let shard = if options.local {
         let handle = server::agent_demo::spawn_local().await?;
         println!(
-            "local shard: {} · proto {}",
+            "local shard: {} · proto {} · spectator seats open to this machine",
             handle.local_addr,
             protocol::PROTO_VER
         );
-        println!("watch with the matching client: cargo run -p client --features render --bin gates -- --server https://{} --cert-hash {}", handle.local_addr, handle.cert_hash);
         Some(handle)
     } else {
         None
     };
-    let address = shard
-        .as_ref()
-        .map(|s| s.local_addr)
-        .or(options.server)
-        .expect("validated destination");
-    let endpoint = Arc::new(bot_endpoint()?);
+    let door = match &shard {
+        Some(h) => Door::new(h.local_addr.to_string(), Some(h.cert_hash.clone()), key)?,
+        None => Door::new(
+            options.server.clone().expect("validated destination"),
+            options.cert_hash.clone(),
+            key,
+        )?,
+    };
+    println!(
+        "{}: {}",
+        if door.key.is_some() {
+            "wallet agent"
+        } else {
+            "guest agent"
+        },
+        door.key
+            .as_ref()
+            .map(|k| format!("{:?}", k.address()))
+            .unwrap_or_else(|| "unsigned, loopback only".into())
+    );
+    println!(
+        "watch it (NETCODE.md §2.3; a loopback shard is this machine only): a Gates web page with ?{}",
+        door.spectate_query()
+    );
+    println!("  or the desktop client: {}", door.desktop_command());
+    let endpoint = Arc::new(door.endpoint()?);
+    let door = Arc::new(door);
     let mut fleet = tokio::task::JoinSet::new();
     for (i, mind) in minds.into_iter().enumerate() {
         let endpoint = endpoint.clone();
+        let door = door.clone();
         let duration = options.duration;
+        let name = bot_name(&options.agent_name, i, options.bots)?;
         fleet.spawn(async move {
             let mut survivor = Survivor::new(mind);
-            let result = run_driven_bot(&endpoint, address, duration, &mut survivor).await;
+            let result = door.play(&endpoint, name, duration, &mut survivor).await;
             (i, survivor, result)
         });
     }

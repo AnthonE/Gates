@@ -2,9 +2,12 @@
 use bevy::prelude::*;
 use bevy::window::WindowResolution;
 use client::render::{input, GatesRenderPlugin, Net, Rt, Settings, Start, WorldId};
-use server::agent_demo::{MindArgs, MIND_USAGE};
+use server::agent_demo::{
+    bot_name, check_page, spectate_url, Door, MindArgs, AGENT_NAME, MIND_USAGE,
+};
 use server::explorer::Survivor;
-use server::watch::{self, http::Broadcast, Controller};
+use server::watch::http::{Broadcast, SpectateLink};
+use server::watch::{self, Controller};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
@@ -12,12 +15,15 @@ use std::time::Duration;
 
 fn usage() -> String {
     format!(
-        "jev-watch [--seconds 120 | --continuous] [--listen 127.0.0.1:8081] [--assets PATH] [--content PATH] {MIND_USAGE}\nStarts a temporary local shard and one survivor bot. Requires a graphics display.\nDeath is answered in-game; a continuous run ends only when its session or renderer fails, so use a supervisor to restart it."
+        "jev-watch [--seconds 120 | --continuous] [--listen 127.0.0.1:8081] [--assets PATH] [--content PATH] [--agent-key PATH] [--agent-name jev] [--spectate-page URL] {MIND_USAGE}\nStarts a temporary local shard and one survivor bot. Requires a graphics display.\nDeath is answered in-game; a continuous run ends only when its session or renderer fails, so use a supervisor to restart it.\nThe bot declares itself an agent a spectator can follow (NETCODE.md §2.3), signed with --agent-key's 0600 file if given. --spectate-page names a Gates web page, so the watch page can link viewers on this machine to a seat."
     )
 }
 
 fn run() -> Result<AppExit, String> {
     let mut mind = MindArgs::default();
+    let mut agent_key: Option<PathBuf> = None;
+    let mut agent_name = AGENT_NAME.to_owned();
+    let mut spectate_page: Option<String> = None;
     let mut continuous = false;
     let mut timed = false;
     let mut duration = Duration::from_secs(120);
@@ -60,6 +66,18 @@ fn run() -> Result<AppExit, String> {
             "--content" => {
                 content = PathBuf::from(args.next().ok_or("--content needs a directory")?)
             }
+            // A path only: the key itself never rides argv (`agentkey`).
+            "--agent-key" => {
+                agent_key = Some(PathBuf::from(
+                    args.next().ok_or("--agent-key needs a file path")?,
+                ))
+            }
+            "--agent-name" => agent_name = args.next().ok_or("--agent-name needs a name")?,
+            "--spectate-page" => {
+                let page = args.next().ok_or("--spectate-page needs a URL")?;
+                check_page(&page)?;
+                spectate_page = Some(page);
+            }
             _ => return Err(format!("unknown argument: {arg}")),
         }
     }
@@ -70,6 +88,8 @@ fn run() -> Result<AppExit, String> {
     if !assets.is_dir() {
         return Err("assets must name a directory".into());
     }
+    let name = bot_name(&agent_name, 0, 1)?;
+    let key = agent_key.as_deref().map(Door::load_key).transpose()?;
     let brain = mind.build()?;
     let (broadcast, capture) = Broadcast::start(listen)?;
     println!("shared watch page: http://{}/", broadcast.address);
@@ -84,14 +104,45 @@ fn run() -> Result<AppExit, String> {
     }
     let _stop = Stop(shard.shutdown.clone());
     let server = shard.local_addr.to_string();
+    let door = Door::new(server.clone(), Some(shard.cert_hash.clone()), key)?;
     let (_endpoint, mut session) = rt.block_on(async {
         let endpoint = client::client_endpoint(&server, Some(&shard.cert_hash))?;
-        let session =
-            client::Session::connect(&endpoint, &server, protocol::Address::GUEST, |_, _, _| None)
+        // Declared an agent either way, so a spectator can follow it; a key
+        // also proves the address, so a viewer can name this wallet.
+        let session = match &door.key {
+            Some(key) => client::Session::connect_agent(&endpoint, &server, key, name).await,
+            None => {
+                client::Session::connect_as(
+                    &endpoint,
+                    &server,
+                    protocol::Address::GUEST,
+                    &client::Join::Agent { name },
+                    |_, _, _| None,
+                )
                 .await
-                .map_err(|e| e.to_string())?;
+            }
+        }
+        .map_err(|e| e.to_string())?;
         Ok::<_, String>((endpoint, session))
     })?;
+    println!(
+        "spectator seats (NETCODE.md §2.3), this machine only — the shard listens on {server}:"
+    );
+    match &spectate_page {
+        Some(page) => {
+            let url = spectate_url(page, &door.spectate_query());
+            println!("  browser: {url}");
+            broadcast.announce(SpectateLink {
+                url,
+                scope: "same machine only: this bot's shard listens on 127.0.0.1",
+            });
+        }
+        None => println!(
+            "  browser: a Gates web page with ?{}",
+            door.spectate_query()
+        ),
+    }
+    println!("  desktop: {}", door.desktop_command());
     let controller = Controller::attach(&mut session, Survivor::new(brain), duration)?;
     let world = WorldId::new(session.welcome.seed);
     let mut app = App::new();

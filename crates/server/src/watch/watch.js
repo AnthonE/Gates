@@ -43,6 +43,16 @@ function present(state) {
   fill(byId("pack"), (state.inventory || []).map(i => `${i.name} × ${i.count.toLocaleString()}`), "Empty");
   fill(byId("history"), (state.history || []).map(h =>
     `${goalText(h.goal)}: ${h.outcome}${h.why ? ` (${h.why})` : ""}${h.gained ? `, +${h.gained}` : ""}`), "None yet.");
+  // A spectator seat on the bot's own shard (NETCODE.md §2.3), linked only
+  // when the operator named a Gates web page. Scoped as the server says:
+  // a loopback shard is this machine only. http(s) links only.
+  const link = state.spectate, box = byId("spectate");
+  if (link && /^https?:\/\//.test(link.url)) {
+    const a = byId("spectate-link");
+    if (a.getAttribute("href") !== link.url) a.setAttribute("href", link.url);
+    byId("spectate-scope").textContent = link.scope;
+    box.hidden = false;
+  } else box.hidden = true;
   byId("waiting").hidden = true; picture.hidden = false;
   previous = state; shown = state.frame; freshAt = performance.now() - state.age_ms;
   connection("LIVE", true);

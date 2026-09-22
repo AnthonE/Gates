@@ -602,8 +602,10 @@ fn drain_driver_events(rx: &mut DriverEvents, driver: &mut dyn BotDriver) -> Res
     Ok(())
 }
 
-/// Experimental guest controller, confined to a local development shard.
-/// Public agent players still need PLAYERS.md's wallet/identity surface.
+/// Experimental guest controller, confined to a local development shard. It
+/// declares nothing, so no spectator can follow it; a driven agent that
+/// should be watchable joins through [`run_guest_agent`] or, with a wallet,
+/// [`run_agent_bot`].
 pub async fn run_driven_bot(
     endpoint: &Endpoint<Client>,
     server: SocketAddr,
@@ -616,6 +618,33 @@ pub async fn run_driven_bot(
     run_bot_inner(
         endpoint,
         Dial::Guest(server),
+        0,
+        duration,
+        None,
+        Some(driver),
+    )
+    .await
+}
+
+/// A driven **guest agent** on a loopback shard: unsigned like
+/// [`run_driven_bot`], but it declares `HELLO_AGENT | HELLO_WATCHABLE` and a
+/// display name, so a spectator can follow it (`NETCODE.md` §2.3). With no
+/// proven address it is named by "any watchable agent" (`?spectate` bare, or
+/// the desktop client's `--spectate any`). A shard with `require_auth`
+/// refuses it as it refuses every guest.
+pub async fn run_guest_agent(
+    endpoint: &Endpoint<Client>,
+    server: SocketAddr,
+    name: protocol::Name,
+    duration: Duration,
+    driver: &mut dyn BotDriver,
+) -> Result<BotReport, String> {
+    if !server.ip().is_loopback() {
+        return Err("a guest agent requires a loopback shard; a wallet agent may dial any".into());
+    }
+    run_bot_inner(
+        endpoint,
+        Dial::GuestAgent { server, name },
         0,
         duration,
         None,
@@ -668,6 +697,12 @@ pub async fn run_agent_bot(
 enum Dial<'a> {
     /// A load bot or the loopback guest prototype: an unsigned guest.
     Guest(SocketAddr),
+    /// An unsigned guest that declares itself an agent and consents to be
+    /// watched, with a display name (v73) — [`run_guest_agent`].
+    GuestAgent {
+        server: SocketAddr,
+        name: protocol::Name,
+    },
     /// An agent player: a named shard, a signed hello (v73).
     Agent {
         server: &'a str,
@@ -695,6 +730,7 @@ impl Dial<'_> {
     > {
         let url = match self {
             Dial::Guest(server) => format!("https://{server}"),
+            Dial::GuestAgent { server, .. } => format!("https://{server}"),
             Dial::Agent { server, .. } => format!("https://{server}"),
         };
         let connection = connect_retrying_a_shed(endpoint, &url, connect_sheds).await?;
@@ -715,6 +751,24 @@ impl Dial<'_> {
                     |_| None,
                 )
                 .await?
+            }
+            // Declared, never proven: consent to be watched is the one
+            // thing a session may grant about itself alone. The domain is
+            // inert for a guest — nothing is signed.
+            Dial::GuestAgent { name, .. } => {
+                let mut hello = protocol::Hello::this_build();
+                hello.flags = protocol::HELLO_AGENT | protocol::HELLO_WATCHABLE;
+                hello.name = *name;
+                crate::net::client_handshake_as(
+                    &mut send,
+                    &mut recv,
+                    "jev-bot",
+                    protocol::Address::GUEST,
+                    &hello,
+                    |_, _, _| None,
+                )
+                .await?
+                .welcome
             }
             Dial::Agent { server, identity } => {
                 // The SIWE domain is the host this agent DIALLED, port

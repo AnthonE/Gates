@@ -3,7 +3,7 @@
 use super::{Capture, Captured, HEIGHT, WIDTH};
 use std::net::{SocketAddr, TcpListener};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -17,6 +17,16 @@ pub struct Broadcast {
     pub address: SocketAddr,
     stop: Arc<AtomicBool>,
     worker: Option<std::thread::JoinHandle<()>>,
+    link: Arc<OnceLock<SpectateLink>>,
+}
+
+/// Where a viewer can take a spectator seat on this bot's shard
+/// (`NETCODE.md` §2.3): known only when the operator names the Gates web
+/// page, and scoped honestly — a loopback shard is this machine only.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpectateLink {
+    pub url: String,
+    pub scope: &'static str,
 }
 
 impl Broadcast {
@@ -33,6 +43,8 @@ impl Broadcast {
         let (tx, rx) = rtrb::RingBuffer::new(1);
         let stop = Arc::new(AtomicBool::new(false));
         let done = stop.clone();
+        let link = Arc::new(OnceLock::new());
+        let served = link.clone();
         let worker = std::thread::Builder::new()
             .name("bot-broadcast".into())
             .spawn(move || {
@@ -40,7 +52,7 @@ impl Broadcast {
                     .enable_all()
                     .build()
                     .map_err(|e| e.to_string())
-                    .and_then(|rt| rt.block_on(serve(listener, rx, done)));
+                    .and_then(|rt| rt.block_on(serve(listener, rx, done, served)));
                 if let Err(e) = result {
                     eprintln!("jev-watch: {e}");
                 }
@@ -51,9 +63,15 @@ impl Broadcast {
                 address,
                 stop,
                 worker: Some(worker),
+                link,
             },
             Capture::new(tx),
         ))
+    }
+
+    /// Publish the spectator link in `state.json`, once, when it is known.
+    pub fn announce(&self, link: SpectateLink) {
+        let _ = self.link.set(link);
     }
 }
 
@@ -102,6 +120,7 @@ async fn serve(
     listener: TcpListener,
     mut frames: rtrb::Consumer<Captured>,
     stop: Arc<AtomicBool>,
+    link: Arc<OnceLock<SpectateLink>>,
 ) -> Result<(), String> {
     let listener = tokio::net::TcpListener::from_std(listener).map_err(|e| e.to_string())?;
     let mut latest = None;
@@ -117,8 +136,9 @@ async fn serve(
                 let (socket, _) = connected.map_err(|e| e.to_string())?;
                 if clients.len() >= CLIENTS { drop(socket); continue; }
                 let frame = latest.clone();
+                let link = link.clone();
                 clients.spawn(async move {
-                    let _ = tokio::time::timeout(REQUEST_TIMEOUT, request(socket, frame)).await;
+                    let _ = tokio::time::timeout(REQUEST_TIMEOUT, request(socket, frame, link.get())).await;
                 });
             }
             _ = clients.join_next(), if !clients.is_empty() => {}
@@ -155,9 +175,10 @@ fn route(header: &[u8]) -> (u16, &'static str) {
     }
 }
 
-fn state(frame: Option<&Frame>) -> String {
+fn state(frame: Option<&Frame>, link: Option<&SpectateLink>) -> String {
+    let spectate = link.map(|l| serde_json::json!({ "url": l.url, "scope": l.scope }));
     let Some(f) = frame else {
-        return serde_json::json!({ "ready": false }).to_string();
+        return serde_json::json!({ "ready": false, "spectate": spectate }).to_string();
     };
     let st = &f.status;
     let meter = |(v, max): (u16, u16)| {
@@ -202,6 +223,7 @@ fn state(frame: Option<&Frame>) -> String {
         "input_tokens": st.input_tokens, "output_tokens": st.output_tokens,
         "requests_hour": [st.hour.0, st.hour.1], "requests_day": [st.day.0, st.day.1],
         "decode_errors": st.decode_errors,
+        "spectate": spectate,
     })
     .to_string()
 }
@@ -209,6 +231,7 @@ fn state(frame: Option<&Frame>) -> String {
 async fn request(
     mut socket: tokio::net::TcpStream,
     frame: Option<Arc<Frame>>,
+    link: Option<&SpectateLink>,
 ) -> std::io::Result<()> {
     let mut header = [0u8; HEADER_BYTES];
     let mut n = 0;
@@ -244,7 +267,7 @@ async fn request(
         "js" => ("text/javascript; charset=utf-8", include_bytes!("watch.js")),
         "css" => ("text/css; charset=utf-8", include_bytes!("watch.css")),
         "state" => {
-            json = state(frame.as_deref());
+            json = state(frame.as_deref(), link);
             ("application/json", json.as_bytes())
         }
         "frame" => match &frame {
@@ -259,7 +282,7 @@ async fn request(
     // One response carries both image and state. A viewer whose round trip
     // exceeds the capture interval must not chase superseded frame IDs.
     let metadata = if route == "frame" {
-        format!("X-Bot-State: {}\r\n", state(frame.as_deref()))
+        format!("X-Bot-State: {}\r\n", state(frame.as_deref(), link))
     } else {
         String::new()
     };
@@ -341,10 +364,16 @@ mod tests {
             assert_eq!(state["wood"], 42);
             assert_eq!(state["action"], "Harvesting");
             assert_eq!(state["goal"], "gather_wood");
-            assert_eq!(state["reason"], "scripted: next resource in the rotation is in view");
+            assert_eq!(
+                state["reason"],
+                "scripted: next resource in the rotation is in view"
+            );
             assert_eq!(state["history"][0]["goal"], "craft:Stone Hatchet");
             assert_eq!(state["history"][1]["outcome"], "failed");
-            assert_eq!((state["deaths"].as_u64(), state["respawns"].as_u64()), (Some(1), Some(1)));
+            assert_eq!(
+                (state["deaths"].as_u64(), state["respawns"].as_u64()),
+                (Some(1), Some(1))
+            );
             assert_eq!(state["inventory"][0]["name"], "Wood");
         }
         let decoded = image::load_from_memory(&a[body..]).unwrap();
@@ -406,6 +435,30 @@ mod tests {
             day: (3, 7200),
             decode_errors: 0,
         }
+    }
+
+    #[test]
+    fn the_spectator_link_appears_only_once_it_is_known() {
+        let (server, capture) = Broadcast::start("127.0.0.1:0".parse().unwrap()).unwrap();
+        let body = |response: Vec<u8>| {
+            let at = response.windows(4).position(|b| b == b"\r\n\r\n").unwrap() + 4;
+            serde_json::from_slice::<serde_json::Value>(&response[at..]).unwrap()
+        };
+        let before = body(get(server.address, "/state.json"));
+        assert!(
+            before["spectate"].is_null(),
+            "no page named, no link: {before}"
+        );
+        let link = SpectateLink {
+            url: "http://127.0.0.1:8080/?server=127.0.0.1:4433&hash=ab:cd&spectate".into(),
+            scope: "same machine only",
+        };
+        server.announce(link.clone());
+        let after = body(get(server.address, "/state.json"));
+        assert_eq!(after["spectate"]["url"], link.url.as_str());
+        assert_eq!(after["spectate"]["scope"], "same machine only");
+        drop(capture);
+        drop(server);
     }
 
     #[test]
