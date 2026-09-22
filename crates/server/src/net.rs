@@ -505,6 +505,8 @@ pub async fn spawn_shard(
         let seed = cfg.seed;
         let dev_spawn = cfg.dev_spawn;
         let admins = cfg.admins.clone();
+        // The trust log's tap rides the save boot artifact (`store::Saves`).
+        let trust = saves.trust;
         std::thread::Builder::new()
             .name("sim".into())
             .spawn(move || {
@@ -523,6 +525,7 @@ pub async fn spawn_shard(
                     admin_tx,
                     log,
                     admins,
+                    trust,
                     slots,
                     stats,
                     shutdown,
@@ -2097,6 +2100,7 @@ fn sim_thread(
     mut admin_tx: rtrb::Producer<crate::admin::AdminAct>,
     mut log: crate::anomaly::Sink,
     admins: crate::admin::Admins,
+    trust: crate::trustlog::Tap,
     slots: Arc<SlotTable>,
     stats: Arc<ShardStats>,
     shutdown: Arc<AtomicBool>,
@@ -2136,6 +2140,7 @@ fn sim_thread(
     core.world.research = research;
     core.catalog = catalog;
     core.install_admins(admins);
+    core.trust = trust;
     // The counter sweep's memory, beside the sink it feeds (`anomaly.rs`).
     let mut watch = crate::anomaly::Watch::new();
     // **The load, and this is the only place it may happen**: after the
