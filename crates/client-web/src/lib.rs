@@ -122,6 +122,61 @@ impl Gates {
         })
     }
 
+    /// Take a **read-only seat** watching `target` on `server` (wire v73;
+    /// `NETCODE.md` §2.3), and return once the shard has said whose view it
+    /// is. `target` is a wallet address (`0x…`), or absent / `"any"` for any
+    /// agent the shard lets you watch.
+    ///
+    /// **No wallet, and none is asked for**: a watcher is anonymous, signs
+    /// nothing and claims nothing. What it may watch is decided by the
+    /// TARGET's consent, on the shard — this call cannot widen it. The seat
+    /// has no body and no input: [`Gates::play`] draws the watched player's
+    /// view from the ordinary snapshot stream, on this machine's GPU.
+    ///
+    /// A refusal carries the shard's code on `code`, as [`Gates::join`]'s
+    /// does (`REFUSE_WATCH` 6, `REFUSE_WATCH_FULL` 7).
+    pub async fn watch(
+        server: String,
+        cert_hash: Option<String>,
+        target: Option<String>,
+    ) -> Result<Gates, JsValue> {
+        let named = target
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty() && !t.eq_ignore_ascii_case("any"));
+        let target = match named {
+            None => protocol::Address::GUEST,
+            Some(t) => protocol::Address::from_hex(t.as_bytes())
+                .filter(|a| !a.is_guest())
+                .ok_or_else(|| {
+                    JsValue::from_str(
+                        "spectate must be `any` or a wallet address — 0x followed by 40 hex digits",
+                    )
+                })?,
+        };
+        let session = client::Session::watch(&server, cert_hash.as_deref(), target)
+            .await
+            .map_err(join_error)?;
+        Ok(Gates {
+            session,
+            aim: client::look::Aim::default(),
+            last: client::Frame {
+                tick: 0,
+                snapshots: 0,
+            },
+        })
+    }
+
+    /// What a seat's label says (`SPECTATING …`), or `undefined` when this
+    /// session plays rather than watches.
+    #[wasm_bindgen(getter)]
+    pub fn watching(&self) -> Option<String> {
+        self.session
+            .watching
+            .as_ref()
+            .map(client::ui::spectate::label)
+    }
+
     /// Hand this frame's raw input to the client core.
     ///
     /// **Pixels and key states in — the page derives nothing.** Which way is

@@ -43,6 +43,14 @@ const say = (text, cls) => { status.textContent = text; status.className = cls ?
    off it gets them open, because a dev shard's hash has to be typed. */
 const q = new URLSearchParams(location.search);
 const onOrigin = /(^|\.)elopros\.com$/.test(location.hostname);
+
+/* ── watching instead of playing ───────────────────────────────────────────
+   `?spectate` (any agent the shard lets you watch) or `?spectate=0x…` (that
+   wallet's agent) takes a READ-ONLY seat (wire v73; NETCODE.md §2.3): the
+   agent's own view, drawn by this tab's GPU from the ordinary snapshot
+   stream. A watcher is anonymous — no wallet is asked for and nothing is
+   signed — and the shard, not this page, decides who may be watched. */
+const spectate = q.has("spectate") ? (q.get("spectate") || "any") : null;
 document.getElementById("server").value =
   q.get("server") || (onOrigin ? "game.elopros.com:61234" : "127.0.0.1:4433");
 document.getElementById("hash").value = q.get("hash") || "";
@@ -134,6 +142,13 @@ const showAccount = () => {
 if (!wallet.has()) {
   connect.disabled = true;
   account.textContent = "no wallet extension here — you can still join a shard that takes guests";
+}
+if (spectate !== null) {
+  // A watcher signs nothing, so the wallet row would only be a question the
+  // page never asks. Hidden, and the button says what it will do.
+  document.getElementById("who").hidden = true;
+  go.textContent = "Watch";
+  say(spectate === "any" ? "watch any agent on this shard" : `watch ${short(spectate)}`);
 }
 
 connect.addEventListener("click", async () => {
@@ -240,15 +255,24 @@ go.addEventListener("click", async () => {
   const audio = startAudio();
   const server = document.getElementById("server").value.trim();
   const hash = document.getElementById("hash").value.trim() || undefined;
-  say(address ? `connecting to ${server} as ${short(address)}…` : `connecting to ${server} as a guest…`);
+  say(spectate !== null
+    ? `connecting to ${server} to watch…`
+    : address ? `connecting to ${server} as ${short(address)}…` : `connecting to ${server} as a guest…`);
 
   let g;
   try {
-    // Address and signer together or neither — `Gates.join` refuses the odd
-    // pair rather than dropping half of it, because an address nobody can
-    // sign for reaches a locked shard as REFUSE_AUTH and blames the shard.
-    g = await Gates.join(server, hash, address ?? undefined,
-                         address ? ((text) => wallet.sign(text, address)) : undefined);
+    if (spectate !== null) {
+      // A read-only seat: no address, no signer. The shard answers with whose
+      // view this is, or refuses with its own code (6: cannot be watched here,
+      // 7: too many watching).
+      g = await Gates.watch(server, hash, spectate === "any" ? undefined : spectate);
+    } else {
+      // Address and signer together or neither — `Gates.join` refuses the odd
+      // pair rather than dropping half of it, because an address nobody can
+      // sign for reaches a locked shard as REFUSE_AUTH and blames the shard.
+      g = await Gates.join(server, hash, address ?? undefined,
+                           address ? ((text) => wallet.sign(text, address)) : undefined);
+    }
   } catch (e) {
     // The message is already right for a browser — `client::refusal_sentence`
     // overrides the shared wording wherever it names something a page cannot
@@ -264,7 +288,9 @@ go.addEventListener("click", async () => {
     return;
   }
 
-  say(`in the world — player ${g.player_id}, seed ${g.seed} — starting the renderer…`, "good");
+  say(g.watching
+    ? `${g.watching} — starting the renderer…`
+    : `in the world — player ${g.player_id}, seed ${g.seed} — starting the renderer…`, "good");
 
   // ── hand over to Bevy ────────────────────────────────────────────────────
   // The page's job ends here. It owned the frame loop while there was no

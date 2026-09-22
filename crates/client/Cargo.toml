@@ -168,6 +168,13 @@ name = "report_key"
 path = "tests/report_key.rs"
 required-features = ["render"]
 
+# The spectator label's bundle, spawned in a headless `App` — a bundle is not
+# type-checked for duplicate components, so it is run (`tests/map_marks.rs`).
+[[test]]
+name = "spectate_label"
+path = "tests/spectate_label.rs"
+required-features = ["render"]
+
 # The animal the client draws against the cylinder the sim lets you hit —
 # one number in two crates with a TOML file between them (melee aim v1).
 [[test]]

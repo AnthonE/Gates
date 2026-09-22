@@ -91,6 +91,7 @@ pub mod pointer;
 pub mod refusals;
 pub mod servers;
 pub mod slots;
+pub mod spectate;
 pub mod structure;
 pub mod swing;
 pub mod techtree;
