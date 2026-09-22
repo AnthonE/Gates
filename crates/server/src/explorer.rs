@@ -1108,12 +1108,18 @@ impl Survivor {
             }
             return frame;
         }
+        // Out of water sources: whatever was drunk still counts as done.
+        let dry = if active.gained > 0 {
+            Outcome::Done
+        } else {
+            Outcome::Failed(Why::NoWater)
+        };
         let Some(yaw) = self.water_yaw else {
-            self.end_goal(tick, Outcome::Failed(Why::NoWater));
+            self.end_goal(tick, dry);
             return frame;
         };
         if tick.wrapping_sub(active.started) >= SEARCH_GOAL_SECS * TICK_HZ {
-            self.end_goal(tick, Outcome::Failed(Why::NoWater));
+            self.end_goal(tick, dry);
             return frame;
         }
         self.stats.phase = Phase::SeekingWater;
