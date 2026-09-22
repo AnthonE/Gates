@@ -1625,22 +1625,28 @@ pub fn observe(
     s.free_slots = free;
     if core.recipes_have >= core.recipes.recipe_count {
         let known = core.known();
-        for r in 0..usize::from(core.recipes.recipe_count).min(core.recipes.recipes.len()) {
-            let def = core.recipes.recipes[r];
-            if def.out_count == 0
-                || def.station != STATION_NONE
-                || (def.blueprint && (r >= 64 || known & (1 << r) == 0))
-                || !inputs_ok(core, r as u16)
-            {
-                continue;
-            }
-            let Some(name) = Name::new(core.catalog.name(def.output as usize)) else {
-                continue;
-            };
-            let n = s.craftable_len as usize;
-            if n < SUMMARY_CRAFTS && !s.craftable[..n].contains(&name) {
-                s.craftable[n] = name;
-                s.craftable_len += 1;
+        // Tools first: the list is bounded, and with a full pack more than
+        // `SUMMARY_CRAFTS` recipes can be craftable at once — the better
+        // tool is the one that must not fall off the end.
+        for tools_first in [true, false] {
+            for r in 0..usize::from(core.recipes.recipe_count).min(core.recipes.recipes.len()) {
+                let def = core.recipes.recipes[r];
+                if def.out_count == 0
+                    || def.station != STATION_NONE
+                    || (def.blueprint && (r >= 64 || known & (1 << r) == 0))
+                    || !inputs_ok(core, r as u16)
+                {
+                    continue;
+                }
+                let Some(name) = Name::new(core.catalog.name(def.output as usize)) else {
+                    continue;
+                };
+                let tool = TREE_TOOLS.contains(&name.as_str()) || NODE_TOOLS.contains(&name.as_str());
+                let n = s.craftable_len as usize;
+                if tool == tools_first && n < SUMMARY_CRAFTS && !s.craftable[..n].contains(&name) {
+                    s.craftable[n] = name;
+                    s.craftable_len += 1;
+                }
             }
         }
     }
@@ -2299,6 +2305,47 @@ mod tests {
         bot.frame_at(&view, 1, 5, now);
         assert!(bot.action(&mut out).is_none());
         assert_eq!(bot.memory.last.unwrap().outcome, Outcome::Failed(Why::NoRecipe));
+    }
+
+    #[test]
+    fn a_craftable_tool_is_never_crowded_off_the_bounded_list() {
+        let (mut bot, view, _) = fixture();
+        let core = bot.core.as_mut().unwrap();
+        // Every recipe row but the last makes a different plain thing from
+        // one wood; the last makes the hatchet. More names than the list
+        // holds, so a list filled in recipe order would drop the hatchet.
+        let rows = SUMMARY_CRAFTS + 3;
+        core.catalog.count = 10 + rows as u16;
+        for i in 10..10 + rows {
+            let name = format!("Plain Thing {i}");
+            let row = ItemRow {
+                stack_max: 10,
+                ..ItemRow::EMPTY
+            };
+            core.catalog.set(i, name.as_bytes(), row).unwrap();
+        }
+        core.recipes.recipe_count = rows as u16;
+        core.recipes_have = rows as u16;
+        for r in 0..rows {
+            let output = if r + 1 == rows { 9 } else { 10 + r as u16 };
+            core.recipes.recipes[r] = sim_core::craft::RecipeDef {
+                output,
+                out_count: 1,
+                ticks: 1,
+                station: STATION_NONE,
+                blueprint: false,
+                n_inputs: 1,
+                inputs: [(5, 1), (0, 0), (0, 0), (0, 0)],
+            };
+        }
+        core.inv[7] = ItemStack {
+            item: 5,
+            count: 10,
+            cond: 0,
+        };
+        let summary = bot.summary(&view, 1).unwrap();
+        assert_eq!(summary.craftable()[0].as_str(), "Stone Hatchet");
+        assert!(summary.offers(Goal::Craft(Name::new(b"Stone Hatchet").unwrap())));
     }
 
     #[test]
