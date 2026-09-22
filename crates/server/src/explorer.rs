@@ -482,14 +482,17 @@ impl Survivor {
         if body.dead || core.dead {
             // The death screen's one answer. A beach, never a bag: this
             // body places none, and a bag is where it just lost a fight.
+            // Asked on the event lane's own fact: a snapshot can still show
+            // the corpse for a frame after the wake has landed.
             self.end_goal(tick, Outcome::Interrupted(Why::Died));
             self.halt();
-            let due = match self.awaiting {
-                Some((Pending::Respawn, since)) => {
-                    tick.wrapping_sub(since) >= VERDICT_SECS * TICK_HZ
-                }
-                _ => true,
-            };
+            let due = core.dead
+                && match self.awaiting {
+                    Some((Pending::Respawn, since)) => {
+                        tick.wrapping_sub(since) >= VERDICT_SECS * TICK_HZ
+                    }
+                    _ => true,
+                };
             if due && self.queue(|buf| protocol::encode_action_respawn(false, buf)) {
                 self.awaiting = Some((Pending::Respawn, tick));
                 self.stats.respawn_asks += 1;
@@ -501,7 +504,6 @@ impl Survivor {
             self.stats.phase = Phase::Sleeping;
             return frame;
         }
-        let choice = self.mind.poll(now);
         if body.wounded || core.wounded {
             // Down: crawl away from the last blow's bearing while it is
             // fresh, otherwise lie still. Nothing else is possible here.
@@ -521,7 +523,10 @@ impl Survivor {
                 self.end_goal(tick, Outcome::Interrupted(why));
             }
         }
-        if let Some(choice) = choice {
+        // Answers are taken only by a body that can act on them; one that
+        // arrives while it is down waits in the ring and is judged fresh
+        // or late when it is read.
+        if let Some(choice) = self.mind.poll(now) {
             self.adopt(choice, tick);
         }
         self.perceive(core, view, &body, player, tick);
