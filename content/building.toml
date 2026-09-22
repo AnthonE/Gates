@@ -423,3 +423,257 @@ shape = "floor_frame"
 material = "metal"
 hp = 1000
 cost = [{ item = "item.metal_frags", count = 100 }]
+
+[[piece]]
+id = "build.half_wall_twig"
+shape = "half_wall"
+material = "twig"
+hp = 10
+cost = [{ item = "item.wood", count = 50 }]
+
+[[piece]]
+id = "build.half_wall_wood"
+shape = "half_wall"
+material = "wood"
+hp = 250
+cost = [{ item = "item.wood", count = 200 }]
+
+[[piece]]
+id = "build.half_wall_stone"
+shape = "half_wall"
+material = "stone"
+hp = 500
+cost = [{ item = "item.stone", count = 300 }]
+
+[[piece]]
+id = "build.half_wall_metal"
+shape = "half_wall"
+material = "metal"
+hp = 1000
+cost = [{ item = "item.metal_frags", count = 200 }]
+
+[[piece]]
+id = "build.low_wall_twig"
+shape = "low_wall"
+material = "twig"
+hp = 10
+cost = [{ item = "item.wood", count = 25 }]
+
+[[piece]]
+id = "build.low_wall_wood"
+shape = "low_wall"
+material = "wood"
+hp = 250
+cost = [{ item = "item.wood", count = 100 }]
+
+[[piece]]
+id = "build.low_wall_stone"
+shape = "low_wall"
+material = "stone"
+hp = 500
+cost = [{ item = "item.stone", count = 150 }]
+
+[[piece]]
+id = "build.low_wall_metal"
+shape = "low_wall"
+material = "metal"
+hp = 1000
+cost = [{ item = "item.metal_frags", count = 100 }]
+
+# Circulation catalogue: BUILDING.md §7b ratios; DECISIONS.md circulation v0.
+
+[[piece]]
+id = "build.foundation_steps_twig"
+shape = "foundation_steps"
+material = "twig"
+hp = 10
+cost = [{ item = "item.wood", count = 25 }]
+
+[[piece]]
+id = "build.foundation_steps_wood"
+shape = "foundation_steps"
+material = "wood"
+hp = 250
+cost = [{ item = "item.wood", count = 100 }]
+
+[[piece]]
+id = "build.foundation_steps_stone"
+shape = "foundation_steps"
+material = "stone"
+hp = 500
+cost = [{ item = "item.stone", count = 150 }]
+
+[[piece]]
+id = "build.foundation_steps_metal"
+shape = "foundation_steps"
+material = "metal"
+hp = 1000
+cost = [{ item = "item.metal_frags", count = 100 }]
+
+[[piece]]
+id = "build.ramp_twig"
+shape = "ramp"
+material = "twig"
+hp = 10
+cost = [{ item = "item.wood", count = 25 }]
+
+[[piece]]
+id = "build.ramp_wood"
+shape = "ramp"
+material = "wood"
+hp = 250
+cost = [{ item = "item.wood", count = 100 }]
+
+[[piece]]
+id = "build.ramp_stone"
+shape = "ramp"
+material = "stone"
+hp = 500
+cost = [{ item = "item.stone", count = 150 }]
+
+[[piece]]
+id = "build.ramp_metal"
+shape = "ramp"
+material = "metal"
+hp = 1000
+cost = [{ item = "item.metal_frags", count = 100 }]
+
+[[piece]]
+id = "build.stairs_l_twig"
+shape = "stairs_l"
+material = "twig"
+hp = 10
+cost = [{ item = "item.wood", count = 50 }]
+
+[[piece]]
+id = "build.stairs_l_wood"
+shape = "stairs_l"
+material = "wood"
+hp = 250
+cost = [{ item = "item.wood", count = 200 }]
+
+[[piece]]
+id = "build.stairs_l_stone"
+shape = "stairs_l"
+material = "stone"
+hp = 500
+cost = [{ item = "item.stone", count = 300 }]
+
+[[piece]]
+id = "build.stairs_l_metal"
+shape = "stairs_l"
+material = "metal"
+hp = 1000
+cost = [{ item = "item.metal_frags", count = 200 }]
+
+[[piece]]
+id = "build.stairs_u_twig"
+shape = "stairs_u"
+material = "twig"
+hp = 10
+cost = [{ item = "item.wood", count = 50 }]
+
+[[piece]]
+id = "build.stairs_u_wood"
+shape = "stairs_u"
+material = "wood"
+hp = 250
+cost = [{ item = "item.wood", count = 200 }]
+
+[[piece]]
+id = "build.stairs_u_stone"
+shape = "stairs_u"
+material = "stone"
+hp = 500
+cost = [{ item = "item.stone", count = 300 }]
+
+[[piece]]
+id = "build.stairs_u_metal"
+shape = "stairs_u"
+material = "metal"
+hp = 1000
+cost = [{ item = "item.metal_frags", count = 200 }]
+
+[[piece]]
+id = "build.stairs_spiral_twig"
+shape = "stairs_spiral"
+material = "twig"
+hp = 10
+cost = [{ item = "item.wood", count = 50 }]
+
+[[piece]]
+id = "build.stairs_spiral_wood"
+shape = "stairs_spiral"
+material = "wood"
+hp = 250
+cost = [{ item = "item.wood", count = 200 }]
+
+[[piece]]
+id = "build.stairs_spiral_stone"
+shape = "stairs_spiral"
+material = "stone"
+hp = 500
+cost = [{ item = "item.stone", count = 300 }]
+
+[[piece]]
+id = "build.stairs_spiral_metal"
+shape = "stairs_spiral"
+material = "metal"
+hp = 1000
+cost = [{ item = "item.metal_frags", count = 200 }]
+
+[[piece]]
+id = "build.stairs_tri_spiral_twig"
+shape = "stairs_tri_spiral"
+material = "twig"
+hp = 10
+cost = [{ item = "item.wood", count = 50 }]
+
+[[piece]]
+id = "build.stairs_tri_spiral_wood"
+shape = "stairs_tri_spiral"
+material = "wood"
+hp = 250
+cost = [{ item = "item.wood", count = 200 }]
+
+[[piece]]
+id = "build.stairs_tri_spiral_stone"
+shape = "stairs_tri_spiral"
+material = "stone"
+hp = 500
+cost = [{ item = "item.stone", count = 300 }]
+
+[[piece]]
+id = "build.stairs_tri_spiral_metal"
+shape = "stairs_tri_spiral"
+material = "metal"
+hp = 1000
+cost = [{ item = "item.metal_frags", count = 200 }]
+
+[[piece]]
+id = "build.tri_floor_frame_twig"
+shape = "tri_floor_frame"
+material = "twig"
+hp = 10
+cost = [{ item = "item.wood", count = 13 }]
+
+[[piece]]
+id = "build.tri_floor_frame_wood"
+shape = "tri_floor_frame"
+material = "wood"
+hp = 250
+cost = [{ item = "item.wood", count = 50 }]
+
+[[piece]]
+id = "build.tri_floor_frame_stone"
+shape = "tri_floor_frame"
+material = "stone"
+hp = 500
+cost = [{ item = "item.stone", count = 75 }]
+
+[[piece]]
+id = "build.tri_floor_frame_metal"
+shape = "tri_floor_frame"
+material = "metal"
+hp = 1000
+cost = [{ item = "item.metal_frags", count = 50 }]

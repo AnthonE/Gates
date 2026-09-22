@@ -27,9 +27,10 @@ use sim_core::craft::{
     STATION_WORKBENCH3,
 };
 use sim_core::deploy::{
-    DeployContent, DeployDef, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE, ARCH_HEARTH,
-    ARCH_LOCK, ARCH_RECYCLER, ARCH_RESEARCH, ARCH_WORKBENCH, ARCH_WORKBENCH2, ARCH_WORKBENCH3,
-    PLACE_ANY, PLACE_DOOR, PLACE_DOORWAY, PLACE_FOUNDATION, PLACE_GROUND,
+    DeployContent, DeployDef, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE,
+    ARCH_GARAGE_DOOR, ARCH_HEARTH, ARCH_LOCK, ARCH_RECYCLER, ARCH_RESEARCH, ARCH_WINDOW_BARS,
+    ARCH_WORKBENCH, ARCH_WORKBENCH2, ARCH_WORKBENCH3, PLACE_ANY, PLACE_DOOR, PLACE_DOORWAY,
+    PLACE_FOUNDATION, PLACE_FRAME, PLACE_GROUND, PLACE_WINDOW,
 };
 use sim_core::gather::ItemStack;
 use sim_core::gather::{GatherContent, NodeDef, MAX_TOOLS_PER_NODE, NO_ITEM};
@@ -326,6 +327,15 @@ impl Content {
                     Shape::TriFloor => SHAPE_TRI_FLOOR,
                     Shape::TriRoof => SHAPE_TRI_ROOF,
                     Shape::FloorFrame => SHAPE_FLOOR_FRAME,
+                    Shape::HalfWall => sim_core::build::SHAPE_HALF_WALL,
+                    Shape::LowWall => sim_core::build::SHAPE_LOW_WALL,
+                    Shape::FoundationSteps => sim_core::build::SHAPE_FOUNDATION_STEPS,
+                    Shape::Ramp => sim_core::build::SHAPE_RAMP,
+                    Shape::StairsL => sim_core::build::SHAPE_STAIRS_L,
+                    Shape::StairsU => sim_core::build::SHAPE_STAIRS_U,
+                    Shape::StairsSpiral => sim_core::build::SHAPE_STAIRS_SPIRAL,
+                    Shape::StairsTriSpiral => sim_core::build::SHAPE_STAIRS_TRI_SPIRAL,
+                    Shape::TriFloorFrame => sim_core::build::SHAPE_TRI_FLOOR_FRAME,
                 },
                 material: match p.material {
                     Material::Twig => MAT_TWIG,
@@ -456,6 +466,10 @@ impl Content {
                     DeployArchetype::Research => ARCH_RESEARCH,
                     DeployArchetype::Workbench2 => ARCH_WORKBENCH2,
                     DeployArchetype::Workbench3 => ARCH_WORKBENCH3,
+                    DeployArchetype::WindowBars => ARCH_WINDOW_BARS,
+                    DeployArchetype::GarageDoor => ARCH_GARAGE_DOOR,
+                    DeployArchetype::WindowGlass => sim_core::deploy::ARCH_WINDOW_GLASS,
+                    DeployArchetype::WindowShutter => sim_core::deploy::ARCH_WINDOW_SHUTTER,
                 },
                 placement: match d.placement {
                     Placement::Ground => PLACE_GROUND,
@@ -463,6 +477,8 @@ impl Content {
                     Placement::Doorway => PLACE_DOORWAY,
                     Placement::Any => PLACE_ANY,
                     Placement::Door => PLACE_DOOR,
+                    Placement::Window => PLACE_WINDOW,
+                    Placement::WallFrame => PLACE_FRAME,
                 },
                 hp,
                 item: self

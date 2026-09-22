@@ -31,16 +31,17 @@ use sim_core::build::{
     terrain_band, BuildContent, PieceRec, BUILD_CELL_M, BUILD_REACH_M, LEVEL_H_M, LOC_DIAG_A,
     LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, LOC_RISER, LOC_TRI_XHI_ZHI, LOC_TRI_XHI_ZLO,
     LOC_TRI_XLO_ZHI, LOC_TRI_XLO_ZLO, PLATE_RISE_MAX_BANDS, PLATE_SINK_MAX_BANDS, SHAPE_DOORWAY,
-    SHAPE_FOUNDATION, SHAPE_FRAME, SHAPE_STAIRS, SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION,
-    SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
+    SHAPE_FOUNDATION, SHAPE_FRAME, SHAPE_HALF_WALL, SHAPE_LOW_WALL, SHAPE_TRI_FLOOR,
+    SHAPE_TRI_FOUNDATION, SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
 };
 use sim_core::craft::inv_count;
 use sim_core::deploy::{
-    box_key, cell_center, loc_fits_placement, lockable, DeployContent, DeployRec, ARCH_BOX,
-    ARCH_LOCK, PLACE_ANY, PLACE_DOOR, PLACE_DOORWAY, PLACE_FOUNDATION, PLACE_GROUND,
+    box_key, cell_center, loc_fits_placement, lockable, socket_shape, DeployContent, DeployRec,
+    ARCH_BOX, ARCH_LOCK, PLACE_ANY, PLACE_DOOR, PLACE_DOORWAY, PLACE_FOUNDATION, PLACE_FRAME,
+    PLACE_GROUND, PLACE_WINDOW,
 };
 use sim_core::gather::ItemStack;
-use sim_core::limits::{INV_SLOTS, MAX_BUILD_COORD, MAX_BUILD_LEVELS};
+use sim_core::limits::{INV_SLOTS, MAX_BUILD_COORD, MAX_BUILD_SOCKETS};
 
 use super::build::affordable;
 
@@ -95,6 +96,8 @@ pub enum Met {
     /// this storey. A plane or an edge piece aimed here goes ON TOP of it
     /// (the wall-top socket); stairs stand beside it.
     Wall(u8),
+    HalfWall(u8),
+    LowWall(u8),
     /// A built neighbour's level plane, crossed inside a cell that holds
     /// no plane at that storey — the floor socket: aim at the edge of a
     /// floor from above or below and the next tile continues it.
@@ -113,6 +116,8 @@ pub struct Aim {
     /// The storey the feet stand on — what [`Met::Nothing`] resolves to, so
     /// looking at the sky from an upper floor still builds on that floor.
     pub standing: u8,
+    /// Same-storey continuation selected by a hit below an edge midpoint.
+    pub beside: Option<Target>,
 }
 
 impl Aim {
@@ -125,31 +130,74 @@ impl Aim {
     /// the wall's own storey for stairs, which stand on a plane beside it
     /// rather than on the wall.
     pub fn level_for(&self, shape: u8) -> u8 {
-        let top = MAX_BUILD_LEVELS as u8 - 1;
-        if matches!(shape, SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION) {
+        let top = MAX_BUILD_SOCKETS as u8 - 1;
+        if matches!(
+            shape,
+            SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION | sim_core::build::SHAPE_FOUNDATION_STEPS
+        ) {
             return 0;
         }
         match self.met {
             Met::Ground => 0,
             Met::Floor(l) | Met::Socket(l) => l.min(top),
-            Met::Wall(l) => {
-                if shape == SHAPE_STAIRS {
+            Met::Wall(l) | Met::HalfWall(l) | Met::LowWall(l) => {
+                if sim_core::circulation::is_riser(shape)
+                    || (self.beside.is_some()
+                        && matches!(
+                            shape,
+                            SHAPE_WALL
+                                | SHAPE_HALF_WALL
+                                | SHAPE_LOW_WALL
+                                | SHAPE_DOORWAY
+                                | SHAPE_WINDOW
+                                | SHAPE_FRAME
+                        ))
+                {
                     l.min(top)
                 } else {
-                    l.saturating_add(1).min(top)
+                    sim_core::build::level_step(
+                        l,
+                        match self.met {
+                            Met::HalfWall(_) => 1,
+                            Met::LowWall(_) => 0,
+                            _ => 2,
+                        },
+                    )
+                    .unwrap_or(l)
+                    .min(top)
                 }
             }
             Met::Nothing => self.standing.min(top),
         }
     }
 
+    /// Resolve the build socket from the same hit that selects its storey.
+    pub fn target_for(&self, shape: u8) -> Target {
+        if matches!(
+            shape,
+            SHAPE_WALL
+                | SHAPE_HALF_WALL
+                | SHAPE_LOW_WALL
+                | SHAPE_DOORWAY
+                | SHAPE_WINDOW
+                | SHAPE_FRAME
+        ) {
+            if let Some(target) = self.beside {
+                return target;
+            }
+        }
+        target_at(self.at.0, self.at.1, shape, self.level_for(shape))
+    }
+
     /// The storey a doorway-class deployable resolves to: the doorway's own,
     /// so a door aimed at its frame lands in it and not a storey up.
     pub fn level_for_deploy(&self) -> u8 {
-        let top = MAX_BUILD_LEVELS as u8 - 1;
+        let top = MAX_BUILD_SOCKETS as u8 - 1;
         match self.met {
             Met::Ground => 0,
-            Met::Floor(l) | Met::Socket(l) | Met::Wall(l) => l.min(top),
+            Met::Floor(l) | Met::Socket(l) | Met::Wall(l) | Met::HalfWall(l) | Met::LowWall(l) => {
+                l.min(top)
+            }
             Met::Nothing => self.standing.min(top),
         }
     }
@@ -203,11 +251,12 @@ pub fn aim_from_look(
             eye[1] + dir[1] * t,
             eye[2] + dir[2] * t,
         ];
-        if let Some(level) = edge_crossed(seed, haven, cols, prev, p) {
+        if let Some((met, beside)) = edge_crossed(seed, haven, cols, prev, p) {
             return Aim {
                 at: clamp_to_reach(planar_feet, (prev[0], prev[2])),
-                met: Met::Wall(level),
+                met,
                 standing,
+                beside,
             };
         }
         if let Some((level, s)) = socket_crossed(seed, haven, cols, prev, p) {
@@ -217,6 +266,7 @@ pub fn aim_from_look(
                 at: clamp_to_reach(planar_feet, (x, z)),
                 met: Met::Socket(level),
                 standing,
+                beside: None,
             };
         }
         let terrain = sim_core::terrain::ground(seed, haven, p[0], p[2]);
@@ -245,6 +295,7 @@ pub fn aim_from_look(
                 at: clamp_to_reach(planar_feet, (p[0], p[2])),
                 met,
                 standing,
+                beside: None,
             };
         }
         prev = p;
@@ -261,6 +312,7 @@ pub fn aim_from_look(
         ),
         met: Met::Nothing,
         standing,
+        beside: None,
     }
 }
 
@@ -301,8 +353,10 @@ fn level_of(
     // already the integer; the nudge is for a stair tread or a solid
     // deployable's top, which sit between storeys and belong to the one
     // below — and for the top of the tread, which is the next storey's base.
-    let l = ((y - base) / LEVEL_H_M + 0.05).floor();
-    l.clamp(0.0, (MAX_BUILD_LEVELS - 1) as f32) as u8
+    let halves = (((y - base) / (LEVEL_H_M * 0.5) + 0.05)
+        .floor()
+        .clamp(0.0, (MAX_BUILD_SOCKETS - 1) as f32)) as u8;
+    halves / 2 + (halves % 2) * sim_core::limits::MAX_BUILD_LEVELS as u8
 }
 
 /// The storey the feet stand on: the highest standable built surface under
@@ -333,16 +387,25 @@ fn edge_crossed(
     cols: &sim_core::collide::ColIndex,
     a: [f32; 3],
     b: [f32; 3],
-) -> Option<u8> {
+) -> Option<(Met, Option<Target>)> {
     let (ax, bx) = (build_cell_of(a[0]), build_cell_of(b[0]));
     let (az, bz) = (build_cell_of(a[2]), build_cell_of(b[2]));
-    let mut best: Option<(f32, u8)> = None;
+    let mut best: Option<(f32, (Met, Option<Target>))> = None;
     if ax != bx {
         let bound = ax.max(bx);
         let s = (bound as f32 * BUILD_CELL_M - a[0]) / (b[0] - a[0]);
         let y = a[1] + (b[1] - a[1]) * s;
         let cz = build_cell_of(a[2] + (b[2] - a[2]) * s);
-        if let Some(l) = edge_level_at(seed, haven, cols, bound, cz, LOC_EDGE_XLO, y) {
+        if let Some(l) = edge_level_at(
+            seed,
+            haven,
+            cols,
+            bound,
+            cz,
+            LOC_EDGE_XLO,
+            y,
+            a[2] + (b[2] - a[2]) * s,
+        ) {
             best = Some((s, l));
         }
     }
@@ -351,7 +414,16 @@ fn edge_crossed(
         let s = (bound as f32 * BUILD_CELL_M - a[2]) / (b[2] - a[2]);
         let y = a[1] + (b[1] - a[1]) * s;
         let cx = build_cell_of(a[0] + (b[0] - a[0]) * s);
-        if let Some(l) = edge_level_at(seed, haven, cols, cx, bound, LOC_EDGE_ZLO, y) {
+        if let Some(l) = edge_level_at(
+            seed,
+            haven,
+            cols,
+            cx,
+            bound,
+            LOC_EDGE_ZLO,
+            y,
+            a[0] + (b[0] - a[0]) * s,
+        ) {
             if best.is_none_or(|(bs, _)| s < bs) {
                 best = Some((s, l));
             }
@@ -364,6 +436,7 @@ fn edge_crossed(
 /// stands there. Every edge shape counts — a doorway's opening included,
 /// because the piece is what the crosshair is on, hole or not: aim through
 /// a doorway and the doorway is what a floor goes over.
+#[allow(clippy::too_many_arguments)]
 fn edge_level_at(
     seed: u64,
     haven: &sim_core::terrain::Haven,
@@ -372,16 +445,17 @@ fn edge_level_at(
     cz: i32,
     loc: u8,
     y: f32,
-) -> Option<u8> {
+    along: f32,
+) -> Option<(Met, Option<Target>)> {
     if !in_grid(cx, cz) {
         return None;
     }
     let (cx, cz) = (cx as u16, cz as u16);
     let m = cols.get(cx, cz);
     let mask = if loc == LOC_EDGE_XLO {
-        m.walls_xlo | m.doors_xlo | m.wins_xlo | m.frames_xlo
+        m.half_xlo | m.low_xlo | m.walls_xlo | m.doors_xlo | m.wins_xlo | m.frames_xlo
     } else {
-        m.walls_zlo | m.doors_zlo | m.wins_zlo | m.frames_zlo
+        m.half_zlo | m.low_zlo | m.walls_zlo | m.doors_zlo | m.wins_zlo | m.frames_zlo
     };
     if mask == 0 {
         return None;
@@ -390,12 +464,56 @@ fn edge_level_at(
     if rel < 0.0 {
         return None;
     }
-    let l = (rel / LEVEL_H_M).floor();
-    if l >= MAX_BUILD_LEVELS as f32 {
-        return None;
-    }
-    let l = l as u8;
-    (mask & (1u8 << l) != 0).then_some(l)
+    let l = (0..MAX_BUILD_SOCKETS as u8).find(|&l| {
+        let bottom = sim_core::build::level_y(l);
+        mask & (1 << l) != 0 && rel >= bottom && rel < bottom + m.edge_height(loc, l)
+    })?;
+    let (half, low) = m.partial_edges(loc);
+    let met = if half & (1 << l) != 0 {
+        Met::HalfWall(l)
+    } else if low & (1 << l) != 0 {
+        Met::LowWall(l)
+    } else {
+        Met::Wall(l)
+    };
+    // An opening keeps its own insert/top sockets. Only a solid wall's
+    // lower face asks to continue the wall run beside it.
+    let walls = if loc == LOC_EDGE_XLO {
+        m.walls_xlo | m.half_xlo | m.low_xlo
+    } else {
+        m.walls_zlo | m.half_zlo | m.low_zlo
+    };
+    let beside = if walls & (1 << l) != 0
+        && rel - sim_core::build::level_y(l) < m.edge_height(loc, l) * 0.5
+    {
+        let start = if loc == LOC_EDGE_XLO { cz } else { cx } as f32 * BUILD_CELL_M;
+        let high = along - start >= BUILD_CELL_M * 0.5;
+        let step = |v: u16| {
+            if high {
+                v.checked_add(1).filter(|v| (*v as usize) < MAX_BUILD_COORD)
+            } else {
+                v.checked_sub(1)
+            }
+        };
+        if loc == LOC_EDGE_XLO {
+            step(cz).map(|cz| Target {
+                cx,
+                cz,
+                level: l,
+                loc,
+            })
+        } else {
+            step(cx).map(|cx| Target {
+                cx,
+                cz,
+                level: l,
+                loc,
+            })
+        }
+    } else {
+        None
+    };
+    Some((met, beside))
 }
 
 /// How far past the shared edge a neighbour's level plane still catches the
@@ -475,12 +593,12 @@ fn socket_crossed(
             continue;
         }
         let nbase = column_floor(seed, haven, cols, nx, nz);
-        for level in 1..MAX_BUILD_LEVELS as u8 {
-            let bit = 1u8 << level;
+        for level in 1..MAX_BUILD_SOCKETS as u8 {
+            let bit = 1u16 << level;
             if planes & bit == 0 || here_planes & bit != 0 {
                 continue;
             }
-            let plane_y = nbase + level as f32 * LEVEL_H_M;
+            let plane_y = nbase + sim_core::build::level_y(level);
             let s = (plane_y - a[1]) / (b[1] - a[1]);
             if !(0.0..=1.0).contains(&s) {
                 continue;
@@ -554,7 +672,7 @@ pub fn target_at(ax: f32, az: f32, shape: u8, level: u8) -> Target {
     let mut loc = LOC_PLANE;
     if matches!(
         shape,
-        SHAPE_WALL | SHAPE_DOORWAY | SHAPE_WINDOW | SHAPE_FRAME
+        SHAPE_WALL | SHAPE_HALF_WALL | SHAPE_LOW_WALL | SHAPE_DOORWAY | SHAPE_WINDOW | SHAPE_FRAME
     ) {
         // Which boundary of this cell the aim point is nearest — and for
         // the WALL alone, the two diagonals compete on the same terms
@@ -576,7 +694,7 @@ pub fn target_at(ax: f32, az: f32, shape: u8, level: u8) -> Target {
             cz = (cz + 1).min(max);
             loc = LOC_EDGE_ZLO;
         }
-        if shape == SHAPE_WALL {
+        if matches!(shape, SHAPE_WALL | SHAPE_HALF_WALL | SHAPE_LOW_WALL) {
             const INV_SQRT2: f32 = std::f32::consts::FRAC_1_SQRT_2;
             let da = (fzc - fxc).abs() * INV_SQRT2;
             let db = (fxc + fzc - 1.0).abs() * INV_SQRT2;
@@ -592,7 +710,10 @@ pub fn target_at(ax: f32, az: f32, shape: u8, level: u8) -> Target {
         }
     } else if matches!(
         shape,
-        SHAPE_TRI_FOUNDATION | SHAPE_TRI_FLOOR | SHAPE_TRI_ROOF
+        SHAPE_TRI_FOUNDATION
+            | SHAPE_TRI_FLOOR
+            | SHAPE_TRI_ROOF
+            | sim_core::build::SHAPE_TRI_FLOOR_FRAME
     ) {
         // The half whose centroid is nearest the aim point — the anchors
         // are the sim's own (`build::anchor` at thirds), so the ghost's
@@ -611,17 +732,20 @@ pub fn target_at(ax: f32, az: f32, shape: u8, level: u8) -> Target {
                 loc = cand;
             }
         }
-    } else if shape == SHAPE_STAIRS {
+    } else if sim_core::circulation::is_riser(shape) {
         loc = LOC_RISER;
     }
 
     Target {
         cx: cx as u16,
         cz: cz as u16,
-        level: if shape == SHAPE_FOUNDATION {
+        level: if matches!(
+            shape,
+            SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION | sim_core::build::SHAPE_FOUNDATION_STEPS
+        ) {
             0
         } else {
-            level.min(MAX_BUILD_LEVELS as u8 - 1)
+            level.min(MAX_BUILD_SOCKETS as u8 - 1)
         },
         loc,
     }
@@ -717,7 +841,11 @@ pub fn verdict(
 
     // Ground, for a foundation only — every other shape stands on structure
     // and the sim asks a different question of it.
-    if shape == SHAPE_FOUNDATION && !foundation_terrain_ok(site.seed, site.haven, ax, az) {
+    if matches!(
+        shape,
+        SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION | sim_core::build::SHAPE_FOUNDATION_STEPS
+    ) && !foundation_terrain_ok(site.seed, site.haven, ax, az)
+    {
         return Verdict::No("bad ground");
     }
 
@@ -929,7 +1057,10 @@ impl DeployVerdict {
 /// is the aimed storey for doors and locks. Ground/foundation body deploys
 /// use level 0; [`deploy_target_on`] also resolves locks on existing boxes.
 pub fn deploy_target(x: f32, z: f32, fx: f32, fz: f32, placement: u8, level: u8) -> Target {
-    if matches!(placement, PLACE_DOORWAY | PLACE_DOOR) {
+    if matches!(
+        placement,
+        PLACE_DOORWAY | PLACE_DOOR | PLACE_WINDOW | PLACE_FRAME
+    ) {
         target(x, z, fx, fz, SHAPE_DOORWAY, level)
     } else {
         target(x, z, fx, fz, SHAPE_FOUNDATION, 0)
@@ -939,7 +1070,10 @@ pub fn deploy_target(x: f32, z: f32, fx: f32, fz: f32, placement: u8, level: u8)
 /// [`deploy_target`] for an aim POINT — the look-ray variant, split the
 /// way [`target_at`] is and for the same caller.
 pub fn deploy_target_at(ax: f32, az: f32, placement: u8, level: u8) -> Target {
-    if matches!(placement, PLACE_DOORWAY | PLACE_DOOR) {
+    if matches!(
+        placement,
+        PLACE_DOORWAY | PLACE_DOOR | PLACE_WINDOW | PLACE_FRAME
+    ) {
         target_at(ax, az, SHAPE_DOORWAY, level)
     } else {
         target_at(ax, az, SHAPE_FOUNDATION, 0)
@@ -1122,13 +1256,16 @@ pub fn deploy_verdict(t: Target, row: u8, site: &DeploySite<'_>) -> DeployVerdic
                 return DeployVerdict::No("needs support");
             }
         }
-        PLACE_DOORWAY => match site.piece_at(t.cx, t.cz, t.level, t.loc) {
+        PLACE_DOORWAY | PLACE_WINDOW | PLACE_FRAME => match site
+            .piece_at(t.cx, t.cz, t.level, t.loc)
+        {
             None => return DeployVerdict::No("needs support"),
             Some(r) => {
                 if (r.row as u16) >= site.piece_have.min(site.piece_defs.piece_count) {
                     return DeployVerdict::Unknown; // shape not dripped yet
                 }
-                if site.piece_defs.pieces[r.row as usize].shape != SHAPE_DOORWAY {
+                if Some(site.piece_defs.pieces[r.row as usize].shape) != socket_shape(def.placement)
+                {
                     return DeployVerdict::No("needs support");
                 }
             }
@@ -1280,7 +1417,10 @@ mod tests {
 
     #[test]
     fn stairs_take_the_riser_and_planes_take_the_plane() {
-        assert_eq!(target(9.0, 9.0, 0.0, 1.0, SHAPE_STAIRS, 1).loc, LOC_RISER);
+        assert_eq!(
+            target(9.0, 9.0, 0.0, 1.0, sim_core::build::SHAPE_STAIRS, 1).loc,
+            LOC_RISER
+        );
         assert_eq!(
             target(9.0, 9.0, 0.0, 1.0, SHAPE_FOUNDATION, 1).loc,
             LOC_PLANE
@@ -1310,7 +1450,41 @@ mod tests {
     #[test]
     fn the_level_is_clamped_to_the_grids_ceiling() {
         let t = target(9.0, 9.0, 0.0, 1.0, SHAPE_WALL, 250);
-        assert!((t.level as usize) < MAX_BUILD_LEVELS);
+        assert!((t.level as usize) < MAX_BUILD_SOCKETS);
+    }
+
+    #[test]
+    fn every_foundation_preview_refuses_bad_ground() {
+        let seed = 20260731;
+        let haven = sim_core::terrain::haven(seed);
+        let cols = sim_core::collide::ColIndex::new();
+        let inv = empty_inv();
+        for (shape, loc) in [
+            (SHAPE_FOUNDATION, LOC_PLANE),
+            (SHAPE_TRI_FOUNDATION, LOC_TRI_XLO_ZLO),
+            (sim_core::build::SHAPE_FOUNDATION_STEPS, LOC_RISER),
+        ] {
+            let t = Target {
+                loc,
+                ..Target::default()
+            };
+            let at = anchor(t.cx, t.cz, loc);
+            assert!(!foundation_terrain_ok(seed, &haven, at.0, at.1));
+            let content = free_table(shape);
+            let site = Site {
+                seed,
+                haven: &haven,
+                at,
+                taken: &[],
+                cols: &cols,
+                content: &content,
+                inv: &inv,
+            };
+            assert_eq!(
+                verdict(t, 0, shape, &site, false, 0),
+                Verdict::No("bad ground")
+            );
+        }
     }
 
     #[test]
@@ -1413,7 +1587,7 @@ mod tests {
     #[test]
     fn a_rotated_stair_preview_cannot_overlap_another_direction() {
         let haven = sim_core::terrain::haven(1);
-        let content = free_table(SHAPE_STAIRS);
+        let content = free_table(sim_core::build::SHAPE_STAIRS);
         let inv = empty_inv();
         let cols = sim_core::collide::ColIndex::new();
         for placed in sim_core::build::STAIR_LOCS {
@@ -1440,7 +1614,7 @@ mod tests {
                     loc,
                 };
                 assert_eq!(
-                    verdict(target, 0, SHAPE_STAIRS, &site, false, 0),
+                    verdict(target, 0, sim_core::build::SHAPE_STAIRS, &site, false, 0),
                     Verdict::No("spot taken")
                 );
             }
@@ -1594,6 +1768,7 @@ mod tests {
             at: (x, z),
             met: Met::Floor(2),
             standing: 0,
+            beside: None,
         };
         assert_eq!(
             deploy_target_on(&aim, PLACE_DOOR, &deploys, &defs, 2),
@@ -1609,6 +1784,7 @@ mod tests {
                 at: point,
                 met: Met::Wall(2),
                 standing: 0,
+                beside: None,
             };
             assert_eq!(
                 deploy_target_on(&aim, PLACE_DOOR, &deploys, &defs, 2),
@@ -1662,7 +1838,7 @@ mod tests {
                 cols.add(cell, cz, level, LOC_PLANE, sim_core::build::SHAPE_FLOOR, 3);
             }
             cols.set_solid(cx, cz, level, Some(ARCH_BOX));
-            let floor = column_floor_y(seed, &haven, cx, cz, 3) + level as f32 * LEVEL_H_M;
+            let floor = column_floor_y(seed, &haven, cx, cz, 3) + sim_core::build::level_y(level);
             let feet = [x - 4.0, floor, z];
             let norm = (1.0f32 + 0.32 * 0.32).sqrt();
             let aim = aim_from_look(

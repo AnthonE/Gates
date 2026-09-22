@@ -1,0 +1,2 @@
+<!-- Gates building silhouette; authored from our geometry, not third-party art. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128"><g fill="none" stroke="white" stroke-width="7" stroke-linejoin="round" stroke-linecap="square"><path d="M12 116V12H116Z" stroke-width="5"/><path d="M32 86V34H84M32 70H50M32 52H66M50 20V34M68 20V34" stroke-width="7"/><path d="M72 24L86 34L72 44"/></g></svg>

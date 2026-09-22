@@ -39,15 +39,17 @@ use bevy::prelude::*;
 use sim_core::build::{
     BUILD_CELL_M, DMG_BANDS, LEVEL_H_M, LOC_DIAG_A, LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO,
     LOC_RISER_XHI, LOC_RISER_XLO, LOC_RISER_ZLO, LOC_TRI_XHI_ZHI, LOC_TRI_XHI_ZLO, LOC_TRI_XLO_ZHI,
-    LOC_TRI_XLO_ZLO, MAT_METAL, SHAPE_DOORWAY, SHAPE_FLOOR_FRAME, SHAPE_FRAME, SHAPE_STAIRS,
-    SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION, SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
+    LOC_TRI_XLO_ZLO, MAT_METAL, MAT_WOOD, SHAPE_DOORWAY, SHAPE_FLOOR_FRAME, SHAPE_FRAME,
+    SHAPE_HALF_WALL, SHAPE_LOW_WALL, SHAPE_STAIRS, SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION,
+    SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
 };
 use sim_core::collide::{
     ColIndex, DOOR_POST_W_M, FRAME_RIM_M, WALL_THICKNESS_M, WINDOW_HEAD_M, WINDOW_SILL_M,
 };
 use sim_core::deploy::{
-    DeployRec, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE, ARCH_HEARTH, ARCH_RECYCLER,
-    ARCH_RESEARCH, ARCH_WORKBENCH, ARCH_WORKBENCH2, ARCH_WORKBENCH3,
+    DeployRec, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE, ARCH_GARAGE_DOOR,
+    ARCH_HEARTH, ARCH_RECYCLER, ARCH_RESEARCH, ARCH_WINDOW_BARS, ARCH_WINDOW_GLASS,
+    ARCH_WINDOW_SHUTTER, ARCH_WORKBENCH, ARCH_WORKBENCH2, ARCH_WORKBENCH3,
 };
 use sim_core::movement::{POS_XZ_Q, POS_Y_Q};
 use sim_core::terrain;
@@ -390,7 +392,7 @@ pub fn deploy_size(arch: usize) -> Vec3 {
 // so these transfer 1:1 with no scale conversion. Nothing in the sim reads
 // this table — `deploy_size` has two callers, the build ghost and its test —
 // so a row is a render fact and moving one costs no wire byte and no replay.
-const DEPLOY: [([f32; 3], Color, f32, f32); 12] = [
+const DEPLOY: [([f32; 3], Color, f32, f32); 16] = [
     // 0 · sleeping bag. A human-length bedroll laid flat: it must be longer
     // than a player is tall or it reads as a floor mat. 1.2 was shorter than
     // the body that spawns on it. The 0.32 thickness is the pillow end, not
@@ -482,6 +484,46 @@ const DEPLOY: [([f32; 3], Color, f32, f32); 12] = [
         0.55,
         0.55,
     ), // workbench 3 — the machine bench, metal through
+    (
+        [
+            sim_core::deploy::WINDOW_BAR_M,
+            WINDOW_HEAD_M - WINDOW_SILL_M,
+            BUILD_CELL_M - 2.0 * DOOR_POST_W_M,
+        ],
+        Color::srgb(0.325, 0.353, 0.376),
+        0.55,
+        0.6,
+    ),
+    (
+        [
+            WALL_THICKNESS_M * 0.5,
+            LEVEL_H_M - FRAME_RIM_M,
+            BUILD_CELL_M - 2.0 * FRAME_RIM_M,
+        ],
+        Color::srgb(0.325, 0.353, 0.376),
+        0.55,
+        0.6,
+    ),
+    (
+        [
+            WALL_THICKNESS_M * 0.5,
+            WINDOW_HEAD_M - WINDOW_SILL_M,
+            BUILD_CELL_M - 2.0 * DOOR_POST_W_M,
+        ],
+        Color::WHITE,
+        0.5,
+        0.0,
+    ),
+    (
+        [
+            WALL_THICKNESS_M * 0.5,
+            WINDOW_HEAD_M - WINDOW_SILL_M,
+            BUILD_CELL_M - 2.0 * DOOR_POST_W_M,
+        ],
+        Color::WHITE,
+        0.5,
+        0.0,
+    ),
 ];
 
 /// A locked door wears banded iron: the one bit of door state a passer-by
@@ -548,6 +590,7 @@ struct Live {
     plate: i8,
     /// A rotate can change only this bit, keeping address, row and damage.
     facing: u8,
+    foot_drop: f32,
 }
 
 /// Shared meshes and materials, built once on first use. A base is hundreds
@@ -570,7 +613,7 @@ pub struct Kit {
     /// variants, each with two soft-face orientations, built once per shape.
     edge_mesh: [[[Option<Handle<Mesh>>; 2]; 4]; N_SHAPES],
     /// The diagonal wall's body ([`diagonal_parts`]) — its own size.
-    diag_mesh: [Handle<Mesh>; 2],
+    diag_mesh: [[Handle<Mesh>; 2]; 3],
     /// The footings, for the shapes whose one part is sized PER ADDRESS
     /// rather than per shape — the foundations, whose skirt depth follows
     /// the terrain under their cell ([`foundation_part`]). Indexed by
@@ -589,6 +632,7 @@ pub struct Kit {
     deploy_mesh: [Handle<Mesh>; DEPLOY.len()],
     deploy_mat: [Handle<StandardMaterial>; DEPLOY.len()],
     door_locked: Handle<StandardMaterial>,
+    shutters_open: Handle<Mesh>,
     bag_mesh: Handle<Mesh>,
     bag_mat: Handle<StandardMaterial>,
     gitem_mesh: Handle<Mesh>,
@@ -654,7 +698,7 @@ pub fn level_base_y(
     level: u8,
     plate: i8,
 ) -> f32 {
-    sim_core::build::column_floor_y(seed, haven, cx, cz, plate) + level as f32 * LEVEL_H_M
+    sim_core::build::column_floor_y(seed, haven, cx, cz, plate) + sim_core::build::level_y(level)
 }
 
 /// The world XZ of a cell's centre.
@@ -874,6 +918,8 @@ pub enum PartKind {
     /// frame lets the existing placement checks still compare the ramp
     /// against collision; `tests/stairs.rs` checks the actual tread mesh.
     Stairs,
+    Circulation(u8),
+    TriFrame,
 }
 
 impl Part {
@@ -892,7 +938,7 @@ pub const MAX_PARTS: usize = 6;
 /// How many shapes the parts table covers: the sim's own last shape, plus
 /// one. A shape past it is drawn as the fallback slab, same as one the
 /// table has no arm for.
-pub const N_SHAPES: usize = SHAPE_FLOOR_FRAME as usize + 1;
+pub const N_SHAPES: usize = sim_core::build::SHAPE_TRI_FLOOR_FRAME as usize + 1;
 
 /// Which parts a shape has and where they go — **the one table** both the
 /// standing piece ([`spawn_piece`]) and the build ghost (`ghost::track`)
@@ -915,9 +961,53 @@ pub fn shape_parts(shape: u8) -> ([Part; MAX_PARTS], usize) {
     // The run between the two corner posts, which is what every straight
     // edge body spans: the bodies abut the posts, never overlap them.
     let between = BUILD_CELL_M - post_w();
-    let [lo, hi] = corner_posts();
+    let [mut lo, mut hi] = corner_posts();
+    if matches!(shape, SHAPE_HALF_WALL | SHAPE_LOW_WALL) {
+        let delta = sim_core::build::wall_height(shape) - LEVEL_H_M;
+        for p in [&mut lo, &mut hi] {
+            p.size.y += delta;
+            p.offset.y += delta * 0.5;
+        }
+    }
     let body = PartRole::Body;
+    let wall = || {
+        let mut p = edge_part(0.0, LEVEL_H_M, between, 0.0, body);
+        let delta = sim_core::build::wall_height(shape) - LEVEL_H_M;
+        p.size.y += delta;
+        p.offset.y += delta * 0.5;
+        p
+    };
     match shape {
+        shape if shape != SHAPE_STAIRS && sim_core::circulation::is_riser(shape) => (
+            [
+                Part {
+                    size: Vec3::ONE,
+                    kind: PartKind::Circulation(shape),
+                    ..Part::default()
+                },
+                none,
+                none,
+                none,
+                none,
+                none,
+            ],
+            1,
+        ),
+        sim_core::build::SHAPE_TRI_FLOOR_FRAME => (
+            [
+                Part {
+                    size: Vec3::ONE,
+                    kind: PartKind::TriFrame,
+                    ..Part::default()
+                },
+                none,
+                none,
+                none,
+                none,
+                none,
+            ],
+            1,
+        ),
         SHAPE_FLOOR_FRAME => {
             let half = BUILD_CELL_M * 0.5;
             let inset = half - FRAME_RIM_M * 0.5;
@@ -939,17 +1029,7 @@ pub fn shape_parts(shape: u8) -> ([Part; MAX_PARTS], usize) {
                 4,
             )
         }
-        SHAPE_WALL => (
-            [
-                edge_part(0.0, LEVEL_H_M, between, 0.0, body),
-                lo,
-                hi,
-                none,
-                none,
-                none,
-            ],
-            3,
-        ),
+        SHAPE_WALL | SHAPE_HALF_WALL | SHAPE_LOW_WALL => ([wall(), lo, hi, none, none, none], 3),
         SHAPE_DOORWAY => {
             // Two posts hugging each end of the edge, the lintel over what
             // they leave, and the corner posts they abut.
@@ -1100,8 +1180,14 @@ pub fn diagonal_parts() -> ([Part; MAX_PARTS], usize) {
 /// wall on a diagonal is [`diagonal_parts`]. What the ghost and the kit both
 /// read, so a diagonal previews as the object it becomes.
 pub fn parts_for(shape: u8, loc: u8) -> ([Part; MAX_PARTS], usize) {
-    if shape == SHAPE_WALL && (loc == LOC_DIAG_A || loc == LOC_DIAG_B) {
-        diagonal_parts()
+    if matches!(shape, SHAPE_WALL | SHAPE_HALF_WALL | SHAPE_LOW_WALL)
+        && (loc == LOC_DIAG_A || loc == LOC_DIAG_B)
+    {
+        let (mut parts, n) = diagonal_parts();
+        let delta = sim_core::build::wall_height(shape) - LEVEL_H_M;
+        parts[0].size.y += delta;
+        parts[0].offset.y += delta * 0.5;
+        (parts, n)
     } else {
         shape_parts(shape)
     }
@@ -1112,7 +1198,7 @@ pub fn parts_for(shape: u8, loc: u8) -> ([Part; MAX_PARTS], usize) {
 pub fn is_edge_shape(shape: u8) -> bool {
     matches!(
         shape,
-        SHAPE_WALL | SHAPE_DOORWAY | SHAPE_WINDOW | SHAPE_FRAME
+        SHAPE_WALL | SHAPE_HALF_WALL | SHAPE_LOW_WALL | SHAPE_DOORWAY | SHAPE_WINDOW | SHAPE_FRAME
     )
 }
 
@@ -1143,16 +1229,23 @@ pub fn post_owner(cols: &ColIndex, cx: u16, cz: u16, level: u8, loc: u8) -> Post
         LOC_EDGE_ZLO => ((Some(cx), Some(cz)), (cx.checked_add(1), Some(cz)), 1, 3),
         _ => return PostOwn::default(),
     };
+    let height = cols.get(cx, cz).edge_height(loc, level);
     let owns = |corner: Corner, rank: u8| -> bool {
-        // A corner off the grid's far edge belongs to nobody else.
         let (Some(px), Some(pz)) = corner else {
             return true;
         };
-        (0..rank).all(|r| !match r {
-            0 => edge_at(cols, Some(px), Some(pz), level, LOC_EDGE_XLO),
-            1 => edge_at(cols, Some(px), Some(pz), level, LOC_EDGE_ZLO),
-            2 => edge_at(cols, Some(px), pz.checked_sub(1), level, LOC_EDGE_XLO),
-            _ => edge_at(cols, px.checked_sub(1), Some(pz), level, LOC_EDGE_ZLO),
+        let candidates = [
+            (Some(px), Some(pz), LOC_EDGE_XLO),
+            (Some(px), Some(pz), LOC_EDGE_ZLO),
+            (Some(px), pz.checked_sub(1), LOC_EDGE_XLO),
+            (px.checked_sub(1), Some(pz), LOC_EDGE_ZLO),
+        ];
+        candidates.into_iter().enumerate().all(|(r, (x, z, edge))| {
+            if !edge_at(cols, x, z, level, edge) {
+                return true;
+            }
+            let other = cols.get(x.unwrap(), z.unwrap()).edge_height(edge, level);
+            other < height || (other == height && r >= rank as usize)
         })
     };
     PostOwn {
@@ -1212,11 +1305,11 @@ fn edge_at(cols: &ColIndex, cx: Option<u16>, cz: Option<u16>, level: u8, loc: u8
     }
     let m = cols.get(cx, cz);
     let mask = if loc == LOC_EDGE_XLO {
-        m.walls_xlo | m.doors_xlo | m.wins_xlo | m.frames_xlo
+        m.half_xlo | m.low_xlo | m.walls_xlo | m.doors_xlo | m.wins_xlo | m.frames_xlo
     } else {
-        m.walls_zlo | m.doors_zlo | m.wins_zlo | m.frames_zlo
+        m.half_zlo | m.low_zlo | m.walls_zlo | m.doors_zlo | m.wins_zlo | m.frames_zlo
     };
-    mask & (1u8 << level) != 0
+    mask & (1u16 << level) != 0
 }
 
 /// How far below the lowest ground sample under its cell a foundation's
@@ -1323,6 +1416,23 @@ pub fn foundation_part(
 /// stops with it — buried under every footing the cap has not cut, and cut
 /// exactly where the skirt is on ground steep enough to cut it.
 pub const APRON_DEPTH_M: f32 = SKIRT_MAX_M;
+
+/// Continue the drawn solid foot to the adjacent lower floor. Ground aprons
+/// retain their buried skirt; upper floors get only the measured height gap.
+pub fn edge_apron_transform(level: u8, foot_drop: f32) -> Option<Transform> {
+    let depth = if level == 0 {
+        APRON_DEPTH_M.max(foot_drop + EDGE_DROP_M)
+    } else if foot_drop > 0.0 {
+        foot_drop + EDGE_DROP_M
+    } else {
+        return None;
+    };
+    let scale = (depth - EDGE_DROP_M) / (APRON_DEPTH_M - EDGE_DROP_M);
+    Some(
+        Transform::from_xyz(0.0, EDGE_DROP_M * (scale - 1.0), 0.0)
+            .with_scale(Vec3::new(1.0, scale, 1.0)),
+    )
+}
 
 /// The apron a ground-storey edge piece hangs from its foot (gap v1): the
 /// wall's own plinth, a wall's thickness across and [`APRON_DEPTH_M`] deep
@@ -1433,6 +1543,16 @@ pub fn footing_of(seed: u64, haven: &terrain::Haven, cx: u16, cz: u16, plate: i8
 /// depth would otherwise mean a per-address mesh.
 pub fn part_mesh(part: &Part) -> Mesh {
     match part.kind {
+        PartKind::Circulation(shape) => {
+            let mut b = buffers(256);
+            circulation_into(&mut b, shape, Vec3::ZERO);
+            finish(b)
+        }
+        PartKind::TriFrame => {
+            let mut b = buffers(72);
+            tri_frame_into(&mut b, Vec3::ZERO);
+            finish(b)
+        }
         PartKind::Box => box_mesh(part.size),
         PartKind::Tri => tri_prism_mesh(part.size),
         PartKind::Stairs => {
@@ -1466,6 +1586,8 @@ fn parts_buffers(parts: &[Part]) -> Buffers {
             PartKind::Box => box_into(&mut b, part.size, part.offset),
             PartKind::Tri => tri_prism_into(&mut b, part.size, part.offset),
             PartKind::Stairs => stairs_into(&mut b, part.size, part.offset),
+            PartKind::Circulation(shape) => circulation_into(&mut b, shape, part.offset),
+            PartKind::TriFrame => tri_frame_into(&mut b, part.offset),
         }
     }
     b
@@ -1879,6 +2001,54 @@ pub fn base_transform(
         .with_scale(scale)
 }
 
+/// The insert's exact solids, centered for `deploy_transform`.
+/// Built once by both the standing pool and the translucent preview pool.
+pub fn insert_mesh(arch: u8) -> Mesh {
+    let (solids, n) = sim_core::deploy::insert_parts(arch);
+    let height = deploy_size(arch as usize).y;
+    let sill = if matches!(
+        arch,
+        ARCH_WINDOW_BARS | ARCH_WINDOW_GLASS | ARCH_WINDOW_SHUTTER
+    ) {
+        WINDOW_SILL_M
+    } else {
+        0.0
+    };
+    let parts: [Part; sim_core::deploy::WINDOW_BAR_COUNT + 2] = std::array::from_fn(|i| {
+        let p = solids[i];
+        Part {
+            size: Vec3::new(
+                sim_core::deploy::insert_thickness(arch),
+                p.top - p.bottom,
+                p.hi - p.lo,
+            ),
+            offset: Vec3::new(
+                0.0,
+                (p.top + p.bottom) * 0.5 - sill - height * 0.5,
+                (p.lo + p.hi) * 0.5 - BUILD_CELL_M * 0.5,
+            ),
+            ..Part::default()
+        }
+    });
+    parts_mesh(&parts[..n])
+}
+
+/// Proposed visual default, recorded in DECISIONS.md (window fittings v0).
+pub const WINDOW_GLASS_ALPHA: f32 = 0.25;
+
+/// The two shutter leaves fold outside the window aperture. Their width and
+/// hinge positions derive from the existing opening, not a second set of sizes.
+pub fn open_shutters_mesh() -> Mesh {
+    let width = (BUILD_CELL_M - 2.0 * DOOR_POST_W_M) * 0.5;
+    let height = WINDOW_HEAD_M - WINDOW_SILL_M;
+    let thickness = sim_core::deploy::insert_thickness(ARCH_WINDOW_SHUTTER);
+    parts_mesh(&[-1.0, 1.0].map(|side| Part {
+        size: Vec3::new(width, height, thickness),
+        offset: Vec3::new(-width * 0.5, 0.0, side * (width + thickness * 0.5)),
+        ..Part::default()
+    }))
+}
+
 /// The generated mesh for an archetype, or `None` where the greybox cuboid is
 /// still what draws. Index-aligned with [`DEPLOY`], which is what keeps a new
 /// archetype from silently inheriting its neighbour's model.
@@ -1908,6 +2078,10 @@ pub const DEPLOY_ASSET: [Option<&str>; DEPLOY.len()] = [
     None, // 9 research table — greybox
     None, // 10 workbench 2 — greybox
     None, // 11 workbench 3 — greybox
+    None, // 12 window bars — shared insert geometry
+    None, // 13 garage door — shared insert geometry
+    None, // 14 glass — shared insert geometry
+    None, // 15 shutters — shared insert geometry
 ];
 
 /// Build the pool. `pub` for the same reason [`Kit`] is.
@@ -1962,12 +2136,28 @@ pub fn build_kit(
             }
             .from_asset(path),
         ),
+        None if matches!(
+            i as u8,
+            ARCH_WINDOW_BARS | ARCH_GARAGE_DOOR | ARCH_WINDOW_GLASS | ARCH_WINDOW_SHUTTER
+        ) =>
+        {
+            meshes.add(insert_mesh(i as u8))
+        }
         None => {
             let [w, h, d] = DEPLOY[i].0;
             meshes.add(Cuboid::new(w, h, d))
         }
     });
     let deploy_mat = std::array::from_fn(|i| match DEPLOY_ASSET[i] {
+        None if i as u8 == ARCH_WINDOW_GLASS => materials.add(StandardMaterial {
+            base_color: Color::WHITE.with_alpha(WINDOW_GLASS_ALPHA),
+            alpha_mode: AlphaMode::Blend,
+            ..default()
+        }),
+        None if i as u8 == ARCH_WINDOW_SHUTTER => tier[MAT_WOOD as usize][0].clone(),
+        None if matches!(i as u8, ARCH_WINDOW_BARS | ARCH_GARAGE_DOOR) => {
+            tier[MAT_METAL as usize][0].clone()
+        }
         Some(path) => assets.load(
             GltfAssetLabel::Material {
                 index: 0,
@@ -2018,7 +2208,14 @@ pub fn build_kit(
     // of the two corner posts the piece draws (`post_owner`).
     let mut edge_mesh: [[[Option<Handle<Mesh>>; 2]; 4]; N_SHAPES] =
         std::array::from_fn(|_| std::array::from_fn(|_| [NO_MESH; 2]));
-    for shape in [SHAPE_WALL, SHAPE_DOORWAY, SHAPE_WINDOW, SHAPE_FRAME] {
+    for shape in [
+        SHAPE_WALL,
+        SHAPE_HALF_WALL,
+        SHAPE_LOW_WALL,
+        SHAPE_DOORWAY,
+        SHAPE_WINDOW,
+        SHAPE_FRAME,
+    ] {
         let (parts, n) = shape_parts(shape);
         for own in 0..4u8 {
             let keep = PostOwn::from_bits(own);
@@ -2031,8 +2228,14 @@ pub fn build_kit(
                 std::array::from_fn(|side| Some(meshes.add(sided_parts_mesh(&owned, side != 0))));
         }
     }
-    let diag_mesh = std::array::from_fn(|side| {
-        meshes.add(sided_parts_mesh(&diagonal_parts().0[..1], side != 0))
+    let diag_mesh = std::array::from_fn(|kind| {
+        std::array::from_fn(|side| {
+            let shape = [SHAPE_WALL, SHAPE_HALF_WALL, SHAPE_LOW_WALL][kind];
+            meshes.add(sided_parts_mesh(
+                &parts_for(shape, LOC_DIAG_A).0[..1],
+                side != 0,
+            ))
+        })
     });
     let apron = std::array::from_fn(|own| {
         let (parts, n) = apron_parts(PostOwn::from_bits(own as u8));
@@ -2048,6 +2251,7 @@ pub fn build_kit(
         [meshes.add(box_mesh(size)), meshes.add(tri_prism_mesh(size))]
     });
     Kit {
+        shutters_open: meshes.add(open_shutters_mesh()),
         shape_mesh,
         edge_mesh,
         diag_mesh,
@@ -2173,6 +2377,16 @@ pub fn stream(
         } else {
             0
         };
+        let foot_drop = sim_core::collide::edge_foot_drop(
+            seed,
+            haven,
+            core.pieces.cols(),
+            rec.cx,
+            rec.cz,
+            rec.level,
+            rec.loc,
+            rec.plate,
+        );
         if let Some(live) = ring.pieces.get_mut(&key) {
             live.seen = gen;
             // An upgrade keeps the address and changes the row; a raid keeps
@@ -2184,6 +2398,7 @@ pub fn stream(
                 && live.plate == rec.plate
                 && live.own == own
                 && live.facing == rec.facing
+                && live.foot_drop == foot_drop
             {
                 continue;
             }
@@ -2202,6 +2417,7 @@ pub fn stream(
             rec.plate,
             rec.facing,
             PostOwn::from_bits(own),
+            foot_drop,
         );
         ring.pieces.insert(
             key,
@@ -2215,6 +2431,7 @@ pub fn stream(
                 own,
                 plate: rec.plate,
                 facing: rec.facing,
+                foot_drop,
             },
         );
     }
@@ -2274,6 +2491,7 @@ pub fn stream(
                 own: 0,
                 plate,
                 facing: 0,
+                foot_drop: 0.0,
             },
         );
     }
@@ -2321,6 +2539,7 @@ pub fn stream(
                 // column and no plate to be drawn against.
                 plate: 0,
                 facing: 0,
+                foot_drop: 0.0,
             },
         );
     }
@@ -2377,6 +2596,7 @@ pub fn stream(
                 own: 0,
                 plate: 0,
                 facing: 0,
+                foot_drop: 0.0,
             },
         );
     }
@@ -2402,6 +2622,7 @@ fn spawn_piece(
     plate: i8,
     facing: u8,
     own: PostOwn,
+    foot_drop: f32,
 ) -> Entity {
     // Clamped, not `.min(2)`: the table covers every material the sim has
     // (`N_TIERS`, gated in `tests/pieces.rs` §A), so this only catches a
@@ -2441,8 +2662,15 @@ fn spawn_piece(
             kit.footing[step][usize::from(tri)].clone(),
             root * part.transform(),
         )
-    } else if shape == SHAPE_WALL && (loc == LOC_DIAG_A || loc == LOC_DIAG_B) {
-        (kit.diag_mesh[soft_side].clone(), root)
+    } else if matches!(shape, SHAPE_WALL | SHAPE_HALF_WALL | SHAPE_LOW_WALL)
+        && (loc == LOC_DIAG_A || loc == LOC_DIAG_B)
+    {
+        let kind = match shape {
+            SHAPE_HALF_WALL => 1,
+            SHAPE_LOW_WALL => 2,
+            _ => 0,
+        };
+        (kit.diag_mesh[kind][soft_side].clone(), root)
     } else if is_edge_shape(shape) {
         (
             kit.edge_mesh[(shape as usize).min(N_SHAPES - 1)][own.bits() as usize][soft_side]
@@ -2469,12 +2697,14 @@ fn spawn_piece(
     // child at the root's own frame: the wall's plinth, in the wall's
     // material, owned like its posts. The root keeps the mesh the highlight
     // reads; a child is exactly what the one-entity contract allows.
-    if addr.2 == 0 && is_edge_shape(shape) && matches!(loc, LOC_EDGE_XLO | LOC_EDGE_ZLO) {
-        piece.with_child((
-            Mesh3d(kit.apron[own.bits() as usize].clone()),
-            MeshMaterial3d(mat),
-            Transform::IDENTITY,
-        ));
+    if is_edge_shape(shape) && matches!(loc, LOC_EDGE_XLO | LOC_EDGE_ZLO) {
+        if let Some(apron) = edge_apron_transform(addr.2, foot_drop) {
+            piece.with_child((
+                Mesh3d(kit.apron[own.bits() as usize].clone()),
+                MeshMaterial3d(mat),
+                apron,
+            ));
+        }
     }
     piece.id()
 }
@@ -2505,8 +2735,36 @@ pub fn deploy_transform(
     let (cxm, czm) = cell_center(cx, cz);
     let x0 = cx as f32 * BUILD_CELL_M;
     let z0 = cz as f32 * BUILD_CELL_M;
-    let y = base_y + h * 0.5;
+    let y = base_y
+        + h * 0.5
+        + if matches!(
+            arch,
+            ARCH_WINDOW_BARS | ARCH_WINDOW_GLASS | ARCH_WINDOW_SHUTTER
+        ) {
+            WINDOW_SILL_M
+        } else {
+            0.0
+        };
     let quarter = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+
+    if arch == ARCH_WINDOW_SHUTTER {
+        let mut root = base_transform(seed, haven, addr, plate);
+        root.translation.y = y;
+        return root;
+    }
+
+    if arch == ARCH_GARAGE_DOOR {
+        let mut root = base_transform(seed, haven, addr, plate);
+        root.translation.y = if open {
+            base_y + LEVEL_H_M - FRAME_RIM_M * 0.5
+        } else {
+            y
+        };
+        if open {
+            root.scale.y = FRAME_RIM_M / h;
+        }
+        return root;
+    }
 
     match (loc, open) {
         (LOC_EDGE_XLO, false) => Transform::from_xyz(x0, y, czm),
@@ -2554,7 +2812,11 @@ pub fn spawn_deploy(
 
     let mut e = commands.spawn((
         super::WorldEntity,
-        Mesh3d(kit.deploy_mesh[idx].clone()),
+        Mesh3d(if arch == ARCH_WINDOW_SHUTTER && rec.open {
+            kit.shutters_open.clone()
+        } else {
+            kit.deploy_mesh[idx].clone()
+        }),
         MeshMaterial3d(mat),
         transform,
     ));
@@ -2743,4 +3005,187 @@ pub fn is_station(arch: u8) -> bool {
 /// set and would silently start accepting a table as a workbench).
 pub fn is_proximity(arch: u8) -> bool {
     is_station(arch) || arch == ARCH_RESEARCH
+}
+
+/// A convex face, authored counterclockwise from outside. UVs remain metres;
+/// vertical faces keep their grain upright like box_into.
+fn polygon_face(b: &mut Buffers, points: &[Vec3]) {
+    if points.len() < 3 {
+        return;
+    }
+    let cross = (points[1] - points[0]).cross(points[2] - points[0]);
+    if cross.length_squared() < 1e-12 {
+        return;
+    }
+    let normal = cross.normalize();
+    let u = if normal.y.abs() > 0.5 {
+        (points[1] - points[0]).normalize()
+    } else {
+        Vec3::Y.cross(normal).normalize()
+    };
+    let v = normal.cross(u);
+    let base = b.0.len() as u32;
+    for p in points {
+        b.0.push(p.to_array());
+        b.1.push(normal.to_array());
+        let tint = face_tint(normal, p.y, 0.0, LEVEL_H_M);
+        b.2.push([tint, tint, tint, 1.0]);
+        b.3.push([p.dot(u) * PIECE_UV_PER_M, p.dot(v) * PIECE_UV_PER_M]);
+    }
+    for i in 1..points.len() - 1 {
+        b.4.extend([base, base + i as u32, base + i as u32 + 1]);
+    }
+}
+fn patch_slab(
+    b: &mut Buffers,
+    footprint: &[Vec2],
+    top: impl Fn(Vec2) -> f32,
+    bottom: impl Fn(Vec2) -> f32,
+    at: Vec3,
+) {
+    let half = BUILD_CELL_M * 0.5;
+    let vertices = |height: &dyn Fn(Vec2) -> f32| {
+        footprint
+            .iter()
+            .map(|&p| at + Vec3::new(p.x - half, height(p), p.y - half))
+            .collect::<Vec<_>>()
+    };
+    let upper = vertices(&top);
+    let mut lower = vertices(&bottom);
+    polygon_face(b, &upper);
+    for i in 0..upper.len() {
+        let j = (i + 1) % upper.len();
+        polygon_face(b, &[upper[j], upper[i], lower[i], lower[j]]);
+    }
+    lower.reverse();
+    polygon_face(b, &lower);
+}
+fn clipped_patch(x0: f32, z0: f32, x1: f32, z1: f32, triangle: bool) -> Vec<Vec2> {
+    let rectangle = [
+        Vec2::new(x0, z0),
+        Vec2::new(x0, z1),
+        Vec2::new(x1, z1),
+        Vec2::new(x1, z0),
+    ];
+    if !triangle {
+        return rectangle.to_vec();
+    }
+    let mut out = Vec::with_capacity(5);
+    for i in 0..4 {
+        let a = rectangle[i];
+        let c = rectangle[(i + 1) % 4];
+        let da = BUILD_CELL_M - a.x - a.y;
+        let dc = BUILD_CELL_M - c.x - c.y;
+        if da >= 0.0 {
+            out.push(a);
+        }
+        if (da > 0.0 && dc < 0.0) || (da < 0.0 && dc > 0.0) {
+            out.push(a + (c - a) * (da / (da - dc)));
+        }
+    }
+    out
+}
+fn circulation_into(b: &mut Buffers, shape: u8, at: Vec3) {
+    let (patches, n) = sim_core::circulation::patches(shape);
+    for patch in &patches[..n] {
+        let dx = patch.x1 - patch.x0;
+        let dz = patch.z1 - patch.z0;
+        let rise = (dx * patch.sx + dz * patch.sz).abs();
+        let smooth = shape == sim_core::build::SHAPE_RAMP || rise == 0.0;
+        let steps = if smooth {
+            1
+        } else {
+            (rise / LEVEL_H_M * STAIR_RISERS as f32).ceil() as usize
+        };
+        // Endpoint treads meet the landing exactly, as the original flight
+        // does. Interior treads centre on the smooth walk surface.
+        for step in 0..if smooth { 1 } else { steps + 1 } {
+            let t0 = if smooth {
+                0.0
+            } else {
+                ((step as f32 - 0.5) / steps as f32).max(0.0)
+            };
+            let t1 = if smooth {
+                1.0
+            } else {
+                ((step as f32 + 0.5) / steps as f32).min(1.0)
+            };
+            let (x0, x1) = if patch.sx != 0.0 {
+                (patch.x0 + dx * t0, patch.x0 + dx * t1)
+            } else {
+                (patch.x0, patch.x1)
+            };
+            let (z0, z1) = if patch.sz != 0.0 {
+                (patch.z0 + dz * t0, patch.z0 + dz * t1)
+            } else {
+                (patch.z0, patch.z1)
+            };
+            let footprint = clipped_patch(
+                x0,
+                z0,
+                x1,
+                z1,
+                shape == sim_core::build::SHAPE_STAIRS_TRI_SPIRAL,
+            );
+            if footprint.len() < 3 {
+                continue;
+            }
+            let t = step as f32 / steps as f32;
+            let tread = patch.height(
+                if patch.sx != 0.0 {
+                    patch.x0 + dx * t
+                } else {
+                    (x0 + x1) * 0.5
+                },
+                if patch.sz != 0.0 {
+                    patch.z0 + dz * t
+                } else {
+                    (z0 + z1) * 0.5
+                },
+            );
+            patch_slab(
+                b,
+                &footprint,
+                |p| {
+                    if smooth {
+                        patch.height(p.x, p.y)
+                    } else {
+                        tread
+                    }
+                },
+                |p| {
+                    if shape == sim_core::build::SHAPE_FOUNDATION_STEPS {
+                        -SKIRT_MAX_M
+                    } else {
+                        patch.height(p.x, p.y) - SLAB_T
+                    }
+                },
+                at,
+            );
+        }
+    }
+}
+fn tri_frame_into(b: &mut Buffers, at: Vec3) {
+    let r = FRAME_RIM_M;
+    let diagonal = BUILD_CELL_M - r * std::f32::consts::SQRT_2 - r;
+    let outer = [
+        Vec2::ZERO,
+        Vec2::new(0.0, BUILD_CELL_M),
+        Vec2::new(BUILD_CELL_M, 0.0),
+    ];
+    let inner = [
+        Vec2::splat(r),
+        Vec2::new(r, diagonal),
+        Vec2::new(diagonal, r),
+    ];
+    for i in 0..3 {
+        let j = (i + 1) % 3;
+        patch_slab(
+            b,
+            &[outer[i], outer[j], inner[j], inner[i]],
+            |_| 0.0,
+            |_| -SLAB_T,
+            at,
+        );
+    }
 }

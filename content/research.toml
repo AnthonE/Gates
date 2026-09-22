@@ -114,3 +114,20 @@ requires = "item.gunpowder"
 item = "item.satchel_charge"
 cost = 75
 requires = "item.gunpowder"
+
+# Research-table price, not the separate tech-tree price (Facepunch, 2026-09-21).
+[[research]]
+item = "item.window_bars_metal"
+cost = 30
+
+[[research]]
+item = "item.garage_door"
+cost = 30
+
+[[research]]
+item = "item.window_glass"
+cost = 30
+
+[[research]]
+item = "item.window_shutters"
+cost = 15

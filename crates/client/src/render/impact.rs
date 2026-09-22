@@ -836,7 +836,7 @@ pub fn struct_point(
     let plate = core.pieces.cols().plate(cx, cz).unwrap_or(0);
     let at = Vec3::new(
         (cx as f32 + 0.5) * BUILD_CELL_M,
-        floor(cx, cz, plate) + level as f32 * LEVEL_H_M + LEVEL_H_M * 0.5,
+        floor(cx, cz, plate) + sim_core::build::level_y(level) + LEVEL_H_M * 0.5,
         (cz as f32 + 0.5) * BUILD_CELL_M,
     );
     // The piece at that address, if the mirror holds one: its baked row

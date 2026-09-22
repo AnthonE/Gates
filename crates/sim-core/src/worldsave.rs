@@ -78,7 +78,7 @@ use crate::input::InputFrame;
 use crate::limits::HOTBAR_SLOTS;
 use crate::limits::{
     BOX_SLOTS, HEARTH_CREW_CAP, HEARTH_STOCK_ROWS, INV_SLOTS, LOCK_AUTH_CAP, LOCK_GUEST_CAP,
-    MAX_BACKPACKS, MAX_BOXES, MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_DEPLOYS, MAX_GROUND_ITEMS,
+    MAX_BACKPACKS, MAX_BOXES, MAX_BUILD_COORD, MAX_BUILD_SOCKETS, MAX_DEPLOYS, MAX_GROUND_ITEMS,
     MAX_HEARTHS, MAX_LIVE_CHARGES, MAX_LOCKS, MAX_MAGS, MAX_PIECES, MAX_PLAYERS, MAX_SLOT_LIVES,
     MAX_SPENT_ARROWS, MAX_WORLD_CONTS,
 };
@@ -792,14 +792,14 @@ impl<'a> R<'a> {
 /// A **build**-grid address: pieces, deployables, hearths, boxes and
 /// charges all live on it. Bounded by the same `MAX_BUILD_COORD` the
 /// placement path refuses on (`build.rs`, `REFUSE_B_SPOT`), and by the same
-/// `MAX_BUILD_LEVELS` the wire's 3-bit level field carries — deliberately
+/// `MAX_BUILD_SOCKETS` the wire's 3-bit level field carries — deliberately
 /// those constants and not a second pair, because a decoder that admitted
 /// an address the placer would have refused is a decoder that lets a file
 /// build something no player could.
 fn build_addr_ok(cx: u16, cz: u16, level: u8) -> bool {
     (cx as usize) < MAX_BUILD_COORD
         && (cz as usize) < MAX_BUILD_COORD
-        && (level as usize) < MAX_BUILD_LEVELS
+        && (level as usize) < MAX_BUILD_SOCKETS
 }
 
 /// A **terrain**-grid address — a different grid, and the distinction is
