@@ -281,10 +281,15 @@ fn withdraw(core: &mut ShardCore, stats: &ShardStats, slot: usize, cont: u32) {
 /// after the owner logs off. Every row is on disk in order, with the right
 /// ids, wallets, guest mark, verb, presence and tick.
 ///
+/// The outsider joins **after** the tick-0 cadence refresh and acts on its
+/// first tick in the world, so its wallet can only come from the refresh a
+/// tick with rows forces. With every body joined on tick 0 that path was
+/// never needed, and the mutant that deleted it survived.
+///
 /// Mutants watched red: the hook line removed from `core.rs` (no rows on
 /// disk); `party` returning `Guest` before the identity tables (wallets
-/// missing); the sleeper arrow skipped (`asleep` row loses the owner's
-/// wallet).
+/// missing); identities refreshed on the cadence only (the late joiner is
+/// logged as a guest).
 #[test]
 fn a_shard_tick_logs_trust_rows_with_their_wallets() {
     let dir = scratch("e2e");
@@ -299,14 +304,23 @@ fn a_shard_tick_logs_trust_rows_with_their_wallets() {
     assert!(core
         .connect_as(0, owner, Some(key(OWNER_WALLET)), None)
         .is_some());
-    assert!(core
-        .connect_as(1, outsider, Some(key(OUTSIDER_WALLET)), None)
-        .is_some());
     assert!(core.connect_as(2, guest, None, None).is_some());
     tick(&mut core, &stats);
     let cont = stand_a_box(&mut core, &stats, &haven, 0, owner, at);
-    stand(&mut core, &haven, outsider, at);
     stand(&mut core, &haven, guest, at);
+    // The late joiner: seated between cadence refreshes.
+    assert!(core
+        .connect_as(1, outsider, Some(key(OUTSIDER_WALLET)), None)
+        .is_some());
+    tick(&mut core, &stats);
+    assert!(
+        !core
+            .world
+            .tick
+            .is_multiple_of(trustlog::TRUST_IDENT_REFRESH_TICKS),
+        "the fixture must join the outsider off the refresh cadence"
+    );
+    stand(&mut core, &haven, outsider, at);
 
     withdraw(&mut core, &stats, 1, cont);
     let t1 = core.world.trust.tick();
