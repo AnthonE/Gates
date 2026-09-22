@@ -135,6 +135,25 @@ async fn a_watcher_sees_what_the_agent_sees() {
     assert!(w.agent);
     assert_eq!(w.name.as_str(), "jev-test");
     assert!(watcher.core.spectating());
+    // **The join facts arrive before the walks do.** A player hears its
+    // health and vitals once, as events at its join; a late watcher hears
+    // them from the seat's catch-up, which the shard sends ahead of the
+    // seat's first drip on the same ordered stream. So by the time the first
+    // catalog batch has landed, they are already known — not waiting for the
+    // next hunger tick to announce them.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while watcher.core.catalog.count == 0 {
+            frame(&mut [&mut agent, &mut watcher]).await;
+        }
+    })
+    .await
+    .expect("the watcher's drips begin");
+    assert!(
+        watcher.core.hp > 0 && watcher.core.max_food > 0,
+        "the drips began before the join facts: hp {} max_food {}",
+        watcher.core.hp,
+        watcher.core.max_food
+    );
 
     let mut theirs: BTreeMap<u32, protocol::EntityState> = BTreeMap::new();
     let mut ours: BTreeMap<u32, protocol::EntityState> = BTreeMap::new();
@@ -197,6 +216,29 @@ async fn a_watcher_sees_what_the_agent_sees() {
         "vitals"
     );
     assert_eq!(watcher.core.catalog, agent.core.catalog, "item names");
+    // **A mirrored fact, end to end**: the agent says something and hears
+    // its own echo (the delivery receipt, `ShardCore::pump_chat`); the
+    // watcher hears exactly that line, because every message the sim's
+    // arms and the chat fan-out address to the agent is copied to its seat.
+    let mut b = [0u8; 64];
+    let n = protocol::encode_chat(b"hello, watchers", true, &mut b).unwrap();
+    agent.send_action(&b[..n]).expect("the agent speaks");
+    let (mut heard, mut echoed) = (None, None);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while heard.is_none() || echoed.is_none() {
+            frame(&mut [&mut agent, &mut watcher]).await;
+            if echoed.is_none() {
+                echoed = agent.core.pop_chat();
+            }
+            if heard.is_none() {
+                heard = watcher.core.pop_chat();
+            }
+        }
+    })
+    .await
+    .expect("the line reaches the agent and its watcher");
+    assert_eq!(heard, echoed, "the watcher heard something else");
+    assert_eq!(heard.map(|(from, _, _)| from), Some(id));
     // The camera has the agent's body to follow.
     let v = watcher.core.spectate_view().expect("a sample to follow");
     assert!(v.x.is_finite() && v.z.is_finite());

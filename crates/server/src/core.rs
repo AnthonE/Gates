@@ -4776,6 +4776,53 @@ mod tests {
         assert_eq!(core.connected(), 1, "and never counted as a player");
     }
 
+    /// **A new seat hears its target's join facts first** — health, vitals
+    /// and the research mask, from the body, ahead of its first drip on the
+    /// same ordered lane. A player hears these once, as events at its join;
+    /// without this a late watcher's HUD would read zero until the next
+    /// hunger tick happened to announce them.
+    #[test]
+    fn a_new_seat_is_told_its_targets_join_facts_before_anything_else() {
+        let stats = ShardStats::default();
+        let mut core = quiet_core(&stats);
+        let w = core.live_wslot(0).expect("the target has a body");
+        core.world.players[w].hp = 61;
+        core.world.players[w].hp_max = 100;
+        core.world.players[w].known = 0b1011;
+        let seat = MAX_PLAYERS + 2;
+        assert!(core.connect_spectator(seat, PLAYER, 0));
+        let mut first = Vec::new();
+        core.tick_bare(&stats, |lane, slot, bytes| {
+            if lane == Lane::Event && slot == seat {
+                first.push(decode_event(bytes).expect("decodes"));
+            }
+            true
+        });
+        let hp_max = core.world.players[w].hp_max;
+        assert!(
+            matches!(first.first(), Some(EventMsg::Health { hp: 61, max }) if *max == hp_max),
+            "the seat's first fact must be its target's health: {:?}",
+            first.first()
+        );
+        assert!(
+            matches!(first.get(1), Some(EventMsg::Vitals { .. })),
+            "{first:?}"
+        );
+        assert!(
+            matches!(first.get(2), Some(EventMsg::Known { mask: 0b1011 })),
+            "{first:?}"
+        );
+        // Owed once: the next tick does not repeat it.
+        let mut again = 0;
+        core.tick_bare(&stats, |lane, slot, bytes| {
+            if lane == Lane::Event && slot == seat {
+                again += usize::from(matches!(decode_event(bytes), Ok(EventMsg::Health { .. })));
+            }
+            true
+        });
+        assert_eq!(again, 0, "the catch-up is owed once, not every tick");
+    }
+
     /// A seat's datagrams are acks: frames that reach `push_input` anyway
     /// (past the net side's refusal) become nothing the tick can execute.
     #[test]
