@@ -1475,7 +1475,7 @@ What it still cannot do:
    re-point them if this item moves.
 
 
-## 5d · The agent player: the trust ledger is minted and nobody reads it *(systems lane)*
+## 5d · The agent player: the trust ledger is kept; the agent API is not *(systems lane)*
 
 Local first loop (2026-09-21): `jev-bot --local --scripted --gather-wood`
 finds visible trees, approaches, harvests with a belt tool and confirms wood
@@ -1496,12 +1496,18 @@ is built (`EV_TRUST` code 39, `World::log_trust`, six checks in
 `crates/sim-core/tests/event_roles.rs`); the other three are not.
 
 Remains, in order:
-- **Nothing reads it.** `ShardCore`'s drain ends `_ => {}`
-  (`crates/server/src/core.rs:2465`) and no file under `crates/server/` names
-  `EV_TRUST`, so no shard-hour is recorded until a server lane sinks it.
-- **A dropped row is gone** — it rides the 256-seat drop-newest ring
-  (`MAX_EVENTS_PER_TICK`, `limits.rs:624`), and unlike every other event a
-  resync cannot re-derive a fact about a moment.
+- ~~Nothing reads it~~ and ~~a dropped row is gone~~ — **built 2026-09-22
+  (trust ledger v1).** `World::trust` is a per-tick ring no tick can overflow
+  (`sim-core/trust.rs`: one `TrustSeat` per command, spent by value).
+  `ShardCore::tick` drains it every tick into `<world_file>.trust/`
+  (`server/trustlog.rs`), and `trust-log` reads it. Knobs:
+  `DECISIONS.md` §open. The public shard logs once a build with it is
+  deployed (operator act), and only because it has a `world_file`.
+- **`Command::Loot` mints no trust row.** Emptying another player's bag
+  with `Loot` is silent, while taking one stack of it with `Move` logs
+  `TRUST_CONT`, so the record depends on which button was pressed. Decide
+  whether a corpse bag is trust (`TRUST_CONT`'s doc says bags are), then
+  re-measure `loot_storm.rs`'s counts in the same commit.
 - `TRUST_GIVE` waits on the give verb; there is still no player-to-player give.
 - Then the verb table, wall 1's subset gate in the same commit, then an agent
   client that plays badly. Entry price and earnings are `ALPHA.md`.

@@ -221,6 +221,12 @@ pub const WATCHED: &[&str] = &[
     // whether a read-only seat is really read-only.
     "spectate_input_refused",
     "spectate_actions_refused",
+    // Trust rows the ledger did not get (`trustlog.rs`). The first is a
+    // disk that fell behind; the second is `sim_core::trust`'s derivation
+    // failing, which it cannot do. Both are also gap lines in the trust log
+    // itself, and this puts the tick they happened at beside everything else.
+    "trust_ring_drops",
+    "trust_sim_overflow",
 ];
 
 /// The previous tick's reading of every watched counter, so the sweep can

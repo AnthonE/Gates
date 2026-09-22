@@ -670,6 +670,18 @@ pub struct ShardStats {
     /// Seats resynced because a mirrored copy was refused (a full ring) or
     /// the sim dropped events — also counted in `ev_resyncs`.
     pub spectate_resyncs: AtomicU64,
+    // ── The trust ledger (`trustlog.rs`, `PLAYERS.md` wall 3) ──
+    /// Trust rows the sim minted and the drain read, logged or not.
+    pub trust_rows: AtomicU64,
+    /// Rows dropped because the ring to the log writer was full. Each run of
+    /// them is also written into the log as a `gap` line. Watched.
+    pub trust_ring_drops: AtomicU64,
+    /// Rows the sim's own ring refused. Unreachable by `sim_core::trust`'s
+    /// derivation and counted, so a broken derivation is loud. Watched.
+    pub trust_sim_overflow: AtomicU64,
+    /// Rows minted on a shard with no trust log configured: the ledger is
+    /// not being kept, and this is where that shows.
+    pub trust_unlogged: AtomicU64,
 
     // ── Aim staleness (findings/lagcomp-design-20260818.md §7 slice 1) ──
     //
@@ -956,6 +968,8 @@ impl ShardStats {
             "favour_disagree" => &self.favour_disagree,
             "spectate_input_refused" => &self.spectate_input_refused,
             "spectate_actions_refused" => &self.spectate_actions_refused,
+            "trust_ring_drops" => &self.trust_ring_drops,
+            "trust_sim_overflow" => &self.trust_sim_overflow,
             _ => return None,
         })
     }

@@ -27,6 +27,7 @@ use crate::ranged;
 use crate::rng::cell_hash;
 use crate::survival::{self, SurvivalContent};
 use crate::terrain::{self, ScatterTable};
+use crate::trust::{TrustLedger, TrustRow, TrustSeat};
 use crate::yaw_lut::yaw_dir;
 use xxhash_rust::xxh3::Xxh3;
 
@@ -512,15 +513,16 @@ pub const EV_IMPACT: u8 = 38;
 /// player placed it) and so is a `mob::mob_id` (a boar's corpse bag is
 /// loot, not a counterparty).
 ///
-/// ⚠ **It rides the same drop-newest ring as everything else, and it is
-/// the one passenger a resync cannot re-derive.** `MAX_EVENTS_PER_TICK` is
-/// 256 against a `MAX_COMMANDS_PER_TICK` of 256, so a tick saturated with
-/// trust verbs was already at the ring's edge before this code existed —
-/// what is new is that each such verb now costs two seats instead of one.
-/// Every other event in the lane is a fact about *state*, which the late-
-/// join sync walk re-derives from the world; this is a fact about a
-/// *moment*, and a dropped one is gone. `EventQueue::dropped` counts it,
-/// which is the honest floor and not a fix.
+/// **Two copies, and only one of them is the record.** This event still
+/// rides the drop-newest event ring, where each trust verb costs two seats
+/// (its own addressed event plus this one), and under a saturated tick it
+/// drops like any other passenger. It is the one passenger a resync cannot
+/// re-derive: every other event is a fact about *state*, and this is a fact
+/// about a *moment*. So since trust ledger v1 the same row also lands in
+/// `World::trust` (`trust.rs`), a ring sized to the most rows a tick can
+/// make, and **that** copy is what the shard drains and logs. This one
+/// stays for the role checks and the tick-mate join in
+/// `tests/event_roles.rs`, and it is allowed to drop.
 ///
 /// **No address.** Three fields are spent on who/whom/what, and the
 /// address is not lost: every push here rides the same tick as the verb's
@@ -1826,6 +1828,10 @@ pub struct World {
     pub spent: Box<crate::spent::SpentArrows>,
     /// This tick's outbound events; cleared at tick start.
     pub events: EventQueue,
+    /// This tick's trust rows (`trust.rs`), cleared at tick start beside
+    /// `events` and sized so that no tick can overflow it. Derived output:
+    /// not hashed, not saved, drained by the shard after every tick.
+    pub trust: TrustLedger,
     /// Hash stamped every `STATE_HASH_INTERVAL` ticks (0 until the first).
     pub last_hash: u64,
     /// Dev-only fixed spawn override in meters (DECISIONS.md §open). None
@@ -1878,6 +1884,7 @@ impl World {
             arrows: Box::new(ranged::Arrows::new()),
             spent: Box::new(crate::spent::SpentArrows::new()),
             events: EventQueue::default(),
+            trust: TrustLedger::new(),
             last_hash: 0,
             dev_spawn: None,
         }
@@ -2070,20 +2077,29 @@ impl World {
     ///   id where a player's would be (`EV_BAG_DROPPED`). A boar is not a
     ///   counterparty, and without this check every skinned carcass would
     ///   log one against a player number that does not exist.
-    fn log_trust(&mut self, actor: u32, counterparty: u32, verb: u8) {
+    ///
+    /// **It spends the command's `seat`**, which is what bounds the trust
+    /// ring (`trust.rs`): a seat is moved in by value, so a second call for
+    /// one command does not compile. A silent return drops the seat unspent.
+    ///
+    /// One row, two rings, built once: the event is packed *from* the row,
+    /// so the lossy announcement and the record cannot disagree.
+    fn log_trust(&mut self, seat: TrustSeat, actor: u32, counterparty: u32, verb: u8) {
         if counterparty == 0
             || counterparty == actor
             || crate::mob::slot_of_id(counterparty).is_some()
         {
             return;
         }
-        let presence = self.presence_of(counterparty);
-        self.events.push(
-            EV_TRUST,
+        let row = TrustRow {
             actor,
             counterparty,
-            ((verb as u32) << 8) | presence as u32,
-        );
+            verb,
+            presence: self.presence_of(counterparty),
+        };
+        self.events
+            .push(EV_TRUST, row.actor, row.counterparty, row.packed());
+        self.trust.push(seat, row);
     }
 
     /// One slot of whichever container `kind` names, by value. `ci` is the
@@ -2168,6 +2184,7 @@ impl World {
     #[allow(clippy::too_many_arguments)]
     fn move_item(
         &mut self,
+        seat: TrustSeat,
         slot: usize,
         cont: u32,
         from_kind: u8,
@@ -2404,7 +2421,7 @@ impl World {
             _ => None,
         };
         if let Some(owner) = owner {
-            self.log_trust(pid, owner, TRUST_CONT);
+            self.log_trust(seat, pid, owner, TRUST_CONT);
         }
         // A bag a withdrawal emptied leaves by `loot_nearest`'s route, so
         // the wire sees one removal contract however it was emptied. A box
@@ -3490,9 +3507,13 @@ impl World {
         frame
     }
 
+    /// `seat` is this command's right to one trust row (`trust.rs`). The
+    /// three trust-bearing arms move it into `log_trust`; every other arm
+    /// drops it unspent.
     fn apply(
         &mut self,
         cmd: &Command,
+        seat: TrustSeat,
         removals: &mut usize,
         favour: &mut [u8; MAX_PLAYERS],
         catchup: &mut [Option<InputFrame>; MAX_PLAYERS],
@@ -3775,7 +3796,7 @@ impl World {
                         // cannot also read the roster the presence
                         // question is asked of. One borrow later, this can.
                         if let Some(owner) = owner {
-                            self.log_trust(id, owner, TRUST_DOOR);
+                            self.log_trust(seat, id, owner, TRUST_DOOR);
                         }
                     }
                 }
@@ -3879,7 +3900,7 @@ impl World {
                             &mut self.events,
                         );
                         if let Some(owner) = owner {
-                            self.log_trust(id, owner, TRUST_AUTH);
+                            self.log_trust(seat, id, owner, TRUST_AUTH);
                         }
                     } else {
                         let mut spill = [ItemStack::default(); INV_SLOTS];
@@ -3900,7 +3921,7 @@ impl World {
                         );
                         self.drain_spill(slot, &mut spill);
                         if let Some(owner) = owner {
-                            self.log_trust(id, owner, TRUST_AUTH);
+                            self.log_trust(seat, id, owner, TRUST_AUTH);
                         }
                     }
                 }
@@ -4082,7 +4103,9 @@ impl World {
                 count,
             } => {
                 if let Some(slot) = self.live_slot_of(id) {
-                    self.move_item(slot, cont, from_kind, from_slot, to_kind, to_slot, count);
+                    self.move_item(
+                        seat, slot, cont, from_kind, from_slot, to_kind, to_slot, count,
+                    );
                 }
             }
             Command::Respawn { id, on_bag } => {
@@ -4120,6 +4143,7 @@ impl World {
     /// respawns, stamp the hash on cadence.
     pub fn tick(&mut self, commands: &[Command]) {
         self.events.clear();
+        self.trust.clear(self.tick);
         // The tick's structural removal budget is minted **before** the
         // commands rather than after them, because since demolish v1 a
         // command can take a piece out of the store and seed a cascade —
@@ -4150,7 +4174,10 @@ impl World {
         // orders of magnitude to spare.
         let mut catchup: [Option<InputFrame>; MAX_PLAYERS] = [None; MAX_PLAYERS];
         for cmd in commands.iter().take(MAX_COMMANDS_PER_TICK) {
-            self.apply(cmd, &mut removals, &mut favour, &mut catchup);
+            // The trust ring's bound, link 2 (`trust.rs`): one seat per
+            // applied command, minted here and nowhere else.
+            let seat = self.trust.seat();
+            self.apply(cmd, seat, &mut removals, &mut favour, &mut catchup);
         }
         // One helper per target. Existing ownership wins; otherwise lowest
         // slot wins. Two hands never add their time together.

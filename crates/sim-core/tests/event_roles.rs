@@ -93,6 +93,7 @@ use sim_core::oven::CookContent;
 use sim_core::ranged::SURF_GROUND;
 use sim_core::survival::{SurvivalContent, DRINK_REACH_M, REFUSE_C_NOT_FOOD, REFUSE_C_NO_WATER};
 use sim_core::terrain;
+use sim_core::trust::TrustRow;
 use sim_core::world::{
     Command, SimEvent, World, DEATH_BY_MAX, EV_ASSIST, EV_AUTH, EV_BAG_DROPPED, EV_BAG_REMOVED,
     EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE,
@@ -4555,6 +4556,45 @@ fn distinct_pack8(packed: u32, what: &str) {
     );
 }
 
+/// The ledger copy of this tick's one trust row (`sim_core::trust`, trust
+/// ledger v1): the same row, in the ring the shard drains and logs.
+///
+/// Checked field for field against the event the role checks have just
+/// read, so every role assertion in a cause covers the ledger as well. A row
+/// that reached the ledger swapped, or with its bytes reversed, while the
+/// event stayed right is a record that is wrong with this whole file green.
+/// The shard reads only the ledger.
+fn ledger_mirrors(w: &World, t: SimEvent) {
+    let want = TrustRow {
+        actor: t.a,
+        counterparty: t.b,
+        verb: (t.c >> 8) as u8,
+        presence: (t.c & 0xff) as u8,
+    };
+    assert_eq!(
+        w.trust.rows(),
+        &[want],
+        "the trust ledger must hold exactly the row EV_TRUST announced, field \
+         for field. The event is the lossy copy; the ledger is the record"
+    );
+    assert_eq!(
+        w.trust.tick() + 1,
+        w.tick,
+        "a ledger row names the tick it was applied in, which is one behind \
+         `world.tick` once the tick has run"
+    );
+}
+
+/// The silence half of [`ledger_mirrors`]: no event, and no ledger row.
+fn ledger_silent(w: &World) {
+    assert!(
+        w.trust.is_empty(),
+        "EV_TRUST was silent but the ledger kept {:?}. The two copies are \
+         built on one line and must fall silent together",
+        w.trust.rows()
+    );
+}
+
 /// `EV_TRUST: a = the player who acted, b = the counterparty, c = verb << 8
 /// | presence` — cause one: **a door, against an owner who is asleep.**
 ///
@@ -4585,6 +4625,7 @@ fn trust_names_the_actor_the_owner_and_a_door_worked_while_they_slept() {
     }]);
 
     let t = only(&w, EV_TRUST);
+    ledger_mirrors(&w, t);
     distinct3(t, "EV_TRUST");
     distinct_pack8(t.c, "EV_TRUST.c");
     assert_eq!(
@@ -4666,6 +4707,7 @@ fn trust_names_a_grant_taken_on_the_lock_of_a_body_that_is_gone() {
     }]);
 
     let t = only(&w, EV_TRUST);
+    ledger_mirrors(&w, t);
     distinct3(t, "EV_TRUST");
     distinct_pack8(t.c, "EV_TRUST.c");
     assert_eq!(t.a, OUTSIDER, "EV_TRUST.a is the hand that ACTED");
@@ -4750,6 +4792,7 @@ fn trust_names_a_container_opened_while_its_owner_watches() {
     }]);
 
     let t = only(&w, EV_TRUST);
+    ledger_mirrors(&w, t);
     distinct3(t, "EV_TRUST");
     distinct_pack8(t.c, "EV_TRUST.c");
     assert_eq!(t.a, OUTSIDER, "EV_TRUST.a is the hand that ACTED");
@@ -4811,6 +4854,7 @@ fn trust_is_silent_for_your_own_door_and_for_an_animals_bag() {
         0,
         "opening your own door logged a trust row against yourself"
     );
+    ledger_silent(&w);
 
     // A locked door, pressed by a hand the lock does not know. The row is
     // a record of access *exercised*, never of access asked for — the
@@ -4846,6 +4890,7 @@ fn trust_is_silent_for_your_own_door_and_for_an_animals_bag() {
         "a refused door logged a trust row — the leaf never moved and \
          nothing was exercised"
     );
+    ledger_silent(&w);
 
     // A bag a dead animal left. `stand_up` is the call `mob.rs` reaches
     // through when a carcass drops one, with the same tagged id in `owner`;
@@ -4895,6 +4940,7 @@ fn trust_is_silent_for_your_own_door_and_for_an_animals_bag() {
         "looting an animal's carcass logged a trust row against a mob id \
          sitting in a player id's seat"
     );
+    ledger_silent(&w);
 }
 
 /// Cause four: **the same `TRUST_AUTH`, through the other store.**
@@ -4948,6 +4994,7 @@ fn trust_names_a_crew_seat_taken_on_someone_elses_hearth() {
         0,
         "a crew op that moved no membership logged a trust row"
     );
+    ledger_silent(&w);
 
     // The owner steps off their own hearth, which empties the crew.
     w.tick(&[Command::Access {
@@ -4969,6 +5016,7 @@ fn trust_names_a_crew_seat_taken_on_someone_elses_hearth() {
         0,
         "leaving your OWN hearth's crew logged a trust row against yourself"
     );
+    ledger_silent(&w);
 
     // And the outsider takes the seat.
     w.tick(&[Command::Access {
@@ -4982,6 +5030,7 @@ fn trust_names_a_crew_seat_taken_on_someone_elses_hearth() {
     }]);
 
     let t = only(&w, EV_TRUST);
+    ledger_mirrors(&w, t);
     distinct3(t, "EV_TRUST");
     distinct_pack8(t.c, "EV_TRUST.c");
     assert_eq!(t.a, OUTSIDER, "EV_TRUST.a is the hand that ACTED");

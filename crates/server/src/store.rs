@@ -420,9 +420,17 @@ impl SaveFile {
 /// The two halves together, as one boot artifact. Split by owner the moment
 /// the shard starts: the index goes to the accept loop, the file to the
 /// storage thread, and neither can reach the other's state again.
+///
+/// **And the trust log's tap, which rides here to reach the sim thread.**
+/// It is the shard's other durable record of its players
+/// (`trustlog.rs`), opened by `bin/shard.rs` beside this one and before a
+/// port is bound. It rides in this boot artifact so `spawn_shard`'s
+/// signature, and every caller of it, stay as they are. `Tap::off()` in
+/// [`Saves::off`] and from [`open`].
 pub struct Saves {
     pub store: SaveStore,
     pub file: SaveFile,
+    pub trust: crate::trustlog::Tap,
 }
 
 /// Counts and a flag, never contents — the same rule `PlayerKey`'s `Debug`
@@ -453,6 +461,7 @@ impl Saves {
         Self {
             store: SaveStore::new(),
             file: SaveFile::closed(),
+            trust: crate::trustlog::Tap::off(),
         }
     }
 }
@@ -614,6 +623,7 @@ pub fn open(
             Saves {
                 store,
                 file: SaveFile { file: Some(file) },
+                trust: crate::trustlog::Tap::off(),
             },
             SaveLoad {
                 live: 0,
@@ -727,6 +737,7 @@ pub fn open(
         Saves {
             store,
             file: SaveFile { file: Some(file) },
+            trust: crate::trustlog::Tap::off(),
         },
         found,
     ))

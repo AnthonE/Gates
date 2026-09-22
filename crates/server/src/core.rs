@@ -209,6 +209,9 @@ pub struct ShardCore {
     /// leaves, the seat stops receiving anything, and the accept loop closes
     /// it with `REFUSE_WATCH_ENDED` on its next sweep.
     watching: [Option<Seat>; MAX_SPECTATORS],
+    /// The trust ledger's sink (`trustlog.rs`), drained once per tick.
+    /// `Tap::off()` unless the shard installed a log.
+    pub trust: crate::trustlog::Tap,
 }
 
 /// One spectator seat's sim-side state.
@@ -379,6 +382,7 @@ impl ShardCore {
             keys: vec![None; MAX_PLAYERS].into_boxed_slice(),
             sleepers: SleeperIndex::new(),
             watching: [None; MAX_SPECTATORS],
+            trust: crate::trustlog::Tap::off(),
         }
     }
 
@@ -1256,6 +1260,9 @@ impl ShardCore {
             }
         }
         self.world.tick(&self.cmd_buf[..n]);
+        // This tick's trust rows leave for the log before the next
+        // `World::tick` clears them (`trustlog.rs`).
+        crate::trustlog::Tap::drain(self, stats);
 
         for slot in 0..MAX_PLAYERS {
             if self.clients[slot].connected {
