@@ -276,6 +276,18 @@ impl Predictor {
         self.started = true;
     }
 
+    /// Take the server's body as the whole truth — a spectator's reconcile
+    /// (`ClientCore::spectator`). There is no tail to replay and nothing was
+    /// predicted, so there is no error to smooth either: the pair collapses
+    /// onto the wire's state and the correction offset is zero.
+    pub fn adopt_authoritative(&mut self, own: &EntityState) {
+        self.tail_len = 0;
+        self.body = Self::adopt(own);
+        self.prev = self.body;
+        self.err = [0.0; 3];
+        self.started = true;
+    }
+
     /// Predicted position in meters (the sim-truth one, no smoothing).
     pub fn position(&self) -> [f32; 3] {
         Self::position_of(&self.body)

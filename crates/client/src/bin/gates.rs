@@ -63,7 +63,11 @@ fn main() -> AppExit {
     // has owned a timeout, an Esc and a failure arm that names the reason
     // since it existed. The player is still not asked to choose twice —
     // `chosen` carries that — they are just allowed to survive a dead shard.
-    let straight_in = capture.is_some();
+    // `--spectate` connects before the window too, for the capture run's
+    // reason inverted: a watcher has no menu to pick from — its seat is the
+    // whole of what it asked for — so a refusal belongs on the terminal that
+    // typed the flag, with the shard's own sentence.
+    let straight_in = capture.is_some() || a.spectate.is_some();
 
     // The launcher handshake used to be here too, before the window, because
     // it is a blocking round trip over a local socket and must never happen
@@ -94,19 +98,24 @@ fn main() -> AppExit {
                 eprintln!("gates: {e}");
                 std::process::exit(1);
             });
-            Session::connect(&endpoint, &server, address, client::elo::sign_siwe)
-                .await
-                .unwrap_or_else(|e| {
-                    eprintln!("gates: {e}");
-                    std::process::exit(1);
-                })
+            let joined = match a.spectate {
+                Some(target) => Session::watch(&endpoint, &server, target).await,
+                None => Session::connect(&endpoint, &server, address, client::elo::sign_siwe).await,
+            };
+            joined.unwrap_or_else(|e| {
+                eprintln!("gates: {e}");
+                std::process::exit(1);
+            })
         })
     });
     if let Some(s) = &session {
-        println!(
-            "gates: in the world — player {} seed {} tick {}",
-            s.welcome.player_id, s.welcome.seed, s.welcome.tick
-        );
+        match &s.watching {
+            Some(w) => println!("gates: {}", client::ui::spectate::label(w)),
+            None => println!(
+                "gates: in the world — player {} seed {} tick {}",
+                s.welcome.player_id, s.welcome.seed, s.welcome.tick
+            ),
+        }
     }
 
     let mut app = App::new();

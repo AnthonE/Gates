@@ -68,6 +68,23 @@ pub fn pitch_u8(pitch: f32) -> u8 {
     v.clamp(0.0, 255.0) as u8
 }
 
+/// A wire yaw back to radians — [`yaw_u16`] inverted, for a spectator's
+/// camera (spectators v0), which faces the way the WATCHED body faces.
+///
+/// Takes the interpolator's blended value (`interp::RemoteState::yaw`, still
+/// on the `0..65536` scale, fractional between samples) rather than a `u16`,
+/// so the camera turns smoothly between snapshots instead of in 1/65536
+/// steps that the eye would read as nothing at all — and a whole-number input
+/// round-trips through [`yaw_u16`] exactly.
+pub fn yaw_of_wire(wire: f32) -> f32 {
+    wire / 65536.0 * std::f32::consts::TAU
+}
+
+/// A wire pitch back to radians — [`pitch_u8`] inverted: 128 is level.
+pub fn pitch_of_wire(wire: f32) -> f32 {
+    (wire / 255.0 - 0.5) * std::f32::consts::PI
+}
+
 /// Degrees clockwise from north for a world-XZ direction — **the one place
 /// that answers which compass point a world axis is.**
 ///
@@ -283,6 +300,28 @@ pub fn control(aim: &mut Aim, raw: Raw) -> (u8, u16, u8, i8, i8, u8) {
 
 #[cfg(test)]
 mod tests {
+    /// A spectator's camera turns the way the watched body turned: every
+    /// wire angle survives the trip back to radians and out to the wire
+    /// again, so the view a watcher is shown is the look the sim ran on.
+    #[test]
+    fn a_wire_angle_round_trips_through_the_spectators_inverse() {
+        for w in [0u16, 1, 0x2000, 0x4000, 0x7FFF, 0x8000, 0xC123, 0xFFFF] {
+            let back = super::yaw_u16(super::yaw_of_wire(w as f32));
+            assert!(
+                back == w || back.wrapping_sub(w) == 1 || w.wrapping_sub(back) == 1,
+                "yaw {w} came back as {back}"
+            );
+        }
+        for w in 0..=255u8 {
+            assert_eq!(
+                super::pitch_u8(super::pitch_of_wire(w as f32)),
+                w,
+                "pitch {w}"
+            );
+        }
+        assert!(super::pitch_of_wire(128.0).abs() < 0.01, "128 is level");
+    }
+
     use super::*;
 
     /// The sim's own wish-direction arithmetic (`movement::step`), so the

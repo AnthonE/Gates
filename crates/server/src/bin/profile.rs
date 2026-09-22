@@ -53,6 +53,10 @@ struct Args {
     /// body inside everyone else's enter radius, which is the worst case
     /// the AOI rank band exists for.
     pitch_m: f32,
+    /// Spectator seats to add (`NETCODE.md` §2.3), each watching a player in
+    /// turn and acking like one. Zero is the historical profile; run it at
+    /// `MAX_SPECTATORS` and subtract to price a seat.
+    spectators: usize,
 }
 
 impl Default for Args {
@@ -65,6 +69,7 @@ impl Default for Args {
             seed: 20_260_731,
             content_dir: "content".into(),
             pitch_m: 6.0,
+            spectators: 0,
         }
     }
 }
@@ -83,10 +88,16 @@ fn parse_args() -> Args {
             "--seed" => a.seed = val.parse().unwrap_or(a.seed),
             "--content" => a.content_dir = val,
             "--pitch" => a.pitch_m = val.parse().unwrap_or(a.pitch_m),
+            "--spectators" => {
+                a.spectators = val
+                    .parse()
+                    .unwrap_or(0)
+                    .min(sim_core::limits::MAX_SPECTATORS)
+            }
             "--help" | "-h" => {
                 println!(
                     "profile [--clients N] [--pieces N] [--ticks N] [--warmup N] \
-                     [--seed N] [--content DIR] [--pitch M]"
+                     [--seed N] [--content DIR] [--pitch M] [--spectators N]"
                 );
                 std::process::exit(0);
             }
@@ -251,8 +262,14 @@ fn fill_pieces(core: &mut ShardCore, want: usize) -> usize {
     core.world.pieces.len()
 }
 
-/// Mean and worst of a sample, in microseconds.
+/// Mean and worst of a sample, in microseconds. An empty sample is zeros:
+/// since netcode v2 took `SNAPSHOT_INTERVAL_TICKS` to 1 every tick is a
+/// snapshot tick, the no-snapshot sample is always empty, and indexing it
+/// panicked the tool on every run.
 fn stat(v: &mut [Duration]) -> (f64, f64, f64) {
+    if v.is_empty() {
+        return (0.0, 0.0, 0.0);
+    }
     let n = v.len().max(1) as f64;
     let sum: Duration = v.iter().sum();
     v.sort_unstable();
@@ -271,6 +288,16 @@ fn main() {
     let mut core = build_core(&a);
     let pieces = fill_pieces(&mut core, a.pieces);
     fill_clients(&mut core, &stats, &a);
+    // Seats watching the cluster, one target each in turn — the shard's own
+    // `connect_spectator`, so the tick below runs every seat's interest,
+    // drips, mirror and snapshot exactly as a live shard would.
+    for i in 0..a.spectators {
+        let target = i % a.clients.max(1);
+        assert!(
+            core.connect_spectator(MAX_PLAYERS + i, id_of(target), target),
+            "seat {i}"
+        );
+    }
 
     // Every client sends every tick, which is what a shard under load
     // looks like — an empty input buffer profiles the starve path instead.
@@ -281,7 +308,7 @@ fn main() {
     // tests, `encode_delta` — never runs. A profile without acks measures a
     // shard where nobody has finished joining.
     let mut seq: u16 = 1;
-    let mut last_snap = vec![0u16; MAX_PLAYERS];
+    let mut last_snap = vec![0u16; MAX_PLAYERS + sim_core::limits::MAX_SPECTATORS];
     let feed = |core: &mut ShardCore, seq: &mut u16, last_snap: &[u16]| {
         for (slot, &ack) in last_snap.iter().enumerate().take(a.clients) {
             let mut dg = InputDatagram::new(ack, 0, 4);
@@ -299,6 +326,12 @@ fn main() {
                 sel: 0,
             });
             core.push_input(slot, &dg);
+        }
+        // A seat sends acks and nothing else — which is what keeps its
+        // snapshots delta-coded, and so what a seat really costs.
+        for i in 0..a.spectators {
+            let slot = MAX_PLAYERS + i;
+            core.push_input(slot, &InputDatagram::new(last_snap[slot], 0, 4));
         }
         *seq = seq.wrapping_add(1);
     };
@@ -375,9 +408,10 @@ fn main() {
     let budget_us = 1e6 / sim_core::limits::TICK_HZ as f64;
 
     println!(
-        "profile: seed {} · {} clients · {pieces} pieces · {} mobs alive · {} ticks",
+        "profile: seed {} · {} clients + {} seats · {pieces} pieces · {} mobs alive · {} ticks",
         a.seed,
         a.clients,
+        a.spectators,
         core.world.mobs.m.iter().filter(|m| m.alive).count(),
         a.ticks
     );

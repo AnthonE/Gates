@@ -59,6 +59,32 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
 
 # Buildable now — a loop can pick any of these
 
+## 5sp · Spectator seats and signed agents are built — what they still owe *(net lane)*
+
+Wire v73 (2026-09-22): a viewer's own client watches a consenting player
+(`?spectate`, `--spectate`), and an agent joins a real shard with a key file
+(`crates/agentkey`). `NETCODE.md` §2.3/§2.4 carry the design;
+`server/tests/spectate_wire.rs` and `agent_join.rs` are the gates.
+
+- **Operator acts, none done:** the coordinated publish v73 needs (the public
+  shard and every published client move together — a v72 client is refused
+  `REFUSE_VERSION`); `spectate = true` on any shard that should be watchable;
+  a wallet, its entitlement and a `chmod 600` key file per hosted agent
+  (§2.4's list); the page link from the watch host to `?spectate=0x…`.
+- **jev lane:** `jev-watch`'s shard sets `cfg.spectate = Spectate::on()` and
+  its bot joins `Join::Agent`; `jev-bot` grows `--agent-key PATH`, a name and
+  `--server host:port` onto `botclient::run_agent_bot` — the JPEG feed can
+  then retire behind the browser seat.
+- **The browser loses the close reason.** A seat whose target left is closed
+  with `REFUSE_WATCH_ENDED` as its code; the desktop `Session` reads it
+  (`close_code`, and the disconnected screen says why) and the page's
+  `WebTransport.closed` is not yet read, so a tab says "left the world".
+- A delayed human feed's line is per seat in memory and reserved when the
+  seat opens — 7.1 MB at 60 s, 5.0 MB of it an event line sized for eight
+  messages a tick; reserving that half on demand makes it cost the traffic;
+  `status.json` does not publish `spectators`; a seat does not see the
+  target's open container panel (the container stream is per connection).
+
 ## 0gfx · Graphics rows and render scale are built *(client lane)*
 
 Eight settable rows + the preset ladder shipped 2026-09-16 (`DECISIONS.md`

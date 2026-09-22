@@ -928,6 +928,19 @@ const JITTER_GAIN: f64 = 1.0 / 16.0;
 
 pub struct ClientCore {
     pub player_id: u32,
+    /// **This core watches a body it does not drive** (spectators v0, wire
+    /// v73; `NETCODE.md` §2.3). `player_id` is then the WATCHED session's
+    /// body, and four things change, all here so the renderer decides none of
+    /// them: no input frame is ever built (`set_input` is ignored and
+    /// `advance` steps no prediction), so the datagram lane carries acks only;
+    /// the watched body is interpolated like a remote rather than predicted;
+    /// the eye rides that interpolation ([`Self::eye_position`],
+    /// [`Self::spectate_view`]); and the first snapshot seeds `dead` and
+    /// `wounded`, which a player learns from events it was present for.
+    ///
+    /// Private and set only by [`Self::spectator`], so a core cannot change
+    /// mode mid-session — the shard's seat is decided at the handshake.
+    spectating: bool,
     pub view: ClientView,
     pub predict: Predictor,
     pub interp: Interp,
@@ -1456,9 +1469,25 @@ pub struct ClientCore {
 }
 
 impl ClientCore {
+    /// A core that watches `player_id` and drives nothing — see the
+    /// `spectating` field. Everything else is [`Self::new`]'s, so a spectator
+    /// decodes, interpolates and keeps its own-facts exactly as the watched
+    /// session's own client does.
+    pub fn spectator(seed: u64, player_id: u32, server_tick: u32) -> Self {
+        let mut c = Self::new(seed, player_id, server_tick);
+        c.spectating = true;
+        c
+    }
+
+    /// Is this core watching rather than playing?
+    pub fn spectating(&self) -> bool {
+        self.spectating
+    }
+
     pub fn new(seed: u64, player_id: u32, server_tick: u32) -> Self {
         Self {
             player_id,
+            spectating: false,
             view: ClientView::new(),
             predict: Predictor::new(seed),
             interp: Interp::new(),
@@ -3204,6 +3233,12 @@ impl ClientCore {
     /// The live input state; sampled once per generated frame. `sel`
     /// clamps into the hotbar (the encoder refuses 6+ outright).
     pub fn set_input(&mut self, buttons: u8, yaw: u16, pitch: u8, move_x: i8, move_z: i8, sel: u8) {
+        // A spectator drives nothing. Refused here rather than trusted to
+        // every caller: the shard refuses a watcher's frames too, but a frame
+        // that is never built is one no bug can smuggle onto the wire.
+        if self.spectating {
+            return;
+        }
         // See `sticky_buttons`: the level is overwritten, the presses are
         // remembered. Without the OR, a press that begins and ends between
         // two 30 Hz ticks never reaches the sim at all.
@@ -3284,6 +3319,18 @@ impl ClientCore {
         self.playout_ticks += (target - self.playout_ticks).clamp(-max_step, max_step);
         let steps = self.clock.advance(dt_ms);
         self.predict.decay_error(dt_ms);
+        if self.spectating {
+            // The clock still runs — `render_tick` interpolates off it — and a
+            // datagram is still due each tick, because the ack is how the
+            // shard keeps delta-coding this watcher's snapshots. What does not
+            // happen is a frame: no seq, no prediction step, nothing to send
+            // but the ack header (`poll_input` finds an empty tail).
+            for _ in 0..steps {
+                self.clock.client_tick = self.clock.client_tick.wrapping_add(1);
+                self.input_due = true;
+            }
+            return steps;
+        }
         for _ in 0..steps {
             let frame = InputFrame {
                 seq: self.next_seq,
@@ -3332,7 +3379,31 @@ impl ClientCore {
     /// sim-truth reader every verb resolves against. See
     /// `Predictor::eye_position`.
     pub fn eye_position(&self) -> [f32; 3] {
+        if self.spectating {
+            if let Some(v) = self.spectate_view() {
+                return [v.x, v.y, v.z];
+            }
+        }
         self.predict.eye_position(self.clock.alpha())
+    }
+
+    /// Where the watched body is and which way it looks, at the render tick —
+    /// the spectator's camera (`None` before the first sample, or on a core
+    /// that is not spectating).
+    ///
+    /// **Interpolated, not predicted**: a watcher has no input to predict
+    /// from, so the body is drawn the way every remote is — smooth and a
+    /// playout delay late — and its look angles are the wire's, blended
+    /// shortest-arc. The watched player's own screen is ahead of this by that
+    /// delay, which for a viewer is the right trade: smooth beats early.
+    pub fn spectate_view(&self) -> Option<crate::interp::RemoteState> {
+        if !self.spectating {
+            return None;
+        }
+        let mut out = crate::interp::RemoteState::default();
+        self.interp
+            .sample(self.player_id, self.render_tick(), &mut out)
+            .then_some(out)
     }
 
     /// Encode the due input datagram — the unacked tail plus the redundant
@@ -3386,7 +3457,9 @@ impl ClientCore {
                     self.interp.remove(id);
                 }
                 for e in snap.entities() {
-                    if e.id != self.player_id {
+                    // A spectator interpolates the watched body like any
+                    // remote — it is the camera's only source (`spectate_view`).
+                    if e.id != self.player_id || self.spectating {
                         self.interp.push(header.tick, e);
                     }
                 }
@@ -3414,7 +3487,26 @@ impl ClientCore {
                     // pairing over instead.
                     self.have_arrival = false;
                 }
-                if let Some(own) = self.view.get(self.player_id).copied() {
+                if self.spectating {
+                    if let Some(own) = self.view.get(self.player_id).copied() {
+                        // No frames to replay, so nothing to reconcile: the
+                        // body IS the wire's, with no correction to smooth.
+                        // Kept on the predictor so every reader of
+                        // `render_position` (the map, the compass, a verb
+                        // prompt) sees the watched body and not the origin.
+                        self.predict.adopt_authoritative(&own);
+                        // Late join: a player learns it is down or dead from
+                        // an event it was present for, and a watcher who
+                        // arrived afterwards was not. Seeded ONCE, from the
+                        // first snapshot; after that the mirrored events rule,
+                        // because a snapshot delayed behind a respawn would
+                        // otherwise raise a death that is already over.
+                        if self.snapshots_applied == 1 {
+                            self.dead = own.dead;
+                            self.wounded = own.wounded;
+                        }
+                    }
+                } else if let Some(own) = self.view.get(self.player_id).copied() {
                     self.predict.reconcile(
                         &own,
                         header.last_executed_seq,

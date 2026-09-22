@@ -1194,3 +1194,22 @@ pub const MAX_MOB_BITES_PER_TICK: usize = 8;
 /// every tick, so a waking animal can be up to `MOB_THINK_TICKS` late —
 /// half a second, at a distance of two hundred metres.
 pub const MOB_WAKE_CM: i64 = 24_000;
+
+// ---------------------------------------------------------------------------
+// Spectators (net lane, 2026-09-22; `NETCODE.md` §2.3). Appended as its own
+// block so a parallel lane's appendix merges beside it rather than into it.
+// ---------------------------------------------------------------------------
+
+/// Read-only spectator seats per shard: connection slots past
+/// `MAX_PLAYERS` that watch a consenting player's view and hold no body.
+///
+/// **The array size behind every per-seat table** — `ShardCore::clients`
+/// grows by this, the slot table and the sim thread's link table with it — so
+/// a shard's `spectate_seats` can lower it and never raise it. Priced against
+/// the tick: a seat runs a connected client's netcode (interest, drips, one
+/// snapshot encode) plus the mirror — ~8 µs per client in `NETCODE.md` §9's
+/// 100-client row, a seat ~1.4× that in a debug ablation, so sixteen are
+/// ~0.2 ms of 33.3 (`bin/profile --spectators` measures it). Overflow
+/// policy: **refuse** at the handshake with `REFUSE_WATCH_FULL`, never evict
+/// a seat already watching. Proposed default, `DECISIONS.md` §open.
+pub const MAX_SPECTATORS: usize = 16;

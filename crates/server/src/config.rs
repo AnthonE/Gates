@@ -253,6 +253,66 @@ pub struct ShardConfig {
     /// trusting" had never been runnable. `net_congestion_events` is the
     /// measurement it unblocks.
     pub congestion: Congestion,
+    /// The spectator door (`NETCODE.md` §2.3): read-only seats that watch a
+    /// consenting player's view over the ordinary snapshot stream. **Shut by
+    /// default** ([`Spectate::OFF`]), the same honest state `status_addr`
+    /// takes; `spectate = true` opens it. The switch a demo shard turns on so
+    /// its agent can be watched from a browser (`jev-watch`'s temporary
+    /// shard is the first).
+    pub spectate: Spectate,
+}
+
+/// Default per-target seat cap once the spectator door is open — how many
+/// viewers one player's feed serves. Four because a feed is a stream per
+/// viewer, and a popular agent should be re-broadcast, not fanned out from
+/// the shard (`NETCODE.md` §2.3). Proposed default, `DECISIONS.md` §open.
+pub const DEFAULT_SPECTATORS_PER_TARGET: usize = 4;
+
+/// The longest a human's feed may be delayed, in seconds. The delay line
+/// holds a spectator's snapshots and events in memory for that long, so the
+/// ceiling bounds it: at 60 s a delayed seat reserves 7.1 MB when it opens —
+/// 2.0 MB of snapshots and a 5.0 MB event line sized for eight messages a
+/// tick (entry sizes 1,120 B and 344 B, measured). Proposed default,
+/// `DECISIONS.md` §open.
+pub const SPECTATE_HUMAN_DELAY_MAX_S: u32 = 60;
+
+/// The spectator door's configuration (`shard.toml` `spectate*` keys).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Spectate {
+    /// Seats this shard offers; 0 is a shut door. At most
+    /// `limits::MAX_SPECTATORS`, which sizes every per-seat table.
+    pub seats: usize,
+    /// Seats one watched player may fill. At most `seats`.
+    pub per_target: usize,
+    /// Seconds a **human's** feed is delayed; 0 refuses human feeds outright,
+    /// which is the default. An agent's feed is never delayed: consenting to
+    /// be watched is what declaring `HELLO_AGENT` means. A human who opts in
+    /// (`HELLO_WATCHABLE`) is admitted only behind this delay, so a spectator
+    /// cannot become a live ghost on somebody who plays against them.
+    pub human_delay_s: u32,
+}
+
+impl Spectate {
+    /// No seats. What every shard runs unless its operator opens the door.
+    pub const OFF: Self = Self {
+        seats: 0,
+        per_target: 0,
+        human_delay_s: 0,
+    };
+
+    /// The door open at its defaults: every seat the limits allow, the
+    /// default per-target cap, human feeds refused.
+    pub const fn on() -> Self {
+        Self {
+            seats: sim_core::limits::MAX_SPECTATORS,
+            per_target: DEFAULT_SPECTATORS_PER_TARGET,
+            human_delay_s: 0,
+        }
+    }
+
+    pub fn open(&self) -> bool {
+        self.seats > 0
+    }
 }
 
 /// Congestion controller selection (`shard.toml` `cc`).
@@ -289,6 +349,7 @@ impl ShardConfig {
             admins: crate::admin::Admins::none(),
             anomaly_file: None,
             population: 0,
+            spectate: Spectate::OFF,
         }
     }
 }
@@ -352,6 +413,10 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut congestion: Option<Congestion> = None;
     let mut entitle_timeout_secs: Option<u64> = None;
     let mut entitle_sweep_secs: Option<u64> = None;
+    let mut spectate: Option<bool> = None;
+    let mut spectate_seats: Option<usize> = None;
+    let mut spectate_per_target: Option<usize> = None;
+    let mut spectate_human_delay_s: Option<u32> = None;
     for (n, line) in text.lines().enumerate() {
         let line = line.split('#').next().unwrap_or("").trim();
         if line.is_empty() {
@@ -695,9 +760,89 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                     ))
                 }
             },
+            // The spectator door (`NETCODE.md` §2.3). `spectate` opens it;
+            // the other three are refused without it below, because a cap on
+            // a shut door is a setting the operator believes is doing
+            // something.
+            "spectate" => match value {
+                "true" => spectate = Some(true),
+                "false" => spectate = Some(false),
+                other => {
+                    return Err(format!(
+                        "shard.toml line {}: spectate must be true or false, got `{other}`",
+                        n + 1
+                    ))
+                }
+            },
+            "spectate_seats" | "spectate_per_target" => {
+                let v: usize = value.parse().ok().filter(|v| *v >= 1).ok_or_else(|| {
+                    format!(
+                        "shard.toml line {}: {key} must be a whole number of seats, at least 1",
+                        n + 1
+                    )
+                })?;
+                if v > sim_core::limits::MAX_SPECTATORS {
+                    return Err(format!(
+                        "shard.toml line {}: {key} {v} is over the {} seats a shard has \
+                         (limits::MAX_SPECTATORS sizes every per-seat table)",
+                        n + 1,
+                        sim_core::limits::MAX_SPECTATORS
+                    ));
+                }
+                if key == "spectate_seats" {
+                    spectate_seats = Some(v);
+                } else {
+                    spectate_per_target = Some(v);
+                }
+            }
+            "spectate_human_delay_s" => {
+                let v: u32 = value.parse().map_err(|_| {
+                    format!(
+                        "shard.toml line {}: spectate_human_delay_s must be whole seconds \
+                         (0 refuses human feeds, which is the default)",
+                        n + 1
+                    )
+                })?;
+                if v > SPECTATE_HUMAN_DELAY_MAX_S {
+                    return Err(format!(
+                        "shard.toml line {}: spectate_human_delay_s {v} is over the \
+                         {SPECTATE_HUMAN_DELAY_MAX_S} s the delay line may hold",
+                        n + 1
+                    ));
+                }
+                spectate_human_delay_s = Some(v);
+            }
             other => return Err(format!("shard.toml line {}: unknown key `{other}`", n + 1)),
         }
     }
+    let spectate = if spectate.unwrap_or(false) {
+        let d = Spectate::on();
+        let seats = spectate_seats.unwrap_or(d.seats);
+        let per_target = spectate_per_target.unwrap_or(d.per_target.min(seats));
+        if per_target > seats {
+            return Err(format!(
+                "shard.toml: spectate_per_target ({per_target}) is more than \
+                 spectate_seats ({seats}) — one player cannot fill more seats than exist"
+            ));
+        }
+        Spectate {
+            seats,
+            per_target,
+            human_delay_s: spectate_human_delay_s.unwrap_or(d.human_delay_s),
+        }
+    } else {
+        if spectate_seats.is_some()
+            || spectate_per_target.is_some()
+            || spectate_human_delay_s.is_some()
+        {
+            return Err(
+                "shard.toml: a spectate_* key needs spectate = true — the door \
+                        is shut and the setting would do nothing"
+                    .into(),
+            );
+        }
+        Spectate::OFF
+    };
     // Both or neither: half a TLS identity is a shard that self-signs while
     // its operator believes it is public.
     if cert_pem.is_some() != key_pem.is_some() {
@@ -771,6 +916,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         anomaly_file,
         // Unset ⇒ 0, a shard that seats nobody but the players who dial it.
         population: population.unwrap_or(0),
+        spectate,
     })
 }
 
@@ -1107,6 +1253,55 @@ mod tests {
 #[cfg(test)]
 mod auth_cfg_tests {
     use super::*;
+
+    /// The spectator door is shut unless the operator opens it, and opening
+    /// it takes every default at once (`NETCODE.md` §2.3).
+    #[test]
+    fn the_spectator_door_is_shut_by_default_and_opens_whole() {
+        let base = "bind = \"127.0.0.1:1\"\nseed = 7\n";
+        let off = parse_shard_toml(base).unwrap();
+        assert_eq!(off.spectate, Spectate::OFF);
+        assert!(!off.spectate.open());
+        let on = parse_shard_toml(&format!("{base}spectate = true\n")).unwrap();
+        assert_eq!(on.spectate, Spectate::on());
+        assert_eq!(on.spectate.seats, sim_core::limits::MAX_SPECTATORS);
+        assert_eq!(on.spectate.human_delay_s, 0, "human feeds stay refused");
+        let tuned = parse_shard_toml(&format!(
+            "{base}spectate = true\nspectate_seats = 3\nspectate_per_target = 2\n\
+             spectate_human_delay_s = 30\n"
+        ))
+        .unwrap();
+        assert_eq!(
+            tuned.spectate,
+            Spectate {
+                seats: 3,
+                per_target: 2,
+                human_delay_s: 30
+            }
+        );
+    }
+
+    #[test]
+    fn a_spectator_setting_the_door_cannot_honour_is_refused() {
+        let base = "bind = \"127.0.0.1:1\"\nseed = 7\n";
+        for (extra, needle) in [
+            ("spectate_seats = 4\n", "spectate = true"),
+            ("spectate = yes\n", "true or false"),
+            ("spectate = true\nspectate_seats = 0\n", "at least 1"),
+            ("spectate = true\nspectate_seats = 17\n", "MAX_SPECTATORS"),
+            (
+                "spectate = true\nspectate_seats = 2\nspectate_per_target = 3\n",
+                "more than",
+            ),
+            (
+                "spectate = true\nspectate_human_delay_s = 61\n",
+                "delay line",
+            ),
+        ] {
+            let err = parse_shard_toml(&format!("{base}{extra}")).expect_err(extra);
+            assert!(err.contains(needle), "{extra:?}: {err}");
+        }
+    }
 
     /// The default is guests-welcome, and that is load-bearing: every test
     /// in this repo joins a shard with no launcher running.

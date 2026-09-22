@@ -368,6 +368,21 @@ async fn main() {
     // until that call returns. One clone at boot, never in a loop.
     let boot_cfg = cfg.clone();
     let population = cfg.population;
+    // The spectator door (`NETCODE.md` §2.3), said once at boot so the
+    // counters on the periodic line below have their other half.
+    let spectate = cfg.spectate;
+    if spectate.open() {
+        println!(
+            "spectate open: {} seats, {} per player · agents live · humans {}",
+            spectate.seats,
+            spectate.per_target,
+            if spectate.human_delay_s == 0 {
+                "refused".to_string()
+            } else {
+                format!("behind a {} s delay", spectate.human_delay_s)
+            }
+        );
+    }
     let handle = match spawn_shard(cfg, tables, saves, world_boot).await {
         Ok(h) => h,
         Err(e) => {
@@ -520,6 +535,21 @@ async fn main() {
         // seating them over the wire — so this is the only place the split
         // is readable. `live` against the configured count is the health
         // number; `errors` climbing is a population fighting its own wire.
+        // Its own line, and only on a shard whose door is open: a seat is not
+        // a player, so none of it is in the line above.
+        if spectate.open() {
+            println!(
+                "spectators {}/{} · seated {} · refused {} full {} ended {} · forged in/act {}/{}",
+                ShardStats::get(&s.spectators),
+                spectate.seats,
+                ShardStats::get(&s.spectate_joins),
+                ShardStats::get(&s.spectate_refused),
+                ShardStats::get(&s.spectate_full),
+                ShardStats::get(&s.spectate_ended),
+                ShardStats::get(&s.spectate_input_refused),
+                ShardStats::get(&s.spectate_actions_refused),
+            );
+        }
         if let Some(p) = &pop {
             let g = &p.stats;
             println!(

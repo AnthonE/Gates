@@ -133,6 +133,9 @@ pub mod presence;
 pub mod props;
 pub mod rig;
 pub mod settings;
+// A spectator seat's label (wire v73): whose view this is. Everything else a
+// watcher sees is the ordinary HUD reading a core that drives nothing.
+pub mod spectate;
 // The screenshot key. Distinct from `capture`, which is the probe harness:
 // this is a player pressing F12 at a moment they chose, so it settles
 // nothing and never touches the view. `crate::shot` is the arithmetic half.
@@ -973,7 +976,12 @@ impl Plugin for GatesRenderPlugin {
         // itself is untouched, so the gate's own frames cannot move.
         .add_systems(
             OnEnter(Screen::Loading),
-            hud::setup.after(rig::setup).run_if(move || !plate),
+            (
+                hud::setup.after(rig::setup),
+                // Beside the HUD, and like it absent from a plate run.
+                spectate::setup,
+            )
+                .run_if(move || !plate),
         )
         // Both in `Update` and NOT on the `Loading` transition — that
         // transition runs before `Startup`, so `PropMaps` does not exist yet

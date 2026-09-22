@@ -21,6 +21,10 @@ content = { path = "../content" }
 sim-core = { path = "../sim-core" }
 protocol = { path = "../protocol" }
 client-core = { path = "../client-core" }
+# An agent player's wallet key (`NETCODE.md` §2.4): `botclient`'s signed
+# connect path loads one for a bot that plays a real shard. Load bots never
+# touch it — they stay guests (`net::client_handshake` says why).
+agentkey = { path = "../agentkey" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-util", "signal", "sync"] }
 # SIWE verification: recover the signer of a `personal_sign` signature and
 # derive its Ethereum address. Two small, ubiquitous crates and no way to do

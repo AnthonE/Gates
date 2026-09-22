@@ -184,6 +184,99 @@ controller says so, no opt-out. What that means for us, concretely:
 | certs, prod | ordinary ACME cert on the game's own subdomain, no hashes | unchanged, and load-bearing. **The client validates as of 2026-08-10** (operator; `DECISIONS.md` that date): the platform root store for every non-loopback address with no pin, `with_server_certificate_hashes` when `--cert-hash` names one, and `with_no_cert_validation` on loopback only. The warning that used to sit here — that publishing was blocked on this — is discharged. Why it mattered more than a checklist item: **SIWE has no channel binding**, so an on-path relay that terminates the player's QUIC and opens its own to the shard is admitted *as the victim* with the key never leaving the wallet. Gated by `crates/server/tests/tls_posture.rs`, which raises a self-signed shard on a NON-loopback address and asserts the refusal, the pin, a wrong pin, and the carve-out |
 | migration | server tolerates NAT rebinding (default on); **client treats network change as death** | the behaviour is unchanged; the reason is not. It read "Chrome ships no client-side QUIC migration", and there is no Chrome — quinn *can* migrate. Fast-reconnect stays an app feature (§6.3, §10) because it has to handle the cases migration cannot (a dead server, a new address that must re-prove SIWE), not because the client is incapable |
 
+### 2.3 · Spectators — watching a player's own view (wire v73)
+
+Built 2026-09-22 (operator: *"i want it all"*), replacing the server-rendered
+JPEG feed (`crates/server/WATCH.md`) as the way to watch an agent: **a
+viewer's own client joins as a read-only seat and draws the watched player's
+first-person view on the viewer's GPU from the ordinary snapshot stream.**
+The seat has no body, sends no input and changes nothing in the sim — no
+command, no WAL entry, no `state_hash` term, so wall 5 does not see it.
+Code: `server/src/net.rs` (the door), `server/src/core.rs` (`Seat`,
+`fan_out`), `client-core` (`ClientCore::spectator`), `client` (`Session::watch`).
+
+- **Handshake.** `Hello` carries `flags` — `HELLO_AGENT`, `HELLO_WATCHABLE`,
+  `HELLO_SPECTATE` — a `target` address present only with `HELLO_SPECTATE`
+  (`GUEST` = any watchable agent), and a self-declared `Name` (0–16 printable
+  ASCII; empty on a watcher). The shard peeks the version first
+  (`peek_hello_version`), so the grown hello still gives an older client
+  `REFUSE_VERSION`. A watcher answers the challenge as a guest and is never
+  verified: it is anonymous, `require_auth` and the ticket door guard things it
+  cannot touch, and what it may watch is decided by the **target**.
+- **Consent is the target's, and self-declared is enough** — a session can
+  only consent for itself. `HELLO_AGENT` is consent (an agent player's feed is
+  part of its public record, `PLAYERS.md`); a human opts in with
+  `HELLO_WATCHABLE` and is still refused unless the shard runs human feeds
+  (`spectate_human_delay_s > 0`), which then pass through a server-side delay
+  line on both lanes — on the shard's egress, so no client can skip it. Absent,
+  private and full-of-humans are **one code**, `REFUSE_WATCH`: "online but
+  private" is itself a presence oracle.
+- **What a seat is sent**: exactly what the target's own client gets for its
+  view. A seat is a connection slot past `MAX_PLAYERS` whose netcode state is
+  bound to the target's body (`id` = the target's), so it runs its **own**
+  interest, drips (catalog, recipes, walks, inventory, wear, craft queue) and
+  snapshots against its **own** acked baselines — never a copy of the target's
+  datagrams, which delta against acks the watcher never sent. The sim's event
+  arms and the chat fan-out are **mirrored** (`ShardCore::fan_out`): every
+  message they address to the target is copied to its seats byte for byte, so
+  every own-fact and every public event the target was shown reaches the
+  watcher with the target's interest filter already applied. The welcome names
+  the target's body as `player_id`; a `Watch` message follows it (proven
+  address, agent bit, name) for the `SPECTATING <name>` label.
+- **Late join** is a fresh join: the seat's drips start from zero shadows, the
+  join facts a player heard once as events (health, vitals, research) are sent
+  from the body as a catch-up ahead of the first drip, and the first snapshot
+  seeds `dead`/`wounded`. A seat that loses a mirrored copy (full ring) or
+  whose target's events the sim dropped is `ev_resync`ed and re-caught-up.
+- **Death, respawn, disconnect.** A body keeps its id through death and
+  respawn, so the seat follows it through the death screen and back
+  (`EV_DEATH`/`EV_RESPAWN` are mirrored). The target leaving — or its slot
+  being re-used — stops the seat's feed the same tick (the id check in
+  `seat_live`: a reused slot never feeds a stranger's view), and the accept
+  loop closes it with **`REFUSE_WATCH_ENDED` as the close code**.
+- **Caps and cost.** `limits::MAX_SPECTATORS` seats per shard (16), a shard's
+  `spectate_seats` below it, and `spectate_per_target` (default 4); overflow
+  is `REFUSE_WATCH_FULL`, never an eviction. A seat runs a client's netcode
+  plus the mirror (one compare per seat per event-lane message): §9's
+  100-client row prices a client at ~8 µs, and a debug-build ablation put a
+  seat at ~1.4× a client, so sixteen are ~0.2 ms of the 33.3 ms tick —
+  **derived, not measured**; `cargo run --release -p server --bin profile --
+  --spectators 16` is the measurement.
+- **No input lane.** A watcher's datagrams are acks only (frame count 0) —
+  that is how its snapshots stay delta-coded; one carrying a frame is refused
+  and counted (`spectate_input_refused`), and the sim takes nothing but acks
+  from a seat besides. Any reliable C→S frame closes the seat
+  (`spectate_actions_refused`). The client refuses both before the wire:
+  `ClientCore::spectator` builds no frame and `Session::send_action` answers
+  `SendError::ReadOnly`.
+- **Turning it on**: `shard.toml` `spectate = true` (shut by default). Viewers:
+  the browser page with `?spectate` or `?spectate=0x…`, the desktop client with
+  `--spectate any|0x…`. `server/tests/spectate_wire.rs` is the gate.
+
+### 2.4 · Agent players — a wallet, and every door a person pays
+
+Load bots stay guests (`net::client_handshake` says why). An **agent player**
+is a player with a wallet: it declares `HELLO_AGENT` and proves its address
+with its own key, because it has no launcher to hold one. `crates/agentkey`
+is the one place a private key is held: loaded from a **file path** whose mode
+must grant nothing to group or others (`0600`), never from argv, never logged
+(its `Debug` prints the address), and not linkable into the page (`client`
+takes it under `native` only). It signs only the SIWE text it composes itself
+through `protocol::siwe_message` from the domain it dialled, the shard's nonce
+and its `Issued At`. Two entries use it: `botclient::run_agent_bot` (with
+`agent_endpoint`, which validates certificates like `client_endpoint`: a pin,
+the root store off loopback, permissive on loopback only) and
+`Session::connect_agent`. Nothing is bypassed: `require_auth`, the signature
+and the ticket door (`entitle.rs`) apply unchanged — `server/tests/agent_join.rs`.
+
+**What the operator provisions to put a hosted agent on a real shard** (none
+of it is a loop's act): a wallet generated for the agent; that wallet
+**entitled** on the shard's title (a ticket in it, or a free title); its key
+as 64 hex digits in a file owned by the agent's service user, `chmod 600`, in
+a directory only that user can read, outside any repo, and named to the bot by
+path (`--agent-key PATH`); the shard's public name dialled by name
+(`host:port`), so its real certificate validates — a pin only for a dev shard.
+
 ## 3 · Class D — the hot pipeline
 
 Refinements over `DESIGN.md` §5, with the canon's shipped parameters:

@@ -6,6 +6,7 @@
 
 use crate::client::ClientNetState;
 use crate::interest::{self, PIECE_SCAN_BATCH};
+use crate::slot::MAX_CONNS;
 use crate::stats::{self, ShardStats, FAVOUR_DISAGREE_BAND_TICKS};
 use crate::store::PlayerKey;
 use protocol::{
@@ -38,8 +39,8 @@ use sim_core::inventory::{slots_in, CONT_BAG, CONT_BOX, CONT_SELF, CONT_WEAR, CO
 use sim_core::limits::{
     AOI_ENTER_CM, AOI_EXIT_CM, AOI_RANK_ENTER, AOI_RANK_EXIT, CHAT_LOCAL_CM, CRAFT_QUEUE,
     DATAGRAM_BUDGET_BYTES, HEARTH_STOCK_ROWS, HOTBAR_SLOTS, INV_SLOTS, MAX_COMMANDS_PER_TICK,
-    MAX_MOBS, MAX_PLAYERS, MAX_SNAPSHOT_ENTITIES, SNAPSHOT_INTERVAL_TICKS, STALENESS_CEILING,
-    SYNC_SCAN_PER_TICK, WEAR_SLOTS,
+    MAX_MOBS, MAX_PLAYERS, MAX_SNAPSHOT_ENTITIES, MAX_SPECTATORS, SNAPSHOT_INTERVAL_TICKS,
+    STALENESS_CEILING, SYNC_SCAN_PER_TICK, WEAR_SLOTS,
 };
 use sim_core::mob;
 use sim_core::persist::PlayerSave;
@@ -201,7 +202,34 @@ pub struct ShardCore {
     /// whose header says it holds no `ShardStats`: a list of addresses is
     /// data, not a side effect.
     admins: crate::admin::Admins,
+    /// The spectator seats (`NETCODE.md` §2.3): seat `i` is connection slot
+    /// `MAX_PLAYERS + i`, and holds the connection slot it watches. `None` is
+    /// an empty seat. A seat is **fed only while its target is still that
+    /// player on that slot** ([`Self::seat_live`]); the moment the target
+    /// leaves, the seat stops receiving anything, and the accept loop closes
+    /// it with `REFUSE_WATCH_ENDED` on its next sweep.
+    watching: [Option<Seat>; MAX_SPECTATORS],
 }
+
+/// One spectator seat's sim-side state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Seat {
+    /// The watched player's connection slot, `< MAX_PLAYERS`.
+    target: usize,
+    /// The own-facts a player hears once, at its join, as events — health,
+    /// vitals, what it has researched — are still owed to this watcher. Sent
+    /// once from the body's state and cleared; the mirrored events keep it
+    /// current after that. (Inventory, wear and the craft queue need nothing:
+    /// they are diffed per connection, so a new seat's empty shadow already
+    /// asks for the whole of them.)
+    catchup: bool,
+}
+
+/// Where a mirrored event copy goes: `NO_SEAT` for an empty seat, else the
+/// target's connection slot. `u8` because `MAX_PLAYERS` fits one, and the
+/// table is copied into the mirror closure every tick.
+const NO_SEAT: u8 = u8::MAX;
+const _: () = assert!(MAX_PLAYERS < NO_SEAT as usize);
 
 /// The three side channels an admin verb needs and the sim's own state
 /// cannot provide — passed into [`ShardCore::tick`] rather than held,
@@ -330,8 +358,9 @@ impl SleeperIndex {
 
 impl ShardCore {
     pub fn new(seed: u64) -> Self {
-        let mut clients = Vec::with_capacity(MAX_PLAYERS);
-        clients.resize_with(MAX_PLAYERS, ClientNetState::new);
+        // Every connection slot: players, then spectator seats.
+        let mut clients = Vec::with_capacity(MAX_CONNS);
+        clients.resize_with(MAX_CONNS, ClientNetState::new);
         Self {
             world: World::new(seed),
             clients: clients.into_boxed_slice(),
@@ -349,6 +378,7 @@ impl ShardCore {
             last_saved: vec![PlayerSave::EMPTY; MAX_PLAYERS].into_boxed_slice(),
             keys: vec![None; MAX_PLAYERS].into_boxed_slice(),
             sleepers: SleeperIndex::new(),
+            watching: [None; MAX_SPECTATORS],
         }
     }
 
@@ -440,7 +470,62 @@ impl ShardCore {
     /// (`net.rs`): a second copy of the count could drift from the array
     /// it describes.
     pub fn connected(&self) -> usize {
-        self.clients.iter().filter(|c| c.connected).count()
+        // Players only: a spectator seat is not a player and must not read
+        // as one on the status endpoint (`MAX_PLAYERS` bounds the scan).
+        self.clients[..MAX_PLAYERS]
+            .iter()
+            .filter(|c| c.connected)
+            .count()
+    }
+
+    /// Occupied spectator seats — the `spectators` gauge (`stats.rs`).
+    pub fn spectators(&self) -> usize {
+        self.watching.iter().filter(|w| w.is_some()).count()
+    }
+
+    /// Seat a spectator on connection slot `slot` (past `MAX_PLAYERS`),
+    /// watching the player `target_id` on connection slot `target`.
+    ///
+    /// **No command, and that is the design**: a watcher has no body, so the
+    /// world never hears of it — nothing enters the WAL, `state_hash` is
+    /// untouched, and a replay without the watcher is the same run (wall 5).
+    /// What it gets is a connection's netcode state bound to the target's
+    /// body: `id` is the target's, so interest, the drips and the snapshot's
+    /// own record all resolve to the body being watched.
+    ///
+    /// False ⇒ refused: not a seat slot, or the target is no longer that id on
+    /// that slot (it left between the accept loop's check and this tick). The
+    /// caller parks the link and lets the LEAVING sweep take it.
+    #[must_use]
+    pub fn connect_spectator(&mut self, slot: usize, target_id: u32, target: usize) -> bool {
+        if !(MAX_PLAYERS..MAX_CONNS).contains(&slot)
+            || target >= MAX_PLAYERS
+            || !self.clients[target].connected
+            || self.clients[target].id != target_id
+        {
+            return false;
+        }
+        self.clients[slot].reset(target_id);
+        self.watching[slot - MAX_PLAYERS] = Some(Seat {
+            target,
+            catchup: true,
+        });
+        true
+    }
+
+    /// Is spectator seat `i` still watching the player it was seated for?
+    /// A target's connection slot is reused after it leaves, and the new
+    /// tenant has a different id — so the id check is what stops a seat
+    /// being fed a stranger's view (a privacy defect, not a cosmetic one).
+    fn seat_live(&self, i: usize) -> bool {
+        match self.watching[i] {
+            Some(seat) => {
+                let t = &self.clients[seat.target];
+                let me = &self.clients[MAX_PLAYERS + i];
+                me.connected && t.connected && t.id == me.id
+            }
+            None => false,
+        }
     }
 
     /// Install a client: onto the body they left behind if it is still
@@ -644,6 +729,16 @@ impl ShardCore {
     /// unchanged. Where the record then goes — a ring, an index, a file — is
     /// `net.rs`'s business and none of it touches the sim thread's laws.
     pub fn disconnect(&mut self, slot: usize) -> Option<(u32, PlayerSave)> {
+        // A spectator seat leaves nothing behind: no body, no sleeper, no
+        // record, no command. Branched first because every array below this
+        // line is player-sized.
+        if slot >= MAX_PLAYERS {
+            if slot < MAX_CONNS {
+                self.clients[slot].connected = false;
+                self.watching[slot - MAX_PLAYERS] = None;
+            }
+            return None;
+        }
         let id = self.clients[slot].id;
         if !self.clients[slot].connected {
             return None;
@@ -776,6 +871,14 @@ impl ShardCore {
         // header going the other way. Clamped at the favour mint, not
         // here — the mint is the one place the claim buys anything.
         c.reported_playout = dg.playout_ticks;
+        // A spectator's datagram is its acks and nothing else. The net side
+        // already refuses one carrying frames (`spectate_input_refused`);
+        // this is the second wall, so a frame that got past it still reaches
+        // no command — and the tick's input loop stops at `MAX_PLAYERS`
+        // besides, which is the third.
+        if slot >= MAX_PLAYERS {
+            return;
+        }
         for f in dg.frames() {
             c.push_frame(*f, view);
         }
@@ -785,13 +888,19 @@ impl ShardCore {
     /// net thread pops its action ring only through an open hand, so a
     /// deferred action stays ringed (and, past the ring, in the stream).
     pub fn wants_action(&self, slot: usize) -> bool {
-        self.clients[slot].connected && self.clients[slot].pending_action.is_none()
+        // A spectator never acts; its hand is never open.
+        slot < MAX_PLAYERS
+            && self.clients[slot].connected
+            && self.clients[slot].pending_action.is_none()
     }
 
     /// Hand one decoded action to this client's pending slot. Callers
     /// check `wants_action` first; a push into a full hand is dropped
     /// (defensive — the contract keeps it unreachable).
     pub fn push_action(&mut self, slot: usize, act: ActionMsg) {
+        if slot >= MAX_PLAYERS {
+            return;
+        }
         let c = &mut self.clients[slot];
         if c.connected && c.pending_action.is_none() {
             c.pending_action = Some(act);
@@ -804,6 +913,9 @@ impl ShardCore {
     /// path (it pops one per tick) and is the right answer if it ever
     /// does: chat is not owed delivery the way an action is.
     pub fn push_chat(&mut self, slot: usize, chat: ChatMsg) {
+        if slot >= MAX_PLAYERS {
+            return;
+        }
         let c = &mut self.clients[slot];
         if c.connected {
             c.pending_chat = Some(chat);
@@ -1150,9 +1262,33 @@ impl ShardCore {
                 self.update_interest(slot, stats);
             }
         }
+        // Spectator seats (`NETCODE.md` §2.3), decided once per tick: a seat
+        // whose target left is fed nothing more from here on, and the accept
+        // loop closes it on its next sweep. A live seat measures interest
+        // from the body it watches, exactly as that player's own connection
+        // does — `clients[seat].id` IS the target's id.
+        let live = self.live_seats();
+        for (i, &l) in live.iter().enumerate() {
+            if l {
+                self.update_interest(MAX_PLAYERS + i, stats);
+            }
+        }
+        self.fan_out(&live, stats, ops, &mut send);
 
-        self.pump_chat(stats, ops, &mut send);
-        self.pump_events(stats, &mut send);
+        // The drips: every connection's own walk over world state, unmirrored.
+        for slot in 0..MAX_PLAYERS {
+            if self.clients[slot].connected {
+                self.drip_client(slot, stats, &mut send);
+            }
+        }
+        for (i, &l) in live.iter().enumerate() {
+            if l {
+                if self.watching[i].is_some_and(|s| s.catchup) {
+                    self.spectator_catchup(i, stats, &mut send);
+                }
+                self.drip_client(MAX_PLAYERS + i, stats, &mut send);
+            }
+        }
 
         if self.world.tick.is_multiple_of(SNAPSHOT_INTERVAL_TICKS) {
             for slot in 0..MAX_PLAYERS {
@@ -1164,6 +1300,131 @@ impl ShardCore {
                     send(Lane::Snapshot, slot, &self.dg_buf[..len]);
                 }
             }
+            // A seat's own snapshot, against its own acked baselines — never
+            // a copy of the target's datagram, which deltas against acks the
+            // watcher never sent and would not decode after one loss.
+            for (i, &l) in live.iter().enumerate() {
+                if !l {
+                    continue;
+                }
+                let slot = MAX_PLAYERS + i;
+                if let Some(len) = self.encode_snapshot(slot, stats) {
+                    ShardStats::bump(&stats.snap_sent);
+                    send(Lane::Snapshot, slot, &self.dg_buf[..len]);
+                }
+            }
+        }
+    }
+
+    /// Which seats are live this tick (`seat_live`), decided once.
+    fn live_seats(&self) -> [bool; MAX_SPECTATORS] {
+        let mut live = [false; MAX_SPECTATORS];
+        for (i, l) in live.iter_mut().enumerate() {
+            *l = self.seat_live(i);
+        }
+        live
+    }
+
+    /// The sim's facts routed — chat and the event arms — with **the mirror**
+    /// around them: every message those address to a watched player is
+    /// copied to that player's live seats, byte for byte.
+    ///
+    /// That is what makes a watcher's HUD read what the player's reads —
+    /// every own-fact (a gather, a hit, a death, a respawn, the vitals) and
+    /// every public event the player was shown, with the player's own
+    /// interest filter already applied — without a second routing decision
+    /// anywhere in the drain. The drips are NOT mirrored (`tick` runs them
+    /// after this, with the bare `send`): they are each connection's own
+    /// walk over world state, and a seat runs its own. The table is copied
+    /// out so the closure can hold it while the pumps borrow `self`; `u8`
+    /// slots, no allocation (wall 2).
+    fn fan_out(
+        &mut self,
+        live: &[bool; MAX_SPECTATORS],
+        stats: &ShardStats,
+        ops: &mut Ops<'_>,
+        send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
+    ) {
+        let mut mirror = [NO_SEAT; MAX_SPECTATORS];
+        for (i, m) in mirror.iter_mut().enumerate() {
+            if let (true, Some(seat)) = (live[i], self.watching[i]) {
+                *m = seat.target as u8;
+            }
+        }
+        let watched = mirror.iter().any(|&t| t != NO_SEAT);
+        let mut refused = [false; MAX_SPECTATORS];
+        {
+            let mut mirrored = |lane: Lane, slot: usize, bytes: &[u8]| -> bool {
+                let ok = send(lane, slot, bytes);
+                if watched && lane == Lane::Event && slot < MAX_PLAYERS {
+                    for (i, &t) in mirror.iter().enumerate() {
+                        if t as usize == slot && !send(Lane::Event, MAX_PLAYERS + i, bytes) {
+                            refused[i] = true;
+                        }
+                    }
+                }
+                ok
+            };
+            self.pump_chat(stats, ops, &mut mirrored);
+            self.route_events(stats, &mut mirrored);
+        }
+        // A seat that lost a mirrored copy (its ring was full) or whose
+        // target's facts the sim itself dropped re-walks the world and is
+        // re-told the join facts, the same repair a player gets
+        // (`ev_resync`). What a resync cannot bring back is a transient —
+        // a toast, a hitmarker — which a watcher loses exactly as a player
+        // with a full ring would.
+        let sim_dropped = self.world.events.dropped > 0;
+        for (i, &l) in live.iter().enumerate() {
+            if l && (refused[i] || sim_dropped) {
+                self.clients[MAX_PLAYERS + i].ev_resync();
+                if let Some(seat) = self.watching[i].as_mut() {
+                    seat.catchup = true;
+                }
+                ShardStats::bump(&stats.ev_resyncs);
+                ShardStats::bump(&stats.spectate_resyncs);
+            }
+        }
+    }
+
+    /// Tell a freshly seated (or resynced) watcher the own-facts its target
+    /// heard once, as events, when it joined: health, vitals and the research
+    /// mask. Absolute values off the body, so a copy that arrives beside a
+    /// mirrored event says the same thing. A refused push leaves the debt in
+    /// place for the next tick; nothing here can be partially owed wrongly,
+    /// because every message is the whole truth of its field.
+    fn spectator_catchup(
+        &mut self,
+        i: usize,
+        stats: &ShardStats,
+        send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
+    ) {
+        let slot = MAX_PLAYERS + i;
+        // No body yet (the target's join is still queued): owed next tick.
+        let Some(w) = self.live_wslot(slot) else {
+            return;
+        };
+        let p = &self.world.players[w];
+        let (hp, hp_max, food, water, known) = (p.hp, p.hp_max, p.food, p.water, p.known);
+        let (max_food, max_water) = (self.world.survival.max_food, self.world.survival.max_water);
+        for k in 0..3 {
+            let enc = match k {
+                0 => encode_event_health(hp, hp_max, &mut self.ev_buf),
+                1 => encode_event_vitals(food, water, max_food, max_water, &mut self.ev_buf),
+                _ => encode_event_known(known, &mut self.ev_buf),
+            };
+            match enc {
+                Ok(len) => {
+                    if !send(Lane::Event, slot, &self.ev_buf[..len]) {
+                        return; // ring full: still owed, whole, next tick
+                    }
+                    ShardStats::bump(&stats.ev_sent);
+                }
+                Err(_) => ShardStats::bump(&stats.encode_range_errors),
+            }
+        }
+        if let Some(seat) = self.watching[i].as_mut() {
+            seat.catchup = false;
         }
     }
 
@@ -1454,12 +1715,30 @@ impl ShardCore {
         }
     }
 
-    /// The event lane, one tick's worth: this tick's sim events routed to
-    /// their audiences, then per client at most one catalog batch, one
-    /// harvested-set sync batch, and one inventory diff. A refused push
-    /// (or a dropped sim event) flags the affected clients for
-    /// `ev_resync` — the walk restarts; nothing is silently lost.
+    /// The event lane, one tick's worth, in the order `tick` runs it: the
+    /// sim's facts routed ([`Self::route_events`]), then every player's drips.
+    /// `tick` calls the two halves itself, with the spectator mirror between
+    /// them; this keeps the whole lane one call for the tests that drive it.
+    #[cfg(test)]
     fn pump_events(
+        &mut self,
+        stats: &ShardStats,
+        send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
+    ) {
+        self.route_events(stats, send);
+        for slot in 0..MAX_PLAYERS {
+            if self.clients[slot].connected {
+                self.drip_client(slot, stats, send);
+            }
+        }
+    }
+
+    /// The event lane's first half: this tick's sim events routed to their
+    /// audiences. A refused push (or a dropped sim event) flags the affected
+    /// clients for `ev_resync` — the walk restarts; nothing is silently lost.
+    /// The per-client drips — at most one catalog batch, one harvested-set
+    /// sync batch, one inventory diff — are the second half, run by `tick`.
+    fn route_events(
         &mut self,
         stats: &ShardStats,
         send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
@@ -2759,12 +3038,10 @@ impl ShardCore {
                 }
             }
         }
-
-        for slot in 0..MAX_PLAYERS {
-            if self.clients[slot].connected {
-                self.drip_client(slot, stats, send);
-            }
-        }
+        // The per-connection drips run in `tick`, after this returns — they
+        // used to close this function, and moved so the spectator mirror
+        // (which wraps this function's `send`) forwards the sim's facts and
+        // never a connection's own walk state (`NETCODE.md` §2.3).
     }
 
     /// Resolve which connection slot player `id` belongs to.
@@ -4385,5 +4662,214 @@ mod tests {
             range_before + 2,
             "the in-domain reason is not counted as refused"
         );
+    }
+
+    /// Everything `fan_out` sent, per connection slot, in order.
+    fn fanned(core: &mut ShardCore, stats: &ShardStats) -> Vec<Vec<Vec<u8>>> {
+        let mut out = vec![Vec::new(); MAX_CONNS];
+        let live = core.live_seats();
+        let mut log = crate::anomaly::Sink::off();
+        let mut save_now = false;
+        let mut ops = Ops {
+            log: &mut log,
+            admin_tx: None,
+            save_now: &mut save_now,
+        };
+        core.fan_out(&live, stats, &mut ops, &mut |lane, slot, bytes: &[u8]| {
+            if lane == Lane::Event {
+                out[slot].push(bytes.to_vec());
+            }
+            true
+        });
+        out
+    }
+
+    /// **A seat hears exactly what its target hears, and nothing a stranger
+    /// hears** (`NETCODE.md` §2.3). Two players, one watched: the target's
+    /// own-facts and the broadcast it was shown reach the seat byte for byte
+    /// and in order; the other player's own-facts reach neither.
+    #[test]
+    fn a_seat_hears_every_fact_its_target_hears_and_no_strangers() {
+        const OTHER: u32 = PLAYER + 1;
+        let stats = ShardStats::default();
+        let mut core = quiet_core(&stats);
+        assert!(core.connect(1, OTHER));
+        core.tick_bare(&stats, |_, _, _| true);
+        let seat = MAX_PLAYERS + 3;
+        assert!(core.connect_spectator(seat, PLAYER, 0), "seated");
+        core.tick_bare(&stats, |_, _, _| true);
+        core.world.tick(&[]);
+        assert!(core.world.events.is_empty());
+
+        // Own-facts for each player, and one broadcast.
+        core.world.events.push(EV_HEALTH, PLAYER, 55, 100);
+        core.world.events.push(EV_HEALTH, OTHER, 11, 100);
+        core.world.events.push(EV_GATHER, PLAYER, (3 << 16) | 9, 0);
+        core.world.events.push(EV_GATHER, OTHER, (4 << 16) | 2, 0);
+        core.world
+            .events
+            .push(EV_SLOT_HARVESTED, (40 << 16) | 41, 0, 0);
+        let out = fanned(&mut core, &stats);
+        assert!(
+            out[0].len() >= 3,
+            "the target heard its facts: {:?}",
+            out[0]
+        );
+        assert_eq!(out[seat], out[0], "the seat must hear exactly the target");
+        assert_ne!(out[1], out[0], "the stranger heard different facts");
+        // And spelled out, so a mirror that forwarded EVERY player's copy
+        // (the stranger's too) could not pass by coincidence of ordering.
+        let healths: Vec<u16> = out[seat]
+            .iter()
+            .filter_map(|b| match decode_event(b) {
+                Ok(EventMsg::Health { hp, .. }) => Some(hp),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(healths, vec![55], "only the target's own health");
+        // No seat that watches nobody is spoken to.
+        for (i, msgs) in out.iter().enumerate().skip(MAX_PLAYERS) {
+            if i != seat {
+                assert!(msgs.is_empty(), "seat slot {i} heard {msgs:?}");
+            }
+        }
+    }
+
+    /// **A seat whose target left is fed nothing — not the next tenant of the
+    /// target's slot.** Connection slots are reused and a reused slot's new
+    /// player has a new id; without the id check a seat would be handed a
+    /// stranger's own-facts and view. A privacy defect, not a cosmetic one.
+    #[test]
+    fn a_seat_whose_target_left_hears_nothing_from_the_slots_next_tenant() {
+        const NEXT: u32 = PLAYER + 0x100;
+        let stats = ShardStats::default();
+        let mut core = quiet_core(&stats);
+        let seat = MAX_PLAYERS;
+        assert!(core.connect_spectator(seat, PLAYER, 0));
+        core.tick_bare(&stats, |_, _, _| true);
+        // The target leaves and a stranger takes its connection slot.
+        let _ = core.disconnect(0);
+        core.tick_bare(&stats, |_, _, _| true);
+        assert!(core.connect(0, NEXT));
+        core.tick_bare(&stats, |_, _, _| true);
+        core.world.tick(&[]);
+        core.world.events.push(EV_HEALTH, NEXT, 42, 100);
+        let out = fanned(&mut core, &stats);
+        assert!(!out[0].is_empty(), "the new tenant hears its own facts");
+        assert!(
+            out[seat].is_empty(),
+            "the seat heard a stranger: {:?}",
+            out[seat]
+        );
+        // Nor does it get the stranger's view: a whole tick sends it nothing.
+        let mut to_seat = 0;
+        core.tick_bare(&stats, |_, slot, _| {
+            to_seat += usize::from(slot == seat);
+            true
+        });
+        assert_eq!(to_seat, 0, "an orphaned seat was sent {to_seat} messages");
+        assert_eq!(
+            core.spectators(),
+            1,
+            "still seated until the accept loop closes it"
+        );
+        assert_eq!(core.connected(), 1, "and never counted as a player");
+    }
+
+    /// **A new seat hears its target's join facts first** — health, vitals
+    /// and the research mask, from the body, ahead of its first drip on the
+    /// same ordered lane. A player hears these once, as events at its join;
+    /// without this a late watcher's HUD would read zero until the next
+    /// hunger tick happened to announce them.
+    #[test]
+    fn a_new_seat_is_told_its_targets_join_facts_before_anything_else() {
+        let stats = ShardStats::default();
+        let mut core = quiet_core(&stats);
+        let w = core.live_wslot(0).expect("the target has a body");
+        core.world.players[w].hp = 61;
+        core.world.players[w].hp_max = 100;
+        core.world.players[w].known = 0b1011;
+        let seat = MAX_PLAYERS + 2;
+        assert!(core.connect_spectator(seat, PLAYER, 0));
+        let mut first = Vec::new();
+        core.tick_bare(&stats, |lane, slot, bytes| {
+            if lane == Lane::Event && slot == seat {
+                first.push(decode_event(bytes).expect("decodes"));
+            }
+            true
+        });
+        let hp_max = core.world.players[w].hp_max;
+        assert!(
+            matches!(first.first(), Some(EventMsg::Health { hp: 61, max }) if *max == hp_max),
+            "the seat's first fact must be its target's health: {:?}",
+            first.first()
+        );
+        assert!(
+            matches!(first.get(1), Some(EventMsg::Vitals { .. })),
+            "{first:?}"
+        );
+        assert!(
+            matches!(first.get(2), Some(EventMsg::Known { mask: 0b1011 })),
+            "{first:?}"
+        );
+        // Owed once: the next tick does not repeat it.
+        let mut again = 0;
+        core.tick_bare(&stats, |lane, slot, bytes| {
+            if lane == Lane::Event && slot == seat {
+                again += usize::from(matches!(decode_event(bytes), Ok(EventMsg::Health { .. })));
+            }
+            true
+        });
+        assert_eq!(again, 0, "the catch-up is owed once, not every tick");
+    }
+
+    /// A seat's datagrams are acks: frames that reach `push_input` anyway
+    /// (past the net side's refusal) become nothing the tick can execute.
+    #[test]
+    fn a_seat_never_buffers_an_input_frame() {
+        let stats = ShardStats::default();
+        let mut core = quiet_core(&stats);
+        let seat = MAX_PLAYERS + 1;
+        assert!(core.connect_spectator(seat, PLAYER, 0));
+        let mut dg = InputDatagram::new(0, 0, 4);
+        for seq in 1..=5u16 {
+            dg.push(sim_core::input::InputFrame {
+                seq,
+                move_z: 127,
+                ..Default::default()
+            })
+            .unwrap();
+        }
+        core.push_input(seat, &dg);
+        assert!(
+            core.clients[seat].consume_input().is_none(),
+            "a seat buffered a frame"
+        );
+        assert!(!core.wants_action(seat), "a seat's hand is never open");
+    }
+
+    /// A seat is refused for a target that is not (or no longer) that id on
+    /// that slot, and for a slot that is not a seat.
+    #[test]
+    fn a_seat_is_refused_for_the_wrong_target_or_slot() {
+        let stats = ShardStats::default();
+        let mut core = quiet_core(&stats);
+        assert!(
+            !core.connect_spectator(MAX_PLAYERS, PLAYER + 1, 0),
+            "wrong id"
+        );
+        assert!(
+            !core.connect_spectator(MAX_PLAYERS, PLAYER, 1),
+            "empty slot"
+        );
+        assert!(
+            !core.connect_spectator(5, PLAYER, 0),
+            "a player slot is not a seat"
+        );
+        assert!(
+            !core.connect_spectator(MAX_CONNS, PLAYER, 0),
+            "past the seats"
+        );
+        assert_eq!(core.spectators(), 0);
     }
 }

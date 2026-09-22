@@ -216,6 +216,11 @@ pub const WATCHED: &[&str] = &[
     // is the counter that says somebody is reaching for it. `DESIGN.md`
     // §5.8's "outliers surface in the anomaly log", built.
     "favour_disagree",
+    // A spectator sending input or an action (`NETCODE.md` §2.3). Our client
+    // builds neither in watch mode, so either one is a forged client probing
+    // whether a read-only seat is really read-only.
+    "spectate_input_refused",
+    "spectate_actions_refused",
 ];
 
 /// The previous tick's reading of every watched counter, so the sweep can

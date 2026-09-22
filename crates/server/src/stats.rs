@@ -646,6 +646,31 @@ pub struct ShardStats {
     /// overflow worse.
     pub anomaly_dropped: AtomicU64,
 
+    // ── Spectators (`NETCODE.md` §2.3) ─────────────────────────────────────
+    /// Occupied spectator seats right now — a gauge like `players`, mirrored
+    /// off `ShardCore::spectators` each tick. Never counted in `players`.
+    pub spectators: AtomicU64,
+    /// Watchers seated (the sim accepted the seat).
+    pub spectate_joins: AtomicU64,
+    /// Watchers refused `REFUSE_WATCH`: the door is shut, the target is not
+    /// here, or it did not consent. One counter for all three, like the code.
+    pub spectate_refused: AtomicU64,
+    /// Watchers refused `REFUSE_WATCH_FULL`: the shard's seats or the
+    /// target's per-target cap were full.
+    pub spectate_full: AtomicU64,
+    /// Seats closed `REFUSE_WATCH_ENDED` because their target left.
+    pub spectate_ended: AtomicU64,
+    /// Datagrams from a spectator that carried an input frame — refused and
+    /// dropped (never a disconnect; the datagram lane's loss policy). Our
+    /// client never builds one, so a nonzero reading is a forged client.
+    pub spectate_input_refused: AtomicU64,
+    /// Reliable frames (an action, a chat line) from a spectator. The seat is
+    /// closed on the first: a watcher has no reliable C→S lane at all.
+    pub spectate_actions_refused: AtomicU64,
+    /// Seats resynced because a mirrored copy was refused (a full ring) or
+    /// the sim dropped events — also counted in `ev_resyncs`.
+    pub spectate_resyncs: AtomicU64,
+
     // ── Aim staleness (findings/lagcomp-design-20260818.md §7 slice 1) ──
     //
     // **How far behind the world a fight actually is, measured instead of
@@ -929,6 +954,8 @@ impl ShardStats {
             "admin_refused" => &self.admin_refused,
             "aim_stale_refused" => &self.aim_stale_refused,
             "favour_disagree" => &self.favour_disagree,
+            "spectate_input_refused" => &self.spectate_input_refused,
+            "spectate_actions_refused" => &self.spectate_actions_refused,
             _ => return None,
         })
     }

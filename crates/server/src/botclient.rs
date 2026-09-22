@@ -480,7 +480,7 @@ pub fn walk_ticks(duration: Duration) -> u64 {
 /// Is this failure the box saying "not now", rather than the shard saying no?
 ///
 /// The distinction is the whole point and it is exact, not a heuristic.
-/// **Our** refusals are `REFUSE_VERSION..=REFUSE_ADMIN`, 0..=5, closed with
+/// **Our** refusals are `REFUSE_VERSION..=REFUSE_WATCH_ENDED`, 0..=8, closed with
 /// the refusal text beside them (`net.rs`) — those are ANSWERS and are
 /// returned on the first try, because retrying one would let a suite sleep
 /// through a version gate that had begun rejecting everybody. `0x107` is
@@ -550,7 +550,15 @@ pub async fn run_bot(
     duration: Duration,
     raid: Option<RaidRows>,
 ) -> Result<BotReport, String> {
-    run_bot_inner(endpoint, server, seed_stream, duration, raid, None).await
+    run_bot_inner(
+        endpoint,
+        Dial::Guest(server),
+        seed_stream,
+        duration,
+        raid,
+        None,
+    )
+    .await
 }
 
 /// A client-side controller. It may only observe the client's decoded view;
@@ -598,36 +606,149 @@ pub async fn run_driven_bot(
     if !server.ip().is_loopback() {
         return Err("the guest agent prototype requires a loopback shard".into());
     }
-    run_bot_inner(endpoint, server, 0, duration, None, Some(driver)).await
+    run_bot_inner(
+        endpoint,
+        Dial::Guest(server),
+        0,
+        duration,
+        None,
+        Some(driver),
+    )
+    .await
+}
+
+/// Who an **agent player** is on the wire (`NETCODE.md` §2.4): its key, which
+/// proves its address to the shard, and the name its spectators see.
+///
+/// Load bots never carry one — they are guests on purpose
+/// (`net::client_handshake`) — and an agent always does, because an agent
+/// player pays the same doors a person does: `require_auth`, the signature,
+/// and the ticket (`entitle.rs`) all apply to it unchanged.
+pub struct AgentIdentity<'a> {
+    pub key: &'a agentkey::AgentKey,
+    pub name: protocol::Name,
+    /// Consents to be watched — `HELLO_AGENT` already does, so this is
+    /// always set for an agent; kept explicit so the declaration is read
+    /// where the identity is built.
+    pub watchable: bool,
+}
+
+/// A driven agent on any shard, **signed and certificate-validated** — the
+/// public counterpart to [`run_driven_bot`], which is confined to loopback
+/// as an unsigned guest. `server` is `host:port`, NOT a `SocketAddr`: the
+/// transport checks the certificate against the name dialled, so resolving
+/// it first would throw away the one thing trust is decided on. Build the
+/// endpoint with [`agent_endpoint`].
+pub async fn run_agent_bot(
+    endpoint: &Endpoint<Client>,
+    server: &str,
+    identity: &AgentIdentity<'_>,
+    duration: Duration,
+    driver: &mut dyn BotDriver,
+) -> Result<BotReport, String> {
+    run_bot_inner(
+        endpoint,
+        Dial::Agent { server, identity },
+        0,
+        duration,
+        None,
+        Some(driver),
+    )
+    .await
+}
+
+/// Where a bot dials and who it says it is. Two shapes, one join path.
+enum Dial<'a> {
+    /// A load bot or the loopback guest prototype: an unsigned guest.
+    Guest(SocketAddr),
+    /// An agent player: a named shard, a signed hello (v73).
+    Agent {
+        server: &'a str,
+        identity: &'a AgentIdentity<'a>,
+    },
+}
+
+impl Dial<'_> {
+    /// Connect and handshake. The connect retries a transport shed exactly
+    /// as before; the handshake is the one `net::client_handshake_as` runs
+    /// for every session in this repo.
+    async fn join(
+        &self,
+        endpoint: &Endpoint<Client>,
+        driven: bool,
+        connect_sheds: &mut u32,
+    ) -> Result<
+        (
+            Connection,
+            wtransport::SendStream,
+            wtransport::RecvStream,
+            Welcome,
+        ),
+        String,
+    > {
+        let url = match self {
+            Dial::Guest(server) => format!("https://{server}"),
+            Dial::Agent { server, .. } => format!("https://{server}"),
+        };
+        let connection = connect_retrying_a_shed(endpoint, &url, connect_sheds).await?;
+        let opening = connection
+            .open_bi()
+            .await
+            .map_err(|e| format!("open_bi: {e}"))?;
+        let (mut send, mut recv) = opening.await.map_err(|e| format!("open_bi await: {e}"))?;
+        let welcome = match self {
+            // A bot is a guest and stays one (`net::client_handshake` says
+            // why).
+            Dial::Guest(_) => {
+                client_handshake(
+                    &mut send,
+                    &mut recv,
+                    if driven { "jev-bot" } else { "bot" },
+                    protocol::Address::GUEST,
+                    |_| None,
+                )
+                .await?
+            }
+            Dial::Agent { server, identity } => {
+                // The SIWE domain is the host this agent DIALLED, port
+                // stripped — `client::net::handshake::proof_wanted`'s rule,
+                // and the whole of SIWE's domain binding.
+                let domain = server.rsplit_once(':').map(|(h, _)| h).unwrap_or(server);
+                let mut hello = protocol::Hello::this_build();
+                hello.flags = protocol::HELLO_AGENT;
+                if identity.watchable {
+                    hello.flags |= protocol::HELLO_WATCHABLE;
+                }
+                hello.name = identity.name;
+                let key = identity.key;
+                crate::net::client_handshake_as(
+                    &mut send,
+                    &mut recv,
+                    domain,
+                    key.address(),
+                    &hello,
+                    |d, nonce, issued_at| Some(key.sign_siwe(d, nonce, issued_at)),
+                )
+                .await?
+                .welcome
+            }
+        };
+        Ok((connection, send, recv, welcome))
+    }
 }
 
 async fn run_bot_inner(
     endpoint: &Endpoint<Client>,
-    server: SocketAddr,
+    dial: Dial<'_>,
     seed_stream: u64,
     duration: Duration,
     raid: Option<RaidRows>,
     mut driver: Option<&mut dyn BotDriver>,
 ) -> Result<BotReport, String> {
-    let url = format!("https://{server}");
     let mut connect_sheds = 0;
-    let connection = connect_retrying_a_shed(endpoint, &url, &mut connect_sheds).await?;
-
-    let opening = connection
-        .open_bi()
-        .await
-        .map_err(|e| format!("open_bi: {e}"))?;
-    let (mut send, mut recv) = opening.await.map_err(|e| format!("open_bi await: {e}"))?;
-
-    // A bot is a guest and stays one (`net::client_handshake` says why).
-    let welcome = client_handshake(
-        &mut send,
-        &mut recv,
-        if driver.is_some() { "jev-bot" } else { "bot" },
-        protocol::Address::GUEST,
-        |_| None,
-    )
-    .await?;
+    let (connection, mut send, recv, welcome) = dial
+        .join(endpoint, driver.is_some(), &mut connect_sheds)
+        .await?;
 
     let mut report = BotReport {
         player_id: welcome.player_id,
@@ -1084,9 +1205,95 @@ pub fn bot_endpoint() -> Result<Endpoint<Client>, String> {
     }
 }
 
+/// The endpoint an **agent player** dials from (`NETCODE.md` §2.4) — and,
+/// unlike [`bot_endpoint`], one that asks who the far end is.
+///
+/// Three postures, the desktop client's (`client::client_endpoint`) for the
+/// same reason — SIWE has no channel binding, so a relay that terminates the
+/// agent's QUIC would be admitted as the agent with the key never leaving
+/// this process, and certificate validation is the only thing that refuses
+/// it:
+///
+/// | target | pin | trust |
+/// |---|---|---|
+/// | any | `Some` | that certificate and no other |
+/// | loopback | `None` | anything — a relay on this box already runs code here |
+/// | anything else | `None` | the platform's root store |
+///
+/// A second copy of that table exists because `client` is not a dependency
+/// of this crate outside tests; `tests/agent_join.rs` raises a non-loopback
+/// shard and holds this copy to all three rows.
+pub fn agent_endpoint(server: &str, cert_hash: Option<&str>) -> Result<Endpoint<Client>, String> {
+    let pin = match cert_hash.map(str::trim).filter(|h| !h.is_empty()) {
+        None => None,
+        Some(h) => Some(h.parse::<wtransport::tls::Sha256Digest>().map_err(|_| {
+            format!(
+                "cert hash {h:?} is not a SHA-256 digest — expected the 32-byte dotted hex \
+                 the shard prints at boot (`aa:bb:...`)"
+            )
+        })?),
+    };
+    let loopback = is_loopback_host(server);
+    let build = |ip: wtransport::config::IpBindConfig| {
+        let roots = wtransport::ClientConfig::builder().with_bind_config(ip);
+        let cfg = match (pin.clone(), loopback) {
+            (Some(digest), _) => roots.with_server_certificate_hashes([digest]).build(),
+            (None, true) => roots.with_no_cert_validation().build(),
+            (None, false) => roots.with_native_certs().build(),
+        };
+        Endpoint::client(cfg)
+    };
+    match build(wtransport::config::IpBindConfig::InAddrAnyV4) {
+        Ok(e) => Ok(e),
+        Err(v4) => build(wtransport::config::IpBindConfig::InAddrAnyDual)
+            .map_err(|dual| format!("client endpoint: v4 {v4}; dual-stack {dual}")),
+    }
+}
+
+/// Does `server` (`host:port`) name this machine's loopback? The client's
+/// rule (`client::is_loopback_host`): a bracketed v6 literal or the last
+/// colon splits the port, `localhost` counts, and anything unreadable is NOT
+/// loopback — the safe direction, since it falls through to validation.
+fn is_loopback_host(server: &str) -> bool {
+    let server = server.trim();
+    let host = if let Some(rest) = server.strip_prefix('[') {
+        match rest.split_once(']') {
+            Some((h, _)) => h,
+            None => return false,
+        }
+    } else {
+        match server.rsplit_once(':') {
+            Some((h, _)) if h.contains(':') => return false,
+            Some((h, _)) => h,
+            None => server,
+        }
+    };
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The loopback split agrees with the client's on every shape the client
+    /// tests — two copies of one rule, so the cases are the ones that matter.
+    #[test]
+    fn the_loopback_carve_out_is_the_clients() {
+        for (s, want) in [
+            ("127.0.0.1:4433", true),
+            ("localhost:4433", true),
+            ("[::1]:4433", true),
+            ("game.elopros.com:61234", false),
+            ("10.0.0.5:4433", false),
+            ("::1", false),
+            ("", false),
+        ] {
+            assert_eq!(is_loopback_host(s), want, "{s}");
+        }
+    }
 
     #[test]
     fn driver_event_handoff_is_bounded_ordered_and_fails_on_a_closed_lane() {

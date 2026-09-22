@@ -106,6 +106,14 @@ pub fn gather(
     // checked by a windowed run.
     mut pointer: Local<crate::ui::pointer::Pointer>,
 ) {
+    // **A spectator seat drives nothing** (wire v73): no input frame, no look,
+    // no pointer lock. The core would ignore `set_input` anyway
+    // (`ClientCore::spectator`); returning here keeps the mouse free, since a
+    // watcher has nothing to aim, and keeps every key a player binds from
+    // doing anything a watcher could mistake for control.
+    if net.session.watching.is_some() {
+        return;
+    }
     // An in-game panel owns the pointer while it is up: the cursor comes
     // back, the view stops turning, and the movement axes go to zero. A
     // player dragging an item across a container is not also walking into a
@@ -459,7 +467,7 @@ pub fn gather(
 pub fn place_eye(
     mut net: NonSendMut<Net>,
     mut eye: ResMut<Eye>,
-    look: Res<Look>,
+    mut look: ResMut<Look>,
     time: Res<Time>,
     // The false→true edge, logged once. A wait with no observable is a wait
     // nobody can tell from a hang, and this one gates the whole world.
@@ -503,6 +511,18 @@ pub fn place_eye(
     eye.down += (want - eye.down) * k;
     let height = EYE_HEIGHT - (EYE_HEIGHT - super::wounded::CRAWL_EYE_M) * eye.down;
     eye.pos = Vec3::new(x, y + height, z);
+    // **A spectator looks where the watched body looks** (wire v73): the
+    // body's angles come off the interpolated wire record, not off a mouse,
+    // and they are written into `Look` so every reader of the body's
+    // bearing — the compass, the map — follows the watched player too. The
+    // position above already came from the same sample
+    // (`ClientCore::eye_position`).
+    if let Some(v) = net.session.core.spectate_view() {
+        look.yaw = crate::look::yaw_of_wire(v.yaw);
+        look.pitch = crate::look::pitch_of_wire(v.pitch);
+        look.free_yaw = 0.0;
+        look.free_pitch = 0.0;
+    }
     // **The one place the head's offset is added to the body's angles.**
     // Both are zero unless free look is held, so this is the identity it has
     // always been the rest of the time. Adding it anywhere else — or reading

@@ -730,8 +730,7 @@ async fn test_version_gate_refuses() {
     let len = encode_hello(
         &Hello {
             proto_ver: 999,
-            ver: protocol::version::VER,
-            build: protocol::version::BUILD,
+            ..Hello::this_build()
         },
         &mut buf,
     )
@@ -744,6 +743,60 @@ async fn test_version_gate_refuses() {
     let refuse = protocol::decode_refuse(&reply[..reply_len]).expect("refuse decodes");
     assert_eq!(refuse.code, protocol::REFUSE_VERSION);
     assert_eq!(ShardStats::get(&handle.stats.refused_version), 1);
+    handle
+        .shutdown
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// **An older client's SHORTER hello meets the version gate too** (v73).
+///
+/// The hello grew at v73, and a v72 client's hello stops after `build`. The
+/// shard used to decode the whole message before comparing the version, so
+/// that client was dropped as a handshake error — a timeout on its screen —
+/// where it was owed "update the game". The frame below is a v72 hello built
+/// by hand, byte for byte the old layout.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_an_older_layout_hello_is_refused_by_version_not_dropped() {
+    use protocol::bits::BitWriter;
+    use protocol::{KIND_BITS, KIND_HELLO, MAX_STREAM_MSG_BYTES};
+    use server::net::{read_frame, write_frame};
+
+    let handle = spawn_shard(
+        ShardConfig::ephemeral(8),
+        baked_content(),
+        Saves::off(),
+        server::worldfile::WorldBoot::off(),
+    )
+    .await
+    .expect("boots");
+    let endpoint = bot_endpoint().expect("endpoint");
+    let connection = endpoint
+        .connect(&format!("https://{}", handle.local_addr))
+        .await
+        .expect("connects");
+    let (mut send, mut recv) = connection
+        .open_bi()
+        .await
+        .expect("open_bi")
+        .await
+        .expect("bi");
+    let mut buf = [0u8; MAX_STREAM_MSG_BYTES];
+    let mut w = BitWriter::new(&mut buf);
+    w.write(KIND_HELLO, KIND_BITS).unwrap();
+    w.write(72, 16).unwrap();
+    w.write(protocol::version::VER, 32).unwrap();
+    w.write(0x1111_2222, 32).unwrap();
+    w.write(0x3333_4444, 32).unwrap();
+    let len = w.finish();
+    write_frame(&mut send, &buf[..len]).await.expect("write");
+    let (reply, reply_len) = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut recv))
+        .await
+        .expect("reply inside 5 s")
+        .expect("a refusal frame, not silence");
+    let refuse = protocol::decode_refuse(&reply[..reply_len]).expect("refuse decodes");
+    assert_eq!(refuse.code, protocol::REFUSE_VERSION);
+    assert_eq!(ShardStats::get(&handle.stats.refused_version), 1);
+    assert_eq!(ShardStats::get(&handle.stats.handshake_errors), 0);
     handle
         .shutdown
         .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -800,9 +853,8 @@ async fn test_min_client_refuses_below_and_admits_above() {
         // about the RELEASE and must be reachable with the bytes agreeing.
         let len = encode_hello(
             &Hello {
-                proto_ver: protocol::PROTO_VER,
                 ver,
-                build: protocol::version::BUILD,
+                ..Hello::this_build()
             },
             &mut buf,
         )

@@ -1,5 +1,6 @@
 //! Connection slots and the ring payloads that cross threads. One slot per
-//! potential player, preallocated at boot; the accept loop claims slots,
+//! potential player and per spectator seat ([`MAX_CONNS`]), preallocated at
+//! boot; the accept loop claims slots,
 //! connection tasks mark them dying, the sim thread frees them. All of it
 //! rides one packed atomic per slot — no locks anywhere (L3).
 //!
@@ -184,6 +185,13 @@ pub struct Connect {
     /// what it is not — the key never enters `sim-core`, and this struct is
     /// the boundary where that stops being true (`persist.rs`).
     pub key: Option<PlayerKey>,
+    /// `Some(target connection slot)` ⇒ **a spectator seat**, not a player
+    /// (`NETCODE.md` §2.3): `slot` is past `MAX_PLAYERS`, `id` is the watched
+    /// player's id, `save` and `key` are `None`, and no body is created. The
+    /// sim re-checks that the target is still that id on that slot before it
+    /// seats the watcher, so a target who left between the accept loop's
+    /// check and this message is never watched in someone else's name.
+    pub watch: Option<usize>,
     pub link: Link,
 }
 
@@ -252,3 +260,9 @@ pub struct WriteMsg {
     pub stamp: u64,
     pub save: PlayerSave,
 }
+
+/// Connection slots on a shard: every player seat, then every spectator seat
+/// (`NETCODE.md` §2.3). Players claim `0..MAX_PLAYERS` and spectators
+/// `MAX_PLAYERS..MAX_CONNS`, so every loop that means "players" keeps its
+/// `0..MAX_PLAYERS` bound and cannot reach a watcher by accident.
+pub const MAX_CONNS: usize = sim_core::limits::MAX_PLAYERS + sim_core::limits::MAX_SPECTATORS;

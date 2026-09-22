@@ -135,6 +135,8 @@ pub fn parse_cert_digest(text: &str) -> Option<[u8; 32]> {
 pub enum SendError {
     Full,
     Closed,
+    /// This session is a spectator seat (v73): it watches and cannot act.
+    ReadOnly,
 }
 
 impl std::fmt::Display for SendError {
@@ -142,6 +144,7 @@ impl std::fmt::Display for SendError {
         match self {
             SendError::Full => write!(f, "the server is behind - try again"),
             SendError::Closed => write!(f, "disconnected"),
+            SendError::ReadOnly => write!(f, "spectating - a watcher cannot act"),
         }
     }
 }
@@ -184,6 +187,12 @@ pub(crate) struct DgRing {
     /// stated policy (drop-oldest), counted rather than silent.
     pub(crate) dropped: u64,
     pub(crate) closed: bool,
+    /// The application code the shard closed the connection with, when it
+    /// gave one — a `REFUSE_*` value (`REFUSE_WATCH_ENDED` for a seat whose
+    /// target left, `REFUSE_ADMIN` for a kick, `REFUSE_TICKET` for a sold
+    /// copy). `None` for a loss with no reason: a dead route, a timeout.
+    /// Written by the desktop reader; the browser's is owed (`NOW.md` §5sp).
+    pub(crate) close_code: Option<u64>,
 }
 
 impl DgRing {
@@ -228,6 +237,7 @@ pub(crate) fn datagram_lane() -> DatagramRx {
         len: 0,
         dropped: 0,
         closed: false,
+        close_code: None,
     }))
 }
 

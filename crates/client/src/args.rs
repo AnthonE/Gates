@@ -72,6 +72,12 @@ gates — the Gates desktop client
                        client a player could walk around in is a different
                        thing nobody asked for
   --no-launcher        do not look for an elo launcher, even if one is running
+  --spectate TARGET    watch instead of play: take a read-only seat on the
+                       shard and see TARGET's own view — a wallet address
+                       (0x…), or `any` for any agent the shard lets you
+                       watch. No body, no input, no identity: a watcher
+                       signs nothing. The shard decides who may be watched
+                       (only players who consented) and how many may watch
   --help               this
 
 F12 takes a screenshot, on any screen, and the game reads its own frame to do
@@ -122,6 +128,9 @@ pub struct Args {
     /// something — see the `--server` requirement below.
     pub cert_hash: Option<String>,
     pub no_launcher: bool,
+    /// `--spectate TARGET`: take a read-only seat watching TARGET (wire v73)
+    /// — a proven wallet address, or `Address::GUEST` for `any`. `None` plays.
+    pub spectate: Option<protocol::Address>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,6 +152,7 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
     let mut cert_hash: Option<String> = None;
     let mut no_hud = false;
     let mut no_launcher = false;
+    let mut spectate: Option<String> = None;
 
     let mut it = argv.into_iter();
     while let Some(a) = it.next() {
@@ -175,6 +185,14 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
             "--cert-hash" => match it.next() {
                 Some(v) => cert_hash = Some(v),
                 None => return Parsed::Bad("--cert-hash needs a sha-256 digest".into()),
+            },
+            "--spectate" => match it.next() {
+                Some(v) if !v.trim().is_empty() => spectate = Some(v),
+                _ => {
+                    return Parsed::Bad(
+                        "--spectate needs a target: a wallet address (0x…) or `any`".into(),
+                    )
+                }
             },
             "--capture" => match it.next() {
                 // Refused rather than defaulted. A capture run that shot into
@@ -273,6 +291,30 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
         return Parsed::Bad("--cert-hash pins one shard's certificate and needs --server".into());
     }
 
+    // A watcher is anonymous and watches rather than probes, so the two
+    // flags that would mean something else are refused rather than quietly
+    // dropped — the same refuse-don't-ignore rule `--no-hud` follows.
+    let spectate = match spectate.map(|s| s.trim().to_string()) {
+        None => None,
+        Some(t) if t.eq_ignore_ascii_case("any") => Some(protocol::Address::GUEST),
+        Some(t) => match protocol::Address::from_hex(t.as_bytes()) {
+            Some(a) if !a.is_guest() => Some(a),
+            _ => {
+                return Parsed::Bad(format!(
+                    "--spectate {t:?} is neither `any` nor a wallet address (0x + 40 hex)"
+                ))
+            }
+        },
+    };
+    if spectate.is_some() && capture.is_some() {
+        return Parsed::Bad("--spectate and --capture are two different runs; pick one".into());
+    }
+    if spectate.is_some() && identity.as_deref().is_some_and(|s| !s.trim().is_empty()) {
+        return Parsed::Bad(
+            "--spectate watches anonymously; --identity would be ignored, so it is refused".into(),
+        );
+    }
+
     Parsed::Run(Args {
         server: raw.trim().to_string(),
         server_given,
@@ -284,6 +326,7 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
         no_hud,
         cert_hash,
         no_launcher,
+        spectate,
     })
 }
 
@@ -323,6 +366,29 @@ mod tests {
         match a(v) {
             Parsed::Run(x) => x,
             other => panic!("expected Run, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn spectate_takes_an_address_or_any_and_refuses_what_would_be_ignored() {
+        assert_eq!(run(&[]).spectate, None, "playing is the default");
+        assert_eq!(
+            run(&["--spectate", "any"]).spectate,
+            Some(protocol::Address::GUEST)
+        );
+        let addr = "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf";
+        assert_eq!(
+            run(&["--spectate", addr]).spectate,
+            protocol::Address::from_hex(addr.as_bytes())
+        );
+        for bad in [
+            vec!["--spectate"],
+            vec!["--spectate", "jev"],
+            vec!["--spectate", "0x0000000000000000000000000000000000000000"],
+            vec!["--spectate", "any", "--capture", "/tmp/x"],
+            vec!["--spectate", "any", "--identity", addr],
+        ] {
+            assert!(matches!(a(&bad), Parsed::Bad(_)), "{bad:?} must be refused");
         }
     }
 

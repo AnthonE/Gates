@@ -8,7 +8,7 @@ use crate::config::ShardConfig;
 use crate::core::{Admitted, Lane, ShardCore};
 use crate::slot::{
     generation_of, state_of, Connect, EvMsg, Link, SaveMsg, SlotTable, SnapMsg, WorldDone,
-    WorldMsg, WriteMsg, SLOT_LEAVING, SLOT_LIVE,
+    WorldMsg, WriteMsg, MAX_CONNS, SLOT_LEAVING, SLOT_LIVE,
 };
 use crate::stats::ShardStats;
 use crate::store::{PlayerKey, SaveFile, SaveStore, Saves};
@@ -21,7 +21,8 @@ use rtrb::RingBuffer;
 use sim_core::input::BTN_MASK;
 use sim_core::limits::{
     ACTION_RING_CAP, CHAT_RING_CAP, CTRL_RING_CAP, EVENT_RING_CAP, GRAVEYARD_RING_CAP,
-    INPUT_RING_CAP, MAX_PLAYERS, SAVE_RING_CAP, SNAPSHOT_RING_CAP, TICK_HZ, WORLD_RING_CAP,
+    INPUT_RING_CAP, MAX_PLAYERS, MAX_SPECTATORS, SAVE_RING_CAP, SNAPSHOT_RING_CAP, TICK_HZ,
+    WORLD_RING_CAP,
 };
 use sim_core::worldsave::WORLD_SAVE_MAX_BYTES;
 use std::net::SocketAddr;
@@ -451,7 +452,8 @@ pub async fn spawn_shard(
     let shutdown = Arc::new(AtomicBool::new(false));
     let mut pending = PendingStartup(Some(shutdown.clone()));
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-    let slots = Arc::new(SlotTable::new(MAX_PLAYERS));
+    // Players, then spectator seats (`slot::MAX_CONNS`).
+    let slots = Arc::new(SlotTable::new(MAX_CONNS));
 
     let (ctrl_tx, ctrl_rx) = RingBuffer::<Connect>::new(CTRL_RING_CAP);
     let (grave_tx, grave_rx) = RingBuffer::<Link>::new(GRAVEYARD_RING_CAP);
@@ -565,6 +567,7 @@ pub async fn spawn_shard(
             entitle: cfg.entitle.clone(),
             min_client: cfg.min_client,
             netsim: cfg.netsim,
+            spectate: cfg.spectate,
         },
         ctrl_tx,
         grave_rx,
@@ -612,6 +615,8 @@ struct ShardFacts {
     /// The dev fake-network knob (`config.rs`), applied per connection at
     /// the two datagram tasks. `None` on every shipping shard.
     netsim: Option<crate::config::NetSim>,
+    /// The spectator door (`config.rs`, `NETCODE.md` §2.3). Shut by default.
+    spectate: crate::config::Spectate,
 }
 
 /// What a handshake task hands back once the client said a valid hello.
@@ -624,6 +629,12 @@ struct Handshaken {
     /// guest: admitted (on a shard that takes guests) and remembered by
     /// nobody, because there is no stable string to file them under.
     key: Option<PlayerKey>,
+    /// The PROVEN address behind `key`, or `Address::GUEST` — the form a
+    /// spectator names its target in and the `Watch` message reports.
+    address: protocol::Address,
+    /// What the session declared about itself (v73): agent, consent to be
+    /// watched, a spectator's target, a display name.
+    hello: protocol::Hello,
 }
 
 /// The accept loop's own id→key table, one entry per connection slot.
@@ -653,6 +664,37 @@ struct KeySlot {
     key: Option<PlayerKey>,
     id: u32,
     conn: Option<Connection>,
+    /// The slot generation this tenant claimed — what a spectator seat is
+    /// bound to, because a reused slot has a new one (`SeatSlot`).
+    generation: u32,
+    /// The proven address, or `GUEST` (`Handshaken::address`).
+    address: protocol::Address,
+    /// Declared `HELLO_AGENT` (v73): consent to be watched, fed undelayed.
+    agent: bool,
+    /// Declared `HELLO_WATCHABLE`: a human's opt-in, fed only behind the
+    /// shard's human delay.
+    watchable: bool,
+    /// The self-declared display name its watchers see.
+    name: protocol::Name,
+}
+
+/// The accept loop's half of a spectator seat (`NETCODE.md` §2.3): the
+/// connection it may have to close, and exactly which tenant it watches.
+/// Seat `i` is connection slot `MAX_PLAYERS + i`.
+#[derive(Clone, Default)]
+struct SeatSlot {
+    /// Granted and not yet swept. A flag of its own rather than
+    /// `conn.is_some()`, so the door (`pick_target`) is a pure function a
+    /// test can drive without a socket.
+    occupied: bool,
+    conn: Option<Connection>,
+    /// This seat's own claim generation, so a sweep never closes the next
+    /// tenant of the seat in the previous one's name.
+    generation: u32,
+    /// The watched player's connection slot and the generation it held when
+    /// the seat was granted. The target is gone the moment either changes.
+    target: usize,
+    target_gen: u32,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -678,6 +720,8 @@ async fn accept_loop(
     // different reason (wasm's shadow stack) — here it is simply the way to
     // fill a fixed array with a clonable value.
     let mut keys: [KeySlot; MAX_PLAYERS] = std::array::from_fn(|_| KeySlot::default());
+    // The spectator seats' connections and their targets (`SeatSlot`).
+    let mut seats: [SeatSlot; MAX_SPECTATORS] = std::array::from_fn(|_| SeatSlot::default());
     // Wallets banned for this uptime (admin v0). Memory only, and
     // `admin.rs`' header says why that is stated rather than hidden: a
     // persisted ban wants its own file with its own format version.
@@ -744,6 +788,7 @@ async fn accept_loop(
                     facts.domain.clone(),
                     facts.entitle.clone(),
                     facts.min_client,
+                    facts.spectate.open(),
                     in_flight,
                 ));
             }
@@ -752,7 +797,12 @@ async fn accept_loop(
                 // previous tenant has to be filed under the key it was
                 // written for, and installing first would overwrite that key.
                 drain_saves(&mut save_rx, &mut write_tx, &mut store, &keys, &stats);
-                install(done, &facts, &mut ctrl_tx, &mut keys, &store, &slots, &stats).await;
+                if done.hello.is_spectator() {
+                    install_spectator(done, &facts, &mut ctrl_tx, &keys, &mut seats, &slots, &stats)
+                        .await;
+                } else {
+                    install(done, &facts, &mut ctrl_tx, &mut keys, &store, &slots, &stats).await;
+                }
             }
             _ = entitle_sweep.tick(), if facts.entitle.armed() && !sweep_in_flight => {
                 // Snapshot who to ask about, with the generation each answer
@@ -828,6 +878,36 @@ async fn accept_loop(
             _ = sweep.tick() => {
                 while let Ok(link) = grave_rx.pop() {
                     drop(link); // net side deallocates, never the sim
+                }
+                // Spectator seats whose target left (`NETCODE.md` §2.3). The
+                // sim stopped feeding them the tick the target's slot turned
+                // over; this closes the connection with the reason, on the
+                // cadence the admin kick uses. A seat whose OWN connection
+                // went is just forgotten.
+                for (i, seat) in seats.iter_mut().enumerate() {
+                    if !seat.occupied {
+                        continue;
+                    }
+                    let own = slots.load(MAX_PLAYERS + i);
+                    if state_of(own) != SLOT_LIVE || generation_of(own) != seat.generation {
+                        *seat = SeatSlot::default();
+                        continue;
+                    }
+                    let t = slots.load(seat.target);
+                    if state_of(t) == SLOT_LIVE && generation_of(t) == seat.target_gen {
+                        continue;
+                    }
+                    ShardStats::bump(&stats.spectate_ended);
+                    slots.mark_leaving(MAX_PLAYERS + i, seat.generation);
+                    if let Some(conn) = seat.conn.take() {
+                        conn.close(
+                            wtransport::VarInt::from_u32(protocol::REFUSE_WATCH_ENDED as u32),
+                            protocol::refuse_text(protocol::REFUSE_WATCH_ENDED)
+                                .unwrap_or("ended")
+                                .as_bytes(),
+                        );
+                    }
+                    *seat = SeatSlot::default();
                 }
                 // Admin kicks and bans, on the same cadence as the
                 // graveyard: an admin is a person typing, so 100 ms is
@@ -1136,6 +1216,7 @@ async fn handshake_task(
     facts_domain: String,
     entitle: crate::entitle::Config,
     min_client: u32,
+    spectate_open: bool,
     in_flight: Arc<std::sync::atomic::AtomicUsize>,
 ) {
     // Decremented however this task leaves — the timeout arm, any of the
@@ -1156,19 +1237,34 @@ async fn handshake_task(
         let connection = request.accept().await.map_err(|_| ())?;
         let (send, mut recv) = connection.accept_bi().await.map_err(|_| ())?;
         let (hello_buf, hello_len) = read_frame(&mut recv).await.ok_or(())?;
-        let hello = decode_hello(&hello_buf[..hello_len]).map_err(|_| ())?;
-        Ok::<_, ()>((connection, send, recv, hello))
+        Ok::<_, ()>((connection, send, recv, hello_buf, hello_len))
     })
     .await;
-    let Ok(Ok((connection, send, mut recv, hello))) = result else {
+    let Ok(Ok((connection, send, mut recv, hello_buf, hello_len))) = result else {
         ShardStats::bump(&stats.handshake_errors);
         return;
     };
-    if hello.proto_ver != PROTO_VER {
-        ShardStats::bump(&stats.refused_version);
-        spawn_refusal(connection, send, REFUSE_VERSION);
-        return;
+    // **The version first, read on its own** (`protocol::peek_hello_version`).
+    // The hello grew at v73; decoding the whole message before comparing the
+    // version would drop every older client's shorter hello as a handshake
+    // error — a timeout on their screen — where it is owed a posted "update
+    // the game".
+    match protocol::peek_hello_version(&hello_buf[..hello_len]) {
+        Ok(v) if v == PROTO_VER => {}
+        Ok(_) => {
+            ShardStats::bump(&stats.refused_version);
+            spawn_refusal(connection, send, REFUSE_VERSION);
+            return;
+        }
+        Err(_) => {
+            ShardStats::bump(&stats.handshake_errors);
+            return;
+        }
     }
+    let Ok(hello) = decode_hello(&hello_buf[..hello_len]) else {
+        ShardStats::bump(&stats.handshake_errors);
+        return;
+    };
     // The release floor, second because it is only meaningful once the two
     // sides agree on what the bytes are — `hello.ver` is not a number until
     // `proto_ver` says the layout it was read from is this one.
@@ -1187,6 +1283,13 @@ async fn handshake_task(
         // an operator needs to read this number.
         ShardStats::bump(&stats.refused_build);
         spawn_refusal(connection, send, protocol::REFUSE_BUILD);
+        return;
+    }
+    // A watcher at a shut door is told so before any crypto: there is no
+    // identity question worth asking a session this shard will not seat.
+    if hello.is_spectator() && !spectate_open {
+        ShardStats::bump(&stats.spectate_refused);
+        spawn_refusal(connection, send, protocol::REFUSE_WATCH);
         return;
     }
     // ---- SIWE, and the nonce never leaves this stack frame --------------
@@ -1235,6 +1338,26 @@ async fn handshake_task(
         ShardStats::bump(&stats.handshake_errors);
         return;
     };
+
+    // **A watcher is anonymous by construction** (`NETCODE.md` §2.3): it has
+    // no body, keeps nothing and can change nothing, so the three doors below
+    // — `require_auth`, the signature, the ticket — guard things it cannot
+    // touch. Its auth frame is read (the handshake has one shape for every
+    // session) and discarded unverified; what it may watch is decided by the
+    // TARGET's consent, in `install_spectator`, not by who the watcher is.
+    if hello.is_spectator() {
+        let _ = done_tx
+            .send(Handshaken {
+                connection,
+                send,
+                recv,
+                key: None,
+                address: protocol::Address::GUEST,
+                hello,
+            })
+            .await;
+        return;
+    }
 
     // A guest offers no address and is admitted only where guests are.
     // Everyone else is *proved*: the signature is recovered against the
@@ -1310,12 +1433,21 @@ async fn handshake_task(
             }
         }
     }
+    // The proven address rides along for the spectator door: `key` is only
+    // `Some` when `verify` recovered this very address from the signature.
+    let address = if key.is_some() {
+        auth.address
+    } else {
+        protocol::Address::GUEST
+    };
     let _ = done_tx
         .send(Handshaken {
             connection,
             send,
             recv,
             key,
+            address,
+            hello,
         })
         .await;
 }
@@ -1338,6 +1470,8 @@ async fn install(
         mut send,
         recv,
         key,
+        address,
+        hello,
     } = done;
     let Some((slot, generation)) = (0..MAX_PLAYERS).find_map(|s| slots.claim(s).map(|g| (s, g)))
     else {
@@ -1367,6 +1501,11 @@ async fn install(
         // reader/writer task; this one lives exactly as long as the slot
         // does, and `install` overwrites it on the next tenant.
         conn: Some(connection.clone()),
+        generation,
+        address,
+        agent: hello.is_agent(),
+        watchable: hello.consents_to_watch(),
+        name: hello.name,
     };
     // Does this shard remember them? A miss is the ordinary case and it is
     // not a failure: a guest, a first visit, or a shard with no save file.
@@ -1391,6 +1530,7 @@ async fn install(
             id,
             save,
             key,
+            watch: None,
             link,
         })
         .is_err()
@@ -1460,6 +1600,420 @@ async fn install(
         generation,
         facts.netsim,
     ));
+}
+
+// ---------------------------------------------------------------------------
+// Spectator seats (`NETCODE.md` §2.3)
+// ---------------------------------------------------------------------------
+
+/// Which player a watcher gets, or the refusal code it earns.
+///
+/// Pure over the accept loop's two tables so the whole door — consent, the
+/// target naming, both caps — is reachable by a test without a socket
+/// (`accept_chat`'s precedent). `want` is the hello's target: an address
+/// names one player (matched against the address the shard PROVED, never a
+/// claim), and `GUEST` means "any watchable agent", taken in slot order,
+/// skipping one whose own seats are full.
+///
+/// **Eligible** means the tenant is live and consented: it declared
+/// `HELLO_AGENT`, or it opted in as a human and this shard runs human feeds
+/// (`human_feeds`, which is `spectate_human_delay_s > 0`). A human who opted
+/// in on a shard that runs none is refused exactly like a stranger — one
+/// code, because "online but private" is itself a fact about a person.
+fn pick_target(
+    keys: &[KeySlot; MAX_PLAYERS],
+    live: impl Fn(usize) -> Option<u32>,
+    seats: &[SeatSlot; MAX_SPECTATORS],
+    want: protocol::Address,
+    human_feeds: bool,
+    per_target: usize,
+) -> Result<usize, u8> {
+    let mut full = false;
+    for (t, k) in keys.iter().enumerate() {
+        // The tenant is this slot's CURRENT one: live, and the generation
+        // it was installed under (a slot is reused, and a stale key row
+        // must not be mistaken for the player now in it).
+        let Some(gen) = live(t) else {
+            continue;
+        };
+        if k.generation != gen {
+            continue;
+        }
+        if !(k.agent || (k.watchable && human_feeds)) {
+            continue;
+        }
+        if !want.is_guest() && k.address != want {
+            continue;
+        }
+        let watching = seats
+            .iter()
+            .filter(|s| s.occupied && s.target == t && s.target_gen == gen)
+            .count();
+        if watching >= per_target {
+            full = true;
+            if want.is_guest() {
+                continue; // "any": try the next consenting player
+            }
+            return Err(protocol::REFUSE_WATCH_FULL);
+        }
+        return Ok(t);
+    }
+    Err(if full {
+        protocol::REFUSE_WATCH_FULL
+    } else {
+        protocol::REFUSE_WATCH
+    })
+}
+
+/// Seat a watcher: pick its target, claim a seat slot, build its rings, hand
+/// the sim its ends, then welcome it as the target's body and tell it whose.
+/// Every refusal is posted, never a hang (DESIGN.md §5.9) — `install`'s shape
+/// with the player half taken out.
+#[allow(clippy::too_many_arguments)]
+async fn install_spectator(
+    done: Handshaken,
+    facts: &ShardFacts,
+    ctrl_tx: &mut rtrb::Producer<Connect>,
+    keys: &[KeySlot; MAX_PLAYERS],
+    seats: &mut [SeatSlot; MAX_SPECTATORS],
+    slots: &Arc<SlotTable>,
+    stats: &Arc<ShardStats>,
+) {
+    let Handshaken {
+        connection,
+        mut send,
+        recv,
+        hello,
+        ..
+    } = done;
+    let live = |t: usize| {
+        let w = slots.load(t);
+        (state_of(w) == SLOT_LIVE).then(|| generation_of(w))
+    };
+    let target = match pick_target(
+        keys,
+        live,
+        seats,
+        hello.target,
+        facts.spectate.human_delay_s > 0,
+        facts.spectate.per_target,
+    ) {
+        Ok(t) => t,
+        Err(code) => {
+            let counter = if code == protocol::REFUSE_WATCH_FULL {
+                &stats.spectate_full
+            } else {
+                &stats.spectate_refused
+            };
+            ShardStats::bump(counter);
+            spawn_refusal(connection, send, code);
+            return;
+        }
+    };
+    // A seat, within the shard's configured count (`spectate_seats` may be
+    // below `MAX_SPECTATORS`; the tables are sized to the ceiling).
+    let Some((i, generation)) =
+        (0..facts.spectate.seats).find_map(|i| slots.claim(MAX_PLAYERS + i).map(|g| (i, g)))
+    else {
+        ShardStats::bump(&stats.spectate_full);
+        spawn_refusal(connection, send, protocol::REFUSE_WATCH_FULL);
+        return;
+    };
+    let slot = MAX_PLAYERS + i;
+    let target_gen = generation_of(slots.load(target));
+    let k = &keys[target];
+    // An agent's feed is live; a human's rides the shard's delay. Decided
+    // here, once, from what the target declared — never from the watcher.
+    let delay = (!k.agent).then(|| Duration::from_secs(facts.spectate.human_delay_s as u64));
+
+    let (input_tx, input_rx) = RingBuffer::new(INPUT_RING_CAP);
+    // A watcher has no reliable C→S lane: these two rings exist because
+    // `Link` names them, and nothing ever pushes into either.
+    let (_action_tx, action_rx) = RingBuffer::<ActionMsg>::new(1);
+    let (_chat_tx, chat_rx) = RingBuffer::<ChatMsg>::new(1);
+    let (snap_tx, snap_rx) = RingBuffer::<SnapMsg>::new(SNAPSHOT_RING_CAP);
+    let (ev_tx, ev_rx) = RingBuffer::<EvMsg>::new(EVENT_RING_CAP);
+    let link = Link {
+        generation,
+        input: input_rx,
+        actions: action_rx,
+        chats: chat_rx,
+        snaps: snap_tx,
+        events: ev_tx,
+    };
+    if ctrl_tx
+        .push(Connect {
+            slot,
+            id: k.id,
+            save: None,
+            key: None,
+            watch: Some(target),
+            link,
+        })
+        .is_err()
+    {
+        slots.unclaim(slot, generation);
+        ShardStats::bump(&stats.spectate_full);
+        spawn_refusal(connection, send, protocol::REFUSE_WATCH_FULL);
+        return;
+    }
+    seats[i] = SeatSlot {
+        occupied: true,
+        conn: Some(connection.clone()),
+        generation,
+        target,
+        target_gen,
+    };
+
+    // Welcomed AS the target's body: `player_id` is whose view this is, which
+    // is the one field a client core keys its own-facts on.
+    let welcome = Welcome {
+        player_id: k.id,
+        seed: facts.seed,
+        tick: ShardStats::get(&stats.current_tick) as u32,
+        dev: facts.dev,
+    };
+    let _ = write_welcome(&mut send, &welcome).await;
+    let watch = protocol::Watch {
+        address: k.address,
+        agent: k.agent,
+        name: k.name,
+    };
+    let _ = write_watch(&mut send, &watch).await;
+
+    tokio::spawn(spectator_reader_task(
+        connection.clone(),
+        input_tx,
+        slots.clone(),
+        stats.clone(),
+        slot,
+        generation,
+    ));
+    tokio::spawn(spectator_stream_task(
+        recv,
+        slots.clone(),
+        stats.clone(),
+        slot,
+        generation,
+    ));
+    match delay {
+        None => {
+            tokio::spawn(event_writer_task(
+                send,
+                ev_rx,
+                slots.clone(),
+                stats.clone(),
+                slot,
+                generation,
+            ));
+            tokio::spawn(writer_task(
+                connection,
+                snap_rx,
+                slots.clone(),
+                stats.clone(),
+                slot,
+                generation,
+                None,
+            ));
+        }
+        Some(delay) => {
+            tokio::spawn(delayed_writer_task(
+                connection,
+                send,
+                snap_rx,
+                ev_rx,
+                slots.clone(),
+                stats.clone(),
+                slot,
+                generation,
+                delay,
+            ));
+        }
+    }
+}
+
+async fn write_watch(send: &mut SendStream, msg: &protocol::Watch) -> Result<(), ()> {
+    let mut payload = [0u8; MAX_STREAM_MSG_BYTES];
+    let len = protocol::encode_watch(msg, &mut payload).map_err(|_| ())?;
+    write_frame(send, &payload[..len]).await
+}
+
+/// A watcher's datagram, accepted or refused — `accept_input`'s wiring for a
+/// seat, split out for the same reason: reachable by a test with no socket.
+///
+/// Only the acks are wanted (they are how the shard keeps delta-coding this
+/// seat's snapshots), so a datagram carrying a frame is refused whole and
+/// counted: our client never builds one in watch mode, so it is forged, and
+/// refusing the datagram rather than stripping the frame keeps a forger from
+/// learning anything by the difference. Never a disconnect — the datagram
+/// lane's policy is loss, not framing trust.
+fn accept_spectator_input(
+    dg: &[u8],
+    input_tx: &mut rtrb::Producer<protocol::InputDatagram>,
+    stats: &ShardStats,
+) {
+    ShardStats::add_msg(&stats.net_dg_in_count, &stats.net_dg_in_bytes, dg.len());
+    let Ok(decoded) = decode_input(dg) else {
+        ShardStats::bump(&stats.input_dg_bad);
+        return;
+    };
+    if !decoded.frames().is_empty() {
+        ShardStats::bump(&stats.spectate_input_refused);
+        return;
+    }
+    if input_tx.push(decoded).is_err() {
+        ShardStats::bump(&stats.input_ring_drops);
+    }
+}
+
+async fn spectator_reader_task(
+    connection: Connection,
+    mut input_tx: rtrb::Producer<protocol::InputDatagram>,
+    slots: Arc<SlotTable>,
+    stats: Arc<ShardStats>,
+    slot: usize,
+    generation: u32,
+) {
+    while let Ok(dg) = connection.receive_datagram().await {
+        accept_spectator_input(&dg, &mut input_tx, &stats);
+    }
+    slots.mark_leaving(slot, generation);
+}
+
+/// A watcher's C→S stream. **There is no reliable lane for a spectator**:
+/// the first frame on it — an action, a chat line, anything — is counted and
+/// ends the seat, because a read-only session that writes is a forged
+/// client. The stream closing ends the seat too, which is how a watcher that
+/// simply leaves is noticed.
+async fn spectator_stream_task(
+    mut recv: RecvStream,
+    slots: Arc<SlotTable>,
+    stats: Arc<ShardStats>,
+    slot: usize,
+    generation: u32,
+) {
+    if read_frame(&mut recv).await.is_some() {
+        ShardStats::bump(&stats.spectate_actions_refused);
+    }
+    slots.mark_leaving(slot, generation);
+}
+
+/// A FIFO of messages each due at a wall-clock instant — the human feed's
+/// delay (`config::Spectate::human_delay_s`). Bounded (`cap`): the caller
+/// states what overflow means for its lane. Pure over the instants it is
+/// handed, so its arithmetic is testable without waiting on a clock.
+struct DelayLine<T> {
+    q: std::collections::VecDeque<(tokio::time::Instant, T)>,
+    cap: usize,
+}
+
+impl<T> DelayLine<T> {
+    fn new(cap: usize) -> Self {
+        Self {
+            q: std::collections::VecDeque::with_capacity(cap),
+            cap,
+        }
+    }
+
+    /// Queue `msg` due at `due`. `Err(msg)` when full — the caller decides.
+    fn push(&mut self, due: tokio::time::Instant, msg: T) -> Result<(), T> {
+        if self.q.len() >= self.cap {
+            return Err(msg);
+        }
+        self.q.push_back((due, msg));
+        Ok(())
+    }
+
+    /// The oldest message due by `now`, if any. Dues are pushed in order
+    /// (each is enqueue time plus one fixed delay), so the head is always
+    /// the next due.
+    fn pop_due(&mut self, now: tokio::time::Instant) -> Option<T> {
+        if self.q.front().is_some_and(|(due, _)| *due <= now) {
+            return self.q.pop_front().map(|(_, m)| m);
+        }
+        None
+    }
+
+    fn drop_oldest(&mut self) {
+        self.q.pop_front();
+    }
+}
+
+/// Snapshots a delay line holds per second of delay: one per tick at the
+/// snapshot cadence, plus a second's slack.
+const DELAY_SNAPS_PER_S: usize = TICK_HZ as usize;
+/// Event-lane messages a delay line holds per second of delay — the drips
+/// send at most a handful per tick, so eight a tick is a generous bound, and
+/// a watcher that outruns it is closed rather than shown a gap.
+const DELAY_EVENTS_PER_S: usize = 8 * TICK_HZ as usize;
+
+/// Both of a delayed seat's output lanes, one task (`NETCODE.md` §2.3): every
+/// snapshot and every event the sim hands this seat is held for `delay`
+/// before it goes out, so a human who opted in to being watched is never
+/// watched live. Snapshots keep their superseding rule after the delay (only
+/// the newest due one is sent) and drop their oldest when the line is full;
+/// events never drop — a full event line ends the seat, the reliable lane's
+/// own policy. The acks this seat sends back are `delay` stale, so the shard
+/// falls back to zero-state snapshots for it: correct, and more bytes, which
+/// is the price of the delay and one reason human feeds are off by default.
+#[allow(clippy::too_many_arguments)]
+async fn delayed_writer_task(
+    connection: Connection,
+    mut send: SendStream,
+    mut snap_rx: rtrb::Consumer<SnapMsg>,
+    mut ev_rx: rtrb::Consumer<EvMsg>,
+    slots: Arc<SlotTable>,
+    stats: Arc<ShardStats>,
+    slot: usize,
+    generation: u32,
+    delay: Duration,
+) {
+    let secs = delay.as_secs() as usize + 1;
+    let mut snaps = DelayLine::<SnapMsg>::new(secs * DELAY_SNAPS_PER_S);
+    let mut events = DelayLine::<EvMsg>::new(secs * DELAY_EVENTS_PER_S);
+    let mut poll = tokio::time::interval(WRITER_POLL);
+    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        poll.tick().await;
+        let word = slots.load(slot);
+        if state_of(word) != SLOT_LIVE || generation_of(word) != generation {
+            return;
+        }
+        let now = tokio::time::Instant::now();
+        while let Ok(msg) = snap_rx.pop() {
+            if let Err(msg) = snaps.push(now + delay, msg) {
+                snaps.drop_oldest();
+                ShardStats::bump(&stats.snap_ring_skips);
+                let _ = snaps.push(now + delay, msg);
+            }
+        }
+        while let Ok(msg) = ev_rx.pop() {
+            if events.push(now + delay, msg).is_err() {
+                ShardStats::bump(&stats.ev_send_errors);
+                slots.mark_leaving(slot, generation);
+                return;
+            }
+        }
+        let mut newest = None;
+        while let Some(msg) = snaps.pop_due(now) {
+            newest = Some(msg);
+        }
+        if let Some(msg) = newest {
+            if !send_snap(&connection, &msg, &stats) {
+                break;
+            }
+        }
+        while let Some(msg) = events.pop_due(now) {
+            let n = FRAME_PREFIX_BYTES + msg.bytes().len();
+            if write_frame(&mut send, msg.bytes()).await.is_err() {
+                ShardStats::bump(&stats.ev_send_errors);
+                slots.mark_leaving(slot, generation);
+                return;
+            }
+            ShardStats::add_msg(&stats.net_stream_out_frames, &stats.net_stream_out_bytes, n);
+        }
+    }
+    slots.mark_leaving(slot, generation);
 }
 
 /// The input half of the datagram lane, split out of the async task the
@@ -1973,20 +2527,69 @@ pub async fn client_handshake(
     address: protocol::Address,
     sign: impl FnOnce(&[u8]) -> Option<protocol::Signature>,
 ) -> Result<Welcome, String> {
-    let mut buf = [0u8; MAX_STREAM_MSG_BYTES];
-    let len = protocol::encode_hello(
-        &protocol::Hello {
-            proto_ver: PROTO_VER,
-            // The bots are this build, so they state this build — which is
-            // also what makes them a real exercise of the floor: a shard with
-            // `min_client` above this release refuses its own bot fleet, and
-            // that is the correct answer rather than a special case.
-            ver: protocol::version::VER,
-            build: protocol::version::BUILD,
+    // The bots are this build, so they state this build — which is also what
+    // makes them a real exercise of the floor: a shard with `min_client`
+    // above this release refuses its own bot fleet, and that is the correct
+    // answer rather than a special case. They declare nothing (v73): a load
+    // bot is not an agent player and consents to nobody watching it.
+    client_handshake_as(
+        send,
+        recv,
+        domain,
+        address,
+        &protocol::Hello::this_build(),
+        |domain, nonce, issued_at| {
+            // **The address goes in before the signing, not after**, and the
+            // first version of this function got that backwards: it built the
+            // text with `Address::GUEST` and then asked for a signature. The
+            // server rebuilds the message from the address the client
+            // *claims*, so the two texts would have differed by 42 characters
+            // and every real login would have been refused as `WrongSigner` —
+            // with the crypto, the nonce and the domain binding all correct.
+            //
+            // Checksummed, because that is what the shard recomputes and what
+            // a real launcher signs — see `Address::to_checksum_hex`.
+            let mut text = [0u8; protocol::SIWE_MESSAGE_MAX];
+            let checksummed = address.to_checksum_hex();
+            let addr = core::str::from_utf8(&checksummed).ok()?;
+            let tlen =
+                protocol::siwe_message(domain, addr, protocol::SLUG, nonce, issued_at, &mut text);
+            sign(&text[..tlen.min(protocol::SIWE_MESSAGE_MAX)])
         },
-        &mut buf,
     )
-    .map_err(|e| format!("encode hello: {e:?}"))?;
+    .await
+    .map(|j| j.welcome)
+}
+
+/// What a join handed back: the welcome, and — to a spectator only — who
+/// it is watching (v73, `protocol::Watch`).
+#[derive(Clone, Copy, Debug)]
+pub struct Joined {
+    pub welcome: Welcome,
+    pub watch: Option<protocol::Watch>,
+}
+
+/// [`client_handshake`] with the hello spelled out (v73): an agent player
+/// declares itself (`HELLO_AGENT`, a name), and a spectator asks for a seat
+/// (`HELLO_SPECTATE`, a target). The sequence is the same four steps; a
+/// spectator reads one more frame after the welcome, the `Watch`.
+///
+/// `sign` is handed the three inert values — the domain this client dialled,
+/// the shard's nonce, its `Issued At` — and composes nothing it did not
+/// build itself: an agent's key signs the `protocol::siwe_message` it
+/// composes from them (`agentkey::AgentKey::sign_siwe`), which is the same
+/// inversion the desktop client made for the launcher.
+pub async fn client_handshake_as(
+    send: &mut SendStream,
+    recv: &mut RecvStream,
+    domain: &str,
+    address: protocol::Address,
+    hello: &protocol::Hello,
+    sign: impl FnOnce(&str, &[u8; protocol::NONCE_BYTES], u64) -> Option<protocol::Signature>,
+) -> Result<Joined, String> {
+    let mut buf = [0u8; MAX_STREAM_MSG_BYTES];
+    let len =
+        protocol::encode_hello(hello, &mut buf).map_err(|e| format!("encode hello: {e:?}"))?;
     write_frame(send, &buf[..len])
         .await
         .map_err(|_| "write hello".to_string())?;
@@ -2012,38 +2615,15 @@ pub async fn client_handshake(
     // The message is built from the domain **this client dialled**, never
     // from anything the server said — that is the whole of SIWE's domain
     // binding, and handing the server the choice would let one shard collect
-    // a signature valid at another.
-    //
-    // **The address goes in before the signing, not after**, and the first
-    // version of this function got that backwards: it built the text with
-    // `Address::GUEST` and then asked for a signature. The server rebuilds
-    // the message from the address the client *claims*, so the two texts
-    // would have differed by 42 characters and every real login would have
-    // been refused as `WrongSigner` — with the crypto, the nonce and the
-    // domain binding all correct. The address is a parameter for that
-    // reason: there is no order in which it can be learned late.
+    // a signature valid at another. The address is a parameter for the
+    // reason `client_handshake` states: there is no order in which it can be
+    // learned late.
     let auth = if address.is_guest() {
         protocol::Auth::default()
     } else {
-        let mut text = [0u8; protocol::SIWE_MESSAGE_MAX];
-        // Checksummed, because that is what the shard recomputes and what a
-        // real launcher signs — see `Address::to_checksum_hex`. A lowercase address
-        // here would differ from the server's text by up to 40 characters and
-        // land as `WrongSigner`, which is the same trap the comment above
-        // describes one field over.
-        let checksummed = address.to_checksum_hex();
-        let addr = core::str::from_utf8(&checksummed).map_err(|_| "address hex".to_string())?;
-        let tlen = protocol::siwe_message(
-            domain,
-            addr,
-            protocol::SLUG,
-            &challenge.nonce,
-            challenge.issued_at,
-            &mut text,
-        );
-        match sign(&text[..tlen.min(protocol::SIWE_MESSAGE_MAX)]) {
+        match sign(domain, &challenge.nonce, challenge.issued_at) {
             Some(signature) => protocol::Auth { address, signature },
-            // The launcher refused, is not running, or handed the player a
+            // The signer refused, is not running, or handed the player a
             // consent prompt they declined. That is a *guest*, not an error:
             // a shard that takes guests should still take this one.
             None => protocol::Auth::default(),
@@ -2055,19 +2635,34 @@ pub async fn client_handshake(
         .map_err(|_| "write auth".to_string())?;
 
     let (frame, n) = read_frame(recv).await.ok_or("no handshake reply")?;
-    match peek_kind(&frame[..n]) {
+    let welcome = match peek_kind(&frame[..n]) {
         Ok(protocol::KIND_WELCOME) => {
-            protocol::decode_welcome(&frame[..n]).map_err(|e| format!("welcome: {e:?}"))
+            protocol::decode_welcome(&frame[..n]).map_err(|e| format!("welcome: {e:?}"))?
         }
         Ok(protocol::KIND_REFUSE) => {
             let r = protocol::decode_refuse(&frame[..n]).map_err(|e| format!("refuse: {e:?}"))?;
-            Err(match protocol::refuse_text(r.code) {
+            return Err(match protocol::refuse_text(r.code) {
                 Some(why) => format!("refused: {why}"),
                 None => format!("refused: code {}", r.code),
-            })
+            });
         }
-        other => Err(format!("unexpected handshake reply: {other:?}")),
+        other => return Err(format!("unexpected handshake reply: {other:?}")),
+    };
+    if !hello.is_spectator() {
+        return Ok(Joined {
+            welcome,
+            watch: None,
+        });
     }
+    let (frame, n) = read_frame(recv).await.ok_or("no watch after the welcome")?;
+    if peek_kind(&frame[..n]) != Ok(protocol::KIND_WATCH) {
+        return Err("a spectator's welcome must be followed by a watch".into());
+    }
+    let watch = protocol::decode_watch(&frame[..n]).map_err(|e| format!("watch: {e:?}"))?;
+    Ok(Joined {
+        welcome,
+        watch: Some(watch),
+    })
 }
 
 pub async fn write_frame(send: &mut SendStream, payload: &[u8]) -> Result<(), ()> {
@@ -2170,8 +2765,9 @@ fn sim_thread(
         .map(|_| Vec::with_capacity(MAX_PLAYERS))
         .collect();
     let mut next_world_save = core.world.tick + world_interval.min(u64::MAX / 2);
-    let mut links: Vec<Option<Link>> = Vec::with_capacity(MAX_PLAYERS);
-    links.resize_with(MAX_PLAYERS, || None);
+    // Every connection slot: players, then spectator seats (`MAX_CONNS`).
+    let mut links: Vec<Option<Link>> = Vec::with_capacity(MAX_CONNS);
+    links.resize_with(MAX_CONNS, || None);
     let mut links = links.into_boxed_slice();
 
     // Startup-only notification: no channel wake or drop enters the tick.
@@ -2186,6 +2782,22 @@ fn sim_thread(
     while !shutdown.load(Ordering::Relaxed) {
         // Install fresh connections.
         while let Ok(c) = ctrl_rx.pop() {
+            // A spectator seat: no body, no command, no save — a connection's
+            // netcode bound to its target's body (`ShardCore::connect_spectator`).
+            // Refused if the target left in the window since the accept loop
+            // checked; the link then rides the LEAVING sweep out like any
+            // refused install, and the watcher's connection dies with it.
+            if let Some(target) = c.watch {
+                let generation = c.link.generation;
+                links[c.slot] = Some(c.link);
+                if core.connect_spectator(c.slot, c.id, target) {
+                    ShardStats::bump(&stats.spectate_joins);
+                } else {
+                    slots.mark_leaving(c.slot, generation);
+                    ShardStats::bump(&stats.spectate_refused);
+                }
+                continue;
+            }
             if let Some((how, evicted)) = core.connect_as(c.slot, c.id, c.key, c.save) {
                 links[c.slot] = Some(c.link);
                 ShardStats::bump(&stats.joins);
@@ -2219,8 +2831,8 @@ fn sim_thread(
                 ShardStats::bump(&stats.handshake_errors);
             }
         }
-        // Clean up dead connections.
-        for slot in 0..MAX_PLAYERS {
+        // Clean up dead connections — every connection slot, seats included.
+        for slot in 0..MAX_CONNS {
             let word = slots.load(slot);
             if state_of(word) != SLOT_LEAVING {
                 continue;
@@ -2246,7 +2858,11 @@ fn sim_thread(
                         push_save(&mut save_tx, id, None, save, &stats);
                     }
                     slots.free(slot, generation);
-                    ShardStats::bump(&stats.leaves);
+                    // `leaves` is a PLAYER counter (it pairs with `joins`);
+                    // a seat closing is not a player leaving.
+                    if slot < MAX_PLAYERS {
+                        ShardStats::bump(&stats.leaves);
+                    }
                 }
                 Err(rtrb::PushError::Full(link)) => {
                     // Graveyard full: hold the handles, retry next tick.
@@ -2256,10 +2872,15 @@ fn sim_thread(
         }
         // Drain inputs, and at most one action per client per tick — the
         // ring buffers the burst, the stream backpressures past it.
-        for slot in 0..MAX_PLAYERS {
+        for slot in 0..MAX_CONNS {
             if let Some(link) = links[slot].as_mut() {
+                // A seat's datagrams are its acks (`push_input` takes nothing
+                // else from one), so they drain like a player's.
                 while let Ok(dg) = link.input.pop() {
                     core.push_input(slot, &dg);
+                }
+                if slot >= MAX_PLAYERS {
+                    continue; // a watcher has no action or chat lane
                 }
                 if core.wants_action(slot) {
                     if let Ok(act) = link.actions.pop() {
@@ -2367,6 +2988,7 @@ fn sim_thread(
         ShardStats::set(&stats.sleepers_evicted, core.world.evictions);
         ShardStats::set(&stats.sleepers, core.world.sleepers() as u64);
         ShardStats::set(&stats.players, core.connected() as u64);
+        ShardStats::set(&stats.spectators, core.spectators() as u64);
 
         // Pace (the boundary).
         next += tick_dur;
@@ -2427,6 +3049,127 @@ fn sim_thread(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The human feed's delay line holds every message for exactly its
+    /// delay, in order, and refuses past its bound** — clock-free: every
+    /// instant is handed in, none is read.
+    #[test]
+    fn the_delay_line_releases_each_message_at_its_due_and_not_before() {
+        let t0 = tokio::time::Instant::now();
+        let d = Duration::from_secs(5);
+        let mut line = DelayLine::<u32>::new(3);
+        assert!(line.push(t0 + d, 1).is_ok());
+        assert!(line.push(t0 + Duration::from_secs(1) + d, 2).is_ok());
+        assert!(line.push(t0 + Duration::from_secs(2) + d, 3).is_ok());
+        assert_eq!(line.push(t0 + d, 4), Err(4), "a full line refuses");
+        // Nothing is due before the delay has passed for it.
+        assert_eq!(line.pop_due(t0), None);
+        assert_eq!(line.pop_due(t0 + d - Duration::from_millis(1)), None);
+        // Released in order, each at its own due, never early.
+        assert_eq!(line.pop_due(t0 + d), Some(1));
+        assert_eq!(line.pop_due(t0 + d), None, "the next is not due yet");
+        assert_eq!(line.pop_due(t0 + Duration::from_secs(10)), Some(2));
+        assert_eq!(line.pop_due(t0 + Duration::from_secs(10)), Some(3));
+        assert_eq!(line.pop_due(t0 + Duration::from_secs(10)), None);
+        // Dropping the oldest makes room for the newest (the snapshot lane's
+        // policy; the event lane refuses instead).
+        for i in 0..3 {
+            line.push(t0, 10 + i).unwrap();
+        }
+        line.drop_oldest();
+        assert!(line.push(t0, 20).is_ok());
+        assert_eq!(line.pop_due(t0), Some(11));
+    }
+
+    /// **The spectator door, decided without a socket** (`NETCODE.md` §2.3):
+    /// consent, naming by proven address, the per-target cap, "any" skipping
+    /// a full target, and a stale key row never standing in for the slot's
+    /// current tenant. `pick_target` is the whole door, so each rule is one
+    /// case here; `tests/spectate_wire.rs` drives the same rules over a
+    /// socket.
+    #[test]
+    fn the_spectator_door_picks_only_consenting_current_tenants_under_the_cap() {
+        let mut keys: [KeySlot; MAX_PLAYERS] = std::array::from_fn(|_| KeySlot::default());
+        let mut seats: [SeatSlot; MAX_SPECTATORS] = std::array::from_fn(|_| SeatSlot::default());
+        let a = protocol::Address([0xA; protocol::ADDRESS_BYTES]);
+        let b = protocol::Address([0xB; protocol::ADDRESS_BYTES]);
+        let h = protocol::Address([0xC; protocol::ADDRESS_BYTES]);
+        let z = protocol::Address([0xD; protocol::ADDRESS_BYTES]);
+        // 0: a player who declared nothing. 1: an agent. 2: a human who
+        // opted in. 3: an agent whose slot turned over (stale row).
+        for (s, address, agent, watchable) in [
+            (0, b, false, false),
+            (1, a, true, true),
+            (2, h, false, true),
+            (3, z, true, true),
+        ] {
+            keys[s] = KeySlot {
+                generation: 7,
+                address,
+                agent,
+                watchable,
+                ..KeySlot::default()
+            };
+        }
+        let live = |t: usize| match t {
+            0..=2 => Some(7),
+            3 => Some(8), // re-claimed: the row above is the previous tenant's
+            _ => None,
+        };
+        use protocol::{REFUSE_WATCH, REFUSE_WATCH_FULL};
+        assert_eq!(pick_target(&keys, live, &seats, a, false, 2), Ok(1));
+        assert_eq!(
+            pick_target(&keys, live, &seats, protocol::Address::GUEST, false, 2),
+            Ok(1)
+        );
+        assert_eq!(
+            pick_target(&keys, live, &seats, b, false, 2),
+            Err(REFUSE_WATCH),
+            "no consent"
+        );
+        assert_eq!(
+            pick_target(&keys, live, &seats, h, false, 2),
+            Err(REFUSE_WATCH),
+            "no human feeds"
+        );
+        assert_eq!(
+            pick_target(&keys, live, &seats, h, true, 2),
+            Ok(2),
+            "behind a delay"
+        );
+        assert_eq!(
+            pick_target(&keys, live, &seats, z, false, 2),
+            Err(REFUSE_WATCH),
+            "stale row"
+        );
+        // Fill the agent's two seats: by name it is FULL; "any" moves on to
+        // the next consenting player when human feeds run, and is FULL when
+        // there is none.
+        for (i, seat) in seats.iter_mut().take(2).enumerate() {
+            *seat = SeatSlot {
+                occupied: true,
+                generation: i as u32 + 1,
+                target: 1,
+                target_gen: 7,
+                ..SeatSlot::default()
+            };
+        }
+        assert_eq!(
+            pick_target(&keys, live, &seats, a, false, 2),
+            Err(REFUSE_WATCH_FULL)
+        );
+        assert_eq!(
+            pick_target(&keys, live, &seats, protocol::Address::GUEST, false, 2),
+            Err(REFUSE_WATCH_FULL)
+        );
+        assert_eq!(
+            pick_target(&keys, live, &seats, protocol::Address::GUEST, true, 2),
+            Ok(2)
+        );
+        // A seat on a PREVIOUS tenant of slot 1 does not count against this one.
+        seats[1].target_gen = 6;
+        assert_eq!(pick_target(&keys, live, &seats, a, false, 2), Ok(1));
+    }
 
     // The admission-gate ordering and the sample period are asserted at
     // COMPILE time beside their constants (`const _: () = assert!(…)`), not

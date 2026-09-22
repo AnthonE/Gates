@@ -61,18 +61,24 @@ async fn main() {
         }
     };
     println!("client: connecting to {server}");
-    let mut session =
-        match Session::connect(&endpoint, &server, address, client::elo::sign_siwe).await {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("client: {e}");
-                std::process::exit(1);
-            }
-        };
-    println!(
-        "client: in the world — player {} seed {} tick {}",
-        session.welcome.player_id, session.welcome.seed, session.welcome.tick
-    );
+    let joined = match a.spectate {
+        Some(target) => Session::watch(&endpoint, &server, target).await,
+        None => Session::connect(&endpoint, &server, address, client::elo::sign_siwe).await,
+    };
+    let mut session = match joined {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("client: {e}");
+            std::process::exit(1);
+        }
+    };
+    match &session.watching {
+        Some(w) => println!("client: {}", client::ui::spectate::label(w)),
+        None => println!(
+            "client: in the world — player {} seed {} tick {}",
+            session.welcome.player_id, session.welcome.seed, session.welcome.tick
+        ),
+    }
 
     // 60 Hz pump. The core owns the 30 Hz sim tick; this is only how often
     // wall time is handed to it, which is what a renderer's frame loop will
