@@ -5461,6 +5461,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/survival.rs"),
         },
         Module {
+            file: "trust.rs",
+            src: include_str!("../../sim-core/src/trust.rs"),
+        },
+        Module {
             file: "terrain.rs",
             src: include_str!("../../sim-core/src/terrain.rs"),
         },
