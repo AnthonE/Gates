@@ -165,3 +165,9 @@ confirmed 1,500 wood and three trees with zero decode errors. There is no pixel 
 The hosted Jev mode subsequently accepted 19 real model decisions in 35 seconds
 with zero model or decode errors; this validates the connection and controller,
 not general survival competence or a sustained spending rate.
+
+Two scripted Xvfb/llvmpipe smokes of the goal-level bot on 2026-09-22 served
+the goal, reason, mode, goal history and pack in `state.json` with the same
+CSP. The first exposed that perception swept once per rendered frame (first
+goal after 72 s); after sweeping per game tick the second chose its first
+goal after 16 s and felled a tree within 180 s, with zero decode errors.
