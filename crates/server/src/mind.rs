@@ -390,6 +390,9 @@ pub struct Summary {
     pub animals: Sighting,
     pub water_near: Sighting,
     pub last: Option<Report>,
+    /// The goal still running when this was asked (a heartbeat), with what
+    /// it has gained so far — so a source can let it finish.
+    pub current: Option<Report>,
     pub hits: u16,
     pub deaths: u32,
     pub respawns: u32,
@@ -449,6 +452,7 @@ impl Summary {
             bearing: 0,
         },
         last: None,
+        current: None,
         hits: 0,
         deaths: 0,
         respawns: 0,
@@ -526,6 +530,11 @@ impl Summary {
                 "goal": r.goal.label().as_str(),
                 "outcome": r.outcome.word(),
                 "why": r.outcome.why().map(Why::text),
+                "gained": r.gained,
+                "seconds": r.secs,
+            })),
+            "current_goal": self.current.map(|r| json!({
+                "goal": r.goal.label().as_str(),
                 "gained": r.gained,
                 "seconds": r.secs,
             })),
@@ -1086,6 +1095,12 @@ impl Scripted {
                 return (Goal::Forage, "scripted: food is low, a bush is in view");
             }
         }
+        // A heartbeat with no urgent need lets a working goal finish: the
+        // rotation below is for choosing a new one, not for abandoning a
+        // tree half felled.
+        if let Some(current) = s.current.filter(|c| s.offers(c.goal)) {
+            return (current.goal, "scripted: keep going");
+        }
         // Better tools first, named by the controller's own tool ladders.
         for ladder in [crate::explorer::TREE_TOOLS, crate::explorer::NODE_TOOLS] {
             let owned = ladder.iter().position(|t| s.count_of(t) > 0);
@@ -1321,5 +1336,16 @@ mod tests {
         s.items[0] = (hatchet, 1);
         s.items_len = 1;
         assert_ne!(scripted.pick(&s).0, Goal::Craft(hatchet), "already owned");
+        // A heartbeat keeps a working goal, unless something is urgent.
+        s.current = Some(Report {
+            goal: Goal::GatherWood,
+            outcome: Outcome::Running,
+            gained: 150,
+            secs: 30,
+        });
+        s.trigger = Trigger::Heartbeat;
+        assert_eq!(scripted.pick(&s).0, Goal::GatherWood);
+        s.water = 10;
+        assert_eq!(scripted.pick(&s).0, Goal::Drink, "thirst outranks the work");
     }
 }

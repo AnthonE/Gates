@@ -428,7 +428,20 @@ impl Survivor {
     /// The summary this body would send now; pure, for display and tests.
     pub fn summary(&self, view: &ClientView, player: u32) -> Option<Summary> {
         let core = self.core.as_deref()?;
-        Some(observe(core, view, player, &self.senses, &self.memory))
+        Some(self.summarize(core, view, player))
+    }
+
+    /// `observe`, plus the goal this body is running now.
+    fn summarize(&self, core: &ClientCore, view: &ClientView, player: u32) -> Summary {
+        let mut s = observe(core, view, player, &self.senses, &self.memory);
+        let tick = view.newest_applied.unwrap_or_default();
+        s.current = self.goal.map(|a| Report {
+            goal: a.goal,
+            outcome: Outcome::Running,
+            gained: a.gained,
+            secs: tick.wrapping_sub(a.started) / TICK_HZ,
+        });
+        s
     }
 
     pub fn frame_at(
@@ -578,7 +591,7 @@ impl Survivor {
         tick: u32,
         now: Instant,
     ) -> bool {
-        let summary = observe(core, view, player, &self.senses, &self.memory);
+        let summary = self.summarize(core, view, player);
         if summary.options_len == 0 || !self.mind.ask(now, &summary) {
             return false;
         }

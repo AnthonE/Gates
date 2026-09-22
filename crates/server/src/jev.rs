@@ -229,6 +229,12 @@ mod tests {
             secs: u32::MAX,
         });
         s.trigger = Trigger::Heartbeat;
+        s.current = Some(Report {
+            goal: Goal::Craft(long(9)),
+            outcome: crate::mind::Outcome::Running,
+            gained: u32::MAX,
+            secs: u32::MAX,
+        });
         for g in Goal::FIXED {
             s.offer(g);
         }
