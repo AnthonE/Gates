@@ -115,6 +115,11 @@ impl Controller {
                     Err(client::SendError::Closed) => {
                         return Err("the bot's action lane closed".into())
                     }
+                    // A spectator seat cannot act (v73). The bot joins as a
+                    // player, so this is a wiring fault: stop, never drop.
+                    Err(client::SendError::ReadOnly) => {
+                        return Err("the bot's session is a read-only seat".into())
+                    }
                 }
             }
         }
