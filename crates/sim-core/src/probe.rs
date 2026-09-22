@@ -1441,6 +1441,62 @@ pub fn headroom_probe() -> HeadroomProbe {
         cols.add(cx, HEADROOM_CZ, 1, loc, SHAPE_STAIRS, plate);
         cols.add(cx, HEADROOM_CZ, 2, LOC_PLANE, SHAPE_FLOOR_FRAME, plate);
     }
+    // Half-storey movement is part of the same native/Wasm and allocation
+    // probe: cross low cover at ground height, then at its actual upper socket.
+    for start in [12, 15] {
+        for dx in [start, start + 1] {
+            let cx = HEADROOM_CX + dx;
+            let plate = (band - terrain_band(HEADROOM_SEED, &haven, cx, HEADROOM_CZ)) as i8;
+            cols.add(
+                cx,
+                HEADROOM_CZ,
+                if start == 12 { 0 } else { 8 },
+                LOC_PLANE,
+                SHAPE_FLOOR,
+                plate,
+            );
+            if dx == start + 1 {
+                cols.add(cx, HEADROOM_CZ, 0, LOC_EDGE_XLO, SHAPE_HALF_WALL, plate);
+            }
+        }
+    }
+    // Every new circulation kind enters the allocation and native/Wasm
+    // fixture. Each plot uses its own terrain band so a distant hill cannot
+    // bury a flight and silently remove it from the movement coverage.
+    for (i, shape) in [
+        SHAPE_FOUNDATION_STEPS,
+        SHAPE_RAMP,
+        SHAPE_STAIRS_L,
+        SHAPE_STAIRS_U,
+        SHAPE_STAIRS_SPIRAL,
+        SHAPE_STAIRS_TRI_SPIRAL,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let cx = HEADROOM_CX + 20 + i as u16 * 2;
+        let steps = shape == SHAPE_FOUNDATION_STEPS;
+        let plate = if steps { PLATE_RISE_MAX_BANDS as i8 } else { 0 };
+        if !steps {
+            cols.add(cx, HEADROOM_CZ, 1, LOC_PLANE, SHAPE_FLOOR, plate);
+        }
+        cols.add(
+            cx,
+            HEADROOM_CZ,
+            if steps { 0 } else { 1 },
+            LOC_RISER,
+            shape,
+            plate,
+        );
+        cols.add(
+            cx,
+            HEADROOM_CZ,
+            3,
+            LOC_TRI_XHI_ZHI,
+            SHAPE_TRI_FLOOR_FRAME,
+            plate,
+        );
+    }
     HeadroomProbe {
         haven,
         cols,
@@ -1460,11 +1516,18 @@ pub fn run_headroom_probe(p: &mut HeadroomProbe) -> u64 {
     let underside = base + LEVEL_H_M - PLANE_THICKNESS_M;
     let mut hash = Xxh3::new();
     let mut contacts = 0u64;
-    for route in 0..6 {
+    for route in 0..8 {
         let (dx, dz, rise) = if route == 0 {
             (1.5, 0.09, 0.09)
         } else if route == 1 {
             (BUILD_CELL_M + 0.6, 0.6, 0.0)
+        } else if route >= 6 {
+            let cell = if route == 6 { 13 } else { 16 };
+            (
+                cell as f32 * BUILD_CELL_M - 0.6,
+                1.5,
+                if route == 6 { 0.0 } else { LEVEL_H_M * 0.5 },
+            )
         } else {
             let turn = route - 2;
             let offset = (3 + turn * 2) as f32 * BUILD_CELL_M;
@@ -1488,7 +1551,7 @@ pub fn run_headroom_probe(p: &mut HeadroomProbe) -> u64 {
             let direction = if tick < 20 { 127 } else { -127 };
             let frame = InputFrame {
                 move_x: match route {
-                    3 => direction,
+                    3 | 6 | 7 => direction,
                     5 => -direction,
                     _ => 0,
                 },
@@ -1533,6 +1596,85 @@ pub fn run_headroom_probe(p: &mut HeadroomProbe) -> u64 {
                 hash.update(&q.to_le_bytes());
             }
             hash.update(&[body.grounded as u8]);
+        }
+    }
+    // Sweep the lanes and sample projectile contact too, without allocating
+    // paths. Assertions about traversal live in tests/circulation.rs.
+    for route in 0..6 {
+        let cx = HEADROOM_CX + 20 + route * 2;
+        let x = cx as f32 * BUILD_CELL_M + 0.5;
+        let z = HEADROOM_CZ as f32 * BUILD_CELL_M;
+        let own_base = column_floor_y(
+            HEADROOM_SEED,
+            &p.haven,
+            cx,
+            HEADROOM_CZ,
+            p.cols.get(cx, HEADROOM_CZ).plate,
+        );
+        let start_z = match route {
+            4 => 1.5,
+            5 => 2.45,
+            _ => 0.1,
+        };
+        let mut body = Body {
+            qx: quant_xz(x),
+            qz: quant_xz(z + start_z),
+            qy: quant_y(
+                own_base
+                    + if route == 0 {
+                        -LEVEL_H_M * 0.5 + start_z * 0.5
+                    } else {
+                        LEVEL_H_M
+                    },
+            ),
+            qvy: 0,
+            grounded: true,
+        };
+        for tick in 0..80 {
+            let frame = InputFrame {
+                move_z: if (tick < 40) != (route == 5) { 40 } else { -40 },
+                ..InputFrame::default()
+            };
+            movement::step(
+                HEADROOM_SEED,
+                &p.haven,
+                &p.cols,
+                &mut p.scratch.occupants(),
+                &mut body,
+                &frame,
+            );
+            for q in [body.qx, body.qy, body.qz, body.qvy] {
+                hash.update(&q.to_le_bytes());
+            }
+            let stop = crate::collide::shot_stop(
+                HEADROOM_SEED,
+                &p.haven,
+                &p.cols,
+                x,
+                z + 1.0,
+                x,
+                z + 1.1,
+                body.qy as f32 * POS_Y_Q - 0.1,
+                crate::ranged::ARROW_R_M,
+            );
+            hash.update(&[stop.map_or(255, |hit| hit.loc)]);
+        }
+        // Both the open centroid and solid corner of the triangular frame
+        // contribute, so its mask cannot disappear without moving the hash.
+        for offset in [2.0, 2.9] {
+            let at_x = cx as f32 * BUILD_CELL_M + offset;
+            let stop = crate::collide::shot_stop(
+                HEADROOM_SEED,
+                &p.haven,
+                &p.cols,
+                at_x,
+                z + offset,
+                at_x,
+                z + offset,
+                own_base + 3.0 * LEVEL_H_M - 0.1,
+                crate::ranged::ARROW_R_M,
+            );
+            hash.update(&[stop.map_or(255, |hit| hit.loc)]);
         }
     }
     (contacts << 32) | (hash.digest() & 0xFFFF_FFFF)

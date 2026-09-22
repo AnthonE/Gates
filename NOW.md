@@ -1312,92 +1312,44 @@ The first two need a wire field (`DECISIONS.md` §open):
   shown it.
 
 
-## 0bl · The lattice's residuals: a seam, a memo, and a shot with no flanks *(client+sim lane)*
+## 0bl · Building catalogue and remaining playtest *(client+sim lane)*
 
-✅ **2026-09-05, three of the playtest's four**: the seam is retired, every
-corner has one post, a wall's head sits inside the floor above (gap v1); the
-storey follows the aim (aimed level v0); a first foundation takes the band it
-asked for (foundation height v0, `PROTO_VER` 62). `DECISIONS.md` §open has
-the three rows; `client/tests/gaps.rs` and `storey.rs` are the gates.
+✅ **2026-09-21:** 21 shapes across four grades, including half/low walls,
+foundation steps, ramps, L/U and square/triangular spiral stairs, and both
+floor-frame footprints. Half walls support their actual tops; stacked spirals
+carry the next half-flight. Plate bounds and the eight-storey limit stay fixed.
+Wall feet close lower-neighbour gaps; lower-half aim continues beside a wall.
+R/F turns flights, Shift+R/F adjusts step-foundation height, and half-storeys
+read as 0.5, 1.5, etc. `findings/building-circulation-20260921.md` has evidence.
 
-✅ **2026-09-20, ceiling headroom**: a floor over stairs used to let the
-capsule climb through it, and a jump could put its head inside a slab.
-Shared movement now stops both at the underside; open stairs still reach
-two upper landings and return. `sim-core/tests/headroom.rs`, allocation and
-native/Wasm parity cover it. The stair mesh now has treads (2026-09-20).
-**Stair placement turns with R/F** through four directions; **Floor Frame**
-in the build wheel leaves a real opening above the flight. Its rim bears
-walls, but its centre cannot hold deployables. Shared movement, projectile,
-save/load and mesh checks cover the opening. Combined playtest is next;
-post-placement hammer rotation is now built (§0p2).
-
-1. **A band-boundary wall bases on its canonical cell** and hangs one band over
-   the lower plate — an arrow-sized slit. The lower column is the honest base;
-   needs `collide` and the renderer together. Rare since the plate, not fixed.
-2. **The flank costs 153 µs a tick and the shot walk now pays too; one memo
-   takes most of both back.** `col_base_y` re-samples terrain per cell per
-   candidate. `build::terrain_band` is pure in (seed, cell), so a direct-mapped
-   memo is exact (`occupy::SlotCache`'s argument) and nothing memoizes it.
-   **Measured 2026-08-25** on `examples/shot_cost --base`: 100 shooters
-   volleying while stood on a slab is **1.25 → 3.07 ms** a tick against the
-   same run with nothing built, because `cell_planes_stop_shot` taps
-   `col_base_y` per sample over a plane-bearing column. Two callers now, same
-   fix, still not urgent — the number is an aligned volley, not play.
-3. ✅ **The shot walk reads the planes** (shot planes v0, 2026-08-25) —
-   `cell_planes_stop_shot`, gated by `tests/shoot.rs`' floor block. What it
-   still does not read is `ColMasks::solid`: see §0mk item 2.
-4. **The half wall** — the reference's answer to the gap a half-storey plate
-   offset leaves on upper floors. The twelve-shape catalogue has no half;
-   adding one also needs partial-height support and an upper snap socket,
-   because current edges bear the next whole storey. All 48 definition rows
-   are occupied. `findings/building-tools-20260920.md` records the boundary.
-5. **The stepped foundation — and DO NOT widen the plate limits instead.**
-   `reference/BUILDING.md` §7c.2 is a published, tested negative result on
-   exactly that change: they tried a three-metre gradient on `foundation.steps`
-   for our problem, it helped mountains, hurt flats and clipped their door
-   blocks, and they reverted it. Ours is a catalogue row plus a shape code
-   (§9 item 18), never a knob. Recorded here because it will keep suggesting
-   itself.
-6. **The diagonal wall's √2 root scale stretches its UVs** —
-   `render/structures.rs:1272` turns the slab ±45° and scales `SQRT_2` along
-   its length. Pinned so it cannot grow; `ART.md`'s business, not a defect.
-7. **Operator:** whether `place` should refuse a piece whose cell a body stands
-   in (`DECISIONS.md` §open "piece flanks v0"), and nobody has played the aimed
-   freehand bit — which rides no golden either, closing which means scripting
-   `sim-core/src/probe.rs` to build beside a built neighbour.
-8. **Nobody has played the three 2026-09-05 slices either**, and each has a
-   look or a feel only a person can judge: the corner posts (3 cm proud is a
-   guess at the reference's stone corners) and the apron on a stilted plate
-   (gap v1); a wall aimed at a wall's LOWER half stacks on top rather than
-   standing beside it (aimed level v0 — the reference snaps beside); the
-   aimed band stepping half a metre as the crosshair sweeps a sloped cell
-   (foundation height v0). The HUD's `+0.5 m` and `(R/F height)` hint are
-   the only teaching there is.
-9. **Operator: should a plate step disconnect?** In the reference a
-   height-offset piece takes no stability from its neighbour and an offset
-   foundation is a separate building, which is what their bunkers and
-   multi-TC bases are made of; ours walks addresses and never reads the
-   plate, so a freehand plate is still one base (`reference/BUILDING.md`
-   §9 item 24). A word, not a measurement.
+1. **Human playtest remains:** judge snapping, corner posts/aprons, soft-face
+   readability and walking a complete furnished base. Native captures inspect
+   geometry; automated movement, support, saving and parity tests cover rules.
+2. **The column-base memo remains a performance option:** `col_base_y`
+   repeats terrain sampling. The measured aligned volley cost was 1.25 →
+   3.07 ms/tick on 2026-08-25; this is not a new gameplay failure.
+3. **Diagonal-wall UV stretch remains** (`ART.md`): the √2 root scale
+   stretches the slab texture. Keep silhouette/fit separate from material art.
+4. **Operator calls remain:** placement inside a body, and whether height-
+   offset foundations split building privilege/stability (`DECISIONS.md`
+   §open "piece flanks v0"; `reference/BUILDING.md` §9.24).
 
 
-## 0ac · The catalogue's inserts, the soft face's look, and the diagonal price *(systems lane)*
+## 0ac · Inserts, soft faces and diagonal price *(systems lane)*
 
-1. **The inserts are unbuilt** — bars, glass, shutters, the garage door
-   (`reference/BUILDING.md` §7b.4's second purchase, §9.13's remainder).
-   Each is a deployable pass of its own; `content/building.toml` says so
-   at both socket rows, and `place_deploy` still requires
-   `SHAPE_DOORWAY`.
-2. **Soft wall faces are lighter, hard faces darker** (2026-09-20), selected
-   from the sim's facing and refreshed on hammer rotation. The shared meshes
-   reuse the existing face gains; the playtest should judge their readability.
-   Still owed: floor sides (needs a vertical attack direction) and the pairing
-   with `RIPLIST.md` §2's per-material resistance.
-3. **Triangles want a look and a price call**: a capture pass on a
-   diagonal base in the booted game (the person is the visual gate); the
-   wall-on-diagonal price — ~1.41× the length, today priced by the
-   socket (`DECISIONS.md` §open "triangles v0", open for the operator,
-   with the wheel at 11 wedges); and hard/soft's identity on tri halves.
+1. ✅ **Bars, glass, shutters and garage doors are built** (2026-09-21).
+   Bars/glass/shutters are alternatives for one window socket; garage doors
+   occupy wall frames. Shared collision, independent damage, saving, resync,
+   crafting and research are covered. Shutters toggle without a lock; garage
+   doors reuse the door lock/repair/pickup path. The findings record native
+   captures and their limits: `findings/window-fittings-20260921.md`.
+2. **Soft wall faces are lighter, hard faces darker** (2026-09-20), refreshed
+   on hammer rotation. Human review still owns readability. Floor-side damage
+   needs a vertical attack direction and the per-material resistance pairing
+   in `RIPLIST.md` §2 remains separate work.
+3. **Diagonal price is still an operator call:** ~1.41× the length, currently
+   priced by socket (`DECISIONS.md` §open "triangles v0"). Triangle faces and
+   the material treatment still benefit from play on an occupied base.
 
 
 ## 0tt · The bench ladder's craft rebate, unbuilt *(systems lane)*
@@ -2208,15 +2160,16 @@ is §0win's, not this item's.
    ratio stays DISPUTED until someone checks it against the in-game price.
 
 
-## 0ps · Pieces: staged damage, the missing shapes, the repeated wall *(client lane)*
+## 0ps · Pieces: staged damage, the catalogue, the repeated wall *(client lane)*
 
 1. **Damage bands have never been staged**: one row of one material, hit a
    known number of times, photographed at each band. ⚠ §0mk — no decal
    renders under lavapipe, so a headless run cannot check marked surfaces.
-2. **12 shapes against the reference's 20** (`BUILDING.md` §7b.1):
-   `sim-core/src/build.rs` declares `SHAPE_FOUNDATION`..`SHAPE_FLOOR_FRAME`
-   — no half/low wall, steps, ramp, 3 of 4 stair shapes. Rule 6 is
-   silhouette before surface, so this outranks more material work.
+2. ✅ **The catalogue is complete** (2026-09-21): 21 shapes in four grades.
+   Half/low walls, foundation steps, ramps, four additional stair forms and
+   triangular floor frames join the existing straight flight. Shared walk/shot
+   geometry, meshes, icons and native captures are in
+   `findings/building-circulation-20260921.md`. Material art remains below.
 3. **A base is a hundred identical walls at one rotation** (rule 7).
    `render/structures.rs` sets `uv_transform` from the tier's scale alone; the
    fix is a pool of per-tier variants (offset + tint) by address hash.

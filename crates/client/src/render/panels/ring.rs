@@ -71,6 +71,15 @@ pub const SHAPE_HI: [Handle<Image>; SHAPES.len()] = [
     uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5ef"),
     uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5f0"),
     uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5f1"),
+    uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d6e0"),
+    uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d6e1"),
+    uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d6e2"),
+    uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d6e3"),
+    uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d6e4"),
+    uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d6e5"),
+    uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d6e6"),
+    uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d6e7"),
+    uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d6e8"),
 ];
 
 /// The hammer wheel's base ring — same band, five wedges
