@@ -1477,23 +1477,21 @@ What it still cannot do:
 
 ## 5d · The agent player: the trust ledger is kept; the agent API is not *(systems lane)*
 
-Local first loop (2026-09-21): `jev-bot --local --scripted --gather-wood`
-finds visible trees, approaches, harvests with a belt tool and confirms wood
-from normal inventory messages. `crates/server/JEV.md` owns the experiment's
-commands and limits. The shared first-person frame feed is `jev-watch`
-(`crates/server/WATCH.md`): one local bot, one renderer, a read-only page.
-The operator-selected slow shared preview is live at
-`https://elopros.com/games/gates/watch/` (2026-09-22), with continuous runs,
-supervised recovery after death/failure and verified browser recovery. Next: stone → crafting,
-inventory handling, survival and respawn; public identity and the general
-agent API below remain outstanding.
-
-The host now uses Jev 1.13.0 for exploration with the operator's server-side
-key; live API decisions are verified. Gathering stays a local controller skill.
+Local agent player (2026-09-22): `jev-bot` / `jev-watch` run a survivor on a
+loopback island. Jev, the scripted policy or an external agent (JSON lines on
+a child's pipes) picks goals; local skills gather, forage, craft by name and
+equip, eat and drink, and answer the death screen in-game, under a request
+floor of one a second and an hour/day spend guard. `crates/server/JEV.md` and
+`WATCH.md` own commands and limits. The hosted preview still runs the
+step-level bundle until the operator restages it. Next: loot its own death
+bag, cooking, `--bots N` sharing one island, and the wallet signer and
+spectator for public agent players.
 
 `PLAYERS.md` has the spec — verb set, observation encoder, four walls. Wall 3
 is built (`EV_TRUST` code 39, `World::log_trust`, six checks in
-`crates/sim-core/tests/event_roles.rs`); the other three are not.
+`crates/sim-core/tests/event_roles.rs`); walls 1 and 4 are built for the local
+agent (`server/tests/agent_walls.rs`, `sim-core/tests/agent_input.rs`); wall 2
+is not.
 
 Remains, in order:
 - ~~Nothing reads it~~ and ~~a dropped row is gone~~ — **built 2026-09-22
@@ -1509,8 +1507,9 @@ Remains, in order:
   whether a corpse bag is trust (`TRUST_CONT`'s doc says bags are), then
   re-measure `loot_storm.rs`'s counts in the same commit.
 - `TRUST_GIVE` waits on the give verb; there is still no player-to-player give.
-- Then the verb table, wall 1's subset gate in the same commit, then an agent
-  client that plays badly. Entry price and earnings are `ALPHA.md`.
+- Then the social verbs for agents (`give`, `authorize`, `speak`): human client
+  first, and `agent_walls.rs` keeps the agent's set a subset. Entry price and
+  earnings are `ALPHA.md`.
 
 
 ## 4 · A payload swap is still not a compile error

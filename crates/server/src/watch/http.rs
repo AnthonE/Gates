@@ -156,19 +156,53 @@ fn route(header: &[u8]) -> (u16, &'static str) {
 }
 
 fn state(frame: Option<&Frame>) -> String {
-    match frame {
-        None => serde_json::json!({ "ready": false }),
-        Some(f) => serde_json::json!({
-            "ready": true, "frame": f.id, "age_ms": f.at.elapsed().as_millis() as u64,
-            "mode": if f.status.scripted { "Scripted demo" } else { "Jev 1.13.0" },
-            "action": f.status.action(), "seconds": f.status.seconds,
-            "hp": f.status.hp, "hp_max": f.status.hp_max,
-            "wood": f.status.wood, "wood_gained": f.status.gained,
-            "trees": f.status.trees, "retreats": f.status.retreats,
-            "decisions": f.status.decisions, "model_errors": f.status.failures,
-            "decode_errors": f.status.decode_errors,
-        }),
-    }
+    let Some(f) = frame else {
+        return serde_json::json!({ "ready": false }).to_string();
+    };
+    let st = &f.status;
+    let meter = |(v, max): (u16, u16)| {
+        if max == 0 {
+            serde_json::Value::Null
+        } else {
+            serde_json::json!([v, max])
+        }
+    };
+    // Newest first, as the page lists them.
+    let mut history: Vec<_> = st
+        .history
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "goal": r.goal.label().as_str(),
+                "outcome": r.outcome.word(),
+                "why": r.outcome.why().map(crate::mind::Why::text),
+                "gained": r.gained,
+                "seconds": r.secs,
+            })
+        })
+        .collect();
+    history.reverse();
+    serde_json::json!({
+        "ready": true, "frame": f.id, "age_ms": f.at.elapsed().as_millis() as u64,
+        "controller": st.source.label(),
+        "mode": st.mode_line(),
+        "paused": st.mode == crate::mind::Mode::Paused,
+        "action": st.action(), "seconds": st.seconds,
+        "goal": st.goal.map(|g| g.label().as_str().to_owned()),
+        "goal_seconds": st.goal_secs,
+        "reason": st.reason.as_str(),
+        "history": history,
+        "hp": st.hp, "hp_max": st.hp_max,
+        "food": meter(st.food), "water": meter(st.water),
+        "inventory": st.items().iter().map(|(n, c)| serde_json::json!({"name": n.as_str(), "count": c})).collect::<Vec<_>>(),
+        "wood": st.wood,
+        "trees": st.trees, "crafted": st.crafted, "retreats": st.retreats,
+        "deaths": st.deaths, "respawns": st.respawns,
+        "requests": st.requests, "decisions": st.decisions, "model_errors": st.failures,
+        "input_tokens": st.input_tokens, "output_tokens": st.output_tokens,
+        "requests_hour": [st.hour.0, st.hour.1], "requests_day": [st.day.0, st.day.1],
+        "decode_errors": st.decode_errors,
+    })
     .to_string()
 }
 
@@ -273,20 +307,7 @@ mod tests {
                 image,
                 id: 7,
                 at: std::time::Instant::now(),
-                status: super::super::Status {
-                    scripted: true,
-                    phase: crate::explorer::Phase::Harvesting,
-                    seconds: 12,
-                    hp: 80,
-                    hp_max: 100,
-                    wood: 42,
-                    gained: 42,
-                    trees: 0,
-                    retreats: 1,
-                    decisions: 3,
-                    failures: 0,
-                    decode_errors: 0,
-                },
+                status: status(),
             })
             .ok()
             .unwrap();
@@ -318,18 +339,75 @@ mod tests {
             let state: serde_json::Value = serde_json::from_str(metadata).unwrap();
             assert_eq!(state["frame"], 7);
             assert_eq!(state["wood"], 42);
-            assert_eq!(state["action"], "Gathering wood");
+            assert_eq!(state["action"], "Harvesting");
+            assert_eq!(state["goal"], "gather_wood");
+            assert_eq!(state["reason"], "scripted: next resource in the rotation is in view");
+            assert_eq!(state["history"][0]["goal"], "craft:Stone Hatchet");
+            assert_eq!(state["history"][1]["outcome"], "failed");
+            assert_eq!((state["deaths"].as_u64(), state["respawns"].as_u64()), (Some(1), Some(1)));
+            assert_eq!(state["inventory"][0]["name"], "Wood");
         }
         let decoded = image::load_from_memory(&a[body..]).unwrap();
         assert_eq!((decoded.width(), decoded.height()), (WIDTH, HEIGHT));
         assert!(get(server.address, "/frame.jpg?n=6").starts_with(b"HTTP/1.1 409"));
         let state = get(server.address, "/state.json");
         let state = String::from_utf8_lossy(&state);
-        assert!(state.contains("Scripted demo"));
+        assert!(state.contains("Scripted · paused: spend cap"));
+        assert!(state.contains("\"paused\":true"));
         assert!(state.contains("\"wood\":42"));
         drop(capture);
         drop(server);
     }
+    fn status() -> super::super::Status {
+        use crate::mind::{Goal, History, Name, Outcome, Reason, Report, Why};
+        let hatchet = Name::new(b"Stone Hatchet").unwrap();
+        let mut history = History::default();
+        history.push(Report {
+            goal: Goal::GatherStone,
+            outcome: Outcome::Failed(Why::NotFound),
+            gained: 0,
+            secs: 20,
+        });
+        history.push(Report {
+            goal: Goal::Craft(hatchet),
+            outcome: Outcome::Done,
+            gained: 1,
+            secs: 15,
+        });
+        let mut items = [(Name::EMPTY, 0); super::super::PAGE_ITEMS];
+        items[0] = (Name::new(b"Wood").unwrap(), 42);
+        super::super::Status {
+            source: crate::mind::SourceKind::Scripted,
+            mode: crate::mind::Mode::Paused,
+            phase: crate::explorer::Phase::Harvesting,
+            goal: Some(Goal::GatherWood),
+            goal_secs: 4,
+            reason: Reason::from_text("scripted: next resource in the rotation is in view"),
+            history,
+            seconds: 12,
+            hp: 80,
+            hp_max: 100,
+            food: (300, 500),
+            water: (0, 0),
+            items,
+            items_len: 1,
+            wood: 42,
+            deaths: 1,
+            respawns: 1,
+            trees: 0,
+            crafted: 1,
+            retreats: 1,
+            requests: 3,
+            decisions: 3,
+            failures: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            hour: (3, 600),
+            day: (3, 7200),
+            decode_errors: 0,
+        }
+    }
+
     #[test]
     fn the_watch_origin_has_no_control_or_file_routes() {
         for target in [
