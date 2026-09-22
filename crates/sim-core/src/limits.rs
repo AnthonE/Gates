@@ -1194,3 +1194,41 @@ pub const MAX_MOB_BITES_PER_TICK: usize = 8;
 /// every tick, so a waking animal can be up to `MOB_THINK_TICKS` late —
 /// half a second, at a distance of two hundred metres.
 pub const MOB_WAKE_CM: i64 = 24_000;
+
+// ---------------------------------------------------------------------------
+// The trust ledger (`trust.rs`, `PLAYERS.md` wall 3). Ledger lane, 2026-09-22.
+// ---------------------------------------------------------------------------
+
+/// Trust rows one applied command may mint. **One, and the borrow checker
+/// holds it rather than a test**: a row is pushed by spending a
+/// `trust::TrustSeat` by value, and a seat is neither `Clone` nor `Copy`, so
+/// a second push in one command is `E0382` at compile time. A verb that
+/// genuinely needs two rows changes that type and this number in the same
+/// commit. Structural, not a knob.
+pub const TRUST_ROWS_PER_COMMAND: usize = 1;
+
+/// The trust ledger's per-tick ring (`World::trust`), cleared at tick start
+/// and drained by the shard after every tick (`server/src/trustlog.rs`).
+///
+/// **Derived from a proven bound rather than picked**, because loss is the
+/// thing this ring exists to prevent: rows per tick ≤ seats per tick ≤
+/// `MAX_COMMANDS_PER_TICK` × `TRUST_ROWS_PER_COMMAND` (`trust.rs` holds the
+/// derivation, `tests/trust_ledger.rs` gates each link). So the ring is
+/// exactly as deep as the most rows a tick can make.
+///
+/// Overflow policy: **none reachable, counted anyway** (`TrustLedger::
+/// overflow`, surfaced by the shard as `trust_sim_overflow` and as a gap
+/// line in the log itself). Never a silent drop.
+///
+/// Typed as the number, with the derivation asserted beside it: the knob
+/// registry (`ci/knob_registry.mjs`) reads literals and cannot evaluate an
+/// expression, which is `AOI_RANK_ENTER`'s lesson above. Cost: 256 × 12 B,
+/// one boxed allocation at construction, nothing in the tick (wall 2).
+/// Registered in DECISIONS.md §open ("trust ledger v1").
+pub const MAX_TRUST_ROWS_PER_TICK: usize = 256;
+const _: () = assert!(
+    MAX_TRUST_ROWS_PER_TICK == MAX_COMMANDS_PER_TICK * TRUST_ROWS_PER_COMMAND,
+    "MAX_TRUST_ROWS_PER_TICK must stay the command ceiling times the rows one \
+     command may mint. One of them moved and the ring stopped being a proof: \
+     a tick can now make more trust rows than it has room to keep"
+);
