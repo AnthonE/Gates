@@ -31,8 +31,10 @@ versions must agree.
 
 The vocabulary (`mind.rs`): `explore`, `gather_wood`, `gather_stone`,
 `gather_ore`, `forage`, `craft:<item name>`, `eat`, `drink`, `flee`, `wait`.
-Only goals that can work now are offered, and a reply naming anything else is
-refused.
+Only goals that can work now are offered — a gather goal needs a belt tool
+for the kind and room for what it pays, eat needs something worth eating, and
+drink needs known water-giving food or the sea plus the health to pay for it —
+and a reply naming anything else is refused.
 
 - **gather** — find a visible node of the kind (32 m, 90° cone, line of sight,
   one cell per frame), approach, hold primary with the best belt tool by name

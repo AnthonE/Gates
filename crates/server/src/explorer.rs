@@ -209,6 +209,9 @@ pub struct Memory {
     pub respawns: u32,
     pub trigger: Trigger,
     pub food: FoodBook,
+    /// Items each resource kind has been seen to pay (gather receipts),
+    /// as masks over item indices: what "room for it" means.
+    pub yields: [u64; 4],
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -325,7 +328,6 @@ pub struct Survivor {
     heading: Option<u16>,
     wander_mark: Option<(u32, i32, i32)>,
     wander_turn: u32,
-    yields: [u64; 4],
     outbox: Option<([u8; MAX_STREAM_MSG_BYTES], usize)>,
     awaiting: Option<(Pending, u32)>,
     verdict: Option<Verdict>,
@@ -368,7 +370,6 @@ impl Survivor {
             heading: None,
             wander_mark: None,
             wander_turn: 0,
-            yields: [0; 4],
             outbox: None,
             awaiting: None,
             verdict: None,
@@ -801,7 +802,7 @@ impl Survivor {
             return frame;
         };
         frame.sel = sel;
-        if !room_for(core, self.yields[kind as usize]) {
+        if !room_for(core, self.memory.yields[kind as usize]) {
             self.end_goal(tick, Outcome::Failed(Why::PackFull));
             return frame;
         }
@@ -1274,7 +1275,7 @@ impl Survivor {
             if let Some(a) = self.goal.as_mut() {
                 a.gained = a.gained.saturating_add(u32::from(added));
                 if let Some(kind) = Kind::of_goal(a.goal) {
-                    self.yields[kind as usize] |= FoodBook::bit(item);
+                    self.memory.yields[kind as usize] |= FoodBook::bit(item);
                 }
             }
             if self.target.is_some() {
@@ -1658,15 +1659,24 @@ pub fn observe(
     if s.body != BodyState::Alive {
         return s;
     }
+    // A gather goal needs a tool for the kind and room for what it pays: a
+    // full pack takes the offer away rather than failing every second.
     s.offer(Goal::Explore);
-    if best_tool(core, Kind::Wood).is_some() {
+    let fits = |kind: Kind| room_for(core, memory.yields[kind as usize]);
+    if best_tool(core, Kind::Wood).is_some() && fits(Kind::Wood) {
         s.offer(Goal::GatherWood);
     }
     if best_tool(core, Kind::Stone).is_some() {
-        s.offer(Goal::GatherStone);
-        s.offer(Goal::GatherOre);
+        if fits(Kind::Stone) {
+            s.offer(Goal::GatherStone);
+        }
+        if fits(Kind::Ore) {
+            s.offer(Goal::GatherOre);
+        }
     }
-    s.offer(Goal::Forage);
+    if fits(Kind::Forage) {
+        s.offer(Goal::Forage);
+    }
     // Eat and drink are offered only below the level they fill to, and
     // only where they can work: something worth eating in the pack; a food
     // the eat verb has seen restore water, or open water in sight and the
@@ -2440,7 +2450,7 @@ mod tests {
         event(&mut bot, n, &buf);
         assert_eq!(bot.gathered_of("Wood"), 25);
         assert_eq!(bot.stats.gather_awards, 1);
-        assert_ne!(bot.yields[Kind::Wood as usize], 0);
+        assert_ne!(bot.memory.yields[Kind::Wood as usize], 0);
         let core = bot.core.as_mut().unwrap();
         core.inv.fill(ItemStack {
             item: 6,
@@ -2452,6 +2462,11 @@ mod tests {
             count: 1,
             cond: 100,
         };
+        let summary = bot.summary(&view, 1).unwrap();
+        assert!(
+            !summary.offers(Goal::GatherWood),
+            "a full pack takes the offer away"
+        );
         bot.frame_at(&view, 1, 2, now);
         assert_eq!(bot.memory.last.unwrap().outcome, Outcome::Failed(Why::PackFull));
         // A stack of the yield with room is still room.
@@ -2461,7 +2476,8 @@ mod tests {
             count: 10,
             cond: 0,
         };
-        assert!(room_for(core, bot.yields[Kind::Wood as usize]));
+        assert!(room_for(core, bot.memory.yields[Kind::Wood as usize]));
+        assert!(bot.summary(&view, 1).unwrap().offers(Goal::GatherWood));
     }
 
     #[test]
