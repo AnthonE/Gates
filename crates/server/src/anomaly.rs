@@ -216,6 +216,12 @@ pub const WATCHED: &[&str] = &[
     // is the counter that says somebody is reaching for it. `DESIGN.md`
     // §5.8's "outliers surface in the anomaly log", built.
     "favour_disagree",
+    // Trust rows the ledger did not get (`trustlog.rs`). The first is a
+    // disk that fell behind; the second is `sim_core::trust`'s derivation
+    // failing, which it cannot do. Both are also gap lines in the trust log
+    // itself, and this puts the tick they happened at beside everything else.
+    "trust_ring_drops",
+    "trust_sim_overflow",
 ];
 
 /// The previous tick's reading of every watched counter, so the sweep can

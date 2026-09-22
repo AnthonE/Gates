@@ -49,6 +49,8 @@ pub mod slot;
 pub mod stats;
 pub mod status;
 pub mod store;
+/// The trust ledger's sink: every trust row, appended off the sim thread.
+pub mod trustlog;
 #[cfg(feature = "watch")]
 pub mod watch;
 pub mod worldfile;

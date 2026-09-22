@@ -201,6 +201,9 @@ pub struct ShardCore {
     /// whose header says it holds no `ShardStats`: a list of addresses is
     /// data, not a side effect.
     admins: crate::admin::Admins,
+    /// The trust ledger's sink (`trustlog.rs`), drained once per tick.
+    /// `Tap::off()` unless the shard installed a log.
+    pub trust: crate::trustlog::Tap,
 }
 
 /// The three side channels an admin verb needs and the sim's own state
@@ -349,6 +352,7 @@ impl ShardCore {
             last_saved: vec![PlayerSave::EMPTY; MAX_PLAYERS].into_boxed_slice(),
             keys: vec![None; MAX_PLAYERS].into_boxed_slice(),
             sleepers: SleeperIndex::new(),
+            trust: crate::trustlog::Tap::off(),
         }
     }
 
@@ -1144,6 +1148,9 @@ impl ShardCore {
             }
         }
         self.world.tick(&self.cmd_buf[..n]);
+        // This tick's trust rows leave for the log before the next
+        // `World::tick` clears them (`trustlog.rs`).
+        crate::trustlog::Tap::drain(self, stats);
 
         for slot in 0..MAX_PLAYERS {
             if self.clients[slot].connected {

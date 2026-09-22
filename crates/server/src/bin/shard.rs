@@ -213,7 +213,7 @@ async fn main() {
     // than inside `spawn_shard`: a save file describes inventories as item
     // *indices*, so restoring it under moved content would hand players the
     // wrong things, and that has to be a refusal rather than a surprise.
-    let saves = match cfg.save_file.as_deref() {
+    let mut saves = match cfg.save_file.as_deref() {
         None => {
             println!("saves off: no save_file — every join builds a fresh character");
             server::store::Saves::off()
@@ -281,6 +281,12 @@ async fn main() {
     // thrown away, and the bytes are handed to the sim thread to load into
     // the world it actually runs (`worldfile::WorldBoot` says why twice is
     // right).
+    // The island's own digest, computed once: the world file's header pins
+    // it, and the trust log's header names the island its rows are about.
+    let world_digest = cfg
+        .world_file
+        .as_ref()
+        .map(|_| sim_core::probe::probe_terrain(cfg.seed));
     let world_boot = match cfg.world_file.as_deref() {
         None => {
             println!("world off: no world_file — the island is generated fresh every boot");
@@ -302,7 +308,7 @@ async fn main() {
             // `test_terrain_golden` pins, so a build whose worldgen moved
             // refuses the file rather than putting bases on ground that
             // changed shape (`worldfile::H_WORLD`).
-            let world_digest = sim_core::probe::probe_terrain(cfg.seed);
+            let world_digest = world_digest.unwrap_or_default();
             match server::worldfile::open(
                 Path::new(path),
                 &mut trial,
@@ -357,6 +363,51 @@ async fn main() {
     // `require_auth = true` proved a joiner carried *something*. It now
     // proves they hold the private key behind the address they claim
     // (`auth.rs`), which is the thing the warning was waiting for.
+    // **The trust ledger's log** (`server::trustlog`), beside the world file
+    // it records: `<world_file>.trust/`. Tied to the world file and not a key
+    // of its own because its rows are stamped with the world's tick, and that
+    // tick only continues across a restart when the world does. Opened here,
+    // before a port is bound, so a directory it cannot write refuses the boot
+    // the way a save file does.
+    let mut trust_log = match (cfg.world_file.as_deref(), world_digest) {
+        (Some(world_path), Some(world)) => {
+            let dir = format!("{world_path}.trust");
+            let ident = server::trustlog::ShardIdent {
+                domain: cfg.domain.clone(),
+                seed: cfg.seed,
+                content: content.hash(),
+                world,
+                build: protocol::version::BUILD_ID.to_string(),
+                proto: protocol::PROTO_VER,
+            };
+            match server::trustlog::spawn(
+                Path::new(&dir),
+                ident,
+                server::trustlog::Limits::default(),
+            ) {
+                Ok((tap, log)) => {
+                    println!(
+                        "trust log ok: {dir}/{} · boot {}",
+                        server::trustlog::segment_name(log.segment),
+                        log.boot
+                    );
+                    saves.trust = tap;
+                    Some(log)
+                }
+                Err(e) => {
+                    eprintln!("shard: trust log {dir}: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        _ => {
+            println!(
+                "trust log off: no world_file — trust rows are counted (trust_unlogged) \
+                 and kept nowhere"
+            );
+            None
+        }
+    };
     let status_addr = cfg.status_addr;
     // **The shard's own inhabitants** (`population.rs`), resolved before the
     // config moves into `spawn_shard`. The rows come off the content this
@@ -462,11 +513,13 @@ async fn main() {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
                 shutdown(&handle, "SIGINT").await;
+                trust_down(trust_log.as_mut());
                 drain(pop.take()).await;
                 return;
             }
             name = stop.recv() => {
                 shutdown(&handle, name).await;
+                trust_down(trust_log.as_mut());
                 drain(pop.take()).await;
                 return;
             }
@@ -520,6 +573,7 @@ async fn main() {
         // seating them over the wire — so this is the only place the split
         // is readable. `live` against the configured count is the health
         // number; `errors` climbing is a population fighting its own wire.
+        trust_line(s, trust_log.as_ref());
         if let Some(p) = &pop {
             let g = &p.stats;
             println!(
@@ -551,6 +605,65 @@ async fn drain(pop: Option<Population>) {
     if let Some(p) = pop {
         p.join().await;
         println!("population left");
+    }
+}
+
+/// The trust ledger's line on the 10 s report. Silent on a shard that has
+/// neither a log nor a row, so a quiet dev shard's console stays quiet.
+fn trust_line(s: &ShardStats, log: Option<&server::trustlog::TrustLog>) {
+    use server::trustlog::WriterStats as W;
+    let rows = ShardStats::get(&s.trust_rows);
+    match log {
+        Some(l) => {
+            let w = &l.stats;
+            println!(
+                "trust rows {rows} · written {} · gaps {} · dropped {} · sim overflow {} · \
+                 write errors {} · segments {} (pruned {})",
+                W::get(&w.rows_written),
+                W::get(&w.gaps_written),
+                ShardStats::get(&s.trust_ring_drops),
+                ShardStats::get(&s.trust_sim_overflow),
+                W::get(&w.write_errors),
+                W::get(&w.segments_opened),
+                W::get(&w.segments_pruned),
+            );
+            // The writer only stops when the sim thread lets go of its tap,
+            // which a running shard never does. Said out loud rather than
+            // inferred: this is the ledger silently not being kept.
+            if w.stopped() {
+                println!(
+                    "trust WARNING: the log writer has stopped while the shard runs — \
+                     the sim thread is not holding its tap, and no row is being kept"
+                );
+            }
+        }
+        None if rows > 0 => println!(
+            "trust rows {rows} · unlogged {} (no world_file, so no trust log)",
+            ShardStats::get(&s.trust_unlogged)
+        ),
+        None => {}
+    }
+}
+
+/// Wait for the trust log's writer to write its `close` line. It stops once
+/// the sim thread drops its tap, which `shutdown` has already waited for.
+fn trust_down(log: Option<&mut server::trustlog::TrustLog>) {
+    let Some(log) = log else {
+        return;
+    };
+    if log.join_within(SHUTDOWN_WAIT) {
+        println!(
+            "shard: trust log closed · {} rows written this boot ({} gaps, {} write errors)",
+            server::trustlog::WriterStats::get(&log.stats.rows_written),
+            server::trustlog::WriterStats::get(&log.stats.gaps_written),
+            server::trustlog::WriterStats::get(&log.stats.write_errors),
+        );
+    } else {
+        eprintln!(
+            "shard: WARNING — the trust log writer did not finish inside {}s; \
+             its last lines may be unsynced",
+            SHUTDOWN_WAIT.as_secs()
+        );
     }
 }
 
