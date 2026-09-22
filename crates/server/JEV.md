@@ -1,117 +1,108 @@
-# Jev local bot prototype
+# Jev: an agent player on a local island
 
-To run the first gathering loop without a model key:
-
-```sh
-cargo run -p server --release --bin jev-bot -- --local --scripted --gather-wood
-```
-
-With `TYPESAFE_API_KEY` set, omit `--scripted` to let Jev explore. The
-collect-wood goal is fixed in this slice: a local controller finds a visible
-tree, walks within the ordinary swing reach, selects a working rock/hatchet
-from its belt and harvests until the tree is gone. It then searches again.
-The final `gathering` line reports actual inventory wood and its increase;
-a collect-wood run with no confirmed gain exits unsuccessfully.
-
-The controller reuses `ClientCore` for inventory, content catalog, harvested
-slots and built collision. A preallocated event ring delivers the reliable
-lane in order; overflow or closure ends the session rather than silently
-losing a state update. Search checks one nearby terrain cell per frame, within
-32 m and a 90-degree view cone, and checks terrain, scenery and built cover
-before acquiring a target. These are the human client's procedural scenery
-and received deltas. No authoritative `World` is available to the controller.
-Neither the seed nor these target coordinates are sent to Jev.
-
-It turns away from deeper water while searching, abandons a target after
-three seconds of simulated time without approach/harvest progress, and takes
-a one-second sideways route before searching again. One failed target is
-remembered so it does not immediately retry the same obstacle. It stops on
-stale snapshots, death/wounding/sleep, a full pack or no working belt tool.
-Nearby bodies inhibit harvesting. Item names come from the wire catalog;
-item indices, yields, stack sizes and condition ceilings are never assumed.
-
-A received hit interrupts gathering. The bot looks toward the ordinary
-damage-direction indicator and sprints backwards. A nearby body that remains
-visible renews the retreat, as does another hit; it resumes travelling away
-after six seconds without either. At most one body sight ray runs per frame,
-using the same range, view cone and cover checks as tree perception. A hidden
-attacker's position is never queried. The abandoned tree is remembered so the
-bot does not immediately return to it.
-
-This is a rough wood collector: no general path planner, inventory rearranging,
-stone gathering, crafting, eating, deliberate combat, respawning or reconnecting yet.
-Escape is still unreliable on rough terrain; normal-spawn runs can end in
-animal deaths and lose the collected inventory.
-Trees behind vegetation volumes may be conservatively hidden. A nearby-body
-check reduces accidental swings at other players but cannot prevent a body
-from moving into a swing between snapshots.
-
-Without `--gather-wood`, the guest explorer walks, turns and jumps using the
-same input datagrams and snapshot decoder as the existing load bots. Jev
-chooses a movement once per second; a worker handles HTTP while inputs keep
-flowing at the game's cadence. Preallocated single-slot rings carry observations
-and decisions; request serialization and error-string destruction stay on the worker. This is the first movement experiment toward
-PLAYERS.md, not its wallet-bearing public agent API.
-
-Run from this worktree, with a TypeSafe key in `TYPESAFE_API_KEY`:
+`jev-bot` plays one guest body on a loopback shard with the same inputs,
+actions and received state as the human client. A decision source picks
+**goals**; local skills carry them out. It survives in-game: death is answered
+on the death screen and play goes on, so the process ends only when the run
+ends or the connection fails.
 
 ```sh
-cargo run -p server --release --bin jev-bot -- --local
+# explicit scripted goals, no model calls
+cargo run -p server --release --bin jev-bot -- --local --scripted --seconds 600
+# Jev (needs TYPESAFE_API_KEY); omit --scripted
+cargo run -p server --release --bin jev-bot -- --local --seconds 600
+# bring your own agent (must be the last flag)
+cargo run -p server --release --bin jev-bot -- --local --external python3 crates/server/examples/jev_agent.py
+# join an existing loopback guest shard instead of booting one
+cargo run -p server --release --bin jev-bot -- --server 127.0.0.1:4433 --scripted
 ```
 
-The command boots a temporary loopback shard with shipped content, prints its
-address and the exact client command for watching, and runs for 120 seconds.
-The bot and viewer share a beach chosen by the game's spawn selector.
-There are no saves. Use the matching checkout for the watching client: wire
-versions must agree. Ctrl-C closes the bot and its temporary shard.
+Flags shared with `jev-watch`: `--think-ms` (1000–60000; the floor is the
+operator's once-a-second ceiling), `--timeout-ms` (3000), `--heartbeat-s`
+(30), `--max-requests-hour` (600), `--max-requests-day` (7200).
+`--seconds` is 1–86400. `--local` prints the matching client command for
+watching; wire versions must agree.
 
-Without a key, explicitly select the offline movement demonstration:
+## Goals and skills
 
-```sh
-cargo run -p server --release --bin jev-bot -- --local --scripted
+The vocabulary (`mind.rs`): `explore`, `gather_wood`, `gather_stone`,
+`gather_ore`, `forage`, `craft:<item name>`, `eat`, `drink`, `flee`, `wait`.
+Only goals that can work now are offered, and a reply naming anything else is
+refused.
+
+- **gather** — find a visible node of the kind (32 m, 90° cone, line of sight,
+  one cell per frame), approach, hold primary with the best belt tool by name
+  (`TREE_TOOLS`, `NODE_TOOLS`), done when the node falls. A resource seen in
+  the last minute is walked back to. Fails on no tool, nothing found in 20 s,
+  three stalled approaches, or a full pack (no room for what the node pays).
+- **craft** — resolve the recipe by the output's catalog name (no station,
+  blueprint known), check inputs, send `Craft`, wait for the completion, then
+  `Move` a crafted tool onto the belt.
+- **eat / drink** — food is learned from the sim's verdicts, as a player learns
+  by pressing eat: refused items are remembered, consumed ones classified by
+  the meters that rose. Drink uses known water-giving food first, then the sea
+  (salt: it costs health, so it stops at 20% health). Both stop at 80%.
+- **explore / wait / flee** — wander 20 s, stand 5 s, back away from the
+  nearest visible body.
+
+Reflexes under every goal: the respawn verb on the death screen (a beach,
+never a bag), crawling away from a fresh blow while wounded, and the existing
+retreat from received damage. A new body looks for one sweep before choosing.
+
+Nothing here reads a server `World`, the seed as an observation, or a hidden
+body; `crates/server/tests/agent_walls.rs` holds that and the verb set.
+
+## When a source is asked, and what it sees
+
+After a goal completes, fails or is interrupted, after a respawn, and every
+30 s of one goal; never more than once per second, one request outstanding.
+A failed or late answer is a failure (exponential backoff), never a scripted
+substitute. The request is `Summary::to_json`: health, food and water, the
+pack by name, craftable names, counts and relative bearings of trees, stone
+and ore nodes, bushes, players and animals in view (or seen in the last
+minute), water nearby, the last goal's outcome, hits since the last decision,
+deaths, respawns and why it was asked. No seed, position or identity.
+
+**Jev** (`jev-1.13.0`, pinned) is a classifier: it returns a choice,
+a confidence and per-option probabilities, and no text. The one-line reason
+shown for a Jev decision is composed from those numbers and our own labels.
+Responses are capped at 16 KiB; API errors print a status, never the key or
+body. Input and output tokens are counted.
+
+**Spend guard.** Requests (sent, answered or not) are counted in an hour window
+and a day window from their first request. At either ceiling the mind stops
+asking and says `paused: spend cap`; the current goal finishes and the body
+then holds still. Nothing is substituted.
+
+## Bring your own agent
+
+`--external PROGRAM [ARG...]` starts a child and speaks newline-delimited JSON
+over its stdin/stdout: nothing else can connect to those pipes, there is no
+port to guard, the agent dies with the bot, and the bot's stdout stays free.
+`TYPESAFE_API_KEY` is removed from the child's environment.
+
+```text
+-> {"protocol":1,"id":7,"observation":{...Summary...},"options":["explore","gather_wood","craft:Stone Hatchet"]}
+<- {"id":7,"goal":"gather_wood","reason":"need wood for a hatchet"}
 ```
 
-This is labelled SCRIPTED and makes no model calls. It walks and turns right
-when a previous walk made no progress. It is never substituted for Jev silently.
+The reply must echo the id and name an offered goal within `--timeout-ms`;
+`reason` is optional and shown trimmed to 96 printable characters. Replies to
+an older id are skipped; lines over 8 KiB, bad JSON, unknown goals, silence
+and exit are failures. `examples/jev_agent.py` is a complete agent.
 
-To join an existing local guest shard:
+## Limits
 
-```sh
-cargo run -p server --release --bin jev-bot -- --server 127.0.0.1:4433 --seconds 300
-```
+No cooking (it needs a kill, a placed fire and oven moves), no looting its own
+death backpack, no building, research, deliberate combat, bags or path
+planner. A full pack stops gathering what cannot fit; crafting frees room.
+Tools and good crafts are known by name, not discovered. The guest is
+loopback-only with the load client's certificate policy; public play needs
+the normal wallet sign-in and entitlement.
 
-`--think-ms` changes the decision interval; `--timeout-ms` changes both the
-HTTP deadline and the maximum age of a snapshot or pending reply. Defaults
-are 1000 and 3000 ms. Movement stops at the end of each decision interval
-while the next request is pending. Failures stop movement and back off
-exponentially, capped at 64 intervals. No automatic respawn or deliberate combat.
-
-The model is pinned to `jev-1.13.0`. Each exploration request contains the bot's own
-replicated x/z position, grounded/wounded state, previous action and measured
-movement since its previous observation. No world seed, terrain query, other
-player's body, chat or credentials enter the observation. Consequently it
-cannot see an obstacle ahead of time; it can only react to failed movement.
-Turns are quarter/half turns and jumps are single presses. The response is
-capped at 16 KiB; unknown actions, model versions and malformed confidence
-values are rejected. Confidence is reported, not treated as a correctness
-threshold. API errors print a status/reason, never the API key or response body.
-
-At exit the command prints request/decision/error counts, accepted-response
-input tokens, moving frames, first/last position in wire quanta and snapshot
-statistics. TypeSafe billing remains the authority on paid usage, including
-requests whose responses could not be used. An exploration-only run with no
-decisions fails; gathering also requires a confirmed inventory gain.
-
-This guest prototype is restricted to loopback and uses the load client's
-local certificate policy. Public deployment needs the normal wallet sign-in,
-entitlement and certificate validation, plus richer player-visible senses
-before it could be useful as a survival player. No server simulation rules,
-wire layouts, balance or public shard configuration change.
-
-API contract checked against https://docs.typesafe.ai/api and
-https://docs.typesafe.ai/models on 2026-09-22. The operator enabled the shared
-watch host with a real key that day; its first live API check returned the
-pinned model, a valid movement choice, 507 input tokens and 342 ms latency.
-See [WATCH.md](WATCH.md) for the hosted configuration and cost assumptions.
-Broader model quality and sustained billing remain unmeasured; automated
-tests use a local HTTP peer and controlled decision sources.
+At exit `jev-bot` prints the mind's counters (requests, decisions, failures,
+late answers, tokens, pauses, hour/day windows), survival counters (deaths,
+respawns, goals done/failed/interrupted, crafts, meals, drinks), items
+gathered, the pack, and recent goals. A run with no decision or snapshot
+fails. Defaults: `DECISIONS.md` §open, "Jev goals v0" and "Jev survivor v0".
+API contract checked against https://docs.typesafe.ai/api on 2026-09-22.

@@ -562,6 +562,13 @@ pub trait BotDriver: Send {
         Ok(())
     }
     fn frame(&mut self, view: &ClientView, player_id: u32, seq: u16) -> InputFrame;
+    /// At most one already-encoded `ACT_*` frame for this tick's action
+    /// slot, written into `out` — the same bytes the human client's
+    /// `Session::send_action` carries. Asked once per tick, after `frame`,
+    /// and only when the tick's slot is free.
+    fn action(&mut self, _out: &mut [u8]) -> Option<usize> {
+        None
+    }
 }
 
 /// A cancelled or finished bot must not leave its stream reader running.
@@ -898,6 +905,24 @@ async fn run_bot_inner(
                         // nothing in perfect silence, which is this item's
                         // own failure mode one level down.
                         Some(Err(_)) | None => report.actions_unencodable += 1,
+                    }
+                }
+
+                // ---- a driven agent's action lane --------------------
+                // One action per tick, the server's own ceiling, and only
+                // when the reload lane did not take the slot. A write that
+                // fails means the stream is gone: an agent session ends on
+                // that rather than playing on with its verbs unheard.
+                if !took_the_tick {
+                    if let Some(d) = driver.as_deref_mut() {
+                        if let Some(len) = d.action(&mut act_buf) {
+                            if write_frame(&mut send, &act_buf[..len]).await.is_err() {
+                                return Err("agent action lane closed".into());
+                            }
+                            report.actions_sent += 1;
+                            report.act_out_bytes += (FRAME_PREFIX_BYTES + len) as u64;
+                            took_the_tick = true;
+                        }
                     }
                 }
 

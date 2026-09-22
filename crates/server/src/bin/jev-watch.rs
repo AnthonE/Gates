@@ -2,17 +2,22 @@
 use bevy::prelude::*;
 use bevy::window::WindowResolution;
 use client::render::{input, GatesRenderPlugin, Net, Rt, Settings, Start, WorldId};
-use server::jev::{Driver, Jev, REQUEST_TIMEOUT, THINK_INTERVAL};
+use server::agent_demo::{MindArgs, MIND_USAGE};
+use server::explorer::Survivor;
 use server::watch::{self, http::Broadcast, Controller};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-const USAGE: &str = "jev-watch [--scripted] [--seconds 120 | --continuous] [--listen 127.0.0.1:8081] [--assets PATH] [--content PATH]\nStarts a temporary local shard and one wood-collecting bot. Requires a graphics display.\nContinuous runs end on death or disconnect; use a supervisor to restart them.\nJev requires TYPESAFE_API_KEY; --scripted is an explicitly labelled offline controller.";
+fn usage() -> String {
+    format!(
+        "jev-watch [--seconds 120 | --continuous] [--listen 127.0.0.1:8081] [--assets PATH] [--content PATH] {MIND_USAGE}\nStarts a temporary local shard and one survivor bot. Requires a graphics display.\nDeath is answered in-game; a continuous run ends only when its session or renderer fails, so use a supervisor to restart it."
+    )
+}
 
 fn run() -> Result<AppExit, String> {
-    let mut scripted = false;
+    let mut mind = MindArgs::default();
     let mut continuous = false;
     let mut timed = false;
     let mut duration = Duration::from_secs(120);
@@ -23,12 +28,14 @@ fn run() -> Result<AppExit, String> {
         .join("assets");
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
+        if mind.take(&arg, &mut args)? {
+            continue;
+        }
         match arg.as_str() {
             "--help" | "-h" => {
-                println!("{USAGE}");
+                println!("{}", usage());
                 return Ok(AppExit::Success);
             }
-            "--scripted" => scripted = true,
             "--continuous" => continuous = true,
             "--seconds" => {
                 timed = true;
@@ -63,31 +70,10 @@ fn run() -> Result<AppExit, String> {
     if !assets.is_dir() {
         return Err("assets must name a directory".into());
     }
-    let driver = if scripted {
-        Driver::new(
-            server::agent_demo::Scripted,
-            THINK_INTERVAL,
-            REQUEST_TIMEOUT,
-        )?
-    } else {
-        let key = std::env::var("TYPESAFE_API_KEY")
-            .map_err(|_| "set TYPESAFE_API_KEY, or explicitly choose --scripted")?;
-        Driver::new(
-            Jev::new(key, REQUEST_TIMEOUT)?,
-            THINK_INTERVAL,
-            REQUEST_TIMEOUT,
-        )?
-    };
+    let brain = mind.build()?;
     let (broadcast, capture) = Broadcast::start(listen)?;
     println!("shared watch page: http://{}/", broadcast.address);
-    println!(
-        "controller: {}",
-        if scripted {
-            "SCRIPTED; no model calls"
-        } else {
-            server::jev::MODEL
-        }
-    );
+    println!("controller: {}", mind.label());
     let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
     let shard = rt.block_on(server::agent_demo::spawn_local_with_content(&content))?;
     struct Stop(std::sync::Arc<std::sync::atomic::AtomicBool>);
@@ -106,12 +92,7 @@ fn run() -> Result<AppExit, String> {
                 .map_err(|e| e.to_string())?;
         Ok::<_, String>((endpoint, session))
     })?;
-    let controller = Controller::attach(
-        &mut session,
-        server::explorer::Gatherer::new(driver),
-        scripted,
-        duration,
-    )?;
+    let controller = Controller::attach(&mut session, Survivor::new(brain), duration)?;
     let world = WorldId::new(session.welcome.seed);
     let mut app = App::new();
     app.add_plugins(
@@ -193,7 +174,7 @@ fn main() -> AppExit {
     match run() {
         Ok(result) => result,
         Err(error) => {
-            eprintln!("jev-watch: {error}\n{USAGE}");
+            eprintln!("jev-watch: {error}\n{}", usage());
             AppExit::error()
         }
     }

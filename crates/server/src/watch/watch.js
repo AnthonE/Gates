@@ -4,23 +4,45 @@ const picture = byId("view"), badge = byId("connection"), events = byId("events"
 const POLL_MS = 250, STALE_MS = 5000, REQUEST_MS = 2000, EVENT_CAP = 6;
 let previous = null, shown = null, freshAt = 0, stopped = false, imageUrl = null;
 const clock = seconds => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+// Goal labels are the controller's own vocabulary: `gather_wood`,
+// `craft:Stone Hatchet`. Shown as words; always set as text, never markup.
+function goalText(label) {
+  if (!label) return "Choosing the next goal";
+  if (label.startsWith("craft:")) return `Craft a ${label.slice(6)}`;
+  const words = label.replace(/_/g, " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+function meter(pair) { return Array.isArray(pair) ? `${pair[0]} / ${pair[1]}` : "—"; }
 function connection(label, live = false) { badge.textContent = label; badge.dataset.live = String(live); }
 function note(text) {
   const li = document.createElement("li"); li.textContent = text; events.prepend(li);
   while (events.children.length > EVENT_CAP) events.lastElementChild.remove();
 }
+function fill(list, rows, empty) {
+  const items = rows.length ? rows : [empty];
+  list.replaceChildren(...items.map(text => { const li = document.createElement("li"); li.textContent = text; return li; }));
+}
 function present(state) {
   if (!previous || state.seconds < previous.seconds) events.replaceChildren();
-  if (!previous || state.action !== previous.action) note(state.action);
-  if (previous && state.wood > previous.wood) note(`+${state.wood - previous.wood} wood in the pack`);
+  if (!previous || state.goal !== previous.goal) note(state.goal ? `New goal: ${goalText(state.goal)}` : state.action);
+  if (previous && state.deaths > previous.deaths) note("Died");
+  if (previous && state.respawns > previous.respawns) note("Answered the death screen: back on a beach");
   if (previous && state.hp < previous.hp) note(`Health ${previous.hp} → ${state.hp}`);
+  if (previous && state.paused && !previous.paused) note("Model decisions paused: spend cap");
   byId("action").textContent = state.action;
   byId("mode").textContent = state.mode.toUpperCase();
-  byId("wood").textContent = state.wood.toLocaleString();
-  byId("trees").textContent = state.trees.toLocaleString();
+  byId("mode").dataset.paused = String(!!state.paused);
+  byId("goal").textContent = goalText(state.goal);
+  byId("reason").textContent = state.reason || "No reason given yet.";
+  byId("food").textContent = meter(state.food);
+  byId("water").textContent = meter(state.water);
+  byId("lives").textContent = `${state.deaths} · ${state.respawns}`;
   byId("time").textContent = clock(state.seconds);
   byId("hp").textContent = `${state.hp} / ${state.hp_max}`;
   byId("health").max = state.hp_max || 1; byId("health").value = state.hp;
+  fill(byId("pack"), (state.inventory || []).map(i => `${i.name} × ${i.count.toLocaleString()}`), "Empty");
+  fill(byId("history"), (state.history || []).map(h =>
+    `${goalText(h.goal)}: ${h.outcome}${h.why ? ` (${h.why})` : ""}${h.gained ? `, +${h.gained}` : ""}`), "None yet.");
   byId("waiting").hidden = true; picture.hidden = false;
   previous = state; shown = state.frame; freshAt = performance.now() - state.age_ms;
   connection("LIVE", true);
