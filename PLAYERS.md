@@ -1,6 +1,7 @@
 # PLAYERS.md — the agent player
 
-**DESIGN, 2026-08-05. One wall of it is built.** `crates/sim-core/src/bots.rs`
+**DESIGN, 2026-08-05. Walls 1, 3 and 4 are built; wall 2 and the social
+verbs are not.** `crates/sim-core/src/bots.rs`
 drives deterministic synthetic input and the `bots` bin runs it at scale, so a
 non-human client is already first-class, and **wall 3's event exists**
 (`EV_TRUST`, 2026-08-18) — which is deliberate ordering rather than a
@@ -10,16 +11,14 @@ the other three gates, or anything that reads a trust row. This doc owns that
 surface and nothing else. `DESIGN.md` still owns the product, `NETCODE.md` the wire,
 `CONTENT.md` the numbers.
 
-**Local explorer and wood-gathering experiment, 2026-09-21:** `server`'s
-`jev-bot --gather-wood` finds a visible tree, approaches it, selects a working
-tool from its belt and holds the ordinary harvest input. It confirms the
-result from `ClientCore`'s inventory updates, handles exhausted targets and
-stalled approaches, retreats from received damage bearings, and stops for a
-full pack, missing tool or incapacitated body. Jev handles exploration on a
-separate worker; gathering is a local fixed-goal skill. An explicit scripted
-mode exercises the same controller.
-`crates/server/JEV.md` has the commands and limits. Public identity, the full
-verb table, social reasoning and the general observation encoder remain open.
+**Local agent player, 2026-09-22:** `server`'s `jev-bot` and `jev-watch` run a
+survivor on a loopback guest shard. A decision source — Jev, an explicit
+scripted policy, or an operator's own agent over JSON lines — picks goals
+(explore, gather, forage, craft by name, eat, drink, flee, wait); local skills
+carry them out with the human client's inputs and actions over `ClientCore`'s
+received state, and answer the death screen with the respawn verb.
+`crates/server/JEV.md` has the commands and limits. Public identity, the
+social verbs and wall 2 remain open.
 
 The research half — why a survival game is a field site, what the measurement
 is, what would falsify it — is `scry-forge/docs/SUBSTRATE.md`. This is the
@@ -41,9 +40,9 @@ computes.
 ## The four walls
 
 Each with its enforcement, because a law without a gate is a mood. **Wall 3's
-is built** (2026-08-18, `NOW.md` §5d); the other three are unbuilt, each is a
-small test, and none of them should land after the verb API rather than with
-it.
+is built** (2026-08-18, `NOW.md` §5d), and **walls 1 and 4 landed with the
+local agent's goal API** (2026-09-22); wall 2 is unbuilt and must land with
+the first ladder, not after it.
 
 1. **Agent verbs are a subset of human verbs.** An agent must never have an
    affordance a human client lacks — no extra reach, no wallhack, no state a
@@ -53,6 +52,11 @@ it.
    commits is not comparable to a human's. → a test asserting the agent verb
    table is a strict subset of the player input table, and that the observation
    encoder is a pure function of what that client's snapshot already carried.
+   **BUILT for the local agent** — `crates/server/tests/agent_walls.rs` reads
+   the `encode_action_*` verbs off the agent's source and the human client's
+   and requires a subset, decodes every action a full life actually sent,
+   holds frames to the buttons a player's keys produce, and refuses a `World`
+   name in the encoder and mind sources; `explorer::observe` is the encoder.
 
 2. **No global leaderboard.** No endpoint returns a total ordering across
    ladders, and no ladder is convertible into another. Wealth, structures
@@ -86,7 +90,12 @@ it.
    source like any other; the sim must not learn it exists. No clock, no I/O,
    no allocation enters the tick because a player is a model. → `test_replay`
    and `test_alloc_zero` extended over a scripted agent-input fixture, in the
-   same commit as the API.
+   same commit as the API. **BUILT** — `crates/sim-core/tests/agent_input.rs`
+   (live agents replay tick-identically twice and from their recorded log, no
+   heap operation inside `World::tick`, every agent verb landed) and the
+   shard-path half in `agent_walls.rs` (two shards fed the same agent bytes
+   stay hash-identical through a whole life; the agent's frame loop never
+   allocates).
 
 ## The verb set
 
@@ -94,6 +103,11 @@ Bounded, capped in `limits.rs` like everything else (wall 4), and small on
 purpose — the interesting behaviour is social, not mechanical.
 
 `move · look · build · open · take · give · attack · speak · authorize`
+
+Built so far: movement, look, swing, sprint, jump and hotbar frames, and the
+`craft`, `consume`, `drink`, `respawn` and item `move` actions — every one a
+human verb. `build`, `open`, `take`, `give`, `attack`, `speak` and `authorize`
+are not.
 
 `authorize` (granting another player TC or door access) and `give` are the two
 that carry the whole design: they are the only verbs that create a trust
@@ -107,19 +121,21 @@ A pure function of the snapshot that client already receives. It answers: what
 is in view, who is present, what is in this container, what do I hold, is this
 base's owner online.
 
-For procedural scenery, the local gathering experiment uses the same welcome
-seed, slot deltas and geometry as the human client, restricted to nearby trees
-in its view cone with terrain/scenery/building occlusion. The seed and hidden
-scene are never model inputs. This is a narrow perception adapter, not a
-global resource lookup or a general-purpose observation API.
-
 The last field is deliberate and it is the one to get right. It is ordinary
 game state — a human sees it in the same moment — and it is also the condition
 the whole measurement turns on (`SUBSTRATE.md` §3). It must be logged at every
 trust-bearing verb from the first shard that runs; retrofitting it makes the
 early record worthless. The **logging** half is built (wall 3 above); the
-encoder is not, and neither is a sink for the rows — the sim mints them and
+encoder does not carry it yet, and neither is a sink for the rows — the sim mints them and
 `ShardCore`'s event drain currently ignores the code.
+
+Built for the local agent as `explorer::observe` → `mind::Summary`: health,
+meters, the pack by name, craftable names, counts and relative bearings of
+resources, players and animals in its view cone (with terrain, scenery and
+building occlusion, or seen in the last minute), water nearby, how its last
+goal went, and its own deaths and blows. No seed, position or identity; the
+same welcome seed, slot deltas and geometry as the human client. It does not
+yet answer what is in a container or whether a base's owner is online.
 
 ## The model does not drive at frame rate
 

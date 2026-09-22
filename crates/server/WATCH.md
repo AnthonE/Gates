@@ -7,8 +7,10 @@ cargo run -p server --features watch --bin jev-watch -- --scripted
 ```
 
 Open **http://127.0.0.1:8081/**. Every viewer watches the same bot, camera and
-run. The page shows its received health and inventory, controller activity,
-trees completed and elapsed play time. Viewing creates no game connection or
+run. The page shows the current goal and the one-line reason for it, which
+controller decides and whether it can (`deciding`, `backing off`, `paused:
+spend cap`), recent goals and how they ended, deaths and respawns, health,
+food, water, the pack and play time. Viewing creates no game connection or
 model request. `--assets PATH` selects an existing asset directory;
 `--content PATH` selects a shipped content directory for a standalone binary;
 `--listen 127.0.0.1:PORT` changes the web listener.
@@ -21,23 +23,26 @@ xvfb-run -a -s '-screen 0 640x360x24' \
   cargo run -p server --features watch --bin jev-watch -- --scripted
 ```
 
-For Jev, set `TYPESAFE_API_KEY` in the host environment and omit `--scripted`.
-The page identifies the controller explicitly; an API failure never switches
-to scripted decisions. No key, prompt or model response is sent to viewers.
-See [JEV.md](JEV.md) for the movement model and the local wood-collecting
-controller. The policy is still rough: it can get stuck or die, and cannot
-craft, eat, respawn or reconnect.
+For Jev, set `TYPESAFE_API_KEY` in the host environment and omit `--scripted`;
+`--external PROGRAM [ARG...]` runs your own agent instead. The page identifies
+the controller explicitly; an API failure never switches to scripted
+decisions. No key, prompt or model response is sent to viewers: the reason
+line is composed from Jev's numbers and the controller's own labels, or is an
+external agent's sanitized 96-character string. [JEV.md](JEV.md) has the goals,
+skills, spend guard and flags. The policy is still rough: it can get stuck,
+and it cannot cook, build, fight back or reconnect.
 
 The temporary shard uses shipped content, a game-selected beach and no saves.
 The run lasts 120 seconds **after the world loads**; `--seconds N` accepts
 1–86400. A startup that exceeds 300 seconds fails. The watcher closes when
 the duration ends or its session fails; Ctrl-C also ends it and the temporary
-shard. Death is shown on the normal game screen until the run ends.
+shard. Death is shown on the normal death screen until the bot answers it with
+the respawn verb, as a player would; play then resumes on a beach.
 
 For an always-running hosted feed, pass `--continuous` instead of `--seconds`.
-There is no play-time limit. Death, disconnection or failed startup ends the
-process, allowing the supervisor to start a fresh run. This restarts a private
-island; it does not save progress or implement in-game respawning.
+There is no play-time limit and death does not end the run. A lost session,
+a renderer failure or a failed startup ends the process, allowing the
+supervisor to start a fresh private island (no saves).
 
 ## What carries the picture
 
@@ -76,8 +81,10 @@ be embedded by a page on the same origin; its CSP refuses other origins.
 `watch-deploy/gates-watch.service` runs one instance continuously under Xvfb
 on the existing render host. The base unit is explicitly scripted; the live
 host uses `watch-deploy/jev.conf` to select Jev. The two-minute demo timer is disabled.
-After death or failure, systemd starts a fresh private island after five
-seconds; startup still has its 300-second ceiling. Viewers reconnect
+After a lost session or failure, systemd starts a fresh private island after
+five seconds; startup still has its 300-second ceiling. The host runs the
+installed bundle, so the in-game respawn and goal-level Jev reach it only when
+the operator restages the bundle. Viewers reconnect
 automatically and the page explains the loading pauses.
 The service runs at nice level 10 so interactive work takes priority.
 
@@ -111,8 +118,8 @@ the service. Never put the key in the unit, command arguments, page or git.
 
 ## Running cost
 
-The live service now uses Jev for exploration and makes paid model requests.
-Explicit `--scripted` runs still make none. It uses the existing server,
+The live service uses Jev and makes paid model requests. Explicit `--scripted`
+runs make none; an `--external` agent's costs are its own. It uses the existing server,
 with no additional machine provisioned; its
 CPU, memory and viewer bandwidth still consume that server's capacity.
 
@@ -129,13 +136,24 @@ returned 507 input tokens in 342 ms. At that request size and one request per
 second continuously, the arithmetic is $55.19 per 30 days. This is a sample,
 not a measured monthly rate or spending cap; real usage varies with the run.
 
+Since goal-level Jev (2026-09-22, not yet on the host) the bot asks when a goal
+ends or every 30 s, never more than once a second. A lockstep scripted run
+asked 9 times in 110 s of play. A goal request is larger: at most 3.6 KB
+(`jev::tests::a_full_request_stays_small`), unmeasured in tokens. The spend
+guard caps requests at 600 an hour and 7,200 a day by default. At 1,800 input
+tokens a request, the day cap is $0.54 a day or $16.33 per 30 days; at the
+ceiling the page says `paused: spend cap` and the bot stops deciding rather
+than guessing. Arithmetic, not measurement.
+
 ## Checked locally
 
 `cargo test -p server --features watch --lib watch::` exercises harvesting
 through the ordinary client session over real WebTransport, including held
 input between client ticks and agreement with the received inventory. It
 also checks that observer failure stops outgoing traffic, that two viewers
-receive identical encoded frames, and that an obsolete frame ID is refused.
+receive identical encoded frames with the goal, reason, history and lives in
+their state, that an obsolete frame ID is refused, and that a continuous run
+outlives death but not a lost session.
 
 Manual Chromium checks cover desktop and mobile layout, real renderer
 frames, no horizontal overflow, and the stalled indicator after losing the

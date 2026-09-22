@@ -1663,17 +1663,20 @@ pub fn observe(
     }
     s.offer(Goal::Forage);
     // Eat and drink are offered only below the level they fill to, and
-    // only where they can work: something worth eating in the pack; open
-    // water in sight, or a food the eat verb has seen restore water.
+    // only where they can work: something worth eating in the pack; a food
+    // the eat verb has seen restore water, or open water in sight and the
+    // health to pay for salt water.
     if core.max_food > 0
         && pct(core.food, core.max_food) < METER_TARGET_PCT
         && food_slot(core, &memory.food, false).is_some()
     {
         s.offer(Goal::Eat);
     }
+    let sea = senses.water.count > 0
+        && (core.hp_max == 0 || pct(core.hp, core.hp_max) > DRINK_MIN_HP_PCT);
     if core.max_water > 0
         && pct(core.water, core.max_water) < METER_TARGET_PCT
-        && (senses.water.count > 0 || food_slot(core, &memory.food, true).is_some())
+        && (sea || food_slot(core, &memory.food, true).is_some())
     {
         s.offer(Goal::Drink);
     }

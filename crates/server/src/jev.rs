@@ -16,6 +16,10 @@ pub const MODEL: &str = "jev-1.13.0";
 pub const THINK_INTERVAL: Duration = Duration::from_secs(1);
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 pub const MAX_RESPONSE_BYTES: u64 = 16 * 1024;
+/// Test bound on the largest request a summary can produce; its size is
+/// what a decision costs. Not sent anywhere.
+#[cfg(test)]
+const REQUEST_BYTES_MAX: usize = 6 * 1024;
 
 const INSTRUCTIONS: &str = "Choose the next goal for a player in a survival game. \
 A local controller carries the goal out with ordinary player inputs and reports how it went. \
@@ -194,6 +198,47 @@ mod tests {
         for banned in ["seed", "api", "Bearer", "player_id", "qx"] {
             assert!(!text.contains(banned), "{banned}");
         }
+    }
+
+    /// The request is what a Jev decision costs, so its size is bounded: a
+    /// summary filled to every capacity stays under `REQUEST_BYTES_MAX`.
+    #[test]
+    fn a_full_request_stays_small() {
+        use crate::mind::{Report, Sighting, Trigger, SUMMARY_CRAFTS, SUMMARY_ITEMS};
+        let mut s = Summary::EMPTY;
+        let long = |i: usize| Name::new(format!("Item Name Number {i:04}").as_bytes()).unwrap();
+        for i in 0..SUMMARY_ITEMS {
+            s.items[i] = (long(i), 60_000);
+        }
+        s.items_len = SUMMARY_ITEMS as u8;
+        for i in 0..SUMMARY_CRAFTS {
+            s.craftable[i] = long(100 + i);
+        }
+        s.craftable_len = SUMMARY_CRAFTS as u8;
+        let seen = Sighting {
+            count: 255,
+            nearest_m: 32,
+            bearing: 5,
+        };
+        (s.trees, s.stone_nodes, s.ore_nodes, s.bushes) = (seen, seen, seen, seen);
+        (s.players, s.animals, s.water_near) = (seen, seen, seen);
+        (s.hp, s.hp_max, s.food, s.food_max, s.water, s.water_max) = (100, 100, 500, 500, 250, 250);
+        s.last = Some(Report {
+            goal: Goal::Craft(long(7)),
+            outcome: crate::mind::Outcome::Failed(crate::mind::Why::MissingInputs),
+            gained: u32::MAX,
+            secs: u32::MAX,
+        });
+        s.trigger = Trigger::Heartbeat;
+        for g in Goal::FIXED {
+            s.offer(g);
+        }
+        for i in 0..SUMMARY_CRAFTS {
+            s.offer(Goal::Craft(s.craftable[i]));
+        }
+        let bytes = Jev::request(&s).to_string().len();
+        println!("largest Jev request: {bytes} bytes");
+        assert!(bytes < REQUEST_BYTES_MAX, "{bytes}");
     }
 
     #[test]

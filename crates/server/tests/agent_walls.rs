@@ -399,6 +399,7 @@ fn a_survivor_plays_a_whole_life_and_the_next_one_in_lockstep() {
     );
     // Wall 4, the agent's half: its frame loop never allocated.
     assert_eq!(h.heap_ops, 0, "the agent's frame loop touched the allocator");
+    println!("{}", h.explain());
     // Far fewer decisions than ticks: goals, not steps.
     assert!(
         h.bot.mind.stats.requests * u64::from(TICK_HZ) <= u64::from(h.tick),
