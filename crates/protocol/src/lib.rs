@@ -919,7 +919,17 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// and `ACT_RESEARCH` keeps its bytes and changes its meaning — it reads
 /// the blueprint in a slot, where it used to research the sample in one.
 /// A v72 client would draw the tree from rows read 32 bits short.
-pub const PROTO_VER: u16 = 73;
+/// v74 puts the hearth's upkeep bill on the feed ack (upkeep v2's readout):
+/// each stock row gains a 32-bit per-period charge after its units, so a
+/// client can say how long a base is protected. Nothing else moved — no
+/// action, no event code, no other message's bytes; the hearth lock rides
+/// the access action and door event it already had. **Landed on its branch
+/// as v73, beside research table v1's v73 on `main`** — two layouts under
+/// one number is the wire drifting by accident (wall 6), so the merge took
+/// the next number and regenerated every fixture from the merged encoder.
+/// Against `main`'s v73 exactly two fixtures differ in bytes: `hello` (the
+/// version) and `event_stock` (the bill).
+pub const PROTO_VER: u16 = 74;
 
 /// This game's slug in the elo catalog.
 ///

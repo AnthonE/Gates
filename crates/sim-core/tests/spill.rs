@@ -585,8 +585,9 @@ const FIRE_ITEM: u16 = 6;
 /// Row 5: the code lock, item 7, priced at 12 × item 1.
 const LOCK_ROW: u16 = 5;
 const LOCK_ITEM: u16 = 7;
-/// A lockable box over the recycler row — `deploy::lockable` admits only a
-/// door or a box, and a box needs no doorway piece and no door deployable.
+/// A lockable box over the recycler row — of what `deploy::lockable` admits
+/// (the doors, a box, a hearth), a box needs no doorway piece, no door
+/// deployable and no claim of its own.
 /// `tests/lock_box.rs` makes the same override for the same reason.
 const BOX_ROW: u16 = 6;
 const BOX_ITEM: u16 = 9;

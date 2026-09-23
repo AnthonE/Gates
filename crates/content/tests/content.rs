@@ -361,6 +361,44 @@ fn hash_moves_with_values() {
         "the repair price must move the content hash"
     );
 
+    // The decay ladder. It reaches the sim through `bake_deployables` into
+    // `DeployContent::decay_pct` and sat outside the canonical walk from
+    // upkeep/decay v1 until upkeep v2 found it: a stone base rotting in
+    // five hours and one rotting in fifty canonicalised identically.
+    let mut srcs = sources();
+    let b = srcs.iter_mut().find(|(n, _)| *n == "balance.toml").unwrap();
+    b.1 = b.1.replace("stone = 20, metal", "stone = 19, metal");
+    assert_ne!(
+        base,
+        build(&srcs).unwrap().hash(),
+        "the decay ladder must move the content hash"
+    );
+
+    // Upkeep v2's three knobs, each read by the sweep (`bake_deployables`).
+    for (from, to, what) in [
+        ("[190, 333]", "[190, 334]", "the rent ladder"),
+        (
+            "inside_decay_pct = 10",
+            "inside_decay_pct = 11",
+            "the inside rate",
+        ),
+        (
+            "grief_protection_h = 24",
+            "grief_protection_h = 23",
+            "the grief window",
+        ),
+    ] {
+        let mut srcs = sources();
+        let b = srcs.iter_mut().find(|(n, _)| *n == "balance.toml").unwrap();
+        assert!(b.1.contains(from), "{what}: the probe's anchor text moved");
+        b.1 = b.1.replace(from, to);
+        assert_ne!(
+            base,
+            build(&srcs).unwrap().hash(),
+            "{what} must move the content hash"
+        );
+    }
+
     // The satchel's fuse. It reaches the sim through `bake_combat` into
     // `ThrowDef::fuse_ticks`, and it is the newest field on the newest
     // path, which is exactly the shape `canon.rs` has been caught by twice
@@ -1070,6 +1108,102 @@ fn bake_deployables_carries_the_shipped_numbers() {
         assert!(!seen[i], "deploy index {i} assigned twice");
         seen[i] = true;
     }
+}
+
+/// Upkeep v2's three knobs reach the table the sweep reads, read back off
+/// the shipped file rather than restated, and the ladder the sweep walks
+/// prices the reference's own worked example.
+#[test]
+fn bake_deployables_carries_upkeep_v2() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let dc = c.bake_deployables().expect("shipped deployables must bake");
+    let g = &c.balance.globals;
+    assert_eq!(dc.upkeep_step_count as usize, g.upkeep_steps.len());
+    for (n, [after, permille]) in g.upkeep_steps.iter().enumerate() {
+        assert_eq!(dc.upkeep_steps[n], (*after as u16, *permille as u16));
+    }
+    assert_eq!(dc.inside_decay_pct as u32, g.inside_decay_pct.unwrap());
+    assert_eq!(dc.grief_periods as u32, g.grief_protection_h);
+    // (15 × 10 % + 5 × 15 %) / 20 = 11.25 % — the guides' worked example,
+    // off the shipped ladder.
+    let t = sim_core::upkeep::tax(&dc, 20);
+    assert_eq!(t.num * 10_000 / t.den, 1125);
+}
+
+/// A `balance.toml` older than upkeep v2 plays the game it played: no
+/// ladder (the flat rate), no inside rate (the full one), no receipt.
+#[test]
+fn a_balance_without_upkeep_v2_plays_v1() {
+    let mut srcs = sources();
+    let b = srcs.iter_mut().find(|(n, _)| *n == "balance.toml").unwrap();
+    let kept: Vec<&str> =
+        b.1.lines()
+            .filter(|l| {
+                !l.starts_with("upkeep_steps")
+                    && !l.starts_with("inside_decay_pct")
+                    && !l.starts_with("grief_protection_h")
+            })
+            .collect();
+    assert_eq!(
+        b.1.lines().count() - kept.len(),
+        3,
+        "the three knobs were found"
+    );
+    b.1 = kept.join("\n");
+    let dc = build(&srcs)
+        .expect("an older balance.toml still loads")
+        .bake_deployables()
+        .expect("and bakes");
+    assert_eq!(dc.upkeep_step_count, 0);
+    assert_eq!(dc.inside_decay_pct, 0);
+    assert_eq!(dc.grief_periods, 0);
+    assert_eq!(sim_core::upkeep::scale(&dc, true), 100);
+}
+
+#[test]
+fn an_upkeep_ladder_that_does_not_climb_is_refused() {
+    refuses(
+        "balance.toml",
+        "upkeep_steps = [[15, 150], [65, 200], [190, 333]]",
+        "upkeep_steps = [[15, 150], [15, 200], [190, 333]]",
+        "does not climb",
+    );
+    refuses(
+        "balance.toml",
+        "upkeep_steps = [[15, 150], [65, 200], [190, 333]]",
+        "upkeep_steps = [[15, 150], [65, 120], [190, 333]]",
+        "must not fall below",
+    );
+    refuses(
+        "balance.toml",
+        "upkeep_steps = [[15, 150], [65, 200], [190, 333]]",
+        "upkeep_steps = [[15, 50], [65, 200], [190, 333]]",
+        "must not fall below",
+    );
+    refuses(
+        "balance.toml",
+        "upkeep_steps = [[15, 150], [65, 200], [190, 333]]",
+        "upkeep_steps = [[15, 150], [65, 200], [190, 1001]]",
+        "nor pass 1000",
+    );
+    refuses(
+        "balance.toml",
+        "upkeep_steps = [[15, 150], [65, 200], [190, 333]]",
+        "upkeep_steps = [[15, 150], [65, 200], [190, 333], [300, 400], [400, 500]]",
+        "upkeep steps",
+    );
+    refuses(
+        "balance.toml",
+        "inside_decay_pct = 10",
+        "inside_decay_pct = 0",
+        "a live percent",
+    );
+    refuses(
+        "balance.toml",
+        "inside_decay_pct = 10",
+        "inside_decay_pct = 101",
+        "a live percent",
+    );
 }
 
 /// The deployable bake refuses what the sim's capacities can't hold.

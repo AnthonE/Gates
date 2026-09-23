@@ -1447,6 +1447,34 @@ What it still cannot do:
    Each is its own verb.
 
 
+## 0up · Upkeep v2 landed — what the reference's upkeep has that ours still lacks *(systems lane)*
+
+✅ **2026-09-22:** the rent's size ladder, inside decay, grief protection, the
+hearth's "protected for" readout (wire v74) and a code lock on the hearth as
+the crew's invitation (`DECISIONS.md` §open "upkeep v2", "hearth lock v0";
+`reference/BUILDING.md` §4b, §5b, §9.25–28).
+
+1. **Heal under upkeep.** A paid base of theirs regains hp at its decay rate
+   once unattacked for 10 min (Devblog 189; commit 213133). The guard needs a
+   per-piece last-hit clock — a hashed field, so `WORLD_SAVE_FORMAT` and a
+   wipe. Bundle it with the next format bump, not alone.
+2. **Exact fractional rent.** `upkeep::Tax::charge` rounds each piece's
+   hourly charge up: a 300-stone wall at 10 % pays 2 an hour, 48 a day,
+   against the 30 the rate says (wood 24 vs 20). Stateless fix: charge period
+   `k` the difference of cumulative floors `⌊cost·rate·k/24⌋`, which
+   telescopes to the exact day, and require a hearth to hold ≥ 1 of a
+   material to cover a zero-charge period. The upkeep unit tests pin spends at
+   the probe fixture's 5-unit costs and need fixtures priced in hundreds.
+3. **The hearth panel.** The readout is a toast after `E`; theirs is a panel
+   (cost per 24 h per resource, a live clock) plus a HUD vital for the crew.
+   There is no withdrawal either — a fed hearth is spent only by upkeep.
+4. **Door and insert upkeep** (Devblog 190) — ours charge nothing in a claim.
+5. **The group tax** (September 2026): rent rises per authorized player past
+   four. New in the reference; unmeasured against `HEARTH_CREW_CAP`.
+6. **No gate runs the inside discount** — the replay script never leaves a
+   roofed piece unpaid (0 discounted steps, counted). One scripted roof over
+   an unpaid piece would put it under wall 5.
+
 ## 0aa · Building rights: the roster's third customer is missing *(systems lane)*
 
 1. **No `AutoTurret`, so the roster has two customers and not three.**

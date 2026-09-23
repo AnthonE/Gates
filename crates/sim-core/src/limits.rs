@@ -541,6 +541,23 @@ pub const MAX_HEARTHS: usize = 256;
 /// refuses a build table needing more. Structural cap, not a knob.
 pub const HEARTH_STOCK_ROWS: usize = 4;
 
+/// Steps in the upkeep rent's size ladder (upkeep v2, `upkeep::tax`): past
+/// how many graded pieces a base pays which rate. The reference prices four
+/// brackets and the first is our flat `upkeep_pct_per_day`, so three steps
+/// carry theirs; the fourth is headroom. The bake refuses a longer ladder.
+/// Structural cap, not a knob.
+pub const UPKEEP_STEPS: usize = 4;
+
+/// Stocked hearths whose death one tick can turn into grief protection
+/// (upkeep v2, `deploy::grieve`): each is parked at removal and drained at
+/// the end of the tick, the box spill's shape. Overflow policy: **the
+/// excess buys nothing** — a hearth destroyed past the cap in one tick
+/// leaves its base unprotected, which under-protects and can never
+/// over-protect. Eight is several raids' worth of cupboards dying in one
+/// tick; the drain is three passes over the piece store per entry.
+/// Proposed default, DECISIONS.md §open (upkeep v2).
+pub const MAX_GRIEF_PER_TICK: usize = 8;
+
 /// Piece + deployable records the upkeep/decay sweep visits per tick
 /// (each store advances its own cursor by this many entries). Bounded
 /// per-tick work: a full pass over both stores takes seconds while the
@@ -756,10 +773,12 @@ pub const PRIV_BFS_CELLS: usize = 256;
 pub const CLAIM_INDEX_SLOTS: usize = 16_384;
 
 /// Players one hearth remembers as its **crew** — who may build, upgrade,
-/// repair and deploy inside its claim (`reference/BUILDING.md` §2). Ten in
-/// the reference's own vanilla cap, and the same number here for the same
-/// reason it is a number at all: a base is a group, and an unbounded group
-/// is an unbounded array in a `HearthRec` the wire mirrors nothing of.
+/// repair and deploy inside its claim (`reference/BUILDING.md` §2). Ten is
+/// **ours**: it was written as the reference's vanilla cap, and upkeep v2's
+/// research found none at tier 1 — only a softcore cap of 4 and a 2026
+/// devblog example of "a TC with 12 players". It is a number at all because
+/// a base is a group, and an unbounded group is an unbounded array in a
+/// `HearthRec` the wire mirrors nothing of (wall 4).
 /// Overflow policy: **refuse, never evict** — the `Roster`'s rule, and the
 /// one this cap must not break is that a hearth never forgets whoever
 /// placed it. Proposed default, DECISIONS.md §open (hearth crew v1).

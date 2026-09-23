@@ -2147,6 +2147,37 @@ fn the_lockable_set_is_the_sims_not_a_second_list() {
     }
 }
 
+/// Hearth lock v0: a bare hearth offers the crew's join; one with a lock
+/// bolted on names its keypad in that key's place, because there the code
+/// IS the join. `K` stays the leave either way, and the keypad address is
+/// the hearth's own plane — the sweep above already proves `lock_target`
+/// agrees with `deploy::lockable` for every archetype, the hearth included.
+#[test]
+fn a_hearth_prompt_trades_join_for_its_keypad_once_a_lock_is_on() {
+    let mut p = pick_mod::Pick {
+        verb: pick_mod::Verb::Hearth,
+        arch: sim_core::deploy::ARCH_HEARTH,
+        ..Default::default()
+    };
+    let bare = p.prompt(&protocol::ItemCatalog::EMPTY);
+    assert!(
+        bare.contains("[L] JOIN CREW") && bare.contains("[K] LEAVE"),
+        "{bare}"
+    );
+    assert_eq!(lock_target(&p), LockTarget::Bare);
+    p.has_lock = true;
+    let locked = p.prompt(&protocol::ItemCatalog::EMPTY);
+    assert!(
+        locked.contains("[L] KEYPAD") && locked.contains("[K] LEAVE"),
+        "{locked}"
+    );
+    assert!(
+        !locked.contains("JOIN"),
+        "the pad is the join now: {locked}"
+    );
+    assert!(matches!(lock_target(&p), LockTarget::Pad(..)));
+}
+
 #[test]
 fn a_box_prompt_advertises_its_keypad_like_a_door() {
     let mut p = pick_mod::Pick {

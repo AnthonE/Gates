@@ -86,7 +86,7 @@ use crate::gather::{GatherContent, ItemStack};
 use crate::limits::{
     BOX_SLOTS, HEARTH_CREW_CAP, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_BOXES, MAX_BOX_SPILL_PER_TICK,
     MAX_BUILD_COORD, MAX_BUILD_SOCKETS, MAX_DEPLOYS, MAX_DEPLOY_COSTS, MAX_DEPLOY_DEFS,
-    MAX_HEARTHS, MAX_LOCKS, UPKEEP_SWEEP_PER_TICK,
+    MAX_GRIEF_PER_TICK, MAX_HEARTHS, MAX_LOCKS, UPKEEP_STEPS, UPKEEP_SWEEP_PER_TICK,
 };
 use crate::lock::{self, LockRec, Locks, Outcome};
 use crate::roster::{Added, Roster};
@@ -303,14 +303,23 @@ pub const fn bench_tier(arch: u8) -> u8 {
     }
 }
 
-/// What a code lock may bolt onto: a door's leaf or a storage box's lid
-/// (lock v1; locks on boxes, `reference/DOORS.md` §9.8). The fire and the
-/// furnace are containers too and deliberately **not** here — the
-/// reference locks neither, and an oven is a shared amenity whose cook
-/// loop rewrites its own slots, so a lock on one would be a claim the
-/// sim itself ignores every burn tick.
+/// What a code lock may bolt onto: a door's leaf, a storage box's lid
+/// (lock v1; locks on boxes, `reference/DOORS.md` §9.8), and a hearth
+/// (hearth lock v0, `reference/BUILDING.md` §2). The fire and the furnace
+/// are containers too and deliberately **not** here — the reference locks
+/// neither, and an oven is a shared amenity whose cook loop rewrites its
+/// own slots, so a lock on one would be a claim the sim itself ignores
+/// every burn tick.
+///
+/// **A hearth's lock is its crew's invitation, not its door.** The
+/// reference's cupboard is anyone's to authorize on until a code lock is
+/// bolted to it; ours refuses strangers bare, because our reach is planar
+/// and sees through walls (`crew_op`'s doc), so the lock cannot be what
+/// keeps them out. What it adds is the half the bare rule left missing: a
+/// hand the lock remembers at full rights may join the crew
+/// ([`hearth_admits`]), so a code told to a friend is how a base is shared.
 pub fn lockable(arch: u8) -> bool {
-    matches!(arch, ARCH_DOOR | ARCH_GARAGE_DOOR | ARCH_BOX)
+    matches!(arch, ARCH_DOOR | ARCH_GARAGE_DOOR | ARCH_BOX | ARCH_HEARTH)
 }
 
 /// The one archetype the use verb toggles. Named so `use_door` and
@@ -598,6 +607,21 @@ pub struct DeployContent {
     /// priced no ladder and `DECAY_PCT_PER_PERIOD` answers instead, which
     /// is what keeps an older `balance.toml` playing the game it played.
     pub decay_pct: [u16; DECAY_MATERIALS],
+    /// The rent's size ladder (upkeep v2, [`crate::upkeep::tax`]):
+    /// `(after, permille)` — past `after` graded pieces in one base, each
+    /// further piece's day costs `permille` ‰ of its build cost rather than
+    /// the rung below. The first rung is `upkeep_pct_per_day`, so an empty
+    /// ladder is upkeep/decay v1's flat rate exactly.
+    pub upkeep_steps: [(u16, u16); UPKEEP_STEPS],
+    pub upkeep_step_count: u8,
+    /// Percent of its ladder rate an unpaid piece rots at while something
+    /// is built over it (upkeep v2, [`crate::upkeep::inside`]). Zero means
+    /// the content priced none and the full rate answers — v1's game.
+    pub inside_decay_pct: u16,
+    /// Upkeep periods a destroyed hearth's stock may still buy its base
+    /// ([`grieve`], upkeep v2). Zero is the content pricing none, and no
+    /// death buys anything — v1's game.
+    pub grief_periods: u16,
 }
 
 impl DeployContent {
@@ -610,6 +634,10 @@ impl DeployContent {
         mat_count: 0,
         upkeep_pct_per_day: 0,
         decay_pct: [0; DECAY_MATERIALS],
+        upkeep_steps: [(0, 0); UPKEEP_STEPS],
+        upkeep_step_count: 0,
+        inside_decay_pct: 0,
+        grief_periods: 0,
     };
 
     /// Synthetic table for the parity/replay/alloc gates, over the gather
@@ -730,6 +758,21 @@ impl DeployContent {
         // only ever sees the default is not watching the feature. Twig
         // leads at 100: one period and a scaffold is gone.
         d.decay_pct = [100, 34, 20, 13];
+        // And upkeep v2's rules keyed, for the same reason: a rent ladder
+        // with steps low enough that the gates' bases climb it, an inside
+        // rate, and a grief window. ⚠ **Keyed is not the same as exercised,
+        // and it was measured**: the ladder walk and the inside predicate
+        // run on every visit these gates make, but no piece in the replay
+        // script ever goes unpaid with anything over it (0 discounted steps,
+        // counted 2026-09-22), so the inside discount is held by
+        // `upkeep.rs`'s and this module's unit tests and not by parity or
+        // replay. The grief receipt was not counted; its gates are the
+        // unit tests here too.
+        d.upkeep_steps[0] = (3, 150);
+        d.upkeep_steps[1] = (6, 200);
+        d.upkeep_step_count = 2;
+        d.inside_decay_pct = 10;
+        d.grief_periods = 24;
         d
     }
 }
@@ -824,6 +867,17 @@ pub struct HearthRec {
     /// putting the cupboard down is the act of joining its list (§1 fact
     /// 4) — so this is never empty on a live record.
     pub crew: CrewList,
+}
+
+/// A stocked hearth that left the world this tick, parked for [`grieve`]
+/// — where it stood and what it held, which is all the drain needs: the
+/// building is re-walked from the cell, because the cache that knew its
+/// shape is rebuilt before the drain runs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GriefRec {
+    pub cx: u16,
+    pub cz: u16,
+    pub stock: [u32; HEARTH_STOCK_ROWS],
 }
 
 /// One deployed box's contents, in the dense box list. Identity is the
@@ -978,6 +1032,12 @@ pub struct Deploys {
     /// rather than state: never hashed, never saved, deterministic
     /// anyway (every bump site is stream-ordered).
     hearth_gen: u64,
+    /// Stocked hearths destroyed this tick, awaiting [`grieve`] — the box
+    /// spill's shape and its reason: the removal path holds neither the
+    /// build table nor the clock. Empty at every tick boundary, so it is
+    /// neither hashed nor saved.
+    grief: [GriefRec; MAX_GRIEF_PER_TICK],
+    grief_len: usize,
 }
 
 impl Deploys {
@@ -993,6 +1053,8 @@ impl Deploys {
             locks: Locks::new(),
             claim: crate::claim::ClaimCache::new(),
             hearth_gen: 0,
+            grief: [GriefRec::default(); MAX_GRIEF_PER_TICK],
+            grief_len: 0,
         }
     }
 
@@ -1000,7 +1062,7 @@ impl Deploys {
     /// was last built. Called from exactly one place — the top of
     /// [`upkeep_sweep`], the fixed point in the tick the determinism
     /// argument in `claim.rs` names — and from the gates.
-    pub(crate) fn refresh_claims(&mut self, pieces: &Pieces) {
+    pub(crate) fn refresh_claims(&mut self, pieces: &Pieces, bc: &BuildContent) {
         if self
             .claim
             .fresh_for(pieces.footprint_gen(), self.hearth_gen)
@@ -1010,10 +1072,18 @@ impl Deploys {
         let hg = self.hearth_gen;
         self.claim.rebuild(
             pieces,
+            bc,
             &self.hearths[..self.hearth_count],
             pieces.footprint_gen(),
             hg,
         );
+    }
+
+    /// Graded pieces on hearth `hi`'s cached claim volume — what its rent
+    /// is priced on (upkeep v2, `upkeep::tax`). Same freshness contract as
+    /// [`Deploys::hearth_covers`].
+    pub(crate) fn claim_graded(&self, hi: usize) -> u32 {
+        self.claim.graded(hi)
     }
 
     /// Whether hearth `hi`'s **cached** claim volume covers the planar
@@ -1352,6 +1422,20 @@ impl Deploys {
                 .iter()
                 .position(|h| h.cx == rec.cx && h.cz == rec.cz && h.level == rec.level)
             {
+                // A hearth with anything in it leaves a receipt (upkeep
+                // v2's grief protection): parked here, spent by `grieve` at
+                // the end of the tick. An empty one parks nothing, which is
+                // also why a pickup — refused on a stocked hearth — never
+                // buys a base time.
+                let hr = self.hearths[h];
+                if hr.stock.iter().any(|&u| u > 0) && self.grief_len < MAX_GRIEF_PER_TICK {
+                    self.grief[self.grief_len] = GriefRec {
+                        cx: hr.cx,
+                        cz: hr.cz,
+                        stock: hr.stock,
+                    };
+                    self.grief_len += 1;
+                }
                 self.hearth_count -= 1;
                 self.hearths[h] = self.hearths[self.hearth_count];
                 // The cache row moves with the record it describes —
@@ -1757,12 +1841,13 @@ pub fn place_deploy(
         PLACE_DOORWAY | PLACE_WINDOW | PLACE_FRAME => pieces
             .find(cx, cz, level, loc)
             .is_some_and(|r| Some(bc.pieces[r.row as usize].shape) == socket_shape(def.placement)),
-        // A lock's support is the thing it bolts to — a door or a box
-        // (`lockable`; locks on boxes, `DOORS.md` §9.8). Anyone in reach
-        // may bolt one onto a target that has none — including one
+        // A lock's support is the thing it bolts to — a door, a box or a
+        // hearth (`lockable`; `DOORS.md` §9.8, hearth lock v0). Anyone in
+        // reach may bolt one onto a target that has none — including one
         // somebody else built, which is the reference's claim mechanic
         // (`DOORS.md` §5: the lock is not only who opens it, it is whose
-        // door this is).
+        // door this is). The claim check above keeps a stranger's lock off
+        // a crewed hearth, since the hearth stands inside its own claim.
         PLACE_DOOR => deploys
             .find(cx, cz, level, loc)
             .is_some_and(|r| lockable(dc.defs[r.row as usize].arch)),
@@ -2169,6 +2254,27 @@ pub fn lock_op(
                 ((level as u32) << 16) | ((loc as u32) << 8) | grant as u32,
                 p.id,
             );
+            // **At a hearth, the right code is the whole invitation**
+            // (hearth lock v0): the reference asks for two acts — open the
+            // lock, then authorize — and ours folds them, because the
+            // second can only ever succeed after the first
+            // ([`hearth_admits`]) and a keypad that remembered you but left
+            // you off the crew would be a press that did half of what it
+            // said. One `EV_AUTH` carries both: the grant is the lock's,
+            // and a full grant IS crew standing. A full crew refuses with
+            // the lock's own reason; the lock still remembers the hand.
+            if grant == lock::GRANT_FULL
+                && dc.defs[deploys.entries[di].row as usize].arch == ARCH_HEARTH
+            {
+                if let Some(h) = deploys.hearths[..deploys.hearth_count]
+                    .iter()
+                    .position(|hr| hr.cx == cx && hr.cz == cz && hr.level == level)
+                {
+                    if deploys.hearths[h].crew.add(p.id) == Added::Full {
+                        events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_AUTH_FULL, 0);
+                    }
+                }
+            }
             // The one outcome here that is a *trust* act: a hand this lock
             // did not know now stands on its list, and the owner may or
             // may not have been there to see it (`world.rs`'s `EV_TRUST`).
@@ -2307,6 +2413,26 @@ pub fn pick_up(
     drop_deploy(dc, pieces, deploys, i, events);
 }
 
+/// Whether `id` may join this hearth's crew — the one admission rule,
+/// asked by the crew's own join and by a code entered at the hearth's lock
+/// (hearth lock v0). An empty crew is anyone's (a bare door's rule); a
+/// crewed hearth takes its own members and **whoever its lock remembers at
+/// full rights**. The lock's list is the invitation: a guest code opens
+/// nothing here, and a fresh lock remembers only the hand that bolted it
+/// on, so bolting one on shares nothing until a code is set and told.
+///
+/// Evicting follows from the same sentence and is the reference's own
+/// pair of acts: clearing the crew leaves the lock's list standing, so a
+/// hand still on it can walk back in — setting a new code is what forgets
+/// them (`lock.rs`'s `reset_lists`).
+pub fn hearth_admits(locks: &Locks, h: &HearthRec, id: u32) -> bool {
+    h.crew.is_empty()
+        || h.crew.contains(id)
+        || locks
+            .find(h.cx, h.cz, h.level, LOC_PLANE)
+            .is_some_and(|l| l.grant(id) == lock::GRANT_FULL)
+}
+
 /// Apply one crew op to the hearth at the address (hearth crew v1,
 /// `reference/BUILDING.md` §9.1). `Command::Access` routes here when the
 /// address holds a hearth and to `lock_op` when it holds a door — one
@@ -2351,6 +2477,9 @@ pub fn crew_op(
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_REACH, 0);
         return None;
     }
+    // Read before the crew is borrowed for writing: the answer spans two
+    // stores (the crew and the hearth's lock), and only the join asks it.
+    let admitted = hearth_admits(&deploys.locks, &deploys.hearths[h], p.id);
     let crew = &mut deploys.hearths[h].crew;
     // Whether the crew's membership actually moved. The trust row rides
     // this and not the op's success, because one op succeeds while
@@ -2362,13 +2491,14 @@ pub fn crew_op(
     // whole value is that its rows mean something.
     let moved;
     match op {
-        // **Anyone in reach may join an empty-crewed hearth, and only the
-        // crew may join a crewed one.** The first half cannot happen —
-        // placing joins the crew, so a live hearth always has at least one
-        // member — but stating it here is what makes the rule readable as
+        // **Anyone in reach may join an empty-crewed hearth; a crewed one
+        // takes its crew and whoever its lock remembers at full rights**
+        // ([`hearth_admits`], hearth lock v0). The empty half cannot happen
+        // — placing joins the crew, so a live hearth always has at least
+        // one member — but stating it is what makes the rule readable as
         // the same one the lock keeps: an unclaimed thing is anyone's.
         ACCESS_OP_CREW_JOIN => {
-            if !crew.is_empty() && !crew.contains(p.id) {
+            if !admitted {
                 events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWNER, 0);
                 return None;
             }
@@ -2431,22 +2561,6 @@ fn lock_row(dc: &DeployContent) -> Option<usize> {
     dc.defs[..dc.def_count as usize]
         .iter()
         .position(|d| d.arch == ARCH_LOCK)
-}
-
-/// Per-period charge for one cost row: `ceil(cost × pct / 100 / 24)`.
-fn charge_of(cost: u16, pct: u16) -> u32 {
-    let num = cost as u32 * pct as u32;
-    num.div_ceil(100 * PERIODS_PER_DAY)
-}
-
-/// Per-period decay for a max hp at a rate: `max(1, maxhp × pct / 100)`.
-///
-/// The floor is what stops a 1 % rate on a 50 hp piece rounding to zero
-/// and making it immortal — a decay that never subtracts is a decay
-/// that is off, and off is a thing content should have to *say*
-/// (`upkeep_pct_per_day = 0`) rather than stumble into.
-fn decay_at(max_hp: u16, pct: u32) -> u16 {
-    ((max_hp as u32 * pct) / 100).max(1) as u16
 }
 
 /// The rate a **piece** of this material rots at, from the baked ladder.
@@ -2637,6 +2751,108 @@ pub fn damage_deploy(
     false
 }
 
+/// **Grief protection** (upkeep v2; `reference/BUILDING.md` §5b): what a
+/// destroyed hearth's stock still buys its base, drained at the end of the
+/// tick from the park `Deploys::remove_at` fills — `World::tick` calls it
+/// beside the box spill, for the spill's reason.
+///
+/// The reference's rule, Devblog 198 whole: *"when a cupboard with
+/// resources in it is destroyed, it uses part or all of those resources to
+/// purchase up to 24 hours of decay protection on all building blocks that
+/// are currently connected to the building … Doing this multiple times will
+/// not increase the time beyond 24 hours. Building blocks that are added
+/// after the cupboard was destroyed will decay normally."* Without it,
+/// breaking a hearth is the cheapest way to delete a base: every wall is
+/// unpaid on the next sweep and a wooden base is gone in three hours.
+///
+/// Ours is that sentence **per material**, because our upkeep is: every
+/// graded piece of the building is prepaid for as many periods as the dead
+/// hearth's stock of the piece's own materials would have covered the
+/// building's bill — capped at `grief_periods`. A stone-short cupboard
+/// still buys its wooden walls their time, which is the case the reference
+/// itself shipped a fix for in 2025. Prepaid is an upkeep clock ahead of
+/// the hour: the sweep skips a piece whose `uh` has not been reached, so it
+/// neither pays nor rots, and a second death raises the clock with `max`
+/// rather than adding to it — never past the cap from now.
+///
+/// Bounded (wall 4): at most `MAX_GRIEF_PER_TICK` entries, each three
+/// passes over the piece store and one capped walk (`claim::component_near`).
+pub fn grieve(
+    dc: &DeployContent,
+    bc: &BuildContent,
+    pieces: &mut Pieces,
+    deploys: &mut Deploys,
+    tick: u64,
+) {
+    let parked = deploys.grief_len;
+    deploys.grief_len = 0;
+    if dc.grief_periods == 0 || dc.mat_count == 0 {
+        return;
+    }
+    let h_now = (tick / UPKEEP_PERIOD_TICKS) as u16;
+    let mats = dc.mat_count as usize;
+    for g in 0..parked {
+        let rec = deploys.grief[g];
+        let walk = crate::claim::component_near(pieces, rec.cx, rec.cz);
+        let ours = |p: &crate::build::PieceRec| {
+            bc.pieces[p.row as usize].material != crate::build::MAT_TWIG && walk.holds(p.cx, p.cz)
+        };
+        // The building's bill at its own size — the sweep's arithmetic.
+        let graded = pieces.entries().iter().filter(|p| ours(p)).count() as u32;
+        let t = crate::upkeep::tax(dc, graded);
+        let mut bill = [0u32; HEARTH_STOCK_ROWS];
+        for p in pieces.entries().iter().filter(|p| ours(p)) {
+            for (m, due) in bill.iter_mut().enumerate().take(mats) {
+                *due = due.saturating_add(row_due(&bc.pieces[p.row as usize], dc.mats[m], t));
+            }
+        }
+        // Periods each material's stock covers, capped.
+        let mut periods = [0u32; HEARTH_STOCK_ROWS];
+        for m in 0..mats {
+            // An unbilled material buys nothing: no piece here costs it.
+            periods[m] = rec.stock[m]
+                .checked_div(bill[m])
+                .map_or(0, |p| p.min(dc.grief_periods as u32));
+        }
+        for i in 0..pieces.len() {
+            let p = pieces.entries()[i];
+            if !ours(&p) {
+                continue;
+            }
+            let def = &bc.pieces[p.row as usize];
+            // The least of its own materials: a piece of wood and stone is
+            // protected while both last, as the sweep would charge it.
+            let mut n: Option<u32> = None;
+            for (m, &item) in dc.mats.iter().enumerate().take(mats) {
+                if def
+                    .costs
+                    .iter()
+                    .take(def.n_costs as usize)
+                    .any(|&(it, cost)| it == item && cost > 0)
+                {
+                    n = Some(n.map_or(periods[m], |k| k.min(periods[m])));
+                }
+            }
+            let until = h_now.saturating_add(n.unwrap_or(0) as u16);
+            if n.unwrap_or(0) > 0 && p.uh < until {
+                pieces.set_upkeep(i, p.hp, until);
+            }
+        }
+    }
+}
+
+/// One period's charge for material `item` on a piece at rent `t` — every
+/// cost row of that item, each rounded up on its own, which is how v1
+/// charged and what keeps a starter base's bill unchanged to the unit.
+fn row_due(def: &crate::build::PieceDef, item: u16, t: crate::upkeep::Tax) -> u32 {
+    def.costs
+        .iter()
+        .take(def.n_costs as usize)
+        .filter(|&&(it, _)| it == item)
+        .map(|&(_, cost)| t.charge(cost))
+        .sum()
+}
+
 /// One tick of the upkeep/decay sweep: advance each store's cursor by
 /// `UPKEEP_SWEEP_PER_TICK` entries, processing due periods per entry
 /// (charge from a covering hearth or decay; removal at 0 hp). Bounded
@@ -2664,7 +2880,7 @@ pub fn upkeep_sweep(
     // the determinism argument; what matters here is the order: no
     // coverage question is ever asked of a cache the tick's commands have
     // not been folded into.
-    deploys.refresh_claims(pieces);
+    deploys.refresh_claims(pieces, bc);
     let h_now = (tick / UPKEEP_PERIOD_TICKS) as u16;
 
     // --- pieces ---------------------------------------------------------
@@ -2694,6 +2910,13 @@ pub fn upkeep_sweep(
                 cover_n += 1;
             }
         }
+        // Whether anything of a base stands over this piece — asked once
+        // per visit for the reason `cover` is: the steps below spend stock
+        // and never move structure (upkeep v2, `upkeep::inside`).
+        let scale = crate::upkeep::scale(
+            dc,
+            crate::upkeep::inside(pieces.cols(), rec.cx, rec.cz, rec.level, rec.loc, def.shape),
+        );
         let mut hp = rec.hp;
         let mut uh = rec.uh;
         let mut removed = false;
@@ -2735,28 +2958,43 @@ pub fn upkeep_sweep(
             // 100 %/period is waiting. That is the whole difference
             // between a draft you re-lay for 50 wood and a cheap
             // permanent base nobody upgrades.
+            //
+            // **The rent is the payer's** (upkeep v2): what a row costs is
+            // read off the covering hearth's own base size
+            // (`upkeep::tax`), so the search asks each candidate its own
+            // price rather than pricing once and shopping for a stock.
             let mut all_paid = cover_n > 0 && def.material != crate::build::MAT_TWIG;
             for m in 0..(if all_paid { dc.mat_count as usize } else { 0 }) {
-                let due: u32 = def
+                let item = dc.mats[m];
+                if !def
                     .costs
                     .iter()
                     .take(def.n_costs as usize)
-                    .filter(|&&(item, _)| item == dc.mats[m])
-                    .map(|&(_, cost)| charge_of(cost, dc.upkeep_pct_per_day))
-                    .sum();
-                if due == 0 {
+                    .any(|&(it, cost)| it == item && cost > 0)
+                {
                     continue;
                 }
+                let due = |hi: u16| {
+                    row_due(
+                        &def,
+                        item,
+                        crate::upkeep::tax(dc, deploys.claim_graded(hi as usize)),
+                    )
+                };
                 let payer = cover[..cover_n]
                     .iter()
-                    .position(|&hi| deploys.hearths[hi as usize].stock[m] >= due);
+                    .find(|&&hi| deploys.hearths[hi as usize].stock[m] >= due(hi))
+                    .copied();
                 match payer {
-                    Some(ci) => deploys.hearths[cover[ci] as usize].stock[m] -= due,
+                    Some(hi) => {
+                        let d = due(hi);
+                        deploys.hearths[hi as usize].stock[m] -= d;
+                    }
                     None => all_paid = false,
                 }
             }
             if !all_paid {
-                let d = decay_at(def.hp, piece_decay_pct(dc, def.material));
+                let d = crate::upkeep::decay_step(def.hp, piece_decay_pct(dc, def.material), scale);
                 if hp <= d {
                     hp = 0;
                     removed = true;
@@ -2818,6 +3056,10 @@ pub fn upkeep_sweep(
         }
         let def = dc.defs[rec.row as usize];
         let (x, z) = cell_center(rec.cx, rec.cz);
+        let scale = crate::upkeep::scale(
+            dc,
+            crate::upkeep::deploy_inside(pieces.cols(), rec.cx, rec.cz, rec.level, rec.loc),
+        );
         let mut hp = rec.hp;
         let mut uh = rec.uh;
         let mut removed = false;
@@ -2829,8 +3071,9 @@ pub fn upkeep_sweep(
             // (An empty hearth covers nothing, itself included.)
             if deploys.covering_hearth(x, z).is_none() {
                 // The flat rate: a deployable has no build material, so
-                // the ladder has nothing to key on (`piece_decay_pct`).
-                let d = decay_at(def.hp, DECAY_PCT_PER_PERIOD);
+                // the ladder has nothing to key on (`piece_decay_pct`) —
+                // but a box under a roof is inside as a wall is.
+                let d = crate::upkeep::decay_step(def.hp, DECAY_PCT_PER_PERIOD, scale);
                 if hp <= d {
                     hp = 0;
                     removed = true;
@@ -3735,10 +3978,7 @@ mod tests {
         let spent = STOCK_MAX - deploys.hearths()[0].stock[0];
         assert_eq!(
             spent,
-            charge_of(
-                bc.pieces[GRADED_FOUNDATION].costs[0].1,
-                dc.upkeep_pct_per_day
-            ),
+            crate::upkeep::tax(&dc, 1).charge(bc.pieces[GRADED_FOUNDATION].costs[0].1),
             "the hearth paid for the foundation and nothing else"
         );
     }
@@ -5804,10 +6044,14 @@ mod tests {
         // metal 13, so a wooden piece loses more of its max hp per period
         // than a stone one. Read off the content rather than typed, so a
         // re-price moves the assertion with it.
-        let twig = decay_at(100, piece_decay_pct(&dc, crate::build::MAT_TWIG));
-        let wood = decay_at(100, piece_decay_pct(&dc, crate::build::MAT_WOOD));
-        let stone = decay_at(100, piece_decay_pct(&dc, crate::build::MAT_STONE));
-        let metal = decay_at(100, piece_decay_pct(&dc, crate::build::MAT_METAL));
+        let twig =
+            crate::upkeep::decay_step(100, piece_decay_pct(&dc, crate::build::MAT_TWIG), 100);
+        let wood =
+            crate::upkeep::decay_step(100, piece_decay_pct(&dc, crate::build::MAT_WOOD), 100);
+        let stone =
+            crate::upkeep::decay_step(100, piece_decay_pct(&dc, crate::build::MAT_STONE), 100);
+        let metal =
+            crate::upkeep::decay_step(100, piece_decay_pct(&dc, crate::build::MAT_METAL), 100);
         assert!(
             twig > wood && wood > stone && stone > metal,
             "the tougher the grade the slower it rots ({twig}/{wood}/{stone}/{metal})"
@@ -5833,7 +6077,15 @@ mod tests {
             );
         }
         // ...and a rate that would round to nothing still subtracts.
-        assert_eq!(decay_at(50, 1), 1, "a decay that never subtracts is off");
+        assert_eq!(
+            crate::upkeep::decay_step(50, 1, 100),
+            1,
+            "a decay that never subtracts is off"
+        );
+        // ...and an inside rate of zero is the content saying nothing, so
+        // the full rate answers rather than immortality.
+        dc.inside_decay_pct = 0;
+        assert_eq!(crate::upkeep::scale(&dc, true), 100);
     }
 
     /// A hearth with a crew is a base two people can build in — the whole
@@ -6030,6 +6282,323 @@ mod tests {
         crew_op(&mut deploys, &far, CX, CZ, 0, ACCESS_OP_CREW_JOIN, &mut ev);
         assert_eq!(last(&ev).2, REFUSE_D_REACH, "a crew op has the build reach");
         assert_eq!(deploys.hearths()[0].crew.len(), 1);
+    }
+
+    /// Hearth lock v0, whole: a crewed hearth refuses a stranger bare, and
+    /// a code lock bolted to it is how a crew **invites** one — the right
+    /// code at the hearth's keypad is crew standing in one press, a guest
+    /// code is nothing here, clearing the crew leaves the lock's list
+    /// standing, and a new code is what forgets a hand. Before this there
+    /// was no verb at all that put a second player on a live crew; the
+    /// crew test above reaches for `hearths_mut()` to do it.
+    #[test]
+    fn a_code_at_the_hearths_lock_is_how_a_crew_invites_a_hand() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let gc = GatherContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut owner = player_at_cell(CX, CZ, &[(0, 99), (1, 99), (2, 2), (7, 1)]);
+        founded(&bc, &mut pieces, &mut owner, CX, CZ);
+        place_deploy(
+            SEED,
+            hv(),
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut owner,
+            0,
+            0,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        let (ax, az) = cell_center(CX, CZ);
+        let mut friend = player_at_cell(CX, CZ, &[]);
+        friend.id = 9;
+        let mut guest = player_at_cell(CX, CZ, &[]);
+        guest.id = 11;
+        let crew = |d: &Deploys| d.hearths()[0].crew.members().to_vec();
+        let join = |d: &mut Deploys, p: &Player, ev: &mut EventQueue| {
+            crew_op(d, p, CX, CZ, 0, ACCESS_OP_CREW_JOIN, ev);
+        };
+        let pad = |d: &mut Deploys, p: &mut Player, op: u8, code: u16, ev: &mut EventQueue| {
+            lock_op(
+                &dc,
+                &gc,
+                d,
+                p,
+                CX,
+                CZ,
+                0,
+                LOC_PLANE,
+                op,
+                code,
+                0,
+                ev,
+                &mut [ItemStack::default(); INV_SLOTS],
+            );
+        };
+
+        // Bare and crewed: the stranger bounces, exactly as before.
+        join(&mut deploys, &friend, &mut ev);
+        assert_eq!(
+            last(&ev).2,
+            REFUSE_D_OWNER,
+            "a bare crewed hearth is closed"
+        );
+
+        // Bolt the lock on — a hearth is `lockable` now — and arm it.
+        place_deploy(
+            SEED,
+            hv(),
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut owner,
+            0,
+            5,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(deploys.locks().len(), 1, "the lock bolted onto the hearth");
+        assert!(deploys.find(CX, CZ, 0, LOC_PLANE).unwrap().has_lock);
+        pad(&mut deploys, &mut owner, ACCESS_OP_SET_CODE, 1234, &mut ev);
+        pad(&mut deploys, &mut owner, ACCESS_OP_SET_GUEST, 5555, &mut ev);
+
+        // A wrong code is the door's wrong code: a shock and no standing.
+        pad(&mut deploys, &mut friend, ACCESS_OP_ENTER, 4321, &mut ev);
+        assert_eq!(last(&ev).2, REFUSE_D_CODE);
+        assert_eq!(crew(&deploys), vec![owner.id]);
+
+        // The right one is the invitation, in one press.
+        pad(&mut deploys, &mut friend, ACCESS_OP_ENTER, 1234, &mut ev);
+        assert_eq!(
+            (last(&ev).0, last(&ev).2 & 0xff, last(&ev).3),
+            (
+                crate::world::EV_AUTH,
+                crate::lock::GRANT_FULL as u32,
+                friend.id
+            ),
+            "one EV_AUTH carries both the lock's grant and the crew standing"
+        );
+        assert_eq!(crew(&deploys), vec![owner.id, friend.id]);
+        assert!(
+            !crate::claim::foreign_claim(&pieces, &deploys, ax, az, friend.id),
+            "and crew standing is what the claim asks"
+        );
+
+        // A guest code opens nothing here: remembered, never crewed.
+        pad(&mut deploys, &mut guest, ACCESS_OP_ENTER, 5555, &mut ev);
+        assert_eq!(last(&ev).2 & 0xff, crate::lock::GRANT_GUEST as u32);
+        join(&mut deploys, &guest, &mut ev);
+        assert_eq!(last(&ev).2, REFUSE_D_OWNER, "a guest is not an invitee");
+        assert!(!crew(&deploys).contains(&guest.id));
+
+        // Clearing the crew leaves the lock's list standing, so the friend
+        // walks back in on the crew's own join — no code needed.
+        crew_op(
+            &mut deploys,
+            &owner,
+            CX,
+            CZ,
+            0,
+            ACCESS_OP_CREW_CLEAR,
+            &mut ev,
+        );
+        assert_eq!(crew(&deploys), vec![owner.id]);
+        join(&mut deploys, &friend, &mut ev);
+        assert_eq!(crew(&deploys), vec![owner.id, friend.id]);
+
+        // A new code is what forgets them: clear, re-key, and they bounce.
+        crew_op(
+            &mut deploys,
+            &owner,
+            CX,
+            CZ,
+            0,
+            ACCESS_OP_CREW_CLEAR,
+            &mut ev,
+        );
+        pad(&mut deploys, &mut owner, ACCESS_OP_SET_CODE, 2468, &mut ev);
+        join(&mut deploys, &friend, &mut ev);
+        assert_eq!(last(&ev).2, REFUSE_D_OWNER, "the re-keyed lock forgot them");
+        assert_eq!(crew(&deploys), vec![owner.id]);
+
+        // And the lock dies with the hearth it is bolted to.
+        let di = deploys.find_index(CX, CZ, 0, LOC_PLANE).unwrap();
+        drop_deploy(&dc, &mut pieces, &mut deploys, di, &mut ev);
+        assert!(deploys.locks().is_empty(), "no lock outlives its hearth");
+    }
+
+    /// Upkeep v2's inside rule through the sweep: with no hearth anywhere
+    /// both pieces go unpaid, and the one with a floor over it rots at the
+    /// content's inside rate — a tenth — while the roof takes the ladder's
+    /// full step. A lapsed base comes down from the top.
+    #[test]
+    fn an_unpaid_piece_under_a_roof_rots_at_the_inside_rate() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        pieces.insert_for_test(CX, CZ, 0, LOC_PLANE, GRADED_FOUNDATION as u8, &bc);
+        pieces.insert_for_test(CX, CZ, 1, LOC_PLANE, 6, &bc);
+        sweep_once(&dc, &bc, &mut pieces, &mut deploys, UPKEEP_PERIOD_TICKS + 1);
+        let full = bc.pieces[GRADED_FOUNDATION].hp;
+        let step = full as u32 * piece_decay_pct(&dc, crate::build::MAT_STONE) / 100;
+        assert_eq!(
+            pieces.find(CX, CZ, 1, LOC_PLANE).unwrap().hp as u32,
+            bc.pieces[6].hp as u32 - step,
+            "the roof has nothing over it and takes the full step"
+        );
+        assert_eq!(
+            pieces.find(CX, CZ, 0, LOC_PLANE).unwrap().hp as u32,
+            full as u32 - step * dc.inside_decay_pct as u32 / 100,
+            "the floor under it takes the inside fraction"
+        );
+    }
+
+    /// Grief protection, whole (upkeep v2, Devblog 198): a stocked hearth
+    /// broken by a raid buys each graded piece of the building it stood in
+    /// the periods its stock of that piece's material covered, capped, and
+    /// nothing for a piece the building does not reach.
+    #[test]
+    fn a_destroyed_stocked_hearth_buys_its_base_time_per_material() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = player_at_cell(CX, CZ, &[(0, 99), (1, 99), (2, 1)]);
+        founded_graded(&bc, &mut pieces, &mut p, CX, CZ);
+        place_deploy(
+            SEED,
+            hv(),
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            0,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        // Two more graded pieces of one building — a stone foundation
+        // (item 0) and a stone floor (item 1) — and one detached.
+        pieces.insert_for_test(CX + 1, CZ, 0, LOC_PLANE, GRADED_FOUNDATION as u8, &bc);
+        pieces.insert_for_test(CX + 2, CZ, 0, LOC_PLANE, 6, &bc);
+        pieces.insert_for_test(CX + 10, CZ, 0, LOC_PLANE, GRADED_FOUNDATION as u8, &bc);
+        // Three graded pieces sit below the fixture's first step, so each
+        // row charges 1 a period: item 0's bill is 2, item 1's is 1. Ten of
+        // item 0 covers five periods; one of item 1 covers one.
+        deploys.hearths_mut()[0].stock = [10, 1, 0, 0];
+
+        let h0: u16 = 3;
+        let di = deploys.find_index(CX, CZ, 0, LOC_PLANE).unwrap();
+        assert!(damage_deploy(
+            &dc,
+            &mut pieces,
+            &mut deploys,
+            di,
+            u16::MAX,
+            &mut ev
+        ));
+        assert!(deploys.hearths().is_empty(), "the raid took the hearth");
+        grieve(
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            h0 as u64 * UPKEEP_PERIOD_TICKS + 5,
+        );
+
+        let uh = |p: &Pieces, cx: u16| p.find(cx, CZ, 0, LOC_PLANE).unwrap().uh;
+        assert_eq!(uh(&pieces, CX), h0 + 5, "stone on item 0: five periods");
+        assert_eq!(uh(&pieces, CX + 1), h0 + 5);
+        assert_eq!(uh(&pieces, CX + 2), h0 + 1, "the floor on item 1: one");
+        assert_eq!(uh(&pieces, CX + 10), 0, "not the building, not protected");
+
+        // Two periods on, the floor's time is spent and it rots; the
+        // foundations are still paid for by a hearth that no longer exists.
+        sweep_once(
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            (h0 as u64 + 2) * UPKEEP_PERIOD_TICKS + 1,
+        );
+        let hp = |p: &Pieces, cx: u16| p.find(cx, CZ, 0, LOC_PLANE).unwrap().hp;
+        assert_eq!(hp(&pieces, CX), bc.pieces[GRADED_FOUNDATION].hp);
+        assert!(
+            hp(&pieces, CX + 2) < bc.pieces[6].hp,
+            "the floor's receipt ran out"
+        );
+
+        // The cap, and `max` rather than `+`: a vast stock buys the cap
+        // from now, and a second receipt never stacks past it.
+        deploys.grief[0] = GriefRec {
+            cx: CX,
+            cz: CZ,
+            stock: [u32::MAX, u32::MAX, 0, 0],
+        };
+        for _ in 0..2 {
+            deploys.grief_len = 1;
+            grieve(
+                &dc,
+                &bc,
+                &mut pieces,
+                &mut deploys,
+                h0 as u64 * UPKEEP_PERIOD_TICKS,
+            );
+        }
+        assert_eq!(uh(&pieces, CX + 1), h0 + dc.grief_periods);
+        assert_eq!(deploys.grief_len, 0, "the park drains every time");
+    }
+
+    /// An empty hearth parks nothing — which is also why a pickup, refused
+    /// on a stocked one, can never buy a base time.
+    #[test]
+    fn an_empty_hearth_buys_nothing() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = player_at_cell(CX, CZ, &[(0, 99), (1, 99), (2, 1)]);
+        founded_graded(&bc, &mut pieces, &mut p, CX, CZ);
+        place_deploy(
+            SEED,
+            hv(),
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            0,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        let di = deploys.find_index(CX, CZ, 0, LOC_PLANE).unwrap();
+        damage_deploy(&dc, &mut pieces, &mut deploys, di, u16::MAX, &mut ev);
+        assert_eq!(deploys.grief_len, 0);
+        grieve(&dc, &bc, &mut pieces, &mut deploys, 3 * UPKEEP_PERIOD_TICKS);
+        assert_eq!(pieces.find(CX, CZ, 0, LOC_PLANE).unwrap().uh, 0);
     }
 
     /// A crew is what lets a second pair of hands build in the base, and

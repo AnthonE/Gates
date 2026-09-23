@@ -1094,7 +1094,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             // collision index is rebuilt from the pieces. The rebuild only
             // walks archetypes `lockable` names, so the file's `locked`
             // byte has to be dropped *here* or a forged save could present
-            // locked:true / has_lock:false on a fire or a hearth — a
+            // locked:true / has_lock:false on a fire or a bench — a
             // mirror state no lock verb can produce — and nothing after
             // this line would ever look at it again.
             has_lock: false,

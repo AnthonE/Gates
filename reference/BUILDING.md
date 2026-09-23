@@ -54,6 +54,19 @@ practical consequence is that §7c's two quotes are transcribed from the pages
 and the rest of this file's are not, and a reader deciding how much weight to
 put on a sentence should know which kind they are holding.
 
+⚠ **§4b and §5b (2026-09-22) are tier 1 fetched whole, and they add a
+source this directory had not used: Facepunch's public commit feed**
+(`commits.facepunch.com`, repo `rust_reboot` — every commit message since
+2014, their own words, each with a date; one opens at
+`commits.facepunch.com/<id>`). It answered three questions the devblogs leave
+open: the heal guard (10 minutes), what *inside* costs (10 %), and when the
+bracket convars were reworded (2025-07-03). Their verbatim convar text came
+from two console pastes (2018) and one convar dump (2026), each marked where
+it is used. They also corrected four claims below, each fixed where it
+stands: §2's list cap, §5's ladder and "eats inward" (search summaries, now
+sourced), and §7b.6's exempt high walls, which the reference changed in
+August 2026.
+
 Nothing here was decompiled. Nothing ships.
 
 ## 1 · The object model, read off the hook table
@@ -104,9 +117,19 @@ Five structural facts, and they are the valuable half of this document:
 - **Placing it authorizes you** (§1 fact 4). No separate step.
 - **`E` toggles**: press once to add yourself, press again to remove
   yourself. **Hold `E`** for a radial menu carrying **Clear List**.
-- **Vanilla caps the list at 10 players.** They bounded it; so must we
-  (wall 4), and the reference having done the same is worth knowing before
-  arguing about the number.
+- ~~**Vanilla caps the list at 10 players.**~~ **Not found at tier 1**
+  (2026-09-22): the only published caps are softcore's 4 (*"Maximum team
+  size is 4 (this includes the number of people who can authorize at a Tool
+  Cupboard…)"*) and a 2026 devblog's example of *"a TC with 12 players"*.
+  The 10 was a tier-3 figure, possibly Rust Console Edition's team clamp.
+  Ours stays bounded (`HEARTH_CREW_CAP`, wall 4) — the number is ours.
+- **Anyone may authorize at an unlocked cupboard, and it takes line of
+  sight.** *"Your teammates (or anyone else) will not be authorized to the
+  tool cupboard until they approach it and press E"* (wiki, the Tool
+  Cupboard page); authorizing and clearing need line of sight (Devblog 84).
+  **Locks go on cupboards** (Devblog 159: *"so attackers have to destroy
+  them before they can grief your base"*), and a lock is what stands
+  between a stranger and the list.
 - **Authorization grants three things** that are usually stated as one:
   build inside the privilege, **pick up deployables** inside it, and be
   authorized to the traps that require building privilege (flame and
@@ -150,6 +173,43 @@ The replacement is a **cost**, not a timer:
 - Devblog 190 extended the protection: **deployables inside the privilege**
   stop decaying too, not just building blocks.
 
+## 4b · The rent's ladder, and the one question the sources split on
+
+*Tier 1, fetched whole 2026-09-22.* Devblog 189 states the model — *"a tax
+system, where the first section of blocks are 'taxed' at a certain rate to
+maintain their health, and the more and more blocks you add to your base the
+more expensive it gets"* — and the convars carry the numbers, default and
+verbatim:
+
+| convar | default | 2018 help text | 2026 help text |
+|---|---|---|---|
+| `decay.bracket_0_blockcount` | 15 | "Between 0 and this value are considered bracket 0 …" | "Number of blocks in the 1st upkeep bracket" |
+| `decay.bracket_1_blockcount` | 50 | "Between bracket_0_blockcount and this value …" | "Number of blocks in the 2nd upkeep bracket" |
+| `decay.bracket_2_blockcount` | 125 | "Between bracket_1_blockcount and this value …" | "The number of blocks in the 3rd upkeep bracket" |
+| `decay.bracket_0..3_costfraction` | 0.1 / 0.15 / 0.2 / 0.333 | "… will cost this fraction per upkeep period" | "… will cost this value per day" |
+
+`bracket_3_blockcount` (200) was removed 2025-07-03, commit 539282: *"it
+doesn't do anything (all blocks past bracket_2_blockcount are automatically
+in the 4th upkeep bracket) / change descriptions to be a bit easier to
+understand"*. The rate is **blended**, one per base, applied to every block —
+the guides' worked example is *(15 × 10 % + 5 × 15 %) / 20 = 11.3 %*, and the
+cupboard's tooltip is `'{0} blocks at {1}%'` (commit 492117).
+
+**The split: are the counts thresholds or sizes?** The 2018 text reads as
+thresholds (15 / 50 / 125); the 2026 text, written by the developer who read
+the code "to be a bit easier to understand", reads as sizes (15, the next 50,
+the next 125 — breaks at 15 / 65 / 190), and so do the guides. They agree to
+50 blocks and part after: 65 blocks is 13.85 % as sizes, 15.0 % as
+thresholds. `BALANCE.md` §6.3 rungs 3–4 take **sizes** (the worked example
+and the recency); the threshold reading is the loser, one line to flip. The
+cheap tie-break is in their game: a 65-block base's tooltip.
+
+What pays: a fraction of each block's cost in its own materials, per 24 h
+(`decay.upkeep_period_minutes` 1440). Doors and frame inserts pay too since
+Devblog 190; loose deployables do not; high walls pay 20 % since August 2026.
+And since September 2026 a **group tax** raises it per authorized player past
+four — new, and not taken (`NOW.md` §0up).
+
 ## 5 · Decay, when nothing is paying
 
 Community numbers (tier 3 — treat as ratios). Time to gone, at full health,
@@ -171,6 +231,37 @@ Two shape facts under the table:
    half as long.
 3. **It eats inward.** The outermost pieces exposed to the environment go
    first, and it works toward the core until the base is gone.
+
+**Sourced 2026-09-22, and the ladder above is right.** The durations are
+`decay.duration_twig…toptier` 1 / 3 / 5 / 8 / 12 h, verbatim *"How long should
+this building grade take to decay when not protected by upkeep, in hours"*,
+ticked every 10 minutes (`decay.tick` 600). **Inside** is a number, not an
+order: *"Building blocks that are inside now decay at 10% of their normal
+decay rate (upkeep_inside_decay_scale convar)"* (commit 212834) — the onion
+the wiki describes falls out of it, since the outside rots ten times faster.
+How *inside* is decided for a block is not published beyond a ray and a
+50 m range (`decay.outside_test_range`); for deployables it is *"no roof /
+overhang above them"* (commit 226281). **And a paid base heals**: *"your
+base will repair itself, very slowly, at the same rate that it would have
+decayed at"* (Devblog 189), once it has *"not been attacked for 10min"*
+(commit 213133) — not taken, `NOW.md` §0up item 1.
+
+## 5b · Grief protection: a broken cupboard still pays
+
+Devblog 198, whole: *"when a cupboard with resources in it is destroyed, it
+uses part or all of those resources to purchase up to 24 hours of decay
+protection on all building blocks that are currently connected to the
+building. This requires resources to be in the cupboard, so make sure to put
+a code lock on it. Doing this multiple times will not increase the time
+beyond 24 hours. Building blocks that are added after the cupboard was
+destroyed will decay normally."* The convar is `decay.upkeep_grief_protection`,
+1440 minutes. Commits 208428/208426 stopped repeated triggering; a 2025 fix
+restored it when one resource type was missing — which is the per-material
+reading, and the one we took.
+
+The reason it exists is the reason we want it: without it, breaking the
+cupboard is the cheapest way to delete a base, because every block is unpaid
+on the next tick.
 
 ## 6 · The grace window: demolish and rotate
 
@@ -350,7 +441,9 @@ frags **and** HQM from one cupboard simultaneously, and running out of any
 one of them rots only that grade's pieces. Structural blocks, doors and
 window inserts count toward upkeep; loose interior deployables such as
 sleeping bags generally do not, and high external walls inside privilege
-are exempt. **A bigger base is not merely expensive to build — it is
+were exempt — ⚠ **until 6 August 2026**, when they took a flat 20 % a day
+(*"High walls now have a static upkeep cost of 20%"*; §4b). **A bigger
+base is not merely expensive to build — it is
 expensive to keep**, which is the sentence that makes this a survival game
 rather than a construction toy.
 
@@ -632,6 +725,15 @@ grades) is stronger evidence of faithful transcription than any single
 figure here, and the ratios are the part §9 acts on. The absolute prices
 are the part to re-check before they are copied anywhere.
 
+Tier 1 for §2's corrections, §4b, §5 and §5b, **fetched whole
+2026-09-22**: Devblogs 84, 159, 185, 186, 189, 190, 191, 194, 197 and 198 at
+`rust.facepunch.com/news/devblog-<n>`; the wiki's *Tool Cupboard, decay and
+building privilege* page (`wiki.facepunch.com/rust/the_tool_cupboard`) and
+the cupboard's item page; and the commit feed (§0), cited by number. Tier 2:
+the 2018 `find upkeep` console pastes on oxidemod.org and the 2026 convar
+dump behind carbonmod.gg (its "(Generated)" strings are Carbon's own and are
+not quoted). Tier 3: Corrosion Hour's decay page, for the worked example.
+
 ## 9 · What it means for us
 
 Owned by `sim-core/deploy.rs` (the hearth, upkeep, decay) and
@@ -868,3 +970,35 @@ and the fixes were a day's.
     a second support rule and a claim walk that reads plates, and with the
     band-boundary slit becoming the visible edge of a designed seam rather
     than a defect. Not built; `NOW.md` §0bl item 9 carries it.
+
+The rest of this section is **upkeep v2's**, added 2026-09-22 with the
+research above, and all three are built (`DECISIONS.md` §open "upkeep v2",
+"hearth lock v0"). `sim-core/upkeep.rs` owns the arithmetic.
+
+25. **The rent's ladder is theirs** (§4b): `upkeep_steps` past 15 / 65 / 190
+    graded pieces at 15 / 20 / 33.3 % a day over the 10 % first rung, blended
+    across the base. Our *building* is the claim cache's volume, so the count
+    rides the walk that already exists (`claim::ClaimCache::graded`), and it
+    counts graded pieces only — twig pays no rent here, so it must not raise
+    anyone's. A starter base is under the first step and pays v1's bill to
+    the unit, which `a_base_below_the_first_step_pays_v1s_bill_to_the_unit`
+    holds.
+26. **Inside is their ray asked of the grid** (§5): a piece is inside while
+    anything of the base stands over its top — planes, solid triangles,
+    flights and diagonal walls over a centre; frames and stacked edges over
+    an edge too. The consequence is §5's onion, with the roof going first.
+    ⚠ Nothing in the replay or parity scripts ever roofs an unpaid piece, so
+    the discount is held by unit tests alone (`NOW.md` §0up item 6).
+27. **Grief protection is an upkeep clock ahead of the hour** (§5b): the
+    destroyed hearth's stock is parked at removal and paid out at the end of
+    the tick, per material, to every graded piece of the building it stood in
+    — re-walked from its cell and neighbours, because the likeliest reason it
+    died is that its floor went first. No save field: `uh` already says "paid
+    through this hour", and a receipt is only a later hour.
+28. **The cupboard lock, and the one rule we keep that they do not** (§2):
+    ours takes a code lock and its full-rights list is the invitation — the
+    right code at the hearth's keypad is crew standing. Theirs lets anyone
+    authorize at an unlocked cupboard because authorizing needs line of
+    sight; ours reaches through walls, so a bare crewed hearth stays closed.
+    This retires §9 item 10's "no way to share" in practice: until it, no
+    verb put a second player on a live crew.
