@@ -21,22 +21,14 @@ the deleted one out of git history when a question about a verb needs it.
 
 ## The 90-second start
 
-1. Read `CLAUDE.md`. It is the law of this repo and it is short.
-2. Read `NOW.md`. Pick the **top item you can actually finish**. The
-   workspace exists and `./ci/gates.sh` is green on `main` — if it is red on a
-   clean tree, that is a missing capability on your box before it is a defect
-   in the tree, and `CLAUDE.md` names the ones this repo has already paid for
-   (three `-dev` packages, the wasm target, `RUST_MIN_STACK` for the `*_wire`
-   suites). Diagnose with `git stash -u` before believing your diff caused it.
-3. Read the doc that **owns** your area before touching it — the table in
-   `CLAUDE.md` §the docs says which doc wins. Numbers live in `CONTENT.md`
-   schemas and `DECISIONS.md`, never in code. The `reference/` docs own
-   nothing but are worth reading before you build the thing they survey —
-   `SAVES.md` before persistence, `SPAWN.md` before placement, `AUDIO.md`
-   before sound — because each one's §9 is where a spoken decision about that
-   area was reasoned out.
-4. Branch → build → **`./ci/gates.sh` green locally** → open a PR. Fill the
-   template. One crate per PR. Never push to `main`.
+**MVP fast-iteration mode** (operator, 2026-09-23). `CLAUDE.md` is one page
+and is the whole process.
+
+1. Read `CLAUDE.md`.
+2. Pick something from `NOW.md`, or do what the operator asked.
+3. Write the code. Run `ci/quick.sh` (format + clippy of the workspace and the
+   game; add crate names to run their tests). Skip the docs.
+4. Branch, commit, push, open a PR. CI runs the full suite (`ci/gates.sh`).
 5. Want to be paid? See **the deal** below.
 
 ## Don't know what is broken? A player will tell you, in a file
@@ -122,8 +114,6 @@ the **floor**, not the bar. A PR gets rejected even with every gate green
 when it is:
 
 - allocation or locks smuggled into the hot path behind a warmup or a cfg,
-- an invented number (every tunable is spoken in `DECISIONS.md` or ships
-  its documented default — propose new ones in `DECISIONS.md` §open),
 - a test edited to make a wall pass (a change that reddens a wall does not
   merge, ever — fix the change, not the wall),
 - a giant mixed diff, comment churn, or README landscaping dressed as work,
@@ -183,7 +173,8 @@ lands clean, and they are judged one at a time.
 ## Commands (derive, don't quote)
 
 ```
-./ci/gates.sh                       # exactly what CI runs — run before every PR
+ci/quick.sh [crate…]                # the local check — run before every PR
+./ci/gates.sh                       # exactly what CI runs (~90 min cold)
 cargo test --workspace              # every headless gate
 cargo run -p server --bin shard     # the server (reads shard.toml)
 cargo run -p server --bin bots -- 100
