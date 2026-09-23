@@ -85,6 +85,10 @@ jobs:
       - name: numpy and Pillow, for the asset triage self-tests
         run: pip3 install numpy pillow
       - name: the gates
+        env:
+          # PRs skip the wasm parity probe and the web-profile build (MVP mode);
+          # main and manual runs, like nightly and release, run everything.
+          GATES_TIER: ${{ github.event_name == 'pull_request' && 'fast' || 'all' }}
         run: ./ci/gates.sh
       - name: cache cargo (save, main only)
         if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}

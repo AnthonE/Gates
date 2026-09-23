@@ -28,7 +28,7 @@ and is the whole process.
 2. Pick something from `NOW.md`, or do what the operator asked.
 3. Write the code. Run `ci/quick.sh` (format + clippy of the workspace and the
    game; add crate names to run their tests). Skip the docs.
-4. Branch, commit, push, open a PR. CI runs the full suite (`ci/gates.sh`).
+4. Branch, commit, push, open a PR. CI runs `ci/gates.sh fast`.
 5. Want to be paid? See **the deal** below.
 
 ## Don't know what is broken? A player will tell you, in a file
@@ -174,7 +174,7 @@ lands clean, and they are judged one at a time.
 
 ```
 ci/quick.sh [crate…]                # the local check — run before every PR
-./ci/gates.sh                       # exactly what CI runs (~90 min cold)
+./ci/gates.sh [fast]                # what CI runs (fast = a PR's run)
 cargo test --workspace              # every headless gate
 cargo run -p server --bin shard     # the server (reads shard.toml)
 cargo run -p server --bin bots -- 100
@@ -184,8 +184,9 @@ cargo run -p client --features render --bin gates   # the game
 ## CI and nightlies
 
 - **`gates` workflow** — runs `./ci/gates.sh` on every PR and push to
-  `main` that touches code paths. Red means do not merge; there is no
-  override lane.
+  `main` that touches code paths. A PR runs the `fast` tier, which skips the
+  wasm parity probe and the web build; main runs everything. Red means do
+  not merge; there is no override lane.
 - **`nightly` workflow** — every night, runs `./ci/gates.sh` against `main`,
   builds the release server, and packages the desktop client as an elo depot
   (`ci/depot.py`) in a second job. It does **not** publish: a build goes live

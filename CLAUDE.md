@@ -26,13 +26,13 @@ WebTransport/QUIC.
 ## The loop
 
 1. Write the code.
-2. `ci/quick.sh`: formats, runs a 1-second knob check, then clippies the
-   workspace and the game. Add crate names to run their tests too
-   (`ci/quick.sh sim-core protocol`).
+2. `ci/quick.sh`: formats, then clippies the workspace and the game. Add
+   crate names to run their tests too (`ci/quick.sh sim-core protocol`).
 3. Commit with a short message. Push your branch.
 
-CI runs the full suite (`ci/gates.sh`) on the PR. There's no need to run it
-locally.
+CI runs `ci/gates.sh fast` on the PR: everything except the wasm parity probe
+and the web build, which run on every merge to main and nightly. There's no
+need to run it locally.
 
 ## Don't
 
@@ -44,16 +44,15 @@ locally.
   `DESIGN.md` (product), `NETCODE.md`, `TERRAIN.md`, `RENDER.md`, `ART.md`
   (visual bar), `CONTENT.md` (content schemas), `reference/*.md` (how Rust
   the game does a system), `NOW.md` (backlog).
-- Register new numbers anywhere. They go in code, or in `content/*.toml` for
-  items and balance. The one catch: about 700 existing constants are pinned in
-  `DECISIONS.md` §Open, and CI fails if code and row disagree. `ci/quick.sh`
-  catches that in a second. Update the value in the row.
+- Register numbers anywhere. They go in code, or in `content/*.toml` for items
+  and balance. `DECISIONS.md` §Open is history and no longer has to match.
 
 ## What CI will stop you on (so you know why)
 
 1. **`sim-core` is deterministic.** No I/O, clock, threads, `HashMap`
    iteration or trig/libm, and floats are limited to `+ − × ÷ sqrt min max`.
-   Clippy enforces it, and native vs wasm must hash identically.
+   Clippy enforces it on every PR. Native vs wasm must hash identically;
+   that probe runs on main and nightly.
 2. **No allocation in the sim tick after warmup** (`test_alloc_zero`), and
    every queue has a cap in `sim-core/src/limits.rs`.
 3. **Bevy draws, it does not decide.** Gameplay state lives in `sim-core` and
@@ -72,7 +71,7 @@ cargo run -p server --bin shard                      # server (reads shard.toml)
 cargo run -p client --features render --bin gates    # the game
 cargo run -p server --bin bots -- 100                # 100 bots
 cargo test -p <crate>                                # one crate's tests
-./ci/gates.sh                                        # everything CI runs (~90 min cold)
+./ci/gates.sh [fast]                                 # what CI runs (fast = a PR's run)
 ```
 
 ## Traps that already cost real time
