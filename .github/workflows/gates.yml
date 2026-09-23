@@ -24,9 +24,17 @@ on:
       - ".github/workflows/gates.yml"
   workflow_dispatch: {}
 
+# A newer push to the same PR supersedes the run in flight. Main always runs
+# to the end, so every merge is tested and its cache saved.
+concurrency:
+  group: gates-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   gates:
     runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: 0
     # Run 35478523217 (2026-09-20) had a cold cache: 44 minutes reached
     # parity, then native + wasm took another 27.5 minutes. The 75-minute
     # job cap killed the final debug probe after native/wasm had matched.
@@ -46,14 +54,20 @@ jobs:
           # and the developer's box drift three releases apart while the gates
           # read green locally.
           rustup show active-toolchain || rustup toolchain install
-      - name: cache cargo
-        uses: actions/cache@v4
+      # Only main SAVES the cache. One is ~4.8 GB against the repo's 10 GB
+      # limit, so when every PR run saved its own copy they evicted main's:
+      # the 2026-09-22 main run started cold on a Cargo.lock unchanged since
+      # 09-16 and took 90 minutes. A PR restores its base branch's cache.
+      - name: cache cargo (restore)
+        id: cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: gates-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          key: gates-v2-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
+          restore-keys: gates-v2-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}-
       # `ci/gates.sh`'s native-client gate builds `--features render`, and each
       # of these fails identically without its package: a `pkg-config exited
       # with status code 1` panic from a *-sys build script, with the crate
@@ -72,3 +86,13 @@ jobs:
         run: pip3 install numpy pillow
       - name: the gates
         run: ./ci/gates.sh
+      - name: cache cargo (save, main only)
+        if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          # The key the restore step computed, before target/ existed to hash through.
+          key: ${{ steps.cache.outputs.cache-primary-key }}

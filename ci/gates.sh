@@ -157,7 +157,7 @@ echo "== gate: clippy walls (-D warnings; sim walls via crates/sim-core/clippy.t
 $NICE cargo clippy --workspace --all-targets -- -D warnings || fail "clippy"
 
 echo "== gate: native test suite (alloc_zero, replay, terrain_golden, protocol_golden, snapshot_budget, content, bot smoke, unit)"
-$NICE cargo test --workspace --release || fail "cargo test"
+$NICE cargo test --workspace --profile ci || fail "cargo test"
 
 # The native client, which the two gates above DO NOT SEE. `render` is off by
 # default (`crates/client/Cargo.toml`: a default-on Bevy would put minutes onto
