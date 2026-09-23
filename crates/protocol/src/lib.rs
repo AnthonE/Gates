@@ -912,7 +912,14 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// Piece-definition totals widen to 7 bits for the extended catalogue.
 /// v72 adds circulation shapes through triangular floor frame; shape codes
 /// widen from four bits to five. All previous codes keep their meaning.
-pub const PROTO_VER: u16 = 72;
+/// v73 is the timed research table (research table v1). The research-rows
+/// header grows by the paper's item and the table's wait (32 bits); move
+/// refusals admit 11 (`REFUSE_M_TABLE`) and 12 (`REFUSE_M_BUSY`) and
+/// research refusals 7 (`REFUSE_R_BUSY`), all inside their existing widths;
+/// and `ACT_RESEARCH` keeps its bytes and changes its meaning — it reads
+/// the blueprint in a slot, where it used to research the sample in one.
+/// A v72 client would draw the tree from rows read 32 bits short.
+pub const PROTO_VER: u16 = 73;
 
 /// This game's slug in the elo catalog.
 ///
@@ -1365,15 +1372,19 @@ const ACT_THROW: u32 = 15;
 /// `ACT_RESEARCH` below is that verb, landed one version later at the cost
 /// of a subtype and no layout at all.
 const ACT_DEMOLISH: u32 = 16;
-/// Learn the blueprint for what is in inventory `slot`, at a research
-/// table in reach (wire v32, research v0). **The eighteenth action, and
-/// the first one that was free** — `ACTION_SUB_BITS` widened to 5 for
-/// `ACT_DEMOLISH` one version earlier and holds thirty-two, so this cost
-/// a subtype and not a layout.
+/// Read the blueprint in inventory `slot` (wire v73, research table v1:
+/// `research::study`). **The eighteenth action, and the first one that
+/// was free** — `ACTION_SUB_BITS` widened to 5 for `ACT_DEMOLISH` one
+/// version earlier and holds thirty-two, so this cost a subtype and not a
+/// layout.
 ///
-/// Payload is the slot alone. The table is found by proximity the way a
-/// workbench is (`research.rs`), so there is no address to aim and nothing
-/// for the client to guess about which table it meant.
+/// Payload is the slot alone, and it was the slot alone when this action
+/// meant something else: from v32 to v72 it researched the SAMPLE in the
+/// slot at a table in reach, instantly. The timed table (a container,
+/// started by `ACT_USE`) replaced that, and the action kept its code and
+/// its bytes for the thing a slot is still the whole address of — the
+/// paper you are holding. Its golden did not move, and that is exactly
+/// the case a `PROTO_VER` bump exists for: same bytes, new meaning.
 const ACT_RESEARCH: u32 = 17;
 /// Learn a recipe through the tech tree at a workbench (wire v38, tech
 /// tree v0). The nineteenth action; the lane holds thirty-two, so it
@@ -1916,8 +1927,9 @@ pub fn encode_action_drink(buf: &mut [u8]) -> Result<usize, WireError> {
     Ok(w.finish())
 }
 
-/// The eat verb. `slot` rides the inventory-slot width the event lane
-/// already uses, so the width itself is the range check.
+/// The read verb (research table v1): learn the blueprint in `slot`.
+/// `slot` rides the inventory-slot width the event lane already uses, so
+/// the width itself is the range check.
 pub fn encode_action_research(slot: u8, buf: &mut [u8]) -> Result<usize, WireError> {
     if slot as usize >= sim_core::limits::INV_SLOTS {
         return Err(WireError::Range);

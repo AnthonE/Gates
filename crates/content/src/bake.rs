@@ -1245,6 +1245,30 @@ impl Content {
                 self.research_coin.item
             )
         })?;
+        // The table's paper and its wait (research table v1). Validate has
+        // held the paper to a stack of one with no ceiling and the wait to
+        // a u16 of ticks; the resolves here can only fail on a bug there.
+        rc.blueprint = self
+            .item_index(&self.research_table.blueprint)
+            .ok_or_else(|| {
+                format!(
+                    "bake: research blueprint `{}` names no item",
+                    self.research_table.blueprint
+                )
+            })?;
+        rc.table_ticks = self
+            .research_table
+            .seconds
+            .checked_mul(TICK_HZ)
+            .and_then(|t| u16::try_from(t).ok())
+            .filter(|&t| t > 0)
+            .ok_or_else(|| {
+                format!(
+                    "bake: a {} s research is not 1..={} ticks",
+                    self.research_table.seconds,
+                    u16::MAX
+                )
+            })?;
         if self.research.len() > MAX_RESEARCH_ROWS {
             return Err(format!(
                 "bake: {} research rows exceed the sim's {MAX_RESEARCH_ROWS}-row table",

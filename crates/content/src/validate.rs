@@ -4,7 +4,7 @@
 
 use crate::schema::*;
 use crate::Content;
-use sim_core::limits::INV_SLOTS;
+use sim_core::limits::{INV_SLOTS, TICK_HZ};
 use std::collections::BTreeSet;
 
 fn check_id(id: &str, prefix: &str, what: &str) -> Result<(), String> {
@@ -1375,6 +1375,62 @@ pub fn structural(c: &Content) -> Result<(), String> {
         return Err(format!(
             "research: coin `{}` is not an item",
             c.research_coin.item
+        ));
+    }
+    // The table's paper (research table v1). One item for every recipe,
+    // its target in the stack's `cond` — so it must be a stack of ONE (a
+    // second sheet merged into a slot would be a second target with nowhere
+    // to live) with NO ceiling (anything that wears or repairs `cond` would
+    // rewrite what the paper teaches), and minted by no road but the table:
+    // every other mint writes `cond = 0`, which is a blank sheet that
+    // teaches nothing and looks like loot.
+    let t = &c.research_table;
+    let Some(paper) = c.items.iter().find(|i| i.id == t.blueprint) else {
+        return Err(format!(
+            "research: table blueprint `{}` is not an item",
+            t.blueprint
+        ));
+    };
+    if paper.stack != 1 || paper.condition_max != 0 {
+        return Err(format!(
+            "research: blueprint `{}` must be stack 1 with no condition — its \
+             `cond` names what it teaches",
+            t.blueprint
+        ));
+    }
+    let bp = t.blueprint.as_str();
+    let elsewhere = c
+        .recipes
+        .iter()
+        .any(|k| k.output == bp || k.inputs.iter().any(|s| s.item == bp))
+        || c.cooks.iter().any(|k| k.input == bp || k.output == bp)
+        || c.fuel.item == bp
+        || c.fuel.byproduct == bp
+        || c.loot_tables.iter().any(|l| {
+            l.entries.iter().any(|e| e.item == bp) || l.guaranteed.iter().any(|g| g.item == bp)
+        })
+        || c.balance.spawn_kit.iter().any(|s| s.item == bp)
+        || c.mobs.iter().any(|m| m.drops.iter().any(|d| d.item == bp))
+        || c.gatherables
+            .iter()
+            .any(|g| g.output == bp || g.secondary.as_ref().is_some_and(|s| s.output == bp))
+        || c.research.iter().any(|r| r.item == bp)
+        || c.research_coin.item == bp
+        || c.consumables.iter().any(|k| k.id == bp)
+        || c.weapons.iter().any(|w| w.id == bp)
+        || c.armors.iter().any(|a| a.id == bp)
+        || c.deployables.iter().any(|d| d.id == bp);
+    if elsewhere {
+        return Err(format!(
+            "research: blueprint `{bp}` is named by another table — only a \
+             research table may make paper, or it arrives blank"
+        ));
+    }
+    if t.seconds == 0 || t.seconds.saturating_mul(TICK_HZ) > u16::MAX as u32 {
+        return Err(format!(
+            "research: a table research takes {} s — it must be 1..={} s",
+            t.seconds,
+            u16::MAX as u32 / TICK_HZ
         ));
     }
     if !c.research.is_empty() {

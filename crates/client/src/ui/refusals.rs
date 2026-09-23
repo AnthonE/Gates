@@ -58,17 +58,20 @@ pub const CRAFT: [&str; 6] = [
     "not researched — research one at a table or unlock it at a workbench",
 ];
 
-/// `sim_core::research`'s `REFUSE_R_*: u32`. The last two are the tree
-/// verb's (tech tree v0), and each names the act that fixes it —
-/// `CRAFT`'s blueprint sentence sets the bar.
-pub const RESEARCH: [&str; 7] = [
+/// `sim_core::research`'s `REFUSE_R_*: u32`. Five are the table's and the
+/// reader's (research table v1), two the tree verb's (tech tree v0), and
+/// each names the act that fixes it — `CRAFT`'s blueprint sentence sets the
+/// bar. The fourth is said to a reader holding paper they already know,
+/// and the paper is kept, so the sentence says what it is still good for.
+pub const RESEARCH: [&str; 8] = [
     "no research table in reach",
-    "nothing in that slot",
+    "nothing to research - put an item in the table",
     "that cannot be researched",
-    "already known",
-    "not enough junk",
+    "already known - the blueprint is kept, give it to someone",
+    "not enough junk in the table",
     "unlock the node before it first",
     "no workbench of that level in reach",
+    "the table is already researching",
 ];
 
 /// `sim_core::build`'s `REFUSE_B_*: u32` — a build, an upgrade or a repair

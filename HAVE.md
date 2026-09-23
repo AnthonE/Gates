@@ -89,8 +89,9 @@ survive a server restart — world file and player save are separate, because a
 wipe deletes one and keeps the other.
 
 **And there is a second ladder.** Junk from barrels feeds a **research table**
-(spend a sample and junk to learn a recipe permanently) and a **tech tree**
-at a workbench, and a **recycler** turns loot back into components.
+(put a sample and junk in, wait ten seconds, and take out a blueprint to read
+or to trade) and a **tech tree** at a workbench, and a **recycler** turns
+loot back into components.
 
 **Two animals share the island with you**: a pig that flees and a wolf that
 hunts you, both with voices.
@@ -129,7 +130,7 @@ header so a replay replays the content it was played under — wall 7.
 
 | file | rows | what |
 |---|---|---|
-| `items.toml` | **57** | resources, components, tools, weapons, armour, food, deployables |
+| `items.toml` | **62** | resources, components, tools, weapons, armour, food, deployables, the blueprint |
 | `recipes.toml` | **45** | the craft ladder, T0 → T3, with times and station gates |
 | `building.toml` | **44** | 11 shapes × 4 tiers, with hp per tier |
 | `deployables.toml` | **14** | bag, hearth, two boxes, fire, furnace, 3 benches, recycler, research table, code lock, 2 doors |

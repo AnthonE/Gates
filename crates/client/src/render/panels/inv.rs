@@ -78,16 +78,18 @@ use bevy::window::PrimaryWindow;
 use client_core::core::ClientCore;
 use sim_core::combat::ARMOR_MAX_PCT;
 use sim_core::gather::ItemStack;
-use sim_core::inventory::{CONT_SELF, CONT_WEAR, REFUSE_M_MAX};
+use sim_core::inventory::{CONT_BOX, CONT_SELF, CONT_WEAR, REFUSE_M_BUSY, REFUSE_M_MAX};
 use sim_core::limits::{HOTBAR_SLOTS, INV_SLOTS, WEAR_SLOTS};
+use sim_core::research::{TABLE_COIN_SLOT, TABLE_ITEM_SLOT};
 
 use super::{
     craft, font, font_bold, GhostRoot, Panel, PanelRoot, Ui, BADGE, CELL_BG, CELL_FULL,
-    CELL_GAP_PX, CELL_HOVER, CELL_PX, LINE, LINE_HOT, PANEL_BG, PIP_FILL, PIP_H_PX, PIP_TROUGH,
-    SCRIM, TEXT, TEXT_DIM, TEXT_SHORT,
+    CELL_GAP_PX, CELL_HOVER, CELL_PX, LINE, LINE_HOT, PANEL_BG, PAPER_BG, PIP_FILL, PIP_H_PX,
+    PIP_TROUGH, SCRIM, TEXT, TEXT_DIM, TEXT_SHORT,
 };
 use crate::render::icons::Icons;
 use crate::ui::craft::{cell_abbrev, item_label, CELL_LINE_CHARS};
+use crate::ui::research::{self as research_ui, TableLine, UseAs};
 use crate::ui::slots::{
     container_bar, container_cols, container_name, container_title, count_badge, ghost_origin,
     looting, move_args, pip_fraction, quick_move, refusal_text, screen_title, slots_in,
@@ -175,7 +177,9 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: 
             .with_children(|row| {
                 own_grid(row, core, icons);
                 wear_panel(row, core, icons);
-                if looting(core.cont_kind) {
+                if open_table(core).is_some() {
+                    table_grid(row, ui, core, icons);
+                } else if looting(core.cont_kind) {
                     container_grid(row, core, icons);
                 }
             });
@@ -186,7 +190,13 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: 
             // promising a round trip that does not exist is worse than a hint
             // that is merely incomplete.
             root.spawn((
-                Text::new(if looting(core.cont_kind) {
+                Text::new(if open_table(core).is_some() {
+                    // The table's own gestures: which slot takes what, and
+                    // what starts it — the two things no other container
+                    // asks a player to know.
+                    "one item to research in ITEM, junk beside it   -   right-click moves it across   \
+                     -   BEGIN or C starts it   -   Tab or Esc closes"
+                } else if looting(core.cont_kind) {
                     // What the gesture DOES here, which is not what it
                     // does with nothing open. A hint line that names the
                     // other mode is worse than no hint: it is a promise.
@@ -312,6 +322,228 @@ fn container_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Ico
         }
         grid(col, core, icons, kind, 0, n, container_cols(kind));
     });
+}
+
+/// The open container's address, if what is open is a **research table**
+/// (research table v1) — `ui::research::table_open`, read off the deploy
+/// sync the client already draws.
+fn open_table(core: &ClientCore) -> Option<(u16, u16, u8)> {
+    research_ui::table_open(
+        core.cont_kind,
+        core.cont_handle,
+        core.deploys.entries(),
+        &core.deploy_defs,
+        core.deploy_defs_have,
+    )
+    .then(|| research_ui::table_address(core.cont_handle))
+}
+
+/// Whether the open research table is running — the lit bit the core heard
+/// for its address (`EV_OVEN`). `false` for anything else, which is what
+/// `panels::detect_changes` needs: the table's slots do not move when a
+/// research starts, only this does.
+pub(crate) fn open_table_running(core: &ClientCore) -> bool {
+    open_table(core).is_some_and(|(cx, cz, level)| core.ovens().is_lit(cx, cz, level))
+}
+
+/// The BEGIN button under a research table's slots.
+#[derive(Component)]
+pub struct TableBegin;
+
+/// The wait bar's fill, whose width [`table_clock`] sets each frame.
+#[derive(Component)]
+pub struct TableFill;
+
+/// Width of the table's column contents: its two captioned cells.
+const TABLE_W_PX: f32 = 2.0 * CELL_PX + 64.0;
+
+/// The research table, in the container's seat (research table v1): its
+/// two working slots captioned by what goes in them, the line saying what
+/// the table will do (`ui::research::table_line` — the sim's start check,
+/// read on this side), the wait while it runs, and BEGIN.
+///
+/// The cells are `cell()`, unchanged, so the drag path does not know this
+/// container is shaped differently — the slot indices are the sim's
+/// (`research::TABLE_ITEM_SLOT`, `TABLE_COIN_SLOT`) and nothing else of the
+/// box's twelve is drawn, because nothing else of it takes anything.
+fn table_grid(row: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore, icons: &Icons) {
+    let running = open_table_running(core);
+    let line = research_ui::table_line(&core.research, &core.cont, running);
+    let coin = item_label(&core.catalog, core.research.coin);
+    let name = container_name(
+        CONT_BOX,
+        core.cont_handle,
+        core.deploys.entries(),
+        &core.deploy_defs,
+        core.deploy_defs_have,
+        &core.catalog,
+    );
+    let ready = matches!(line, TableLine::Ready { .. });
+    let good = matches!(line, TableLine::Ready { .. } | TableLine::Done { .. });
+    row.spawn((
+        Node {
+            flex_direction: FlexDirection::Column,
+            padding: UiRect::all(Val::Px(10.0)),
+            row_gap: Val::Px(6.0),
+            border: UiRect::all(Val::Px(1.0)),
+            ..default()
+        },
+        BackgroundColor(PANEL_BG),
+        BorderColor::all(LINE),
+    ))
+    .with_children(|col| {
+        section(col, "RESEARCH");
+        if let Some(bar) = container_bar(CONT_BOX, &name) {
+            name_bar(col, bar);
+        }
+        col.spawn(Node {
+            flex_direction: FlexDirection::Row,
+            column_gap: Val::Px(12.0),
+            ..default()
+        })
+        .with_children(|r| {
+            for (slot, caption) in [
+                (TABLE_ITEM_SLOT, "ITEM".to_string()),
+                (TABLE_COIN_SLOT, coin.to_uppercase()),
+            ] {
+                r.spawn(Node {
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Center,
+                    row_gap: Val::Px(3.0),
+                    ..default()
+                })
+                .with_children(|c| {
+                    cell(
+                        c,
+                        CONT_BOX,
+                        slot,
+                        cell_stack(core, CONT_BOX, slot),
+                        core,
+                        icons,
+                    );
+                    c.spawn((Text::new(caption), font(10.0), TextColor(TEXT_DIM)));
+                });
+            }
+        });
+        col.spawn((
+            Text::new(research_ui::table_text(&core.catalog, line, &coin)),
+            font(12.0),
+            TextColor(if good { BADGE } else { TEXT_DIM }),
+            Node {
+                max_width: Val::Px(TABLE_W_PX + 60.0),
+                ..default()
+            },
+        ));
+        // The wait, only when this client saw it start — a bar begun at
+        // zero on a table opened halfway through would be a bar that lies
+        // (`ui::research::TableClock`).
+        if running && ui.table_clock.timed() {
+            col.spawn((
+                Node {
+                    width: Val::Px(TABLE_W_PX),
+                    height: Val::Px(PIP_H_PX * 2.0),
+                    ..default()
+                },
+                BackgroundColor(PIP_TROUGH),
+            ))
+            .with_children(|t| {
+                t.spawn((
+                    TableFill,
+                    Node {
+                        width: Val::Percent(0.0),
+                        height: Val::Percent(100.0),
+                        ..default()
+                    },
+                    BackgroundColor(BADGE),
+                ));
+            });
+        }
+        col.spawn((
+            Button,
+            TableBegin,
+            Node {
+                padding: UiRect::axes(Val::Px(14.0), Val::Px(4.0)),
+                border: UiRect::all(Val::Px(1.0)),
+                align_self: AlignSelf::FlexStart,
+                ..default()
+            },
+            BackgroundColor(if ready { BADGE } else { CELL_BG }),
+            BorderColor::all(if ready { BADGE } else { LINE }),
+        ))
+        .with_children(|b| {
+            b.spawn((
+                Text::new("BEGIN"),
+                font_bold(13.0),
+                TextColor(if ready {
+                    Color::srgb(0.08, 0.08, 0.06)
+                } else {
+                    TEXT_DIM
+                }),
+                Pickable::IGNORE,
+            ));
+        });
+    });
+}
+
+/// BEGIN: the table's switch, `ACT_USE` at its address — the same action
+/// the `C` key sends at a fire. A press on a table that is not ready says
+/// why instead of sending a request the sim would refuse with the same
+/// sentence a round trip later.
+pub fn table_clicks(
+    mut ui: ResMut<Ui>,
+    net: NonSend<super::super::Net>,
+    begin: Query<&Interaction, (Changed<Interaction>, With<TableBegin>)>,
+) {
+    if ui.panel != Panel::Inventory || !begin.iter().any(|i| *i == Interaction::Pressed) {
+        return;
+    }
+    let core = &net.session.core;
+    let Some((cx, cz, level)) = open_table(core) else {
+        return;
+    };
+    let line = research_ui::table_line(&core.research, &core.cont, open_table_running(core));
+    if !matches!(line, TableLine::Ready { .. }) {
+        let coin = item_label(&core.catalog, core.research.coin);
+        ui.say(research_ui::table_text(&core.catalog, line, &coin).to_lowercase());
+        return;
+    }
+    let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
+    match protocol::encode_action_use(cx, cz, level, sim_core::build::LOC_PLANE, &mut buf) {
+        Ok(len) => match net.session.send_action(&buf[..len]) {
+            Ok(()) => ui.status.clear(),
+            Err(e) => ui.say(e.to_string()),
+        },
+        Err(e) => ui.say(format!("the table would not start ({e:?})")),
+    }
+}
+
+/// The table's wait, every frame: feed the clock what the core says about
+/// the open table, and set the bar's fill from it. Before `rebuild` in the
+/// chain, so the frame a research starts is also the frame the panel is
+/// rebuilt knowing it was seen starting.
+pub fn table_clock(
+    time: Res<Time>,
+    mut ui: ResMut<Ui>,
+    net: NonSend<super::super::Net>,
+    mut fills: Query<&mut Node, With<TableFill>>,
+) {
+    let core = &net.session.core;
+    let now = time.elapsed_secs();
+    let (handle, running) = if ui.panel == Panel::Inventory && open_table(core).is_some() {
+        (core.cont_handle, open_table_running(core))
+    } else {
+        (0, false)
+    };
+    let mut clock = ui.table_clock;
+    clock.observe(handle, running, now);
+    if clock != ui.table_clock {
+        ui.table_clock = clock;
+    }
+    if let Some(f) = clock.fraction(now, core.research.table_ticks) {
+        for mut node in fills.iter_mut() {
+            node.width = Val::Percent(f * 100.0);
+        }
+    }
 }
 
 /// Height of the drawn silhouette's head block, and of its torso. Two
@@ -569,6 +801,7 @@ fn cell(
     icons: &Icons,
 ) {
     let filled = stack.count > 0;
+    let paper = research_ui::is_paper(&core.research, stack);
     parent
         .spawn((
             Button,
@@ -583,7 +816,11 @@ fn cell(
                 overflow: Overflow::clip(),
                 ..default()
             },
-            BackgroundColor(if filled { CELL_FULL } else { CELL_BG }),
+            BackgroundColor(match (filled, paper) {
+                (true, true) => PAPER_BG,
+                (true, false) => CELL_FULL,
+                (false, _) => CELL_BG,
+            }),
             BorderColor::all(LINE),
         ))
         .with_children(|c| {
@@ -593,7 +830,11 @@ fn cell(
                 // `crafting.png` is artwork. The name still exists — the
                 // detail pane and the drag ghost print it — so the cell can
                 // afford to be the thing rather than the label for it.
-                let name = item_label(&core.catalog, stack.item);
+                //
+                // A blueprint is drawn as the thing it TEACHES, on the
+                // paper's blue (research table v1): twelve sheets are twelve
+                // pictures, not twelve identical scrolls.
+                let name = research_ui::icon_name(&core.catalog, &core.research, stack);
                 match icons.item(&name) {
                     Some(image) => c.spawn((
                         Node {
@@ -792,9 +1033,10 @@ pub fn drag_pointer(
         if border.top != want {
             *border = BorderColor::all(want);
         }
-        let filled = cell_stack(core, cell.kind, cell.slot).count > 0;
-        let fill = match (hot || source, filled) {
+        let resting = cell_stack(core, cell.kind, cell.slot);
+        let fill = match (hot || source, resting.count > 0) {
             (true, _) => CELL_HOVER,
+            (false, true) if research_ui::is_paper(&core.research, resting) => PAPER_BG,
             (false, true) => CELL_FULL,
             (false, false) => CELL_BG,
         };
@@ -874,18 +1116,34 @@ pub fn drag_pointer(
     // press handler mints it), not a count — a quick-move measures its
     // own. Every branch of the decision is `ui::slots::quick_move`'s, so
     // this arm sends what it is handed and decides nothing.
+    let table = open_table(core).is_some();
     if target.kind == drag.kind && target.slot == drag.slot {
         if drag.grab == Grab::Half {
-            match quick_move(
-                core.cont_kind,
-                core.cont_handle,
-                drag.kind,
-                drag.slot,
-                &core.catalog,
-                &core.inv,
-                &core.cont,
-                &core.worn,
-            ) {
+            let quick = if table {
+                research_ui::table_quick_move(
+                    core.cont_handle,
+                    open_table_running(core),
+                    drag.kind,
+                    drag.slot,
+                    &core.catalog,
+                    &core.research,
+                    &core.inv,
+                    &core.cont,
+                    &core.worn,
+                )
+            } else {
+                quick_move(
+                    core.cont_kind,
+                    core.cont_handle,
+                    drag.kind,
+                    drag.slot,
+                    &core.catalog,
+                    &core.inv,
+                    &core.cont,
+                    &core.worn,
+                )
+            };
+            match quick {
                 Quick::Send(args) => send_move(&mut ui, &net, args),
                 Quick::Use(slot) => use_item(&mut ui, &net, slot),
                 Quick::Refused(why) => ui.say(why),
@@ -909,13 +1167,37 @@ pub fn drag_pointer(
         return;
     }
 
+    // A research table has an opinion about every drop, and the obvious
+    // ones are said here rather than after a round trip: the wrong thing
+    // for a slot, or any move at all while it runs. A drop INTO the item
+    // slot carries one unit whatever the button — the slot holds one.
+    let mut grab = drag.grab;
+    if table && (drag.kind == CONT_BOX || target.kind == CONT_BOX) {
+        let running = open_table_running(core);
+        if target.kind == CONT_BOX && drag.kind != CONT_BOX {
+            if let Some(why) = research_ui::table_drop_refusal(
+                &core.research,
+                running,
+                target.slot,
+                drag.stack.item,
+            ) {
+                ui.say(why);
+                return;
+            }
+            grab = research_ui::table_grab(target.slot == TABLE_ITEM_SLOT, grab);
+        } else if running {
+            ui.say(refusal_text(REFUSE_M_BUSY as u8));
+            return;
+        }
+    }
+
     let Some(args) = move_args(
         core.cont_handle,
         drag.kind,
         drag.slot,
         target.kind,
         target.slot,
-        drag.grab,
+        grab,
         &core.inv,
         &core.cont,
         &core.worn,
@@ -950,14 +1232,21 @@ fn send_move(ui: &mut Ui, net: &super::super::Net, args: crate::ui::slots::MoveA
     }
 }
 
-/// `ACT_CONSUME` for an inventory slot. Whether the item is food, and
-/// whether eating it does anything, are the sim's verdict.
+/// Use an inventory slot: read it if it is a blueprint (`ACT_RESEARCH`,
+/// research table v1), eat it otherwise (`ACT_CONSUME`). Which one is
+/// `ui::research::use_as`'s call; whether it does anything is the sim's.
 fn use_item(ui: &mut Ui, net: &super::super::Net, slot: usize) {
     let Ok(slot) = u8::try_from(slot) else {
         return;
     };
+    let core = &net.session.core;
+    let stack = core.inv.get(slot as usize).copied().unwrap_or_default();
     let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
-    match protocol::encode_action_consume(slot, &mut buf) {
+    let encoded = match research_ui::use_as(&core.research, stack) {
+        UseAs::Read => protocol::encode_action_research(slot, &mut buf),
+        UseAs::Consume => protocol::encode_action_consume(slot, &mut buf),
+    };
+    match encoded {
         Ok(len) => match net.session.send_action(&buf[..len]) {
             Ok(()) => ui.status.clear(),
             Err(e) => ui.say(e.to_string()),
@@ -991,7 +1280,10 @@ fn spawn_ghost(
     at: (f32, f32),
 ) {
     let units = grab.units(stack.count);
-    let name = item_label(&core.catalog, stack.item);
+    // The caption is the stack's whole name ("Revolver Blueprint"); the
+    // picture is the thing it teaches, as the cell it came out of drew it.
+    let name = research_ui::stack_label(&core.catalog, &core.research, stack);
+    let art = research_ui::icon_name(&core.catalog, &core.research, stack);
     commands
         .spawn((
             GhostRoot,
@@ -1018,7 +1310,7 @@ fn spawn_ghost(
             GlobalZIndex(50),
         ))
         .with_children(|g| {
-            match icons.item(&name) {
+            match icons.item(&art) {
                 Some(image) => g.spawn((
                     Node {
                         position_type: PositionType::Absolute,

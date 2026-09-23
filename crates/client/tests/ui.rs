@@ -5613,3 +5613,321 @@ fn the_loose_stacks_reach_the_renderer_and_the_key() {
          `--features render` gate is the only thing that compiles"
     );
 }
+
+// ---------------------------------------------------------------------------
+// §V · the research table and its paper (research table v1) —
+// `ui::research`, headless
+//
+// The table is a container, so the move verb every box takes does most of
+// the work and is gated in §A. What is new is the table's opinion: which
+// slot takes what, one unit into the item slot whatever the gesture, the
+// line that says the sim's start refusal before the press, what a sheet is
+// called and drawn as, what using one sends, and a wait bar that refuses to
+// guess a start it did not see.
+
+mod research_table {
+    use client::ui::interact::{Pick, Verb};
+    use client::ui::research::{
+        icon_name, is_paper, stack_label, table_address, table_drop_refusal, table_grab,
+        table_line, table_open, table_quick_move, table_text, use_as, TableClock, TableLine, UseAs,
+    };
+    use client::ui::slots::{container_name, refusal_text, Grab, Quick};
+    use protocol::event::ItemCatalog;
+    use protocol::ItemRow;
+    use sim_core::deploy::{box_key, DeployContent, DeployDef, DeployRec, ARCH_BOX, ARCH_RESEARCH};
+    use sim_core::gather::ItemStack;
+    use sim_core::inventory::{CONT_BOX, CONT_SELF, REFUSE_M_BUSY, REFUSE_M_TABLE};
+    use sim_core::limits::{INV_SLOTS, TICK_HZ};
+    use sim_core::research::{blueprint_of, ResearchContent};
+
+    /// The research fixture: item 4 researches for 5 of item 3, and the
+    /// paper is item 11.
+    const SAMPLE: u16 = 4;
+    const COIN: u16 = 3;
+    const PAPER: u16 = 11;
+    const TABLE_ITEM: u16 = 10;
+    const CX: u16 = 21;
+    const CZ: u16 = 34;
+
+    fn rc() -> ResearchContent {
+        ResearchContent::probe_fixture()
+    }
+
+    fn catalog() -> ItemCatalog {
+        let mut c = ItemCatalog::EMPTY;
+        let row = |stack_max| ItemRow {
+            stack_max,
+            ..ItemRow::EMPTY
+        };
+        c.set(COIN as usize, b"Junk", row(1000)).unwrap();
+        c.set(SAMPLE as usize, b"Revolver", row(1)).unwrap();
+        c.set(7, b"Wood", row(1000)).unwrap();
+        c.set(TABLE_ITEM as usize, b"Research Table", row(1))
+            .unwrap();
+        c.set(PAPER as usize, b"Blueprint", row(1)).unwrap();
+        c
+    }
+
+    fn stack(item: u16, count: u16) -> ItemStack {
+        ItemStack {
+            item,
+            count,
+            cond: 0,
+        }
+    }
+
+    fn defs(arch: u8) -> DeployContent {
+        let mut dc = DeployContent::EMPTY;
+        dc.defs[0] = DeployDef {
+            arch,
+            item: TABLE_ITEM,
+            ..DeployDef::INERT
+        };
+        dc.def_count = 1;
+        dc
+    }
+
+    fn rec() -> DeployRec {
+        DeployRec {
+            cx: CX,
+            cz: CZ,
+            level: 0,
+            row: 0,
+            ..DeployRec::default()
+        }
+    }
+
+    fn empty() -> [ItemStack; INV_SLOTS] {
+        [ItemStack::default(); INV_SLOTS]
+    }
+
+    /// A table is recognised by the deploy standing at the handle — and a
+    /// box there is not one, nor is a table whose def row has not dripped.
+    #[test]
+    fn the_open_container_is_a_table_only_when_a_table_stands_there() {
+        let h = box_key(CX, CZ, 0);
+        assert!(table_open(CONT_BOX, h, &[rec()], &defs(ARCH_RESEARCH), 1));
+        assert!(!table_open(CONT_BOX, h, &[rec()], &defs(ARCH_BOX), 1));
+        assert!(
+            !table_open(CONT_BOX, h, &[rec()], &defs(ARCH_RESEARCH), 0),
+            "a def past the watermark is zeroes and is not read"
+        );
+        assert!(!table_open(CONT_SELF, h, &[rec()], &defs(ARCH_RESEARCH), 1));
+        assert_eq!(table_address(h), (CX, CZ, 0), "the handle unpacks");
+        assert_eq!(
+            table_address(box_key(1023, 1023, 7)),
+            (1023, 1023, 7),
+            "at the grid's far corner too"
+        );
+        assert_eq!(
+            container_name(CONT_BOX, h, &[rec()], &defs(ARCH_RESEARCH), 1, &catalog()),
+            "RESEARCH TABLE",
+            "and the name bar says what it is, not BOX"
+        );
+    }
+
+    /// A sheet is named and drawn as what it teaches; a blank is honestly
+    /// just a blueprint; anything else is itself.
+    #[test]
+    fn a_sheet_is_named_and_drawn_by_what_it_teaches() {
+        let (rc, cat) = (rc(), catalog());
+        let sheet = blueprint_of(&rc, SAMPLE);
+        assert!(is_paper(&rc, sheet));
+        assert_eq!(stack_label(&cat, &rc, sheet), "Revolver Blueprint");
+        assert_eq!(icon_name(&cat, &rc, sheet), "Revolver");
+        let blank = stack(PAPER, 1);
+        assert!(is_paper(&rc, blank), "a blank is still paper");
+        assert_eq!(stack_label(&cat, &rc, blank), "Blueprint");
+        assert_eq!(stack_label(&cat, &rc, stack(7, 3)), "Wood");
+        assert!(!is_paper(&rc, stack(7, 3)));
+        assert!(
+            !is_paper(&ResearchContent::EMPTY, sheet),
+            "before the rows drip, nothing is paper"
+        );
+    }
+
+    /// Using a slot reads paper and eats everything else — a blank
+    /// included, so its refusal is the table's sentence and not food's.
+    #[test]
+    fn paper_is_read_and_everything_else_is_eaten() {
+        let rc = rc();
+        assert_eq!(use_as(&rc, blueprint_of(&rc, SAMPLE)), UseAs::Read);
+        assert_eq!(use_as(&rc, stack(PAPER, 1)), UseAs::Read);
+        assert_eq!(use_as(&rc, stack(7, 3)), UseAs::Consume);
+        assert_eq!(use_as(&rc, ItemStack::default()), UseAs::Consume);
+    }
+
+    /// Into the item slot is one unit, whatever the button.
+    #[test]
+    fn a_drag_into_the_item_slot_carries_one() {
+        for g in [Grab::All, Grab::Half, Grab::One, Grab::Fit(9)] {
+            assert_eq!(table_grab(true, g), Grab::One);
+            assert_eq!(table_grab(false, g), g, "and anywhere else is untouched");
+        }
+    }
+
+    /// The drops the table refuses whatever the arithmetic, in the sim's
+    /// own words — and the ones only the sim can judge are left to it.
+    #[test]
+    fn the_table_says_its_refusals_before_the_round_trip() {
+        let rc = rc();
+        let table = refusal_text(REFUSE_M_TABLE as u8);
+        let busy = refusal_text(REFUSE_M_BUSY as u8);
+        assert_ne!(table, "refused", "the table's refusal has a sentence");
+        assert_ne!(busy, "refused", "and so does its lock");
+        assert_eq!(table_drop_refusal(&rc, false, 0, SAMPLE), None);
+        assert_eq!(table_drop_refusal(&rc, false, 1, COIN), None);
+        assert_eq!(table_drop_refusal(&rc, false, 0, COIN), Some(table));
+        assert_eq!(table_drop_refusal(&rc, false, 1, SAMPLE), Some(table));
+        assert_eq!(table_drop_refusal(&rc, false, 2, COIN), Some(table));
+        assert_eq!(
+            table_drop_refusal(&rc, false, 0, PAPER),
+            Some(table),
+            "paper goes out of the table, never in"
+        );
+        assert_eq!(table_drop_refusal(&rc, true, 0, SAMPLE), Some(busy));
+    }
+
+    /// A right-click into a table picks the slot by what the stack is.
+    #[test]
+    fn a_right_click_into_the_table_picks_its_slot() {
+        let (rc, cat) = (rc(), catalog());
+        let h = box_key(CX, CZ, 0);
+        let mut inv = empty();
+        inv[6] = stack(SAMPLE, 3);
+        inv[7] = stack(COIN, 40);
+        inv[8] = stack(7, 5);
+        let mut cont = empty();
+        let quick = |inv: &[ItemStack; INV_SLOTS], cont: &[ItemStack; INV_SLOTS], slot, running| {
+            table_quick_move(h, running, CONT_SELF, slot, &cat, &rc, inv, cont, &[])
+        };
+        match quick(&inv, &cont, 6, false) {
+            Quick::Send(a) => assert_eq!(
+                (a.to_kind, a.to_slot, a.count),
+                (CONT_BOX, 0, 1),
+                "one sample, into the item slot"
+            ),
+            other => panic!("the sample did not go in: {other:?}"),
+        }
+        match quick(&inv, &cont, 7, false) {
+            Quick::Send(a) => assert_eq!((a.to_slot, a.count), (1, 40), "all the coin"),
+            other => panic!("the coin did not go in: {other:?}"),
+        }
+        cont[1] = stack(COIN, 990);
+        match quick(&inv, &cont, 7, false) {
+            Quick::Send(a) => assert_eq!(a.count, 10, "topped up to the room there is"),
+            other => panic!("the coin did not top up: {other:?}"),
+        }
+        assert!(
+            matches!(quick(&inv, &cont, 8, false), Quick::Refused(_)),
+            "wood is neither a sample nor the coin"
+        );
+        cont[0] = stack(SAMPLE, 1);
+        assert!(
+            matches!(quick(&inv, &cont, 6, false), Quick::Refused(_)),
+            "the item slot holds one thing"
+        );
+        assert!(
+            matches!(quick(&inv, &cont, 7, true), Quick::Refused(_)),
+            "and nothing moves while it runs"
+        );
+        // Out of the table is the ordinary quick-move, into the pack.
+        match table_quick_move(h, false, CONT_BOX, 0, &cat, &rc, &inv, &cont, &[]) {
+            Quick::Send(a) => assert_eq!((a.from_kind, a.to_kind), (CONT_BOX, CONT_SELF)),
+            other => panic!("the sample did not come out: {other:?}"),
+        }
+    }
+
+    /// The line is the sim's start check, in order, read on this side.
+    #[test]
+    fn the_line_under_the_slots_is_the_start_check() {
+        let rc = rc();
+        let mut cont = empty();
+        assert_eq!(table_line(&rc, &cont, false), TableLine::Empty);
+        cont[0] = stack(7, 1);
+        assert_eq!(table_line(&rc, &cont, false), TableLine::NotResearchable);
+        cont[0] = stack(SAMPLE, 1);
+        assert_eq!(
+            table_line(&rc, &cont, false),
+            TableLine::Short { cost: 5, have: 0 }
+        );
+        cont[1] = stack(COIN, 4);
+        assert_eq!(
+            table_line(&rc, &cont, false),
+            TableLine::Short { cost: 5, have: 4 }
+        );
+        cont[1] = stack(COIN, 5);
+        assert_eq!(table_line(&rc, &cont, false), TableLine::Ready { cost: 5 });
+        assert_eq!(table_line(&rc, &cont, true), TableLine::Running);
+        cont[0] = blueprint_of(&rc, SAMPLE);
+        assert_eq!(
+            table_line(&rc, &cont, false),
+            TableLine::Done { target: SAMPLE }
+        );
+        assert_eq!(
+            table_text(&catalog(), TableLine::Done { target: SAMPLE }, "Junk"),
+            "DONE - TAKE THE REVOLVER BLUEPRINT"
+        );
+        assert_eq!(
+            table_text(&catalog(), TableLine::Ready { cost: 5 }, "Junk"),
+            "COSTS 5 JUNK - PRESS BEGIN"
+        );
+    }
+
+    /// The wait bar times only a start it saw: a table opened mid-research
+    /// has no bar, one seen idle and then running does, and a different
+    /// table or a finish starts the clock over.
+    #[test]
+    fn the_wait_is_timed_only_from_a_start_this_client_saw() {
+        let ticks = 10 * TICK_HZ as u16;
+        let h = box_key(CX, CZ, 0);
+
+        let mut late = TableClock::default();
+        late.observe(h, true, 3.0);
+        late.observe(h, true, 4.0);
+        assert_eq!(
+            late.fraction(4.0, ticks),
+            None,
+            "opened mid-research: no bar"
+        );
+        assert!(!late.timed());
+
+        let mut seen = TableClock::default();
+        seen.observe(h, false, 1.0);
+        seen.observe(h, true, 2.0);
+        assert!(seen.timed());
+        assert_eq!(seen.fraction(2.0, ticks), Some(0.0));
+        assert_eq!(seen.fraction(7.0, ticks), Some(0.5));
+        assert_eq!(
+            seen.fraction(30.0, ticks),
+            Some(1.0),
+            "and it stops at done"
+        );
+
+        seen.observe(h, false, 12.0);
+        assert_eq!(seen.fraction(12.0, ticks), None, "a finish clears it");
+        seen.observe(box_key(CX + 1, CZ, 0), true, 13.0);
+        assert_eq!(
+            seen.fraction(13.0, ticks),
+            None,
+            "another table is another clock"
+        );
+    }
+
+    /// The prompt names the table's two keys, and says RESEARCHING rather
+    /// than offering a press the sim would refuse.
+    #[test]
+    fn the_table_prompt_names_its_two_keys() {
+        let mut p = Pick {
+            verb: Verb::Research,
+            arch: ARCH_RESEARCH,
+            ..Default::default()
+        };
+        let idle = p.prompt(&ItemCatalog::EMPTY);
+        assert!(idle.contains("[E] OPEN RESEARCH TABLE"), "{idle}");
+        assert!(idle.contains("[C] BEGIN"), "{idle}");
+        p.lit = true;
+        let busy = p.prompt(&ItemCatalog::EMPTY);
+        assert!(busy.contains("[C] RESEARCHING"), "{busy}");
+    }
+}

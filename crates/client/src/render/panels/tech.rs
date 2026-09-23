@@ -575,7 +575,11 @@ pub fn clicks(
 /// `pop_*` site in the client and `hud::feedback` is the other reader of the
 /// same facts; this is a second `Res<Feed>`, which cannot consume anything.
 pub fn sync_status(feed: Res<Feed>, mut ui: ResMut<Ui>, net: NonSend<super::super::Net>) {
-    if ui.panel != Panel::Tech {
+    // The inventory hears it too since research table v1: a research table
+    // is opened there, and a blueprint is read there with a right-click, so
+    // "learned X" and "already known" belong on the line a player is
+    // looking at when they happen.
+    if ui.panel != Panel::Tech && ui.panel != Panel::Inventory {
         return;
     }
     let core = &net.session.core;

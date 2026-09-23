@@ -15,6 +15,16 @@
 [coin]
 item = "item.junk"
 
+# What a research table makes, and how long it takes (research table v1,
+# operator 2026-09-22: *"Timed research table"*). The reference's table is
+# a two-slot box: the item in one slot, scrap in the other, ten seconds,
+# and out comes a blueprint — paper you can carry, trade or lose, and
+# right-click to learn. The coin and the sample are taken when the research
+# LANDS, so a table raided mid-research spills both whole.
+[table]
+blueprint = "item.blueprint"
+seconds = 10
+
 # --- what may be learned ------------------------------------------------
 #
 # `[[research]] item` is the thing you consume; the recipe it unlocks is
@@ -55,10 +65,10 @@ item = "item.junk"
 # pistol ammunition at workbench 2 and the satchel at 3 (theirs are all 1),
 # because the satchel is the top of our raid ladder — `BLUEPRINTS.md` §9.2.
 #
-# Two verbs read this table: the research TABLE takes a looted sample plus
-# the cost and ignores `requires` entirely — research what you loot — and
-# the tree verb at a workbench takes the cost alone, along these edges, at a
-# bench of the recipe's tier.
+# Two roads read this table: the research TABLE takes a looted sample plus
+# the cost and ignores `requires` entirely — research what you loot, into
+# paper — and the tree at a workbench takes the cost alone, along these
+# edges, at a bench of the recipe's tier, and teaches on the spot.
 
 # --- workbench 1 --------------------------------------------------------
 

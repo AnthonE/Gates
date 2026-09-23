@@ -148,5 +148,16 @@ their catalogue is wide (a pistol bullet sits eleven nodes deep); ours are
 one or two deep because the intermediate nodes — beancans, flares, embrasures,
 the engineering workbench — do not exist here. Adding any of those items is a
 content decision that should re-run §9.3's rule, not append an edge by hand.
-The physical blueprint item their research table produces is a separate
-slice (`DECISIONS.md` §open "research table v1").
+
+**§9.5 — the table makes paper (built 2026-09-23).** Their research table is
+a two-slot container — the item, the scrap — that runs about ten seconds,
+refuses to be emptied while it runs, and leaves a blueprint *item* where the
+sample was; the blueprint is learned by using it, which is what lets one be
+traded, and researching something you already know is allowed because the
+paper is the point (every default item page's *"Research is only needed to
+obtain a physical blueprint"* is the same fact from the other side). Ours is
+that, with the research table a box record, the wait on the ovens' stride,
+the price taken when the research lands, and one paper item whose `cond`
+carries its target — their single blueprint item with a per-instance target,
+which our 64-slot item table would have forced anyway (`DECISIONS.md` §open
+"research table v1"). The instant research-from-the-hand verb is gone.

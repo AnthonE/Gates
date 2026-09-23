@@ -1918,10 +1918,17 @@ impl ClientCore {
                 first,
                 count,
                 coin,
+                blueprint,
+                table_ticks,
                 rows,
             } => {
                 self.research.row_count = total as u16;
                 self.research.coin = coin;
+                // The research table's paper and wait (wire v73): what
+                // `research::blueprint_target` reads a sheet against, and
+                // what the table's panel draws the clock from.
+                self.research.blueprint = blueprint;
+                self.research.table_ticks = table_ticks;
                 for (i, row) in rows.iter().enumerate().take(count as usize) {
                     self.research.rows[first as usize + i] = *row;
                 }

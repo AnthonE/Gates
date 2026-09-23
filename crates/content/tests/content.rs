@@ -3732,6 +3732,112 @@ fn the_hash_moves_with_the_ladder() {
     );
 }
 
+/// **The table's paper and its wait reach the sim** (research table v1):
+/// the blueprint is the item the file names and the wait is its seconds in
+/// ticks — the two numbers `sim-core/research.rs` runs a table on.
+#[test]
+fn the_research_table_bakes_its_paper_and_its_wait() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content loads");
+    let rc = c.bake_research().expect("shipped research bakes");
+    assert_eq!(
+        Some(rc.blueprint),
+        c.item_index("item.blueprint"),
+        "the table makes the paper the file names"
+    );
+    assert_eq!(
+        rc.table_ticks as u32,
+        10 * sim_core::limits::TICK_HZ,
+        "the reference's ten seconds"
+    );
+    let paper = c
+        .items
+        .iter()
+        .find(|i| i.id == "item.blueprint")
+        .expect("the paper is an item");
+    assert_eq!(
+        (paper.stack, paper.condition_max),
+        (1, 0),
+        "one sheet per slot, and no ceiling to wear its target away"
+    );
+}
+
+/// The paper's `cond` names what it teaches, so the item may not stack and
+/// may not carry condition — either would let an ordinary verb rewrite the
+/// target.
+#[test]
+fn a_blueprint_that_stacks_or_wears_is_refused() {
+    let from = "id = \"item.blueprint\"\nname = \"Blueprint\"\nstack = 1";
+    refuses(
+        "items.toml",
+        from,
+        "id = \"item.blueprint\"\nname = \"Blueprint\"\nstack = 2",
+        "must be stack 1 with no condition",
+    );
+    refuses(
+        "items.toml",
+        from,
+        "id = \"item.blueprint\"\nname = \"Blueprint\"\nstack = 1\ncondition_max = 100",
+        "must be stack 1 with no condition",
+    );
+}
+
+/// Every road but the table mints a blank: a crate that paid one, a recipe
+/// that made one, a kit that granted one. Each is refused by name.
+#[test]
+fn a_blueprint_minted_by_another_road_is_refused() {
+    refuses(
+        "loot.toml",
+        "guaranteed = [{ item = \"item.junk\", count_min = 2, count_max = 2 }]",
+        "guaranteed = [{ item = \"item.junk\", count_min = 2, count_max = 2 }, \
+         { item = \"item.blueprint\", count_min = 1, count_max = 1 }]",
+        "only a research table may make paper",
+    );
+    refuses(
+        "research.toml",
+        "[table]\nblueprint = \"item.blueprint\"",
+        "[table]\nblueprint = \"item.junk\"",
+        "must be stack 1 with no condition",
+    );
+}
+
+/// A table that never finishes, or one whose wait overflows the sim's
+/// field, is refused rather than clamped.
+#[test]
+fn a_table_research_must_take_a_representable_time() {
+    refuses(
+        "research.toml",
+        "seconds = 10",
+        "seconds = 0",
+        "a table research takes 0 s",
+    );
+    refuses(
+        "research.toml",
+        "seconds = 10",
+        "seconds = 100000",
+        "a table research takes 100000 s",
+    );
+}
+
+/// The wait is part of what a content set means: a ten-second table and an
+/// eleven-second one must not canonicalise identically.
+#[test]
+fn the_hash_moves_with_the_table_wait() {
+    let base = Content::load_dir(&content_dir()).expect("shipped content loads");
+    let mut srcs = sources();
+    let entry = srcs
+        .iter_mut()
+        .find(|(n, _)| *n == "research.toml")
+        .expect("research.toml");
+    assert!(entry.1.contains("seconds = 10"), "test fixture rot");
+    entry.1 = entry.1.replace("seconds = 10", "seconds = 11");
+    let moved = build(&srcs).expect("an eleven-second table is legal");
+    assert_ne!(
+        base.hash(),
+        moved.hash(),
+        "two contents whose table waits differ canonicalise identically"
+    );
+}
+
 /// **`content/armor.toml` reaches the sim.** Every row lands at its item's
 /// index carrying the percent and the slot the file declares — the assertion
 /// that stopped this file being priced, validated, hashed, balance-anchored

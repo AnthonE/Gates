@@ -25,6 +25,7 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | `backpack.png` | `delapouite/backpack` |
 | `bandage.png` | `lorc/bandage-roll` |
 | `berries.png` | `delapouite/berries-bowl` |
+| `blueprint.png` | `lorc/tied-scroll` |
 | `building_plan.png` | `delapouite/notebook` |
 | `burlap_hood.png` | `lorc/hood` |
 | `burlap_tunic.png` | `lorc/leather-vest` |

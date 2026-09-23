@@ -4304,14 +4304,17 @@ fn death_causes_are_a_closed_ledger() {
 }
 
 // ---------------------------------------------------------------------------
-// Research (research v0) — `EV_RESEARCH` and `EV_RESEARCH_REFUSED`.
+// Research (research v0; research table v1) — `EV_RESEARCH`,
+// `EV_RESEARCH_REFUSED`, and the table's use of `EV_OVEN`.
 //
-// Both are own-facts keyed on `a = the player`, which is what lets the
-// server route them with `client_slot_of`. `EV_RESEARCH` then carries two
-// small integers in `b` and `c` — the recipe and the coin burned — which is
-// exactly the positional payload a byte-golden cannot see swapped, since
-// each fits the other's field. The fixture's recipe is 2 and its cost is 5
-// so the swap is visible.
+// Both research events are own-facts keyed on `a = the player`, which is
+// what lets the server route them with `client_slot_of`. `EV_RESEARCH` then
+// carries two small integers in `b` and `c` — the recipe and the coin THIS
+// verb burned — which is exactly the positional payload a byte-golden
+// cannot see swapped, since each fits the other's field. The coin half is
+// driven through the tree verb, which burns the node's price: the fixture's
+// recipe is 2 and its cost is 5, so the swap is visible. Reading paper
+// burns nothing and is checked for exactly that.
 
 /// A world with a placed research table (fixture row 7) and a player
 /// holding the sample (item 4) and the coin (item 3).
@@ -4358,14 +4361,41 @@ fn table_world(w: &mut World) {
     };
 }
 
-/// `EV_RESEARCH: a = player, b = recipe, c = coin burned`.
+/// `EV_RESEARCH: a = player, b = recipe, c = coin burned` — through the
+/// tree verb, which burns the node's price. The fixture workbench (deploy
+/// row 1) stands a cell over from the table, and the coin is restocked
+/// after placing it because the bench's own carrier item is the coin.
 #[test]
 fn research_names_the_player_then_the_recipe_then_the_price() {
     let mut w = World::new(SEED);
     table_world(&mut w);
-    w.tick(&[Command::Research {
+    let (cx, cz) = buildable_cell(SEED);
+    w.players[0].inv[2] = ItemStack {
+        item: 3,
+        count: 1,
+        cond: 0,
+    };
+    w.tick(&[Command::PlaceDeploy {
         id: BUILDER,
-        slot: 0,
+        row: 1,
+        cx: cx + 1,
+        cz,
+        level: 0,
+        loc: LOC_PLANE,
+    }]);
+    assert_eq!(
+        w.deploys.len(),
+        2,
+        "the bench has to stand or nothing fires"
+    );
+    w.players[0].inv[1] = ItemStack {
+        item: 3,
+        count: 20,
+        cond: 0,
+    };
+    w.tick(&[Command::Unlock {
+        id: BUILDER,
+        recipe: 2,
     }]);
     let ev = only(&w, EV_RESEARCH);
     assert_eq!(ev.a, BUILDER, "EV_RESEARCH.a is the LEARNER");
@@ -4374,6 +4404,97 @@ fn research_names_the_player_then_the_recipe_then_the_price() {
     assert_ne!(
         ev.b, ev.c,
         "the fixture's two fields must differ or this check proves nothing"
+    );
+}
+
+/// `EV_RESEARCH` again, from the other road (research table v1): reading
+/// paper names the reader and the recipe, and burns nothing — the table
+/// was paid when the paper was made. The zero is asserted, not assumed,
+/// because a read that re-stated the row's price would tell the reader
+/// they were charged for something somebody else paid for.
+#[test]
+fn a_read_names_the_reader_then_the_recipe_and_burns_nothing() {
+    let mut w = World::new(SEED);
+    table_world(&mut w);
+    w.players[0].inv[5] = sim_core::research::blueprint_of(&w.research, 4);
+    w.tick(&[Command::Research {
+        id: BUILDER,
+        slot: 5,
+    }]);
+    let ev = only(&w, EV_RESEARCH);
+    assert_eq!(ev.a, BUILDER, "EV_RESEARCH.a is the READER");
+    assert_eq!(ev.b, 2, "EV_RESEARCH.b is the RECIPE the paper names");
+    assert_eq!(ev.c, 0, "EV_RESEARCH.c is the coin THIS verb burned: none");
+}
+
+/// `EV_OVEN`, from a research table (research table v1): the start is
+/// `lit` by the hand that pressed, and the landing is the snuff with no
+/// actor — the table's clock ran out, nobody pressed anything. The table
+/// stands on the ground here and the builder is id 4, so the cell key, the
+/// level and the actor are three different numbers.
+#[test]
+fn a_research_table_names_its_cell_then_its_state_then_who_started_it() {
+    let mut w = World::new(SEED);
+    table_world(&mut w);
+    let (cx, cz) = buildable_cell(SEED);
+    let i = w
+        .deploys
+        .table_index(box_key(cx, cz, 0))
+        .expect("the table is a container since research table v1");
+    w.deploys.set_box_slot(
+        i,
+        0,
+        ItemStack {
+            item: 4,
+            count: 1,
+            cond: 0,
+        },
+    );
+    w.deploys.set_box_slot(
+        i,
+        1,
+        ItemStack {
+            item: 3,
+            count: 20,
+            cond: 0,
+        },
+    );
+    w.tick(&[Command::Use {
+        id: BUILDER,
+        cx,
+        cz,
+        level: 0,
+        loc: LOC_PLANE,
+    }]);
+    let start = only(&w, EV_OVEN);
+    assert_eq!(start.a, cell_key(cx, cz), "EV_OVEN.a is the CELL KEY");
+    assert_eq!(start.b >> 16, 0, "EV_OVEN.b's high field is LEVEL");
+    assert_eq!(
+        start.b & 1,
+        1,
+        "EV_OVEN.b bit 0 is LIT: the research started"
+    );
+    assert_eq!(start.c, BUILDER, "EV_OVEN.c is the hand that pressed");
+    assert_ne!(start.a, start.c, "and the cell and the hand differ");
+
+    let mut landed = None;
+    for _ in 0..(w.research.table_ticks as u64 + 2 * sim_core::oven::OVEN_PERIOD_TICKS) {
+        w.tick(&[]);
+        if count(&w, EV_OVEN) > 0 {
+            landed = Some(only(&w, EV_OVEN));
+            break;
+        }
+    }
+    let landed = landed.expect("the research never landed");
+    assert_eq!(
+        landed.a,
+        cell_key(cx, cz),
+        "the landing names the same cell"
+    );
+    assert_eq!(landed.b & 1, 0, "and it is out: the research is done");
+    assert_eq!(
+        landed.c, 0,
+        "with no actor — the clock ran out, nobody pressed"
     );
 }
 

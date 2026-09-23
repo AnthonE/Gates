@@ -127,7 +127,11 @@ properly. The short version:
   Since 2026-09-22 the edges are **derived** rather than authored (the
   reference's chains, `reference/BLUEPRINTS.md` §9.3) and **may not cross a
   bench tier**: one tree per bench, the tier being `research::node_tier` of
-  the recipe's station, refused at validate.
+  the recipe's station, refused at validate. **`[table]` (research table
+  v1)** names the paper a research table makes and how long it takes
+  (`blueprint`, `seconds`): one item for every recipe, its target carried
+  in the stack's `cond`, so validate holds it to stack 1, no condition, and
+  no road but the table — every other mint writes a blank.
 - **loot_table**: container archetype → weighted entries + count range,
   plus optional **guaranteed** rows (item + count range, no weight) that
   every open pays after the draw — the reference's container ladder is a

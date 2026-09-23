@@ -1374,14 +1374,20 @@ read as 0.5, 1.5, etc. `findings/building-circulation-20260921.md` has evidence.
    are long because their catalogue is wide; adding an intermediate item
    (beancan, flare, embrasure) means re-running the rule, never typing an
    edge.
-2. **No blueprint ITEM**, so learning stays instant and personal and there
-   is nothing to trade — the half that makes another player's progress
-   interesting. Unbuilt, and it is a wire change
-   (`crates/sim-core/src/research.rs` header records the omission).
-3. **Nobody has seen the research/tech-tree panel work.** `ui/techtree.rs`
-   and `render/panels/tech.rs` are gated headless only (`client/tests/ui.rs`
-   §M); past `decode_event` nothing has been looked at. Same residual as
-   §0tt item 3 — boot it, stand at a bench, press `E`.
+2. ~~**No blueprint ITEM.**~~ Built 2026-09-23 (research table v1, wire
+   v73, `DECISIONS.md` §open): the table is a two-slot container, ten
+   seconds, and makes paper you trade or read. **Residuals**, none a defect:
+   a loose stack's sync carries no `cond`, so a sheet on the ground reads
+   "Blueprint" until picked up (the sim keeps its target); the wait bar is
+   drawn only from a start this client SAW, so a late opener gets
+   "RESEARCHING..." with no bar; and the probe never places a table (no
+   bot holds one), so `begin`/`table_sweep` ride no parity or replay
+   surface — the fire's conversion has the same gap, and
+   `sim-core/tests/research.rs` is where both are gated.
+3. **Nobody has seen the research/tech-tree panel work** — nor the table's
+   (`client/tests/ui.rs` §M, §V: headless only). Boot it, stand at a bench
+   and press `E`; then at a table: `E`, one revolver and 30 junk in, BEGIN,
+   ten seconds, take the paper, right-click it.
 
 
 ## 0rs · Bodies are out of the raid storm *(systems lane)*

@@ -206,6 +206,22 @@ pub struct ResearchCoin {
     pub item: String,
 }
 
+/// `[table]` of `content/research.toml` (research table v1): what a
+/// research table makes and how long it takes.
+///
+/// **One blueprint item for every recipe**, its target in the stack's
+/// `cond` (`sim-core/research.rs` says why) — so the item this names must
+/// be a stack of one with no condition, and minted by no other road
+/// (`validate::structural`): every other mint writes a blank.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResearchTable {
+    pub blueprint: String,
+    /// How long one research takes, whole seconds. The reference's table
+    /// takes ten.
+    pub seconds: u32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Shape {
