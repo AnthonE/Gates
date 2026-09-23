@@ -154,8 +154,12 @@ a two-slot container — the item, the scrap — that runs about ten seconds,
 refuses to be emptied while it runs, and leaves a blueprint *item* where the
 sample was; the blueprint is learned by using it, which is what lets one be
 traded, and researching something you already know is allowed because the
-paper is the point (every default item page's *"Research is only needed to
-obtain a physical blueprint"* is the same fact from the other side). Ours is
+paper is the point. **Provenance, stated because §0 is strict about it**:
+none of the 42 pages fetched for this document describes the table's own
+mechanics, so the two slots, the ten seconds, the lock and the paper are
+**memory of play**, not a page read — the one fetched fact that bears on it
+is every default item page's *"Research is only needed to obtain a physical
+blueprint"*, which is the known-recipe case from the other side. Ours is
 that, with the research table a box record, the wait on the ovens' stride,
 the price taken when the research lands, and one paper item whose `cond`
 carries its target — their single blueprint item with a per-instance target,

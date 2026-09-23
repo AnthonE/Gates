@@ -3795,8 +3795,8 @@ impl World {
                     // and a research table is a container that is not a
                     // converter (`Deploys::table_index`), so this is a
                     // lookup and not a guess about what the player aimed
-                    // at. The table asks first only because it is the
-                    // cheaper miss.
+                    // at. Which asks first is immaterial: at most one of
+                    // them answers for any address.
                     let lit = crate::research::begin(
                         &self.research,
                         &mut self.deploys,

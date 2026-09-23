@@ -228,7 +228,14 @@ fn header(root: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore) {
     // `ui::slots::screen_title`'s to choose and `LOOTING` is what it
     // chooses (`tests/ui.rs` §T).
     root.spawn((
-        Text::new(screen_title(core.cont_kind)),
+        // A research table is not loot (research table v1): the screen is
+        // where a research is started, and LOOTING over it would name a
+        // verb the player is not doing.
+        Text::new(if open_table(core).is_some() {
+            "RESEARCH"
+        } else {
+            screen_title(core.cont_kind)
+        }),
         font_bold(26.0),
         TextColor(TEXT),
     ));
@@ -392,10 +399,10 @@ fn table_grid(row: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore, icons:
         BorderColor::all(LINE),
     ))
     .with_children(|col| {
-        section(col, "RESEARCH");
-        if let Some(bar) = container_bar(CONT_BOX, &name) {
-            name_bar(col, bar);
-        }
+        // The table's own name as the head, and no name bar under it: the
+        // bar exists to name a container its category cannot, and this
+        // head already does — a bar would say RESEARCH TABLE twice.
+        section(col, &name);
         col.spawn(Node {
             flex_direction: FlexDirection::Row,
             column_gap: Val::Px(12.0),
