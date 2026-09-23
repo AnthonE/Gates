@@ -1302,8 +1302,17 @@ pub fn prop_models(o: Occupant) -> &'static [&'static str] {
         // 1,054 instances of the same object, which is `ART.md` rule 7 broken
         // a thousand times over. Three silhouettes indexed by yaw is a bigger
         // purchase than three better-looking copies of one.
+        //
+        // **Four, in two halves, and the order is the grouping.**
+        // `species_variant` splits a pool into `SLOT_SPECIES` runs, so with
+        // three entries one rock family was `rock_a` ALONE — the pale ball the
+        // operator read as a node stood in half the island's regions. The first
+        // two are `ci/rock_kit.py` boulders (dark, angular, `ART.md` rule 8's
+        // formation) and the last two the generated pair that already held
+        // their band, so each family has two silhouettes and neither is a ball.
         Occupant::Rock => &[
             "models/prop/rock_a.glb",
+            "models/prop/rock_d.glb",
             "models/prop/rock_b.glb",
             "models/prop/rock_c.glb",
         ],
