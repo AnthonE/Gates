@@ -374,10 +374,27 @@ fn detail_body(
             font_bold(20.0),
             TextColor(TEXT),
         ));
+        // The time at the bench the player is standing at (craft rebate
+        // v0): a higher rung in reach halves a unit, two quarter it, and the
+        // green says the bench is doing that.
+        let pos = core.predict.position();
+        let best = sim_core::deploy::best_bench_in(
+            core.deploys.entries(),
+            &core.deploy_defs,
+            pos[0],
+            pos[2],
+            sim_core::craft::STATION_RADIUS_M,
+        );
+        let here = crate::ui::craft::seconds_at(def, count, best);
+        let rebated = here < seconds(def, count);
         row.spawn((
-            Text::new(format!("{:.1}s", seconds(def, count))),
+            Text::new(if rebated {
+                format!("{here:.1}s · bench bonus")
+            } else {
+                format!("{here:.1}s")
+            }),
             font_bold(14.0),
-            TextColor(TEXT_DIM),
+            TextColor(if rebated { BADGE } else { TEXT_DIM }),
         ));
     });
 

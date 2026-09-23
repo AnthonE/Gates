@@ -1347,10 +1347,9 @@ read as 0.5, 1.5, etc. `findings/building-circulation-20260921.md` has evidence.
 
 ## 0tt · The bench ladder's craft rebate, unbuilt *(systems lane)*
 
-1. **The craft rebate** (`RIPLIST.md` §2 row 3) — 50% faster one bench
-   up, 75% two up — is unblocked and untaken. `deploy::bench_near`
-   answers a bool; it would have to answer "best rung in reach", and
-   `craft::enqueue` would read it.
+1. ~~**The craft rebate**~~ Built 2026-09-22 (craft rebate v0): ½ one rung
+   above the recipe, ¼ two up, read at each unit's start off
+   `Deploys::best_bench_near`; the detail pane quotes the rebated time.
 2. ~~**The panel draws indents, not edges.**~~ Stale since the board grew
    connector lines; and since 2026-09-22 each tab is ONE tier's tree with
    its roots hanging off the bench (`ui::techtree::layout`), the bench's own

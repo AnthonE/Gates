@@ -3432,6 +3432,26 @@ mod techtree_model {
         );
     }
 
+    /// The detail pane quotes the time the queue will take where the player
+    /// stands — the sim's own rebate (craft rebate v0): full with no bench,
+    /// half one rung above the recipe, a quarter two up and no further.
+    #[test]
+    fn the_detail_pane_quotes_the_rebated_time() {
+        use client::ui::craft::{seconds, seconds_at};
+        let mut def = CraftContent::probe_fixture().recipes[1];
+        def.ticks = 900; // 30 s, no station — their Workbench's own row
+        assert_eq!(seconds_at(&def, 1, 0), seconds(&def, 1));
+        assert_eq!(seconds_at(&def, 1, 0), 30.0);
+        assert_eq!(seconds_at(&def, 1, 1), 15.0);
+        assert_eq!(seconds_at(&def, 1, 2), 7.5);
+        assert_eq!(seconds_at(&def, 1, 3), 7.5, "the quarter is the floor");
+        assert_eq!(
+            seconds_at(&def, 2, 1),
+            30.0,
+            "a count multiplies the rebated unit"
+        );
+    }
+
     /// The words the panel draws — pinned so the badge and the craft
     /// panel's phrasing stay one voice.
     #[test]

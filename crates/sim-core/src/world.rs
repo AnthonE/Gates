@@ -3174,7 +3174,13 @@ impl World {
                     sleeping: false,
                     slept_at: 0,
                 };
-                craft::rearm(&self.craft, self.tick, &mut self.players[slot]);
+                craft::rearm(
+                    &self.craft,
+                    &self.deploy,
+                    &self.deploys,
+                    self.tick,
+                    &mut self.players[slot],
+                );
                 if s.dead {
                     // Logged off on the death screen. Declining the choice
                     // is choosing the beach — `wake` re-derives the whole
@@ -3294,7 +3300,13 @@ impl World {
         // survive being an absolute number in a world that kept ticking
         // without the player. Re-armed against now, exactly as `JoinAs`
         // does — one rule, two doors.
-        craft::rearm(&self.craft, self.tick, &mut self.players[slot]);
+        craft::rearm(
+            &self.craft,
+            &self.deploy,
+            &self.deploys,
+            self.tick,
+            &mut self.players[slot],
+        );
         let (hp, hp_max) = (self.players[slot].hp, self.players[slot].hp_max);
         if hp > 0 {
             self.events.push(EV_HEALTH, id, hp as u32, hp_max as u32);
@@ -3652,6 +3664,8 @@ impl World {
                     craft::cancel(
                         &self.craft,
                         &self.gather,
+                        &self.deploy,
+                        &self.deploys,
                         self.tick,
                         &mut self.players[slot],
                         index,
@@ -4533,6 +4547,8 @@ impl World {
             craft::step(
                 &self.craft,
                 &self.gather,
+                &self.deploy,
+                &self.deploys,
                 tick,
                 &mut self.players[i],
                 &mut self.events,

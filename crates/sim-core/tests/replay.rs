@@ -516,7 +516,12 @@ const TICKS: u64 = 900;
 /// bot 31 smashes barrels on this surface, so every smash pays one or two
 /// more units onto the ground from the first open. Behavioural and
 /// deliberate, regenerated in the commit that caused it.
-const GOLDEN_FINAL_HASH: u64 = 0x289F_6236_4545_3594;
+/// **Moved `0x289F_6236_4545_3594` → `0xFEFF_9C41_0FCB_BBB3` at craft rebate v0**
+/// (2026-09-22). The script places the fixture's level-1 workbench beside
+/// its crafters, and a no-station recipe now crafts in half its time at a
+/// level-1 bench, so `craft_done_at` — which the digest hashes — moves from
+/// the first unit armed there.
+const GOLDEN_FINAL_HASH: u64 = 0xFEFF_9C41_0FCB_BBB3;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -584,7 +589,12 @@ const GOLDEN_FINAL_HASH: u64 = 0x289F_6236_4545_3594;
 /// guaranteed column v0** (2026-09-22), beside `GOLDEN_FINAL_HASH` and for
 /// its reason: the probe barrel pays a guaranteed row, so the run diverges
 /// at the first smash and not by a constant.
-const GOLDEN_TRACE_HASH: u64 = 0x3E4F_B5D2_69F5_369A;
+///
+/// **Moved `0x3E4F_B5D2_69F5_369A` → `0xE490_DA72_6A3A_5427` at craft rebate v0**
+/// (2026-09-22), beside `GOLDEN_FINAL_HASH` and for its reason: the crafts
+/// at the fixture bench finish sooner, so the path diverges at the first
+/// unit armed there.
+const GOLDEN_TRACE_HASH: u64 = 0xE490_DA72_6A3A_5427;
 
 /// Fold a stamped trace into one number.
 ///

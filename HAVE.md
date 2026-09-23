@@ -47,7 +47,9 @@ bonus for hitting it. Trees fall. Barrels break and **spill 3D items on the
 ground** you walk over and pick up, rather than turning into a sack.
 
 **You craft.** 45 recipes, queued with a time and cancellable, gated by a
-station ladder — nothing, then workbench 1/2/3, then a furnace. The craft
+station ladder — nothing, then workbench 1/2/3, then a furnace — and a
+bench above a recipe's own rung crafts it in half the time, two above in a
+quarter. Eleven recipes need a blueprint first, as in the reference. The craft
 screen is the reference's shape: category rail with live counts, search,
 unaffordable rows dimmed, a detail pane with cost/time/station, a favourite
 star, a quantity stepper, and a queue strip with a countdown.
