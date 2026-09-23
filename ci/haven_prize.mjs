@@ -112,7 +112,14 @@ const lootSrc = fs.readFileSync(path.join(ROOT, "content/loot.toml"), "utf8");
 
 /**
  * Parse `content/loot.toml` into `{id, container, rolls_min, rolls_max,
- * entries: [{item, weight, count_min, count_max}]}`.
+ * entries: [{item, weight, count_min, count_max}],
+ * guaranteed: [{item, count_min, count_max}]}`.
+ *
+ * The two arrays are read SEPARATELY since loot guaranteed column v0
+ * (2026-09-22). This parser used to take every `{...}` in a block as a
+ * weighted entry, so a certain row would have been read as a row with a
+ * NaN weight — a red gate for the right content, which is still better
+ * than the silent kind, and not what a gate is for.
  *
  * A hand parser rather than a dependency, for the same reason `pine_shape`
  * imports the shipped builder: this file has one shape, the content gate in
@@ -122,24 +129,36 @@ const lootSrc = fs.readFileSync(path.join(ROOT, "content/loot.toml"), "utf8");
  */
 function parseLoot(src) {
   const tables = [];
-  for (const block of src.split(/^\[\[loot_table\]\]$/m).slice(1)) {
+  for (const raw of src.split(/^\[\[loot_table\]\]$/m).slice(1)) {
+    // Comments stripped first: prose above a row may say anything,
+    // brackets included, and must not be read as structure.
+    const block = raw.replace(/^\s*#.*$/gm, "");
     const scalar = (k) => {
       const m = block.match(new RegExp(`^${k}\\s*=\\s*"?([^"\\n]+)"?`, "m"));
       return m ? m[1].trim() : null;
     };
-    const entries = [];
-    for (const row of block.matchAll(/\{([^}]*)\}/g)) {
-      const f = (k) => {
+    // The body of `key = [ ... ]`: rows are `{...}` and carry no `]`, so
+    // the first `]` after the opening bracket closes the array.
+    const array = (k) => {
+      const m = block.match(new RegExp(`^${k}\\s*=\\s*\\[([^\\]]*)\\]`, "m"));
+      return m ? m[1] : "";
+    };
+    const rows = (body) =>
+      [...body.matchAll(/\{([^}]*)\}/g)].map((row) => (k) => {
         const m = row[1].match(new RegExp(`${k}\\s*=\\s*"?([^",}]+)"?`));
         return m ? m[1].trim() : null;
-      };
-      entries.push({
-        item: f("item"),
-        weight: Number(f("weight")),
-        count_min: Number(f("count_min")),
-        count_max: Number(f("count_max")),
       });
-    }
+    const entries = rows(array("entries")).map((f) => ({
+      item: f("item"),
+      weight: Number(f("weight")),
+      count_min: Number(f("count_min")),
+      count_max: Number(f("count_max")),
+    }));
+    const guaranteed = rows(array("guaranteed")).map((f) => ({
+      item: f("item"),
+      count_min: Number(f("count_min")),
+      count_max: Number(f("count_max")),
+    }));
     tables.push({
       id: scalar("id"),
       container: scalar("container"),
@@ -147,6 +166,7 @@ function parseLoot(src) {
       rolls_max: Number(scalar("rolls_max")),
       hits: Number(scalar("hits")),
       entries,
+      guaranteed,
     });
   }
   return tables;
@@ -229,18 +249,39 @@ for (const t of [barrel, cache, crate]) {
       `${t.id}: entry ${e.item} counts ${e.count_min}..${e.count_max} is not an ordered pair`,
     );
   }
+  for (const g of t.guaranteed) {
+    check(
+      g.item &&
+        Number.isFinite(g.count_min) &&
+        Number.isFinite(g.count_max) &&
+        g.count_min >= 1 &&
+        g.count_max >= g.count_min,
+      `${t.id}: guaranteed ${g.item} counts ${g.count_min}..${g.count_max} is not a paying pair`,
+    );
+  }
 }
 
 // --- the ordering the world design rests on ---------------------------------
 
-/** Expected items out of one opening: mean rolls x weighted mean count. */
+/**
+ * Expected items out of one opening: mean rolls x weighted mean count, plus
+ * every guaranteed row's mean count — a certain row pays on every open.
+ */
 function expectedItems(t) {
   const total = t.entries.reduce((a, e) => a + e.weight, 0);
   const perRoll = t.entries.reduce(
     (a, e) => a + (e.weight / total) * ((e.count_min + e.count_max) / 2),
     0,
   );
-  return ((t.rolls_min + t.rolls_max) / 2) * perRoll;
+  const sure = t.guaranteed.reduce((a, g) => a + (g.count_min + g.count_max) / 2, 0);
+  return ((t.rolls_min + t.rolls_max) / 2) * perRoll + sure;
+}
+
+/** The mean of one item's guaranteed pay per open, 0 if the table has none. */
+function guaranteedOf(t, item) {
+  return t.guaranteed
+    .filter((g) => g.item === item)
+    .reduce((a, g) => a + (g.count_min + g.count_max) / 2, 0);
 }
 
 const ev = {
@@ -253,7 +294,8 @@ for (const t of [barrel, cache, crate]) {
   console.log(
     `haven prize: ${t.container.padEnd(6)} ${String(t.entries.length).padStart(2)} entries, ` +
       `rolls ${t.rolls_min}-${t.rolls_max}, hits ${t.hits ?? "?"}, ` +
-      `E[items] ${ev[t.container].toFixed(2)}`,
+      `E[items] ${ev[t.container].toFixed(2)}, ` +
+      `guaranteed junk ${guaranteedOf(t, "item.junk")}`,
   );
 }
 
@@ -287,6 +329,15 @@ for (const [lo, hi, loWhat, hiWhat] of CHAIN) {
     b.hits >= a.hits,
     `${hi} opens in ${b.hits} swings against ${lo}'s ${a.hits} — the richer container is also ` +
       `the cheaper one, so there is no reason to ever open the lesser tier`,
+  );
+  // The certain junk climbs with the walk, never falls (loot guaranteed
+  // column v0): the reference's ladder is 2 / 5 / 8 over the same three
+  // stops, and a destination that paid LESS scrap for certain than the road
+  // would invert the one number their whole container ladder is priced in.
+  check(
+    guaranteedOf(b, "item.junk") >= guaranteedOf(a, "item.junk"),
+    `${hi} guarantees ${guaranteedOf(b, "item.junk")} junk against ${lo}'s ` +
+      `${guaranteedOf(a, "item.junk")} — ${hiWhat} pays less certain junk than ${loWhat}`,
   );
   // Non-vacuity, in the direction this gate can actually be fooled: if two
   // tables became copies of each other every check above still passes on

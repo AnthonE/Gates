@@ -126,7 +126,12 @@ properly. The short version:
   "unreachable" is what a player experiences and a cycle is one cause.
   ⚠ The BENCH tier (workbench 2/3, the tree UI) is a different system and
   is unbuilt — `NOW.md` §0tt, and the era is a spoken knob.
-- **loot_table**: container archetype → weighted entries + count range
+- **loot_table**: container archetype → weighted entries + count range,
+  plus optional **guaranteed** rows (item + count range, no weight) that
+  every open pays after the draw — the reference's container ladder is a
+  certain scrap payout, and ours pays certain junk: barrel 2, cache 5,
+  crate 8 (loot guaranteed column v0, 2026-09-22; at most
+  `MAX_LOOT_GUARANTEED` rows, refused past it at bake)
 - **skin**: id, covers (item id), price (ELO or ORBS — one coin per
   row, bare tickers), season — the catalog is content too (dark until A3)
 

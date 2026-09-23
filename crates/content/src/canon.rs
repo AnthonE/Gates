@@ -218,6 +218,14 @@ pub fn hash(c: &Content) -> u64 {
             h.u(e.count_min);
             h.u(e.count_max);
         }
+        // The guaranteed rows reach the sim through `bake_loot`, so two
+        // contents that disagree about one play differently.
+        h.u(l.guaranteed.len() as u32);
+        for g in &l.guaranteed {
+            h.s(&g.item);
+            h.u(g.count_min);
+            h.u(g.count_max);
+        }
     }
 
     // Animals. Hashed like everything else the sim reads: two content sets

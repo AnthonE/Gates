@@ -821,9 +821,16 @@ pub fn structural(c: &Content) -> Result<(), String> {
             if crate::bake::container_index(&l.container).is_none() {
                 continue;
             }
-            for e in &l.entries {
+            // A guaranteed row pays on every open, so it is as reachable as
+            // any weighted one — more so.
+            let paid = l
+                .entries
+                .iter()
+                .map(|e| &e.item)
+                .chain(l.guaranteed.iter().map(|g| &g.item));
+            for item in paid {
                 for con in &c.consumables {
-                    if con.id != e.item {
+                    if &con.id != item {
                         continue;
                     }
                     gathered_food |= con.food > 0;
@@ -1061,6 +1068,23 @@ pub fn structural(c: &Content) -> Result<(), String> {
             }
             if e.count_min == 0 || e.count_min > e.count_max {
                 return Err(format!("loot `{}`: bad count range on `{}`", l.id, e.item));
+            }
+        }
+        // Guaranteed rows (loot guaranteed column v0): real items, a count
+        // that pays something, and each item once — two certain rows of one
+        // item are one row written twice, and the second is where a price
+        // edit goes to be missed.
+        let mut sure = BTreeSet::new();
+        for g in &l.guaranteed {
+            item_exists(&g.item, &format!("loot `{}` guaranteed row", l.id))?;
+            if g.count_min == 0 || g.count_min > g.count_max {
+                return Err(format!(
+                    "loot `{}`: bad guaranteed count range on `{}`",
+                    l.id, g.item
+                ));
+            }
+            if !sure.insert(g.item.clone()) {
+                return Err(format!("loot `{}`: `{}` is guaranteed twice", l.id, g.item));
             }
         }
     }

@@ -323,6 +323,20 @@ fn hash_moves_with_values() {
     // `hits` decides how long a barrel takes to open, so two contents that
     // disagree about it play differently and must not canonicalise the
     // same. It reaches the sim through `bake_loot`.
+    // A certain payout reaches the sim through `bake_loot` too, so two
+    // contents that disagree about one must not canonicalise the same.
+    let mut srcs = sources();
+    let l = srcs.iter_mut().find(|(n, _)| *n == "loot.toml").unwrap();
+    l.1 = l.1.replace(
+        "guaranteed = [{ item = \"item.junk\", count_min = 2, count_max = 2 }]",
+        "guaranteed = [{ item = \"item.junk\", count_min = 3, count_max = 3 }]",
+    );
+    assert_ne!(
+        base,
+        build(&srcs).unwrap().hash(),
+        "a guaranteed row's count must move the content hash"
+    );
+
     let mut srcs = sources();
     let l = srcs.iter_mut().find(|(n, _)| *n == "loot.toml").unwrap();
     l.1 = l.1.replace("hits = 3", "hits = 4");
@@ -2125,6 +2139,113 @@ fn a_container_that_cannot_be_opened_is_refused() {
     );
 }
 
+/// **Every container pays guaranteed junk, climbing with the walk** (loot
+/// guaranteed column v0, operator 2026-09-22): the reference prices its
+/// whole ladder in a certain scrap payout, and our three stops take the
+/// three of theirs a road walk passes — barrel 2, tools crate 5, military
+/// crate 8. Baked as a CERTAIN row, not a weight, and junk is never also a
+/// weighted row, which would make it neither price. The barrel's gear row
+/// fell with it (weight 1, their 1.4 % of barrels), or the recycler's
+/// 12-junk gear on top of the certain 2 would pay twice their faucet.
+#[test]
+fn the_shipped_containers_pay_guaranteed_junk() {
+    use sim_core::loot::{LOOT_BARREL, LOOT_CACHE, LOOT_CRATE};
+    let c = build(&sources()).unwrap();
+    let lc = c.bake_loot().expect("shipped loot must bake");
+    let junk = c.item_index("item.junk").expect("junk is an item");
+    let mut last = 0u16;
+    for (which, want) in [(LOOT_BARREL, 2u16), (LOOT_CACHE, 5), (LOOT_CRATE, 8)] {
+        let t = lc.table(which).expect("shipped table is live");
+        let sure: Vec<_> = t.guaranteed[..t.guaranteed_len as usize]
+            .iter()
+            .filter(|g| g.item == junk)
+            .collect();
+        assert_eq!(sure.len(), 1, "table {which} guarantees junk exactly once");
+        assert_eq!(
+            (sure[0].count_min, sure[0].count_max),
+            (want, want),
+            "table {which}'s certain junk moved"
+        );
+        assert!(want > last, "the certain junk climbs with the walk");
+        last = want;
+        assert!(
+            t.entries[..t.len as usize].iter().all(|e| e.item != junk),
+            "table {which} rolls junk as well as guaranteeing it"
+        );
+    }
+    let t = lc.table(LOOT_BARREL).expect("barrel");
+    let gears = c.item_index("item.gears").expect("gears are an item");
+    let row = t.entries[..t.len as usize]
+        .iter()
+        .find(|e| e.item == gears)
+        .expect("barrels still pay gears");
+    assert_eq!(row.weight, 1, "the barrel's gear rate is theirs");
+}
+
+/// Wall 4 on the guaranteed walk: a table past `MAX_LOOT_GUARANTEED` rows
+/// does not boot — refused, never clamped, because a table that silently
+/// dropped a certain payout would read as paying it.
+#[test]
+fn a_guaranteed_row_past_the_cap_is_refused() {
+    let mut srcs = sources();
+    let l = srcs.iter_mut().find(|(n, _)| *n == "loot.toml").unwrap();
+    let from = "guaranteed = [{ item = \"item.junk\", count_min = 2, count_max = 2 }]";
+    assert!(
+        l.1.contains(from),
+        "test fixture rot: the barrel's junk row moved"
+    );
+    let rows: Vec<String> = [
+        "item.junk",
+        "item.cloth",
+        "item.fat",
+        "item.rope",
+        "item.tarp",
+    ]
+    .iter()
+    .map(|i| format!("{{ item = \"{i}\", count_min = 1, count_max = 1 }}"))
+    .collect();
+    assert!(rows.len() > sim_core::limits::MAX_LOOT_GUARANTEED);
+    l.1 =
+        l.1.replacen(from, &format!("guaranteed = [{}]", rows.join(", ")), 1);
+    let err = build(&srcs)
+        .unwrap()
+        .bake_loot()
+        .expect_err("five guaranteed rows baked");
+    assert!(err.contains("guaranteed rows"), "got: {err}");
+}
+
+/// A guaranteed row is validated like a weighted one, plus the one rule a
+/// certain row needs: each item once.
+#[test]
+fn a_bad_guaranteed_row_is_refused() {
+    let from = "guaranteed = [{ item = \"item.junk\", count_min = 2, count_max = 2 }]";
+    refuses(
+        "loot.toml",
+        from,
+        "guaranteed = [{ item = \"item.nonesuch\", count_min = 2, count_max = 2 }]",
+        "`item.nonesuch` is not an item",
+    );
+    refuses(
+        "loot.toml",
+        from,
+        "guaranteed = [{ item = \"item.junk\", count_min = 0, count_max = 2 }]",
+        "bad guaranteed count range",
+    );
+    refuses(
+        "loot.toml",
+        from,
+        "guaranteed = [{ item = \"item.junk\", count_min = 3, count_max = 2 }]",
+        "bad guaranteed count range",
+    );
+    refuses(
+        "loot.toml",
+        from,
+        "guaranteed = [{ item = \"item.junk\", count_min = 2, count_max = 2 }, \
+         { item = \"item.junk\", count_min = 1, count_max = 1 }]",
+        "guaranteed twice",
+    );
+}
+
 /// The decay ladder must not invert.
 ///
 /// The four numbers look like taste and one relationship in them is
@@ -3149,6 +3270,9 @@ fn unreachable_consumables(c: &Content) -> Vec<String> {
         if content::bake::container_index(&l.container).is_some() {
             for e in &l.entries {
                 have.insert(e.item.as_str());
+            }
+            for g in &l.guaranteed {
+                have.insert(g.item.as_str());
             }
         }
     }

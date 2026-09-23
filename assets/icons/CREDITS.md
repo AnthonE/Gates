@@ -43,7 +43,7 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | `hammer.png` | `lorc/claw-hammer` |
 | `hearth.png` | `delapouite/fireplace` |
 | `hunting_bow.png` | `delapouite/bow-arrow` |
-| `junk.png` | `delapouite/two-coins` |
+| `junk.png` | `delapouite/hexagonal-nut` |
 | `large_box.png` | `delapouite/cargo-crate` |
 | `low_grade_fuel.png` | `delapouite/jerrycan` |
 | `map_site.png` | `delapouite/hut` |

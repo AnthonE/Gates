@@ -2518,8 +2518,9 @@ touching a balance number and do not re-derive the list here.
    (`READY`, page tier). Settle the era question (§1f) before taking it.
 2. Blocked, researched, numbers already written down: **1j** `armor.toml` —
    one re-anchor of `content/tests/content.rs::band_breaks_refused`, best
-   landed inside equipment v0; **1i** `loot.toml` — needs a `guaranteed`
-   column on `LootEntry`, and the half-take measures 9× worse than nothing.
+   landed inside equipment v0. (**1i** `loot.toml` is TAKEN, 2026-09-22 —
+   the `guaranteed` column landed and every container pays certain junk,
+   barrel 2 / cache 5 / crate 8, with the barrel's gear rate theirs.)
 3. **No per-material damage resistance**: `content/src/schema.rs:281` has one
    `structure` column, so the ladder above stone is compressed (row 2).
 4. Gather yields, smelt and craft times are still ours; per-hit yields and
@@ -2940,9 +2941,9 @@ each blocked on something outside this tree.
    new kind; the live served document carries no `kind` field at all, so
    nothing breaks today — but the launcher should accept it before the next
    publish.
-5. **The junk icon is a picture of two coins.** `assets/icons/junk.png` is
-   still `delapouite/two-coins`, which was right for a coin and is wrong for
-   scrap. An art call, on the CC-BY rail.
+5. ~~**The junk icon is a picture of two coins.**~~ Done 2026-09-22:
+   `assets/icons/junk.png` is `delapouite/hexagonal-nut` (CC-BY, credited),
+   because a price in coins on every bench read as money and junk is scrap.
 6. **`fix/us-east-shard` is closed** (2026-08-28). Nothing is owed: `shards.toml`
    already said `us-east-1` via the 2026-08-23 host move, `ci/depot.py`'s
    docstring fix landed independently on 08-14, and the two DECISIONS rows the

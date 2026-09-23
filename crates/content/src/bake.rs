@@ -38,9 +38,9 @@ use sim_core::inventory::SpawnKit;
 use sim_core::limits::MAX_SPAWN_KIT;
 use sim_core::limits::{
     ARROW_STEP_MM, HEARTH_STOCK_ROWS, MAX_ARROW_SUBSTEPS, MAX_COOK_ROWS, MAX_DEPLOY_COSTS,
-    MAX_DEPLOY_DEFS, MAX_HITSCAN_SAMPLES, MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_ROLLS,
-    MAX_LOOT_TABLES, MAX_MAGS, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS,
-    MAX_RESEARCH_ROWS, MAX_WEAPON_AMMO, TICK_HZ,
+    MAX_DEPLOY_DEFS, MAX_HITSCAN_SAMPLES, MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_GUARANTEED,
+    MAX_LOOT_ROLLS, MAX_LOOT_TABLES, MAX_MAGS, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES,
+    MAX_RECIPE_INPUTS, MAX_RESEARCH_ROWS, MAX_WEAPON_AMMO, TICK_HZ,
 };
 use sim_core::loot::{
     LootContent, LootEntryDef, LootTableDef, LOOT_BARREL, LOOT_CACHE, LOOT_CRATE,
@@ -1416,6 +1416,29 @@ impl Content {
                     .total_weight
                     .checked_add(e.weight)
                     .ok_or_else(|| format!("bake: loot `{}` weight sum overflows", l.id))?;
+            }
+            // The guaranteed rows (loot guaranteed column v0): refused past
+            // the store rather than clamped, `MAX_LOOT_ENTRIES`'s policy — a
+            // table that silently dropped a certain payout would read as
+            // paying it.
+            if l.guaranteed.len() > MAX_LOOT_GUARANTEED {
+                return Err(format!(
+                    "bake: loot `{}` has {} guaranteed rows, past the sim's {MAX_LOOT_GUARANTEED}",
+                    l.id,
+                    l.guaranteed.len()
+                ));
+            }
+            t.guaranteed_len = l.guaranteed.len() as u16;
+            for (i, g) in l.guaranteed.iter().enumerate() {
+                let item = self.item_index(&g.item).ok_or_else(|| {
+                    format!("bake: loot `{}` guarantees unknown `{}`", l.id, g.item)
+                })?;
+                t.guaranteed[i] = LootEntryDef {
+                    item,
+                    weight: 0,
+                    count_min: small(g.count_min, "count_min")?,
+                    count_max: small(g.count_max, "count_max")?,
+                };
             }
             lc.tables[which] = t;
         }

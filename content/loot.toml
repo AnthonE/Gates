@@ -29,6 +29,18 @@
 # nothing in the world able to produce its container. Both are **openable
 # since world containers v0** (2026-08-14, `sim-core/worldcont.rs`), so these
 # two tables are reachable loot and not merely reachable content.
+#
+# **Every table pays guaranteed junk** (loot guaranteed column v0, operator
+# 2026-09-22: *"Crafting system should use Junk [as our] scrap. It needs to
+# be just like Rust"*). The reference prices its whole container ladder in a
+# certain scrap payout — barrel 2, basic crate 3, brown/tools crate 5,
+# military crate 8, elite 25, every one at 100 % (`reference/RIPLIST.md`
+# row 1i) — and junk is our scrap (operator, 2026-08-10). Our three tiers
+# take the three of theirs a road walk passes: the road's barrel is their
+# barrel, a waystation is their roadside tools crate, the haven pad is their
+# military crate. The take is whole or not at all — row 1i measured the
+# half-take (their component rates without the certain scrap) at 0.12× the
+# faucet — so the barrel's gear row fell with it, below.
 
 [[loot_table]]
 id = "loot.barrel"
@@ -37,12 +49,19 @@ rolls_min = 1
 rolls_max = 2
 hits = 3
 
+# Their barrel: 2 scrap, certain. And their barrel's gear rate with it —
+# gears in 1.4 % of their barrels against ~10 % of ours, so weight 10 → 1
+# (1.66 % of opens) — or the recycler's 12-junk gear and the certain 2 would
+# have paid a barrel twice their faucet. ~2.30 junk a barrel against their
+# ~2.42 (it was 2.727, all of it through the recycler).
+guaranteed = [{ item = "item.junk", count_min = 2, count_max = 2 }]
+
 entries = [
     { item = "item.cloth", weight = 20, count_min = 10, count_max = 20 },
     { item = "item.fat", weight = 15, count_min = 5, count_max = 10 },
     { item = "item.metal_frags", weight = 15, count_min = 10, count_max = 25 },
     { item = "item.lowgrade", weight = 10, count_min = 10, count_max = 20 },
-    { item = "item.gears", weight = 10, count_min = 1, count_max = 2 },
+    { item = "item.gears", weight = 1, count_min = 1, count_max = 2 },
     { item = "item.rope", weight = 12, count_min = 1, count_max = 2 },
     { item = "item.tarp", weight = 8, count_min = 1, count_max = 1 },
     # Corn: the reference grows wild crops by its rivers and stocks its
@@ -68,6 +87,9 @@ rolls_min = 2
 rolls_max = 2
 hits = 4
 
+# Their roadside tools crate: 5 scrap, certain.
+guaranteed = [{ item = "item.junk", count_min = 5, count_max = 5 }]
+
 entries = [
     { item = "item.metal_frags", weight = 15, count_min = 15, count_max = 30 },
     { item = "item.cloth", weight = 14, count_min = 10, count_max = 20 },
@@ -86,6 +108,10 @@ container = "crate"
 rolls_min = 2
 rolls_max = 3
 hits = 5
+
+# Their military crate: 8 scrap, certain — the top of the ladder a road
+# walk reaches (their elite crate's 25 belongs to a monument we do not have).
+guaranteed = [{ item = "item.junk", count_min = 8, count_max = 8 }]
 
 entries = [
     { item = "item.metal_frags", weight = 15, count_min = 25, count_max = 50 },
