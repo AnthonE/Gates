@@ -188,6 +188,27 @@ so scatter clumping v0 cannot reach rock at any weight. Ranked in its §9.7:
    a box-list volume off its own slope; `rock_kit.py gen --kind slab` builds
    the mesh once `measure_glb.py` has a slab row. Tint and blend: `§LOOK`.
 
+## 0rf · Rock face v0 — cliffs stopped being one pale sheet *(client lane)*
+
+Built 2026-09-23 (`DECISIONS.md` §open, rock face v0): the ground shader draws
+rock as warped world-space blocks, two scales of leaning facets, a crack on
+30 % of boundaries, weathering and streaks, fading with a block's size on
+screen. Brightness-neutral by construction (`tests/rock_face.rs`). Seen on the
+capture at `dev_spawn = 1500,600` — before/after in
+`findings/rock-face-20260923.md`. What it left:
+
+1. **`§LOOK` on a GPU.** Every frame of it is lavapipe at 1280×720; the facet
+   fade thresholds were set on that footprint, and a 4K frame keeps facets
+   leaning twice as far out.
+2. **The silhouette is still smooth.** A scarp's outline against the sky is
+   the heightfield's, and no shader can break it — that is §0rock item 4's
+   cliff mesh, or relief worldgen may not author yet (§0wg item 3).
+3. **The lip and foot are still a hard contour line.** Letting blocks decide
+   rock against turf was tried and read as paving stones on grass; the real
+   answer is scree at the foot, which is §0rock item 3's seeding.
+4. **The fine facets are invisible past ~20 m** by design; whether 2.2 m is
+   worth its second lattice walk on a real GPU is a profile nobody has run.
+
 ## 0anim · The animals cannot be bought until the client can move one *(client lane)*
 
 Asked 2026-09-02 whether the generator can rig. **It can, and it will not rig
