@@ -416,12 +416,13 @@ fn hash_moves_with_values() {
         .iter_mut()
         .find(|(n, _)| *n == "research.toml")
         .unwrap();
-    // Anchored on the revolver's whole block: two rows require gunpowder,
-    // and a bare `replace` moved both — which strips the satchel's
-    // craft-graph floor edge and fails validation for an unrelated reason.
+    // Anchored on the revolver's whole block. The new parent is legal —
+    // the roadsign plate unlocks at the same bench, and authoring an edge
+    // the recipes do not imply is a design call — so the build succeeds
+    // and only the hash can tell the two trees apart.
     r.1 = r.1.replace(
-        "item = \"item.revolver\"\ncost = 75\nrequires = \"item.gunpowder\"",
-        "item = \"item.revolver\"\ncost = 75\nrequires = \"item.medkit\"",
+        "item = \"item.revolver\"\ncost = 30\nrequires = \"item.pistol_ammo\"",
+        "item = \"item.revolver\"\ncost = 30\nrequires = \"item.armor_roadsign_body\"",
     );
     assert_ne!(
         base,
@@ -2526,7 +2527,7 @@ fn bows_bake_to_per_tick_integers_the_sim_can_integrate() {
 /// Until 2026-08-19 `bake_combat` dropped every row that was not melee,
 /// throwable or bow, and the revolver was not inert data while it sat
 /// there: it is a barrel drop at weight 1 (`the_shipped_loot_tables_bake`),
-/// it has a recipe, it is on the research ladder behind gunpowder, and its
+/// it has a recipe, it is on the research ladder behind pistol rounds, and its
 /// round both drops and crafts. So a player could spend scrap on the
 /// research, materials on the gun and more on ammo, and pull the trigger on
 /// nothing. What this asserts is the whole chain out of that: the row bakes,
@@ -3488,8 +3489,11 @@ fn mob_refusals() {
 // `crates/server/tests/boot_tables.rs`.
 // ---------------------------------------------------------------------------
 
-/// The shipped tree is a tree: it bakes, its one authored edge survives into
-/// the sim's own bit space, and the row it points at is a root.
+/// The shipped tree is a tree: it bakes, its authored edges survive into the
+/// sim's own bit space, and the rows they point at are roots. The revolver
+/// behind pistol rounds is the reference's own link (`BLUEPRINTS.md` §2);
+/// the satchel is a root because its link in their chain crosses one of our
+/// benches.
 #[test]
 fn the_shipped_research_tree_bakes_with_its_edge_intact() {
     let c = Content::load_dir(&content_dir()).expect("shipped content loads");
@@ -3503,66 +3507,153 @@ fn the_shipped_research_tree_bakes_with_its_edge_intact() {
     assert!(rc.row_count > 0, "an empty table is the pre-2026-08-15 bug");
 
     let idx = |id: &str| c.item_index(id).unwrap_or_else(|| panic!("shipped {id}"));
-    let powder_recipe = c
-        .recipe_index("recipe.gunpowder")
-        .expect("shipped recipe.gunpowder");
+    let ammo_recipe = c
+        .recipe_index("recipe.pistol_ammo")
+        .expect("shipped recipe.pistol_ammo");
 
-    let satchel = rc
-        .row_for(idx("item.satchel_charge"))
-        .expect("satchel is researchable");
+    let revolver = rc
+        .row_for(idx("item.revolver"))
+        .expect("the revolver is researchable");
     assert_eq!(
-        satchel.requires, powder_recipe,
-        "the satchel's prerequisite is gunpowder's RECIPE INDEX — what the \
-         tree verb looks up in `Player::known`, or the check means nothing"
+        revolver.requires, ammo_recipe,
+        "the revolver's prerequisite is pistol ammunition's RECIPE INDEX — \
+         what the tree verb looks up in `Player::known`, or the check means \
+         nothing"
     );
+    for root in [
+        "item.pistol_ammo",
+        "item.satchel_charge",
+        "item.hatchet_metal",
+    ] {
+        let row = rc.row_for(idx(root)).expect("researchable");
+        assert_eq!(
+            row.requires,
+            sim_core::research::NO_RECIPE,
+            "{root} is a root of its bench's tree"
+        );
+    }
+}
 
-    let powder = rc
-        .row_for(idx("item.gunpowder"))
-        .expect("gunpowder is researchable");
-    assert_eq!(
-        powder.requires,
-        sim_core::research::NO_RECIPE,
-        "gunpowder is a root of the tree"
+/// **The split is theirs** (operator, 2026-09-22 — `reference/BLUEPRINTS.md`
+/// §1): eleven recipes need a blueprint, each at the item page's research
+/// price, and gunpowder and metal arrows — known from the start there — are
+/// not gated here either.
+#[test]
+fn the_shipped_split_is_rusts() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content loads");
+    let want: [(&str, u32); 11] = [
+        ("item.hatchet_metal", 30),
+        ("item.pickaxe_metal", 30),
+        ("item.medkit", 30),
+        ("item.window_shutters", 15),
+        ("item.window_bars_metal", 30),
+        ("item.pistol_ammo", 30),
+        ("item.revolver", 30),
+        ("item.armor_roadsign_body", 30),
+        ("item.window_glass", 30),
+        ("item.garage_door", 30),
+        ("item.satchel_charge", 60),
+    ];
+    let gated: Vec<&str> = c
+        .recipes
+        .iter()
+        .filter(|r| r.blueprint)
+        .map(|r| r.output.as_str())
+        .collect();
+    assert_eq!(gated.len(), want.len(), "gated: {gated:?}");
+    for (item, cost) in want {
+        assert!(gated.contains(&item), "{item} is learned in the reference");
+        let row = c
+            .research
+            .iter()
+            .find(|r| r.item == item)
+            .unwrap_or_else(|| panic!("{item} has a research row"));
+        assert_eq!(row.cost, cost, "{item}'s price is the item page's");
+    }
+    for known in [
+        "item.gunpowder",
+        "item.arrow_metal",
+        "item.crossbow",
+        "item.box_large",
+    ] {
+        assert!(
+            !gated.contains(&known),
+            "{known} is known by default in the reference"
+        );
+        assert!(
+            c.research.iter().all(|r| r.item != known),
+            "{known} has a research row with nothing to unlock"
+        );
+    }
+}
+
+/// **One tree per bench**: an edge that crosses a tier is refused, because
+/// the panel draws one bench's tree at a time and the parent would be a line
+/// to a board nobody is standing at.
+#[test]
+fn a_cross_tier_edge_is_refused() {
+    refuses(
+        "research.toml",
+        "item = \"item.revolver\"\ncost = 30\nrequires = \"item.pistol_ammo\"",
+        "item = \"item.revolver\"\ncost = 30\nrequires = \"item.hatchet_metal\"",
+        "each bench has its own tree",
     );
 }
 
 /// The floor: an edge the craft graph already implies may not be dropped
 /// from the tree. This is the drift that makes a tech tree lie — the recipe
-/// says you need gunpowder, the tree says you do not, and a player buys a
-/// blueprint for a thing they cannot make.
+/// says you need the input, the tree says you do not, and a player buys a
+/// blueprint for a thing they cannot make. The shipped tree implies no edge
+/// (gunpowder is known), so the case is made: gate gunpowder again, give it
+/// a row, and the gated pistol rounds made from it must require it.
 #[test]
 fn a_prerequisite_the_recipe_already_implies_cannot_be_dropped() {
-    refuses(
-        "research.toml",
-        "item = \"item.satchel_charge\"\ncost = 75\nrequires = \"item.gunpowder\"",
-        "item = \"item.satchel_charge\"\ncost = 75",
-        "must require it",
+    let mut srcs = sources();
+    let recipes = srcs.iter_mut().find(|(n, _)| *n == "recipes.toml").unwrap();
+    let from = "id = \"recipe.gunpowder\"\noutput = \"item.gunpowder\"\ncount = 10";
+    assert!(
+        recipes.1.contains(from),
+        "test fixture rot: gunpowder's recipe moved"
     );
+    recipes.1 = recipes.1.replace(
+        from,
+        "id = \"recipe.gunpowder\"\noutput = \"item.gunpowder\"\nblueprint = true\ncount = 10",
+    );
+    let research = srcs
+        .iter_mut()
+        .find(|(n, _)| *n == "research.toml")
+        .unwrap();
+    research
+        .1
+        .push_str("\n[[research]]\nitem = \"item.gunpowder\"\ncost = 120\n");
+    let err = build(&srcs).expect_err("a dropped implied edge was accepted");
+    assert!(err.contains("must require it"), "got: {err}");
 }
 
 /// Every other way an edge can be wrong.
 #[test]
 fn research_edge_refusals() {
+    let edge = "item = \"item.revolver\"\ncost = 30\nrequires = \"item.pistol_ammo\"";
     // A row that requires itself is a cycle of length one.
     refuses(
         "research.toml",
-        "item = \"item.satchel_charge\"\ncost = 75\nrequires = \"item.gunpowder\"",
-        "item = \"item.satchel_charge\"\ncost = 75\nrequires = \"item.satchel_charge\"",
+        edge,
+        "item = \"item.revolver\"\ncost = 30\nrequires = \"item.revolver\"",
         "requires itself",
     );
     // A prerequisite that names no item at all.
     refuses(
         "research.toml",
-        "item = \"item.satchel_charge\"\ncost = 75\nrequires = \"item.gunpowder\"",
-        "item = \"item.satchel_charge\"\ncost = 75\nrequires = \"item.nonesuch\"",
+        edge,
+        "item = \"item.revolver\"\ncost = 30\nrequires = \"item.nonesuch\"",
         "is not an item",
     );
     // A prerequisite that is a real item but is not researchable: nobody can
     // ever learn it, so the row behind it is locked forever.
     refuses(
         "research.toml",
-        "item = \"item.satchel_charge\"\ncost = 75\nrequires = \"item.gunpowder\"",
-        "item = \"item.satchel_charge\"\ncost = 75\nrequires = \"item.rock\"",
+        edge,
+        "item = \"item.revolver\"\ncost = 30\nrequires = \"item.rock\"",
         "is not researchable",
     );
     // The "same edge twice" case that stood here is DELETED by the
@@ -3573,9 +3664,10 @@ fn research_edge_refusals() {
 
 /// A cycle, and the row stranded behind it, are one refusal — because
 /// "can never be learned" is what a player experiences and a cycle is only
-/// one cause of it. Gunpowder is made to depend on the satchel that depends
-/// on gunpowder; the medkit is untouched and must stay reachable, which is
-/// what proves the walk reports the stuck rows rather than giving up.
+/// one cause of it. Pistol rounds are made to depend on the revolver that
+/// depends on them (one bench, so the tier rule has nothing to say); the
+/// medkit is untouched and must stay reachable, which is what proves the
+/// walk reports the stuck rows rather than giving up.
 #[test]
 fn a_prerequisite_cycle_is_refused() {
     let mut srcs = sources();
@@ -3583,9 +3675,14 @@ fn a_prerequisite_cycle_is_refused() {
         .iter_mut()
         .find(|(n, _)| *n == "research.toml")
         .expect("research.toml");
+    let from = "[[research]]\nitem = \"item.pistol_ammo\"\ncost = 30";
+    assert!(
+        entry.1.contains(from),
+        "test fixture rot: the pistol_ammo row moved"
+    );
     entry.1 = entry.1.replace(
-        "[[research]]\nitem = \"item.gunpowder\"\ncost = 40",
-        "[[research]]\nitem = \"item.gunpowder\"\ncost = 40\nrequires = \"item.satchel_charge\"",
+        from,
+        "[[research]]\nitem = \"item.pistol_ammo\"\ncost = 30\nrequires = \"item.revolver\"",
     );
     let err = build(&srcs).expect_err("a research cycle was accepted");
     assert!(
@@ -3593,7 +3690,7 @@ fn a_prerequisite_cycle_is_refused() {
         "expected the reachability walk to refuse, got: {err}"
     );
     assert!(
-        err.contains("item.gunpowder") && err.contains("item.satchel_charge"),
+        err.contains("item.pistol_ammo") && err.contains("item.revolver"),
         "the refusal must name the stuck rows, got: {err}"
     );
     assert!(
@@ -3614,12 +3711,18 @@ fn the_hash_moves_with_the_ladder() {
         .iter_mut()
         .find(|(n, _)| *n == "research.toml")
         .expect("research.toml");
-    // A legal edge that changes the tree: the revolver behind gunpowder.
-    // Legal because the floor is a minimum and authoring MORE is a design
-    // call — which is exactly why the hash has to be able to see it.
+    // A legal edge that changes the tree: the pickaxe behind the hatchet —
+    // the guess their chain refutes (`BLUEPRINTS.md` §2), and still legal,
+    // because the floor is a minimum and authoring MORE is a design call —
+    // which is exactly why the hash has to be able to see it.
+    let from = "[[research]]\nitem = \"item.pickaxe_metal\"\ncost = 30";
+    assert!(
+        entry.1.contains(from),
+        "test fixture rot: the pickaxe row moved"
+    );
     entry.1 = entry.1.replace(
-        "[[research]]\nitem = \"item.arrow_metal\"\ncost = 20",
-        "[[research]]\nitem = \"item.arrow_metal\"\ncost = 20\nrequires = \"item.gunpowder\"",
+        from,
+        "[[research]]\nitem = \"item.pickaxe_metal\"\ncost = 30\nrequires = \"item.hatchet_metal\"",
     );
     let moved = build(&srcs).expect("an added edge is legal content");
     assert_ne!(

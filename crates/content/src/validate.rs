@@ -1444,6 +1444,28 @@ pub fn structural(c: &Content) -> Result<(), String> {
                     r.item
                 ));
             }
+            // **One tree per bench** (operator, 2026-09-22 — the reference's
+            // own shape, `reference/BLUEPRINTS.md` §2): a parent that unlocks
+            // at another bench is a line to a board the player is not
+            // standing at. The tier is the sim's own reading of the station
+            // (`research::node_tier` of `bake::station_code`), so the rung
+            // refused here is the rung `research::unlock` would demand.
+            let tier_of = |item: &str| {
+                c.recipes
+                    .iter()
+                    .find(|k| k.output == item)
+                    .map(|k| sim_core::research::node_tier(crate::bake::station_code(k.station)))
+            };
+            if let (Some(own), Some(theirs)) = (tier_of(&r.item), tier_of(req)) {
+                if own != theirs {
+                    return Err(format!(
+                        "research: `{}` (workbench {own} tree) requires `{req}` \
+                         (workbench {theirs} tree) — each bench has its own tree, \
+                         so an edge may not cross one",
+                        r.item
+                    ));
+                }
+            }
         }
     }
 

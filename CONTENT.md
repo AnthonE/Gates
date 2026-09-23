@@ -124,8 +124,10 @@ properly. The short version:
   contradict them. One fixpoint walk from the empty known-set refuses a
   cycle and a row stranded behind one as the same thing, because
   "unreachable" is what a player experiences and a cycle is one cause.
-  ⚠ The BENCH tier (workbench 2/3, the tree UI) is a different system and
-  is unbuilt — `NOW.md` §0tt, and the era is a spoken knob.
+  Since 2026-09-22 the edges are **derived** rather than authored (the
+  reference's chains, `reference/BLUEPRINTS.md` §9.3) and **may not cross a
+  bench tier**: one tree per bench, the tier being `research::node_tier` of
+  the recipe's station, refused at validate.
 - **loot_table**: container archetype → weighted entries + count range,
   plus optional **guaranteed** rows (item + count range, no weight) that
   every open pays after the draw — the reference's container ladder is a

@@ -3409,6 +3409,29 @@ mod techtree_model {
         assert_eq!(path_total(&rc, 0, 0), 0);
     }
 
+    /// A locked recipe's detail pane names where it is learned — its bench
+    /// tree and the node's price, off the same `node_tier` and the same row
+    /// the tree panel draws — and says nothing for a recipe that needs no
+    /// blueprint or is already known.
+    #[test]
+    fn a_locked_recipe_names_its_bench_and_its_price() {
+        let (rc, cc) = fixture();
+        assert_eq!(
+            client::ui::craft::unlock_hint(&rc, 0, 2, &cc.recipes[2]).as_deref(),
+            Some("BLUEPRINT — UNLOCK AT WORKBENCH LEVEL 1 · 5 JUNK")
+        );
+        assert_eq!(
+            client::ui::craft::unlock_hint(&rc, 1 << 2, 2, &cc.recipes[2]),
+            None,
+            "a known recipe asks for nothing"
+        );
+        assert_eq!(
+            client::ui::craft::unlock_hint(&rc, 0, 1, &cc.recipes[1]),
+            None,
+            "an ungated recipe asks for nothing"
+        );
+    }
+
     /// The words the panel draws — pinned so the badge and the craft
     /// panel's phrasing stay one voice.
     #[test]

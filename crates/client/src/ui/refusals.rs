@@ -51,9 +51,11 @@ pub const CRAFT: [&str; 6] = [
     "missing ingredients",
     // Not "no such recipe": the recipe exists and the player can see it,
     // which is exactly why this reason is its own code (research v0). The
-    // sentence names the verb that fixes it, because a refusal a player
-    // cannot act on is a refusal that reads as a bug.
-    "not researched — take one to a research table",
+    // sentence names BOTH verbs that fix it (2026-09-22): a sample at a
+    // table, or the bench's tree — which is the only road for a thing no
+    // container drops, and was missing from this sentence for as long as
+    // the tree existed.
+    "not researched — research one at a table or unlock it at a workbench",
 ];
 
 /// `sim_core::research`'s `REFUSE_R_*: u32`. The last two are the tree

@@ -1367,14 +1367,14 @@ read as 0.5, 1.5, etc. `findings/building-circulation-20260921.md` has evidence.
 
 ## 0tree · How deep the research tree goes, and the blueprint nobody can trade *(systems lane)*
 
-1. **The tree's depth is still an unspoken pacing call.** It carries three
-   edges now — `content/research.toml`: roadsign body behind medkit (:103),
-   revolver and satchel behind gunpowder (:111, :116) — so the "one edge
-   deep" reading is retired, and `DECISIONS.md` §open "research ladder v0"
-   is stale in the same direction: it says revolver-behind-gunpowder is
-   deliberately unauthored and `research.toml:116` authors it. What is open
-   is how many more edges, over which bench tier now that workbench 2/3
-   exist (§0tt). Do not invent one; fix the DECISIONS row when it is spoken.
+1. ~~**The tree's depth is still an unspoken pacing call.**~~ Spoken
+   2026-09-22 (*"just like Rust"*): the gated set is theirs and every edge is
+   DERIVED from their chains — nearest ancestor we ship in the same tier of
+   ours, else a root (`reference/BLUEPRINTS.md` §9.3, `DECISIONS.md` §open
+   "blueprint split v1"). Four edges, three trees. **Residual**: their chains
+   are long because their catalogue is wide; adding an intermediate item
+   (beancan, flare, embrasure) means re-running the rule, never typing an
+   edge.
 2. **No blueprint ITEM**, so learning stays instant and personal and there
    is nothing to trade — the half that makes another player's progress
    interesting. Unbuilt, and it is a wire change

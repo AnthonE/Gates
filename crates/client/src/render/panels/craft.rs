@@ -398,6 +398,16 @@ fn detail_body(
         });
     }
 
+    // A locked recipe says where it is learned — the bench tree and the
+    // node's price — rather than only that it is locked.
+    if let Some(hint) = crate::ui::craft::unlock_hint(&core.research, core.known(), recipe, def) {
+        pane.spawn((
+            Text::new(hint),
+            font_bold(11.0),
+            TextColor(super::TEXT_SHORT),
+        ));
+    }
+
     pane.spawn((
         Button,
         FavStar(recipe),

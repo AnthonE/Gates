@@ -252,13 +252,7 @@ impl Content {
                     .ok_or_else(|| format!("bake: `{}` output missing", r.id))?,
                 out_count: r.count as u16,
                 ticks: r.seconds * TICK_HZ,
-                station: match r.station {
-                    Station::None => STATION_NONE,
-                    Station::Workbench1 => STATION_WORKBENCH1,
-                    Station::Workbench2 => STATION_WORKBENCH2,
-                    Station::Workbench3 => STATION_WORKBENCH3,
-                    Station::Furnace => STATION_FURNACE,
-                },
+                station: station_code(r.station),
                 n_inputs: r.inputs.len() as u8,
                 inputs: [(0, 0); MAX_RECIPE_INPUTS],
             };
@@ -1544,5 +1538,19 @@ impl Content {
             mc.defs[which] = def;
         }
         Ok(mc)
+    }
+}
+
+/// The sim's station code for a schema station — **the one mapping**, shared
+/// by the recipe bake and the research tree's tier rule (`validate.rs`), so
+/// the tier a node is refused for and the tier the sim demands at unlock
+/// (`research::node_tier` of this code) cannot be two different readings.
+pub fn station_code(s: Station) -> u8 {
+    match s {
+        Station::None => STATION_NONE,
+        Station::Workbench1 => STATION_WORKBENCH1,
+        Station::Workbench2 => STATION_WORKBENCH2,
+        Station::Workbench3 => STATION_WORKBENCH3,
+        Station::Furnace => STATION_FURNACE,
     }
 }
