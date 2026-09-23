@@ -123,10 +123,14 @@ pub const ARCH_LOCK: u8 = 7;
 /// gate that says so is `every_domain_fits_its_wire_field`, and it is why
 /// the tenth archetype is cheap and the seventeenth is not.
 pub const ARCH_RECYCLER: u8 = 8;
-/// A research table (research v0). A **station**, not a container: it is
-/// checked by proximity the way `craft.rs` checks a workbench, so it holds
-/// no items, mints no box record, and the thing being researched comes out
-/// of the player's own inventory (`research.rs` says why).
+/// A research table (research v0) — **a container since research table
+/// v1** (2026-09-23). v0 made it a station checked by proximity, the sample
+/// taken out of the hand; the operator's *"Timed research table"* made it
+/// the reference's two-slot box, so it holds items like a fire does, mints
+/// a box record and an oven state (`holds_items`), and `research.rs` runs
+/// its clock on the ovens' stride. What it does not do is convert: its
+/// state's `arch` keeps `oven::sweep` away, and `research::table_sweep` is
+/// the only thing that advances it.
 ///
 /// The tenth archetype, and free — `ARCH_BITS` widened to four for the
 /// recycler one commit earlier and holds sixteen. That is what the
@@ -267,15 +271,20 @@ pub fn op_is_crew(op: u8) -> bool {
 /// Does a deployable of this archetype hold items — that is, does
 /// placing it stand up a container record in the box store?
 ///
-/// Four archetypes say yes and they share one store deliberately: a
+/// Five archetypes say yes and they share one store deliberately: a
 /// storage box is a container, an oven (`oven.rs`) is a container that
-/// burns, and a recycler is a container that converts. One store means
+/// burns, a recycler is a container that converts, and a research table
+/// (research table v1) is a container that makes paper. One store means
 /// one address space, one `CONT_BOX` handle, one reach rule and one spill
-/// path when a raid takes the thing apart — so a campfire's contents fall
-/// on the floor by the same route a box's do, with no second contract on
-/// the wire and none in the sim.
+/// path when a raid takes the thing apart — so a campfire's contents, and
+/// a research half done, fall on the floor by the same route a box's do,
+/// with no second contract on the wire and none in the sim.
 pub fn holds_items(arch: u8) -> bool {
-    arch == ARCH_BOX || arch == ARCH_FIRE || arch == ARCH_FURNACE || arch == ARCH_RECYCLER
+    arch == ARCH_BOX
+        || arch == ARCH_FIRE
+        || arch == ARCH_FURNACE
+        || arch == ARCH_RECYCLER
+        || arch == ARCH_RESEARCH
 }
 
 /// A workbench archetype's rung on the bench ladder, `0` for anything
@@ -1195,6 +1204,16 @@ impl Deploys {
             .filter(|&i| self.boxes.ovens[i].is_converter())
     }
 
+    /// Resolve a packed address to a container index that is a **research
+    /// table** (research table v1) — `oven_index`'s filter for the third
+    /// thing a use press switches. The table is not a converter, so the two
+    /// lookups can never both answer for one address, and `world.rs` asks
+    /// this one first without either shadowing the other.
+    pub fn table_index(&self, key: u32) -> Option<usize> {
+        self.box_index(key)
+            .filter(|&i| self.boxes.ovens[i].arch == ARCH_RESEARCH)
+    }
+
     /// Resolve a packed box address to an index into `boxes()`, or `None`
     /// when no box stands there. The index is transient — swap-remove
     /// invalidates it — which is exactly why the handle on the wire is the
@@ -1424,16 +1443,17 @@ impl Deploys {
     /// (bench ladder v0). One scan rather than one `arch_near` per rung,
     /// and the ≥ is the reference's own rule: a level-3 bench crafts a
     /// level-1 recipe, so upgrading a bench never costs a verb.
+    ///
+    /// Every caller asks for a rung (1..=3); tier 0 is not one, and asking
+    /// for it answers true.
     pub fn bench_near(&self, dc: &DeployContent, tier: u8, x: f32, z: f32, radius_m: f32) -> bool {
-        let r2 = radius_m * radius_m;
-        self.entries[..self.len].iter().any(|d| {
-            if bench_tier(dc.defs[d.row as usize].arch) < tier {
-                return false;
-            }
-            let (ax, az) = cell_center(d.cx, d.cz);
-            let (dx, dz) = (ax - x, az - z);
-            dx * dx + dz * dz <= r2
-        })
+        self.best_bench_near(dc, x, z, radius_m) >= tier
+    }
+
+    /// The highest workbench rung within `radius_m` (planar) of the point,
+    /// 0 when none stands there — [`best_bench_in`] over this store.
+    pub fn best_bench_near(&self, dc: &DeployContent, x: f32, z: f32, radius_m: f32) -> u8 {
+        best_bench_in(self.entries(), dc, x, z, radius_m)
     }
 
     fn own_bag_count(&self, dc: &DeployContent, owner: u32) -> usize {
@@ -1573,6 +1593,41 @@ pub fn box_drop_pos(
     )
 }
 
+/// The highest workbench rung among `recs` standing within `radius_m`
+/// (planar, to the cell centre) of the point, or 0 when none does — the one
+/// scan behind the tiered station check ([`Deploys::bench_near`]) and the
+/// client's tree panel, which must agree with it about when a bench is
+/// still "here".
+///
+/// A free function over records rather than only a `Deploys` method
+/// because the client keeps the same records in its own mirror
+/// (`client-core`'s `DeploySet`) and asks the same question of them. A row
+/// past the def table reads as no bench rather than an index panic: the
+/// mirror can hold a record whose def has not dripped yet.
+pub fn best_bench_in(recs: &[DeployRec], dc: &DeployContent, x: f32, z: f32, radius_m: f32) -> u8 {
+    let top = bench_tier(ARCH_WORKBENCH3);
+    let r2 = radius_m * radius_m;
+    let mut best = 0u8;
+    for d in recs {
+        let tier = dc
+            .defs
+            .get(d.row as usize)
+            .map_or(0, |def| bench_tier(def.arch));
+        if tier <= best {
+            continue;
+        }
+        let (ax, az) = cell_center(d.cx, d.cz);
+        let (dx, dz) = (ax - x, az - z);
+        if dx * dx + dz * dz <= r2 {
+            best = tier;
+            if best >= top {
+                break;
+            }
+        }
+    }
+    best
+}
+
 /// The point `place_deploy` measures reach to, for every `loc`. `build.rs`
 /// measures `repair` to `build::anchor` instead, which is this point for a
 /// plane and half a cell off it for an edge; named so the test that
@@ -1669,7 +1724,10 @@ pub fn place_deploy(
         // strictly better than an item store that swallows. It costs one
         // build cell at the world's origin corner and nothing else; every
         // other level of that cell, and every other cell, is unaffected.
-        || (def.arch == ARCH_BOX && box_key(cx, cz, level) == 0)
+        // Every container, not only the box: a fire, a recycler and — since
+        // research table v1 — a research table are opened by the same
+        // handle and would be swallowed at this address the same way.
+        || (holds_items(def.arch) && box_key(cx, cz, level) == 0)
     {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_SPOT, 0);
         return;

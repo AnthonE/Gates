@@ -38,9 +38,9 @@ use sim_core::inventory::SpawnKit;
 use sim_core::limits::MAX_SPAWN_KIT;
 use sim_core::limits::{
     ARROW_STEP_MM, HEARTH_STOCK_ROWS, MAX_ARROW_SUBSTEPS, MAX_COOK_ROWS, MAX_DEPLOY_COSTS,
-    MAX_DEPLOY_DEFS, MAX_HITSCAN_SAMPLES, MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_ROLLS,
-    MAX_LOOT_TABLES, MAX_MAGS, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS,
-    MAX_RESEARCH_ROWS, MAX_WEAPON_AMMO, TICK_HZ,
+    MAX_DEPLOY_DEFS, MAX_HITSCAN_SAMPLES, MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_GUARANTEED,
+    MAX_LOOT_ROLLS, MAX_LOOT_TABLES, MAX_MAGS, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES,
+    MAX_RECIPE_INPUTS, MAX_RESEARCH_ROWS, MAX_WEAPON_AMMO, TICK_HZ,
 };
 use sim_core::loot::{
     LootContent, LootEntryDef, LootTableDef, LOOT_BARREL, LOOT_CACHE, LOOT_CRATE,
@@ -252,13 +252,7 @@ impl Content {
                     .ok_or_else(|| format!("bake: `{}` output missing", r.id))?,
                 out_count: r.count as u16,
                 ticks: r.seconds * TICK_HZ,
-                station: match r.station {
-                    Station::None => STATION_NONE,
-                    Station::Workbench1 => STATION_WORKBENCH1,
-                    Station::Workbench2 => STATION_WORKBENCH2,
-                    Station::Workbench3 => STATION_WORKBENCH3,
-                    Station::Furnace => STATION_FURNACE,
-                },
+                station: station_code(r.station),
                 n_inputs: r.inputs.len() as u8,
                 inputs: [(0, 0); MAX_RECIPE_INPUTS],
             };
@@ -1251,6 +1245,30 @@ impl Content {
                 self.research_coin.item
             )
         })?;
+        // The table's paper and its wait (research table v1). Validate has
+        // held the paper to a stack of one with no ceiling and the wait to
+        // a u16 of ticks; the resolves here can only fail on a bug there.
+        rc.blueprint = self
+            .item_index(&self.research_table.blueprint)
+            .ok_or_else(|| {
+                format!(
+                    "bake: research blueprint `{}` names no item",
+                    self.research_table.blueprint
+                )
+            })?;
+        rc.table_ticks = self
+            .research_table
+            .seconds
+            .checked_mul(TICK_HZ)
+            .and_then(|t| u16::try_from(t).ok())
+            .filter(|&t| t > 0)
+            .ok_or_else(|| {
+                format!(
+                    "bake: a {} s research is not 1..={} ticks",
+                    self.research_table.seconds,
+                    u16::MAX
+                )
+            })?;
         if self.research.len() > MAX_RESEARCH_ROWS {
             return Err(format!(
                 "bake: {} research rows exceed the sim's {MAX_RESEARCH_ROWS}-row table",
@@ -1417,6 +1435,29 @@ impl Content {
                     .checked_add(e.weight)
                     .ok_or_else(|| format!("bake: loot `{}` weight sum overflows", l.id))?;
             }
+            // The guaranteed rows (loot guaranteed column v0): refused past
+            // the store rather than clamped, `MAX_LOOT_ENTRIES`'s policy — a
+            // table that silently dropped a certain payout would read as
+            // paying it.
+            if l.guaranteed.len() > MAX_LOOT_GUARANTEED {
+                return Err(format!(
+                    "bake: loot `{}` has {} guaranteed rows, past the sim's {MAX_LOOT_GUARANTEED}",
+                    l.id,
+                    l.guaranteed.len()
+                ));
+            }
+            t.guaranteed_len = l.guaranteed.len() as u16;
+            for (i, g) in l.guaranteed.iter().enumerate() {
+                let item = self.item_index(&g.item).ok_or_else(|| {
+                    format!("bake: loot `{}` guarantees unknown `{}`", l.id, g.item)
+                })?;
+                t.guaranteed[i] = LootEntryDef {
+                    item,
+                    weight: 0,
+                    count_min: small(g.count_min, "count_min")?,
+                    count_max: small(g.count_max, "count_max")?,
+                };
+            }
             lc.tables[which] = t;
         }
         Ok(lc)
@@ -1521,5 +1562,19 @@ impl Content {
             mc.defs[which] = def;
         }
         Ok(mc)
+    }
+}
+
+/// The sim's station code for a schema station — **the one mapping**, shared
+/// by the recipe bake and the research tree's tier rule (`validate.rs`), so
+/// the tier a node is refused for and the tier the sim demands at unlock
+/// (`research::node_tier` of this code) cannot be two different readings.
+pub fn station_code(s: Station) -> u8 {
+    match s {
+        Station::None => STATION_NONE,
+        Station::Workbench1 => STATION_WORKBENCH1,
+        Station::Workbench2 => STATION_WORKBENCH2,
+        Station::Workbench3 => STATION_WORKBENCH3,
+        Station::Furnace => STATION_FURNACE,
     }
 }

@@ -317,7 +317,9 @@ pub const EV_CHARGE_PLACED: u8 = 29;
 /// An oven's fire went in or out (`oven.rs`). `a` = `cell_key(cx, cz)`,
 /// `b` = `level << 16 | lit`, `c` = the hand that pressed, or **0 when
 /// the oven ran dry and snuffed itself** — a fact with no actor behind
-/// it, the posture `EV_SLOT_RESPAWNED` already takes.
+/// it, the posture `EV_SLOT_RESPAWNED` already takes. **A research table
+/// announces on it too** (research table v1): lit is a research running,
+/// and the landing is the snuff, with no actor for the same reason.
 ///
 /// Absolute, never a delta, for the reason `EV_DOOR` is: a client that
 /// toggled optimistically is confirmed or corrected by the same event,
@@ -349,9 +351,12 @@ pub const EV_KNOCK: u8 = 31;
 pub const EV_AUTH: u8 = 32;
 
 /// EV_RESEARCH: a = the player who learned it, b = recipe index, c = the
-/// coin burned. **Own-fact** — a blueprint is personal (`research.rs`), so
-/// nobody else's client has any use for it and broadcasting what a rival
-/// has unlocked would be handing out their tech level for free.
+/// coin THIS verb burned — the node's price for a tree unlock, and 0 for a
+/// blueprint read (research table v1: the paper was paid for at the table,
+/// possibly by somebody else). **Own-fact** — what a player knows is
+/// personal (`research.rs`), so nobody else's client has any use for it
+/// and broadcasting what a rival has unlocked would be handing out their
+/// tech level for free.
 ///
 /// The cost rides `c` rather than being looked up, because it is what the
 /// player just paid and the table can change under a shard: an ack that
@@ -1390,8 +1395,11 @@ pub enum Command {
         recipe: u16,
         count: u16,
     },
-    /// Learn the blueprint for whatever is in inventory `slot`, at a
-    /// research table in reach, paying the row's coin (research.rs).
+    /// Read the blueprint in inventory `slot` (`research::study`, research
+    /// table v1): learn the recipe its paper names, anywhere, for nothing.
+    /// Until v1 this learned from any researchable sample at a table in
+    /// reach, instantly; the timed table replaced that, and the command
+    /// kept its name and shape because the wire's `ACT_RESEARCH` did.
     /// The slot is the sender's claim and the sim is the verdict: a forged
     /// index, an empty hand and a stack of wood all land on the same
     /// announced refusal, exactly as `Consume`'s does.
@@ -2296,6 +2304,17 @@ impl World {
         // kind is a ground container, and the zero is never indexed
         // otherwise.
         let ci = cont_idx.unwrap_or(0);
+        // A research table that is running holds what it holds until the
+        // research lands (research table v1, `REFUSE_M_BUSY`) — in or out,
+        // whatever the arithmetic would have said, which is why it is asked
+        // before anything is planned. `table` is also the next check's
+        // question, so it is resolved once.
+        let table = ground == inventory::CONT_BOX && self.deploys.table_index(cont).is_some();
+        if table && self.deploys.oven_states()[ci].lit {
+            self.events
+                .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_BUSY, addr);
+            return;
+        }
 
         // 3. Read both sides as copies.
         let src = self.cont_slot(slot, from_kind, from_slot, ci);
@@ -2379,6 +2398,22 @@ impl World {
             }
         };
         let (new_src, new_dst) = inventory::resolve(plan, src, dst);
+        // What a research table's slot may hold (`research::table_accepts`)
+        // is asked of the RESOLVED writes, on both landing sites: a swap
+        // puts the destination's old stack in the source, and a merge can
+        // make one unit two. The wear check asks its question before the
+        // plan because its answer depends only on the item; this one
+        // depends on the count the plan produces.
+        if table
+            && ((to_kind == inventory::CONT_BOX
+                && !crate::research::table_accepts(&self.research, to_slot, new_dst))
+                || (from_kind == inventory::CONT_BOX
+                    && !crate::research::table_accepts(&self.research, from_slot, new_src)))
+        {
+            self.events
+                .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_TABLE, addr);
+            return;
+        }
 
         // 5. Mutate. Every check is behind us and both writes always land.
         self.set_cont_slot(slot, from_kind, from_slot, ci, new_src);
@@ -3174,7 +3209,13 @@ impl World {
                     sleeping: false,
                     slept_at: 0,
                 };
-                craft::rearm(&self.craft, self.tick, &mut self.players[slot]);
+                craft::rearm(
+                    &self.craft,
+                    &self.deploy,
+                    &self.deploys,
+                    self.tick,
+                    &mut self.players[slot],
+                );
                 if s.dead {
                     // Logged off on the death screen. Declining the choice
                     // is choosing the beach — `wake` re-derives the whole
@@ -3294,7 +3335,13 @@ impl World {
         // survive being an absolute number in a world that kept ticking
         // without the player. Re-armed against now, exactly as `JoinAs`
         // does — one rule, two doors.
-        craft::rearm(&self.craft, self.tick, &mut self.players[slot]);
+        craft::rearm(
+            &self.craft,
+            &self.deploy,
+            &self.deploys,
+            self.tick,
+            &mut self.players[slot],
+        );
         let (hp, hp_max) = (self.players[slot].hp, self.players[slot].hp_max);
         if hp > 0 {
             self.events.push(EV_HEALTH, id, hp as u32, hp_max as u32);
@@ -3623,10 +3670,8 @@ impl World {
             }
             Command::Research { id, slot } => {
                 if let Some(s) = self.live_slot_of(id) {
-                    crate::research::research(
+                    crate::research::study(
                         &self.research,
-                        &self.deploy,
-                        &self.deploys,
                         &mut self.players[s],
                         slot,
                         &mut self.events,
@@ -3652,6 +3697,8 @@ impl World {
                     craft::cancel(
                         &self.craft,
                         &self.gather,
+                        &self.deploy,
+                        &self.deploys,
                         self.tick,
                         &mut self.players[slot],
                         index,
@@ -3740,14 +3787,25 @@ impl World {
                 // `awake_slot_of`, not `live_slot_of`: a door is the one
                 // verb a downed body keeps (wounded v0).
                 if let Some(slot) = self.awake_slot_of(id) {
-                    // One key, two verbs, picked by what stands at the
+                    // One key, three verbs, picked by what stands at the
                     // address — the reference's own E menu, where a door
                     // offers open/close and a fire offers ignite/
-                    // extinguish. The two can never collide: a door lives
-                    // on a doorway's edge address and an oven on the
-                    // plane, so this is a lookup and not a guess about
-                    // what the player aimed at.
-                    let lit = crate::oven::toggle(
+                    // extinguish. They can never collide: a door lives on
+                    // a doorway's edge address and an oven on the plane,
+                    // and a research table is a container that is not a
+                    // converter (`Deploys::table_index`), so this is a
+                    // lookup and not a guess about what the player aimed
+                    // at. Which asks first is immaterial: at most one of
+                    // them answers for any address.
+                    let lit = crate::research::begin(
+                        &self.research,
+                        &mut self.deploys,
+                        &self.players[slot],
+                        cx,
+                        cz,
+                        level,
+                        &mut self.events,
+                    ) || crate::oven::toggle(
                         &self.cook,
                         &mut self.deploys,
                         &self.players[slot],
@@ -4533,6 +4591,8 @@ impl World {
             craft::step(
                 &self.craft,
                 &self.gather,
+                &self.deploy,
+                &self.deploys,
                 tick,
                 &mut self.players[i],
                 &mut self.events,
@@ -4818,6 +4878,11 @@ impl World {
             tick,
             &mut self.events,
         );
+        // The research tables, on the same stride and at the same point
+        // in the tick (research table v1): a table a raid takes apart this
+        // tick has already spent its period, as an oven has, and its
+        // contents spill uncharged when it does.
+        crate::research::table_sweep(&self.research, &mut self.deploys, tick, &mut self.events);
         // The structural backstop, after the sweep that can create work for
         // it: anything a capped cascade left hanging in the air comes down
         // here, one piece and its own cascade per tick (build.rs).

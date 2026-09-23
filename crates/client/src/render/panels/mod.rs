@@ -128,10 +128,18 @@ pub struct Ui {
     /// The tech tree's selected node — a recipe index, the sidebar's
     /// subject (tech tree v0).
     pub tech_sel: Option<u16>,
-    /// The rung of the bench the tree was opened at — the header's LEVEL
-    /// badge. Display only: the sim re-derives the demanded rung per
-    /// node, so a stale badge can mislabel nothing.
+    /// The rung of the bench the tree was opened at: the highest tab, and
+    /// the rung the panel's reach check holds it to (`keys` closes the tree
+    /// when no bench that high stands within the station radius). The sim
+    /// still re-derives the demanded rung per node.
     pub tech_tier: u8,
+    /// The tab on show — one bench tier's tree, `1..=tech_tier`
+    /// (`ui::techtree::tabs`). Opens on the bench's own tier.
+    pub tech_tab: u8,
+    /// When this client saw the open research table start (research table
+    /// v1) — the wait bar's clock, fed every frame by `inv::table_clock`.
+    /// `ui::research::TableClock` says why a start has to be SEEN.
+    pub table_clock: crate::ui::research::TableClock,
     /// Rebuild the panel's node tree on the next frame.
     pub dirty: bool,
     /// Change detection against the core. A menu that rebuilt every frame
@@ -175,6 +183,11 @@ pub(crate) struct Seen {
     pub known: u64,
     /// The research drip's watermark, `recipes_have`'s reason exactly.
     pub research_have: u16,
+    /// Whether the open research table is running (research table v1).
+    /// Its slots do not change when a research STARTS — only the lit bit
+    /// does — so without this the line under them would keep saying PRESS
+    /// BEGIN over a table that had begun.
+    pub table_lit: bool,
 }
 
 impl Default for Ui {
@@ -193,6 +206,8 @@ impl Default for Ui {
             hover: None,
             tech_sel: None,
             tech_tier: 1,
+            tech_tab: 1,
+            table_clock: crate::ui::research::TableClock::default(),
             dirty: false,
             seen: Seen::default(),
         }
@@ -249,6 +264,11 @@ pub const CELL_BG: Color = Color::srgba(0.220, 0.204, 0.184, 0.92);
 pub const CELL_FULL: Color = Color::srgba(0.278, 0.263, 0.235, 0.96);
 /// The cell the pointer is over, and the drag's source.
 pub const CELL_HOVER: Color = Color::srgba(0.369, 0.353, 0.329, 0.98);
+/// A filled cell holding a **blueprint** (research table v1): the paper's
+/// blue, under the picture of the thing it teaches — the reference draws a
+/// blueprint as its item on blueprint paper, and a sheet on the stone-grey
+/// every other stack wears would read as the item itself.
+pub const PAPER_BG: Color = Color::srgba(0.141, 0.259, 0.412, 0.96);
 /// The one hot line: a selected cell, the head of the queue, an armed button.
 pub const LINE_HOT: Color = Color::srgba(0.98, 0.86, 0.55, 0.95);
 /// A price the player cannot pay, and the reference's own colour for it.
@@ -335,12 +355,14 @@ pub fn register(app: &mut App) {
             (
                 keys,
                 inv::drag_pointer,
+                inv::table_clicks,
                 craft::clicks,
                 craft::scroll,
                 tech::clicks,
                 tech::scroll,
                 wheel::track,
                 sync_refusals,
+                inv::table_clock,
                 rebuild,
                 inv::ghost_follow,
             )
@@ -354,6 +376,16 @@ pub fn register(app: &mut App) {
                 // key, in the same frame.
                 .before(super::pause::open)
                 .after(super::verbs::resolve)
+                .run_if(in_state(super::Screen::InWorld)),
+        )
+        // The tree's status line hears the sim — a node learned, or why not.
+        // After the drain, because it reads this frame's `Feed`; before the
+        // rebuild, so the sentence is on the board drawn this frame.
+        .add_systems(
+            Update,
+            tech::sync_status
+                .after(super::feed::drain)
+                .before(rebuild)
                 .run_if(in_state(super::Screen::InWorld)),
         )
         // A panel is only ever drawn over a running world, so leaving `InWorld`
@@ -569,10 +601,26 @@ pub fn keys(
         chars.clear();
     }
 
-    // The sim can close a container out from under an open panel — it
-    // despawned, or the player walked out of reach — and the panel is never
-    // authoritative about its own visibility.
-    let _ = &net;
+    // **The tree is a thing you stand at a bench to read.** When no bench of
+    // the rung it was opened at stands within the station radius any more —
+    // demolished, picked up, burned — it closes, on the sim's own scan at the
+    // sim's own radius (`ui::techtree::bench_in_reach`), so it never offers a
+    // button `research::unlock` would refuse for want of a bench. Movement is
+    // zeroed while a panel is up, so a walk-off is not the case this catches;
+    // the bench leaving is.
+    if ui.panel == Panel::Tech
+        && !crate::ui::techtree::bench_in_reach(
+            core.deploys.entries(),
+            &core.deploy_defs,
+            core.predict.position(),
+            ui.tech_tier,
+        )
+    {
+        ui.panel = Panel::None;
+        ui.tech_sel = None;
+        ui.dirty = true;
+        toast.warn("workbench out of reach");
+    }
 }
 
 /// Put the sim's own refusals on the status line.
@@ -662,6 +710,7 @@ fn detect_changes(
             std::array::from_fn(|i| (core.cont[i].item, core.cont[i].count, core.cont[i].cond));
         let worn: [(u16, u16, u16); sim_core::limits::WEAR_SLOTS] =
             std::array::from_fn(|i| (core.worn[i].item, core.worn[i].count, core.worn[i].cond));
+        let table_lit = inv::open_table_running(core);
         if inv != ui.seen.inv
             || cont != ui.seen.cont
             || worn != ui.seen.worn
@@ -675,6 +724,7 @@ fn detect_changes(
             || (ui.panel == Panel::Hammer && near != ui.seen.hammer_target)
             || core.known() != ui.seen.known
             || core.research_have != ui.seen.research_have
+            || table_lit != ui.seen.table_lit
         {
             // The def tables drip in over the first seconds of a session, so
             // the derived category facts are rebuilt with them.
@@ -694,6 +744,7 @@ fn detect_changes(
             ui.seen.hammer_target = near;
             ui.seen.known = core.known();
             ui.seen.research_have = core.research_have;
+            ui.seen.table_lit = table_lit;
             ui.dirty = true;
         }
     }

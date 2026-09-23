@@ -222,6 +222,7 @@ inputs = [
 [[recipe]]
 id = "recipe.hatchet_metal"
 output = "item.hatchet_metal"
+blueprint = true
 count = 1
 station = "workbench1"
 seconds = 20
@@ -233,6 +234,7 @@ inputs = [
 [[recipe]]
 id = "recipe.pickaxe_metal"
 output = "item.pickaxe_metal"
+blueprint = true
 count = 1
 station = "workbench1"
 seconds = 20
@@ -312,7 +314,6 @@ inputs = [{ item = "item.cloth", count = 20 }]
 [[recipe]]
 id = "recipe.arrow_metal"
 output = "item.arrow_metal"
-blueprint = true
 count = 3
 station = "workbench1"
 seconds = 5
@@ -386,12 +387,13 @@ inputs = [{ item = "item.wood", count = 1 }]
 # --- T2, the powder chain (workbench2 since bench ladder v0 — the
 # second rung IS the powder gate: guns, ammunition and the plate that
 # stops them all stand behind one bench, and the raid tool behind the
-# one after it) -------------------------------------------------------
+# one after it). Gunpowder itself is KNOWN from the start since
+# 2026-09-22, as the reference's is (`reference/BLUEPRINTS.md` §1): the
+# bench is its gate, and the blueprints are the gun and its rounds. ---
 
 [[recipe]]
 id = "recipe.gunpowder"
 output = "item.gunpowder"
-blueprint = true
 count = 10
 station = "workbench2"
 seconds = 5
@@ -416,6 +418,7 @@ inputs = [
 [[recipe]]
 id = "recipe.pistol_ammo"
 output = "item.pistol_ammo"
+blueprint = true
 count = 4
 station = "workbench2"
 seconds = 10

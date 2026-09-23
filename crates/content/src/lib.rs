@@ -106,6 +106,10 @@ struct CookingFile {
 #[serde(deny_unknown_fields)]
 struct ResearchFile {
     coin: ResearchCoin,
+    /// Required, unlike the rows: a shard that researches anything has to
+    /// say what the table makes and how long it takes, and a default for
+    /// either would be a number nobody spoke (research table v1).
+    table: ResearchTable,
     /// Absent is legal and means nothing is researchable — a shard where
     /// the whole ladder is open, which is what every shard was before
     /// research v0.
@@ -152,6 +156,9 @@ pub struct Content {
     pub cooks: Vec<Cook>,
     /// What research is paid in, and what it teaches (research v0).
     pub research_coin: ResearchCoin,
+    /// What a research table makes, and how long it takes (research table
+    /// v1).
+    pub research_table: ResearchTable,
     pub research: Vec<Research>,
     pub loot_tables: Vec<LootTable>,
     /// The animal roster's species table. Empty is legal and means a
@@ -242,6 +249,7 @@ impl Content {
             fuel: cooking.fuel,
             cooks: cooking.cook,
             research_coin: research.coin,
+            research_table: research.table,
             research: research.research,
             loot_tables: loot.loot_table,
             mobs: mobs.mob,

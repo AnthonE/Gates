@@ -109,7 +109,7 @@ pub fn resolve(
     // (`client-core/core.rs`). Stamped here, where the core is in hand.
     aimed.0.lit = matches!(
         aimed.0.verb,
-        interact::Verb::Fire | interact::Verb::Recycler
+        interact::Verb::Fire | interact::Verb::Recycler | interact::Verb::Research
     ) && core.ovens().is_lit(aimed.0.cx, aimed.0.cz, aimed.0.level);
     // The weak-spot chase, read before the island borrows the core mutably.
     // Both are `Copy` scalars, so this is a read and not a hold.
@@ -376,10 +376,30 @@ pub fn keys(
         // chosen for survives the move intact: the reason was never the
         // letter `G`, it was that eat and drink sit under one hand as a pair,
         // and `J`–`H` are adjacent exactly as `G`–`H` were.
+        //
+        // A blueprint in the hand is READ rather than eaten (research table
+        // v1): `ui::research::use_as` makes the call the inventory panel's
+        // right-click makes, so the key and the click cannot disagree.
         let slot = net.sel;
-        send(&net, &mut toast, "eat", |buf| {
-            protocol::encode_action_consume(slot, buf)
-        });
+        let stack = net
+            .session
+            .core
+            .inv
+            .get(slot as usize)
+            .copied()
+            .unwrap_or_default();
+        match crate::ui::research::use_as(&net.session.core.research, stack) {
+            crate::ui::research::UseAs::Read => {
+                send(&net, &mut toast, "read", |buf| {
+                    protocol::encode_action_research(slot, buf)
+                });
+            }
+            crate::ui::research::UseAs::Consume => {
+                send(&net, &mut toast, "eat", |buf| {
+                    protocol::encode_action_consume(slot, buf)
+                });
+            }
+        }
     }
     if keys.just_pressed(KeyCode::KeyV) {
         // Pick up the nearest spent arrow in reach (`sim-core/spent.rs`).
@@ -486,16 +506,17 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
             }
         }
         Verb::Research => {
-            // The one `E` that spends what is in your hand rather than
-            // opening what is at the address. The slot is the hotbar
-            // selection — the same `net.sel` the eat verb uses — because
-            // "the held item" is the only thing the prompt can honestly
-            // name, and the sim refuses a slot that holds the wrong thing
-            // with a sentence of its own.
-            let slot = net.sel;
-            send(net, toast, "research", |buf| {
-                protocol::encode_action_research(slot, buf)
-            });
+            // A container since research table v1, so `E` opens it for the
+            // recycler's reason exactly — the panel is where the sample and
+            // the junk go — and by the same action. `C` below starts it.
+            // (Until v1 this `E` researched the held item on the spot; the
+            // timed table replaced that, and paper is read from the pack.)
+            let handle = pick.handle;
+            if send(net, toast, "open", |buf| {
+                protocol::encode_action_container(CONT_BOX, handle, buf)
+            }) {
+                open_panel(ui);
+            }
         }
         Verb::Hearth => {
             let (cx, cz, level) = (pick.cx, pick.cz, pick.level);
@@ -548,10 +569,14 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
             if let Some(ui) = ui {
                 if ui.panel == Panel::None {
                     ui.panel = Panel::Tech;
-                    // The header's LEVEL badge is the bench actually under
-                    // the crosshair — display only; the sim re-derives the
-                    // demanded rung per node.
+                    // The bench actually under the crosshair: the highest
+                    // tab, and the rung the panel's reach check holds it to.
+                    // The sim still re-derives the demanded rung per node.
                     ui.tech_tier = sim_core::deploy::bench_tier(pick.arch).max(1);
+                    // Opens on the bench's own tree; the lower tiers are
+                    // tabs (operator, 2026-09-22).
+                    ui.tech_tab = ui.tech_tier;
+                    ui.tech_sel = None;
                     ui.dirty = true;
                 }
             }
@@ -578,7 +603,9 @@ fn light_aimed(net: &Net, pick: &Pick, toast: &mut Toast) {
     // an address, and `oven::toggle` switches whatever converter stands
     // there. The refusal that separates them is the sim's — a fire with
     // nothing to burn answers `REFUSE_D_FUEL` and a recycler never does.
-    if !matches!(pick.verb, Verb::Fire | Verb::Recycler) {
+    // And a research table (research table v1): its start is the same
+    // switch, and `research::begin` answers with the table's own refusal.
+    if !matches!(pick.verb, Verb::Fire | Verb::Recycler | Verb::Research) {
         toast.warn("nothing to switch in reach");
         return;
     }

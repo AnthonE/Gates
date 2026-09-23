@@ -510,7 +510,18 @@ const TICKS: u64 = 900;
 /// commit that caused it.
 // 2026-09-19: road grading changes generated ground; hand-revive
 // intent/progress also enter the deterministic Player hash.
-const GOLDEN_FINAL_HASH: u64 = 0xCC5EEC4395CC727A;
+/// **Moved `0xCC5E_EC43_95CC_727A` → `0x289F_6236_4545_3594` at loot
+/// guaranteed column v0** (2026-09-22). The probe barrel table grew a
+/// guaranteed row (item 2, a RANGED count so its salted draw runs here), and
+/// bot 31 smashes barrels on this surface, so every smash pays one or two
+/// more units onto the ground from the first open. Behavioural and
+/// deliberate, regenerated in the commit that caused it.
+/// **Moved `0x289F_6236_4545_3594` → `0xFEFF_9C41_0FCB_BBB3` at craft rebate v0**
+/// (2026-09-22). The script places the fixture's level-1 workbench beside
+/// its crafters, and a no-station recipe now crafts in half its time at a
+/// level-1 bench, so `craft_done_at` — which the digest hashes — moves from
+/// the first unit armed there.
+const GOLDEN_FINAL_HASH: u64 = 0xFEFF_9C41_0FCB_BBB3;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -573,7 +584,17 @@ const GOLDEN_FINAL_HASH: u64 = 0xCC5EEC4395CC727A;
 /// different island is a different run. Both moving together is the expected
 /// shape here — a trace that moved while the end state held would be the
 /// interesting case, and it is not this one.
-const GOLDEN_TRACE_HASH: u64 = 0xDC1A26782384F745;
+///
+/// **Moved `0xDC1A_2678_2384_F745` → `0x3E4F_B5D2_69F5_369A` at loot
+/// guaranteed column v0** (2026-09-22), beside `GOLDEN_FINAL_HASH` and for
+/// its reason: the probe barrel pays a guaranteed row, so the run diverges
+/// at the first smash and not by a constant.
+///
+/// **Moved `0x3E4F_B5D2_69F5_369A` → `0xE490_DA72_6A3A_5427` at craft rebate v0**
+/// (2026-09-22), beside `GOLDEN_FINAL_HASH` and for its reason: the crafts
+/// at the fixture bench finish sooner, so the path diverges at the first
+/// unit armed there.
+const GOLDEN_TRACE_HASH: u64 = 0xE490_DA72_6A3A_5427;
 
 /// Fold a stamped trace into one number.
 ///

@@ -1347,36 +1347,47 @@ read as 0.5, 1.5, etc. `findings/building-circulation-20260921.md` has evidence.
 
 ## 0tt · The bench ladder's craft rebate, unbuilt *(systems lane)*
 
-1. **The craft rebate** (`RIPLIST.md` §2 row 3) — 50% faster one bench
-   up, 75% two up — is unblocked and untaken. `deploy::bench_near`
-   answers a bool; it would have to answer "best rung in reach", and
-   `craft::enqueue` would read it.
-2. **The panel draws indents, not edges.** `ui/techtree.rs:49` says so in its
-   own comment ("an indent (and one day a line)"); a line renderer between
-   parent and child is cosmetic and waits for a real look at the screen.
-3. **The operator has not seen it** — the tree panel, the two greybox
-   benches, the tier badges. The visual gate is a person (`CLAUDE.md`);
-   boot the game, stand at a bench, press `E`.
+1. ~~**The craft rebate**~~ Built 2026-09-22 (craft rebate v0): ½ one rung
+   above the recipe, ¼ two up, read at each unit's start off
+   `Deploys::best_bench_near`; the detail pane quotes the rebated time.
+2. ~~**The panel draws indents, not edges.**~~ Stale since the board grew
+   connector lines; and since 2026-09-22 each tab is ONE tier's tree with
+   its roots hanging off the bench (`ui::techtree::layout`), the bench's own
+   tier open and lower tiers as tabs (operator, `DECISIONS.md` 2026-09-22).
+   A tree unlock now restates the mask (`research::unlock` pushed no
+   `EV_KNOWN`, so a bought node stayed locked on screen until a respawn),
+   the panel closes when its bench leaves the station radius, and "learned X"
+   reaches the HUD and the panel's status line.
+3. **The operator has not seen it** — the tree panel, the tabs, the bench
+   root, the tier badges. The visual gate is a person (`CLAUDE.md`);
+   boot the game, stand at a bench, press `E`, buy a node and watch it turn
+   KNOWN.
 
 
 ## 0tree · How deep the research tree goes, and the blueprint nobody can trade *(systems lane)*
 
-1. **The tree's depth is still an unspoken pacing call.** It carries three
-   edges now — `content/research.toml`: roadsign body behind medkit (:103),
-   revolver and satchel behind gunpowder (:111, :116) — so the "one edge
-   deep" reading is retired, and `DECISIONS.md` §open "research ladder v0"
-   is stale in the same direction: it says revolver-behind-gunpowder is
-   deliberately unauthored and `research.toml:116` authors it. What is open
-   is how many more edges, over which bench tier now that workbench 2/3
-   exist (§0tt). Do not invent one; fix the DECISIONS row when it is spoken.
-2. **No blueprint ITEM**, so learning stays instant and personal and there
-   is nothing to trade — the half that makes another player's progress
-   interesting. Unbuilt, and it is a wire change
-   (`crates/sim-core/src/research.rs` header records the omission).
-3. **Nobody has seen the research/tech-tree panel work.** `ui/techtree.rs`
-   and `render/panels/tech.rs` are gated headless only (`client/tests/ui.rs`
-   §M); past `decode_event` nothing has been looked at. Same residual as
-   §0tt item 3 — boot it, stand at a bench, press `E`.
+1. ~~**The tree's depth is still an unspoken pacing call.**~~ Spoken
+   2026-09-22 (*"just like Rust"*): the gated set is theirs and every edge is
+   DERIVED from their chains — nearest ancestor we ship in the same tier of
+   ours, else a root (`reference/BLUEPRINTS.md` §9.3, `DECISIONS.md` §open
+   "blueprint split v1"). Four edges, three trees. **Residual**: their chains
+   are long because their catalogue is wide; adding an intermediate item
+   (beancan, flare, embrasure) means re-running the rule, never typing an
+   edge.
+2. ~~**No blueprint ITEM.**~~ Built 2026-09-23 (research table v1, wire
+   v73, `DECISIONS.md` §open): the table is a two-slot container, ten
+   seconds, and makes paper you trade or read. **Residuals**, none a defect:
+   a loose stack's sync carries no `cond`, so a sheet on the ground reads
+   "Blueprint" until picked up (the sim keeps its target); the wait bar is
+   drawn only from a start this client SAW, so a late opener gets
+   "RESEARCHING..." with no bar; and the probe never places a table (no
+   bot holds one), so `begin`/`table_sweep` ride no parity or replay
+   surface — the fire's conversion has the same gap, and
+   `sim-core/tests/research.rs` is where both are gated.
+3. **Nobody has seen the research/tech-tree panel work** — nor the table's
+   (`client/tests/ui.rs` §M, §V: headless only). Boot it, stand at a bench
+   and press `E`; then at a table: `E`, one revolver and 30 junk in, BEGIN,
+   ten seconds, take the paper, right-click it.
 
 
 ## 0rs · Bodies are out of the raid storm *(systems lane)*
@@ -2512,8 +2523,9 @@ touching a balance number and do not re-derive the list here.
    (`READY`, page tier). Settle the era question (§1f) before taking it.
 2. Blocked, researched, numbers already written down: **1j** `armor.toml` —
    one re-anchor of `content/tests/content.rs::band_breaks_refused`, best
-   landed inside equipment v0; **1i** `loot.toml` — needs a `guaranteed`
-   column on `LootEntry`, and the half-take measures 9× worse than nothing.
+   landed inside equipment v0. (**1i** `loot.toml` is TAKEN, 2026-09-22 —
+   the `guaranteed` column landed and every container pays certain junk,
+   barrel 2 / cache 5 / crate 8, with the barrel's gear rate theirs.)
 3. **No per-material damage resistance**: `content/src/schema.rs:281` has one
    `structure` column, so the ladder above stone is compressed (row 2).
 4. Gather yields, smelt and craft times are still ours; per-hit yields and
@@ -2934,9 +2946,9 @@ each blocked on something outside this tree.
    new kind; the live served document carries no `kind` field at all, so
    nothing breaks today — but the launcher should accept it before the next
    publish.
-5. **The junk icon is a picture of two coins.** `assets/icons/junk.png` is
-   still `delapouite/two-coins`, which was right for a coin and is wrong for
-   scrap. An art call, on the CC-BY rail.
+5. ~~**The junk icon is a picture of two coins.**~~ Done 2026-09-22:
+   `assets/icons/junk.png` is `delapouite/hexagonal-nut` (CC-BY, credited),
+   because a price in coins on every bench read as money and junk is scrap.
 6. **`fix/us-east-shard` is closed** (2026-08-28). Nothing is owed: `shards.toml`
    already said `us-east-1` via the 2026-08-23 host move, `ci/depot.py`'s
    docstring fix landed independently on 08-14, and the two DECISIONS rows the
