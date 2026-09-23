@@ -878,11 +878,20 @@ pub enum EventMsg {
     /// to the same `ResearchRow` the sim runs, and `coin` is
     /// `ResearchContent::coin`, so the panel can price a node against
     /// the player's own stacks.
+    ///
+    /// `blueprint` and `table_ticks` are the research table's two numbers
+    /// (wire v73, research table v1): which item is paper — so a panel can
+    /// name a sheet by what it teaches rather than as "Blueprint" — and how
+    /// long a research runs, so the table's panel can draw the wait. Every
+    /// batch carries them, like `coin`, so there is no first-batch rule to
+    /// get wrong.
     ResearchRows {
         total: u8,
         first: u8,
         count: u8,
         coin: u16,
+        blueprint: u16,
+        table_ticks: u16,
         rows: [ResearchRow; RESEARCH_BATCH],
     },
     /// A building piece landed (broadcast — pieces are world facts like
@@ -1096,7 +1105,7 @@ pub enum EventMsg {
     /// The feed ack: the hearth's stock rows after the transfer, aligned
     /// to the baked upkeep-material list — (item index, units, what one
     /// upkeep period charges in it). The third column is upkeep v2's
-    /// readout (wire v73): `sim_core::upkeep::lasts` over the second and
+    /// readout (wire v74): `sim_core::upkeep::lasts` over the second and
     /// third is how long the base is protected.
     Stock {
         cx: u16,
@@ -1688,6 +1697,11 @@ pub fn encode_event_research_rows(
     w.write(first as u32, RESEARCH_TOTAL_BITS)?;
     w.write(count as u32, RESEARCH_COUNT_BITS)?;
     w.write(rc.coin as u32, 16)?;
+    // The table's paper and its wait (v73). Sixteen bits each, the sim's
+    // own widths: an item index and a `u16` of ticks. `NO_ITEM` crosses as
+    // itself and means "no paper" on both sides.
+    w.write(rc.blueprint as u32, 16)?;
+    w.write(rc.table_ticks as u32, 16)?;
     for row in rc.rows[first..first + count].iter() {
         let requires_ok = row.requires == NO_RECIPE || (row.requires as usize) < MAX_RECIPES;
         if (row.recipe as usize) >= MAX_RECIPES || !requires_ok {
@@ -3246,6 +3260,8 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 return Err(WireError::Malformed);
             }
             let coin = r.read(16)? as u16;
+            let blueprint = r.read(16)? as u16;
+            let table_ticks = r.read(16)? as u16;
             let mut rows = [ResearchRow::INERT; RESEARCH_BATCH];
             for row in rows.iter_mut().take(count) {
                 let item = r.read(16)? as u16;
@@ -3272,6 +3288,8 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 first: first as u8,
                 count: count as u8,
                 coin,
+                blueprint,
+                table_ticks,
                 rows,
             }
         }
@@ -5557,7 +5575,13 @@ mod wire_domains {
             // snaps back with no refusal, no toast and no line — the
             // dark-panel defect, arriving as a version skew rather than
             // as a bug in the panel.
-            live_max: 10,
+            //
+            // 10 -> 12 at wire v73 (research table v1): the table's slot
+            // rule (`REFUSE_M_TABLE`) and its lock while it runs
+            // (`REFUSE_M_BUSY`). Four bits still hold them with three to
+            // spare; the version turned for the header the same commit
+            // grew, and this pin would have demanded it on its own.
+            live_max: 12,
         },
         Domain {
             what: "wear slot",
@@ -5697,9 +5721,12 @@ mod wire_domains {
             prefix: "pub const REFUSE_R_",
             ty: ": u32 = ",
             exempt: &["MAX"],
-            min_members: 7,
+            min_members: 8,
             bits: RESEARCH_REFUSE_BITS,
-            live_max: 6,
+            // 6 -> 7 at wire v73 (research table v1): `REFUSE_R_BUSY`, a
+            // table already running. It saturates the three-bit field, so
+            // the next research reason is a widening and a turn.
+            live_max: 7,
         },
         Domain {
             what: "deploy archetype",

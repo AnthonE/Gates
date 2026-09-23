@@ -836,6 +836,15 @@ pub const MAX_LOOT_TABLES: usize = 8;
 /// not a knob.
 pub const MAX_LOOT_ENTRIES: usize = 16;
 
+/// Guaranteed rows one loot table may carry (loot guaranteed column v0,
+/// 2026-09-22) — the rows every open pays whatever the weighted draw did,
+/// which is how the reference prices its whole container ladder in scrap
+/// (barrel 2, military crate 8, every one at 100 %). The bake refuses past
+/// it. Structural cap like [`MAX_LOOT_ENTRIES`], not a knob: it bounds the
+/// per-open work (a fixed walk, one `inv_add` per row), and how much a row
+/// pays is its own `count_min`/`count_max`. The shipped tables use one.
+pub const MAX_LOOT_GUARANTEED: usize = 4;
+
 /// Draws one smash may make — the cap on a table's `rolls_max`. The bake
 /// refuses past it. Structural cap like the two above, **not a knob**: it
 /// is `INV_SLOTS` because `LootContent::roll_into` fills exactly that many

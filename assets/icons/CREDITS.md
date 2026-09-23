@@ -25,6 +25,7 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | `backpack.png` | `delapouite/backpack` |
 | `bandage.png` | `lorc/bandage-roll` |
 | `berries.png` | `delapouite/berries-bowl` |
+| `blueprint.png` | `lorc/tied-scroll` |
 | `building_plan.png` | `delapouite/notebook` |
 | `burlap_hood.png` | `lorc/hood` |
 | `burlap_tunic.png` | `lorc/leather-vest` |
@@ -43,7 +44,7 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | `hammer.png` | `lorc/claw-hammer` |
 | `hearth.png` | `delapouite/fireplace` |
 | `hunting_bow.png` | `delapouite/bow-arrow` |
-| `junk.png` | `delapouite/two-coins` |
+| `junk.png` | `delapouite/hexagonal-nut` |
 | `large_box.png` | `delapouite/cargo-crate` |
 | `low_grade_fuel.png` | `delapouite/jerrycan` |
 | `map_site.png` | `delapouite/hut` |

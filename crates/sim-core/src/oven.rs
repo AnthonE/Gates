@@ -363,7 +363,12 @@ fn slots_room(slots: &[ItemStack], item: u16, amount: u16, stack_max: u16) -> bo
 /// Announce an oven's state. `by` is the hand that pressed, or 0 when the
 /// oven snuffed itself — the same posture `EV_SLOT_RESPAWNED` takes for a
 /// fact with no actor behind it.
-fn announce(cx: u16, cz: u16, level: u8, lit: bool, by: u32, events: &mut EventQueue) {
+///
+/// `pub(crate)` because the research table announces with it too
+/// (research table v1): a running research is "lit" on the wire, so the
+/// client's lit set and the one event it already decodes carry the table's
+/// state with nothing new to learn.
+pub(crate) fn announce(cx: u16, cz: u16, level: u8, lit: bool, by: u32, events: &mut EventQueue) {
     events.push(
         EV_OVEN,
         crate::gather::cell_key(cx, cz),

@@ -300,19 +300,25 @@ impl GatherContent {
     /// moment a bot's slot 0 fills. Real values bake from content/*.toml.
     pub fn probe_fixture() -> Self {
         let mut c = Self::EMPTY;
-        // Eleven. Every index below is spoken for by a fixture
+        // Twelve. Every index below 11 is spoken for by a fixture
         // deployable's `item` (hearth 2, workbench 3, door 4, bag 5, fire
         // 6, lock 7, recycler 8, research table 10) plus the box that
         // `deploy.rs`'s `boxed_fixture` appends at 9. Two deployables
         // sharing an item is what `DeployContent::probe_fixture` warns
         // about at the lock row — the give-back hands out the wrong
         // object — so the fixture widens rather than doubling up.
-        c.item_count = 11;
+        //
+        // Item 11 is the research table's paper (research table v1,
+        // `ResearchContent::probe_fixture`): a stack of ONE, like the
+        // shipped blueprint, so the fixture's paper can never merge — and
+        // no ceiling, since its `cond` carries the target.
+        c.item_count = 12;
         let mut i = 0;
         while i < 11 {
             c.stack_max[i] = 100;
             i += 1;
         }
+        c.stack_max[11] = 1;
         // The two items the nodes below use as tools carry condition, so
         // wear rides the parity/replay/alloc surfaces the moment a bot
         // gathers with one — and since gathered stacks are minted at the

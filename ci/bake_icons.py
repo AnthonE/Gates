@@ -174,9 +174,20 @@ ITEMS = {
     # The blueprint you unroll, not the bench you unroll it on: a table at
     # 44 px is a rectangle, and the thing the verb produces reads.
     "research_table": "lorc/scroll-unfurled",
-    # The coin that pays the ferryman (DESIGN.md §3.1). Two coins rather
-    # than one because a single disc at 44 px reads as a full stop.
-    "junk": "delapouite/two-coins",
+    # Scrap, not a coin (operator, 2026-09-22: "Crafting system should use
+    # Junk [as our] scrap"). It was `delapouite/two-coins` from the days the
+    # item was OBOL, and a picture of money on every bench and blueprint price
+    # read as a currency the crafting system spent rather than the salvage it
+    # is. A nut is the universal salvage mark, reads whole at 44 px, and is
+    # distinct from `gears` (lorc/gears) and `metal_frags` (lorc/metal-bar).
+    "junk": "delapouite/hexagonal-nut",
+    # The research table's paper (research table v1). A tied scroll: a sheet
+    # rolled for carrying, which is what a blueprint is between the table and
+    # the reading — and not the table's own unfurled one, so the two never
+    # read as the same thing in adjacent cells. The panels draw a sheet WITH
+    # a target as the item it teaches on the paper's blue; this picture is
+    # what the hotbar and a blank sheet show.
+    "blueprint": "lorc/tied-scroll",
     "door_wood": "delapouite/door",
     "building_plan": "delapouite/notebook",
     "hammer": "lorc/claw-hammer",

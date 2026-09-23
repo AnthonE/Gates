@@ -1,8 +1,10 @@
 # Gates · content/research.toml — the blueprint table (CONTENT.md §1,
 # research). The sink JUNK exists for: you find the thing, you take it to a
-# table with a fistful of coin, and from then on you can make it yourself.
+# table with a fistful of coin, and from then on you can make it yourself —
+# or you unlock it at a workbench's tree for the same coin per node.
 # The sim's side is `sim-core/research.rs`; every number here is a knob with
-# this file as its documented default (DECISIONS.md §open, "research v0").
+# this file as its documented default (DECISIONS.md §open, "blueprint split
+# v1").
 #
 # **What research is paid in, named here rather than assumed in code.**
 # `sim-core` receives an item index and never learns it is currency —
@@ -12,6 +14,16 @@
 # file touches a wallet, a ledger or a chain.
 [coin]
 item = "item.junk"
+
+# What a research table makes, and how long it takes (research table v1,
+# operator 2026-09-22: *"Timed research table"*). The reference's table is
+# a two-slot box: the item in one slot, scrap in the other, ten seconds,
+# and out comes a blueprint — paper you can carry, trade or lose, and
+# right-click to learn. The coin and the sample are taken when the research
+# LANDS, so a table raided mid-research spills both whole.
+[table]
+blueprint = "item.blueprint"
+seconds = 10
 
 # --- what may be learned ------------------------------------------------
 #
@@ -23,111 +35,108 @@ item = "item.junk"
 # same error from the other end and `validate::structural` refuses it:
 # that combination is a recipe nobody could ever craft.
 #
-# **`requires` is the ladder, and it is a floor rather than a free hand**
-# (2026-08-15). A row may name blueprints that must already be held; the
-# ids resolve at bake into `Player::known`'s own bits. What may NOT happen
-# is the tree disagreeing with the recipes: if a blueprint-gated recipe
-# consumes another blueprint-gated item, that edge is already a fact of the
-# data and `validate::structural` refuses a row that omits it. Authoring
-# MORE edges than the recipes imply is a design call and stays legal — the
-# revolver behind gunpowder is the obvious candidate and is deliberately
-# NOT written here, because it is a knob nobody has spoken
-# (`DECISIONS.md` §open, "research ladder v0").
+# **Which rows exist is the reference's own split** (operator, 2026-09-22:
+# *"It needs to be just like Rust survival game"*, answered "Rust's split").
+# Eleven of our recipes are learned there and nothing else is; every bench,
+# the research table, gunpowder, metal arrows, the crossbow and the large
+# box are KNOWN from the start there, and so here (`reference/BLUEPRINTS.md`
+# §1, 42 item pages fetched whole). What the tree gates is the NEXT tool —
+# the metal hatchet, the pickaxe — never the first one, so the circle this
+# file once warned about (gate the hatchet you need to gather the wood to
+# build the bench to research the hatchet) cannot close: stone tools are
+# default and the metal ones are one bench and 30 junk away.
 #
-# **Which rows are gated is the whole design decision, and it is small on
-# purpose.** Only the powder era — the things a player would go raiding
-# for — is behind research; the whole T0 and workbench ladder stays open,
-# because gating the hatchet you need to gather the wood to build the bench
-# to research the hatchet is the kind of circle a tech tree gets wrong
-# once and never lives down. Everything here is reachable as loot before it
-# is craftable (`content/loot.toml`: the crate table pays gunpowder, the
-# medkit, pistol ammo and metal arrows), which is what makes the verb a
-# reason to walk to the haven rather than a tax on crafting.
+# **Every price is the item page's research price**, the Nov 2025 rarity
+# ladder (15 / 30 / 60 / 120). **The tree charges the same number per node**
+# — one column serves both verbs. Their devblog cut *"tech tree and research
+# costs"* together and rusthelp/rustly print node = research price; the
+# wiki's flat 125/250/500 per bench loses `reference/BALANCE.md` §6.3 and is
+# on record in `DECISIONS.md` §open as the one-line flip. So the tree costs
+# more only as the PATH: a revolver is 30 at a table with one in hand and 60
+# through the tree (pistol ammunition first).
 #
-# **The prices are ours, and as of 2026-08-18 their TOTAL is theirs by
-# accident** — which is a better place to be than the reason they used to
-# carry. That reason read: theirs are 75/125/250/500 pre-Oct-2025 and
-# 15/30/60/120 post-cut (`reference/RIPLIST.md` §2 row 7, page tier
-# 2026-08-14), "both priced against a ~10-scrap barrel where ours pays
-# ~0.85 junk, so neither lands raw". **The ~10 was never measured and is
-# wrong**: their barrel pays ~2.42 scrap (§1f — 2 direct at 100 % plus a
-# 1.4 % gear roll recycled), and taking their recycler yields the same day
-# put ours at 2.727 junk a barrel. One junk now buys about what one scrap
-# buys. Priced in barrels over the four researchable items we both have —
-# their Research Table column, page-read 2026-08-18: HV arrow 15,
-# revolver 30, satchel 60, gunpowder 120 — **this ladder cost 2.66× theirs
-# before that take and 0.83× after it.** No price moved; the justification
-# did, and the total is now theirs to within a sixth.
+# **`requires` is the tree, one per bench and derived, not authored**
+# (`reference/BLUEPRINTS.md` §9.3): a row's parent is its nearest ancestor in
+# THEIR chain that we also ship AND that unlocks at the same bench of OURS;
+# with none it is a root, hanging off the bench in the panel. Their trees are
+# independent per bench and ours are too — `validate::structural` refuses a
+# `requires` that crosses a tier. Which bench a row unlocks at is OUR station
+# (`research::node_tier`): the spoken bench ladder keeps the revolver and
+# pistol ammunition at workbench 2 and the satchel at 3 (theirs are all 1),
+# because the satchel is the top of our raid ladder — `BLUEPRINTS.md` §9.2.
 #
-# **The SHAPE is still ours and is the open half.** Their spread is 8×
-# (15 → 120) against our 3.75× (20 → 75), and the two disagree on where
-# gunpowder sits: theirs is the most expensive blueprint in the game's
-# early ladder, ours is the middle rung, while their revolver is cheap
-# (30) where ours is 75. Taking their per-item ordering is a real row and
-# nobody has opened it (`reference/RIPLIST.md` §2 row 1g); until then
-# this ladder still reads reachable, a session, a project, and it still
-# moves with the faucet counts or the ratio breaks (DECISIONS.md §open,
-# "JUNK faucet v0").
-#
-# **`requires` is the tech tree** (tech tree v0 — spoken 2026-08-14, the
-# pre-Oct-2025 era 2026-08-15). Two verbs read this table: the research
-# TABLE takes a looted sample plus the cost and ignores `requires`
-# entirely — research what you loot — and the tree verb at a workbench
-# takes the cost alone, along these edges, at a bench of the recipe's
-# tier. One cost column serves both, the reference's own pre-Oct-2025
-# arrangement; the tree "costs more" only as the path total (a satchel
-# via the tree is gunpowder's 40 + its own 75 = 115, against 75 with a
-# sample in hand — and there IS no satchel sample, which is the point:
-# the tree is how the two rows nothing drops became learnable at all).
-# Three roots, two paths: powder (gunpowder → revolver / satchel) and
-# field kit (medkit → roadsign plate); metal arrows stand alone.
+# Two roads read this table: the research TABLE takes a looted sample plus
+# the cost and ignores `requires` entirely — research what you loot, into
+# paper — and the tree at a workbench takes the cost alone, along these
+# edges, at a bench of the recipe's tier, and teaches on the spot.
 
-# 20 — a handful of barrels. The first thing most players will research,
-# and cheap because it is the one that teaches what the verb IS.
+# --- workbench 1 --------------------------------------------------------
+
+# Their chain: Salvaged Hammer → Hatchet. The hammer is not ours, so a root.
+[[research]]
+item = "item.hatchet_metal"
+cost = 30
+
+# Their chain: Salvaged Hammer → Engineering Workbench → Pickaxe — NOT behind
+# the hatchet, which is what a guess made before the pages were read said.
+[[research]]
+item = "item.pickaxe_metal"
+cost = 30
+
+# Their large medkit (and the syringe before it); both learned at 30. Ours is
+# a workbench 1 recipe, so it roots the first tree rather than the second.
 [[research]]
 item = "item.medkit"
-cost = 20
+cost = 30
 
+# Their chain: … Hatchet → Wooden Ladder → Wooden Barricade → Barbed Wooden
+# Barricade → Wooden Floor Spikes → Wood Shutters, so the nearest ancestor we
+# ship is the hatchet. Hand-crafted, and still a node in the first tree —
+# theirs sits in WB1's tree with no bench to craft it, like ours.
 [[research]]
-item = "item.arrow_metal"
-cost = 20
+item = "item.window_shutters"
+cost = 15
+requires = "item.hatchet_metal"
 
-# 40 — a session. The powder chain proper.
-[[research]]
-item = "item.gunpowder"
-cost = 40
-
-[[research]]
-item = "item.armor_roadsign_body"
-cost = 40
-requires = "item.medkit"
-
-# 75 — a project, and both of these are what a raid is made of. The
-# revolver is also a rare barrel drop (`loot.toml`), so the fastest route
-# to owning one is still luck; this is the route to owning several.
-[[research]]
-item = "item.revolver"
-cost = 75
-requires = "item.gunpowder"
-
-[[research]]
-item = "item.satchel_charge"
-cost = 75
-requires = "item.gunpowder"
-
-# Research-table price, not the separate tech-tree price (Facepunch, 2026-09-21).
 [[research]]
 item = "item.window_bars_metal"
 cost = 30
+requires = "item.window_shutters"
 
+# --- workbench 2 --------------------------------------------------------
+
+# Their pistol bullet descends from the pickaxe, which is our tier 1: a
+# cross-tier link, so a root of the second tree.
 [[research]]
-item = "item.garage_door"
+item = "item.pistol_ammo"
 cost = 30
 
+[[research]]
+item = "item.revolver"
+cost = 30
+requires = "item.pistol_ammo"
+
+# Their chain: Hazmat Suit → Boots → Coffee Can Helmet → Road Sign Jacket;
+# none of those is ours.
+[[research]]
+item = "item.armor_roadsign_body"
+cost = 30
+
+# Their chain: Longsword → Salvaged Axe → Salvaged Icepick → embrasures →
+# Strengthened Glass Window; none ours.
 [[research]]
 item = "item.window_glass"
 cost = 30
 
 [[research]]
-item = "item.window_shutters"
-cost = 15
+item = "item.garage_door"
+cost = 30
+requires = "item.window_glass"
+
+# --- workbench 3 --------------------------------------------------------
+
+# Their satchel sits behind the beancan and the revolver, both below our
+# third rung, so it roots the third tree alone. 60: rare, the dearest row.
+[[research]]
+item = "item.satchel_charge"
+cost = 60

@@ -1920,10 +1920,17 @@ impl ClientCore {
                 first,
                 count,
                 coin,
+                blueprint,
+                table_ticks,
                 rows,
             } => {
                 self.research.row_count = total as u16;
                 self.research.coin = coin;
+                // The research table's paper and wait (wire v73): what
+                // `research::blueprint_target` reads a sheet against, and
+                // what the table's panel draws the clock from.
+                self.research.blueprint = blueprint;
+                self.research.table_ticks = table_ticks;
                 for (i, row) in rows.iter().enumerate().take(count as usize) {
                     self.research.rows[first as usize + i] = *row;
                 }
@@ -3952,6 +3959,36 @@ mod tests {
         let flags = c.on_stream(&buf[..len]).unwrap();
         assert_ne!(flags & APPLIED_MARK, 0);
         assert_eq!(c.mark_cell, NO_CELL);
+    }
+
+    /// The research drip installs the table's paper and its wait with the
+    /// rows (wire v73, research table v1) — the two numbers
+    /// `research::blueprint_target` and the table panel's clock read. Before
+    /// the drip nothing is paper, so no stack is misnamed as a blueprint
+    /// while the tables arrive.
+    #[test]
+    fn research_rows_carry_the_paper_and_the_wait() {
+        use protocol::encode_event_research_rows;
+
+        let mut c = core();
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        assert_eq!(
+            c.research.blueprint,
+            sim_core::gather::NO_ITEM,
+            "nothing is paper before the drip"
+        );
+        let rc = sim_core::research::ResearchContent::probe_fixture();
+        let (len, _) = encode_event_research_rows(&rc, 0, &mut buf).unwrap();
+        assert_eq!(c.on_stream(&buf[..len]).unwrap(), APPLIED_RECIPES);
+        assert_eq!(
+            (
+                c.research.blueprint,
+                c.research.table_ticks,
+                c.research.coin
+            ),
+            (rc.blueprint, rc.table_ticks, rc.coin),
+            "the header's three numbers land where the sim keeps them"
+        );
     }
 
     #[test]

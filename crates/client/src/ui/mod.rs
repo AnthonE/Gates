@@ -89,6 +89,7 @@ pub mod map;
 pub mod place;
 pub mod pointer;
 pub mod refusals;
+pub mod research;
 pub mod servers;
 pub mod slots;
 pub mod structure;

@@ -345,6 +345,38 @@ pub fn seconds(def: &RecipeDef, count: u16) -> f32 {
     def.ticks as f32 * count as f32 / TICK_HZ as f32
 }
 
+/// Seconds `count` crafts take at a bench `best` rungs strong — the highest
+/// workbench in reach, `deploy::best_bench_in` over the client's mirror at
+/// the sim's `STATION_RADIUS_M` (craft rebate v0). The sim's own
+/// `craft::rebated_ticks`, so the pane quotes the time the queue will take
+/// where the player is standing, not the recipe's list price.
+pub fn seconds_at(def: &RecipeDef, count: u16, best: u8) -> f32 {
+    sim_core::craft::rebated_ticks(def.ticks, def.station, best) as f32 * count as f32
+        / TICK_HZ as f32
+}
+
+/// What a LOCKED recipe's detail pane says about where to learn it: the
+/// bench tree it unlocks in and the node's price — the same `node_tier` the
+/// sim demands at unlock and the same row the tree panel draws — or `None`
+/// for a recipe that needs no blueprint or is already known. (The research
+/// table's road needs a sample in hand and says so in the refusal instead.)
+pub fn unlock_hint(
+    rc: &sim_core::research::ResearchContent,
+    known: u64,
+    recipe: u16,
+    def: &RecipeDef,
+) -> Option<String> {
+    if !def.blueprint || sim_core::research::knows(known, recipe) {
+        return None;
+    }
+    let row = rc.row_for_recipe(recipe)?;
+    Some(format!(
+        "BLUEPRINT — UNLOCK AT WORKBENCH LEVEL {} · {} JUNK",
+        sim_core::research::node_tier(def.station),
+        row.cost
+    ))
+}
+
 /// The station badge — the reference's yellow WORKBENCH LEVEL 1 REQUIRED.
 /// `None` for a recipe with no station, which draws no badge at all rather
 /// than a badge saying nothing is needed.

@@ -19,7 +19,12 @@
 //! station-gated recipes need a placed station deployable
 //! (workbench/furnace archetype, deploy.rs) within `STATION_RADIUS_M` of
 //! the crafter at enqueue — enqueue-time only, the reference behavior:
-//! walking away never cancels a queue.
+//! walking away never cancels a queue ·
+//! **a higher bench crafts faster** (craft rebate v0, operator 2026-09-22):
+//! each unit's time is halved per bench rung in reach above the recipe's
+//! own, at most [`REBATE_MAX_RUNGS`] times, read when the unit STARTS —
+//! the reference's per-task end time, so walking away costs the next unit
+//! its bonus and never the one in hand.
 
 use crate::deploy::{DeployContent, Deploys, ARCH_FURNACE};
 use crate::gather::{inv_add_spilling, GatherContent, ItemStack};
@@ -60,6 +65,67 @@ const _: () = {
 /// the reference's workbench-proximity read. Proposed default,
 /// DECISIONS.md §open ("deployables v0").
 pub const STATION_RADIUS_M: f32 = 5.0;
+
+/// How many bench rungs above a recipe's own the craft rebate reaches
+/// (craft rebate v0, 2026-09-22). The reference halves a unit one
+/// workbench level above its requirement and quarters it two levels up,
+/// and stops there — its wiki prints the Workbench's own time as
+/// 30 / 15 / 7 / 7 s with no bench and at levels 1, 2 and 3.
+pub const REBATE_MAX_RUNGS: u8 = 2;
+
+/// One unit's ticks at a bench `best` rungs strong (the highest workbench
+/// rung in reach, 0 for none) — the bench ladder's craft rebate: halved
+/// once per rung above the recipe's own, at most [`REBATE_MAX_RUNGS`]
+/// times, floored (their 7.5 s prints as 7) and never below one tick.
+///
+/// A no-station recipe sits on rung 0, so a level-1 bench already halves
+/// it; a **furnace** recipe is smelting, not the bench ladder, and pays its
+/// full time anywhere. An inert row's zero stays zero.
+pub const fn rebated_ticks(ticks: u32, station: u8, best: u8) -> u32 {
+    if station == STATION_FURNACE || ticks == 0 {
+        return ticks;
+    }
+    let own = if station <= STATION_WORKBENCH3 {
+        station
+    } else {
+        0
+    };
+    let over = best.saturating_sub(own);
+    let rungs = if over > REBATE_MAX_RUNGS {
+        REBATE_MAX_RUNGS
+    } else {
+        over
+    };
+    let t = ticks >> rungs as u32;
+    if t == 0 {
+        1
+    } else {
+        t
+    }
+}
+
+/// The head unit's ticks for `p` standing where it stands now: the recipe's
+/// own, rebated by the best workbench within [`STATION_RADIUS_M`]. A
+/// furnace row never scans, since nothing a bench does can move it.
+fn unit_ticks(
+    cc: &CraftContent,
+    dc: &DeployContent,
+    deploys: &Deploys,
+    p: &Player,
+    recipe: u16,
+) -> u32 {
+    let def = &cc.recipes[recipe as usize];
+    if def.station == STATION_FURNACE || def.ticks == 0 {
+        return def.ticks;
+    }
+    let px = p.body.qx as f32 * crate::movement::POS_XZ_Q;
+    let pz = p.body.qz as f32 * crate::movement::POS_XZ_Q;
+    rebated_ticks(
+        def.ticks,
+        def.station,
+        deploys.best_bench_near(dc, px, pz, STATION_RADIUS_M),
+    )
+}
 
 /// Integer refusal reasons (CLAUDE.md wall 3: integer event codes only),
 /// carried by EV_CRAFT_REFUSED / the craft-refused wire subtype.
@@ -300,7 +366,7 @@ pub fn enqueue(
         remaining: count,
     };
     if slot == 0 {
-        p.craft_done_at = tick + def.ticks as u64;
+        p.craft_done_at = tick + unit_ticks(cc, dc, deploys, p, recipe) as u64;
     }
 }
 
@@ -318,10 +384,14 @@ pub fn enqueue(
 /// visit, and arming it with the inert row's span here is harmless — the
 /// row exists (`MAX_RECIPES` is the array bound, and both the wire and
 /// `PlayerSave::read_le` refuse anything past it).
+///
+/// **The craft rebate is read here** (craft rebate v0): the unit starting
+/// now runs at the best bench standing within reach now. One scan at most,
+/// only when a unit starts.
 #[inline]
-pub fn rearm(cc: &CraftContent, tick: u64, p: &mut Player) {
+pub fn rearm(cc: &CraftContent, dc: &DeployContent, deploys: &Deploys, tick: u64, p: &mut Player) {
     p.craft_done_at = if p.jobs[0].remaining > 0 {
-        tick + cc.recipes[p.jobs[0].recipe as usize].ticks as u64
+        tick + unit_ticks(cc, dc, deploys, p, p.jobs[0].recipe) as u64
     } else {
         0
     };
@@ -344,9 +414,12 @@ pub fn rearm(cc: &CraftContent, tick: u64, p: &mut Player) {
 /// report nothing. Every chunk now lands in the pack or in the spill, so
 /// the loop runs to `left == 0` and the only remaining bound is the
 /// spill's own `INV_SLOTS`, which `inv_add_spilling` documents.
+#[allow(clippy::too_many_arguments)]
 pub fn cancel(
     cc: &CraftContent,
     gc: &GatherContent,
+    dc: &DeployContent,
+    deploys: &Deploys,
     tick: u64,
     p: &mut Player,
     index: u16,
@@ -378,7 +451,7 @@ pub fn cancel(
     }
     shift_left(&mut p.jobs, index);
     if index == 0 {
-        rearm(cc, tick, p);
+        rearm(cc, dc, deploys, tick, p);
     }
 }
 
@@ -390,9 +463,12 @@ pub fn cancel(
 /// writes: a finished craft whose output does not fit falls at the
 /// crafter's feet instead of vanishing, which matters more here than at a
 /// node because the ingredients are already spent.
+#[allow(clippy::too_many_arguments)]
 pub fn step(
     cc: &CraftContent,
     gc: &GatherContent,
+    dc: &DeployContent,
+    deploys: &Deploys,
     tick: u64,
     p: &mut Player,
     events: &mut EventQueue,
@@ -406,7 +482,7 @@ pub fn step(
         // A table swap shrank the set under a live job (content hotfix):
         // drop the job rather than pay from a stale row.
         shift_left(&mut p.jobs, 0);
-        rearm(cc, tick, p);
+        rearm(cc, dc, deploys, tick, p);
         return;
     }
     let def = &cc.recipes[recipe as usize];
@@ -431,7 +507,7 @@ pub fn step(
     if p.jobs[0].remaining == 0 {
         shift_left(&mut p.jobs, 0);
     }
-    rearm(cc, tick, p);
+    rearm(cc, dc, deploys, tick, p);
 }
 
 #[cfg(test)]
@@ -459,7 +535,16 @@ mod tests {
         events: &mut EventQueue,
     ) {
         let mut spill = [ItemStack::default(); INV_SLOTS];
-        step(cc, gc, tick, p, events, &mut spill);
+        step(
+            cc,
+            gc,
+            &DeployContent::EMPTY,
+            &Deploys::new(),
+            tick,
+            p,
+            events,
+            &mut spill,
+        );
         assert!(
             spill.iter().all(|s| s.count == 0),
             "nothing should have spilled at tick {tick}"
@@ -611,6 +696,8 @@ mod tests {
         cancel(
             &cc,
             &gc,
+            &dc,
+            &nod,
             55,
             &mut p,
             0,
@@ -634,6 +721,8 @@ mod tests {
         cancel(
             &cc,
             &gc,
+            &dc,
+            &nod,
             60,
             &mut p,
             0,
@@ -648,6 +737,8 @@ mod tests {
         cancel(
             &cc,
             &gc,
+            &dc,
+            &nod,
             61,
             &mut p,
             3,
@@ -656,6 +747,8 @@ mod tests {
         cancel(
             &cc,
             &gc,
+            &dc,
+            &nod,
             61,
             &mut p,
             99,
@@ -878,7 +971,7 @@ mod tests {
         let mut ev = EventQueue::default();
         let mut spill = [ItemStack::default(); INV_SLOTS];
         enqueue(&cc, &dc, &nod, 10, &mut p, 0, 2, &mut ev);
-        step(&cc, &gc, 12, &mut p, &mut ev, &mut spill);
+        step(&cc, &gc, &dc, &nod, 12, &mut p, &mut ev, &mut spill);
         let e = ev.entries()[ev.len() - 1];
         assert_eq!(e.code, EV_CRAFT_DONE);
         assert_eq!(
@@ -891,6 +984,176 @@ mod tests {
             inv_count(&spill, 2),
             cc.recipes[0].out_count as u32,
             "the whole output fell to the spill instead of being destroyed"
+        );
+    }
+
+    /// The craft rebate's arithmetic (craft rebate v0), the reference's
+    /// ladder: halved one rung above the recipe's own, quartered two up,
+    /// and no further — their wiki prints the Workbench's own time as
+    /// 30 / 15 / 7 / 7 s with no bench and at levels 1, 2 and 3. Floored,
+    /// never below a tick; a furnace row and an inert zero are untouched.
+    #[test]
+    fn rebated_ticks_follows_the_ladder_and_stops_at_a_quarter() {
+        // A no-station recipe is rung 0 — their Workbench, 900 ticks.
+        assert_eq!(rebated_ticks(900, STATION_NONE, 0), 900);
+        assert_eq!(rebated_ticks(900, STATION_NONE, 1), 450);
+        assert_eq!(rebated_ticks(900, STATION_NONE, 2), 225);
+        assert_eq!(
+            rebated_ticks(900, STATION_NONE, 3),
+            225,
+            "capped at a quarter"
+        );
+        // A workbench-1 recipe starts its ladder one rung up.
+        assert_eq!(rebated_ticks(900, STATION_WORKBENCH1, 1), 900);
+        assert_eq!(rebated_ticks(900, STATION_WORKBENCH1, 2), 450);
+        assert_eq!(rebated_ticks(900, STATION_WORKBENCH1, 3), 225);
+        // Below its own rung is not a rebate (the station gate refuses
+        // that case before a timer is ever armed).
+        assert_eq!(rebated_ticks(900, STATION_WORKBENCH3, 1), 900);
+        // Floored, and never to zero: a live row always takes a tick.
+        assert_eq!(rebated_ticks(45, STATION_NONE, 1), 22);
+        assert_eq!(rebated_ticks(1, STATION_NONE, 3), 1);
+        // Smelting is not the bench ladder.
+        assert_eq!(rebated_ticks(60, STATION_FURNACE, 3), 60);
+        // An inert row stays inert.
+        assert_eq!(rebated_ticks(0, STATION_NONE, 3), 0);
+    }
+
+    /// One crafter per bench, each reading exactly one rung: a no-station
+    /// recipe crafts in full, half, a quarter, and still a quarter as the
+    /// bench beside it climbs — measured on the timer `enqueue` arms, with
+    /// real placed benches and the sim's own reach.
+    #[test]
+    fn a_higher_bench_halves_then_quarters_the_unit() {
+        use crate::build::{BuildContent, Pieces, LOC_PLANE};
+        use crate::deploy::{DeployDef, ARCH_WORKBENCH2, ARCH_WORKBENCH3, PLACE_ANY};
+        use crate::movement::Body;
+        const SEED: u64 = 20260731;
+
+        let (mut cc, _gc) = fixture();
+        cc.recipes[1].ticks = 40;
+        let mut dc = crate::deploy::DeployContent::probe_fixture();
+        let wb2 = dc.def_count;
+        let wb3 = wb2 + 1;
+        for (row, arch) in [(wb2, ARCH_WORKBENCH2), (wb3, ARCH_WORKBENCH3)] {
+            dc.defs[row as usize] = DeployDef {
+                arch,
+                placement: PLACE_ANY,
+                hp: 80,
+                item: 3,
+                n_costs: 1,
+                costs: [(0, 20), (0, 0), (0, 0), (0, 0)],
+            };
+        }
+        dc.def_count += 2;
+        let bc = BuildContent::probe_fixture();
+        let mut ev = EventQueue::default();
+        let mut armed = |row: Option<u16>| -> u64 {
+            let mut nod = Deploys::new();
+            let mut p = player(&[(1, 4), (2, 2), (3, 1)]);
+            p.body = Body::at(SEED, &hv(SEED), 1024.0, 1024.0);
+            if let Some(row) = row {
+                crate::deploy::place_deploy(
+                    SEED,
+                    &hv(SEED),
+                    &dc,
+                    &bc,
+                    &mut Pieces::new(),
+                    &mut nod,
+                    &mut p,
+                    0,
+                    row,
+                    341,
+                    341,
+                    0,
+                    LOC_PLANE,
+                    &mut ev,
+                );
+                assert_eq!(
+                    ev.entries()[ev.len() - 1].code,
+                    crate::world::EV_DEPLOY_PLACED
+                );
+            }
+            enqueue(&cc, &dc, &nod, 100, &mut p, 1, 1, &mut ev);
+            assert_eq!(p.jobs[0].remaining, 1, "the craft queued");
+            p.craft_done_at - 100
+        };
+        assert_eq!(armed(None), 40, "no bench: the recipe's own time");
+        assert_eq!(
+            armed(Some(1)),
+            20,
+            "a level-1 bench halves a no-station recipe"
+        );
+        assert_eq!(armed(Some(wb2)), 10, "a level-2 bench quarters it");
+        assert_eq!(
+            armed(Some(wb3)),
+            10,
+            "and a level-3 bench stops at the quarter"
+        );
+    }
+
+    /// The rebate is read when a unit STARTS — the reference's per-task end
+    /// time. Walk away with a unit in hand and that unit keeps the rate it
+    /// began at; the next one arms at full time. Walk back and the unit
+    /// already running is not re-rated either.
+    #[test]
+    fn the_rebate_is_read_at_each_unit_start() {
+        use crate::build::{BuildContent, Pieces, LOC_PLANE};
+        use crate::movement::Body;
+        const SEED: u64 = 20260731;
+
+        let (mut cc, gc) = fixture();
+        cc.recipes[1].ticks = 40;
+        let dc = crate::deploy::DeployContent::probe_fixture();
+        let mut nod = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut spill = [ItemStack::default(); INV_SLOTS];
+        let mut p = player(&[(1, 8), (2, 4), (3, 1)]);
+        let at_bench = Body::at(SEED, &hv(SEED), 1024.0, 1024.0);
+        p.body = at_bench;
+        crate::deploy::place_deploy(
+            SEED,
+            &hv(SEED),
+            &dc,
+            &BuildContent::probe_fixture(),
+            &mut Pieces::new(),
+            &mut nod,
+            &mut p,
+            0,
+            1, // fixture row 1: the level-1 workbench
+            341,
+            341,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        enqueue(&cc, &dc, &nod, 100, &mut p, 1, 3, &mut ev);
+        assert_eq!(
+            p.craft_done_at, 120,
+            "the first unit starts at the bench: half"
+        );
+
+        // Walk out of the station radius mid-unit: the unit in hand keeps
+        // its rate, and the next one starts at full time.
+        p.body = Body::at(SEED, &hv(SEED), 1024.0 + STATION_RADIUS_M + 3.0, 1024.0);
+        step(&cc, &gc, &dc, &nod, 120, &mut p, &mut ev, &mut spill);
+        assert_eq!(p.jobs[0].remaining, 2, "the first unit landed");
+        assert_eq!(
+            p.craft_done_at, 160,
+            "the next unit starts away from it: full"
+        );
+
+        // Walk back: the running unit is not re-rated, the one after it is.
+        p.body = at_bench;
+        step(&cc, &gc, &dc, &nod, 159, &mut p, &mut ev, &mut spill);
+        assert_eq!(
+            p.craft_done_at, 160,
+            "a running unit keeps the rate it began at"
+        );
+        step(&cc, &gc, &dc, &nod, 160, &mut p, &mut ev, &mut spill);
+        assert_eq!(
+            p.craft_done_at, 180,
+            "back at the bench, the next unit halves"
         );
     }
 }

@@ -218,6 +218,14 @@ pub fn hash(c: &Content) -> u64 {
             h.u(e.count_min);
             h.u(e.count_max);
         }
+        // The guaranteed rows reach the sim through `bake_loot`, so two
+        // contents that disagree about one play differently.
+        h.u(l.guaranteed.len() as u32);
+        for g in &l.guaranteed {
+            h.s(&g.item);
+            h.u(g.count_min);
+            h.u(g.count_max);
+        }
     }
 
     // Animals. Hashed like everything else the sim reads: two content sets
@@ -364,6 +372,10 @@ pub fn hash(c: &Content) -> u64 {
     // by item id, which `validate::structural` refuses to repeat.
     h.s("research");
     h.s(&c.research_coin.item);
+    // The table's paper and its wait (research table v1): both reach the
+    // sim, and a ten-second table and a sixty-second one play differently.
+    h.s(&c.research_table.blueprint);
+    h.u(c.research_table.seconds);
     h.u(c.research.len() as u32);
     let mut research: Vec<&Research> = c.research.iter().collect();
     research.sort_by(|a, b| a.item.cmp(&b.item));

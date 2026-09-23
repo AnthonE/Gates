@@ -1877,6 +1877,24 @@ pub fn feedback(
         });
     }
 
+    // A blueprint learned — the research verbs' LANDED half, whose refused
+    // half is the `Refused::Research` arm above. `Feed::learned` had no reader
+    // at all until 2026-09-22, so a table research or a tree unlock that
+    // worked was silent everywhere but the craft panel's LOCKED label going
+    // away (which, for the tree, it also did not — `research::unlock` never
+    // restated the mask).
+    for &(recipe, _coin) in feed.learned() {
+        let item = core
+            .recipes
+            .recipes
+            .get(recipe as usize)
+            .map_or(sim_core::gather::NO_ITEM, |d| d.output);
+        toast.say(format!(
+            "learned {}",
+            crate::ui::craft::item_label(&core.catalog, item)
+        ));
+    }
+
     // The consume verbs' LANDED half (`NOW.md` §0eat). The refused half is in
     // the loop above and rides the queue, so the mixer's refusal cue answers
     // a dry shoreline for free. A ring since 2026-08-15: this read the
@@ -2445,7 +2463,7 @@ fn side_line(near: &Option<crate::ui::structure::Target>) -> String {
 /// `None` when it holds nothing and is charged nothing.
 ///
 /// The rows are `(item, units, bill)` — `bill` what one upkeep period
-/// charges in that material (upkeep v2, wire v73) — and the count is
+/// charges in that material (upkeep v2, wire v74) — and the count is
 /// authoritative. Saying "0 ×" for a thing that is not there is the
 /// dark-panel defect this repo has a rule against, so an empty row is
 /// skipped; an empty hearth **with a bill** says so, because that is the

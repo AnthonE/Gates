@@ -17,12 +17,21 @@
 //! exactly the rules an inventory does.
 
 use crate::gather::{inv_add, GatherContent, ItemStack, NO_ITEM};
-use crate::limits::{INV_SLOTS, MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_TABLES};
+use crate::limits::{
+    INV_SLOTS, MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_GUARANTEED, MAX_LOOT_TABLES,
+};
 use crate::rng::{cell_hash, splitmix64};
 
 /// Noise channel for the loot roll. Sim-side, like gather's 97/98
 /// (worldgen channels live in terrain.rs and stay below 96).
 const CH_LOOT: u32 = 99;
+
+/// Where a guaranteed row's count draw salts from. The weighted loop salts
+/// its two draws per roll with `2n+1` and `2n+2` for `n` below
+/// `MAX_LOOT_ROLLS`, so any salt from here up can never collide with one —
+/// and a FIXED row draws nothing at all, which is what lets shipped
+/// content take the column without moving any other roll.
+const GUARANTEED_SALT: u64 = 0x8000;
 
 /// Baked table index for `container = "barrel"`. The container *name* is
 /// content and the *index* is code, exactly as `deploy.rs`'s `ARCH_*` maps
@@ -78,6 +87,12 @@ pub struct LootTableDef {
     /// (`content/loot.toml`), never a literal here — DECISIONS.md §open
     /// "barrel smash hits".
     pub hits: u16,
+    /// Rows every open pays after the weighted draw, `count_min..=count_max`
+    /// of each, `weight` unused (loot guaranteed column v0). The reference's
+    /// container ladder is denominated in exactly this: a barrel's 2 scrap
+    /// is not a roll, it is a certainty, and a weighted row cannot say so.
+    pub guaranteed: [LootEntryDef; MAX_LOOT_GUARANTEED],
+    pub guaranteed_len: u16,
 }
 
 impl LootTableDef {
@@ -88,6 +103,8 @@ impl LootTableDef {
         rolls_min: 0,
         rolls_max: 0,
         hits: 0,
+        guaranteed: [LootEntryDef::EMPTY; MAX_LOOT_GUARANTEED],
+        guaranteed_len: 0,
     };
 }
 
@@ -199,13 +216,44 @@ impl LootContent {
             ));
             n += 1;
         }
+
+        // The guaranteed rows, after the draw so the weighted stacks land
+        // in the slots they always did: every open pays them. A ranged row
+        // takes one salted draw ([`GUARANTEED_SALT`]); a fixed one takes
+        // none. Bounded by `MAX_LOOT_GUARANTEED`, one `inv_add` each.
+        let mut g = 0usize;
+        while g < (t.guaranteed_len as usize).min(MAX_LOOT_GUARANTEED) {
+            let e = t.guaranteed[g];
+            g += 1;
+            if e.item == NO_ITEM || e.item as usize >= MAX_ITEM_DEFS {
+                continue;
+            }
+            let cspan = (e.count_max.max(e.count_min) - e.count_min) as u64 + 1;
+            let count = if cspan == 1 {
+                e.count_min as u64
+            } else {
+                e.count_min as u64 + splitmix64(base ^ ((GUARANTEED_SALT + g as u64) << 32)) % cspan
+            };
+            let cap = gc.stack_max_of(e.item);
+            if cap == 0 {
+                continue;
+            }
+            written = written.saturating_add(inv_add(
+                out,
+                e.item,
+                count as u16,
+                cap,
+                gc.cond_max_of(e.item),
+            ));
+        }
         written
     }
 
     /// Synthetic table for the parity/replay/alloc gates. Deliberately
-    /// unlike game content: two rows over the fixture's items 0 and 1, so
-    /// a bot run covers the weighted walk and the stack cap without any
-    /// real number living in code.
+    /// unlike game content: two weighted rows over the fixture's items 0 and
+    /// 1, plus one guaranteed row of item 2, so a bot run covers the
+    /// weighted walk, the guaranteed pay and the stack cap without any real
+    /// number living in code.
     pub fn probe_fixture() -> Self {
         let mut c = Self::EMPTY;
         let mut t = LootTableDef::INERT;
@@ -226,6 +274,17 @@ impl LootContent {
         t.rolls_min = 1;
         t.rolls_max = 2;
         t.hits = 2;
+        // One guaranteed row (loot guaranteed column v0), RANGED so its
+        // count takes the salted draw inside parity, replay and alloc — a
+        // fixed row draws nothing, and the unit tests below own that half.
+        // Item 2, so the weighted rows' count bounds stay assertable apart.
+        t.guaranteed[0] = LootEntryDef {
+            item: 2,
+            weight: 0,
+            count_min: 1,
+            count_max: 2,
+        };
+        t.guaranteed_len = 1;
         c.tables[LOOT_BARREL] = t;
         c
     }
@@ -294,6 +353,8 @@ mod tests {
                     // rolls_max 2, so at most two of a row stack up.
                     0 => assert!((2..=10).contains(&s.count), "item 0 count {}", s.count),
                     1 => assert!((1..=2).contains(&s.count), "item 1 count {}", s.count),
+                    // The guaranteed row, paid once per open.
+                    2 => assert!((1..=2).contains(&s.count), "item 2 count {}", s.count),
                     other => panic!("item {other} is not in the fixture table"),
                 }
             }
@@ -309,8 +370,9 @@ mod tests {
             lc.roll_into(LOOT_BARREL, &gc, 0xF00D, cell(9, 9), tick, &mut out);
             let units: u32 = out.iter().map(|s| s.count as u32).sum();
             // 1 roll of the cheapest row at worst, 2 rolls of the richest
-            // at best: [1, 10] over the fixture's bounds.
-            assert!((1..=10).contains(&units), "{units} units off one barrel");
+            // at best, plus the guaranteed row's 1..=2: [2, 12] over the
+            // fixture's bounds.
+            assert!((2..=12).contains(&units), "{units} units off one barrel");
         }
     }
 
@@ -343,5 +405,66 @@ mod tests {
         assert_eq!(LootContent::probe_fixture().hits(LOOT_CRATE), 0);
         assert_eq!(LootContent::EMPTY.hits(LOOT_BARREL), 0);
         assert_eq!(LootContent::probe_fixture().hits(MAX_LOOT_TABLES + 1), 0);
+    }
+
+    /// The guaranteed row pays on EVERY open, inside its band, and reaches
+    /// both ends of it — the certainty the reference's scrap ladder is built
+    /// on, and the thing a weighted row could not express.
+    #[test]
+    fn a_guaranteed_row_pays_every_open_inside_its_band() {
+        let gc = GatherContent::probe_fixture();
+        let lc = LootContent::probe_fixture();
+        let (mut lo, mut hi) = (false, false);
+        for tick in 0..512u64 {
+            let mut out = empty();
+            lc.roll_into(LOOT_BARREL, &gc, 0xACE, cell(4, 4), tick, &mut out);
+            let paid: u32 = out
+                .iter()
+                .filter(|s| s.item == 2 && s.count > 0)
+                .map(|s| s.count as u32)
+                .sum();
+            assert!(
+                (1..=2).contains(&paid),
+                "open {tick} paid {paid} of the guaranteed row"
+            );
+            lo |= paid == 1;
+            hi |= paid == 2;
+        }
+        assert!(lo && hi, "a ranged row reaches both ends of its band");
+    }
+
+    /// A FIXED guaranteed row draws nothing, so the weighted half rolls
+    /// bit-identically with or without it — the property that let the
+    /// shipped tables take the column without moving any other roll.
+    #[test]
+    fn a_fixed_guaranteed_row_draws_nothing() {
+        let gc = GatherContent::probe_fixture();
+        let mut plain = LootContent::probe_fixture();
+        plain.tables[LOOT_BARREL].guaranteed_len = 0;
+        let mut fixed = plain;
+        fixed.tables[LOOT_BARREL].guaranteed[0] = LootEntryDef {
+            item: 2,
+            weight: 0,
+            count_min: 3,
+            count_max: 3,
+        };
+        fixed.tables[LOOT_BARREL].guaranteed_len = 1;
+        for tick in 0..256u64 {
+            let (mut a, mut b) = (empty(), empty());
+            plain.roll_into(LOOT_BARREL, &gc, 9, cell(6, 7), tick, &mut a);
+            fixed.roll_into(LOOT_BARREL, &gc, 9, cell(6, 7), tick, &mut b);
+            for (x, y) in a.iter().zip(b.iter()) {
+                if y.item == 2 && y.count > 0 {
+                    continue;
+                }
+                assert_eq!(x, y, "the fixed row moved a weighted stack");
+            }
+            let g: u32 = b
+                .iter()
+                .filter(|s| s.item == 2 && s.count > 0)
+                .map(|s| s.count as u32)
+                .sum();
+            assert_eq!(g, 3, "a fixed row pays exactly its count");
+        }
     }
 }

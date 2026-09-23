@@ -206,6 +206,22 @@ pub struct ResearchCoin {
     pub item: String,
 }
 
+/// `[table]` of `content/research.toml` (research table v1): what a
+/// research table makes and how long it takes.
+///
+/// **One blueprint item for every recipe**, its target in the stack's
+/// `cond` (`sim-core/research.rs` says why) — so the item this names must
+/// be a stack of one with no condition, and minted by no other road
+/// (`validate::structural`): every other mint writes a blank.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResearchTable {
+    pub blueprint: String,
+    /// How long one research takes, whole seconds. The reference's table
+    /// takes ten.
+    pub seconds: u32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Shape {
@@ -555,7 +571,25 @@ pub struct LootTable {
     /// passes are `content/*.toml` only (CLAUDE.md wall 7). See
     /// DECISIONS.md §open, "barrel smash hits".
     pub hits: u32,
+    /// Rows every open pays whatever the draw did (loot guaranteed column
+    /// v0, 2026-09-22). The reference's container ladder is denominated in
+    /// a certain scrap payout — barrel 2, military crate 8, every one at
+    /// 100 % — which no weighted `entries` row can express
+    /// (`reference/RIPLIST.md` row 1i). Optional; a table without one pays
+    /// only its draw.
+    #[serde(default)]
+    pub guaranteed: Vec<LootGuaranteed>,
     pub entries: Vec<LootEntry>,
+}
+
+/// One guaranteed loot row: paid on every open, after the weighted draw.
+/// No weight, because being certain is the whole of what it is.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LootGuaranteed {
+    pub item: String,
+    pub count_min: u32,
+    pub count_max: u32,
 }
 
 /// One animal species (`sim-core/src/mob.rs`).

@@ -46,8 +46,10 @@ node, a bush — five gatherable classes, each with a weak spot that pays a
 bonus for hitting it. Trees fall. Barrels break and **spill 3D items on the
 ground** you walk over and pick up, rather than turning into a sack.
 
-**You craft.** 41 recipes, queued with a time and cancellable, gated by a
-station ladder — nothing, then workbench 1/2/3, then a furnace. The craft
+**You craft.** 45 recipes, queued with a time and cancellable, gated by a
+station ladder — nothing, then workbench 1/2/3, then a furnace — and a
+bench above a recipe's own rung crafts it in half the time, two above in a
+quarter. Eleven recipes need a blueprint first, as in the reference. The craft
 screen is the reference's shape: category rail with live counts, search,
 unaffordable rows dimmed, a detail pane with cost/time/station, a favourite
 star, a quantity stepper, and a queue strip with a countdown.
@@ -91,8 +93,9 @@ survive a server restart — world file and player save are separate, because a
 wipe deletes one and keeps the other.
 
 **And there is a second ladder.** Junk from barrels feeds a **research table**
-(spend a sample and junk to learn a recipe permanently) and a **tech tree**
-at a workbench, and a **recycler** turns loot back into components.
+(put a sample and junk in, wait ten seconds, and take out a blueprint to read
+or to trade) and a **tech tree** at a workbench, and a **recycler** turns
+loot back into components.
 
 **Two animals share the island with you**: a pig that flees and a wolf that
 hunts you, both with voices.
@@ -131,15 +134,15 @@ header so a replay replays the content it was played under — wall 7.
 
 | file | rows | what |
 |---|---|---|
-| `items.toml` | **57** | resources, components, tools, weapons, armour, food, deployables |
-| `recipes.toml` | **41** | the craft ladder, T0 → T3, with times and station gates |
+| `items.toml` | **62** | resources, components, tools, weapons, armour, food, deployables, the blueprint |
+| `recipes.toml` | **45** | the craft ladder, T0 → T3, with times and station gates |
 | `building.toml` | **44** | 11 shapes × 4 tiers, with hp per tier |
 | `deployables.toml` | **14** | bag, hearth, two boxes, fire, furnace, 3 benches, recycler, research table, code lock, 2 doors |
 | `weapons.toml` | **11 + 2** | 7 melee, 2 bows, 1 firearm, 1 throwable; wood and metal arrows |
 | `gatherables.toml` | **5** | tree, stone / metal / sulfur node, bush |
 | `consumables.toml` | **7** | food and medical |
 | `cooking.toml` | **6** | raw → cooked → burnt |
-| `research.toml` | **6** | the tech-tree edges |
+| `research.toml` | **11** | the reference's learned set, one tree per bench |
 | `loot.toml` | **3** | barrel, crate, cache |
 | `armor.toml` | **3** | burlap hood, burlap tunic, roadsign vest |
 | `mobs.toml` | **2** | pig (80 hp), wolf (100 hp) |

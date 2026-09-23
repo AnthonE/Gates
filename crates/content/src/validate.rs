@@ -4,7 +4,7 @@
 
 use crate::schema::*;
 use crate::Content;
-use sim_core::limits::INV_SLOTS;
+use sim_core::limits::{INV_SLOTS, TICK_HZ};
 use std::collections::BTreeSet;
 
 fn check_id(id: &str, prefix: &str, what: &str) -> Result<(), String> {
@@ -821,9 +821,16 @@ pub fn structural(c: &Content) -> Result<(), String> {
             if crate::bake::container_index(&l.container).is_none() {
                 continue;
             }
-            for e in &l.entries {
+            // A guaranteed row pays on every open, so it is as reachable as
+            // any weighted one — more so.
+            let paid = l
+                .entries
+                .iter()
+                .map(|e| &e.item)
+                .chain(l.guaranteed.iter().map(|g| &g.item));
+            for item in paid {
                 for con in &c.consumables {
-                    if con.id != e.item {
+                    if &con.id != item {
                         continue;
                     }
                     gathered_food |= con.food > 0;
@@ -1101,6 +1108,23 @@ pub fn structural(c: &Content) -> Result<(), String> {
             }
             if e.count_min == 0 || e.count_min > e.count_max {
                 return Err(format!("loot `{}`: bad count range on `{}`", l.id, e.item));
+            }
+        }
+        // Guaranteed rows (loot guaranteed column v0): real items, a count
+        // that pays something, and each item once — two certain rows of one
+        // item are one row written twice, and the second is where a price
+        // edit goes to be missed.
+        let mut sure = BTreeSet::new();
+        for g in &l.guaranteed {
+            item_exists(&g.item, &format!("loot `{}` guaranteed row", l.id))?;
+            if g.count_min == 0 || g.count_min > g.count_max {
+                return Err(format!(
+                    "loot `{}`: bad guaranteed count range on `{}`",
+                    l.id, g.item
+                ));
+            }
+            if !sure.insert(g.item.clone()) {
+                return Err(format!("loot `{}`: `{}` is guaranteed twice", l.id, g.item));
             }
         }
     }
@@ -1393,6 +1417,62 @@ pub fn structural(c: &Content) -> Result<(), String> {
             c.research_coin.item
         ));
     }
+    // The table's paper (research table v1). One item for every recipe,
+    // its target in the stack's `cond` — so it must be a stack of ONE (a
+    // second sheet merged into a slot would be a second target with nowhere
+    // to live) with NO ceiling (anything that wears or repairs `cond` would
+    // rewrite what the paper teaches), and minted by no road but the table:
+    // every other mint writes `cond = 0`, which is a blank sheet that
+    // teaches nothing and looks like loot.
+    let t = &c.research_table;
+    let Some(paper) = c.items.iter().find(|i| i.id == t.blueprint) else {
+        return Err(format!(
+            "research: table blueprint `{}` is not an item",
+            t.blueprint
+        ));
+    };
+    if paper.stack != 1 || paper.condition_max != 0 {
+        return Err(format!(
+            "research: blueprint `{}` must be stack 1 with no condition — its \
+             `cond` names what it teaches",
+            t.blueprint
+        ));
+    }
+    let bp = t.blueprint.as_str();
+    let elsewhere = c
+        .recipes
+        .iter()
+        .any(|k| k.output == bp || k.inputs.iter().any(|s| s.item == bp))
+        || c.cooks.iter().any(|k| k.input == bp || k.output == bp)
+        || c.fuel.item == bp
+        || c.fuel.byproduct == bp
+        || c.loot_tables.iter().any(|l| {
+            l.entries.iter().any(|e| e.item == bp) || l.guaranteed.iter().any(|g| g.item == bp)
+        })
+        || c.balance.spawn_kit.iter().any(|s| s.item == bp)
+        || c.mobs.iter().any(|m| m.drops.iter().any(|d| d.item == bp))
+        || c.gatherables
+            .iter()
+            .any(|g| g.output == bp || g.secondary.as_ref().is_some_and(|s| s.output == bp))
+        || c.research.iter().any(|r| r.item == bp)
+        || c.research_coin.item == bp
+        || c.consumables.iter().any(|k| k.id == bp)
+        || c.weapons.iter().any(|w| w.id == bp)
+        || c.armors.iter().any(|a| a.id == bp)
+        || c.deployables.iter().any(|d| d.id == bp);
+    if elsewhere {
+        return Err(format!(
+            "research: blueprint `{bp}` is named by another table — only a \
+             research table may make paper, or it arrives blank"
+        ));
+    }
+    if t.seconds == 0 || t.seconds.saturating_mul(TICK_HZ) > u16::MAX as u32 {
+        return Err(format!(
+            "research: a table research takes {} s — it must be 1..={} s",
+            t.seconds,
+            u16::MAX as u32 / TICK_HZ
+        ));
+    }
     if !c.research.is_empty() {
         // A table nobody can stand at teaches nothing. The deployable is
         // what makes the verb reachable, so its absence is a bake error
@@ -1459,6 +1539,28 @@ pub fn structural(c: &Content) -> Result<(), String> {
                      a prerequisite nobody can learn locks the row forever",
                     r.item
                 ));
+            }
+            // **One tree per bench** (operator, 2026-09-22 — the reference's
+            // own shape, `reference/BLUEPRINTS.md` §2): a parent that unlocks
+            // at another bench is a line to a board the player is not
+            // standing at. The tier is the sim's own reading of the station
+            // (`research::node_tier` of `bake::station_code`), so the rung
+            // refused here is the rung `research::unlock` would demand.
+            let tier_of = |item: &str| {
+                c.recipes
+                    .iter()
+                    .find(|k| k.output == item)
+                    .map(|k| sim_core::research::node_tier(crate::bake::station_code(k.station)))
+            };
+            if let (Some(own), Some(theirs)) = (tier_of(&r.item), tier_of(req)) {
+                if own != theirs {
+                    return Err(format!(
+                        "research: `{}` (workbench {own} tree) requires `{req}` \
+                         (workbench {theirs} tree) — each bench has its own tree, \
+                         so an edge may not cross one",
+                        r.item
+                    ));
+                }
             }
         }
     }

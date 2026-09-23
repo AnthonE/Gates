@@ -390,7 +390,7 @@ fn deployables_ride_the_wire() {
     );
 
     // Graded now, the foundation pays rent, and the feed ack carries the
-    // bill (upkeep v2's readout, wire v73) — the sim's own reading of the
+    // bill (upkeep v2's readout, wire v74) — the sim's own reading of the
     // world, read off the claim cache the tick refreshed, not a client's
     // guess at it.
     act(

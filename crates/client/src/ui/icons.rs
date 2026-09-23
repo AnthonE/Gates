@@ -60,7 +60,7 @@ pub fn icon_stem(
 /// not do I/O to find out what it has — and because a gate can then compare
 /// it against the directory and fail on either half drifting
 /// (`tests/ui.rs` §G).
-pub const STEMS: [&str; 92] = [
+pub const STEMS: [&str; 93] = [
     // the shape wheel
     "metal_window_bars",
     "garage_door",
@@ -108,6 +108,7 @@ pub const STEMS: [&str; 92] = [
     "rope",
     "tarp",
     "junk",
+    "blueprint",
     "rock",
     "torch",
     "wooden_spear",
