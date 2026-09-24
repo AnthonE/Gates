@@ -960,7 +960,7 @@ fn impact_names_the_surface_then_x_then_z_then_y() {
     // broke on, not the shooter's own cell, so it may land a quantum
     // either side. Slack this tight still cannot absorb a swap — the two
     // axes are thousands of quanta apart.
-    let (got_x, got_z) = ((im.a & 0x00FF_FFFF) as i32, im.b as i32);
+    let (got_x, got_z) = ((im.a & 0x000F_FFFF) as i32, im.b as i32);
     assert!(
         (got_x - want_x).abs() <= 1,
         "EV_IMPACT.a's low 24 bits are the impact's X ({want_x}), got \

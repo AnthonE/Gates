@@ -670,10 +670,15 @@ pub fn mark(
         let Some((kind, size)) = decal_kind(c.weapon, c.matter) else {
             continue;
         };
-        if kind == Kind::Blood {
-            // Behind the victim, on whatever they stand on.
-            let back = (-c.normal).with_y(0.0).normalize_or(Vec3::X);
-            let p = c.at + back * (0.2 + 0.5 * pool.roll());
+        if matches!(kind, Kind::Blood | Kind::Scorch) {
+            // Blood behind the victim, a scorch under the charge — both on
+            // whatever is underfoot there.
+            let p = if kind == Kind::Blood {
+                let back = (-c.normal).with_y(0.0).normalize_or(Vec3::X);
+                c.at + back * (0.2 + 0.5 * pool.roll())
+            } else {
+                c.at
+            };
             let y = surface::floor_below(&world, cols, p);
             if y <= terrain::SEA_LEVEL {
                 continue;

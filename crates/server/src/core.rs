@@ -2463,8 +2463,7 @@ impl ShardCore {
                     // up and the encoder would refuse it, which is the
                     // failure being loud rather than wrong; `a`'s cell is
                     // plain because the island starts at zero.
-                    let surf = (ev.a >> 24) as u8;
-                    let qx = (ev.a & 0x00FF_FFFF) as i32;
+                    let (surf, kind, qx) = sim_core::world::impact_parts(ev.a);
                     let qz = ev.b as i32;
                     let qy = ev.c as i32;
                     // Filtered on the **point**, not on a body — see
@@ -2476,7 +2475,7 @@ impl ShardCore {
                     // the band takes a slot from a mark at the player's
                     // feet.
                     let at = interest::body_cm(qx, qz);
-                    match encode_event_impact(qx, qy, qz, surf, &mut self.ev_buf) {
+                    match encode_event_impact(qx, qy, qz, surf, kind, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {

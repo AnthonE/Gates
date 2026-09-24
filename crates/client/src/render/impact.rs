@@ -74,7 +74,7 @@ use crate::sound::Cue;
 use crate::ui::interact::SwingPick;
 use sim_core::build::{MAT_METAL, MAT_STONE, MAT_TWIG, MAT_WOOD};
 use sim_core::movement::{POS_XZ_Q, POS_Y_Q};
-use sim_core::ranged::{SURF_GROUND, SURF_WORLD};
+use sim_core::ranged::{IMPACT_ARROW, IMPACT_BLAST, IMPACT_MELEE, SURF_GROUND, SURF_WORLD};
 use sim_core::terrain::{self, Occupant};
 
 /// Chips drawable at once. A *view* cap, not a world one — `decal::MARKS`'s
@@ -817,28 +817,24 @@ impl Contacts {
     }
 }
 
-/// How near a body that swung this frame must stand to an impact for the
-/// impact to be that swing's, metres — a melee reach plus the ray's probe.
-/// It is how a remote hatchet blow is told from a bullet until the wire
-/// names the weapon.
-pub const SWING_REACH_M: f32 = 3.5;
-
-/// What delivered an impact nobody claimed: a swing if a swinger stood within
-/// [`SWING_REACH_M`] of it this frame, a shot otherwise.
-pub fn weapon_of(mine: bool, swinger_near: bool) -> Weapon {
-    if mine || swinger_near {
-        Weapon::Melee
-    } else {
-        Weapon::Bullet
+/// What struck, from `EV_IMPACT`'s kind field (`sim_core::ranged::IMPACT_*`).
+pub fn weapon_of(kind: u8) -> Weapon {
+    match kind {
+        IMPACT_ARROW => Weapon::Arrow,
+        IMPACT_MELEE => Weapon::Melee,
+        IMPACT_BLAST => Weapon::Blast,
+        _ => Weapon::Bullet,
     }
 }
 
 /// Resolve every blow the feed reports into this frame's [`Contacts`].
 ///
 /// Reads `Res<Feed>` and never `pop_*`, for the single-drain reason
-/// `feed.rs`'s header narrates and `tests/sound.rs` greps for. Where and
-/// what: the point is the sim's (`EV_IMPACT`) or the pick's or the drawn
-/// body's; the facing and the matter are `surface`'s.
+/// `feed.rs`'s header narrates and `tests/sound.rs` greps for. Where, what
+/// struck and what was struck are the sim's (`EV_IMPACT`, wire v76 — blasts
+/// included); the facing and the matter are `surface`'s. A blow on a body is
+/// `EV_HIT`, the attacker's own fact, so blood is drawn by the hand that
+/// landed it, at the body it drew.
 #[allow(clippy::too_many_arguments)]
 pub fn contacts(
     mut out: ResMut<Contacts>,
@@ -855,38 +851,25 @@ pub fn contacts(
     let core = &net.session.core;
     let own_swing = feed.swings().contains(&core.player_id);
     let pick = &swung.0;
-    let swinger_near = |at: Vec3| {
-        feed.swings().iter().any(|&id| {
-            let p = if id == core.player_id {
-                Some(eye.pos)
-            } else {
-                bodies
-                    .iter()
-                    .find(|(b, _)| b.0 == id)
-                    .map(|(_, gt)| gt.translation())
-            };
-            p.is_some_and(|p| p.distance_squared(at) <= SWING_REACH_M * SWING_REACH_M)
-        })
-    };
 
     // ── Every surface the sim says was struck ────────────────────────────
     //
-    // The only source whose position is the SIM's rather than recovered, so
-    // when this frame's own swing is among them the impact's point is the
+    // When this frame's own swing is among them the impact's point is the
     // one the burst takes (`same_blow`).
     let mut claimed = false;
-    for &(qx, qy, qz, surf) in feed.impacts() {
+    for im in feed.impacts() {
         let mut at = Vec3::new(
-            qx as f32 * POS_XZ_Q,
-            qy as f32 * POS_Y_Q,
-            qz as f32 * POS_XZ_Q,
+            im.qx as f32 * POS_XZ_Q,
+            im.qy as f32 * POS_Y_Q,
+            im.qz as f32 * POS_XZ_Q,
         );
-        let mine = own_swing && surf == SURF_WORLD && same_blow(pick, at);
+        let weapon = weapon_of(im.kind);
+        let mine = own_swing && im.surf == SURF_WORLD && same_blow(pick, at);
         claimed |= mine;
         let (mut normal, mut matter) = match world.as_deref() {
             Some(w) => {
-                let n = surface::normal_at(w, core.pieces.cols(), at.x, at.y, at.z, surf);
-                (n, surface::matter_at(w, core, at, surf, n))
+                let n = surface::normal_at(w, core.pieces.cols(), at.x, at.y, at.z, im.surf);
+                (n, surface::matter_at(w, core, at, im.surf, n))
             }
             None => (Vec3::Y, Matter::Dirt),
         };
@@ -899,18 +882,24 @@ pub fn contacts(
             at.y = terrain::SEA_LEVEL;
             normal = Vec3::Y;
         }
+        // A blast throws up and out, whatever it went off against.
+        let away = if weapon == Weapon::Blast {
+            Vec3::Y
+        } else {
+            normal
+        };
         out.push(Contact {
             at,
-            away: normal,
+            away,
             normal,
-            surf,
+            surf: im.surf,
             matter,
             kind: if mine {
                 ContactKind::Swing
             } else {
                 ContactKind::Impact
             },
-            weapon: weapon_of(mine, swinger_near(at)),
+            weapon,
             mark: !matches!(matter, Matter::Water | Matter::Plant),
         });
     }
@@ -956,7 +945,7 @@ pub fn contacts(
             continue;
         };
         // The entry face looks back at the attacker, and that is where the
-        // spray is thrown; the mark lands behind the victim.
+        // spray is thrown; the mark lands behind the body.
         let toward = (eye.pos - at).normalize_or(Vec3::Y);
         out.push(Contact {
             at,

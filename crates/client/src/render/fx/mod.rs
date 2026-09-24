@@ -26,7 +26,7 @@ use bevy::camera::visibility::NoFrustumCulling;
 use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
 
-use super::impact::Contact;
+use super::impact::{Contact, Weapon};
 use super::rig::EyeCam;
 use pool::{pool_mesh, Cam, Pool};
 
@@ -37,11 +37,45 @@ pub const GLOW_POOL: usize = 512;
 /// every one of these is sorted each frame.
 pub const SOFT_POOL: usize = 256;
 
-/// The two pools and the meshes they draw into.
+/// Light flashes that can burn at once — a blast, a muzzle. Pooled point
+/// lights, hidden when idle and never despawned.
+pub const FLASH_LIGHTS: usize = 4;
+
+/// A light flash: peak intensity (lumens), range (metres), life (seconds),
+/// linear colour.
+#[derive(Clone, Copy, Debug)]
+pub struct FlashDef {
+    pub lumens: f32,
+    pub range: f32,
+    pub life: f32,
+    pub color: [f32; 3],
+}
+
+/// A satchel going off: a hard orange light over the whole base.
+pub const BLAST_FLASH: FlashDef = FlashDef {
+    lumens: 400_000.0,
+    range: 30.0,
+    life: 0.45,
+    color: [1.0, 0.62, 0.3],
+};
+
+/// One burning flash.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Flash {
+    pub at: Vec3,
+    pub left: f32,
+    pub life: f32,
+    pub lumens: f32,
+    pub range: f32,
+    pub color: [f32; 3],
+}
+
+/// The two pools and the meshes they draw into, and the flash lights.
 #[derive(Resource)]
 pub struct Fx {
     pub glow: Pool,
     pub soft: Pool,
+    pub flashes: [Flash; FLASH_LIGHTS],
     glow_mesh: Handle<Mesh>,
     soft_mesh: Handle<Mesh>,
 }
@@ -51,6 +85,7 @@ impl Default for Fx {
         Self {
             glow: Pool::new(GLOW_POOL, false),
             soft: Pool::new(SOFT_POOL, true),
+            flashes: [Flash::default(); FLASH_LIGHTS],
             glow_mesh: Handle::default(),
             soft_mesh: Handle::default(),
         }
@@ -62,7 +97,13 @@ impl Fx {
     /// Returns how many lit chips go with it (`impact::Chips` owns those).
     pub fn impact(&mut self, c: &Contact, eye: Vec3) -> usize {
         let def = table::effect(c.weapon, c.matter);
-        let lod = table::lod(c.at.distance(eye));
+        let dist = c.at.distance(eye);
+        let lod = if c.weapon == Weapon::Blast {
+            self.flash(c.at + Vec3::Y * 0.5, BLAST_FLASH);
+            table::lod_far(dist)
+        } else {
+            table::lod(dist)
+        };
         for (layer, n) in def.layers {
             let n = table::scaled(n, lod);
             if n == 0 {
@@ -78,12 +119,35 @@ impl Fx {
         table::scaled(def.chips, lod)
     }
 
+    /// Light a flash at `at` — the free light, or the one closest to out.
+    pub fn flash(&mut self, at: Vec3, def: FlashDef) {
+        let i = self
+            .flashes
+            .iter()
+            .enumerate()
+            .min_by(|a, b| a.1.left.total_cmp(&b.1.left))
+            .map_or(0, |(i, _)| i);
+        self.flashes[i] = Flash {
+            at,
+            left: def.life,
+            life: def.life,
+            lumens: def.lumens,
+            range: def.range,
+            color: def.color,
+        };
+    }
+
     /// Forget every particle — the world they were thrown in has gone.
     pub fn clear(&mut self) {
         self.glow.clear();
         self.soft.clear();
+        self.flashes = [Flash::default(); FLASH_LIGHTS];
     }
 }
+
+/// A flash light's entity; `0` is its index into [`Fx::flashes`].
+#[derive(Component)]
+pub struct FlashLight(pub usize);
 
 /// One of the two particle meshes.
 #[derive(Component)]
@@ -124,6 +188,19 @@ pub fn setup(
         cull_mode: None,
         ..default()
     });
+    for i in 0..FLASH_LIGHTS {
+        commands.spawn((
+            FlashLight(i),
+            PointLight {
+                intensity: 0.0,
+                range: 1.0,
+                shadows_enabled: false,
+                ..default()
+            },
+            Transform::default(),
+            Visibility::Hidden,
+        ));
+    }
     for (is_glow, mesh, mat) in [
         (false, fx.soft_mesh.clone(), soft),
         (true, fx.glow_mesh.clone(), glow),
@@ -168,6 +245,7 @@ pub fn draw(
         soft,
         glow_mesh,
         soft_mesh,
+        ..
     } = &mut *fx;
     for (m, mut tf, mut gt) in &mut q {
         // The additive mesh sorts at the eye, the soft one a metre ahead of
@@ -194,4 +272,36 @@ pub fn draw(
 /// Retire every particle on the way out of a world.
 pub fn forget(mut fx: ResMut<Fx>) {
     fx.clear();
+}
+
+/// Burn the flashes down: a hard attack and a quadratic fall, hidden when out.
+pub fn flash(
+    time: Res<Time>,
+    mut fx: ResMut<Fx>,
+    mut q: Query<(
+        &FlashLight,
+        &mut PointLight,
+        &mut Transform,
+        &mut Visibility,
+    )>,
+) {
+    let dt = time.delta_secs().min(0.1);
+    for (FlashLight(i), mut light, mut tf, mut vis) in &mut q {
+        let Some(f) = fx.flashes.get_mut(*i) else {
+            continue;
+        };
+        if f.left <= 0.0 {
+            if *vis != Visibility::Hidden {
+                *vis = Visibility::Hidden;
+            }
+            continue;
+        }
+        f.left = (f.left - dt).max(0.0);
+        let k = (f.left / f.life.max(1e-4)).powi(2);
+        light.intensity = f.lumens * k;
+        light.range = f.range;
+        light.color = Color::linear_rgb(f.color[0], f.color[1], f.color[2]);
+        tf.translation = f.at;
+        *vis = Visibility::Visible;
+    }
 }

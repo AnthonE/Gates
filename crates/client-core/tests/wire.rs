@@ -40,8 +40,8 @@
 //! fail, so no two fields may share a value.
 
 use client_core::core::{
-    ClientCore, HitFact, APPLIED2_CONT, APPLIED2_MOVE, APPLIED_BAGS, APPLIED_DEATH, APPLIED_HIT,
-    NO_VICTIM,
+    ClientCore, HitFact, Impact, APPLIED2_CONT, APPLIED2_MOVE, APPLIED2_OWN_STRUCT_HIT,
+    APPLIED_BAGS, APPLIED_DEATH, APPLIED_HIT, NO_VICTIM,
 };
 use protocol::{
     encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
@@ -54,7 +54,9 @@ use sim_core::backpack::{BAG_GONE_DESPAWN, BAG_GONE_EMPTIED};
 use sim_core::collide::Part;
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{addr, CONT_BAG, CONT_BOX, CONT_SELF, REFUSE_M_NO_ROOM};
-use sim_core::ranged::{SURF_GROUND, SURF_WORLD};
+use sim_core::ranged::{
+    IMPACT_ARROW, IMPACT_BLAST, IMPACT_BULLET, SURF_BUILT, SURF_GROUND, SURF_WORLD,
+};
 use sim_core::world::{DEATH_BY_ARROW, DEATH_BY_HAND};
 
 /// The player this core is. Distinct from every other id below, because
@@ -381,53 +383,61 @@ fn an_impact_crosses_whole_and_drains_once() {
     assert_eq!(c.pop_impact(), None, "the impact ring starts empty");
 
     // Two axes distinguishable in both halves, and a Y below datum.
-    let (qx, qy, qz, surf) = (0xA179i32, -312i32, 0x58A3i32, SURF_WORLD);
-    let len = encode_event_impact(qx, qy, qz, surf, &mut buf).unwrap();
+    let want = Impact {
+        qx: 0xA179,
+        qy: -312,
+        qz: 0x58A3,
+        surf: SURF_WORLD,
+        kind: IMPACT_BULLET,
+    };
+    let len =
+        encode_event_impact(want.qx, want.qy, want.qz, want.surf, want.kind, &mut buf).unwrap();
     feed(&mut c, &buf[..len]);
     assert_eq!(
         c.pop_impact(),
-        Some((qx, qy, qz, surf)),
+        Some(want),
         "the impact arrived with an axis in the wrong seat, or a Y that \
          lost its sign"
     );
     assert_eq!(c.pop_impact(), None, "the impact ring must drain");
 }
 
+/// Wire v76: the weapon that struck crosses beside the surface without
+/// disturbing it — a blast on a wall, a bullet in the ground.
+#[test]
+fn an_impacts_weapon_crosses_whole() {
+    let mut c = core();
+    let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+    for (surf, kind) in [(SURF_BUILT, IMPACT_BLAST), (SURF_GROUND, IMPACT_BULLET)] {
+        let len = encode_event_impact(1000, 250, 2000, surf, kind, &mut buf).unwrap();
+        feed(&mut c, &buf[..len]);
+        let got = c.pop_impact().expect("the impact reaches the ring");
+        assert_eq!((got.surf, got.kind), (surf, kind));
+    }
+}
+
 /// A surface kind this build does not know is refused, not guessed at.
 ///
 /// `SURF_BITS` is two, the sim makes three kinds, and the fourth value is
-/// dead. Dead is not the same as spare: a decoder that accepted it would
-/// turn a forged byte into a fact, and the mark it produced would be
-/// whatever the renderer's fallback happens to be. Both ends refuse —
-/// `encode_event_impact` returns `Range`, and this is the decoder's half.
-///
-/// **The forge is bit-exact and paired with a control**, `a_shot_with_no_
-/// speed_is_malformed`'s discipline: the header is 10 bits and the writer
-/// packs LSB-first, so the fields land at bit 10 (qx, 17), 27 (qy, 14), 41
-/// (qz, 17) and **58 (surf, 2)**. Setting both surf bits makes 3; the
-/// control sets only the low one, which is `SURF_WORLD` and must still
-/// decode.
+/// dead: a decoder that accepted it would turn a forged byte into a fact.
+/// The fields land at bit 10 (qx, 17), 27 (qy, 14), 41 (qz, 17), **58
+/// (surf, 2)** and 60 (kind, 2). Setting both surf bits makes 3; the control
+/// sets only the low one, which is `SURF_WORLD` and must still decode.
 #[test]
 fn an_unknown_impact_surface_is_malformed() {
     let mut c = core();
     let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
-    let len = encode_event_impact(0xA179, -312, 0x58A3, SURF_GROUND, &mut buf).unwrap();
+    let len =
+        encode_event_impact(0xA179, -312, 0x58A3, SURF_GROUND, IMPACT_ARROW, &mut buf).unwrap();
 
-    // Control: bit 58 is byte 7, offset 2 — set it alone and the surface
-    // reads as `SURF_WORLD`, a kind this build knows.
     let mut control = buf[..len].to_vec();
     control[7] |= 0b0000_0100;
     assert!(
         c.on_stream(&control).is_ok(),
         "the control must decode, or the forge below proves nothing"
     );
-    assert_eq!(
-        c.pop_impact().map(|i| i.3),
-        Some(SURF_WORLD),
-        "and it must reach the ring as the kind the control set"
-    );
+    assert_eq!(c.pop_impact().map(|i| i.surf), Some(SURF_WORLD));
 
-    // Forge: set both bits, which is the fourth value nothing emits.
     let mut forged = buf[..len].to_vec();
     forged[7] |= 0b0000_1100;
     assert!(
@@ -738,17 +748,41 @@ fn a_struct_hit_carries_its_address_and_never_guesses_a_maximum() {
         max, 0,
         "a row whose defs have not arrived must report max 0, never a guess"
     );
+    // Broadcast to the island (wire v76), so it is nobody's hitmarker.
+    assert_eq!(
+        c.pop_hit(),
+        None,
+        "anyone's raid must not light this crosshair"
+    );
+}
+
+/// The raider's own hitmarker is the `EV_HIT` with no victim sent to them
+/// alone — no rung, because a wall is not a body — and the island's
+/// `StructHit` behind it is then latched as their own wall for the HUD.
+#[test]
+fn an_own_raid_hit_marks_and_latches_the_wall() {
+    let mut c = core();
+    let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+    let len = encode_event_hit(NO_VICTIM, Part::Chest, 40, &mut buf).unwrap();
+    feed(&mut c, &buf[..len]);
+    let len = encode_event_struct_hit(false, 12, 34, 5, 1, 9, 40, 60, &mut buf).unwrap();
+    feed(&mut c, &buf[..len]);
+    assert_ne!(
+        c.applied2() & APPLIED2_OWN_STRUCT_HIT,
+        0,
+        "the wall is this player's"
+    );
     assert_eq!(
         c.pop_hit(),
         Some(HitFact {
             victim: NO_VICTIM,
-            // No rung: a wall has no head and no legs. `None` and not
-            // `Some(Chest)`, so merging a frame cannot promote a leg hit.
             part: None,
             damage: 40
         }),
-        "a raid swing must still feed the hitmarker ring, and a wall is not a body"
+        "the raider's hitmarker has no rung"
     );
+    assert_eq!(c.own_struct_hit.0, 12);
+    assert_eq!(c.own_struct_hit.4, 60);
 }
 
 /// Vitals, and the reading that must be refused rather than clamped: the

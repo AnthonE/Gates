@@ -117,6 +117,17 @@ pub fn lod(dist: f32) -> f32 {
     }
 }
 
+/// [`lod`] for a blast, which is seen and felt much further away.
+pub fn lod_far(dist: f32) -> f32 {
+    if dist <= 120.0 {
+        1.0
+    } else if dist <= 250.0 {
+        0.5
+    } else {
+        0.25
+    }
+}
+
 /// `count` scaled by `lod`, never rounding a non-empty layer to nothing
 /// while it is in range at all.
 pub fn scaled(count: u8, lod: f32) -> usize {

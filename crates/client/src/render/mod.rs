@@ -1037,6 +1037,7 @@ impl Plugin for GatesRenderPlugin {
                 impact::contacts.after(feed::drain).after(verbs::resolve),
                 impact::strike.after(impact::contacts),
                 impact::fly.after(impact::strike),
+                fx::flash.after(impact::strike),
             )
                 .run_if(world_running)
                 .run_if(move || !plate),

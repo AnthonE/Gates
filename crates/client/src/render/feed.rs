@@ -262,7 +262,7 @@ pub struct Feed {
     /// rings — every arrow on the island that stops on something lands here,
     /// not only this player's. Cosmetic only: what reads this leaves a mark,
     /// and a mark decides nothing.
-    impacts: [(i32, i32, i32, u8); FEED_CAP],
+    impacts: [client_core::core::Impact; FEED_CAP],
     n_impacts: usize,
     /// Bodies whose arm started to move this frame, by wire entity id
     /// (broadcast, wire v47). Cosmetic and unvalidated: an id naming no
@@ -355,7 +355,7 @@ impl Feed {
         &self.shots[..self.n_shots]
     }
     /// Arrow impacts heard this frame, oldest first.
-    pub fn impacts(&self) -> &[(i32, i32, i32, u8)] {
+    pub fn impacts(&self) -> &[client_core::core::Impact] {
         &self.impacts[..self.n_impacts]
     }
 

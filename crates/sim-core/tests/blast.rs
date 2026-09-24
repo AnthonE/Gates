@@ -190,6 +190,42 @@ fn wait_out(w: &mut World) {
     assert_eq!(w.charges.len(), 0, "the fuse must have run out");
 }
 
+/// A detonation announces itself once, as a blast impact at the charge
+/// (wire v76), before the damage it does — every client in range draws the
+/// fireball and the scorch off this one fact.
+#[test]
+fn a_detonation_is_one_blast_impact_at_the_charge() {
+    let (mut w, cx, cz) = raid_world();
+    plant(&mut w, cx, cz, LOC_EDGE_XLO);
+    w.players[0].body = Body::at(
+        SEED,
+        hv(SEED),
+        cell_center(cx, cz).0 + 20.0,
+        cell_center(cx, cz).1,
+    );
+    let mut blasts = Vec::new();
+    for _ in 0..62 {
+        w.tick(&[]);
+        for e in w.events.entries() {
+            if e.code == sim_core::world::EV_IMPACT {
+                let (_, kind, qx) = sim_core::world::impact_parts(e.a);
+                if kind == sim_core::ranged::IMPACT_BLAST {
+                    blasts.push(qx);
+                }
+            }
+        }
+    }
+    assert_eq!(w.charges.len(), 0, "the fuse must have run out");
+    assert_eq!(blasts.len(), 1, "one charge, one blast");
+    let x = blasts[0] as f32 * sim_core::movement::POS_XZ_Q;
+    let wall_x = cx as f32 * sim_core::build::BUILD_CELL_M;
+    let d = x - wall_x;
+    assert!(
+        d * d < 1.6 * 1.6,
+        "the blast is at the charge: {x} vs {wall_x}"
+    );
+}
+
 /// The planted wall takes the full structure number — the falloff's zero
 /// point is the anchor, so anchor 1's `piece hp ÷ structure` arithmetic
 /// is exactly what it was before the blast existed. The foundation one

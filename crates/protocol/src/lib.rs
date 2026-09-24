@@ -935,7 +935,7 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// the regrowing trees a late joiner needs; the slot-respawn event grows a
 /// sapling bit and the tick it is grown by; and the death cause admits 7
 /// (`DEATH_BY_COLD`) inside its three bits.
-pub const PROTO_VER: u16 = 75;
+pub const PROTO_VER: u16 = 76;
 
 /// This game's slug in the elo catalog.
 ///

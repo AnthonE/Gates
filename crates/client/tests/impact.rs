@@ -643,12 +643,13 @@ fn the_pool_empties_on_the_way_out() {
     assert_eq!(p.bursts, 0);
 }
 
-/// An impact nobody claimed is a swing's only when a swinger stood in reach
-/// of it; everything else is a shot until the wire names the weapon.
+/// The wire names what struck (v76), and the client reads it straight.
 #[test]
-fn an_unclaimed_impact_is_a_shot_unless_a_swinger_stood_there() {
+fn the_wire_names_the_weapon() {
     use client::render::impact::{weapon_of, Weapon};
-    assert_eq!(weapon_of(true, false), Weapon::Melee);
-    assert_eq!(weapon_of(false, true), Weapon::Melee);
-    assert_eq!(weapon_of(false, false), Weapon::Bullet);
+    use sim_core::ranged::{IMPACT_ARROW, IMPACT_BLAST, IMPACT_BULLET, IMPACT_MELEE};
+    assert_eq!(weapon_of(IMPACT_ARROW), Weapon::Arrow);
+    assert_eq!(weapon_of(IMPACT_BULLET), Weapon::Bullet);
+    assert_eq!(weapon_of(IMPACT_MELEE), Weapon::Melee);
+    assert_eq!(weapon_of(IMPACT_BLAST), Weapon::Blast);
 }

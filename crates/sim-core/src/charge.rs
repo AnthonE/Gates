@@ -437,6 +437,19 @@ fn detonate(
     let ay = crate::collide::col_base_y(seed, haven, pieces.cols(), c.cx, c.cz)
         + crate::build::level_y(c.level);
     let blast = c.blast_cm;
+    // The blast itself, before what it breaks: every client in range draws
+    // the fireball and the scorch at the charge, and a piece that falls to
+    // it has its removal behind the flash that explains it.
+    events.push(
+        crate::world::EV_IMPACT,
+        crate::world::impact_a(
+            crate::ranged::SURF_BUILT,
+            crate::ranged::IMPACT_BLAST,
+            crate::fmath::floor_i32(ax / crate::movement::POS_XZ_Q),
+        ),
+        crate::fmath::floor_i32(az / crate::movement::POS_XZ_Q) as u32,
+        crate::fmath::floor_i32((ay + 0.8) / crate::movement::POS_Y_Q) as u32,
+    );
 
     // Distance from the epicentre to a point, centimetres. Planar plus
     // vertical in one metric, f32 sqrt (wall 1's list) cast back to the

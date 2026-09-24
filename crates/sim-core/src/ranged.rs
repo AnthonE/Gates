@@ -352,6 +352,35 @@ pub const SURF_WORLD: u8 = 1;
 /// cell_planes_stop_shot` is what makes the sentence true; `tests/shoot.rs`'
 /// floor block is what keeps it that way.
 pub const SURF_BUILT: u8 = 2;
+/// What delivered an `EV_IMPACT` — its kind field. Picks the mark (a hole,
+/// a gash, a scorch) and the size of what the client throws.
+pub const IMPACT_ARROW: u8 = 0;
+pub const IMPACT_BULLET: u8 = 1;
+pub const IMPACT_MELEE: u8 = 2;
+pub const IMPACT_BLAST: u8 = 3;
+
+/// Push an `EV_IMPACT` at `o + s·t` (millimetres), in the body lane's
+/// quanta — the one conversion every shot's stop and entry point shares.
+pub(crate) fn push_impact(
+    events: &mut EventQueue,
+    surf: u8,
+    kind: u8,
+    o: (f32, f32, f32),
+    s: (f32, f32, f32),
+    t: f32,
+) {
+    let qx = crate::fmath::floor_i32((o.0 + s.0 * t) / (POS_XZ_Q * MM_PER_M));
+    let qy = crate::fmath::floor_i32((o.1 + s.1 * t) / (POS_Y_Q * MM_PER_M));
+    let qz = crate::fmath::floor_i32((o.2 + s.2 * t) / (POS_XZ_Q * MM_PER_M));
+    events.push(
+        EV_IMPACT,
+        crate::world::impact_a(surf, kind, qx),
+        qz as u32,
+        // Signed: a shot can stop below sea level. It crosses as the
+        // two's-complement pattern and the encoder reads it back `as i32`.
+        qy as u32,
+    );
+}
 
 /// One arrow in flight. `life == 0` ⇔ the slot is free, which is also what
 /// keeps it out of `state_hash` (see `World::state_hash`).
@@ -869,21 +898,13 @@ pub fn step(
             // millimetres, because the wire already has windows and a range
             // check for those and a decal is 20 cm across — a unit no eye
             // can find is a unit not worth three bits an axis.
-            let qx = crate::fmath::floor_i32((ox + sx * stop_t) / (POS_XZ_Q * MM_PER_M));
-            let qy = crate::fmath::floor_i32((oy + sy * stop_t) / (POS_Y_Q * MM_PER_M));
-            let qz = crate::fmath::floor_i32((oz + sz * stop_t) / (POS_XZ_Q * MM_PER_M));
-            events.push(
-                EV_IMPACT,
-                (kind as u32) << 24 | qx as u32,
-                qz as u32,
-                // Signed, and the only field in the lane that is: an arrow
-                // can stop below sea level and `qy` is negative there. It
-                // crosses as the two's-complement bit pattern and the
-                // encoder reads it back with `as i32` before biasing it into
-                // the wire's window — a reinterpretation, never a cast that
-                // loses anything. `a`'s `qx` needs no such note: the island
-                // starts at zero.
-                qy as u32,
+            push_impact(
+                events,
+                kind,
+                IMPACT_ARROW,
+                (ox, oy, oz),
+                (sx, sy, sz),
+                stop_t,
             );
             // …and the wall takes it, on `hitscan`'s ordering and for its
             // reason. `(ox, oz)` is the arrow's position at the start of
@@ -897,6 +918,7 @@ pub fn step(
                         structure: a.structure,
                         from_x: ox / MM_PER_M,
                         from_z: oz / MM_PER_M,
+                        by: a.owner,
                     };
                     n_chips += 1;
                 }
@@ -982,6 +1004,9 @@ pub struct Chip {
     /// which is what the rule is actually about.
     pub from_x: f32,
     pub from_z: f32,
+    /// Who struck it: the raid's own hitmarker is theirs alone (`EV_HIT`
+    /// with no victim), never the island's.
+    pub by: u32,
 }
 
 /// How far along `s` from `o` the **world** stops a shot, and what stopped
@@ -1727,14 +1752,13 @@ pub fn hitscan(
             // arithmetic and `step`'s reason for the units. Reached only
             // when no body was hit, so a decal is never drawn for a shot
             // that found flesh.
-            let qx = crate::fmath::floor_i32((ox + sx * stop_t) / (POS_XZ_Q * MM_PER_M));
-            let qy = crate::fmath::floor_i32((oy + sy * stop_t) / (POS_Y_Q * MM_PER_M));
-            let qz = crate::fmath::floor_i32((oz + sz * stop_t) / (POS_XZ_Q * MM_PER_M));
-            events.push(
-                EV_IMPACT,
-                (kind as u32) << 24 | qx as u32,
-                qz as u32,
-                qy as u32,
+            push_impact(
+                events,
+                kind,
+                IMPACT_BULLET,
+                (ox, oy, oz),
+                (sx, sy, sz),
+                stop_t,
             );
             // …and the wall takes it. After the impact, so the order on the
             // wire is *where it hit* then *what that cost* — and so a piece
@@ -1748,6 +1772,7 @@ pub fn hitscan(
                         structure: def.structure,
                         from_x: ox / MM_PER_M,
                         from_z: oz / MM_PER_M,
+                        by: id,
                     };
                     n_chips += 1;
                 }

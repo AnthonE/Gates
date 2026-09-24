@@ -614,6 +614,9 @@ pub fn remote_steps(
 /// a chop in the next clearing is heard as a chop.
 pub fn impacts(contacts: Res<super::impact::Contacts>, mut sound: ResMut<Sound>) {
     for c in contacts.iter() {
+        if c.weapon == super::impact::Weapon::Blast {
+            continue;
+        }
         if let Some(cue) = super::impact::impact_cue(c.matter) {
             sound.play(Request::at(cue, [c.at.x, c.at.y, c.at.z]));
         }

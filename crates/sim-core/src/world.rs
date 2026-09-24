@@ -164,6 +164,28 @@ pub const EV_HIT: u8 = 15;
 /// below it is a `u16` and occupies the whole low half.
 pub const HIT_PART_SHIFT: u32 = 16;
 
+/// `EV_HIT`'s victim for a blow on a structure: no body, the attacker's
+/// hitmarker only (`client_core::core::NO_VICTIM`'s value).
+pub const STRUCT_VICTIM: u32 = u32::MAX;
+
+/// Where `EV_IMPACT`'s weapon kind sits in `a`: below the surface's byte,
+/// above `qx` (`POS_XZ_BITS` = 17 of the low 20).
+pub const IMPACT_KIND_SHIFT: u32 = 20;
+
+/// `EV_IMPACT`'s `a`: surface << 24 | weapon kind << 20 | x quanta.
+pub fn impact_a(surf: u8, kind: u8, qx: i32) -> u32 {
+    (surf as u32) << 24 | ((kind as u32) & 0xF) << IMPACT_KIND_SHIFT | (qx as u32 & 0xF_FFFF)
+}
+
+/// The three parts of an `EV_IMPACT`'s `a`: (surface, weapon kind, x).
+pub fn impact_parts(a: u32) -> (u8, u8, i32) {
+    (
+        (a >> 24) as u8,
+        ((a >> IMPACT_KIND_SHIFT) & 0xF) as u8,
+        (a & 0xF_FFFF) as i32,
+    )
+}
+
 /// Pack an `EV_HIT` payload: the part above the damage it already scaled.
 #[inline]
 pub fn hit_c(part: crate::collide::Part, damage: u16) -> u32 {
@@ -447,10 +469,16 @@ pub const EV_KNOWN: u8 = 36;
 /// cadence: at most one per `SWING_INTERVAL_TICKS` per player.
 pub const EV_GATHER_REFUSED: u8 = 37;
 
-/// EV_IMPACT: a = `ranged::SURF_*` << 24 | the stop point's x in `POS_XZ_Q`
-/// quanta, b = its z in the same, c = its y in `POS_Y_Q` quanta **as a
-/// signed `i32` reinterpreted** — an arrow can stop below sea level, and
-/// this is the one field in the lane that can be negative.
+/// EV_IMPACT: a = [`impact_a`]`(ranged::SURF_*, ranged::IMPACT_*, x)` — the
+/// surface, what struck it (arrow, bullet, melee, blast) and the point's x in
+/// `POS_XZ_Q` quanta; b = its z in the same, c = its y in `POS_Y_Q` quanta
+/// **as a signed `i32` reinterpreted** — an arrow can stop below sea level,
+/// and this is the one field in the lane that can be negative.
+///
+/// Since wire v76 it also fires where a charge went off (`IMPACT_BLAST`), so
+/// every client in range draws the blast. A blow on flesh is still `EV_HIT`
+/// alone: a broadcast per hit is a fan-out no rank cap bounds, and the
+/// population storm (`server/tests/snapshot_budget.rs`) overflows on it.
 ///
 /// **Broadcast**, `EV_SHOT`'s posture and its reason: where an arrow
 /// landed is a world fact, and the mark it leaves is visible to anyone who
@@ -2556,6 +2584,8 @@ impl World {
             else {
                 return;
             };
+            let hp = self.deploys.entries()[i].hp;
+            self.struct_hitmarker(c.by, c.structure.min(hp));
             deploy::damage_deploy(
                 &self.deploy,
                 &mut self.pieces,
@@ -2580,6 +2610,7 @@ impl World {
             c.from_z,
             c.structure,
         );
+        self.struct_hitmarker(c.by, amount.min(rec.hp));
         deploy::damage_piece(
             &self.deploy,
             &self.build,
@@ -2589,6 +2620,21 @@ impl World {
             amount,
             removals,
             &mut self.events,
+        );
+    }
+
+    /// The striker's own hitmarker for a blow on a structure: `EV_HIT` with
+    /// no victim, routed to the attacker alone. `EV_STRUCT_HIT` is the
+    /// island's fact about the wall and no longer lights anyone's crosshair.
+    fn struct_hitmarker(&mut self, by: u32, dealt: u16) {
+        if dealt == 0 {
+            return;
+        }
+        self.events.push(
+            EV_HIT,
+            by,
+            STRUCT_VICTIM,
+            hit_c(crate::collide::Part::Chest, dealt),
         );
     }
 
@@ -4710,7 +4756,11 @@ impl World {
                         let (mx, my, mz) = ray.at_m(t);
                         self.events.push(
                             EV_IMPACT,
-                            (surf as u32) << 24 | crate::fmath::floor_i32(mx / POS_XZ_Q) as u32,
+                            impact_a(
+                                surf,
+                                ranged::IMPACT_MELEE,
+                                crate::fmath::floor_i32(mx / POS_XZ_Q),
+                            ),
                             crate::fmath::floor_i32(mz / POS_XZ_Q) as u32,
                             crate::fmath::floor_i32(my / POS_Y_Q) as u32,
                         );
@@ -4727,6 +4777,7 @@ impl World {
                                 structure: def.structure,
                                 from_x: body.qx as f32 * POS_XZ_Q,
                                 from_z: body.qz as f32 * POS_XZ_Q,
+                                by: self.players[i].id,
                             };
                             self.chip(&chip, &mut removals);
                         }
