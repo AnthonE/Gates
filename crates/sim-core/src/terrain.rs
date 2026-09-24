@@ -3080,6 +3080,14 @@ pub struct Haven {
     /// than by receiving it. It is also the reason `road_band` now takes a
     /// `&Haven` — see the block above [`SIDE_ROADS`].
     pub roads: [SideRoad; SIDE_ROADS],
+    /// The island's ore budget: per-mille scales on the Highland row's metal
+    /// and sulfur weights, `[metal, sulfur]` ([`ORE_TARGET`]).
+    ///
+    /// On `Haven` for `minor`'s reason: it is a pure function of the seed,
+    /// resolved once, and every `scatter` caller already holds one — so the
+    /// server, the client's mirror and the probe all draw against the same
+    /// budget and no signature moved. [`ORE_PM_UNIT`] on the inert fixtures.
+    pub ore_pm: [u16; 2],
 }
 
 /// The altitude a site's floor is cut to — **the level of lowest error over
@@ -3172,6 +3180,7 @@ fn haven_ring_phase(ring: &RingPath, seed: u64, x: f32, z: f32) -> Option<u8> {
             shelter: 0,
             minor: empty_minor(),
             roads: [SideRoad::NONE; SIDE_ROADS],
+            ore_pm: ORE_PM_UNIT,
         };
         let mut k = 0i32;
         let mut ok = true;
@@ -3221,6 +3230,7 @@ fn haven_shelter_bearing(ring: &RingPath, seed: u64, x: f32, z: f32, phase: u8) 
         shelter: 0,
         minor: empty_minor(),
         roads: [SideRoad::NONE; SIDE_ROADS],
+        ore_pm: ORE_PM_UNIT,
     };
     let mut t = 0i32;
     while t < HAVEN_SHELTER_TRIES {
@@ -3394,6 +3404,7 @@ pub fn haven(seed: u64) -> Haven {
             shelter,
             minor: empty_minor(),
             roads: [SideRoad::NONE; SIDE_ROADS],
+            ore_pm: ORE_PM_UNIT,
         };
 
         if relaxed.is_none() || score < relaxed_score {
@@ -3420,6 +3431,7 @@ pub fn haven(seed: u64) -> Haven {
         shelter: 0,
         minor: empty_minor(),
         roads: [SideRoad::NONE; SIDE_ROADS],
+        ore_pm: ORE_PM_UNIT,
     });
     // The pad is resolved before the lesser tier is chosen, and that order is
     // the design: a waystation is defined as "far from the destination", so
@@ -3429,6 +3441,9 @@ pub fn haven(seed: u64) -> Haven {
     let (minor, roads) = pick_minor(seed, &pad, &cand[..n_cand]);
     pad.minor = minor;
     pad.roads = roads;
+    // The ore budget last: it is measured on the ground the draw will stand
+    // on, and that ground is carved by every site and road above.
+    pad.ore_pm = ore_budget(seed, &pad);
     // And last, the roads to whatever the ring does not reach. Last because
     // a road is a consequence: it needs both ends to exist, and one of them
     // is a site the loop above just chose.
@@ -5766,6 +5781,113 @@ const _: () = {
     assert!(FOREST_CLUMP_NORM >= 1.0);
 };
 
+// ── The ore budget ─────────────────────────────────────────────────────────
+//
+// Metal and sulfur come from the Highland row alone, so an island's ore is
+// its rock area times that row — and the interior ranges made rock area a
+// property of the seed: summed over the four probe islands the ranges moved
+// ore 3–5%, but island by island −26% to +56%, and raiding is priced in
+// sulfur. So each island scales the row to a budget instead: `haven` measures
+// the draw's expectation once (`ore_budget`) and every `scatter` applies the
+// scale (`ore_budgeted`). What is left between islands is the draw's own
+// noise, a count of independent cells (±√n).
+
+/// Metal and sulfur nodes an island is drawn toward, `[metal, sulfur]`.
+/// **(knob)** The four probe islands' mean with the ranges in (657 and 473
+/// over four), rounded; 4:3 is the Highland row's own ratio, so one scale
+/// would nearly serve both and two keep sulfur exact.
+pub const ORE_TARGET: [f32; 2] = [160.0, 120.0];
+
+/// The scale's bounds, per mille. The ceiling is the saturation rail: the
+/// Highland row with its ore at the ceiling, times the grove field's peak,
+/// must stay under the 1000 a roll can give (the const block below), so an
+/// island with little rock falls short of the budget rather than starving
+/// the row's tail. The floor keeps a rock-heavy island's ore a draw.
+pub const ORE_PM_MIN: u16 = 500;
+pub const ORE_PM_MAX: u16 = 1750;
+
+/// The row as authored — what an inert fixture's `Haven` carries.
+pub const ORE_PM_UNIT: [u16; 2] = [1000, 1000];
+
+/// The budget samples every second cell each way: 16,384 of the 65,536,
+/// which lands within ~1% of the full expectation on the twelve seeds it
+/// was measured on (every fourth cell: 7%). About 20 ms, once per island.
+const ORE_SAMPLE_STRIDE: i32 = 2;
+
+const _: () = {
+    let row = ScatterTable::alpha_default().weights[Biome::Highland as usize];
+    let rest = (row[0] + row[1] + row[4] + row[5] + row[6]) as f32;
+    let ore = (row[2] + row[3]) as f32 * (ORE_PM_MAX as f32 / 1000.0);
+    assert!((rest + ore) * CLUMP_NORM < 1000.0);
+    assert!(ORE_PM_MIN <= 1000 && ORE_PM_MAX >= 1000);
+};
+
+/// A drawn row with the island's ore budget applied: the metal and sulfur
+/// weights scaled by `haven.ore_pm`, rounded to the per mille. Every other
+/// entry is untouched, so the roll's walk moves only past the ore.
+///
+/// Published so the gates can hold the row the draw actually rolls against.
+pub fn ore_budgeted(mut row: [u16; OCCUPANT_KINDS], haven: &Haven) -> [u16; OCCUPANT_KINDS] {
+    for (k, pm) in haven.ore_pm.iter().enumerate() {
+        let w = &mut row[2 + k];
+        *w = ((u32::from(*w) * u32::from(*pm) + 500) / 1000) as u16;
+    }
+    row
+}
+
+/// The island's ore scales: the draw's expected metal and sulfur counts,
+/// measured on every `ORE_SAMPLE_STRIDE`th cell, against [`ORE_TARGET`].
+///
+/// The expectation is the draw's own: the same `ground`, `ground_slope`,
+/// `moisture` and `clump` a cell rolls against, the same water and cliff
+/// vetoes, the authored table. Taken at cell centres and without the road
+/// and site vetoes, which touch almost no Highland ground; `tests/scatter.rs`
+/// counts the islands whole and holds the result.
+fn ore_budget(seed: u64, haven: &Haven) -> [u16; 2] {
+    let table = ScatterTable::alpha_default();
+    let mut lat = Lattice::new();
+    let mut sum = [0u32; 2];
+    let mut cz = ORE_SAMPLE_STRIDE / 2;
+    while cz < CELLS_PER_SIDE {
+        let z = cz as f32 * CELL_SIZE + CELL_SIZE * 0.5;
+        let mut cx = ORE_SAMPLE_STRIDE / 2;
+        while cx < CELLS_PER_SIDE {
+            let x = cx as f32 * CELL_SIZE + CELL_SIZE * 0.5;
+            cx += ORE_SAMPLE_STRIDE;
+            let hy = ground_in(&mut lat, seed, haven, x, z);
+            if hy < LAND_MIN_H {
+                continue;
+            }
+            let sl = ground_slope_in(&mut lat, seed, haven, x, z);
+            if sl > CLIFF_SLOPE_RATIO {
+                continue;
+            }
+            let row = scatter_draw_row(
+                &table,
+                hy,
+                moisture_in(&mut lat, seed, x, z),
+                sl,
+                clump_in(&mut lat, seed, x, z),
+            );
+            sum[0] += u32::from(row[2]);
+            sum[1] += u32::from(row[3]);
+        }
+        cz += ORE_SAMPLE_STRIDE;
+    }
+    let cells = (ORE_SAMPLE_STRIDE * ORE_SAMPLE_STRIDE) as f32;
+    let mut pm = ORE_PM_UNIT;
+    for (k, out) in pm.iter_mut().enumerate() {
+        let expect = sum[k] as f32 * cells * (1.0 / 1000.0);
+        let want = if expect > 0.0 {
+            ORE_TARGET[k] / expect * 1000.0
+        } else {
+            f32::MAX
+        };
+        *out = floor_i32(want.clamp(ORE_PM_MIN as f32, ORE_PM_MAX as f32) + 0.5) as u16;
+    }
+    pm
+}
+
 /// A resolved scatter slot: potential, not state (TERRAIN.md §2). The
 /// server owns harvested/standing bits elsewhere; this is the backdrop.
 #[derive(Clone, Copy, Debug)]
@@ -6040,7 +6162,12 @@ fn scatter_in<C: Corners>(
         // is a convex mix of the two — which is what keeps the saturation
         // rail a statement about four pure rows (`scatter_draw_row`).
         let g = clump_in(c, seed, x, z);
-        let row = scatter_draw_row(table, hy, moisture_in(c, seed, x, z), sl, g);
+        // And the island's ore budget over the row, so an island's metal and
+        // sulfur follow `ORE_TARGET` rather than its rock area.
+        let row = ore_budgeted(
+            scatter_draw_row(table, hy, moisture_in(c, seed, x, z), sl, g),
+            haven,
+        );
         let roll = (h % 1000) as u16;
         let mut acc = 0u16;
         for (i, w) in row.iter().enumerate() {

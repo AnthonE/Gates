@@ -296,6 +296,47 @@ fn test_scatter_density_preserved() {
     }
 }
 
+/// Every island's metal and sulfur land on the ore budget, whatever its rock.
+///
+/// Before the budget an island's ore was its rock area times the Highland
+/// row, and the interior ranges made rock area the seed's: these eight
+/// islands drew 93–209 metal and 54–147 sulfur, and raiding is priced in
+/// sulfur. `haven` now scales the row per island (`ORE_TARGET`, `ORE_PM_*`);
+/// what remains is the draw's own noise over independent cells, and the two
+/// islands too bare of rock to reach the budget under `ORE_PM_MAX`. Measured
+/// 2026-09-24: metal 131–170, sulfur 101–132.
+const ORE_BAND: f32 = 0.25;
+
+#[test]
+fn test_ore_is_budgeted_per_island() {
+    for seed in DENSITY_SEEDS {
+        let f = build(seed);
+        let pm = terrain::haven(seed).ore_pm;
+        for (k, (name, occ)) in [
+            ("metal", Occupant::MetalNode),
+            ("sulfur", Occupant::SulfurNode),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let got = f.counts[occ as usize] as f32;
+            let want = terrain::ORE_TARGET[k];
+            println!(
+                "seed {seed}: {name} {got} against {want} (scale {} per mille)",
+                pm[k]
+            );
+            assert!(
+                (want * (1.0 - ORE_BAND)..=want * (1.0 + ORE_BAND)).contains(&got),
+                "seed {seed}: {got} {name} nodes against a budget of {want} — \
+                 outside ±{:.0}%. The island's ore follows its rock area again \
+                 (check `terrain::ore_budget` and `ore_budgeted`), or the draw \
+                 moved under the estimate.",
+                ORE_BAND * 100.0
+            );
+        }
+    }
+}
+
 /// `CLUMP_NORM` is re-derived here rather than trusted, on the same grid the
 /// constant's doc comment claims it was measured on.
 ///
@@ -386,8 +427,15 @@ fn test_no_biome_row_saturates() {
             }
         }
     }
+    // The ore budget scales the Highland row's metal and sulfur by up to
+    // `ORE_PM_MAX`, so the pure rows are held at that ceiling.
+    let mut ceiling = terrain::haven(SEEDS[0]);
+    ceiling.ore_pm = [terrain::ORE_PM_MAX; 2];
     for (b, row) in table.weights.iter().enumerate() {
-        let total: u32 = row.iter().map(|&w| u32::from(w)).sum();
+        let total: u32 = terrain::ore_budgeted(*row, &ceiling)
+            .iter()
+            .map(|&w| u32::from(w))
+            .sum();
         let factor = hi.min(table.clump_cap[b]) * table.clump_cap_norm[b];
         let scaled = total as f32 * factor;
         println!(
@@ -418,12 +466,15 @@ fn test_no_biome_row_saturates() {
                 if h < LAND_MIN_H {
                     continue;
                 }
-                let row = terrain::scatter_draw_row(
-                    &table,
-                    h,
-                    terrain::moisture(seed, x, z),
-                    terrain::ground_slope(seed, &haven, x, z),
-                    terrain::clump(seed, x, z),
+                let row = terrain::ore_budgeted(
+                    terrain::scatter_draw_row(
+                        &table,
+                        h,
+                        terrain::moisture(seed, x, z),
+                        terrain::ground_slope(seed, &haven, x, z),
+                        terrain::clump(seed, x, z),
+                    ),
+                    &haven,
                 );
                 worst = worst.max(row.iter().map(|&w| u32::from(w)).sum());
             }

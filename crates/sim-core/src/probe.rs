@@ -192,6 +192,14 @@ pub extern "C" fn probe_sites(seed: u64) -> u64 {
     hash_f32(&mut h, haven.floor_y);
     hash_f32(&mut h, haven.relief);
     h.update(&[haven.phase, haven.shelter]);
+    // The ore budget: it moves every rock-channel cell's draw, and none of
+    // those need lie inside the scatter windows `probe_terrain` hashes — on
+    // the golden seed none does. Folded here so a budget change moves the
+    // world digest and an old save refuses rather than loading onto moved
+    // nodes; and it is a haven field the client resolves on wasm.
+    for pm in haven.ore_pm {
+        h.update(&pm.to_le_bytes());
+    }
     let (sx, sz, syaw) = terrain::haven_shelter(&haven);
     hash_f32(&mut h, sx);
     hash_f32(&mut h, sz);
