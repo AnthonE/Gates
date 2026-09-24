@@ -842,6 +842,25 @@ fn cell(
                 // paper's blue (research table v1): twelve sheets are twelve
                 // pictures, not twelve identical scrolls.
                 let name = research_ui::icon_name(&core.catalog, &core.research, stack);
+                // A skinned item's icon wears its skin's tint (skins v0), and
+                // a swatch in the corner says it is skinned even where the
+                // tint is subtle.
+                let tint = crate::ui::skins::tint_of(&core.skins, stack.skin);
+                let [tr, tg, tb] = tint.unwrap_or([1.0, 1.0, 1.0]);
+                if let Some([r, g, b]) = tint {
+                    c.spawn((
+                        Node {
+                            position_type: PositionType::Absolute,
+                            right: Val::Px(3.0),
+                            top: Val::Px(3.0),
+                            width: Val::Px(7.0),
+                            height: Val::Px(7.0),
+                            ..default()
+                        },
+                        BackgroundColor(Color::srgb(r, g, b)),
+                        Pickable::IGNORE,
+                    ));
+                }
                 match icons.item(&name) {
                     Some(image) => c.spawn((
                         Node {
@@ -854,7 +873,7 @@ fn cell(
                         },
                         ImageNode {
                             image,
-                            color: Color::srgb(0.90, 0.87, 0.82),
+                            color: Color::srgb(0.90 * tr, 0.87 * tg, 0.82 * tb),
                             ..default()
                         },
                         Pickable::IGNORE,
@@ -948,6 +967,66 @@ fn section(parent: &mut ChildSpawnerCommands, text: &str) {
         font_bold(15.0),
         TextColor(TEXT),
     ));
+}
+
+/// Skins in the inventory (skins v0): `P` over an item of yours cycles
+/// it through the skins you own for it and back to its own look — Rust's
+/// repair-bench skin picker, at any workbench since we have no repair bench
+/// (`sim_core::skin::reskin`; the sim refuses away from one and says why).
+///
+/// And **opening the inventory asks the shard to read your skins again**
+/// (`ACT_SKINS_REFRESH`), which is how a skin bought in the launcher reaches
+/// the game: buy, come back, press Tab. The shard reads the platform at most
+/// once per `server::skins::REFRESH_COOLDOWN`, so opening it often costs
+/// nothing.
+pub fn skin_keys(
+    mut ui: ResMut<Ui>,
+    net: NonSend<super::super::Net>,
+    keyboard: Res<ButtonInput<KeyCode>>,
+    cells: Query<(&SlotCell, &Interaction)>,
+    mut was_open: Local<bool>,
+) {
+    let open = ui.panel == Panel::Inventory;
+    if open && !*was_open {
+        let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
+        if let Ok(len) = protocol::encode_action_skins_refresh(&mut buf) {
+            // A full lane drops the ask; the next open asks again.
+            let _ = net.session.send_action(&buf[..len]);
+        }
+    }
+    *was_open = open;
+    if !open || !keyboard.just_pressed(KeyCode::KeyP) {
+        return;
+    }
+    let Some(cell) = cells
+        .iter()
+        .find(|(c, i)| c.kind == CONT_SELF && !matches!(i, Interaction::None))
+        .map(|(c, _)| *c)
+    else {
+        ui.say("point at an item in your inventory to change its skin");
+        return;
+    };
+    let core = &net.session.core;
+    let stack = core.inv[cell.slot];
+    if stack.count == 0 {
+        return;
+    }
+    let next = crate::ui::skins::next_skin(&core.skins, &core.skins_owned, stack.item, stack.skin);
+    if next == stack.skin {
+        ui.say("you own no skins for this item - they are sold in the launcher's ITEM STORE");
+        return;
+    }
+    let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
+    match protocol::encode_action_reskin(cell.slot as u8, next, &mut buf) {
+        Ok(len) => match net.session.send_action(&buf[..len]) {
+            Ok(()) => ui.say(match crate::ui::skins::name(&core.skins, next) {
+                Some(name) => format!("skin: {name}"),
+                None => "skin: default".to_string(),
+            }),
+            Err(e) => ui.say(e.to_string()),
+        },
+        Err(e) => ui.say(format!("that skin change would not encode ({e:?})")),
+    }
 }
 
 /// Press, drag, release. The only system that sends a move.

@@ -811,6 +811,7 @@ pub fn held_model_of(catalog: &ItemCatalog, held: Option<u16>) -> Option<usize> 
             item: held?,
             count: 1,
             cond: 1,
+            skin: 0,
         },
     )
 }
@@ -867,6 +868,7 @@ mod tests {
             item: 0,
             count: 1,
             cond: 5_000,
+            skin: 0,
         };
         let inv = |s: ItemStack| [s, ItemStack::default()];
 
@@ -889,6 +891,7 @@ mod tests {
             item: 1,
             count: 1,
             cond: 0,
+            skin: 0,
         };
         assert_eq!(
             lit_model_in_hand(&c, &inv(rock), 0, true),
@@ -988,6 +991,7 @@ mod tests {
                     item: 1,
                     count: 1,
                     cond: 0,
+                    skin: 0,
                 }
             ),
             Held::Plan
@@ -999,6 +1003,7 @@ mod tests {
                     item: 2,
                     count: 1,
                     cond: 0,
+                    skin: 0,
                 }
             ),
             Held::Hammer
@@ -1010,6 +1015,7 @@ mod tests {
                     item: 0,
                     count: 5,
                     cond: 0,
+                    skin: 0,
                 }
             ),
             Held::Other
@@ -1028,6 +1034,7 @@ mod tests {
                     item: 1,
                     count: 0,
                     cond: 0,
+                    skin: 0,
                 }
             ),
             Held::Other
@@ -1047,6 +1054,7 @@ mod tests {
                     item: 40,
                     count: 1,
                     cond: 0,
+                    skin: 0,
                 }
             ),
             Held::Other
@@ -1061,11 +1069,13 @@ mod tests {
                 item: 1,
                 count: 1,
                 cond: 0,
+                skin: 0,
             },
             ItemStack {
                 item: 0,
                 count: 9,
                 cond: 0,
+                skin: 0,
             },
         ];
         assert_eq!(held_in_hand(&c, &inv, 0), Held::Hammer);
@@ -1088,6 +1098,7 @@ mod tests {
                     item: 0,
                     count: 0,
                     cond: 0,
+                    skin: 0,
                 }
             ),
             None
@@ -1099,6 +1110,7 @@ mod tests {
                     item: 0,
                     count: 1,
                     cond: 0,
+                    skin: 0,
                 }
             ),
             Some(0)
@@ -1122,6 +1134,7 @@ mod tests {
                     item: 0,
                     count: 1,
                     cond: 0,
+                    skin: 0,
                 }
             ),
             None
@@ -1135,6 +1148,7 @@ mod tests {
                     item: 900,
                     count: 1,
                     cond: 0,
+                    skin: 0,
                 }
             ),
             None
@@ -1153,6 +1167,7 @@ mod tests {
                     item: 0,
                     count: 1,
                     cond: 0,
+                    skin: 0,
                 }
             ),
             Some(
@@ -1169,6 +1184,7 @@ mod tests {
                     item: 1,
                     count: 1,
                     cond: 0,
+                    skin: 0,
                 }],
                 0
             ),

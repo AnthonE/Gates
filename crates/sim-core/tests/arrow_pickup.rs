@@ -215,6 +215,7 @@ fn a_full_quiver_leaves_the_arrow_lying_there() {
                 item: ARROW,
                 count: QUIVER,
                 cond: 0,
+                skin: 0,
             };
         }
     }

@@ -185,6 +185,7 @@ fn full_pack_world(pos: (f32, f32)) -> Box<World> {
             item: FILLER,
             count: STACK_MAX,
             cond: 0,
+            skin: 0,
         };
     }
     w
@@ -330,11 +331,13 @@ fn a_merge_never_pulls_a_partly_looted_bag_s_clock_in() {
         item: 0,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     held[1] = ItemStack {
         item: FILLER,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     let id = bp
         .stand_up(&bc, 0, 0, 0, 1, &held, 100, &mut ev)
@@ -353,6 +356,7 @@ fn a_merge_never_pulls_a_partly_looted_bag_s_clock_in() {
         item: FILLER,
         count: 5,
         cond: 0,
+        skin: 0,
     };
     assert_eq!(
         bp.spill_at(&bc, &gc, 0, 0, 0, 1, &mut spill, 200, &mut ev),
@@ -387,6 +391,7 @@ fn a_spill_out_of_reach_stands_its_own_bag_up() {
         item: FILLER,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     let near = bp.stand_up(&bc, 0, 0, 0, 1, &held, 100, &mut ev).unwrap();
 
@@ -397,6 +402,7 @@ fn a_spill_out_of_reach_stands_its_own_bag_up() {
         item: FILLER,
         count: 3,
         cond: 0,
+        skin: 0,
     };
     let made = bp
         .spill_at(&bc, &gc, far_q, 0, 0, 1, &mut spill, 110, &mut ev)
@@ -657,21 +663,25 @@ fn giveback_world() -> (Box<World>, u16, u16) {
         item: 0,
         count: 100,
         cond: 0,
+        skin: 0,
     };
     w.players[0].inv[1] = ItemStack {
         item: FIRE_ITEM,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     w.players[0].inv[2] = ItemStack {
         item: LOCK_ITEM,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     w.players[0].inv[3] = ItemStack {
         item: BOX_ITEM,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     (w, cx, cz)
 }
@@ -684,6 +694,7 @@ fn wall_off(w: &mut World) {
             item: BALLAST,
             count: STACK_MAX,
             cond: 0,
+            skin: 0,
         };
     }
 }
@@ -870,6 +881,7 @@ fn a_cancelled_craft_s_refund_a_full_pack_cannot_hold_falls_at_your_feet() {
         id: OWNER,
         recipe: 0,
         count: units,
+        skin: 0,
     }]);
     assert_eq!(
         w.players[0].jobs[0].remaining, units,
@@ -957,6 +969,7 @@ fn a_minted_bag_leaves_the_caller_s_buffer_empty() {
         item: FILLER,
         count: 5,
         cond: 0,
+        skin: 0,
     };
     let made = bp.spill_at(&bc, &gc, 0, 0, 0, 1, &mut buf, 10, &mut ev);
     assert!(made.is_some(), "nothing stood up — the case did not run");
@@ -1002,6 +1015,7 @@ fn an_inert_ladder_does_not_even_merge_into_a_bag_already_standing() {
         item: FILLER,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     bp.stand_up(&armed, 0, 0, 0, 1, &held, 10, &mut ev)
         .expect("the case needs a bag standing under armed content");
@@ -1011,6 +1025,7 @@ fn an_inert_ladder_does_not_even_merge_into_a_bag_already_standing() {
         item: FILLER,
         count: 5,
         cond: 0,
+        skin: 0,
     };
     let made = bp.spill_at(
         &BackpackContent::EMPTY,
@@ -1057,11 +1072,13 @@ fn a_looted_slot_zeroes_its_condition_with_its_item() {
         item: 0,
         count: 1,
         cond: 123,
+        skin: 0,
     };
     held[1] = ItemStack {
         item: FILLER,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     bp.stand_up(&bc, 0, 0, 0, 1, &held, 100, &mut ev)
         .expect("the fixture ladder is armed");
@@ -1075,6 +1092,7 @@ fn a_looted_slot_zeroes_its_condition_with_its_item() {
             item: 2,
             count: STACK_MAX,
             cond: 0,
+            skin: 0,
         };
     }
     bp.loot_nearest(&gc, &mut p, &mut ev)
@@ -1086,6 +1104,7 @@ fn a_looted_slot_zeroes_its_condition_with_its_item() {
             item: 0,
             count: 1,
             cond: 123,
+            skin: 0,
         },
         "the tool travels worn"
     );
@@ -1113,6 +1132,7 @@ fn a_spilled_slot_that_merged_away_zeroes_its_condition() {
         item: FILLER,
         count: STACK_MAX,
         cond: 0,
+        skin: 0,
     }; INV_SLOTS];
     held[0] = ItemStack::default();
     let first = bp
@@ -1127,11 +1147,13 @@ fn a_spilled_slot_that_merged_away_zeroes_its_condition() {
         item: 0,
         count: 1,
         cond: 77,
+        skin: 0,
     };
     spill[1] = ItemStack {
         item: 2,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     let stood = bp
         .spill_at(&bc, &gc, 0, 0, 0, 1, &mut spill, 200, &mut ev)

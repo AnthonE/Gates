@@ -91,6 +91,7 @@ pub mod pointer;
 pub mod refusals;
 pub mod research;
 pub mod servers;
+pub mod skins;
 pub mod slots;
 pub mod structure;
 pub mod swing;

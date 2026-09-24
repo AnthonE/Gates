@@ -102,21 +102,25 @@ fn kit(w: &mut World, slot: usize) {
         item: 0,
         count: 500,
         cond: 0,
+        skin: 0,
     };
     w.players[slot].inv[1] = ItemStack {
         item: 1,
         count: 500,
         cond: 0,
+        skin: 0,
     };
     w.players[slot].inv[2] = ItemStack {
         item: 2,
         count: 9,
         cond: 0,
+        skin: 0,
     };
     w.players[slot].inv[3] = ItemStack {
         item: 4,
         count: 9,
         cond: 0,
+        skin: 0,
     };
 }
 
@@ -753,6 +757,7 @@ fn with_a_bench(w: &mut World) {
         item: 3,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     for (dx, dz) in [(1i32, 0i32), (0, 1), (-1, 0), (0, -1)] {
         let (cx, cz) = ((h.cx as i32 + dx) as u16, (h.cz as i32 + dz) as u16);
@@ -845,6 +850,7 @@ fn a_worn_tool_survives_the_world_and_an_empty_slot_may_not_wear() {
         item: 2,
         count: 1,
         cond: 7_777,
+        skin: 0,
     };
 
     let w2 = round_trip(&w);
@@ -859,6 +865,7 @@ fn a_worn_tool_survives_the_world_and_an_empty_slot_may_not_wear() {
             item: 2,
             count: 1,
             cond: 7_777,
+            skin: 0,
         },
         "the world blob dropped a tool's condition"
     );
@@ -1077,6 +1084,7 @@ fn loose_stacks_come_back_with_the_world() {
             item: k as u16 + 1,
             count: (k as u16 + 1) * 4,
             cond: 0,
+            skin: 0,
         };
     }
     let (seed, tick) = (w.seed, w.tick);

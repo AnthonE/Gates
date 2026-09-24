@@ -808,6 +808,7 @@ fn duel_shard() -> (Box<ShardCore>, ShardStats) {
             item: 0,
             count: 1,
             cond: 0,
+            skin: 0,
         };
     }
     (core, stats)

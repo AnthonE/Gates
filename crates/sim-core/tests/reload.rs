@@ -100,16 +100,19 @@ fn armed() -> Box<World> {
         item: GUN,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     w.players[0].inv[1] = ItemStack {
         item: ROUND,
         count: PACK,
         cond: 0,
+        skin: 0,
     };
     w.players[0].inv[2] = ItemStack {
         item: BOW,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     w
 }
@@ -327,6 +330,7 @@ fn a_partial_fill_takes_what_there_is_and_reports_it() {
         item: ROUND,
         count: 2,
         cond: 0,
+        skin: 0,
     };
     w.tick(&[Command::Reload { id: ME }]);
     let ev = first(&w, EV_RELOAD);
@@ -356,6 +360,7 @@ fn two_of_a_kind_share_one_magazine() {
         item: GUN,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     w.tick(&[Command::Reload { id: ME }]);
     assert_eq!(w.players[0].mag[0], MAG);
@@ -396,6 +401,7 @@ fn a_partly_loaded_magazine_will_not_mix_rounds() {
         item: OTHER,
         count: PACK,
         cond: 0,
+        skin: 0,
     };
     w.tick(&[Command::Reload { id: ME }]);
     assert_eq!(
@@ -574,6 +580,7 @@ fn a_shed_round_arrives_as_ammunition_not_scrap() {
         item: ROUND,
         count: MAG,
         cond: 0,
+        skin: 0,
     };
 
     w.tick(&[Command::Reload { id: ME }]);

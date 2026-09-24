@@ -63,11 +63,13 @@ fn fixture(arch: u8, loc: u8, level: u8) -> (Box<World>, Player) {
         item: 10,
         count: 10,
         cond: 0,
+        skin: 0,
     };
     p.inv[1] = ItemStack {
         item: 11,
         count: 10,
         cond: 0,
+        skin: 0,
     };
     let mut ev = EventQueue::default();
     for l in 0..=level {

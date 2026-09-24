@@ -947,7 +947,7 @@ fn rows(cat: usize) -> Vec<Row> {
 /// where a crouched player is silent and is seen only inside an animal's sight
 /// cone at half range — the reference's sneak-up-from-behind. The row states
 /// that rather than implying a stance the player will go looking for.
-pub const BINDS: [(&str, &str); 20] = [
+pub const BINDS: [(&str, &str); 21] = [
     ("MOVE", "W A S D"),
     ("SPRINT", "Left Shift"),
     (
@@ -973,6 +973,10 @@ pub const BINDS: [(&str, &str); 20] = [
         "Right Mouse with a torch in hand (it burns while it is lit)",
     ),
     ("REPAIR / UPGRADE", "R / U, or Left Mouse with a hammer"),
+    (
+        "CHANGE SKIN",
+        "P over an item in the inventory, at a workbench (cycles the skins you own)",
+    ),
     ("SCREENSHOT", "F12"),
     (
         "REPORT A BUG",

@@ -2613,6 +2613,7 @@ mod tests {
                 item,
                 count,
                 cond: 0,
+                skin: 0,
             };
         }
         p
@@ -5541,6 +5542,7 @@ mod tests {
             item: 0,
             count: 9,
             cond: 0,
+            skin: 0,
         };
 
         place_deploy(

@@ -60,16 +60,19 @@ fn stocked() -> [ItemStack; INV_SLOTS] {
         item: 7,
         count: 9,
         cond: 0,
+        skin: 0,
     };
     inv[1] = ItemStack {
         item: 3,
         count: 100,
         cond: 0,
+        skin: 0,
     };
     inv[2] = ItemStack {
         item: 7,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     inv
 }
@@ -144,6 +147,7 @@ fn a_wear_move_needs_no_handle_and_carries_none() {
         item: 5,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     let cont = empty();
 
@@ -180,6 +184,7 @@ fn a_wear_move_needs_no_handle_and_carries_none() {
         item: 5,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     let m = slots::move_args(
         HANDLE,
@@ -211,6 +216,7 @@ fn widening_own_did_not_legalise_two_ground_containers() {
         item: 5,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     // One ground side plus the body: addressable.
     assert!(
@@ -309,6 +315,7 @@ fn a_ground_move_carries_the_handle_and_the_containers_own_count() {
         item: 2,
         count: 6,
         cond: 0,
+        skin: 0,
     };
     let m = slots::move_args(
         HANDLE,
@@ -338,6 +345,7 @@ fn refusals_in_order() {
         item: 2,
         count: 4,
         cond: 0,
+        skin: 0,
     };
 
     // 1 · a kind past CONT_MAX.
@@ -562,6 +570,7 @@ fn affordability_is_the_tightest_input() {
         item: 0,
         count: 7,
         cond: 0,
+        skin: 0,
     };
     // Row 0 costs 3 of item 0, so seven pays for two and leaves one over.
     assert_eq!(craft::affordable(&recipes.recipes[0], &inv), 2);
@@ -571,11 +580,13 @@ fn affordability_is_the_tightest_input() {
         item: 1,
         count: 10,
         cond: 0,
+        skin: 0,
     };
     inv[2] = ItemStack {
         item: 2,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     assert_eq!(craft::affordable(&recipes.recipes[1], &inv), 1);
 
@@ -591,6 +602,7 @@ fn the_ingredient_table_scales_with_the_stepper() {
         item: 0,
         count: 5,
         cond: 0,
+        skin: 0,
     };
     let (lines, n) = craft::ingredients(&recipes.recipes[0], 3, &inv);
     assert_eq!(n, 1);
@@ -903,6 +915,7 @@ fn the_wheel_prices_a_piece_against_the_bag() {
         item: 0,
         count: 4,
         cond: 0,
+        skin: 0,
     };
     let (lines, n) = build::costs(&content, row, &inv);
     assert_eq!(n, 1);
@@ -916,6 +929,7 @@ fn the_wheel_prices_a_piece_against_the_bag() {
         item: 0,
         count: 5,
         cond: 0,
+        skin: 0,
     };
     assert!(build::affordable(&content, row, &inv));
 }
@@ -3297,6 +3311,7 @@ mod techtree_model {
             item: 3,
             count,
             cond: 0,
+            skin: 0,
         };
         inv
     }
@@ -3979,7 +3994,7 @@ fn the_readout_gate_can_see_a_reader_go_away() {
 ///
 /// An empty list means the row is not a discrete button — `LOOK` is mouse
 /// motion — and is exempt by name rather than by falling through.
-const BIND_IDENTS: [(&str, &[&str]); 20] = [
+const BIND_IDENTS: [(&str, &[&str]); 21] = [
     ("MOVE", &["KeyW", "KeyA", "KeyS", "KeyD"]),
     ("SPRINT", &["ShiftLeft"]),
     ("CROUCH", &["ControlLeft"]),
@@ -3999,6 +4014,7 @@ const BIND_IDENTS: [(&str, &[&str]); 20] = [
     ("BUILD", &["MouseButton::Right"]),
     ("LIGHT / SNUFF A TORCH", &["MouseButton::Right"]),
     ("REPAIR / UPGRADE", &["KeyR", "KeyU"]),
+    ("CHANGE SKIN", &["KeyP"]),
     ("SCREENSHOT", &["F12"]),
     ("REPORT A BUG", &["F7"]),
     ("MENU", &["Escape"]),
@@ -4527,11 +4543,18 @@ mod q_durability_pip {
     /// is v1 by decision), which is the whole reason to gate it now: the day
     /// a repair bench or wear-on-hit lands, this is a defect nobody would
     /// think to look for.
+    ///
+    /// Since skins v0 the key is the **whole stack** (`let inv = core.inv;`),
+    /// so condition and skin are in it by construction rather than by a
+    /// field someone remembered to copy; either form passes, a key that
+    /// names neither fails.
     #[test]
     fn the_panel_redraws_when_a_condition_moves() {
         let src = std::fs::read_to_string("src/render/panels/mod.rs").expect("panels/mod.rs");
+        let fields = src.contains("core.inv[i].cond") && src.contains("core.cont[i].cond");
+        let whole = src.contains("let inv = core.inv;") && src.contains("let cont = core.cont;");
         assert!(
-            src.contains("core.inv[i].cond") && src.contains("core.cont[i].cond"),
+            fields || whole,
             "`panels::rebuild`'s change key dropped `cond` — the durability \
              pip is drawn from it, so both grids would draw a stale bar until \
              an item or a count happened to move (`NOW.md` §0dur item 1)"
@@ -4604,6 +4627,7 @@ fn the_panels_protection_is_the_sims_protection() {
                         item,
                         count,
                         cond: 0,
+                        skin: 0,
                     };
                     p.worn[i] = s;
                     worn[i] = s;
@@ -4672,6 +4696,7 @@ fn the_protection_total_stops_at_the_cap_on_both_sides() {
                     item,
                     count: 1,
                     cond: 0,
+                    skin: 0,
                 };
                 p.worn[i] = s;
                 worn[i] = s;
@@ -4746,6 +4771,7 @@ fn a_stack_past_the_last_wear_slot_is_worth_nothing() {
         item: armor,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     assert_eq!(
         slots::worn_pct(&cat, &worn),
@@ -4772,6 +4798,7 @@ fn a_stack_past_the_last_wear_slot_is_worth_nothing() {
         item: ghost,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     assert_eq!(
         slots::worn_pct(&cat, &worn),
@@ -4788,6 +4815,7 @@ fn a_stack_past_the_last_wear_slot_is_worth_nothing() {
         item: armor,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     assert!(slots::worn_pct(&cat, &worn) > 0);
 }
@@ -5117,6 +5145,7 @@ mod quick {
             item,
             count,
             cond: 0,
+            skin: 0,
         }
     }
 
@@ -5704,6 +5733,7 @@ mod research_table {
             item,
             count,
             cond: 0,
+            skin: 0,
         }
     }
 

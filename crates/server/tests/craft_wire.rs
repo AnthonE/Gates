@@ -124,6 +124,7 @@ fn craft_rides_the_wire() {
         item: 0,
         count: 20,
         cond: 0,
+        skin: 0,
     };
 
     // Craft 2 of recipe 0 (3 × item0 per unit, 2 ticks each).
@@ -133,6 +134,7 @@ fn craft_rides_the_wire() {
         ActionMsg::Craft {
             recipe: 0,
             count: 2,
+            skin: 0,
         },
     );
     let flags = pump(&mut core, &stats, &mut clients);
@@ -193,6 +195,7 @@ fn craft_rides_the_wire() {
         ActionMsg::Craft {
             recipe: 2,
             count: 1,
+            skin: 0,
         },
     );
     let flags = pump(&mut core, &stats, &mut clients);

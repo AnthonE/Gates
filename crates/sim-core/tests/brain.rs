@@ -230,6 +230,7 @@ fn a_lit_torch_keeps_a_wolf_from_biting() {
             item: 0,
             count: 1,
             cond: 400,
+            skin: 0,
         };
         let full = w.players[0].hp;
         let mut circled = false;
@@ -410,6 +411,7 @@ fn strike(w: &mut World, slot: usize) {
         item: 0,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     w.players[0].frame.sel = 0;
     let tick = w.tick;

@@ -115,6 +115,7 @@ fn drop_one(core: &mut ShardCore, wslot: usize, item: u16, count: u16) -> u32 {
         item,
         count,
         cond: 0,
+        skin: 0,
     };
     let (bc, seed, tick) = (core.world.backpack, core.world.seed, core.world.tick);
     let made = core

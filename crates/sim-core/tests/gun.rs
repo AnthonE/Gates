@@ -137,11 +137,13 @@ fn shooter(id: u32, x: f32, feet_y: f32, z: f32, yaw: u16, pitch: u8, rounds: u1
         item: GUN,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     p.inv[7] = ItemStack {
         item: ROUND,
         count: rounds,
         cond: 0,
+        skin: 0,
     };
     // **And the magazine, loaded (reload v1).** The pack is no longer
     // where a hitscan shot spends from — it is where a reload draws from —

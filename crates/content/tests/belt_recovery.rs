@@ -126,6 +126,7 @@ fn the_shipped_medkit_rescues_from_the_belt_but_not_the_backpack() {
             item: medkit,
             count: 1,
             cond: 0,
+            skin: 0,
         };
         while w.tick <= t {
             w.tick(&[]);

@@ -43,6 +43,7 @@ use crate::ui::MAX_QUERY_CHARS;
 
 use crate::ui::craft::{Cat, Facts};
 use crate::ui::slots::Drag;
+use sim_core::gather::ItemStack;
 
 pub mod craft;
 pub mod inv;
@@ -104,6 +105,10 @@ pub struct Ui {
     pub selected: Option<u16>,
     /// The quantity stepper, always ≥ 1.
     pub count: u16,
+    /// The skin the next craft of `selected` is minted in (skins v0): a
+    /// catalog id, 0 for the item's own look. Reset with every new pick,
+    /// the stepper's reason.
+    pub skin: u16,
     /// The one line under the title that says what just happened — a
     /// refusal, a full action lane, a craft that went in. Never empty for
     /// long, and never silently empty: a panel that cannot say why it did
@@ -160,15 +165,23 @@ pub(crate) struct Seen {
     /// wears while this screen is open in v0 — you cannot swing through it
     /// — so this is not a defect being fixed but the door being shut before
     /// repair or wear-on-hit walks through it.
-    pub inv: [(u16, u16, u16); sim_core::limits::INV_SLOTS],
-    pub cont: [(u16, u16, u16); sim_core::limits::INV_SLOTS],
+    ///
+    /// **And the skin** (skins v0), for condition's reason one field on: a
+    /// re-skin changes nothing else about a slot, so a key without it would
+    /// leave the old look drawn.
+    pub inv: [ItemStack; sim_core::limits::INV_SLOTS],
+    pub cont: [ItemStack; sim_core::limits::INV_SLOTS],
     /// The **body**, watched separately from `cont` since the two views
     /// split (`NOW.md` §0eq item 4). It has to be here rather than
     /// folded into `cont`: the wear panel is drawn on every inventory
     /// screen now, so a helmet arriving on a head while no ground
     /// container is open changes nothing else on this list, and the
     /// paperdoll would keep drawing the slot it had before.
-    pub worn: [(u16, u16, u16); sim_core::limits::WEAR_SLOTS],
+    pub worn: [ItemStack; sim_core::limits::WEAR_SLOTS],
+    /// The owned skin set and how much of the skin catalog has dripped: the
+    /// craft panel's picker draws from both.
+    pub skins_owned: sim_core::skin::SkinSet,
+    pub skins_have: u16,
     pub cont_kind: u8,
     pub cont_handle: u32,
     pub jobs: [(u8, u8); sim_core::limits::CRAFT_QUEUE],
@@ -200,6 +213,7 @@ impl Default for Ui {
             favs: Vec::new(),
             selected: None,
             count: 1,
+            skin: 0,
             status: String::new(),
             facts: Facts::default(),
             shape: 0,
@@ -355,6 +369,7 @@ pub fn register(app: &mut App) {
             (
                 keys,
                 inv::drag_pointer,
+                inv::skin_keys,
                 inv::table_clicks,
                 craft::clicks,
                 craft::scroll,
@@ -704,12 +719,9 @@ fn detect_changes(
 ) {
     // Change detection against the core's authoritative view.
     if ui.panel != Panel::None {
-        let inv: [(u16, u16, u16); sim_core::limits::INV_SLOTS] =
-            std::array::from_fn(|i| (core.inv[i].item, core.inv[i].count, core.inv[i].cond));
-        let cont: [(u16, u16, u16); sim_core::limits::INV_SLOTS] =
-            std::array::from_fn(|i| (core.cont[i].item, core.cont[i].count, core.cont[i].cond));
-        let worn: [(u16, u16, u16); sim_core::limits::WEAR_SLOTS] =
-            std::array::from_fn(|i| (core.worn[i].item, core.worn[i].count, core.worn[i].cond));
+        let inv = core.inv;
+        let cont = core.cont;
+        let worn = core.worn;
         let table_lit = inv::open_table_running(core);
         if inv != ui.seen.inv
             || cont != ui.seen.cont
@@ -725,6 +737,8 @@ fn detect_changes(
             || core.known() != ui.seen.known
             || core.research_have != ui.seen.research_have
             || table_lit != ui.seen.table_lit
+            || core.skins_owned != ui.seen.skins_owned
+            || core.skins.count != ui.seen.skins_have
         {
             // The def tables drip in over the first seconds of a session, so
             // the derived category facts are rebuilt with them.
@@ -745,6 +759,8 @@ fn detect_changes(
             ui.seen.known = core.known();
             ui.seen.research_have = core.research_have;
             ui.seen.table_lit = table_lit;
+            ui.seen.skins_owned = core.skins_owned;
+            ui.seen.skins_have = core.skins.count;
             ui.dirty = true;
         }
     }

@@ -126,6 +126,7 @@ fn place_bag(w: &mut World, cx: u16, cz: u16) {
         item: BAG_ITEM,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     let before = w.deploys.len();
     w.tick(&[Command::PlaceDeploy {
@@ -503,6 +504,7 @@ fn a_corpse_cannot_act() {
         item: BAG_ITEM,
         count: 4,
         cond: 0,
+        skin: 0,
     };
     die(&mut w);
     // The backpack took the inventory with it; put something back by hand
@@ -511,6 +513,7 @@ fn a_corpse_cannot_act() {
         item: BAG_ITEM,
         count: 4,
         cond: 0,
+        skin: 0,
     };
     let hash_before = w.state_hash();
 
@@ -649,7 +652,8 @@ fn probe_kit() -> sim_core::inventory::SpawnKit {
             ItemStack {
                 item: 8,
                 count: 1,
-                cond: 0
+                cond: 0,
+                skin: 0
             }
         ),
         "kit slot 0"
@@ -660,7 +664,8 @@ fn probe_kit() -> sim_core::inventory::SpawnKit {
             ItemStack {
                 item: 9,
                 count: 1,
-                cond: 0
+                cond: 0,
+                skin: 0
             }
         ),
         "kit slot 1"
@@ -694,12 +699,14 @@ fn a_respawn_re_grants_the_spawn_kit() {
             ItemStack {
                 item: 8,
                 count: 1,
-                cond: 0
+                cond: 0,
+                skin: 0
             },
             ItemStack {
                 item: 9,
                 count: 1,
-                cond: 0
+                cond: 0,
+                skin: 0
             }
         ),
         "the fresh spawn did not get the kit — nothing below proves anything"
@@ -712,6 +719,7 @@ fn a_respawn_re_grants_the_spawn_kit() {
         item: 3,
         count: 40,
         cond: 0,
+        skin: 0,
     };
 
     die(&mut w);
@@ -723,12 +731,14 @@ fn a_respawn_re_grants_the_spawn_kit() {
             ItemStack {
                 item: 8,
                 count: 1,
-                cond: 0
+                cond: 0,
+                skin: 0
             },
             ItemStack {
                 item: 9,
                 count: 1,
-                cond: 0
+                cond: 0,
+                skin: 0
             }
         ),
         "a respawned body woke naked — the kit is still fresh-arm only"

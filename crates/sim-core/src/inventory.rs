@@ -403,7 +403,9 @@ pub fn plan_move(cap: u16, src: ItemStack, dst: ItemStack, count: u16) -> Result
             count,
         });
     }
-    if dst.item == src.item {
+    // Two skins of one item are two things to hold: they swap like two
+    // items, and a merge never has to pick whose look survives.
+    if dst.item == src.item && dst.skin == src.skin {
         // `saturating_sub`: a destination already over its ladder yields
         // zero room and refuses, rather than wrapping into a huge one.
         let room = cap.saturating_sub(dst.count);
@@ -445,6 +447,7 @@ pub fn resolve(plan: MovePlan, src: ItemStack, dst: ItemStack) -> (ItemStack, It
                     item: src.item,
                     count: left,
                     cond: src.cond,
+                    skin: src.skin,
                 }
             };
             // The moved stack keeps its condition — this splice is the
@@ -456,11 +459,15 @@ pub fn resolve(plan: MovePlan, src: ItemStack, dst: ItemStack) -> (ItemStack, It
             // (condition ⇒ stack of 1) is what guarantees a merge is
             // never asked to reconcile two conditions — a condition item
             // at its one-stack ceiling refuses with `REFUSE_M_NO_ROOM`
-            // before this arm is reached.
+            // before this arm is reached. The skin is the same splice
+            // one field on: it travels into an empty slot, and a merge
+            // only ever joins two stacks wearing the same one
+            // (`plan_move`).
             let new_dst = ItemStack {
                 item,
                 count: dst.count + count,
                 cond: if dst.count == 0 { src.cond } else { dst.cond },
+                skin: if dst.count == 0 { src.skin } else { dst.skin },
             };
             (new_src, new_dst)
         }
@@ -512,6 +519,7 @@ impl SpawnKit {
             item: 0,
             count: 0,
             cond: 0,
+            skin: 0,
         }; MAX_SPAWN_KIT],
         count: 0,
     };

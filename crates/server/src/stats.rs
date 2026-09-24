@@ -209,6 +209,16 @@ pub struct ShardStats {
     /// Roster sweeps that kicked somebody — a copy sold mid-session. Same
     /// rule: a definite zero and nothing else.
     pub entitle_kicked: AtomicU64,
+    /// Skin-ownership reads (`skins.rs`) whose answer reached the sim.
+    pub skins_read: AtomicU64,
+    /// Skin-ownership reads that could not be answered. Unlike
+    /// `entitle_unknown` these admit nothing: the sim keeps the set it had,
+    /// so a player who just bought a skin simply cannot use it yet — which
+    /// is why it is watched.
+    pub skins_unknown: AtomicU64,
+    /// Answers that found the skins ring full and were dropped. The client
+    /// can ask again; a count here says it had to.
+    pub skins_dropped: AtomicU64,
     pub refused_full: AtomicU64,
     pub handshake_errors: AtomicU64,
     /// Input datagrams decoded and ringed.
@@ -898,6 +908,8 @@ impl ShardStats {
             "refused_full" => &self.refused_full,
             "entitle_unknown" => &self.entitle_unknown,
             "entitle_kicked" => &self.entitle_kicked,
+            "skins_unknown" => &self.skins_unknown,
+            "skins_dropped" => &self.skins_dropped,
             "handshake_errors" => &self.handshake_errors,
             "input_dg_bad" => &self.input_dg_bad,
             "input_dg_forged" => &self.input_dg_forged,

@@ -125,6 +125,7 @@ fn lay_base(core: &mut ShardCore, cx0: u16, cz0: u16, n: usize) -> Vec<(u16, u16
             item: 0,
             count: 10,
             cond: 0,
+            skin: 0,
         };
         let before = core.world.pieces.len();
         sim_core::build::place(
@@ -341,6 +342,7 @@ fn walking_to_a_base_delivers_it_including_what_was_placed_while_away() {
         item: 0,
         count: 10,
         cond: 0,
+        skin: 0,
     };
     let late = (CX - 1, CZ);
     assert!(core.wants_action(1), "hand should be open");

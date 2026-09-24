@@ -41,6 +41,7 @@ fn stack(item: u16, count: u16) -> ItemStack {
         item,
         count,
         cond: 0,
+        skin: 0,
     }
 }
 

@@ -154,6 +154,10 @@ pub struct ShardCore {
     /// before the first tick; empty (the default) sends no catalog, which
     /// is what content-less tests run under.
     pub catalog: ItemCatalog,
+    /// The skin catalog the drip sends (skins v0), baked beside `catalog`
+    /// from `content/skins.toml`. Boxed: ~9 kB of fixed capacity. Empty
+    /// sends nothing.
+    pub skin_catalog: Box<protocol::SkinCatalog>,
     /// Scratch: event-lane encode target.
     ev_buf: [u8; MAX_EVENT_MSG_BYTES],
     /// Autosave sweep cursor: which connection slot [`Self::autosave`] looks
@@ -343,6 +347,7 @@ impl ShardCore {
             removed_buf: [0; MAX_SNAPSHOT_ENTITIES],
             dg_buf: [0; DATAGRAM_BUDGET_BYTES],
             catalog: ItemCatalog::EMPTY,
+            skin_catalog: Box::new(protocol::SkinCatalog::EMPTY),
             ev_buf: [0; MAX_EVENT_MSG_BYTES],
             admins: crate::admin::Admins::none(),
             autosave_at: 0,
@@ -356,6 +361,21 @@ impl ShardCore {
     /// `dev_env` (`config.rs`). False ⇒ the command buffer was full.
     pub fn queue_env(&mut self, weather: u8, time_pm: u16) -> bool {
         self.queue(Command::AdminEnv { weather, time_pm })
+    }
+
+    /// The platform said what connection `slot`, player `id`, owns
+    /// (`skins.rs`, read off the sim thread by the accept loop). Held on the
+    /// client until the next tick queues it as `Command::SkinsOwned`, so a
+    /// full command queue delays the set rather than dropping it. An id
+    /// that no longer names this slot's tenant is a stale answer about
+    /// somebody who left, and is dropped.
+    pub fn skins_owned(&mut self, slot: usize, id: u32, owned: sim_core::skin::SkinSet) {
+        let Some(c) = self.clients.get_mut(slot) else {
+            return;
+        };
+        if c.connected && c.id == id {
+            c.skins_pending = Some(owned);
+        }
     }
 
     fn queue(&mut self, cmd: Command) -> bool {
@@ -849,6 +869,17 @@ impl ShardCore {
         ops: &mut Ops<'_>,
         mut send: impl FnMut(Lane, usize, &[u8]) -> bool,
     ) {
+        // Owned skin sets the platform answered since the last tick, queued
+        // behind whatever else this window holds — so a join queued in the
+        // same window lands first and the set finds its body.
+        for slot in 0..MAX_PLAYERS {
+            if let Some(owned) = self.clients[slot].skins_pending {
+                let id = self.clients[slot].id;
+                if self.queue(Command::SkinsOwned { id, owned }) {
+                    self.clients[slot].skins_pending = None;
+                }
+            }
+        }
         let mut n = self.queued_len;
         self.cmd_buf[..n].copy_from_slice(&self.queued[..n]);
         self.queued_len = 0;
@@ -991,11 +1022,25 @@ impl ShardCore {
                         }
                     }
                     ActionMsg::Assist { target } => Command::Assist { id: c.id, target },
-                    ActionMsg::Craft { recipe, count } => Command::Craft {
+                    ActionMsg::Craft {
+                        recipe,
+                        count,
+                        skin,
+                    } => Command::Craft {
                         id: c.id,
                         recipe,
                         count,
+                        skin,
                     },
+                    ActionMsg::Reskin { slot, skin } => Command::Reskin {
+                        id: c.id,
+                        slot,
+                        skin,
+                    },
+                    // Answered by the accept loop before it reaches this
+                    // ring (`net.rs` `action_reader_task`); one that got
+                    // here anyway asks the sim for nothing.
+                    ActionMsg::SkinsRefresh => continue,
                     ActionMsg::CraftCancel { index } => Command::CraftCancel { id: c.id, index },
                     ActionMsg::Place {
                         row,
@@ -2961,6 +3006,43 @@ impl ShardCore {
             }
         }
 
+        // Skin rows (skins v0), the item catalog's drip shape: the store
+        // screen and every skinned item's look read them.
+        let c = &self.clients[slot];
+        let sk = &self.skin_catalog;
+        if sk.count > 0 && c.skins_cursor < sk.count as usize {
+            match protocol::encode_event_skins(sk, c.skins_cursor, &mut self.ev_buf) {
+                Ok((len, took)) => {
+                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                        ShardStats::bump(&stats.ev_sent);
+                        self.clients[slot].skins_cursor += took;
+                    } else {
+                        return;
+                    }
+                }
+                Err(_) => ShardStats::bump(&stats.encode_range_errors),
+            }
+        }
+
+        // What this player owns, whenever the sim's copy moves (a join's
+        // first read, a refresh, a new session's reset to none).
+        if let Some(wslot) = Self::world_slot_of(&self.world, self.clients[slot].id) {
+            let owned = self.world.players[wslot].skins;
+            if self.clients[slot].last_skins != Some(owned) {
+                match protocol::encode_event_skins_owned(&owned, &mut self.ev_buf) {
+                    Ok(len) => {
+                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            self.clients[slot].last_skins = Some(owned);
+                            ShardStats::bump(&stats.ev_sent);
+                        } else {
+                            return;
+                        }
+                    }
+                    Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                }
+            }
+        }
+
         // Recipe rows, same drip shape (the craft menu's data).
         let c = &self.clients[slot];
         let cc = &self.world.craft;
@@ -4026,6 +4108,13 @@ impl ShardCore {
             // branch); this is the wire agreeing.
             held: if p.wounded { None } else { Self::held_of(p) },
             lit: !p.wounded && sim_core::light::is_lit(p, gc),
+            // The held item's skin (skins v0), under `held`'s rule: an
+            // empty or dropped hand wears nothing.
+            held_skin: if p.wounded || Self::held_of(p).is_none() {
+                0
+            } else {
+                p.inv[p.frame.sel as usize].skin
+            },
         }
     }
 
@@ -4086,6 +4175,7 @@ impl ShardCore {
             // catalog and a mob has no inventory to index it from.
             held: None,
             lit: false,
+            held_skin: 0,
         }
     }
 
@@ -4380,6 +4470,7 @@ mod tests {
             item: 0,
             count: 20,
             cond: 0,
+            skin: 0,
         };
         for (row, loc) in [(0, LOC_PLANE), (row, STAIR_LOCS[0])] {
             core.push_action(
@@ -4450,6 +4541,7 @@ mod tests {
             item: 0,
             count: 1,
             cond: 0,
+            skin: 0,
         }; INV_SLOTS];
         let w = &mut core.world;
         w.backpacks

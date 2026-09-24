@@ -210,6 +210,7 @@ mod tests {
                     item: 0,
                     count,
                     cond: 0,
+                    skin: 0,
                 },
             )
         };
@@ -230,6 +231,7 @@ mod tests {
                     item: 0,
                     count: 3,
                     cond: 0,
+                    skin: 0,
                 }
             ),
             None
@@ -243,6 +245,7 @@ mod tests {
                     item: 999,
                     count: 1,
                     cond: 0,
+                    skin: 0,
                 }
             ),
             None
@@ -258,6 +261,7 @@ mod tests {
             item: 0,
             count: 1,
             cond: 0,
+            skin: 0,
         };
         assert_eq!(icon_stem(&c, st), Some("stone_hatchet"));
         assert_eq!(

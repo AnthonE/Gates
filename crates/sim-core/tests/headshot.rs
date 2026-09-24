@@ -218,11 +218,13 @@ fn shooter(id: u32, x: f32, feet_y: f32, z: f32, weapon: u16, round: u16, pitch:
         item: weapon,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     p.inv[7] = ItemStack {
         item: round,
         count: 20,
         cond: 0,
+        skin: 0,
     };
     // And the magazine, loaded (reload v1) — harmless for the bow, which
     // has no `mag_slot` and spends straight out of the quiver, and

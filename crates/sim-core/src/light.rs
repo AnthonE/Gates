@@ -145,6 +145,7 @@ mod tests {
             item: 0,
             count: 1,
             cond: 400,
+            skin: 0,
         }
     }
 
@@ -166,6 +167,7 @@ mod tests {
             item: 1,
             count: 1,
             cond: 300,
+            skin: 0,
         };
         assert!(
             !is_lit(&holder(not_a_light, BTN_LIGHT), &g),
@@ -289,6 +291,7 @@ mod tests {
                 item: 0,
                 count: 1,
                 cond: 5_000,
+                skin: 0,
             },
             BTN_LIGHT,
         );

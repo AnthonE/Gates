@@ -304,11 +304,13 @@ fn blasted_from(dx: f32, dz: f32) -> World {
         item: 0,
         count: 20,
         cond: 0,
+        skin: 0,
     };
     w.players[0].inv[1] = ItemStack {
         item: SATCHEL,
         count: 2,
         cond: 0,
+        skin: 0,
     };
     w.tick(&[Command::Place {
         id: RAIDER,

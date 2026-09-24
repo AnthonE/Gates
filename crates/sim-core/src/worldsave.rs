@@ -80,7 +80,7 @@ use crate::limits::{
     BOX_SLOTS, HEARTH_CREW_CAP, HEARTH_STOCK_ROWS, INV_SLOTS, LOCK_AUTH_CAP, LOCK_GUEST_CAP,
     MAX_BACKPACKS, MAX_BOXES, MAX_BUILD_COORD, MAX_BUILD_SOCKETS, MAX_DEPLOYS, MAX_GROUND_ITEMS,
     MAX_HEARTHS, MAX_LIVE_CHARGES, MAX_LOCKS, MAX_MAGS, MAX_PIECES, MAX_PLAYERS, MAX_SLOT_LIVES,
-    MAX_SPENT_ARROWS, MAX_WORLD_CONTS,
+    MAX_SPENT_ARROWS, MAX_WORLD_CONTS, SKIN_WORDS,
 };
 use crate::lock::{LockRec, CODE_MAX, CODE_NONE};
 use crate::loot::{LOOT_CACHE, LOOT_CRATE};
@@ -181,7 +181,12 @@ use crate::worldcont::WorldContRec;
 /// `weather::Env` (`ENV_BYTES`), hashed once it is not the default. The
 /// same release grew the per-player tail (wet and cold) and the slot-life
 /// record (a regrowing tree), all under this one number.
-pub const WORLD_SAVE_FORMAT: u16 = 15;
+///
+/// **16 — skins** (skins v0): every stored stack is eight bytes (the skin it
+/// wears joins item, count and condition), a craft job carries its skin
+/// (`PlayerSave` format 7), and the player tail grew the owned set, which
+/// `state_hash` folds.
+pub const WORLD_SAVE_FORMAT: u16 = 16;
 
 /// The head's `weather::Env`: mode, fade end, the six per-mille fields and
 /// the bearing it faded from, and the day offset.
@@ -231,7 +236,7 @@ pub const SECTION_COUNTS: usize = 11 * 2 + 4;
 /// **the magazine** (format 12: `MAX_MAGS` pairs of `u16`, the loaded count
 /// and the round in it), the weak-spot pair, the four death-screen facts,
 /// and `craft_done_at`.
-const PLAYER_TAIL_BYTES: usize = 4 + 8 + 9 + 8 + MAX_MAGS * 4 + 6 + 9 + 8 + 8;
+const PLAYER_TAIL_BYTES: usize = 4 + 8 + 9 + 8 + MAX_MAGS * 4 + 6 + 9 + 8 + 8 + SKIN_WORDS * 8;
 /// On-disk stride of one saved body. Public because two byte-poking
 /// tests in `tests/worldsave.rs` have to seek past the player section, and
 /// a hand-copied 240 there is a silent wrong-offset the day `PlayerSave`
@@ -274,7 +279,7 @@ const HEARTH_BYTES: usize = 9 + HEARTH_STOCK_ROWS * 4 + 1 + HEARTH_CREW_CAP * 4;
 /// container carries the state — a storage box's says `ARCH_BOX` and is
 /// six zeroed bytes plus twelve zeroed counters, which is the price of
 /// the two stores staying one store (`deploy::holds_items`).
-const BOX_BYTES: usize = 9 + BOX_SLOTS * 6 + 6 + BOX_SLOTS * 2;
+const BOX_BYTES: usize = 9 + BOX_SLOTS * STACK_BYTES + 6 + BOX_SLOTS * 2;
 /// One code lock (lock v1). Address, owner, both codes, the locked bit,
 /// both remembered lists with their counts, and the three brute-force
 /// counters — the whole `LockRec`, because every field of it is hashed
@@ -283,7 +288,7 @@ const BOX_BYTES: usize = 9 + BOX_SLOTS * 6 + 6 + BOX_SLOTS * 2;
 /// over).
 const LOCK_BYTES: usize =
     6 + 4 + 2 + 2 + 1 + 1 + 1 + LOCK_AUTH_CAP * 4 + LOCK_GUEST_CAP * 4 + 1 + 8 + 8;
-const BACKPACK_BYTES: usize = 28 + INV_SLOTS * 6;
+const BACKPACK_BYTES: usize = 28 + INV_SLOTS * STACK_BYTES;
 /// One authored world container (format 5, `worldcont.rs`): the cell, the
 /// quantized stand position, the table it rolls, the refill deadline, and
 /// its slots. The position is saved rather than re-derived from
@@ -291,7 +296,7 @@ const BACKPACK_BYTES: usize = 28 + INV_SLOTS * 6;
 /// a load must not cost 60 `noise2` evaluations per container — and the
 /// decoder re-checks it against the cell it claims, so a hand-edited save
 /// cannot move a crate to the player's feet.
-const WORLD_CONT_BYTES: usize = 2 + 2 + 4 + 4 + 1 + 8 + INV_SLOTS * 6;
+const WORLD_CONT_BYTES: usize = 2 + 2 + 4 + 4 + 1 + 8 + INV_SLOTS * STACK_BYTES;
 /// One spent arrow (format 10, `spent.rs`): three millimetre coordinates,
 /// the round it is, and the tick it becomes takeable. Millimetres and not
 /// the body's coarser quanta because the reach test `spent::pickup` runs
@@ -310,12 +315,14 @@ const SLOT_LIFE_BYTES: usize = 23;
 /// also the bound that makes the encode a *bounded* piece of work in the
 /// sense wall 4 means: the sim thread's cost is O(live records) with a
 /// ceiling nothing can exceed, not O(whatever the world grew to).
-/// One loose stack (format 14): 4 id + three `i32` coordinates + a
-/// six-byte `ItemStack` + the despawn deadline. The same 30 bytes
-/// `state_hash` folds per record, and deliberately so — a digest and a
-/// save that disagreed about a record's shape is how a reload changes a
-/// hash.
-pub const GROUND_ITEM_BYTES: usize = 4 + 12 + 6 + 8;
+/// One loose stack (format 14): 4 id + three `i32` coordinates + an
+/// `ItemStack` + the despawn deadline. The same 32 bytes `state_hash`
+/// folds per record, and deliberately so — a digest and a save that
+/// disagreed about a record's shape is how a reload changes a hash.
+pub const GROUND_ITEM_BYTES: usize = 4 + 12 + STACK_BYTES + 8;
+
+/// One stored `ItemStack`: item, count, condition, skin (format 16).
+pub const STACK_BYTES: usize = 8;
 
 pub const WORLD_SAVE_MAX_BYTES: usize = HEAD_BYTES
     + MAX_PLAYERS * PLAYER_BYTES
@@ -484,6 +491,7 @@ impl<'a> W<'a> {
         self.u16(s.item);
         self.u16(s.count);
         self.u16(s.cond);
+        self.u16(s.skin);
     }
 }
 
@@ -589,6 +597,10 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         o.u16(p.wet);
         o.u16(p.chill);
         o.u32(p.cold_acc);
+        // The owned skins (format 16): hashed, so saved. A body that
+        // reloads asleep keeps the set until its owner's next session
+        // replaces it (`World::take_over` clears it at the door).
+        o.bytes(&p.skins.to_le_bytes());
     }
     for (p, placed) in w.pieces.entries().iter().zip(w.pieces.placed()) {
         o.u16(p.cx);
@@ -729,9 +741,7 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         o.i32(g.qx);
         o.i32(g.qy);
         o.i32(g.qz);
-        o.u16(g.stack.item);
-        o.u16(g.stack.count);
-        o.u16(g.stack.cond);
+        o.stack(&g.stack);
         o.u64(g.expires);
     }
     for s in w.slot_lives.entries() {
@@ -819,14 +829,24 @@ impl<'a> R<'a> {
         let item = self.u16()?;
         let count = self.u16()?;
         let cond = self.u16()?;
-        // The canonical-empty rule, all three fields (format 7): a slot
-        // emptied by a path that forgot to zero `cond` hashes differently
-        // from the same empty slot the sim produced — a difference nothing
-        // can see, which is wall 5's failure mode.
-        if item as usize >= max_item || (count == 0 && item != 0) || (count == 0 && cond != 0) {
+        let skin = self.u16()?;
+        // The canonical-empty rule, all four fields (formats 7 and 16): a
+        // slot emptied by a path that forgot to zero `cond` or `skin`
+        // hashes differently from the same empty slot the sim produced — a
+        // difference nothing can see, which is wall 5's failure mode.
+        if item as usize >= max_item
+            || (count == 0 && item != 0)
+            || (count == 0 && cond != 0)
+            || (count == 0 && skin != 0)
+        {
             return Err(WorldSaveError::BadItemStack);
         }
-        Ok(ItemStack { item, count, cond })
+        Ok(ItemStack {
+            item,
+            count,
+            cond,
+            skin,
+        })
     }
 }
 
@@ -960,6 +980,11 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         let wet = r.u16()?;
         let chill = r.u16()?;
         let cold_acc = r.u32()?;
+        let mut skin_bytes = [0u8; SKIN_WORDS * 8];
+        for b in skin_bytes.iter_mut() {
+            *b = r.u8()?;
+        }
+        let skins = crate::skin::SkinSet::from_le_bytes(&skin_bytes);
         if wet > 1000 || chill > 1000 {
             return Err(WorldSaveError::BadExposure);
         }
@@ -1019,6 +1044,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             wet,
             chill,
             cold_acc,
+            skins,
             dead: save.dead,
             // **A world remembers a crawl** (wounded v0, format 13): the
             // body comes back down with its clock, for `mag`'s reason —
@@ -1541,6 +1567,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         let item = r.u16()?;
         let count = r.u16()?;
         let cond = r.u16()?;
+        let skin = r.u16()?;
         let expires = r.u64()?;
         let side_q = (terrain::ISLAND_SIZE / crate::movement::POS_XZ_Q) as i64 + 1;
         if i64::from(qx) < 0
@@ -1561,7 +1588,12 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             qx,
             qy,
             qz,
-            stack: ItemStack { item, count, cond },
+            stack: ItemStack {
+                item,
+                count,
+                cond,
+                skin,
+            },
             expires,
         };
     }
@@ -1676,12 +1708,14 @@ mod tests {
             item: 0,
             count: 0,
             cond: 9,
+            skin: 0,
         };
         // A second, legal stack so the bag is not empty-by-construction.
         bag.items[1] = ItemStack {
             item: 1,
             count: 3,
             cond: 0,
+            skin: 0,
         };
         w.backpacks.restore(&[bag], 2);
 
@@ -1706,15 +1740,18 @@ mod tests {
         // written inline after `next_swing` (reload v1). Saved because
         // `state_hash` folds it — a snapshot that dropped it would restore
         // a world that hashes differently from the one it was written from.
-        assert_eq!(PLAYER_TAIL_BYTES, 92);
+        // 92 → 124 at format 16: the owned skin set, `SKIN_WORDS` words.
+        assert_eq!(PLAYER_TAIL_BYTES, 124);
         // 308 → 320 at format 8: `PlayerSave` carries `WEAR_SLOTS` worn
         // stacks at the inventory's six-byte stride (armor v0). 320 → 324
         // at format 11: the torch's remainder in its scalar head (torch
         // fuel v0). 356 → 373 at format 13: the crawl and its two clocks
         // in the same head (wounded v0). 373 → 381 at format 15: wet,
-        // chill and the cold's remainder in the tail (weather v0).
+        // chill and the cold's remainder in the tail (weather v0). 381 →
+        // 485 at format 16 (skins v0): eight-byte stacks and six-byte jobs
+        // in `PlayerSave` (+72) and the owned set in the tail (+32).
         assert_eq!(
-            PLAYER_BYTES, 381,
+            PLAYER_BYTES, 485,
             "a body is PlayerSave plus every other hashed field"
         );
         // The sum, spelled out, so the number below is checkable by
@@ -1725,17 +1762,17 @@ mod tests {
         // a stack is four bytes and not two. A constant a reader cannot
         // re-derive is a constant nobody checks twice.
         let by_hand = 90                    // head (format 15: eleven section counts + the 26 B sky/clock)
-            + 100 * 381                     // players (6 B a stack, 2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13, wet and cold at 15)
+            + 100 * 485                     // players (2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13, wet and cold at 15, 8 B stacks + the owned skins at 16)
             + 8_192 * 21                    // pieces + plate + placement tick
             + 1_024 * 33                    // deploys + bag_ready + placed
             + 256 * 66                      // hearths (25 + the crew: 1 + 10*4)
-            + 256 * 111                     // containers: 9 + 12 six-byte stacks + the oven's 30
+            + 256 * 135                     // containers: 9 + 12 eight-byte stacks + the oven's 30
             + 512 * 98                      // code locks
-            + 256 * 208                     // bags: 28 + 30 six-byte stacks
-            + 64 * 201                      // world containers: 21 + 30 six-byte stacks
+            + 256 * 268                     // bags: 28 + 30 eight-byte stacks
+            + 64 * 261                      // world containers: 21 + 30 eight-byte stacks
             + 64 * 25                       // charges
             + 512 * 22                      // spent arrows (format 10)
-            + 256 * 30                      // loose ground stacks (format 14)
+            + 256 * 32                      // loose ground stacks (format 14; 8 B stack at 16)
             + 32_768 * 23; // harvested slots (format 15: the occupant and the sapling's clock)
                            // 54 -> 56 at format 5: a ninth section count is a `u16` in the head.
                            // 56 -> 62 at format 10: a tenth count, plus the
@@ -1749,14 +1786,14 @@ mod tests {
                            // wrong. 64 -> 90 at format 15: the admin's sky and
                            // clock (`ENV_BYTES`).
         assert_eq!(HEAD_BYTES, 90);
-        // 4 id + 12 position + 6 stack + 8 deadline.
-        assert_eq!(GROUND_ITEM_BYTES, 30);
+        // 4 id + 12 position + 8 stack + 8 deadline.
+        assert_eq!(GROUND_ITEM_BYTES, 32);
         // Three millimetre coordinates, the round, and the ready deadline.
         assert_eq!(SPENT_BYTES, 22);
-        // A world container is 201: 4 cell + 8 quantized position + 1 table
-        // + 8 refill deadline, then `INV_SLOTS` stacks at six bytes
-        // (format 7: item, count, condition).
-        assert_eq!(WORLD_CONT_BYTES, 201);
+        // A world container is 261: 4 cell + 8 quantized position + 1 table
+        // + 8 refill deadline, then `INV_SLOTS` stacks at eight bytes
+        // (format 16: item, count, condition, skin).
+        assert_eq!(WORLD_CONT_BYTES, 261);
         // A lock is 98: 6 address + 4 owner + 2 + 2 codes + 1 locked + 2
         // counts + 8 auth ids + 8 guest ids at four bytes each + 1 miss
         // counter + 8 + 8 for the two tick deadlines.
@@ -1820,8 +1857,12 @@ mod tests {
         // sky and clock, and 8 bytes of wet and cold on each of 100 bodies.
         // 884_910 → 1_179_822, same format: a harvested slot remembers what
         // stood there and when its sapling is grown, 9 bytes × 32,768.
+        // 1_179_822 → 1_216_078 at format 16 (skins v0): every stored stack
+        // grew two bytes for its skin (players, boxes, bags, world
+        // containers, loose stacks), a craft job two, and each body 32 for
+        // the owned set.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 1_179_822,
+            WORLD_SAVE_MAX_BYTES, 1_216_078,
             "the world save ceiling moved"
         );
     }

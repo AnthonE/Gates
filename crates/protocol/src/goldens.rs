@@ -16,6 +16,7 @@
 //! NOW.md §5c). Never both at once: the bytes would then move for two
 //! reasons and no reader afterwards can tell which byte answers to which.
 
+use crate::event::{SkinCatalog, SkinRow};
 use crate::{
     ChatText, EntityState, Hello, InputDatagram, InvSlot, ItemCatalog, ItemRow, Nudge, Refuse,
     SnapshotHeader, Welcome, WireBag, WireGItem, BAG_SYNC_BATCH, DEPLOY_SYNC_BATCH,
@@ -40,7 +41,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 115] = [
+pub const FIXTURES: [&str; 119] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -214,6 +215,12 @@ pub const FIXTURES: [&str; 115] = [
     "event_slot_grow_sync.bin",
     // The pack call (v76). Appended.
     "event_howl.bin",
+    // Skins v0 (v77): the skin catalog, the owner's set, and the two new
+    // verbs. Appended, positional like every row above.
+    "event_skins.bin",
+    "event_skins_owned.bin",
+    "action_reskin.bin",
+    "action_skins_refresh.bin",
 ];
 
 /// The sky/clock event: a storm forced mid-fade, the clock pushed to dusk.
@@ -334,6 +341,7 @@ pub fn event_cont_sync() -> (u8, u32, bool, [InvSlot; 3]) {
                     item: 5,
                     count: 40,
                     cond: 0,
+                    skin: 0,
                 },
             },
             InvSlot {
@@ -345,6 +353,7 @@ pub fn event_cont_sync() -> (u8, u32, bool, [InvSlot; 3]) {
                     // every other field in the batch, so a codec that
                     // wrote the halves in the wrong order moves bytes.
                     cond: 4_321,
+                    skin: 0,
                 },
             },
             InvSlot {
@@ -353,6 +362,7 @@ pub fn event_cont_sync() -> (u8, u32, bool, [InvSlot; 3]) {
                     item: 12,
                     count: 77,
                     cond: 9_876,
+                    skin: 0,
                 },
             },
         ],
@@ -412,6 +422,7 @@ fn rng_entity(rng: &mut Pcg32, id: u32) -> EntityState {
         // point the field has.
         held: None,
         lit: false,
+        held_skin: 0,
     }
 }
 
@@ -781,6 +792,12 @@ pub fn event_inv() -> ([InvSlot; INV_SLOTS], usize) {
                 // stream so the fixture pins it in thirty different
                 // states rather than one.
                 cond: rng.next_bounded(40_001) as u16,
+                // The skin (wire v77), from the same stream: a third of the
+                // slots skinned, the rest plain, so both states are pinned.
+                skin: match rng.next_bounded(3) {
+                    0 => 1 + rng.next_bounded(900) as u16,
+                    _ => 0,
+                },
             },
         };
     }
@@ -883,14 +900,17 @@ pub fn event_craft_q() -> ([CraftJob; 3], u16) {
             CraftJob {
                 recipe: 5,
                 remaining: 2,
+                skin: 0,
             },
             CraftJob {
                 recipe: 0,
                 remaining: 99,
+                skin: 0,
             },
             CraftJob {
                 recipe: 63,
                 remaining: 1,
+                skin: 0,
             },
         ],
         777,
@@ -951,8 +971,10 @@ pub fn event_recipes() -> CraftContent {
 }
 
 /// A craft request: (recipe index, count).
-pub fn action_craft() -> (u16, u16) {
-    (33, 5)
+pub fn action_craft() -> (u16, u16, u16) {
+    // A skin id sharing no byte with the recipe or the count (wire v77), so
+    // a transposed field cannot pass.
+    (33, 5, 0x0A61)
 }
 
 /// A tech-tree unlock request naming recipe 21 (tech tree v0) — a value
@@ -1742,6 +1764,64 @@ pub fn event_howl() -> u32 {
     sim_core::limits::MOB_ID_TAG | 37
 }
 
+/// The skin catalog (wire v77): three rows — one unpriced, one in ELO, one
+/// in ORBS — so the coin field and the optional price are each pinned in
+/// every state. The drip sends all three in one batch.
+pub fn event_skins() -> SkinCatalog {
+    let mut c = SkinCatalog::EMPTY;
+    let rows = [
+        (
+            b"Obsidian Rock".as_slice(),
+            1u16,
+            7u16,
+            [70u8, 62, 84],
+            0u8,
+            0u32,
+        ),
+        (b"Ember Hatchet".as_slice(), 2, 12, [214, 118, 70], 1, 350),
+        (
+            b"Gilded Revolver".as_slice(),
+            0x0A61,
+            40,
+            [232, 192, 96],
+            2,
+            9,
+        ),
+    ];
+    for (i, (name, catalog, covers, tint, coin, price)) in rows.into_iter().enumerate() {
+        c.set(
+            i,
+            name,
+            SkinRow {
+                catalog,
+                covers,
+                tint,
+                coin,
+                price,
+            },
+        )
+        .expect("a legal row");
+    }
+    c.count = 3;
+    c
+}
+
+/// The owner's set (wire v77): bits in the first word, across the word
+/// boundary and in the last word, so a codec that wrote the halves of a
+/// word, or the words, in the wrong order cannot pass.
+pub fn event_skins_owned() -> sim_core::skin::SkinSet {
+    let mut s = sim_core::skin::SkinSet::EMPTY;
+    for row in [0, 5, 63, 64, 130, 255] {
+        s.insert(row);
+    }
+    s
+}
+
+/// Put catalog id 0x0B72 on the item in slot 17 (wire v77).
+pub fn action_reskin() -> (u8, u16) {
+    (17, 0x0B72)
+}
+
 /// Opening a **world container** (wire v37) — the fourth kind, and the
 /// first whose open reaches the sim rather than only the subscription.
 ///
@@ -1794,6 +1874,7 @@ pub fn event_cont_sync_world() -> (u8, u32, bool, [InvSlot; 3]) {
                     item: 19,
                     count: 64,
                     cond: 0,
+                    skin: 0,
                 },
             },
             InvSlot {
@@ -1802,6 +1883,7 @@ pub fn event_cont_sync_world() -> (u8, u32, bool, [InvSlot; 3]) {
                     item: 7,
                     count: 2,
                     cond: 12_345,
+                    skin: 0,
                 },
             },
             InvSlot {
@@ -1810,6 +1892,7 @@ pub fn event_cont_sync_world() -> (u8, u32, bool, [InvSlot; 3]) {
                     item: 44,
                     count: 11,
                     cond: 40_000,
+                    skin: 0,
                 },
             },
         ],
@@ -1910,6 +1993,7 @@ pub fn event_cont_sync_wear() -> (u8, u32, bool, [InvSlot; 2]) {
                     item: 4,
                     count: 1,
                     cond: 9_100,
+                    skin: 0,
                 },
             },
             InvSlot {
@@ -1918,6 +2002,7 @@ pub fn event_cont_sync_wear() -> (u8, u32, bool, [InvSlot; 2]) {
                     item: 5,
                     count: 1,
                     cond: 10_000,
+                    skin: 0,
                 },
             },
         ],

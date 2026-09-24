@@ -75,6 +75,7 @@ impl Rig {
                 item: i as u16,
                 count: 99,
                 cond: 0,
+                skin: 0,
             };
         }
         let mut ev = EventQueue::default();

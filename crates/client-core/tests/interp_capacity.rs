@@ -58,6 +58,7 @@ fn ent(id: u32) -> EntityState {
         // into a file whose whole subject is the first.
         held: None,
         lit: false,
+        held_skin: 0,
     }
 }
 

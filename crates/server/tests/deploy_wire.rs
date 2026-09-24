@@ -215,16 +215,19 @@ fn deployables_ride_the_wire() {
         item: 0,
         count: 50,
         cond: 0,
+        skin: 0,
     };
     core.world.players[w0].inv[1] = ItemStack {
         item: 1,
         count: 50,
         cond: 0,
+        skin: 0,
     };
     core.world.players[w0].inv[2] = ItemStack {
         item: 2,
         count: 5,
         cond: 0,
+        skin: 0,
     };
 
     // Foundation + hearth at the spawn cell: both broadcast; the hearth
@@ -278,6 +281,7 @@ fn deployables_ride_the_wire() {
         item: 0,
         count: 50,
         cond: 0,
+        skin: 0,
     };
     act(
         &mut core,
@@ -370,6 +374,7 @@ fn deployables_ride_the_wire() {
         item: 0,
         count: 10,
         cond: 0,
+        skin: 0,
     };
     act(
         &mut core,
@@ -435,6 +440,7 @@ fn deployables_ride_the_wire() {
         item: 0,
         count: 10,
         cond: 0,
+        skin: 0,
     };
     act(
         &mut core,
@@ -531,16 +537,19 @@ fn doors_toggle_across_the_wire() {
         item: 0,
         count: 50,
         cond: 0,
+        skin: 0,
     };
     core.world.players[w0].inv[1] = ItemStack {
         item: 4,
         count: 5,
         cond: 0,
+        skin: 0,
     };
     core.world.players[w0].inv[2] = ItemStack {
         item: 7,
         count: 2,
         cond: 0,
+        skin: 0,
     };
 
     for a in [
@@ -1099,6 +1108,7 @@ fn a_removal_storm_leaves_every_walk_standing() {
             item: 0,
             count: 10,
             cond: 0,
+            skin: 0,
         };
         sim_core::build::place(
             SEED,
@@ -1166,6 +1176,7 @@ fn a_removal_storm_leaves_every_walk_standing() {
                 item: 0,
                 count: 10,
                 cond: 0,
+                skin: 0,
             };
             act(
                 &mut core,
@@ -1325,6 +1336,7 @@ fn a_cliff_cannot_run_the_piece_cursor_off_the_store() {
             item: 0,
             count: 10,
             cond: 0,
+            skin: 0,
         };
         let hour = if k < DOOMED { 0 } else { HOURS };
         sim_core::build::place(

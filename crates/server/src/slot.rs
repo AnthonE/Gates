@@ -187,6 +187,16 @@ pub struct Connect {
     pub link: Link,
 }
 
+/// Accept→sim: what the platform said the player in `slot` owns
+/// (`skins.rs`). `id` is the tenant the read was made for; `ShardCore`
+/// drops the message if the slot has moved on to somebody else.
+#[derive(Clone, Copy)]
+pub struct SkinsMsg {
+    pub slot: usize,
+    pub id: u32,
+    pub owned: sim_core::skin::SkinSet,
+}
+
 /// Sim→accept: one player's state, for the store's index to file under their
 /// key. Carries the player **id**, not the key — the sim has never heard of a
 /// key, and that is the wall that keeps identity out of the deterministic
