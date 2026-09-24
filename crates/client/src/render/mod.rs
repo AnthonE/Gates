@@ -100,6 +100,7 @@ pub mod input;
 pub mod loading;
 pub mod loot;
 pub mod sparks;
+pub mod surface;
 // The island map. Painted from the same `terrain::splat_from` the ground
 // blends by, so the map and the world are one worldgen seen two ways.
 pub mod map;
@@ -631,10 +632,8 @@ impl Plugin for GatesRenderPlugin {
                 // The tracer pool. Spawned once here so the frame path
                 // never spawns an entity for an arrow (`tracer.rs`).
                 tracer::setup,
-                // The mark pool, for the same reason plus one more: the
-                // materials it builds here are what the prewarm draw
-                // specializes, and a pipeline compiled mid-fight is the
-                // pop `decal.rs`'s `PREWARM_FRAMES` exists to avoid.
+                // The mark mesh: one entity, always drawn, so its pipeline
+                // compiles at load rather than on the first shot of a fight.
                 decal::setup,
                 // The chip pool, `tracer::setup`'s reason exactly: a landed
                 // blow must not spawn an entity inside a fight
@@ -1033,11 +1032,10 @@ impl Plugin for GatesRenderPlugin {
                 // tracer's first frame already shows motion.
                 tracer::launch.after(feed::drain),
                 tracer::fly.after(tracer::launch),
-                // The mark's two halves, the tracer's shape exactly.
-                // `mark` reads the drained feed so it follows the drain;
-                // `fade` then ages everything including the mark just
-                // claimed, which is what releases the prewarm slot.
-                decal::mark.after(feed::drain),
+                // The mark's two halves. `mark` reads the frame's resolved
+                // contacts, so it follows the resolver; `fade` then ages
+                // everything and rewrites the one mark mesh if it moved.
+                decal::mark.after(impact::contacts),
                 decal::fade.after(decal::mark),
                 // The weak-spot cross, off the core's latched mark and the
                 // frame's sector answer — after the resolver that writes

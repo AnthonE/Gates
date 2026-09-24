@@ -1,320 +1,276 @@
-//! The mark an arrow leaves — the first decal in this tree.
+//! Marks the world keeps: bullet holes, gashes, dents, blood and scorch.
 //!
-//! Ranged combat has landed marks on nothing since it shipped: the sim
-//! stopped arrows on ground, trunks and walls, `EV_SHOT` grew a tracer so
-//! the arrow was visible in flight, and then the streak simply stopped
-//! existing at the surface it hit. `EV_IMPACT` (wire v45) is the fact that
-//! was missing; this is what draws it.
+//! # One mesh, both builds
 //!
-//! # Bevy has decals and we were not using them
+//! Every mark is a small patch in ONE dynamic mesh drawn with ONE lit,
+//! alpha-blended `StandardMaterial` over a generated atlas — one draw call on
+//! the desktop and in the browser alike. Bevy's `ForwardDecal` cannot run on
+//! WebGL2 (its 4-byte uniform is refused outright), and drawing marks two ways
+//! meant the two builds looked different; the mesh path the browser proved is
+//! now the only path. A patch is lifted [`MESH_MARK_LIFT_M`] off its surface
+//! along the normal, and bent to the trunk where it lands on one.
 //!
-//! `bevy_pbr::decal` ships two kinds and this takes the **forward** one:
-//! a 1×1 quad whose material alpha-blends toward the edges by comparing
-//! its own depth against the surface behind it, so a mark laid on uneven
-//! ground fades out where the ground pulls away instead of hanging in the
-//! air. `ClusteredDecal` is the higher-quality kind and is **not** an
-//! option here — it requires bindless textures, which is the same wall
-//! `ground_splat.rs` had to route around, on a gate box whose renderer is
-//! a CPU rasterizer.
+//! # What a mark looks like
 //!
-//! **Its one hard prerequisite was already paid for, by accident.**
-//! `ForwardDecal` needs a `DepthPrepass` on the camera, and `rig.rs` has
-//! carried `ScreenSpaceAmbientOcclusion` since the lighting slice — which
-//! is `#[require(DepthPrepass, NormalPrepass)]` in 0.18. So the prepass is
-//! up, and `Msaa::Off` (the other caveat in Bevy's own usage notes) is set
-//! for SSAO's sake too. Neither is this module's to hold, which is exactly
-//! why `tests/decal.rs` asserts the camera still carries the AO: this file
-//! would go quietly wrong if that line ever left `rig.rs`, and quietly is
-//! the problem.
+//! Picked per weapon × matter ([`decal_kind`]), the way the reference picks an
+//! impact effect: a bullet leaves a hole whose rim is the material's
+//! (splintered wood, chipped stone with cracks, bright bare metal, a soil
+//! crater), a blade a gash, a blow on metal a dent, a blast a scorch and a
+//! body blood on the floor behind it. Every mark is rotated and scaled at
+//! random, and fades out after its life. The atlas is grey value × alpha; the
+//! matter's [`tint`] colours it, so one crater serves every soil.
 //!
-//! # It decides nothing, and could not
+//! # A fixed pool
 //!
-//! `RENDER.md` §1: Bevy draws, it does not decide. A mark is the purest
-//! case of that in the tree — nothing reads one, nothing collides with
-//! one, and a mark that is late, dropped or in the wrong place costs a
-//! scuff. What it is NOT is a guess: the sim says where the arrow stopped
-//! and what it stopped on, so this file never re-runs the stop test. The
-//! alternative — a client that re-derived what it hit from `collide` and
-//! `terrain` — is the two-copies-of-one-rule failure `column_floor_y` was
-//! written to end.
+//! [`MARKS`] slots, drop-oldest — a mark has no motion to interrupt and the
+//! oldest is the faintest. The mesh is rewritten only when a mark is placed,
+//! a fade step moves or the pool is forgotten; a free slot is a collapsed
+//! patch, so the mesh never changes size.
 //!
-//! What this file *does* derive is the mark's **facing**, and that is a
-//! different kind of thing: a normal read off shared worldgen is a
-//! position lookup, not a second opinion about a collision. See
-//! [`facing`].
+//! # The weak spot
 //!
-//! # A fixed pool, never a per-frame spawn
-//!
-//! [`MARKS`] entities are spawned once at startup and hidden; an impact
-//! claims a free one and the fade releases it. The trap list's rule is no
-//! per-frame allocations on the client, and spawn-plus-despawn per arrow
-//! is exactly that — with the added cost that a Bevy spawn is a structural
-//! archetype move. `tracer.rs` and `highlight.rs` make the same call.
-//!
-//! **The overflow policy is drop-OLDEST**, which is the opposite of the
-//! tracer's and deliberately so. A tracer that vanishes mid-flight reads
-//! as a bug, so `tracer.rs` refuses the newest rather than stealing a live
-//! one. A mark has no motion to interrupt: the oldest is the faintest and
-//! the furthest from whatever the player is looking at now, so recycling
-//! it is invisible while refusing the newest would drop the mark from the
-//! shot they just took — the one impact they are actually watching for.
-//!
-//! # A browser draws a MESH mark, because it cannot draw a decal (2026-09-13)
-//!
-//! From 2026-09-12 this pool was **empty on wasm32** — `setup` returned
-//! before spawning a slot, on two measured walls: `ForwardDecal` needs the
-//! depth prepass, and its extension's 4-byte uniform is refused outright by
-//! WebGL2. That was the right call about the decal and the wrong call about
-//! the mark: the operator plays the browser build now, chopped a tree in it
-//! and reported *"i still dont see decals on trees"* (2026-09-13), and no
-//! arithmetic in this file could have been wrong enough to explain a pool
-//! with no entities in it.
-//!
-//! So on wasm32 a slot is a plain `StandardMaterial` quad instead — the same
-//! scuff mask, the same tint, alpha-blended, lifted [`MESH_MARK_LIFT_M`] off
-//! the surface along its normal so it never fights the depth of the thing
-//! it lies on, and **curved to the trunk** for a world hit
-//! ([`curved_patch`]): a flat 22 cm sticker on a 24 cm-radius trunk floats
-//! 3 cm off the bark at its edges, and a patch bent to the sim's own
-//! collision radius does not. What a mesh mark loses against the decal is
-//! projection — it does not wrap a bump in the ground — and that costs
-//! nothing at 22 cm on this terrain. The desktop keeps the decal, which a
-//! person has looked at; the browser's mark has not been looked at by anyone
-//! and `NOW.md` §LOOK says so.
-//!
-//! # The weak spot is drawn on the thing (2026-09-13)
-//!
-//! `EV_WEAK_MARK` has crossed the wire since gather v0 and been decoded into
-//! `ClientCore::{mark_cell, mark8}` for as long, and the only thing that
-//! ever drew it was two words on the HUD prompt while the player happened
-//! to be standing in the sector. The reference's mechanic is an X ON THE
-//! TREE that moves after every hit, and a player who has never seen one
-//! cannot chase it. [`weak_spot`] puts a cross on the node's skin, on the
-//! side the sector faces, pulsing; it brightens and holds when the player
-//! stands where it points. Our sector is about *stance* and not aim
-//! (`gather.rs`'s `WEAK_COS`), which is exactly why the mark faces the
-//! sector: standing where you can see it square-on is standing in it.
+//! `EV_WEAK_MARK`'s cross on the node the sim marked is its own entity on the
+//! same mesh-mark path: it pulses and moves every hit, which a pooled mark
+//! does not.
 
 use bevy::asset::RenderAssetUsages;
+use bevy::camera::visibility::NoFrustumCulling;
 use bevy::image::ImageSampler;
-use bevy::pbr::decal::{ForwardDecal, ForwardDecalMaterial, ForwardDecalMaterialExt};
-use bevy::pbr::ExtendedMaterial;
+use bevy::light::NotShadowCaster;
+use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
-use bevy::mesh::{Indices, PrimitiveTopology};
-
-use super::feed::Feed;
-use super::impact::{skin_radius, strike_height};
-use super::{Eye, WorldId};
-use sim_core::build::{self, BUILD_CELL_M};
-use sim_core::collide::{ColIndex, PLANE_THICKNESS_M};
+use super::impact::{skin_radius, strike_height, Contacts, Matter, Weapon};
+use super::mipmap;
+use super::props::hash01;
+use super::{surface, Eye, WorldId};
 use sim_core::gather::NO_CELL;
-use sim_core::limits::{MAX_BUILD_COORD, MAX_BUILD_SOCKETS};
-use sim_core::movement::{POS_XZ_Q, POS_Y_Q};
-use sim_core::ranged::{SURF_BUILT, SURF_GROUND, SURF_WORLD};
-use sim_core::terrain::{self, Occupant, Slot};
+use sim_core::ranged::SURF_WORLD;
+use sim_core::terrain::{self, Slot};
 use sim_core::yaw_dir;
 
-/// Marks drawable at once.
-///
-/// A *view* cap, not a world one — the same split `tracer.rs` makes
-/// between its 16 and the sim's `MAX_ARROWS`. Nothing about a mark exists
-/// outside this pool: they are not saved, not replicated and not known to
-/// the sim, so this number is answering "how much scuffing can be in front
-/// of one player" and nothing else.
-///
-/// 48 is three volleys from four archers with the oldest still up. Each
-/// slot costs one hidden entity, one 1×1 quad and one material; the mesh
-/// is shared, so the per-slot cost is the material and the transform.
-pub const MARKS: usize = 48;
+/// Marks drawable at once — a *view* cap: marks are not saved, replicated or
+/// known to the sim. Each costs 18 vertices of one shared mesh.
+pub const MARKS: usize = 256;
 
 /// How long a mark stays at full strength, seconds.
-///
-/// Long enough that a firefight leaves a readable record of where the
-/// arrows went, short enough that the pool turns over rather than
-/// saturating — at [`MARKS`] slots this is about one mark a second before
-/// the oldest starts being recycled, which no realistic rate of fire
-/// reaches. **Not a knob anybody spoke**: it is this module's documented
-/// default, `DECISIONS.md` §open (surface marks v0).
 pub const LIFE_S: f32 = 45.0;
 
-/// The tail, seconds — how long the mark takes to fade out once [`LIFE_S`]
-/// is up. A mark that vanished on a frame boundary would read as a pop in
-/// the corner of the eye, which is the one way a purely cosmetic system
-/// can still look like a bug.
+/// Blood's life, seconds — shorter: a fight's blood should not outlast it.
+pub const BLOOD_LIFE_S: f32 = 30.0;
+
+/// The fade-out tail, seconds, once a mark's life is up. A mark that vanished
+/// on a frame boundary would read as a pop in the corner of the eye.
 pub const FADE_S: f32 = 6.0;
 
-/// The mark's footprint, metres. An arrowhead is centimetres and this is
-/// deliberately wider: what is being drawn is the scuff around the hit,
-/// not the hole itself, and a mark under ~15 cm is invisible past the few
-/// metres at which anybody would be looking at it.
+/// A melee scuff's nominal footprint, metres; every other kind is sized
+/// relative to what made it ([`decal_kind`]).
 pub const SIZE_M: f32 = 0.22;
 
-/// How far the decal's box reaches along its projection axis before it
-/// stops blending, metres (`ForwardDecalMaterialExt::depth_fade_factor`).
-///
-/// Small on purpose. This is the number that decides whether a mark on a
-/// trunk also smears onto the ground two metres behind it, and `ART.md`
-/// rule 2's whole complaint about a "clean intersection edge" is what a
-/// decal looks like when this is set too generously — a sticker, not a
-/// mark. One arrow-length is enough to cover the surface's own relief and
-/// nothing beyond it.
-pub const DEPTH_FADE_M: f32 = 0.35;
+/// Marks further than this from the eye are not laid, metres — the reference
+/// caps impact decals at 30 m; ours are cheaper and a firefight reads further.
+pub const MARK_RANGE_M: f32 = 50.0;
 
-/// How far a placed mark is lifted off the surface along its own normal,
-/// metres. **Zero, and the zero is the point.**
-///
-/// This was `DEPTH_FADE_M * 0.5` from the first decal in the tree until
-/// 2026-09-09, on a comment claiming the quad had to "sit inside the
-/// projection volume". **A `ForwardDecal` has no projection volume.** Read
-/// `bevy_pbr-0.18.1/src/decal/forward_decal.wgsl`: there is no bounds
-/// discard anywhere in it, and the blend is
-///
-/// ```wgsl
-/// let alpha = saturate(1.0 - (normal_depth * inv_depth_fade_factor));
-/// ```
-///
-/// — maximal at **zero** separation and gone at [`DEPTH_FADE_M`]. So the
-/// lift was not admission to a volume, it was a flat ×0.5 on the alpha of
-/// every mark in the game, permanently, and it was invisible to every gate
-/// here because no gate in this repo reads a texel of a frame.
-///
-/// It cost a second thing that is worse, because it depends on where you
-/// stand. The same shader shifts the sample by
-/// `delta_uv = normal_depth * Vt.xy / view_steepness` — a parallax term
-/// proportional to `tan θ` of the view against the normal — so a lifted
-/// quad walks its own scuff sideways as the camera swings off-axis, and
-/// past a modest angle the mark leaves the quad it is drawn on entirely.
-/// At the old lift that displacement passes [`SIZE_M`] / 2 well inside the
-/// angles a standing player looks at nearby ground from.
-///
-/// Nothing is bought by a lift, either: `ForwardDecalMaterialExt::
-/// specialize` sets `depth_compare = CompareFunction::Always`
-/// (`forward.rs:128`), so a decal **cannot** z-fight with the surface it
-/// lies on, which is the only thing an offset is usually for.
-///
-/// Kept as a named constant rather than deleted so the gate has something
-/// to read and a re-introduced offset reddens
-/// `tests/decal.rs::a_mark_sits_on_its_surface_so_bevys_fade_gives_it_full_alpha`
-/// instead of quietly dimming the game again. Documented default, not a
-/// spoken knob (`CLAUDE.md` §loop discipline).
-pub const MARK_LIFT_M: f32 = 0.0;
-
-/// Frames the prewarm mark is left visible at startup.
-///
-/// **This exists because of a live trap with nothing else watching it.**
-/// A new material is a new pipeline, and Bevy specializes a pipeline
-/// lazily on **first use** — so without this the first arrow to land in a
-/// fight would pay a compile stall at the worst possible moment.
-/// `CLAUDE.md` carries this as a trap that survived the port and is worse
-/// natively than it was in the browser, and notes that the gate which used
-/// to assert it (`browser_smoke`) went with the browser and has no native
-/// replacement.
-///
-/// A pipeline specializes when the material is actually **drawn**, so a
-/// hidden entity does not pay it and neither does a culled one. Hence a
-/// real draw, in frustum, at [`PREWARM_ALPHA`] — invisible to the player
-/// and identical to the renderer.
-pub const PREWARM_FRAMES: u32 = 8;
-
-/// The prewarm mark's alpha. Non-zero because zero is a value a driver may
-/// reasonably discard early, and the whole point is that the fragment path
-/// runs; low enough that nobody sees it against ground.
-pub const PREWARM_ALPHA: f32 = 0.02;
-
-/// How far a **mesh** mark (the browser's, see the header) stands off its
-/// surface along the normal, metres. Not `MARK_LIFT_M`'s question: that one
-/// is about a decal's blend, which peaks at zero separation; this one is
-/// about a quad's depth test against the surface it lies on, which at zero
-/// separation is a coin toss per pixel. One centimetre resolves that at
-/// every distance a mark is visible from and is invisible as a float.
+/// How far a mark stands off its surface along the normal, metres — at zero
+/// separation the depth test is a coin toss per pixel.
 pub const MESH_MARK_LIFT_M: f32 = 0.01;
 
-/// Segments across a curved mesh mark — eight chords over a 22 cm arc on a
-/// 24 cm radius is a sagitta under a millimetre, which the lift above
-/// already covers.
+/// Segments across a mark, so a trunk mark can bend: eight chords over a
+/// 22 cm arc on a 24 cm radius is a sagitta under a millimetre.
 pub const MESH_MARK_SEGMENTS: u32 = 8;
 
-/// The weak-spot cross's footprint, metres. Larger than a scuff: it is a
-/// target to be read from where a swing is taken, not a record of one.
+/// Vertices per mark: two rows of `MESH_MARK_SEGMENTS + 1`.
+const VERTS_PER_MARK: usize = (MESH_MARK_SEGMENTS as usize + 1) * 2;
+
+/// The weak-spot cross's footprint, metres — a target read from where a swing
+/// is taken, larger than a scuff.
 pub const WEAK_MARK_SIZE_M: f32 = 0.30;
 
-/// How fast the weak-spot cross breathes while the player is outside its
-/// sector, Hz — slow enough to read as an invitation and not an alarm.
+/// How fast the weak-spot cross breathes outside its sector, Hz.
 pub const WEAK_MARK_PULSE_HZ: f32 = 1.4;
 
-/// The cross's alpha at the bottom and top of the pulse. It holds at the
-/// top while the player stands in the sector, which is the one bit of
-/// feedback the mechanic needs: *here, and you are in the right place*.
+/// The cross's alpha at the bottom and top of the pulse; it holds at the top
+/// while the player stands in the sector.
 pub const WEAK_MARK_ALPHA_LO: f32 = 0.45;
 pub const WEAK_MARK_ALPHA_HI: f32 = 0.95;
 
-/// The mark texture's side, texels. A soft round scuff carries no detail
-/// worth more than this, and the whole set is one 64×64 RGBA — 16 KB.
+/// The weak-spot mask's side, texels.
 const MARK_TEX: u32 = 64;
 
-/// Alpha steps the fade is quantized to.
-///
-/// **A write per live mark per frame is the thing being avoided.** Each
-/// material edit marks the asset changed and re-uploads its uniform, so a
-/// continuous fade across [`MARKS`] slots would be 48 uploads a frame for
-/// a value no eye can resolve. Quantizing to 1/32 turns the whole fade
-/// into 32 writes spread over [`FADE_S`], per mark.
+/// Alpha steps a fade is quantized to, so a fading mark rewrites the mesh 32
+/// times over [`FADE_S`] and not every frame.
 const ALPHA_STEPS: f32 = 32.0;
 
-/// One pooled mark and the fade it is currently running.
-#[derive(Default, Clone, Copy)]
-struct Mark {
-    /// Seconds this mark has left, counting down through [`LIFE_S`] and
-    /// then [`FADE_S`]. Zero means the slot is free — `tracer.rs`'s
-    /// `life == 0` convention, so the two pools read alike.
-    left: f32,
-    /// The alpha step last written to this slot's material, so the fade
-    /// writes only when the quantized value actually moves.
-    step: i32,
-    /// Ticks up while the prewarm mark is on screen; the slot is released
-    /// when it reaches [`PREWARM_FRAMES`]. Only ever non-zero on the slot
-    /// the prewarm claimed.
-    warm: u32,
+/// The atlas: [`ATLAS_COLS`] × [`ATLAS_ROWS`] cells of [`CELL_TEX`]² texels.
+pub const ATLAS_COLS: u32 = 8;
+pub const ATLAS_ROWS: u32 = 4;
+pub const CELL_TEX: u32 = 128;
+
+/// What a mark is — an atlas cell, or a run of variant cells.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Kind {
+    HoleSoil,
+    HoleWood,
+    HoleStone,
+    HoleMetal,
+    GashWood,
+    ChipStone,
+    DentMetal,
+    ScuffSoil,
+    ArrowHole,
+    Scorch,
+    Blood,
 }
 
-/// The pool. Entities and materials are created once and reused.
+impl Kind {
+    /// Every kind, for the generator and the gates.
+    pub const ALL: [Kind; 11] = [
+        Kind::HoleSoil,
+        Kind::HoleWood,
+        Kind::HoleStone,
+        Kind::HoleMetal,
+        Kind::GashWood,
+        Kind::ChipStone,
+        Kind::DentMetal,
+        Kind::ScuffSoil,
+        Kind::ArrowHole,
+        Kind::Scorch,
+        Kind::Blood,
+    ];
+
+    /// The first atlas cell and how many variants follow it.
+    pub fn cells(self) -> (u32, u32) {
+        match self {
+            Kind::HoleSoil => (0, 2),
+            Kind::HoleWood => (2, 2),
+            Kind::HoleStone => (4, 2),
+            Kind::HoleMetal => (6, 2),
+            Kind::GashWood => (8, 2),
+            Kind::ChipStone => (10, 2),
+            Kind::DentMetal => (12, 2),
+            Kind::ScuffSoil => (14, 2),
+            Kind::ArrowHole => (16, 2),
+            Kind::Scorch => (18, 2),
+            Kind::Blood => (20, 4),
+        }
+    }
+
+    fn life(self) -> f32 {
+        match self {
+            Kind::Blood => BLOOD_LIFE_S,
+            _ => LIFE_S,
+        }
+    }
+}
+
+/// Which mark a blow leaves and how wide it is, metres — `None` for a blow
+/// that leaves nothing (water, a bush). A bullet's hole is small and its rim
+/// is the material's; a blade's gash and a blunt dent are the width of the
+/// tool; blood is a splat; a blast is a scorch.
+pub fn decal_kind(weapon: Weapon, matter: Matter) -> Option<(Kind, f32)> {
+    use Matter::*;
+    Some(match (weapon, matter) {
+        (_, Water | Plant) => return None,
+        (_, Flesh) => (Kind::Blood, 0.55),
+        (Weapon::Blast, _) => (Kind::Scorch, 2.2),
+        (Weapon::Melee, Wood) => (Kind::GashWood, SIZE_M * 1.2),
+        (Weapon::Melee, Stone) => (Kind::ChipStone, SIZE_M),
+        (Weapon::Melee, Metal) => (Kind::DentMetal, SIZE_M),
+        (Weapon::Melee, Dirt | Sand | Grass) => (Kind::ScuffSoil, SIZE_M * 1.3),
+        (Weapon::Arrow, _) => (Kind::ArrowHole, 0.16),
+        (Weapon::Bullet, Wood) => (Kind::HoleWood, 0.14),
+        (Weapon::Bullet, Stone) => (Kind::HoleStone, 0.14),
+        (Weapon::Bullet, Metal) => (Kind::HoleMetal, 0.11),
+        (Weapon::Bullet, Dirt | Sand | Grass) => (Kind::HoleSoil, 0.18),
+    })
+}
+
+/// A mark's colour on this matter; the atlas carries the value, this the hue.
 ///
-/// `Default` is written out rather than derived: `[T; N]` only derives it
-/// up to N = 32 and [`MARKS`] is past that, so a derive stops compiling
-/// the moment the pool is sized for the job it is actually doing.
+/// Pale where the blow exposes something pale (heartwood, fresh stone, bare
+/// metal), dark where it turns something dark over (earth). Measured against
+/// the surfaces they land on by `tests/decal.rs`.
+pub fn tint(kind: Kind, matter: Matter) -> Color {
+    match kind {
+        Kind::Blood => return Color::srgb(0.40, 0.03, 0.03),
+        Kind::Scorch => return Color::srgb(0.17, 0.15, 0.13),
+        _ => {}
+    }
+    match matter {
+        Matter::Wood => Color::srgb(0.82, 0.66, 0.46),
+        Matter::Stone => Color::srgb(0.80, 0.78, 0.74),
+        Matter::Metal => Color::srgb(0.84, 0.84, 0.86),
+        Matter::Sand => Color::srgb(0.56, 0.48, 0.35),
+        Matter::Grass => Color::srgb(0.27, 0.25, 0.16),
+        Matter::Dirt | Matter::Plant | Matter::Water | Matter::Flesh => {
+            Color::srgb(0.30, 0.23, 0.16)
+        }
+    }
+}
+
+/// One vertex of a mark: position, normal, uv, linear colour.
+pub type MarkVertex = ([f32; 3], [f32; 3], [f32; 2], [f32; 4]);
+
+/// One pooled mark.
+#[derive(Clone, Copy)]
+struct Mark {
+    /// Seconds left through life and then [`FADE_S`]; zero is a free slot.
+    left: f32,
+    /// The alpha step last written, so a fade rewrites only when it moves.
+    step: i32,
+    pos: Vec3,
+    normal: Vec3,
+    /// The patch's local +u axis on the surface; horizontal on a trunk.
+    tangent: Vec3,
+    size: f32,
+    cell: u32,
+    /// The trunk's radius for a bent mark, metres; zero is flat.
+    bend_r: f32,
+    /// Linear tint.
+    tint: [f32; 3],
+    /// A trunk mark cannot be spun (it is aligned to the trunk), so its
+    /// variety is the atlas cell's dihedral turn: bit 0 swaps u/v, bits 1–2
+    /// mirror them.
+    flip: u8,
+}
+
+impl Default for Mark {
+    fn default() -> Self {
+        Self {
+            left: 0.0,
+            step: -1,
+            pos: Vec3::ZERO,
+            normal: Vec3::Y,
+            tangent: Vec3::X,
+            size: 0.0,
+            cell: 0,
+            bend_r: 0.0,
+            tint: [1.0; 3],
+            flip: 0,
+        }
+    }
+}
+
+/// The pool: every mark's state, and the handles of the one mesh that draws
+/// them. `Default` is written out: `[T; N]` derives it only up to 32.
 #[derive(Resource)]
 pub struct Marks {
     slots: [Mark; MARKS],
-    entities: Vec<Entity>,
-    /// The decal path's materials — one per slot, empty on wasm32.
-    materials: Vec<Handle<ForwardDecalMaterial<StandardMaterial>>>,
-    /// The mesh path's materials — one per slot, empty on the desktop. The
-    /// two vectors are never both filled; which one is says which kind of
-    /// mark this build draws.
-    mesh_materials: Vec<Handle<StandardMaterial>>,
-    /// The mesh path's two quads: flat for ground and built surfaces,
-    /// curved to a trunk for a world hit ([`curved_patch`]).
-    flat: Handle<Mesh>,
-    curved: Handle<Mesh>,
-    /// Whether the prewarm draw has been asked for yet. One-shot: the
-    /// pipeline needs specializing once per run, not once per world.
-    warmed: bool,
-    /// The oldest slot to recycle when every one is busy — a rotating
-    /// hand rather than a scan for the least time left, because "oldest"
-    /// only has to be approximately right to be invisible and this costs
-    /// one add.
+    mesh: Handle<Mesh>,
+    /// The oldest slot to recycle when every one is busy — a rotating hand.
     hand: usize,
-    /// The weak-spot cross: one entity, its material on whichever path this
-    /// build draws, and the alpha step last written so the pulse costs a
-    /// write only when the quantized value moves.
+    /// Whether the mesh no longer matches the slots.
+    dirty: bool,
+    rng: u32,
+    /// Marks laid since the world was entered, and live marks recycled.
+    pub placed: u64,
+    pub stolen: u64,
+    /// The weak-spot cross: its entity, material, the alpha step last
+    /// written and the cell and heading it was last placed for.
     weak: Option<Entity>,
-    weak_material: Handle<ForwardDecalMaterial<StandardMaterial>>,
-    weak_mesh_material: Handle<StandardMaterial>,
+    weak_material: Handle<StandardMaterial>,
     weak_step: i32,
-    /// The cell the cross was last placed for, so the scatter is asked
-    /// once per mark and not once per frame.
     weak_cell: u32,
     weak_mark8: u8,
     weak_at: Vec3,
@@ -325,16 +281,14 @@ impl Default for Marks {
     fn default() -> Self {
         Self {
             slots: [Mark::default(); MARKS],
-            entities: Vec::new(),
-            materials: Vec::new(),
-            mesh_materials: Vec::new(),
-            flat: Handle::default(),
-            curved: Handle::default(),
-            warmed: false,
+            mesh: Handle::default(),
             hand: 0,
+            dirty: false,
+            rng: 0,
+            placed: 0,
+            stolen: 0,
             weak: None,
             weak_material: Handle::default(),
-            weak_mesh_material: Handle::default(),
             weak_step: -1,
             weak_cell: NO_CELL,
             weak_mark8: 0,
@@ -344,213 +298,310 @@ impl Default for Marks {
     }
 }
 
-/// Drop every mark, because the world they were made in has gone.
-///
-/// **The pool is spawned at `Startup`, not on entering a world**, which is
-/// what makes this necessary: the entities are not `WorldEntity`, so
-/// `world_teardown`'s despawn walks straight past them and 48 marks at the
-/// last shard's coordinates would still be standing in the next one. That
-/// is `world_teardown`'s own stated failure — "view resources that would
-/// otherwise carry the last world's eye into the next one" — and a mark is
-/// a view resource that happens to be made of entities.
-///
-/// Hiding goes through `Commands` rather than a query because the teardown
-/// runs outside the world schedule and has no reason to hold one.
-///
-/// **`warmed` is deliberately NOT reset.** A pipeline is specialized once
-/// per process, not once per world; re-running the prewarm on every
-/// reconnect would pay a real cost to avoid a stall that cannot happen
-/// twice.
-pub fn forget_in(commands: &mut Commands, pool: &mut Marks) {
-    for &e in &pool.entities {
-        commands.entity(e).insert(Visibility::Hidden);
+impl Marks {
+    /// A free slot, or the oldest live one — drop-oldest.
+    fn claim(&mut self) -> usize {
+        if let Some(ix) = self.slots.iter().position(|m| m.left <= 0.0) {
+            return ix;
+        }
+        self.stolen += 1;
+        let ix = self.hand;
+        self.hand = (self.hand + 1) % MARKS;
+        ix
     }
+
+    /// One roll in `[0, 1)` — a 32-bit xorshift, seeded on first use.
+    fn roll(&mut self) -> f32 {
+        if self.rng == 0 {
+            self.rng = 0x2545_F491;
+        }
+        self.rng ^= self.rng << 13;
+        self.rng ^= self.rng >> 17;
+        self.rng ^= self.rng << 5;
+        (self.rng >> 8) as f32 / (1 << 24) as f32
+    }
+
+    /// How many marks are drawing.
+    pub fn live(&self) -> usize {
+        self.slots.iter().filter(|m| m.left > 0.0).count()
+    }
+
+    /// Lay one mark: rotated and scaled at random, a random variant of its
+    /// kind. `bend_r` is the trunk radius for a mark on a standing thing, or
+    /// zero. Pure — no `World`, no assets.
+    pub fn place(
+        &mut self,
+        at: Vec3,
+        normal: Vec3,
+        kind: Kind,
+        size: f32,
+        matter: Matter,
+        bend_r: f32,
+    ) -> usize {
+        let n = normal.normalize_or(Vec3::Y);
+        let (first, variants) = kind.cells();
+        let cell = first + ((self.roll() * variants as f32) as u32).min(variants - 1);
+        let size = size * (0.8 + 0.4 * self.roll());
+        let (tangent, flip) = if bend_r > 0.0 {
+            (
+                Vec3::Y.cross(n).normalize_or(Vec3::X),
+                (self.roll() * 8.0) as u8,
+            )
+        } else {
+            let base = if n.y.abs() < 0.9 { Vec3::Y } else { Vec3::X };
+            let t = base.cross(n).normalize_or(Vec3::X);
+            let spin = Quat::from_axis_angle(n, self.roll() * std::f32::consts::TAU);
+            (spin * t, 0)
+        };
+        // A little brightness jitter so a row of holes is not one sticker.
+        let lin = tint(kind, matter).to_linear();
+        let j = 0.88 + 0.24 * self.roll();
+        let ix = self.claim();
+        self.slots[ix] = Mark {
+            left: kind.life() + FADE_S,
+            step: -1,
+            pos: at,
+            normal: n,
+            tangent,
+            size,
+            cell,
+            bend_r,
+            tint: [lin.red * j, lin.green * j, lin.blue * j],
+            flip,
+        };
+        self.placed += 1;
+        self.dirty = true;
+        ix
+    }
+
+    /// Age every mark by `dt`: release the dead, step the fading. Returns
+    /// whether the mesh needs rewriting.
+    pub fn age(&mut self, dt: f32) -> bool {
+        for m in self.slots.iter_mut() {
+            if m.left <= 0.0 {
+                continue;
+            }
+            m.left -= dt;
+            if m.left <= 0.0 {
+                *m = Mark::default();
+                self.dirty = true;
+                continue;
+            }
+            let step = alpha_step(m.left);
+            if step != m.step {
+                m.step = step;
+                self.dirty = true;
+            }
+        }
+        std::mem::take(&mut self.dirty)
+    }
+
+    /// The vertices of slot `ix` — a collapsed patch for a free slot.
+    pub fn vertices(&self, ix: usize) -> [MarkVertex; VERTS_PER_MARK] {
+        let mut out = [([0.0; 3], [0.0, 1.0, 0.0], [0.0; 2], [0.0; 4]); VERTS_PER_MARK];
+        let m = &self.slots[ix];
+        if m.left <= 0.0 {
+            return out;
+        }
+        let a = (alpha_step(m.left) as f32 / ALPHA_STEPS).clamp(0.0, 1.0);
+        let col = [m.tint[0], m.tint[1], m.tint[2], a];
+        let segs = MESH_MARK_SEGMENTS as usize;
+        let b = m.normal.cross(m.tangent);
+        let (cu, cv) = (m.cell % ATLAS_COLS, m.cell / ATLAS_COLS);
+        // Half a texel in from the cell's edge so a mip never reads the
+        // neighbour.
+        let inset = 0.5 / CELL_TEX as f32;
+        for c in 0..=segs {
+            let u = c as f32 / segs as f32;
+            let (off, n) = if m.bend_r > 0.0 {
+                let theta = (u - 0.5) * m.size / m.bend_r;
+                let (s, co) = theta.sin_cos();
+                (
+                    m.tangent * (m.bend_r * s) + m.normal * (m.bend_r * (co - 1.0)),
+                    m.tangent * s + m.normal * co,
+                )
+            } else {
+                (m.tangent * ((u - 0.5) * m.size), m.normal)
+            };
+            for r in 0..2 {
+                let v = r as f32;
+                let up = if m.bend_r > 0.0 { Vec3::Y } else { b };
+                let p = m.pos + off + up * ((v - 0.5) * m.size) + n * MESH_MARK_LIFT_M;
+                let (mut tu, mut tv) = (u, v);
+                if m.flip & 1 != 0 {
+                    std::mem::swap(&mut tu, &mut tv);
+                }
+                if m.flip & 2 != 0 {
+                    tu = 1.0 - tu;
+                }
+                if m.flip & 4 != 0 {
+                    tv = 1.0 - tv;
+                }
+                let uv = [
+                    (cu as f32 + inset + tu * (1.0 - 2.0 * inset)) / ATLAS_COLS as f32,
+                    (cv as f32 + inset + tv * (1.0 - 2.0 * inset)) / ATLAS_ROWS as f32,
+                ];
+                out[c * 2 + r] = (p.to_array(), n.to_array(), uv, col);
+            }
+        }
+        out
+    }
+
+    /// Copy every slot into the mesh's attributes, in place — no allocation.
+    fn write(&self, mesh: &mut Mesh) {
+        let (mut pos, mut nrm, mut uv, mut col) = (None, None, None, None);
+        for (attr, values) in mesh.attributes_mut() {
+            let id = attr.id;
+            match values {
+                VertexAttributeValues::Float32x3(v) => {
+                    if id == Mesh::ATTRIBUTE_POSITION.id {
+                        pos = Some(v);
+                    } else if id == Mesh::ATTRIBUTE_NORMAL.id {
+                        nrm = Some(v);
+                    }
+                }
+                VertexAttributeValues::Float32x2(v) if id == Mesh::ATTRIBUTE_UV_0.id => {
+                    uv = Some(v);
+                }
+                VertexAttributeValues::Float32x4(v) if id == Mesh::ATTRIBUTE_COLOR.id => {
+                    col = Some(v);
+                }
+                _ => {}
+            }
+        }
+        let (Some(pos), Some(nrm), Some(uv), Some(col)) = (pos, nrm, uv, col) else {
+            return;
+        };
+        for ix in 0..MARKS {
+            for (k, (p, n, t, c)) in self.vertices(ix).into_iter().enumerate() {
+                let i = ix * VERTS_PER_MARK + k;
+                pos[i] = p;
+                nrm[i] = n;
+                uv[i] = t;
+                col[i] = c;
+            }
+        }
+    }
+}
+
+/// The quantized alpha step of a mark with `left` seconds to go.
+fn alpha_step(left: f32) -> i32 {
+    ((left / FADE_S).clamp(0.0, 1.0) * ALPHA_STEPS) as i32
+}
+
+/// Drop every mark, because the world they were made in has gone. The mesh
+/// catches up on the next frame's [`fade`].
+pub fn forget_in(commands: &mut Commands, pool: &mut Marks) {
     if let Some(e) = pool.weak {
         commands.entity(e).insert(Visibility::Hidden);
     }
     pool.slots = [Mark::default(); MARKS];
     pool.hand = 0;
+    pool.dirty = true;
     pool.weak_cell = NO_CELL;
     pool.weak_step = -1;
 }
 
-impl Marks {
-    /// A free slot, or the oldest live one — the drop-oldest policy this
-    /// module's header argues for, and the inverse of `tracer.rs`'s.
-    fn claim(&mut self) -> usize {
-        if let Some(ix) = self.slots.iter().position(|m| m.left <= 0.0) {
-            return ix;
+/// The mark mesh's entity.
+#[derive(Component)]
+pub struct MarkMesh;
+
+/// The weak-spot cross's entity.
+#[derive(Component)]
+pub struct WeakSpot;
+
+/// The empty mark mesh: [`MARKS`] collapsed patches and their fixed indices.
+pub fn mark_mesh() -> Mesh {
+    let n = MARKS * VERTS_PER_MARK;
+    let segs = MESH_MARK_SEGMENTS;
+    let mut idx = Vec::with_capacity(MARKS * segs as usize * 6);
+    for m in 0..MARKS as u32 {
+        let base = m * VERTS_PER_MARK as u32;
+        for s in 0..segs {
+            let a = base + s * 2;
+            let (b, c, d) = (a + 1, a + 2, a + 3);
+            idx.extend_from_slice(&[a, b, c, b, d, c]);
         }
-        let ix = self.hand;
-        self.hand = (self.hand + 1) % MARKS;
-        ix
     }
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+    );
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0f32; 3]; n]);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0f32, 1.0, 0.0]; n]);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, vec![[0.0f32; 2]; n]);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![[0.0f32; 4]; n]);
+    mesh.insert_indices(Indices::U32(idx));
+    mesh
 }
 
-/// Spawn the pool, hidden. One-time cost at startup, so the frame path
-/// never spawns an entity for an arrow.
-///
-/// **`ForwardDecal` is `#[require(Mesh3d)]` and fills that mesh in from an
-/// `on_add` hook, so nothing here hands it one.** Writing the obvious
-/// `(ForwardDecal, Mesh3d(quad), …)` is precisely the shape of the
-/// 2026-08-16 duplicate-component trap — a bundle assembled out of two
-/// helpers that each insert the same component, which does not merge and
-/// does not replace but panics at spawn inside a command queue, naming the
-/// system as `<Enable the debug feature to see the name>`. Every gate in
-/// this repo is blind to it. Let the hook own the mesh.
+/// Spawn the mark mesh and the weak-spot cross. The mesh is always drawn —
+/// its patches collapsed until used — so its pipeline compiles at load and
+/// not on the first shot of a fight.
 pub fn setup(
     mut commands: Commands,
     mut pool: ResMut<Marks>,
     mut images: ResMut<Assets<Image>>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ForwardDecalMaterial<StandardMaterial>>>,
     mut standard: ResMut<Assets<StandardMaterial>>,
 ) {
-    let tex = images.add(scuff_texture());
+    let atlas = images.add(atlas_image());
     let cross = images.add(cross_texture());
-    // ⚠ **No DECALS in a browser, and the reason is measured rather than
-    // assumed** (2026-09-12). `ForwardDecalMaterialExt` is one `f32` in a
-    // uniform, and WebGL2 has no `BUFFER_BINDINGS_NOT_16_BYTE_ALIGNED`, so
-    // wgpu refuses the pipeline outright — *"the type given for group 3
-    // binding 200 has a size of 4 … must have a size that is a multiple of
-    // 16"* — and a refused pipeline is a fatal wgpu error, i.e. the module
-    // gone on the prewarm draw of the very first mark. Without a depth
-    // prepass on the camera the shader failed to COMPILE instead
-    // (`prepass_depth` undefined, `findings/web-build-20260909.md` §15.6),
-    // which never reached the pipeline and so never panicked: the two walls
-    // are stacked, and taking down the first exposed the second. The
-    // extension is Bevy's type and its shader reads that field by name, so a
-    // 16-byte padding is a copy of `forward_decal.wgsl` this tree does not
-    // carry.
-    //
-    // **So a browser slot is a mesh mark** — the header's account. A runtime
-    // `cfg!` rather than an attribute, so both paths stay reachable to the
-    // compiler on every target: an attribute split turned every helper this
-    // function feeds into dead code under the browser's clippy wall, one at
-    // a time, and the mesh path is the one no gate here can run.
-    let mesh_marks = cfg!(target_arch = "wasm32");
-    if mesh_marks {
-        pool.flat = meshes.add(flat_quad());
-        pool.curved = meshes.add(curved_patch(
-            terrain::occupant_volume(Occupant::Tree).0 / SIZE_M,
-            MESH_MARK_SEGMENTS,
-        ));
-    }
-    let mesh_material = |standard: &mut Assets<StandardMaterial>, tex: &Handle<Image>| {
-        standard.add(StandardMaterial {
-            base_color: Color::srgba(1.0, 1.0, 1.0, 0.0),
-            base_color_texture: Some(tex.clone()),
-            perceptual_roughness: 0.95,
-            metallic: 0.0,
-            alpha_mode: AlphaMode::Blend,
-            // A mark is seen from the side it was made on; the flip is for
-            // the curved patch's chords, whose winding a tangent rotation
-            // may turn.
-            double_sided: true,
-            cull_mode: None,
-            ..default()
-        })
-    };
-    let decal_material = |materials: &mut Assets<ForwardDecalMaterial<StandardMaterial>>,
-                          tex: &Handle<Image>| {
-        materials.add(ExtendedMaterial {
-            base: StandardMaterial {
-                base_color: Color::srgba(1.0, 1.0, 1.0, 0.0),
-                base_color_texture: Some(tex.clone()),
-                // A scuff is dirt and splinters, not a polished surface.
-                // Left rough and non-metallic so a mark never catches a
-                // specular highlight the surface under it did not.
-                perceptual_roughness: 0.95,
-                metallic: 0.0,
-                alpha_mode: AlphaMode::Blend,
-                ..default()
-            },
-            extension: ForwardDecalMaterialExt {
-                depth_fade_factor: DEPTH_FADE_M,
-            },
-        })
-    };
-    for ix in 0..MARKS {
-        let entity = if mesh_marks {
-            let mat = mesh_material(&mut standard, &tex);
-            let e = commands
-                .spawn((
-                    Mesh3d(pool.flat.clone()),
-                    MeshMaterial3d(mat.clone()),
-                    Transform::from_scale(Vec3::splat(SIZE_M)),
-                    Visibility::Hidden,
-                ))
-                .id();
-            pool.mesh_materials.push(mat);
-            e
-        } else {
-            let mat = decal_material(&mut materials, &tex);
-            let e = commands
-                .spawn((
-                    ForwardDecal,
-                    MeshMaterial3d(mat.clone()),
-                    Transform::from_scale(Vec3::splat(SIZE_M)),
-                    Visibility::Hidden,
-                ))
-                .id();
-            pool.materials.push(mat);
-            e
-        };
-        pool.entities.push(entity);
-        pool.slots[ix] = Mark::default();
-    }
-    // The weak-spot cross — one of whichever kind this build draws, on the
-    // same two materials with the other mask.
-    pool.weak = Some(if mesh_marks {
-        let mat = mesh_material(&mut standard, &cross);
-        pool.weak_mesh_material = mat.clone();
-        commands
-            .spawn((
-                WeakSpot,
-                Mesh3d(pool.curved.clone()),
-                MeshMaterial3d(mat),
-                Transform::from_scale(Vec3::splat(WEAK_MARK_SIZE_M)),
-                Visibility::Hidden,
-            ))
-            .id()
-    } else {
-        let mat = decal_material(&mut materials, &cross);
-        pool.weak_material = mat.clone();
-        commands
-            .spawn((
-                WeakSpot,
-                ForwardDecal,
-                MeshMaterial3d(mat),
-                Transform::from_scale(Vec3::splat(WEAK_MARK_SIZE_M)),
-                Visibility::Hidden,
-            ))
-            .id()
+    pool.mesh = meshes.add(mark_mesh());
+    let material = standard.add(StandardMaterial {
+        base_color: Color::WHITE,
+        base_color_texture: Some(atlas),
+        // A mark is dirt, splinters and soot — never a highlight the surface
+        // under it did not have.
+        perceptual_roughness: 0.95,
+        metallic: 0.0,
+        alpha_mode: AlphaMode::Blend,
+        double_sided: true,
+        cull_mode: None,
+        ..default()
     });
+    commands.spawn((
+        MarkMesh,
+        Mesh3d(pool.mesh.clone()),
+        MeshMaterial3d(material),
+        Transform::IDENTITY,
+        Visibility::Visible,
+        NoFrustumCulling,
+        NotShadowCaster,
+    ));
+
+    let curved = meshes.add(curved_patch(
+        terrain::occupant_volume(terrain::Occupant::Tree).0 / WEAK_MARK_SIZE_M,
+        MESH_MARK_SEGMENTS,
+    ));
+    let weak_mat = standard.add(StandardMaterial {
+        base_color: WEAK_TINT.with_alpha(0.0),
+        base_color_texture: Some(cross),
+        perceptual_roughness: 0.95,
+        metallic: 0.0,
+        alpha_mode: AlphaMode::Blend,
+        double_sided: true,
+        cull_mode: None,
+        ..default()
+    });
+    pool.weak_material = weak_mat.clone();
+    pool.weak = Some(
+        commands
+            .spawn((
+                WeakSpot,
+                Mesh3d(curved),
+                MeshMaterial3d(weak_mat),
+                Transform::from_scale(Vec3::splat(WEAK_MARK_SIZE_M)),
+                Visibility::Hidden,
+                NotShadowCaster,
+            ))
+            .id(),
+    );
 }
 
-/// The weak-spot cross's entity. A marker so [`weak_spot`]'s query is the
-/// one entity and not every transform on the island.
-#[derive(Component)]
-pub struct WeakSpot;
-
-/// The flat mesh mark: the decal's own quad, built the same way —
-/// `Rectangle` rotated from +Z onto +Y, so local +Y is the normal and
-/// [`place`] can lay both kinds of mark with one rotation.
-pub fn flat_quad() -> Mesh {
-    Rectangle::from_size(Vec2::ONE)
-        .mesh()
-        .build()
-        .rotated_by(Quat::from_rotation_arc(Vec3::Z, Vec3::Y))
-}
-
-/// The curved mesh mark: the same unit quad bent about its local **Z** axis
-/// to a cylinder of radius `r` (mesh units — the caller divides the trunk's
-/// metres by the scale the mark is drawn at), so laid on a trunk with local
-/// Z up the trunk it follows the bark instead of standing off it at the
-/// edges. Local +Y is still the outward normal at the centre; the edges
-/// bend to −Y, into the surface, which is where the bark is.
-///
-/// Pure — `tests/decal.rs` holds every vertex to the cylinder.
+/// The curved patch: a unit quad bent about its local **Z** axis to a
+/// cylinder of radius `r` (mesh units), so laid on a trunk with local Z up the
+/// trunk it follows the bark. Local +Y is the outward normal at the centre.
 pub fn curved_patch(r: f32, segments: u32) -> Mesh {
     let n = segments.max(1) as usize;
     let mut pos = Vec::with_capacity((n + 1) * 2);
@@ -562,7 +613,6 @@ pub fn curved_patch(r: f32, segments: u32) -> Mesh {
         let (sin, cos) = theta.sin_cos();
         let x = r * sin;
         let y = r * (cos - 1.0);
-        // Two rows: local z = −0.5 and +0.5, the axis of the bend.
         for (z, v) in [(-0.5f32, 1.0f32), (0.5, 0.0)] {
             pos.push([x, y, z]);
             nrm.push([sin, cos, 0.0]);
@@ -573,7 +623,6 @@ pub fn curved_patch(r: f32, segments: u32) -> Mesh {
     for i in 0..n as u32 {
         let a = i * 2;
         let (b, c, d) = (a + 1, a + 2, a + 3);
-        // Front face toward +Y, the decal quad's own: (b−a)×(c−a) is +Y.
         idx.extend_from_slice(&[a, b, c, b, d, c]);
     }
     let mut m = Mesh::new(
@@ -587,10 +636,8 @@ pub fn curved_patch(r: f32, segments: u32) -> Mesh {
     m
 }
 
-/// Which mesh a mesh mark on `surf` takes, and the rotation that lays it:
-/// a world hit is a trunk, so its patch is the curved one and it must be
-/// turned with local Z up the trunk's axis, not merely its normal onto the
-/// surface. Everything else is flat and only the normal matters.
+/// Which mesh a curved patch on `surf` takes and the rotation that lays it:
+/// a world hit is a trunk, so it is turned with local Z up the trunk's axis.
 pub fn mesh_pose(surf: u8, normal: Vec3) -> (bool, Quat) {
     if surf == SURF_WORLD && normal.y.abs() < 0.99 {
         let n = normal.with_y(0.0).normalize_or(Vec3::Z);
@@ -601,79 +648,352 @@ pub fn mesh_pose(surf: u8, normal: Vec3) -> (bool, Quat) {
     }
 }
 
-/// The scuff: a soft round mask, white, with transparent edges.
+/// Lay a mark for every contact the frame resolved that leaves one.
 ///
-/// White because the tint is the material's `base_color` — one texture
-/// serves every surface kind and the *colour* is what says whether this
-/// was dirt, bark or a splintered plank ([`tint`]).
-///
-/// The transparent edge is not incidental. Bevy's own usage note for
-/// forward decals is that a steep viewing angle distorts them and that
-/// padding the texture with transparent pixels is the mitigation; a
-/// radial falloff that reaches zero before the quad's edge is that
-/// padding, built in.
-fn scuff_texture() -> Image {
-    let n = MARK_TEX as usize;
-    let mut data = vec![0u8; n * n * 4];
-    let c = (n as f32 - 1.0) * 0.5;
-    for y in 0..n {
-        for x in 0..n {
-            let (dx, dy) = (x as f32 - c, y as f32 - c);
-            let d = (dx * dx + dy * dy).sqrt() / c;
-            // Solid to 45% of the radius, then a smooth shoulder to zero
-            // at 95% — the last 5% is the transparent padding above.
-            let a = if d <= 0.45 {
-                1.0
+/// Reads `Res<Contacts>` — the one resolution of where and what — so the
+/// mark, the debris and the sound of a blow cannot disagree about it.
+pub fn mark(
+    mut pool: ResMut<Marks>,
+    contacts: Res<Contacts>,
+    world: Option<Res<WorldId>>,
+    net: Option<NonSend<super::Net>>,
+    eye: Res<Eye>,
+) {
+    let (Some(world), Some(net)) = (world, net) else {
+        return;
+    };
+    let cols = net.session.core.pieces.cols();
+    for c in contacts.iter().filter(|c| c.mark) {
+        if c.at.distance_squared(eye.pos) > MARK_RANGE_M * MARK_RANGE_M {
+            continue;
+        }
+        let Some((kind, size)) = decal_kind(c.weapon, c.matter) else {
+            continue;
+        };
+        if kind == Kind::Blood {
+            // Behind the victim, on whatever they stand on.
+            let back = (-c.normal).with_y(0.0).normalize_or(Vec3::X);
+            let p = c.at + back * (0.2 + 0.5 * pool.roll());
+            let y = surface::floor_below(&world, cols, p);
+            if y <= terrain::SEA_LEVEL {
+                continue;
+            }
+            pool.place(Vec3::new(p.x, y, p.z), Vec3::Y, kind, size, c.matter, 0.0);
+            continue;
+        }
+        // A mark on a standing thing bends to its skin.
+        let bend_r = if c.surf == SURF_WORLD && c.normal.y.abs() < 0.5 {
+            surface::world_slot(&world, c.at)
+                .map_or(0.0, |s| skin_radius(s.occupant as u8) * s.scale)
+        } else {
+            0.0
+        };
+        pool.place(c.at, c.normal, kind, size, c.matter, bend_r);
+    }
+}
+
+/// Age every mark and, when anything visible changed, rewrite the mesh.
+pub fn fade(mut pool: ResMut<Marks>, time: Res<Time>, mut meshes: ResMut<Assets<Mesh>>) {
+    if !pool.age(time.delta_secs()) {
+        return;
+    }
+    if let Some(mesh) = meshes.get_mut(&pool.mesh) {
+        pool.write(mesh);
+    }
+}
+
+// ─── The atlas ───────────────────────────────────────────────────────────────
+
+/// Lattice hash in `[0, 1)`.
+fn lattice(x: i32, y: i32, seed: u32) -> f32 {
+    hash01(
+        (x as u32).wrapping_mul(0x9E37_79B1) ^ seed,
+        (y as u32) ^ seed.rotate_left(16),
+    )
+}
+
+/// Smooth value noise in `[0, 1)`.
+fn vnoise(x: f32, y: f32, seed: u32) -> f32 {
+    let (xf, yf) = (x.floor(), y.floor());
+    let (fx, fy) = (x - xf, y - yf);
+    let (sx, sy) = (fx * fx * (3.0 - 2.0 * fx), fy * fy * (3.0 - 2.0 * fy));
+    let (xi, yi) = (xf as i32, yf as i32);
+    let a = lattice(xi, yi, seed);
+    let b = lattice(xi + 1, yi, seed);
+    let c = lattice(xi, yi + 1, seed);
+    let d = lattice(xi + 1, yi + 1, seed);
+    let ab = a + (b - a) * sx;
+    let cd = c + (d - c) * sx;
+    ab + (cd - ab) * sy
+}
+
+/// Three octaves of [`vnoise`], still in `[0, 1)`.
+fn fbm(x: f32, y: f32, seed: u32) -> f32 {
+    vnoise(x, y, seed) * 0.5
+        + vnoise(x * 2.03, y * 2.03, seed ^ 0x51) * 0.3
+        + vnoise(x * 4.1, y * 4.1, seed ^ 0xA7) * 0.2
+}
+
+/// Noise around a circle, so a ragged rim closes on itself.
+fn around(a: f32, k: f32, seed: u32) -> f32 {
+    vnoise(a.cos() * k + 7.0, a.sin() * k + 7.0, seed)
+}
+
+fn smooth(e0: f32, e1: f32, x: f32) -> f32 {
+    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// A thin line's coverage: 1 on it, 0 past `w`.
+fn line(d: f32, w: f32) -> f32 {
+    smooth(w, w * 0.35, d.abs())
+}
+
+/// Radial rays: coverage of `n` jittered spokes whose length is rolled per
+/// spoke and stretched along `grain` (1 = along ±u), tapering to their tips.
+fn spokes(u: f32, v: f32, n: f32, len: f32, width: f32, grain: f32, seed: u32) -> f32 {
+    let r = (u * u + v * v).sqrt();
+    let a = v.atan2(u);
+    let t = (a / std::f32::consts::TAU + 0.5) * n;
+    let id = t.floor();
+    let f = t - id;
+    let jit = hash01(id as u32, seed);
+    let l = len
+        * (0.45 + 0.55 * hash01(id as u32, seed ^ 0x33))
+        * (1.0 - grain + grain * a.cos().abs());
+    if r >= l {
+        return 0.0;
+    }
+    let w = width * (1.0 - r / l);
+    let centre = 0.3 + 0.4 * jit;
+    smooth(w, w * 0.4, (f - centre).abs() * r.max(0.05) * 6.0)
+}
+
+/// Value (grey, sRGB 0..1) and alpha of cell `cell` at `(u, v) ∈ [-1, 1]²`.
+fn texel(cell: u32, u: f32, v: f32) -> (f32, f32) {
+    let seed = 0x5EED_0000 ^ cell.wrapping_mul(0x0101_0101);
+    let r = (u * u + v * v).sqrt();
+    let a = v.atan2(u);
+    let n = fbm(u * 5.0, v * 5.0, seed);
+    let (value, alpha) = match cell {
+        // A soil crater: a dark pit, the slope lighter, clods thrown out.
+        0 | 1 => {
+            let rn = r / (0.6 + 0.3 * (around(a, 1.6, seed) - 0.5));
+            let pit = smooth(0.4, 0.0, rn);
+            let body = 1.0 - smooth(0.5, 0.95, rn);
+            let clods = smooth(0.62, 0.74, fbm(u * 9.0 + 3.0, v * 9.0, seed ^ 7))
+                * smooth(0.6, 0.85, rn)
+                * (1.0 - smooth(0.95, 1.35, rn));
+            (
+                (0.7 - 0.55 * pit + 0.25 * (n - 0.5)).clamp(0.05, 1.0),
+                (body * (0.7 + 0.3 * n)).max(clods * 0.9),
+            )
+        }
+        // Wood: a dark bore, a ring of torn pale fibre, splinters along the
+        // grain.
+        2 | 3 => {
+            let hole_r = 0.11 + 0.04 * around(a, 2.0, seed);
+            let hole = smooth(hole_r + 0.03, hole_r - 0.02, r);
+            let torn = 1.0 - smooth(0.18, 0.34, r / (0.8 + 0.4 * around(a, 3.0, seed ^ 1)));
+            let splinter = spokes(u, v, 13.0, 0.95, 0.5, 0.7, seed);
+            let fibre = 0.82 + 0.18 * vnoise(u * 3.0, v * 28.0, seed ^ 9);
+            (
+                fibre * (1.0 - hole) + 0.07 * hole,
+                hole.max(torn * 0.9).max(splinter * 0.95),
+            )
+        }
+        // Stone: a dark pit in a pale chipped crater, with cracks running out.
+        4 | 5 => {
+            let pit = smooth(0.14, 0.07, r / (0.8 + 0.4 * around(a, 2.5, seed)));
+            let chip = 1.0 - smooth(0.26, 0.42, r / (0.75 + 0.5 * around(a, 2.0, seed ^ 2)));
+            let cracks = spokes(u, v, 7.0, 0.95, 0.12, 0.0, seed ^ 5);
+            let dust = (1.0 - smooth(0.3, 0.75, r)) * 0.3;
+            let crack_v = 0.22;
+            let base = 0.9 - 0.2 * n;
+            let value = if pit > 0.5 {
+                0.08
+            } else if cracks > chip {
+                crack_v
             } else {
-                let t = ((0.95 - d) / 0.5).clamp(0.0, 1.0);
-                t * t * (3.0 - 2.0 * t)
+                base
             };
-            let i = (y * n + x) * 4;
-            data[i] = 255;
-            data[i + 1] = 255;
-            data[i + 2] = 255;
-            data[i + 3] = (a * 255.0) as u8;
+            (value, pit.max(chip * 0.95).max(cracks * 0.9).max(dust))
+        }
+        // Metal: a dark centre, a bright ring of bare metal, a scuffed halo.
+        6 | 7 => {
+            let hole = smooth(0.1, 0.06, r);
+            let rim = 1.0 - smooth(0.17, 0.24, r / (0.9 + 0.2 * around(a, 3.0, seed)));
+            let scratch = vnoise(a * 9.0, r * 2.0, seed ^ 4);
+            let halo = (1.0 - smooth(0.24, 0.58, r)) * (0.35 + 0.65 * scratch);
+            let value = if hole > 0.5 { 0.05 } else { 0.8 + 0.2 * rim };
+            (value, hole.max(rim).max(halo * 0.75))
+        }
+        // A blade's gash in wood: a dark cut, torn pale lips, a few chips.
+        8 | 9 => {
+            // The gash narrows to nothing at its ends; past them there is no
+            // cut at all (and a zero width must not reach `smooth`).
+            let w = 0.13 * (1.0 - (u / 0.85).powi(2)).max(0.0) + 1e-4;
+            let d = v - 0.06 * (vnoise(u * 3.0, 0.5, seed) - 0.5);
+            let ends = 1.0 - smooth(0.7, 0.85, u.abs());
+            let cut = smooth(w * 0.55, w * 0.2, d.abs()) * ends;
+            let lip = smooth(w * 1.7, w * 1.1, d.abs()) * ends;
+            let chips = smooth(0.7, 0.8, fbm(u * 8.0, v * 8.0, seed ^ 3))
+                * (1.0 - smooth(0.2, 0.5, d.abs()));
+            let fibre = 0.84 + 0.16 * vnoise(u * 26.0, v * 3.0, seed ^ 9);
+            (
+                fibre * (1.0 - cut) + 0.08 * cut,
+                cut.max(lip * 0.9).max(chips * 0.8),
+            )
+        }
+        // A pick on stone: a pale chipped scar with darker grit in it.
+        10 | 11 => {
+            let rn = r / (0.55 + 0.35 * (around(a, 2.2, seed) - 0.5));
+            let body = 1.0 - smooth(0.7, 1.0, rn);
+            let grit = smooth(0.5, 0.7, fbm(u * 7.0 + 1.3, v * 7.0, seed ^ 6));
+            let flake = smooth(0.35, 0.8, rn)
+                * (1.0 - smooth(1.0, 1.25, rn))
+                * smooth(0.55, 0.62, fbm(u * 4.0, v * 4.0, seed ^ 8));
+            (
+                0.9 - 0.35 * grit - 0.15 * n,
+                (body * (0.7 + 0.3 * n)).max(flake * 0.8),
+            )
+        }
+        // A blow on metal: bright scratches across a darker dent.
+        12 | 13 => {
+            let (s, c) = (0.35f32).sin_cos();
+            let (ru, rv) = (u * c - v * s, u * s + v * c);
+            let mut scratch: f32 = 0.0;
+            for k in 0..5 {
+                let o = (hash01(k, seed) - 0.5) * 0.7;
+                let l = 0.3 + 0.55 * hash01(k, seed ^ 0x77);
+                let cover = line(rv - o, 0.025) * (1.0 - smooth(l * 0.8, l, ru.abs()));
+                scratch = scratch.max(cover);
+            }
+            let dent = 1.0 - smooth(0.12, 0.3, (ru * ru * 0.5 + rv * rv * 2.0).sqrt());
+            let value = if scratch > dent * 0.8 { 1.0 } else { 0.35 };
+            (value, scratch.max(dent * 0.6))
+        }
+        // A blunt or bladed blow on soil: a smear of turned earth.
+        14 | 15 => {
+            let rn = (u * u * 0.5 + v * v * 2.2).sqrt() / (0.7 + 0.25 * around(a, 1.8, seed));
+            let body = 1.0 - smooth(0.6, 1.0, rn);
+            (0.6 - 0.3 * n, body * (0.55 + 0.45 * n))
+        }
+        // An arrow's hole: a small dark bore with a pale bruise and a split.
+        16 | 17 => {
+            let hole = smooth(0.1, 0.05, r);
+            let ring = 1.0 - smooth(0.16, 0.3, r / (0.85 + 0.3 * around(a, 3.0, seed)));
+            let split = line(v, 0.03) * (1.0 - smooth(0.25, 0.45, u.abs()));
+            let value = if hole.max(split) > 0.5 { 0.07 } else { 0.85 };
+            (value, hole.max(ring * 0.85).max(split * 0.9))
+        }
+        // Scorch: soot, darkest at the centre, ragged at the edge.
+        18 | 19 => {
+            let rn = r / (0.82 + 0.3 * (around(a, 2.0, seed) - 0.5));
+            let body = 1.0 - smooth(0.35, 1.0, rn);
+            (0.25 + 0.5 * rn.min(1.0) * n, body * (0.6 + 0.4 * n))
+        }
+        // Blood: a splat with satellite drops; the last variant is a spray.
+        20..=23 => {
+            let spray = cell == 23;
+            let (su, sv) = if spray { (u * 0.55, v * 1.6) } else { (u, v) };
+            let sr = (su * su + sv * sv).sqrt();
+            let rn = sr / (0.4 + 0.22 * (around(sv.atan2(su), 2.4, seed) - 0.5));
+            let body = 1.0 - smooth(0.8, 1.0, rn);
+            let mut drops: f32 = 0.0;
+            for k in 0..12 {
+                let ang = hash01(k, seed) * std::f32::consts::TAU;
+                let dist = 0.45 + 0.45 * hash01(k, seed ^ 0x11);
+                let rad = 0.02 + 0.05 * hash01(k, seed ^ 0x22);
+                let (cx, cy) = if spray {
+                    (dist * ang.cos().signum() * 0.95, 0.12 * ang.sin())
+                } else {
+                    (dist * ang.cos(), dist * ang.sin())
+                };
+                let d = ((u - cx).powi(2) + (v - cy).powi(2)).sqrt();
+                drops = drops.max(smooth(rad, rad * 0.6, d));
+            }
+            (0.75 + 0.25 * n, body.max(drops) * 0.92)
+        }
+        _ => (0.0, 0.0),
+    };
+    // The cell's own transparent border: nothing reaches its edge, so no mip
+    // and no bilinear tap bleeds a neighbour in.
+    let pad = 1.0 - smooth(0.88, 0.97, u.abs().max(v.abs()));
+    (value.clamp(0.0, 1.0), (alpha * pad).clamp(0.0, 1.0))
+}
+
+/// The atlas's level 0: RGBA8 sRGB, grey value in RGB, coverage in A.
+pub fn atlas_pixels() -> (Vec<u8>, u32, u32) {
+    let (w, h) = (ATLAS_COLS * CELL_TEX, ATLAS_ROWS * CELL_TEX);
+    let mut data = vec![0u8; (w * h * 4) as usize];
+    let used = Kind::ALL
+        .iter()
+        .map(|k| k.cells().0 + k.cells().1)
+        .max()
+        .unwrap_or(0);
+    for cell in 0..used {
+        let (cx, cy) = (cell % ATLAS_COLS, cell / ATLAS_COLS);
+        for y in 0..CELL_TEX {
+            for x in 0..CELL_TEX {
+                let u = (x as f32 + 0.5) / CELL_TEX as f32 * 2.0 - 1.0;
+                let v = (y as f32 + 0.5) / CELL_TEX as f32 * 2.0 - 1.0;
+                let (val, a) = texel(cell, u, v);
+                let px = (cx * CELL_TEX + x) as usize;
+                let py = (cy * CELL_TEX + y) as usize;
+                let i = (py * w as usize + px) * 4;
+                let g = (val * 255.0 + 0.5) as u8;
+                data[i] = g;
+                data[i + 1] = g;
+                data[i + 2] = g;
+                data[i + 3] = (a * 255.0 + 0.5) as u8;
+            }
         }
     }
+    (data, w, h)
+}
+
+/// The atlas image, with its whole mip chain — a mark at 40 m is a few
+/// texels and must not shimmer.
+pub fn atlas_image() -> Image {
+    let (level0, w, h) = atlas_pixels();
     let mut img = Image::new(
         Extent3d {
-            width: MARK_TEX,
-            height: MARK_TEX,
+            width: w,
+            height: h,
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,
-        data,
-        // sRGB: this is multiplied into base colour, and a white mask is
-        // white in either encoding. `tree.rs`'s needle mask says the same.
+        level0,
         TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+        RenderAssetUsages::RENDER_WORLD,
     );
+    if let Some(l0) = img.data.as_ref() {
+        let chain = mipmap::chain(l0, w, h, mipmap::Filter::Srgb);
+        img.texture_descriptor.mip_level_count = mipmap::levels(w, h);
+        img.data = Some(chain);
+    }
     img.sampler = ImageSampler::linear();
     img
 }
 
-/// The weak-spot mask: two soft bars crossed at right angles, white. The
-/// reference's own glyph for the mechanic, and the one shape nothing else in
-/// the world makes on a trunk — a scuff is round, bark is streaked, and a
-/// cross reads as *put* rather than *happened*.
+// ─── The weak spot ───────────────────────────────────────────────────────────
+
+/// The weak-spot mask: two soft bars crossed at right angles, white — the
+/// reference's own glyph, and the one shape nothing else on a trunk makes.
 pub fn cross_texture() -> Image {
     let n = MARK_TEX as usize;
     let mut data = vec![0u8; n * n * 4];
     let c = (n as f32 - 1.0) * 0.5;
-    // Bar half-width and the soft shoulder past it, as fractions of the
-    // half-side.
     const HALF_W: f32 = 0.13;
     const SOFT: f32 = 0.08;
     for y in 0..n {
         for x in 0..n {
             let (px, py) = ((x as f32 - c) / c, (y as f32 - c) / c);
-            // Distance to each diagonal, in the same units.
             let d1 = (px - py).abs() * std::f32::consts::FRAC_1_SQRT_2;
             let d2 = (px + py).abs() * std::f32::consts::FRAC_1_SQRT_2;
             let bar = |d: f32| ((HALF_W + SOFT - d) / SOFT).clamp(0.0, 1.0);
             let a = bar(d1).max(bar(d2));
-            // The same transparent padding the scuff carries, so the quad's
-            // corners never draw.
             let edge = (px * px + py * py).sqrt();
             let pad = ((0.95 - edge) / 0.15).clamp(0.0, 1.0);
             let i = (y * n + x) * 4;
@@ -698,466 +1018,13 @@ pub fn cross_texture() -> Image {
     img
 }
 
-/// The cross's colour: pale and warm, chosen to stand off bark, granite and
-/// ore alike the way `tint` stands its scuffs off — and off the scuffs
-/// themselves, because a player has to tell the mark they are chasing
-/// from the marks they have made.
+/// The cross's colour: pale and warm, off bark, granite, ore and the marks
+/// the player has made.
 pub const WEAK_TINT: Color = Color::srgb(0.98, 0.86, 0.52);
 
-/// What colour a mark on this surface is.
-///
-/// Three kinds, three colours, and the surface kind is the sim's word
-/// rather than a guess (`ranged::SURF_*`). Dark rather than black —
-/// `ART.md` rule 3 forbids a crushed shadow, and a mark is a surface like
-/// any other: it is lit by the same sky the thing under it is.
-/// `pub` for `tests/decal.rs`'s contrast gate and for nothing else — the
-/// same reason `terrain::clutter_rich_draw` is (`CLAUDE.md`: rebuild the law
-/// from published parts, never by calling the thing under test).
-pub fn tint(surf: u8) -> Color {
-    match surf {
-        // Turned earth: darker and warmer than the litter around it.
-        SURF_GROUND => Color::srgb(0.19, 0.14, 0.10),
-        // Exposed heartwood under bark — lighter than the trunk, which is
-        // what makes a hit on a tree read at all.
-        //
-        // ⚠ **It was 0.42/0.31/0.19 until 2026-09-09, and that is DARKER
-        // than the trunk**, so the comment above described an intention the
-        // value contradicted. Linear luma 0.089 against `bark`'s measured
-        // 0.107 (`assets/textures/MANIFEST.md`'s prop-bind table, which
-        // `tests/manifest_measured.rs` pins to the shipped pixels) — a
-        // ratio of 1.20, i.e. no contrast at all, on a photograph whose own
-        // sd is 0.068. The mark was inside the bark's noise.
-        //
-        // The comment was not wrong when it was written; it was written
-        // against `tree.rs`'s `BARK_LO`/`BARK_HI` vertex constants, and the
-        // trunk stopped being shaded by those when it got a photograph and
-        // `band(.., mean1 = true)` normalised them to a unit-luminance hue
-        // field carrying no brightness of its own.
-        //
-        // The replacement is derived rather than picked: `SURF_BUILT`
-        // already stands 2.13× off `twig` (0.0785 against 0.167, and every
-        // piece enters the world as twig), so `SURF_WORLD` is set to the
-        // same ratio against bark — linear luma 0.233, 2.17×. A number
-        // taken from a sibling that works is not an invented one.
-        SURF_WORLD => Color::srgb(0.62, 0.50, 0.34),
-        // Splintered timber: the same wood, greyer for the cut face.
-        SURF_BUILT => Color::srgb(0.36, 0.30, 0.24),
-        // Unreachable — the decoder refuses a fourth kind — but a mark is
-        // the wrong place to panic, so an unknown surface gets the ground's
-        // colour rather than taking the client down.
-        _ => Color::srgb(0.19, 0.14, 0.10),
-    }
-}
-
-/// Which way the mark faces, given where it landed and what it landed on.
-///
-/// **This is derived, and the distinction from re-deciding matters.** The
-/// sim already said *what* was hit; all that is computed here is the
-/// direction that surface points, out of worldgen the client and the
-/// server both hold. A wrong normal costs a mark that lies at an angle. A
-/// wrong *surface* would be the client disagreeing with the sim, which is
-/// why the surface is on the wire and this is not.
-///
-/// - **Ground** is exact: the terrain gradient by central differences on
-///   `terrain::ground`, the same function the mesh is built from. **Carved,
-///   and that sentence is the reason** — the mesh moved to `ground` when the
-///   site carve was armed, so a raw read here would lay the mark on the hill
-///   the pad replaced while the pad is what a player sees and shoots at.
-/// - **A world occupant** is exact too, and cheaper than it looks: a
-///   trunk's axis is its slot's own `x`/`z`, so the outward normal is the
-///   horizontal from that axis to the impact. `terrain::scatter` is the
-///   lookup `props.rs` already spawns the tree from.
-/// - **A built piece** is the approximate one, and it is still the honest
-///   gap in this slice — but it is no longer wrong about floors, which is
-///   the half that started mattering when `collide::shot_blocked` learned
-///   to read a plane (shot planes v0). A wall lies on its cell's edge, so
-///   the impact's offset from the cell centre points at that edge and the
-///   dominant horizontal axis is right for it; a **floor is horizontal**,
-///   and the same snap laid every mark on a floor edge-on, where a decal
-///   projects to a smear or to nothing. So the altitude is asked first
-///   ([`plane_face`]) and only an impact that is not on a slab's face falls
-///   through to the edge snap.
-///
-///   Closing it *properly* still wants the piece's address on `EV_IMPACT`
-///   (`NOW.md` §0mk): what the altitude cannot separate is a slab's face
-///   from its **rim**, and [`plane_face`] declines the ambiguous band rather
-///   than guessing — so a rim hit keeps exactly the normal it has always
-///   had. The change is monotone: every impact this improves was wrong
-///   before, and none that were right have moved.
-fn facing(world: &WorldId, cols: &ColIndex, x: f32, y: f32, z: f32, surf: u8) -> Vec3 {
-    match surf {
-        SURF_GROUND => {
-            // One arrow-radius of separation: closer and the difference is
-            // float noise, wider and the normal is of a hill rather than
-            // of the ground under the mark.
-            const H: f32 = 0.25;
-            let dx = terrain::ground(world.seed, &world.haven, x + H, z)
-                - terrain::ground(world.seed, &world.haven, x - H, z);
-            let dz = terrain::ground(world.seed, &world.haven, x, z + H)
-                - terrain::ground(world.seed, &world.haven, x, z - H);
-            Vec3::new(-dx, 2.0 * H, -dz).normalize_or(Vec3::Y)
-        }
-        SURF_WORLD => {
-            let (cx, cz) = (
-                (x / terrain::CELL_SIZE).floor() as i32,
-                (z / terrain::CELL_SIZE).floor() as i32,
-            );
-            let slot = terrain::scatter(world.seed, &world.table, &world.haven, cx, cz);
-            // A horizontal normal: what was hit is the side of a standing
-            // thing, and its axis is vertical. `normalize_or` covers the
-            // degenerate case of an impact on the axis itself, which is
-            // reachable when the arrow came in from straight above.
-            Vec3::new(x - slot.x, 0.0, z - slot.z).normalize_or(Vec3::Y)
-        }
-        _ => {
-            // A slab's face, when the altitude says so and says it
-            // unambiguously; otherwise the edge snap below, which is what a
-            // wall, a rim and a foundation skirt all want.
-            if let Some(n) = plane_face(world, cols, x, y, z) {
-                return n;
-            }
-            let cell = BUILD_CELL_M;
-            let ox = x - (x / cell).floor() * cell - cell * 0.5;
-            let oz = z - (z / cell).floor() * cell - cell * 0.5;
-            if ox.abs() >= oz.abs() {
-                Vec3::new(ox.signum(), 0.0, 0.0)
-            } else {
-                Vec3::new(0.0, 0.0, oz.signum())
-            }
-        }
-    }
-}
-
-/// Whether the impact at (`x`, `y`, `z`) landed on the **face** of a built
-/// plane, and which way that face points — `None` when the altitude cannot
-/// say so without guessing.
-///
-/// **Derived, like every other arm of [`facing`], and from the mirror the
-/// predictor already holds.** A plane's geometry is not a secret the wire has
-/// to carry: its top is `column_floor_y(cell, plate) + level·sim_core::build::LEVEL_H_M` —
-/// `collide`'s own sentence, computed here from the same `ColIndex` the
-/// client predicts movement against — and the slab hangs
-/// `PLANE_THICKNESS_M` below it. So an impact's height above that column is
-/// enough to separate a floor from a wall, which is the distinction the mark
-/// actually needs.
-///
-/// **It declines the rim, and that is the point of the margin.** An arrow
-/// stopped by a slab's exposed edge reports a position in the same altitude
-/// band as one stopped by its face, and nothing on the wire separates them —
-/// so `EDGE_M` fences off the strip where a rim hit is reachable
-/// (`ranged::ARROW_R_M` plus one `limits::ARROW_STEP_MM` tap, rounded up) and
-/// this returns `None` inside it. `facing`'s edge snap then answers, exactly
-/// as it did before shot planes v0. The result is that this function only
-/// ever *replaces a wrong normal with a right one*; it never overrules a
-/// normal that was already correct.
-///
-/// A **foundation** (level 0) has a top face and no underside — it is solid
-/// to the ground and the drawn skirt is its side — so it claims `+Y` at its
-/// top and declines everywhere below, leaving the skirt to the edge snap that
-/// suits a vertical face.
-fn plane_face(world: &WorldId, cols: &ColIndex, x: f32, y: f32, z: f32) -> Option<Vec3> {
-    /// How close to a cell boundary an impact may be and still be called a
-    /// face. Inside this, a rim hit is reachable and nothing distinguishes
-    /// the two, so the answer is "do not guess".
-    const EDGE_M: f32 = 0.25;
-    /// The slack around a slab's two faces: an arrow stops at the first
-    /// sample inside the band, so its reported height overshoots by up to one
-    /// tap. Wider than the sample step so a mark is not thrown back to the
-    /// edge snap by quantization.
-    ///
-    /// Named at this length because the knob registry scans **crate-wide by
-    /// name** and a bare `TOL` already means 0.01 in `sim-core/tests/
-    /// relief.rs` — the registry cannot be authoritative about a name that
-    /// means two things, and it says so out loud rather than picking one.
-    const SLAB_FACE_TOL_M: f32 = 0.25;
-
-    let (bx, bz) = (build::build_cell_of(x), build::build_cell_of(z));
-    // Both ends of the lattice, `collide`'s own guard: a mark arrives as three
-    // quantized wire fields and nothing upstream promises they name a cell.
-    if bx < 0 || bz < 0 || bx >= MAX_BUILD_COORD as i32 || bz >= MAX_BUILD_COORD as i32 {
-        return None;
-    }
-    let (bx, bz) = (bx as u16, bz as u16);
-    let m = cols.get(bx, bz);
-    let tris = m.tri_xlo_zlo | m.tri_xhi_zlo | m.tri_xlo_zhi | m.tri_xhi_zhi;
-    if m.planes == 0 && tris == 0 {
-        return None;
-    }
-    // Far enough inside the cell that a rim cannot be what was hit. The
-    // triangles' own half tests are deliberately not repeated here: a
-    // triangle's hypotenuse is a rim too, and `EDGE_M` off the cell says
-    // nothing about it, so a triangle only answers where the square would.
-    let cxm = bx as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5;
-    let czm = bz as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5;
-    if (x - cxm).abs() > BUILD_CELL_M * 0.5 - EDGE_M
-        || (z - czm).abs() > BUILD_CELL_M * 0.5 - EDGE_M
-    {
-        return None;
-    }
-    let base = build::column_floor_y(
-        world.seed,
-        &world.haven,
-        bx,
-        bz,
-        cols.plate(bx, bz).unwrap_or(0),
-    );
-    for level in 0..MAX_BUILD_SOCKETS {
-        let bit = 1u16 << level;
-        if (m.planes | tris) & bit == 0 {
-            continue;
-        }
-        let top = base + sim_core::build::level_y(level as u8);
-        if y > top + SLAB_FACE_TOL_M {
-            continue; // over this slab
-        }
-        // Level 0 is solid to the ground, so it has a top face and no
-        // underside — the drawn skirt is its side, and a hit on that side is
-        // at the cell boundary, where `EDGE_M` has already declined.
-        if level == 0 {
-            if y >= top - SLAB_FACE_TOL_M {
-                return Some(Vec3::Y);
-            }
-            continue;
-        }
-        let bottom = top - PLANE_THICKNESS_M;
-        if y < bottom - SLAB_FACE_TOL_M {
-            continue; // under this slab
-        }
-        // Inside the band: the NEARER face, rather than whichever test was
-        // written first. The two windows overlap — the slack is most of the
-        // slab's own thickness — so an order-dependent answer would put a
-        // ceiling mark face-up on nothing more than statement order.
-        return Some(if top - y <= y - bottom {
-            Vec3::Y
-        } else {
-            Vec3::NEG_Y
-        });
-    }
-    None
-}
-
-/// Claim a slot for every impact the feed reports.
-///
-/// Reads `Res<Feed>` — never `pop_impact` — because the drain is
-/// single-consumer and a second caller would silently starve the first.
-/// That is CLAUDE.md's clean-merge trap, and a pool that draws things is
-/// exactly the kind of second reader that caused it.
-// Eight parameters, which clippy counts: the two material stores are the two
-// paths this build may draw a mark on (the header), and folding them into one
-// `SystemParam` would hide which of the eight a reader has to think about —
-// `bodies::stream`'s allow and argument.
-#[allow(clippy::too_many_arguments)]
-pub fn mark(
-    mut pool: ResMut<Marks>,
-    feed: Res<Feed>,
-    world: Res<WorldId>,
-    // The piece mirror, for the one thing a mark on a built surface needs
-    // that the wire does not carry: which way that surface points. Read the
-    // way `audio::place` reads it — the placement broadcast that raised a
-    // column inserted the record, so the column is in the mirror by the time
-    // an impact inside it can arrive.
-    net: NonSend<super::Net>,
-    eye: Res<Eye>,
-    mut materials: ResMut<Assets<ForwardDecalMaterial<StandardMaterial>>>,
-    mut standard: ResMut<Assets<StandardMaterial>>,
-    mut q: Query<(&mut Transform, &mut Visibility, &mut Mesh3d)>,
-) {
-    // The prewarm draw, once per run and before any arrow needs it. Placed
-    // on the ground a few metres ahead of the eye rather than at the feet:
-    // the point is to be *drawn*, and ground directly under the camera can
-    // fall outside the frustum's near plane.
-    if !pool.warmed && eye.placed {
-        pool.warmed = true;
-        // The eye's own forward, flattened — `rig.rs` builds the camera's
-        // look vector from these two the same way. Flat because the target
-        // is the ground ahead, and a player looking at the sky would
-        // otherwise put the prewarm mark behind the horizon.
-        let ahead = eye.pos + Vec3::new(eye.yaw.sin(), 0.0, eye.yaw.cos()) * 3.0;
-        let y = terrain::ground(world.seed, &world.haven, ahead.x, ahead.z);
-        let cols = net.session.core.pieces.cols();
-        let ix = pool.claim();
-        pool.slots[ix] = Mark {
-            left: LIFE_S,
-            step: -1,
-            warm: 1,
-        };
-        place(
-            &mut q,
-            &mut materials,
-            &mut standard,
-            &pool,
-            ix,
-            Vec3::new(ahead.x, y, ahead.z),
-            facing(&world, cols, ahead.x, y, ahead.z, SURF_GROUND),
-            SURF_GROUND,
-            PREWARM_ALPHA,
-        );
-    }
-
-    for &(qx, qy, qz, surf) in feed.impacts() {
-        let at = Vec3::new(
-            qx as f32 * POS_XZ_Q,
-            qy as f32 * POS_Y_Q,
-            qz as f32 * POS_XZ_Q,
-        );
-        let n = facing(
-            &world,
-            net.session.core.pieces.cols(),
-            at.x,
-            at.y,
-            at.z,
-            surf,
-        );
-        let ix = pool.claim();
-        pool.slots[ix] = Mark {
-            left: LIFE_S + FADE_S,
-            step: -1,
-            warm: 0,
-        };
-        // On the surface. `MARK_LIFT_M`'s doc has the whole argument: the
-        // shader's alpha peaks at zero separation and `depth_compare` is
-        // `Always`, so there is nothing an offset buys and half the mark's
-        // alpha to lose by taking one.
-        let pos = at + n * MARK_LIFT_M;
-        place(
-            &mut q,
-            &mut materials,
-            &mut standard,
-            &pool,
-            ix,
-            pos,
-            n,
-            surf,
-            1.0,
-        );
-    }
-}
-
-/// Point one slot's entity at a surface and set its colour — on whichever
-/// path this build draws (the header).
-#[allow(clippy::too_many_arguments)]
-fn place(
-    q: &mut Query<(&mut Transform, &mut Visibility, &mut Mesh3d)>,
-    materials: &mut Assets<ForwardDecalMaterial<StandardMaterial>>,
-    standard: &mut Assets<StandardMaterial>,
-    pool: &Marks,
-    ix: usize,
-    pos: Vec3,
-    normal: Vec3,
-    surf: u8,
-    alpha: f32,
-) {
-    let Some(&entity) = pool.entities.get(ix) else {
-        return;
-    };
-    let Ok((mut tf, mut vis, mut mesh)) = q.get_mut(entity) else {
-        return;
-    };
-    if let Some(mat) = pool.mesh_materials.get(ix) {
-        // A mesh mark: lifted off the surface, and bent to a trunk.
-        let (curved, rot) = mesh_pose(surf, normal);
-        tf.translation = pos + normal * MESH_MARK_LIFT_M;
-        tf.rotation = rot;
-        let want = if curved { &pool.curved } else { &pool.flat };
-        if mesh.0 != *want {
-            mesh.0 = want.clone();
-        }
-        if let Some(m) = standard.get_mut(mat) {
-            m.base_color = tint(surf).with_alpha(alpha);
-        }
-    } else {
-        tf.translation = pos;
-        // The decal projects along its own local **−Y**: `ForwardDecalPlugin`
-        // builds its quad by rotating a `Rectangle` from +Z onto +Y, so local
-        // +Y is the projection axis and aligning it with the surface normal is
-        // what lays the mark flat on that surface.
-        tf.rotation = Quat::from_rotation_arc(Vec3::Y, normal);
-        if let Some(m) = pool.materials.get(ix).and_then(|h| materials.get_mut(h)) {
-            m.base.base_color = tint(surf).with_alpha(alpha);
-        }
-    }
-    tf.scale = Vec3::splat(SIZE_M);
-    *vis = Visibility::Visible;
-}
-
-/// Age every live mark, fade its tail, and release the slot.
-pub fn fade(
-    mut pool: ResMut<Marks>,
-    time: Res<Time>,
-    mut materials: ResMut<Assets<ForwardDecalMaterial<StandardMaterial>>>,
-    mut standard: ResMut<Assets<StandardMaterial>>,
-    mut q: Query<&mut Visibility>,
-) {
-    let dt = time.delta_secs();
-    // Destructure once for disjoint field borrows rather than cloning the
-    // entity list to dodge them. The clone was a heap allocation on every
-    // frame of the game, which is the one thing the client's hot-path
-    // discipline names outright (`CLAUDE.md` traps) — and `structures::stream`
-    // and `water::stream` already use exactly this reborrow for exactly this
-    // reason, so it is the house pattern rather than a new one.
-    let Marks {
-        slots,
-        entities,
-        materials: decal_mats,
-        mesh_materials,
-        ..
-    } = &mut *pool;
-    for (ix, entity) in entities.iter().enumerate() {
-        let m = slots[ix];
-        if m.left <= 0.0 {
-            continue;
-        }
-        let Ok(mut vis) = q.get_mut(*entity) else {
-            continue;
-        };
-
-        // The prewarm slot counts frames, not seconds: what it is waiting
-        // for is a number of DRAWS, and a draw is a frame regardless of
-        // how long the frame took. Released the moment the pipeline can
-        // have specialized.
-        if m.warm > 0 {
-            slots[ix].warm += 1;
-            if slots[ix].warm > PREWARM_FRAMES {
-                slots[ix] = Mark::default();
-                *vis = Visibility::Hidden;
-            }
-            continue;
-        }
-
-        let left = m.left - dt;
-        slots[ix].left = left;
-        if left <= 0.0 {
-            slots[ix] = Mark::default();
-            *vis = Visibility::Hidden;
-            continue;
-        }
-
-        // Full strength until the tail, then a linear ramp to nothing.
-        let alpha = (left / FADE_S).clamp(0.0, 1.0);
-        let step = (alpha * ALPHA_STEPS) as i32;
-        if step == m.step {
-            continue;
-        }
-        slots[ix].step = step;
-        let a = step as f32 / ALPHA_STEPS;
-        if let Some(asset) = decal_mats.get(ix).and_then(|h| materials.get_mut(h)) {
-            asset.base.base_color = asset.base.base_color.with_alpha(a);
-        }
-        if let Some(asset) = mesh_materials.get(ix).and_then(|h| standard.get_mut(h)) {
-            asset.base_color = asset.base_color.with_alpha(a);
-        }
-    }
-}
-
-/// Where the weak-spot cross for `slot` sits and which way it faces, from
-/// the mark's own heading: on the occupant's collision skin, on the side
-/// the sector faces, at the height a swing lands. The point and the sector
-/// are the same fact — `in_weak_sector` tests the swinger's bearing from
-/// the slot against `yaw_dir(mark8)`, and this puts the cross on the skin
-/// along that very bearing — so a player who can see the cross square-on
-/// is standing where the bonus pays.
-///
-/// `None` for an occupant with no skin (a bush), which the sim never marks.
+/// Where the weak-spot cross for `slot` sits and which way it faces: on the
+/// occupant's collision skin, on the side the sector faces, at the height a
+/// swing lands. `None` for an occupant with no skin (a bush).
 pub fn weak_spot_pose(slot: &Slot, mark8: u8) -> Option<(Vec3, Vec3)> {
     let occ = slot.occupant as u8;
     let r = skin_radius(occ) * slot.scale;
@@ -1166,15 +1033,13 @@ pub fn weak_spot_pose(slot: &Slot, mark8: u8) -> Option<(Vec3, Vec3)> {
     }
     let (wx, wz) = yaw_dir((mark8 as u16) << 8);
     let (_, top) = terrain::occupant_volume(slot.occupant);
-    // A hand under the top, so a knee-high node's cross is on its flank and
-    // not its crown.
     let h = strike_height(occ).min(top * slot.scale - 0.15).max(0.15);
     let n = Vec3::new(wx, 0.0, wz);
     Some((Vec3::new(slot.x, slot.y + h, slot.z) + n * r, n))
 }
 
-/// The cross's alpha at time `t`: breathing between the two bounds outside
-/// the sector, held at the top inside it.
+/// The cross's alpha at time `t`: breathing outside the sector, held bright
+/// inside it.
 pub fn weak_spot_alpha(t: f32, in_sector: bool) -> f32 {
     if in_sector {
         return WEAK_MARK_ALPHA_HI;
@@ -1184,21 +1049,13 @@ pub fn weak_spot_alpha(t: f32, in_sector: bool) -> f32 {
 }
 
 /// Draw the weak-spot cross on the node the sim marked for this player, or
-/// hide it — the header's account.
-///
-/// Reads `ClientCore::{mark_cell, mark8}` directly rather than through
-/// `Feed`, and that is not a second drain: they are latched fields the core
-/// keeps current, not a ring anyone pops (`clear_mark_if` retires them when
-/// the node is harvested or the chase restarts). `verbs::resolve` reads the
-/// same two the same way for the HUD's suffix.
-#[allow(clippy::too_many_arguments)]
+/// hide it. Reads the core's latched `mark_cell`/`mark8` — not a ring.
 pub fn weak_spot(
     mut pool: ResMut<Marks>,
     net: Option<NonSend<super::Net>>,
     world: Option<Res<WorldId>>,
     in_weak: Res<super::verbs::InWeak>,
     time: Res<Time>,
-    mut materials: ResMut<Assets<ForwardDecalMaterial<StandardMaterial>>>,
     mut standard: ResMut<Assets<StandardMaterial>>,
     mut q: Query<(&mut Transform, &mut Visibility), With<WeakSpot>>,
 ) {
@@ -1221,9 +1078,6 @@ pub fn weak_spot(
         hide(&mut vis, &mut pool);
         return;
     }
-    // The scatter is asked once per (cell, heading), not once per frame:
-    // the heading moves on every landed hit and the cell on every new
-    // chase, and a frame in between is a transform copy.
     if pool.weak_cell != core.mark_cell || pool.weak_mark8 != core.mark8 {
         let (cx, cz) = (
             (core.mark_cell >> 16) as i32,
@@ -1241,14 +1095,9 @@ pub fn weak_spot(
         pool.weak_step = -1;
     }
     let (at, n) = (pool.weak_at, pool.weak_normal);
-    if pool.mesh_materials.is_empty() {
-        tf.translation = at + n * MARK_LIFT_M;
-        tf.rotation = Quat::from_rotation_arc(Vec3::Y, n);
-    } else {
-        let (_, rot) = mesh_pose(SURF_WORLD, n);
-        tf.translation = at + n * MESH_MARK_LIFT_M;
-        tf.rotation = rot;
-    }
+    let (_, rot) = mesh_pose(SURF_WORLD, n);
+    tf.translation = at + n * MESH_MARK_LIFT_M;
+    tf.rotation = rot;
     tf.scale = Vec3::splat(WEAK_MARK_SIZE_M);
     *vis = Visibility::Visible;
     let alpha = weak_spot_alpha(time.elapsed_secs(), in_weak.0);
@@ -1257,12 +1106,8 @@ pub fn weak_spot(
         return;
     }
     pool.weak_step = step;
-    let a = step as f32 / ALPHA_STEPS;
-    if let Some(m) = materials.get_mut(&pool.weak_material) {
-        m.base.base_color = WEAK_TINT.with_alpha(a);
-    }
-    if let Some(m) = standard.get_mut(&pool.weak_mesh_material) {
-        m.base_color = WEAK_TINT.with_alpha(a);
+    if let Some(m) = standard.get_mut(&pool.weak_material) {
+        m.base_color = WEAK_TINT.with_alpha(step as f32 / ALPHA_STEPS);
     }
 }
 
@@ -1270,273 +1115,140 @@ pub fn weak_spot(
 mod tests {
     use super::*;
 
-    /// The seed the shard ships and every capture is shot on.
-    const SEED: u64 = 20260731;
-
-    /// Wall 4 wants a cap **and a stated overflow policy**, and this is
-    /// the policy: a full pool recycles its oldest rather than refusing
-    /// the newest.
-    ///
-    /// The direction is the whole point and it is the opposite of
-    /// `tracer.rs`'s. Refusing here would drop the mark from the shot the
-    /// player just took — the one impact they are watching for — while
-    /// recycling costs the faintest mark on screen. So the assertion is
-    /// not merely "it is bounded": it is that a claim against a saturated
-    /// pool still **hands back a usable slot**, and always one in range.
+    /// A full pool recycles its oldest rather than refusing the newest, and
+    /// spreads the recycling over every slot.
     #[test]
     fn the_mark_pool_is_bounded_and_recycles_rather_than_refusing() {
         let mut pool = Marks::default();
-        assert_eq!(pool.slots.len(), MARKS, "the pool is a fixed array");
-
-        // Every slot busy — the saturated case.
-        for m in pool.slots.iter_mut() {
-            m.left = LIFE_S;
+        for _ in 0..MARKS {
+            pool.place(Vec3::ZERO, Vec3::Y, Kind::HoleSoil, 0.2, Matter::Dirt, 0.0);
         }
-        // Twice round the pool: every claim is in range, and the hand
-        // walks rather than parking on one victim, so a burst does not
-        // reuse the same slot repeatedly and leave the rest stale.
+        assert_eq!(pool.live(), MARKS);
         let mut seen = [0u32; MARKS];
         for _ in 0..MARKS * 2 {
-            let ix = pool.claim();
-            assert!(ix < MARKS, "claim handed back a slot outside the pool");
-            seen[ix] += 1;
+            seen[pool.claim()] += 1;
         }
-        assert!(
-            seen.iter().all(|&n| n == 2),
-            "a saturated pool must spread its recycling over every slot; \
-             one slot taking every claim is a pool of one wearing a pool's \
-             clothes"
-        );
-
-        // A free slot is always preferred to recycling a live one.
+        assert!(seen.iter().all(|&n| n == 2), "recycling must walk the pool");
         pool.slots[7].left = 0.0;
-        assert_eq!(
-            pool.claim(),
-            7,
-            "a free slot must be taken before a live one is stolen"
-        );
+        assert_eq!(pool.claim(), 7, "a free slot is taken before a live one");
     }
 
-    /// A mark on flat ground lies flat, and one on a slope leans downhill.
-    ///
-    /// **This is the check that the derived normal is derived correctly**,
-    /// and it is arithmetic rather than a screenshot — `CLAUDE.md` is
-    /// explicit that there is no visual gate and that what may be gated
-    /// about a frame is arithmetic.
+    /// A mark lives its life, fades, and frees its slot; a free slot is a
+    /// collapsed patch.
     #[test]
-    fn a_ground_mark_takes_the_terrain_it_lies_on() {
-        let world = WorldId::new(SEED);
-
-        // Sea level well off the island's shoulder is as close to flat as
-        // this worldgen offers; the assertion is deliberately loose,
-        // because what would fail it is an axis error, not a gentle slope.
-        let empty = ColIndex::new();
-        let n = facing(&world, &empty, 1024.0, 0.0, 1024.0, SURF_GROUND);
-        assert!(
-            n.y > 0.9,
-            "a ground mark's normal must point broadly up, got {n:?} — a \
-             normal built from the wrong axes lies down"
-        );
-        assert!(
-            (n.length() - 1.0).abs() < 1e-3,
-            "the normal must be unit length, got {}",
-            n.length()
-        );
-
-        // And it must actually respond to the ground rather than being a
-        // dressed-up constant: somewhere on the island the normal has to
-        // tilt, or this function is `Vec3::Y` with extra steps.
-        let mut tilted = 0;
-        for i in 0..64 {
-            let (x, z) = (300.0 + i as f32 * 20.0, 700.0 + i as f32 * 11.0);
-            if facing(&world, &empty, x, 0.0, z, SURF_GROUND).y < 0.999 {
-                tilted += 1;
-            }
-        }
-        assert!(
-            tilted > 0,
-            "no sample in 64 tilted at all — `facing` is ignoring the \
-             terrain and returning a constant"
-        );
-    }
-
-    /// A mark on a standing thing faces out of it, horizontally.
-    ///
-    /// The trunk's axis is its slot's own position, so the outward normal
-    /// is the horizontal from that axis to the impact — and it must have
-    /// **no vertical component at all**, because what was hit is the side
-    /// of something vertical. A normal that kept its Y would lay the mark
-    /// at an angle across the bark.
-    #[test]
-    fn a_world_mark_faces_out_of_the_thing_it_hit() {
-        let world = WorldId::new(SEED);
-        let empty = ColIndex::new();
-        let n = facing(&world, &empty, 512.3, 0.0, 733.7, SURF_WORLD);
-        assert_eq!(n.y, 0.0, "a mark on a trunk's side has no vertical lean");
-        assert!(
-            (n.length() - 1.0).abs() < 1e-3,
-            "the normal must be unit length, got {}",
-            n.length()
-        );
-    }
-
-    /// A mark on a floor lies flat on it, and one on a wall still stands up.
-    ///
-    /// **The check that shot planes v0 does not arrive drawing smears.**
-    /// `collide::shot_blocked` learned to stop an arrow on a plane, so a
-    /// built impact can now be a *floor* — and every built normal used to be
-    /// horizontal, which lays a decal edge-on to the surface it is projecting
-    /// onto. Both halves are asserted together on purpose: a `plane_face`
-    /// that answered `+Y` everywhere would fix the floor and flatten every
-    /// mark on every wall, and the wall half is the only thing that says so.
-    ///
-    /// Arithmetic, not a screenshot — `CLAUDE.md` is explicit that there is
-    /// no visual gate and that what may be gated about a frame is arithmetic.
-    #[test]
-    fn a_mark_on_a_floor_lies_flat_and_one_on_a_wall_stands_up() {
-        use sim_core::build::{LOC_PLANE, SHAPE_FLOOR, SHAPE_FOUNDATION};
-
-        let world = WorldId::new(SEED);
-        // Boxed: `ColIndex` is a large fixed array, and building one in a
-        // stack frame is CLAUDE.md's wasm shadow-stack trap.
-        let mut cols = Box::new(ColIndex::new());
-        let (cx, cz) = (341u16, 341u16);
-        cols.add(cx, cz, 0, LOC_PLANE, SHAPE_FOUNDATION, 0);
-        cols.add(cx, cz, 1, LOC_PLANE, SHAPE_FLOOR, 0);
-
-        let base = build::column_floor_y(world.seed, &world.haven, cx, cz, 0);
-        let (mx, mz) = (
-            cx as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5,
-            cz as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5,
-        );
-
-        // On the foundation's top face, mid-cell.
-        let n = facing(&world, &cols, mx, base, mz, SURF_BUILT);
-        assert_eq!(
-            n,
+    fn a_mark_fades_out_and_collapses() {
+        let mut pool = Marks::default();
+        let ix = pool.place(
+            Vec3::new(3.0, 1.0, 2.0),
             Vec3::Y,
-            "a mark on a foundation at y={base:.2} faces {n:?} — a horizontal              normal lays the decal edge-on to the floor it is on"
+            Kind::HoleWood,
+            0.14,
+            Matter::Wood,
+            0.0,
         );
-
-        // On the first storey's floor, and on its underside — the ceiling of
-        // the room below, which is the half a downward shot never reaches.
-        let up = facing(
-            &world,
-            &cols,
-            mx,
-            base + sim_core::build::LEVEL_H_M,
-            mz,
-            SURF_BUILT,
+        assert!(pool.age(0.0) || pool.vertices(ix)[0].3[3] > 0.99);
+        let full = pool.vertices(ix);
+        assert!(
+            full.iter().all(|v| (v.3[3] - 1.0).abs() < 1e-6),
+            "a new mark is opaque"
         );
-        assert_eq!(up, Vec3::Y, "a mark on the level-1 floor faces {up:?}");
-        let down = facing(
-            &world,
-            &cols,
-            mx,
-            base + sim_core::build::LEVEL_H_M - PLANE_THICKNESS_M,
-            mz,
-            SURF_BUILT,
+        pool.age(LIFE_S + FADE_S * 0.5);
+        let half = pool.vertices(ix)[0].3[3];
+        assert!(
+            half > 0.3 && half < 0.7,
+            "halfway through the fade, alpha {half}"
         );
-        assert_eq!(
-            down,
-            Vec3::NEG_Y,
-            "a mark on the ceiling of the storey below faces {down:?}"
-        );
-
-        // A WALL — the same cell, at an altitude no slab occupies. It must
-        // keep the horizontal snap, or this helper has flattened every
-        // vertical surface in the game.
-        let mid = facing(
-            &world,
-            &cols,
-            mx + 1.0,
-            base + sim_core::build::LEVEL_H_M * 0.5,
-            mz,
-            SURF_BUILT,
-        );
-        assert_eq!(
-            mid.y, 0.0,
-            "a mark between two floors is on something vertical and must              stand up, got {mid:?}"
-        );
-
-        // And the RIM: at a slab's altitude but at the cell's edge, where
-        // nothing on the wire separates a face from an exposed edge. It must
-        // DECLINE rather than guess, which is what keeps this change from
-        // overruling a normal that was already right.
-        let rim = facing(
-            &world,
-            &cols,
-            cx as f32 * BUILD_CELL_M + 0.05,
-            base + sim_core::build::LEVEL_H_M,
-            mz,
-            SURF_BUILT,
-        );
-        assert_eq!(
-            rim.y, 0.0,
-            "an impact on the cell boundary is a rim hit as easily as a face              hit; it must keep the edge snap, got {rim:?}"
-        );
-
-        // An empty column answers nothing at any altitude — the mirror is
-        // what makes this derived rather than invented.
-        let none = facing(&world, &ColIndex::new(), mx, base, mz, SURF_BUILT);
-        assert_eq!(
-            none.y, 0.0,
-            "with no piece in the mirror there is no plane to face, got {none:?}"
-        );
+        pool.age(FADE_S);
+        assert_eq!(pool.live(), 0);
+        assert!(pool
+            .vertices(ix)
+            .iter()
+            .all(|v| v.0 == [0.0; 3] && v.3[3] == 0.0));
     }
 
-    /// Every surface kind the sim can send has a colour, and no two are
-    /// the same.
-    ///
-    /// The equality half is what makes this worth writing: three kinds
-    /// that all resolved to one colour would draw correctly, place
-    /// correctly, and tell the player nothing — the surface field would be
-    /// crossing the wire for no reason and nothing would say so.
+    /// A flat mark lies on its surface, lifted along the normal, inside its
+    /// footprint; a bent one stays on its trunk.
     #[test]
-    fn every_surface_kind_reads_differently() {
-        let kinds = [SURF_GROUND, SURF_WORLD, SURF_BUILT];
-        for (i, &a) in kinds.iter().enumerate() {
-            for &b in &kinds[i + 1..] {
-                assert_ne!(
-                    tint(a).to_linear().to_f32_array(),
-                    tint(b).to_linear().to_f32_array(),
-                    "surface kinds {a} and {b} paint the same colour, so \
-                     the wire field buys nothing"
-                );
-            }
-        }
-        // `ART.md` rule 3: no crushed shadow. A mark is a lit surface like
-        // any other and none of these may be black.
-        for &k in &kinds {
-            let l = tint(k).to_linear();
+    fn a_mark_lies_on_its_surface() {
+        let mut pool = Marks::default();
+        let (at, n) = (Vec3::new(10.0, 2.0, 5.0), Vec3::new(1.0, 0.0, 0.0));
+        let ix = pool.place(at, n, Kind::HoleStone, 0.2, Matter::Stone, 0.0);
+        for (p, _, _, _) in pool.vertices(ix) {
+            let d = Vec3::from_array(p) - at;
             assert!(
-                l.red + l.green + l.blue > 0.05,
-                "surface {k}'s colour is effectively black, which rule 3 \
-                 forbids outdoors"
+                (d.dot(n) - MESH_MARK_LIFT_M).abs() < 1e-4,
+                "lifted along the normal"
             );
+            assert!(d.length() < 0.2 * 1.2 * 0.75, "inside the footprint");
+        }
+        let r = 0.3;
+        let axis = at - n * r;
+        let ix = pool.place(at, n, Kind::GashWood, 0.26, Matter::Wood, r);
+        for (p, _, _, _) in pool.vertices(ix) {
+            let d = (Vec3::from_array(p) - axis).with_y(0.0).length();
+            assert!((d - r - MESH_MARK_LIFT_M).abs() < 2e-3, "on the trunk: {d}");
         }
     }
 
-    /// The scuff mask reaches zero before the quad's edge.
-    ///
-    /// Bevy's own usage note for forward decals is that a steep viewing
-    /// angle distorts them and that padding the texture with transparent
-    /// pixels is the mitigation. That padding is a property of the
-    /// generated image, so it is checkable: the corners and edges must be
-    /// fully transparent and the centre fully opaque.
+    /// Wood never takes a metal or stone hole, a bullet leaves a hole and a
+    /// blade a gash, and water and bushes keep no mark.
     #[test]
-    fn the_scuff_mask_is_padded_transparent_at_its_edges() {
-        let img = scuff_texture();
-        let data = img.data.as_ref().expect("the mask is built in memory");
-        let n = MARK_TEX as usize;
-        let alpha = |x: usize, y: usize| data[(y * n + x) * 4 + 3];
+    fn a_blow_leaves_the_mark_of_what_it_hit() {
+        assert_eq!(
+            decal_kind(Weapon::Bullet, Matter::Wood).map(|k| k.0),
+            Some(Kind::HoleWood)
+        );
+        assert_eq!(
+            decal_kind(Weapon::Bullet, Matter::Metal).map(|k| k.0),
+            Some(Kind::HoleMetal)
+        );
+        assert_eq!(
+            decal_kind(Weapon::Bullet, Matter::Stone).map(|k| k.0),
+            Some(Kind::HoleStone)
+        );
+        assert_eq!(
+            decal_kind(Weapon::Bullet, Matter::Sand).map(|k| k.0),
+            Some(Kind::HoleSoil)
+        );
+        assert_eq!(
+            decal_kind(Weapon::Melee, Matter::Wood).map(|k| k.0),
+            Some(Kind::GashWood)
+        );
+        assert_eq!(
+            decal_kind(Weapon::Blast, Matter::Metal).map(|k| k.0),
+            Some(Kind::Scorch)
+        );
+        assert_eq!(
+            decal_kind(Weapon::Bullet, Matter::Flesh).map(|k| k.0),
+            Some(Kind::Blood)
+        );
+        assert!(decal_kind(Weapon::Bullet, Matter::Water).is_none());
+        assert!(decal_kind(Weapon::Melee, Matter::Plant).is_none());
+    }
 
-        assert_eq!(alpha(n / 2, n / 2), 255, "the centre must be solid");
-        for i in 0..n {
-            assert_eq!(alpha(i, 0), 0, "the top edge must be transparent");
-            assert_eq!(alpha(i, n - 1), 0, "the bottom edge must be transparent");
-            assert_eq!(alpha(0, i), 0, "the left edge must be transparent");
-            assert_eq!(alpha(n - 1, i), 0, "the right edge must be transparent");
+    /// Every cell a kind uses is drawn, is transparent at its border (so no
+    /// mip bleeds a neighbour in) and has a solid body somewhere.
+    #[test]
+    fn every_atlas_cell_is_padded_and_drawn() {
+        let (data, w, _) = atlas_pixels();
+        for k in Kind::ALL {
+            let (first, n) = k.cells();
+            for cell in first..first + n {
+                let (cx, cy) = (cell % ATLAS_COLS, cell / ATLAS_COLS);
+                let alpha = |x: u32, y: u32| {
+                    data[(((cy * CELL_TEX + y) * w + cx * CELL_TEX + x) * 4 + 3) as usize]
+                };
+                for i in 0..CELL_TEX {
+                    for (x, y) in [(i, 0), (i, CELL_TEX - 1), (0, i), (CELL_TEX - 1, i)] {
+                        assert_eq!(alpha(x, y), 0, "{k:?} cell {cell} bleeds at its edge");
+                    }
+                }
+                let max = (0..CELL_TEX * CELL_TEX)
+                    .map(|i| alpha(i % CELL_TEX, i / CELL_TEX))
+                    .max()
+                    .unwrap_or(0);
+                assert!(max > 200, "{k:?} cell {cell} is empty (max alpha {max})");
+            }
         }
     }
 }

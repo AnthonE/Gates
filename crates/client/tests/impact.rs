@@ -547,8 +547,11 @@ fn each_matter_has_the_sound_of_itself() {
     assert_eq!(impact_cue(Matter::Stone), Some(Cue::ImpactStone));
     assert_eq!(impact_cue(Matter::Metal), Some(Cue::ImpactMetal));
     assert_eq!(impact_cue(Matter::Dirt), Some(Cue::ImpactStone));
+    assert_eq!(impact_cue(Matter::Sand), Some(Cue::ImpactStone));
+    assert_eq!(impact_cue(Matter::Grass), Some(Cue::ImpactStone));
     assert_eq!(impact_cue(Matter::Flesh), None);
     assert_eq!(impact_cue(Matter::Plant), None);
+    assert_eq!(impact_cue(Matter::Water), None);
     // Every cue this map hands out is positional: an impact is a place.
     for m in Matter::ALL {
         if let Some(c) = impact_cue(m) {
@@ -582,9 +585,9 @@ fn the_contact_list_is_bounded_and_says_so() {
     for i in 0..(CONTACT_CAP + 5) {
         c.push(Contact {
             at: Vec3::new(i as f32, 0.0, 0.0),
-            away: Vec3::Y,
             matter: Matter::Wood,
             kind: ContactKind::Impact,
+            ..Contact::default()
         });
     }
     assert_eq!(c.len(), CONTACT_CAP);
@@ -638,4 +641,14 @@ fn the_pool_empties_on_the_way_out() {
     p = Chips::default();
     assert_eq!(p.live(), 0);
     assert_eq!(p.bursts, 0);
+}
+
+/// An impact nobody claimed is a swing's only when a swinger stood in reach
+/// of it; everything else is a shot until the wire names the weapon.
+#[test]
+fn an_unclaimed_impact_is_a_shot_unless_a_swinger_stood_there() {
+    use client::render::impact::{weapon_of, Weapon};
+    assert_eq!(weapon_of(true, false), Weapon::Melee);
+    assert_eq!(weapon_of(false, true), Weapon::Melee);
+    assert_eq!(weapon_of(false, false), Weapon::Bullet);
 }

@@ -95,7 +95,13 @@ pub fn burst_size(matter: Matter) -> usize {
     match matter {
         Matter::Metal => SPARK_BURST_METAL,
         Matter::Stone => SPARK_BURST_STONE,
-        Matter::Wood | Matter::Flesh | Matter::Plant | Matter::Dirt => 0,
+        Matter::Wood
+        | Matter::Flesh
+        | Matter::Plant
+        | Matter::Dirt
+        | Matter::Sand
+        | Matter::Grass
+        | Matter::Water => 0,
     }
 }
 

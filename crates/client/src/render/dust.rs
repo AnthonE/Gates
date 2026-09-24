@@ -77,7 +77,7 @@ pub const DUST_SPRAY: f32 = 0.5;
 pub const DUST_ALPHA_STEPS: f32 = 24.0;
 /// Puffs one blow knocks out of each matter. Zero for flesh: `ART.md` has
 /// no blood in it, and a cloud off a body would be that.
-pub const DUST_BURST: [usize; 6] = [2, 3, 2, 0, 1, 3];
+pub const DUST_BURST: [usize; super::impact::MATTER_COUNT] = [2, 3, 2, 0, 1, 3, 4, 2, 0];
 /// The mask's side, texels.
 const DUST_TEX: u32 = 64;
 
@@ -97,6 +97,9 @@ pub fn tint(matter: Matter) -> Color {
         Matter::Flesh => Color::srgb(0.46, 0.10, 0.10),
         Matter::Plant => Color::srgb(0.52, 0.56, 0.36),
         Matter::Dirt => Color::srgb(0.50, 0.42, 0.30),
+        Matter::Sand => Color::srgb(0.78, 0.71, 0.56),
+        Matter::Grass => Color::srgb(0.52, 0.50, 0.36),
+        Matter::Water => Color::srgb(0.80, 0.86, 0.90),
     }
 }
 

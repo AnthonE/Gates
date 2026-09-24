@@ -79,12 +79,12 @@
 use bevy::prelude::*;
 
 use super::feed::Feed;
-use super::{Eye, Net, WorldId};
+use super::{surface, Eye, Net, WorldId};
 use crate::sound::Cue;
 use crate::ui::interact::SwingPick;
-use sim_core::build::{BUILD_CELL_M, LEVEL_H_M, MAT_METAL, MAT_STONE, MAT_TWIG, MAT_WOOD};
+use sim_core::build::{MAT_METAL, MAT_STONE, MAT_TWIG, MAT_WOOD};
 use sim_core::movement::{POS_XZ_Q, POS_Y_Q};
-use sim_core::ranged::{SURF_BUILT, SURF_GROUND, SURF_WORLD};
+use sim_core::ranged::{SURF_GROUND, SURF_WORLD};
 use sim_core::terrain::{self, Occupant};
 
 /// Chips drawable at once. A *view* cap, not a world one — `decal::MARKS`'s
@@ -128,39 +128,44 @@ pub const CHIP_SPIN_RAD_S: f32 = 11.0;
 /// cone.
 pub const CHIP_SPRAY: f32 = 0.55;
 
-/// What was struck. Picks the colour and nothing else — the motion is one
-/// law for every burst.
+/// What was struck — resolved once per blow by `surface::matter_at`, and the
+/// one input every effect layer (particles, decal, sound) keys on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Matter {
     Wood,
     Stone,
     Metal,
-    /// A body. `ART.md` has no blood in it and this is deliberately not
-    /// blood: a dark red mote that says *you hit a person* and costs the
-    /// game nothing it would have to defend.
+    /// A body — players and animals alike. Blood (operator, 2026-09-24).
     Flesh,
     /// A bush, a picked plant — the green half of the scatter.
     Plant,
-    /// The island itself, and anything built out of it that this file
-    /// cannot name more precisely.
+    /// Forest floor and anything this file cannot name more precisely.
     Dirt,
+    Sand,
+    Grass,
+    /// A shot into the sea: the splash on the surface, never the seabed.
+    Water,
 }
+
+/// How many [`Matter`]s there are — every per-matter table's length.
+pub const MATTER_COUNT: usize = 9;
 
 impl Matter {
     /// Every kind, so `setup` can build one material each and the array
     /// index below cannot drift from the enum.
-    pub const ALL: [Matter; 6] = [
+    pub const ALL: [Matter; MATTER_COUNT] = [
         Matter::Wood,
         Matter::Stone,
         Matter::Metal,
         Matter::Flesh,
         Matter::Plant,
         Matter::Dirt,
+        Matter::Sand,
+        Matter::Grass,
+        Matter::Water,
     ];
 
     /// The index into every per-matter table — `Matter::ALL`'s order.
-    /// Public so `dust.rs` can size its own table off it rather than
-    /// carrying a second `match` that drifts.
     pub fn slot(self) -> usize {
         match self {
             Matter::Wood => 0,
@@ -169,6 +174,9 @@ impl Matter {
             Matter::Flesh => 3,
             Matter::Plant => 4,
             Matter::Dirt => 5,
+            Matter::Sand => 6,
+            Matter::Grass => 7,
+            Matter::Water => 8,
         }
     }
 
@@ -187,6 +195,9 @@ impl Matter {
             Matter::Flesh => Color::srgb(0.46, 0.10, 0.10),
             Matter::Plant => Color::srgb(0.38, 0.52, 0.22),
             Matter::Dirt => Color::srgb(0.44, 0.37, 0.28),
+            Matter::Sand => Color::srgb(0.74, 0.66, 0.50),
+            Matter::Grass => Color::srgb(0.40, 0.46, 0.24),
+            Matter::Water => Color::srgb(0.70, 0.78, 0.82),
         }
     }
 
@@ -208,19 +219,6 @@ impl Matter {
             x if x == Occupant::Rock as u8 => Matter::Stone,
             x if x == Occupant::CrateSlot as u8 => Matter::Wood,
             x if x == Occupant::CacheSlot as u8 => Matter::Wood,
-            _ => Matter::Dirt,
-        }
-    }
-
-    /// What an arrow's stop surface is made of (`sim_core::ranged::SURF_*`),
-    /// when nothing more is known about it. A world surface is a tree until
-    /// [`world_matter`] asks the scatter what actually stands there, and a
-    /// built one is stone until [`struct_point`] reads the piece's tier.
-    pub fn of_surface(surf: u8) -> Matter {
-        match surf {
-            SURF_GROUND => Matter::Dirt,
-            SURF_WORLD => Matter::Wood,
-            SURF_BUILT => Matter::Stone,
             _ => Matter::Dirt,
         }
     }
@@ -250,10 +248,20 @@ impl Matter {
 pub fn impact_cue(matter: Matter) -> Option<Cue> {
     match matter {
         Matter::Wood => Some(Cue::ImpactWood),
-        Matter::Stone | Matter::Dirt => Some(Cue::ImpactStone),
+        Matter::Stone | Matter::Dirt | Matter::Sand | Matter::Grass => Some(Cue::ImpactStone),
         Matter::Metal => Some(Cue::ImpactMetal),
-        Matter::Flesh | Matter::Plant => None,
+        Matter::Flesh | Matter::Plant | Matter::Water => None,
     }
+}
+
+/// What delivered a blow — picks the decal (a bullet hole, a gash) and, once
+/// `fx` lands, the size of what it throws.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Weapon {
+    Melee,
+    Arrow,
+    Bullet,
+    Blast,
 }
 
 /// How far up a swung node's own ground the chips come from, metres.
@@ -520,20 +528,6 @@ pub fn same_blow(pick: &SwingPick, at: Vec3) -> bool {
     dx * dx + dz * dz <= SAME_BLOW_M * SAME_BLOW_M
 }
 
-/// What stands at a world-surface impact point: the scatter's own occupant
-/// for the cell, so an arrow that stops on a stone node throws stone and
-/// another player's chop on a tree throws wood. `Dirt` when the cell holds
-/// nothing this file can name, which is the honest default — the sim said
-/// a world occupant stopped it, and this cannot say which.
-pub fn world_matter(world: &WorldId, at: Vec3) -> Matter {
-    let (cx, cz) = (
-        (at.x / terrain::CELL_SIZE).floor() as i32,
-        (at.z / terrain::CELL_SIZE).floor() as i32,
-    );
-    let slot = terrain::scatter(world.seed, &world.table, &world.haven, cx, cz);
-    Matter::of_occupant(slot.occupant as u8)
-}
-
 /// Where a blow lands up a standing player, as a fraction of their height.
 /// A chest on a 1.8 m figure is 1.12 m, which is the rung `combat`'s own
 /// bands put between the head and the limbs.
@@ -734,23 +728,30 @@ pub fn fly(
 pub enum ContactKind {
     /// The local player's own swing met the thing its pick named.
     Swing,
-    /// An `EV_IMPACT`: an arrow's stop, or a swing the sim marked — anyone's.
+    /// An `EV_IMPACT`: an arrow's or a bullet's stop, or a swing the sim
+    /// marked — anyone's.
     Impact,
     /// A blow landed on a body.
     Flesh,
-    /// A blow landed on a built piece or a deployable.
-    Struct,
 }
 
-/// One blow's contact with the world this frame: where, thrown which way,
-/// on what. The whole of what the three debris layers and the impact cue
-/// need, resolved once by [`contacts`].
+/// One blow's contact with the world this frame: where, which way the surface
+/// faces, on what, by what. The whole of what every effect layer needs,
+/// resolved once by [`contacts`].
 #[derive(Clone, Copy, Debug)]
 pub struct Contact {
     pub at: Vec3,
+    /// Which way the debris is thrown.
     pub away: Vec3,
+    /// Which way the struck surface faces — what a mark lies on.
+    pub normal: Vec3,
+    /// The wire's `SURF_*` the blow stopped on; a world mark bends to its trunk.
+    pub surf: u8,
     pub matter: Matter,
     pub kind: ContactKind,
+    pub weapon: Weapon,
+    /// Whether the blow leaves a mark (`decal::mark`).
+    pub mark: bool,
 }
 
 impl Default for Contact {
@@ -758,16 +759,19 @@ impl Default for Contact {
         Self {
             at: Vec3::ZERO,
             away: Vec3::Y,
+            normal: Vec3::Y,
+            surf: SURF_GROUND,
             matter: Matter::Dirt,
             kind: ContactKind::Impact,
+            weapon: Weapon::Bullet,
+            mark: false,
         }
     }
 }
 
-/// Contacts one frame may carry. `Feed`'s own cap: the impacts array is that
-/// long and the other three sources add at most a few, so a frame that
-/// overflows this is a frame the drain already dropped from.
-pub const CONTACT_CAP: usize = super::feed::FEED_CAP + 4;
+/// Contacts one frame may carry: the impacts, the hit victims and the own
+/// swing, each at most `FEED_CAP` long.
+pub const CONTACT_CAP: usize = super::feed::FEED_CAP * 3;
 
 /// This frame's contacts — `Feed`'s shape: one resolver writes it, every
 /// layer reads it through `Res<_>`, so no layer can consume a fact another
@@ -818,50 +822,28 @@ impl Contacts {
     }
 }
 
-/// Where a blow on a built piece lands and what the piece is made of, from
-/// the struct-hit readout the core latched — or `None` when the mirror holds
-/// no piece at that address, which is a hit on a deployable whose tier the
-/// wire does not carry.
-///
-/// The point is the build grid's own floor for that column
-/// (`build::column_floor_y`, the sim's function rather than a second opinion
-/// about where a storey sits — the failure that function exists to end) plus
-/// half a storey; `floor` is the caller's answer for a world that has no
-/// island to ask.
-pub fn struct_point(
-    core: &client_core::core::ClientCore,
-    floor: impl FnOnce(u16, u16, i8) -> f32,
-) -> (Vec3, Matter) {
-    let (cx, cz, level, loc, _, _) = core.struct_hit;
-    let plate = core.pieces.cols().plate(cx, cz).unwrap_or(0);
-    let at = Vec3::new(
-        (cx as f32 + 0.5) * BUILD_CELL_M,
-        floor(cx, cz, plate) + sim_core::build::level_y(level) + LEVEL_H_M * 0.5,
-        (cz as f32 + 0.5) * BUILD_CELL_M,
-    );
-    // The piece at that address, if the mirror holds one: its baked row
-    // names the tier, and the tier names the matter. A deployable shares
-    // the address space and has no tier, so it falls to wood — every
-    // deployable in the catalogue today is a box, a door or a bench.
-    let matter = core
-        .pieces
-        .entries()
-        .iter()
-        .find(|r| r.cx == cx && r.cz == cz && r.level == level && r.loc == loc)
-        .filter(|r| (r.row as u16) < core.piece_defs_have)
-        .map(|r| Matter::of_piece(core.piece_defs.pieces[r.row as usize].material))
-        .unwrap_or(Matter::Wood);
-    (at, matter)
+/// How near a body that swung this frame must stand to an impact for the
+/// impact to be that swing's, metres — a melee reach plus the ray's probe.
+/// It is how a remote hatchet blow is told from a bullet until the wire
+/// names the weapon.
+pub const SWING_REACH_M: f32 = 3.5;
+
+/// What delivered an impact nobody claimed: a swing if a swinger stood within
+/// [`SWING_REACH_M`] of it this frame, a shot otherwise.
+pub fn weapon_of(mine: bool, swinger_near: bool) -> Weapon {
+    if mine || swinger_near {
+        Weapon::Melee
+    } else {
+        Weapon::Bullet
+    }
 }
 
 /// Resolve every blow the feed reports into this frame's [`Contacts`].
 ///
 /// Reads `Res<Feed>` and never `pop_*`, for the single-drain reason
-/// `feed.rs`'s header narrates and `tests/sound.rs` greps for. Eight
-/// parameters, which clippy counts — `bodies::stream` carries the same allow
-/// and the same argument: the two victim stores are as distinct from each
-/// other as `feed` is from `eye`, and bundling any two would hide which of
-/// the eight a future reader has to think about.
+/// `feed.rs`'s header narrates and `tests/sound.rs` greps for. Where and
+/// what: the point is the sim's (`EV_IMPACT`) or the pick's or the drawn
+/// body's; the facing and the matter are `surface`'s.
 #[allow(clippy::too_many_arguments)]
 pub fn contacts(
     mut out: ResMut<Contacts>,
@@ -878,70 +860,91 @@ pub fn contacts(
     let core = &net.session.core;
     let own_swing = feed.swings().contains(&core.player_id);
     let pick = &swung.0;
+    let swinger_near = |at: Vec3| {
+        feed.swings().iter().any(|&id| {
+            let p = if id == core.player_id {
+                Some(eye.pos)
+            } else {
+                bodies
+                    .iter()
+                    .find(|(b, _)| b.0 == id)
+                    .map(|(_, gt)| gt.translation())
+            };
+            p.is_some_and(|p| p.distance_squared(at) <= SWING_REACH_M * SWING_REACH_M)
+        })
+    };
 
     // ── Every surface the sim says was struck ────────────────────────────
     //
-    // The only source whose position is the SIM's rather than recovered:
-    // `EV_IMPACT` carries the stop point in the wire's own quanta, which is
-    // why `decal.rs` can lay a mark there — and why, when this frame's own
-    // swing is among them, the impact's point is the one the burst takes.
+    // The only source whose position is the SIM's rather than recovered, so
+    // when this frame's own swing is among them the impact's point is the
+    // one the burst takes (`same_blow`).
     let mut claimed = false;
     for &(qx, qy, qz, surf) in feed.impacts() {
-        let at = Vec3::new(
+        let mut at = Vec3::new(
             qx as f32 * POS_XZ_Q,
             qy as f32 * POS_Y_Q,
             qz as f32 * POS_XZ_Q,
         );
         let mine = own_swing && surf == SURF_WORLD && same_blow(pick, at);
         claimed |= mine;
-        let matter = if mine {
-            Matter::of_occupant(pick.occupant)
-        } else if surf == SURF_WORLD {
-            world
-                .as_deref()
-                .map_or(Matter::of_surface(surf), |w| world_matter(w, at))
-        } else {
-            Matter::of_surface(surf)
+        let (mut normal, mut matter) = match world.as_deref() {
+            Some(w) => {
+                let n = surface::normal_at(w, core.pieces.cols(), at.x, at.y, at.z, surf);
+                (n, surface::matter_at(w, core, at, surf, n))
+            }
+            None => (Vec3::Y, Matter::Dirt),
         };
+        if mine {
+            matter = Matter::of_occupant(pick.occupant);
+        }
+        // A shot into the sea stops on the seabed; what a player sees is the
+        // splash on the surface above it.
+        if matter == Matter::Water {
+            at.y = terrain::SEA_LEVEL;
+            normal = Vec3::Y;
+        }
         out.push(Contact {
             at,
-            away: (eye.pos - at).normalize_or(Vec3::Y),
+            away: normal,
+            normal,
+            surf,
             matter,
             kind: if mine {
                 ContactKind::Swing
             } else {
                 ContactKind::Impact
             },
+            weapon: weapon_of(mine, swinger_near(at)),
+            mark: !matches!(matter, Matter::Water | Matter::Plant),
         });
     }
 
     // ── A swing that connected with a node the sim did not mark ──────────
     //
-    // The sim's own swing fact plus the pick — see [`gather_burst`], which
-    // carries the whole argument and the defect it replaces. Skipped when an
-    // impact above already placed this blow: that one has the ray's own
-    // point, this one has the pick's.
+    // A refused tool, a barrel, a bush: the sim's own swing fact plus the
+    // pick ([`gather_burst`]). Skipped when an impact above already placed
+    // this blow. No mark — the sim did not mark it.
     if !claimed {
         if let Some(b) = gather_burst(own_swing, pick, eye.pos) {
             out.push(Contact {
                 at: b.at,
                 away: b.away,
+                normal: b.away,
+                surf: SURF_WORLD,
                 matter: b.matter,
                 kind: ContactKind::Swing,
+                weapon: Weapon::Melee,
+                mark: false,
             });
         }
     }
 
     // ── A blow that landed on something alive ────────────────────────────
     //
-    // **Two stores, and the wire id is what says which.** `EV_HIT` names a
-    // victim and nothing else, and this client draws players out of
-    // `bodies::Bodies` and animals out of `mobs::Herd` — two systems, two
-    // component types, one id space split by `mob::slot_of_id`. The first
-    // cut of this file looked only in `Bodies`, so a wolf took a blow and
-    // the frame was unchanged: the exact gap the whole slice was opened for,
-    // one victim class over, and invisible because a miss and an
-    // unrecognised victim are the same `continue`.
+    // Two stores, split by the wire id (`struck`): players out of
+    // `bodies::Bodies`, animals out of `mobs::Herd`. A victim this client
+    // cannot place throws nothing rather than guessing at the crosshair.
     for &victim in feed.hit_victims() {
         let hit = struck(victim);
         let at = match hit {
@@ -954,38 +957,25 @@ pub fn contacts(
                 .find(|(b, _)| b.0 == victim)
                 .map(|(_, gt)| gt.translation()),
         };
-        // Not in the interest set, or not drawn yet. A blow whose victim
-        // this client cannot place throws nothing rather than guessing at
-        // the crosshair — `RENDER.md` §1, and the same posture the gather
-        // burst takes when the pick is empty.
         let Some(at) = at.map(|p| p + Vec3::Y * hit.lift()) else {
             continue;
         };
+        // The entry face looks back at the attacker, and that is where the
+        // spray is thrown; the mark lands behind the victim.
+        let toward = (eye.pos - at).normalize_or(Vec3::Y);
         out.push(Contact {
             at,
-            away: (eye.pos - at).normalize_or(Vec3::Y),
+            away: toward,
+            normal: toward,
+            surf: SURF_GROUND,
             matter: Matter::Flesh,
             kind: ContactKind::Flesh,
-        });
-    }
-
-    // ── A blow that landed on a wall ─────────────────────────────────────
-    //
-    // Latched, so the freshness bit decides and not the field — `Feed::
-    // applied`'s doc, and the failure without it is a wall that sprays chips
-    // forever after one hit.
-    if feed.applied & client_core::core::APPLIED_STRUCT_HIT != 0 {
-        let (at, matter) = struct_point(core, |cx, cz, plate| match world.as_deref() {
-            Some(w) => sim_core::build::column_floor_y(w.seed, &w.haven, cx, cz, plate),
-            // No world means no island to ask; the eye's own feet are the
-            // honest fallback and the burst is cosmetic either way.
-            None => eye.pos.y - super::EYE_HEIGHT,
-        });
-        out.push(Contact {
-            at,
-            away: (eye.pos - at).with_y(0.0),
-            matter,
-            kind: ContactKind::Struct,
+            weapon: if own_swing {
+                Weapon::Melee
+            } else {
+                Weapon::Bullet
+            },
+            mark: true,
         });
     }
 }
@@ -1005,7 +995,9 @@ pub fn strike(
             away: c.away,
             matter: c.matter,
         };
-        chips.ignite(&b);
+        if c.matter != Matter::Water {
+            chips.ignite(&b);
+        }
         sparks.ignite(&b);
         dust.ignite(&b);
     }
