@@ -653,3 +653,33 @@ fn the_wire_names_the_weapon() {
     assert_eq!(weapon_of(IMPACT_MELEE), Weapon::Melee);
     assert_eq!(weapon_of(IMPACT_BLAST), Weapon::Blast);
 }
+
+/// What a contact sounds like: a blow is the impact family, a round the
+/// bullet family (a glance off the hard two whines), a body is a body and a
+/// charge is a blast — and a gunshot past its near radius is the far layer.
+#[test]
+fn a_round_does_not_sound_like_a_blow() {
+    use client::render::audio::{contact_cue, far_layer, SHOT_FAR_M};
+    use client::render::impact::Weapon;
+    let (b, m) = (Weapon::Bullet, Weapon::Melee);
+    assert_eq!(contact_cue(b, Matter::Wood, false), Some(Cue::BulletWood));
+    assert_eq!(contact_cue(m, Matter::Wood, false), Some(Cue::ImpactWood));
+    assert_eq!(contact_cue(b, Matter::Sand, false), Some(Cue::BulletSoil));
+    assert_eq!(contact_cue(b, Matter::Metal, false), Some(Cue::BulletMetal));
+    assert_eq!(contact_cue(b, Matter::Metal, true), Some(Cue::Ricochet));
+    assert_eq!(contact_cue(b, Matter::Stone, true), Some(Cue::Ricochet));
+    assert_eq!(contact_cue(b, Matter::Wood, true), Some(Cue::BulletWood));
+    assert_eq!(contact_cue(m, Matter::Metal, true), Some(Cue::ImpactMetal));
+    assert_eq!(
+        contact_cue(Weapon::Arrow, Matter::Flesh, false),
+        Some(Cue::FleshHit)
+    );
+    assert_eq!(
+        contact_cue(Weapon::Blast, Matter::Stone, false),
+        Some(Cue::Blast)
+    );
+    assert_eq!(contact_cue(b, Matter::Water, false), None);
+    assert_eq!(far_layer(Cue::ShotGun, SHOT_FAR_M - 1.0), Cue::ShotGun);
+    assert_eq!(far_layer(Cue::ShotGun, SHOT_FAR_M + 1.0), Cue::ShotGunFar);
+    assert_eq!(far_layer(Cue::ShotBow, 80.0), Cue::ShotBow);
+}

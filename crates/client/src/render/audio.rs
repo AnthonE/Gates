@@ -39,14 +39,12 @@ use bevy::prelude::*;
 
 use crate::sound::birds::{self, Birds};
 use crate::sound::engine::{self, Cmd, Live, Stats, HELD_BEDS, HELD_MUSIC};
-use crate::sound::mixer::{Mixer, Request, Start};
+use crate::sound::mixer::{Mixer, Request, Start, Takes};
 use crate::sound::music::{self, Director};
 use crate::sound::steps::Steps;
 use crate::sound::voice::Voices;
 use crate::sound::water::Waterline;
-use crate::sound::{
-    synth, Cue, Mix, Snapshot, SnapshotDef, Snapshots, CUE_COUNT, SAMPLE_RATE, VOICE_CAP,
-};
+use crate::sound::{Cue, Mix, Snapshot, SnapshotDef, Snapshots, CUE_COUNT, SAMPLE_RATE, VOICE_CAP};
 
 use super::{Eye, Net};
 
@@ -79,6 +77,7 @@ pub const BEDS: [Cue; 4] = [Cue::BedWind, Cue::BedSurf, Cue::BedUnder, Cue::BedR
 pub struct Bank {
     installed: [bool; CUE_COUNT],
     len_s: [f32; CUE_COUNT],
+    takes: [u8; CUE_COUNT],
 }
 
 impl Default for Bank {
@@ -86,6 +85,7 @@ impl Default for Bank {
         Self {
             installed: [false; CUE_COUNT],
             len_s: [0.0; CUE_COUNT],
+            takes: [1; CUE_COUNT],
         }
     }
 }
@@ -96,9 +96,15 @@ impl Bank {
         self.installed[cue.idx()]
     }
 
-    /// The cue's length in seconds at the bank's rate; zero until it lands.
+    /// One take's length in seconds at the bank's rate; zero until it
+    /// lands.
     pub fn len_s(&self, cue: Cue) -> f32 {
         self.len_s[cue.idx()]
+    }
+
+    /// How many takes the cue's samples hold (`sound_bank::pcm`).
+    pub fn takes(&self, cue: Cue) -> u8 {
+        self.takes[cue.idx()]
     }
 
     /// How many cues have landed.
@@ -106,9 +112,11 @@ impl Bank {
         self.installed.iter().filter(|b| **b).count()
     }
 
-    fn land(&mut self, cue: Cue, samples: usize) {
+    fn land(&mut self, cue: Cue, samples: usize, takes: u8) {
+        let takes = takes.max(1);
         self.installed[cue.idx()] = true;
-        self.len_s[cue.idx()] = samples as f32 / SAMPLE_RATE as f32;
+        self.takes[cue.idx()] = takes;
+        self.len_s[cue.idx()] = (samples / takes as usize) as f32 / SAMPLE_RATE as f32;
     }
 }
 
@@ -244,6 +252,8 @@ impl Engine {
 #[derive(Resource, Default)]
 pub struct Sound {
     pub mixer: Mixer,
+    /// Which take each cue plays next (`sound::mixer::Takes`).
+    pub takes: Takes,
     pub steps: Steps,
     /// The waterline, as a thing the local body crosses.
     pub waterline: Waterline,
@@ -393,9 +403,9 @@ pub fn build_bank_with(app: &mut App, spread: bool) {
     let mut bank = Bank::default();
     if !spread {
         let mut engine = app.world_mut().resource_mut::<Engine>();
-        for (i, pcm) in synth::pcm_bank().into_iter().enumerate() {
-            let cue = Cue::ALL[i];
-            bank.land(cue, pcm.len());
+        for cue in Cue::ALL {
+            let (pcm, takes) = crate::sound_bank::pcm(cue);
+            bank.land(cue, pcm.len(), takes);
             engine.install(cue, pcm);
         }
     }
@@ -454,8 +464,8 @@ pub fn synthesize(mut synth: ResMut<Synth>, mut bank: ResMut<Bank>, mut engine: 
         return;
     }
     let cue = synth_order()[synth.next];
-    let pcm = synth::pcm(cue);
-    bank.land(cue, pcm.len());
+    let (pcm, takes) = crate::sound_bank::pcm(cue);
+    bank.land(cue, pcm.len(), takes);
     engine.install(cue, pcm);
     synth.next += 1;
 }
@@ -603,23 +613,54 @@ pub fn remote_steps(
 /// *on what* for the chips, the sparks and the dust, so the thock cannot
 /// land on a different blow from the debris — and the one de-duplication
 /// rule (`impact::same_blow`) is applied once, there, instead of a second
-/// time here. A flesh contact is `None` from `impact_cue` by design: the
-/// hitmarker and the victim's own hurt cue already voice it (`NOW.md`
-/// §0pvp item 2 stays open for a flesh waveform).
+/// time here. Which cue is [`contact_cue`]'s: a blow, a round, a body and a
+/// charge each sound like themselves.
 ///
 /// Positional even for the swinger's own blow, `shots`' argument: an
 /// impact is a thing that happens at a place, and the place is at arm's
 /// length. Everyone else's swings and every arrow's stop are the same cue
 /// at their own points, which is the disclosure the reference relies on —
 /// a chop in the next clearing is heard as a chop.
-pub fn impacts(contacts: Res<super::impact::Contacts>, mut sound: ResMut<Sound>) {
+pub fn impacts(
+    contacts: Res<super::impact::Contacts>,
+    mut sound: ResMut<Sound>,
+    mut roll: Local<u32>,
+) {
     for c in contacts.iter() {
-        if c.weapon == super::impact::Weapon::Blast {
-            continue;
-        }
-        if let Some(cue) = super::impact::impact_cue(c.matter) {
+        // A cheap stream for the ricochet's odds: cosmetic, and never read
+        // by anything that decides.
+        *roll = roll.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        let glance = (*roll >> 16) % 100 < RICOCHET_PCT;
+        if let Some(cue) = contact_cue(c.weapon, c.matter, glance) {
             sound.play(Request::at(cue, [c.at.x, c.at.y, c.at.z]));
         }
+    }
+}
+
+/// How often a round on stone or metal glances off whining, percent.
+pub const RICOCHET_PCT: u32 = 30;
+
+/// What a contact sounds like, by what struck it and what it struck: a
+/// blow is the impact family, a round or an arrow the bullet family (a
+/// `glance` on the hard two is a ricochet), a body is a body whatever hit
+/// it, and a charge is a blast. Water makes no sound here.
+pub fn contact_cue(
+    weapon: super::impact::Weapon,
+    matter: super::impact::Matter,
+    glance: bool,
+) -> Option<Cue> {
+    use super::impact::{Matter, Weapon};
+    match (weapon, matter) {
+        (Weapon::Blast, _) => Some(Cue::Blast),
+        (_, Matter::Flesh) => Some(Cue::FleshHit),
+        (Weapon::Melee, m) => super::impact::impact_cue(m),
+        (_, Matter::Water) => None,
+        (_, Matter::Metal) if glance => Some(Cue::Ricochet),
+        (_, Matter::Stone) if glance => Some(Cue::Ricochet),
+        (_, Matter::Metal) => Some(Cue::BulletMetal),
+        (_, Matter::Stone) => Some(Cue::BulletStone),
+        (_, Matter::Wood) => Some(Cue::BulletWood),
+        (_, Matter::Dirt | Matter::Sand | Matter::Grass | Matter::Plant) => Some(Cue::BulletSoil),
     }
 }
 
@@ -715,6 +756,7 @@ pub fn shot_cue(speed_mmpt: u16) -> Cue {
 pub fn shots(
     net: NonSend<Net>,
     feed: Res<super::feed::Feed>,
+    eye: Res<Eye>,
     bodies: Query<(&super::bodies::Body, &Transform)>,
     mut sound: ResMut<Sound>,
 ) {
@@ -741,7 +783,23 @@ pub fn shots(
             };
             [t.x, t.y, t.z]
         };
-        sound.play(Request::at(cue, at));
+        let d = eye.pos.distance(Vec3::from(at));
+        sound.play(Request::at(far_layer(cue, d), at));
+    }
+}
+
+/// Past this far a gunshot is its far layer, metres: where the near
+/// report's falloff and the far one's meet at about the same level
+/// (`CUES`' two rows), so the switch is a change of colour and not a step.
+pub const SHOT_FAR_M: f32 = 45.0;
+
+/// The layer of a report heard from `d` metres. Only the gun has a far
+/// layer; a bow does not carry far enough to need one.
+pub fn far_layer(cue: Cue, d: f32) -> Cue {
+    if cue == Cue::ShotGun && d > SHOT_FAR_M {
+        Cue::ShotGunFar
+    } else {
+        cue
     }
 }
 
@@ -753,7 +811,12 @@ pub fn shots(
 /// client whose HUD ate every event before the mixer saw one. `feed.rs`'s
 /// header is the whole account; the rule that came out of it is that
 /// `feed::drain` is the only `pop_*` call site in the client.
-pub fn feed(net: NonSend<Net>, feed: Res<super::feed::Feed>, mut sound: ResMut<Sound>) {
+pub fn feed(
+    net: NonSend<Net>,
+    feed: Res<super::feed::Feed>,
+    world: Option<Res<super::WorldId>>,
+    mut sound: ResMut<Sound>,
+) {
     // One marker per frame however many landed — `Cue::Hit`'s own cooldown
     // would refuse the rest anyway, and asking for four identical clicks so
     // three can be thrown away is work the queue does not need to do.
@@ -792,17 +855,22 @@ pub fn feed(net: NonSend<Net>, feed: Res<super::feed::Feed>, mut sound: ResMut<S
     for _ in feed.crafted() {
         sound.play(Request::own(Cue::CraftDone));
     }
-    // A magazine seated. `Cue::Place` borrowed rather than minted, on the
-    // spill's argument below and for its reason: the ear needs "that
-    // happened" and the readout above the hotbar says what — and what a
-    // reload sounds like is a mechanical thing seating, which is the cue
-    // a piece going down already is. A voice of its own is a fair later
-    // change and would cost a `synth.rs` row, a bank entry and a
-    // `WANTED.md` line (`assets/sound/WANTED.md` is the queue); the dry
-    // click needs no such argument, because it is a refusal and the
-    // variant-agnostic block below already answers it.
+    // A magazine seated: your own hands, so an own-fact. (It borrowed the
+    // positional `Cue::Place` with no position, which the mixer refuses —
+    // a reload was silent.)
     if feed.reloaded > 0 {
-        sound.play(Request::own(Cue::Place));
+        sound.play(Request::own(Cue::Reload));
+    }
+    // A knock, at the door knocked on — broadcast, so it is often somebody
+    // else's hand, and where the door is is the news.
+    if let Some(world) = world {
+        let core = &net.session.core;
+        for &(cx, cz, level, loc, _who) in feed.knocks() {
+            let (x, z) = sim_core::build::anchor(cx, cz, loc);
+            let plate = core.pieces.cols().plate(cx, cz).unwrap_or(0);
+            let y = super::structures::level_base_y(world.seed, &world.haven, cx, cz, level, plate);
+            sound.play(Request::at(Cue::Knock, [x, y + 1.3, z]));
+        }
     }
     // Every refusal kind, one sound. A player does not need to hear the
     // difference between a refused craft and a refused placement — the toast
@@ -1161,7 +1229,11 @@ pub fn bed(
     let mix = mix_of(&settings).under(&snap);
     for (i, cue) in BEDS.iter().enumerate() {
         let def = cue.def();
-        let level = sound.bed_gain[i] * snap.bed(*cue) * def.gain * mix.bus_gain(def.bus);
+        let level = sound.bed_gain[i]
+            * snap.bed(*cue)
+            * def.gain
+            * mix.bus_gain(def.bus)
+            * sound.mixer.duck();
         if level != sound.bed_sent[i] {
             sound.bed_sent[i] = level;
             engine.push(Cmd::Gain {
@@ -1356,7 +1428,10 @@ pub fn pump(
     for start in chosen.into_iter().flatten() {
         // The rate is the mixer's speed resampled to the renderer's rate —
         // `engine::rate` is the one resampler in the chain (`audio_out.rs`).
-        engine.push(engine::start_cmd(&start, listener, right, out_rate));
+        // The take is the bank's to count and never the last one played.
+        let takes = bank.takes(start.cue);
+        let take = sound.takes.pick(start.cue, takes);
+        engine.push(engine::start_cmd(&start, listener, right, out_rate).with_take(take, takes));
         // The ledger counts what the renderer will actually sound: a cue
         // that has not landed (a spread bank's first frames) is silence
         // there, counted as `unbanked`, and must not hold a ledger slot for

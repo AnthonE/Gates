@@ -77,6 +77,9 @@ fn script(x: &mut u32, k: usize, out_rate: u32, out: &mut Vec<Cmd>) {
         let cmd = match xorshift(x) % 6 {
             0 => Cmd::Start {
                 cue,
+                take: 0,
+                takes: 1,
+                lp: 0,
                 gain_l: g,
                 gain_r: 1.0 - g,
                 rate: rate(0.9 + (xorshift(x) % 200) as f32 / 1000.0, out_rate),
@@ -399,6 +402,9 @@ fn the_carry_survives_a_441_frame_callback() {
     let (mut native, mut feed, mut mirror) = loaded(SAMPLE_RATE);
     let start = Cmd::Start {
         cue: Cue::Gather,
+        take: 0,
+        takes: 1,
+        lp: 0,
         gain_l: 0.8,
         gain_r: 0.3,
         rate: 1.0,
@@ -494,6 +500,9 @@ fn commands_sent_between_callbacks_land_before_the_next_rendered_block_not_insid
     // Something sounding, so the carry is not trivially silence.
     let start = Cmd::Start {
         cue: Cue::Gather,
+        take: 0,
+        takes: 1,
+        lp: 0,
         gain_l: 0.7,
         gain_r: 0.4,
         rate: 1.0,

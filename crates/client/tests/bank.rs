@@ -19,7 +19,8 @@
 
 use bevy::prelude::*;
 use client::render::audio::{build_bank_with, synth_order, synthesize, Bank, Engine, Synth, BEDS};
-use client::sound::{synth, Cue, CUE_COUNT, SAMPLE_RATE};
+use client::sound::{Cue, CUE_COUNT, SAMPLE_RATE};
+use client::sound_bank;
 
 fn app() -> App {
     let mut app = App::new();
@@ -52,17 +53,19 @@ fn the_desktop_bank_is_whole_at_build() {
     for (cue, pcm) in &got {
         assert!(!seen[cue.idx()], "{cue:?} was installed twice");
         seen[cue.idx()] = true;
+        let (want, takes) = sound_bank::pcm(*cue);
         assert_eq!(
             pcm.as_ref(),
-            synth::pcm(*cue).as_ref(),
+            want.as_ref(),
             "{cue:?} was installed with different samples"
         );
         let bank = app.world().resource::<Bank>();
         assert!(bank.installed(*cue), "{cue:?} landed but the bank says not");
+        assert_eq!(bank.takes(*cue), takes);
         assert_eq!(
             bank.len_s(*cue),
-            pcm.len() as f32 / SAMPLE_RATE as f32,
-            "{cue:?}: the ledger's length is not the samples'"
+            (pcm.len() / takes as usize) as f32 / SAMPLE_RATE as f32,
+            "{cue:?}: the ledger's length is not one take's"
         );
     }
     assert!(seen.iter().all(|s| *s), "a cue never reached the engine");
@@ -96,7 +99,7 @@ fn the_spread_bank_fills_one_cue_a_frame_beds_first_and_then_stops() {
         );
         assert_eq!(
             pcm.as_ref(),
-            synth::pcm(*cue).as_ref(),
+            sound_bank::pcm(*cue).0.as_ref(),
             "frame {frame}: {cue:?} holds different samples"
         );
         assert_eq!(
