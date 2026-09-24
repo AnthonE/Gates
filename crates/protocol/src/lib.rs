@@ -58,16 +58,16 @@ pub use event::{
     encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
     encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_gather,
     encode_event_gather_refused, encode_event_gitem_sync, encode_event_health, encode_event_hit,
-    encode_event_hurt, encode_event_impact, encode_event_inv, encode_event_knock,
-    encode_event_known, encode_event_move_refused, encode_event_moved, encode_event_oven,
-    encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_repaired,
-    encode_event_piece_sync, encode_event_recipes, encode_event_recovered, encode_event_reload,
-    encode_event_reload_refused, encode_event_removed, encode_event_research,
-    encode_event_research_refused, encode_event_research_rows, encode_event_respawn,
-    encode_event_shot, encode_event_slot_change, encode_event_slot_sync, encode_event_stock,
-    encode_event_struct_hit, encode_event_swing, encode_event_vitals, encode_event_weak_mark,
-    encode_event_wounded, shot_is_instant, EventMsg, InvSlot, ItemCatalog, ItemRow, WireBag,
-    WireGItem, BAG_SYNC_BATCH, CATALOG_BATCH, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH,
+    encode_event_howl, encode_event_hurt, encode_event_impact, encode_event_inv,
+    encode_event_knock, encode_event_known, encode_event_move_refused, encode_event_moved,
+    encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
+    encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
+    encode_event_recovered, encode_event_reload, encode_event_reload_refused, encode_event_removed,
+    encode_event_research, encode_event_research_refused, encode_event_research_rows,
+    encode_event_respawn, encode_event_shot, encode_event_slot_change, encode_event_slot_sync,
+    encode_event_stock, encode_event_struct_hit, encode_event_swing, encode_event_vitals,
+    encode_event_weak_mark, encode_event_wounded, shot_is_instant, EventMsg, InvSlot, ItemCatalog,
+    ItemRow, WireBag, WireGItem, BAG_SYNC_BATCH, CATALOG_BATCH, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH,
     DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES,
     PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH, SLOT_SYNC_BATCH,
 };
@@ -929,7 +929,10 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// the next number and regenerated every fixture from the merged encoder.
 /// Against `main`'s v73 exactly two fixtures differ in bytes: `hello` (the
 /// version) and `event_stock` (the bill).
-pub const PROTO_VER: u16 = 74;
+/// v75 adds the pack call: `SUB_HOWL` carries the tagged roster id of an
+/// animal that howled for its pack (`EV_HOWL`, the animal brain). A new
+/// subtype only — no field of any existing message moved.
+pub const PROTO_VER: u16 = 75;
 
 /// This game's slug in the elo catalog.
 ///

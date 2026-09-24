@@ -612,6 +612,8 @@ pub struct Mob {
     /// The tick it was last struck — the out-of-combat clock its healing
     /// runs off (`brain::heal`).
     pub hurt_at: u64,
+    /// The tick it last howled for its pack (`brain::HOWL_COOLDOWN_TICKS`).
+    pub howled_at: u64,
     /// The route being walked (`nav.rs`).
     pub path: NavPath,
     /// Awake, as of the last think tick. Recomputed there and not per
@@ -770,6 +772,48 @@ pub const MOB_TURN_STEP: u16 = 8 << 8;
 /// walked round, so a sharp corner is a pivot and not a loop around it.
 const TURN_IN_PLACE: u16 = 64 << 8;
 
+/// The tick's pack calls, bounded (wall 4): the roster slots that howled.
+/// `world::tick` turns each into an `EV_HOWL` after the roster has stepped,
+/// `Bites`' split for `Bites`' reason. **Overflow drops the howl's sound**,
+/// never the call — the pack answers off the roster.
+pub struct Howls {
+    slots: [u8; crate::limits::MAX_HOWLS_PER_TICK],
+    len: usize,
+}
+
+impl Default for Howls {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Howls {
+    pub const fn new() -> Self {
+        Self {
+            slots: [0; crate::limits::MAX_HOWLS_PER_TICK],
+            len: 0,
+        }
+    }
+
+    #[inline]
+    pub fn clear(&mut self) {
+        self.len = 0;
+    }
+
+    #[inline]
+    pub fn entries(&self) -> &[u8] {
+        &self.slots[..self.len]
+    }
+
+    #[inline]
+    pub(crate) fn push(&mut self, slot: u8) {
+        if self.len < self.slots.len() {
+            self.slots[self.len] = slot;
+            self.len += 1;
+        }
+    }
+}
+
 /// One tick of the whole roster.
 ///
 /// Order is slot order, which is the fixed order determinism wants, and the
@@ -791,8 +835,10 @@ pub fn step(
     noises: &crate::noise::Noises,
     nav: &mut Nav,
     bites: &mut Bites,
+    howls: &mut Howls,
 ) {
     bites.clear();
+    howls.clear();
     nav.begin_tick();
     let mut peers = brain::peers(&mobs.m, tick);
     let mut ground = Ground {
@@ -826,6 +872,7 @@ pub fn step(
                 players,
                 lit,
                 noises,
+                howls: &mut *howls,
                 peers: &peers,
                 nav,
                 ground: &mut ground,
@@ -908,6 +955,7 @@ fn hatch(seed: u64, haven: &crate::terrain::Haven, mob: &mut Mob, def: &MobDef) 
     mob.want_yaw = mob.yaw;
     mob.poi_until = 0;
     mob.hurt_at = 0;
+    mob.howled_at = 0;
     mob.path.clear();
 }
 

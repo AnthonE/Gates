@@ -269,6 +269,10 @@ pub struct Feed {
     /// live body matches nothing when `bodies::stream` walks its set.
     swings: [u32; FEED_CAP],
     n_swings: usize,
+    /// Animals that howled for their pack this frame (`EventMsg::Howl`,
+    /// wire v75), by tagged roster id. A sound and nothing else.
+    howls: [u32; FEED_CAP],
+    n_howls: usize,
     /// Placements that happened this frame: address + which store (`true` =
     /// deployable). Broadcast-only by construction — the core's ring is fed
     /// by `PiecePlaced`/`DeployPlaced` and never by a sync walk, so a join
@@ -360,6 +364,11 @@ impl Feed {
         &self.swings[..self.n_swings]
     }
 
+    /// Animals that called their pack this frame, oldest first.
+    pub fn howls(&self) -> &[u32] {
+        &self.howls[..self.n_howls]
+    }
+
     /// Bodies this player's blows landed on this frame, oldest first.
     /// Never contains `client_core::core::NO_VICTIM` — see the field.
     pub fn hit_victims(&self) -> &[u32] {
@@ -443,6 +452,7 @@ impl Feed {
         self.n_shots = 0;
         self.n_impacts = 0;
         self.n_swings = 0;
+        self.n_howls = 0;
         self.n_placed = 0;
         self.wounded = None;
         self.recovered = None;
@@ -615,6 +625,15 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
             let n = feed.n_swings;
             feed.swings[n] = sw;
             feed.n_swings += 1;
+        }
+    }
+    while let Some(h) = core.pop_howl() {
+        if feed.n_howls >= FEED_CAP {
+            feed.dropped = feed.dropped.saturating_add(1);
+        } else {
+            let n = feed.n_howls;
+            feed.howls[n] = h;
+            feed.n_howls += 1;
         }
     }
     while let Some(p) = core.pop_placed() {

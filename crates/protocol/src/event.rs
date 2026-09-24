@@ -353,7 +353,11 @@ const SUB_RECOVERED: u32 = 57;
 const SUB_GITEM_SYNC: u32 = 58;
 /// Help progress/clear state, visible only to the two participants (v66).
 const SUB_ASSIST: u32 = 59;
-const SUB_MAX: u32 = SUB_ASSIST;
+/// `EV_HOWL` (v75): a pack animal called its pack. The animal's tagged
+/// roster id and nothing else — `SUB_SWING`'s shape: where the animal is,
+/// the snapshot already says; that the call went up, only this can.
+const SUB_HOWL: u32 = 60;
+const SUB_MAX: u32 = SUB_HOWL;
 /// Width of the recovery chance on both wounded messages: per mille, so
 /// 0..=1000 in ten bits. `sim_core::wound::recover_chance_pm` tops out at
 /// 450 by construction; the field is sized to the unit rather than to
@@ -1102,6 +1106,10 @@ pub enum EventMsg {
     /// the whiff is the commoner of the two. `EV_HIT` is the hit fact and
     /// is unicast to the attacker.
     Swing { swinger: u32 },
+    /// A pack animal howled for its pack (wire v75): its tagged roster id.
+    /// The pack answers in the sim; this is the sound, so a client can put
+    /// the howl on the animal that made it rather than on a timer.
+    Howl { mob: u32 },
     /// The feed ack: the hearth's stock rows after the transfer, aligned
     /// to the baked upkeep-material list — (item index, units, what one
     /// upkeep period charges in it). The third column is upkeep v2's
@@ -2431,6 +2439,17 @@ pub fn encode_event_swing(swinger: u32, buf: &mut [u8]) -> Result<usize, WireErr
     Ok(w.finish())
 }
 
+/// A pack animal's howl. Refuses an id that is not a roster id — a howl
+/// from a player would be a sim bug, and the wire never clamps one.
+pub fn encode_event_howl(mob: u32, buf: &mut [u8]) -> Result<usize, WireError> {
+    if sim_core::mob::slot_of_id(mob).is_none() {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_HOWL)?;
+    w.write(mob, 32)?;
+    Ok(w.finish())
+}
+
 /// The attacker's hitmarker: `damage` landed on `victim`.
 /// One standing backpack as the wire carries it: identity and where it
 /// is, nothing else. Owner, expiry and contents stay sim-side — the
@@ -3593,6 +3612,13 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
         SUB_SWING => EventMsg::Swing {
             swinger: r.read(32)?,
         },
+        SUB_HOWL => {
+            let mob = r.read(32)?;
+            if sim_core::mob::slot_of_id(mob).is_none() {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Howl { mob }
+        }
         SUB_HURT => {
             // The width and the domain are the same size today, so nothing
             // here can be out of range — and it is written as a checked read
@@ -5460,6 +5486,18 @@ mod wire_domains {
         Module {
             file: "mob.rs",
             src: include_str!("../../sim-core/src/mob.rs"),
+        },
+        Module {
+            file: "brain.rs",
+            src: include_str!("../../sim-core/src/brain.rs"),
+        },
+        Module {
+            file: "nav.rs",
+            src: include_str!("../../sim-core/src/nav.rs"),
+        },
+        Module {
+            file: "noise.rs",
+            src: include_str!("../../sim-core/src/noise.rs"),
         },
         Module {
             file: "movement.rs",

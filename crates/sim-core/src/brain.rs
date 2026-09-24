@@ -456,6 +456,9 @@ const SWIM_DEPTH_M: f32 = 0.5;
 /// twenty seconds from a scratch to whole.
 const HEAL_AFTER_TICKS: u64 = 1_800;
 const HEAL_PARTS: u16 = 40;
+/// A wolf howls for its pack at most this often. Twenty seconds: one call
+/// per hunt, not one per sighting.
+const HOWL_COOLDOWN_TICKS: u64 = 600;
 /// How long a heard noise is remembered — how long prey keeps running from
 /// the spot and a hunter keeps meaning to look. Five seconds.
 const NOISE_MEMORY_TICKS: u64 = 150;
@@ -562,6 +565,8 @@ pub struct Ctx<'c, 'h, 'o> {
     pub lit: &'c [bool; MAX_PLAYERS],
     /// What there is to hear (`noise.rs`).
     pub noises: &'c crate::noise::Noises,
+    /// The tick's pack calls, for `world::tick` to announce.
+    pub howls: &'c mut crate::mob::Howls,
     pub peers: &'c [Peer; MAX_MOBS],
     pub nav: &'c mut Nav,
     pub ground: &'c mut Ground<'h, 'o>,
@@ -837,6 +842,18 @@ fn sense(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob) {
         if best.is_none_or(|(s, _)| score < s) {
             best = Some((score, i as u8));
         }
+    }
+    // A pack animal that found someone itself, fresh, calls its pack —
+    // the reference wolf's howl. An answer to a call is not a call, and a
+    // wolf howls at most once a `HOWL_COOLDOWN_TICKS`.
+    let fresh = best.is_some() && !has_target(ctx, mob);
+    if fresh
+        && def.pack_cm > 0
+        && crate::mob::pack_of(slot).is_some()
+        && (mob.howled_at == 0 || tick >= mob.howled_at.saturating_add(HOWL_COOLDOWN_TICKS))
+    {
+        mob.howled_at = tick;
+        ctx.howls.push(slot as u8);
     }
     if best.is_none() && !calm && def.pack_cm > 0 && !has_target(ctx, mob) {
         best = pack_call(ctx, slot, def, mob);

@@ -61,7 +61,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 111] = [
+const GOLDEN: [&[u8]; 112] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -173,6 +173,7 @@ const GOLDEN: [&[u8]; 111] = [
     include_bytes!("golden/action_assist.bin"),
     include_bytes!("golden/event_assist.bin"),
     include_bytes!("golden/action_rotate.bin"),
+    include_bytes!("golden/event_howl.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -367,8 +368,10 @@ fn test_protocol_golden() {
     g!(seen, golden_action, 108);
     g!(seen, golden_event, 109);
     g!(seen, golden_action, 110);
+    // The pack call (v75).
+    g!(seen, golden_event, 111);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 111, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 112, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -1641,6 +1644,15 @@ fn golden_event(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             encode_event_swing(swinger, &mut buf).unwrap()
+        }
+        "event_howl.bin" => {
+            let mob = protocol::goldens::event_howl();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::Howl { mob },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_event_howl(mob, &mut buf).unwrap()
         }
         other => panic!("unknown event fixture {other}"),
     };

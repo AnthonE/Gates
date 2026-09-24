@@ -371,3 +371,31 @@ fn a_wounded_animal_left_alone_heals_after_a_minute() {
     hold(&mut w, 0, 60 * MOB_THINK_TICKS as u32, |_| {});
     assert_eq!(w.mobs.m[pig].hp, full, "the pig never healed back to whole");
 }
+
+/// **One howl a hunt.** The pack-mate that found the player howls; the one
+/// that answered the call does not howl back, and the finder does not howl
+/// again while the hunt runs (`brain::HOWL_COOLDOWN_TICKS`). The events are
+/// what reaches clients (`EV_HOWL`), so they are what is counted.
+#[test]
+fn a_pack_howls_once_when_it_finds_someone() {
+    use sim_core::world::EV_HOWL;
+    let [a, b, _] = free_pack();
+    let mut w = world_with(&[(a, 10.0, 0.0), (b, 45.0, 0.0)]);
+    let mut from_a = 0;
+    let mut from_b = 0;
+    hold(&mut w, 0, 10 * MOB_THINK_TICKS as u32, |w| {
+        for e in w.events.entries().iter().filter(|e| e.code == EV_HOWL) {
+            if e.a == mob::mob_id(a) {
+                from_a += 1;
+            } else if e.a == mob::mob_id(b) {
+                from_b += 1;
+            }
+        }
+    });
+    assert_eq!(
+        from_a, 1,
+        "the wolf that found the player howled {from_a} times"
+    );
+    assert_eq!(from_b, 0, "the wolf that answered the call howled too");
+    assert_eq!(w.mobs.m[b].target, 0, "the call went unanswered");
+}

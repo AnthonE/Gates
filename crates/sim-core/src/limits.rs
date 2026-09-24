@@ -1253,3 +1253,10 @@ pub const NAV_MAX_CORNERS: usize = 16;
 /// never could — a noise is only audible for one think window, and 32 is
 /// every shot a full server could fire into one window with room over.
 pub const MAX_NOISES: usize = 32;
+
+/// Pack calls one tick can raise across the roster (`mob::Howls`). Only a
+/// thinking pack animal howls, and each at most once per its cooldown, so
+/// the true ceiling is the handful thinking on the tick. **Overflow drops
+/// the howl**: the call still happened (the pack answers off the roster, not
+/// the sound), only its sound is lost.
+pub const MAX_HOWLS_PER_TICK: usize = 8;

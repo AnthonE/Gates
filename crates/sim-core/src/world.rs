@@ -747,6 +747,14 @@ pub const EV_RECOVERED: u8 = 45;
 /// b = wounded target id, c = elapsed ticks (0 cancels, ASSIST_TICKS completes).
 pub const EV_ASSIST: u8 = 46;
 
+/// EV_HOWL: a = the howling animal's tagged roster id (`mob::mob_id`), b
+/// and c are zero. A pack animal found someone and called its pack
+/// (`brain::sense`; the reference wolf's howl) — the pack answers off the
+/// roster, and this is the sound of it. **Broadcast to the clients that
+/// have that animal in interest**: it is a fact about a body they are
+/// drawing, and the one moment a howl means *they are coming*.
+pub const EV_HOWL: u8 = 47;
+
 /// The highest code above, named rather than counted: the event codes are
 /// `1..=EV_MAX` with no gaps, and `test_event_roles`'s coverage ledger
 /// scans that range. It lived in that test as a literal `25`, which meant a
@@ -754,7 +762,7 @@ pub const EV_ASSIST: u8 = 46;
 /// classified it. Tying it to the last constant closes half of that; the
 /// other half is the ledger's own `every_event_code_is_in_range`, which
 /// parses this file and fails if a code is declared past this line.
-pub const EV_MAX: u8 = EV_ASSIST;
+pub const EV_MAX: u8 = EV_HOWL;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -4713,6 +4721,7 @@ impl World {
         // shot must resolve against where the animal ended this tick — the
         // same rule the player loop's ordering states in the comment above.
         let mut bites = mob::Bites::new();
+        let mut howls = mob::Howls::new();
         // Who holds a lit torch, which a wolf keeps its distance from
         // (`MobDef::fire_fear_cm`). The same predicate the light pass reads.
         let lit: [bool; MAX_PLAYERS] =
@@ -4735,7 +4744,11 @@ impl World {
             &self.noises,
             &mut self.nav,
             &mut bites,
+            &mut howls,
         );
+        for &slot in howls.entries() {
+            self.events.push(EV_HOWL, mob::mob_id(slot as usize), 0, 0);
+        }
         // The bites land after the whole roster stepped, so every animal
         // decided against one consistent tick — the borrow split `Bites`'
         // own doc names. The hp and the deaths counter go through
@@ -5344,6 +5357,7 @@ impl World {
             poi[8..16].copy_from_slice(&m.poi_until.to_le_bytes());
             poi[16..24].copy_from_slice(&m.hurt_at.to_le_bytes());
             h.update(&poi);
+            h.update(&m.howled_at.to_le_bytes());
             for k in 0..m.path.len as usize {
                 h.update(&m.path.cx[k].to_le_bytes());
                 h.update(&m.path.cz[k].to_le_bytes());
