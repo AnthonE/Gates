@@ -380,9 +380,11 @@ const HALO_RGB: [f32; 3] = [0.02, 0.024, 0.032];
 const NIGHT_CLOUD_LIGHT: f32 = 0.012;
 /// Moonlight's colour on the deck, over the sun's: a little cool.
 const MOONLIT: [f32; 3] = [0.8, 0.88, 1.0];
-/// The most [`deck_hue`] lifts a channel — the deck under ~15° gives up on
-/// being grey rather than trading its range for it.
-const HUE_MAX: f32 = 2.5;
+/// The most [`deck_hue`] lifts a channel. Where the air takes more blue
+/// than this can give back (under ~20°), the correction lowers red and
+/// green to meet it instead, so the far deck goes a darker grey and never
+/// yellow.
+const HUE_MAX: f32 = 3.0;
 /// Steps in [`deck_hue`]'s table, zenith to horizon.
 const HUE_STEPS: usize = 512;
 /// How much brighter the desktop draws its cube than its texels say, and so
@@ -650,9 +652,12 @@ pub fn deck_hue(y: f32) -> [f32; 3] {
         (0..HUE_STEPS)
             .map(|i| {
                 let m = airmass(i as f32 / (HUE_STEPS - 1) as f32);
-                let t: [f32; 3] = core::array::from_fn(|c| (-tau[c] * m).exp());
-                let l = super::fill::luminance(t);
-                core::array::from_fn(|c| (l / t[c].max(1e-6)).min(HUE_MAX))
+                let t: [f32; 3] = core::array::from_fn(|c| (-tau[c] * m).exp().max(1e-6));
+                // The grey `T` would be at its own luminance, or as bright
+                // a grey as the weakest channel can be lifted to.
+                let least = t[0].min(t[1]).min(t[2]);
+                let grey = super::fill::luminance(t).min(HUE_MAX * least);
+                core::array::from_fn(|c| grey / t[c])
             })
             .collect()
     });
@@ -799,7 +804,18 @@ pub fn compose_range(
         if p.fog > 0.0 {
             let band = p.fog * (1.0 - (d.y + 0.02) / 0.25).clamp(0.0, 1.0);
             for c in 0..3 {
-                rgb[c] += (fog_rgb[c] - rgb[c]) * band;
+                rgb[c] += (fog_rgb[c] * gain - rgb[c]) * band;
+            }
+        }
+        // A desktop texel over range keeps its hue and gives up brightness:
+        // clipped a channel at a time, a lifted blue would clip first and
+        // the cloud would come out yellow — the tint `deck_hue` took out.
+        if !p.backdrop {
+            let most = rgb[0].max(rgb[1]).max(rgb[2]);
+            if most > 1.0 {
+                for v in rgb.iter_mut() {
+                    *v /= most;
+                }
             }
         }
 

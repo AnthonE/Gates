@@ -131,9 +131,18 @@ fn the_browser_deck_is_the_desktops_over_a_sky() {
                     let hue = deck_hue(d.y);
                     let al: [f32; 3] = core::array::from_fn(|c| lin(a[c]) * DECK_GAIN / hue[c]);
                     let bl: [f32; 3] = core::array::from_fn(|c| lin(b[c]));
-                    // A channel the desktop clipped says only "at least".
-                    let clipped = |c: usize| a[c] == 255;
-                    if (0..3).all(|c| clipped(c) || (al[c] - bl[c]).abs() <= 0.02) {
+                    // One byte of the desktop's, undone by the same factors:
+                    // where the air gives a channel back, the cube keeps
+                    // little of it, and a byte there is worth a lot.
+                    let tol: [f32; 3] = core::array::from_fn(|c| {
+                        let step = srgb_to_linear((a[c] as f32 + 1.0) / 255.0) - lin(a[c]);
+                        0.02 + step * DECK_GAIN / hue[c]
+                    });
+                    // A texel the desktop brought back in range (keeping
+                    // its hue) says only "at least", in every channel.
+                    let over = a[..3].contains(&255);
+                    let clipped = |_c: usize| over;
+                    if (0..3).all(|c| clipped(c) || (al[c] - bl[c]).abs() <= tol[c]) {
                         // An opaque cloud: the same cloud on both targets.
                         same += 1;
                     } else {
@@ -144,8 +153,8 @@ fn the_browser_deck_is_the_desktops_over_a_sky() {
                         let sky = backdrop_at(d);
                         for c in 0..3 {
                             assert!(
-                                bl[c] >= al[c] - 0.02
-                                    && (clipped(c) || bl[c] <= al[c] + sky[c] + 0.02),
+                                bl[c] >= al[c] - tol[c]
+                                    && (clipped(c) || bl[c] <= al[c] + sky[c] + tol[c]),
                                 "edge texel {b:?} is not cloud {a:?} plus at most the sky {want:?} (channel {c}: {} .. {})",
                                 al[c],
                                 al[c] + sky[c]
