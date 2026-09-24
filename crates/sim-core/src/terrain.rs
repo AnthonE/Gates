@@ -1277,9 +1277,13 @@ fn gullies<C: Corners>(
         let sx = gx + ex * GULLY_BRANCH;
         let sz = gz + ez * GULLY_BRANCH;
         let s = (sx * sx + sz * sz).sqrt();
-        if s > 1e-4 {
-            let st = ((s - GULLY_SLOPE_LO) / (GULLY_SLOPE_HI - GULLY_SLOPE_LO)).clamp(0.0, 1.0);
-            let mask = st * st * (3.0 - 2.0 * st) * strength;
+        let st = ((s - GULLY_SLOPE_LO) / (GULLY_SLOPE_HI - GULLY_SLOPE_LO)).clamp(0.0, 1.0);
+        let mask = st * st * (3.0 - 2.0 * st) * strength;
+        // A crest's fall line lays no stripe: at `mask == 0` the octave adds
+        // `0 × sc / sw` with `sw ≥ GULLY_FLOOR_W`, so skipping its nine cells
+        // is bit-identical. `mask > 0` also implies `s > GULLY_SLOPE_LO`, so
+        // the divide by `s` below stays guarded.
+        if mask > 0.0 {
             // Across the fall line, so the stripes run downhill.
             let (px, pz) = (-sz / s, sx / s);
             let fx = wx / cell;
@@ -5408,6 +5412,132 @@ fn ground_slope_in<C: Corners>(c: &mut C, seed: u64, haven: &Haven, x: f32, z: f
     (sx * sx + sz * sz).sqrt()
 }
 
+/// The slope clutter classifies by: [`ground_slope`] at the four whole-metre
+/// corners of the 1 m cell holding (x, z), blended bilinearly.
+///
+/// It is the slope the near ground mesh classifies its own splat by — one
+/// `ground_slope` per 1 m vertex (`terrain_mesh.rs`), read between vertices
+/// the way the mesh reads its weights — and it is what makes a clutter tile
+/// cheap: the corners are shared, so a tile resolves every element's slope
+/// from one 17 × 17 grid ([`TileSlopes`]) instead of four `ground` taps per
+/// element, which was 81% of a tile's `height` bill.
+fn clutter_slope_taps<C: Corners>(c: &mut C, seed: u64, haven: &Haven, x: f32, z: f32) -> f32 {
+    let ix = floor_i32(x);
+    let iz = floor_i32(z);
+    let (x0, z0) = (ix as f32, iz as f32);
+    let (x1, z1) = ((ix + 1) as f32, (iz + 1) as f32);
+    slope_lerp(
+        [
+            ground_slope_in(c, seed, haven, x0, z0),
+            ground_slope_in(c, seed, haven, x1, z0),
+            ground_slope_in(c, seed, haven, x0, z1),
+            ground_slope_in(c, seed, haven, x1, z1),
+        ],
+        x - x0,
+        z - z0,
+    )
+}
+
+/// Bilinear over a cell's corners `[s00, s10, s01, s11]`. One body, so the
+/// tap path and the grid path cannot round differently.
+#[inline(always)]
+fn slope_lerp(s: [f32; 4], fx: f32, fz: f32) -> f32 {
+    let a = s[0] + (s[1] - s[0]) * fx;
+    let b = s[2] + (s[3] - s[2]) * fx;
+    a + (b - a) * fz
+}
+
+/// Corner slopes per side of a clutter tile: its 16 metres and the far edge.
+const TILE_SLOPE_N: usize = CLUTTER_TILE_M as usize + 1;
+
+/// One clutter tile's [`clutter_slope_taps`] corners, resolved on first use.
+///
+/// Lazy because a tile of open water needs none, and one pass fills all of
+/// them: 19 × 19 `ground` taps (the four corners of that square are never
+/// read and are skipped) give `ground_slope` at 17 × 17 whole metres — the
+/// same taps, subtractions and root `ground_slope_in` makes, so a corner
+/// read here is bit-for-bit the one the tap path draws.
+struct TileSlopes {
+    x0: i32,
+    z0: i32,
+    built: bool,
+    s: [[f32; TILE_SLOPE_N]; TILE_SLOPE_N],
+}
+
+impl TileSlopes {
+    fn new(tile_x: i32, tile_z: i32) -> Self {
+        Self {
+            x0: tile_x * CLUTTER_TILE_M as i32,
+            z0: tile_z * CLUTTER_TILE_M as i32,
+            built: false,
+            s: [[0.0; TILE_SLOPE_N]; TILE_SLOPE_N],
+        }
+    }
+
+    fn build<C: Corners>(&mut self, c: &mut C, seed: u64, haven: &Haven) {
+        const G: usize = TILE_SLOPE_N + 2;
+        let mut g = [[0.0f32; G]; G];
+        for (k, row) in g.iter_mut().enumerate() {
+            let z = (self.z0 - 1 + k as i32) as f32;
+            for (i, v) in row.iter_mut().enumerate() {
+                if (k == 0 || k == G - 1) && (i == 0 || i == G - 1) {
+                    continue;
+                }
+                *v = ground_in(c, seed, haven, (self.x0 - 1 + i as i32) as f32, z);
+            }
+        }
+        for (k, row) in self.s.iter_mut().enumerate() {
+            for (i, v) in row.iter_mut().enumerate() {
+                let sx = (g[k + 1][i + 2] - g[k + 1][i]) * 0.5;
+                let sz = (g[k + 2][i + 1] - g[k][i + 1]) * 0.5;
+                *v = (sx * sx + sz * sz).sqrt();
+            }
+        }
+        self.built = true;
+    }
+
+    /// [`clutter_slope_taps`] at (x, z): off the grid when the cell is inside
+    /// the tile, by taps when it is not (a jitter can land on the far edge).
+    fn at<C: Corners>(&mut self, c: &mut C, seed: u64, haven: &Haven, x: f32, z: f32) -> f32 {
+        let ix = floor_i32(x);
+        let iz = floor_i32(z);
+        let (i, k) = (ix - self.x0, iz - self.z0);
+        let inside = 0..TILE_SLOPE_N as i32 - 1;
+        if !inside.contains(&i) || !inside.contains(&k) {
+            return clutter_slope_taps(c, seed, haven, x, z);
+        }
+        if !self.built {
+            self.build(c, seed, haven);
+        }
+        let (i, k) = (i as usize, k as usize);
+        slope_lerp(
+            [
+                self.s[k][i],
+                self.s[k][i + 1],
+                self.s[k + 1][i],
+                self.s[k + 1][i + 1],
+            ],
+            x - ix as f32,
+            z - iz as f32,
+        )
+    }
+}
+
+/// Clutter's slope at (x, z), off the tile's grid when the caller has one.
+fn clutter_slope_at<C: Corners>(
+    c: &mut C,
+    seed: u64,
+    haven: &Haven,
+    slopes: Option<&mut TileSlopes>,
+    x: f32,
+    z: f32,
+) -> f32 {
+    match slopes {
+        Some(t) => t.at(c, seed, haven, x, z),
+        None => clutter_slope_taps(c, seed, haven, x, z),
+    }
+}
+
 /// Whether a clutter element drawn at (x, z) with dither byte `d` stands on
 /// swept ground.
 ///
@@ -6529,7 +6659,7 @@ pub fn clutter_kind_at(
     roll_bits: u64,
     swept: bool,
 ) -> Clutter {
-    clutter_kind_at_in(&mut Direct, seed, haven, x, z, y, roll_bits, swept)
+    clutter_kind_at_in(&mut Direct, seed, haven, None, x, z, y, roll_bits, swept)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -6537,6 +6667,7 @@ fn clutter_kind_at_in<C: Corners>(
     c: &mut C,
     seed: u64,
     haven: &Haven,
+    slopes: Option<&mut TileSlopes>,
     x: f32,
     z: f32,
     y: f32,
@@ -6561,11 +6692,12 @@ fn clutter_kind_at_in<C: Corners>(
     if swept {
         return Clutter::Pebble;
     }
-    // `y` reached here from `ground`, so its slope is `ground_slope`.
+    // `y` reached here from `ground`, so its slope is the carved surface's,
+    // read the way the mesh reads it (`clutter_slope_taps`).
     let w = splat_from(
         y,
         moisture_in(c, seed, x, z),
-        ground_slope_in(c, seed, haven, x, z),
+        clutter_slope_at(c, seed, haven, slopes, x, z),
     );
     kind_from_splat(w, roll_bits)
 }
@@ -6635,13 +6767,14 @@ pub fn kind_from_splat(w: [u8; 4], roll_bits: u64) -> Clutter {
 /// cannot see the site list grows a lawn across the pad — which is exactly
 /// what this one did until `reference/MONUMENTS.md` §9.2 was built.
 pub fn clutter_cell(seed: u64, haven: &Haven, cell_x: i32, cell_z: i32) -> ClutterElem {
-    clutter_cell_in(&mut Direct, seed, haven, cell_x, cell_z)
+    clutter_cell_in(&mut Direct, seed, haven, None, cell_x, cell_z)
 }
 
 fn clutter_cell_in<C: Corners>(
     c: &mut C,
     seed: u64,
     haven: &Haven,
+    slopes: Option<&mut TileSlopes>,
     cell_x: i32,
     cell_z: i32,
 ) -> ClutterElem {
@@ -6669,6 +6802,7 @@ fn clutter_cell_in<C: Corners>(
         c,
         seed,
         haven,
+        slopes,
         x,
         z,
         y,
@@ -6724,11 +6858,11 @@ pub fn clutter_richness_at(seed: u64, haven: &Haven, x: f32, z: f32, y: f32) -> 
     if road_band_in(&mut c, seed, haven, x, z) == RoadBand::Carriageway {
         return 0;
     }
-    // `y` reached here from `ground`, so its slope is `ground_slope`.
+    // `y` reached here from `ground`; the slope is `clutter_kind_at`'s.
     let w = splat_from(
         y,
         moisture_in(&mut c, seed, x, z),
-        ground_slope_in(&mut c, seed, haven, x, z),
+        clutter_slope_taps(&mut c, seed, haven, x, z),
     );
     richness_from_splat_in(&mut c, seed, w, x, z)
 }
@@ -6792,7 +6926,7 @@ pub const RICH_ACCEPT_MAX: u32 = 32;
 /// the largest bare disc is unchanged by construction and the wall in
 /// `tests/clutter.rs` re-measures it anyway.
 pub fn clutter_rich_cell(seed: u64, haven: &Haven, cell_x: i32, cell_z: i32) -> ClutterElem {
-    clutter_rich_cell_in(&mut Direct, seed, haven, cell_x, cell_z)
+    clutter_rich_cell_in(&mut Direct, seed, haven, None, cell_x, cell_z)
 }
 
 /// The richness stratum's per-cell draw, before any terrain is touched: the
@@ -6854,6 +6988,7 @@ fn clutter_rich_cell_in<C: Corners>(
     c: &mut C,
     seed: u64,
     haven: &Haven,
+    slopes: Option<&mut TileSlopes>,
     cell_x: i32,
     cell_z: i32,
 ) -> ClutterElem {
@@ -6904,7 +7039,7 @@ fn clutter_rich_cell_in<C: Corners>(
     let w = splat_from(
         y,
         moisture_in(c, seed, x, z),
-        ground_slope_in(c, seed, haven, x, z),
+        clutter_slope_at(c, seed, haven, slopes, x, z),
     );
 
     // The acceptance draw. `SPAWN.md` §9.6: the roll is seeded per cell, so
@@ -6976,11 +7111,55 @@ pub fn clutter_fill(
 /// hundred distinct lattice quads. This entry point exists for the caller
 /// that streams a RING of tiles and would rather not pay the table's
 /// initialisation, or lose the neighbours' quads, once per tile:
-/// `render/clutter.rs` holds one on its ring resource.
+/// `render/clutter.rs` holds one on its ring resource and fills through
+/// [`clutter_tile_fill_memo`].
 pub fn clutter_fill_memo(
     lat: &mut Lattice,
     seed: u64,
     haven: &Haven,
+    tile_x: i32,
+    tile_z: i32,
+    out: &mut [ClutterElem],
+) -> usize {
+    let mut slopes = TileSlopes::new(tile_x, tile_z);
+    grid_fill_in(lat, seed, haven, &mut slopes, tile_x, tile_z, out)
+}
+
+/// Both of a tile's populations — the grid, then the prop skirts behind it —
+/// into one buffer, sharing one [`TileSlopes`]: the client's entry point.
+///
+/// The same elements as [`clutter_fill_memo`] followed by [`skirt_fill_memo`]
+/// into the rest of the buffer, bit for bit (`tests/lattice.rs`); what it
+/// saves is the second tile's worth of corner slopes.
+#[allow(clippy::too_many_arguments)]
+pub fn clutter_tile_fill_memo(
+    lat: &mut Lattice,
+    seed: u64,
+    table: &ScatterTable,
+    haven: &Haven,
+    tile_x: i32,
+    tile_z: i32,
+    out: &mut [ClutterElem],
+) -> usize {
+    let mut slopes = TileSlopes::new(tile_x, tile_z);
+    let n = grid_fill_in(lat, seed, haven, &mut slopes, tile_x, tile_z, out);
+    n + skirt_fill_in(
+        lat,
+        seed,
+        table,
+        haven,
+        &mut slopes,
+        tile_x,
+        tile_z,
+        &mut out[n..],
+    )
+}
+
+fn grid_fill_in(
+    lat: &mut Lattice,
+    seed: u64,
+    haven: &Haven,
+    slopes: &mut TileSlopes,
     tile_x: i32,
     tile_z: i32,
     out: &mut [ClutterElem],
@@ -7003,7 +7182,7 @@ pub fn clutter_fill_memo(
             if n >= out.len() {
                 return n;
             }
-            let e = clutter_cell_in(lat, seed, haven, cx0 + i, cz0 + j);
+            let e = clutter_cell_in(lat, seed, haven, Some(&mut *slopes), cx0 + i, cz0 + j);
             if e.kind != Clutter::None {
                 out[n] = e;
                 n += 1;
@@ -7011,7 +7190,7 @@ pub fn clutter_fill_memo(
             if rich >= CLUTTER_RICH_PER_TILE || n >= out.len() {
                 continue;
             }
-            let r = clutter_rich_cell_in(lat, seed, haven, cx0 + i, cz0 + j);
+            let r = clutter_rich_cell_in(lat, seed, haven, Some(&mut *slopes), cx0 + i, cz0 + j);
             if r.kind != Clutter::None {
                 out[n] = r;
                 n += 1;
@@ -7135,7 +7314,7 @@ pub fn skirt_elem(
     n: usize,
 ) -> ClutterElem {
     let (h, x, z) = skirt_pos(seed, cell_x, cell_z, slot, i, n);
-    skirt_at(&mut Direct, seed, haven, h, x, z)
+    skirt_at(&mut Direct, seed, haven, None, h, x, z)
 }
 
 /// Where element `i` of `n` LANDS, and the draw that put it there — the half
@@ -7174,6 +7353,7 @@ fn skirt_at<C: Corners>(
     c: &mut C,
     seed: u64,
     haven: &Haven,
+    slopes: Option<&mut TileSlopes>,
     h: u64,
     x: f32,
     z: f32,
@@ -7195,6 +7375,7 @@ fn skirt_at<C: Corners>(
             c,
             seed,
             haven,
+            slopes,
             x,
             z,
             y,
@@ -7240,6 +7421,21 @@ pub fn skirt_fill_memo(
     tile_z: i32,
     out: &mut [ClutterElem],
 ) -> usize {
+    let mut slopes = TileSlopes::new(tile_x, tile_z);
+    skirt_fill_in(lat, seed, table, haven, &mut slopes, tile_x, tile_z, out)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn skirt_fill_in(
+    lat: &mut Lattice,
+    seed: u64,
+    table: &ScatterTable,
+    haven: &Haven,
+    slopes: &mut TileSlopes,
+    tile_x: i32,
+    tile_z: i32,
+    out: &mut [ClutterElem],
+) -> usize {
     let x0 = tile_x as f32 * CLUTTER_TILE_M;
     let z0 = tile_z as f32 * CLUTTER_TILE_M;
     let x1 = x0 + CLUTTER_TILE_M;
@@ -7272,7 +7468,7 @@ pub fn skirt_fill_memo(
                 if ex < x0 || ex >= x1 || ez < z0 || ez >= z1 {
                     continue;
                 }
-                let e = skirt_at(lat, seed, haven, h, ex, ez);
+                let e = skirt_at(lat, seed, haven, Some(&mut *slopes), h, ex, ez);
                 if e.kind == Clutter::None {
                     continue;
                 }

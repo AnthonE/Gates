@@ -437,6 +437,42 @@ fn the_two_fill_entry_points_are_one_function() {
     }
 }
 
+/// The client's one call is the grid then the skirt, into one buffer, bit for
+/// bit: sharing the tile's corner slopes between the two may save taps and
+/// may not move an element.
+#[test]
+fn the_client_fill_is_the_grid_then_the_skirt() {
+    let table = ScatterTable::alpha_default();
+    let mut both = vec![CLUTTER_NONE; terrain::CLUTTER_TILE_CAP];
+    let mut apart = vec![CLUTTER_NONE; terrain::CLUTTER_TILE_CAP];
+    let mut elements = 0usize;
+    for s in SEEDS {
+        let haven = hv(s);
+        let (mut la, mut lb) = (Lattice::new(), Lattice::new());
+        for (tx, tz) in tiles_of_interest(&haven).into_iter().take(60) {
+            let n = terrain::clutter_tile_fill_memo(&mut la, s, &table, &haven, tx, tz, &mut both);
+            let grid = terrain::clutter_fill_memo(&mut lb, s, &haven, tx, tz, &mut apart);
+            let skirt =
+                terrain::skirt_fill_memo(&mut lb, s, &table, &haven, tx, tz, &mut apart[grid..]);
+            assert_eq!(n, grid + skirt, "seed {s:#x} tile ({tx}, {tz})");
+            for k in 0..n {
+                same_elem(
+                    &both[k],
+                    &apart[k],
+                    At {
+                        seed: s,
+                        tile: (tx, tz),
+                        ix: k,
+                        layer: if k < grid { "grid" } else { "skirt" },
+                    },
+                );
+            }
+            elements += n;
+        }
+    }
+    assert!(elements > 10_000, "only {elements} elements compared");
+}
+
 // ── 3. The early-out, re-derived from outside ──────────────────────────────
 
 /// Whether the richness stratum refuses this cell, rebuilt from the published

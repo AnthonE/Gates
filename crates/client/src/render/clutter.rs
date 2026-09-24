@@ -124,6 +124,9 @@ pub struct ClutterRing {
     /// alpha test it does not need and tie two unrelated surfaces to one
     /// texture forever. 25 extra draws is the cheaper half of that trade.
     card_material: Option<Handle<StandardMaterial>>,
+    /// The ring's lattice memo, kept across tiles: a neighbour's quads and the
+    /// ranges' layout stay warm from one fill to the next.
+    lat: terrain::Lattice,
 }
 
 /// Tiles in a full clutter ring.
@@ -709,17 +712,17 @@ pub fn stream(
             // changes size drags its skirt with it.
             //
             // It has been in `sim-core` and gated the whole time. The native
-            // client simply never called it.
-            let grid = terrain::clutter_fill(world.seed, &world.haven, key.0, key.1, &mut buf);
-            let skirt = terrain::skirt_fill(
+            // client simply never called it. Both fill through one call so
+            // they share the tile's corner slopes (`clutter_tile_fill_memo`).
+            let n = terrain::clutter_tile_fill_memo(
+                &mut ring.lat,
                 world.seed,
                 &world.table,
                 &world.haven,
                 key.0,
                 key.1,
-                &mut buf[grid..],
+                &mut buf,
             );
-            let n = grid + skirt;
             // Two soups, because the grass wears a cutout and nothing else in
             // this file does — see `ClutterRing::card_material`. Split by
             // `masked` rather than by a list here, so a kind that changes
