@@ -81,6 +81,12 @@ pub const IMPACT_RING: usize = 8;
 /// drawing.
 pub const SWING_RING: usize = 8;
 
+/// Pack calls held between two frames (`EventMsg::Howl`). A wolf howls at
+/// most once in twenty seconds, so eight is a whole pack's worth with room.
+/// Drop-oldest, the swing ring's policy: a howl is a sound, and the newest
+/// is the one worth hearing.
+pub const HOWL_RING: usize = 8;
+
 /// The victim slot of a hitmarker that names no body.
 ///
 /// The hitmarker ring carries two facts that read identically to a player —
@@ -1472,6 +1478,10 @@ pub struct ClientCore {
     swings: [u32; SWING_RING],
     swing_head: usize,
     swing_len: usize,
+    /// Tagged roster ids of animals that howled for their pack.
+    howls: [u32; HOWL_RING],
+    howl_head: usize,
+    howl_len: usize,
     /// Grants this client earned (lock v1): address + `lock::GRANT_*`. An
     /// own-fact, and the only thing that tells a client its code landed —
     /// the door itself does not move on a correct code.
@@ -1681,6 +1691,9 @@ impl ClientCore {
             swings: [0; SWING_RING],
             swing_head: 0,
             swing_len: 0,
+            howls: [0; HOWL_RING],
+            howl_head: 0,
+            howl_len: 0,
             knock_head: 0,
             knock_len: 0,
             auths: [(0, 0, 0, 0, 0); REFUSAL_RING],
@@ -2719,6 +2732,17 @@ impl ClientCore {
                 self.swings[(self.swing_head + self.swing_len) % SWING_RING] = swinger;
                 self.swing_len += 1;
             }
+            EventMsg::Howl { mob } => {
+                // Drop-oldest, like the swing ring. An id that names an
+                // animal this client is not drawing matches nothing where
+                // the howl is voiced, which is the right sound for it.
+                if self.howl_len == HOWL_RING {
+                    self.howl_head = (self.howl_head + 1) % HOWL_RING;
+                    self.howl_len -= 1;
+                }
+                self.howls[(self.howl_head + self.howl_len) % HOWL_RING] = mob;
+                self.howl_len += 1;
+            }
             EventMsg::Knock {
                 cx,
                 cz,
@@ -3024,6 +3048,18 @@ impl ClientCore {
         self.swing_head = (self.swing_head + 1) % SWING_RING;
         self.swing_len -= 1;
         Some(s)
+    }
+
+    /// Oldest buffered pack call: the tagged roster id of the animal that
+    /// howled. Drained once a frame by `render::feed`, like every ring here.
+    pub fn pop_howl(&mut self) -> Option<u32> {
+        if self.howl_len == 0 {
+            return None;
+        }
+        let m = self.howls[self.howl_head];
+        self.howl_head = (self.howl_head + 1) % HOWL_RING;
+        self.howl_len -= 1;
+        Some(m)
     }
 
     /// Oldest buffered grant: the lock's address and what it now allows

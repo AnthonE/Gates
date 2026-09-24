@@ -182,9 +182,16 @@ const RAW_READERS: &[(&str, &str, &str)] = &[
     ),
     (
         "mob.rs",
-        "think",
-        "carve-blind: a `<= floor` beached test against sea level, and an \
-         authored site sits above `LAND_MIN_H` by its own solver's guard.",
+        "den_of",
+        "locator: picks where a pack-mate dens, round its leader's home, against \
+         the raw ground for `home_of`'s reason.",
+    ),
+    (
+        "brain.rs",
+        "far_from_home",
+        "carve-blind: the leash's `<= floor` beached test against sea level (moved \
+         here from `mob::think`), and an authored site sits above `LAND_MIN_H` by \
+         its own solver's guard.",
     ),
     (
         "survival.rs",

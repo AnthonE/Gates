@@ -946,6 +946,7 @@ pub fn voices(
     herd: Query<(&super::mobs::Animal, &Transform)>,
     eye: Res<Eye>,
     time: Res<Time>,
+    feed: Res<super::feed::Feed>,
     mut sound: ResMut<Sound>,
 ) {
     let dt = time.delta_secs();
@@ -956,6 +957,15 @@ pub fn voices(
         };
         let p = t.translation;
         let at = [p.x, p.y + super::mobs::voice_h_of(slot), p.z];
+        // A pack call the sim raised (wire v76): the howl goes up now, from
+        // this animal, and its own clock restarts so the ambient cadence
+        // does not answer it a second later. `Feed` is read, never drained
+        // — `feed::drain` is the one reader of the core's rings.
+        if feed.howls().contains(&animal.0) {
+            sound.voices.called(slot);
+            sound.play(Request::at(Cue::Howl, at));
+            continue;
+        }
         let d = [at[0] - eye.pos.x, at[1] - eye.pos.y, at[2] - eye.pos.z];
         let near = d[0] * d[0] + d[1] * d[1] + d[2] * d[2] <= switch * switch;
         let Some(cue) = sound.voices.due(slot, near, dt) else {

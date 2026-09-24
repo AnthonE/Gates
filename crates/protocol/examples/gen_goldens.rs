@@ -484,6 +484,12 @@ fn main() {
         write_fixture(goldens::FIXTURES[95], &buf[..len]);
     }
 
+    // The pack call (v76): an animal howled for its pack.
+    {
+        let len = protocol::encode_event_howl(goldens::event_howl(), &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[114], &buf[..len]);
+    }
+
     // Armor v1 (v51): the fifth container kind — the one worn rather
     // than stood in — on all three lanes it travels, plus the refusal
     // that is the only place a kind rides inside an address.
