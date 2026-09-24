@@ -71,9 +71,12 @@ pub enum AiState {
     Patrol = 7,
     /// Lying down at night: still, and noticing at half range.
     Sleep = 8,
+    /// Going to look at something heard (the reference's `MoveTowards`,
+    /// fed from its position memory).
+    MoveTowards = 9,
 }
 
-pub const AI_STATES: usize = 9;
+pub const AI_STATES: usize = 10;
 
 /// State switches one think may make — a state that finishes or fails on
 /// entry is re-ruled at once rather than standing a half-second.
@@ -122,6 +125,11 @@ pub enum Cond {
     /// A draw, percent — the reference's `Chance` event, hashed off the
     /// slot and the think so a replay rolls the same.
     Chance(u8),
+    /// A noise is remembered (`noise.rs`; the reference's
+    /// `OnPositionMemorySet`).
+    Noise,
+    /// None is.
+    Quiet,
 }
 
 /// A rule: when every condition holds, go to `to`. `forget` drops the
@@ -168,6 +176,7 @@ pub static BOAR: Design = Design {
         &[
             go(&[Target, Afraid], Flee),
             go(&[Target, Brave], Chase),
+            go(&[Noise], Flee),
             go(&[FarFromHome], NavigateHome),
             go(&[Timer, Night, Chance(40)], Sleep),
             go(&[Timer], Roam),
@@ -176,6 +185,7 @@ pub static BOAR: Design = Design {
         &[
             go(&[Target, Afraid], Flee),
             go(&[Target, Brave], Chase),
+            go(&[Noise], Flee),
             go(&[FarFromHome], NavigateHome),
             go(&[Finished], Idle),
             go(&[Failed], Idle),
@@ -194,12 +204,13 @@ pub static BOAR: Design = Design {
             go(&[NoTarget], Idle),
             go(&[OutOfReach], Chase),
         ],
-        // Flee
-        &[go(&[NoTarget], Idle)],
+        // Flee: from the target, or from the noise when there is none.
+        &[go(&[NoTarget, Quiet], Idle)],
         // NavigateHome
         &[
             go(&[Target, Afraid], Flee),
             go(&[Target, Brave], Chase),
+            go(&[Noise], Flee),
             go(&[Finished], Idle),
             go(&[Failed], Idle),
         ],
@@ -209,22 +220,31 @@ pub static BOAR: Design = Design {
         &[
             go(&[Target, Afraid], Flee),
             go(&[Target, Brave], Chase),
+            go(&[Noise], Flee),
             go(&[Finished], Idle),
             go(&[Failed], Idle),
         ],
-        // Sleep
+        // Sleep: a shot wakes it running.
         &[
             go(&[Target, Afraid], Flee),
             go(&[Target, Brave], Chase),
+            go(&[Noise], Flee),
             go(&[Timer], Idle),
+        ],
+        // MoveTowards: prey never goes to look; the row is the table's.
+        &[
+            go(&[Target], Chase),
+            go(&[Timer], Idle),
+            go(&[Finished], Idle),
         ],
     ],
 };
 
 /// The wolf, after the reference's 2024 rework: a pack hunter that runs you
 /// down, mixes charging with circling (no more than `PACK_BITERS` close in
-/// at once), circles a lit torch instead of biting through it, and waits you
-/// out on a rock until it has failed `GIVE_UP_TRIES` routes to you.
+/// at once), circles a lit torch instead of biting through it, waits you
+/// out on a rock until it has failed `GIVE_UP_TRIES` routes to you, and
+/// comes to see what a gunshot was.
 pub static WOLF: Design = Design {
     rules: [
         // Idle
@@ -233,6 +253,7 @@ pub static WOLF: Design = Design {
             go(&[Target, Fire], Orbit),
             go(&[Target], Chase),
             go(&[FarFromHome], NavigateHome),
+            go(&[Noise], MoveTowards),
             go(&[Timer], Roam),
         ],
         // Roam
@@ -241,6 +262,7 @@ pub static WOLF: Design = Design {
             go(&[Target, Fire], Orbit),
             go(&[Target], Chase),
             go(&[FarFromHome], NavigateHome),
+            go(&[Noise], MoveTowards),
             go(&[Finished], Idle),
             go(&[Failed], Idle),
             go(&[Timer], Idle),
@@ -288,6 +310,15 @@ pub static WOLF: Design = Design {
         ],
         // Sleep: a hunter does not bed down at night; the row is the table's.
         &[go(&[Target], Chase), go(&[Timer], Idle)],
+        // MoveTowards: going to look, until it finds someone or gets there.
+        &[
+            go(&[Target, Afraid], Flee),
+            go(&[Target, Fire], Orbit),
+            go(&[Target], Chase),
+            go(&[Finished], Idle),
+            go(&[Failed], Idle),
+            go(&[Timer], Idle),
+        ],
     ],
 };
 
@@ -302,6 +333,7 @@ pub static GUARD: Design = Design {
             go(&[Target, Fire], Orbit),
             go(&[Target], Chase),
             go(&[FarFromHome], NavigateHome),
+            go(&[Noise], MoveTowards),
             go(&[Timer], Patrol),
         ],
         // Roam: a guard never roams; if it ever did, it goes back on rounds.
@@ -350,11 +382,21 @@ pub static GUARD: Design = Design {
             go(&[Target, Fire], Orbit),
             go(&[Target], Chase),
             go(&[FarFromHome], NavigateHome),
+            go(&[Noise], MoveTowards),
             go(&[Finished], Idle),
             go(&[Failed], Idle),
         ],
         // Sleep: a guard does not sleep at its post.
         &[go(&[Target], Chase), go(&[Timer], Idle)],
+        // MoveTowards: to the edge of its post, toward the noise.
+        &[
+            go(&[Target, Afraid], Flee),
+            go(&[Target, Fire], Orbit),
+            go(&[Target], Chase),
+            go(&[Finished], Idle),
+            go(&[Failed], Idle),
+            go(&[Timer], Idle),
+        ],
     ],
 };
 
@@ -408,6 +450,20 @@ const FIRE_FEINT_CM: i64 = 250;
 /// A target this far under the waterline is swimming, and a wolf gives up
 /// on a swimmer at once.
 const SWIM_DEPTH_M: f32 = 0.5;
+/// Out of combat this long — not struck, nobody remembered — an animal
+/// starts to heal (the reference's reworked wolf regenerates "after a long
+/// time out of combat"). A minute, then a fortieth of its hp every think:
+/// twenty seconds from a scratch to whole.
+const HEAL_AFTER_TICKS: u64 = 1_800;
+const HEAL_PARTS: u16 = 40;
+/// How long a heard noise is remembered — how long prey keeps running from
+/// the spot and a hunter keeps meaning to look. Five seconds.
+const NOISE_MEMORY_TICKS: u64 = 150;
+/// A look lasts at most this long before it is given up. Twenty seconds.
+const LOOK_MAX_TICKS: u64 = 600;
+/// A hunter going to look stops inside this much of its leash: a guard
+/// looks from the edge of its post and does not leave it.
+const LOOK_LEASH_PCT: f32 = 0.9;
 /// A pack-mate roams within this ring round its leader.
 const PACK_ROAM_MIN_M: f32 = 3.0;
 const PACK_ROAM_SPAN_M: f32 = 7.0;
@@ -504,6 +560,8 @@ pub struct Ctx<'c, 'h, 'o> {
     pub players: &'c [Player; MAX_PLAYERS],
     /// Which players hold a lit torch this tick (`light::is_lit`).
     pub lit: &'c [bool; MAX_PLAYERS],
+    /// What there is to hear (`noise.rs`).
+    pub noises: &'c crate::noise::Noises,
     pub peers: &'c [Peer; MAX_MOBS],
     pub nav: &'c mut Nav,
     pub ground: &'c mut Ground<'h, 'o>,
@@ -527,6 +585,7 @@ pub fn think(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob, bites: &mu
 
     track_stuck(mob);
     sense(ctx, slot, def, mob);
+    heal(ctx, def, mob);
 
     // Rule on what the last think left, then run the state; a state that
     // finishes or fails on the spot is re-ruled at once, up to
@@ -576,6 +635,8 @@ fn holds(ctx: &Ctx, slot: usize, def: &MobDef, mob: &Mob, c: Cond) -> bool {
         Fire => fire(ctx, def, mob),
         GaveUp => mob.tries >= GIVE_UP_TRIES,
         Night => crate::world::is_night(tick),
+        Noise => mob.poi_until > tick,
+        Quiet => mob.poi_until <= tick,
         Chance(pct) => draw(ctx.ground.seed, slot, tick, CH_CHANCE) % 100 < pct as u64,
     }
 }
@@ -780,6 +841,15 @@ fn sense(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob) {
     if best.is_none() && !calm && def.pack_cm > 0 && !has_target(ctx, mob) {
         best = pack_call(ctx, slot, def, mob);
     }
+    // Hearing: the newest noise this animal is inside the radius of goes
+    // into position memory. A sulk hears nothing, as it sees nothing.
+    if !calm {
+        if let Some(n) = ctx.noises.heard(tick, mob.body.qx, mob.body.qz) {
+            mob.poi_qx = n.qx;
+            mob.poi_qz = n.qz;
+            mob.poi_until = tick + NOISE_MEMORY_TICKS;
+        }
+    }
     if let Some((_, t)) = best {
         if t != mob.target {
             mob.tries = 0;
@@ -818,6 +888,18 @@ fn pack_call(ctx: &Ctx, slot: usize, def: &MobDef, mob: &Mob) -> Option<(i64, u8
         }
     }
     best
+}
+
+/// Healing out of combat (`HEAL_AFTER_TICKS`): a wounded animal that got
+/// away comes back whole, and one still being hunted does not.
+fn heal(ctx: &Ctx, def: &MobDef, mob: &mut Mob) {
+    if mob.hp >= def.hp || has_target(ctx, mob) {
+        return;
+    }
+    if ctx.tick < mob.hurt_at.saturating_add(HEAL_AFTER_TICKS) {
+        return;
+    }
+    mob.hp = (mob.hp + (def.hp / HEAL_PARTS).max(1)).min(def.hp);
 }
 
 /// Stuck detection: a walker that has barely moved across a think while
@@ -882,6 +964,11 @@ fn enter(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob, to: AiState) {
         Orbit => {
             mob.state_until = tick + ORBIT_TICKS;
         }
+        MoveTowards => {
+            mob.state_until = tick + LOOK_MAX_TICKS;
+            let (x, z) = look_point(slot, def, mob);
+            walk_to(ctx, mob, x, z, WALK_STOP_CM);
+        }
         Sleep => {
             mob.gait = 0;
             mob.state_until = tick
@@ -900,7 +987,7 @@ fn run(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob, bites: &mut Bite
             mob.gait = 0;
             RUNNING
         }
-        Roam | Patrol | NavigateHome => walking(ctx, slot, def, mob),
+        Roam | Patrol | NavigateHome | MoveTowards => walking(ctx, slot, def, mob),
         Chase => chase(ctx, def, mob),
         Attack => attack(ctx, slot, def, mob, bites),
         Flee => flee(ctx, def, mob),
@@ -917,6 +1004,10 @@ fn walking(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob) -> u8 {
     }
     if mob.path.arrived && !mob.path.partial {
         mob.gait = 0;
+        if mob.state == MoveTowards {
+            // Looked: the noise is spent, or the look would start again.
+            mob.poi_until = ctx.tick;
+        }
         return FINISHED;
     }
     if !mob.path.active() {
@@ -929,6 +1020,10 @@ fn walking(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob) -> u8 {
             }
             Patrol => {
                 let (x, z) = patrol_point(slot, def, mob);
+                (x, z, WALK_STOP_CM)
+            }
+            MoveTowards => {
+                let (x, z) = look_point(slot, def, mob);
                 (x, z, WALK_STOP_CM)
             }
             _ => {
@@ -957,7 +1052,13 @@ fn walking(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob) -> u8 {
             return FAILED;
         }
     }
-    mob.gait = def.gait.min(127) as i8;
+    // A look is a jog (the fast gait without the sprint); every other walk
+    // is a walk.
+    mob.gait = if mob.state == MoveTowards {
+        def.flee_gait.min(127) as i8
+    } else {
+        def.gait.min(127) as i8
+    };
     RUNNING
 }
 
@@ -1074,13 +1175,16 @@ fn attack(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob, bites: &mut B
     RUNNING
 }
 
-/// Run to a point away from the threat, and again from there while it is
-/// still remembered. With no point to run to, straight away.
+/// Run to a point away from the threat — the target, or with none the
+/// noise that spooked it — and again from there while it is still
+/// remembered. With no point to run to, straight away.
 fn flee(ctx: &mut Ctx, def: &MobDef, mob: &mut Mob) -> u8 {
     mob.gait = run_gait(def, mob);
     let from = if has_target(ctx, mob) {
         let p = ctx.players[mob.target as usize].body;
         Some((p.qx, p.qz))
+    } else if mob.poi_until > ctx.tick {
+        Some((mob.poi_qx, mob.poi_qz))
     } else {
         None
     };
@@ -1230,6 +1334,23 @@ fn roam_point(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &Mob) -> Option<(f3
         return Some((px, pz));
     }
     None
+}
+
+/// Where a look goes: the remembered noise, pulled in to `LOOK_LEASH_PCT`
+/// of the leash round home so a hunter never walks off its range to look
+/// (and a guard looks from the edge of its post).
+fn look_point(slot: usize, def: &MobDef, mob: &Mob) -> (f32, f32) {
+    let (leash_cm, _) = leash(slot, def);
+    let lim = leash_cm as f32 * 0.01 * LOOK_LEASH_PCT;
+    let (hx, hz) = home_xz(mob);
+    let (px, pz) = (mob.poi_qx as f32 * POS_XZ_Q, mob.poi_qz as f32 * POS_XZ_Q);
+    let (dx, dz) = (px - hx, pz - hz);
+    let d2 = dx * dx + dz * dz;
+    if d2 <= lim * lim {
+        return (px, pz);
+    }
+    let k = lim / d2.sqrt();
+    (hx + dx * k, hz + dz * k)
 }
 
 /// Patrol point `mob.leg`: evenly round a ring about home, the ring's phase

@@ -39,11 +39,16 @@ const SEED: u64 = 11;
 /// leash does not walk it off before it has had a chance to sense), and
 /// calmed: no route, no timer.
 fn world_with(animals: &[(usize, f32, f32)]) -> World {
+    world_at(None, animals)
+}
+
+/// `world_with`, with the player joined at `spawn` rather than on the beach.
+fn world_at(spawn: Option<(f32, f32)>, animals: &[(usize, f32, f32)]) -> World {
     let mut w = World::new(SEED);
     w.combat = CombatContent::probe_fixture();
     w.mob = MobContent::probe_fixture();
     w.gather = GatherContent::probe_fixture();
-    w.dev_spawn = Some(w.spawn_pos(1));
+    w.dev_spawn = Some(spawn.unwrap_or_else(|| w.spawn_pos(1)));
     w.tick(&[Command::Join { id: 1 }]);
     let keep: Vec<usize> = animals.iter().map(|a| a.0).collect();
     for (i, m) in w.mobs.m.iter_mut().enumerate() {
@@ -240,4 +245,129 @@ fn a_lit_torch_keeps_a_wolf_from_biting() {
             assert!(circled, "a wolf held off by fire should circle it");
         }
     }
+}
+
+/// Planar distance², cm², from the player to a roster slot.
+fn gap2(w: &World, slot: usize) -> i64 {
+    let (m, p) = (w.mobs.m[slot].body, w.players[0].body);
+    let (dx, dz) = ((m.qx - p.qx) as i64 * 3, (m.qz - p.qz) as i64 * 3);
+    dx * dx + dz * dz
+}
+
+/// **A gunshot sends a pig running and brings a wolf to look.** Both stand
+/// well outside their notice radius (the pig's 12 m, the wolf's 30 m), so
+/// neither would ever react to a player standing still there. A shot at the
+/// player is heard inside 100 m: the pig bolts away from the spot, and the
+/// wolf jogs toward it until it notices the player and the hunt starts.
+/// The control is the same stand-off with no shot, and nobody moves toward
+/// or away on purpose.
+#[test]
+fn a_gunshot_sends_a_pig_running_and_brings_a_wolf_to_look() {
+    use sim_core::noise::{Noise, NOISE_GUN_CM};
+    let pig = {
+        let mut w = World::new(SEED);
+        w.mob = MobContent::probe_fixture();
+        w.tick(&[]);
+        first(&w, MOB_PIG)
+    };
+    let [wolf, _, _] = free_pack();
+    let shoot = |w: &mut World| {
+        let p = w.players[0].body;
+        let at = w.tick;
+        w.noises.push(Noise {
+            qx: p.qx,
+            qz: p.qz,
+            radius_cm: NOISE_GUN_CM,
+            at,
+        });
+    };
+
+    // Staged inland, at a pig's home, with each animal placed along a
+    // bearing that is dry land all the way out: the leash sends anything
+    // standing on the beach home before it will do anything else, which is
+    // a different test.
+    let w0 = {
+        let mut w = World::new(SEED);
+        w.mob = MobContent::probe_fixture();
+        w
+    };
+    let home = (
+        w0.mobs.m[pig].home_qx as f32 * POS_XZ_Q,
+        w0.mobs.m[pig].home_qz as f32 * POS_XZ_Q,
+    );
+    let inland = |r: f32| -> (f32, f32) {
+        (0..16u16)
+            .map(|k| sim_core::yaw_dir(k << 12))
+            .find(|&(dx, dz)| {
+                (1..=10).all(|i| {
+                    let t = r * i as f32 / 10.0;
+                    let (x, z) = (home.0 + dx * t, home.1 + dz * t);
+                    sim_core::terrain::height(SEED, x, z) > sim_core::terrain::BEACH_MAX_H
+                })
+            })
+            .map(|(dx, dz)| (dx * r, dz * r))
+            .expect("no dry bearing from the pig's home")
+    };
+
+    // The pig, shot at and not.
+    for shot in [true, false] {
+        let (dx, dz) = inland(40.0);
+        let mut w = world_at(Some(home), &[(pig, dx, dz)]);
+        let before = gap2(&w, pig);
+        if shot {
+            shoot(&mut w);
+        }
+        let mut fled = false;
+        hold(&mut w, 0, 4 * MOB_THINK_TICKS as u32, |w| {
+            fled |= w.mobs.m[pig].state == AiState::Flee;
+        });
+        assert_eq!(fled, shot, "shot={shot}: the pig's flight");
+        if shot {
+            assert!(
+                gap2(&w, pig) > before,
+                "a pig that heard the shot did not open distance from it"
+            );
+        }
+    }
+
+    // The wolf, shot near and not.
+    for shot in [true, false] {
+        let (dx, dz) = inland(55.0);
+        let mut w = world_at(Some(home), &[(wolf, dx, dz)]);
+        if shot {
+            shoot(&mut w);
+        }
+        let mut looked = false;
+        let mut hunted = false;
+        hold(&mut w, 0, 20 * MOB_THINK_TICKS as u32, |w| {
+            looked |= w.mobs.m[wolf].state == AiState::MoveTowards;
+            hunted |= w.mobs.m[wolf].target == 0 && w.mobs.m[wolf].roused_until > w.tick;
+        });
+        assert_eq!(looked, shot, "shot={shot}: the wolf going to look");
+        assert_eq!(hunted, shot, "shot={shot}: the look turning into a hunt");
+    }
+}
+
+/// **Out of combat, a wound heals** — after a minute unstruck with nobody
+/// remembered, and not a tick before. A pig that got away comes back
+/// whole, which is the reference's reworked wolf.
+#[test]
+fn a_wounded_animal_left_alone_heals_after_a_minute() {
+    let pig = {
+        let mut w = World::new(SEED);
+        w.mob = MobContent::probe_fixture();
+        w.tick(&[]);
+        first(&w, MOB_PIG)
+    };
+    let mut w = world_with(&[(pig, 100.0, 0.0)]);
+    let full = w.mob.def(MOB_PIG).hp;
+    w.mobs.m[pig].hp = full / 8;
+    hold(&mut w, 0, 1_700, |_| {});
+    assert_eq!(
+        w.mobs.m[pig].hp,
+        full / 8,
+        "the pig healed inside its first out-of-combat minute"
+    );
+    hold(&mut w, 0, 60 * MOB_THINK_TICKS as u32, |_| {});
+    assert_eq!(w.mobs.m[pig].hp, full, "the pig never healed back to whole");
 }

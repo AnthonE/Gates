@@ -603,6 +603,15 @@ pub struct Mob {
     pub want_yaw: u16,
     /// Which point of its rounds a guard walks to next.
     pub leg: u8,
+    /// The brain's position memory (the reference's position slots): the
+    /// last noise it heard, remembered until `poi_until`. Prey runs from
+    /// it, a hunter goes to see.
+    pub poi_qx: i32,
+    pub poi_qz: i32,
+    pub poi_until: u64,
+    /// The tick it was last struck — the out-of-combat clock its healing
+    /// runs off (`brain::heal`).
+    pub hurt_at: u64,
     /// The route being walked (`nav.rs`).
     pub path: NavPath,
     /// Awake, as of the last think tick. Recomputed there and not per
@@ -779,6 +788,7 @@ pub fn step(
     mobs: &mut Mobs,
     players: &[Player; MAX_PLAYERS],
     lit: &[bool; MAX_PLAYERS],
+    noises: &crate::noise::Noises,
     nav: &mut Nav,
     bites: &mut Bites,
 ) {
@@ -815,6 +825,7 @@ pub fn step(
                 tick,
                 players,
                 lit,
+                noises,
                 peers: &peers,
                 nav,
                 ground: &mut ground,
@@ -895,6 +906,8 @@ fn hatch(seed: u64, haven: &crate::terrain::Haven, mob: &mut Mob, def: &MobDef) 
     mob.last_qz = mob.body.qz;
     mob.stuck = 0;
     mob.want_yaw = mob.yaw;
+    mob.poi_until = 0;
+    mob.hurt_at = 0;
     mob.path.clear();
 }
 
@@ -961,6 +974,7 @@ pub fn strike_slot(
     }
     mob.target = attacker as u8;
     mob.calm_until = 0;
+    mob.hurt_at = tick;
     // EV_HIT is the attacker's own fact and the server routes it by `a`,
     // so a tagged mob id in `b` reaches the hand that swung and nothing
     // else — the hitmarker, exactly as a player hit draws it.

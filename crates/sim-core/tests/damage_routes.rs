@@ -118,6 +118,12 @@ const NOT_A_PLAYER: &[(&str, &str, &str)] = &[
         "a `MobRec` — an animal's hp. Mobs are hurt by `mob::strike`, which is \
          the roster's own business; a mob is not a player and never funnels",
     ),
+    (
+        "brain.rs",
+        "mob",
+        "a `Mob` — an animal healing out of combat (`brain::heal`). Not a \
+         player, and not damage",
+    ),
 ];
 
 /// The funnel's own write. Exactly one, and it must be inside `debit`.

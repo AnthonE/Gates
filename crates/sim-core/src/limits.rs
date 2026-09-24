@@ -1247,3 +1247,9 @@ pub const NAV_HEAP_CAP: usize = 8 * NAV_MAX_EXPAND as usize + 8;
 /// Turn points one path carries. A route with more is cut short and the
 /// animal re-plans from where the cut lands.
 pub const NAV_MAX_CORNERS: usize = 16;
+
+/// Recent noises the animals can hear (`noise.rs`). A ring: **overflow
+/// forgets the oldest**, which every animal in range has already heard or
+/// never could — a noise is only audible for one think window, and 32 is
+/// every shot a full server could fire into one window with room over.
+pub const MAX_NOISES: usize = 32;

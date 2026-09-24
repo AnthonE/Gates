@@ -1735,6 +1735,10 @@ pub struct World {
     /// neither hashed nor saved, `slot_cache`'s posture. What a search hands
     /// back lives on the mob and is hashed there.
     pub nav: Box<crate::nav::Nav>,
+    /// What the animals can hear (`noise.rs`): the last few shots, strikes
+    /// and blasts. Derived from the tick's own events — not hashed, not
+    /// saved, the event queue's posture.
+    pub noises: Box<crate::noise::Noises>,
     /// Placed building pieces — sim state, hashed.
     pub pieces: Pieces,
     /// Placed deployables + the hearth list — sim state, hashed.
@@ -1865,6 +1869,7 @@ impl World {
             // authored sites (mob.rs `home_of`).
             mobs: Box::new(mob::Mobs::new(seed, &haven)),
             nav: Box::new(crate::nav::Nav::new()),
+            noises: Box::new(crate::noise::Noises::new()),
             haven,
             gather: GatherContent::EMPTY,
             craft: CraftContent::EMPTY,
@@ -4660,6 +4665,19 @@ impl World {
         // `removals` is the same allowance the swings above just spent:
         // wall 4 does not hand out a second one because the damage arrived
         // on a timer.
+        // A fuse about to run out is heard before it is felt: the blast's
+        // noise is recorded off the charge while its address still exists.
+        for c in self.charges.entries() {
+            if c.fires_at <= tick {
+                let (x, z) = crate::build::anchor(c.cx, c.cz, c.loc);
+                self.noises.push(crate::noise::Noise {
+                    qx: crate::movement::quant_xz(x),
+                    qz: crate::movement::quant_xz(z),
+                    radius_cm: crate::noise::NOISE_BLAST_CM,
+                    at: tick,
+                });
+            }
+        }
         let mut blast_kills = crate::charge::BlastKills::new();
         crate::charge::tick_fuses(
             seed,
@@ -4714,6 +4732,7 @@ impl World {
             &mut self.mobs,
             &self.players,
             &lit,
+            &self.noises,
             &mut self.nav,
             &mut bites,
         );
@@ -5003,6 +5022,9 @@ impl World {
             }
         }
         self.rewind.write_row(self.tick, &self.players);
+        // Last, so every producer this tick has spoken: the shots and
+        // strikes the animals will hear on their next thinks.
+        self.noises.record(self.tick, &self.events, &self.players);
         self.tick += 1;
         if self.tick.is_multiple_of(STATE_HASH_INTERVAL) {
             self.last_hash = self.state_hash();
@@ -5316,6 +5338,12 @@ impl World {
             b[42] = m.path.partial as u8 | (m.path.arrived as u8) << 1;
             b[43..45].copy_from_slice(&m.path.stop_cm.to_le_bytes());
             h.update(&b);
+            let mut poi = [0u8; 24];
+            poi[0..4].copy_from_slice(&m.poi_qx.to_le_bytes());
+            poi[4..8].copy_from_slice(&m.poi_qz.to_le_bytes());
+            poi[8..16].copy_from_slice(&m.poi_until.to_le_bytes());
+            poi[16..24].copy_from_slice(&m.hurt_at.to_le_bytes());
+            h.update(&poi);
             for k in 0..m.path.len as usize {
                 h.update(&m.path.cx[k].to_le_bytes());
                 h.update(&m.path.cz[k].to_le_bytes());
