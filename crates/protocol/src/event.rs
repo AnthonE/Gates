@@ -118,7 +118,11 @@ pub const CONT_SYNC_BATCH: usize = INV_SLOTS;
 /// and no room for the unknown-subtype probe to have anything to probe.
 /// One bit on every event message, taken while the goldens were being
 /// regenerated anyway — the cheapest moment there will ever be.
-const SUB_BITS: u32 = 6;
+///
+/// Widened 6 → 7 with `PROTO_VER` 76 (the pack call) for the same reason:
+/// the howl was the 64th of the 64 a 6-bit field holds, and weather v0 had
+/// just spent 60–62.
+const SUB_BITS: u32 = 7;
 const SUB_GATHER: u32 = 0;
 const SUB_INV: u32 = 1;
 const SUB_SLOT_HARVESTED: u32 = 2;
@@ -369,7 +373,11 @@ const SUB_EXPOSURE: u32 = 61;
 /// The regrowing trees a late joiner needs (tree growth v0, wire v75):
 /// `(cx, cz, grown_at)` batches, walked after the harvested set's reset.
 const SUB_SLOT_GROW_SYNC: u32 = 62;
-const SUB_MAX: u32 = SUB_SLOT_GROW_SYNC;
+/// `EV_HOWL` (v76): a pack animal called its pack. The animal's tagged
+/// roster id and nothing else — `SUB_SWING`'s shape: where the animal is,
+/// the snapshot already says; that the call went up, only this can.
+const SUB_HOWL: u32 = 63;
+const SUB_MAX: u32 = SUB_HOWL;
 /// A grow-sync batch's count: 1..=`GROW_SYNC_BATCH` in six bits.
 const GROW_SYNC_COUNT_BITS: u32 = 6;
 /// Width of an exposure reading: per cent, 0..=100 in seven bits.
@@ -398,7 +406,7 @@ const _: () = assert!(
     SURF_KINDS <= (1 << SURF_BITS),
     "a surface kind past the field width would decode as a different one"
 );
-/// Width of `SUB_IMPACT`'s weapon-kind field (wire v76): arrow, bullet,
+/// Width of `SUB_IMPACT`'s weapon-kind field (wire v77): arrow, bullet,
 /// melee, blast — derived from the sim's own last kind, `SURF_KINDS`' way.
 const IMPACT_KIND_BITS: u32 = 2;
 const IMPACT_KINDS: u32 = sim_core::ranged::IMPACT_BLAST as u32 + 1;
@@ -1150,7 +1158,7 @@ pub enum EventMsg {
         qy: i32,
         qz: i32,
         surf: u8,
-        /// What struck it — a `sim_core::ranged::IMPACT_*` (wire v76).
+        /// What struck it — a `sim_core::ranged::IMPACT_*` (wire v77).
         kind: u8,
     },
     /// A body swung (wire v47). The swinger's entity id and nothing else:
@@ -1162,6 +1170,10 @@ pub enum EventMsg {
     /// the whiff is the commoner of the two. `EV_HIT` is the hit fact and
     /// is unicast to the attacker.
     Swing { swinger: u32 },
+    /// A pack animal howled for its pack (wire v76): its tagged roster id.
+    /// The pack answers in the sim; this is the sound, so a client can put
+    /// the howl on the animal that made it rather than on a timer.
+    Howl { mob: u32 },
     /// The feed ack: the hearth's stock rows after the transfer, aligned
     /// to the baked upkeep-material list — (item index, units, what one
     /// upkeep period charges in it). The third column is upkeep v2's
@@ -2528,6 +2540,17 @@ pub fn encode_event_swing(swinger: u32, buf: &mut [u8]) -> Result<usize, WireErr
     Ok(w.finish())
 }
 
+/// A pack animal's howl. Refuses an id that is not a roster id — a howl
+/// from a player would be a sim bug, and the wire never clamps one.
+pub fn encode_event_howl(mob: u32, buf: &mut [u8]) -> Result<usize, WireError> {
+    if sim_core::mob::slot_of_id(mob).is_none() {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_HOWL)?;
+    w.write(mob, 32)?;
+    Ok(w.finish())
+}
+
 /// The attacker's hitmarker: `damage` landed on `victim`.
 /// One standing backpack as the wire carries it: identity and where it
 /// is, nothing else. Owner, expiry and contents stay sim-side — the
@@ -3744,6 +3767,13 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
         SUB_SWING => EventMsg::Swing {
             swinger: r.read(32)?,
         },
+        SUB_HOWL => {
+            let mob = r.read(32)?;
+            if sim_core::mob::slot_of_id(mob).is_none() {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Howl { mob }
+        }
         SUB_HURT => {
             // The width and the domain are the same size today, so nothing
             // here can be out of range — and it is written as a checked read
@@ -5674,6 +5704,18 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/mob.rs"),
         },
         Module {
+            file: "brain.rs",
+            src: include_str!("../../sim-core/src/brain.rs"),
+        },
+        Module {
+            file: "nav.rs",
+            src: include_str!("../../sim-core/src/nav.rs"),
+        },
+        Module {
+            file: "noise.rs",
+            src: include_str!("../../sim-core/src/noise.rs"),
+        },
+        Module {
             file: "movement.rs",
             src: include_str!("../../sim-core/src/movement.rs"),
         },
@@ -6188,7 +6230,7 @@ mod wire_domains {
         assert_eq!(
             // 17 -> 18 at wire v59 (reload v1): `REFUSE_RL_BITS` is a
             // field width spent on `ranged::REFUSE_RL_*`, so it owes a
-            // row, and this assert is what asked for it. 18 -> 19 at v76:
+            // row, and this assert is what asked for it. 18 -> 19 at v77:
             // `IMPACT_KIND_BITS` over `ranged::IMPACT_*`.
             DOMAINS.len(),
             19,

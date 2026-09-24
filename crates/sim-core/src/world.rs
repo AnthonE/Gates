@@ -475,7 +475,7 @@ pub const EV_GATHER_REFUSED: u8 = 37;
 /// **as a signed `i32` reinterpreted** — an arrow can stop below sea level,
 /// and this is the one field in the lane that can be negative.
 ///
-/// Since wire v76 it also fires where a charge went off (`IMPACT_BLAST`), so
+/// Since wire v77 it also fires where a charge went off (`IMPACT_BLAST`), so
 /// every client in range draws the blast. A blow on flesh is still `EV_HIT`
 /// alone: a broadcast per hit is a fan-out no rank cap bounds, and the
 /// population storm (`server/tests/snapshot_budget.rs`) overflows on it.
@@ -777,6 +777,14 @@ pub const EV_RECOVERED: u8 = 45;
 /// b = wounded target id, c = elapsed ticks (0 cancels, ASSIST_TICKS completes).
 pub const EV_ASSIST: u8 = 46;
 
+/// EV_HOWL: a = the howling animal's tagged roster id (`mob::mob_id`), b
+/// and c are zero. A pack animal found someone and called its pack
+/// (`brain::sense`; the reference wolf's howl) — the pack answers off the
+/// roster, and this is the sound of it. **Broadcast to the clients that
+/// have that animal in interest**: it is a fact about a body they are
+/// drawing, and the one moment a howl means *they are coming*.
+pub const EV_HOWL: u8 = 47;
+
 /// The highest code above, named rather than counted: the event codes are
 /// `1..=EV_MAX` with no gaps, and `test_event_roles`'s coverage ledger
 /// scans that range. It lived in that test as a literal `25`, which meant a
@@ -784,7 +792,7 @@ pub const EV_ASSIST: u8 = 46;
 /// classified it. Tying it to the last constant closes half of that; the
 /// other half is the ledger's own `every_event_code_is_in_range`, which
 /// parses this file and fails if a code is declared past this line.
-pub const EV_MAX: u8 = EV_ASSIST;
+pub const EV_MAX: u8 = EV_HOWL;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -906,7 +914,7 @@ pub const DEATH_BY_MAX: u8 = DEATH_BY_COLD;
 /// clock calls this same function on the sim's own tick and stays
 /// deterministic for free.
 ///
-/// **The sim reads it now** — [`is_night`] is the door, and `mob::think`
+/// **The sim reads it now** — [`is_night`] is the door, and `brain::sense`
 /// walked through it (nocturnal senses, 2026-08-14). The bet this doc used
 /// to hedge on has been called: the curve is a divergence surface today,
 /// not just a look, which is why `is_night` exists as one comparison rather
@@ -1785,6 +1793,16 @@ pub struct World {
     /// stack-built `World`, not because it is what holds that gate up.
     /// Nothing here allocates in the tick.
     pub mobs: Box<mob::Mobs>,
+    /// The roster's path-search scratch (`nav.rs`) — **not state**: it
+    /// holds nothing between two searches (every cell is re-probed under a
+    /// fresh generation stamp) and its budget refills every tick, so it is
+    /// neither hashed nor saved, `slot_cache`'s posture. What a search hands
+    /// back lives on the mob and is hashed there.
+    pub nav: Box<crate::nav::Nav>,
+    /// What the animals can hear (`noise.rs`): the last few shots, strikes
+    /// and blasts. Derived from the tick's own events — not hashed, not
+    /// saved, the event queue's posture.
+    pub noises: Box<crate::noise::Noises>,
     /// Placed building pieces — sim state, hashed.
     pub pieces: Pieces,
     /// Placed deployables + the hearth list — sim state, hashed.
@@ -1918,6 +1936,8 @@ impl World {
             // After `haven`, because a home is rejected against the two
             // authored sites (mob.rs `home_of`).
             mobs: Box::new(mob::Mobs::new(seed, &haven)),
+            nav: Box::new(crate::nav::Nav::new()),
+            noises: Box::new(crate::noise::Noises::new()),
             haven,
             gather: GatherContent::EMPTY,
             craft: CraftContent::EMPTY,
@@ -4850,6 +4870,19 @@ impl World {
         // `removals` is the same allowance the swings above just spent:
         // wall 4 does not hand out a second one because the damage arrived
         // on a timer.
+        // A fuse about to run out is heard before it is felt: the blast's
+        // noise is recorded off the charge while its address still exists.
+        for c in self.charges.entries() {
+            if c.fires_at <= tick {
+                let (x, z) = crate::build::anchor(c.cx, c.cz, c.loc);
+                self.noises.push(crate::noise::Noise {
+                    qx: crate::movement::quant_xz(x),
+                    qz: crate::movement::quant_xz(z),
+                    radius_cm: crate::noise::NOISE_BLAST_CM,
+                    at: tick,
+                });
+            }
+        }
         let mut blast_kills = crate::charge::BlastKills::new();
         crate::charge::tick_fuses(
             seed,
@@ -4885,6 +4918,11 @@ impl World {
         // shot must resolve against where the animal ended this tick — the
         // same rule the player loop's ordering states in the comment above.
         let mut bites = mob::Bites::new();
+        let mut howls = mob::Howls::new();
+        // Who holds a lit torch, which a wolf keeps its distance from
+        // (`MobDef::fire_fear_cm`). The same predicate the light pass reads.
+        let lit: [bool; MAX_PLAYERS] =
+            core::array::from_fn(|i| crate::light::is_lit(&self.players[i], &self.gather));
         // The hour and the air an animal reads: the day clock under any
         // `/time`, and how far this weather lets it see.
         mob::step(
@@ -4903,8 +4941,15 @@ impl World {
             },
             &mut self.mobs,
             &self.players,
+            &lit,
+            &self.noises,
+            &mut self.nav,
             &mut bites,
+            &mut howls,
         );
+        for &slot in howls.entries() {
+            self.events.push(EV_HOWL, mob::mob_id(slot as usize), 0, 0);
+        }
         // The bites land after the whole roster stepped, so every animal
         // decided against one consistent tick — the borrow split `Bites`'
         // own doc names. The hp and the deaths counter go through
@@ -5191,6 +5236,9 @@ impl World {
             }
         }
         self.rewind.write_row(self.tick, &self.players);
+        // Last, so every producer this tick has spoken: the shots and
+        // strikes the animals will hear on their next thinks.
+        self.noises.record(self.tick, &self.events, &self.players);
         self.tick += 1;
         if self.tick.is_multiple_of(STATE_HASH_INTERVAL) {
             self.last_hash = self.state_hash();
@@ -5497,6 +5545,40 @@ impl World {
             buf[24..32].copy_from_slice(&m.roused_until.to_le_bytes());
             buf[32..40].copy_from_slice(&m.respawn_at.to_le_bytes());
             h.update(&buf);
+            // The brain (`brain.rs`) and the route it is walking: every
+            // field a think writes, because two shards that disagree about
+            // a state or a corner disagree about every position after it.
+            let mut b = [0u8; 48];
+            b[0] = m.state as u8;
+            b[1] = m.status;
+            b[2] = m.target;
+            b[3] = m.tries;
+            b[4] = m.stuck;
+            b[5] = m.leg;
+            b[6..8].copy_from_slice(&m.want_yaw.to_le_bytes());
+            b[8..16].copy_from_slice(&m.state_until.to_le_bytes());
+            b[16..24].copy_from_slice(&m.calm_until.to_le_bytes());
+            b[24..28].copy_from_slice(&m.last_qx.to_le_bytes());
+            b[28..32].copy_from_slice(&m.last_qz.to_le_bytes());
+            b[32..36].copy_from_slice(&m.path.goal_qx.to_le_bytes());
+            b[36..40].copy_from_slice(&m.path.goal_qz.to_le_bytes());
+            b[40] = m.path.len;
+            b[41] = m.path.next;
+            b[42] = m.path.partial as u8 | (m.path.arrived as u8) << 1;
+            b[43..45].copy_from_slice(&m.path.stop_cm.to_le_bytes());
+            h.update(&b);
+            let mut poi = [0u8; 24];
+            poi[0..4].copy_from_slice(&m.poi_qx.to_le_bytes());
+            poi[4..8].copy_from_slice(&m.poi_qz.to_le_bytes());
+            poi[8..16].copy_from_slice(&m.poi_until.to_le_bytes());
+            poi[16..24].copy_from_slice(&m.hurt_at.to_le_bytes());
+            h.update(&poi);
+            h.update(&m.howled_at.to_le_bytes());
+            h.update(&[m.ambushed as u8]);
+            for k in 0..m.path.len as usize {
+                h.update(&m.path.cx[k].to_le_bytes());
+                h.update(&m.path.cz[k].to_le_bytes());
+            }
         }
         h.update(&(self.deploys.len() as u64).to_le_bytes());
         for d in self.deploys.entries() {

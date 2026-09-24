@@ -452,7 +452,7 @@ fn the_chipping_shot_still_reports_where_it_landed() {
     );
 }
 
-/// The shooter's hitmarker for a wall is theirs alone (wire v76): an
+/// The shooter's hitmarker for a wall is theirs alone (wire v77): an
 /// `EV_HIT` addressed to them with no victim, for what the wall took — the
 /// island-wide `EV_STRUCT_HIT` is the wall's fact and lit every crosshair
 /// on the shard until this carried it instead.

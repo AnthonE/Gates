@@ -2179,7 +2179,7 @@ pub fn readout(
     let core = &net.session.core;
     // Latch on the freshness bits, never on the fields being non-zero —
     // they hold the LAST of their kind forever (`Feed::applied`'s doc).
-    // This player's own blows only (wire v76): the island-wide
+    // This player's own blows only (wire v77): the island-wide
     // `APPLIED_STRUCT_HIT` is anyone's raid anywhere.
     if feed.applied2 & client_core::core::APPLIED2_OWN_STRUCT_HIT != 0 {
         let (cx, cz, _, _, left, max) = core.own_struct_hit;

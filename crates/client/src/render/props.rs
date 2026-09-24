@@ -2623,7 +2623,7 @@ pub fn fall(
             {
                 super::fx::world::landing(
                     fx,
-                    world.seed,
+                    world,
                     t.translation,
                     fell_bearing(f.key),
                     t.scale.y,

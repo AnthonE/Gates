@@ -3,7 +3,7 @@
 //!
 //! **The gap this closes was ranked first by a judge**
 //! (`findings/pass-20260829-153230-03-judge.md`): night is a pressure the
-//! sim spends real effort on — `world::is_night` drives `mob::think`'s
+//! sim spends real effort on — `world::is_night` drives `brain::sense`'s
 //! nocturnal notice radius, `rig::day_night` takes the sun, the environment
 //! map and the sky brightness all to zero — and the starter kit has put a
 //! torch on hotbar slot 2 since the kit existed, where it did nothing at

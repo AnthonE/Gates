@@ -8,6 +8,7 @@
 pub mod assist;
 pub mod backpack;
 pub mod bots;
+pub mod brain;
 pub mod build;
 pub mod charge;
 pub mod circulation;
@@ -30,6 +31,8 @@ pub mod loot;
 pub mod melee;
 pub mod mob;
 pub mod movement;
+pub mod nav;
+pub mod noise;
 pub mod occupy;
 pub mod oven;
 pub mod persist;

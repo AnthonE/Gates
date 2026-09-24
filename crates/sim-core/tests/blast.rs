@@ -191,7 +191,7 @@ fn wait_out(w: &mut World) {
 }
 
 /// A detonation announces itself once, as a blast impact at the charge
-/// (wire v76), before the damage it does — every client in range draws the
+/// (wire v77), before the damage it does — every client in range draws the
 /// fireball and the scorch off this one fact.
 #[test]
 fn a_detonation_is_one_blast_impact_at_the_charge() {

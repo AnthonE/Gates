@@ -664,6 +664,18 @@ pub struct Mob {
     /// sim tests cannot drift apart.
     pub body_r_cm: u32,
     pub body_h_cm: u32,
+    /// The sight cone, whole degrees across (`sim-core/src/brain.rs`). A
+    /// player walking or standing is heard across the whole notice radius
+    /// from any bearing; a *crouched* one is seen only inside this cone, and
+    /// behind it not at all — the blind spot a hunter sneaks up in.
+    pub sight_deg: u32,
+    /// How far this animal answers a pack-mate that is already on a target,
+    /// metres. Zero is solitary; anything else is a pack animal, which also
+    /// takes turns closing in and circles while it waits.
+    pub pack_m: u32,
+    /// A target holding a lit torch inside this many metres is circled
+    /// rather than bitten. Zero fears nothing.
+    pub fire_fear_m: u32,
     /// What the killing blow pays. Straight into the killer's inventory
     /// (`mob::strike`), so these are stacks and not a weighted table —
     /// butchering an animal is not opening a barrel.

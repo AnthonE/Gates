@@ -129,6 +129,17 @@ respawn_seconds = 300
 body_r_cm = 55
 body_h_cm = 78
 
+# **The brain's senses** (`sim-core/src/brain.rs`, the reference's
+# `AIBrainSenses`). A player walking or standing is heard across the whole
+# spook radius from any bearing; a crouched one is seen only inside a
+# 240° cone, at half the radius, and behind it not at all. That 120° blind
+# spot is the reference's "sneak up from behind" (reference/ANIMALS.md
+# §2): crouch in from the back and a pig is yours to swing at.
+sight_deg = 240
+# Solitary: a pig answers no pack-mate and fears no torch.
+pack_m = 0
+fire_fear_m = 0
+
 # What the corpse holds. The kill stands these rows up as a ground bag at
 # the death position (`mob::strike` → `backpack::stand_up`) — the killer
 # walks over and loots it with E like any bag; nothing is paid into an
@@ -262,6 +273,23 @@ respawn_seconds = 300
 # 1.6 m long and 0.85 m high on the client (`render/mobs.rs` WOLF_LEN_M / WOLF_H_M).
 body_r_cm = 60
 body_h_cm = 85
+
+# The pig's cone: a wolf's eyes face forward, and the blind spot is the
+# same crouch-in-from-behind a hunter uses on prey.
+sight_deg = 240
+
+# **A pack animal** (the reference's 2024 wolf). A wolf with nobody in its
+# own senses answers a pack-mate on a target inside 40 m — its howl — so a
+# pack arrives together. Free wolves den in threes (`mob::PACK_SIZE`) and
+# the guards on one post are a pack already. No more than two close in on
+# one player at a time (`brain::PACK_BITERS`); the rest circle at 7 m and
+# rush the gap.
+pack_m = 40
+
+# A lit torch inside 8 m holds a wolf off: it circles at the edge of the
+# light instead of biting (the reference's wolves keep off fire). What it
+# costs the player is the hand the torch is in.
+fire_fear_m = 8
 
 # **It pays less than the pig, and that is the reference's own shape** —
 # their boar is the fat-and-cloth animal and their wolf is not. The point

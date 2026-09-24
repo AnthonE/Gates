@@ -643,7 +643,7 @@ fn the_pool_empties_on_the_way_out() {
     assert_eq!(p.bursts, 0);
 }
 
-/// The wire names what struck (v76), and the client reads it straight.
+/// The wire names what struck (v77), and the client reads it straight.
 #[test]
 fn the_wire_names_the_weapon() {
     use client::render::impact::{weapon_of, Weapon};

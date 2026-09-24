@@ -40,7 +40,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 114] = [
+pub const FIXTURES: [&str; 115] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -212,6 +212,8 @@ pub const FIXTURES: [&str; 114] = [
     "event_env.bin",
     "event_exposure.bin",
     "event_slot_grow_sync.bin",
+    // The pack call (v76). Appended.
+    "event_howl.bin",
 ];
 
 /// The sky/clock event: a storm forced mid-fade, the clock pushed to dusk.
@@ -1738,6 +1740,12 @@ pub fn event_impact() -> (i32, i32, i32, u8, u8) {
 /// this lane's failures are positional, not arithmetic.
 pub fn event_swing() -> u32 {
     0x5A3C_91E7
+}
+
+/// A howl from roster slot 37 — a tagged id, so the fixture carries the
+/// tag bit the decoder insists on.
+pub fn event_howl() -> u32 {
+    sim_core::limits::MOB_ID_TAG | 37
 }
 
 /// Opening a **world container** (wire v37) — the fourth kind, and the

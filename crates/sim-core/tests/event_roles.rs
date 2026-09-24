@@ -97,9 +97,9 @@ use sim_core::world::{
     Command, SimEvent, World, DEATH_BY_MAX, EV_ASSIST, EV_AUTH, EV_BAG_DROPPED, EV_BAG_REMOVED,
     EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE,
     EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
-    EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_HURT, EV_IMPACT, EV_KNOCK,
-    EV_KNOWN, EV_MAX, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED,
-    EV_PIECE_REPAIRED, EV_RECOVERED, EV_RELOAD, EV_RELOAD_REFUSED, EV_RESEARCH,
+    EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_HOWL, EV_HURT, EV_IMPACT,
+    EV_KNOCK, EV_KNOWN, EV_MAX, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED,
+    EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RECOVERED, EV_RELOAD, EV_RELOAD_REFUSED, EV_RESEARCH,
     EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK,
     EV_STRUCT_HIT, EV_SWING, EV_TRUST, EV_VITALS, EV_WEAK_MARK, EV_WOUNDED, PRESENCE_ASLEEP,
     PRESENCE_AWAKE, PRESENCE_GONE, PRESENCE_MAX, STRUCT_DEPLOY_BIT, TRUST_AUTH, TRUST_CONT,
@@ -3996,6 +3996,68 @@ fn swing_names_the_swinger_and_nothing_else() {
     assert_eq!(got.c, 0, "EV_SWING.c is reserved and must stay zero");
 }
 
+/// **A pack call names the animal that howled, and nothing else.** A free
+/// wolf — a pack's leader, so it has a pack to call — alone with a player
+/// ten metres off notices them on its first think and howls. `a` is its
+/// tagged roster id (never a player's: the tag bit is asserted), and `b`
+/// and `c` are zero, the room the fact has for more later.
+#[test]
+fn howl_names_the_animal_that_called_its_pack() {
+    use sim_core::limits::{MAX_MOBS, MOB_ID_TAG, MOB_THINK_TICKS};
+    use sim_core::mob::{self, MobContent};
+    use sim_core::movement::{Body, POS_XZ_Q};
+    let mut w = lone_world();
+    w.mob = MobContent::probe_fixture();
+    w.tick(&[]);
+    let slot = (0..MAX_MOBS)
+        .find(|&s| mob::pack_leader_of(s) == Some(s) && w.mobs.m[s].alive)
+        .expect("a free wolf leads a pack");
+    for (i, m) in w.mobs.m.iter_mut().enumerate() {
+        if i != slot {
+            m.alive = false;
+        }
+    }
+    let p = w
+        .players
+        .iter()
+        .find(|p| p.active && p.id == BODY)
+        .expect("the body joined")
+        .body;
+    let (px, pz) = (p.qx as f32 * POS_XZ_Q, p.qz as f32 * POS_XZ_Q);
+    let haven = w.haven;
+    let m = &mut w.mobs.m[slot];
+    m.body = Body::at(SEED, &haven, px + 10.0, pz);
+    m.home_qx = m.body.qx;
+    m.home_qz = m.body.qz;
+
+    let mut steps = 0u64;
+    loop {
+        w.tick(&[]);
+        if count(&w, EV_HOWL) > 0 {
+            break;
+        }
+        steps += 1;
+        assert!(
+            steps <= 2 * MOB_THINK_TICKS,
+            "no EV_HOWL within two think cycles of a wolf ten metres from a \
+             player — the call is broken, not slow"
+        );
+    }
+    let got = only(&w, EV_HOWL);
+    assert_eq!(
+        got.a,
+        mob::mob_id(slot),
+        "EV_HOWL.a is the animal that howled"
+    );
+    assert_ne!(
+        got.a & MOB_ID_TAG,
+        0,
+        "EV_HOWL.a is a roster id, never a player's"
+    );
+    assert_eq!(got.b, 0, "EV_HOWL.b is reserved and must stay zero");
+    assert_eq!(got.c, 0, "EV_HOWL.c is reserved and must stay zero");
+}
+
 /// Coverage, stated rather than implied — and now earned rather than
 /// asserted.
 ///
@@ -4025,7 +4087,7 @@ fn swing_names_the_swinger_and_nothing_else() {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 46] = [
+    const COVERED: [(&str, u8); 47] = [
         ("EV_GATHER", EV_GATHER),
         ("EV_GATHER_REFUSED", EV_GATHER_REFUSED),
         ("EV_SLOT_HARVESTED", EV_SLOT_HARVESTED),
@@ -4072,6 +4134,7 @@ fn coverage_is_stated_not_implied() {
         ("EV_WOUNDED", EV_WOUNDED),
         ("EV_RECOVERED", EV_RECOVERED),
         ("EV_ASSIST", EV_ASSIST),
+        ("EV_HOWL", EV_HOWL),
     ];
     /// What is knowingly still byte-golden only: nothing, since the last
     /// five landed. The seat stays — named, not just counted — so the next

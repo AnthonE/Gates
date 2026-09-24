@@ -185,15 +185,20 @@ pub fn built(
 
 /// A felled trunk hitting the ground: dust along its length where it lands
 /// and needles thrown off the crown. `base` is where it stood, `bearing` the
-/// way it fell (`props::fell_bearing`), `scale` its drawn size.
-pub fn landing(fx: &mut Fx, seed: u64, base: Vec3, bearing: f32, scale: f32, eye: Vec3) {
+/// way it fell (`props::fell_bearing`), `scale` its drawn size. On the
+/// graded ground the trunk is drawn lying on (`terrain::ground`), never the
+/// raw heightfield.
+pub fn landing(fx: &mut Fx, world: &WorldId, base: Vec3, bearing: f32, scale: f32, eye: Vec3) {
     let k = lod(base.distance(eye));
     if k <= 0.0 {
         return;
     }
     let dir = Vec3::new(bearing.sin(), 0.0, bearing.cos());
     let len = super::super::props::PINE_H * scale;
-    let ground = |p: Vec3| Vec3::new(p.x, sim_core::terrain::height(seed, p.x, p.z) + 0.1, p.z);
+    let ground = |p: Vec3| {
+        let y = sim_core::terrain::ground(world.seed, &world.haven, p.x, p.z);
+        Vec3::new(p.x, y + 0.1, p.z)
+    };
     for i in 1..=5 {
         let at = ground(base + dir * (len * i as f32 / 6.0));
         emit(

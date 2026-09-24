@@ -48,8 +48,8 @@ use sim_core::world::{
     Command, Player, World, DEATH_BY_CLOCK, EV_ASSIST, EV_AUTH, EV_BAG_DROPPED, EV_BAG_REMOVED,
     EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE,
     EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
-    EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_HURT, EV_IMPACT, EV_KNOCK,
-    EV_KNOWN, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED,
+    EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_HOWL, EV_HURT, EV_IMPACT,
+    EV_KNOCK, EV_KNOWN, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED,
     EV_PIECE_REPAIRED, EV_RECOVERED, EV_RELOAD, EV_RELOAD_REFUSED, EV_RESEARCH,
     EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK,
     EV_STRUCT_HIT, EV_SWING, EV_VITALS, EV_WEAK_MARK, EV_WOUNDED, STRUCT_DEPLOY_BIT,
@@ -2434,6 +2434,38 @@ impl ShardCore {
                                     continue;
                                 }
                                 if !self.body_event_visible(slot, ev.a, sw) {
+                                    ShardStats::bump(&stats.ev_interest_skipped);
+                                    continue;
+                                }
+                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                    ShardStats::bump(&stats.ev_sent);
+                                } else {
+                                    self.clients[slot].ev_resync();
+                                    ShardStats::bump(&stats.ev_resyncs);
+                                }
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_HOWL => {
+                    // A pack call, to the clients drawing the animal that
+                    // made it: the roster's own interest set (`m_interest`),
+                    // which is the audience a snapshot of that animal has.
+                    // Before a client's interest has settled it hears every
+                    // howl, the fail-open every broadcast arm here takes.
+                    let Some(s) = mob::slot_of_id(ev.a) else {
+                        ShardStats::bump(&stats.encode_range_errors);
+                        continue;
+                    };
+                    match protocol::encode_event_howl(ev.a, &mut self.ev_buf) {
+                        Ok(len) => {
+                            for slot in 0..MAX_PLAYERS {
+                                if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if self.interest_settled(slot) && !self.clients[slot].m_interest[s]
+                                {
                                     ShardStats::bump(&stats.ev_interest_skipped);
                                     continue;
                                 }

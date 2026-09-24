@@ -831,7 +831,7 @@ pub fn weapon_of(kind: u8) -> Weapon {
 ///
 /// Reads `Res<Feed>` and never `pop_*`, for the single-drain reason
 /// `feed.rs`'s header narrates and `tests/sound.rs` greps for. Where, what
-/// struck and what was struck are the sim's (`EV_IMPACT`, wire v76 — blasts
+/// struck and what was struck are the sim's (`EV_IMPACT`, wire v77 — blasts
 /// included); the facing and the matter are `surface`'s. A blow on a body is
 /// `EV_HIT`, the attacker's own fact, so blood is drawn by the hand that
 /// landed it, at the body it drew.

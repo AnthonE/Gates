@@ -1395,7 +1395,7 @@ pub fn swap(
 /// **Night had no counter before this.** `rig::day_night` takes the sun to
 /// zero illuminance, kills the environment map and the sky brightness, and
 /// leaves `NIGHT_AMBIENT_LUX` — 60 lux of direction-free ambient — as the
-/// entire lighting of a tenth of every cycle, while `mob::think` sends the
+/// entire lighting of a tenth of every cycle, while `brain::sense` sends the
 /// wolves out into it. The starter kit has put a torch on hotbar slot 2
 /// since the kit existed (`content/balance.toml`), and holding it did
 /// nothing at all.
