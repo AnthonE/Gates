@@ -74,5 +74,8 @@ fn fragment(in: VertexOut) -> @location(0) vec4<f32> {
         let fade = clamp((d.y - stars.deck.y) / stars.deck.z, 0.0, 1.0);
         clear = 1.0 - clamp((f - stars.cloud.z) / stars.cloud.w, 0.0, 1.0) * fade;
     }
-    return vec4(in.light * spot * clear, 1.0);
+    // Alpha zero: `AlphaMode::Add` blends premultiplied (`One,
+    // OneMinusSrcAlpha`), so any alpha here would erase the sky behind the
+    // quad — black corners round every star, black specks in the cloud.
+    return vec4(in.light * spot * clear, 0.0);
 }
