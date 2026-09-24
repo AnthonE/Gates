@@ -432,6 +432,22 @@ impl Ring {
     pub fn len(&self) -> usize {
         self.built.len()
     }
+
+    /// Soak the island's ground to `wet` (`0..1`, weather v0): the near and
+    /// far ground materials' `identity[0].w`. Writes only when the value
+    /// moved, since a write re-uploads the material.
+    pub fn set_rain_wet(&self, materials: &mut Assets<GroundMaterial>, wet: f32) {
+        for h in [&self.ground, &self.far_ground].into_iter().flatten() {
+            let changed = materials
+                .get(h)
+                .is_some_and(|m| m.extension.params.identity[0].w != wet);
+            if changed {
+                if let Some(m) = materials.get_mut(h) {
+                    m.extension.params.identity[0].w = wet;
+                }
+            }
+        }
+    }
     pub fn is_empty(&self) -> bool {
         self.built.is_empty()
     }

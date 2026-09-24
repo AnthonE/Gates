@@ -34,6 +34,11 @@ pub struct ShardConfig {
     /// "dev spawn override"). Unset is the shipping default; never set it
     /// on a public shard — every joiner lands on the same point.
     pub dev_spawn: Option<(f32, f32)>,
+    /// Dev-only sky and clock at boot, `/weather` and `/time` without an
+    /// admin wallet: `dev_env = "storm,midnight"`, either half optional.
+    /// Queued as the same `Command::AdminEnv` the admin lane mints, so it
+    /// replays. `(weather code or KEEP_WEATHER, time per mille or KEEP_TIME)`.
+    pub dev_env: Option<(u8, u16)>,
     /// Dev-only fake network: `"lat_ms,jitter_ms,loss_pct"` — e.g.
     /// `netsim = "30,10,1"` for a 60 ms-RTT-shaped link with a percent of
     /// loss, applied to BOTH datagram lanes (C→S inputs and S→C
@@ -273,6 +278,7 @@ impl ShardConfig {
             congestion: Congestion::Cubic,
             seed,
             dev_spawn: None,
+            dev_env: None,
             dev_spawn_kit: None,
             netsim: None,
             cert_pem: None,
@@ -325,6 +331,28 @@ pub fn parse_min_client(s: &str) -> Result<u32, String> {
     Ok(protocol::version::pack(got[0], got[1], got[2]))
 }
 
+/// `dev_env`'s value: comma parts, each a `/weather` or a `/time` word, read
+/// by the admin lane's own parser so the two cannot spell a sky twice.
+fn parse_dev_env(value: &str) -> Option<(u8, u16)> {
+    use protocol::admin::{parse, AdminCmd};
+    let (mut weather, mut time) = (
+        sim_core::weather::KEEP_WEATHER,
+        sim_core::weather::KEEP_TIME,
+    );
+    for part in value.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        let as_line = |verb: &str| {
+            protocol::ChatText::sanitize(format!("/{verb} {part}").as_bytes())
+                .and_then(|t| parse(&t))
+        };
+        match (as_line("weather"), as_line("time")) {
+            (Some(AdminCmd::Weather { mode }), _) => weather = mode,
+            (_, Some(AdminCmd::Time { frac_pm })) => time = frac_pm,
+            _ => return None,
+        }
+    }
+    Some((weather, time))
+}
+
 /// Parse `key = value` lines; `#` comments and blanks skipped; string
 /// values may be double-quoted. Refuses unknown keys, missing keys, and
 /// unparseable values.
@@ -332,6 +360,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut bind: Option<SocketAddr> = None;
     let mut seed: Option<u64> = None;
     let mut dev_spawn: Option<(f32, f32)> = None;
+    let mut dev_env: Option<(u8, u16)> = None;
     let mut dev_spawn_kit: Option<Vec<(String, u32)>> = None;
     let mut netsim: Option<NetSim> = None;
     let mut min_client: Option<u32> = None;
@@ -406,6 +435,12 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
             // an id exists and that a count fits its stack are questions
             // for the loaded content, and this function has none
             // (`dev_spawn_kit`, below, is where the boot asks them).
+            "dev_env" => {
+                dev_env = Some(
+                    parse_dev_env(value)
+                        .ok_or_else(|| format!("shard.toml line {}: dev_env wants \"<weather>,<time>\" (e.g. \"storm,midnight\")", n + 1))?,
+                );
+            }
             "netsim" => {
                 // `dev_spawn`'s comma-string shape, inherited on purpose —
                 // this parser is one `key = value` per line, not TOML, so
@@ -747,6 +782,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         bind: bind.ok_or("shard.toml: missing `bind`")?,
         seed: seed.ok_or("shard.toml: missing `seed`")?,
         dev_spawn,
+        dev_env,
         dev_spawn_kit,
         netsim,
         cert_pem,

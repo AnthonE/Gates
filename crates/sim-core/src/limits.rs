@@ -1152,7 +1152,12 @@ pub const MOB_ID_TAG: u32 = 0x8000_0000;
 /// No overflow policy: it is a cadence, not a queue.
 pub const MOB_THINK_TICKS: u64 = 15;
 
-/// One full day/night cycle, in ticks — 45 minutes at `TICK_HZ`
+/// How often a body's wet and cold are stepped, ticks: once a second,
+/// phase-offset by slot so a hundred bodies do not all take the heat scan on
+/// one tick (weather v0, `exposure.rs`). A cadence, not a queue.
+pub const EXPOSURE_PERIOD_TICKS: u64 = 30;
+
+/// One full day/night cycle, in ticks — 80 minutes at `TICK_HZ`
 /// (`ALPHA.md` §1's knob; day/night v0, `DECISIONS.md` §open).
 ///
 /// **Time of day is a pure function of the tick, and that is the design,
@@ -1161,9 +1166,9 @@ pub const MOB_THINK_TICKS: u64 = 15;
 /// it (`client-core/clock.rs`), so shipping a second field would be
 /// redundant bytes carrying a derivable number — `NETCODE.md` §3's "time
 /// of day rides the G channel" is satisfied by the tick itself plus this
-/// constant. What the choice costs is a set-time admin verb: with no
-/// offset field anywhere, shifting the clock means shifting the tick,
-/// which nothing may do. That is a wire field away if ever wanted.
+/// constant. The set-time admin verb this used to cost arrived with
+/// weather v0 as that one field: `weather::Env::day_offset`, which every
+/// reader of the hour adds through `weather::day_tick`.
 pub const DAY_TICKS: u64 = 144_000;
 
 /// Phase offset into the cycle at tick zero, so a fresh world — and every

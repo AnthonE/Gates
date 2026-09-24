@@ -753,6 +753,8 @@ pub fn step(
     seed: u64,
     haven: &crate::terrain::Haven,
     tick: u64,
+    day_tick: u64,
+    sense_pm: u32,
     mc: &MobContent,
     cols: &ColIndex,
     occ: &mut Occupants,
@@ -781,7 +783,9 @@ pub fn step(
         // The think tick, phase-offset by slot: `MAX_MOBS / MOB_THINK_TICKS`
         // animals decide on any given tick and the rest only integrate.
         if tick % MOB_THINK_TICKS == (slot as u64) % MOB_THINK_TICKS {
-            think(seed, tick, slot, &def, mob, players, bites);
+            think(
+                seed, tick, day_tick, sense_pm, slot, &def, mob, players, bites,
+            );
         }
         if !mob.awake {
             continue;
@@ -820,9 +824,12 @@ fn hatch(seed: u64, haven: &crate::terrain::Haven, mob: &mut Mob, def: &MobDef) 
 
 /// One decision. Everything an animal chooses is chosen here, on the think
 /// tick, and the ticks in between only integrate what this left behind.
+#[allow(clippy::too_many_arguments)]
 fn think(
     seed: u64,
     tick: u64,
+    day_tick: u64,
+    sense_pm: u32,
     slot: usize,
     def: &MobDef,
     mob: &mut Mob,
@@ -849,7 +856,9 @@ fn think(
     // off — it stops feeding it, and `flee_ticks` finishes what daylight
     // started.
     if let Some((d2, _, _, _)) = near {
-        let spook_cm = def.spook_at(tick);
+        // The hour's radius (`/time` moves the hour), shrunk by fog and
+        // rain the way the dark already shrinks it (weather v0).
+        let spook_cm = def.spook_at(day_tick) * sense_pm as i64 / 1000;
         if d2 <= spook_cm * spook_cm {
             mob.roused_until = tick + def.flee_ticks as u64;
         }

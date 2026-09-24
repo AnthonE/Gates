@@ -1,6 +1,6 @@
 # The wasm shadow stack, stated rather than defaulted.
 #
-# `World` is 59 kB — fixed-capacity by design (wall 4), and
+# `World` is 60 kB — fixed-capacity by design (wall 4), and
 # (55 kB until ring path v0 put the solved coast ring on `Haven`: 256
 # bearings x one f32 radius = 1 kB, the price of the ring being a stored
 # path instead of a predicate. `ring_band` reads it and spends no `height`

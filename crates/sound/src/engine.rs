@@ -127,8 +127,8 @@ pub const VOICE_SLACK_FRAMES: usize = 4;
 pub const VOICE_SLOTS: usize = 40;
 const _: () = assert!(VOICE_SLOTS == VOICE_CAP + STARTS_PER_FRAME * VOICE_SLACK_FRAMES);
 
-/// Held slots for the beds: wind, surf, submerged, one each.
-pub const HELD_BEDS: usize = 3;
+/// Held slots for the beds: wind, surf, submerged, rain, one each.
+pub const HELD_BEDS: usize = 4;
 /// Held slots for music: consecutive pieces overlap by
 /// `PIECE_S − SECTION_S` (2.5 s) → 2; a menu transition adds an orphan fading
 /// over the client's `MUSIC_FADE_S` → 3; one spare.
@@ -136,7 +136,7 @@ pub const HELD_MUSIC: usize = 4;
 /// All held slots. A `slot` byte in a [`Cmd`] is an index below this; which
 /// slots are beds and which are music is the game thread's convention
 /// ([`HELD_BEDS`] first), not a rule the renderer enforces.
-pub const HELD: usize = 7;
+pub const HELD: usize = 8;
 const _: () = assert!(HELD == HELD_BEDS + HELD_MUSIC);
 
 /// The renderer's own command queue, filled by [`Renderer::push`] between

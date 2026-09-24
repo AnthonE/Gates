@@ -225,7 +225,7 @@ pub fn setup(
             // the grade applied after — are one nested tuple, which is also the
             // grouping `ART.md` rule 5 describes: one owner for the transfer.
             (
-                Exposure { ev100: 14.2 },
+                Exposure { ev100: DAY_EV100 },
                 // Chosen by measurement in a later slice, not by name (`RENDER.md`
                 // §4 R2/R5). TonyMcMapface is Bevy's default and is neutral with a
                 // gentle roll-off; what it is NOT is the browser's Khronos PBR
@@ -425,6 +425,14 @@ pub fn setup(
     // dims it with the deck.
     #[cfg(target_arch = "wasm32")]
     commands.entity(eye).insert(super::sky::browser_haze(1.0));
+    // The desktop's weather fog, inserted ONCE at zero density rather than
+    // added when it first rains: `DistanceFog` is a shader variant, and
+    // adding or removing it re-specializes every pipeline mid-frame.
+    // `day_night` owns its fields from here (weather v0).
+    #[cfg(not(target_arch = "wasm32"))]
+    commands
+        .entity(eye)
+        .insert(super::sky::weather_fog(1.0, 0.0, 0.0));
 
     commands.spawn((
         super::WorldEntity,
@@ -458,7 +466,7 @@ pub fn setup(
         // photographs with a real camera's flare and glare, and the disk is
         // what bloom has to work on.
         SunDisk {
-            intensity: 1.6,
+            intensity: SUN_DISK_INTENSITY,
             ..SunDisk::EARTH
         },
         Transform::from_rotation(sun_rotation()),
@@ -626,6 +634,71 @@ pub fn daylight(frac: f32) -> f32 {
     (sun_elevation(frac).sin() / RIG_SUN_ELEVATION.sin()).clamp(0.0, 1.0)
 }
 
+/// The share of full sun the light keeps at the horizon, and how far below
+/// it the tail fades to nothing (weather v0's twilight). `daylight` reaches
+/// exactly zero as the sun touches the horizon, and the atmosphere is lit
+/// by that same light — so the sky went black the moment the sun set and
+/// dusk never glowed. The tail keeps a little sun for the sky to scatter
+/// until the sun is ~6° down.
+pub const TWILIGHT_TAIL: f32 = 0.04;
+pub const TWILIGHT_DEPTH: f32 = 0.10;
+/// The lowest the light is ever pointed while the tail is lit, radians:
+/// half a degree up. A light below the horizon would reach the faces a
+/// hill hides, lit from underneath; this one grazes and nothing more.
+pub const TWILIGHT_MIN_ELEV: f32 = 0.009;
+/// Below this the sun casts no shadow (2°): shadows that long are noise.
+pub const SHADOW_MIN_ELEV: f32 = 0.035;
+/// `SunDisk::intensity` at full visibility.
+pub const SUN_DISK_INTENSITY: f32 = 1.6;
+/// Ambient added at the peak of a lightning flash, lux.
+pub const FLASH_LUX: f32 = 2_500.0;
+/// The exposure every sunlit frame is judged at (the camera's spawn has the
+/// measurement).
+pub const DAY_EV100: f32 = 14.2;
+/// How far the exposure opens while the sun is low, stops (weather v0).
+///
+/// The light model gives a sun 2.5° up a thirteenth of noon's light, and
+/// against the fixed exposure that read as night: sunset was the lights
+/// going out, twenty minutes early. An eye opens at dusk. This opens by
+/// about what a photographer would at sunset, and is shut again by 15° up
+/// and by 7° down — so noon, and the night `NIGHT_AMBIENT_LUX` was tuned
+/// against, are exactly what they were.
+pub const TWILIGHT_OPEN_STOPS: f32 = 2.5;
+
+/// The camera's exposure at a point in the cycle, ev100: [`DAY_EV100`],
+/// opened by [`TWILIGHT_OPEN_STOPS`] around sunrise and sunset.
+pub fn exposure_ev100(frac: f32) -> f32 {
+    let e = sun_elevation(frac);
+    // Fully open from ~1.7° down to ~3.4° up.
+    let rise = ((0.26 - e) / 0.20).clamp(0.0, 1.0);
+    let set = ((e + 0.12) / 0.09).clamp(0.0, 1.0);
+    let s = rise.min(set);
+    DAY_EV100 - TWILIGHT_OPEN_STOPS * s * s * (3.0 - 2.0 * s)
+}
+
+/// The sun's light as a share of full daylight: `daylight`, with the
+/// twilight tail under it.
+pub fn sun_lux(frac: f32) -> f32 {
+    let e = sun_elevation(frac);
+    let t = (1.0 + e / TWILIGHT_DEPTH).clamp(0.0, 1.0);
+    daylight(frac).max(TWILIGHT_TAIL * t * t)
+}
+
+/// The light's rotation as drawn: [`sun_rotation_at`], except that while
+/// the twilight tail is lit the light never points from below
+/// [`TWILIGHT_MIN_ELEV`]. Under the tail (deep dusk, the night) the light
+/// is dark and points where the sun is.
+pub fn sun_rotation_render(frac: f32) -> Quat {
+    let e = sun_elevation(frac);
+    if e < TWILIGHT_MIN_ELEV && e > -TWILIGHT_DEPTH {
+        Transform::default()
+            .looking_at(-to_sun_at(TWILIGHT_MIN_ELEV, sun_azimuth(frac)), Vec3::Y)
+            .rotation
+    } else {
+        sun_rotation_at(frac)
+    }
+}
+
 // ── The capture probe's clock (capture clock v0 — DECISIONS.md §open) ────
 
 /// The tick whose [`sim_core::world::day_frac`] is `want` — the inverse of
@@ -677,10 +750,25 @@ impl DayPin {
         Self(Some(tick_at_frac(CAPTURE_DAY_FRAC)))
     }
 
+    /// A capture pinned to another hour (`--hour`), as a day fraction.
+    pub fn capture_at(frac: f32) -> Self {
+        Self(Some(tick_at_frac(frac.clamp(0.0, 0.9999))))
+    }
+
     /// The tick to read the hour from. Every clock consumer in the renderer
     /// goes through here.
     pub fn tick(&self, server_tick_est: f64) -> u64 {
         self.0.unwrap_or_else(|| server_tick_est.max(0.0) as u64)
+    }
+
+    /// The tick the day clock reads: [`Self::tick`] moved by any `/time`
+    /// (`weather::day_tick`). A pinned probe ignores the offset — its hour
+    /// is the pin's, whatever the shard's clock was pushed to.
+    pub fn day_tick(&self, server_tick_est: f64, env: &sim_core::weather::Env) -> u64 {
+        match self.0 {
+            Some(t) => t,
+            None => sim_core::weather::day_tick(self.tick(server_tick_est), env),
+        }
     }
 }
 
@@ -692,26 +780,40 @@ type CamLight = (
     &'static mut EnvironmentMapLight,
     Option<&'static mut Skybox>,
     Option<&'static mut DistanceFog>,
+    Option<&'static mut Exposure>,
 );
 
-/// Drive the rig from the server's clock. Runs every frame; the queries
-/// are empty until `setup` has spawned the rig, which makes the system a
-/// no-op on every screen that is not the world.
+/// Drive the rig from the server's clock and the weather. Runs every
+/// frame; the queries are empty until `setup` has spawned the rig, which
+/// makes the system a no-op on every screen that is not the world.
+///
+/// **Still the one writer** of the sun, the fills, the deck's brightness,
+/// the fog and the exposure. The weather (weather v0) arrives as one more input:
+/// `WeatherNow`, absent in the headless fixtures, where the frame is the
+/// clear one this rig always drew.
 pub fn day_night(
     feed: Res<super::feed::Feed>,
     pin: Res<DayPin>,
     settings: Res<super::Settings>,
-    mut sun: Query<(&mut Transform, &mut DirectionalLight), With<Sun>>,
+    weather: Option<Res<super::weather::WeatherNow>>,
+    mut sun: Query<(&mut Transform, &mut DirectionalLight, Option<&mut SunDisk>), With<Sun>>,
     mut cam: Query<CamLight, With<EyeCam>>,
 ) {
-    let frac = sim_core::world::day_frac(pin.tick(feed.server_tick_est));
+    let frac = sim_core::world::day_frac(pin.day_tick(feed.server_tick_est, &feed.env));
     let light = daylight(frac);
-    if let Ok((mut t, mut d)) = sun.single_mut() {
-        t.rotation = sun_rotation_at(frac);
-        d.illuminance = lux::DIRECT_SUNLIGHT * light;
+    let lux_share = sun_lux(frac);
+    let elev = sun_elevation(frac);
+    let w = weather.as_deref().copied().unwrap_or_default();
+    let occ = w.occlusion();
+    if let Ok((mut t, mut d, disk)) = sun.single_mut() {
+        t.rotation = sun_rotation_render(frac);
+        // The twilight tail lights the sky after sunset; cloud takes the
+        // direct sun away and leaves a tenth of it through a full overcast.
+        d.illuminance = lux::DIRECT_SUNLIGHT * lux_share * (1.0 - 0.9 * occ);
         // A light at zero illuminance still schedules its cascades;
         // shadows off at night saves the passes and no shadow is cast by
-        // a sun that is under the ground anyway.
+        // a sun that is under the ground anyway — nor by one behind a
+        // full overcast.
         //
         // **One writer, two reasons.** The player's SHADOWS row is ANDed in
         // here rather than written by `quality::apply`, because two systems
@@ -719,14 +821,25 @@ pub fn day_night(
         // clean merge that is not a correct one: whichever ran second would
         // win, and a player who turned shadows off would have them back at
         // the next sunrise.
-        //
-        // Through `effective` rather than off `settings.gfx` directly: no
-        // target refuses shadows outright today, and "what this machine
-        // actually draws" is the only question this field should ever be
-        // answering.
-        d.shadows_enabled = light > 0.0 && super::quality::effective(settings.gfx).shadows;
+        d.shadows_enabled =
+            elev > SHADOW_MIN_ELEV && occ < 0.85 && super::quality::effective(settings.gfx).shadows;
+        // The atmosphere draws the disk OVER the skybox, so a cloud in front
+        // of the sun has to put the disk out itself.
+        if let Some(mut disk) = disk {
+            disk.intensity = if elev > 0.0 {
+                SUN_DISK_INTENSITY * (1.0 - w.sun_cover.max(w.fog))
+            } else {
+                0.0
+            };
+        }
     }
-    if let Ok((mut amb, mut env, sky, fog)) = cam.single_mut() {
+    if let Ok((mut amb, mut env, sky, fog, exposure)) = cam.single_mut() {
+        if let Some(mut ex) = exposure {
+            let want = exposure_ev100(frac);
+            if ex.ev100 != want {
+                ex.ev100 = want;
+            }
+        }
         // **The handover, and the two terms are complements by construction.**
         // The hemisphere carries the day and the uniform term carries the
         // night, and each is scaled by the same `light` so their sum is
@@ -734,40 +847,25 @@ pub fn day_night(
         // `light == 1` the fill is exactly `fill_at(n)`; at `light == 0` it is
         // exactly `NIGHT_AMBIENT_LUX`, which is what this shipped before the
         // hemisphere existed. Both endpoints are gated (`tests/fill.rs`).
-        //
-        // Driving the env map by `intensity` rather than rebaking the cubemap
-        // is the whole reason the map is stored normalized: the shape of the
-        // hemisphere does not change with the hour, only its scale, so a
-        // per-frame multiply replaces a per-frame 24 KB bake.
-        amb.brightness = NIGHT_AMBIENT_LUX * (1.0 - light);
-        env.intensity = super::fill::peak_lux() * light;
-        // A browser's haze is the sky's own horizon, so it dims with the deck.
-        // The desktop has no fog and this is `None` there.
+        // Weather dims both (a heavy sky, a storm night) and a lightning
+        // flash lifts the uniform term for a fifth of a second.
+        amb.brightness =
+            NIGHT_AMBIENT_LUX * (1.0 - light) * (1.0 - 0.3 * w.dark) + FLASH_LUX * w.flash;
+        env.intensity = super::fill::peak_lux() * light * (1.0 - 0.35 * w.dark);
+        // Weather fog on both targets: nothing in clear weather on the
+        // desktop, the island's own air in a browser, and the weather's
+        // fog and rain on top of either.
         if let Some(mut fog) = fog {
-            fog.color = super::sky::haze_color(light);
+            let sigma = w.fog_sigma();
+            fog.color = super::sky::fog_color(lux_share, w.dark, sigma);
+            fog.falloff = super::sky::fog_falloff(sigma);
         }
         if let Some(mut sky) = sky {
-            // At night clouds are dark from below anyway.
-            sky.brightness = super::sky::CLOUD_NITS * light;
-            // **The half of the sweep that is not the sun.** The deck is baked
-            // ONCE, with its lit faces pointing at the noon sun (`sky.rs`).
-            // Under a fixed bearing that was correct at every hour for free —
-            // only the sun's *height* moved and the deck's march ignores
-            // height. A swept bearing breaks it: by dusk the lit side of every
-            // cloud would face 90° away from the sun that is lighting the
-            // ground, which is `ART.md` rule 5's coupled set disagreeing with
-            // itself, and the visual judge has ranked exactly that seam before
-            // (`pass-20260814-223652-01-visual.md`, gap 2a).
-            //
-            // Rotating the deck about `Y` by the bearing's own offset from
-            // noon fixes it *exactly* rather than approximately: the deck is a
-            // flat plane projected through `1/d.y`, which is invariant under a
-            // yaw rotation, so the rotated cubemap is bit-for-bit the deck a
-            // rebake at that bearing would produce — and a rebake is 393 k
-            // texels of four-octave fBm, which is a boot cost, not a frame
-            // one. The shapes drift with the light, one turn per cycle, most
-            // of it under a `brightness` of zero.
-            sky.rotation = super::sky::deck_rotation(frac);
+            // The composer bakes the hour and the weather into the deck's
+            // texels (`sky.rs`), so the brightness is the deck's physical
+            // unit, lifted only by a flash.
+            sky.brightness = super::sky::CLOUD_NITS * super::sky::DECK_GAIN * (1.0 + 3.0 * w.flash);
+            sky.rotation = Quat::IDENTITY;
         }
     }
 }

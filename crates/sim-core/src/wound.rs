@@ -249,7 +249,7 @@ mod tests {
 
     #[test]
     fn what_wounds_and_what_kills() {
-        use crate::world::{DEATH_BY_CHARGE, DEATH_BY_CLOCK, DEATH_BY_SALT};
+        use crate::world::{DEATH_BY_CHARGE, DEATH_BY_CLOCK, DEATH_BY_COLD, DEATH_BY_SALT};
         assert!(
             wounds(DEATH_BY_HAND, true),
             "a melee blow wounds even to the head"
@@ -262,5 +262,6 @@ mod tests {
         assert!(!wounds(DEATH_BY_CHARGE, false));
         assert!(!wounds(DEATH_BY_CLOCK, false));
         assert!(!wounds(DEATH_BY_SALT, false));
+        assert!(!wounds(DEATH_BY_COLD, false), "the cold is not a hit");
     }
 }

@@ -61,7 +61,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 111] = [
+const GOLDEN: [&[u8]; 114] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -173,6 +173,9 @@ const GOLDEN: [&[u8]; 111] = [
     include_bytes!("golden/action_assist.bin"),
     include_bytes!("golden/event_assist.bin"),
     include_bytes!("golden/action_rotate.bin"),
+    include_bytes!("golden/event_env.bin"),
+    include_bytes!("golden/event_exposure.bin"),
+    include_bytes!("golden/event_slot_grow_sync.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -367,8 +370,11 @@ fn test_protocol_golden() {
     g!(seen, golden_action, 108);
     g!(seen, golden_event, 109);
     g!(seen, golden_action, 110);
+    g!(seen, golden_event, 111);
+    g!(seen, golden_event, 112);
+    g!(seen, golden_event, 113);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 111, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 114, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -896,16 +902,36 @@ fn golden_event(fixture: &[u8], name: &str) {
             }
             encode_event_inv(&slots[..count], &mut buf).unwrap()
         }
-        "event_slot_harvested.bin" | "event_slot_respawned.bin" => {
-            let harvested = name == "event_slot_harvested.bin";
+        "event_slot_harvested.bin" => {
             let (cx, cz) = event_slot_change();
-            let want = if harvested {
-                EventMsg::SlotHarvested { cx, cz }
-            } else {
-                EventMsg::SlotRespawned { cx, cz }
-            };
-            assert_eq!(decode_event(fixture).unwrap(), want, "{name}");
-            encode_event_slot_change(harvested, cx, cz, &mut buf).unwrap()
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::SlotHarvested { cx, cz },
+                "{name}"
+            );
+            encode_event_slot_change(true, cx, cz, &mut buf).unwrap()
+        }
+        "event_slot_respawned.bin" => {
+            let (cx, cz) = event_slot_change();
+            let grown_at = Some(protocol::goldens::EVENT_SLOT_GROWN_AT);
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::SlotRespawned { cx, cz, grown_at },
+                "{name}"
+            );
+            protocol::encode_event_slot_respawned(cx, cz, grown_at, &mut buf).unwrap()
+        }
+        "event_slot_grow_sync.bin" => {
+            let cells = protocol::goldens::event_slot_grow_sync();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::SlotGrowSync {
+                    cells,
+                    count: protocol::GROW_SYNC_BATCH as u8
+                },
+                "{name}"
+            );
+            protocol::encode_event_slot_grow_sync(&cells, &mut buf).unwrap()
         }
         "event_slot_sync.bin" => {
             let (reset, cells) = event_slot_sync();
@@ -1376,6 +1402,22 @@ fn golden_event(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             encode_event_bag_dropped(&b, &mut buf).unwrap()
+        }
+        "event_exposure.bin" => {
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::Exposure {
+                    wet_pct: 64,
+                    cold_pct: 100,
+                    hurting: true
+                }
+            );
+            protocol::encode_event_exposure(64, 100, true, &mut buf).unwrap()
+        }
+        "event_env.bin" => {
+            let env = protocol::goldens::event_env();
+            assert_eq!(decode_event(fixture).unwrap(), EventMsg::Env(env));
+            protocol::encode_event_env(&env, &mut buf).unwrap()
         }
         "event_assist.bin" => {
             assert_eq!(

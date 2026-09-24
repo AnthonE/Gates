@@ -594,7 +594,12 @@ const GOLDEN_FINAL_HASH: u64 = 0xFEFF_9C41_0FCB_BBB3;
 /// (2026-09-22), beside `GOLDEN_FINAL_HASH` and for its reason: the crafts
 /// at the fixture bench finish sooner, so the path diverges at the first
 /// unit armed there.
-const GOLDEN_TRACE_HASH: u64 = 0xE490_DA72_6A3A_5427;
+///
+/// **Moved `0xE490_DA72_6A3A_5427` → `0x89F0_E1F6_0797_F935` at tree growth v0**
+/// (2026-09-24), and alone: a smashed barrel's life record now says what
+/// stood there, which the hash reads while the barrel is down. It is back
+/// by the end, so the end state holds.
+const GOLDEN_TRACE_HASH: u64 = 0x89F0_E1F6_0797_F935;
 
 /// Fold a stamped trace into one number.
 ///

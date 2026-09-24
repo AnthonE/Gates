@@ -73,15 +73,20 @@ id = "item.armor_burlap_head"
 slot = "head"
 reduction_pct = 10
 move_penalty_pct = 0
+# Their Cold column (`reference/RIPLIST.md` §1h), read whole (weather v0).
+cold_pct = 6
 
 [[armor]]
 id = "item.armor_burlap_body"
 slot = "body"
 reduction_pct = 15
 move_penalty_pct = 0
+cold_pct = 27
 
 [[armor]]
 id = "item.armor_roadsign_body"
 slot = "body"
 reduction_pct = 25
 move_penalty_pct = 5
+# Negative, as theirs is: a sheet of metal draws the cold in.
+cold_pct = -34

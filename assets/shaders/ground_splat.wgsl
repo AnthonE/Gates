@@ -558,7 +558,12 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     // keeps its own grain instead of having it multiplied back in at full dry
     // strength. `terrain_mesh::vertex_color` states why.
     base = base * in.uv_b.x;
-    base = wetted(base, in.uv_b.y);
+    // Rain (weather v0): `identity[0].w` carries how wet the weather has
+    // made the island, and it soaks what faces the sky — a cliff face sheds
+    // it. The shoreline's own wet band is the floor under it.
+    let rain_wet = splat.identity[0].w * clamp(in.world_normal.y, 0.0, 1.0);
+    let wet = max(in.uv_b.y, rain_wet);
+    base = wetted(base, wet);
 
     // The photograph, last: a scalar field with a mean of 1, so it contributes
     // relief and not colour.
@@ -605,7 +610,7 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     // would be a hand-kept mirror of another crate's constant, which is the
     // drift `CLAUDE.md` names twice. `tests/ground_splat.rs` holds our knob
     // clear of it instead, which is the half that IS ours.
-    let wet_keep = 1.0 - in.uv_b.y * (1.0 - splat.blend.z);
+    let wet_keep = 1.0 - wet * (1.0 - splat.blend.z);
     pbr_input.material.perceptual_roughness = (dot(bw, rough_map) + road_weight * road_rough) * wet_keep;
 
     // The relief, blended as gradients and applied on the mesh's own written

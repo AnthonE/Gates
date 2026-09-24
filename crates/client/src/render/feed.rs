@@ -299,6 +299,10 @@ pub struct Feed {
     /// first snapshot, which reads as the boot phase — mid-morning — and
     /// is exactly what a loading world should look like.
     pub server_tick_est: f64,
+    /// The world's sky/clock record (`client_core` `env`, weather v0),
+    /// copied beside the tick for the same reason: every reader of the hour
+    /// or the weather takes it as a `Res<Feed>`.
+    pub env: sim_core::weather::Env,
 }
 
 impl Feed {
@@ -477,6 +481,7 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
     feed.applied2 = core::mem::take(&mut net.session.applied2);
     let core = &mut net.session.core;
     feed.server_tick_est = core.clock.server_est;
+    feed.env = core.env;
 
     while let Some(h) = core.pop_hit() {
         feed.damage = feed.damage.saturating_add(h.damage);
