@@ -332,6 +332,8 @@ fn render(cue: Cue) -> Vec<f32> {
         Cue::BedWind => bed(&mut r),
         Cue::BedSurf => surf(&mut r),
         Cue::BedUnder => under(&mut r),
+        Cue::BedRain => rain(&mut r),
+        Cue::Thunder => thunder(&mut r),
 
         // ---- the animals ------------------------------------------------
         Cue::Snort => snort(&mut r),
@@ -916,6 +918,88 @@ fn under(r: &mut Rng) -> Vec<f32> {
         }
     }
     loop_seam(out, samples(BED_FADE_SECS))
+}
+
+/// The rain bed (weather v0): a broad hiss with drops ticking through it.
+///
+/// Two layers, the wind bed's shape: a band-passed wash (the sheet of rain
+/// on everything at once) and sparse short clicks (the drops you pick out
+/// near you). The wash's swell is locked to the loop like [`bed`]'s gusts,
+/// so the join is two noise realizations at one level.
+fn rain(r: &mut Rng) -> Vec<f32> {
+    let n = samples(BED_SECS);
+    let sr = SAMPLE_RATE as f32;
+    let mut lp = Lp::new(7_500.0);
+    let mut hp = Lp::new(900.0);
+    let mut low = Lp::new(260.0);
+    let mut out = Vec::with_capacity(n);
+    let f0 = 1.0 / BED_LOOP_SECS;
+    for i in 0..n {
+        let time = i as f32 / sr;
+        let swell = 0.82 + 0.18 * (std::f32::consts::TAU * 2.0 * f0 * time + 0.6).sin();
+        let x = r.noise();
+        let wash = {
+            let l = lp.run(x);
+            l - hp.run(l)
+        };
+        out.push(wash * swell + low.run(x) * 0.5);
+    }
+    // The drops: ~200 a second, a few milliseconds of bright noise each at a
+    // random level, so the texture is patter rather than static.
+    let count = (BED_SECS * 200.0) as usize;
+    for _ in 0..count {
+        let at = (r.unit() * n as f32) as usize;
+        let len = samples(0.002 + 0.004 * r.unit());
+        let amp = 0.15 + 0.5 * r.unit() * r.unit();
+        let mut click = Lp::new(2_000.0 + 4_000.0 * r.unit());
+        for k in 0..len {
+            let i = at + k;
+            if i >= n {
+                break;
+            }
+            let env = 1.0 - k as f32 / len as f32;
+            out[i] += click.run(r.noise()) * amp * env;
+        }
+    }
+    loop_seam(out, samples(BED_FADE_SECS))
+}
+
+/// Thunder: a crack, then a roll that rumbles on for seconds.
+///
+/// The crack is broadband and short; the roll is brown-ish noise (a low
+/// one-pole on white) under a slow, uneven envelope — thunder arrives from
+/// every point along a kilometre of bolt at once, so it swells and ebbs
+/// rather than simply decaying.
+fn thunder(r: &mut Rng) -> Vec<f32> {
+    let dur = 5.0f32;
+    let n = samples(dur);
+    let sr = SAMPLE_RATE as f32;
+    let mut crack_lp = Lp::new(3_500.0);
+    let mut roll_lp = Lp::new(140.0);
+    let mut roll_lp2 = Lp::new(60.0);
+    let mut out = Vec::with_capacity(n);
+    // Three swells in the roll, at random times, so no two claps match.
+    let swells = [
+        0.3 + 0.6 * r.unit(),
+        1.2 + 1.2 * r.unit(),
+        2.4 + 1.5 * r.unit(),
+    ];
+    for i in 0..n {
+        let time = i as f32 / sr;
+        let x = r.noise();
+        let crack = crack_lp.run(x) * (-time / 0.09).exp() * 1.2;
+        let mut env = (-time / 2.2).exp() * (1.0 - (-time / 0.15).exp());
+        for (k, at) in swells.iter().enumerate() {
+            let d = (time - at) / (0.35 + 0.2 * k as f32);
+            env += 0.5 * (-d * d).exp() * (-time / 3.0).exp();
+        }
+        let roll = roll_lp2.run(roll_lp.run(x) * 3.0) * 4.0;
+        out.push(crack + roll * env);
+    }
+    for (i, v) in out.iter_mut().enumerate() {
+        *v *= edges(i, n);
+    }
+    out
 }
 
 /// Breaking the surface.

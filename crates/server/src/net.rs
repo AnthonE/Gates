@@ -504,6 +504,7 @@ pub async fn spawn_shard(
         let slots = slots.clone();
         let seed = cfg.seed;
         let dev_spawn = cfg.dev_spawn;
+        let dev_env = cfg.dev_env;
         let admins = cfg.admins.clone();
         std::thread::Builder::new()
             .name("sim".into())
@@ -511,6 +512,7 @@ pub async fn spawn_shard(
                 sim_thread(
                     seed,
                     dev_spawn,
+                    dev_env,
                     tables,
                     world_blob,
                     world_idents,
@@ -2085,6 +2087,7 @@ pub async fn write_frame(send: &mut SendStream, payload: &[u8]) -> Result<(), ()
 fn sim_thread(
     seed: u64,
     dev_spawn: Option<(f32, f32)>,
+    dev_env: Option<(u8, u16)>,
     tables: SimTables,
     world_blob: Vec<u8>,
     world_idents: crate::worldfile::Identities,
@@ -2159,6 +2162,11 @@ fn sim_thread(
         }
     }
     drop(world_blob);
+    // `dev_env`: the admin lane's sky/clock verb, queued so it lands on the
+    // first tick and in the WAL like any other.
+    if let Some((weather, time_pm)) = dev_env {
+        core.queue_env(weather, time_pm);
+    }
     // The world-save buffer pool. Allocated here, once, and never again:
     // every later save fills one of these and hands the box to the store
     // thread, which hands the box back. Wall 2 counts the tick, and the tick

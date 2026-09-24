@@ -869,6 +869,53 @@ impl Vital {
     }
 }
 
+/// A wet or cold chip over the vitals (weather v0): the reference's
+/// `WET 36%` and a cold warning that turns red while the cold is taking hp.
+#[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ExposureChip {
+    Wet,
+    Cold,
+}
+
+const WET_CHIP: Color = Color::srgba(0.16, 0.36, 0.62, 0.85);
+const COLD_CHIP: Color = Color::srgba(0.42, 0.58, 0.70, 0.85);
+const FREEZE_CHIP: Color = Color::srgba(0.70, 0.16, 0.14, 0.9);
+
+/// Keep the wet and cold chips on what the server last said. Hidden while
+/// there is nothing to say — dry, and warm enough not to mention.
+pub fn exposure(
+    net: NonSend<super::Net>,
+    mut chips: Query<(
+        &ExposureChip,
+        &mut Text,
+        &mut Visibility,
+        &mut BackgroundColor,
+    )>,
+) {
+    let core = &net.session.core;
+    for (chip, mut text, mut vis, mut bg) in &mut chips {
+        let (show, want, colour) = match chip {
+            ExposureChip::Wet => (core.wet_pct > 0, format!("WET {}%", core.wet_pct), WET_CHIP),
+            ExposureChip::Cold if core.cold_hurting => (true, "FREEZING".to_string(), FREEZE_CHIP),
+            ExposureChip::Cold => (core.cold_pct >= 25, "COLD".to_string(), COLD_CHIP),
+        };
+        let want_vis = if show {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        if *vis != want_vis {
+            *vis = want_vis;
+        }
+        if show && text.0 != want {
+            text.0 = want;
+        }
+        if bg.0 != colour {
+            bg.0 = colour;
+        }
+    }
+}
+
 /// The row for one vital — hidden wholesale when its maximum is 0, which is
 /// the "draw nothing rather than an empty bar" rule this module has always
 /// held, moved from a string to a `Display`.
@@ -1188,6 +1235,24 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
             Pickable::IGNORE,
         ))
         .with_children(|stack| {
+            // Wet and cold (weather v0): two chips over the bars, hidden
+            // until there is something to say.
+            for chip in [ExposureChip::Wet, ExposureChip::Cold] {
+                stack.spawn((
+                    chip,
+                    Text::new(""),
+                    super::ui::font_bold(13.0),
+                    TextColor(Color::srgb(0.97, 0.97, 0.98)),
+                    BackgroundColor(WET_CHIP),
+                    Node {
+                        align_self: AlignSelf::FlexEnd,
+                        padding: UiRect::axes(Val::Px(6.0), Val::Px(1.0)),
+                        ..default()
+                    },
+                    Visibility::Hidden,
+                    Pickable::IGNORE,
+                ));
+            }
             for v in [Vital::Hp, Vital::Water, Vital::Food] {
                 stack
                     .spawn((

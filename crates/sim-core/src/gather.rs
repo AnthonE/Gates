@@ -107,6 +107,32 @@ pub const WEAK_COS: f32 = 0.707_106_77;
 pub const RESPAWN_MIN_TICKS: u64 = 36_000;
 pub const RESPAWN_RANGE_TICKS: u64 = 45_000;
 
+/// Tree regrowth (tree growth v0): a felled tree's stump stands for the
+/// respawn window above, then a sapling sprouts in the same cell and grows
+/// to the tree it was over this long — an hour at 30 Hz. The reference
+/// refills its forests from spawn populations at random spots; ours keeps
+/// the tree where it stood (`reference/SPAWN.md` §9.2) and lets you watch
+/// it come back.
+pub const TREE_GROW_TICKS: u64 = 108_000;
+/// A fresh sapling's size, per mille of the tree it will be.
+pub const SAPLING_PM: u16 = 150;
+/// Growth is collided and paid in this many steps, so the client's
+/// predictor and the server agree about a sapling's trunk exactly.
+pub const GROW_STAGES: u64 = 16;
+
+/// How big a tree growing until `grown_at` is at `now`, per mille of full
+/// size, in `GROW_STAGES` steps. `grown_at == 0` (not growing) or a tick
+/// past it is a full tree.
+#[inline]
+pub fn grow_pm(grown_at: u64, now: u64) -> u16 {
+    if grown_at == 0 || now >= grown_at {
+        return 1000;
+    }
+    let left = (grown_at - now).min(TREE_GROW_TICKS);
+    let stage = (TREE_GROW_TICKS - left) * GROW_STAGES / TREE_GROW_TICKS;
+    SAPLING_PM + ((1000 - SAPLING_PM) as u64 * stage / GROW_STAGES) as u16
+}
+
 /// Noise channel for respawn jitter (worldgen channels live in terrain.rs;
 /// this one is sim-side and collides with nothing below 96).
 const CH_RESPAWN: u32 = 97;
@@ -565,14 +591,21 @@ pub fn inv_add_spilling(
     added
 }
 
-/// One slot's life record. `respawn_at == 0` ⇒ standing (damaged);
-/// nonzero ⇒ harvested until that tick. Absent from the store ⇒ pristine.
+/// One slot's life record. `respawn_at == 0` ⇒ standing (damaged, or a
+/// sapling growing); nonzero ⇒ harvested until that tick. Absent from the
+/// store ⇒ pristine.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SlotLife {
     pub cx: u16,
     pub cz: u16,
     pub hits: u16,
+    /// What stood here when it was felled (`terrain::Occupant`), so the
+    /// respawn knows a tree from a barrel. Zero until it is first felled.
+    pub occ: u8,
     pub respawn_at: u64,
+    /// A regrowing tree (tree growth v0): the tick it is full-grown by.
+    /// Zero when it is not growing.
+    pub grown_at: u64,
 }
 
 /// The server's "one bit + one timer per slot" (TERRAIN.md §2), stored
@@ -588,6 +621,10 @@ pub struct SlotLife {
 pub struct SlotLives {
     entries: Box<[SlotLife; MAX_SLOT_LIVES]>,
     len: usize,
+    /// The tick a growth question is asked at — `World::tick` stamps it
+    /// each tick, so a collision query needs no clock of its own. Not sim
+    /// state: it is the tick, restated.
+    now: u64,
 }
 
 impl SlotLives {
@@ -595,6 +632,23 @@ impl SlotLives {
         Self {
             entries: crate::boxed_array(SlotLife::default()),
             len: 0,
+            now: 0,
+        }
+    }
+
+    /// Stamp the tick growth is measured at.
+    #[inline]
+    pub fn set_now(&mut self, tick: u64) {
+        self.now = tick;
+    }
+
+    /// How much of the slot stands, per mille: 0 harvested, a sapling's
+    /// share while it regrows, 1000 otherwise.
+    pub fn standing_pm(&self, cx: u16, cz: u16) -> u16 {
+        match self.find(cx, cz) {
+            None => 1000,
+            Some(e) if e.respawn_at != 0 => 0,
+            Some(e) => grow_pm(e.grown_at, self.now),
         }
     }
 
@@ -649,7 +703,12 @@ impl SlotLives {
         } else {
             let mut best: Option<usize> = None;
             for (i, e) in self.entries.iter().enumerate() {
-                if e.respawn_at == 0 && best.is_none_or(|b| e.hits < self.entries[b].hits) {
+                // A growing sapling is never the one evicted: that would
+                // stand a full tree up in a stump's place.
+                if e.respawn_at == 0
+                    && e.grown_at == 0
+                    && best.is_none_or(|b| e.hits < self.entries[b].hits)
+                {
                     best = Some(i);
                 }
             }
@@ -658,8 +717,7 @@ impl SlotLives {
         self.entries[at] = SlotLife {
             cx,
             cz,
-            hits: 0,
-            respawn_at: 0,
+            ..SlotLife::default()
         };
         Some(&mut self.entries[at])
     }
@@ -667,14 +725,46 @@ impl SlotLives {
     /// Release every entry whose respawn tick has arrived, reporting each
     /// via `events` (EV_SLOT_RESPAWNED). Swap-remove keeps the store
     /// dense; the order it produces is deterministic like everything else.
+    ///
+    /// A tree does not come back whole (tree growth v0): its timer turns the
+    /// stump into a sapling that stays in the store, growing until
+    /// `grown_at`, and is retired then — or kept as a damaged tree if it was
+    /// hit while it grew. The event says which: `b` the grown-by tick's low
+    /// 32 bits and `c` 1 for a sapling, both 0 for anything else.
     pub fn respawn_due(&mut self, tick: u64, events: &mut EventQueue) {
         let mut i = 0;
         while i < self.len {
             let e = self.entries[i];
             if e.respawn_at != 0 && tick >= e.respawn_at {
-                events.push(crate::world::EV_SLOT_RESPAWNED, cell_key(e.cx, e.cz), 0, 0);
-                self.len -= 1;
-                self.entries[i] = self.entries[self.len];
+                if e.occ == crate::terrain::Occupant::Tree as u8 {
+                    let grown_at = tick + TREE_GROW_TICKS;
+                    self.entries[i] = SlotLife {
+                        hits: 0,
+                        respawn_at: 0,
+                        grown_at,
+                        ..e
+                    };
+                    events.push(
+                        crate::world::EV_SLOT_RESPAWNED,
+                        cell_key(e.cx, e.cz),
+                        grown_at as u32,
+                        1,
+                    );
+                    i += 1;
+                } else {
+                    events.push(crate::world::EV_SLOT_RESPAWNED, cell_key(e.cx, e.cz), 0, 0);
+                    self.len -= 1;
+                    self.entries[i] = self.entries[self.len];
+                }
+            } else if e.grown_at != 0 && tick >= e.grown_at {
+                if e.hits == 0 {
+                    // Full-grown and untouched: pristine again.
+                    self.len -= 1;
+                    self.entries[i] = self.entries[self.len];
+                } else {
+                    self.entries[i].grown_at = 0;
+                    i += 1;
+                }
             } else {
                 i += 1;
             }
@@ -861,7 +951,11 @@ pub fn land(
     // `NodeDef::weak_pct` has the reasoning. The last swing takes
     // whatever is left rather than overdrawing, which is what keeps the
     // total exact instead of approximately right.
-    let budget = def.hits as u32 * HIT_UNIT;
+    // A regrowing tree is worth its size (tree growth v0): fewer hits, the
+    // same pay per hit, never less than one.
+    let size = grow_pm(life.grown_at, tick) as u32;
+    let hits_eff = (def.hits as u32 * size).div_ceil(1000).max(1);
+    let budget = hits_eff * HIT_UNIT;
     let want = if weak_hit {
         HIT_UNIT + def.weak_pct as u32
     } else {
@@ -873,6 +967,8 @@ pub fn land(
     if exhausted {
         let jitter = splitmix64(cell_hash(seed, cx as i32, cz as i32, CH_RESPAWN) ^ tick);
         life.respawn_at = tick + RESPAWN_MIN_TICKS + jitter % RESPAWN_RANGE_TICKS;
+        life.grown_at = 0;
+        life.occ = occupant_of(ni) as u8;
     }
 
     // **The swing has landed, so it leaves the mark an arrow leaves.**
@@ -919,7 +1015,7 @@ pub fn land(
     // A switch mid-node re-bases the schedule, so the cumulative
     // difference is saturating: a worse tool never claws yield back.
     let full = def.yield_for(held) as u64;
-    let total = full * def.hits as u64;
+    let total = full * hits_eff as u64;
     let pool = total * (100 - def.finish_pct as u64) / 100;
     let spent_after = life.hits as u64;
     let spent_before = spent_after - take as u64;
@@ -1053,6 +1149,7 @@ fn smash(
     }
     let jitter = splitmix64(cell_hash(seed, cx as i32, cz as i32, CH_RESPAWN) ^ tick);
     life.respawn_at = tick + RESPAWN_MIN_TICKS + jitter % RESPAWN_RANGE_TICKS;
+    life.occ = occupant_of(BARREL_TARGET) as u8;
     events.push(
         EV_SLOT_HARVESTED,
         cell_key(cx, cz),
@@ -1203,5 +1300,65 @@ mod tests {
         assert!(lives.find(9, 9).is_some());
         assert_eq!(ev.len(), 1);
         assert_eq!(ev.entries()[0].a, cell_key(5, 6));
+    }
+
+    /// Tree growth v0's life cycle in the store: a felled tree's timer
+    /// sprouts a sapling that keeps its record, anything else comes back
+    /// whole, a grown sapling retires, one hit while it grew keeps it as a
+    /// damaged tree, and a growing record is never the one evicted.
+    #[test]
+    fn a_tree_comes_back_a_sapling_and_retires_grown() {
+        let mut lives = SlotLives::new();
+        for (cx, occ) in [(5, Occupant::Tree), (7, Occupant::BarrelSlot)] {
+            let e = lives.find_or_insert(cx, 0).unwrap();
+            e.occ = occ as u8;
+            e.hits = 4;
+            e.respawn_at = 100;
+        }
+        let mut ev = EventQueue::default();
+        lives.respawn_due(100, &mut ev);
+        let grown_at = 100 + TREE_GROW_TICKS;
+        let got: Vec<_> = ev.entries().iter().map(|e| (e.a, e.b, e.c)).collect();
+        assert_eq!(
+            got,
+            [(cell_key(5, 0), grown_at as u32, 1), (cell_key(7, 0), 0, 0)]
+        );
+        assert!(lives.find(7, 0).is_none(), "the barrel is back whole");
+        let sapling = *lives.find(5, 0).expect("the sapling keeps its record");
+        assert_eq!((sapling.hits, sapling.respawn_at), (0, 0));
+        assert_eq!(sapling.grown_at, grown_at);
+        lives.set_now(100);
+        assert!(!lives.is_harvested(5, 0), "a sapling stands");
+        assert_eq!(lives.standing_pm(5, 0), SAPLING_PM);
+
+        // Untouched, it retires when grown, silently: the client grows it
+        // off the same clock.
+        let mut quiet = EventQueue::default();
+        lives.respawn_due(grown_at - 1, &mut quiet);
+        assert!(lives.find(5, 0).is_some());
+        lives.respawn_due(grown_at, &mut quiet);
+        assert!(lives.is_empty() && quiet.is_empty());
+
+        // Hit while it grew: grown, it is a damaged tree like any other.
+        let e = lives.find_or_insert(5, 0).unwrap();
+        e.grown_at = grown_at;
+        e.hits = 1;
+        lives.respawn_due(grown_at, &mut quiet);
+        let damaged = lives.find(5, 0).expect("a hacked sapling stays hacked");
+        assert_eq!((damaged.hits, damaged.grown_at), (1, 0));
+
+        // Full, with the sapling holding the fewest hits: it still stays.
+        let mut full = SlotLives::new();
+        for i in 0..MAX_SLOT_LIVES {
+            let e = full.find_or_insert(i as u16, 1).unwrap();
+            e.hits = i as u16 + 1;
+            if i == 0 {
+                e.hits = 0;
+                e.grown_at = 50;
+            }
+        }
+        full.find_or_insert(9999, 9999).unwrap();
+        assert!(full.find(0, 1).is_some(), "a growing sapling was evicted");
+        assert!(full.find(1, 1).is_none(), "the lowest standing was not");
     }
 }

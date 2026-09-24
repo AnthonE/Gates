@@ -1142,6 +1142,37 @@ impl Content {
         if sc.max_food == 0 || sc.max_water == 0 {
             return Err("bake: a zero meter would disarm the survival clock".to_string());
         }
+        // Wet and cold (weather v0). Validated to per mille already; the
+        // casts cannot truncate what `validate` admitted.
+        let e = &self.balance.exposure;
+        let ex = &mut sc.exposure;
+        ex.wet_rain_per_s = u16f(e.wet_rain_per_s, "wet_rain_per_s")?;
+        ex.dry_per_s = u16f(e.dry_per_s, "dry_per_s")?;
+        ex.dry_fire_per_s = u16f(e.dry_fire_per_s, "dry_fire_per_s")?;
+        ex.soak_depth_cm = u16f(e.soak_depth_cm, "soak_depth_cm")?;
+        ex.night_cold = u16f(e.night_cold, "night_cold")?;
+        ex.rain_cold = u16f(e.rain_cold, "rain_cold")?;
+        ex.wind_cold = u16f(e.wind_cold, "wind_cold")?;
+        ex.wet_cold = u16f(e.wet_cold, "wet_cold")?;
+        ex.fire_warmth = u16f(e.fire_warmth, "fire_warmth")?;
+        ex.torch_warmth = u16f(e.torch_warmth, "torch_warmth")?;
+        ex.heat_radius_cm = u16f(e.heat_radius_cm, "heat_radius_cm")?;
+        ex.chill_rise_per_s = u16f(e.chill_rise_per_s, "chill_rise_per_s")?;
+        ex.chill_fall_per_s = u16f(e.chill_fall_per_s, "chill_fall_per_s")?;
+        ex.hurt_at = if e.chill_rise_per_s > 0 {
+            u16f(e.hurt_at, "hurt_at")?
+        } else {
+            1000
+        };
+        ex.hurt_hp_per_min = u16f(e.hurt_hp_per_min, "hurt_hp_per_min")?;
+        for a in &self.armors {
+            let idx = self
+                .item_index(&a.id)
+                .ok_or_else(|| format!("bake: armor `{}` names no item", a.id))?
+                as usize;
+            // Per cent to per mille of chill kept out.
+            ex.warmth[idx] = (a.cold_pct * 10) as i16;
+        }
         for con in &self.consumables {
             let idx = self
                 .item_index(&con.id)

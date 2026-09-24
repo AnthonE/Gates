@@ -223,12 +223,14 @@ fn noon_and_midnight_reach_the_entities() {
 }
 
 #[test]
-fn the_deck_follows_the_sun_it_is_lit_by() {
+fn the_deck_is_drawn_unrotated_at_its_own_brightness() {
     // The wiring gate for the Skybox branch (`rig.rs`, `day_night`'s camera
-    // query). `sky::deck_rotation` is already gated as arithmetic
-    // (`tests/sun.rs`); this holds the CALL SITE, which nothing did — the
-    // branch is dead without a `Skybox` on the entity, and a dead branch's
-    // deletion is green everywhere.
+    // query). Since weather v0 the composer bakes the hour into the deck's
+    // texels (`sky.rs`) and the clouds move with the wind, not the sun, so
+    // the rig's whole job here is to hold the deck still and at its physical
+    // unit — lifted only by a lightning flash, and there is no weather in
+    // this fixture. The sentinels (a half-turn, a negative brightness) prove
+    // a WRITE at every hour, midnight included.
     let mut app = app();
     let read = |app: &mut App| {
         let world = app.world_mut();
@@ -238,52 +240,56 @@ fn the_deck_follows_the_sun_it_is_lit_by() {
             .unwrap();
         (sky.rotation, sky.brightness)
     };
-
-    // Two hours, neither of them noon: at noon `deck_rotation` is the
-    // identity and the brightness is full, both of which a stale value could
-    // fake. Mid-morning and mid-afternoon sit on opposite sides of noon, so
-    // the deck's offset changes sign between them and the two reads cannot
-    // agree with each other either.
-    let morning_tick = tick_at(DAY_PORTION * 0.25);
-    let afternoon_tick = tick_at(DAY_PORTION * 0.75);
-
-    set_tick(&mut app, morning_tick);
-    let (rot_am, bright_am) = read(&mut app);
-    set_tick(&mut app, afternoon_tick);
-    let (rot_pm, bright_pm) = read(&mut app);
-
-    // The deck moved between the two hours…
-    assert!(
-        rot_am.angle_between(rot_pm) > 0.1,
-        "the deck did not move between morning and afternoon: {rot_am:?} vs {rot_pm:?}"
-    );
-    // …and each read is the arithmetic the sun gate already holds, computed
-    // through the sim's own forward map — the same frac the system saw.
-    for (name, tick, rot, bright) in [
-        ("morning", morning_tick, rot_am, bright_am),
-        ("afternoon", afternoon_tick, rot_pm, bright_pm),
+    for frac in [
+        DAY_PORTION * 0.25,
+        DAY_PORTION * 0.75,
+        DAY_PORTION + (1.0 - DAY_PORTION) * 0.5,
     ] {
-        let frac = day_frac(tick);
-        let want = sky::deck_rotation(frac);
+        set_tick(&mut app, tick_at(frac));
+        let (rot, bright) = read(&mut app);
         assert!(
-            rot.angle_between(want) < 1e-4,
-            "{name}: deck at {rot:?}, deck_rotation says {want:?}"
+            rot.angle_between(Quat::IDENTITY) < 1e-6,
+            "at {frac} the deck is turned {rot:?}"
         );
-        // `sky.brightness` was ungated by the same dead branch; one fixture
-        // closes both (NOW.md §0sun item 1).
-        let want_b = sky::CLOUD_NITS * rig::daylight(frac);
         assert!(
-            (bright - want_b).abs() < 1.0,
-            "{name}: deck brightness {bright}, wanted {want_b}"
+            (bright - sky::CLOUD_NITS * sky::DECK_GAIN).abs() < 1.0,
+            "at {frac} the deck is at {bright}, not CLOUD_NITS × DECK_GAIN"
         );
-        assert!(bright > 0.0, "{name} is daytime; the sentinel survived");
     }
+}
 
-    // The brightness half at its other endpoint: dark at midnight (derived
-    // as the night's midpoint, same as every night sample in this file).
-    set_tick(&mut app, tick_at(DAY_PORTION + (1.0 - DAY_PORTION) * 0.5));
-    let (_, bright_night) = read(&mut app);
-    assert_eq!(bright_night, 0.0, "the deck must go dark at midnight");
+/// The twilight tail: the sky keeps a little sun after it sets, the light
+/// never points up from under the horizon while it does, and the tail is
+/// out well before midnight.
+#[test]
+fn dusk_glows_without_lighting_anything_from_below() {
+    let mut app = app();
+    // Just after sunset: the sun is under the horizon, the tail is lit.
+    let after = DAY_PORTION + (1.0 - DAY_PORTION) * 0.02;
+    assert!(sun_elevation(after) < 0.0);
+    set_tick(&mut app, tick_at(after));
+    let world = app.world_mut();
+    let (t, d) = world
+        .query_filtered::<(&Transform, &DirectionalLight), With<Sun>>()
+        .single(world)
+        .unwrap();
+    assert!(d.illuminance > 0.0, "the sky went black at sunset");
+    assert!(
+        d.illuminance < lux::DIRECT_SUNLIGHT * rig::TWILIGHT_TAIL + 1.0,
+        "the tail is brighter than it claims: {}",
+        d.illuminance
+    );
+    let fwd = t.rotation * Vec3::NEG_Z;
+    assert!(
+        fwd.y < 0.0,
+        "a lit twilight sun points up from below the horizon: {fwd:?}"
+    );
+    assert!(!d.shadows_enabled, "a sun under the horizon casts shadows");
+    assert_eq!(
+        rig::sun_lux(DAY_PORTION + (1.0 - DAY_PORTION) * 0.5),
+        0.0,
+        "the tail is still lit at midnight"
+    );
 }
 
 // ── The capture probe's clock (capture clock v0) ─────────────────────────
@@ -502,4 +508,35 @@ fn sun_casts(app: &mut App) -> bool {
         .single(world)
         .unwrap()
         .shadows_enabled
+}
+
+/// The exposure opens around sunrise and sunset and nowhere else: noon is
+/// the measured `DAY_EV100` and so is the night the ambient was tuned
+/// against, while the sun a few degrees up gets the full lift.
+#[test]
+fn the_eye_opens_at_dusk_and_only_at_dusk() {
+    use rig::{exposure_ev100, DAY_EV100, TWILIGHT_OPEN_STOPS};
+    let noon = DAY_PORTION * 0.5;
+    let midnight = DAY_PORTION + (1.0 - DAY_PORTION) * 0.5;
+    assert_eq!(exposure_ev100(noon), DAY_EV100, "noon moved");
+    assert_eq!(exposure_ev100(midnight), DAY_EV100, "the night moved");
+    assert_eq!(
+        exposure_ev100(DAY_PORTION * 0.25),
+        DAY_EV100,
+        "the morning moved"
+    );
+    // `/time dawn` and `/time dusk`: 20‰ of the cycle inside the day.
+    for frac in [0.02, DAY_PORTION - 0.02] {
+        let ev = exposure_ev100(frac);
+        assert!(
+            (ev - (DAY_EV100 - TWILIGHT_OPEN_STOPS)).abs() < 1e-4,
+            "at {frac} the sun is {} up and the exposure is {ev}",
+            sun_elevation(frac)
+        );
+    }
+    // And it never opens further than that, or closes past the day's.
+    for i in 0..=1000 {
+        let ev = exposure_ev100(i as f32 / 1000.0);
+        assert!((DAY_EV100 - TWILIGHT_OPEN_STOPS - 1e-4..=DAY_EV100).contains(&ev));
+    }
 }

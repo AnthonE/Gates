@@ -45,6 +45,9 @@ fn world_with(animals: &[(usize, f32, f32)]) -> World {
 /// `world_with`, with the player joined at `spawn` rather than on the beach.
 fn world_at(spawn: Option<(f32, f32)>, animals: &[(usize, f32, f32)]) -> World {
     let mut w = World::new(SEED);
+    // Clear skies held: these measure notice ranges, and the weather
+    // schedule would otherwise put fog on some test tick (weather v0).
+    w.env = sim_core::weather::Env::CLEAR;
     w.combat = CombatContent::probe_fixture();
     w.mob = MobContent::probe_fixture();
     w.gather = GatherContent::probe_fixture();

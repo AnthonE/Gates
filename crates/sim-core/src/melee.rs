@@ -428,9 +428,32 @@ pub fn occupant_cast(
             // store is a linear scan (`Occupants::blocks_volume`'s order,
             // for its reason). An out-of-island cell resolved to `None`
             // above, so the casts are in range.
-            if cx < 0 || cz < 0 || occ.harvested.is_harvested(cx as u16, cz as u16) {
+            if cx < 0 || cz < 0 {
                 continue;
             }
+            // A sapling is struck at its own size (tree growth v0): the
+            // full-size cylinder above is the cheap outer test.
+            let (slot, t_in) = match occ.harvested.standing_pm(cx as u16, cz as u16) {
+                0 => continue,
+                1000 => (slot, t_in),
+                pm => {
+                    let small = crate::occupy::grown(&slot, pm);
+                    let Some((t, _)) = cylinder_span(
+                        o,
+                        u,
+                        (small.x, small.z),
+                        r * small.scale + MELEE_PROBE_M,
+                        small.y,
+                        small.y + top * small.scale,
+                    ) else {
+                        continue;
+                    };
+                    if best.is_some_and(|b| t >= b.t) {
+                        continue;
+                    }
+                    (small, t)
+                }
+            };
             best = Some(OccupantHit {
                 cx: cx as u16,
                 cz: cz as u16,

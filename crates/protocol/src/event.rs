@@ -51,6 +51,10 @@ pub const MAX_EVENT_MSG_BYTES: usize = 320;
 /// message continues the walk.
 pub const SLOT_SYNC_BATCH: usize = 64;
 
+/// Regrowing trees one grow-sync message carries (tree growth v0): eight
+/// bytes a tree, 32 of them in 258 — inside `MAX_EVENT_MSG_BYTES` with room.
+pub const GROW_SYNC_BATCH: usize = 32;
+
 /// Item names one catalog message carries.
 pub const CATALOG_BATCH: usize = 8;
 
@@ -114,7 +118,11 @@ pub const CONT_SYNC_BATCH: usize = INV_SLOTS;
 /// and no room for the unknown-subtype probe to have anything to probe.
 /// One bit on every event message, taken while the goldens were being
 /// regenerated anyway — the cheapest moment there will ever be.
-const SUB_BITS: u32 = 6;
+///
+/// Widened 6 → 7 with `PROTO_VER` 76 (the pack call) for the same reason:
+/// the howl was the 64th of the 64 a 6-bit field holds, and weather v0 had
+/// just spent 60–62.
+const SUB_BITS: u32 = 7;
 const SUB_GATHER: u32 = 0;
 const SUB_INV: u32 = 1;
 const SUB_SLOT_HARVESTED: u32 = 2;
@@ -353,11 +361,29 @@ const SUB_RECOVERED: u32 = 57;
 const SUB_GITEM_SYNC: u32 = 58;
 /// Help progress/clear state, visible only to the two participants (v66).
 const SUB_ASSIST: u32 = 59;
-/// `EV_HOWL` (v75): a pack animal called its pack. The animal's tagged
+/// The admin's say over the sky and the clock (weather v0, wire v75): the
+/// whole `sim_core::weather::Env`, broadcast when it changes and on join.
+/// The schedule itself never crosses — it is a function of the seed and
+/// the tick every client already holds.
+const SUB_ENV: u32 = 60;
+/// The owner's wet and cold (weather v0, wire v75): per cent each, and
+/// whether the cold is hurting. Own-fact, `SUB_VITALS`' audience, sent when
+/// the per-cent reading moves.
+const SUB_EXPOSURE: u32 = 61;
+/// The regrowing trees a late joiner needs (tree growth v0, wire v75):
+/// `(cx, cz, grown_at)` batches, walked after the harvested set's reset.
+const SUB_SLOT_GROW_SYNC: u32 = 62;
+/// `EV_HOWL` (v76): a pack animal called its pack. The animal's tagged
 /// roster id and nothing else — `SUB_SWING`'s shape: where the animal is,
 /// the snapshot already says; that the call went up, only this can.
-const SUB_HOWL: u32 = 60;
+const SUB_HOWL: u32 = 63;
 const SUB_MAX: u32 = SUB_HOWL;
+/// A grow-sync batch's count: 1..=`GROW_SYNC_BATCH` in six bits.
+const GROW_SYNC_COUNT_BITS: u32 = 6;
+/// Width of an exposure reading: per cent, 0..=100 in seven bits.
+const EXPOSURE_PCT_BITS: u32 = 7;
+/// Width of each per-mille weather field: 0..=1000 in ten bits.
+const WX_PM_BITS: u32 = 10;
 /// Width of the recovery chance on both wounded messages: per mille, so
 /// 0..=1000 in ten bits. `sim_core::wound::recover_chance_pm` tops out at
 /// 450 by construction; the field is sized to the unit rather than to
@@ -781,6 +807,16 @@ impl Default for ItemCatalog {
 /// so equality is well-defined (the goldens compare decoded values).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EventMsg {
+    /// The world's stored sky and clock (`SUB_ENV`). `fade_end` crosses as
+    /// the low 32 bits of the tick, the snapshot header's own width.
+    Env(sim_core::weather::Env),
+    /// The owner's wet and cold, per cent, and whether the cold is hurting
+    /// them (`SUB_EXPOSURE`).
+    Exposure {
+        wet_pct: u8,
+        cold_pct: u8,
+        hurting: bool,
+    },
     /// Absolute hand-revive progress for its two participants. All-zero
     /// fields clear a prior hold; recovery is the existing `Recovered` fact.
     /// Neither side accumulates network arrivals.
@@ -804,8 +840,21 @@ pub enum EventMsg {
     },
     /// A scatter slot was exhausted — the node vanishes until respawn.
     SlotHarvested { cx: u16, cz: u16 },
-    /// A harvested slot's timer arrived — the node stands again.
-    SlotRespawned { cx: u16, cz: u16 },
+    /// A harvested slot's timer arrived — the node stands again. A tree
+    /// comes back as a sapling (tree growth v0): `grown_at` is the tick,
+    /// low 32 bits, it is full-grown by. `None` for anything that stands
+    /// back up whole.
+    SlotRespawned {
+        cx: u16,
+        cz: u16,
+        grown_at: Option<u32>,
+    },
+    /// One batch of the regrowing-tree walk (tree growth v0): each cell and
+    /// the tick it is full-grown by.
+    SlotGrowSync {
+        cells: [(u16, u16, u32); GROW_SYNC_BATCH],
+        count: u8,
+    },
     /// One batch of the harvested-cell walk. `reset` (first batch of a
     /// join or an event-lane resync) clears the client's set first.
     SlotSync {
@@ -1106,7 +1155,7 @@ pub enum EventMsg {
     /// the whiff is the commoner of the two. `EV_HIT` is the hit fact and
     /// is unicast to the attacker.
     Swing { swinger: u32 },
-    /// A pack animal howled for its pack (wire v75): its tagged roster id.
+    /// A pack animal howled for its pack (wire v76): its tagged roster id.
     /// The pack answers in the sim; this is the sound, so a client can put
     /// the howl on the animal that made it rather than on a timer.
     Howl { mob: u32 },
@@ -1451,14 +1500,48 @@ pub fn encode_event_slot_change(
     cz: u16,
     buf: &mut [u8],
 ) -> Result<usize, WireError> {
-    let sub = if harvested {
-        SUB_SLOT_HARVESTED
-    } else {
-        SUB_SLOT_RESPAWNED
-    };
-    let mut w = begin(buf, sub)?;
+    if !harvested {
+        return encode_event_slot_respawned(cx, cz, None, buf);
+    }
+    let mut w = begin(buf, SUB_SLOT_HARVESTED)?;
     w.write(cx as u32, 16)?;
     w.write(cz as u32, 16)?;
+    Ok(w.finish())
+}
+
+/// A slot stood back up — whole, or as a sapling growing until `grown_at`.
+pub fn encode_event_slot_respawned(
+    cx: u16,
+    cz: u16,
+    grown_at: Option<u32>,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    let mut w = begin(buf, SUB_SLOT_RESPAWNED)?;
+    w.write(cx as u32, 16)?;
+    w.write(cz as u32, 16)?;
+    w.write_bit(grown_at.is_some())?;
+    if let Some(g) = grown_at {
+        w.write(g, 32)?;
+    }
+    Ok(w.finish())
+}
+
+/// One batch of regrowing trees. Never empty: the harvested walk's reset
+/// is what clears a client's set, so an empty batch would say nothing.
+pub fn encode_event_slot_grow_sync(
+    cells: &[(u16, u16, u32)],
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if cells.is_empty() || cells.len() > GROW_SYNC_BATCH {
+        return Err(WireError::Cap);
+    }
+    let mut w = begin(buf, SUB_SLOT_GROW_SYNC)?;
+    w.write(cells.len() as u32, GROW_SYNC_COUNT_BITS)?;
+    for &(cx, cz, g) in cells {
+        w.write(cx as u32, 16)?;
+        w.write(cz as u32, 16)?;
+        w.write(g, 32)?;
+    }
     Ok(w.finish())
 }
 
@@ -2952,6 +3035,41 @@ pub fn encode_event_assist(
     Ok(w.finish())
 }
 
+/// The world's sky and clock — see `EventMsg::Env`. Refuses an `Env` the
+/// decoder would refuse, so a bad value never reaches the wire.
+pub fn encode_event_env(env: &sim_core::weather::Env, buf: &mut [u8]) -> Result<usize, WireError> {
+    if !env.valid() {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_ENV)?;
+    w.write(env.mode as u32, 3)?;
+    w.write(env.fade_end as u32, 32)?;
+    let f = env.from;
+    for v in [f.cloud, f.dark, f.rain, f.fog, f.wind, f.thunder] {
+        w.write(v as u32, WX_PM_BITS)?;
+    }
+    w.write(f.wind_dir as u32, 8)?;
+    w.write(env.day_offset, 32)?;
+    Ok(w.finish())
+}
+
+/// The owner's wet and cold — see `EventMsg::Exposure`.
+pub fn encode_event_exposure(
+    wet_pct: u8,
+    cold_pct: u8,
+    hurting: bool,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if wet_pct > 100 || cold_pct > 100 {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_EXPOSURE)?;
+    w.write(wet_pct as u32, EXPOSURE_PCT_BITS)?;
+    w.write(cold_pct as u32, EXPOSURE_PCT_BITS)?;
+    w.write_bit(hurting)?;
+    Ok(w.finish())
+}
+
 /// A body got up, own-fact — see `EventMsg::Recovered`.
 pub fn encode_event_recovered(chance_pm: u16, hp: u16, buf: &mut [u8]) -> Result<usize, WireError> {
     if chance_pm as u32 > CHANCE_PM_MAX {
@@ -3067,13 +3185,32 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 count: count as u8,
             }
         }
-        sub @ (SUB_SLOT_HARVESTED | SUB_SLOT_RESPAWNED) => {
+        SUB_SLOT_HARVESTED => EventMsg::SlotHarvested {
+            cx: r.read(16)? as u16,
+            cz: r.read(16)? as u16,
+        },
+        SUB_SLOT_RESPAWNED => {
             let cx = r.read(16)? as u16;
             let cz = r.read(16)? as u16;
-            if sub == SUB_SLOT_HARVESTED {
-                EventMsg::SlotHarvested { cx, cz }
+            let grown_at = if r.read_bit()? {
+                Some(r.read(32)?)
             } else {
-                EventMsg::SlotRespawned { cx, cz }
+                None
+            };
+            EventMsg::SlotRespawned { cx, cz, grown_at }
+        }
+        SUB_SLOT_GROW_SYNC => {
+            let count = r.read(GROW_SYNC_COUNT_BITS)? as usize;
+            if count == 0 || count > GROW_SYNC_BATCH {
+                return Err(WireError::Malformed);
+            }
+            let mut cells = [(0u16, 0u16, 0u32); GROW_SYNC_BATCH];
+            for c in cells.iter_mut().take(count) {
+                *c = (r.read(16)? as u16, r.read(16)? as u16, r.read(32)?);
+            }
+            EventMsg::SlotGrowSync {
+                cells,
+                count: count as u8,
             }
         }
         SUB_SLOT_SYNC => {
@@ -3844,6 +3981,47 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             }
             EventMsg::Wounded { ticks, chance_pm }
         }
+        SUB_EXPOSURE => {
+            let wet_pct = r.read(EXPOSURE_PCT_BITS)? as u8;
+            let cold_pct = r.read(EXPOSURE_PCT_BITS)? as u8;
+            let hurting = r.read_bit()?;
+            if wet_pct > 100 || cold_pct > 100 {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Exposure {
+                wet_pct,
+                cold_pct,
+                hurting,
+            }
+        }
+        SUB_ENV => {
+            let mode = r.read(3)? as u8;
+            let fade_end = r.read(32)? as u64;
+            let mut pm = [0u16; 6];
+            for v in pm.iter_mut() {
+                *v = r.read(WX_PM_BITS)? as u16;
+            }
+            let wind_dir = r.read(8)? as u8;
+            let day_offset = r.read(32)?;
+            let env = sim_core::weather::Env {
+                mode,
+                fade_end,
+                from: sim_core::weather::Wx {
+                    cloud: pm[0],
+                    dark: pm[1],
+                    rain: pm[2],
+                    fog: pm[3],
+                    wind: pm[4],
+                    thunder: pm[5],
+                    wind_dir,
+                },
+                day_offset,
+            };
+            if !env.valid() {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Env(env)
+        }
         SUB_ASSIST => {
             let helper = r.read(32)?;
             let target = r.read(32)?;
@@ -3987,7 +4165,20 @@ mod tests {
         let len = encode_event_slot_change(false, 130, 77, &mut buf).unwrap();
         assert_eq!(
             decode_event(&buf[..len]).unwrap(),
-            EventMsg::SlotRespawned { cx: 130, cz: 77 }
+            EventMsg::SlotRespawned {
+                cx: 130,
+                cz: 77,
+                grown_at: None
+            }
+        );
+        let len = encode_event_slot_respawned(130, 77, Some(0xDEAD_BEEF), &mut buf).unwrap();
+        assert_eq!(
+            decode_event(&buf[..len]).unwrap(),
+            EventMsg::SlotRespawned {
+                cx: 130,
+                cz: 77,
+                grown_at: Some(0xDEAD_BEEF)
+            }
         );
     }
 
@@ -5372,6 +5563,14 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/wound.rs"),
         },
         Module {
+            file: "weather.rs",
+            src: include_str!("../../sim-core/src/weather.rs"),
+        },
+        Module {
+            file: "exposure.rs",
+            src: include_str!("../../sim-core/src/exposure.rs"),
+        },
+        Module {
             file: "backpack.rs",
             src: include_str!("../../sim-core/src/backpack.rs"),
         },
@@ -5584,8 +5783,9 @@ mod wire_domains {
             // moved and the second time it did the job it exists for: it
             // is what refused a firearm cause at hitscan v0, and it let
             // this one through only because arrow recovery v1 spent the
-            // bump it demanded.
-            live_max: 6,
+            // bump it demanded. 7 = DEATH_BY_COLD at v75 (weather v0),
+            // the last value the three bits hold.
+            live_max: 7,
         },
         Domain {
             what: "move refusal",
@@ -6187,6 +6387,13 @@ mod wire_domains {
             // without also breaking the unit; the encoder refuses past
             // 1000 either way.
             "CHANCE_PM_BITS",
+            // Per-mille weather fields (weather v0): a unit, not an
+            // enumeration — `Wx::in_range` bounds them at 1000 on both ends.
+            "WX_PM_BITS",
+            // Per-cent wet and cold readings: units, bounded at 100.
+            "EXPOSURE_PCT_BITS",
+            // A grow-sync batch length, bounded by `GROW_SYNC_BATCH`.
+            "GROW_SYNC_COUNT_BITS",
             "MOVE_SLOT_BITS",
             "INV_COUNT_BITS",
             "INV_SLOT_BITS",

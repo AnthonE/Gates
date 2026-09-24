@@ -730,7 +730,7 @@ mod carried_through_death {
     /// a field a death is *allowed* to erase — the inventory (the backpack
     /// takes it), the meters and health (a respawn is a whole body), the
     /// craft queue, the weak-spot chase, and the death record itself.
-    pub const RE_DERIVED: [&str; 35] = [
+    pub const RE_DERIVED: [&str; 38] = [
         "assist_target",
         "assist_by",
         "assist_ticks", // an interrupted hand hold
@@ -805,6 +805,11 @@ mod carried_through_death {
         // remainder without the item it was burning is state nothing can
         // spend.
         "light_acc",
+        // **A respawn comes up dry and warm** (weather v0): the corpse was
+        // the one out in the rain, and a fresh body on a beach has not been.
+        "wet",
+        "chill",
+        "cold_acc",
     ];
 }
 

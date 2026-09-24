@@ -242,6 +242,14 @@ const ROUTES: &[(&str, bool, bool, &str)] = &[
          to invent one",
     ),
     (
+        "exposure.rs",
+        false,
+        false,
+        "the cold (weather v0) — metabolic, like starving: a plate is not a \
+         coat, and what keeps the cold out is the worn warmth the step already \
+         subtracts. No bearing: the weather is on every side of you",
+    ),
+    (
         "deploy.rs",
         false,
         false,

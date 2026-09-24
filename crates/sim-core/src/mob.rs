@@ -830,6 +830,8 @@ pub fn step(
     seed: u64,
     haven: &crate::terrain::Haven,
     tick: u64,
+    day_tick: u64,
+    sense_pm: u32,
     mc: &MobContent,
     cols: &ColIndex,
     occ: &mut Occupants,
@@ -873,6 +875,8 @@ pub fn step(
         if tick % MOB_THINK_TICKS == (slot as u64) % MOB_THINK_TICKS {
             let mut ctx = brain::Ctx {
                 tick,
+                day_tick,
+                sense_pm,
                 players,
                 lit,
                 noises,

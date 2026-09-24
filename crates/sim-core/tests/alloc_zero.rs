@@ -332,6 +332,11 @@ fn test_alloc_zero() {
     // this gate's real coverage for a comfortable number; the assert is
     // the honest version of the same worry.
     world.survival = SurvivalContent::probe_fixture();
+    // Wet and cold (weather v0) under a forced storm: the once-a-second
+    // exposure step — the roof test, the heat scan over the boxes and the
+    // cold's hp — is per-tick work and must allocate nothing either.
+    world.survival.exposure = sim_core::exposure::ExposureContent::probe_fixture();
+    world.env.force(world.seed, 0, sim_core::weather::STORM);
     // The deploy fixture, for the one path in it this gate has to reach:
     // the respawn's bag scan. A death now walks the deploy store looking
     // for the dying player's own bag before it walks the spawn ring, and a

@@ -1141,7 +1141,8 @@ fn the_mixer_refuses_a_bed() {
     let starts = m.tick(16.0, AT_ORIGIN, 0, &Mix::default());
     assert!(starts.is_empty(), "the mixer started a bed");
     assert_eq!(
-        m.dropped, 3,
+        m.dropped as usize,
+        Cue::ALL.iter().filter(|c| c.is_bed()).count(),
         "a refused bed was not counted as a caller bug"
     );
 }

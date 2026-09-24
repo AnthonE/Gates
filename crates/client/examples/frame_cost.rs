@@ -16,12 +16,14 @@
 //!    form is deliberately unchanged by the memo — every public entry point
 //!    still hashes every corner every time, and the memo is a second entry
 //!    point a caller opts into — so a run where these two are equal means the
-//!    memo is not being reached, not that it is free.
+//!    memo is not being reached, not that it is free. Then again on a range
+//!    flank, where stage 4d (the interior ranges) is paid.
 //!  - **`heightfield`**, both rings. The far mesh is the one that used to be a
 //!    ~190 ms frame; it runs on `AsyncComputeTaskPool` now, so what this
 //!    prints is the pool's cost rather than the frame's.
 //!  - **`clutter_fill` + `skirt_fill`**, one tile and one ring. The client
-//!    fills one tile a frame, so the per-tile row is the frame's.
+//!    fills one tile a frame, so the per-tile row is the frame's. Also on a
+//!    range summit tile and a range flank tile.
 //!  - **`water::stream`**, as a system on a bare `App`: a cold sweep (nothing
 //!    to carry) against a one-cell snap (most of the core carried).
 //!
@@ -57,6 +59,34 @@ fn row(label: &str, ns: f64) {
     println!("  {label:<46} {:9.3} ms", ns / 1e6);
 }
 
+fn tile_origin(t: (i32, i32)) -> (f32, f32) {
+    (
+        t.0 as f32 * terrain::CLUTTER_TILE_M,
+        t.1 as f32 * terrain::CLUTTER_TILE_M,
+    )
+}
+
+/// The clutter tiles the timings stand on: the range's highest summit, and
+/// the flank tile whose lift is nearest 20 m. Scanned at tile centres.
+fn range_tiles() -> ((i32, i32), (i32, i32)) {
+    let n = (2048.0 / terrain::CLUTTER_TILE_M) as i32;
+    let (mut summit, mut top) = ((0, 0), f32::MIN);
+    let (mut flank, mut miss) = ((0, 0), f32::MAX);
+    for tz in 0..n {
+        for tx in 0..n {
+            let (ox, oz) = tile_origin((tx, tz));
+            let lift = terrain::massif_lift_at(SEED, ox + 8.0, oz + 8.0);
+            if lift > top {
+                (summit, top) = ((tx, tz), lift);
+            }
+            if lift > 0.0 && (lift - 20.0).abs() < miss {
+                (flank, miss) = ((tx, tz), (lift - 20.0).abs());
+            }
+        }
+    }
+    (summit, flank)
+}
+
 fn main() {
     println!("frame_cost — release, minimum of several runs, CPU only\n");
     let haven = terrain::haven(SEED);
@@ -87,6 +117,42 @@ fn main() {
     row("through a Lattice", memo);
     println!("  {:<46} {:9.2}x\n", "ratio", plain / memo);
 
+    // ── the same, on the interior ranges ──────────────────────────────────
+    //
+    // The walk above sits at the island centre, inside `MASSIF_R_IN`, so it
+    // never pays stage 4d. Two tiles are found rather than written down: the
+    // highest summit, and a flank (lift nearest 20 m), which pays the ridged
+    // term AND the gully filter.
+    let (summit, flank) = range_tiles();
+    let (fx, fz) = tile_origin(flank);
+    println!("terrain::height on a range flank, 100k taps from ({fx:.0}, {fz:.0})");
+    let plain_r = best(4, || {
+        let mut a = 0.0f32;
+        let mut c = 0.0f32;
+        for _ in 0..100_000 {
+            c += 0.001;
+            a += terrain::height(SEED, fx + c, fz);
+        }
+        black_box(a);
+    });
+    let memo_r = best(4, || {
+        let mut lat = terrain::Lattice::new();
+        let mut a = 0.0f32;
+        let mut c = 0.0f32;
+        for _ in 0..100_000 {
+            c += 0.001;
+            a += terrain::height_memo(&mut lat, SEED, fx + c, fz);
+        }
+        black_box(a);
+    });
+    row("plain", plain_r);
+    row("through a Lattice", memo_r);
+    println!(
+        "  {:<46} {:9.2}x\n",
+        "range / centre, through a Lattice",
+        memo_r / memo
+    );
+
     // ── the ground mesh ───────────────────────────────────────────────────
     println!("terrain_mesh::heightfield — now on AsyncComputeTaskPool");
     let step = CHUNK_M / (NEAR_N - 1) as f32;
@@ -112,6 +178,7 @@ fn main() {
     println!("sim_core::terrain — the clutter ring");
     let mut buf = vec![CLUTTER_NONE; CLUTTER_PER_TILE];
     let mut sbuf = vec![CLUTTER_NONE; SKIRT_PER_TILE];
+    let mut tbuf = vec![CLUTTER_NONE; terrain::CLUTTER_TILE_CAP];
     let tx = (1024.0 / terrain::CLUTTER_TILE_M) as i32;
     let n = terrain::clutter_fill(SEED, &haven, tx, tx, &mut buf);
     println!("  (tile ({tx},{tx}) holds {n} elements)");
@@ -151,6 +218,37 @@ fn main() {
             }
         }),
     );
+    for (label, t) in [("summit", summit), ("flank", flank)] {
+        let (ox, oz) = tile_origin(t);
+        let lift = terrain::massif_lift_at(SEED, ox + 8.0, oz + 8.0);
+        println!(
+            "  (range {label} tile ({},{}) at ({ox:.0}, {oz:.0}), lift {lift:.1} m)",
+            t.0, t.1
+        );
+        row(
+            &format!("clutter_fill, one {label} tile"),
+            best(20, || {
+                black_box(terrain::clutter_fill(SEED, &haven, t.0, t.1, &mut buf));
+            }),
+        );
+        row(
+            &format!("skirt_fill, one {label} tile"),
+            best(60, || {
+                black_box(terrain::skirt_fill(
+                    SEED, &table, &haven, t.0, t.1, &mut sbuf,
+                ));
+            }),
+        );
+        row(
+            &format!("clutter_tile_fill_memo, one {label} tile (the client's)"),
+            best(20, || {
+                let mut lat = terrain::Lattice::new();
+                black_box(terrain::clutter_tile_fill_memo(
+                    &mut lat, SEED, &table, &haven, t.0, t.1, &mut tbuf,
+                ));
+            }),
+        );
+    }
     println!();
 
     // ── the sea, as a system ──────────────────────────────────────────────

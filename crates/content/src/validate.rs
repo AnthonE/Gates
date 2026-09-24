@@ -720,6 +720,52 @@ pub fn structural(c: &Content) -> Result<(), String> {
         }
     }
 
+    // Wet and cold (weather v0). Everything is per mille of a meter, so
+    // nothing may pass 1000, and a cold that kills a full body in under five
+    // minutes is a bug, not a winter.
+    {
+        let e = &c.balance.exposure;
+        for (name, v) in [
+            ("wet_rain_per_s", e.wet_rain_per_s),
+            ("dry_per_s", e.dry_per_s),
+            ("dry_fire_per_s", e.dry_fire_per_s),
+            ("night_cold", e.night_cold),
+            ("rain_cold", e.rain_cold),
+            ("wind_cold", e.wind_cold),
+            ("wet_cold", e.wet_cold),
+            ("fire_warmth", e.fire_warmth),
+            ("torch_warmth", e.torch_warmth),
+            ("chill_rise_per_s", e.chill_rise_per_s),
+            ("chill_fall_per_s", e.chill_fall_per_s),
+            ("hurt_at", e.hurt_at),
+        ] {
+            if v > 1000 {
+                return Err(format!("exposure `{name}`: {v} is past 1000 per mille"));
+            }
+        }
+        if e.soak_depth_cm > u16::MAX as u32 || e.heat_radius_cm > u16::MAX as u32 {
+            return Err("exposure: a distance overflows u16 cm".to_string());
+        }
+        if e.chill_rise_per_s > 0 && e.chill_fall_per_s == 0 {
+            return Err("exposure: a chill that never falls would never warm".to_string());
+        }
+        let hp = c.balance.globals.player_hp;
+        if e.hurt_hp_per_min > 0 && hp / e.hurt_hp_per_min < 5 {
+            return Err(format!(
+                "exposure: full cold kills {hp} hp in under 5 min ({} hp/min)",
+                e.hurt_hp_per_min
+            ));
+        }
+        for a in &c.armors {
+            if !(-100..=100).contains(&a.cold_pct) {
+                return Err(format!(
+                    "armor `{}`: cold_pct {} outside ±100",
+                    a.id, a.cold_pct
+                ));
+            }
+        }
+    }
+
     // The survival clock. Every one of these would be a division by zero,
     // a meter that never moves, or a body that cannot be hurt — each of
     // which would make the clock silently inert, which is the failure mode

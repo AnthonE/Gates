@@ -264,11 +264,18 @@ pub enum Cue {
     /// must say *landed, but less* — duller and lower than [`Cue::Hit`],
     /// never quieter to the point of ambiguity with silence.
     HitLimb,
+    /// The rain bed (weather v0): a looped hiss with drops in it, turned up
+    /// with the rain and muffled under a roof. A bed ([`Cue::is_bed`]).
+    /// Appended, the enum's append-order rule.
+    BedRain,
+    /// Thunder: a crack and a long roll, heard wherever you are — a storm is
+    /// not a place in the world, so it is not positional.
+    Thunder,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 45;
+pub const CUE_COUNT: usize = 47;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -322,6 +329,8 @@ impl Cue {
         Cue::ShotGun,
         Cue::HitHead,
         Cue::HitLimb,
+        Cue::BedRain,
+        Cue::Thunder,
     ];
 
     /// Is this cue a piece of music?
@@ -351,7 +360,10 @@ impl Cue {
     /// cooldown-stacking gate, all of which would otherwise each carry their
     /// own list to forget a fourth bed from.
     pub fn is_bed(self) -> bool {
-        matches!(self, Cue::BedWind | Cue::BedSurf | Cue::BedUnder)
+        matches!(
+            self,
+            Cue::BedWind | Cue::BedSurf | Cue::BedUnder | Cue::BedRain
+        )
     }
 
     /// The cue's index into every table in this module.
@@ -424,6 +436,9 @@ impl Cue {
             // layer is heard for minutes on end where a footstep is heard for
             // a stride. The widest in the table on purpose.
             Cue::Bird => 0.16,
+            // No two claps the same length or pitch: a storm is heard for
+            // minutes and one recording retriggered would be its tell.
+            Cue::Thunder => 0.12,
             Cue::CraftDone
             | Cue::Refused
             | Cue::Hit
@@ -433,7 +448,8 @@ impl Cue {
             | Cue::UiClick
             | Cue::BedWind
             | Cue::BedSurf
-            | Cue::BedUnder => 0.0,
+            | Cue::BedUnder
+            | Cue::BedRain => 0.0,
             // **Zero, and it is not the signal-cue argument.** A piece played
             // at 1.03× is a piece in a different key, and the next piece
             // would be in a third — the tail that covers a join would be
@@ -665,6 +681,11 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // as a MISS, and a cue fading toward silence would say exactly that.
     row(GAME,  0.0, 0.60,  45, 6, false),  // hit, head
     row(GAME,  0.0, 0.45,  45, 6, false),  // hit, limb
+    // Weather v0. The rain is a bed like the wind; thunder is ambience —
+    // a player who turns the scenery down turns the storm down with it —
+    // and non-positional, with a cooldown so two near bolts are one roll.
+    row(AMB,   0.0, 0.42,   0, 0, false),  // rain bed
+    row(AMB,   0.0, 0.85, 900, 3, false),  // thunder
 ];
 
 /// Your own arm. Named rather than written inline so [`RSWING`] can read its
@@ -894,6 +915,8 @@ pub struct SnapshotDef {
     pub wind: f32,
     pub surf: f32,
     pub under: f32,
+    /// The rain bed: heard above water, gone below it.
+    pub rain: f32,
 }
 
 /// The two states (`DECISIONS.md` §open, "water audio v0").
@@ -914,6 +937,7 @@ pub const SNAPSHOTS: [SnapshotDef; 2] = [
         wind: 1.0,
         surf: 1.0,
         under: 0.0,
+        rain: 1.0,
     },
     // Submerged. The game bus survives at a level a player can still fight on
     // — being underwater must not be a stealth advantage handed out by the
@@ -925,6 +949,7 @@ pub const SNAPSHOTS: [SnapshotDef; 2] = [
         wind: 0.0,
         surf: 0.22,
         under: 1.0,
+        rain: 0.0,
     },
 ];
 
@@ -988,6 +1013,7 @@ impl Snapshots {
             wind: mix(a.wind, b.wind),
             surf: mix(a.surf, b.surf),
             under: mix(a.under, b.under),
+            rain: mix(a.rain, b.rain),
         }
     }
 }
@@ -1009,6 +1035,7 @@ impl SnapshotDef {
             Cue::BedWind => self.wind,
             Cue::BedSurf => self.surf,
             Cue::BedUnder => self.under,
+            Cue::BedRain => self.rain,
             _ => 0.0,
         }
     }

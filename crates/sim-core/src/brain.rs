@@ -580,6 +580,11 @@ pub fn peers(mobs: &[Mob; MAX_MOBS], tick: u64) -> [Peer; MAX_MOBS] {
 /// Everything one think reads, apart from the animal itself.
 pub struct Ctx<'c, 'h, 'o> {
     pub tick: u64,
+    /// The hour the day clock reads, `/time` included (`weather::day_tick`).
+    pub day_tick: u64,
+    /// How far this weather lets an animal notice, per mille of a clear
+    /// day's reach (`weather::sense_pm`): fog and rain shrink it.
+    pub sense_pm: u32,
     pub players: &'c [Player; MAX_PLAYERS],
     /// Which players hold a lit torch this tick (`light::is_lit`).
     pub lit: &'c [bool; MAX_PLAYERS],
@@ -660,7 +665,7 @@ fn holds(ctx: &Ctx, slot: usize, def: &MobDef, mob: &Mob, c: Cond) -> bool {
         Crowded => crowded(ctx, slot, mob),
         Fire => fire(ctx, def, mob),
         GaveUp => mob.tries >= GIVE_UP_TRIES,
-        Night => crate::world::is_night(tick),
+        Night => crate::world::is_night(ctx.day_tick),
         Noise => mob.poi_until > tick,
         Quiet => mob.poi_until <= tick,
         Ambushed => mob.ambushed,
@@ -833,7 +838,8 @@ fn nearest_watcher(players: &[Player; MAX_PLAYERS], mob: &Mob) -> i64 {
 
 /// Senses (`AIBrainSenses`, one pass a think) into memory.
 ///
-/// Within the notice radius (`MobDef::spook_at`, which is the hour's) a
+/// Within the notice radius (`MobDef::spook_at`, which is the hour's, and
+/// the weather's `sense_pm` of it) a
 /// player walking or standing is noticed from any bearing — hearing, scent,
 /// the reference's listen range — and one sprinting at 130% of it. A
 /// crouched player is silent: seen only inside the sight cone and only at
@@ -855,11 +861,14 @@ fn sense(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob) {
         mob.target = NO_TARGET;
     }
     let calm = tick < mob.calm_until;
-    // Asleep, everything is noticed at half range.
+    // The hour's radius (`/time` moves the hour), shrunk by fog and rain
+    // the way the dark already shrinks it (weather v0). Asleep, everything
+    // is noticed at half of that.
+    let awake_r = def.spook_at(ctx.day_tick) * ctx.sense_pm as i64 / 1000;
     let r = if mob.state == Sleep {
-        def.spook_at(tick) / 2
+        awake_r / 2
     } else {
-        def.spook_at(tick)
+        awake_r
     };
     let (fx, fz) = yaw_dir(mob.yaw);
     let mut best: Option<(i64, u8)> = None;
@@ -1484,6 +1493,8 @@ mod tests {
     #[test]
     fn a_wolf_circles_a_player_it_cannot_reach_and_then_gives_up() {
         let mut w = World::new(11);
+        // Clear skies held: fog would shrink the 12 m it has to hear across.
+        w.env = crate::weather::Env::CLEAR;
         w.combat = CombatContent::probe_fixture();
         w.mob = MobContent::probe_fixture();
         let bc = BuildContent::probe_fixture();

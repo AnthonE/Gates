@@ -180,6 +180,7 @@ pub fn hash(c: &Content) -> u64 {
         h.u(a.slot as u32);
         h.u(a.reduction_pct);
         h.u(a.move_penalty_pct);
+        h.u(a.cold_pct as u32);
     }
 
     h.s("consumables");
@@ -401,6 +402,28 @@ pub fn hash(c: &Content) -> u64 {
     h.u(sv.water_minutes_to_empty);
     h.u(sv.starve_hp_per_min);
     h.u(sv.dehydrate_hp_per_min);
+
+    let ex = &c.balance.exposure;
+    h.s("exposure");
+    for v in [
+        ex.wet_rain_per_s,
+        ex.dry_per_s,
+        ex.dry_fire_per_s,
+        ex.soak_depth_cm,
+        ex.night_cold,
+        ex.rain_cold,
+        ex.wind_cold,
+        ex.wet_cold,
+        ex.fire_warmth,
+        ex.torch_warmth,
+        ex.heat_radius_cm,
+        ex.chill_rise_per_s,
+        ex.chill_fall_per_s,
+        ex.hurt_at,
+        ex.hurt_hp_per_min,
+    ] {
+        h.u(v);
+    }
 
     h.0.digest()
 }

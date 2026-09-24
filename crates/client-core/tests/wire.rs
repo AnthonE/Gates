@@ -402,9 +402,9 @@ fn an_impact_crosses_whole_and_drains_once() {
 /// `encode_event_impact` returns `Range`, and this is the decoder's half.
 ///
 /// **The forge is bit-exact and paired with a control**, `a_shot_with_no_
-/// speed_is_malformed`'s discipline: the header is 10 bits and the writer
-/// packs LSB-first, so the fields land at bit 10 (qx, 17), 27 (qy, 14), 41
-/// (qz, 17) and **58 (surf, 2)**. Setting both surf bits makes 3; the
+/// speed_is_malformed`'s discipline: the header is 11 bits and the writer
+/// packs LSB-first, so the fields land at bit 11 (qx, 17), 28 (qy, 14), 42
+/// (qz, 17) and **59 (surf, 2)**. Setting both surf bits makes 3; the
 /// control sets only the low one, which is `SURF_WORLD` and must still
 /// decode.
 #[test]
@@ -413,10 +413,10 @@ fn an_unknown_impact_surface_is_malformed() {
     let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
     let len = encode_event_impact(0xA179, -312, 0x58A3, SURF_GROUND, &mut buf).unwrap();
 
-    // Control: bit 58 is byte 7, offset 2 — set it alone and the surface
+    // Control: bit 59 is byte 7, offset 3 — set it alone and the surface
     // reads as `SURF_WORLD`, a kind this build knows.
     let mut control = buf[..len].to_vec();
-    control[7] |= 0b0000_0100;
+    control[7] |= 0b0000_1000;
     assert!(
         c.on_stream(&control).is_ok(),
         "the control must decode, or the forge below proves nothing"
@@ -429,7 +429,7 @@ fn an_unknown_impact_surface_is_malformed() {
 
     // Forge: set both bits, which is the fourth value nothing emits.
     let mut forged = buf[..len].to_vec();
-    forged[7] |= 0b0000_1100;
+    forged[7] |= 0b0001_1000;
     assert!(
         c.on_stream(&forged).is_err(),
         "a surface kind past SURF_BUILT must be refused, not drawn"
@@ -453,10 +453,10 @@ fn an_unknown_impact_surface_is_malformed() {
 ///
 /// **The forge is bit-exact and paired with a control**, because a test that
 /// corrupted the frame at large would be refused for any number of reasons
-/// and prove nothing about this one. The event header is 10 bits
-/// (`KIND_BITS` 4 + `SUB_BITS` 6) and the writer packs LSB-first, so the
-/// fields land at bit 10 (shooter, 32), 42 (yaw, 16), 58 (pitch, 8), 66
-/// (speed, 16), 82 (drop, 16). Three frames come out of one encode: a
+/// and prove nothing about this one. The event header is 11 bits
+/// (`KIND_BITS` 4 + `SUB_BITS` 7) and the writer packs LSB-first, so the
+/// fields land at bit 11 (shooter, 32), 43 (yaw, 16), 59 (pitch, 8), 67
+/// (speed, 16), 83 (drop, 16). Three frames come out of one encode: a
 /// control that leaves the speed nonzero, an *instant* forge that clears
 /// only the speed, and a malformed forge that clears the speed and the
 /// reach together. If the control ever starts failing, this test has
@@ -466,7 +466,7 @@ fn a_shot_with_no_speed_is_instant_and_one_with_no_reach_either_is_malformed() {
     let mut c = core();
     let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
     // speed = 1, so the field's only set bit is its bit 0, at wire
-    // position 66 — byte 8, offset 2.
+    // position 67 — byte 8, offset 3.
     let len = encode_event_shot(0x2B17, 41_234, 203, 1, 22, &mut buf).unwrap();
 
     // Control: clear the speed's middle byte only. Speed stays 1, and the
@@ -480,14 +480,14 @@ fn a_shot_with_no_speed_is_instant_and_one_with_no_reach_either_is_malformed() {
     );
     assert!(c.pop_shot().is_some(), "and it must reach the ring");
 
-    // Instant: clear exactly bits 66..=81, leaving `drop` (the reach) at
-    // 22. Byte 8 keeps its low two bits (the top of `pitch`), byte 10 keeps
-    // everything above its low two (the bottom of `drop`). This is what a
-    // firearm actually sends, and it must arrive.
+    // Instant: clear exactly bits 67..=82, leaving `drop` (the reach) at
+    // 22. Byte 8 keeps its low three bits (the top of `pitch`), byte 10
+    // keeps everything above its low three (the bottom of `drop`). This is
+    // what a firearm actually sends, and it must arrive.
     let mut instant = buf[..len].to_vec();
-    instant[8] &= 0b0000_0011;
+    instant[8] &= 0b0000_0111;
     instant[9] = 0;
-    instant[10] &= 0b1111_1100;
+    instant[10] &= 0b1111_1000;
     assert!(
         c.on_stream(&instant).is_ok(),
         "a zero-speed shot is the instant reading now, not a malformed frame"
@@ -498,16 +498,19 @@ fn a_shot_with_no_speed_is_instant_and_one_with_no_reach_either_is_malformed() {
         "the speed the client sees is the zero that was sent"
     );
     assert_eq!(shot.4, 22, "and the low field is the reach, untouched");
+    // And the pitch beside it: a mask one bit off (a header widened under
+    // it) clips pitch's top bit and still passes every line above.
+    assert_eq!(shot.2, 203, "the forge must not reach into the pitch");
 
-    // Malformed: clear the speed AND the reach — bits 66..=97, which is
-    // byte 8's top six, bytes 9 through 11, and byte 10's low two carried
-    // above. A beam of no length is the one pattern left with no meaning.
+    // Malformed: clear the speed AND the reach — bits 67..=98, which is
+    // byte 8's top five, bytes 9 through 11, and byte 12's low three. A
+    // beam of no length is the one pattern left with no meaning.
     let mut forged = buf[..len].to_vec();
-    forged[8] &= 0b0000_0011;
+    forged[8] &= 0b0000_0111;
     forged[9] = 0;
     forged[10] = 0;
     forged[11] = 0;
-    forged[12] &= 0b1111_1100;
+    forged[12] &= 0b1111_1000;
     assert!(
         c.on_stream(&forged).is_err(),
         "an instant shot with no reach must be refused, not drawn"
@@ -633,10 +636,10 @@ fn the_bag_set_adds_syncs_and_removes() {
 ///
 /// **The forge is bit-exact and paired with a control**, because a frame
 /// corrupted at large would be refused for any number of reasons and
-/// prove nothing about this one. The event header is 10 bits (`KIND_BITS`
-/// 4 + `SUB_BITS` 6, LSB-first). Bag removal: `id` at bits 10..41, `why`
-/// at 42..43 — byte 5, offsets 2–3. Consume refusal: `reason` at bits
-/// 10..13 — byte 1, offsets 2–5.
+/// prove nothing about this one. The event header is 11 bits (`KIND_BITS`
+/// 4 + `SUB_BITS` 7, LSB-first). Bag removal: `id` at bits 11..42, `why`
+/// at 43..44 — byte 5, offsets 3–4. Consume refusal: `reason` at bits
+/// 11..14 — byte 1, offsets 3–6.
 #[test]
 fn a_forged_refusal_reason_is_counted_and_dropped_at_the_pump() {
     let mut c = core();
@@ -658,7 +661,7 @@ fn a_forged_refusal_reason_is_counted_and_dropped_at_the_pump() {
     // knows. It must decode and remove the bag, which is what proves the
     // forge below is refused for its value and not for the tampering.
     let mut control = buf[..len].to_vec();
-    control[5] = (control[5] & !0b0000_0100) | 0b0000_1000;
+    control[5] = (control[5] & !0b0000_1000) | 0b0001_0000;
     assert!(
         c.on_stream(&control).is_ok(),
         "the control must decode, or the forge below proves nothing"
@@ -672,7 +675,7 @@ fn a_forged_refusal_reason_is_counted_and_dropped_at_the_pump() {
     let errors_before = c.event_errors;
     let len = encode_event_bag_removed(11, BAG_GONE_EMPTIED as u8, &mut buf).unwrap();
     let mut forged = buf[..len].to_vec();
-    forged[5] |= 0b0000_1100;
+    forged[5] |= 0b0001_1000;
     assert!(
         c.on_stream(&forged).is_err(),
         "why == 3 names no BAG_GONE_* and must be refused, not applied"
@@ -689,7 +692,7 @@ fn a_forged_refusal_reason_is_counted_and_dropped_at_the_pump() {
     // live code.
     let len = protocol::encode_event_consume_refused(2, &mut buf).unwrap();
     let mut control = buf[..len].to_vec();
-    control[1] = (control[1] & !0b0011_1100) | (3 << 2);
+    control[1] = (control[1] & !0b0111_1000) | (3 << 3);
     assert!(
         c.on_stream(&control).is_ok(),
         "the control must decode, or the forge below proves nothing"
@@ -698,7 +701,7 @@ fn a_forged_refusal_reason_is_counted_and_dropped_at_the_pump() {
 
     let errors_before = c.event_errors;
     let mut forged = buf[..len].to_vec();
-    forged[1] = (forged[1] & !0b0011_1100) | (9 << 2);
+    forged[1] = (forged[1] & !0b0111_1000) | (9 << 3);
     assert!(
         c.on_stream(&forged).is_err(),
         "reason 9 names no REFUSE_C_* and must be refused, not toasted"

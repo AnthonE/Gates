@@ -126,8 +126,16 @@ pub fn atlas(srgb: bool) -> impl Fn(&mut ImageLoaderSettings) + Send + Sync + 's
 /// twice — a role added to this list with no file loads a handle that samples
 /// black, and a role with a file left off the list ships an unread texture
 /// again, which is the bug this whole change is fixing.
-pub const ROLES_WITH_AO: [&str; 8] = [
-    "grass", "gravel", "litter", "metal", "rock", "sand", "stone", "concrete",
+pub const ROLES_WITH_AO: [&str; 9] = [
+    "grass",
+    "gravel",
+    "litter",
+    "metal",
+    "rock",
+    "sand",
+    "stone",
+    "concrete",
+    "aggregate",
 ];
 
 impl MapSet {
@@ -197,6 +205,12 @@ pub struct GroundMaps {
     pub grass: MapSet,
     pub litter: MapSet,
     pub rock: MapSet,
+    /// The road's aggregate (`Gravel004`), the arrays' fifth layer. Not an
+    /// identity — no splat weight reaches it; the pavement and the unpaved
+    /// branch sample it at `ground_splat::ROAD_AGGREGATE_TILE_M`. It was the
+    /// `rock` identity until 2026-09-24, when the summits took a slab source
+    /// and the road kept its grit.
+    pub aggregate: MapSet,
 }
 
 /// The prop identities' maps — the five sets that were fetched, manifested and
@@ -219,7 +233,7 @@ pub struct GroundMaps {
 ///
 /// | role | linear mean rgb | luma | albedo sd | in band |
 /// |---|---|---|---|---|
-/// | rock | 0.250 0.245 0.226 | 0.245 | 0.1379 | ✓ |
+/// | rock | 0.101 0.101 0.094 | 0.100 | 0.0368 | ✓ |
 /// | bark | 0.128 0.105 0.064 | 0.107 | 0.0676 | ✓ |
 /// | wood | 0.161 0.139 0.112 | 0.141 | 0.0661 | ✓ |
 /// | stone | 0.237 0.202 0.107 | 0.203 | 0.1138 | ✓ |
@@ -243,6 +257,7 @@ pub fn load(mut commands: Commands, assets: Res<AssetServer>) {
         grass: MapSet::load(&assets, "grass"),
         litter: MapSet::load(&assets, "litter"),
         rock: MapSet::load(&assets, "rock"),
+        aggregate: MapSet::load(&assets, "aggregate"),
     });
     // Same paths as the ground's `rock`, and therefore the same handle: the
     // asset server keys on path plus settings, so naming it twice costs one
@@ -286,22 +301,23 @@ pub fn load(mut commands: Commands, assets: Res<AssetServer>) {
 /// [`GroundMaps`] once this exists.
 #[derive(Resource, Clone)]
 pub struct GroundArrays {
-    /// `Rgba8UnormSrgb`, four layers in `terrain::splat`'s order.
+    /// `Rgba8UnormSrgb`, five layers: the four identities in
+    /// `terrain::splat`'s order, then the road's aggregate.
     pub albedo: Handle<Image>,
-    /// `Rgba8Unorm`, four layers.
+    /// `Rgba8Unorm`, five layers, the same order.
     pub normal: Handle<Image>,
-    /// `Rgba8Unorm`, eight layers: roughness at `0..4`, AO at
-    /// [`AO_LAYER0`]`..8`, each in `terrain::splat`'s order.
+    /// `Rgba8Unorm`, ten layers: roughness at `0..5`, AO at
+    /// [`AO_LAYER0`]`..10`, each in that order.
     pub rough_ao: Handle<Image>,
 }
 
-/// The first AO layer of [`GroundArrays::rough_ao`]; roughness is the four
+/// The first AO layer of [`GroundArrays::rough_ao`]; roughness is the five
 /// below it. The shader indexes these as literals and `tests/ground_tiling.rs`
 /// holds them to this constant.
-pub const AO_LAYER0: u32 = 4;
-// The layer list `stack_ground` builds puts AO after four roughness layers;
+pub const AO_LAYER0: u32 = 5;
+// The layer list `stack_ground` builds puts AO after five roughness layers;
 // this is the one place the two are tied together.
-const _: () = assert!(AO_LAYER0 == 4);
+const _: () = assert!(AO_LAYER0 == 5);
 
 /// Whether a source image may be a layer yet: it has the chain
 /// `mipmap::drain` gives it, or it is one that pass will never touch.
@@ -499,7 +515,13 @@ pub fn stack_ground(
     let Some(maps) = maps else {
         return;
     };
-    let sets = [&maps.sand, &maps.grass, &maps.litter, &maps.rock];
+    let sets = [
+        &maps.sand,
+        &maps.grass,
+        &maps.litter,
+        &maps.rock,
+        &maps.aggregate,
+    ];
     // `expect`, not `unwrap_or_default`, and the reason is unchanged from when
     // this check lived on the material: an unresolved handle samples as BLACK,
     // and a black occlusion layer puts the whole island in shadow — a failure
@@ -513,18 +535,8 @@ pub fn stack_ground(
             )
         })
     };
-    let albedo = [
-        &sets[0].albedo,
-        &sets[1].albedo,
-        &sets[2].albedo,
-        &sets[3].albedo,
-    ];
-    let normal = [
-        &sets[0].normal,
-        &sets[1].normal,
-        &sets[2].normal,
-        &sets[3].normal,
-    ];
+    let albedo = sets.map(|m| &m.albedo);
+    let normal = sets.map(|m| &m.normal);
     // Roughness first, AO from `AO_LAYER0` — the layer order the shader
     // indexes by literal.
     let rough_ao = [
@@ -532,10 +544,12 @@ pub fn stack_ground(
         &sets[1].rough,
         &sets[2].rough,
         &sets[3].rough,
+        &sets[4].rough,
         ao(0),
         ao(1),
         ao(2),
         ao(3),
+        ao(4),
     ];
 
     let s = &mut *stacking;
