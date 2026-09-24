@@ -827,7 +827,7 @@ pub fn day_night(
         // of the sun has to put the disk out itself.
         if let Some(mut disk) = disk {
             disk.intensity = if elev > 0.0 {
-                SUN_DISK_INTENSITY * (1.0 - w.sun_cover)
+                SUN_DISK_INTENSITY * (1.0 - w.sun_cover.max(w.fog))
             } else {
                 0.0
             };

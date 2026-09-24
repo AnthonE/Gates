@@ -84,10 +84,11 @@ pub struct WeatherNow {
 impl WeatherNow {
     /// How much of the direct sun the sky takes away, `0..=1`: the deck
     /// over the sun's own disk, or a heavy sky over all of it, whichever
-    /// is more — and thick fog, which a sun cannot shine through either.
+    /// is more — and thick fog, which a sun cannot shine through either:
+    /// the fog preset's 900‰ puts the shadows out (`rig::day_night`).
     pub fn occlusion(&self) -> f32 {
         let heavy = ((self.cloud - 0.5) / 0.5).clamp(0.0, 1.0);
-        self.sun_cover.max(heavy).max(self.fog * 0.8)
+        self.sun_cover.max(heavy).max(self.fog)
     }
 
     /// Per-metre extinction of the weather's fog and rain on geometry —
