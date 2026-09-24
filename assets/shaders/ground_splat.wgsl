@@ -17,8 +17,9 @@
 // `StandardMaterial`'s six slots, and this material — and sixteen ground maps
 // put this group alone at 22; the browser refused the pipeline layout. A layer
 // costs no binding, so each identity is a layer of its family's array, in
-// `terrain::splat`'s order: albedo (4 layers), normal (4), and roughness with
-// AO behind it (8: roughness 0–3, AO 4–7, `textures::AO_LAYER0`). A layer
+// `terrain::splat`'s order, and the road's aggregate rides behind them as a
+// fifth: albedo (5 layers), normal (5), and roughness with AO behind it (10:
+// roughness 0–4, AO 5–9, `textures::AO_LAYER0`). A layer
 // samples exactly as the standalone texture did — same filter, same chain,
 // same bytes — so this is one shader for the desktop and the browser, and
 // the native before/after capture is what says the desktop frame did not move.
@@ -104,11 +105,16 @@ struct GroundSplat {
     // x/y = streak lattice width/height (m), z/w = `sin(tilt)` where streaks
     // start / are full.
     rock_d: vec4<f32>,
+    // x = the road aggregate's own `1 / linear-luma mean` (`AGGREGATE_GAIN`):
+    // it is layer 4, not an identity, so `gain` has no slot for it. yzw
+    // reserved and zero.
+    aggregate: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> splat: GroundSplat;
 // The four albedo photographs, one layer each: sand 0 · grass 1 · litter 2 ·
-// rock 3, the same order everywhere in this file.
+// rock 3, the same order everywhere in this file — and the road's aggregate at
+// 4, which no splat weight reaches.
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var albedo_maps: texture_2d_array<f32>;
 // **One sampler for every layer of every array.** Every map wants the same
 // tiling/anisotropy descriptor, and a sampler each would have put this
@@ -117,9 +123,9 @@ struct GroundSplat {
 // the cheap axis here until WebGL2 said 16 of those too (the header), which is
 // why the maps are arrays now and this is still one sampler.
 @group(#{MATERIAL_BIND_GROUP}) @binding(102) var ground_sampler: sampler;
-// The tangent-space normal maps, same layer order.
+// The tangent-space normal maps, same layer order, aggregate at 4.
 @group(#{MATERIAL_BIND_GROUP}) @binding(103) var normal_maps: texture_2d_array<f32>;
-// Roughness at layers 0–3 and ambient occlusion at 4–7 (`textures::AO_LAYER0`).
+// Roughness at layers 0–4 and ambient occlusion at 5–9 (`textures::AO_LAYER0`).
 // Both greyscale and loaded `is_srgb = false` because a roughness map is DATA —
 // decoding one as sRGB would bend every value toward the dark end and the
 // ground would read uniformly glossy. AO is `ART.md` §4's MEDIUM scale, the
@@ -300,11 +306,13 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     let uv3 = in.uv * splat.tile.w;
     // A separate, fixed projection: interpolating UV scale would sweep many
     // texture repeats across the verge. Only the sampled surfaces are blended.
+    // Its own photograph, layer 4 (`Gravel004`): the rock identity is a slab
+    // now, and a road is aggregate.
     let uv_road = in.uv * splat.tile.w * splat.pavement.w;
-    let road_albedo = textureSample(albedo_maps, ground_sampler, uv_road, 3);
-    let road_normal = textureSample(normal_maps, ground_sampler, uv_road, 3);
-    let road_rough = textureSample(rough_ao_maps, ground_sampler, uv_road, 3).r;
-    let road_ao = textureSample(rough_ao_maps, ground_sampler, uv_road, 7).r;
+    let road_albedo = textureSample(albedo_maps, ground_sampler, uv_road, 4);
+    let road_normal = textureSample(normal_maps, ground_sampler, uv_road, 4);
+    let road_rough = textureSample(rough_ao_maps, ground_sampler, uv_road, 4).r;
+    let road_ao = textureSample(rough_ao_maps, ground_sampler, uv_road, 9).r;
     var a0 = textureSample(albedo_maps, ground_sampler, uv0, 0);
     var a1 = textureSample(albedo_maps, ground_sampler, uv1, 1);
     var a2 = textureSample(albedo_maps, ground_sampler, uv2, 2);
@@ -506,7 +514,7 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     // Erode only the edge: centres stay covered, off-road stays untouched.
     // Dust is the existing road splat underneath, so a broken edge exposes a
     // shoulder rather than a black transparent seam. No independent noise.
-    let road_grain = dot(road_albedo.rgb, LUMA) * splat.gain.w;
+    let road_grain = dot(road_albedo.rgb, LUMA) * splat.aggregate.x;
     let wear = clamp(road_grain - 1.0, -1.0, 1.0) * splat.road_dirt.w;
     let road_fade = 1.0 - smoothstep(splat.road_lod.x, splat.road_lod.y,
         length(in.world_position.xz - view.world_position.xz));
@@ -650,15 +658,15 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     // diffuse one reused" — applying this to specular is visibly wrong at
     // grazing angles. `pbr_input.specular_occlusion` is left as Bevy computed
     // it from SSAO.
-    // Layers 4–7 of the rough/AO array: `textures::AO_LAYER0` plus the
+    // Layers 5–8 of the rough/AO array: `textures::AO_LAYER0` plus the
     // identity, and `tests/ground_tiling.rs` holds these literals to it.
     let ao = dot(
         bw,
         vec4<f32>(
-            textureSample(rough_ao_maps, ground_sampler, uv0, 4).r,
-            textureSample(rough_ao_maps, ground_sampler, uv1, 5).r,
-            textureSample(rough_ao_maps, ground_sampler, uv2, 6).r,
-            textureSample(rough_ao_maps, ground_sampler, uv3, 7).r,
+            textureSample(rough_ao_maps, ground_sampler, uv0, 5).r,
+            textureSample(rough_ao_maps, ground_sampler, uv1, 6).r,
+            textureSample(rough_ao_maps, ground_sampler, uv2, 7).r,
+            textureSample(rough_ao_maps, ground_sampler, uv3, 8).r,
         ),
     );
     pbr_input.diffuse_occlusion = min(pbr_input.diffuse_occlusion, vec3<f32>(ao + road_weight * road_ao));

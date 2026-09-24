@@ -412,6 +412,7 @@ impl Scratch<Barren> {
                 minor: terrain::empty_minor(),
                 // No side road either, for the same reason.
                 roads: [terrain::SideRoad::NONE; terrain::SIDE_ROADS],
+                ore_pm: terrain::ORE_PM_UNIT,
             },
             harvested: Barren,
             cache: SlotCache::new(),

@@ -246,9 +246,14 @@ pub const GROUND_ALBEDO: [[f32; 3]; 4] = [
     // is what absorbs the held-mean constraint, and it is the only one of the
     // four that is not §3's own number.
     [0.1505, 0.1335, 0.1069],
-    // granite — hue 39.0°, sat 14.5%, **luma 147.0**, the centres of §3's
-    // 35–43°, 10–19% and 127–167.
-    [0.3238, 0.2888, 0.2299],
+    // granite — hue 39.0°, sat 14.6%, **luma 138.7**: the centres of §3's
+    // 35–43° and 10–19%, and a value inside its 127–167 that holds the island's
+    // mean. It sat at the band's centre (147.0) until 2026-09-24; the interior
+    // ranges took granite's share of the land 9.4% → 11.6% and brightened the
+    // island 3.7%, and the value came down (×0.88 linear, hue and saturation
+    // held) to put the island-weighted mean back at 0.10960
+    // (`tests/ground_mix.rs`).
+    [0.2850, 0.2542, 0.2023],
 ];
 
 /// How far the damp band reaches **along the ground**, metres.
@@ -501,7 +506,7 @@ impl Ring {
 ///
 /// Off the shipped 1024² files, linearised from sRGB, Rec.709 luma; `sd` is
 /// the sd of that per-texel luma. The basis is stated because the statistic
-/// moves with it — `rock` reads 0.1379 here and 0.1287 at 512² — and because
+/// moves with it — `Gravel004` read 0.1379 here and 0.1287 at 512² — and because
 /// this table had no basis and no gate until 2026-08-28, by which time its
 /// `rock` row was a texture the repo had stopped shipping and its `sd` column
 /// did not reproduce under any reading. `tests/manifest_measured.rs` re-measures
@@ -512,7 +517,7 @@ impl Ring {
 /// | grass | 0.292 0.248 0.120 | **2.444** | 0.0753 |
 /// | sand | 0.228 0.174 0.110 | **2.066** | 0.0499 |
 /// | litter | 0.140 0.098 0.039 | **3.559** | 0.0635 |
-/// | rock | 0.250 0.245 0.226 | **1.108** | 0.1379 |
+/// | rock | 0.101 0.101 0.094 | **1.076** | 0.0368 |
 ///
 /// Only `rock` clears the rule. Reducing each source to its own mean-1
 /// luminance field gives every one of them a span of 1.000 by construction, so
@@ -729,11 +734,12 @@ pub const UV_PER_M: f32 = 0.25;
 /// booted** (`NOW.md` §LOOK).
 ///
 /// **Rock keeps 4 m because ambientCG does not publish a size for it.**
-/// `Gravel004`'s `dimensionX/Y/Z` are all `0`, their sentinel for unknown —
-/// the same answer `CorrugatedSteel009` gives in `structures::TIER`, and that
-/// row's response is the one copied here: count a feature instead. The
-/// median-energy wavelength of `rock_albedo.jpg` is 14.4 texels, so at 4 m a
-/// clast draws **5.6 cm**, inside real crushed-aggregate grading (20–63 mm).
+/// `Rock032`'s `dimensionX/Y/Z` are all `0`, their sentinel for unknown (as
+/// `Gravel004`'s were before it) — the same answer `CorrugatedSteel009` gives
+/// in `structures::TIER`, and that row's response is the one copied here:
+/// count a feature instead. The median-energy wavelength of `rock_albedo.jpg`
+/// is 11.1 texels, so at 4 m its finest relief draws **4.3 cm**, a coarse
+/// granite's grain and pitting, with its joints a metre or so apart.
 pub const GROUND_TILE_M: [f32; 4] = [4.0, 2.0, 1.3, 4.0];
 
 /// Percent of each identity's albedo variance finer than `ART.md` rule 1's
@@ -747,8 +753,11 @@ pub const GROUND_TILE_M: [f32; 4] = [4.0, 2.0, 1.3, 4.0];
 ///
 /// Sand and rock are the low pair because both are drawn at the 4 m ceiling
 /// rather than at a size of their own — sand because 15 m is over the band,
-/// rock because ambientCG publishes no size to take.
-pub const GRAIN_SHARE: [f32; 4] = [79.811, 94.683, 96.071, 78.375];
+/// rock because ambientCG publishes no size to take. Rock is the lowest since
+/// 2026-09-24 (`Gravel004`'s 78.4% → `Rock032`'s 69.3%): a slab keeps more of
+/// its contrast in metre-scale joints than scree does, which is the point of
+/// the swap — the fine grain is still the majority of it.
+pub const GRAIN_SHARE: [f32; 4] = [79.811, 94.683, 96.071, 69.308];
 
 /// What sand's grain share would be at its published 15 m, and the whole of
 /// the case for clamping it.

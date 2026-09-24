@@ -180,7 +180,12 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// seven seeds at a 4 m pitch before this pin moved, and by
 /// `tests/massif.rs` after — so what moved here is the interior grid, the
 /// inland site that stands among the ranges, and its roads.
-const GOLDEN_TERRAIN_HASH: u64 = 0x05DD_F5CE_799C_BF62;
+/// **Moved `0x05DD_F5CE_799C_BF62` → `0xCF57_44D9_7022_0322` at the ore
+/// budget** (2026-09-24): each island scales its Highland metal and sulfur to
+/// `terrain::ORE_TARGET`, and `probe_sites` now hashes `Haven::ore_pm`. No
+/// height moved; the golden seed's windows hold no rock-channel cell, which
+/// is why the budget had to be hashed rather than seen.
+const GOLDEN_TERRAIN_HASH: u64 = 0xCF57_44D9_7022_0322;
 
 #[test]
 fn test_terrain_golden() {

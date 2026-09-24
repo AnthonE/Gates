@@ -409,6 +409,11 @@ fn the_capture_spawn_no_longer_stands_on_one_identity() {
 /// the brightest identity, so the island got brighter by arithmetic. Stated
 /// here, as the last two were, so the brightness owner meets it as a number.
 ///
+/// ⚠ **And back to 0.10960 on 2026-09-24, and this one IS an albedo edit, on
+/// purpose:** the operator chose to hold the island's brightness where it
+/// was before the ranges, so granite's value came down ×0.88 (luma 147 →
+/// 138.7, hue and saturation held, still inside §3's band) and nothing else.
+///
 /// The second assert is the retraction's own point, kept: the two windows
 /// disagree, and by more than they used to (1.145× → 1.268×), because granite
 /// carries more value now and the quadrant still weights it at zero.
@@ -439,8 +444,8 @@ fn the_mean_luma_is_held_against_the_island_not_the_quadrant() {
     );
 
     assert!(
-        (now - 0.113_65).abs() < 1e-4,
-        "the island-weighted mean linear luma is no longer the 0.11365 the \
+        (now - 0.109_60).abs() < 1e-4,
+        "the island-weighted mean linear luma is no longer the 0.10960 the \
          identity re-place was held to: {now:.5}. An albedo edit moved the \
          island's overall brightness — that is the coupled lighting owner's \
          call (`CLAUDE.md` traps), not an identity pass's."

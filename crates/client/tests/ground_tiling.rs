@@ -286,16 +286,23 @@ fn every_tap_uses_its_identitys_uv() {
     let mut road = [0u32; 4];
     for tap in taps(&wgsl) {
         let (family, layer, args) = classify(&tap);
-        let k = (layer % 4) as usize;
-        let role = ROLES[k];
+        // The slot within its family: AO counts from `AO_LAYER0`, and slot 4
+        // of every family is the road's aggregate, which is no identity.
+        let k = if family == 3 {
+            layer - AO_LAYER0
+        } else {
+            layer
+        } as usize;
+        let role = if k < 4 { ROLES[k] } else { "aggregate" };
         match args.as_slice() {
             // textureSample(maps, sampler, uv, layer)
             [_, sampler, uv, _] => {
                 assert_eq!(*sampler, "ground_sampler", "{tap}");
                 if *uv == "uv_road" {
-                    assert_eq!(k, 3, "road aggregate must sample the rock layer: {tap}");
+                    assert_eq!(k, 4, "road aggregate must sample its own layer: {tap}");
                     road[family] += 1;
                 } else {
+                    assert!(k < 4, "only the road samples the aggregate: {tap}");
                     assert_eq!(
                         *uv, uv_of[k],
                         "{family}/{role}: layer {layer} is sampled at `{uv}`, not \
@@ -440,8 +447,15 @@ fn classify(tap: &str) -> (usize, u32, Vec<&str>) {
         "rough_ao_maps" => 3,
         other => panic!("a tap of `{other}` this scrape cannot classify: {tap}"),
     };
+    // Albedo and normal carry as many layers as roughness does: the four
+    // identities and the road's aggregate.
     assert!(
-        layer < if family >= 2 { 2 * AO_LAYER0 } else { 4 },
+        layer
+            < if family >= 2 {
+                2 * AO_LAYER0
+            } else {
+                AO_LAYER0
+            },
         "{tap}: layer {layer} is past the end of its array"
     );
     (family, layer, args)

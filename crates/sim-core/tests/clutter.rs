@@ -1467,6 +1467,7 @@ fn sites_parked_offshore() -> Haven {
         shelter: 0,
         minor: terrain::empty_minor(),
         roads: [terrain::SideRoad::NONE; terrain::SIDE_ROADS],
+        ore_pm: terrain::ORE_PM_UNIT,
     }
 }
 
