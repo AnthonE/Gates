@@ -414,6 +414,12 @@ pub struct Armor {
     pub slot: ArmorSlot,
     pub reduction_pct: u32,
     pub move_penalty_pct: u32,
+    /// The reference's **Cold** column (weather v0, `exposure.rs`): the
+    /// share of the chill a worn piece keeps out, in per cent. Negative
+    /// draws it in — a road sign jacket is a sheet of metal. Absent is
+    /// zero: a piece that says nothing about the cold does nothing for it.
+    #[serde(default)]
+    pub cold_pct: i32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -828,6 +834,40 @@ pub struct Survival {
     pub drink_hp_cost: u32,
 }
 
+/// Wet and cold (`content/balance.toml` `[exposure]`; weather v0,
+/// `sim_core::exposure`). Everything per mille of a full meter and per
+/// second, because the sim steps a body once a second; distances in
+/// centimetres. Absent is the inert default: nothing gets wet, nobody
+/// gets cold.
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Exposure {
+    /// Wet gained a second in the heaviest rain, with nothing overhead.
+    pub wet_rain_per_s: u32,
+    /// Wet lost a second when nothing is wetting you, and beside a fire.
+    pub dry_per_s: u32,
+    pub dry_fire_per_s: u32,
+    /// Standing in water this deep soaks you through, cm.
+    pub soak_depth_cm: u32,
+    /// The chill the night, the heaviest rain, the strongest wind and being
+    /// soaked through each add.
+    pub night_cold: u32,
+    pub rain_cold: u32,
+    pub wind_cold: u32,
+    pub wet_cold: u32,
+    /// The chill a fire in reach and a torch in hand take away.
+    pub fire_warmth: u32,
+    pub torch_warmth: u32,
+    /// How near a fire has to be to warm you, cm.
+    pub heat_radius_cm: u32,
+    /// How fast the body's chill follows where the world is pushing it.
+    pub chill_rise_per_s: u32,
+    pub chill_fall_per_s: u32,
+    /// Past this chill the cold costs hp; this many a minute at full chill.
+    pub hurt_at: u32,
+    pub hurt_hp_per_min: u32,
+}
+
 /// The declared bands + globals the anchors compute against
 /// (`content/balance.toml`; DECISIONS.md §open "balance bands").
 #[derive(Debug, Clone, Deserialize)]
@@ -839,6 +879,9 @@ pub struct Balance {
     pub starter_base: StarterBase,
     pub backpack: Backpack,
     pub survival: Survival,
+    /// Wet and cold (weather v0). Defaulted: content without it plays dry.
+    #[serde(default)]
+    pub exposure: Exposure,
     /// What a fresh character spawns holding (`[[spawn_kit]]`).
     ///
     /// **Defaulted, because a naked spawn is the game.** Content that

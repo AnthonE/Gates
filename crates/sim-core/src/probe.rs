@@ -1028,11 +1028,19 @@ pub extern "C" fn probe_combat(master_seed: u64, sequences: u32, ticks: u32) -> 
         // fixtures — this probe is not what puts it there, and reading it
         // as though it were is how a coverage claim outruns its code.
         world.survival = crate::survival::SurvivalContent::probe_fixture();
+        // Wet and cold (weather v0), armed on its seconds-fast fixture under
+        // a storm forced at midnight on the first tick: the soak, the chill,
+        // the cold's hp and the admin verb all ride the parity digest.
+        world.survival.exposure = crate::exposure::ExposureContent::probe_fixture();
         world.dev_spawn = Some(world.spawn_pos(1));
         world.tick(&[
             Command::Join { id: 1 },
             Command::Join { id: 2 },
             Command::Join { id: 3 },
+            Command::AdminEnv {
+                weather: crate::weather::STORM,
+                time_pm: 937,
+            },
         ]);
         // Fixture arrangement, like the wire tests' server-side grants:
         // a weapon in hand whichever hotbar slot the bot frame selects.

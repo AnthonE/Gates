@@ -40,7 +40,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 112] = [
+pub const FIXTURES: [&str; 113] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -210,6 +210,7 @@ pub const FIXTURES: [&str; 112] = [
     "action_rotate.bin",
     // Weather v0 (v75). Appended.
     "event_env.bin",
+    "event_exposure.bin",
 ];
 
 /// The sky/clock event: a storm forced mid-fade, the clock pushed to dusk.

@@ -358,7 +358,13 @@ const SUB_ASSIST: u32 = 59;
 /// The schedule itself never crosses — it is a function of the seed and
 /// the tick every client already holds.
 const SUB_ENV: u32 = 60;
-const SUB_MAX: u32 = SUB_ENV;
+/// The owner's wet and cold (weather v0, wire v75): per cent each, and
+/// whether the cold is hurting. Own-fact, `SUB_VITALS`' audience, sent when
+/// the per-cent reading moves.
+const SUB_EXPOSURE: u32 = 61;
+const SUB_MAX: u32 = SUB_EXPOSURE;
+/// Width of an exposure reading: per cent, 0..=100 in seven bits.
+const EXPOSURE_PCT_BITS: u32 = 7;
 /// Width of each per-mille weather field: 0..=1000 in ten bits.
 const WX_PM_BITS: u32 = 10;
 /// Width of the recovery chance on both wounded messages: per mille, so
@@ -787,6 +793,13 @@ pub enum EventMsg {
     /// The world's stored sky and clock (`SUB_ENV`). `fade_end` crosses as
     /// the low 32 bits of the tick, the snapshot header's own width.
     Env(sim_core::weather::Env),
+    /// The owner's wet and cold, per cent, and whether the cold is hurting
+    /// them (`SUB_EXPOSURE`).
+    Exposure {
+        wet_pct: u8,
+        cold_pct: u8,
+        hurting: bool,
+    },
     /// Absolute hand-revive progress for its two participants. All-zero
     /// fields clear a prior hold; recovery is the existing `Recovered` fact.
     /// Neither side accumulates network arrivals.
@@ -2961,6 +2974,23 @@ pub fn encode_event_env(env: &sim_core::weather::Env, buf: &mut [u8]) -> Result<
     Ok(w.finish())
 }
 
+/// The owner's wet and cold — see `EventMsg::Exposure`.
+pub fn encode_event_exposure(
+    wet_pct: u8,
+    cold_pct: u8,
+    hurting: bool,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if wet_pct > 100 || cold_pct > 100 {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_EXPOSURE)?;
+    w.write(wet_pct as u32, EXPOSURE_PCT_BITS)?;
+    w.write(cold_pct as u32, EXPOSURE_PCT_BITS)?;
+    w.write_bit(hurting)?;
+    Ok(w.finish())
+}
+
 /// A body got up, own-fact — see `EventMsg::Recovered`.
 pub fn encode_event_recovered(chance_pm: u16, hp: u16, buf: &mut [u8]) -> Result<usize, WireError> {
     if chance_pm as u32 > CHANCE_PM_MAX {
@@ -3845,6 +3875,19 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 return Err(WireError::Malformed);
             }
             EventMsg::Wounded { ticks, chance_pm }
+        }
+        SUB_EXPOSURE => {
+            let wet_pct = r.read(EXPOSURE_PCT_BITS)? as u8;
+            let cold_pct = r.read(EXPOSURE_PCT_BITS)? as u8;
+            let hurting = r.read_bit()?;
+            if wet_pct > 100 || cold_pct > 100 {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Exposure {
+                wet_pct,
+                cold_pct,
+                hurting,
+            }
         }
         SUB_ENV => {
             let mode = r.read(3)? as u8;
@@ -5406,6 +5449,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/weather.rs"),
         },
         Module {
+            file: "exposure.rs",
+            src: include_str!("../../sim-core/src/exposure.rs"),
+        },
+        Module {
             file: "backpack.rs",
             src: include_str!("../../sim-core/src/backpack.rs"),
         },
@@ -5606,8 +5653,9 @@ mod wire_domains {
             // moved and the second time it did the job it exists for: it
             // is what refused a firearm cause at hitscan v0, and it let
             // this one through only because arrow recovery v1 spent the
-            // bump it demanded.
-            live_max: 6,
+            // bump it demanded. 7 = DEATH_BY_COLD at v75 (weather v0),
+            // the last value the three bits hold.
+            live_max: 7,
         },
         Domain {
             what: "move refusal",
@@ -6212,6 +6260,8 @@ mod wire_domains {
             // Per-mille weather fields (weather v0): a unit, not an
             // enumeration — `Wx::in_range` bounds them at 1000 on both ends.
             "WX_PM_BITS",
+            // Per-cent wet and cold readings: units, bounded at 100.
+            "EXPOSURE_PCT_BITS",
             "MOVE_SLOT_BITS",
             "INV_COUNT_BITS",
             "INV_SLOT_BITS",

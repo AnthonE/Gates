@@ -231,7 +231,7 @@ pub const SECTION_COUNTS: usize = 11 * 2 + 4;
 /// **the magazine** (format 12: `MAX_MAGS` pairs of `u16`, the loaded count
 /// and the round in it), the weak-spot pair, the four death-screen facts,
 /// and `craft_done_at`.
-const PLAYER_TAIL_BYTES: usize = 4 + 8 + 9 + 8 + MAX_MAGS * 4 + 6 + 9 + 8;
+const PLAYER_TAIL_BYTES: usize = 4 + 8 + 9 + 8 + MAX_MAGS * 4 + 6 + 9 + 8 + 8;
 /// On-disk stride of one saved body. Public because two byte-poking
 /// tests in `tests/worldsave.rs` have to seek past the player section, and
 /// a hand-copied 240 there is a silent wrong-offset the day `PlayerSave`
@@ -403,6 +403,8 @@ pub enum WorldSaveError {
     /// The sky/clock record names a preset past the table, a per-mille
     /// field past 1000, or a day offset past a day.
     BadEnv,
+    /// A body's wet or chill is past 1000 per mille.
+    BadExposure,
 }
 
 impl WorldSaveError {
@@ -426,6 +428,7 @@ impl WorldSaveError {
             Self::BadWorldContTable => "a world container names a table no container rolls",
             Self::DuplicateWorldCont => "two world containers claim the same cell",
             Self::BadEnv => "the weather record names an impossible sky or clock",
+            Self::BadExposure => "a body is wetter or colder than a body can be",
         }
     }
 }
@@ -579,6 +582,10 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         o.u16(p.death_item);
         o.u16(p.death_range_cm);
         o.u64(p.craft_done_at);
+        // Wet and cold (format 15): hashed, so saved.
+        o.u16(p.wet);
+        o.u16(p.chill);
+        o.u32(p.cold_acc);
     }
     for (p, placed) in w.pieces.entries().iter().zip(w.pieces.placed()) {
         o.u16(p.cx);
@@ -944,6 +951,12 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         let death_item = r.u16()?;
         let death_range_cm = r.u16()?;
         let craft_done_at = r.u64()?;
+        let wet = r.u16()?;
+        let chill = r.u16()?;
+        let cold_acc = r.u32()?;
+        if wet > 1000 || chill > 1000 {
+            return Err(WorldSaveError::BadExposure);
+        }
         // The hotbar index is read unchecked by every verb that asks what
         // is in your hand, so it is bounded here for the same reason the
         // wire bounds it at decode (`Command::Input` falls back to 0 for a
@@ -997,6 +1010,9 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             // comment demands. It is the survival accumulators' answer for
             // the survival accumulators' reason (torch fuel v0).
             light_acc: save.light_acc,
+            wet,
+            chill,
+            cold_acc,
             dead: save.dead,
             // **A world remembers a crawl** (wounded v0, format 13): the
             // body comes back down with its clock, for `mag`'s reason —
@@ -1676,14 +1692,15 @@ mod tests {
         // written inline after `next_swing` (reload v1). Saved because
         // `state_hash` folds it — a snapshot that dropped it would restore
         // a world that hashes differently from the one it was written from.
-        assert_eq!(PLAYER_TAIL_BYTES, 84);
+        assert_eq!(PLAYER_TAIL_BYTES, 92);
         // 308 → 320 at format 8: `PlayerSave` carries `WEAR_SLOTS` worn
         // stacks at the inventory's six-byte stride (armor v0). 320 → 324
         // at format 11: the torch's remainder in its scalar head (torch
         // fuel v0). 356 → 373 at format 13: the crawl and its two clocks
-        // in the same head (wounded v0).
+        // in the same head (wounded v0). 373 → 381 at format 15: wet,
+        // chill and the cold's remainder in the tail (weather v0).
         assert_eq!(
-            PLAYER_BYTES, 373,
+            PLAYER_BYTES, 381,
             "a body is PlayerSave plus every other hashed field"
         );
         // The sum, spelled out, so the number below is checkable by
@@ -1694,7 +1711,7 @@ mod tests {
         // a stack is four bytes and not two. A constant a reader cannot
         // re-derive is a constant nobody checks twice.
         let by_hand = 90                    // head (format 15: eleven section counts + the 26 B sky/clock)
-            + 100 * 373                     // players (6 B a stack, 2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13)
+            + 100 * 381                     // players (6 B a stack, 2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13, wet and cold at 15)
             + 8_192 * 21                    // pieces + plate + placement tick
             + 1_024 * 33                    // deploys + bag_ready + placed
             + 256 * 66                      // hearths (25 + the crew: 1 + 10*4)
@@ -1785,10 +1802,10 @@ mod tests {
         // an old file no longer reads — which on a live shard means a
         // wipe, and that is an operator act (`DECISIONS.md`, and
         // `store.rs`'s own refusal says whose call it is).
-        // 884_084 → 884_110 at format 15 (weather v0): the head's 26-byte
-        // sky and clock.
+        // 884_084 → 884_910 at format 15 (weather v0): the head's 26-byte
+        // sky and clock, and 8 bytes of wet and cold on each of 100 bodies.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 884_110,
+            WORLD_SAVE_MAX_BYTES, 884_910,
             "the world save ceiling moved"
         );
     }

@@ -257,6 +257,8 @@ fn main() {
     write_fixture(goldens::FIXTURES[109], &buf[..len]);
     let len = protocol::encode_event_env(&goldens::event_env(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[111], &buf[..len]);
+    let len = protocol::encode_event_exposure(64, 100, true, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[112], &buf[..len]);
 
     let (id, why) = goldens::event_bag_removed();
     let len = encode_event_bag_removed(id, why, &mut buf).unwrap();

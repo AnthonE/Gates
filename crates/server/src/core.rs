@@ -2861,6 +2861,29 @@ impl ShardCore {
             }
         }
 
+        // Wet and cold (weather v0): the owner's per-cent readout when it
+        // moves. A client with no live body (dead, not yet joined) owes
+        // nothing and keeps its last reading until one exists.
+        if let Some(wslot) = self.live_wslot(slot) {
+            let expo = sim_core::exposure::readout(
+                &self.world.survival.exposure,
+                &self.world.players[wslot],
+            );
+            if self.world.survival.exposure.armed() && Some(expo) != self.clients[slot].last_expo {
+                match protocol::encode_event_exposure(expo.0, expo.1, expo.2, &mut self.ev_buf) {
+                    Ok(len) => {
+                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            self.clients[slot].last_expo = Some(expo);
+                            ShardStats::bump(&stats.ev_sent);
+                        } else {
+                            return;
+                        }
+                    }
+                    Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                }
+            }
+        }
+
         // The sky and the clock (weather v0): the whole record whenever it
         // differs from what this client last heard, which is also how a
         // fresh join and a resync hear it.

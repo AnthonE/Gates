@@ -1351,6 +1351,7 @@ impl Plugin for GatesRenderPlugin {
                 weather::update.after(feed::drain).before(rig::day_night),
                 sky::compose.after(rig::day_night),
                 rain::drive.after(weather::update),
+                hud::exposure,
             )
                 .run_if(world_running),
         )

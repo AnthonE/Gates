@@ -860,8 +860,12 @@ pub const DEATH_BY_CHARGE: u8 = 5;
 /// bump to ride, and a firearm kill told the victim they were shot with
 /// an arrow for twenty-three days.
 pub const DEATH_BY_BULLET: u8 = 6;
+/// The cold took them (weather v0, `exposure.rs`): chilled past what the
+/// body can hold, wet or in the night or both. The eighth cause and the
+/// last one the three-bit field holds — the next is a widening.
+pub const DEATH_BY_COLD: u8 = 7;
 
-pub const DEATH_BY_MAX: u8 = DEATH_BY_BULLET;
+pub const DEATH_BY_MAX: u8 = DEATH_BY_COLD;
 
 /// Where in the day/night cycle a tick falls, `0.0..1.0` — 0 is dawn,
 /// `limits::DAY_PORTION` is dusk (day/night v0, `DECISIONS.md` §open).
@@ -1165,6 +1169,13 @@ pub struct Player {
     /// torch on every reconnect, which is a small exploit and an exact-
     /// arithmetic bug (`persist.rs`).
     pub light_acc: u32,
+    /// Wet and cold (weather v0, `exposure.rs`), per mille: how soaked the
+    /// body is, how chilled, and the partial hp the cold is owed. Hashed and
+    /// kept by the world save; a body restored from the player store comes
+    /// back dry, like a body that woke.
+    pub wet: u16,
+    pub chill: u16,
+    pub cold_acc: u32,
 }
 
 impl Default for Player {
@@ -1213,6 +1224,9 @@ impl Default for Player {
             assist_by: 0,
             assist_ticks: 0,
             light_acc: 0,
+            wet: 0,
+            chill: 0,
+            cold_acc: 0,
         }
     }
 }
@@ -3212,6 +3226,11 @@ impl World {
                     // silent; `NOW.md` §0mag carries the remainder.
                     mag: [0; MAX_MAGS],
                     mag_round: [NO_ITEM; MAX_MAGS],
+                    // Dry and warm: the store's record is a body that left
+                    // the world, and it comes back the way a body wakes.
+                    wet: 0,
+                    chill: 0,
+                    cold_acc: 0,
                     // `NO_CELL`, not zero: the weak-spot chase names a
                     // cell and cell 0 is a real one, so a `0` here would
                     // restore a player already half-way through chasing
@@ -4202,6 +4221,88 @@ impl World {
     /// order (overflow policy: defer — the caller keeps the tail), step
     /// every active player in slot order (move, then swing), release due
     /// respawns, stamp the hash on cadence.
+    /// One second of wet and cold for slot `i`, on its staggered tick
+    /// (weather v0, `exposure.rs`). True when the cold killed the body —
+    /// the caller's `continue`, as for the survival clock.
+    fn expose(&mut self, i: usize, tick: u64, wx: &crate::weather::Wx, night: bool) -> bool {
+        if !self.survival.exposure.armed()
+            || !(tick + i as u64).is_multiple_of(crate::limits::EXPOSURE_PERIOD_TICKS)
+        {
+            return false;
+        }
+        let inp = self.exposure_inputs(i, wx, night);
+        let step = crate::exposure::step(
+            &self.survival.exposure,
+            &inp,
+            &mut self.players[i],
+            &mut self.events,
+        );
+        if step == survival::Step::Died {
+            let id = self.players[i].id;
+            self.die(i, id, DEATH_BY_COLD, NO_ITEM, 0);
+            return true;
+        }
+        false
+    }
+
+    /// What the world is doing to slot `i`'s body this second: the weather,
+    /// the hour, a roof, the sea at its feet, a fire, a torch.
+    pub fn exposure_inputs(
+        &self,
+        i: usize,
+        wx: &crate::weather::Wx,
+        night: bool,
+    ) -> crate::exposure::Inputs {
+        let p = &self.players[i];
+        let x = p.body.qx as f32 * crate::movement::POS_XZ_Q;
+        let z = p.body.qz as f32 * crate::movement::POS_XZ_Q;
+        let feet = p.body.qy as f32 * crate::movement::POS_Y_Q;
+        let roofed = crate::collide::roofed(self.seed, &self.haven, self.pieces.cols(), x, z, feet);
+        let sea = crate::terrain::SEA_LEVEL;
+        let depth_cm = if feet < sea {
+            ((sea - feet) * 100.0).min(u16::MAX as f32) as u16
+        } else {
+            0
+        };
+        crate::exposure::Inputs {
+            rain: wx.rain,
+            wind: wx.wind,
+            night,
+            roofed,
+            depth_cm,
+            fire: self.near_fire(x, z, feet),
+            torch: crate::light::is_lit(p, &self.gather),
+        }
+    }
+
+    /// Is a lit fire (a campfire, a furnace) near enough to warm a body
+    /// standing here? Planar reach from the content, and within a storey.
+    fn near_fire(&self, x: f32, z: f32, feet: f32) -> bool {
+        let r = self.survival.exposure.heat_radius_cm as f32 * 0.01;
+        if r <= 0.0 {
+            return false;
+        }
+        let cols = self.pieces.cols();
+        self.deploys
+            .boxes()
+            .iter()
+            .zip(self.deploys.oven_states())
+            .any(|(b, st)| {
+                if !(st.lit && st.burns()) {
+                    return false;
+                }
+                let (bx, bz) = crate::deploy::cell_center(b.cx, b.cz);
+                let (dx, dz) = (bx - x, bz - z);
+                if dx * dx + dz * dz > r * r {
+                    return false;
+                }
+                let y = crate::collide::col_base_y(self.seed, &self.haven, cols, b.cx, b.cz)
+                    + crate::build::level_y(b.level);
+                let dy = y - feet;
+                dy * dy < 9.0
+            })
+    }
+
     pub fn tick(&mut self, commands: &[Command]) {
         self.events.clear();
         // The tick's structural removal budget is minted **before** the
@@ -4264,6 +4365,11 @@ impl World {
         }
         let seed = self.seed;
         let tick = self.tick;
+        // The weather and the hour this tick (weather v0): the players'
+        // exposure reads them in the loop below, the animals after it.
+        let wx = crate::weather::now(seed, tick, &self.env);
+        let day_tick = crate::weather::day_tick(tick, &self.env);
+        let night = is_night(day_tick);
         // The tick's structural removal budget, spent by every path that
         // takes a piece out of the store — a raider's killing blow below,
         // the decay sweep, the support backstop, and every cascade they
@@ -4381,6 +4487,11 @@ impl World {
                     self.die(i, id, DEATH_BY_CLOCK, NO_ITEM, 0);
                     continue;
                 }
+                // Wet and cold (weather v0): a body on the ground in the
+                // rain is exactly the body that should be feeling it.
+                if self.expose(i, tick, &wx, night) {
+                    continue;
+                }
                 if self.wound_tick(i) {
                     continue;
                 }
@@ -4425,6 +4536,11 @@ impl World {
             {
                 let id = self.players[i].id;
                 self.die(i, id, DEATH_BY_CLOCK, NO_ITEM, 0);
+                continue;
+            }
+            // Wet and cold (weather v0), on the clock's footing: before the
+            // arm, so a body the cold kills does not also swing.
+            if self.expose(i, tick, &wx, night) {
                 continue;
             }
             // The torch burns on the same footing as the metabolism, and
@@ -4716,12 +4832,11 @@ impl World {
         let mut bites = mob::Bites::new();
         // The hour and the air an animal reads: the day clock under any
         // `/time`, and how far this weather lets it see.
-        let wx = crate::weather::now(seed, tick, &self.env);
         mob::step(
             seed,
             &self.haven,
             tick,
-            crate::weather::day_tick(tick, &self.env),
+            day_tick,
             crate::weather::sense_pm(&wx),
             &self.mob,
             self.pieces.cols(),
@@ -5097,6 +5212,15 @@ impl World {
             // because a flame is derived, not stored — `light.rs`.
             hb[8..12].copy_from_slice(&p.light_acc.to_le_bytes());
             h.update(&hb);
+            // Wet and cold (weather v0). Skip-if-inert per body: a world
+            // with exposure disarmed hashes exactly as it always did.
+            if p.wet != 0 || p.chill != 0 || p.cold_acc != 0 {
+                let mut xb = [0u8; 8];
+                xb[0..2].copy_from_slice(&p.wet.to_le_bytes());
+                xb[2..4].copy_from_slice(&p.chill.to_le_bytes());
+                xb[4..8].copy_from_slice(&p.cold_acc.to_le_bytes());
+                h.update(&xb);
+            }
             // The death screen, in its own buffer for the survival clock's
             // reason: every byte is sim state. `dead` most obviously — two
             // shards that disagree about whether a body is standing

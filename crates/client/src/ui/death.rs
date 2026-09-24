@@ -13,8 +13,8 @@
 use protocol::event::ItemCatalog;
 use sim_core::mob;
 use sim_core::world::{
-    DEATH_BY_ARROW, DEATH_BY_BULLET, DEATH_BY_CHARGE, DEATH_BY_CLOCK, DEATH_BY_HAND, DEATH_BY_MOB,
-    DEATH_BY_SALT,
+    DEATH_BY_ARROW, DEATH_BY_BULLET, DEATH_BY_CHARGE, DEATH_BY_CLOCK, DEATH_BY_COLD, DEATH_BY_HAND,
+    DEATH_BY_MOB, DEATH_BY_SALT,
 };
 
 use super::craft::item_name;
@@ -41,6 +41,7 @@ pub fn sentence(d: &Death, catalog: &ItemCatalog) -> String {
     match d.cause {
         DEATH_BY_CLOCK => "you ran out".to_string(),
         DEATH_BY_SALT => "the sea is salt".to_string(),
+        DEATH_BY_COLD => "the cold took you".to_string(),
         DEATH_BY_HAND if d.killer == d.own_id => "you did it to yourself".to_string(),
         DEATH_BY_HAND => {
             let weapon = match item_name(catalog, d.item) {

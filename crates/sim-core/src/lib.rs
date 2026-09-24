@@ -17,6 +17,7 @@ pub mod combat;
 pub mod craft;
 pub mod deploy;
 pub mod depot;
+pub mod exposure;
 pub mod fmath;
 pub mod gather;
 pub mod grounditem;

@@ -1152,6 +1152,11 @@ pub const MOB_ID_TAG: u32 = 0x8000_0000;
 /// No overflow policy: it is a cadence, not a queue.
 pub const MOB_THINK_TICKS: u64 = 15;
 
+/// How often a body's wet and cold are stepped, ticks: once a second,
+/// phase-offset by slot so a hundred bodies do not all take the heat scan on
+/// one tick (weather v0, `exposure.rs`). A cadence, not a queue.
+pub const EXPOSURE_PERIOD_TICKS: u64 = 30;
+
 /// One full day/night cycle, in ticks — 80 minutes at `TICK_HZ`
 /// (`ALPHA.md` §1's knob; day/night v0, `DECISIONS.md` §open).
 ///

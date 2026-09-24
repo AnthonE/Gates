@@ -314,6 +314,10 @@ pub const APPLIED2_GITEMS: u32 = 1 << 6;
 /// anything.
 pub const APPLIED2_ENV: u32 = 1 << 7;
 
+/// The owner's wet/cold readout changed (`EventMsg::Exposure`, weather
+/// v0) — re-read `wet_pct`, `cold_pct` and `cold_hurting`.
+pub const APPLIED2_EXPOSURE: u32 = 1 << 8;
+
 /// The client's mirror of the loose stacks lying on the ground (ground
 /// items v0). `BagSet`'s shape one store over, with one difference that
 /// matters: **a stack's identity is its id and its contents ride with
@@ -1294,6 +1298,12 @@ pub struct ClientCore {
     /// schedule is `sim_core::weather::now(seed, tick, &env)` — so this is
     /// the only part that crosses.
     pub env: sim_core::weather::Env,
+    /// Own wet and cold, per cent, and whether the cold is hurting — as the
+    /// server last stated them (weather v0). Zero until the first reading,
+    /// which a shard with exposure disarmed never sends.
+    pub wet_pct: u8,
+    pub cold_pct: u8,
+    pub cold_hurting: bool,
     /// The frame's facts for the two destructive readers below — one slot
     /// each, not a ring, because a body cannot go down twice or get up
     /// twice between two drains, and a second `Wounded` before the first
@@ -1566,6 +1576,9 @@ impl ClientCore {
             wound_chance_pm: 0,
             assist: (0, 0, 0),
             env: sim_core::weather::Env::default(),
+            wet_pct: 0,
+            cold_pct: 0,
+            cold_hurting: false,
             wounded_fact: None,
             recovered_fact: None,
             own_bags: [BagAnchor::default(); BAG_CAP],
@@ -2544,6 +2557,16 @@ impl ClientCore {
             EventMsg::Env(env) => {
                 self.env = env;
                 self.applied2 |= APPLIED2_ENV;
+            }
+            EventMsg::Exposure {
+                wet_pct,
+                cold_pct,
+                hurting,
+            } => {
+                self.wet_pct = wet_pct;
+                self.cold_pct = cold_pct;
+                self.cold_hurting = hurting;
+                self.applied2 |= APPLIED2_EXPOSURE;
             }
             EventMsg::Recovered { chance_pm, hp } => {
                 self.wounded = false;
