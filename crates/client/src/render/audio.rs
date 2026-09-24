@@ -541,6 +541,7 @@ pub fn steps(
     world: Res<super::WorldId>,
     mut sound: ResMut<Sound>,
     time: Res<Time>,
+    fx: Option<ResMut<super::fx::Fx>>,
 ) {
     let body = &net.session.core.predict.body;
     let pos = net.session.core.predict.render_position();
@@ -553,6 +554,9 @@ pub fn steps(
     let below_sea = pos[1] < sim_core::terrain::SEA_LEVEL;
     let cue = crate::sound::steps::surface_cue(splat, below_sea);
     sound.play(Request::own(cue).with_gain(step.gain));
+    if let Some(mut fx) = fx {
+        super::fx::world::footstep(&mut fx, cue, Vec3::from(pos), step.gain);
+    }
 }
 
 /// One remote body's step odometer — the same `sound::steps::Steps` the
@@ -582,6 +586,8 @@ pub fn remote_steps(
     time: Res<Time>,
     mut bodies: Query<(&Transform, &mut RemoteSteps), With<super::bodies::Body>>,
     mut sound: ResMut<Sound>,
+    eye: Res<Eye>,
+    mut fx: Option<ResMut<super::fx::Fx>>,
 ) {
     let dt = time.delta_secs();
     for (t, mut steps) in bodies.iter_mut() {
@@ -593,6 +599,11 @@ pub fn remote_steps(
         let below_sea = pos[1] < sim_core::terrain::SEA_LEVEL;
         let cue = crate::sound::steps::remote(crate::sound::steps::surface_cue(splat, below_sea));
         sound.play(Request::at(cue, pos).with_gain(step.gain));
+        if let Some(fx) = fx.as_deref_mut() {
+            if t.translation.distance(eye.pos) <= super::fx::world::STEP_FX_M {
+                super::fx::world::footstep(fx, cue, t.translation, step.gain);
+            }
+        }
     }
 }
 

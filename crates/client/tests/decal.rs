@@ -377,3 +377,39 @@ fn a_mesh_mark_is_lifted_by_less_than_it_is_wide() {
         "a lift of {lift} m on a {width} m mark is a float, not a lift"
     );
 }
+
+/// A mark goes with the thing it was on: forgetting around a gone wall
+/// drops the marks there and leaves the rest.
+#[test]
+fn a_gone_wall_takes_its_marks() {
+    use bevy::math::Vec3;
+    use client::render::decal::Marks;
+    let mut m = Marks::default();
+    m.place(
+        Vec3::new(0.0, 1.0, 0.0),
+        Vec3::X,
+        Kind::HoleWood,
+        0.2,
+        Matter::Wood,
+        0.0,
+    );
+    m.place(
+        Vec3::new(0.0, 2.0, 1.0),
+        Vec3::X,
+        Kind::HoleWood,
+        0.2,
+        Matter::Wood,
+        0.0,
+    );
+    m.place(
+        Vec3::new(9.0, 1.0, 0.0),
+        Vec3::X,
+        Kind::HoleWood,
+        0.2,
+        Matter::Wood,
+        0.0,
+    );
+    assert_eq!(m.forget_near(Vec3::new(0.0, 1.5, 0.0), 1.8), 2);
+    assert_eq!(m.live(), 1);
+    assert_eq!(m.forget_near(Vec3::new(0.0, 1.5, 0.0), 1.8), 0);
+}

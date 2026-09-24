@@ -76,6 +76,20 @@ pub struct Impact {
     pub kind: u8,
 }
 
+/// A piece or deployable that came down (decay, a raid, a hammer), with the
+/// row and plate it stood at — the mirror no longer holds either once it is
+/// gone, and the renderer's dust wants both.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Removed {
+    pub cx: u16,
+    pub cz: u16,
+    pub level: u8,
+    pub loc: u8,
+    pub deploy: bool,
+    pub row: u8,
+    pub plate: i8,
+}
+
 /// Buffered swings — one entry is one body's arm starting to move
 /// (wire v47).
 ///
@@ -1510,6 +1524,12 @@ pub struct ClientCore {
     placed: [(u16, u16, u8, u8, bool); TOAST_RING],
     placed_head: usize,
     placed_len: usize,
+    /// Removals that HAPPENED (`PieceRemoved`/`DeployRemoved`), the
+    /// placement ring's other half: a sync reset clears the mirror without
+    /// ringing here, so a resync throws no dust.
+    removed: [Removed; TOAST_RING],
+    removed_head: usize,
+    removed_len: usize,
     deploy_refusal_head: usize,
     deploy_refusal_len: usize,
     /// Which ovens this client has heard are lit, by address.
@@ -1714,6 +1734,9 @@ impl ClientCore {
             placed: [(0, 0, 0, 0, false); TOAST_RING],
             placed_head: 0,
             placed_len: 0,
+            removed: [Removed::default(); TOAST_RING],
+            removed_head: 0,
+            removed_len: 0,
             deploy_refusal_head: 0,
             deploy_refusal_len: 0,
             ovens: LitOvens::new(),
@@ -2407,11 +2430,27 @@ impl ClientCore {
                 self.applied2 |= APPLIED2_CHARGE;
             }
             EventMsg::PieceRemoved { cx, cz, level, loc } => {
+                let was = self
+                    .pieces
+                    .entries()
+                    .iter()
+                    .find(|r| (r.cx, r.cz, r.level, r.loc) == (cx, cz, level, loc))
+                    .map(|r| (r.row, r.plate));
                 if self
                     .pieces
                     .remove(cx, cz, level, loc, &self.piece_defs, self.piece_defs_have)
                 {
                     self.removed_addr = (cx, cz, level, loc);
+                    let (row, plate) = was.unwrap_or((0, 0));
+                    self.push_removed(Removed {
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                        deploy: false,
+                        row,
+                        plate,
+                    });
                     flags |= APPLIED_PIECE_REMOVED;
                 }
             }
@@ -2434,6 +2473,15 @@ impl ClientCore {
                         self.pieces.set_solid(cx, cz, level, None);
                     }
                     self.removed_addr = (cx, cz, level, loc);
+                    self.push_removed(Removed {
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                        deploy: true,
+                        row: gone.row,
+                        plate: self.pieces.cols().plate(cx, cz).unwrap_or(0),
+                    });
                     flags |= APPLIED_DEPLOY_REMOVED;
                 }
             }
@@ -3082,6 +3130,27 @@ impl ClientCore {
         self.placed[(self.placed_head + self.placed_len) % TOAST_RING] =
             (cx, cz, level, loc, deploy);
         self.placed_len += 1;
+    }
+
+    /// Drop-oldest, the placement ring's rule for its reason.
+    fn push_removed(&mut self, r: Removed) {
+        if self.removed_len == TOAST_RING {
+            self.removed_head = (self.removed_head + 1) % TOAST_RING;
+            self.removed_len -= 1;
+        }
+        self.removed[(self.removed_head + self.removed_len) % TOAST_RING] = r;
+        self.removed_len += 1;
+    }
+
+    /// Oldest buffered removal (see [`Removed`]).
+    pub fn pop_removed(&mut self) -> Option<Removed> {
+        if self.removed_len == 0 {
+            return None;
+        }
+        let r = self.removed[self.removed_head];
+        self.removed_head = (self.removed_head + 1) % TOAST_RING;
+        self.removed_len -= 1;
+        Some(r)
     }
 
     /// Oldest buffered placement broadcast: address + which store (`true` =

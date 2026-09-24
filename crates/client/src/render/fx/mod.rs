@@ -22,6 +22,7 @@ pub mod atlas;
 pub mod gun;
 pub mod pool;
 pub mod table;
+pub mod world;
 
 use bevy::camera::visibility::NoFrustumCulling;
 use bevy::light::NotShadowCaster;

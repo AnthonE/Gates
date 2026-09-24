@@ -1048,6 +1048,17 @@ impl Plugin for GatesRenderPlugin {
                 .run_if(world_running)
                 .run_if(move || !plate),
         )
+        // The world's own effects: pieces going up and coming down (off the
+        // drained feed, before the mark mesh is rewritten), and fires.
+        .add_systems(
+            Update,
+            (
+                fx::world::built.after(feed::drain).before(decal::fade),
+                fx::world::fires,
+            )
+                .run_if(world_running)
+                .run_if(move || !plate),
+        )
         // The particles draw after the camera's transform is final for the
         // frame: a billboard faces the camera this frame renders.
         .add_systems(

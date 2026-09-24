@@ -374,6 +374,23 @@ impl Marks {
         ix
     }
 
+    /// Drop every mark within `r` of `at` — the wall or the trunk it was on
+    /// has gone, and a hole must not hang in the air where it stood.
+    /// Returns how many went.
+    pub fn forget_near(&mut self, at: Vec3, r: f32) -> usize {
+        let mut n = 0;
+        for m in self.slots.iter_mut() {
+            if m.left > 0.0 && m.pos.distance_squared(at) <= r * r {
+                *m = Mark::default();
+                n += 1;
+            }
+        }
+        if n > 0 {
+            self.dirty = true;
+        }
+        n
+    }
+
     /// Age every mark by `dt`: release the dead, step the fading. Returns
     /// whether the mesh needs rewriting.
     pub fn age(&mut self, dt: f32) -> bool {

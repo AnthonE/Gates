@@ -1638,6 +1638,51 @@ fn a_placement_broadcast_rings_and_a_sync_walk_does_not() {
     );
 }
 
+/// The collapse's supply line: a piece coming down rings with the row and
+/// plate it stood at (the mirror no longer holds either), and a resync that
+/// clears the mirror rings nothing — a rejoin throws no dust.
+#[test]
+fn a_removal_rings_with_what_stood_there_and_a_resync_does_not() {
+    use client_core::core::{ClientCore, Removed};
+    use protocol::{encode_event_piece_sync, encode_event_removed, MAX_EVENT_MSG_BYTES};
+    use sim_core::build::{PieceRec, LOC_EDGE_XLO};
+
+    let mut core = ClientCore::new(1, 7, 0);
+    let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+    let rec = PieceRec {
+        cx: 12,
+        cz: 13,
+        level: 0,
+        loc: LOC_EDGE_XLO,
+        row: 2,
+        plate: 1,
+        ..PieceRec::default()
+    };
+    let len = encode_event_piece_sync(true, &[rec], &mut buf).expect("encode");
+    core.on_stream(&buf[..len]).expect("decode");
+    let len = encode_event_removed(true, 12, 13, 0, LOC_EDGE_XLO, &mut buf).expect("encode");
+    core.on_stream(&buf[..len]).expect("decode");
+    assert_eq!(
+        core.pop_removed(),
+        Some(Removed {
+            cx: 12,
+            cz: 13,
+            level: 0,
+            loc: LOC_EDGE_XLO,
+            deploy: false,
+            row: 2,
+            plate: 1,
+        })
+    );
+    assert!(core.pop_removed().is_none(), "one removal rang twice");
+
+    let len = encode_event_piece_sync(true, &[rec], &mut buf).expect("encode");
+    core.on_stream(&buf[..len]).expect("decode");
+    let len = encode_event_piece_sync(true, &[], &mut buf).expect("encode");
+    core.on_stream(&buf[..len]).expect("decode");
+    assert!(core.pop_removed().is_none(), "a resync rang a removal");
+}
+
 /// **`render::feed::drain` must be the only caller of `ClientCore::pop_*` in
 /// the client**, and this test exists because the alternative already
 /// happened.
