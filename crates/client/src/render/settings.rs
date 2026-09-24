@@ -942,15 +942,17 @@ fn rows(cat: usize) -> Vec<Row> {
 /// today; deriving it is the fix, and `tests/ui.rs` §H now at least fails if a
 /// row here names a key no system reads.
 ///
-/// **CROUCH is listed as doing nothing on purpose.** `BTN_CROUCH` crosses the
-/// wire and no sim code reads it (`sim-core/input.rs`), so the row states that
-/// rather than implying a stance the player will go looking for.
+/// **CROUCH is a sneak, and says so.** `BTN_CROUCH` changes nothing about how
+/// the body moves; what reads it is the animal brain (`sim-core/src/brain.rs`),
+/// where a crouched player is silent and is seen only inside an animal's sight
+/// cone at half range — the reference's sneak-up-from-behind. The row states
+/// that rather than implying a stance the player will go looking for.
 pub const BINDS: [(&str, &str); 20] = [
     ("MOVE", "W A S D"),
     ("SPRINT", "Left Shift"),
     (
         "CROUCH",
-        "Left Ctrl (sent, no effect until the combat pass)",
+        "Left Ctrl (sneak: animals cannot hear you, or see you from behind)",
     ),
     ("JUMP", "Space"),
     (

@@ -1561,6 +1561,14 @@ impl Content {
                 // both, so `small` cannot refuse a row it accepted.
                 body_r_cm: small(m.body_r_cm, "body_r_cm")?,
                 body_h_cm: small(m.body_h_cm, "body_h_cm")?,
+                // The cone's half-angle as a cosine, in permille: the sim
+                // may not call trig (wall 1), and a bake may. Rounded to a
+                // permille so the value is the same on every build that
+                // bakes it. Validate bounded the degrees to 1..=360.
+                sight_dot_pm: ((m.sight_deg as f64 * 0.5).to_radians().cos() * 1000.0).round()
+                    as i16,
+                pack_cm: m.pack_m as i64 * 100,
+                fire_fear_cm: m.fire_fear_m as i64 * 100,
                 loot: [ItemStack {
                     item: NO_ITEM,
                     count: 0,

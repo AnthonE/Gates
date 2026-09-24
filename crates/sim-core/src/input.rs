@@ -8,10 +8,10 @@
 //! strength: it mints [`decay_frame`]'s ramp as ordinary commands, so the
 //! sim rule stays one sentence and the WAL still carries everything.
 
-/// Button bits (ALPHA.md §1 sizes sprint/crouch into the field; crouch has
-/// no sim effect yet — it lands with the combat pass). PRIMARY is the
-/// swing/use button: gather now (M1), attack with M2. A new bit in an
-/// already-sized field — the wire layout does not move.
+/// Button bits (ALPHA.md §1 sizes sprint/crouch into the field; crouch moves
+/// nothing, and is the sneak the animal brain listens for — `brain::sense`).
+/// PRIMARY is the swing/use button: gather now (M1), attack with M2. A new
+/// bit in an already-sized field — the wire layout does not move.
 ///
 /// JUMP is the fourth, and it moves **no bit and no byte**: `buttons` is
 /// written and read as a full unmasked octet (`protocol/lib.rs` —

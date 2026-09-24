@@ -1230,6 +1230,21 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 ));
             }
         }
+        // The brain's senses (`sim-core/src/brain.rs`): a cone is 1–360
+        // degrees across, and the pack and fire radii are distances an
+        // animal can act across without leaving its own leash behind.
+        if !(1..=360).contains(&m.sight_deg) {
+            return Err(format!(
+                "mob `{}`: sight_deg {} — a sight cone is 1–360 degrees across",
+                m.id, m.sight_deg
+            ));
+        }
+        if m.pack_m > m.roam_m || m.fire_fear_m > m.roam_m {
+            return Err(format!(
+                "mob `{}`: pack_m {} / fire_fear_m {} reach past its {}m leash",
+                m.id, m.pack_m, m.fire_fear_m, m.roam_m
+            ));
+        }
         if m.drops.is_empty() {
             return Err(format!("mob `{}`: killing it pays nothing", m.id));
         }

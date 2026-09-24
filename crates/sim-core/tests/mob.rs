@@ -925,7 +925,7 @@ fn think_once(w: &mut World) {
 ///
 /// Gated in `sim-core` rather than beside the renderer's curve
 /// (`client/tests/daynight.rs`) because `is_night` stopped being a look the
-/// moment `mob::think` read it: it is a determinism input now, so it belongs
+/// moment the animal brain read it: it is a determinism input now, so it belongs
 /// in a suite that runs headless in `cargo test --workspace` and under the
 /// wasm parity gate, not one behind `--features render`.
 #[test]
@@ -1044,7 +1044,7 @@ fn the_clock_moves_the_hunter_and_not_the_prey() {
 
 /// **Dusk does not call off a chase that daylight started.**
 ///
-/// `think` refreshes `roused_until` while you are inside the radius and
+/// `brain::sense` refreshes `roused_until` while you are inside the radius and
 /// otherwise lets it run out, so crossing the boundary mid-pursuit stops
 /// feeding the rousing rather than cancelling it. The alternative — a
 /// re-check that drops the animal the instant the sun sets — would make the

@@ -34,7 +34,7 @@ use sim_core::movement::POS_XZ_Q;
 use sim_core::world::{Command, DEATH_BY_MOB};
 
 /// The wire yaw whose LUT entry points closest to `(dx, dz)` — the same
-/// pick `mob::think` makes, done here off the public `yaw_dir` so the test
+/// pick `nav::yaw_toward` makes, done here off the public `yaw_dir` so the test
 /// steers on the sim's own direction space rather than an angle it computed
 /// some other way.
 fn yaw_toward(dx: f32, dz: f32) -> u16 {

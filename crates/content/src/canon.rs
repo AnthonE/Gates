@@ -247,6 +247,9 @@ pub fn hash(c: &Content) -> u64 {
         h.u(m.spook_m);
         h.u(m.night_spook_m);
         h.u(m.respawn_seconds);
+        h.u(m.sight_deg);
+        h.u(m.pack_m);
+        h.u(m.fire_fear_m);
         h.stacks(&m.drops);
     }
 

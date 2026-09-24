@@ -872,7 +872,7 @@ pub const DEATH_BY_MAX: u8 = DEATH_BY_BULLET;
 /// clock calls this same function on the sim's own tick and stays
 /// deterministic for free.
 ///
-/// **The sim reads it now** — [`is_night`] is the door, and `mob::think`
+/// **The sim reads it now** — [`is_night`] is the door, and `brain::sense`
 /// walked through it (nocturnal senses, 2026-08-14). The bet this doc used
 /// to hedge on has been called: the curve is a divergence surface today,
 /// not just a look, which is why `is_night` exists as one comparison rather
@@ -1729,6 +1729,12 @@ pub struct World {
     /// stack-built `World`, not because it is what holds that gate up.
     /// Nothing here allocates in the tick.
     pub mobs: Box<mob::Mobs>,
+    /// The roster's path-search scratch (`nav.rs`) — **not state**: it
+    /// holds nothing between two searches (every cell is re-probed under a
+    /// fresh generation stamp) and its budget refills every tick, so it is
+    /// neither hashed nor saved, `slot_cache`'s posture. What a search hands
+    /// back lives on the mob and is hashed there.
+    pub nav: Box<crate::nav::Nav>,
     /// Placed building pieces — sim state, hashed.
     pub pieces: Pieces,
     /// Placed deployables + the hearth list — sim state, hashed.
@@ -1858,6 +1864,7 @@ impl World {
             // After `haven`, because a home is rejected against the two
             // authored sites (mob.rs `home_of`).
             mobs: Box::new(mob::Mobs::new(seed, &haven)),
+            nav: Box::new(crate::nav::Nav::new()),
             haven,
             gather: GatherContent::EMPTY,
             craft: CraftContent::EMPTY,
@@ -4688,6 +4695,10 @@ impl World {
         // shot must resolve against where the animal ended this tick — the
         // same rule the player loop's ordering states in the comment above.
         let mut bites = mob::Bites::new();
+        // Who holds a lit torch, which a wolf keeps its distance from
+        // (`MobDef::fire_fear_cm`). The same predicate the light pass reads.
+        let lit: [bool; MAX_PLAYERS] =
+            core::array::from_fn(|i| crate::light::is_lit(&self.players[i], &self.gather));
         mob::step(
             seed,
             &self.haven,
@@ -4702,6 +4713,8 @@ impl World {
             },
             &mut self.mobs,
             &self.players,
+            &lit,
+            &mut self.nav,
             &mut bites,
         );
         // The bites land after the whole roster stepped, so every animal
@@ -5281,6 +5294,32 @@ impl World {
             buf[24..32].copy_from_slice(&m.roused_until.to_le_bytes());
             buf[32..40].copy_from_slice(&m.respawn_at.to_le_bytes());
             h.update(&buf);
+            // The brain (`brain.rs`) and the route it is walking: every
+            // field a think writes, because two shards that disagree about
+            // a state or a corner disagree about every position after it.
+            let mut b = [0u8; 48];
+            b[0] = m.state as u8;
+            b[1] = m.status;
+            b[2] = m.target;
+            b[3] = m.tries;
+            b[4] = m.stuck;
+            b[5] = m.leg;
+            b[6..8].copy_from_slice(&m.want_yaw.to_le_bytes());
+            b[8..16].copy_from_slice(&m.state_until.to_le_bytes());
+            b[16..24].copy_from_slice(&m.calm_until.to_le_bytes());
+            b[24..28].copy_from_slice(&m.last_qx.to_le_bytes());
+            b[28..32].copy_from_slice(&m.last_qz.to_le_bytes());
+            b[32..36].copy_from_slice(&m.path.goal_qx.to_le_bytes());
+            b[36..40].copy_from_slice(&m.path.goal_qz.to_le_bytes());
+            b[40] = m.path.len;
+            b[41] = m.path.next;
+            b[42] = m.path.partial as u8 | (m.path.arrived as u8) << 1;
+            b[43..45].copy_from_slice(&m.path.stop_cm.to_le_bytes());
+            h.update(&b);
+            for k in 0..m.path.len as usize {
+                h.update(&m.path.cx[k].to_le_bytes());
+                h.update(&m.path.cz[k].to_le_bytes());
+            }
         }
         h.update(&(self.deploys.len() as u64).to_le_bytes());
         for d in self.deploys.entries() {

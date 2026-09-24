@@ -1222,3 +1222,28 @@ pub const MAX_MOB_BITES_PER_TICK: usize = 8;
 /// every tick, so a waking animal can be up to `MOB_THINK_TICKS` late —
 /// half a second, at a distance of two hundred metres.
 pub const MOB_WAKE_CM: i64 = 24_000;
+
+/// Side of one path search's window, in 1 m nav cells (`nav.rs`). 96 m
+/// holds a wolf's 30 m notice radius on either side of it with room to go
+/// round a base; a goal further off is walked toward and re-planned.
+pub const NAV_WIN: usize = 96;
+
+/// Most cells one search may expand before it settles for the nearest
+/// cell it reached — the partial path that tells a brain "unreachable".
+pub const NAV_MAX_EXPAND: u32 = 768;
+
+/// Cells the whole roster may expand in one tick — the count-based stand-in
+/// for the reference's `ai.framebudgetms`. **Overflow defers**: a request
+/// that cannot get `nav::MIN_EXPAND` of it keeps its old path and asks again
+/// on its next think. Two full searches' worth; the straight-line check
+/// every plan tries first costs none of it.
+pub const NAV_EXPAND_PER_TICK: u32 = 2 * NAV_MAX_EXPAND;
+
+/// The A* frontier. Each expansion pushes at most eight cells, so this
+/// cannot fill inside `NAV_MAX_EXPAND`; if it ever did, the newest push is
+/// dropped and the search degrades to a longer route, never a panic.
+pub const NAV_HEAP_CAP: usize = 8 * NAV_MAX_EXPAND as usize + 8;
+
+/// Turn points one path carries. A route with more is cut short and the
+/// animal re-plans from where the cut lands.
+pub const NAV_MAX_CORNERS: usize = 16;
