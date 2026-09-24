@@ -69,7 +69,7 @@ pub const CMD_FRAME_CAP: usize = 32;
 pub const BED_FADE_PER_S: f32 = 0.5;
 
 /// The looping beds, in the order [`Sound::bed_gain`] indexes them.
-pub const BEDS: [Cue; 3] = [Cue::BedWind, Cue::BedSurf, Cue::BedUnder];
+pub const BEDS: [Cue; 4] = [Cue::BedWind, Cue::BedSurf, Cue::BedUnder, Cue::BedRain];
 
 /// What of the generated bank has reached the engine, and how long each cue
 /// is — the number the live ledger ([`Engine::live`]) predicts a voice's end
@@ -1037,6 +1037,7 @@ pub fn bed(
     settings: Res<super::Settings>,
     feed: Res<super::feed::Feed>,
     pin: Res<super::rig::DayPin>,
+    mut weather: ResMut<super::weather::WeatherNow>,
     mut engine: ResMut<Engine>,
 ) {
     // How much cover is within earshot, 0..1. `COVER_FULL` scatter slots
@@ -1100,7 +1101,9 @@ pub fn bed(
     // `--capture` run the hour is pinned, and reading the raw estimate here
     // would roost the birds at the box's hour while the sun stood at noon.
     let is_day = !sim_core::world::is_night(pin.day_tick(feed.server_tick_est, &feed.env));
-    if is_day && sound.birds.due(cover, time.delta_secs()) && near > 0 {
+    // …and not in the rain (weather v0): birds shelter.
+    let singing = is_day && weather.rain < 0.15;
+    if singing && sound.birds.due(cover, time.delta_secs()) && near > 0 {
         let want = sound.birds.perch(near);
         if let Some(p) = props
             .iter()
@@ -1114,7 +1117,9 @@ pub fn bed(
     // Open ground is windier than the inside of a forest, but a forest is not
     // silent — it is the same wind in the canopy. So the bed never drops
     // below half, and cover moves it rather than gating it.
-    sound.bed_target[0] = 1.0 - 0.45 * cover;
+    // The weather's wind rides on top (weather v0): a breeze at clear, a
+    // gale in a storm.
+    sound.bed_target[0] = (1.0 - 0.45 * cover) * (0.6 + 0.8 * weather.wind);
     // The surf reads how much sea is within earshot, from the same
     // `terrain::height` the water is drawn from — 24 taps, a fixed pattern, so
     // the level cannot flicker as a search finds different water.
@@ -1124,6 +1129,16 @@ pub fn bed(
     // The submerged bed has no world level of its own: it is entirely the
     // snapshot's, which is the point of a snapshot.
     sound.bed_target[2] = 1.0;
+    // The rain (weather v0): as hard as it falls, duller under a roof. The
+    // snapshot takes it away underwater.
+    sound.bed_target[3] = weather.rain * if weather.sheltered { 0.45 } else { 1.0 };
+
+    // Thunder: each bolt's clap once its sound has crossed the distance
+    // (`weather::update` queued it at the bolt's own time plus d / 343).
+    let now_s = feed.server_tick_est / sim_core::limits::TICK_HZ as f64;
+    while let Some(gain) = weather.take_thunder(now_s) {
+        sound.play(Request::own(Cue::Thunder).with_gain(gain));
+    }
 
     let d = BED_FADE_PER_S * time.delta_secs();
     for i in 0..BEDS.len() {

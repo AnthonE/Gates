@@ -159,6 +159,8 @@ fn main() -> AppExit {
         identity: a.identity.clone(),
         no_launcher: a.no_launcher,
         no_hud: a.no_hud,
+        pin_hour: a.pin_hour_pm.map(|pm| pm as f32 / 1000.0),
+        pin_weather: a.pin_weather,
     };
     app.add_plugins(GatesRenderPlugin { start, capture });
     // **Returned, not discarded.** `App::run` hands back an `AppExit`, which

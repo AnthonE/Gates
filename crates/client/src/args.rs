@@ -71,6 +71,11 @@ gates — the Gates desktop client
                        is not footage. Refused without --capture: a HUD-less
                        client a player could walk around in is a different
                        thing nobody asked for
+  --hour HOUR          with --capture: shoot at this hour instead of noon —
+                       dawn, morning, noon, afternoon, dusk, midnight, or a
+                       day fraction 0..1 (0 is dawn, 0.875 dusk)
+  --weather PRESET     with --capture: shoot under this sky instead of a clear
+                       one — clear, overcast, fog, rain, heavy, storm
   --no-launcher        do not look for an elo launcher, even if one is running
   --help               this
 
@@ -110,6 +115,10 @@ pub struct Args {
     /// `--no-hud`: shoot a clean plate. Only ever true alongside `capture`,
     /// which the parser enforces rather than leaving to the caller.
     pub no_hud: bool,
+    /// `--hour`: the capture's hour, per mille of the day (`/time`'s words).
+    pub pin_hour_pm: Option<u16>,
+    /// `--weather`: the capture's sky, a `sim_core::weather` preset code.
+    pub pin_weather: Option<u8>,
     /// `--cert-hash`: the ONE shard certificate this run will trust, as the
     /// shard prints it (`client::client_endpoint`). `None` is the shipping
     /// state and means the posture is chosen from the address — permissive on
@@ -143,6 +152,8 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
     let mut cert_hash: Option<String> = None;
     let mut no_hud = false;
     let mut no_launcher = false;
+    let mut pin_hour_pm: Option<u16> = None;
+    let mut pin_weather: Option<u8> = None;
 
     let mut it = argv.into_iter();
     while let Some(a) = it.next() {
@@ -150,6 +161,22 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
             "--help" | "-h" => return Parsed::Help,
             "--no-launcher" => no_launcher = true,
             "--no-hud" => no_hud = true,
+            // The admin lane's own words for an hour and a sky, so a capture
+            // and a `/time` cannot spell dusk two ways.
+            "--hour" => match it.next().and_then(|v| admin_word("time", &v)) {
+                Some(protocol::admin::AdminCmd::Time { frac_pm }) => pin_hour_pm = Some(frac_pm),
+                _ => return Parsed::Bad("--hour wants dawn|noon|dusk|midnight or 0..1".into()),
+            },
+            "--weather" => match it.next().and_then(|v| admin_word("weather", &v)) {
+                Some(protocol::admin::AdminCmd::Weather { mode }) if mode > 0 => {
+                    pin_weather = Some(mode)
+                }
+                _ => {
+                    return Parsed::Bad(
+                        "--weather wants clear|overcast|fog|rain|heavy|storm".into(),
+                    )
+                }
+            },
             "--server" => match it.next() {
                 Some(v) => server_flag = Some(v),
                 None => return Parsed::Bad("--server needs an address".into()),
@@ -258,6 +285,9 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
     if no_hud && capture.is_none() {
         return Parsed::Bad("--no-hud only means something with --capture".into());
     }
+    if (pin_hour_pm.is_some() || pin_weather.is_some()) && capture.is_none() {
+        return Parsed::Bad("--hour and --weather only mean something with --capture".into());
+    }
 
     // Refused rather than ignored, for the same reason `--no-hud` is, and
     // with a sharper edge: only the straight-in connect reads the pin, so a
@@ -282,9 +312,17 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
             .filter(|s| !s.is_empty()),
         capture,
         no_hud,
+        pin_hour_pm,
+        pin_weather,
         cert_hash,
         no_launcher,
     })
+}
+
+/// A capture flag's value read as the admin lane would read `/{verb} {v}`.
+fn admin_word(verb: &str, v: &str) -> Option<protocol::admin::AdminCmd> {
+    let line = protocol::ChatText::sanitize(format!("/{verb} {v}").as_bytes())?;
+    protocol::admin::parse(&line)
 }
 
 impl Args {

@@ -555,7 +555,7 @@ fn the_arithmetic_matches_a_paper_check() {
 fn the_cloud_deck_and_the_shadows_agree_about_the_sun() {
     let s = to_sun(CAPTURE_DAY_FRAC);
     // What sky.rs actually marches toward, read from sky.rs.
-    let deck = client::render::sky::deck_march_dir();
+    let deck = client::render::sky::deck_march_dir(CAPTURE_DAY_FRAC);
     // What the shadow says, negated: the shadow runs away, so -shadow is
     // toward the sun.
     let from_shadow = (-shadow_offset(CAPTURE_DAY_FRAC, 2.0)).normalize();
@@ -575,37 +575,19 @@ fn the_cloud_deck_and_the_shadows_agree_about_the_sun() {
     );
 }
 
-/// **The deck's lit side follows the sun at every hour, not only at the one it
-/// was baked at** — the coupled-set half of the sweep.
+/// **The deck's lit side follows the sun at every hour, not only at noon** —
+/// the coupled-set half of the sweep.
 ///
-/// The deck is baked ONCE with its lit faces pointing at the noon bearing. A
-/// fixed sun never noticed, because a bearing that does not move is correct at
-/// every hour for free; a swept sun would have left every cloud lit from up to
-/// half the arc away by dusk, with the ground lit correctly — one owner
-/// disagreeing with itself, which is `CLAUDE.md`'s tonemap/sky/exposure/fog
-/// trap in its exact shape. `sky::deck_rotation` answers it by turning the
-/// deck, and this is the assertion that the turn is the right size **and the
-/// right way round**: a sign error there drags the clouds backwards through
-/// the sky while the sun is perfectly correct.
-///
-/// It reads both owners — `sky::deck_march_dir` for where the lit side was
-/// baked, `sky::deck_rotation` for where it is drawn — and compares against
-/// the SHADOW, which is a third derivation. Nothing here re-derives `to_sun`.
+/// Until weather v0 the deck was baked once, lit at noon, and turned about Y
+/// as the bearing swept (`deck_rotation`). The composer now marches toward
+/// the current sun on every compose, so this holds `deck_march_dir(frac)`
+/// against the SHADOW at 63 interior hours — a third derivation, and the
+/// one that carries the negation law — and against the sun's own
+/// horizontal at dawn and dusk, where a shadow has a direction but no
+/// length. Nothing here re-derives `to_sun`.
 #[test]
 fn the_cloud_deck_follows_the_sun_all_day() {
-    let baked = client::render::sky::deck_march_dir();
-    let baked3 = Vec3::new(baked.x, 0.0, baked.y);
-    // Where the baked lit side ends up once the deck is drawn rotated.
-    let drawn = |frac: f32| {
-        let d = client::render::sky::deck_rotation(frac) * baked3;
-        Vec2::new(d.x, d.z).normalize()
-    };
-    // The interior hours, against the SHADOW — a third derivation, and the
-    // one that carries the negation law with it. The two endpoints are
-    // excluded rather than fudged: dawn and dusk put the sun exactly on the
-    // horizon, where `h / s.y` is a division by zero and a shadow has a
-    // direction but no length. They are covered below against the sun's own
-    // horizontal, which is what a shadow of infinite length points along.
+    let drawn = |frac: f32| client::render::sky::deck_march_dir(frac);
     for step in 1..64 {
         let frac = daylit(step, 64);
         let from_shadow = (-shadow_offset(frac, 2.0)).normalize();
@@ -616,8 +598,6 @@ fn the_cloud_deck_follows_the_sun_all_day() {
             drawn(frac)
         );
     }
-    // Dawn and dusk, where the disagreement a fixed deck would have shown is
-    // at its widest — half the arc.
     for frac in [0.0, DAY_PORTION] {
         assert!(
             drawn(frac).dot(sun_h(frac)) > 1.0 - EPS_RAD,
@@ -627,14 +607,6 @@ fn the_cloud_deck_follows_the_sun_all_day() {
             sun_h(frac)
         );
     }
-    // Noon is the bake hour, so the rotation there must be nothing at all —
-    // the property that keeps every captured frame identical to the ones the
-    // visual judge has already scored.
-    let noon = client::render::sky::deck_rotation(CAPTURE_DAY_FRAC) * baked3;
-    assert!(
-        (noon - baked3).length() < 1e-6,
-        "the deck must be drawn unrotated at the hour it was baked, got {noon:?}"
-    );
 }
 
 /// Night is one predicate, and both the disc and the shadows are on the same

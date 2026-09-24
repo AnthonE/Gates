@@ -125,6 +125,7 @@ pub mod panels;
 pub mod pause;
 pub mod prewarm;
 pub mod quality;
+pub mod rain;
 pub mod render_scale;
 // Discord rich presence: which screen means what, and the handoff to the
 // worker. The model — socket, framing, payloads, copy — is `crate::discord`,
@@ -158,6 +159,7 @@ pub mod ui;
 // The sea: a graded volume with a swell on it. `reference/WATER.md` is the
 // research, `TERRAIN.md` §4 is what it replaces.
 pub mod water;
+pub mod weather;
 // What a browser build does where the desktop has a window and a menu: the
 // surface fitted under WebGL2's 2048 cap, and the page taking over where
 // `Screen::Menu` would have drawn. Compiled everywhere, in effect on wasm32.
@@ -435,6 +437,10 @@ pub struct Start {
     /// viewmodel, no compass. The menu backdrop is footage
     /// (`ui::backdrop`), and a frame with a hotbar across it is not footage.
     pub no_hud: bool,
+    /// `--hour`: the day fraction a capture run shoots at (noon if unset).
+    pub pin_hour: Option<f32>,
+    /// `--weather`: the preset a capture run shoots under (clear if unset).
+    pub pin_weather: Option<u8>,
 }
 
 pub struct GatesRenderPlugin {
@@ -454,17 +460,31 @@ impl Plugin for GatesRenderPlugin {
         // the frame looks like, and until this landed the sun's height was a
         // function of how long the build took (`rig::DayPin`).
         let day_pin = if self.capture.is_some() {
-            rig::DayPin::capture()
+            match self.start.pin_hour {
+                Some(frac) => rig::DayPin::capture_at(frac),
+                None => rig::DayPin::capture(),
+            }
         } else {
             rig::DayPin::default()
+        };
+        // The probe's sky is pinned the same way (weather v0): a frame must
+        // not depend on which segment of the schedule the shard booted in.
+        let weather_pin = if self.capture.is_some() {
+            weather::WeatherPin::capture(self.start.pin_weather)
+        } else {
+            weather::WeatherPin::default()
         };
         // The ground's splat material. `MaterialPlugin` is what registers the
         // pipeline and the asset type; without it the ground draws with no
         // material at all, which — as the asset-root trap in `bin/gates.rs`
         // records — is not an error the image shows you.
         app.add_plugins(MaterialPlugin::<ground_splat::GroundMaterial>::default());
+        // The rain's streak material (weather v0, `rain.rs`).
+        app.add_plugins(MaterialPlugin::<rain::RainMaterial>::default());
         app.add_plugins(UiMaterialPlugin::<render_scale::OpaqueFrame>::default());
         app.insert_resource(day_pin)
+            .insert_resource(weather_pin)
+            .init_resource::<weather::WeatherNow>()
             .init_resource::<Eye>()
             .init_resource::<wounded::Crawl>()
             .init_resource::<collider_debug::ShowColliders>()
@@ -1075,6 +1095,8 @@ impl Plugin for GatesRenderPlugin {
         )
         // The cloud deck hangs on the camera, so it waits for the rig too.
         .add_systems(OnEnter(Screen::Loading), sky::setup.after(rig::setup))
+        // The rain follows the camera too (weather v0).
+        .add_systems(OnEnter(Screen::Loading), rain::setup.after(rig::setup))
         // The beds, from the loading screen's first frame at zero. No camera
         // is needed: the pan is computed per start from `Eye` in `pump`.
         .add_systems(OnEnter(Screen::Loading), audio::setup)
@@ -1320,6 +1342,17 @@ impl Plugin for GatesRenderPlugin {
         .add_systems(
             Update,
             rig::day_night.after(feed::drain).run_if(world_running),
+        )
+        // The weather (weather v0): read after the drain and before the rig
+        // lights the frame from it; the deck is composed after both.
+        .add_systems(
+            Update,
+            (
+                weather::update.after(feed::drain).before(rig::day_night),
+                sky::compose.after(rig::day_night),
+                rain::drive.after(weather::update),
+            )
+                .run_if(world_running),
         )
         // Audio runs AFTER the streamers and `pump` runs last of all: every
         // producer must have had its say before the mixer resolves the frame,

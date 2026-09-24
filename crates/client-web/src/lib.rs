@@ -380,6 +380,8 @@ impl Gates {
                 // There is no launcher in a tab and there never will be.
                 no_launcher: true,
                 no_hud: false,
+                pin_hour: None,
+                pin_weather: None,
             },
             capture: None,
         });

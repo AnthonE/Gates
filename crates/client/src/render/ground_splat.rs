@@ -294,12 +294,12 @@ pub const NORMAL_Z_FLOOR: f32 = 0.2;
 pub struct GroundSplatParams {
     /// `xyz` the identity's authored linear albedo.
     ///
-    /// **`w` is reserved and zero.** It carried `IDENTITY_ROUGH` until the
-    /// roughness maps landed; roughness is now sampled per texel and there is
-    /// no per-identity scalar left to send. The slot stays because a
-    /// `vec3` in a uniform array has a 16-byte stride anyway — dropping it
-    /// would change nothing about the layout and would cost the reader the
-    /// note explaining where the roughness went.
+    /// **`w` is spare but for `identity[0].w`, the rain's wetness** (weather
+    /// v0, `weather::update` → `terrain_mesh::Ring::set_rain_wet`): how soaked
+    /// the island looks, `0..1`, applied to up-facing ground through the same
+    /// `wetted` as the shoreline. The others carried `IDENTITY_ROUGH` until the
+    /// roughness maps landed and are zero; a `vec3` in a uniform array has a
+    /// 16-byte stride anyway, so the slots cost nothing.
     pub identity: [Vec4; 4],
     pub gain: Vec4,
     /// x = `WET_VALUE`, y = `WET_SATURATION`, z = `ALBEDO_LUMA_FLOOR`,

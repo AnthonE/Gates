@@ -111,7 +111,14 @@ fn the_browser_deck_is_the_desktops_over_a_sky() {
                 let want = encoded(backdrop_at(d));
                 if a == [0, 0, 0, 0] {
                     // No cloud here: the sky, exactly.
-                    assert_eq!(&b[..3], &want[..], "clear texel is not the backdrop");
+                    // Within one step: the composer encodes through a table,
+                    // the reference here through the exact curve.
+                    for c in 0..3 {
+                        assert!(
+                            (b[c] as i32 - want[c] as i32).abs() <= 1,
+                            "clear texel {b:?} is not the backdrop {want:?}"
+                        );
+                    }
                     backdrop += 1;
                 } else if a[..3] == b[..3] {
                     // An opaque cloud: the same bytes on both targets.
