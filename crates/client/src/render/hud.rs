@@ -2179,8 +2179,10 @@ pub fn readout(
     let core = &net.session.core;
     // Latch on the freshness bits, never on the fields being non-zero —
     // they hold the LAST of their kind forever (`Feed::applied`'s doc).
-    if feed.applied & client_core::core::APPLIED_STRUCT_HIT != 0 {
-        let (cx, cz, _, _, left, max) = core.struct_hit;
+    // This player's own blows only (wire v77): the island-wide
+    // `APPLIED_STRUCT_HIT` is anyone's raid anywhere.
+    if feed.applied2 & client_core::core::APPLIED2_OWN_STRUCT_HIT != 0 {
+        let (cx, cz, _, _, left, max) = core.own_struct_hit;
         // `max == 0` is the defs-not-arrived state and pins nothing: the
         // same honesty rule the toast held (`struct_hit_line`'s doc).
         if max > 0 {

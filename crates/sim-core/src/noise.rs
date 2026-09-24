@@ -122,9 +122,10 @@ impl Noises {
                     });
                 }
                 // Where something struck the world; the position rides the
-                // event (x in `a`'s low 24 bits, z in `b`).
+                // event (x in `a` under the surface and the weapon kind —
+                // `world::impact_parts` — z in `b`).
                 EV_IMPACT => self.push(Noise {
-                    qx: (e.a & 0x00FF_FFFF) as i32,
+                    qx: crate::world::impact_parts(e.a).2,
                     qz: e.b as i32,
                     radius_cm: NOISE_STRIKE_CM,
                     at: tick,
@@ -187,7 +188,11 @@ mod tests {
         let mut ev = EventQueue::default();
         ev.push(EV_SHOT, 77, 0, 0); // speed 0: a firearm
         ev.push(EV_SHOT, 77, 0, 40 << 16); // a flight: a bow
-        ev.push(EV_IMPACT, 3 << 24 | 900, 1_100, 0);
+
+        // A hatchet blow: the weapon kind sits above x in `a`, and must not
+        // move the noise.
+        let a = crate::world::impact_a(crate::ranged::SURF_WORLD, crate::ranged::IMPACT_MELEE, 900);
+        ev.push(EV_IMPACT, a, 1_100, 0);
         let mut n = Noises::new();
         n.record(5, &ev, &players);
         let radii: Vec<i64> = n.ring[..3].iter().map(|x| x.radius_cm).collect();

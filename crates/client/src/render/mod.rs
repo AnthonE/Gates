@@ -59,6 +59,7 @@ pub mod fill;
 // the client lives in there — see its header for the merge that made that a
 // rule rather than a preference.
 pub mod feed;
+pub mod fx;
 // The death screen. Dying used to end the session: `dead` was set and read
 // by nothing, and `ACT_RESPAWN` had no key.
 pub mod death;
@@ -91,7 +92,6 @@ pub mod heldgen;
 // `Session`. See `render/screen.rs` for the half both targets keep.
 /// The two debris layers beside the chip burst (2026-09-13): the hot one and
 /// the soft one, both fed off `impact::Contacts`.
-pub mod dust;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hub;
 pub mod hud;
@@ -99,7 +99,7 @@ pub mod impact;
 pub mod input;
 pub mod loading;
 pub mod loot;
-pub mod sparks;
+pub mod surface;
 // The island map. Painted from the same `terrain::splat_from` the ground
 // blends by, so the map and the world are one worldgen seen two ways.
 pub mod map;
@@ -516,8 +516,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<decal::Marks>()
             .init_resource::<impact::Chips>()
             .init_resource::<impact::Contacts>()
-            .init_resource::<sparks::Sparks>()
-            .init_resource::<dust::Dust>()
+            .init_resource::<fx::Fx>()
             .init_resource::<hud::Toast>()
             .init_resource::<hud::Readout>()
             .init_resource::<feed::Feed>()
@@ -631,18 +630,15 @@ impl Plugin for GatesRenderPlugin {
                 // The tracer pool. Spawned once here so the frame path
                 // never spawns an entity for an arrow (`tracer.rs`).
                 tracer::setup,
-                // The mark pool, for the same reason plus one more: the
-                // materials it builds here are what the prewarm draw
-                // specializes, and a pipeline compiled mid-fight is the
-                // pop `decal.rs`'s `PREWARM_FRAMES` exists to avoid.
+                // The mark mesh: one entity, always drawn, so its pipeline
+                // compiles at load rather than on the first shot of a fight.
                 decal::setup,
                 // The chip pool, `tracer::setup`'s reason exactly: a landed
                 // blow must not spawn an entity inside a fight
                 // (`impact.rs`).
                 impact::setup,
                 // The spark and dust pools, the chip pool's reason exactly.
-                sparks::setup,
-                dust::setup,
+                fx::setup,
                 // The shared warm mesh. Before anything that could create a
                 // material, so `prewarm::warm` never sees an `Added` it has
                 // no mesh to draw against.
@@ -834,13 +830,7 @@ impl Plugin for GatesRenderPlugin {
             )
             .add_systems(
                 OnEnter(Screen::Disconnected),
-                (
-                    map::forget,
-                    viewmodel::forget,
-                    impact::forget,
-                    sparks::forget,
-                    dust::forget,
-                ),
+                (map::forget, viewmodel::forget, impact::forget, fx::forget),
             )
             .add_systems(OnExit(Screen::Disconnected), disconnected::teardown)
             .add_systems(
@@ -879,13 +869,7 @@ impl Plugin for GatesRenderPlugin {
             )
             .add_systems(
                 OnEnter(Screen::Menu),
-                (
-                    map::forget,
-                    viewmodel::forget,
-                    impact::forget,
-                    sparks::forget,
-                    dust::forget,
-                ),
+                (map::forget, viewmodel::forget, impact::forget, fx::forget),
             );
 
         // ---- settings ------------------------------------------------
@@ -1033,11 +1017,10 @@ impl Plugin for GatesRenderPlugin {
                 // tracer's first frame already shows motion.
                 tracer::launch.after(feed::drain),
                 tracer::fly.after(tracer::launch),
-                // The mark's two halves, the tracer's shape exactly.
-                // `mark` reads the drained feed so it follows the drain;
-                // `fade` then ages everything including the mark just
-                // claimed, which is what releases the prewarm slot.
-                decal::mark.after(feed::drain),
+                // The mark's two halves. `mark` reads the frame's resolved
+                // contacts, so it follows the resolver; `fade` then ages
+                // everything and rewrites the one mark mesh if it moved.
+                decal::mark.after(impact::contacts).after(fx::gun::shots),
                 decal::fade.after(decal::mark),
                 // The weak-spot cross, off the core's latched mark and the
                 // frame's sector answer — after the resolver that writes
@@ -1052,11 +1035,36 @@ impl Plugin for GatesRenderPlugin {
                 // the three `fly`s advance whatever is live, including the
                 // burst just thrown, so a blow's first frame already moves.
                 impact::contacts.after(feed::drain).after(verbs::resolve),
+                // A shot's flash and tracer, and the contact of a miss the
+                // shard did not mark — added to the frame's list before
+                // anything throws off it.
+                fx::gun::shots
+                    .after(impact::contacts)
+                    .before(impact::strike),
                 impact::strike.after(impact::contacts),
                 impact::fly.after(impact::strike),
-                sparks::fly.after(impact::strike),
-                dust::fly.after(impact::strike),
+                fx::flash.after(impact::strike),
             )
+                .run_if(world_running)
+                .run_if(move || !plate),
+        )
+        // The world's own effects: pieces going up and coming down (off the
+        // drained feed, before the mark mesh is rewritten), and fires.
+        .add_systems(
+            Update,
+            (
+                fx::world::built.after(feed::drain).before(decal::fade),
+                fx::world::fires,
+            )
+                .run_if(world_running)
+                .run_if(move || !plate),
+        )
+        // The particles draw after the camera's transform is final for the
+        // frame: a billboard faces the camera this frame renders.
+        .add_systems(
+            PostUpdate,
+            fx::draw
+                .after(bevy::transform::TransformSystems::Propagate)
                 .run_if(world_running)
                 .run_if(move || !plate),
         )

@@ -37,6 +37,9 @@ const USED: [Cue; 4] = [Cue::StepRock, Cue::ImpactWood, Cue::BedSurf, Cue::Gathe
 fn start(cue: Cue, l: f32, r: f32, speed: f32, out_rate: u32) -> Cmd {
     Cmd::Start {
         cue,
+        take: 0,
+        takes: 1,
+        lp: 0,
         gain_l: l,
         gain_r: r,
         rate: rate(speed, out_rate),

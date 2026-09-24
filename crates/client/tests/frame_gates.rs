@@ -93,6 +93,14 @@ const NOT_THE_MIRROR: &[(&str, u8, &str)] = &[
          recoverable packs. The world's standing-backpack store is word 0's \
          `APPLIED_BAGS`, and that one is in the set.",
     ),
+    (
+        "OWN_STRUCT_HIT",
+        1,
+        "word 1's `APPLIED2_OWN_STRUCT_HIT` says the struck wall was THIS \
+         player's blow, for the HUD's readout. The mirror's re-band rides word \
+         0's `APPLIED_STRUCT_HIT`, raised for every hit, and that one is in the \
+         set.",
+    ),
 ];
 
 // ── 1. Every mirror-shaped word-0 bit is in the set ────────────────────────

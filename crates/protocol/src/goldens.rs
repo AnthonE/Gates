@@ -1721,8 +1721,14 @@ pub fn event_shot() -> (u32, u16, u8, u16, u16) {
 /// `surf` is `SURF_WORLD` — the middle of the three, so a decoder that
 /// read the field one bit narrow or wide lands on a different live kind
 /// instead of on a value the refusal would have caught for free.
-pub fn event_impact() -> (i32, i32, i32, u8) {
-    (0x0000_A179, -312, 0x0000_58A3, 1)
+pub fn event_impact() -> (i32, i32, i32, u8, u8) {
+    (
+        0x0000_A179,
+        -312,
+        0x0000_58A3,
+        1,
+        sim_core::ranged::IMPACT_MELEE,
+    )
 }
 
 /// The swinger of the broadcast swing fact (wire v47).

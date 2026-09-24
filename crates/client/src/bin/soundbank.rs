@@ -20,6 +20,7 @@
 use std::path::PathBuf;
 
 use client::sound::{synth, Cue};
+use client::sound_bank;
 
 fn main() {
     let dir: PathBuf = std::env::args()
@@ -32,17 +33,27 @@ fn main() {
     }
     let mut total = 0usize;
     for cue in Cue::ALL {
-        let wav = synth::wav(cue);
-        // `{:?}` on the cue is its variant name, which is the only name a cue
-        // has — there is deliberately no string table (`crates/sound/src/lib.rs`).
-        let path = dir.join(format!("{:02}_{:?}.wav", cue.idx(), cue));
-        if let Err(e) = std::fs::write(&path, &wav) {
-            eprintln!("soundbank: cannot write {}: {e}", path.display());
-            std::process::exit(1);
+        // What the engine plays: every take, recorded or synthesized
+        // (`sound_bank`), one file each.
+        let (pcm, takes) = sound_bank::pcm(cue);
+        let span = pcm.len() / takes as usize;
+        for (t, take) in pcm.chunks_exact(span).enumerate() {
+            let wav = synth::wav_of(take);
+            // `{:?}` on the cue is its variant name, which is the only name a
+            // cue has — there is deliberately no string table.
+            let path = if takes > 1 {
+                dir.join(format!("{:02}_{:?}_{t}.wav", cue.idx(), cue))
+            } else {
+                dir.join(format!("{:02}_{:?}.wav", cue.idx(), cue))
+            };
+            if let Err(e) = std::fs::write(&path, &wav) {
+                eprintln!("soundbank: cannot write {}: {e}", path.display());
+                std::process::exit(1);
+            }
+            let secs = span as f32 / client::sound::SAMPLE_RATE as f32;
+            println!("{:>5.2}s  {}", secs, path.display());
+            total += wav.len();
         }
-        let secs = (wav.len().saturating_sub(44) / 2) as f32 / client::sound::SAMPLE_RATE as f32;
-        println!("{:>5.2}s  {}", secs, path.display());
-        total += wav.len();
     }
     println!(
         "{} cues, {} kB, {} Hz mono 16-bit",

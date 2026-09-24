@@ -943,7 +943,10 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// exactly — so `SUB_BITS` widens 6 → 7 and every event message moves by
 /// one bit. Landed on its branch as v75, beside weather v0's v75 on
 /// `main`; the merge took the next number and regenerated every fixture.
-pub const PROTO_VER: u16 = 76;
+/// v77: `SUB_IMPACT` names what struck (`IMPACT_KIND_BITS`: arrow, bullet,
+/// melee, blast), and a charge going off is an impact too. Landed on its
+/// branch as v76, beside the pack call's; the merge took the next number.
+pub const PROTO_VER: u16 = 77;
 
 /// This game's slug in the elo catalog.
 ///

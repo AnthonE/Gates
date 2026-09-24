@@ -472,8 +472,8 @@ fn main() {
 
     // Surface marks v0 (v44): where an arrow stopped.
     {
-        let (qx, qy, qz, surf) = goldens::event_impact();
-        let len = protocol::encode_event_impact(qx, qy, qz, surf, &mut buf).unwrap();
+        let (qx, qy, qz, surf, kind) = goldens::event_impact();
+        let len = protocol::encode_event_impact(qx, qy, qz, surf, kind, &mut buf).unwrap();
         write_fixture(goldens::FIXTURES[94], &buf[..len]);
     }
 

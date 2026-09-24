@@ -921,7 +921,10 @@ fn verb_pass(
             // moment there is a decal worth photographing — and the moment
             // after which every further swing is spent destroying the
             // surface it is drawn on.
-            if let Some(&(qx, qy, qz, surf)) = feed.impacts().first() {
+            if let Some(&client_core::core::Impact {
+                qx, qy, qz, surf, ..
+            }) = feed.impacts().first()
+            {
                 let at = Vec3::new(
                     qx as f32 * sim_core::movement::POS_XZ_Q,
                     qy as f32 * sim_core::movement::POS_Y_Q,

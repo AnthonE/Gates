@@ -560,6 +560,55 @@ fn a_miss_marks_the_world_and_a_hit_does_not() {
     );
 }
 
+/// The client's whole-reach walk (`ranged::beam_stop`) lands where the
+/// shard's own mark did, for a miss the shard marks — one ladder, two
+/// callers. The client draws the misses past the shard's mark range off
+/// exactly this, so a disagreement here is a puff of dirt in the wrong place.
+#[test]
+fn a_client_beam_stops_where_the_shards_mark_did() {
+    let cc = gun_fixture();
+    let mut sc = Scratch::barren();
+    let mut alone = Box::new([Player::default(); MAX_PLAYERS]);
+    let g = terrain::ground(SEED, hv(SEED), 600.0, 600.0);
+    alone[0] = shooter(1, 600.0, g + 5.0, 600.0, 0, 0, 6);
+    let body = alone[0].body;
+    let s = pull(0, &cc, &ColIndex::new(), &mut sc.occupants(), &mut alone);
+    let mark = *s
+        .events
+        .entries()
+        .iter()
+        .find(|e| e.code == EV_IMPACT)
+        .expect("a shot into the ground marks it");
+    let (surf, kind, qx) = sim_core::world::impact_parts(mark.a);
+    assert_eq!(kind, ranged::IMPACT_BULLET, "the mark names the bullet");
+    let origin = (
+        (body.qx * (POS_XZ_Q * 1000.0) as i32) as f32,
+        (body.qy * (POS_Y_Q * 1000.0) as i32 + ARROW_EYE_MM) as f32,
+        (body.qz * (POS_XZ_Q * 1000.0) as i32) as f32,
+    );
+    let b = ranged::beam_stop(
+        SEED,
+        hv(SEED),
+        &ColIndex::new(),
+        &mut sc.occupants(),
+        origin,
+        0,
+        0,
+        50_000,
+    );
+    assert_eq!(b.surf, Some(surf));
+    let q = |mm: f32, quantum: f32| sim_core::fmath::floor_i32(mm / (quantum * 1000.0));
+    assert_eq!(
+        (
+            q(b.at_mm.0, POS_XZ_Q),
+            q(b.at_mm.2, POS_XZ_Q),
+            q(b.at_mm.1, POS_Y_Q)
+        ),
+        (qx, mark.b as i32, mark.c as i32),
+        "the client's beam and the shard's mark disagree about where the shot landed"
+    );
+}
+
 /// A firearm raises `EV_SHOT` with **speed zero**, which is the wire's
 /// whole way of saying *this one did not fly*.
 ///
