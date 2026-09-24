@@ -30,7 +30,7 @@
 
 #![cfg(feature = "render")]
 
-use client::render::ground_splat::{GRAIN_GAIN, ROUGH_MEAN, WET_ROUGH};
+use client::render::ground_splat::{AGGREGATE_GAIN, GRAIN_GAIN, ROUGH_MEAN, WET_ROUGH};
 use client::render::terrain_mesh::{self, GROUND_ALBEDO};
 
 const SHADER: &str = concat!(
@@ -100,6 +100,19 @@ fn the_grain_gains_are_the_shipped_files_own() {
             rel * 100.0
         );
     }
+}
+
+/// Leg 1a. The road's aggregate is held the same way: it rides behind the
+/// identities as layer 4 and carries its own gain, because a road that
+/// borrowed the rock identity's would move with every summit re-source.
+#[test]
+fn the_aggregate_gain_is_its_files_own() {
+    let want = 1.0 / mean_linear_luma("aggregate");
+    let got = f64::from(AGGREGATE_GAIN);
+    assert!(
+        (got - want).abs() / want < 0.005,
+        "AGGREGATE_GAIN is {got:.4} and aggregate_albedo.jpg measures {want:.4}"
+    );
 }
 
 /// Leg 1b. The gain does what it is for: mean × gain = 1.

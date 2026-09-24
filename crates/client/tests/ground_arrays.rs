@@ -42,7 +42,8 @@ use client::render::textures::{
     self, layer_bytes, layer_ready, stack, GroundArrays, GroundMaps, MapSet, StackError, AO_LAYER0,
 };
 
-const ROLES: [&str; 4] = ["sand", "grass", "litter", "rock"];
+/// The four identities, then the road's aggregate: the arrays' layer order.
+const ROLES: [&str; 5] = ["sand", "grass", "litter", "rock", "aggregate"];
 const FAMILIES: [&str; 4] = ["albedo", "normal", "rough", "ao"];
 
 /// A `w × w` RGBA8 image whose every texel is `(seed, x, y, 255)`, one level,
@@ -261,7 +262,7 @@ fn every_family_ships_at_one_size() {
                 dims(role, family),
                 first,
                 "{role}_{family}.jpg is not the size of sand_{family}.jpg — the \
-                 four {family} maps are one texture array and every layer \
+                 {family} maps are one texture array and every layer \
                  must share one size. Re-source the SET."
             );
         }
@@ -276,7 +277,7 @@ fn every_family_ships_at_one_size() {
 
 // ── 4. The system: waits for every chain, one family a frame, AO at 4 ──────
 
-/// Sixteen fixtures shaped like the real set: 1K/512 become 8/4 here.
+/// Twenty fixtures shaped like the real set: 1K/512 become 8/4 here.
 fn maps(images: &mut Assets<Image>) -> GroundMaps {
     let mut set = |k: u8| MapSet {
         albedo: images.add(plane(8, TextureFormat::Rgba8UnormSrgb, k)),
@@ -289,6 +290,7 @@ fn maps(images: &mut Assets<Image>) -> GroundMaps {
         grass: set(1),
         litter: set(2),
         rock: set(3),
+        aggregate: set(4),
     }
 }
 
@@ -317,17 +319,23 @@ fn the_ground_is_stacked_only_after_every_chain_lands_one_family_a_frame() {
         let mut images = app.world_mut().resource_mut::<Assets<Image>>();
         maps(&mut images)
     };
-    let all: Vec<Handle<Image>> = [&maps.sand, &maps.grass, &maps.litter, &maps.rock]
-        .iter()
-        .flat_map(|m| {
-            [
-                m.albedo.clone(),
-                m.normal.clone(),
-                m.rough.clone(),
-                m.ao.clone().unwrap(),
-            ]
-        })
-        .collect();
+    let all: Vec<Handle<Image>> = [
+        &maps.sand,
+        &maps.grass,
+        &maps.litter,
+        &maps.rock,
+        &maps.aggregate,
+    ]
+    .iter()
+    .flat_map(|m| {
+        [
+            m.albedo.clone(),
+            m.normal.clone(),
+            m.rough.clone(),
+            m.ao.clone().unwrap(),
+        ]
+    })
+    .collect();
     // The one held back is sand's ALBEDO — a layer of the family built
     // first — so that while it waits, nothing behind it is built either, and
     // when it lands all three families are still owed.
@@ -344,7 +352,7 @@ fn the_ground_is_stacked_only_after_every_chain_lands_one_family_a_frame() {
         "arrays were built from sources that have no mip chain yet"
     );
 
-    // Fifteen of sixteen chained: still nothing, because the missing one is
+    // All but one chained: still nothing, because the missing one is
     // in the family built first and the builder never skips past a family
     // that is not ready — the order is fixed, so the normal and rough/AO
     // arrays (whose layers ARE all ready) wait behind it.
@@ -382,12 +390,12 @@ fn the_ground_is_stacked_only_after_every_chain_lands_one_family_a_frame() {
     let albedo = images.get(&arrays.albedo).expect("albedo array");
     let normal = images.get(&arrays.normal).expect("normal array");
     let rough_ao = images.get(&arrays.rough_ao).expect("rough/ao array");
-    assert_eq!(albedo.texture_descriptor.size.depth_or_array_layers, 4);
+    assert_eq!(albedo.texture_descriptor.size.depth_or_array_layers, 5);
     assert_eq!(
         albedo.texture_descriptor.format,
         TextureFormat::Rgba8UnormSrgb
     );
-    assert_eq!(normal.texture_descriptor.size.depth_or_array_layers, 4);
+    assert_eq!(normal.texture_descriptor.size.depth_or_array_layers, 5);
     assert_eq!(
         rough_ao.texture_descriptor.size.depth_or_array_layers,
         2 * AO_LAYER0
@@ -406,7 +414,7 @@ fn the_ground_is_stacked_only_after_every_chain_lands_one_family_a_frame() {
     // `(seed, 0, 0, 255)` and the seeds say which source landed where.
     let per = layer_bytes(4, 4, mipmap::levels(4, 4), 4);
     let data = rough_ao.data.as_ref().unwrap();
-    for k in 0..4 {
+    for k in 0..ROLES.len() {
         assert_eq!(
             data[k * per],
             32 + k as u8,
@@ -422,7 +430,7 @@ fn the_ground_is_stacked_only_after_every_chain_lands_one_family_a_frame() {
         );
     }
     let per = layer_bytes(8, 8, mipmap::levels(8, 8), 4);
-    for k in 0..4 {
+    for k in 0..ROLES.len() {
         assert_eq!(albedo.data.as_ref().unwrap()[k * per], k as u8);
         assert_eq!(normal.data.as_ref().unwrap()[k * per], 16 + k as u8);
     }

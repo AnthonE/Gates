@@ -88,8 +88,8 @@
 //! every bind group in the pipeline** — the view's shadow and environment
 //! maps, `StandardMaterial`'s six slots and ours — and the material group
 //! alone was 22. The browser refused the pipeline layout before a frame.
-//! `textures::GroundArrays` is the answer: four layers of one
-//! `texture_2d_array` cost one binding, roughness and AO share an array
+//! `textures::GroundArrays` is the answer: the identities (and the road's
+//! aggregate behind them) as layers of one `texture_2d_array` cost one binding, roughness and AO share an array
 //! (same size, format and sampler; `textures::AO_LAYER0`), and the ground is
 //! three sampled textures. **Same texels, same filter, same chain** — a layer
 //! samples exactly as the standalone texture did, which is what lets this stay
@@ -140,7 +140,8 @@ pub const ATTRIBUTE_ROAD: MeshVertexAttribute =
 
 /// Proposed material defaults, DECISIONS.md §open, road surface v1.
 /// Linear reflectances stay inside ART.md §5's band. Aggregate comes from
-/// the existing CC0 Gravel004 map, at pavement grading rather than scree size.
+/// the CC0 Gravel004 map (`textures::GroundMaps::aggregate`, array layer 4),
+/// at pavement grading rather than scree size.
 pub const ROAD_PAVEMENT_ALBEDO: [f32; 3] = [0.065, 0.070, 0.072];
 pub const ROAD_DIRT_ALBEDO: [f32; 3] = [0.18, 0.135, 0.085];
 pub const ROAD_AGGREGATE_TILE_M: f32 = 1.0;
@@ -207,7 +208,15 @@ pub type GroundMaterial = ExtendedMaterial<StandardMaterial, GroundSplat>;
 /// 0.2693 → 0.2450, so the gain that places that mean at 1 rose by the same
 /// 9.0%. Nothing was authored here; the file changed and the gate said so,
 /// which is the whole reason this constant is re-measured rather than typed.
-pub const GRAIN_GAIN: [f32; 4] = [5.5398, 4.0292, 9.6954, 4.0820];
+/// ⚠ **And 4.0820 → 9.9542 on 2026-09-24** (`Gravel004` → aCG `Rock032`, a
+/// weathered slab): scree read as a cobbled road at a player's feet above the
+/// treeline. Gravel004 stayed as the road's aggregate, at [`AGGREGATE_GAIN`].
+pub const GRAIN_GAIN: [f32; 4] = [5.5398, 4.0292, 9.6954, 9.9542];
+
+/// `1 / linear-luma mean` of the road's aggregate map (`aggregate_albedo.jpg`,
+/// `Gravel004`) — [`GRAIN_GAIN`]'s construction for the one layer that is not
+/// an identity. Measured, and re-measured by `tests/ground_splat.rs`.
+pub const AGGREGATE_GAIN: f32 = 4.0820;
 
 /// Per identity, the mean of its shipped `*_rough.jpg` — sand · grass ·
 /// litter · rock, in `terrain::splat`'s order.
@@ -237,7 +246,9 @@ pub const GRAIN_GAIN: [f32; 4] = [5.5398, 4.0292, 9.6954, 4.0820];
 /// sand and the wet term ([`WET_ROUGH`]) multiplies from there. If a mountain
 /// reads as glossy in a frame, this is the number to suspect first — the same
 /// sentence this block already carried about 0.88 → 0.611, one swap later.
-pub const ROUGH_MEAN: [f32; 4] = [0.9631, 0.9364, 0.9197, 0.5359];
+/// ⚠ **And back up to 0.6971 with the 2026-09-24 slab (`Rock032`)** — still
+/// the smoothest identity by 0.22.
+pub const ROUGH_MEAN: [f32; 4] = [0.9631, 0.9364, 0.9197, 0.6971];
 
 /// What a soaked surface keeps of its **dry roughness**.
 ///
@@ -354,6 +365,9 @@ pub struct GroundSplatParams {
     /// x = [`ROCK_STREAK_W_M`], y = [`ROCK_STREAK_H_M`], z = [`ROCK_FACE_ON`],
     /// w = [`ROCK_FACE_FULL`].
     pub rock_d: Vec4,
+    /// x = [`AGGREGATE_GAIN`]: the road's layer is not an identity, so
+    /// `gain` has no slot for it. yzw reserved and zero.
+    pub aggregate: Vec4,
 }
 
 impl GroundSplatParams {
@@ -423,6 +437,7 @@ impl GroundSplatParams {
                 ROCK_FACE_ON,
                 ROCK_FACE_FULL,
             ),
+            aggregate: Vec4::new(AGGREGATE_GAIN, 0.0, 0.0, 0.0),
         }
     }
 }
@@ -563,17 +578,17 @@ pub struct GroundSplat {
     #[uniform(100)]
     pub params: GroundSplatParams,
     /// The four albedo photographs, `Rgba8UnormSrgb`, in `terrain::splat`'s
-    /// order — **and the shared sampler, at 102.** The derive refuses a
+    /// order, then the road's aggregate — **and the shared sampler, at 102.** The derive refuses a
     /// `sampler` attribute with no `texture` beside it, so the one sampler
     /// every array uses hangs off this one; which one is arbitrary and
     /// stable, and the arrays are built with an identical descriptor.
     #[texture(101, dimension = "2d_array")]
     #[sampler(102)]
     pub albedo: Handle<Image>,
-    /// The four tangent-space normal maps, `Rgba8Unorm`.
+    /// The tangent-space normal maps, `Rgba8Unorm`, the same five layers.
     #[texture(103, dimension = "2d_array")]
     pub normal: Handle<Image>,
-    /// Roughness at layers `0..4`, ambient occlusion at `AO_LAYER0..8`, both
+    /// Roughness at layers `0..5`, ambient occlusion at `AO_LAYER0..10`, both
     /// greyscale `Rgba8Unorm` — a roughness map is DATA, loaded
     /// `is_srgb = false`, and so is AO.
     ///
