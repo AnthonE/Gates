@@ -145,6 +145,7 @@ pub mod report;
 /// Bounded client-only coordinates for paint on the authoritative road.
 pub mod road_markings;
 pub mod sky;
+pub mod stars;
 // What players built. Distinct from `props`, which is the world the seed
 // makes: this is the world other players made, and it arrives on the wire.
 pub mod structures;
@@ -481,6 +482,7 @@ impl Plugin for GatesRenderPlugin {
         app.add_plugins(MaterialPlugin::<ground_splat::GroundMaterial>::default());
         // The rain's streak material (weather v0, `rain.rs`).
         app.add_plugins(MaterialPlugin::<rain::RainMaterial>::default());
+        app.add_plugins(MaterialPlugin::<stars::StarMaterial>::default());
         app.add_plugins(UiMaterialPlugin::<render_scale::OpaqueFrame>::default());
         app.insert_resource(day_pin)
             .insert_resource(weather_pin)
@@ -1097,6 +1099,8 @@ impl Plugin for GatesRenderPlugin {
         .add_systems(OnEnter(Screen::Loading), sky::setup.after(rig::setup))
         // The rain follows the camera too (weather v0).
         .add_systems(OnEnter(Screen::Loading), rain::setup.after(rig::setup))
+        // After the deck: the stars hide behind its field.
+        .add_systems(OnEnter(Screen::Loading), stars::setup.after(sky::setup))
         // The beds, from the loading screen's first frame at zero. No camera
         // is needed: the pan is computed per start from `Eye` in `pump`.
         .add_systems(OnEnter(Screen::Loading), audio::setup)
@@ -1351,6 +1355,7 @@ impl Plugin for GatesRenderPlugin {
                 weather::update.after(feed::drain).before(rig::day_night),
                 sky::compose.after(rig::day_night),
                 rain::drive.after(weather::update),
+                stars::drive.after(sky::compose),
                 hud::exposure,
                 // Regrowing trees (tree growth v0), after this frame's
                 // harvested set is in and after `props::harvest` has stood a

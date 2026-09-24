@@ -252,8 +252,8 @@ fn the_deck_is_drawn_unrotated_at_its_own_brightness() {
             "at {frac} the deck is turned {rot:?}"
         );
         assert!(
-            (bright - sky::CLOUD_NITS).abs() < 1.0,
-            "at {frac} the deck is at {bright}, not CLOUD_NITS"
+            (bright - sky::CLOUD_NITS * sky::DECK_GAIN).abs() < 1.0,
+            "at {frac} the deck is at {bright}, not CLOUD_NITS × DECK_GAIN"
         );
     }
 }
@@ -508,4 +508,35 @@ fn sun_casts(app: &mut App) -> bool {
         .single(world)
         .unwrap()
         .shadows_enabled
+}
+
+/// The exposure opens around sunrise and sunset and nowhere else: noon is
+/// the measured `DAY_EV100` and so is the night the ambient was tuned
+/// against, while the sun a few degrees up gets the full lift.
+#[test]
+fn the_eye_opens_at_dusk_and_only_at_dusk() {
+    use rig::{exposure_ev100, DAY_EV100, TWILIGHT_OPEN_STOPS};
+    let noon = DAY_PORTION * 0.5;
+    let midnight = DAY_PORTION + (1.0 - DAY_PORTION) * 0.5;
+    assert_eq!(exposure_ev100(noon), DAY_EV100, "noon moved");
+    assert_eq!(exposure_ev100(midnight), DAY_EV100, "the night moved");
+    assert_eq!(
+        exposure_ev100(DAY_PORTION * 0.25),
+        DAY_EV100,
+        "the morning moved"
+    );
+    // `/time dawn` and `/time dusk`: 20‰ of the cycle inside the day.
+    for frac in [0.02, DAY_PORTION - 0.02] {
+        let ev = exposure_ev100(frac);
+        assert!(
+            (ev - (DAY_EV100 - TWILIGHT_OPEN_STOPS)).abs() < 1e-4,
+            "at {frac} the sun is {} up and the exposure is {ev}",
+            sun_elevation(frac)
+        );
+    }
+    // And it never opens further than that, or closes past the day's.
+    for i in 0..=1000 {
+        let ev = exposure_ev100(i as f32 / 1000.0);
+        assert!((DAY_EV100 - TWILIGHT_OPEN_STOPS - 1e-4..=DAY_EV100).contains(&ev));
+    }
 }

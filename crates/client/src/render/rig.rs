@@ -225,7 +225,7 @@ pub fn setup(
             // the grade applied after — are one nested tuple, which is also the
             // grouping `ART.md` rule 5 describes: one owner for the transfer.
             (
-                Exposure { ev100: 14.2 },
+                Exposure { ev100: DAY_EV100 },
                 // Chosen by measurement in a later slice, not by name (`RENDER.md`
                 // §4 R2/R5). TonyMcMapface is Bevy's default and is neutral with a
                 // gentle roll-off; what it is NOT is the browser's Khronos PBR
@@ -652,6 +652,29 @@ pub const SHADOW_MIN_ELEV: f32 = 0.035;
 pub const SUN_DISK_INTENSITY: f32 = 1.6;
 /// Ambient added at the peak of a lightning flash, lux.
 pub const FLASH_LUX: f32 = 2_500.0;
+/// The exposure every sunlit frame is judged at (the camera's spawn has the
+/// measurement).
+pub const DAY_EV100: f32 = 14.2;
+/// How far the exposure opens while the sun is low, stops (weather v0).
+///
+/// The light model gives a sun 2.5° up a thirteenth of noon's light, and
+/// against the fixed exposure that read as night: sunset was the lights
+/// going out, twenty minutes early. An eye opens at dusk. This opens by
+/// about what a photographer would at sunset, and is shut again by 15° up
+/// and by 7° down — so noon, and the night `NIGHT_AMBIENT_LUX` was tuned
+/// against, are exactly what they were.
+pub const TWILIGHT_OPEN_STOPS: f32 = 2.5;
+
+/// The camera's exposure at a point in the cycle, ev100: [`DAY_EV100`],
+/// opened by [`TWILIGHT_OPEN_STOPS`] around sunrise and sunset.
+pub fn exposure_ev100(frac: f32) -> f32 {
+    let e = sun_elevation(frac);
+    // Fully open from ~1.7° down to ~3.4° up.
+    let rise = ((0.26 - e) / 0.20).clamp(0.0, 1.0);
+    let set = ((e + 0.12) / 0.09).clamp(0.0, 1.0);
+    let s = rise.min(set);
+    DAY_EV100 - TWILIGHT_OPEN_STOPS * s * s * (3.0 - 2.0 * s)
+}
 
 /// The sun's light as a share of full daylight: `daylight`, with the
 /// twilight tail under it.
@@ -757,14 +780,15 @@ type CamLight = (
     &'static mut EnvironmentMapLight,
     Option<&'static mut Skybox>,
     Option<&'static mut DistanceFog>,
+    Option<&'static mut Exposure>,
 );
 
 /// Drive the rig from the server's clock and the weather. Runs every
 /// frame; the queries are empty until `setup` has spawned the rig, which
 /// makes the system a no-op on every screen that is not the world.
 ///
-/// **Still the one writer** of the sun, the fills, the deck's brightness
-/// and the fog. The weather (weather v0) arrives as one more input:
+/// **Still the one writer** of the sun, the fills, the deck's brightness,
+/// the fog and the exposure. The weather (weather v0) arrives as one more input:
 /// `WeatherNow`, absent in the headless fixtures, where the frame is the
 /// clear one this rig always drew.
 pub fn day_night(
@@ -809,7 +833,13 @@ pub fn day_night(
             };
         }
     }
-    if let Ok((mut amb, mut env, sky, fog)) = cam.single_mut() {
+    if let Ok((mut amb, mut env, sky, fog, exposure)) = cam.single_mut() {
+        if let Some(mut ex) = exposure {
+            let want = exposure_ev100(frac);
+            if ex.ev100 != want {
+                ex.ev100 = want;
+            }
+        }
         // **The handover, and the two terms are complements by construction.**
         // The hemisphere carries the day and the uniform term carries the
         // night, and each is scaled by the same `light` so their sum is
@@ -834,7 +864,7 @@ pub fn day_night(
             // The composer bakes the hour and the weather into the deck's
             // texels (`sky.rs`), so the brightness is the deck's physical
             // unit, lifted only by a flash.
-            sky.brightness = super::sky::CLOUD_NITS * (1.0 + 3.0 * w.flash);
+            sky.brightness = super::sky::CLOUD_NITS * super::sky::DECK_GAIN * (1.0 + 3.0 * w.flash);
             sky.rotation = Quat::IDENTITY;
         }
     }
