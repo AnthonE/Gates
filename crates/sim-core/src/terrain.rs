@@ -35,11 +35,15 @@ const CH_WARP_Z: u32 = 24;
 const CH_COAST: u32 = 32;
 const CH_MOIST: u32 = 40;
 const CH_RIDGE: u32 = 48; // +octave index, RIDGE_OCTAVES of them
+const CH_MASSIF: u32 = 56; // +0 the ranges' spur field, +2 their crest field
 const CH_SCATTER: u32 = 64;
 const CH_CLUMP: u32 = 72; // +octave index, 3 octaves
 const CH_CLUTTER: u32 = 80; // the sub-metre ground population
 const CH_COAST_BAY: u32 = 88; // the coastline's headlands and coves
 const CH_SPECIES: u32 = 96; // which species a stand is painted with
+const CH_MASSIF_PLACE: u32 = 128; // where each interior range stands
+const CH_GULLY: u32 = 136; // +octave index, GULLY_OCTAVES of them
+const CH_MASSIF_WARP: u32 = 144; // +0 the ranges' own warp in x, +2 in z
 
 // Generator shape (DECISIONS.md §open: worldgen shape params, golden-pinned).
 const RELIEF_FREQ: f32 = 1.0 / 600.0;
@@ -438,8 +442,18 @@ fn draw_quad(seed: u64, channel: u32, cx: i32, cz: i32) -> Quad {
 }
 
 /// Where a noise field's corner gradients come from. See the note above.
+///
+/// It also carries the two other lattice draws worldgen repeats per sample —
+/// the gully filter's per-cell hash and the interior ranges' layout — so a
+/// caller that brings a memo brings it for those too (interior massifs v0: a
+/// clutter tile on a range cost 3.5× the same tile on open ground until they
+/// were memoized, because every other draw in `height` already was).
 trait Corners {
     fn quad(&mut self, seed: u64, channel: u32, cx: i32, cz: i32) -> Quad;
+    /// The low 32 bits of `cell_hash(seed, cx, cz, channel)`.
+    fn cell32(&mut self, seed: u64, channel: u32, cx: i32, cz: i32) -> u32;
+    /// The seed's interior ranges, which depend on nothing but the seed.
+    fn massifs(&mut self, seed: u64) -> [Massif; MASSIFS];
 }
 
 /// Hash every corner, every time — the draw this file shipped before the memo
@@ -450,6 +464,14 @@ impl Corners for Direct {
     #[inline(always)]
     fn quad(&mut self, seed: u64, channel: u32, cx: i32, cz: i32) -> Quad {
         draw_quad(seed, channel, cx, cz)
+    }
+    #[inline(always)]
+    fn cell32(&mut self, seed: u64, channel: u32, cx: i32, cz: i32) -> u32 {
+        cell_hash(seed, cx, cz, channel) as u32
+    }
+    #[inline(always)]
+    fn massifs(&mut self, seed: u64) -> [Massif; MASSIFS] {
+        [massif(seed, 0), massif(seed, 1)]
     }
 }
 
@@ -473,8 +495,16 @@ struct LatticeSlot {
     /// one increment instead of a sweep — and a slot from an older seed can
     /// never be mistaken for a hit.
     epoch: u32,
-    quad: Quad,
+    /// A `Quad` for a noise channel, or a `cell32` draw for a key carrying
+    /// `CELL32_KEY` — the flag is in the key, so the two never share a slot's
+    /// meaning. Widening this from `u16` cost nothing: the slot was padded to
+    /// 20 bytes either way.
+    val: u32,
 }
+
+/// Set on a `cell32` slot's channel key, so a hash draw and a quad draw on
+/// the same channel and cell can never answer for each other.
+const CELL32_KEY: u32 = 0x8000_0000;
 
 /// A caller-owned memo of the worldgen lattice draw.
 ///
@@ -493,6 +523,9 @@ pub struct Lattice {
     slots: [LatticeSlot; LATTICE_SLOTS],
     seed: u64,
     epoch: u32,
+    /// The seed's interior ranges, live while `ranges_epoch == epoch`.
+    ranges: [Massif; MASSIFS],
+    ranges_epoch: u32,
 }
 
 impl Default for Lattice {
@@ -509,13 +542,37 @@ impl Lattice {
                 cz: 0,
                 channel: 0,
                 epoch: 0,
-                quad: 0,
+                val: 0,
             }; LATTICE_SLOTS],
             seed: 0,
             // Slots start at epoch 0, so the table is cold at 1 without a
             // sweep. 0 is never a live epoch, which is what `reseed` protects.
             epoch: 1,
+            ranges: [MASSIF_NONE; MASSIFS],
+            ranges_epoch: 0,
         }
+    }
+
+    /// The memo's one lookup: `draw` runs on a miss and its answer is kept.
+    #[inline(always)]
+    fn memo(&mut self, seed: u64, key: u32, cx: i32, cz: i32, draw: impl FnOnce() -> u32) -> u32 {
+        if self.seed != seed {
+            self.reseed(seed);
+        }
+        let i = Self::slot_of(key, cx, cz);
+        let s = self.slots[i];
+        if s.epoch == self.epoch && s.cx == cx && s.cz == cz && s.channel == key {
+            return s.val;
+        }
+        let val = draw();
+        self.slots[i] = LatticeSlot {
+            cx,
+            cz,
+            channel: key,
+            epoch: self.epoch,
+            val,
+        };
+        val
     }
 
     /// Which slot a quad lands in. Integer only, and deliberately cheaper than
@@ -542,6 +599,7 @@ impl Lattice {
             for s in self.slots.iter_mut() {
                 s.epoch = 0;
             }
+            self.ranges_epoch = 0;
             self.epoch = 1;
         }
     }
@@ -550,23 +608,26 @@ impl Lattice {
 impl Corners for Lattice {
     #[inline(always)]
     fn quad(&mut self, seed: u64, channel: u32, cx: i32, cz: i32) -> Quad {
+        self.memo(seed, channel, cx, cz, || {
+            draw_quad(seed, channel, cx, cz) as u32
+        }) as Quad
+    }
+    #[inline(always)]
+    fn cell32(&mut self, seed: u64, channel: u32, cx: i32, cz: i32) -> u32 {
+        self.memo(seed, channel | CELL32_KEY, cx, cz, || {
+            cell_hash(seed, cx, cz, channel) as u32
+        })
+    }
+    #[inline(always)]
+    fn massifs(&mut self, seed: u64) -> [Massif; MASSIFS] {
         if self.seed != seed {
             self.reseed(seed);
         }
-        let i = Self::slot_of(channel, cx, cz);
-        let s = self.slots[i];
-        if s.epoch == self.epoch && s.cx == cx && s.cz == cz && s.channel == channel {
-            return s.quad;
+        if self.ranges_epoch != self.epoch {
+            self.ranges = [massif(seed, 0), massif(seed, 1)];
+            self.ranges_epoch = self.epoch;
         }
-        let quad = draw_quad(seed, channel, cx, cz);
-        self.slots[i] = LatticeSlot {
-            cx,
-            cz,
-            channel,
-            epoch: self.epoch,
-            quad,
-        };
-        quad
+        self.ranges
     }
 }
 
@@ -789,6 +850,514 @@ fn continent<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> f32 {
     fade(t)
 }
 
+// ── Stage 4d: the interior massifs ─────────────────────────────────────────
+//
+// **The island had no mountains, and that was measured before this existed.**
+// On the shipped seed 93% of the land sat under 40 m, most of it on the two
+// shelves `REMAP_LUT` manufactures, and the highland was noise lumps 60–100 m
+// tall with nothing joining them (`examples/terrain_stats`). A shelf is a base
+// spot, which is why the curve makes them; an island that is ALL base spot is
+// a pancake from every place a player stands (operator, 2026-09-23: *"our
+// world is still weak terrain wise"*).
+//
+// So the interior gets two mountain ranges, and the rest of the island keeps
+// its bits:
+//
+// - **Placed, then carved.** Each range is an envelope around a wandering
+//   spine (`Massif`): a crest on the spine, an outline moved by a spur field,
+//   peaks and cols along the crest, the whole read through its own warp so no
+//   range is the primitive it was drawn as. Then a **gully filter** cuts the
+//   anatomy into it (`gullies`): every octave lays stripes running DOWN the
+//   slope it stands on, and each octave's slope includes the octaves before
+//   it, so small gullies branch off the sides of large ones. That is the
+//   drainage a hillshade reads as a mountain and a smooth envelope never is.
+// - **Two ranges, opposed.** A major range and a minor one half a turn
+//   apart, so the gaps between them are opposite each other. The inland
+//   depot's two side roads are straight chords on opposite bearings that may
+//   not cross a cliff (`solve_side_roads`, `road_corridor_clear`), and three
+//   evenly spaced ranges would put a range opposite every gap.
+// - **Bounded by radius, exactly.** The lift is exactly 0.0 — `land` is not
+//   even touched — inside `MASSIF_R_IN` and at and beyond `MASSIF_R_OUT`. The
+//   window is read off the TRUE position, so its edges are exact circles: the
+//   inland site's 75 m candidates, the ring (inner reach 583 m), the haven,
+//   the waystations and every spawn are the bits they were.
+// - **C¹ everywhere**, for `remap`'s reason: the renderer's normal is this
+//   field's gradient. The window fades are `fade`, the cross-section is
+//   `t³(4 − 3t)` (zero slope at the foot and on the crest), the spine's
+//   joints are a polynomial smooth-min, the gully wave is a `fade`d
+//   triangle, and every gate on a gully (slope, strength) is a smoothstep.
+// - **Walkable in the main.** A range whose flanks are mostly cliff is
+//   scenery; `tests/massif.rs` holds the footprint's median slope and cliff
+//   share, measured at p50 0.64–0.71 and 4.9–10.7 % cliff on four seeds.
+// - **Paid for where it stands.** Off the window a sample pays one squared-
+//   radius compare. In it, `height` is ~2× what it was (~0.95 µs against
+//   ~0.46 on the gate box), and a clutter tile on a range ~2.7× (2.7 ms
+//   against 1.0 — one tile a frame, on the frame thread). The range layout
+//   and the gully hashes ride the caller's `Lattice` like every other draw,
+//   the fall line is an analytic gradient rather than two more envelopes,
+//   and a bounding disc skips the warp for samples no range can reach.
+//
+// **(knob)** Every number in this block is invented (`DECISIONS.md` §open,
+// interior massifs v0).
+pub const MASSIFS: usize = 2;
+/// The radial window the ranges live in: zero inside `MASSIF_R_IN`, full from
+/// `MASSIF_R_IN + MASSIF_R_IN_FADE` to `MASSIF_R_OUT − MASSIF_R_OUT_FADE`,
+/// zero again at `MASSIF_R_OUT`. Metres from the island centre.
+pub const MASSIF_R_IN: f32 = 170.0;
+pub const MASSIF_R_IN_FADE: f32 = 110.0;
+pub const MASSIF_R_OUT: f32 = 560.0;
+pub const MASSIF_R_OUT_FADE: f32 = 100.0;
+/// Where a range's centre stands, metres from the island centre: the middle
+/// of the window, so a range's flanks have room on both sides.
+const MASSIF_CENTRE_R: [f32; 2] = [355.0, 375.0];
+/// How far each range's bearing strays from its slot, and its spine from
+/// tangential, in yaw units (65,536 a turn).
+const MASSIF_JITTER: f32 = 3_000.0;
+const MASSIF_TILT: f32 = 4_000.0;
+/// The major range: spine half-length, envelope half-width, height (metres),
+/// each drawn between the two ends.
+const MAJOR_HALF_LEN: [f32; 2] = [210.0, 250.0];
+const MAJOR_HALF_W: [f32; 2] = [165.0, 180.0];
+const MAJOR_AMP: [f32; 2] = [80.0, 95.0];
+/// The minor range, the same three.
+const MINOR_HALF_LEN: [f32; 2] = [160.0, 200.0];
+const MINOR_HALF_W: [f32; 2] = [120.0, 135.0];
+const MINOR_AMP: [f32; 2] = [60.0, 75.0];
+/// Segments in a spine, the largest turn between two of them (yaw units), and
+/// the width of the fillet the smooth-min puts at a joint (metres).
+const SPINE_SEGS: usize = 4;
+const SPINE_TURN: f32 = 5_500.0;
+const SPINE_BLEND_M: f32 = 60.0;
+/// The ranges' own domain warp, on top of the relief's: amplitude (metres)
+/// and frequency. 85 m at 1/330 was tried first and compresses space by 4× in
+/// places, which reads as a flat-topped mesa on a range's crest.
+const MASSIF_WARP_AMP: f32 = 45.0;
+const MASSIF_WARP_FREQ: f32 = 1.0 / 420.0;
+/// The farthest the warp can move a sample, with room: `MASSIF_WARP_AMP` on
+/// each axis is √2 of it on the diagonal, and fBm is normalised to ±1 but may
+/// touch it. Derived, not a knob — `massif_base`'s reach test rests on it.
+const MASSIF_REACH_SLACK: f32 = MASSIF_WARP_AMP * 1.6;
+/// How far the spur field moves an outline, as a share of the half-width, and
+/// its frequency. Moves the outline and never the crest (`massif_base`).
+const MASSIF_SPUR: f32 = 0.3;
+const MASSIF_SPUR_FREQ: f32 = 1.0 / 260.0;
+/// Peaks and cols: the share of a range's height the crest field may take
+/// away, and its frequency.
+const MASSIF_CREST: f32 = 0.35;
+const MASSIF_CREST_FREQ: f32 = 1.0 / 170.0;
+/// Lift over which a range takes over from the highland's own ridged crumple
+/// (`RIDGE_AMP`), metres: a range carries its own anatomy, and the crumple
+/// on a gullied flank only roughens the gullies.
+const MASSIF_OWN_M: f32 = 40.0;
+/// Gully filter: octaves, the first octave's stripe spacing (metres) and
+/// depth (metres, peak to trough), and the gain per octave.
+const GULLY_OCTAVES: u32 = 3;
+const GULLY_CELL_M: f32 = 120.0;
+const GULLY_AMP: f32 = 14.0;
+const GULLY_GAIN: f32 = 0.5;
+/// How much an octave's own gullies bend the next octave's fall line — what
+/// makes a small gully branch off a large one rather than run beside it.
+const GULLY_BRANCH: f32 = 1.3;
+/// The slope band over which gullies come in: none on a crest or a flat, full
+/// on a flank.
+const GULLY_SLOPE_LO: f32 = 0.04;
+const GULLY_SLOPE_HI: f32 = 0.45;
+/// Height of range over which the gullies come in at its foot, metres.
+/// `fade(t) <= t` and the octaves' half-depths sum under this, so a gully
+/// never cuts below the ground the range stands on.
+const GULLY_KNEE_M: f32 = 30.0;
+/// Where each cell's stripe origin stands inside its cell, and the neutral
+/// weight under the kernels: where few kernels reach, the stripes fade to
+/// nothing instead of one kernel's edge standing alone as a wall.
+const GULLY_JITTER_LO: f32 = 0.3;
+const GULLY_JITTER: f32 = 0.4;
+const GULLY_FLOOR_W: f32 = 0.08;
+/// Kernel radius², in cells. Derived: with the jitter above, no origin outside
+/// the 3×3 neighbourhood can reach a sample, so the neighbourhood is exact.
+const GULLY_R2: f32 = 1.5625;
+
+const _: () = {
+    // The 3×3 walk is exact: an origin two cells over is at least
+    // `2 − (LO + J)` away, one cell over at least `1 + LO`, and both must be
+    // past the kernel's reach or a stripe appears at a cell edge.
+    let far = 2.0 - (GULLY_JITTER_LO + GULLY_JITTER);
+    let near = 1.0 + GULLY_JITTER_LO;
+    assert!(far * far >= GULLY_R2 && near * near >= GULLY_R2);
+    // Never more cut than there is range: the octaves' half-depths.
+    assert!(GULLY_AMP * 0.5 * (1.0 + GULLY_GAIN + GULLY_GAIN * GULLY_GAIN) <= GULLY_KNEE_M);
+    // The window sits inside the ring's innermost reach (600 − 5 − 12 m).
+    assert!(MASSIF_R_OUT < ROAD_R_MIN - ROAD_SHOULDER_HALF_W - RING_BLEND_M);
+    assert!(MASSIF_R_IN + MASSIF_R_IN_FADE < MASSIF_R_OUT - MASSIF_R_OUT_FADE);
+    // Two ranges, so the gaps between them are opposite each other.
+    assert!(MASSIFS == 2);
+};
+
+/// One range: its spine, its half-width's reciprocal, its height.
+#[derive(Clone, Copy)]
+struct Massif {
+    pts: [[f32; 2]; SPINE_SEGS + 1],
+    /// `1 / |segment|²`, per segment, so a distance costs no division.
+    inv_len2: [f32; SPINE_SEGS],
+    /// A disc holding the whole spine: every spine point is within `rad` of
+    /// `centre`, so `|p − centre| − rad` is a floor under the spine distance.
+    centre: [f32; 2],
+    rad: f32,
+    inv_w: f32,
+    amp: f32,
+}
+
+/// A cold memo slot's range: never read, because `ranges_epoch` starts at 0
+/// and 0 is never a live epoch.
+const MASSIF_NONE: Massif = Massif {
+    pts: [[0.0; 2]; SPINE_SEGS + 1],
+    inv_len2: [0.0; SPINE_SEGS],
+    centre: [0.0; 2],
+    rad: 0.0,
+    inv_w: 0.0,
+    amp: 0.0,
+};
+
+/// A 16-bit unit draw off a hash, in [0, 1].
+fn unit16(h: u64, shift: u32) -> f32 {
+    ((h >> shift) & 0xFFFF) as f32 * (1.0 / 65_535.0)
+}
+
+/// Range `i` of the seed. Four hashes and five table lookups.
+fn massif(seed: u64, i: usize) -> Massif {
+    let r0 = cell_hash(seed, 0, 7, CH_MASSIF_PLACE);
+    let h = cell_hash(seed, i as i32, 0, CH_MASSIF_PLACE);
+    let g = cell_hash(seed, i as i32, 1, CH_MASSIF_PLACE);
+    let t0 = cell_hash(seed, i as i32, 3, CH_MASSIF_PLACE);
+    // One turn for the pair, so the ranges are not always at the same clock
+    // faces, and each its own jitter off its slot.
+    let rot = (unit16(r0, 0) * 65_535.0) as i32;
+    let slot = (i as u32 * (65_536 / MASSIFS as u32)) as i32;
+    let jitter = ((unit16(h, 0) * 2.0 - 1.0) * MASSIF_JITTER) as i32;
+    let bearing = (rot + slot + jitter) as u16;
+    let (dx, dz) = crate::yaw_lut::yaw_dir(bearing);
+    let r = lerp(MASSIF_CENTRE_R[0], MASSIF_CENTRE_R[1], unit16(h, 16));
+    let cx = ISLAND_SIZE * 0.5 + dx * r;
+    let cz = ISLAND_SIZE * 0.5 + dz * r;
+    let tilt = ((unit16(h, 32) * 2.0 - 1.0) * MASSIF_TILT) as i32;
+    let (len, w, amp) = if i == 0 {
+        (MAJOR_HALF_LEN, MAJOR_HALF_W, MAJOR_AMP)
+    } else {
+        (MINOR_HALF_LEN, MINOR_HALF_W, MINOR_AMP)
+    };
+    let half_len = lerp(len[0], len[1], unit16(h, 48));
+    // A spine that wanders: tangential to start, each segment turning off the
+    // last by up to `SPINE_TURN`, and the whole walk recentred on the range.
+    let seg = 2.0 * half_len / SPINE_SEGS as f32;
+    let mut pts = [[0.0f32; 2]; SPINE_SEGS + 1];
+    let mut yaw = bearing as i32 + 16_384 + tilt;
+    let mut j = 0;
+    while j < SPINE_SEGS {
+        yaw += ((unit16(t0, (j as u32 % 4) * 16) * 2.0 - 1.0) * SPINE_TURN) as i32;
+        let (ux, uz) = crate::yaw_lut::yaw_dir(yaw as u16);
+        pts[j + 1] = [pts[j][0] + ux * seg, pts[j][1] + uz * seg];
+        j += 1;
+    }
+    let mx = (pts[0][0] + pts[SPINE_SEGS][0]) * 0.5 - cx;
+    let mz = (pts[0][1] + pts[SPINE_SEGS][1]) * 0.5 - cz;
+    let mut rad2: f32 = 0.0;
+    let mut j = 0;
+    while j <= SPINE_SEGS {
+        pts[j] = [pts[j][0] - mx, pts[j][1] - mz];
+        let (ox, oz) = (pts[j][0] - cx, pts[j][1] - cz);
+        rad2 = rad2.max(ox * ox + oz * oz);
+        j += 1;
+    }
+    let mut inv_len2 = [0.0f32; SPINE_SEGS];
+    let mut j = 0;
+    while j < SPINE_SEGS {
+        let (ex, ez) = (pts[j + 1][0] - pts[j][0], pts[j + 1][1] - pts[j][1]);
+        let l2 = ex * ex + ez * ez;
+        inv_len2[j] = if l2 > 0.0 { 1.0 / l2 } else { 0.0 };
+        j += 1;
+    }
+    Massif {
+        pts,
+        inv_len2,
+        centre: [cx, cz],
+        rad: rad2.sqrt(),
+        inv_w: 1.0 / lerp(w[0], w[1], unit16(g, 0)),
+        amp: lerp(amp[0], amp[1], unit16(g, 16)),
+    }
+}
+
+/// Distance to one spine segment and its gradient in `(x, z)` — the unit
+/// vector from the nearest point of the segment, or zero on it.
+fn seg_dist_grad(a: [f32; 2], b: [f32; 2], inv_len2: f32, x: f32, z: f32) -> (f32, f32, f32) {
+    let (ex, ez) = (b[0] - a[0], b[1] - a[1]);
+    let t = (((x - a[0]) * ex + (z - a[1]) * ez) * inv_len2).clamp(0.0, 1.0);
+    let (dx, dz) = (x - (a[0] + ex * t), z - (a[1] + ez * t));
+    let d = (dx * dx + dz * dz).sqrt();
+    if d > 1e-6 {
+        (d, dx / d, dz / d)
+    } else {
+        (0.0, 0.0, 0.0)
+    }
+}
+
+/// Distance to a range's spine and its gradient: the segments' distances
+/// joined by a polynomial smooth-min, so a bend is a fillet and never a
+/// crease. The smooth-min's own partials weight the two gradients, so the
+/// gradient is as continuous across a joint as the distance is.
+fn spine_dist(m: &Massif, x: f32, z: f32) -> (f32, f32, f32) {
+    let p = &m.pts;
+    let (mut d, mut gx, mut gz) = seg_dist_grad(p[0], p[1], m.inv_len2[0], x, z);
+    let mut j = 1;
+    while j < SPINE_SEGS {
+        let (e, ex, ez) = seg_dist_grad(p[j], p[j + 1], m.inv_len2[j], x, z);
+        let h = (SPINE_BLEND_M - fabs(d - e)).max(0.0) * (1.0 / SPINE_BLEND_M);
+        // ∂smin/∂d: 1 − h/2 while `d` is the smaller, h/2 once it is not —
+        // equal (½) where the two meet, which is what makes it continuous.
+        let wd = if d < e { 1.0 - 0.5 * h } else { 0.5 * h };
+        gx = wd * gx + (1.0 - wd) * ex;
+        gz = wd * gz + (1.0 - wd) * ez;
+        d = d.min(e) - h * h * SPINE_BLEND_M * 0.25;
+        j += 1;
+    }
+    // The fillet can dip under zero right at a joint; the crest is flat to
+    // first order there (`t³(4 − 3t)` at t = 1), so the clamp is C¹.
+    if d > 0.0 {
+        (d, gx, gz)
+    } else {
+        (0.0, 0.0, 0.0)
+    }
+}
+
+/// `fade`'s derivative: `30 t² (1 − t)²`, zero at both rails.
+fn fade_slope(t: f32) -> f32 {
+    let q = t * (1.0 - t);
+    30.0 * q * q
+}
+
+/// The ranges' smooth mass at a point before the gullies, and its gradient:
+/// `(0, 0, 0)` outside the radial window. `(wx, wz)` is the relief's warped
+/// frame.
+///
+/// **The gradient is analytic, and it holds three slow fields still.** The
+/// gully filter needs a fall line, not a derivative exact to the bit, and the
+/// spur, the crest and the ranges' own warp vary over hundreds of metres where
+/// the envelope varies over tens. A forward difference at 1 m cost two more
+/// envelopes — sixteen noise octaves — and was two-thirds of the stage's time.
+#[allow(clippy::too_many_arguments)]
+fn massif_base<C: Corners>(
+    c: &mut C,
+    seed: u64,
+    ms: &[Massif; MASSIFS],
+    x: f32,
+    z: f32,
+    wx: f32,
+    wz: f32,
+) -> (f32, f32, f32) {
+    let dx = x - ISLAND_SIZE * 0.5;
+    let dz = z - ISLAND_SIZE * 0.5;
+    let r = (dx * dx + dz * dz).sqrt();
+    if r <= MASSIF_R_IN || r >= MASSIF_R_OUT {
+        return (0.0, 0.0, 0.0);
+    }
+    let ra = ((r - MASSIF_R_IN) / MASSIF_R_IN_FADE).clamp(0.0, 1.0);
+    let rb = ((MASSIF_R_OUT - r) / MASSIF_R_OUT_FADE).clamp(0.0, 1.0);
+    let radial = fade(ra) * fade(rb);
+    // d(radial)/dr. Both clamps are rails of `fade`, whose slope is zero
+    // there, so this is continuous across them.
+    let radial_dr = fade_slope(ra) * (1.0 / MASSIF_R_IN_FADE) * fade(rb)
+        - fade(ra) * fade_slope(rb) * (1.0 / MASSIF_R_OUT_FADE);
+    // Reach before the warp. The warp moves a sample by at most
+    // `MASSIF_WARP_AMP` on each axis, so one farther than `MASSIF_REACH_SLACK`
+    // past every range's widest outline cannot be reached whatever the warp
+    // says, and skips the warp and the spur. It only ever skips work whose
+    // answer is exactly zero, so no value it returns moves.
+    // The floor is taken off each range's bounding disc rather than its
+    // spine — one root, not four segments — which is still a floor, because
+    // every point of the spine lies inside the disc.
+    let mut reach = false;
+    let mut i = 0;
+    while i < MASSIFS {
+        let (ox, oz) = (wx - ms[i].centre[0], wz - ms[i].centre[1]);
+        let d0 = ((ox * ox + oz * oz).sqrt() - ms[i].rad - MASSIF_REACH_SLACK).max(0.0);
+        reach |= (1.0 - d0 * ms[i].inv_w) * (1.0 - MASSIF_SPUR) + MASSIF_SPUR * 1.1 > 0.0;
+        i += 1;
+    }
+    if !reach {
+        return (0.0, 0.0, 0.0);
+    }
+    let mx = wx + fbm(c, seed, CH_MASSIF_WARP, wx, wz, MASSIF_WARP_FREQ, 2) * MASSIF_WARP_AMP;
+    let mz = wz + fbm(c, seed, CH_MASSIF_WARP + 2, wx, wz, MASSIF_WARP_FREQ, 2) * MASSIF_WARP_AMP;
+    let mut sd = [(0.0f32, 0.0f32, 0.0f32); MASSIFS];
+    let mut any = false;
+    let mut i = 0;
+    while i < MASSIFS {
+        sd[i] = spine_dist(&ms[i], mx, mz);
+        let near = 1.0 - sd[i].0 * ms[i].inv_w;
+        // The widest the spur can take an outline, with a margin for fBm's
+        // occasional excursion past 1: a sample no range can reach pays no
+        // noise.
+        any |= near * (1.0 - MASSIF_SPUR) + MASSIF_SPUR * 1.1 > 0.0;
+        i += 1;
+    }
+    if !any {
+        return (0.0, 0.0, 0.0);
+    }
+    // Read in the relief's frame, not the ranges': the spur and the crest
+    // wander independently of the spine they dress.
+    let spur = MASSIF_SPUR * fbm(c, seed, CH_MASSIF, wx, wz, MASSIF_SPUR_FREQ, 2);
+    let crest = 1.0 - MASSIF_CREST
+        + MASSIF_CREST * (0.5 + 0.5 * fbm(c, seed, CH_MASSIF + 2, wx, wz, MASSIF_CREST_FREQ, 2));
+    let mut env = 0.0;
+    let (mut ex, mut ez) = (0.0, 0.0);
+    let mut k = 0;
+    while k < MASSIFS {
+        // The spur moves the outline and never the crest: on the spine `t` is
+        // exactly 1 whatever the field says, so no plateau is cut. `d ≥ 0`
+        // and `spur < 1`, so `t ≤ 1` and only the foot needs a clamp.
+        let (d, gdx, gdz) = sd[k];
+        let s = ms[k].inv_w * (1.0 - spur);
+        let t = 1.0 - d * s;
+        if t > 0.0 {
+            // t³(4 − 3t): C² at the foot, so an outline does not draw itself,
+            // and a crest rounded rather than flat.
+            env += ms[k].amp * t * t * t * (4.0 - 3.0 * t);
+            let k_slope = ms[k].amp * 12.0 * t * t * (1.0 - t);
+            ex -= k_slope * s * gdx;
+            ez -= k_slope * s * gdz;
+        }
+        k += 1;
+    }
+    let (ux, uz) = if r > 0.0 {
+        (dx / r, dz / r)
+    } else {
+        (0.0, 0.0)
+    };
+    (
+        radial * env * crest,
+        crest * (radial * ex + env * radial_dr * ux),
+        crest * (radial * ez + env * radial_dr * uz),
+    )
+}
+
+/// ≈ `cos(2πm)` and its derivative in `m`: a `fade`d triangle wave, C² at the
+/// crest and in the trough, which is where the `|u|` fold would otherwise put
+/// a corner. Wall 1 has no trig; this needs none.
+fn gully_wave(m: f32) -> (f32, f32) {
+    let u = m - floor_i32(m + 0.5) as f32;
+    let v = 2.0 * fabs(u);
+    let dv = if u < 0.0 { -2.0 } else { 2.0 };
+    let q = v * (1.0 - v);
+    (1.0 - 2.0 * fade(v), -60.0 * q * q * dv)
+}
+
+/// Metres the gully filter adds at a point whose base slope is `(gx, gz)`:
+/// zero-mean, so spurs rise as far as gullies sink and a range keeps its
+/// height (a filter that only cut left every crest standing as a mesa).
+///
+/// Each octave: a 3×3 neighbourhood of jittered stripe origins, each laying a
+/// `gully_wave` across the fall line through itself, blended by a C² kernel
+/// over a neutral floor. The stripes run downhill; where two origins disagree
+/// about the phase, the blend breaks the stripe, which is what makes a gully
+/// end rather than run the length of the range.
+fn gullies<C: Corners>(
+    c: &mut C,
+    seed: u64,
+    wx: f32,
+    wz: f32,
+    gx: f32,
+    gz: f32,
+    strength: f32,
+) -> f32 {
+    let mut h = 0.0;
+    let mut ex = 0.0;
+    let mut ez = 0.0;
+    let mut amp = GULLY_AMP;
+    let mut cell = GULLY_CELL_M;
+    let mut o = 0;
+    while o < GULLY_OCTAVES {
+        let sx = gx + ex * GULLY_BRANCH;
+        let sz = gz + ez * GULLY_BRANCH;
+        let s = (sx * sx + sz * sz).sqrt();
+        if s > 1e-4 {
+            let st = ((s - GULLY_SLOPE_LO) / (GULLY_SLOPE_HI - GULLY_SLOPE_LO)).clamp(0.0, 1.0);
+            let mask = st * st * (3.0 - 2.0 * st) * strength;
+            // Across the fall line, so the stripes run downhill.
+            let (px, pz) = (-sz / s, sx / s);
+            let fx = wx / cell;
+            let fz = wz / cell;
+            let ix = floor_i32(fx);
+            let iz = floor_i32(fz);
+            let tx = fx - ix as f32;
+            let tz = fz - iz as f32;
+            let mut sw = GULLY_FLOOR_W;
+            let mut sc = 0.0;
+            let mut sdx = 0.0;
+            let mut sdz = 0.0;
+            let mut j = -1;
+            while j <= 1 {
+                let mut i = -1;
+                while i <= 1 {
+                    let hsh = c.cell32(seed, CH_GULLY + o, ix + i, iz + j) as u64;
+                    let ddx = tx - (i as f32 + GULLY_JITTER_LO + GULLY_JITTER * unit16(hsh, 0));
+                    let ddz = tz - (j as f32 + GULLY_JITTER_LO + GULLY_JITTER * unit16(hsh, 16));
+                    let d2 = ddx * ddx + ddz * ddz;
+                    if d2 < GULLY_R2 {
+                        let k = 1.0 - d2 * (1.0 / GULLY_R2);
+                        let w = k * k * k;
+                        let (cv, dc) = gully_wave(ddx * px + ddz * pz);
+                        sw += w;
+                        sc += w * cv;
+                        sdx += w * dc * px;
+                        sdz += w * dc * pz;
+                    }
+                    i += 1;
+                }
+                j += 1;
+            }
+            let a = amp * mask * 0.5;
+            h += a * sc / sw;
+            // The octave's own slope, per metre, for the next octave's fall
+            // line. The kernel's own gradient is left out: this steers, it
+            // does not have to be exact.
+            ex += a * sdx / (sw * cell);
+            ez += a * sdz / (sw * cell);
+        }
+        amp *= GULLY_GAIN;
+        cell *= 0.5;
+        o += 1;
+    }
+    h
+}
+
+/// Metres the interior ranges add at `(x, z)`: exactly 0.0 outside the radial
+/// window, and wherever no range reaches.
+fn massif_lift<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32, wx: f32, wz: f32) -> f32 {
+    let dx = x - ISLAND_SIZE * 0.5;
+    let dz = z - ISLAND_SIZE * 0.5;
+    let r2 = dx * dx + dz * dz;
+    if r2 <= MASSIF_R_IN * MASSIF_R_IN || r2 >= MASSIF_R_OUT * MASSIF_R_OUT {
+        return 0.0;
+    }
+    let ms = c.massifs(seed);
+    let (b, gx, gz) = massif_base(c, seed, &ms, x, z, wx, wz);
+    if b <= 0.0 {
+        return 0.0;
+    }
+    let strength = fade((b * (1.0 / GULLY_KNEE_M)).clamp(0.0, 1.0));
+    b + gullies(c, seed, wx, wz, gx, gz, strength)
+}
+
+/// [`massif_lift`] at a world point: what the interior ranges add there.
+///
+/// Published for the gate and the probes, never read by the sim:
+/// `tests/massif.rs` holds the window exact and the ranges walkable with it,
+/// and `examples/massif_stats` measures a seed's ranges.
+pub fn massif_lift_at(seed: u64, x: f32, z: f32) -> f32 {
+    let c = &mut Direct;
+    let wx = x + fbm(c, seed, CH_WARP_X, x, z, WARP_FREQ, 2) * WARP_AMP;
+    let wz = z + fbm(c, seed, CH_WARP_Z, x, z, WARP_FREQ, 2) * WARP_AMP;
+    massif_lift(c, seed, x, z, wx, wz)
+}
+
 /// The authoritative height function: TERRAIN.md §1 stages 1–4 composed.
 pub fn height(seed: u64, x: f32, z: f32) -> f32 {
     height_in(&mut Direct, seed, x, z)
@@ -812,6 +1381,16 @@ fn height_in<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> f32 {
     let detail = fbm(c, seed, CH_DETAIL, wx, wz, DETAIL_FREQ, DETAIL_OCTAVES);
     let mut land = shelfed * (AMPLITUDE + shelfed * detail * DETAIL_AMP);
 
+    // Stage 4d: the interior ranges. Outside their window the lift is exactly
+    // 0.0 and `land` is not touched, so the coast, the ring and the inland
+    // site's near candidates are the bits they were.
+    let lift = massif_lift(c, seed, x, z, wx, wz);
+    let mut own = 0.0;
+    if lift > 0.0 {
+        land += lift;
+        own = fade((lift * (1.0 / MASSIF_OWN_M)).clamp(0.0, 1.0));
+    }
+
     // Ridged blend above the treeline: fakes erosion, no simulation.
     //
     // ⚠ The gate is `fade`d and was a bare `clamp`. A linear ramp is C⁰ at
@@ -820,8 +1399,12 @@ fn height_in<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> f32 {
     // likely to be looked at. `fade` is quintic with zero first *and* second
     // derivative at 0 and 1, so both joins vanish.
     let ridge_t = fade(((land - RIDGE_START_H) / (RIDGE_FULL_H - RIDGE_START_H)).clamp(0.0, 1.0));
-    if ridge_t > 0.0 {
-        land += ridge_t * ridged(c, seed, wx, wz) * RIDGE_AMP;
+    //
+    // A range carries its own anatomy (stage 4d), so the crumple steps aside
+    // as a range's lift comes in; off the ranges `own` is 0 and this is the
+    // arithmetic it always was.
+    if ridge_t > 0.0 && own < 1.0 {
+        land += ridge_t * (1.0 - own) * ridged(c, seed, wx, wz) * RIDGE_AMP;
     }
 
     let m = continent(c, seed, x, z);
@@ -946,10 +1529,27 @@ pub const BEACH_MAX_H: f32 = SEA_LEVEL + 2.0;
 /// the coast road share one definition instead of inventing a second.
 pub const LAND_MIN_H: f32 = SEA_LEVEL + 0.6;
 
+/// The treeline: above it the ground is Highland — granite underfoot, stone
+/// and ore in the scatter row, few trees. `biome()` switches on it and the
+/// splat's alpine ramp is centred on it (`SPLAT_ALPINE_BAND`), so the surface
+/// and the props agree about where the highland starts (`tests/relief.rs`).
+///
+/// **68 m, where it was 52, since interior massifs v0** (2026-09-23). The
+/// island's highest ground used to be noise lumps 60–100 m tall, and 52 m
+/// made their tops granite. With ranges reaching 94–141 m the same line
+/// painted two-thirds of every range as rock, and the rock layer's photograph
+/// read as cobbles from a player's feet (captured from a range's flank). At
+/// 68 m the ranges' lower flanks carry turf and forest and their upper third
+/// is granite — and the island's Highland share lands within ~10 % of what it
+/// was without them (four seeds, `DECISIONS.md` §open), which is the ore
+/// economy's footprint. `RIDGE_START_H` stays at 52: moving it would move
+/// heights outside the ranges' window. **(knob)**
+pub const TREELINE_H: f32 = 68.0;
+
 pub fn biome(h: f32, moist: f32) -> Biome {
     if h < BEACH_MAX_H {
         Biome::Beach
-    } else if h > 52.0 {
+    } else if h > TREELINE_H {
         Biome::Highland
     } else if moist > 0.05 {
         Biome::Forest
@@ -5500,7 +6100,8 @@ const _: () = {
 // `web/src/terrainWorker.js` shipped; they MOVED here rather than being
 // copied, so there is no second copy to disagree — see the header above.
 const SPLAT_BEACH_BAND: (f32, f32) = (1.0, 3.0);
-const SPLAT_ALPINE_BAND: (f32, f32) = (44.0, 60.0);
+/// Centred on [`TREELINE_H`], 16 m wide as it always was.
+const SPLAT_ALPINE_BAND: (f32, f32) = (TREELINE_H - 8.0, TREELINE_H + 8.0);
 const SPLAT_MOIST_BAND: (f32, f32) = (0.01, 0.09);
 /// tan(50°) — the sim's cliff threshold, to the two decimals the worker's
 /// copy carried. Kept distinct from `CLIFF_SLOPE_RATIO` on purpose: this one

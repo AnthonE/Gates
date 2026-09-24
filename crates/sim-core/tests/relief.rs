@@ -143,16 +143,20 @@ fn the_cliff_ramp_is_centred_on_the_collision_threshold() {
 /// *props* on different ground than the Highland *surface*.
 #[test]
 fn the_alpine_ramp_is_centred_on_the_biome_classifier_edge() {
+    // A summit, well over the treeline: 70 m until the treeline moved to 68 m
+    // with interior massifs v0 (2026-09-23), when 70 m became the middle of
+    // the ramp rather than its top.
+    const SUMMIT: f32 = 100.0;
     assert_eq!(rock_at_height(4.0), 0, "low ground is not alpine");
-    assert_eq!(rock_at_height(70.0), 255, "a summit is all rock");
+    assert_eq!(rock_at_height(SUMMIT), 255, "a summit is all rock");
 
-    let (open, full) = ramp_ends(4.0, 70.0, rock_at_height);
+    let (open, full) = ramp_ends(4.0, SUMMIT, rock_at_height);
     let centre = 0.5 * (open + full);
 
     // The classifier's edge, measured rather than quoted — a literal copied
     // out of `biome()` into this file would be a second copy of the number the
     // test exists to hold equal.
-    let edge = bisect(4.0, 70.0, |h| terrain::biome(h, 0.0) == Biome::Highland);
+    let edge = bisect(4.0, SUMMIT, |h| terrain::biome(h, 0.0) == Biome::Highland);
 
     const TOL: f32 = 0.25;
     assert!(

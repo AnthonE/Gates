@@ -859,6 +859,32 @@ treeline (`DECISIONS.md` §open, world structure v1). What is still open:
    from the 8 m grid's staircase. Both were replaced by metrics that
    separate. **A band whose two populations touch is not a gate.**
 
+## 0mtn · The island has mountains now: what interior massifs v0 left *(sim lane)*
+
+Built 2026-09-23 (`DECISIONS.md` §open; `TERRAIN.md` §1 stage 4d): two
+gullied ranges in the 170–560 m annulus. Heights outside the window are
+unchanged to the bit, and the treeline moved from 52 to 68 m with the ranges.
+`findings/interior-massifs-20260923.md` has the fifteen versions and the
+frames.
+
+1. **It is a wipe.** Old saves refuse to load (`probe_terrain`), so
+   deploying it is the operator's call.
+2. **The ore moved per island.** Summed over four seeds, metal went
+   631 → 649 and sulfur 460 → 484, but per seed the change is −26 % to
+   +56 %. Raiding is priced in sulfur: re-tuning the Highland ore weights is
+   the operator's call.
+3. **Above the treeline the ground is cobbles.** `Gravel004` at a 4 m tile
+   reads as a cobbled road at a player's feet on flat granite. The fix is on
+   the rock identity (a scree or slab source, or `rock_face`'s blocks
+   carrying the flats), not on the treeline.
+4. **It costs ~2× where it stands**: `height` ~0.95 µs in the window
+   against 0.46, and a clutter tile on a range 2.7 ms against 1.0 (frame
+   thread). The finest gully octave is the lever. The gullies are a filter,
+   not erosion: no fans, no widening valleys (a grid solve).
+5. **Side roads cannot route around a range.** Two opposed ranges keep a
+   pass open on every road seed; a third range needs routed roads first
+   (`reference/ROADS.md` §9).
+
 ## 0ring · The coast ring has a continuous terrain bench *(sim lane)*
 
 The solved route landed 2026-09-18. Its remaining steep/wet breaks are
