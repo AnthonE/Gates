@@ -399,3 +399,95 @@ fn a_pack_howls_once_when_it_finds_someone() {
     assert_eq!(from_b, 0, "the wolf that answered the call howled too");
     assert_eq!(w.mobs.m[b].target, 0, "the call went unanswered");
 }
+
+/// Land one blow from the player on a roster slot, the way a swing that
+/// found it does (`mob::strike_slot`), with the combat fixture's spear.
+fn strike(w: &mut World, slot: usize) {
+    w.players[0].inv[0] = ItemStack {
+        item: 0,
+        count: 1,
+        cond: 0,
+    };
+    w.players[0].frame.sel = 0;
+    let tick = w.tick;
+    assert!(
+        mob::strike_slot(
+            &w.combat,
+            &w.backpack,
+            &w.mob,
+            tick,
+            0,
+            &w.players,
+            &mut w.mobs,
+            &mut w.backpacks,
+            &mut w.events,
+            slot,
+        ),
+        "the blow did not land"
+    );
+}
+
+/// **Hit a wolf before it has seen you and it backs off, calls its pack, and
+/// comes back with it** (the reference's reworked wolf). A crouched player
+/// in the blind spot strikes the pack's leader; it retreats, howls, the
+/// mate 38 m off — inside the 40 m call, and deaf to a crouched player at
+/// that range — answers, and the retreat's timer turns the leader round
+/// into a charge.
+#[test]
+fn an_ambushed_wolf_backs_off_calls_its_pack_and_comes_back() {
+    use sim_core::world::EV_HOWL;
+    let [a, b, _] = free_pack();
+    let mut w = world_with(&[(a, 1.5, 0.0), (b, 38.0, 0.0)]);
+    face(&mut w, a, false);
+    // A crouched, still player behind it: unnoticed until the blow.
+    hold(&mut w, BTN_CROUCH, MOB_THINK_TICKS as u32 + 1, |_| {});
+    assert_eq!(
+        w.mobs.m[a].roused_until, 0,
+        "the wolf saw the ambush coming"
+    );
+    strike(&mut w, a);
+    assert!(w.mobs.m[a].ambushed, "a blow out of nowhere is an ambush");
+
+    let (mut retreated, mut howled, mut came_back, mut answered) = (false, false, false, false);
+    hold(&mut w, BTN_CROUCH, 10 * MOB_THINK_TICKS as u32, |w| {
+        retreated |= w.mobs.m[a].state == AiState::Flee;
+        answered |= w.mobs.m[b].target == 0 && w.mobs.m[b].roused_until > w.tick;
+        howled |= w
+            .events
+            .entries()
+            .iter()
+            .any(|e| e.code == EV_HOWL && e.a == mob::mob_id(a));
+        came_back |= retreated && matches!(w.mobs.m[a].state, AiState::Chase | AiState::Attack);
+    });
+    assert!(retreated, "the ambushed wolf never backed off");
+    assert!(howled, "the ambushed wolf never called its pack");
+    assert!(answered, "the pack never answered the call");
+    assert!(came_back, "the retreat never turned into a charge");
+    assert!(
+        !w.mobs.m[a].ambushed,
+        "back in the fight, it is no longer ambushed"
+    );
+}
+
+/// **A blow on one wolf makes its charging pack-mates break off and circle**
+/// ("a pack-mate getting hit makes the others stop charging").
+#[test]
+fn a_hit_on_one_wolf_makes_its_charging_mate_circle() {
+    let [a, b, _] = free_pack();
+    let mut w = world_with(&[(a, 3.0, 0.0), (b, 20.0, 0.0)]);
+    hold(&mut w, 0, MOB_THINK_TICKS as u32 + 1, |_| {});
+    assert_eq!(
+        w.mobs.m[b].state,
+        AiState::Chase,
+        "the far wolf is not charging yet"
+    );
+    strike(&mut w, a);
+    let mut circled = false;
+    hold(&mut w, 0, MOB_THINK_TICKS as u32 + 1, |w| {
+        circled |= w.mobs.m[b].state == AiState::Orbit;
+    });
+    assert!(
+        circled,
+        "the charging mate kept coming after its pack-mate was hit"
+    );
+}

@@ -5358,6 +5358,7 @@ impl World {
             poi[16..24].copy_from_slice(&m.hurt_at.to_le_bytes());
             h.update(&poi);
             h.update(&m.howled_at.to_le_bytes());
+            h.update(&[m.ambushed as u8]);
             for k in 0..m.path.len as usize {
                 h.update(&m.path.cx[k].to_le_bytes());
                 h.update(&m.path.cz[k].to_le_bytes());

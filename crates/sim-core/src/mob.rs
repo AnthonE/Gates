@@ -614,6 +614,10 @@ pub struct Mob {
     pub hurt_at: u64,
     /// The tick it last howled for its pack (`brain::HOWL_COOLDOWN_TICKS`).
     pub howled_at: u64,
+    /// Struck before it had noticed anyone. A pack animal answers that by
+    /// backing off, calling its pack and coming back with it (the
+    /// reference's reworked wolf); cleared once it closes in again.
+    pub ambushed: bool,
     /// The route being walked (`nav.rs`).
     pub path: NavPath,
     /// Awake, as of the last think tick. Recomputed there and not per
@@ -956,6 +960,7 @@ fn hatch(seed: u64, haven: &crate::terrain::Haven, mob: &mut Mob, def: &MobDef) 
     mob.poi_until = 0;
     mob.hurt_at = 0;
     mob.howled_at = 0;
+    mob.ambushed = false;
     mob.path.clear();
 }
 
@@ -1015,6 +1020,7 @@ pub fn strike_slot(
     // need the attacker to be close: shot from range, the animal still runs.
     // The attacker becomes the target whoever the animal was minding — the
     // reference's `Attacked` event — and a hit ends any sulk it was in.
+    mob.ambushed = mob.roused_until <= tick;
     mob.roused_until = tick + species.flee_ticks as u64;
     mob.awake = true;
     if mob.target != attacker as u8 {

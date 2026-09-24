@@ -130,6 +130,10 @@ pub enum Cond {
     Noise,
     /// None is.
     Quiet,
+    /// Struck before it had noticed anyone (`Mob::ambushed`).
+    Ambushed,
+    /// A pack-mate inside the call range was struck within the last think.
+    MateStruck,
 }
 
 /// A rule: when every condition holds, go to `to`. `forget` drops the
@@ -250,6 +254,7 @@ pub static WOLF: Design = Design {
         // Idle
         &[
             go(&[Target, Afraid], Flee),
+            go(&[Target, Ambushed], Flee),
             go(&[Target, Fire], Orbit),
             go(&[Target], Chase),
             go(&[FarFromHome], NavigateHome),
@@ -259,6 +264,7 @@ pub static WOLF: Design = Design {
         // Roam
         &[
             go(&[Target, Afraid], Flee),
+            go(&[Target, Ambushed], Flee),
             go(&[Target, Fire], Orbit),
             go(&[Target], Chase),
             go(&[FarFromHome], NavigateHome),
@@ -272,6 +278,7 @@ pub static WOLF: Design = Design {
             go(&[Afraid], Flee),
             go(&[NoTarget], Idle),
             give_up(&[GaveUp], NavigateHome),
+            go(&[MateStruck], Orbit),
             go(&[Fire], Orbit),
             go(&[InReach, Crowded], Orbit),
             go(&[InReach], Attack),
@@ -284,11 +291,12 @@ pub static WOLF: Design = Design {
             go(&[Fire], Orbit),
             go(&[OutOfReach], Chase),
         ],
-        // Flee
-        &[go(&[NoTarget], Idle)],
+        // Flee: a retreat after an ambush ends on its timer, in a charge.
+        &[go(&[NoTarget], Idle), go(&[Timer], Chase)],
         // NavigateHome
         &[
             go(&[Target, Afraid], Flee),
+            go(&[Target, Ambushed], Flee),
             go(&[Target, Fire], Orbit),
             go(&[Target], Chase),
             go(&[Finished], Idle),
@@ -304,6 +312,7 @@ pub static WOLF: Design = Design {
         // Patrol
         &[
             go(&[Target, Afraid], Flee),
+            go(&[Target, Ambushed], Flee),
             go(&[Target], Chase),
             go(&[Finished], Idle),
             go(&[Failed], Idle),
@@ -313,6 +322,7 @@ pub static WOLF: Design = Design {
         // MoveTowards: going to look, until it finds someone or gets there.
         &[
             go(&[Target, Afraid], Flee),
+            go(&[Target, Ambushed], Flee),
             go(&[Target, Fire], Orbit),
             go(&[Target], Chase),
             go(&[Finished], Idle),
@@ -330,6 +340,7 @@ pub static GUARD: Design = Design {
         // Idle
         &[
             go(&[Target, Afraid], Flee),
+            go(&[Target, Ambushed], Flee),
             go(&[Target, Fire], Orbit),
             go(&[Target], Chase),
             go(&[FarFromHome], NavigateHome),
@@ -347,6 +358,7 @@ pub static GUARD: Design = Design {
             go(&[Afraid], Flee),
             go(&[NoTarget], NavigateHome),
             give_up(&[GaveUp], NavigateHome),
+            go(&[MateStruck], Orbit),
             go(&[Fire], Orbit),
             go(&[InReach, Crowded], Orbit),
             go(&[InReach], Attack),
@@ -359,11 +371,12 @@ pub static GUARD: Design = Design {
             go(&[Fire], Orbit),
             go(&[OutOfReach], Chase),
         ],
-        // Flee
-        &[go(&[NoTarget], NavigateHome)],
+        // Flee: a retreat after an ambush ends on its timer, in a charge.
+        &[go(&[NoTarget], NavigateHome), go(&[Timer], Chase)],
         // NavigateHome
         &[
             go(&[Target, Afraid], Flee),
+            go(&[Target, Ambushed], Flee),
             go(&[Target, Fire], Orbit),
             go(&[Target], Chase),
             go(&[Finished], Idle),
@@ -379,6 +392,7 @@ pub static GUARD: Design = Design {
         // Patrol
         &[
             go(&[Target, Afraid], Flee),
+            go(&[Target, Ambushed], Flee),
             go(&[Target, Fire], Orbit),
             go(&[Target], Chase),
             go(&[FarFromHome], NavigateHome),
@@ -391,6 +405,7 @@ pub static GUARD: Design = Design {
         // MoveTowards: to the edge of its post, toward the noise.
         &[
             go(&[Target, Afraid], Flee),
+            go(&[Target, Ambushed], Flee),
             go(&[Target, Fire], Orbit),
             go(&[Target], Chase),
             go(&[Finished], Idle),
@@ -456,6 +471,9 @@ const SWIM_DEPTH_M: f32 = 0.5;
 /// twenty seconds from a scratch to whole.
 const HEAL_AFTER_TICKS: u64 = 1_800;
 const HEAL_PARTS: u16 = 40;
+/// How long an ambushed pack animal backs off before it turns and comes
+/// back with whoever answered. Three seconds.
+const RETREAT_TICKS: u64 = 90;
 /// A wolf howls for its pack at most this often. Twenty seconds: one call
 /// per hunt, not one per sighting.
 const HOWL_COOLDOWN_TICKS: u64 = 600;
@@ -529,6 +547,7 @@ pub struct Peer {
     pub target: u8,
     pub qx: i32,
     pub qz: i32,
+    pub hurt_at: u64,
 }
 
 impl Peer {
@@ -544,6 +563,7 @@ impl Peer {
             },
             qx: m.body.qx,
             qz: m.body.qz,
+            hurt_at: m.hurt_at,
         }
     }
 }
@@ -608,6 +628,7 @@ pub fn think(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob, bites: &mu
                 mob.roused_until = tick;
                 mob.calm_until = tick + CALM_TICKS;
                 mob.tries = 0;
+                mob.ambushed = false;
             }
             enter(ctx, slot, def, mob, rule.to);
             switches += 1;
@@ -642,6 +663,8 @@ fn holds(ctx: &Ctx, slot: usize, def: &MobDef, mob: &Mob, c: Cond) -> bool {
         Night => crate::world::is_night(tick),
         Noise => mob.poi_until > tick,
         Quiet => mob.poi_until <= tick,
+        Ambushed => mob.ambushed,
+        MateStruck => mate_struck(ctx, slot, def, mob),
         Chance(pct) => draw(ctx.ground.seed, slot, tick, CH_CHANCE) % 100 < pct as u64,
     }
 }
@@ -751,6 +774,35 @@ fn fire(ctx: &Ctx, def: &MobDef, mob: &Mob) -> bool {
     })
 }
 
+/// A pack-mate inside the call range was struck within the last think —
+/// the reference's "a pack-mate getting hit makes the others stop charging".
+fn mate_struck(ctx: &Ctx, slot: usize, def: &MobDef, mob: &Mob) -> bool {
+    let Some(pack) = crate::mob::pack_of(slot) else {
+        return false;
+    };
+    ctx.peers.iter().enumerate().any(|(i, p)| {
+        i != slot
+            && p.live
+            && p.hurt_at > 0
+            && ctx.tick.saturating_sub(p.hurt_at) <= MOB_THINK_TICKS
+            && crate::mob::pack_of(i) == Some(pack)
+            && dist2_cm(p.qx - mob.body.qx, p.qz - mob.body.qz) <= def.pack_cm * def.pack_cm
+    })
+}
+
+/// Howl for the pack, if this is a pack animal and it has not howled
+/// within `HOWL_COOLDOWN_TICKS`.
+fn howl(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob) {
+    let tick = ctx.tick;
+    if def.pack_cm > 0
+        && crate::mob::pack_of(slot).is_some()
+        && (mob.howled_at == 0 || tick >= mob.howled_at.saturating_add(HOWL_COOLDOWN_TICKS))
+    {
+        mob.howled_at = tick;
+        ctx.howls.push(slot as u8);
+    }
+}
+
 /// The gait a running state runs at: the species' fast gait, or its walk
 /// once it is limping.
 fn run_gait(def: &MobDef, mob: &Mob) -> i8 {
@@ -846,14 +898,8 @@ fn sense(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob) {
     // A pack animal that found someone itself, fresh, calls its pack —
     // the reference wolf's howl. An answer to a call is not a call, and a
     // wolf howls at most once a `HOWL_COOLDOWN_TICKS`.
-    let fresh = best.is_some() && !has_target(ctx, mob);
-    if fresh
-        && def.pack_cm > 0
-        && crate::mob::pack_of(slot).is_some()
-        && (mob.howled_at == 0 || tick >= mob.howled_at.saturating_add(HOWL_COOLDOWN_TICKS))
-    {
-        mob.howled_at = tick;
-        ctx.howls.push(slot as u8);
+    if best.is_some() && !has_target(ctx, mob) {
+        howl(ctx, slot, def, mob);
     }
     if best.is_none() && !calm && def.pack_cm > 0 && !has_target(ctx, mob) {
         best = pack_call(ctx, slot, def, mob);
@@ -890,7 +936,7 @@ fn pack_call(ctx: &Ctx, slot: usize, def: &MobDef, mob: &Mob) -> Option<(i64, u8
         if i == slot || !p.live || p.kind != mob.kind || p.target == NO_TARGET {
             continue;
         }
-        if crate::mob::pack_of(i) != Some(pack) || !matches!(p.state, Chase | Attack) {
+        if crate::mob::pack_of(i) != Some(pack) || !matches!(p.state, Chase | Attack | Flee) {
             continue;
         }
         if !valid_target(ctx.players, p.target) {
@@ -992,7 +1038,15 @@ fn enter(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob, to: AiState) {
                 + SLEEP_MIN_TICKS
                 + draw(ctx.ground.seed, slot, tick, CH_IDLE) % SLEEP_SPAN_TICKS;
         }
-        Chase | Attack | Flee => {}
+        Flee => {
+            // Ambushed: back off for a moment and call the pack, then the
+            // retreat's timer turns it round into the charge.
+            if mob.ambushed && def.pack_cm > 0 {
+                mob.state_until = tick + RETREAT_TICKS;
+                howl(ctx, slot, def, mob);
+            }
+        }
+        Chase | Attack => mob.ambushed = false,
     }
 }
 
