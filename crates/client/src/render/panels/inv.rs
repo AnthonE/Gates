@@ -84,8 +84,8 @@ use sim_core::research::{TABLE_COIN_SLOT, TABLE_ITEM_SLOT};
 
 use super::{
     craft, font, font_bold, GhostRoot, Panel, PanelRoot, Ui, BADGE, CELL_BG, CELL_FULL,
-    CELL_GAP_PX, CELL_HOVER, CELL_PX, LINE, LINE_HOT, PANEL_BG, PAPER_BG, PIP_FILL, PIP_H_PX,
-    PIP_TROUGH, SCRIM, TEXT, TEXT_DIM, TEXT_SHORT,
+    CELL_GAP_PX, CELL_HOVER, CELL_PX, CELL_SEL, LINE, LINE_HOT, PANEL_BG, PAPER_BG, PIP_FILL,
+    PIP_H_PX, PIP_TROUGH, SCRIM, TEXT, TEXT_DIM, TEXT_SHORT,
 };
 use crate::render::icons::Icons;
 use crate::ui::craft::{cell_abbrev, item_label, CELL_LINE_CHARS};
@@ -107,7 +107,7 @@ pub struct SlotCell {
 }
 
 /// Build the whole screen.
-pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: &Icons) {
+pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: &Icons, sel: u8) {
     commands
         .spawn((
             PanelRoot,
@@ -150,10 +150,10 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: 
                 })
                 .with_children(|row| {
                     craft::build_browser(row, ui, core, icons);
-                    craft::build_detail(row, ui, core);
+                    craft::build_detail(row, ui, core, icons);
                 });
 
-                craft::build_queue(root, ui, core);
+                craft::build_queue(root, ui, core, icons);
             }
 
             // The lower half: your slots, your body, and the container if
@@ -175,7 +175,7 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: 
                 ..default()
             })
             .with_children(|row| {
-                own_grid(row, core, icons);
+                own_grid(row, core, icons, sel as usize);
                 wear_panel(row, core, icons);
                 if open_table(core).is_some() {
                     table_grid(row, ui, core, icons);
@@ -214,6 +214,8 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: 
                     ..default()
                 },
             ));
+
+            super::spawn_tip(root);
         });
 }
 
@@ -254,7 +256,7 @@ fn header(root: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore) {
 }
 
 /// Your own 30 slots: the belt on its own row, then the grid.
-fn own_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons) {
+fn own_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons, sel: usize) {
     row.spawn((
         Node {
             flex_direction: FlexDirection::Column,
@@ -270,7 +272,16 @@ fn own_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons) {
         section(col, "INVENTORY");
         // The belt is drawn apart from the grid because it is apart: it is
         // the row the world can see, and slot 0..6 is what `sel` indexes.
-        grid(col, core, icons, CONT_SELF, 0, HOTBAR_SLOTS, HOTBAR_SLOTS);
+        grid(
+            col,
+            core,
+            icons,
+            CONT_SELF,
+            0,
+            HOTBAR_SLOTS,
+            HOTBAR_SLOTS,
+            sel,
+        );
         col.spawn((
             Node {
                 width: Val::Percent(100.0),
@@ -287,6 +298,7 @@ fn own_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons) {
             HOTBAR_SLOTS,
             INV_SLOTS,
             HOTBAR_SLOTS,
+            sel,
         );
     });
 }
@@ -327,7 +339,7 @@ fn container_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Ico
         if let Some(bar) = container_bar(kind, &name) {
             name_bar(col, bar);
         }
-        grid(col, core, icons, kind, 0, n, container_cols(kind));
+        grid(col, core, icons, kind, 0, n, container_cols(kind), NO_SEL);
     });
 }
 
@@ -427,6 +439,7 @@ fn table_grid(row: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore, icons:
                         cell_stack(core, CONT_BOX, slot),
                         core,
                         icons,
+                        false,
                     );
                     c.spawn((Text::new(caption), font(10.0), TextColor(TEXT_DIM)));
                 });
@@ -639,6 +652,7 @@ fn wear_slot(parent: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons
                 cell_stack(core, CONT_WEAR, slot),
                 core,
                 icons,
+                false,
             );
         });
 }
@@ -775,6 +789,7 @@ fn cell_stack(core: &ClientCore, kind: u8, slot: usize) -> ItemStack {
     view.get(slot).copied().unwrap_or_default()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn grid(
     parent: &mut ChildSpawnerCommands,
     core: &ClientCore,
@@ -783,6 +798,7 @@ fn grid(
     from: usize,
     to: usize,
     cols: usize,
+    sel: usize,
 ) {
     parent
         .spawn(Node {
@@ -794,7 +810,16 @@ fn grid(
         })
         .with_children(|g| {
             for slot in from..to {
-                cell(g, kind, slot, cell_stack(core, kind, slot), core, icons);
+                let stack = cell_stack(core, kind, slot);
+                cell(
+                    g,
+                    kind,
+                    slot,
+                    stack,
+                    core,
+                    icons,
+                    kind == CONT_SELF && slot == sel,
+                );
             }
         });
 }
@@ -806,9 +831,9 @@ fn cell(
     stack: ItemStack,
     core: &ClientCore,
     icons: &Icons,
+    active: bool,
 ) {
     let filled = stack.count > 0;
-    let paper = research_ui::is_paper(&core.research, stack);
     parent
         .spawn((
             Button,
@@ -823,13 +848,18 @@ fn cell(
                 overflow: Overflow::clip(),
                 ..default()
             },
-            BackgroundColor(match (filled, paper) {
-                (true, true) => PAPER_BG,
-                (true, false) => CELL_FULL,
-                (false, _) => CELL_BG,
-            }),
+            BackgroundColor(resting_fill(core, stack, active)),
             BorderColor::all(LINE),
         ))
+        // Its name under the pointer (`panels::tooltip`).
+        .insert_if(
+            super::Tip(research_ui::stack_label(
+                &core.catalog,
+                &core.research,
+                stack,
+            )),
+            || filled,
+        )
         .with_children(|c| {
             if filled {
                 // **A picture, not a word.** `Gunpowde` and `Workbenc` are
@@ -871,9 +901,12 @@ fn cell(
                             height: Val::Px(CELL_PX - 10.0),
                             ..default()
                         },
+                        // A colour picture, drawn as it is — or through the
+                        // skin's tint, the one colour a picture is
+                        // multiplied by.
                         ImageNode {
                             image,
-                            color: Color::srgb(0.90 * tr, 0.87 * tg, 0.82 * tb),
+                            color: Color::srgb(tr, tg, tb),
                             ..default()
                         },
                         Pickable::IGNORE,
@@ -893,17 +926,11 @@ fn cell(
                 // A count of one is not drawn, and the count that is carries
                 // its `x` — both are the reference frame's own rules, and
                 // `count_badge` is where they are written down and tested.
+                // Bottom right and shadowed: a colour picture is busier than
+                // the white glyph it replaced, and a count laid over one has
+                // to stand off whatever it lands on.
                 if let Some(badge) = count_badge(stack.count) {
-                    c.spawn((
-                        Text::new(badge),
-                        font_bold(13.0),
-                        TextColor(TEXT),
-                        Node {
-                            align_self: AlignSelf::FlexEnd,
-                            ..default()
-                        },
-                        Pickable::IGNORE,
-                    ));
+                    c.spawn(count_node(badge));
                 }
                 // The other number a cell carries, and the one a player has
                 // no other way to read: `cond` has been on the wire since
@@ -912,6 +939,44 @@ fn cell(
                 pip(c, stack, core);
             }
         });
+}
+
+/// No slot of this grid is in the player's hand.
+const NO_SEL: usize = usize::MAX;
+
+/// What a cell rests on when nothing is pointing at it: the belt slot in
+/// your hand in Rust's blue (the HUD's own mark for it, so the two agree),
+/// a blueprint on its paper, a stack on the filled grey, nothing on the
+/// empty one. One function for the build and for `drag_pointer`, which
+/// repaints it every frame: two copies of this match were two answers.
+fn resting_fill(core: &ClientCore, stack: ItemStack, active: bool) -> Color {
+    if active {
+        CELL_SEL
+    } else if stack.count == 0 {
+        CELL_BG
+    } else if research_ui::is_paper(&core.research, stack) {
+        PAPER_BG
+    } else {
+        CELL_FULL
+    }
+}
+
+/// A cell's stack count: Rust's corner, bottom right, shadowed off the
+/// picture under it. The cell and the drag ghost draw the same one.
+fn count_node(badge: String) -> impl Bundle {
+    (
+        Text::new(badge),
+        font_bold(12.0),
+        TextColor(TEXT),
+        crate::render::ui::TEXT_SHADOW,
+        Node {
+            position_type: PositionType::Absolute,
+            right: Val::Px(2.0),
+            bottom: Val::Px(PIP_H_PX),
+            ..default()
+        },
+        Pickable::IGNORE,
+    )
 }
 
 /// The durability pip: a thin trough under the cell's icon with a fill, or
@@ -998,15 +1063,19 @@ pub fn skin_keys(
     if !open || !keyboard.just_pressed(KeyCode::KeyP) {
         return;
     }
+    let core = &net.session.core;
     let Some(cell) = cells
         .iter()
         .find(|(c, i)| c.kind == CONT_SELF && !matches!(i, Interaction::None))
         .map(|(c, _)| *c)
     else {
-        ui.say("point at an item in your inventory to change its skin");
+        // With the craft screen up, a `p` pointing at nothing is a letter in
+        // the search box (`panels::keys`), not a request to say anything.
+        if looting(core.cont_kind) {
+            ui.say("point at an item in your inventory to change its skin");
+        }
         return;
     };
-    let core = &net.session.core;
     let stack = core.inv[cell.slot];
     if stack.count == 0 {
         return;
@@ -1120,11 +1189,11 @@ pub fn drag_pointer(
             *border = BorderColor::all(want);
         }
         let resting = cell_stack(core, cell.kind, cell.slot);
-        let fill = match (hot || source, resting.count > 0) {
-            (true, _) => CELL_HOVER,
-            (false, true) if research_ui::is_paper(&core.research, resting) => PAPER_BG,
-            (false, true) => CELL_FULL,
-            (false, false) => CELL_BG,
+        let active = cell.kind == CONT_SELF && cell.slot == net.sel as usize;
+        let fill = if hot || source {
+            CELL_HOVER
+        } else {
+            resting_fill(core, resting, active)
         };
         if bg.0 != fill {
             *bg = BackgroundColor(fill);
@@ -1408,7 +1477,7 @@ fn spawn_ghost(
                     },
                     ImageNode {
                         image,
-                        color: Color::srgb(0.90, 0.87, 0.82),
+                        color: super::super::icons::PICTURE,
                         ..default()
                     },
                     Pickable::IGNORE,
@@ -1424,16 +1493,7 @@ fn spawn_ghost(
                 )),
             };
             if let Some(badge) = count_badge(units) {
-                g.spawn((
-                    Text::new(badge),
-                    font_bold(13.0),
-                    TextColor(TEXT),
-                    Node {
-                        align_self: AlignSelf::FlexEnd,
-                        ..default()
-                    },
-                    Pickable::IGNORE,
-                ));
+                g.spawn(count_node(badge));
             }
             // The ghost is a copy of the source cell, and the pip is part of
             // the copy: an item carrying condition never stacks (content rule

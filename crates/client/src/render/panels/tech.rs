@@ -22,8 +22,8 @@ use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 
 use super::{
-    font, font_bold, Panel, PanelRoot, Ui, BADGE, CELL_BG, CELL_FULL, LINE, LINE_HOT, PANEL_BG,
-    SCRIM, SCROLL_PX_PER_LINE, TEXT, TEXT_DIM, TEXT_SHORT,
+    font, font_bold, Hover, Panel, PanelRoot, Ui, BADGE, CELL_BG, CELL_FULL, LINE, LINE_HOT,
+    PANEL_BG, SCRIM, SCROLL_PX_PER_LINE, TEXT, TEXT_DIM, TEXT_SHORT,
 };
 use crate::render::feed::{Feed, Refused};
 use crate::ui::craft::item_label;
@@ -121,6 +121,11 @@ pub fn build_screen(
                             ..default()
                         },
                         BackgroundColor(if open { BADGE } else { CELL_BG }),
+                        // The open tab is already lit; only the others light.
+                        Hover {
+                            rest: if open { BADGE } else { CELL_BG },
+                            hot: if open { BADGE } else { super::CELL_HOVER },
+                        },
                         BorderColor::all(if open { BADGE } else { LINE }),
                     ))
                     .with_children(|b| {
@@ -358,6 +363,7 @@ fn cell(
             ..default()
         },
         BackgroundColor(if known { CELL_FULL } else { CELL_BG }),
+        Hover::on(if known { CELL_FULL } else { CELL_BG }),
         BorderColor::all(if selected {
             LINE_HOT
         } else if ready {
@@ -371,9 +377,9 @@ fn cell(
             inner.spawn((
                 ImageNode {
                     color: if known {
-                        Color::WHITE
+                        super::super::icons::PICTURE
                     } else {
-                        Color::srgba(1.0, 1.0, 1.0, 0.35)
+                        super::super::icons::PICTURE_DIM
                     },
                     ..ImageNode::new(handle.clone())
                 },
@@ -398,9 +404,9 @@ fn cell(
             ));
         }
         if !known {
-            if let Some(lock) = icons.glyph("code_lock") {
+            if let Some(lock) = icons.glyph("ui_lock") {
                 inner.spawn((
-                    ImageNode::new(lock.clone()),
+                    ImageNode::new(lock.clone()).with_color(super::super::icons::LOCK_TINT),
                     Node {
                         position_type: PositionType::Absolute,
                         width: Val::Px(18.0),
@@ -512,6 +518,7 @@ fn sidebar(row: &mut ChildSpawnerCommands, core: &ClientCore, ui: &Ui, placed: &
                         ..default()
                     },
                     BackgroundColor(CELL_FULL),
+                    Hover::on(CELL_FULL),
                     BorderColor::all(LINE_HOT),
                 ))
                 .with_children(|b| {

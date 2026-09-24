@@ -5021,8 +5021,10 @@ fn the_body_is_drawn_beside_the_container_and_not_instead_of_it() {
     );
     // The call sits in `build_screen`'s lower row, ungated: `own_grid`,
     // then the body, then the container *if* one is open.
+    // Matched on the call's head: the pack's own arguments (the belt slot
+    // in hand, since the active slot is drawn blue) are not this test's.
     let row = code
-        .split("own_grid(row, core, icons);")
+        .split("own_grid(row, core, icons")
         .nth(1)
         .expect("`build_screen` must draw the pack");
     let head = &row[..row.len().min(200)];

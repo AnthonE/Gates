@@ -104,6 +104,23 @@ const CROSSHAIR_TICKS: [(f32, f32, f32, f32); 4] = [
 /// that until both ends had names.
 const HOTBAR_BOTTOM_PX: f32 = 18.0;
 const HOTBAR_CELL_PX: f32 = 46.0;
+/// A hotbar slot at rest, and its edge.
+const SLOT_BG: Color = Color::srgba(0.05, 0.05, 0.06, 0.55);
+const SLOT_EDGE: Color = Color::srgba(0.75, 0.72, 0.62, 0.35);
+/// The slot in your hand: Rust's selection blue, filled.
+const SLOT_SEL: Color = super::panels::CELL_SEL;
+const SLOT_SEL_EDGE: Color = Color::srgba(0.45, 0.68, 0.88, 0.95);
+
+/// Rust's notices sit over the vitals and are this wide — wider than a
+/// vital row, because an item name has to fit.
+const NOTICE_W: f32 = 212.0;
+/// An item notice: Rust's olive (≈#506133), translucent.
+const NOTICE_BG: Color = Color::srgba(0.314, 0.380, 0.200, 0.86);
+const NOTICE_TEXT: Color = Color::srgba(0.96, 0.96, 0.92, 1.0);
+const NOTICE_AMOUNT: Color = Color::srgba(0.80, 0.93, 0.62, 1.0);
+/// The craft bar: Rust's blue, the trough and the progress over it.
+const CRAFT_BAR_BG: Color = Color::srgba(0.122, 0.420, 0.627, 0.45);
+const CRAFT_BAR_FILL: Color = Color::srgba(0.122, 0.420, 0.627, 0.92);
 
 /// How long the hitmarker flashes, seconds. Short on purpose — it is
 /// confirmation, not a readout.
@@ -885,27 +902,21 @@ const FREEZE_CHIP: Color = Color::srgba(0.70, 0.16, 0.14, 0.9);
 /// there is nothing to say — dry, and warm enough not to mention.
 pub fn exposure(
     net: NonSend<super::Net>,
-    mut chips: Query<(
-        &ExposureChip,
-        &mut Text,
-        &mut Visibility,
-        &mut BackgroundColor,
-    )>,
+    mut chips: Query<(&ExposureChip, &mut Text, &mut Node, &mut BackgroundColor)>,
 ) {
     let core = &net.session.core;
-    for (chip, mut text, mut vis, mut bg) in &mut chips {
+    for (chip, mut text, mut node, mut bg) in &mut chips {
         let (show, want, colour) = match chip {
             ExposureChip::Wet => (core.wet_pct > 0, format!("WET {}%", core.wet_pct), WET_CHIP),
             ExposureChip::Cold if core.cold_hurting => (true, "FREEZING".to_string(), FREEZE_CHIP),
             ExposureChip::Cold => (core.cold_pct >= 25, "COLD".to_string(), COLD_CHIP),
         };
-        let want_vis = if show {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
-        if *vis != want_vis {
-            *vis = want_vis;
+        // Out of the layout, not just invisible: a hidden chip that still
+        // took its row left a gap between the vitals and the notices over
+        // them.
+        let want_display = if show { Display::Flex } else { Display::None };
+        if node.display != want_display {
+            node.display = want_display;
         }
         if show && text.0 != want {
             text.0 = want;
@@ -1131,8 +1142,8 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                         align_items: AlignItems::FlexEnd,
                         ..default()
                     },
-                    BackgroundColor(Color::srgba(0.05, 0.05, 0.06, 0.55)),
-                    BorderColor::all(Color::srgba(0.75, 0.72, 0.62, 0.35)),
+                    BackgroundColor(SLOT_BG),
+                    BorderColor::all(SLOT_EDGE),
                 ))
                 .with_children(|cell| {
                     // The icon fills the cell and is spawned EMPTY: a handle
@@ -1151,11 +1162,8 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                         },
                         ImageNode {
                             image: Handle::default(),
-                            // The icons are white-on-transparent silhouettes
-                            // (`icons.rs`), so the tint IS the colour and a
-                            // slightly warm off-white keeps them from
-                            // vibrating against the pale border.
-                            color: Color::srgba(0.90, 0.88, 0.82, 0.95),
+                            // A colour picture (`icons.rs`), drawn as it is.
+                            color: super::icons::PICTURE,
                             ..default()
                         },
                         Visibility::Hidden,
@@ -1166,6 +1174,8 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                         Text::new(""),
                         super::ui::font_bold(12.0),
                         TextColor(Color::srgba(0.97, 0.95, 0.88, 0.95)),
+                        // Over a colour picture, a count needs its shadow.
+                        super::ui::TEXT_SHADOW,
                         Node {
                             position_type: PositionType::Absolute,
                             right: Val::Px(3.0),
@@ -1229,12 +1239,104 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                 bottom: Val::Px(18.0),
                 right: Val::Px(20.0),
                 flex_direction: FlexDirection::Column,
+                // Flush right, so the notices over the bars can be wider
+                // than a bar without pushing the bars off the edge.
+                align_items: AlignItems::FlexEnd,
                 row_gap: Val::Px(3.0),
                 ..default()
             },
             Pickable::IGNORE,
         ))
         .with_children(|stack| {
+            // Rust's notices, over the vitals where Rust stacks them: what
+            // just arrived (`ui::notices`), newest on top, then the craft
+            // bar. Spawned once and hidden; `pickups` and `craft_bar` fill
+            // them in place, so a gather costs no node.
+            for i in 0..crate::ui::notices::NOTICE_ROWS {
+                stack
+                    .spawn((
+                        NoticeRow(i),
+                        notice_node(),
+                        BackgroundColor(NOTICE_BG),
+                        Pickable::IGNORE,
+                    ))
+                    .with_children(|row| {
+                        // Hidden until `pickups` hands it a picture: a
+                        // default handle draws Bevy's white placeholder.
+                        row.spawn((
+                            NoticeIcon(i),
+                            notice_icon_node(),
+                            ImageNode::default(),
+                            Visibility::Hidden,
+                            Pickable::IGNORE,
+                        ));
+                        row.spawn((
+                            NoticeName(i),
+                            Text::new(""),
+                            super::ui::font_bold(12.0),
+                            TextColor(NOTICE_TEXT),
+                            Node {
+                                flex_grow: 1.0,
+                                ..default()
+                            },
+                            Pickable::IGNORE,
+                        ));
+                        row.spawn((
+                            NoticeAmount(i),
+                            Text::new(""),
+                            super::ui::font_bold(12.0),
+                            TextColor(NOTICE_AMOUNT),
+                            Pickable::IGNORE,
+                        ));
+                    });
+            }
+            stack
+                .spawn((
+                    CraftBar,
+                    notice_node(),
+                    BackgroundColor(CRAFT_BAR_BG),
+                    Pickable::IGNORE,
+                ))
+                .with_children(|bar| {
+                    bar.spawn((
+                        CraftBarFill,
+                        Node {
+                            position_type: PositionType::Absolute,
+                            left: Val::Px(0.0),
+                            top: Val::Px(0.0),
+                            width: Val::Percent(0.0),
+                            height: Val::Percent(100.0),
+                            ..default()
+                        },
+                        BackgroundColor(CRAFT_BAR_FILL),
+                        Pickable::IGNORE,
+                    ));
+                    bar.spawn((
+                        CraftBarIcon,
+                        notice_icon_node(),
+                        ImageNode::default(),
+                        Visibility::Hidden,
+                        Pickable::IGNORE,
+                    ));
+                    bar.spawn((
+                        CraftBarName,
+                        Text::new(""),
+                        super::ui::font_bold(12.0),
+                        TextColor(NOTICE_TEXT),
+                        Node {
+                            flex_grow: 1.0,
+                            ..default()
+                        },
+                        Pickable::IGNORE,
+                    ));
+                    bar.spawn((
+                        CraftBarEta,
+                        Text::new(""),
+                        super::ui::font_bold(12.0),
+                        TextColor(NOTICE_TEXT),
+                        Pickable::IGNORE,
+                    ));
+                });
             // Wet and cold (weather v0): two chips over the bars, hidden
             // until there is something to say.
             for chip in [ExposureChip::Wet, ExposureChip::Cold] {
@@ -1247,9 +1349,9 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                     Node {
                         align_self: AlignSelf::FlexEnd,
                         padding: UiRect::axes(Val::Px(6.0), Val::Px(1.0)),
+                        display: Display::None,
                         ..default()
                     },
-                    Visibility::Hidden,
                     Pickable::IGNORE,
                 ));
             }
@@ -1807,18 +1909,20 @@ pub fn update(
         }
     }
 
+    // **The slot in your hand is a solid blue tile**, Rust's own mark for
+    // it (≈#1F5D8D, the interface blue), where ours was an amber hairline
+    // that a colour picture drowned. Written only on a change: this runs
+    // every frame and a rewrite is a re-extract.
     for (cell, mut border, mut bg) in cells.iter_mut() {
         let selected = cell.0 == net.sel as usize;
-        *border = BorderColor::all(if selected {
-            Color::srgba(0.98, 0.86, 0.55, 0.95)
-        } else {
-            Color::srgba(0.75, 0.72, 0.62, 0.35)
-        });
-        *bg = BackgroundColor(if selected {
-            Color::srgba(0.14, 0.13, 0.10, 0.72)
-        } else {
-            Color::srgba(0.05, 0.05, 0.06, 0.55)
-        });
+        let want_border = if selected { SLOT_SEL_EDGE } else { SLOT_EDGE };
+        if border.top != want_border {
+            *border = BorderColor::all(want_border);
+        }
+        let want_bg = if selected { SLOT_SEL } else { SLOT_BG };
+        if bg.0 != want_bg {
+            *bg = BackgroundColor(want_bg);
+        }
     }
 
     // The vitals: a row is hidden outright when its maximum is 0, the fill is
@@ -2076,19 +2180,9 @@ pub fn feedback(
         }
     }
 
-    // Gather and craft toasts are (item, count) pairs — something arrived.
-    // `item_label` is the panels' own naming, reused rather than restated:
-    // an index no name has dripped for prints as `#12`, which is honest,
-    // where an empty cell is the dark-panel defect this repo has a rule
-    // against.
-    for &(item, count) in feed.gathered() {
-        let label = crate::ui::craft::item_label(&core.catalog, item);
-        toast.say(format!("+{count} × {label}"));
-    }
-    for &(item, count) in feed.crafted() {
-        let label = crate::ui::craft::item_label(&core.catalog, item);
-        toast.say(format!("crafted {count} × {label}"));
-    }
+    // Gathers and finished crafts are not said here any more: they are
+    // Rust's item notices over the vitals ([`pickups`]), with the picture
+    // and the running total, and this lane keeps refusals, kills and spills.
     // Last, so it is the top row: `Toast` is a queue now and nothing is
     // discarded, but the newest line is the brightest and the one the eye
     // starts at, and of everything that can land in one frame this is the
@@ -2729,6 +2823,295 @@ fn compass_strip(yaw: f32) -> String {
     let deg = crate::look::bearing_deg(yaw);
     let idx = (((deg / 45.0) + 0.5) as usize) % 8;
     format!("{}   {:03.0}°", POINTS[idx], deg)
+}
+
+/// One of Rust's item notices over the vitals, by row — row 0 is the
+/// newest (`ui::notices::Notices::rows`).
+#[derive(Component)]
+pub struct NoticeRow(usize);
+
+/// The picture in a notice row.
+#[derive(Component)]
+pub struct NoticeIcon(usize);
+
+/// The item's name in a notice row, in caps.
+#[derive(Component)]
+pub struct NoticeName(usize);
+
+/// `+26 (845)` in a notice row: what arrived and what is now held.
+#[derive(Component)]
+pub struct NoticeAmount(usize);
+
+/// The craft bar: the head of the queue while the menu is closed.
+#[derive(Component)]
+pub struct CraftBar;
+
+/// The craft bar's progress fill.
+#[derive(Component)]
+pub struct CraftBarFill;
+
+/// The craft bar's picture of what is being made.
+#[derive(Component)]
+pub struct CraftBarIcon;
+
+/// `WOODEN SPEAR (x2)` on the craft bar.
+#[derive(Component)]
+pub struct CraftBarName;
+
+/// The head unit's countdown on the craft bar.
+#[derive(Component)]
+pub struct CraftBarEta;
+
+/// A notice or craft-bar row: a vital row's height, hidden until used.
+fn notice_node() -> Node {
+    Node {
+        width: Val::Px(NOTICE_W),
+        height: Val::Px(VITAL_BAR_H),
+        flex_direction: FlexDirection::Row,
+        align_items: AlignItems::Center,
+        column_gap: Val::Px(5.0),
+        padding: UiRect::horizontal(Val::Px(3.0)),
+        display: Display::None,
+        ..default()
+    }
+}
+
+fn notice_icon_node() -> Node {
+    Node {
+        width: Val::Px(VITAL_BAR_H - 2.0),
+        height: Val::Px(VITAL_BAR_H - 2.0),
+        flex_shrink: 0.0,
+        ..default()
+    }
+}
+
+/// The head of the craft queue, counted down on this side between the
+/// server's `CraftQ`s (`ui::craft::CraftClock`). One clock for both
+/// readers — the craft bar here and the queue strip in the craft panel —
+/// so the two can never show different seconds.
+#[derive(Resource, Default)]
+pub struct CraftTimer(pub crate::ui::craft::CraftClock);
+
+/// Restart the clock whenever the server restates the queue.
+///
+/// On the REAL clock, not the game's: `Time<Virtual>` caps a frame at a
+/// quarter second, so a hitch would slow a countdown the server keeps on
+/// the wall clock.
+pub fn craft_clock(
+    net: NonSend<Net>,
+    feed: Res<super::feed::Feed>,
+    time: Res<Time<Real>>,
+    mut timer: ResMut<CraftTimer>,
+) {
+    if feed.applied & client_core::core::APPLIED_CRAFT_Q == 0 {
+        return;
+    }
+    let core = &net.session.core;
+    let head = (core.jobs_count > 0).then(|| core.jobs[0]);
+    timer
+        .0
+        .heard(head, core.craft_eta_ticks, time.elapsed_secs_f64());
+}
+
+/// The craft bar over the vitals: Rust's blue bar, `WOODEN SPEAR (x2)` and
+/// `24s`, with the item's picture and the unit's progress as its fill.
+///
+/// It exists for the moment the menu is closed — Devblog 62's *"see how long
+/// is left on your craft without having to keep opening the inventory
+/// menu"* — so it hides while the inventory is open, where the queue strip
+/// says the same thing. Strings are rebuilt only when what they say moves:
+/// the job, or the whole second.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+pub fn craft_bar(
+    net: NonSend<Net>,
+    time: Res<Time<Real>>,
+    timer: Res<CraftTimer>,
+    art: Res<super::icons::Icons>,
+    ui: Option<Res<super::panels::Ui>>,
+    mut drawn: Local<Option<((u8, u8, u8), u32)>>,
+    mut bar: Query<&mut Node, (With<CraftBar>, Without<CraftBarFill>)>,
+    mut fill: Query<&mut Node, (With<CraftBarFill>, Without<CraftBar>)>,
+    mut icon: Query<(&mut ImageNode, &mut Visibility), With<CraftBarIcon>>,
+    mut name: Query<&mut Text, (With<CraftBarName>, Without<CraftBarEta>)>,
+    mut eta: Query<&mut Text, (With<CraftBarEta>, Without<CraftBarName>)>,
+) {
+    let core = &net.session.core;
+    let menu_open = ui
+        .as_ref()
+        .is_some_and(|u| u.panel == super::panels::Panel::Inventory);
+    let head = (core.jobs_count > 0 && !menu_open).then(|| core.jobs[0]);
+    let Ok(mut node) = bar.single_mut() else {
+        return;
+    };
+    let want = if head.is_some() {
+        Display::Flex
+    } else {
+        Display::None
+    };
+    if node.display != want {
+        node.display = want;
+    }
+    let Some((recipe, remaining)) = head else {
+        *drawn = None;
+        return;
+    };
+    let now = time.elapsed_secs_f64();
+    if let Ok(mut f) = fill.single_mut() {
+        let w = Val::Percent(timer.0.progress(now) * 100.0);
+        if f.width != w {
+            f.width = w;
+        }
+    }
+    let more = core.jobs_count.saturating_sub(1);
+    let job = (recipe, remaining, more);
+    let left = timer.0.left(now);
+    let secs = left.max(0.0).ceil() as u32;
+    let last = *drawn;
+    *drawn = Some((job, secs));
+    if last.map(|(_, s)| s) != Some(secs) {
+        if let Ok(mut t) = eta.single_mut() {
+            t.0 = crate::ui::craft::countdown_label(left);
+        }
+    }
+    if last.map(|(j, _)| j) == Some(job) {
+        return;
+    }
+    let output = core
+        .recipes
+        .recipes
+        .get(recipe as usize)
+        .map(|d| d.output)
+        .unwrap_or(0);
+    let label = crate::ui::craft::item_label(&core.catalog, output);
+    if let Ok((mut img, mut vis)) = icon.single_mut() {
+        match art.item(&label) {
+            Some(h) => {
+                img.image = h;
+                *vis = Visibility::Inherited;
+            }
+            None => *vis = Visibility::Hidden,
+        }
+    }
+    let label = label.to_uppercase();
+    if let Ok(mut t) = name.single_mut() {
+        t.0 = match (remaining > 1, more > 0) {
+            (true, true) => format!("{label} (x{remaining}) +{more}"),
+            (true, false) => format!("{label} (x{remaining})"),
+            (false, true) => format!("{label} +{more}"),
+            (false, false) => label,
+        };
+    }
+}
+
+/// What just arrived in the inventory (`ui::notices`), drawn as Rust draws
+/// it: an olive row over the vitals per item, its picture, its name, and
+/// `+26 (845)` — the amount and what you now hold — fading out.
+#[derive(Resource, Default)]
+pub struct Pickups(pub crate::ui::notices::Notices);
+
+/// What a notice row last drew, so its strings are rebuilt only when the
+/// row's item, amount or holding moves — not every frame of its fade.
+#[derive(Clone, Copy, Default, PartialEq)]
+pub struct NoticeDrawn {
+    item: Option<u16>,
+    gained: u32,
+    held: u32,
+}
+
+/// Feed the notice stack from this frame's gathers and finished crafts,
+/// age it, and draw it into the rows `setup` spawned.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+pub fn pickups(
+    net: NonSend<Net>,
+    feed: Res<super::feed::Feed>,
+    time: Res<Time>,
+    art: Res<super::icons::Icons>,
+    mut pickups: ResMut<Pickups>,
+    mut drawn: Local<[NoticeDrawn; crate::ui::notices::NOTICE_ROWS]>,
+    mut rows: Query<(&NoticeRow, &mut Node, &mut BackgroundColor)>,
+    mut pics: Query<(&NoticeIcon, &mut ImageNode, &mut Visibility)>,
+    mut names: Query<(&NoticeName, &mut Text, &mut TextColor), Without<NoticeAmount>>,
+    mut amounts: Query<(&NoticeAmount, &mut Text, &mut TextColor), Without<NoticeName>>,
+) {
+    for &(item, count) in feed.gathered() {
+        pickups.0.add(item, count);
+    }
+    for &(item, count) in feed.crafted() {
+        pickups.0.add(item, count);
+    }
+    pickups.0.tick(time.delta_secs());
+    let core = &net.session.core;
+    let live = pickups.0.rows();
+
+    // Which rows' words moved since the last frame.
+    let mut item_moved = [false; crate::ui::notices::NOTICE_ROWS];
+    let mut amount_moved = [false; crate::ui::notices::NOTICE_ROWS];
+    for (i, was) in drawn.iter_mut().enumerate() {
+        let now = live.get(i).map_or(NoticeDrawn::default(), |n| NoticeDrawn {
+            item: Some(n.item),
+            gained: n.gained,
+            held: sim_core::craft::inv_count(&core.inv, n.item),
+        });
+        item_moved[i] = now.item != was.item;
+        amount_moved[i] = now != *was;
+        *was = now;
+    }
+    let fade =
+        |c: Color, i: usize| c.with_alpha(c.alpha() * live.get(i).map_or(0.0, |n| n.alpha()));
+
+    for (row, mut node, mut bg) in rows.iter_mut() {
+        let want = if row.0 < live.len() {
+            Display::Flex
+        } else {
+            Display::None
+        };
+        if node.display != want {
+            node.display = want;
+        }
+        let c = fade(NOTICE_BG, row.0);
+        if bg.0 != c {
+            bg.0 = c;
+        }
+    }
+    for (pic, mut img, mut vis) in pics.iter_mut() {
+        let Some(n) = live.get(pic.0) else { continue };
+        if item_moved[pic.0] {
+            match art.item(&crate::ui::craft::item_label(&core.catalog, n.item)) {
+                Some(h) => {
+                    img.image = h;
+                    *vis = Visibility::Inherited;
+                }
+                None => *vis = Visibility::Hidden,
+            }
+        }
+        let c = fade(super::icons::PICTURE, pic.0);
+        if img.color != c {
+            img.color = c;
+        }
+    }
+    for (label, mut text, mut colour) in names.iter_mut() {
+        let Some(n) = live.get(label.0) else { continue };
+        if item_moved[label.0] {
+            text.0 = crate::ui::craft::item_label(&core.catalog, n.item).to_uppercase();
+        }
+        let c = fade(NOTICE_TEXT, label.0);
+        if colour.0 != c {
+            colour.0 = c;
+        }
+    }
+    for (amount, mut text, mut colour) in amounts.iter_mut() {
+        let i = amount.0;
+        if i >= live.len() {
+            continue;
+        }
+        if amount_moved[i] {
+            text.0 = crate::ui::notices::amount_label(drawn[i].gained, drawn[i].held);
+        }
+        let c = fade(NOTICE_AMOUNT, i);
+        if colour.0 != c {
+            colour.0 = c;
+        }
+    }
 }
 
 #[cfg(test)]

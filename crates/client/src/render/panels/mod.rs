@@ -105,6 +105,12 @@ pub struct Ui {
     pub selected: Option<u16>,
     /// The quantity stepper, always ≥ 1.
     pub count: u16,
+    /// How far the recipe grid is scrolled, px. Kept here because the grid
+    /// is respawned on every redraw, and a fresh node scrolls to the top: a
+    /// player who scrolled down and clicked a recipe was thrown back up to
+    /// the first row on every click. Zeroed when the list itself changes
+    /// (a new bucket or a new search), where the old offset means nothing.
+    pub browser_scroll: f32,
     /// The skin the next craft of `selected` is minted in (skins v0): a
     /// catalog id, 0 for the item's own look. Reset with every new pick,
     /// the stepper's reason.
@@ -213,6 +219,7 @@ impl Default for Ui {
             favs: Vec::new(),
             selected: None,
             count: 1,
+            browser_scroll: 0.0,
             skin: 0,
             status: String::new(),
             facts: Facts::default(),
@@ -234,6 +241,143 @@ impl Ui {
         self.status = what.into();
         self.dirty = true;
     }
+}
+
+/// A button that lights while the pointer is on it.
+///
+/// **The panels had no hover state at all**, so nothing on them answered the
+/// pointer until a click round-tripped through a redraw, which is a large
+/// part of why the craft screen felt dead. `rest` is the fill the build
+/// drew, `hot` the one under the pointer; [`hover`] swaps them on the frame
+/// the pointer arrives or leaves, with no redraw. Slot cells are not these:
+/// `inv::drag_pointer` paints their hover with the drag's other states.
+#[derive(Component, Clone, Copy)]
+pub struct Hover {
+    pub rest: Color,
+    pub hot: Color,
+}
+
+impl Hover {
+    /// The usual pair: whatever it rests on, lit to [`CELL_HOVER`].
+    pub fn on(rest: Color) -> Self {
+        Self {
+            rest,
+            hot: CELL_HOVER,
+        }
+    }
+}
+
+/// Light the button under the pointer.
+pub fn hover(mut q: Query<(&Interaction, &Hover, &mut BackgroundColor), Changed<Interaction>>) {
+    for (interaction, h, mut bg) in q.iter_mut() {
+        let want = match interaction {
+            Interaction::None => h.rest,
+            _ => h.hot,
+        };
+        if bg.0 != want {
+            bg.0 = want;
+        }
+    }
+}
+
+/// What a cell is called, for [`tooltip`]: set on a filled inventory slot,
+/// a recipe and a queue job when they are built.
+///
+/// **A cell is a picture, and a picture you do not recognise is a
+/// question** a 44 px cell has no room to answer. Rust answers it with the
+/// item's name on its info panel; this answers it under the pointer.
+#[derive(Component, Clone)]
+pub struct Tip(pub String);
+
+/// The tooltip's box and its line — one of each, spawned with the
+/// inventory screen and moved to the pointer by [`tooltip`].
+#[derive(Component)]
+pub struct TipBox;
+#[derive(Component)]
+pub struct TipText;
+
+/// Put the hovered cell's name beside the pointer, or hide it. Not during a
+/// drag: the thing in your hand is already captioned (`inv::spawn_ghost`).
+#[allow(clippy::type_complexity)]
+pub fn tooltip(
+    ui: Res<Ui>,
+    window: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    tips: Query<(&Interaction, &Tip)>,
+    mut boxes: Query<(&mut Node, &ComputedNode), With<TipBox>>,
+    mut texts: Query<&mut Text, With<TipText>>,
+) {
+    let Ok((mut node, computed)) = boxes.single_mut() else {
+        return;
+    };
+    let tip = if ui.drag.is_some() {
+        None
+    } else {
+        tips.iter()
+            .find(|(i, _)| matches!(i, Interaction::Hovered))
+            .map(|(_, t)| t)
+    };
+    let win = window.single().ok();
+    let at = win.and_then(|w| w.cursor_position().map(|p| (p, w.width(), w.height())));
+    let (Some(tip), Some((p, w, h))) = (tip, at) else {
+        if node.display != Display::None {
+            node.display = Display::None;
+        }
+        return;
+    };
+    if let Ok(mut text) = texts.single_mut() {
+        if text.0 != tip.0 {
+            text.0.clone_from(&tip.0);
+        }
+    }
+    // Below and right of the pointer, flipped to the other side of it where
+    // that would run off the window — measured off last frame's layout.
+    let size = computed.size() * computed.inverse_scale_factor();
+    let x = if p.x + 14.0 + size.x > w - 4.0 {
+        p.x - 10.0 - size.x
+    } else {
+        p.x + 14.0
+    };
+    let y = if p.y + 18.0 + size.y > h - 4.0 {
+        p.y - 8.0 - size.y
+    } else {
+        p.y + 18.0
+    };
+    if node.left != Val::Px(x) {
+        node.left = Val::Px(x);
+    }
+    if node.top != Val::Px(y) {
+        node.top = Val::Px(y);
+    }
+    if node.display != Display::Flex {
+        node.display = Display::Flex;
+    }
+}
+
+/// The tooltip's nodes, hidden until [`tooltip`] has something to say.
+pub fn spawn_tip(root: &mut ChildSpawnerCommands) {
+    root.spawn((
+        TipBox,
+        Node {
+            position_type: PositionType::Absolute,
+            padding: UiRect::axes(Val::Px(7.0), Val::Px(3.0)),
+            border: UiRect::all(Val::Px(1.0)),
+            display: Display::None,
+            ..default()
+        },
+        BackgroundColor(Color::srgba(0.09, 0.085, 0.075, 0.96)),
+        BorderColor::all(LINE),
+        GlobalZIndex(45),
+        Pickable::IGNORE,
+    ))
+    .with_children(|b| {
+        b.spawn((
+            TipText,
+            Text::new(""),
+            font_bold(12.0),
+            TextColor(TEXT),
+            Pickable::IGNORE,
+        ));
+    });
 }
 
 /// The root of whichever panel is open. Despawned wholesale on a rebuild —
@@ -278,6 +422,9 @@ pub const CELL_BG: Color = Color::srgba(0.220, 0.204, 0.184, 0.92);
 pub const CELL_FULL: Color = Color::srgba(0.278, 0.263, 0.235, 0.96);
 /// The cell the pointer is over, and the drag's source.
 pub const CELL_HOVER: Color = Color::srgba(0.369, 0.353, 0.329, 0.98);
+/// The belt slot in your hand — Rust's selection blue (≈#1F5D8D), filled,
+/// on the HUD's hotbar and on the inventory's belt row alike.
+pub const CELL_SEL: Color = Color::srgba(0.122, 0.365, 0.553, 0.88);
 /// A filled cell holding a **blueprint** (research table v1): the paper's
 /// blue, under the picture of the thing it teaches — the reference draws a
 /// blueprint as its item on blueprint paper, and a sheet on the stone-grey
@@ -380,6 +527,8 @@ pub fn register(app: &mut App) {
                 inv::table_clock,
                 rebuild,
                 inv::ghost_follow,
+                hover,
+                tooltip,
             )
                 .chain()
                 // **Before `pause::open`, and that ordering is load-bearing.**
@@ -401,6 +550,16 @@ pub fn register(app: &mut App) {
             tech::sync_status
                 .after(super::feed::drain)
                 .before(rebuild)
+                .run_if(in_state(super::Screen::InWorld)),
+        )
+        // The queue strip's countdown and progress, every frame and in place
+        // — they move every frame and a redraw is for things that do not.
+        // After the clock, so the strip and the HUD bar agree to the second.
+        .add_systems(
+            Update,
+            craft::queue_tick
+                .after(super::hud::craft_clock)
+                .after(rebuild)
                 .run_if(in_state(super::Screen::InWorld)),
         )
         // A panel is only ever drawn over a running world, so leaving `InWorld`
@@ -441,6 +600,7 @@ pub fn forget(mut ui: ResMut<Ui>) {
 /// `keyboard` is `ResMut` for one reason: **a key this consumed must not
 /// reach the system after it.** Escape closes an open panel and is cleared;
 /// Escape with nothing open is left alone and `pause::open` takes it.
+#[allow(clippy::too_many_arguments)]
 pub fn keys(
     mut ui: ResMut<Ui>,
     net: NonSend<super::Net>,
@@ -452,6 +612,7 @@ pub fn keys(
     // removed or upgraded structure cannot leave a stale wheel target.
     near: Res<super::verbs::Near>,
     mut chars: MessageReader<bevy::input::keyboard::KeyboardInput>,
+    cells: Query<(&inv::SlotCell, &Interaction)>,
 ) {
     // **The wheel is held RIGHT, and only by an item that owns one.**
     //
@@ -583,6 +744,15 @@ pub fn keys(
     // so a player who typed while looting would close the crate onto a
     // recipe list filtered by whatever they pressed.
     if ui.panel == Panel::Inventory && !crate::ui::slots::looting(core.cont_kind) {
+        // **`P` over one of your items is the re-skin (`inv::skin_keys`),
+        // not a letter.** The box takes every printable key, and a `p`
+        // pressed while pointing at an item used to do both: re-skin it AND
+        // land in the search. Anywhere else, `p` is just a letter.
+        let over_own_item = cells.iter().any(|(c, i)| {
+            c.kind == sim_core::inventory::CONT_SELF
+                && !matches!(i, Interaction::None)
+                && core.inv.get(c.slot).is_some_and(|s| s.count > 0)
+        });
         let mut changed = false;
         for ev in chars.read() {
             if !ev.state.is_pressed() {
@@ -593,6 +763,8 @@ pub fn keys(
                     ui.query.pop();
                     changed = true;
                 }
+                bevy::input::keyboard::Key::Character(s)
+                    if over_own_item && s.eq_ignore_ascii_case("p") => {}
                 bevy::input::keyboard::Key::Character(s) => {
                     // A bound on a field a player types into: wall 4 is
                     // about client-driven paths, and this is one.
@@ -607,6 +779,7 @@ pub fn keys(
             }
         }
         if changed {
+            ui.browser_scroll = 0.0;
             ui.dirty = true;
         }
     } else {
@@ -691,7 +864,7 @@ pub fn rebuild(
         Panel::Inventory => {
             let fallback = super::icons::Icons::default();
             let icons = icons.as_deref().unwrap_or(&fallback);
-            inv::build_screen(&mut commands, &ui, core, icons)
+            inv::build_screen(&mut commands, &ui, core, icons, net.sel)
         }
         Panel::Wheel => {
             let fallback = super::icons::Icons::default();
