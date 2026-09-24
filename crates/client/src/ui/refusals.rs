@@ -43,7 +43,7 @@
 // nothing outside this client renders them.
 
 /// `sim_core::craft`'s `REFUSE_*: u32`.
-pub const CRAFT: [&str; 6] = [
+pub const CRAFT: [&str; 7] = [
     "no such recipe",
     "bad count",
     "needs a station",
@@ -56,6 +56,9 @@ pub const CRAFT: [&str; 6] = [
     // container drops, and was missing from this sentence for as long as
     // the tree existed.
     "not researched — research one at a table or unlock it at a workbench",
+    // Skins v0: a skin you do not own, or that does not fit this item. The
+    // fix is the store, so the sentence says where it is.
+    "not your skin for this item — skins are sold in the launcher's ITEM STORE",
 ];
 
 /// `sim_core::research`'s `REFUSE_R_*: u32`. Five are the table's and the

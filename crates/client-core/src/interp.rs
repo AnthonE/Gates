@@ -133,6 +133,9 @@ pub struct RemoteState {
     /// two facts go: the flame goes out at the start of the window rather
     /// than burning for an extra ~100 ms after the sim put it out.
     pub lit: bool,
+    /// The skin the held item wears (skins v0), 0 for its own look. Newer
+    /// sample, `held`'s reason: a look is an identity, not a quantity.
+    pub held_skin: u16,
 }
 
 fn dequant(s: &Sample, out: &mut RemoteState) {
@@ -147,6 +150,7 @@ fn dequant(s: &Sample, out: &mut RemoteState) {
     out.wounded = s.e.wounded;
     out.held = s.e.held;
     out.lit = s.e.lit;
+    out.held_skin = s.e.held_skin;
 }
 
 pub struct Interp {
@@ -396,6 +400,7 @@ impl Interp {
                 out.wounded = s1.e.wounded;
                 out.held = s1.e.held;
                 out.lit = s1.e.lit;
+                out.held_skin = s1.e.held_skin;
                 out.live = true;
                 return true;
             }
@@ -429,6 +434,7 @@ mod tests {
             pitch: 100,
             held: None,
             lit: false,
+            held_skin: 0,
         }
     }
 

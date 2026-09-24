@@ -58,6 +58,12 @@ pub const GROW_SYNC_BATCH: usize = 32;
 /// Item names one catalog message carries.
 pub const CATALOG_BATCH: usize = 8;
 
+/// Skin rows one skin-catalog message carries (skins v0). A row is at most
+/// 16 + 16 + 24 + 2 + 32 + 5 + 24 × 8 = 287 bits, so eight are ≈ 287 B —
+/// inside `MAX_EVENT_MSG_BYTES`, and `skin_batches_fit_the_message_cap`
+/// measures it rather than trusting this sum.
+pub const SKIN_BATCH: usize = 8;
+
 /// Loose ground stacks one sync message carries (ground items v0).
 /// Sixteen × 14 B is ~230 B, inside `MAX_EVENT_MSG_BYTES` with the
 /// headroom the catalog batch leaves. Overflow policy: the next message
@@ -377,7 +383,14 @@ const SUB_SLOT_GROW_SYNC: u32 = 62;
 /// roster id and nothing else — `SUB_SWING`'s shape: where the animal is,
 /// the snapshot already says; that the call went up, only this can.
 const SUB_HOWL: u32 = 63;
-const SUB_MAX: u32 = SUB_HOWL;
+/// The skin catalog (skins v0, wire v77), dripped at join beside the item
+/// catalog: each row's catalog id, the item it fits, its tint, its price if
+/// it has one, and its name.
+const SUB_SKINS: u32 = 64;
+/// What skins the owner owns (skins v0): a bitset over catalog rows,
+/// `sim_core::skin::SkinSet` exactly, sent whenever the sim's copy moves.
+const SUB_SKINS_OWNED: u32 = 65;
+const SUB_MAX: u32 = SUB_SKINS_OWNED;
 /// A grow-sync batch's count: 1..=`GROW_SYNC_BATCH` in six bits.
 const GROW_SYNC_COUNT_BITS: u32 = 6;
 /// Width of an exposure reading: per cent, 0..=100 in seven bits.
@@ -515,6 +528,13 @@ const SYNC_COUNT_BITS: u32 = 7;
 const CATALOG_TOTAL_BITS: u32 = 7;
 const CATALOG_COUNT_BITS: u32 = 4;
 const NAME_LEN_BITS: u32 = 5;
+/// A skin-catalog index or total: 0..=`MAX_SKINS` (256) in nine bits.
+const SKIN_TOTAL_BITS: u32 = 9;
+const SKIN_COUNT_BITS: u32 = 4;
+const _: () = assert!(sim_core::limits::MAX_SKINS < (1 << SKIN_TOTAL_BITS));
+const _: () = assert!(SKIN_BATCH < (1 << SKIN_COUNT_BITS));
+/// A skin row's coin: [`COIN_NONE`] (not on sale yet), ELO or ORBS.
+const COIN_BITS: u32 = 2;
 /// A catalog row's `armor_pct` (v52). Seven bits carries 0..=127 over a
 /// `combat::ARMOR_MAX_PCT` of 90, and both ends range-check against that
 /// constant rather than against the width — a widened cap must move the
@@ -806,6 +826,112 @@ impl ItemCatalog {
 }
 
 impl Default for ItemCatalog {
+    fn default() -> Self {
+        Self::EMPTY
+    }
+}
+
+/// A skin row's coin: not on sale yet.
+pub const COIN_NONE: u8 = 0;
+/// Priced in ELO.
+pub const COIN_ELO: u8 = 1;
+/// Priced in ORBS.
+pub const COIN_ORBS: u8 = 2;
+
+/// One skin as the client draws and sells it (skins v0): the id items
+/// carry, the item row it fits, its tint, and its price if it has one.
+/// Everything the store screen and the renderer need, because the client
+/// links no content crate (the argument `ItemRow` makes three times over).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SkinRow {
+    /// `ItemStack::skin`'s value for an item wearing this skin. Never 0.
+    pub catalog: u16,
+    /// The item row it fits.
+    pub covers: u16,
+    /// sRGB multiply over the item's own colours.
+    pub tint: [u8; 3],
+    /// [`COIN_NONE`], [`COIN_ELO`] or [`COIN_ORBS`].
+    pub coin: u8,
+    /// Bare amount in `coin`; 0 exactly when `coin` is [`COIN_NONE`].
+    pub price: u32,
+}
+
+impl SkinRow {
+    /// A row the wire can mean: a real catalog id on a real item, and a
+    /// price that is either both halves or neither.
+    pub fn coherent(&self) -> bool {
+        self.catalog != 0
+            && (self.covers as usize) < MAX_ITEM_DEFS
+            && self.coin <= COIN_ORBS
+            && ((self.coin == COIN_NONE) == (self.price == 0))
+    }
+}
+
+/// The skin catalog, in content order: row `i` here is bit `i` of the
+/// owned set (`sim_core::skin::SkinSet`). Fixed storage, `MAX_SKINS` rows,
+/// filled by the server at boot and by the client from `SUB_SKINS`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SkinCatalog {
+    pub names: [[u8; MAX_ITEM_NAME_BYTES]; sim_core::limits::MAX_SKINS],
+    pub lens: [u8; sim_core::limits::MAX_SKINS],
+    pub rows: [SkinRow; sim_core::limits::MAX_SKINS],
+    pub count: u16,
+}
+
+impl SkinCatalog {
+    pub const EMPTY: Self = Self {
+        names: [[0; MAX_ITEM_NAME_BYTES]; sim_core::limits::MAX_SKINS],
+        lens: [0; sim_core::limits::MAX_SKINS],
+        rows: [SkinRow {
+            catalog: 0,
+            covers: 0,
+            tint: [0; 3],
+            coin: 0,
+            price: 0,
+        }; sim_core::limits::MAX_SKINS],
+        count: 0,
+    };
+
+    /// Install row `idx`. Refuses an empty or oversize name, a row past the
+    /// table, or an incoherent [`SkinRow`].
+    pub fn set(&mut self, idx: usize, name: &[u8], row: SkinRow) -> Result<(), WireError> {
+        if idx >= sim_core::limits::MAX_SKINS
+            || name.is_empty()
+            || name.len() > MAX_ITEM_NAME_BYTES
+            || !row.coherent()
+        {
+            return Err(WireError::Range);
+        }
+        self.names[idx][..name.len()].copy_from_slice(name);
+        self.names[idx][name.len()..].fill(0);
+        self.lens[idx] = name.len() as u8;
+        self.rows[idx] = row;
+        Ok(())
+    }
+
+    pub fn name(&self, idx: usize) -> &[u8] {
+        if idx < sim_core::limits::MAX_SKINS {
+            &self.names[idx][..self.lens[idx] as usize]
+        } else {
+            &[]
+        }
+    }
+
+    /// The live rows, in catalog order.
+    pub fn rows(&self) -> &[SkinRow] {
+        &self.rows[..(self.count as usize).min(sim_core::limits::MAX_SKINS)]
+    }
+
+    /// The row index of catalog id `catalog`, if this table has it.
+    pub fn index_of(&self, catalog: u16) -> Option<usize> {
+        if catalog == 0 {
+            return None;
+        }
+        self.rows().iter().position(|r| r.catalog == catalog)
+    }
+}
+
+impl Default for SkinCatalog {
     fn default() -> Self {
         Self::EMPTY
     }
@@ -1174,6 +1300,19 @@ pub enum EventMsg {
     /// The pack answers in the sim; this is the sound, so a client can put
     /// the howl on the animal that made it rather than on a timer.
     Howl { mob: u32 },
+    /// One batch of the skin catalog (skins v0): rows `first..first +
+    /// count` of `total`, in catalog order.
+    Skins {
+        total: u16,
+        first: u16,
+        count: u8,
+        names: [[u8; MAX_ITEM_NAME_BYTES]; SKIN_BATCH],
+        lens: [u8; SKIN_BATCH],
+        rows: [SkinRow; SKIN_BATCH],
+    },
+    /// The skins the owner owns, as the sim holds them: bit `i` is row `i`
+    /// of the skin catalog.
+    SkinsOwned { owned: sim_core::skin::SkinSet },
     /// The feed ack: the hearth's stock rows after the transfer, aligned
     /// to the baked upkeep-material list — (item index, units, what one
     /// upkeep period charges in it). The third column is upkeep v2's
@@ -1505,6 +1644,7 @@ pub fn encode_event_inv(slots: &[InvSlot], buf: &mut [u8]) -> Result<usize, Wire
         w.write(s.stack.item as u32, 16)?;
         w.write(s.stack.count as u32, 16)?;
         w.write(s.stack.cond as u32, 16)?;
+        w.write(s.stack.skin as u32, 16)?;
     }
     Ok(w.finish())
 }
@@ -2551,6 +2691,58 @@ pub fn encode_event_howl(mob: u32, buf: &mut [u8]) -> Result<usize, WireError> {
     Ok(w.finish())
 }
 
+/// Encode up to `SKIN_BATCH` skin rows starting at `first`. Returns the
+/// length and how many rows went, the item catalog's drip shape.
+pub fn encode_event_skins(
+    catalog: &SkinCatalog,
+    first: usize,
+    buf: &mut [u8],
+) -> Result<(usize, usize), WireError> {
+    let total = catalog.count as usize;
+    if total > sim_core::limits::MAX_SKINS || first >= total {
+        return Err(WireError::Range);
+    }
+    let count = SKIN_BATCH.min(total - first);
+    let mut w = begin(buf, SUB_SKINS)?;
+    w.write(total as u32, SKIN_TOTAL_BITS)?;
+    w.write(first as u32, SKIN_TOTAL_BITS)?;
+    w.write(count as u32, SKIN_COUNT_BITS)?;
+    for idx in first..first + count {
+        let row = catalog.rows[idx];
+        let name = catalog.name(idx);
+        if !row.coherent() || name.is_empty() || name.len() > MAX_ITEM_NAME_BYTES {
+            return Err(WireError::Range);
+        }
+        w.write(row.catalog as u32, 16)?;
+        w.write(row.covers as u32, 16)?;
+        for c in row.tint {
+            w.write(c as u32, 8)?;
+        }
+        w.write(row.coin as u32, COIN_BITS)?;
+        if row.coin != COIN_NONE {
+            w.write(row.price, 32)?;
+        }
+        w.write(name.len() as u32, NAME_LEN_BITS)?;
+        for &b in name {
+            w.write(b as u32, 8)?;
+        }
+    }
+    Ok((w.finish(), count))
+}
+
+/// The owner's skin set, every word of it.
+pub fn encode_event_skins_owned(
+    owned: &sim_core::skin::SkinSet,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    let mut w = begin(buf, SUB_SKINS_OWNED)?;
+    for word in owned.0 {
+        w.write(word as u32, 32)?;
+        w.write((word >> 32) as u32, 32)?;
+    }
+    Ok(w.finish())
+}
+
 /// The attacker's hitmarker: `damage` landed on `victim`.
 /// One standing backpack as the wire carries it: identity and where it
 /// is, nothing else. Owner, expiry and contents stay sim-side — the
@@ -2780,6 +2972,7 @@ pub fn encode_event_cont_sync(
         w.write(s.stack.item as u32, 16)?;
         w.write(s.stack.count as u32, 16)?;
         w.write(s.stack.cond as u32, 16)?;
+        w.write(s.stack.skin as u32, 16)?;
     }
     Ok(w.finish())
 }
@@ -3195,6 +3388,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                         item: r.read(16)? as u16,
                         count: r.read(16)? as u16,
                         cond: r.read(16)? as u16,
+                        skin: r.read(16)? as u16,
                     },
                 };
             }
@@ -3774,6 +3968,65 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             }
             EventMsg::Howl { mob }
         }
+        SUB_SKINS => {
+            let total = r.read(SKIN_TOTAL_BITS)? as usize;
+            let first = r.read(SKIN_TOTAL_BITS)? as usize;
+            let count = r.read(SKIN_COUNT_BITS)? as usize;
+            if total > sim_core::limits::MAX_SKINS
+                || count == 0
+                || count > SKIN_BATCH
+                || first + count > total
+            {
+                return Err(WireError::Malformed);
+            }
+            let mut names = [[0u8; MAX_ITEM_NAME_BYTES]; SKIN_BATCH];
+            let mut lens = [0u8; SKIN_BATCH];
+            let mut rows = [SkinRow::default(); SKIN_BATCH];
+            for i in 0..count {
+                let catalog = r.read(16)? as u16;
+                let covers = r.read(16)? as u16;
+                let tint = [r.read(8)? as u8, r.read(8)? as u8, r.read(8)? as u8];
+                let coin = r.read(COIN_BITS)? as u8;
+                let price = if coin == COIN_NONE { 0 } else { r.read(32)? };
+                rows[i] = SkinRow {
+                    catalog,
+                    covers,
+                    tint,
+                    coin,
+                    price,
+                };
+                // A zero id, an item past the table, a fourth coin or a
+                // coin priced at nothing: rows no server can mean.
+                if !rows[i].coherent() {
+                    return Err(WireError::Malformed);
+                }
+                let len = r.read(NAME_LEN_BITS)? as usize;
+                if len == 0 || len > MAX_ITEM_NAME_BYTES {
+                    return Err(WireError::Malformed);
+                }
+                for b in names[i].iter_mut().take(len) {
+                    *b = r.read(8)? as u8;
+                }
+                lens[i] = len as u8;
+            }
+            EventMsg::Skins {
+                total: total as u16,
+                first: first as u16,
+                count: count as u8,
+                names,
+                lens,
+                rows,
+            }
+        }
+        SUB_SKINS_OWNED => {
+            let mut owned = sim_core::skin::SkinSet::EMPTY;
+            for word in owned.0.iter_mut() {
+                let lo = r.read(32)? as u64;
+                let hi = r.read(32)? as u64;
+                *word = lo | (hi << 32);
+            }
+            EventMsg::SkinsOwned { owned }
+        }
         SUB_HURT => {
             // The width and the domain are the same size today, so nothing
             // here can be out of range — and it is written as a checked read
@@ -4129,6 +4382,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                         item: r.read(16)? as u16,
                         count: r.read(16)? as u16,
                         cond: r.read(16)? as u16,
+                        skin: r.read(16)? as u16,
                     },
                 };
             }
@@ -4214,23 +4468,36 @@ mod tests {
                 item: 7,
                 count: 1,
                 cond: 0x1234,
+                // And a skin (skins v0), for the same reason: a round trip
+                // against the input reads 0 where a dropped write loses it.
+                skin: 0x0A0B,
             },
         };
         let len = encode_event_inv(&[worn], &mut buf).unwrap();
         match decode_event(&buf[..len]).unwrap() {
-            EventMsg::Inv { slots, .. } => assert_eq!(
-                slots[0].stack.cond, 0x1234,
-                "SUB_INV dropped the condition — a worn tool arrives whole"
-            ),
+            EventMsg::Inv { slots, .. } => {
+                assert_eq!(
+                    slots[0].stack.cond, 0x1234,
+                    "SUB_INV dropped the condition — a worn tool arrives whole"
+                );
+                assert_eq!(slots[0].stack.skin, 0x0A0B, "SUB_INV dropped the skin");
+            }
             other => panic!("wrong variant: {other:?}"),
         }
         let len = encode_event_cont_sync(CONT_BAG, 5, false, &[worn], &mut buf).unwrap();
         match decode_event(&buf[..len]).unwrap() {
-            EventMsg::ContSync { slots, .. } => assert_eq!(
-                slots[0].stack.cond, 0x1234,
-                "SUB_CONT_SYNC dropped the condition — a worn tool in a \
-                 container arrives whole"
-            ),
+            EventMsg::ContSync { slots, .. } => {
+                assert_eq!(
+                    slots[0].stack.cond, 0x1234,
+                    "SUB_CONT_SYNC dropped the condition — a worn tool in a \
+                     container arrives whole"
+                );
+                assert_eq!(
+                    slots[0].stack.skin, 0x0A0B,
+                    "SUB_CONT_SYNC dropped the skin — a looted skinned rifle \
+                     would draw plain"
+                );
+            }
             other => panic!("wrong variant: {other:?}"),
         }
     }
@@ -4246,6 +4513,7 @@ mod tests {
                     item: i as u16,
                     count: 100 + i as u16,
                     cond: 200 + i as u16,
+                    skin: 300 + i as u16,
                 },
             };
         }
@@ -4506,6 +4774,107 @@ mod tests {
         );
     }
 
+    /// The skin drip's worst case — every row priced (the widest coin
+    /// arm) with a full-width name — fits the message cap, walks the whole
+    /// table, and round-trips row for row.
+    #[test]
+    fn skin_batches_fit_the_message_cap_and_walk_the_table() {
+        let mut cat = SkinCatalog::EMPTY;
+        let n = SKIN_BATCH + 3;
+        for i in 0..n {
+            let name = [b'a' + (i as u8 % 26); MAX_ITEM_NAME_BYTES];
+            let row = SkinRow {
+                catalog: u16::MAX - i as u16,
+                covers: (MAX_ITEM_DEFS - 1 - i) as u16,
+                tint: [255, i as u8, 0],
+                coin: if i % 2 == 0 { COIN_ELO } else { COIN_ORBS },
+                price: u32::MAX - i as u32,
+            };
+            cat.set(i, &name, row).unwrap();
+        }
+        cat.count = n as u16;
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let mut first = 0;
+        while first < n {
+            let (len, took) = encode_event_skins(&cat, first, &mut buf).unwrap();
+            assert!(len <= MAX_EVENT_MSG_BYTES, "a batch of {took} is {len} B");
+            match decode_event(&buf[..len]).unwrap() {
+                EventMsg::Skins {
+                    total,
+                    first: f,
+                    count,
+                    names,
+                    lens,
+                    rows,
+                } => {
+                    assert_eq!((total as usize, f as usize), (n, first));
+                    for i in 0..count as usize {
+                        assert_eq!(rows[i], cat.rows[first + i]);
+                        assert_eq!(&names[i][..lens[i] as usize], cat.name(first + i));
+                    }
+                }
+                other => panic!("wrong variant: {other:?}"),
+            }
+            first += took;
+        }
+        assert_eq!(
+            encode_event_skins(&cat, n, &mut buf),
+            Err(WireError::Range),
+            "past the end is a server bug, not a message"
+        );
+    }
+
+    /// A row no server can mean is refused at both ends: a zero id, a price
+    /// with no coin, a coin with no price, a fourth coin.
+    #[test]
+    fn an_incoherent_skin_row_never_crosses() {
+        let ok = SkinRow {
+            catalog: 4,
+            covers: 2,
+            tint: [1, 2, 3],
+            coin: COIN_NONE,
+            price: 0,
+        };
+        assert!(ok.coherent());
+        for bad in [
+            SkinRow { catalog: 0, ..ok },
+            SkinRow { price: 5, ..ok },
+            SkinRow {
+                coin: COIN_ELO,
+                ..ok
+            },
+            SkinRow {
+                coin: 3,
+                price: 5,
+                ..ok
+            },
+            SkinRow {
+                covers: MAX_ITEM_DEFS as u16,
+                ..ok
+            },
+        ] {
+            assert!(!bad.coherent(), "{bad:?}");
+            let mut cat = SkinCatalog::EMPTY;
+            assert_eq!(cat.set(0, b"x", bad), Err(WireError::Range));
+        }
+        // And from the wire side: a hand-built message carrying catalog 0.
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let mut w = begin(&mut buf, SUB_SKINS).unwrap();
+        w.write(1, SKIN_TOTAL_BITS).unwrap();
+        w.write(0, SKIN_TOTAL_BITS).unwrap();
+        w.write(1, SKIN_COUNT_BITS).unwrap();
+        w.write(0, 16).unwrap(); // catalog 0: "no skin" is not a row
+        w.write(2, 16).unwrap();
+        for _ in 0..3 {
+            w.write(9, 8).unwrap();
+        }
+        w.write(COIN_NONE as u32, COIN_BITS).unwrap();
+        w.write(1, NAME_LEN_BITS).unwrap();
+        w.write(b'x' as u32, 8).unwrap();
+        let len = w.finish();
+        assert_eq!(decode_event(&buf[..len]), Err(WireError::Malformed));
+    }
+
     #[test]
     fn catalog_batches_walk_the_table_within_cap() {
         let mut cat = ItemCatalog::EMPTY;
@@ -4586,10 +4955,12 @@ mod tests {
             CraftJob {
                 recipe: 3,
                 remaining: 99,
+                skin: 0,
             },
             CraftJob {
                 recipe: 0,
                 remaining: 1,
+                skin: 0,
             },
         ];
         let len = encode_event_craft_q(&jobs, 1234, &mut buf).unwrap();
@@ -4616,14 +4987,17 @@ mod tests {
             CraftJob {
                 recipe: 0,
                 remaining: 0,
+                skin: 0,
             },
             CraftJob {
                 recipe: 0,
                 remaining: 256,
+                skin: 0,
             },
             CraftJob {
                 recipe: MAX_RECIPES as u16,
                 remaining: 1,
+                skin: 0,
             },
         ] {
             assert_eq!(
@@ -5236,6 +5610,7 @@ mod tests {
                     item: 9,
                     count: 4,
                     cond: 0,
+                    skin: 0,
                 },
             },
             InvSlot {
@@ -5244,6 +5619,7 @@ mod tests {
                     item: 21,
                     count: 60,
                     cond: 7_500,
+                    skin: 0,
                 },
             },
         ];
@@ -5276,6 +5652,7 @@ mod tests {
                 item: 3,
                 count: 1,
                 cond: 42,
+                skin: 0,
             },
         }];
         let len = encode_event_cont_sync(CONT_BAG, 7, true, &wide, &mut buf).unwrap();
@@ -5338,6 +5715,7 @@ mod tests {
                 item: 1,
                 count: 1,
                 cond: 0,
+                skin: 0,
             },
         }];
         assert_eq!(
@@ -5402,6 +5780,7 @@ mod tests {
                     item: (i as u16) + 1,
                     count: u16::MAX,
                     cond: u16::MAX,
+                    skin: 0,
                 },
             };
         }
@@ -5690,6 +6069,10 @@ mod wire_domains {
         Module {
             file: "roster.rs",
             src: include_str!("../../sim-core/src/roster.rs"),
+        },
+        Module {
+            file: "skin.rs",
+            src: include_str!("../../sim-core/src/skin.rs"),
         },
         Module {
             file: "loot.rs",
@@ -6463,6 +6846,15 @@ mod wire_domains {
             "BAGS_COUNT_BITS",
             "CONT_COUNT_BITS",
             "LOCK_CODE_BITS",
+            // The skin catalog drip (skins v0): an index bounded by
+            // `limits::MAX_SKINS`, a batch length bounded by `SKIN_BATCH`,
+            // and the coin, a closed three-value set this module owns
+            // (`COIN_NONE`/`COIN_ELO`/`COIN_ORBS`) rather than a sim-core
+            // enumeration. All three are guarded by compile-time asserts or
+            // `SkinRow::coherent` at both ends.
+            "SKIN_TOTAL_BITS",
+            "SKIN_COUNT_BITS",
+            "COIN_BITS",
             // A percentage bounded by `combat::ARMOR_MAX_PCT`, which is a
             // sim-core *cap* and not an enumeration — `BAGS_COUNT_BITS`'
             // shape exactly, and classified with it for the same reason.

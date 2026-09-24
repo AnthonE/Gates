@@ -110,16 +110,19 @@ fn duel() -> Box<World> {
             item: 0,
             count: 500,
             cond: 0,
+            skin: 0,
         };
         p.inv[2] = ItemStack {
             item: 1,
             count: 500,
             cond: 0,
+            skin: 0,
         };
         p.inv[3] = ItemStack {
             item: 4,
             count: 10,
             cond: 0,
+            skin: 0,
         };
     }
     arm(&mut w);
@@ -141,6 +144,7 @@ fn arm(w: &mut World) {
             item: SPEAR,
             count: 1,
             cond: 0,
+            skin: 0,
         };
     }
 }

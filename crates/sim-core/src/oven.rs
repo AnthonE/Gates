@@ -333,6 +333,7 @@ fn slots_add(slots: &mut [ItemStack], item: u16, amount: u16, stack_max: u16, co
                 item,
                 count: put,
                 cond,
+                skin: 0,
             };
             left -= put;
         }
@@ -599,6 +600,7 @@ mod tests {
             item: 1,
             count: 8,
             cond: 0,
+            skin: 0,
         };
         assert_eq!(slots_add(&mut s, 1, 5, 10, 0), 5);
         assert_eq!(
@@ -606,7 +608,8 @@ mod tests {
             ItemStack {
                 item: 1,
                 count: 10,
-                cond: 0
+                cond: 0,
+                skin: 0
             }
         );
         assert_eq!(
@@ -614,7 +617,8 @@ mod tests {
             ItemStack {
                 item: 1,
                 count: 3,
-                cond: 0
+                cond: 0,
+                skin: 0
             }
         );
     }
@@ -626,11 +630,13 @@ mod tests {
             item: 1,
             count: 9,
             cond: 0,
+            skin: 0,
         };
         s[1] = ItemStack {
             item: 2,
             count: 4,
             cond: 0,
+            skin: 0,
         };
         assert!(slots_room(&s, 1, 1, 10));
         assert!(!slots_room(&s, 1, 2, 10));
@@ -653,6 +659,7 @@ mod tests {
             item: 3,
             count: 1,
             cond: 0,
+            skin: 0,
         };
         assert!(take_one(&mut s, 3));
         assert_eq!(s[1], ItemStack::default());

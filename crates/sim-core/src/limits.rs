@@ -824,6 +824,15 @@ const _: () = assert!(
      could never be researched, and nothing else would say so"
 );
 
+/// Skin rows the sim preallocates for (`content/skins.toml`, `skin.rs`).
+/// The content bake refuses a catalog past this. Structural rather than a
+/// knob: it is the width of `Player::skins`, and the owned set crosses the
+/// wire as exactly this many bits.
+pub const MAX_SKINS: usize = 256;
+/// `u64` words in a [`crate::skin::SkinSet`].
+pub const SKIN_WORDS: usize = MAX_SKINS / 64;
+const _: () = assert!(MAX_SKINS.is_multiple_of(64), "a SkinSet is whole u64 words");
+
 /// Loot tables the sim preallocates for — one per container archetype
 /// (`content/loot.toml` ships 2: barrel and crate). The content bake
 /// refuses a set past this. Structural cap like `MAX_DEPLOY_DEFS`, not a

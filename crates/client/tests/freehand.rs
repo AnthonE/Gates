@@ -54,6 +54,7 @@ fn store_with(cells: &[(u16, u16)]) -> (Pieces, BuildContent) {
                 item: i as u16,
                 count: 99,
                 cond: 0,
+                skin: 0,
             };
         }
         let mut ev = EventQueue::default();

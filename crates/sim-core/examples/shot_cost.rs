@@ -160,11 +160,13 @@ fn main() {
             item: GUN,
             count: 1,
             cond: 0,
+            skin: 0,
         };
         p.inv[7] = ItemStack {
             item: ROUND,
             count: u16::MAX,
             cond: 0,
+            skin: 0,
         };
         p.frame = InputFrame {
             seq: 1,

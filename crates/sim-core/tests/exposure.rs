@@ -94,6 +94,7 @@ fn what_you_wear_keeps_cold_out_and_a_road_sign_lets_it_in() {
         item: 1,
         count: 1,
         cond: 100,
+        skin: 0,
     };
     assert_eq!(exposure::target_chill(&ec, &night, &coat), base - 270);
     // Soaked, the coat keeps half.
@@ -105,6 +106,7 @@ fn what_you_wear_keeps_cold_out_and_a_road_sign_lets_it_in() {
         item: 2,
         count: 1,
         cond: 100,
+        skin: 0,
     };
     assert_eq!(exposure::target_chill(&ec, &night, &sign), base + 340);
     // A roof and a fire take anyone to zero — even soaked, even at night.

@@ -219,11 +219,13 @@ fn construction_and_ground_deploys_refuse_the_reserved_yard_without_payment() {
             item: 0,
             count: 100,
             cond: 0,
+            skin: 0,
         };
         p.inv[1] = ItemStack {
             item: 5,
             count: 1,
             cond: 0,
+            skin: 0,
         };
         let before = p.inv;
         let mut pieces = Pieces::new();
@@ -316,6 +318,7 @@ fn warehouse_cover_stops_a_bullet_but_its_doorway_allows_the_hit() {
                 item: 6,
                 count: 1,
                 cond: 0,
+                skin: 0,
             };
             players[0].mag[0] = 1;
             players[0].mag_round[0] = 7;

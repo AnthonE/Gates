@@ -185,6 +185,7 @@ fn table_world() -> Table {
         item: TABLE_ITEM,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     w.tick(&[Command::PlaceDeploy {
         id: PLAYER,
@@ -210,11 +211,13 @@ fn stock(w: &mut World) {
         item: SAMPLE,
         count: 2,
         cond: 0,
+        skin: 0,
     };
     w.players[0].inv[1] = ItemStack {
         item: COIN,
         count: 20,
         cond: 0,
+        skin: 0,
     };
 }
 
@@ -361,6 +364,7 @@ fn a_gated_recipe_is_uncraftable_until_it_is_learned() {
         id: PLAYER,
         recipe: GATED_RECIPE,
         count: 1,
+        skin: 0,
     }]);
     assert_eq!(
         refusal(&t.w, EV_CRAFT_REFUSED),
@@ -401,6 +405,7 @@ fn a_gated_recipe_is_uncraftable_until_it_is_learned() {
         id: PLAYER,
         recipe: GATED_RECIPE,
         count: 1,
+        skin: 0,
     }]);
     assert_ne!(
         refusal(&t.w, EV_CRAFT_REFUSED),
@@ -673,6 +678,7 @@ fn only_paper_with_a_target_can_be_read() {
         item: PAPER,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     study(&mut t.w, PLAYER, 5);
     assert_eq!(refusal(&t.w, EV_RESEARCH_REFUSED), Some(REFUSE_R_ITEM));
@@ -783,6 +789,7 @@ fn an_ungated_recipe_never_asks_about_a_blueprint() {
         id: PLAYER,
         recipe: OPEN_RECIPE,
         count: 1,
+        skin: 0,
     }]);
     assert_ne!(
         refusal(&t.w, EV_CRAFT_REFUSED),
@@ -813,6 +820,7 @@ fn bench_world() -> Table {
         item: BENCH_ITEM,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     let (cx, cz) = (t.cx, t.cz);
     t.w.tick(&[Command::PlaceDeploy {
@@ -889,6 +897,7 @@ fn the_tree_refuses_with_reasons_and_takes_nothing() {
         item: COIN,
         count: 3,
         cond: 0,
+        skin: 0,
     };
     ask_unlock(w, NODE_RECIPE);
     assert_eq!(refusal(w, EV_RESEARCH_REFUSED), Some(REFUSE_R_COST));
@@ -968,6 +977,7 @@ fn a_higher_bench_unlocks_a_lower_tier_node() {
         item: BENCH_ITEM,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     let (cx, cz) = (t.cx, t.cz);
     t.w.tick(&[Command::PlaceDeploy {
@@ -1007,6 +1017,7 @@ fn the_table_researches_a_sample_with_no_questions_about_parents() {
         item: 5,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     assert!(!knows(t.w.players[0].known, GATED_RECIPE));
     research(&mut t);
@@ -1091,6 +1102,7 @@ fn blueprint_blocks(w: &mut World, id: u32) -> bool {
         id,
         recipe: GATED_RECIPE,
         count: 1,
+        skin: 0,
     }]);
     refusal(w, EV_CRAFT_REFUSED) == Some(REFUSE_BLUEPRINT)
 }

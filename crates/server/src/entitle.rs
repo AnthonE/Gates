@@ -397,8 +397,14 @@ fn agent(timeout: Duration) -> ureq::Agent {
 }
 
 fn get(url: &str, timeout: Duration) -> Option<String> {
+    get_capped(url, timeout, MAX_RESPONSE_BYTES)
+}
+
+/// A GET with its own response ceiling: the skin read (`skins.rs`) pages a
+/// whole inventory, which is a bigger body than a verdict.
+pub(crate) fn get_capped(url: &str, timeout: Duration, cap: usize) -> Option<String> {
     let mut res = agent(timeout).get(url).call().ok()?;
-    read_capped(&mut res)
+    read_capped_to(&mut res, cap)
 }
 
 fn post(url: &str, body: &str, timeout: Duration) -> Option<String> {
@@ -411,9 +417,13 @@ fn post(url: &str, body: &str, timeout: Duration) -> Option<String> {
 }
 
 fn read_capped(res: &mut ureq::http::Response<ureq::Body>) -> Option<String> {
+    read_capped_to(res, MAX_RESPONSE_BYTES)
+}
+
+fn read_capped_to(res: &mut ureq::http::Response<ureq::Body>, cap: usize) -> Option<String> {
     res.body_mut()
         .with_config()
-        .limit((MAX_RESPONSE_BYTES + 1) as u64)
+        .limit((cap + 1) as u64)
         .read_to_string()
         .ok()
 }

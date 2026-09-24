@@ -202,6 +202,7 @@ fn finishing_hit(healing: bool) {
         item: 0,
         count: 1,
         cond: 400,
+        skin: 0,
     };
     if healing {
         w.survival = sim_core::survival::SurvivalContent::probe_fixture();

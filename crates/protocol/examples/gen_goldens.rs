@@ -122,8 +122,8 @@ fn main() {
     assert_eq!(took, protocol::RECIPE_BATCH);
     write_fixture(goldens::FIXTURES[18], &buf[..len]);
 
-    let (recipe, count) = goldens::action_craft();
-    let len = encode_action_craft(recipe, count, &mut buf).unwrap();
+    let (recipe, count, skin) = goldens::action_craft();
+    let len = encode_action_craft(recipe, count, skin, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[19], &buf[..len]);
 
     let len = encode_action_cancel(goldens::action_cancel(), &mut buf).unwrap();
@@ -488,6 +488,22 @@ fn main() {
     {
         let len = protocol::encode_event_howl(goldens::event_howl(), &mut buf).unwrap();
         write_fixture(goldens::FIXTURES[114], &buf[..len]);
+    }
+
+    // Skins v0 (v77): the catalog drip, the owner's set, the two verbs.
+    {
+        let (len, took) =
+            protocol::encode_event_skins(&goldens::event_skins(), 0, &mut buf).unwrap();
+        assert_eq!(took, 3);
+        write_fixture(goldens::FIXTURES[115], &buf[..len]);
+        let len =
+            protocol::encode_event_skins_owned(&goldens::event_skins_owned(), &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[116], &buf[..len]);
+        let (slot, skin) = goldens::action_reskin();
+        let len = protocol::encode_action_reskin(slot, skin, &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[117], &buf[..len]);
+        let len = protocol::encode_action_skins_refresh(&mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[118], &buf[..len]);
     }
 
     // Armor v1 (v51): the fifth container kind — the one worn rather

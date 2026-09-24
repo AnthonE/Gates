@@ -692,13 +692,30 @@ pub enum Coin {
 }
 
 /// Appearance only: no stat field exists to write (DESIGN.md §3.3).
+///
+/// A row is Rust's item definition for a skin: the id items carry
+/// (`catalog`, the skin's `catalogId` on the platform's item contract), the
+/// item it fits, what it is called and what it looks like. **The price is
+/// optional**: a row can ship its look before the operator prices it
+/// (`coin` and `price` together or neither), and the store reads an
+/// unpriced row as not on sale yet.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Skin {
     pub id: String,
+    /// The id an item wearing this skin carries (`ItemStack::skin`), and
+    /// the `catalogId` the platform mints it under. Nonzero, unique, and
+    /// never reused for a different look: a saved item keeps it forever.
+    pub catalog: u16,
+    /// The display name, what the store and the item's label say.
+    pub name: String,
     pub covers: String,
-    pub coin: Coin,
-    pub price: u32,
+    /// The look, v0: an sRGB multiply over the item's own colours.
+    pub tint: [u8; 3],
+    #[serde(default)]
+    pub coin: Option<Coin>,
+    #[serde(default)]
+    pub price: Option<u32>,
     pub season: String,
 }
 

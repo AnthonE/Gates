@@ -224,6 +224,7 @@ fn armed_shooter(w: &mut World, structure: u16, dx: f32, dz: f32) -> (u16, u16) 
             item,
             count: 200,
             cond: 0,
+            skin: 0,
         };
     }
     // **The two weapons live in HOTBAR slots and their ammo does not.**
@@ -237,21 +238,25 @@ fn armed_shooter(w: &mut World, structure: u16, dx: f32, dz: f32) -> (u16, u16) 
         item: BOW,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     w.players[0].inv[SLOT_GUN] = ItemStack {
         item: GUN,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     w.players[0].inv[6] = ItemStack {
         item: ARROW,
         count: 200,
         cond: 0,
+        skin: 0,
     };
     w.players[0].inv[7] = ItemStack {
         item: ROUND,
         count: 200,
         cond: 0,
+        skin: 0,
     };
     // The magazine, loaded (reload v1). A gun with an empty cylinder does
     // not fire, so without this the `shoot_until` helpers below run their
@@ -801,6 +806,7 @@ fn benched_world(w: &mut World, structure: u16) -> (u16, u16, f32) {
         item: 3,
         count: 4,
         cond: 0,
+        skin: 0,
     };
     let before = w.deploys.len();
     w.tick(&[Command::PlaceDeploy {

@@ -70,11 +70,13 @@ fn a_played_character() -> (Box<World>, PlayerSave) {
         item: 1,
         count: 37,
         cond: 0,
+        skin: 0,
     };
     p.inv[7] = ItemStack {
         item: 2,
         count: 4,
         cond: 0,
+        skin: 0,
     };
     p.hp = 41;
     p.food = 300;
@@ -101,6 +103,7 @@ fn a_saved_character_comes_back_as_themselves() {
             item: 1,
             count: 37,
             cond: 0,
+            skin: 0,
         }
     );
     assert_eq!(
@@ -109,6 +112,7 @@ fn a_saved_character_comes_back_as_themselves() {
             item: 2,
             count: 4,
             cond: 0,
+            skin: 0,
         }
     );
     assert_eq!(p.hp, 41, "you log off hurt, you log in hurt");
@@ -253,11 +257,13 @@ fn a_craft_queue_survives_and_rearms_against_the_new_clock() {
         item: 0,
         count: 90,
         cond: 0,
+        skin: 0,
     };
     w.tick(&[Command::Craft {
         id: ID,
         recipe: 0,
         count: 5,
+        skin: 0,
     }]);
     // Let the queue run a little, so the save is taken mid-batch against a
     // clock well past zero — but not so long that the batch finishes (the
@@ -328,6 +334,7 @@ fn a_body_that_logged_off_dead_wakes_on_a_beach() {
         item: 1,
         count: 9,
         cond: 0,
+        skin: 0,
     };
     // A real death by a real cause — the survival clock, whose fixture spans
     // are seconds so a whole death fits in a test — and then the screen is
@@ -386,7 +393,8 @@ fn probe_kit() -> sim_core::inventory::SpawnKit {
             ItemStack {
                 item: 8,
                 count: 1,
-                cond: 0
+                cond: 0,
+                skin: 0
             }
         ),
         "kit slot 0"
@@ -397,7 +405,8 @@ fn probe_kit() -> sim_core::inventory::SpawnKit {
             ItemStack {
                 item: 9,
                 count: 1,
-                cond: 0
+                cond: 0,
+                skin: 0
             }
         ),
         "kit slot 1"
@@ -440,6 +449,7 @@ fn a_dead_save_wakes_holding_the_spawn_kit() {
         item: 2,
         count: 5,
         cond: 0,
+        skin: 0,
     };
 
     // A real death by a real cause, screen left unanswered — the same
@@ -470,12 +480,14 @@ fn a_dead_save_wakes_holding_the_spawn_kit() {
             ItemStack {
                 item: 8,
                 count: 1,
-                cond: 0
+                cond: 0,
+                skin: 0
             },
             ItemStack {
                 item: 9,
                 count: 1,
-                cond: 0
+                cond: 0,
+                skin: 0
             }
         ),
         "a body that logged off dead woke naked — this door skipped the kit"
@@ -616,6 +628,7 @@ fn a_second_join_as_for_a_live_id_is_ignored() {
         item: 3,
         count: 8,
         cond: 0,
+        skin: 0,
     };
     let hash = w.state_hash();
     let mut stale = PlayerSave::EMPTY;
@@ -625,10 +638,12 @@ fn a_second_join_as_for_a_live_id_is_ignored() {
         item: 1,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     stale.jobs[0] = CraftJob {
         recipe: 0,
         remaining: 1,
+        skin: 0,
     };
     w.tick(&[Command::JoinAs {
         id: ID,
@@ -641,6 +656,7 @@ fn a_second_join_as_for_a_live_id_is_ignored() {
             item: 3,
             count: 8,
             cond: 0,
+            skin: 0,
         },
         "a restore overwrote a live body"
     );
@@ -665,6 +681,7 @@ fn every_inventory_slot_survives_the_trip() {
             item: (i % 8) as u16 + 1,
             count: i as u16 + 1,
             cond: 0,
+            skin: 0,
         };
     }
     let want = w.players[0].inv;
@@ -724,7 +741,11 @@ mod carried_through_death {
     /// it is here because a blueprint is a thing the player *did*, not a
     /// thing they were holding when they fell. The corpse's inventory is
     /// the backpack's business and is correctly on the other list.
-    pub const CARRIED: [&str; 5] = ["id", "active", "frame", "deaths", "known"];
+    ///
+    /// `skins` is `known`'s argument one step further out: what a player
+    /// owns is not even in the world, it is the platform's answer about a
+    /// person (`sim_core::skin`), and a death is not a sale.
+    pub const CARRIED: [&str; 6] = ["id", "active", "frame", "deaths", "known", "skins"];
 
     /// Re-derived, dropped, or owned by the death itself. Anything here is
     /// a field a death is *allowed* to erase — the inventory (the backpack
@@ -995,6 +1016,7 @@ fn a_saved_tool_comes_back_worn() {
         item: 1,
         count: 1,
         cond: 4_150,
+        skin: 0,
     };
     let save = PlayerSave::of(&w.players[0]);
 
@@ -1024,6 +1046,7 @@ fn a_saved_tool_comes_back_worn() {
             item: 1,
             count: 1,
             cond: 4_150,
+            skin: 0,
         },
         "a saved tool must come back exactly as worn as it left"
     );
@@ -1047,6 +1070,7 @@ fn an_eaten_empty_slot_still_saves_and_loads() {
         item: 0,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     assert!(
         sim_core::survival::consume(&sc, 0, &mut p, &mut ev),

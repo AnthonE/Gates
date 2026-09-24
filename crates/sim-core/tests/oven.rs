@@ -116,16 +116,19 @@ fn fire_world() -> (World, u32, u16, u16) {
         item: FIRE_ITEM,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     w.players[0].inv[1] = ItemStack {
         item: FUEL,
         count: 40,
         cond: 0,
+        skin: 0,
     };
     w.players[0].inv[2] = ItemStack {
         item: RAW,
         count: 4,
         cond: 0,
+        skin: 0,
     };
     w.tick(&[Command::PlaceDeploy {
         id: PLAYER,
@@ -160,6 +163,7 @@ fn load(w: &mut World, key: u32, slot: usize, item: u16, count: u16) {
             item,
             count,
             cond: 0,
+            skin: 0,
         },
     );
 }
@@ -440,6 +444,7 @@ fn an_oven_takes_fuel_and_what_it_cooks_and_nothing_else() {
         item: 2,
         count: 5,
         cond: 0,
+        skin: 0,
     };
 
     let mv = |w: &mut World, from_slot: u8, count: u16| {
@@ -485,6 +490,7 @@ fn an_oven_takes_fuel_and_what_it_cooks_and_nothing_else() {
             item: CHAR,
             count: 3,
             cond: 0,
+            skin: 0,
         },
         "the charcoal is takeable"
     );
@@ -507,6 +513,7 @@ fn a_removal_moves_both_halves() {
         item: FIRE_ITEM,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     w.tick(&[Command::PlaceDeploy {
         id: PLAYER,
@@ -666,16 +673,19 @@ fn recycler_world() -> (World, u32, u16, u16) {
         item: RECYCLER_ITEM,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     w.players[0].inv[1] = ItemStack {
         item: SALVAGE,
         count: 8,
         cond: 0,
+        skin: 0,
     };
     w.players[0].inv[2] = ItemStack {
         item: FUEL,
         count: 40,
         cond: 0,
+        skin: 0,
     };
     w.tick(&[Command::PlaceDeploy {
         id: PLAYER,

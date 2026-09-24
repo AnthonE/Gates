@@ -1214,6 +1214,15 @@ pub struct Player {
     pub wet: u16,
     pub chill: u16,
     pub cold_acc: u32,
+    /// The skins this player owns (`skin.rs`), as the server last heard it
+    /// from the platform: Rust's Steam inventory, held by the game only so
+    /// the two verbs that put a skin on can ask it. Set by
+    /// `Command::SkinsOwned` and nothing else. **Session state**: a new
+    /// connection (`seat`, `take_over`) starts with none until the server
+    /// says otherwise, and a death or a respawn carries it, because it
+    /// belongs to the person and not the body. Hashed and world-saved like
+    /// every other field a command writes.
+    pub skins: crate::skin::SkinSet,
 }
 
 impl Default for Player {
@@ -1265,6 +1274,7 @@ impl Default for Player {
             wet: 0,
             chill: 0,
             cold_acc: 0,
+            skins: crate::skin::SkinSet::EMPTY,
         }
     }
 }
@@ -1453,11 +1463,35 @@ pub enum Command {
         favour: u8,
     },
     /// Enqueue `count` crafts of recipe row `recipe` (craft.rs validates
-    /// and refuses by event, never by panic).
+    /// and refuses by event, never by panic), minted wearing skin `skin`
+    /// (`skin::NO_SKIN` for the item's own look; `craft::enqueue` checks
+    /// the player owns it).
     Craft {
         id: u32,
         recipe: u16,
         count: u16,
+        skin: u16,
+    },
+    /// Put skin `skin` on the item in `id`'s inventory `slot`, or take it
+    /// off with `skin::NO_SKIN` (`skin::reskin`, at a workbench). The slot
+    /// and the skin are the sender's claim and the sim is the verdict.
+    Reskin {
+        id: u32,
+        slot: u8,
+        skin: u16,
+    },
+    /// What skins `id` owns, as the server read it off the platform
+    /// (`server/src/skins.rs`), replacing whatever the sim held.
+    ///
+    /// **Not reachable from the wire**, `AdminGive`'s posture: no
+    /// `ActionMsg` maps here, so a client cannot claim a skin however it
+    /// forges its bytes. The server mints it after a join and after every
+    /// refresh it reads. A command rather than a write from outside because
+    /// what a player owns decides what a craft mints, and the WAL is the
+    /// command stream: a replay has to own what the session owned.
+    SkinsOwned {
+        id: u32,
+        owned: crate::skin::SkinSet,
     },
     /// Read the blueprint in inventory `slot` (`research::study`, research
     /// table v1): learn the recipe its paper names, anywhere, for nothing.
@@ -1751,6 +1785,10 @@ pub struct World {
     /// Baked research rules (research.rs). Construction input, like every
     /// other content table; `EMPTY` teaches nothing.
     pub research: crate::research::ResearchContent,
+    /// Baked skin catalog (`skin.rs`). Construction input like every other
+    /// table; `EMPTY` fits no skin on anything, so every craft that names
+    /// one refuses and every item wears its own look.
+    pub skins: crate::skin::SkinContent,
     /// Baked melee rows + max hp (combat.rs). Construction input too; the
     /// inert default leaves the world unable to hurt anyone.
     pub combat: CombatContent,
@@ -1945,6 +1983,7 @@ impl World {
             deploy: DeployContent::EMPTY,
             cook: crate::oven::CookContent::EMPTY,
             research: crate::research::ResearchContent::EMPTY,
+            skins: crate::skin::SkinContent::EMPTY,
             combat: CombatContent::EMPTY,
             backpack: BackpackContent::EMPTY,
             survival: SurvivalContent::EMPTY,
@@ -2098,10 +2137,11 @@ impl World {
     /// on the death screen could still craft, build, feed a hearth, lock a
     /// door and drink, which is a dead player playing the game.
     ///
-    /// Two commands deliberately use `slot_of` instead: `Respawn`, which
-    /// only a corpse may send, and `Input`, which is the client's own
-    /// frame and keeps flowing so prediction and the server agree about a
-    /// body that is standing still (the tick zeroes what it acts on).
+    /// Three commands deliberately use `slot_of` instead: `Respawn`, which
+    /// only a corpse may send, `Input`, which is the client's own frame
+    /// and keeps flowing so prediction and the server agree about a body
+    /// that is standing still (the tick zeroes what it acts on), and
+    /// `SkinsOwned`, which is a fact about the person and not the body.
     pub fn live_slot_of(&self, id: u32) -> Option<usize> {
         self.slot_of(id)
             .filter(|&s| !self.players[s].dead && !self.players[s].wounded)
@@ -2913,6 +2953,9 @@ impl World {
             // `dead` by hand — the hand-set version of the same test
             // passed, because it never came through this function.
             known: body.known,
+            // Carried for `known`'s reason: what a player owns is not in
+            // their pockets, so a death does not take it (`skin.rs`).
+            skins: body.skins,
             ..Player::default()
         };
         // **What it was wearing goes into the bag with what it was
@@ -3084,6 +3127,8 @@ impl World {
             hp_max: hp,
             deaths,
             known,
+            // The owned skins survive the new body, as `known` does.
+            skins: body.skins,
             ..Player::default()
         };
         // A player who starved does not respawn already starving.
@@ -3312,6 +3357,10 @@ impl World {
                     death_range_cm: 0,
                     sleeping: false,
                     slept_at: 0,
+                    // Not from the save: the platform owns what a player
+                    // owns (`persist.rs`'s header), and the server states
+                    // it after this join (`Command::SkinsOwned`).
+                    skins: crate::skin::SkinSet::EMPTY,
                 };
                 craft::rearm(
                     &self.craft,
@@ -3431,6 +3480,10 @@ impl World {
         // executed inputs this client has not sent (`persist.rs` says the
         // same thing about restoring one from a file).
         p.frame = InputFrame::default();
+        // And the owned skins are the new session's to state (`skin.rs`):
+        // none until the server reads them again, so a skin sold while the
+        // body slept cannot be put on by the sleeper's old answer.
+        p.skins = crate::skin::SkinSet::EMPTY;
         if self.players[slot].dead {
             self.wake(slot, false);
             return;
@@ -3767,18 +3820,46 @@ impl World {
                     self.players[slot].frame = Self::sanitize_frame(frame);
                 }
             }
-            Command::Craft { id, recipe, count } => {
+            Command::Craft {
+                id,
+                recipe,
+                count,
+                skin,
+            } => {
                 if let Some(slot) = self.live_slot_of(id) {
                     craft::enqueue(
                         &self.craft,
+                        &self.skins,
                         &self.deploy,
                         &self.deploys,
                         self.tick,
                         &mut self.players[slot],
                         recipe,
                         count,
+                        skin,
                         &mut self.events,
                     );
+                }
+            }
+            Command::Reskin { id, slot, skin } => {
+                if let Some(s) = self.live_slot_of(id) {
+                    crate::skin::reskin(
+                        &self.skins,
+                        &self.deploy,
+                        &self.deploys,
+                        &mut self.players[s],
+                        slot,
+                        skin,
+                        &mut self.events,
+                    );
+                }
+            }
+            Command::SkinsOwned { id, owned } => {
+                // Any body carrying the id, awake or asleep: a refresh can
+                // land while its owner is still on the death screen, and
+                // the set belongs to the person either way.
+                if let Some(s) = self.slot_of(id) {
+                    self.players[s].skins = owned;
                 }
             }
             Command::Research { id, slot } => {
@@ -5360,11 +5441,7 @@ impl World {
             h.update(&p.assist_ticks.to_le_bytes());
             h.update(&wb);
             for s in p.inv.iter() {
-                let mut sb = [0u8; 6];
-                sb[0..2].copy_from_slice(&s.item.to_le_bytes());
-                sb[2..4].copy_from_slice(&s.count.to_le_bytes());
-                sb[4..6].copy_from_slice(&s.cond.to_le_bytes());
-                h.update(&sb);
+                h.update(&stack_bytes(s));
             }
             // What this body is wearing (armor v0), in its own loop
             // appended after the inventory rather than folded into it.
@@ -5384,13 +5461,13 @@ impl World {
             // it. The hash is behavioural now — it says the sim carries
             // worn equipment — where before it said nothing at all.
             for s in p.worn.iter() {
-                let mut wb = [0u8; 6];
-                wb[0..2].copy_from_slice(&s.item.to_le_bytes());
-                wb[2..4].copy_from_slice(&s.count.to_le_bytes());
-                wb[4..6].copy_from_slice(&s.cond.to_le_bytes());
-                h.update(&wb);
+                h.update(&stack_bytes(s));
             }
-            let mut cb = [0u8; 16 + CRAFT_QUEUE * 4];
+            // The owned skins (skins v0): a `Command::SkinsOwned` writes
+            // them and they decide what the next skinned craft mints, so
+            // two replays that disagreed about them would diverge there.
+            h.update(&p.skins.to_le_bytes());
+            let mut cb = [0u8; 16 + CRAFT_QUEUE * 6];
             cb[0..8].copy_from_slice(&p.craft_done_at.to_le_bytes());
             // The blueprint mask (research v0). It belongs here for the
             // reason `[backpack]`'s ladder had to reach `canon::hash`, one
@@ -5401,8 +5478,10 @@ impl World {
             // — silently, because every other field still matched.
             cb[8..16].copy_from_slice(&p.known.to_le_bytes());
             for (j, job) in p.jobs.iter().enumerate() {
-                cb[16 + j * 4..16 + j * 4 + 2].copy_from_slice(&job.recipe.to_le_bytes());
-                cb[16 + j * 4 + 2..16 + j * 4 + 4].copy_from_slice(&job.remaining.to_le_bytes());
+                let at = 16 + j * 6;
+                cb[at..at + 2].copy_from_slice(&job.recipe.to_le_bytes());
+                cb[at + 2..at + 4].copy_from_slice(&job.remaining.to_le_bytes());
+                cb[at + 4..at + 6].copy_from_slice(&job.skin.to_le_bytes());
             }
             h.update(&cb);
         }
@@ -5711,11 +5790,7 @@ impl World {
             buf[5..9].copy_from_slice(&bx.owner.to_le_bytes());
             h.update(&buf);
             for s in bx.items.iter() {
-                let mut sb = [0u8; 6];
-                sb[0..2].copy_from_slice(&s.item.to_le_bytes());
-                sb[2..4].copy_from_slice(&s.count.to_le_bytes());
-                sb[4..6].copy_from_slice(&s.cond.to_le_bytes());
-                h.update(&sb);
+                h.update(&stack_bytes(s));
             }
         }
         // Oven state, in its own pass beside the contents for the reason
@@ -5746,11 +5821,7 @@ impl World {
             buf[20..28].copy_from_slice(&b.expires.to_le_bytes());
             h.update(&buf);
             for s in b.items.iter() {
-                let mut sb = [0u8; 6];
-                sb[0..2].copy_from_slice(&s.item.to_le_bytes());
-                sb[2..4].copy_from_slice(&s.count.to_le_bytes());
-                sb[4..6].copy_from_slice(&s.cond.to_le_bytes());
-                h.update(&sb);
+                h.update(&stack_bytes(s));
             }
         }
         // The id counter is state, not a cursor: a replay that reused an
@@ -5781,15 +5852,13 @@ impl World {
                 // tick would call two stacks equal right up until one of
                 // them vanished, which is the trap `refill_at` names one
                 // store down.
-                let mut buf = [0u8; 30];
+                let mut buf = [0u8; 32];
                 buf[0..4].copy_from_slice(&g.id.to_le_bytes());
                 buf[4..8].copy_from_slice(&g.qx.to_le_bytes());
                 buf[8..12].copy_from_slice(&g.qy.to_le_bytes());
                 buf[12..16].copy_from_slice(&g.qz.to_le_bytes());
-                buf[16..18].copy_from_slice(&g.stack.item.to_le_bytes());
-                buf[18..20].copy_from_slice(&g.stack.count.to_le_bytes());
-                buf[20..22].copy_from_slice(&g.stack.cond.to_le_bytes());
-                buf[22..30].copy_from_slice(&g.expires.to_le_bytes());
+                buf[16..24].copy_from_slice(&stack_bytes(&g.stack));
+                buf[24..32].copy_from_slice(&g.expires.to_le_bytes());
                 h.update(&buf);
             }
             h.update(&self.ground_items.next_id().to_le_bytes());
@@ -5810,11 +5879,7 @@ impl World {
             buf[13..21].copy_from_slice(&c.refill_at.to_le_bytes());
             h.update(&buf);
             for s in c.items.iter() {
-                let mut sb = [0u8; 6];
-                sb[0..2].copy_from_slice(&s.item.to_le_bytes());
-                sb[2..4].copy_from_slice(&s.count.to_le_bytes());
-                sb[4..6].copy_from_slice(&s.cond.to_le_bytes());
-                h.update(&sb);
+                h.update(&stack_bytes(s));
             }
         }
         h.update(&self.sweep_piece.to_le_bytes());
@@ -5840,6 +5905,19 @@ impl World {
         }
         h.digest()
     }
+}
+
+/// One stack as `state_hash` folds it: item, count, condition and skin,
+/// little-endian. The one encoding every store's loop shares, so a field
+/// added to `ItemStack` is added to the digest once rather than at six
+/// hand-copied buffers that can disagree.
+fn stack_bytes(s: &ItemStack) -> [u8; 8] {
+    let mut b = [0u8; 8];
+    b[0..2].copy_from_slice(&s.item.to_le_bytes());
+    b[2..4].copy_from_slice(&s.count.to_le_bytes());
+    b[4..6].copy_from_slice(&s.cond.to_le_bytes());
+    b[6..8].copy_from_slice(&s.skin.to_le_bytes());
+    b
 }
 
 #[cfg(test)]
@@ -5875,6 +5953,7 @@ mod tests {
             item: 3,
             count: 1,
             cond,
+            skin: 0,
         };
 
         // 1. The player inventory loop.

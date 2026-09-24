@@ -660,6 +660,7 @@ mod tests {
             item: 0,
             count: 2,
             cond: 0,
+            skin: 0,
         };
         let mut q = EventQueue::default();
         assert!(!consume(&sc, 0, &mut p, &mut q), "full meters, no heal");
@@ -679,6 +680,7 @@ mod tests {
             item: 0,
             count: 1,
             cond: 0,
+            skin: 0,
         };
         let mut q = EventQueue::default();
         assert!(consume(&sc, 0, &mut p, &mut q));
@@ -728,6 +730,7 @@ mod tests {
             item: 0,
             count: 1,
             cond: 0,
+            skin: 0,
         };
         let mut q = EventQueue::default();
         assert!(consume(&sc, 0, &mut p, &mut q));

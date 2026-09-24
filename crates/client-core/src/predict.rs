@@ -417,6 +417,7 @@ mod tests {
             // what a misprediction can be about.
             held: None,
             lit: false,
+            held_skin: 0,
         }
     }
 
@@ -595,6 +596,7 @@ mod tests {
             item: 0,
             count: 50,
             cond: 0,
+            skin: 0,
         };
         world.tick(&[
             Command::Place {

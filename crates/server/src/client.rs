@@ -332,6 +332,14 @@ pub struct ClientNetState {
     /// The sky/clock record as last sent (weather v0). `None` owes the
     /// client the whole of it: a fresh join and a resync both start here.
     pub last_env: Option<sim_core::weather::Env>,
+    /// Next skin-catalog row the drip sends (skins v0).
+    pub skins_cursor: usize,
+    /// The owned skin set this client last heard (`SUB_SKINS_OWNED`), so the
+    /// drip sends it when the sim's copy moves and never otherwise.
+    pub last_skins: Option<sim_core::skin::SkinSet>,
+    /// A set the platform reported for this connection that has not yet
+    /// found room in the command queue (`ShardCore::skins_owned`).
+    pub skins_pending: Option<sim_core::skin::SkinSet>,
     /// The wet/cold readout as last sent, `(wet %, cold %, hurting)`.
     /// `None` owes the client the reading.
     pub last_expo: Option<(u8, u8, bool)>,
@@ -404,6 +412,9 @@ impl ClientNetState {
             pending_action: None,
             last_assist: (0, 0, 0),
             last_env: None,
+            skins_cursor: 0,
+            last_skins: None,
+            skins_pending: None,
             last_expo: None,
             pending_chat: None,
             last_jobs: [CraftJob::default(); CRAFT_QUEUE],
@@ -421,6 +432,8 @@ impl ClientNetState {
         self.sync_cursor = 0;
         self.sync_reset = true;
         self.catalog_cursor = 0;
+        self.skins_cursor = 0;
+        self.last_skins = None;
         self.recipes_cursor = 0;
         self.research_cursor = 0;
         self.piece_defs_cursor = 0;

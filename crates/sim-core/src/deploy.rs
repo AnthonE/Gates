@@ -3144,6 +3144,7 @@ mod tests {
                 item,
                 count,
                 cond: 0,
+                skin: 0,
             };
         }
         p

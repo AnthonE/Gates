@@ -198,6 +198,10 @@ pub struct ShardConfig {
     /// Armed, it requires `require_auth = true`, because a guest has no wallet
     /// to ask about; `parse_shard_toml` refuses the pair rather than warning.
     pub entitle: crate::entitle::Config,
+    /// Where skin ownership is read (`skins.rs`): `skins_origin`, and the
+    /// dev knob `skins_all`. Off by default — nobody owns a skin, so every
+    /// item wears its own look and every skinned craft refuses.
+    pub skins: crate::skins::Config,
     /// The oldest client **release** this shard will admit, packed by
     /// [`protocol::version::pack`]. A joiner below it meets `REFUSE_BUILD`.
     ///
@@ -291,6 +295,7 @@ impl ShardConfig {
             status_addr: None,
             domain: "127.0.0.1".into(),
             entitle: crate::entitle::Config::off(),
+            skins: crate::skins::Config::off(),
             min_client: 0,
             admins: crate::admin::Admins::none(),
             anomaly_file: None,
@@ -381,6 +386,9 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut congestion: Option<Congestion> = None;
     let mut entitle_timeout_secs: Option<u64> = None;
     let mut entitle_sweep_secs: Option<u64> = None;
+    let mut skins_origin: Option<String> = None;
+    let mut skins_all: Option<bool> = None;
+    let mut skins_timeout_secs: Option<u64> = None;
     for (n, line) in text.lines().enumerate() {
         let line = line.split('#').next().unwrap_or("").trim();
         if line.is_empty() {
@@ -658,6 +666,40 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                 entitle_origin = Some(value.trim_end_matches('/').to_string());
             }
             "entitle_slug" => entitle_slug = Some(value.to_string()),
+            // Skin ownership (`skins.rs`): the platform whose item contract
+            // says who owns which skin. Absent ⇒ nobody owns any.
+            "skins_origin" => {
+                if value.is_empty() {
+                    return Err(format!(
+                        "shard.toml line {}: skins_origin is empty — omit the key \
+                         to read no skins, rather than naming nowhere",
+                        n + 1
+                    ));
+                }
+                if !value.starts_with("https://") && !value.starts_with("http://") {
+                    return Err(format!(
+                        "shard.toml line {}: skins_origin needs a scheme, e.g. \
+                         https://elopros.com",
+                        n + 1
+                    ));
+                }
+                skins_origin = Some(value.trim_end_matches('/').to_string());
+            }
+            "skins_all" => match value {
+                "true" => skins_all = Some(true),
+                "false" => skins_all = Some(false),
+                other => {
+                    return Err(format!(
+                        "shard.toml line {}: skins_all must be true or false, got `{other}`",
+                        n + 1
+                    ))
+                }
+            },
+            "skins_timeout_secs" => {
+                skins_timeout_secs = Some(value.parse().map_err(|e| {
+                    format!("shard.toml line {}: bad skins_timeout_secs: {e}", n + 1)
+                })?);
+            }
             "entitle_timeout_secs" => {
                 entitle_timeout_secs = Some(value.parse().map_err(|e| {
                     format!("shard.toml line {}: bad entitle_timeout_secs: {e}", n + 1)
@@ -751,6 +793,31 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     // Refused here rather than clamped at the call site: a cadence nobody
     // chose is worse than a boot that says which line to fix.
     entitle.sane().map_err(|e| format!("shard.toml: {e}"))?;
+    let skins = crate::skins::Config {
+        origin: skins_origin,
+        all: skins_all.unwrap_or(false),
+        timeout: skins_timeout_secs
+            .map(std::time::Duration::from_secs)
+            .unwrap_or(crate::skins::DEFAULT_TIMEOUT),
+    };
+    // Lending every skin to everyone is how a look is seen before it is
+    // sold, on a dev or test shard. On a shard that sells the game it is
+    // handing the store away, which is the line Rust's server guidelines
+    // draw for community servers as well — so the pair refuses to boot.
+    if skins.all && entitle.armed() {
+        return Err(
+            "shard.toml: skins_all lends every paid skin to every player — it is for \
+             dev and test shards, and this one has a ticket door (entitle_origin)"
+                .into(),
+        );
+    }
+    if skins.all && skins.origin.is_some() {
+        return Err(
+            "shard.toml: skins_all and skins_origin together — the origin would never \
+             be asked. Keep one"
+                .into(),
+        );
+    }
     // A ticket door over an open door is a shard that checks copies and then
     // admits everyone who offers no address at all — the check has nothing to
     // hang on, because a guest has no wallet to ask about. Refused rather
@@ -803,6 +870,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
             b.ip().to_string()
         }),
         entitle,
+        skins,
         admins: admins.unwrap_or_else(crate::admin::Admins::none),
         anomaly_file,
         // Unset ⇒ 0, a shard that seats nobody but the players who dial it.
@@ -879,6 +947,7 @@ pub fn dev_spawn_kit(
             // would be a dead tool on every tester's spawn.
             cond: u16::try_from(item.condition_max)
                 .map_err(|_| format!("dev_spawn_kit: `{id}` condition_max overflows u16"))?,
+            skin: 0,
         };
         if !kit.set(i, stack) {
             return Err(format!(

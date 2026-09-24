@@ -7,6 +7,10 @@ use crate::Content;
 use sim_core::limits::{INV_SLOTS, TICK_HZ};
 use std::collections::BTreeSet;
 
+/// Longest skin name, in bytes: the wire's name field
+/// (`protocol::MAX_ITEM_NAME_BYTES`), pinned equal by the server's tests.
+pub const SKIN_NAME_MAX_BYTES: usize = 24;
+
 fn check_id(id: &str, prefix: &str, what: &str) -> Result<(), String> {
     let rest = id
         .strip_prefix(prefix)
@@ -1304,10 +1308,66 @@ pub fn structural(c: &Content) -> Result<(), String> {
 
     // Skins: appearance rows only (the schema already can't carry stats);
     // covered items must exist, prices are nonzero bare-ticker amounts.
+    if c.skins.len() > sim_core::limits::MAX_SKINS {
+        return Err(format!(
+            "skins: {} rows, the sim holds {} (limits.rs MAX_SKINS)",
+            c.skins.len(),
+            sim_core::limits::MAX_SKINS
+        ));
+    }
+    let mut catalogs = std::collections::BTreeSet::new();
     for s in &c.skins {
         item_exists(&s.covers, &format!("skin `{}` covers", s.id))?;
-        if s.price == 0 {
-            return Err(format!("skin `{}`: zero price", s.id));
+        match (s.coin, s.price) {
+            (None, None) => {}
+            (Some(_), Some(0)) => return Err(format!("skin `{}`: zero price", s.id)),
+            (Some(_), Some(_)) => {}
+            _ => {
+                return Err(format!(
+                    "skin `{}`: `coin` and `price` go together — a price in no coin, \
+                     or a coin with no price, is not a price",
+                    s.id
+                ))
+            }
+        }
+        // The id items carry: 0 is "no skin" on every stack, and two rows
+        // on one id would paint one saved item two ways.
+        if s.catalog == 0 {
+            return Err(format!("skin `{}`: catalog 0 means no skin", s.id));
+        }
+        if !catalogs.insert(s.catalog) {
+            return Err(format!("skin `{}`: catalog {} is taken", s.id, s.catalog));
+        }
+        // The name rides the wire in the item catalog's field (24 bytes,
+        // `protocol::MAX_ITEM_NAME_BYTES`) and is drawn as text.
+        if s.name.is_empty()
+            || s.name.len() > SKIN_NAME_MAX_BYTES
+            || !s.name.bytes().all(|b| (0x20..0x7f).contains(&b))
+        {
+            return Err(format!(
+                "skin `{}`: name must be 1..={SKIN_NAME_MAX_BYTES} printable ASCII bytes",
+                s.id
+            ));
+        }
+        // A skin is on ONE item: condition and stacking are per-stack, and
+        // a skin on a stack of forty would have to decide whose look forty
+        // merged stacks wear. V7's shape.
+        if let Some(item) = c.item(&s.covers) {
+            if item.stack != 1 {
+                return Err(format!(
+                    "skin `{}` covers `{}`, which stacks to {} — a skin fits one item",
+                    s.id, s.covers, item.stack
+                ));
+            }
+        }
+        // v0 skins an item and not a placed thing: a deployable's record
+        // does not carry a skin yet, so placing a skinned box would strip
+        // it. Refused rather than silently lost.
+        if c.deployables.iter().any(|d| d.id == s.covers) {
+            return Err(format!(
+                "skin `{}` covers `{}`, a deployable — placed things do not carry skins yet",
+                s.id, s.covers
+            ));
         }
     }
 

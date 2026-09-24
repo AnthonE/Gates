@@ -113,6 +113,7 @@ fn tick_cmds(
                 id: (t as u32 % MAX_PLAYERS as u32) + 1,
                 recipe: t % 4, // 3 is out of range: the refusal path counts too
                 count: 1 + t % 2,
+                skin: 0,
             }
         } else if i == MAX_PLAYERS + 1 {
             Command::CraftCancel {
@@ -367,11 +368,13 @@ fn test_alloc_zero() {
         item: 0,
         count: 60_000,
         cond: 0,
+        skin: 0,
     };
     world.players[0].inv[21] = ItemStack {
         item: 1,
         count: 60_000,
         cond: 0,
+        skin: 0,
     };
     // The duel: bots 3 and 4, armed in the hand they hold. Deliberately
     // not bot 1 — the builder must keep its stock and its own cell, and a
@@ -385,6 +388,7 @@ fn test_alloc_zero() {
             item: 0,
             count: 1,
             cond: 0,
+            skin: 0,
         };
     }
     // Bot 1's own build cell, so place and upgrade always have reach.
@@ -448,6 +452,7 @@ fn test_alloc_zero() {
         item: 5,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     world.tick(&[Command::PlaceDeploy {
         id: 6,
@@ -546,6 +551,7 @@ fn test_alloc_zero() {
         item: 0,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     // Bot 6 is the starving body: both meters emptied as the window opens,
     // deliberately not a bot the duel, the raid or the build script uses.

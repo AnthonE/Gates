@@ -521,7 +521,12 @@ const TICKS: u64 = 900;
 /// its crafters, and a no-station recipe now crafts in half its time at a
 /// level-1 bench, so `craft_done_at` — which the digest hashes — moves from
 /// the first unit armed there.
-const GOLDEN_FINAL_HASH: u64 = 0xFEFF_9C41_0FCB_BBB3;
+/// **Moved `0xFEFF_9C41_0FCB_BBB3` → `0xBAE2_2467_6365_4D69` at skins v0**
+/// (2026-09-24), and by encoding rather than behaviour: every stack the
+/// digest folds is eight bytes (its skin joins it), craft jobs hash their
+/// skin and each player its owned set. No command in the script names a
+/// skin, so every one of those fields is zero.
+const GOLDEN_FINAL_HASH: u64 = 0xBAE2_2467_6365_4D69;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -599,7 +604,10 @@ const GOLDEN_FINAL_HASH: u64 = 0xFEFF_9C41_0FCB_BBB3;
 /// (2026-09-24), and alone: a smashed barrel's life record now says what
 /// stood there, which the hash reads while the barrel is down. It is back
 /// by the end, so the end state holds.
-const GOLDEN_TRACE_HASH: u64 = 0x89F0_E1F6_0797_F935;
+/// **Moved `0x89F0_E1F6_0797_F935` → `0x8885_A6EE_B5A7_B8E7` at skins v0**
+/// (2026-09-24), with the final hash and for its reason: the stack, job and
+/// player encodings the digest folds grew their skin fields.
+const GOLDEN_TRACE_HASH: u64 = 0x8885_A6EE_B5A7_B8E7;
 
 /// Fold a stamped trace into one number.
 ///
@@ -879,6 +887,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     id,
                     recipe: ((t / 37 + id as u64) % 4) as u16,
                     count: 1 + (id as u64 % 3) as u16,
+                    skin: 0,
                 });
             }
             if (t + id as u64).is_multiple_of(149) {
@@ -1012,6 +1021,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     item: 3,
                     count: 8,
                     cond: 0,
+                    skin: 0,
                 };
             }
         }
@@ -1040,6 +1050,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                             item,
                             count,
                             cond: 0,
+                            skin: 0,
                         };
                     }
                     walk_up_the_beach(&mut world, seed, w);

@@ -93,6 +93,7 @@ fn duel_world() -> World {
             item: SPEAR,
             count: 1,
             cond: 0,
+            skin: 0,
         };
     }
     w
@@ -327,6 +328,7 @@ fn a_return_takes_over_the_body_it_left() {
         item: SPEAR,
         count: 7,
         cond: 0,
+        skin: 0,
     };
     let carried = w.players[slot].inv;
     let stood = w.players[slot].body;
@@ -412,7 +414,8 @@ fn probe_kit() -> sim_core::inventory::SpawnKit {
             ItemStack {
                 item: 8,
                 count: 1,
-                cond: 0
+                cond: 0,
+                skin: 0
             }
         ),
         "kit slot 0"
@@ -423,7 +426,8 @@ fn probe_kit() -> sim_core::inventory::SpawnKit {
             ItemStack {
                 item: 9,
                 count: 1,
-                cond: 0
+                cond: 0,
+                skin: 0
             }
         ),
         "kit slot 1"
@@ -486,12 +490,14 @@ fn a_takeover_of_a_dead_body_wakes_holding_the_spawn_kit() {
             ItemStack {
                 item: 8,
                 count: 1,
-                cond: 0
+                cond: 0,
+                skin: 0
             },
             ItemStack {
                 item: 9,
                 count: 1,
-                cond: 0
+                cond: 0,
+                skin: 0
             }
         ),
         "a raided sleeper's owner woke naked — the takeover door skipped the kit"

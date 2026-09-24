@@ -265,7 +265,14 @@ fn test_content() {
         "alpha core plus two window fittings, got {} items",
         c.items.len()
     );
-    assert!(c.skins.is_empty(), "skin catalog is dark until A3");
+    // The catalog ships looks (skins v0); what is for sale is the price,
+    // and a priced row is the operator's act (BUSINESS.md).
+    assert!(
+        c.skins.len() <= sim_core::limits::MAX_SKINS,
+        "the catalog fits the sim's owned set"
+    );
+    let baked = c.bake_skins().expect("the shipped catalog bakes");
+    assert_eq!(baked.count as usize, c.skins.len());
 
     // Hash: nonzero, stable across an independent reload (formatting and
     // comments don't move it — same parse, same digest).
@@ -617,10 +624,7 @@ fn skin_stat_field_refused() {
     // stat field does not.
     let mut srcs = sources();
     let skins = srcs.iter_mut().find(|(n, _)| *n == "skins.toml").unwrap();
-    skins.1 = String::from(
-        "[[skin]]\nid = \"skin.wood_gilt\"\ncovers = \"item.hatchet_stone\"\n\
-         coin = \"ELO\"\nprice = 10\nseason = \"alpha\"\n",
-    );
+    skins.1 = String::from(SKIN_ROW);
     build(&srcs).expect("a plain appearance row must parse");
     let skins = srcs.iter_mut().find(|(n, _)| *n == "skins.toml").unwrap();
     skins.1.push_str("damage_bonus = 1\n");
@@ -633,11 +637,65 @@ fn dollar_ticker_refused() {
     // Tickers are bare (CLAUDE.md wall 8): `$ELO` is not a coin.
     let mut srcs = sources();
     let skins = srcs.iter_mut().find(|(n, _)| *n == "skins.toml").unwrap();
-    skins.1 = String::from(
-        "[[skin]]\nid = \"skin.wood_gilt\"\ncovers = \"item.hatchet_stone\"\n\
-         coin = \"$ELO\"\nprice = 10\nseason = \"alpha\"\n",
+    skins.1 = SKIN_ROW.replace("coin = \"ELO\"", "coin = \"$ELO\"");
+    let err = build(&srcs).expect_err("$-prefixed ticker was accepted");
+    assert!(err.contains("unknown variant"), "got: {err}");
+}
+
+/// One legal skin row: every required field, priced.
+const SKIN_ROW: &str = "[[skin]]\nid = \"skin.wood_gilt\"\ncatalog = 9\nname = \"Gilt Hatchet\"\n\
+     covers = \"item.hatchet_stone\"\ntint = [200, 170, 60]\ncoin = \"ELO\"\nprice = 10\n\
+     season = \"alpha\"\n";
+
+fn skins_with(row: &str) -> Result<content::Content, String> {
+    let mut srcs = sources();
+    let skins = srcs.iter_mut().find(|(n, _)| *n == "skins.toml").unwrap();
+    skins.1 = row.to_string();
+    build(&srcs)
+}
+
+#[test]
+fn an_unpriced_skin_is_legal_and_half_a_price_is_not() {
+    // A look can ship before it is priced (skins v0)...
+    let unpriced = SKIN_ROW
+        .replace("coin = \"ELO\"\n", "")
+        .replace("price = 10\n", "");
+    skins_with(&unpriced).expect("an unpriced row is a look, not an error");
+    // ...but a coin with no price, or a price in no coin, is not a price.
+    let err = skins_with(&SKIN_ROW.replace("price = 10\n", "")).expect_err("coin alone");
+    assert!(err.contains("go together"), "got: {err}");
+    let err = skins_with(&SKIN_ROW.replace("coin = \"ELO\"\n", "")).expect_err("price alone");
+    assert!(err.contains("go together"), "got: {err}");
+    let err = skins_with(&SKIN_ROW.replace("price = 10", "price = 0")).expect_err("zero");
+    assert!(err.contains("zero price"), "got: {err}");
+}
+
+#[test]
+fn a_skin_catalog_id_is_nonzero_and_unique() {
+    let err = skins_with(&SKIN_ROW.replace("catalog = 9", "catalog = 0")).expect_err("zero id");
+    assert!(err.contains("catalog 0"), "got: {err}");
+    let twice = format!(
+        "{SKIN_ROW}{}",
+        SKIN_ROW.replace("skin.wood_gilt", "skin.wood_gilt_two")
     );
-    assert!(build(&srcs).is_err(), "$-prefixed ticker was accepted");
+    let err = skins_with(&twice).expect_err("two rows on one catalog id");
+    assert!(err.contains("is taken"), "got: {err}");
+}
+
+#[test]
+fn a_skin_fits_one_carried_item() {
+    // Not a stack: a skin is on one item.
+    let err = skins_with(&SKIN_ROW.replace("item.hatchet_stone", "item.wood"))
+        .expect_err("a skin on a stackable");
+    assert!(err.contains("a skin fits one item"), "got: {err}");
+    // Not a placed thing, yet: the deploy record carries no skin.
+    let err = skins_with(&SKIN_ROW.replace("item.hatchet_stone", "item.box_small"))
+        .expect_err("a skin on a deployable");
+    assert!(err.contains("deployable"), "got: {err}");
+    // And a name the wire can carry.
+    let err =
+        skins_with(&SKIN_ROW.replace("Gilt Hatchet", &"x".repeat(25))).expect_err("a 25-byte name");
+    assert!(err.contains("printable"), "got: {err}");
 }
 
 #[test]
@@ -1371,12 +1429,14 @@ fn bake_backpack_walks_the_rarity_ladder_the_data_declares() {
         item: c.item_index(&commonest.id).unwrap(),
         count: 1,
         cond: 0,
+        skin: 0,
     };
     assert_eq!(bc.lifetime_ticks(&inv), bc.base_ticks);
     inv[1] = sim_core::gather::ItemStack {
         item: c.item_index(&rarest.id).unwrap(),
         count: 1,
         cond: 0,
+        skin: 0,
     };
     assert_eq!(
         bc.lifetime_ticks(&inv),

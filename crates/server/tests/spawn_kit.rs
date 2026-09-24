@@ -115,6 +115,7 @@ fn a_fresh_spawn_and_a_respawn_both_hold_a_rock_and_a_torch() {
         item: wood,
         count: 300,
         cond: 0,
+        skin: 0,
     };
 
     die(&mut w);

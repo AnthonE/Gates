@@ -426,6 +426,7 @@ impl MobDef {
             item: NO_ITEM,
             count: 0,
             cond: 0,
+            skin: 0,
         }; MOB_LOOT_ROWS],
     };
 
@@ -509,6 +510,7 @@ impl MobContent {
                 item: NO_ITEM,
                 count: 0,
                 cond: 0,
+                skin: 0,
             }; MOB_LOOT_ROWS],
         };
         c.defs[MOB_WOLF as usize] = MobDef {
@@ -533,6 +535,7 @@ impl MobContent {
                 item: NO_ITEM,
                 count: 0,
                 cond: 0,
+                skin: 0,
             }; MOB_LOOT_ROWS],
         };
         c

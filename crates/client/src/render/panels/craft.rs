@@ -60,6 +60,11 @@ pub const STEP_MAX: i32 = i32::MAX;
 #[derive(Component)]
 pub struct CraftGo;
 
+/// A skin chip on the detail pane (skins v0): the catalog id it picks, 0 for
+/// the item's own look. Only owned skins are buttons.
+#[derive(Component)]
+pub struct SkinChip(pub u16);
+
 /// A queue job; the index is its position, which is what `ACT_CANCEL`
 /// carries. The queue is dense and the head is 0, so an index is only valid
 /// for as long as the queue it was drawn from — which is why a cancel is
@@ -480,6 +485,8 @@ fn detail_body(
         }
     });
 
+    skin_picker(pane, ui, core, def.output);
+
     // The stepper and the button.
     let max = affordable(def, &core.inv);
     pane.spawn(Node {
@@ -544,6 +551,97 @@ fn detail_body(
         font(11.0),
         TextColor(TEXT_DIM),
     ));
+}
+
+/// Rust's craft-menu skin picker (skins v0): the item's own look and every
+/// skin you own for it, plus the ones you do not, dimmed with their price —
+/// the store is the launcher's, so a skin you have not bought is shown, not
+/// offered. Drawn only when some skin fits the output.
+fn skin_picker(pane: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore, output: u16) {
+    let rows: Vec<(usize, protocol::SkinRow, bool)> = core.skins_for(output).collect();
+    if rows.is_empty() {
+        return;
+    }
+    pane.spawn((
+        Text::new("SKIN".to_string()),
+        font_bold(11.0),
+        TextColor(TEXT_DIM),
+        Node {
+            margin: UiRect::top(Val::Px(6.0)),
+            ..default()
+        },
+    ));
+    pane.spawn(Node {
+        flex_direction: FlexDirection::Row,
+        flex_wrap: FlexWrap::Wrap,
+        column_gap: Val::Px(6.0),
+        row_gap: Val::Px(4.0),
+        ..default()
+    })
+    .with_children(|row| {
+        skin_chip(row, 0, "Default".to_string(), None, true, ui.skin == 0);
+        for (i, r, owned) in rows {
+            let name = String::from_utf8_lossy(core.skins.name(i)).into_owned();
+            let label = if owned {
+                name
+            } else {
+                format!("{name} · {}", crate::ui::skins::price_label(&r))
+            };
+            let tint = crate::ui::skins::tint_factors(r.tint);
+            skin_chip(
+                row,
+                r.catalog,
+                label,
+                Some(tint),
+                owned,
+                ui.skin == r.catalog,
+            );
+        }
+    });
+}
+
+fn skin_chip(
+    parent: &mut ChildSpawnerCommands,
+    catalog: u16,
+    label: String,
+    tint: Option<[f32; 3]>,
+    owned: bool,
+    picked: bool,
+) {
+    let mut chip = parent.spawn((
+        Node {
+            flex_direction: FlexDirection::Row,
+            column_gap: Val::Px(5.0),
+            align_items: AlignItems::Center,
+            padding: UiRect::axes(Val::Px(6.0), Val::Px(3.0)),
+            border: UiRect::all(Val::Px(1.0)),
+            ..default()
+        },
+        BackgroundColor(if picked { CELL_FULL } else { CELL_BG }),
+        BorderColor::all(if picked { LINE_HOT } else { LINE }),
+    ));
+    if owned {
+        chip.insert((Button, SkinChip(catalog)));
+    }
+    chip.with_children(|c| {
+        if let Some([r, g, b]) = tint {
+            c.spawn((
+                Node {
+                    width: Val::Px(10.0),
+                    height: Val::Px(10.0),
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(r, g, b)),
+                Pickable::IGNORE,
+            ));
+        }
+        c.spawn((
+            Text::new(label),
+            font_bold(11.0),
+            TextColor(if owned { TEXT } else { TEXT_DIM }),
+            Pickable::IGNORE,
+        ));
+    });
 }
 
 fn step_button(parent: &mut ChildSpawnerCommands, by: i32, glyph: &str) {
@@ -699,6 +797,7 @@ pub fn clicks(
     steps: Query<(&Interaction, &Step), Changed<Interaction>>,
     go: Query<&Interaction, (Changed<Interaction>, With<CraftGo>)>,
     cancels: Query<(&Interaction, &CancelJob), Changed<Interaction>>,
+    chips: Query<(&Interaction, &SkinChip), Changed<Interaction>>,
 ) {
     if ui.panel != Panel::Inventory {
         return;
@@ -720,6 +819,9 @@ pub fn clicks(
             // A fresh pick starts at one. Carrying the last recipe's count
             // over is how a player queues 40 of something by accident.
             ui.count = 1;
+            // And in its own look: a skin is per item, so the last pick's
+            // would not fit this one.
+            ui.skin = 0;
             ui.dirty = true;
         }
     }
@@ -763,7 +865,7 @@ pub fn clicks(
         let Some(recipe) = ui.selected else { continue };
         let count = ui.count.max(1);
         let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
-        match protocol::encode_action_craft(recipe, count, &mut buf) {
+        match protocol::encode_action_craft(recipe, count, ui.skin, &mut buf) {
             Ok(len) => match net.session.send_action(&buf[..len]) {
                 // The queue redraws when the sim answers with `CraftQ`. It
                 // is not drawn here, because a queue the client wrote is a
@@ -772,6 +874,13 @@ pub fn clicks(
                 Err(e) => ui.say(e.to_string()),
             },
             Err(e) => ui.say(format!("that craft would not encode ({e:?})")),
+        }
+    }
+
+    for (interaction, chip) in chips.iter() {
+        if *interaction == Interaction::Pressed {
+            ui.skin = chip.0;
+            ui.dirty = true;
         }
     }
 

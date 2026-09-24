@@ -155,7 +155,11 @@ pub const SAVE_MAGIC: [u8; 8] = *b"GATESAV\0";
 /// 272 → 289. Saved because a crawl is a live body with a die still to be
 /// cast, and a record that forgot it would make logging off the one way
 /// to dodge the roll (`persist.rs` says the rest).
-pub const SAVE_FORMAT: u16 = 6;
+/// **7 — a skin travels with its item** (skins v0): every stack grew its
+/// 16-bit skin (6 → 8 B) and every craft job the skin it mints in (4 → 6 B),
+/// so the record went 289 → 361. A skinned tool you log off holding is the
+/// skinned tool you log in holding.
+pub const SAVE_FORMAT: u16 = 7;
 
 /// Header size. Fixed so record `i` is at a computable offset.
 pub const SAVE_HEADER_BYTES: usize = 48;
@@ -874,8 +878,9 @@ mod tests {
         // at SAVE_FORMAT 4: two worn slots at the same stride (armor v0).
         // 340 → 344 at SAVE_FORMAT 5: the torch's remainder (torch fuel v0).
         // 344 → 361 at SAVE_FORMAT 6: the crawl and its two clocks
-        // (wounded v0).
-        assert_eq!(SAVE_RECORD_BYTES, 361);
+        // (wounded v0). 361 → 433 at SAVE_FORMAT 7: a skin on every slot
+        // and craft job (skins v0), +72.
+        assert_eq!(SAVE_RECORD_BYTES, 433);
         let head = encode_header(7, 0xdead_beef);
         assert_eq!(
             u16::from_le_bytes([head[10], head[11]]) as usize,

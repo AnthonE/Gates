@@ -40,7 +40,7 @@ use sim_core::limits::{
     ARROW_STEP_MM, HEARTH_STOCK_ROWS, MAX_ARROW_SUBSTEPS, MAX_COOK_ROWS, MAX_DEPLOY_COSTS,
     MAX_DEPLOY_DEFS, MAX_HITSCAN_SAMPLES, MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_GUARANTEED,
     MAX_LOOT_ROLLS, MAX_LOOT_TABLES, MAX_MAGS, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES,
-    MAX_RECIPE_INPUTS, MAX_RESEARCH_ROWS, MAX_WEAPON_AMMO, TICK_HZ,
+    MAX_RECIPE_INPUTS, MAX_RESEARCH_ROWS, MAX_SKINS, MAX_WEAPON_AMMO, TICK_HZ,
 };
 use sim_core::loot::{
     LootContent, LootEntryDef, LootTableDef, LOOT_BARREL, LOOT_CACHE, LOOT_CRATE,
@@ -48,6 +48,7 @@ use sim_core::loot::{
 use sim_core::mob::{MobContent, MobDef, MOB_LOOT_ROWS, MOB_PIG, MOB_WOLF};
 use sim_core::oven::{CookContent, CookRow};
 use sim_core::research::{ResearchContent, ResearchRow, NO_RECIPE};
+use sim_core::skin::{SkinContent, SkinDef};
 use sim_core::survival::{ConsumableDef, SurvivalContent, TICKS_PER_MIN};
 
 /// Container name → baked `loot::LOOT_*` index, for exactly the containers
@@ -1107,6 +1108,7 @@ impl Content {
                     item: idx,
                     count,
                     cond,
+                    skin: 0,
                 },
             ) {
                 return Err(format!("bake: spawn_kit slot {i} refused"));
@@ -1516,6 +1518,31 @@ impl Content {
         }
         Ok(lc)
     }
+    /// The skin catalog (`sim_core::skin`): each row's catalog id and the
+    /// item row it fits, in file order, which is the row order a player's
+    /// owned set indexes. Names, tints and prices are not the sim's business
+    /// and stay here for the server's wire catalog.
+    pub fn bake_skins(&self) -> Result<SkinContent, String> {
+        if self.skins.len() > MAX_SKINS {
+            return Err(format!(
+                "skins: {} rows, limit {MAX_SKINS}",
+                self.skins.len()
+            ));
+        }
+        let mut sc = SkinContent::EMPTY;
+        for (i, s) in self.skins.iter().enumerate() {
+            let covers = self
+                .item_index(&s.covers)
+                .ok_or_else(|| format!("skin `{}` covers `{}`: not an item", s.id, s.covers))?;
+            sc.defs[i] = SkinDef {
+                catalog: s.catalog,
+                covers,
+            };
+        }
+        sc.count = self.skins.len() as u16;
+        Ok(sc)
+    }
+
     /// The animal species table (`sim-core/src/mob.rs`).
     ///
     /// Three conversions happen here and nowhere else, which is the point
@@ -1604,6 +1631,7 @@ impl Content {
                     item: NO_ITEM,
                     count: 0,
                     cond: 0,
+                    skin: 0,
                 }; MOB_LOOT_ROWS],
             };
             for (i, d) in m.drops.iter().enumerate() {
@@ -1619,6 +1647,7 @@ impl Content {
                         .map_err(|_| {
                             format!("bake: mob `{}` drop `{}` condition overflows", m.id, d.item)
                         })?,
+                    skin: 0,
                 };
             }
             mc.defs[which] = def;

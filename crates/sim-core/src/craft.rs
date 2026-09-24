@@ -144,6 +144,10 @@ pub const REFUSE_INPUTS: u32 = 4;
 /// A `REFUSE_C_MAX` here would also collide with `survival.rs`'s consume
 /// refusals, whose prefix the domain gate scans crate-wide.)
 pub const REFUSE_BLUEPRINT: u32 = 5;
+/// A skin the player does not own, that does not fit the item, or an empty
+/// slot to put one on (`skin.rs`). One reason for all three, because the
+/// fix a player can act on is the same: pick a skin you own for this item.
+pub const REFUSE_SKIN: u32 = 6;
 
 /// One baked recipe row. `out_count == 0` ⇒ inert (the empty-table row).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -247,6 +251,9 @@ impl CraftContent {
 pub struct CraftJob {
     pub recipe: u16,
     pub remaining: u16,
+    /// The skin every unit of this job is minted wearing (`skin.rs`),
+    /// checked once at enqueue. `skin::NO_SKIN` for the item's own look.
+    pub skin: u16,
 }
 
 /// Total units of `item` across the inventory (u32: 30 slots × u16 max
@@ -293,15 +300,21 @@ fn shift_left(jobs: &mut [CraftJob; CRAFT_QUEUE], from: usize) {
 /// errors — the client hears why. Inputs for the whole batch are consumed
 /// here; the head job's first unit starts its timer immediately.
 /// `dc`/`deploys` carry the placed stations for the proximity gate.
+///
+/// `skin` is the look the output is minted wearing (`skin.rs`): Rust's
+/// skin picker on the craft menu. It is checked here, once, against the
+/// player's owned set, and then rides the job to every unit it pays.
 #[allow(clippy::too_many_arguments)]
 pub fn enqueue(
     cc: &CraftContent,
+    sc: &crate::skin::SkinContent,
     dc: &DeployContent,
     deploys: &Deploys,
     tick: u64,
     p: &mut Player,
     recipe: u16,
     count: u16,
+    skin: u16,
     events: &mut EventQueue,
 ) {
     if recipe >= cc.recipe_count {
@@ -327,6 +340,13 @@ pub fn enqueue(
     // standing at, which is the refusal actively misleading them.
     if def.blueprint && !crate::research::knows(p.known, recipe) {
         events.push(EV_CRAFT_REFUSED, p.id, REFUSE_BLUEPRINT, 0);
+        return;
+    }
+    // The skin beside the blueprint, and for its reason: not owning one is
+    // fixed somewhere else entirely (the store), so it is said before the
+    // station a player could fix by walking.
+    if skin != crate::skin::NO_SKIN && !sc.may_wear(&p.skins, skin, def.output) {
+        events.push(EV_CRAFT_REFUSED, p.id, REFUSE_SKIN, 0);
         return;
     }
     if def.station != STATION_NONE {
@@ -364,6 +384,7 @@ pub fn enqueue(
     p.jobs[slot] = CraftJob {
         recipe,
         remaining: count,
+        skin,
     };
     if slot == 0 {
         p.craft_done_at = tick + unit_ticks(cc, dc, deploys, p, recipe) as u64;
@@ -489,13 +510,14 @@ pub fn step(
     // A crafted tool arrives whole: re-craft IS the repair (Q3, operator
     // 2026-08-15), so the mint at the ceiling is the design and not a
     // convenience — an output minted at 0 would be dead on arrival.
-    let added = inv_add_spilling(
+    let added = crate::gather::inv_add_spilling_skinned(
         &mut p.inv,
         spill,
         def.output,
         def.out_count,
         gc.stack_max[def.output as usize],
         gc.cond_max[def.output as usize],
+        p.jobs[0].skin,
     );
     events.push(
         EV_CRAFT_DONE,
@@ -512,6 +534,7 @@ pub fn step(
 
 #[cfg(test)]
 mod tests {
+    const SK: crate::skin::SkinContent = crate::skin::SkinContent::EMPTY;
 
     /// The solved authored sites for a test's seed. `craft.rs` declares its
     /// `SEED` per case rather than per module, so this takes one.
@@ -571,6 +594,7 @@ mod tests {
                 item,
                 count,
                 cond: 0,
+                skin: 0,
             };
         }
         p
@@ -581,6 +605,138 @@ mod tests {
             CraftContent::probe_fixture(),
             GatherContent::probe_fixture(),
         )
+    }
+
+    /// A catalog of one skin, catalog id 7, fitting item 3 — recipe 1's
+    /// output in the probe fixture.
+    fn one_skin() -> crate::skin::SkinContent {
+        let mut sc = crate::skin::SkinContent::EMPTY;
+        sc.defs[0] = crate::skin::SkinDef {
+            catalog: 7,
+            covers: 3,
+        };
+        sc.count = 1;
+        sc
+    }
+
+    /// Rust's craft-menu skin picker: a skin you do not own refuses the
+    /// craft before anything is spent, and one you do rides the job to the
+    /// item it mints.
+    #[test]
+    fn a_skinned_craft_needs_the_skin_and_mints_wearing_it() {
+        let (cc, gc) = fixture();
+        let sc = one_skin();
+        let dc = DeployContent::EMPTY;
+        let nod = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = player(&[(1, 2), (2, 1)]);
+
+        enqueue(&cc, &sc, &dc, &nod, 10, &mut p, 1, 1, 7, &mut ev);
+        assert_eq!(ev.entries()[0].code, EV_CRAFT_REFUSED);
+        assert_eq!(ev.entries()[0].b, REFUSE_SKIN, "not owned");
+        assert_eq!(p.jobs[0].remaining, 0, "nothing queued");
+        assert_eq!(inv_count(&p.inv, 1), 2, "nothing spent");
+
+        // Owned, but the skin does not fit this recipe's output.
+        p.skins.insert(0);
+        let mut ev = EventQueue::default();
+        enqueue(&cc, &sc, &dc, &nod, 10, &mut p, 0, 1, 7, &mut ev);
+        assert_eq!(ev.entries()[0].b, REFUSE_SKIN, "item 2 is not item 3");
+
+        let mut ev = EventQueue::default();
+        enqueue(&cc, &sc, &dc, &nod, 10, &mut p, 1, 1, 7, &mut ev);
+        assert_eq!(ev.len(), 0, "owned and fitting: queued");
+        assert_eq!(p.jobs[0].skin, 7);
+        step_nospill(&cc, &gc, p.craft_done_at, &mut p, &mut ev);
+        let made = p.inv.iter().find(|s| s.item == 3).expect("minted");
+        assert_eq!(made.skin, 7, "the item wears the job's skin");
+        assert_eq!(p.jobs[0].remaining, 0);
+    }
+
+    /// Rust's repair bench: a skin goes on, or comes off, at a bench.
+    #[test]
+    fn reskin_puts_a_skin_on_and_takes_it_off_at_a_bench() {
+        use crate::build::{BuildContent, Pieces, LOC_PLANE};
+        use crate::skin::{reskin, NO_SKIN};
+
+        // Item 4 wears it here: item 3 is the fixture's workbench, which the
+        // bench placement below spends.
+        let mut sc = one_skin();
+        sc.defs[0].covers = 4;
+        let dc = crate::deploy::DeployContent::probe_fixture();
+        let mut benches = Deploys::new();
+        let mut ev = EventQueue::default();
+        const SEED: u64 = 20260731;
+        let mut p = player(&[(4, 1), (3, 1), (0, 10)]);
+        p.body = Body::at(SEED, &hv(SEED), 1024.0, 1024.0);
+
+        // Owned, but no bench in reach: the station refusal.
+        p.skins.insert(0);
+        reskin(&sc, &dc, &Deploys::new(), &mut p, 0, 7, &mut ev);
+        assert_eq!(ev.entries()[0].b, REFUSE_STATION);
+        assert_eq!(p.inv[0].skin, NO_SKIN);
+
+        crate::deploy::place_deploy(
+            SEED,
+            &hv(SEED),
+            &dc,
+            &BuildContent::probe_fixture(),
+            &mut Pieces::new(),
+            &mut benches,
+            &mut p,
+            0,
+            1, // fixture row 1: the workbench
+            341,
+            341,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(
+            ev.entries()[ev.len() - 1].code,
+            crate::world::EV_DEPLOY_PLACED
+        );
+
+        let mut ev = EventQueue::default();
+        reskin(&sc, &dc, &benches, &mut p, 0, 7, &mut ev);
+        assert_eq!(ev.len(), 0);
+        assert_eq!(p.inv[0].skin, 7, "on");
+
+        // Not owned any more: it cannot go back on, and the one on the item
+        // stays — ownership is asked where a skin goes on, never after.
+        p.skins = crate::skin::SkinSet::EMPTY;
+        reskin(&sc, &dc, &benches, &mut p, 0, NO_SKIN, &mut ev);
+        assert_eq!(p.inv[0].skin, NO_SKIN, "taking it off needs no ownership");
+        reskin(&sc, &dc, &benches, &mut p, 0, 7, &mut ev);
+        assert_eq!(ev.entries()[0].b, REFUSE_SKIN);
+        assert_eq!(p.inv[0].skin, NO_SKIN);
+
+        // An empty slot and a slot past the pack are refusals, not panics.
+        let mut ev = EventQueue::default();
+        reskin(&sc, &dc, &benches, &mut p, 5, NO_SKIN, &mut ev);
+        reskin(&sc, &dc, &benches, &mut p, 200, NO_SKIN, &mut ev);
+        assert_eq!(ev.len(), 2);
+        assert!(ev.entries().iter().all(|e| e.b == REFUSE_SKIN));
+    }
+
+    /// The move verb carries a skin, and two looks of one item never merge.
+    #[test]
+    fn a_skin_travels_with_its_item_through_a_move() {
+        use crate::inventory::{plan_move, resolve, MovePlan};
+        let skinned = ItemStack {
+            item: 3,
+            count: 1,
+            cond: 0,
+            skin: 7,
+        };
+        let plan = plan_move(1, skinned, ItemStack::default(), 1).expect("into empty");
+        let (src, dst) = resolve(plan, skinned, ItemStack::default());
+        assert_eq!(src, ItemStack::default(), "the source empties canonically");
+        assert_eq!(dst, skinned, "the skin arrived with the item");
+
+        // Same item, different skin, a ladder with room: a swap, not a merge.
+        let plain = ItemStack { skin: 0, ..skinned };
+        assert_eq!(plan_move(5, skinned, plain, 1), Ok(MovePlan::Swap));
     }
 
     #[test]
@@ -594,7 +750,8 @@ mod tests {
             ItemStack {
                 item: 0,
                 count: 2,
-                cond: 0
+                cond: 0,
+                skin: 0
             }
         );
         assert_eq!(inv_count(&p.inv, 0), 2);
@@ -607,13 +764,14 @@ mod tests {
         let (dc, nod) = (DeployContent::EMPTY, Deploys::new());
         let mut p = player(&[(0, 10)]);
         let mut ev = EventQueue::default();
-        enqueue(&cc, &dc, &nod, 100, &mut p, 0, 2, &mut ev);
+        enqueue(&cc, &SK, &dc, &nod, 100, &mut p, 0, 2, 0, &mut ev);
         assert!(ev.is_empty(), "no refusal");
         assert_eq!(
             p.jobs[0],
             CraftJob {
                 recipe: 0,
-                remaining: 2
+                remaining: 2,
+                skin: 0
             }
         );
         assert_eq!(inv_count(&p.inv, 0), 4, "3 × 2 consumed up front");
@@ -651,7 +809,7 @@ mod tests {
             (2, 1, REFUSE_BLUEPRINT),
         ];
         for (recipe, count, reason) in cases {
-            enqueue(&cc, &dc, &nod, 10, &mut p, recipe, count, &mut ev);
+            enqueue(&cc, &SK, &dc, &nod, 10, &mut p, recipe, count, 0, &mut ev);
             let e = ev.entries()[ev.len() - 1];
             assert_eq!((e.code, e.a, e.b), (EV_CRAFT_REFUSED, 7, reason));
         }
@@ -659,12 +817,12 @@ mod tests {
         // to the station — so the ordering above is a priority and not a
         // check that swallowed the other one.
         p.known |= 1 << 2;
-        enqueue(&cc, &dc, &nod, 10, &mut p, 2, 1, &mut ev);
+        enqueue(&cc, &SK, &dc, &nod, 10, &mut p, 2, 1, 0, &mut ev);
         let e = ev.entries()[ev.len() - 1];
         assert_eq!((e.code, e.a, e.b), (EV_CRAFT_REFUSED, 7, REFUSE_STATION));
         // Missing inputs: recipe 1 wants 2×item1 + 1×item2 per unit.
         let mut poor = player(&[(1, 1)]);
-        enqueue(&cc, &dc, &nod, 10, &mut poor, 1, 1, &mut ev);
+        enqueue(&cc, &SK, &dc, &nod, 10, &mut poor, 1, 1, 0, &mut ev);
         let e = ev.entries()[ev.len() - 1];
         assert_eq!(e.b, REFUSE_INPUTS);
         assert_eq!(inv_count(&poor.inv, 1), 1, "nothing consumed on refusal");
@@ -672,11 +830,11 @@ mod tests {
         // Queue full: fill all four, the fifth bounces.
         let mut busy = player(&[(0, 90)]);
         for _ in 0..CRAFT_QUEUE {
-            enqueue(&cc, &dc, &nod, 10, &mut busy, 0, 1, &mut ev);
+            enqueue(&cc, &SK, &dc, &nod, 10, &mut busy, 0, 1, 0, &mut ev);
         }
         assert!(busy.jobs.iter().all(|j| j.remaining == 1));
         let before = ev.len();
-        enqueue(&cc, &dc, &nod, 10, &mut busy, 0, 1, &mut ev);
+        enqueue(&cc, &SK, &dc, &nod, 10, &mut busy, 0, 1, 0, &mut ev);
         assert_eq!(ev.entries()[before].b, REFUSE_QUEUE_FULL);
     }
 
@@ -686,8 +844,8 @@ mod tests {
         let (dc, nod) = (DeployContent::EMPTY, Deploys::new());
         let mut p = player(&[(0, 30), (1, 20), (2, 20)]);
         let mut ev = EventQueue::default();
-        enqueue(&cc, &dc, &nod, 50, &mut p, 0, 3, &mut ev); // 9 × item0
-        enqueue(&cc, &dc, &nod, 50, &mut p, 1, 2, &mut ev); // 4 × item1, 2 × item2
+        enqueue(&cc, &SK, &dc, &nod, 50, &mut p, 0, 3, 0, &mut ev); // 9 × item0
+        enqueue(&cc, &SK, &dc, &nod, 50, &mut p, 1, 2, 0, &mut ev); // 4 × item1, 2 × item2
         assert_eq!(inv_count(&p.inv, 0), 21);
         assert_eq!(p.craft_done_at, 52);
 
@@ -708,7 +866,8 @@ mod tests {
             p.jobs[0],
             CraftJob {
                 recipe: 1,
-                remaining: 2
+                remaining: 2,
+                skin: 0
             }
         );
         assert_eq!(p.jobs[1], CraftJob::default());
@@ -796,12 +955,13 @@ mod tests {
         // Beside the bench, the workbench recipe enqueues — once its
         // blueprint is learned, which row 2 also wants (research v0).
         p.known |= 1 << 2;
-        enqueue(&cc, &dc, &nod, 10, &mut p, 2, 1, &mut ev);
+        enqueue(&cc, &SK, &dc, &nod, 10, &mut p, 2, 1, 0, &mut ev);
         assert_eq!(
             p.jobs[0],
             CraftJob {
                 recipe: 2,
-                remaining: 1
+                remaining: 1,
+                skin: 0
             }
         );
 
@@ -811,7 +971,7 @@ mod tests {
         let mut far = player(&[(0, 10)]);
         far.known |= 1 << 2;
         far.body = Body::at(SEED, &hv(SEED), 1024.0 + STATION_RADIUS_M + 2.0, 1024.0);
-        enqueue(&cc, &dc, &nod, 10, &mut far, 2, 1, &mut ev);
+        enqueue(&cc, &SK, &dc, &nod, 10, &mut far, 2, 1, 0, &mut ev);
         let e = ev.entries()[ev.len() - 1];
         assert_eq!((e.code, e.b), (EV_CRAFT_REFUSED, REFUSE_STATION));
     }
@@ -875,7 +1035,7 @@ mod tests {
             ev.entries()[ev.len() - 1].code,
             crate::world::EV_DEPLOY_PLACED
         );
-        enqueue(&cc, &dc, &nod, 10, &mut p, 2, 1, &mut ev);
+        enqueue(&cc, &SK, &dc, &nod, 10, &mut p, 2, 1, 0, &mut ev);
         let e = ev.entries()[ev.len() - 1];
         assert_eq!((e.code, e.b), (EV_CRAFT_REFUSED, REFUSE_STATION));
 
@@ -900,12 +1060,13 @@ mod tests {
             ev.entries()[ev.len() - 1].code,
             crate::world::EV_DEPLOY_PLACED
         );
-        enqueue(&cc, &dc, &nod, 10, &mut p, 2, 1, &mut ev);
+        enqueue(&cc, &SK, &dc, &nod, 10, &mut p, 2, 1, 0, &mut ev);
         assert_eq!(
             p.jobs[0],
             CraftJob {
                 recipe: 2,
-                remaining: 1
+                remaining: 1,
+                skin: 0
             },
             "the matching rung arms the recipe"
         );
@@ -935,12 +1096,13 @@ mod tests {
             LOC_PLANE,
             &mut ev,
         );
-        enqueue(&cc1, &dc, &only_wb2, 10, &mut q, 2, 1, &mut ev);
+        enqueue(&cc1, &SK, &dc, &only_wb2, 10, &mut q, 2, 1, 0, &mut ev);
         assert_eq!(
             q.jobs[0],
             CraftJob {
                 recipe: 2,
-                remaining: 1
+                remaining: 1,
+                skin: 0
             },
             "a higher bench satisfies a lower recipe"
         );
@@ -966,11 +1128,12 @@ mod tests {
                 item: 2,
                 count: 100,
                 cond: 0,
+                skin: 0,
             };
         }
         let mut ev = EventQueue::default();
         let mut spill = [ItemStack::default(); INV_SLOTS];
-        enqueue(&cc, &dc, &nod, 10, &mut p, 0, 2, &mut ev);
+        enqueue(&cc, &SK, &dc, &nod, 10, &mut p, 0, 2, 0, &mut ev);
         step(&cc, &gc, &dc, &nod, 12, &mut p, &mut ev, &mut spill);
         let e = ev.entries()[ev.len() - 1];
         assert_eq!(e.code, EV_CRAFT_DONE);
@@ -1074,7 +1237,7 @@ mod tests {
                     crate::world::EV_DEPLOY_PLACED
                 );
             }
-            enqueue(&cc, &dc, &nod, 100, &mut p, 1, 1, &mut ev);
+            enqueue(&cc, &SK, &dc, &nod, 100, &mut p, 1, 1, 0, &mut ev);
             assert_eq!(p.jobs[0].remaining, 1, "the craft queued");
             p.craft_done_at - 100
         };
@@ -1127,7 +1290,7 @@ mod tests {
             LOC_PLANE,
             &mut ev,
         );
-        enqueue(&cc, &dc, &nod, 100, &mut p, 1, 3, &mut ev);
+        enqueue(&cc, &SK, &dc, &nod, 100, &mut p, 1, 3, 0, &mut ev);
         assert_eq!(
             p.craft_done_at, 120,
             "the first unit starts at the bench: half"

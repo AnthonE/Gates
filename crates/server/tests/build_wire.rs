@@ -130,6 +130,7 @@ fn build_rides_the_wire() {
         item: 0,
         count: 20,
         cond: 0,
+        skin: 0,
     };
 
     // Foundation at the spawn cell: the piece lands for the placer AND
@@ -265,11 +266,13 @@ fn upgrade_rides_the_wire() {
         item: 0,
         count: 20,
         cond: 0,
+        skin: 0,
     };
     core.world.players[w0].inv[1] = sim_core::gather::ItemStack {
         item: 1,
         count: 10,
         cond: 0,
+        skin: 0,
     };
     for (row, loc) in [(0u16, LOC_PLANE), (1u16, LOC_EDGE_XLO)] {
         act(
@@ -409,6 +412,7 @@ fn rotation_fixture() -> (Box<ShardCore>, ShardStats, Vec<(usize, ClientCore)>) 
         item: 0,
         count: 20,
         cond: 0,
+        skin: 0,
     };
     for (row, loc) in [
         (0, LOC_PLANE),

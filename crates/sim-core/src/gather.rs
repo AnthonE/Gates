@@ -476,7 +476,7 @@ pub enum Swing {
 }
 
 /// One inventory slot. Empty ⇔ `count == 0`; emptied slots zero **all
-/// three** fields so the state hash stays canonical.
+/// four** fields so the state hash stays canonical.
 ///
 /// `cond` is the stack's condition in **hundredths of a point** (item
 /// durability v0, DECISIONS.md 2026-08-15): 10 000 is the reference's
@@ -492,11 +492,22 @@ pub enum Swing {
 /// failure mode: a missed site here is a **build error**, where a missed
 /// site under a side table is a wrong condition with the goldens, replay
 /// and clippy all green (the section-open row's three-green-gates shape).
+///
+/// `skin` is the look this one item wears: a skin's catalog id
+/// (`skin::SkinDef::catalog`, the `catalogId` of the platform's item
+/// contract), 0 for the item's own look. It is Rust's `Item.skin`: a fact
+/// about the instance, not the player. Ownership is checked once, where a
+/// skin is put on (`craft::enqueue`, `skin::reskin`), and the skin then
+/// travels with the item through every move, bag, box, death and save, so a
+/// looted skinned rifle still wears its skin. The catalog id rather than a
+/// baked row, so adding or removing a catalog row never repaints a saved
+/// item; an id the running content does not know draws as the plain item.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ItemStack {
     pub item: u16,
     pub count: u16,
     pub cond: u16,
+    pub skin: u16,
 }
 
 /// Add `amount` of `item` to an inventory: top up matching stacks in slot
@@ -533,6 +544,21 @@ pub fn inv_add(
     stack_max: u16,
     cond: u16,
 ) -> u16 {
+    inv_add_skinned(inv, item, amount, stack_max, cond, crate::skin::NO_SKIN)
+}
+
+/// [`inv_add`] for a mint that wears a skin (`skin.rs`): a finished craft
+/// whose job named one. Fresh stacks are stamped with it the way they are
+/// stamped with `cond`, and a top-up only ever joins a stack wearing the
+/// same skin, so two looks never merge into one.
+pub fn inv_add_skinned(
+    inv: &mut [ItemStack; INV_SLOTS],
+    item: u16,
+    amount: u16,
+    stack_max: u16,
+    cond: u16,
+    skin: u16,
+) -> u16 {
     if stack_max == 0 {
         return 0;
     }
@@ -541,7 +567,7 @@ pub fn inv_add(
         if left == 0 {
             return amount;
         }
-        if s.count > 0 && s.item == item && s.count < stack_max {
+        if s.count > 0 && s.item == item && s.skin == skin && s.count < stack_max {
             let take = (stack_max - s.count).min(left);
             s.count += take;
             left -= take;
@@ -556,6 +582,7 @@ pub fn inv_add(
             let take = stack_max.min(left);
             s.count = take;
             s.cond = cond;
+            s.skin = skin;
             left -= take;
         }
     }
@@ -584,9 +611,30 @@ pub fn inv_add_spilling(
     stack_max: u16,
     cond: u16,
 ) -> u16 {
-    let added = inv_add(inv, item, amount, stack_max, cond);
+    inv_add_spilling_skinned(
+        inv,
+        spill,
+        item,
+        amount,
+        stack_max,
+        cond,
+        crate::skin::NO_SKIN,
+    )
+}
+
+/// [`inv_add_spilling`] for a skinned mint: what spills keeps the skin.
+pub fn inv_add_spilling_skinned(
+    inv: &mut [ItemStack; INV_SLOTS],
+    spill: &mut [ItemStack; INV_SLOTS],
+    item: u16,
+    amount: u16,
+    stack_max: u16,
+    cond: u16,
+    skin: u16,
+) -> u16 {
+    let added = inv_add_skinned(inv, item, amount, stack_max, cond, skin);
     if added < amount {
-        inv_add(spill, item, amount - added, stack_max, cond);
+        inv_add_skinned(spill, item, amount - added, stack_max, cond, skin);
     }
     added
 }
@@ -1180,6 +1228,7 @@ mod tests {
                 item: 3,
                 count: 100,
                 cond: 0,
+                skin: 0,
             }
         );
         assert_eq!(
@@ -1187,7 +1236,8 @@ mod tests {
             ItemStack {
                 item: 3,
                 count: 40,
-                cond: 0
+                cond: 0,
+                skin: 0
             }
         );
         // Fill every slot, then overflow is lost.
@@ -1196,6 +1246,7 @@ mod tests {
                 item: 3,
                 count: 100,
                 cond: 0,
+                skin: 0,
             };
         }
         assert_eq!(inv_add(&mut inv, 3, 50, 100, 0), 0);
@@ -1208,6 +1259,7 @@ mod tests {
                 item: 7,
                 count: 100,
                 cond: 0,
+                skin: 0,
             }
         );
     }
@@ -1244,6 +1296,7 @@ mod tests {
                 item: 3,
                 count: 100,
                 cond: 0,
+                skin: 0,
             };
         }
         inv[7] = ItemStack::default();

@@ -301,6 +301,7 @@ mod tests {
             item: 0,
             count: 0,
             cond: 0,
+            skin: 0,
         }; INV_SLOTS]
     }
 

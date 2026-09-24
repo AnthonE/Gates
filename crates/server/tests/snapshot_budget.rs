@@ -1706,11 +1706,13 @@ fn arm_archer(core: &mut ShardCore, w: usize) {
         item: BOW,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     p.inv[7] = ItemStack {
         item: ARROW,
         count: 32,
         cond: 0,
+        skin: 0,
     };
 }
 
@@ -1894,11 +1896,13 @@ fn storm_core(stats: &ShardStats) -> Box<ShardCore> {
             item: BOW,
             count: 1,
             cond: 0,
+            skin: 0,
         };
         p.inv[7] = ItemStack {
             item: ARROW,
             count: 60_000,
             cond: 0,
+            skin: 0,
         };
         // The magazine, filled to its ceiling (reload v1). Without this
         // the storm stops after eight shots per body and the anti-vacuity

@@ -379,6 +379,7 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                 id: 1,
                 recipe: (t % 4) as u16, // 3 = out of range: refusal path
                 count: 1 + (t % 2) as u16,
+                skin: 0,
             };
             let cancel = Command::CraftCancel {
                 id: 2,
@@ -468,6 +469,7 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                         id: 2,
                         recipe: 2,
                         count: 1,
+                        skin: 0,
                     },
                 ]);
                 continue;
@@ -581,6 +583,7 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                         id: 2,
                         recipe: 0,
                         count: 1,
+                        skin: 0,
                     },
                 ]);
             } else if t % 16 == 11 {
@@ -775,6 +778,7 @@ pub extern "C" fn probe_bags(master_seed: u64, sequences: u32, ticks: u32) -> u6
                 item: 5, // the fixture's bag item (deploy row 3)
                 count: crate::deploy::BAG_CAP as u16,
                 cond: 0,
+                skin: 0,
             };
         }
         let mut rng = Pcg32::new(seq_seed, 13);
@@ -949,11 +953,13 @@ fn arm_guns(world: &mut World) {
             item: GUN_ITEM,
             count: 1,
             cond: 0,
+            skin: 0,
         };
         p.inv[ROUND_SLOT] = ItemStack {
             item: ROUND_ITEM,
             count: GUN_ROUNDS,
             cond: 0,
+            skin: 0,
         };
     }
 }
@@ -1060,6 +1066,7 @@ pub extern "C" fn probe_combat(master_seed: u64, sequences: u32, ticks: u32) -> 
                     item: (slot % 2) as u16,
                     count: 1,
                     cond: 0,
+                    skin: 0,
                 };
             }
         }
@@ -1270,6 +1277,7 @@ pub fn assist_probe_world(seed: u64) -> World {
             item: 1,
             count: 1,
             cond: 0,
+            skin: 0,
         };
     }
     w.players[2].wounded = true;
@@ -1350,6 +1358,7 @@ pub fn rotation_probe_world() -> World {
         item: 0,
         count: 100,
         cond: 0,
+        skin: 0,
     };
     for (row, level, loc) in [
         (0, 0, LOC_PLANE),

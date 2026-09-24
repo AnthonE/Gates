@@ -257,9 +257,16 @@ pub fn hash(c: &Content) -> u64 {
     h.s("skins");
     for s in sorted(&c.skins, |s| &s.id) {
         h.s(&s.id);
+        h.u(s.catalog as u32);
+        h.s(&s.name);
         h.s(&s.covers);
-        h.u(s.coin as u32);
-        h.u(s.price);
+        for ch in s.tint {
+            h.u(ch as u32);
+        }
+        // An unpriced row hashes as coin 0xFF, price 0 — distinct from
+        // every priced one, since a priced row's price is never 0.
+        h.u(s.coin.map_or(0xFF, |c| c as u32));
+        h.u(s.price.unwrap_or(0));
         h.s(&s.season);
     }
 

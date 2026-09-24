@@ -1338,11 +1338,13 @@ mod tests {
             item: 3,
             count: 1,
             cond: 0,
+            skin: 0,
         };
         p.inv[2] = ItemStack {
             item: 7,
             count: 5,
             cond: 0,
+            skin: 0,
         };
         assert_eq!(held_item(&p), 3);
         p.frame.sel = 2;
@@ -1393,6 +1395,7 @@ mod tests {
                 item: 0,
                 count: 1,
                 cond: 0,
+                skin: 0,
             };
         }
         let mut ev = EventQueue::default();
@@ -1430,6 +1433,7 @@ mod tests {
                 item: 0,
                 count: 1,
                 cond: 0,
+                skin: 0,
             };
         }
         let def = cc.held_melee(0).unwrap();

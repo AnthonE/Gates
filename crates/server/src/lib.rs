@@ -42,6 +42,7 @@ pub mod entitle;
 pub mod interest;
 pub mod net;
 pub mod population;
+pub mod skins;
 pub mod slot;
 pub mod stats;
 pub mod status;

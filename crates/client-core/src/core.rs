@@ -1157,6 +1157,14 @@ pub struct ClientCore {
     /// Boxed: 24 kB of fixed capacity against wasm's 1 MB shadow stack.
     slot_cache: Box<SlotCache>,
     pub catalog: ItemCatalog,
+    /// The skin catalog (skins v0), dripped at join like `catalog`: row `i`
+    /// is bit `i` of [`Self::skins_owned`]. Boxed, `slot_cache`'s reason:
+    /// ~9 kB of fixed capacity.
+    pub skins: Box<protocol::SkinCatalog>,
+    /// The skins this player owns, as the sim holds them (`SUB_SKINS_OWNED`).
+    /// The craft panel's picker and the store's "owned" marks read it; the
+    /// sim is still the verdict on every skinned craft.
+    pub skins_owned: sim_core::skin::SkinSet,
     /// Cell changes the last `on_stream` call produced: (key, harvested).
     slot_changes: [(u32, bool); protocol::SLOT_SYNC_BATCH],
     n_slot_changes: usize,
@@ -1633,6 +1641,8 @@ impl ClientCore {
             haven: terrain::haven(seed),
             slot_cache: Box::new(SlotCache::new()),
             catalog: ItemCatalog::EMPTY,
+            skins: Box::new(protocol::SkinCatalog::EMPTY),
+            skins_owned: sim_core::skin::SkinSet::EMPTY,
             slot_changes: [(0, false); protocol::SLOT_SYNC_BATCH],
             n_slot_changes: 0,
             toasts: [(0, 0); TOAST_RING],
@@ -1996,6 +2006,26 @@ impl ClientCore {
                     );
                 }
                 flags |= APPLIED_CATALOG;
+            }
+            EventMsg::Skins {
+                total,
+                first,
+                count,
+                names,
+                lens,
+                rows,
+            } => {
+                self.skins.count = total;
+                for i in 0..count as usize {
+                    // The decoder refused incoherent rows and bounded the
+                    // index; a failure here is an index past the table.
+                    let _ =
+                        self.skins
+                            .set(first as usize + i, &names[i][..lens[i] as usize], rows[i]);
+                }
+            }
+            EventMsg::SkinsOwned { owned } => {
+                self.skins_owned = owned;
             }
             EventMsg::CraftQ {
                 jobs,
@@ -3455,6 +3485,28 @@ impl ClientCore {
     }
 
     /// Oldest buffered craft refusal reason (`sim_core::craft::REFUSE_*`).
+    /// The skins that fit `item`, in catalog order, each with its row index
+    /// and whether this player owns it. What the craft panel's picker and
+    /// the store's rows are drawn from.
+    pub fn skins_for(
+        &self,
+        item: u16,
+    ) -> impl Iterator<Item = (usize, protocol::SkinRow, bool)> + '_ {
+        self.skins
+            .rows()
+            .iter()
+            .enumerate()
+            .filter(move |(_, r)| r.covers == item)
+            .map(|(i, r)| (i, *r, self.skins_owned.has(i)))
+    }
+
+    /// The dripped row for skin `catalog`, if this client has it. An item
+    /// wearing an id the catalog does not name draws as the plain item.
+    pub fn skin_row(&self, catalog: u16) -> Option<(usize, protocol::SkinRow)> {
+        let i = self.skins.index_of(catalog)?;
+        Some((i, self.skins.rows[i]))
+    }
+
     pub fn pop_craft_refusal(&mut self) -> Option<u8> {
         if self.refusal_len == 0 {
             return None;
@@ -3988,6 +4040,7 @@ mod tests {
                 item: 3,
                 count: 21,
                 cond: 0,
+                skin: 0,
             },
         }];
         let len = encode_event_inv(&slots, &mut buf).unwrap();
@@ -3998,6 +4051,7 @@ mod tests {
                 item: 3,
                 count: 21,
                 cond: 0,
+                skin: 0,
             }
         );
         assert_eq!(c.pop_toast(), Some((3, 7)));
@@ -4271,10 +4325,12 @@ mod tests {
             CraftJob {
                 recipe: 1,
                 remaining: 2,
+                skin: 0,
             },
             CraftJob {
                 recipe: 0,
                 remaining: 5,
+                skin: 0,
             },
         ];
         let len = encode_event_craft_q(&jobs, 90, &mut buf).unwrap();

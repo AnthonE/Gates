@@ -65,13 +65,14 @@ pub use event::{
     encode_event_piece_sync, encode_event_recipes, encode_event_recovered, encode_event_reload,
     encode_event_reload_refused, encode_event_removed, encode_event_research,
     encode_event_research_refused, encode_event_research_rows, encode_event_respawn,
-    encode_event_shot, encode_event_slot_change, encode_event_slot_grow_sync,
-    encode_event_slot_respawned, encode_event_slot_sync, encode_event_stock,
-    encode_event_struct_hit, encode_event_swing, encode_event_vitals, encode_event_weak_mark,
-    encode_event_wounded, shot_is_instant, EventMsg, InvSlot, ItemCatalog, ItemRow, WireBag,
-    WireGItem, BAG_SYNC_BATCH, CATALOG_BATCH, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH,
-    DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, GROW_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES,
-    PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH, SLOT_SYNC_BATCH,
+    encode_event_shot, encode_event_skins, encode_event_skins_owned, encode_event_slot_change,
+    encode_event_slot_grow_sync, encode_event_slot_respawned, encode_event_slot_sync,
+    encode_event_stock, encode_event_struct_hit, encode_event_swing, encode_event_vitals,
+    encode_event_weak_mark, encode_event_wounded, shot_is_instant, EventMsg, InvSlot, ItemCatalog,
+    ItemRow, SkinCatalog, SkinRow, WireBag, WireGItem, BAG_SYNC_BATCH, CATALOG_BATCH, COIN_ELO,
+    COIN_NONE, COIN_ORBS, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH,
+    GROW_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH,
+    RECIPE_BATCH, RESEARCH_BATCH, SKIN_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSHOT_ENTITIES};
@@ -943,6 +944,12 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// exactly — so `SUB_BITS` widens 6 → 7 and every event message moves by
 /// one bit. Landed on its branch as v75, beside weather v0's v75 on
 /// `main`; the merge took the next number and regenerated every fixture.
+/// v77 is skins v0 (`sim_core::skin`): every stack on the inventory and
+/// container lanes carries its 16-bit skin after its condition, the craft
+/// action names the skin to mint in, `ACT_RESKIN` (23) and
+/// `ACT_SKINS_REFRESH` (24) join the action lane, `SUB_SKINS` (64) drips
+/// the skin catalog and `SUB_SKINS_OWNED` (65) states the owner's set, and
+/// an entity's hand carries the held item's skin beside its id.
 /// v77: `SUB_IMPACT` names what struck (`IMPACT_KIND_BITS`: arrow, bullet,
 /// melee, blast), and a charge going off is an impact too. Landed on its
 /// branch as v76, beside the pack call's; the merge took the next number.
@@ -1449,6 +1456,15 @@ const ACT_RELOAD: u32 = 20;
 const ACT_ASSIST: u32 = 21;
 /// Turn a placed building piece through its next supported orientation.
 const ACT_ROTATE: u32 = 22;
+/// Put a skin on (or take it off) the item in one inventory slot, at a
+/// workbench (`sim_core::skin::reskin`, skins v0).
+const ACT_RESKIN: u32 = 23;
+/// "Read what I own again": the client just bought a skin in the launcher.
+/// **Never reaches the sim** — the server's action reader answers it by
+/// asking the platform (`server/src/skins.rs`), and what comes back enters
+/// the sim as a server-minted `Command::SkinsOwned`, never as anything a
+/// client said.
+const ACT_SKINS_REFRESH: u32 = 24;
 /// The highest live action code, named rather than counted — the event
 /// lane's `SUB_MAX` discipline, which this lane did not have.
 ///
@@ -1458,7 +1474,7 @@ const ACT_ROTATE: u32 = 22;
 /// prevents is the worst shape of wire drift there is: an action past the
 /// field width truncates into a *live* code, and both ends then agree on
 /// bytes that mean two different things.
-const ACT_MAX: u32 = ACT_ROTATE;
+const ACT_MAX: u32 = ACT_SKINS_REFRESH;
 const _: () = assert!(
     ACT_MAX < (1 << ACTION_SUB_BITS),
     "an action subtype past the field width would truncate into a live code"
@@ -1594,8 +1610,14 @@ const PLACE_FREEHAND_BITS: u32 = 1;
 pub enum ActionMsg {
     /// Select a wounded body. Input's BTN_ASSIST bit holds or releases it.
     Assist { target: u32 },
-    /// Enqueue `count` crafts of recipe row `recipe`.
-    Craft { recipe: u16, count: u16 },
+    /// Enqueue `count` crafts of recipe row `recipe`, minted wearing skin
+    /// `skin` (a catalog id; 0 for the item's own look).
+    Craft { recipe: u16, count: u16, skin: u16 },
+    /// Put skin `skin` on the item in inventory `slot` (0 takes it off).
+    Reskin { slot: u8, skin: u16 },
+    /// Ask the server to read the owned skin set again. Answered by the
+    /// server outside the sim; see `ACT_SKINS_REFRESH`.
+    SkinsRefresh,
     /// Cancel the queue job at `index`, refunding remaining inputs.
     CraftCancel { index: u16 },
     /// Place baked piece row `row` at build-grid address (cx, cz, level,
@@ -2008,7 +2030,12 @@ pub fn encode_action_pickup(buf: &mut [u8]) -> Result<usize, WireError> {
     Ok(w.finish())
 }
 
-pub fn encode_action_craft(recipe: u16, count: u16, buf: &mut [u8]) -> Result<usize, WireError> {
+pub fn encode_action_craft(
+    recipe: u16,
+    count: u16,
+    skin: u16,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
     if recipe as usize >= sim_core::limits::MAX_RECIPES
         || count == 0
         || count > sim_core::limits::CRAFT_COUNT_MAX
@@ -2020,6 +2047,32 @@ pub fn encode_action_craft(recipe: u16, count: u16, buf: &mut [u8]) -> Result<us
     w.write(ACT_CRAFT, ACTION_SUB_BITS)?;
     w.write(recipe as u32, 8)?;
     w.write(count as u32, 8)?;
+    // Full width: any catalog id is a legal claim, and the sim is the
+    // verdict on whether it is one this player may wear on this item.
+    w.write(skin as u32, 16)?;
+    Ok(w.finish())
+}
+
+/// `ActionMsg::Reskin` — put skin `skin` on the item in inventory `slot`,
+/// or take its skin off with 0.
+pub fn encode_action_reskin(slot: u8, skin: u16, buf: &mut [u8]) -> Result<usize, WireError> {
+    if slot as usize >= sim_core::limits::INV_SLOTS {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_RESKIN, ACTION_SUB_BITS)?;
+    w.write(slot as u32, ACTION_SLOT_BITS)?;
+    w.write(skin as u32, 16)?;
+    Ok(w.finish())
+}
+
+/// `ActionMsg::SkinsRefresh` — payload-free, the whole frame is a kind and
+/// a subtype.
+pub fn encode_action_skins_refresh(buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_SKINS_REFRESH, ACTION_SUB_BITS)?;
     Ok(w.finish())
 }
 
@@ -2353,8 +2406,22 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
             {
                 return Err(WireError::Malformed);
             }
-            ActionMsg::Craft { recipe, count }
+            let skin = r.read(16)? as u16;
+            ActionMsg::Craft {
+                recipe,
+                count,
+                skin,
+            }
         }
+        ACT_RESKIN => {
+            let slot = r.read(ACTION_SLOT_BITS)? as u8;
+            if slot as usize >= sim_core::limits::INV_SLOTS {
+                return Err(WireError::Malformed);
+            }
+            let skin = r.read(16)? as u16;
+            ActionMsg::Reskin { slot, skin }
+        }
+        ACT_SKINS_REFRESH => ActionMsg::SkinsRefresh,
         ACT_CANCEL => {
             let index = r.read(CANCEL_INDEX_BITS)? as u16;
             if index as usize >= sim_core::limits::CRAFT_QUEUE {
@@ -2944,6 +3011,13 @@ pub struct EntityState {
     /// would make is "a torch is always lit" — which is the whole of
     /// `ALPHA.md` §1's disclosure running backwards.
     pub lit: bool,
+    /// The skin the held item wears (`ItemStack::skin`, skins v0): a
+    /// catalog id, 0 for its own look. The third hand fact, behind the same
+    /// `hand_changed` flag, and a **presence bit** ahead of the id — nearly
+    /// every hand on the island is unskinned, so it costs one bit there and
+    /// seventeen only where someone paid for it. Meaningless with an empty
+    /// hand, and sent as 0 then.
+    pub held_skin: u16,
 }
 
 impl EntityState {
@@ -2968,6 +3042,7 @@ impl EntityState {
         pitch: 0,
         held: None,
         lit: false,
+        held_skin: 0,
     };
 }
 
@@ -3199,7 +3274,7 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
         // every case that matters — a hotbar switch changes what is held
         // and puts the flame out in the same tick — and a torch that
         // burns out changes `lit` alone, which is one flag either way.
-        let hand_changed = e.held != b.held || e.lit != b.lit;
+        let hand_changed = e.held != b.held || e.lit != b.lit || e.held_skin != b.held_skin;
         self.w.write_bit(pos_changed)?;
         self.w.write_bit(vel_changed)?;
         self.w.write_bit(look_changed)?;
@@ -3252,6 +3327,10 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
         self.w
             .write(e.held.unwrap_or(HELD_NONE) as u32, HELD_BITS)?;
         self.w.write_bit(e.lit)?;
+        self.w.write_bit(e.held_skin != 0)?;
+        if e.held_skin != 0 {
+            self.w.write(e.held_skin as u32, 16)?;
+        }
         Ok(())
     }
 
@@ -3427,6 +3506,7 @@ fn decode_entity(
             pitch: r.read(8)? as u8,
             held: read_held(r)?,
             lit: r.read_bit()?,
+            held_skin: read_held_skin(r)?,
         });
     }
     if baseline_age == 0 {
@@ -3464,8 +3544,22 @@ fn decode_entity(
     if hand_changed {
         e.held = read_held(r)?;
         e.lit = r.read_bit()?;
+        e.held_skin = read_held_skin(r)?;
     }
     Ok(e)
+}
+
+/// The held item's skin: a presence bit, then the id. A present 0 is a
+/// second spelling of "no skin" and is refused, so one hand has one
+/// encoding.
+fn read_held_skin(r: &mut BitReader) -> Result<u16, WireError> {
+    if !r.read_bit()? {
+        return Ok(0);
+    }
+    match r.read(16)? as u16 {
+        0 => Err(WireError::Malformed),
+        v => Ok(v),
+    }
 }
 
 /// The held-item field, with the band the sim cannot mean refused.
@@ -3533,6 +3627,7 @@ mod tests {
             pitch: 7,
             held: None,
             lit: false,
+            held_skin: 0,
         }
     }
 
@@ -3753,11 +3848,14 @@ mod tests {
             })
             .collect();
         let hands = encode(&moved);
+        // Nine bits a record since v77: the seven-bit id, the flame, and
+        // the skin's presence bit (none of these hands is skinned). Eight
+        // records are 72 bits, so exactly nine bytes.
         assert_eq!(
             hands - still,
-            8,
-            "eight changed hands cost {} B over eight unchanged ones, not 8 \
-             — one byte per record is the field, so this is the gate on the \
+            9,
+            "eight changed hands cost {} B over eight unchanged ones, not 9 \
+             — nine bits per record is the field, so this is the gate on the \
              flag doing anything at all",
             hands - still
         );
@@ -4057,13 +4155,94 @@ mod tests {
     /// of them at v32 — which is the shape this assert exists to make
     /// visible: a verb landing is supposed to move a number in a comment,
     /// not slip in against a stale one.
+    /// Skins v0's three actions round-trip, and a re-skin slot past the
+    /// pack is refused at both ends.
+    #[test]
+    fn the_skin_actions_round_trip() {
+        let mut buf = [0u8; 16];
+        let n = encode_action_craft(3, 2, 0xBEEF, &mut buf).unwrap();
+        assert_eq!(
+            decode_action(&buf[..n]),
+            Ok(ActionMsg::Craft {
+                recipe: 3,
+                count: 2,
+                skin: 0xBEEF
+            })
+        );
+        let n = encode_action_reskin(29, 7, &mut buf).unwrap();
+        assert_eq!(
+            decode_action(&buf[..n]),
+            Ok(ActionMsg::Reskin { slot: 29, skin: 7 })
+        );
+        assert_eq!(
+            encode_action_reskin(sim_core::limits::INV_SLOTS as u8, 7, &mut buf),
+            Err(WireError::Range)
+        );
+        let n = encode_action_skins_refresh(&mut buf).unwrap();
+        assert_eq!(decode_action(&buf[..n]), Ok(ActionMsg::SkinsRefresh));
+    }
+
+    /// A skinned hand survives both snapshot paths, and a present-zero
+    /// skin — a second spelling of "no skin" — is refused.
+    #[test]
+    fn a_skinned_hand_crosses_and_a_present_zero_does_not() {
+        let hdr = SnapshotHeader {
+            tick: 7,
+            baseline_age: 0,
+            last_executed_seq: 0,
+            nudge: Nudge::Ok,
+            buffered_depth: 0,
+            repeat_count: 0,
+        };
+        let mut base: Vec<EntityState> = (1..=3).map(ent).collect();
+        base[0].held = Some(41);
+        base[0].held_skin = 0x0A61;
+        base[1].held = Some(6);
+        let mut buf = [0u8; 512];
+        let mut enc = SnapshotEncoder::begin(&mut buf, &hdr, &[]).unwrap();
+        for e in &base {
+            enc.add_entity(e).unwrap();
+        }
+        let len = enc.finish().unwrap();
+        let got = decode_snapshot(&buf[..len], &[]).unwrap();
+        assert_eq!(got.entities(), &base[..], "absolute path carries the skin");
+        // Delta: the skin alone changes (a re-skin in hand), and the skin
+        // comes off — both must move the hand flag.
+        let mut next = base.clone();
+        next[0].held_skin = 0;
+        next[1].held_skin = 0x0B72;
+        let hdr = SnapshotHeader {
+            baseline_age: 1,
+            ..hdr
+        };
+        let mut enc = SnapshotEncoder::begin(&mut buf, &hdr, &base).unwrap();
+        for e in &next {
+            enc.add_entity(e).unwrap();
+        }
+        let len = enc.finish().unwrap();
+        let got = decode_snapshot(&buf[..len], &base).unwrap();
+        assert_eq!(got.entities(), &next[..], "delta path carries the skin");
+
+        let mut buf = [0u8; 64];
+        let mut w = BitWriter::new(&mut buf);
+        w.write_bit(true).unwrap();
+        w.write(0x0A61, 16).unwrap();
+        w.write_bit(true).unwrap();
+        w.write(0, 16).unwrap();
+        let n = w.finish();
+        let mut r = BitReader::new(&buf[..n]);
+        assert_eq!(read_held_skin(&mut r), Ok(0x0A61));
+        assert_eq!(read_held_skin(&mut r), Err(WireError::Malformed));
+    }
+
     #[test]
     fn the_action_lane_has_the_room_it_claims() {
-        // Hammer rotation (v68) spends code 22, leaving nine five-bit codes.
-        assert_eq!(ACT_MAX, ACT_ROTATE);
+        // Hammer rotation (v68) spent code 22; skins v0 (v77) spends 23 and
+        // 24 (re-skin, refresh), leaving seven five-bit codes.
+        assert_eq!(ACT_MAX, ACT_SKINS_REFRESH);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
-            9,
+            7,
             "the spare action codes moved — say so where the count is written"
         );
     }

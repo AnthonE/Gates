@@ -2601,6 +2601,7 @@ fn sync_loot(
                     item: g.item,
                     count: g.count,
                     cond: 0,
+                    skin: 0,
                 },
             ),
         };

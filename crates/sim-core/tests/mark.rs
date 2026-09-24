@@ -241,6 +241,7 @@ fn walled(w: &mut World) -> ((u16, u16), f32) {
             item,
             count: 200,
             cond: 0,
+            skin: 0,
         };
     }
     place(w, PIECE_FOUNDATION, cx, cz, GROUND, LOC_PLANE);

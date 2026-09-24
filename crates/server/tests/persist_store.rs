@@ -120,6 +120,7 @@ fn a_shard_restart_remembers_a_player() {
             item: 3,
             count: 128,
             cond: 0,
+            skin: 0,
         };
         core.world.players[slot].hp = 37;
         core.tick_bare(&stats, |_, _, _| true);
@@ -266,6 +267,7 @@ fn an_evicted_sleeper_comes_back_from_the_current_body_not_the_stale_record() {
         item: 3,
         count: 128,
         cond: 0,
+        skin: 0,
     };
 
     // Session one: join keyed, carry something, log off. The disconnect's
@@ -596,6 +598,7 @@ fn two_keys_never_share_a_save() {
                 item: i as u16 + 1,
                 count: (i as u16 + 1) * 10,
                 cond: 0,
+                skin: 0,
             };
             let put = store.put(k, 1_700_000_000, save);
             assert!(!put.evicted);
@@ -610,7 +613,8 @@ fn two_keys_never_share_a_save() {
         ItemStack {
             item: 1,
             count: 10,
-            cond: 0
+            cond: 0,
+            skin: 0
         }
     );
     assert_eq!(
@@ -618,7 +622,8 @@ fn two_keys_never_share_a_save() {
         ItemStack {
             item: 2,
             count: 20,
-            cond: 0
+            cond: 0,
+            skin: 0
         }
     );
     sweep(&path);
@@ -873,6 +878,7 @@ fn a_record_with_unmintable_condition_is_refused_as_corrupt() {
             item,
             count: 1,
             cond,
+            skin: 0,
         };
         s
     };

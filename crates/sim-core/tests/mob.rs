@@ -325,11 +325,13 @@ fn hunt_world() -> (World, usize) {
         item: MEAT,
         count: 3,
         cond: 0,
+        skin: 0,
     };
     def.loot[1] = ItemStack {
         item: HIDE,
         count: 15,
         cond: 0,
+        skin: 0,
     };
     w.dev_spawn = Some(w.spawn_pos(1));
     w.tick(&[Command::Join { id: 1 }]);
@@ -378,6 +380,7 @@ fn kill_the_pig(w: &mut World, slot: usize) {
         item: SPEAR,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     for seq in 0..(SWING_INTERVAL_TICKS as u16 * 8) {
         // Down at the animal: a pig is 0.8 m tall (`body_h_cm`) and a
