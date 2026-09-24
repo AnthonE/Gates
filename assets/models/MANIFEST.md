@@ -323,14 +323,20 @@ metal, 48 sulfur** — off exactly two meshes before this landed, because every
 boulder was one `blob_mesh` at one seed and the three ore nodes shared a
 second and differed only by material.
 
+⚠ **Four of these rows are history since 2026-09-23** — `rock_a` and the three
+nodes ship from `ci/rock_kit.py` now (§rock_kit below, *2026-09-23*), and a
+fourth boulder, `rock_d`, joined the pool from the same tool. The rows are
+kept because they say what the files WERE; `git show ecb9e21:assets/models/prop/<file>`
+returns any of the four deliveries.
+
 | file | occupant | image task | mesh task | tris | asked | size |
 |---|---|---|---|---|---|---|
-| `prop/rock_a.glb` | `Rock` (pool 0) | `01a05e71-4efe` | `01a05e73-a70e` | 2,662 | 2,400 | 3.4 MB |
-| `prop/rock_b.glb` | `Rock` (pool 1) | `01a05e7a-56ee` | `01a05e7a-f87b` | 2,670 | 2,400 | 3.4 MB |
-| `prop/rock_c.glb` | `Rock` (pool 2) | `01a05e7d-075b` | `01a05e7d-811d` | 2,662 | 2,400 | 3.3 MB |
-| `prop/node_stone.glb` | `StoneNode` | `01a05e6e-4baa` | `01a05e6e-c5a5` | 1,439 | 1,400 | 3.5 MB |
-| `prop/node_metal.glb` | `MetalNode` | `01a05e85-6c8d` | `01a05e85-e691` | 1,364 | 1,250 | 3.4 MB |
-| `prop/node_sulfur.glb` | `SulfurNode` | `01a05e7c-bfc4` | `01a05e7d-3978` | 1,490 | 1,400 | 3.5 MB |
+| ~~`prop/rock_a.glb`~~ | `Rock` (was pool 0) | `01a05e71-4efe` | `01a05e73-a70e` | 2,662 | 2,400 | 3.4 MB |
+| `prop/rock_b.glb` | `Rock` (pool 2) | `01a05e7a-56ee` | `01a05e7a-f87b` | 2,670 | 2,400 | 3.4 MB |
+| `prop/rock_c.glb` | `Rock` (pool 3) | `01a05e7d-075b` | `01a05e7d-811d` | 2,662 | 2,400 | 3.3 MB |
+| ~~`prop/node_stone.glb`~~ | `StoneNode` | `01a05e6e-4baa` | `01a05e6e-c5a5` | 1,439 | 1,400 | 3.5 MB |
+| ~~`prop/node_metal.glb`~~ | `MetalNode` | `01a05e85-6c8d` | `01a05e85-e691` | 1,364 | 1,250 | 3.4 MB |
+| ~~`prop/node_sulfur.glb`~~ | `SulfurNode` | `01a05e7c-bfc4` | `01a05e7d-3978` | 1,490 | 1,400 | 3.5 MB |
 | `prop/barrel.glb` | `BarrelSlot` | `01a05ea8-6214` | `01a05ea9-0399` | 758 | 700 | 3.6 MB |
 | `prop/crate.glb` | `CrateSlot` | `01a05ea1-9804` | `01a05ea2-894d` | 522 | 550 | 3.3 MB |
 | `prop/cache.glb` | `CacheSlot` | `01a05ea5-0f65` | `01a05ea5-8934` | 479 | 550 | 3.2 MB |
@@ -544,8 +550,10 @@ below the 41° bend it removes.
 **Our own work, on no licence at all.** A piece `rock_kit.py gen` makes is
 authored by a script in this tree from a seed; Blender's GPL covers the
 program and not what it exports, so no vendor, no plan, no `NOTICE` entry —
-the provenance is the sidecar. Landed 2026-09-14 and **nothing from it ships
-yet**: every file below stayed in a scratch directory and was measured there.
+the provenance is the sidecar. Landed 2026-09-14 with nothing shipped; **five
+props ship from it since 2026-09-23** — the three ore nodes, `rock_a` and
+`rock_d` (§*2026-09-23* at the end of this section). The 2026-09-14 table
+below stayed in a scratch directory and was measured there.
 `WANTED.md` §0.4 says when to reach for it instead of Meshy;
 `reference/ROCKS.md` §9 is why the cliff and formation tiers need it.
 
@@ -587,6 +595,79 @@ coverage mask with `glbcharts.rasterize`, calibrates the albedo's luma over
 the covered texels only, and fills the rest with the rock's own mean — so
 `measure_glb.py`'s whole-image luma and the surface's mean are one number by
 construction. A Meshy delivery's background is whatever the generator left.
+
+### 2026-09-23 · five pieces ship: the three ore nodes and a boulder pair
+
+**The first kit output in the tree.** The node needed a kind the kit did not
+have — every existing kind's squash is unequal in plan, which is right for a
+boulder and exactly what a node's round band forbids — so `--kind node` was
+added (equal squash, 12–18 upward-leaning **chips** that shear a cap flat, the
+bottom third cut and buried), and three **looks** over one shared rock:
+`stone` (pale speckled granite, quartz veins, glossy white crystals), `metal`
+(grey rock, dark METALLIC seams that swell and pinch, a rust halo — the only
+texels in the kit with a non-zero ORM blue channel) and `sulfur` (a cool grey
+rock under a crystalline yellow crust packed into its cavities). `rock_a` and
+the new `rock_d` are the 2026-09-14 `boulder` kind's geometry — the same seeds
+rebuild the same meshes — under a fourth, opt-in look, `formation`: the dark
+rock on the same machinery, because the first cut's `granite` read as clean
+clay beside the generated pair it is pooled with. `granite` stays the default,
+so a documented seed still builds the rock it was measured as — on this box the
+2026-09-14 seeds rebuild their plan and spread to three decimals, and their
+bake reads a few thousandths off (seed 1: luma 0.209 against 0.210, chart 0.004
+against 0.006), which is a different CPU under the same Cycles seed and is why
+byte-identity is only ever claimed per box. `props.rs` pools the two kit
+boulders first so each rock family draws two silhouettes. Numbers and reasons:
+`DECISIONS.md` §open, scatter art v2.
+
+```
+ci/rock_kit.py gen --occupant StoneNode --kind node --seed 31 --tris 1400 --out node_stone.glb
+ci/rock_kit.py gen --occupant MetalNode --kind node --seed 43 --tris 1400 --out node_metal.glb
+ci/rock_kit.py gen --occupant SulfurNode --kind node --seed 53 --tris 1400 --out node_sulfur.glb
+ci/rock_kit.py gen --occupant Rock --kind boulder --look formation --seed 1 --out rock_a.glb
+ci/rock_kit.py gen --occupant Rock --kind boulder --look formation --seed 3 --out rock_d.glb
+# then, per file: import_meshy.py <in> <out> W H D --fit-radius --center ; ktx_pack.py <out> assets/models/prop/<file>
+```
+
+| file | occupant | kind · look · seed | tris | plan | spread | luma | chart | metal texels | packed |
+|---|---|---|---|---|---|---|---|---|---|
+| `prop/node_stone.glb` | `StoneNode` | node · stone · 31 | 1,372 | 1.139 | 0.127 | 0.341 | 0.039 | — | 1.7 MB |
+| `prop/node_metal.glb` | `MetalNode` | node · metal · 43 | 1,372 | 1.194 | 0.111 | 0.260 | 0.025 | 24.9 % | 1.7 MB |
+| `prop/node_sulfur.glb` | `SulfurNode` | node · sulfur · 53 | 1,372 | 1.099 | 0.098 | 0.299 | 0.012 | — | 1.5 MB |
+| `prop/rock_a.glb` | `Rock` (pool 0) | boulder · formation · 1 | 2,352 | 1.820 | 0.133 | 0.210 | 0.025 | — | 1.7 MB |
+| `prop/rock_d.glb` | `Rock` (pool 1) | boulder · formation · 3 | 2,352 | 1.452 | 0.109 | 0.210 | 0.049 | — | 1.7 MB |
+
+Measured by the triage off each piece before packing (it cannot decode KTX2);
+`tests/packed_maps.rs` re-reads the packed albedo through Bevy's own transcoder
+and gets the same chart contrast to three decimals, and every normal map 100 %
+unit length at X/Y 0.500–0.502. **Five files, 8.4 MB, where the four they
+replace were 13.5 MB.** All five rebuild **byte-identical** from the committed
+script (`ci/rock_kit.py` sha256 `f9e5ddbe12445481…`, bpy 4.5.0) with the
+commands above — checked on the box they were made on, before packing.
+
+**Selected, not accepted.** On the final shape the plan band took two of six
+stone and metal rolls out (seed 33 at 1.215, seed 42 at 1.227), and chart
+contrast took two sulfur rolls (0.070, 0.071) until the crust's contrast
+against its rock was narrowed — a kit bake is lit uniformly, so a chart reject
+here always means the content is spread unevenly across islands, never
+lighting. The keepers are the roundest that passed, except metal: seed 43
+(1.194) over 41 (1.175), whose chips met in a tent-shaped ridge. Every keeper
+was then looked at in a lineup rendered the way the game seats it
+(`archetype_lift − SINK_M`, yawed, on turf, a sun and a cool sky fill, Khronos
+PBR Neutral — Blender's nearest view transform to the game's TonyMcMapface),
+beside the files it replaces. Three rounds of that looking changed the tool
+rather than the bands: a voronoi crack is a net and reads as a cracked egg
+(cracks are warped noise isolines now); a bright metal mirrors the sky and
+reads as blue paint (the seams are a dark metal that flashes); and the first
+sulfur graph had a cycle in it, which Cycles resolves by dropping links — it
+baked at luma 0.48 against a ramp of 0.24 and every number downstream looked
+plausible. A constant-colour control (0.2 in, 0.191 out) is what told the graph
+from the bake.
+
+⚠ **Nobody has seen these in the game** (`NOW.md` §LOOK, 2026-09-23). The
+metal node's glint depends on Bevy's environment light, which Blender does not
+reproduce; and a node on a slope floats on its downhill edge exactly as the
+cubes did, because the lift still buries 0.13 m (scatter art v1's 0.3 is the
+fix, and `greybox.rs` holds the fallback blob to the same lift).
 
 ## `held/` — what the viewmodel puts in your hand
 

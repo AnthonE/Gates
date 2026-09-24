@@ -78,6 +78,38 @@ Stages, in order — each cheap, each deterministic:
    both joins, because the renderer takes its normal from this field's
    gradient and a C0 join at the water's edge is a shading line where every
    player stands.
+4d. **The interior ranges** (`terrain::massif_lift`, interior massifs v0,
+   2026-09-23). Before this, 93% of the shipped island's land sat under
+   40 m and the highland was separate noise lumps: a pancake from every
+   place a player stands. Now two ranges stand in the annulus between the
+   inland site and the ring, a major one and a minor one half a turn apart.
+   Each is an envelope around a wandering four-segment spine, with the crest
+   on the spine, the outline moved by a spur field, peaks and cols along the
+   crest, and its own warp over all of it. Then a **gully filter** carves it:
+   each of three octaves (120 / 60 / 30 m) lays a C² stripe across the fall
+   line through jittered origins, and each octave's fall line includes the
+   octaves before it, so small gullies branch off large ones. That drainage
+   is what a hillshade reads as a mountain. The filter is zero-mean, because
+   a filter that only cut left every crest standing as a mesa.
+   Three properties hold it:
+   - **Exact outside `MASSIF_R_IN`/`MASSIF_R_OUT`.** On seven seeds, every
+     4 m height sample off the window is bit-identical to the island before
+     this stage, so the coast, the ring, the haven, the waystations, every
+     spawn and the inland site's 75 m candidates did not move.
+     `tests/massif.rs` holds the lift at exactly zero there.
+   - **Walkable in the main.** Measured on four seeds (`examples/massif_stats`):
+     a footprint median slope of 0.64–0.71, 4.9–10.7% cliff, and peaks of
+     94–141 m.
+   - **Opposed, so the roads get through.** The inland site's side roads are
+     straight chords on opposite bearings that may not cross a cliff, so the
+     gaps between the ranges must face each other. Three evenly spaced ranges
+     would put a range opposite every gap.
+   The highland's ridged crumple steps aside as a range's lift comes in
+   (`MASSIF_OWN_M`), since a range carries its own anatomy. **The treeline
+   moved with the ranges, 52 → 68 m** (`TREELINE_H`, which `biome()` and the
+   splat's alpine ramp share). At 52 m two-thirds of every range was granite
+   and read as cobbles underfoot. At 68 m the flanks carry turf and forest,
+   and the island's Highland share (the ore) stays close to what it was.
 5. **Masks** (derived, not stored): slope from finite differences → cliff
    mask (slope > ~50° **(knob)**: unclimbable, unbuildable, distinct
    material); beach mask (height within ~2 m of sea level); moisture =

@@ -1612,7 +1612,19 @@ fn test_an_authored_site_sweeps_its_own_floor() {
                                 e0.z,
                                 e.kind
                             );
-                        } else if sweep <= 0.0 && !in_any_blend(&haven, cx, cz) {
+                        } else if sweep <= 0.0
+                            && !in_any_blend(&haven, cx, cz)
+                            && terrain::road_band(seed, &haven, e0.x, e0.z)
+                                == terrain::RoadBand::Off
+                        {
+                            // ⚠ **Off every road, too.** The control parks the
+                            // sites AND drops their side roads, so a carriageway
+                            // crossing this scan square outside the blend turns a
+                            // tuft to grit in the diff — the road's own override
+                            // (`clutter_kind_at`), not the site's sweep. Found
+                            // 2026-09-23: interior massifs v0 moved seed GATES's
+                            // inland site to (980, 1245), and its side road clips
+                            // the square's corner at (943, 1207).
                             // 2 · outside the mask AND outside the carve's blend,
                             // nothing moved, bit for bit.
                             //

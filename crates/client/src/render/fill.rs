@@ -164,7 +164,17 @@ pub const SKY_FILL_LUX: f32 = lux::AMBIENT_DAYLIGHT * 1.7;
 /// lifts the island-weighted mean linear luma 0.10715 → 0.10960 (+2.3%) with
 /// no albedo moved — `tests/ground_mix.rs::the_mean_luma_is_held_against_the_
 /// island_not_the_quadrant` carries the number and the reason.
-pub const GROUND_MIX: [f32; 4] = [0.043_425, 0.512_346, 0.350_701, 0.093_528];
+/// ⚠ **Re-measured 2026-09-23 from `[0.043_425, 0.512_346, 0.350_701,
+/// 0.093_528]` for interior massifs v0**: two ranges in the interior and the
+/// treeline moved 52 → 68 m with them (`DECISIONS.md` §open). **Granite
+/// 0.0935 → 0.1156** — the ranges' upper thirds and their steep flanks — and
+/// sand 0.0434 → 0.0374, because the ranges lifted interior ground that sat
+/// in the beach band. Granite is the brightest identity, so the island-weighted
+/// mean linear luma rises again, ~+3.7 %, with no albedo moved; the gate
+/// carries the exact number. The measured grass weight is 0.502_088; the
+/// 2e-6 it gained here is what makes the four a partition, which
+/// `tests/fill.rs` holds to 1e-6.
+pub const GROUND_MIX: [f32; 4] = [0.037_410, 0.502_090, 0.344_911, 0.115_589];
 
 /// sRGB → linear, the exact piecewise transfer (not the 2.2 approximation).
 pub fn srgb_to_linear(v: f32) -> f32 {

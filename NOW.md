@@ -133,7 +133,7 @@ Operator, 2026-09-05: the boulder *"looks like mineable"*, the node is
 the node a 1.39 cube; every UV island of every albedo was lit on its own (chart
 contrast 0.09–0.36); and **every normal map in the tree decodes bent** — X/Y
 means 0.212, not 0.5 — because `ci/ktx_pack.py` let `ktx create` linearise the
-data maps for three weeks. The tooling landed; the assets did not:
+data maps for three weeks. The tooling landed first, then the assets:
 
 1. ✅ **All 23 re-packed 2026-09-16.** Not from the raw deliveries — those are
    in gitignored `To Examine/` and absent from every clone, so `ci/unbake_ktx.py`
@@ -142,22 +142,18 @@ data maps for three weeks. The tooling landed; the assets did not:
    which is a physical check the arithmetic cannot fake. Chart contrast fell in
    the same pass (worst residual 0.045 < 0.06). Both `packed_maps.rs` lists are
    empty. Geometry byte-identical, so no shape pin moved. `§LOOK`: unseen.
-2. **Re-roll the stone node and the boulder pool's first entry.** No
-   `MESHY_API_KEY` on this box, so §0rock item 1's kit was tried instead and
-   **it cannot make the node at all** — measured 2026-09-16, and the reason is
-   structural rather than a bad seed: `rock_kit.py`'s `boulder` squash is
-   `(1.0, 0.62..0.82, ..)` with the comment *"never a ball in plan"*, which is
-   right for a boulder and is exactly what the node's round band forbids
-   (the sim blocks a CYLINDER). Plan ratio came back **1.82** on `boulder` and
-   **1.330 / 1.335 / 1.339** on `small` across three seeds against a ceiling of
-   1.2 — that tight a spread is the kind, not the roll. A `dome` kind (or a
-   widened `small` squash) is a number, so it is `DECISIONS.md` §open's, not a
-   loop's. The **formation** for rock_a did come back KEEP (plan 2.201, luma
-   0.21, chart 0.024, r 1.1145 exact) and is **not landed on purpose**: its
-   previews read as a fractured outcrop from the broad side and as a **shark
-   fin** down the narrow axis, which is `vantages.mjs`'s lesson with a
-   different gate — measured KEEP, visual reject. Both candidates and their
-   previews are in the pass notes; the swap is `§LOOK`'s call.
+2. ✅ **Re-made 2026-09-23 — all three nodes, `rock_a`, and a fourth
+   boulder, from `ci/rock_kit.py`** (`findings/kit-ore-nodes-20260923.md`,
+   `DECISIONS.md` §open, scatter art v2). The kit could not make a node because
+   its `boulder` squash is never equal in plan; it has a `node` kind now (equal
+   squash, upward-leaning chips, a flat buried cut) and three looks — pale
+   speckled granite, metallic seams in rust, a yellow crystalline crust —
+   selected on the unchanged plan band and looked at in a Blender lineup.
+   `rock_a` is a kit boulder and `rock_d` joins it, so each rock family draws
+   two silhouettes. `tests/prop_assets.rs`' four pins are gone. The
+   `formation` kind's 2026-09-16 KEEP for `rock_a` stays out: a shark fin down
+   its narrow axis — measured KEEP, visual reject. **`§LOOK`**: none of it
+   has been booted — see the 2026-09-23 entry there.
 3. **The formation levers, measured and parked.** Tilt is out at these
    tolerances: rock_b and rock_c leave the blocked cylinder past **3°**. A
    cluster per slot waits for a slab, because the top gate holds the main part
@@ -175,11 +171,9 @@ nearer a rock than a bush is; rock dispersion is 1.1–1.6 against the trees'
 3.0 — **exactly what a shared rate field predicts at 0.6 rocks per window**,
 so scatter clumping v0 cannot reach rock at any weight. Ranked in its §9.7:
 
-1. **§0rk first** — nothing about rock is worth looking at on a bent normal
-   map and a ball. ✅ **The pipeline for the re-roll exists** (2026-09-14):
-   `ci/rock_kit.py gen --occupant Rock` makes a keeper on every seed tried,
-   byte-deterministic, maps straight; `MANIFEST.md` §rock_kit has the
-   numbers. **Nobody has looked** — the previews sit unseen (`§LOOK`).
+1. ✅ **§0rk first — done 2026-09-23** (§0rk item 2): the nodes and two of
+   the four boulders ship from `ci/rock_kit.py`, maps straight, looked at in
+   Blender and not yet in the game (`§LOOK`).
 2. ✅ **Rock kind + species into `Slot`** (§9.1, `FORESTS.md` §9.3) —
    **built 2026-09-15** with world structure v1, one golden move for both as
    §9.1 predicted. `render/props.rs::species_variant` is the one place the
@@ -193,6 +187,27 @@ so scatter clumping v0 cannot reach rock at any weight. Ranked in its §9.7:
 4. **Cliff tier v0** (§9.3): `Occupant::Cliff` on the cell the veto empties,
    a box-list volume off its own slope; `rock_kit.py gen --kind slab` builds
    the mesh once `measure_glb.py` has a slab row. Tint and blend: `§LOOK`.
+
+## 0rf · Rock face v0 — cliffs stopped being one pale sheet *(client lane)*
+
+Built 2026-09-23 (`DECISIONS.md` §open, rock face v0): the ground shader draws
+rock as warped world-space blocks, two scales of leaning facets, a crack on
+30 % of boundaries, weathering and streaks, fading with a block's size on
+screen. Brightness-neutral by construction (`tests/rock_face.rs`). Seen on the
+capture at `dev_spawn = 1500,600` — before/after in
+`findings/rock-face-20260923.md`. What it left:
+
+1. **`§LOOK` on a GPU.** Every frame of it is lavapipe at 1280×720; the facet
+   fade thresholds were set on that footprint, and a 4K frame keeps facets
+   leaning twice as far out.
+2. **The silhouette is still smooth.** A scarp's outline against the sky is
+   the heightfield's, and no shader can break it — that is §0rock item 4's
+   cliff mesh, or relief worldgen may not author yet (§0wg item 3).
+3. **The lip and foot are still a hard contour line.** Letting blocks decide
+   rock against turf was tried and read as paving stones on grass; the real
+   answer is scree at the foot, which is §0rock item 3's seeding.
+4. **The fine facets are invisible past ~20 m** by design; whether 2.2 m is
+   worth its second lattice walk on a real GPU is a profile nobody has run.
 
 ## 0anim · The animals cannot be bought until the client can move one *(client lane)*
 
@@ -843,6 +858,32 @@ treeline (`DECISIONS.md` §open, world structure v1). What is still open:
    cliff, and coastline perimeter over an equal-area disc cannot tell a cove
    from the 8 m grid's staircase. Both were replaced by metrics that
    separate. **A band whose two populations touch is not a gate.**
+
+## 0mtn · The island has mountains now: what interior massifs v0 left *(sim lane)*
+
+Built 2026-09-23 (`DECISIONS.md` §open; `TERRAIN.md` §1 stage 4d): two
+gullied ranges in the 170–560 m annulus. Heights outside the window are
+unchanged to the bit, and the treeline moved from 52 to 68 m with the ranges.
+`findings/interior-massifs-20260923.md` has the fifteen versions and the
+frames.
+
+1. **It is a wipe.** Old saves refuse to load (`probe_terrain`), so
+   deploying it is the operator's call.
+2. **The ore moved per island.** Summed over four seeds, metal went
+   631 → 649 and sulfur 460 → 484, but per seed the change is −26 % to
+   +56 %. Raiding is priced in sulfur: re-tuning the Highland ore weights is
+   the operator's call.
+3. **Above the treeline the ground is cobbles.** `Gravel004` at a 4 m tile
+   reads as a cobbled road at a player's feet on flat granite. The fix is on
+   the rock identity (a scree or slab source, or `rock_face`'s blocks
+   carrying the flats), not on the treeline.
+4. **It costs ~2× where it stands**: `height` ~0.95 µs in the window
+   against 0.46, and a clutter tile on a range 2.7 ms against 1.0 (frame
+   thread). The finest gully octave is the lever. The gullies are a filter,
+   not erosion: no fans, no widening valleys (a grid solve).
+5. **Side roads cannot route around a range.** Two opposed ranges keep a
+   pass open on every road seed; a third range needs routed roads first
+   (`reference/ROADS.md` §9).
 
 ## 0ring · The coast ring has a continuous terrain bench *(sim lane)*
 
@@ -2690,7 +2731,16 @@ with a place for its answer**, so a reply is one line and not an essay. And
 a replacement pixel gate** (`CLAUDE.md`); that rule is untouched and this
 correction does not soften it.
 
-**Newest, 2026-09-17 — stand at the depot and look down its road** (§0rd,
+**Newest, 2026-09-23 — walk up to an ore node with a boulder in the same
+frame** (§0rk item 2, scatter art v2): all three nodes and half the boulders
+are kit-made now. Four judgements, each one line: can you tell the node from
+the boulder at ten metres without a prompt; does the metal node's seam
+*glint* under the game's own light (the Blender renders say yes; Bevy's
+environment fill is the unmeasured half); does the sulfur crust read as crust
+rather than paint; and does a node on a hillside float on its downhill edge
+(expected — the 0.3 lift is the fix, `DECISIONS.md` scatter art v1).
+
+**2026-09-17 — stand at the depot and look down its road** (§0rd,
 side road bend v0). The straight road is the one thing on this list that was
 reported from a frame rather than waiting for one, so it is the only entry
 here with a before. Three judgements: does a 25–57 m wander over 620–1,050 m

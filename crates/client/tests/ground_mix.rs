@@ -352,8 +352,13 @@ fn the_capture_spawn_no_longer_stands_on_one_identity() {
         "300 m disc: land {n_mid}, mix [{:.6}, {:.6}, {:.6}, {:.6}]",
         mid[0], mid[1], mid[2], mid[3]
     );
+    // ⚠ **The floor was 0.05 until 2026-09-23**, when the treeline moved
+    // 52 → 68 m with interior massifs v0: the old highland lumps between the
+    // two lines are turf now, and this disc measures 4.2 % granite where it
+    // measured 8.9 %. The claim is presence — the frames are granite-free
+    // because 60 m is, not because 300 m is — and 4.2 % still makes it.
     assert!(
-        mid[ROCK] > 0.05,
+        mid[ROCK] > 0.03,
         "granite is absent at 300 m too: {:.6}",
         mid[ROCK]
     );
@@ -397,6 +402,13 @@ fn the_capture_spawn_no_longer_stands_on_one_identity() {
 /// this gate still refuses is an ALBEDO edit taking brightness by accident —
 /// that is what it is for, and it is unchanged.
 ///
+/// ⚠ **Re-pinned 0.10960 → 0.11365 on 2026-09-23 (+3.7 %), the same kind of
+/// move again and again not an albedo edit.** Interior massifs v0 put two
+/// ranges in the interior and moved the treeline 52 → 68 m with them, and
+/// granite's *weight* went 0.0935 → 0.1156 (`fill::GROUND_MIX`). Granite is
+/// the brightest identity, so the island got brighter by arithmetic. Stated
+/// here, as the last two were, so the brightness owner meets it as a number.
+///
 /// The second assert is the retraction's own point, kept: the two windows
 /// disagree, and by more than they used to (1.145× → 1.268×), because granite
 /// carries more value now and the quadrant still weights it at zero.
@@ -427,8 +439,8 @@ fn the_mean_luma_is_held_against_the_island_not_the_quadrant() {
     );
 
     assert!(
-        (now - 0.109_60).abs() < 1e-4,
-        "the island-weighted mean linear luma is no longer the 0.10960 the \
+        (now - 0.113_65).abs() < 1e-4,
+        "the island-weighted mean linear luma is no longer the 0.11365 the \
          identity re-place was held to: {now:.5}. An albedo edit moved the \
          island's overall brightness — that is the coupled lighting owner's \
          call (`CLAUDE.md` traps), not an identity pass's."

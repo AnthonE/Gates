@@ -342,6 +342,18 @@ pub struct GroundSplatParams {
     pub paint_white: Vec4,
     /// x/y = stripe width and radial edge offset; z = validity roundoff tolerance.
     pub paint_geometry: Vec4,
+    /// x = [`ROCK_CELL_M`], y = [`ROCK_FINE_M`], z = [`ROCK_TILT`],
+    /// w = [`ROCK_FINE_TILT`].
+    pub rock_a: Vec4,
+    /// x = [`ROCK_SHADE`], y = [`ROCK_WEATHER_M`], z = [`ROCK_WEATHER`],
+    /// w = [`ROCK_WARP_M`].
+    pub rock_b: Vec4,
+    /// x = [`ROCK_CRACK_SHARE`], y = [`ROCK_CRACK_W`], z = [`ROCK_CRACK_DARK`],
+    /// w = [`ROCK_STREAK`].
+    pub rock_c: Vec4,
+    /// x = [`ROCK_STREAK_W_M`], y = [`ROCK_STREAK_H_M`], z = [`ROCK_FACE_ON`],
+    /// w = [`ROCK_FACE_FULL`].
+    pub rock_d: Vec4,
 }
 
 impl GroundSplatParams {
@@ -402,6 +414,15 @@ impl GroundSplatParams {
                 ROAD_PAINT_VALID_EPS,
                 0.0,
             ),
+            rock_a: Vec4::new(ROCK_CELL_M, ROCK_FINE_M, ROCK_TILT, ROCK_FINE_TILT),
+            rock_b: Vec4::new(ROCK_SHADE, ROCK_WEATHER_M, ROCK_WEATHER, ROCK_WARP_M),
+            rock_c: Vec4::new(ROCK_CRACK_SHARE, ROCK_CRACK_W, ROCK_CRACK_DARK, ROCK_STREAK),
+            rock_d: Vec4::new(
+                ROCK_STREAK_W_M,
+                ROCK_STREAK_H_M,
+                ROCK_FACE_ON,
+                ROCK_FACE_FULL,
+            ),
         }
     }
 }
@@ -418,6 +439,77 @@ pub fn tile_multipliers() -> [f32; 4] {
     }
     m
 }
+
+// ── The rock face ──────────────────────────────────────────────────────────
+//
+// **A smooth heightfield lights a scarp as one value, and that is what the
+// island's cliffs looked like: one pale sheet the height of a house** — every
+// shelf edge `terrain::REMAP_LUT` manufactures, and every summit, at the one
+// granite value `GROUND_ALBEDO` gives them (the operator's frames, 2026-09-23:
+// *"our world is still weak terrain wise"*). The photograph cannot answer it:
+// it tiles at 4 m and averages to its own mean by thirty.
+//
+// So the rock carries structure the mesh does not have, all of it procedural
+// and all of it in world space, so a scarp and a flat summit cut the same
+// blocks and no frame has to be chosen on a curved face:
+//
+//  - **blocks** — a jittered 3D lattice, read through a small warp so a
+//    boundary wanders like a joint rather than ruling a polygon edge;
+//  - **facets** — each block, and each block of a finer lattice inside it,
+//    leans its normal by its own draw, so a face catches the sun in patches;
+//  - **cracks** — a key per PAIR of blocks, and only [`ROCK_CRACK_SHARE`] of
+//    pairs are cracks, so a crack runs the length of one boundary and stops;
+//  - **weathering** — broad patches, the scale that reads across a valley;
+//  - **streaks** — a lattice stretched tall, only on faces too steep for turf.
+//
+// **What it deliberately does not do, both measured on the capture before they
+// were cut.** It moves no splat weight: a first cut let blocks decide rock
+// against turf at the lip and foot, and the foot of every scarp read as white
+// paving stones laid on grass. And it draws no joint on every boundary: an
+// outline round every block (tried twice, thin and then pillowed) reads as
+// crazy paving or a dry-stone wall, never as a cliff.
+//
+// **Brightness-neutral by construction**, the same promise `MACRO_AMP` makes:
+// the value spread, the weathering and the streaks are each odd about the
+// middle of a symmetric draw, so each has mean 1, and only the cracks darken —
+// a sliver of the face, gone before a crack is a pixel wide. The mean granite
+// is still `GROUND_ALBEDO[3]`, which `fill::GROUND_MIX` folds.
+//
+// **Everything fades with the block's size on screen** (the fragment's own
+// footprint, taken before any branch), so a block a few pixels across stops
+// leaning and a distant face does not sparkle.
+
+/// Edge of one rock block, metres. Large enough that a scarp a player stands
+/// under shows a handful, small enough that one across a valley still reads.
+pub const ROCK_CELL_M: f32 = 7.0;
+/// Edge of one fine block inside the large ones, metres.
+pub const ROCK_FINE_M: f32 = 2.2;
+/// How far a block's facet leans, as a tangent-plane offset per unit normal.
+/// Each component of the draw is in ±1, so the lean tops out near 33°.
+pub const ROCK_TILT: f32 = 0.38;
+/// The fine blocks' lean, riding on the large blocks'.
+pub const ROCK_FINE_TILT: f32 = 0.16;
+/// Peak per-block departure of the face's value from its mean.
+pub const ROCK_SHADE: f32 = 0.06;
+/// Wavelength of the weathering patches, metres, and their peak departure.
+pub const ROCK_WEATHER_M: f32 = 14.0;
+pub const ROCK_WEATHER: f32 = 0.12;
+/// How far the block lattice is pushed about before it is read, metres.
+pub const ROCK_WARP_M: f32 = 1.6;
+/// Share of block boundaries that are cracks.
+pub const ROCK_CRACK_SHARE: f32 = 0.3;
+/// A crack's half-width in block units, and how dark its centre goes.
+pub const ROCK_CRACK_W: f32 = 0.025;
+pub const ROCK_CRACK_DARK: f32 = 0.5;
+/// Peak departure of the streaks: darker in a streak, lighter between.
+pub const ROCK_STREAK: f32 = 0.2;
+/// The streak lattice's cell, metres: narrow across a face and tall down it.
+pub const ROCK_STREAK_W_M: f32 = 1.6;
+pub const ROCK_STREAK_H_M: f32 = 14.0;
+/// `sin(tilt)` where streaks begin (~37°) and are full (~58°): water runs
+/// down a face, it does not stripe a slope a player walks up.
+pub const ROCK_FACE_ON: f32 = 0.6;
+pub const ROCK_FACE_FULL: f32 = 0.85;
 
 /// Where the biplanar wall tap turns on, as `sin(tilt)`.
 ///

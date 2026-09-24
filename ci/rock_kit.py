@@ -67,7 +67,14 @@ sys.path.insert(0, CI)
 import measure_glb as mg  # noqa: E402  (the triage: targets, verdicts)
 
 ROOT = os.path.dirname(CI)
-KINDS = ("boulder", "formation", "slab", "small")
+KINDS = ("boulder", "formation", "slab", "small", "node")
+# What the surface is made of. `granite` is the first cut's material and
+# still the default for every non-node row, so a documented seed rebuilds the
+# rock it was measured as; `formation` is the dark rock on the node looks'
+# shared machinery (cracks, curvature, two scales of value) and is opt-in;
+# the other three are the ore nodes' identities (`ART.md` rule 8: "the pale,
+# round, half-buried lump with the glint").
+LOOKS = ("granite", "stone", "metal", "sulfur", "formation")
 BLENDER_PIN = "4.5"
 
 
@@ -127,13 +134,16 @@ def origin_shift(verts, origin):
     return np.array([-mid[0], -mid[1], -lo[2]])
 
 
-def pack_orm(ao, rough):
-    """The glTF ORM layout from two grey maps: R = occlusion, G = roughness,
-    B = metallic, and a rock is never metal."""
+def pack_orm(ao, rough, metal=None):
+    """The glTF ORM layout from grey maps: R = occlusion, G = roughness,
+    B = metallic. A rock is never metal; the ore seams of a metal node are
+    the one exception, and they arrive as their own baked mask."""
     ao = np.clip(np.asarray(ao, dtype=np.float64), 0, 1)
     rough = np.clip(np.asarray(rough, dtype=np.float64), 0, 1)
     orm = np.zeros(ao.shape + (3,), dtype=np.float64)
     orm[..., 0], orm[..., 1] = ao, rough
+    if metal is not None:
+        orm[..., 2] = np.clip(np.asarray(metal, dtype=np.float64), 0, 1)
     return orm
 
 
@@ -147,15 +157,22 @@ def kind_params(kind, radius, rng):
         # three octaves of surface detail average out to a sphere, and the
         # first cut of this file was crumpled foil for the same reason).
         "lobes_scale": r * rng.uniform(1.1, 1.5),
-        "lobes_strength": r * {"boulder": 0.32, "formation": 0.26, "slab": 0.18, "small": 0.34}[kind],
+        # A node's lobes are the smallest because its PLAN is the thing the
+        # triage holds (`PLAN_ROUND_MAX`): a lobe is a bulge in plan too.
+        "lobes_strength": r * {"boulder": 0.32, "formation": 0.26, "slab": 0.18, "small": 0.34, "node": 0.12}[kind],
         "crackle_scale": r * rng.uniform(0.55, 0.8),
-        "crackle_strength": r * {"boulder": 0.075, "formation": 0.11, "slab": 0.09, "small": 0.06}[kind],
+        # A node's crackle is nearly off: its fractures are the CHIPS below,
+        # because voronoi crackle at a boulder's strength is exactly the
+        # stacked-blocks read the shipped node was rejected for.
+        "crackle_strength": r * {"boulder": 0.075, "formation": 0.11, "slab": 0.09, "small": 0.06, "node": 0.02}[kind],
         "asym_scale": r * rng.uniform(1.8, 2.4),
-        "asym_strength": r * {"boulder": 0.20, "formation": 0.16, "slab": 0.12, "small": 0.18}[kind],
+        "asym_strength": r * {"boulder": 0.20, "formation": 0.16, "slab": 0.12, "small": 0.18, "node": 0.08}[kind],
         # Flat faces: near-coplanar high-poly faces within this angle are
         # dissolved into one, so a rock reads as fractured blocks rather
-        # than as noise. Degrees; 0 turns it off.
-        "facet_deg": {"boulder": 7.0, "formation": 10.0, "slab": 9.0, "small": 6.0}[kind],
+        # than as noise. Degrees; 0 turns it off — the node keeps its dense
+        # high-poly, because its facets are cut, not dissolved, and the
+        # curvature its material reads needs the vertices.
+        "facet_deg": {"boulder": 7.0, "formation": 10.0, "slab": 9.0, "small": 6.0, "node": 0.0}[kind],
         # A boulder is wider than it is tall because that is how it came to
         # rest; a formation stands; a slab is bedding, stretched along x.
         "squash": {
@@ -165,16 +182,61 @@ def kind_params(kind, radius, rng):
             "formation": (rng.uniform(0.7, 1.0), rng.uniform(0.7, 1.0), rng.uniform(0.9, 1.25)),
             "slab": (1.0, rng.uniform(0.55, 0.8), rng.uniform(0.6, 0.9)),
             "small": (rng.uniform(0.8, 1.0), rng.uniform(0.8, 1.0), rng.uniform(0.6, 0.85)),
+            "node": None,  # drawn below, after every other kind's draws
         }[kind],
         # Strata: how much the bedding direction is compressed before the
         # noise is sampled, so features run long along the bed. 1 = none.
-        "strata": {"boulder": 1.0, "formation": 0.7, "slab": 0.3, "small": 1.0}[kind],
-        "tilt_deg": {"boulder": 0.0, "formation": rng.uniform(-18, 18), "slab": rng.uniform(-25, 25), "small": 0.0}[kind],
-        "voxel": r / 28.0,
+        "strata": {"boulder": 1.0, "formation": 0.7, "slab": 0.3, "small": 1.0, "node": 1.0}[kind],
+        "tilt_deg": {"boulder": 0.0, "formation": rng.uniform(-18, 18), "slab": rng.uniform(-25, 25), "small": 0.0, "node": 0.0}[kind],
+        "voxel": r / (40.0 if kind == "node" else 28.0),
         "seed_offset": [rng.uniform(-40, 40) for _ in range(3)],
-        "cut_bottom": {"boulder": 0.0, "formation": 0.12, "slab": 0.10, "small": 0.0}[kind],
+        "cut_bottom": {"boulder": 0.0, "formation": 0.12, "slab": 0.10, "small": 0.0, "node": None}[kind],
     }
+    if kind == "node":
+        # **Equal in plan, by construction** — the one thing `boulder` and
+        # `small` forbid (their first squash term is never their second), and
+        # the reason neither could make a node (`NOW.md` §0rk, measured
+        # 1.82 and 1.33 against a ceiling of 1.20). Low, because the row is a
+        # 1.83 m disc 1.25 m tall; cut well below the equator so the widest
+        # ring is the one in the ground — a dome IN the turf, not a ball on
+        # it (`ART.md` rule 2). Drawn after every other kind's draws so a seed
+        # of any existing kind still builds the same rock it always did.
+        p["squash"] = (1.0, 1.0, rng.uniform(0.72, 0.88))
+        p["cut_bottom"] = rng.uniform(0.28, 0.36)
+        # Chips: planes that shear the cap off a lump, each leaving a flat
+        # fractured face with a crisp rim — what "a few shallow fractures and
+        # small chipped facets" means as geometry. Normals lean upward
+        # (25–85° elevation) because a chip on the flank flattens the PLAN,
+        # which is the one thing a node is held to (15° measured 1.206 on the
+        # first roll, over the 1.20 ceiling); the depth is a fraction
+        # of the lump's own reach in that direction, so a chip is shallow on
+        # a low dome and on a tall one alike.
+        p["chips"] = [
+            [round(math.cos(el) * math.cos(az), 6), round(math.cos(el) * math.sin(az), 6), round(math.sin(el), 6), round(d, 6)]
+            for az, el, d in (
+                (rng.uniform(0, 2 * math.pi), math.radians(rng.uniform(25, 85)), rng.uniform(0.80, 0.93))
+                for _ in range(rng.randint(12, 18))
+            )
+        ]
     return p
+
+
+def chip(verts, chips):
+    """Shear each chip's cap flat: every vertex past the plane at `d` of the
+    lump's reach along `n` is projected onto that plane. Pure numpy, so the
+    self-test holds its two promises: a chip ends the reach along its own
+    normal at exactly `d` of what it was, and it only ever moves a vertex
+    TOWARD the centre (the plane sits on the near side of every vertex it
+    moves), so no chip can push the lump out of the volume it is fitted to."""
+    v = np.array(verts, dtype=np.float64)
+    for c in chips:
+        n = np.array(c[:3], dtype=np.float64)
+        n /= np.linalg.norm(n)
+        proj = v @ n
+        plane = c[3] * proj.max()
+        over = np.maximum(proj - plane, 0.0)
+        v -= over[:, None] * n[None, :]
+    return v
 
 
 def row_luma(occupant, kind):
@@ -185,7 +247,18 @@ def row_luma(occupant, kind):
         return 0.34
     if occupant in mg.DARK_ROWS or kind in ("formation", "slab"):
         return 0.21
+    # The sulfur node's crust is a bright yellow over a third of it, so its
+    # mean sits above the grey rock's; the triage gives metal and sulfur the
+    # general band only, because their identity is colour and glint.
+    if occupant == "SulfurNode":
+        return 0.30
     return 0.26
+
+
+def look_of(occupant, kind):
+    """The surface a row wears unless `--look` says otherwise: each ore node
+    its own identity, everything else the formation's granite."""
+    return {"StoneNode": "stone", "MetalNode": "metal", "SulfurNode": "sulfur"}.get(occupant, "granite")
 
 
 def sidecar(cmd, args, target, where, params, measured, verdict, extra=None):
@@ -301,8 +374,10 @@ def facet(bpy, obj, degrees, smooth_iters=1):
 def base_mesh(bpy, kind, rng, p):
     """The un-noised massing, radius ~1, in Blender space."""
     parts = []
-    if kind in ("boulder", "small"):
-        bpy.ops.mesh.primitive_ico_sphere_add(subdivisions=4, radius=1.0)
+    if kind in ("boulder", "small", "node"):
+        # A node's chips are planes cut through this mesh, so their rims
+        # follow its edges: one more subdivision halves the rim's facets.
+        bpy.ops.mesh.primitive_ico_sphere_add(subdivisions=5 if kind == "node" else 4, radius=1.0)
         parts.append(bpy.context.active_object)
     elif kind == "formation":
         # Two or three overlapping tilted blocks and a lobe; the voxel remesh
@@ -492,6 +567,342 @@ def procedural_rock_material(bpy, name, luma, rng, seed):
     links.new(rr.outputs["Result"], bsdf.inputs["Roughness"])
     bsdf.inputs["Metallic"].default_value = 0.0
     return mat
+
+
+def _link_or_set(nt, sock, x):
+    if isinstance(x, (int, float)):
+        sock.default_value = x
+    elif isinstance(x, tuple):
+        sock.default_value = x if len(x) == 4 else (*x, 1.0)
+    else:
+        nt.links.new(x, sock)
+
+
+def _noise(nt, vec, scale, detail=2.0, rough=0.5, distortion=0.0):
+    n = nt.nodes.new("ShaderNodeTexNoise")
+    n.inputs["Scale"].default_value = scale
+    n.inputs["Detail"].default_value = detail
+    n.inputs["Roughness"].default_value = rough
+    n.inputs["Distortion"].default_value = distortion
+    nt.links.new(vec, n.inputs["Vector"])
+    return n.outputs["Fac"]
+
+
+def _voronoi(nt, vec, scale, feature="F1"):
+    """(distance, per-cell random value) — the cell value is the R channel of
+    Voronoi's Color output, one flat random number per cell. `DISTANCE_TO_EDGE`
+    has no Color output, so it returns no cell value."""
+    v = nt.nodes.new("ShaderNodeTexVoronoi")
+    v.feature = feature
+    v.inputs["Scale"].default_value = scale
+    nt.links.new(vec, v.inputs["Vector"])
+    if feature == "DISTANCE_TO_EDGE":
+        return v.outputs["Distance"], None
+    sep = nt.nodes.new("ShaderNodeSeparateColor")
+    nt.links.new(v.outputs["Color"], sep.inputs["Color"])
+    return v.outputs["Distance"], sep.outputs["Red"]
+
+
+def _band(nt, value, lo, hi):
+    """0 below `lo`, 1 above `hi`, smoothstep between — a soft threshold."""
+    m = nt.nodes.new("ShaderNodeMapRange")
+    m.interpolation_type = "SMOOTHSTEP"
+    m.clamp = True
+    m.inputs["From Min"].default_value = lo
+    m.inputs["From Max"].default_value = hi
+    _link_or_set(nt, m.inputs["Value"], value)
+    return m.outputs["Result"]
+
+
+def _range(nt, value, lo, hi):
+    """Linear remap of 0..1 onto lo..hi."""
+    m = nt.nodes.new("ShaderNodeMapRange")
+    m.clamp = True
+    m.inputs["To Min"].default_value = lo
+    m.inputs["To Max"].default_value = hi
+    _link_or_set(nt, m.inputs["Value"], value)
+    return m.outputs["Result"]
+
+
+def _math(nt, op, a, b=None):
+    m = nt.nodes.new("ShaderNodeMath")
+    m.operation = op
+    _link_or_set(nt, m.inputs[0], a)
+    if b is not None:
+        _link_or_set(nt, m.inputs[1], b)
+    return m.outputs["Value"]
+
+
+def _mix_rgb(nt, fac, a, b):
+    m = nt.nodes.new("ShaderNodeMix")
+    m.data_type = "RGBA"
+    _link_or_set(nt, m.inputs["Factor"], fac)
+    _link_or_set(nt, m.inputs[6], a)
+    _link_or_set(nt, m.inputs[7], b)
+    return m.outputs[2]
+
+
+def _mul_rgb(nt, a, b):
+    m = nt.nodes.new("ShaderNodeMix")
+    m.data_type = "RGBA"
+    m.blend_type = "MULTIPLY"
+    m.inputs["Factor"].default_value = 1.0
+    _link_or_set(nt, m.inputs[6], a)
+    _link_or_set(nt, m.inputs[7], b)
+    return m.outputs[2]
+
+
+def _mix_f(nt, fac, a, b):
+    m = nt.nodes.new("ShaderNodeMix")
+    m.data_type = "FLOAT"
+    _link_or_set(nt, m.inputs["Factor"], fac)
+    _link_or_set(nt, m.inputs[2], a)
+    _link_or_set(nt, m.inputs[3], b)
+    return m.outputs[0]
+
+
+def _grey_ramp(nt, fac, lo, hi):
+    ramp = nt.nodes.new("ShaderNodeValToRGB")
+    ramp.color_ramp.elements[0].color = (*lo, 1)
+    ramp.color_ramp.elements[1].color = (*hi, 1)
+    nt.links.new(fac, ramp.inputs["Fac"])
+    return ramp.outputs["Color"]
+
+
+def _warp(nt, vec, scale, amount):
+    """Domain warp: push the lookup point by a low-frequency noise, so a
+    pattern sampled through it has no straight run and no repeat — the
+    difference between a crack and a voronoi diagram (`ART.md` rule 7)."""
+    n = nt.nodes.new("ShaderNodeTexNoise")
+    n.inputs["Scale"].default_value = scale
+    n.inputs["Detail"].default_value = 2.0
+    nt.links.new(vec, n.inputs["Vector"])
+    centred = nt.nodes.new("ShaderNodeVectorMath")
+    centred.operation = "SUBTRACT"
+    nt.links.new(n.outputs["Color"], centred.inputs[0])
+    centred.inputs[1].default_value = (0.5, 0.5, 0.5)
+    scaled = nt.nodes.new("ShaderNodeVectorMath")
+    scaled.operation = "SCALE"
+    nt.links.new(centred.outputs["Vector"], scaled.inputs[0])
+    scaled.inputs["Scale"].default_value = amount
+    add = nt.nodes.new("ShaderNodeVectorMath")
+    add.operation = "ADD"
+    nt.links.new(vec, add.inputs[0])
+    nt.links.new(scaled.outputs["Vector"], add.inputs[1])
+    return add.outputs["Vector"]
+
+
+def procedural_node_material(bpy, name, luma, rng, look):
+    """What an ORE NODE's high-poly is baked from, one identity per look —
+    `ART.md` rule 8's "pale, round, half-buried lump with the glint", said
+    three ways over one shared rock:
+
+      * **the rock** — two scales of value (rule 1: a 0.3–1 m mottle
+        stretched over the ramp's whole range, and a grain under 5 cm), a few
+        CRACKS (isolines of a warped noise, kept only where a zone noise
+        allows, so a face carries a fracture or two and never a net), and
+        the two curvature terms a weathered stone has: convex rims
+        worn paler, cavities collecting dark. Curvature is Cycles'
+        `Pointiness` off the dense high-poly the node kind keeps.
+      * **stone** — pale granite: a sparse salt-and-pepper of 1 cm dark and
+        white crystals, faint quartz veins along a noise isoline, a little
+        warm stain. The white crystals are glossy, which is the glint a
+        granite node has, and nothing is metal.
+      * **metal** — a brown-grey rock with two families of ore SEAMS that
+        swell and pinch, and grains of ore scattered through the same zone,
+        all METALLIC, dark and smooth (the only metal in the kit, baked into
+        the ORM's blue channel through the socket this returns), in a
+        rust-orange halo.
+      * **sulfur** — a cooler grey rock under a crystalline yellow crust
+        packed into the cavities and cracks plus a few broad patches, lemon
+        to golden per crystal, glossier than the rock. Never green: every
+        yellow here has R over G.
+      * **formation** — not a node: the DARK rock of rule 8 for a boulder,
+        with a wider value ramp, a sparse fleck and broad iron staining, so a
+        kit boulder carries the detail the generated pair beside it does.
+
+    Returns `(material, metal_mask_socket_or_None)`. Metallic is left
+    UNLINKED on the BSDF on purpose: a DIFFUSE colour bake of a metallic
+    surface reads black, and the albedo map has to carry the ore's colour.
+    `only_local` AO, so the low-poly sitting inside the high-poly during a
+    bake cannot darken it."""
+    mat = bpy.data.materials.new(name)
+    mat.use_nodes = True
+    nt = mat.node_tree
+    bsdf = nt.nodes["Principled BSDF"]
+    bsdf.inputs["Metallic"].default_value = 0.0
+    coord = nt.nodes.new("ShaderNodeTexCoord")
+    mapping = nt.nodes.new("ShaderNodeMapping")
+    mapping.inputs["Location"].default_value = (rng.uniform(0, 100), rng.uniform(0, 100), rng.uniform(0, 100))
+    nt.links.new(coord.outputs["Object"], mapping.inputs["Vector"])
+    vec = mapping.outputs["Vector"]
+    L = luma
+
+    # ── the shared rock ──
+    grain = _noise(nt, vec, 18.0, 6.0, 0.6)
+    mottle = _band(nt, _noise(nt, _warp(nt, vec, 0.7, 0.6), 1.6, 3.0), 0.40, 0.60)
+    g = _mix_f(nt, 0.3, mottle, grain)
+    geo = nt.nodes.new("ShaderNodeNewGeometry")
+    # Bands centred on what this mesh actually reads: baked off a node's
+    # high-poly, pointiness sits at p5 0.498 / p50 0.506 / p95 0.549, so a
+    # textbook 0.44 cavity threshold never fires.
+    edge_wear = _band(nt, geo.outputs["Pointiness"], 0.515, 0.56)
+    cavity = _math(nt, "SUBTRACT", 1.0, _band(nt, geo.outputs["Pointiness"], 0.47, 0.502))
+    ao = nt.nodes.new("ShaderNodeAmbientOcclusion")
+    ao.samples = 8
+    ao.only_local = True
+    ao.inputs["Distance"].default_value = 0.25
+    # A crack is an ISOLINE of a warped noise — a long open curve that
+    # wanders and ends — and not a voronoi cell edge, which closes into a
+    # polygon net: measured as the "cracked egg" read on the first metal
+    # roll, where the zone mask could not thin a net into fractures.
+    fissure = _math(nt, "ABSOLUTE", _math(nt, "SUBTRACT", _noise(nt, _warp(nt, vec, 1.2, 0.5), 1.4, 2.0), 0.5))
+    crack_zone = _band(nt, _noise(nt, vec, 0.9, 2.0), 0.50, 0.60)
+    crack = _math(nt, "MULTIPLY", _math(nt, "SUBTRACT", 1.0, _band(nt, fissure, 0.002, 0.007)), crack_zone)
+    metal = None
+
+    if look == "stone":
+        col = _grey_ramp(nt, g, (L * 0.70, L * 0.69, L * 0.67), (L * 1.28, L * 1.27, L * 1.24))
+        _, cell = _voronoi(nt, vec, 90.0)
+        dark = _band(nt, cell, 0.925, 0.945)
+        light = _math(nt, "SUBTRACT", 1.0, _band(nt, cell, 0.045, 0.065))
+        col = _mix_rgb(nt, _math(nt, "MULTIPLY", dark, 0.75), col, (L * 0.42, L * 0.42, L * 0.43))
+        col = _mix_rgb(nt, _math(nt, "MULTIPLY", light, 0.6), col, (L * 1.35, L * 1.35, L * 1.33))
+        ridge = _math(nt, "ABSOLUTE", _math(nt, "SUBTRACT", _noise(nt, _warp(nt, vec, 0.8, 0.4), 0.9, 2.0), 0.5))
+        vein = _math(nt, "SUBTRACT", 1.0, _band(nt, ridge, 0.005, 0.02))
+        vein = _math(nt, "MULTIPLY", vein, _band(nt, _noise(nt, vec, 0.7), 0.42, 0.58))
+        col = _mix_rgb(nt, _math(nt, "MULTIPLY", vein, 0.5), col, (L * 1.4, L * 1.4, L * 1.38))
+        stain = _band(nt, _noise(nt, vec, 1.8, 4.0), 0.60, 0.74)
+        col = _mix_rgb(nt, _math(nt, "MULTIPLY", stain, 0.5), col, (L * 1.1, L * 0.82, L * 0.6))
+        rough = _mix_f(nt, _math(nt, "MULTIPLY", light, 0.8), _range(nt, grain, 0.70, 0.90), 0.38)
+        height = _mix_f(nt, 0.35, grain, mottle)
+        bump_strength = 0.2
+    elif look == "metal":
+        col = _grey_ramp(nt, g, (L * 0.70, L * 0.66, L * 0.62), (L * 1.18, L * 1.12, L * 1.06))
+        # Two vein families at two scales, each a thin band on a warped
+        # isoline and each kept only inside a zone, so the ore reads as seams
+        # running through the rock rather than as flakes lying on it.
+        zone = _band(nt, _noise(nt, vec, 0.8, 2.0), 0.40, 0.56)
+        # The main family is straighter (less warp) — ore fills a fracture,
+        # and a fracture runs — and both swell and pinch: the distance to the
+        # isoline is divided by a slow noise, so one threshold draws a seam
+        # of changing width instead of a pen line (the first metal rolls).
+        swell = _range(nt, _noise(nt, vec, 2.6, 2.0), 0.5, 1.35)
+        r1 = _math(nt, "ABSOLUTE", _math(nt, "SUBTRACT", _noise(nt, _warp(nt, vec, 0.9, 0.25), 1.0, 2.0), 0.5))
+        r1 = _math(nt, "DIVIDE", r1, swell)
+        r2 = _math(nt, "ABSOLUTE", _math(nt, "SUBTRACT", _noise(nt, _warp(nt, vec, 1.7, 0.35), 2.3, 2.0), 0.5))
+        r2 = _math(nt, "DIVIDE", r2, swell)
+        vein = _math(nt, "MAXIMUM", _math(nt, "SUBTRACT", 1.0, _band(nt, r1, 0.008, 0.02)),
+                     _math(nt, "SUBTRACT", 1.0, _band(nt, r2, 0.004, 0.010)))
+        vein = _math(nt, "MULTIPLY", vein, zone)
+        near = _math(nt, "MULTIPLY", _math(nt, "SUBTRACT", 1.0, _band(nt, r1, 0.02, 0.07)), zone)
+        _, cell = _voronoi(nt, _warp(nt, vec, 3.0, 0.2), 16.0)
+        # Grains of ore through the whole zone, densest beside a seam: at a
+        # player's distance the seams are a few pixels wide and it is the
+        # scatter of glints that says "metal".
+        nugget = _math(nt, "MULTIPLY", _band(nt, cell, 0.74, 0.78), _math(nt, "MAXIMUM", near, _math(nt, "MULTIPLY", zone, 0.6)))
+        metal = _math(nt, "MAXIMUM", vein, nugget)
+        # Rust hugs the ore: a halo a few centimetres either side of a seam,
+        # and a weak scatter of stain, both a brown-orange iron oxide.
+        halo = _math(nt, "MULTIPLY", _math(nt, "SUBTRACT", 1.0, _band(nt, r1, 0.025, 0.09)), zone)
+        patch = _band(nt, _noise(nt, vec, 2.4, 3.0), 0.62, 0.70)
+        rust = _math(nt, "MAXIMUM", halo, _math(nt, "MULTIPLY", patch, 0.45))
+        col = _mix_rgb(nt, _math(nt, "MULTIPLY", rust, 0.7), col, (L * 1.35, L * 0.64, L * 0.26))
+        # DARK metal: a bright one mirrors the sky and reads as blue paint
+        # (measured on the first two rolls); a dark one reads as a seam that
+        # flashes where it catches the sun.
+        col = _mix_rgb(nt, metal, col, (0.32, 0.31, 0.30))
+        rough = _mix_f(nt, metal, _mix_f(nt, rust, _range(nt, grain, 0.78, 0.92), 0.88), 0.32)
+        height = _mix_f(nt, 0.5, grain, metal)
+        bump_strength = 0.3
+    elif look == "sulfur":
+        # The crust is the brightest thing in the kit, so the rock under it is
+        # lifted and the yellow deepened toward gold: at 2.0× the rock's luma
+        # every island that caught more crust than its neighbour read as a
+        # patch (chart contrast 0.070 / 0.071 on two rolls); at ~1.6× the
+        # yellow still carries and the islands agree.
+        col = _grey_ramp(nt, g, (L * 0.72, L * 0.72, L * 0.74), (L * 1.08, L * 1.08, L * 1.10))
+        # Its OWN occlusion node: the shared one below takes the finished
+        # colour as its input, so reading this mask off it would close a loop
+        # in the graph — which Cycles resolves by dropping links, silently.
+        # Measured: the first sulfur roll baked 0.48 against a ramp of 0.24.
+        ao_mask = nt.nodes.new("ShaderNodeAmbientOcclusion")
+        ao_mask.samples = 8
+        ao_mask.only_local = True
+        ao_mask.inputs["Distance"].default_value = 0.25
+        hollow = _math(nt, "MAXIMUM", cavity, _math(nt, "SUBTRACT", 1.0, _band(nt, ao_mask.outputs["AO"], 0.6, 0.9)))
+        hollow = _math(nt, "MAXIMUM", hollow, crack)
+        # Patches a hand across, not a metre: a metre-wide crust lands on one
+        # UV island and not its neighbour, which the triage reads as a
+        # patchwork (chart contrast 0.07 on the first roll at scale 1.4).
+        patch = _band(nt, _noise(nt, _warp(nt, vec, 0.9, 0.5), 2.4, 3.0), 0.58, 0.64)
+        crust = _math(nt, "MAXIMUM", _math(nt, "MULTIPLY", hollow, _band(nt, _noise(nt, vec, 4.0, 2.0), 0.35, 0.5)), patch)
+        crystal_d, cell = _voronoi(nt, vec, 32.0)
+        yellow = _mix_rgb(nt, cell, (0.76, 0.54, 0.035), (0.60, 0.36, 0.02))
+        yellow = _mul_rgb(nt, yellow, _grey_of(nt, _range(nt, crystal_d, 1.1, 0.8)))
+        col = _mix_rgb(nt, crust, col, yellow)
+        rough = _mix_f(nt, crust, _range(nt, grain, 0.82, 0.94), _range(nt, cell, 0.40, 0.58))
+        height = _mix_f(nt, 0.5, _mix_f(nt, 0.4, grain, crystal_d), crust)
+        bump_strength = 0.35
+    elif look == "formation":
+        # The DARK rock of rule 8 on the shared machinery: a wider value
+        # ramp than granite's, a sparse dark-and-pale fleck, and iron stain
+        # in broad patches — so a kit boulder carries the same two scales of
+        # detail as the generated pair it is pooled with.
+        col = _grey_ramp(nt, g, (L * 0.66, L * 0.66, L * 0.68), (L * 1.30, L * 1.28, L * 1.26))
+        _, cell = _voronoi(nt, vec, 70.0)
+        dark = _band(nt, cell, 0.93, 0.95)
+        light = _math(nt, "SUBTRACT", 1.0, _band(nt, cell, 0.03, 0.05))
+        col = _mix_rgb(nt, _math(nt, "MULTIPLY", dark, 0.6), col, (L * 0.45, L * 0.45, L * 0.46))
+        col = _mix_rgb(nt, _math(nt, "MULTIPLY", light, 0.5), col, (L * 1.4, L * 1.4, L * 1.38))
+        stain = _band(nt, _noise(nt, _warp(nt, vec, 1.0, 0.4), 2.2, 4.0), 0.62, 0.74)
+        col = _mix_rgb(nt, _math(nt, "MULTIPLY", stain, 0.55), col, (L * 1.35, L * 0.75, L * 0.42))
+        rough = _range(nt, grain, 0.74, 0.94)
+        height = _mix_f(nt, 0.35, grain, mottle)
+        bump_strength = 0.25
+    else:
+        raise SystemExit(f"no node material for look {look!r}")
+
+    # Curvature last, so it weathers whatever the look put down: rims paler,
+    # cavities and cracks darker — the two reads every stone photo has.
+    col = _mix_rgb(nt, _math(nt, "MULTIPLY", edge_wear, 0.45), col, _mul_rgb(nt, col, (1.35, 1.35, 1.35)))
+    col = _mix_rgb(nt, _math(nt, "MAXIMUM", _math(nt, "MULTIPLY", cavity, 0.45), _math(nt, "MULTIPLY", crack, 0.7)),
+                   col, _mul_rgb(nt, col, (0.45, 0.44, 0.43)))
+    nt.links.new(col, ao.inputs["Color"])
+    col = _mix_rgb(nt, 0.3, col, ao.outputs["Color"])
+    nt.links.new(col, bsdf.inputs["Base Color"])
+    nt.links.new(rough, bsdf.inputs["Roughness"])
+    height = _math(nt, "SUBTRACT", height, _math(nt, "MULTIPLY", crack, 0.6))
+    bump = nt.nodes.new("ShaderNodeBump")
+    bump.inputs["Strength"].default_value = bump_strength
+    bump.inputs["Distance"].default_value = 0.004
+    nt.links.new(height, bump.inputs["Height"])
+    nt.links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
+    return mat, metal
+
+
+def _grey_of(nt, value):
+    c = nt.nodes.new("ShaderNodeCombineColor")
+    for k in ("Red", "Green", "Blue"):
+        nt.links.new(value, c.inputs[k])
+    return c.outputs["Color"]
+
+
+def bake_mask(bpy, sc, hi, lo, img, mat, socket, radius):
+    """Bake one scalar of the high-poly's material through an Emission
+    shader — how a mask with no bake type of its own (metallic) reaches a
+    map. The material's surface link is restored afterwards."""
+    nt = mat.node_tree
+    out = next(n for n in nt.nodes if n.type == "OUTPUT_MATERIAL")
+    was = out.inputs["Surface"].links[0].from_socket
+    em = nt.nodes.new("ShaderNodeEmission")
+    nt.links.new(_grey_of(nt, socket), em.inputs["Color"])
+    nt.links.new(em.outputs["Emission"], out.inputs["Surface"])
+    try:
+        bake(bpy, sc, hi, lo, img, "EMIT", 1, radius)
+    finally:
+        nt.links.new(was, out.inputs["Surface"])
+        nt.nodes.remove(em)
 
 
 def new_image(bpy, name, size, srgb):
@@ -725,9 +1136,12 @@ def calibrate_luma(png, luma, mask):
     return gain
 
 
-def bake_all(bpy, sc, hi, lo, radius, tex, seed, workdir, stem, luma=0.26):
+def bake_all(bpy, sc, hi, lo, radius, tex, seed, workdir, stem, luma=0.26, metal=None, stats=None):
     """Normal, albedo, roughness and AO from `hi` onto `lo`'s UVs; the
-    albedo and normal PNGs and a packed ORM PNG come back as paths."""
+    albedo and normal PNGs and a packed ORM PNG come back as paths.
+    `metal` is `(material, mask socket)` for a surface with metal in it,
+    baked into the ORM's blue channel; `None` is a rock, and blue stays 0.
+    `stats`, when given, receives the measured metal share for the sidecar."""
     paths = {}
     mask = coverage_mask(lo, tex)
     normal = new_image(bpy, "bake_normal", tex, srgb=False)
@@ -749,7 +1163,16 @@ def bake_all(bpy, sc, hi, lo, radius, tex, seed, workdir, stem, luma=0.26):
     r_arr = fill_outside(r_arr, mask, r_arr[mask].mean())
     a_arr = fill_outside(a_arr, mask, a_arr[mask].mean())
     print(f"roughness over the rock {r_arr[mask].mean():.3f}, occlusion {a_arr[mask].mean():.3f}, coverage {mask.mean() * 100:.0f}%")
-    orm = pack_orm(a_arr, r_arr)
+    m_arr = None
+    if metal is not None:
+        img = new_image(bpy, "bake_metal", tex, srgb=False)
+        bake_mask(bpy, sc, hi, lo, img, metal[0], metal[1], radius)
+        m_arr = fill_outside(image_array(img)[..., 0], mask, 0.0)
+        share = float((m_arr[mask] > 0.5).mean())
+        print(f"metallic over the rock {m_arr[mask].mean():.3f} (share over 0.5: {share * 100:.1f}%)")
+        if stats is not None:
+            stats["metal_share"] = round(share, 4)
+    orm = pack_orm(a_arr, r_arr, m_arr)
     paths["orm"] = os.path.join(workdir, f"{stem}_orm.png")
     save_png(paths["orm"], orm)
     return paths
@@ -819,22 +1242,31 @@ def cmd_gen(args):
     rng = random.Random(args.seed)
     p = kind_params(args.kind, 1.0, rng)  # massing is built at radius ~1, then fitted
     luma = args.luma or row_luma(args.occupant, args.kind)
+    look = args.look or look_of(args.occupant, args.kind)
     out = os.path.abspath(args.out)
     workdir = os.path.dirname(out) or "."
     os.makedirs(workdir, exist_ok=True)
     stem = os.path.splitext(os.path.basename(out))[0]
-    print(f"target {target[0]:.3f} x {target[1]:.3f} x {target[2]:.3f} m ({where}); kind {args.kind}, seed {args.seed}, luma {luma}")
+    print(f"target {target[0]:.3f} x {target[1]:.3f} x {target[2]:.3f} m ({where}); kind {args.kind}, look {look}, seed {args.seed}, luma {luma}")
 
     sc = fresh_scene(bpy, args.seed)
     hi = base_mesh(bpy, args.kind, rng, p)
     displace(bpy, hi, p, args.seed)
+    if p.get("chips"):
+        set_verts(hi, chip(mesh_verts(hi), p["chips"]))
     remesh(bpy, hi, p["voxel"])
     facet(bpy, hi, p["facet_deg"])
     cut_bottom(bpy, hi, p["cut_bottom"])
     k = fit_and_origin(hi, target, fit_mode, origin)
     shade_smooth(bpy, hi)
     hi_tris = sum(len(f.vertices) - 2 for f in hi.data.polygons)
-    hi.data.materials.append(procedural_rock_material(bpy, "rock_hi", luma, rng, args.seed))
+    metal = None
+    if look == "granite":
+        hi.data.materials.append(procedural_rock_material(bpy, "rock_hi", luma, rng, args.seed))
+    else:
+        mat, mask = procedural_node_material(bpy, "rock_hi", luma, rng, look)
+        hi.data.materials.append(mat)
+        metal = (mat, mask) if mask is not None else None
 
     lo = hi.copy()
     lo.data = hi.data.copy()
@@ -848,15 +1280,16 @@ def cmd_gen(args):
     print(f"high-poly {hi_tris} tris (voxel {p['voxel'] * radius:.3f} m), low-poly {lo_tris} tris, "
           f"fit {np.round(k, 4).tolist()}, post-decimate correction {np.round(k2, 4).tolist()}")
 
-    paths = bake_all(bpy, sc, hi, lo, radius, args.tex, args.seed, workdir, stem, luma=luma)
+    stats = {}
+    paths = bake_all(bpy, sc, hi, lo, radius, args.tex, args.seed, workdir, stem, luma=luma, metal=metal, stats=stats)
     final_material(bpy, lo, paths["albedo"], paths["normal"], paths["orm"])
     hi.hide_render = True
     export_glb(bpy, lo, out)
     measured, bad = measure(out, args.occupant, args.tris)
     report(out, measured, bad)
-    extra = {"seed": args.seed, "kind": args.kind, "luma": luma, "origin": origin, "fit": fit_mode,
+    extra = {"seed": args.seed, "kind": args.kind, "look": look, "luma": luma, "origin": origin, "fit": fit_mode,
              "blender": bpy.app.version_string, "python": sys.version.split()[0],
-             "high_poly_tris": hi_tris, "textures": {k: os.path.basename(v) for k, v in paths.items()}}
+             "high_poly_tris": hi_tris, "textures": {k: os.path.basename(v) for k, v in paths.items()}, **stats}
     if args.preview:
         extra["previews"] = [os.path.basename(x) for x in preview_render(bpy, sc, lo, (mg.sim_lift(args.occupant) if args.occupant else 0.0), radius, os.path.join(workdir, stem))]
     json.dump(sidecar("gen", args, target, where, {kk: (vv * radius if kk.endswith(("_scale", "_strength", "voxel")) else vv) for kk, vv in p.items()},
@@ -974,11 +1407,43 @@ def self_test():
     # 3 · the ORM layout.
     orm = pack_orm(np.full((4, 4), 0.25), np.full((4, 4), 0.8))
     check("ORM packs R=ao G=rough B=0", np.allclose(orm[..., 0], 0.25) and np.allclose(orm[..., 1], 0.8) and np.all(orm[..., 2] == 0))
+    seam = np.zeros((4, 4))
+    seam[1, 2] = 1.0
+    orm = pack_orm(np.full((4, 4), 0.25), np.full((4, 4), 0.8), seam)
+    check("ORM packs a metal mask into B and nothing else", np.array_equal(orm[..., 2], seam) and np.allclose(orm[..., 1], 0.8))
     # 4 · kind params scale with the radius and are seeded.
     a, b = kind_params("boulder", 1.0, random.Random(3)), kind_params("boulder", 2.0, random.Random(3))
     check("params scale with radius", abs(b["lobes_strength"] / a["lobes_strength"] - 2.0) < 1e-9 and abs(b["voxel"] / a["voxel"] - 2.0) < 1e-9)
     check("params are seeded", kind_params("slab", 1.0, random.Random(5)) == kind_params("slab", 1.0, random.Random(5)))
     check("every kind has params", all(kind_params(kd, 1.0, random.Random(1)) for kd in KINDS))
+    # A node is round in plan BY CONSTRUCTION — the squash is equal on the
+    # two plan axes on every seed — and a boulder never is, which is why the
+    # boulder could not make one (`NOW.md` §0rk).
+    ball = rng.normal(size=(3000, 3))
+    ball /= np.linalg.norm(ball, axis=1, keepdims=True)
+    one = [[0.3, 0.2, 0.93, 0.85]]
+    n1 = np.array(one[0][:3]) / np.linalg.norm(one[0][:3])
+    cut = chip(ball, one)
+    check("a chip ends the reach along its normal at d", abs((cut @ n1).max() - 0.85 * (ball @ n1).max()) < 1e-9)
+    many = kind_params("node", 1.0, random.Random(4))["chips"]
+    cut = chip(ball, many)
+    check("chips only move a vertex toward the centre",
+          np.all(np.linalg.norm(cut, axis=1) <= np.linalg.norm(ball, axis=1) + 1e-12))
+    nodes = [kind_params("node", 1.0, random.Random(s)) for s in range(1, 40)]
+    check("node squash is equal in plan and low on every seed",
+          all(n["squash"][0] == n["squash"][1] and n["squash"][2] < 1.0 and n["cut_bottom"] > 0 for n in nodes))
+    check("boulder squash is never equal in plan",
+          all(kind_params("boulder", 1.0, random.Random(s))["squash"][1] < 1.0 for s in range(1, 40)))
+    # Adding a kind must not move another kind's draws: a seed names a rock,
+    # and the rows in `MANIFEST.md` §rock_kit were measured off those names.
+    # Pinned values, not a recomputation — a recomputed expectation would
+    # share any change it was meant to catch.
+    b1 = kind_params("boulder", 1.0, random.Random(1))
+    check("existing kinds' seeds are unmoved by the node kind",
+          abs(b1["lobes_scale"] - 1.1537457) < 1e-6 and abs(b1["squash"][1] - 0.6710138) < 1e-6)
+    check("each ore node wears its own look, everything else granite",
+          [look_of(o, "node") for o in ("StoneNode", "MetalNode", "SulfurNode", "Rock", None)]
+          == ["stone", "metal", "sulfur", "granite", "granite"])
     # 5 · row luma follows the triage's bands.
     check("formation dark, node pale, split at granite",
           row_luma("Rock", "boulder") < mg.GRANITE_LUMA < row_luma("StoneNode", "boulder"))
@@ -1011,6 +1476,7 @@ def main():
     g = sub.add_parser("gen", help="generate a seeded kit piece")
     common(g)
     g.add_argument("--kind", choices=KINDS, default="boulder")
+    g.add_argument("--look", choices=LOOKS, help="the surface; default from the row (each ore node its own, else granite)")
     g.add_argument("--luma", type=float, help="linear albedo luma; default from the row's band")
     g.set_defaults(func=cmd_gen)
 
