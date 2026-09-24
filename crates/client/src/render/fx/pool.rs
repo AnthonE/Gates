@@ -56,6 +56,9 @@ pub struct Particle {
     pub orient: Orient,
     /// Seconds of velocity a streak is drawn over.
     pub stretch: f32,
+    /// The longest this streak may draw, metres; zero is [`STREAK_MAX_M`].
+    /// A tracer is metres long where a spark is centimetres.
+    pub len_max: f32,
     /// A plane it bounces off once (a spark off the surface it came from):
     /// a point on it and its normal; a zero normal is no plane.
     pub plane_p: Vec3,
@@ -230,7 +233,12 @@ impl Pool {
                 let view = (p.pos - cam.pos).normalize_or(Vec3::Z);
                 let dist = (p.pos - cam.pos).length();
                 let across = p.vel - view * p.vel.dot(view);
-                let len = (p.vel.length() * p.stretch).clamp(STREAK_MIN_M, STREAK_MAX_M);
+                let max = if p.len_max > 0.0 {
+                    p.len_max
+                } else {
+                    STREAK_MAX_M
+                };
+                let len = (p.vel.length() * p.stretch).clamp(STREAK_MIN_M, max);
                 let axis = across.normalize_or(cam.up);
                 let side = view.cross(axis).normalize_or(cam.right);
                 let w = size.max(dist * MIN_PX);

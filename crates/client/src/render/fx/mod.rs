@@ -19,6 +19,7 @@
 //! `impact::Contact` the sim already announced.
 
 pub mod atlas;
+pub mod gun;
 pub mod pool;
 pub mod table;
 

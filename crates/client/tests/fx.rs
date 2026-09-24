@@ -5,6 +5,7 @@
 
 use bevy::math::Vec3;
 use bevy::mesh::{Mesh, VertexAttributeValues};
+use client::render::fx::gun::{cosmetic_mark, seg_dist};
 use client::render::fx::pool::{pool_mesh, Cam, Orient, Particle, Pool, MIN_PX};
 use client::render::fx::table::{effect, emit, lod, scaled, Layer};
 use client::render::impact::{Matter, Weapon};
@@ -181,4 +182,28 @@ fn the_mesh_collapses_the_dead_and_goes_quiet() {
     assert!(p.write(&mut mesh, &cam, cam.pos));
     assert!(positions(&mesh).iter().all(|v| *v == [0.0; 3]));
     assert!(!p.needs_write(), "and then the mesh is left alone");
+}
+
+/// A client draws a miss exactly where the shard did not: the beam stopped on
+/// something, past the shard's mark walk, and no body stood in its line.
+#[test]
+fn the_client_marks_only_what_the_shard_did_not() {
+    use sim_core::limits::MAX_HITSCAN_MARK_SAMPLES as K;
+    assert!(
+        cosmetic_mark(K + 1, true, false),
+        "a far miss is the client's"
+    );
+    assert!(!cosmetic_mark(K, true, false), "the shard marked this one");
+    assert!(!cosmetic_mark(K + 50, false, false), "it reached nothing");
+    assert!(!cosmetic_mark(K + 50, true, true), "a body took it");
+}
+
+/// The body-in-line test's geometry: a point beside the segment is its
+/// perpendicular distance away; past an end, the distance to that end.
+#[test]
+fn distance_to_a_shot_line() {
+    let (a, b) = (Vec3::ZERO, Vec3::new(10.0, 0.0, 0.0));
+    assert!((seg_dist(Vec3::new(5.0, 0.4, 0.0), a, b) - 0.4).abs() < 1e-5);
+    assert!((seg_dist(Vec3::new(12.0, 0.0, 0.0), a, b) - 2.0).abs() < 1e-5);
+    assert!((seg_dist(Vec3::new(-3.0, 4.0, 0.0), a, b) - 5.0).abs() < 1e-5);
 }

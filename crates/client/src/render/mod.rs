@@ -1020,7 +1020,7 @@ impl Plugin for GatesRenderPlugin {
                 // The mark's two halves. `mark` reads the frame's resolved
                 // contacts, so it follows the resolver; `fade` then ages
                 // everything and rewrites the one mark mesh if it moved.
-                decal::mark.after(impact::contacts),
+                decal::mark.after(impact::contacts).after(fx::gun::shots),
                 decal::fade.after(decal::mark),
                 // The weak-spot cross, off the core's latched mark and the
                 // frame's sector answer — after the resolver that writes
@@ -1035,6 +1035,12 @@ impl Plugin for GatesRenderPlugin {
                 // the three `fly`s advance whatever is live, including the
                 // burst just thrown, so a blow's first frame already moves.
                 impact::contacts.after(feed::drain).after(verbs::resolve),
+                // A shot's flash and tracer, and the contact of a miss the
+                // shard did not mark — added to the frame's list before
+                // anything throws off it.
+                fx::gun::shots
+                    .after(impact::contacts)
+                    .before(impact::strike),
                 impact::strike.after(impact::contacts),
                 impact::fly.after(impact::strike),
                 fx::flash.after(impact::strike),

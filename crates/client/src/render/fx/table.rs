@@ -29,6 +29,8 @@ pub enum Layer {
     BloodDrops,
     Smoke,
     Fireball,
+    /// The little grey breath a muzzle puts out.
+    GunSmoke,
 }
 
 impl Layer {
@@ -355,6 +357,21 @@ fn spec(layer: Layer) -> Spec {
             spin: 0.3,
             ..base
         },
+        Layer::GunSmoke => Spec {
+            cell: SMOKE,
+            cells: 2,
+            speed: (0.6, 1.6),
+            spray: 0.85,
+            gravity: -0.3,
+            drag: 3.0,
+            life: (0.6, 1.0),
+            size: (0.04, 0.06),
+            grow: 5.0,
+            c0: [0.55, 0.55, 0.55, 0.28],
+            c1: [0.6, 0.6, 0.6, 0.0],
+            spin: 0.6,
+            ..base
+        },
         Layer::Fireball => Spec {
             cell: GLOW,
             speed: (1.0, 4.0),
@@ -415,6 +432,7 @@ pub fn emit(pool: &mut Pool, layer: Layer, n: usize, at: Vec3, dir: Vec3, matter
             cell,
             orient: s.orient,
             stretch: s.stretch,
+            len_max: 0.0,
             plane_p: at,
             plane_n: if s.bounce { dir } else { Vec3::ZERO },
         });

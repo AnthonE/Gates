@@ -1100,6 +1100,62 @@ pub(crate) fn world_stop(
     (stop_t, surf, built)
 }
 
+/// Where a hitscan shot stops against the world over its WHOLE reach.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BeamStop {
+    /// The sample the walk stopped on (1-based) and how many it had; `k == n`
+    /// with no surface is a beam that reached nothing.
+    pub k: usize,
+    pub n: usize,
+    /// The stop point, millimetres.
+    pub at_mm: (f32, f32, f32),
+    /// What stopped it (`SURF_*`).
+    pub surf: Option<u8>,
+    /// The beam's unit direction.
+    pub dir: (f32, f32, f32),
+}
+
+/// [`hitscan`]'s world walk from `origin_mm` along (`yaw`, `pitch`) for
+/// `range_mm`, never truncated — for a client drawing the dust and the mark
+/// of a miss the shard did not mark (it stops at
+/// [`MAX_HITSCAN_MARK_SAMPLES`] so a decal cannot own the tick). The same
+/// ladder, so the client and the shard cannot disagree about what a trunk
+/// is. Cosmetic and client-side: nothing in a tick calls this.
+#[allow(clippy::too_many_arguments)]
+pub fn beam_stop(
+    seed: u64,
+    haven: &terrain::Haven,
+    cols: &ColIndex,
+    occ: &mut Occupants,
+    origin_mm: (f32, f32, f32),
+    yaw: u16,
+    pitch: u8,
+    range_mm: u32,
+) -> BeamStop {
+    let n = (range_mm as usize / ARROW_STEP_MM as usize + 1).min(MAX_HITSCAN_SAMPLES);
+    let (fx, fz) = yaw_dir(yaw);
+    let (ch, sv) = pitch_dir(pitch);
+    let reach = range_mm as f32;
+    let s = (fx * ch * reach, sv * reach, fz * ch * reach);
+    let (stop_t, surf, _) = world_stop(seed, haven, cols, occ, origin_mm, s, n, n, ARROW_R_M);
+    let k = if surf.is_some() {
+        crate::fmath::floor_i32(stop_t * n as f32 + 0.5) as usize
+    } else {
+        n
+    };
+    BeamStop {
+        k,
+        n,
+        at_mm: (
+            origin_mm.0 + s.0 * stop_t,
+            origin_mm.1 + s.1 * stop_t,
+            origin_mm.2 + s.2 * stop_t,
+        ),
+        surf,
+        dir: (fx * ch, sv, fz * ch),
+    }
+}
+
 /// How a body scan answers *where was this body*.
 ///
 /// The two shots in this module need different answers and the difference
