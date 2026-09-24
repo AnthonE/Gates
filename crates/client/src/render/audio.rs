@@ -1099,7 +1099,7 @@ pub fn bed(
     // The tick comes through `DayPin` for the same reason one level up: on a
     // `--capture` run the hour is pinned, and reading the raw estimate here
     // would roost the birds at the box's hour while the sun stood at noon.
-    let is_day = !sim_core::world::is_night(pin.tick(feed.server_tick_est));
+    let is_day = !sim_core::world::is_night(pin.day_tick(feed.server_tick_est, &feed.env));
     if is_day && sound.birds.due(cover, time.delta_secs()) && near > 0 {
         let want = sound.birds.perch(near);
         if let Some(p) = props

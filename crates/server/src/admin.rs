@@ -68,6 +68,8 @@ pub const VERB_GIVE: u16 = 4;
 pub const VERB_SAVE: u16 = 5;
 /// Not an admin verb — the code the log uses for a refused slash line.
 pub const VERB_UNKNOWN: u16 = 6;
+pub const VERB_WEATHER: u16 = 7;
+pub const VERB_TIME: u16 = 8;
 
 /// The verb code a parsed command carries into the log.
 pub fn verb_of(cmd: &AdminCmd) -> u16 {
@@ -78,6 +80,8 @@ pub fn verb_of(cmd: &AdminCmd) -> u16 {
         AdminCmd::Teleport { .. } => VERB_TP,
         AdminCmd::Give { .. } => VERB_GIVE,
         AdminCmd::SaveNow => VERB_SAVE,
+        AdminCmd::Weather { .. } => VERB_WEATHER,
+        AdminCmd::Time { .. } => VERB_TIME,
         // A `/bug` is never an admin act; it has its own `Kind`.
         AdminCmd::Bug { .. } => VERB_UNKNOWN,
     }

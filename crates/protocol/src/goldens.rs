@@ -40,7 +40,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 111] = [
+pub const FIXTURES: [&str; 112] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -208,7 +208,27 @@ pub const FIXTURES: [&str; 111] = [
     "action_assist.bin",
     "event_assist.bin",
     "action_rotate.bin",
+    // Weather v0 (v75). Appended.
+    "event_env.bin",
 ];
+
+/// The sky/clock event: a storm forced mid-fade, the clock pushed to dusk.
+pub fn event_env() -> sim_core::weather::Env {
+    sim_core::weather::Env {
+        mode: sim_core::weather::STORM,
+        fade_end: 0x0123_4567,
+        from: sim_core::weather::Wx {
+            cloud: 350,
+            dark: 17,
+            rain: 1000,
+            fog: 0,
+            wind: 999,
+            thunder: 512,
+            wind_dir: 0xA5,
+        },
+        day_offset: 123_457,
+    }
+}
 
 /// The move action: container handle (a bag id, or a packed
 /// `box_key(cx, cz, level)` — the kinds say which), from (kind, slot), to

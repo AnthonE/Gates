@@ -682,6 +682,16 @@ impl DayPin {
     pub fn tick(&self, server_tick_est: f64) -> u64 {
         self.0.unwrap_or_else(|| server_tick_est.max(0.0) as u64)
     }
+
+    /// The tick the day clock reads: [`Self::tick`] moved by any `/time`
+    /// (`weather::day_tick`). A pinned probe ignores the offset — its hour
+    /// is the pin's, whatever the shard's clock was pushed to.
+    pub fn day_tick(&self, server_tick_est: f64, env: &sim_core::weather::Env) -> u64 {
+        match self.0 {
+            Some(t) => t,
+            None => sim_core::weather::day_tick(self.tick(server_tick_est), env),
+        }
+    }
 }
 
 /// What `day_night` drives on the camera: the two fills, the deck and, in a
@@ -704,7 +714,7 @@ pub fn day_night(
     mut sun: Query<(&mut Transform, &mut DirectionalLight), With<Sun>>,
     mut cam: Query<CamLight, With<EyeCam>>,
 ) {
-    let frac = sim_core::world::day_frac(pin.tick(feed.server_tick_est));
+    let frac = sim_core::world::day_frac(pin.day_tick(feed.server_tick_est, &feed.env));
     let light = daylight(frac);
     if let Ok((mut t, mut d)) = sun.single_mut() {
         t.rotation = sun_rotation_at(frac);

@@ -1346,6 +1346,18 @@ pub enum Command {
         item: u16,
         count: u16,
     },
+    /// The sky and the clock — the admin lane's `/weather` and `/time`
+    /// (the reference's `weather.load` and `env.time`), `AdminTeleport`'s
+    /// posture: minted only behind the allowlist, a command so it replays.
+    ///
+    /// `weather` is `weather::MODE_AUTO` or a preset code, or
+    /// `weather::KEEP_WEATHER` to leave the sky alone; `time_pm` is where in
+    /// the day to put the clock, per mille of `day_frac`, or
+    /// `weather::KEEP_TIME`. Out-of-range values are a legal no-op.
+    AdminEnv {
+        weather: u8,
+        time_pm: u16,
+    },
     /// One client input frame, plus how many ticks of lag compensation the
     /// server is willing to grant this player's verbs *this tick*.
     ///
@@ -1811,6 +1823,10 @@ pub struct World {
     /// long as the two victims were standing still. The counter is what
     /// makes that divergence loud on the tick it happens.
     pub evictions: u64,
+    /// The admin's say over the sky and the day clock (`weather::Env`):
+    /// a forced preset and a clock offset. Sim state — hashed, saved, and
+    /// broadcast when it changes. `Default` is the schedule untouched.
+    pub env: crate::weather::Env,
     /// Sparse harvested/damaged slot records (TERRAIN.md §2).
     pub slot_lives: SlotLives,
     /// Memo of `terrain::scatter` behind the occupant collision query
@@ -1881,6 +1897,7 @@ impl World {
             sweep_deploy: 0,
             sweep_support: 0,
             evictions: 0,
+            env: crate::weather::Env::default(),
             slot_lives: SlotLives::new(),
             slot_cache: Box::new(crate::occupy::SlotCache::new()),
             arrows: Box::new(ranged::Arrows::new()),
@@ -3613,6 +3630,15 @@ impl World {
                     }
                 }
             }
+            Command::AdminEnv { weather, time_pm } => {
+                let (seed, tick) = (self.seed, self.tick);
+                if weather <= crate::weather::PRESET_MAX {
+                    self.env.force(seed, tick, weather);
+                }
+                if time_pm < 1000 {
+                    self.env.set_time(tick, time_pm);
+                }
+            }
             Command::Input {
                 id,
                 frame,
@@ -4688,10 +4714,15 @@ impl World {
         // shot must resolve against where the animal ended this tick — the
         // same rule the player loop's ordering states in the comment above.
         let mut bites = mob::Bites::new();
+        // The hour and the air an animal reads: the day clock under any
+        // `/time`, and how far this weather lets it see.
+        let wx = crate::weather::now(seed, tick, &self.env);
         mob::step(
             seed,
             &self.haven,
             tick,
+            crate::weather::day_tick(tick, &self.env),
+            crate::weather::sense_pm(&wx),
             &self.mob,
             self.pieces.cols(),
             &mut crate::occupy::Occupants {
@@ -5523,6 +5554,23 @@ impl World {
         h.update(&self.sweep_deploy.to_le_bytes());
         h.update(&self.sweep_support.to_le_bytes());
         h.update(&self.evictions.to_le_bytes());
+        // Skip-if-inert: a world nobody ever forced hashes as it always did.
+        if self.env != crate::weather::Env::default() {
+            let e = &self.env;
+            let mut buf = [0u8; 26];
+            buf[0] = e.mode;
+            buf[1..9].copy_from_slice(&e.fade_end.to_le_bytes());
+            let f = e.from;
+            for (i, v) in [f.cloud, f.dark, f.rain, f.fog, f.wind, f.thunder]
+                .into_iter()
+                .enumerate()
+            {
+                buf[9 + i * 2..11 + i * 2].copy_from_slice(&v.to_le_bytes());
+            }
+            buf[21] = f.wind_dir;
+            buf[22..26].copy_from_slice(&e.day_offset.to_le_bytes());
+            h.update(&buf);
+        }
         h.digest()
     }
 }

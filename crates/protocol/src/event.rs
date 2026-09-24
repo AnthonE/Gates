@@ -353,7 +353,14 @@ const SUB_RECOVERED: u32 = 57;
 const SUB_GITEM_SYNC: u32 = 58;
 /// Help progress/clear state, visible only to the two participants (v66).
 const SUB_ASSIST: u32 = 59;
-const SUB_MAX: u32 = SUB_ASSIST;
+/// The admin's say over the sky and the clock (weather v0, wire v75): the
+/// whole `sim_core::weather::Env`, broadcast when it changes and on join.
+/// The schedule itself never crosses — it is a function of the seed and
+/// the tick every client already holds.
+const SUB_ENV: u32 = 60;
+const SUB_MAX: u32 = SUB_ENV;
+/// Width of each per-mille weather field: 0..=1000 in ten bits.
+const WX_PM_BITS: u32 = 10;
 /// Width of the recovery chance on both wounded messages: per mille, so
 /// 0..=1000 in ten bits. `sim_core::wound::recover_chance_pm` tops out at
 /// 450 by construction; the field is sized to the unit rather than to
@@ -777,6 +784,9 @@ impl Default for ItemCatalog {
 /// so equality is well-defined (the goldens compare decoded values).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EventMsg {
+    /// The world's stored sky and clock (`SUB_ENV`). `fade_end` crosses as
+    /// the low 32 bits of the tick, the snapshot header's own width.
+    Env(sim_core::weather::Env),
     /// Absolute hand-revive progress for its two participants. All-zero
     /// fields clear a prior hold; recovery is the existing `Recovered` fact.
     /// Neither side accumulates network arrivals.
@@ -2933,6 +2943,24 @@ pub fn encode_event_assist(
     Ok(w.finish())
 }
 
+/// The world's sky and clock — see `EventMsg::Env`. Refuses an `Env` the
+/// decoder would refuse, so a bad value never reaches the wire.
+pub fn encode_event_env(env: &sim_core::weather::Env, buf: &mut [u8]) -> Result<usize, WireError> {
+    if !env.valid() {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_ENV)?;
+    w.write(env.mode as u32, 3)?;
+    w.write(env.fade_end as u32, 32)?;
+    let f = env.from;
+    for v in [f.cloud, f.dark, f.rain, f.fog, f.wind, f.thunder] {
+        w.write(v as u32, WX_PM_BITS)?;
+    }
+    w.write(f.wind_dir as u32, 8)?;
+    w.write(env.day_offset, 32)?;
+    Ok(w.finish())
+}
+
 /// A body got up, own-fact — see `EventMsg::Recovered`.
 pub fn encode_event_recovered(chance_pm: u16, hp: u16, buf: &mut [u8]) -> Result<usize, WireError> {
     if chance_pm as u32 > CHANCE_PM_MAX {
@@ -3817,6 +3845,34 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 return Err(WireError::Malformed);
             }
             EventMsg::Wounded { ticks, chance_pm }
+        }
+        SUB_ENV => {
+            let mode = r.read(3)? as u8;
+            let fade_end = r.read(32)? as u64;
+            let mut pm = [0u16; 6];
+            for v in pm.iter_mut() {
+                *v = r.read(WX_PM_BITS)? as u16;
+            }
+            let wind_dir = r.read(8)? as u8;
+            let day_offset = r.read(32)?;
+            let env = sim_core::weather::Env {
+                mode,
+                fade_end,
+                from: sim_core::weather::Wx {
+                    cloud: pm[0],
+                    dark: pm[1],
+                    rain: pm[2],
+                    fog: pm[3],
+                    wind: pm[4],
+                    thunder: pm[5],
+                    wind_dir,
+                },
+                day_offset,
+            };
+            if !env.valid() {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Env(env)
         }
         SUB_ASSIST => {
             let helper = r.read(32)?;
@@ -5346,6 +5402,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/wound.rs"),
         },
         Module {
+            file: "weather.rs",
+            src: include_str!("../../sim-core/src/weather.rs"),
+        },
+        Module {
             file: "backpack.rs",
             src: include_str!("../../sim-core/src/backpack.rs"),
         },
@@ -6149,6 +6209,9 @@ mod wire_domains {
             // without also breaking the unit; the encoder refuses past
             // 1000 either way.
             "CHANCE_PM_BITS",
+            // Per-mille weather fields (weather v0): a unit, not an
+            // enumeration — `Wx::in_range` bounds them at 1000 on both ends.
+            "WX_PM_BITS",
             "MOVE_SLOT_BITS",
             "INV_COUNT_BITS",
             "INV_SLOT_BITS",

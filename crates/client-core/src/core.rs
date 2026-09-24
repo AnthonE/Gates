@@ -309,6 +309,11 @@ pub const APPLIED2_BAGS: u32 = 1 << 5;
 /// would keep drawing it.
 pub const APPLIED2_GITEMS: u32 = 1 << 6;
 
+/// The world's sky/clock record changed (`EventMsg::Env`, weather v0) —
+/// re-read `env`. A level, not a ring: only the latest record means
+/// anything.
+pub const APPLIED2_ENV: u32 = 1 << 7;
+
 /// The client's mirror of the loose stacks lying on the ground (ground
 /// items v0). `BagSet`'s shape one store over, with one difference that
 /// matters: **a stack's identity is its id and its contents ride with
@@ -1284,6 +1289,11 @@ pub struct ClientCore {
     /// Latest server hold, helper and target are connection ids. Zero ticks
     /// cancels it; the completion is followed by the ordinary recovery fact.
     pub assist: (u32, u32, u16),
+    /// The world's stored say over the sky and the clock (weather v0), as
+    /// the server last stated it. The weather itself is derived — the
+    /// schedule is `sim_core::weather::now(seed, tick, &env)` — so this is
+    /// the only part that crosses.
+    pub env: sim_core::weather::Env,
     /// The frame's facts for the two destructive readers below — one slot
     /// each, not a ring, because a body cannot go down twice or get up
     /// twice between two drains, and a second `Wounded` before the first
@@ -1555,6 +1565,7 @@ impl ClientCore {
             wound_ticks: 0,
             wound_chance_pm: 0,
             assist: (0, 0, 0),
+            env: sim_core::weather::Env::default(),
             wounded_fact: None,
             recovered_fact: None,
             own_bags: [BagAnchor::default(); BAG_CAP],
@@ -2529,6 +2540,10 @@ impl ClientCore {
                 ticks,
             } => {
                 self.assist = (helper, target, ticks);
+            }
+            EventMsg::Env(env) => {
+                self.env = env;
+                self.applied2 |= APPLIED2_ENV;
             }
             EventMsg::Recovered { chance_pm, hp } => {
                 self.wounded = false;

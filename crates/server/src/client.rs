@@ -329,6 +329,9 @@ pub struct ClientNetState {
     pub pending_action: Option<ActionMsg>,
     /// Last help state successfully queued. A failed cancellation retries.
     pub last_assist: (u32, u32, u16),
+    /// The sky/clock record as last sent (weather v0). `None` owes the
+    /// client the whole of it: a fresh join and a resync both start here.
+    pub last_env: Option<sim_core::weather::Env>,
     /// One decoded C→S chat line awaiting its fan-out. Unlike the action
     /// hand this is never deferred: chat is not a transaction, so a line
     /// that can't be said this tick is dropped rather than held (the
@@ -397,6 +400,7 @@ impl ClientNetState {
             wear_reset: true,
             pending_action: None,
             last_assist: (0, 0, 0),
+            last_env: None,
             pending_chat: None,
             last_jobs: [CraftJob::default(); CRAFT_QUEUE],
             last_done_at: 0,
@@ -447,6 +451,7 @@ impl ClientNetState {
         // client to re-ask and no panel it may have shut.
         self.resync_wear();
         self.last_done_at = u64::MAX;
+        self.last_env = None;
     }
 
     /// Open `handle` of `kind` as this client's container view, or close

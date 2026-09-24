@@ -176,7 +176,16 @@ use crate::worldcont::WorldContRec;
 /// players moved again. Saved for 12's reason exactly: `state_hash` folds
 /// all three, and `tests/combat_storm.rs`'s round trip went red the day
 /// they were left out.
-pub const WORLD_SAVE_FORMAT: u16 = 14;
+///
+/// **15 — the sky and the clock** (weather v0): the head grew the admin's
+/// `weather::Env` (`ENV_BYTES`), hashed once it is not the default. The
+/// same release grew the per-player tail (wet and cold) and the slot-life
+/// record (a regrowing tree), all under this one number.
+pub const WORLD_SAVE_FORMAT: u16 = 15;
+
+/// The head's `weather::Env`: mode, fade end, the six per-mille fields and
+/// the bearing it faded from, and the day offset.
+pub const ENV_BYTES: usize = 1 + 8 + 6 * 2 + 1 + 4;
 
 /// Fixed head: format, tick, the three sweep cursors, the eviction counter,
 /// the next bag id, and the ten section counts.
@@ -190,7 +199,7 @@ pub const WORLD_SAVE_FORMAT: u16 = 14;
 /// with anything about the head. A hand-copied offset is a silent
 /// wrong-seek the day the layout grows; naming the constant is what makes
 /// the next section free.
-pub const HEAD_BYTES: usize = 2 + 8 + 4 * 3 + 8 + 4 + 4 + SECTION_COUNTS;
+pub const HEAD_BYTES: usize = 2 + 8 + 4 * 3 + 8 + 4 + 4 + ENV_BYTES + SECTION_COUNTS;
 /// Eleven `u16` counts and one `u32` (`slot_lives`, whose cap is 16 384 and
 /// so does not fit a `u16` with room to be over-cap and *refused* rather
 /// than wrapping — the count has to be able to say an illegal number).
@@ -391,6 +400,9 @@ pub enum WorldSaveError {
     /// can reach and a `state_hash` term nothing can explain. The
     /// duplicate-bag-id refusal, one store over.
     DuplicateWorldCont,
+    /// The sky/clock record names a preset past the table, a per-mille
+    /// field past 1000, or a day offset past a day.
+    BadEnv,
 }
 
 impl WorldSaveError {
@@ -413,6 +425,7 @@ impl WorldSaveError {
             Self::BadCode => "a code lock carries a code that is not four digits",
             Self::BadWorldContTable => "a world container names a table no container rolls",
             Self::DuplicateWorldCont => "two world containers claim the same cell",
+            Self::BadEnv => "the weather record names an impossible sky or clock",
         }
     }
 }
@@ -491,6 +504,21 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
     // records, and a save that dropped it would load to a different
     // `state_hash` than it was taken from.
     o.u32(w.spent.evictions());
+    let e = &w.env;
+    o.u8(e.mode);
+    o.u64(e.fade_end);
+    for v in [
+        e.from.cloud,
+        e.from.dark,
+        e.from.rain,
+        e.from.fog,
+        e.from.wind,
+        e.from.thunder,
+    ] {
+        o.u16(v);
+    }
+    o.u8(e.from.wind_dir);
+    o.u32(e.day_offset);
 
     // Bodies. Everyone in the file is written as a sleeper *by the loader*,
     // not here — see `decode_into`. What is written is who was in the world.
@@ -841,6 +869,22 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
     let evictions = r.u64()?;
     let next_bag = r.u32()?;
     let spent_evictions = r.u32()?;
+    let mut env = crate::weather::Env {
+        mode: r.u8()?,
+        fade_end: r.u64()?,
+        ..Default::default()
+    };
+    env.from.cloud = r.u16()?;
+    env.from.dark = r.u16()?;
+    env.from.rain = r.u16()?;
+    env.from.fog = r.u16()?;
+    env.from.wind = r.u16()?;
+    env.from.thunder = r.u16()?;
+    env.from.wind_dir = r.u8()?;
+    env.day_offset = r.u32()?;
+    if !env.valid() {
+        return Err(WorldSaveError::BadEnv);
+    }
 
     let n_players = r.count(MAX_PLAYERS)?;
     let n_pieces = r.count(MAX_PIECES)?;
@@ -1531,6 +1575,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
     w.sweep_deploy = sweep_deploy;
     w.sweep_support = sweep_support;
     w.evictions = evictions;
+    w.env = env;
     w.players = players;
     w.pieces
         .restore(&pieces[..n_pieces], &placed[..n_pieces], &w.build);
@@ -1648,7 +1693,7 @@ mod tests {
         // is 9 + 12 stacks = 57, and 55 is what you get by forgetting that
         // a stack is four bytes and not two. A constant a reader cannot
         // re-derive is a constant nobody checks twice.
-        let by_hand = 64                    // head (format 14: eleven section counts)
+        let by_hand = 90                    // head (format 15: eleven section counts + the 26 B sky/clock)
             + 100 * 373                     // players (6 B a stack, 2 worn at format 8, light_acc at 11, the magazine at 12, the crawl at 13)
             + 8_192 * 21                    // pieces + plate + placement tick
             + 1_024 * 33                    // deploys + bag_ready + placed
@@ -1670,8 +1715,9 @@ mod tests {
                            // ids it installs (`GroundItems::restore`), unlike
                            // a bag's, and a head field duplicating a
                            // derivable one is a second place for it to be
-                           // wrong.
-        assert_eq!(HEAD_BYTES, 64);
+                           // wrong. 64 -> 90 at format 15: the admin's sky and
+                           // clock (`ENV_BYTES`).
+        assert_eq!(HEAD_BYTES, 90);
         // 4 id + 12 position + 6 stack + 8 deadline.
         assert_eq!(GROUND_ITEM_BYTES, 30);
         // Three millimetre coordinates, the round, and the ready deadline.
@@ -1739,8 +1785,10 @@ mod tests {
         // an old file no longer reads — which on a live shard means a
         // wipe, and that is an operator act (`DECISIONS.md`, and
         // `store.rs`'s own refusal says whose call it is).
+        // 884_084 → 884_110 at format 15 (weather v0): the head's 26-byte
+        // sky and clock.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 884_084,
+            WORLD_SAVE_MAX_BYTES, 884_110,
             "the world save ceiling moved"
         );
     }

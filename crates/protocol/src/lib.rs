@@ -56,9 +56,9 @@ pub use event::{
     encode_event_consume_refused, encode_event_consumed, encode_event_cont_sync,
     encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused, encode_event_death,
     encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
-    encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_gather,
-    encode_event_gather_refused, encode_event_gitem_sync, encode_event_health, encode_event_hit,
-    encode_event_hurt, encode_event_impact, encode_event_inv, encode_event_knock,
+    encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_env,
+    encode_event_gather, encode_event_gather_refused, encode_event_gitem_sync, encode_event_health,
+    encode_event_hit, encode_event_hurt, encode_event_impact, encode_event_inv, encode_event_knock,
     encode_event_known, encode_event_move_refused, encode_event_moved, encode_event_oven,
     encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_repaired,
     encode_event_piece_sync, encode_event_recipes, encode_event_recovered, encode_event_reload,
@@ -929,7 +929,12 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// the next number and regenerated every fixture from the merged encoder.
 /// Against `main`'s v73 exactly two fixtures differ in bytes: `hello` (the
 /// version) and `event_stock` (the bill).
-pub const PROTO_VER: u16 = 74;
+/// v75 is weather v0: `SUB_ENV` (60) carries the admin's sky and clock,
+/// `SUB_EXPOSURE` (61) the owner's wet and cold, `SUB_SLOT_GROW_SYNC` (62)
+/// the regrowing trees a late joiner needs; the slot-respawn event grows a
+/// sapling bit and the tick it is grown by; and the death cause admits 7
+/// (`DEATH_BY_COLD`) inside its three bits.
+pub const PROTO_VER: u16 = 75;
 
 /// This game's slug in the elo catalog.
 ///

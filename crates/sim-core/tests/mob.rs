@@ -652,6 +652,9 @@ fn a_bite_can_kill_and_the_cause_is_the_mob() {
 /// simply the only one in the world.
 fn alone_with(kind: u8, metres: f32) -> (World, usize) {
     let mut w = World::new(11);
+    // Clear skies held: these measure the hour's radius, and the weather
+    // schedule would otherwise put fog on some test tick (weather v0).
+    w.env = sim_core::weather::Env::CLEAR;
     w.combat = CombatContent::probe_fixture();
     w.mob = MobContent::probe_fixture();
     w.dev_spawn = Some(w.spawn_pos(1));

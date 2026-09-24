@@ -352,6 +352,12 @@ impl ShardCore {
         }
     }
 
+    /// Queue the sky/clock verb outside the admin lane — the boot's
+    /// `dev_env` (`config.rs`). False ⇒ the command buffer was full.
+    pub fn queue_env(&mut self, weather: u8, time_pm: u16) -> bool {
+        self.queue(Command::AdminEnv { weather, time_pm })
+    }
+
     fn queue(&mut self, cmd: Command) -> bool {
         // Half the command budget is reserved for the per-tick inputs.
         if self.queued_len >= MAX_COMMANDS_PER_TICK - MAX_PLAYERS {
@@ -1364,6 +1370,36 @@ impl ShardCore {
                     return;
                 }
                 logged = logged.with(item as i64, count as i64, 0);
+            }
+            AdminCmd::Weather { mode } => {
+                if !self.queue(Command::AdminEnv {
+                    weather: mode,
+                    time_pm: sim_core::weather::KEEP_TIME,
+                }) {
+                    ops.log
+                        .push(Record::new(tick, Kind::AdminRefused, verb, who).with(
+                            mode as i64,
+                            0,
+                            0,
+                        ));
+                    return;
+                }
+                logged = logged.with(mode as i64, 0, 0);
+            }
+            AdminCmd::Time { frac_pm } => {
+                if !self.queue(Command::AdminEnv {
+                    weather: sim_core::weather::KEEP_WEATHER,
+                    time_pm: frac_pm,
+                }) {
+                    ops.log
+                        .push(Record::new(tick, Kind::AdminRefused, verb, who).with(
+                            frac_pm as i64,
+                            0,
+                            0,
+                        ));
+                    return;
+                }
+                logged = logged.with(frac_pm as i64, 0, 0);
             }
             AdminCmd::SaveNow => {
                 *ops.save_now = true;
@@ -2816,6 +2852,24 @@ impl ShardCore {
                 Ok(len) => {
                     if send(Lane::Event, slot, &self.ev_buf[..len]) {
                         self.clients[slot].last_assist = assist;
+                        ShardStats::bump(&stats.ev_sent);
+                    } else {
+                        return;
+                    }
+                }
+                Err(_) => ShardStats::bump(&stats.encode_range_errors),
+            }
+        }
+
+        // The sky and the clock (weather v0): the whole record whenever it
+        // differs from what this client last heard, which is also how a
+        // fresh join and a resync hear it.
+        let env = self.world.env;
+        if self.clients[slot].last_env != Some(env) {
+            match protocol::encode_event_env(&env, &mut self.ev_buf) {
+                Ok(len) => {
+                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                        self.clients[slot].last_env = Some(env);
                         ShardStats::bump(&stats.ev_sent);
                     } else {
                         return;
