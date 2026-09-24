@@ -59,6 +59,7 @@ pub mod fill;
 // the client lives in there — see its header for the merge that made that a
 // rule rather than a preference.
 pub mod feed;
+pub mod fx;
 // The death screen. Dying used to end the session: `dead` was set and read
 // by nothing, and `ACT_RESPAWN` had no key.
 pub mod death;
@@ -91,7 +92,6 @@ pub mod heldgen;
 // `Session`. See `render/screen.rs` for the half both targets keep.
 /// The two debris layers beside the chip burst (2026-09-13): the hot one and
 /// the soft one, both fed off `impact::Contacts`.
-pub mod dust;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hub;
 pub mod hud;
@@ -99,7 +99,6 @@ pub mod impact;
 pub mod input;
 pub mod loading;
 pub mod loot;
-pub mod sparks;
 pub mod surface;
 // The island map. Painted from the same `terrain::splat_from` the ground
 // blends by, so the map and the world are one worldgen seen two ways.
@@ -517,8 +516,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<decal::Marks>()
             .init_resource::<impact::Chips>()
             .init_resource::<impact::Contacts>()
-            .init_resource::<sparks::Sparks>()
-            .init_resource::<dust::Dust>()
+            .init_resource::<fx::Fx>()
             .init_resource::<hud::Toast>()
             .init_resource::<hud::Readout>()
             .init_resource::<feed::Feed>()
@@ -640,8 +638,7 @@ impl Plugin for GatesRenderPlugin {
                 // (`impact.rs`).
                 impact::setup,
                 // The spark and dust pools, the chip pool's reason exactly.
-                sparks::setup,
-                dust::setup,
+                fx::setup,
                 // The shared warm mesh. Before anything that could create a
                 // material, so `prewarm::warm` never sees an `Added` it has
                 // no mesh to draw against.
@@ -833,13 +830,7 @@ impl Plugin for GatesRenderPlugin {
             )
             .add_systems(
                 OnEnter(Screen::Disconnected),
-                (
-                    map::forget,
-                    viewmodel::forget,
-                    impact::forget,
-                    sparks::forget,
-                    dust::forget,
-                ),
+                (map::forget, viewmodel::forget, impact::forget, fx::forget),
             )
             .add_systems(OnExit(Screen::Disconnected), disconnected::teardown)
             .add_systems(
@@ -878,13 +869,7 @@ impl Plugin for GatesRenderPlugin {
             )
             .add_systems(
                 OnEnter(Screen::Menu),
-                (
-                    map::forget,
-                    viewmodel::forget,
-                    impact::forget,
-                    sparks::forget,
-                    dust::forget,
-                ),
+                (map::forget, viewmodel::forget, impact::forget, fx::forget),
             );
 
         // ---- settings ------------------------------------------------
@@ -1052,9 +1037,16 @@ impl Plugin for GatesRenderPlugin {
                 impact::contacts.after(feed::drain).after(verbs::resolve),
                 impact::strike.after(impact::contacts),
                 impact::fly.after(impact::strike),
-                sparks::fly.after(impact::strike),
-                dust::fly.after(impact::strike),
             )
+                .run_if(world_running)
+                .run_if(move || !plate),
+        )
+        // The particles draw after the camera's transform is final for the
+        // frame: a billboard faces the camera this frame renders.
+        .add_systems(
+            PostUpdate,
+            fx::draw
+                .after(bevy::transform::TransformSystems::Propagate)
                 .run_if(world_running)
                 .run_if(move || !plate),
         )

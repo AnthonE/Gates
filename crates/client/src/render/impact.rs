@@ -46,25 +46,15 @@
 //! refusing the newest would drop the burst from the blow the player just
 //! landed — the one they are watching for.
 //!
-//! # One contact list, three layers and a sound (2026-09-13)
+//! # One contact list, every layer and a sound
 //!
-//! The chips were the whole answer to *"connecting looks like missing"* for
-//! two weeks and the operator's next note was that they are not enough
-//! (*"we dont really have any good FX effect around combat or hitting rocks
-//! or hitting woods"*). What was missing is not more chips: it is the two
-//! things a chip cannot be — the **hot** fragment a pick strikes off stone
-//! and metal (`sparks.rs`) and the **soft** cloud every solid blow knocks
-//! loose (`dust.rs`) — plus the sound of the matter struck, which the bank
-//! has carried since audio v0 with no producer (`Cue::ImpactWood` and its
-//! two siblings).
-//!
-//! So the resolver and the draw are split. [`contacts`] turns this frame's
-//! facts into a bounded list of [`Contact`]s — *a blow met this matter at
-//! this point, thrown this way* — and [`strike`], `sparks::fly`, `dust::fly`
-//! and `audio::impacts` all read that one list. It is `feed.rs`'s shape one
-//! layer down: one resolution of *where and what*, many readers, so the
-//! puff, the sparks, the chips and the thock cannot disagree about which
-//! blow they are for.
+//! [`contacts`] turns this frame's facts into a bounded list of
+//! [`Contact`]s — *a blow met this matter at this point, facing this way* —
+//! with the matter and the facing resolved once by `surface.rs`. [`strike`]
+//! (the particles, `fx::table::effect`, and the lit chips here),
+//! `decal::mark` and `audio::impacts` all read that one list, so the sparks,
+//! the dust, the mark and the thock cannot disagree about which blow they
+//! are for or what it hit.
 //!
 //! **And it de-duplicates a blow the wire reports twice.** A landed node
 //! swing arrives as `EV_SWING` (the cadence gate) AND `EV_IMPACT` (the
@@ -550,9 +540,14 @@ impl Chips {
     ///
     /// Pure: no `World`, no assets, no clock. See [`Chip`].
     pub fn ignite(&mut self, b: &Burst) {
+        self.ignite_n(b, CHIP_BURST);
+    }
+
+    /// [`Chips::ignite`] with the count the effect table asks for.
+    pub fn ignite_n(&mut self, b: &Burst, n: usize) {
         let away = b.away.normalize_or(Vec3::Y);
         self.bursts += 1;
-        for _ in 0..CHIP_BURST {
+        for _ in 0..n {
             // A cone about `away`: a scattered unit vector blended toward the
             // normal by CHIP_SPRAY, so nothing is thrown into the surface it came
             // off and the burst still has a shape.
@@ -980,26 +975,28 @@ pub fn contacts(
     }
 }
 
-/// Throw the debris for every contact this frame: chips here, sparks and
-/// dust in their own pools, all off the one list so a blow's three layers
-/// leave the same point in the same direction.
+/// Throw the debris for every contact this frame: the particles
+/// (`fx::table::effect` decides which) and the lit chips that go with them,
+/// all off the one list so a blow's layers leave the same point in the same
+/// direction.
 pub fn strike(
     contacts: Res<Contacts>,
+    eye: Res<Eye>,
     mut chips: ResMut<Chips>,
-    mut sparks: ResMut<super::sparks::Sparks>,
-    mut dust: ResMut<super::dust::Dust>,
+    mut fx: ResMut<super::fx::Fx>,
 ) {
     for c in contacts.iter() {
-        let b = Burst {
-            at: c.at,
-            away: c.away,
-            matter: c.matter,
-        };
-        if c.matter != Matter::Water {
-            chips.ignite(&b);
+        let n = fx.impact(c, eye.pos);
+        if n > 0 {
+            chips.ignite_n(
+                &Burst {
+                    at: c.at,
+                    away: c.away,
+                    matter: c.matter,
+                },
+                n,
+            );
         }
-        sparks.ignite(&b);
-        dust.ignite(&b);
     }
 }
 
