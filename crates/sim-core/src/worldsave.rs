@@ -301,7 +301,7 @@ const SPENT_BYTES: usize = 4 + 4 + 4 + 2 + 8;
 /// A burning fuse: address + store bit + the three copied-at-plant
 /// numbers (structure, damage, blast — format 4) + deadline + planter.
 const CHARGE_BYTES: usize = 25;
-const SLOT_LIFE_BYTES: usize = 14;
+const SLOT_LIFE_BYTES: usize = 23;
 
 /// The largest blob this world can produce — every store at capacity.
 ///
@@ -405,6 +405,8 @@ pub enum WorldSaveError {
     BadEnv,
     /// A body's wet or chill is past 1000 per mille.
     BadExposure,
+    /// A harvested slot claims to be felled and regrowing at once.
+    BadSlotLife,
 }
 
 impl WorldSaveError {
@@ -429,6 +431,7 @@ impl WorldSaveError {
             Self::DuplicateWorldCont => "two world containers claim the same cell",
             Self::BadEnv => "the weather record names an impossible sky or clock",
             Self::BadExposure => "a body is wetter or colder than a body can be",
+            Self::BadSlotLife => "a felled slot claims to be regrowing too",
         }
     }
 }
@@ -735,7 +738,10 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         o.u16(s.cx);
         o.u16(s.cz);
         o.u16(s.hits);
+        o.u8(s.occ);
         o.u64(s.respawn_at);
+        // A regrowing tree's clock (format 15, tree growth v0).
+        o.u64(s.grown_at);
     }
 
     if o.at > o.buf.len() {
@@ -1569,15 +1575,23 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         let cx = r.u16()?;
         let cz = r.u16()?;
         let hits = r.u16()?;
+        let occ = r.u8()?;
         let respawn_at = r.u64()?;
+        let grown_at = r.u64()?;
         if !terrain_cell_ok(cx, cz) {
             return Err(WorldSaveError::AddressOutOfRange);
+        }
+        // Felled and regrowing at once is a record no tick writes.
+        if respawn_at != 0 && grown_at != 0 {
+            return Err(WorldSaveError::BadSlotLife);
         }
         *s = SlotLife {
             cx,
             cz,
             hits,
+            occ,
             respawn_at,
+            grown_at,
         };
     }
 
@@ -1722,7 +1736,7 @@ mod tests {
             + 64 * 25                       // charges
             + 512 * 22                      // spent arrows (format 10)
             + 256 * 30                      // loose ground stacks (format 14)
-            + 32_768 * 14; // harvested slots
+            + 32_768 * 23; // harvested slots (format 15: the occupant and the sapling's clock)
                            // 54 -> 56 at format 5: a ninth section count is a `u16` in the head.
                            // 56 -> 62 at format 10: a tenth count, plus the
                            // spent store's `u32` eviction counter beside the
@@ -1804,8 +1818,10 @@ mod tests {
         // `store.rs`'s own refusal says whose call it is).
         // 884_084 → 884_910 at format 15 (weather v0): the head's 26-byte
         // sky and clock, and 8 bytes of wet and cold on each of 100 bodies.
+        // 884_910 → 1_179_822, same format: a harvested slot remembers what
+        // stood there and when its sapling is grown, 9 bytes × 32,768.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 884_910,
+            WORLD_SAVE_MAX_BYTES, 1_179_822,
             "the world save ceiling moved"
         );
     }

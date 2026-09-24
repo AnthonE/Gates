@@ -385,6 +385,13 @@ impl GItemSet {
 pub struct HarvestedSet {
     cells: Box<[u32]>,
     len: usize,
+    /// Regrowing trees (tree growth v0): `(key, grown_at)`, the tick — low
+    /// 32 bits — each is full-grown by. Bounded like `cells`.
+    grow: Box<[(u32, u32)]>,
+    grow_len: usize,
+    /// The tick growth is measured at: the predictor's, stamped before each
+    /// step so a sapling collides here exactly as the server sizes it.
+    now: u32,
 }
 
 impl HarvestedSet {
@@ -392,6 +399,53 @@ impl HarvestedSet {
         Self {
             cells: vec![0; MAX_SLOT_LIVES].into_boxed_slice(),
             len: 0,
+            grow: vec![(0, 0); MAX_SLOT_LIVES].into_boxed_slice(),
+            grow_len: 0,
+            now: 0,
+        }
+    }
+
+    /// Stamp the tick growth is measured at, and retire trees that have
+    /// grown up since — a full tree needs no entry.
+    pub fn set_now(&mut self, tick: u32) {
+        self.now = tick;
+        let mut i = 0;
+        while i < self.grow_len {
+            if self.grow[i].1.wrapping_sub(tick) as i32 <= 0 {
+                self.grow_len -= 1;
+                self.grow[i] = self.grow[self.grow_len];
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    /// The tick a regrowing tree is full-grown by, if this cell holds one.
+    pub fn growth(&self, key: u32) -> Option<u32> {
+        self.grow[..self.grow_len]
+            .iter()
+            .find(|g| g.0 == key)
+            .map(|g| g.1)
+    }
+
+    /// How many trees are regrowing.
+    pub fn growing(&self) -> usize {
+        self.grow_len
+    }
+
+    fn set_grow(&mut self, key: u32, grown_at: u32) {
+        if let Some(g) = self.grow[..self.grow_len].iter_mut().find(|g| g.0 == key) {
+            g.1 = grown_at;
+        } else if self.grow_len < self.grow.len() {
+            self.grow[self.grow_len] = (key, grown_at);
+            self.grow_len += 1;
+        }
+    }
+
+    fn unset_grow(&mut self, key: u32) {
+        if let Some(i) = self.grow[..self.grow_len].iter().position(|g| g.0 == key) {
+            self.grow_len -= 1;
+            self.grow[i] = self.grow[self.grow_len];
         }
     }
 
@@ -424,15 +478,29 @@ impl HarvestedSet {
 
     fn clear(&mut self) {
         self.len = 0;
+        self.grow_len = 0;
     }
 }
 
 /// The client's half of `occupy::Harvested`. Same question the server's
 /// `SlotLives` answers, off a bare key set: a mirror needs no hit counts and
-/// no respawn ticks, only whether the node is standing right now.
+/// no respawn ticks, only whether the node is standing right now — and, for
+/// a regrowing tree, how much of it (`sim_core::gather::grow_pm`, the
+/// server's own sizing).
 impl Harvested for HarvestedSet {
     fn is_harvested(&self, cx: u16, cz: u16) -> bool {
         self.contains(cell_key(cx, cz))
+    }
+
+    fn standing_pm(&self, cx: u16, cz: u16) -> u16 {
+        let key = cell_key(cx, cz);
+        if self.contains(key) {
+            return 0;
+        }
+        match self.growth(key) {
+            Some(g) => sim_core::gather::grow_pm(g as u64, self.now as u64),
+            None => 1000,
+        }
     }
 }
 
@@ -1798,13 +1866,24 @@ impl ClientCore {
             }
             EventMsg::SlotHarvested { cx, cz } => {
                 self.harvested.insert(cell_key(cx, cz));
+                // A sapling felled is a stump again.
+                self.harvested.unset_grow(cell_key(cx, cz));
                 self.push_change(cell_key(cx, cz), true);
                 flags |= APPLIED_SLOTS | self.clear_mark_if(cell_key(cx, cz));
             }
-            EventMsg::SlotRespawned { cx, cz } => {
+            EventMsg::SlotRespawned { cx, cz, grown_at } => {
                 self.harvested.remove(cell_key(cx, cz));
+                if let Some(g) = grown_at {
+                    self.harvested.set_grow(cell_key(cx, cz), g);
+                }
                 self.push_change(cell_key(cx, cz), false);
                 flags |= APPLIED_SLOTS | self.clear_mark_if(cell_key(cx, cz));
+            }
+            EventMsg::SlotGrowSync { cells, count } => {
+                for &(cx, cz, g) in cells.iter().take(count as usize) {
+                    self.harvested.set_grow(cell_key(cx, cz), g);
+                }
+                flags |= APPLIED_SLOTS;
             }
             EventMsg::SlotSync {
                 reset,
@@ -3352,6 +3431,7 @@ impl ClientCore {
             self.sticky_buttons = 0;
             self.next_seq = self.next_seq.wrapping_add(1);
             self.clock.client_tick = self.clock.client_tick.wrapping_add(1);
+            self.harvested.set_now(self.clock.client_tick);
             self.predict.step(
                 frame,
                 self.pieces.cols(),
@@ -3462,6 +3542,7 @@ impl ClientCore {
                     self.have_arrival = false;
                 }
                 if let Some(own) = self.view.get(self.player_id).copied() {
+                    self.harvested.set_now(self.clock.client_tick);
                     self.predict.reconcile(
                         &own,
                         header.last_executed_seq,

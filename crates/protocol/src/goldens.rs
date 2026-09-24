@@ -40,7 +40,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 113] = [
+pub const FIXTURES: [&str; 114] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -211,6 +211,7 @@ pub const FIXTURES: [&str; 113] = [
     // Weather v0 (v75). Appended.
     "event_env.bin",
     "event_exposure.bin",
+    "event_slot_grow_sync.bin",
 ];
 
 /// The sky/clock event: a storm forced mid-fade, the clock pushed to dusk.
@@ -786,6 +787,21 @@ pub fn event_inv() -> ([InvSlot; INV_SLOTS], usize) {
 
 pub fn event_slot_change() -> (u16, u16) {
     (0x0102, 0x0304)
+}
+
+/// The tick a golden sapling is full-grown by (tree growth v0).
+pub const EVENT_SLOT_GROWN_AT: u32 = 0x0A0B_0C0D;
+
+/// A full batch of regrowing trees, at the cap.
+pub fn event_slot_grow_sync() -> [(u16, u16, u32); crate::GROW_SYNC_BATCH] {
+    let mut rng = Pcg32::new(0x0047_524f_5753, 19);
+    core::array::from_fn(|_| {
+        (
+            rng.next_bounded(256) as u16,
+            rng.next_bounded(256) as u16,
+            rng.next_u32(),
+        )
+    })
 }
 
 /// A full sync batch with the reset bit set — the join-sync first message

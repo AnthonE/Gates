@@ -89,7 +89,10 @@ fn main() {
     let (cx, cz) = goldens::event_slot_change();
     let len = encode_event_slot_change(true, cx, cz, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[10], &buf[..len]);
-    let len = encode_event_slot_change(false, cx, cz, &mut buf).unwrap();
+    // A tree standing back up as a sapling (tree growth v0).
+    let len =
+        protocol::encode_event_slot_respawned(cx, cz, Some(goldens::EVENT_SLOT_GROWN_AT), &mut buf)
+            .unwrap();
     write_fixture(goldens::FIXTURES[11], &buf[..len]);
 
     let (reset, cells) = goldens::event_slot_sync();
@@ -259,6 +262,9 @@ fn main() {
     write_fixture(goldens::FIXTURES[111], &buf[..len]);
     let len = protocol::encode_event_exposure(64, 100, true, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[112], &buf[..len]);
+    let len =
+        protocol::encode_event_slot_grow_sync(&goldens::event_slot_grow_sync(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[113], &buf[..len]);
 
     let (id, why) = goldens::event_bag_removed();
     let len = encode_event_bag_removed(id, why, &mut buf).unwrap();

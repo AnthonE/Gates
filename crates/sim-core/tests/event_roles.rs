@@ -83,7 +83,7 @@ use sim_core::combat::NO_MAG;
 use sim_core::combat::{AmmoDef, CombatContent, RangedDef};
 use sim_core::craft::{CraftContent, REFUSE_INPUTS, REFUSE_RECIPE};
 use sim_core::deploy::{box_key, DeployContent, REFUSE_D_KIND, REFUSE_D_SPOT};
-use sim_core::gather::{cell_key, weak_mark8, GatherContent, ItemStack, NO_ITEM};
+use sim_core::gather::{self, cell_key, weak_mark8, GatherContent, ItemStack, NO_ITEM};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::inventory::{self, CONT_SELF, REFUSE_M_EMPTY};
 use sim_core::limits::{INV_SLOTS, TICK_HZ};
@@ -3465,15 +3465,15 @@ fn weak_mark_names_the_swinger_then_the_cell_then_bit_over_heading() {
     );
 }
 
-/// `EV_SLOT_RESPAWNED: a = cell key, b = 0.`
+/// `EV_SLOT_RESPAWNED: a = cell key, b = the sapling's grown-by tick,
+/// c = 1 for a sapling.`
 ///
 /// The one code that needed a timer to elapse: the window is 20–45 min of
 /// sim ticks, so the clock is leapt to one tick short of the store's own
 /// `respawn_at` — `bag_respawn.rs`'s cooldown leap, the same arithmetic
 /// the minutes would have done — and the event must then land on exactly
-/// the tick the timer names. The swap this catches is quiet: `a` and `b`
-/// reversed reads `(0, cell key)`, and with `b` documented as 0 the zero
-/// in `a` would address no cell on any client.
+/// the tick the timer names. A tree comes back as a sapling, so its life
+/// record stays behind holding the clock `b` names.
 #[test]
 fn slot_respawned_names_the_cell_that_stood_back_up() {
     let mut w = duel_world();
@@ -3511,13 +3511,25 @@ fn slot_respawned_names_the_cell_that_stood_back_up() {
         cell_key(cx, cz),
         "EV_SLOT_RESPAWNED.a is the CELL KEY of the slot that stood up"
     );
-    assert_eq!(ev.b, 0, "EV_SLOT_RESPAWNED.b is documented as 0");
-    assert_eq!(ev.c, 0, "and c states no role either");
-    assert!(
-        w.slot_lives.find(cx, cz).is_none(),
-        "the slot is announced standing but its life record remains — the \
-         event under test did not ride the release"
+    let life = w
+        .slot_lives
+        .find(cx, cz)
+        .expect("a tree comes back as a sapling, and a sapling keeps its record");
+    assert_eq!(
+        (life.respawn_at, life.hits),
+        (0, 0),
+        "the stump's timer and its hits went with the stump"
     );
+    assert_eq!(
+        life.grown_at,
+        due + gather::TREE_GROW_TICKS,
+        "the sapling is grown an hour after it sprouts"
+    );
+    assert_eq!(
+        ev.b, life.grown_at as u32,
+        "EV_SLOT_RESPAWNED.b is the sapling's grown-by tick"
+    );
+    assert_eq!(ev.c, 1, "and c says it is a sapling");
 }
 
 /// The craft fixture's two-input recipe (row 1): 2 × item 1 + 1 × item 2

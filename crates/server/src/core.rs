@@ -2765,8 +2765,19 @@ impl ShardCore {
                 EV_SLOT_HARVESTED | EV_SLOT_RESPAWNED => {
                     let cx = (ev.a >> 16) as u16;
                     let cz = ev.a as u16;
-                    let harvested = ev.code == EV_SLOT_HARVESTED;
-                    match encode_event_slot_change(harvested, cx, cz, &mut self.ev_buf) {
+                    // A tree comes back as a sapling (tree growth v0): `c`
+                    // says so and `b` is the tick it is grown by.
+                    let encoded = if ev.code == EV_SLOT_HARVESTED {
+                        encode_event_slot_change(true, cx, cz, &mut self.ev_buf)
+                    } else {
+                        protocol::encode_event_slot_respawned(
+                            cx,
+                            cz,
+                            (ev.c != 0).then_some(ev.b),
+                            &mut self.ev_buf,
+                        )
+                    };
+                    match encoded {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {
@@ -2973,40 +2984,72 @@ impl ShardCore {
         // walks the live store; entries that move behind it mid-walk stay
         // unsynced until their own respawn event — bounded staleness the
         // respawn window already caps, documented over machinery.
+        //
+        // The same window carries the regrowing trees (tree growth v0) in a
+        // second message: a late joiner has to know a sapling is a sapling,
+        // and when it will be grown, or it would walk through what it sees
+        // as a full tree's trunk. Sent after the harvested batch, so a
+        // reset has cleared both of the client's sets before any arrive.
         let c = &self.clients[slot];
         let lives = &self.world.slot_lives;
         if c.sync_reset || c.sync_cursor < lives.len() {
             let mut cells = [(0u16, 0u16); SLOT_SYNC_BATCH];
+            let mut grows = [(0u16, 0u16, 0u32); protocol::GROW_SYNC_BATCH];
             let mut n_cells = 0usize;
+            let mut n_grows = 0usize;
             let mut scanned = 0usize;
             let entries = lives.entries();
             while c.sync_cursor + scanned < entries.len()
                 && scanned < SYNC_SCAN_PER_TICK
                 && n_cells < SLOT_SYNC_BATCH
+                && n_grows < protocol::GROW_SYNC_BATCH
             {
                 let e = entries[c.sync_cursor + scanned];
                 if e.respawn_at != 0 {
                     cells[n_cells] = (e.cx, e.cz);
                     n_cells += 1;
+                } else if e.grown_at != 0 {
+                    grows[n_grows] = (e.cx, e.cz, e.grown_at as u32);
+                    n_grows += 1;
                 }
                 scanned += 1;
             }
-            if c.sync_reset || n_cells > 0 {
-                match encode_event_slot_sync(c.sync_reset, &cells[..n_cells], &mut self.ev_buf) {
+            // A window whose second send is refused goes again whole next
+            // tick; the client's sets take a repeat as a no-op.
+            let reset = c.sync_reset;
+            let mut said = true;
+            if reset || n_cells > 0 {
+                match encode_event_slot_sync(reset, &cells[..n_cells], &mut self.ev_buf) {
                     Ok(len) => {
-                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
-                            ShardStats::bump(&stats.ev_sent);
-                            let c = &mut self.clients[slot];
-                            c.sync_reset = false;
-                            c.sync_cursor += scanned;
-                        } else {
+                        if !send(Lane::Event, slot, &self.ev_buf[..len]) {
                             return;
                         }
+                        ShardStats::bump(&stats.ev_sent);
+                        self.clients[slot].sync_reset = false;
                     }
-                    Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    Err(_) => {
+                        ShardStats::bump(&stats.encode_range_errors);
+                        said = false;
+                    }
                 }
-            } else {
-                // Window held only standing-damage entries: nothing to say.
+            }
+            if said && n_grows > 0 {
+                match protocol::encode_event_slot_grow_sync(&grows[..n_grows], &mut self.ev_buf) {
+                    Ok(len) => {
+                        if !send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            return;
+                        }
+                        ShardStats::bump(&stats.ev_sent);
+                    }
+                    Err(_) => {
+                        ShardStats::bump(&stats.encode_range_errors);
+                        said = false;
+                    }
+                }
+            }
+            // Past this window: its harvested and growing entries are said,
+            // and the standing-damage ones had nothing to say.
+            if said {
                 self.clients[slot].sync_cursor += scanned;
             }
         }

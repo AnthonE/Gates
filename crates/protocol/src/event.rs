@@ -51,6 +51,10 @@ pub const MAX_EVENT_MSG_BYTES: usize = 320;
 /// message continues the walk.
 pub const SLOT_SYNC_BATCH: usize = 64;
 
+/// Regrowing trees one grow-sync message carries (tree growth v0): eight
+/// bytes a tree, 32 of them in 258 — inside `MAX_EVENT_MSG_BYTES` with room.
+pub const GROW_SYNC_BATCH: usize = 32;
+
 /// Item names one catalog message carries.
 pub const CATALOG_BATCH: usize = 8;
 
@@ -362,7 +366,12 @@ const SUB_ENV: u32 = 60;
 /// whether the cold is hurting. Own-fact, `SUB_VITALS`' audience, sent when
 /// the per-cent reading moves.
 const SUB_EXPOSURE: u32 = 61;
-const SUB_MAX: u32 = SUB_EXPOSURE;
+/// The regrowing trees a late joiner needs (tree growth v0, wire v75):
+/// `(cx, cz, grown_at)` batches, walked after the harvested set's reset.
+const SUB_SLOT_GROW_SYNC: u32 = 62;
+const SUB_MAX: u32 = SUB_SLOT_GROW_SYNC;
+/// A grow-sync batch's count: 1..=`GROW_SYNC_BATCH` in six bits.
+const GROW_SYNC_COUNT_BITS: u32 = 6;
 /// Width of an exposure reading: per cent, 0..=100 in seven bits.
 const EXPOSURE_PCT_BITS: u32 = 7;
 /// Width of each per-mille weather field: 0..=1000 in ten bits.
@@ -823,8 +832,21 @@ pub enum EventMsg {
     },
     /// A scatter slot was exhausted — the node vanishes until respawn.
     SlotHarvested { cx: u16, cz: u16 },
-    /// A harvested slot's timer arrived — the node stands again.
-    SlotRespawned { cx: u16, cz: u16 },
+    /// A harvested slot's timer arrived — the node stands again. A tree
+    /// comes back as a sapling (tree growth v0): `grown_at` is the tick,
+    /// low 32 bits, it is full-grown by. `None` for anything that stands
+    /// back up whole.
+    SlotRespawned {
+        cx: u16,
+        cz: u16,
+        grown_at: Option<u32>,
+    },
+    /// One batch of the regrowing-tree walk (tree growth v0): each cell and
+    /// the tick it is full-grown by.
+    SlotGrowSync {
+        cells: [(u16, u16, u32); GROW_SYNC_BATCH],
+        count: u8,
+    },
     /// One batch of the harvested-cell walk. `reset` (first batch of a
     /// join or an event-lane resync) clears the client's set first.
     SlotSync {
@@ -1466,14 +1488,48 @@ pub fn encode_event_slot_change(
     cz: u16,
     buf: &mut [u8],
 ) -> Result<usize, WireError> {
-    let sub = if harvested {
-        SUB_SLOT_HARVESTED
-    } else {
-        SUB_SLOT_RESPAWNED
-    };
-    let mut w = begin(buf, sub)?;
+    if !harvested {
+        return encode_event_slot_respawned(cx, cz, None, buf);
+    }
+    let mut w = begin(buf, SUB_SLOT_HARVESTED)?;
     w.write(cx as u32, 16)?;
     w.write(cz as u32, 16)?;
+    Ok(w.finish())
+}
+
+/// A slot stood back up — whole, or as a sapling growing until `grown_at`.
+pub fn encode_event_slot_respawned(
+    cx: u16,
+    cz: u16,
+    grown_at: Option<u32>,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    let mut w = begin(buf, SUB_SLOT_RESPAWNED)?;
+    w.write(cx as u32, 16)?;
+    w.write(cz as u32, 16)?;
+    w.write_bit(grown_at.is_some())?;
+    if let Some(g) = grown_at {
+        w.write(g, 32)?;
+    }
+    Ok(w.finish())
+}
+
+/// One batch of regrowing trees. Never empty: the harvested walk's reset
+/// is what clears a client's set, so an empty batch would say nothing.
+pub fn encode_event_slot_grow_sync(
+    cells: &[(u16, u16, u32)],
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if cells.is_empty() || cells.len() > GROW_SYNC_BATCH {
+        return Err(WireError::Cap);
+    }
+    let mut w = begin(buf, SUB_SLOT_GROW_SYNC)?;
+    w.write(cells.len() as u32, GROW_SYNC_COUNT_BITS)?;
+    for &(cx, cz, g) in cells {
+        w.write(cx as u32, 16)?;
+        w.write(cz as u32, 16)?;
+        w.write(g, 32)?;
+    }
     Ok(w.finish())
 }
 
@@ -3106,13 +3162,32 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 count: count as u8,
             }
         }
-        sub @ (SUB_SLOT_HARVESTED | SUB_SLOT_RESPAWNED) => {
+        SUB_SLOT_HARVESTED => EventMsg::SlotHarvested {
+            cx: r.read(16)? as u16,
+            cz: r.read(16)? as u16,
+        },
+        SUB_SLOT_RESPAWNED => {
             let cx = r.read(16)? as u16;
             let cz = r.read(16)? as u16;
-            if sub == SUB_SLOT_HARVESTED {
-                EventMsg::SlotHarvested { cx, cz }
+            let grown_at = if r.read_bit()? {
+                Some(r.read(32)?)
             } else {
-                EventMsg::SlotRespawned { cx, cz }
+                None
+            };
+            EventMsg::SlotRespawned { cx, cz, grown_at }
+        }
+        SUB_SLOT_GROW_SYNC => {
+            let count = r.read(GROW_SYNC_COUNT_BITS)? as usize;
+            if count == 0 || count > GROW_SYNC_BATCH {
+                return Err(WireError::Malformed);
+            }
+            let mut cells = [(0u16, 0u16, 0u32); GROW_SYNC_BATCH];
+            for c in cells.iter_mut().take(count) {
+                *c = (r.read(16)? as u16, r.read(16)? as u16, r.read(32)?);
+            }
+            EventMsg::SlotGrowSync {
+                cells,
+                count: count as u8,
             }
         }
         SUB_SLOT_SYNC => {
@@ -4060,7 +4135,20 @@ mod tests {
         let len = encode_event_slot_change(false, 130, 77, &mut buf).unwrap();
         assert_eq!(
             decode_event(&buf[..len]).unwrap(),
-            EventMsg::SlotRespawned { cx: 130, cz: 77 }
+            EventMsg::SlotRespawned {
+                cx: 130,
+                cz: 77,
+                grown_at: None
+            }
+        );
+        let len = encode_event_slot_respawned(130, 77, Some(0xDEAD_BEEF), &mut buf).unwrap();
+        assert_eq!(
+            decode_event(&buf[..len]).unwrap(),
+            EventMsg::SlotRespawned {
+                cx: 130,
+                cz: 77,
+                grown_at: Some(0xDEAD_BEEF)
+            }
         );
     }
 
@@ -6262,6 +6350,8 @@ mod wire_domains {
             "WX_PM_BITS",
             // Per-cent wet and cold readings: units, bounded at 100.
             "EXPOSURE_PCT_BITS",
+            // A grow-sync batch length, bounded by `GROW_SYNC_BATCH`.
+            "GROW_SYNC_COUNT_BITS",
             "MOVE_SLOT_BITS",
             "INV_COUNT_BITS",
             "INV_SLOT_BITS",

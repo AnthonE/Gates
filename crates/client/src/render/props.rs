@@ -267,6 +267,50 @@ pub struct Topple {
     pub t: f32,
 }
 
+/// A tree part that regrows (tree growth v0), and the size it is drawn at
+/// full-grown. Its own component for [`Topple`]'s reason: `audio::fell`
+/// change-detects [`Fellable`], and a growth write there would be a
+/// tree-fall cue.
+#[derive(Component)]
+pub struct Grow {
+    pub base: f32,
+}
+
+/// Draw every regrowing tree at its size — a sapling where the stump was,
+/// full height an hour later (`sim_core::gather::grow_pm`, the server's own
+/// sizing, in its sixteen steps). Twice a second, or at once when the
+/// harvested set moved or a tree streamed in: the steps are minutes apart.
+pub fn grow(
+    net: NonSend<Net>,
+    feed: Res<super::feed::Feed>,
+    time: Res<Time>,
+    mut since: Local<f32>,
+    added: Query<(), Added<Grow>>,
+    mut q: Query<(&Fellable, &Grow, &mut Transform)>,
+) {
+    *since += time.delta_secs();
+    if *since < 0.5 && feed.applied & HARVEST_APPLIED == 0 && added.is_empty() {
+        return;
+    }
+    *since = 0.0;
+    let core = &net.session.core;
+    let now = feed.server_tick_est.max(0.0) as u64;
+    for (f, g, mut t) in q.iter_mut() {
+        // A felled tree lies at the size it fell at.
+        if f.felled {
+            continue;
+        }
+        let pm = core
+            .harvested
+            .growth(f.key)
+            .map_or(1000, |at| sim_core::gather::grow_pm(at as u64, now));
+        let want = g.base * pm as f32 * 0.001;
+        if (t.scale.x - want).abs() > 1e-4 {
+            t.scale = Vec3::splat(want);
+        }
+    }
+}
+
 /// Which piece of a harvestable slot an entity draws.
 ///
 /// **The tree is three entities and the split is what lets it topple.** While
@@ -2143,6 +2187,7 @@ pub fn spawn_outer_tree(
             part: FellPart::Vanish,
             felled: false,
         },
+        Grow { base: slot.scale },
         Mesh3d(a.impostors[variant].clone()),
         MeshMaterial3d(a.foliage[tint_of(key)].clone()),
         Transform {
@@ -2288,6 +2333,7 @@ pub fn spawn_slot(
         e.with_child((
             fellable(FellPart::Trunk),
             Topple { t: -1.0 },
+            Grow { base: slot.scale },
             Mesh3d(mesh),
             MeshMaterial3d(material),
             tree::lod_band(&lod.near),
@@ -2357,6 +2403,7 @@ pub fn spawn_slot(
         e.with_child((
             fellable(FellPart::Canopy),
             Topple { t: -1.0 },
+            Grow { base: slot.scale },
             Mesh3d(a.needles[variant].clone()),
             // The card is the species' — a sprig on a conifer, a leaf
             // cluster on a broadleaf. Chosen in one place so a gate can ask.
@@ -2383,6 +2430,7 @@ pub fn spawn_slot(
         e.with_child((
             fellable(FellPart::Far),
             Topple { t: -1.0 },
+            Grow { base: slot.scale },
             Mesh3d(a.impostors[variant].clone()),
             MeshMaterial3d(a.foliage[tint].clone()),
             tree::lod_band(&lod.far),

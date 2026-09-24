@@ -1352,6 +1352,11 @@ impl Plugin for GatesRenderPlugin {
                 sky::compose.after(rig::day_night),
                 rain::drive.after(weather::update),
                 hud::exposure,
+                // Regrowing trees (tree growth v0), after this frame's
+                // harvested set is in and after `props::harvest` has stood a
+                // respawned trunk up — before it, a sapling would stand one
+                // frame at the size its tree fell at.
+                props::grow.after(feed::drain).after(Stream),
             )
                 .run_if(world_running),
         )

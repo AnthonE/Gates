@@ -65,12 +65,12 @@ pub use event::{
     encode_event_recipes, encode_event_recovered, encode_event_reload, encode_event_reload_refused,
     encode_event_removed, encode_event_research, encode_event_research_refused,
     encode_event_research_rows, encode_event_respawn, encode_event_shot, encode_event_slot_change,
-    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_swing,
-    encode_event_vitals, encode_event_weak_mark, encode_event_wounded, shot_is_instant, EventMsg,
-    InvSlot, ItemCatalog, ItemRow, WireBag, WireGItem, BAG_SYNC_BATCH, CATALOG_BATCH,
-    CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, MAX_EVENT_MSG_BYTES,
-    MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH,
-    SLOT_SYNC_BATCH,
+    encode_event_slot_grow_sync, encode_event_slot_respawned, encode_event_slot_sync,
+    encode_event_stock, encode_event_struct_hit, encode_event_swing, encode_event_vitals,
+    encode_event_weak_mark, encode_event_wounded, shot_is_instant, EventMsg, InvSlot, ItemCatalog,
+    ItemRow, WireBag, WireGItem, BAG_SYNC_BATCH, CATALOG_BATCH, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH,
+    DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, GROW_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES,
+    PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSHOT_ENTITIES};

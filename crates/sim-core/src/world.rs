@@ -98,7 +98,9 @@ pub const EV_GATHER: u8 = 1;
 /// the server sends the cell alone (`encode_event_slot_change`) and the
 /// client re-derives the occupant from shared worldgen.
 pub const EV_SLOT_HARVESTED: u8 = 2;
-/// EV_SLOT_RESPAWNED: a = cell key, b = 0.
+/// EV_SLOT_RESPAWNED: a = cell key, b = the tick a sapling is grown by (low
+/// 32 bits), c = 1 when a tree came back as a sapling. Both 0 for anything
+/// that comes back whole.
 pub const EV_SLOT_RESPAWNED: u8 = 3;
 /// EV_WEAK_MARK: a = player id, b = cell key, c = weak-hit bit << 8 |
 /// next mark heading (u8 over the 256-entry yaw LUT). Swinger-only fact:
@@ -4365,6 +4367,8 @@ impl World {
         }
         let seed = self.seed;
         let tick = self.tick;
+        // A sapling's size is measured at this tick (tree growth v0).
+        self.slot_lives.set_now(tick);
         // The weather and the hour this tick (weather v0): the players'
         // exposure reads them in the loop below, the animals after it.
         let wx = crate::weather::now(seed, tick, &self.env);
@@ -5309,8 +5313,14 @@ impl World {
             buf[0..2].copy_from_slice(&e.cx.to_le_bytes());
             buf[2..4].copy_from_slice(&e.cz.to_le_bytes());
             buf[4..6].copy_from_slice(&e.hits.to_le_bytes());
+            buf[6] = e.occ;
             buf[8..16].copy_from_slice(&e.respawn_at.to_le_bytes());
             h.update(&buf);
+            // A regrowing tree's clock (tree growth v0), only where there is
+            // one, so a store with no saplings hashes as it always did.
+            if e.grown_at != 0 {
+                h.update(&e.grown_at.to_le_bytes());
+            }
         }
         h.update(&(self.pieces.len() as u64).to_le_bytes());
         // The placement clocks, in their own pass rather than widening

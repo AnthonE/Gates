@@ -362,7 +362,20 @@ fn harvested_node_respawns_inside_the_window() {
         waited >= RESPAWN_MIN_TICKS,
         "respawned after {waited} ticks — under the 20-min floor"
     );
-    assert!(w.slot_lives.is_empty(), "released entry leaves the store");
+    // A tree comes back as a sapling: standing, but its record stays until
+    // it is grown, and then it leaves the store.
+    let (cx, cz) = (cx as u16, cz as u16);
+    assert!(!w.slot_lives.is_harvested(cx, cz), "the sapling stands");
+    let grown_at = w
+        .slot_lives
+        .find(cx, cz)
+        .expect("a sapling keeps its record while it grows")
+        .grown_at;
+    assert!(grown_at > w.tick, "the sapling is still growing");
+    w.tick = grown_at;
+    w.tick(&[]);
+    w.tick(&[]);
+    assert!(w.slot_lives.is_empty(), "a grown tree leaves the store");
 }
 
 #[test]
