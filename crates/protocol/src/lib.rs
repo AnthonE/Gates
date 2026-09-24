@@ -950,6 +950,9 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// `ACT_SKINS_REFRESH` (24) join the action lane, `SUB_SKINS` (64) drips
 /// the skin catalog and `SUB_SKINS_OWNED` (65) states the owner's set, and
 /// an entity's hand carries the held item's skin beside its id.
+/// v77: `SUB_IMPACT` names what struck (`IMPACT_KIND_BITS`: arrow, bullet,
+/// melee, blast), and a charge going off is an impact too. Landed on its
+/// branch as v76, beside the pack call's; the merge took the next number.
 pub const PROTO_VER: u16 = 77;
 
 /// This game's slug in the elo catalog.

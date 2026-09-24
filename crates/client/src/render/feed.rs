@@ -262,7 +262,7 @@ pub struct Feed {
     /// rings — every arrow on the island that stops on something lands here,
     /// not only this player's. Cosmetic only: what reads this leaves a mark,
     /// and a mark decides nothing.
-    impacts: [(i32, i32, i32, u8); FEED_CAP],
+    impacts: [client_core::core::Impact; FEED_CAP],
     n_impacts: usize,
     /// Bodies whose arm started to move this frame, by wire entity id
     /// (broadcast, wire v47). Cosmetic and unvalidated: an id naming no
@@ -280,6 +280,11 @@ pub struct Feed {
     /// mixer wants the address for the positional place cue.
     placed: [(u16, u16, u8, u8, bool); FEED_CAP],
     n_placed: usize,
+    /// Pieces and deployables that came down this frame, with the row and
+    /// plate they stood at (`client_core::core::Removed`). Removal events
+    /// only — a resync clears the mirror without handing anything over.
+    removed: [client_core::core::Removed; FEED_CAP],
+    n_removed: usize,
     /// Every `APPLIED*` bit raised since the last drain.
     ///
     /// **Latched facts need this and rings do not.** `struct_hit`,
@@ -359,7 +364,7 @@ impl Feed {
         &self.shots[..self.n_shots]
     }
     /// Arrow impacts heard this frame, oldest first.
-    pub fn impacts(&self) -> &[(i32, i32, i32, u8)] {
+    pub fn impacts(&self) -> &[client_core::core::Impact] {
         &self.impacts[..self.n_impacts]
     }
 
@@ -435,6 +440,10 @@ impl Feed {
         &self.placed[..self.n_placed]
     }
 
+    pub fn removed(&self) -> &[client_core::core::Removed] {
+        &self.removed[..self.n_removed]
+    }
+
     fn clear(&mut self) {
         self.damage = 0;
         self.hits = 0;
@@ -458,6 +467,7 @@ impl Feed {
         self.n_swings = 0;
         self.n_howls = 0;
         self.n_placed = 0;
+        self.n_removed = 0;
         self.wounded = None;
         self.recovered = None;
     }
@@ -648,6 +658,15 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
             let n = feed.n_placed;
             feed.placed[n] = p;
             feed.n_placed += 1;
+        }
+    }
+    while let Some(r) = core.pop_removed() {
+        if feed.n_removed >= FEED_CAP {
+            feed.dropped = feed.dropped.saturating_add(1);
+        } else {
+            let n = feed.n_removed;
+            feed.removed[n] = r;
+            feed.n_removed += 1;
         }
     }
     while let Some(t) = core.pop_toast() {

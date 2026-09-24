@@ -64,6 +64,32 @@ pub const CHAT_RING: usize = 16;
 /// same reason.
 pub const IMPACT_RING: usize = 8;
 
+/// One mark-worthy blow as the ring holds it: the point in the wire's
+/// quanta, the surface (`sim_core::ranged::SURF_*`) and what struck it
+/// (`sim_core::ranged::IMPACT_*`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Impact {
+    pub qx: i32,
+    pub qy: i32,
+    pub qz: i32,
+    pub surf: u8,
+    pub kind: u8,
+}
+
+/// A piece or deployable that came down (decay, a raid, a hammer), with the
+/// row and plate it stood at — the mirror no longer holds either once it is
+/// gone, and the renderer's dust wants both.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Removed {
+    pub cx: u16,
+    pub cz: u16,
+    pub level: u8,
+    pub loc: u8,
+    pub deploy: bool,
+    pub row: u8,
+    pub plate: i8,
+}
+
 /// Buffered swings — one entry is one body's arm starting to move
 /// (wire v47).
 ///
@@ -269,7 +295,7 @@ pub const APPLIED2_WORN: u32 = 1 << 2;
 /// Broadcast like the event behind it, so most of these are somebody
 /// else's charge on somebody else's wall. That is the point rather than a
 /// caveat: the charge you most need drawn is the one you did not plant.
-pub const APPLIED2_CHARGE: u32 = 1 << 2;
+pub const APPLIED2_CHARGE: u32 = 1 << 9;
 
 /// Something about research landed: a blueprint learned, a refusal, or the
 /// known-mask restated (research v0). **One flag for all three**, the
@@ -323,6 +349,12 @@ pub const APPLIED2_ENV: u32 = 1 << 7;
 /// The owner's wet/cold readout changed (`EventMsg::Exposure`, weather
 /// v0) — re-read `wet_pct`, `cold_pct` and `cold_hurting`.
 pub const APPLIED2_EXPOSURE: u32 = 1 << 8;
+
+/// A structure hit landed that was THIS player's blow (wire v77): the
+/// struck wall is latched in `own_struct_hit` for the HUD's readout.
+/// `APPLIED_STRUCT_HIT` still rises for every hit on the island — the
+/// mirror re-bands every wall in view — but only this one is the player's.
+pub const APPLIED2_OWN_STRUCT_HIT: u32 = 1 << 10;
 
 /// The client's mirror of the loose stacks lying on the ground (ground
 /// items v0). `BagSet`'s shape one store over, with one difference that
@@ -1480,7 +1512,7 @@ pub struct ClientCore {
     shot_len: usize,
     /// Where arrows stopped, in the wire's quanta, with the surface kind
     /// (`sim_core::ranged::SURF_*`). Drop-oldest and purely cosmetic.
-    impacts: [(i32, i32, i32, u8); IMPACT_RING],
+    impacts: [Impact; IMPACT_RING],
     impact_head: usize,
     impact_len: usize,
     swings: [u32; SWING_RING],
@@ -1510,6 +1542,12 @@ pub struct ClientCore {
     placed: [(u16, u16, u8, u8, bool); TOAST_RING],
     placed_head: usize,
     placed_len: usize,
+    /// Removals that HAPPENED (`PieceRemoved`/`DeployRemoved`), the
+    /// placement ring's other half: a sync reset clears the mirror without
+    /// ringing here, so a resync throws no dust.
+    removed: [Removed; TOAST_RING],
+    removed_head: usize,
+    removed_len: usize,
     deploy_refusal_head: usize,
     deploy_refusal_len: usize,
     /// Which ovens this client has heard are lit, by address.
@@ -1542,6 +1580,13 @@ pub struct ClientCore {
     /// a row the defs have not arrived for yet reports `max = 0`, and the
     /// caller draws nothing rather than a lie.
     pub struct_hit: (u16, u16, u8, u8, u16, u16),
+    /// The last structure hit that was this player's own blow, the same
+    /// shape — what the HUD's wall readout draws (`APPLIED2_OWN_STRUCT_HIT`).
+    pub own_struct_hit: (u16, u16, u8, u8, u16, u16),
+    /// The damage of this player's last hitmarker on a structure (an
+    /// `EV_HIT` with no victim), waiting for the island-wide `StructHit`
+    /// behind it; the pair is how a client tells its own raid from anyone's.
+    own_struct_pending: Option<u16>,
     /// The last charge planted: (cx, cz, level, loc, row, fuse ticks). The
     /// store bit rides in `charge_deploy` beside it rather than inside the
     /// tuple, because a caller drawing a countdown on a wall needs the
@@ -1695,7 +1740,7 @@ impl ClientCore {
             shots: [(0, 0, 0, 0, 0); REFUSAL_RING],
             shot_head: 0,
             shot_len: 0,
-            impacts: [(0, 0, 0, 0); IMPACT_RING],
+            impacts: [Impact::default(); IMPACT_RING],
             impact_head: 0,
             impact_len: 0,
             swings: [0; SWING_RING],
@@ -1712,12 +1757,17 @@ impl ClientCore {
             placed: [(0, 0, 0, 0, false); TOAST_RING],
             placed_head: 0,
             placed_len: 0,
+            removed: [Removed::default(); TOAST_RING],
+            removed_head: 0,
+            removed_len: 0,
             deploy_refusal_head: 0,
             deploy_refusal_len: 0,
             ovens: LitOvens::new(),
             pending_door: None,
             removed_addr: (0, 0, 0, 0),
             struct_hit: (0, 0, 0, 0, 0, 0),
+            own_struct_hit: (0, 0, 0, 0, 0, 0),
+            own_struct_pending: None,
             charge_placed: (0, 0, 0, 0, 0, 0),
             charge_deploy: false,
             stock_addr: (0, 0, 0),
@@ -2336,23 +2386,10 @@ impl ClientCore {
                 damage,
                 left,
             } => {
-                // The raid's own hitmarker: the same ring a body hit uses,
-                // because "my swing landed for N" is the same fact. It is
-                // the one entry with no victim — a wall is not a person and
-                // has nothing to flinch — so it rides `NO_VICTIM`.
-                if self.hit_len == TOAST_RING {
-                    self.hit_head = (self.hit_head + 1) % TOAST_RING;
-                    self.hit_len -= 1;
-                }
-                self.hits[(self.hit_head + self.hit_len) % TOAST_RING] = HitFact {
-                    victim: NO_VICTIM,
-                    // No rung: a wall is not a body. `None` rather than
-                    // the identity so merging a frame cannot promote a
-                    // leg hit to a chest one.
-                    part: None,
-                    damage,
-                };
-                self.hit_len += 1;
+                // Broadcast to the whole island, so it is NOT the raider's
+                // hitmarker (wire v77): that is the `EV_HIT` with no victim
+                // the striker alone receives. This is the wall's own fact.
+                let own = self.own_struct_pending.take() == Some(damage);
                 let addressed =
                     |r: &(u16, u16, u8, u8)| r.0 == cx && r.1 == cz && r.2 == level && r.3 == loc;
                 let max = if deploy {
@@ -2371,6 +2408,10 @@ impl ClientCore {
                         .map(|r| self.piece_defs.pieces[r.row as usize].hp)
                 };
                 self.struct_hit = (cx, cz, level, loc, left, max.unwrap_or(0));
+                if own {
+                    self.own_struct_hit = self.struct_hit;
+                    self.applied2 |= APPLIED2_OWN_STRUCT_HIT;
+                }
                 // …and re-band the mirror, so the wall the player is
                 // watching come apart actually comes apart (`set_dmg`).
                 // An unknown maximum bands to 0 by `damage_band`'s own
@@ -2381,11 +2422,7 @@ impl ClientCore {
                 } else {
                     self.pieces.set_dmg(cx, cz, level, loc, band);
                 }
-                // Both flags on purpose: `HIT` is the hitmarker fact and
-                // owns draining the ring, `STRUCT_HIT` adds where it
-                // landed. One flag would either strand the ring or make
-                // every caller of the marker learn about addresses.
-                flags |= APPLIED_HIT | APPLIED_STRUCT_HIT;
+                flags |= APPLIED_STRUCT_HIT;
             }
             EventMsg::PieceRepaired {
                 // `StructHit` reads its bit to pick which store to look a
@@ -2436,11 +2473,27 @@ impl ClientCore {
                 self.applied2 |= APPLIED2_CHARGE;
             }
             EventMsg::PieceRemoved { cx, cz, level, loc } => {
+                let was = self
+                    .pieces
+                    .entries()
+                    .iter()
+                    .find(|r| (r.cx, r.cz, r.level, r.loc) == (cx, cz, level, loc))
+                    .map(|r| (r.row, r.plate));
                 if self
                     .pieces
                     .remove(cx, cz, level, loc, &self.piece_defs, self.piece_defs_have)
                 {
                     self.removed_addr = (cx, cz, level, loc);
+                    let (row, plate) = was.unwrap_or((0, 0));
+                    self.push_removed(Removed {
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                        deploy: false,
+                        row,
+                        plate,
+                    });
                     flags |= APPLIED_PIECE_REMOVED;
                 }
             }
@@ -2463,6 +2516,15 @@ impl ClientCore {
                         self.pieces.set_solid(cx, cz, level, None);
                     }
                     self.removed_addr = (cx, cz, level, loc);
+                    self.push_removed(Removed {
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                        deploy: true,
+                        row: gone.row,
+                        plate: self.pieces.cols().plate(cx, cz).unwrap_or(0),
+                    });
                     flags |= APPLIED_DEPLOY_REMOVED;
                 }
             }
@@ -2602,9 +2664,17 @@ impl ClientCore {
                     self.hit_head = (self.hit_head + 1) % TOAST_RING;
                     self.hit_len -= 1;
                 }
+                // A blow on a structure (wire v77: `EV_HIT` with no victim,
+                // sent to the striker alone) has no rung — a wall is not a
+                // body — and is remembered so the `StructHit` behind it is
+                // known for this player's own.
+                let wall = victim == NO_VICTIM;
+                if wall {
+                    self.own_struct_pending = Some(damage);
+                }
                 self.hits[(self.hit_head + self.hit_len) % TOAST_RING] = HitFact {
                     victim,
-                    part: Some(part),
+                    part: (!wall).then_some(part),
                     damage,
                 };
                 self.hit_len += 1;
@@ -2732,7 +2802,13 @@ impl ClientCore {
                     (shooter, yaw, pitch, speed_mmpt, drop_mmpt2);
                 self.shot_len += 1;
             }
-            EventMsg::Impact { qx, qy, qz, surf } => {
+            EventMsg::Impact {
+                qx,
+                qy,
+                qz,
+                surf,
+                kind,
+            } => {
                 // Drop-oldest, the shot ring's policy and its reason: when
                 // more marks arrive than a frame can take, the newest are
                 // the ones still near enough to look at.
@@ -2746,8 +2822,13 @@ impl ClientCore {
                     self.impact_head = (self.impact_head + 1) % IMPACT_RING;
                     self.impact_len -= 1;
                 }
-                self.impacts[(self.impact_head + self.impact_len) % IMPACT_RING] =
-                    (qx, qy, qz, surf);
+                self.impacts[(self.impact_head + self.impact_len) % IMPACT_RING] = Impact {
+                    qx,
+                    qy,
+                    qz,
+                    surf,
+                    kind,
+                };
                 self.impact_len += 1;
             }
             EventMsg::Swing { swinger } => {
@@ -3052,7 +3133,7 @@ impl ClientCore {
     /// clean-merge trap in CLAUDE.md is this exact ring shape, and
     /// `tests/sound.rs` derives its verb list from this file so a ring
     /// added and never drained reddens on its own.
-    pub fn pop_impact(&mut self) -> Option<(i32, i32, i32, u8)> {
+    pub fn pop_impact(&mut self) -> Option<Impact> {
         if self.impact_len == 0 {
             return None;
         }
@@ -3115,6 +3196,27 @@ impl ClientCore {
         self.placed[(self.placed_head + self.placed_len) % TOAST_RING] =
             (cx, cz, level, loc, deploy);
         self.placed_len += 1;
+    }
+
+    /// Drop-oldest, the placement ring's rule for its reason.
+    fn push_removed(&mut self, r: Removed) {
+        if self.removed_len == TOAST_RING {
+            self.removed_head = (self.removed_head + 1) % TOAST_RING;
+            self.removed_len -= 1;
+        }
+        self.removed[(self.removed_head + self.removed_len) % TOAST_RING] = r;
+        self.removed_len += 1;
+    }
+
+    /// Oldest buffered removal (see [`Removed`]).
+    pub fn pop_removed(&mut self) -> Option<Removed> {
+        if self.removed_len == 0 {
+            return None;
+        }
+        let r = self.removed[self.removed_head];
+        self.removed_head = (self.removed_head + 1) % TOAST_RING;
+        self.removed_len -= 1;
+        Some(r)
     }
 
     /// Oldest buffered placement broadcast: address + which store (`true` =

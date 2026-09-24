@@ -1532,7 +1532,7 @@ fn a_landed_swing_marks_the_node_on_the_side_it_was_hit_from() {
         sim_core::ranged::SURF_WORLD,
         "a struck occupant is the world, not the ground under it"
     );
-    let mx = (a & 0x00ff_ffff) as i32 as f32 * movement::POS_XZ_Q;
+    let mx = (a & 0x000f_ffff) as i32 as f32 * movement::POS_XZ_Q;
     let mz = b as i32 as f32 * movement::POS_XZ_Q;
     let my = c as i32 as f32 * movement::POS_Y_Q;
 
@@ -1685,7 +1685,7 @@ fn the_mark_is_at_the_height_the_ray_entered_the_node() {
         w.tick(&[hold_primary(aim, t as u16)]);
         for e in w.events.entries() {
             if e.code == sim_core::world::EV_IMPACT {
-                let mx = (e.a & 0x00ff_ffff) as i32 as f32 * movement::POS_XZ_Q;
+                let mx = (e.a & 0x000f_ffff) as i32 as f32 * movement::POS_XZ_Q;
                 let mz = e.b as i32 as f32 * movement::POS_XZ_Q;
                 let my = e.c as i32 as f32 * movement::POS_Y_Q;
                 marks.push((mx, my, mz));

@@ -56,8 +56,12 @@
 //! - A sample is `(a + (b − a) · frac) · (1/32768)` with `a = bank[pos]`,
 //!   `b = bank[pos + 1]`; a looping voice's `b` at the last position is
 //!   `bank[0]`, because the seam is already cut (`synth::loop_seam`) and the
-//!   wrap IS the loop point. A one-shot ends when `pos` reaches `len − 1`,
-//!   so `bank[len]` is never read.
+//!   wrap IS the loop point. A one-shot plays one take of its cue's bank
+//!   (`takes` equal slices of it, `len / takes` samples each) and ends when
+//!   `pos` reaches the take's last sample, so the next take is never read.
+//! - A one-shot with a low-pass (`lp != 0`) runs each sample through one
+//!   pole, `y += (lp/256)·(x − y)`, before its gains. `lp == 0` skips it, so
+//!   an unfiltered voice is bit-identical to one from before the filter.
 //! - A held slot's gain across a block is `g0 + (g1 − g0) · (i + 1) / n`
 //!   for sample `i` of `n`, and equals the target on the block's last sample.
 //! - The block is summed in a fixed order into a zeroed buffer — held slots
@@ -150,9 +154,11 @@ pub const CMD_RING_CAP: usize = 64;
 /// starts dropping ([`Out::ring_dropped`]).
 pub const CMD_RING_CAP_NATIVE: usize = 512;
 
-/// A [`Cmd`] on the wire: tag, cue, slot, a pad byte, three little-endian
-/// f32. The browser transport carries commands as these records; native does
-/// not encode at all.
+/// A [`Cmd`] on the wire: tag, cue, slot, a fourth byte, three
+/// little-endian f32. A `Start` has no slot and uses bytes 2 and 3 for its
+/// take (`(takes − 1) << 4 | take`) and its low-pass, so a record from before
+/// either decodes as take 0 of 1, unfiltered. The browser transport carries
+/// commands as these records; native does not encode at all.
 pub const CMD_BYTES: usize = 16;
 
 /// What the game thread tells the renderer. `Copy`, fixed-size, and complete.
@@ -162,6 +168,12 @@ pub enum Cmd {
     /// ([`rate`]). Refused, counted and never stolen when the pool is full.
     Start {
         cue: Cue,
+        /// Which of the cue's `takes` to play, below `takes` (at most
+        /// [`MAX_TAKES`]).
+        take: u8,
+        takes: u8,
+        /// The one-pole low-pass coefficient × 256; 0 is no filter.
+        lp: u8,
         gain_l: f32,
         gain_r: f32,
         rate: f32,
@@ -210,26 +222,38 @@ impl Tag {
 }
 
 impl Cmd {
-    /// Encode. Layout: `[tag, cue, slot, 0, f0 LE, f1 LE, f2 LE]`, where a
-    /// variant that carries no cue, slot or float leaves that field zero.
+    /// Encode. Layout: `[tag, cue, slot, b3, f0 LE, f1 LE, f2 LE]`, where a
+    /// variant that carries no cue, slot or float leaves that field zero and
+    /// a `Start` packs its take into the slot byte and its low-pass into
+    /// `b3` (see [`CMD_BYTES`]).
     pub fn to_bytes(self) -> [u8; CMD_BYTES] {
-        let (tag, cue, slot, f) = match self {
+        let (tag, cue, slot, b3, f) = match self {
             Cmd::Start {
                 cue,
+                take,
+                takes,
+                lp,
                 gain_l,
                 gain_r,
                 rate,
-            } => (Tag::Start, cue as u8, 0, [gain_l, gain_r, rate]),
-            Cmd::Loop { slot, cue, gain } => (Tag::Loop, cue as u8, slot, [gain, 0.0, 0.0]),
-            Cmd::Play { slot, cue, gain } => (Tag::Play, cue as u8, slot, [gain, 0.0, 0.0]),
-            Cmd::Gain { slot, gain } => (Tag::Gain, 0, slot, [gain, 0.0, 0.0]),
-            Cmd::Stop { slot } => (Tag::Stop, 0, slot, [0.0; 3]),
-            Cmd::CutVoices => (Tag::CutVoices, 0, 0, [0.0; 3]),
+            } => (
+                Tag::Start,
+                cue as u8,
+                (takes.saturating_sub(1) & 0x0F) << 4 | (take & 0x0F),
+                lp,
+                [gain_l, gain_r, rate],
+            ),
+            Cmd::Loop { slot, cue, gain } => (Tag::Loop, cue as u8, slot, 0, [gain, 0.0, 0.0]),
+            Cmd::Play { slot, cue, gain } => (Tag::Play, cue as u8, slot, 0, [gain, 0.0, 0.0]),
+            Cmd::Gain { slot, gain } => (Tag::Gain, 0, slot, 0, [gain, 0.0, 0.0]),
+            Cmd::Stop { slot } => (Tag::Stop, 0, slot, 0, [0.0; 3]),
+            Cmd::CutVoices => (Tag::CutVoices, 0, 0, 0, [0.0; 3]),
         };
         let mut b = [0u8; CMD_BYTES];
         b[0] = tag as u8;
         b[1] = cue;
         b[2] = slot;
+        b[3] = b3;
         for (i, v) in f.iter().enumerate() {
             b[4 + i * 4..8 + i * 4].copy_from_slice(&v.to_le_bytes());
         }
@@ -237,9 +261,9 @@ impl Cmd {
     }
 
     /// Decode. `None` for an unknown tag, a cue byte off [`Cue::ALL`] on a
-    /// variant that carries one, or a slot byte at or past [`HELD`] on a
-    /// variant that carries one. A bad record is dropped by the reader, never
-    /// coerced into a nearby valid one.
+    /// variant that carries one, a slot byte at or past [`HELD`] on a
+    /// variant that carries one, or a take at or past its takes. A bad record
+    /// is dropped by the reader, never coerced into a nearby valid one.
     pub fn from_bytes(b: &[u8; CMD_BYTES]) -> Option<Cmd> {
         let tag = Tag::of(b[0])?;
         let cue = || Cue::ALL.get(b[1] as usize).copied();
@@ -253,12 +277,21 @@ impl Cmd {
         let f =
             |i: usize| f32::from_le_bytes([b[4 + i * 4], b[5 + i * 4], b[6 + i * 4], b[7 + i * 4]]);
         Some(match tag {
-            Tag::Start => Cmd::Start {
-                cue: cue()?,
-                gain_l: f(0),
-                gain_r: f(1),
-                rate: f(2),
-            },
+            Tag::Start => {
+                let (take, takes) = (b[2] & 0x0F, (b[2] >> 4) + 1);
+                if take >= takes {
+                    return None;
+                }
+                Cmd::Start {
+                    cue: cue()?,
+                    take,
+                    takes,
+                    lp: b[3],
+                    gain_l: f(0),
+                    gain_r: f(1),
+                    rate: f(2),
+                }
+            }
             Tag::Loop => Cmd::Loop {
                 slot: slot()?,
                 cue: cue()?,
@@ -307,26 +340,95 @@ pub fn pan(d: [f32; 3], right: [f32; 2]) -> (f32, f32) {
     (theta.cos(), theta.sin())
 }
 
-/// The [`Cmd::Start`] for a voice the mixer admitted.
+/// The [`Cmd::Start`] for a voice the mixer admitted: take 0 of 1 (the
+/// caller that knows the bank sets the take, [`Cmd::with_take`]).
 ///
 /// Positional: [`pan`] times `start.gain` per ear, so a source at the pan's
 /// centre is `gain/√2` per ear and one sweeping past does not get louder in
-/// the middle. Non-positional (an own-fact): both ears at `start.gain`
-/// exactly — heard at the table's gain as authored, with no pan and no
-/// falloff, which is what `CueDef::positional == false` means.
+/// the middle, and past [`LP_FROM`] of its radius the air takes the top off
+/// ([`lp_of`]). Non-positional (an own-fact): both ears at `start.gain`
+/// exactly, unfiltered — heard at the table's gain as authored, with no pan
+/// and no falloff, which is what `CueDef::positional == false` means.
 pub fn start_cmd(start: &Start, listener: [f32; 3], right: [f32; 2], out_rate: u32) -> Cmd {
-    let (l, r) = match start.at {
-        Some(p) => pan(
-            [p[0] - listener[0], p[1] - listener[1], p[2] - listener[2]],
-            right,
-        ),
-        None => (1.0, 1.0),
+    let ((l, r), lp) = match start.at {
+        Some(p) => {
+            let d = [p[0] - listener[0], p[1] - listener[1], p[2] - listener[2]];
+            let dist = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+            (
+                pan(d, right),
+                lp_of(dist, start.cue.def().radius_m, out_rate),
+            )
+        }
+        None => ((1.0, 1.0), 0),
     };
     Cmd::Start {
         cue: start.cue,
+        take: 0,
+        takes: 1,
+        lp,
         gain_l: l * start.gain,
         gain_r: r * start.gain,
         rate: rate(start.speed, out_rate),
+    }
+}
+
+/// The most takes one cue's bank may be cut into — what the record's four
+/// bits hold.
+pub const MAX_TAKES: u8 = 16;
+
+/// How far into its radius a sound carries before the air starts taking its
+/// top end off, as a fraction of the radius.
+pub const LP_FROM: f32 = 0.3;
+/// The cutoff a sound has just past [`LP_FROM`], Hz, falling geometrically
+/// to [`LP_FAR_HZ`] at the radius. Distance muffles; it does not only
+/// quieten (Rust's own occlusion is the same one-pole, no resonance).
+pub const LP_NEAR_HZ: f32 = 12_000.0;
+pub const LP_FAR_HZ: f32 = 1_400.0;
+
+/// The low-pass byte for a source `dist_m` away that carries `radius_m`: 0
+/// (no filter) inside [`LP_FROM`] of the radius, else the one-pole
+/// coefficient `1 − e^(−2π·fc/rate)` × 256 for a cutoff falling from
+/// [`LP_NEAR_HZ`] to [`LP_FAR_HZ`]. Computed on the game thread, so the
+/// renderer's half is multiply-add only and the browser's output matches the
+/// native one bit for bit.
+pub fn lp_of(dist_m: f32, radius_m: f32, out_rate: u32) -> u8 {
+    if radius_m <= 0.0 || !dist_m.is_finite() {
+        return 0;
+    }
+    let t = (dist_m / radius_m).clamp(0.0, 1.0);
+    if t <= LP_FROM {
+        return 0;
+    }
+    let k = (t - LP_FROM) / (1.0 - LP_FROM);
+    let hz = LP_NEAR_HZ * (LP_FAR_HZ / LP_NEAR_HZ).powf(k);
+    let a = 1.0 - (-core::f32::consts::TAU * hz / out_rate.max(1) as f32).exp();
+    (a * 256.0).round().clamp(1.0, 255.0) as u8
+}
+
+impl Cmd {
+    /// This start, playing take `take` of `takes` — the bank's own count
+    /// (`render/audio.rs`), so the renderer cuts the cue where it was joined.
+    /// Any other command comes back unchanged.
+    pub fn with_take(self, take: u8, takes: u8) -> Cmd {
+        match self {
+            Cmd::Start {
+                cue,
+                lp,
+                gain_l,
+                gain_r,
+                rate,
+                ..
+            } => Cmd::Start {
+                cue,
+                take,
+                takes,
+                lp,
+                gain_l,
+                gain_r,
+                rate,
+            },
+            other => other,
+        }
     }
 }
 
@@ -340,20 +442,30 @@ struct Voice {
     live: bool,
     cue: Cue,
     pos: u32,
+    /// One past the take's last sample.
+    end: u32,
     frac: f32,
     rate: f32,
     gain_l: f32,
     gain_r: f32,
+    /// The low-pass: off, or its coefficient and state.
+    lp: bool,
+    lp_a: f32,
+    lp_y: f32,
 }
 
 const NO_VOICE: Voice = Voice {
     live: false,
     cue: Cue::UiClick,
     pos: 0,
+    end: 0,
     frac: 0.0,
     rate: 1.0,
     gain_l: 0.0,
     gain_r: 0.0,
+    lp: false,
+    lp_a: 0.0,
+    lp_y: 0.0,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -440,7 +552,8 @@ pub struct Renderer {
     /// that is not finite, a rate that is not finite or is outside
     /// `rate(SPEED_MIN..=SPEED_MAX, out_rate)` — a rate of zero is a voice
     /// that never ends and holds its slot forever, and a rate past the band
-    /// is a click the mixer would never have asked for.
+    /// is a click the mixer would never have asked for — or a take past its
+    /// takes, or one too short to play.
     pub bad_cmd: u32,
     /// Installs of a cue already installed, refused and handed back.
     pub reinstall_refused: u32,
@@ -517,6 +630,9 @@ impl Renderer {
         match cmd {
             Cmd::Start {
                 cue,
+                take,
+                takes,
+                lp,
                 gain_l,
                 gain_r,
                 rate,
@@ -527,27 +643,41 @@ impl Renderer {
                     && gain_r.is_finite()
                     && rate.is_finite()
                     && rate >= self.rate_min
-                    && rate <= self.rate_max)
+                    && rate <= self.rate_max
+                    && take < takes
+                    && takes <= MAX_TAKES)
                 {
                     self.bad_cmd = self.bad_cmd.saturating_add(1);
                     return;
                 }
-                if self.bank[cue.idx()].is_none() {
+                let Some(len) = self.bank[cue.idx()].as_deref().map(|b| b.len() as u32) else {
                     self.unbanked = self.unbanked.saturating_add(1);
+                    return;
+                };
+                // Takes are equal slices of the bank; one under two samples
+                // has nothing between its first sample and its end.
+                let span = len / takes as u32;
+                if span < 2 {
+                    self.bad_cmd = self.bad_cmd.saturating_add(1);
                     return;
                 }
                 let Some(v) = self.voices.iter_mut().find(|v| !v.live) else {
                     self.refused = self.refused.saturating_add(1);
                     return;
                 };
+                let pos = take as u32 * span;
                 *v = Voice {
                     live: true,
                     cue,
-                    pos: 0,
+                    pos,
+                    end: pos + span,
                     frac: 0.0,
                     rate,
                     gain_l,
                     gain_r,
+                    lp: lp != 0,
+                    lp_a: lp as f32 * (1.0 / 256.0),
+                    lp_y: 0.0,
                 };
             }
             Cmd::Loop { slot, cue, gain } | Cmd::Play { slot, cue, gain } => {
@@ -726,16 +856,20 @@ fn mix_held(h: &mut Held, b: &[i16], rate: f32, out: &mut [f32]) {
     }
 }
 
-/// Mix a one-shot into `out`. Ends when `pos` reaches `len − 1`, so the
-/// neighbour read is always inside the bank.
+/// Mix a one-shot into `out`. Ends when `pos` reaches its take's last
+/// sample, so the neighbour read is always inside the take.
 fn mix_voice(v: &mut Voice, b: &[i16], out: &mut [f32]) {
-    let len = b.len() as u32;
+    let end = v.end.min(b.len() as u32);
     for fr in out.chunks_exact_mut(2) {
-        if v.pos >= len - 1 {
+        if v.pos >= end.saturating_sub(1) {
             v.live = false;
             return;
         }
-        let s = tap(b[v.pos as usize], b[v.pos as usize + 1], v.frac);
+        let mut s = tap(b[v.pos as usize], b[v.pos as usize + 1], v.frac);
+        if v.lp {
+            v.lp_y += v.lp_a * (s - v.lp_y);
+            s = v.lp_y;
+        }
         fr[0] += s * v.gain_l;
         fr[1] += s * v.gain_r;
         advance(&mut v.pos, &mut v.frac, v.rate);

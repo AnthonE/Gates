@@ -528,6 +528,9 @@ bevy = { version = "0.18", optional = true, features = [
 # OpenSSL. Blocking on purpose; the menu fetches on a thread, never a frame.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Decodes the recorded half of the sound bank (`src/sound_bank.rs`, Kenney's
+# CC0 OGGs) at boot. Pure Rust, so the browser build decodes the same bytes.
+lewton = "0.10"
 # The conifer generator: ez-tree's algorithm, ported to Rust and Bevy
 # (MIT OR Apache-2.0, github.com/Affinator/bevy_procedural_tree). The browser
 # client already ships `@dgreenheck/ez-tree` and `web/src/props.js` already

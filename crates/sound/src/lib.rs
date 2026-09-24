@@ -271,11 +271,34 @@ pub enum Cue {
     /// Thunder: a crack and a long roll, heard wherever you are — a storm is
     /// not a place in the world, so it is not positional.
     Thunder,
+    /// A round landing in soil, sand or grass: a dull slap and a spray.
+    BulletSoil,
+    /// A round on stone or rock: a hard crack with grit in it.
+    BulletStone,
+    /// A round into wood: a dry thock.
+    BulletWood,
+    /// A round on metal: a bright ping.
+    BulletMetal,
+    /// A round glancing off stone or metal and whining away.
+    Ricochet,
+    /// A blade or a round into a body.
+    FleshHit,
+    /// A gun fired a long way off: low, dark and long, the layer heard past
+    /// [`Cue::ShotGun`]'s own radius (`render/audio.rs::shots` picks by range).
+    ShotGunFar,
+    /// A charge going off.
+    Blast,
+    /// A built piece coming down.
+    Collapse,
+    /// Somebody knocking on a door.
+    Knock,
+    /// Your own gun being reloaded.
+    Reload,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 47;
+pub const CUE_COUNT: usize = 58;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -331,6 +354,17 @@ impl Cue {
         Cue::HitLimb,
         Cue::BedRain,
         Cue::Thunder,
+        Cue::BulletSoil,
+        Cue::BulletStone,
+        Cue::BulletWood,
+        Cue::BulletMetal,
+        Cue::Ricochet,
+        Cue::FleshHit,
+        Cue::ShotGunFar,
+        Cue::Blast,
+        Cue::Collapse,
+        Cue::Knock,
+        Cue::Reload,
     ];
 
     /// Is this cue a piece of music?
@@ -414,14 +448,28 @@ impl Cue {
             | Cue::TreeFall
             | Cue::Snort
             | Cue::Growl
-            | Cue::Hurt => 0.07,
+            | Cue::Hurt
+            | Cue::BulletSoil
+            | Cue::BulletStone
+            | Cue::BulletWood
+            | Cue::BulletMetal
+            | Cue::FleshHit
+            | Cue::Collapse
+            | Cue::Knock
+            | Cue::Reload => 0.07,
+            // A whine's pitch is its whole character, and no two glances
+            // leave at the same speed.
+            Cue::Ricochet => 0.14,
+            // A blast varies like thunder: heard rarely, but one recording
+            // retriggered through a raid is its tell.
+            Cue::Blast => 0.08,
             // A shot varies like any other diegetic cue, and slightly less
             // than a swing: the two are the most *repeated* sounds in a
             // fight, so unison is the tell, but a firearm's report is a
             // mechanism with a fixed bore and a bow's is a fixed string —
             // both vary with the shooter and the round, not with the
             // weapon's pitch.
-            Cue::ShotBow | Cue::ShotGun => 0.05,
+            Cue::ShotBow | Cue::ShotGun | Cue::ShotGunFar => 0.05,
             // Wider than any diegetic cue but the bird, and for the bird's
             // reason turned up one notch: a howl is the most *exposed* tonal
             // call in the bank — a near-pure pitched tone held for seconds,
@@ -686,6 +734,27 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // and non-positional, with a cooldown so two near bolts are one roll.
     row(AMB,   0.0, 0.42,   0, 0, false),  // rain bed
     row(AMB,   0.0, 0.85, 900, 3, false),  // thunder
+    // Effects v2. A round landing carries like a blow does; a ricochet a
+    // little further, being a whine; a body hit is information a life
+    // turns on, so it outranks the impacts.
+    row(GAME, 40.0, 0.60,  30, 4, true),   // bullet, soil
+    row(GAME, 40.0, 0.60,  30, 4, true),   // bullet, stone
+    row(GAME, 40.0, 0.60,  30, 4, true),   // bullet, wood
+    row(GAME, 48.0, 0.60,  30, 4, true),   // bullet, metal
+    row(GAME, 56.0, 0.45,  90, 3, true),   // ricochet
+    row(GAME, 30.0, 0.70,  30, 5, true),   // flesh hit
+    // The far report: past `ShotGun`'s radius the near layer is gone and
+    // this is what is left of a gunshot. Twice the reach, dark, and at a
+    // gain that meets the near layer where `render/audio.rs` switches.
+    row(GAME, 200.0, 0.45,  60, 6, true),  // gun fired, far
+    // A charge is the loudest thing on the island and the one sound a
+    // whole server should know the place of.
+    row(GAME, 200.0, 1.00,   0, 7, true),  // blast
+    row(GAME, 60.0, 0.80,  80, 5, true),   // collapse
+    row(GAME, 24.0, 0.60, 120, 4, true),   // knock
+    // Your own hands, so non-positional; the cooldown is what keeps a
+    // reload key held down from being a rattle.
+    row(GAME,  0.0, 0.45, 250, 3, false),  // reload
 ];
 
 /// Your own arm. Named rather than written inline so [`RSWING`] can read its
@@ -785,14 +854,13 @@ const M_COMBAT: CueDef = music_row(1.0);
 /// (It also used to derive `render/audio.rs`'s spatial scale for rodio's
 /// clamp; the engine pans now and that half is gone.)
 ///
-/// **Set by [`Cue::ShotGun`] since v54**, at the reference's own hundred
-/// metres; the falling tree's 96 m held it before that (this line said 88 m
-/// for one commit, which is the howl's radius — the maximum of a table is
-/// the kind of claim to re-read off the table). It is a derived
-/// number and not a taste one — it is the maximum of the table, and the
-/// test that asserts so is what makes raising a radius force this line
+/// **Set by [`Cue::ShotGunFar`] and [`Cue::Blast`] since effects v2**, at
+/// 200 m, inside the shard's 208 m interest radius (an event from further
+/// never arrives); the near gunshot's 100 m held it before that. It is a
+/// derived number and not a taste one — it is the maximum of the table, and
+/// the test that asserts so is what makes raising a radius force this line
 /// rather than silently invert a cue's falloff.
-pub const MAX_AUDIBLE_M: f32 = 100.0;
+pub const MAX_AUDIBLE_M: f32 = 200.0;
 
 /// How many voices may sound at once.
 ///

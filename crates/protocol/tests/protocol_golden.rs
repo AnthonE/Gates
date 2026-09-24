@@ -1700,13 +1700,19 @@ fn golden_event(fixture: &[u8], name: &str) {
             encode_event_shot(shooter, yaw, pitch, speed_mmpt, drop_mmpt2, &mut buf).unwrap()
         }
         "event_impact.bin" => {
-            let (qx, qy, qz, surf) = event_impact();
+            let (qx, qy, qz, surf, kind) = event_impact();
             assert_eq!(
                 decode_event(fixture).unwrap(),
-                EventMsg::Impact { qx, qy, qz, surf },
+                EventMsg::Impact {
+                    qx,
+                    qy,
+                    qz,
+                    surf,
+                    kind
+                },
                 "{name}: decode mismatch"
             );
-            encode_event_impact(qx, qy, qz, surf, &mut buf).unwrap()
+            encode_event_impact(qx, qy, qz, surf, kind, &mut buf).unwrap()
         }
         "event_swing.bin" => {
             let swinger = event_swing();

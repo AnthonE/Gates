@@ -62,6 +62,9 @@ fn main() {
     let cmds = [
         Cmd::Start {
             cue: Cue::StepRock,
+            take: 0,
+            takes: 1,
+            lp: 0,
             gain_l: 0.9,
             gain_r: 0.2,
             rate: rate(1.0, OUT_RATE),

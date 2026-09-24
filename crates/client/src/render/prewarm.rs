@@ -62,10 +62,9 @@ use bevy::prelude::*;
 use super::props::Soup;
 use super::rig::EyeCam;
 
-/// Frames a warm entity stays alive. **`decal.rs`'s number, imported rather
-/// than re-picked** — it is the same claim about the same renderer, and two
-/// copies of it would be two things to keep true.
-pub const WARM_FRAMES: u32 = super::decal::PREWARM_FRAMES;
+/// Frames a warm entity stays alive — long enough for a pipeline queued on
+/// its first draw to specialize before the entity goes.
+pub const WARM_FRAMES: u32 = 8;
 
 /// How far in front of the eye a warm entity sits, metres. Past the camera's
 /// 0.1 m near plane with room to spare, and close enough that nothing can get

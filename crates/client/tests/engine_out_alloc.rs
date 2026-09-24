@@ -76,6 +76,9 @@ fn script(x: &mut u32, k: usize, out: &mut [Cmd; 6]) -> usize {
         *slot_out = match roll() % 8 {
             0..=3 => Cmd::Start {
                 cue,
+                take: 0,
+                takes: 1,
+                lp: 0,
                 gain_l: g,
                 gain_r: 1.0 - g,
                 rate: rate(SPEED_MIN + (roll() % 375) as f32 / 100.0, DEVICE_HZ),

@@ -1038,7 +1038,7 @@ pub fn land(
         let qz = crate::fmath::floor_i32(mz / POS_XZ_Q);
         events.push(
             crate::world::EV_IMPACT,
-            (crate::ranged::SURF_WORLD as u32) << 24 | qx as u32,
+            crate::world::impact_a(crate::ranged::SURF_WORLD, crate::ranged::IMPACT_MELEE, qx),
             qz as u32,
             qy as u32,
         );

@@ -31,6 +31,20 @@ use super::{falloff, Cue, Mix, CUE_COUNT, CUE_QUEUE_CAP, STARTS_PER_FRAME, VOICE
 pub const SPEED_MIN: f32 = 0.25;
 pub const SPEED_MAX: f32 = 4.0;
 
+/// How hard a gunshot at the listener ducks the quiet layer, 0..1, scaled
+/// by its own falloff — a shot across the valley ducks nothing.
+pub const DUCK_SHOT: f32 = 0.6;
+/// A charge going off: the whole of it.
+pub const DUCK_BLAST: f32 = 1.0;
+/// How long a full duck takes to let go, seconds.
+pub const DUCK_RELEASE_S: f32 = 0.8;
+/// What a full duck takes off a ducked sound: half.
+pub const DUCK_DEPTH: f32 = 0.5;
+/// The priority at and under which a cue is ducked: footsteps, birds, the
+/// animals' ambience. The beds and the music take [`Mixer::duck`] from
+/// `render/audio.rs`, which holds their voices.
+pub const DUCK_PRIORITY: u8 = 2;
+
 /// A cue somebody wants heard this frame.
 #[derive(Clone, Copy, Debug)]
 pub struct Request {
@@ -112,6 +126,10 @@ pub struct Mixer {
     /// produces the same voices at the same rates — which is what makes the
     /// whole module testable.
     rng: u32,
+    /// How ducked the quiet layer is, 0..1 (Rust's gunshot ducking: a shot
+    /// near you drops the ambience and the small sounds for a moment, which
+    /// is most of why it sounds loud).
+    duck: f32,
 }
 
 impl Default for Mixer {
@@ -142,7 +160,15 @@ impl Mixer {
             dropped: 0,
             starved: 0,
             rng: 0x2545_F491,
+            duck: 0.0,
         }
+    }
+
+    /// The multiplier the ducked layer is under right now: 1 when nothing
+    /// is ducking it, down to `1 − DUCK_DEPTH`. The beds and the music read
+    /// this; the mixer applies it to its own quiet cues.
+    pub fn duck(&self) -> f32 {
+        1.0 - DUCK_DEPTH * self.duck
     }
 
     /// xorshift32 — see [`Self::rng`].
@@ -197,6 +223,8 @@ impl Mixer {
         for c in self.cool.iter_mut() {
             *c = (*c - dt_ms).max(0.0);
         }
+        self.duck = (self.duck - dt_ms / (DUCK_RELEASE_S * 1000.0)).max(0.0);
+        let ducked = self.duck();
         self.started = 0;
 
         // Pass one: score every queued request, in place. A refused request
@@ -225,7 +253,12 @@ impl Mixer {
                 }
                 (false, _) => (0.0, 1.0),
             };
-            let gain = def.gain * req.gain * fall * mix.bus_gain(def.bus);
+            let duck = if def.priority <= DUCK_PRIORITY {
+                ducked
+            } else {
+                1.0
+            };
+            let gain = def.gain * req.gain * fall * mix.bus_gain(def.bus) * duck;
             // Below the cull radius, silenced by the mix, or on cooldown.
             let ok = fall > 0.0 && gain > 0.0 && self.cool[req.cue.idx()] <= 0.0;
             *slot = if ok {
@@ -283,6 +316,19 @@ impl Mixer {
                     }
                 }
             }
+            let kick = match req.cue {
+                Cue::ShotGun => DUCK_SHOT,
+                Cue::Blast => DUCK_BLAST,
+                _ => 0.0,
+            };
+            if kick > 0.0 {
+                let fall = if def.positional {
+                    falloff(scored[i].2, def.radius_m)
+                } else {
+                    1.0
+                };
+                self.duck = self.duck.max(kick * fall);
+            }
             let var = req.cue.pitch_var();
             self.starts[self.started] = Start {
                 cue: req.cue,
@@ -310,6 +356,51 @@ impl Mixer {
 
         self.queued = 0;
         &self.starts[..self.started]
+    }
+}
+
+/// Which take of a cue to play: never the one it played last, so a cue with
+/// takes is never heard twice running (Rust records several variations per
+/// sound for this; a pitch nudge alone reads as the same sample).
+pub struct Takes {
+    last: [u8; CUE_COUNT],
+    rng: u32,
+}
+
+impl Default for Takes {
+    fn default() -> Self {
+        Self {
+            last: [u8::MAX; CUE_COUNT],
+            rng: 0x9E37_79B9,
+        }
+    }
+}
+
+impl Takes {
+    /// A take of `cue`, below `takes`. With one take it is always 0; with
+    /// more, a uniform pick among the ones that did not play last.
+    pub fn pick(&mut self, cue: Cue, takes: u8) -> u8 {
+        if takes <= 1 {
+            return 0;
+        }
+        let mut x = self.rng;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.rng = x;
+        let last = self.last[cue.idx()];
+        let t = if last < takes {
+            let t = (x % (takes as u32 - 1)) as u8;
+            if t >= last {
+                t + 1
+            } else {
+                t
+            }
+        } else {
+            (x % takes as u32) as u8
+        };
+        self.last[cue.idx()] = t;
+        t
     }
 }
 

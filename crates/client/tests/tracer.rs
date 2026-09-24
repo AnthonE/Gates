@@ -113,7 +113,8 @@ fn a_bow_discloses_you_over_a_smaller_circle_than_a_gun() {
     );
 }
 
-/// The gunshot is what sets `MAX_AUDIBLE_M` now, and the two must not drift.
+/// The gunshot's far layer is what sets `MAX_AUDIBLE_M` now, and the two
+/// must not drift.
 ///
 /// `tests/sound.rs` already refuses a cue that carries *past* the ceiling.
 /// This is the other direction and it is the one that rots quietly: a ceiling
@@ -130,9 +131,9 @@ fn the_ceiling_is_the_loudest_cue_and_that_cue_is_the_gun() {
         "MAX_AUDIBLE_M is the maximum of the table, not a number beside it"
     );
     assert_eq!(
-        CUES[Cue::ShotGun as usize].radius_m,
+        CUES[Cue::ShotGunFar as usize].radius_m,
         MAX_AUDIBLE_M,
-        "the gunshot is the cue that sets the ceiling"
+        "the far gunshot is the cue that sets the ceiling"
     );
 }
 

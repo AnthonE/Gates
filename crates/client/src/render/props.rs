@@ -2589,14 +2589,48 @@ pub fn fell_rotation(yaw: f32, bearing: f32, t: f32) -> Quat {
 /// costs this system one comparison each. That matters because the client is
 /// held to the sim thread's discipline (`CLAUDE.md`'s client trap) and this
 /// runs every frame over every prop in the ring.
-pub fn fall(time: Res<Time>, mut q: Query<(&Fellable, &mut Topple, &mut Transform)>) {
+///
+/// The trunk takes its marks with it as it goes (a hole must not hang where
+/// it stood) and throws dust and needles where it lands (`fx::world`).
+/// Optional so the topple still runs in a world that draws no effects.
+pub fn fall(
+    time: Res<Time>,
+    mut q: Query<(&Fellable, &mut Topple, &mut Transform)>,
+    mut fx: Option<ResMut<super::fx::Fx>>,
+    mut marks: Option<ResMut<super::decal::Marks>>,
+    world: Option<Res<super::WorldId>>,
+    eye: Option<Res<super::Eye>>,
+) {
     let dt = time.delta_secs();
     for (f, mut top, mut t) in q.iter_mut() {
         if top.t < 0.0 || top.t >= FELL_FALL_S {
             continue;
         }
+        let was = top.t;
         top.t = (top.t + dt).min(FELL_FALL_S);
         t.rotation = fell_rotation(f.yaw, fell_bearing(f.key), top.t);
+        if f.part != FellPart::Trunk {
+            continue;
+        }
+        if was <= 0.0 {
+            if let Some(m) = marks.as_deref_mut() {
+                m.forget_near(t.translation + Vec3::Y * 1.2, 1.2);
+            }
+        }
+        if top.t >= FELL_FALL_S {
+            if let (Some(fx), Some(world), Some(eye)) =
+                (fx.as_deref_mut(), world.as_deref(), eye.as_deref())
+            {
+                super::fx::world::landing(
+                    fx,
+                    world,
+                    t.translation,
+                    fell_bearing(f.key),
+                    t.scale.y,
+                    eye.pos,
+                );
+            }
+        }
     }
 }
 

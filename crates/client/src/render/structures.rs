@@ -2906,6 +2906,10 @@ pub fn spawn_deploy(
     // A thing that burns gets a light, hung as a child and dark until the sim
     // says the fire is lit. See [`FireLight`].
     if burns(arch) {
+        // A pit shows its flames from the logs; a furnace keeps them inside
+        // and smokes from its top.
+        let h = DEPLOY[idx].0[1];
+        let flames = arch == ARCH_FIRE;
         e.with_child((
             FireLight {
                 cx: rec.cx,
@@ -2920,6 +2924,15 @@ pub fn spawn_deploy(
                 ..default()
             },
             Transform::from_xyz(0.0, FIRE_LIGHT_LIFT_M, 0.0),
+            super::fx::world::FireFx {
+                flames,
+                flame_dy: -FIRE_LIGHT_LIFT_M + 0.05,
+                smoke_dy: if flames {
+                    0.45
+                } else {
+                    h * 0.5 - FIRE_LIGHT_LIFT_M + 0.05
+                },
+            },
         ));
     }
     e.id()

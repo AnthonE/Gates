@@ -419,6 +419,14 @@ const _: () = assert!(
     SURF_KINDS <= (1 << SURF_BITS),
     "a surface kind past the field width would decode as a different one"
 );
+/// Width of `SUB_IMPACT`'s weapon-kind field (wire v77): arrow, bullet,
+/// melee, blast — derived from the sim's own last kind, `SURF_KINDS`' way.
+const IMPACT_KIND_BITS: u32 = 2;
+const IMPACT_KINDS: u32 = sim_core::ranged::IMPACT_BLAST as u32 + 1;
+const _: () = assert!(
+    IMPACT_KINDS <= (1 << IMPACT_KIND_BITS),
+    "an impact kind past the field width would decode as a different one"
+);
 /// And the field must hold it. A subtype declared past `SUB_BITS` would
 /// truncate on the way out and decode as a *different, live* code — the
 /// worst shape of wire drift there is, since both ends would agree on
@@ -1271,7 +1279,14 @@ pub enum EventMsg {
     /// No shooter and no item, `Shot`'s omissions for `Shot`'s reason: a
     /// mark in the world is the same mark whoever made it, and the client
     /// that wants to know whose arrow it was already heard the shot.
-    Impact { qx: i32, qy: i32, qz: i32, surf: u8 },
+    Impact {
+        qx: i32,
+        qy: i32,
+        qz: i32,
+        surf: u8,
+        /// What struck it — a `sim_core::ranged::IMPACT_*` (wire v77).
+        kind: u8,
+    },
     /// A body swung (wire v47). The swinger's entity id and nothing else:
     /// the receiver already knows where that body is and which way it
     /// faces, and what it could not know is that the arm moved, because a
@@ -2635,12 +2650,14 @@ pub fn encode_event_impact(
     qy: i32,
     qz: i32,
     surf: u8,
+    kind: u8,
     buf: &mut [u8],
 ) -> Result<usize, WireError> {
     if !(0..(1i64 << POS_XZ_BITS)).contains(&(qx as i64))
         || !(0..(1i64 << POS_XZ_BITS)).contains(&(qz as i64))
         || !(0..(1i64 << POS_Y_BITS)).contains(&(qy as i64 + POS_Y_BIAS as i64))
         || surf as u32 >= SURF_KINDS
+        || kind as u32 >= IMPACT_KINDS
     {
         return Err(WireError::Range);
     }
@@ -2649,6 +2666,7 @@ pub fn encode_event_impact(
     w.write((qy + POS_Y_BIAS) as u32, POS_Y_BITS)?;
     w.write(qz as u32, POS_XZ_BITS)?;
     w.write(surf as u32, SURF_BITS)?;
+    w.write(kind as u32, IMPACT_KIND_BITS)?;
     Ok(w.finish())
 }
 
@@ -4028,12 +4046,10 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             let qy = r.read(POS_Y_BITS)? as i32 - POS_Y_BIAS;
             let qz = r.read(POS_XZ_BITS)? as i32;
             let surf = r.read(SURF_BITS)?;
-            // The encoder's refusal, mirrored — `SUB_SHOT`'s posture one
-            // arm up. Two bits hold four values and the sim makes three,
-            // so the fourth is a sender this build does not understand
-            // and the honest answer is malformed rather than a guess at
-            // which mark it meant.
-            if surf >= SURF_KINDS {
+            let kind = r.read(IMPACT_KIND_BITS)?;
+            // The encoder's refusal, mirrored: a value past what the sim
+            // makes is a sender this build does not understand.
+            if surf >= SURF_KINDS || kind >= IMPACT_KINDS {
                 return Err(WireError::Malformed);
             }
             EventMsg::Impact {
@@ -4041,6 +4057,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 qy,
                 qz,
                 surf: surf as u8,
+                kind: kind as u8,
             }
         }
         SUB_OVEN => EventMsg::Oven {
@@ -6415,6 +6432,18 @@ mod wire_domains {
             live_max: 2,
         },
         Domain {
+            what: "impact kind",
+            sim_site: "ranged.rs IMPACT_*",
+            wire_site: "IMPACT_KIND_BITS",
+            home: "ranged.rs",
+            prefix: "pub const IMPACT_",
+            ty: ": u8 = ",
+            exempt: &[],
+            min_members: 4,
+            bits: IMPACT_KIND_BITS,
+            live_max: 3,
+        },
+        Domain {
             what: "access op",
             sim_site: "deploy.rs ACCESS_OP_*",
             wire_site: "ACCESS_OP_BITS",
@@ -6584,9 +6613,10 @@ mod wire_domains {
         assert_eq!(
             // 17 -> 18 at wire v59 (reload v1): `REFUSE_RL_BITS` is a
             // field width spent on `ranged::REFUSE_RL_*`, so it owes a
-            // row, and this assert is what asked for it.
+            // row, and this assert is what asked for it. 18 -> 19 at v77:
+            // `IMPACT_KIND_BITS` over `ranged::IMPACT_*`.
             DOMAINS.len(),
-            18,
+            19,
             "the wire-domain table changed size. Every entry is a field \
              width spent on a sim-core enumeration; add the new pair here \
              in the same commit that adds the width, or state why the \

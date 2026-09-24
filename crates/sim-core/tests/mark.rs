@@ -302,7 +302,7 @@ fn impact(events: &[SimEvent]) -> Option<(u8, f32, f32, f32)> {
     hits.first().map(|e| {
         (
             (e.a >> 24) as u8,
-            (e.a & 0x00ff_ffff) as i32 as f32 * POS_XZ_Q,
+            (e.a & 0x000f_ffff) as i32 as f32 * POS_XZ_Q,
             e.c as i32 as f32 * POS_Y_Q,
             e.b as i32 as f32 * POS_XZ_Q,
         )
