@@ -639,6 +639,10 @@ pub fn inv_add_spilling_skinned(
     added
 }
 
+/// How long a respawn held back by a base standing over the slot waits
+/// before asking again: five minutes at 30 Hz.
+pub const RESPAWN_RETRY_TICKS: u64 = 9_000;
+
 /// One slot's life record. `respawn_at == 0` ⇒ standing (damaged, or a
 /// sapling growing); nonzero ⇒ harvested until that tick. Absent from the
 /// store ⇒ pristine.
@@ -780,10 +784,28 @@ impl SlotLives {
     /// hit while it grew. The event says which: `b` the grown-by tick's low
     /// 32 bits and `c` 1 for a sapling, both 0 for anything else.
     pub fn respawn_due(&mut self, tick: u64, events: &mut EventQueue) {
+        self.respawn_due_unless(tick, events, &|_, _| false);
+    }
+
+    /// [`SlotLives::respawn_due`], holding back any slot `built_over` says a
+    /// base now stands on: it stays harvested and asks again after
+    /// [`RESPAWN_RETRY_TICKS`]. A tree felled inside a base grew back up
+    /// through the floor, and a node could come back inside a wall.
+    pub fn respawn_due_unless(
+        &mut self,
+        tick: u64,
+        events: &mut EventQueue,
+        built_over: &dyn Fn(u16, u16) -> bool,
+    ) {
         let mut i = 0;
         while i < self.len {
             let e = self.entries[i];
             if e.respawn_at != 0 && tick >= e.respawn_at {
+                if built_over(e.cx, e.cz) {
+                    self.entries[i].respawn_at = tick + RESPAWN_RETRY_TICKS;
+                    i += 1;
+                    continue;
+                }
                 if e.occ == crate::terrain::Occupant::Tree as u8 {
                     let grown_at = tick + TREE_GROW_TICKS;
                     self.entries[i] = SlotLife {
@@ -1353,6 +1375,23 @@ mod tests {
         assert!(lives.find(9, 9).is_some());
         assert_eq!(ev.len(), 1);
         assert_eq!(ev.entries()[0].a, cell_key(5, 6));
+    }
+
+    /// A slot a base stands over is held back — still harvested, asking
+    /// again after `RESPAWN_RETRY_TICKS` — and comes back once it is clear.
+    #[test]
+    fn respawn_waits_while_a_base_stands_over_the_slot() {
+        let mut lives = SlotLives::new();
+        lives.find_or_insert(5, 6).unwrap().respawn_at = 100;
+        let mut ev = EventQueue::default();
+        lives.respawn_due_unless(150, &mut ev, &|cx, cz| (cx, cz) == (5, 6));
+        assert_eq!(ev.len(), 0, "it grew back under the floor");
+        let e = lives.find(5, 6).expect("still harvested");
+        assert_eq!(e.respawn_at, 150 + RESPAWN_RETRY_TICKS);
+        // Cleared: it comes back on the retry.
+        lives.respawn_due_unless(150 + RESPAWN_RETRY_TICKS, &mut ev, &|_, _| false);
+        assert_eq!(ev.len(), 1);
+        assert!(lives.find(5, 6).is_none());
     }
 
     /// Tree growth v0's life cycle in the store: a felled tree's timer

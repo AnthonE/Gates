@@ -217,6 +217,7 @@ pub static BOAR: Design = Design {
             go(&[Noise], Flee),
             go(&[Finished], Idle),
             go(&[Failed], Idle),
+            go(&[Timer], Idle),
         ],
         // Orbit
         &[go(&[NoTarget], Idle), go(&[Timer], Chase)],
@@ -301,6 +302,7 @@ pub static WOLF: Design = Design {
             go(&[Target], Chase),
             go(&[Finished], Idle),
             go(&[Failed], Idle),
+            go(&[Timer], Idle),
         ],
         // Orbit
         &[
@@ -381,6 +383,7 @@ pub static GUARD: Design = Design {
             go(&[Target], Chase),
             go(&[Finished], Idle),
             go(&[Failed], Idle),
+            go(&[Timer], Idle),
         ],
         // Orbit
         &[
@@ -503,6 +506,12 @@ const PATROL_LEGS: u8 = 4;
 const PATROL_RING_PCT: f32 = 0.5;
 /// Arrived at home once within this.
 const HOME_STOP_CM: u16 = 300;
+/// The longest one walk home lasts before the leash gives it up and tries
+/// again from Idle: half a minute at 30 Hz.
+const HOME_MAX_TICKS: u64 = 900;
+/// How many points back along the line to home `standable_toward_home`
+/// tries before settling for home.
+const STANDABLE_STEPS: u32 = 4;
 /// Arrived at a roam or patrol point once within this.
 const WALK_STOP_CM: u16 = 100;
 /// A chase re-plans when the target has moved this far from where the
@@ -605,10 +614,16 @@ pub fn think(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob, bites: &mu
     mob.awake = nearest_watcher(ctx.players, mob) <= MOB_WAKE_CM * MOB_WAKE_CM;
     if !mob.awake {
         // Asleep stops the body where it stands and starts the next waking
-        // from rest, so nothing wakes mid-stride along a stale route.
+        // from rest, so nothing wakes mid-stride along a stale route. Rest
+        // is a real Idle, timer and all: the state it left may have had no
+        // timer (Patrol, Chase, NavigateHome run at `u64::MAX`), and an Idle
+        // that kept that would never time out — a guard whose site emptied
+        // stood at its post until somebody walked up.
+        if mob.state != Idle || mob.state_until == u64::MAX {
+            enter(ctx, slot, def, mob, Idle);
+        }
         mob.gait = 0;
         mob.path.clear();
-        mob.state = Idle;
         mob.status = RUNNING;
         return;
     }
@@ -880,7 +895,12 @@ fn sense(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob) {
         let d2 = dist2_cm(dqx, dqz);
         let buttons = p.frame.buttons;
         let moving = p.frame.move_z != 0 || p.frame.move_x != 0;
-        let radius = if buttons & BTN_CROUCH != 0 {
+        // Sprint is asked first: the body moves at a run whether or not
+        // crouch is also held (`movement::step` reads no crouch), so a
+        // crouch-sprint is a sprint, not a stalk.
+        let radius = if buttons & BTN_SPRINT != 0 && moving {
+            r * 13 / 10
+        } else if buttons & BTN_CROUCH != 0 {
             let (dx, dz) = (dqx as f32, dqz as f32);
             let cone = def.sight_dot_pm as f32 * 0.001;
             let seen = fx * dx + fz * dz >= cone * (dx * dx + dz * dz).sqrt();
@@ -889,8 +909,6 @@ fn sense(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob) {
             } else {
                 BUMP_CM
             }
-        } else if buttons & BTN_SPRINT != 0 && moving {
-            r * 13 / 10
         } else {
             r
         };
@@ -980,7 +998,9 @@ fn track_stuck(mob: &mut Mob) {
     let moved2 = dist2_cm(mob.body.qx - mob.last_qx, mob.body.qz - mob.last_qz);
     mob.last_qx = mob.body.qx;
     mob.last_qz = mob.body.qz;
-    if mob.gait <= 0 || !mob.path.active() {
+    // A walk home with no route still steers (`walking`'s fallback), and a
+    // body pushing at a wall that way is as stuck as one on a route.
+    if mob.gait <= 0 || (!mob.path.active() && mob.state != NavigateHome) {
         mob.stuck = 0;
         return;
     }
@@ -1026,10 +1046,14 @@ fn enter(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob, to: AiState) {
         }
         Patrol => {
             mob.leg = (mob.leg + 1) % PATROL_LEGS;
-            let (x, z) = patrol_point(slot, def, mob);
+            let (x, z) = standable_toward_home(ctx, mob, patrol_point(slot, def, mob));
             walk_to(ctx, mob, x, z, WALK_STOP_CM);
         }
         NavigateHome => {
+            // A walk home that cannot end — a base built over the den, a
+            // ledge between — gives up on this timer, and the leash tries
+            // again from Idle rather than grinding at a wall for good.
+            mob.state_until = tick + HOME_MAX_TICKS;
             let (x, z) = home_xz(mob);
             walk_to(ctx, mob, x, z, HOME_STOP_CM);
         }
@@ -1038,7 +1062,7 @@ fn enter(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob, to: AiState) {
         }
         MoveTowards => {
             mob.state_until = tick + LOOK_MAX_TICKS;
-            let (x, z) = look_point(slot, def, mob);
+            let (x, z) = standable_toward_home(ctx, mob, look_point(slot, def, mob));
             walk_to(ctx, mob, x, z, WALK_STOP_CM);
         }
         Sleep => {
@@ -1099,11 +1123,11 @@ fn walking(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob) -> u8 {
                 (x, z, HOME_STOP_CM)
             }
             Patrol => {
-                let (x, z) = patrol_point(slot, def, mob);
+                let (x, z) = standable_toward_home(ctx, mob, patrol_point(slot, def, mob));
                 (x, z, WALK_STOP_CM)
             }
             MoveTowards => {
-                let (x, z) = look_point(slot, def, mob);
+                let (x, z) = standable_toward_home(ctx, mob, look_point(slot, def, mob));
                 (x, z, WALK_STOP_CM)
             }
             _ => {
@@ -1130,6 +1154,12 @@ fn walking(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob) -> u8 {
             }
             mob.gait = 0;
             return FAILED;
+        }
+        if !mob.path.active() {
+            // Deferred: the tick's search budget ran out. Stand and ask
+            // again next think, rather than walk on along a stale heading.
+            mob.gait = 0;
+            return RUNNING;
         }
     }
     // A look is a jog (the fast gait without the sprint); every other walk
@@ -1319,12 +1349,7 @@ fn orbit(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob) -> u8 {
         (mob.body.qz - p.qz) as f32 * POS_XZ_Q,
     );
     let bearing = yaw_toward(ox, oz, mob.yaw);
-    // Half the slots circle one way and half the other, so a pack spreads.
-    let step = if slot.is_multiple_of(2) {
-        ORBIT_STEP
-    } else {
-        0u16.wrapping_sub(ORBIT_STEP)
-    };
+    let step = orbit_step(slot);
     let (px, pz) = (p.qx as f32 * POS_XZ_Q, p.qz as f32 * POS_XZ_Q);
     let (dx, dz) = yaw_dir(bearing.wrapping_add(step));
     let rm = r * 0.01;
@@ -1338,6 +1363,18 @@ fn orbit(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob) -> u8 {
     head(mob, gx, gz);
     mob.gait = run_gait(def, mob);
     RUNNING
+}
+
+/// Which way this slot steps round its target. Half the pack circles one
+/// way and half the other, so it spreads. Split on the slot's place among
+/// the predators: every predator slot is a multiple of `WOLF_SLOT_EVERY`,
+/// so the slot's own parity put the whole pack on one side.
+fn orbit_step(slot: usize) -> u16 {
+    if (slot / crate::mob::WOLF_SLOT_EVERY).is_multiple_of(2) {
+        ORBIT_STEP
+    } else {
+        0u16.wrapping_sub(ORBIT_STEP)
+    }
 }
 
 /// Plan a route for this animal, gait untouched.
@@ -1431,6 +1468,26 @@ fn look_point(slot: usize, def: &MobDef, mob: &Mob) -> (f32, f32) {
     }
     let k = lim / d2.sqrt();
     (hx + dx * k, hz + dz * k)
+}
+
+/// `(x, z)` if an animal can stand there, else the first standable point
+/// back along the line to home, or home itself. A look at a round that
+/// splashed into the sea, or a patrol ring that dips into the surf, walked
+/// the animal out into the water: `roam_point` asked `standable` and these
+/// two did not.
+fn standable_toward_home(ctx: &mut Ctx, mob: &Mob, (x, z): (f32, f32)) -> (f32, f32) {
+    if ctx.nav.standable(ctx.ground, x, z) {
+        return (x, z);
+    }
+    let (hx, hz) = home_xz(mob);
+    for k in 1..STANDABLE_STEPS {
+        let f = 1.0 - k as f32 / STANDABLE_STEPS as f32;
+        let (px, pz) = (hx + (x - hx) * f, hz + (z - hz) * f);
+        if ctx.nav.standable(ctx.ground, px, pz) {
+            return (px, pz);
+        }
+    }
+    (hx, hz)
 }
 
 /// Patrol point `mob.leg`: evenly round a ring about home, the ring's phase
@@ -1568,5 +1625,29 @@ mod tests {
             gave_up,
             "the wolf never gave up on a player it cannot reach"
         );
+    }
+
+    /// **A pack spreads round its target.** Every pack with two or more
+    /// wolves has at least one stepping each way; splitting on the slot's
+    /// own parity sent every predator slot (all multiples of four) the
+    /// same way.
+    #[test]
+    fn every_pack_circles_both_ways() {
+        let mut checked = 0;
+        for leader in (0..MAX_MOBS).filter(|&s| crate::mob::pack_leader_of(s) == Some(s)) {
+            let steps: Vec<u16> = (0..MAX_MOBS)
+                .filter(|&s| crate::mob::pack_leader_of(s) == Some(leader))
+                .map(orbit_step)
+                .collect();
+            if steps.len() < 2 {
+                continue;
+            }
+            assert!(
+                steps.contains(&ORBIT_STEP) && steps.contains(&0u16.wrapping_sub(ORBIT_STEP)),
+                "pack led by slot {leader} circles one way only"
+            );
+            checked += 1;
+        }
+        assert!(checked > 0, "no pack of two or more to check");
     }
 }

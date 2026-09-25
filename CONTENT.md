@@ -147,8 +147,12 @@ properly. The short version:
   certain scrap payout, and ours pays certain junk: barrel 2, cache 5,
   crate 8 (loot guaranteed column v0, 2026-09-22; at most
   `MAX_LOOT_GUARANTEED` rows, refused past it at bake)
-- **skin**: id, covers (item id), price (ELO or ORBS — one coin per
-  row, bare tickers), season — the catalog is content too (dark until A3)
+- **skin**: id, catalog (the platform's item id; nonzero, never reused),
+  name, covers (one stack-1 item), tint (an sRGB multiply, v0), coin +
+  price (optional together: an unpriced row ships its look off sale, and a
+  shard with `skins_origin` takes the store's prices), season. Out of the
+  content hash (`canon.rs`), so a new look is never a wipe
+  (`content/skins.toml`)
 
 ## 1.5 · The spawn kit
 

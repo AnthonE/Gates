@@ -2834,6 +2834,13 @@ impl ShardCore {
                         continue; // hearth decayed in the same tick
                     };
                     let hr = self.world.deploys.hearths()[hi];
+                    // Only the crew reads the stock and the bill. To anyone
+                    // else they are the base's decay clock, which a stranger
+                    // would otherwise read for the price of one plank fed
+                    // (the feed itself still lands: a gift is not a grief).
+                    if !hr.crew.contains(ev.a) {
+                        continue;
+                    }
                     // What one upkeep period charges this hearth, per row —
                     // the sweep's own arithmetic over the claim cache the
                     // tick just refreshed (upkeep v2's readout). A walk of
@@ -4172,9 +4179,11 @@ impl ShardCore {
     /// One animal as the same record. Four of the ten fields have no
     /// meaning here and each is answered rather than left to a default:
     /// `pitch` is zero because nothing about a pig looks up or down;
-    /// `sleeping` is false because that bit means *nobody is driving this
-    /// body*, and something always is — dormancy is not the same fact and
-    /// a client would draw the slumped pose for it; `dead` is false because
+    /// `sleeping` is the brain's Sleep state — the animal lying down, which
+    /// is what the client draws for it (`render/mobs.rs`) and what stops it
+    /// being extrapolated, since nothing moves a sleeper. Dormancy is not
+    /// that fact and does not set it: a dormant animal is merely unthought
+    /// about, standing where it stopped. `dead` is false because
     /// a mob that dies is *removed* rather than left in its slot (`mob.rs`
     /// clears `alive` and the snapshot skips it), so unlike a player there
     /// is never a corpse of one on the wire to flag; `yaw` is the animal's
@@ -4188,7 +4197,7 @@ impl ShardCore {
             qz: m.body.qz,
             qvy: m.body.qvy,
             grounded: m.body.grounded,
-            sleeping: false,
+            sleeping: m.state == sim_core::brain::AiState::Sleep,
             dead: false,
             wounded: false,
             yaw: m.yaw,

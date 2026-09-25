@@ -58,7 +58,7 @@ pub const CRAFT: [&str; 7] = [
     "not researched — research one at a table or unlock it at a workbench",
     // Skins v0: a skin you do not own, or that does not fit this item. The
     // fix is the store, so the sentence says where it is.
-    "not your skin for this item — skins are sold in the launcher's ITEM STORE",
+    "not your skin for this item — skins are sold in the ITEM STORE",
 ];
 
 /// `sim_core::research`'s `REFUSE_R_*: u32`. Five are the table's and the
@@ -123,8 +123,10 @@ pub const DEPLOY: [&str; 20] = [
     // Lock v1's one sentence for both halves of "this lock does not know
     // you" — a stranger's press and a guest reaching for a full-rights
     // op. Kept as one because telling them apart would tell a raider
-    // something about the lock refusing them.
-    "the lock says no",
+    // something about the lock refusing them. Worded without the lock,
+    // because a bare hearth's crew refuses a stranger's join with the same
+    // code and "the lock says no" named a lock that was not there.
+    "you haven't been let in",
     "nothing in it to burn",
     "no lock on that door",
     "that door already has a lock",
@@ -410,7 +412,7 @@ mod tests {
         assert_eq!(deploy(REFUSE_D_BAG_CAP as u8), "bag limit reached");
         assert_eq!(deploy(REFUSE_D_HEARTH as u8), "no hearth there");
         assert_eq!(deploy(REFUSE_D_DOOR as u8), "no door there");
-        assert_eq!(deploy(REFUSE_D_OWNER as u8), "the lock says no");
+        assert_eq!(deploy(REFUSE_D_OWNER as u8), "you haven't been let in");
         assert_eq!(deploy(REFUSE_D_NO_LOCK as u8), "no lock on that door");
         assert_eq!(
             deploy(REFUSE_D_HAS_LOCK as u8),

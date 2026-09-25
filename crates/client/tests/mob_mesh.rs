@@ -560,3 +560,24 @@ fn the_draw_path_picks_the_mesh_off_the_slot() {
     assert!(seen_wolf > 0 && seen_pig > 0, "the roster is one species");
     assert_eq!(seen_wolf, sim_core::limits::MAX_MOBS / 4);
 }
+
+/// A sleeping animal (the wire's `sleeping` on an animal is the brain's
+/// Sleep state) lies down over `LIE_S` and gets back up the same way, and
+/// knows how far it has to drop.
+#[test]
+fn a_sleeping_animal_lies_down_and_gets_up() {
+    use client::render::mobs::LIE_S;
+    let mut g = Gait::new(0);
+    assert_eq!(g.lie, 0.0);
+    g.settle(true, LIE_S * 0.5);
+    assert!(
+        (g.lie - 0.5).abs() < 1e-5,
+        "half way at half the time: {}",
+        g.lie
+    );
+    g.settle(true, LIE_S);
+    assert_eq!(g.lie, 1.0);
+    g.settle(false, LIE_S * 2.0);
+    assert_eq!(g.lie, 0.0);
+    assert!(g.hip > 0.0, "no hip height to lie down from");
+}

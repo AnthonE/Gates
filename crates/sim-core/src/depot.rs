@@ -167,6 +167,26 @@ pub fn ground(haven: &Haven, x: f32, z: f32, feet: f32) -> f32 {
     best
 }
 
+/// Is any part of a depot over a head at `head` — a roof, the steel above
+/// it, a lintel? The shelter half of `terrain::site_roofed`: walls start at
+/// the floor and never answer, so only something the rain would land on
+/// first does.
+pub fn roofed(haven: &Haven, x: f32, z: f32, head: f32) -> bool {
+    for site in &haven.minor {
+        if !is_depot(site) || !near(site, x, z, 0.0) {
+            continue;
+        }
+        let (lx, lz) = to_local(site, x, z);
+        for part in &DEPOT_PARTS {
+            let b = part.bounds;
+            if lx >= b[0] && lx <= b[3] && lz >= b[2] && lz <= b[5] && site.floor_y + b[1] >= head {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// The whole depot is reserved, including gate approaches. Expand by a
 /// build-cell diagonal so an outside anchor cannot overhang its reservation.
 pub fn reserves(haven: &Haven, x: f32, z: f32, margin: f32) -> bool {

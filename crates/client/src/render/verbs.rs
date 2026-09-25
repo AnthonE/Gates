@@ -245,8 +245,9 @@ pub fn resolve(
 /// pointer, for `input::gather`'s reason: every verb here spends something —
 /// a swing, a door, a mouthful — and a player typing into the craft search
 /// box asked for none of it.
-// Seven, and each is a distinct source: the keyboard, the session, the two
-// picks, the toast, the panels, and the chat composer.
+// Each is a distinct source: the keyboard, the session, the two picks, the
+// toast, the panels, the chat composer, and the clock the crew clear's
+// second press is timed on.
 #[allow(clippy::too_many_arguments)]
 pub fn keys(
     keys: Res<ButtonInput<KeyCode>>,
@@ -258,6 +259,8 @@ pub fn keys(
     mut pad: ResMut<Pad>,
     ui: Option<ResMut<Ui>>,
     chat: Option<Res<super::chat::Chat>>,
+    time: Res<Time>,
+    mut clear_armed_until: Local<f64>,
 ) {
     let mut ui = ui;
     if keys.just_released(KeyCode::KeyE) {
@@ -293,13 +296,32 @@ pub fn keys(
         return;
     }
     if keys.just_pressed(KeyCode::KeyL) {
-        access_aimed(&net, &aimed.0, &mut pad, &mut toast, false);
+        access_aimed(&net, &aimed.0, &mut pad, &mut toast, Access::Join);
     }
-    // `K` is the crew's leave, and it is only a hearth key: at a door the
-    // same letter is the keypad's LOCK, which is why `access_aimed` takes
-    // the bit rather than this reading the pick twice.
+    // `K` is the crew's leave and `Shift+K` its clear, and both are only
+    // hearth keys: at a door the same letter is the keypad's LOCK, which is
+    // why `access_aimed` takes the ask rather than this reading the pick
+    // twice.
     if keys.just_pressed(KeyCode::KeyK) {
-        access_aimed(&net, &aimed.0, &mut pad, &mut toast, true);
+        let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+        let now = time.elapsed_secs_f64();
+        let ask = if !shift {
+            Some(Access::Leave)
+        } else if now <= *clear_armed_until {
+            *clear_armed_until = 0.0;
+            Some(Access::Clear)
+        } else {
+            // A clear takes everyone else off the crew, so it asks twice:
+            // the first press arms it, a second within the window sends.
+            if aimed.0.verb == Verb::Hearth {
+                *clear_armed_until = now + CLEAR_CONFIRM_S;
+                toast.warn("SHIFT+K again to clear the crew to just you");
+            }
+            None
+        };
+        if let Some(ask) = ask {
+            access_aimed(&net, &aimed.0, &mut pad, &mut toast, ask);
+        }
     }
     if keys.just_pressed(KeyCode::KeyU) {
         upgrade_near(&net, &near.0, &mut toast);
@@ -615,6 +637,17 @@ fn light_aimed(net: &Net, pick: &Pick, toast: &mut Toast) {
     });
 }
 
+/// How long a first `Shift+K` at a hearth stays armed for the second.
+const CLEAR_CONFIRM_S: f64 = 3.0;
+
+/// Which access key was pressed: `L`, `K` or `Shift+K`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Access {
+    Join,
+    Leave,
+    Clear,
+}
+
 /// `L` and `K` — the access verb, on whatever the crosshair is on.
 ///
 /// **One key, two stores, because the sim's verb is one verb.** At
@@ -627,25 +660,28 @@ fn light_aimed(net: &Net, pick: &Pick, toast: &mut Toast) {
 /// door's, because there the four digits ARE the question — the code is
 /// how a crew invites a hand (hearth lock v0).
 ///
-/// `leave` is the `K` half. Passing it in rather than reading the pick
-/// twice is what keeps `K` meaning LOCK at a door and LEAVE at a hearth
-/// without two resolvers that could disagree about which is aimed at.
+/// `ask` says which key: `L` joins, `K` leaves, `Shift+K` clears the crew
+/// to the one pressing it (the reference's "clear list"; the sim refuses a
+/// hand not on the crew). Passing it in rather than reading the pick twice
+/// is what keeps `K` meaning LOCK at a door and LEAVE at a hearth without
+/// two resolvers that could disagree about which is aimed at.
 ///
 /// A lockable with no lock bolted on says so rather than opening an empty
 /// pad: the wire carries `has_lock` precisely so this prompt can be honest
 /// without the client learning anything about who the lock remembers.
-fn access_aimed(net: &Net, pick: &Pick, pad: &mut Pad, toast: &mut Toast, leave: bool) {
+fn access_aimed(net: &Net, pick: &Pick, pad: &mut Pad, toast: &mut Toast, ask: Access) {
     use crate::ui::keypad::{lock_target, LockTarget};
     // A hearth with a lock bolted on takes `L` to its keypad (hearth lock
     // v0): the right code is the invitation, and the sim puts the hand it
-    // remembers on the crew in the same act. `K` stays the crew's leave on
-    // every hearth, locked or bare — leaving is never a question for a pad.
-    if pick.verb == Verb::Hearth && (leave || !pick.has_lock) {
+    // remembers on the crew in the same act. `K` and `Shift+K` stay the
+    // crew's leave and clear on every hearth, locked or bare — neither is
+    // ever a question for a pad.
+    if pick.verb == Verb::Hearth && (ask != Access::Join || !pick.has_lock) {
         let (cx, cz, level) = (pick.cx, pick.cz, pick.level);
-        let op = if leave {
-            sim_core::deploy::ACCESS_OP_CREW_LEAVE
-        } else {
-            sim_core::deploy::ACCESS_OP_CREW_JOIN
+        let op = match ask {
+            Access::Join => sim_core::deploy::ACCESS_OP_CREW_JOIN,
+            Access::Leave => sim_core::deploy::ACCESS_OP_CREW_LEAVE,
+            Access::Clear => sim_core::deploy::ACCESS_OP_CREW_CLEAR,
         };
         send(net, toast, "crew", |buf| {
             protocol::encode_action_access(
@@ -662,7 +698,7 @@ fn access_aimed(net: &Net, pick: &Pick, pad: &mut Pad, toast: &mut Toast, leave:
     }
     // `K` at a door is the keypad's own LOCK and is handled there; outside
     // the pad and away from a hearth it means nothing.
-    if leave {
+    if ask != Access::Join {
         return;
     }
     match lock_target(pick) {

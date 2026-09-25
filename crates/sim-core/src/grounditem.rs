@@ -48,7 +48,7 @@
 //! operator set.
 
 use crate::backpack::LOOT_REACH_M;
-use crate::gather::{inv_add_spilling, GatherContent, ItemStack};
+use crate::gather::{inv_add_spilling_skinned, GatherContent, ItemStack};
 use crate::limits::{INV_SLOTS, MAX_GROUND_ITEMS};
 use crate::movement::{quant_xz, quant_y, POS_XZ_Q};
 use crate::rng::{cell_hash, splitmix64};
@@ -304,15 +304,17 @@ impl GroundItems {
         let i = self.nearest(p)?;
         let rec = self.entries[i];
         let cap = gc.stack_max_of(rec.stack.item);
-        let took = inv_add_spilling(
+        // An existing stack: its condition and its skin travel with it.
+        let took = inv_add_spilling_skinned(
             &mut p.inv,
             spill,
             rec.stack.item,
             rec.stack.count,
             cap,
             rec.stack.cond,
+            rec.stack.skin,
         );
-        // `inv_add_spilling` puts the remainder in `spill`, so the whole
+        // `inv_add_spilling_skinned` puts the remainder in `spill`, so the whole
         // stack has left the ground whether the pack held it or not —
         // which is why the record goes rather than being decremented. A
         // ceiling of zero (`REFUSE_M_UNSTACKABLE`'s condition) takes
@@ -322,7 +324,12 @@ impl GroundItems {
         if took == 0 && spill.iter().all(|s| s.count == 0) {
             return None;
         }
-        events.push(EV_GATHER, p.id, rec.stack.item as u32, took as u32);
+        events.push(
+            EV_GATHER,
+            p.id,
+            ((rec.stack.item as u32) << 16) | took as u32,
+            0,
+        );
         self.remove(i);
         Some(rec.id)
     }

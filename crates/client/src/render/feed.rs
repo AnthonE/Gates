@@ -116,6 +116,18 @@ pub struct Hurt {
 
 /// One frame of own-facts. Cleared and refilled by [`drain`]; read-only to
 /// everything else.
+/// The frame's removals: one tick's worth at the sim's own cap
+/// (`client_core::core::REMOVED_RING`), which is past the 32 elements an
+/// array derives `Default` for — so this defaults by hand.
+#[derive(Clone, Copy)]
+struct Removals([client_core::core::Removed; client_core::core::REMOVED_RING]);
+
+impl Default for Removals {
+    fn default() -> Self {
+        Self([client_core::core::Removed::default(); client_core::core::REMOVED_RING])
+    }
+}
+
 #[derive(Resource, Default)]
 pub struct Feed {
     /// Total damage the local player dealt this frame, and whether any landed.
@@ -283,7 +295,7 @@ pub struct Feed {
     /// Pieces and deployables that came down this frame, with the row and
     /// plate they stood at (`client_core::core::Removed`). Removal events
     /// only — a resync clears the mirror without handing anything over.
-    removed: [client_core::core::Removed; FEED_CAP],
+    removed: Removals,
     n_removed: usize,
     /// Every `APPLIED*` bit raised since the last drain.
     ///
@@ -441,7 +453,7 @@ impl Feed {
     }
 
     pub fn removed(&self) -> &[client_core::core::Removed] {
-        &self.removed[..self.n_removed]
+        &self.removed.0[..self.n_removed]
     }
 
     fn clear(&mut self) {
@@ -661,11 +673,11 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
         }
     }
     while let Some(r) = core.pop_removed() {
-        if feed.n_removed >= FEED_CAP {
+        if feed.n_removed >= client_core::core::REMOVED_RING {
             feed.dropped = feed.dropped.saturating_add(1);
         } else {
             let n = feed.n_removed;
-            feed.removed[n] = r;
+            feed.removed.0[n] = r;
             feed.n_removed += 1;
         }
     }

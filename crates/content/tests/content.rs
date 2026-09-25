@@ -4366,3 +4366,22 @@ fn every_solid_deployable_places_on_the_plane() {
          deliberate edit to this number."
     );
 }
+
+/// **A new look is not a wipe.** Skin rows stay out of the digest a save is
+/// refused on: a stack carries its skin's catalog id, not a row index, so a
+/// look added, retinted or renamed moves nothing a save points through.
+#[test]
+fn a_skin_row_does_not_move_the_hash() {
+    let shipped = build(&sources()).expect("shipped content builds");
+    let mut srcs = sources();
+    let skins = srcs.iter_mut().find(|(n, _)| *n == "skins.toml").unwrap();
+    skins.1.push('\n');
+    skins.1.push_str(SKIN_ROW);
+    let grown = build(&srcs).expect("a new look is legal content");
+    assert_eq!(grown.skins.len(), shipped.skins.len() + 1);
+    assert_eq!(
+        shipped.hash(),
+        grown.hash(),
+        "a new skin row moved the save hash — every new look would be a wipe"
+    );
+}

@@ -932,6 +932,9 @@ fn a_worn_tool_survives_the_world_and_an_empty_slot_may_not_wear() {
 #[test]
 fn the_piece_stride_is_what_the_encoder_writes() {
     let mut w = a_lived_in_world();
+    // The fixture's feed handed the kit's building materials to the hearth
+    // (a `FEED_CHUNK` is 500); the wall below is paid for from a fresh kit.
+    kit(&mut w, 0);
     let mut blob = vec![0u8; WORLD_SAVE_MAX_BYTES];
     let before_n = w.pieces.len();
     let before = w.save_world(&mut blob).expect("encodes");

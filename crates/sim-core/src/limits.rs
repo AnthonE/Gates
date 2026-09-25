@@ -723,8 +723,11 @@ pub const MAX_LOCKS: usize = 512;
 /// Overflow policy: **refuse the code entry** with `REFUSE_D_AUTH_FULL`.
 /// Never evict: dropping the oldest entry would make a door that forgets
 /// the person who owns it, which is the one failure this cap must not
-/// have. Proposed default, DECISIONS.md §open (lock v1).
-pub const LOCK_AUTH_CAP: usize = 8;
+/// have. Proposed default, DECISIONS.md §open (lock v1). **Ten, the
+/// crew's own cap** (`HEARTH_CREW_CAP`): a code lock on a hearth is how a
+/// crew invites a hand, and at eight one code could fill a ten-strong crew
+/// only by rotating codes.
+pub const LOCK_AUTH_CAP: usize = 10;
 
 /// Players one lock remembers as **guests** — entered the guest code, may
 /// work the door and nothing else (`reference/DOORS.md` §2.2, Devblog
@@ -1264,9 +1267,12 @@ pub const NAV_MAX_CORNERS: usize = 16;
 
 /// Recent noises the animals can hear (`noise.rs`). A ring: **overflow
 /// forgets the oldest**, which every animal in range has already heard or
-/// never could — a noise is only audible for one think window, and 32 is
-/// every shot a full server could fire into one window with room over.
-pub const MAX_NOISES: usize = 32;
+/// never could — a noise is only audible for one think window. Every shot
+/// AND every strike lands here (each gather swing and each round's impact
+/// is an `EV_IMPACT`), and at 32 a busy server's hatchets pushed a gunshot
+/// out before the animals near it had thought: 256 is a full server's
+/// shots and strikes over one window with room over.
+pub const MAX_NOISES: usize = 256;
 
 /// Pack calls one tick can raise across the roster (`mob::Howls`). Only a
 /// thinking pack animal howls, and each at most once per its cooldown, so

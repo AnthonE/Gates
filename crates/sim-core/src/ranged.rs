@@ -462,6 +462,48 @@ impl Arrow {
     }
 }
 
+/// A shot that met an animal — found here, landed by `World` through
+/// `mob::hurt_slot`, for [`Kill`]'s reason: an animal's hit needs the mob
+/// store, the corpse's bag store and the loot ladder, and this pass holds
+/// none of them. Before this, arrows and bullets passed through animals —
+/// only a swing (`melee::mob_cast`) could reach one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MobShot {
+    /// Roster slot in `Mobs`.
+    pub slot: usize,
+    /// The shooter's player id — an arrow outlives its archer's slot, so
+    /// `World` re-resolves it and lands the hit with nobody to blame when
+    /// the archer has gone.
+    pub by: u32,
+    pub damage: u16,
+}
+
+/// The animals a shot can meet, and where their hits are written — the
+/// hunting half of [`hitscan_hunting`] and [`step_hunting`]. `n` is how many
+/// entries of `hits` the pass wrote.
+pub struct Quarry<'a> {
+    pub mobs: &'a crate::mob::Mobs,
+    pub mc: &'a crate::mob::MobContent,
+    pub hits: &'a mut [MobShot; MAX_ARROWS],
+    pub n: usize,
+}
+
+impl Quarry<'_> {
+    /// The nearest living animal the segment `o + s·t` (millimetres)
+    /// enters, as `melee::mob_cast` answers it for a swing.
+    fn first(&self, o: (f32, f32, f32), s: (f32, f32, f32)) -> Option<crate::melee::MobHit> {
+        let ray = crate::melee::Ray { o, s, len_mm: 0.0 };
+        crate::melee::mob_cast(self.mc, self.mobs, &ray)
+    }
+
+    fn push(&mut self, hit: MobShot) {
+        if self.n < self.hits.len() {
+            self.hits[self.n] = hit;
+            self.n += 1;
+        }
+    }
+}
+
 /// A death an arrow caused, handed back to `World` because laying the body
 /// down (`World::die`) needs the whole world and this step has half of it
 /// borrowed.
@@ -736,6 +778,63 @@ pub fn step(
     kills: &mut [Kill; MAX_ARROWS],
     chips: &mut [Chip; MAX_ARROWS],
 ) -> (usize, usize) {
+    step_in(
+        seed, tick, haven, cols, occ, cc, arrows, spent, players, events, kills, chips, None,
+    )
+}
+
+/// [`step`], with the island's animals in the line of flight: an arrow that
+/// meets one before any body or the world lodges in it, and its hit is
+/// written to `quarry` for `World` to land (`mob::hurt_slot`).
+#[allow(clippy::too_many_arguments)]
+pub fn step_hunting(
+    seed: u64,
+    tick: u64,
+    haven: &terrain::Haven,
+    cols: &ColIndex,
+    occ: &mut Occupants,
+    cc: &CombatContent,
+    arrows: &mut Arrows,
+    spent: &mut SpentArrows,
+    players: &mut [Player; MAX_PLAYERS],
+    events: &mut EventQueue,
+    kills: &mut [Kill; MAX_ARROWS],
+    chips: &mut [Chip; MAX_ARROWS],
+    quarry: &mut Quarry,
+) -> (usize, usize) {
+    step_in(
+        seed,
+        tick,
+        haven,
+        cols,
+        occ,
+        cc,
+        arrows,
+        spent,
+        players,
+        events,
+        kills,
+        chips,
+        Some(quarry),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn step_in(
+    seed: u64,
+    tick: u64,
+    haven: &terrain::Haven,
+    cols: &ColIndex,
+    occ: &mut Occupants,
+    cc: &CombatContent,
+    arrows: &mut Arrows,
+    spent: &mut SpentArrows,
+    players: &mut [Player; MAX_PLAYERS],
+    events: &mut EventQueue,
+    kills: &mut [Kill; MAX_ARROWS],
+    chips: &mut [Chip; MAX_ARROWS],
+    mut quarry: Option<&mut Quarry>,
+) -> (usize, usize) {
     let mut n_kills = 0usize;
     let mut n_chips = 0usize;
     for ix in 0..MAX_ARROWS {
@@ -815,6 +914,28 @@ pub fn step(
             a.owner,
             Pose::Live,
         );
+
+        // Pass three: an animal the shaft enters before the world stops it
+        // and before any body. It lodges where it went in, as it does in a
+        // player, and the hit goes out to `World` to land.
+        if let Some(q) = quarry.as_deref_mut() {
+            let beast = q
+                .first((ox, oy, oz), (sx, sy, sz))
+                .filter(|m| m.t <= stop_t && best.is_none_or(|b| m.t < b.enter));
+            if let Some(m) = beast {
+                q.push(MobShot {
+                    slot: m.slot,
+                    by: a.owner,
+                    damage: a.damage,
+                });
+                a.qx = crate::fmath::floor_i32(ox + sx * m.t);
+                a.qy = crate::fmath::floor_i32(oy + sy * m.t);
+                a.qz = crate::fmath::floor_i32(oz + sz * m.t);
+                land(seed, tick, cc, spent, ix, &a, true);
+                arrows.a[ix].life = 0;
+                continue;
+            }
+        }
 
         if let Some(BodyHit {
             t,
@@ -1546,6 +1667,65 @@ pub fn hitscan(
     kills: &mut [Kill; MAX_ARROWS],
     chips: &mut [Chip; MAX_ARROWS],
 ) -> (usize, usize) {
+    hitscan_in(
+        seed, haven, cols, occ, tick, rewind, favour, cc, players, events, kills, chips, None,
+    )
+}
+
+/// [`hitscan`], with the island's animals in the line of fire: a round that
+/// meets one before any body or the world stops in it, and its hit is
+/// written to `quarry` for `World` to land (`mob::hurt_slot`). Animals are
+/// not rewound — they are not in `Rewind` — so a hit on one is solved
+/// against where it stands this tick.
+#[allow(clippy::too_many_arguments)]
+pub fn hitscan_hunting(
+    seed: u64,
+    haven: &terrain::Haven,
+    cols: &ColIndex,
+    occ: &mut Occupants,
+    tick: u64,
+    rewind: &Rewind,
+    favour: &[u8; MAX_PLAYERS],
+    cc: &CombatContent,
+    players: &mut [Player; MAX_PLAYERS],
+    events: &mut EventQueue,
+    kills: &mut [Kill; MAX_ARROWS],
+    chips: &mut [Chip; MAX_ARROWS],
+    quarry: &mut Quarry,
+) -> (usize, usize) {
+    hitscan_in(
+        seed,
+        haven,
+        cols,
+        occ,
+        tick,
+        rewind,
+        favour,
+        cc,
+        players,
+        events,
+        kills,
+        chips,
+        Some(quarry),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn hitscan_in(
+    seed: u64,
+    haven: &terrain::Haven,
+    cols: &ColIndex,
+    occ: &mut Occupants,
+    tick: u64,
+    rewind: &Rewind,
+    favour: &[u8; MAX_PLAYERS],
+    cc: &CombatContent,
+    players: &mut [Player; MAX_PLAYERS],
+    events: &mut EventQueue,
+    kills: &mut [Kill; MAX_ARROWS],
+    chips: &mut [Chip; MAX_ARROWS],
+    mut quarry: Option<&mut Quarry>,
+) -> (usize, usize) {
     let mut n_kills = 0usize;
     let mut n_chips = 0usize;
     for i in 0..MAX_PLAYERS {
@@ -1723,8 +1903,18 @@ pub fn hitscan(
                 back: favour[i],
             },
         );
-        let upto = match seen {
-            Some(b) => (b.t * n as f32) as usize + 1,
+        // The nearest animal on the whole segment, found the same cheap way
+        // and truncating the world walk the same way: the walk only needs
+        // to reach the first thing the round could meet.
+        let beast = quarry
+            .as_deref()
+            .and_then(|q| q.first((ox, oy, oz), (sx, sy, sz)));
+        let first_t = match (seen.map(|b| b.t), beast.map(|m| m.t)) {
+            (Some(b), Some(m)) => Some(b.min(m)),
+            (b, m) => b.or(m),
+        };
+        let upto = match first_t {
+            Some(t) => (t * n as f32) as usize + 1,
             None => MAX_HITSCAN_MARK_SAMPLES,
         };
         let (stop_t, surf, built) = world_stop(
@@ -1739,6 +1929,19 @@ pub fn hitscan(
             ARROW_R_M,
         );
         let best = seen.filter(|b| b.t <= stop_t);
+
+        // An animal in front of every body and short of the world's stop
+        // takes the round; it stops there, and marks nothing.
+        if let (Some(q), Some(m)) = (quarry.as_deref_mut(), beast) {
+            if m.t <= stop_t && best.is_none_or(|b| m.t < b.enter) {
+                q.push(MobShot {
+                    slot: m.slot,
+                    by: id,
+                    damage: def.damage,
+                });
+                continue;
+            }
+        }
 
         if let Some(BodyHit {
             t,

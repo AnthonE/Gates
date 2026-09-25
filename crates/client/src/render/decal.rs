@@ -275,7 +275,18 @@ pub struct Marks {
     weak_mark8: u8,
     weak_at: Vec3,
     weak_normal: Vec3,
+    /// Clears asked for this frame ([`Marks::forget_later`]), applied by
+    /// [`fade`] — which runs after [`mark`], so a killing blow's own mark,
+    /// laid this same frame, goes with the thing it hit whichever system
+    /// ran first.
+    pending: [(Vec3, f32); FORGET_QUEUE],
+    n_pending: usize,
 }
+
+/// Deferred clears one frame can queue: a full collapse's removals
+/// (`client_core::core::REMOVED_RING`) with room for the trunks, nodes and
+/// doors of the same frame. Past it a clear runs at once rather than never.
+const FORGET_QUEUE: usize = client_core::core::REMOVED_RING + 32;
 
 impl Default for Marks {
     fn default() -> Self {
@@ -294,6 +305,8 @@ impl Default for Marks {
             weak_mark8: 0,
             weak_at: Vec3::ZERO,
             weak_normal: Vec3::Y,
+            pending: [(Vec3::ZERO, 0.0); FORGET_QUEUE],
+            n_pending: 0,
         }
     }
 }
@@ -388,6 +401,30 @@ impl Marks {
         if n > 0 {
             self.dirty = true;
         }
+        n
+    }
+
+    /// [`Marks::forget_near`], at the end of this frame's marking: the
+    /// surface is gone (a wall down, a trunk falling, a node mined out, a
+    /// door swung open), and a mark laid on it this same frame must go too.
+    pub fn forget_later(&mut self, at: Vec3, r: f32) {
+        if self.n_pending == FORGET_QUEUE {
+            self.forget_near(at, r);
+            return;
+        }
+        self.pending[self.n_pending] = (at, r);
+        self.n_pending += 1;
+    }
+
+    /// Run every clear [`Marks::forget_later`] queued. Returns how many
+    /// marks went.
+    pub fn forget_pending(&mut self) -> usize {
+        let mut n = 0;
+        for i in 0..self.n_pending {
+            let (at, r) = self.pending[i];
+            n += self.forget_near(at, r);
+        }
+        self.n_pending = 0;
         n
     }
 
@@ -716,6 +753,7 @@ pub fn mark(
 
 /// Age every mark and, when anything visible changed, rewrite the mesh.
 pub fn fade(mut pool: ResMut<Marks>, time: Res<Time>, mut meshes: ResMut<Assets<Mesh>>) {
+    pool.forget_pending();
     if !pool.age(time.delta_secs()) {
         return;
     }

@@ -2175,7 +2175,9 @@ fn a_hearth_prompt_trades_join_for_its_keypad_once_a_lock_is_on() {
     };
     let bare = p.prompt(&protocol::ItemCatalog::EMPTY);
     assert!(
-        bare.contains("[L] JOIN CREW") && bare.contains("[K] LEAVE"),
+        bare.contains("[L] JOIN CREW")
+            && bare.contains("[K] LEAVE")
+            && bare.contains("[SHIFT+K] CLEAR CREW"),
         "{bare}"
     );
     assert_eq!(lock_target(&p), LockTarget::Bare);

@@ -130,7 +130,7 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: 
                 // starts it — the two things no other container asks a
                 // player to know.
                 "one item to research in ITEM, junk beside it   -   right-click moves it across   \
-                 -   BEGIN or C starts it   -   Tab or Esc closes"
+                 -   BEGIN starts it   -   Tab or Esc closes"
             } else if looting(core.cont_kind) {
                 // What the gesture DOES here, which is not what it does with
                 // nothing open. A hint line that names the other mode is
@@ -745,15 +745,10 @@ fn cell(
             BackgroundColor(resting_fill(core, stack, active)),
             BorderColor::all(LINE),
         ))
-        // Its name under the pointer (`panels::tooltip`).
-        .insert_if(
-            super::Tip(research_ui::stack_label(
-                &core.catalog,
-                &core.research,
-                stack,
-            )),
-            || filled,
-        )
+        // Its name under the pointer (`panels::tooltip`), with the skin it
+        // wears and how worn it is — the two things the picture alone does
+        // not say.
+        .insert_if(super::Tip(slot_tip(core, stack)), || filled)
         .with_children(|c| {
             if filled {
                 // **A picture, not a word.** `Gunpowde` and `Workbenc` are
@@ -837,6 +832,26 @@ fn cell(
 
 /// No slot of this grid is in the player's hand.
 const NO_SEL: usize = usize::MAX;
+
+/// What a slot's tooltip says: its name (a blueprint's, the thing it
+/// teaches), the skin it wears, and — for anything that wears out — how
+/// worn it is, as the pip under it draws it.
+pub fn slot_tip(
+    core: &client_core::core::ClientCore,
+    stack: sim_core::gather::ItemStack,
+) -> String {
+    let mut tip = research_ui::stack_label(&core.catalog, &core.research, stack);
+    if let Some(skin) = crate::ui::skins::name(&core.skins, stack.skin) {
+        tip.push_str(" · ");
+        tip.push_str(&skin);
+    }
+    let cond_max = core.catalog.cond_max(stack.item as usize);
+    if cond_max > 0 {
+        let pct = (stack.cond as u32 * 100 / cond_max as u32).min(100);
+        tip.push_str(&format!(" · {pct}%"));
+    }
+    tip
+}
 
 /// What a cell rests on when nothing is pointing at it: the belt slot in
 /// your hand in Rust's blue (the HUD's own mark for it, so the two agree),
@@ -974,15 +989,31 @@ pub fn skin_keys(
     }
     let next = crate::ui::skins::next_skin(&core.skins, &core.skins_owned, stack.item, stack.skin);
     if next == stack.skin {
-        ui.say("you own no skins for this item - they are sold in the launcher's ITEM STORE");
+        ui.say("you own no skins for this item - they are sold in the ITEM STORE");
+        return;
+    }
+    // The sim's own rule, asked first so the answer is the right one: a
+    // re-skin is a workbench job (`sim_core::skin::reskin`).
+    let pos = core.predict.position();
+    let at_bench = sim_core::deploy::best_bench_in(
+        core.deploys.entries(),
+        &core.deploy_defs,
+        pos[0],
+        pos[2],
+        sim_core::craft::STATION_RADIUS_M,
+    ) >= sim_core::craft::STATION_WORKBENCH1;
+    if !at_bench {
+        ui.say("changing a skin needs a workbench nearby");
         return;
     }
     let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
     match protocol::encode_action_reskin(cell.slot as u8, next, &mut buf) {
         Ok(len) => match net.session.send_action(&buf[..len]) {
+            // Asked, not done: the item's own cell redraws when the sim
+            // agrees, and a refusal says why.
             Ok(()) => ui.say(match crate::ui::skins::name(&core.skins, next) {
-                Some(name) => format!("skin: {name}"),
-                None => "skin: default".to_string(),
+                Some(name) => format!("changing skin to {name}"),
+                None => "taking the skin off".to_string(),
             }),
             Err(e) => ui.say(e.to_string()),
         },
@@ -1367,9 +1398,13 @@ fn spawn_ghost(
                         height: Val::Px(SLOT_PX - 10.0),
                         ..default()
                     },
+                    // The skin's tint, as the cell it came out of wears it.
                     ImageNode {
                         image,
-                        color: super::super::icons::PICTURE,
+                        color: crate::ui::skins::tint_of(&core.skins, stack.skin)
+                            .map_or(super::super::icons::PICTURE, |[r, g, b]| {
+                                Color::srgb(r, g, b)
+                            }),
                         ..default()
                     },
                     Pickable::IGNORE,

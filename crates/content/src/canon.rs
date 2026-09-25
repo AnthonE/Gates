@@ -254,21 +254,12 @@ pub fn hash(c: &Content) -> u64 {
         h.stacks(&m.drops);
     }
 
-    h.s("skins");
-    for s in sorted(&c.skins, |s| &s.id) {
-        h.s(&s.id);
-        h.u(s.catalog as u32);
-        h.s(&s.name);
-        h.s(&s.covers);
-        for ch in s.tint {
-            h.u(ch as u32);
-        }
-        // An unpriced row hashes as coin 0xFF, price 0 — distinct from
-        // every priced one, since a priced row's price is never 0.
-        h.u(s.coin.map_or(0xFF, |c| c as u32));
-        h.u(s.price.unwrap_or(0));
-        h.s(&s.season);
-    }
+    // **Skins are not hashed.** This digest is what a save file is refused
+    // on (`server::store`, `server::worldfile`), because item and recipe
+    // rows are indices a saved stack points through. A skin is not: a
+    // stack carries its skin's catalog id, and an id the running catalog
+    // does not know draws as the plain item. Hashing the rows made a new
+    // look, a tint or a name a wipe, for a catalog that is meant to grow.
 
     // The bands are content: moving one is a visible balance change.
     h.s("balance");

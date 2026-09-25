@@ -237,9 +237,15 @@ pub struct WorldId {
 
 impl WorldId {
     pub fn new(seed: u64) -> Self {
+        Self::with_haven(seed, terrain::haven(seed))
+    }
+
+    /// A join's: `ClientCore::new` has already solved the haven, and solving
+    /// it again cost the join hitch another 20–30 ms.
+    pub fn with_haven(seed: u64, haven: Haven) -> Self {
         Self {
             seed,
-            haven: terrain::haven(seed),
+            haven,
             table: ScatterTable::alpha_default(),
         }
     }
@@ -1401,9 +1407,11 @@ impl Plugin for GatesRenderPlugin {
                 audio::water,
                 audio::feed,
                 // The matter struck, at the point it was struck — off the
-                // contact list the debris is thrown from, and after the
-                // resolver that fills it.
-                audio::impacts.after(impact::contacts),
+                // contact list the debris is thrown from, and after both
+                // systems that fill it: the resolver, and the gun's far-miss
+                // contacts, which otherwise landed after this read on some
+                // frames and made no sound.
+                audio::impacts.after(impact::contacts).after(fx::gun::shots),
                 // The second positional cue: placements off the feed's
                 // broadcast-only ring (the join-flood guard is the core's).
                 audio::place,

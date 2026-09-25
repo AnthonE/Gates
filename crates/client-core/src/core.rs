@@ -32,6 +32,12 @@ use sim_core::terrain::{self, Haven, ScatterTable};
 /// Gather toasts buffered for the HUD (drop-oldest — a toast is cosmetic).
 pub const TOAST_RING: usize = 8;
 
+/// Removals buffered for the renderer ([`Removed`]): one tick's worth at the
+/// sim's own cap, because a collapse brings down up to that many pieces at
+/// once and every one is a mark to clear and a cloud of dust. At the toast
+/// ring's eight, the other 56 of a big collapse left their marks hanging.
+pub const REMOVED_RING: usize = sim_core::limits::MAX_REMOVALS_PER_TICK;
+
 /// Craft refusal reasons buffered for the HUD (drop-oldest, cosmetic).
 pub const REFUSAL_RING: usize = 4;
 
@@ -940,6 +946,12 @@ impl ClientCore {
         &self.ovens
     }
 
+    /// The island's authored sites, solved once in `new`. A join hands this
+    /// copy to `render::WorldId` rather than solving `terrain::haven` twice.
+    pub fn haven(&self) -> &Haven {
+        &self.haven
+    }
+
     /// The island this client stands on, as the seed plus the same four
     /// borrows the predictor hands `movement::step` — including **the very
     /// `SlotCache` the predictor just filled**.
@@ -1165,6 +1177,10 @@ pub struct ClientCore {
     /// The craft panel's picker and the store's "owned" marks read it; the
     /// sim is still the verdict on every skinned craft.
     pub skins_owned: sim_core::skin::SkinSet,
+    /// Bumped by every skin catalog drip. A reprice rewrites rows in place
+    /// and leaves `skins.count` alone, so a screen that redraws on the count
+    /// kept showing the old price; this is the number that moves.
+    pub skins_gen: u32,
     /// Cell changes the last `on_stream` call produced: (key, harvested).
     slot_changes: [(u32, bool); protocol::SLOT_SYNC_BATCH],
     n_slot_changes: usize,
@@ -1545,7 +1561,7 @@ pub struct ClientCore {
     /// Removals that HAPPENED (`PieceRemoved`/`DeployRemoved`), the
     /// placement ring's other half: a sync reset clears the mirror without
     /// ringing here, so a resync throws no dust.
-    removed: [Removed; TOAST_RING],
+    removed: [Removed; REMOVED_RING],
     removed_head: usize,
     removed_len: usize,
     deploy_refusal_head: usize,
@@ -1643,6 +1659,7 @@ impl ClientCore {
             catalog: ItemCatalog::EMPTY,
             skins: Box::new(protocol::SkinCatalog::EMPTY),
             skins_owned: sim_core::skin::SkinSet::EMPTY,
+            skins_gen: 0,
             slot_changes: [(0, false); protocol::SLOT_SYNC_BATCH],
             n_slot_changes: 0,
             toasts: [(0, 0); TOAST_RING],
@@ -1757,7 +1774,7 @@ impl ClientCore {
             placed: [(0, 0, 0, 0, false); TOAST_RING],
             placed_head: 0,
             placed_len: 0,
-            removed: [Removed::default(); TOAST_RING],
+            removed: [Removed::default(); REMOVED_RING],
             removed_head: 0,
             removed_len: 0,
             deploy_refusal_head: 0,
@@ -2016,6 +2033,7 @@ impl ClientCore {
                 rows,
             } => {
                 self.skins.count = total;
+                self.skins_gen = self.skins_gen.wrapping_add(1);
                 for i in 0..count as usize {
                     // The decoder refused incoherent rows and bounded the
                     // index; a failure here is an index past the table.
@@ -3200,11 +3218,11 @@ impl ClientCore {
 
     /// Drop-oldest, the placement ring's rule for its reason.
     fn push_removed(&mut self, r: Removed) {
-        if self.removed_len == TOAST_RING {
-            self.removed_head = (self.removed_head + 1) % TOAST_RING;
+        if self.removed_len == REMOVED_RING {
+            self.removed_head = (self.removed_head + 1) % REMOVED_RING;
             self.removed_len -= 1;
         }
-        self.removed[(self.removed_head + self.removed_len) % TOAST_RING] = r;
+        self.removed[(self.removed_head + self.removed_len) % REMOVED_RING] = r;
         self.removed_len += 1;
     }
 
@@ -3214,7 +3232,7 @@ impl ClientCore {
             return None;
         }
         let r = self.removed[self.removed_head];
-        self.removed_head = (self.removed_head + 1) % TOAST_RING;
+        self.removed_head = (self.removed_head + 1) % REMOVED_RING;
         self.removed_len -= 1;
         Some(r)
     }

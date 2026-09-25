@@ -193,6 +193,12 @@ seed = 20260731
 # craft refuses. A guest owns nothing. "Could not look" keeps what the sim
 # had; it never grants and never strips (`skins_unknown` counts it).
 #
+# What each skin costs is read from the same origin's store,
+# `/api/items/store/gates`, at boot and every five minutes (one cheap read,
+# not per player). Store prices replace content/skins.toml's; a store that is
+# not configured (or whose route 404s) has nothing on sale, and a read that
+# fails changes nothing (`skin_prices_unknown` counts it).
+#
 # skins_origin = "https://elopros.com"
 # skins_timeout_secs = 8
 #

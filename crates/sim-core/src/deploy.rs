@@ -535,11 +535,15 @@ pub const DECAY_MATERIALS: usize = 4;
 /// Proposed default, DECISIONS.md §open ("upkeep/decay v0").
 pub const DECAY_PCT_PER_PERIOD: u32 = 5;
 /// Units per upkeep material one feed press moves. Proposed default,
-/// DECISIONS.md §open ("deployables v0").
-pub const FEED_CHUNK: u32 = 100;
+/// DECISIONS.md §open ("deployables v0"); 100 → 500 with the ceiling below,
+/// so filling a row is twenty presses rather than a hundred.
+pub const FEED_CHUNK: u32 = 500;
 /// Stock ceiling per material per hearth. Proposed default, DECISIONS.md
-/// §open ("deployables v0").
-pub const STOCK_MAX: u32 = 2_000;
+/// §open ("deployables v0"); 2 000 → 10 000 under upkeep v2's rent ladder,
+/// where 2 000 of stone kept a 100-piece stone base for about ten hours and
+/// a 190-piece one for three and a half — short of the 24 h grief cover a
+/// full hearth is meant to buy, and short of a night's sleep.
+pub const STOCK_MAX: u32 = 10_000;
 /// Bags one player may have placed (ALPHA.md §1 knob, DECISIONS.md §open
 /// "bag cooldown · cap": 8).
 pub const BAG_CAP: usize = 8;
@@ -2265,12 +2269,25 @@ pub fn lock_op(
             announce_door(deploys, di, p.id, events);
         }
         Outcome::Authorized { grant } => {
-            events.push(
-                EV_AUTH,
-                crate::gather::cell_key(cx, cz),
-                ((level as u32) << 16) | ((loc as u32) << 8) | grant as u32,
-                p.id,
-            );
+            // A full crew answers with the refusal alone: announcing the
+            // grant first read on screen as "you're on the crew" a line
+            // before "that lock remembers too many" took it back.
+            let hearth_full = grant == lock::GRANT_FULL
+                && dc.defs[deploys.entries[di].row as usize].arch == ARCH_HEARTH
+                && deploys.hearths[..deploys.hearth_count]
+                    .iter()
+                    .find(|hr| hr.cx == cx && hr.cz == cz && hr.level == level)
+                    .is_some_and(|hr| {
+                        !hr.crew.contains(p.id) && hr.crew.members().len() >= HEARTH_CREW_CAP
+                    });
+            if !hearth_full {
+                events.push(
+                    EV_AUTH,
+                    crate::gather::cell_key(cx, cz),
+                    ((level as u32) << 16) | ((loc as u32) << 8) | grant as u32,
+                    p.id,
+                );
+            }
             // **At a hearth, the right code is the whole invitation**
             // (hearth lock v0): the reference asks for two acts — open the
             // lock, then authorize — and ours folds them, because the
@@ -2432,22 +2449,26 @@ pub fn pick_up(
 
 /// Whether `id` may join this hearth's crew — the one admission rule,
 /// asked by the crew's own join and by a code entered at the hearth's lock
-/// (hearth lock v0). An empty crew is anyone's (a bare door's rule); a
-/// crewed hearth takes its own members and **whoever its lock remembers at
-/// full rights**. The lock's list is the invitation: a guest code opens
-/// nothing here, and a fresh lock remembers only the hand that bolted it
-/// on, so bolting one on shares nothing until a code is set and told.
+/// (hearth lock v0). A hearth takes its own members and **whoever its lock
+/// remembers at full rights**; a bare hearth with nobody on its crew is
+/// anyone's (a bare door's rule). The lock's list is the invitation: a
+/// guest code opens nothing here, and a fresh lock remembers only the hand
+/// that bolted it on, so bolting one on shares nothing until a code is set
+/// and told. **An empty crew behind a lock is not an unclaimed thing** — the
+/// last member leaving must not open a locked base to whoever walks up.
 ///
 /// Evicting follows from the same sentence and is the reference's own
 /// pair of acts: clearing the crew leaves the lock's list standing, so a
 /// hand still on it can walk back in — setting a new code is what forgets
 /// them (`lock.rs`'s `reset_lists`).
 pub fn hearth_admits(locks: &Locks, h: &HearthRec, id: u32) -> bool {
-    h.crew.is_empty()
-        || h.crew.contains(id)
-        || locks
-            .find(h.cx, h.cz, h.level, LOC_PLANE)
-            .is_some_and(|l| l.grant(id) == lock::GRANT_FULL)
+    if h.crew.contains(id) {
+        return true;
+    }
+    match locks.find(h.cx, h.cz, h.level, LOC_PLANE) {
+        Some(l) => l.grant(id) == lock::GRANT_FULL,
+        None => h.crew.is_empty(),
+    }
 }
 
 /// Apply one crew op to the hearth at the address (hearth crew v1,
@@ -2508,12 +2529,11 @@ pub fn crew_op(
     // whole value is that its rows mean something.
     let moved;
     match op {
-        // **Anyone in reach may join an empty-crewed hearth; a crewed one
-        // takes its crew and whoever its lock remembers at full rights**
-        // ([`hearth_admits`], hearth lock v0). The empty half cannot happen
-        // — placing joins the crew, so a live hearth always has at least
-        // one member — but stating it is what makes the rule readable as
-        // the same one the lock keeps: an unclaimed thing is anyone's.
+        // **A hearth takes its crew and whoever its lock remembers at full
+        // rights; a bare one nobody is on is anyone's** ([`hearth_admits`],
+        // hearth lock v0). Placing joins the crew, but the last member
+        // leaving empties it, so the empty half is real: without a lock an
+        // unclaimed thing is anyone's, and with one it stays the lock's.
         ACCESS_OP_CREW_JOIN => {
             if !admitted {
                 events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWNER, 0);
@@ -3803,7 +3823,7 @@ mod tests {
         let mut pieces = Pieces::new();
         let mut deploys = Deploys::new();
         let mut ev = EventQueue::default();
-        let mut p = player_at_cell(CX, CZ, &[(0, 250), (1, 80), (2, 1)]);
+        let mut p = player_at_cell(CX, CZ, &[(0, 600), (1, 80), (2, 1)]);
         founded_graded(&bc, &mut pieces, &mut p, CX, CZ);
         place_deploy(
             SEED,
@@ -3823,8 +3843,8 @@ mod tests {
         );
         assert_eq!(last(&ev).0, crate::world::EV_DEPLOY_PLACED);
 
-        // Feed: FEED_CHUNK of item 0 (has 245 left after the foundation's
-        // 5), all 80 of item 1.
+        // Feed: a whole FEED_CHUNK of item 0 (600 held, less the
+        // foundation's and the hearth's price), all 80 of item 1.
         feed(&dc, &mut deploys, &mut p, CX, CZ, 0, &mut ev);
         assert_eq!(last(&ev).0, crate::world::EV_STOCK);
         assert_eq!(deploys.hearths()[0].stock[0], FEED_CHUNK);
@@ -6449,6 +6469,29 @@ mod tests {
         pad(&mut deploys, &mut owner, ACCESS_OP_SET_CODE, 2468, &mut ev);
         join(&mut deploys, &friend, &mut ev);
         assert_eq!(last(&ev).2, REFUSE_D_OWNER, "the re-keyed lock forgot them");
+        assert_eq!(crew(&deploys), vec![owner.id]);
+
+        // The last member leaving does not open a locked hearth: an empty
+        // crew behind a lock is still the lock's, not anyone's.
+        crew_op(
+            &mut deploys,
+            &owner,
+            CX,
+            CZ,
+            0,
+            ACCESS_OP_CREW_LEAVE,
+            &mut ev,
+        );
+        assert!(deploys.hearths()[0].crew.is_empty());
+        join(&mut deploys, &guest, &mut ev);
+        assert_eq!(
+            last(&ev).2,
+            REFUSE_D_OWNER,
+            "an emptied crew opened a locked hearth to a stranger"
+        );
+        assert!(crew(&deploys).is_empty());
+        // Its lock still remembers the owner, who walks back in.
+        join(&mut deploys, &owner, &mut ev);
         assert_eq!(crew(&deploys), vec![owner.id]);
 
         // And the lock dies with the hearth it is bolted to.

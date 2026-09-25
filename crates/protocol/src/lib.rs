@@ -953,7 +953,11 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// v77: `SUB_IMPACT` names what struck (`IMPACT_KIND_BITS`: arrow, bullet,
 /// melee, blast), and a charge going off is an impact too. Landed on its
 /// branch as v76, beside the pack call's; the merge took the next number.
-pub const PROTO_VER: u16 = 77;
+/// v78 moves no byte. The impact kind and skins v0 each merged as v77, a
+/// minute apart, so `main` built one v77 without skins and one with them —
+/// two layouts under one number. The number moves so the two can never
+/// meet on one link.
+pub const PROTO_VER: u16 = 78;
 
 /// This game's slug in the elo catalog.
 ///

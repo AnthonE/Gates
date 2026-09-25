@@ -307,6 +307,10 @@ pub fn grow(
         let want = g.base * pm as f32 * 0.001;
         if (t.scale.x - want).abs() > 1e-4 {
             t.scale = Vec3::splat(want);
+            // A stump stands on its own lift, which is to its size.
+            if f.part == FellPart::Stump {
+                t.translation.y = f.base_y + STUMP_LIFT_M * want;
+            }
         }
     }
 }
@@ -1987,7 +1991,7 @@ pub fn stream(
                 for ix in 0..cells {
                     let cell_x = key.0 * cells + ix;
                     let cell_z = key.1 * cells + iz;
-                    let slot = terrain::scatter_memo(
+                    let mut slot = terrain::scatter_memo(
                         &mut lat,
                         world.seed,
                         &world.table,
@@ -1998,6 +2002,7 @@ pub fn stream(
                     if slot.occupant == Occupant::None {
                         continue;
                     }
+                    slot.y -= slope_sink(&mut lat, &world, &slot);
                     // `cell_key` is `sim_core::gather`'s own, not a second
                     // copy: the client's mirror is keyed by it and a renderer
                     // that packed its own would silently never match.
@@ -2198,6 +2203,24 @@ pub fn spawn_outer_tree(
     ));
 }
 
+/// How far a rock or an ore node is drawn below its slot on a slope: the
+/// ground's fall across its footprint (the slope times its radius), so its
+/// downhill edge meets the hillside instead of floating over it — the
+/// ranges put most of the ore on slopes, where `SINK_M` alone left a gap
+/// under every node. Capped at a third of its height, so a node on a cliff
+/// still reads as a node. Drawn only: the sim's volume stays the slot's.
+pub fn slope_sink(lat: &mut terrain::Lattice, world: &WorldId, slot: &terrain::Slot) -> f32 {
+    if !matches!(
+        slot.occupant,
+        Occupant::StoneNode | Occupant::MetalNode | Occupant::SulfurNode | Occupant::Rock
+    ) {
+        return 0.0;
+    }
+    let (r, top) = terrain::occupant_volume(slot.occupant);
+    let slope = terrain::ground_slope_memo(lat, world.seed, &world.haven, slot.x, slot.z);
+    (slope * r * slot.scale).min(top * slot.scale / 3.0)
+}
+
 /// Draw one scatter slot as a child of its chunk.
 ///
 /// **Public because the LOD is a spawn-site claim.** Every gate in this repo
@@ -2374,6 +2397,9 @@ pub fn spawn_slot(
     if is_tree {
         e.with_child((
             fellable(FellPart::Stump),
+            // Hidden while the tree stands, it grows with the sapling, so a
+            // sapling felled leaves a sapling's stump — not a full tree's.
+            Grow { base: slot.scale },
             Mesh3d(a.stump.clone()),
             MeshMaterial3d(a.wood.clone()),
             Transform {
@@ -2459,6 +2485,7 @@ pub fn harvest(
         &mut Transform,
         &mut Visibility,
     )>,
+    mut marks: Option<ResMut<super::decal::Marks>>,
 ) {
     if q.is_empty() {
         return;
@@ -2467,7 +2494,12 @@ pub fn harvest(
     // without a socket. `HarvestedSet` is the authority; this is the only
     // place it is consulted.
     let core = &net.session.core;
-    apply_fell(q, &|key| core.harvested.contains(key));
+    let mut forget = |at: Vec3, r: f32| {
+        if let Some(m) = marks.as_deref_mut() {
+            m.forget_later(at, r);
+        }
+    };
+    apply_fell_forgetting(q, &|key| core.harvested.contains(key), &mut forget);
 }
 
 /// The bit that means the harvested set moved — the only thing [`harvest`]
@@ -2614,7 +2646,7 @@ pub fn fall(
         }
         if was <= 0.0 {
             if let Some(m) = marks.as_deref_mut() {
-                m.forget_near(t.translation + Vec3::Y * 1.2, 1.2);
+                m.forget_later(t.translation + Vec3::Y * 1.2, 1.2);
             }
         }
         if top.t >= FELL_FALL_S {
@@ -2656,7 +2688,23 @@ pub fn apply_fell(
     )>,
     harvested: &dyn Fn(u32) -> bool,
 ) {
-    apply_fell_in(q, harvested);
+    apply_fell_in(q, harvested, &mut |_, _| {});
+}
+
+/// [`apply_fell`], told where a vanished part stood and how big it was, so
+/// its marks can go with it (`decal::Marks::forget_later`) — a bullet hole
+/// must not hang in the air where a mined-out node was.
+pub fn apply_fell_forgetting(
+    q: Query<(
+        &mut Fellable,
+        Option<&mut Topple>,
+        &mut Transform,
+        &mut Visibility,
+    )>,
+    harvested: &dyn Fn(u32) -> bool,
+    forget: &mut dyn FnMut(Vec3, f32),
+) {
+    apply_fell_in(q, harvested, forget);
 }
 
 /// [`apply_fell`] over the `Added<Fellable>` query — same body, one filter.
@@ -2672,7 +2720,7 @@ pub fn apply_fell_added(
     >,
     harvested: &dyn Fn(u32) -> bool,
 ) {
-    apply_fell_in(q, harvested);
+    apply_fell_in(q, harvested, &mut |_, _| {});
 }
 
 fn apply_fell_in<F: bevy::ecs::query::QueryFilter>(
@@ -2686,6 +2734,7 @@ fn apply_fell_in<F: bevy::ecs::query::QueryFilter>(
         F,
     >,
     harvested: &dyn Fn(u32) -> bool,
+    forget: &mut dyn FnMut(Vec3, f32),
 ) {
     for (mut f, top, mut t, mut vis) in q.iter_mut() {
         let felled = harvested(f.key);
@@ -2697,6 +2746,11 @@ fn apply_fell_in<F: bevy::ecs::query::QueryFilter>(
             // A rock that stops being a rock has nothing to animate.
             FellPart::Vanish => {
                 *vis = if felled {
+                    // Its marks go with it, from about its middle.
+                    forget(
+                        t.translation + Vec3::Y * 0.5 * t.scale.y,
+                        1.5 * t.scale.y.max(0.5),
+                    );
                     Visibility::Hidden
                 } else {
                     Visibility::Inherited

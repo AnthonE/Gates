@@ -891,8 +891,10 @@ fn continent<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> f32 {
 //   share, measured at p50 0.64–0.71 and 4.9–10.7 % cliff on four seeds.
 // - **Paid for where it stands.** Off the window a sample pays one squared-
 //   radius compare. In it, `height` is ~2× what it was (~0.95 µs against
-//   ~0.46 on the gate box), and a clutter tile on a range ~2.7× (2.7 ms
-//   against 1.0 — one tile a frame, on the frame thread). The range layout
+//   ~0.46 on the gate box). A clutter tile on a range cost 2.7 ms against 1.0
+//   until clutter took its slope off one corner grid per tile
+//   (`clutter_slope_taps`): now ~0.9 ms on a summit and ~1.0 on a flank —
+//   one tile a frame, on the frame thread. The range layout
 //   and the gully hashes ride the caller's `Lattice` like every other draw,
 //   the fall line is an analytic gradient rather than two more envelopes,
 //   and a bounding disc skips the warp for samples no range can reach.
@@ -8287,6 +8289,85 @@ pub fn slot_ground(slot: &Slot, x: f32, z: f32, feet_y: f32) -> f32 {
             }
         }
     }
+}
+
+/// Is there an authored roof over a body standing here — the haven's
+/// shelter, a waystation's canopy, or a depot building? Weather v0's shelter
+/// question ("no roof above them"), asked of the sites the way
+/// `collide::roofed` asks it of built slabs: a box answers when the point is
+/// inside its footprint and its underside is at or above the body's head,
+/// so walls and posts, which start below the head, never do. A site's
+/// ground is read only once the point is inside its bounding circle.
+pub fn site_roofed(seed: u64, haven: &Haven, x: f32, z: f32, feet_y: f32) -> bool {
+    let head = feet_y + crate::collide::CAPSULE_HEIGHT_M;
+    let shelter = haven_shelter(haven);
+    if boxes_over(
+        seed,
+        haven,
+        &SHELTER_BOXES,
+        SHELTER_FLOOR_IX,
+        SHELTER_CORNER_R_M,
+        shelter,
+        x,
+        z,
+        head,
+    ) {
+        return true;
+    }
+    for ws in haven.minor.iter() {
+        // The same set `scatter` seats a canopy at.
+        if !ws.live || ws.kind == SiteKind::Inland {
+            continue;
+        }
+        let canopy = waystation_canopy(ws);
+        if boxes_over(
+            seed,
+            haven,
+            &WAYSTATION_CANOPY_BOXES,
+            WAYSTATION_CANOPY_FLOOR_IX,
+            WAYSTATION_CANOPY_R_M,
+            canopy,
+            x,
+            z,
+            head,
+        ) {
+            return true;
+        }
+    }
+    crate::depot::roofed(haven, x, z, head)
+}
+
+/// [`site_roofed`] for one authored box list standing at `(sx, sz, yaw)` on
+/// its own ground: any box but the floor whose footprint holds the point
+/// and whose underside clears `head`.
+#[allow(clippy::too_many_arguments)]
+fn boxes_over(
+    seed: u64,
+    haven: &Haven,
+    boxes: &[[f32; 6]],
+    floor_ix: usize,
+    r: f32,
+    (sx, sz, yaw): (f32, f32, u8),
+    x: f32,
+    z: f32,
+    head: f32,
+) -> bool {
+    let (dx, dz) = (x - sx, z - sz);
+    if dx * dx + dz * dz > r * r {
+        return false;
+    }
+    // The slot's own y, as `scatter` seats it.
+    let sy = ground(seed, haven, sx, sz);
+    // World → local, `boxes_ground`'s basis.
+    let (s, c) = crate::yaw_lut::yaw_dir((yaw as u16) << 8);
+    let lx = dx * c - dz * s;
+    let lz = dx * s + dz * c;
+    boxes.iter().enumerate().any(|(i, b)| {
+        i != floor_ix
+            && fabs(lx - b[0]) <= b[3] * 0.5
+            && fabs(lz - b[2]) <= b[5] * 0.5
+            && sy + b[1] - b[4] * 0.5 >= head
+    })
 }
 
 /// The box-list half of [`slot_ground`]: the highest box top under the
