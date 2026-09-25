@@ -157,6 +157,11 @@ pub struct ClientNetState {
     pub last_executed: u16,
     got_input: bool,
     starve_ticks: u32,
+    /// Frames the throttle may still take as a second-per-tick
+    /// (`limits::INPUT_CATCHUP_CREDIT_CAP` says why); and the drift
+    /// trickle's tick counter.
+    catchup_credit: u16,
+    drift_ticks: u16,
     /// The last REAL frame this connection executed — the decay mint's
     /// source (`core.rs`, the starved branch). Deliberately a server-side
     /// copy and not the world's `Player::frame`: the mint overwrites the
@@ -376,6 +381,8 @@ impl ClientNetState {
             last_executed: 0,
             got_input: false,
             starve_ticks: 0,
+            catchup_credit: sim_core::limits::INPUT_CATCHUP_CREDIT_CAP,
+            drift_ticks: 0,
             last_real: InputFrame::default(),
             reported_playout: sim_core::limits::INTERP_DELAY_TICKS,
             depth_report: 0,
@@ -769,7 +776,15 @@ impl ClientNetState {
             self.depth_report = 0;
             return None;
         }
-        let to_consume = if self.buffered_depth() > INPUT_THROTTLE_DEPTH {
+        self.drift_ticks += 1;
+        if self.drift_ticks >= sim_core::limits::INPUT_DRIFT_CREDIT_TICKS {
+            self.drift_ticks = 0;
+            self.earn_credit();
+        }
+        // Depth says the buffer is deep; the credit says the client is owed
+        // the catch-up. A client that ran ahead of the clock has no credit.
+        let to_consume = if self.buffered_depth() > INPUT_THROTTLE_DEPTH && self.catchup_credit > 0
+        {
             2
         } else {
             1
@@ -808,8 +823,12 @@ impl ClientNetState {
         if let Some(c) = &executed {
             self.starve_ticks = 0;
             self.last_real = c.frame;
+            if c.prev.is_some() {
+                self.catchup_credit -= 1;
+            }
         } else {
             self.starve_ticks += 1;
+            self.earn_credit();
         }
         // `HardResync` is the rung that still steers (netcode v2 S4):
         // the client's clock runs a proportional controller on the
@@ -826,6 +845,11 @@ impl ClientNetState {
             Nudge::Slower
         };
         executed
+    }
+
+    fn earn_credit(&mut self) {
+        self.catchup_credit =
+            (self.catchup_credit + 1).min(sim_core::limits::INPUT_CATCHUP_CREDIT_CAP);
     }
 
     /// The starved tick's stand-in (netcode v2): the last REAL frame this

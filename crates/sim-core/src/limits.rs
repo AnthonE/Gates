@@ -213,6 +213,19 @@ pub const INPUT_BUFFER_CAP: usize = 16;
 /// depth above this consumes two inputs in one tick to re-center.
 pub const INPUT_THROTTLE_DEPTH: usize = 6;
 
+/// Catch-up credit (anti-speedhack): the throttle's second frame is spent
+/// from a per-connection credit, never granted by depth alone. Depth alone
+/// let a client that minted frames at 60 Hz keep the buffer past the
+/// threshold and move at 2× forever (found 2026-09-25). A starved tick —
+/// a tick the client genuinely owed a frame for — earns one credit, so a
+/// loss burst still catches up at full speed; a drift trickle of one per
+/// `INPUT_DRIFT_CREDIT_TICKS` covers clock skew; a fresh connection starts
+/// with a full buffer's worth. Net: a client running ahead gains at most
+/// ~3% over the tick rate, instead of 100%.
+pub const INPUT_CATCHUP_CREDIT_CAP: u16 = INPUT_BUFFER_CAP as u16;
+/// Ticks per drift credit: one second at 30 Hz.
+pub const INPUT_DRIFT_CREDIT_TICKS: u16 = 30;
+
 /// Rewind ring depth in sim ticks — 8 rows of body history, 267 ms
 /// (NETCODE.md §8, `findings/lagcomp-design-20260818.md` §1.4). A power of
 /// two so the ring index is a mask and never a modulo: wall 1 likes

@@ -185,9 +185,19 @@ if [ "$GO" = 1 ]; then
          | grep -q "does match certificate"; then
       echo "  cert:   covers $NAME"
     else
-      echo "  cert:   !! /home/master/gates-certs/fullchain.pem does NOT cover $NAME"
-      echo "          every joiner will fail the handshake. Run the deploy hook:"
-      echo "          sudo $HOOK"
+      # Found live 2026-09-25: the shard had served game.moreright.xyz's
+      # chain for two days. The hook picks the lineage that covers $NAME and
+      # restarts the shard, so run it rather than print it.
+      echo "  cert:   !! /home/master/gates-certs/fullchain.pem does NOT cover $NAME — running the deploy hook"
+      sudo "$HOOK" || exit 1
+      if openssl x509 -noout -checkhost "$NAME" \
+           -in /home/master/gates-certs/fullchain.pem 2>/dev/null \
+           | grep -q "does match certificate"; then
+        echo "  cert:   covers $NAME now"
+      else
+        echo "  cert:   !! still does not cover $NAME; every joiner will fail the handshake"
+        exit 1
+      fi
     fi
   else
     echo "  !! did not come up. journalctl -u $UNIT -n 50 --no-pager"
@@ -196,6 +206,50 @@ if [ "$GO" = 1 ]; then
   fi
 else
   echo "  would poll: systemctl is-active, 61234/udp bound, /status.json answering"
+fi
+
+echo
+echo "== 6. the agents =="
+# The Jev services speak the wire too, so a deploy that moves PROTO_VER
+# strands them exactly as it strands a published client: gates-jev plays the
+# public shard, gates-watch runs its own private one but ships this tree's
+# content and renderer. Rebuild both from this commit whenever installed.
+AGENT_BIN=/home/master/gates-jev
+WATCH=/mnt/hive-data/gates-watch
+if systemctl list-unit-files gates-jev.service >/dev/null 2>&1 \
+   || systemctl list-unit-files gates-watch.service >/dev/null 2>&1; then
+  if [ "$GO" = 1 ]; then
+    cargo build --release -p server --features watch --bin jev-bot --bin jev-watch || exit 1
+  else
+    echo "  would run: cargo build --release -p server --features watch --bin jev-bot --bin jev-watch"
+  fi
+fi
+if systemctl list-unit-files gates-jev.service >/dev/null 2>&1; then
+  run cp -f target/release/jev-bot "$AGENT_BIN/jev-bot.new"
+  run mv -f "$AGENT_BIN/jev-bot.new" "$AGENT_BIN/jev-bot"
+  run sudo systemctl restart gates-jev.service
+else
+  echo "  gates-jev.service not installed"
+fi
+if systemctl list-unit-files gates-watch.service >/dev/null 2>&1; then
+  REL="$WATCH/releases/$(git rev-parse --short=12 HEAD)"
+  run mkdir -p "$REL"
+  run cp -f target/release/jev-watch "$REL/jev-watch"
+  run rsync -a --delete content/ "$REL/content/"
+  # Tracked files only: an untracked asset is not ours to ship.
+  if [ "$GO" = 1 ]; then
+    git ls-files -z assets | sed -z 's#^assets/##' \
+      | rsync -a --from0 --files-from=- assets/ "$WATCH/assets/" || exit 1
+  else
+    echo "  would sync tracked assets/ into $WATCH/assets/"
+  fi
+  if [ "$(readlink "$WATCH/current")" != "$REL" ]; then
+    run ln -sfn "$(readlink "$WATCH/current")" "$WATCH/previous"
+    run ln -sfn "$REL" "$WATCH/current"
+  fi
+  run sudo systemctl restart gates-watch.service
+else
+  echo "  gates-watch.service not installed"
 fi
 
 echo

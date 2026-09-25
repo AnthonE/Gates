@@ -493,11 +493,17 @@ pub fn consume(sc: &SurvivalContent, slot: usize, p: &mut Player, events: &mut E
         // A second consume replaces the ramp rather than queueing behind
         // it: two bandages at once is one bandage's worth of book-keeping,
         // and the remainder of the first is folded into the second so the
-        // hp is not lost.
+        // hp is not lost. **The span grows with the pool, so the RATE never
+        // exceeds this item's own**: folding the remainder in over one
+        // item's span made N items at once heal N times as fast — thirty
+        // bandages in a second was a full heal in one bandage's time
+        // (found 2026-09-25). Integer and rounded up, so never faster.
         let carried = p.heal_rem;
         p.heal_rem = def.health.saturating_add(carried);
         p.heal_total = p.heal_rem;
-        p.heal_span = def.seconds as u32 * TICK_HZ;
+        let span = def.seconds as u64 * TICK_HZ as u64;
+        p.heal_span =
+            ((p.heal_rem as u64 * span).div_ceil(def.health as u64)).min(u32::MAX as u64) as u32;
         p.heal_acc = 0;
     }
     events.push(
@@ -665,6 +671,39 @@ mod tests {
         let mut q = EventQueue::default();
         assert!(!consume(&sc, 0, &mut p, &mut q), "full meters, no heal");
         assert_eq!(p.inv[0].count, 2, "the item is not destroyed");
+    }
+
+    /// Ten heals eaten in ten ticks heal no faster than one: the pool grows
+    /// and so does the span. Red on the old fold, which kept one item's span.
+    #[test]
+    fn stacked_heals_do_not_heal_faster() {
+        let sc = SurvivalContent::probe_fixture();
+        let mut p = player(&sc);
+        p.hp = 1;
+        p.food = 0;
+        p.water = 0;
+        p.inv[0] = ItemStack {
+            item: 0,
+            count: 10,
+            cond: 0,
+            skin: 0,
+        };
+        let mut q = EventQueue::default();
+        let span = sc.consumable[0].seconds as u32 * TICK_HZ;
+        let per_item = sc.consumable[0].health as u32;
+        let start = p.hp as u32;
+        for _ in 0..10 {
+            consume(&sc, 0, &mut p, &mut q);
+            step(&sc, &mut p, &mut q);
+        }
+        for _ in 10..span {
+            step(&sc, &mut p, &mut q);
+        }
+        let healed = p.hp as u32 - start;
+        assert!(
+            healed <= per_item + 1,
+            "{healed} hp inside one item's span from stacked heals (one item is {per_item})"
+        );
     }
 
     /// Eating restores the pair and delivers health over `seconds` — not

@@ -189,3 +189,11 @@ status_addr = "127.0.0.1:8431"
 # "nobody owns a skin, nothing is on sale" — exactly this shard's state without
 # the key. Once they deploy, skins sold on elopros.com work here with no change.
 skins_origin = "https://elopros.com"
+
+# ── spectators ───────────────────────────────────────────────────────────────
+#
+# Open so Jev (gates-jev.service) can be watched from the web page with
+# `?spectate=<wallet>` (operator, 2026-09-25). Only agents are watchable live;
+# a human's feed stays refused (`spectate_human_delay_s` unset = 0), so a seat
+# can never ghost a person. Watchers sign nothing and send no input.
+spectate = true
