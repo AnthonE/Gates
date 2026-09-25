@@ -8,7 +8,7 @@
 use sim_core::brain::{AiState, NO_TARGET, PACK_BITERS};
 use sim_core::combat::CombatContent;
 use sim_core::gather::{GatherContent, ItemStack};
-use sim_core::input::{InputFrame, BTN_CROUCH, BTN_LIGHT};
+use sim_core::input::{InputFrame, BTN_CROUCH, BTN_LIGHT, BTN_SPRINT};
 use sim_core::limits::{MAX_MOBS, MOB_THINK_TICKS};
 use sim_core::mob::{self, MobContent, MOB_PIG, MOB_WOLF};
 use sim_core::movement::{Body, POS_XZ_Q};
@@ -494,5 +494,92 @@ fn a_hit_on_one_wolf_makes_its_charging_mate_circle() {
     assert!(
         circled,
         "the charging mate kept coming after its pack-mate was hit"
+    );
+}
+
+/// Tick with the player holding `buttons` and pushing forward.
+fn hold_moving(w: &mut World, buttons: u8, ticks: u32) {
+    for seq in 0..ticks {
+        let frame = InputFrame {
+            seq: seq as u16,
+            buttons,
+            move_z: 127,
+            sel: 0,
+            ..InputFrame::default()
+        };
+        w.tick(&[Command::Input {
+            id: 1,
+            frame,
+            favour: 0,
+        }]);
+    }
+}
+
+/// **A crouch-sprint is a sprint.** `movement::step` reads no crouch, so a
+/// player holding both runs at full speed; the pig behind them hears a
+/// runner, not a stalker. Crouch was asked before sprint, which made
+/// holding both the quietest way to cross the island at a run.
+#[test]
+fn a_crouch_sprint_behind_a_pig_is_heard() {
+    let slot = {
+        let mut w = World::new(SEED);
+        w.mob = MobContent::probe_fixture();
+        w.tick(&[]);
+        first(&w, MOB_PIG)
+    };
+    let mut w = world_with(&[(slot, 5.0, 0.0)]);
+    face(&mut w, slot, false);
+    hold_moving(&mut w, BTN_CROUCH | BTN_SPRINT, MOB_THINK_TICKS as u32 + 1);
+    assert!(
+        w.mobs.m[slot].roused_until > 0,
+        "a pig did not hear a player crouch-sprinting past behind it"
+    );
+}
+
+/// **Dormancy ends in an Idle that ends.** An animal nobody can see goes
+/// dormant as Idle; the state it left may have had no timer (a chase, a
+/// patrol, the walk home), and an Idle that kept `u64::MAX` never timed
+/// out, so the animal stood still once woken until somebody came close —
+/// guards stopped their rounds for good once their site emptied.
+#[test]
+fn an_animal_woken_from_dormancy_does_not_stand_forever() {
+    let slot = {
+        let mut w = World::new(SEED);
+        w.mob = MobContent::probe_fixture();
+        w.tick(&[]);
+        first(&w, MOB_PIG)
+    };
+    // 300 m off: past the 240 m wake radius, so the first think is dormant.
+    let mut w = world_with(&[(slot, 300.0, 0.0)]);
+    w.mobs.m[slot].state = AiState::Chase;
+    w.mobs.m[slot].state_until = u64::MAX;
+    hold(&mut w, 0, MOB_THINK_TICKS as u32 + 1, |_| {});
+    let m = &w.mobs.m[slot];
+    assert!(!m.awake, "the pig 300 m off was awake");
+    assert_eq!(m.state, AiState::Idle, "dormancy is Idle");
+    assert_ne!(
+        m.state_until,
+        u64::MAX,
+        "dormancy left an Idle that can never time out"
+    );
+
+    // Now bring it within the wake radius but well outside its senses.
+    let b = w.players[0].body;
+    let (px, pz) = (b.qx as f32 * POS_XZ_Q, b.qz as f32 * POS_XZ_Q);
+    {
+        let m = &mut w.mobs.m[slot];
+        m.body = Body::at(SEED, hv(SEED), px + 60.0, pz);
+        m.home_qx = m.body.qx;
+        m.home_qz = m.body.qz;
+        m.last_qx = m.body.qx;
+        m.last_qz = m.body.qz;
+    }
+    let mut left_idle = false;
+    hold(&mut w, 0, 20 * MOB_THINK_TICKS as u32, |w| {
+        left_idle |= w.mobs.m[slot].state != AiState::Idle;
+    });
+    assert!(
+        left_idle,
+        "a woken pig stood in Idle for ten seconds with nobody near"
     );
 }

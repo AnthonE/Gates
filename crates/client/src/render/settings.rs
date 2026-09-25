@@ -963,7 +963,10 @@ pub const BINDS: [(&str, &str); 21] = [
     ("USE / ATTACK", "Left Mouse"),
     ("INTERACT / OPEN", "E"),
     ("HOTBAR", "1 - 6, or the scroll wheel"),
-    ("INVENTORY / CRAFTING", "Tab, I or Q  (Tab or Esc closes)"),
+    (
+        "INVENTORY / CRAFTING",
+        "Tab or I: inventory · Q: crafting  (the same key or Esc closes)",
+    ),
     ("MAP", "Hold G"),
     ("CHAT", "T or Enter"),
     ("EAT / DRINK", "J / H"),

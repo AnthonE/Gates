@@ -375,3 +375,56 @@ fn a_stack_no_ladder_can_size_stays_where_it_is() {
     assert!(p.inv.iter().all(|s| s.count == 0));
     assert!(spill.iter().all(|s| s.count == 0));
 }
+
+/// A take says what it took the way every other `EV_GATHER` producer does
+/// (`b = item << 16 | added`, `c = 0`), so the pickup notice names the
+/// item and not "+<index> of item 0" — and the stack keeps its skin into
+/// the pack, as it keeps its condition.
+#[test]
+fn a_take_announces_its_item_and_keeps_its_skin() {
+    let gc = GatherContent::probe_fixture();
+    let bc = BackpackContent::probe_fixture();
+    let mut g = GroundItems::new();
+    let mut p = Player {
+        id: PLAYER,
+        ..Default::default()
+    };
+    let (qx, qz) = land_spot();
+    p.body = Body::at(SEED, hv(), qx as f32 * POS_XZ_Q, qz as f32 * POS_XZ_Q);
+    let mut items = [ItemStack::default(); INV_SLOTS];
+    items[0] = ItemStack {
+        item: 3,
+        count: 5,
+        cond: 0,
+        skin: 7,
+    };
+    g.scatter(&bc, SEED, hv(), 1, p.body.qx, p.body.qz, &items, 0);
+
+    let mut spill = [ItemStack::default(); INV_SLOTS];
+    let mut events = EventQueue::default();
+    assert!(g
+        .take_nearest(&gc, &mut p, &mut spill, &mut events)
+        .is_some());
+
+    let ev = events
+        .entries()
+        .iter()
+        .find(|e| e.code == sim_core::world::EV_GATHER)
+        .expect("a take announces itself");
+    assert_eq!(
+        ev.b,
+        (3 << 16) | 5,
+        "the take named the wrong item or count"
+    );
+    assert_eq!(ev.c, 0);
+    let got = p
+        .inv
+        .iter()
+        .find(|s| s.count > 0)
+        .expect("nothing reached the pack");
+    assert_eq!(
+        (got.item, got.count, got.skin),
+        (3, 5, 7),
+        "the skin fell off"
+    );
+}

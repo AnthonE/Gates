@@ -605,10 +605,16 @@ pub fn think(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob, bites: &mu
     mob.awake = nearest_watcher(ctx.players, mob) <= MOB_WAKE_CM * MOB_WAKE_CM;
     if !mob.awake {
         // Asleep stops the body where it stands and starts the next waking
-        // from rest, so nothing wakes mid-stride along a stale route.
+        // from rest, so nothing wakes mid-stride along a stale route. Rest
+        // is a real Idle, timer and all: the state it left may have had no
+        // timer (Patrol, Chase, NavigateHome run at `u64::MAX`), and an Idle
+        // that kept that would never time out — a guard whose site emptied
+        // stood at its post until somebody walked up.
+        if mob.state != Idle || mob.state_until == u64::MAX {
+            enter(ctx, slot, def, mob, Idle);
+        }
         mob.gait = 0;
         mob.path.clear();
-        mob.state = Idle;
         mob.status = RUNNING;
         return;
     }
@@ -880,7 +886,12 @@ fn sense(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob) {
         let d2 = dist2_cm(dqx, dqz);
         let buttons = p.frame.buttons;
         let moving = p.frame.move_z != 0 || p.frame.move_x != 0;
-        let radius = if buttons & BTN_CROUCH != 0 {
+        // Sprint is asked first: the body moves at a run whether or not
+        // crouch is also held (`movement::step` reads no crouch), so a
+        // crouch-sprint is a sprint, not a stalk.
+        let radius = if buttons & BTN_SPRINT != 0 && moving {
+            r * 13 / 10
+        } else if buttons & BTN_CROUCH != 0 {
             let (dx, dz) = (dqx as f32, dqz as f32);
             let cone = def.sight_dot_pm as f32 * 0.001;
             let seen = fx * dx + fz * dz >= cone * (dx * dx + dz * dz).sqrt();
@@ -889,8 +900,6 @@ fn sense(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob) {
             } else {
                 BUMP_CM
             }
-        } else if buttons & BTN_SPRINT != 0 && moving {
-            r * 13 / 10
         } else {
             r
         };
@@ -1319,12 +1328,7 @@ fn orbit(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob) -> u8 {
         (mob.body.qz - p.qz) as f32 * POS_XZ_Q,
     );
     let bearing = yaw_toward(ox, oz, mob.yaw);
-    // Half the slots circle one way and half the other, so a pack spreads.
-    let step = if slot.is_multiple_of(2) {
-        ORBIT_STEP
-    } else {
-        0u16.wrapping_sub(ORBIT_STEP)
-    };
+    let step = orbit_step(slot);
     let (px, pz) = (p.qx as f32 * POS_XZ_Q, p.qz as f32 * POS_XZ_Q);
     let (dx, dz) = yaw_dir(bearing.wrapping_add(step));
     let rm = r * 0.01;
@@ -1338,6 +1342,18 @@ fn orbit(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob) -> u8 {
     head(mob, gx, gz);
     mob.gait = run_gait(def, mob);
     RUNNING
+}
+
+/// Which way this slot steps round its target. Half the pack circles one
+/// way and half the other, so it spreads. Split on the slot's place among
+/// the predators: every predator slot is a multiple of `WOLF_SLOT_EVERY`,
+/// so the slot's own parity put the whole pack on one side.
+fn orbit_step(slot: usize) -> u16 {
+    if (slot / crate::mob::WOLF_SLOT_EVERY).is_multiple_of(2) {
+        ORBIT_STEP
+    } else {
+        0u16.wrapping_sub(ORBIT_STEP)
+    }
 }
 
 /// Plan a route for this animal, gait untouched.
@@ -1568,5 +1584,29 @@ mod tests {
             gave_up,
             "the wolf never gave up on a player it cannot reach"
         );
+    }
+
+    /// **A pack spreads round its target.** Every pack with two or more
+    /// wolves has at least one stepping each way; splitting on the slot's
+    /// own parity sent every predator slot (all multiples of four) the
+    /// same way.
+    #[test]
+    fn every_pack_circles_both_ways() {
+        let mut checked = 0;
+        for leader in (0..MAX_MOBS).filter(|&s| crate::mob::pack_leader_of(s) == Some(s)) {
+            let steps: Vec<u16> = (0..MAX_MOBS)
+                .filter(|&s| crate::mob::pack_leader_of(s) == Some(leader))
+                .map(orbit_step)
+                .collect();
+            if steps.len() < 2 {
+                continue;
+            }
+            assert!(
+                steps.contains(&ORBIT_STEP) && steps.contains(&0u16.wrapping_sub(ORBIT_STEP)),
+                "pack led by slot {leader} circles one way only"
+            );
+            checked += 1;
+        }
+        assert!(checked > 0, "no pack of two or more to check");
     }
 }

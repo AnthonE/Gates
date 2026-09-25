@@ -43,8 +43,10 @@
 # model in the abstract and **false for every piece we own**: their
 # Projectile and Melee cells are EQUAL on all three, and those are the
 # only two damage classes our combat has, so one scalar expresses theirs
-# exactly. The columns we cannot key against — Bite, Radiation, Cold —
-# are mechanics we do not ship. §4.1 is retracted.
+# exactly. Bite and Radiation are mechanics we do not ship; Cold is, since
+# weather v0 — `cold_pct` below is their column, read by `sim_core::exposure`
+# (a negative one draws cold in as a share of the cold you are in). §4.1 is
+# retracted.
 #
 # **Our ladder is also inverted**, which is the part a player feels: ours
 # has the headwrap weaker than the shirt where theirs has it stronger.

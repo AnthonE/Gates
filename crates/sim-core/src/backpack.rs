@@ -50,7 +50,7 @@
 //! silent (`EV_GATHER` honestly reports the zero that reached the hands)
 //! and the merge ignores ownership. `NOW.md` §0sp2 carries both.
 
-use crate::gather::{inv_add, GatherContent, ItemStack};
+use crate::gather::{inv_add_skinned, GatherContent, ItemStack};
 use crate::limits::{INV_SLOTS, MAX_BACKPACKS, MAX_ITEM_DEFS};
 use crate::movement::POS_XZ_Q;
 use crate::world::{EventQueue, Player, EV_BAG_DROPPED, EV_BAG_REMOVED, EV_GATHER};
@@ -442,15 +442,17 @@ impl Backpacks {
                     continue;
                 }
                 let cap = gc.stack_max_of(stack.item);
-                // The stack already exists, so its condition travels with
-                // it — minting at the ceiling here would mend a worn tool
-                // by dropping it into a bag.
-                let took = inv_add(
+                // The stack already exists, so its condition and its skin
+                // travel with it — minting at the ceiling here would mend a
+                // worn tool by dropping it into a bag, and a plain mint
+                // would strip the skin off it.
+                let took = inv_add_skinned(
                     &mut self.entries[i].items,
                     stack.item,
                     stack.count,
                     cap,
                     stack.cond,
+                    stack.skin,
                 );
                 if took == 0 {
                     continue;
@@ -600,9 +602,16 @@ impl Backpacks {
             if cap == 0 {
                 continue; // an item the ladder cannot stack cannot be taken
             }
-            // An existing stack: its condition travels, or looting a bag
-            // would repair everything in it.
-            let took = inv_add(&mut p.inv, stack.item, stack.count, cap, stack.cond);
+            // An existing stack: its condition and skin travel, or looting
+            // a bag would repair everything in it and strip every skin.
+            let took = inv_add_skinned(
+                &mut p.inv,
+                stack.item,
+                stack.count,
+                cap,
+                stack.cond,
+                stack.skin,
+            );
             if took == 0 {
                 continue;
             }

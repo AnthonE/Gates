@@ -1319,15 +1319,13 @@ pub fn plane_blocked(
     })
 }
 
-/// Lowest slab underside at or above the capsule's current head, or `None`
-/// when it can rise freely. Uses the same footprint as `plane_blocked`.
-/// Foundations have no air underneath; slabs already intersecting the body
-/// are ignored so a piece placed around somebody still lets them escape.
 /// Is there a roof over a body standing here — a floor, roof or stair
-/// slab anywhere above its head (weather v0)? The reference's shelter
-/// question ("no roof / overhang above them"), asked of the same planes a
-/// jump bumps its head on, so the sky a player cannot see is the rain that
-/// cannot reach them. Terrain overhead is ignored, as `piece_ceiling` does.
+/// slab anywhere above its head, or an authored site's roof (the haven's
+/// shelter, a waystation's canopy, a depot building; weather v0)? The
+/// reference's shelter question ("no roof / overhang above them"), asked of
+/// the same planes a jump bumps its head on, so the sky a player cannot see
+/// is the rain that cannot reach them. Terrain overhead is ignored, as
+/// `piece_ceiling` does.
 pub fn roofed(
     seed: u64,
     haven: &crate::terrain::Haven,
@@ -1337,8 +1335,13 @@ pub fn roofed(
     feet_y: f32,
 ) -> bool {
     piece_ceiling(seed, haven, cols, x, z, feet_y).is_some()
+        || crate::terrain::site_roofed(seed, haven, x, z, feet_y)
 }
 
+/// Lowest slab underside at or above the capsule's current head, or `None`
+/// when it can rise freely. Uses the same footprint as `plane_blocked`.
+/// Foundations have no air underneath; slabs already intersecting the body
+/// are ignored so a piece placed around somebody still lets them escape.
 pub(crate) fn piece_ceiling(
     seed: u64,
     haven: &crate::terrain::Haven,

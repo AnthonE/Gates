@@ -32,6 +32,12 @@ use sim_core::terrain::{self, Haven, ScatterTable};
 /// Gather toasts buffered for the HUD (drop-oldest — a toast is cosmetic).
 pub const TOAST_RING: usize = 8;
 
+/// Removals buffered for the renderer ([`Removed`]): one tick's worth at the
+/// sim's own cap, because a collapse brings down up to that many pieces at
+/// once and every one is a mark to clear and a cloud of dust. At the toast
+/// ring's eight, the other 56 of a big collapse left their marks hanging.
+pub const REMOVED_RING: usize = sim_core::limits::MAX_REMOVALS_PER_TICK;
+
 /// Craft refusal reasons buffered for the HUD (drop-oldest, cosmetic).
 pub const REFUSAL_RING: usize = 4;
 
@@ -1545,7 +1551,7 @@ pub struct ClientCore {
     /// Removals that HAPPENED (`PieceRemoved`/`DeployRemoved`), the
     /// placement ring's other half: a sync reset clears the mirror without
     /// ringing here, so a resync throws no dust.
-    removed: [Removed; TOAST_RING],
+    removed: [Removed; REMOVED_RING],
     removed_head: usize,
     removed_len: usize,
     deploy_refusal_head: usize,
@@ -1757,7 +1763,7 @@ impl ClientCore {
             placed: [(0, 0, 0, 0, false); TOAST_RING],
             placed_head: 0,
             placed_len: 0,
-            removed: [Removed::default(); TOAST_RING],
+            removed: [Removed::default(); REMOVED_RING],
             removed_head: 0,
             removed_len: 0,
             deploy_refusal_head: 0,
@@ -3200,11 +3206,11 @@ impl ClientCore {
 
     /// Drop-oldest, the placement ring's rule for its reason.
     fn push_removed(&mut self, r: Removed) {
-        if self.removed_len == TOAST_RING {
-            self.removed_head = (self.removed_head + 1) % TOAST_RING;
+        if self.removed_len == REMOVED_RING {
+            self.removed_head = (self.removed_head + 1) % REMOVED_RING;
             self.removed_len -= 1;
         }
-        self.removed[(self.removed_head + self.removed_len) % TOAST_RING] = r;
+        self.removed[(self.removed_head + self.removed_len) % REMOVED_RING] = r;
         self.removed_len += 1;
     }
 
@@ -3214,7 +3220,7 @@ impl ClientCore {
             return None;
         }
         let r = self.removed[self.removed_head];
-        self.removed_head = (self.removed_head + 1) % TOAST_RING;
+        self.removed_head = (self.removed_head + 1) % REMOVED_RING;
         self.removed_len -= 1;
         Some(r)
     }

@@ -2432,22 +2432,26 @@ pub fn pick_up(
 
 /// Whether `id` may join this hearth's crew — the one admission rule,
 /// asked by the crew's own join and by a code entered at the hearth's lock
-/// (hearth lock v0). An empty crew is anyone's (a bare door's rule); a
-/// crewed hearth takes its own members and **whoever its lock remembers at
-/// full rights**. The lock's list is the invitation: a guest code opens
-/// nothing here, and a fresh lock remembers only the hand that bolted it
-/// on, so bolting one on shares nothing until a code is set and told.
+/// (hearth lock v0). A hearth takes its own members and **whoever its lock
+/// remembers at full rights**; a bare hearth with nobody on its crew is
+/// anyone's (a bare door's rule). The lock's list is the invitation: a
+/// guest code opens nothing here, and a fresh lock remembers only the hand
+/// that bolted it on, so bolting one on shares nothing until a code is set
+/// and told. **An empty crew behind a lock is not an unclaimed thing** — the
+/// last member leaving must not open a locked base to whoever walks up.
 ///
 /// Evicting follows from the same sentence and is the reference's own
 /// pair of acts: clearing the crew leaves the lock's list standing, so a
 /// hand still on it can walk back in — setting a new code is what forgets
 /// them (`lock.rs`'s `reset_lists`).
 pub fn hearth_admits(locks: &Locks, h: &HearthRec, id: u32) -> bool {
-    h.crew.is_empty()
-        || h.crew.contains(id)
-        || locks
-            .find(h.cx, h.cz, h.level, LOC_PLANE)
-            .is_some_and(|l| l.grant(id) == lock::GRANT_FULL)
+    if h.crew.contains(id) {
+        return true;
+    }
+    match locks.find(h.cx, h.cz, h.level, LOC_PLANE) {
+        Some(l) => l.grant(id) == lock::GRANT_FULL,
+        None => h.crew.is_empty(),
+    }
 }
 
 /// Apply one crew op to the hearth at the address (hearth crew v1,
@@ -2508,12 +2512,11 @@ pub fn crew_op(
     // whole value is that its rows mean something.
     let moved;
     match op {
-        // **Anyone in reach may join an empty-crewed hearth; a crewed one
-        // takes its crew and whoever its lock remembers at full rights**
-        // ([`hearth_admits`], hearth lock v0). The empty half cannot happen
-        // — placing joins the crew, so a live hearth always has at least
-        // one member — but stating it is what makes the rule readable as
-        // the same one the lock keeps: an unclaimed thing is anyone's.
+        // **A hearth takes its crew and whoever its lock remembers at full
+        // rights; a bare one nobody is on is anyone's** ([`hearth_admits`],
+        // hearth lock v0). Placing joins the crew, but the last member
+        // leaving empties it, so the empty half is real: without a lock an
+        // unclaimed thing is anyone's, and with one it stays the lock's.
         ACCESS_OP_CREW_JOIN => {
             if !admitted {
                 events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWNER, 0);
@@ -6449,6 +6452,29 @@ mod tests {
         pad(&mut deploys, &mut owner, ACCESS_OP_SET_CODE, 2468, &mut ev);
         join(&mut deploys, &friend, &mut ev);
         assert_eq!(last(&ev).2, REFUSE_D_OWNER, "the re-keyed lock forgot them");
+        assert_eq!(crew(&deploys), vec![owner.id]);
+
+        // The last member leaving does not open a locked hearth: an empty
+        // crew behind a lock is still the lock's, not anyone's.
+        crew_op(
+            &mut deploys,
+            &owner,
+            CX,
+            CZ,
+            0,
+            ACCESS_OP_CREW_LEAVE,
+            &mut ev,
+        );
+        assert!(deploys.hearths()[0].crew.is_empty());
+        join(&mut deploys, &guest, &mut ev);
+        assert_eq!(
+            last(&ev).2,
+            REFUSE_D_OWNER,
+            "an emptied crew opened a locked hearth to a stranger"
+        );
+        assert!(crew(&deploys).is_empty());
+        // Its lock still remembers the owner, who walks back in.
+        join(&mut deploys, &owner, &mut ev);
         assert_eq!(crew(&deploys), vec![owner.id]);
 
         // And the lock dies with the hearth it is bolted to.

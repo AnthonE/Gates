@@ -91,7 +91,7 @@ pub const MOB_KINDS: usize = 2;
 /// distribution a gate has to sample. What the seed still varies is *where*
 /// they live — `home_of` draws per slot — so two shards agree on how many
 /// wolves exist and on nothing else about them.
-const WOLF_SLOT_EVERY: usize = 4;
+pub(crate) const WOLF_SLOT_EVERY: usize = 4;
 
 /// Which species a roster slot holds.
 ///

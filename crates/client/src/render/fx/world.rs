@@ -48,8 +48,10 @@ pub fn break_points(wall: bool) -> [Vec3; 5] {
     }
 }
 
-/// How far from a gone piece's middle its marks go with it, metres.
-pub const FORGET_R_M: f32 = 1.8;
+/// How far from a gone piece's middle its marks go with it, metres: past
+/// the corner of a 3 m wall or floor (1.5·√2 ≈ 2.12 m from its middle). At
+/// 1.8 a wall's four corners kept their holes after it came down.
+pub const FORGET_R_M: f32 = 2.2;
 
 /// The matter a piece of `row` is built of.
 fn piece_matter(core: &client_core::core::ClientCore, row: u8) -> Matter {
@@ -136,7 +138,7 @@ pub fn built(
         );
         let wall = !r.deploy && is_wall(r.loc);
         let middle = tf.translation + Vec3::Y * if wall { LEVEL_H_M * 0.5 } else { 0.3 };
-        marks.forget_near(middle, FORGET_R_M);
+        marks.forget_later(middle, FORGET_R_M);
         // A piece crashes down; a deployable going (picked up, decayed) is
         // dust and no more — a charge on a door already has its blast.
         if !r.deploy {
@@ -151,30 +153,35 @@ pub fn built(
         } else {
             piece_matter(core, r.row)
         };
-        let across = tf.rotation * Vec3::X;
-        for (i, p) in break_points(wall).into_iter().enumerate() {
-            let at = tf.transform_point(if r.deploy { p * 0.4 } else { p });
-            // A wall breaks out of both faces; a floor up out of itself.
-            let away = if !wall {
-                Vec3::Y
-            } else if i % 2 == 0 {
-                across
-            } else {
-                -across
-            };
-            let c = Contact {
-                at,
-                away,
-                normal: away,
-                surf: sim_core::ranged::SURF_BUILT,
-                matter,
-                kind: ContactKind::Impact,
-                weapon: Weapon::Melee,
-                mark: false,
-            };
-            let n = fx.impact(&c, eye.pos);
-            if n > 0 {
-                chips.ignite_n(&Burst { at, away, matter }, n);
+        // The break itself — chips and, off metal, sparks — is a piece's
+        // alone. Run for a deployable too, it threw a spark shower every
+        // time somebody picked up a lock or a bench.
+        if !r.deploy {
+            let across = tf.rotation * Vec3::X;
+            for (i, p) in break_points(wall).into_iter().enumerate() {
+                let at = tf.transform_point(p);
+                // A wall breaks out of both faces; a floor up out of itself.
+                let away = if !wall {
+                    Vec3::Y
+                } else if i % 2 == 0 {
+                    across
+                } else {
+                    -across
+                };
+                let c = Contact {
+                    at,
+                    away,
+                    normal: away,
+                    surf: sim_core::ranged::SURF_BUILT,
+                    matter,
+                    kind: ContactKind::Impact,
+                    weapon: Weapon::Melee,
+                    mark: false,
+                };
+                let n = fx.impact(&c, eye.pos);
+                if n > 0 {
+                    chips.ignite_n(&Burst { at, away, matter }, n);
+                }
             }
         }
         // The cloud the whole thing leaves hanging.

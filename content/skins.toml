@@ -17,7 +17,12 @@
 #
 # Ownership is read off the platform (server/src/skins.rs); a shard with
 # `skins_all = true` in shard.toml lends every row to every player so the
-# looks can be seen before anything is sold.
+# looks can be seen before anything is sold. On a shard with `skins_origin`
+# set, the platform's store prices replace the coin/price here (read at boot
+# and every five minutes); these apply only on a shard without one.
+#
+# Rows stay out of the content hash (`canon.rs`): a stack carries its skin's
+# catalog id, so adding, retinting or renaming a look is never a wipe.
 
 [[skin]]
 id = "skin.rock_obsidian"

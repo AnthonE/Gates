@@ -207,9 +207,23 @@ pub fn prices_of(cfg: &Config, sc: &SkinContent) -> Prices {
         return Prices::Unknown;
     }
     let url = format!("{origin}/api/items/store/{STORE_TITLE}");
-    match crate::entitle::get_capped(&url, cfg.timeout, MAX_PRICES_BYTES) {
-        Some(body) => parse_prices(&body, sc),
-        None => Prices::Unknown,
+    prices_from(
+        crate::entitle::get_capped_status(&url, cfg.timeout, MAX_PRICES_BYTES),
+        sc,
+    )
+}
+
+/// What a store read came back as, as prices. A 404 is the platform not
+/// serving the store route yet, which is the store `configured: false`
+/// describes — nothing on sale — and not a read that failed: counted as
+/// `Unknown`, an armed shard logged an anomaly every sweep until elo
+/// shipped the route.
+fn prices_from(got: crate::entitle::Got, sc: &SkinContent) -> Prices {
+    use crate::entitle::Got;
+    match got {
+        Got::Body(body) => parse_prices(&body, sc),
+        Got::NotFound => Prices::Known(Box::new([None; sim_core::limits::MAX_SKINS])),
+        Got::Failed => Prices::Unknown,
     }
 }
 
@@ -429,5 +443,20 @@ mod tests {
             ..Config::off()
         };
         assert_eq!(prices_of(&all, &sc), Prices::Unknown);
+    }
+
+    /// A store route elo does not serve yet (404) is a dark store, as
+    /// `configured: false` is — nothing on sale, no anomaly — while a read
+    /// that failed stays `Unknown` and changes nothing.
+    #[test]
+    fn a_missing_store_route_is_a_dark_store_not_a_failed_read() {
+        use crate::entitle::Got;
+        let dark = Prices::Known(Box::new([None; sim_core::limits::MAX_SKINS]));
+        assert_eq!(prices_from(Got::NotFound, &catalog()), dark);
+        assert_eq!(
+            prices_from(Got::Body(r#"{"configured":false}"#.into()), &catalog()),
+            dark
+        );
+        assert_eq!(prices_from(Got::Failed, &catalog()), Prices::Unknown);
     }
 }

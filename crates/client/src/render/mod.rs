@@ -1401,9 +1401,11 @@ impl Plugin for GatesRenderPlugin {
                 audio::water,
                 audio::feed,
                 // The matter struck, at the point it was struck — off the
-                // contact list the debris is thrown from, and after the
-                // resolver that fills it.
-                audio::impacts.after(impact::contacts),
+                // contact list the debris is thrown from, and after both
+                // systems that fill it: the resolver, and the gun's far-miss
+                // contacts, which otherwise landed after this read on some
+                // frames and made no sound.
+                audio::impacts.after(impact::contacts).after(fx::gun::shots),
                 // The second positional cue: placements off the feed's
                 // broadcast-only ring (the join-flood guard is the core's).
                 audio::place,

@@ -8,8 +8,9 @@
 //!   fast beside a fire. The reference's `weather.wetness_rain` is the rate
 //!   and a roof is what stops it.
 //! - **Chill.** Where the body is heading is the night, the rain and the
-//!   wind that reach it, and how wet it is — less what it wears (wet
-//!   clothes keep half their warmth) and less any fire or flame in hand.
+//!   wind that reach it, and how wet it is — made worse by a piece that
+//!   draws cold in, less what it wears (wet clothes keep half their warmth)
+//!   and less any fire or flame in hand.
 //!   The body moves toward that at a rate, so stepping under a roof for a
 //!   second changes nothing and a night in the rain changes a lot. Past
 //!   `hurt_at` it costs hp, through the same unreduced funnel starvation
@@ -61,7 +62,8 @@ pub struct ExposureContent {
     /// Hit points a minute at full chill, scaling from zero at `hurt_at`.
     pub hurt_hp_per_min: u16,
     /// Per item index: the chill a worn piece keeps out. Negative draws it
-    /// in — a road sign jacket is a sheet of metal.
+    /// in — a road sign jacket is a sheet of metal — as a per-mille share
+    /// of the cold the body is already in, never as cold of its own.
     pub warmth: [i16; MAX_ITEM_DEFS],
 }
 
@@ -152,14 +154,26 @@ pub fn target_chill(ec: &ExposureContent, inp: &Inputs, p: &Player) -> u16 {
         t += (inp.rain as i32 * ec.rain_cold as i32 + inp.wind as i32 * ec.wind_cold as i32) / 1000;
     }
     t += p.wet as i32 * ec.wet_cold as i32 / 1000;
-    let worn: i32 = p
-        .worn
-        .iter()
-        .filter(|s| s.count > 0 && (s.item as usize) < MAX_ITEM_DEFS)
-        .map(|s| ec.warmth[s.item as usize] as i32)
-        .sum();
+    // What is worn splits in two: warmth that keeps cold out, and a draw
+    // that lets it in (a road sign jacket is a sheet of metal).
+    let (mut keep, mut draw) = (0i32, 0i32);
+    for s in p.worn.iter() {
+        if s.count == 0 || s.item as usize >= MAX_ITEM_DEFS {
+            continue;
+        }
+        let w = ec.warmth[s.item as usize] as i32;
+        if w >= 0 {
+            keep += w;
+        } else {
+            draw -= w;
+        }
+    }
+    // A draw makes the cold the body is already in worse by its share; it
+    // cannot make a warm hour cold. Added flat, the jacket alone put a
+    // clear, dry night past `hurt_at` and chilled a sunny afternoon.
+    t += t * draw / 1000;
     // Wet clothes keep half the warmth dry ones would.
-    t -= worn * (2000 - p.wet as i32) / 2000;
+    t -= keep * (2000 - p.wet as i32) / 2000;
     if inp.fire {
         t -= ec.fire_warmth as i32;
     }

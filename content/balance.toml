@@ -220,15 +220,17 @@ drink_hp_cost = 2
 # Wet and cold (weather v0, `sim_core::exposure`) — the reference's exposure:
 # rain soaks you unless something is overhead (their `weather.wetness_rain`),
 # the sea soaks you to the depth you stand in, and a fire dries you. The chill
-# a body heads for is the night, the rain, the wind and how wet it is, less
-# what it wears (wet clothes keep half) and less a fire or a torch. Per mille
-# of a meter, per second; distances in cm.
+# a body heads for is the night, the rain, the wind and how wet it is, made
+# worse by a piece that draws cold in (armor.toml's negative `cold_pct`, as a
+# share of that cold), less what it wears (wet clothes keep half) and less a
+# fire or a torch. Per mille of a meter, per second; distances in cm.
 #
 # What these numbers do, measured against the formula rather than chosen:
-# naked and dry on a clear night heads for 350 (no damage); clothed, soaked
-# in daytime heavy rain, 575 (none); soaked at night in heavy rain, ~925 —
-# about 5 hp a minute, a slow death with time to find a roof and a fire.
-# A roof and a lit campfire take anyone back to zero.
+# naked and dry on a clear night heads for 380 (no damage; the clear sky's
+# wind adds 30); in the road sign jacket, 509 (cold, no damage); clothed,
+# soaked in daytime heavy rain, 575 (none); soaked at night in heavy rain,
+# ~925 — about 5 hp a minute, a slow death with time to find a roof and a
+# fire. A roof and a lit campfire take anyone back to zero.
 [exposure]
 wet_rain_per_s = 8
 dry_per_s = 2

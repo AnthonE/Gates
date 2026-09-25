@@ -1037,8 +1037,15 @@ pub fn build_quick(parent: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore
         &mut all,
     );
     // What the pack pays for, learned, and makeable where the player
-    // stands — a recipe whose bench is elsewhere is not quick.
-    all.retain(|r| r.affordable > 0 && !r.locked && makeable_here(core, r.recipe));
+    // stands — a recipe whose bench is elsewhere is not quick. A cell with
+    // jobs in the queue stays, dimmed, once the pack can pay for no more:
+    // its count and its right-click cancel went with it, and the grid
+    // shifted the next recipe under a cursor that was about to click again.
+    all.retain(|r| {
+        (r.affordable > 0 || queued(core, r.recipe) > 0)
+            && !r.locked
+            && makeable_here(core, r.recipe)
+    });
     // Favourites first, the bake's order otherwise (a stable sort keeps it).
     all.sort_by_key(|r| !ui.favs.contains(&r.recipe));
     all.truncate(QUICK_MAX);
@@ -1138,19 +1145,28 @@ fn quick_cell(
 ) {
     let name = item_label(&core.catalog, row.output);
     let queued = queued(core, row.recipe);
+    // Only queued now: the pack pays for no more, so the cell dims the way
+    // the grid dims what it cannot afford, and keeps its count and cancel.
+    let can = row.affordable > 0;
+    let rest = if can { CELL_FULL } else { CELL_BG };
+    let tip = if can {
+        format!("{name} · you can make {}", row.affordable)
+    } else {
+        format!("{name} · {queued} queued · need materials for more")
+    };
     parent
         .spawn((
             Button,
             QuickCraft(row.recipe),
-            super::Tip(format!("{name} · you can make {}", row.affordable)),
+            super::Tip(tip),
             Node {
                 width: Val::Px(SLOT_PX),
                 height: Val::Px(SLOT_PX),
                 border: UiRect::all(Val::Px(1.0)),
                 ..default()
             },
-            BackgroundColor(CELL_FULL),
-            Hover::on(CELL_FULL),
+            BackgroundColor(rest),
+            Hover::on(rest),
             BorderColor::all(if queued > 0 { QUEUE_HEAD } else { LINE }),
         ))
         .with_children(|c| {
@@ -1164,13 +1180,17 @@ fn quick_cell(
                         height: Val::Px(SLOT_PX - 12.0),
                         ..default()
                     },
-                    ImageNode::new(image),
+                    ImageNode {
+                        image,
+                        color: if can { PICTURE } else { PICTURE_DIM },
+                        ..default()
+                    },
                     Pickable::IGNORE,
                 )),
                 None => c.spawn((
                     Text::new(cell_abbrev(&name, CELL_LINE_CHARS)),
                     font_bold(10.0),
-                    TextColor(TEXT),
+                    TextColor(if can { TEXT } else { TEXT_DIM }),
                     Pickable::IGNORE,
                 )),
             };
@@ -1504,15 +1524,21 @@ pub fn clicks(
             }
         } else {
             let can = def.map(|d| affordable(d, &core.inv)).unwrap_or(0);
-            let want = if button == MouseButton::Middle {
-                QUICK_MIDDLE.min(can).max(1)
+            if can == 0 {
+                // A cell kept for its queue: the pack pays for no more.
+                ui.say(format!("need materials for another {name}"));
+                None
             } else {
-                1
-            };
-            Some((
-                protocol::encode_action_craft(recipe, want as u16, 0, &mut buf),
-                format!("queued {want} × {name}"),
-            ))
+                let want = if button == MouseButton::Middle {
+                    QUICK_MIDDLE.min(can).max(1)
+                } else {
+                    1
+                };
+                Some((
+                    protocol::encode_action_craft(recipe, want as u16, 0, &mut buf),
+                    format!("queued {want} × {name}"),
+                ))
+            }
         };
         if let Some((encoded, said)) = encoded {
             match encoded {

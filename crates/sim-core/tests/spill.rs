@@ -1172,3 +1172,54 @@ fn a_spilled_slot_that_merged_away_zeroes_its_condition() {
         );
     }
 }
+
+/// A skin rides the item through a bag both ways (skins v0's promise):
+/// a skinned stack spilled into a bag in reach keeps its skin there, and
+/// looting the bag with take-all hands it back still wearing it. Both
+/// roads used to mint the stack plain.
+#[test]
+fn a_skin_survives_a_bag_both_ways() {
+    let bc = BackpackContent::probe_fixture();
+    let gc = GatherContent::probe_fixture();
+    let mut bp = Backpacks::new();
+    let mut ev = EventQueue::default();
+
+    let mut held = [ItemStack::default(); INV_SLOTS];
+    held[0] = ItemStack {
+        item: FILLER,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    bp.stand_up(&bc, 0, 0, 0, 1, &held, 100, &mut ev)
+        .expect("the fixture ladder is armed");
+
+    // A finished skinned craft with nowhere in the pack: the spill merges
+    // into the standing bag rather than minting a second one.
+    let skinned = ItemStack {
+        item: 0,
+        count: 1,
+        cond: 77,
+        skin: 5,
+    };
+    let mut spill = [ItemStack::default(); INV_SLOTS];
+    spill[0] = skinned;
+    bp.spill_at(&bc, &gc, 0, 0, 0, 1, &mut spill, 110, &mut ev)
+        .expect("a bag in reach catches it");
+    assert_eq!(bp.len(), 1, "merged rather than minted");
+    assert!(
+        bp.entries()[0].items.contains(&skinned),
+        "the bag holds the stack without its skin: {:?}",
+        bp.entries()[0].items
+    );
+
+    // Take-all: the stack comes back with its condition and its skin.
+    let mut p = Player::default();
+    bp.loot_nearest(&gc, &mut p, &mut ev)
+        .expect("a bag in reach");
+    assert!(
+        p.inv.contains(&skinned),
+        "take-all stripped the skin: {:?}",
+        p.inv
+    );
+}

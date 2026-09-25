@@ -306,7 +306,7 @@ impl Pick {
             // code is how the crew invites a hand, so JOIN would be the
             // prompt naming a press the pad answers instead.
             Verb::Hearth => format!(
-                "[E] FEED HEARTH  ·  [L] {}  ·  [K] LEAVE",
+                "[E] FEED HEARTH  ·  [L] {}  ·  [K] LEAVE  ·  [SHIFT+K] CLEAR CREW",
                 if self.has_lock { "KEYPAD" } else { "JOIN CREW" }
             ),
             // Two verbs on one thing, and both named: the panel is where
