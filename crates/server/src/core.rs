@@ -378,6 +378,32 @@ impl ShardCore {
         }
     }
 
+    /// The platform's item store said what each skin costs
+    /// (`skins::prices_of`). A row whose coin or price moved is rewritten,
+    /// and when any did every client's skin drip starts over, so a store
+    /// screen shows what the store charges. Rows are overwritten by index on
+    /// the client, so a re-drip replaces and never appends.
+    pub fn skin_prices(
+        &mut self,
+        prices: &[Option<crate::skins::Price>; sim_core::limits::MAX_SKINS],
+    ) {
+        let n = (self.skin_catalog.count as usize).min(sim_core::limits::MAX_SKINS);
+        let mut moved = false;
+        for (row, price) in self.skin_catalog.rows[..n].iter_mut().zip(prices) {
+            let (coin, amount) = price.unwrap_or((protocol::COIN_NONE, 0));
+            if row.coin != coin || row.price != amount {
+                row.coin = coin;
+                row.price = amount;
+                moved = true;
+            }
+        }
+        if moved {
+            for c in self.clients.iter_mut() {
+                c.skins_cursor = 0;
+            }
+        }
+    }
+
     fn queue(&mut self, cmd: Command) -> bool {
         // Half the command budget is reserved for the per-tick inputs.
         if self.queued_len >= MAX_COMMANDS_PER_TICK - MAX_PLAYERS {

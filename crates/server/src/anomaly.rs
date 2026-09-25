@@ -176,6 +176,7 @@ pub const WATCHED: &[&str] = &[
     "entitle_kicked",
     "skins_unknown",
     "skins_dropped",
+    "skin_prices_unknown",
     "handshake_errors",
     "input_dg_bad",
     "input_dg_forged",

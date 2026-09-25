@@ -6,7 +6,7 @@
 //! snapshot; and a skin nobody owns refuses the craft before it spends.
 
 use client_core::core::ClientCore;
-use protocol::{ActionMsg, ItemCatalog, SkinCatalog, SkinRow, COIN_ELO, COIN_NONE};
+use protocol::{ActionMsg, ItemCatalog, SkinCatalog, SkinRow, COIN_ELO, COIN_NONE, COIN_ORBS};
 use server::core::{Lane, ShardCore};
 use server::stats::ShardStats;
 use sim_core::craft::{CraftContent, REFUSE_SKIN};
@@ -231,4 +231,63 @@ fn a_skin_is_owned_crafted_carried_and_seen() {
         .expect("the bystander draws the crafter");
     assert_eq!(seen.held, Some(OUTPUT));
     assert_eq!(seen.held_skin, SKIN, "the bystander sees the skin in hand");
+}
+
+/// The platform's store reprices mid-session (`skins::prices_of` →
+/// `ShardCore::skin_prices`): every client is sent the catalog again and ends
+/// with the store's price, the same rows overwritten rather than appended. A
+/// read that moves nothing re-sends nothing.
+#[test]
+fn a_store_price_reaches_every_client_and_replaces_the_row() {
+    let stats = ShardStats::default();
+    let mut core = Box::new(ShardCore::new(SEED));
+    core.world.gather = GatherContent::probe_fixture();
+    core.world.craft = CraftContent::probe_fixture();
+    let (sc, wire) = skins();
+    core.world.skins = sc;
+    *core.skin_catalog = wire;
+    core.world.dev_spawn = Some(SPAWN);
+    core.catalog = probe_catalog();
+    assert!(core.connect(0, id_of(0)));
+    let mut clients = vec![(0usize, ClientCore::new(SEED, id_of(0), 0))];
+    for _ in 0..6 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    assert_eq!(
+        clients[0].1.skins.rows[0].price, 250,
+        "content's price, before any read"
+    );
+
+    let mut prices = [None; sim_core::limits::MAX_SKINS];
+    prices[0] = Some((COIN_ORBS, 7));
+    prices[1] = Some((COIN_ELO, 3));
+    core.skin_prices(&prices);
+    for _ in 0..6 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    let c = &clients[0].1;
+    assert_eq!(c.skins.count, 2, "re-sent, not appended");
+    assert_eq!(
+        (c.skins.rows[0].coin, c.skins.rows[0].price),
+        (COIN_ORBS, 7)
+    );
+    assert_eq!((c.skins.rows[1].coin, c.skins.rows[1].price), (COIN_ELO, 3));
+    assert_eq!(c.skins.rows[0].catalog, SKIN, "the row is the same skin");
+
+    core.skin_prices(&prices);
+    assert_eq!(
+        core.clients[0].skins_cursor, 2,
+        "an unchanged read re-sends nothing"
+    );
+
+    // Off sale at the store: the row reads unpriced, whatever content said.
+    core.skin_prices(&[None; sim_core::limits::MAX_SKINS]);
+    for _ in 0..6 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    let c = &clients[0].1;
+    assert_eq!(
+        (c.skins.rows[0].coin, c.skins.rows[0].price),
+        (COIN_NONE, 0)
+    );
 }
