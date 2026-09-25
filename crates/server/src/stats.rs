@@ -219,6 +219,11 @@ pub struct ShardStats {
     /// Answers that found the skins ring full and were dropped. The client
     /// can ask again; a count here says it had to.
     pub skins_dropped: AtomicU64,
+    /// Item-store price reads (`skins::prices_of`) whose answer reached the
+    /// sim, and the ones that could not be answered. An unanswered read keeps
+    /// the prices the store screen already shows.
+    pub skin_prices_read: AtomicU64,
+    pub skin_prices_unknown: AtomicU64,
     pub refused_full: AtomicU64,
     pub handshake_errors: AtomicU64,
     /// Input datagrams decoded and ringed.
@@ -910,6 +915,7 @@ impl ShardStats {
             "entitle_kicked" => &self.entitle_kicked,
             "skins_unknown" => &self.skins_unknown,
             "skins_dropped" => &self.skins_dropped,
+            "skin_prices_unknown" => &self.skin_prices_unknown,
             "handshake_errors" => &self.handshake_errors,
             "input_dg_bad" => &self.input_dg_bad,
             "input_dg_forged" => &self.input_dg_forged,

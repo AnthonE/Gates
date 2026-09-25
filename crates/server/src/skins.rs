@@ -162,6 +162,111 @@ pub fn parse(body: &str, sc: &SkinContent) -> Owned {
     Owned::Known(set)
 }
 
+// ── what the store charges ───────────────────────────────────────────────────
+//
+// The price a store screen shows is the one the platform's item store posts
+// on chain (`EloItemStore`, read back by `GET {origin}/api/items/store/gates`,
+// `meter/itemstore.py`), not `content/skins.toml`'s. Two reasons: the sale
+// happens on the platform's page, so a content price is a second number that
+// can disagree with the one charged; and content prices are in the content
+// hash, so repricing from here would refuse every save on the next boot.
+// Content prices stand only on a shard with no `skins_origin`.
+
+/// The title's slug on the platform (`/api/items/store/{slug}`).
+pub const STORE_TITLE: &str = "gates";
+
+/// How often the shard re-reads the store. That route answers from
+/// `eth_call`s behind a short cache — not the metered explorer — and a price
+/// moves only when the store's owner re-lists, so minutes are plenty.
+pub const PRICES_EVERY: Duration = Duration::from_secs(300);
+
+/// At most `MAX_SKINS` rows of well under 1 KiB each.
+pub const MAX_PRICES_BYTES: usize = 256 * 1024;
+
+/// One row's price as the store posts it: `(protocol::COIN_*, whole coins)`.
+pub type Price = (u8, u32);
+
+/// What a store read said.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Prices {
+    /// One entry per baked row: `Some` on sale, `None` not. Replaces the
+    /// rows' prices. Boxed because it crosses a channel beside `Unknown`;
+    /// the accept loop copies it into the ring's fixed-size message.
+    Known(Box<[Option<Price>; sim_core::limits::MAX_SKINS]>),
+    /// We could not look. Changes nothing.
+    Unknown,
+}
+
+/// The store's prices over `sc`'s rows. Blocking; the caller is a
+/// `spawn_blocking` task. An unarmed shard or the dev knob never asks.
+pub fn prices_of(cfg: &Config, sc: &SkinContent) -> Prices {
+    let Some(origin) = cfg.origin.as_deref() else {
+        return Prices::Unknown;
+    };
+    if cfg.all || sc.count == 0 {
+        return Prices::Unknown;
+    }
+    let url = format!("{origin}/api/items/store/{STORE_TITLE}");
+    match crate::entitle::get_capped(&url, cfg.timeout, MAX_PRICES_BYTES) {
+        Some(body) => parse_prices(&body, sc),
+        None => Prices::Unknown,
+    }
+}
+
+/// An `items/store` body → a price per row. No store on the platform yet
+/// (`configured: false`) is an answer — nothing is on sale. A store we could
+/// not read is not. A row the store sells in a coin the wire cannot name, or
+/// at a price past `u32` whole coins, shows as not on sale here; the
+/// platform's own page still sells it.
+pub fn parse_prices(body: &str, sc: &SkinContent) -> Prices {
+    use serde_json::Value;
+    let Ok(v) = serde_json::from_str::<Value>(body) else {
+        return Prices::Unknown;
+    };
+    let mut out = Box::new([None; sim_core::limits::MAX_SKINS]);
+    if v.get("configured") == Some(&Value::Bool(false)) {
+        return Prices::Known(out);
+    }
+    if v.get("reachable") != Some(&Value::Bool(true)) {
+        return Prices::Unknown;
+    }
+    let Some(skins) = v.get("skins").and_then(Value::as_array) else {
+        return Prices::Unknown;
+    };
+    for s in skins {
+        let Some(row) = s
+            .get("catalog_id")
+            .and_then(Value::as_u64)
+            .and_then(|id| u16::try_from(id).ok())
+            .and_then(|id| sc.row_of(id))
+        else {
+            continue;
+        };
+        if s.get("on_sale") != Some(&Value::Bool(true)) {
+            continue;
+        }
+        let coin = match s
+            .get("coin")
+            .and_then(|c| c.get("symbol"))
+            .and_then(Value::as_str)
+        {
+            Some("ORBS") => protocol::COIN_ORBS,
+            Some("ELO") => protocol::COIN_ELO,
+            _ => continue,
+        };
+        let Some(price) = s
+            .get("price_whole")
+            .and_then(Value::as_u64)
+            .and_then(|p| u32::try_from(p).ok())
+            .filter(|&p| p > 0)
+        else {
+            continue;
+        };
+        out[row] = Some((coin, price));
+    }
+    Prices::Known(out)
+}
+
 /// The boolean after `key:`, if it is one.
 fn flag(body: &str, key: &str) -> Option<bool> {
     let at = body.find(key)? + key.len();
@@ -245,5 +350,84 @@ mod tests {
             ..Config::off()
         };
         assert_eq!(owned_of(&all, None, &sc), Owned::Known(SkinSet::all(3)));
+    }
+
+    /// The live store's shape (`meter/itemstore.py::card`), trimmed.
+    const STORE: &str = r#"{"game":"gates","configured":true,"reachable":true,
+      "store":"0x5","item":"0xa","store_can_mint":true,"skins":[
+        {"catalog_id":900,"name":"Bone Bow","on_sale":true,"why_not":null,
+         "coin":{"address":"0xc","symbol":"ORBS","decimals":18},
+         "price":"2500000000000000000","price_text":"2.5 ORBS","price_whole":3,"burns":true},
+        {"catalog_id":1,"name":"Obsidian Rock","on_sale":false,"why_not":"not on sale",
+         "coin":null,"price":null,"price_whole":null},
+        {"catalog_id":2,"name":"Ember Hatchet","on_sale":true,
+         "coin":{"symbol":"ELO","decimals":18},"price_whole":10},
+        {"catalog_id":77,"name":"not ours","on_sale":true,
+         "coin":{"symbol":"ORBS"},"price_whole":1}
+      ]}"#;
+
+    fn known(p: Prices) -> [Option<Price>; sim_core::limits::MAX_SKINS] {
+        match p {
+            Prices::Known(rows) => *rows,
+            Prices::Unknown => panic!("a readable store is an answer"),
+        }
+    }
+
+    #[test]
+    fn a_listed_skin_takes_the_store_price_and_an_unlisted_one_none() {
+        let rows = known(parse_prices(STORE, &catalog()));
+        assert_eq!(
+            rows[2],
+            Some((protocol::COIN_ORBS, 3)),
+            "catalog 900, rounded up"
+        );
+        assert_eq!(rows[0], None, "catalog 1 is not on sale");
+        assert_eq!(rows[1], Some((protocol::COIN_ELO, 10)));
+        assert!(
+            rows[3..].iter().all(Option::is_none),
+            "77 is no row of ours"
+        );
+    }
+
+    #[test]
+    fn no_store_is_nothing_on_sale_and_a_failed_read_changes_nothing() {
+        let dark = r#"{"game":"gates","configured":false,"why":"no item store",
+            "skins":[{"catalog_id":1,"on_sale":false}]}"#;
+        assert_eq!(
+            parse_prices(dark, &catalog()),
+            Prices::Known(Box::new([None; sim_core::limits::MAX_SKINS]))
+        );
+        let unread = r#"{"game":"gates","configured":true,"reachable":false,"skins":[]}"#;
+        assert_eq!(parse_prices(unread, &catalog()), Prices::Unknown);
+        assert_eq!(
+            parse_prices("<html>502</html>", &catalog()),
+            Prices::Unknown
+        );
+        assert_eq!(
+            parse_prices(r#"{"configured":true,"reachable":true}"#, &catalog()),
+            Prices::Unknown
+        );
+    }
+
+    #[test]
+    fn a_coin_the_wire_cannot_name_or_a_price_it_cannot_carry_is_not_on_sale_here() {
+        let odd = r#"{"configured":true,"reachable":true,"skins":[
+            {"catalog_id":1,"on_sale":true,"coin":{"symbol":"JUNK"},"price_whole":5},
+            {"catalog_id":2,"on_sale":true,"coin":{"symbol":"ORBS"},"price_whole":4294967296},
+            {"catalog_id":900,"on_sale":true,"coin":{"symbol":"ORBS"},"price_whole":0}]}"#;
+        let rows = known(parse_prices(odd, &catalog()));
+        assert!(rows.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn an_unarmed_shard_and_the_dev_knob_never_ask_the_store() {
+        let sc = catalog();
+        assert_eq!(prices_of(&Config::off(), &sc), Prices::Unknown);
+        let all = Config {
+            origin: Some("https://origin.test".into()),
+            all: true,
+            ..Config::off()
+        };
+        assert_eq!(prices_of(&all, &sc), Prices::Unknown);
     }
 }

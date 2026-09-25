@@ -523,6 +523,10 @@ pub async fn spawn_shard(
     // command. One read in flight per slot, so a slot's worth of depth is a
     // ring that cannot fill; a full one drops the answer and counts it.
     let (skins_tx, skins_rx) = RingBuffer::<crate::slot::SkinsMsg>::new(MAX_PLAYERS);
+    // The item store's prices, same direction (`skins::prices_of`). One read
+    // in flight at a time, so two deep cannot fill; a full ring drops the
+    // answer and the next sweep brings it again.
+    let (prices_tx, prices_rx) = RingBuffer::<crate::slot::SkinPricesMsg>::new(2);
     let skin_content = Arc::new(tables.skins);
     let crate::worldfile::WorldBoot {
         file: world_file,
@@ -569,6 +573,7 @@ pub async fn spawn_shard(
                     world_interval,
                     ctrl_rx,
                     skins_rx,
+                    prices_rx,
                     grave_tx,
                     save_tx,
                     world_tx,
@@ -623,6 +628,7 @@ pub async fn spawn_shard(
         },
         ctrl_tx,
         skins_tx,
+        prices_tx,
         grave_rx,
         save_rx,
         write_tx,
@@ -784,6 +790,7 @@ async fn accept_loop(
     facts: ShardFacts,
     mut ctrl_tx: rtrb::Producer<Connect>,
     mut skins_tx: rtrb::Producer<crate::slot::SkinsMsg>,
+    mut prices_tx: rtrb::Producer<crate::slot::SkinPricesMsg>,
     mut grave_rx: rtrb::Consumer<Link>,
     mut save_rx: rtrb::Consumer<SaveMsg>,
     mut write_tx: rtrb::Producer<WriteMsg>,
@@ -838,6 +845,14 @@ async fn accept_loop(
     let (owned_tx, mut owned_rx) =
         tokio::sync::mpsc::channel::<(usize, u32, crate::skins::Owned)>(MAX_PLAYERS);
     let mut skin_reads = SkinReads::new();
+    // The item store's prices: at boot, then every `PRICES_EVERY`. Only a
+    // shard that reads ownership from the platform reads prices from it.
+    let prices_armed = facts.skins.origin.is_some() && !facts.skins.all;
+    let mut prices_sweep = tokio::time::interval(crate::skins::PRICES_EVERY);
+    prices_sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let (prices_done_tx, mut prices_done_rx) =
+        tokio::sync::mpsc::channel::<crate::skins::Prices>(1);
+    let mut prices_in_flight = false;
     loop {
         tokio::select! {
             incoming = endpoint.accept() => {
@@ -902,6 +917,26 @@ async fn accept_loop(
                     && crate::slot::state_of(slots.load(slot)) == crate::slot::SLOT_LIVE
                 {
                     skin_reads.ask(slot, gen, false, &keys, &facts, &owned_tx);
+                }
+            }
+            _ = prices_sweep.tick(), if prices_armed && !prices_in_flight => {
+                prices_in_flight = true;
+                let cfg = facts.skins.clone();
+                let sc = facts.skin_content.clone();
+                let tx = prices_done_tx.clone();
+                tokio::task::spawn_blocking(move || {
+                    let _ = tx.blocking_send(crate::skins::prices_of(&cfg, &sc));
+                });
+            }
+            Some(prices) = prices_done_rx.recv() => {
+                prices_in_flight = false;
+                match prices {
+                    crate::skins::Prices::Known(prices) => {
+                        if prices_tx.push(crate::slot::SkinPricesMsg { prices: *prices }).is_ok() {
+                            ShardStats::bump(&stats.skin_prices_read);
+                        }
+                    }
+                    crate::skins::Prices::Unknown => ShardStats::bump(&stats.skin_prices_unknown),
                 }
             }
             Some((slot, gen, owned)) = owned_rx.recv() => {
@@ -2284,6 +2319,7 @@ fn sim_thread(
     world_interval: u64,
     mut ctrl_rx: rtrb::Consumer<Connect>,
     mut skins_rx: rtrb::Consumer<crate::slot::SkinsMsg>,
+    mut prices_rx: rtrb::Consumer<crate::slot::SkinPricesMsg>,
     mut grave_tx: rtrb::Producer<Link>,
     mut save_tx: rtrb::Producer<SaveMsg>,
     mut world_tx: rtrb::Producer<WorldMsg>,
@@ -2426,6 +2462,10 @@ fn sim_thread(
         // above so a set read for a joiner finds the client it belongs to.
         while let Ok(m) = skins_rx.pop() {
             core.skins_owned(m.slot, m.id, m.owned);
+        }
+        // What the platform's store charges for each skin.
+        while let Ok(m) = prices_rx.pop() {
+            core.skin_prices(&m.prices);
         }
         // Clean up dead connections.
         for slot in 0..MAX_PLAYERS {
