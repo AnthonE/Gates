@@ -99,7 +99,9 @@ pub const EV_GATHER: u8 = 1;
 /// the server sends the cell alone (`encode_event_slot_change`) and the
 /// client re-derives the occupant from shared worldgen.
 pub const EV_SLOT_HARVESTED: u8 = 2;
-/// EV_SLOT_RESPAWNED: a = cell key, b = 0.
+/// EV_SLOT_RESPAWNED: a = cell key, b = the tick a sapling is grown by (low
+/// 32 bits), c = 1 when a tree came back as a sapling. Both 0 for anything
+/// that comes back whole.
 pub const EV_SLOT_RESPAWNED: u8 = 3;
 /// EV_WEAK_MARK: a = player id, b = cell key, c = weak-hit bit << 8 |
 /// next mark heading (u8 over the 256-entry yaw LUT). Swinger-only fact:
@@ -162,6 +164,28 @@ pub const EV_HIT: u8 = 15;
 /// Where the part sits in [`EV_HIT`]'s `c`. Sixteen, because the damage
 /// below it is a `u16` and occupies the whole low half.
 pub const HIT_PART_SHIFT: u32 = 16;
+
+/// `EV_HIT`'s victim for a blow on a structure: no body, the attacker's
+/// hitmarker only (`client_core::core::NO_VICTIM`'s value).
+pub const STRUCT_VICTIM: u32 = u32::MAX;
+
+/// Where `EV_IMPACT`'s weapon kind sits in `a`: below the surface's byte,
+/// above `qx` (`POS_XZ_BITS` = 17 of the low 20).
+pub const IMPACT_KIND_SHIFT: u32 = 20;
+
+/// `EV_IMPACT`'s `a`: surface << 24 | weapon kind << 20 | x quanta.
+pub fn impact_a(surf: u8, kind: u8, qx: i32) -> u32 {
+    (surf as u32) << 24 | ((kind as u32) & 0xF) << IMPACT_KIND_SHIFT | (qx as u32 & 0xF_FFFF)
+}
+
+/// The three parts of an `EV_IMPACT`'s `a`: (surface, weapon kind, x).
+pub fn impact_parts(a: u32) -> (u8, u8, i32) {
+    (
+        (a >> 24) as u8,
+        ((a >> IMPACT_KIND_SHIFT) & 0xF) as u8,
+        (a & 0xF_FFFF) as i32,
+    )
+}
 
 /// Pack an `EV_HIT` payload: the part above the damage it already scaled.
 #[inline]
@@ -318,7 +342,9 @@ pub const EV_CHARGE_PLACED: u8 = 29;
 /// An oven's fire went in or out (`oven.rs`). `a` = `cell_key(cx, cz)`,
 /// `b` = `level << 16 | lit`, `c` = the hand that pressed, or **0 when
 /// the oven ran dry and snuffed itself** — a fact with no actor behind
-/// it, the posture `EV_SLOT_RESPAWNED` already takes.
+/// it, the posture `EV_SLOT_RESPAWNED` already takes. **A research table
+/// announces on it too** (research table v1): lit is a research running,
+/// and the landing is the snuff, with no actor for the same reason.
 ///
 /// Absolute, never a delta, for the reason `EV_DOOR` is: a client that
 /// toggled optimistically is confirmed or corrected by the same event,
@@ -350,9 +376,12 @@ pub const EV_KNOCK: u8 = 31;
 pub const EV_AUTH: u8 = 32;
 
 /// EV_RESEARCH: a = the player who learned it, b = recipe index, c = the
-/// coin burned. **Own-fact** — a blueprint is personal (`research.rs`), so
-/// nobody else's client has any use for it and broadcasting what a rival
-/// has unlocked would be handing out their tech level for free.
+/// coin THIS verb burned — the node's price for a tree unlock, and 0 for a
+/// blueprint read (research table v1: the paper was paid for at the table,
+/// possibly by somebody else). **Own-fact** — what a player knows is
+/// personal (`research.rs`), so nobody else's client has any use for it
+/// and broadcasting what a rival has unlocked would be handing out their
+/// tech level for free.
 ///
 /// The cost rides `c` rather than being looked up, because it is what the
 /// player just paid and the table can change under a shard: an ack that
@@ -441,10 +470,16 @@ pub const EV_KNOWN: u8 = 36;
 /// cadence: at most one per `SWING_INTERVAL_TICKS` per player.
 pub const EV_GATHER_REFUSED: u8 = 37;
 
-/// EV_IMPACT: a = `ranged::SURF_*` << 24 | the stop point's x in `POS_XZ_Q`
-/// quanta, b = its z in the same, c = its y in `POS_Y_Q` quanta **as a
-/// signed `i32` reinterpreted** — an arrow can stop below sea level, and
-/// this is the one field in the lane that can be negative.
+/// EV_IMPACT: a = [`impact_a`]`(ranged::SURF_*, ranged::IMPACT_*, x)` — the
+/// surface, what struck it (arrow, bullet, melee, blast) and the point's x in
+/// `POS_XZ_Q` quanta; b = its z in the same, c = its y in `POS_Y_Q` quanta
+/// **as a signed `i32` reinterpreted** — an arrow can stop below sea level,
+/// and this is the one field in the lane that can be negative.
+///
+/// Since wire v77 it also fires where a charge went off (`IMPACT_BLAST`), so
+/// every client in range draws the blast. A blow on flesh is still `EV_HIT`
+/// alone: a broadcast per hit is a fan-out no rank cap bounds, and the
+/// population storm (`server/tests/snapshot_budget.rs`) overflows on it.
 ///
 /// **Broadcast**, `EV_SHOT`'s posture and its reason: where an arrow
 /// landed is a world fact, and the mark it leaves is visible to anyone who
@@ -744,6 +779,14 @@ pub const EV_RECOVERED: u8 = 45;
 /// b = wounded target id, c = elapsed ticks (0 cancels, ASSIST_TICKS completes).
 pub const EV_ASSIST: u8 = 46;
 
+/// EV_HOWL: a = the howling animal's tagged roster id (`mob::mob_id`), b
+/// and c are zero. A pack animal found someone and called its pack
+/// (`brain::sense`; the reference wolf's howl) — the pack answers off the
+/// roster, and this is the sound of it. **Broadcast to the clients that
+/// have that animal in interest**: it is a fact about a body they are
+/// drawing, and the one moment a howl means *they are coming*.
+pub const EV_HOWL: u8 = 47;
+
 /// The highest code above, named rather than counted: the event codes are
 /// `1..=EV_MAX` with no gaps, and `test_event_roles`'s coverage ledger
 /// scans that range. It lived in that test as a literal `25`, which meant a
@@ -751,7 +794,7 @@ pub const EV_ASSIST: u8 = 46;
 /// classified it. Tying it to the last constant closes half of that; the
 /// other half is the ledger's own `every_event_code_is_in_range`, which
 /// parses this file and fails if a code is declared past this line.
-pub const EV_MAX: u8 = EV_ASSIST;
+pub const EV_MAX: u8 = EV_HOWL;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -857,8 +900,12 @@ pub const DEATH_BY_CHARGE: u8 = 5;
 /// bump to ride, and a firearm kill told the victim they were shot with
 /// an arrow for twenty-three days.
 pub const DEATH_BY_BULLET: u8 = 6;
+/// The cold took them (weather v0, `exposure.rs`): chilled past what the
+/// body can hold, wet or in the night or both. The eighth cause and the
+/// last one the three-bit field holds — the next is a widening.
+pub const DEATH_BY_COLD: u8 = 7;
 
-pub const DEATH_BY_MAX: u8 = DEATH_BY_BULLET;
+pub const DEATH_BY_MAX: u8 = DEATH_BY_COLD;
 
 /// Where in the day/night cycle a tick falls, `0.0..1.0` — 0 is dawn,
 /// `limits::DAY_PORTION` is dusk (day/night v0, `DECISIONS.md` §open).
@@ -869,7 +916,7 @@ pub const DEATH_BY_MAX: u8 = DEATH_BY_BULLET;
 /// clock calls this same function on the sim's own tick and stays
 /// deterministic for free.
 ///
-/// **The sim reads it now** — [`is_night`] is the door, and `mob::think`
+/// **The sim reads it now** — [`is_night`] is the door, and `brain::sense`
 /// walked through it (nocturnal senses, 2026-08-14). The bet this doc used
 /// to hedge on has been called: the curve is a divergence surface today,
 /// not just a look, which is why `is_night` exists as one comparison rather
@@ -1162,6 +1209,22 @@ pub struct Player {
     /// torch on every reconnect, which is a small exploit and an exact-
     /// arithmetic bug (`persist.rs`).
     pub light_acc: u32,
+    /// Wet and cold (weather v0, `exposure.rs`), per mille: how soaked the
+    /// body is, how chilled, and the partial hp the cold is owed. Hashed and
+    /// kept by the world save; a body restored from the player store comes
+    /// back dry, like a body that woke.
+    pub wet: u16,
+    pub chill: u16,
+    pub cold_acc: u32,
+    /// The skins this player owns (`skin.rs`), as the server last heard it
+    /// from the platform: Rust's Steam inventory, held by the game only so
+    /// the two verbs that put a skin on can ask it. Set by
+    /// `Command::SkinsOwned` and nothing else. **Session state**: a new
+    /// connection (`seat`, `take_over`) starts with none until the server
+    /// says otherwise, and a death or a respawn carries it, because it
+    /// belongs to the person and not the body. Hashed and world-saved like
+    /// every other field a command writes.
+    pub skins: crate::skin::SkinSet,
 }
 
 impl Default for Player {
@@ -1210,6 +1273,10 @@ impl Default for Player {
             assist_by: 0,
             assist_ticks: 0,
             light_acc: 0,
+            wet: 0,
+            chill: 0,
+            cold_acc: 0,
+            skins: crate::skin::SkinSet::EMPTY,
         }
     }
 }
@@ -1343,6 +1410,18 @@ pub enum Command {
         item: u16,
         count: u16,
     },
+    /// The sky and the clock — the admin lane's `/weather` and `/time`
+    /// (the reference's `weather.load` and `env.time`), `AdminTeleport`'s
+    /// posture: minted only behind the allowlist, a command so it replays.
+    ///
+    /// `weather` is `weather::MODE_AUTO` or a preset code, or
+    /// `weather::KEEP_WEATHER` to leave the sky alone; `time_pm` is where in
+    /// the day to put the clock, per mille of `day_frac`, or
+    /// `weather::KEEP_TIME`. Out-of-range values are a legal no-op.
+    AdminEnv {
+        weather: u8,
+        time_pm: u16,
+    },
     /// One client input frame, plus how many ticks of lag compensation the
     /// server is willing to grant this player's verbs *this tick*.
     ///
@@ -1386,14 +1465,41 @@ pub enum Command {
         favour: u8,
     },
     /// Enqueue `count` crafts of recipe row `recipe` (craft.rs validates
-    /// and refuses by event, never by panic).
+    /// and refuses by event, never by panic), minted wearing skin `skin`
+    /// (`skin::NO_SKIN` for the item's own look; `craft::enqueue` checks
+    /// the player owns it).
     Craft {
         id: u32,
         recipe: u16,
         count: u16,
+        skin: u16,
     },
-    /// Learn the blueprint for whatever is in inventory `slot`, at a
-    /// research table in reach, paying the row's coin (research.rs).
+    /// Put skin `skin` on the item in `id`'s inventory `slot`, or take it
+    /// off with `skin::NO_SKIN` (`skin::reskin`, at a workbench). The slot
+    /// and the skin are the sender's claim and the sim is the verdict.
+    Reskin {
+        id: u32,
+        slot: u8,
+        skin: u16,
+    },
+    /// What skins `id` owns, as the server read it off the platform
+    /// (`server/src/skins.rs`), replacing whatever the sim held.
+    ///
+    /// **Not reachable from the wire**, `AdminGive`'s posture: no
+    /// `ActionMsg` maps here, so a client cannot claim a skin however it
+    /// forges its bytes. The server mints it after a join and after every
+    /// refresh it reads. A command rather than a write from outside because
+    /// what a player owns decides what a craft mints, and the WAL is the
+    /// command stream: a replay has to own what the session owned.
+    SkinsOwned {
+        id: u32,
+        owned: crate::skin::SkinSet,
+    },
+    /// Read the blueprint in inventory `slot` (`research::study`, research
+    /// table v1): learn the recipe its paper names, anywhere, for nothing.
+    /// Until v1 this learned from any researchable sample at a table in
+    /// reach, instantly; the timed table replaced that, and the command
+    /// kept its name and shape because the wire's `ACT_RESEARCH` did.
     /// The slot is the sender's claim and the sim is the verdict: a forged
     /// index, an empty hand and a stack of wood all land on the same
     /// announced refusal, exactly as `Consume`'s does.
@@ -1681,6 +1787,10 @@ pub struct World {
     /// Baked research rules (research.rs). Construction input, like every
     /// other content table; `EMPTY` teaches nothing.
     pub research: crate::research::ResearchContent,
+    /// Baked skin catalog (`skin.rs`). Construction input like every other
+    /// table; `EMPTY` fits no skin on anything, so every craft that names
+    /// one refuses and every item wears its own look.
+    pub skins: crate::skin::SkinContent,
     /// Baked melee rows + max hp (combat.rs). Construction input too; the
     /// inert default leaves the world unable to hurt anyone.
     pub combat: CombatContent,
@@ -1723,6 +1833,16 @@ pub struct World {
     /// stack-built `World`, not because it is what holds that gate up.
     /// Nothing here allocates in the tick.
     pub mobs: Box<mob::Mobs>,
+    /// The roster's path-search scratch (`nav.rs`) — **not state**: it
+    /// holds nothing between two searches (every cell is re-probed under a
+    /// fresh generation stamp) and its budget refills every tick, so it is
+    /// neither hashed nor saved, `slot_cache`'s posture. What a search hands
+    /// back lives on the mob and is hashed there.
+    pub nav: Box<crate::nav::Nav>,
+    /// What the animals can hear (`noise.rs`): the last few shots, strikes
+    /// and blasts. Derived from the tick's own events — not hashed, not
+    /// saved, the event queue's posture.
+    pub noises: Box<crate::noise::Noises>,
     /// Placed building pieces — sim state, hashed.
     pub pieces: Pieces,
     /// Placed deployables + the hearth list — sim state, hashed.
@@ -1805,6 +1925,10 @@ pub struct World {
     /// long as the two victims were standing still. The counter is what
     /// makes that divergence loud on the tick it happens.
     pub evictions: u64,
+    /// The admin's say over the sky and the day clock (`weather::Env`):
+    /// a forced preset and a clock offset. Sim state — hashed, saved, and
+    /// broadcast when it changes. `Default` is the schedule untouched.
+    pub env: crate::weather::Env,
     /// Sparse harvested/damaged slot records (TERRAIN.md §2).
     pub slot_lives: SlotLives,
     /// Memo of `terrain::scatter` behind the occupant collision query
@@ -1856,6 +1980,8 @@ impl World {
             // After `haven`, because a home is rejected against the two
             // authored sites (mob.rs `home_of`).
             mobs: Box::new(mob::Mobs::new(seed, &haven)),
+            nav: Box::new(crate::nav::Nav::new()),
+            noises: Box::new(crate::noise::Noises::new()),
             haven,
             gather: GatherContent::EMPTY,
             craft: CraftContent::EMPTY,
@@ -1863,6 +1989,7 @@ impl World {
             deploy: DeployContent::EMPTY,
             cook: crate::oven::CookContent::EMPTY,
             research: crate::research::ResearchContent::EMPTY,
+            skins: crate::skin::SkinContent::EMPTY,
             combat: CombatContent::EMPTY,
             backpack: BackpackContent::EMPTY,
             survival: SurvivalContent::EMPTY,
@@ -1879,6 +2006,7 @@ impl World {
             sweep_deploy: 0,
             sweep_support: 0,
             evictions: 0,
+            env: crate::weather::Env::default(),
             slot_lives: SlotLives::new(),
             slot_cache: Box::new(crate::occupy::SlotCache::new()),
             arrows: Box::new(ranged::Arrows::new()),
@@ -2016,10 +2144,11 @@ impl World {
     /// on the death screen could still craft, build, feed a hearth, lock a
     /// door and drink, which is a dead player playing the game.
     ///
-    /// Two commands deliberately use `slot_of` instead: `Respawn`, which
-    /// only a corpse may send, and `Input`, which is the client's own
-    /// frame and keeps flowing so prediction and the server agree about a
-    /// body that is standing still (the tick zeroes what it acts on).
+    /// Three commands deliberately use `slot_of` instead: `Respawn`, which
+    /// only a corpse may send, `Input`, which is the client's own frame
+    /// and keeps flowing so prediction and the server agree about a body
+    /// that is standing still (the tick zeroes what it acts on), and
+    /// `SkinsOwned`, which is a fact about the person and not the body.
     pub fn live_slot_of(&self, id: u32) -> Option<usize> {
         self.slot_of(id)
             .filter(|&s| !self.players[s].dead && !self.players[s].wounded)
@@ -2313,6 +2442,17 @@ impl World {
         // kind is a ground container, and the zero is never indexed
         // otherwise.
         let ci = cont_idx.unwrap_or(0);
+        // A research table that is running holds what it holds until the
+        // research lands (research table v1, `REFUSE_M_BUSY`) — in or out,
+        // whatever the arithmetic would have said, which is why it is asked
+        // before anything is planned. `table` is also the next check's
+        // question, so it is resolved once.
+        let table = ground == inventory::CONT_BOX && self.deploys.table_index(cont).is_some();
+        if table && self.deploys.oven_states()[ci].lit {
+            self.events
+                .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_BUSY, addr);
+            return;
+        }
 
         // 3. Read both sides as copies.
         let src = self.cont_slot(slot, from_kind, from_slot, ci);
@@ -2396,6 +2536,22 @@ impl World {
             }
         };
         let (new_src, new_dst) = inventory::resolve(plan, src, dst);
+        // What a research table's slot may hold (`research::table_accepts`)
+        // is asked of the RESOLVED writes, on both landing sites: a swap
+        // puts the destination's old stack in the source, and a merge can
+        // make one unit two. The wear check asks its question before the
+        // plan because its answer depends only on the item; this one
+        // depends on the count the plan produces.
+        if table
+            && ((to_kind == inventory::CONT_BOX
+                && !crate::research::table_accepts(&self.research, to_slot, new_dst))
+                || (from_kind == inventory::CONT_BOX
+                    && !crate::research::table_accepts(&self.research, from_slot, new_src)))
+        {
+            self.events
+                .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_TABLE, addr);
+            return;
+        }
 
         // 5. Mutate. Every check is behind us and both writes always land.
         self.set_cont_slot(slot, from_kind, from_slot, ci, new_src);
@@ -2430,6 +2586,30 @@ impl World {
         // paid for and placed. Emptying one leaves it standing.
         if ground == inventory::CONT_BAG {
             self.backpacks.drop_if_empty(ci, &mut self.events);
+        }
+    }
+
+    /// Land the shots `ranged` found meeting animals (`ranged::MobShot`):
+    /// the same `mob::hurt_slot` a swing lands through, so a shot animal
+    /// flees, turns on its shooter and drops its corpse exactly as a
+    /// struck one does. The shooter is re-resolved by id — an arrow can
+    /// outlive its archer's slot — and a hit with nobody behind it still
+    /// lands.
+    fn land_mob_shots(&mut self, hits: &[ranged::MobShot]) {
+        for h in hits {
+            let by = self.live_slot_of(h.by);
+            mob::hurt_slot(
+                &self.backpack,
+                &self.mob,
+                self.tick,
+                by,
+                &self.players,
+                &mut self.mobs,
+                &mut self.backpacks,
+                &mut self.events,
+                h.slot,
+                h.damage,
+            );
         }
     }
 
@@ -2505,6 +2685,8 @@ impl World {
             else {
                 return;
             };
+            let hp = self.deploys.entries()[i].hp;
+            self.struct_hitmarker(c.by, c.structure.min(hp));
             deploy::damage_deploy(
                 &self.deploy,
                 &mut self.pieces,
@@ -2529,6 +2711,7 @@ impl World {
             c.from_z,
             c.structure,
         );
+        self.struct_hitmarker(c.by, amount.min(rec.hp));
         deploy::damage_piece(
             &self.deploy,
             &self.build,
@@ -2538,6 +2721,21 @@ impl World {
             amount,
             removals,
             &mut self.events,
+        );
+    }
+
+    /// The striker's own hitmarker for a blow on a structure: `EV_HIT` with
+    /// no victim, routed to the attacker alone. `EV_STRUCT_HIT` is the
+    /// island's fact about the wall and no longer lights anyone's crosshair.
+    fn struct_hitmarker(&mut self, by: u32, dealt: u16) {
+        if dealt == 0 {
+            return;
+        }
+        self.events.push(
+            EV_HIT,
+            by,
+            STRUCT_VICTIM,
+            hit_c(crate::collide::Part::Chest, dealt),
         );
     }
 
@@ -2796,6 +2994,9 @@ impl World {
             // `dead` by hand — the hand-set version of the same test
             // passed, because it never came through this function.
             known: body.known,
+            // Carried for `known`'s reason: what a player owns is not in
+            // their pockets, so a death does not take it (`skin.rs`).
+            skins: body.skins,
             ..Player::default()
         };
         // **What it was wearing goes into the bag with what it was
@@ -2967,6 +3168,8 @@ impl World {
             hp_max: hp,
             deaths,
             known,
+            // The owned skins survive the new body, as `known` does.
+            skins: body.skins,
             ..Player::default()
         };
         // A player who starved does not respawn already starving.
@@ -3177,6 +3380,11 @@ impl World {
                     // silent; `NOW.md` §0mag carries the remainder.
                     mag: [0; MAX_MAGS],
                     mag_round: [NO_ITEM; MAX_MAGS],
+                    // Dry and warm: the store's record is a body that left
+                    // the world, and it comes back the way a body wakes.
+                    wet: 0,
+                    chill: 0,
+                    cold_acc: 0,
                     // `NO_CELL`, not zero: the weak-spot chase names a
                     // cell and cell 0 is a real one, so a `0` here would
                     // restore a player already half-way through chasing
@@ -3190,8 +3398,18 @@ impl World {
                     death_range_cm: 0,
                     sleeping: false,
                     slept_at: 0,
+                    // Not from the save: the platform owns what a player
+                    // owns (`persist.rs`'s header), and the server states
+                    // it after this join (`Command::SkinsOwned`).
+                    skins: crate::skin::SkinSet::EMPTY,
                 };
-                craft::rearm(&self.craft, self.tick, &mut self.players[slot]);
+                craft::rearm(
+                    &self.craft,
+                    &self.deploy,
+                    &self.deploys,
+                    self.tick,
+                    &mut self.players[slot],
+                );
                 if s.dead {
                     // Logged off on the death screen. Declining the choice
                     // is choosing the beach — `wake` re-derives the whole
@@ -3303,6 +3521,10 @@ impl World {
         // executed inputs this client has not sent (`persist.rs` says the
         // same thing about restoring one from a file).
         p.frame = InputFrame::default();
+        // And the owned skins are the new session's to state (`skin.rs`):
+        // none until the server reads them again, so a skin sold while the
+        // body slept cannot be put on by the sleeper's old answer.
+        p.skins = crate::skin::SkinSet::EMPTY;
         if self.players[slot].dead {
             self.wake(slot, false);
             return;
@@ -3311,7 +3533,13 @@ impl World {
         // survive being an absolute number in a world that kept ticking
         // without the player. Re-armed against now, exactly as `JoinAs`
         // does — one rule, two doors.
-        craft::rearm(&self.craft, self.tick, &mut self.players[slot]);
+        craft::rearm(
+            &self.craft,
+            &self.deploy,
+            &self.deploys,
+            self.tick,
+            &mut self.players[slot],
+        );
         let (hp, hp_max) = (self.players[slot].hp, self.players[slot].hp_max);
         if hp > 0 {
             self.events.push(EV_HEALTH, id, hp as u32, hp_max as u32);
@@ -3587,6 +3815,15 @@ impl World {
                     }
                 }
             }
+            Command::AdminEnv { weather, time_pm } => {
+                let (seed, tick) = (self.seed, self.tick);
+                if weather <= crate::weather::PRESET_MAX {
+                    self.env.force(seed, tick, weather);
+                }
+                if time_pm < 1000 {
+                    self.env.set_time(tick, time_pm);
+                }
+            }
             Command::Input {
                 id,
                 frame,
@@ -3628,26 +3865,52 @@ impl World {
                     self.players[slot].frame = Self::sanitize_frame(frame);
                 }
             }
-            Command::Craft { id, recipe, count } => {
+            Command::Craft {
+                id,
+                recipe,
+                count,
+                skin,
+            } => {
                 if let Some(slot) = self.live_slot_of(id) {
                     craft::enqueue(
                         &self.craft,
+                        &self.skins,
                         &self.deploy,
                         &self.deploys,
                         self.tick,
                         &mut self.players[slot],
                         recipe,
                         count,
+                        skin,
                         &mut self.events,
                     );
                 }
             }
-            Command::Research { id, slot } => {
+            Command::Reskin { id, slot, skin } => {
                 if let Some(s) = self.live_slot_of(id) {
-                    crate::research::research(
-                        &self.research,
+                    crate::skin::reskin(
+                        &self.skins,
                         &self.deploy,
                         &self.deploys,
+                        &mut self.players[s],
+                        slot,
+                        skin,
+                        &mut self.events,
+                    );
+                }
+            }
+            Command::SkinsOwned { id, owned } => {
+                // Any body carrying the id, awake or asleep: a refresh can
+                // land while its owner is still on the death screen, and
+                // the set belongs to the person either way.
+                if let Some(s) = self.slot_of(id) {
+                    self.players[s].skins = owned;
+                }
+            }
+            Command::Research { id, slot } => {
+                if let Some(s) = self.live_slot_of(id) {
+                    crate::research::study(
+                        &self.research,
                         &mut self.players[s],
                         slot,
                         &mut self.events,
@@ -3673,6 +3936,8 @@ impl World {
                     craft::cancel(
                         &self.craft,
                         &self.gather,
+                        &self.deploy,
+                        &self.deploys,
                         self.tick,
                         &mut self.players[slot],
                         index,
@@ -3761,14 +4026,25 @@ impl World {
                 // `awake_slot_of`, not `live_slot_of`: a door is the one
                 // verb a downed body keeps (wounded v0).
                 if let Some(slot) = self.awake_slot_of(id) {
-                    // One key, two verbs, picked by what stands at the
+                    // One key, three verbs, picked by what stands at the
                     // address — the reference's own E menu, where a door
                     // offers open/close and a fire offers ignite/
-                    // extinguish. The two can never collide: a door lives
-                    // on a doorway's edge address and an oven on the
-                    // plane, so this is a lookup and not a guess about
-                    // what the player aimed at.
-                    let lit = crate::oven::toggle(
+                    // extinguish. They can never collide: a door lives on
+                    // a doorway's edge address and an oven on the plane,
+                    // and a research table is a container that is not a
+                    // converter (`Deploys::table_index`), so this is a
+                    // lookup and not a guess about what the player aimed
+                    // at. Which asks first is immaterial: at most one of
+                    // them answers for any address.
+                    let lit = crate::research::begin(
+                        &self.research,
+                        &mut self.deploys,
+                        &self.players[slot],
+                        cx,
+                        cz,
+                        level,
+                        &mut self.events,
+                    ) || crate::oven::toggle(
                         &self.cook,
                         &mut self.deploys,
                         &self.players[slot],
@@ -4141,6 +4417,88 @@ impl World {
     /// order (overflow policy: defer — the caller keeps the tail), step
     /// every active player in slot order (move, then swing), release due
     /// respawns, stamp the hash on cadence.
+    /// One second of wet and cold for slot `i`, on its staggered tick
+    /// (weather v0, `exposure.rs`). True when the cold killed the body —
+    /// the caller's `continue`, as for the survival clock.
+    fn expose(&mut self, i: usize, tick: u64, wx: &crate::weather::Wx, night: bool) -> bool {
+        if !self.survival.exposure.armed()
+            || !(tick + i as u64).is_multiple_of(crate::limits::EXPOSURE_PERIOD_TICKS)
+        {
+            return false;
+        }
+        let inp = self.exposure_inputs(i, wx, night);
+        let step = crate::exposure::step(
+            &self.survival.exposure,
+            &inp,
+            &mut self.players[i],
+            &mut self.events,
+        );
+        if step == survival::Step::Died {
+            let id = self.players[i].id;
+            self.die(i, id, DEATH_BY_COLD, NO_ITEM, 0);
+            return true;
+        }
+        false
+    }
+
+    /// What the world is doing to slot `i`'s body this second: the weather,
+    /// the hour, a roof, the sea at its feet, a fire, a torch.
+    pub fn exposure_inputs(
+        &self,
+        i: usize,
+        wx: &crate::weather::Wx,
+        night: bool,
+    ) -> crate::exposure::Inputs {
+        let p = &self.players[i];
+        let x = p.body.qx as f32 * crate::movement::POS_XZ_Q;
+        let z = p.body.qz as f32 * crate::movement::POS_XZ_Q;
+        let feet = p.body.qy as f32 * crate::movement::POS_Y_Q;
+        let roofed = crate::collide::roofed(self.seed, &self.haven, self.pieces.cols(), x, z, feet);
+        let sea = crate::terrain::SEA_LEVEL;
+        let depth_cm = if feet < sea {
+            ((sea - feet) * 100.0).min(u16::MAX as f32) as u16
+        } else {
+            0
+        };
+        crate::exposure::Inputs {
+            rain: wx.rain,
+            wind: wx.wind,
+            night,
+            roofed,
+            depth_cm,
+            fire: self.near_fire(x, z, feet),
+            torch: crate::light::is_lit(p, &self.gather),
+        }
+    }
+
+    /// Is a lit fire (a campfire, a furnace) near enough to warm a body
+    /// standing here? Planar reach from the content, and within a storey.
+    fn near_fire(&self, x: f32, z: f32, feet: f32) -> bool {
+        let r = self.survival.exposure.heat_radius_cm as f32 * 0.01;
+        if r <= 0.0 {
+            return false;
+        }
+        let cols = self.pieces.cols();
+        self.deploys
+            .boxes()
+            .iter()
+            .zip(self.deploys.oven_states())
+            .any(|(b, st)| {
+                if !(st.lit && st.burns()) {
+                    return false;
+                }
+                let (bx, bz) = crate::deploy::cell_center(b.cx, b.cz);
+                let (dx, dz) = (bx - x, bz - z);
+                if dx * dx + dz * dz > r * r {
+                    return false;
+                }
+                let y = crate::collide::col_base_y(self.seed, &self.haven, cols, b.cx, b.cz)
+                    + crate::build::level_y(b.level);
+                let dy = y - feet;
+                dy * dy < 9.0
+            })
+    }
+
     pub fn tick(&mut self, commands: &[Command]) {
         self.events.clear();
         self.trust.clear(self.tick);
@@ -4207,6 +4565,13 @@ impl World {
         }
         let seed = self.seed;
         let tick = self.tick;
+        // A sapling's size is measured at this tick (tree growth v0).
+        self.slot_lives.set_now(tick);
+        // The weather and the hour this tick (weather v0): the players'
+        // exposure reads them in the loop below, the animals after it.
+        let wx = crate::weather::now(seed, tick, &self.env);
+        let day_tick = crate::weather::day_tick(tick, &self.env);
+        let night = is_night(day_tick);
         // The tick's structural removal budget, spent by every path that
         // takes a piece out of the store — a raider's killing blow below,
         // the decay sweep, the support backstop, and every cascade they
@@ -4324,6 +4689,11 @@ impl World {
                     self.die(i, id, DEATH_BY_CLOCK, NO_ITEM, 0);
                     continue;
                 }
+                // Wet and cold (weather v0): a body on the ground in the
+                // rain is exactly the body that should be feeling it.
+                if self.expose(i, tick, &wx, night) {
+                    continue;
+                }
                 if self.wound_tick(i) {
                     continue;
                 }
@@ -4368,6 +4738,11 @@ impl World {
             {
                 let id = self.players[i].id;
                 self.die(i, id, DEATH_BY_CLOCK, NO_ITEM, 0);
+                continue;
+            }
+            // Wet and cold (weather v0), on the clock's footing: before the
+            // arm, so a body the cold kills does not also swing.
+            if self.expose(i, tick, &wx, night) {
                 continue;
             }
             // The torch burns on the same footing as the metabolism, and
@@ -4533,7 +4908,11 @@ impl World {
                         let (mx, my, mz) = ray.at_m(t);
                         self.events.push(
                             EV_IMPACT,
-                            (surf as u32) << 24 | crate::fmath::floor_i32(mx / POS_XZ_Q) as u32,
+                            impact_a(
+                                surf,
+                                ranged::IMPACT_MELEE,
+                                crate::fmath::floor_i32(mx / POS_XZ_Q),
+                            ),
                             crate::fmath::floor_i32(mz / POS_XZ_Q) as u32,
                             crate::fmath::floor_i32(my / POS_Y_Q) as u32,
                         );
@@ -4550,6 +4929,7 @@ impl World {
                                 structure: def.structure,
                                 from_x: body.qx as f32 * POS_XZ_Q,
                                 from_z: body.qz as f32 * POS_XZ_Q,
+                                by: self.players[i].id,
                             };
                             self.chip(&chip, &mut removals);
                         }
@@ -4560,6 +4940,8 @@ impl World {
             craft::step(
                 &self.craft,
                 &self.gather,
+                &self.deploy,
+                &self.deploys,
                 tick,
                 &mut self.players[i],
                 &mut self.events,
@@ -4620,6 +5002,19 @@ impl World {
         // `removals` is the same allowance the swings above just spent:
         // wall 4 does not hand out a second one because the damage arrived
         // on a timer.
+        // A fuse about to run out is heard before it is felt: the blast's
+        // noise is recorded off the charge while its address still exists.
+        for c in self.charges.entries() {
+            if c.fires_at <= tick {
+                let (x, z) = crate::build::anchor(c.cx, c.cz, c.loc);
+                self.noises.push(crate::noise::Noise {
+                    qx: crate::movement::quant_xz(x),
+                    qz: crate::movement::quant_xz(z),
+                    radius_cm: crate::noise::NOISE_BLAST_CM,
+                    at: tick,
+                });
+            }
+        }
         let mut blast_kills = crate::charge::BlastKills::new();
         crate::charge::tick_fuses(
             seed,
@@ -4655,10 +5050,19 @@ impl World {
         // shot must resolve against where the animal ended this tick — the
         // same rule the player loop's ordering states in the comment above.
         let mut bites = mob::Bites::new();
+        let mut howls = mob::Howls::new();
+        // Who holds a lit torch, which a wolf keeps its distance from
+        // (`MobDef::fire_fear_cm`). The same predicate the light pass reads.
+        let lit: [bool; MAX_PLAYERS] =
+            core::array::from_fn(|i| crate::light::is_lit(&self.players[i], &self.gather));
+        // The hour and the air an animal reads: the day clock under any
+        // `/time`, and how far this weather lets it see.
         mob::step(
             seed,
             &self.haven,
             tick,
+            day_tick,
+            crate::weather::sense_pm(&wx),
             &self.mob,
             self.pieces.cols(),
             &mut crate::occupy::Occupants {
@@ -4669,8 +5073,15 @@ impl World {
             },
             &mut self.mobs,
             &self.players,
+            &lit,
+            &self.noises,
+            &mut self.nav,
             &mut bites,
+            &mut howls,
         );
+        for &slot in howls.entries() {
+            self.events.push(EV_HOWL, mob::mob_id(slot as usize), 0, 0);
+        }
         // The bites land after the whole roster stepped, so every animal
         // decided against one consistent tick — the borrow split `Bites`'
         // own doc names. The hp and the deaths counter go through
@@ -4737,6 +5148,10 @@ impl World {
         // stopped on a piece, and `hitscan` writes at most one per player
         // under the same `MAX_PLAYERS <= MAX_ARROWS` const assert.
         let mut chips = [ranged::Chip::default(); MAX_ARROWS];
+        // Shots that met an animal, landed after each pass as the chips are
+        // (`mob::hurt_slot`) — at most one per player from `hitscan` and one
+        // per arrow from `step`, reused between the two like `kills`.
+        let mut mob_hits = [ranged::MobShot::default(); MAX_ARROWS];
         // A firearm resolves here rather than in the loop above, for the
         // arrow's two reasons — final positions, and no dependence on the
         // shooter's slot index — and it goes **first** because it is the
@@ -4747,7 +5162,13 @@ impl World {
         // reused rather than doubled: this pass writes at most one entry
         // per player, the array is drained before `step` fills it again,
         // and `ranged.rs`'s const assert holds `MAX_PLAYERS <= MAX_ARROWS`.
-        let (n_shot, n_chips) = ranged::hitscan(
+        let mut quarry = ranged::Quarry {
+            mobs: &self.mobs,
+            mc: &self.mob,
+            hits: &mut mob_hits,
+            n: 0,
+        };
+        let (n_shot, n_chips) = ranged::hitscan_hunting(
             seed,
             &self.haven,
             self.pieces.cols(),
@@ -4771,7 +5192,10 @@ impl World {
             &mut self.events,
             &mut kills,
             &mut chips,
+            &mut quarry,
         );
+        let n_mob = quarry.n;
+        self.land_mob_shots(&mob_hits[..n_mob]);
         // Chips before deaths, and the order is the tick's chronology
         // rather than a preference: a bullet reaches the wall it stops on
         // during this pass, and `die` lays a body down, drops its bag and
@@ -4787,7 +5211,13 @@ impl World {
             // lifts. A rifle no longer reports an arrow.
             self.down_or_die(k.victim, k.by, DEATH_BY_BULLET, k.item, k.range_cm, k.head);
         }
-        let (n_kills, n_chips) = ranged::step(
+        let mut quarry = ranged::Quarry {
+            mobs: &self.mobs,
+            mc: &self.mob,
+            hits: &mut mob_hits,
+            n: 0,
+        };
+        let (n_kills, n_chips) = ranged::step_hunting(
             seed,
             self.tick,
             &self.haven,
@@ -4805,14 +5235,32 @@ impl World {
             &mut self.events,
             &mut kills,
             &mut chips,
+            &mut quarry,
         );
+        let n_mob = quarry.n;
+        self.land_mob_shots(&mob_hits[..n_mob]);
         for c in chips.iter().take(n_chips) {
             self.chip(c, &mut removals);
         }
         for k in kills.iter().take(n_kills) {
             self.down_or_die(k.victim, k.by, DEATH_BY_ARROW, k.item, k.range_cm, k.head);
         }
-        self.slot_lives.respawn_due(tick, &mut self.events);
+        {
+            // A slot a base now stands over does not grow back through it.
+            let (table, haven, cols) = (&self.scatter, &self.haven, self.pieces.cols());
+            let built_over = |cx: u16, cz: u16| {
+                let slot = crate::terrain::scatter(seed, table, haven, cx as i32, cz as i32);
+                let (bx, bz) = (
+                    crate::build::build_cell_of(slot.x),
+                    crate::build::build_cell_of(slot.z),
+                );
+                (0..crate::limits::MAX_BUILD_COORD as i32).contains(&bx)
+                    && (0..crate::limits::MAX_BUILD_COORD as i32).contains(&bz)
+                    && cols.get(bx as u16, bz as u16).has_piece()
+            };
+            self.slot_lives
+                .respawn_due_unless(tick, &mut self.events, &built_over);
+        }
         // Bags time out on the sim's clock, before the tick advances, so
         // a bag dropped at tick T with a lifetime of L is gone the tick
         // its own `expires` names and not one later.
@@ -4845,6 +5293,11 @@ impl World {
             tick,
             &mut self.events,
         );
+        // The research tables, on the same stride and at the same point
+        // in the tick (research table v1): a table a raid takes apart this
+        // tick has already spent its period, as an oven has, and its
+        // contents spill uncharged when it does.
+        crate::research::table_sweep(&self.research, &mut self.deploys, tick, &mut self.events);
         // The structural backstop, after the sweep that can create work for
         // it: anything a capped cascade left hanging in the air comes down
         // here, one piece and its own cascade per tick (build.rs).
@@ -4893,6 +5346,18 @@ impl World {
             );
         }
         self.deploys.clear_box_spill();
+        // Hearths that died with stock in them buy their base time
+        // (upkeep v2's grief protection). Here for the spill's reason — the
+        // removal path holds neither the build table nor the clock — and
+        // after every sweep that can remove one, so a hearth broken this
+        // tick by any route is paid out once, this tick.
+        deploy::grieve(
+            &self.deploy,
+            &self.build,
+            &mut self.pieces,
+            &mut self.deploys,
+            tick,
+        );
         // Every body's pose, recorded for tick `tick` — the last thing the
         // tick does, and deliberately *after* the phase note above says
         // positions are final. Three of the four `movement::step` sites are
@@ -4940,6 +5405,9 @@ impl World {
             }
         }
         self.rewind.write_row(self.tick, &self.players);
+        // Last, so every producer this tick has spoken: the shots and
+        // strikes the animals will hear on their next thinks.
+        self.noises.record(self.tick, &self.events, &self.players);
         self.tick += 1;
         if self.tick.is_multiple_of(STATE_HASH_INTERVAL) {
             self.last_hash = self.state_hash();
@@ -5016,6 +5484,15 @@ impl World {
             // because a flame is derived, not stored — `light.rs`.
             hb[8..12].copy_from_slice(&p.light_acc.to_le_bytes());
             h.update(&hb);
+            // Wet and cold (weather v0). Skip-if-inert per body: a world
+            // with exposure disarmed hashes exactly as it always did.
+            if p.wet != 0 || p.chill != 0 || p.cold_acc != 0 {
+                let mut xb = [0u8; 8];
+                xb[0..2].copy_from_slice(&p.wet.to_le_bytes());
+                xb[2..4].copy_from_slice(&p.chill.to_le_bytes());
+                xb[4..8].copy_from_slice(&p.cold_acc.to_le_bytes());
+                h.update(&xb);
+            }
             // The death screen, in its own buffer for the survival clock's
             // reason: every byte is sim state. `dead` most obviously — two
             // shards that disagree about whether a body is standing
@@ -5052,11 +5529,7 @@ impl World {
             h.update(&p.assist_ticks.to_le_bytes());
             h.update(&wb);
             for s in p.inv.iter() {
-                let mut sb = [0u8; 6];
-                sb[0..2].copy_from_slice(&s.item.to_le_bytes());
-                sb[2..4].copy_from_slice(&s.count.to_le_bytes());
-                sb[4..6].copy_from_slice(&s.cond.to_le_bytes());
-                h.update(&sb);
+                h.update(&stack_bytes(s));
             }
             // What this body is wearing (armor v0), in its own loop
             // appended after the inventory rather than folded into it.
@@ -5076,13 +5549,13 @@ impl World {
             // it. The hash is behavioural now — it says the sim carries
             // worn equipment — where before it said nothing at all.
             for s in p.worn.iter() {
-                let mut wb = [0u8; 6];
-                wb[0..2].copy_from_slice(&s.item.to_le_bytes());
-                wb[2..4].copy_from_slice(&s.count.to_le_bytes());
-                wb[4..6].copy_from_slice(&s.cond.to_le_bytes());
-                h.update(&wb);
+                h.update(&stack_bytes(s));
             }
-            let mut cb = [0u8; 16 + CRAFT_QUEUE * 4];
+            // The owned skins (skins v0): a `Command::SkinsOwned` writes
+            // them and they decide what the next skinned craft mints, so
+            // two replays that disagreed about them would diverge there.
+            h.update(&p.skins.to_le_bytes());
+            let mut cb = [0u8; 16 + CRAFT_QUEUE * 6];
             cb[0..8].copy_from_slice(&p.craft_done_at.to_le_bytes());
             // The blueprint mask (research v0). It belongs here for the
             // reason `[backpack]`'s ladder had to reach `canon::hash`, one
@@ -5093,8 +5566,10 @@ impl World {
             // — silently, because every other field still matched.
             cb[8..16].copy_from_slice(&p.known.to_le_bytes());
             for (j, job) in p.jobs.iter().enumerate() {
-                cb[16 + j * 4..16 + j * 4 + 2].copy_from_slice(&job.recipe.to_le_bytes());
-                cb[16 + j * 4 + 2..16 + j * 4 + 4].copy_from_slice(&job.remaining.to_le_bytes());
+                let at = 16 + j * 6;
+                cb[at..at + 2].copy_from_slice(&job.recipe.to_le_bytes());
+                cb[at + 2..at + 4].copy_from_slice(&job.remaining.to_le_bytes());
+                cb[at + 4..at + 6].copy_from_slice(&job.skin.to_le_bytes());
             }
             h.update(&cb);
         }
@@ -5104,8 +5579,14 @@ impl World {
             buf[0..2].copy_from_slice(&e.cx.to_le_bytes());
             buf[2..4].copy_from_slice(&e.cz.to_le_bytes());
             buf[4..6].copy_from_slice(&e.hits.to_le_bytes());
+            buf[6] = e.occ;
             buf[8..16].copy_from_slice(&e.respawn_at.to_le_bytes());
             h.update(&buf);
+            // A regrowing tree's clock (tree growth v0), only where there is
+            // one, so a store with no saplings hashes as it always did.
+            if e.grown_at != 0 {
+                h.update(&e.grown_at.to_le_bytes());
+            }
         }
         h.update(&(self.pieces.len() as u64).to_le_bytes());
         // The placement clocks, in their own pass rather than widening
@@ -5231,6 +5712,40 @@ impl World {
             buf[24..32].copy_from_slice(&m.roused_until.to_le_bytes());
             buf[32..40].copy_from_slice(&m.respawn_at.to_le_bytes());
             h.update(&buf);
+            // The brain (`brain.rs`) and the route it is walking: every
+            // field a think writes, because two shards that disagree about
+            // a state or a corner disagree about every position after it.
+            let mut b = [0u8; 48];
+            b[0] = m.state as u8;
+            b[1] = m.status;
+            b[2] = m.target;
+            b[3] = m.tries;
+            b[4] = m.stuck;
+            b[5] = m.leg;
+            b[6..8].copy_from_slice(&m.want_yaw.to_le_bytes());
+            b[8..16].copy_from_slice(&m.state_until.to_le_bytes());
+            b[16..24].copy_from_slice(&m.calm_until.to_le_bytes());
+            b[24..28].copy_from_slice(&m.last_qx.to_le_bytes());
+            b[28..32].copy_from_slice(&m.last_qz.to_le_bytes());
+            b[32..36].copy_from_slice(&m.path.goal_qx.to_le_bytes());
+            b[36..40].copy_from_slice(&m.path.goal_qz.to_le_bytes());
+            b[40] = m.path.len;
+            b[41] = m.path.next;
+            b[42] = m.path.partial as u8 | (m.path.arrived as u8) << 1;
+            b[43..45].copy_from_slice(&m.path.stop_cm.to_le_bytes());
+            h.update(&b);
+            let mut poi = [0u8; 24];
+            poi[0..4].copy_from_slice(&m.poi_qx.to_le_bytes());
+            poi[4..8].copy_from_slice(&m.poi_qz.to_le_bytes());
+            poi[8..16].copy_from_slice(&m.poi_until.to_le_bytes());
+            poi[16..24].copy_from_slice(&m.hurt_at.to_le_bytes());
+            h.update(&poi);
+            h.update(&m.howled_at.to_le_bytes());
+            h.update(&[m.ambushed as u8]);
+            for k in 0..m.path.len as usize {
+                h.update(&m.path.cx[k].to_le_bytes());
+                h.update(&m.path.cz[k].to_le_bytes());
+            }
         }
         h.update(&(self.deploys.len() as u64).to_le_bytes());
         for d in self.deploys.entries() {
@@ -5363,11 +5878,7 @@ impl World {
             buf[5..9].copy_from_slice(&bx.owner.to_le_bytes());
             h.update(&buf);
             for s in bx.items.iter() {
-                let mut sb = [0u8; 6];
-                sb[0..2].copy_from_slice(&s.item.to_le_bytes());
-                sb[2..4].copy_from_slice(&s.count.to_le_bytes());
-                sb[4..6].copy_from_slice(&s.cond.to_le_bytes());
-                h.update(&sb);
+                h.update(&stack_bytes(s));
             }
         }
         // Oven state, in its own pass beside the contents for the reason
@@ -5398,11 +5909,7 @@ impl World {
             buf[20..28].copy_from_slice(&b.expires.to_le_bytes());
             h.update(&buf);
             for s in b.items.iter() {
-                let mut sb = [0u8; 6];
-                sb[0..2].copy_from_slice(&s.item.to_le_bytes());
-                sb[2..4].copy_from_slice(&s.count.to_le_bytes());
-                sb[4..6].copy_from_slice(&s.cond.to_le_bytes());
-                h.update(&sb);
+                h.update(&stack_bytes(s));
             }
         }
         // The id counter is state, not a cursor: a replay that reused an
@@ -5433,15 +5940,13 @@ impl World {
                 // tick would call two stacks equal right up until one of
                 // them vanished, which is the trap `refill_at` names one
                 // store down.
-                let mut buf = [0u8; 30];
+                let mut buf = [0u8; 32];
                 buf[0..4].copy_from_slice(&g.id.to_le_bytes());
                 buf[4..8].copy_from_slice(&g.qx.to_le_bytes());
                 buf[8..12].copy_from_slice(&g.qy.to_le_bytes());
                 buf[12..16].copy_from_slice(&g.qz.to_le_bytes());
-                buf[16..18].copy_from_slice(&g.stack.item.to_le_bytes());
-                buf[18..20].copy_from_slice(&g.stack.count.to_le_bytes());
-                buf[20..22].copy_from_slice(&g.stack.cond.to_le_bytes());
-                buf[22..30].copy_from_slice(&g.expires.to_le_bytes());
+                buf[16..24].copy_from_slice(&stack_bytes(&g.stack));
+                buf[24..32].copy_from_slice(&g.expires.to_le_bytes());
                 h.update(&buf);
             }
             h.update(&self.ground_items.next_id().to_le_bytes());
@@ -5462,19 +5967,45 @@ impl World {
             buf[13..21].copy_from_slice(&c.refill_at.to_le_bytes());
             h.update(&buf);
             for s in c.items.iter() {
-                let mut sb = [0u8; 6];
-                sb[0..2].copy_from_slice(&s.item.to_le_bytes());
-                sb[2..4].copy_from_slice(&s.count.to_le_bytes());
-                sb[4..6].copy_from_slice(&s.cond.to_le_bytes());
-                h.update(&sb);
+                h.update(&stack_bytes(s));
             }
         }
         h.update(&self.sweep_piece.to_le_bytes());
         h.update(&self.sweep_deploy.to_le_bytes());
         h.update(&self.sweep_support.to_le_bytes());
         h.update(&self.evictions.to_le_bytes());
+        // Skip-if-inert: a world nobody ever forced hashes as it always did.
+        if self.env != crate::weather::Env::default() {
+            let e = &self.env;
+            let mut buf = [0u8; 26];
+            buf[0] = e.mode;
+            buf[1..9].copy_from_slice(&e.fade_end.to_le_bytes());
+            let f = e.from;
+            for (i, v) in [f.cloud, f.dark, f.rain, f.fog, f.wind, f.thunder]
+                .into_iter()
+                .enumerate()
+            {
+                buf[9 + i * 2..11 + i * 2].copy_from_slice(&v.to_le_bytes());
+            }
+            buf[21] = f.wind_dir;
+            buf[22..26].copy_from_slice(&e.day_offset.to_le_bytes());
+            h.update(&buf);
+        }
         h.digest()
     }
+}
+
+/// One stack as `state_hash` folds it: item, count, condition and skin,
+/// little-endian. The one encoding every store's loop shares, so a field
+/// added to `ItemStack` is added to the digest once rather than at six
+/// hand-copied buffers that can disagree.
+fn stack_bytes(s: &ItemStack) -> [u8; 8] {
+    let mut b = [0u8; 8];
+    b[0..2].copy_from_slice(&s.item.to_le_bytes());
+    b[2..4].copy_from_slice(&s.count.to_le_bytes());
+    b[4..6].copy_from_slice(&s.cond.to_le_bytes());
+    b[6..8].copy_from_slice(&s.skin.to_le_bytes());
+    b
 }
 
 #[cfg(test)]
@@ -5510,6 +6041,7 @@ mod tests {
             item: 3,
             count: 1,
             cond,
+            skin: 0,
         };
 
         // 1. The player inventory loop.

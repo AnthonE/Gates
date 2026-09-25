@@ -32,6 +32,12 @@ use sim_core::terrain::{self, Haven, ScatterTable};
 /// Gather toasts buffered for the HUD (drop-oldest — a toast is cosmetic).
 pub const TOAST_RING: usize = 8;
 
+/// Removals buffered for the renderer ([`Removed`]): one tick's worth at the
+/// sim's own cap, because a collapse brings down up to that many pieces at
+/// once and every one is a mark to clear and a cloud of dust. At the toast
+/// ring's eight, the other 56 of a big collapse left their marks hanging.
+pub const REMOVED_RING: usize = sim_core::limits::MAX_REMOVALS_PER_TICK;
+
 /// Craft refusal reasons buffered for the HUD (drop-oldest, cosmetic).
 pub const REFUSAL_RING: usize = 4;
 
@@ -64,6 +70,32 @@ pub const CHAT_RING: usize = 16;
 /// same reason.
 pub const IMPACT_RING: usize = 8;
 
+/// One mark-worthy blow as the ring holds it: the point in the wire's
+/// quanta, the surface (`sim_core::ranged::SURF_*`) and what struck it
+/// (`sim_core::ranged::IMPACT_*`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Impact {
+    pub qx: i32,
+    pub qy: i32,
+    pub qz: i32,
+    pub surf: u8,
+    pub kind: u8,
+}
+
+/// A piece or deployable that came down (decay, a raid, a hammer), with the
+/// row and plate it stood at — the mirror no longer holds either once it is
+/// gone, and the renderer's dust wants both.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Removed {
+    pub cx: u16,
+    pub cz: u16,
+    pub level: u8,
+    pub loc: u8,
+    pub deploy: bool,
+    pub row: u8,
+    pub plate: i8,
+}
+
 /// Buffered swings — one entry is one body's arm starting to move
 /// (wire v47).
 ///
@@ -80,6 +112,12 @@ pub const IMPACT_RING: usize = 8;
 /// more arrive than a frame can take, the newest are the arcs still worth
 /// drawing.
 pub const SWING_RING: usize = 8;
+
+/// Pack calls held between two frames (`EventMsg::Howl`). A wolf howls at
+/// most once in twenty seconds, so eight is a whole pack's worth with room.
+/// Drop-oldest, the swing ring's policy: a howl is a sound, and the newest
+/// is the one worth hearing.
+pub const HOWL_RING: usize = 8;
 
 /// The victim slot of a hitmarker that names no body.
 ///
@@ -263,7 +301,7 @@ pub const APPLIED2_WORN: u32 = 1 << 2;
 /// Broadcast like the event behind it, so most of these are somebody
 /// else's charge on somebody else's wall. That is the point rather than a
 /// caveat: the charge you most need drawn is the one you did not plant.
-pub const APPLIED2_CHARGE: u32 = 1 << 2;
+pub const APPLIED2_CHARGE: u32 = 1 << 9;
 
 /// Something about research landed: a blueprint learned, a refusal, or the
 /// known-mask restated (research v0). **One flag for all three**, the
@@ -308,6 +346,21 @@ pub const APPLIED2_BAGS: u32 = 1 << 5;
 /// stack was taken or despawned, and a client that only watched inserts
 /// would keep drawing it.
 pub const APPLIED2_GITEMS: u32 = 1 << 6;
+
+/// The world's sky/clock record changed (`EventMsg::Env`, weather v0) —
+/// re-read `env`. A level, not a ring: only the latest record means
+/// anything.
+pub const APPLIED2_ENV: u32 = 1 << 7;
+
+/// The owner's wet/cold readout changed (`EventMsg::Exposure`, weather
+/// v0) — re-read `wet_pct`, `cold_pct` and `cold_hurting`.
+pub const APPLIED2_EXPOSURE: u32 = 1 << 8;
+
+/// A structure hit landed that was THIS player's blow (wire v77): the
+/// struck wall is latched in `own_struct_hit` for the HUD's readout.
+/// `APPLIED_STRUCT_HIT` still rises for every hit on the island — the
+/// mirror re-bands every wall in view — but only this one is the player's.
+pub const APPLIED2_OWN_STRUCT_HIT: u32 = 1 << 10;
 
 /// The client's mirror of the loose stacks lying on the ground (ground
 /// items v0). `BagSet`'s shape one store over, with one difference that
@@ -376,6 +429,13 @@ impl GItemSet {
 pub struct HarvestedSet {
     cells: Box<[u32]>,
     len: usize,
+    /// Regrowing trees (tree growth v0): `(key, grown_at)`, the tick — low
+    /// 32 bits — each is full-grown by. Bounded like `cells`.
+    grow: Box<[(u32, u32)]>,
+    grow_len: usize,
+    /// The tick growth is measured at: the predictor's, stamped before each
+    /// step so a sapling collides here exactly as the server sizes it.
+    now: u32,
 }
 
 impl HarvestedSet {
@@ -383,6 +443,53 @@ impl HarvestedSet {
         Self {
             cells: vec![0; MAX_SLOT_LIVES].into_boxed_slice(),
             len: 0,
+            grow: vec![(0, 0); MAX_SLOT_LIVES].into_boxed_slice(),
+            grow_len: 0,
+            now: 0,
+        }
+    }
+
+    /// Stamp the tick growth is measured at, and retire trees that have
+    /// grown up since — a full tree needs no entry.
+    pub fn set_now(&mut self, tick: u32) {
+        self.now = tick;
+        let mut i = 0;
+        while i < self.grow_len {
+            if self.grow[i].1.wrapping_sub(tick) as i32 <= 0 {
+                self.grow_len -= 1;
+                self.grow[i] = self.grow[self.grow_len];
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    /// The tick a regrowing tree is full-grown by, if this cell holds one.
+    pub fn growth(&self, key: u32) -> Option<u32> {
+        self.grow[..self.grow_len]
+            .iter()
+            .find(|g| g.0 == key)
+            .map(|g| g.1)
+    }
+
+    /// How many trees are regrowing.
+    pub fn growing(&self) -> usize {
+        self.grow_len
+    }
+
+    fn set_grow(&mut self, key: u32, grown_at: u32) {
+        if let Some(g) = self.grow[..self.grow_len].iter_mut().find(|g| g.0 == key) {
+            g.1 = grown_at;
+        } else if self.grow_len < self.grow.len() {
+            self.grow[self.grow_len] = (key, grown_at);
+            self.grow_len += 1;
+        }
+    }
+
+    fn unset_grow(&mut self, key: u32) {
+        if let Some(i) = self.grow[..self.grow_len].iter().position(|g| g.0 == key) {
+            self.grow_len -= 1;
+            self.grow[i] = self.grow[self.grow_len];
         }
     }
 
@@ -415,15 +522,29 @@ impl HarvestedSet {
 
     fn clear(&mut self) {
         self.len = 0;
+        self.grow_len = 0;
     }
 }
 
 /// The client's half of `occupy::Harvested`. Same question the server's
 /// `SlotLives` answers, off a bare key set: a mirror needs no hit counts and
-/// no respawn ticks, only whether the node is standing right now.
+/// no respawn ticks, only whether the node is standing right now — and, for
+/// a regrowing tree, how much of it (`sim_core::gather::grow_pm`, the
+/// server's own sizing).
 impl Harvested for HarvestedSet {
     fn is_harvested(&self, cx: u16, cz: u16) -> bool {
         self.contains(cell_key(cx, cz))
+    }
+
+    fn standing_pm(&self, cx: u16, cz: u16) -> u16 {
+        let key = cell_key(cx, cz);
+        if self.contains(key) {
+            return 0;
+        }
+        match self.growth(key) {
+            Some(g) => sim_core::gather::grow_pm(g as u64, self.now as u64),
+            None => 1000,
+        }
     }
 }
 
@@ -825,6 +946,12 @@ impl ClientCore {
         &self.ovens
     }
 
+    /// The island's authored sites, solved once in `new`. A join hands this
+    /// copy to `render::WorldId` rather than solving `terrain::haven` twice.
+    pub fn haven(&self) -> &Haven {
+        &self.haven
+    }
+
     /// The island this client stands on, as the seed plus the same four
     /// borrows the predictor hands `movement::step` — including **the very
     /// `SlotCache` the predictor just filled**.
@@ -1055,6 +1182,18 @@ pub struct ClientCore {
     /// Boxed: 24 kB of fixed capacity against wasm's 1 MB shadow stack.
     slot_cache: Box<SlotCache>,
     pub catalog: ItemCatalog,
+    /// The skin catalog (skins v0), dripped at join like `catalog`: row `i`
+    /// is bit `i` of [`Self::skins_owned`]. Boxed, `slot_cache`'s reason:
+    /// ~9 kB of fixed capacity.
+    pub skins: Box<protocol::SkinCatalog>,
+    /// The skins this player owns, as the sim holds them (`SUB_SKINS_OWNED`).
+    /// The craft panel's picker and the store's "owned" marks read it; the
+    /// sim is still the verdict on every skinned craft.
+    pub skins_owned: sim_core::skin::SkinSet,
+    /// Bumped by every skin catalog drip. A reprice rewrites rows in place
+    /// and leaves `skins.count` alone, so a screen that redraws on the count
+    /// kept showing the old price; this is the number that moves.
+    pub skins_gen: u32,
     /// Cell changes the last `on_stream` call produced: (key, harvested).
     slot_changes: [(u32, bool); protocol::SLOT_SYNC_BATCH],
     n_slot_changes: usize,
@@ -1297,6 +1436,17 @@ pub struct ClientCore {
     /// Latest server hold, helper and target are connection ids. Zero ticks
     /// cancels it; the completion is followed by the ordinary recovery fact.
     pub assist: (u32, u32, u16),
+    /// The world's stored say over the sky and the clock (weather v0), as
+    /// the server last stated it. The weather itself is derived — the
+    /// schedule is `sim_core::weather::now(seed, tick, &env)` — so this is
+    /// the only part that crosses.
+    pub env: sim_core::weather::Env,
+    /// Own wet and cold, per cent, and whether the cold is hurting — as the
+    /// server last stated them (weather v0). Zero until the first reading,
+    /// which a shard with exposure disarmed never sends.
+    pub wet_pct: u8,
+    pub cold_pct: u8,
+    pub cold_hurting: bool,
     /// The frame's facts for the two destructive readers below — one slot
     /// each, not a ring, because a body cannot go down twice or get up
     /// twice between two drains, and a second `Wounded` before the first
@@ -1391,12 +1541,16 @@ pub struct ClientCore {
     shot_len: usize,
     /// Where arrows stopped, in the wire's quanta, with the surface kind
     /// (`sim_core::ranged::SURF_*`). Drop-oldest and purely cosmetic.
-    impacts: [(i32, i32, i32, u8); IMPACT_RING],
+    impacts: [Impact; IMPACT_RING],
     impact_head: usize,
     impact_len: usize,
     swings: [u32; SWING_RING],
     swing_head: usize,
     swing_len: usize,
+    /// Tagged roster ids of animals that howled for their pack.
+    howls: [u32; HOWL_RING],
+    howl_head: usize,
+    howl_len: usize,
     /// Grants this client earned (lock v1): address + `lock::GRANT_*`. An
     /// own-fact, and the only thing that tells a client its code landed —
     /// the door itself does not move on a correct code.
@@ -1417,6 +1571,12 @@ pub struct ClientCore {
     placed: [(u16, u16, u8, u8, bool); TOAST_RING],
     placed_head: usize,
     placed_len: usize,
+    /// Removals that HAPPENED (`PieceRemoved`/`DeployRemoved`), the
+    /// placement ring's other half: a sync reset clears the mirror without
+    /// ringing here, so a resync throws no dust.
+    removed: [Removed; REMOVED_RING],
+    removed_head: usize,
+    removed_len: usize,
     deploy_refusal_head: usize,
     deploy_refusal_len: usize,
     /// Which ovens this client has heard are lit, by address.
@@ -1449,15 +1609,24 @@ pub struct ClientCore {
     /// a row the defs have not arrived for yet reports `max = 0`, and the
     /// caller draws nothing rather than a lie.
     pub struct_hit: (u16, u16, u8, u8, u16, u16),
+    /// The last structure hit that was this player's own blow, the same
+    /// shape — what the HUD's wall readout draws (`APPLIED2_OWN_STRUCT_HIT`).
+    pub own_struct_hit: (u16, u16, u8, u8, u16, u16),
+    /// The damage of this player's last hitmarker on a structure (an
+    /// `EV_HIT` with no victim), waiting for the island-wide `StructHit`
+    /// behind it; the pair is how a client tells its own raid from anyone's.
+    own_struct_pending: Option<u16>,
     /// The last charge planted: (cx, cz, level, loc, row, fuse ticks). The
     /// store bit rides in `charge_deploy` beside it rather than inside the
     /// tuple, because a caller drawing a countdown on a wall needs the
     /// address first and the store only to pick which mesh to stick it to.
     pub charge_placed: (u16, u16, u8, u8, u8, u16),
     pub charge_deploy: bool,
-    /// The last stock ack: hearth address, rows, live row count.
+    /// The last stock ack: hearth address, rows `(item, units, bill)` —
+    /// `bill` being what one upkeep period charges in that material — and
+    /// the live row count.
     pub stock_addr: (u16, u16, u8),
-    pub stock: [(u16, u32); HEARTH_STOCK_ROWS],
+    pub stock: [(u16, u32, u32); HEARTH_STOCK_ROWS],
     pub stock_count: u8,
     /// The `APPLIED2_*` word for the last `on_stream` call, read back by
     /// `applied2()`. Rebuilt from zero on every call for the same reason
@@ -1517,6 +1686,9 @@ impl ClientCore {
             haven: terrain::haven(seed),
             slot_cache: Box::new(SlotCache::new()),
             catalog: ItemCatalog::EMPTY,
+            skins: Box::new(protocol::SkinCatalog::EMPTY),
+            skins_owned: sim_core::skin::SkinSet::EMPTY,
+            skins_gen: 0,
             slot_changes: [(0, false); protocol::SLOT_SYNC_BATCH],
             n_slot_changes: 0,
             toasts: [(0, 0); TOAST_RING],
@@ -1582,6 +1754,10 @@ impl ClientCore {
             wound_ticks: 0,
             wound_chance_pm: 0,
             assist: (0, 0, 0),
+            env: sim_core::weather::Env::default(),
+            wet_pct: 0,
+            cold_pct: 0,
+            cold_hurting: false,
             wounded_fact: None,
             recovered_fact: None,
             own_bags: [BagAnchor::default(); BAG_CAP],
@@ -1610,12 +1786,15 @@ impl ClientCore {
             shots: [(0, 0, 0, 0, 0); REFUSAL_RING],
             shot_head: 0,
             shot_len: 0,
-            impacts: [(0, 0, 0, 0); IMPACT_RING],
+            impacts: [Impact::default(); IMPACT_RING],
             impact_head: 0,
             impact_len: 0,
             swings: [0; SWING_RING],
             swing_head: 0,
             swing_len: 0,
+            howls: [0; HOWL_RING],
+            howl_head: 0,
+            howl_len: 0,
             knock_head: 0,
             knock_len: 0,
             auths: [(0, 0, 0, 0, 0); REFUSAL_RING],
@@ -1624,16 +1803,21 @@ impl ClientCore {
             placed: [(0, 0, 0, 0, false); TOAST_RING],
             placed_head: 0,
             placed_len: 0,
+            removed: [Removed::default(); REMOVED_RING],
+            removed_head: 0,
+            removed_len: 0,
             deploy_refusal_head: 0,
             deploy_refusal_len: 0,
             ovens: LitOvens::new(),
             pending_door: None,
             removed_addr: (0, 0, 0, 0),
             struct_hit: (0, 0, 0, 0, 0, 0),
+            own_struct_hit: (0, 0, 0, 0, 0, 0),
+            own_struct_pending: None,
             charge_placed: (0, 0, 0, 0, 0, 0),
             charge_deploy: false,
             stock_addr: (0, 0, 0),
-            stock: [(0, 0); HEARTH_STOCK_ROWS],
+            stock: [(0, 0, 0); HEARTH_STOCK_ROWS],
             stock_count: 0,
             applied2: 0,
             known: 0,
@@ -1801,13 +1985,24 @@ impl ClientCore {
             }
             EventMsg::SlotHarvested { cx, cz } => {
                 self.harvested.insert(cell_key(cx, cz));
+                // A sapling felled is a stump again.
+                self.harvested.unset_grow(cell_key(cx, cz));
                 self.push_change(cell_key(cx, cz), true);
                 flags |= APPLIED_SLOTS | self.clear_mark_if(cell_key(cx, cz));
             }
-            EventMsg::SlotRespawned { cx, cz } => {
+            EventMsg::SlotRespawned { cx, cz, grown_at } => {
                 self.harvested.remove(cell_key(cx, cz));
+                if let Some(g) = grown_at {
+                    self.harvested.set_grow(cell_key(cx, cz), g);
+                }
                 self.push_change(cell_key(cx, cz), false);
                 flags |= APPLIED_SLOTS | self.clear_mark_if(cell_key(cx, cz));
+            }
+            EventMsg::SlotGrowSync { cells, count } => {
+                for &(cx, cz, g) in cells.iter().take(count as usize) {
+                    self.harvested.set_grow(cell_key(cx, cz), g);
+                }
+                flags |= APPLIED_SLOTS;
             }
             EventMsg::SlotSync {
                 reset,
@@ -1857,6 +2052,27 @@ impl ClientCore {
                     );
                 }
                 flags |= APPLIED_CATALOG;
+            }
+            EventMsg::Skins {
+                total,
+                first,
+                count,
+                names,
+                lens,
+                rows,
+            } => {
+                self.skins.count = total;
+                self.skins_gen = self.skins_gen.wrapping_add(1);
+                for i in 0..count as usize {
+                    // The decoder refused incoherent rows and bounded the
+                    // index; a failure here is an index past the table.
+                    let _ =
+                        self.skins
+                            .set(first as usize + i, &names[i][..lens[i] as usize], rows[i]);
+                }
+            }
+            EventMsg::SkinsOwned { owned } => {
+                self.skins_owned = owned;
             }
             EventMsg::CraftQ {
                 jobs,
@@ -1947,10 +2163,17 @@ impl ClientCore {
                 first,
                 count,
                 coin,
+                blueprint,
+                table_ticks,
                 rows,
             } => {
                 self.research.row_count = total as u16;
                 self.research.coin = coin;
+                // The research table's paper and wait (wire v73): what
+                // `research::blueprint_target` reads a sheet against, and
+                // what the table's panel draws the clock from.
+                self.research.blueprint = blueprint;
+                self.research.table_ticks = table_ticks;
                 for (i, row) in rows.iter().enumerate().take(count as usize) {
                     self.research.rows[first as usize + i] = *row;
                 }
@@ -2210,23 +2433,10 @@ impl ClientCore {
                 damage,
                 left,
             } => {
-                // The raid's own hitmarker: the same ring a body hit uses,
-                // because "my swing landed for N" is the same fact. It is
-                // the one entry with no victim — a wall is not a person and
-                // has nothing to flinch — so it rides `NO_VICTIM`.
-                if self.hit_len == TOAST_RING {
-                    self.hit_head = (self.hit_head + 1) % TOAST_RING;
-                    self.hit_len -= 1;
-                }
-                self.hits[(self.hit_head + self.hit_len) % TOAST_RING] = HitFact {
-                    victim: NO_VICTIM,
-                    // No rung: a wall is not a body. `None` rather than
-                    // the identity so merging a frame cannot promote a
-                    // leg hit to a chest one.
-                    part: None,
-                    damage,
-                };
-                self.hit_len += 1;
+                // Broadcast to the whole island, so it is NOT the raider's
+                // hitmarker (wire v77): that is the `EV_HIT` with no victim
+                // the striker alone receives. This is the wall's own fact.
+                let own = self.own_struct_pending.take() == Some(damage);
                 let addressed =
                     |r: &(u16, u16, u8, u8)| r.0 == cx && r.1 == cz && r.2 == level && r.3 == loc;
                 let max = if deploy {
@@ -2245,6 +2455,10 @@ impl ClientCore {
                         .map(|r| self.piece_defs.pieces[r.row as usize].hp)
                 };
                 self.struct_hit = (cx, cz, level, loc, left, max.unwrap_or(0));
+                if own {
+                    self.own_struct_hit = self.struct_hit;
+                    self.applied2 |= APPLIED2_OWN_STRUCT_HIT;
+                }
                 // …and re-band the mirror, so the wall the player is
                 // watching come apart actually comes apart (`set_dmg`).
                 // An unknown maximum bands to 0 by `damage_band`'s own
@@ -2255,11 +2469,7 @@ impl ClientCore {
                 } else {
                     self.pieces.set_dmg(cx, cz, level, loc, band);
                 }
-                // Both flags on purpose: `HIT` is the hitmarker fact and
-                // owns draining the ring, `STRUCT_HIT` adds where it
-                // landed. One flag would either strand the ring or make
-                // every caller of the marker learn about addresses.
-                flags |= APPLIED_HIT | APPLIED_STRUCT_HIT;
+                flags |= APPLIED_STRUCT_HIT;
             }
             EventMsg::PieceRepaired {
                 // `StructHit` reads its bit to pick which store to look a
@@ -2310,11 +2520,27 @@ impl ClientCore {
                 self.applied2 |= APPLIED2_CHARGE;
             }
             EventMsg::PieceRemoved { cx, cz, level, loc } => {
+                let was = self
+                    .pieces
+                    .entries()
+                    .iter()
+                    .find(|r| (r.cx, r.cz, r.level, r.loc) == (cx, cz, level, loc))
+                    .map(|r| (r.row, r.plate));
                 if self
                     .pieces
                     .remove(cx, cz, level, loc, &self.piece_defs, self.piece_defs_have)
                 {
                     self.removed_addr = (cx, cz, level, loc);
+                    let (row, plate) = was.unwrap_or((0, 0));
+                    self.push_removed(Removed {
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                        deploy: false,
+                        row,
+                        plate,
+                    });
                     flags |= APPLIED_PIECE_REMOVED;
                 }
             }
@@ -2337,6 +2563,15 @@ impl ClientCore {
                         self.pieces.set_solid(cx, cz, level, None);
                     }
                     self.removed_addr = (cx, cz, level, loc);
+                    self.push_removed(Removed {
+                        cx,
+                        cz,
+                        level,
+                        loc,
+                        deploy: true,
+                        row: gone.row,
+                        plate: self.pieces.cols().plate(cx, cz).unwrap_or(0),
+                    });
                     flags |= APPLIED_DEPLOY_REMOVED;
                 }
             }
@@ -2476,9 +2711,17 @@ impl ClientCore {
                     self.hit_head = (self.hit_head + 1) % TOAST_RING;
                     self.hit_len -= 1;
                 }
+                // A blow on a structure (wire v77: `EV_HIT` with no victim,
+                // sent to the striker alone) has no rung — a wall is not a
+                // body — and is remembered so the `StructHit` behind it is
+                // known for this player's own.
+                let wall = victim == NO_VICTIM;
+                if wall {
+                    self.own_struct_pending = Some(damage);
+                }
                 self.hits[(self.hit_head + self.hit_len) % TOAST_RING] = HitFact {
                     victim,
-                    part: Some(part),
+                    part: (!wall).then_some(part),
                     damage,
                 };
                 self.hit_len += 1;
@@ -2550,6 +2793,20 @@ impl ClientCore {
             } => {
                 self.assist = (helper, target, ticks);
             }
+            EventMsg::Env(env) => {
+                self.env = env;
+                self.applied2 |= APPLIED2_ENV;
+            }
+            EventMsg::Exposure {
+                wet_pct,
+                cold_pct,
+                hurting,
+            } => {
+                self.wet_pct = wet_pct;
+                self.cold_pct = cold_pct;
+                self.cold_hurting = hurting;
+                self.applied2 |= APPLIED2_EXPOSURE;
+            }
             EventMsg::Recovered { chance_pm, hp } => {
                 self.wounded = false;
                 self.assist = (0, 0, 0);
@@ -2592,7 +2849,13 @@ impl ClientCore {
                     (shooter, yaw, pitch, speed_mmpt, drop_mmpt2);
                 self.shot_len += 1;
             }
-            EventMsg::Impact { qx, qy, qz, surf } => {
+            EventMsg::Impact {
+                qx,
+                qy,
+                qz,
+                surf,
+                kind,
+            } => {
                 // Drop-oldest, the shot ring's policy and its reason: when
                 // more marks arrive than a frame can take, the newest are
                 // the ones still near enough to look at.
@@ -2606,8 +2869,13 @@ impl ClientCore {
                     self.impact_head = (self.impact_head + 1) % IMPACT_RING;
                     self.impact_len -= 1;
                 }
-                self.impacts[(self.impact_head + self.impact_len) % IMPACT_RING] =
-                    (qx, qy, qz, surf);
+                self.impacts[(self.impact_head + self.impact_len) % IMPACT_RING] = Impact {
+                    qx,
+                    qy,
+                    qz,
+                    surf,
+                    kind,
+                };
                 self.impact_len += 1;
             }
             EventMsg::Swing { swinger } => {
@@ -2621,6 +2889,17 @@ impl ClientCore {
                 }
                 self.swings[(self.swing_head + self.swing_len) % SWING_RING] = swinger;
                 self.swing_len += 1;
+            }
+            EventMsg::Howl { mob } => {
+                // Drop-oldest, like the swing ring. An id that names an
+                // animal this client is not drawing matches nothing where
+                // the howl is voiced, which is the right sound for it.
+                if self.howl_len == HOWL_RING {
+                    self.howl_head = (self.howl_head + 1) % HOWL_RING;
+                    self.howl_len -= 1;
+                }
+                self.howls[(self.howl_head + self.howl_len) % HOWL_RING] = mob;
+                self.howl_len += 1;
             }
             EventMsg::Knock {
                 cx,
@@ -2901,7 +3180,7 @@ impl ClientCore {
     /// clean-merge trap in CLAUDE.md is this exact ring shape, and
     /// `tests/sound.rs` derives its verb list from this file so a ring
     /// added and never drained reddens on its own.
-    pub fn pop_impact(&mut self) -> Option<(i32, i32, i32, u8)> {
+    pub fn pop_impact(&mut self) -> Option<Impact> {
         if self.impact_len == 0 {
             return None;
         }
@@ -2929,6 +3208,18 @@ impl ClientCore {
         Some(s)
     }
 
+    /// Oldest buffered pack call: the tagged roster id of the animal that
+    /// howled. Drained once a frame by `render::feed`, like every ring here.
+    pub fn pop_howl(&mut self) -> Option<u32> {
+        if self.howl_len == 0 {
+            return None;
+        }
+        let m = self.howls[self.howl_head];
+        self.howl_head = (self.howl_head + 1) % HOWL_RING;
+        self.howl_len -= 1;
+        Some(m)
+    }
+
     /// Oldest buffered grant: the lock's address and what it now allows
     /// this client (`sim_core::lock::GRANT_*`).
     pub fn pop_auth(&mut self) -> Option<(u16, u16, u8, u8, u8)> {
@@ -2952,6 +3243,27 @@ impl ClientCore {
         self.placed[(self.placed_head + self.placed_len) % TOAST_RING] =
             (cx, cz, level, loc, deploy);
         self.placed_len += 1;
+    }
+
+    /// Drop-oldest, the placement ring's rule for its reason.
+    fn push_removed(&mut self, r: Removed) {
+        if self.removed_len == REMOVED_RING {
+            self.removed_head = (self.removed_head + 1) % REMOVED_RING;
+            self.removed_len -= 1;
+        }
+        self.removed[(self.removed_head + self.removed_len) % REMOVED_RING] = r;
+        self.removed_len += 1;
+    }
+
+    /// Oldest buffered removal (see [`Removed`]).
+    pub fn pop_removed(&mut self) -> Option<Removed> {
+        if self.removed_len == 0 {
+            return None;
+        }
+        let r = self.removed[self.removed_head];
+        self.removed_head = (self.removed_head + 1) % REMOVED_RING;
+        self.removed_len -= 1;
+        Some(r)
     }
 
     /// Oldest buffered placement broadcast: address + which store (`true` =
@@ -3220,6 +3532,28 @@ impl ClientCore {
     }
 
     /// Oldest buffered craft refusal reason (`sim_core::craft::REFUSE_*`).
+    /// The skins that fit `item`, in catalog order, each with its row index
+    /// and whether this player owns it. What the craft panel's picker and
+    /// the store's rows are drawn from.
+    pub fn skins_for(
+        &self,
+        item: u16,
+    ) -> impl Iterator<Item = (usize, protocol::SkinRow, bool)> + '_ {
+        self.skins
+            .rows()
+            .iter()
+            .enumerate()
+            .filter(move |(_, r)| r.covers == item)
+            .map(|(i, r)| (i, *r, self.skins_owned.has(i)))
+    }
+
+    /// The dripped row for skin `catalog`, if this client has it. An item
+    /// wearing an id the catalog does not name draws as the plain item.
+    pub fn skin_row(&self, catalog: u16) -> Option<(usize, protocol::SkinRow)> {
+        let i = self.skins.index_of(catalog)?;
+        Some((i, self.skins.rows[i]))
+    }
+
     pub fn pop_craft_refusal(&mut self) -> Option<u8> {
         if self.refusal_len == 0 {
             return None;
@@ -3352,6 +3686,7 @@ impl ClientCore {
             self.sticky_buttons = 0;
             self.next_seq = self.next_seq.wrapping_add(1);
             self.clock.client_tick = self.clock.client_tick.wrapping_add(1);
+            self.harvested.set_now(self.clock.client_tick);
             self.predict.step(
                 frame,
                 self.pieces.cols(),
@@ -3507,6 +3842,7 @@ impl ClientCore {
                         }
                     }
                 } else if let Some(own) = self.view.get(self.player_id).copied() {
+                    self.harvested.set_now(self.clock.client_tick);
                     self.predict.reconcile(
                         &own,
                         header.last_executed_seq,
@@ -3814,6 +4150,7 @@ mod tests {
                 item: 3,
                 count: 21,
                 cond: 0,
+                skin: 0,
             },
         }];
         let len = encode_event_inv(&slots, &mut buf).unwrap();
@@ -3824,6 +4161,7 @@ mod tests {
                 item: 3,
                 count: 21,
                 cond: 0,
+                skin: 0,
             }
         );
         assert_eq!(c.pop_toast(), Some((3, 7)));
@@ -4044,6 +4382,36 @@ mod tests {
         assert_eq!(c.mark_cell, NO_CELL);
     }
 
+    /// The research drip installs the table's paper and its wait with the
+    /// rows (wire v73, research table v1) — the two numbers
+    /// `research::blueprint_target` and the table panel's clock read. Before
+    /// the drip nothing is paper, so no stack is misnamed as a blueprint
+    /// while the tables arrive.
+    #[test]
+    fn research_rows_carry_the_paper_and_the_wait() {
+        use protocol::encode_event_research_rows;
+
+        let mut c = core();
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        assert_eq!(
+            c.research.blueprint,
+            sim_core::gather::NO_ITEM,
+            "nothing is paper before the drip"
+        );
+        let rc = sim_core::research::ResearchContent::probe_fixture();
+        let (len, _) = encode_event_research_rows(&rc, 0, &mut buf).unwrap();
+        assert_eq!(c.on_stream(&buf[..len]).unwrap(), APPLIED_RECIPES);
+        assert_eq!(
+            (
+                c.research.blueprint,
+                c.research.table_ticks,
+                c.research.coin
+            ),
+            (rc.blueprint, rc.table_ticks, rc.coin),
+            "the header's three numbers land where the sim keeps them"
+        );
+    }
+
     #[test]
     fn stream_tracks_craft_queue_recipes_and_toasts() {
         use protocol::{
@@ -4067,10 +4435,12 @@ mod tests {
             CraftJob {
                 recipe: 1,
                 remaining: 2,
+                skin: 0,
             },
             CraftJob {
                 recipe: 0,
                 remaining: 5,
+                skin: 0,
             },
         ];
         let len = encode_event_craft_q(&jobs, 90, &mut buf).unwrap();

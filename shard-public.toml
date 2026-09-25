@@ -177,3 +177,15 @@ status_addr = "127.0.0.1:8431"
 # and nobody can see it.
 #
 # entitle_origin = "https://elopros.com"   # scry.moreright.xyz retired 2026-08-20 (410)
+
+# ── skins ────────────────────────────────────────────────────────────────────
+#
+# Who owns which skin, and what each costs, from the platform
+# (`crates/server/src/skins.rs`): ownership through `/api/items/of/{wallet}` on
+# join and on the client's refresh, prices through `/api/items/store/gates` at
+# boot and every five minutes. Safe to arm before the item contract and the
+# store are deployed: until then elo answers `configured: false` for ownership
+# and 404 for the store route (read as a store with nothing on sale), which is
+# "nobody owns a skin, nothing is on sale" — exactly this shard's state without
+# the key. Once they deploy, skins sold on elopros.com work here with no change.
+skins_origin = "https://elopros.com"

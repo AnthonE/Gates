@@ -302,21 +302,10 @@ pub fn gather(
     if keys.pressed(KeyCode::Space) {
         buttons |= BTN_JUMP;
     }
-    // **Crouch crosses the wire and the sim ignores it, deliberately.**
-    // `BTN_CROUCH` has been declared and inside `BTN_MASK` since v0 — so the
-    // server accepts the bit rather than refusing the frame — and
-    // `movement::step` does not read it (`sim-core/input.rs`: *"crouch has no
-    // sim effect yet — it lands with the combat pass"*). Binding the key now
-    // costs nothing and moves nothing: both sides run the same `movement::step`
-    // over a bit neither consults, so prediction cannot drift on it and no
-    // golden moves.
-    //
-    // It is bound anyway because the alternative is worse. The key belongs to
-    // crouch in every reference a player arrives from; leaving it unbound
-    // means the combat pass has to remember to add it, and until then Ctrl is
-    // free for something else to take and then have to give back. What must
-    // NOT happen is this being advertised as a working verb — the settings
-    // screen's bind row says so in as many words.
+    // **Crouch is a sneak.** `movement::step` does not read `BTN_CROUCH`, so
+    // prediction cannot drift on it; the animal brain does (`sim-core/src/
+    // brain.rs`): a crouched player is silent to wildlife and seen only
+    // inside an animal's sight cone, at half range.
     //
     // `ControlRight` too: `panels/inv.rs` already treats the two as one
     // modifier, and a split would be a keyboard the player has to think about.

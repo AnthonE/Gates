@@ -235,11 +235,13 @@ fn stage(w: &mut World) -> (u32, usize) {
         item: 0,
         count: 100,
         cond: 0,
+        skin: 0,
     };
     w.players[o].inv[1] = ItemStack {
         item: BOX_ITEM,
         count: 5,
         cond: 0,
+        skin: 0,
     };
     w.tick(&[Command::Place {
         id: OWNER,
@@ -280,6 +282,7 @@ fn restock(w: &mut World, bi: usize, flood: bool) {
                 item: GOODS,
                 count: STACK,
                 cond: 0,
+                skin: 0,
             },
         );
     }
@@ -293,6 +296,7 @@ fn restock(w: &mut World, bi: usize, flood: bool) {
             item: GOODS,
             count: STACK,
             cond: 0,
+            skin: 0,
         }; INV_SLOTS];
         for f in 0..FLOODERS {
             let id = FIRST_FLOODER + f;

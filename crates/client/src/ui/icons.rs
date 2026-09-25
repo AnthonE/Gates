@@ -60,7 +60,12 @@ pub fn icon_stem(
 /// not do I/O to find out what it has — and because a gate can then compare
 /// it against the directory and fail on either half drifting
 /// (`tests/ui.rs` §G).
-pub const STEMS: [&str; 92] = [
+///
+/// **Two kinds of file share this list.** The items are full-colour pictures
+/// (`ci/finish_icons.py`: a render of the model, or the silhouette painted)
+/// and draw untinted; everything else is a white glyph the draw tints —
+/// see [`is_glyph`].
+pub const STEMS: [&str; 98] = [
     // the shape wheel
     "metal_window_bars",
     "garage_door",
@@ -108,6 +113,7 @@ pub const STEMS: [&str; 92] = [
     "rope",
     "tarp",
     "junk",
+    "blueprint",
     "rock",
     "torch",
     "wooden_spear",
@@ -158,13 +164,22 @@ pub const STEMS: [&str; 92] = [
     // The map screen's markers (`ui::map::MarkKind::icon`). Not items, for
     // the same reason the vitals below are not: they name something on the
     // ISLAND — a site the worldgen placed, the player themselves — which the
-    // content will never carry a row for. `sleeping_bag` and `hearth` are
-    // deliberately absent from this group and reused from the item set above:
-    // a bed on the map and a bed in your inventory are the same object, and
-    // two files would be two drawings of it waiting to diverge.
+    // content will never carry a row for.
     "map_site",
     "map_player",
     "backpack",
+    // White versions of the bed and the hearth for the map, which tints its
+    // markers. They were the item files until items became colour pictures
+    // (`ci/finish_icons.py`); a picture multiplied by a badge colour is mud.
+    "map_bed",
+    "map_hearth",
+    // The panels' own marks, drawn over or beside an item picture: the
+    // padlock on a recipe or tech node not yet learned, the favourite star,
+    // and the clock beside a craft time — Rust's three, in white for the
+    // draw to tint. The typeface has no star or stopwatch to fall back on.
+    "ui_lock",
+    "ui_star",
+    "ui_clock",
     // The three vitals, bottom right. Not items — these are the only stems
     // that name a HUD readout rather than something a player can hold, and
     // they are here because `tests/ui.rs` §G holds this list equal to the
@@ -174,9 +189,33 @@ pub const STEMS: [&str; 92] = [
     "vital_food",
 ];
 
+/// Whether a stem is a white glyph the draw tints, rather than an item's
+/// full-colour picture. A glyph multiplied by a colour is that colour; a
+/// picture multiplied by one is mud, so every call site that tints needs to
+/// know which it holds.
+pub fn is_glyph(stem: &str) -> bool {
+    ["shape_", "verb_", "vital_", "map_", "ui_"]
+        .iter()
+        .any(|p| stem.starts_with(p))
+        || stem == "backpack"
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{icon_stem, stem};
+    use super::{icon_stem, is_glyph, stem};
+
+    #[test]
+    fn items_are_pictures_and_the_rest_are_glyphs() {
+        assert!(!is_glyph("wood"));
+        assert!(!is_glyph("code_lock"));
+        assert!(!is_glyph("sleeping_bag"));
+        assert!(is_glyph("ui_lock"));
+        assert!(is_glyph("map_bed"));
+        assert!(is_glyph("shape_wall"));
+        assert!(is_glyph("verb_upgrade"));
+        assert!(is_glyph("vital_hp"));
+        assert!(is_glyph("backpack"));
+    }
 
     #[test]
     fn the_stem_matches_the_bakers_rule() {
@@ -209,6 +248,7 @@ mod tests {
                     item: 0,
                     count,
                     cond: 0,
+                    skin: 0,
                 },
             )
         };
@@ -229,6 +269,7 @@ mod tests {
                     item: 0,
                     count: 3,
                     cond: 0,
+                    skin: 0,
                 }
             ),
             None
@@ -242,6 +283,7 @@ mod tests {
                     item: 999,
                     count: 1,
                     cond: 0,
+                    skin: 0,
                 }
             ),
             None
@@ -257,6 +299,7 @@ mod tests {
             item: 0,
             count: 1,
             cond: 0,
+            skin: 0,
         };
         assert_eq!(icon_stem(&c, st), Some("stone_hatchet"));
         assert_eq!(

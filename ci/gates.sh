@@ -55,29 +55,22 @@ done
 # it and every gate below is code: deterministic, headless, minutes not tens of
 # minutes. Nothing left to opt out of.
 #
-# An argument is still ACCEPTED and ignored, because `lanes.sh` passes
-# `GATES_TIER=fast` and a hard error there would be a red gate reporting a
-# vocabulary problem rather than a defect. It is a no-op, said out loud rather
-# than silently: this script now has exactly one behaviour and one final line.
+# MVP mode (operator, 2026-09-23) brought one tier back. Pull requests run
+# `fast`: everything except the wasm parity probe (43 of the 2026-09-22 run's
+# 90 minutes) and the client-web `--profile web` build. Main, nightly and
+# release run everything, so a break in either surfaces within a merge.
 TIER="${1:-${GATES_TIER:-all}}"
 case "$TIER" in
-  all | fast | auto)
-    [ "$TIER" = "all" ] || echo "note: tier '$TIER' is a no-op — the renderer tier was cut with the browser client; running every gate."
-    ;;
-  *) fail "unknown tier '$TIER' — the tiers are gone; pass nothing." ;;
+  all | auto) TIER=all ;;
+  fast) echo "note: tier 'fast' SKIPS the wasm parity probe and the web-profile build (main and nightly run them)." ;;
+  *) fail "unknown tier '$TIER' — pass 'fast' or nothing." ;;
 esac
 
-# Cheapest gate in the file — pure text, no build — so it runs first: a knob
-# that disagrees with its registry entry should not cost a ten-minute compile
-# to discover. `CLAUDE.md` calls `DECISIONS.md` authoritative on every knob,
-# and on 2026-08-02 `BUMP_MAX_SLOPE` shipped at 0.55 while its §open row still
-# read 1.0 — nine gates green over the disagreement, caught only by a judge
-# reading the diff. This is that reading, mechanized.
-echo "== gate: knob registry (DECISIONS.md §open declares what the code ships)"
-command -v node >/dev/null || fail "node missing — knob registry gate cannot run"
-$NICE node ci/knob_registry.mjs || fail "knob registry"
+# The knob registry (`ci/knob_registry.mjs`: DECISIONS.md §open pinned to the
+# source) no longer gates. In MVP mode (operator, 2026-09-23) the code is the
+# source of truth for a number. The script still runs by hand as an audit.
 
-# Also pure text, also no build. The sim proves the haven pad concentrates
+# Pure text, no build. The sim proves the haven pad concentrates
 # containers; this proves the containers it concentrates are the richer kind.
 # That half lives entirely in content/loot.toml, which no Rust gate scores
 # for richness — the verb exists (Command::OpenWorldCont, world.rs) but it
@@ -157,7 +150,7 @@ echo "== gate: clippy walls (-D warnings; sim walls via crates/sim-core/clippy.t
 $NICE cargo clippy --workspace --all-targets -- -D warnings || fail "clippy"
 
 echo "== gate: native test suite (alloc_zero, replay, terrain_golden, protocol_golden, snapshot_budget, content, bot smoke, unit)"
-$NICE cargo test --workspace --release || fail "cargo test"
+$NICE cargo test --workspace --profile ci || fail "cargo test"
 
 # The native client, which the two gates above DO NOT SEE. `render` is off by
 # default (`crates/client/Cargo.toml`: a default-on Bevy would put minutes onto
@@ -265,8 +258,13 @@ $NICE cargo clippy -p client-web --target wasm32-unknown-unknown --all-targets -
   || fail "clippy (browser client)"
 # `--profile web` — the profile `ci/build_web.sh` ships (root `Cargo.toml`), so
 # what this gate links is the module a page loads and not a sibling of it.
-$NICE cargo build -p client-web --profile web --target wasm32-unknown-unknown \
-  || fail "browser client build"
+# Fat LTO makes it ~6 minutes, so the `fast` tier leaves it to main.
+if [ "$TIER" = "all" ]; then
+  $NICE cargo build -p client-web --profile web --target wasm32-unknown-unknown \
+    || fail "browser client build"
+else
+  echo "   SKIPPED (tier fast): the --profile web link — main and nightly run it"
+fi
 
 # **The audio thread's module, which is a SECOND wasm artifact and therefore a
 # second thing that can rot unnoticed.** `client-web` does not depend on
@@ -303,6 +301,15 @@ echo "== gate: browser renderer (client --features render -> wasm32, check tier)
 $NICE cargo clippy -p client --no-default-features --features render \
   --target wasm32-unknown-unknown --all-targets -- -D warnings \
   || fail "clippy (browser renderer)"
+
+# The parity probe runs one simulation three times (native, wasm under node,
+# debug) and was 43 minutes of a 90-minute run, so a pull request skips it.
+# It is the last gate, and main and nightly run it on every merge.
+if [ "$TIER" = "fast" ]; then
+  echo "== SKIPPED (tier fast): test_parity_wasm — main and nightly run it"
+  echo "ALL GATES GREEN (tier fast)"
+  exit 0
+fi
 
 echo "== gate: test_parity_wasm (native vs wasm, byte-equal digests)"
 command -v node >/dev/null || fail "node missing — parity gate cannot run"

@@ -714,6 +714,44 @@ pub struct HeldModel {
     /// frame: `Mesh3d` is a handle, and writing it unconditionally would
     /// re-trigger Bevy's change detection on the render world forever.
     shown: Option<usize>,
+    /// The skin the shown model is drawn in (skins v0), 0 for its own look.
+    skin: u16,
+}
+
+/// Tinted copies of the held-model materials (skins v0), one per
+/// (`HELD_MODELS` row, skin catalog id), made on first use and kept: a skin
+/// is a colour over the item's own surface, so the copy is the row's material
+/// with its base colour multiplied. Shared by the first-person hand and
+/// every body's hand (`bodies::update_hand`), so one skin on screen twice is
+/// one material.
+#[derive(Resource, Default)]
+pub struct SkinMats(std::collections::HashMap<(usize, u16), Handle<StandardMaterial>>);
+
+impl SkinMats {
+    /// Row `row`'s material in skin `skin`, tinted by `tint` (sRGB factors,
+    /// `ui::skins::tint_of`). `None` while the row's own material has not
+    /// loaded yet (a glTF row), so the caller draws the plain look this
+    /// frame and asks again next frame.
+    pub fn for_skin(
+        &mut self,
+        row: usize,
+        skin: u16,
+        tint: [f32; 3],
+        base: &Handle<StandardMaterial>,
+        materials: &mut Assets<StandardMaterial>,
+    ) -> Option<Handle<StandardMaterial>> {
+        if let Some(h) = self.0.get(&(row, skin)) {
+            return Some(h.clone());
+        }
+        let mut m = materials.get(base)?.clone();
+        let c = m.base_color.to_linear();
+        let t = Color::srgb(tint[0], tint[1], tint[2]).to_linear();
+        m.base_color =
+            Color::linear_rgba(c.red * t.red, c.green * t.green, c.blue * t.blue, c.alpha);
+        let h = materials.add(m);
+        self.0.insert((row, skin), h.clone());
+        Some(h)
+    }
 }
 
 /// A generated model is authored standing up with its feet at y = 0 (see
@@ -868,7 +906,10 @@ pub fn spawn_item(
                     // panic, and not a warning: the hand is simply always empty.
                     // Cost one capture to find.
                     item.spawn((
-                        HeldModel { shown: None },
+                        HeldModel {
+                            shown: None,
+                            skin: 0,
+                        },
                         Mesh3d(Handle::default()),
                         MeshMaterial3d::<StandardMaterial>(Handle::default()),
                         Transform::from_rotation(Quat::from_rotation_x(MODEL_UPRIGHT_TO_HELD)),
@@ -1329,9 +1370,12 @@ pub fn pose(def: &crate::ui::hold::HeldModelDef, palm: Vec3) -> Transform {
     }
 }
 
+#[allow(clippy::type_complexity)]
 pub fn swap(
     net: Option<NonSend<Net>>,
     models: Res<Models>,
+    mut skin_mats: ResMut<SkinMats>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
     mut q: Query<(
         &mut HeldModel,
         &mut Mesh3d,
@@ -1341,33 +1385,47 @@ pub fn swap(
     )>,
     mut fallback: Query<&mut Visibility, (With<Fallback>, Without<HeldModel>)>,
 ) {
-    let (want, empty) = match net.as_deref() {
+    let (want, empty, skin, tint) = match net.as_deref() {
         Some(n) => {
             let core = &n.session.core;
             let stack = core
                 .inv
                 .get(usize::from(n.sel).min(core.inv.len() - 1))
                 .copied();
+            let skin = stack.map_or(0, |s| if s.count == 0 { 0 } else { s.skin });
             (
                 crate::ui::hold::held_model_in_hand(&core.catalog, &core.inv, n.sel),
                 stack.is_none_or(|s| s.count == 0),
+                skin,
+                crate::ui::skins::tint_of(&core.skins, skin),
             )
         }
-        None => (None, true),
+        None => (None, true, 0, None),
     };
 
     for (mut held, mut mesh, mut mat, mut vis, mut tf) in &mut q {
-        if held.shown != want {
+        if held.shown != want || held.skin != skin {
             match want {
                 Some(i) => {
                     let (m, mt) = models.row(i);
                     mesh.0 = m;
-                    mat.0 = mt;
                     *tf = pose(&crate::ui::hold::HELD_MODELS[i], VIEWMODEL_PALM);
+                    // The skin's tinted copy when it is ready; the plain look
+                    // (and a retry next frame, by not recording the skin)
+                    // while the row's own material is still loading.
+                    let skinned =
+                        tint.and_then(|t| skin_mats.for_skin(i, skin, t, &mt, &mut materials));
+                    held.skin = if skinned.is_some() || tint.is_none() {
+                        skin
+                    } else {
+                        u16::MAX
+                    };
+                    mat.0 = skinned.unwrap_or(mt);
                 }
                 None => {
                     mesh.0 = Handle::default();
                     mat.0 = Handle::default();
+                    held.skin = skin;
                 }
             }
             held.shown = want;
@@ -1395,7 +1453,7 @@ pub fn swap(
 /// **Night had no counter before this.** `rig::day_night` takes the sun to
 /// zero illuminance, kills the environment map and the sky brightness, and
 /// leaves `NIGHT_AMBIENT_LUX` — 60 lux of direction-free ambient — as the
-/// entire lighting of a tenth of every cycle, while `mob::think` sends the
+/// entire lighting of a tenth of every cycle, while `brain::sense` sends the
 /// wolves out into it. The starter kit has put a torch on hotbar slot 2
 /// since the kit existed (`content/balance.toml`), and holding it did
 /// nothing at all.
@@ -1529,6 +1587,7 @@ pub fn load_models(
         }
     }
     commands.insert_resource(Models { mesh, mat });
+    commands.insert_resource(SkinMats::default());
 }
 
 /// Integrate the three motions and write the one transform.

@@ -81,6 +81,7 @@ fn give(core: &mut ShardCore, slot: usize, item: u16, cond: u16) {
         item,
         count: 1,
         cond,
+        skin: 0,
     };
 }
 
@@ -204,6 +205,7 @@ fn the_watcher_sees_the_other_hand_and_its_flame() {
         item: OTHER_ITEM,
         count: 0,
         cond: 0,
+        skin: 0,
     };
     press(&mut core, 0, 5, false);
     let e = seen(&mut core, &stats, &mut view, 1, 0);

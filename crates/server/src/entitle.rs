@@ -397,8 +397,35 @@ fn agent(timeout: Duration) -> ureq::Agent {
 }
 
 fn get(url: &str, timeout: Duration) -> Option<String> {
+    get_capped(url, timeout, MAX_RESPONSE_BYTES)
+}
+
+/// A GET with its own response ceiling: the skin read (`skins.rs`) pages a
+/// whole inventory, which is a bigger body than a verdict.
+pub(crate) fn get_capped(url: &str, timeout: Duration, cap: usize) -> Option<String> {
     let mut res = agent(timeout).get(url).call().ok()?;
-    read_capped(&mut res)
+    read_capped_to(&mut res, cap)
+}
+
+/// A GET for a caller that must tell "not there" from "could not look".
+pub(crate) enum Got {
+    /// A 2xx body, within the cap.
+    Body(String),
+    /// A 404: the route is not served (yet).
+    NotFound,
+    /// Anything else — a timeout, a refusal, a 5xx, a body past the cap.
+    Failed,
+}
+
+/// [`get_capped`], with the 404 told apart. The store read (`skins.rs`)
+/// needs it: elo not serving its store route yet is a store with nothing on
+/// sale, not a failed read for the anomaly watch to count every sweep.
+pub(crate) fn get_capped_status(url: &str, timeout: Duration, cap: usize) -> Got {
+    match agent(timeout).get(url).call() {
+        Ok(mut res) => read_capped_to(&mut res, cap).map_or(Got::Failed, Got::Body),
+        Err(ureq::Error::StatusCode(404)) => Got::NotFound,
+        Err(_) => Got::Failed,
+    }
 }
 
 fn post(url: &str, body: &str, timeout: Duration) -> Option<String> {
@@ -411,9 +438,13 @@ fn post(url: &str, body: &str, timeout: Duration) -> Option<String> {
 }
 
 fn read_capped(res: &mut ureq::http::Response<ureq::Body>) -> Option<String> {
+    read_capped_to(res, MAX_RESPONSE_BYTES)
+}
+
+fn read_capped_to(res: &mut ureq::http::Response<ureq::Body>, cap: usize) -> Option<String> {
     res.body_mut()
         .with_config()
-        .limit((MAX_RESPONSE_BYTES + 1) as u64)
+        .limit((cap + 1) as u64)
         .read_to_string()
         .ok()
 }

@@ -109,7 +109,7 @@ pub fn resolve(
     // (`client-core/core.rs`). Stamped here, where the core is in hand.
     aimed.0.lit = matches!(
         aimed.0.verb,
-        interact::Verb::Fire | interact::Verb::Recycler
+        interact::Verb::Fire | interact::Verb::Recycler | interact::Verb::Research
     ) && core.ovens().is_lit(aimed.0.cx, aimed.0.cz, aimed.0.level);
     // The weak-spot chase, read before the island borrows the core mutably.
     // Both are `Copy` scalars, so this is a read and not a hold.
@@ -245,8 +245,9 @@ pub fn resolve(
 /// pointer, for `input::gather`'s reason: every verb here spends something —
 /// a swing, a door, a mouthful — and a player typing into the craft search
 /// box asked for none of it.
-// Seven, and each is a distinct source: the keyboard, the session, the two
-// picks, the toast, the panels, and the chat composer.
+// Each is a distinct source: the keyboard, the session, the two picks, the
+// toast, the panels, the chat composer, and the clock the crew clear's
+// second press is timed on.
 #[allow(clippy::too_many_arguments)]
 pub fn keys(
     keys: Res<ButtonInput<KeyCode>>,
@@ -258,6 +259,8 @@ pub fn keys(
     mut pad: ResMut<Pad>,
     ui: Option<ResMut<Ui>>,
     chat: Option<Res<super::chat::Chat>>,
+    time: Res<Time>,
+    mut clear_armed_until: Local<f64>,
 ) {
     let mut ui = ui;
     if keys.just_released(KeyCode::KeyE) {
@@ -293,13 +296,32 @@ pub fn keys(
         return;
     }
     if keys.just_pressed(KeyCode::KeyL) {
-        access_aimed(&net, &aimed.0, &mut pad, &mut toast, false);
+        access_aimed(&net, &aimed.0, &mut pad, &mut toast, Access::Join);
     }
-    // `K` is the crew's leave, and it is only a hearth key: at a door the
-    // same letter is the keypad's LOCK, which is why `access_aimed` takes
-    // the bit rather than this reading the pick twice.
+    // `K` is the crew's leave and `Shift+K` its clear, and both are only
+    // hearth keys: at a door the same letter is the keypad's LOCK, which is
+    // why `access_aimed` takes the ask rather than this reading the pick
+    // twice.
     if keys.just_pressed(KeyCode::KeyK) {
-        access_aimed(&net, &aimed.0, &mut pad, &mut toast, true);
+        let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+        let now = time.elapsed_secs_f64();
+        let ask = if !shift {
+            Some(Access::Leave)
+        } else if now <= *clear_armed_until {
+            *clear_armed_until = 0.0;
+            Some(Access::Clear)
+        } else {
+            // A clear takes everyone else off the crew, so it asks twice:
+            // the first press arms it, a second within the window sends.
+            if aimed.0.verb == Verb::Hearth {
+                *clear_armed_until = now + CLEAR_CONFIRM_S;
+                toast.warn("SHIFT+K again to clear the crew to just you");
+            }
+            None
+        };
+        if let Some(ask) = ask {
+            access_aimed(&net, &aimed.0, &mut pad, &mut toast, ask);
+        }
     }
     if keys.just_pressed(KeyCode::KeyU) {
         upgrade_near(&net, &near.0, &mut toast);
@@ -376,10 +398,30 @@ pub fn keys(
         // chosen for survives the move intact: the reason was never the
         // letter `G`, it was that eat and drink sit under one hand as a pair,
         // and `J`–`H` are adjacent exactly as `G`–`H` were.
+        //
+        // A blueprint in the hand is READ rather than eaten (research table
+        // v1): `ui::research::use_as` makes the call the inventory panel's
+        // right-click makes, so the key and the click cannot disagree.
         let slot = net.sel;
-        send(&net, &mut toast, "eat", |buf| {
-            protocol::encode_action_consume(slot, buf)
-        });
+        let stack = net
+            .session
+            .core
+            .inv
+            .get(slot as usize)
+            .copied()
+            .unwrap_or_default();
+        match crate::ui::research::use_as(&net.session.core.research, stack) {
+            crate::ui::research::UseAs::Read => {
+                send(&net, &mut toast, "read", |buf| {
+                    protocol::encode_action_research(slot, buf)
+                });
+            }
+            crate::ui::research::UseAs::Consume => {
+                send(&net, &mut toast, "eat", |buf| {
+                    protocol::encode_action_consume(slot, buf)
+                });
+            }
+        }
     }
     if keys.just_pressed(KeyCode::KeyV) {
         // Pick up the nearest spent arrow in reach (`sim-core/spent.rs`).
@@ -486,16 +528,17 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
             }
         }
         Verb::Research => {
-            // The one `E` that spends what is in your hand rather than
-            // opening what is at the address. The slot is the hotbar
-            // selection — the same `net.sel` the eat verb uses — because
-            // "the held item" is the only thing the prompt can honestly
-            // name, and the sim refuses a slot that holds the wrong thing
-            // with a sentence of its own.
-            let slot = net.sel;
-            send(net, toast, "research", |buf| {
-                protocol::encode_action_research(slot, buf)
-            });
+            // A container since research table v1, so `E` opens it for the
+            // recycler's reason exactly — the panel is where the sample and
+            // the junk go — and by the same action. `C` below starts it.
+            // (Until v1 this `E` researched the held item on the spot; the
+            // timed table replaced that, and paper is read from the pack.)
+            let handle = pick.handle;
+            if send(net, toast, "open", |buf| {
+                protocol::encode_action_container(CONT_BOX, handle, buf)
+            }) {
+                open_panel(ui);
+            }
         }
         Verb::Hearth => {
             let (cx, cz, level) = (pick.cx, pick.cz, pick.level);
@@ -548,10 +591,14 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
             if let Some(ui) = ui {
                 if ui.panel == Panel::None {
                     ui.panel = Panel::Tech;
-                    // The header's LEVEL badge is the bench actually under
-                    // the crosshair — display only; the sim re-derives the
-                    // demanded rung per node.
+                    // The bench actually under the crosshair: the highest
+                    // tab, and the rung the panel's reach check holds it to.
+                    // The sim still re-derives the demanded rung per node.
                     ui.tech_tier = sim_core::deploy::bench_tier(pick.arch).max(1);
+                    // Opens on the bench's own tree; the lower tiers are
+                    // tabs (operator, 2026-09-22).
+                    ui.tech_tab = ui.tech_tier;
+                    ui.tech_sel = None;
                     ui.dirty = true;
                 }
             }
@@ -578,7 +625,9 @@ fn light_aimed(net: &Net, pick: &Pick, toast: &mut Toast) {
     // an address, and `oven::toggle` switches whatever converter stands
     // there. The refusal that separates them is the sim's — a fire with
     // nothing to burn answers `REFUSE_D_FUEL` and a recycler never does.
-    if !matches!(pick.verb, Verb::Fire | Verb::Recycler) {
+    // And a research table (research table v1): its start is the same
+    // switch, and `research::begin` answers with the table's own refusal.
+    if !matches!(pick.verb, Verb::Fire | Verb::Recycler | Verb::Research) {
         toast.warn("nothing to switch in reach");
         return;
     }
@@ -588,32 +637,51 @@ fn light_aimed(net: &Net, pick: &Pick, toast: &mut Toast) {
     });
 }
 
+/// How long a first `Shift+K` at a hearth stays armed for the second.
+const CLEAR_CONFIRM_S: f64 = 3.0;
+
+/// Which access key was pressed: `L`, `K` or `Shift+K`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Access {
+    Join,
+    Leave,
+    Clear,
+}
+
 /// `L` and `K` — the access verb, on whatever the crosshair is on.
 ///
 /// **One key, two stores, because the sim's verb is one verb.** At
-/// anything a lock bolts to — a door or a box, and the set is the sim's
-/// own `deploy::lockable` by way of `ui::keypad::lock_target`, never a
-/// list here — it opens the keypad (which then speaks: six ops share one
-/// action code and which one a press means depends on four digits nobody
-/// has typed yet). At a hearth it sends a crew op immediately: there is
-/// nothing to type, and a pad that asked for four digits at a cupboard
-/// would be asking the wrong question.
+/// anything a lock bolts to — a door, a box, a hearth with a lock on it;
+/// the set is the sim's own `deploy::lockable` by way of
+/// `ui::keypad::lock_target`, never a list here — it opens the keypad
+/// (which then speaks: six ops share one action code and which one a press
+/// means depends on four digits nobody has typed yet). At a bare hearth it sends a crew op immediately: there
+/// is nothing to type. A hearth with a lock bolted on opens its pad like a
+/// door's, because there the four digits ARE the question — the code is
+/// how a crew invites a hand (hearth lock v0).
 ///
-/// `leave` is the `K` half. Passing it in rather than reading the pick
-/// twice is what keeps `K` meaning LOCK at a door and LEAVE at a hearth
-/// without two resolvers that could disagree about which is aimed at.
+/// `ask` says which key: `L` joins, `K` leaves, `Shift+K` clears the crew
+/// to the one pressing it (the reference's "clear list"; the sim refuses a
+/// hand not on the crew). Passing it in rather than reading the pick twice
+/// is what keeps `K` meaning LOCK at a door and LEAVE at a hearth without
+/// two resolvers that could disagree about which is aimed at.
 ///
 /// A lockable with no lock bolted on says so rather than opening an empty
 /// pad: the wire carries `has_lock` precisely so this prompt can be honest
 /// without the client learning anything about who the lock remembers.
-fn access_aimed(net: &Net, pick: &Pick, pad: &mut Pad, toast: &mut Toast, leave: bool) {
+fn access_aimed(net: &Net, pick: &Pick, pad: &mut Pad, toast: &mut Toast, ask: Access) {
     use crate::ui::keypad::{lock_target, LockTarget};
-    if pick.verb == Verb::Hearth {
+    // A hearth with a lock bolted on takes `L` to its keypad (hearth lock
+    // v0): the right code is the invitation, and the sim puts the hand it
+    // remembers on the crew in the same act. `K` and `Shift+K` stay the
+    // crew's leave and clear on every hearth, locked or bare — neither is
+    // ever a question for a pad.
+    if pick.verb == Verb::Hearth && (ask != Access::Join || !pick.has_lock) {
         let (cx, cz, level) = (pick.cx, pick.cz, pick.level);
-        let op = if leave {
-            sim_core::deploy::ACCESS_OP_CREW_LEAVE
-        } else {
-            sim_core::deploy::ACCESS_OP_CREW_JOIN
+        let op = match ask {
+            Access::Join => sim_core::deploy::ACCESS_OP_CREW_JOIN,
+            Access::Leave => sim_core::deploy::ACCESS_OP_CREW_LEAVE,
+            Access::Clear => sim_core::deploy::ACCESS_OP_CREW_CLEAR,
         };
         send(net, toast, "crew", |buf| {
             protocol::encode_action_access(
@@ -630,7 +698,7 @@ fn access_aimed(net: &Net, pick: &Pick, pad: &mut Pad, toast: &mut Toast, leave:
     }
     // `K` at a door is the keypad's own LOCK and is handled there; outside
     // the pad and away from a hearth it means nothing.
-    if leave {
+    if ask != Access::Join {
         return;
     }
     match lock_target(pick) {

@@ -2343,6 +2343,7 @@ pub fn stream(
     world: Res<WorldId>,
     net: NonSend<Net>,
     models: Res<super::viewmodel::Models>,
+    mut marks: Option<ResMut<super::decal::Marks>>,
 ) {
     // One reborrow, then field-level borrows. `ResMut`'s `DerefMut` hands out
     // a borrow of the WHOLE resource, so reading `kit` while inserting into
@@ -2406,6 +2407,19 @@ pub fn stream(
                 && live.foot_drop == foot_drop
             {
                 continue;
+            }
+            // An upgrade is a new face: the old material's marks (splinters
+            // on what is stone now) go with the old face.
+            if live.row != rec.row {
+                if let Some(m) = marks.as_deref_mut() {
+                    let tf = base_transform(seed, haven, key, live.plate);
+                    let up = if is_edge_shape(def.shape) {
+                        LEVEL_H_M * 0.5
+                    } else {
+                        0.3
+                    };
+                    m.forget_later(tf.translation + Vec3::Y * up, super::fx::world::FORGET_R_M);
+                }
             }
             commands.entity(live.entity).despawn();
             ring.pieces.remove(&key);
@@ -2478,6 +2492,15 @@ pub fn stream(
                 && live.plate == plate
             {
                 continue;
+            }
+            // A leaf that swings takes its marks with it rather than leaving
+            // them hanging in the doorway it no longer fills.
+            if live.open != rec.open {
+                if let Some(m) = marks.as_deref_mut() {
+                    let arch = core.deploy_defs.defs[live.row as usize].arch;
+                    let was = deploy_transform(seed, haven, key, arch, live.open, live.plate);
+                    m.forget_later(was.translation, DOOR_FORGET_R_M);
+                }
             }
             commands.entity(live.entity).despawn();
             ring.deploys.remove(&key);
@@ -2601,6 +2624,7 @@ fn sync_loot(
                     item: g.item,
                     count: g.count,
                     cond: 0,
+                    skin: 0,
                 },
             ),
         };
@@ -2791,6 +2815,10 @@ fn spawn_piece(
     piece.id()
 }
 
+/// How far from a door leaf's middle its marks go when it swings, metres:
+/// past the corner of the widest leaf, a garage door's.
+const DOOR_FORGET_R_M: f32 = 1.8;
+
 /// Where a deployable of `arch` stands at `addr` — the centre of its box,
 /// posed. **The one emit site** both the standing deployable
 /// ([`spawn_deploy`]) and the deploy ghost (`ghost::deploy_track`) use, the
@@ -2905,6 +2933,10 @@ pub fn spawn_deploy(
     // A thing that burns gets a light, hung as a child and dark until the sim
     // says the fire is lit. See [`FireLight`].
     if burns(arch) {
+        // A pit shows its flames from the logs; a furnace keeps them inside
+        // and smokes from its top.
+        let h = DEPLOY[idx].0[1];
+        let flames = arch == ARCH_FIRE;
         e.with_child((
             FireLight {
                 cx: rec.cx,
@@ -2919,6 +2951,16 @@ pub fn spawn_deploy(
                 ..default()
             },
             Transform::from_xyz(0.0, FIRE_LIGHT_LIFT_M, 0.0),
+            super::fx::world::FireFx {
+                flames,
+                flame_dy: -FIRE_LIGHT_LIFT_M + 0.05,
+                smoke_dy: if flames {
+                    0.45
+                } else {
+                    h * 0.5 - FIRE_LIGHT_LIFT_M + 0.05
+                },
+                scale: 1.0,
+            },
         ));
     }
     e.id()

@@ -46,7 +46,7 @@
 use protocol::event::ItemCatalog;
 use protocol::{encode_action_move, WireError};
 use sim_core::combat::{ARMOR_MAX_PCT, WEAR_BODY, WEAR_HEAD};
-use sim_core::deploy::{box_key, DeployContent, DeployRec, ARCH_BOX};
+use sim_core::deploy::{box_key, holds_items, DeployContent, DeployRec};
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{
     deposit_refused, is_own, CONT_BOX, CONT_MAX, CONT_SELF, CONT_WEAR, CONT_WORLD,
@@ -362,8 +362,9 @@ pub fn move_args(
 /// this side's.
 pub fn refusal_text(reason: u8) -> &'static str {
     use sim_core::inventory::{
-        REFUSE_M_COUNT, REFUSE_M_EMPTY, REFUSE_M_NO_CONTAINER, REFUSE_M_NO_INPUT, REFUSE_M_NO_ROOM,
-        REFUSE_M_OVEN, REFUSE_M_REACH, REFUSE_M_SLOT, REFUSE_M_UNSTACKABLE, REFUSE_M_WEAR,
+        REFUSE_M_BUSY, REFUSE_M_COUNT, REFUSE_M_EMPTY, REFUSE_M_NO_CONTAINER, REFUSE_M_NO_INPUT,
+        REFUSE_M_NO_ROOM, REFUSE_M_OVEN, REFUSE_M_REACH, REFUSE_M_SLOT, REFUSE_M_TABLE,
+        REFUSE_M_UNSTACKABLE, REFUSE_M_WEAR,
     };
     match reason as u32 {
         REFUSE_M_SLOT => "that slot is not addressable",
@@ -386,6 +387,11 @@ pub fn refusal_text(reason: u8) -> &'static str {
         // `container_title` calls that panel `CRATE` — the word on the
         // screen and the word in the line are the same one.
         REFUSE_M_NO_INPUT => "that crate gives loot and takes none",
+        // The research table's two (v73). Its slot rule names both slots,
+        // because the fix is to put the thing in the OTHER one as often as
+        // it is to take it away.
+        REFUSE_M_TABLE => "the table takes one thing to research and its junk",
+        REFUSE_M_BUSY => "the table is researching - wait for it to finish",
         _ => "refused",
     }
 }
@@ -436,34 +442,14 @@ pub fn wearable_here(catalog: &ItemCatalog, item: u16, s: usize) -> bool {
 
 /// Is a ground container open — is the player **looting**?
 ///
-/// One name for a state two parts of the screen key off: the container
-/// grid is drawn, and the crafting half is not (`screen_title`). `is_own`
+/// One name for a state two parts of the inventory page key off: the
+/// container grid is drawn, and quick craft is not. `is_own`
 /// rather than `!= CONT_SELF`, which is `sim_core`'s own distinction and
 /// the reason it exists — the body is a container the player carries, and
 /// it is never what `ClientCore::cont_kind` holds, so the two spellings
 /// agree today and only one of them keeps agreeing.
 pub fn looting(cont_kind: u8) -> bool {
     !is_own(cont_kind)
-}
-
-/// The screen title over the inventory panel.
-///
-/// **`CRAFTING` only when the crafting half is actually drawn.** The title
-/// names the region under it (this file's own rule, and why it stopped
-/// saying `INVENTORY` — the grids have their own heads), so with a
-/// container open and the recipe browser gone, `CRAFTING` would label a
-/// row of grids and `INVENTORY` would be the screen's third `INVENTORY`.
-///
-/// The operator, 2026-09-16, looking at the crafting panel over a bag's
-/// slots: *"we shouldnt show crafting"*. So the word names the verb the
-/// screen is for instead, which is the one thing on it that is not also a
-/// heading somewhere else.
-pub fn screen_title(cont_kind: u8) -> &'static str {
-    if looting(cont_kind) {
-        "LOOTING"
-    } else {
-        "CRAFTING"
-    }
 }
 
 /// What a right-click on a slot with no drag resolves to.
@@ -780,8 +766,11 @@ pub fn container_cols(kind: u8) -> usize {
 ///
 /// **The arch check is what makes the address unambiguous**, not tidiness: a
 /// handle names a cell and a level, and `DeployRec` also carries a `loc`, so
-/// a hearth and a box sharing one cell share one key. Filtering to `ARCH_BOX`
-/// picks the one the handle can actually mean.
+/// a hearth and a box sharing one cell share one key. Filtering to the
+/// archetypes that hold items (`deploy::holds_items` — a box, a fire, a
+/// furnace, a recycler, and since research table v1 a research table) picks
+/// the one the handle can actually mean, and names each by its own item
+/// rather than calling every container `BOX`.
 ///
 /// `defs_have` is the watermark — the def table drips in over the first
 /// seconds of a session, and a row past it is a row of zeroes whose `arch`
@@ -798,7 +787,7 @@ pub fn box_item_at(
             return None;
         }
         let def = &defs.defs[d.row as usize];
-        (def.arch == ARCH_BOX).then_some(def.item)
+        holds_items(def.arch).then_some(def.item)
     })
 }
 

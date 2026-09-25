@@ -73,6 +73,9 @@ fn block() -> [f32; 2 * BLOCK] {
 fn start(cue: Cue, gain_l: f32, gain_r: f32, rate: f32) -> Cmd {
     Cmd::Start {
         cue,
+        take: 0,
+        takes: 1,
+        lp: 0,
         gain_l,
         gain_r,
         rate,
@@ -235,6 +238,7 @@ fn rebuild_at(out_rate: u32) {
                     gain_l,
                     gain_r,
                     rate,
+                    ..
                 } => voices.push(NVoice {
                     cue,
                     c: Cursor { pos: 0, frac: 0.0 },
@@ -970,6 +974,7 @@ fn start_cmd_pans_a_positional_cue_and_leaves_an_own_fact_at_the_table_gain() {
         gain_l,
         gain_r,
         rate: r,
+        ..
     } = start_cmd(&own, listener, right, 48_000)
     else {
         panic!("start_cmd must build a Start")
@@ -1105,6 +1110,96 @@ fn the_command_codec_is_pinned_and_refuses_a_bad_record() {
         None,
         "an unknown tag must decode to nothing"
     );
+}
+
+/// A cue's takes are equal slices of its bank: take 1 of 3 plays exactly the
+/// middle third and ends inside it. A low-passed voice is the one pole the
+/// header states; every rebuild above runs at `lp == 0`, which is what holds
+/// an unfiltered voice to its old bits.
+#[test]
+fn a_take_plays_its_own_slice_and_the_low_pass_is_one_pole() {
+    const SPAN: usize = 200;
+    // Three ramps at three levels, so a sample says which take it came from.
+    let takes: Vec<i16> = (0..3 * SPAN)
+        .map(|i| ((i / SPAN) as i16 + 1) * 1000 + (i % SPAN) as i16)
+        .collect();
+    let mut r = Renderer::new(SAMPLE_RATE);
+    assert!(r.install(Cue::Knock, takes.clone().into()).is_ok());
+    r.push(start(Cue::Knock, 1.0, 1.0, 1.0).with_take(1, 3));
+    let mut heard = Vec::new();
+    for _ in 0..3 {
+        let mut out = block();
+        r.render(&mut out);
+        heard.extend(out.chunks_exact(2).map(|f| f[0]));
+    }
+    for (i, h) in heard.iter().enumerate().take(SPAN - 1) {
+        assert_eq!(
+            *h,
+            takes[SPAN + i] as f32 * (1.0 / 32768.0),
+            "sample {i} is not take 1's"
+        );
+    }
+    assert!(
+        heard[SPAN - 1..].iter().all(|h| *h == 0.0),
+        "take 1 ran on into take 2"
+    );
+    assert_eq!(r.live(), 0);
+    // A take past its takes is refused, and so is a record that says so.
+    r.apply(start(Cue::Knock, 1.0, 1.0, 1.0).with_take(3, 3));
+    assert_eq!(r.bad_cmd, 1);
+    let c = start(Cue::Knock, 0.5, 0.25, 1.0).with_take(4, 5);
+    let Cmd::Start {
+        cue,
+        gain_l,
+        gain_r,
+        rate,
+        ..
+    } = c
+    else {
+        unreachable!()
+    };
+    let lp = Cmd::Start {
+        cue,
+        take: 4,
+        takes: 5,
+        lp: 77,
+        gain_l,
+        gain_r,
+        rate,
+    };
+    assert_eq!(Cmd::from_bytes(&lp.to_bytes()), Some(lp));
+    let mut bad = lp.to_bytes();
+    bad[2] = 0x45; // take 5 of 5
+    assert_eq!(Cmd::from_bytes(&bad), None);
+
+    // The filter: a step through one pole, bit for bit.
+    let mut r = Renderer::new(SAMPLE_RATE);
+    assert!(r
+        .install(Cue::Knock, vec![16_384i16; 4 * BLOCK].into())
+        .is_ok());
+    r.push(Cmd::Start {
+        cue: Cue::Knock,
+        take: 0,
+        takes: 1,
+        lp: 40,
+        gain_l: 1.0,
+        gain_r: 1.0,
+        rate: 1.0,
+    });
+    let mut out = block();
+    r.render(&mut out);
+    let (a, x) = (40.0f32 * (1.0 / 256.0), 16_384.0f32 * (1.0 / 32768.0));
+    let mut y = 0.0f32;
+    for (i, f) in out.chunks_exact(2).enumerate() {
+        y += a * (x - y);
+        assert_eq!(f[0], y, "sample {i} is not the one-pole's");
+    }
+    // Distance muffles past `LP_FROM` of the radius, more the further out.
+    let near = engine::lp_of(0.2 * 40.0, 40.0, 48_000);
+    let mid = engine::lp_of(0.5 * 40.0, 40.0, 48_000);
+    let far = engine::lp_of(0.95 * 40.0, 40.0, 48_000);
+    assert_eq!(near, 0, "a near sound is not filtered");
+    assert!(mid > far && far > 0, "{mid} then {far}");
 }
 
 // ---------------------------------------------------------------------------

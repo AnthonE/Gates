@@ -541,6 +541,23 @@ pub const MAX_HEARTHS: usize = 256;
 /// refuses a build table needing more. Structural cap, not a knob.
 pub const HEARTH_STOCK_ROWS: usize = 4;
 
+/// Steps in the upkeep rent's size ladder (upkeep v2, `upkeep::tax`): past
+/// how many graded pieces a base pays which rate. The reference prices four
+/// brackets and the first is our flat `upkeep_pct_per_day`, so three steps
+/// carry theirs; the fourth is headroom. The bake refuses a longer ladder.
+/// Structural cap, not a knob.
+pub const UPKEEP_STEPS: usize = 4;
+
+/// Stocked hearths whose death one tick can turn into grief protection
+/// (upkeep v2, `deploy::grieve`): each is parked at removal and drained at
+/// the end of the tick, the box spill's shape. Overflow policy: **the
+/// excess buys nothing** — a hearth destroyed past the cap in one tick
+/// leaves its base unprotected, which under-protects and can never
+/// over-protect. Eight is several raids' worth of cupboards dying in one
+/// tick; the drain is three passes over the piece store per entry.
+/// Proposed default, DECISIONS.md §open (upkeep v2).
+pub const MAX_GRIEF_PER_TICK: usize = 8;
+
 /// Piece + deployable records the upkeep/decay sweep visits per tick
 /// (each store advances its own cursor by this many entries). Bounded
 /// per-tick work: a full pass over both stores takes seconds while the
@@ -706,8 +723,11 @@ pub const MAX_LOCKS: usize = 512;
 /// Overflow policy: **refuse the code entry** with `REFUSE_D_AUTH_FULL`.
 /// Never evict: dropping the oldest entry would make a door that forgets
 /// the person who owns it, which is the one failure this cap must not
-/// have. Proposed default, DECISIONS.md §open (lock v1).
-pub const LOCK_AUTH_CAP: usize = 8;
+/// have. Proposed default, DECISIONS.md §open (lock v1). **Ten, the
+/// crew's own cap** (`HEARTH_CREW_CAP`): a code lock on a hearth is how a
+/// crew invites a hand, and at eight one code could fill a ten-strong crew
+/// only by rotating codes.
+pub const LOCK_AUTH_CAP: usize = 10;
 
 /// Players one lock remembers as **guests** — entered the guest code, may
 /// work the door and nothing else (`reference/DOORS.md` §2.2, Devblog
@@ -756,10 +776,12 @@ pub const PRIV_BFS_CELLS: usize = 256;
 pub const CLAIM_INDEX_SLOTS: usize = 16_384;
 
 /// Players one hearth remembers as its **crew** — who may build, upgrade,
-/// repair and deploy inside its claim (`reference/BUILDING.md` §2). Ten in
-/// the reference's own vanilla cap, and the same number here for the same
-/// reason it is a number at all: a base is a group, and an unbounded group
-/// is an unbounded array in a `HearthRec` the wire mirrors nothing of.
+/// repair and deploy inside its claim (`reference/BUILDING.md` §2). Ten is
+/// **ours**: it was written as the reference's vanilla cap, and upkeep v2's
+/// research found none at tier 1 — only a softcore cap of 4 and a 2026
+/// devblog example of "a TC with 12 players". It is a number at all because
+/// a base is a group, and an unbounded group is an unbounded array in a
+/// `HearthRec` the wire mirrors nothing of (wall 4).
 /// Overflow policy: **refuse, never evict** — the `Roster`'s rule, and the
 /// one this cap must not break is that a hearth never forgets whoever
 /// placed it. Proposed default, DECISIONS.md §open (hearth crew v1).
@@ -805,6 +827,15 @@ const _: () = assert!(
      could never be researched, and nothing else would say so"
 );
 
+/// Skin rows the sim preallocates for (`content/skins.toml`, `skin.rs`).
+/// The content bake refuses a catalog past this. Structural rather than a
+/// knob: it is the width of `Player::skins`, and the owned set crosses the
+/// wire as exactly this many bits.
+pub const MAX_SKINS: usize = 256;
+/// `u64` words in a [`crate::skin::SkinSet`].
+pub const SKIN_WORDS: usize = MAX_SKINS / 64;
+const _: () = assert!(MAX_SKINS.is_multiple_of(64), "a SkinSet is whole u64 words");
+
 /// Loot tables the sim preallocates for — one per container archetype
 /// (`content/loot.toml` ships 2: barrel and crate). The content bake
 /// refuses a set past this. Structural cap like `MAX_DEPLOY_DEFS`, not a
@@ -816,6 +847,15 @@ pub const MAX_LOOT_TABLES: usize = 8;
 /// 9). The bake refuses past it. Structural cap like `MAX_RECIPE_INPUTS`,
 /// not a knob.
 pub const MAX_LOOT_ENTRIES: usize = 16;
+
+/// Guaranteed rows one loot table may carry (loot guaranteed column v0,
+/// 2026-09-22) — the rows every open pays whatever the weighted draw did,
+/// which is how the reference prices its whole container ladder in scrap
+/// (barrel 2, military crate 8, every one at 100 %). The bake refuses past
+/// it. Structural cap like [`MAX_LOOT_ENTRIES`], not a knob: it bounds the
+/// per-open work (a fixed walk, one `inv_add` per row), and how much a row
+/// pays is its own `count_min`/`count_max`. The shipped tables use one.
+pub const MAX_LOOT_GUARANTEED: usize = 4;
 
 /// Draws one smash may make — the cap on a table's `rolls_max`. The bake
 /// refuses past it. Structural cap like the two above, **not a knob**: it
@@ -1124,7 +1164,12 @@ pub const MOB_ID_TAG: u32 = 0x8000_0000;
 /// No overflow policy: it is a cadence, not a queue.
 pub const MOB_THINK_TICKS: u64 = 15;
 
-/// One full day/night cycle, in ticks — 45 minutes at `TICK_HZ`
+/// How often a body's wet and cold are stepped, ticks: once a second,
+/// phase-offset by slot so a hundred bodies do not all take the heat scan on
+/// one tick (weather v0, `exposure.rs`). A cadence, not a queue.
+pub const EXPOSURE_PERIOD_TICKS: u64 = 30;
+
+/// One full day/night cycle, in ticks — 80 minutes at `TICK_HZ`
 /// (`ALPHA.md` §1's knob; day/night v0, `DECISIONS.md` §open).
 ///
 /// **Time of day is a pure function of the tick, and that is the design,
@@ -1133,9 +1178,9 @@ pub const MOB_THINK_TICKS: u64 = 15;
 /// it (`client-core/clock.rs`), so shipping a second field would be
 /// redundant bytes carrying a derivable number — `NETCODE.md` §3's "time
 /// of day rides the G channel" is satisfied by the tick itself plus this
-/// constant. What the choice costs is a set-time admin verb: with no
-/// offset field anywhere, shifting the clock means shifting the tick,
-/// which nothing may do. That is a wire field away if ever wanted.
+/// constant. The set-time admin verb this used to cost arrived with
+/// weather v0 as that one field: `weather::Env::day_offset`, which every
+/// reader of the hour adds through `weather::day_tick`.
 pub const DAY_TICKS: u64 = 144_000;
 
 /// Phase offset into the cycle at tick zero, so a fresh world — and every
@@ -1251,3 +1296,43 @@ const _: () = assert!(
      command may mint. One of them moved and the ring stopped being a proof: \
      a tick can now make more trust rows than it has room to keep"
 );
+/// Side of one path search's window, in 1 m nav cells (`nav.rs`). 96 m
+/// holds a wolf's 30 m notice radius on either side of it with room to go
+/// round a base; a goal further off is walked toward and re-planned.
+pub const NAV_WIN: usize = 96;
+
+/// Most cells one search may expand before it settles for the nearest
+/// cell it reached — the partial path that tells a brain "unreachable".
+pub const NAV_MAX_EXPAND: u32 = 768;
+
+/// Cells the whole roster may expand in one tick — the count-based stand-in
+/// for the reference's `ai.framebudgetms`. **Overflow defers**: a request
+/// that cannot get `nav::MIN_EXPAND` of it keeps its old path and asks again
+/// on its next think. Two full searches' worth; the straight-line check
+/// every plan tries first costs none of it.
+pub const NAV_EXPAND_PER_TICK: u32 = 2 * NAV_MAX_EXPAND;
+
+/// The A* frontier. Each expansion pushes at most eight cells, so this
+/// cannot fill inside `NAV_MAX_EXPAND`; if it ever did, the newest push is
+/// dropped and the search degrades to a longer route, never a panic.
+pub const NAV_HEAP_CAP: usize = 8 * NAV_MAX_EXPAND as usize + 8;
+
+/// Turn points one path carries. A route with more is cut short and the
+/// animal re-plans from where the cut lands.
+pub const NAV_MAX_CORNERS: usize = 16;
+
+/// Recent noises the animals can hear (`noise.rs`). A ring: **overflow
+/// forgets the oldest**, which every animal in range has already heard or
+/// never could — a noise is only audible for one think window. Every shot
+/// AND every strike lands here (each gather swing and each round's impact
+/// is an `EV_IMPACT`), and at 32 a busy server's hatchets pushed a gunshot
+/// out before the animals near it had thought: 256 is a full server's
+/// shots and strikes over one window with room over.
+pub const MAX_NOISES: usize = 256;
+
+/// Pack calls one tick can raise across the roster (`mob::Howls`). Only a
+/// thinking pack animal howls, and each at most once per its cooldown, so
+/// the true ceiling is the handful thinking on the tick. **Overflow drops
+/// the howl**: the call still happened (the pack answers off the roster, not
+/// the sound), only its sound is lost.
+pub const MAX_HOWLS_PER_TICK: usize = 8;

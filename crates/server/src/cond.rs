@@ -80,7 +80,12 @@ mod tests {
     #[test]
     fn the_ceiling_holds_and_the_legal_band_passes() {
         let gc = GatherContent::probe_fixture(); // cond_max[0] = 400, [2] = 0
-        let stack = |item, count, cond| ItemStack { item, count, cond };
+        let stack = |item, count, cond| ItemStack {
+            item,
+            count,
+            cond,
+            skin: 0,
+        };
 
         // Legal: at the ceiling, worn, dead (cond 0 with a ceiling), and a
         // conditionless item at 0.

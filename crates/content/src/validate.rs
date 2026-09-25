@@ -4,8 +4,12 @@
 
 use crate::schema::*;
 use crate::Content;
-use sim_core::limits::INV_SLOTS;
+use sim_core::limits::{INV_SLOTS, TICK_HZ};
 use std::collections::BTreeSet;
+
+/// Longest skin name, in bytes: the wire's name field
+/// (`protocol::MAX_ITEM_NAME_BYTES`), pinned equal by the server's tests.
+pub const SKIN_NAME_MAX_BYTES: usize = 24;
 
 fn check_id(id: &str, prefix: &str, what: &str) -> Result<(), String> {
     let rest = id
@@ -720,6 +724,52 @@ pub fn structural(c: &Content) -> Result<(), String> {
         }
     }
 
+    // Wet and cold (weather v0). Everything is per mille of a meter, so
+    // nothing may pass 1000, and a cold that kills a full body in under five
+    // minutes is a bug, not a winter.
+    {
+        let e = &c.balance.exposure;
+        for (name, v) in [
+            ("wet_rain_per_s", e.wet_rain_per_s),
+            ("dry_per_s", e.dry_per_s),
+            ("dry_fire_per_s", e.dry_fire_per_s),
+            ("night_cold", e.night_cold),
+            ("rain_cold", e.rain_cold),
+            ("wind_cold", e.wind_cold),
+            ("wet_cold", e.wet_cold),
+            ("fire_warmth", e.fire_warmth),
+            ("torch_warmth", e.torch_warmth),
+            ("chill_rise_per_s", e.chill_rise_per_s),
+            ("chill_fall_per_s", e.chill_fall_per_s),
+            ("hurt_at", e.hurt_at),
+        ] {
+            if v > 1000 {
+                return Err(format!("exposure `{name}`: {v} is past 1000 per mille"));
+            }
+        }
+        if e.soak_depth_cm > u16::MAX as u32 || e.heat_radius_cm > u16::MAX as u32 {
+            return Err("exposure: a distance overflows u16 cm".to_string());
+        }
+        if e.chill_rise_per_s > 0 && e.chill_fall_per_s == 0 {
+            return Err("exposure: a chill that never falls would never warm".to_string());
+        }
+        let hp = c.balance.globals.player_hp;
+        if e.hurt_hp_per_min > 0 && hp / e.hurt_hp_per_min < 5 {
+            return Err(format!(
+                "exposure: full cold kills {hp} hp in under 5 min ({} hp/min)",
+                e.hurt_hp_per_min
+            ));
+        }
+        for a in &c.armors {
+            if !(-100..=100).contains(&a.cold_pct) {
+                return Err(format!(
+                    "armor `{}`: cold_pct {} outside ±100",
+                    a.id, a.cold_pct
+                ));
+            }
+        }
+    }
+
     // The survival clock. Every one of these would be a division by zero,
     // a meter that never moves, or a body that cannot be hurt — each of
     // which would make the clock silently inert, which is the failure mode
@@ -821,9 +871,16 @@ pub fn structural(c: &Content) -> Result<(), String> {
             if crate::bake::container_index(&l.container).is_none() {
                 continue;
             }
-            for e in &l.entries {
+            // A guaranteed row pays on every open, so it is as reachable as
+            // any weighted one — more so.
+            let paid = l
+                .entries
+                .iter()
+                .map(|e| &e.item)
+                .chain(l.guaranteed.iter().map(|g| &g.item));
+            for item in paid {
                 for con in &c.consumables {
-                    if con.id != e.item {
+                    if &con.id != item {
                         continue;
                     }
                     gathered_food |= con.food > 0;
@@ -1038,6 +1095,46 @@ pub fn structural(c: &Content) -> Result<(), String> {
         }
     }
 
+    // Upkeep v2. The ladder climbs: its steps strictly ascending and each
+    // rate at least the one below it (first against `upkeep_pct_per_day`),
+    // because a base that got cheaper per piece by growing would make the
+    // reference's lever against sprawl pay the sprawler. A rate over 100 %
+    // a day is a base that costs more to keep than to build, which is not
+    // a number anybody meant.
+    {
+        let g = &c.balance.globals;
+        if g.upkeep_steps.len() > sim_core::limits::UPKEEP_STEPS {
+            return Err(format!(
+                "balance: {} upkeep steps, the sim carries {}",
+                g.upkeep_steps.len(),
+                sim_core::limits::UPKEEP_STEPS
+            ));
+        }
+        let (mut after_prev, mut rate_prev) = (0u32, g.upkeep_pct_per_day * 10);
+        for [after, permille] in &g.upkeep_steps {
+            if *after <= after_prev {
+                return Err(format!(
+                    "balance: upkeep step at {after} pieces does not climb past {after_prev}"
+                ));
+            }
+            if *permille < rate_prev || *permille > 1000 {
+                return Err(format!(
+                    "balance: upkeep step past {after} pieces charges {permille}‰ a day — the \
+                     ladder must not fall below {rate_prev}‰ nor pass 1000‰"
+                ));
+            }
+            (after_prev, rate_prev) = (*after, *permille);
+        }
+        if let Some(p) = g.inside_decay_pct {
+            if p == 0 || p > 100 {
+                return Err(format!(
+                    "balance: inside_decay_pct {p} — a live percent of the ladder rate, 1..=100 \
+                     (leave it out for the full rate)"
+                ));
+            }
+        }
+    }
+
     // Loot: every entry exists, weights and count ranges sane.
     let mut containers = BTreeSet::new();
     for l in &c.loot_tables {
@@ -1061,6 +1158,23 @@ pub fn structural(c: &Content) -> Result<(), String> {
             }
             if e.count_min == 0 || e.count_min > e.count_max {
                 return Err(format!("loot `{}`: bad count range on `{}`", l.id, e.item));
+            }
+        }
+        // Guaranteed rows (loot guaranteed column v0): real items, a count
+        // that pays something, and each item once — two certain rows of one
+        // item are one row written twice, and the second is where a price
+        // edit goes to be missed.
+        let mut sure = BTreeSet::new();
+        for g in &l.guaranteed {
+            item_exists(&g.item, &format!("loot `{}` guaranteed row", l.id))?;
+            if g.count_min == 0 || g.count_min > g.count_max {
+                return Err(format!(
+                    "loot `{}`: bad guaranteed count range on `{}`",
+                    l.id, g.item
+                ));
+            }
+            if !sure.insert(g.item.clone()) {
+                return Err(format!("loot `{}`: `{}` is guaranteed twice", l.id, g.item));
             }
         }
     }
@@ -1166,6 +1280,21 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 ));
             }
         }
+        // The brain's senses (`sim-core/src/brain.rs`): a cone is 1–360
+        // degrees across, and the pack and fire radii are distances an
+        // animal can act across without leaving its own leash behind.
+        if !(1..=360).contains(&m.sight_deg) {
+            return Err(format!(
+                "mob `{}`: sight_deg {} — a sight cone is 1–360 degrees across",
+                m.id, m.sight_deg
+            ));
+        }
+        if m.pack_m > m.roam_m || m.fire_fear_m > m.roam_m {
+            return Err(format!(
+                "mob `{}`: pack_m {} / fire_fear_m {} reach past its {}m leash",
+                m.id, m.pack_m, m.fire_fear_m, m.roam_m
+            ));
+        }
         if m.drops.is_empty() {
             return Err(format!("mob `{}`: killing it pays nothing", m.id));
         }
@@ -1179,10 +1308,66 @@ pub fn structural(c: &Content) -> Result<(), String> {
 
     // Skins: appearance rows only (the schema already can't carry stats);
     // covered items must exist, prices are nonzero bare-ticker amounts.
+    if c.skins.len() > sim_core::limits::MAX_SKINS {
+        return Err(format!(
+            "skins: {} rows, the sim holds {} (limits.rs MAX_SKINS)",
+            c.skins.len(),
+            sim_core::limits::MAX_SKINS
+        ));
+    }
+    let mut catalogs = std::collections::BTreeSet::new();
     for s in &c.skins {
         item_exists(&s.covers, &format!("skin `{}` covers", s.id))?;
-        if s.price == 0 {
-            return Err(format!("skin `{}`: zero price", s.id));
+        match (s.coin, s.price) {
+            (None, None) => {}
+            (Some(_), Some(0)) => return Err(format!("skin `{}`: zero price", s.id)),
+            (Some(_), Some(_)) => {}
+            _ => {
+                return Err(format!(
+                    "skin `{}`: `coin` and `price` go together — a price in no coin, \
+                     or a coin with no price, is not a price",
+                    s.id
+                ))
+            }
+        }
+        // The id items carry: 0 is "no skin" on every stack, and two rows
+        // on one id would paint one saved item two ways.
+        if s.catalog == 0 {
+            return Err(format!("skin `{}`: catalog 0 means no skin", s.id));
+        }
+        if !catalogs.insert(s.catalog) {
+            return Err(format!("skin `{}`: catalog {} is taken", s.id, s.catalog));
+        }
+        // The name rides the wire in the item catalog's field (24 bytes,
+        // `protocol::MAX_ITEM_NAME_BYTES`) and is drawn as text.
+        if s.name.is_empty()
+            || s.name.len() > SKIN_NAME_MAX_BYTES
+            || !s.name.bytes().all(|b| (0x20..0x7f).contains(&b))
+        {
+            return Err(format!(
+                "skin `{}`: name must be 1..={SKIN_NAME_MAX_BYTES} printable ASCII bytes",
+                s.id
+            ));
+        }
+        // A skin is on ONE item: condition and stacking are per-stack, and
+        // a skin on a stack of forty would have to decide whose look forty
+        // merged stacks wear. V7's shape.
+        if let Some(item) = c.item(&s.covers) {
+            if item.stack != 1 {
+                return Err(format!(
+                    "skin `{}` covers `{}`, which stacks to {} — a skin fits one item",
+                    s.id, s.covers, item.stack
+                ));
+            }
+        }
+        // v0 skins an item and not a placed thing: a deployable's record
+        // does not carry a skin yet, so placing a skinned box would strip
+        // it. Refused rather than silently lost.
+        if c.deployables.iter().any(|d| d.id == s.covers) {
+            return Err(format!(
+                "skin `{}` covers `{}`, a deployable — placed things do not carry skins yet",
+                s.id, s.covers
+            ));
         }
     }
 
@@ -1353,6 +1538,62 @@ pub fn structural(c: &Content) -> Result<(), String> {
             c.research_coin.item
         ));
     }
+    // The table's paper (research table v1). One item for every recipe,
+    // its target in the stack's `cond` — so it must be a stack of ONE (a
+    // second sheet merged into a slot would be a second target with nowhere
+    // to live) with NO ceiling (anything that wears or repairs `cond` would
+    // rewrite what the paper teaches), and minted by no road but the table:
+    // every other mint writes `cond = 0`, which is a blank sheet that
+    // teaches nothing and looks like loot.
+    let t = &c.research_table;
+    let Some(paper) = c.items.iter().find(|i| i.id == t.blueprint) else {
+        return Err(format!(
+            "research: table blueprint `{}` is not an item",
+            t.blueprint
+        ));
+    };
+    if paper.stack != 1 || paper.condition_max != 0 {
+        return Err(format!(
+            "research: blueprint `{}` must be stack 1 with no condition — its \
+             `cond` names what it teaches",
+            t.blueprint
+        ));
+    }
+    let bp = t.blueprint.as_str();
+    let elsewhere = c
+        .recipes
+        .iter()
+        .any(|k| k.output == bp || k.inputs.iter().any(|s| s.item == bp))
+        || c.cooks.iter().any(|k| k.input == bp || k.output == bp)
+        || c.fuel.item == bp
+        || c.fuel.byproduct == bp
+        || c.loot_tables.iter().any(|l| {
+            l.entries.iter().any(|e| e.item == bp) || l.guaranteed.iter().any(|g| g.item == bp)
+        })
+        || c.balance.spawn_kit.iter().any(|s| s.item == bp)
+        || c.mobs.iter().any(|m| m.drops.iter().any(|d| d.item == bp))
+        || c.gatherables
+            .iter()
+            .any(|g| g.output == bp || g.secondary.as_ref().is_some_and(|s| s.output == bp))
+        || c.research.iter().any(|r| r.item == bp)
+        || c.research_coin.item == bp
+        || c.consumables.iter().any(|k| k.id == bp)
+        || c.weapons.iter().any(|w| w.id == bp)
+        || c.armors.iter().any(|a| a.id == bp)
+        || c.deployables.iter().any(|d| d.id == bp);
+    if elsewhere {
+        return Err(format!(
+            "research: blueprint `{bp}` is named by another table — only a \
+             research table may make paper, or it arrives blank"
+        ));
+    }
+    if t.seconds == 0 || t.seconds.saturating_mul(TICK_HZ) > u16::MAX as u32 {
+        return Err(format!(
+            "research: a table research takes {} s — it must be 1..={} s",
+            t.seconds,
+            u16::MAX as u32 / TICK_HZ
+        ));
+    }
     if !c.research.is_empty() {
         // A table nobody can stand at teaches nothing. The deployable is
         // what makes the verb reachable, so its absence is a bake error
@@ -1419,6 +1660,28 @@ pub fn structural(c: &Content) -> Result<(), String> {
                      a prerequisite nobody can learn locks the row forever",
                     r.item
                 ));
+            }
+            // **One tree per bench** (operator, 2026-09-22 — the reference's
+            // own shape, `reference/BLUEPRINTS.md` §2): a parent that unlocks
+            // at another bench is a line to a board the player is not
+            // standing at. The tier is the sim's own reading of the station
+            // (`research::node_tier` of `bake::station_code`), so the rung
+            // refused here is the rung `research::unlock` would demand.
+            let tier_of = |item: &str| {
+                c.recipes
+                    .iter()
+                    .find(|k| k.output == item)
+                    .map(|k| sim_core::research::node_tier(crate::bake::station_code(k.station)))
+            };
+            if let (Some(own), Some(theirs)) = (tier_of(&r.item), tier_of(req)) {
+                if own != theirs {
+                    return Err(format!(
+                        "research: `{}` (workbench {own} tree) requires `{req}` \
+                         (workbench {theirs} tree) — each bench has its own tree, \
+                         so an edge may not cross one",
+                        r.item
+                    ));
+                }
             }
         }
     }

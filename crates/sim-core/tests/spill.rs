@@ -185,6 +185,7 @@ fn full_pack_world(pos: (f32, f32)) -> Box<World> {
             item: FILLER,
             count: STACK_MAX,
             cond: 0,
+            skin: 0,
         };
     }
     w
@@ -330,11 +331,13 @@ fn a_merge_never_pulls_a_partly_looted_bag_s_clock_in() {
         item: 0,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     held[1] = ItemStack {
         item: FILLER,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     let id = bp
         .stand_up(&bc, 0, 0, 0, 1, &held, 100, &mut ev)
@@ -353,6 +356,7 @@ fn a_merge_never_pulls_a_partly_looted_bag_s_clock_in() {
         item: FILLER,
         count: 5,
         cond: 0,
+        skin: 0,
     };
     assert_eq!(
         bp.spill_at(&bc, &gc, 0, 0, 0, 1, &mut spill, 200, &mut ev),
@@ -387,6 +391,7 @@ fn a_spill_out_of_reach_stands_its_own_bag_up() {
         item: FILLER,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     let near = bp.stand_up(&bc, 0, 0, 0, 1, &held, 100, &mut ev).unwrap();
 
@@ -397,6 +402,7 @@ fn a_spill_out_of_reach_stands_its_own_bag_up() {
         item: FILLER,
         count: 3,
         cond: 0,
+        skin: 0,
     };
     let made = bp
         .spill_at(&bc, &gc, far_q, 0, 0, 1, &mut spill, 110, &mut ev)
@@ -585,8 +591,9 @@ const FIRE_ITEM: u16 = 6;
 /// Row 5: the code lock, item 7, priced at 12 × item 1.
 const LOCK_ROW: u16 = 5;
 const LOCK_ITEM: u16 = 7;
-/// A lockable box over the recycler row — `deploy::lockable` admits only a
-/// door or a box, and a box needs no doorway piece and no door deployable.
+/// A lockable box over the recycler row — of what `deploy::lockable` admits
+/// (the doors, a box, a hearth), a box needs no doorway piece, no door
+/// deployable and no claim of its own.
 /// `tests/lock_box.rs` makes the same override for the same reason.
 const BOX_ROW: u16 = 6;
 const BOX_ITEM: u16 = 9;
@@ -656,21 +663,25 @@ fn giveback_world() -> (Box<World>, u16, u16) {
         item: 0,
         count: 100,
         cond: 0,
+        skin: 0,
     };
     w.players[0].inv[1] = ItemStack {
         item: FIRE_ITEM,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     w.players[0].inv[2] = ItemStack {
         item: LOCK_ITEM,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     w.players[0].inv[3] = ItemStack {
         item: BOX_ITEM,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     (w, cx, cz)
 }
@@ -683,6 +694,7 @@ fn wall_off(w: &mut World) {
             item: BALLAST,
             count: STACK_MAX,
             cond: 0,
+            skin: 0,
         };
     }
 }
@@ -869,6 +881,7 @@ fn a_cancelled_craft_s_refund_a_full_pack_cannot_hold_falls_at_your_feet() {
         id: OWNER,
         recipe: 0,
         count: units,
+        skin: 0,
     }]);
     assert_eq!(
         w.players[0].jobs[0].remaining, units,
@@ -956,6 +969,7 @@ fn a_minted_bag_leaves_the_caller_s_buffer_empty() {
         item: FILLER,
         count: 5,
         cond: 0,
+        skin: 0,
     };
     let made = bp.spill_at(&bc, &gc, 0, 0, 0, 1, &mut buf, 10, &mut ev);
     assert!(made.is_some(), "nothing stood up — the case did not run");
@@ -1001,6 +1015,7 @@ fn an_inert_ladder_does_not_even_merge_into_a_bag_already_standing() {
         item: FILLER,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     bp.stand_up(&armed, 0, 0, 0, 1, &held, 10, &mut ev)
         .expect("the case needs a bag standing under armed content");
@@ -1010,6 +1025,7 @@ fn an_inert_ladder_does_not_even_merge_into_a_bag_already_standing() {
         item: FILLER,
         count: 5,
         cond: 0,
+        skin: 0,
     };
     let made = bp.spill_at(
         &BackpackContent::EMPTY,
@@ -1056,11 +1072,13 @@ fn a_looted_slot_zeroes_its_condition_with_its_item() {
         item: 0,
         count: 1,
         cond: 123,
+        skin: 0,
     };
     held[1] = ItemStack {
         item: FILLER,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     bp.stand_up(&bc, 0, 0, 0, 1, &held, 100, &mut ev)
         .expect("the fixture ladder is armed");
@@ -1074,6 +1092,7 @@ fn a_looted_slot_zeroes_its_condition_with_its_item() {
             item: 2,
             count: STACK_MAX,
             cond: 0,
+            skin: 0,
         };
     }
     bp.loot_nearest(&gc, &mut p, &mut ev)
@@ -1085,6 +1104,7 @@ fn a_looted_slot_zeroes_its_condition_with_its_item() {
             item: 0,
             count: 1,
             cond: 123,
+            skin: 0,
         },
         "the tool travels worn"
     );
@@ -1112,6 +1132,7 @@ fn a_spilled_slot_that_merged_away_zeroes_its_condition() {
         item: FILLER,
         count: STACK_MAX,
         cond: 0,
+        skin: 0,
     }; INV_SLOTS];
     held[0] = ItemStack::default();
     let first = bp
@@ -1126,11 +1147,13 @@ fn a_spilled_slot_that_merged_away_zeroes_its_condition() {
         item: 0,
         count: 1,
         cond: 77,
+        skin: 0,
     };
     spill[1] = ItemStack {
         item: 2,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     let stood = bp
         .spill_at(&bc, &gc, 0, 0, 0, 1, &mut spill, 200, &mut ev)
@@ -1148,4 +1171,55 @@ fn a_spilled_slot_that_merged_away_zeroes_its_condition() {
             "slot {s} of the minted bag is a non-canonical empty: {slot:?}"
         );
     }
+}
+
+/// A skin rides the item through a bag both ways (skins v0's promise):
+/// a skinned stack spilled into a bag in reach keeps its skin there, and
+/// looting the bag with take-all hands it back still wearing it. Both
+/// roads used to mint the stack plain.
+#[test]
+fn a_skin_survives_a_bag_both_ways() {
+    let bc = BackpackContent::probe_fixture();
+    let gc = GatherContent::probe_fixture();
+    let mut bp = Backpacks::new();
+    let mut ev = EventQueue::default();
+
+    let mut held = [ItemStack::default(); INV_SLOTS];
+    held[0] = ItemStack {
+        item: FILLER,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    bp.stand_up(&bc, 0, 0, 0, 1, &held, 100, &mut ev)
+        .expect("the fixture ladder is armed");
+
+    // A finished skinned craft with nowhere in the pack: the spill merges
+    // into the standing bag rather than minting a second one.
+    let skinned = ItemStack {
+        item: 0,
+        count: 1,
+        cond: 77,
+        skin: 5,
+    };
+    let mut spill = [ItemStack::default(); INV_SLOTS];
+    spill[0] = skinned;
+    bp.spill_at(&bc, &gc, 0, 0, 0, 1, &mut spill, 110, &mut ev)
+        .expect("a bag in reach catches it");
+    assert_eq!(bp.len(), 1, "merged rather than minted");
+    assert!(
+        bp.entries()[0].items.contains(&skinned),
+        "the bag holds the stack without its skin: {:?}",
+        bp.entries()[0].items
+    );
+
+    // Take-all: the stack comes back with its condition and its skin.
+    let mut p = Player::default();
+    bp.loot_nearest(&gc, &mut p, &mut ev)
+        .expect("a bag in reach");
+    assert!(
+        p.inv.contains(&skinned),
+        "take-all stripped the skin: {:?}",
+        p.inv
+    );
 }

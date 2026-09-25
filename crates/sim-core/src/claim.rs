@@ -50,7 +50,7 @@
 //! visited set are one fixed array), no `HashMap`, and floats only in the
 //! wall-1 set.
 
-use crate::build::{build_cell_of, Pieces, BUILD_CELL_M};
+use crate::build::{build_cell_of, BuildContent, Pieces, BUILD_CELL_M, MAT_TWIG};
 use crate::deploy::{Deploys, HearthRec};
 use crate::limits::{CLAIM_INDEX_SLOTS, MAX_BUILD_COORD, MAX_HEARTHS, MAX_PIECES, PRIV_BFS_CELLS};
 
@@ -111,7 +111,7 @@ fn built(pieces: &Pieces, cx: u16, cz: u16) -> bool {
 /// The walk's scratch: one fixed array used as both the queue and the
 /// visited set, because a breadth-first walk that never revisits is
 /// exactly a queue you also search.
-struct Walk {
+pub(crate) struct Walk {
     seen: [u32; PRIV_BFS_CELLS],
     len: usize,
 }
@@ -122,6 +122,15 @@ impl Walk {
             seen: [0; PRIV_BFS_CELLS],
             len: 0,
         }
+    }
+
+    /// Whether the walk reached this cell. **For [`component_near`]'s
+    /// walks only**, which come back sorted — the flood's queue order is
+    /// spent once the flood is, and a sorted set answers in eight compares
+    /// where the queue would take up to `PRIV_BFS_CELLS`, which matters for
+    /// a caller asking once per piece in the store.
+    pub(crate) fn holds(&self, cx: u16, cz: u16) -> bool {
+        self.seen[..self.len].binary_search(&key(cx, cz)).is_ok()
     }
 
     /// Enqueue a cell if it is new and there is room. False means the cap
@@ -169,6 +178,36 @@ fn reach(pieces: &Pieces, x: f32, z: f32) -> Walk {
         }
     }
 
+    flood(pieces, w)
+}
+
+/// The building a cell belongs to — the connected structure reachable from
+/// it or from any of its four neighbours, which is what a destroyed hearth
+/// was standing in (upkeep v2's grief protection). The neighbours are
+/// seeded because the likeliest reason a hearth is gone is that the floor
+/// under it went first, and a hole where the floor was is still the middle
+/// of the same base. Same cap and policy as [`reach`]: it can under-reach,
+/// never over-reach.
+pub(crate) fn component_near(pieces: &Pieces, cx: u16, cz: u16) -> Walk {
+    let mut w = Walk::new();
+    for (dx, dz) in [(0i32, 0i32), (0, -1), (0, 1), (-1, 0), (1, 0)] {
+        let (nx, nz) = (cx as i32 + dx, cz as i32 + dz);
+        if nx < 0 || nz < 0 || nx >= MAX_BUILD_COORD as i32 || nz >= MAX_BUILD_COORD as i32 {
+            continue;
+        }
+        if built(pieces, nx as u16, nz as u16) && !w.push(key(nx as u16, nz as u16)) {
+            break;
+        }
+    }
+    let mut w = flood(pieces, w);
+    // Sorted for `Walk::holds`: a total order on distinct keys, so the
+    // result is the same on every target (wall 1) whatever the sort does.
+    w.seen[..w.len].sort_unstable();
+    w
+}
+
+/// Flood a seeded walk out through connected built cells, to its cap.
+fn flood(pieces: &Pieces, mut w: Walk) -> Walk {
     // --- the walk -------------------------------------------------------
     // A queue and its visited set are one array: `at` is the head, `len`
     // the tail, and everything between them has been seen. The neighbour
@@ -329,14 +368,26 @@ pub(crate) struct ClaimCache {
     /// `[min_x, min_z, max_x, max_z]`. The cheap pre-reject that keeps a
     /// covers() miss at four compares instead of a cell scan.
     vol_bb: [[f32; 4]; MAX_HEARTHS],
+    /// Graded pieces (anything but twig) standing on each volume's own
+    /// cells — the count the upkeep rent's ladder is priced on (upkeep v2,
+    /// `upkeep::tax`). Twig is left out for the reason it pays no rent: a
+    /// scaffold going up must not raise what the finished half costs.
+    /// Counted at rebuild, which `Pieces::gen` triggers on every insert,
+    /// removal and **upgrade** — the last because an upgrade is what turns
+    /// a twig piece into one this counts.
+    vol_graded: [u32; MAX_HEARTHS],
     vol_count: usize,
     /// Which volume claims for each hearth, index-aligned to the hearth
     /// list ([`VOL_NONE`] = none). The one row `Deploys::remove_at` must
     /// keep aligned mid-tick.
     vol_of: [u16; MAX_HEARTHS],
-    /// Open-addressed cell → volume map, rebuild-only scratch (queries
-    /// never touch it). Lives here rather than in a stack frame because
-    /// 96 KB of scratch in a frame is the wasm shadow-stack trap
+    /// Open-addressed cell → volume map, **written only by a rebuild** and
+    /// read back between rebuilds (`volume_at`): by `covers`' one-probe
+    /// answer for a point on the base itself, and by the graded tally
+    /// (upkeep v2). It was query-free scratch until then, and it is still
+    /// cleared and filled nowhere else, so a fresh cache's map describes
+    /// exactly the pool beside it. Lives here rather than in a stack frame
+    /// because 96 KB of scratch in a frame is the wasm shadow-stack trap
     /// (`crate::boxed_array`'s doc), and clearing it is a `fill`, not an
     /// allocation.
     tbl_key: Box<[u32; CLAIM_INDEX_SLOTS]>,
@@ -356,6 +407,7 @@ impl ClaimCache {
             vol_start: [0; MAX_HEARTHS],
             vol_len: [0; MAX_HEARTHS],
             vol_bb: [[0.0; 4]; MAX_HEARTHS],
+            vol_graded: [0; MAX_HEARTHS],
             vol_count: 0,
             vol_of: [VOL_NONE; MAX_HEARTHS],
             tbl_key: crate::boxed_array(0),
@@ -386,11 +438,13 @@ impl ClaimCache {
     pub(crate) fn rebuild(
         &mut self,
         pieces: &Pieces,
+        bc: &BuildContent,
         hearths: &[HearthRec],
         pieces_gen: u64,
         hearth_gen: u64,
     ) {
         self.tbl_key.fill(0);
+        self.vol_graded = [0; MAX_HEARTHS];
         self.vol_count = 0;
         self.pool_len = 0;
         for (hi, h) in hearths.iter().enumerate().take(MAX_HEARTHS) {
@@ -503,8 +557,43 @@ impl ClaimCache {
             self.vol_of[hi] = v;
             self.vol_count += 1;
         }
+        // The rent's piece count: one probe per graded piece into the map
+        // the walks just filled, so the whole tally is `MAX_PIECES` O(1)
+        // probes on top of the walks it rides.
+        for rec in pieces.entries() {
+            if bc.pieces[rec.row as usize].material == MAT_TWIG {
+                continue;
+            }
+            if let Some(v) = self.volume_at(rec.cx, rec.cz) {
+                self.vol_graded[v as usize] += 1;
+            }
+        }
         self.stamp_pieces = pieces_gen;
         self.stamp_hearths = hearth_gen;
+    }
+
+    /// The volume a built cell was pooled into at the last rebuild, if any
+    /// — the scratch map read back. Valid between rebuilds, because only a
+    /// rebuild clears or writes it and every caller holds the cache fresh.
+    fn volume_at(&self, cx: u16, cz: u16) -> Option<u16> {
+        let k = TBL_OCCUPIED | key(cx, cz);
+        let mut s = tbl_home(k);
+        loop {
+            match self.tbl_key[s] {
+                0 => return None,
+                found if found == k => return Some(self.tbl_vol[s]),
+                _ => s = (s + 1) & (CLAIM_INDEX_SLOTS - 1),
+            }
+        }
+    }
+
+    /// Graded pieces on hearth `hearth`'s own volume — 0 for a hearth that
+    /// claims nothing, which `upkeep::tax` prices as its first rung.
+    pub(crate) fn graded(&self, hearth: usize) -> u32 {
+        match self.vol_of.get(hearth) {
+            Some(&v) if v != VOL_NONE => self.vol_graded[v as usize],
+            _ => 0,
+        }
     }
 
     /// Whether hearth `hearth`'s cached volume covers the planar point —
@@ -521,6 +610,14 @@ impl ClaimCache {
         let bb = self.vol_bb[v as usize];
         if x < bb[0] || z < bb[1] || x > bb[2] || z > bb[3] {
             return false;
+        }
+        // A point on one of the volume's own cells is at most half a cell's
+        // diagonal from that cell's centre, far inside the cushion — so
+        // membership answers yes in one probe, and only a point off the
+        // base (a detached shack in the cushion) pays for the scan below.
+        let (cx, cz) = (build_cell_of(x), build_cell_of(z));
+        if cx >= 0 && cz >= 0 && self.volume_at(cx as u16, cz as u16) == Some(v) {
+            return true;
         }
         let s = self.vol_start[v as usize] as usize;
         let e = s + self.vol_len[v as usize] as usize;
@@ -730,7 +827,7 @@ mod tests {
             pieces.insert_for_test(cx, 100, 0, LOC_PLANE, 0, &bc);
         }
         deploys.push_hearth_for_test(100, 100, 0, OWNER);
-        deploys.refresh_claims(&pieces);
+        deploys.refresh_claims(&pieces, &bc);
         for cx in 90..=130u16 {
             for cz in 92..=108u16 {
                 let (x, z) = centre(cx, cz);
@@ -757,7 +854,7 @@ mod tests {
         }
         deploys.push_hearth_for_test(100, 100, 0, OWNER);
         deploys.push_hearth_for_test(119, 100, 0, OWNER);
-        deploys.refresh_claims(&pieces);
+        deploys.refresh_claims(&pieces, &bc);
         let near = centre(100, 100);
         let far = centre(119, 100);
         assert!(deploys.hearth_covers(0, far.0, far.1));
@@ -771,7 +868,7 @@ mod tests {
             let shape = bc.pieces[pieces.entries()[i].row as usize].shape;
             pieces.remove_at(i, shape);
         }
-        deploys.refresh_claims(&pieces);
+        deploys.refresh_claims(&pieces, &bc);
         assert!(
             deploys.hearth_covers(0, near.0, near.1) && !deploys.hearth_covers(0, far.0, far.1),
             "hearth 0 keeps its island and loses the other"

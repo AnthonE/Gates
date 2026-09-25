@@ -334,6 +334,10 @@ pub struct SimTables {
     pub mobs: sim_core::mob::MobContent,
     pub research: sim_core::research::ResearchContent,
     pub catalog: ItemCatalog,
+    /// The skin catalog, twice: the sim's half (what fits what) and the
+    /// wire's (names, tints, prices), both from `content/skins.toml`.
+    pub skins: sim_core::skin::SkinContent,
+    pub skin_catalog: Box<protocol::SkinCatalog>,
 }
 
 /// Bake every table a shard needs, or refuse the boot naming the one that
@@ -355,9 +359,49 @@ pub fn bake_all(content: &content::Content) -> Result<SimTables, String> {
         mobs: content.bake_mobs()?,
         research: content.bake_research()?,
         catalog: bake_catalog(content, &combat, &gather)?,
+        skins: content.bake_skins()?,
+        skin_catalog: bake_skin_catalog(content)?,
         combat,
         gather,
     })
+}
+
+/// The wire's skin catalog (skins v0), in the same row order as
+/// `Content::bake_skins`, which is the order an owned set indexes.
+pub fn bake_skin_catalog(content: &content::Content) -> Result<Box<protocol::SkinCatalog>, String> {
+    let mut cat = Box::new(protocol::SkinCatalog::EMPTY);
+    for (i, s) in content.skins.iter().enumerate() {
+        let covers = content
+            .item_index(&s.covers)
+            .ok_or_else(|| format!("skin `{}` covers `{}`: not an item", s.id, s.covers))?;
+        let (coin, price) = match (s.coin, s.price) {
+            (Some(content::schema::Coin::Elo), Some(p)) => (protocol::COIN_ELO, p),
+            (Some(content::schema::Coin::Orbs), Some(p)) => (protocol::COIN_ORBS, p),
+            _ => (protocol::COIN_NONE, 0),
+        };
+        cat.set(
+            i,
+            s.name.as_bytes(),
+            protocol::SkinRow {
+                catalog: s.catalog,
+                covers,
+                tint: s.tint,
+                coin,
+                price,
+            },
+        )
+        .map_err(|_| {
+            format!(
+                "skin `{}`: name `{}` is empty or over {} bytes, or its row is one the \
+                 wire cannot carry",
+                s.id,
+                s.name,
+                protocol::MAX_ITEM_NAME_BYTES
+            )
+        })?;
+    }
+    cat.count = content.skins.len() as u16;
+    Ok(cat)
 }
 
 /// Stop threads if startup fails or its future is cancelled before handoff.
@@ -476,6 +520,16 @@ pub async fn spawn_shard(
     // the same reason — and a full ring refuses the act out loud rather
     // than queueing a kick nobody remembers ordering.
     let (admin_tx, admin_rx) = RingBuffer::<crate::admin::AdminAct>::new(CTRL_RING_CAP);
+    // The skins path, accept → sim, one direction: what the platform said a
+    // player owns (`skins.rs`), read off the sim thread and entered as a
+    // command. One read in flight per slot, so a slot's worth of depth is a
+    // ring that cannot fill; a full one drops the answer and counts it.
+    let (skins_tx, skins_rx) = RingBuffer::<crate::slot::SkinsMsg>::new(MAX_PLAYERS);
+    // The item store's prices, same direction (`skins::prices_of`). One read
+    // in flight at a time, so two deep cannot fill; a full ring drops the
+    // answer and the next sweep brings it again.
+    let (prices_tx, prices_rx) = RingBuffer::<crate::slot::SkinPricesMsg>::new(2);
+    let skin_content = Arc::new(tables.skins);
     let crate::worldfile::WorldBoot {
         file: world_file,
         idents: world_idents,
@@ -506,6 +560,7 @@ pub async fn spawn_shard(
         let slots = slots.clone();
         let seed = cfg.seed;
         let dev_spawn = cfg.dev_spawn;
+        let dev_env = cfg.dev_env;
         let admins = cfg.admins.clone();
         // The trust log's tap rides the save boot artifact (`store::Saves`).
         let trust = saves.trust;
@@ -515,11 +570,14 @@ pub async fn spawn_shard(
                 sim_thread(
                     seed,
                     dev_spawn,
+                    dev_env,
                     tables,
                     world_blob,
                     world_idents,
                     world_interval,
                     ctrl_rx,
+                    skins_rx,
+                    prices_rx,
                     grave_tx,
                     save_tx,
                     world_tx,
@@ -568,11 +626,15 @@ pub async fn spawn_shard(
             require_auth: cfg.require_auth,
             domain: cfg.domain.clone(),
             entitle: cfg.entitle.clone(),
+            skins: cfg.skins.clone(),
+            skin_content,
             min_client: cfg.min_client,
             netsim: cfg.netsim,
             spectate: cfg.spectate,
         },
         ctrl_tx,
+        skins_tx,
+        prices_tx,
         grave_rx,
         save_rx,
         write_tx,
@@ -611,6 +673,10 @@ struct ShardFacts {
     /// The ticket door (`entitle.rs`). `Config::off()` — the default — checks
     /// nothing, which is what every test and every community shard runs.
     entitle: crate::entitle::Config,
+    /// Where skin ownership is read (`skins.rs`), and the baked rows an
+    /// answer's catalog ids map onto.
+    skins: crate::skins::Config,
+    skin_content: Arc<sim_core::skin::SkinContent>,
     /// `shard.toml min_client`, packed. 0 — the default — admits every client
     /// whose `PROTO_VER` already matched, which is every client that could
     /// have got this far.
@@ -700,11 +766,76 @@ struct SeatSlot {
     target_gen: u32,
 }
 
+/// The accept loop's bookkeeping for skin-ownership reads: which tenant of
+/// each slot has one in flight, and when each was last asked. One read per
+/// tenant at a time, and a client-asked read no sooner than
+/// `skins::REFRESH_COOLDOWN` after the last.
+struct SkinReads {
+    busy: [Option<u32>; MAX_PLAYERS],
+    last: [Option<(u32, Instant)>; MAX_PLAYERS],
+}
+
+impl SkinReads {
+    fn new() -> Self {
+        Self {
+            busy: [None; MAX_PLAYERS],
+            last: [None; MAX_PLAYERS],
+        }
+    }
+
+    /// Start a read for tenant `gen` of `slot`. `forced` is the door's read,
+    /// which the cooldown does not apply to.
+    fn ask(
+        &mut self,
+        slot: usize,
+        gen: u32,
+        forced: bool,
+        keys: &[KeySlot; MAX_PLAYERS],
+        facts: &ShardFacts,
+        owned_tx: &tokio::sync::mpsc::Sender<(usize, u32, crate::skins::Owned)>,
+    ) {
+        if slot >= MAX_PLAYERS || self.busy[slot] == Some(gen) {
+            return;
+        }
+        let now = Instant::now();
+        if !forced {
+            if let Some((g, at)) = self.last[slot] {
+                if g == gen && now.duration_since(at) < crate::skins::REFRESH_COOLDOWN {
+                    return;
+                }
+            }
+        }
+        self.busy[slot] = Some(gen);
+        self.last[slot] = Some((gen, now));
+        // The key IS the wallet (`auth::key_of`), as at the ticket door.
+        let wallet = keys[slot]
+            .key
+            .as_ref()
+            .and_then(|k| std::str::from_utf8(k.as_bytes()).ok())
+            .map(str::to_string);
+        let cfg = facts.skins.clone();
+        let sc = facts.skin_content.clone();
+        let tx = owned_tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let owned = crate::skins::owned_of(&cfg, wallet.as_deref(), &sc);
+            let _ = tx.blocking_send((slot, gen, owned));
+        });
+    }
+
+    fn done(&mut self, slot: usize, gen: u32) {
+        if slot < MAX_PLAYERS && self.busy[slot] == Some(gen) {
+            self.busy[slot] = None;
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn accept_loop(
     endpoint: Endpoint<Server>,
     facts: ShardFacts,
     mut ctrl_tx: rtrb::Producer<Connect>,
+    mut skins_tx: rtrb::Producer<crate::slot::SkinsMsg>,
+    mut prices_tx: rtrb::Producer<crate::slot::SkinPricesMsg>,
     mut grave_rx: rtrb::Consumer<Link>,
     mut save_rx: rtrb::Consumer<SaveMsg>,
     mut write_tx: rtrb::Producer<WriteMsg>,
@@ -751,6 +882,24 @@ async fn accept_loop(
     let (kick_tx, mut kick_rx) = tokio::sync::mpsc::channel::<Vec<(usize, u32)>>(1);
     let mut entitle_sweep = tokio::time::interval(facts.entitle.sweep);
     let mut sweep_in_flight = false;
+    // ---- skin ownership (`skins.rs`) ------------------------------------
+    //
+    // Asked at the door and when a client says it bought something, never
+    // on a timer. Requests come from the action readers, answers from
+    // blocking reads, both through channels so this loop never waits on
+    // the platform — the ticket sweep's shape.
+    let (refresh_tx, mut refresh_rx) = tokio::sync::mpsc::channel::<(usize, u32)>(MAX_PLAYERS);
+    let (owned_tx, mut owned_rx) =
+        tokio::sync::mpsc::channel::<(usize, u32, crate::skins::Owned)>(MAX_PLAYERS);
+    let mut skin_reads = SkinReads::new();
+    // The item store's prices: at boot, then every `PRICES_EVERY`. Only a
+    // shard that reads ownership from the platform reads prices from it.
+    let prices_armed = facts.skins.origin.is_some() && !facts.skins.all;
+    let mut prices_sweep = tokio::time::interval(crate::skins::PRICES_EVERY);
+    prices_sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let (prices_done_tx, mut prices_done_rx) =
+        tokio::sync::mpsc::channel::<crate::skins::Prices>(1);
+    let mut prices_in_flight = false;
     loop {
         tokio::select! {
             incoming = endpoint.accept() => {
@@ -803,8 +952,63 @@ async fn accept_loop(
                 if done.hello.is_spectator() {
                     install_spectator(done, &facts, &mut ctrl_tx, &keys, &mut seats, &slots, &stats)
                         .await;
-                } else {
-                    install(done, &facts, &mut ctrl_tx, &mut keys, &store, &slots, &stats).await;
+                } else if let Some((slot, gen)) = install(
+                    done, &facts, &mut ctrl_tx, &refresh_tx, &mut keys, &store, &slots, &stats,
+                )
+                .await
+                {
+                    // The door's read: what this player owns, before they
+                    // reach a bench.
+                    skin_reads.ask(slot, gen, true, &keys, &facts, &owned_tx);
+                }
+            }
+            Some((slot, gen)) = refresh_rx.recv() => {
+                if slot < MAX_PLAYERS
+                    && crate::slot::generation_of(slots.load(slot)) == gen
+                    && crate::slot::state_of(slots.load(slot)) == crate::slot::SLOT_LIVE
+                {
+                    skin_reads.ask(slot, gen, false, &keys, &facts, &owned_tx);
+                }
+            }
+            _ = prices_sweep.tick(), if prices_armed && !prices_in_flight => {
+                prices_in_flight = true;
+                let cfg = facts.skins.clone();
+                let sc = facts.skin_content.clone();
+                let tx = prices_done_tx.clone();
+                tokio::task::spawn_blocking(move || {
+                    let _ = tx.blocking_send(crate::skins::prices_of(&cfg, &sc));
+                });
+            }
+            Some(prices) = prices_done_rx.recv() => {
+                prices_in_flight = false;
+                match prices {
+                    crate::skins::Prices::Known(prices) => {
+                        if prices_tx.push(crate::slot::SkinPricesMsg { prices: *prices }).is_ok() {
+                            ShardStats::bump(&stats.skin_prices_read);
+                        }
+                    }
+                    crate::skins::Prices::Unknown => ShardStats::bump(&stats.skin_prices_unknown),
+                }
+            }
+            Some((slot, gen, owned)) = owned_rx.recv() => {
+                skin_reads.done(slot, gen);
+                // The generation guard: an answer about a tenant who has
+                // left is not an answer about whoever holds the slot now.
+                if slot < MAX_PLAYERS
+                    && crate::slot::generation_of(slots.load(slot)) == gen
+                    && crate::slot::state_of(slots.load(slot)) == crate::slot::SLOT_LIVE
+                {
+                    match owned {
+                        crate::skins::Owned::Known(set) => {
+                            let msg = crate::slot::SkinsMsg { slot, id: keys[slot].id, owned: set };
+                            if skins_tx.push(msg).is_ok() {
+                                ShardStats::bump(&stats.skins_read);
+                            } else {
+                                ShardStats::bump(&stats.skins_dropped);
+                            }
+                        }
+                        crate::skins::Owned::Unknown => ShardStats::bump(&stats.skins_unknown),
+                    }
                 }
             }
             _ = entitle_sweep.tick(), if facts.entitle.armed() && !sweep_in_flight => {
@@ -1463,11 +1667,12 @@ async fn install(
     done: Handshaken,
     facts: &ShardFacts,
     ctrl_tx: &mut rtrb::Producer<Connect>,
+    refresh_tx: &tokio::sync::mpsc::Sender<(usize, u32)>,
     keys: &mut [KeySlot; MAX_PLAYERS],
     store: &SaveStore,
     slots: &Arc<SlotTable>,
     stats: &Arc<ShardStats>,
-) {
+) -> Option<(usize, u32)> {
     let Handshaken {
         connection,
         mut send,
@@ -1480,7 +1685,7 @@ async fn install(
     else {
         ShardStats::bump(&stats.refused_full);
         spawn_refusal(connection, send, REFUSE_FULL);
-        return;
+        return None;
     };
     // Player id: slot in the low byte, claim generation above — unique
     // across slot reuse, stable for the connection's life.
@@ -1543,7 +1748,7 @@ async fn install(
         slots.unclaim(slot, generation);
         ShardStats::bump(&stats.refused_full);
         spawn_refusal(connection, send, REFUSE_FULL);
-        return;
+        return None;
     }
     // `saves_restored` is **not** counted here, and it used to be. A record
     // existing is no longer the same fact as a record being used: since
@@ -1579,6 +1784,7 @@ async fn install(
         recv,
         action_tx,
         chat_tx,
+        refresh_tx.clone(),
         slots.clone(),
         stats.clone(),
         slot,
@@ -1603,6 +1809,7 @@ async fn install(
         generation,
         facts.netsim,
     ));
+    Some((slot, generation))
 }
 
 // ---------------------------------------------------------------------------
@@ -2195,16 +2402,23 @@ fn accept_chat(
     ShardStats::bump(&stats.chat_ok);
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn action_reader_task(
     mut recv: RecvStream,
     mut action_tx: rtrb::Producer<ActionMsg>,
     mut chat_tx: rtrb::Producer<ChatMsg>,
+    refresh_tx: tokio::sync::mpsc::Sender<(usize, u32)>,
     slots: Arc<SlotTable>,
     stats: Arc<ShardStats>,
     slot: usize,
     generation: u32,
 ) {
     let mut limiter = ChatLimiter::new();
+    // A client hammering "refresh my skins" is answered at most once a
+    // second from here, before it can crowd the accept loop's bounded queue
+    // that every other player's refresh shares; the accept loop's own
+    // cooldown (`skins::REFRESH_COOLDOWN`) then decides whether to read.
+    let mut last_refresh: Option<Instant> = None;
     loop {
         let word = slots.load(slot);
         if state_of(word) != SLOT_LIVE || generation_of(word) != generation {
@@ -2231,6 +2445,17 @@ async fn action_reader_task(
             continue;
         }
         match decode_action(&buf[..len]) {
+            // "I bought something": answered here, by the accept loop's
+            // platform read, and never by the sim (`skins.rs`). A full
+            // channel drops the ask; the cooldown would have anyway.
+            Ok(ActionMsg::SkinsRefresh) => {
+                ShardStats::bump(&stats.actions_ok);
+                let now = Instant::now();
+                if last_refresh.is_none_or(|t| now.duration_since(t) >= Duration::from_secs(1)) {
+                    last_refresh = Some(now);
+                    let _ = refresh_tx.try_send((slot, generation));
+                }
+            }
             Ok(mut act) => {
                 ShardStats::bump(&stats.actions_ok);
                 loop {
@@ -2683,11 +2908,14 @@ pub async fn write_frame(send: &mut SendStream, payload: &[u8]) -> Result<(), ()
 fn sim_thread(
     seed: u64,
     dev_spawn: Option<(f32, f32)>,
+    dev_env: Option<(u8, u16)>,
     tables: SimTables,
     world_blob: Vec<u8>,
     world_idents: crate::worldfile::Identities,
     world_interval: u64,
     mut ctrl_rx: rtrb::Consumer<Connect>,
+    mut skins_rx: rtrb::Consumer<crate::slot::SkinsMsg>,
+    mut prices_rx: rtrb::Consumer<crate::slot::SkinPricesMsg>,
     mut grave_tx: rtrb::Producer<Link>,
     mut save_tx: rtrb::Producer<SaveMsg>,
     mut world_tx: rtrb::Producer<WorldMsg>,
@@ -2720,6 +2948,8 @@ fn sim_thread(
         mobs,
         research,
         catalog,
+        skins,
+        skin_catalog,
     } = tables;
     core.world.gather = gather;
     core.world.craft = craft;
@@ -2733,7 +2963,9 @@ fn sim_thread(
     core.world.loot = loot;
     core.world.mob = mobs;
     core.world.research = research;
+    core.world.skins = skins;
     core.catalog = catalog;
+    core.skin_catalog = skin_catalog;
     core.install_admins(admins);
     core.trust = trust;
     // The counter sweep's memory, beside the sink it feeds (`anomaly.rs`).
@@ -2759,6 +2991,11 @@ fn sim_thread(
         }
     }
     drop(world_blob);
+    // `dev_env`: the admin lane's sky/clock verb, queued so it lands on the
+    // first tick and in the WAL like any other.
+    if let Some((weather, time_pm)) = dev_env {
+        core.queue_env(weather, time_pm);
+    }
     // The world-save buffer pool. Allocated here, once, and never again:
     // every later save fills one of these and hands the box to the store
     // thread, which hands the box back. Wall 2 counts the tick, and the tick
@@ -2835,6 +3072,15 @@ fn sim_thread(
                 slots.mark_leaving(c.slot, generation);
                 ShardStats::bump(&stats.handshake_errors);
             }
+        }
+        // What the platform said players own (`skins.rs`), after the joins
+        // above so a set read for a joiner finds the client it belongs to.
+        while let Ok(m) = skins_rx.pop() {
+            core.skins_owned(m.slot, m.id, m.owned);
+        }
+        // What the platform's store charges for each skin.
+        while let Ok(m) = prices_rx.pop() {
+            core.skin_prices(&m.prices);
         }
         // Clean up dead connections — every connection slot, seats included.
         for slot in 0..MAX_CONNS {

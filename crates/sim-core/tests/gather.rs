@@ -249,6 +249,7 @@ fn swing_pays_exhausts_and_replays() {
             // fixture's outputs double as tools, so a gathered stack
             // arrives whole rather than dead.
             cond: fixture.cond_max[tree.output as usize],
+            skin: 0,
         },
         "yield stacked into the first slot"
     );
@@ -283,6 +284,7 @@ fn a_bush_pays_its_side_yield_flat_and_says_so() {
         // Granted whole: a zero-condition tool is a dead tool since
         // durability v0, and this test needs a LIVE one in hand.
         cond: fixture.cond_max[fixture.nodes[0].tools[0].0 as usize],
+        skin: 0,
     };
     w.tick(&[hold_primary(yaw, 0)]);
 
@@ -362,7 +364,20 @@ fn harvested_node_respawns_inside_the_window() {
         waited >= RESPAWN_MIN_TICKS,
         "respawned after {waited} ticks — under the 20-min floor"
     );
-    assert!(w.slot_lives.is_empty(), "released entry leaves the store");
+    // A tree comes back as a sapling: standing, but its record stays until
+    // it is grown, and then it leaves the store.
+    let (cx, cz) = (cx as u16, cz as u16);
+    assert!(!w.slot_lives.is_harvested(cx, cz), "the sapling stands");
+    let grown_at = w
+        .slot_lives
+        .find(cx, cz)
+        .expect("a sapling keeps its record while it grows")
+        .grown_at;
+    assert!(grown_at > w.tick, "the sapling is still growing");
+    w.tick = grown_at;
+    w.tick(&[]);
+    w.tick(&[]);
+    assert!(w.slot_lives.is_empty(), "a grown tree leaves the store");
 }
 
 #[test]
@@ -376,6 +391,7 @@ fn tool_in_slot0_outyields_hand() {
         count: 1,
         // Whole, or the Q4 guard reads it as no tool at all.
         cond: tool_cond,
+        skin: 0,
     };
     w.tick(&[hold_primary(yaw, 0)]);
     let out = w.gather.nodes[0].output;
@@ -385,6 +401,7 @@ fn tool_in_slot0_outyields_hand() {
             item: out,
             count: per_hit,
             cond: w.gather.cond_max[out as usize],
+            skin: 0,
         },
         "held tool pays its row, stacked past the occupied slot 0"
     );
@@ -619,6 +636,7 @@ fn selected_slot_is_the_held_item_and_invalid_sel_falls_back() {
         item: tool,
         count: 1,
         cond: w.gather.cond_max[tool as usize],
+        skin: 0,
     };
     w.tick(&[hold_sel(3)]);
     assert_eq!(
@@ -627,6 +645,7 @@ fn selected_slot_is_the_held_item_and_invalid_sel_falls_back() {
             item: out,
             count: per_hit,
             cond: w.gather.cond_max[out as usize],
+            skin: 0,
         },
         "held tool in the selected slot pays its row"
     );
@@ -637,6 +656,7 @@ fn selected_slot_is_the_held_item_and_invalid_sel_falls_back() {
         item: tool,
         count: 1,
         cond: w2.gather.cond_max[tool as usize],
+        skin: 0,
     };
     w2.tick(&[hold_sel(7)]);
     assert_eq!(w2.players[0].frame.sel, 0, "invalid selector clamps to 0");
@@ -646,6 +666,7 @@ fn selected_slot_is_the_held_item_and_invalid_sel_falls_back() {
             item: out,
             count: w2.gather.nodes[0].hand_yield,
             cond: w2.gather.cond_max[out as usize],
+            skin: 0,
         },
         "fallback swings the hand row"
     );
@@ -888,6 +909,7 @@ fn a_swing_the_node_pays_nothing_for_is_refused_and_costs_the_node_nothing() {
         // Whole — a dead tool would be refused exactly like the bare hand
         // and this phase exists to prove the RIGHT tool still collects.
         cond: w.gather.cond_max[tool as usize],
+        skin: 0,
     };
     let mut paid = 0u32;
     let mut harvested = 0u32;
@@ -959,6 +981,7 @@ fn a_refused_node_absorbs_the_swing_and_the_body_beside_it_is_hit_by_aiming_at_i
         item: 2,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     let (mut refused, mut hits, mut seq) = (0u32, 0u32, 0u16);
     for _ in 0..SWING_INTERVAL_TICKS * 2 {
@@ -1148,16 +1171,19 @@ fn a_refused_swing_never_reaches_the_wall_behind_the_node() {
                 item: WRONG_TOOL,
                 count: 1,
                 cond: 0,
+                skin: 0,
             };
             w.players[0].inv[1] = ItemStack {
                 item: 0,
                 count: 200,
                 cond: 0,
+                skin: 0,
             };
             w.players[0].inv[2] = ItemStack {
                 item: 1,
                 count: 200,
                 cond: 0,
+                skin: 0,
             };
             // Foundation, then the wall on its west edge — placed from the
             // stance, so the soft side faces the raider and both halves
@@ -1290,6 +1316,7 @@ fn wear_is_keyed_per_tool_and_node_not_per_tool() {
         item: tool,
         count: 1,
         cond: ceiling,
+        skin: 0,
     };
     let mut seq = 0u16;
     let mut landed = 0u16;
@@ -1323,6 +1350,7 @@ fn wear_is_keyed_per_tool_and_node_not_per_tool() {
         item: tool,
         count: 1,
         cond: ceiling,
+        skin: 0,
     };
     let mut seq = 0u16;
     let mut landed2 = 0u16;
@@ -1375,7 +1403,8 @@ fn a_dead_tool_gathers_at_the_hand_rate() {
     w.players[0].inv[0] = ItemStack {
         item: tool,
         count: 1,
-        cond: 0, // dead
+        cond: 0, // dead,
+        skin: 0,
     };
     w.tick(&[hold_primary(yaw, 0)]);
     let paid: Vec<u32> = w
@@ -1398,6 +1427,7 @@ fn a_dead_tool_gathers_at_the_hand_rate() {
             item: tool,
             count: 1,
             cond: 0,
+            skin: 0,
         },
         "the dead tool must stay in the hand"
     );
@@ -1422,6 +1452,7 @@ fn a_dead_tool_is_refused_where_hands_are() {
         item: tool,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     let mut seq = 0u16;
     let mut refused = 0u32;
@@ -1501,7 +1532,7 @@ fn a_landed_swing_marks_the_node_on_the_side_it_was_hit_from() {
         sim_core::ranged::SURF_WORLD,
         "a struck occupant is the world, not the ground under it"
     );
-    let mx = (a & 0x00ff_ffff) as i32 as f32 * movement::POS_XZ_Q;
+    let mx = (a & 0x000f_ffff) as i32 as f32 * movement::POS_XZ_Q;
     let mz = b as i32 as f32 * movement::POS_XZ_Q;
     let my = c as i32 as f32 * movement::POS_Y_Q;
 
@@ -1550,6 +1581,7 @@ fn a_refused_swing_leaves_no_mark() {
         item: dud,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     for n in w.gather.nodes.iter_mut() {
         n.hand_yield = 0;
@@ -1653,7 +1685,7 @@ fn the_mark_is_at_the_height_the_ray_entered_the_node() {
         w.tick(&[hold_primary(aim, t as u16)]);
         for e in w.events.entries() {
             if e.code == sim_core::world::EV_IMPACT {
-                let mx = (e.a & 0x00ff_ffff) as i32 as f32 * movement::POS_XZ_Q;
+                let mx = (e.a & 0x000f_ffff) as i32 as f32 * movement::POS_XZ_Q;
                 let mz = e.b as i32 as f32 * movement::POS_XZ_Q;
                 let my = e.c as i32 as f32 * movement::POS_Y_Q;
                 marks.push((mx, my, mz));

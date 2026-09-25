@@ -181,6 +181,8 @@ fn run() -> Result<AppExit, String> {
             identity: None,
             no_launcher: true,
             no_hud: false,
+            pin_hour: None,
+            pin_weather: None,
         },
         capture: None,
     });

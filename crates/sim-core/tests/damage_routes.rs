@@ -118,6 +118,12 @@ const NOT_A_PLAYER: &[(&str, &str, &str)] = &[
         "a `MobRec` — an animal's hp. Mobs are hurt by `mob::strike`, which is \
          the roster's own business; a mob is not a player and never funnels",
     ),
+    (
+        "brain.rs",
+        "mob",
+        "a `Mob` — an animal healing out of combat (`brain::heal`). Not a \
+         player, and not damage",
+    ),
 ];
 
 /// The funnel's own write. Exactly one, and it must be inside `debit`.
@@ -234,6 +240,14 @@ const ROUTES: &[(&str, bool, bool, &str)] = &[
          chest plate does not feed you, and a helmet is not a desalinator; \
          and there is no bearing toward being hungry, so the arc would have \
          to invent one",
+    ),
+    (
+        "exposure.rs",
+        false,
+        false,
+        "the cold (weather v0) — metabolic, like starving: a plate is not a \
+         coat, and what keeps the cold out is the worn warmth the step already \
+         subtracts. No bearing: the weather is on every side of you",
     ),
     (
         "deploy.rs",

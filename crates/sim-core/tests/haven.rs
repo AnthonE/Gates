@@ -63,6 +63,7 @@ fn no_haven() -> Haven {
         shelter: 0,
         minor: terrain::empty_minor(),
         roads: [terrain::SideRoad::NONE; terrain::SIDE_ROADS],
+        ore_pm: terrain::ORE_PM_UNIT,
     }
 }
 
@@ -91,6 +92,7 @@ fn ring_phase(ring: &terrain::RingPath, seed: u64, x: f32, z: f32) -> Option<u8>
             shelter: 0,
             minor: terrain::empty_minor(),
             roads: [terrain::SideRoad::NONE; terrain::SIDE_ROADS],
+            ore_pm: terrain::ORE_PM_UNIT,
         };
         let ok = (0..HAVEN_CRATES).all(|k| {
             let (ax, az, _) = terrain::haven_crate(&probe, k);
@@ -130,6 +132,7 @@ fn shelter_bearing(ring: &terrain::RingPath, seed: u64, x: f32, z: f32, phase: u
         shelter: 0,
         minor: terrain::empty_minor(),
         roads: [terrain::SideRoad::NONE; terrain::SIDE_ROADS],
+        ore_pm: terrain::ORE_PM_UNIT,
     };
     for t in 0..HAVEN_CRATES {
         let bearing = ((t as u32 * 256) / HAVEN_CRATES as u32
@@ -1022,6 +1025,7 @@ fn the_pad_carries_the_shelter_at_its_center() {
             shelter: HAVEN_SHELTER_YAW_STEP as u8,
             minor: terrain::empty_minor(),
             roads: [terrain::SideRoad::NONE; terrain::SIDE_ROADS],
+            ore_pm: terrain::ORE_PM_UNIT,
         };
         let (px, pz, _) = terrain::haven_shelter(&probe);
         if (0..HAVEN_CRATES).any(|k| {

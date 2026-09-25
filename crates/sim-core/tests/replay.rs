@@ -510,7 +510,23 @@ const TICKS: u64 = 900;
 /// commit that caused it.
 // 2026-09-19: road grading changes generated ground; hand-revive
 // intent/progress also enter the deterministic Player hash.
-const GOLDEN_FINAL_HASH: u64 = 0xCC5EEC4395CC727A;
+/// **Moved `0xCC5E_EC43_95CC_727A` → `0x289F_6236_4545_3594` at loot
+/// guaranteed column v0** (2026-09-22). The probe barrel table grew a
+/// guaranteed row (item 2, a RANGED count so its salted draw runs here), and
+/// bot 31 smashes barrels on this surface, so every smash pays one or two
+/// more units onto the ground from the first open. Behavioural and
+/// deliberate, regenerated in the commit that caused it.
+/// **Moved `0x289F_6236_4545_3594` → `0xFEFF_9C41_0FCB_BBB3` at craft rebate v0**
+/// (2026-09-22). The script places the fixture's level-1 workbench beside
+/// its crafters, and a no-station recipe now crafts in half its time at a
+/// level-1 bench, so `craft_done_at` — which the digest hashes — moves from
+/// the first unit armed there.
+/// **Moved `0xFEFF_9C41_0FCB_BBB3` → `0xBAE2_2467_6365_4D69` at skins v0**
+/// (2026-09-24), and by encoding rather than behaviour: every stack the
+/// digest folds is eight bytes (its skin joins it), craft jobs hash their
+/// skin and each player its owned set. No command in the script names a
+/// skin, so every one of those fields is zero.
+const GOLDEN_FINAL_HASH: u64 = 0xBAE2_2467_6365_4D69;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -573,7 +589,31 @@ const GOLDEN_FINAL_HASH: u64 = 0xCC5EEC4395CC727A;
 /// different island is a different run. Both moving together is the expected
 /// shape here — a trace that moved while the end state held would be the
 /// interesting case, and it is not this one.
-const GOLDEN_TRACE_HASH: u64 = 0xDC1A26782384F745;
+///
+/// **Moved `0xDC1A_2678_2384_F745` → `0x3E4F_B5D2_69F5_369A` at loot
+/// guaranteed column v0** (2026-09-22), beside `GOLDEN_FINAL_HASH` and for
+/// its reason: the probe barrel pays a guaranteed row, so the run diverges
+/// at the first smash and not by a constant.
+///
+/// **Moved `0x3E4F_B5D2_69F5_369A` → `0xE490_DA72_6A3A_5427` at craft rebate v0**
+/// (2026-09-22), beside `GOLDEN_FINAL_HASH` and for its reason: the crafts
+/// at the fixture bench finish sooner, so the path diverges at the first
+/// unit armed there.
+///
+/// **Moved `0xE490_DA72_6A3A_5427` → `0x89F0_E1F6_0797_F935` at tree growth v0**
+/// (2026-09-24), and alone: a smashed barrel's life record now says what
+/// stood there, which the hash reads while the barrel is down. It is back
+/// by the end, so the end state holds.
+/// **Moved `0x89F0_E1F6_0797_F935` → `0x8885_A6EE_B5A7_B8E7` at skins v0**
+/// (2026-09-24), with the final hash and for its reason: the stack, job and
+/// player encodings the digest folds grew their skin fields.
+/// **Moved `0x8885_A6EE_B5A7_B8E7` → `0x37FB_4909_FBC2_BD22` at the lock cap's rise**
+/// (`LOCK_AUTH_CAP` 8 → 10, 2026-09-25), and alone: the digest folds a
+/// lock's whole remembered list, so two more zero slots ride every stamp
+/// while the script's code lock (bolted on at tick 155) stands. It is gone
+/// by the end, so the end state holds; with the cap at 8 the whole golden
+/// reproduces.
+const GOLDEN_TRACE_HASH: u64 = 0x37FB_4909_FBC2_BD22;
 
 /// Fold a stamped trace into one number.
 ///
@@ -853,6 +893,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     id,
                     recipe: ((t / 37 + id as u64) % 4) as u16,
                     count: 1 + (id as u64 % 3) as u16,
+                    skin: 0,
                 });
             }
             if (t + id as u64).is_multiple_of(149) {
@@ -986,6 +1027,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     item: 3,
                     count: 8,
                     cond: 0,
+                    skin: 0,
                 };
             }
         }
@@ -1014,6 +1056,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                             item,
                             count,
                             cond: 0,
+                            skin: 0,
                         };
                     }
                     walk_up_the_beach(&mut world, seed, w);

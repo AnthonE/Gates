@@ -62,6 +62,10 @@ socket2 = "0.6"
 # (already waiting on a network) and on the sweep's own thread, never on the
 # sim thread (wall 3) and never on the accept loop.
 ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }
+# The item store's price page (skins.rs): nested per-skin objects, where the
+# ownership read's hand scan would have to guess which key belongs to which
+# row. The client already builds this crate, so it adds nothing to the lock.
+# (serde_json is declared above, for Jev.)
 # Save-record integrity only (store.rs): a torn write has to be detectable at
 # load. Same crate and version `sim-core` and `content` already build, so this
 # adds a line to a manifest and nothing to the tree.

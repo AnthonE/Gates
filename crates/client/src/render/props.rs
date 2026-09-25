@@ -267,6 +267,54 @@ pub struct Topple {
     pub t: f32,
 }
 
+/// A tree part that regrows (tree growth v0), and the size it is drawn at
+/// full-grown. Its own component for [`Topple`]'s reason: `audio::fell`
+/// change-detects [`Fellable`], and a growth write there would be a
+/// tree-fall cue.
+#[derive(Component)]
+pub struct Grow {
+    pub base: f32,
+}
+
+/// Draw every regrowing tree at its size — a sapling where the stump was,
+/// full height an hour later (`sim_core::gather::grow_pm`, the server's own
+/// sizing, in its sixteen steps). Twice a second, or at once when the
+/// harvested set moved or a tree streamed in: the steps are minutes apart.
+pub fn grow(
+    net: NonSend<Net>,
+    feed: Res<super::feed::Feed>,
+    time: Res<Time>,
+    mut since: Local<f32>,
+    added: Query<(), Added<Grow>>,
+    mut q: Query<(&Fellable, &Grow, &mut Transform)>,
+) {
+    *since += time.delta_secs();
+    if *since < 0.5 && feed.applied & HARVEST_APPLIED == 0 && added.is_empty() {
+        return;
+    }
+    *since = 0.0;
+    let core = &net.session.core;
+    let now = feed.server_tick_est.max(0.0) as u64;
+    for (f, g, mut t) in q.iter_mut() {
+        // A felled tree lies at the size it fell at.
+        if f.felled {
+            continue;
+        }
+        let pm = core
+            .harvested
+            .growth(f.key)
+            .map_or(1000, |at| sim_core::gather::grow_pm(at as u64, now));
+        let want = g.base * pm as f32 * 0.001;
+        if (t.scale.x - want).abs() > 1e-4 {
+            t.scale = Vec3::splat(want);
+            // A stump stands on its own lift, which is to its size.
+            if f.part == FellPart::Stump {
+                t.translation.y = f.base_y + STUMP_LIFT_M * want;
+            }
+        }
+    }
+}
+
 /// Which piece of a harvestable slot an entity draws.
 ///
 /// **The tree is three entities and the split is what lets it topple.** While
@@ -1302,8 +1350,17 @@ pub fn prop_models(o: Occupant) -> &'static [&'static str] {
         // 1,054 instances of the same object, which is `ART.md` rule 7 broken
         // a thousand times over. Three silhouettes indexed by yaw is a bigger
         // purchase than three better-looking copies of one.
+        //
+        // **Four, in two halves, and the order is the grouping.**
+        // `species_variant` splits a pool into `SLOT_SPECIES` runs, so with
+        // three entries one rock family was `rock_a` ALONE — the pale ball the
+        // operator read as a node stood in half the island's regions. The first
+        // two are `ci/rock_kit.py` boulders (dark, angular, `ART.md` rule 8's
+        // formation) and the last two the generated pair that already held
+        // their band, so each family has two silhouettes and neither is a ball.
         Occupant::Rock => &[
             "models/prop/rock_a.glb",
+            "models/prop/rock_d.glb",
             "models/prop/rock_b.glb",
             "models/prop/rock_c.glb",
         ],
@@ -1934,7 +1991,7 @@ pub fn stream(
                 for ix in 0..cells {
                     let cell_x = key.0 * cells + ix;
                     let cell_z = key.1 * cells + iz;
-                    let slot = terrain::scatter_memo(
+                    let mut slot = terrain::scatter_memo(
                         &mut lat,
                         world.seed,
                         &world.table,
@@ -1945,6 +2002,7 @@ pub fn stream(
                     if slot.occupant == Occupant::None {
                         continue;
                     }
+                    slot.y -= slope_sink(&mut lat, &world, &slot);
                     // `cell_key` is `sim_core::gather`'s own, not a second
                     // copy: the client's mirror is keyed by it and a renderer
                     // that packed its own would silently never match.
@@ -2134,6 +2192,7 @@ pub fn spawn_outer_tree(
             part: FellPart::Vanish,
             felled: false,
         },
+        Grow { base: slot.scale },
         Mesh3d(a.impostors[variant].clone()),
         MeshMaterial3d(a.foliage[tint_of(key)].clone()),
         Transform {
@@ -2142,6 +2201,24 @@ pub fn spawn_outer_tree(
             scale: Vec3::splat(slot.scale),
         },
     ));
+}
+
+/// How far a rock or an ore node is drawn below its slot on a slope: the
+/// ground's fall across its footprint (the slope times its radius), so its
+/// downhill edge meets the hillside instead of floating over it — the
+/// ranges put most of the ore on slopes, where `SINK_M` alone left a gap
+/// under every node. Capped at a third of its height, so a node on a cliff
+/// still reads as a node. Drawn only: the sim's volume stays the slot's.
+pub fn slope_sink(lat: &mut terrain::Lattice, world: &WorldId, slot: &terrain::Slot) -> f32 {
+    if !matches!(
+        slot.occupant,
+        Occupant::StoneNode | Occupant::MetalNode | Occupant::SulfurNode | Occupant::Rock
+    ) {
+        return 0.0;
+    }
+    let (r, top) = terrain::occupant_volume(slot.occupant);
+    let slope = terrain::ground_slope_memo(lat, world.seed, &world.haven, slot.x, slot.z);
+    (slope * r * slot.scale).min(top * slot.scale / 3.0)
 }
 
 /// Draw one scatter slot as a child of its chunk.
@@ -2279,6 +2356,7 @@ pub fn spawn_slot(
         e.with_child((
             fellable(FellPart::Trunk),
             Topple { t: -1.0 },
+            Grow { base: slot.scale },
             Mesh3d(mesh),
             MeshMaterial3d(material),
             tree::lod_band(&lod.near),
@@ -2319,6 +2397,9 @@ pub fn spawn_slot(
     if is_tree {
         e.with_child((
             fellable(FellPart::Stump),
+            // Hidden while the tree stands, it grows with the sapling, so a
+            // sapling felled leaves a sapling's stump — not a full tree's.
+            Grow { base: slot.scale },
             Mesh3d(a.stump.clone()),
             MeshMaterial3d(a.wood.clone()),
             Transform {
@@ -2348,6 +2429,7 @@ pub fn spawn_slot(
         e.with_child((
             fellable(FellPart::Canopy),
             Topple { t: -1.0 },
+            Grow { base: slot.scale },
             Mesh3d(a.needles[variant].clone()),
             // The card is the species' — a sprig on a conifer, a leaf
             // cluster on a broadleaf. Chosen in one place so a gate can ask.
@@ -2374,6 +2456,7 @@ pub fn spawn_slot(
         e.with_child((
             fellable(FellPart::Far),
             Topple { t: -1.0 },
+            Grow { base: slot.scale },
             Mesh3d(a.impostors[variant].clone()),
             MeshMaterial3d(a.foliage[tint].clone()),
             tree::lod_band(&lod.far),
@@ -2402,6 +2485,7 @@ pub fn harvest(
         &mut Transform,
         &mut Visibility,
     )>,
+    mut marks: Option<ResMut<super::decal::Marks>>,
 ) {
     if q.is_empty() {
         return;
@@ -2410,7 +2494,12 @@ pub fn harvest(
     // without a socket. `HarvestedSet` is the authority; this is the only
     // place it is consulted.
     let core = &net.session.core;
-    apply_fell(q, &|key| core.harvested.contains(key));
+    let mut forget = |at: Vec3, r: f32| {
+        if let Some(m) = marks.as_deref_mut() {
+            m.forget_later(at, r);
+        }
+    };
+    apply_fell_forgetting(q, &|key| core.harvested.contains(key), &mut forget);
 }
 
 /// The bit that means the harvested set moved — the only thing [`harvest`]
@@ -2532,14 +2621,48 @@ pub fn fell_rotation(yaw: f32, bearing: f32, t: f32) -> Quat {
 /// costs this system one comparison each. That matters because the client is
 /// held to the sim thread's discipline (`CLAUDE.md`'s client trap) and this
 /// runs every frame over every prop in the ring.
-pub fn fall(time: Res<Time>, mut q: Query<(&Fellable, &mut Topple, &mut Transform)>) {
+///
+/// The trunk takes its marks with it as it goes (a hole must not hang where
+/// it stood) and throws dust and needles where it lands (`fx::world`).
+/// Optional so the topple still runs in a world that draws no effects.
+pub fn fall(
+    time: Res<Time>,
+    mut q: Query<(&Fellable, &mut Topple, &mut Transform)>,
+    mut fx: Option<ResMut<super::fx::Fx>>,
+    mut marks: Option<ResMut<super::decal::Marks>>,
+    world: Option<Res<super::WorldId>>,
+    eye: Option<Res<super::Eye>>,
+) {
     let dt = time.delta_secs();
     for (f, mut top, mut t) in q.iter_mut() {
         if top.t < 0.0 || top.t >= FELL_FALL_S {
             continue;
         }
+        let was = top.t;
         top.t = (top.t + dt).min(FELL_FALL_S);
         t.rotation = fell_rotation(f.yaw, fell_bearing(f.key), top.t);
+        if f.part != FellPart::Trunk {
+            continue;
+        }
+        if was <= 0.0 {
+            if let Some(m) = marks.as_deref_mut() {
+                m.forget_later(t.translation + Vec3::Y * 1.2, 1.2);
+            }
+        }
+        if top.t >= FELL_FALL_S {
+            if let (Some(fx), Some(world), Some(eye)) =
+                (fx.as_deref_mut(), world.as_deref(), eye.as_deref())
+            {
+                super::fx::world::landing(
+                    fx,
+                    world,
+                    t.translation,
+                    fell_bearing(f.key),
+                    t.scale.y,
+                    eye.pos,
+                );
+            }
+        }
     }
 }
 
@@ -2565,7 +2688,23 @@ pub fn apply_fell(
     )>,
     harvested: &dyn Fn(u32) -> bool,
 ) {
-    apply_fell_in(q, harvested);
+    apply_fell_in(q, harvested, &mut |_, _| {});
+}
+
+/// [`apply_fell`], told where a vanished part stood and how big it was, so
+/// its marks can go with it (`decal::Marks::forget_later`) — a bullet hole
+/// must not hang in the air where a mined-out node was.
+pub fn apply_fell_forgetting(
+    q: Query<(
+        &mut Fellable,
+        Option<&mut Topple>,
+        &mut Transform,
+        &mut Visibility,
+    )>,
+    harvested: &dyn Fn(u32) -> bool,
+    forget: &mut dyn FnMut(Vec3, f32),
+) {
+    apply_fell_in(q, harvested, forget);
 }
 
 /// [`apply_fell`] over the `Added<Fellable>` query — same body, one filter.
@@ -2581,7 +2720,7 @@ pub fn apply_fell_added(
     >,
     harvested: &dyn Fn(u32) -> bool,
 ) {
-    apply_fell_in(q, harvested);
+    apply_fell_in(q, harvested, &mut |_, _| {});
 }
 
 fn apply_fell_in<F: bevy::ecs::query::QueryFilter>(
@@ -2595,6 +2734,7 @@ fn apply_fell_in<F: bevy::ecs::query::QueryFilter>(
         F,
     >,
     harvested: &dyn Fn(u32) -> bool,
+    forget: &mut dyn FnMut(Vec3, f32),
 ) {
     for (mut f, top, mut t, mut vis) in q.iter_mut() {
         let felled = harvested(f.key);
@@ -2606,6 +2746,11 @@ fn apply_fell_in<F: bevy::ecs::query::QueryFilter>(
             // A rock that stops being a rock has nothing to animate.
             FellPart::Vanish => {
                 *vis = if felled {
+                    // Its marks go with it, from about its middle.
+                    forget(
+                        t.translation + Vec3::Y * 0.5 * t.scale.y,
+                        1.5 * t.scale.y.max(0.5),
+                    );
                     Visibility::Hidden
                 } else {
                     Visibility::Inherited

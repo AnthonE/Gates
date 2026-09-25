@@ -264,11 +264,41 @@ pub enum Cue {
     /// must say *landed, but less* — duller and lower than [`Cue::Hit`],
     /// never quieter to the point of ambiguity with silence.
     HitLimb,
+    /// The rain bed (weather v0): a looped hiss with drops in it, turned up
+    /// with the rain and muffled under a roof. A bed ([`Cue::is_bed`]).
+    /// Appended, the enum's append-order rule.
+    BedRain,
+    /// Thunder: a crack and a long roll, heard wherever you are — a storm is
+    /// not a place in the world, so it is not positional.
+    Thunder,
+    /// A round landing in soil, sand or grass: a dull slap and a spray.
+    BulletSoil,
+    /// A round on stone or rock: a hard crack with grit in it.
+    BulletStone,
+    /// A round into wood: a dry thock.
+    BulletWood,
+    /// A round on metal: a bright ping.
+    BulletMetal,
+    /// A round glancing off stone or metal and whining away.
+    Ricochet,
+    /// A blade or a round into a body.
+    FleshHit,
+    /// A gun fired a long way off: low, dark and long, the layer heard past
+    /// [`Cue::ShotGun`]'s own radius (`render/audio.rs::shots` picks by range).
+    ShotGunFar,
+    /// A charge going off.
+    Blast,
+    /// A built piece coming down.
+    Collapse,
+    /// Somebody knocking on a door.
+    Knock,
+    /// Your own gun being reloaded.
+    Reload,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 45;
+pub const CUE_COUNT: usize = 58;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -322,6 +352,19 @@ impl Cue {
         Cue::ShotGun,
         Cue::HitHead,
         Cue::HitLimb,
+        Cue::BedRain,
+        Cue::Thunder,
+        Cue::BulletSoil,
+        Cue::BulletStone,
+        Cue::BulletWood,
+        Cue::BulletMetal,
+        Cue::Ricochet,
+        Cue::FleshHit,
+        Cue::ShotGunFar,
+        Cue::Blast,
+        Cue::Collapse,
+        Cue::Knock,
+        Cue::Reload,
     ];
 
     /// Is this cue a piece of music?
@@ -351,7 +394,10 @@ impl Cue {
     /// cooldown-stacking gate, all of which would otherwise each carry their
     /// own list to forget a fourth bed from.
     pub fn is_bed(self) -> bool {
-        matches!(self, Cue::BedWind | Cue::BedSurf | Cue::BedUnder)
+        matches!(
+            self,
+            Cue::BedWind | Cue::BedSurf | Cue::BedUnder | Cue::BedRain
+        )
     }
 
     /// The cue's index into every table in this module.
@@ -402,14 +448,28 @@ impl Cue {
             | Cue::TreeFall
             | Cue::Snort
             | Cue::Growl
-            | Cue::Hurt => 0.07,
+            | Cue::Hurt
+            | Cue::BulletSoil
+            | Cue::BulletStone
+            | Cue::BulletWood
+            | Cue::BulletMetal
+            | Cue::FleshHit
+            | Cue::Collapse
+            | Cue::Knock
+            | Cue::Reload => 0.07,
+            // A whine's pitch is its whole character, and no two glances
+            // leave at the same speed.
+            Cue::Ricochet => 0.14,
+            // A blast varies like thunder: heard rarely, but one recording
+            // retriggered through a raid is its tell.
+            Cue::Blast => 0.08,
             // A shot varies like any other diegetic cue, and slightly less
             // than a swing: the two are the most *repeated* sounds in a
             // fight, so unison is the tell, but a firearm's report is a
             // mechanism with a fixed bore and a bow's is a fixed string —
             // both vary with the shooter and the round, not with the
             // weapon's pitch.
-            Cue::ShotBow | Cue::ShotGun => 0.05,
+            Cue::ShotBow | Cue::ShotGun | Cue::ShotGunFar => 0.05,
             // Wider than any diegetic cue but the bird, and for the bird's
             // reason turned up one notch: a howl is the most *exposed* tonal
             // call in the bank — a near-pure pitched tone held for seconds,
@@ -424,6 +484,9 @@ impl Cue {
             // layer is heard for minutes on end where a footstep is heard for
             // a stride. The widest in the table on purpose.
             Cue::Bird => 0.16,
+            // No two claps the same length or pitch: a storm is heard for
+            // minutes and one recording retriggered would be its tell.
+            Cue::Thunder => 0.12,
             Cue::CraftDone
             | Cue::Refused
             | Cue::Hit
@@ -433,7 +496,8 @@ impl Cue {
             | Cue::UiClick
             | Cue::BedWind
             | Cue::BedSurf
-            | Cue::BedUnder => 0.0,
+            | Cue::BedUnder
+            | Cue::BedRain => 0.0,
             // **Zero, and it is not the signal-cue argument.** A piece played
             // at 1.03× is a piece in a different key, and the next piece
             // would be in a third — the tail that covers a join would be
@@ -665,6 +729,32 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // as a MISS, and a cue fading toward silence would say exactly that.
     row(GAME,  0.0, 0.60,  45, 6, false),  // hit, head
     row(GAME,  0.0, 0.45,  45, 6, false),  // hit, limb
+    // Weather v0. The rain is a bed like the wind; thunder is ambience —
+    // a player who turns the scenery down turns the storm down with it —
+    // and non-positional, with a cooldown so two near bolts are one roll.
+    row(AMB,   0.0, 0.42,   0, 0, false),  // rain bed
+    row(AMB,   0.0, 0.85, 900, 3, false),  // thunder
+    // Effects v2. A round landing carries like a blow does; a ricochet a
+    // little further, being a whine; a body hit is information a life
+    // turns on, so it outranks the impacts.
+    row(GAME, 40.0, 0.60,  30, 4, true),   // bullet, soil
+    row(GAME, 40.0, 0.60,  30, 4, true),   // bullet, stone
+    row(GAME, 40.0, 0.60,  30, 4, true),   // bullet, wood
+    row(GAME, 48.0, 0.60,  30, 4, true),   // bullet, metal
+    row(GAME, 56.0, 0.45,  90, 3, true),   // ricochet
+    row(GAME, 30.0, 0.70,  30, 5, true),   // flesh hit
+    // The far report: past `ShotGun`'s radius the near layer is gone and
+    // this is what is left of a gunshot. Twice the reach, dark, and at a
+    // gain that meets the near layer where `render/audio.rs` switches.
+    row(GAME, 200.0, 0.45,  60, 6, true),  // gun fired, far
+    // A charge is the loudest thing on the island and the one sound a
+    // whole server should know the place of.
+    row(GAME, 200.0, 1.00,   0, 7, true),  // blast
+    row(GAME, 60.0, 0.80,  80, 5, true),   // collapse
+    row(GAME, 24.0, 0.60, 120, 4, true),   // knock
+    // Your own hands, so non-positional; the cooldown is what keeps a
+    // reload key held down from being a rattle.
+    row(GAME,  0.0, 0.45, 250, 3, false),  // reload
 ];
 
 /// Your own arm. Named rather than written inline so [`RSWING`] can read its
@@ -764,14 +854,13 @@ const M_COMBAT: CueDef = music_row(1.0);
 /// (It also used to derive `render/audio.rs`'s spatial scale for rodio's
 /// clamp; the engine pans now and that half is gone.)
 ///
-/// **Set by [`Cue::ShotGun`] since v54**, at the reference's own hundred
-/// metres; the falling tree's 96 m held it before that (this line said 88 m
-/// for one commit, which is the howl's radius — the maximum of a table is
-/// the kind of claim to re-read off the table). It is a derived
-/// number and not a taste one — it is the maximum of the table, and the
-/// test that asserts so is what makes raising a radius force this line
+/// **Set by [`Cue::ShotGunFar`] and [`Cue::Blast`] since effects v2**, at
+/// 200 m, inside the shard's 208 m interest radius (an event from further
+/// never arrives); the near gunshot's 100 m held it before that. It is a
+/// derived number and not a taste one — it is the maximum of the table, and
+/// the test that asserts so is what makes raising a radius force this line
 /// rather than silently invert a cue's falloff.
-pub const MAX_AUDIBLE_M: f32 = 100.0;
+pub const MAX_AUDIBLE_M: f32 = 200.0;
 
 /// How many voices may sound at once.
 ///
@@ -894,6 +983,8 @@ pub struct SnapshotDef {
     pub wind: f32,
     pub surf: f32,
     pub under: f32,
+    /// The rain bed: heard above water, gone below it.
+    pub rain: f32,
 }
 
 /// The two states (`DECISIONS.md` §open, "water audio v0").
@@ -914,6 +1005,7 @@ pub const SNAPSHOTS: [SnapshotDef; 2] = [
         wind: 1.0,
         surf: 1.0,
         under: 0.0,
+        rain: 1.0,
     },
     // Submerged. The game bus survives at a level a player can still fight on
     // — being underwater must not be a stealth advantage handed out by the
@@ -925,6 +1017,7 @@ pub const SNAPSHOTS: [SnapshotDef; 2] = [
         wind: 0.0,
         surf: 0.22,
         under: 1.0,
+        rain: 0.0,
     },
 ];
 
@@ -988,6 +1081,7 @@ impl Snapshots {
             wind: mix(a.wind, b.wind),
             surf: mix(a.surf, b.surf),
             under: mix(a.under, b.under),
+            rain: mix(a.rain, b.rain),
         }
     }
 }
@@ -1009,6 +1103,7 @@ impl SnapshotDef {
             Cue::BedWind => self.wind,
             Cue::BedSurf => self.surf,
             Cue::BedUnder => self.under,
+            Cue::BedRain => self.rain,
             _ => 0.0,
         }
     }

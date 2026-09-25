@@ -66,6 +66,13 @@ pub enum AdminCmd {
     Give { item: u16, count: u16 },
     /// Write the world now rather than at the next cadence.
     SaveNow,
+    /// Force the sky: a `sim_core::weather` preset code, or
+    /// `weather::MODE_AUTO` to hand it back to the schedule — the
+    /// reference's `weather.load` / `weather.reset`.
+    Weather { mode: u8 },
+    /// Move the day clock to a point in the day, per mille of `day_frac`
+    /// (0 dawn, `DAY_PORTION` dusk) — the reference's `env.time`.
+    Time { frac_pm: u16 },
     /// Not an admin verb: anyone may file one. The tick and the filer's
     /// position are stamped by the server, so the note is all a player
     /// has to type (`ALPHA.md` §4).
@@ -130,6 +137,42 @@ pub fn parse(text: &ChatText) -> Option<AdminCmd> {
             (count > 0).then_some(AdminCmd::Give { item, count })
         }
         "save" => Some(AdminCmd::SaveNow),
+        "weather" => {
+            use sim_core::weather::*;
+            let mode = match parts.next()? {
+                "auto" | "reset" => MODE_AUTO,
+                "clear" => CLEAR,
+                "overcast" | "cloudy" => OVERCAST,
+                "fog" => FOG,
+                "rain" => RAIN_MILD,
+                "heavy" => RAIN_HEAVY,
+                "storm" => STORM,
+                _ => return None,
+            };
+            Some(AdminCmd::Weather { mode })
+        }
+        "time" => {
+            // Named hours on the day's own curve: dawn is 0, dusk is
+            // `DAY_PORTION`, noon halfway between, midnight halfway
+            // through the night. A bare fraction is taken as it is.
+            let day = (sim_core::limits::DAY_PORTION * 1000.0) as u16;
+            let frac_pm = match parts.next()? {
+                "dawn" | "sunrise" => 20,
+                "morning" => day / 4,
+                "noon" => day / 2,
+                "afternoon" => day * 3 / 4,
+                "dusk" | "sunset" => day - 20,
+                "night" | "midnight" => day + (1000 - day) / 2,
+                f => {
+                    let v: f32 = f.parse().ok()?;
+                    if !(0.0..1.0).contains(&v) {
+                        return None;
+                    }
+                    (v * 1000.0) as u16
+                }
+            };
+            Some(AdminCmd::Time { frac_pm })
+        }
         // The tail of these two is free text, so it is the remainder
         // whole — never rejoined from the split, which would eat the runs
         // of spaces a person typed. Re-sanitized so it is a `ChatText` by
@@ -147,6 +190,31 @@ mod tests {
 
     fn text(s: &str) -> ChatText {
         ChatText::sanitize(s.as_bytes()).expect("a legal chat line")
+    }
+
+    #[test]
+    fn weather_and_time_parse() {
+        use sim_core::weather::{MODE_AUTO, STORM};
+        assert_eq!(
+            parse(&text("/weather storm")),
+            Some(AdminCmd::Weather { mode: STORM })
+        );
+        assert_eq!(
+            parse(&text("/weather auto")),
+            Some(AdminCmd::Weather { mode: MODE_AUTO })
+        );
+        assert_eq!(parse(&text("/weather snow")), None);
+        assert_eq!(parse(&text("/weather")), None);
+        assert_eq!(
+            parse(&text("/time 0.25")),
+            Some(AdminCmd::Time { frac_pm: 250 })
+        );
+        assert_eq!(parse(&text("/time 1.5")), None);
+        let Some(AdminCmd::Time { frac_pm }) = parse(&text("/time midnight")) else {
+            panic!("midnight parses");
+        };
+        let night = (sim_core::limits::DAY_PORTION * 1000.0) as u16;
+        assert!(frac_pm > night && frac_pm < 1000);
     }
 
     #[test]

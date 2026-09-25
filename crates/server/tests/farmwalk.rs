@@ -183,6 +183,7 @@ fn a_walker_can_farm_the_island_and_the_rate_is_measured() {
         item: hatchet,
         count: 1,
         cond: hatchet_cond,
+        skin: 0,
     };
 
     let wood = c.item_index("item.wood").expect("wood is an item");

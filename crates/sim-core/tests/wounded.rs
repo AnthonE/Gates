@@ -77,6 +77,7 @@ fn duel_world() -> World {
         item: SPEAR,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     let (fx, fz) = yaw_dir(YAW);
     let a = w.players[0].body;
@@ -185,6 +186,7 @@ fn arm_victim(w: &mut World) {
         item: SPEAR,
         count: 1,
         cond: 0,
+        skin: 0,
     };
 }
 
@@ -331,6 +333,7 @@ fn recovery_item(w: &mut World, slot: usize, count: u16) {
         item: RECOVERY_ITEM,
         count,
         cond: 0,
+        skin: 0,
     };
 }
 
@@ -439,6 +442,7 @@ fn recovery_ignores_empty_and_invalid_belt_stacks() {
         item: NO_ITEM,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     assert_eq!(w.survival.belt_recovery_slot(&w.players[1]), None);
     recovery_item(&mut w, 2, 1);
@@ -577,6 +581,7 @@ fn a_downed_body_crawls_at_a_third_of_the_walk_and_swings_at_nothing() {
         item: SPEAR,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     let start = w.players[1].body;
     let ticks = 30;
@@ -654,6 +659,7 @@ fn verbs_are_refused_while_down_but_a_door_would_not_be() {
         id: VICTIM,
         recipe: 0,
         count: 1,
+        skin: 0,
     }]);
     assert_eq!(w.players[1].jobs, before, "a crawl cannot craft");
     // And the corpse loses even the door.

@@ -17,6 +17,12 @@ Available on https://game-icons.net
 
 Licence: https://creativecommons.org/licenses/by/3.0/
 
+**Item icons are finished, not rasterised.** `ci/finish_icons.py` paints
+each item's silhouette below in colour, or — where `ci/icons/renders/`
+holds one — replaces it with a render of the game's own 3D model. A
+render is ours and owes nothing; the silhouette credit stays listed for
+every item either way, because the painted ones are derived works of it.
+
 ## What maps to what
 
 | file | source icon |
@@ -25,6 +31,7 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | `backpack.png` | `delapouite/backpack` |
 | `bandage.png` | `lorc/bandage-roll` |
 | `berries.png` | `delapouite/berries-bowl` |
+| `blueprint.png` | `lorc/tied-scroll` |
 | `building_plan.png` | `delapouite/notebook` |
 | `burlap_hood.png` | `lorc/hood` |
 | `burlap_tunic.png` | `lorc/leather-vest` |
@@ -43,17 +50,19 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | `hammer.png` | `lorc/claw-hammer` |
 | `hearth.png` | `delapouite/fireplace` |
 | `hunting_bow.png` | `delapouite/bow-arrow` |
-| `junk.png` | `delapouite/two-coins` |
+| `junk.png` | `delapouite/hexagonal-nut` |
 | `large_box.png` | `delapouite/cargo-crate` |
 | `low_grade_fuel.png` | `delapouite/jerrycan` |
+| `map_bed.png` | `delapouite/sleeping-bag` |
+| `map_hearth.png` | `delapouite/fireplace` |
 | `map_site.png` | `delapouite/hut` |
 | `medkit.png` | `delapouite/first-aid-kit` |
-| `metal_arrow.png` | `delapouite/split-arrows` |
+| `metal_arrow.png` | `lorc/broadhead-arrow` |
 | `metal_door.png` | `delapouite/closed-doors` |
 | `metal_fragments.png` | `lorc/metal-bar` |
 | `metal_hatchet.png` | `delapouite/sharp-axe` |
 | `metal_ore.png` | `delapouite/gold-nuggets` |
-| `metal_pickaxe.png` | `delapouite/mining-helmet` |
+| `metal_pickaxe.png` | `delapouite/war-pick` |
 | `metal_spear.png` | `lorc/barbed-spear` |
 | `metal_window_bars.png` | `delapouite/window-bars` |
 | `mushrooms.png` | `delapouite/mushrooms` |
@@ -86,6 +95,9 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | `sulfur_ore.png` | `lorc/crystal-cluster` |
 | `tarp.png` | `delapouite/camping-tent` |
 | `torch.png` | `delapouite/torch` |
+| `ui_clock.png` | `lorc/stopwatch` |
+| `ui_lock.png` | `lorc/padlock` |
+| `ui_star.png` | `delapouite/round-star` |
 | `verb_demolish.png` | `lorc/demolish` |
 | `verb_pick_up.png` | `lorc/grab` |
 | `verb_repair.png` | `lorc/auto-repair` |
@@ -96,7 +108,7 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | `vital_water.png` | `sbed/water-drop` |
 | `wood.png` | `delapouite/log` |
 | `wood_shutters.png` | `delapouite/closed-doors` |
-| `wooden_arrow.png` | `delapouite/plain-arrow` |
+| `wooden_arrow.png` | `lorc/arrowhead` |
 | `wooden_door.png` | `delapouite/door` |
 | `wooden_spear.png` | `lorc/spears` |
 | `workbench.png` | `lorc/hammer-nails` |

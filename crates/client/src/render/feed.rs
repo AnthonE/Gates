@@ -116,6 +116,18 @@ pub struct Hurt {
 
 /// One frame of own-facts. Cleared and refilled by [`drain`]; read-only to
 /// everything else.
+/// The frame's removals: one tick's worth at the sim's own cap
+/// (`client_core::core::REMOVED_RING`), which is past the 32 elements an
+/// array derives `Default` for — so this defaults by hand.
+#[derive(Clone, Copy)]
+struct Removals([client_core::core::Removed; client_core::core::REMOVED_RING]);
+
+impl Default for Removals {
+    fn default() -> Self {
+        Self([client_core::core::Removed::default(); client_core::core::REMOVED_RING])
+    }
+}
+
 #[derive(Resource, Default)]
 pub struct Feed {
     /// Total damage the local player dealt this frame, and whether any landed.
@@ -262,13 +274,17 @@ pub struct Feed {
     /// rings — every arrow on the island that stops on something lands here,
     /// not only this player's. Cosmetic only: what reads this leaves a mark,
     /// and a mark decides nothing.
-    impacts: [(i32, i32, i32, u8); FEED_CAP],
+    impacts: [client_core::core::Impact; FEED_CAP],
     n_impacts: usize,
     /// Bodies whose arm started to move this frame, by wire entity id
     /// (broadcast, wire v47). Cosmetic and unvalidated: an id naming no
     /// live body matches nothing when `bodies::stream` walks its set.
     swings: [u32; FEED_CAP],
     n_swings: usize,
+    /// Animals that howled for their pack this frame (`EventMsg::Howl`,
+    /// wire v76), by tagged roster id. A sound and nothing else.
+    howls: [u32; FEED_CAP],
+    n_howls: usize,
     /// Placements that happened this frame: address + which store (`true` =
     /// deployable). Broadcast-only by construction — the core's ring is fed
     /// by `PiecePlaced`/`DeployPlaced` and never by a sync walk, so a join
@@ -276,6 +292,11 @@ pub struct Feed {
     /// mixer wants the address for the positional place cue.
     placed: [(u16, u16, u8, u8, bool); FEED_CAP],
     n_placed: usize,
+    /// Pieces and deployables that came down this frame, with the row and
+    /// plate they stood at (`client_core::core::Removed`). Removal events
+    /// only — a resync clears the mirror without handing anything over.
+    removed: Removals,
+    n_removed: usize,
     /// Every `APPLIED*` bit raised since the last drain.
     ///
     /// **Latched facts need this and rings do not.** `struct_hit`,
@@ -299,6 +320,10 @@ pub struct Feed {
     /// first snapshot, which reads as the boot phase — mid-morning — and
     /// is exactly what a loading world should look like.
     pub server_tick_est: f64,
+    /// The world's sky/clock record (`client_core` `env`, weather v0),
+    /// copied beside the tick for the same reason: every reader of the hour
+    /// or the weather takes it as a `Res<Feed>`.
+    pub env: sim_core::weather::Env,
 }
 
 impl Feed {
@@ -351,13 +376,18 @@ impl Feed {
         &self.shots[..self.n_shots]
     }
     /// Arrow impacts heard this frame, oldest first.
-    pub fn impacts(&self) -> &[(i32, i32, i32, u8)] {
+    pub fn impacts(&self) -> &[client_core::core::Impact] {
         &self.impacts[..self.n_impacts]
     }
 
     /// Bodies that swung this frame, oldest first.
     pub fn swings(&self) -> &[u32] {
         &self.swings[..self.n_swings]
+    }
+
+    /// Animals that called their pack this frame, oldest first.
+    pub fn howls(&self) -> &[u32] {
+        &self.howls[..self.n_howls]
     }
 
     /// Bodies this player's blows landed on this frame, oldest first.
@@ -422,6 +452,10 @@ impl Feed {
         &self.placed[..self.n_placed]
     }
 
+    pub fn removed(&self) -> &[client_core::core::Removed] {
+        &self.removed.0[..self.n_removed]
+    }
+
     fn clear(&mut self) {
         self.damage = 0;
         self.hits = 0;
@@ -443,7 +477,9 @@ impl Feed {
         self.n_shots = 0;
         self.n_impacts = 0;
         self.n_swings = 0;
+        self.n_howls = 0;
         self.n_placed = 0;
+        self.n_removed = 0;
         self.wounded = None;
         self.recovered = None;
     }
@@ -477,6 +513,7 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
     feed.applied2 = core::mem::take(&mut net.session.applied2);
     let core = &mut net.session.core;
     feed.server_tick_est = core.clock.server_est;
+    feed.env = core.env;
 
     while let Some(h) = core.pop_hit() {
         feed.damage = feed.damage.saturating_add(h.damage);
@@ -617,6 +654,15 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
             feed.n_swings += 1;
         }
     }
+    while let Some(h) = core.pop_howl() {
+        if feed.n_howls >= FEED_CAP {
+            feed.dropped = feed.dropped.saturating_add(1);
+        } else {
+            let n = feed.n_howls;
+            feed.howls[n] = h;
+            feed.n_howls += 1;
+        }
+    }
     while let Some(p) = core.pop_placed() {
         if feed.n_placed >= FEED_CAP {
             feed.dropped = feed.dropped.saturating_add(1);
@@ -624,6 +670,15 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
             let n = feed.n_placed;
             feed.placed[n] = p;
             feed.n_placed += 1;
+        }
+    }
+    while let Some(r) = core.pop_removed() {
+        if feed.n_removed >= client_core::core::REMOVED_RING {
+            feed.dropped = feed.dropped.saturating_add(1);
+        } else {
+            let n = feed.n_removed;
+            feed.removed.0[n] = r;
+            feed.n_removed += 1;
         }
     }
     while let Some(t) = core.pop_toast() {

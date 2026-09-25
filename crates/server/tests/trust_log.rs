@@ -218,11 +218,13 @@ fn stand_a_box(
         item: 0,
         count: 100,
         cond: 0,
+        skin: 0,
     };
     core.world.players[s].inv[1] = ItemStack {
         item: BOX_ITEM,
         count: 5,
         cond: 0,
+        skin: 0,
     };
     let (cx, cz) = at;
     act(
@@ -261,6 +263,7 @@ fn stand_a_box(
             item: GOODS,
             count: 50,
             cond: 0,
+            skin: 0,
         },
     );
     k

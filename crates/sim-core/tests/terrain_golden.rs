@@ -173,7 +173,19 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// IS — and with it every site, since `haven` chooses its pad ON the ring and
 /// now scores all 256 of its nodes rather than 64 re-derived crossings.
 // 2026-09-19: ring bench changes ground and hashes the cached road profile.
-const GOLDEN_TERRAIN_HASH: u64 = 0xBC90ADC1A4E90596;
+/// **Moved `0xBC90_ADC1_A4E9_0596` → `0x05DD_F5CE_799C_BF62` at interior
+/// massifs v0** (2026-09-23, operator: *"our world is still weak terrain
+/// wise"*). Two gullied ranges stand in the 170–560 m annulus (`TERRAIN.md`
+/// §1 stage 4d). Outside that window every height is bit-unchanged — held on
+/// seven seeds at a 4 m pitch before this pin moved, and by
+/// `tests/massif.rs` after — so what moved here is the interior grid, the
+/// inland site that stands among the ranges, and its roads.
+/// **Moved `0x05DD_F5CE_799C_BF62` → `0xCF57_44D9_7022_0322` at the ore
+/// budget** (2026-09-24): each island scales its Highland metal and sulfur to
+/// `terrain::ORE_TARGET`, and `probe_sites` now hashes `Haven::ore_pm`. No
+/// height moved; the golden seed's windows hold no rock-channel cell, which
+/// is why the budget had to be hashed rather than seen.
+const GOLDEN_TERRAIN_HASH: u64 = 0xCF57_44D9_7022_0322;
 
 #[test]
 fn test_terrain_golden() {

@@ -22,8 +22,9 @@ use bevy::pbr::FogFalloff;
 use client::render::fill::{linear_to_srgb, luminance, srgb_to_linear};
 use client::render::rig::{island_medium, AIR_DENSITY};
 use client::render::sky::{
-    air_chroma, backdrop_at, browser_haze, cloud_cubemap_with, cube_dir, ground_air, haze_color,
-    AIR_FLOOR, BAKE_BACKDROP, CLOUD_NITS, HORIZON_DESAT, HORIZON_GAIN, SKY_FACE,
+    air_chroma, backdrop_at, browser_haze, cloud_cubemap_with, cube_dir, deck_hue, ground_air,
+    haze_color, AIR_FLOOR, BAKE_BACKDROP, CLOUD_NITS, DECK_GAIN, HORIZON_DESAT, HORIZON_GAIN,
+    SKY_FACE,
 };
 
 const SEED: u64 = 20_260_731;
@@ -88,9 +89,12 @@ fn the_default_bake_is_the_targets() {
     );
 }
 
-/// The browser's deck is the desktop's with a sky under it: identical bytes
+/// The browser's deck is the desktop's with a sky under it: the same cloud
 /// wherever a cloud is opaque, exactly the backdrop wherever the desktop's
-/// texel is zero, and never black anywhere.
+/// texel is zero, and never black anywhere. "The same cloud" once the
+/// desktop's two corrections are undone — the atmosphere's hue it takes out
+/// (`deck_hue`) and the headroom it keeps (`DECK_GAIN`); a browser has no
+/// atmosphere and needs neither.
 #[test]
 fn the_browser_deck_is_the_desktops_over_a_sky() {
     let native = texels(false);
@@ -111,28 +115,53 @@ fn the_browser_deck_is_the_desktops_over_a_sky() {
                 let want = encoded(backdrop_at(d));
                 if a == [0, 0, 0, 0] {
                     // No cloud here: the sky, exactly.
-                    assert_eq!(&b[..3], &want[..], "clear texel is not the backdrop");
-                    backdrop += 1;
-                } else if a[..3] == b[..3] {
-                    // An opaque cloud: the same bytes on both targets.
-                    same += 1;
-                } else {
-                    // A cloud's edge. The desktop stores `cloud · cov` over
-                    // black; the browser stores `cloud · cov + sky · (1 − cov)`,
-                    // so in LINEAR terms the sky only ever adds, by at most
-                    // the sky itself: `a ≤ b ≤ a + sky`. Compared decoded,
-                    // because the bytes are sRGB and a sum is not.
-                    let lin = |v: u8| srgb_to_linear(v as f32 / 255.0);
-                    let sky = backdrop_at(d);
+                    // Within one step: the composer encodes through a table,
+                    // the reference here through the exact curve.
                     for c in 0..3 {
-                        let (al, bl) = (lin(a[c]), lin(b[c]));
                         assert!(
-                            bl >= al - 0.02 && bl <= al + sky[c] + 0.02,
-                            "edge texel {b:?} is not cloud {a:?} plus at most the sky {want:?} (channel {c}: {al} .. {})",
-                            al + sky[c]
+                            (b[c] as i32 - want[c] as i32).abs() <= 1,
+                            "clear texel {b:?} is not the backdrop {want:?}"
                         );
                     }
-                    blended += 1;
+                    backdrop += 1;
+                } else {
+                    // The desktop's cloud, as the browser would store it.
+                    // Decoded, because the bytes are sRGB and a sum is not.
+                    let lin = |v: u8| srgb_to_linear(v as f32 / 255.0);
+                    let hue = deck_hue(d.y);
+                    let al: [f32; 3] = core::array::from_fn(|c| lin(a[c]) * DECK_GAIN / hue[c]);
+                    let bl: [f32; 3] = core::array::from_fn(|c| lin(b[c]));
+                    // One byte of the desktop's, undone by the same factors:
+                    // where the air gives a channel back, the cube keeps
+                    // little of it, and a byte there is worth a lot.
+                    let tol: [f32; 3] = core::array::from_fn(|c| {
+                        let step = srgb_to_linear((a[c] as f32 + 1.0) / 255.0) - lin(a[c]);
+                        0.02 + step * DECK_GAIN / hue[c]
+                    });
+                    // A texel the desktop brought back in range (keeping
+                    // its hue) says only "at least", in every channel.
+                    let over = a[..3].contains(&255);
+                    let clipped = |_c: usize| over;
+                    if (0..3).all(|c| clipped(c) || (al[c] - bl[c]).abs() <= tol[c]) {
+                        // An opaque cloud: the same cloud on both targets.
+                        same += 1;
+                    } else {
+                        // A cloud's edge. The desktop stores `cloud · cov`
+                        // over black; the browser `cloud · cov + sky ·
+                        // (1 − cov)`, so the sky only ever adds, by at most
+                        // the sky itself: `a ≤ b ≤ a + sky`.
+                        let sky = backdrop_at(d);
+                        for c in 0..3 {
+                            assert!(
+                                bl[c] >= al[c] - tol[c]
+                                    && (clipped(c) || bl[c] <= al[c] + sky[c] + tol[c]),
+                                "edge texel {b:?} is not cloud {a:?} plus at most the sky {want:?} (channel {c}: {} .. {})",
+                                al[c],
+                                al[c] + sky[c]
+                            );
+                        }
+                        blended += 1;
+                    }
                 }
             }
         }
@@ -326,5 +355,38 @@ fn the_browser_haze_is_the_desktops_air_and_the_skys_horizon() {
     assert!(
         night.red == 0.0 && night.green == 0.0 && night.blue == 0.0,
         "the haze glows at night"
+    );
+}
+
+/// The stars are points, not texels: above the horizon, unit directions,
+/// and mostly faint with a few bright — and the cube no longer carries any,
+/// so a night deck is only the moon and the cloud.
+#[test]
+fn the_stars_are_a_mesh_above_the_horizon() {
+    use bevy::mesh::VertexAttributeValues;
+    use client::render::stars::{star_mesh, STARS};
+    let mesh = star_mesh(STARS);
+    let Some(VertexAttributeValues::Float32x3(pos)) =
+        mesh.attribute(bevy::mesh::Mesh::ATTRIBUTE_POSITION)
+    else {
+        panic!("no positions");
+    };
+    let Some(VertexAttributeValues::Float32x4(col)) =
+        mesh.attribute(bevy::mesh::Mesh::ATTRIBUTE_COLOR)
+    else {
+        panic!("no colours");
+    };
+    assert_eq!(pos.len(), STARS as usize * 4);
+    for p in pos {
+        let d = Vec3::from_array(*p);
+        assert!(
+            (d.length() - 1.0).abs() < 1e-4 && d.y > 0.02,
+            "a star at {d}"
+        );
+    }
+    let bright = col.iter().step_by(4).filter(|c| c[0] > 0.5).count();
+    assert!(
+        bright * 10 < STARS as usize && bright * 30 > STARS as usize,
+        "{bright} of {STARS} stars are bright"
     );
 }

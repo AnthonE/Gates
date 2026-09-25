@@ -193,6 +193,29 @@ seed = 20260731
 # entitle_timeout_secs = 6
 # entitle_sweep_secs = 120
 
+# Skins (crates/server/src/skins.rs): who owns which skin. Read off the
+# platform's item contract through elo's `/api/items/of/{wallet}` when a player
+# joins and when their client says it bought something (opening the inventory
+# asks) — never on a timer, because every read is an explorer call elo pays
+# for. Unset ⇒ nobody owns a skin: every item wears its own look and a skinned
+# craft refuses. A guest owns nothing. "Could not look" keeps what the sim
+# had; it never grants and never strips (`skins_unknown` counts it).
+#
+# What each skin costs is read from the same origin's store,
+# `/api/items/store/gates`, at boot and every five minutes (one cheap read,
+# not per player). Store prices replace content/skins.toml's; a store that is
+# not configured (or whose route 404s) has nothing on sale, and a read that
+# fails changes nothing (`skin_prices_unknown` counts it).
+#
+# skins_origin = "https://elopros.com"
+# skins_timeout_secs = 8
+#
+# Dev and test shards only: every player owns every skin in content/skins.toml,
+# so the looks can be seen before anything is sold. Refused at boot together
+# with entitle_origin — a shard that sells the game does not give its skins away.
+#
+# skins_all = true
+
 # ---------------------------------------------------------------------------
 # The oldest CLIENT RELEASE this shard admits. Unset ⇒ 0 ⇒ every client that
 # can talk to this shard at all, which is the shipping default and is not a

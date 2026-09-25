@@ -124,6 +124,7 @@ fn place_bag(
         // bag is not a tool and carries no condition, and `..default()`
         // would hide that from a reader rather than say it.
         cond: 0,
+        skin: 0,
     };
     let before = core.world.deploys.len();
     assert!(core.wants_action(net_slot), "hand should be open");

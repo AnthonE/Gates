@@ -180,6 +180,7 @@ pub fn hash(c: &Content) -> u64 {
         h.u(a.slot as u32);
         h.u(a.reduction_pct);
         h.u(a.move_penalty_pct);
+        h.u(a.cold_pct as u32);
     }
 
     h.s("consumables");
@@ -218,6 +219,14 @@ pub fn hash(c: &Content) -> u64 {
             h.u(e.count_min);
             h.u(e.count_max);
         }
+        // The guaranteed rows reach the sim through `bake_loot`, so two
+        // contents that disagree about one play differently.
+        h.u(l.guaranteed.len() as u32);
+        for g in &l.guaranteed {
+            h.s(&g.item);
+            h.u(g.count_min);
+            h.u(g.count_max);
+        }
     }
 
     // Animals. Hashed like everything else the sim reads: two content sets
@@ -239,17 +248,18 @@ pub fn hash(c: &Content) -> u64 {
         h.u(m.spook_m);
         h.u(m.night_spook_m);
         h.u(m.respawn_seconds);
+        h.u(m.sight_deg);
+        h.u(m.pack_m);
+        h.u(m.fire_fear_m);
         h.stacks(&m.drops);
     }
 
-    h.s("skins");
-    for s in sorted(&c.skins, |s| &s.id) {
-        h.s(&s.id);
-        h.s(&s.covers);
-        h.u(s.coin as u32);
-        h.u(s.price);
-        h.s(&s.season);
-    }
+    // **Skins are not hashed.** This digest is what a save file is refused
+    // on (`server::store`, `server::worldfile`), because item and recipe
+    // rows are indices a saved stack points through. A skin is not: a
+    // stack carries its skin's catalog id, and an id the running catalog
+    // does not know draws as the plain item. Hashing the rows made a new
+    // look, a tint or a name a wipe, for a catalog that is meant to grow.
 
     // The bands are content: moving one is a visible balance change.
     h.s("balance");
@@ -269,6 +279,26 @@ pub fn hash(c: &Content) -> u64 {
     h.u(g.repair_cost_pct);
     h.u(g.arrow_break_pct);
     h.u(g.arrow_lodge_s);
+    // The decay ladder reaches the sim (`bake_deployables` → `decay_pct`) and
+    // was the fourth field caught outside this walk: two contents rotting a
+    // stone base in five hours and in fifty canonicalised identically. A
+    // `BTreeMap`, so the walk order is the key order and needs no sort.
+    h.s("decay");
+    h.u(g.decay_pct_per_period.len() as u32);
+    for (m, pct) in &g.decay_pct_per_period {
+        h.u(*m as u32);
+        h.u(*pct);
+    }
+    // Upkeep v2's three knobs, each read by the sweep. The ladder in file
+    // order, which validation holds ascending, so order is meaning.
+    h.s("upkeep_v2");
+    h.u(g.upkeep_steps.len() as u32);
+    for [after, permille] in &g.upkeep_steps {
+        h.u(*after);
+        h.u(*permille);
+    }
+    h.u(g.inside_decay_pct.unwrap_or(0));
+    h.u(g.grief_protection_h);
     let b = &c.balance.bands;
     for pair in [
         b.ttk_melee,
@@ -344,6 +374,10 @@ pub fn hash(c: &Content) -> u64 {
     // by item id, which `validate::structural` refuses to repeat.
     h.s("research");
     h.s(&c.research_coin.item);
+    // The table's paper and its wait (research table v1): both reach the
+    // sim, and a ten-second table and a sixty-second one play differently.
+    h.s(&c.research_table.blueprint);
+    h.u(c.research_table.seconds);
     h.u(c.research.len() as u32);
     let mut research: Vec<&Research> = c.research.iter().collect();
     research.sort_by(|a, b| a.item.cmp(&b.item));
@@ -366,6 +400,28 @@ pub fn hash(c: &Content) -> u64 {
     h.u(sv.water_minutes_to_empty);
     h.u(sv.starve_hp_per_min);
     h.u(sv.dehydrate_hp_per_min);
+
+    let ex = &c.balance.exposure;
+    h.s("exposure");
+    for v in [
+        ex.wet_rain_per_s,
+        ex.dry_per_s,
+        ex.dry_fire_per_s,
+        ex.soak_depth_cm,
+        ex.night_cold,
+        ex.rain_cold,
+        ex.wind_cold,
+        ex.wet_cold,
+        ex.fire_warmth,
+        ex.torch_warmth,
+        ex.heat_radius_cm,
+        ex.chill_rise_per_s,
+        ex.chill_fall_per_s,
+        ex.hurt_at,
+        ex.hurt_hp_per_min,
+    ] {
+        h.u(v);
+    }
 
     h.0.digest()
 }

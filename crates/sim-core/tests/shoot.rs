@@ -146,11 +146,13 @@ fn archer(id: u32, x: f32, feet_y: f32, z: f32, yaw: u16, pitch: u8, ammo: u16) 
         item: BOW,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     p.inv[7] = ItemStack {
         item: ARROW,
         count: ammo,
         cond: 0,
+        skin: 0,
     };
     p.frame = InputFrame {
         seq: 1,
@@ -560,6 +562,7 @@ fn an_empty_hand_hands_the_arm_back() {
         item: 9,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     assert!(!ranged::draw(
         0,

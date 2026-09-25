@@ -192,6 +192,18 @@ fn the_shipped_research_table_reaches_a_booted_world() {
         w.research.coin, coin,
         "and it is priced in the coin the file names"
     );
+    // The table's paper and its wait (research table v1): a table with no
+    // paper or no wait refuses every start, which is the dark verb this
+    // suite exists to catch one field over.
+    assert_eq!(
+        Some(w.research.blueprint),
+        content.item_index(&content.research_table.blueprint),
+        "the table makes the paper the file names"
+    );
+    assert!(
+        w.research.table_ticks > 0,
+        "a table whose wait reached the sim as zero never starts"
+    );
 
     for r in &content.research {
         let item = content

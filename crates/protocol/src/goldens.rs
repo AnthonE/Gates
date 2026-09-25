@@ -16,6 +16,7 @@
 //! NOW.md §5c). Never both at once: the bytes would then move for two
 //! reasons and no reader afterwards can tell which byte answers to which.
 
+use crate::event::{SkinCatalog, SkinRow};
 use crate::{
     ChatText, EntityState, Hello, InputDatagram, InvSlot, ItemCatalog, ItemRow, Nudge, Refuse,
     SnapshotHeader, Welcome, WireBag, WireGItem, BAG_SYNC_BATCH, DEPLOY_SYNC_BATCH,
@@ -38,131 +39,132 @@ use sim_core::limits::{
 use sim_core::research::{ResearchContent, ResearchRow, NO_RECIPE};
 use sim_core::rng::Pcg32;
 
-/// Fixture file names, keyed by wire version (`PROTO_VER` 10 ⇒ `v10_*`).
-pub const FIXTURES: [&str; 113] = [
-    "v73_input_acks_only.bin",
-    "v73_input_full.bin",
-    "v73_snapshot_keyframe.bin",
-    "v73_snapshot_delta.bin",
-    "v73_snapshot_cap.bin",
-    "v73_hello.bin",
-    "v73_welcome.bin",
-    "v73_refuse_full.bin",
-    "v73_event_gather.bin",
-    "v73_event_inv.bin",
-    "v73_event_slot_harvested.bin",
-    "v73_event_slot_respawned.bin",
-    "v73_event_slot_sync.bin",
-    "v73_event_catalog.bin",
-    "v73_event_weak_mark.bin",
-    "v73_event_craft_q.bin",
-    "v73_event_craft_done.bin",
-    "v73_event_craft_refused.bin",
-    "v73_event_recipes.bin",
-    "v73_action_craft.bin",
-    "v73_action_cancel.bin",
-    "v73_action_place.bin",
-    "v73_event_piece_placed.bin",
-    "v73_event_piece_sync.bin",
-    "v73_event_build_refused.bin",
-    "v73_event_piece_defs.bin",
-    "v73_action_deploy.bin",
-    "v73_action_feed.bin",
-    "v73_event_deploy_placed.bin",
-    "v73_event_deploy_sync.bin",
-    "v73_event_deploy_refused.bin",
-    "v73_event_deploy_defs.bin",
-    "v73_event_piece_removed.bin",
-    "v73_event_deploy_removed.bin",
-    "v73_event_stock.bin",
-    "v73_action_use.bin",
-    "v73_action_access.bin",
-    "v73_event_door.bin",
-    "v73_action_upgrade.bin",
-    "v73_chat.bin",
-    "v73_event_chat.bin",
-    "v73_event_hit.bin",
-    "v73_event_health.bin",
-    "v73_event_death.bin",
-    "v73_action_loot.bin",
-    "v73_event_bag_dropped.bin",
-    "v73_event_bag_sync.bin",
-    "v73_event_bag_removed.bin",
-    "v73_event_struct_hit_piece.bin",
-    "v73_event_struct_hit_deploy.bin",
-    "v73_event_vitals.bin",
-    "v73_event_consumed.bin",
-    "v73_event_consume_refused.bin",
-    "v73_action_consume.bin",
-    "v73_event_drank.bin",
-    "v73_action_drink.bin",
-    "v73_event_respawn.bin",
-    "v73_action_respawn.bin",
-    "v73_action_move.bin",
-    "v73_event_moved.bin",
-    "v73_event_move_refused.bin",
-    "v73_action_move_box.bin",
-    "v73_action_container.bin",
-    "v73_action_container_close.bin",
-    "v73_event_cont_sync.bin",
-    "v73_event_cont_close.bin",
-    "v73_action_repair_piece.bin",
-    "v73_action_repair_deploy.bin",
-    "v73_event_piece_repaired_piece.bin",
-    "v73_event_piece_repaired_deploy.bin",
-    "v73_action_throw_piece.bin",
-    "v73_action_throw_deploy.bin",
-    "v73_event_charge_placed_piece.bin",
-    "v73_event_charge_placed_deploy.bin",
-    "v73_challenge.bin",
-    "v73_auth.bin",
-    "v73_event_oven_lit.bin",
-    "v73_event_oven_out.bin",
+/// Fixture file names. Not versioned: a wire change regenerates only the
+/// fixtures whose bytes moved, so a diff shows what changed and nothing else.
+pub const FIXTURES: [&str; 121] = [
+    "input_acks_only.bin",
+    "input_full.bin",
+    "snapshot_keyframe.bin",
+    "snapshot_delta.bin",
+    "snapshot_cap.bin",
+    "hello.bin",
+    "welcome.bin",
+    "refuse_full.bin",
+    "event_gather.bin",
+    "event_inv.bin",
+    "event_slot_harvested.bin",
+    "event_slot_respawned.bin",
+    "event_slot_sync.bin",
+    "event_catalog.bin",
+    "event_weak_mark.bin",
+    "event_craft_q.bin",
+    "event_craft_done.bin",
+    "event_craft_refused.bin",
+    "event_recipes.bin",
+    "action_craft.bin",
+    "action_cancel.bin",
+    "action_place.bin",
+    "event_piece_placed.bin",
+    "event_piece_sync.bin",
+    "event_build_refused.bin",
+    "event_piece_defs.bin",
+    "action_deploy.bin",
+    "action_feed.bin",
+    "event_deploy_placed.bin",
+    "event_deploy_sync.bin",
+    "event_deploy_refused.bin",
+    "event_deploy_defs.bin",
+    "event_piece_removed.bin",
+    "event_deploy_removed.bin",
+    "event_stock.bin",
+    "action_use.bin",
+    "action_access.bin",
+    "event_door.bin",
+    "action_upgrade.bin",
+    "chat.bin",
+    "event_chat.bin",
+    "event_hit.bin",
+    "event_health.bin",
+    "event_death.bin",
+    "action_loot.bin",
+    "event_bag_dropped.bin",
+    "event_bag_sync.bin",
+    "event_bag_removed.bin",
+    "event_struct_hit_piece.bin",
+    "event_struct_hit_deploy.bin",
+    "event_vitals.bin",
+    "event_consumed.bin",
+    "event_consume_refused.bin",
+    "action_consume.bin",
+    "event_drank.bin",
+    "action_drink.bin",
+    "event_respawn.bin",
+    "action_respawn.bin",
+    "action_move.bin",
+    "event_moved.bin",
+    "event_move_refused.bin",
+    "action_move_box.bin",
+    "action_container.bin",
+    "action_container_close.bin",
+    "event_cont_sync.bin",
+    "event_cont_close.bin",
+    "action_repair_piece.bin",
+    "action_repair_deploy.bin",
+    "event_piece_repaired_piece.bin",
+    "event_piece_repaired_deploy.bin",
+    "action_throw_piece.bin",
+    "action_throw_deploy.bin",
+    "event_charge_placed_piece.bin",
+    "event_charge_placed_deploy.bin",
+    "challenge.bin",
+    "auth.bin",
+    "event_oven_lit.bin",
+    "event_oven_out.bin",
     // Appended rather than slotted beside `v30_event_door`: the
     // fixture list is positional (`gen_goldens` indexes it), so a new
     // name in the middle silently renumbers every writer after it.
-    "v73_event_knock.bin",
-    "v73_event_auth.bin",
-    "v73_action_access_crew.bin",
-    "v73_action_demolish.bin",
-    "v73_event_shot.bin",
+    "event_knock.bin",
+    "event_auth.bin",
+    "action_access_crew.bin",
+    "action_demolish.bin",
+    "event_shot.bin",
     // World containers v0 (v37): the fourth container kind. Three
     // fixtures and not one, because `action_move_box`'s own doc records
     // what happens otherwise — the third kind crossed the wire for a
     // whole version with only the *open* pinned, so the bytes that mean
     // "take it out of the box" were checked by nothing. Kind 3 gets its
     // open, its move and its sync in the commit that legalises it.
-    "v73_action_container_world.bin",
-    "v73_action_move_world.bin",
-    "v73_event_cont_sync_world.bin",
+    "action_container_world.bin",
+    "action_move_world.bin",
+    "event_cont_sync_world.bin",
     // The bench ladder + tech tree (v38): the unlock action and the
     // research-rows drip, plus the three research-lane events that had
     // ridden unpinned since v32 — the role gate checked their payloads
     // and nothing checked their bytes, which is the exact seat the v37
     // world-container note called out as empty.
-    "v73_action_unlock.bin",
-    "v73_event_research_rows.bin",
-    "v73_event_research.bin",
-    "v73_event_research_refused.bin",
-    "v73_event_known.bin",
+    "action_unlock.bin",
+    "event_research_rows.bin",
+    "event_research.bin",
+    "event_research_refused.bin",
+    "event_known.bin",
     // The table verb's own action, pinned by the local branch and kept
     // through the 2026-08-15 integration: `encode_action_research` is
-    // still live (the client's `verbs.rs` calls it), so
-    // `every_encoder_has_a_golden` requires these bytes.
-    "v73_action_research.bin",
+    // still live (the client sends it to read a blueprint since research
+    // table v1), so `every_encoder_has_a_golden` requires these bytes.
+    "action_research.bin",
     // The gather refusal (v42) — appended, because the manifest is
     // positional and a name in the middle silently renumbers every
     // writer after it.
-    "v73_event_gather_refused.bin",
+    "event_gather_refused.bin",
     // Bag choice v0 (v43): the own-fact bag list the death screen shapes
     // itself around. Appended for the same positional reason.
-    "v73_event_bags.bin",
+    "event_bags.bin",
     // Surface marks v0 (v45): where an arrow stopped, and on what.
     // Appended, like the two above — `gen_goldens` writes this list by
     // INDEX, so inserting anywhere but the end silently re-points every
     // fixture after the insertion at another message's bytes.
-    "v73_event_impact.bin",
-    "v73_event_swing.bin",
+    "event_impact.bin",
+    "event_swing.bin",
     // Armor v1 (v51): the fifth container kind, and the first that is
     // carried on the player rather than standing in the world. Four
     // fixtures on the v37 precedent above — its open, its move and its
@@ -170,15 +172,15 @@ pub const FIXTURES: [&str; 113] = [
     // `REFUSE_M_WEAR` is a reason no fixture has ever carried and the
     // refusal message is the only one that pins a container kind inside
     // an *address* rather than as a field of its own.
-    "v73_action_container_wear.bin",
-    "v73_action_move_wear.bin",
-    "v73_event_cont_sync_wear.bin",
-    "v73_event_move_refused_wear.bin",
+    "action_container_wear.bin",
+    "action_move_wear.bin",
+    "event_cont_sync_wear.bin",
+    "event_move_refused_wear.bin",
     // Appended, never inserted: `protocol_golden.rs` and `gen_goldens.rs`
     // address this array by literal index, so a name landing in the middle
     // would silently re-point ~14 existing fixtures at each other's bytes.
-    "v73_action_pickup.bin",
-    "v73_event_hurt.bin",
+    "action_pickup.bin",
+    "event_hurt.bin",
     // Reload v1 (v59): the verb, the magazine's new state, and the refusal
     // that carries the count — the dry click's authoritative "you are at
     // zero".
@@ -192,26 +194,56 @@ pub const FIXTURES: [&str; 113] = [
     // this file already records two blocks up, arrived at alone rather
     // than in a merge: **this list is positional, so a new name appends
     // and never inserts.**
-    "v73_action_reload.bin",
-    "v73_event_reload.bin",
-    "v73_event_reload_refused.bin",
+    "action_reload.bin",
+    "event_reload.bin",
+    "event_reload_refused.bin",
     // Wounded v0 (v63). Appended, per the rule three lines up.
-    "v73_event_wounded.bin",
-    "v73_event_recovered.bin",
+    "event_wounded.bin",
+    "event_recovered.bin",
     // **Appended, never inserted.** `examples/gen_goldens.rs` writes by
     // INDEX into this array, so a name added in the middle silently
     // re-points every fixture after it — 60 files written under their
     // neighbours' names, with the golden test green because it compares
     // each name against what the same index produced.
-    "v73_event_gitem_sync.bin",
-    "v73_action_assist.bin",
-    "v73_event_assist.bin",
-    "v73_action_rotate.bin",
-    // Spectators v0 (v73): the watcher's hello, with its target, and the
+    "event_gitem_sync.bin",
+    "action_assist.bin",
+    "event_assist.bin",
+    "action_rotate.bin",
+    // Weather v0 (v75). Appended.
+    "event_env.bin",
+    "event_exposure.bin",
+    "event_slot_grow_sync.bin",
+    // The pack call (v76). Appended.
+    "event_howl.bin",
+    // Skins v0 (v77): the skin catalog, the owner's set, and the two new
+    // verbs. Appended, positional like every row above.
+    "event_skins.bin",
+    "event_skins_owned.bin",
+    "action_reskin.bin",
+    "action_skins_refresh.bin",
+    // Spectators (v79): the watcher's hello, with its target, and the
     // one message only a watcher receives. Appended, positional as ever.
-    "v73_hello_spectate.bin",
-    "v73_watch.bin",
+    "hello_spectate.bin",
+    "watch.bin",
 ];
+
+/// The sky/clock event: a storm forced mid-fade, the clock pushed to dusk.
+pub fn event_env() -> sim_core::weather::Env {
+    sim_core::weather::Env {
+        mode: sim_core::weather::STORM,
+        fade_end: 0x0123_4567,
+        from: sim_core::weather::Wx {
+            cloud: 350,
+            dark: 17,
+            rain: 1000,
+            fog: 0,
+            wind: 999,
+            thunder: 512,
+            wind_dir: 0xA5,
+        },
+        day_offset: 123_457,
+    }
+}
 
 /// The move action: container handle (a bag id, or a packed
 /// `box_key(cx, cz, level)` — the kinds say which), from (kind, slot), to
@@ -313,6 +345,7 @@ pub fn event_cont_sync() -> (u8, u32, bool, [InvSlot; 3]) {
                     item: 5,
                     count: 40,
                     cond: 0,
+                    skin: 0,
                 },
             },
             InvSlot {
@@ -324,6 +357,7 @@ pub fn event_cont_sync() -> (u8, u32, bool, [InvSlot; 3]) {
                     // every other field in the batch, so a codec that
                     // wrote the halves in the wrong order moves bytes.
                     cond: 4_321,
+                    skin: 0,
                 },
             },
             InvSlot {
@@ -332,6 +366,7 @@ pub fn event_cont_sync() -> (u8, u32, bool, [InvSlot; 3]) {
                     item: 12,
                     count: 77,
                     cond: 9_876,
+                    skin: 0,
                 },
             },
         ],
@@ -391,6 +426,7 @@ fn rng_entity(rng: &mut Pcg32, id: u32) -> EntityState {
         // point the field has.
         held: None,
         lit: false,
+        held_skin: 0,
     }
 }
 
@@ -800,6 +836,12 @@ pub fn event_inv() -> ([InvSlot; INV_SLOTS], usize) {
                 // stream so the fixture pins it in thirty different
                 // states rather than one.
                 cond: rng.next_bounded(40_001) as u16,
+                // The skin (wire v77), from the same stream: a third of the
+                // slots skinned, the rest plain, so both states are pinned.
+                skin: match rng.next_bounded(3) {
+                    0 => 1 + rng.next_bounded(900) as u16,
+                    _ => 0,
+                },
             },
         };
     }
@@ -808,6 +850,21 @@ pub fn event_inv() -> ([InvSlot; INV_SLOTS], usize) {
 
 pub fn event_slot_change() -> (u16, u16) {
     (0x0102, 0x0304)
+}
+
+/// The tick a golden sapling is full-grown by (tree growth v0).
+pub const EVENT_SLOT_GROWN_AT: u32 = 0x0A0B_0C0D;
+
+/// A full batch of regrowing trees, at the cap.
+pub fn event_slot_grow_sync() -> [(u16, u16, u32); crate::GROW_SYNC_BATCH] {
+    let mut rng = Pcg32::new(0x0047_524f_5753, 19);
+    core::array::from_fn(|_| {
+        (
+            rng.next_bounded(256) as u16,
+            rng.next_bounded(256) as u16,
+            rng.next_u32(),
+        )
+    })
 }
 
 /// A full sync batch with the reset bit set — the join-sync first message
@@ -887,14 +944,17 @@ pub fn event_craft_q() -> ([CraftJob; 3], u16) {
             CraftJob {
                 recipe: 5,
                 remaining: 2,
+                skin: 0,
             },
             CraftJob {
                 recipe: 0,
                 remaining: 99,
+                skin: 0,
             },
             CraftJob {
                 recipe: 63,
                 remaining: 1,
+                skin: 0,
             },
         ],
         777,
@@ -955,8 +1015,10 @@ pub fn event_recipes() -> CraftContent {
 }
 
 /// A craft request: (recipe index, count).
-pub fn action_craft() -> (u16, u16) {
-    (33, 5)
+pub fn action_craft() -> (u16, u16, u16) {
+    // A skin id sharing no byte with the recipe or the count (wire v77), so
+    // a transposed field cannot pass.
+    (33, 5, 0x0A61)
 }
 
 /// A tech-tree unlock request naming recipe 21 (tech tree v0) — a value
@@ -974,6 +1036,10 @@ pub fn action_unlock() -> u16 {
 pub fn event_research_rows() -> ResearchContent {
     let mut rc = ResearchContent::EMPTY;
     rc.coin = 9;
+    // The table's two numbers (v73), distinct from the coin, from each
+    // other and from every row field below, so a transposed header shows.
+    rc.blueprint = 58;
+    rc.table_ticks = 1_234;
     rc.row_count = 5;
     let rows: [(u16, u16, u16, u16); 5] = [
         (11, 3, 0, NO_RECIPE),
@@ -1540,9 +1606,17 @@ pub fn event_removed() -> (u16, u16, u8, u8) {
     (341, 682, 0, sim_core::build::LOC_EDGE_ZLO)
 }
 
-/// A feed ack: hearth address + three stock rows.
-pub fn event_stock() -> (u16, u16, u8, [(u16, u32); 3]) {
-    (341, 682, 0, [(44, 1_900), (38, 0), (25, 123_456)])
+/// A feed ack: hearth address + three stock rows, each with its bill —
+/// one row short of its own bill (protected for no period), one with none
+/// billed, one covered for days, so every reading `upkeep::lasts` makes
+/// crosses the wire.
+pub fn event_stock() -> (u16, u16, u8, [(u16, u32, u32); 3]) {
+    (
+        341,
+        682,
+        0,
+        [(44, 1_900, 2_345), (38, 0, 0), (25, 123_456, 17)],
+    )
 }
 
 /// The worst-case shape (DESIGN.md §12 `test_snapshot_budget` at the
@@ -1713,8 +1787,14 @@ pub fn event_shot() -> (u32, u16, u8, u16, u16) {
 /// `surf` is `SURF_WORLD` — the middle of the three, so a decoder that
 /// read the field one bit narrow or wide lands on a different live kind
 /// instead of on a value the refusal would have caught for free.
-pub fn event_impact() -> (i32, i32, i32, u8) {
-    (0x0000_A179, -312, 0x0000_58A3, 1)
+pub fn event_impact() -> (i32, i32, i32, u8, u8) {
+    (
+        0x0000_A179,
+        -312,
+        0x0000_58A3,
+        1,
+        sim_core::ranged::IMPACT_MELEE,
+    )
 }
 
 /// The swinger of the broadcast swing fact (wire v47).
@@ -1726,6 +1806,70 @@ pub fn event_impact() -> (i32, i32, i32, u8) {
 /// this lane's failures are positional, not arithmetic.
 pub fn event_swing() -> u32 {
     0x5A3C_91E7
+}
+
+/// A howl from roster slot 37 — a tagged id, so the fixture carries the
+/// tag bit the decoder insists on.
+pub fn event_howl() -> u32 {
+    sim_core::limits::MOB_ID_TAG | 37
+}
+
+/// The skin catalog (wire v77): three rows — one unpriced, one in ELO, one
+/// in ORBS — so the coin field and the optional price are each pinned in
+/// every state. The drip sends all three in one batch.
+pub fn event_skins() -> SkinCatalog {
+    let mut c = SkinCatalog::EMPTY;
+    let rows = [
+        (
+            b"Obsidian Rock".as_slice(),
+            1u16,
+            7u16,
+            [70u8, 62, 84],
+            0u8,
+            0u32,
+        ),
+        (b"Ember Hatchet".as_slice(), 2, 12, [214, 118, 70], 1, 350),
+        (
+            b"Gilded Revolver".as_slice(),
+            0x0A61,
+            40,
+            [232, 192, 96],
+            2,
+            9,
+        ),
+    ];
+    for (i, (name, catalog, covers, tint, coin, price)) in rows.into_iter().enumerate() {
+        c.set(
+            i,
+            name,
+            SkinRow {
+                catalog,
+                covers,
+                tint,
+                coin,
+                price,
+            },
+        )
+        .expect("a legal row");
+    }
+    c.count = 3;
+    c
+}
+
+/// The owner's set (wire v77): bits in the first word, across the word
+/// boundary and in the last word, so a codec that wrote the halves of a
+/// word, or the words, in the wrong order cannot pass.
+pub fn event_skins_owned() -> sim_core::skin::SkinSet {
+    let mut s = sim_core::skin::SkinSet::EMPTY;
+    for row in [0, 5, 63, 64, 130, 255] {
+        s.insert(row);
+    }
+    s
+}
+
+/// Put catalog id 0x0B72 on the item in slot 17 (wire v77).
+pub fn action_reskin() -> (u8, u16) {
+    (17, 0x0B72)
 }
 
 /// Opening a **world container** (wire v37) — the fourth kind, and the
@@ -1780,6 +1924,7 @@ pub fn event_cont_sync_world() -> (u8, u32, bool, [InvSlot; 3]) {
                     item: 19,
                     count: 64,
                     cond: 0,
+                    skin: 0,
                 },
             },
             InvSlot {
@@ -1788,6 +1933,7 @@ pub fn event_cont_sync_world() -> (u8, u32, bool, [InvSlot; 3]) {
                     item: 7,
                     count: 2,
                     cond: 12_345,
+                    skin: 0,
                 },
             },
             InvSlot {
@@ -1796,6 +1942,7 @@ pub fn event_cont_sync_world() -> (u8, u32, bool, [InvSlot; 3]) {
                     item: 44,
                     count: 11,
                     cond: 40_000,
+                    skin: 0,
                 },
             },
         ],
@@ -1896,6 +2043,7 @@ pub fn event_cont_sync_wear() -> (u8, u32, bool, [InvSlot; 2]) {
                     item: 4,
                     count: 1,
                     cond: 9_100,
+                    skin: 0,
                 },
             },
             InvSlot {
@@ -1904,6 +2052,7 @@ pub fn event_cont_sync_wear() -> (u8, u32, bool, [InvSlot; 2]) {
                     item: 5,
                     count: 1,
                     cond: 10_000,
+                    skin: 0,
                 },
             },
         ],

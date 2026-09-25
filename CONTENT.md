@@ -51,6 +51,15 @@ properly. The short version:
   is charged that cost pro-rata against the hp being restored, scaled by
   `globals.repair_cost_pct` (100 = the damage's worth exactly, validated
   1..=100), rounded up and floored at one unit so no repair is ever free.
+  What a piece costs to **keep** is five `globals`, not the row: the day's
+  rent `upkeep_pct_per_day` as the first rung, `upkeep_steps` — `[after,
+  permille]` rungs past a base's graded-piece count, blended over the whole
+  base, validated climbing and ≤ 1000 ‰ — then `decay_pct_per_period` (the
+  per-grade ladder an unpaid piece rots at), `inside_decay_pct` (the % of it
+  a piece with anything built over it rots at) and `grief_protection_h`
+  (hours a destroyed hearth's stock still buys its building). Upkeep v2's
+  three — the steps, the inside rate, the grief hours — may be left out, and
+  left out is the v1 game.
 - **weapon**: kind (`melee|bow|firearm|throwable`), damage, headshot ×,
   **limb %**, rate, range falloff curve, ballistic (speed, drop) or hitscan,
   ammo id. The two body-part columns are the ends of one ladder and are
@@ -124,11 +133,26 @@ properly. The short version:
   contradict them. One fixpoint walk from the empty known-set refuses a
   cycle and a row stranded behind one as the same thing, because
   "unreachable" is what a player experiences and a cycle is one cause.
-  ⚠ The BENCH tier (workbench 2/3, the tree UI) is a different system and
-  is unbuilt — `NOW.md` §0tt, and the era is a spoken knob.
-- **loot_table**: container archetype → weighted entries + count range
-- **skin**: id, covers (item id), price (ELO or ORBS — one coin per
-  row, bare tickers), season — the catalog is content too (dark until A3)
+  Since 2026-09-22 the edges are **derived** rather than authored (the
+  reference's chains, `reference/BLUEPRINTS.md` §9.3) and **may not cross a
+  bench tier**: one tree per bench, the tier being `research::node_tier` of
+  the recipe's station, refused at validate. **`[table]` (research table
+  v1)** names the paper a research table makes and how long it takes
+  (`blueprint`, `seconds`): one item for every recipe, its target carried
+  in the stack's `cond`, so validate holds it to stack 1, no condition, and
+  no road but the table — every other mint writes a blank.
+- **loot_table**: container archetype → weighted entries + count range,
+  plus optional **guaranteed** rows (item + count range, no weight) that
+  every open pays after the draw — the reference's container ladder is a
+  certain scrap payout, and ours pays certain junk: barrel 2, cache 5,
+  crate 8 (loot guaranteed column v0, 2026-09-22; at most
+  `MAX_LOOT_GUARANTEED` rows, refused past it at bake)
+- **skin**: id, catalog (the platform's item id; nonzero, never reused),
+  name, covers (one stack-1 item), tint (an sRGB multiply, v0), coin +
+  price (optional together: an unpriced row ships its look off sale, and a
+  shard with `skins_origin` takes the store's prices), season. Out of the
+  content hash (`canon.rs`), so a new look is never a wipe
+  (`content/skins.toml`)
 
 ## 1.5 · The spawn kit
 

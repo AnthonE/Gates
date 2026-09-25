@@ -69,9 +69,12 @@ use crate::world::Player;
 /// make logging out a way to lose a plate. The head grew the crawl and its
 /// two clocks at `SAVE_FORMAT` 6 (wounded v0): 272 → 289 — you log off on
 /// the ground, you log in on the ground, and the alternative would make
-/// logging out a way to dodge the roll.
+/// logging out a way to dodge the roll. A slot is **8 bytes and a craft job
+/// 6 since `SAVE_FORMAT` 7** (skins v0): each carries the skin it wears or
+/// will be minted in, 289 → 361. A skinned rifle you log off holding is the
+/// skinned rifle you log in holding.
 pub const PLAYER_SAVE_BYTES: usize =
-    SCALARS_BYTES + CRAFT_QUEUE * 4 + INV_SLOTS * 6 + WEAR_SLOTS * 6;
+    SCALARS_BYTES + CRAFT_QUEUE * 6 + INV_SLOTS * 8 + WEAR_SLOTS * 8;
 
 /// The fixed head of the record: body, meters, heal, counters, the
 /// blueprint mask, the torch's remainder, and the crawl with its two
@@ -288,15 +291,18 @@ impl PlayerSave {
             item: 0,
             count: 0,
             cond: 0,
+            skin: 0,
         }; INV_SLOTS],
         worn: [ItemStack {
             item: 0,
             count: 0,
             cond: 0,
+            skin: 0,
         }; WEAR_SLOTS],
         jobs: [CraftJob {
             recipe: 0,
             remaining: 0,
+            skin: 0,
         }; CRAFT_QUEUE],
         hp: 0,
         hp_max: 0,
@@ -376,13 +382,15 @@ impl PlayerSave {
         for j in self.jobs.iter() {
             out[at..at + 2].copy_from_slice(&j.recipe.to_le_bytes());
             out[at + 2..at + 4].copy_from_slice(&j.remaining.to_le_bytes());
-            at += 4;
+            out[at + 4..at + 6].copy_from_slice(&j.skin.to_le_bytes());
+            at += 6;
         }
         for s in self.inv.iter().chain(self.worn.iter()) {
             out[at..at + 2].copy_from_slice(&s.item.to_le_bytes());
             out[at + 2..at + 4].copy_from_slice(&s.count.to_le_bytes());
             out[at + 4..at + 6].copy_from_slice(&s.cond.to_le_bytes());
-            at += 6;
+            out[at + 6..at + 8].copy_from_slice(&s.skin.to_le_bytes());
+            at += 8;
         }
         debug_assert_eq!(at, PLAYER_SAVE_BYTES);
     }
@@ -432,11 +440,18 @@ impl PlayerSave {
             *j = CraftJob {
                 recipe: u16_at(at),
                 remaining: u16_at(at + 2),
+                // Any value: a skin id the running content does not know
+                // mints the plain item's look, never a panic (`skin.rs`).
+                skin: u16_at(at + 4),
             };
             if j.recipe as usize >= MAX_RECIPES || j.remaining > CRAFT_COUNT_MAX {
                 return Err(SaveError::BadCraftJob);
             }
-            at += 4;
+            // An empty job is all zeroes, the stack's canonical-empty rule.
+            if j.remaining == 0 && j.skin != 0 {
+                return Err(SaveError::BadCraftJob);
+            }
+            at += 6;
         }
         // Dense, head at 0: once a job is empty every later one must be.
         let live = jobs
@@ -459,6 +474,7 @@ impl PlayerSave {
                 item: u16_at(at),
                 count: u16_at(at + 2),
                 cond: u16_at(at + 4),
+                skin: u16_at(at + 6),
             };
             // Canonical empty: an emptied slot zeroes ALL THREE fields,
             // which is what the state hash reads. A record that said "0 of
@@ -472,10 +488,11 @@ impl PlayerSave {
             if s.item as usize >= MAX_ITEM_DEFS
                 || (s.count == 0 && s.item != 0)
                 || (s.count == 0 && s.cond != 0)
+                || (s.count == 0 && s.skin != 0)
             {
                 return Err(SaveError::BadItemStack);
             }
-            at += 6;
+            at += 8;
         }
         debug_assert_eq!(at, PLAYER_SAVE_BYTES);
 
@@ -565,10 +582,14 @@ mod tests {
         s.jobs[0] = CraftJob {
             recipe: 2,
             remaining: 5,
+            // A skinned job (format 7), so the job's third field is pinned
+            // in a nonzero state.
+            skin: 0x0C0D,
         };
         s.jobs[1] = CraftJob {
             recipe: 1,
             remaining: 9,
+            skin: 0,
         };
         for (i, slot) in s.inv.iter_mut().enumerate() {
             if i % 3 == 0 {
@@ -576,6 +597,7 @@ mod tests {
                     item: (i % MAX_ITEM_DEFS) as u16,
                     count: (i as u16 + 1) * 7,
                     cond: 0,
+                    skin: 0,
                 };
             }
         }
@@ -588,6 +610,8 @@ mod tests {
             item: 5,
             count: 42,
             cond: 0x2233,
+            // Skinned (format 7): a saved skinned tool comes back skinned.
+            skin: 0x0A0B,
         };
         // The worn slots, distinct from each other and from every
         // inventory stack, so the codec cannot pass by writing the
@@ -598,11 +622,13 @@ mod tests {
             item: 9,
             count: 1,
             cond: 0x4455,
+            skin: 0,
         };
         s.worn[1] = ItemStack {
             item: 11,
             count: 1,
             cond: 0x6677,
+            skin: 0x0E0F,
         };
         s
     }
@@ -622,9 +648,10 @@ mod tests {
     /// 256 → 268 at `SAVE_FORMAT` 4: two worn stacks (armor v0).
     /// 268 → 272 at `SAVE_FORMAT` 5: the torch's remainder (torch fuel v0).
     /// 272 → 289 at `SAVE_FORMAT` 6: the crawl and its two clocks (wounded v0).
+    /// 289 → 361 at `SAVE_FORMAT` 7: a skin on every slot and job (skins v0).
     #[test]
     fn the_record_is_the_size_the_format_declares() {
-        assert_eq!(PLAYER_SAVE_BYTES, 289, "the on-disk record size moved");
+        assert_eq!(PLAYER_SAVE_BYTES, 361, "the on-disk record size moved");
         assert_eq!(INV_SLOTS, 30);
         assert_eq!(CRAFT_QUEUE, 4);
         assert_eq!(WEAR_SLOTS, 2);
@@ -692,12 +719,22 @@ mod tests {
         );
         assert_eq!(&buf[81..83], &2u16.to_le_bytes(), "jobs[0].recipe at 81");
         assert_eq!(&buf[83..85], &5u16.to_le_bytes(), "jobs[0].remaining at 83");
-        assert_eq!(&buf[97..99], &5u16.to_le_bytes(), "inv[0].item at 97");
-        assert_eq!(&buf[99..101], &42u16.to_le_bytes(), "inv[0].count at 99");
         assert_eq!(
-            &buf[101..103],
+            &buf[85..87],
+            &0x0C0Du16.to_le_bytes(),
+            "jobs[0].skin at 85 — the job stride is 6 since format 7"
+        );
+        assert_eq!(&buf[105..107], &5u16.to_le_bytes(), "inv[0].item at 105");
+        assert_eq!(&buf[107..109], &42u16.to_le_bytes(), "inv[0].count at 107");
+        assert_eq!(
+            &buf[109..111],
             &0x2233u16.to_le_bytes(),
-            "inv[0].cond at 101 — the slot stride is 6 since format 3"
+            "inv[0].cond at 109"
+        );
+        assert_eq!(
+            &buf[111..113],
+            &0x0A0Bu16.to_le_bytes(),
+            "inv[0].skin at 111 — the slot stride is 8 since format 7"
         );
         // The worn slots close the record (format 4), and they are pinned
         // here rather than left to the round trip for this block's stated
@@ -706,18 +743,23 @@ mod tests {
         // walk them with one shared `.chain()` — which means the two halves
         // agree about a wrong offset by construction and only an
         // independent decoder can say so.
-        assert_eq!(&buf[277..279], &9u16.to_le_bytes(), "worn[0].item at 277");
-        assert_eq!(&buf[279..281], &1u16.to_le_bytes(), "worn[0].count at 279");
+        assert_eq!(&buf[345..347], &9u16.to_le_bytes(), "worn[0].item at 345");
+        assert_eq!(&buf[347..349], &1u16.to_le_bytes(), "worn[0].count at 347");
         assert_eq!(
-            &buf[281..283],
+            &buf[349..351],
             &0x4455u16.to_le_bytes(),
-            "worn[0].cond at 281"
+            "worn[0].cond at 349"
         );
-        assert_eq!(&buf[283..285], &11u16.to_le_bytes(), "worn[1].item at 283");
+        assert_eq!(&buf[353..355], &11u16.to_le_bytes(), "worn[1].item at 353");
         assert_eq!(
-            &buf[287..289],
+            &buf[357..359],
             &0x6677u16.to_le_bytes(),
-            "worn[1].cond at 287 — and 289 is the whole record"
+            "worn[1].cond at 357"
+        );
+        assert_eq!(
+            &buf[359..361],
+            &0x0E0Fu16.to_le_bytes(),
+            "worn[1].skin at 359 — and 361 is the whole record"
         );
     }
 
@@ -774,30 +816,44 @@ mod tests {
             bent(&|b| b[83..85].copy_from_slice(&(CRAFT_COUNT_MAX + 1).to_le_bytes())),
             Err(SaveError::BadCraftJob)
         );
-        // A gap before a live job: job 0 emptied, jobs 1 still live.
+        // A gap before a live job: job 0 emptied (count AND skin, so the
+        // job is a canonical empty), job 1 still live.
         assert_eq!(
-            bent(&|b| b[83..85].copy_from_slice(&0u16.to_le_bytes())),
+            bent(&|b| b[83..87].copy_from_slice(&[0, 0, 0, 0])),
             Err(SaveError::SparseCraftQueue)
+        );
+        // An empty job wearing a skin (format 7): job 2 is empty in the
+        // fixture, its skin at 81 + 2 * 6 + 4 = 97.
+        assert_eq!(
+            bent(&|b| b[97..99].copy_from_slice(&5u16.to_le_bytes())),
+            Err(SaveError::BadCraftJob),
+            "an empty job may not carry a skin"
         );
         // An item past the table, and a non-canonical empty.
         assert_eq!(
-            bent(&|b| b[97..99].copy_from_slice(&(MAX_ITEM_DEFS as u16).to_le_bytes())),
+            bent(&|b| b[105..107].copy_from_slice(&(MAX_ITEM_DEFS as u16).to_le_bytes())),
             Err(SaveError::BadItemStack)
         );
         assert_eq!(
-            bent(&|b| b[99..101].copy_from_slice(&0u16.to_le_bytes())),
+            bent(&|b| b[107..109].copy_from_slice(&0u16.to_le_bytes())),
             Err(SaveError::BadItemStack)
         );
         // The cond half of canonical empty (format 3): inv[1] is a zeroed
-        // slot in the fixture, at offset 103; condition on an empty slot is
+        // slot in the fixture, at offset 113; condition on an empty slot is
         // state nothing can see and is refused exactly as "0 of item 7"
         // always was. This is the check nobody would think of — a slot
         // emptied by a path that forgot to zero `cond` hashes differently
         // from the sim's own empty (wall 5).
         assert_eq!(
-            bent(&|b| b[107..109].copy_from_slice(&7u16.to_le_bytes())),
+            bent(&|b| b[117..119].copy_from_slice(&7u16.to_le_bytes())),
             Err(SaveError::BadItemStack),
             "an empty slot may not carry condition"
+        );
+        // And the skin half (format 7), for the same reason.
+        assert_eq!(
+            bent(&|b| b[119..121].copy_from_slice(&7u16.to_le_bytes())),
+            Err(SaveError::BadItemStack),
+            "an empty slot may not carry a skin"
         );
     }
 
@@ -809,6 +865,7 @@ mod tests {
         s.jobs = [CraftJob {
             recipe: 1,
             remaining: 2,
+            skin: 0,
         }; CRAFT_QUEUE];
         let mut buf = [0u8; PLAYER_SAVE_BYTES];
         s.write_le(&mut buf);

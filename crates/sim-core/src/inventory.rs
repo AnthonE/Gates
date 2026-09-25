@@ -332,10 +332,25 @@ pub const REFUSE_M_WEAR: u32 = 9;
 /// its sentence names fuel. This one is about the container and no item
 /// changes the answer.
 pub const REFUSE_M_NO_INPUT: u32 = 10;
+/// The destination is a **research table slot that does not take this**
+/// (research table v1, `research::table_accepts`): slot 0 takes one unit
+/// of something researchable, slot 1 the coin, the rest nothing. Asked of
+/// both landing sites, for the wear check's reason — a swap writes the
+/// destination's old stack into the source.
+///
+/// Its own reason rather than `REFUSE_M_OVEN`, whose sentence names fuel:
+/// the table is the same question asked of different content, and a player
+/// told "a fire takes fuel" at a research table is told something false.
+pub const REFUSE_M_TABLE: u32 = 11;
+/// The container is a **research table that is running** (research table
+/// v1): nothing goes in or out until the research lands, which is the
+/// reference's own lock and what makes checking the price at the start
+/// the same as checking it at the end.
+pub const REFUSE_M_BUSY: u32 = 12;
 /// The largest reason above. Four bits hold `1..=15`, which is what the
 /// wire spends (widened from three with `PROTO_VER` 28, oven v0), and a
 /// reason added past 15 needs the width to move again.
-pub const REFUSE_M_MAX: u32 = REFUSE_M_NO_INPUT;
+pub const REFUSE_M_MAX: u32 = REFUSE_M_BUSY;
 
 /// What a validated move will do. Constructed only by `plan_move`, so a
 /// value of this type *is* the proof that every check passed — the
@@ -388,7 +403,9 @@ pub fn plan_move(cap: u16, src: ItemStack, dst: ItemStack, count: u16) -> Result
             count,
         });
     }
-    if dst.item == src.item {
+    // Two skins of one item are two things to hold: they swap like two
+    // items, and a merge never has to pick whose look survives.
+    if dst.item == src.item && dst.skin == src.skin {
         // `saturating_sub`: a destination already over its ladder yields
         // zero room and refuses, rather than wrapping into a huge one.
         let room = cap.saturating_sub(dst.count);
@@ -430,6 +447,7 @@ pub fn resolve(plan: MovePlan, src: ItemStack, dst: ItemStack) -> (ItemStack, It
                     item: src.item,
                     count: left,
                     cond: src.cond,
+                    skin: src.skin,
                 }
             };
             // The moved stack keeps its condition — this splice is the
@@ -441,11 +459,15 @@ pub fn resolve(plan: MovePlan, src: ItemStack, dst: ItemStack) -> (ItemStack, It
             // (condition ⇒ stack of 1) is what guarantees a merge is
             // never asked to reconcile two conditions — a condition item
             // at its one-stack ceiling refuses with `REFUSE_M_NO_ROOM`
-            // before this arm is reached.
+            // before this arm is reached. The skin is the same splice
+            // one field on: it travels into an empty slot, and a merge
+            // only ever joins two stacks wearing the same one
+            // (`plan_move`).
             let new_dst = ItemStack {
                 item,
                 count: dst.count + count,
                 cond: if dst.count == 0 { src.cond } else { dst.cond },
+                skin: if dst.count == 0 { src.skin } else { dst.skin },
             };
             (new_src, new_dst)
         }
@@ -497,6 +519,7 @@ impl SpawnKit {
             item: 0,
             count: 0,
             cond: 0,
+            skin: 0,
         }; MAX_SPAWN_KIT],
         count: 0,
     };

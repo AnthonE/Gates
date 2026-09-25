@@ -265,7 +265,14 @@ fn test_content() {
         "alpha core plus two window fittings, got {} items",
         c.items.len()
     );
-    assert!(c.skins.is_empty(), "skin catalog is dark until A3");
+    // The catalog ships looks (skins v0); what is for sale is the price,
+    // and a priced row is the operator's act (BUSINESS.md).
+    assert!(
+        c.skins.len() <= sim_core::limits::MAX_SKINS,
+        "the catalog fits the sim's owned set"
+    );
+    let baked = c.bake_skins().expect("the shipped catalog bakes");
+    assert_eq!(baked.count as usize, c.skins.len());
 
     // Hash: nonzero, stable across an independent reload (formatting and
     // comments don't move it — same parse, same digest).
@@ -323,6 +330,20 @@ fn hash_moves_with_values() {
     // `hits` decides how long a barrel takes to open, so two contents that
     // disagree about it play differently and must not canonicalise the
     // same. It reaches the sim through `bake_loot`.
+    // A certain payout reaches the sim through `bake_loot` too, so two
+    // contents that disagree about one must not canonicalise the same.
+    let mut srcs = sources();
+    let l = srcs.iter_mut().find(|(n, _)| *n == "loot.toml").unwrap();
+    l.1 = l.1.replace(
+        "guaranteed = [{ item = \"item.junk\", count_min = 2, count_max = 2 }]",
+        "guaranteed = [{ item = \"item.junk\", count_min = 3, count_max = 3 }]",
+    );
+    assert_ne!(
+        base,
+        build(&srcs).unwrap().hash(),
+        "a guaranteed row's count must move the content hash"
+    );
+
     let mut srcs = sources();
     let l = srcs.iter_mut().find(|(n, _)| *n == "loot.toml").unwrap();
     l.1 = l.1.replace("hits = 3", "hits = 4");
@@ -346,6 +367,44 @@ fn hash_moves_with_values() {
         build(&srcs).unwrap().hash(),
         "the repair price must move the content hash"
     );
+
+    // The decay ladder. It reaches the sim through `bake_deployables` into
+    // `DeployContent::decay_pct` and sat outside the canonical walk from
+    // upkeep/decay v1 until upkeep v2 found it: a stone base rotting in
+    // five hours and one rotting in fifty canonicalised identically.
+    let mut srcs = sources();
+    let b = srcs.iter_mut().find(|(n, _)| *n == "balance.toml").unwrap();
+    b.1 = b.1.replace("stone = 20, metal", "stone = 19, metal");
+    assert_ne!(
+        base,
+        build(&srcs).unwrap().hash(),
+        "the decay ladder must move the content hash"
+    );
+
+    // Upkeep v2's three knobs, each read by the sweep (`bake_deployables`).
+    for (from, to, what) in [
+        ("[190, 333]", "[190, 334]", "the rent ladder"),
+        (
+            "inside_decay_pct = 10",
+            "inside_decay_pct = 11",
+            "the inside rate",
+        ),
+        (
+            "grief_protection_h = 24",
+            "grief_protection_h = 23",
+            "the grief window",
+        ),
+    ] {
+        let mut srcs = sources();
+        let b = srcs.iter_mut().find(|(n, _)| *n == "balance.toml").unwrap();
+        assert!(b.1.contains(from), "{what}: the probe's anchor text moved");
+        b.1 = b.1.replace(from, to);
+        assert_ne!(
+            base,
+            build(&srcs).unwrap().hash(),
+            "{what} must move the content hash"
+        );
+    }
 
     // The satchel's fuse. It reaches the sim through `bake_combat` into
     // `ThrowDef::fuse_ticks`, and it is the newest field on the newest
@@ -402,12 +461,13 @@ fn hash_moves_with_values() {
         .iter_mut()
         .find(|(n, _)| *n == "research.toml")
         .unwrap();
-    // Anchored on the revolver's whole block: two rows require gunpowder,
-    // and a bare `replace` moved both — which strips the satchel's
-    // craft-graph floor edge and fails validation for an unrelated reason.
+    // Anchored on the revolver's whole block. The new parent is legal —
+    // the roadsign plate unlocks at the same bench, and authoring an edge
+    // the recipes do not imply is a design call — so the build succeeds
+    // and only the hash can tell the two trees apart.
     r.1 = r.1.replace(
-        "item = \"item.revolver\"\ncost = 75\nrequires = \"item.gunpowder\"",
-        "item = \"item.revolver\"\ncost = 75\nrequires = \"item.medkit\"",
+        "item = \"item.revolver\"\ncost = 30\nrequires = \"item.pistol_ammo\"",
+        "item = \"item.revolver\"\ncost = 30\nrequires = \"item.armor_roadsign_body\"",
     );
     assert_ne!(
         base,
@@ -564,10 +624,7 @@ fn skin_stat_field_refused() {
     // stat field does not.
     let mut srcs = sources();
     let skins = srcs.iter_mut().find(|(n, _)| *n == "skins.toml").unwrap();
-    skins.1 = String::from(
-        "[[skin]]\nid = \"skin.wood_gilt\"\ncovers = \"item.hatchet_stone\"\n\
-         coin = \"ELO\"\nprice = 10\nseason = \"alpha\"\n",
-    );
+    skins.1 = String::from(SKIN_ROW);
     build(&srcs).expect("a plain appearance row must parse");
     let skins = srcs.iter_mut().find(|(n, _)| *n == "skins.toml").unwrap();
     skins.1.push_str("damage_bonus = 1\n");
@@ -580,11 +637,65 @@ fn dollar_ticker_refused() {
     // Tickers are bare (CLAUDE.md wall 8): `$ELO` is not a coin.
     let mut srcs = sources();
     let skins = srcs.iter_mut().find(|(n, _)| *n == "skins.toml").unwrap();
-    skins.1 = String::from(
-        "[[skin]]\nid = \"skin.wood_gilt\"\ncovers = \"item.hatchet_stone\"\n\
-         coin = \"$ELO\"\nprice = 10\nseason = \"alpha\"\n",
+    skins.1 = SKIN_ROW.replace("coin = \"ELO\"", "coin = \"$ELO\"");
+    let err = build(&srcs).expect_err("$-prefixed ticker was accepted");
+    assert!(err.contains("unknown variant"), "got: {err}");
+}
+
+/// One legal skin row: every required field, priced.
+const SKIN_ROW: &str = "[[skin]]\nid = \"skin.wood_gilt\"\ncatalog = 9\nname = \"Gilt Hatchet\"\n\
+     covers = \"item.hatchet_stone\"\ntint = [200, 170, 60]\ncoin = \"ELO\"\nprice = 10\n\
+     season = \"alpha\"\n";
+
+fn skins_with(row: &str) -> Result<content::Content, String> {
+    let mut srcs = sources();
+    let skins = srcs.iter_mut().find(|(n, _)| *n == "skins.toml").unwrap();
+    skins.1 = row.to_string();
+    build(&srcs)
+}
+
+#[test]
+fn an_unpriced_skin_is_legal_and_half_a_price_is_not() {
+    // A look can ship before it is priced (skins v0)...
+    let unpriced = SKIN_ROW
+        .replace("coin = \"ELO\"\n", "")
+        .replace("price = 10\n", "");
+    skins_with(&unpriced).expect("an unpriced row is a look, not an error");
+    // ...but a coin with no price, or a price in no coin, is not a price.
+    let err = skins_with(&SKIN_ROW.replace("price = 10\n", "")).expect_err("coin alone");
+    assert!(err.contains("go together"), "got: {err}");
+    let err = skins_with(&SKIN_ROW.replace("coin = \"ELO\"\n", "")).expect_err("price alone");
+    assert!(err.contains("go together"), "got: {err}");
+    let err = skins_with(&SKIN_ROW.replace("price = 10", "price = 0")).expect_err("zero");
+    assert!(err.contains("zero price"), "got: {err}");
+}
+
+#[test]
+fn a_skin_catalog_id_is_nonzero_and_unique() {
+    let err = skins_with(&SKIN_ROW.replace("catalog = 9", "catalog = 0")).expect_err("zero id");
+    assert!(err.contains("catalog 0"), "got: {err}");
+    let twice = format!(
+        "{SKIN_ROW}{}",
+        SKIN_ROW.replace("skin.wood_gilt", "skin.wood_gilt_two")
     );
-    assert!(build(&srcs).is_err(), "$-prefixed ticker was accepted");
+    let err = skins_with(&twice).expect_err("two rows on one catalog id");
+    assert!(err.contains("is taken"), "got: {err}");
+}
+
+#[test]
+fn a_skin_fits_one_carried_item() {
+    // Not a stack: a skin is on one item.
+    let err = skins_with(&SKIN_ROW.replace("item.hatchet_stone", "item.wood"))
+        .expect_err("a skin on a stackable");
+    assert!(err.contains("a skin fits one item"), "got: {err}");
+    // Not a placed thing, yet: the deploy record carries no skin.
+    let err = skins_with(&SKIN_ROW.replace("item.hatchet_stone", "item.box_small"))
+        .expect_err("a skin on a deployable");
+    assert!(err.contains("deployable"), "got: {err}");
+    // And a name the wire can carry.
+    let err =
+        skins_with(&SKIN_ROW.replace("Gilt Hatchet", &"x".repeat(25))).expect_err("a 25-byte name");
+    assert!(err.contains("printable"), "got: {err}");
 }
 
 #[test]
@@ -1057,6 +1168,102 @@ fn bake_deployables_carries_the_shipped_numbers() {
     }
 }
 
+/// Upkeep v2's three knobs reach the table the sweep reads, read back off
+/// the shipped file rather than restated, and the ladder the sweep walks
+/// prices the reference's own worked example.
+#[test]
+fn bake_deployables_carries_upkeep_v2() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let dc = c.bake_deployables().expect("shipped deployables must bake");
+    let g = &c.balance.globals;
+    assert_eq!(dc.upkeep_step_count as usize, g.upkeep_steps.len());
+    for (n, [after, permille]) in g.upkeep_steps.iter().enumerate() {
+        assert_eq!(dc.upkeep_steps[n], (*after as u16, *permille as u16));
+    }
+    assert_eq!(dc.inside_decay_pct as u32, g.inside_decay_pct.unwrap());
+    assert_eq!(dc.grief_periods as u32, g.grief_protection_h);
+    // (15 × 10 % + 5 × 15 %) / 20 = 11.25 % — the guides' worked example,
+    // off the shipped ladder.
+    let t = sim_core::upkeep::tax(&dc, 20);
+    assert_eq!(t.num * 10_000 / t.den, 1125);
+}
+
+/// A `balance.toml` older than upkeep v2 plays the game it played: no
+/// ladder (the flat rate), no inside rate (the full one), no receipt.
+#[test]
+fn a_balance_without_upkeep_v2_plays_v1() {
+    let mut srcs = sources();
+    let b = srcs.iter_mut().find(|(n, _)| *n == "balance.toml").unwrap();
+    let kept: Vec<&str> =
+        b.1.lines()
+            .filter(|l| {
+                !l.starts_with("upkeep_steps")
+                    && !l.starts_with("inside_decay_pct")
+                    && !l.starts_with("grief_protection_h")
+            })
+            .collect();
+    assert_eq!(
+        b.1.lines().count() - kept.len(),
+        3,
+        "the three knobs were found"
+    );
+    b.1 = kept.join("\n");
+    let dc = build(&srcs)
+        .expect("an older balance.toml still loads")
+        .bake_deployables()
+        .expect("and bakes");
+    assert_eq!(dc.upkeep_step_count, 0);
+    assert_eq!(dc.inside_decay_pct, 0);
+    assert_eq!(dc.grief_periods, 0);
+    assert_eq!(sim_core::upkeep::scale(&dc, true), 100);
+}
+
+#[test]
+fn an_upkeep_ladder_that_does_not_climb_is_refused() {
+    refuses(
+        "balance.toml",
+        "upkeep_steps = [[15, 150], [65, 200], [190, 333]]",
+        "upkeep_steps = [[15, 150], [15, 200], [190, 333]]",
+        "does not climb",
+    );
+    refuses(
+        "balance.toml",
+        "upkeep_steps = [[15, 150], [65, 200], [190, 333]]",
+        "upkeep_steps = [[15, 150], [65, 120], [190, 333]]",
+        "must not fall below",
+    );
+    refuses(
+        "balance.toml",
+        "upkeep_steps = [[15, 150], [65, 200], [190, 333]]",
+        "upkeep_steps = [[15, 50], [65, 200], [190, 333]]",
+        "must not fall below",
+    );
+    refuses(
+        "balance.toml",
+        "upkeep_steps = [[15, 150], [65, 200], [190, 333]]",
+        "upkeep_steps = [[15, 150], [65, 200], [190, 1001]]",
+        "nor pass 1000",
+    );
+    refuses(
+        "balance.toml",
+        "upkeep_steps = [[15, 150], [65, 200], [190, 333]]",
+        "upkeep_steps = [[15, 150], [65, 200], [190, 333], [300, 400], [400, 500]]",
+        "upkeep steps",
+    );
+    refuses(
+        "balance.toml",
+        "inside_decay_pct = 10",
+        "inside_decay_pct = 0",
+        "a live percent",
+    );
+    refuses(
+        "balance.toml",
+        "inside_decay_pct = 10",
+        "inside_decay_pct = 101",
+        "a live percent",
+    );
+}
+
 /// The deployable bake refuses what the sim's capacities can't hold.
 #[test]
 fn bake_deployables_refuses_out_of_cap_rows() {
@@ -1222,12 +1429,14 @@ fn bake_backpack_walks_the_rarity_ladder_the_data_declares() {
         item: c.item_index(&commonest.id).unwrap(),
         count: 1,
         cond: 0,
+        skin: 0,
     };
     assert_eq!(bc.lifetime_ticks(&inv), bc.base_ticks);
     inv[1] = sim_core::gather::ItemStack {
         item: c.item_index(&rarest.id).unwrap(),
         count: 1,
         cond: 0,
+        skin: 0,
     };
     assert_eq!(
         bc.lifetime_ticks(&inv),
@@ -2125,6 +2334,113 @@ fn a_container_that_cannot_be_opened_is_refused() {
     );
 }
 
+/// **Every container pays guaranteed junk, climbing with the walk** (loot
+/// guaranteed column v0, operator 2026-09-22): the reference prices its
+/// whole ladder in a certain scrap payout, and our three stops take the
+/// three of theirs a road walk passes — barrel 2, tools crate 5, military
+/// crate 8. Baked as a CERTAIN row, not a weight, and junk is never also a
+/// weighted row, which would make it neither price. The barrel's gear row
+/// fell with it (weight 1, their 1.4 % of barrels), or the recycler's
+/// 12-junk gear on top of the certain 2 would pay twice their faucet.
+#[test]
+fn the_shipped_containers_pay_guaranteed_junk() {
+    use sim_core::loot::{LOOT_BARREL, LOOT_CACHE, LOOT_CRATE};
+    let c = build(&sources()).unwrap();
+    let lc = c.bake_loot().expect("shipped loot must bake");
+    let junk = c.item_index("item.junk").expect("junk is an item");
+    let mut last = 0u16;
+    for (which, want) in [(LOOT_BARREL, 2u16), (LOOT_CACHE, 5), (LOOT_CRATE, 8)] {
+        let t = lc.table(which).expect("shipped table is live");
+        let sure: Vec<_> = t.guaranteed[..t.guaranteed_len as usize]
+            .iter()
+            .filter(|g| g.item == junk)
+            .collect();
+        assert_eq!(sure.len(), 1, "table {which} guarantees junk exactly once");
+        assert_eq!(
+            (sure[0].count_min, sure[0].count_max),
+            (want, want),
+            "table {which}'s certain junk moved"
+        );
+        assert!(want > last, "the certain junk climbs with the walk");
+        last = want;
+        assert!(
+            t.entries[..t.len as usize].iter().all(|e| e.item != junk),
+            "table {which} rolls junk as well as guaranteeing it"
+        );
+    }
+    let t = lc.table(LOOT_BARREL).expect("barrel");
+    let gears = c.item_index("item.gears").expect("gears are an item");
+    let row = t.entries[..t.len as usize]
+        .iter()
+        .find(|e| e.item == gears)
+        .expect("barrels still pay gears");
+    assert_eq!(row.weight, 1, "the barrel's gear rate is theirs");
+}
+
+/// Wall 4 on the guaranteed walk: a table past `MAX_LOOT_GUARANTEED` rows
+/// does not boot — refused, never clamped, because a table that silently
+/// dropped a certain payout would read as paying it.
+#[test]
+fn a_guaranteed_row_past_the_cap_is_refused() {
+    let mut srcs = sources();
+    let l = srcs.iter_mut().find(|(n, _)| *n == "loot.toml").unwrap();
+    let from = "guaranteed = [{ item = \"item.junk\", count_min = 2, count_max = 2 }]";
+    assert!(
+        l.1.contains(from),
+        "test fixture rot: the barrel's junk row moved"
+    );
+    let rows: Vec<String> = [
+        "item.junk",
+        "item.cloth",
+        "item.fat",
+        "item.rope",
+        "item.tarp",
+    ]
+    .iter()
+    .map(|i| format!("{{ item = \"{i}\", count_min = 1, count_max = 1 }}"))
+    .collect();
+    assert!(rows.len() > sim_core::limits::MAX_LOOT_GUARANTEED);
+    l.1 =
+        l.1.replacen(from, &format!("guaranteed = [{}]", rows.join(", ")), 1);
+    let err = build(&srcs)
+        .unwrap()
+        .bake_loot()
+        .expect_err("five guaranteed rows baked");
+    assert!(err.contains("guaranteed rows"), "got: {err}");
+}
+
+/// A guaranteed row is validated like a weighted one, plus the one rule a
+/// certain row needs: each item once.
+#[test]
+fn a_bad_guaranteed_row_is_refused() {
+    let from = "guaranteed = [{ item = \"item.junk\", count_min = 2, count_max = 2 }]";
+    refuses(
+        "loot.toml",
+        from,
+        "guaranteed = [{ item = \"item.nonesuch\", count_min = 2, count_max = 2 }]",
+        "`item.nonesuch` is not an item",
+    );
+    refuses(
+        "loot.toml",
+        from,
+        "guaranteed = [{ item = \"item.junk\", count_min = 0, count_max = 2 }]",
+        "bad guaranteed count range",
+    );
+    refuses(
+        "loot.toml",
+        from,
+        "guaranteed = [{ item = \"item.junk\", count_min = 3, count_max = 2 }]",
+        "bad guaranteed count range",
+    );
+    refuses(
+        "loot.toml",
+        from,
+        "guaranteed = [{ item = \"item.junk\", count_min = 2, count_max = 2 }, \
+         { item = \"item.junk\", count_min = 1, count_max = 1 }]",
+        "guaranteed twice",
+    );
+}
+
 /// The decay ladder must not invert.
 ///
 /// The four numbers look like taste and one relationship in them is
@@ -2405,7 +2721,7 @@ fn bows_bake_to_per_tick_integers_the_sim_can_integrate() {
 /// Until 2026-08-19 `bake_combat` dropped every row that was not melee,
 /// throwable or bow, and the revolver was not inert data while it sat
 /// there: it is a barrel drop at weight 1 (`the_shipped_loot_tables_bake`),
-/// it has a recipe, it is on the research ladder behind gunpowder, and its
+/// it has a recipe, it is on the research ladder behind pistol rounds, and its
 /// round both drops and crafts. So a player could spend scrap on the
 /// research, materials on the gun and more on ammo, and pull the trigger on
 /// nothing. What this asserts is the whole chain out of that: the row bakes,
@@ -3150,6 +3466,9 @@ fn unreachable_consumables(c: &Content) -> Vec<String> {
             for e in &l.entries {
                 have.insert(e.item.as_str());
             }
+            for g in &l.guaranteed {
+                have.insert(g.item.as_str());
+            }
         }
     }
     for s in &c.balance.spawn_kit {
@@ -3364,8 +3683,11 @@ fn mob_refusals() {
 // `crates/server/tests/boot_tables.rs`.
 // ---------------------------------------------------------------------------
 
-/// The shipped tree is a tree: it bakes, its one authored edge survives into
-/// the sim's own bit space, and the row it points at is a root.
+/// The shipped tree is a tree: it bakes, its authored edges survive into the
+/// sim's own bit space, and the rows they point at are roots. The revolver
+/// behind pistol rounds is the reference's own link (`BLUEPRINTS.md` §2);
+/// the satchel is a root because its link in their chain crosses one of our
+/// benches.
 #[test]
 fn the_shipped_research_tree_bakes_with_its_edge_intact() {
     let c = Content::load_dir(&content_dir()).expect("shipped content loads");
@@ -3379,66 +3701,153 @@ fn the_shipped_research_tree_bakes_with_its_edge_intact() {
     assert!(rc.row_count > 0, "an empty table is the pre-2026-08-15 bug");
 
     let idx = |id: &str| c.item_index(id).unwrap_or_else(|| panic!("shipped {id}"));
-    let powder_recipe = c
-        .recipe_index("recipe.gunpowder")
-        .expect("shipped recipe.gunpowder");
+    let ammo_recipe = c
+        .recipe_index("recipe.pistol_ammo")
+        .expect("shipped recipe.pistol_ammo");
 
-    let satchel = rc
-        .row_for(idx("item.satchel_charge"))
-        .expect("satchel is researchable");
+    let revolver = rc
+        .row_for(idx("item.revolver"))
+        .expect("the revolver is researchable");
     assert_eq!(
-        satchel.requires, powder_recipe,
-        "the satchel's prerequisite is gunpowder's RECIPE INDEX — what the \
-         tree verb looks up in `Player::known`, or the check means nothing"
+        revolver.requires, ammo_recipe,
+        "the revolver's prerequisite is pistol ammunition's RECIPE INDEX — \
+         what the tree verb looks up in `Player::known`, or the check means \
+         nothing"
     );
+    for root in [
+        "item.pistol_ammo",
+        "item.satchel_charge",
+        "item.hatchet_metal",
+    ] {
+        let row = rc.row_for(idx(root)).expect("researchable");
+        assert_eq!(
+            row.requires,
+            sim_core::research::NO_RECIPE,
+            "{root} is a root of its bench's tree"
+        );
+    }
+}
 
-    let powder = rc
-        .row_for(idx("item.gunpowder"))
-        .expect("gunpowder is researchable");
-    assert_eq!(
-        powder.requires,
-        sim_core::research::NO_RECIPE,
-        "gunpowder is a root of the tree"
+/// **The split is theirs** (operator, 2026-09-22 — `reference/BLUEPRINTS.md`
+/// §1): eleven recipes need a blueprint, each at the item page's research
+/// price, and gunpowder and metal arrows — known from the start there — are
+/// not gated here either.
+#[test]
+fn the_shipped_split_is_rusts() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content loads");
+    let want: [(&str, u32); 11] = [
+        ("item.hatchet_metal", 30),
+        ("item.pickaxe_metal", 30),
+        ("item.medkit", 30),
+        ("item.window_shutters", 15),
+        ("item.window_bars_metal", 30),
+        ("item.pistol_ammo", 30),
+        ("item.revolver", 30),
+        ("item.armor_roadsign_body", 30),
+        ("item.window_glass", 30),
+        ("item.garage_door", 30),
+        ("item.satchel_charge", 60),
+    ];
+    let gated: Vec<&str> = c
+        .recipes
+        .iter()
+        .filter(|r| r.blueprint)
+        .map(|r| r.output.as_str())
+        .collect();
+    assert_eq!(gated.len(), want.len(), "gated: {gated:?}");
+    for (item, cost) in want {
+        assert!(gated.contains(&item), "{item} is learned in the reference");
+        let row = c
+            .research
+            .iter()
+            .find(|r| r.item == item)
+            .unwrap_or_else(|| panic!("{item} has a research row"));
+        assert_eq!(row.cost, cost, "{item}'s price is the item page's");
+    }
+    for known in [
+        "item.gunpowder",
+        "item.arrow_metal",
+        "item.crossbow",
+        "item.box_large",
+    ] {
+        assert!(
+            !gated.contains(&known),
+            "{known} is known by default in the reference"
+        );
+        assert!(
+            c.research.iter().all(|r| r.item != known),
+            "{known} has a research row with nothing to unlock"
+        );
+    }
+}
+
+/// **One tree per bench**: an edge that crosses a tier is refused, because
+/// the panel draws one bench's tree at a time and the parent would be a line
+/// to a board nobody is standing at.
+#[test]
+fn a_cross_tier_edge_is_refused() {
+    refuses(
+        "research.toml",
+        "item = \"item.revolver\"\ncost = 30\nrequires = \"item.pistol_ammo\"",
+        "item = \"item.revolver\"\ncost = 30\nrequires = \"item.hatchet_metal\"",
+        "each bench has its own tree",
     );
 }
 
 /// The floor: an edge the craft graph already implies may not be dropped
 /// from the tree. This is the drift that makes a tech tree lie — the recipe
-/// says you need gunpowder, the tree says you do not, and a player buys a
-/// blueprint for a thing they cannot make.
+/// says you need the input, the tree says you do not, and a player buys a
+/// blueprint for a thing they cannot make. The shipped tree implies no edge
+/// (gunpowder is known), so the case is made: gate gunpowder again, give it
+/// a row, and the gated pistol rounds made from it must require it.
 #[test]
 fn a_prerequisite_the_recipe_already_implies_cannot_be_dropped() {
-    refuses(
-        "research.toml",
-        "item = \"item.satchel_charge\"\ncost = 75\nrequires = \"item.gunpowder\"",
-        "item = \"item.satchel_charge\"\ncost = 75",
-        "must require it",
+    let mut srcs = sources();
+    let recipes = srcs.iter_mut().find(|(n, _)| *n == "recipes.toml").unwrap();
+    let from = "id = \"recipe.gunpowder\"\noutput = \"item.gunpowder\"\ncount = 10";
+    assert!(
+        recipes.1.contains(from),
+        "test fixture rot: gunpowder's recipe moved"
     );
+    recipes.1 = recipes.1.replace(
+        from,
+        "id = \"recipe.gunpowder\"\noutput = \"item.gunpowder\"\nblueprint = true\ncount = 10",
+    );
+    let research = srcs
+        .iter_mut()
+        .find(|(n, _)| *n == "research.toml")
+        .unwrap();
+    research
+        .1
+        .push_str("\n[[research]]\nitem = \"item.gunpowder\"\ncost = 120\n");
+    let err = build(&srcs).expect_err("a dropped implied edge was accepted");
+    assert!(err.contains("must require it"), "got: {err}");
 }
 
 /// Every other way an edge can be wrong.
 #[test]
 fn research_edge_refusals() {
+    let edge = "item = \"item.revolver\"\ncost = 30\nrequires = \"item.pistol_ammo\"";
     // A row that requires itself is a cycle of length one.
     refuses(
         "research.toml",
-        "item = \"item.satchel_charge\"\ncost = 75\nrequires = \"item.gunpowder\"",
-        "item = \"item.satchel_charge\"\ncost = 75\nrequires = \"item.satchel_charge\"",
+        edge,
+        "item = \"item.revolver\"\ncost = 30\nrequires = \"item.revolver\"",
         "requires itself",
     );
     // A prerequisite that names no item at all.
     refuses(
         "research.toml",
-        "item = \"item.satchel_charge\"\ncost = 75\nrequires = \"item.gunpowder\"",
-        "item = \"item.satchel_charge\"\ncost = 75\nrequires = \"item.nonesuch\"",
+        edge,
+        "item = \"item.revolver\"\ncost = 30\nrequires = \"item.nonesuch\"",
         "is not an item",
     );
     // A prerequisite that is a real item but is not researchable: nobody can
     // ever learn it, so the row behind it is locked forever.
     refuses(
         "research.toml",
-        "item = \"item.satchel_charge\"\ncost = 75\nrequires = \"item.gunpowder\"",
-        "item = \"item.satchel_charge\"\ncost = 75\nrequires = \"item.rock\"",
+        edge,
+        "item = \"item.revolver\"\ncost = 30\nrequires = \"item.rock\"",
         "is not researchable",
     );
     // The "same edge twice" case that stood here is DELETED by the
@@ -3449,9 +3858,10 @@ fn research_edge_refusals() {
 
 /// A cycle, and the row stranded behind it, are one refusal — because
 /// "can never be learned" is what a player experiences and a cycle is only
-/// one cause of it. Gunpowder is made to depend on the satchel that depends
-/// on gunpowder; the medkit is untouched and must stay reachable, which is
-/// what proves the walk reports the stuck rows rather than giving up.
+/// one cause of it. Pistol rounds are made to depend on the revolver that
+/// depends on them (one bench, so the tier rule has nothing to say); the
+/// medkit is untouched and must stay reachable, which is what proves the
+/// walk reports the stuck rows rather than giving up.
 #[test]
 fn a_prerequisite_cycle_is_refused() {
     let mut srcs = sources();
@@ -3459,9 +3869,14 @@ fn a_prerequisite_cycle_is_refused() {
         .iter_mut()
         .find(|(n, _)| *n == "research.toml")
         .expect("research.toml");
+    let from = "[[research]]\nitem = \"item.pistol_ammo\"\ncost = 30";
+    assert!(
+        entry.1.contains(from),
+        "test fixture rot: the pistol_ammo row moved"
+    );
     entry.1 = entry.1.replace(
-        "[[research]]\nitem = \"item.gunpowder\"\ncost = 40",
-        "[[research]]\nitem = \"item.gunpowder\"\ncost = 40\nrequires = \"item.satchel_charge\"",
+        from,
+        "[[research]]\nitem = \"item.pistol_ammo\"\ncost = 30\nrequires = \"item.revolver\"",
     );
     let err = build(&srcs).expect_err("a research cycle was accepted");
     assert!(
@@ -3469,7 +3884,7 @@ fn a_prerequisite_cycle_is_refused() {
         "expected the reachability walk to refuse, got: {err}"
     );
     assert!(
-        err.contains("item.gunpowder") && err.contains("item.satchel_charge"),
+        err.contains("item.pistol_ammo") && err.contains("item.revolver"),
         "the refusal must name the stuck rows, got: {err}"
     );
     assert!(
@@ -3490,18 +3905,130 @@ fn the_hash_moves_with_the_ladder() {
         .iter_mut()
         .find(|(n, _)| *n == "research.toml")
         .expect("research.toml");
-    // A legal edge that changes the tree: the revolver behind gunpowder.
-    // Legal because the floor is a minimum and authoring MORE is a design
-    // call — which is exactly why the hash has to be able to see it.
+    // A legal edge that changes the tree: the pickaxe behind the hatchet —
+    // the guess their chain refutes (`BLUEPRINTS.md` §2), and still legal,
+    // because the floor is a minimum and authoring MORE is a design call —
+    // which is exactly why the hash has to be able to see it.
+    let from = "[[research]]\nitem = \"item.pickaxe_metal\"\ncost = 30";
+    assert!(
+        entry.1.contains(from),
+        "test fixture rot: the pickaxe row moved"
+    );
     entry.1 = entry.1.replace(
-        "[[research]]\nitem = \"item.arrow_metal\"\ncost = 20",
-        "[[research]]\nitem = \"item.arrow_metal\"\ncost = 20\nrequires = \"item.gunpowder\"",
+        from,
+        "[[research]]\nitem = \"item.pickaxe_metal\"\ncost = 30\nrequires = \"item.hatchet_metal\"",
     );
     let moved = build(&srcs).expect("an added edge is legal content");
     assert_ne!(
         base.hash(),
         moved.hash(),
         "two contents whose tech tree differs canonicalise identically"
+    );
+}
+
+/// **The table's paper and its wait reach the sim** (research table v1):
+/// the blueprint is the item the file names and the wait is its seconds in
+/// ticks — the two numbers `sim-core/research.rs` runs a table on.
+#[test]
+fn the_research_table_bakes_its_paper_and_its_wait() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content loads");
+    let rc = c.bake_research().expect("shipped research bakes");
+    assert_eq!(
+        Some(rc.blueprint),
+        c.item_index("item.blueprint"),
+        "the table makes the paper the file names"
+    );
+    assert_eq!(
+        rc.table_ticks as u32,
+        10 * sim_core::limits::TICK_HZ,
+        "the reference's ten seconds"
+    );
+    let paper = c
+        .items
+        .iter()
+        .find(|i| i.id == "item.blueprint")
+        .expect("the paper is an item");
+    assert_eq!(
+        (paper.stack, paper.condition_max),
+        (1, 0),
+        "one sheet per slot, and no ceiling to wear its target away"
+    );
+}
+
+/// The paper's `cond` names what it teaches, so the item may not stack and
+/// may not carry condition — either would let an ordinary verb rewrite the
+/// target.
+#[test]
+fn a_blueprint_that_stacks_or_wears_is_refused() {
+    let from = "id = \"item.blueprint\"\nname = \"Blueprint\"\nstack = 1";
+    refuses(
+        "items.toml",
+        from,
+        "id = \"item.blueprint\"\nname = \"Blueprint\"\nstack = 2",
+        "must be stack 1 with no condition",
+    );
+    refuses(
+        "items.toml",
+        from,
+        "id = \"item.blueprint\"\nname = \"Blueprint\"\nstack = 1\ncondition_max = 100",
+        "must be stack 1 with no condition",
+    );
+}
+
+/// Every road but the table mints a blank: a crate that paid one, a recipe
+/// that made one, a kit that granted one. Each is refused by name.
+#[test]
+fn a_blueprint_minted_by_another_road_is_refused() {
+    refuses(
+        "loot.toml",
+        "guaranteed = [{ item = \"item.junk\", count_min = 2, count_max = 2 }]",
+        "guaranteed = [{ item = \"item.junk\", count_min = 2, count_max = 2 }, \
+         { item = \"item.blueprint\", count_min = 1, count_max = 1 }]",
+        "only a research table may make paper",
+    );
+    refuses(
+        "research.toml",
+        "[table]\nblueprint = \"item.blueprint\"",
+        "[table]\nblueprint = \"item.junk\"",
+        "must be stack 1 with no condition",
+    );
+}
+
+/// A table that never finishes, or one whose wait overflows the sim's
+/// field, is refused rather than clamped.
+#[test]
+fn a_table_research_must_take_a_representable_time() {
+    refuses(
+        "research.toml",
+        "seconds = 10",
+        "seconds = 0",
+        "a table research takes 0 s",
+    );
+    refuses(
+        "research.toml",
+        "seconds = 10",
+        "seconds = 100000",
+        "a table research takes 100000 s",
+    );
+}
+
+/// The wait is part of what a content set means: a ten-second table and an
+/// eleven-second one must not canonicalise identically.
+#[test]
+fn the_hash_moves_with_the_table_wait() {
+    let base = Content::load_dir(&content_dir()).expect("shipped content loads");
+    let mut srcs = sources();
+    let entry = srcs
+        .iter_mut()
+        .find(|(n, _)| *n == "research.toml")
+        .expect("research.toml");
+    assert!(entry.1.contains("seconds = 10"), "test fixture rot");
+    entry.1 = entry.1.replace("seconds = 10", "seconds = 11");
+    let moved = build(&srcs).expect("an eleven-second table is legal");
+    assert_ne!(
+        base.hash(),
+        moved.hash(),
+        "two contents whose table waits differ canonicalise identically"
     );
 }
 
@@ -3837,5 +4364,24 @@ fn every_solid_deployable_places_on_the_plane() {
          already contradicted: two solid rows could have been deleted with \
          this gate green (judged 2026-08-28). A row added here is a \
          deliberate edit to this number."
+    );
+}
+
+/// **A new look is not a wipe.** Skin rows stay out of the digest a save is
+/// refused on: a stack carries its skin's catalog id, not a row index, so a
+/// look added, retinted or renamed moves nothing a save points through.
+#[test]
+fn a_skin_row_does_not_move_the_hash() {
+    let shipped = build(&sources()).expect("shipped content builds");
+    let mut srcs = sources();
+    let skins = srcs.iter_mut().find(|(n, _)| *n == "skins.toml").unwrap();
+    skins.1.push('\n');
+    skins.1.push_str(SKIN_ROW);
+    let grown = build(&srcs).expect("a new look is legal content");
+    assert_eq!(grown.skins.len(), shipped.skins.len() + 1);
+    assert_eq!(
+        shipped.hash(),
+        grown.hash(),
+        "a new skin row moved the save hash — every new look would be a wipe"
     );
 }

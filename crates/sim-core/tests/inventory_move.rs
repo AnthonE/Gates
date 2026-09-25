@@ -89,6 +89,7 @@ fn bag_at_feet(w: &mut World, stacks: &[(u16, u16)]) -> u32 {
             item,
             count,
             cond: 0,
+            skin: 0,
         };
     }
     let tick = w.tick;
@@ -218,6 +219,7 @@ fn refused_moves_never_mutate() {
             item: (s as u16) % ITEMS,
             count: (10 + s as u16 * 13) % STACK_MAX + 1,
             cond: 0,
+            skin: 0,
         };
     }
 
@@ -301,6 +303,7 @@ fn moves_conserve_every_item() {
             item: rng.next_bounded(ITEMS as u32) as u16,
             count: rng.next_bounded(STACK_MAX as u32) as u16 + 1,
             cond: 0,
+            skin: 0,
         };
     }
 
@@ -389,11 +392,13 @@ fn every_move_answers_and_none_panics() {
         item: 4,
         count: 60,
         cond: 0,
+        skin: 0,
     };
     w.players[0].inv[1] = ItemStack {
         item: 1,
         count: 5,
         cond: 0,
+        skin: 0,
     };
 
     // One past every live bound on all four address axes, so a decoder that
@@ -437,11 +442,13 @@ fn a_whole_stack_onto_another_item_swaps() {
         item: 1,
         count: 9,
         cond: 0,
+        skin: 0,
     };
     w.players[0].inv[7] = ItemStack {
         item: 4,
         count: 3,
         cond: 0,
+        skin: 0,
     };
 
     let (code, b, c) = do_move(&mut w, 0, CONT_SELF, 7, CONT_SELF, 0, 3);
@@ -462,6 +469,7 @@ fn a_whole_stack_onto_another_item_swaps() {
             item: 4,
             count: 3,
             cond: 0,
+            skin: 0,
         }
     );
     assert_eq!(
@@ -470,6 +478,7 @@ fn a_whole_stack_onto_another_item_swaps() {
             item: 1,
             count: 9,
             cond: 0,
+            skin: 0,
         }
     );
 }
@@ -484,6 +493,7 @@ fn a_partial_move_splits_and_empties_canonically() {
         item: 6,
         count: 30,
         cond: 0,
+        skin: 0,
     };
 
     let (code, _, _) = do_move(&mut w, 0, CONT_SELF, 2, CONT_SELF, 9, 12);
@@ -494,6 +504,7 @@ fn a_partial_move_splits_and_empties_canonically() {
             item: 6,
             count: 18,
             cond: 0,
+            skin: 0,
         }
     );
     assert_eq!(
@@ -502,6 +513,7 @@ fn a_partial_move_splits_and_empties_canonically() {
             item: 6,
             count: 12,
             cond: 0,
+            skin: 0,
         }
     );
 
@@ -519,6 +531,7 @@ fn a_partial_move_splits_and_empties_canonically() {
             item: 6,
             count: 30,
             cond: 0,
+            skin: 0,
         }
     );
 }
@@ -534,11 +547,13 @@ fn a_merge_that_does_not_fit_is_refused_not_clamped() {
         item: 3,
         count: STACK_MAX,
         cond: 0,
+        skin: 0,
     };
     w.players[0].inv[1] = ItemStack {
         item: 3,
         count: STACK_MAX - 10,
         cond: 0,
+        skin: 0,
     };
 
     let (code, b, _) = do_move(&mut w, 0, CONT_SELF, 0, CONT_SELF, 1, 40);
@@ -579,6 +594,7 @@ fn a_bag_can_be_taken_from_a_slot_at_a_time_and_put_back() {
             item: 1,
             count: 12,
             cond: 0,
+            skin: 0,
         }
     );
     assert_eq!(w.backpacks.entries()[0].items[0].count, 38);
@@ -597,6 +613,7 @@ fn a_bag_can_be_taken_from_a_slot_at_a_time_and_put_back() {
             item: 1,
             count: 7,
             cond: 0,
+            skin: 0,
         }
     );
     assert_eq!(w.backpacks.entries()[0].items[0].count, 43);
@@ -659,6 +676,7 @@ fn a_slot_moved_onto_itself_is_refused() {
         item: 2,
         count: 10,
         cond: 0,
+        skin: 0,
     };
     let before = ledger(&w);
 
@@ -671,6 +689,7 @@ fn a_slot_moved_onto_itself_is_refused() {
             item: 2,
             count: 10,
             cond: 0,
+            skin: 0,
         }
     );
     assert_eq!(ledger(&w), before, "and it invented nothing");
@@ -687,6 +706,7 @@ fn an_item_off_the_ladder_refuses() {
         item: ITEMS + 5,
         count: 3,
         cond: 0,
+        skin: 0,
     };
     let (code, b, _) = do_move(&mut w, 0, CONT_SELF, 0, CONT_SELF, 1, 1);
     assert_eq!(code, EV_MOVE_REFUSED);
@@ -703,6 +723,7 @@ fn a_corpse_cannot_move_anything() {
         item: 1,
         count: 4,
         cond: 0,
+        skin: 0,
     };
     w.players[0].dead = true;
     let before = snapshot(&w);
@@ -745,11 +766,13 @@ fn resolve_conserves_over_the_whole_small_space() {
                             item: src_item,
                             count: src_count,
                             cond: 0,
+                            skin: 0,
                         };
                         let dst = ItemStack {
                             item: dst_item,
                             count: dst_count,
                             cond: 0,
+                            skin: 0,
                         };
                         let Ok(plan) = plan_move(8, src, dst, count) else {
                             continue;
@@ -795,16 +818,19 @@ fn the_planner_names_each_refusal() {
         item: 1,
         count: 8,
         cond: 0,
+        skin: 0,
     };
     let some = ItemStack {
         item: 1,
         count: 3,
         cond: 0,
+        skin: 0,
     };
     let other = ItemStack {
         item: 2,
         count: 3,
         cond: 0,
+        skin: 0,
     };
     let empty = ItemStack::default();
 
@@ -850,6 +876,7 @@ fn a_moved_tool_keeps_its_condition() {
         item: 5,
         count: 1,
         cond: 4_321,
+        skin: 0,
     };
     let empty = ItemStack::default();
 
@@ -868,6 +895,7 @@ fn a_moved_tool_keeps_its_condition() {
         item: 5,
         count: 1,
         cond: 9_000,
+        skin: 0,
     };
     assert_eq!(
         plan_move(1, worn, other, 1),
@@ -882,6 +910,7 @@ fn a_moved_tool_keeps_its_condition() {
         item: 2,
         count: 10,
         cond: 0,
+        skin: 0,
     };
     let plan = plan_move(20, pile, empty, 4).expect("a split plans");
     let (src, dst) = resolve(plan, pile, empty);
@@ -893,11 +922,13 @@ fn a_moved_tool_keeps_its_condition() {
         item: 5,
         count: 1,
         cond: 111,
+        skin: 0,
     };
     let b = ItemStack {
         item: 6,
         count: 1,
         cond: 222,
+        skin: 0,
     };
     let plan = plan_move(1, a, b, 1).expect("whole stacks swap");
     let (src, dst) = resolve(plan, a, b);

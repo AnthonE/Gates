@@ -95,11 +95,13 @@ fn archer(id: u32, x: f32, feet_y: f32, z: f32, pitch: u8) -> Player {
         item: BOW,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     p.inv[7] = ItemStack {
         item: ARROW,
         count: 10,
         cond: 0,
+        skin: 0,
     };
     p.frame = InputFrame {
         buttons: BTN_PRIMARY,

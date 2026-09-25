@@ -192,6 +192,14 @@ pub extern "C" fn probe_sites(seed: u64) -> u64 {
     hash_f32(&mut h, haven.floor_y);
     hash_f32(&mut h, haven.relief);
     h.update(&[haven.phase, haven.shelter]);
+    // The ore budget: it moves every rock-channel cell's draw, and none of
+    // those need lie inside the scatter windows `probe_terrain` hashes — on
+    // the golden seed none does. Folded here so a budget change moves the
+    // world digest and an old save refuses rather than loading onto moved
+    // nodes; and it is a haven field the client resolves on wasm.
+    for pm in haven.ore_pm {
+        h.update(&pm.to_le_bytes());
+    }
     let (sx, sz, syaw) = terrain::haven_shelter(&haven);
     hash_f32(&mut h, sx);
     hash_f32(&mut h, sz);
@@ -371,6 +379,7 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                 id: 1,
                 recipe: (t % 4) as u16, // 3 = out of range: refusal path
                 count: 1 + (t % 2) as u16,
+                skin: 0,
             };
             let cancel = Command::CraftCancel {
                 id: 2,
@@ -460,6 +469,7 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                         id: 2,
                         recipe: 2,
                         count: 1,
+                        skin: 0,
                     },
                 ]);
                 continue;
@@ -573,6 +583,7 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                         id: 2,
                         recipe: 0,
                         count: 1,
+                        skin: 0,
                     },
                 ]);
             } else if t % 16 == 11 {
@@ -767,6 +778,7 @@ pub extern "C" fn probe_bags(master_seed: u64, sequences: u32, ticks: u32) -> u6
                 item: 5, // the fixture's bag item (deploy row 3)
                 count: crate::deploy::BAG_CAP as u16,
                 cond: 0,
+                skin: 0,
             };
         }
         let mut rng = Pcg32::new(seq_seed, 13);
@@ -941,11 +953,13 @@ fn arm_guns(world: &mut World) {
             item: GUN_ITEM,
             count: 1,
             cond: 0,
+            skin: 0,
         };
         p.inv[ROUND_SLOT] = ItemStack {
             item: ROUND_ITEM,
             count: GUN_ROUNDS,
             cond: 0,
+            skin: 0,
         };
     }
 }
@@ -1028,11 +1042,19 @@ pub extern "C" fn probe_combat(master_seed: u64, sequences: u32, ticks: u32) -> 
         // fixtures — this probe is not what puts it there, and reading it
         // as though it were is how a coverage claim outruns its code.
         world.survival = crate::survival::SurvivalContent::probe_fixture();
+        // Wet and cold (weather v0), armed on its seconds-fast fixture under
+        // a storm forced at midnight on the first tick: the soak, the chill,
+        // the cold's hp and the admin verb all ride the parity digest.
+        world.survival.exposure = crate::exposure::ExposureContent::probe_fixture();
         world.dev_spawn = Some(world.spawn_pos(1));
         world.tick(&[
             Command::Join { id: 1 },
             Command::Join { id: 2 },
             Command::Join { id: 3 },
+            Command::AdminEnv {
+                weather: crate::weather::STORM,
+                time_pm: 937,
+            },
         ]);
         // Fixture arrangement, like the wire tests' server-side grants:
         // a weapon in hand whichever hotbar slot the bot frame selects.
@@ -1044,6 +1066,7 @@ pub extern "C" fn probe_combat(master_seed: u64, sequences: u32, ticks: u32) -> 
                     item: (slot % 2) as u16,
                     count: 1,
                     cond: 0,
+                    skin: 0,
                 };
             }
         }
@@ -1254,6 +1277,7 @@ pub fn assist_probe_world(seed: u64) -> World {
             item: 1,
             count: 1,
             cond: 0,
+            skin: 0,
         };
     }
     w.players[2].wounded = true;
@@ -1334,6 +1358,7 @@ pub fn rotation_probe_world() -> World {
         item: 0,
         count: 100,
         cond: 0,
+        skin: 0,
     };
     for (row, level, loc) in [
         (0, 0, LOC_PLANE),

@@ -43,8 +43,10 @@
 # model in the abstract and **false for every piece we own**: their
 # Projectile and Melee cells are EQUAL on all three, and those are the
 # only two damage classes our combat has, so one scalar expresses theirs
-# exactly. The columns we cannot key against — Bite, Radiation, Cold —
-# are mechanics we do not ship. §4.1 is retracted.
+# exactly. Bite and Radiation are mechanics we do not ship; Cold is, since
+# weather v0 — `cold_pct` below is their column, read by `sim_core::exposure`
+# (a negative one draws cold in as a share of the cold you are in). §4.1 is
+# retracted.
 #
 # **Our ladder is also inverted**, which is the part a player feels: ours
 # has the headwrap weaker than the shirt where theirs has it stronger.
@@ -73,15 +75,20 @@ id = "item.armor_burlap_head"
 slot = "head"
 reduction_pct = 10
 move_penalty_pct = 0
+# Their Cold column (`reference/RIPLIST.md` §1h), read whole (weather v0).
+cold_pct = 6
 
 [[armor]]
 id = "item.armor_burlap_body"
 slot = "body"
 reduction_pct = 15
 move_penalty_pct = 0
+cold_pct = 27
 
 [[armor]]
 id = "item.armor_roadsign_body"
 slot = "body"
 reduction_pct = 25
 move_penalty_pct = 5
+# Negative, as theirs is: a sheet of metal draws the cold in.
+cold_pct = -34

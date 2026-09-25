@@ -242,6 +242,7 @@ impl Harness {
             item: spear,
             count: 1,
             cond: catalog.cond_max(spear as usize),
+            skin: 0,
         };
         let mut bot =
             Survivor::new(Mind::inline(Scripted::default(), MindConfig::default()).unwrap());

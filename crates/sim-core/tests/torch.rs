@@ -48,6 +48,7 @@ fn lit_world() -> World {
         item: 0,
         count: 1,
         cond: 400,
+        skin: 0,
     };
     w
 }

@@ -59,6 +59,7 @@ pub mod fill;
 // the client lives in there — see its header for the merge that made that a
 // rule rather than a preference.
 pub mod feed;
+pub mod fx;
 // The death screen. Dying used to end the session: `dead` was set and read
 // by nothing, and `ACT_RESPAWN` had no key.
 pub mod death;
@@ -91,7 +92,6 @@ pub mod heldgen;
 // `Session`. See `render/screen.rs` for the half both targets keep.
 /// The two debris layers beside the chip burst (2026-09-13): the hot one and
 /// the soft one, both fed off `impact::Contacts`.
-pub mod dust;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hub;
 pub mod hud;
@@ -99,7 +99,7 @@ pub mod impact;
 pub mod input;
 pub mod loading;
 pub mod loot;
-pub mod sparks;
+pub mod surface;
 // The island map. Painted from the same `terrain::splat_from` the ground
 // blends by, so the map and the world are one worldgen seen two ways.
 pub mod map;
@@ -125,6 +125,7 @@ pub mod panels;
 pub mod pause;
 pub mod prewarm;
 pub mod quality;
+pub mod rain;
 pub mod render_scale;
 // Discord rich presence: which screen means what, and the handoff to the
 // worker. The model — socket, framing, payloads, copy — is `crate::discord`,
@@ -147,6 +148,7 @@ pub mod report;
 /// Bounded client-only coordinates for paint on the authoritative road.
 pub mod road_markings;
 pub mod sky;
+pub mod stars;
 // What players built. Distinct from `props`, which is the world the seed
 // makes: this is the world other players made, and it arrives on the wire.
 pub mod structures;
@@ -161,6 +163,7 @@ pub mod ui;
 // The sea: a graded volume with a swell on it. `reference/WATER.md` is the
 // research, `TERRAIN.md` §4 is what it replaces.
 pub mod water;
+pub mod weather;
 // What a browser build does where the desktop has a window and a menu: the
 // surface fitted under WebGL2's 2048 cap, and the page taking over where
 // `Screen::Menu` would have drawn. Compiled everywhere, in effect on wasm32.
@@ -237,9 +240,15 @@ pub struct WorldId {
 
 impl WorldId {
     pub fn new(seed: u64) -> Self {
+        Self::with_haven(seed, terrain::haven(seed))
+    }
+
+    /// A join's: `ClientCore::new` has already solved the haven, and solving
+    /// it again cost the join hitch another 20–30 ms.
+    pub fn with_haven(seed: u64, haven: Haven) -> Self {
         Self {
             seed,
-            haven: terrain::haven(seed),
+            haven,
             table: ScatterTable::alpha_default(),
         }
     }
@@ -438,6 +447,10 @@ pub struct Start {
     /// viewmodel, no compass. The menu backdrop is footage
     /// (`ui::backdrop`), and a frame with a hotbar across it is not footage.
     pub no_hud: bool,
+    /// `--hour`: the day fraction a capture run shoots at (noon if unset).
+    pub pin_hour: Option<f32>,
+    /// `--weather`: the preset a capture run shoots under (clear if unset).
+    pub pin_weather: Option<u8>,
 }
 
 pub struct GatesRenderPlugin {
@@ -457,17 +470,32 @@ impl Plugin for GatesRenderPlugin {
         // the frame looks like, and until this landed the sun's height was a
         // function of how long the build took (`rig::DayPin`).
         let day_pin = if self.capture.is_some() {
-            rig::DayPin::capture()
+            match self.start.pin_hour {
+                Some(frac) => rig::DayPin::capture_at(frac),
+                None => rig::DayPin::capture(),
+            }
         } else {
             rig::DayPin::default()
+        };
+        // The probe's sky is pinned the same way (weather v0): a frame must
+        // not depend on which segment of the schedule the shard booted in.
+        let weather_pin = if self.capture.is_some() {
+            weather::WeatherPin::capture(self.start.pin_weather)
+        } else {
+            weather::WeatherPin::default()
         };
         // The ground's splat material. `MaterialPlugin` is what registers the
         // pipeline and the asset type; without it the ground draws with no
         // material at all, which — as the asset-root trap in `bin/gates.rs`
         // records — is not an error the image shows you.
         app.add_plugins(MaterialPlugin::<ground_splat::GroundMaterial>::default());
+        // The rain's streak material (weather v0, `rain.rs`).
+        app.add_plugins(MaterialPlugin::<rain::RainMaterial>::default());
+        app.add_plugins(MaterialPlugin::<stars::StarMaterial>::default());
         app.add_plugins(UiMaterialPlugin::<render_scale::OpaqueFrame>::default());
         app.insert_resource(day_pin)
+            .insert_resource(weather_pin)
+            .init_resource::<weather::WeatherNow>()
             .init_resource::<Eye>()
             .init_resource::<wounded::Crawl>()
             .init_resource::<collider_debug::ShowColliders>()
@@ -497,10 +525,11 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<decal::Marks>()
             .init_resource::<impact::Chips>()
             .init_resource::<impact::Contacts>()
-            .init_resource::<sparks::Sparks>()
-            .init_resource::<dust::Dust>()
+            .init_resource::<fx::Fx>()
             .init_resource::<hud::Toast>()
             .init_resource::<hud::Readout>()
+            .init_resource::<hud::CraftTimer>()
+            .init_resource::<hud::Pickups>()
             .init_resource::<feed::Feed>()
             .init_resource::<audio::Sound>()
             // Before `audio::build_bank` below: the bank is installed
@@ -612,18 +641,15 @@ impl Plugin for GatesRenderPlugin {
                 // The tracer pool. Spawned once here so the frame path
                 // never spawns an entity for an arrow (`tracer.rs`).
                 tracer::setup,
-                // The mark pool, for the same reason plus one more: the
-                // materials it builds here are what the prewarm draw
-                // specializes, and a pipeline compiled mid-fight is the
-                // pop `decal.rs`'s `PREWARM_FRAMES` exists to avoid.
+                // The mark mesh: one entity, always drawn, so its pipeline
+                // compiles at load rather than on the first shot of a fight.
                 decal::setup,
                 // The chip pool, `tracer::setup`'s reason exactly: a landed
                 // blow must not spawn an entity inside a fight
                 // (`impact.rs`).
                 impact::setup,
                 // The spark and dust pools, the chip pool's reason exactly.
-                sparks::setup,
-                dust::setup,
+                fx::setup,
                 // The shared warm mesh. Before anything that could create a
                 // material, so `prewarm::warm` never sees an `Added` it has
                 // no mesh to draw against.
@@ -815,13 +841,7 @@ impl Plugin for GatesRenderPlugin {
             )
             .add_systems(
                 OnEnter(Screen::Disconnected),
-                (
-                    map::forget,
-                    viewmodel::forget,
-                    impact::forget,
-                    sparks::forget,
-                    dust::forget,
-                ),
+                (map::forget, viewmodel::forget, impact::forget, fx::forget),
             )
             .add_systems(OnExit(Screen::Disconnected), disconnected::teardown)
             .add_systems(
@@ -860,13 +880,7 @@ impl Plugin for GatesRenderPlugin {
             )
             .add_systems(
                 OnEnter(Screen::Menu),
-                (
-                    map::forget,
-                    viewmodel::forget,
-                    impact::forget,
-                    sparks::forget,
-                    dust::forget,
-                ),
+                (map::forget, viewmodel::forget, impact::forget, fx::forget),
             );
 
         // ---- settings ------------------------------------------------
@@ -1019,11 +1033,10 @@ impl Plugin for GatesRenderPlugin {
                 // tracer's first frame already shows motion.
                 tracer::launch.after(feed::drain),
                 tracer::fly.after(tracer::launch),
-                // The mark's two halves, the tracer's shape exactly.
-                // `mark` reads the drained feed so it follows the drain;
-                // `fade` then ages everything including the mark just
-                // claimed, which is what releases the prewarm slot.
-                decal::mark.after(feed::drain),
+                // The mark's two halves. `mark` reads the frame's resolved
+                // contacts, so it follows the resolver; `fade` then ages
+                // everything and rewrites the one mark mesh if it moved.
+                decal::mark.after(impact::contacts).after(fx::gun::shots),
                 decal::fade.after(decal::mark),
                 // The weak-spot cross, off the core's latched mark and the
                 // frame's sector answer — after the resolver that writes
@@ -1038,11 +1051,36 @@ impl Plugin for GatesRenderPlugin {
                 // the three `fly`s advance whatever is live, including the
                 // burst just thrown, so a blow's first frame already moves.
                 impact::contacts.after(feed::drain).after(verbs::resolve),
+                // A shot's flash and tracer, and the contact of a miss the
+                // shard did not mark — added to the frame's list before
+                // anything throws off it.
+                fx::gun::shots
+                    .after(impact::contacts)
+                    .before(impact::strike),
                 impact::strike.after(impact::contacts),
                 impact::fly.after(impact::strike),
-                sparks::fly.after(impact::strike),
-                dust::fly.after(impact::strike),
+                fx::flash.after(impact::strike),
             )
+                .run_if(world_running)
+                .run_if(move || !plate),
+        )
+        // The world's own effects: pieces going up and coming down (off the
+        // drained feed, before the mark mesh is rewritten), and fires.
+        .add_systems(
+            Update,
+            (
+                fx::world::built.after(feed::drain).before(decal::fade),
+                fx::world::fires,
+            )
+                .run_if(world_running)
+                .run_if(move || !plate),
+        )
+        // The particles draw after the camera's transform is final for the
+        // frame: a billboard faces the camera this frame renders.
+        .add_systems(
+            PostUpdate,
+            fx::draw
+                .after(bevy::transform::TransformSystems::Propagate)
                 .run_if(world_running)
                 .run_if(move || !plate),
         )
@@ -1083,6 +1121,10 @@ impl Plugin for GatesRenderPlugin {
         )
         // The cloud deck hangs on the camera, so it waits for the rig too.
         .add_systems(OnEnter(Screen::Loading), sky::setup.after(rig::setup))
+        // The rain follows the camera too (weather v0).
+        .add_systems(OnEnter(Screen::Loading), rain::setup.after(rig::setup))
+        // After the deck: the stars hide behind its field.
+        .add_systems(OnEnter(Screen::Loading), stars::setup.after(sky::setup))
         // The beds, from the loading screen's first frame at zero. No camera
         // is needed: the pan is computed per start from `Eye` in `pump`.
         .add_systems(OnEnter(Screen::Loading), audio::setup)
@@ -1314,6 +1356,18 @@ impl Plugin for GatesRenderPlugin {
                 .before(Stream)
                 .run_if(world_running),
         )
+        // The craft clock, the craft bar and the item notices over the
+        // vitals. After the drain: the clock restarts on this frame's
+        // `CraftQ` and the notices read this frame's gathers. The clock is
+        // first, so both clock readers (this bar and the craft panel's
+        // queue strip) draw the same second.
+        .add_systems(
+            Update,
+            (hud::craft_clock, hud::craft_bar, hud::pickups)
+                .chain()
+                .after(feed::drain)
+                .run_if(world_running),
+        )
         // The crawl's screen (wounded v0): the vignette and the two numbers.
         // After the drain for `bodies::stream`'s reason — it reads this
         // frame's `Feed::wounded` — and under `world_running` rather than
@@ -1329,6 +1383,24 @@ impl Plugin for GatesRenderPlugin {
             Update,
             rig::day_night.after(feed::drain).run_if(world_running),
         )
+        // The weather (weather v0): read after the drain and before the rig
+        // lights the frame from it; the deck is composed after both.
+        .add_systems(
+            Update,
+            (
+                weather::update.after(feed::drain).before(rig::day_night),
+                sky::compose.after(rig::day_night),
+                rain::drive.after(weather::update),
+                stars::drive.after(sky::compose),
+                hud::exposure,
+                // Regrowing trees (tree growth v0), after this frame's
+                // harvested set is in and after `props::harvest` has stood a
+                // respawned trunk up — before it, a sapling would stand one
+                // frame at the size its tree fell at.
+                props::grow.after(feed::drain).after(Stream),
+            )
+                .run_if(world_running),
+        )
         // Audio runs AFTER the streamers and `pump` runs last of all: every
         // producer must have had its say before the mixer resolves the frame,
         // or a cue requested by a system scheduled later is heard a frame
@@ -1343,9 +1415,11 @@ impl Plugin for GatesRenderPlugin {
                 audio::water,
                 audio::feed,
                 // The matter struck, at the point it was struck — off the
-                // contact list the debris is thrown from, and after the
-                // resolver that fills it.
-                audio::impacts.after(impact::contacts),
+                // contact list the debris is thrown from, and after both
+                // systems that fill it: the resolver, and the gun's far-miss
+                // contacts, which otherwise landed after this read on some
+                // frames and made no sound.
+                audio::impacts.after(impact::contacts).after(fx::gun::shots),
                 // The second positional cue: placements off the feed's
                 // broadcast-only ring (the join-flood guard is the core's).
                 audio::place,

@@ -348,10 +348,13 @@ mod tests {
     ///
     /// Scoped to the lock half deliberately: since hearth crew v1 the op
     /// space also carries the three crew ops, and those are the *hearth's*
-    /// surface (`E` at a hearth, `render/verbs.rs`) rather than the
-    /// keypad's — a keypad offering "join crew" at a door would be
-    /// offering a verb that store cannot answer. `op_is_crew` is the same
-    /// split the sim dispatches on, so this cannot drift from it.
+    /// own keys (`L` and `K` at a bare hearth, `render/verbs.rs`) rather
+    /// than the keypad's — a keypad offering "join crew" at a door would be
+    /// offering a verb that store cannot answer. A hearth with a lock does
+    /// open this pad (hearth lock v0), and its `ENTER` is still the lock's
+    /// op: the sim folds the join into a full-rights entry, so a crew key
+    /// here would only be a second road to the same list. `op_is_crew` is
+    /// the same split the sim dispatches on, so this cannot drift from it.
     #[test]
     fn the_keypad_reaches_every_lock_op_the_sim_has() {
         use KeypadKey::*;

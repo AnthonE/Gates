@@ -649,6 +649,7 @@ fn player_at_cell(cx: u16, cz: u16, items: &[(u16, u16)]) -> Player {
             item,
             count,
             cond: 0,
+            skin: 0,
         };
     }
     p
@@ -873,6 +874,7 @@ fn a_bad_row_is_red_on_both_sides() {
         item: 9,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     rig.agree_no(
         &mut p,

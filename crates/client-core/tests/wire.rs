@@ -40,8 +40,8 @@
 //! fail, so no two fields may share a value.
 
 use client_core::core::{
-    ClientCore, HitFact, APPLIED2_CONT, APPLIED2_MOVE, APPLIED_BAGS, APPLIED_DEATH, APPLIED_HIT,
-    NO_VICTIM,
+    ClientCore, HitFact, Impact, APPLIED2_CONT, APPLIED2_MOVE, APPLIED2_OWN_STRUCT_HIT,
+    APPLIED_BAGS, APPLIED_DEATH, APPLIED_HIT, NO_VICTIM,
 };
 use protocol::{
     encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
@@ -54,7 +54,9 @@ use sim_core::backpack::{BAG_GONE_DESPAWN, BAG_GONE_EMPTIED};
 use sim_core::collide::Part;
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{addr, CONT_BAG, CONT_BOX, CONT_SELF, REFUSE_M_NO_ROOM};
-use sim_core::ranged::{SURF_GROUND, SURF_WORLD};
+use sim_core::ranged::{
+    IMPACT_ARROW, IMPACT_BLAST, IMPACT_BULLET, SURF_BUILT, SURF_GROUND, SURF_WORLD,
+};
 use sim_core::world::{DEATH_BY_ARROW, DEATH_BY_HAND};
 
 /// The player this core is. Distinct from every other id below, because
@@ -98,6 +100,7 @@ fn a_container_sync_opens_diffs_and_closes_and_a_foreign_batch_is_dropped() {
                 item: 5,
                 count: 40,
                 cond: 0,
+                skin: 0,
             },
         },
         InvSlot {
@@ -106,6 +109,7 @@ fn a_container_sync_opens_diffs_and_closes_and_a_foreign_batch_is_dropped() {
                 item: 31,
                 count: 3,
                 cond: 0,
+                skin: 0,
             },
         },
     ];
@@ -125,6 +129,7 @@ fn a_container_sync_opens_diffs_and_closes_and_a_foreign_batch_is_dropped() {
             item: 5,
             count: 40,
             cond: 0,
+            skin: 0,
         }
     );
     assert_eq!(
@@ -133,6 +138,7 @@ fn a_container_sync_opens_diffs_and_closes_and_a_foreign_batch_is_dropped() {
             item: 31,
             count: 3,
             cond: 0,
+            skin: 0,
         }
     );
     assert_eq!(
@@ -157,6 +163,7 @@ fn a_container_sync_opens_diffs_and_closes_and_a_foreign_batch_is_dropped() {
             item: 31,
             count: 3,
             cond: 0,
+            skin: 0,
         },
         "a diff must not disturb the slots it did not name"
     );
@@ -170,6 +177,7 @@ fn a_container_sync_opens_diffs_and_closes_and_a_foreign_batch_is_dropped() {
             item: 7,
             count: 99,
             cond: 0,
+            skin: 0,
         },
     }];
     let len = encode_event_cont_sync(CONT_BOX, BOX ^ 1, false, &foreign, &mut buf).unwrap();
@@ -185,6 +193,7 @@ fn a_container_sync_opens_diffs_and_closes_and_a_foreign_batch_is_dropped() {
             item: 31,
             count: 3,
             cond: 0,
+            skin: 0,
         },
         "a foreign diff reached this panel's slots"
     );
@@ -381,16 +390,37 @@ fn an_impact_crosses_whole_and_drains_once() {
     assert_eq!(c.pop_impact(), None, "the impact ring starts empty");
 
     // Two axes distinguishable in both halves, and a Y below datum.
-    let (qx, qy, qz, surf) = (0xA179i32, -312i32, 0x58A3i32, SURF_WORLD);
-    let len = encode_event_impact(qx, qy, qz, surf, &mut buf).unwrap();
+    let want = Impact {
+        qx: 0xA179,
+        qy: -312,
+        qz: 0x58A3,
+        surf: SURF_WORLD,
+        kind: IMPACT_BULLET,
+    };
+    let len =
+        encode_event_impact(want.qx, want.qy, want.qz, want.surf, want.kind, &mut buf).unwrap();
     feed(&mut c, &buf[..len]);
     assert_eq!(
         c.pop_impact(),
-        Some((qx, qy, qz, surf)),
+        Some(want),
         "the impact arrived with an axis in the wrong seat, or a Y that \
          lost its sign"
     );
     assert_eq!(c.pop_impact(), None, "the impact ring must drain");
+}
+
+/// Wire v77: the weapon that struck crosses beside the surface without
+/// disturbing it — a blast on a wall, a bullet in the ground.
+#[test]
+fn an_impacts_weapon_crosses_whole() {
+    let mut c = core();
+    let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+    for (surf, kind) in [(SURF_BUILT, IMPACT_BLAST), (SURF_GROUND, IMPACT_BULLET)] {
+        let len = encode_event_impact(1000, 250, 2000, surf, kind, &mut buf).unwrap();
+        feed(&mut c, &buf[..len]);
+        let got = c.pop_impact().expect("the impact reaches the ring");
+        assert_eq!((got.surf, got.kind), (surf, kind));
+    }
 }
 
 /// A surface kind this build does not know is refused, not guessed at.
@@ -402,34 +432,30 @@ fn an_impact_crosses_whole_and_drains_once() {
 /// `encode_event_impact` returns `Range`, and this is the decoder's half.
 ///
 /// **The forge is bit-exact and paired with a control**, `a_shot_with_no_
-/// speed_is_malformed`'s discipline: the header is 10 bits and the writer
-/// packs LSB-first, so the fields land at bit 10 (qx, 17), 27 (qy, 14), 41
-/// (qz, 17) and **58 (surf, 2)**. Setting both surf bits makes 3; the
-/// control sets only the low one, which is `SURF_WORLD` and must still
-/// decode.
+/// speed_is_malformed`'s discipline: the header is 11 bits and the writer
+/// packs LSB-first, so the fields land at bit 11 (qx, 17), 28 (qy, 14), 42
+/// (qz, 17), **59 (surf, 2)** and 61 (kind, 2). Setting both surf bits
+/// makes 3; the control sets only the low one, which is `SURF_WORLD` and
+/// must still decode.
 #[test]
 fn an_unknown_impact_surface_is_malformed() {
     let mut c = core();
     let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
-    let len = encode_event_impact(0xA179, -312, 0x58A3, SURF_GROUND, &mut buf).unwrap();
+    let len =
+        encode_event_impact(0xA179, -312, 0x58A3, SURF_GROUND, IMPACT_ARROW, &mut buf).unwrap();
 
-    // Control: bit 58 is byte 7, offset 2 — set it alone and the surface
+    // Control: bit 59 is byte 7, offset 3 — set it alone and the surface
     // reads as `SURF_WORLD`, a kind this build knows.
     let mut control = buf[..len].to_vec();
-    control[7] |= 0b0000_0100;
+    control[7] |= 0b0000_1000;
     assert!(
         c.on_stream(&control).is_ok(),
         "the control must decode, or the forge below proves nothing"
     );
-    assert_eq!(
-        c.pop_impact().map(|i| i.3),
-        Some(SURF_WORLD),
-        "and it must reach the ring as the kind the control set"
-    );
+    assert_eq!(c.pop_impact().map(|i| i.surf), Some(SURF_WORLD));
 
-    // Forge: set both bits, which is the fourth value nothing emits.
     let mut forged = buf[..len].to_vec();
-    forged[7] |= 0b0000_1100;
+    forged[7] |= 0b0001_1000;
     assert!(
         c.on_stream(&forged).is_err(),
         "a surface kind past SURF_BUILT must be refused, not drawn"
@@ -453,10 +479,10 @@ fn an_unknown_impact_surface_is_malformed() {
 ///
 /// **The forge is bit-exact and paired with a control**, because a test that
 /// corrupted the frame at large would be refused for any number of reasons
-/// and prove nothing about this one. The event header is 10 bits
-/// (`KIND_BITS` 4 + `SUB_BITS` 6) and the writer packs LSB-first, so the
-/// fields land at bit 10 (shooter, 32), 42 (yaw, 16), 58 (pitch, 8), 66
-/// (speed, 16), 82 (drop, 16). Three frames come out of one encode: a
+/// and prove nothing about this one. The event header is 11 bits
+/// (`KIND_BITS` 4 + `SUB_BITS` 7) and the writer packs LSB-first, so the
+/// fields land at bit 11 (shooter, 32), 43 (yaw, 16), 59 (pitch, 8), 67
+/// (speed, 16), 83 (drop, 16). Three frames come out of one encode: a
 /// control that leaves the speed nonzero, an *instant* forge that clears
 /// only the speed, and a malformed forge that clears the speed and the
 /// reach together. If the control ever starts failing, this test has
@@ -466,7 +492,7 @@ fn a_shot_with_no_speed_is_instant_and_one_with_no_reach_either_is_malformed() {
     let mut c = core();
     let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
     // speed = 1, so the field's only set bit is its bit 0, at wire
-    // position 66 — byte 8, offset 2.
+    // position 67 — byte 8, offset 3.
     let len = encode_event_shot(0x2B17, 41_234, 203, 1, 22, &mut buf).unwrap();
 
     // Control: clear the speed's middle byte only. Speed stays 1, and the
@@ -480,14 +506,14 @@ fn a_shot_with_no_speed_is_instant_and_one_with_no_reach_either_is_malformed() {
     );
     assert!(c.pop_shot().is_some(), "and it must reach the ring");
 
-    // Instant: clear exactly bits 66..=81, leaving `drop` (the reach) at
-    // 22. Byte 8 keeps its low two bits (the top of `pitch`), byte 10 keeps
-    // everything above its low two (the bottom of `drop`). This is what a
-    // firearm actually sends, and it must arrive.
+    // Instant: clear exactly bits 67..=82, leaving `drop` (the reach) at
+    // 22. Byte 8 keeps its low three bits (the top of `pitch`), byte 10
+    // keeps everything above its low three (the bottom of `drop`). This is
+    // what a firearm actually sends, and it must arrive.
     let mut instant = buf[..len].to_vec();
-    instant[8] &= 0b0000_0011;
+    instant[8] &= 0b0000_0111;
     instant[9] = 0;
-    instant[10] &= 0b1111_1100;
+    instant[10] &= 0b1111_1000;
     assert!(
         c.on_stream(&instant).is_ok(),
         "a zero-speed shot is the instant reading now, not a malformed frame"
@@ -498,16 +524,19 @@ fn a_shot_with_no_speed_is_instant_and_one_with_no_reach_either_is_malformed() {
         "the speed the client sees is the zero that was sent"
     );
     assert_eq!(shot.4, 22, "and the low field is the reach, untouched");
+    // And the pitch beside it: a mask one bit off (a header widened under
+    // it) clips pitch's top bit and still passes every line above.
+    assert_eq!(shot.2, 203, "the forge must not reach into the pitch");
 
-    // Malformed: clear the speed AND the reach — bits 66..=97, which is
-    // byte 8's top six, bytes 9 through 11, and byte 10's low two carried
-    // above. A beam of no length is the one pattern left with no meaning.
+    // Malformed: clear the speed AND the reach — bits 67..=98, which is
+    // byte 8's top five, bytes 9 through 11, and byte 12's low three. A
+    // beam of no length is the one pattern left with no meaning.
     let mut forged = buf[..len].to_vec();
-    forged[8] &= 0b0000_0011;
+    forged[8] &= 0b0000_0111;
     forged[9] = 0;
     forged[10] = 0;
     forged[11] = 0;
-    forged[12] &= 0b1111_1100;
+    forged[12] &= 0b1111_1000;
     assert!(
         c.on_stream(&forged).is_err(),
         "an instant shot with no reach must be refused, not drawn"
@@ -633,10 +662,10 @@ fn the_bag_set_adds_syncs_and_removes() {
 ///
 /// **The forge is bit-exact and paired with a control**, because a frame
 /// corrupted at large would be refused for any number of reasons and
-/// prove nothing about this one. The event header is 10 bits (`KIND_BITS`
-/// 4 + `SUB_BITS` 6, LSB-first). Bag removal: `id` at bits 10..41, `why`
-/// at 42..43 — byte 5, offsets 2–3. Consume refusal: `reason` at bits
-/// 10..13 — byte 1, offsets 2–5.
+/// prove nothing about this one. The event header is 11 bits (`KIND_BITS`
+/// 4 + `SUB_BITS` 7, LSB-first). Bag removal: `id` at bits 11..42, `why`
+/// at 43..44 — byte 5, offsets 3–4. Consume refusal: `reason` at bits
+/// 11..14 — byte 1, offsets 3–6.
 #[test]
 fn a_forged_refusal_reason_is_counted_and_dropped_at_the_pump() {
     let mut c = core();
@@ -658,7 +687,7 @@ fn a_forged_refusal_reason_is_counted_and_dropped_at_the_pump() {
     // knows. It must decode and remove the bag, which is what proves the
     // forge below is refused for its value and not for the tampering.
     let mut control = buf[..len].to_vec();
-    control[5] = (control[5] & !0b0000_0100) | 0b0000_1000;
+    control[5] = (control[5] & !0b0000_1000) | 0b0001_0000;
     assert!(
         c.on_stream(&control).is_ok(),
         "the control must decode, or the forge below proves nothing"
@@ -672,7 +701,7 @@ fn a_forged_refusal_reason_is_counted_and_dropped_at_the_pump() {
     let errors_before = c.event_errors;
     let len = encode_event_bag_removed(11, BAG_GONE_EMPTIED as u8, &mut buf).unwrap();
     let mut forged = buf[..len].to_vec();
-    forged[5] |= 0b0000_1100;
+    forged[5] |= 0b0001_1000;
     assert!(
         c.on_stream(&forged).is_err(),
         "why == 3 names no BAG_GONE_* and must be refused, not applied"
@@ -689,7 +718,7 @@ fn a_forged_refusal_reason_is_counted_and_dropped_at_the_pump() {
     // live code.
     let len = protocol::encode_event_consume_refused(2, &mut buf).unwrap();
     let mut control = buf[..len].to_vec();
-    control[1] = (control[1] & !0b0011_1100) | (3 << 2);
+    control[1] = (control[1] & !0b0111_1000) | (3 << 3);
     assert!(
         c.on_stream(&control).is_ok(),
         "the control must decode, or the forge below proves nothing"
@@ -698,7 +727,7 @@ fn a_forged_refusal_reason_is_counted_and_dropped_at_the_pump() {
 
     let errors_before = c.event_errors;
     let mut forged = buf[..len].to_vec();
-    forged[1] = (forged[1] & !0b0011_1100) | (9 << 2);
+    forged[1] = (forged[1] & !0b0111_1000) | (9 << 3);
     assert!(
         c.on_stream(&forged).is_err(),
         "reason 9 names no REFUSE_C_* and must be refused, not toasted"
@@ -738,17 +767,41 @@ fn a_struct_hit_carries_its_address_and_never_guesses_a_maximum() {
         max, 0,
         "a row whose defs have not arrived must report max 0, never a guess"
     );
+    // Broadcast to the island (wire v77), so it is nobody's hitmarker.
+    assert_eq!(
+        c.pop_hit(),
+        None,
+        "anyone's raid must not light this crosshair"
+    );
+}
+
+/// The raider's own hitmarker is the `EV_HIT` with no victim sent to them
+/// alone — no rung, because a wall is not a body — and the island's
+/// `StructHit` behind it is then latched as their own wall for the HUD.
+#[test]
+fn an_own_raid_hit_marks_and_latches_the_wall() {
+    let mut c = core();
+    let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+    let len = encode_event_hit(NO_VICTIM, Part::Chest, 40, &mut buf).unwrap();
+    feed(&mut c, &buf[..len]);
+    let len = encode_event_struct_hit(false, 12, 34, 5, 1, 9, 40, 60, &mut buf).unwrap();
+    feed(&mut c, &buf[..len]);
+    assert_ne!(
+        c.applied2() & APPLIED2_OWN_STRUCT_HIT,
+        0,
+        "the wall is this player's"
+    );
     assert_eq!(
         c.pop_hit(),
         Some(HitFact {
             victim: NO_VICTIM,
-            // No rung: a wall has no head and no legs. `None` and not
-            // `Some(Chest)`, so merging a frame cannot promote a leg hit.
             part: None,
             damage: 40
         }),
-        "a raid swing must still feed the hitmarker ring, and a wall is not a body"
+        "the raider's hitmarker has no rung"
     );
+    assert_eq!(c.own_struct_hit.0, 12);
+    assert_eq!(c.own_struct_hit.4, 60);
 }
 
 /// Vitals, and the reading that must be refused rather than clamped: the

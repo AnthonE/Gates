@@ -979,7 +979,7 @@ impl Survivor {
                     self.end_goal(tick, Outcome::Failed(Why::MissingInputs));
                     return frame;
                 }
-                if self.queue(|buf| protocol::encode_action_craft(recipe, 1, buf)) {
+                if self.queue(|buf| protocol::encode_action_craft(recipe, 1, 0, buf)) {
                     self.awaiting = Some((Pending::Craft { item }, tick));
                     self.verdict = None;
                     self.set_craft(CraftStep::Sent { ticks });
@@ -2052,6 +2052,7 @@ mod tests {
             item: 3,
             count: 1,
             cond: 100,
+            skin: 0,
         };
         for cz in 40..216 {
             for cx in 40..216 {
@@ -2342,12 +2343,14 @@ mod tests {
                 item: 5,
                 count: 1,
                 cond: 0,
+                skin: 0,
             };
         }
         core.inv[7] = ItemStack {
             item: 5,
             count: 30,
             cond: 0,
+            skin: 0,
         };
         let hatchet = Name::new(b"Stone Hatchet").unwrap();
         let summary = bot.summary(&view, 1).unwrap();
@@ -2361,7 +2364,8 @@ mod tests {
             protocol::decode_action(&out[..len]),
             Ok(protocol::ActionMsg::Craft {
                 recipe: 2,
-                count: 1
+                count: 1,
+                ..
             })
         ));
         let mut buf = [0u8; protocol::event::MAX_EVENT_MSG_BYTES];
@@ -2374,6 +2378,7 @@ mod tests {
                     item: 9,
                     count: 1,
                     cond: 100,
+                    skin: 0,
                 },
             }],
             &mut buf,
@@ -2457,6 +2462,7 @@ mod tests {
             item: 5,
             count: 10,
             cond: 0,
+            skin: 0,
         };
         let summary = bot.summary(&view, 1).unwrap();
         assert_eq!(summary.craftable()[0].as_str(), "Stone Hatchet");
@@ -2473,11 +2479,13 @@ mod tests {
             item: 6,
             count: 1,
             cond: 0,
+            skin: 0,
         };
         core.inv[1] = ItemStack {
             item: 7,
             count: 3,
             cond: 0,
+            skin: 0,
         };
         let summary = bot.summary(&view, 1).unwrap();
         assert!(summary.offers(Goal::Eat), "untried items may be food");
@@ -2624,11 +2632,13 @@ mod tests {
             item: 6,
             count: 100,
             cond: 0,
+            skin: 0,
         });
         core.inv[4] = ItemStack {
             item: 3,
             count: 1,
             cond: 100,
+            skin: 0,
         };
         let summary = bot.summary(&view, 1).unwrap();
         assert!(
@@ -2646,6 +2656,7 @@ mod tests {
             item: 5,
             count: 10,
             cond: 0,
+            skin: 0,
         };
         assert!(room_for(core, bot.memory.yields[Kind::Wood as usize]));
         assert!(bot.summary(&view, 1).unwrap().offers(Goal::GatherWood));

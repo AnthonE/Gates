@@ -103,9 +103,27 @@ pub fn pcm_bank() -> [Box<[i16]>; CUE_COUNT] {
 /// faded to zero by `edges`. The clamp is the one `to_wav16` always applied,
 /// moved to the one place a sample becomes an integer.
 pub fn pcm(cue: Cue) -> Box<[i16]> {
-    let mut s = render(cue);
+    pcm_take(cue, 0)
+}
+
+/// Take `take` of a cue: the same recipe on its own noise, so two takes of
+/// a crack are two cracks rather than one played twice. Take 0 is [`pcm`].
+pub fn pcm_take(cue: Cue, take: u8) -> Box<[i16]> {
+    let mut s = render_take(cue, take);
     normalize(&mut s, PEAK);
     to_i16(&s)
+}
+
+/// Several takes as one bank entry: each padded with silence to the longest
+/// and laid end to end, so take `t` of `n` is the `t`-th of `n` equal slices
+/// — the cut the renderer makes (`engine::Cmd::Start`'s `take`).
+pub fn join_takes(takes: &[Box<[i16]>]) -> Box<[i16]> {
+    let span = takes.iter().map(|t| t.len()).max().unwrap_or(0);
+    let mut out = vec![0i16; span * takes.len()];
+    for (i, t) in takes.iter().enumerate() {
+        out[i * span..i * span + t.len()].copy_from_slice(t);
+    }
+    out.into_boxed_slice()
 }
 
 /// One cue, as 16-bit mono PCM in a WAV container: the 44-byte header over
@@ -118,11 +136,21 @@ pub fn wav(cue: Cue) -> Vec<u8> {
     to_wav16(&pcm(cue))
 }
 
-/// The sample buffer for a cue, before normalization.
-fn render(cue: Cue) -> Vec<f32> {
+/// Any bank samples as a WAV — a recorded take, for the listening dump.
+pub fn wav_of(samples: &[i16]) -> Vec<u8> {
+    to_wav16(samples)
+}
+
+/// One take of a cue's sample buffer, before normalization.
+fn render_take(cue: Cue, take: u8) -> Vec<f32> {
     // Seeded off the discriminant, so a cue's noise is its own and adding a
-    // cue does not reshuffle every other cue's samples.
-    let mut r = Rng::new(0x9E37_79B9 ^ (cue as u32).wrapping_mul(0x85EB_CA6B));
+    // cue does not reshuffle every other cue's samples; a take moves the
+    // seed, and take 0 is the seed every cue always had.
+    let mut r = Rng::new(
+        0x9E37_79B9
+            ^ (cue as u32).wrapping_mul(0x85EB_CA6B)
+            ^ (take as u32).wrapping_mul(0x27D4_EB2D),
+    );
     match cue {
         // ---- footsteps -------------------------------------------------
         // Five surfaces, one gesture: a transient with a body under it. What
@@ -332,6 +360,8 @@ fn render(cue: Cue) -> Vec<f32> {
         Cue::BedWind => bed(&mut r),
         Cue::BedSurf => surf(&mut r),
         Cue::BedUnder => under(&mut r),
+        Cue::BedRain => rain(&mut r),
+        Cue::Thunder => thunder(&mut r),
 
         // ---- the animals ------------------------------------------------
         Cue::Snort => snort(&mut r),
@@ -345,18 +375,18 @@ fn render(cue: Cue) -> Vec<f32> {
         // remote step remote is its def — positional, at the body, culled by
         // the falloff law — never its waveform. `tests/sound.rs` pins the
         // equality.
-        Cue::RemoteStepSand => render(Cue::StepSand),
-        Cue::RemoteStepGrass => render(Cue::StepGrass),
-        Cue::RemoteStepLitter => render(Cue::StepLitter),
-        Cue::RemoteStepRock => render(Cue::StepRock),
-        Cue::RemoteStepWater => render(Cue::StepWater),
+        Cue::RemoteStepSand => render_take(Cue::StepSand, take),
+        Cue::RemoteStepGrass => render_take(Cue::StepGrass, take),
+        Cue::RemoteStepLitter => render_take(Cue::StepLitter, take),
+        Cue::RemoteStepRock => render_take(Cue::StepRock, take),
+        Cue::RemoteStepWater => render_take(Cue::StepWater, take),
 
         // ---- a remote swing ---------------------------------------------
         // The same arm through the same air, by delegation for the remote
         // steps' reason: what makes a swing remote is its def — positional,
         // at the body, culled by the falloff law — never its waveform, and
         // a copied parameter set is a fork waiting to happen.
-        Cue::RemoteSwing => render(Cue::Swing),
+        Cue::RemoteSwing => render_take(Cue::Swing, take),
 
         // ---- the two shots ------------------------------------------------
         // Both are `impact`, which is the bank's transient-plus-body
@@ -417,6 +447,82 @@ fn render(cue: Cue) -> Vec<f32> {
 
         // ---- the forest layer -------------------------------------------
         Cue::Bird => bird(&mut r),
+
+        // ---- effects v2: what a round, a charge and a door sound like ----
+        // The fallbacks under the recorded bank (`client/src/sound_bank.rs`),
+        // and the whole of it for the cues nothing was recorded for.
+        //
+        // Soil: a dull slap with the spray in it — low, soft, crackled.
+        Cue::BulletSoil => impact(
+            &mut r,
+            0.30,
+            Tone {
+                lo_hz: 70.0,
+                lo_amp: 0.55,
+                lo_tau: 0.040,
+                noise_amp: 0.90,
+                noise_tau: 0.060,
+                lp_hz: 2_600.0,
+                hp_hz: 150.0,
+                attack_s: 0.0005,
+                crackle: 0.45,
+            },
+        ),
+        // Stone: a hard crack, bright and short, with grit.
+        Cue::BulletStone => impact(
+            &mut r,
+            0.25,
+            Tone {
+                lo_hz: 150.0,
+                lo_amp: 0.30,
+                lo_tau: 0.020,
+                noise_amp: 1.00,
+                noise_tau: 0.032,
+                lp_hz: 8_500.0,
+                hp_hz: 900.0,
+                attack_s: 0.0002,
+                crackle: 0.30,
+            },
+        ),
+        // Wood: a thock — one mode, dry, a splintered edge on it.
+        Cue::BulletWood => impact(
+            &mut r,
+            0.25,
+            Tone {
+                lo_hz: 230.0,
+                lo_amp: 0.80,
+                lo_tau: 0.050,
+                noise_amp: 0.60,
+                noise_tau: 0.030,
+                lp_hz: 4_200.0,
+                hp_hz: 250.0,
+                attack_s: 0.0003,
+                crackle: 0.25,
+            },
+        ),
+        Cue::BulletMetal => ping(&mut r),
+        Cue::Ricochet => ricochet(&mut r),
+        // A body: low, wet, no ring — nothing in it is hard.
+        Cue::FleshHit => impact(
+            &mut r,
+            0.22,
+            Tone {
+                lo_hz: 105.0,
+                lo_amp: 0.90,
+                lo_tau: 0.045,
+                noise_amp: 0.50,
+                noise_tau: 0.025,
+                lp_hz: 1_800.0,
+                hp_hz: 120.0,
+                attack_s: 0.0008,
+                crackle: 0.0,
+            },
+        ),
+        Cue::ShotGunFar => far_report(&mut r),
+        Cue::Blast => blast(&mut r),
+        Cue::Collapse => collapse(&mut r),
+        Cue::Knock => knock(&mut r),
+        Cue::Reload => reload(&mut r),
 
         // ---- the score ---------------------------------------------------
         // Nine pieces, one generator, and the table decides which: the arm
@@ -769,6 +875,211 @@ fn tree_fall(r: &mut Rng) -> Vec<f32> {
     out
 }
 
+/// A round on metal: a bright transient and two high inharmonic partials,
+/// pitched per take so a burst on a door is not one note.
+fn ping(r: &mut Rng) -> Vec<f32> {
+    let dur = 0.45f32;
+    let n = samples(dur);
+    let sr = SAMPLE_RATE as f32;
+    let f1 = 1_650.0 + 700.0 * r.unit();
+    let f2 = f1 * (2.63 + 0.2 * r.unit());
+    let mut hp = Lp::new(3_000.0);
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let time = i as f32 / sr;
+        let p1 = (TAU * f1 * time).sin() * (-time / 0.14).exp();
+        let p2 = (TAU * f2 * time).sin() * (-time / 0.07).exp() * 0.5;
+        let x = r.noise();
+        let tick = (x - hp.run(x)) * (-time / 0.006).exp() * 0.9;
+        out.push(((p1 + p2) * 0.6 + tick) * edges(i, n));
+    }
+    out
+}
+
+/// A glance and the whine of the round leaving: a tick, then a thin tone
+/// falling as it goes, with a little flutter from the tumble.
+fn ricochet(r: &mut Rng) -> Vec<f32> {
+    let dur = 0.42 + 0.2 * r.unit();
+    let n = samples(dur);
+    let sr = SAMPLE_RATE as f32;
+    let from = 2_600.0 + 2_200.0 * r.unit();
+    let to = from * (0.45 + 0.15 * r.unit());
+    let flutter = 22.0 + 18.0 * r.unit();
+    let mut hp = Lp::new(2_500.0);
+    let mut phase = 0.0f32;
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let t = i as f32 / n as f32;
+        let time = i as f32 / sr;
+        let hz = from + (to - from) * t;
+        phase += TAU * hz / sr;
+        let wob = 1.0 + 0.25 * (TAU * flutter * time).sin();
+        let whine = phase.sin() * attack(time, 0.012) * (-time / (dur * 0.45)).exp() * wob;
+        let x = r.noise();
+        let tick = (x - hp.run(x)) * (-time / 0.005).exp();
+        out.push((whine * 0.7 + tick * 0.8) * edges(i, n));
+    }
+    out
+}
+
+/// A gun heard from far off: the crack is gone to the air and the ground,
+/// and what is left is a low thump, a long dark roll and its echo off the
+/// hills a quarter-second later.
+fn far_report(r: &mut Rng) -> Vec<f32> {
+    let dur = 1.5f32;
+    let n = samples(dur);
+    let sr = SAMPLE_RATE as f32;
+    let mut lp = Lp::new(900.0);
+    let mut lp2 = Lp::new(500.0);
+    let mut dry = Vec::with_capacity(n);
+    for i in 0..n {
+        let time = i as f32 / sr;
+        let body = (TAU * 62.0 * time).sin() * (-time / 0.16).exp();
+        let roll = lp2.run(lp.run(r.noise())) * 3.0 * (-time / 0.35).exp();
+        dry.push((body * 0.8 + roll) * attack(time, 0.006));
+    }
+    let echo = samples(0.22 + 0.12 * r.unit());
+    let mut out = dry.clone();
+    for i in echo..n {
+        out[i] += dry[i - echo] * 0.45;
+    }
+    for (i, v) in out.iter_mut().enumerate() {
+        *v *= edges(i, n);
+    }
+    out
+}
+
+/// A charge: a hard crack, a boom under it that shakes, a roll that takes
+/// seconds to leave, and the debris coming back down through it.
+fn blast(r: &mut Rng) -> Vec<f32> {
+    let dur = 3.0f32;
+    let n = samples(dur);
+    let sr = SAMPLE_RATE as f32;
+    let mut crack_lp = Lp::new(6_000.0);
+    let mut roll_lp = Lp::new(180.0);
+    let mut roll_lp2 = Lp::new(90.0);
+    let mut grit_hp = Lp::new(1_500.0);
+    let boom_hz = 38.0 + 10.0 * r.unit();
+    let mut gate = 0.0f32;
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let time = i as f32 / sr;
+        let x = r.noise();
+        let crack = crack_lp.run(x) * (-time / 0.045).exp() * 1.3;
+        let boom = (TAU * boom_hz * time).sin() * (-time / 0.45).exp() * 1.1;
+        let roll = roll_lp2.run(roll_lp.run(x) * 3.0) * 5.0 * (-time / 0.9).exp();
+        // Debris: sparse snaps from 0.3 s on, thinning out.
+        if r.unit() < 0.004 {
+            gate = 1.0;
+        }
+        gate *= 0.998;
+        let fall = if time > 0.3 {
+            (x - grit_hp.run(x)) * gate * 0.35 * (-(time - 0.3) / 1.0).exp()
+        } else {
+            0.0
+        };
+        out.push((crack + boom + roll + fall) * attack(time, 0.001) * edges(i, n));
+    }
+    out
+}
+
+/// A built piece coming down: a crash of noise, then two heavy thumps as
+/// it lands, then the settling.
+fn collapse(r: &mut Rng) -> Vec<f32> {
+    let dur = 1.3f32;
+    let n = samples(dur);
+    let sr = SAMPLE_RATE as f32;
+    let mut lp = Lp::new(3_000.0);
+    let mut hp = Lp::new(200.0);
+    let mut out = vec![0.0f32; n];
+    for (i, v) in out.iter_mut().enumerate() {
+        let time = i as f32 / sr;
+        let x = r.noise();
+        let low = lp.run(x);
+        *v += (low - hp.run(low)) * (-time / 0.35).exp() * attack(time, 0.004);
+    }
+    for (at, hz, amp) in [
+        (0.05f32, 70.0f32, 1.0f32),
+        (0.34 + 0.1 * r.unit(), 55.0, 0.8),
+    ] {
+        let from = samples(at);
+        for k in 0..(n - from.min(n)) {
+            let time = k as f32 / sr;
+            out[from + k] += (TAU * hz * time).sin() * (-time / 0.12).exp() * amp;
+        }
+    }
+    for (i, v) in out.iter_mut().enumerate() {
+        *v *= edges(i, n);
+    }
+    out
+}
+
+/// Two raps of a knuckle on a door.
+fn knock(r: &mut Rng) -> Vec<f32> {
+    let dur = 0.42f32;
+    let n = samples(dur);
+    let sr = SAMPLE_RATE as f32;
+    let mut out = vec![0.0f32; n];
+    let gap = 0.17 + 0.04 * r.unit();
+    for (k, at) in [0.0f32, gap].into_iter().enumerate() {
+        let mut lp = Lp::new(2_400.0);
+        let from = samples(at);
+        let amp = if k == 0 { 1.0 } else { 0.85 };
+        for j in 0..samples(0.12) {
+            let i = from + j;
+            if i >= n {
+                break;
+            }
+            let time = j as f32 / sr;
+            let body = (TAU * 190.0 * time).sin() * (-time / 0.035).exp();
+            let tap = lp.run(r.noise()) * (-time / 0.010).exp();
+            out[i] += (body * 0.8 + tap) * amp;
+        }
+    }
+    for (i, v) in out.iter_mut().enumerate() {
+        *v *= edges(i, n);
+    }
+    out
+}
+
+/// A magazine out, a magazine in, the action closing: three metallic ticks
+/// with a short slide between the last two.
+fn reload(r: &mut Rng) -> Vec<f32> {
+    let dur = 0.75f32;
+    let n = samples(dur);
+    let sr = SAMPLE_RATE as f32;
+    let mut out = vec![0.0f32; n];
+    for (at, hz, amp) in [
+        (0.02f32, 2_300.0f32, 0.7f32),
+        (0.30, 1_800.0, 0.9),
+        (0.62, 2_900.0, 1.0),
+    ] {
+        let mut hp = Lp::new(1_800.0);
+        let from = samples(at);
+        for j in 0..samples(0.07) {
+            let i = from + j;
+            if i >= n {
+                break;
+            }
+            let time = j as f32 / sr;
+            let x = r.noise();
+            let tick = (x - hp.run(x)) * (-time / 0.006).exp();
+            let ring = (TAU * hz * time).sin() * (-time / 0.025).exp() * 0.4;
+            out[i] += (tick + ring) * amp;
+        }
+    }
+    let mut lp = Lp::new(3_500.0);
+    let (a, b) = (samples(0.40), samples(0.58));
+    for (k, v) in out[a..b].iter_mut().enumerate() {
+        let t = k as f32 / (b - a) as f32;
+        *v += lp.run(r.noise()) * 0.25 * (PI * t).sin();
+    }
+    for (i, v) in out.iter_mut().enumerate() {
+        *v *= edges(i, n);
+    }
+    out
+}
+
 /// The wind bed: two layers of heavily low-passed noise under slow gust LFOs,
 /// crossfaded into a seamless loop.
 ///
@@ -916,6 +1227,88 @@ fn under(r: &mut Rng) -> Vec<f32> {
         }
     }
     loop_seam(out, samples(BED_FADE_SECS))
+}
+
+/// The rain bed (weather v0): a broad hiss with drops ticking through it.
+///
+/// Two layers, the wind bed's shape: a band-passed wash (the sheet of rain
+/// on everything at once) and sparse short clicks (the drops you pick out
+/// near you). The wash's swell is locked to the loop like [`bed`]'s gusts,
+/// so the join is two noise realizations at one level.
+fn rain(r: &mut Rng) -> Vec<f32> {
+    let n = samples(BED_SECS);
+    let sr = SAMPLE_RATE as f32;
+    let mut lp = Lp::new(7_500.0);
+    let mut hp = Lp::new(900.0);
+    let mut low = Lp::new(260.0);
+    let mut out = Vec::with_capacity(n);
+    let f0 = 1.0 / BED_LOOP_SECS;
+    for i in 0..n {
+        let time = i as f32 / sr;
+        let swell = 0.82 + 0.18 * (std::f32::consts::TAU * 2.0 * f0 * time + 0.6).sin();
+        let x = r.noise();
+        let wash = {
+            let l = lp.run(x);
+            l - hp.run(l)
+        };
+        out.push(wash * swell + low.run(x) * 0.5);
+    }
+    // The drops: ~200 a second, a few milliseconds of bright noise each at a
+    // random level, so the texture is patter rather than static.
+    let count = (BED_SECS * 200.0) as usize;
+    for _ in 0..count {
+        let at = (r.unit() * n as f32) as usize;
+        let len = samples(0.002 + 0.004 * r.unit());
+        let amp = 0.15 + 0.5 * r.unit() * r.unit();
+        let mut click = Lp::new(2_000.0 + 4_000.0 * r.unit());
+        for k in 0..len {
+            let i = at + k;
+            if i >= n {
+                break;
+            }
+            let env = 1.0 - k as f32 / len as f32;
+            out[i] += click.run(r.noise()) * amp * env;
+        }
+    }
+    loop_seam(out, samples(BED_FADE_SECS))
+}
+
+/// Thunder: a crack, then a roll that rumbles on for seconds.
+///
+/// The crack is broadband and short; the roll is brown-ish noise (a low
+/// one-pole on white) under a slow, uneven envelope — thunder arrives from
+/// every point along a kilometre of bolt at once, so it swells and ebbs
+/// rather than simply decaying.
+fn thunder(r: &mut Rng) -> Vec<f32> {
+    let dur = 5.0f32;
+    let n = samples(dur);
+    let sr = SAMPLE_RATE as f32;
+    let mut crack_lp = Lp::new(3_500.0);
+    let mut roll_lp = Lp::new(140.0);
+    let mut roll_lp2 = Lp::new(60.0);
+    let mut out = Vec::with_capacity(n);
+    // Three swells in the roll, at random times, so no two claps match.
+    let swells = [
+        0.3 + 0.6 * r.unit(),
+        1.2 + 1.2 * r.unit(),
+        2.4 + 1.5 * r.unit(),
+    ];
+    for i in 0..n {
+        let time = i as f32 / sr;
+        let x = r.noise();
+        let crack = crack_lp.run(x) * (-time / 0.09).exp() * 1.2;
+        let mut env = (-time / 2.2).exp() * (1.0 - (-time / 0.15).exp());
+        for (k, at) in swells.iter().enumerate() {
+            let d = (time - at) / (0.35 + 0.2 * k as f32);
+            env += 0.5 * (-d * d).exp() * (-time / 3.0).exp();
+        }
+        let roll = roll_lp2.run(roll_lp.run(x) * 3.0) * 4.0;
+        out.push(crack + roll * env);
+    }
+    for (i, v) in out.iter_mut().enumerate() {
+        *v *= edges(i, n);
+    }
+    out
 }
 
 /// Breaking the surface.

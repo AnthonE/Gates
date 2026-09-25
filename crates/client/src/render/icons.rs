@@ -13,10 +13,14 @@
 //! `assets/icons/CREDITS.md` carries the attribution the licence requires and
 //! `crates/client/tests/ui.rs` §G fails if it stops shipping.
 //!
-//! **White on transparent, tinted at the draw.** Every PNG is a white
-//! silhouette, so one file serves every state: `ImageNode::color` multiplies
-//! it, and a chosen wedge, a dimmed unaffordable recipe and an ordinary cell
-//! are three tints of one texture rather than three files.
+//! **Items are colour pictures; everything else is a white glyph.** An item's
+//! PNG is a finished picture (`ci/finish_icons.py`: a render of its model,
+//! or its silhouette painted) and draws as it is — [`PICTURE`], or
+//! [`PICTURE_DIM`] for one the player cannot use right now. They were white
+//! silhouettes tinted off-white until 2026-09-24, which made every cell in
+//! the inventory the same colour. The shape wheel, the hammer's verbs, the
+//! vitals, the map markers and the padlock are still white glyphs, tinted at
+//! the draw, because there the tint IS the state (`ui::icons::is_glyph`).
 //!
 //! ## The key is the item's NAME, and that is forced
 //!
@@ -36,6 +40,15 @@ use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 
 pub use crate::ui::icons::{stem, STEMS};
+
+/// An item picture, drawn as it is.
+pub const PICTURE: Color = Color::WHITE;
+/// An item picture the player cannot use right now — a recipe they cannot
+/// pay for or have not learned. Greyed, not hidden: Rust's own treatment,
+/// so the player still sees what to go and get.
+pub const PICTURE_DIM: Color = Color::srgba(0.46, 0.46, 0.46, 0.80);
+/// The padlock over a picture not yet learned — Rust's light grey.
+pub const LOCK_TINT: Color = Color::srgba(0.86, 0.85, 0.82, 0.95);
 
 /// Every icon, by file stem, loaded once.
 ///
@@ -83,8 +96,8 @@ impl Icons {
         self.by_name.get(key).cloned()
     }
 
-    /// A UI glyph borrowed from the item set by literal stem — the tech
-    /// tree's padlock is `code_lock` worn as an overlay (tech tree v0).
+    /// A UI glyph by literal stem — the padlock (`ui_lock`), a map marker —
+    /// or an item picture drawn in a UI role (a bench on the tree's tabs).
     /// [`Self::shape`]'s lookup, its own name for its own grep.
     pub fn glyph(&self, key: &str) -> Option<Handle<Image>> {
         self.by_name.get(key).cloned()

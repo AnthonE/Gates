@@ -324,8 +324,9 @@ is a word, and what happens when the menu is closed.
    content (48 rows to write) plus wire (wall 6). Worth it, and not first.
 9. **No fast-track.** A verb on the queue (§1.4): sim + wire. Small, and
    it changes what a cancel index means — take §1.1's task id with it.
-10. **No time rebate at a bench** — `NOW.md` §0tt, unchanged by this file
-    except that the ladder's numbers are now fetched rather than summarised.
+10. ~~**No time rebate at a bench**~~ — built 2026-09-22 (craft rebate
+    v0, `craft::rebated_ticks`) on §6's fetched ladder: ½ one rung up, ¼ two,
+    read at each unit's start; the detail pane quotes the time here.
 11. **No quick-craft column** — `MENUS.md`'s PARTIAL on the inventory.
     Devblog 187 says: default icon only, or it freezes under a loot.
 12. **The `+1` badge.** We do not show `out_count`; one label.

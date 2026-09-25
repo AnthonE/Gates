@@ -67,6 +67,28 @@ use crate::terrain::{self, Haven, Occupant, ScatterTable, Slot, CELLS_PER_SIDE, 
 /// side and neither wants the other's layout.
 pub trait Harvested {
     fn is_harvested(&self, cx: u16, cz: u16) -> bool;
+
+    /// How much of the slot stands, per mille (tree growth v0): 0 when
+    /// harvested, a sapling's share while one regrows, 1000 otherwise. The
+    /// default knows no saplings, so every fixture store stays exactly
+    /// what it was.
+    fn standing_pm(&self, cx: u16, cz: u16) -> u16 {
+        if self.is_harvested(cx, cz) {
+            0
+        } else {
+            1000
+        }
+    }
+}
+
+/// A slot at `pm` per mille of its size — a regrowing sapling is the tree
+/// it will be, smaller, standing where it will stand.
+#[inline]
+pub fn grown(slot: &Slot, pm: u16) -> Slot {
+    Slot {
+        scale: slot.scale * (pm as f32 * 0.001),
+        ..*slot
+    }
 }
 
 /// Nothing has ever been harvested — the island as worldgen drew it. For
@@ -100,6 +122,10 @@ impl Harvested for Barren {
 impl Harvested for crate::gather::SlotLives {
     fn is_harvested(&self, cx: u16, cz: u16) -> bool {
         crate::gather::SlotLives::is_harvested(self, cx, cz)
+    }
+
+    fn standing_pm(&self, cx: u16, cz: u16) -> u16 {
+        crate::gather::SlotLives::standing_pm(self, cx, cz)
     }
 }
 
@@ -270,7 +296,15 @@ impl Occupants<'_> {
                 if g <= best {
                     continue;
                 }
-                if self.harvested.is_harvested(cx as u16, cz as u16) {
+                // A sapling stands at its own size (tree growth v0), which
+                // sits inside the full one — so re-asking only after the
+                // full-size answer keeps this as cheap as it was.
+                let g = match self.harvested.standing_pm(cx as u16, cz as u16) {
+                    0 => continue,
+                    1000 => g,
+                    pm => terrain::slot_ground(&grown(&slot, pm), x, z, feet_y),
+                };
+                if g <= best {
                     continue;
                 }
                 best = g;
@@ -326,8 +360,14 @@ impl Occupants<'_> {
                 // is a linear scan over the life store, and "nothing blocks"
                 // is the answer almost every tick. `cx`/`cz` are in range here
                 // because an out-of-island cell resolved to `None` above.
-                if self.harvested.is_harvested(cx as u16, cz as u16) {
-                    continue;
+                match self.harvested.standing_pm(cx as u16, cz as u16) {
+                    0 => continue,
+                    1000 => {}
+                    pm => {
+                        if !terrain::slot_blocks(&grown(&slot, pm), x, z, feet_y, r, h) {
+                            continue;
+                        }
+                    }
                 }
                 return true;
             }
@@ -372,6 +412,7 @@ impl Scratch<Barren> {
                 minor: terrain::empty_minor(),
                 // No side road either, for the same reason.
                 roads: [terrain::SideRoad::NONE; terrain::SIDE_ROADS],
+                ore_pm: terrain::ORE_PM_UNIT,
             },
             harvested: Barren,
             cache: SlotCache::new(),

@@ -49,6 +49,31 @@ repair_cost_pct = 100
 # a wooden one's rate and took twenty hours to do it. Proposed default,
 # DECISIONS.md §open ("upkeep/decay v1").
 decay_pct_per_period = { twig = 100, wood = 34, stone = 20, metal = 13 }
+# The rent's size ladder (upkeep v2), [after, permille per day]: past 15
+# graded pieces in one base each further piece's day costs 15 %, past 65
+# 20 %, past 190 33.3 %, with upkeep_pct_per_day above as the first rung.
+# Theirs, taken whole: the four `decay.bracket_*` convars, 15 / 50 / 125
+# blocks at 0.1 / 0.15 / 0.2 / 0.333 a day. Their counts are read as bracket
+# SIZES — 15, the next 50, the next 125 — because the 2026 convar text and
+# the only worked example say so; the 2018 text read them as thresholds
+# (15 / 50 / 125), and that reading is the loser BALANCE.md §6.3 keeps in
+# reference/BUILDING.md §4b. The blend is theirs too: a base pays the
+# average of its rungs on every piece, (15 × 10 % + 5 × 15 %) / 20 = 11.25 %
+# at twenty. Twig is not counted, for the reason it pays no rent.
+# Proposed default, DECISIONS.md §open ("upkeep v2").
+upkeep_steps = [[15, 150], [65, 200], [190, 333]]
+# An unpaid piece with anything of its base built over it rots at this % of
+# its ladder rate, so a lapsed base comes down from the roof inward. Theirs,
+# whole — "Building blocks that are inside now decay at 10% of their normal
+# decay rate" (`decay.upkeep_inside_decay_scale` 0.1, Facepunch commit
+# 212834). Proposed default, DECISIONS.md §open ("upkeep v2").
+inside_decay_pct = 10
+# Hours a destroyed hearth's stock still buys the building it stood in —
+# Devblog 198, "up to 24 hours of decay protection on all building blocks
+# that are currently connected to the building" (`decay.upkeep_grief_
+# protection`, 1440 minutes). Per material, since our upkeep is.
+# Proposed default, DECISIONS.md §open ("upkeep v2").
+grief_protection_h = 24
 # Chance an arrow is destroyed where it lands instead of becoming an item
 # on the ground again (arrow recovery v0). Theirs, taken whole under
 # BALANCE.md §6: reference/PROJECTILES.md §5 reads "~15 % chance to break
@@ -191,6 +216,37 @@ starve_hp_per_min = 3
 dehydrate_hp_per_min = 5
 drink_water = 25
 drink_hp_cost = 2
+
+# Wet and cold (weather v0, `sim_core::exposure`) — the reference's exposure:
+# rain soaks you unless something is overhead (their `weather.wetness_rain`),
+# the sea soaks you to the depth you stand in, and a fire dries you. The chill
+# a body heads for is the night, the rain, the wind and how wet it is, made
+# worse by a piece that draws cold in (armor.toml's negative `cold_pct`, as a
+# share of that cold), less what it wears (wet clothes keep half) and less a
+# fire or a torch. Per mille of a meter, per second; distances in cm.
+#
+# What these numbers do, measured against the formula rather than chosen:
+# naked and dry on a clear night heads for 380 (no damage; the clear sky's
+# wind adds 30); in the road sign jacket, 509 (cold, no damage); clothed,
+# soaked in daytime heavy rain, 575 (none); soaked at night in heavy rain,
+# ~925 — about 5 hp a minute, a slow death with time to find a roof and a
+# fire. A roof and a lit campfire take anyone back to zero.
+[exposure]
+wet_rain_per_s = 8
+dry_per_s = 2
+dry_fire_per_s = 12
+soak_depth_cm = 120
+night_cold = 350
+rain_cold = 250
+wind_cold = 150
+wet_cold = 450
+fire_warmth = 1000
+torch_warmth = 150
+heat_radius_cm = 450
+chill_rise_per_s = 8
+chill_fall_per_s = 20
+hurt_at = 600
+hurt_hp_per_min = 6
 
 # The starter base the raid ratio prices (CONTENT §3: "2×1 stone, door,
 # bag, hearth, box"): 2 foundations, 5 walls, 1 doorway, 2 roofs, plus

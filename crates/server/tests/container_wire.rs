@@ -283,17 +283,20 @@ fn bag_from_a_kill(
         item: SPEAR,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     core.world.players[w1].inv = [ItemStack::default(); INV_SLOTS];
     core.world.players[w1].inv[SLOT_A] = ItemStack {
         item: FILLER,
         count: COUNT_A,
         cond: 0,
+        skin: 0,
     };
     core.world.players[w1].inv[SLOT_B] = ItemStack {
         item: OTHER,
         count: COUNT_B,
         cond: 0,
+        skin: 0,
     };
     let deaths_before = core.world.players[w1].deaths;
     let mut burn = Vec::new();
@@ -352,6 +355,7 @@ fn only_the_opener_is_shown_a_container() {
         item: THIRD,
         count: COUNT_C,
         cond: 0,
+        skin: 0,
     };
 
     let mut seen = Vec::new();
@@ -389,6 +393,7 @@ fn only_the_opener_is_shown_a_container() {
                     item: FILLER,
                     count: COUNT_A,
                     cond: 0,
+                    skin: 0,
                 }
             ),
             (
@@ -397,6 +402,7 @@ fn only_the_opener_is_shown_a_container() {
                     item: OTHER,
                     count: COUNT_B,
                     cond: 0,
+                    skin: 0,
                 }
             ),
         ],
@@ -419,6 +425,7 @@ fn only_the_opener_is_shown_a_container() {
             item: FILLER,
             count: COUNT_A,
             cond: 0,
+            skin: 0,
         }
     );
     assert_eq!(c0.cont[SLOT_B].item, OTHER);
@@ -542,6 +549,7 @@ fn a_change_inside_an_open_container_arrives_as_a_diff() {
             item: THIRD,
             count: COUNT_C,
             cond: 0,
+            skin: 0,
         },
     );
     core.world
@@ -563,6 +571,7 @@ fn a_change_inside_an_open_container_arrives_as_a_diff() {
                     item: THIRD,
                     count: COUNT_C,
                     cond: 0,
+                    skin: 0,
                 }
             ),
             (SLOT_B as u8, ItemStack::default()),
@@ -576,6 +585,7 @@ fn a_change_inside_an_open_container_arrives_as_a_diff() {
             item: THIRD,
             count: COUNT_C,
             cond: 0,
+            skin: 0,
         }
     );
     assert_eq!(c0.cont[SLOT_B], ItemStack::default());
@@ -624,6 +634,7 @@ fn a_client_close_shuts_the_view_without_a_reply() {
             item: THIRD,
             count: COUNT_C,
             cond: 0,
+            skin: 0,
         },
     );
     let mut later = Vec::new();
@@ -728,11 +739,13 @@ fn the_body_is_still_fed_while_a_box_is_open() {
         item: 0,
         count: 5,
         cond: 0,
+        skin: 0,
     };
     core.world.players[w0].inv[1] = ItemStack {
         item: BOX_ITEM,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     core.world.tick(&[Command::Place {
         id: id_of(0),
@@ -759,6 +772,7 @@ fn the_body_is_still_fed_while_a_box_is_open() {
             item: FILLER,
             count: COUNT_A,
             cond: 0,
+            skin: 0,
         },
     );
     let key = box_key(cx, cz, 0);
@@ -784,6 +798,7 @@ fn the_body_is_still_fed_while_a_box_is_open() {
         item: OTHER,
         count: 1,
         cond: 9_100,
+        skin: 0,
     };
     core.world.players[w0].worn[0] = helmet;
 
@@ -856,11 +871,13 @@ fn asking_for_the_body_resyncs_it_and_keeps_the_box() {
         item: 0,
         count: 5,
         cond: 0,
+        skin: 0,
     };
     core.world.players[w0].inv[1] = ItemStack {
         item: BOX_ITEM,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     core.world.tick(&[Command::Place {
         id: id_of(0),
@@ -885,6 +902,7 @@ fn asking_for_the_body_resyncs_it_and_keeps_the_box() {
         item: OTHER,
         count: 1,
         cond: 9_100,
+        skin: 0,
     };
     core.world.players[w0].worn[0] = helmet;
 
@@ -941,6 +959,7 @@ fn asking_for_the_body_resyncs_it_and_keeps_the_box() {
             item: FILLER,
             count: COUNT_A,
             cond: 0,
+            skin: 0,
         },
     );
     let mut later = Vec::new();
@@ -964,6 +983,7 @@ fn asking_for_the_body_resyncs_it_and_keeps_the_box() {
                 item: FILLER,
                 count: COUNT_A,
                 cond: 0,
+                skin: 0,
             }
         )],
         "the diff must carry the box's slot, not the body's"
@@ -990,11 +1010,13 @@ fn a_box_opens_by_its_packed_address() {
         item: 0,
         count: 5,
         cond: 0,
+        skin: 0,
     };
     core.world.players[w0].inv[1] = ItemStack {
         item: BOX_ITEM,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     core.world.tick(&[Command::Place {
         id: id_of(0),
@@ -1028,6 +1050,7 @@ fn a_box_opens_by_its_packed_address() {
             item: FILLER,
             count: COUNT_A,
             cond: 0,
+            skin: 0,
         },
     );
     let key = box_key(cx, cz, 0);
@@ -1050,6 +1073,7 @@ fn a_box_opens_by_its_packed_address() {
                 item: FILLER,
                 count: COUNT_A,
                 cond: 0,
+                skin: 0,
             }
         )],
         "the box's contents did not cross correctly"
@@ -1126,11 +1150,13 @@ fn a_corpse_is_shown_no_container() {
         item: 0,
         count: 5,
         cond: 0,
+        skin: 0,
     };
     core.world.players[w0].inv[1] = ItemStack {
         item: BOX_ITEM,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     core.world.tick(&[Command::Place {
         id: id_of(0),
@@ -1158,6 +1184,7 @@ fn a_corpse_is_shown_no_container() {
             item: FILLER,
             count: COUNT_A,
             cond: 0,
+            skin: 0,
         },
     );
     let key = box_key(cx, cz, 0);
@@ -1181,6 +1208,7 @@ fn a_corpse_is_shown_no_container() {
                 item: FILLER,
                 count: COUNT_A,
                 cond: 0,
+                skin: 0,
             }
         )],
         "the living view is the baseline the corpse must lose"
@@ -1195,6 +1223,7 @@ fn a_corpse_is_shown_no_container() {
         item: SPEAR,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     clients[1].1.set_input(BTN_PRIMARY, 0, 128, 0, 0, 0);
     clients[0].1.set_input(0, 0, 128, 0, 0, 0);
@@ -1229,6 +1258,7 @@ fn a_corpse_is_shown_no_container() {
             item: THIRD,
             count: COUNT_C,
             cond: 0,
+            skin: 0,
         },
     );
     let mut after = Vec::new();
@@ -1354,16 +1384,19 @@ fn a_locked_box_shows_a_stranger_nothing_until_it_unlocks() {
         item: 0,
         count: 5,
         cond: 0,
+        skin: 0,
     };
     core.world.players[w0].inv[1] = ItemStack {
         item: LOCKED_BOX_ITEM,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     core.world.players[w0].inv[2] = ItemStack {
         item: LOCK_ITEM,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     core.world.tick(&[Command::Place {
         id: id_of(0),
@@ -1391,6 +1424,7 @@ fn a_locked_box_shows_a_stranger_nothing_until_it_unlocks() {
             item: FILLER,
             count: COUNT_A,
             cond: 0,
+            skin: 0,
         },
     );
     core.world.tick(&[Command::PlaceDeploy {
@@ -1461,6 +1495,7 @@ fn a_locked_box_shows_a_stranger_nothing_until_it_unlocks() {
                 item: FILLER,
                 count: COUNT_A,
                 cond: 0,
+                skin: 0,
             }
         )],
         "the owner was shown the wrong slots"
@@ -1499,6 +1534,7 @@ fn a_locked_box_shows_a_stranger_nothing_until_it_unlocks() {
                 item: FILLER,
                 count: COUNT_A,
                 cond: 0,
+                skin: 0,
             }
         )],
         "the unlocked view pays the same contents the owner saw"
@@ -1732,11 +1768,13 @@ fn a_wear_panel_is_drawn_from_the_body_not_the_backpack() {
             item: OTHER,
             count: 1,
             cond: 9_100,
+            skin: 0,
         },
         ItemStack {
             item: THIRD,
             count: 1,
             cond: 10_000,
+            skin: 0,
         },
     ];
     core.world.players[w0].worn = worn;
@@ -1744,11 +1782,13 @@ fn a_wear_panel_is_drawn_from_the_body_not_the_backpack() {
         item: SPEAR,
         count: COUNT_A,
         cond: 0,
+        skin: 0,
     };
     core.world.players[w0].inv[1] = ItemStack {
         item: FILLER,
         count: COUNT_B,
         cond: 0,
+        skin: 0,
     };
 
     // The handle is zero and stays zero: a body has no address, which is

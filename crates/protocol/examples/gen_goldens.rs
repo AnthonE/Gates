@@ -71,12 +71,12 @@ fn main() {
     write_fixture(goldens::FIXTURES[6], &buf[..len]);
     let len = encode_refuse(&goldens::refuse_full(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[7], &buf[..len]);
-    // Spectators v0 (v73): the watcher's hello and the watch message, the
+    // Spectators (v79): the watcher's hello and the watch message, the
     // last two in the positional manifest.
     let len = encode_hello(&goldens::hello_spectate(), &mut buf).unwrap();
-    write_fixture(goldens::FIXTURES[111], &buf[..len]);
+    write_fixture(goldens::FIXTURES[119], &buf[..len]);
     let len = protocol::encode_watch(&goldens::watch(), &mut buf).unwrap();
-    write_fixture(goldens::FIXTURES[112], &buf[..len]);
+    write_fixture(goldens::FIXTURES[120], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();
@@ -95,7 +95,10 @@ fn main() {
     let (cx, cz) = goldens::event_slot_change();
     let len = encode_event_slot_change(true, cx, cz, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[10], &buf[..len]);
-    let len = encode_event_slot_change(false, cx, cz, &mut buf).unwrap();
+    // A tree standing back up as a sapling (tree growth v0).
+    let len =
+        protocol::encode_event_slot_respawned(cx, cz, Some(goldens::EVENT_SLOT_GROWN_AT), &mut buf)
+            .unwrap();
     write_fixture(goldens::FIXTURES[11], &buf[..len]);
 
     let (reset, cells) = goldens::event_slot_sync();
@@ -125,8 +128,8 @@ fn main() {
     assert_eq!(took, protocol::RECIPE_BATCH);
     write_fixture(goldens::FIXTURES[18], &buf[..len]);
 
-    let (recipe, count) = goldens::action_craft();
-    let len = encode_action_craft(recipe, count, &mut buf).unwrap();
+    let (recipe, count, skin) = goldens::action_craft();
+    let len = encode_action_craft(recipe, count, skin, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[19], &buf[..len]);
 
     let len = encode_action_cancel(goldens::action_cancel(), &mut buf).unwrap();
@@ -261,6 +264,13 @@ fn main() {
     write_fixture(goldens::FIXTURES[108], &buf[..len]);
     let len = protocol::encode_event_assist(0x10203040, 0x12345678, 83, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[109], &buf[..len]);
+    let len = protocol::encode_event_env(&goldens::event_env(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[111], &buf[..len]);
+    let len = protocol::encode_event_exposure(64, 100, true, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[112], &buf[..len]);
+    let len =
+        protocol::encode_event_slot_grow_sync(&goldens::event_slot_grow_sync(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[113], &buf[..len]);
 
     let (id, why) = goldens::event_bag_removed();
     let len = encode_event_bag_removed(id, why, &mut buf).unwrap();
@@ -468,8 +478,8 @@ fn main() {
 
     // Surface marks v0 (v44): where an arrow stopped.
     {
-        let (qx, qy, qz, surf) = goldens::event_impact();
-        let len = protocol::encode_event_impact(qx, qy, qz, surf, &mut buf).unwrap();
+        let (qx, qy, qz, surf, kind) = goldens::event_impact();
+        let len = protocol::encode_event_impact(qx, qy, qz, surf, kind, &mut buf).unwrap();
         write_fixture(goldens::FIXTURES[94], &buf[..len]);
     }
 
@@ -478,6 +488,28 @@ fn main() {
         let s = goldens::event_swing();
         let len = protocol::encode_event_swing(s, &mut buf).unwrap();
         write_fixture(goldens::FIXTURES[95], &buf[..len]);
+    }
+
+    // The pack call (v76): an animal howled for its pack.
+    {
+        let len = protocol::encode_event_howl(goldens::event_howl(), &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[114], &buf[..len]);
+    }
+
+    // Skins v0 (v77): the catalog drip, the owner's set, the two verbs.
+    {
+        let (len, took) =
+            protocol::encode_event_skins(&goldens::event_skins(), 0, &mut buf).unwrap();
+        assert_eq!(took, 3);
+        write_fixture(goldens::FIXTURES[115], &buf[..len]);
+        let len =
+            protocol::encode_event_skins_owned(&goldens::event_skins_owned(), &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[116], &buf[..len]);
+        let (slot, skin) = goldens::action_reskin();
+        let len = protocol::encode_action_reskin(slot, skin, &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[117], &buf[..len]);
+        let len = protocol::encode_action_skins_refresh(&mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[118], &buf[..len]);
     }
 
     // Armor v1 (v51): the fifth container kind — the one worn rather

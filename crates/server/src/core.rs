@@ -49,8 +49,8 @@ use sim_core::world::{
     Command, Player, World, DEATH_BY_CLOCK, EV_ASSIST, EV_AUTH, EV_BAG_DROPPED, EV_BAG_REMOVED,
     EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE,
     EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
-    EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_HURT, EV_IMPACT, EV_KNOCK,
-    EV_KNOWN, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED,
+    EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_HOWL, EV_HURT, EV_IMPACT,
+    EV_KNOCK, EV_KNOWN, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED,
     EV_PIECE_REPAIRED, EV_RECOVERED, EV_RELOAD, EV_RELOAD_REFUSED, EV_RESEARCH,
     EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK,
     EV_STRUCT_HIT, EV_SWING, EV_VITALS, EV_WEAK_MARK, EV_WOUNDED, STRUCT_DEPLOY_BIT,
@@ -155,6 +155,10 @@ pub struct ShardCore {
     /// before the first tick; empty (the default) sends no catalog, which
     /// is what content-less tests run under.
     pub catalog: ItemCatalog,
+    /// The skin catalog the drip sends (skins v0), baked beside `catalog`
+    /// from `content/skins.toml`. Boxed: ~9 kB of fixed capacity. Empty
+    /// sends nothing.
+    pub skin_catalog: Box<protocol::SkinCatalog>,
     /// Scratch: event-lane encode target.
     ev_buf: [u8; MAX_EVENT_MSG_BYTES],
     /// Autosave sweep cursor: which connection slot [`Self::autosave`] looks
@@ -375,6 +379,7 @@ impl ShardCore {
             removed_buf: [0; MAX_SNAPSHOT_ENTITIES],
             dg_buf: [0; DATAGRAM_BUDGET_BYTES],
             catalog: ItemCatalog::EMPTY,
+            skin_catalog: Box::new(protocol::SkinCatalog::EMPTY),
             ev_buf: [0; MAX_EVENT_MSG_BYTES],
             admins: crate::admin::Admins::none(),
             autosave_at: 0,
@@ -383,6 +388,53 @@ impl ShardCore {
             sleepers: SleeperIndex::new(),
             watching: [None; MAX_SPECTATORS],
             trust: crate::trustlog::Tap::off(),
+        }
+    }
+
+    /// Queue the sky/clock verb outside the admin lane — the boot's
+    /// `dev_env` (`config.rs`). False ⇒ the command buffer was full.
+    pub fn queue_env(&mut self, weather: u8, time_pm: u16) -> bool {
+        self.queue(Command::AdminEnv { weather, time_pm })
+    }
+
+    /// The platform said what connection `slot`, player `id`, owns
+    /// (`skins.rs`, read off the sim thread by the accept loop). Held on the
+    /// client until the next tick queues it as `Command::SkinsOwned`, so a
+    /// full command queue delays the set rather than dropping it. An id
+    /// that no longer names this slot's tenant is a stale answer about
+    /// somebody who left, and is dropped.
+    pub fn skins_owned(&mut self, slot: usize, id: u32, owned: sim_core::skin::SkinSet) {
+        let Some(c) = self.clients.get_mut(slot) else {
+            return;
+        };
+        if c.connected && c.id == id {
+            c.skins_pending = Some(owned);
+        }
+    }
+
+    /// The platform's item store said what each skin costs
+    /// (`skins::prices_of`). A row whose coin or price moved is rewritten,
+    /// and when any did every client's skin drip starts over, so a store
+    /// screen shows what the store charges. Rows are overwritten by index on
+    /// the client, so a re-drip replaces and never appends.
+    pub fn skin_prices(
+        &mut self,
+        prices: &[Option<crate::skins::Price>; sim_core::limits::MAX_SKINS],
+    ) {
+        let n = (self.skin_catalog.count as usize).min(sim_core::limits::MAX_SKINS);
+        let mut moved = false;
+        for (row, price) in self.skin_catalog.rows[..n].iter_mut().zip(prices) {
+            let (coin, amount) = price.unwrap_or((protocol::COIN_NONE, 0));
+            if row.coin != coin || row.price != amount {
+                row.coin = coin;
+                row.price = amount;
+                moved = true;
+            }
+        }
+        if moved {
+            for c in self.clients.iter_mut() {
+                c.skins_cursor = 0;
+            }
         }
     }
 
@@ -959,6 +1011,17 @@ impl ShardCore {
         ops: &mut Ops<'_>,
         mut send: impl FnMut(Lane, usize, &[u8]) -> bool,
     ) {
+        // Owned skin sets the platform answered since the last tick, queued
+        // behind whatever else this window holds — so a join queued in the
+        // same window lands first and the set finds its body.
+        for slot in 0..MAX_PLAYERS {
+            if let Some(owned) = self.clients[slot].skins_pending {
+                let id = self.clients[slot].id;
+                if self.queue(Command::SkinsOwned { id, owned }) {
+                    self.clients[slot].skins_pending = None;
+                }
+            }
+        }
         let mut n = self.queued_len;
         self.cmd_buf[..n].copy_from_slice(&self.queued[..n]);
         self.queued_len = 0;
@@ -1101,11 +1164,25 @@ impl ShardCore {
                         }
                     }
                     ActionMsg::Assist { target } => Command::Assist { id: c.id, target },
-                    ActionMsg::Craft { recipe, count } => Command::Craft {
+                    ActionMsg::Craft {
+                        recipe,
+                        count,
+                        skin,
+                    } => Command::Craft {
                         id: c.id,
                         recipe,
                         count,
+                        skin,
                     },
+                    ActionMsg::Reskin { slot, skin } => Command::Reskin {
+                        id: c.id,
+                        slot,
+                        skin,
+                    },
+                    // Answered by the accept loop before it reaches this
+                    // ring (`net.rs` `action_reader_task`); one that got
+                    // here anyway asks the sim for nothing.
+                    ActionMsg::SkinsRefresh => continue,
                     ActionMsg::CraftCancel { index } => Command::CraftCancel { id: c.id, index },
                     ActionMsg::Place {
                         row,
@@ -1632,6 +1709,36 @@ impl ShardCore {
                     return;
                 }
                 logged = logged.with(item as i64, count as i64, 0);
+            }
+            AdminCmd::Weather { mode } => {
+                if !self.queue(Command::AdminEnv {
+                    weather: mode,
+                    time_pm: sim_core::weather::KEEP_TIME,
+                }) {
+                    ops.log
+                        .push(Record::new(tick, Kind::AdminRefused, verb, who).with(
+                            mode as i64,
+                            0,
+                            0,
+                        ));
+                    return;
+                }
+                logged = logged.with(mode as i64, 0, 0);
+            }
+            AdminCmd::Time { frac_pm } => {
+                if !self.queue(Command::AdminEnv {
+                    weather: sim_core::weather::KEEP_WEATHER,
+                    time_pm: frac_pm,
+                }) {
+                    ops.log
+                        .push(Record::new(tick, Kind::AdminRefused, verb, who).with(
+                            frac_pm as i64,
+                            0,
+                            0,
+                        ));
+                    return;
+                }
+                logged = logged.with(frac_pm as i64, 0, 0);
             }
             AdminCmd::SaveNow => {
                 *ops.save_now = true;
@@ -2698,6 +2805,38 @@ impl ShardCore {
                         Err(_) => ShardStats::bump(&stats.encode_range_errors),
                     }
                 }
+                EV_HOWL => {
+                    // A pack call, to the clients drawing the animal that
+                    // made it: the roster's own interest set (`m_interest`),
+                    // which is the audience a snapshot of that animal has.
+                    // Before a client's interest has settled it hears every
+                    // howl, the fail-open every broadcast arm here takes.
+                    let Some(s) = mob::slot_of_id(ev.a) else {
+                        ShardStats::bump(&stats.encode_range_errors);
+                        continue;
+                    };
+                    match protocol::encode_event_howl(ev.a, &mut self.ev_buf) {
+                        Ok(len) => {
+                            for slot in 0..MAX_PLAYERS {
+                                if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if self.interest_settled(slot) && !self.clients[slot].m_interest[s]
+                                {
+                                    ShardStats::bump(&stats.ev_interest_skipped);
+                                    continue;
+                                }
+                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                    ShardStats::bump(&stats.ev_sent);
+                                } else {
+                                    self.clients[slot].ev_resync();
+                                    ShardStats::bump(&stats.ev_resyncs);
+                                }
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
                 EV_IMPACT => {
                     // Broadcast, `EV_SHOT`'s posture one arm up and for a
                     // longer reason: a shot is a world fact for as long as
@@ -2713,8 +2852,7 @@ impl ShardCore {
                     // up and the encoder would refuse it, which is the
                     // failure being loud rather than wrong; `a`'s cell is
                     // plain because the island starts at zero.
-                    let surf = (ev.a >> 24) as u8;
-                    let qx = (ev.a & 0x00FF_FFFF) as i32;
+                    let (surf, kind, qx) = sim_core::world::impact_parts(ev.a);
                     let qz = ev.b as i32;
                     let qy = ev.c as i32;
                     // Filtered on the **point**, not on a body — see
@@ -2726,7 +2864,7 @@ impl ShardCore {
                     // the band takes a slot from a mark at the player's
                     // feet.
                     let at = interest::body_cm(qx, qz);
-                    match encode_event_impact(qx, qy, qz, surf, &mut self.ev_buf) {
+                    match encode_event_impact(qx, qy, qz, surf, kind, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {
@@ -2972,19 +3110,39 @@ impl ShardCore {
                     };
                     let (cx, cz) = ((ev.b >> 16) as u16, ev.b as u16);
                     let level = ev.c as u8;
-                    let Some(hr) = self
+                    let Some(hi) = self
                         .world
                         .deploys
                         .hearths()
                         .iter()
-                        .find(|h| h.cx == cx && h.cz == cz && h.level == level)
+                        .position(|h| h.cx == cx && h.cz == cz && h.level == level)
                     else {
                         continue; // hearth decayed in the same tick
                     };
-                    let mut rows = [(0u16, 0u32); HEARTH_STOCK_ROWS];
+                    let hr = self.world.deploys.hearths()[hi];
+                    // Only the crew reads the stock and the bill. To anyone
+                    // else they are the base's decay clock, which a stranger
+                    // would otherwise read for the price of one plank fed
+                    // (the feed itself still lands: a gift is not a grief).
+                    if !hr.crew.contains(ev.a) {
+                        continue;
+                    }
+                    // What one upkeep period charges this hearth, per row —
+                    // the sweep's own arithmetic over the claim cache the
+                    // tick just refreshed (upkeep v2's readout). A walk of
+                    // the piece store, asked per feed press and never per
+                    // tick, with an O(1) answer for the base's own pieces.
+                    let bill = sim_core::upkeep::bill(
+                        &self.world.deploy,
+                        &self.world.build,
+                        &self.world.pieces,
+                        &self.world.deploys,
+                        hi,
+                    );
+                    let mut rows = [(0u16, 0u32, 0u32); HEARTH_STOCK_ROWS];
                     let n = self.world.deploy.mat_count as usize;
                     for (m, row) in rows.iter_mut().enumerate().take(n) {
-                        *row = (self.world.deploy.mats[m], hr.stock[m]);
+                        *row = (self.world.deploy.mats[m], hr.stock[m], bill[m]);
                     }
                     match encode_event_stock(cx, cz, level, &rows[..n], &mut self.ev_buf) {
                         Ok(len) => {
@@ -3002,8 +3160,19 @@ impl ShardCore {
                 EV_SLOT_HARVESTED | EV_SLOT_RESPAWNED => {
                     let cx = (ev.a >> 16) as u16;
                     let cz = ev.a as u16;
-                    let harvested = ev.code == EV_SLOT_HARVESTED;
-                    match encode_event_slot_change(harvested, cx, cz, &mut self.ev_buf) {
+                    // A tree comes back as a sapling (tree growth v0): `c`
+                    // says so and `b` is the tick it is grown by.
+                    let encoded = if ev.code == EV_SLOT_HARVESTED {
+                        encode_event_slot_change(true, cx, cz, &mut self.ev_buf)
+                    } else {
+                        protocol::encode_event_slot_respawned(
+                            cx,
+                            cz,
+                            (ev.c != 0).then_some(ev.b),
+                            &mut self.ev_buf,
+                        )
+                    };
+                    match encoded {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {
@@ -3096,6 +3265,47 @@ impl ShardCore {
             }
         }
 
+        // Wet and cold (weather v0): the owner's per-cent readout when it
+        // moves. A client with no live body (dead, not yet joined) owes
+        // nothing and keeps its last reading until one exists.
+        if let Some(wslot) = self.live_wslot(slot) {
+            let expo = sim_core::exposure::readout(
+                &self.world.survival.exposure,
+                &self.world.players[wslot],
+            );
+            if self.world.survival.exposure.armed() && Some(expo) != self.clients[slot].last_expo {
+                match protocol::encode_event_exposure(expo.0, expo.1, expo.2, &mut self.ev_buf) {
+                    Ok(len) => {
+                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            self.clients[slot].last_expo = Some(expo);
+                            ShardStats::bump(&stats.ev_sent);
+                        } else {
+                            return;
+                        }
+                    }
+                    Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                }
+            }
+        }
+
+        // The sky and the clock (weather v0): the whole record whenever it
+        // differs from what this client last heard, which is also how a
+        // fresh join and a resync hear it.
+        let env = self.world.env;
+        if self.clients[slot].last_env != Some(env) {
+            match protocol::encode_event_env(&env, &mut self.ev_buf) {
+                Ok(len) => {
+                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                        self.clients[slot].last_env = Some(env);
+                        ShardStats::bump(&stats.ev_sent);
+                    } else {
+                        return;
+                    }
+                }
+                Err(_) => ShardStats::bump(&stats.encode_range_errors),
+            }
+        }
+
         // Catalog: names first — toasts and hotbar labels want them early.
         let c = &self.clients[slot];
         if self.catalog.count > 0 && c.catalog_cursor < self.catalog.count as usize {
@@ -3109,6 +3319,43 @@ impl ShardCore {
                     }
                 }
                 Err(_) => ShardStats::bump(&stats.encode_range_errors),
+            }
+        }
+
+        // Skin rows (skins v0), the item catalog's drip shape: the store
+        // screen and every skinned item's look read them.
+        let c = &self.clients[slot];
+        let sk = &self.skin_catalog;
+        if sk.count > 0 && c.skins_cursor < sk.count as usize {
+            match protocol::encode_event_skins(sk, c.skins_cursor, &mut self.ev_buf) {
+                Ok((len, took)) => {
+                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                        ShardStats::bump(&stats.ev_sent);
+                        self.clients[slot].skins_cursor += took;
+                    } else {
+                        return;
+                    }
+                }
+                Err(_) => ShardStats::bump(&stats.encode_range_errors),
+            }
+        }
+
+        // What this player owns, whenever the sim's copy moves (a join's
+        // first read, a refresh, a new session's reset to none).
+        if let Some(wslot) = Self::world_slot_of(&self.world, self.clients[slot].id) {
+            let owned = self.world.players[wslot].skins;
+            if self.clients[slot].last_skins != Some(owned) {
+                match protocol::encode_event_skins_owned(&owned, &mut self.ev_buf) {
+                    Ok(len) => {
+                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            self.clients[slot].last_skins = Some(owned);
+                            ShardStats::bump(&stats.ev_sent);
+                        } else {
+                            return;
+                        }
+                    }
+                    Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                }
             }
         }
 
@@ -3167,40 +3414,72 @@ impl ShardCore {
         // walks the live store; entries that move behind it mid-walk stay
         // unsynced until their own respawn event — bounded staleness the
         // respawn window already caps, documented over machinery.
+        //
+        // The same window carries the regrowing trees (tree growth v0) in a
+        // second message: a late joiner has to know a sapling is a sapling,
+        // and when it will be grown, or it would walk through what it sees
+        // as a full tree's trunk. Sent after the harvested batch, so a
+        // reset has cleared both of the client's sets before any arrive.
         let c = &self.clients[slot];
         let lives = &self.world.slot_lives;
         if c.sync_reset || c.sync_cursor < lives.len() {
             let mut cells = [(0u16, 0u16); SLOT_SYNC_BATCH];
+            let mut grows = [(0u16, 0u16, 0u32); protocol::GROW_SYNC_BATCH];
             let mut n_cells = 0usize;
+            let mut n_grows = 0usize;
             let mut scanned = 0usize;
             let entries = lives.entries();
             while c.sync_cursor + scanned < entries.len()
                 && scanned < SYNC_SCAN_PER_TICK
                 && n_cells < SLOT_SYNC_BATCH
+                && n_grows < protocol::GROW_SYNC_BATCH
             {
                 let e = entries[c.sync_cursor + scanned];
                 if e.respawn_at != 0 {
                     cells[n_cells] = (e.cx, e.cz);
                     n_cells += 1;
+                } else if e.grown_at != 0 {
+                    grows[n_grows] = (e.cx, e.cz, e.grown_at as u32);
+                    n_grows += 1;
                 }
                 scanned += 1;
             }
-            if c.sync_reset || n_cells > 0 {
-                match encode_event_slot_sync(c.sync_reset, &cells[..n_cells], &mut self.ev_buf) {
+            // A window whose second send is refused goes again whole next
+            // tick; the client's sets take a repeat as a no-op.
+            let reset = c.sync_reset;
+            let mut said = true;
+            if reset || n_cells > 0 {
+                match encode_event_slot_sync(reset, &cells[..n_cells], &mut self.ev_buf) {
                     Ok(len) => {
-                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
-                            ShardStats::bump(&stats.ev_sent);
-                            let c = &mut self.clients[slot];
-                            c.sync_reset = false;
-                            c.sync_cursor += scanned;
-                        } else {
+                        if !send(Lane::Event, slot, &self.ev_buf[..len]) {
                             return;
                         }
+                        ShardStats::bump(&stats.ev_sent);
+                        self.clients[slot].sync_reset = false;
                     }
-                    Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    Err(_) => {
+                        ShardStats::bump(&stats.encode_range_errors);
+                        said = false;
+                    }
                 }
-            } else {
-                // Window held only standing-damage entries: nothing to say.
+            }
+            if said && n_grows > 0 {
+                match protocol::encode_event_slot_grow_sync(&grows[..n_grows], &mut self.ev_buf) {
+                    Ok(len) => {
+                        if !send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            return;
+                        }
+                        ShardStats::bump(&stats.ev_sent);
+                    }
+                    Err(_) => {
+                        ShardStats::bump(&stats.encode_range_errors);
+                        said = false;
+                    }
+                }
+            }
+            // Past this window: its harvested and growing entries are said,
+            // and the standing-damage ones had nothing to say.
+            if said {
                 self.clients[slot].sync_cursor += scanned;
             }
         }
@@ -4145,6 +4424,13 @@ impl ShardCore {
             // branch); this is the wire agreeing.
             held: if p.wounded { None } else { Self::held_of(p) },
             lit: !p.wounded && sim_core::light::is_lit(p, gc),
+            // The held item's skin (skins v0), under `held`'s rule: an
+            // empty or dropped hand wears nothing.
+            held_skin: if p.wounded || Self::held_of(p).is_none() {
+                0
+            } else {
+                p.inv[p.frame.sel as usize].skin
+            },
         }
     }
 
@@ -4177,9 +4463,11 @@ impl ShardCore {
     /// One animal as the same record. Four of the ten fields have no
     /// meaning here and each is answered rather than left to a default:
     /// `pitch` is zero because nothing about a pig looks up or down;
-    /// `sleeping` is false because that bit means *nobody is driving this
-    /// body*, and something always is — dormancy is not the same fact and
-    /// a client would draw the slumped pose for it; `dead` is false because
+    /// `sleeping` is the brain's Sleep state — the animal lying down, which
+    /// is what the client draws for it (`render/mobs.rs`) and what stops it
+    /// being extrapolated, since nothing moves a sleeper. Dormancy is not
+    /// that fact and does not set it: a dormant animal is merely unthought
+    /// about, standing where it stopped. `dead` is false because
     /// a mob that dies is *removed* rather than left in its slot (`mob.rs`
     /// clears `alive` and the snapshot skips it), so unlike a player there
     /// is never a corpse of one on the wire to flag; `yaw` is the animal's
@@ -4193,7 +4481,7 @@ impl ShardCore {
             qz: m.body.qz,
             qvy: m.body.qvy,
             grounded: m.body.grounded,
-            sleeping: false,
+            sleeping: m.state == sim_core::brain::AiState::Sleep,
             dead: false,
             wounded: false,
             yaw: m.yaw,
@@ -4205,6 +4493,7 @@ impl ShardCore {
             // catalog and a mob has no inventory to index it from.
             held: None,
             lit: false,
+            held_skin: 0,
         }
     }
 
@@ -4499,6 +4788,7 @@ mod tests {
             item: 0,
             count: 20,
             cond: 0,
+            skin: 0,
         };
         for (row, loc) in [(0, LOC_PLANE), (row, STAIR_LOCS[0])] {
             core.push_action(
@@ -4569,6 +4859,7 @@ mod tests {
             item: 0,
             count: 1,
             cond: 0,
+            skin: 0,
         }; INV_SLOTS];
         let w = &mut core.world;
         w.backpacks

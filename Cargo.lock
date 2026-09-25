@@ -1994,6 +1994,7 @@ dependencies = [
  "image",
  "js-sys",
  "ktx2",
+ "lewton",
  "png",
  "protocol",
  "ruzstd",

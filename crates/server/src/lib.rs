@@ -49,6 +49,7 @@ pub mod jev;
 pub mod mind;
 pub mod net;
 pub mod population;
+pub mod skins;
 pub mod slot;
 pub mod stats;
 pub mod status;

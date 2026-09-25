@@ -873,6 +873,110 @@ fn the_bank_is_deterministic() {
     );
 }
 
+/// Every take the engine can be asked for is a sound — recorded or
+/// synthesized, it has energy, does not clip, and starts and ends at rest —
+/// and a cue's takes are equal slices, which is the cut the renderer makes.
+#[test]
+fn every_take_in_the_bank_is_a_sound() {
+    use client::sound::engine::MAX_TAKES;
+    use client::sound_bank;
+    for cue in Cue::ALL {
+        if cue.is_bed() || cue.is_music() {
+            continue;
+        }
+        let (pcm, takes) = sound_bank::pcm(cue);
+        assert!(
+            (1..=MAX_TAKES).contains(&takes),
+            "{cue:?} has {takes} takes"
+        );
+        assert_eq!(
+            pcm.len() % takes as usize,
+            0,
+            "{cue:?}'s takes are not equal slices"
+        );
+        let span = pcm.len() / takes as usize;
+        for (t, take) in pcm.chunks_exact(span).enumerate() {
+            let s: Vec<f32> = take.iter().map(|v| *v as f32 / i16::MAX as f32).collect();
+            let peak = s.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+            assert!(peak > 0.5, "{cue:?} take {t} peaks at {peak}");
+            assert!(rms(&s) > 0.005, "{cue:?} take {t} has no energy");
+            assert!(s[0].abs() < 0.05, "{cue:?} take {t} starts on a click");
+            assert!(
+                s[s.len() - 1].abs() < 0.05,
+                "{cue:?} take {t} ends on a click"
+            );
+        }
+        // Another body's step or arm is the same sound as yours.
+        let src = sound_bank::source(cue);
+        if src != cue {
+            assert_eq!(sound_bank::pcm(src).0, pcm, "{cue:?} is not {src:?}'s bank");
+        }
+    }
+    assert!(
+        sound_bank::recorded(Cue::BulletWood) && sound_bank::pcm(Cue::BulletWood).1 == 5,
+        "the recordings did not decode"
+    );
+}
+
+/// A cue with takes never plays the same one twice running, and plays all
+/// of them.
+#[test]
+fn a_take_is_never_the_last_one() {
+    use client::sound::mixer::Takes;
+    let mut t = Takes::default();
+    let mut last = u8::MAX;
+    let mut seen = [0u32; 5];
+    for _ in 0..500 {
+        let k = t.pick(Cue::BulletWood, 5);
+        assert!(k < 5);
+        assert_ne!(k, last, "take {k} twice running");
+        seen[k as usize] += 1;
+        last = k;
+    }
+    assert!(
+        seen.iter().all(|n| *n > 50),
+        "takes are not spread: {seen:?}"
+    );
+    assert_eq!(t.pick(Cue::Reload, 1), 0);
+}
+
+/// A gunshot at your shoulder ducks the quiet layer for a moment; one across
+/// the valley does not; and the duck lets go.
+#[test]
+fn a_near_shot_ducks_the_quiet_layer_and_lets_go() {
+    use client::sound::mixer::{DUCK_DEPTH, DUCK_RELEASE_S, DUCK_SHOT};
+    let mix = Mix::default();
+    let mut m = Mixer::new();
+    m.push(Request::at(Cue::ShotGun, [1.0, 0.0, 0.0]));
+    assert_eq!(m.tick(16.0, AT_ORIGIN, 0, &mix).len(), 1);
+    let ducked = m.duck();
+    assert!(
+        (ducked - (1.0 - DUCK_DEPTH * DUCK_SHOT * 0.98)).abs() < 0.01,
+        "a shot at 1 m ducks to {ducked}"
+    );
+    // A footstep is ducked; a round landing is not.
+    m.push(Request::at(Cue::RemoteStepRock, [2.0, 0.0, 0.0]));
+    m.push(Request::at(Cue::BulletWood, [2.0, 0.0, 0.0]));
+    let starts = m.tick(1.0, AT_ORIGIN, 0, &mix).to_vec();
+    let step = starts
+        .iter()
+        .find(|s| s.cue == Cue::RemoteStepRock)
+        .unwrap();
+    let wood = starts.iter().find(|s| s.cue == Cue::BulletWood).unwrap();
+    let fall = client::sound::falloff(2.0, Cue::RemoteStepRock.def().radius_m);
+    assert!(step.gain < Cue::RemoteStepRock.def().gain * fall * 0.8);
+    let fall = client::sound::falloff(2.0, Cue::BulletWood.def().radius_m);
+    assert!((wood.gain - Cue::BulletWood.def().gain * fall).abs() < 1e-6);
+    for _ in 0..((DUCK_RELEASE_S * 1000.0 / 16.0) as usize + 2) {
+        m.tick(16.0, AT_ORIGIN, 0, &mix);
+    }
+    assert_eq!(m.duck(), 1.0, "the duck never let go");
+    let mut far = Mixer::new();
+    far.push(Request::at(Cue::ShotGun, [90.0, 0.0, 0.0]));
+    far.tick(16.0, AT_ORIGIN, 0, &mix);
+    assert!(far.duck() > 0.99, "a shot at 90 m ducked to {}", far.duck());
+}
+
 /// A bed loops forever, so its seam is heard more than any other sample in
 /// the game. Continuity across the join is the assertion, and it runs over
 /// **every** bed — the wind bed had this gate alone for two lanes, and the
@@ -1141,7 +1245,8 @@ fn the_mixer_refuses_a_bed() {
     let starts = m.tick(16.0, AT_ORIGIN, 0, &Mix::default());
     assert!(starts.is_empty(), "the mixer started a bed");
     assert_eq!(
-        m.dropped, 3,
+        m.dropped as usize,
+        Cue::ALL.iter().filter(|c| c.is_bed()).count(),
         "a refused bed was not counted as a caller bug"
     );
 }
@@ -1531,6 +1636,51 @@ fn a_placement_broadcast_rings_and_a_sync_walk_does_not() {
         Some((50, 51, 0, LOC_PLANE, true)),
         "a deployable placement broadcast did not ring"
     );
+}
+
+/// The collapse's supply line: a piece coming down rings with the row and
+/// plate it stood at (the mirror no longer holds either), and a resync that
+/// clears the mirror rings nothing — a rejoin throws no dust.
+#[test]
+fn a_removal_rings_with_what_stood_there_and_a_resync_does_not() {
+    use client_core::core::{ClientCore, Removed};
+    use protocol::{encode_event_piece_sync, encode_event_removed, MAX_EVENT_MSG_BYTES};
+    use sim_core::build::{PieceRec, LOC_EDGE_XLO};
+
+    let mut core = ClientCore::new(1, 7, 0);
+    let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+    let rec = PieceRec {
+        cx: 12,
+        cz: 13,
+        level: 0,
+        loc: LOC_EDGE_XLO,
+        row: 2,
+        plate: 1,
+        ..PieceRec::default()
+    };
+    let len = encode_event_piece_sync(true, &[rec], &mut buf).expect("encode");
+    core.on_stream(&buf[..len]).expect("decode");
+    let len = encode_event_removed(true, 12, 13, 0, LOC_EDGE_XLO, &mut buf).expect("encode");
+    core.on_stream(&buf[..len]).expect("decode");
+    assert_eq!(
+        core.pop_removed(),
+        Some(Removed {
+            cx: 12,
+            cz: 13,
+            level: 0,
+            loc: LOC_EDGE_XLO,
+            deploy: false,
+            row: 2,
+            plate: 1,
+        })
+    );
+    assert!(core.pop_removed().is_none(), "one removal rang twice");
+
+    let len = encode_event_piece_sync(true, &[rec], &mut buf).expect("encode");
+    core.on_stream(&buf[..len]).expect("decode");
+    let len = encode_event_piece_sync(true, &[], &mut buf).expect("encode");
+    core.on_stream(&buf[..len]).expect("decode");
+    assert!(core.pop_removed().is_none(), "a resync rang a removal");
 }
 
 /// **`render::feed::drain` must be the only caller of `ClientCore::pop_*` in

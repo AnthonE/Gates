@@ -1,11 +1,13 @@
 //! The tech tree screen (tech tree v0) — the workbench's `E`
 //! (`ui::interact::Verb::TechTree`), drawn the way the reference draws
-//! its bench tree: a node **graph** over a scrim — icon cells with a
-//! padlock over everything unlearned, green connector lines from parent
-//! to child, the bench's LEVEL badge top-left, the coin count top-right —
-//! and a detail sidebar on the selected node carrying the name, the
-//! price, and the path total (`ui::techtree::path_total`, the number the
-//! reference prints as TOTAL REQUIRED).
+//! its bench tree: a node **graph** over a scrim — the bench at the root,
+//! icon cells with a padlock over everything unlearned, green connector
+//! lines from parent to child, one LEVEL tab per tier the bench reaches
+//! top-left (the bench's own tier open, lower tiers a click away, higher
+//! tiers not drawn — operator, 2026-09-22), the coin count top-right — and
+//! a detail sidebar on the selected node carrying the name, the price, and
+//! the path total (`ui::techtree::path_total`, the number the reference
+//! prints as TOTAL REQUIRED).
 //!
 //! Every number is `ui::techtree`'s (pure, gated headless in `tests/ui.rs`
 //! §M — the tidy-tree layout included); this file is nodes and handles.
@@ -13,17 +15,19 @@
 //! offered only on a `Ready` node — the reference's own two-step, and the
 //! reason a mis-click on a locked cell costs nothing. The request carries
 //! the recipe index alone; the parent, the tier and the price are the
-//! sim's verdict, and its refusal lands on the status line as a sentence.
+//! sim's verdict, and its answer — learned, or the refusal's sentence —
+//! lands on the status line ([`sync_status`]).
 
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 
 use super::{
-    font, font_bold, Panel, PanelRoot, Ui, BADGE, CELL_BG, CELL_FULL, LINE, LINE_HOT, PANEL_BG,
-    SCRIM, SCROLL_PX_PER_LINE, TEXT, TEXT_DIM, TEXT_SHORT,
+    font, font_bold, Hover, Panel, PanelRoot, Ui, BADGE, CELL_BG, CELL_FULL, LINE, LINE_HOT,
+    PANEL_BG, SCRIM, SCROLL_PX_PER_LINE, TEXT, TEXT_DIM, TEXT_SHORT,
 };
+use crate::render::feed::{Feed, Refused};
 use crate::ui::craft::item_label;
-use crate::ui::techtree::{self, NodeState, Placed};
+use crate::ui::techtree::{self, NodeState, Placed, BENCH};
 use client_core::core::ClientCore;
 
 /// Grid metrics: the craft browser's 44 px cell, spaced so an edge has
@@ -55,6 +59,10 @@ pub struct UnlockGo(pub u16);
 #[derive(Component)]
 pub struct TreeScroll;
 
+/// A LEVEL tab in the header, carrying the tier whose tree it shows.
+#[derive(Component)]
+pub struct TabButton(pub u8);
+
 pub fn build_screen(
     commands: &mut Commands,
     ui: &Ui,
@@ -63,11 +71,13 @@ pub fn build_screen(
 ) {
     let mut placed = Vec::new();
     let mut edges = Vec::new();
-    techtree::layout(
+    let tab = ui.tech_tab.clamp(1, ui.tech_tier.max(1));
+    let bench_col = techtree::layout(
         &core.research,
         &core.recipes,
         &core.inv,
         core.known(),
+        tab,
         &mut placed,
         &mut edges,
     );
@@ -98,20 +108,39 @@ pub fn build_screen(
                 ..default()
             })
             .with_children(|h| {
-                h.spawn((
-                    Node {
-                        padding: UiRect::axes(Val::Px(8.0), Val::Px(3.0)),
-                        ..default()
-                    },
-                    BackgroundColor(BADGE),
-                ))
-                .with_children(|b| {
-                    b.spawn((
-                        Text::new(format!("LEVEL {}", ui.tech_tier.max(1))),
-                        font_bold(13.0),
-                        TextColor(Color::srgb(0.08, 0.08, 0.06)),
-                    ));
-                });
+                // One tab per tier this bench reaches, lowest first; the
+                // open one wears the badge green.
+                for t in techtree::tabs(ui.tech_tier) {
+                    let open = t == tab;
+                    h.spawn((
+                        Button,
+                        TabButton(t),
+                        Node {
+                            padding: UiRect::axes(Val::Px(8.0), Val::Px(3.0)),
+                            border: UiRect::all(Val::Px(1.0)),
+                            ..default()
+                        },
+                        BackgroundColor(if open { BADGE } else { CELL_BG }),
+                        // The open tab is already lit; only the others light.
+                        Hover {
+                            rest: if open { BADGE } else { CELL_BG },
+                            hot: if open { BADGE } else { super::CELL_HOVER },
+                        },
+                        BorderColor::all(if open { BADGE } else { LINE }),
+                    ))
+                    .with_children(|b| {
+                        b.spawn((
+                            Text::new(format!("LEVEL {t}")),
+                            font_bold(13.0),
+                            TextColor(if open {
+                                Color::srgb(0.08, 0.08, 0.06)
+                            } else {
+                                TEXT_DIM
+                            }),
+                            Pickable::IGNORE,
+                        ));
+                    });
+                }
                 h.spawn((Text::new("TECH TREE"), font_bold(22.0), TextColor(TEXT)));
                 // The status line rides the header — a refusal sentence
                 // replaces it until the next redraw.
@@ -138,12 +167,14 @@ pub fn build_screen(
                 ..default()
             })
             .with_children(|row| {
-                board(row, core, icons, ui, &placed, &edges);
+                board(row, core, icons, ui, &placed, &edges, bench_col, tab);
                 sidebar(row, core, ui, &placed);
             });
 
             root.spawn((
-                Text::new("click a node to inspect it   -   Tab opens inventory   -   Esc closes"),
+                Text::new(
+                    "click a node to inspect it   -   LEVEL tabs switch tree   -   Tab opens inventory   -   Esc closes",
+                ),
                 font(12.0),
                 TextColor(TEXT_DIM),
                 Node {
@@ -158,6 +189,7 @@ pub fn build_screen(
 /// Edges first so cells draw over them; each edge is a drop from the
 /// parent, a bus at the midline, and a drop into the child — three thin
 /// rects, the reference's own elbow.
+#[allow(clippy::too_many_arguments)]
 fn board(
     row: &mut ChildSpawnerCommands,
     core: &ClientCore,
@@ -165,8 +197,15 @@ fn board(
     ui: &Ui,
     placed: &[Placed],
     edges: &[techtree::Edge],
+    bench_col: u16,
+    tab: u8,
 ) {
-    let cols = placed.iter().map(|p| p.col).max().map_or(1, |c| c + 1);
+    let cols = placed
+        .iter()
+        .map(|p| p.col)
+        .max()
+        .map_or(1, |c| c + 1)
+        .max(bench_col + 1);
     let rows = placed.iter().map(|p| p.row).max().map_or(1, |r| r + 1);
     let canvas_w = (cols as f32 * COL_W).max(BOARD_W - 20.0);
     let canvas_h = (rows as f32 * ROW_H).max(1.0);
@@ -194,7 +233,11 @@ fn board(
             .with_children(|canvas| {
                 if placed.is_empty() {
                     canvas.spawn((
-                        Text::new("nothing researchable has synced yet"),
+                        Text::new(if core.research_have == 0 {
+                            "nothing researchable has synced yet"
+                        } else {
+                            "nothing to unlock at this level"
+                        }),
                         font(13.0),
                         TextColor(TEXT_DIM),
                     ));
@@ -202,16 +245,24 @@ fn board(
                 }
                 let center_x = |col: u16| col as f32 * COL_W + (COL_W - CELL_PX) * 0.5;
                 for e in edges {
-                    let (p, c) = (&placed[e.parent], &placed[e.child]);
-                    let px = center_x(p.col) + CELL_PX * 0.5;
+                    // A root's edge starts at the bench, which is not in the
+                    // placed list: it stands on row 0 at `bench_col`.
+                    let (p_col, p_row) = if e.parent == BENCH {
+                        (bench_col, 0)
+                    } else {
+                        (placed[e.parent].col, placed[e.parent].row)
+                    };
+                    let c = &placed[e.child];
+                    let px = center_x(p_col) + CELL_PX * 0.5;
                     let cx = center_x(c.col) + CELL_PX * 0.5;
-                    let top = p.row as f32 * ROW_H + CELL_PX;
+                    let top = p_row as f32 * ROW_H + CELL_PX;
                     let mid = c.row as f32 * ROW_H - (ROW_H - CELL_PX) * 0.5;
                     let bottom = c.row as f32 * ROW_H;
                     segment(canvas, px, top, EDGE_PX, mid - top);
                     segment(canvas, px.min(cx), mid, (px - cx).abs() + EDGE_PX, EDGE_PX);
                     segment(canvas, cx, mid, EDGE_PX, bottom - mid);
                 }
+                bench_cell(canvas, icons, tab, center_x(bench_col));
                 for p in placed {
                     cell(canvas, core, icons, ui, p, center_x(p.col));
                 }
@@ -232,6 +283,53 @@ fn segment(canvas: &mut ChildSpawnerCommands, x: f32, y: f32, w: f32, h: f32) {
         BackgroundColor(EDGE),
         Pickable::IGNORE,
     ));
+}
+
+/// The root of the board: the bench the tab belongs to, drawn lit — it is
+/// already yours, which is why you are standing at it.
+fn bench_cell(
+    canvas: &mut ChildSpawnerCommands,
+    icons: &super::super::icons::Icons,
+    tier: u8,
+    x: f32,
+) {
+    canvas
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(x),
+                top: Val::Px(0.0),
+                width: Val::Px(CELL_PX),
+                height: Val::Px(CELL_PX),
+                border: UiRect::all(Val::Px(1.0)),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            BackgroundColor(CELL_FULL),
+            BorderColor::all(BADGE),
+            Pickable::IGNORE,
+        ))
+        .with_children(|inner| {
+            if let Some(handle) = icons.glyph(techtree::bench_glyph(tier)) {
+                inner.spawn((
+                    ImageNode::new(handle),
+                    Node {
+                        width: Val::Px(34.0),
+                        height: Val::Px(34.0),
+                        ..default()
+                    },
+                    Pickable::IGNORE,
+                ));
+            } else {
+                inner.spawn((
+                    Text::new(format!("WB{tier}")),
+                    font_bold(11.0),
+                    TextColor(TEXT),
+                    Pickable::IGNORE,
+                ));
+            }
+        });
 }
 
 /// One node cell: the item's icon, dimmed with a padlock over it until it
@@ -265,6 +363,7 @@ fn cell(
             ..default()
         },
         BackgroundColor(if known { CELL_FULL } else { CELL_BG }),
+        Hover::on(if known { CELL_FULL } else { CELL_BG }),
         BorderColor::all(if selected {
             LINE_HOT
         } else if ready {
@@ -278,9 +377,9 @@ fn cell(
             inner.spawn((
                 ImageNode {
                     color: if known {
-                        Color::WHITE
+                        super::super::icons::PICTURE
                     } else {
-                        Color::srgba(1.0, 1.0, 1.0, 0.35)
+                        super::super::icons::PICTURE_DIM
                     },
                     ..ImageNode::new(handle.clone())
                 },
@@ -305,9 +404,9 @@ fn cell(
             ));
         }
         if !known {
-            if let Some(lock) = icons.glyph("code_lock") {
+            if let Some(lock) = icons.glyph("ui_lock") {
                 inner.spawn((
-                    ImageNode::new(lock.clone()),
+                    ImageNode::new(lock.clone()).with_color(super::super::icons::LOCK_TINT),
                     Node {
                         position_type: PositionType::Absolute,
                         width: Val::Px(18.0),
@@ -378,8 +477,24 @@ fn sidebar(row: &mut ChildSpawnerCommands, core: &ClientCore, ui: &Ui, placed: &
                 side.spawn((Text::new("KNOWN"), font_bold(13.0), TextColor(TEXT_DIM)));
             }
             NodeState::Blocked => {
+                // Name the node in the way — and its bench, since it can sit
+                // in another tab — rather than pointing at "the node before".
+                let before = core.research.row_for_recipe(node.requires).map(|r| {
+                    let tier = core
+                        .recipes
+                        .recipes
+                        .get(r.recipe as usize)
+                        .map_or(1, |d| sim_core::research::node_tier(d.station));
+                    format!(
+                        "LOCKED — unlock {} ({}) first",
+                        item_label(&core.catalog, r.item),
+                        techtree::tier_label(tier)
+                    )
+                });
                 side.spawn((
-                    Text::new("LOCKED — unlock the node before it first"),
+                    Text::new(
+                        before.unwrap_or_else(|| "LOCKED — unlock the node before it first".into()),
+                    ),
                     font(12.0),
                     TextColor(TEXT_DIM),
                 ));
@@ -403,6 +518,7 @@ fn sidebar(row: &mut ChildSpawnerCommands, core: &ClientCore, ui: &Ui, placed: &
                         ..default()
                     },
                     BackgroundColor(CELL_FULL),
+                    Hover::on(CELL_FULL),
                     BorderColor::all(LINE_HOT),
                 ))
                 .with_children(|b| {
@@ -418,18 +534,27 @@ fn sidebar(row: &mut ChildSpawnerCommands, core: &ClientCore, ui: &Ui, placed: &
     });
 }
 
-/// Clicks: a cell selects; the sidebar's button unlocks. The mask and
-/// the board redraw on the `Known` restate that follows — the bit is
-/// never set here, `client-core`'s own rule about `SUB_KNOWN` being the
-/// authority.
+/// Clicks: a tab switches tree, a cell selects, the sidebar's button
+/// unlocks. The mask and the board redraw on the `Known` restate that
+/// follows — the bit is never set here, `client-core`'s own rule about
+/// `SUB_KNOWN` being the authority (and `research::unlock` states it since
+/// 2026-09-22, which it did not: the board never redrew on a purchase).
 pub fn clicks(
     mut ui: ResMut<Ui>,
     net: NonSend<super::super::Net>,
     cells: Query<(&Interaction, &NodeButton), Changed<Interaction>>,
     unlocks: Query<(&Interaction, &UnlockGo), Changed<Interaction>>,
+    tabs: Query<(&Interaction, &TabButton), Changed<Interaction>>,
 ) {
     if ui.panel != Panel::Tech {
         return;
+    }
+    for (interaction, tab) in tabs.iter() {
+        if *interaction == Interaction::Pressed && ui.tech_tab != tab.0 {
+            ui.tech_tab = tab.0;
+            ui.tech_sel = None;
+            ui.dirty = true;
+        }
     }
     for (interaction, cell) in cells.iter() {
         if *interaction == Interaction::Pressed && ui.tech_sel != Some(cell.0) {
@@ -448,6 +573,34 @@ pub fn clicks(
                 Err(e) => ui.say(e.to_string()),
             },
             Err(e) => ui.say(format!("that unlock would not encode ({e:?})")),
+        }
+    }
+}
+
+/// The status line hears the sim: a blueprint learned, or the sentence for
+/// why not. **Reads [`Feed`] and pops nothing** — `feed::drain` is the one
+/// `pop_*` site in the client and `hud::feedback` is the other reader of the
+/// same facts; this is a second `Res<Feed>`, which cannot consume anything.
+pub fn sync_status(feed: Res<Feed>, mut ui: ResMut<Ui>, net: NonSend<super::super::Net>) {
+    // The inventory hears it too since research table v1: a research table
+    // is opened there, and a blueprint is read there with a right-click, so
+    // "learned X" and "already known" belong on the line a player is
+    // looking at when they happen.
+    if !matches!(ui.panel, Panel::Tech | Panel::Inventory | Panel::Craft) {
+        return;
+    }
+    let core = &net.session.core;
+    for &(recipe, _coin) in feed.learned() {
+        let item = core
+            .recipes
+            .recipes
+            .get(recipe as usize)
+            .map_or(sim_core::gather::NO_ITEM, |d| d.output);
+        ui.say(format!("learned {}", item_label(&core.catalog, item)));
+    }
+    for (which, code, _item) in feed.refusals() {
+        if which == Refused::Research {
+            ui.say(crate::ui::refusals::research(code));
         }
     }
 }

@@ -537,9 +537,9 @@ fn a_blow_the_wire_reports_twice_is_one_blow() {
     );
 }
 
-/// Each matter has the sound of itself, and the two that do not have a
-/// reason: a body is voiced by the hitmarker, a plant by nothing worth a
-/// wrong waveform. `Cue::ImpactWood` had no producer at all from audio v0 to
+/// Each matter has the sound of itself, and the one that does not has a
+/// reason: a body is voiced by the hitmarker. A bush rustles and water
+/// splashes, off the remote-step takes that are those sounds. `Cue::ImpactWood` had no producer at all from audio v0 to
 /// 2026-09-13; this is the map that gives it one.
 #[test]
 fn each_matter_has_the_sound_of_itself() {
@@ -547,8 +547,11 @@ fn each_matter_has_the_sound_of_itself() {
     assert_eq!(impact_cue(Matter::Stone), Some(Cue::ImpactStone));
     assert_eq!(impact_cue(Matter::Metal), Some(Cue::ImpactMetal));
     assert_eq!(impact_cue(Matter::Dirt), Some(Cue::ImpactStone));
+    assert_eq!(impact_cue(Matter::Sand), Some(Cue::ImpactStone));
+    assert_eq!(impact_cue(Matter::Grass), Some(Cue::ImpactStone));
     assert_eq!(impact_cue(Matter::Flesh), None);
-    assert_eq!(impact_cue(Matter::Plant), None);
+    assert_eq!(impact_cue(Matter::Plant), Some(Cue::RemoteStepLitter));
+    assert_eq!(impact_cue(Matter::Water), Some(Cue::RemoteStepWater));
     // Every cue this map hands out is positional: an impact is a place.
     for m in Matter::ALL {
         if let Some(c) = impact_cue(m) {
@@ -582,9 +585,9 @@ fn the_contact_list_is_bounded_and_says_so() {
     for i in 0..(CONTACT_CAP + 5) {
         c.push(Contact {
             at: Vec3::new(i as f32, 0.0, 0.0),
-            away: Vec3::Y,
             matter: Matter::Wood,
             kind: ContactKind::Impact,
+            ..Contact::default()
         });
     }
     assert_eq!(c.len(), CONTACT_CAP);
@@ -638,4 +641,48 @@ fn the_pool_empties_on_the_way_out() {
     p = Chips::default();
     assert_eq!(p.live(), 0);
     assert_eq!(p.bursts, 0);
+}
+
+/// The wire names what struck (v77), and the client reads it straight.
+#[test]
+fn the_wire_names_the_weapon() {
+    use client::render::impact::{weapon_of, Weapon};
+    use sim_core::ranged::{IMPACT_ARROW, IMPACT_BLAST, IMPACT_BULLET, IMPACT_MELEE};
+    assert_eq!(weapon_of(IMPACT_ARROW), Weapon::Arrow);
+    assert_eq!(weapon_of(IMPACT_BULLET), Weapon::Bullet);
+    assert_eq!(weapon_of(IMPACT_MELEE), Weapon::Melee);
+    assert_eq!(weapon_of(IMPACT_BLAST), Weapon::Blast);
+}
+
+/// What a contact sounds like: a blow is the impact family, a round the
+/// bullet family (a glance off the hard two whines), a body is a body and a
+/// charge is a blast — and a gunshot past its near radius is the far layer.
+#[test]
+fn a_round_does_not_sound_like_a_blow() {
+    use client::render::audio::{contact_cue, far_layer, SHOT_FAR_M};
+    use client::render::impact::Weapon;
+    let (b, m) = (Weapon::Bullet, Weapon::Melee);
+    assert_eq!(contact_cue(b, Matter::Wood, false), Some(Cue::BulletWood));
+    assert_eq!(contact_cue(m, Matter::Wood, false), Some(Cue::ImpactWood));
+    assert_eq!(contact_cue(b, Matter::Sand, false), Some(Cue::BulletSoil));
+    assert_eq!(contact_cue(b, Matter::Metal, false), Some(Cue::BulletMetal));
+    assert_eq!(contact_cue(b, Matter::Metal, true), Some(Cue::Ricochet));
+    assert_eq!(contact_cue(b, Matter::Stone, true), Some(Cue::Ricochet));
+    assert_eq!(contact_cue(b, Matter::Wood, true), Some(Cue::BulletWood));
+    assert_eq!(contact_cue(m, Matter::Metal, true), Some(Cue::ImpactMetal));
+    assert_eq!(
+        contact_cue(Weapon::Arrow, Matter::Flesh, false),
+        Some(Cue::FleshHit)
+    );
+    assert_eq!(
+        contact_cue(Weapon::Blast, Matter::Stone, false),
+        Some(Cue::Blast)
+    );
+    assert_eq!(
+        contact_cue(b, Matter::Water, false),
+        Some(Cue::RemoteStepWater)
+    );
+    assert_eq!(far_layer(Cue::ShotGun, SHOT_FAR_M - 1.0), Cue::ShotGun);
+    assert_eq!(far_layer(Cue::ShotGun, SHOT_FAR_M + 1.0), Cue::ShotGunFar);
+    assert_eq!(far_layer(Cue::ShotBow, 80.0), Cue::ShotBow);
 }

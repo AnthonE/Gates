@@ -264,12 +264,13 @@ pub fn fly(
     mut q: Query<(&mut Transform, &mut Visibility)>,
 ) {
     let ticks = time.delta_secs() * TICK_HZ as f32;
-    let entities = pool.entities.clone();
+    // Disjoint field borrows rather than a per-frame clone of the entity list.
+    let Tracers { entities, slots } = &mut *pool;
     for (ix, entity) in entities.iter().enumerate() {
         let Ok((mut tf, mut vis)) = q.get_mut(*entity) else {
             continue;
         };
-        let f = &mut pool.slots[ix];
+        let f = &mut slots[ix];
         if f.life == 0 {
             if *vis != Visibility::Hidden {
                 *vis = Visibility::Hidden;

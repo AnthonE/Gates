@@ -88,8 +88,8 @@
 //! every bind group in the pipeline** — the view's shadow and environment
 //! maps, `StandardMaterial`'s six slots and ours — and the material group
 //! alone was 22. The browser refused the pipeline layout before a frame.
-//! `textures::GroundArrays` is the answer: four layers of one
-//! `texture_2d_array` cost one binding, roughness and AO share an array
+//! `textures::GroundArrays` is the answer: the identities (and the road's
+//! aggregate behind them) as layers of one `texture_2d_array` cost one binding, roughness and AO share an array
 //! (same size, format and sampler; `textures::AO_LAYER0`), and the ground is
 //! three sampled textures. **Same texels, same filter, same chain** — a layer
 //! samples exactly as the standalone texture did, which is what lets this stay
@@ -140,7 +140,8 @@ pub const ATTRIBUTE_ROAD: MeshVertexAttribute =
 
 /// Proposed material defaults, DECISIONS.md §open, road surface v1.
 /// Linear reflectances stay inside ART.md §5's band. Aggregate comes from
-/// the existing CC0 Gravel004 map, at pavement grading rather than scree size.
+/// the CC0 Gravel004 map (`textures::GroundMaps::aggregate`, array layer 4),
+/// at pavement grading rather than scree size.
 pub const ROAD_PAVEMENT_ALBEDO: [f32; 3] = [0.065, 0.070, 0.072];
 pub const ROAD_DIRT_ALBEDO: [f32; 3] = [0.18, 0.135, 0.085];
 pub const ROAD_AGGREGATE_TILE_M: f32 = 1.0;
@@ -207,7 +208,15 @@ pub type GroundMaterial = ExtendedMaterial<StandardMaterial, GroundSplat>;
 /// 0.2693 → 0.2450, so the gain that places that mean at 1 rose by the same
 /// 9.0%. Nothing was authored here; the file changed and the gate said so,
 /// which is the whole reason this constant is re-measured rather than typed.
-pub const GRAIN_GAIN: [f32; 4] = [5.5398, 4.0292, 9.6954, 4.0820];
+/// ⚠ **And 4.0820 → 9.9542 on 2026-09-24** (`Gravel004` → aCG `Rock032`, a
+/// weathered slab): scree read as a cobbled road at a player's feet above the
+/// treeline. Gravel004 stayed as the road's aggregate, at [`AGGREGATE_GAIN`].
+pub const GRAIN_GAIN: [f32; 4] = [5.5398, 4.0292, 9.6954, 9.9542];
+
+/// `1 / linear-luma mean` of the road's aggregate map (`aggregate_albedo.jpg`,
+/// `Gravel004`) — [`GRAIN_GAIN`]'s construction for the one layer that is not
+/// an identity. Measured, and re-measured by `tests/ground_splat.rs`.
+pub const AGGREGATE_GAIN: f32 = 4.0820;
 
 /// Per identity, the mean of its shipped `*_rough.jpg` — sand · grass ·
 /// litter · rock, in `terrain::splat`'s order.
@@ -237,7 +246,9 @@ pub const GRAIN_GAIN: [f32; 4] = [5.5398, 4.0292, 9.6954, 4.0820];
 /// sand and the wet term ([`WET_ROUGH`]) multiplies from there. If a mountain
 /// reads as glossy in a frame, this is the number to suspect first — the same
 /// sentence this block already carried about 0.88 → 0.611, one swap later.
-pub const ROUGH_MEAN: [f32; 4] = [0.9631, 0.9364, 0.9197, 0.5359];
+/// ⚠ **And back up to 0.6971 with the 2026-09-24 slab (`Rock032`)** — still
+/// the smoothest identity by 0.22.
+pub const ROUGH_MEAN: [f32; 4] = [0.9631, 0.9364, 0.9197, 0.6971];
 
 /// What a soaked surface keeps of its **dry roughness**.
 ///
@@ -294,12 +305,12 @@ pub const NORMAL_Z_FLOOR: f32 = 0.2;
 pub struct GroundSplatParams {
     /// `xyz` the identity's authored linear albedo.
     ///
-    /// **`w` is reserved and zero.** It carried `IDENTITY_ROUGH` until the
-    /// roughness maps landed; roughness is now sampled per texel and there is
-    /// no per-identity scalar left to send. The slot stays because a
-    /// `vec3` in a uniform array has a 16-byte stride anyway — dropping it
-    /// would change nothing about the layout and would cost the reader the
-    /// note explaining where the roughness went.
+    /// **`w` is spare but for `identity[0].w`, the rain's wetness** (weather
+    /// v0, `weather::update` → `terrain_mesh::Ring::set_rain_wet`): how soaked
+    /// the island looks, `0..1`, applied to up-facing ground through the same
+    /// `wetted` as the shoreline. The others carried `IDENTITY_ROUGH` until the
+    /// roughness maps landed and are zero; a `vec3` in a uniform array has a
+    /// 16-byte stride anyway, so the slots cost nothing.
     pub identity: [Vec4; 4],
     pub gain: Vec4,
     /// x = `WET_VALUE`, y = `WET_SATURATION`, z = `ALBEDO_LUMA_FLOOR`,
@@ -342,6 +353,21 @@ pub struct GroundSplatParams {
     pub paint_white: Vec4,
     /// x/y = stripe width and radial edge offset; z = validity roundoff tolerance.
     pub paint_geometry: Vec4,
+    /// x = [`ROCK_CELL_M`], y = [`ROCK_FINE_M`], z = [`ROCK_TILT`],
+    /// w = [`ROCK_FINE_TILT`].
+    pub rock_a: Vec4,
+    /// x = [`ROCK_SHADE`], y = [`ROCK_WEATHER_M`], z = [`ROCK_WEATHER`],
+    /// w = [`ROCK_WARP_M`].
+    pub rock_b: Vec4,
+    /// x = [`ROCK_CRACK_SHARE`], y = [`ROCK_CRACK_W`], z = [`ROCK_CRACK_DARK`],
+    /// w = [`ROCK_STREAK`].
+    pub rock_c: Vec4,
+    /// x = [`ROCK_STREAK_W_M`], y = [`ROCK_STREAK_H_M`], z = [`ROCK_FACE_ON`],
+    /// w = [`ROCK_FACE_FULL`].
+    pub rock_d: Vec4,
+    /// x = [`AGGREGATE_GAIN`]: the road's layer is not an identity, so
+    /// `gain` has no slot for it. yzw reserved and zero.
+    pub aggregate: Vec4,
 }
 
 impl GroundSplatParams {
@@ -402,6 +428,16 @@ impl GroundSplatParams {
                 ROAD_PAINT_VALID_EPS,
                 0.0,
             ),
+            rock_a: Vec4::new(ROCK_CELL_M, ROCK_FINE_M, ROCK_TILT, ROCK_FINE_TILT),
+            rock_b: Vec4::new(ROCK_SHADE, ROCK_WEATHER_M, ROCK_WEATHER, ROCK_WARP_M),
+            rock_c: Vec4::new(ROCK_CRACK_SHARE, ROCK_CRACK_W, ROCK_CRACK_DARK, ROCK_STREAK),
+            rock_d: Vec4::new(
+                ROCK_STREAK_W_M,
+                ROCK_STREAK_H_M,
+                ROCK_FACE_ON,
+                ROCK_FACE_FULL,
+            ),
+            aggregate: Vec4::new(AGGREGATE_GAIN, 0.0, 0.0, 0.0),
         }
     }
 }
@@ -418,6 +454,82 @@ pub fn tile_multipliers() -> [f32; 4] {
     }
     m
 }
+
+// ── The rock face ──────────────────────────────────────────────────────────
+//
+// **A smooth heightfield lights a scarp as one value, and that is what the
+// island's cliffs looked like: one pale sheet the height of a house** — every
+// shelf edge `terrain::REMAP_LUT` manufactures, and every summit, at the one
+// granite value `GROUND_ALBEDO` gives them (the operator's frames, 2026-09-23:
+// *"our world is still weak terrain wise"*). The photograph cannot answer it:
+// it tiles at 4 m and averages to its own mean by thirty.
+//
+// So the rock carries structure the mesh does not have, all of it procedural
+// and all of it in world space, so a scarp and a flat summit cut the same
+// blocks and no frame has to be chosen on a curved face:
+//
+//  - **blocks** — a jittered 3D lattice, read through a small warp so a
+//    boundary wanders like a joint rather than ruling a polygon edge;
+//  - **facets** — each block, and each block of a finer lattice inside it,
+//    leans its normal by its own draw, so a face catches the sun in patches;
+//  - **cracks** — a key per PAIR of blocks, and only [`ROCK_CRACK_SHARE`] of
+//    pairs are cracks, so a crack runs the length of one boundary and stops;
+//  - **weathering** — broad patches, the scale that reads across a valley;
+//  - **streaks** — a lattice stretched tall, only on faces too steep for turf.
+//
+// **What it deliberately does not do, both measured on the capture before they
+// were cut.** It moves no splat weight: a first cut let blocks decide rock
+// against turf at the lip and foot, and the foot of every scarp read as white
+// paving stones laid on grass. And it draws no joint on every boundary: an
+// outline round every block (tried twice, thin and then pillowed) reads as
+// crazy paving or a dry-stone wall, never as a cliff.
+//
+// **Brightness-neutral by construction**, the same promise `MACRO_AMP` makes:
+// the value spread, the weathering and the streaks are each odd about the
+// middle of a symmetric draw, so each has mean 1, and only the cracks darken —
+// a sliver of the face, gone before a crack is a pixel wide. The mean granite
+// is still `GROUND_ALBEDO[3]`, which `fill::GROUND_MIX` folds.
+//
+// **Everything fades with the block's size on screen** (the fragment's own
+// footprint, taken before any branch), so a block a few pixels across stops
+// leaning and a distant face does not sparkle.
+
+/// Edge of one rock block, metres. Large enough that a scarp a player stands
+/// under shows a handful, small enough that one across a valley still reads.
+pub const ROCK_CELL_M: f32 = 7.0;
+/// Edge of one fine block inside the large ones, metres.
+pub const ROCK_FINE_M: f32 = 2.2;
+/// How far a block's facet leans, as a tangent-plane offset per unit normal.
+/// Each component of the draw is in ±1, so the lean tops out near 33°.
+pub const ROCK_TILT: f32 = 0.38;
+/// The fine blocks' lean, riding on the large blocks'.
+pub const ROCK_FINE_TILT: f32 = 0.16;
+/// Peak per-block departure of the face's value from its mean.
+pub const ROCK_SHADE: f32 = 0.06;
+/// Wavelength of the weathering patches, metres, and their peak departure.
+pub const ROCK_WEATHER_M: f32 = 14.0;
+pub const ROCK_WEATHER: f32 = 0.12;
+/// How far the block lattice is pushed about before it is read, metres.
+pub const ROCK_WARP_M: f32 = 1.6;
+/// Share of block boundaries that are cracks.
+pub const ROCK_CRACK_SHARE: f32 = 0.3;
+/// A crack's half-width in block units, and how dark its centre goes.
+///
+/// At most 0.125: a crack shows from half a pixel wide, so it is gone by a
+/// block footprint of `2 × ROCK_CRACK_W` pixels, inside the 0.25 where
+/// `near_big` reaches zero and the shader skips the 7 m pass.
+pub const ROCK_CRACK_W: f32 = 0.025;
+const _: () = assert!(ROCK_CRACK_W <= 0.125);
+pub const ROCK_CRACK_DARK: f32 = 0.5;
+/// Peak departure of the streaks: darker in a streak, lighter between.
+pub const ROCK_STREAK: f32 = 0.2;
+/// The streak lattice's cell, metres: narrow across a face and tall down it.
+pub const ROCK_STREAK_W_M: f32 = 1.6;
+pub const ROCK_STREAK_H_M: f32 = 14.0;
+/// `sin(tilt)` where streaks begin (~37°) and are full (~58°): water runs
+/// down a face, it does not stripe a slope a player walks up.
+pub const ROCK_FACE_ON: f32 = 0.6;
+pub const ROCK_FACE_FULL: f32 = 0.85;
 
 /// Where the biplanar wall tap turns on, as `sin(tilt)`.
 ///
@@ -471,17 +583,17 @@ pub struct GroundSplat {
     #[uniform(100)]
     pub params: GroundSplatParams,
     /// The four albedo photographs, `Rgba8UnormSrgb`, in `terrain::splat`'s
-    /// order — **and the shared sampler, at 102.** The derive refuses a
+    /// order, then the road's aggregate — **and the shared sampler, at 102.** The derive refuses a
     /// `sampler` attribute with no `texture` beside it, so the one sampler
     /// every array uses hangs off this one; which one is arbitrary and
     /// stable, and the arrays are built with an identical descriptor.
     #[texture(101, dimension = "2d_array")]
     #[sampler(102)]
     pub albedo: Handle<Image>,
-    /// The four tangent-space normal maps, `Rgba8Unorm`.
+    /// The tangent-space normal maps, `Rgba8Unorm`, the same five layers.
     #[texture(103, dimension = "2d_array")]
     pub normal: Handle<Image>,
-    /// Roughness at layers `0..4`, ambient occlusion at `AO_LAYER0..8`, both
+    /// Roughness at layers `0..5`, ambient occlusion at `AO_LAYER0..10`, both
     /// greyscale `Rgba8Unorm` — a roughness map is DATA, loaded
     /// `is_srgb = false`, and so is AO.
     ///

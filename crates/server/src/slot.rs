@@ -195,6 +195,24 @@ pub struct Connect {
     pub link: Link,
 }
 
+/// Accept→sim: what the platform said the player in `slot` owns
+/// (`skins.rs`). `id` is the tenant the read was made for; `ShardCore`
+/// drops the message if the slot has moved on to somebody else.
+#[derive(Clone, Copy)]
+pub struct SkinsMsg {
+    pub slot: usize,
+    pub id: u32,
+    pub owned: sim_core::skin::SkinSet,
+}
+
+/// Accept→sim: what the platform's item store charges, one entry per baked
+/// skin row (`skins::prices_of`). Fixed storage, so the sim thread takes it
+/// without touching the heap.
+#[derive(Clone, Copy)]
+pub struct SkinPricesMsg {
+    pub prices: [Option<crate::skins::Price>; sim_core::limits::MAX_SKINS],
+}
+
 /// Sim→accept: one player's state, for the store's index to file under their
 /// key. Carries the player **id**, not the key — the sim has never heard of a
 /// key, and that is the wall that keeps identity out of the deterministic

@@ -99,6 +99,9 @@ pub mod report;
 // easiest to break, and a test behind `--features render` runs in the
 // renderer tier where nobody looks at it. `render/audio.rs` is the Bevy half.
 pub use sound;
+// The bank the engine plays: recorded takes where we have them, synthesized
+// ones elsewhere. Not feature-gated, for `sound`'s reason.
+pub mod sound_bank;
 // The in-game menus' arithmetic. NOT feature-gated: it is pure, it is what
 // the menus actually get wrong, and a test behind `--features render` runs
 // in the renderer tier where nobody looks at it (`ui/mod.rs`).

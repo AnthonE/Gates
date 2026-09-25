@@ -243,16 +243,19 @@ fn restock(inv: &mut [ItemStack], shooter: bool) {
         item: if shooter { GUN } else { BLADE },
         count: 1,
         cond: 0,
+        skin: 0,
     };
     inv[1] = ItemStack {
         item: if shooter { ROUND } else { BLADE },
         count: 100,
         cond: 0,
+        skin: 0,
     };
     inv[2] = ItemStack {
         item: KEEPSAKE,
         count: 10,
         cond: 0,
+        skin: 0,
     };
 }
 

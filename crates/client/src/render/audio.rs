@@ -39,14 +39,12 @@ use bevy::prelude::*;
 
 use crate::sound::birds::{self, Birds};
 use crate::sound::engine::{self, Cmd, Live, Stats, HELD_BEDS, HELD_MUSIC};
-use crate::sound::mixer::{Mixer, Request, Start};
+use crate::sound::mixer::{Mixer, Request, Start, Takes};
 use crate::sound::music::{self, Director};
 use crate::sound::steps::Steps;
 use crate::sound::voice::Voices;
 use crate::sound::water::Waterline;
-use crate::sound::{
-    synth, Cue, Mix, Snapshot, SnapshotDef, Snapshots, CUE_COUNT, SAMPLE_RATE, VOICE_CAP,
-};
+use crate::sound::{Cue, Mix, Snapshot, SnapshotDef, Snapshots, CUE_COUNT, SAMPLE_RATE, VOICE_CAP};
 
 use super::{Eye, Net};
 
@@ -69,7 +67,7 @@ pub const CMD_FRAME_CAP: usize = 32;
 pub const BED_FADE_PER_S: f32 = 0.5;
 
 /// The looping beds, in the order [`Sound::bed_gain`] indexes them.
-pub const BEDS: [Cue; 3] = [Cue::BedWind, Cue::BedSurf, Cue::BedUnder];
+pub const BEDS: [Cue; 4] = [Cue::BedWind, Cue::BedSurf, Cue::BedUnder, Cue::BedRain];
 
 /// What of the generated bank has reached the engine, and how long each cue
 /// is — the number the live ledger ([`Engine::live`]) predicts a voice's end
@@ -79,6 +77,7 @@ pub const BEDS: [Cue; 3] = [Cue::BedWind, Cue::BedSurf, Cue::BedUnder];
 pub struct Bank {
     installed: [bool; CUE_COUNT],
     len_s: [f32; CUE_COUNT],
+    takes: [u8; CUE_COUNT],
 }
 
 impl Default for Bank {
@@ -86,6 +85,7 @@ impl Default for Bank {
         Self {
             installed: [false; CUE_COUNT],
             len_s: [0.0; CUE_COUNT],
+            takes: [1; CUE_COUNT],
         }
     }
 }
@@ -96,9 +96,15 @@ impl Bank {
         self.installed[cue.idx()]
     }
 
-    /// The cue's length in seconds at the bank's rate; zero until it lands.
+    /// One take's length in seconds at the bank's rate; zero until it
+    /// lands.
     pub fn len_s(&self, cue: Cue) -> f32 {
         self.len_s[cue.idx()]
+    }
+
+    /// How many takes the cue's samples hold (`sound_bank::pcm`).
+    pub fn takes(&self, cue: Cue) -> u8 {
+        self.takes[cue.idx()]
     }
 
     /// How many cues have landed.
@@ -106,9 +112,11 @@ impl Bank {
         self.installed.iter().filter(|b| **b).count()
     }
 
-    fn land(&mut self, cue: Cue, samples: usize) {
+    fn land(&mut self, cue: Cue, samples: usize, takes: u8) {
+        let takes = takes.max(1);
         self.installed[cue.idx()] = true;
-        self.len_s[cue.idx()] = samples as f32 / SAMPLE_RATE as f32;
+        self.takes[cue.idx()] = takes;
+        self.len_s[cue.idx()] = (samples / takes as usize) as f32 / SAMPLE_RATE as f32;
     }
 }
 
@@ -244,6 +252,8 @@ impl Engine {
 #[derive(Resource, Default)]
 pub struct Sound {
     pub mixer: Mixer,
+    /// Which take each cue plays next (`sound::mixer::Takes`).
+    pub takes: Takes,
     pub steps: Steps,
     /// The waterline, as a thing the local body crosses.
     pub waterline: Waterline,
@@ -393,9 +403,9 @@ pub fn build_bank_with(app: &mut App, spread: bool) {
     let mut bank = Bank::default();
     if !spread {
         let mut engine = app.world_mut().resource_mut::<Engine>();
-        for (i, pcm) in synth::pcm_bank().into_iter().enumerate() {
-            let cue = Cue::ALL[i];
-            bank.land(cue, pcm.len());
+        for cue in Cue::ALL {
+            let (pcm, takes) = crate::sound_bank::pcm(cue);
+            bank.land(cue, pcm.len(), takes);
             engine.install(cue, pcm);
         }
     }
@@ -454,8 +464,8 @@ pub fn synthesize(mut synth: ResMut<Synth>, mut bank: ResMut<Bank>, mut engine: 
         return;
     }
     let cue = synth_order()[synth.next];
-    let pcm = synth::pcm(cue);
-    bank.land(cue, pcm.len());
+    let (pcm, takes) = crate::sound_bank::pcm(cue);
+    bank.land(cue, pcm.len(), takes);
     engine.install(cue, pcm);
     synth.next += 1;
 }
@@ -531,6 +541,7 @@ pub fn steps(
     world: Res<super::WorldId>,
     mut sound: ResMut<Sound>,
     time: Res<Time>,
+    fx: Option<ResMut<super::fx::Fx>>,
 ) {
     let body = &net.session.core.predict.body;
     let pos = net.session.core.predict.render_position();
@@ -543,6 +554,9 @@ pub fn steps(
     let below_sea = pos[1] < sim_core::terrain::SEA_LEVEL;
     let cue = crate::sound::steps::surface_cue(splat, below_sea);
     sound.play(Request::own(cue).with_gain(step.gain));
+    if let Some(mut fx) = fx {
+        super::fx::world::footstep(&mut fx, cue, Vec3::from(pos), step.gain);
+    }
 }
 
 /// One remote body's step odometer — the same `sound::steps::Steps` the
@@ -572,6 +586,8 @@ pub fn remote_steps(
     time: Res<Time>,
     mut bodies: Query<(&Transform, &mut RemoteSteps), With<super::bodies::Body>>,
     mut sound: ResMut<Sound>,
+    eye: Res<Eye>,
+    mut fx: Option<ResMut<super::fx::Fx>>,
 ) {
     let dt = time.delta_secs();
     for (t, mut steps) in bodies.iter_mut() {
@@ -583,6 +599,11 @@ pub fn remote_steps(
         let below_sea = pos[1] < sim_core::terrain::SEA_LEVEL;
         let cue = crate::sound::steps::remote(crate::sound::steps::surface_cue(splat, below_sea));
         sound.play(Request::at(cue, pos).with_gain(step.gain));
+        if let Some(fx) = fx.as_deref_mut() {
+            if t.translation.distance(eye.pos) <= super::fx::world::STEP_FX_M {
+                super::fx::world::footstep(fx, cue, t.translation, step.gain);
+            }
+        }
     }
 }
 
@@ -603,20 +624,54 @@ pub fn remote_steps(
 /// *on what* for the chips, the sparks and the dust, so the thock cannot
 /// land on a different blow from the debris — and the one de-duplication
 /// rule (`impact::same_blow`) is applied once, there, instead of a second
-/// time here. A flesh contact is `None` from `impact_cue` by design: the
-/// hitmarker and the victim's own hurt cue already voice it (`NOW.md`
-/// §0pvp item 2 stays open for a flesh waveform).
+/// time here. Which cue is [`contact_cue`]'s: a blow, a round, a body and a
+/// charge each sound like themselves.
 ///
 /// Positional even for the swinger's own blow, `shots`' argument: an
 /// impact is a thing that happens at a place, and the place is at arm's
 /// length. Everyone else's swings and every arrow's stop are the same cue
 /// at their own points, which is the disclosure the reference relies on —
 /// a chop in the next clearing is heard as a chop.
-pub fn impacts(contacts: Res<super::impact::Contacts>, mut sound: ResMut<Sound>) {
+pub fn impacts(
+    contacts: Res<super::impact::Contacts>,
+    mut sound: ResMut<Sound>,
+    mut roll: Local<u32>,
+) {
     for c in contacts.iter() {
-        if let Some(cue) = super::impact::impact_cue(c.matter) {
+        // A cheap stream for the ricochet's odds: cosmetic, and never read
+        // by anything that decides.
+        *roll = roll.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        let glance = (*roll >> 16) % 100 < RICOCHET_PCT;
+        if let Some(cue) = contact_cue(c.weapon, c.matter, glance) {
             sound.play(Request::at(cue, [c.at.x, c.at.y, c.at.z]));
         }
+    }
+}
+
+/// How often a round on stone or metal glances off whining, percent.
+pub const RICOCHET_PCT: u32 = 30;
+
+/// What a contact sounds like, by what struck it and what it struck: a
+/// blow is the impact family, a round or an arrow the bullet family (a
+/// `glance` on the hard two is a ricochet), a body is a body whatever hit
+/// it, and a charge is a blast. A round into water splashes.
+pub fn contact_cue(
+    weapon: super::impact::Weapon,
+    matter: super::impact::Matter,
+    glance: bool,
+) -> Option<Cue> {
+    use super::impact::{Matter, Weapon};
+    match (weapon, matter) {
+        (Weapon::Blast, _) => Some(Cue::Blast),
+        (_, Matter::Flesh) => Some(Cue::FleshHit),
+        (Weapon::Melee, m) => super::impact::impact_cue(m),
+        (_, Matter::Water) => Some(Cue::RemoteStepWater),
+        (_, Matter::Metal) if glance => Some(Cue::Ricochet),
+        (_, Matter::Stone) if glance => Some(Cue::Ricochet),
+        (_, Matter::Metal) => Some(Cue::BulletMetal),
+        (_, Matter::Stone) => Some(Cue::BulletStone),
+        (_, Matter::Wood) => Some(Cue::BulletWood),
+        (_, Matter::Dirt | Matter::Sand | Matter::Grass | Matter::Plant) => Some(Cue::BulletSoil),
     }
 }
 
@@ -712,6 +767,7 @@ pub fn shot_cue(speed_mmpt: u16) -> Cue {
 pub fn shots(
     net: NonSend<Net>,
     feed: Res<super::feed::Feed>,
+    eye: Res<Eye>,
     bodies: Query<(&super::bodies::Body, &Transform)>,
     mut sound: ResMut<Sound>,
 ) {
@@ -738,7 +794,23 @@ pub fn shots(
             };
             [t.x, t.y, t.z]
         };
-        sound.play(Request::at(cue, at));
+        let d = eye.pos.distance(Vec3::from(at));
+        sound.play(Request::at(far_layer(cue, d), at));
+    }
+}
+
+/// Past this far a gunshot is its far layer, metres: where the near
+/// report's falloff and the far one's meet at about the same level
+/// (`CUES`' two rows), so the switch is a change of colour and not a step.
+pub const SHOT_FAR_M: f32 = 45.0;
+
+/// The layer of a report heard from `d` metres. Only the gun has a far
+/// layer; a bow does not carry far enough to need one.
+pub fn far_layer(cue: Cue, d: f32) -> Cue {
+    if cue == Cue::ShotGun && d > SHOT_FAR_M {
+        Cue::ShotGunFar
+    } else {
+        cue
     }
 }
 
@@ -750,7 +822,12 @@ pub fn shots(
 /// client whose HUD ate every event before the mixer saw one. `feed.rs`'s
 /// header is the whole account; the rule that came out of it is that
 /// `feed::drain` is the only `pop_*` call site in the client.
-pub fn feed(net: NonSend<Net>, feed: Res<super::feed::Feed>, mut sound: ResMut<Sound>) {
+pub fn feed(
+    net: NonSend<Net>,
+    feed: Res<super::feed::Feed>,
+    world: Option<Res<super::WorldId>>,
+    mut sound: ResMut<Sound>,
+) {
     // One marker per frame however many landed — `Cue::Hit`'s own cooldown
     // would refuse the rest anyway, and asking for four identical clicks so
     // three can be thrown away is work the queue does not need to do.
@@ -789,17 +866,22 @@ pub fn feed(net: NonSend<Net>, feed: Res<super::feed::Feed>, mut sound: ResMut<S
     for _ in feed.crafted() {
         sound.play(Request::own(Cue::CraftDone));
     }
-    // A magazine seated. `Cue::Place` borrowed rather than minted, on the
-    // spill's argument below and for its reason: the ear needs "that
-    // happened" and the readout above the hotbar says what — and what a
-    // reload sounds like is a mechanical thing seating, which is the cue
-    // a piece going down already is. A voice of its own is a fair later
-    // change and would cost a `synth.rs` row, a bank entry and a
-    // `WANTED.md` line (`assets/sound/WANTED.md` is the queue); the dry
-    // click needs no such argument, because it is a refusal and the
-    // variant-agnostic block below already answers it.
+    // A magazine seated: your own hands, so an own-fact. (It borrowed the
+    // positional `Cue::Place` with no position, which the mixer refuses —
+    // a reload was silent.)
     if feed.reloaded > 0 {
-        sound.play(Request::own(Cue::Place));
+        sound.play(Request::own(Cue::Reload));
+    }
+    // A knock, at the door knocked on — broadcast, so it is often somebody
+    // else's hand, and where the door is is the news.
+    if let Some(world) = world {
+        let core = &net.session.core;
+        for &(cx, cz, level, loc, _who) in feed.knocks() {
+            let (x, z) = sim_core::build::anchor(cx, cz, loc);
+            let plate = core.pieces.cols().plate(cx, cz).unwrap_or(0);
+            let y = super::structures::level_base_y(world.seed, &world.haven, cx, cz, level, plate);
+            sound.play(Request::at(Cue::Knock, [x, y + 1.3, z]));
+        }
     }
     // Every refusal kind, one sound. A player does not need to hear the
     // difference between a refused craft and a refused placement — the toast
@@ -946,6 +1028,7 @@ pub fn voices(
     herd: Query<(&super::mobs::Animal, &Transform)>,
     eye: Res<Eye>,
     time: Res<Time>,
+    feed: Res<super::feed::Feed>,
     mut sound: ResMut<Sound>,
 ) {
     let dt = time.delta_secs();
@@ -956,6 +1039,15 @@ pub fn voices(
         };
         let p = t.translation;
         let at = [p.x, p.y + super::mobs::voice_h_of(slot), p.z];
+        // A pack call the sim raised (wire v76): the howl goes up now, from
+        // this animal, and its own clock restarts so the ambient cadence
+        // does not answer it a second later. `Feed` is read, never drained
+        // — `feed::drain` is the one reader of the core's rings.
+        if feed.howls().contains(&animal.0) {
+            sound.voices.called(slot);
+            sound.play(Request::at(Cue::Howl, at));
+            continue;
+        }
         let d = [at[0] - eye.pos.x, at[1] - eye.pos.y, at[2] - eye.pos.z];
         let near = d[0] * d[0] + d[1] * d[1] + d[2] * d[2] <= switch * switch;
         let Some(cue) = sound.voices.due(slot, near, dt) else {
@@ -1037,6 +1129,7 @@ pub fn bed(
     settings: Res<super::Settings>,
     feed: Res<super::feed::Feed>,
     pin: Res<super::rig::DayPin>,
+    mut weather: ResMut<super::weather::WeatherNow>,
     mut engine: ResMut<Engine>,
 ) {
     // How much cover is within earshot, 0..1. `COVER_FULL` scatter slots
@@ -1099,8 +1192,10 @@ pub fn bed(
     // The tick comes through `DayPin` for the same reason one level up: on a
     // `--capture` run the hour is pinned, and reading the raw estimate here
     // would roost the birds at the box's hour while the sun stood at noon.
-    let is_day = !sim_core::world::is_night(pin.tick(feed.server_tick_est));
-    if is_day && sound.birds.due(cover, time.delta_secs()) && near > 0 {
+    let is_day = !sim_core::world::is_night(pin.day_tick(feed.server_tick_est, &feed.env));
+    // …and not in the rain (weather v0): birds shelter.
+    let singing = is_day && weather.rain < 0.15;
+    if singing && sound.birds.due(cover, time.delta_secs()) && near > 0 {
         let want = sound.birds.perch(near);
         if let Some(p) = props
             .iter()
@@ -1114,7 +1209,11 @@ pub fn bed(
     // Open ground is windier than the inside of a forest, but a forest is not
     // silent — it is the same wind in the canopy. So the bed never drops
     // below half, and cover moves it rather than gating it.
-    sound.bed_target[0] = 1.0 - 0.45 * cover;
+    // The weather's wind rides on top (weather v0): a breeze at clear, a
+    // gale in a storm.
+    // Under a roof the gale is outside: its share of the bed drops.
+    let gale = weather.wind * if weather.sheltered { 0.35 } else { 1.0 };
+    sound.bed_target[0] = (1.0 - 0.45 * cover) * (0.6 + 0.8 * gale);
     // The surf reads how much sea is within earshot, from the same
     // `terrain::height` the water is drawn from — 24 taps, a fixed pattern, so
     // the level cannot flicker as a search finds different water.
@@ -1124,6 +1223,16 @@ pub fn bed(
     // The submerged bed has no world level of its own: it is entirely the
     // snapshot's, which is the point of a snapshot.
     sound.bed_target[2] = 1.0;
+    // The rain (weather v0): as hard as it falls, duller under a roof. The
+    // snapshot takes it away underwater.
+    sound.bed_target[3] = weather.rain * if weather.sheltered { 0.35 } else { 1.0 };
+
+    // Thunder: each bolt's clap once its sound has crossed the distance
+    // (`weather::update` queued it at the bolt's own time plus d / 343).
+    let now_s = feed.server_tick_est / sim_core::limits::TICK_HZ as f64;
+    while let Some(gain) = weather.take_thunder(now_s) {
+        sound.play(Request::own(Cue::Thunder).with_gain(gain));
+    }
 
     let d = BED_FADE_PER_S * time.delta_secs();
     for i in 0..BEDS.len() {
@@ -1143,7 +1252,11 @@ pub fn bed(
     let mix = mix_of(&settings).under(&snap);
     for (i, cue) in BEDS.iter().enumerate() {
         let def = cue.def();
-        let level = sound.bed_gain[i] * snap.bed(*cue) * def.gain * mix.bus_gain(def.bus);
+        let level = sound.bed_gain[i]
+            * snap.bed(*cue)
+            * def.gain
+            * mix.bus_gain(def.bus)
+            * sound.mixer.duck();
         if level != sound.bed_sent[i] {
             sound.bed_sent[i] = level;
             engine.push(Cmd::Gain {
@@ -1201,6 +1314,9 @@ pub fn music(
 ) {
     let dt = time.delta_secs();
     let mix = mix_of(&settings);
+    // The music sits under the same duck the beds do (`Mixer::duck`): a
+    // gunshot or a blast pulls it down with them.
+    let duck = sound.mixer.duck();
     if let Some(piece) = sound.music.tick(dt) {
         let i = sound.next_music;
         sound.next_music = (i + 1) % HELD_MUSIC;
@@ -1211,7 +1327,7 @@ pub fn music(
         // piece, which is the click `synth::edges` exists to prevent at the
         // other end of the same sample. The loop's job is to FOLLOW the
         // slider, not to set the opening level.
-        let level = def.gain * mix.bus_gain(def.bus);
+        let level = def.gain * mix.bus_gain(def.bus) * duck;
         sound.music_slots[i] = MusicSlot {
             cue: piece.cue,
             fade: 1.0,
@@ -1248,7 +1364,7 @@ pub fn music(
             continue;
         }
         let def = slot.cue.def();
-        let level = def.gain * mix.bus_gain(def.bus) * slot.fade;
+        let level = def.gain * mix.bus_gain(def.bus) * slot.fade * duck;
         if level != slot.sent {
             slot.sent = level;
             engine.push(Cmd::Gain {
@@ -1338,7 +1454,10 @@ pub fn pump(
     for start in chosen.into_iter().flatten() {
         // The rate is the mixer's speed resampled to the renderer's rate —
         // `engine::rate` is the one resampler in the chain (`audio_out.rs`).
-        engine.push(engine::start_cmd(&start, listener, right, out_rate));
+        // The take is the bank's to count and never the last one played.
+        let takes = bank.takes(start.cue);
+        let take = sound.takes.pick(start.cue, takes);
+        engine.push(engine::start_cmd(&start, listener, right, out_rate).with_take(take, takes));
         // The ledger counts what the renderer will actually sound: a cue
         // that has not landed (a spread bank's first frames) is silence
         // there, counted as `unbanked`, and must not hold a ledger slot for

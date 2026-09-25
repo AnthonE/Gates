@@ -299,16 +299,18 @@ fn python_const(name: &str) -> f64 {
     line.split('=').nth(1).unwrap().trim().parse().unwrap()
 }
 
-/// What the four props that violate their row's shape band measured on
-/// 2026-09-05 — pinned, so they cannot drift further and cannot be
-/// forgotten. Remove an entry when its re-roll lands; the file is then held
-/// to the band itself. (`plan`, `spread`.)
-const SHAPE_AS_SHIPPED: &[(&str, f64, f64)] = &[
-    ("models/prop/rock_a.glb", 1.1723, 0.1162),
-    ("models/prop/node_stone.glb", 1.3911, 0.3763),
-    ("models/prop/node_metal.glb", 1.3936, 0.2671),
-    ("models/prop/node_sulfur.glb", 1.7488, 0.1996),
-];
+/// Props that violate their row's shape band, pinned at what they measured —
+/// so they cannot drift further and cannot be forgotten. Remove an entry when
+/// its re-roll lands; the file is then held to the band itself. (`plan`,
+/// `spread`.)
+///
+/// **Empty since 2026-09-23**, when `ci/rock_kit.py`'s node kind re-made all
+/// three ore nodes round and `rock_a` became a kit boulder. The four that sat
+/// here were `rock_a` 1.1723 / 0.1162 (a ball), and the stone, metal and
+/// sulfur nodes at 1.3911, 1.3936 and 1.7488 (blocks). Kept as a named empty
+/// rather than deleted, because an empty list cannot rot and the next
+/// offender has somewhere to go.
+const SHAPE_AS_SHIPPED: &[(&str, f64, f64)] = &[];
 const SHAPE_PIN_TOL: f64 = 0.005;
 
 fn glb_of(rel: &str) -> Glb {

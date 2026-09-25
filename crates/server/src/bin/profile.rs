@@ -57,6 +57,11 @@ struct Args {
     /// turn and acking like one. Zero is the historical profile; run it at
     /// `MAX_SPECTATORS` and subtract to price a seat.
     spectators: usize,
+    /// Stand the whole animal roster in a ring round the cluster, homed
+    /// there, so every animal is awake, hearing a hundred players and
+    /// routing over the foundation block — the brain's worst case rather
+    /// than the handful that happen to live near the cluster.
+    mobs_near: bool,
 }
 
 impl Default for Args {
@@ -70,6 +75,7 @@ impl Default for Args {
             content_dir: "content".into(),
             pitch_m: 6.0,
             spectators: 0,
+            mobs_near: false,
         }
     }
 }
@@ -94,10 +100,11 @@ fn parse_args() -> Args {
                     .unwrap_or(0)
                     .min(sim_core::limits::MAX_SPECTATORS)
             }
+            "--mobs-near" => a.mobs_near = val == "1",
             "--help" | "-h" => {
                 println!(
                     "profile [--clients N] [--pieces N] [--ticks N] [--warmup N] \
-                     [--seed N] [--content DIR] [--pitch M] [--spectators N]"
+                     [--seed N] [--content DIR] [--pitch M] [--spectators N] [--mobs-near 1]"
                 );
                 std::process::exit(0);
             }
@@ -176,6 +183,27 @@ fn fill_clients(core: &mut ShardCore, stats: &ShardStats, a: &Args) {
     }
 }
 
+/// `--mobs-near`: every homed animal onto a ring 20–60 m round the cluster's
+/// middle, its home moved with it so the leash does not walk it straight
+/// back out. Deterministic in the slot, like everything else here.
+fn herd_near(core: &mut ShardCore, a: &Args) {
+    let side = (a.clients as f32).sqrt().ceil().max(1.0);
+    let mid = 900.0 + side * a.pitch_m * 0.5;
+    let seed = core.world.seed;
+    let haven = core.world.haven;
+    for (slot, m) in core.world.mobs.m.iter_mut().enumerate() {
+        if !m.homed {
+            continue;
+        }
+        let (dx, dz) = sim_core::yaw_dir(((slot as u16).wrapping_mul(41)) << 8);
+        let r = 20.0 + (slot % 5) as f32 * 10.0;
+        let (x, z) = (mid + dx * r, mid + dz * r);
+        m.body = sim_core::movement::Body::at(seed, &haven, x, z);
+        m.home_qx = m.body.qx;
+        m.home_qz = m.body.qz;
+    }
+}
+
 /// Fill the piece store the way the game does — one `Command::Place` per
 /// piece, through the real refusal chain — by walking a builder to each
 /// address. Foundations only: the terrain refuses plenty of them, and what
@@ -239,6 +267,7 @@ fn fill_pieces(core: &mut ShardCore, want: usize) -> usize {
                     item,
                     count: units.saturating_mul(4).max(4),
                     cond: 0,
+                    skin: 0,
                 };
             }
             cmds.push(Command::Place {
@@ -267,10 +296,12 @@ fn fill_pieces(core: &mut ShardCore, want: usize) -> usize {
 /// snapshot tick, the no-snapshot sample is always empty, and indexing it
 /// panicked the tool on every run.
 fn stat(v: &mut [Duration]) -> (f64, f64, f64) {
+    // An empty sample is a phase that never ran — the no-snapshot ticks,
+    // since `SNAPSHOT_INTERVAL_TICKS` went to 1 — not a reason to panic.
     if v.is_empty() {
         return (0.0, 0.0, 0.0);
     }
-    let n = v.len().max(1) as f64;
+    let n = v.len() as f64;
     let sum: Duration = v.iter().sum();
     v.sort_unstable();
     let p99 = v[(v.len() * 99 / 100).min(v.len().saturating_sub(1))];
@@ -297,6 +328,9 @@ fn main() {
             core.connect_spectator(MAX_PLAYERS + i, id_of(target), target),
             "seat {i}"
         );
+    }
+    if a.mobs_near {
+        herd_near(&mut core, &a);
     }
 
     // Every client sends every tick, which is what a shard under load
@@ -418,6 +452,18 @@ fn main() {
     println!(
         "         budget {budget_us:.0} µs/tick at {} Hz",
         sim_core::limits::TICK_HZ
+    );
+    // The animals' routing (`sim-core/src/nav.rs`): plans asked for and A*
+    // cells expanded over the whole run, warmup included. Expansions are the
+    // count-based budget (`NAV_EXPAND_PER_TICK`), so this is the line that
+    // says how close the roster ran to it.
+    let ran = core.world.tick.max(1);
+    println!(
+        "         nav {} plans · {} cells expanded · {:.1} cells/tick (budget {})",
+        core.world.nav.plans,
+        core.world.nav.expanded,
+        core.world.nav.expanded as f64 / ran as f64,
+        sim_core::limits::NAV_EXPAND_PER_TICK
     );
     println!();
     println!("  phase                         avg µs      p99 µs      max µs   % budget");

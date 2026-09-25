@@ -1,7 +1,73 @@
-# Gates · content/skins.toml — the skin catalog (CONTENT.md §1). Content
-# too, but dark until A3 (ALPHA.md §2): the catalog ships empty and rows
-# land only by operator act, priced in bare ELO or ORBS — one coin per
-# row. The schema can never carry a stat field; that absence is the
-# never-table (DESIGN.md §3.3) enforced at the schema layer.
+# Gates · content/skins.toml — the skin catalog (CONTENT.md §1): Rust's
+# item definitions for skins. The schema can never carry a stat field;
+# that absence is the never-table (DESIGN.md §3.3) enforced at the schema
+# layer.
+#
+#   id       content id, `skin.` prefix
+#   catalog  the id an item wearing this skin carries (ItemStack::skin) and
+#            the catalogId the platform's item contract mints it under.
+#            Nonzero, unique, never reused for a different look.
+#   name     what the store and the item's label say (≤ 24 ASCII bytes)
+#   covers   the one item it fits (a stack-1 item, not a deployable, v0)
+#   tint     the look, v0: an sRGB multiply over the item's own colours
+#   coin     ELO or ORBS \  optional, together: a row without them ships
+#   price    bare amount  /  its look and is not on sale until priced —
+#                           prices are the operator's (BUSINESS.md)
+#   season   which drop it belongs to
+#
+# Ownership is read off the platform (server/src/skins.rs); a shard with
+# `skins_all = true` in shard.toml lends every row to every player so the
+# looks can be seen before anything is sold. On a shard with `skins_origin`
+# set, the platform's store prices replace the coin/price here (read at boot
+# and every five minutes); these apply only on a shard without one.
+#
+# Rows stay out of the content hash (`canon.rs`): a stack carries its skin's
+# catalog id, so adding, retinting or renaming a look is never a wipe.
 
-skin = []
+[[skin]]
+id = "skin.rock_obsidian"
+catalog = 1
+name = "Obsidian Rock"
+covers = "item.rock"
+tint = [70, 62, 84]
+season = "launch"
+
+[[skin]]
+id = "skin.hatchet_stone_ember"
+catalog = 2
+name = "Ember Hatchet"
+covers = "item.hatchet_stone"
+tint = [214, 118, 70]
+season = "launch"
+
+[[skin]]
+id = "skin.pickaxe_stone_frost"
+catalog = 3
+name = "Frost Pickaxe"
+covers = "item.pickaxe_stone"
+tint = [150, 190, 232]
+season = "launch"
+
+[[skin]]
+id = "skin.bow_bone"
+catalog = 4
+name = "Bone Bow"
+covers = "item.bow"
+tint = [236, 226, 204]
+season = "launch"
+
+[[skin]]
+id = "skin.revolver_gilded"
+catalog = 5
+name = "Gilded Revolver"
+covers = "item.revolver"
+tint = [232, 192, 96]
+season = "launch"
+
+[[skin]]
+id = "skin.armor_burlap_body_moss"
+catalog = 6
+name = "Moss Tunic"
+covers = "item.armor_burlap_body"
+tint = [124, 152, 92]
+season = "launch"

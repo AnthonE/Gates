@@ -38,9 +38,9 @@ use sim_core::inventory::SpawnKit;
 use sim_core::limits::MAX_SPAWN_KIT;
 use sim_core::limits::{
     ARROW_STEP_MM, HEARTH_STOCK_ROWS, MAX_ARROW_SUBSTEPS, MAX_COOK_ROWS, MAX_DEPLOY_COSTS,
-    MAX_DEPLOY_DEFS, MAX_HITSCAN_SAMPLES, MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_ROLLS,
-    MAX_LOOT_TABLES, MAX_MAGS, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS,
-    MAX_RESEARCH_ROWS, MAX_WEAPON_AMMO, TICK_HZ,
+    MAX_DEPLOY_DEFS, MAX_HITSCAN_SAMPLES, MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_GUARANTEED,
+    MAX_LOOT_ROLLS, MAX_LOOT_TABLES, MAX_MAGS, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES,
+    MAX_RECIPE_INPUTS, MAX_RESEARCH_ROWS, MAX_SKINS, MAX_WEAPON_AMMO, TICK_HZ,
 };
 use sim_core::loot::{
     LootContent, LootEntryDef, LootTableDef, LOOT_BARREL, LOOT_CACHE, LOOT_CRATE,
@@ -48,6 +48,7 @@ use sim_core::loot::{
 use sim_core::mob::{MobContent, MobDef, MOB_LOOT_ROWS, MOB_PIG, MOB_WOLF};
 use sim_core::oven::{CookContent, CookRow};
 use sim_core::research::{ResearchContent, ResearchRow, NO_RECIPE};
+use sim_core::skin::{SkinContent, SkinDef};
 use sim_core::survival::{ConsumableDef, SurvivalContent, TICKS_PER_MIN};
 
 /// Container name → baked `loot::LOOT_*` index, for exactly the containers
@@ -252,13 +253,7 @@ impl Content {
                     .ok_or_else(|| format!("bake: `{}` output missing", r.id))?,
                 out_count: r.count as u16,
                 ticks: r.seconds * TICK_HZ,
-                station: match r.station {
-                    Station::None => STATION_NONE,
-                    Station::Workbench1 => STATION_WORKBENCH1,
-                    Station::Workbench2 => STATION_WORKBENCH2,
-                    Station::Workbench3 => STATION_WORKBENCH3,
-                    Station::Furnace => STATION_FURNACE,
-                },
+                station: station_code(r.station),
                 n_inputs: r.inputs.len() as u8,
                 inputs: [(0, 0); MAX_RECIPE_INPUTS],
             };
@@ -529,6 +524,29 @@ impl Content {
                     self.balance.globals.upkeep_pct_per_day
                 )
             })?;
+        // Upkeep v2. Validation holds the ranges; the bake refuses only
+        // what the baked widths cannot carry.
+        let g = &self.balance.globals;
+        if g.upkeep_steps.len() > sim_core::limits::UPKEEP_STEPS {
+            return Err(format!(
+                "bake: {} upkeep steps exceed the {} the sim carries",
+                g.upkeep_steps.len(),
+                sim_core::limits::UPKEEP_STEPS
+            ));
+        }
+        for (n, [after, permille]) in g.upkeep_steps.iter().enumerate() {
+            dc.upkeep_steps[n] = (
+                u16::try_from(*after)
+                    .map_err(|_| format!("bake: upkeep step {after} overflows u16"))?,
+                u16::try_from(*permille)
+                    .map_err(|_| format!("bake: upkeep rate {permille} overflows u16"))?,
+            );
+        }
+        dc.upkeep_step_count = g.upkeep_steps.len() as u8;
+        dc.inside_decay_pct = u16::try_from(g.inside_decay_pct.unwrap_or(0))
+            .map_err(|_| "bake: inside_decay_pct overflows u16".to_string())?;
+        dc.grief_periods = u16::try_from(g.grief_protection_h)
+            .map_err(|_| "bake: grief_protection_h overflows u16".to_string())?;
         Ok(dc)
     }
 
@@ -1090,6 +1108,7 @@ impl Content {
                     item: idx,
                     count,
                     cond,
+                    skin: 0,
                 },
             ) {
                 return Err(format!("bake: spawn_kit slot {i} refused"));
@@ -1124,6 +1143,37 @@ impl Content {
         sc.water_span_ticks = span(s.water_minutes_to_empty, "water_minutes_to_empty")?;
         if sc.max_food == 0 || sc.max_water == 0 {
             return Err("bake: a zero meter would disarm the survival clock".to_string());
+        }
+        // Wet and cold (weather v0). Validated to per mille already; the
+        // casts cannot truncate what `validate` admitted.
+        let e = &self.balance.exposure;
+        let ex = &mut sc.exposure;
+        ex.wet_rain_per_s = u16f(e.wet_rain_per_s, "wet_rain_per_s")?;
+        ex.dry_per_s = u16f(e.dry_per_s, "dry_per_s")?;
+        ex.dry_fire_per_s = u16f(e.dry_fire_per_s, "dry_fire_per_s")?;
+        ex.soak_depth_cm = u16f(e.soak_depth_cm, "soak_depth_cm")?;
+        ex.night_cold = u16f(e.night_cold, "night_cold")?;
+        ex.rain_cold = u16f(e.rain_cold, "rain_cold")?;
+        ex.wind_cold = u16f(e.wind_cold, "wind_cold")?;
+        ex.wet_cold = u16f(e.wet_cold, "wet_cold")?;
+        ex.fire_warmth = u16f(e.fire_warmth, "fire_warmth")?;
+        ex.torch_warmth = u16f(e.torch_warmth, "torch_warmth")?;
+        ex.heat_radius_cm = u16f(e.heat_radius_cm, "heat_radius_cm")?;
+        ex.chill_rise_per_s = u16f(e.chill_rise_per_s, "chill_rise_per_s")?;
+        ex.chill_fall_per_s = u16f(e.chill_fall_per_s, "chill_fall_per_s")?;
+        ex.hurt_at = if e.chill_rise_per_s > 0 {
+            u16f(e.hurt_at, "hurt_at")?
+        } else {
+            1000
+        };
+        ex.hurt_hp_per_min = u16f(e.hurt_hp_per_min, "hurt_hp_per_min")?;
+        for a in &self.armors {
+            let idx = self
+                .item_index(&a.id)
+                .ok_or_else(|| format!("bake: armor `{}` names no item", a.id))?
+                as usize;
+            // Per cent to per mille of chill kept out.
+            ex.warmth[idx] = (a.cold_pct * 10) as i16;
         }
         for con in &self.consumables {
             let idx = self
@@ -1251,6 +1301,30 @@ impl Content {
                 self.research_coin.item
             )
         })?;
+        // The table's paper and its wait (research table v1). Validate has
+        // held the paper to a stack of one with no ceiling and the wait to
+        // a u16 of ticks; the resolves here can only fail on a bug there.
+        rc.blueprint = self
+            .item_index(&self.research_table.blueprint)
+            .ok_or_else(|| {
+                format!(
+                    "bake: research blueprint `{}` names no item",
+                    self.research_table.blueprint
+                )
+            })?;
+        rc.table_ticks = self
+            .research_table
+            .seconds
+            .checked_mul(TICK_HZ)
+            .and_then(|t| u16::try_from(t).ok())
+            .filter(|&t| t > 0)
+            .ok_or_else(|| {
+                format!(
+                    "bake: a {} s research is not 1..={} ticks",
+                    self.research_table.seconds,
+                    u16::MAX
+                )
+            })?;
         if self.research.len() > MAX_RESEARCH_ROWS {
             return Err(format!(
                 "bake: {} research rows exceed the sim's {MAX_RESEARCH_ROWS}-row table",
@@ -1417,10 +1491,58 @@ impl Content {
                     .checked_add(e.weight)
                     .ok_or_else(|| format!("bake: loot `{}` weight sum overflows", l.id))?;
             }
+            // The guaranteed rows (loot guaranteed column v0): refused past
+            // the store rather than clamped, `MAX_LOOT_ENTRIES`'s policy — a
+            // table that silently dropped a certain payout would read as
+            // paying it.
+            if l.guaranteed.len() > MAX_LOOT_GUARANTEED {
+                return Err(format!(
+                    "bake: loot `{}` has {} guaranteed rows, past the sim's {MAX_LOOT_GUARANTEED}",
+                    l.id,
+                    l.guaranteed.len()
+                ));
+            }
+            t.guaranteed_len = l.guaranteed.len() as u16;
+            for (i, g) in l.guaranteed.iter().enumerate() {
+                let item = self.item_index(&g.item).ok_or_else(|| {
+                    format!("bake: loot `{}` guarantees unknown `{}`", l.id, g.item)
+                })?;
+                t.guaranteed[i] = LootEntryDef {
+                    item,
+                    weight: 0,
+                    count_min: small(g.count_min, "count_min")?,
+                    count_max: small(g.count_max, "count_max")?,
+                };
+            }
             lc.tables[which] = t;
         }
         Ok(lc)
     }
+    /// The skin catalog (`sim_core::skin`): each row's catalog id and the
+    /// item row it fits, in file order, which is the row order a player's
+    /// owned set indexes. Names, tints and prices are not the sim's business
+    /// and stay here for the server's wire catalog.
+    pub fn bake_skins(&self) -> Result<SkinContent, String> {
+        if self.skins.len() > MAX_SKINS {
+            return Err(format!(
+                "skins: {} rows, limit {MAX_SKINS}",
+                self.skins.len()
+            ));
+        }
+        let mut sc = SkinContent::EMPTY;
+        for (i, s) in self.skins.iter().enumerate() {
+            let covers = self
+                .item_index(&s.covers)
+                .ok_or_else(|| format!("skin `{}` covers `{}`: not an item", s.id, s.covers))?;
+            sc.defs[i] = SkinDef {
+                catalog: s.catalog,
+                covers,
+            };
+        }
+        sc.count = self.skins.len() as u16;
+        Ok(sc)
+    }
+
     /// The animal species table (`sim-core/src/mob.rs`).
     ///
     /// Three conversions happen here and nowhere else, which is the point
@@ -1497,10 +1619,19 @@ impl Content {
                 // both, so `small` cannot refuse a row it accepted.
                 body_r_cm: small(m.body_r_cm, "body_r_cm")?,
                 body_h_cm: small(m.body_h_cm, "body_h_cm")?,
+                // The cone's half-angle as a cosine, in permille: the sim
+                // may not call trig (wall 1), and a bake may. Rounded to a
+                // permille so the value is the same on every build that
+                // bakes it. Validate bounded the degrees to 1..=360.
+                sight_dot_pm: ((m.sight_deg as f64 * 0.5).to_radians().cos() * 1000.0).round()
+                    as i16,
+                pack_cm: m.pack_m as i64 * 100,
+                fire_fear_cm: m.fire_fear_m as i64 * 100,
                 loot: [ItemStack {
                     item: NO_ITEM,
                     count: 0,
                     cond: 0,
+                    skin: 0,
                 }; MOB_LOOT_ROWS],
             };
             for (i, d) in m.drops.iter().enumerate() {
@@ -1516,10 +1647,25 @@ impl Content {
                         .map_err(|_| {
                             format!("bake: mob `{}` drop `{}` condition overflows", m.id, d.item)
                         })?,
+                    skin: 0,
                 };
             }
             mc.defs[which] = def;
         }
         Ok(mc)
+    }
+}
+
+/// The sim's station code for a schema station — **the one mapping**, shared
+/// by the recipe bake and the research tree's tier rule (`validate.rs`), so
+/// the tier a node is refused for and the tier the sim demands at unlock
+/// (`research::node_tier` of this code) cannot be two different readings.
+pub fn station_code(s: Station) -> u8 {
+    match s {
+        Station::None => STATION_NONE,
+        Station::Workbench1 => STATION_WORKBENCH1,
+        Station::Workbench2 => STATION_WORKBENCH2,
+        Station::Workbench3 => STATION_WORKBENCH3,
+        Station::Furnace => STATION_FURNACE,
     }
 }

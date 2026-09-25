@@ -201,6 +201,16 @@ impl HerdAssets {
     }
 }
 
+/// The hip height of the species in `slot`, metres — off the same anchor
+/// tables its legs hang from.
+fn hip_of(slot: usize) -> f32 {
+    if mob::kind_of(slot) == mob::MOB_WOLF {
+        WOLF_LEG_ANCHORS[0].0[1]
+    } else {
+        LEG_ANCHORS[0].0[1]
+    }
+}
+
 /// The stride speed at which a slot's species reaches full swing.
 pub fn full_mps_of(slot: usize) -> f32 {
     match mob::kind_of(slot) {
@@ -397,9 +407,10 @@ pub fn stream(
         match known {
             Some(entity) => {
                 if let Ok((mut t, mut gait)) = q.get_mut(entity) {
-                    t.translation = pos;
-                    t.rotation = facing;
                     gait.observe(pos, time.delta_secs());
+                    gait.settle(rs.sleeping, time.delta_secs());
+                    t.translation = pos - Vec3::Y * gait.lie * gait.hip * LIE_DROP;
+                    t.rotation = facing;
                 }
             }
             None => {
@@ -481,7 +492,24 @@ pub struct Gait {
     pub full_mps: f32,
     /// Last interpolated position, for the difference.
     last: Option<Vec3>,
+    /// How far lain down, `0` standing to `1` on its belly with its legs
+    /// folded — the sim's Sleep state (the wire's `sleeping` on an animal),
+    /// eased over [`LIE_S`] so it settles rather than drops.
+    pub lie: f32,
+    /// Its hip height, metres — how far lying down lowers it.
+    pub hip: f32,
 }
+
+/// Seconds an animal takes to lie down or get up.
+pub const LIE_S: f32 = 0.8;
+
+/// How far a folded leg lies from vertical, radians: forward for a
+/// foreleg, back for a hind leg, short of flat so no hoof sinks.
+pub const LEG_FOLD_RAD: f32 = 1.35;
+
+/// How much of its hip height a lying animal drops: the belly on the
+/// ground, the folded legs (which lie at the hip) just clear of it.
+pub const LIE_DROP: f32 = 0.8;
 
 impl Gait {
     /// The phase origin is hashed from the roster slot — the snort's own
@@ -494,7 +522,20 @@ impl Gait {
             phase: crate::sound::voice::hash01(slot as u32, 0) * std::f32::consts::TAU,
             full_mps: full_mps_of(slot),
             last: None,
+            lie: 0.0,
+            hip: hip_of(slot),
         }
+    }
+
+    /// Ease toward lying down (`asleep`) or standing, over [`LIE_S`].
+    pub fn settle(&mut self, asleep: bool, dt: f32) {
+        let to = if asleep { 1.0 } else { 0.0 };
+        let step = (dt / LIE_S).max(0.0);
+        self.lie = if self.lie < to {
+            (self.lie + step).min(to)
+        } else {
+            (self.lie - step).max(to)
+        };
     }
 
     /// Fold a new interpolated position in.
@@ -551,12 +592,15 @@ pub fn trot(
     for (gait, children) in herd.iter() {
         for child in children.iter() {
             if let Ok((leg, mut t)) = legs.get_mut(child) {
-                t.rotation = Quat::from_rotation_x(leg_swing_rad(
-                    gait.phase,
-                    leg.0,
-                    gait.speed,
-                    gait.full_mps,
-                ));
+                let swing = leg_swing_rad(gait.phase, leg.0, gait.speed, gait.full_mps);
+                // Lying down folds the legs flat under the body: forelegs
+                // forward, hind legs back (the anchor's z says which).
+                let fold = if t.translation.z > 0.0 {
+                    -LEG_FOLD_RAD
+                } else {
+                    LEG_FOLD_RAD
+                };
+                t.rotation = Quat::from_rotation_x(swing + (fold - swing) * gait.lie);
             }
         }
     }

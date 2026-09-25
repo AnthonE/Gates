@@ -149,7 +149,10 @@ fn main() -> AppExit {
     app.insert_non_send_resource(Rt(rt));
 
     if let Some(session) = session {
-        app.insert_resource(WorldId::new(session.welcome.seed));
+        app.insert_resource(WorldId::with_haven(
+            session.welcome.seed,
+            *session.core.haven(),
+        ));
         app.insert_non_send_resource(Net {
             session,
             sel: 0,
@@ -168,6 +171,8 @@ fn main() -> AppExit {
         identity: a.identity.clone(),
         no_launcher: a.no_launcher,
         no_hud: a.no_hud,
+        pin_hour: a.pin_hour_pm.map(|pm| pm as f32 / 1000.0),
+        pin_weather: a.pin_weather,
     };
     app.add_plugins(GatesRenderPlugin { start, capture });
     // **Returned, not discarded.** `App::run` hands back an `AppExit`, which

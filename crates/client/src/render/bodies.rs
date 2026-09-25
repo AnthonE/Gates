@@ -139,6 +139,9 @@ struct Live {
     /// second for every remote, and a `PointLight` written every frame is
     /// re-extracted into the render world every frame.
     held: Option<usize>,
+    /// The skin the held model is drawn in (skins v0), 0 for its own look;
+    /// `u16::MAX` while a tinted copy waits on its base material.
+    held_skin: u16,
     lit: Option<usize>,
 }
 
@@ -216,6 +219,8 @@ pub fn stream(
     models: Res<Models>,
     net: NonSend<Net>,
     feed: Res<super::feed::Feed>,
+    mut skin_mats: ResMut<super::viewmodel::SkinMats>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     // Nothing is drawn until the rig has loaded. A body spawned before it
     // would get no scene and no player, and the bind below only ever runs on
@@ -324,7 +329,15 @@ pub fn stream(
                 // an id the wire started carrying at v56 precisely because
                 // the holder's inventory and the holder's latch are not
                 // ours to read.
-                update_hand(&mut commands, &mut store, id, &models, rig.scale, &rs, core);
+                update_hand(
+                    &mut commands,
+                    &mut store,
+                    id,
+                    (&models, &mut skin_mats, &mut materials),
+                    rig.scale,
+                    &rs,
+                    core,
+                );
                 if was_sleeping != rs.sleeping {
                     // The shade lives on the scene's descendants now, so the
                     // swap is a marker the walk consumes rather than a
@@ -400,6 +413,16 @@ pub fn stream(
                                 shadows_enabled: false,
                                 ..default()
                             },
+                            // The flame itself, while the light is lit:
+                            // `fx::world::fires` draws any lit emitter
+                            // carrying this, the nearest few, a torch's at
+                            // a torch's size.
+                            super::fx::world::FireFx {
+                                flames: true,
+                                flame_dy: 0.0,
+                                smoke_dy: 0.15,
+                                scale: super::fx::world::TORCH_FIRE_SCALE,
+                            },
                             Transform::IDENTITY,
                         ))
                         .id();
@@ -419,6 +442,7 @@ pub fn stream(
                         // against, which is one frame of empty hand and
                         // no ordering assumption about a command queue.
                         held: None,
+                        held_skin: 0,
                         lit: None,
                         bone: None,
                     },
@@ -618,7 +642,11 @@ fn update_hand(
     commands: &mut Commands,
     store: &mut Bodies,
     id: u32,
-    models: &Models,
+    (models, skin_mats, materials): (
+        &Models,
+        &mut super::viewmodel::SkinMats,
+        &mut Assets<StandardMaterial>,
+    ),
     scale: f32,
     rs: &client_core::interp::RemoteState,
     core: &client_core::core::ClientCore,
@@ -633,14 +661,26 @@ fn update_hand(
         Some(_) => hand_wants(&core.catalog, rs),
         None => (None, None),
     };
-    if live.held != want {
+    // The held item's skin (skins v0), under the hand's own rule: a hand
+    // that draws nothing wears nothing.
+    let skin = if want.is_some() { rs.held_skin } else { 0 };
+    if live.held != want || live.held_skin != skin {
         let mut e = commands.entity(live.hand);
         match want {
             Some(row) => {
                 let (mesh, mat) = models.row(row);
+                let tint = crate::ui::skins::tint_of(&core.skins, skin);
+                let skinned = tint.and_then(|t| skin_mats.for_skin(row, skin, t, &mat, materials));
+                // Not recorded while the base material loads, so the next
+                // frame tries again (`viewmodel::swap`'s rule).
+                live.held_skin = if skinned.is_some() || tint.is_none() {
+                    skin
+                } else {
+                    u16::MAX
+                };
                 e.insert((
                     Mesh3d(mesh),
-                    MeshMaterial3d(mat),
+                    MeshMaterial3d(skinned.unwrap_or(mat)),
                     hand_pose(row, scale),
                     Visibility::Inherited,
                 ));
@@ -656,6 +696,7 @@ fn update_hand(
                     MeshMaterial3d::<StandardMaterial>::default(),
                     Visibility::Hidden,
                 ));
+                live.held_skin = 0;
             }
         }
         live.held = want;

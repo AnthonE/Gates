@@ -104,6 +104,23 @@ const CROSSHAIR_TICKS: [(f32, f32, f32, f32); 4] = [
 /// that until both ends had names.
 const HOTBAR_BOTTOM_PX: f32 = 18.0;
 const HOTBAR_CELL_PX: f32 = 46.0;
+/// A hotbar slot at rest, and its edge.
+const SLOT_BG: Color = Color::srgba(0.05, 0.05, 0.06, 0.55);
+const SLOT_EDGE: Color = Color::srgba(0.75, 0.72, 0.62, 0.35);
+/// The slot in your hand: Rust's selection blue, filled.
+const SLOT_SEL: Color = super::panels::CELL_SEL;
+const SLOT_SEL_EDGE: Color = Color::srgba(0.45, 0.68, 0.88, 0.95);
+
+/// Rust's notices sit over the vitals and are this wide — wider than a
+/// vital row, because an item name has to fit.
+const NOTICE_W: f32 = 212.0;
+/// An item notice: Rust's olive (≈#506133), translucent.
+const NOTICE_BG: Color = Color::srgba(0.314, 0.380, 0.200, 0.86);
+const NOTICE_TEXT: Color = Color::srgba(0.96, 0.96, 0.92, 1.0);
+const NOTICE_AMOUNT: Color = Color::srgba(0.80, 0.93, 0.62, 1.0);
+/// The craft bar: Rust's blue, the trough and the progress over it.
+const CRAFT_BAR_BG: Color = Color::srgba(0.122, 0.420, 0.627, 0.45);
+const CRAFT_BAR_FILL: Color = Color::srgba(0.122, 0.420, 0.627, 0.92);
 
 /// How long the hitmarker flashes, seconds. Short on purpose — it is
 /// confirmation, not a readout.
@@ -869,6 +886,52 @@ impl Vital {
     }
 }
 
+/// A wet or cold chip over the vitals (weather v0): the reference's
+/// `WET 36%` and a cold warning that turns red while the cold is taking hp.
+#[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ExposureChip {
+    Wet,
+    Cold,
+}
+
+const WET_CHIP: Color = Color::srgba(0.16, 0.36, 0.62, 0.85);
+const COLD_CHIP: Color = Color::srgba(0.42, 0.58, 0.70, 0.85);
+const FREEZE_CHIP: Color = Color::srgba(0.70, 0.16, 0.14, 0.9);
+
+/// Keep the wet and cold chips on what the server last said. Hidden while
+/// there is nothing to say — dry, and warm enough not to mention.
+pub fn exposure(
+    net: NonSend<super::Net>,
+    mut chips: Query<(&ExposureChip, &mut Text, &mut Node, &mut BackgroundColor)>,
+) {
+    let core = &net.session.core;
+    for (chip, mut text, mut node, mut bg) in &mut chips {
+        let (show, want, colour) = match chip {
+            ExposureChip::Wet => (core.wet_pct > 0, format!("WET {}%", core.wet_pct), WET_CHIP),
+            // The one chip that costs hp says what stops it.
+            ExposureChip::Cold if core.cold_hurting => (
+                true,
+                "FREEZING · FIND A FIRE OR A ROOF".to_string(),
+                FREEZE_CHIP,
+            ),
+            ExposureChip::Cold => (core.cold_pct >= 25, "COLD".to_string(), COLD_CHIP),
+        };
+        // Out of the layout, not just invisible: a hidden chip that still
+        // took its row left a gap between the vitals and the notices over
+        // them.
+        let want_display = if show { Display::Flex } else { Display::None };
+        if node.display != want_display {
+            node.display = want_display;
+        }
+        if show && text.0 != want {
+            text.0 = want;
+        }
+        if bg.0 != colour {
+            bg.0 = colour;
+        }
+    }
+}
+
 /// The row for one vital — hidden wholesale when its maximum is 0, which is
 /// the "draw nothing rather than an empty bar" rule this module has always
 /// held, moved from a string to a `Display`.
@@ -1084,8 +1147,8 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                         align_items: AlignItems::FlexEnd,
                         ..default()
                     },
-                    BackgroundColor(Color::srgba(0.05, 0.05, 0.06, 0.55)),
-                    BorderColor::all(Color::srgba(0.75, 0.72, 0.62, 0.35)),
+                    BackgroundColor(SLOT_BG),
+                    BorderColor::all(SLOT_EDGE),
                 ))
                 .with_children(|cell| {
                     // The icon fills the cell and is spawned EMPTY: a handle
@@ -1104,11 +1167,8 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                         },
                         ImageNode {
                             image: Handle::default(),
-                            // The icons are white-on-transparent silhouettes
-                            // (`icons.rs`), so the tint IS the colour and a
-                            // slightly warm off-white keeps them from
-                            // vibrating against the pale border.
-                            color: Color::srgba(0.90, 0.88, 0.82, 0.95),
+                            // A colour picture (`icons.rs`), drawn as it is.
+                            color: super::icons::PICTURE,
                             ..default()
                         },
                         Visibility::Hidden,
@@ -1119,6 +1179,8 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                         Text::new(""),
                         super::ui::font_bold(12.0),
                         TextColor(Color::srgba(0.97, 0.95, 0.88, 0.95)),
+                        // Over a colour picture, a count needs its shadow.
+                        super::ui::TEXT_SHADOW,
                         Node {
                             position_type: PositionType::Absolute,
                             right: Val::Px(3.0),
@@ -1182,12 +1244,122 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                 bottom: Val::Px(18.0),
                 right: Val::Px(20.0),
                 flex_direction: FlexDirection::Column,
+                // Flush right, so the notices over the bars can be wider
+                // than a bar without pushing the bars off the edge.
+                align_items: AlignItems::FlexEnd,
                 row_gap: Val::Px(3.0),
                 ..default()
             },
             Pickable::IGNORE,
         ))
         .with_children(|stack| {
+            // Rust's notices, over the vitals where Rust stacks them: what
+            // just arrived (`ui::notices`), newest on top, then the craft
+            // bar. Spawned once and hidden; `pickups` and `craft_bar` fill
+            // them in place, so a gather costs no node.
+            for i in 0..crate::ui::notices::NOTICE_ROWS {
+                stack
+                    .spawn((
+                        NoticeRow(i),
+                        notice_node(),
+                        BackgroundColor(NOTICE_BG),
+                        Pickable::IGNORE,
+                    ))
+                    .with_children(|row| {
+                        // Hidden until `pickups` hands it a picture: a
+                        // default handle draws Bevy's white placeholder.
+                        row.spawn((
+                            NoticeIcon(i),
+                            notice_icon_node(),
+                            ImageNode::default(),
+                            Visibility::Hidden,
+                            Pickable::IGNORE,
+                        ));
+                        row.spawn((
+                            NoticeName(i),
+                            Text::new(""),
+                            super::ui::font_bold(12.0),
+                            TextColor(NOTICE_TEXT),
+                            Node {
+                                flex_grow: 1.0,
+                                ..default()
+                            },
+                            Pickable::IGNORE,
+                        ));
+                        row.spawn((
+                            NoticeAmount(i),
+                            Text::new(""),
+                            super::ui::font_bold(12.0),
+                            TextColor(NOTICE_AMOUNT),
+                            Pickable::IGNORE,
+                        ));
+                    });
+            }
+            stack
+                .spawn((
+                    CraftBar,
+                    notice_node(),
+                    BackgroundColor(CRAFT_BAR_BG),
+                    Pickable::IGNORE,
+                ))
+                .with_children(|bar| {
+                    bar.spawn((
+                        CraftBarFill,
+                        Node {
+                            position_type: PositionType::Absolute,
+                            left: Val::Px(0.0),
+                            top: Val::Px(0.0),
+                            width: Val::Percent(0.0),
+                            height: Val::Percent(100.0),
+                            ..default()
+                        },
+                        BackgroundColor(CRAFT_BAR_FILL),
+                        Pickable::IGNORE,
+                    ));
+                    bar.spawn((
+                        CraftBarIcon,
+                        notice_icon_node(),
+                        ImageNode::default(),
+                        Visibility::Hidden,
+                        Pickable::IGNORE,
+                    ));
+                    bar.spawn((
+                        CraftBarName,
+                        Text::new(""),
+                        super::ui::font_bold(12.0),
+                        TextColor(NOTICE_TEXT),
+                        Node {
+                            flex_grow: 1.0,
+                            ..default()
+                        },
+                        Pickable::IGNORE,
+                    ));
+                    bar.spawn((
+                        CraftBarEta,
+                        Text::new(""),
+                        super::ui::font_bold(12.0),
+                        TextColor(NOTICE_TEXT),
+                        Pickable::IGNORE,
+                    ));
+                });
+            // Wet and cold (weather v0): two chips over the bars, hidden
+            // until there is something to say.
+            for chip in [ExposureChip::Wet, ExposureChip::Cold] {
+                stack.spawn((
+                    chip,
+                    Text::new(""),
+                    super::ui::font_bold(13.0),
+                    TextColor(Color::srgb(0.97, 0.97, 0.98)),
+                    BackgroundColor(WET_CHIP),
+                    Node {
+                        align_self: AlignSelf::FlexEnd,
+                        padding: UiRect::axes(Val::Px(6.0), Val::Px(1.0)),
+                        display: Display::None,
+                        ..default()
+                    },
+                    Pickable::IGNORE,
+                ));
+            }
             for v in [Vital::Hp, Vital::Water, Vital::Food] {
                 stack
                     .spawn((
@@ -1677,7 +1849,18 @@ pub fn update(
     // — the highlight is `net.sel`, this is the inventory mirror.
     for (icon, mut img, mut vis) in icons.iter_mut() {
         let stack = core.inv.get(icon.0).copied().unwrap_or_default();
-        match crate::ui::icons::icon_stem(&core.catalog, stack).and_then(|s| art.verb(s)) {
+        // A blueprint shows the thing it teaches and a skinned item wears its
+        // skin's tint, as their cells on the inventory page do — the belt and
+        // the page disagreed about both.
+        let shown = sim_core::research::blueprint_target(&core.research, stack)
+            .map_or(stack, |t| sim_core::gather::ItemStack { item: t, ..stack });
+        let [tr, tg, tb] =
+            crate::ui::skins::tint_of(&core.skins, stack.skin).unwrap_or([1.0, 1.0, 1.0]);
+        let tint = Color::srgb(tr, tg, tb);
+        if img.color != tint {
+            img.color = tint;
+        }
+        match crate::ui::icons::icon_stem(&core.catalog, shown).and_then(|s| art.verb(s)) {
             Some(h) => {
                 if img.image != h {
                     img.image = h;
@@ -1742,18 +1925,20 @@ pub fn update(
         }
     }
 
+    // **The slot in your hand is a solid blue tile**, Rust's own mark for
+    // it (≈#1F5D8D, the interface blue), where ours was an amber hairline
+    // that a colour picture drowned. Written only on a change: this runs
+    // every frame and a rewrite is a re-extract.
     for (cell, mut border, mut bg) in cells.iter_mut() {
         let selected = cell.0 == net.sel as usize;
-        *border = BorderColor::all(if selected {
-            Color::srgba(0.98, 0.86, 0.55, 0.95)
-        } else {
-            Color::srgba(0.75, 0.72, 0.62, 0.35)
-        });
-        *bg = BackgroundColor(if selected {
-            Color::srgba(0.14, 0.13, 0.10, 0.72)
-        } else {
-            Color::srgba(0.05, 0.05, 0.06, 0.55)
-        });
+        let want_border = if selected { SLOT_SEL_EDGE } else { SLOT_EDGE };
+        if border.top != want_border {
+            *border = BorderColor::all(want_border);
+        }
+        let want_bg = if selected { SLOT_SEL } else { SLOT_BG };
+        if bg.0 != want_bg {
+            *bg = BackgroundColor(want_bg);
+        }
     }
 
     // The vitals: a row is hidden outright when its maximum is 0, the fill is
@@ -1877,6 +2062,24 @@ pub fn feedback(
         });
     }
 
+    // A blueprint learned — the research verbs' LANDED half, whose refused
+    // half is the `Refused::Research` arm above. `Feed::learned` had no reader
+    // at all until 2026-09-22, so a table research or a tree unlock that
+    // worked was silent everywhere but the craft panel's LOCKED label going
+    // away (which, for the tree, it also did not — `research::unlock` never
+    // restated the mask).
+    for &(recipe, _coin) in feed.learned() {
+        let item = core
+            .recipes
+            .recipes
+            .get(recipe as usize)
+            .map_or(sim_core::gather::NO_ITEM, |d| d.output);
+        toast.say(format!(
+            "learned {}",
+            crate::ui::craft::item_label(&core.catalog, item)
+        ));
+    }
+
     // The consume verbs' LANDED half (`NOW.md` §0eat). The refused half is in
     // the loop above and rides the queue, so the mixer's refusal cue answers
     // a dry shoreline for free. A ring since 2026-08-15: this read the
@@ -1931,15 +2134,16 @@ pub fn feedback(
     for _ in feed.knocks() {
         toast.say("*knock knock*".to_string());
     }
-    for (.., grant) in feed.auths() {
-        toast.say(
-            if *grant == sim_core::lock::GRANT_FULL {
-                "the lock remembers you"
-            } else {
-                "the lock remembers you as a guest"
-            }
-            .to_string(),
-        );
+    for &(cx, cz, level, loc, grant) in feed.auths() {
+        // Whose list moved is the address's archetype: a hearth's crew or a
+        // lock's memory (they share `EV_AUTH`, hearth crew v1). Read off the
+        // mirror, which still holds the hearth after a leave.
+        let at_hearth = core.deploys.entries().iter().any(|r| {
+            (r.cx, r.cz, r.level, r.loc) == (cx, cz, level, loc)
+                && (r.row as u16) < core.deploy_defs_have
+                && core.deploy_defs.defs[r.row as usize].arch == sim_core::deploy::ARCH_HEARTH
+        });
+        toast.say(auth_line(grant, at_hearth).to_string());
     }
     // What the hearth is holding, after you feed it. `stock` is a latched
     // ROW TABLE rather than one value, so the same freshness rule applies —
@@ -1992,19 +2196,9 @@ pub fn feedback(
         }
     }
 
-    // Gather and craft toasts are (item, count) pairs — something arrived.
-    // `item_label` is the panels' own naming, reused rather than restated:
-    // an index no name has dripped for prints as `#12`, which is honest,
-    // where an empty cell is the dark-panel defect this repo has a rule
-    // against.
-    for &(item, count) in feed.gathered() {
-        let label = crate::ui::craft::item_label(&core.catalog, item);
-        toast.say(format!("+{count} × {label}"));
-    }
-    for &(item, count) in feed.crafted() {
-        let label = crate::ui::craft::item_label(&core.catalog, item);
-        toast.say(format!("crafted {count} × {label}"));
-    }
+    // Gathers and finished crafts are not said here any more: they are
+    // Rust's item notices over the vitals ([`pickups`]), with the picture
+    // and the running total, and this lane keeps refusals, kills and spills.
     // Last, so it is the top row: `Toast` is a queue now and nothing is
     // discarded, but the newest line is the brightest and the one the eye
     // starts at, and of everything that can land in one frame this is the
@@ -2095,8 +2289,10 @@ pub fn readout(
     let core = &net.session.core;
     // Latch on the freshness bits, never on the fields being non-zero —
     // they hold the LAST of their kind forever (`Feed::applied`'s doc).
-    if feed.applied & client_core::core::APPLIED_STRUCT_HIT != 0 {
-        let (cx, cz, _, _, left, max) = core.struct_hit;
+    // This player's own blows only (wire v77): the island-wide
+    // `APPLIED_STRUCT_HIT` is anyone's raid anywhere.
+    if feed.applied2 & client_core::core::APPLIED2_OWN_STRUCT_HIT != 0 {
+        let (cx, cz, _, _, left, max) = core.own_struct_hit;
         // `max == 0` is the defs-not-arrived state and pins nothing: the
         // same honesty rule the toast held (`struct_hit_line`'s doc).
         if max > 0 {
@@ -2440,14 +2636,27 @@ fn side_line(near: &Option<crate::ui::structure::Target>) -> String {
     }
 }
 
-/// What a fed hearth is holding, or `None` when it is holding nothing.
+/// What a fed hearth holds and how long it keeps its base standing, or
+/// `None` when it holds nothing and is charged nothing.
 ///
-/// The rows are `(item, units)` and the count is authoritative — an empty
-/// hearth acks with zero rows, and saying "0 ×" for a thing that is not there
-/// is the dark-panel defect this repo has a rule against.
-fn stock_line(rows: &[(u16, u32)], catalog: &protocol::event::ItemCatalog) -> Option<String> {
+/// The rows are `(item, units, bill)` — `bill` what one upkeep period
+/// charges in that material (upkeep v2, wire v74) — and the count is
+/// authoritative. Saying "0 ×" for a thing that is not there is the
+/// dark-panel defect this repo has a rule against, so an empty row is
+/// skipped; an empty hearth **with a bill** says so, because that is the
+/// one reading a player most needs and the reference's cupboard leads
+/// with it (*"Your base is not protected and is decaying."*).
+///
+/// The hours are `sim_core::upkeep::lasts`, the sim's own reading: the
+/// least of the billed materials, since the first one to run out is the
+/// first part of the base to rot.
+fn stock_line(rows: &[(u16, u32, u32)], catalog: &protocol::event::ItemCatalog) -> Option<String> {
     let mut parts = Vec::new();
-    for &(item, units) in rows {
+    let mut stock = [0u32; sim_core::limits::HEARTH_STOCK_ROWS];
+    let mut bill = [0u32; sim_core::limits::HEARTH_STOCK_ROWS];
+    let n = rows.len().min(stock.len());
+    for (m, &(item, units, charge)) in rows.iter().take(n).enumerate() {
+        (stock[m], bill[m]) = (units, charge);
         if units == 0 {
             continue;
         }
@@ -2456,10 +2665,46 @@ fn stock_line(rows: &[(u16, u32)], catalog: &protocol::event::ItemCatalog) -> Op
             crate::ui::craft::item_label(catalog, item)
         ));
     }
-    if parts.is_empty() {
-        return None;
+    let held = if parts.is_empty() {
+        "EMPTY".to_string()
+    } else {
+        parts.join(", ")
+    };
+    match sim_core::upkeep::lasts(&stock[..n], &bill[..n]) {
+        None if parts.is_empty() => None,
+        None => Some(format!("HEARTH: {held}")),
+        Some(0) => Some(format!("HEARTH: {held}  ·  NOT PROTECTED — DECAYING")),
+        Some(h) => Some(format!("HEARTH: {held}  ·  PROTECTED {}", periods_label(h))),
     }
-    Some(format!("HEARTH: {}", parts.join(", ")))
+}
+
+/// What an `EV_AUTH` says. At a hearth it is crew standing — joined,
+/// whether by `L` or by the right code at its keypad (hearth lock v0), or
+/// left — and anywhere else it is a lock remembering a hand. The leave used
+/// to read "the lock remembers you as a guest", because a crew leave is the
+/// one `EV_AUTH` carrying no grant and the old line's else-branch caught it.
+fn auth_line(grant: u8, at_hearth: bool) -> &'static str {
+    match (at_hearth, grant) {
+        (true, sim_core::lock::GRANT_NONE) => "you left the hearth's crew",
+        (true, sim_core::lock::GRANT_FULL) => "you're on the hearth's crew",
+        // A guest code at a hearth's lock is remembered and opens nothing:
+        // the crew is the full code's alone.
+        (true, _) => "a guest code opens nothing at a hearth",
+        (false, sim_core::lock::GRANT_FULL) => "the lock remembers you",
+        (false, sim_core::lock::GRANT_GUEST) => "the lock remembers you as a guest",
+        (false, _) => "the lock forgets you",
+    }
+}
+
+/// Upkeep periods as a player reads a clock: hours, and days past a day.
+/// One period is one hour (`sim_core::deploy::UPKEEP_PERIOD_TICKS` at the
+/// sim's tick rate), which `a_hearth_says_how_long_its_base_lasts` pins.
+fn periods_label(h: u32) -> String {
+    if h >= 24 {
+        format!("{}D {}H", h / 24, h % 24)
+    } else {
+        format!("{h}H")
+    }
 }
 
 /// What a planted charge says, or `None` for a fuse of zero.
@@ -2597,6 +2842,296 @@ fn compass_strip(yaw: f32) -> String {
     let deg = crate::look::bearing_deg(yaw);
     let idx = (((deg / 45.0) + 0.5) as usize) % 8;
     format!("{}   {:03.0}°", POINTS[idx], deg)
+}
+
+/// One of Rust's item notices over the vitals, by row — row 0 is the
+/// newest (`ui::notices::Notices::rows`).
+#[derive(Component)]
+pub struct NoticeRow(usize);
+
+/// The picture in a notice row.
+#[derive(Component)]
+pub struct NoticeIcon(usize);
+
+/// The item's name in a notice row, in caps.
+#[derive(Component)]
+pub struct NoticeName(usize);
+
+/// `+26 (845)` in a notice row: what arrived and what is now held.
+#[derive(Component)]
+pub struct NoticeAmount(usize);
+
+/// The craft bar: the head of the queue while the menu is closed.
+#[derive(Component)]
+pub struct CraftBar;
+
+/// The craft bar's progress fill.
+#[derive(Component)]
+pub struct CraftBarFill;
+
+/// The craft bar's picture of what is being made.
+#[derive(Component)]
+pub struct CraftBarIcon;
+
+/// `WOODEN SPEAR (x2)` on the craft bar.
+#[derive(Component)]
+pub struct CraftBarName;
+
+/// The head unit's countdown on the craft bar.
+#[derive(Component)]
+pub struct CraftBarEta;
+
+/// A notice or craft-bar row: a vital row's height, hidden until used.
+fn notice_node() -> Node {
+    Node {
+        width: Val::Px(NOTICE_W),
+        height: Val::Px(VITAL_BAR_H),
+        flex_direction: FlexDirection::Row,
+        align_items: AlignItems::Center,
+        column_gap: Val::Px(5.0),
+        padding: UiRect::horizontal(Val::Px(3.0)),
+        display: Display::None,
+        ..default()
+    }
+}
+
+fn notice_icon_node() -> Node {
+    Node {
+        width: Val::Px(VITAL_BAR_H - 2.0),
+        height: Val::Px(VITAL_BAR_H - 2.0),
+        flex_shrink: 0.0,
+        ..default()
+    }
+}
+
+/// The head of the craft queue, counted down on this side between the
+/// server's `CraftQ`s (`ui::craft::CraftClock`). One clock for both
+/// readers — the craft bar here and the queue strip in the craft panel —
+/// so the two can never show different seconds.
+#[derive(Resource, Default)]
+pub struct CraftTimer(pub crate::ui::craft::CraftClock);
+
+/// Restart the clock whenever the server restates the queue.
+///
+/// On the REAL clock, not the game's: `Time<Virtual>` caps a frame at a
+/// quarter second, so a hitch would slow a countdown the server keeps on
+/// the wall clock.
+pub fn craft_clock(
+    net: NonSend<Net>,
+    feed: Res<super::feed::Feed>,
+    time: Res<Time<Real>>,
+    mut timer: ResMut<CraftTimer>,
+) {
+    if feed.applied & client_core::core::APPLIED_CRAFT_Q == 0 {
+        return;
+    }
+    let core = &net.session.core;
+    let head = (core.jobs_count > 0).then(|| core.jobs[0]);
+    timer
+        .0
+        .heard(head, core.craft_eta_ticks, time.elapsed_secs_f64());
+}
+
+/// The craft bar over the vitals: Rust's blue bar, `WOODEN SPEAR (x2)` and
+/// `24s`, with the item's picture and the unit's progress as its fill.
+///
+/// It exists for the moment the menu is closed — Devblog 62's *"see how long
+/// is left on your craft without having to keep opening the inventory
+/// menu"* — and it stays up over the inventory page, as Rust's does, since
+/// that page's quick craft queues without drawing the queue. It hides only
+/// on the crafting page, whose strip says the same thing. Strings are
+/// rebuilt only when what they say moves: the job, or the whole second.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+pub fn craft_bar(
+    net: NonSend<Net>,
+    time: Res<Time<Real>>,
+    timer: Res<CraftTimer>,
+    art: Res<super::icons::Icons>,
+    ui: Option<Res<super::panels::Ui>>,
+    mut drawn: Local<Option<((u8, u8, u8), u32)>>,
+    mut bar: Query<&mut Node, (With<CraftBar>, Without<CraftBarFill>)>,
+    mut fill: Query<&mut Node, (With<CraftBarFill>, Without<CraftBar>)>,
+    mut icon: Query<(&mut ImageNode, &mut Visibility), With<CraftBarIcon>>,
+    mut name: Query<&mut Text, (With<CraftBarName>, Without<CraftBarEta>)>,
+    mut eta: Query<&mut Text, (With<CraftBarEta>, Without<CraftBarName>)>,
+) {
+    let core = &net.session.core;
+    let menu_open = ui
+        .as_ref()
+        .is_some_and(|u| u.panel == super::panels::Panel::Craft);
+    let head = (core.jobs_count > 0 && !menu_open).then(|| core.jobs[0]);
+    let Ok(mut node) = bar.single_mut() else {
+        return;
+    };
+    let want = if head.is_some() {
+        Display::Flex
+    } else {
+        Display::None
+    };
+    if node.display != want {
+        node.display = want;
+    }
+    let Some((recipe, remaining)) = head else {
+        *drawn = None;
+        return;
+    };
+    let now = time.elapsed_secs_f64();
+    if let Ok(mut f) = fill.single_mut() {
+        let w = Val::Percent(timer.0.progress(now) * 100.0);
+        if f.width != w {
+            f.width = w;
+        }
+    }
+    let more = core.jobs_count.saturating_sub(1);
+    let job = (recipe, remaining, more);
+    let left = timer.0.left(now);
+    let secs = left.max(0.0).ceil() as u32;
+    let last = *drawn;
+    *drawn = Some((job, secs));
+    if last.map(|(_, s)| s) != Some(secs) {
+        if let Ok(mut t) = eta.single_mut() {
+            t.0 = crate::ui::craft::countdown_label(left);
+        }
+    }
+    if last.map(|(j, _)| j) == Some(job) {
+        return;
+    }
+    let output = core
+        .recipes
+        .recipes
+        .get(recipe as usize)
+        .map(|d| d.output)
+        .unwrap_or(0);
+    let label = crate::ui::craft::item_label(&core.catalog, output);
+    if let Ok((mut img, mut vis)) = icon.single_mut() {
+        match art.item(&label) {
+            Some(h) => {
+                img.image = h;
+                *vis = Visibility::Inherited;
+            }
+            None => *vis = Visibility::Hidden,
+        }
+    }
+    let label = label.to_uppercase();
+    if let Ok(mut t) = name.single_mut() {
+        t.0 = match (remaining > 1, more > 0) {
+            (true, true) => format!("{label} (x{remaining}) +{more}"),
+            (true, false) => format!("{label} (x{remaining})"),
+            (false, true) => format!("{label} +{more}"),
+            (false, false) => label,
+        };
+    }
+}
+
+/// What just arrived in the inventory (`ui::notices`), drawn as Rust draws
+/// it: an olive row over the vitals per item, its picture, its name, and
+/// `+26 (845)` — the amount and what you now hold — fading out.
+#[derive(Resource, Default)]
+pub struct Pickups(pub crate::ui::notices::Notices);
+
+/// What a notice row last drew, so its strings are rebuilt only when the
+/// row's item, amount or holding moves — not every frame of its fade.
+#[derive(Clone, Copy, Default, PartialEq)]
+pub struct NoticeDrawn {
+    item: Option<u16>,
+    gained: u32,
+    held: u32,
+}
+
+/// Feed the notice stack from this frame's gathers and finished crafts,
+/// age it, and draw it into the rows `setup` spawned.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+pub fn pickups(
+    net: NonSend<Net>,
+    feed: Res<super::feed::Feed>,
+    time: Res<Time>,
+    art: Res<super::icons::Icons>,
+    mut pickups: ResMut<Pickups>,
+    mut drawn: Local<[NoticeDrawn; crate::ui::notices::NOTICE_ROWS]>,
+    mut rows: Query<(&NoticeRow, &mut Node, &mut BackgroundColor)>,
+    mut pics: Query<(&NoticeIcon, &mut ImageNode, &mut Visibility)>,
+    mut names: Query<(&NoticeName, &mut Text, &mut TextColor), Without<NoticeAmount>>,
+    mut amounts: Query<(&NoticeAmount, &mut Text, &mut TextColor), Without<NoticeName>>,
+) {
+    for &(item, count) in feed.gathered() {
+        pickups.0.add(item, count);
+    }
+    for &(item, count) in feed.crafted() {
+        pickups.0.add(item, count);
+    }
+    pickups.0.tick(time.delta_secs());
+    let core = &net.session.core;
+    let live = pickups.0.rows();
+
+    // Which rows' words moved since the last frame.
+    let mut item_moved = [false; crate::ui::notices::NOTICE_ROWS];
+    let mut amount_moved = [false; crate::ui::notices::NOTICE_ROWS];
+    for (i, was) in drawn.iter_mut().enumerate() {
+        let now = live.get(i).map_or(NoticeDrawn::default(), |n| NoticeDrawn {
+            item: Some(n.item),
+            gained: n.gained,
+            held: sim_core::craft::inv_count(&core.inv, n.item),
+        });
+        item_moved[i] = now.item != was.item;
+        amount_moved[i] = now != *was;
+        *was = now;
+    }
+    let fade =
+        |c: Color, i: usize| c.with_alpha(c.alpha() * live.get(i).map_or(0.0, |n| n.alpha()));
+
+    for (row, mut node, mut bg) in rows.iter_mut() {
+        let want = if row.0 < live.len() {
+            Display::Flex
+        } else {
+            Display::None
+        };
+        if node.display != want {
+            node.display = want;
+        }
+        let c = fade(NOTICE_BG, row.0);
+        if bg.0 != c {
+            bg.0 = c;
+        }
+    }
+    for (pic, mut img, mut vis) in pics.iter_mut() {
+        let Some(n) = live.get(pic.0) else { continue };
+        if item_moved[pic.0] {
+            match art.item(&crate::ui::craft::item_label(&core.catalog, n.item)) {
+                Some(h) => {
+                    img.image = h;
+                    *vis = Visibility::Inherited;
+                }
+                None => *vis = Visibility::Hidden,
+            }
+        }
+        let c = fade(super::icons::PICTURE, pic.0);
+        if img.color != c {
+            img.color = c;
+        }
+    }
+    for (label, mut text, mut colour) in names.iter_mut() {
+        let Some(n) = live.get(label.0) else { continue };
+        if item_moved[label.0] {
+            text.0 = crate::ui::craft::item_label(&core.catalog, n.item).to_uppercase();
+        }
+        let c = fade(NOTICE_TEXT, label.0);
+        if colour.0 != c {
+            colour.0 = c;
+        }
+    }
+    for (amount, mut text, mut colour) in amounts.iter_mut() {
+        let i = amount.0;
+        if i >= live.len() {
+            continue;
+        }
+        if amount_moved[i] {
+            text.0 = crate::ui::notices::amount_label(drawn[i].gained, drawn[i].held);
+        }
+        let c = fade(NOTICE_AMOUNT, i);
+        if colour.0 != c {
+            colour.0 = c;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3224,22 +3759,72 @@ mod tests {
         let cat = catalog_with_names(&[(3, "WOOD"), (4, "CLOTH")]);
         assert_eq!(stock_line(&[], &cat), None, "no rows must say nothing");
         assert_eq!(
-            stock_line(&[(3, 0)], &cat),
+            stock_line(&[(3, 0, 0)], &cat),
             None,
             "a zero row is not a holding"
         );
         assert_eq!(
-            stock_line(&[(3, 120)], &cat),
+            stock_line(&[(3, 120, 0)], &cat),
             Some("HEARTH: 120 × WOOD".to_string())
         );
         assert_eq!(
-            stock_line(&[(3, 120), (4, 5)], &cat),
+            stock_line(&[(3, 120, 0), (4, 5, 0)], &cat),
             Some("HEARTH: 120 × WOOD, 5 × CLOTH".to_string())
         );
         // A zero row between two live ones is skipped, not printed empty.
         assert_eq!(
-            stock_line(&[(3, 120), (4, 0)], &cat),
+            stock_line(&[(3, 120, 0), (4, 0, 0)], &cat),
             Some("HEARTH: 120 × WOOD".to_string())
+        );
+    }
+
+    /// The grant toast names whose list moved, and a crew leave no longer
+    /// reads as a guest pass.
+    #[test]
+    fn an_auth_says_whose_list_moved() {
+        use sim_core::lock::{GRANT_FULL, GRANT_GUEST, GRANT_NONE};
+        assert_eq!(auth_line(GRANT_FULL, true), "you're on the hearth's crew");
+        assert_eq!(auth_line(GRANT_NONE, true), "you left the hearth's crew");
+        assert_eq!(
+            auth_line(GRANT_GUEST, true),
+            "a guest code opens nothing at a hearth"
+        );
+        assert_eq!(auth_line(GRANT_FULL, false), "the lock remembers you");
+        assert_eq!(
+            auth_line(GRANT_GUEST, false),
+            "the lock remembers you as a guest"
+        );
+    }
+
+    /// Upkeep v2's readout: the hours are the least billed material's, an
+    /// empty hearth with a bill says it is decaying, and a day reads as one.
+    #[test]
+    fn a_hearth_says_how_long_its_base_lasts() {
+        // The label's unit is the sim's period, which is one hour.
+        assert_eq!(
+            sim_core::deploy::UPKEEP_PERIOD_TICKS,
+            3600 * sim_core::limits::TICK_HZ as u64,
+            "an upkeep period stopped being an hour — relabel `periods_label`"
+        );
+        let cat = catalog_with_names(&[(3, "WOOD"), (4, "CLOTH")]);
+        assert_eq!(
+            stock_line(&[(3, 120, 10), (4, 50, 5)], &cat),
+            Some("HEARTH: 120 × WOOD, 50 × CLOTH  ·  PROTECTED 10H".to_string()),
+            "the cloth lasts ten periods and it runs out first"
+        );
+        assert_eq!(
+            stock_line(&[(3, 600, 10)], &cat),
+            Some("HEARTH: 600 × WOOD  ·  PROTECTED 2D 12H".to_string())
+        );
+        assert_eq!(
+            stock_line(&[(3, 120, 10), (4, 0, 5)], &cat),
+            Some("HEARTH: 120 × WOOD  ·  NOT PROTECTED — DECAYING".to_string()),
+            "one billed material missing is a base already rotting"
+        );
+        assert_eq!(
+            stock_line(&[(3, 0, 10)], &cat),
+            Some("HEARTH: EMPTY  ·  NOT PROTECTED — DECAYING".to_string()),
+            "an empty hearth with a bill is the reading that matters most"
         );
     }
 

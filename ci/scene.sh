@@ -8,6 +8,7 @@
 #   ./ci/scene.sh --charges            # arm the raiders (they may kill the camera)
 #   ./ci/scene.sh --settle 240         # give the base longer to go up
 #   ./ci/scene.sh --keep               # leave the shard's log and config behind
+#   ./ci/scene.sh --hour dusk --weather storm   # pin the probe's hour and sky
 #
 # ## What this is for
 #
@@ -83,6 +84,9 @@ HUD=1
 KEEP=0
 CHARGES=0
 PLAY=0
+# The probe's hour and sky (`gates --hour/--weather`): empty is noon, clear.
+HOUR=""
+WEATHER=""
 # Extra items prepended to every inhabitant's kit, `dev_spawn_kit` syntax.
 #
 # **What it is for is the one question the default kit cannot answer.** The
@@ -131,6 +135,8 @@ while [ $# -gt 0 ]; do
     --charges)    CHARGES=1;       shift ;;
     --kit)        KIT_EXTRA="$2";  shift 2 ;;
     --no-hud)     HUD=0;           shift ;;
+    --hour)       HOUR="$2";       shift 2 ;;
+    --weather)    WEATHER="$2";    shift 2 ;;
     --keep)       KEEP=1;          shift ;;
     -h|--help)    sed -n '2,50p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "scene: unknown argument \`$1\`" >&2; exit 1 ;;
@@ -271,6 +277,8 @@ for i in $(seq 1 40); do [ -e "/tmp/.X11-unix/X$DISP" ] && break; sleep 0.25; do
 # ---------------------------------------------------------------- probe ----
 ARGS=(--server "$ADDR" --capture "$OUT")
 [ "$HUD" = 1 ] || ARGS+=(--no-hud)
+[ -z "$HOUR" ] || ARGS+=(--hour "$HOUR")
+[ -z "$WEATHER" ] || ARGS+=(--weather "$WEATHER")
 echo "scene: shooting…"
 set +e
 VK_DRIVER_FILES="$ICD" DISPLAY=":$DISP" WGPU_BACKEND=vulkan \

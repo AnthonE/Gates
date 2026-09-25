@@ -301,8 +301,14 @@ impl Pick {
             ),
             // The crew keys ride the hearth's prompt because there is
             // nowhere else a player would look for them, and `L` is
-            // already the access key at a door (hearth crew v1).
-            Verb::Hearth => "[E] FEED HEARTH  ·  [L] JOIN CREW  ·  [K] LEAVE".to_string(),
+            // already the access key at a door (hearth crew v1). A lock
+            // bolted on turns `L` into its keypad (hearth lock v0): the
+            // code is how the crew invites a hand, so JOIN would be the
+            // prompt naming a press the pad answers instead.
+            Verb::Hearth => format!(
+                "[E] FEED HEARTH  ·  [L] {}  ·  [K] LEAVE  ·  [SHIFT+K] CLEAR CREW",
+                if self.has_lock { "KEYPAD" } else { "JOIN CREW" }
+            ),
             // Two verbs on one thing, and both named: the panel is where
             // the wood goes and `C` is the match. The state is stated the
             // way a door's is, because it is the same question — which
@@ -319,10 +325,15 @@ impl Pick {
                 "[E] OPEN RECYCLER  ·  [C] {}",
                 if self.lit { "STOP" } else { "START" }
             ),
-            // Not "OPEN": there is nothing to open, and a prompt that
-            // promised a panel would be teaching the wrong gesture. What
-            // `E` does here is spend the held item, so the prompt says so.
-            Verb::Research => "[E] RESEARCH HELD ITEM".to_string(),
+            // The recycler's two keys (research table v1): the table is a
+            // container now, so `E` opens it and `C` is the switch that
+            // starts a research — and says RESEARCHING while one runs,
+            // because the press would then be refused and the prompt should
+            // not offer it.
+            Verb::Research => format!(
+                "[E] OPEN RESEARCH TABLE  ·  [C] {}",
+                if self.lit { "RESEARCHING" } else { "BEGIN" }
+            ),
             // "TECH TREE", not "OPEN WORKBENCH": the bench holds nothing
             // and opens nothing — what `E` does here is show the tree
             // (tech tree v0), so the prompt names the thing you get.
@@ -513,7 +524,11 @@ pub fn resolve(
         // one this client should not have, so it is not offered at all —
         // better than a prompt for a box the key would decline to open.
         let mut handle = 0u32;
-        if verb == Verb::Box || verb == Verb::Fire || verb == Verb::Recycler {
+        if verb == Verb::Box
+            || verb == Verb::Fire
+            || verb == Verb::Recycler
+            || verb == Verb::Research
+        {
             handle = box_key(rec.cx, rec.cz, rec.level);
             if handle == 0 {
                 continue;

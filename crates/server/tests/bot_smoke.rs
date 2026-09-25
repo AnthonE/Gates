@@ -314,6 +314,7 @@ async fn test_bots_raid_over_the_wire() {
         item: i,
         count: gather.stack_max_of(i),
         cond: gather.cond_max_of(i),
+        skin: 0,
     };
     assert!(kit.set(KIT_CHARGE, stack(satchel)), "charge slot");
     assert!(kit.set(KIT_CONTAINER, stack(box_item)), "container slot");
@@ -657,7 +658,7 @@ async fn test_action_lane_over_socket() {
     .expect("welcome inside 5 s")
     .expect("welcomed");
 
-    let len = encode_action_craft(recipe, 1, &mut buf).expect("action encodes");
+    let len = encode_action_craft(recipe, 1, 0, &mut buf).expect("action encodes");
     write_frame(&mut send, &buf[..len]).await.expect("action");
 
     // The event lane drips catalog/recipes/sync too; scan until the
@@ -1056,6 +1057,7 @@ async fn test_bots_reload_over_the_wire() {
         item: i,
         count: gather.stack_max_of(i),
         cond: gather.cond_max_of(i),
+        skin: 0,
     };
     let mut kit = sim_core::inventory::SpawnKit::EMPTY;
     for slot in 0..sim_core::limits::HOTBAR_SLOTS {

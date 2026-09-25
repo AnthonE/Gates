@@ -144,11 +144,15 @@ server holds no keys, mints nothing, and the on-chain supply it draws from
 is an operator-funded allotment on the elo side **(knob: allotment size and
 claim cadence — an operator act, not a game mechanic)**.
 
-**Faucets** (all in-world): salvage from barrels; the recycler (feed it
-components → JUNK); a trickle from monument crates. **Built**
-(`content/cooking.toml`, recycler v0) — the recycler is a placeable
-machine rather than a haven fixture for now, which is the one thing that
-paragraph promises and the world does not yet do.
+**Faucets** (all in-world): **every container pays a certain handful** —
+barrel 2, waystation cache 5, haven crate 8, the reference's own scrap
+ladder over the three stops a road walk passes (`content/loot.toml`, loot
+guaranteed column v0, 2026-09-22); and the recycler (feed it components →
+JUNK, a gear pays 12; `content/cooking.toml`, recycler v0). **Both built.**
+Until 2026-09-22 the recycler was the *only* faucet, so a player who had not
+built one held no junk at all. The recycler is still a placeable machine
+rather than a haven fixture, which is the one thing this paragraph promises
+and the world does not yet do.
 
 **Sinks.** The distinction the rest of this section turns on applies here
 too, and this line used to blur it: *carried* sinks burn an item stack in

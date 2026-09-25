@@ -43,7 +43,7 @@
 // nothing outside this client renders them.
 
 /// `sim_core::craft`'s `REFUSE_*: u32`.
-pub const CRAFT: [&str; 6] = [
+pub const CRAFT: [&str; 7] = [
     "no such recipe",
     "bad count",
     "needs a station",
@@ -51,22 +51,30 @@ pub const CRAFT: [&str; 6] = [
     "missing ingredients",
     // Not "no such recipe": the recipe exists and the player can see it,
     // which is exactly why this reason is its own code (research v0). The
-    // sentence names the verb that fixes it, because a refusal a player
-    // cannot act on is a refusal that reads as a bug.
-    "not researched — take one to a research table",
+    // sentence names BOTH verbs that fix it (2026-09-22): a sample at a
+    // table, or the bench's tree — which is the only road for a thing no
+    // container drops, and was missing from this sentence for as long as
+    // the tree existed.
+    "not researched — research one at a table or unlock it at a workbench",
+    // Skins v0: a skin you do not own, or that does not fit this item. The
+    // fix is the store, so the sentence says where it is.
+    "not your skin for this item — skins are sold in the ITEM STORE",
 ];
 
-/// `sim_core::research`'s `REFUSE_R_*: u32`. The last two are the tree
-/// verb's (tech tree v0), and each names the act that fixes it —
-/// `CRAFT`'s blueprint sentence sets the bar.
-pub const RESEARCH: [&str; 7] = [
+/// `sim_core::research`'s `REFUSE_R_*: u32`. Five are the table's and the
+/// reader's (research table v1), two the tree verb's (tech tree v0), and
+/// each names the act that fixes it — `CRAFT`'s blueprint sentence sets the
+/// bar. The fourth is said to a reader holding paper they already know,
+/// and the paper is kept, so the sentence says what it is still good for.
+pub const RESEARCH: [&str; 8] = [
     "no research table in reach",
-    "nothing in that slot",
+    "nothing to research - put an item in the table",
     "that cannot be researched",
-    "already known",
-    "not enough junk",
+    "already known - the blueprint is kept, give it to someone",
+    "not enough junk in the table",
     "unlock the node before it first",
     "no workbench of that level in reach",
+    "the table is already researching",
 ];
 
 /// `sim_core::build`'s `REFUSE_B_*: u32` — a build, an upgrade or a repair
@@ -115,8 +123,10 @@ pub const DEPLOY: [&str; 20] = [
     // Lock v1's one sentence for both halves of "this lock does not know
     // you" — a stranger's press and a guest reaching for a full-rights
     // op. Kept as one because telling them apart would tell a raider
-    // something about the lock refusing them.
-    "the lock says no",
+    // something about the lock refusing them. Worded without the lock,
+    // because a bare hearth's crew refuses a stranger's join with the same
+    // code and "the lock says no" named a lock that was not there.
+    "you haven't been let in",
     "nothing in it to burn",
     "no lock on that door",
     "that door already has a lock",
@@ -402,7 +412,7 @@ mod tests {
         assert_eq!(deploy(REFUSE_D_BAG_CAP as u8), "bag limit reached");
         assert_eq!(deploy(REFUSE_D_HEARTH as u8), "no hearth there");
         assert_eq!(deploy(REFUSE_D_DOOR as u8), "no door there");
-        assert_eq!(deploy(REFUSE_D_OWNER as u8), "the lock says no");
+        assert_eq!(deploy(REFUSE_D_OWNER as u8), "you haven't been let in");
         assert_eq!(deploy(REFUSE_D_NO_LOCK as u8), "no lock on that door");
         assert_eq!(
             deploy(REFUSE_D_HAS_LOCK as u8),

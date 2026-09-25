@@ -83,7 +83,7 @@ use sim_core::combat::NO_MAG;
 use sim_core::combat::{AmmoDef, CombatContent, RangedDef};
 use sim_core::craft::{CraftContent, REFUSE_INPUTS, REFUSE_RECIPE};
 use sim_core::deploy::{box_key, DeployContent, REFUSE_D_KIND, REFUSE_D_SPOT};
-use sim_core::gather::{cell_key, weak_mark8, GatherContent, ItemStack, NO_ITEM};
+use sim_core::gather::{self, cell_key, weak_mark8, GatherContent, ItemStack, NO_ITEM};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::inventory::{self, CONT_SELF, REFUSE_M_EMPTY};
 use sim_core::limits::{INV_SLOTS, TICK_HZ};
@@ -98,9 +98,9 @@ use sim_core::world::{
     Command, SimEvent, World, DEATH_BY_MAX, EV_ASSIST, EV_AUTH, EV_BAG_DROPPED, EV_BAG_REMOVED,
     EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE,
     EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
-    EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_HURT, EV_IMPACT, EV_KNOCK,
-    EV_KNOWN, EV_MAX, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED,
-    EV_PIECE_REPAIRED, EV_RECOVERED, EV_RELOAD, EV_RELOAD_REFUSED, EV_RESEARCH,
+    EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_HOWL, EV_HURT, EV_IMPACT,
+    EV_KNOCK, EV_KNOWN, EV_MAX, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED,
+    EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RECOVERED, EV_RELOAD, EV_RELOAD_REFUSED, EV_RESEARCH,
     EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK,
     EV_STRUCT_HIT, EV_SWING, EV_TRUST, EV_VITALS, EV_WEAK_MARK, EV_WOUNDED, PRESENCE_ASLEEP,
     PRESENCE_AWAKE, PRESENCE_GONE, PRESENCE_MAX, STRUCT_DEPLOY_BIT, TRUST_AUTH, TRUST_CONT,
@@ -334,6 +334,7 @@ fn duel_world() -> World {
         item: SPEAR,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     let (fx, fz) = yaw_dir(YAW);
     let a = w.players[0].body;
@@ -352,6 +353,7 @@ fn arm_victim_with_junk(w: &mut World) {
         item: FILLER,
         count: JUNK_COUNT,
         cond: 0,
+        skin: 0,
     };
 }
 
@@ -557,11 +559,13 @@ fn shot_names_the_shooter_then_the_aim_then_the_ballistics() {
         item: BOW,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     w.players[0].inv[1] = ItemStack {
         item: ARROW,
         count: 5,
         cond: 0,
+        skin: 0,
     };
     w.tick(&[Command::Input {
         id: ATTACKER,
@@ -643,11 +647,13 @@ fn gun_world() -> World {
         item: RL_GUN,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     w.players[0].inv[1] = ItemStack {
         item: RL_ROUND,
         count: RL_PACK,
         cond: 0,
+        skin: 0,
     };
     w
 }
@@ -805,11 +811,13 @@ fn an_instant_shot_reads_zero_speed_and_a_reach() {
         item: GUN,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     w.players[0].inv[1] = ItemStack {
         item: ROUND,
         count: 5,
         cond: 0,
+        skin: 0,
     };
     // Loaded (reload v1). A gun with an empty cylinder raises
     // `EV_RELOAD_REFUSED` and no `EV_SHOT`, which `only` reports as "the
@@ -916,11 +924,13 @@ fn impact_names_the_surface_then_x_then_z_then_y() {
         item: BOW,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     w.players[0].inv[1] = ItemStack {
         item: ARROW,
         count: 5,
         cond: 0,
+        skin: 0,
     };
     // The victim would be under the falling arrow otherwise, and a body
     // resolves before the world does — `EV_HIT`, not this.
@@ -961,7 +971,7 @@ fn impact_names_the_surface_then_x_then_z_then_y() {
     // broke on, not the shooter's own cell, so it may land a quantum
     // either side. Slack this tight still cannot absorb a swap — the two
     // axes are thousands of quanta apart.
-    let (got_x, got_z) = ((im.a & 0x00FF_FFFF) as i32, im.b as i32);
+    let (got_x, got_z) = ((im.a & 0x000F_FFFF) as i32, im.b as i32);
     assert!(
         (got_x - want_x).abs() <= 1,
         "EV_IMPACT.a's low 24 bits are the impact's X ({want_x}), got \
@@ -1446,6 +1456,7 @@ fn gather_refused_names_the_player_then_item_over_reason() {
         item: FILLER,
         count: 1,
         cond: 0,
+        skin: 0,
     };
 
     let mut seq = 1u16;
@@ -1682,6 +1693,7 @@ fn consumed_names_the_player_then_item_over_slot() {
         item: FOOD_ITEM,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     w.tick(&[Command::Consume {
         id: BODY,
@@ -1819,6 +1831,7 @@ fn craft_refused_names_the_player_then_why() {
         id: BODY,
         recipe: NO_SUCH_ROW,
         count: 1,
+        skin: 0,
     }]);
     let bad_row = only(&w, EV_CRAFT_REFUSED);
     refused(
@@ -1836,6 +1849,7 @@ fn craft_refused_names_the_player_then_why() {
         id: BODY,
         recipe: 0,
         count: 1,
+        skin: 0,
     }]);
     let broke = only(&w, EV_CRAFT_REFUSED);
     refused(
@@ -2065,6 +2079,7 @@ fn builder_world(w: &mut World) -> (u16, u16) {
             item,
             count: 200,
             cond: 0,
+            skin: 0,
         };
     }
     (cx, cz)
@@ -2207,6 +2222,7 @@ fn oven_names_the_cell_then_its_state_then_who_lit_it() {
         item: 6,
         count: 4,
         cond: 0,
+        skin: 0,
     };
     place_deploy(&mut w, DEPLOY_FIRE, cx, cz, GROUND, LOC_PLANE);
 
@@ -2222,6 +2238,7 @@ fn oven_names_the_cell_then_its_state_then_who_lit_it() {
             item: 0,
             count: 2,
             cond: 0,
+            skin: 0,
         },
     );
 
@@ -3139,6 +3156,7 @@ fn moved_names_the_address_and_what_moved() {
         item: FILLER,
         count: 30,
         cond: 0,
+        skin: 0,
     };
     w.players[0].inv[9] = ItemStack::default();
 
@@ -3257,6 +3275,7 @@ fn charge_placed_names_the_cell_then_the_address_then_the_fuse() {
         item: CHARGE_ITEM,
         count: 3,
         cond: 0,
+        skin: 0,
     };
     // Select the charge on its own tick. Buttons stay at zero throughout:
     // item 3 is also a melee row in this fixture, and a held primary would
@@ -3466,15 +3485,15 @@ fn weak_mark_names_the_swinger_then_the_cell_then_bit_over_heading() {
     );
 }
 
-/// `EV_SLOT_RESPAWNED: a = cell key, b = 0.`
+/// `EV_SLOT_RESPAWNED: a = cell key, b = the sapling's grown-by tick,
+/// c = 1 for a sapling.`
 ///
 /// The one code that needed a timer to elapse: the window is 20–45 min of
 /// sim ticks, so the clock is leapt to one tick short of the store's own
 /// `respawn_at` — `bag_respawn.rs`'s cooldown leap, the same arithmetic
 /// the minutes would have done — and the event must then land on exactly
-/// the tick the timer names. The swap this catches is quiet: `a` and `b`
-/// reversed reads `(0, cell key)`, and with `b` documented as 0 the zero
-/// in `a` would address no cell on any client.
+/// the tick the timer names. A tree comes back as a sapling, so its life
+/// record stays behind holding the clock `b` names.
 #[test]
 fn slot_respawned_names_the_cell_that_stood_back_up() {
     let mut w = duel_world();
@@ -3512,13 +3531,25 @@ fn slot_respawned_names_the_cell_that_stood_back_up() {
         cell_key(cx, cz),
         "EV_SLOT_RESPAWNED.a is the CELL KEY of the slot that stood up"
     );
-    assert_eq!(ev.b, 0, "EV_SLOT_RESPAWNED.b is documented as 0");
-    assert_eq!(ev.c, 0, "and c states no role either");
-    assert!(
-        w.slot_lives.find(cx, cz).is_none(),
-        "the slot is announced standing but its life record remains — the \
-         event under test did not ride the release"
+    let life = w
+        .slot_lives
+        .find(cx, cz)
+        .expect("a tree comes back as a sapling, and a sapling keeps its record");
+    assert_eq!(
+        (life.respawn_at, life.hits),
+        (0, 0),
+        "the stump's timer and its hits went with the stump"
     );
+    assert_eq!(
+        life.grown_at,
+        due + gather::TREE_GROW_TICKS,
+        "the sapling is grown an hour after it sprouts"
+    );
+    assert_eq!(
+        ev.b, life.grown_at as u32,
+        "EV_SLOT_RESPAWNED.b is the sapling's grown-by tick"
+    );
+    assert_eq!(ev.c, 1, "and c says it is a sapling");
 }
 
 /// The craft fixture's two-input recipe (row 1): 2 × item 1 + 1 × item 2
@@ -3555,16 +3586,19 @@ fn craft_done_names_the_crafter_then_item_over_units() {
         item: 1,
         count: 2,
         cond: 0,
+        skin: 0,
     };
     w.players[0].inv[1] = ItemStack {
         item: 2,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     w.tick(&[Command::Craft {
         id: BODY,
         recipe: RECIPE_PAYS_ONE,
         count: 1,
+        skin: 0,
     }]);
     assert_eq!(
         count(&w, EV_CRAFT_REFUSED),
@@ -3592,6 +3626,7 @@ fn craft_done_names_the_crafter_then_item_over_units() {
             item: def.output,
             count: def.out_count,
             cond: 0,
+            skin: 0,
         },
         "and the inventory holds what the event announced"
     );
@@ -3604,18 +3639,21 @@ fn craft_done_names_the_crafter_then_item_over_units() {
         item: 0,
         count: 4,
         cond: 0,
+        skin: 0,
     };
     for s in w.players[0].inv.iter_mut().skip(1) {
         *s = ItemStack {
             item: 2,
             count: 100,
             cond: 0,
+            skin: 0,
         };
     }
     w.tick(&[Command::Craft {
         id: BODY,
         recipe: RECIPE_OVERFLOWS,
         count: 1,
+        skin: 0,
     }]);
     until_quiet(&mut w, EV_CRAFT_DONE);
     let lost = only(&w, EV_CRAFT_DONE);
@@ -3810,6 +3848,7 @@ fn respawn_names_the_player_then_which_anchor_answered() {
         item: BAG_PLACE_ITEM,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     let before = w.deploys.len();
     w.tick(&[Command::PlaceDeploy {
@@ -3985,6 +4024,68 @@ fn swing_names_the_swinger_and_nothing_else() {
     assert_eq!(got.c, 0, "EV_SWING.c is reserved and must stay zero");
 }
 
+/// **A pack call names the animal that howled, and nothing else.** A free
+/// wolf — a pack's leader, so it has a pack to call — alone with a player
+/// ten metres off notices them on its first think and howls. `a` is its
+/// tagged roster id (never a player's: the tag bit is asserted), and `b`
+/// and `c` are zero, the room the fact has for more later.
+#[test]
+fn howl_names_the_animal_that_called_its_pack() {
+    use sim_core::limits::{MAX_MOBS, MOB_ID_TAG, MOB_THINK_TICKS};
+    use sim_core::mob::{self, MobContent};
+    use sim_core::movement::{Body, POS_XZ_Q};
+    let mut w = lone_world();
+    w.mob = MobContent::probe_fixture();
+    w.tick(&[]);
+    let slot = (0..MAX_MOBS)
+        .find(|&s| mob::pack_leader_of(s) == Some(s) && w.mobs.m[s].alive)
+        .expect("a free wolf leads a pack");
+    for (i, m) in w.mobs.m.iter_mut().enumerate() {
+        if i != slot {
+            m.alive = false;
+        }
+    }
+    let p = w
+        .players
+        .iter()
+        .find(|p| p.active && p.id == BODY)
+        .expect("the body joined")
+        .body;
+    let (px, pz) = (p.qx as f32 * POS_XZ_Q, p.qz as f32 * POS_XZ_Q);
+    let haven = w.haven;
+    let m = &mut w.mobs.m[slot];
+    m.body = Body::at(SEED, &haven, px + 10.0, pz);
+    m.home_qx = m.body.qx;
+    m.home_qz = m.body.qz;
+
+    let mut steps = 0u64;
+    loop {
+        w.tick(&[]);
+        if count(&w, EV_HOWL) > 0 {
+            break;
+        }
+        steps += 1;
+        assert!(
+            steps <= 2 * MOB_THINK_TICKS,
+            "no EV_HOWL within two think cycles of a wolf ten metres from a \
+             player — the call is broken, not slow"
+        );
+    }
+    let got = only(&w, EV_HOWL);
+    assert_eq!(
+        got.a,
+        mob::mob_id(slot),
+        "EV_HOWL.a is the animal that howled"
+    );
+    assert_ne!(
+        got.a & MOB_ID_TAG,
+        0,
+        "EV_HOWL.a is a roster id, never a player's"
+    );
+    assert_eq!(got.b, 0, "EV_HOWL.b is reserved and must stay zero");
+    assert_eq!(got.c, 0, "EV_HOWL.c is reserved and must stay zero");
+}
+
 /// Coverage, stated rather than implied — and now earned rather than
 /// asserted.
 ///
@@ -4014,7 +4115,7 @@ fn swing_names_the_swinger_and_nothing_else() {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 46] = [
+    const COVERED: [(&str, u8); 47] = [
         ("EV_GATHER", EV_GATHER),
         ("EV_GATHER_REFUSED", EV_GATHER_REFUSED),
         ("EV_SLOT_HARVESTED", EV_SLOT_HARVESTED),
@@ -4061,6 +4162,7 @@ fn coverage_is_stated_not_implied() {
         ("EV_WOUNDED", EV_WOUNDED),
         ("EV_RECOVERED", EV_RECOVERED),
         ("EV_ASSIST", EV_ASSIST),
+        ("EV_HOWL", EV_HOWL),
     ];
     /// What is knowingly still byte-golden only: nothing, since the last
     /// five landed. The seat stays — named, not just counted — so the next
@@ -4305,14 +4407,17 @@ fn death_causes_are_a_closed_ledger() {
 }
 
 // ---------------------------------------------------------------------------
-// Research (research v0) — `EV_RESEARCH` and `EV_RESEARCH_REFUSED`.
+// Research (research v0; research table v1) — `EV_RESEARCH`,
+// `EV_RESEARCH_REFUSED`, and the table's use of `EV_OVEN`.
 //
-// Both are own-facts keyed on `a = the player`, which is what lets the
-// server route them with `client_slot_of`. `EV_RESEARCH` then carries two
-// small integers in `b` and `c` — the recipe and the coin burned — which is
-// exactly the positional payload a byte-golden cannot see swapped, since
-// each fits the other's field. The fixture's recipe is 2 and its cost is 5
-// so the swap is visible.
+// Both research events are own-facts keyed on `a = the player`, which is
+// what lets the server route them with `client_slot_of`. `EV_RESEARCH` then
+// carries two small integers in `b` and `c` — the recipe and the coin THIS
+// verb burned — which is exactly the positional payload a byte-golden
+// cannot see swapped, since each fits the other's field. The coin half is
+// driven through the tree verb, which burns the node's price: the fixture's
+// recipe is 2 and its cost is 5, so the swap is visible. Reading paper
+// burns nothing and is checked for exactly that.
 
 /// A world with a placed research table (fixture row 7) and a player
 /// holding the sample (item 4) and the coin (item 3).
@@ -4333,6 +4438,7 @@ fn table_world(w: &mut World) {
         item: 10,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     w.tick(&[Command::PlaceDeploy {
         id: BUILDER,
@@ -4351,22 +4457,53 @@ fn table_world(w: &mut World) {
         item: 4,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     w.players[0].inv[1] = ItemStack {
         item: 3,
         count: 20,
         cond: 0,
+        skin: 0,
     };
 }
 
-/// `EV_RESEARCH: a = player, b = recipe, c = coin burned`.
+/// `EV_RESEARCH: a = player, b = recipe, c = coin burned` — through the
+/// tree verb, which burns the node's price. The fixture workbench (deploy
+/// row 1) stands a cell over from the table, and the coin is restocked
+/// after placing it because the bench's own carrier item is the coin.
 #[test]
 fn research_names_the_player_then_the_recipe_then_the_price() {
     let mut w = World::new(SEED);
     table_world(&mut w);
-    w.tick(&[Command::Research {
+    let (cx, cz) = buildable_cell(SEED);
+    w.players[0].inv[2] = ItemStack {
+        item: 3,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    w.tick(&[Command::PlaceDeploy {
         id: BUILDER,
-        slot: 0,
+        row: 1,
+        cx: cx + 1,
+        cz,
+        level: 0,
+        loc: LOC_PLANE,
+    }]);
+    assert_eq!(
+        w.deploys.len(),
+        2,
+        "the bench has to stand or nothing fires"
+    );
+    w.players[0].inv[1] = ItemStack {
+        item: 3,
+        count: 20,
+        cond: 0,
+        skin: 0,
+    };
+    w.tick(&[Command::Unlock {
+        id: BUILDER,
+        recipe: 2,
     }]);
     let ev = only(&w, EV_RESEARCH);
     assert_eq!(ev.a, BUILDER, "EV_RESEARCH.a is the LEARNER");
@@ -4375,6 +4512,99 @@ fn research_names_the_player_then_the_recipe_then_the_price() {
     assert_ne!(
         ev.b, ev.c,
         "the fixture's two fields must differ or this check proves nothing"
+    );
+}
+
+/// `EV_RESEARCH` again, from the other road (research table v1): reading
+/// paper names the reader and the recipe, and burns nothing — the table
+/// was paid when the paper was made. The zero is asserted, not assumed,
+/// because a read that re-stated the row's price would tell the reader
+/// they were charged for something somebody else paid for.
+#[test]
+fn a_read_names_the_reader_then_the_recipe_and_burns_nothing() {
+    let mut w = World::new(SEED);
+    table_world(&mut w);
+    w.players[0].inv[5] = sim_core::research::blueprint_of(&w.research, 4);
+    w.tick(&[Command::Research {
+        id: BUILDER,
+        slot: 5,
+    }]);
+    let ev = only(&w, EV_RESEARCH);
+    assert_eq!(ev.a, BUILDER, "EV_RESEARCH.a is the READER");
+    assert_eq!(ev.b, 2, "EV_RESEARCH.b is the RECIPE the paper names");
+    assert_eq!(ev.c, 0, "EV_RESEARCH.c is the coin THIS verb burned: none");
+}
+
+/// `EV_OVEN`, from a research table (research table v1): the start is
+/// `lit` by the hand that pressed, and the landing is the snuff with no
+/// actor — the table's clock ran out, nobody pressed anything. The table
+/// stands on the ground here and the builder is id 4, so the cell key, the
+/// level and the actor are three different numbers.
+#[test]
+fn a_research_table_names_its_cell_then_its_state_then_who_started_it() {
+    let mut w = World::new(SEED);
+    table_world(&mut w);
+    let (cx, cz) = buildable_cell(SEED);
+    let i = w
+        .deploys
+        .table_index(box_key(cx, cz, 0))
+        .expect("the table is a container since research table v1");
+    w.deploys.set_box_slot(
+        i,
+        0,
+        ItemStack {
+            item: 4,
+            count: 1,
+            cond: 0,
+            skin: 0,
+        },
+    );
+    w.deploys.set_box_slot(
+        i,
+        1,
+        ItemStack {
+            item: 3,
+            count: 20,
+            cond: 0,
+            skin: 0,
+        },
+    );
+    w.tick(&[Command::Use {
+        id: BUILDER,
+        cx,
+        cz,
+        level: 0,
+        loc: LOC_PLANE,
+    }]);
+    let start = only(&w, EV_OVEN);
+    assert_eq!(start.a, cell_key(cx, cz), "EV_OVEN.a is the CELL KEY");
+    assert_eq!(start.b >> 16, 0, "EV_OVEN.b's high field is LEVEL");
+    assert_eq!(
+        start.b & 1,
+        1,
+        "EV_OVEN.b bit 0 is LIT: the research started"
+    );
+    assert_eq!(start.c, BUILDER, "EV_OVEN.c is the hand that pressed");
+    assert_ne!(start.a, start.c, "and the cell and the hand differ");
+
+    let mut landed = None;
+    for _ in 0..(w.research.table_ticks as u64 + 2 * sim_core::oven::OVEN_PERIOD_TICKS) {
+        w.tick(&[]);
+        if count(&w, EV_OVEN) > 0 {
+            landed = Some(only(&w, EV_OVEN));
+            break;
+        }
+    }
+    let landed = landed.expect("the research never landed");
+    assert_eq!(
+        landed.a,
+        cell_key(cx, cz),
+        "the landing names the same cell"
+    );
+    assert_eq!(landed.b & 1, 0, "and it is out: the research is done");
+    assert_eq!(
+        landed.c, 0,
+        "with no actor — the clock ran out, nobody pressed"
     );
 }
 
@@ -4759,6 +4989,7 @@ fn trust_names_a_container_opened_while_its_owner_watches() {
         item: 6,
         count: 4,
         cond: 0,
+        skin: 0,
     };
     place_deploy(&mut w, DEPLOY_FIRE, cx, cz, GROUND, LOC_PLANE);
     let key = box_key(cx, cz, GROUND);
@@ -4770,6 +5001,7 @@ fn trust_names_a_container_opened_while_its_owner_watches() {
             item: FILLER,
             count: JUNK_COUNT,
             cond: 0,
+            skin: 0,
         },
     );
     stand_an_outsider(&mut w);
@@ -4904,6 +5136,7 @@ fn trust_is_silent_for_your_own_door_and_for_an_animals_bag() {
             item: FILLER,
             count: JUNK_COUNT,
             cond: 0,
+            skin: 0,
         };
         let tick = w.tick;
         w.backpacks

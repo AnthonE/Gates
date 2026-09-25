@@ -224,6 +224,7 @@ fn armed_shooter(w: &mut World, structure: u16, dx: f32, dz: f32) -> (u16, u16) 
             item,
             count: 200,
             cond: 0,
+            skin: 0,
         };
     }
     // **The two weapons live in HOTBAR slots and their ammo does not.**
@@ -237,21 +238,25 @@ fn armed_shooter(w: &mut World, structure: u16, dx: f32, dz: f32) -> (u16, u16) 
         item: BOW,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     w.players[0].inv[SLOT_GUN] = ItemStack {
         item: GUN,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     w.players[0].inv[6] = ItemStack {
         item: ARROW,
         count: 200,
         cond: 0,
+        skin: 0,
     };
     w.players[0].inv[7] = ItemStack {
         item: ROUND,
         count: 200,
         cond: 0,
+        skin: 0,
     };
     // The magazine, loaded (reload v1). A gun with an empty cylinder does
     // not fire, so without this the `shoot_until` helpers below run their
@@ -450,6 +455,27 @@ fn the_chipping_shot_still_reports_where_it_landed() {
          SURF_BUILT",
         i.a >> 24
     );
+}
+
+/// The shooter's hitmarker for a wall is theirs alone (wire v77): an
+/// `EV_HIT` addressed to them with no victim, for what the wall took — the
+/// island-wide `EV_STRUCT_HIT` is the wall's fact and lit every crosshair
+/// on the shard until this carried it instead.
+#[test]
+fn the_chipping_shot_marks_its_shooter_and_nobody_else() {
+    let mut w = World::new(SEED);
+    walled_world(&mut w, 25);
+    let events = shoot_until(&mut w, SLOT_BOW as u8, YAW_PLUS_X, EV_STRUCT_HIT);
+    let hit = only(&events, sim_core::world::EV_HIT);
+    assert_eq!(hit.b, sim_core::world::STRUCT_VICTIM, "a wall is no body");
+    let st = only(&events, EV_STRUCT_HIT);
+    assert_eq!(
+        sim_core::world::hit_damage(hit.c) as u32,
+        st.c >> 16,
+        "the hitmarker says what the wall took"
+    );
+    let (surf, kind, _) = sim_core::world::impact_parts(only(&events, EV_IMPACT).a);
+    assert_eq!((surf, kind), (SURF_BUILT, sim_core::ranged::IMPACT_ARROW));
 }
 
 /// A shot on the wall's HARD face pays `HARD_SIDE_STRUCTURE`, exactly as a
@@ -780,6 +806,7 @@ fn benched_world(w: &mut World, structure: u16) -> (u16, u16, f32) {
         item: 3,
         count: 4,
         cond: 0,
+        skin: 0,
     };
     let before = w.deploys.len();
     w.tick(&[Command::PlaceDeploy {

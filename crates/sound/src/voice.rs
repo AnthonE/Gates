@@ -157,6 +157,18 @@ impl Voices {
         Some(cue)
     }
 
+    /// The sim called this slot's howl itself (a pack call, `EV_HOWL`):
+    /// restart its countdown from now, so the ambient cadence waits a whole
+    /// interval before this animal speaks again rather than howling twice.
+    pub fn called(&mut self, slot: usize) {
+        if slot >= MAX_MOBS {
+            return;
+        }
+        let cue = cue_of(slot, self.near[slot]);
+        self.next[slot] = interval(slot, self.cycle[slot], cue);
+        self.cycle[slot] = self.cycle[slot].wrapping_add(1);
+    }
+
     /// Forget every clock — leaving a world. A stale countdown carried into
     /// the next island would voice its animals on the last island's schedule.
     pub fn reset(&mut self) {

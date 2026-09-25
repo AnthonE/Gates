@@ -73,7 +73,7 @@ jobs:
     runs-on: ubuntu-latest
     # Same full suite and cold-cache budget as gates.yml. A cancelled gate
     # skips the build and leaves the release without artifacts.
-    timeout-minutes: 120
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
         with:

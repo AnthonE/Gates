@@ -28,6 +28,9 @@ const OUT_RATE: u32 = 48_000;
 fn start(cue: Cue, l: f32, r: f32, speed: f32) -> Cmd {
     Cmd::Start {
         cue,
+        take: 0,
+        takes: 1,
+        lp: 0,
         gain_l: l,
         gain_r: r,
         rate: rate(speed, OUT_RATE),

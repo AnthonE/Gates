@@ -69,6 +69,7 @@ fn duel_world() -> World {
             item: SPEAR,
             count: 1,
             cond: 0,
+            skin: 0,
         };
     }
     w
@@ -174,6 +175,7 @@ fn a_kill_leaves_what_the_body_carried_on_the_ground() {
         item: FILLER,
         count: 42,
         cond: 0,
+        skin: 0,
     };
     let victim_id = w.players[1].id;
     let (_, vx, vz) = kill_player_two(&mut w);
@@ -206,6 +208,7 @@ fn the_kill_is_announced_as_a_bag_the_whole_shard_can_see() {
         item: FILLER,
         count: 3,
         cond: 0,
+        skin: 0,
     };
     let victim_id = w.players[1].id;
     kill_player_two(&mut w);
@@ -223,6 +226,7 @@ fn the_killer_takes_it_and_the_bag_is_gone() {
         item: FILLER,
         count: 42,
         cond: 0,
+        skin: 0,
     };
     kill_player_two(&mut w);
     let bag_id = w.backpacks.entries()[0].id;
@@ -259,6 +263,7 @@ fn a_bag_out_of_reach_stays_shut() {
         item: FILLER,
         count: 42,
         cond: 0,
+        skin: 0,
     };
     kill_player_two(&mut w);
     let bag = w.backpacks.entries()[0];
@@ -289,6 +294,7 @@ fn what_does_not_fit_stays_in_the_bag() {
         item: FILLER,
         count: 42,
         cond: 0,
+        skin: 0,
     };
     // Fill the killer to the brim with something else, leaving one slot
     // that already holds the spear (which can still top up by 1).
@@ -297,6 +303,7 @@ fn what_does_not_fit_stays_in_the_bag() {
             item: 1,
             count: STACK_MAX,
             cond: 0,
+            skin: 0,
         };
     }
     kill_player_two(&mut w);
@@ -312,6 +319,7 @@ fn what_does_not_fit_stays_in_the_bag() {
             item: SPEAR,
             count: 2,
             cond: 0,
+            skin: 0,
         },
         "but the stack that could top up did"
     );
@@ -329,6 +337,7 @@ fn a_bag_despawns_on_the_ladder_the_content_declares() {
         item: FILLER,
         count: 5,
         cond: 0,
+        skin: 0,
     };
     let (killed_at, _, _) = kill_player_two(&mut w);
     let bag = w.backpacks.entries()[0];
@@ -355,6 +364,7 @@ fn one_long_lived_item_keeps_the_whole_bag_standing() {
         item: FILLER,
         count: 5,
         cond: 0,
+        skin: 0,
     };
     let (killed_at, _, _) = kill_player_two(&mut w);
     // Slot 0 still holds the spear — a fixture "rare", 360 ticks.
@@ -373,6 +383,7 @@ fn an_inert_ladder_destroys_exactly_as_it_did_before() {
         item: FILLER,
         count: 42,
         cond: 0,
+        skin: 0,
     };
     kill_player_two(&mut w);
     assert!(
@@ -423,6 +434,7 @@ fn hash_after_a_kill_carrying(count: u16) -> (u64, usize) {
         item: FILLER,
         count,
         cond: 0,
+        skin: 0,
     };
     kill_player_two(&mut w);
     let slots = w.backpacks.entries()[0].items.len();

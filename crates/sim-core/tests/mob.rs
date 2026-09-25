@@ -325,11 +325,13 @@ fn hunt_world() -> (World, usize) {
         item: MEAT,
         count: 3,
         cond: 0,
+        skin: 0,
     };
     def.loot[1] = ItemStack {
         item: HIDE,
         count: 15,
         cond: 0,
+        skin: 0,
     };
     w.dev_spawn = Some(w.spawn_pos(1));
     w.tick(&[Command::Join { id: 1 }]);
@@ -378,6 +380,7 @@ fn kill_the_pig(w: &mut World, slot: usize) {
         item: SPEAR,
         count: 1,
         cond: 0,
+        skin: 0,
     };
     for seq in 0..(SWING_INTERVAL_TICKS as u16 * 8) {
         // Down at the animal: a pig is 0.8 m tall (`body_h_cm`) and a
@@ -652,6 +655,9 @@ fn a_bite_can_kill_and_the_cause_is_the_mob() {
 /// simply the only one in the world.
 fn alone_with(kind: u8, metres: f32) -> (World, usize) {
     let mut w = World::new(11);
+    // Clear skies held: these measure the hour's radius, and the weather
+    // schedule would otherwise put fog on some test tick (weather v0).
+    w.env = sim_core::weather::Env::CLEAR;
     w.combat = CombatContent::probe_fixture();
     w.mob = MobContent::probe_fixture();
     w.dev_spawn = Some(w.spawn_pos(1));
@@ -925,7 +931,7 @@ fn think_once(w: &mut World) {
 ///
 /// Gated in `sim-core` rather than beside the renderer's curve
 /// (`client/tests/daynight.rs`) because `is_night` stopped being a look the
-/// moment `mob::think` read it: it is a determinism input now, so it belongs
+/// moment the animal brain read it: it is a determinism input now, so it belongs
 /// in a suite that runs headless in `cargo test --workspace` and under the
 /// wasm parity gate, not one behind `--features render`.
 #[test]
@@ -1044,7 +1050,7 @@ fn the_clock_moves_the_hunter_and_not_the_prey() {
 
 /// **Dusk does not call off a chase that daylight started.**
 ///
-/// `think` refreshes `roused_until` while you are inside the radius and
+/// `brain::sense` refreshes `roused_until` while you are inside the radius and
 /// otherwise lets it run out, so crossing the boundary mid-pursuit stops
 /// feeding the rousing rather than cancelling it. The alternative — a
 /// re-check that drops the animal the instant the sun sets — would make the

@@ -206,6 +206,22 @@ pub struct ResearchCoin {
     pub item: String,
 }
 
+/// `[table]` of `content/research.toml` (research table v1): what a
+/// research table makes and how long it takes.
+///
+/// **One blueprint item for every recipe**, its target in the stack's
+/// `cond` (`sim-core/research.rs` says why) — so the item this names must
+/// be a stack of one with no condition, and minted by no other road
+/// (`validate::structural`): every other mint writes a blank.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResearchTable {
+    pub blueprint: String,
+    /// How long one research takes, whole seconds. The reference's table
+    /// takes ten.
+    pub seconds: u32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Shape {
@@ -398,6 +414,12 @@ pub struct Armor {
     pub slot: ArmorSlot,
     pub reduction_pct: u32,
     pub move_penalty_pct: u32,
+    /// The reference's **Cold** column (weather v0, `exposure.rs`): the
+    /// share of the chill a worn piece keeps out, in per cent. Negative
+    /// draws it in — a road sign jacket is a sheet of metal. Absent is
+    /// zero: a piece that says nothing about the cold does nothing for it.
+    #[serde(default)]
+    pub cold_pct: i32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -555,7 +577,25 @@ pub struct LootTable {
     /// passes are `content/*.toml` only (CLAUDE.md wall 7). See
     /// DECISIONS.md §open, "barrel smash hits".
     pub hits: u32,
+    /// Rows every open pays whatever the draw did (loot guaranteed column
+    /// v0, 2026-09-22). The reference's container ladder is denominated in
+    /// a certain scrap payout — barrel 2, military crate 8, every one at
+    /// 100 % — which no weighted `entries` row can express
+    /// (`reference/RIPLIST.md` row 1i). Optional; a table without one pays
+    /// only its draw.
+    #[serde(default)]
+    pub guaranteed: Vec<LootGuaranteed>,
     pub entries: Vec<LootEntry>,
+}
+
+/// One guaranteed loot row: paid on every open, after the weighted draw.
+/// No weight, because being certain is the whole of what it is.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LootGuaranteed {
+    pub item: String,
+    pub count_min: u32,
+    pub count_max: u32,
 }
 
 /// One animal species (`sim-core/src/mob.rs`).
@@ -624,6 +664,18 @@ pub struct Mob {
     /// sim tests cannot drift apart.
     pub body_r_cm: u32,
     pub body_h_cm: u32,
+    /// The sight cone, whole degrees across (`sim-core/src/brain.rs`). A
+    /// player walking or standing is heard across the whole notice radius
+    /// from any bearing; a *crouched* one is seen only inside this cone, and
+    /// behind it not at all — the blind spot a hunter sneaks up in.
+    pub sight_deg: u32,
+    /// How far this animal answers a pack-mate that is already on a target,
+    /// metres. Zero is solitary; anything else is a pack animal, which also
+    /// takes turns closing in and circles while it waits.
+    pub pack_m: u32,
+    /// A target holding a lit torch inside this many metres is circled
+    /// rather than bitten. Zero fears nothing.
+    pub fire_fear_m: u32,
     /// What the killing blow pays. Straight into the killer's inventory
     /// (`mob::strike`), so these are stacks and not a weighted table —
     /// butchering an animal is not opening a barrel.
@@ -640,13 +692,30 @@ pub enum Coin {
 }
 
 /// Appearance only: no stat field exists to write (DESIGN.md §3.3).
+///
+/// A row is Rust's item definition for a skin: the id items carry
+/// (`catalog`, the skin's `catalogId` on the platform's item contract), the
+/// item it fits, what it is called and what it looks like. **The price is
+/// optional**: a row can ship its look before the operator prices it
+/// (`coin` and `price` together or neither), and the store reads an
+/// unpriced row as not on sale yet.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Skin {
     pub id: String,
+    /// The id an item wearing this skin carries (`ItemStack::skin`), and
+    /// the `catalogId` the platform mints it under. Nonzero, unique, and
+    /// never reused for a different look: a saved item keeps it forever.
+    pub catalog: u16,
+    /// The display name, what the store and the item's label say.
+    pub name: String,
     pub covers: String,
-    pub coin: Coin,
-    pub price: u32,
+    /// The look, v0: an sRGB multiply over the item's own colours.
+    pub tint: [u8; 3],
+    #[serde(default)]
+    pub coin: Option<Coin>,
+    #[serde(default)]
+    pub price: Option<u32>,
     pub season: String,
 }
 
@@ -665,6 +734,25 @@ pub struct Globals {
     /// A map rather than three fields so a fourth grade is a data change
     /// (`Material`'s own set is what validate checks it against).
     pub decay_pct_per_period: BTreeMap<Material, u32>,
+    /// The rent's size ladder (upkeep v2, `sim_core::upkeep::tax`): each
+    /// `[after, permille]` says past `after` graded pieces in one base, each
+    /// further piece's day costs `permille` ‰ of its build cost; the first
+    /// rung is `upkeep_pct_per_day`. Per mille because the reference's top
+    /// rung is 33.3 %. **Defaulted empty**, and empty is the flat rate — a
+    /// `balance.toml` older than the ladder plays the game it played.
+    #[serde(default)]
+    pub upkeep_steps: Vec<[u32; 2]>,
+    /// Percent of its ladder rate an unpaid piece rots at while something
+    /// is built over it (upkeep v2, `sim_core::upkeep::inside`). **Absent is
+    /// the full rate**, v1's game; present, it must be a live percent.
+    #[serde(default)]
+    pub inside_decay_pct: Option<u32>,
+    /// Upkeep periods (hours) a destroyed hearth's stock may still buy the
+    /// building it stood in (upkeep v2, `sim_core::deploy::grieve`).
+    /// **Absent is none** — v1's game, where breaking a hearth left every
+    /// wall unpaid on the next sweep.
+    #[serde(default)]
+    pub grief_protection_h: u32,
     /// Chance in 100 that an arrow is destroyed where it lands rather
     /// than becoming an item on the ground (arrow recovery v0). A
     /// *global* and not an ammo column on purpose: `[[ammo]]` carries no
@@ -775,6 +863,40 @@ pub struct Survival {
     pub drink_hp_cost: u32,
 }
 
+/// Wet and cold (`content/balance.toml` `[exposure]`; weather v0,
+/// `sim_core::exposure`). Everything per mille of a full meter and per
+/// second, because the sim steps a body once a second; distances in
+/// centimetres. Absent is the inert default: nothing gets wet, nobody
+/// gets cold.
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Exposure {
+    /// Wet gained a second in the heaviest rain, with nothing overhead.
+    pub wet_rain_per_s: u32,
+    /// Wet lost a second when nothing is wetting you, and beside a fire.
+    pub dry_per_s: u32,
+    pub dry_fire_per_s: u32,
+    /// Standing in water this deep soaks you through, cm.
+    pub soak_depth_cm: u32,
+    /// The chill the night, the heaviest rain, the strongest wind and being
+    /// soaked through each add.
+    pub night_cold: u32,
+    pub rain_cold: u32,
+    pub wind_cold: u32,
+    pub wet_cold: u32,
+    /// The chill a fire in reach and a torch in hand take away.
+    pub fire_warmth: u32,
+    pub torch_warmth: u32,
+    /// How near a fire has to be to warm you, cm.
+    pub heat_radius_cm: u32,
+    /// How fast the body's chill follows where the world is pushing it.
+    pub chill_rise_per_s: u32,
+    pub chill_fall_per_s: u32,
+    /// Past this chill the cold costs hp; this many a minute at full chill.
+    pub hurt_at: u32,
+    pub hurt_hp_per_min: u32,
+}
+
 /// The declared bands + globals the anchors compute against
 /// (`content/balance.toml`; DECISIONS.md §open "balance bands").
 #[derive(Debug, Clone, Deserialize)]
@@ -786,6 +908,9 @@ pub struct Balance {
     pub starter_base: StarterBase,
     pub backpack: Backpack,
     pub survival: Survival,
+    /// Wet and cold (weather v0). Defaulted: content without it plays dry.
+    #[serde(default)]
+    pub exposure: Exposure,
     /// What a fresh character spawns holding (`[[spawn_kit]]`).
     ///
     /// **Defaulted, because a naked spawn is the game.** Content that

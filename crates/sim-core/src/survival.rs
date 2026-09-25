@@ -141,6 +141,9 @@ pub struct SurvivalContent {
     /// authors no drink still boots.
     pub drink_water: u16,
     pub drink_hp_cost: u16,
+    /// Wet and cold (weather v0, `exposure.rs`): the other half of the body
+    /// the clock keeps, baked from `[exposure]`. `EMPTY` disarms it.
+    pub exposure: crate::exposure::ExposureContent,
 }
 
 impl SurvivalContent {
@@ -160,6 +163,7 @@ impl SurvivalContent {
         dehydrate_hp_per_min: 0,
         drink_water: 0,
         drink_hp_cost: 0,
+        exposure: crate::exposure::ExposureContent::EMPTY,
     };
 
     /// Synthetic table for the parity/replay/alloc gates. Deliberately
@@ -405,6 +409,7 @@ pub fn grant(sc: &SurvivalContent, p: &mut Player) {
     p.water_acc = 0;
     p.hurt_acc = 0;
     clear_heal(p);
+    crate::exposure::reset(p);
 }
 
 /// Announce the whole vitals truth, absolute. Own-fact and absolute for
@@ -655,6 +660,7 @@ mod tests {
             item: 0,
             count: 2,
             cond: 0,
+            skin: 0,
         };
         let mut q = EventQueue::default();
         assert!(!consume(&sc, 0, &mut p, &mut q), "full meters, no heal");
@@ -674,6 +680,7 @@ mod tests {
             item: 0,
             count: 1,
             cond: 0,
+            skin: 0,
         };
         let mut q = EventQueue::default();
         assert!(consume(&sc, 0, &mut p, &mut q));
@@ -723,6 +730,7 @@ mod tests {
             item: 0,
             count: 1,
             cond: 0,
+            skin: 0,
         };
         let mut q = EventQueue::default();
         assert!(consume(&sc, 0, &mut p, &mut q));
