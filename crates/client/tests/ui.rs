@@ -5019,23 +5019,28 @@ fn the_body_is_drawn_beside_the_container_and_not_instead_of_it() {
          is drawn only when it IS the open container, which is never now \
          and was a box's eviction before"
     );
-    // The call sits in `build_screen`'s lower row, ungated: `own_grid`,
-    // then the body, then the container *if* one is open.
-    // Matched on the call's head: the pack's own arguments (the belt slot
-    // in hand, since the active slot is drawn blue) are not this test's.
+    // The call sits in `build_screen`'s row, ungated: the body, then the
+    // pack (Rust's order since the pages split, 2026-09-25), then the
+    // container *if* one is open. Matched on the pack call's head: its own
+    // arguments (the belt slot in hand) are not this test's.
     let row = code
-        .split("own_grid(row, core, icons")
+        .split("wear_panel(row, core, icons);")
         .nth(1)
-        .expect("`build_screen` must draw the pack");
+        .expect("`build_screen` must draw the body");
     let head = &row[..row.len().min(200)];
     assert!(
-        head.contains("wear_panel(row, core, icons);"),
+        head.contains("own_grid(row, core, icons"),
         "the body is not drawn beside the pack: {head}"
     );
+    let before = code
+        .split("wear_panel(row, core, icons);")
+        .next()
+        .expect("there is text before the call");
+    let tail = &before[before.len().saturating_sub(300)..];
     assert!(
-        head.find("wear_panel").unwrap() < head.find("if core.cont_kind").unwrap_or(usize::MAX),
+        !tail.contains("looting(core.cont_kind)") && !tail.contains("if core.cont_kind"),
         "the body is drawn inside the open-container branch — it must be \
-         unconditional, which is the whole of §0eq item 4: {head}"
+         unconditional, which is the whole of §0eq item 4: {tail}"
     );
     // And from `core.worn`, not `core.cont`. The two were one array until
     // 2026-08-28; a panel left reading `cont` draws the open box's first
@@ -5096,7 +5101,7 @@ fn the_paperdoll_is_as_wide_as_the_body_is() {
 // `stack_max` since wire v64, and why the cases below are about slots and
 // counts rather than about a click.
 mod quick {
-    use client::ui::slots::{looting, quick_move, screen_title, MoveArgs, Quick};
+    use client::ui::slots::{looting, quick_move, MoveArgs, Quick};
     use protocol::event::ItemCatalog;
     use sim_core::gather::ItemStack;
     use sim_core::inventory::{CONT_BAG, CONT_SELF, CONT_WEAR, CONT_WORLD};
@@ -5191,19 +5196,16 @@ mod quick {
         }
     }
 
-    /// The title names the region under it, and with a container open
-    /// there is no recipe browser under it to name.
+    /// Looting is a ground container open, which is what swaps quick craft
+    /// out for the container on the inventory page.
     #[test]
-    fn the_screen_is_called_crafting_only_while_crafting_is_drawn() {
-        assert_eq!(screen_title(CONT_SELF), "CRAFTING");
+    fn only_a_ground_container_is_looting() {
         assert!(!looting(CONT_SELF), "nothing open is not looting");
-        // The body is a container the player carries, so it is not a
-        // reason to hide the crafting half — and `is_own` is what says so
-        // rather than a `!= CONT_SELF` that was true until armor v1.
-        assert_eq!(screen_title(CONT_WEAR), "CRAFTING");
+        // The body is a container the player carries, so it is not loot —
+        // and `is_own` is what says so rather than a `!= CONT_SELF` that
+        // was true until armor v1.
         assert!(!looting(CONT_WEAR), "your own body is not a loot panel");
         for open in [CONT_BAG, sim_core::inventory::CONT_BOX, CONT_WORLD] {
-            assert_eq!(screen_title(open), "LOOTING", "kind {open}");
             assert!(looting(open), "kind {open} is a ground container");
         }
     }
@@ -5470,23 +5472,29 @@ mod quick {
     }
 }
 
-/// **The crafting half is not drawn while a container is open, and the
-/// title is not a literal.** Both are draws, so the gate is a grep for the
-/// call site — `tests/sound.rs`'s rule, and §F's: the defect is a call
-/// site and not a value, and no headless test can open a panel.
+/// **No crafting is drawn beside a container.** The recipe browser has its
+/// own page now (2026-09-25), so the inventory page must not draw it at
+/// all, and its quick-craft column must give way to the container (the
+/// operator, 2026-09-16: *"we shouldnt show crafting"*). Both are draws, so
+/// the gate is a grep for the call site — `tests/sound.rs`'s rule, and §F's:
+/// the defect is a call site and not a value, and no headless test can open
+/// a panel.
 #[test]
 fn the_craft_browser_is_behind_the_looting_check() {
     let code = inv_code();
     assert!(
-        code.contains("if !looting(core.cont_kind)"),
-        "`inv.rs` draws the recipe browser unconditionally — the operator \
-         asked for it gone while a container is open, and a `Visibility` \
-         toggle would still take the keystrokes"
+        !code.contains("craft::build_browser("),
+        "`inv.rs` draws the recipe browser again — it is the crafting \
+         page's (`craft::build_screen`), not the inventory's"
     );
+    let quick = code
+        .split("craft::build_quick(")
+        .next()
+        .expect("the inventory page offers quick craft");
     assert!(
-        code.contains("screen_title(core.cont_kind)"),
-        "`inv.rs` heads the screen with a literal again — the word depends \
-         on whether the crafting half is under it, which is arithmetic"
+        quick.contains("} else if looting(core.cont_kind) {"),
+        "quick craft is not behind the looting check — it would be drawn \
+         beside the container the player opened"
     );
     assert!(
         !code.contains("Text::new(\"CRAFTING\")"),

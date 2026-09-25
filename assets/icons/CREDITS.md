@@ -57,7 +57,7 @@ every item either way, because the painted ones are derived works of it.
 | `map_hearth.png` | `delapouite/fireplace` |
 | `map_site.png` | `delapouite/hut` |
 | `medkit.png` | `delapouite/first-aid-kit` |
-| `metal_arrow.png` | `delapouite/split-arrows` |
+| `metal_arrow.png` | `lorc/broadhead-arrow` |
 | `metal_door.png` | `delapouite/closed-doors` |
 | `metal_fragments.png` | `lorc/metal-bar` |
 | `metal_hatchet.png` | `delapouite/sharp-axe` |
@@ -108,7 +108,7 @@ every item either way, because the painted ones are derived works of it.
 | `vital_water.png` | `sbed/water-drop` |
 | `wood.png` | `delapouite/log` |
 | `wood_shutters.png` | `delapouite/closed-doors` |
-| `wooden_arrow.png` | `delapouite/plain-arrow` |
+| `wooden_arrow.png` | `lorc/arrowhead` |
 | `wooden_door.png` | `delapouite/door` |
 | `wooden_spear.png` | `lorc/spears` |
 | `workbench.png` | `lorc/hammer-nails` |

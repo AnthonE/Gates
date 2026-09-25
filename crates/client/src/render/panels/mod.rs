@@ -15,8 +15,9 @@
 //!
 //! | screen | key | reference frame |
 //! |---|---|---|
-//! | inventory + crafting | `Tab` toggles; `I`/`Q` open; `Esc` closes | the reference `inventory.jpeg`, `crafting.png` |
-//! | container | opens itself when the sim says one is open | `storageandtoolchest.jpeg` |
+//! | inventory page | `Tab` (or `I`) toggles, `Q` switches, `Esc` closes | the reference `inventory.jpeg` |
+//! | crafting page | `Q` toggles, `Tab` switches, `Esc` closes | the reference `crafting.png` |
+//! | container | the inventory page, opened by the sim | `storageandtoolchest.jpeg` |
 //! | build wheel | hold right, building plan in hand | the radial in the operator's second frame |
 //! | hammer wheel | hold right, hammer in hand | the reference's second radial ("right click when equipped for more options") |
 //!
@@ -58,9 +59,13 @@ pub mod wheel;
 pub enum Panel {
     #[default]
     None,
-    /// The `Tab` screen: crafting on the left, your inventory below, the
-    /// open container beside it when there is one.
+    /// The `Tab` page: your pack and belt, your body, and on the right
+    /// either quick craft or whatever you are looting (Rust's inventory).
     Inventory,
+    /// The `Q` page: the crafting menu on its own — the category rail,
+    /// the recipe grid, the detail pane and the queue (Rust's crafting).
+    /// It was the top half of the inventory screen until 2026-09-25.
+    Craft,
     /// The build wheel, up while right is held with the building plan.
     /// Latches its choice; releasing keeps it.
     Wheel,
@@ -81,6 +86,29 @@ impl Panel {
     pub fn grabs_pointer(self) -> bool {
         !matches!(self, Panel::None)
     }
+
+    /// This panel as `ui::nav` sees it.
+    pub fn page(self) -> crate::ui::nav::Page {
+        use crate::ui::nav::Page;
+        match self {
+            Panel::None => Page::Closed,
+            Panel::Inventory => Page::Inventory,
+            Panel::Craft => Page::Crafting,
+            Panel::Wheel | Panel::Hammer | Panel::Tech => Page::Other,
+        }
+    }
+
+    /// The panel a `ui::nav` answer lands on; `None` for `Other`, which no
+    /// key or tab ever answers.
+    pub fn of_page(page: crate::ui::nav::Page) -> Option<Panel> {
+        use crate::ui::nav::Page;
+        match page {
+            Page::Closed => Some(Panel::None),
+            Page::Inventory => Some(Panel::Inventory),
+            Page::Crafting => Some(Panel::Craft),
+            Page::Other => None,
+        }
+    }
 }
 
 /// Everything the menus hold that is not on the wire.
@@ -98,6 +126,13 @@ pub struct Ui {
     pub cat: Cat,
     /// The search box's contents.
     pub query: String,
+    /// Whether the search box has the keyboard. **Only while it does is a
+    /// letter a letter**: Rust's search field is clicked into (and goes
+    /// amber), and every other letter on these pages is a key — `Q` shuts
+    /// the crafting page, `P` re-skins, `I` opens the pack. The box used to
+    /// take every printable key the whole time the screen was up, which is
+    /// why no letter could close anything.
+    pub search_focus: bool,
     /// Starred recipes. A local latch — the reference's FAVOURITE is one
     /// too, and nothing on our wire carries a favourite.
     pub favs: Vec<u16>,
@@ -216,6 +251,7 @@ impl Default for Ui {
             drag: None,
             cat: Cat::All,
             query: String::new(),
+            search_focus: false,
             favs: Vec::new(),
             selected: None,
             count: 1,
@@ -380,6 +416,119 @@ pub fn spawn_tip(root: &mut ChildSpawnerCommands) {
     });
 }
 
+/// A button in the strip across the top of both pages: the page it opens.
+#[derive(Component)]
+pub struct TabGo(pub Panel);
+
+/// The strip across the top of the inventory and crafting pages — Rust's:
+/// a button to the other page, never one for the page you are on
+/// (`ui::nav::strip`), and its key in the tooltip rather than on it.
+pub fn page_tabs(root: &mut ChildSpawnerCommands, ui: &Ui) {
+    use crate::ui::nav;
+    root.spawn(Node {
+        flex_direction: FlexDirection::Row,
+        column_gap: Val::Px(6.0),
+        ..default()
+    })
+    .with_children(|row| {
+        for page in nav::strip(ui.panel.page()) {
+            let Some(panel) = Panel::of_page(*page) else {
+                continue;
+            };
+            row.spawn((
+                Button,
+                TabGo(panel),
+                Tip(format!("or press {}", nav::key_hint(*page))),
+                Node {
+                    min_width: Val::Px(200.0),
+                    padding: UiRect::axes(Val::Px(18.0), Val::Px(6.0)),
+                    justify_content: JustifyContent::Center,
+                    border: UiRect::all(Val::Px(1.0)),
+                    ..default()
+                },
+                BackgroundColor(CELL_BG),
+                Hover::on(CELL_BG),
+                BorderColor::all(LINE),
+            ))
+            .with_children(|t| {
+                t.spawn((
+                    Text::new(nav::label(*page)),
+                    font_bold(17.0),
+                    TextColor(TEXT),
+                    Pickable::IGNORE,
+                ));
+            });
+        }
+    });
+}
+
+/// Where the strip across the top of both pages sits, px from the top of the
+/// window. **Pinned**, so the button to the other page is where the last
+/// page's was: the crafting page is taller than the inventory page, and
+/// centring each page whole put the button 60 px apart on the two, so it
+/// jumped out from under the pointer that had just clicked it. Rust's strip
+/// does not move either.
+pub const STRIP_TOP_PX: f32 = 64.0;
+/// The foot of the window the HUD's hotbar owns, px. A page's body is
+/// centred in the room between the strip and it.
+pub const HOTBAR_CLEAR_PX: f32 = 64.0;
+
+/// The frame both pages share: the scrim, the strip pinned at the top, and
+/// under it the status line over the page's `body`, centred in the room
+/// that is left.
+pub fn page_root(commands: &mut Commands, ui: &Ui, body: impl FnOnce(&mut ChildSpawnerCommands)) {
+    commands
+        .spawn((
+            PanelRoot,
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                padding: UiRect {
+                    top: Val::Px(STRIP_TOP_PX),
+                    bottom: Val::Px(HOTBAR_CLEAR_PX),
+                    ..default()
+                },
+                row_gap: Val::Px(8.0),
+                ..default()
+            },
+            BackgroundColor(SCRIM),
+        ))
+        .with_children(|root| {
+            page_tabs(root, ui);
+            root.spawn(Node {
+                flex_grow: 1.0,
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                row_gap: Val::Px(8.0),
+                ..default()
+            })
+            .with_children(|zone| {
+                status_line(zone, ui);
+                body(zone);
+            });
+            spawn_tip(root);
+        });
+}
+
+/// The one line under the tabs that says what just happened (`Ui::status`).
+/// Always drawn, even empty: a line that appears and disappears makes the
+/// page jump when it does.
+pub fn status_line(root: &mut ChildSpawnerCommands, ui: &Ui) {
+    root.spawn((
+        Text::new(if ui.status.is_empty() {
+            " ".into()
+        } else {
+            ui.status.clone()
+        }),
+        font(13.0),
+        TextColor(BADGE),
+    ));
+}
+
 /// The root of whichever panel is open. Despawned wholesale on a rebuild —
 /// the same shape `menu::rebuild_on_new_rows` uses, and for the same reason:
 /// a screen rebuilt from one function cannot drift from itself.
@@ -474,23 +623,30 @@ pub const PIP_TROUGH: Color = VITAL_TROUGH;
 /// with the icon for the cell it is annotating.
 pub const PIP_H_PX: f32 = 3.0;
 
-/// Grid cell edge, px. Proposed default, same `DECISIONS.md` row.
+/// A recipe cell on the crafting page, px. Proposed default, same
+/// `DECISIONS.md` row.
 ///
-/// **Sized against 720p, which is the constraint that decides it.** Bevy's
-/// default window is 1280×720 and the whole screen is one column: title,
-/// browser, queue, your thirty slots, hint. At 54 px that column measured
-/// ~830 px tall and a centred overflow clips at BOTH ends — the first cut
-/// lost the title off the top and the last two inventory rows off the
-/// bottom, and neither is visible from the code. [`PANEL_H`] and
-/// [`BROWSER_COLS`] are the rest of the same budget.
-pub const CELL_PX: f32 = 44.0;
+/// **Sized against 720p, which is the constraint that decides it** — Bevy's
+/// default window is 1280×720. It was 44 px while the crafting menu shared
+/// one column with your thirty slots; on its own page (Rust's split,
+/// 2026-09-25) the browser and the detail pane get the height [`PANEL_H`]
+/// states, and the cell grew with them.
+pub const CELL_PX: f32 = 50.0;
 pub const CELL_GAP_PX: f32 = 4.0;
 
-/// Height of the browser and the detail pane, px — the two tall things, and
-/// therefore the ones that pay for the rest of the budget above. What is
-/// left after the fixed rows at 720p: title 30, status 16, queue 46, your
-/// thirty slots 285, hint 16, four 8 px gaps.
-pub const PANEL_H: f32 = 276.0;
+/// A slot on the inventory page — your pack, your belt, your body and the
+/// container you are looting. Bigger than a recipe cell because the page is
+/// only slots: Rust's slots are ~80 px at 1080p, and 58 at 720p keeps a
+/// picture 48 px across, where a thin tool still reads.
+pub const SLOT_PX: f32 = 58.0;
+
+/// Height of the crafting page's browser and detail pane, px — the two tall
+/// things, and so the ones that pay for the rest of the 720p budget. The
+/// strip is pinned [`STRIP_TOP_PX`] down and the HUD's hotbar owns the
+/// bottom [`HOTBAR_CLEAR_PX`], which leaves ~590: the strip 34, the status
+/// line 16, the queue 56, the hint 16 and five 8 px gaps leave this. At 470
+/// the hint line sat on the hotbar (measured off a 720p frame, 2026-09-25).
+pub const PANEL_H: f32 = 424.0;
 
 /// Columns in the recipe browser. Eight rather than the inventory's six —
 /// the recipe list is longer than an inventory and is read by name, not by
@@ -499,9 +655,9 @@ pub const BROWSER_COLS: u16 = 8;
 
 /// The recipe grid's own height inside [`PANEL_H`], leaving room for the
 /// search box under it. **The grid scrolls**: content grows with
-/// `content/recipes.toml` and a browser sized to today's 36 recipes is a
-/// browser that silently hides the 37th.
-pub const BROWSER_GRID_H: f32 = 218.0;
+/// `content/recipes.toml` and a browser sized to today's recipes is a
+/// browser that silently hides the next one.
+pub const BROWSER_GRID_H: f32 = PANEL_H - 62.0;
 
 /// Pixels of scroll per wheel line. Proposed default, same `DECISIONS.md`
 /// row.
@@ -547,7 +703,7 @@ pub fn register(app: &mut App) {
         // rebuild, so the sentence is on the board drawn this frame.
         .add_systems(
             Update,
-            tech::sync_status
+            (tech::sync_status, craft::sync_status)
                 .after(super::feed::drain)
                 .before(rebuild)
                 .run_if(in_state(super::Screen::InWorld)),
@@ -612,7 +768,7 @@ pub fn keys(
     // removed or upgraded structure cannot leave a stale wheel target.
     near: Res<super::verbs::Near>,
     mut chars: MessageReader<bevy::input::keyboard::KeyboardInput>,
-    cells: Query<(&inv::SlotCell, &Interaction)>,
+    tabs: Query<(&Interaction, &TabGo), Changed<Interaction>>,
 ) {
     // **The wheel is held RIGHT, and only by an item that owns one.**
     //
@@ -627,40 +783,66 @@ pub fn keys(
     let holding_wheel = hand.opens_a_wheel() && mouse.pressed(MouseButton::Right);
     let was_inventory = ui.panel == Panel::Inventory;
 
-    // **Three keys, one panel, and that is the honest mapping rather than a
-    // convenience.** The reference separates inventory (`Tab`/`I`) from a
-    // crafting menu (`Q`); this client draws crafting *inside* the inventory
-    // screen — `inv::build_screen` calls `craft::build_browser` and
-    // `craft::build_detail`, and every craft system self-gates on
-    // `Panel::Inventory` — so there is no second panel for `Q` to open and
-    // inventing one to justify the key would be the tail wagging the dog.
-    // Pointing all three at the screen that actually holds both means a
-    // player who reaches for `Q` to craft arrives at the crafting UI, which
-    // is the whole of what the binding promises.
+    // **Two pages, Rust's two keys.** `Tab` is the inventory and `Q` is the
+    // crafting menu; each key shuts its own page and switches from the
+    // other (`ui::nav::press`), and a tab in the strip across the top of
+    // both is a click that switches and never shuts (`ui::nav::click`).
+    // `I` is `Tab`'s alias, as it always was here.
     //
-    // **`Tab` toggles; `I` and `Q` only ever OPEN, and the asymmetry is
-    // forced rather than chosen.** This screen has a search box, and it
-    // captures every printable key the whole time it is up (below, and it has
-    // no focus concept to check). So a letter that also closed the panel
-    // would close it mid-word: type "iron" into the search field and the `i`
-    // shuts the screen you are searching. `Tab` and `Esc` are safe as closers
-    // precisely because neither is a character — which is why they remain the
-    // only two, and why this is not the toggle the binding list implies.
-    let open_inventory = keyboard.just_pressed(KeyCode::Tab)
-        || ((keyboard.just_pressed(KeyCode::KeyI) || keyboard.just_pressed(KeyCode::KeyQ))
-            && ui.panel != Panel::Inventory);
-    if open_inventory {
-        ui.panel = match ui.panel {
-            Panel::Inventory => Panel::None,
-            _ => Panel::Inventory,
-        };
-        ui.drag = None;
-        ui.dirty = true;
+    // **The letters can do this now because the search box stopped taking
+    // them.** It used to capture every printable key while the screen was
+    // up, so a letter that closed the screen would have closed it mid-word
+    // and only `Tab` and `Esc` could close anything. The box takes the
+    // keyboard only while it is clicked into (`Ui::search_focus`, Rust's
+    // amber field), and while it does, `Q` and `I` are letters.
+    let typing = ui.panel == Panel::Craft && ui.search_focus;
+    let page = ui.panel.page();
+    let mut want = tabs
+        .iter()
+        .find(|(i, _)| **i == Interaction::Pressed)
+        .map(|(_, t)| crate::ui::nav::click(t.0.page()));
+    if keyboard.just_pressed(KeyCode::Tab) || (!typing && keyboard.just_pressed(KeyCode::KeyI)) {
+        want = Some(crate::ui::nav::press(page, crate::ui::nav::Page::Inventory));
+    } else if !typing && keyboard.just_pressed(KeyCode::KeyQ) {
+        want = Some(crate::ui::nav::press(page, crate::ui::nav::Page::Crafting));
+    }
+    if let Some(to) = want.and_then(Panel::of_page) {
+        if to != ui.panel {
+            ui.panel = to;
+            ui.drag = None;
+            ui.search_focus = false;
+            ui.dirty = true;
+            // The crafting page opens on a recipe, never on an empty pane.
+            if to == Panel::Craft && ui.selected.is_none() {
+                let mut shown = Vec::new();
+                crate::ui::craft::rows(
+                    &core.recipes,
+                    &core.inv,
+                    &core.catalog,
+                    &ui.facts,
+                    &ui.favs,
+                    core.known(),
+                    ui.cat,
+                    &ui.query,
+                    &mut shown,
+                );
+                ui.selected =
+                    crate::ui::craft::first_pick(&shown, |r| craft::makeable_here(core, r));
+                ui.count = 1;
+                ui.skin = 0;
+            }
+        }
     }
 
     if keyboard.just_pressed(KeyCode::Escape) && ui.panel != Panel::None {
-        ui.panel = Panel::None;
-        ui.drag = None;
+        // Out of the search box first: Esc there means "stop typing", and
+        // a second one shuts the page.
+        if ui.search_focus {
+            ui.search_focus = false;
+        } else {
+            ui.panel = Panel::None;
+            ui.drag = None;
+        }
         ui.dirty = true;
         // Consumed: `pause::open` runs after this and would otherwise read
         // the same press and open the Esc menu behind the panel that just
@@ -668,7 +850,8 @@ pub fn keys(
         keyboard.clear_just_pressed(KeyCode::Escape);
     }
 
-    // Closing the inventory closes whatever container was open beside it.
+    // Leaving the inventory page — for the crafting page, or shut — closes
+    // whatever container was open on it.
     //
     // **The server's idea of an open container outlives the panel drawing
     // it.** A container left open is one the sim keeps syncing to a screen
@@ -697,7 +880,7 @@ pub fn keys(
     // The wheel wins over nothing and loses to the two toggle screens: a
     // player with the inventory (or the tree) open who brushes the button
     // is not asking for a wheel on top of it.
-    if !matches!(ui.panel, Panel::Inventory | Panel::Tech) {
+    if !matches!(ui.panel, Panel::Inventory | Panel::Craft | Panel::Tech) {
         let want = if holding_wheel {
             // One wheel per item (`crate::ui::hold`'s table). Opening the
             // OTHER item's wheel would place with the wrong verb, which is
@@ -735,24 +918,10 @@ pub fn keys(
         }
     }
 
-    // Typing into the search box. Only while the inventory screen is up, so
-    // the world's own binds are untouched everywhere else — **and only
-    // while the box is drawn**, which since the crafting half went away
-    // under a container (`inv::build_screen`) is not the same condition.
-    // The `else` branch below already states why: a keystroke that lands
-    // in a box nobody can see arrives in it the moment the box comes back,
-    // so a player who typed while looting would close the crate onto a
-    // recipe list filtered by whatever they pressed.
-    if ui.panel == Panel::Inventory && !crate::ui::slots::looting(core.cont_kind) {
-        // **`P` over one of your items is the re-skin (`inv::skin_keys`),
-        // not a letter.** The box takes every printable key, and a `p`
-        // pressed while pointing at an item used to do both: re-skin it AND
-        // land in the search. Anywhere else, `p` is just a letter.
-        let over_own_item = cells.iter().any(|(c, i)| {
-            c.kind == sim_core::inventory::CONT_SELF
-                && !matches!(i, Interaction::None)
-                && core.inv.get(c.slot).is_some_and(|s| s.count > 0)
-        });
+    // Typing into the search box — only while it has the keyboard, which is
+    // only on the crafting page. Enter hands the keyboard back, as Esc does
+    // above.
+    if typing && ui.panel == Panel::Craft {
         let mut changed = false;
         for ev in chars.read() {
             if !ev.state.is_pressed() {
@@ -763,8 +932,10 @@ pub fn keys(
                     ui.query.pop();
                     changed = true;
                 }
-                bevy::input::keyboard::Key::Character(s)
-                    if over_own_item && s.eq_ignore_ascii_case("p") => {}
+                bevy::input::keyboard::Key::Enter => {
+                    ui.search_focus = false;
+                    ui.dirty = true;
+                }
                 bevy::input::keyboard::Key::Character(s) => {
                     // A bound on a field a player types into: wall 4 is
                     // about client-driven paths, and this is one.
@@ -783,9 +954,8 @@ pub fn keys(
             ui.dirty = true;
         }
     } else {
-        // Drain, so a keystroke pressed with the panel shut — or with a
-        // container over it — does not arrive in the search box the moment
-        // the box is drawn again.
+        // Drain, so a keystroke pressed while the box did not have the
+        // keyboard does not arrive in it the moment it does.
         chars.clear();
     }
 
@@ -865,6 +1035,11 @@ pub fn rebuild(
             let fallback = super::icons::Icons::default();
             let icons = icons.as_deref().unwrap_or(&fallback);
             inv::build_screen(&mut commands, &ui, core, icons, net.sel)
+        }
+        Panel::Craft => {
+            let fallback = super::icons::Icons::default();
+            let icons = icons.as_deref().unwrap_or(&fallback);
+            craft::build_screen(&mut commands, &ui, core, icons)
         }
         Panel::Wheel => {
             let fallback = super::icons::Icons::default();

@@ -286,6 +286,50 @@ pub fn rows(
     }
 }
 
+/// Whether the station `def` needs stands in reach of `(x, z)` — the sim's
+/// own test (`craft::start`: the furnace by archetype, the bench ladder by
+/// `≥`), asked of the client's mirror of the deploys at the sim's radius.
+/// Quick craft offers only what this says yes to, and the crafting page
+/// dims CRAFT on a no — before the sim answers `REFUSE_STATION` to a click
+/// that looked live.
+pub fn station_here(
+    def: &RecipeDef,
+    recs: &[sim_core::deploy::DeployRec],
+    dc: &DeployContent,
+    x: f32,
+    z: f32,
+) -> bool {
+    use sim_core::craft::STATION_RADIUS_M;
+    match def.station {
+        STATION_NONE => true,
+        STATION_FURNACE => sim_core::deploy::arch_in(
+            recs,
+            dc,
+            sim_core::deploy::ARCH_FURNACE,
+            x,
+            z,
+            STATION_RADIUS_M,
+        ),
+        tier => sim_core::deploy::best_bench_in(recs, dc, x, z, STATION_RADIUS_M) >= tier,
+    }
+}
+
+/// What the detail pane shows when the crafting page opens with nothing
+/// picked: the first recipe the pack pays for where the player stands
+/// (`here`, [`station_here`] in the game), else the first it pays for, else
+/// the first in the list. An empty pane on a page of its own says less than
+/// any recipe does, and a bench recipe opened away from the bench greets
+/// the player with a red badge.
+pub fn first_pick(rows: &[Row], here: impl Fn(u16) -> bool) -> Option<u16> {
+    let makeable = |r: &&Row| r.affordable > 0 && !r.locked;
+    rows.iter()
+        .filter(makeable)
+        .find(|r| here(r.recipe))
+        .or_else(|| rows.iter().find(makeable))
+        .or(rows.first())
+        .map(|r| r.recipe)
+}
+
 /// One line of the detail pane's ingredient table — the reference frame's
 /// AMOUNT / ITEM TYPE / TOTAL / HAVE, in that order and named for it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -546,8 +590,84 @@ pub fn countdown_label(left_s: f32) -> String {
 }
 
 #[cfg(test)]
-mod clock_tests {
+mod tests {
     use super::*;
+
+    /// Quick craft and the CRAFT button ask the sim's own station question
+    /// of the client's mirror: no station always, the bench ladder by ≥,
+    /// the furnace by archetype, each at the sim's radius.
+    #[test]
+    fn a_recipe_is_makeable_only_where_its_station_stands() {
+        use sim_core::craft::STATION_RADIUS_M;
+        use sim_core::deploy::{cell_center, DeployRec, ARCH_FURNACE};
+        let mut dc = DeployContent::probe_fixture();
+        // Row 1 is the fixture's tier-1 bench; row 4 (the fire) stands in
+        // for a furnace, which the fixture does not carry.
+        dc.defs[4].arch = ARCH_FURNACE;
+        let bench = DeployRec {
+            cx: 100,
+            cz: 100,
+            row: 1,
+            ..DeployRec::default()
+        };
+        let furnace = DeployRec { row: 4, ..bench };
+        let (x, z) = cell_center(100, 100);
+        let at = |station| RecipeDef {
+            station,
+            ..RecipeDef::INERT
+        };
+        assert!(station_here(&at(STATION_NONE), &[], &dc, x, z));
+        assert!(station_here(&at(STATION_WORKBENCH1), &[bench], &dc, x, z));
+        assert!(
+            !station_here(&at(STATION_WORKBENCH2), &[bench], &dc, x, z),
+            "a tier-1 bench is not a tier-2 bench"
+        );
+        assert!(!station_here(&at(STATION_WORKBENCH1), &[], &dc, x, z));
+        let far = x + STATION_RADIUS_M + 0.01;
+        assert!(!station_here(
+            &at(STATION_WORKBENCH1),
+            &[bench],
+            &dc,
+            far,
+            z
+        ));
+        assert!(station_here(&at(STATION_FURNACE), &[furnace], &dc, x, z));
+        assert!(
+            !station_here(&at(STATION_FURNACE), &[bench], &dc, x, z),
+            "a bench is not a furnace"
+        );
+    }
+
+    #[test]
+    fn the_page_opens_on_something_the_pack_can_make() {
+        let row = |recipe, affordable, locked| Row {
+            recipe,
+            output: 0,
+            out_count: 1,
+            station: 0,
+            affordable,
+            locked,
+        };
+        let rows = [
+            row(4, 0, false),
+            row(5, 3, true),
+            row(6, 2, false),
+            row(7, 1, false),
+        ];
+        assert_eq!(first_pick(&rows, |_| true), Some(6));
+        assert_eq!(first_pick(&rows, |r| r == 7), Some(7), "where you stand");
+        assert_eq!(
+            first_pick(&rows, |_| false),
+            Some(6),
+            "else what you pay for"
+        );
+        assert_eq!(
+            first_pick(&rows[..2], |_| true),
+            Some(4),
+            "else the first shown"
+        );
+        assert_eq!(first_pick(&[], |_| true), None);
+    }
 
     #[test]
     fn the_head_counts_down_between_messages() {

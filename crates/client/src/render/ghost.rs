@@ -267,11 +267,16 @@ pub fn track(
     // long as the plan is out and places with repeated left clicks, and the
     // ghost is what makes that flow legible.
     //
-    // The inventory still hides it: that screen owns the pointer, and a
-    // preview of a placement you cannot make is noise.
+    // The inventory and crafting pages still hide it: they own the pointer,
+    // and a preview of a placement you cannot make is noise.
     let core = &net.session.core;
     let hand = crate::ui::hold::held_in_hand(&core.catalog, &core.inv, net.sel);
-    if !hand.shows_ghost() || ui.panel == super::panels::Panel::Inventory {
+    if !hand.shows_ghost()
+        || matches!(
+            ui.panel,
+            super::panels::Panel::Inventory | super::panels::Panel::Craft
+        )
+    {
         hide(&mut commands, ghost);
         return;
     }

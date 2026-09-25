@@ -2918,9 +2918,10 @@ pub fn craft_clock(
 ///
 /// It exists for the moment the menu is closed — Devblog 62's *"see how long
 /// is left on your craft without having to keep opening the inventory
-/// menu"* — so it hides while the inventory is open, where the queue strip
-/// says the same thing. Strings are rebuilt only when what they say moves:
-/// the job, or the whole second.
+/// menu"* — and it stays up over the inventory page, as Rust's does, since
+/// that page's quick craft queues without drawing the queue. It hides only
+/// on the crafting page, whose strip says the same thing. Strings are
+/// rebuilt only when what they say moves: the job, or the whole second.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn craft_bar(
     net: NonSend<Net>,
@@ -2938,7 +2939,7 @@ pub fn craft_bar(
     let core = &net.session.core;
     let menu_open = ui
         .as_ref()
-        .is_some_and(|u| u.panel == super::panels::Panel::Inventory);
+        .is_some_and(|u| u.panel == super::panels::Panel::Craft);
     let head = (core.jobs_count > 0 && !menu_open).then(|| core.jobs[0]);
     let Ok(mut node) = bar.single_mut() else {
         return;

@@ -586,7 +586,7 @@ pub fn sync_status(feed: Res<Feed>, mut ui: ResMut<Ui>, net: NonSend<super::supe
     // is opened there, and a blueprint is read there with a right-click, so
     // "learned X" and "already known" belong on the line a player is
     // looking at when they happen.
-    if ui.panel != Panel::Tech && ui.panel != Panel::Inventory {
+    if !matches!(ui.panel, Panel::Tech | Panel::Inventory | Panel::Craft) {
         return;
     }
     let core = &net.session.core;

@@ -1,5 +1,6 @@
-//! The craft half of the inventory screen — the frame in
-//! the reference `crafting.png`, built out of `crate::ui::craft`'s arithmetic.
+//! The crafting page (`Q`) — the frame in the reference `crafting.png`,
+//! built out of `crate::ui::craft`'s arithmetic — and the inventory page's
+//! quick-craft column.
 //!
 //! Four regions, each answering one of the questions the reference frame
 //! answers and ours did not (`MENUS.md` §3):
@@ -31,7 +32,7 @@ use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use super::{
     font, font_bold, Hover, Panel, Ui, ACCENT, BADGE, BROWSER_COLS, BROWSER_GRID_H, CELL_BG,
     CELL_FULL, CELL_GAP_PX, CELL_HOVER, CELL_PX, LINE, LINE_HOT, PANEL_BG, PANEL_H,
-    SCROLL_PX_PER_LINE, TEXT, TEXT_DIM, TEXT_SHORT,
+    SCROLL_PX_PER_LINE, SLOT_PX, TEXT, TEXT_DIM, TEXT_SHORT,
 };
 use crate::render::icons::{Icons, LOCK_TINT, PICTURE, PICTURE_DIM};
 use crate::ui::craft::{
@@ -53,10 +54,16 @@ const QUEUE_FILL: Color = Color::srgba(0.86, 0.95, 0.70, 0.95);
 const CANCEL: Color = Color::srgb(0.761, 0.427, 0.200);
 /// The empty queue's label, faded the way Rust fades it.
 const QUEUE_EMPTY: Color = Color::srgba(0.74, 0.72, 0.68, 0.30);
-/// Queue tile edge, px. With the strip's padding this is the 46 px row
-/// `PANEL_H`'s 720p budget gives the queue — a taller strip pushes the
-/// screen's title and hint line off both ends of a 720p window.
-const QUEUE_TILE_PX: f32 = 36.0;
+/// Queue tile edge, px. With the strip's padding this is the 56 px row
+/// `PANEL_H`'s 720p budget leaves the queue.
+const QUEUE_TILE_PX: f32 = 46.0;
+/// Most recipes the quick-craft column offers: Rust's 6 × 3, which does
+/// not scroll — and a bound on a list fed by the inventory (wall 4).
+pub const QUICK_MAX: usize = 18;
+/// What a middle-click on a quick-craft cell queues, Rust's.
+const QUICK_MIDDLE: u32 = 5;
+/// Quick-craft columns: the pack's own six, so the column lines up with it.
+const QUICK_COLS: u16 = 6;
 
 /// The recipe grid, which scrolls.
 #[derive(Component)]
@@ -97,6 +104,15 @@ pub struct SkinChip(pub u16);
 #[derive(Component)]
 pub struct CancelJob(pub usize);
 
+/// The search box: a click gives it the keyboard (`Ui::search_focus`).
+#[derive(Component)]
+pub struct SearchBox;
+
+/// A recipe in the inventory page's quick-craft column: a click queues one,
+/// a middle-click five, a right-click takes its last job out of the queue.
+#[derive(Component)]
+pub struct QuickCraft(pub u16);
+
 /// The head tile's countdown, written by [`queue_tick`].
 #[derive(Component)]
 pub struct QueueEta;
@@ -104,6 +120,41 @@ pub struct QueueEta;
 /// The head tile's progress bar, sized by [`queue_tick`].
 #[derive(Component)]
 pub struct QueueFill;
+
+/// The crafting page (`Q`) — Rust's crafting menu, on its own: the tabs,
+/// the rail and the browser beside the detail pane, and the queue under
+/// both. Your pack is on the other page; the ingredient table's HAVE column
+/// is what this one needs of it.
+pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: &Icons) {
+    super::page_root(commands, ui, |zone| {
+        // One column so the queue is exactly as wide as the row over it.
+        zone.spawn(Node {
+            flex_direction: FlexDirection::Column,
+            row_gap: Val::Px(8.0),
+            ..default()
+        })
+        .with_children(|col| {
+            col.spawn(Node {
+                flex_direction: FlexDirection::Row,
+                column_gap: Val::Px(8.0),
+                ..default()
+            })
+            .with_children(|row| {
+                build_browser(row, ui, core, icons);
+                build_detail(row, ui, core, icons);
+            });
+            build_queue(col, ui, core, icons);
+        });
+        zone.spawn((
+            Text::new(
+                "click a recipe   -   click the search box to type   -   \
+                 Q or Esc closes   -   Tab for your inventory",
+            ),
+            font(12.0),
+            TextColor(TEXT_DIM),
+        ));
+    });
+}
 
 /// The rail and the browser.
 pub fn build_browser(parent: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore, icons: &Icons) {
@@ -261,26 +312,33 @@ fn browser(parent: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore, icons:
             // The search box. Not a widget — a rectangle showing what the
             // keyboard has put in `ui.query`, because Bevy has no text input
             // and one built here would be a text-editing engine in a menu.
-            // Amber while it holds a search, Rust's mark for a live field.
+            // A click gives it the keyboard and turns it amber, Rust's mark
+            // for a live field; Enter, Esc or a click elsewhere hands the
+            // keyboard back, so the page's letters are keys again.
             let empty = ui.query.is_empty();
+            let live = ui.search_focus;
             col.spawn((
+                Button,
+                SearchBox,
                 Node {
                     padding: UiRect::axes(Val::Px(8.0), Val::Px(6.0)),
                     border: UiRect::all(Val::Px(1.0)),
                     ..default()
                 },
                 BackgroundColor(CELL_BG),
-                BorderColor::all(if empty { LINE } else { LINE_HOT }),
+                Hover::on(CELL_BG),
+                BorderColor::all(if live { LINE_HOT } else { LINE }),
             ))
             .with_children(|b| {
                 b.spawn((
-                    Text::new(if empty {
-                        "Search... (type to filter)".to_string()
-                    } else {
-                        format!("{}|", ui.query)
+                    Text::new(match (live, empty) {
+                        (true, _) => format!("{}|", ui.query),
+                        (false, true) => "Search...".to_string(),
+                        (false, false) => ui.query.clone(),
                     }),
                     font(13.0),
-                    TextColor(if empty { TEXT_DIM } else { TEXT }),
+                    TextColor(if empty && !live { TEXT_DIM } else { TEXT }),
+                    Pickable::IGNORE,
                 ));
             });
         });
@@ -463,6 +521,14 @@ fn detail_body(
     let count = ui.count.max(1);
     let name = item_label(&core.catalog, def.output);
     let locked = def.blueprint && !sim_core::research::knows(core.known(), recipe);
+    let pos = core.predict.position();
+    let here = crate::ui::craft::station_here(
+        def,
+        core.deploys.entries(),
+        &core.deploy_defs,
+        pos[0],
+        pos[2],
+    );
 
     // The head: the picture, what it is and where it is made, and — Rust's
     // top right — how long it takes and how many one craft makes.
@@ -520,19 +586,25 @@ fn detail_body(
                 TextColor(TEXT),
             ));
             if let Some(badge) = station_label(def.station) {
+                // Green where the station stands in reach, red where it
+                // does not — the badge is the reason CRAFT is dark.
                 mid.spawn((
                     Node {
                         padding: UiRect::axes(Val::Px(6.0), Val::Px(2.0)),
                         align_self: AlignSelf::FlexStart,
                         ..default()
                     },
-                    BackgroundColor(Color::srgba(0.30, 0.27, 0.08, 0.9)),
+                    BackgroundColor(if here {
+                        Color::srgba(0.30, 0.27, 0.08, 0.9)
+                    } else {
+                        Color::srgba(0.36, 0.10, 0.08, 0.9)
+                    }),
                 ))
                 .with_children(|b| {
                     b.spawn((
                         Text::new(badge.to_string()),
                         font_bold(11.0),
-                        TextColor(BADGE),
+                        TextColor(if here { BADGE } else { TEXT_SHORT }),
                     ));
                 });
             }
@@ -550,7 +622,6 @@ fn detail_body(
             // The time at the bench the player is standing at (craft rebate
             // v0): a higher rung in reach halves a unit, two quarter it, and
             // the green says the bench is doing that.
-            let pos = core.predict.position();
             let best = sim_core::deploy::best_bench_in(
                 core.deploys.entries(),
                 &core.deploy_defs,
@@ -685,7 +756,7 @@ fn detail_body(
         step_button(row, 1, "+");
         step_button(row, STEP_MAX, ">|");
 
-        let can = max >= count as u32 && !locked;
+        let can = max >= count as u32 && !locked && here;
         let rest = if can { CELL_FULL } else { CELL_BG };
         row.spawn((
             Button,
@@ -724,6 +795,16 @@ fn detail_body(
         font(11.0),
         TextColor(TEXT_DIM),
     ));
+    if !here {
+        pane.spawn((
+            Text::new(format!(
+                "stand within {} m of it to craft this",
+                sim_core::craft::STATION_RADIUS_M
+            )),
+            font(11.0),
+            TextColor(TEXT_SHORT),
+        ));
+    }
 }
 
 /// The favourite toggle under the name: Rust's star and the word.
@@ -935,6 +1016,206 @@ fn table_row(
         });
 }
 
+/// The inventory page's quick-craft column — Rust's: what the pack in
+/// front of you can make right now, where you stand, favourites first, 6 × 3
+/// and no scroll. A click queues one, a middle-click five, a right-click
+/// cancels; how many are queued is on the cell, and the queue itself is on
+/// the crafting page and the HUD's craft bar, which is up over this page as
+/// Rust's is. Devblog 187's lesson is kept by construction: a cell draws the
+/// item's default picture, never a skin.
+pub fn build_quick(parent: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore, icons: &Icons) {
+    let mut all: Vec<Row> = Vec::new();
+    rows(
+        &core.recipes,
+        &core.inv,
+        &core.catalog,
+        &ui.facts,
+        &ui.favs,
+        core.known(),
+        crate::ui::craft::Cat::All,
+        "",
+        &mut all,
+    );
+    // What the pack pays for, learned, and makeable where the player
+    // stands — a recipe whose bench is elsewhere is not quick.
+    all.retain(|r| r.affordable > 0 && !r.locked && makeable_here(core, r.recipe));
+    // Favourites first, the bake's order otherwise (a stable sort keeps it).
+    all.sort_by_key(|r| !ui.favs.contains(&r.recipe));
+    all.truncate(QUICK_MAX);
+    let width = QUICK_COLS as f32 * (SLOT_PX + CELL_GAP_PX) - CELL_GAP_PX;
+
+    parent
+        .spawn((
+            Node {
+                flex_direction: FlexDirection::Column,
+                padding: UiRect::all(Val::Px(10.0)),
+                row_gap: Val::Px(6.0),
+                border: UiRect::all(Val::Px(1.0)),
+                ..default()
+            },
+            BackgroundColor(PANEL_BG),
+            BorderColor::all(LINE),
+        ))
+        .with_children(|col| {
+            col.spawn((
+                Text::new("QUICK CRAFT".to_string()),
+                font_bold(15.0),
+                TextColor(TEXT),
+            ));
+            if all.is_empty() {
+                col.spawn((
+                    Text::new("nothing you carry makes anything here yet".to_string()),
+                    font(12.0),
+                    TextColor(TEXT_DIM),
+                    Node {
+                        width: Val::Px(width),
+                        ..default()
+                    },
+                ));
+                return;
+            }
+            col.spawn(Node {
+                display: Display::Grid,
+                grid_template_columns: RepeatedGridTrack::px(QUICK_COLS, SLOT_PX),
+                row_gap: Val::Px(CELL_GAP_PX),
+                column_gap: Val::Px(CELL_GAP_PX),
+                ..default()
+            })
+            .with_children(|g| {
+                for row in &all {
+                    quick_cell(g, ui, core, icons, row);
+                }
+            });
+            col.spawn((
+                Text::new(
+                    "click crafts one   -   middle-click five   -   right-click cancels"
+                        .to_string(),
+                ),
+                font(11.0),
+                TextColor(TEXT_DIM),
+                Node {
+                    width: Val::Px(width),
+                    ..default()
+                },
+            ));
+        });
+}
+
+/// Does the station `recipe` needs stand where the player does — nothing, a
+/// furnace, or a bench of its rung (`ui::craft::station_here`)?
+pub fn makeable_here(core: &ClientCore, recipe: u16) -> bool {
+    let pos = core.predict.position();
+    core.recipes
+        .recipes
+        .get(recipe as usize)
+        .is_some_and(|def| {
+            crate::ui::craft::station_here(
+                def,
+                core.deploys.entries(),
+                &core.deploy_defs,
+                pos[0],
+                pos[2],
+            )
+        })
+}
+
+/// How many of `recipe` are queued, over every job making it.
+fn queued(core: &ClientCore, recipe: u16) -> u32 {
+    let n = (core.jobs_count as usize).min(core.jobs.len());
+    core.jobs[..n]
+        .iter()
+        .filter(|(r, _)| *r as u16 == recipe)
+        .map(|(_, left)| *left as u32)
+        .sum()
+}
+
+fn quick_cell(
+    parent: &mut ChildSpawnerCommands,
+    ui: &Ui,
+    core: &ClientCore,
+    icons: &Icons,
+    row: &Row,
+) {
+    let name = item_label(&core.catalog, row.output);
+    let queued = queued(core, row.recipe);
+    parent
+        .spawn((
+            Button,
+            QuickCraft(row.recipe),
+            super::Tip(format!("{name} · you can make {}", row.affordable)),
+            Node {
+                width: Val::Px(SLOT_PX),
+                height: Val::Px(SLOT_PX),
+                border: UiRect::all(Val::Px(1.0)),
+                ..default()
+            },
+            BackgroundColor(CELL_FULL),
+            Hover::on(CELL_FULL),
+            BorderColor::all(if queued > 0 { QUEUE_HEAD } else { LINE }),
+        ))
+        .with_children(|c| {
+            match icons.item(&name) {
+                Some(image) => c.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(5.0),
+                        top: Val::Px(5.0),
+                        width: Val::Px(SLOT_PX - 12.0),
+                        height: Val::Px(SLOT_PX - 12.0),
+                        ..default()
+                    },
+                    ImageNode::new(image),
+                    Pickable::IGNORE,
+                )),
+                None => c.spawn((
+                    Text::new(cell_abbrev(&name, CELL_LINE_CHARS)),
+                    font_bold(10.0),
+                    TextColor(TEXT),
+                    Pickable::IGNORE,
+                )),
+            };
+            if ui.favs.contains(&row.recipe) {
+                if let Some(star) = icons.glyph("ui_star") {
+                    c.spawn((
+                        Node {
+                            position_type: PositionType::Absolute,
+                            right: Val::Px(2.0),
+                            top: Val::Px(2.0),
+                            width: Val::Px(11.0),
+                            height: Val::Px(11.0),
+                            ..default()
+                        },
+                        ImageNode::new(star).with_color(STAR),
+                        Pickable::IGNORE,
+                    ));
+                }
+            }
+            // How many are coming, in the queue's green — the answer to a
+            // click, on the thing clicked.
+            if queued > 0 {
+                c.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        right: Val::Px(2.0),
+                        bottom: Val::Px(2.0),
+                        padding: UiRect::axes(Val::Px(4.0), Val::Px(0.0)),
+                        ..default()
+                    },
+                    BackgroundColor(QUEUE_HEAD),
+                    Pickable::IGNORE,
+                ))
+                .with_children(|b| {
+                    b.spawn((
+                        Text::new(queued.to_string()),
+                        font_bold(11.0),
+                        TextColor(TEXT),
+                        Pickable::IGNORE,
+                    ));
+                });
+            }
+        });
+}
+
 /// The queue strip, Rust's way: a tile per job — its picture, its count, a
 /// cross to cancel — the head green, with its countdown and a progress bar
 /// that [`queue_tick`] moves in place.
@@ -943,7 +1224,6 @@ pub fn build_queue(parent: &mut ChildSpawnerCommands, _ui: &Ui, core: &ClientCor
     parent
         .spawn((
             Node {
-                width: Val::Px(970.0),
                 height: Val::Px(QUEUE_TILE_PX + 10.0),
                 padding: UiRect::axes(Val::Px(8.0), Val::Px(4.0)),
                 flex_direction: FlexDirection::Row,
@@ -1127,7 +1407,7 @@ pub fn queue_tick(
     mut etas: Query<(&mut Text, Ref<QueueEta>)>,
     mut fills: Query<&mut Node, With<QueueFill>>,
 ) {
-    if ui.panel != Panel::Inventory {
+    if !matches!(ui.panel, Panel::Craft | Panel::Inventory) {
         *last = None;
         return;
     }
@@ -1164,11 +1444,86 @@ pub fn clicks(
     go: Query<&Interaction, (Changed<Interaction>, With<CraftGo>)>,
     cancels: Query<(&Interaction, &CancelJob), Changed<Interaction>>,
     chips: Query<(&Interaction, &SkinChip), Changed<Interaction>>,
+    search: Query<&Interaction, (Changed<Interaction>, With<SearchBox>)>,
+    quick: Query<(&Interaction, &QuickCraft)>,
+    mouse: Res<ButtonInput<MouseButton>>,
 ) {
-    if ui.panel != Panel::Inventory {
+    if !matches!(ui.panel, Panel::Craft | Panel::Inventory) {
         return;
     }
     let core = &net.session.core;
+
+    // The search box takes the keyboard on a click and gives it back on a
+    // click anywhere else (`Ui::search_focus`).
+    let into_search = search.iter().any(|i| *i == Interaction::Pressed);
+    if into_search && !ui.search_focus {
+        ui.search_focus = true;
+        ui.dirty = true;
+    } else if !into_search && ui.search_focus && mouse.just_pressed(MouseButton::Left) {
+        ui.search_focus = false;
+        ui.dirty = true;
+    }
+
+    // Quick craft, Rust's three buttons: left one, middle five (or what the
+    // pack pays for, if less), right cancels the recipe's last job. `Pressed`
+    // is Bevy's left button only, so the other two are the button's own
+    // press over the hovered cell. The queue answers with `CraftQ`.
+    let press = if mouse.just_pressed(MouseButton::Left) {
+        Some(MouseButton::Left)
+    } else if mouse.just_pressed(MouseButton::Middle) {
+        Some(MouseButton::Middle)
+    } else if mouse.just_pressed(MouseButton::Right) {
+        Some(MouseButton::Right)
+    } else {
+        None
+    };
+    let hit = quick
+        .iter()
+        .find(|(i, _)| !matches!(i, Interaction::None))
+        .map(|(_, q)| q.0);
+    if let (Some(button), Some(recipe)) = (press, hit) {
+        let def = core.recipes.recipes.get(recipe as usize);
+        let name = def
+            .map(|d| item_label(&core.catalog, d.output))
+            .unwrap_or_default();
+        let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
+        let encoded = if button == MouseButton::Right {
+            let n = (core.jobs_count as usize).min(core.jobs.len());
+            match core.jobs[..n]
+                .iter()
+                .rposition(|(r, _)| *r as u16 == recipe)
+            {
+                Some(i) => Some((
+                    protocol::encode_action_cancel(i as u16, &mut buf),
+                    format!("cancelled {} × {name}", core.jobs[i].1),
+                )),
+                None => {
+                    ui.say(format!("no {name} in the queue"));
+                    None
+                }
+            }
+        } else {
+            let can = def.map(|d| affordable(d, &core.inv)).unwrap_or(0);
+            let want = if button == MouseButton::Middle {
+                QUICK_MIDDLE.min(can).max(1)
+            } else {
+                1
+            };
+            Some((
+                protocol::encode_action_craft(recipe, want as u16, 0, &mut buf),
+                format!("queued {want} × {name}"),
+            ))
+        };
+        if let Some((encoded, said)) = encoded {
+            match encoded {
+                Ok(len) => match net.session.send_action(&buf[..len]) {
+                    Ok(()) => ui.say(said),
+                    Err(e) => ui.say(e.to_string()),
+                },
+                Err(e) => ui.say(format!("that would not encode ({e:?})")),
+            }
+        }
+    }
 
     for (interaction, cat) in cats.iter() {
         if *interaction == Interaction::Pressed {
@@ -1269,6 +1624,21 @@ pub fn clicks(
     }
 }
 
+/// A craft the sim refused, said on the page's status line. It reaches the
+/// HUD's toast too (`hud::feedback`), but an open page covers the HUD, and
+/// a click that is answered where the player is not looking is the
+/// dark-panel defect.
+pub fn sync_status(feed: Res<crate::render::feed::Feed>, mut ui: ResMut<Ui>) {
+    if !matches!(ui.panel, Panel::Craft | Panel::Inventory) {
+        return;
+    }
+    for (which, code, _item) in feed.refusals() {
+        if which == crate::render::feed::Refused::Craft {
+            ui.say(crate::ui::refusals::craft(code));
+        }
+    }
+}
+
 /// Wheel over the recipe grid.
 ///
 /// Clamped to the content rather than left to run: Bevy will happily scroll
@@ -1281,7 +1651,7 @@ pub fn scroll(
     mut wheel: MessageReader<MouseWheel>,
     mut grids: Query<(&mut ScrollPosition, &ComputedNode), With<BrowserScroll>>,
 ) {
-    if ui.panel != Panel::Inventory {
+    if ui.panel != Panel::Craft {
         wheel.clear();
         return;
     }

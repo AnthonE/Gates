@@ -159,7 +159,10 @@ ITEMS = {
     "hatchet_stone": "delapouite/hatchet",
     "pickaxe_stone": "delapouite/war-pick",
     "bow": "delapouite/bow-arrow",
-    "arrow_wood": "delapouite/plain-arrow",
+    # An arrow, not the UI symbol for one: `delapouite/plain-arrow` is a
+    # download arrow, and it drew the crafting page's first pick as a
+    # button. The metal arrow's barbed head is its own glyph below.
+    "arrow_wood": "lorc/arrowhead",
     "bandage": "lorc/bandage-roll",
     "sleeping_bag": "delapouite/sleeping-bag",
     "box_small": "delapouite/wooden-crate",
@@ -204,7 +207,7 @@ ITEMS = {
     "hammer": "lorc/claw-hammer",
     "armor_burlap_head": "lorc/hood",
     "armor_burlap_body": "lorc/leather-vest",
-    "arrow_metal": "delapouite/split-arrows",
+    "arrow_metal": "lorc/broadhead-arrow",
     "crossbow": "carl-olsen/crossbow",
     "revolver": "delapouite/revolver",
     "pistol_ammo": "delapouite/heavy-bullets",

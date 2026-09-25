@@ -1509,17 +1509,10 @@ impl Deploys {
     }
 
     /// Whether any placed deployable of `arch` sits within `radius_m`
-    /// (planar) of the point — the craft station check.
+    /// (planar) of the point — the craft station check, [`arch_in`] over
+    /// this store.
     pub fn arch_near(&self, dc: &DeployContent, arch: u8, x: f32, z: f32, radius_m: f32) -> bool {
-        let r2 = radius_m * radius_m;
-        self.entries[..self.len].iter().any(|d| {
-            if dc.defs[d.row as usize].arch != arch {
-                return false;
-            }
-            let (ax, az) = cell_center(d.cx, d.cz);
-            let (dx, dz) = (ax - x, az - z);
-            dx * dx + dz * dz <= r2
-        })
+        arch_in(self.entries(), dc, arch, x, z, radius_m)
     }
 
     /// Whether any placed workbench of tier ≥ `tier` sits within
@@ -1710,6 +1703,30 @@ pub fn best_bench_in(recs: &[DeployRec], dc: &DeployContent, x: f32, z: f32, rad
         }
     }
     best
+}
+
+/// Whether any record of `arch` sits within `radius_m` (planar) of the
+/// point — the furnace's station check. A free function for
+/// [`best_bench_in`]'s reason: the client asks it of its own mirror, so the
+/// crafting page can say a recipe needs a furnace before the sim refuses
+/// it. A row past the def table reads as not that archetype.
+pub fn arch_in(
+    recs: &[DeployRec],
+    dc: &DeployContent,
+    arch: u8,
+    x: f32,
+    z: f32,
+    radius_m: f32,
+) -> bool {
+    let r2 = radius_m * radius_m;
+    recs.iter().any(|d| {
+        if dc.defs.get(d.row as usize).map(|def| def.arch) != Some(arch) {
+            return false;
+        }
+        let (ax, az) = cell_center(d.cx, d.cz);
+        let (dx, dz) = (ax - x, az - z);
+        dx * dx + dz * dz <= r2
+    })
 }
 
 /// The point `place_deploy` measures reach to, for every `loc`. `build.rs`

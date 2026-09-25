@@ -442,34 +442,14 @@ pub fn wearable_here(catalog: &ItemCatalog, item: u16, s: usize) -> bool {
 
 /// Is a ground container open — is the player **looting**?
 ///
-/// One name for a state two parts of the screen key off: the container
-/// grid is drawn, and the crafting half is not (`screen_title`). `is_own`
+/// One name for a state two parts of the inventory page key off: the
+/// container grid is drawn, and quick craft is not. `is_own`
 /// rather than `!= CONT_SELF`, which is `sim_core`'s own distinction and
 /// the reason it exists — the body is a container the player carries, and
 /// it is never what `ClientCore::cont_kind` holds, so the two spellings
 /// agree today and only one of them keeps agreeing.
 pub fn looting(cont_kind: u8) -> bool {
     !is_own(cont_kind)
-}
-
-/// The screen title over the inventory panel.
-///
-/// **`CRAFTING` only when the crafting half is actually drawn.** The title
-/// names the region under it (this file's own rule, and why it stopped
-/// saying `INVENTORY` — the grids have their own heads), so with a
-/// container open and the recipe browser gone, `CRAFTING` would label a
-/// row of grids and `INVENTORY` would be the screen's third `INVENTORY`.
-///
-/// The operator, 2026-09-16, looking at the crafting panel over a bag's
-/// slots: *"we shouldnt show crafting"*. So the word names the verb the
-/// screen is for instead, which is the one thing on it that is not also a
-/// heading somewhere else.
-pub fn screen_title(cont_kind: u8) -> &'static str {
-    if looting(cont_kind) {
-        "LOOTING"
-    } else {
-        "CRAFTING"
-    }
 }
 
 /// What a right-click on a slot with no drag resolves to.
