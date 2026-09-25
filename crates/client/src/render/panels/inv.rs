@@ -1,22 +1,14 @@
-//! The inventory screen: your slots, the open container's, and the drag
-//! between them.
+//! The inventory page (`Tab`): your body, your slots, the open container's,
+//! and the drag between them.
 //!
-//! The whole screen is one tree, and **what is in it depends on whether a
-//! container is open.** With nothing open it is the crafting screen —
-//! the recipe browser, the detail pane, the queue — over your slots and
-//! your body. With a container open the crafting half is not drawn at all
-//! and the container's grid takes the room (the operator, 2026-09-16:
-//! *"we shouldnt show crafting"*).
-//!
-//! ⚠ **That is a reversal, and the paragraph it replaced was the argument
-//! for the other side**: *"a player pulls something out of a box and
-//! crafts with it without closing anything"*, measured against the
-//! reference `inventory.jpeg`. It was a fair reading of a frame with no
-//! loot panel in it — the reference's *loot* frame puts the container
-//! where the crafting tab was, so the thing we copied from a screenshot
-//! was the half of their layout that does not survive opening a box. The
-//! cost is real and stated: to craft you close the container, because this
-//! screen has no tab strip (`NOW.md` §0p2).
+//! **What is on its right depends on whether a container is open.** With
+//! nothing open it is quick craft (`craft::build_quick`) — Rust's short list
+//! of what the pack can make right now; with a container open the container
+//! takes that room (the operator, 2026-09-16: *"we shouldnt show
+//! crafting"*). The full crafting menu is its own page (`Q`), one button
+//! away in the strip across the top, which is Rust's split: the two used to
+//! be one screen with the recipe browser stacked over these grids, and to
+//! craft while looting you had to close the box.
 //!
 //! ## The gestures, and why they are three and not one
 //!
@@ -39,26 +31,14 @@
 //!
 //! ## The three regions are titled, and the container's says what it is
 //!
-//! The reference loot frame is three named blocks — the crafting tab across
-//! the top, `INVENTORY`, and `LOOT` over a bar naming the thing you opened
-//! (`LARGE WOODEN BOX`). Ours drew a screen-wide `INVENTORY` title and then
-//! labelled the two grids `YOU` and `BOX`, which is the same information
-//! arranged so that the word `INVENTORY` appears twice and the container is
-//! named after its category rather than itself.
-//!
-//! So the screen title now names the region it actually sits over — the top
-//! half of this screen *is* the crafting UI — the two grids carry their own
-//! heads, and the container gets a name bar
-//! (`crate::ui::slots::container_name`, resolved out of the deploy sync the
-//! client is already drawing, so no byte of wire is owed for it).
-//!
-//! **It costs 3 px of the 720p column**, which is worth stating because
-//! `CELL_PX`'s budget is what decides such things and the obvious reading is
-//! that three new headings cost three headings' height. They do not: the
-//! screen title was renamed, not added, so the only growth is the two
-//! section heads going 12 px → 15 px, and the name bar sits on the
-//! **container** panel — two rows where yours is five — so the row is as
-//! tall as your grid either way and the bar is free.
+//! The reference loot frame is three named blocks — the crafting button
+//! across the top, `INVENTORY`, and `LOOT` over a bar naming the thing you
+//! opened (`LARGE WOODEN BOX`). So the grids carry their own heads and the
+//! container gets a name bar (`crate::ui::slots::container_name`, resolved
+//! out of the deploy sync the client is already drawing, so no byte of wire
+//! is owed for it). The name bar sits on the **container** panel — two rows
+//! where yours is five — so the row is as tall as your grid either way and
+//! the bar is free.
 //!
 //! ## What the panel is not allowed to do
 //!
@@ -83,17 +63,17 @@ use sim_core::limits::{HOTBAR_SLOTS, INV_SLOTS, WEAR_SLOTS};
 use sim_core::research::{TABLE_COIN_SLOT, TABLE_ITEM_SLOT};
 
 use super::{
-    craft, font, font_bold, GhostRoot, Panel, PanelRoot, Ui, BADGE, CELL_BG, CELL_FULL,
-    CELL_GAP_PX, CELL_HOVER, CELL_PX, LINE, LINE_HOT, PANEL_BG, PAPER_BG, PIP_FILL, PIP_H_PX,
-    PIP_TROUGH, SCRIM, TEXT, TEXT_DIM, TEXT_SHORT,
+    craft, font, font_bold, GhostRoot, Panel, Ui, BADGE, CELL_BG, CELL_FULL, CELL_GAP_PX,
+    CELL_HOVER, CELL_SEL, LINE, LINE_HOT, PANEL_BG, PAPER_BG, PIP_FILL, PIP_H_PX, PIP_TROUGH,
+    SLOT_PX, TEXT, TEXT_DIM, TEXT_SHORT,
 };
 use crate::render::icons::Icons;
 use crate::ui::craft::{cell_abbrev, item_label, CELL_LINE_CHARS};
 use crate::ui::research::{self as research_ui, TableLine, UseAs};
 use crate::ui::slots::{
     container_bar, container_cols, container_name, container_title, count_badge, ghost_origin,
-    looting, move_args, pip_fraction, quick_move, refusal_text, screen_title, slots_in,
-    takes_deposits, wear_slot_label, wearable_here, worn_pct, Drag, Grab, Quick,
+    looting, move_args, pip_fraction, quick_move, refusal_text, slots_in, takes_deposits,
+    wear_slot_label, wearable_here, worn_pct, Drag, Grab, Quick,
 };
 
 /// One addressable cell. `kind` is a `CONT_*`, so the same component serves
@@ -106,155 +86,71 @@ pub struct SlotCell {
     pub slot: usize,
 }
 
-/// Build the whole screen.
-pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: &Icons) {
-    commands
-        .spawn((
-            PanelRoot,
-            Node {
-                position_type: PositionType::Absolute,
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
-                flex_direction: FlexDirection::Column,
-                align_items: AlignItems::Center,
-                justify_content: JustifyContent::Center,
-                row_gap: Val::Px(8.0),
-                ..default()
-            },
-            BackgroundColor(SCRIM),
-        ))
-        .with_children(|root| {
-            header(root, ui, core);
-
-            // The upper half: crafting, then the detail pane — **and not
-            // while a container is open** (the operator, 2026-09-16:
-            // *"we shouldnt show crafting"*, looking at the recipe
-            // browser drawn over a bag's slots).
-            //
-            // The reference's loot frame is the same shape: the panel you
-            // opened takes the screen and crafting is behind a tab. We
-            // have no tab, so the crafting half is reachable by closing
-            // the container — which is the cost, and `NOW.md` §0p2
-            // carries it rather than this file inventing a tab strip.
-            //
-            // It is a `build_screen` branch rather than a `Visibility`
-            // toggle because `panels::rebuild` tears this tree down and
-            // respawns it on every change: a hidden browser would still
-            // cost its ~40 cells of nodes and would still be the thing
-            // `ui.query`'s keystrokes went to.
-            if !looting(core.cont_kind) {
-                root.spawn(Node {
-                    flex_direction: FlexDirection::Row,
-                    column_gap: Val::Px(8.0),
-                    ..default()
-                })
-                .with_children(|row| {
-                    craft::build_browser(row, ui, core, icons);
-                    craft::build_detail(row, ui, core);
-                });
-
-                craft::build_queue(root, ui, core);
+/// The inventory page (`Tab`) — Rust's: your body on the left, your pack
+/// in the middle with the belt along its foot, and on the right whatever
+/// the page is being used for: quick craft, or the container you opened.
+/// The crafting menu is its own page (`craft::build_screen`, `Q`), reached
+/// by the tab strip across the top of both.
+pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: &Icons, sel: u8) {
+    super::page_root(commands, ui, |zone| {
+        // **The body is drawn unconditionally** (`NOW.md` §0eq item 4). It
+        // used to be a branch inside `container_grid`, so it appeared only
+        // when `CONT_WEAR` was the open container — and a box was the open
+        // container the whole time you were looting one, which made the
+        // panel's own move (helmet out of a raided box, onto a head) the one
+        // route it could not draw. It is fed by its own stream and is never
+        // absent.
+        //
+        // Left to right the way Rust lays it out: what you wear, what you
+        // carry, and what the page is for. With a container open that last
+        // column is the container (the operator, 2026-09-16: *"we shouldnt
+        // show crafting"*); with nothing open it is quick craft, and the
+        // whole crafting menu is a button away.
+        zone.spawn(Node {
+            flex_direction: FlexDirection::Row,
+            column_gap: Val::Px(8.0),
+            align_items: AlignItems::FlexStart,
+            ..default()
+        })
+        .with_children(|row| {
+            wear_panel(row, core, icons);
+            own_grid(row, core, icons, sel as usize);
+            if open_table(core).is_some() {
+                table_grid(row, ui, core, icons);
+            } else if looting(core.cont_kind) {
+                container_grid(row, core, icons);
+            } else {
+                craft::build_quick(row, ui, core, icons);
             }
-
-            // The lower half: your slots, your body, and the container if
-            // one is open.
-            //
-            // **The body is drawn unconditionally now** (`NOW.md` §0eq
-            // item 4). It used to be a branch inside `container_grid`, so
-            // it appeared only when `CONT_WEAR` was the open container —
-            // and a box was the open container the whole time you were
-            // looting one, which made the panel's own move (helmet out of
-            // a raided box, onto a head) the one route it could not draw.
-            // It is fed by its own stream now and is never absent, so the
-            // three panels sit left-to-right in the order the move runs:
-            // take from the box on the right, drop on the body in the
-            // middle, or hold it in the pack on the left.
-            root.spawn(Node {
-                flex_direction: FlexDirection::Row,
-                column_gap: Val::Px(8.0),
-                ..default()
-            })
-            .with_children(|row| {
-                own_grid(row, core, icons);
-                wear_panel(row, core, icons);
-                if open_table(core).is_some() {
-                    table_grid(row, ui, core, icons);
-                } else if looting(core.cont_kind) {
-                    container_grid(row, core, icons);
-                }
-            });
-
-            // Names only the two closers, deliberately. `I` and `Q` open this
-            // screen and cannot close it — the search box eats every letter,
-            // so a letter that closed would close it mid-word — and a hint
-            // promising a round trip that does not exist is worse than a hint
-            // that is merely incomplete.
-            root.spawn((
-                Text::new(if open_table(core).is_some() {
-                    // The table's own gestures: which slot takes what, and
-                    // what starts it — the two things no other container
-                    // asks a player to know.
-                    "one item to research in ITEM, junk beside it   -   right-click moves it across   \
-                     -   BEGIN or C starts it   -   Tab or Esc closes"
-                } else if looting(core.cont_kind) {
-                    // What the gesture DOES here, which is not what it
-                    // does with nothing open. A hint line that names the
-                    // other mode is worse than no hint: it is a promise.
-                    "drag to move   -   right-click moves it across   \
-                     -   right-drag takes half   -   ctrl-drag takes one   \
-                     -   Tab or Esc closes"
-                } else {
-                    "drag to move   -   right-drag takes half   -   ctrl-drag takes one   \
-                     -   right-click uses   -   Tab or Esc closes"
-                }),
-                font(12.0),
-                TextColor(TEXT_DIM),
-                Node {
-                    margin: UiRect::top(Val::Px(6.0)),
-                    ..default()
-                },
-            ));
         });
+
+        zone.spawn((
+            Text::new(if open_table(core).is_some() {
+                // The table's own gestures: which slot takes what, and what
+                // starts it — the two things no other container asks a
+                // player to know.
+                "one item to research in ITEM, junk beside it   -   right-click moves it across   \
+                 -   BEGIN or C starts it   -   Tab or Esc closes"
+            } else if looting(core.cont_kind) {
+                // What the gesture DOES here, which is not what it does with
+                // nothing open. A hint line that names the other mode is
+                // worse than no hint: it is a promise.
+                "drag to move   -   right-click moves it across   \
+                 -   right-drag takes half   -   ctrl-drag takes one   \
+                 -   Tab or Esc closes"
+            } else {
+                "drag to move   -   right-drag takes half   -   ctrl-drag takes one   \
+                 -   right-click uses   -   P re-skins   -   Q crafting   -   Tab or Esc closes"
+            }),
+            font(12.0),
+            TextColor(TEXT_DIM),
+        ));
+    });
 }
 
-fn header(root: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore) {
-    // **`CRAFTING`, not `INVENTORY`.** It sits directly over the recipe
-    // browser, the detail pane and the queue, which are what the top half of
-    // this screen is; the inventory has its own head on the grid it names,
-    // and a title that labels the region under it can only be one of the two.
-    //
-    // Which is exactly why it is not a constant any more: with a container
-    // open there IS no recipe browser under it, so the word is
-    // `ui::slots::screen_title`'s to choose and `LOOTING` is what it
-    // chooses (`tests/ui.rs` §T).
-    root.spawn((
-        // A research table is not loot (research table v1): the screen is
-        // where a research is started, and LOOTING over it would name a
-        // verb the player is not doing.
-        Text::new(if open_table(core).is_some() {
-            "RESEARCH"
-        } else {
-            screen_title(core.cont_kind)
-        }),
-        font_bold(26.0),
-        TextColor(TEXT),
-    ));
-    // Always drawn, even empty: the line's job is to have somewhere to say
-    // why something did not happen, and a line that appears and disappears
-    // makes the panel jump when it does.
-    root.spawn((
-        Text::new(if ui.status.is_empty() {
-            " ".into()
-        } else {
-            ui.status.clone()
-        }),
-        font(13.0),
-        TextColor(BADGE),
-    ));
-}
-
-/// Your own 30 slots: the belt on its own row, then the grid.
-fn own_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons) {
+/// Your own 30 slots: the pack, then the belt along its foot — Rust's
+/// order, and the hotbar's own place on the screen under it.
+fn own_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons, sel: usize) {
     row.spawn((
         Node {
             flex_direction: FlexDirection::Column,
@@ -268,17 +164,6 @@ fn own_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons) {
     ))
     .with_children(|col| {
         section(col, "INVENTORY");
-        // The belt is drawn apart from the grid because it is apart: it is
-        // the row the world can see, and slot 0..6 is what `sel` indexes.
-        grid(col, core, icons, CONT_SELF, 0, HOTBAR_SLOTS, HOTBAR_SLOTS);
-        col.spawn((
-            Node {
-                width: Val::Percent(100.0),
-                height: Val::Px(1.0),
-                ..default()
-            },
-            BackgroundColor(LINE),
-        ));
         grid(
             col,
             core,
@@ -287,6 +172,27 @@ fn own_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons) {
             HOTBAR_SLOTS,
             INV_SLOTS,
             HOTBAR_SLOTS,
+            sel,
+        );
+        col.spawn((
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Px(1.0),
+                ..default()
+            },
+            BackgroundColor(LINE),
+        ));
+        // The belt is drawn apart from the pack because it is apart: it is
+        // the row the world can see, and slot 0..6 is what `sel` indexes.
+        grid(
+            col,
+            core,
+            icons,
+            CONT_SELF,
+            0,
+            HOTBAR_SLOTS,
+            HOTBAR_SLOTS,
+            sel,
         );
     });
 }
@@ -327,7 +233,7 @@ fn container_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Ico
         if let Some(bar) = container_bar(kind, &name) {
             name_bar(col, bar);
         }
-        grid(col, core, icons, kind, 0, n, container_cols(kind));
+        grid(col, core, icons, kind, 0, n, container_cols(kind), NO_SEL);
     });
 }
 
@@ -362,7 +268,7 @@ pub struct TableBegin;
 pub struct TableFill;
 
 /// Width of the table's column contents: its two captioned cells.
-const TABLE_W_PX: f32 = 2.0 * CELL_PX + 64.0;
+const TABLE_W_PX: f32 = 2.0 * SLOT_PX + 64.0;
 
 /// The research table, in the container's seat (research table v1): its
 /// two working slots captioned by what goes in them, the line saying what
@@ -427,6 +333,7 @@ fn table_grid(row: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore, icons:
                         cell_stack(core, CONT_BOX, slot),
                         core,
                         icons,
+                        false,
                     );
                     c.spawn((Text::new(caption), font(10.0), TextColor(TEXT_DIM)));
                 });
@@ -639,6 +546,7 @@ fn wear_slot(parent: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons
                 cell_stack(core, CONT_WEAR, slot),
                 core,
                 icons,
+                false,
             );
         });
 }
@@ -775,6 +683,7 @@ fn cell_stack(core: &ClientCore, kind: u8, slot: usize) -> ItemStack {
     view.get(slot).copied().unwrap_or_default()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn grid(
     parent: &mut ChildSpawnerCommands,
     core: &ClientCore,
@@ -783,18 +692,28 @@ fn grid(
     from: usize,
     to: usize,
     cols: usize,
+    sel: usize,
 ) {
     parent
         .spawn(Node {
             display: Display::Grid,
-            grid_template_columns: RepeatedGridTrack::px(cols as u16, CELL_PX),
+            grid_template_columns: RepeatedGridTrack::px(cols as u16, SLOT_PX),
             row_gap: Val::Px(CELL_GAP_PX),
             column_gap: Val::Px(CELL_GAP_PX),
             ..default()
         })
         .with_children(|g| {
             for slot in from..to {
-                cell(g, kind, slot, cell_stack(core, kind, slot), core, icons);
+                let stack = cell_stack(core, kind, slot);
+                cell(
+                    g,
+                    kind,
+                    slot,
+                    stack,
+                    core,
+                    icons,
+                    kind == CONT_SELF && slot == sel,
+                );
             }
         });
 }
@@ -806,16 +725,16 @@ fn cell(
     stack: ItemStack,
     core: &ClientCore,
     icons: &Icons,
+    active: bool,
 ) {
     let filled = stack.count > 0;
-    let paper = research_ui::is_paper(&core.research, stack);
     parent
         .spawn((
             Button,
             SlotCell { kind, slot },
             Node {
-                width: Val::Px(CELL_PX),
-                height: Val::Px(CELL_PX),
+                width: Val::Px(SLOT_PX),
+                height: Val::Px(SLOT_PX),
                 border: UiRect::all(Val::Px(1.0)),
                 padding: UiRect::all(Val::Px(3.0)),
                 flex_direction: FlexDirection::Column,
@@ -823,13 +742,18 @@ fn cell(
                 overflow: Overflow::clip(),
                 ..default()
             },
-            BackgroundColor(match (filled, paper) {
-                (true, true) => PAPER_BG,
-                (true, false) => CELL_FULL,
-                (false, _) => CELL_BG,
-            }),
+            BackgroundColor(resting_fill(core, stack, active)),
             BorderColor::all(LINE),
         ))
+        // Its name under the pointer (`panels::tooltip`).
+        .insert_if(
+            super::Tip(research_ui::stack_label(
+                &core.catalog,
+                &core.research,
+                stack,
+            )),
+            || filled,
+        )
         .with_children(|c| {
             if filled {
                 // **A picture, not a word.** `Gunpowde` and `Workbenc` are
@@ -867,13 +791,16 @@ fn cell(
                             position_type: PositionType::Absolute,
                             left: Val::Px(4.0),
                             top: Val::Px(4.0),
-                            width: Val::Px(CELL_PX - 10.0),
-                            height: Val::Px(CELL_PX - 10.0),
+                            width: Val::Px(SLOT_PX - 10.0),
+                            height: Val::Px(SLOT_PX - 10.0),
                             ..default()
                         },
+                        // A colour picture, drawn as it is — or through the
+                        // skin's tint, the one colour a picture is
+                        // multiplied by.
                         ImageNode {
                             image,
-                            color: Color::srgb(0.90 * tr, 0.87 * tg, 0.82 * tb),
+                            color: Color::srgb(tr, tg, tb),
                             ..default()
                         },
                         Pickable::IGNORE,
@@ -893,17 +820,11 @@ fn cell(
                 // A count of one is not drawn, and the count that is carries
                 // its `x` — both are the reference frame's own rules, and
                 // `count_badge` is where they are written down and tested.
+                // Bottom right and shadowed: a colour picture is busier than
+                // the white glyph it replaced, and a count laid over one has
+                // to stand off whatever it lands on.
                 if let Some(badge) = count_badge(stack.count) {
-                    c.spawn((
-                        Text::new(badge),
-                        font_bold(13.0),
-                        TextColor(TEXT),
-                        Node {
-                            align_self: AlignSelf::FlexEnd,
-                            ..default()
-                        },
-                        Pickable::IGNORE,
-                    ));
+                    c.spawn(count_node(badge));
                 }
                 // The other number a cell carries, and the one a player has
                 // no other way to read: `cond` has been on the wire since
@@ -912,6 +833,44 @@ fn cell(
                 pip(c, stack, core);
             }
         });
+}
+
+/// No slot of this grid is in the player's hand.
+const NO_SEL: usize = usize::MAX;
+
+/// What a cell rests on when nothing is pointing at it: the belt slot in
+/// your hand in Rust's blue (the HUD's own mark for it, so the two agree),
+/// a blueprint on its paper, a stack on the filled grey, nothing on the
+/// empty one. One function for the build and for `drag_pointer`, which
+/// repaints it every frame: two copies of this match were two answers.
+fn resting_fill(core: &ClientCore, stack: ItemStack, active: bool) -> Color {
+    if active {
+        CELL_SEL
+    } else if stack.count == 0 {
+        CELL_BG
+    } else if research_ui::is_paper(&core.research, stack) {
+        PAPER_BG
+    } else {
+        CELL_FULL
+    }
+}
+
+/// A cell's stack count: Rust's corner, bottom right, shadowed off the
+/// picture under it. The cell and the drag ghost draw the same one.
+fn count_node(badge: String) -> impl Bundle {
+    (
+        Text::new(badge),
+        font_bold(12.0),
+        TextColor(TEXT),
+        crate::render::ui::TEXT_SHADOW,
+        Node {
+            position_type: PositionType::Absolute,
+            right: Val::Px(2.0),
+            bottom: Val::Px(PIP_H_PX),
+            ..default()
+        },
+        Pickable::IGNORE,
+    )
 }
 
 /// The durability pip: a thin trough under the cell's icon with a fill, or
@@ -926,7 +885,7 @@ fn cell(
 /// bar taking part in it would push the badge off the corner every reference
 /// frame puts it in. Pinning `left` and `right` also means the bar is the
 /// cell's own width whatever the padding and border do to the content box,
-/// which is what the icon's hand-fitted `CELL_PX - 10` does not.
+/// which is what the icon's hand-fitted `SLOT_PX - 10` does not.
 fn pip(parent: &mut ChildSpawnerCommands, stack: ItemStack, core: &ClientCore) {
     let Some(frac) = pip_fraction(stack.cond, core.catalog.cond_max(stack.item as usize)) else {
         return;
@@ -974,11 +933,11 @@ fn section(parent: &mut ChildSpawnerCommands, text: &str) {
 /// repair-bench skin picker, at any workbench since we have no repair bench
 /// (`sim_core::skin::reskin`; the sim refuses away from one and says why).
 ///
-/// And **opening the inventory asks the shard to read your skins again**
+/// And **opening either page asks the shard to read your skins again**
 /// (`ACT_SKINS_REFRESH`), which is how a skin bought in the launcher reaches
-/// the game: buy, come back, press Tab. The shard reads the platform at most
-/// once per `server::skins::REFRESH_COOLDOWN`, so opening it often costs
-/// nothing.
+/// the game: buy, come back, press Tab or Q. The shard reads the platform at
+/// most once per `server::skins::REFRESH_COOLDOWN`, so opening them often
+/// costs nothing.
 pub fn skin_keys(
     mut ui: ResMut<Ui>,
     net: NonSend<super::super::Net>,
@@ -986,7 +945,9 @@ pub fn skin_keys(
     cells: Query<(&SlotCell, &Interaction)>,
     mut was_open: Local<bool>,
 ) {
-    let open = ui.panel == Panel::Inventory;
+    // Either page: the skin picker is on the crafting page, the re-skin on
+    // this one, and both want what was bought in the launcher.
+    let open = matches!(ui.panel, Panel::Inventory | Panel::Craft);
     if open && !*was_open {
         let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
         if let Ok(len) = protocol::encode_action_skins_refresh(&mut buf) {
@@ -995,9 +956,10 @@ pub fn skin_keys(
         }
     }
     *was_open = open;
-    if !open || !keyboard.just_pressed(KeyCode::KeyP) {
+    if ui.panel != Panel::Inventory || !keyboard.just_pressed(KeyCode::KeyP) {
         return;
     }
+    let core = &net.session.core;
     let Some(cell) = cells
         .iter()
         .find(|(c, i)| c.kind == CONT_SELF && !matches!(i, Interaction::None))
@@ -1006,7 +968,6 @@ pub fn skin_keys(
         ui.say("point at an item in your inventory to change its skin");
         return;
     };
-    let core = &net.session.core;
     let stack = core.inv[cell.slot];
     if stack.count == 0 {
         return;
@@ -1120,11 +1081,11 @@ pub fn drag_pointer(
             *border = BorderColor::all(want);
         }
         let resting = cell_stack(core, cell.kind, cell.slot);
-        let fill = match (hot || source, resting.count > 0) {
-            (true, _) => CELL_HOVER,
-            (false, true) if research_ui::is_paper(&core.research, resting) => PAPER_BG,
-            (false, true) => CELL_FULL,
-            (false, false) => CELL_BG,
+        let active = cell.kind == CONT_SELF && cell.slot == net.sel as usize;
+        let fill = if hot || source {
+            CELL_HOVER
+        } else {
+            resting_fill(core, resting, active)
         };
         if bg.0 != fill {
             *bg = BackgroundColor(fill);
@@ -1166,7 +1127,7 @@ pub fn drag_pointer(
                     .single()
                     .ok()
                     .and_then(|w| w.cursor_position())
-                    .map(|p| ghost_origin(p.x, p.y, CELL_PX))
+                    .map(|p| ghost_origin(p.x, p.y, SLOT_PX))
                     .unwrap_or((0.0, 0.0));
                 let fallback = super::super::icons::Icons::default();
                 let icons = icons.as_deref().unwrap_or(&fallback);
@@ -1377,8 +1338,8 @@ fn spawn_ghost(
                 position_type: PositionType::Absolute,
                 left: Val::Px(at.0),
                 top: Val::Px(at.1),
-                width: Val::Px(CELL_PX),
-                height: Val::Px(CELL_PX),
+                width: Val::Px(SLOT_PX),
+                height: Val::Px(SLOT_PX),
                 padding: UiRect::all(Val::Px(3.0)),
                 border: UiRect::all(Val::Px(1.0)),
                 flex_direction: FlexDirection::Column,
@@ -1402,13 +1363,13 @@ fn spawn_ghost(
                         position_type: PositionType::Absolute,
                         left: Val::Px(4.0),
                         top: Val::Px(4.0),
-                        width: Val::Px(CELL_PX - 10.0),
-                        height: Val::Px(CELL_PX - 10.0),
+                        width: Val::Px(SLOT_PX - 10.0),
+                        height: Val::Px(SLOT_PX - 10.0),
                         ..default()
                     },
                     ImageNode {
                         image,
-                        color: Color::srgb(0.90, 0.87, 0.82),
+                        color: super::super::icons::PICTURE,
                         ..default()
                     },
                     Pickable::IGNORE,
@@ -1424,16 +1385,7 @@ fn spawn_ghost(
                 )),
             };
             if let Some(badge) = count_badge(units) {
-                g.spawn((
-                    Text::new(badge),
-                    font_bold(13.0),
-                    TextColor(TEXT),
-                    Node {
-                        align_self: AlignSelf::FlexEnd,
-                        ..default()
-                    },
-                    Pickable::IGNORE,
-                ));
+                g.spawn(count_node(badge));
             }
             // The ghost is a copy of the source cell, and the pip is part of
             // the copy: an item carrying condition never stacks (content rule
@@ -1451,7 +1403,7 @@ fn spawn_ghost(
                 Node {
                     position_type: PositionType::Absolute,
                     left: Val::Px(0.0),
-                    top: Val::Px(CELL_PX),
+                    top: Val::Px(SLOT_PX),
                     ..default()
                 },
                 Pickable::IGNORE,
@@ -1471,7 +1423,7 @@ pub fn ghost_follow(
     let Some(p) = window.cursor_position() else {
         return;
     };
-    let (x, y) = ghost_origin(p.x, p.y, CELL_PX);
+    let (x, y) = ghost_origin(p.x, p.y, SLOT_PX);
     for mut node in ghosts.iter_mut() {
         node.left = Val::Px(x);
         node.top = Val::Px(y);

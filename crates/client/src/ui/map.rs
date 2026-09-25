@@ -574,9 +574,10 @@ impl MarkKind {
     /// under it to read at all. So the badge is the old marker and the icon
     /// is what is now inside it.
     ///
-    /// `sleeping_bag` and `hearth` are the item set's own files — a bed on
-    /// the map and a bed in your inventory are the same object, and two
-    /// drawings of it would be two things to keep in step. `map_site` serves
+    /// `map_bed` and `map_hearth` are the bed's and the hearth's own
+    /// silhouettes in white. They were the item files themselves until item
+    /// icons became colour pictures, and a picture tinted by the badge's
+    /// colour does not read; a white glyph does. `map_site` serves
     /// authored destinations; their labels distinguish haven, waystation and
     /// depot, and size distinguishes the haven.
     ///
@@ -589,8 +590,8 @@ impl MarkKind {
         match self {
             MarkKind::None => None,
             MarkKind::Haven | MarkKind::Waystation | MarkKind::Depot => Some("map_site"),
-            MarkKind::Bed | MarkKind::BedSpent => Some("sleeping_bag"),
-            MarkKind::Hearth => Some("hearth"),
+            MarkKind::Bed | MarkKind::BedSpent => Some("map_bed"),
+            MarkKind::Hearth => Some("map_hearth"),
             MarkKind::Backpack => Some("backpack"),
         }
     }

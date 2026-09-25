@@ -6,17 +6,22 @@ Run when an item is added to `content/items.toml` or a mapping below changes:
     python3 ci/bake_icons.py                 # fetches from github.com/game-icons/icons
     GAME_ICONS_DIR=/tmp/game-icons ...       # or reads a local unzipped archive
 
-Needs `cairosvg`. Writes `assets/icons/*.png` and `assets/icons/CREDITS.md`,
-both of which are committed — the depot ships `assets/` wholesale and no
-build step runs this. `crates/client/tests/ui.rs` §G fails if the baked set
-and `client::ui::icons::STEMS` ever disagree, or if an item in the content
-has no picture.
+Needs `cairosvg`. Writes the UI glyphs to `assets/icons/*.png`, the item
+silhouettes to `ci/icons/masks/*.png`, and `assets/icons/CREDITS.md`, all
+committed — the depot ships `assets/` wholesale and no build step runs this.
+`crates/client/tests/ui.rs` §G fails if the shipped set and
+`client::ui::icons::STEMS` ever disagree, or if an item in the content has
+no picture.
+
+**Items are not shipped from here any more.** Their silhouettes are the
+source `ci/finish_icons.py` paints into full-colour pictures (or replaces
+with a render of the item's own model), and that script writes the item
+PNGs in `assets/icons/`. Run it after this one whenever an item is added.
 
 The icons are CC BY 3.0. Nothing here is traced from the reference game.
 
-
-White-on-transparent PNGs, so the client tints them with `ImageNode.color`
-instead of shipping one file per state.
+White-on-transparent PNGs, so the client tints the glyphs with
+`ImageNode.color` instead of shipping one file per state.
 """
 import os
 import pathlib
@@ -62,6 +67,8 @@ def source_svg(path):
     with urllib.request.urlopen(f"{GH}/{path}.svg", timeout=60) as r:
         return BG_RECT.sub("", r.read().decode(), count=1)
 OUT = ROOT / "assets/icons"
+# Item silhouettes: `ci/finish_icons.py`'s input, not shipped.
+MASKS = ROOT / "ci/icons/masks"
 PX = 128
 
 # The six building shapes the shape wheel draws. **Still no material icons**,
@@ -152,7 +159,10 @@ ITEMS = {
     "hatchet_stone": "delapouite/hatchet",
     "pickaxe_stone": "delapouite/war-pick",
     "bow": "delapouite/bow-arrow",
-    "arrow_wood": "delapouite/plain-arrow",
+    # An arrow, not the UI symbol for one: `delapouite/plain-arrow` is a
+    # download arrow, and it drew the crafting page's first pick as a
+    # button. The metal arrow's barbed head is its own glyph below.
+    "arrow_wood": "lorc/arrowhead",
     "bandage": "lorc/bandage-roll",
     "sleeping_bag": "delapouite/sleeping-bag",
     "box_small": "delapouite/wooden-crate",
@@ -165,7 +175,11 @@ ITEMS = {
     "workbench3": "lorc/gear-hammer",
     "hearth": "delapouite/fireplace",
     "hatchet_metal": "delapouite/sharp-axe",
-    "pickaxe_metal": "delapouite/mining-helmet",
+    # The stone pickaxe's own pick, painted with a steel head by
+    # `ci/finish_icons.py`. It was `delapouite/mining-helmet`, a HAT, which
+    # stopped being defensible the day the icons got colour: the two picks
+    # now differ the way Rust's do, by what the head is made of.
+    "pickaxe_metal": "delapouite/war-pick",
     "spear_metal": "lorc/barbed-spear",
     "furnace": "delapouite/furnace",
     "box_large": "delapouite/cargo-crate",
@@ -193,7 +207,7 @@ ITEMS = {
     "hammer": "lorc/claw-hammer",
     "armor_burlap_head": "lorc/hood",
     "armor_burlap_body": "lorc/leather-vest",
-    "arrow_metal": "delapouite/split-arrows",
+    "arrow_metal": "lorc/broadhead-arrow",
     "crossbow": "carl-olsen/crossbow",
     "revolver": "delapouite/revolver",
     "pistol_ammo": "delapouite/heavy-bullets",
@@ -266,6 +280,25 @@ ITEMS = {
 MAP = {
     "map_site": "delapouite/hut",
     "backpack": "delapouite/backpack",
+    # A bed and a hearth on the map, in white for the marker's tint. They
+    # used to borrow the item files, which were white too until items became
+    # colour pictures (`ci/finish_icons.py`); a picture tinted by a badge
+    # colour is mud, so the map has its own glyphs now.
+    "map_bed": "delapouite/sleeping-bag",
+    "map_hearth": "delapouite/fireplace",
+}
+
+# Glyphs the panels draw OVER an item picture. Not items, so not `ITEMS`.
+# `ui_lock` is the padlock over a recipe or tech node not yet learned —
+# Rust's own mark for it. It was the code lock ITEM's file worn as an
+# overlay, which a colour picture of a code lock cannot be.
+UI = {
+    "ui_lock": "lorc/padlock",
+    # The craft panel's two marks the typeface cannot draw (RobotoCondensed
+    # has no U+2605 and no stopwatch): the favourite star on a recipe, and
+    # the clock beside a craft time — both Rust's.
+    "ui_star": "delapouite/round-star",
+    "ui_clock": "lorc/stopwatch",
 }
 
 VITALS = {
@@ -375,6 +408,8 @@ ALL = dict(SHAPES)
 ALL.update(VERBS)
 ALL.update(VITALS)
 ALL.update(MAP)
+ALL.update(UI)
+ITEM_STEMS = {norm(BY_ID[i]) for i in ITEMS} | {norm(BY_ID[i]) for i in OURS}
 for item_id, icon in ITEMS.items():
     ALL[norm(BY_ID[item_id])] = icon
 MINE = {norm(BY_ID[item_id]): f for item_id, f in OURS.items()}
@@ -393,6 +428,14 @@ todo = {k: v for k, v in ALL.items() if not only or k in only}
 todo_mine = {k: v for k, v in MINE.items() if not only or k in only}
 
 OUT.mkdir(parents=True, exist_ok=True)
+MASKS.mkdir(parents=True, exist_ok=True)
+
+
+def dest(name):
+    """Items to the finisher's input, glyphs straight to the depot."""
+    return MASKS if name in ITEM_STEMS else OUT
+
+
 failed = []
 for name, path in sorted(todo.items()):
     try:
@@ -402,14 +445,14 @@ for name, path in sorted(todo.items()):
         continue
     cairosvg.svg2png(
         bytestring=svg.encode(),
-        write_to=str(OUT / f"{name}.png"),
+        write_to=str(dest(name) / f"{name}.png"),
         output_width=PX,
         output_height=PX,
     )
 for name, path in sorted(todo_mine.items()):
     cairosvg.svg2png(
         url=str(OURS_SRC / f"{path}.svg"),
-        write_to=str(OUT / f"{name}.png"),
+        write_to=str(dest(name) / f"{name}.png"),
         output_width=PX,
         output_height=PX,
     )
@@ -432,6 +475,11 @@ credits.write_text(
     + "".join(f"- {a}\n" for a in authors)
     + "\nAvailable on https://game-icons.net\n\n"
     "Licence: https://creativecommons.org/licenses/by/3.0/\n\n"
+    "**Item icons are finished, not rasterised.** `ci/finish_icons.py` paints\n"
+    "each item's silhouette below in colour, or — where `ci/icons/renders/`\n"
+    "holds one — replaces it with a render of the game's own 3D model. A\n"
+    "render is ours and owes nothing; the silhouette credit stays listed for\n"
+    "every item either way, because the painted ones are derived works of it.\n\n"
     "## What maps to what\n\n"
     "| file | source icon |\n|---|---|\n"
     + "".join(f"| `{k}.png` | `{v}` |\n" for k, v in sorted(ALL.items()))

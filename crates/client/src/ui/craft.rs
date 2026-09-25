@@ -286,6 +286,50 @@ pub fn rows(
     }
 }
 
+/// Whether the station `def` needs stands in reach of `(x, z)` — the sim's
+/// own test (`craft::start`: the furnace by archetype, the bench ladder by
+/// `≥`), asked of the client's mirror of the deploys at the sim's radius.
+/// Quick craft offers only what this says yes to, and the crafting page
+/// dims CRAFT on a no — before the sim answers `REFUSE_STATION` to a click
+/// that looked live.
+pub fn station_here(
+    def: &RecipeDef,
+    recs: &[sim_core::deploy::DeployRec],
+    dc: &DeployContent,
+    x: f32,
+    z: f32,
+) -> bool {
+    use sim_core::craft::STATION_RADIUS_M;
+    match def.station {
+        STATION_NONE => true,
+        STATION_FURNACE => sim_core::deploy::arch_in(
+            recs,
+            dc,
+            sim_core::deploy::ARCH_FURNACE,
+            x,
+            z,
+            STATION_RADIUS_M,
+        ),
+        tier => sim_core::deploy::best_bench_in(recs, dc, x, z, STATION_RADIUS_M) >= tier,
+    }
+}
+
+/// What the detail pane shows when the crafting page opens with nothing
+/// picked: the first recipe the pack pays for where the player stands
+/// (`here`, [`station_here`] in the game), else the first it pays for, else
+/// the first in the list. An empty pane on a page of its own says less than
+/// any recipe does, and a bench recipe opened away from the bench greets
+/// the player with a red badge.
+pub fn first_pick(rows: &[Row], here: impl Fn(u16) -> bool) -> Option<u16> {
+    let makeable = |r: &&Row| r.affordable > 0 && !r.locked;
+    rows.iter()
+        .filter(makeable)
+        .find(|r| here(r.recipe))
+        .or_else(|| rows.iter().find(makeable))
+        .or(rows.first())
+        .map(|r| r.recipe)
+}
+
 /// One line of the detail pane's ingredient table — the reference frame's
 /// AMOUNT / ITEM TYPE / TOTAL / HAVE, in that order and named for it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -478,4 +522,192 @@ pub struct Job {
 /// Seconds left on the head unit, from the core's `craft_eta_ticks`.
 pub fn eta_seconds(eta_ticks: u16) -> f32 {
     eta_ticks as f32 / TICK_HZ as f32
+}
+
+/// The head unit's countdown, run on this side between `CraftQ`s.
+///
+/// The wire states the head's remaining ticks only when the queue changes
+/// (`EventMsg::CraftQ`, "the client counts down locally between messages"),
+/// and until this existed nothing counted: the queue strip printed the number
+/// the last message carried until the next one replaced it, so a ten-second
+/// craft read `10.0s` for ten seconds and then vanished. That frozen number
+/// is most of why the craft screen felt laggy.
+///
+/// Clocked on the caller's seconds, not on ticks the sim agrees with: it is
+/// a picture of a countdown the server owns, and the next `CraftQ` corrects
+/// any drift by restating it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CraftClock {
+    /// The head job as last heard, `(recipe, units remaining)`, so a new
+    /// unit is told from a restated one.
+    head: Option<(u8, u8)>,
+    /// Seconds left on the head unit when it was heard.
+    left_s: f32,
+    /// The whole unit's seconds — the most it has been heard at, which is
+    /// its full length when it was heard starting.
+    unit_s: f32,
+    /// When it was heard, on the caller's clock.
+    at_s: f64,
+}
+
+impl CraftClock {
+    /// A `CraftQ` landed: `head` is its first job (`None` for an empty
+    /// queue), `eta_ticks` the head unit's remaining ticks, `now_s` the
+    /// caller's clock.
+    pub fn heard(&mut self, head: Option<(u8, u8)>, eta_ticks: u16, now_s: f64) {
+        let left = eta_seconds(eta_ticks);
+        if head != self.head {
+            self.unit_s = left;
+            self.head = head;
+        } else {
+            self.unit_s = self.unit_s.max(left);
+        }
+        self.left_s = left;
+        self.at_s = now_s;
+    }
+
+    /// Seconds left on the head unit now, never below zero.
+    pub fn left(&self, now_s: f64) -> f32 {
+        if self.head.is_none() {
+            return 0.0;
+        }
+        (self.left_s - (now_s - self.at_s).max(0.0) as f32).max(0.0)
+    }
+
+    /// How far through the head unit, 0..=1.
+    pub fn progress(&self, now_s: f64) -> f32 {
+        if self.head.is_none() || self.unit_s <= 0.0 {
+            return 0.0;
+        }
+        (1.0 - self.left(now_s) / self.unit_s).clamp(0.0, 1.0)
+    }
+}
+
+/// A countdown as the queue chip prints it: whole seconds, rounded up so it
+/// reads `1s` until the unit lands — Rust's `24s` chip.
+pub fn countdown_label(left_s: f32) -> String {
+    format!("{}s", left_s.max(0.0).ceil() as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Quick craft and the CRAFT button ask the sim's own station question
+    /// of the client's mirror: no station always, the bench ladder by ≥,
+    /// the furnace by archetype, each at the sim's radius.
+    #[test]
+    fn a_recipe_is_makeable_only_where_its_station_stands() {
+        use sim_core::craft::STATION_RADIUS_M;
+        use sim_core::deploy::{cell_center, DeployRec, ARCH_FURNACE};
+        let mut dc = DeployContent::probe_fixture();
+        // Row 1 is the fixture's tier-1 bench; row 4 (the fire) stands in
+        // for a furnace, which the fixture does not carry.
+        dc.defs[4].arch = ARCH_FURNACE;
+        let bench = DeployRec {
+            cx: 100,
+            cz: 100,
+            row: 1,
+            ..DeployRec::default()
+        };
+        let furnace = DeployRec { row: 4, ..bench };
+        let (x, z) = cell_center(100, 100);
+        let at = |station| RecipeDef {
+            station,
+            ..RecipeDef::INERT
+        };
+        assert!(station_here(&at(STATION_NONE), &[], &dc, x, z));
+        assert!(station_here(&at(STATION_WORKBENCH1), &[bench], &dc, x, z));
+        assert!(
+            !station_here(&at(STATION_WORKBENCH2), &[bench], &dc, x, z),
+            "a tier-1 bench is not a tier-2 bench"
+        );
+        assert!(!station_here(&at(STATION_WORKBENCH1), &[], &dc, x, z));
+        let far = x + STATION_RADIUS_M + 0.01;
+        assert!(!station_here(
+            &at(STATION_WORKBENCH1),
+            &[bench],
+            &dc,
+            far,
+            z
+        ));
+        assert!(station_here(&at(STATION_FURNACE), &[furnace], &dc, x, z));
+        assert!(
+            !station_here(&at(STATION_FURNACE), &[bench], &dc, x, z),
+            "a bench is not a furnace"
+        );
+    }
+
+    #[test]
+    fn the_page_opens_on_something_the_pack_can_make() {
+        let row = |recipe, affordable, locked| Row {
+            recipe,
+            output: 0,
+            out_count: 1,
+            station: 0,
+            affordable,
+            locked,
+        };
+        let rows = [
+            row(4, 0, false),
+            row(5, 3, true),
+            row(6, 2, false),
+            row(7, 1, false),
+        ];
+        assert_eq!(first_pick(&rows, |_| true), Some(6));
+        assert_eq!(first_pick(&rows, |r| r == 7), Some(7), "where you stand");
+        assert_eq!(
+            first_pick(&rows, |_| false),
+            Some(6),
+            "else what you pay for"
+        );
+        assert_eq!(
+            first_pick(&rows[..2], |_| true),
+            Some(4),
+            "else the first shown"
+        );
+        assert_eq!(first_pick(&[], |_| true), None);
+    }
+
+    #[test]
+    fn the_head_counts_down_between_messages() {
+        let mut c = CraftClock::default();
+        let ten = (10 * TICK_HZ) as u16;
+        c.heard(Some((3, 2)), ten, 100.0);
+        assert_eq!(c.left(100.0), 10.0);
+        assert!((c.left(104.0) - 6.0).abs() < 1e-4);
+        assert!((c.progress(104.0) - 0.4).abs() < 1e-4);
+        // Past the end it holds at zero until the server restates it.
+        assert_eq!(c.left(200.0), 0.0);
+        assert_eq!(c.progress(200.0), 1.0);
+    }
+
+    #[test]
+    fn a_new_unit_restarts_the_bar_and_a_tail_change_does_not() {
+        let mut c = CraftClock::default();
+        let ten = (10 * TICK_HZ) as u16;
+        c.heard(Some((3, 2)), ten, 0.0);
+        // Something was queued behind it at t=4: same head, 6 s left.
+        c.heard(Some((3, 2)), (6 * TICK_HZ) as u16, 4.0);
+        assert!(
+            (c.progress(4.0) - 0.4).abs() < 1e-4,
+            "the unit is still 10 s long"
+        );
+        // The unit finished and the next one started.
+        c.heard(Some((3, 1)), ten, 10.0);
+        assert_eq!(c.progress(10.0), 0.0);
+        // An empty queue has nothing to count.
+        c.heard(None, 0, 20.0);
+        assert_eq!(c.left(20.0), 0.0);
+        assert_eq!(c.progress(20.0), 0.0);
+    }
+
+    #[test]
+    fn the_label_reads_like_rusts_chip() {
+        assert_eq!(countdown_label(24.2), "25s");
+        assert_eq!(countdown_label(10.0), "10s");
+        assert_eq!(countdown_label(0.3), "1s");
+        assert_eq!(countdown_label(0.0), "0s");
+        assert_eq!(countdown_label(-2.0), "0s");
+    }
 }

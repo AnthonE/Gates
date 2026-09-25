@@ -120,6 +120,14 @@ path = "src/bin/modelview.rs"
 # feature, so nothing about a desktop build changes.
 required-features = ["render", "native"]
 
+# The icon camera (`src/bin/iconbake.rs`): renders the items whose model makes
+# a good picture to transparent frames, headless (lavapipe is enough), for
+# `ci/finish_icons.py` to turn into `assets/icons/`. Bevy only, like the bench.
+[[bin]]
+name = "iconbake"
+path = "src/bin/iconbake.rs"
+required-features = ["render", "native"]
+
 # The CPU cost probe (`examples/frame_cost.rs`): what a streaming frame spends
 # on the ground, the population and the sea. Not a gate and never will be — it
 # reports elapsed time, and a gate that waits on a clock is not a gate on this

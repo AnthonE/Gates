@@ -519,6 +519,8 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<fx::Fx>()
             .init_resource::<hud::Toast>()
             .init_resource::<hud::Readout>()
+            .init_resource::<hud::CraftTimer>()
+            .init_resource::<hud::Pickups>()
             .init_resource::<feed::Feed>()
             .init_resource::<audio::Sound>()
             // Before `audio::build_bank` below: the bank is installed
@@ -1338,6 +1340,18 @@ impl Plugin for GatesRenderPlugin {
             feed::drain
                 .after(input::place_eye)
                 .before(Stream)
+                .run_if(world_running),
+        )
+        // The craft clock, the craft bar and the item notices over the
+        // vitals. After the drain: the clock restarts on this frame's
+        // `CraftQ` and the notices read this frame's gathers. The clock is
+        // first, so both clock readers (this bar and the craft panel's
+        // queue strip) draw the same second.
+        .add_systems(
+            Update,
+            (hud::craft_clock, hud::craft_bar, hud::pickups)
+                .chain()
+                .after(feed::drain)
                 .run_if(world_running),
         )
         // The crawl's screen (wounded v0): the vignette and the two numbers.
