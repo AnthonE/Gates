@@ -186,7 +186,10 @@ use crate::worldcont::WorldContRec;
 /// wears joins item, count and condition), a craft job carries its skin
 /// (`PlayerSave` format 7), and the player tail grew the owned set, which
 /// `state_hash` folds.
-pub const WORLD_SAVE_FORMAT: u16 = 16;
+///
+/// **17 — a lock remembers ten** (`limits::LOCK_AUTH_CAP` 8 → 10, the
+/// crew's cap): every lock record's full-rights list grew two entries.
+pub const WORLD_SAVE_FORMAT: u16 = 17;
 
 /// The head's `weather::Env`: mode, fade end, the six per-mille fields and
 /// the bearing it faded from, and the day offset.
@@ -1767,7 +1770,7 @@ mod tests {
             + 1_024 * 33                    // deploys + bag_ready + placed
             + 256 * 66                      // hearths (25 + the crew: 1 + 10*4)
             + 256 * 135                     // containers: 9 + 12 eight-byte stacks + the oven's 30
-            + 512 * 98                      // code locks
+            + 512 * 106                     // code locks (format 17: ten auth ids)
             + 256 * 268                     // bags: 28 + 30 eight-byte stacks
             + 64 * 261                      // world containers: 21 + 30 eight-byte stacks
             + 64 * 25                       // charges
@@ -1794,10 +1797,11 @@ mod tests {
         // + 8 refill deadline, then `INV_SLOTS` stacks at eight bytes
         // (format 16: item, count, condition, skin).
         assert_eq!(WORLD_CONT_BYTES, 261);
-        // A lock is 98: 6 address + 4 owner + 2 + 2 codes + 1 locked + 2
-        // counts + 8 auth ids + 8 guest ids at four bytes each + 1 miss
-        // counter + 8 + 8 for the two tick deadlines.
-        assert_eq!(LOCK_BYTES, 98);
+        // A lock is 106: 6 address + 4 owner + 2 + 2 codes + 1 locked + 2
+        // counts + 10 auth ids (format 17, the crew's cap) + 8 guest ids at
+        // four bytes each + 1 miss counter + 8 + 8 for the two tick
+        // deadlines.
+        assert_eq!(LOCK_BYTES, 106);
         // A hearth is 66: 9 address + owner, 16 stock, then the crew's
         // count and its whole ten-slot backing array.
         assert_eq!(HEARTH_BYTES, 66);
@@ -1861,8 +1865,10 @@ mod tests {
         // grew two bytes for its skin (players, boxes, bags, world
         // containers, loose stacks), a craft job two, and each body 32 for
         // the owned set.
+        // 1_216_078 → 1_220_174 at format 17: a lock remembers ten, two
+        // more four-byte ids on each of 512 locks.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 1_216_078,
+            WORLD_SAVE_MAX_BYTES, 1_220_174,
             "the world save ceiling moved"
         );
     }

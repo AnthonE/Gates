@@ -2572,6 +2572,30 @@ impl World {
         }
     }
 
+    /// Land the shots `ranged` found meeting animals (`ranged::MobShot`):
+    /// the same `mob::hurt_slot` a swing lands through, so a shot animal
+    /// flees, turns on its shooter and drops its corpse exactly as a
+    /// struck one does. The shooter is re-resolved by id — an arrow can
+    /// outlive its archer's slot — and a hit with nobody behind it still
+    /// lands.
+    fn land_mob_shots(&mut self, hits: &[ranged::MobShot]) {
+        for h in hits {
+            let by = self.live_slot_of(h.by);
+            mob::hurt_slot(
+                &self.backpack,
+                &self.mob,
+                self.tick,
+                by,
+                &self.players,
+                &mut self.mobs,
+                &mut self.backpacks,
+                &mut self.events,
+                h.slot,
+                h.damage,
+            );
+        }
+    }
+
     /// Charge one shot's structure damage to the piece **or deployable** it
     /// stopped on — `ranged`'s half of the raid verb, written here for the
     /// reason `Chip` states: the shot pass holds the collision index, and
@@ -5097,6 +5121,10 @@ impl World {
         // stopped on a piece, and `hitscan` writes at most one per player
         // under the same `MAX_PLAYERS <= MAX_ARROWS` const assert.
         let mut chips = [ranged::Chip::default(); MAX_ARROWS];
+        // Shots that met an animal, landed after each pass as the chips are
+        // (`mob::hurt_slot`) — at most one per player from `hitscan` and one
+        // per arrow from `step`, reused between the two like `kills`.
+        let mut mob_hits = [ranged::MobShot::default(); MAX_ARROWS];
         // A firearm resolves here rather than in the loop above, for the
         // arrow's two reasons — final positions, and no dependence on the
         // shooter's slot index — and it goes **first** because it is the
@@ -5107,7 +5135,13 @@ impl World {
         // reused rather than doubled: this pass writes at most one entry
         // per player, the array is drained before `step` fills it again,
         // and `ranged.rs`'s const assert holds `MAX_PLAYERS <= MAX_ARROWS`.
-        let (n_shot, n_chips) = ranged::hitscan(
+        let mut quarry = ranged::Quarry {
+            mobs: &self.mobs,
+            mc: &self.mob,
+            hits: &mut mob_hits,
+            n: 0,
+        };
+        let (n_shot, n_chips) = ranged::hitscan_hunting(
             seed,
             &self.haven,
             self.pieces.cols(),
@@ -5131,7 +5165,10 @@ impl World {
             &mut self.events,
             &mut kills,
             &mut chips,
+            &mut quarry,
         );
+        let n_mob = quarry.n;
+        self.land_mob_shots(&mob_hits[..n_mob]);
         // Chips before deaths, and the order is the tick's chronology
         // rather than a preference: a bullet reaches the wall it stops on
         // during this pass, and `die` lays a body down, drops its bag and
@@ -5147,7 +5184,13 @@ impl World {
             // lifts. A rifle no longer reports an arrow.
             self.down_or_die(k.victim, k.by, DEATH_BY_BULLET, k.item, k.range_cm, k.head);
         }
-        let (n_kills, n_chips) = ranged::step(
+        let mut quarry = ranged::Quarry {
+            mobs: &self.mobs,
+            mc: &self.mob,
+            hits: &mut mob_hits,
+            n: 0,
+        };
+        let (n_kills, n_chips) = ranged::step_hunting(
             seed,
             self.tick,
             &self.haven,
@@ -5165,14 +5208,32 @@ impl World {
             &mut self.events,
             &mut kills,
             &mut chips,
+            &mut quarry,
         );
+        let n_mob = quarry.n;
+        self.land_mob_shots(&mob_hits[..n_mob]);
         for c in chips.iter().take(n_chips) {
             self.chip(c, &mut removals);
         }
         for k in kills.iter().take(n_kills) {
             self.down_or_die(k.victim, k.by, DEATH_BY_ARROW, k.item, k.range_cm, k.head);
         }
-        self.slot_lives.respawn_due(tick, &mut self.events);
+        {
+            // A slot a base now stands over does not grow back through it.
+            let (table, haven, cols) = (&self.scatter, &self.haven, self.pieces.cols());
+            let built_over = |cx: u16, cz: u16| {
+                let slot = crate::terrain::scatter(seed, table, haven, cx as i32, cz as i32);
+                let (bx, bz) = (
+                    crate::build::build_cell_of(slot.x),
+                    crate::build::build_cell_of(slot.z),
+                );
+                (0..crate::limits::MAX_BUILD_COORD as i32).contains(&bx)
+                    && (0..crate::limits::MAX_BUILD_COORD as i32).contains(&bz)
+                    && cols.get(bx as u16, bz as u16).has_piece()
+            };
+            self.slot_lives
+                .respawn_due_unless(tick, &mut self.events, &built_over);
+        }
         // Bags time out on the sim's clock, before the tick advances, so
         // a bag dropped at tick T with a lifetime of L is gone the tick
         // its own `expires` names and not one later.

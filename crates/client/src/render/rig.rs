@@ -652,6 +652,9 @@ pub const SHADOW_MIN_ELEV: f32 = 0.035;
 pub const SUN_DISK_INTENSITY: f32 = 1.6;
 /// Ambient added at the peak of a lightning flash, lux.
 pub const FLASH_LUX: f32 = 2_500.0;
+
+/// How much of a lightning flash reaches a body under a roof.
+pub const SHELTERED_FLASH: f32 = 0.25;
 /// The exposure every sunlit frame is judged at (the camera's spawn has the
 /// measurement).
 pub const DAY_EV100: f32 = 14.2;
@@ -849,8 +852,11 @@ pub fn day_night(
         // hemisphere existed. Both endpoints are gated (`tests/fill.rs`).
         // Weather dims both (a heavy sky, a storm night) and a lightning
         // flash lifts the uniform term for a fifth of a second.
+        // Under a roof the flash is what the doorway lets in, not the whole
+        // sky: the uniform term lit a closed room as bright as open ground.
+        let flash = w.flash * if w.sheltered { SHELTERED_FLASH } else { 1.0 };
         amb.brightness =
-            NIGHT_AMBIENT_LUX * (1.0 - light) * (1.0 - 0.3 * w.dark) + FLASH_LUX * w.flash;
+            NIGHT_AMBIENT_LUX * (1.0 - light) * (1.0 - 0.3 * w.dark) + FLASH_LUX * flash;
         env.intensity = super::fill::peak_lux() * light * (1.0 - 0.35 * w.dark);
         // Weather fog on both targets: nothing in clear weather on the
         // desktop, the island's own air in a browser, and the weather's

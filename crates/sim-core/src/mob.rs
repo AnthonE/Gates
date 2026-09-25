@@ -1014,15 +1014,47 @@ pub fn strike_slot(
     let Some(def) = cc.held_melee(held_item(a)) else {
         return false;
     };
-    let attacker_id = a.id;
-    if !mobs.m[slot].alive || mobs.m[slot].hp == 0 {
+    hurt_slot(
+        bc,
+        mc,
+        tick,
+        Some(attacker),
+        players,
+        mobs,
+        bags,
+        events,
+        slot,
+        def.damage,
+    )
+}
+
+/// Land `damage` on the animal in `slot` from the player in `attacker` —
+/// a swing ([`strike_slot`]) or a shot (`ranged::MobShot`, which is how an
+/// arrow or a bullet reaches an animal at all). `None` is a shot whose
+/// shooter has left: the animal still takes it and still runs, with nobody
+/// to turn on. Returns true when the animal took the hit.
+#[allow(clippy::too_many_arguments)]
+pub fn hurt_slot(
+    bc: &BackpackContent,
+    mc: &MobContent,
+    tick: u64,
+    attacker: Option<usize>,
+    players: &[Player; MAX_PLAYERS],
+    mobs: &mut Mobs,
+    bags: &mut Backpacks,
+    events: &mut EventQueue,
+    slot: usize,
+    damage: u16,
+) -> bool {
+    if slot >= mobs.m.len() || !mobs.m[slot].alive || mobs.m[slot].hp == 0 || damage == 0 {
         return false;
     }
+    let attacker = attacker.filter(|&i| i < players.len() && players[i].active);
 
     let species = mc.def(mobs.m[slot].kind);
     let mob = &mut mobs.m[slot];
-    let died = def.damage >= mob.hp;
-    mob.hp -= def.damage.min(mob.hp);
+    let died = damage >= mob.hp;
+    mob.hp -= damage.min(mob.hp);
     // Hurt is the other way into a flight, and the only one that does not
     // need the attacker to be close: shot from range, the animal still runs.
     // The attacker becomes the target whoever the animal was minding — the
@@ -1030,21 +1062,24 @@ pub fn strike_slot(
     mob.ambushed = mob.roused_until <= tick;
     mob.roused_until = tick + species.flee_ticks as u64;
     mob.awake = true;
-    if mob.target != attacker as u8 {
-        mob.tries = 0;
-    }
-    mob.target = attacker as u8;
     mob.calm_until = 0;
     mob.hurt_at = tick;
-    // EV_HIT is the attacker's own fact and the server routes it by `a`,
-    // so a tagged mob id in `b` reaches the hand that swung and nothing
-    // else — the hitmarker, exactly as a player hit draws it.
-    events.push(
-        EV_HIT,
-        attacker_id,
-        mob_id(slot),
-        crate::world::hit_c(crate::collide::Part::Chest, def.damage),
-    );
+    if let Some(attacker) = attacker {
+        if mob.target != attacker as u8 {
+            mob.tries = 0;
+        }
+        mob.target = attacker as u8;
+        // EV_HIT is the attacker's own fact and the server routes it by
+        // `a`, so a tagged mob id in `b` reaches the hand that swung or
+        // fired and nothing else — the hitmarker, exactly as a player hit
+        // draws it.
+        events.push(
+            EV_HIT,
+            players[attacker].id,
+            mob_id(slot),
+            crate::world::hit_c(crate::collide::Part::Chest, damage),
+        );
+    }
     if !died {
         return true;
     }

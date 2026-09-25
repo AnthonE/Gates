@@ -535,11 +535,15 @@ pub const DECAY_MATERIALS: usize = 4;
 /// Proposed default, DECISIONS.md §open ("upkeep/decay v0").
 pub const DECAY_PCT_PER_PERIOD: u32 = 5;
 /// Units per upkeep material one feed press moves. Proposed default,
-/// DECISIONS.md §open ("deployables v0").
-pub const FEED_CHUNK: u32 = 100;
+/// DECISIONS.md §open ("deployables v0"); 100 → 500 with the ceiling below,
+/// so filling a row is twenty presses rather than a hundred.
+pub const FEED_CHUNK: u32 = 500;
 /// Stock ceiling per material per hearth. Proposed default, DECISIONS.md
-/// §open ("deployables v0").
-pub const STOCK_MAX: u32 = 2_000;
+/// §open ("deployables v0"); 2 000 → 10 000 under upkeep v2's rent ladder,
+/// where 2 000 of stone kept a 100-piece stone base for about ten hours and
+/// a 190-piece one for three and a half — short of the 24 h grief cover a
+/// full hearth is meant to buy, and short of a night's sleep.
+pub const STOCK_MAX: u32 = 10_000;
 /// Bags one player may have placed (ALPHA.md §1 knob, DECISIONS.md §open
 /// "bag cooldown · cap": 8).
 pub const BAG_CAP: usize = 8;
@@ -2265,12 +2269,25 @@ pub fn lock_op(
             announce_door(deploys, di, p.id, events);
         }
         Outcome::Authorized { grant } => {
-            events.push(
-                EV_AUTH,
-                crate::gather::cell_key(cx, cz),
-                ((level as u32) << 16) | ((loc as u32) << 8) | grant as u32,
-                p.id,
-            );
+            // A full crew answers with the refusal alone: announcing the
+            // grant first read on screen as "you're on the crew" a line
+            // before "that lock remembers too many" took it back.
+            let hearth_full = grant == lock::GRANT_FULL
+                && dc.defs[deploys.entries[di].row as usize].arch == ARCH_HEARTH
+                && deploys.hearths[..deploys.hearth_count]
+                    .iter()
+                    .find(|hr| hr.cx == cx && hr.cz == cz && hr.level == level)
+                    .is_some_and(|hr| {
+                        !hr.crew.contains(p.id) && hr.crew.members().len() >= HEARTH_CREW_CAP
+                    });
+            if !hearth_full {
+                events.push(
+                    EV_AUTH,
+                    crate::gather::cell_key(cx, cz),
+                    ((level as u32) << 16) | ((loc as u32) << 8) | grant as u32,
+                    p.id,
+                );
+            }
             // **At a hearth, the right code is the whole invitation**
             // (hearth lock v0): the reference asks for two acts — open the
             // lock, then authorize — and ours folds them, because the
@@ -3806,7 +3823,7 @@ mod tests {
         let mut pieces = Pieces::new();
         let mut deploys = Deploys::new();
         let mut ev = EventQueue::default();
-        let mut p = player_at_cell(CX, CZ, &[(0, 250), (1, 80), (2, 1)]);
+        let mut p = player_at_cell(CX, CZ, &[(0, 600), (1, 80), (2, 1)]);
         founded_graded(&bc, &mut pieces, &mut p, CX, CZ);
         place_deploy(
             SEED,
@@ -3826,8 +3843,8 @@ mod tests {
         );
         assert_eq!(last(&ev).0, crate::world::EV_DEPLOY_PLACED);
 
-        // Feed: FEED_CHUNK of item 0 (has 245 left after the foundation's
-        // 5), all 80 of item 1.
+        // Feed: a whole FEED_CHUNK of item 0 (600 held, less the
+        // foundation's and the hearth's price), all 80 of item 1.
         feed(&dc, &mut deploys, &mut p, CX, CZ, 0, &mut ev);
         assert_eq!(last(&ev).0, crate::world::EV_STOCK);
         assert_eq!(deploys.hearths()[0].stock[0], FEED_CHUNK);

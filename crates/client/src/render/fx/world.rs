@@ -266,7 +266,13 @@ pub struct FireFx {
     pub flames: bool,
     pub flame_dy: f32,
     pub smoke_dy: f32,
+    /// How big the fire is: 1 for a fire pit, a fraction for a torch in a
+    /// hand — its tongues' spread, their size and how many there are.
+    pub scale: f32,
 }
+
+/// The torch's fire, as a fraction of a fire pit's.
+pub const TORCH_FIRE_SCALE: f32 = 0.35;
 
 /// Fires get flames, embers and smoke within this range, metres.
 pub const FIRE_FX_M: f32 = 40.0;
@@ -319,11 +325,12 @@ pub fn fires(
         let Some(f) = f else { break };
         if f.flames {
             let base = at + Vec3::Y * f.flame_dy;
-            for _ in 0..count(glow, FLAME_RATE, dt) {
-                let off = Vec3::new(glow.signed() * 0.16, 0.0, glow.signed() * 0.16);
+            let k = f.scale;
+            for _ in 0..count(glow, FLAME_RATE * k.max(0.5), dt) {
+                let off = Vec3::new(glow.signed() * 0.16 * k, 0.0, glow.signed() * 0.16 * k);
                 let life = 0.35 + 0.3 * glow.roll();
-                let size = 0.14 + 0.08 * glow.roll();
-                let rise = 0.9 + 0.6 * glow.roll();
+                let size = (0.14 + 0.08 * glow.roll()) * k;
+                let rise = (0.9 + 0.6 * glow.roll()) * k.sqrt();
                 let roll = glow.roll() * std::f32::consts::TAU;
                 let spin = glow.signed() * 1.5;
                 let cell = atlas::PUFF + ((glow.roll() * 3.0) as u8).min(2);

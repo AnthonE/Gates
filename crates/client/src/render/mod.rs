@@ -237,9 +237,15 @@ pub struct WorldId {
 
 impl WorldId {
     pub fn new(seed: u64) -> Self {
+        Self::with_haven(seed, terrain::haven(seed))
+    }
+
+    /// A join's: `ClientCore::new` has already solved the haven, and solving
+    /// it again cost the join hitch another 20–30 ms.
+    pub fn with_haven(seed: u64, haven: Haven) -> Self {
         Self {
             seed,
-            haven: terrain::haven(seed),
+            haven,
             table: ScatterTable::alpha_default(),
         }
     }

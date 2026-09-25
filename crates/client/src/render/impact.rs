@@ -240,7 +240,11 @@ pub fn impact_cue(matter: Matter) -> Option<Cue> {
         Matter::Wood => Some(Cue::ImpactWood),
         Matter::Stone | Matter::Dirt | Matter::Sand | Matter::Grass => Some(Cue::ImpactStone),
         Matter::Metal => Some(Cue::ImpactMetal),
-        Matter::Flesh | Matter::Plant | Matter::Water => None,
+        // A swing through a bush rustles and one into the shallows splashes:
+        // the remote-step takes are those sounds, positional already.
+        Matter::Plant => Some(Cue::RemoteStepLitter),
+        Matter::Water => Some(Cue::RemoteStepWater),
+        Matter::Flesh => None,
     }
 }
 

@@ -5,7 +5,7 @@
 
 use bevy::math::Vec3;
 use bevy::mesh::{Mesh, VertexAttributeValues};
-use client::render::fx::gun::{cosmetic_mark, seg_dist};
+use client::render::fx::gun::{cosmetic_mark, first_in_line, seg_dist};
 use client::render::fx::pool::{pool_mesh, Cam, Orient, Particle, Pool, MIN_PX};
 use client::render::fx::table::{effect, emit, lod, scaled, Layer};
 use client::render::impact::{Matter, Weapon};
@@ -206,4 +206,30 @@ fn distance_to_a_shot_line() {
     assert!((seg_dist(Vec3::new(5.0, 0.4, 0.0), a, b) - 0.4).abs() < 1e-5);
     assert!((seg_dist(Vec3::new(12.0, 0.0, 0.0), a, b) - 2.0).abs() < 1e-5);
     assert!((seg_dist(Vec3::new(-3.0, 4.0, 0.0), a, b) - 5.0).abs() < 1e-5);
+}
+
+/// A round stops at the first body or animal in its line — the tracer ends
+/// there rather than flying on through, and nothing behind it is marked.
+#[test]
+fn a_shot_stops_at_the_first_thing_standing_in_its_line() {
+    let (a, b) = (Vec3::ZERO, Vec3::new(20.0, 0.0, 0.0));
+    let near = (Vec3::new(6.0, 0.3, 0.0), 0.5);
+    let far = (Vec3::new(12.0, 0.0, 0.2), 0.5);
+    let off = (Vec3::new(3.0, 0.0, 2.0), 0.5);
+    let t = first_in_line(a, b, [far, off, near].into_iter()).expect("a target in line");
+    assert!(
+        (t - 6.0).abs() < 1e-5,
+        "stopped at {t}, not the nearer target"
+    );
+    assert_eq!(
+        first_in_line(a, b, [off].into_iter()),
+        None,
+        "a target off the line"
+    );
+    let behind = (Vec3::new(-2.0, 0.0, 0.0), 0.5);
+    assert_eq!(
+        first_in_line(a, b, [behind].into_iter()),
+        None,
+        "a target behind the muzzle"
+    );
 }

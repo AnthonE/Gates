@@ -55,6 +55,27 @@ pub fn seg_dist(p: Vec3, a: Vec3, b: Vec3) -> f32 {
     (a + ab * t).distance(p)
 }
 
+/// How far along `from → to` the first of `targets` (a centre and a
+/// radius) stands in the line, metres, or `None` when the line is clear.
+pub fn first_in_line(
+    from: Vec3,
+    to: Vec3,
+    targets: impl Iterator<Item = (Vec3, f32)>,
+) -> Option<f32> {
+    let along = to - from;
+    let len = along.length();
+    if len <= 0.0 {
+        return None;
+    }
+    let d = along / len;
+    targets
+        .filter_map(|(c, r)| {
+            let t = (c - from).dot(d);
+            (t > 0.0 && t < len && (from + d * t).distance(c) < r).then_some(t)
+        })
+        .min_by(f32::total_cmp)
+}
+
 /// Draw every shot this frame: its flash at the muzzle, its tracer, and —
 /// for a hitscan miss past the shard's mark range — the contact its dust,
 /// mark and sound are thrown from.
@@ -65,6 +86,7 @@ pub fn shots(
     world: Option<Res<WorldId>>,
     cams: Query<&GlobalTransform, With<EyeCam>>,
     bodies: Query<(&Body, &GlobalTransform)>,
+    animals: Query<&GlobalTransform, With<super::super::mobs::Animal>>,
     mut contacts: ResMut<Contacts>,
     mut fx: ResMut<Fx>,
     mut cache: Local<Box<SlotCache>>,
@@ -152,10 +174,31 @@ pub fn shots(
             Vec3::new(b.at_mm.0, b.at_mm.1, b.at_mm.2) / MM_PER_M
         });
 
+        // The first drawn body or animal standing in the line short of the
+        // world's stop — where a round that hit something stopped. Your own
+        // hit is confirmed by its `EV_HIT` on the same frame; anyone else's
+        // is read off the picture, as their miss always was.
+        let targets = bodies
+            .iter()
+            .filter(|(bd, _)| bd.0 != shooter)
+            .map(|(_, gt)| (gt.translation() + Vec3::Y * 1.0, 0.5))
+            .chain(
+                animals
+                    .iter()
+                    .map(|gt| (gt.translation() + Vec3::Y * 0.4, 0.6)),
+            );
+        let in_line = first_in_line(eye_at, end, targets);
+        let hit_t = if own {
+            in_line.filter(|_| !feed.hit_victims().is_empty())
+        } else {
+            in_line
+        };
+
         // The tracer, from a little past the muzzle (not through your own
-        // gun) to where the round stopped.
+        // gun) to where the round stopped — the body it met, if it met one.
+        let tracer_end = hit_t.map_or(end, |t| eye_at + dir * t);
         let start = muzzle + dir * if own { 1.5 } else { 0.3 };
-        let dist = (end - start).dot(dir).max(0.0);
+        let dist = (tracer_end - start).dot(dir).max(0.0);
         if dist > 2.0 {
             let life = (dist / TRACER_MPS).clamp(0.03, 0.3);
             fx.glow.spawn(Particle {
@@ -178,12 +221,11 @@ pub fn shots(
         // The miss the shard did not mark.
         let Some(b) = stop else { continue };
         let body_in_line = if own {
-            // Your own hit arrives as `EV_HIT` on the same frame.
+            // Your own hit arrives as `EV_HIT` on the same frame — an
+            // animal's too, since a round can meet one now.
             !feed.hit_victims().is_empty()
         } else {
-            bodies.iter().any(|(bd, gt)| {
-                bd.0 != shooter && seg_dist(gt.translation() + Vec3::Y * 1.0, eye_at, end) < 0.5
-            })
+            in_line.is_some()
         };
         let Some(surf) = b.surf else { continue };
         if !cosmetic_mark(b.k, true, body_in_line) {

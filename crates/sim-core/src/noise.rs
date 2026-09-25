@@ -28,7 +28,8 @@ use crate::world::{EventQueue, Player, EV_IMPACT, EV_SHOT};
 /// A gunshot at a hundred metres is the disclosure `reference/AUDIO.md` §9
 /// already prices for players; an animal gets the same.
 pub const NOISE_GUN_CM: i64 = 10_000;
-/// A bow is quiet — the reason to hunt with one.
+/// A bow is quiet — the reason to hunt with one (an arrow reaches an
+/// animal since `ranged::Quarry`).
 pub const NOISE_BOW_CM: i64 = 1_500;
 /// A strike on a surface: a hatchet in a trunk, a pick on a node, a round
 /// landing in the dirt.

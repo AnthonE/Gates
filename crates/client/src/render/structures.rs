@@ -2959,6 +2959,7 @@ pub fn spawn_deploy(
                 } else {
                     h * 0.5 - FIRE_LIGHT_LIFT_M + 0.05
                 },
+                scale: 1.0,
             },
         ));
     }

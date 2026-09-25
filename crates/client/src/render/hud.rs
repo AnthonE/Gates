@@ -908,7 +908,12 @@ pub fn exposure(
     for (chip, mut text, mut node, mut bg) in &mut chips {
         let (show, want, colour) = match chip {
             ExposureChip::Wet => (core.wet_pct > 0, format!("WET {}%", core.wet_pct), WET_CHIP),
-            ExposureChip::Cold if core.cold_hurting => (true, "FREEZING".to_string(), FREEZE_CHIP),
+            // The one chip that costs hp says what stops it.
+            ExposureChip::Cold if core.cold_hurting => (
+                true,
+                "FREEZING · FIND A FIRE OR A ROOF".to_string(),
+                FREEZE_CHIP,
+            ),
             ExposureChip::Cold => (core.cold_pct >= 25, "COLD".to_string(), COLD_CHIP),
         };
         // Out of the layout, not just invisible: a hidden chip that still
@@ -1844,7 +1849,18 @@ pub fn update(
     // — the highlight is `net.sel`, this is the inventory mirror.
     for (icon, mut img, mut vis) in icons.iter_mut() {
         let stack = core.inv.get(icon.0).copied().unwrap_or_default();
-        match crate::ui::icons::icon_stem(&core.catalog, stack).and_then(|s| art.verb(s)) {
+        // A blueprint shows the thing it teaches and a skinned item wears its
+        // skin's tint, as their cells on the inventory page do — the belt and
+        // the page disagreed about both.
+        let shown = sim_core::research::blueprint_target(&core.research, stack)
+            .map_or(stack, |t| sim_core::gather::ItemStack { item: t, ..stack });
+        let [tr, tg, tb] =
+            crate::ui::skins::tint_of(&core.skins, stack.skin).unwrap_or([1.0, 1.0, 1.0]);
+        let tint = Color::srgb(tr, tg, tb);
+        if img.color != tint {
+            img.color = tint;
+        }
+        match crate::ui::icons::icon_stem(&core.catalog, shown).and_then(|s| art.verb(s)) {
             Some(h) => {
                 if img.image != h {
                     img.image = h;
@@ -2670,7 +2686,10 @@ fn stock_line(rows: &[(u16, u32, u32)], catalog: &protocol::event::ItemCatalog) 
 fn auth_line(grant: u8, at_hearth: bool) -> &'static str {
     match (at_hearth, grant) {
         (true, sim_core::lock::GRANT_NONE) => "you left the hearth's crew",
-        (true, _) => "you're on the hearth's crew",
+        (true, sim_core::lock::GRANT_FULL) => "you're on the hearth's crew",
+        // A guest code at a hearth's lock is remembered and opens nothing:
+        // the crew is the full code's alone.
+        (true, _) => "a guest code opens nothing at a hearth",
         (false, sim_core::lock::GRANT_FULL) => "the lock remembers you",
         (false, sim_core::lock::GRANT_GUEST) => "the lock remembers you as a guest",
         (false, _) => "the lock forgets you",
@@ -3766,6 +3785,10 @@ mod tests {
         use sim_core::lock::{GRANT_FULL, GRANT_GUEST, GRANT_NONE};
         assert_eq!(auth_line(GRANT_FULL, true), "you're on the hearth's crew");
         assert_eq!(auth_line(GRANT_NONE, true), "you left the hearth's crew");
+        assert_eq!(
+            auth_line(GRANT_GUEST, true),
+            "a guest code opens nothing at a hearth"
+        );
         assert_eq!(auth_line(GRANT_FULL, false), "the lock remembers you");
         assert_eq!(
             auth_line(GRANT_GUEST, false),

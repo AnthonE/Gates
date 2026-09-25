@@ -607,7 +607,13 @@ const GOLDEN_FINAL_HASH: u64 = 0xBAE2_2467_6365_4D69;
 /// **Moved `0x89F0_E1F6_0797_F935` → `0x8885_A6EE_B5A7_B8E7` at skins v0**
 /// (2026-09-24), with the final hash and for its reason: the stack, job and
 /// player encodings the digest folds grew their skin fields.
-const GOLDEN_TRACE_HASH: u64 = 0x8885_A6EE_B5A7_B8E7;
+/// **Moved `0x8885_A6EE_B5A7_B8E7` → `0x37FB_4909_FBC2_BD22` at the lock cap's rise**
+/// (`LOCK_AUTH_CAP` 8 → 10, 2026-09-25), and alone: the digest folds a
+/// lock's whole remembered list, so two more zero slots ride every stamp
+/// while the script's code lock (bolted on at tick 155) stands. It is gone
+/// by the end, so the end state holds; with the cap at 8 the whole golden
+/// reproduces.
+const GOLDEN_TRACE_HASH: u64 = 0x37FB_4909_FBC2_BD22;
 
 /// Fold a stamped trace into one number.
 ///

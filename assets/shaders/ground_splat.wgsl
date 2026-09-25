@@ -27,8 +27,8 @@
 // **Why the maps contribute LUMINANCE and never colour.** `ART.md` §7 bounds a
 // mean-placing correction: a sourced map's colour deviation may not be
 // stretched by more than ×1. Measured over the four ground sources the gain
-// spans are grass 2.454, sand 2.073, litter 3.586, rock 1.054 — only rock
-// clears it. So each map is reduced to its own mean-1 luminance field (span
+// spans are grass 2.454, sand 2.073, litter 3.586, rock 1.08 (`Rock032`) —
+// only rock clears it. So each map is reduced to its own mean-1 luminance field (span
 // 1.000 by construction, because every channel becomes the same channel) and
 // the colour stays entirely the authored splat's. The photograph contributes
 // exactly the thing a noise field cannot encode: measured high-frequency
@@ -434,10 +434,11 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     // **The height is the GRAIN centred on zero, not the raw luma.** Every
     // grain field has a mean of 1 by construction, so `grain − 1` is each map's
     // own relief about its own mean and no identity carries a systematic
-    // advantage. Raw luma does: rock's mean (0.269) is 2.6× litter's (0.103),
-    // so it wins contested bands on brightness alone. Clamped because a gain of
-    // 9.7 lets one litter texel reach a grain of ~4, and an outlier texel may
-    // sharpen a seam without being allowed to move it.
+    // advantage. Raw luma does: grass's mean (0.248) is 2.4× litter's (0.103)
+    // and rock's (0.100), so it would win contested bands on brightness alone.
+    // Clamped because a gain of ~10 lets one litter or rock texel reach a
+    // grain of ~4, and an outlier texel may sharpen a seam without being
+    // allowed to move it.
     //
     // **Measured as a no-op, and kept anyway.** Swapping raw luma for this
     // moved a six-frame capture by +0.1% contrast and 0.05 luma — nothing. The
@@ -463,21 +464,29 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     var rock_shade = 1.0;
     var rock_tilt = vec3<f32>(0.0);
     if w.w > 0.002 {
-        // The block lattice is read through a warp so a boundary wanders like
-        // a joint and is never a ruled polygon edge.
-        let warp = vec3<f32>(value3(wp / 4.0), value3(wp / 4.0 + vec3<f32>(31.7, 11.3, 5.9)), value3(wp / 4.0 + vec3<f32>(7.1, 23.9, 17.3))) * 2.0 - 1.0;
-        let big = rock_cell((wp + warp * splat.rock_b.w) / splat.rock_a.x);
-        let d = draw3(big.key);
-        var shade = 1.0 + splat.rock_b.x * (2.0 * d.y - 1.0) * near_big;
-        // Only some boundaries are cracks: a key per PAIR of blocks, so a
-        // crack runs the length of the boundary it chose and stops.
-        let pair = cell_key(vec3<i32>(bitcast<i32>(min(big.key, big.key2)), bitcast<i32>(max(big.key, big.key2)), 7));
-        if unit_of(pair) < splat.rock_c.x {
-            let crack_px = splat.rock_c.y / max(big_px, 1e-5);
-            let on = smoothstep(0.5, 1.5, crack_px);
-            shade = shade * (1.0 - splat.rock_c.z * on * (1.0 - smoothstep(0.0, splat.rock_c.y, big.edge)));
+        var shade = 1.0;
+        var t_big = vec3<f32>(0.0);
+        // Skipped where it would add nothing: every output of the 7 m pass is
+        // scaled by `near_big`, and a crack needs half a pixel of width, which
+        // `ROCK_CRACK_W` keeps inside `near_big` (a const assert holds it).
+        // On distant rock this was ~140 hashes a pixel for a no-op.
+        if near_big > 0.0 {
+            // The block lattice is read through a warp so a boundary wanders
+            // like a joint and is never a ruled polygon edge.
+            let warp = vec3<f32>(value3(wp / 4.0), value3(wp / 4.0 + vec3<f32>(31.7, 11.3, 5.9)), value3(wp / 4.0 + vec3<f32>(7.1, 23.9, 17.3))) * 2.0 - 1.0;
+            let big = rock_cell((wp + warp * splat.rock_b.w) / splat.rock_a.x);
+            let d = draw3(big.key);
+            shade = 1.0 + splat.rock_b.x * (2.0 * d.y - 1.0) * near_big;
+            // Only some boundaries are cracks: a key per PAIR of blocks, so a
+            // crack runs the length of the boundary it chose and stops.
+            let pair = cell_key(vec3<i32>(bitcast<i32>(min(big.key, big.key2)), bitcast<i32>(max(big.key, big.key2)), 7));
+            if unit_of(pair) < splat.rock_c.x {
+                let crack_px = splat.rock_c.y / max(big_px, 1e-5);
+                let on = smoothstep(0.5, 1.5, crack_px);
+                shade = shade * (1.0 - splat.rock_c.z * on * (1.0 - smoothstep(0.0, splat.rock_c.y, big.edge)));
+            }
+            t_big = (draw3(big.key ^ 0x68e31da4u) * 2.0 - 1.0) * (splat.rock_a.z * near_big);
         }
-        let t_big = (draw3(big.key ^ 0x68e31da4u) * 2.0 - 1.0) * (splat.rock_a.z * near_big);
         var t_fine = vec3<f32>(0.0);
         if near_fine > 0.0 {
             let fine = rock_cell(wp / splat.rock_a.y + vec3<f32>(17.3, 5.1, 9.7));

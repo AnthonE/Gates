@@ -654,7 +654,7 @@ pub const RICOCHET_PCT: u32 = 30;
 /// What a contact sounds like, by what struck it and what it struck: a
 /// blow is the impact family, a round or an arrow the bullet family (a
 /// `glance` on the hard two is a ricochet), a body is a body whatever hit
-/// it, and a charge is a blast. Water makes no sound here.
+/// it, and a charge is a blast. A round into water splashes.
 pub fn contact_cue(
     weapon: super::impact::Weapon,
     matter: super::impact::Matter,
@@ -665,7 +665,7 @@ pub fn contact_cue(
         (Weapon::Blast, _) => Some(Cue::Blast),
         (_, Matter::Flesh) => Some(Cue::FleshHit),
         (Weapon::Melee, m) => super::impact::impact_cue(m),
-        (_, Matter::Water) => None,
+        (_, Matter::Water) => Some(Cue::RemoteStepWater),
         (_, Matter::Metal) if glance => Some(Cue::Ricochet),
         (_, Matter::Stone) if glance => Some(Cue::Ricochet),
         (_, Matter::Metal) => Some(Cue::BulletMetal),
@@ -1211,7 +1211,9 @@ pub fn bed(
     // below half, and cover moves it rather than gating it.
     // The weather's wind rides on top (weather v0): a breeze at clear, a
     // gale in a storm.
-    sound.bed_target[0] = (1.0 - 0.45 * cover) * (0.6 + 0.8 * weather.wind);
+    // Under a roof the gale is outside: its share of the bed drops.
+    let gale = weather.wind * if weather.sheltered { 0.35 } else { 1.0 };
+    sound.bed_target[0] = (1.0 - 0.45 * cover) * (0.6 + 0.8 * gale);
     // The surf reads how much sea is within earshot, from the same
     // `terrain::height` the water is drawn from — 24 taps, a fixed pattern, so
     // the level cannot flicker as a search finds different water.
@@ -1223,7 +1225,7 @@ pub fn bed(
     sound.bed_target[2] = 1.0;
     // The rain (weather v0): as hard as it falls, duller under a roof. The
     // snapshot takes it away underwater.
-    sound.bed_target[3] = weather.rain * if weather.sheltered { 0.45 } else { 1.0 };
+    sound.bed_target[3] = weather.rain * if weather.sheltered { 0.35 } else { 1.0 };
 
     // Thunder: each bolt's clap once its sound has crossed the distance
     // (`weather::update` queued it at the bolt's own time plus d / 343).
@@ -1312,6 +1314,9 @@ pub fn music(
 ) {
     let dt = time.delta_secs();
     let mix = mix_of(&settings);
+    // The music sits under the same duck the beds do (`Mixer::duck`): a
+    // gunshot or a blast pulls it down with them.
+    let duck = sound.mixer.duck();
     if let Some(piece) = sound.music.tick(dt) {
         let i = sound.next_music;
         sound.next_music = (i + 1) % HELD_MUSIC;
@@ -1322,7 +1327,7 @@ pub fn music(
         // piece, which is the click `synth::edges` exists to prevent at the
         // other end of the same sample. The loop's job is to FOLLOW the
         // slider, not to set the opening level.
-        let level = def.gain * mix.bus_gain(def.bus);
+        let level = def.gain * mix.bus_gain(def.bus) * duck;
         sound.music_slots[i] = MusicSlot {
             cue: piece.cue,
             fade: 1.0,
@@ -1359,7 +1364,7 @@ pub fn music(
             continue;
         }
         let def = slot.cue.def();
-        let level = def.gain * mix.bus_gain(def.bus) * slot.fade;
+        let level = def.gain * mix.bus_gain(def.bus) * slot.fade * duck;
         if level != slot.sent {
             slot.sent = level;
             engine.push(Cmd::Gain {

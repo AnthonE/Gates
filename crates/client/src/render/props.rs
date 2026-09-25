@@ -307,6 +307,10 @@ pub fn grow(
         let want = g.base * pm as f32 * 0.001;
         if (t.scale.x - want).abs() > 1e-4 {
             t.scale = Vec3::splat(want);
+            // A stump stands on its own lift, which is to its size.
+            if f.part == FellPart::Stump {
+                t.translation.y = f.base_y + STUMP_LIFT_M * want;
+            }
         }
     }
 }
@@ -2393,6 +2397,9 @@ pub fn spawn_slot(
     if is_tree {
         e.with_child((
             fellable(FellPart::Stump),
+            // Hidden while the tree stands, it grows with the sapling, so a
+            // sapling felled leaves a sapling's stump — not a full tree's.
+            Grow { base: slot.scale },
             Mesh3d(a.stump.clone()),
             MeshMaterial3d(a.wood.clone()),
             Transform {

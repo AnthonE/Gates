@@ -537,9 +537,9 @@ fn a_blow_the_wire_reports_twice_is_one_blow() {
     );
 }
 
-/// Each matter has the sound of itself, and the two that do not have a
-/// reason: a body is voiced by the hitmarker, a plant by nothing worth a
-/// wrong waveform. `Cue::ImpactWood` had no producer at all from audio v0 to
+/// Each matter has the sound of itself, and the one that does not has a
+/// reason: a body is voiced by the hitmarker. A bush rustles and water
+/// splashes, off the remote-step takes that are those sounds. `Cue::ImpactWood` had no producer at all from audio v0 to
 /// 2026-09-13; this is the map that gives it one.
 #[test]
 fn each_matter_has_the_sound_of_itself() {
@@ -550,8 +550,8 @@ fn each_matter_has_the_sound_of_itself() {
     assert_eq!(impact_cue(Matter::Sand), Some(Cue::ImpactStone));
     assert_eq!(impact_cue(Matter::Grass), Some(Cue::ImpactStone));
     assert_eq!(impact_cue(Matter::Flesh), None);
-    assert_eq!(impact_cue(Matter::Plant), None);
-    assert_eq!(impact_cue(Matter::Water), None);
+    assert_eq!(impact_cue(Matter::Plant), Some(Cue::RemoteStepLitter));
+    assert_eq!(impact_cue(Matter::Water), Some(Cue::RemoteStepWater));
     // Every cue this map hands out is positional: an impact is a place.
     for m in Matter::ALL {
         if let Some(c) = impact_cue(m) {
@@ -678,7 +678,10 @@ fn a_round_does_not_sound_like_a_blow() {
         contact_cue(Weapon::Blast, Matter::Stone, false),
         Some(Cue::Blast)
     );
-    assert_eq!(contact_cue(b, Matter::Water, false), None);
+    assert_eq!(
+        contact_cue(b, Matter::Water, false),
+        Some(Cue::RemoteStepWater)
+    );
     assert_eq!(far_layer(Cue::ShotGun, SHOT_FAR_M - 1.0), Cue::ShotGun);
     assert_eq!(far_layer(Cue::ShotGun, SHOT_FAR_M + 1.0), Cue::ShotGunFar);
     assert_eq!(far_layer(Cue::ShotBow, 80.0), Cue::ShotBow);

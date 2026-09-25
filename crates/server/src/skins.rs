@@ -126,36 +126,36 @@ pub fn owned_of(cfg: &Config, wallet: Option<&str>, sc: &SkinContent) -> Owned {
 
 /// An `items/of` body → the owned set over `sc`'s rows.
 ///
-/// Hand-scanned, `entitle.rs`'s reasoning: the only facts this may act on
-/// are the two flags that say *could not look* and *no contract*, and the
-/// `catalog_id` of each listed item. An id this shard's content does not
-/// know is skipped, as is an item whose instance could not be read (it has
-/// no `catalog_id`): both fail toward owning less.
+/// The only facts this may act on are the two flags that say *could not
+/// look* and *no contract*, and the `catalog_id` of each listed item — its
+/// own, top-level on the item. An id this shard's content does not know is
+/// skipped, as is an item whose instance could not be read (it has no
+/// `catalog_id`): both fail toward owning less. Parsed, not scanned: a scan
+/// for `"catalog_id"` after `"items"` also counted one nested inside an
+/// item's `derived` record as owned.
 pub fn parse(body: &str, sc: &SkinContent) -> Owned {
-    if flag(body, "\"reachable\"") == Some(false) {
+    use serde_json::Value;
+    let Ok(v) = serde_json::from_str::<Value>(body) else {
+        return Owned::Unknown;
+    };
+    if v.get("reachable") == Some(&Value::Bool(false)) {
         return Owned::Unknown;
     }
-    if flag(body, "\"configured\"") == Some(false) {
+    if v.get("configured") == Some(&Value::Bool(false)) {
         // No item contract on the platform yet: nobody can hold a skin.
         return Owned::Known(SkinSet::EMPTY);
     }
-    let Some(items_at) = body.find("\"items\"") else {
+    let Some(items) = v.get("items").and_then(Value::as_array) else {
         return Owned::Unknown;
     };
     let mut set = SkinSet::EMPTY;
-    let key = "\"catalog_id\"";
-    let mut rest = &body[items_at..];
-    while let Some(at) = rest.find(key) {
-        rest = &rest[at + key.len()..];
-        let Some(value) = rest.trim_start().strip_prefix(':') else {
-            continue;
-        };
-        let value = value.trim_start();
-        let digits = value.bytes().take_while(u8::is_ascii_digit).count();
-        let Ok(id) = value[..digits].parse::<u64>() else {
-            continue;
-        };
-        if let Some(row) = u16::try_from(id).ok().and_then(|id| sc.row_of(id)) {
+    for item in items {
+        let row = item
+            .get("catalog_id")
+            .and_then(Value::as_u64)
+            .and_then(|id| u16::try_from(id).ok())
+            .and_then(|id| sc.row_of(id));
+        if let Some(row) = row {
             set.insert(row);
         }
     }
@@ -281,19 +281,6 @@ pub fn parse_prices(body: &str, sc: &SkinContent) -> Prices {
     Prices::Known(out)
 }
 
-/// The boolean after `key:`, if it is one.
-fn flag(body: &str, key: &str) -> Option<bool> {
-    let at = body.find(key)? + key.len();
-    let rest = body[at..].trim_start().strip_prefix(':')?.trim_start();
-    if rest.starts_with("true") {
-        Some(true)
-    } else if rest.starts_with("false") {
-        Some(false)
-    } else {
-        None
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,6 +315,20 @@ mod tests {
         assert!(set.has(0), "catalog 1 is row 0, whitespace and all");
         assert!(!set.has(1), "catalog 2 was not listed");
         assert_eq!(set.count(), 2, "77 is not a skin this shard knows");
+    }
+
+    /// A `catalog_id` nested inside an item's own record is not that
+    /// item's: only the item's top-level id owns a row.
+    #[test]
+    fn a_nested_catalog_id_owns_nothing() {
+        let body = r#"{"wallet":"0xAb","items":[
+            {"token_id":4,"catalog_id":900,"derived":{"catalog_id":2}}
+          ],"count":1}"#;
+        let Owned::Known(set) = parse(body, &catalog()) else {
+            panic!("a readable page is an answer");
+        };
+        assert!(set.has(2), "catalog 900 is row 2");
+        assert!(!set.has(1), "catalog 2 only appeared inside `derived`");
     }
 
     #[test]

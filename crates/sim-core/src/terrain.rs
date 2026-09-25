@@ -891,8 +891,10 @@ fn continent<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> f32 {
 //   share, measured at p50 0.64–0.71 and 4.9–10.7 % cliff on four seeds.
 // - **Paid for where it stands.** Off the window a sample pays one squared-
 //   radius compare. In it, `height` is ~2× what it was (~0.95 µs against
-//   ~0.46 on the gate box), and a clutter tile on a range ~2.7× (2.7 ms
-//   against 1.0 — one tile a frame, on the frame thread). The range layout
+//   ~0.46 on the gate box). A clutter tile on a range cost 2.7 ms against 1.0
+//   until clutter took its slope off one corner grid per tile
+//   (`clutter_slope_taps`): now ~0.9 ms on a summit and ~1.0 on a flank —
+//   one tile a frame, on the frame thread. The range layout
 //   and the gully hashes ride the caller's `Lattice` like every other draw,
 //   the fall line is an analytic gradient rather than two more envelopes,
 //   and a bounding disc skips the warp for samples no range can reach.

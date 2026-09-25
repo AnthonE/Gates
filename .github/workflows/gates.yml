@@ -41,7 +41,9 @@ jobs:
     # Allow the whole compile and suite to finish, with room to save the
     # cache afterward. This is a job ceiling; test timeouts and assertions
     # remain in ci/gates.sh and its suites. Keep nightly/release in step.
-    timeout-minutes: 120
+    # 120 → 180 (2026-09-25): main's full runs had grown to 95–115 minutes
+    # and nightly run 36139601292 was cancelled at 120 mid-suite.
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
       - name: toolchain

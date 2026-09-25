@@ -413,6 +413,16 @@ pub fn stream(
                                 shadows_enabled: false,
                                 ..default()
                             },
+                            // The flame itself, while the light is lit:
+                            // `fx::world::fires` draws any lit emitter
+                            // carrying this, the nearest few, a torch's at
+                            // a torch's size.
+                            super::fx::world::FireFx {
+                                flames: true,
+                                flame_dy: 0.0,
+                                smoke_dy: 0.15,
+                                scale: super::fx::world::TORCH_FIRE_SCALE,
+                            },
                             Transform::IDENTITY,
                         ))
                         .id();

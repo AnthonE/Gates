@@ -514,7 +514,12 @@ pub const ROCK_WARP_M: f32 = 1.6;
 /// Share of block boundaries that are cracks.
 pub const ROCK_CRACK_SHARE: f32 = 0.3;
 /// A crack's half-width in block units, and how dark its centre goes.
+///
+/// At most 0.125: a crack shows from half a pixel wide, so it is gone by a
+/// block footprint of `2 × ROCK_CRACK_W` pixels, inside the 0.25 where
+/// `near_big` reaches zero and the shader skips the 7 m pass.
 pub const ROCK_CRACK_W: f32 = 0.025;
+const _: () = assert!(ROCK_CRACK_W <= 0.125);
 pub const ROCK_CRACK_DARK: f32 = 0.5;
 /// Peak departure of the streaks: darker in a streak, lighter between.
 pub const ROCK_STREAK: f32 = 0.2;

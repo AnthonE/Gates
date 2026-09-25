@@ -222,7 +222,9 @@ pub(crate) struct Seen {
     /// The owned skin set and how much of the skin catalog has dripped: the
     /// craft panel's picker draws from both.
     pub skins_owned: sim_core::skin::SkinSet,
-    pub skins_have: u16,
+    /// `ClientCore::skins_gen` at the last redraw: any catalog drip,
+    /// a reprice included.
+    pub skins_have: u32,
     pub cont_kind: u8,
     pub cont_handle: u32,
     pub jobs: [(u8, u8); sim_core::limits::CRAFT_QUEUE],
@@ -1086,7 +1088,7 @@ fn detect_changes(
             || core.research_have != ui.seen.research_have
             || table_lit != ui.seen.table_lit
             || core.skins_owned != ui.seen.skins_owned
-            || core.skins.count != ui.seen.skins_have
+            || core.skins_gen != ui.seen.skins_have
         {
             // The def tables drip in over the first seconds of a session, so
             // the derived category facts are rebuilt with them.
@@ -1108,7 +1110,7 @@ fn detect_changes(
             ui.seen.research_have = core.research_have;
             ui.seen.table_lit = table_lit;
             ui.seen.skins_owned = core.skins_owned;
-            ui.seen.skins_have = core.skins.count;
+            ui.seen.skins_have = core.skins_gen;
             ui.dirty = true;
         }
     }

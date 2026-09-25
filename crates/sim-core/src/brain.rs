@@ -217,6 +217,7 @@ pub static BOAR: Design = Design {
             go(&[Noise], Flee),
             go(&[Finished], Idle),
             go(&[Failed], Idle),
+            go(&[Timer], Idle),
         ],
         // Orbit
         &[go(&[NoTarget], Idle), go(&[Timer], Chase)],
@@ -301,6 +302,7 @@ pub static WOLF: Design = Design {
             go(&[Target], Chase),
             go(&[Finished], Idle),
             go(&[Failed], Idle),
+            go(&[Timer], Idle),
         ],
         // Orbit
         &[
@@ -381,6 +383,7 @@ pub static GUARD: Design = Design {
             go(&[Target], Chase),
             go(&[Finished], Idle),
             go(&[Failed], Idle),
+            go(&[Timer], Idle),
         ],
         // Orbit
         &[
@@ -503,6 +506,12 @@ const PATROL_LEGS: u8 = 4;
 const PATROL_RING_PCT: f32 = 0.5;
 /// Arrived at home once within this.
 const HOME_STOP_CM: u16 = 300;
+/// The longest one walk home lasts before the leash gives it up and tries
+/// again from Idle: half a minute at 30 Hz.
+const HOME_MAX_TICKS: u64 = 900;
+/// How many points back along the line to home `standable_toward_home`
+/// tries before settling for home.
+const STANDABLE_STEPS: u32 = 4;
 /// Arrived at a roam or patrol point once within this.
 const WALK_STOP_CM: u16 = 100;
 /// A chase re-plans when the target has moved this far from where the
@@ -989,7 +998,9 @@ fn track_stuck(mob: &mut Mob) {
     let moved2 = dist2_cm(mob.body.qx - mob.last_qx, mob.body.qz - mob.last_qz);
     mob.last_qx = mob.body.qx;
     mob.last_qz = mob.body.qz;
-    if mob.gait <= 0 || !mob.path.active() {
+    // A walk home with no route still steers (`walking`'s fallback), and a
+    // body pushing at a wall that way is as stuck as one on a route.
+    if mob.gait <= 0 || (!mob.path.active() && mob.state != NavigateHome) {
         mob.stuck = 0;
         return;
     }
@@ -1035,10 +1046,14 @@ fn enter(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob, to: AiState) {
         }
         Patrol => {
             mob.leg = (mob.leg + 1) % PATROL_LEGS;
-            let (x, z) = patrol_point(slot, def, mob);
+            let (x, z) = standable_toward_home(ctx, mob, patrol_point(slot, def, mob));
             walk_to(ctx, mob, x, z, WALK_STOP_CM);
         }
         NavigateHome => {
+            // A walk home that cannot end — a base built over the den, a
+            // ledge between — gives up on this timer, and the leash tries
+            // again from Idle rather than grinding at a wall for good.
+            mob.state_until = tick + HOME_MAX_TICKS;
             let (x, z) = home_xz(mob);
             walk_to(ctx, mob, x, z, HOME_STOP_CM);
         }
@@ -1047,7 +1062,7 @@ fn enter(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob, to: AiState) {
         }
         MoveTowards => {
             mob.state_until = tick + LOOK_MAX_TICKS;
-            let (x, z) = look_point(slot, def, mob);
+            let (x, z) = standable_toward_home(ctx, mob, look_point(slot, def, mob));
             walk_to(ctx, mob, x, z, WALK_STOP_CM);
         }
         Sleep => {
@@ -1108,11 +1123,11 @@ fn walking(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob) -> u8 {
                 (x, z, HOME_STOP_CM)
             }
             Patrol => {
-                let (x, z) = patrol_point(slot, def, mob);
+                let (x, z) = standable_toward_home(ctx, mob, patrol_point(slot, def, mob));
                 (x, z, WALK_STOP_CM)
             }
             MoveTowards => {
-                let (x, z) = look_point(slot, def, mob);
+                let (x, z) = standable_toward_home(ctx, mob, look_point(slot, def, mob));
                 (x, z, WALK_STOP_CM)
             }
             _ => {
@@ -1139,6 +1154,12 @@ fn walking(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob) -> u8 {
             }
             mob.gait = 0;
             return FAILED;
+        }
+        if !mob.path.active() {
+            // Deferred: the tick's search budget ran out. Stand and ask
+            // again next think, rather than walk on along a stale heading.
+            mob.gait = 0;
+            return RUNNING;
         }
     }
     // A look is a jog (the fast gait without the sprint); every other walk
@@ -1447,6 +1468,26 @@ fn look_point(slot: usize, def: &MobDef, mob: &Mob) -> (f32, f32) {
     }
     let k = lim / d2.sqrt();
     (hx + dx * k, hz + dz * k)
+}
+
+/// `(x, z)` if an animal can stand there, else the first standable point
+/// back along the line to home, or home itself. A look at a round that
+/// splashed into the sea, or a patrol ring that dips into the surf, walked
+/// the animal out into the water: `roam_point` asked `standable` and these
+/// two did not.
+fn standable_toward_home(ctx: &mut Ctx, mob: &Mob, (x, z): (f32, f32)) -> (f32, f32) {
+    if ctx.nav.standable(ctx.ground, x, z) {
+        return (x, z);
+    }
+    let (hx, hz) = home_xz(mob);
+    for k in 1..STANDABLE_STEPS {
+        let f = 1.0 - k as f32 / STANDABLE_STEPS as f32;
+        let (px, pz) = (hx + (x - hx) * f, hz + (z - hz) * f);
+        if ctx.nav.standable(ctx.ground, px, pz) {
+            return (px, pz);
+        }
+    }
+    (hx, hz)
 }
 
 /// Patrol point `mob.leg`: evenly round a ring about home, the ring's phase

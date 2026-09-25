@@ -946,6 +946,12 @@ impl ClientCore {
         &self.ovens
     }
 
+    /// The island's authored sites, solved once in `new`. A join hands this
+    /// copy to `render::WorldId` rather than solving `terrain::haven` twice.
+    pub fn haven(&self) -> &Haven {
+        &self.haven
+    }
+
     /// The island this client stands on, as the seed plus the same four
     /// borrows the predictor hands `movement::step` — including **the very
     /// `SlotCache` the predictor just filled**.
@@ -1171,6 +1177,10 @@ pub struct ClientCore {
     /// The craft panel's picker and the store's "owned" marks read it; the
     /// sim is still the verdict on every skinned craft.
     pub skins_owned: sim_core::skin::SkinSet,
+    /// Bumped by every skin catalog drip. A reprice rewrites rows in place
+    /// and leaves `skins.count` alone, so a screen that redraws on the count
+    /// kept showing the old price; this is the number that moves.
+    pub skins_gen: u32,
     /// Cell changes the last `on_stream` call produced: (key, harvested).
     slot_changes: [(u32, bool); protocol::SLOT_SYNC_BATCH],
     n_slot_changes: usize,
@@ -1649,6 +1659,7 @@ impl ClientCore {
             catalog: ItemCatalog::EMPTY,
             skins: Box::new(protocol::SkinCatalog::EMPTY),
             skins_owned: sim_core::skin::SkinSet::EMPTY,
+            skins_gen: 0,
             slot_changes: [(0, false); protocol::SLOT_SYNC_BATCH],
             n_slot_changes: 0,
             toasts: [(0, 0); TOAST_RING],
@@ -2022,6 +2033,7 @@ impl ClientCore {
                 rows,
             } => {
                 self.skins.count = total;
+                self.skins_gen = self.skins_gen.wrapping_add(1);
                 for i in 0..count as usize {
                     // The decoder refused incoherent rows and bounded the
                     // index; a failure here is an index past the table.
