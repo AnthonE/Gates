@@ -77,6 +77,11 @@ wasm-bindgen --target web --no-typescript \
   --out-dir "$out" \
   "target/wasm32-unknown-unknown/$profile/client_web.wasm"
 cp crates/client-web/web/index.html crates/client-web/web/app.js "$out/"
+# The menu's face is the game's (`render/ui.rs` embeds the same two files), and
+# the page's CSP is `font-src 'self'`, so they ship beside it with their licence.
+mkdir -p "$out/fonts"
+cp crates/client/fonts/RobotoCondensed-Regular.ttf crates/client/fonts/RobotoCondensed-Bold.ttf \
+  crates/client/fonts/LICENSE-ROBOTO.txt "$out/fonts/"
 
 # ── the audio thread's module ───────────────────────────────────────────────
 # The game's sound is rendered in Rust inside an `AudioWorkletProcessor`, which
@@ -215,4 +220,14 @@ gzip -9 -n -c "$out/client_web_bg.wasm" > "$out/client_web_bg.wasm.gz"
 gzip -9 -n -c "$out/sound_worklet_bg.wasm" > "$out/sound_worklet_bg.wasm.gz"
 gz=$(stat -c%s "$out/client_web_bg.wasm.gz")
 printf "   client_web_bg.wasm  %d bytes raw, %d gzipped (.wasm.gz beside it)\n" "$raw" "$gz"
+
+# What the menu reads before the module arrives: the download bar's
+# denominator (with gzip on the wire Content-Length is the compressed size, and
+# the page counts decompressed bytes) and the build line in its footer.
+version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
+proto="$(sed -n 's/^pub const PROTO_VER: u16 = \([0-9]*\);$/\1/p' crates/protocol/src/lib.rs)"
+commit="${GATES_GIT_SHA:-$(git rev-parse --short=9 HEAD 2>/dev/null || echo unknown)}"
+printf '{"version":"%s","commit":"%s","proto":%s,"wasm_bytes":%d,"wasm_gz_bytes":%d}\n' \
+  "$version" "$commit" "${proto:-null}" "$raw" "$gz" > "$out/build.json"
+echo "   build.json: $(cat "$out/build.json")"
 echo "== done: python3 -m http.server 8080 --directory $out"
