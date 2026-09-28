@@ -10,8 +10,8 @@ use sim_core::{
     terrain,
 };
 const SEED: u64 = 20260731;
-const CX: u16 = 341;
-const CZ: u16 = 341;
+const CX: u16 = 682;
+const CZ: u16 = 682;
 fn world_point(loc: u8, x: f32, z: f32) -> (f32, f32) {
     match loc {
         LOC_RISER_XHI => (z, 3.0 - x),

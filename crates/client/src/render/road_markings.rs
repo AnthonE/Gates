@@ -336,8 +336,9 @@ mod tests {
         assert!(end.sin().abs() < 0.002);
         assert!(end.cos() > 0.999);
         let chart = RoadChart { nodes };
-        let a = chart.at(1824.0, 1024.001).unwrap();
-        let b = chart.at(1824.0, 1023.999).unwrap();
+        let c = terrain::ISLAND_SIZE * 0.5;
+        let a = chart.at(c + 800.0, c + 0.001).unwrap();
+        let b = chart.at(c + 800.0, c - 0.001).unwrap();
         assert!((a.phase[0] - b.phase[0]).abs() < 0.01);
         assert!((a.phase[1] - b.phase[1]).abs() < 0.01);
     }
@@ -350,8 +351,9 @@ mod tests {
         assert_eq!(nodes[0].along, nodes.last().unwrap().along + 1.0);
         assert_eq!(nodes[0].run_length, (ROAD_CHART_SAMPLES - 1) as f32);
         let chart = RoadChart { nodes };
-        assert!(chart.at(224.0, 1024.0).is_none());
-        assert!(chart.at(1824.0, 1024.0).is_some());
+        let c = terrain::ISLAND_SIZE * 0.5;
+        assert!(chart.at(c - 800.0, c).is_none());
+        assert!(chart.at(c + 800.0, c).is_some());
     }
 
     #[test]
@@ -360,8 +362,16 @@ mod tests {
         // Before the phase-rate bound this actual 1 m mesh diagonal advanced
         // 4.238 m along a 6 m dash cycle, reversing interpolated dash/gap.
         assert!(chart.at(346.0, 562.0).is_none() || chart.at(347.0, 561.0).is_none());
-        // The conservative gap does not remove the ordinary seam fixture.
-        assert!(chart.at(1859.276, 1024.0).is_some());
+        // The conservative gap does not remove the ordinary chart: some
+        // painted node's own centre still answers.
+        let hit = (0..ROAD_CHART_SAMPLES).any(|i| {
+            let n = chart.nodes[i];
+            let a = (i as f32 + 0.5) * TAU / ROAD_CHART_SAMPLES as f32;
+            let (uz, ux) = a.sin_cos();
+            let (x, z) = point(ux, uz, n.radius);
+            n.live && n.paintable && chart.at(x, z).is_some()
+        });
+        assert!(hit, "no painted node answers at its own centre");
     }
 
     #[test]

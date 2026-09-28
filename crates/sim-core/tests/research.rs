@@ -109,8 +109,8 @@ fn buildable_cell(seed: u64) -> (u16, u16) {
                 if dx.abs() != r && dz.abs() != r {
                     continue;
                 }
-                let cx = (512 + dx).clamp(0, 1023) as u16;
-                let cz = (512 + dz).clamp(0, 1023) as u16;
+                let cx = (512 + dx).clamp(0, 2047) as u16;
+                let cz = (512 + dz).clamp(0, 2047) as u16;
                 let (x, z) = cell_center(cx, cz);
                 if foundation_terrain_ok(seed, hv(seed), x, z) {
                     return (cx, cz);

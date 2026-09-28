@@ -52,8 +52,8 @@ fn hv(seed: u64) -> &'static terrain::Haven {
 }
 
 const SEED: u64 = 20260731;
-const CX: u16 = 341;
-const CZ: u16 = 341;
+const CX: u16 = 682;
+const CZ: u16 = 682;
 
 /// The cell centre, world XZ.
 fn centre(cx: u16, cz: u16) -> (f32, f32) {

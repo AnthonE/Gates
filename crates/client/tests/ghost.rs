@@ -487,8 +487,8 @@ fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
 /// `deploy.rs`'s own fixture seed and cells — buildable ground, proven by
 /// the sim's own tests on the same numbers.
 const SEED: u64 = 20260731;
-const CX: u16 = 341;
-const CZ: u16 = 341;
+const CX: u16 = 682;
+const CZ: u16 = 682;
 
 /// Fixture rows of `DeployContent::probe_fixture`, named.
 const ROW_HEARTH: u16 = 0; // foundation class

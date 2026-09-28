@@ -81,8 +81,8 @@ const DENSITY_SEEDS: [u64; 8] = [0, 1, 7, 42, 12345, 20_260_731, 20_260_804, 0xD
 /// the measured maximum, so it still reddens on a row change that moves
 /// density (proven — halving the Forest tree row reads 9,824 on seed 0) and
 /// no longer sits 1.9% off an island the repo already generates.
-const LIVE_SLOTS_MIN: u32 = 11_400;
-const LIVE_SLOTS_MAX: u32 = 16_500;
+const LIVE_SLOTS_MIN: u32 = 34_000;
+const LIVE_SLOTS_MAX: u32 = 60_000;
 
 /// Window half-width in cells. 5x5 cells is 40 m, which is the range
 /// `TERRAIN.md` §1 stage 6 is talking about when it asks forest for "cover,
@@ -123,7 +123,16 @@ fn build(seed: u64) -> Field {
     for cz in 0..CELLS_PER_SIDE {
         for cx in 0..CELLS_PER_SIDE {
             let slot = terrain::scatter(seed, &table, &haven, cx, cz);
-            f.counts[slot.occupant as usize] += 1;
+            // A landmark's crates are its own (`landmark.rs`), not the
+            // field's and not a site's: counted by neither tier below.
+            let landmark = sim_core::landmark::at(&haven.marks, slot.x, slot.z, 1.0).is_some()
+                && matches!(
+                    slot.occupant,
+                    Occupant::CrateSlot | Occupant::CacheSlot | Occupant::BarrelSlot
+                );
+            if !landmark {
+                f.counts[slot.occupant as usize] += 1;
+            }
             let i = (cz * CELLS_PER_SIDE + cx) as usize;
             f.tree[i] = slot.occupant == Occupant::Tree;
             let x = cx as f32 * CELL_SIZE + CELL_SIZE * 0.5;

@@ -106,8 +106,8 @@ fn buildable_cell(seed: u64) -> (u16, u16) {
                 if dx.abs() != r && dz.abs() != r {
                     continue;
                 }
-                let cx = (512 + dx).clamp(0, 1023) as u16;
-                let cz = (512 + dz).clamp(0, 1023) as u16;
+                let cx = (512 + dx).clamp(0, 2047) as u16;
+                let cz = (512 + dz).clamp(0, 2047) as u16;
                 let (x, z) = cell_center(cx, cz);
                 if foundation_terrain_ok(seed, hv(seed), x, z) {
                     return (cx, cz);
@@ -723,7 +723,7 @@ fn the_same_commands_land_on_the_same_box_state() {
 #[test]
 fn the_box_address_is_injective_over_every_legal_cell() {
     fn unpack(k: u32) -> (u16, u16, u8) {
-        ((k >> 16) as u16, ((k >> 4) & 0x3FF) as u16, (k & 0xF) as u8)
+        ((k >> 16) as u16, ((k >> 4) & 0xFFF) as u16, (k & 0xF) as u8)
     }
     for cx in 0..MAX_BUILD_COORD as u16 {
         for cz in 0..MAX_BUILD_COORD as u16 {

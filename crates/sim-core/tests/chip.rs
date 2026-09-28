@@ -118,8 +118,8 @@ fn buildable_cell(seed: u64) -> (u16, u16) {
                 if dx.abs() != r && dz.abs() != r {
                     continue;
                 }
-                let cx = (170 + dx).clamp(0, 1023) as u16;
-                let cz = (170 + dz).clamp(0, 1023) as u16;
+                let cx = (720 + dx).clamp(0, 2047) as u16;
+                let cz = (720 + dz).clamp(0, 2047) as u16;
                 if cx == cz {
                     continue;
                 }

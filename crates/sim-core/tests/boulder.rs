@@ -32,7 +32,7 @@ fn the_island_has_rocks_and_some_of_them_are_huge() {
         );
         for dome in &d {
             assert!(
-                dome.h > 1.0 && dome.r >= 1.0,
+                dome.h > 0.5 && dome.r >= boulder::DOME_R_FLOOR,
                 "seed {seed:#x}: a dome too small to be one: {dome:?}"
             );
         }
@@ -72,16 +72,35 @@ fn a_flank_stops_a_body_and_a_crown_holds_one() {
         .max_by(|a, b| a.h.total_cmp(&b.h))
         .expect("a big rock on the shipped seed");
     let mut occ = scratch.occupants();
-    // At the foot of its flank, a body standing on the ground is stopped.
-    let (fx, fz) = (d.x + d.r * 0.9, d.z);
-    let feet = terrain::ground(seed, &haven, fx, fz);
+    // At the foot of its flank, where the rock stands clear of the ground
+    // (its uphill side is buried by design), a body on the ground is stopped.
+    let (fx, fz, feet) = (0..16u16)
+        .map(|k| {
+            let (s, c) = sim_core::yaw_dir(k << 12);
+            let (x, z) = (d.x + s * d.r * 0.8, d.z + c * d.r * 0.8);
+            (x, z, terrain::ground(seed, &haven, x, z))
+        })
+        .max_by(|a, b| {
+            let top = |p: &(f32, f32, f32)| {
+                boulder::surface(&d, p.0, p.1, 0.0).map_or(0.0, |s| s.0) - p.2
+            };
+            top(a).total_cmp(&top(b))
+        })
+        .unwrap();
     assert!(
         occ.blocks(seed, fx, fz, feet),
         "a body at the foot of a {:.1} m rock walked into it",
         d.h
     );
     // Well clear of it, nothing stops the same body.
-    let (ox, oz) = (d.x + d.r + 3.0, d.z);
+    // (A bearing clear of the formation's other rocks.)
+    let (ox, oz) = (0..16u16)
+        .map(|k| {
+            let (s, c) = sim_core::yaw_dir(k << 12);
+            (d.x + s * (d.r + 3.0), d.z + c * (d.r + 3.0))
+        })
+        .find(|&(x, z)| !boulder::covers(seed, &haven, x, z, 1.0))
+        .expect("somewhere around a rock is clear of rock");
     let feet = terrain::ground(seed, &haven, ox, oz);
     assert!(
         !occ.blocks(seed, ox, oz, feet),

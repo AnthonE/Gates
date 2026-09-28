@@ -26,8 +26,8 @@ use sim_core::terrain;
 use sim_core::world::{EventQueue, Player};
 
 const SEED: u64 = 20260731;
-const CX: u16 = 341;
-const CZ: u16 = 341;
+const CX: u16 = 682;
+const CZ: u16 = 682;
 
 fn hv() -> &'static terrain::Haven {
     use std::sync::OnceLock;

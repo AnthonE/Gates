@@ -136,7 +136,7 @@ fn the_photograph_keeps_its_scale_and_continues_across_treads() {
 fn treads_follow_collision_and_join_both_landings_at_every_plate() {
     let seed = 20260731;
     let haven = terrain::haven(seed);
-    let (cx, cz) = (341, 341);
+    let (cx, cz) = (682, 682);
     let part = shape_parts(SHAPE_STAIRS).0[0];
     let mesh = part_mesh(&part);
     let rise = LEVEL_H_M / STAIR_RISERS as f32;
@@ -185,7 +185,7 @@ fn floor_frame_mesh_and_collision_share_the_opening_and_walk_surface() {
     use sim_core::collide::NO_SURFACE;
     let seed = 20260731;
     let haven = terrain::haven(seed);
-    let (cx, cz) = (341, 341);
+    let (cx, cz) = (682, 682);
     let (parts, n) = shape_parts(SHAPE_FLOOR_FRAME);
     let mesh = parts_mesh(&parts[..n]);
     for plate in [-3, 0, 3] {

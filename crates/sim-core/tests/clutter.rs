@@ -1116,7 +1116,7 @@ fn waterline_tiles(seed: u64) -> Vec<(i32, i32)> {
                 tz as f32 * CLUTTER_TILE_M + CLUTTER_TILE_M * 0.5,
             );
             let d = ((mx - c) * (mx - c) + (mz - c) * (mz - c)).sqrt();
-            if !(600.0..=1050.0).contains(&d) {
+            if !(1200.0..=2040.0).contains(&d) {
                 continue;
             }
             let (mut land, mut sea) = (false, false);

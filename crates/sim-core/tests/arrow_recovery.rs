@@ -257,7 +257,7 @@ fn an_arrow_that_drew_blood_waits_out_its_lodge() {
         body: Body {
             qx: (2048.0 / POS_XZ_Q) as i32,
             qy: ((ground + ARROW_EYE_MM as f32 / 1000.0 - 1.2) / POS_Y_Q) as i32,
-            qz: (1030.0 / POS_XZ_Q) as i32,
+            qz: (2054.0 / POS_XZ_Q) as i32,
             ..Body::default()
         },
         ..Player::default()

@@ -2690,11 +2690,11 @@ pub fn solve_ring(seed: u64) -> RingPath {
 /// bay rather than inside it (DECISIONS.md §open: bay slots v0).
 pub const BAY_SPAN_YAW: u16 = 2048;
 /// Per-mille of sheltered (bay) shoulder cells that become barrel slots.
-pub const ROAD_BAY_BARREL_PERMILLE: u16 = 430;
+pub const ROAD_BAY_BARREL_PERMILLE: u16 = 320;
 /// Per-mille on the open coast — headlands and straight shore. Set with the
 /// above so the measured island-wide shoulder mean stays on
 /// ROAD_BARREL_PERMILLE (DECISIONS.md §open: bay slots v0).
-pub const ROAD_OPEN_BARREL_PERMILLE: u16 = 170;
+pub const ROAD_OPEN_BARREL_PERMILLE: u16 = 150;
 
 const _: () = {
     // The bay is the denser end or the whole thing is decoration, and the
@@ -6020,7 +6020,7 @@ const _: () = {
 /// **(knob)** The four probe islands' mean with the ranges in (657 and 473
 /// over four), rounded; 4:3 is the Highland row's own ratio, so one scale
 /// would nearly serve both and two keep sulfur exact.
-pub const ORE_TARGET: [f32; 2] = [640.0, 480.0];
+pub const ORE_TARGET: [f32; 2] = [560.0, 400.0];
 
 /// The scale's bounds, per mille. The ceiling is the saturation rail: the
 /// Highland row with its ore at the ceiling, times the grove field's peak,

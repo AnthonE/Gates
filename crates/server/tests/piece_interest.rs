@@ -55,8 +55,8 @@ fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
 
 const SEED: u64 = 20_260_731;
 const SPAWN: (f32, f32) = (2048.0, 2048.0);
-const CX: u16 = 341;
-const CZ: u16 = 341;
+const CX: u16 = 682;
+const CZ: u16 = 682;
 
 fn id_of(slot: usize) -> u32 {
     (1 << 8) | slot as u32

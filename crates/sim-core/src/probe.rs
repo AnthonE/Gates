@@ -398,7 +398,7 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                 let b = &world.players[0].body;
                 let cx = crate::build::build_cell_of(b.qx as f32 * crate::movement::POS_XZ_Q);
                 let cz = crate::build::build_cell_of(b.qz as f32 * crate::movement::POS_XZ_Q);
-                (cx.clamp(0, 1023) as u16, cz.clamp(0, 1023) as u16)
+                (cx.clamp(0, 2047) as u16, cz.clamp(0, 2047) as u16)
             };
             // t ≡ 11 (mod 16) on every place tick, so cycle on t/16.
             let place = Command::Place {
@@ -432,7 +432,7 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                 let b = &world.players[1].body;
                 let cx = crate::build::build_cell_of(b.qx as f32 * crate::movement::POS_XZ_Q);
                 let cz = crate::build::build_cell_of(b.qz as f32 * crate::movement::POS_XZ_Q);
-                (cx.clamp(0, 1023) as u16, cz.clamp(0, 1023) as u16)
+                (cx.clamp(0, 2047) as u16, cz.clamp(0, 2047) as u16)
             };
             let place_deploy = Command::PlaceDeploy {
                 id: 2,
@@ -801,7 +801,7 @@ pub extern "C" fn probe_bags(master_seed: u64, sequences: u32, ticks: u32) -> u6
             let (cx, cz) = {
                 let b = &world.players[placer].body;
                 let cell = |q: i32| {
-                    crate::build::build_cell_of(q as f32 * crate::movement::POS_XZ_Q).clamp(0, 1023)
+                    crate::build::build_cell_of(q as f32 * crate::movement::POS_XZ_Q).clamp(0, 2047)
                         as u16
                 };
                 (cell(b.qx), cell(b.qz))
@@ -1443,8 +1443,8 @@ pub struct HeadroomProbe {
 }
 
 const HEADROOM_SEED: u64 = 20260731;
-const HEADROOM_CX: u16 = 341;
-const HEADROOM_CZ: u16 = 341;
+const HEADROOM_CX: u16 = 682;
+const HEADROOM_CZ: u16 = 682;
 
 pub fn headroom_probe() -> HeadroomProbe {
     use crate::build::*;

@@ -65,8 +65,8 @@ fn hv(seed: u64) -> &'static terrain::Haven {
 
 /// The shipped island and `ghost.rs`' own buildable cell.
 const SEED: u64 = 20260731;
-const CX: u16 = 341;
-const CZ: u16 = 341;
+const CX: u16 = 682;
+const CZ: u16 = 682;
 
 /// The plates every sweep here runs over: flat on its own ground, mid-stilt,
 /// the stilt ceiling, and cut into the hill (build plate v1,

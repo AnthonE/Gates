@@ -1017,8 +1017,8 @@ fn the_barren_fixture_really_blocks_nothing() {
 // v0 (`tests/flank.rs`); only the shot walk had not.
 
 /// Where the floor fixtures start looking for a site to build on.
-const FCX: u16 = 341;
-const FCZ: u16 = 341;
+const FCX: u16 = 682;
+const FCZ: u16 = 682;
 
 /// The first run of `cells` columns from (`FCX`, `FCZ`) along +z that a base
 /// could actually sit flush on — every column within `PLATE_RISE_MAX_BANDS`

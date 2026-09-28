@@ -9,8 +9,8 @@ use sim_core::world::{EventQueue, Player, World, EV_DEPLOY_REFUSED};
 use sim_core::worldsave;
 
 const SEED: u64 = 20260731;
-const CX: u16 = 341;
-const CZ: u16 = 341;
+const CX: u16 = 682;
+const CZ: u16 = 682;
 fn haven() -> &'static terrain::Haven {
     static H: std::sync::OnceLock<terrain::Haven> = std::sync::OnceLock::new();
     H.get_or_init(|| terrain::haven(SEED))

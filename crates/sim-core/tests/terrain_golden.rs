@@ -185,7 +185,7 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// `terrain::ORE_TARGET`, and `probe_sites` now hashes `Haven::ore_pm`. No
 /// height moved; the golden seed's windows hold no rock-channel cell, which
 /// is why the budget had to be hashed rather than seen.
-const GOLDEN_TERRAIN_HASH: u64 = 0xCF57_44D9_7022_0322;
+const GOLDEN_TERRAIN_HASH: u64 = 0x3E6C_C74D_30F7_BF09;
 
 #[test]
 fn test_terrain_golden() {
@@ -443,8 +443,8 @@ fn test_terrain_shape_sanity() {
         }
     }
     assert!(
-        (13_000..=19_000).contains(&live),
-        "live slots {live} outside TERRAIN.md §6's 13–19k band (trees {trees}, ore {ore}, barrels {barrels})"
+        (39_000..=62_000).contains(&live),
+        "live slots {live} outside the 4,096 m island's 39–62k band (trees {trees}, ore {ore}, barrels {barrels})"
     );
     assert!(trees > 1_000, "island needs wood: {trees} trees");
     assert!(ore > 300, "island needs ore: {ore} nodes");

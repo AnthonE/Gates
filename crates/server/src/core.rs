@@ -4757,7 +4757,7 @@ mod tests {
         use sim_core::limits::MAX_EVENTS_PER_TICK;
 
         const BUILD_SEED: u64 = 20_260_731;
-        const CELL: u16 = 341;
+        const CELL: u16 = 682;
         let stats = ShardStats::default();
         let mut core = Box::new(ShardCore::new(BUILD_SEED));
         core.world.dev_spawn = Some((2048.0, 2048.0));

@@ -17,7 +17,7 @@ fn inserts_survive_late_definitions_and_rebuilds_then_unseal_on_removal() {
     ] {
         let mut c = ClientCore::new(20260731, 7, 0);
         let mut buf = [0; MAX_EVENT_MSG_BYTES];
-        let (cx, cz, level, loc) = (341, 341, 2, LOC_EDGE_XLO);
+        let (cx, cz, level, loc) = (682, 682, 2, LOC_EDGE_XLO);
         let sealed = |c: &ClientCore| c.pieces.cols().get(cx, cz).shut_xlo & (1 << level) != 0;
         let mut bc = BuildContent::probe_fixture();
         bc.pieces[3].shape = shape;

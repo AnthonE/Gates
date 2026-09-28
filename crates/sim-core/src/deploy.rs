@@ -3163,8 +3163,8 @@ mod tests {
         static HV: std::sync::OnceLock<crate::terrain::Haven> = std::sync::OnceLock::new();
         HV.get_or_init(|| crate::terrain::haven(SEED))
     }
-    const CX: u16 = 341;
-    const CZ: u16 = 341;
+    const CX: u16 = 682;
+    const CZ: u16 = 682;
 
     fn player_at_cell(cx: u16, cz: u16, items: &[(u16, u16)]) -> Player {
         let mut p = Player {

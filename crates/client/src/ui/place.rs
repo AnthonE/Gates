@@ -1818,7 +1818,7 @@ mod tests {
         use sim_core::deploy::{DeployDef, ARCH_DOOR};
         let seed = 20260731;
         let haven = sim_core::terrain::haven(seed);
-        let (cx, cz) = (341, 341);
+        let (cx, cz) = (682, 682);
         let (x, z) = cell_center(cx, cz);
         let mut defs = DeployContent::EMPTY;
         defs.def_count = 2;
@@ -1928,7 +1928,7 @@ mod tests {
         // here rather than shared, so the ghost is tested against the same
         // island `terrain::ground` would give the server.
         let haven = sim_core::terrain::haven(seed);
-        let (fx, fz) = (1024.5f32, 1024.5f32);
+        let (fx, fz) = (2047.5f32, 2047.5f32);
         let eye_y = sim_core::terrain::ground(seed, &haven, fx, fz) + 1.6;
 
         let feet = [fx, eye_y - 1.6, fz];

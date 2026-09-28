@@ -78,8 +78,8 @@ fn buildable_cell_near(seed: u64, cx0: u16, cz0: u16, skip: usize) -> (u16, u16)
                 if dx.abs() != r && dz.abs() != r {
                     continue;
                 }
-                let cx = (cx0 as i32 + dx).clamp(0, 1023) as u16;
-                let cz = (cz0 as i32 + dz).clamp(0, 1023) as u16;
+                let cx = (cx0 as i32 + dx).clamp(0, 2047) as u16;
+                let cz = (cz0 as i32 + dz).clamp(0, 2047) as u16;
                 let (x, z) = cell_center(cx, cz);
                 if foundation_terrain_ok(seed, hv(seed), x, z) {
                     if found == skip {
@@ -209,12 +209,12 @@ fn respawn_event(w: &World) -> Option<(u32, bool)> {
 #[test]
 fn a_death_wakes_you_on_your_own_bag() {
     let mut w = lone_world();
-    let (cx, cz) = buildable_cell_near(SEED, 341, 341, 0);
+    let (cx, cz) = buildable_cell_near(SEED, 682, 682, 0);
     place_bag(&mut w, cx, cz);
 
     // Walk away first: waking *where you happened to die* would pass a
     // weaker version of this test, so the body dies somewhere else.
-    let (fx, fz) = buildable_cell_near(SEED, 341, 341, 40);
+    let (fx, fz) = buildable_cell_near(SEED, 682, 682, 40);
     stand(&mut w, fx, fz);
     assert_ne!((fx, fz), (cx, cz), "the fixture must move the body");
 
@@ -266,7 +266,7 @@ fn no_bag_is_still_the_spawn_ring() {
 #[test]
 fn a_second_death_inside_the_cooldown_falls_back_to_the_ring() {
     let mut w = lone_world();
-    let (cx, cz) = buildable_cell_near(SEED, 341, 341, 0);
+    let (cx, cz) = buildable_cell_near(SEED, 682, 682, 0);
     place_bag(&mut w, cx, cz);
 
     assert_eq!(
@@ -297,8 +297,8 @@ fn a_second_death_inside_the_cooldown_falls_back_to_the_ring() {
 #[test]
 fn a_second_bag_answers_the_second_death() {
     let mut w = lone_world();
-    let (cx, cz) = buildable_cell_near(SEED, 341, 341, 0);
-    let (bx, bz) = buildable_cell_near(SEED, 341, 341, 1);
+    let (cx, cz) = buildable_cell_near(SEED, 682, 682, 0);
+    let (bx, bz) = buildable_cell_near(SEED, 682, 682, 1);
     assert_ne!((cx, cz), (bx, bz));
     place_bag(&mut w, cx, cz);
     place_bag(&mut w, bx, bz);
@@ -325,7 +325,7 @@ fn a_second_bag_answers_the_second_death() {
 #[test]
 fn the_bag_answers_again_once_its_cooldown_lapses() {
     let mut w = lone_world();
-    let (cx, cz) = buildable_cell_near(SEED, 341, 341, 0);
+    let (cx, cz) = buildable_cell_near(SEED, 682, 682, 0);
     place_bag(&mut w, cx, cz);
     assert_eq!(
         die_and_wake(&mut w, true),
@@ -352,7 +352,7 @@ fn the_bag_answers_again_once_its_cooldown_lapses() {
 #[test]
 fn the_cooldown_is_hashed_state() {
     let mut w = lone_world();
-    let (cx, cz) = buildable_cell_near(SEED, 341, 341, 0);
+    let (cx, cz) = buildable_cell_near(SEED, 682, 682, 0);
     place_bag(&mut w, cx, cz);
 
     // Spend the bag through the store's own verb and nothing else — no
@@ -385,9 +385,9 @@ fn the_cooldown_is_hashed_state() {
 #[test]
 fn a_death_leaves_the_body_where_it_fell_and_waiting() {
     let mut w = lone_world();
-    let (cx, cz) = buildable_cell_near(SEED, 341, 341, 0);
+    let (cx, cz) = buildable_cell_near(SEED, 682, 682, 0);
     place_bag(&mut w, cx, cz);
-    let (fx, fz) = buildable_cell_near(SEED, 341, 341, 40);
+    let (fx, fz) = buildable_cell_near(SEED, 682, 682, 40);
     stand(&mut w, fx, fz);
     let fell = (w.players[0].body.qx, w.players[0].body.qz);
 
@@ -423,7 +423,7 @@ fn a_death_leaves_the_body_where_it_fell_and_waiting() {
 #[test]
 fn the_beach_button_refuses_a_ready_bag() {
     let mut w = lone_world();
-    let (cx, cz) = buildable_cell_near(SEED, 341, 341, 0);
+    let (cx, cz) = buildable_cell_near(SEED, 682, 682, 0);
     place_bag(&mut w, cx, cz);
     stand(&mut w, cx, cz);
 
@@ -449,7 +449,7 @@ fn the_beach_button_refuses_a_ready_bag() {
 #[test]
 fn a_refused_bag_is_not_a_spent_bag() {
     let mut w = lone_world();
-    let (cx, cz) = buildable_cell_near(SEED, 341, 341, 0);
+    let (cx, cz) = buildable_cell_near(SEED, 682, 682, 0);
     place_bag(&mut w, cx, cz);
     stand(&mut w, cx, cz);
 
@@ -524,8 +524,8 @@ fn a_corpse_cannot_act() {
         Command::PlaceDeploy {
             id: 1,
             row: BAG_ROW,
-            cx: 341,
-            cz: 341,
+            cx: 682,
+            cz: 682,
             level: 0,
             loc: LOC_PLANE,
         },
@@ -552,7 +552,7 @@ fn a_corpse_cannot_act() {
 #[test]
 fn a_respawn_from_a_live_body_does_nothing() {
     let mut w = lone_world();
-    let (cx, cz) = buildable_cell_near(SEED, 341, 341, 0);
+    let (cx, cz) = buildable_cell_near(SEED, 682, 682, 0);
     place_bag(&mut w, cx, cz);
     stand(&mut w, cx, cz);
     let stood = (w.players[0].body.qx, w.players[0].body.qz);

@@ -24,8 +24,8 @@ fn circulation_mesh_tops_match_walk_surfaces_in_every_orientation() {
         let indices = mesh.indices().unwrap().iter().collect::<Vec<_>>();
         for loc in STAIR_LOCS {
             for level in [0, 8, 2] {
-                let root = base_transform(seed, &haven, (341, 341, level, loc), 0);
-                let base = column_floor_y(seed, &haven, 341, 341, 0) + level_y(level);
+                let root = base_transform(seed, &haven, (682, 682, level, loc), 0);
+                let base = column_floor_y(seed, &haven, 682, 682, 0) + level_y(level);
                 let mut tops = 0;
                 for tri in indices.chunks_exact(3) {
                     if normals[tri[0]][1] < 0.5 {
@@ -37,7 +37,7 @@ fn circulation_mesh_tops_match_walk_surfaces_in_every_orientation() {
                         / 3.0;
                     let world = (root * part.transform()).transform_point(local);
                     let expected =
-                        circulation::surface(shape, loc, world.x - 1023.0, world.z - 1023.0)
+                        circulation::surface(shape, loc, world.x - 2046.0, world.z - 2046.0)
                             .expect("drawn top outside the walk footprint");
                     assert!(
                         (world.y - base - expected).abs() <= LEVEL_H_M / 20.0,

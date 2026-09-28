@@ -34,8 +34,11 @@ pub const BOULDER_CELL_M: f32 = 64.0;
 pub const DOMES_PER_CELL: usize = 4;
 /// Widest a main dome's radius can be drawn, metres.
 pub const DOME_R_MAX: f32 = 13.0;
-/// Narrowest, metres. Smaller than this is the scatter's `Rock`.
+/// Narrowest a main dome is drawn, metres.
 pub const DOME_R_MIN: f32 = 3.2;
+/// Narrowest any dome is kept, satellites and beach rocks included, metres.
+/// Smaller than this is the scatter's own `Rock`.
+pub const DOME_R_FLOOR: f32 = 1.6;
 /// How far a formation's domes can reach from its cell's centre, metres:
 /// the main dome's centre is kept 12 m inside the cell (so at most the
 /// half-diagonal of a 40 m square off centre), and a satellite's far edge is
@@ -46,7 +49,7 @@ pub const FORMATION_REACH_M: f32 = (BOULDER_CELL_M * 0.5 - 12.0) * 1.4143 + DOME
 /// own radius, metres — the carriageway, its shoulder and the ring's blend.
 pub const ROAD_CLEAR_M: f32 = terrain::ROAD_SHOULDER_HALF_W + terrain::RING_BLEND_M + 3.0;
 /// Clearance beyond a site's blend radius, metres.
-pub const SITE_CLEAR_M: f32 = 6.0;
+pub const SITE_CLEAR_M: f32 = 20.0;
 
 const CH_BOULDER: u32 = 176;
 
@@ -245,6 +248,10 @@ pub fn formation(seed: u64, haven: &Haven, bcx: i32, bcz: i32) -> Formation {
         if beach {
             d.r *= 0.55;
             d.h *= 0.55;
+        }
+        // Smaller than this is the scatter's own `Rock`.
+        if d.r < DOME_R_FLOOR {
+            continue;
         }
         if !clear(haven, d.x, d.z, d.r) {
             // A satellite that would land on a road is dropped alone; a main

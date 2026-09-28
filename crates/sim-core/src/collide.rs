@@ -2439,13 +2439,13 @@ mod tests {
         // walks is not (occupy::Barren).
         let mut occ = crate::occupy::Scratch::barren();
         let bc = free_table();
-        let wall_x = CX as f32 * BUILD_CELL_M; // 1023: the low-x edge plane
+        let wall_x = CX as f32 * BUILD_CELL_M; // 2046: the low-x edge plane
 
         // A wall on the low-x edge stops a −x walk at the slab.
         let mut pieces = Pieces::new();
         put(&bc, &mut pieces, CX, CZ, 0, LOC_PLANE, 0);
         put(&bc, &mut pieces, CX, CZ, 0, crate::build::LOC_EDGE_XLO, 1);
-        let mut b = body_at(2048.5, 2048.5);
+        let mut b = body_at(2047.5, 2047.5);
         for _ in 0..120 {
             movement::step(
                 SEED,
@@ -2468,7 +2468,7 @@ mod tests {
         let mut pieces = Pieces::new();
         put(&bc, &mut pieces, CX, CZ, 0, LOC_PLANE, 0);
         put(&bc, &mut pieces, CX, CZ, 0, crate::build::LOC_EDGE_XLO, 2);
-        let mut b = body_at(2048.5, 2048.5);
+        let mut b = body_at(2047.5, 2047.5);
         for _ in 0..120 {
             movement::step(
                 SEED,
@@ -2486,7 +2486,7 @@ mod tests {
         );
 
         // Aimed at a post (z inside the low-z post span): blocked.
-        let mut b = body_at(2048.5, CZ as f32 * BUILD_CELL_M + 0.45);
+        let mut b = body_at(2047.5, CZ as f32 * BUILD_CELL_M + 0.45);
         for _ in 0..120 {
             movement::step(
                 SEED,
@@ -2512,7 +2512,7 @@ mod tests {
         put(&bc, &mut pieces, CX, CZ, 0, crate::build::LOC_EDGE_ZLO, 1);
         put(&bc, &mut pieces, CX, CZ, 1, LOC_PLANE, 3);
         put(&bc, &mut pieces, CX, CZ, 1, crate::build::LOC_EDGE_XLO, 1);
-        let mut b = body_at(2048.5, 2048.5);
+        let mut b = body_at(2047.5, 2047.5);
         for _ in 0..120 {
             movement::step(
                 SEED,
@@ -2541,7 +2541,7 @@ mod tests {
         let base = col_base_y(SEED, hv(), &ColIndex::new(), CX, CZ);
 
         // Standing in the cell snaps up onto the slab (lift ≤ step-up)…
-        let mut b = body_at(2048.5, 2048.5);
+        let mut b = body_at(2047.5, 2047.5);
         movement::step(
             SEED,
             hv(),
@@ -2575,7 +2575,7 @@ mod tests {
         );
 
         // Walking +x off the slab falls back to terrain.
-        let mut b = body_at(2048.5, 2048.5);
+        let mut b = body_at(2047.5, 2047.5);
         for _ in 0..240 {
             movement::step(
                 SEED,
@@ -2622,7 +2622,7 @@ mod tests {
         // The sim was right at every step; the fixture was standing in the
         // wrong place. A body that is on the storey it is about to climb from
         // is what this test has always meant to start with.
-        let mut b = body_at(2048.5, CZ as f32 * BUILD_CELL_M + 0.2);
+        let mut b = body_at(2047.5, CZ as f32 * BUILD_CELL_M + 0.2);
         b.qy = crate::movement::quant_y(base);
         let mut last_y = pos(&b).1;
         let mut top_y = last_y;
@@ -2674,7 +2674,7 @@ mod tests {
         let mut pieces = Pieces::new();
         put(&bc, &mut pieces, CX, CZ, 0, LOC_PLANE, 0);
         put(&bc, &mut pieces, CX, CZ, 0, crate::build::LOC_EDGE_XLO, 5);
-        let mut b = body_at(2048.5, 2048.5);
+        let mut b = body_at(2047.5, 2047.5);
         for _ in 0..120 {
             movement::step(
                 SEED,
@@ -2780,7 +2780,7 @@ mod tests {
         let mut framed = Pieces::new();
         put(&bc, &mut framed, CX, CZ, 0, LOC_PLANE, 0);
         put(&bc, &mut framed, CX, CZ, 0, crate::build::LOC_EDGE_XLO, 6);
-        let mut b = body_at(2048.5, 2048.5);
+        let mut b = body_at(2047.5, 2047.5);
         for _ in 0..120 {
             movement::step(
                 SEED,
@@ -3064,7 +3064,7 @@ mod tests {
         pieces.remove_at(wi, SHAPE_WALL);
         assert_eq!(pieces.cols().get(CX, CZ).walls_xlo, 0);
         assert_eq!(pieces.cols().get(CX, CZ).planes, 1, "the slab stays");
-        let mut b = body_at(2048.5, 2048.5);
+        let mut b = body_at(2047.5, 2047.5);
         for _ in 0..120 {
             movement::step(
                 SEED,

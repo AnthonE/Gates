@@ -46,6 +46,12 @@ use std::path::Path;
 ///   it), or it is a depiction at a scale the carve is invisible at.
 const RAW_READERS: &[(&str, &str, &str)] = &[
     (
+        "boulders.rs",
+        "dome_tris",
+        "cosmetic: whether a rock formation's crown is mossy reads the biome \
+         band it stands in, and never stands anything on the result.",
+    ),
+    (
         "landmark.rs",
         "try_site",
         "locator: a landmark is sited against the raw surface, off every road \
@@ -56,12 +62,6 @@ const RAW_READERS: &[(&str, &str, &str)] = &[
         "smooth_ring",
         "locator: `solve_ring`'s own corner-rounding pass, against the same raw \
          surface the solve reads, for `ring_probe`'s reason.",
-    ),
-    (
-        "terrain.rs",
-        "trail_clear",
-        "locator: a landmark trail's corridor test, run inside `haven` while \
-         the carve it would read is still being solved.",
     ),
     (
         "boulder.rs",
