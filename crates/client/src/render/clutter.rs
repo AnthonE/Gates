@@ -26,7 +26,6 @@ use sim_core::terrain::{
 };
 
 use super::props::{hash01, linear, Soup};
-use super::terrain_mesh::GROUND_ALBEDO;
 use super::{Eye, WorldId};
 
 /// Tiles either side of the player's own — a 5×5 ring, 40 m to an edge.
@@ -85,15 +84,16 @@ pub const FROND_H: f32 = 0.19;
 pub const FRONDS_PER_CLUMP: u32 = 3;
 
 /// How much brighter a standing litter stalk's tip is than its root.
-///
-/// The root colour is not authored here: it is `GROUND_ALBEDO[2]`, the island's
-/// own forest-litter identity, so a stalk is the same colour as the ground it
-/// grew out of and the two cannot drift. That seam was open — every other
-/// clutter colour in this file is a hex authored beside the ground rather than
-/// from it, and nothing measured the gap — and `ART.md` §3 has no litter row to
-/// author one against anyway (its "dirt path" sample pins that identity's hue
-/// and saturation, which `GROUND_ALBEDO` already carries).
 pub const FROND_TIP_GAIN: f32 = 1.45;
+
+/// A standing litter stalk's root colour, linear: dead bracken, sRGB
+/// (86, 66, 44).
+///
+/// **Authored, no longer the ground's own litter identity** (2026-09-28). A
+/// stalk the colour of grey forest gravel, lit from the side, read as a bed
+/// of pale spikes over the whole floor; standing dead matter is darker and
+/// warmer than the ground it stands in.
+pub const FROND_ROOT: [f32; 3] = [0.093, 0.0545, 0.0252];
 
 /// Authored colour per kind, sRGB.
 ///
@@ -577,7 +577,7 @@ fn litter(s: &mut Soup, at: Vec3, yaw: f32, scale: f32, seed: u32) {
         TWIG_C,
         seed,
     );
-    let root = GROUND_ALBEDO[2];
+    let root = FROND_ROOT;
     // The seed is offset so the stalks' yaws do not correlate with the corner
     // jitter of the stick they stand in — rule 7, at clump scale.
     stand(

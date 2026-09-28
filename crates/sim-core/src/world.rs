@@ -2112,6 +2112,13 @@ impl World {
     /// at most half a cell (4 m) from that center, and jitter moves a slot
     /// at most 3 m — so 16 − 4 − 3 = 9 m of unavoidable distance.
     fn scatter_clear(&self, x: f32, z: f32) -> bool {
+        // The rock formations and the landmarks are not scatter, and a beach
+        // boulder is exactly where a spawn ring lands.
+        if crate::boulder::covers(self.seed, &self.haven, x, z, SPAWN_CLEAR_M)
+            || crate::landmark::at(&self.haven.marks, x, z, SPAWN_CLEAR_M).is_some()
+        {
+            return false;
+        }
         let cx = floor_i32(x / terrain::CELL_SIZE);
         let cz = floor_i32(z / terrain::CELL_SIZE);
         let mut ox = -1i32;

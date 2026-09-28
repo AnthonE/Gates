@@ -35,6 +35,14 @@ pub const BUILDS_PER_FRAME: usize = 2;
 /// How far the drawn rock departs from the collision dome, as a share of its
 /// radius, either way.
 pub const ROCK_JAG: f32 = 0.07;
+/// The ground material's value multiplier (`UV_1.x`) on a boulder, at its
+/// crown. Granite at full value is the ground's brightest identity, and a
+/// lone dome of it in the sun read as a white lump — ore, not a boulder.
+/// Weathered rock is darker than a fresh cliff face, and darker again at its
+/// foot, where it meets the soil.
+pub const ROCK_VALUE: f32 = 0.6;
+/// The share of [`ROCK_VALUE`] a rock keeps at its foot.
+pub const ROCK_FOOT_VALUE: f32 = 0.7;
 
 #[derive(Resource, Default)]
 pub struct RockRing {
@@ -224,8 +232,9 @@ pub fn formation_mesh(seed: u64, f: &boulder::Formation) -> Mesh {
     let mut pos = Vec::new();
     let mut nrm = Vec::new();
     let mut col = Vec::new();
+    let mut val = Vec::new();
     for d in f.iter() {
-        dome_tris(seed, d, &mut pos, &mut nrm, &mut col);
+        dome_tris(seed, d, &mut pos, &mut nrm, &mut col, &mut val);
     }
     let n = pos.len();
     let uv: Vec<[f32; 2]> = pos
@@ -253,8 +262,8 @@ pub fn formation_mesh(seed: u64, f: &boulder::Formation) -> Mesh {
     .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
     .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, nrm)
     .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uv)
-    // The macro break-up at its mean, and dry.
-    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_1, vec![[1.0f32, 0.0]; n])
+    // The macro break-up as the rock's own value, and dry.
+    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_1, val)
     .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, tan)
     .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, col)
     .with_inserted_attribute(ATTRIBUTE_ROAD, vec![[0.0f32; 2]; n])
@@ -268,14 +277,12 @@ fn dome_tris(
     pos: &mut Vec<[f32; 3]>,
     nrm: &mut Vec<[f32; 3]>,
     col: &mut Vec<[f32; 4]>,
+    val: &mut Vec<[f32; 2]>,
 ) {
-    let sub = if d.r > 7.0 {
-        3
-    } else if d.r > 2.5 {
-        2
-    } else {
-        1
-    };
+    // Coarse on purpose: a big rock at four subdivisions was a smooth dome
+    // (an igloo, in the frame); at two its faces are metres across and read
+    // as fractured planes.
+    let sub = if d.r > 2.5 { 2 } else { 1 };
     let (v, f) = icosphere(sub);
     let s = (seed as u32) ^ ((d.shape as u32) << 8) ^ (d.yaw as u32).wrapping_mul(0x2545_F491);
     let yaw = Quat::from_rotation_y(d.yaw as f32 / 256.0 * std::f32::consts::TAU);
@@ -317,15 +324,21 @@ fn dome_tris(
             0.0
         };
         let w = [0.0, moss * 0.4, moss * 0.6, 1.0 - moss];
+        // Per face, a touch either way, so the facets read as fractures.
+        let face = 0.8 + 0.4 * h01(s ^ pos.len() as u32, 11);
         for p in [pa, pb, pc] {
             pos.push(p.to_array());
             nrm.push(n.to_array());
             col.push(w);
+            let up = ((p.y - d.y) / d.h.max(0.1)).clamp(0.0, 1.0);
+            let v = ROCK_VALUE * (ROCK_FOOT_VALUE + (1.0 - ROCK_FOOT_VALUE) * up) * face;
+            val.push([v, 0.0]);
         }
         // Keep the winding outward for the pipeline's back-face cull.
         if (pb - pa).cross(pc - pa).dot(n) < 0.0 {
             let k = pos.len();
             pos.swap(k - 2, k - 1);
+            val.swap(k - 2, k - 1);
         }
     }
 }

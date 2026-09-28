@@ -526,7 +526,7 @@ const TICKS: u64 = 900;
 /// digest folds is eight bytes (its skin joins it), craft jobs hash their
 /// skin and each player its owned set. No command in the script names a
 /// skin, so every one of those fields is zero.
-const GOLDEN_FINAL_HASH: u64 = 0xAEB1_1A86_AB5B_CF75;
+const GOLDEN_FINAL_HASH: u64 = 0x2DC4_523F_2338_DD47;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -616,7 +616,7 @@ const GOLDEN_FINAL_HASH: u64 = 0xAEB1_1A86_AB5B_CF75;
 /// **Moved `0x37FB_4909_FBC2_BD22` → `0xDA0B_802C_0E68_808E` at the heal-rate
 /// cap** (2026-09-25), with the final hash: stacked heals stretch the span
 /// instead of healing faster, so the script's heals land later.
-const GOLDEN_TRACE_HASH: u64 = 0x5A71_3ADE_D12A_32C9;
+const GOLDEN_TRACE_HASH: u64 = 0x2296_CBFB_E407_96AF;
 
 /// Fold a stamped trace into one number.
 ///

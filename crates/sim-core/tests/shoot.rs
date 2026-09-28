@@ -885,7 +885,18 @@ fn the_same_shot_flies_the_same_path_twice() {
         let cols = ColIndex::new();
         let mut sc = Scratch::with(seed, Pristine);
         let mut players = Box::new([Player::default(); MAX_PLAYERS]);
-        let (x, z) = (sc.haven.x + 300.0, sc.haven.z - 150.0);
+        // Off the pad, and clear of the rock formations (a shot from inside
+        // one stops on its first step).
+        let (x, z) = [
+            (300.0f32, -150.0f32),
+            (-300.0, -150.0),
+            (300.0, 150.0),
+            (-300.0, 150.0),
+        ]
+        .iter()
+        .map(|&(dx, dz)| (sc.haven.x + dx, sc.haven.z + dz))
+        .find(|&(x, z)| !sim_core::boulder::covers(seed, &sc.haven, x, z, 30.0))
+        .expect("a rock-free spot near the pad");
         let y = terrain::height(seed, x, z);
         players[0] = archer(1, x, y + 2.0, z, 0x2A00, 170, 5);
         let mut arrows = Arrows::new();

@@ -3,7 +3,7 @@
 //! **Why this is not a scatter occupant.** The scatter grid holds one
 //! occupant per 8 m cell and proves its 3×3 collision probe complete only
 //! because nothing reaches past `CELL_SIZE` (`terrain::OCCUPANT_PROBE_CELLS`).
-//! A rock a player reads as a landmark is 6–25 m across, so it lives on its
+//! A rock a player reads as a landmark is 6–32 m across, so it lives on its
 //! own coarse grid — one formation per 64 m cell at most — and answers its
 //! own collision query, the way `depot::blocks` answers for the depot yard.
 //! `reference/ROCKS.md` §9.2 is the plan this follows: formations first,
@@ -33,7 +33,7 @@ pub const BOULDER_CELL_M: f32 = 64.0;
 /// Domes one formation may hold: the main rock and its satellites.
 pub const DOMES_PER_CELL: usize = 4;
 /// Widest a main dome's radius can be drawn, metres.
-pub const DOME_R_MAX: f32 = 13.0;
+pub const DOME_R_MAX: f32 = 16.0;
 /// Narrowest a main dome is drawn, metres.
 pub const DOME_R_MIN: f32 = 3.2;
 /// Narrowest any dome is kept, satellites and beach rocks included, metres.
@@ -50,6 +50,11 @@ pub const FORMATION_REACH_M: f32 = (BOULDER_CELL_M * 0.5 - 12.0) * 1.4143 + DOME
 pub const ROAD_CLEAR_M: f32 = terrain::ROAD_SHOULDER_HALF_W + terrain::RING_BLEND_M + 3.0;
 /// Clearance beyond a site's blend radius, metres.
 pub const SITE_CLEAR_M: f32 = 20.0;
+/// How far a dome's base sits under the lowest ground in its footprint, as a
+/// share of its planned height.
+const SINK: f32 = 0.25;
+/// How far its crown stands over the highest, as a share of the same.
+const STAND: f32 = 0.7;
 
 const CH_BOULDER: u32 = 176;
 
@@ -125,7 +130,7 @@ fn plan(seed: u64, bcx: i32, bcz: i32) -> (f32, Formation) {
     let cz = z0 + 12.0 + unit(h, 32) * span;
     // Radius skewed small: most formations are house-sized, a few are hills.
     let t = unit(h, 48);
-    let r = DOME_R_MIN + (DOME_R_MAX - DOME_R_MIN) * t * t;
+    let r = DOME_R_MIN + (DOME_R_MAX - DOME_R_MIN) * t * t.sqrt();
     let h2 = cell_hash(seed, bcx, bcz, CH_BOULDER + 1);
     let tall = 0.5 + 0.45 * unit(h2, 0);
     f.domes[0] = Dome {
@@ -138,8 +143,13 @@ fn plan(seed: u64, bcx: i32, bcz: i32) -> (f32, Formation) {
         shape: (h2 >> 24) as u8,
     };
     f.n = 1;
-    // Satellites: 0–3, around the main rock at its own scale.
-    let sats = ((h2 >> 32) & 3) as usize;
+    // Satellites: 0–3, around the main rock at its own scale, and never
+    // fewer than two on a big one — a lone big dome read as an igloo, and
+    // a cluster leaning into it reads as a broken outcrop.
+    let mut sats = ((h2 >> 32) & 3) as usize;
+    if r > 9.0 {
+        sats = sats.max(2);
+    }
     let mut i = 0;
     while i < sats && (f.n as usize) < DOMES_PER_CELL {
         let hs = cell_hash(seed, bcx, bcz, CH_BOULDER + 2 + i as u32);
@@ -147,7 +157,8 @@ fn plan(seed: u64, bcx: i32, bcz: i32) -> (f32, Formation) {
         // offset, walked with the LUT so no trig runs in the sim.
         let (s, c) = crate::yaw_dir((hs & 0xFFFF) as u16);
         let rs = r * (0.28 + 0.3 * unit(hs, 16));
-        let dist = r * (0.75 + 0.6 * unit(hs, 32)) + rs * 0.4;
+        // Overlapping the main rock's flank, so the two read as one mass.
+        let dist = r * (0.55 + 0.55 * unit(hs, 32)) + rs * 0.3;
         f.domes[f.n as usize] = Dome {
             x: cx + s * dist,
             z: cz + c * dist,
@@ -261,21 +272,28 @@ pub fn formation(seed: u64, haven: &Haven, bcx: i32, bcz: i32) -> Formation {
             }
             continue;
         }
-        // Sit on the LOWEST ground under the dome's footprint, so the downhill
-        // side is never a lip over air, and sink a share of its own height.
-        let k = d.r * 0.7;
-        let mut lo = if i == 0 {
+        // Base sunk under the LOWEST ground in the footprint, so the downhill
+        // side is never a lip over air; crown `STAND` of the drawn height
+        // above the HIGHEST, so a rock on a slope still stands out of it —
+        // taller on its downhill face, the way a boulder breaks a hillside.
+        // Sat on the lowest alone, a big rock on a hill was a 3 m hump.
+        let k = d.r * 0.8;
+        let c = if i == 0 {
             h0
         } else {
             terrain::height_memo(&mut lat, seed, d.x, d.z)
         };
-        if lo < terrain::LAND_MIN_H {
+        if c < terrain::LAND_MIN_H {
             continue;
         }
+        let (mut lo, mut hi) = (c, c);
         for (ox, oz) in [(k, 0.0), (-k, 0.0), (0.0, k), (0.0, -k)] {
-            lo = lo.min(terrain::height_memo(&mut lat, seed, d.x + ox, d.z + oz));
+            let g = terrain::height_memo(&mut lat, seed, d.x + ox, d.z + oz);
+            lo = lo.min(g);
+            hi = hi.max(g);
         }
-        d.y = lo - d.h * 0.28;
+        d.y = lo - d.h * SINK;
+        d.h = hi + d.h * STAND - d.y;
         out.domes[out.n as usize] = *d;
         out.n += 1;
     }
