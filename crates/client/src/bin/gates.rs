@@ -69,6 +69,30 @@ fn main() -> AppExit {
     // typed the flag, with the shard's own sentence.
     let straight_in = capture.is_some() || a.spectate.is_some();
 
+    // `--film`: the tape is the world, loaded before the window for the
+    // capture run's reason — a broken shot list or a stale tape belongs on
+    // the terminal that typed the flag.
+    let film = a.film.as_deref().map(|path| {
+        let script = client::render::film::Script::load(path).unwrap_or_else(|e| {
+            eprintln!("gates: {e}");
+            std::process::exit(2);
+        });
+        let tape = std::fs::File::open(&script.recording)
+            .and_then(|f| client::film::read(&mut std::io::BufReader::new(f)))
+            .unwrap_or_else(|e| {
+                eprintln!("gates: {}: {e}", script.recording.display());
+                std::process::exit(2);
+            });
+        println!(
+            "gates: filming {} shot(s) from {} ({:.0} s of tape)",
+            script.shots.len(),
+            script.recording.display(),
+            tape.end_ms() / 1000.0
+        );
+        let (session, replay) = Session::replay(tape);
+        (script, session, replay)
+    });
+
     // The launcher handshake used to be here too, before the window, because
     // it is a blocking round trip over a local socket and must never happen
     // inside a frame. It still must not; it happens on a thread from the boot
@@ -108,6 +132,13 @@ fn main() -> AppExit {
             })
         })
     });
+    // A film's session is the tape's, built above; `--film` refuses every
+    // flag that would have connected one.
+    let (film, session) = match film {
+        Some((script, replayed, replay)) => (Some((script, replay)), Some(replayed)),
+        None => (None, session),
+    };
+    let straight_in = straight_in || film.is_some();
     if let Some(s) = &session {
         match &s.watching {
             Some(w) => println!("gates: {}", client::ui::spectate::label(w)),
@@ -135,14 +166,35 @@ fn main() -> AppExit {
             assets.file_path = repo.to_string_lossy().into_owned();
         }
     }
+    let mut window = WindowPlugin::default();
+    if let Some((script, _)) = &film {
+        // The frame is the film's, not the box's: exactly the shot list's
+        // size, and never resized by a window manager.
+        window.primary_window = Some(Window {
+            title: "gates — film".into(),
+            resolution: bevy::window::WindowResolution::new(script.width, script.height)
+                .with_scale_factor_override(1.0),
+            resizable: false,
+            ..default()
+        });
+    }
     // bevy_audio's rodio stream would open the device a second time and mix
     // nothing: the engine owns the device through cpal (`render/audio_out.rs`).
     app.add_plugins(
         DefaultPlugins
             .build()
             .disable::<bevy::audio::AudioPlugin>()
-            .set(assets),
+            .set(assets)
+            .set(window),
     );
+    if let Some((script, replay)) = film {
+        // One frame is 1/fps of screen time however long lavapipe took to
+        // draw it — the film's frame clock (`render::film`).
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_secs_f64(1.0 / script.fps as f64),
+        ));
+        app.insert_resource(client::render::film::Film::new(script, replay));
+    }
     app.insert_resource(Who(who));
     // The runtime outlives every session, which is why it is its own
     // resource now: on the menu path there is no session yet to hold it.
@@ -170,7 +222,7 @@ fn main() -> AppExit {
         chosen: straight_in || a.server_given,
         identity: a.identity.clone(),
         no_launcher: a.no_launcher,
-        no_hud: a.no_hud,
+        no_hud: a.no_hud || a.film.is_some(),
         pin_hour: a.pin_hour_pm.map(|pm| pm as f32 / 1000.0),
         pin_weather: a.pin_weather,
     };

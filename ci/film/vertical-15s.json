@@ -1,0 +1,110 @@
+{
+  "out": "film/ads/gates-15s-9x16.mp4",
+  "size": [
+    1080,
+    1920
+  ],
+  "fps": 30,
+  "shots": "film/shots/tall",
+  "bank": "film/bank",
+  "fade": 0.4,
+  "loudness": -14,
+  "clips": [
+    {
+      "shot": "opener",
+      "in": 0.0,
+      "len": 4.5,
+      "game": 2.0,
+      "grade": "curves=master='0/0.02 0.25/0.24 0.5/0.53 0.75/0.80 1/1',eq=saturation=1.28,colorbalance=rh=0.04:bh=-0.03:rm=0.015:bm=-0.015"
+    },
+    {
+      "shot": "timelapse",
+      "in": 0.3,
+      "len": 3.9,
+      "game": 0.0,
+      "fade": 0.4,
+      "grade": "curves=master='0/0.02 0.25/0.24 0.5/0.53 0.75/0.80 1/1',eq=saturation=1.28,colorbalance=rh=0.04:bh=-0.03:rm=0.015:bm=-0.015"
+    },
+    {
+      "shot": "raid",
+      "in": 2.57,
+      "len": 3.33,
+      "game": 1.0,
+      "fade": 0,
+      "grade": "curves=master='0/0.02 0.25/0.24 0.5/0.53 0.75/0.80 1/1',eq=saturation=1.28,colorbalance=rh=0.04:bh=-0.03:rm=0.015:bm=-0.015"
+    },
+    {
+      "shot": "silhouette",
+      "in": 0.5,
+      "len": 1.67,
+      "game": 1.6,
+      "fade": 0,
+      "grade": "curves=master='0/0.02 0.25/0.24 0.5/0.53 0.75/0.80 1/1',eq=saturation=1.28,colorbalance=rh=0.04:bh=-0.03:rm=0.015:bm=-0.015"
+    }
+  ],
+  "captions": [
+    {
+      "at": 0.5,
+      "len": 3.4,
+      "text": "YOU WAKE ON A BEACH",
+      "sub": "with a rock and a torch",
+      "size": 0.075,
+      "y": 0.72
+    },
+    {
+      "at": 4.4,
+      "len": 3.4,
+      "text": "BUILD",
+      "size": 0.16,
+      "y": 0.5
+    },
+    {
+      "at": 8.1,
+      "len": 3.0,
+      "text": "RAID",
+      "size": 0.16,
+      "y": 0.3
+    },
+    {
+      "at": 11.4,
+      "len": 1.4,
+      "text": "SURVIVE",
+      "size": 0.14,
+      "y": 0.5
+    }
+  ],
+  "music": [
+    {
+      "src": "30_MusicOpenTense.wav",
+      "at": 0.0,
+      "gain": 0.85
+    },
+    {
+      "src": "37_MusicCloseCombat.wav",
+      "at": 8.0,
+      "gain": 0.85,
+      "cut": 7.0,
+      "fade_out": 1.5
+    }
+  ],
+  "card": {
+    "len": 2.5,
+    "fade": 0.5,
+    "shot": "silhouette",
+    "at": 2.0,
+    "title": "GATES",
+    "lines": [
+      "THE SURVIVAL GAME THAT RUNS IN YOUR BROWSER",
+      "PLAY NOW  \u00b7  ELOPROS.COM/GAMES/GATES"
+    ]
+  },
+  "poster": {
+    "out": "film/ads/gates-15s-9x16-poster.png",
+    "shot": "silhouette",
+    "at": 2.0,
+    "lines": [
+      "BUILD. RAID. SURVIVE.",
+      "PLAY IN YOUR BROWSER"
+    ]
+  }
+}
