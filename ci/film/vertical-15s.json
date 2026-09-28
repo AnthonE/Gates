@@ -20,15 +20,15 @@
     {
       "shot": "timelapse",
       "in": 0.3,
-      "len": 3.9,
+      "len": 3.2,
       "game": 0.0,
       "fade": 0.4,
       "grade": "curves=master='0/0.02 0.25/0.24 0.5/0.53 0.75/0.80 1/1',eq=saturation=1.28,colorbalance=rh=0.04:bh=-0.03:rm=0.015:bm=-0.015"
     },
     {
       "shot": "raid",
-      "in": 2.57,
-      "len": 3.33,
+      "in": 3.2,
+      "len": 2.8,
       "game": 1.0,
       "fade": 0,
       "grade": "curves=master='0/0.02 0.25/0.24 0.5/0.53 0.75/0.80 1/1',eq=saturation=1.28,colorbalance=rh=0.04:bh=-0.03:rm=0.015:bm=-0.015"
@@ -36,9 +36,9 @@
     {
       "shot": "silhouette",
       "in": 0.5,
-      "len": 1.67,
+      "len": 2.6,
       "game": 1.6,
-      "fade": 0,
+      "fade": 0.3,
       "grade": "curves=master='0/0.02 0.25/0.24 0.5/0.53 0.75/0.80 1/1',eq=saturation=1.28,colorbalance=rh=0.04:bh=-0.03:rm=0.015:bm=-0.015"
     }
   ],
@@ -53,21 +53,21 @@
     },
     {
       "at": 4.4,
-      "len": 3.4,
+      "len": 2.8,
       "text": "BUILD",
       "size": 0.16,
       "y": 0.5
     },
     {
-      "at": 8.1,
-      "len": 3.0,
+      "at": 7.4,
+      "len": 2.5,
       "text": "RAID",
       "size": 0.16,
-      "y": 0.3
+      "y": 0.22
     },
     {
-      "at": 11.4,
-      "len": 1.4,
+      "at": 10.0,
+      "len": 2.2,
       "text": "SURVIVE",
       "size": 0.14,
       "y": 0.5
@@ -88,7 +88,7 @@
     }
   ],
   "card": {
-    "len": 2.5,
+    "len": 3.1,
     "fade": 0.5,
     "shot": "silhouette",
     "at": 2.0,

@@ -1065,6 +1065,21 @@ impl Plugin for GatesRenderPlugin {
                 // on an emitter that outlives every swap. Both read the same
                 // pure row lookup, so neither has to run first.
                 viewmodel::hand_light.after(viewmodel::spawn_item),
+                // The weak-spot cross, off the core's latched mark and the
+                // frame's sector answer — after the resolver that writes
+                // `InWeak`, so the cross brightens on the frame the prompt
+                // gains its suffix and not the one after.
+                decal::weak_spot.after(verbs::resolve),
+            )
+                .run_if(world_running)
+                .run_if(move || !plate),
+        )
+        // What a blow, a shot and a blast leave in the world. Off a plate
+        // like the HUD above, but ON for a film, which has no HUD and is
+        // mostly here to show exactly these.
+        .add_systems(
+            Update,
+            (
                 // The tracer's two halves. `launch` reads the drained feed,
                 // so it must follow the drain for the swing's reason —
                 // the other order reacts a frame late. `fly` then advances
@@ -1077,11 +1092,6 @@ impl Plugin for GatesRenderPlugin {
                 // everything and rewrites the one mark mesh if it moved.
                 decal::mark.after(impact::contacts).after(fx::gun::shots),
                 decal::fade.after(decal::mark),
-                // The weak-spot cross, off the core's latched mark and the
-                // frame's sector answer — after the resolver that writes
-                // `InWeak`, so the cross brightens on the frame the prompt
-                // gains its suffix and not the one after.
-                decal::weak_spot.after(verbs::resolve),
                 // The impact burst, in three halves now. `contacts` reads
                 // the drained feed AND the frame's swing pick, so it follows
                 // both — a burst resolved against last frame's pick is a
@@ -1101,7 +1111,7 @@ impl Plugin for GatesRenderPlugin {
                 fx::flash.after(impact::strike),
             )
                 .run_if(world_running)
-                .run_if(move || !plate),
+                .run_if(move || !plate || filming),
         )
         // The world's own effects: pieces going up and coming down (off the
         // drained feed, before the mark mesh is rewritten), and fires.
@@ -1112,7 +1122,7 @@ impl Plugin for GatesRenderPlugin {
                 fx::world::fires,
             )
                 .run_if(world_running)
-                .run_if(move || !plate),
+                .run_if(move || !plate || filming),
         )
         // The particles draw after the camera's transform is final for the
         // frame: a billboard faces the camera this frame renders.
@@ -1121,7 +1131,7 @@ impl Plugin for GatesRenderPlugin {
             fx::draw
                 .after(bevy::transform::TransformSystems::Propagate)
                 .run_if(world_running)
-                .run_if(move || !plate),
+                .run_if(move || !plate || filming),
         )
         // The rig. `build` runs until the glTF is in and then costs one
         // branch; `bind` catches every `AnimationPlayer` the scene spawner

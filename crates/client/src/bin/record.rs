@@ -188,8 +188,16 @@ fn scan(path: &str, every: f64) {
                 r.level
             );
         }
+        while let Some(im) = core.pop_impact() {
+            if im.kind == sim_core::ranged::IMPACT_BLAST {
+                let (x, z) = (
+                    im.qx as f32 * sim_core::movement::POS_XZ_Q,
+                    im.qz as f32 * sim_core::movement::POS_XZ_Q,
+                );
+                println!("{t:7.1}  BLAST at {x:.0},{z:.0}");
+            }
+        }
         // The rest of the rings, emptied so they never back up.
-        while core.pop_impact().is_some() {}
         while core.pop_placed().is_some() {}
         while core.pop_death().is_some() {}
         if t >= next_report {

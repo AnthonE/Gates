@@ -1,14 +1,87 @@
 {
   "recording": "film/take2.rec",
   "out": "film/shots/tall",
-  "width": 1080, "height": 1920, "fps": 30, "fov": 68,
+  "width": 1080,
+  "height": 1920,
+  "fps": 30,
+  "fov": 68,
   "shots": [
-    {"name": "timelapse", "at": 13, "len": 4.5, "speed": 11, "hour": [0.60, 0.73], "weather": "clear",
-     "orbit": {"center": [1662, 1.5, 1588], "radius": 30, "height": 18, "from": 20, "to": 50}},
-    {"name": "silhouette", "at": 250, "len": 4.0, "hour": 0.855, "weather": "clear", "fov": 72,
-     "keys": [{"t": 0, "pos": [1625, 25, 1555], "look": [1760, -10, 1690]},
-              {"t": 4, "pos": [1629, 24.5, 1559], "look": [1764, -10, 1694]}]},
-    {"name": "raid", "at": 306.5, "len": 6.0, "hour": 0.8, "weather": "clear",
-     "orbit": {"center": [1650, 1.5, 1592], "radius": 22, "height": 10, "from": 40, "to": 47}}
+    {
+      "name": "timelapse",
+      "at": 13,
+      "len": 4.5,
+      "speed": 11,
+      "hour": [
+        0.6,
+        0.73
+      ],
+      "weather": "clear",
+      "orbit": {
+        "center": [
+          1662,
+          1.5,
+          1588
+        ],
+        "radius": 30,
+        "height": 18,
+        "from": 20,
+        "to": 50
+      }
+    },
+    {
+      "name": "silhouette",
+      "at": 250,
+      "len": 4.0,
+      "hour": 0.855,
+      "weather": "clear",
+      "fov": 72,
+      "keys": [
+        {
+          "t": 0,
+          "pos": [
+            1625,
+            25,
+            1555
+          ],
+          "look": [
+            1760,
+            -10,
+            1690
+          ]
+        },
+        {
+          "t": 4,
+          "pos": [
+            1629,
+            24.5,
+            1559
+          ],
+          "look": [
+            1764,
+            -10,
+            1694
+          ]
+        }
+      ]
+    },
+    {
+      "name": "raid",
+      "at": 306.5,
+      "len": 6.0,
+      "hour": 0.8,
+      "weather": "clear",
+      "orbit": {
+        "center": [
+          1650,
+          0.5,
+          1592
+        ],
+        "radius": 11,
+        "height": 8.5,
+        "from": 50,
+        "to": 58
+      },
+      "fov": 58
+    }
   ]
 }

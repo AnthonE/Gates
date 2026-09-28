@@ -28,33 +28,33 @@
     {
       "shot": "timelapse",
       "in": 0.5,
-      "len": 4.0,
+      "len": 3.5,
       "game": 0.0,
+      "fade": 0,
+      "grade": "curves=master='0/0.02 0.25/0.24 0.5/0.53 0.75/0.80 1/1',eq=saturation=1.28,colorbalance=rh=0.04:bh=-0.03:rm=0.015:bm=-0.015"
+    },
+    {
+      "shot": "scatter",
+      "in": 0.5,
+      "len": 2.5,
+      "game": 1.2,
+      "fade": 0,
+      "grade": "curves=master='0/0.02 0.25/0.24 0.5/0.53 0.75/0.80 1/1',eq=saturation=1.28,colorbalance=rh=0.04:bh=-0.03:rm=0.015:bm=-0.015"
+    },
+    {
+      "shot": "raid",
+      "in": 2.9,
+      "len": 5.1,
+      "game": 1.0,
       "fade": 0,
       "grade": "curves=master='0/0.02 0.25/0.24 0.5/0.53 0.75/0.80 1/1',eq=saturation=1.28,colorbalance=rh=0.04:bh=-0.03:rm=0.015:bm=-0.015"
     },
     {
       "shot": "walker",
       "in": 1.0,
-      "len": 2.67,
+      "len": 3.4,
       "game": 1.6,
-      "fade": 0,
-      "grade": "curves=master='0/0.02 0.25/0.24 0.5/0.53 0.75/0.80 1/1',eq=saturation=1.28,colorbalance=rh=0.04:bh=-0.03:rm=0.015:bm=-0.015"
-    },
-    {
-      "shot": "scatter",
-      "in": 4.07,
-      "len": 2.66,
-      "game": 1.0,
-      "fade": 0,
-      "grade": "curves=master='0/0.02 0.25/0.24 0.5/0.53 0.75/0.80 1/1',eq=saturation=1.28,colorbalance=rh=0.04:bh=-0.03:rm=0.015:bm=-0.015"
-    },
-    {
-      "shot": "raid",
-      "in": 2.23,
-      "len": 5.77,
-      "game": 1.0,
-      "fade": 0,
+      "fade": 0.4,
       "grade": "curves=master='0/0.02 0.25/0.24 0.5/0.53 0.75/0.80 1/1',eq=saturation=1.28,colorbalance=rh=0.04:bh=-0.03:rm=0.015:bm=-0.015"
     }
   ],
@@ -76,28 +76,28 @@
     },
     {
       "at": 8.15,
-      "len": 3.7,
+      "len": 3.15,
       "text": "BUILD",
       "size": 0.14,
       "y": 0.5
     },
     {
-      "at": 12.1,
-      "len": 2.5,
+      "at": 11.6,
+      "len": 2.3,
       "text": "TRUST NO ONE",
-      "size": 0.08,
-      "y": 0.8
+      "size": 0.09,
+      "y": 0.5
     },
     {
-      "at": 16.1,
-      "len": 3.6,
+      "at": 14.1,
+      "len": 1.8,
       "text": "RAID",
       "size": 0.14,
       "y": 0.5
     },
     {
-      "at": 20.3,
-      "len": 2.3,
+      "at": 18.9,
+      "len": 2.4,
       "text": "SURVIVE",
       "size": 0.14,
       "y": 0.5
@@ -130,12 +130,12 @@
   "sfx": [
     {
       "src": "46_Thunder.wav",
-      "at": 22.7,
+      "at": 21.7,
       "gain": 0.6
     }
   ],
   "card": {
-    "len": 7.5,
+    "len": 8.5,
     "fade": 0.6,
     "shot": "silhouette",
     "at": 3.0,
