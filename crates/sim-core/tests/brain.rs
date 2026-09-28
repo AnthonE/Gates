@@ -299,14 +299,20 @@ fn a_gunshot_sends_a_pig_running_and_brings_a_wolf_to_look() {
         w0.mobs.m[pig].home_qx as f32 * POS_XZ_Q,
         w0.mobs.m[pig].home_qz as f32 * POS_XZ_Q,
     );
-    let inland = |r: f32| -> (f32, f32) {
+    // …and nothing a body is stopped by on the way (a rock, a landmark
+    // wall): an animal that walks into one is stuck, which is a different
+    // test again.
+    let mut scratch = sim_core::occupy::Scratch::live(SEED);
+    let mut occ = scratch.occupants();
+    let mut inland = |r: f32| -> (f32, f32) {
         (0..16u16)
             .map(|k| sim_core::yaw_dir(k << 12))
             .find(|&(dx, dz)| {
-                (1..=10).all(|i| {
-                    let t = r * i as f32 / 10.0;
-                    let (x, z) = (home.0 + dx * t, home.1 + dz * t);
+                (1..=r as u32).all(|i| {
+                    let (x, z) = (home.0 + dx * i as f32, home.1 + dz * i as f32);
+                    let feet = sim_core::terrain::ground(SEED, &w0.haven, x, z);
                     sim_core::terrain::height(SEED, x, z) > sim_core::terrain::BEACH_MAX_H
+                        && !occ.blocks(SEED, x, z, feet)
                 })
             })
             .map(|(dx, dz)| (dx * r, dz * r))
