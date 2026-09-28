@@ -99,31 +99,6 @@
         "to": 62
       },
       "fov": 38
-    },
-    {
-      "name": "walker",
-      "at": 332,
-      "len": 6.0,
-      "hour": 0.82,
-      "weather": "clear",
-      "fov": 35,
-      "orbit": {
-        "center": [
-          1652,
-          1.5,
-          1621
-        ],
-        "radius": 9,
-        "height": 2,
-        "from": 200,
-        "to": 232
-      },
-      "track": {
-        "near": [
-          1654,
-          1618
-        ]
-      }
     }
   ]
 }

@@ -105,8 +105,8 @@ def caption_png(path, W, H, cap):
     text_layer(W, H, lines).save(path)
 
 
-def card_png(path, W, H, card, bg_frame):
-    """The end card: a darkened, softened frame with the title and lines."""
+def card_bg(W, H, card, bg_frame):
+    """The card's backdrop: a frame covering the canvas, softened and dimmed."""
     bg = Image.open(bg_frame).convert("RGB")
     # Cover, not stretch: a 16:9 frame behind a 9:16 card is cropped to fit.
     k = max(W / bg.width, H / bg.height)
@@ -116,7 +116,11 @@ def card_png(path, W, H, card, bg_frame):
     if card.get("blur", True):
         bg = bg.filter(ImageFilter.GaussianBlur(H // 120))
     shade = Image.new("RGB", (W, H), (8, 8, 10))
-    bg = Image.blend(bg, shade, card.get("dim", 0.55))
+    return Image.blend(bg, shade, card.get("dim", 0.55))
+
+
+def card_text(W, H, card):
+    """The card's words: the title, then its lines, centred."""
     portrait = H > W
     unit = W if portrait else H
     title = int(unit * (0.22 if portrait else 0.20))
@@ -128,8 +132,13 @@ def card_png(path, W, H, card, bg_frame):
         colour = (255, 255, 255, 255) if i == 0 else (255, 196, 120, 255)
         lines.append((line, face, s, y, colour, s * 0.1))
         y += int(s * 1.55)
-    layer = text_layer(W, H, lines)
-    Image.alpha_composite(bg.convert("RGBA"), layer).convert("RGB").save(path)
+    return text_layer(W, H, lines)
+
+
+def card_png(path, W, H, card, bg_frame):
+    """The card as one still, for a poster."""
+    bg = card_bg(W, H, card, bg_frame).convert("RGBA")
+    Image.alpha_composite(bg, card_text(W, H, card)).convert("RGB").save(path)
 
 
 def cut(spec_path):
@@ -172,7 +181,7 @@ def cut(spec_path):
             chain += f",scale=w='iw*(1+{z}*t/{c['len']})':h=-2:eval=frame:flags=lanczos,crop={W}:{H}"
         if c.get("grade"):
             chain += "," + c["grade"]
-        vf.append(chain + f",format=yuv420p[c{k}]")
+        vf.append(chain + f",format=yuv420p,settb=1/{fps}[c{k}]")
         if prev is None:
             prev = f"c{k}"
             starts.append(0.0)
@@ -184,7 +193,9 @@ def cut(spec_path):
                 vf.append(f"[{prev}][c{k}]xfade=transition=fade:duration={f}:offset={off:.4f}[x{k}]")
             else:
                 off = t
-                vf.append(f"[{prev}][c{k}]concat=n=2:v=1:a=0[x{k}]")
+                # `concat` hands back the microsecond timebase, which the
+                # next `xfade` refuses to meet, so it is pinned back.
+                vf.append(f"[{prev}][c{k}]concat=n=2:v=1:a=0,settb=1/{fps}[x{k}]")
             starts.append(off)
             prev = f"x{k}"
             t = off + c["len"]
@@ -195,10 +206,18 @@ def cut(spec_path):
         frame = os.path.join(tmp, "card_bg.png")
         run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-ss", str(card.get("at", 1.0)),
              "-i", find_shot(shots, card["shot"], ".mp4"), "-frames:v", "1", frame])
-        png = os.path.join(tmp, "card.png")
-        card_png(png, W, H, card, frame)
-        i = add_input("-loop", "1", "-framerate", str(fps), "-t", str(card["len"]), "-i", png)
-        vf.append(f"[{i}:v]scale={W}:{H},setsar=1,format=yuv420p[card]")
+        bg_png, text_png = os.path.join(tmp, "card_bg.png"), os.path.join(tmp, "card_text.png")
+        card_bg(W, H, card, frame).save(bg_png)
+        card_text(W, H, card).save(text_png)
+        loop = ("-loop", "1", "-framerate", str(fps), "-t", str(card["len"]))
+        ib = add_input(*loop, "-i", bg_png)
+        it = add_input(*loop, "-i", text_png)
+        # The backdrop pushes in slowly under words that hold still, so a
+        # long card is still a moving picture.
+        z, ln = card.get("push", 0.06), card["len"]
+        vf.append(f"[{ib}:v]scale=w='{W}*(1+{z}*t/{ln})':h=-2:eval=frame:flags=lanczos,"
+                  f"crop={W}:{H},setsar=1[cardbg]")
+        vf.append(f"[cardbg][{it}:v]overlay=0:0:format=auto,format=yuv420p,settb=1/{fps}[card]")
         f = card.get("fade", 0.6)
         off = t - f
         vf.append(f"[{prev}][card]xfade=transition=fade:duration={f}:offset={off:.4f}[xc]")

@@ -50,11 +50,12 @@
       "grade": "curves=master='0/0.02 0.25/0.24 0.5/0.53 0.75/0.80 1/1',eq=saturation=1.28,colorbalance=rh=0.04:bh=-0.03:rm=0.015:bm=-0.015"
     },
     {
-      "shot": "walker",
-      "in": 1.0,
+      "shot": "silhouette",
+      "in": 1.6,
       "len": 3.4,
       "game": 1.6,
       "fade": 0.4,
+      "push": 0.08,
       "grade": "curves=master='0/0.02 0.25/0.24 0.5/0.53 0.75/0.80 1/1',eq=saturation=1.28,colorbalance=rh=0.04:bh=-0.03:rm=0.015:bm=-0.015"
     }
   ],
