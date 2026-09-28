@@ -47,9 +47,23 @@ use std::path::Path;
 const RAW_READERS: &[(&str, &str, &str)] = &[
     (
         "boulders.rs",
-        "dome_tris",
-        "cosmetic: whether a rock formation's crown is mossy reads the biome \
+        "formation_mesh",
+        "cosmetic: whether a rock formation's top is mossy reads the biome \
          band it stands in, and never stands anything on the result.",
+    ),
+    (
+        "boulders.rs",
+        "talus",
+        "cosmetic: loose stones round a rock's foot sit on the raw surface; \
+         rocks keep clear of every carve, so over their footprint the two are \
+         one surface, and nothing stands on a stone.",
+    ),
+    (
+        "boulder.rs",
+        "seat",
+        "locator: a rock block is seated against the raw surface under its \
+         footprint, which keeps clear of every road and site the carve \
+         touches, so there the two surfaces are the same one.",
     ),
     (
         "landmark.rs",

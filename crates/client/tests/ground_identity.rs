@@ -94,17 +94,21 @@ const BANDS: [Band; 4] = [
         hue: (38.0, 46.0),
         sat: (0.055, 0.145),
     },
-    // §3 "grass, lit — 59–70 luma, 63–74°, 29–33%", verbatim.
+    // §3 "grass, lit — 59–70 luma, 63–74°, 29–33%" was a khaki; the
+    // operator's 2026-09-28 reference frames put green turf under the grass,
+    // 77°, 50%, held here with §3's own widths.
     Band {
         name: "grass",
-        hue: (63.0, 74.0),
-        sat: (0.29, 0.33),
+        hue: (72.0, 82.0),
+        sat: (0.46, 0.54),
     },
-    // §3 "dirt path — 139 luma, 38°, 15%", widened by granite's spans.
+    // The forest floor of the operator's 2026-09-28 reference frames — leaf
+    // and needle litter under canopy, 44°, 46% — widened by granite's spans.
+    // It borrowed §3's "dirt path" row before, which painted it as gravel.
     Band {
         name: "litter",
-        hue: (34.0, 42.0),
-        sat: (0.105, 0.195),
+        hue: (40.0, 48.0),
+        sat: (0.41, 0.50),
     },
     // §3 "granite, lit — 127–167 luma, 35–43°, 10–19%", verbatim.
     Band {

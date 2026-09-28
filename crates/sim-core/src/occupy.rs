@@ -312,8 +312,8 @@ impl Occupants<'_> {
         let (cache, haven) = (&mut *self.cache, self.haven);
         crate::boulder::cells_near(x, z, ROCK_SKIN_M, |bx, bz| {
             let f = cache.formation(seed, haven, bx, bz);
-            for d in f.iter() {
-                if let Some((s, _)) = crate::boulder::surface(d, x, z, ROCK_SKIN_M) {
+            for b in f.iter() {
+                if let Some((s, _, _)) = crate::boulder::surface(b, x, z, ROCK_SKIN_M) {
                     if s <= feet_y + crate::movement::STEP_UP && s > best {
                         best = s;
                     }
@@ -326,10 +326,11 @@ impl Occupants<'_> {
     /// Whether a rock stops a volume of radius `r` and height `h` at
     /// (`x`, `z`) with its bottom at `feet_y`.
     ///
-    /// A body (a volume a step or more tall) is stopped by a flank — rock
+    /// A body (a volume a step or more tall) is stopped by a side — rock
     /// above its feet that is steeper than the cliff ratio or more than a
-    /// step up — and walks on a crown. Anything smaller (an arrow's probe) is
-    /// stopped by being inside the rock at all.
+    /// step up — and walks on a top. Anything smaller (an arrow's probe) is
+    /// stopped by being inside the rock at all. A block overhead, its bottom
+    /// above the volume's top, is passed under.
     fn rock_blocks(&mut self, seed: u64, x: f32, z: f32, feet_y: f32, r: f32, h: f32) -> bool {
         let mut hit = false;
         let (cache, haven) = (&mut *self.cache, self.haven);
@@ -339,11 +340,11 @@ impl Occupants<'_> {
                 return;
             }
             let f = cache.formation(seed, haven, bx, bz);
-            for d in f.iter() {
-                let Some((s, slope)) = crate::boulder::surface(d, x, z, dil) else {
+            for b in f.iter() {
+                let Some((s, slope, bottom)) = crate::boulder::surface(b, x, z, dil) else {
                     continue;
                 };
-                if s <= feet_y {
+                if s <= feet_y || feet_y + h <= bottom {
                     continue;
                 }
                 // A short volume is stopped by any rock above its feet; a
@@ -386,8 +387,8 @@ impl Occupants<'_> {
         let pcx = floor_i32(x / CELL_SIZE);
         let pcz = floor_i32(z / CELL_SIZE);
         let mut best = crate::depot::ground(self.haven, x, z, feet_y);
-        // The rock formations' crowns (`boulder.rs`): a dome's top is ground
-        // within a step of the feet, like any other occupant's lid. Its flank
+        // The rock formations' tops (`boulder.rs`): a block's top is ground
+        // within a step of the feet, like any other occupant's lid. Its side
         // is a wall, which `blocks_volume` answers.
         best = best.max(self.rock_ground(seed, x, z, feet_y));
         best = best.max(crate::landmark::ground(&self.haven.marks, x, z, feet_y));

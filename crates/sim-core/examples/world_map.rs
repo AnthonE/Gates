@@ -70,18 +70,19 @@ fn main() {
             }
         }
     }
-    let mut domes = 0usize;
+    let mut blocks = 0usize;
     let n = boulder::cells_per_side();
     for bz in 0..n {
         for bx in 0..n {
             let f = boulder::formation(seed, &haven, bx, bz);
-            for d in f.iter() {
-                domes += 1;
-                let r = (d.r / s).max(1.0) as i32;
-                let (ci, cj) = ((d.x / s) as i32, (d.z / s) as i32);
+            for b in f.iter() {
+                blocks += 1;
+                let r = (b.radius() / s).max(1.0) as i32;
+                let (ci, cj) = ((b.x / s) as i32, (b.z / s) as i32);
                 for dj in -r..=r {
                     for di in -r..=r {
-                        if di * di + dj * dj > r * r {
+                        let (wx, wz) = ((ci + di) as f32 * s, (cj + dj) as f32 * s);
+                        if boulder::surface(b, wx, wz, s * 0.5).is_none() {
                             continue;
                         }
                         let (ii, jj) = (ci + di, cj + dj);
@@ -93,7 +94,7 @@ fn main() {
             }
         }
     }
-    eprintln!("rock domes: {domes}");
+    eprintln!("rock blocks: {blocks}");
     for m in haven.marks.iter().filter(|m| m.live) {
         let r = (sim_core::landmark::LANDMARK_R_M / s).max(2.0) as i32;
         let (ci, cj) = ((m.x / s) as i32, (m.z / s) as i32);

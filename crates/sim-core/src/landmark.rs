@@ -1,5 +1,6 @@
-//! Landmarks: the island's ruins, masts, towers, stone rings and container
-//! yards — places worth walking to, readable from across the island.
+//! Landmarks: the island's ruins, masts, towers, stone rings, container
+//! yards and rock formations — anvils, arches, spires — places worth walking
+//! to, readable from across the island.
 //!
 //! **Why a layer and not more `SiteKind`s.** The authored sites (the haven,
 //! the waystations, the depot) are few, tiered and wired into the road
@@ -57,6 +58,13 @@ pub enum LandmarkKind {
     Stones = 3,
     /// A yard of stacked shipping containers.
     Yard = 4,
+    /// A rock pillar under a cap far wider than it — the reference game's
+    /// anvil and god rocks. The cap overhangs, and a body walks under it.
+    Anvil = 5,
+    /// Two rock buttresses and the slab across them: a gate in the rock.
+    Arch = 6,
+    /// A cluster of rock spires, the tallest capped.
+    Spires = 7,
 }
 
 /// What a part is made of — the client picks a surface by it.
@@ -68,6 +76,9 @@ pub enum Mat {
     Steel = 2,
     Timber = 3,
     Cargo = 4,
+    /// Natural rock: the client draws it as a fractured rock
+    /// (`render/boulders.rs`), not a box.
+    Rock = 5,
 }
 
 /// One box of a kit, in the landmark's own frame: `[x0, y0, z0, x1, y1, z1]`
@@ -217,6 +228,51 @@ const YARD_CRATES: &[Anchor] = &[
     (-10.0, 5.0, Occupant::CrateSlot),
 ];
 
+const ANVIL: &[Part] = &[
+    // The foot, broken boulders round it.
+    p(-6.5, F, -5.0, 6.0, 2.5, 5.5, Mat::Rock),
+    // The pillar, waisted, and the neck the cap sits on.
+    p(-3.0, 2.0, -2.6, 3.0, 12.5, 2.6, Mat::Rock),
+    p(-4.8, 12.0, -4.0, 4.6, 14.6, 4.0, Mat::Rock),
+    // The cap: twice the pillar's width, overhanging on every side.
+    p(-8.5, 14.0, -6.0, 8.0, 18.5, 6.5, Mat::Rock),
+    // Fallen pieces.
+    p(8.0, F, -3.5, 11.5, 1.8, 0.5, Mat::Rock),
+    p(-11.5, F, 2.0, -8.5, 1.3, 5.0, Mat::Rock),
+    p(2.0, F, 8.0, 4.5, 1.0, 10.0, Mat::Rock),
+];
+const ANVIL_CRATES: &[Anchor] = &[(0.0, -8.5, Occupant::CacheSlot)];
+
+const ARCH: &[Part] = &[
+    // The buttresses, and the slab across them 10 m up.
+    p(-12.0, F, -4.0, -6.5, 11.0, 4.0, Mat::Rock),
+    p(6.0, F, -3.5, 11.5, 10.5, 3.5, Mat::Rock),
+    p(-12.5, 10.0, -3.4, 12.0, 14.0, 3.4, Mat::Rock),
+    p(-5.0, 13.5, -2.6, 4.0, 15.5, 2.8, Mat::Rock),
+    // Rubble in the gate and off its ends.
+    p(-2.0, F, 4.5, 1.5, 1.2, 7.0, Mat::Rock),
+    p(13.0, F, -2.0, 16.0, 2.0, 1.5, Mat::Rock),
+    p(-16.5, F, 1.0, -13.5, 1.6, 4.5, Mat::Rock),
+];
+const ARCH_CRATES: &[Anchor] = &[
+    (0.0, 0.0, Occupant::CrateSlot),
+    (-3.0, -9.0, Occupant::BarrelSlot),
+];
+
+const SPIRES: &[Part] = &[
+    p(-10.0, F, -3.0, -5.5, 12.0, 1.5, Mat::Rock),
+    p(-2.5, F, 3.5, 2.5, 16.0, 8.0, Mat::Rock),
+    p(-3.8, 15.0, 2.4, 3.8, 18.5, 9.2, Mat::Rock),
+    p(5.0, F, -6.5, 9.5, 9.0, -2.0, Mat::Rock),
+    p(0.5, F, -11.0, 4.0, 6.0, -7.5, Mat::Rock),
+    p(-13.0, F, 6.0, -9.5, 5.0, 9.5, Mat::Rock),
+    p(9.0, F, 5.0, 12.5, 3.5, 8.5, Mat::Rock),
+];
+const SPIRES_CRATES: &[Anchor] = &[
+    (-1.0, -3.0, Occupant::CacheSlot),
+    (8.0, 1.0, Occupant::BarrelSlot),
+];
+
 /// The boxes of a kind.
 pub const fn parts(kind: LandmarkKind) -> &'static [Part] {
     match kind {
@@ -225,6 +281,9 @@ pub const fn parts(kind: LandmarkKind) -> &'static [Part] {
         LandmarkKind::Tower => TOWER,
         LandmarkKind::Stones => STONES,
         LandmarkKind::Yard => YARD,
+        LandmarkKind::Anvil => ANVIL,
+        LandmarkKind::Arch => ARCH,
+        LandmarkKind::Spires => SPIRES,
     }
 }
 
@@ -236,6 +295,9 @@ pub const fn anchors(kind: LandmarkKind) -> &'static [Anchor] {
         LandmarkKind::Tower => TOWER_CRATES,
         LandmarkKind::Stones => STONES_CRATES,
         LandmarkKind::Yard => YARD_CRATES,
+        LandmarkKind::Anvil => ANVIL_CRATES,
+        LandmarkKind::Arch => ARCH_CRATES,
+        LandmarkKind::Spires => SPIRES_CRATES,
     }
 }
 
@@ -247,6 +309,9 @@ pub const fn name(kind: LandmarkKind) -> &'static str {
         LandmarkKind::Tower => "Watchtower",
         LandmarkKind::Stones => "Standing Stones",
         LandmarkKind::Yard => "Container Yard",
+        LandmarkKind::Anvil => "Anvil Rock",
+        LandmarkKind::Arch => "Arch Rock",
+        LandmarkKind::Spires => "The Spires",
     }
 }
 
@@ -259,6 +324,9 @@ const _: () = {
         LandmarkKind::Tower,
         LandmarkKind::Stones,
         LandmarkKind::Yard,
+        LandmarkKind::Anvil,
+        LandmarkKind::Arch,
+        LandmarkKind::Spires,
     ];
     let mut k = 0;
     while k < kinds.len() {
@@ -499,27 +567,39 @@ fn try_site(
     let moist = terrain::moisture_memo(lat, seed, x, z);
     let roll = unit(h, 32);
     let kind = if y0 > 42.0 {
-        if roll < 0.6 {
+        if roll < 0.4 {
             LandmarkKind::Mast
-        } else {
+        } else if roll < 0.6 {
             LandmarkKind::Stones
+        } else if roll < 0.8 {
+            LandmarkKind::Anvil
+        } else {
+            LandmarkKind::Spires
         }
     } else if moist > 0.05 {
-        if roll < 0.5 {
+        if roll < 0.4 {
             LandmarkKind::Tower
-        } else if roll < 0.85 {
+        } else if roll < 0.7 {
             LandmarkKind::Ruin
+        } else if roll < 0.85 {
+            LandmarkKind::Arch
         } else {
             LandmarkKind::Mast
         }
-    } else if roll < 0.3 {
+    } else if roll < 0.22 {
         LandmarkKind::Yard
-    } else if roll < 0.6 {
+    } else if roll < 0.4 {
         LandmarkKind::Ruin
-    } else if roll < 0.8 {
+    } else if roll < 0.52 {
         LandmarkKind::Stones
-    } else {
+    } else if roll < 0.64 {
         LandmarkKind::Mast
+    } else if roll < 0.76 {
+        LandmarkKind::Arch
+    } else if roll < 0.88 {
+        LandmarkKind::Anvil
+    } else {
+        LandmarkKind::Spires
     };
     Some(Landmark {
         x,

@@ -6948,6 +6948,13 @@ pub enum Clutter {
     /// and moving through woods feel different from crossing a meadow, which
     /// for a survival game is a gameplay property and not a visual one.
     Brush = 5,
+    /// Grass channel, lying: a loose stone in the turf, a sub-draw of the
+    /// grass channel the way [`Brush`](Clutter::Brush) is of litter. The
+    /// reference game's meadows are dotted with them (2026-09-28).
+    Stone = 6,
+    /// Forest-litter channel, standing: short grass growing through the
+    /// litter, so a forest floor is not bare soil between its sticks.
+    Sprig = 7,
 }
 
 /// Buckets an array indexed by `Clutter as usize` needs — the largest
@@ -6959,7 +6966,7 @@ pub enum Clutter {
 /// on the first haven cell of every seed. `Brush = 5` did the same thing to
 /// `tests/clutter.rs`'s `[0usize; 5]`, which is what this constant now stands
 /// in front of.
-pub const CLUTTER_SLOTS: usize = Clutter::Brush as usize + 1;
+pub const CLUTTER_SLOTS: usize = Clutter::Sprig as usize + 1;
 
 /// The splat channel a clutter kind was drawn from.
 ///
@@ -6975,8 +6982,8 @@ pub const CLUTTER_SLOTS: usize = Clutter::Brush as usize + 1;
 pub fn clutter_channel(kind: Clutter) -> usize {
     match kind {
         Clutter::Pebble => 0,
-        Clutter::Tuft => 1,
-        Clutter::Twig | Clutter::Brush => 2,
+        Clutter::Tuft | Clutter::Stone => 1,
+        Clutter::Twig | Clutter::Brush | Clutter::Sprig => 2,
         Clutter::Shard => 3,
         Clutter::None => usize::MAX,
     }
@@ -6991,6 +6998,14 @@ pub fn clutter_channel(kind: Clutter) -> usize {
 /// hash for a sub-kind would be a per-element cost on the densest population
 /// in the game.
 pub const BRUSH_SHARE_PERMILLE: u32 = 120;
+
+/// Share of the grass channel that lies as a [`Clutter::Stone`], per mille —
+/// spent the way [`BRUSH_SHARE_PERMILLE`] is. **(knob)**
+pub const STONE_SHARE_PERMILLE: u32 = 30;
+
+/// Share of the forest-litter channel that grows as a [`Clutter::Sprig`],
+/// per mille, taken above the brush's share. **(knob)**
+pub const SPRIG_SHARE_PERMILLE: u32 = 300;
 
 /// One resolved clutter element. Deliberately the same shape as `Slot` minus
 /// the things clutter does not have (an occupant identity the sim knows, a
@@ -7118,7 +7133,15 @@ pub fn kind_from_splat(w: [u8; 4], roll_bits: u64) -> Clutter {
         if roll < acc {
             k = match i {
                 0 => Clutter::Pebble,
-                1 => Clutter::Tuft,
+                // The turf's own share, split the brush's way: the bottom
+                // `STONE_SHARE_PERMILLE` of it is a stone lying in the grass.
+                1 => {
+                    if (roll - lo) * 1_000 < *v as u32 * STONE_SHARE_PERMILLE {
+                        Clutter::Stone
+                    } else {
+                        Clutter::Tuft
+                    }
+                }
                 // The forest floor's own share, split in place: the bottom
                 // `BRUSH_SHARE_PERMILLE` of channel 2's interval stands up.
                 // **Sub-dividing the interval rather than rolling again** is
@@ -7129,8 +7152,11 @@ pub fn kind_from_splat(w: [u8; 4], roll_bits: u64) -> Clutter {
                 // a channel weight is a byte, so the worst case is
                 // 255 × 1000.
                 2 => {
-                    if (roll - lo) * 1_000 < *v as u32 * BRUSH_SHARE_PERMILLE {
+                    let at = (roll - lo) * 1_000;
+                    if at < *v as u32 * BRUSH_SHARE_PERMILLE {
                         Clutter::Brush
+                    } else if at < *v as u32 * (BRUSH_SHARE_PERMILLE + SPRIG_SHARE_PERMILLE) {
+                        Clutter::Sprig
                     } else {
                         Clutter::Twig
                     }

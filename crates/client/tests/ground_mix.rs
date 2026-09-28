@@ -224,6 +224,13 @@ fn granite_is_a_real_share_of_the_island() {
 /// edit:** the 4096 m island has more lowland per massif, so granite's
 /// weight fell 0.1156 → 0.0801 and the island got darker by arithmetic.
 ///
+/// ⚠ **And 0.10379 → 0.08910 the same day (−14 %), an albedo edit on
+/// purpose:** the operator's reference frames put a dark leaf-litter floor
+/// under the woods and green turf under the grass. Forest litter went from
+/// the grey "dirt path" row (102.8 luma) to that floor (83.9) and grass from
+/// khaki to green at the same value; a third of the land darkened, so the
+/// island did.
+///
 /// The second assert is the retraction's own point, kept: the two windows
 /// disagree, and by more than they used to (1.145× → 1.268×), because granite
 /// carries more value now and the quadrant still weights it at zero.
@@ -254,8 +261,8 @@ fn the_mean_luma_is_held_against_the_island_not_the_quadrant() {
     );
 
     assert!(
-        (now - 0.103_79).abs() < 1e-4,
-        "the island-weighted mean linear luma is no longer the 0.10379 the \
+        (now - 0.089_10).abs() < 1e-4,
+        "the island-weighted mean linear luma is no longer the 0.08910 the \
          identity re-place was held to: {now:.5}. An albedo edit moved the \
          island's overall brightness — that is the coupled lighting owner's \
          call (`CLAUDE.md` traps), not an identity pass's."

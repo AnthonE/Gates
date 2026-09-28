@@ -540,6 +540,11 @@ fn linear_to_srgb(v: f32) -> u8 {
     (s * 255.0 + 0.5) as u8
 }
 
+/// The share of its albedo a card's needles keep. A real crown shows mostly
+/// its own shade between the lit needles, and a card baked at bare albedo
+/// read as a pale ghost beside the mesh trees in front of it (2026-09-28).
+pub const CARD_CANOPY_SHADE: f32 = 0.6;
+
 /// One tree, side-on, orthographic, into a `CARD_RES²` RGBA8 sRGB cell.
 fn bake_card(bark: &Mesh, needles: &Mesh, card: &Image) -> (Vec<u8>, CardDims) {
     let (h, _) = tree::bounds(&[bark, needles]);
@@ -617,10 +622,14 @@ fn bake_card(bark: &Mesh, needles: &Mesh, card: &Image) -> (Vec<u8>, CardDims) {
                         if k + 3 >= tex.len() || tex[k + 3] < mipmap::MASK_CUT {
                             continue;
                         }
+                        // The crown's own shade, baked: darker toward its
+                        // foot, where the tiers above shadow it.
+                        let up = 1.0 - fy / n as f32;
+                        let shade = CARD_CANOPY_SHADE * (0.72 + 0.28 * up);
                         [
-                            vc[0] * srgb_to_linear(tex[k]),
-                            vc[1] * srgb_to_linear(tex[k + 1]),
-                            vc[2] * srgb_to_linear(tex[k + 2]),
+                            vc[0] * srgb_to_linear(tex[k]) * shade,
+                            vc[1] * srgb_to_linear(tex[k + 1]) * shade,
+                            vc[2] * srgb_to_linear(tex[k + 2]) * shade,
                         ]
                     }
                 } else {

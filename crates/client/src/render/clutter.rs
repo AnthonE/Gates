@@ -33,9 +33,12 @@ pub const CLUTTER_RING: i32 = 2;
 /// Tiles filled per frame. The fill is 721 hash draws and a few thousand
 /// triangles; one a frame keeps the spike off the frame the player turns on.
 pub const CLUTTER_FILLS_PER_FRAME: usize = 1;
-/// A tuft's blade height at scale 1, metres — the browser's, unchanged, and
-/// inside `ART.md` §1's measured 20–40 cm band.
-pub const TUFT_H: f32 = 0.34;
+/// A tuft's blade height at scale 1, metres — the top of `ART.md` §1's
+/// measured 20–40 cm band. A card is twice as wide as it is tall
+/// (`CARD_ASPECT`), so at 0.40 a tuft is 0.8 m across on a 0.64 m cell and
+/// neighbours overlap into turf; at 0.34 the soil showed between every one
+/// of them (2026-09-28, against the reference game's meadows).
+pub const TUFT_H: f32 = 0.40;
 
 /// A brush clump's height at scale 1, metres. **(knob)**
 ///
@@ -108,6 +111,12 @@ pub const FROND_ROOT: [f32; 3] = [0.093, 0.0545, 0.0252];
 const PEBBLE_C: u32 = 0x8a8880;
 const TWIG_C: u32 = 0x5a4630;
 const SHARD_C: u32 = 0x7d7a73;
+/// A stone lying in the turf: pale, weathered — the reference game's
+/// meadows are dotted with them, and they read at any distance a tuft does.
+const STONE_C: u32 = 0xa9a59c;
+
+/// A sprig of grass through the forest litter: a tuft's card, shorter.
+pub const SPRIG_H: f32 = TUFT_H * 0.75;
 
 #[derive(Resource, Default)]
 pub struct ClutterRing {
@@ -336,6 +345,7 @@ pub const CARD_SINK: f32 = 0.04;
 /// used to author is in the scan already.
 fn card(s: &mut Soup, at: Vec3, yaw: f32, seed: u32, h: f32) {
     let root = at - Vec3::Y * h * CARD_SINK;
+    let tint = patch_tint(at.x, at.z);
     for i in 0..CARDS_PER_TUFT {
         let a = yaw + i as f32 * std::f32::consts::PI / CARDS_PER_TUFT as f32;
         let side = Vec3::new(a.sin(), 0.0, a.cos());
@@ -365,7 +375,7 @@ fn card(s: &mut Soup, at: Vec3, yaw: f32, seed: u32, h: f32) {
         let (uv_t0, uv_t1) = ([cu, cv], [cu + du, cv]);
 
         let v = 0.86 + 0.28 * hash01(seed, i + 13);
-        let col = move |_: Vec3| [v, v, v, 1.0];
+        let col = move |_: Vec3| [v * tint[0], v * tint[1], v * tint[2], 1.0];
         let root_y = root.y;
         let ramp = move |p: Vec3| {
             let t = ((p.y - root_y) / hj).clamp(0.0, 1.0);
@@ -386,6 +396,42 @@ fn card(s: &mut Soup, at: Vec3, yaw: f32, seed: u32, h: f32) {
             ramp,
         );
     }
+}
+
+/// Smooth value noise over the ground plane, in [0, 1]: the patches a meadow
+/// is made of, metres across rather than a tuft wide.
+fn patch(x: f32, z: f32) -> f32 {
+    let octave = |x: f32, z: f32| {
+        let (ix, iz) = (x.floor(), z.floor());
+        let (fx, fz) = (x - ix, z - iz);
+        let (ux, uz) = (fx * fx * (3.0 - 2.0 * fx), fz * fz * (3.0 - 2.0 * fz));
+        let h = |dx: i32, dz: i32| {
+            hash01(
+                (ix as i32 + dx) as u32,
+                ((iz as i32 + dz) as u32) ^ 0x5eed_0f1e,
+            )
+        };
+        let a = h(0, 0) + (h(1, 0) - h(0, 0)) * ux;
+        let b = h(0, 1) + (h(1, 1) - h(0, 1)) * ux;
+        a + (b - a) * uz
+    };
+    octave(x / 11.0, z / 11.0) * 0.65 + octave(x / 4.3 + 17.0, z / 4.3 + 5.0) * 0.35
+}
+
+/// A grass card's colour multiplier where it stands: straw-yellow in the dry
+/// patches, deeper green in the lush ones, the photograph's own colour
+/// between. **Not a second authored colour for grass** — a mean-1 shift of
+/// the photograph's, the variation the reference game's meadows have and a
+/// field of one photograph does not (2026-09-28).
+fn patch_tint(x: f32, z: f32) -> [f32; 3] {
+    let t = patch(x, z);
+    let dry = ((t - 0.55) / 0.25).clamp(0.0, 1.0);
+    let lush = ((0.42 - t) / 0.25).clamp(0.0, 1.0);
+    [
+        1.0 + 0.16 * dry - 0.08 * lush,
+        1.0 + 0.03 * dry + 0.06 * lush,
+        1.0 - 0.30 * dry - 0.02 * lush,
+    ]
 }
 
 /// How much of the volume normal a blade's TIP keeps. **(knob)**
@@ -615,7 +661,7 @@ fn litter(s: &mut Soup, at: Vec3, yaw: f32, scale: f32, seed: u32) {
 /// cutout means a card rendered as an opaque grey quad, and for an opaque
 /// solid means an alpha test against a texture it has no UVs for.
 pub fn masked(kind: Clutter) -> bool {
-    matches!(kind, Clutter::Tuft | Clutter::Brush)
+    matches!(kind, Clutter::Tuft | Clutter::Brush | Clutter::Sprig)
 }
 
 pub fn element_mesh(e: &ClutterElem) -> Mesh {
@@ -655,6 +701,20 @@ fn element(s: &mut Soup, e: &ClutterElem) {
             SHARD_C,
             seed,
         ),
+        // A stone in the grass: a pebble's shape at two to five times its
+        // size, most of them small.
+        Clutter::Stone => {
+            let k = 0.6 + 1.4 * hash01(seed, 71) * hash01(seed, 72);
+            stone(
+                s,
+                at,
+                yaw,
+                Vec3::new(0.16, 0.08, 0.12) * e.scale * k,
+                STONE_C,
+                seed,
+            )
+        }
+        Clutter::Sprig => card(s, at, yaw, seed, SPRIG_H * e.scale),
     }
 }
 

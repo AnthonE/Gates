@@ -361,8 +361,12 @@ fn grass_must_hold_most_of_a_mix_for_the_ground_to_read_green() {
             lo = g;
         }
     }
+    // ⚠ 2026-09-28: greener turf and a darker leaf-litter floor (the
+    // operator's reference frames) took the crossover from ~80% to 63% and
+    // the value gap from 3.2× to 1.6× — the defect this documents, reduced
+    // rather than gone. The floors follow it down.
     assert!(
-        hi > 0.66,
+        hi > 0.6,
         "grass now only needs {:.1}% of a grass/litter mix to read \
          green-dominant. That is a better ground than the one this file \
          documents — re-measure the mosaic numbers in the header before \
@@ -375,7 +379,7 @@ fn grass_must_hold_most_of_a_mix_for_the_ground_to_read_green() {
         0.2126 * GROUND_ALBEDO[i][0] + 0.7152 * GROUND_ALBEDO[i][1] + 0.0722 * GROUND_ALBEDO[i][2]
     };
     assert!(
-        luma(LITTER) / luma(GRASS) > 2.0,
+        luma(LITTER) / luma(GRASS) > 1.4,
         "litter is only {:.2}× grass's value; the crossover above is explained \
          by that ratio and this file's account of it no longer holds",
         luma(LITTER) / luma(GRASS)

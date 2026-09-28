@@ -232,20 +232,19 @@ pub const GROUND_ALBEDO: [[f32; 3]; 4] = [
     // beach sand — hue 42.0°, sat 10.0%, **luma 117.0** (§3 "beach sand — 117
     // luma, 42°, 10%", now read whole rather than for its chroma alone).
     [0.1895, 0.1775, 0.1513],
-    // grass — hue 68.5°, sat 31.0% and **luma 64.5**: the centres of §3's
-    // 63–74°, 29–33% and 59–70. Still the darkest identity, but it no longer
-    // sits on `ALBEDO_LUMA_BAND`'s floor — it sits at its own band's centre,
-    // 0.0526 linear, and clears §5's 0.05 with room. The old value read 62.8,
-    // which is 0.04997 linear: marginally UNDER the floor the comment here
-    // claimed it sat exactly on, and the reason it sat there was the old
-    // mean rather than anything §3 says.
-    [0.0526, 0.0574, 0.0281],
-    // forest litter — hue 38.0°, sat 15.0% (§3 "dirt path — 139 luma, 38°,
-    // 15%"). §3 sampled a bare compacted path, not needles under canopy, so
-    // it pins this identity's hue and saturation and NOT its value; the value
-    // is what absorbs the held-mean constraint, and it is the only one of the
-    // four that is not §3's own number.
-    [0.1505, 0.1335, 0.1069],
+    // grass — hue 76.7°, sat 50.0%, **luma 64.9**: sRGB (62, 72, 36). §3's
+    // value (59–70) and still the darkest identity, but greener than §3's
+    // "grass, lit" 63–74°, 29–33% — which is a khaki, and read as bare soil
+    // between the tufts. The operator's reference frames (2026-09-28) put
+    // green turf under the grass, and the tufts' own photograph is greener
+    // than §3's sample too.
+    [0.0482, 0.0648, 0.0176],
+    // forest litter — hue 43.6°, sat 45.8%, **luma 83.9**: sRGB (96, 84, 52),
+    // the leaf-and-needle floor under the reference game's woods
+    // (operator's reference frames, 2026-09-28). It borrowed §3's "dirt path"
+    // row until then — a bare compacted path, grey-beige — and a forest floor
+    // painted as a path read as gravel under every tree.
+    [0.117, 0.0885, 0.0343],
     // granite — hue 39.0°, sat 14.6%, **luma 138.7**: the centres of §3's
     // 35–43° and 10–19%, and a value inside its 127–167 that holds the island's
     // mean. It sat at the band's centre (147.0) until 2026-09-24; the interior
