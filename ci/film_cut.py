@@ -293,8 +293,11 @@ def cut(spec_path):
     args += ["-filter_complex", ";".join(vf + af), "-map", "[vout]"]
     if mix:
         args += ["-map", "[aout]", "-c:a", "aac", "-b:a", "192k", "-ar", "48000"]
+    # Capped where the platforms' own upload guidance sits for 1080p30
+    # (~8 Mbps), so an ad is small enough to send and loses nothing on upload.
     args += ["-t", f"{total:.4f}", "-r", str(fps), "-c:v", "libx264", "-preset", "slow",
-             "-crf", str(spec.get("crf", 17)), "-profile:v", "high", "-pix_fmt", "yuv420p",
+             "-crf", str(spec.get("crf", 18)), "-maxrate", spec.get("maxrate", "7M"),
+             "-bufsize", "14M", "-profile:v", "high", "-pix_fmt", "yuv420p",
              "-movflags", "+faststart", out]
     run(args)
     print(f"film_cut: {out} — {total:.2f} s, {W}x{H}")
