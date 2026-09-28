@@ -84,10 +84,19 @@ pub fn enter(
     // functions, never a second copy: a paused frame that rounded yaw
     // differently would be a frame the server and the predictor disagree
     // about, which is the quantize-both-sides law with the stakes hidden.
+    //
+    // **Except the torch**, `input::gather`'s panel rule: the world does not
+    // stop for this menu, and zeroing the latch put the flame out for the
+    // sim and every other player while this screen kept drawing it lit.
     if let Some(mut net) = net {
         let sel = net.sel;
+        let lit = if net.light {
+            sim_core::input::BTN_LIGHT
+        } else {
+            0
+        };
         net.session.core.set_input(
-            0,
+            lit,
             super::input::yaw_u16(look.yaw),
             super::input::pitch_u8(look.pitch),
             0,

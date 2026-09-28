@@ -1026,6 +1026,7 @@ impl Plugin for GatesRenderPlugin {
                 // on an emitter that outlives every swap. Both read the same
                 // pure row lookup, so neither has to run first.
                 viewmodel::hand_light.after(viewmodel::spawn_item),
+                viewmodel::hand_flame.after(viewmodel::spawn_item),
                 // The tracer's two halves. `launch` reads the drained feed,
                 // so it must follow the drain for the swing's reason —
                 // the other order reacts a frame late. `fly` then advances

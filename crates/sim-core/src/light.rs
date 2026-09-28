@@ -76,8 +76,13 @@ pub const BURN_DEN: u32 = TICK_HZ * 60 * 100;
 /// falls a non-wire frame back to slot 0, and this bounds it again rather
 /// than trusting that — one id arrives from a datagram and one from a WAL
 /// (`GatherContent::cond_max_of`'s reason, one layer up).
+///
+/// **A downed body is not holding it up either.** It has dropped what it
+/// held (`held` on the wire is empty, and `step` never runs on it), so a
+/// flame read here while down was a torch that warmed and held wolves off
+/// for free while every other screen showed an empty hand.
 pub fn is_lit(p: &Player, gc: &GatherContent) -> bool {
-    if p.dead || p.sleeping || p.frame.buttons & BTN_LIGHT == 0 {
+    if p.dead || p.sleeping || p.wounded || p.frame.buttons & BTN_LIGHT == 0 {
         return false;
     }
     let sel = p.frame.sel as usize;
@@ -192,6 +197,10 @@ mod tests {
         assert!(!is_lit(&dead, &g), "a corpse is not holding a torch up");
         assert_eq!(step(&mut dead, &g), 0);
         assert_eq!(dead.inv[0].cond, 400, "and it spent nothing");
+
+        let mut down = holder(torch(), BTN_LIGHT);
+        down.wounded = true;
+        assert!(!is_lit(&down, &g), "a downed body dropped what it held");
 
         let mut asleep = holder(torch(), BTN_LIGHT);
         asleep.sleeping = true;

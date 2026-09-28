@@ -968,7 +968,11 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// `REFUSE_WATCH_ENDED`) are values in the old `u8`. Landed on its branch as
 /// v73, beside research table v1's v73 on `main`; the merge took the next
 /// number and regenerated every fixture.
-pub const PROTO_VER: u16 = 79;
+/// v80 — the belt eats. Each catalog row grows three 16-bit eat columns
+/// after `stack_max` (`ItemRow::food`, `water`, `health`: what one unit of
+/// the item pays when eaten, 0 for anything the eat verb refuses), so a
+/// client knows a left click with food in hand is a meal and not a swing.
+pub const PROTO_VER: u16 = 80;
 
 /// This game's slug in the elo catalog.
 ///

@@ -4012,7 +4012,10 @@ const BIND_IDENTS: [(&str, &[&str]); 21] = [
     ("INVENTORY / CRAFTING", &["Tab", "KeyI", "KeyQ"]),
     ("MAP", &["KeyG"]),
     ("CHAT", &["KeyT", "Enter"]),
-    ("EAT / DRINK", &["KeyJ", "KeyH"]),
+    (
+        "EAT / DRINK",
+        &["KeyJ", "KeyH", "MouseButton::Left", "Digit1", "Digit6"],
+    ),
     ("BUILD", &["MouseButton::Right"]),
     ("LIGHT / SNUFF A TORCH", &["MouseButton::Right"]),
     ("REPAIR / UPGRADE", &["KeyR", "KeyU"]),
@@ -4597,6 +4600,7 @@ fn catalog_for(cc: &combat::CombatContent) -> protocol::ItemCatalog {
                 armor_pct: a.reduction_pct,
                 wear_slot: a.slot,
                 stack_max: 1,
+                ..protocol::ItemRow::EMPTY
             },
         )
         .expect("a fixture row the sim already validated is coherent");
@@ -4790,6 +4794,7 @@ fn a_stack_past_the_last_wear_slot_is_worth_nothing() {
         armor_pct: 25,
         wear_slot: WEAR_SLOTS as u8 + 1,
         stack_max: 1,
+        ..protocol::ItemRow::EMPTY
     };
     assert!(
         !cat.rows[ghost as usize].coherent(),
@@ -4867,6 +4872,7 @@ fn nothing_is_wearable_in_a_slot_the_body_does_not_have() {
         armor_pct: 25,
         wear_slot: WEAR_SLOTS as u8 + 1,
         stack_max: 1,
+        ..protocol::ItemRow::EMPTY
     };
     assert!(
         !slots::wearable_here(&cat, ghost, WEAR_SLOTS),
@@ -5127,6 +5133,7 @@ mod quick {
                 armor_pct: 0,
                 wear_slot: 0,
                 stack_max: 1000,
+                ..protocol::ItemRow::EMPTY
             },
         )
         .expect("a resource row is coherent");
@@ -5138,6 +5145,7 @@ mod quick {
                 armor_pct: 0,
                 wear_slot: 0,
                 stack_max: 1,
+                ..protocol::ItemRow::EMPTY
             },
         )
         .expect("V7: a condition item stacks to one");
@@ -5605,6 +5613,7 @@ mod take {
                 armor_pct: 0,
                 wear_slot: 0,
                 stack_max: 1000,
+                ..protocol::ItemRow::EMPTY
             },
         )
         .unwrap();

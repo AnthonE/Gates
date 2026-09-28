@@ -59,6 +59,9 @@ pub struct Pointer {
     /// Whether the player had captured the pointer before that panel opened —
     /// the thing closing has to give back.
     locked_before_panel: bool,
+    /// Whether the left button now down is the press that captured the
+    /// pointer. See [`Pointer::swallow`].
+    capturing: bool,
 }
 
 impl Pointer {
@@ -91,6 +94,26 @@ impl Pointer {
         }
         self.panel_had_it = panel_open;
         out
+    }
+
+    /// Is the left button, this frame, the click that captured the pointer —
+    /// or that click still held down? **That press is not also a use.** With
+    /// the belt click-modal a capture click would otherwise eat a mushroom,
+    /// put a sleeping bag down or place a wall wherever the ghost happened to
+    /// stand, and it swung the axe long before that; a player clicking back
+    /// into the window asked for none of it. Swallowed until the button is
+    /// let go, so holding the capture click does not turn into a swing.
+    ///
+    /// `held` is the left button being down this frame; the other three are
+    /// [`Pointer::step`]'s own inputs, read before it locks anything.
+    pub fn swallow(&mut self, locked: bool, panel_open: bool, clicked: bool, held: bool) -> bool {
+        if clicked && !locked && !panel_open {
+            self.capturing = true;
+        }
+        if !held {
+            self.capturing = false;
+        }
+        self.capturing
     }
 }
 
@@ -150,6 +173,21 @@ mod tests {
             p.step(false, false, false),
             Grab::Leave,
             "a click the panel ate must not count as the player capturing"
+        );
+    }
+
+    /// The click that captures is swallowed for as long as it is held, and
+    /// the next click — the pointer locked by then — is a click again.
+    #[test]
+    fn the_capturing_click_is_not_a_use() {
+        let mut p = Pointer::default();
+        assert!(p.swallow(false, false, true, true), "the capture click");
+        assert!(p.swallow(true, false, false, true), "still held after lock");
+        assert!(!p.swallow(true, false, false, false), "released");
+        assert!(!p.swallow(true, false, true, true), "a click once locked");
+        assert!(
+            !p.swallow(false, true, true, true),
+            "a click into a panel belongs to the panel, not to this"
         );
     }
 

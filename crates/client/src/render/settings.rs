@@ -960,7 +960,10 @@ pub const BINDS: [(&str, &str); 21] = [
         "Hold Left Alt (the head turns, the body does not)",
     ),
     ("LOOK", "Mouse (click to capture the pointer)"),
-    ("USE / ATTACK", "Left Mouse"),
+    (
+        "USE / ATTACK",
+        "Left Mouse: uses what is in your hand (eats food, places a box, swings a tool)",
+    ),
     ("INTERACT / OPEN", "E"),
     ("HOTBAR", "1 - 6, or the scroll wheel"),
     (
@@ -969,7 +972,10 @@ pub const BINDS: [(&str, &str); 21] = [
     ),
     ("MAP", "Hold G"),
     ("CHAT", "T or Enter"),
-    ("EAT / DRINK", "J / H"),
+    (
+        "EAT / DRINK",
+        "Food's hotbar key (1 - 6) eats one and keeps your hand; or Left Mouse / J with it in hand · H drinks",
+    ),
     ("BUILD", "Hold Right Mouse with a plan; Left Mouse places"),
     (
         "LIGHT / SNUFF A TORCH",

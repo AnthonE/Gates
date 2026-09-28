@@ -411,3 +411,48 @@ fn the_shipped_catalog_carries_every_armor_row() {
     }
     assert!(inert > 0, "every shipped item is armor?");
 }
+
+/// (6) The eat columns (wire v80): a left click with food in hand is a
+/// meal only if the catalog says the item is food, so every authored
+/// consumable must ride the catalog with its own numbers, and nothing else
+/// may look edible — a rock that "eats" is a click that neither swings nor
+/// feeds.
+#[test]
+fn the_shipped_catalog_carries_every_consumable_row() {
+    let content = content::Content::load_dir(&content_dir()).expect("shipped content loads");
+    let tables = server::net::bake_all(&content).expect("shipped content bakes");
+
+    for c in &content.consumables {
+        let idx = content
+            .item_index(&c.id)
+            .expect("consumable is item-backed") as usize;
+        let row = tables.catalog.row(idx);
+        assert_eq!(
+            (
+                u32::from(row.food),
+                u32::from(row.water),
+                u32::from(row.health)
+            ),
+            (c.food, c.water, c.health),
+            "`{}` eats as authored in consumables.toml",
+            c.id
+        );
+        assert!(row.eats(), "`{}` is food and the catalog says not", c.id);
+    }
+    assert!(
+        content.consumables.len() >= 3,
+        "only {} consumable rows ship",
+        content.consumables.len()
+    );
+    for item in &content.items {
+        if content.consumables.iter().any(|c| c.id == item.id) {
+            continue;
+        }
+        let idx = content.item_index(&item.id).expect("own id resolves") as usize;
+        assert!(
+            !tables.catalog.row(idx).eats(),
+            "`{}` is not a consumable and the catalog makes it edible",
+            item.id
+        );
+    }
+}

@@ -117,6 +117,7 @@ fn a_late_catalog_replaces_the_pouch_with_the_shared_held_model() {
                 armor_pct: 0,
                 wear_slot: 0,
                 stack_max: 1,
+                ..protocol::ItemRow::EMPTY
             },
         )
         .unwrap();
@@ -163,6 +164,7 @@ fn a_loading_model_keeps_the_pouch_then_replaces_it_without_wire_news() {
                 armor_pct: 0,
                 wear_slot: 0,
                 stack_max: 1,
+                ..protocol::ItemRow::EMPTY
             },
         )
         .unwrap();

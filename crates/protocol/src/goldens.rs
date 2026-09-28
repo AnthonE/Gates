@@ -893,9 +893,11 @@ pub fn event_catalog() -> ItemCatalog {
     let rows: [(&[u8], ItemRow); 11] = [
         (b"Wood", row(0, 0, WEAR_NONE, 1000)),
         (b"Stone", row(0, 0, WEAR_NONE, 1000)),
-        (b"Metal Ore", row(0, 0, WEAR_NONE, 1000)),
-        (b"Sulfur Ore", row(0, 0, WEAR_NONE, 1000)),
-        (b"Cloth", row(0, 0, WEAR_NONE, 1000)),
+        // The eat columns' coverage (v80): a food with all three, a heal
+        // with only hp, and the width's corner on each column.
+        (b"Mushrooms", food(10, 15, 5, 3)),
+        (b"Bandage", food(3, 0, 0, 20)),
+        (b"Corn", food(1000, u16::MAX, 1, u16::MAX - 1)),
         // Rows 5..8 are the armor columns' coverage (v52): a head piece, a
         // body piece, the cap itself, and — row 8 — a piece whose slot is
         // named with no reduction behind it, which is legal and is the
@@ -934,6 +936,17 @@ fn row(cond_max: u16, armor_pct: u8, wear_slot: u8, stack_max: u16) -> ItemRow {
         armor_pct,
         wear_slot,
         stack_max,
+        ..ItemRow::EMPTY
+    }
+}
+
+/// A food row: the eat columns (v80) on top of a plain stacking row.
+fn food(stack_max: u16, food: u16, water: u16, health: u16) -> ItemRow {
+    ItemRow {
+        food,
+        water,
+        health,
+        ..row(0, 0, WEAR_NONE, stack_max)
     }
 }
 

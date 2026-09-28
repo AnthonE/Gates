@@ -704,6 +704,43 @@ pub fn rig_transform(rot: Quat, off: Vec3) -> Transform {
 #[derive(Component)]
 pub struct HandLight;
 
+/// The visible flame on a lit torch in your own hand: a child of
+/// [`HandLight`], so it sits where the light does. `core` is the hot inner
+/// egg, drawn smaller inside the orange mantle.
+#[derive(Component)]
+pub struct HandFlame {
+    pub core: bool,
+}
+
+/// The first-person torch's particles, as a fraction of a fire pit's — a
+/// size under the remote torch's `fx::world::TORCH_FIRE_SCALE`, because this
+/// one burns half a metre from the eye rather than across a clearing.
+pub const HAND_FIRE_SCALE: f32 = 0.22;
+
+/// The flame's mantle: radius and how many radii tall, metres. It sits on
+/// the torch head with its foot at the crown — the emitter is
+/// `hold::FLAME_LIFT_M` above it — and the core is [`FLAME_CORE`] of it.
+pub const FLAME_R_M: f32 = 0.02;
+pub const FLAME_TALL: f32 = 2.4;
+pub const FLAME_CORE: f32 = 0.55;
+
+/// The flame's transform at time `t` seconds: a mantle (or its core) that
+/// flickers taller and thinner by two incommensurate waves, so the beat
+/// never visibly repeats. Pure, so a test can hold the flame on the head.
+pub fn hand_flame_pose(core: bool, t: f32) -> Transform {
+    let k = if core { FLAME_CORE } else { 1.0 };
+    let flick = 1.0 + 0.12 * (t * 17.0).sin() + 0.07 * (t * 29.0 + 1.3).sin();
+    let r = FLAME_R_M * k * (1.0 - 0.35 * (flick - 1.0));
+    let h = FLAME_R_M * FLAME_TALL * k * flick;
+    Transform {
+        // Foot on the crown: the egg's bottom is `h` below its centre, and
+        // the crown is the lift below the emitter.
+        translation: Vec3::Y * (h - crate::ui::hold::FLAME_LIFT_M),
+        rotation: Quat::IDENTITY,
+        scale: Vec3::new(r, h, r),
+    }
+}
+
 /// The child that carries whichever model is in hand. Separate from
 /// [`HeldItem`] so `animate` keeps writing exactly one transform and the swap
 /// below writes only handles — two systems, one entity each, no contention.
@@ -930,8 +967,54 @@ pub fn spawn_item(
                             shadows_enabled: false,
                             ..default()
                         },
+                        // The flame you can SEE, which your own torch never
+                        // had: a lit one was a light with no fire, while
+                        // everyone else's drew `bodies::BodyFlame`'s. The
+                        // same component on the same emitter, so
+                        // `fx::world::fires` burns it only while
+                        // `hand_light` has it lit, at a torch's size. The
+                        // smoke leaves well above the head so it does not
+                        // hang in front of your own eyes.
+                        super::fx::world::FireFx {
+                            flames: true,
+                            flame_dy: 0.0,
+                            smoke_dy: 0.6,
+                            scale: HAND_FIRE_SCALE,
+                        },
                         Transform::IDENTITY,
-                    ));
+                    ))
+                    .with_children(|light| {
+                        // The flame's body: two additive eggs, a dim orange
+                        // mantle and a hot core, hung off the emitter so
+                        // they sit on the torch head through every bob and
+                        // swing. World-space particles trail a moving hand
+                        // (which is what a flame does) and this does not, so
+                        // the torch reads as burning at a sprint too.
+                        // `hand_flame` shows, hides and flickers them.
+                        let egg = meshes.add(Sphere::new(1.0).mesh().uv(12, 8));
+                        for (core, color) in [
+                            (false, LinearRgba::new(1.5, 0.52, 0.12, 1.0)),
+                            (true, LinearRgba::new(2.2, 1.35, 0.55, 1.0)),
+                        ] {
+                            light.spawn((
+                                HandFlame { core },
+                                Mesh3d(egg.clone()),
+                                // Front faces only: an additive egg drawn
+                                // from both sides doubles into one flat
+                                // blob, where one side leaves the core to
+                                // be the brighter middle.
+                                MeshMaterial3d(materials.add(StandardMaterial {
+                                    base_color: Color::LinearRgba(color),
+                                    unlit: true,
+                                    alpha_mode: AlphaMode::Add,
+                                    ..default()
+                                })),
+                                Transform::from_scale(Vec3::ZERO),
+                                bevy::light::NotShadowCaster,
+                                Visibility::Hidden,
+                            ));
+                        }
+                    });
                 });
             });
     });
@@ -1385,7 +1468,7 @@ pub fn swap(
     )>,
     mut fallback: Query<&mut Visibility, (With<Fallback>, Without<HeldModel>)>,
 ) {
-    let (want, empty, skin, tint) = match net.as_deref() {
+    let (want, empty, skin, tint, tool) = match net.as_deref() {
         Some(n) => {
             let core = &n.session.core;
             let stack = core
@@ -1393,14 +1476,29 @@ pub fn swap(
                 .get(usize::from(n.sel).min(core.inv.len() - 1))
                 .copied();
             let skin = stack.map_or(0, |s| if s.count == 0 { 0 } else { s.skin });
+            // Food and paper are not tools: a left click eats or reads them
+            // (`ui::hold::Click`), and the hafted stand-in in the fist said
+            // the opposite — a mushroom drawn as an axe.
+            let tool = !matches!(
+                crate::ui::hold::click_in_hand(
+                    &core.catalog,
+                    &core.research,
+                    &core.deploy_defs,
+                    core.deploy_defs_have,
+                    &core.inv,
+                    n.sel,
+                ),
+                crate::ui::hold::Click::Eat | crate::ui::hold::Click::Read
+            );
             (
                 crate::ui::hold::held_model_in_hand(&core.catalog, &core.inv, n.sel),
                 stack.is_none_or(|s| s.count == 0),
                 skin,
                 crate::ui::skins::tint_of(&core.skins, skin),
+                tool,
             )
         }
-        None => (None, true, 0, None),
+        None => (None, true, 0, None, true),
     };
 
     for (mut held, mut mesh, mut mat, mut vis, mut tf) in &mut q {
@@ -1436,8 +1534,9 @@ pub fn swap(
             Visibility::Hidden
         };
     }
-    // The stand-in covers "no model of its own", never "nothing in hand".
-    let show_fallback = want.is_none() && !empty;
+    // The stand-in covers "a tool with no model of its own", never "nothing
+    // in hand" and never a meal.
+    let show_fallback = want.is_none() && !empty && tool;
     for mut v in &mut fallback {
         *v = if show_fallback {
             Visibility::Inherited
@@ -1472,9 +1571,40 @@ pub fn hand_light(
 ) {
     let want = net.as_deref().and_then(|n| {
         let core = &n.session.core;
-        crate::ui::hold::lit_model_in_hand(&core.catalog, &core.inv, n.sel, n.light)
+        // A downed body has dropped what it held, and the sim burns no
+        // flame on it (`light::is_lit`) — so neither does this screen.
+        let latch = n.light && !core.wounded && !core.dead;
+        crate::ui::hold::lit_model_in_hand(&core.catalog, &core.inv, n.sel, latch)
     });
     apply_hand_light(want, q);
+}
+
+/// Show and flicker [`HandFlame`] while the torch in your hand is lit — the
+/// same derived flame [`hand_light`] lights the world with.
+pub fn hand_flame(
+    net: Option<NonSend<Net>>,
+    time: Res<Time>,
+    mut q: Query<(&HandFlame, &mut Transform, &mut Visibility)>,
+) {
+    let lit = net.as_deref().is_some_and(|n| {
+        let core = &n.session.core;
+        let latch = n.light && !core.wounded && !core.dead;
+        crate::ui::hold::lit_model_in_hand(&core.catalog, &core.inv, n.sel, latch).is_some()
+    });
+    let t = time.elapsed_secs();
+    for (flame, mut tf, mut vis) in &mut q {
+        let want = if lit {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        if *vis != want {
+            *vis = want;
+        }
+        if lit {
+            *tf = hand_flame_pose(flame.core, t);
+        }
+    }
 }
 
 /// [`hand_light`] with the held row as a value. The half a gate can drive —

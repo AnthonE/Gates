@@ -39,9 +39,9 @@ use sim_core::limits::{
 use sim_core::research::{ResearchRow, NO_RECIPE};
 
 /// Longest event-lane message. Sized by the worst subtype (a full catalog
-/// batch ≈ 296 B since v64's per-row `stack_max` — it was ≈ 280 B from
-/// v46's `cond_max`, and `catalog_batches_walk_the_table_within_cap` is
-/// the one that measures rather than remembers — a full slot-sync batch
+/// batch ≈ 290 B since v80's three eat columns — 29 header bits and 286 a
+/// row; `catalog_batches_walk_the_table_within_cap` is the one that
+/// measures rather than remembers — a full slot-sync batch
 /// ≈ 258 B) with headroom; the client-side framer refuses past it.
 /// Registered in DECISIONS.md §open.
 pub const MAX_EVENT_MSG_BYTES: usize = 320;
@@ -689,6 +689,13 @@ pub struct ItemRow {
     /// scatters five stacks of wood across five slots beside the pile it
     /// should have joined.
     pub stack_max: u16,
+    /// What eating one unit pays (v80): `survival::ConsumableDef`'s food,
+    /// water and hp, all 0 for anything the eat verb refuses. The client
+    /// needs the fact to make a left click with food in hand EAT rather
+    /// than swing (`ui::hold`), and the numbers to say what it will do.
+    pub food: u16,
+    pub water: u16,
+    pub health: u16,
 }
 
 impl ItemRow {
@@ -697,7 +704,16 @@ impl ItemRow {
         armor_pct: 0,
         wear_slot: 0,
         stack_max: 0,
+        food: 0,
+        water: 0,
+        health: 0,
     };
+
+    /// Does the eat verb accept this item? `ConsumableDef::is_food`'s rule
+    /// on the same three numbers.
+    pub fn eats(&self) -> bool {
+        self.food > 0 || self.water > 0 || self.health > 0
+    }
 
     /// Is this pair one the sim could mean? A reduction with no slot pays
     /// nobody, so it is refused at both ends of the wire rather than
@@ -743,6 +759,10 @@ impl ItemRow {
 /// v64 added `stack_max` for the third turn of the same argument, and the
 /// field's own doc has the case. Sixteen bits a row, and the batch's
 /// worst case is what the note on [`MAX_EVENT_MSG_BYTES`] tracks.
+///
+/// v80 added the eat columns (`food`, `water`, `health`), the fourth turn:
+/// which items are food lives in `content/consumables.toml`, and the belt
+/// could not eat from a left click without knowing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ItemCatalog {
     pub names: [[u8; MAX_ITEM_NAME_BYTES]; MAX_ITEM_DEFS],
@@ -1764,6 +1784,10 @@ pub fn encode_event_catalog(
         // hold today's largest authored stack (1,000) and would silently
         // become wrong the day content names 1,024.
         w.write(row.stack_max as u32, 16)?;
+        // The eat columns (v80), full width for the same reason.
+        w.write(row.food as u32, 16)?;
+        w.write(row.water as u32, 16)?;
+        w.write(row.health as u32, 16)?;
     }
     Ok((w.finish(), count))
 }
@@ -3466,6 +3490,9 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     armor_pct: r.read(ARMOR_PCT_BITS)? as u8,
                     wear_slot: r.read(WEAR_SLOT_BITS)? as u8,
                     stack_max: r.read(16)? as u16,
+                    food: r.read(16)? as u16,
+                    water: r.read(16)? as u16,
+                    health: r.read(16)? as u16,
                 };
                 // Both fields fit their widths by construction; what the
                 // width cannot say is that 91 % is over the cap or that a
@@ -4581,6 +4608,7 @@ mod tests {
                     armor_pct: 20,
                     wear_slot: WEAR_NONE,
                     stack_max: 1,
+                    ..ItemRow::EMPTY
                 },
             ),
             Err(WireError::Range),
@@ -4595,6 +4623,7 @@ mod tests {
                     armor_pct: ARMOR_MAX_PCT as u8 + 1,
                     wear_slot: WEAR_BODY,
                     stack_max: 1,
+                    ..ItemRow::EMPTY
                 },
             ),
             Err(WireError::Range),
@@ -4609,6 +4638,7 @@ mod tests {
                     armor_pct: 10,
                     wear_slot: WEAR_SLOTS as u8 + 1,
                     stack_max: 1,
+                    ..ItemRow::EMPTY
                 },
             ),
             Err(WireError::Range),
@@ -4625,6 +4655,7 @@ mod tests {
                 armor_pct: 20,
                 wear_slot: WEAR_BODY,
                 stack_max: 1,
+                ..ItemRow::EMPTY
             },
         )
         .unwrap();
@@ -4699,6 +4730,7 @@ mod tests {
                     armor_pct: 0,
                     wear_slot: WEAR_NONE,
                     stack_max: 30,
+                    ..ItemRow::EMPTY
                 },
             ),
             Err(WireError::Range),
@@ -4714,6 +4746,7 @@ mod tests {
             armor_pct: 0,
             wear_slot: WEAR_NONE,
             stack_max: 1,
+            ..ItemRow::EMPTY
         };
         cat.set(0, b"Hatchet", plain).unwrap();
         let (one_len, _) = encode_event_catalog(&cat, 0, &mut buf).unwrap();
@@ -4899,12 +4932,17 @@ mod tests {
                 // V7 pins the odd rows — the ones given a condition
                 // above — to a stack of 1.
                 stack_max: if i % 2 == 0 { u16::MAX } else { 1 },
+                // The eat columns (v80) at their corners, distinct per row
+                // so a transposed pair shows up in the round trip below.
+                food: u16::MAX - i as u16,
+                water: u16::MAX - 2 * i as u16,
+                health: u16::MAX - 3 * i as u16,
             };
             cat.set(i, &name, row).unwrap();
         }
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
         let (len, took) = encode_event_catalog(&cat, 0, &mut buf).unwrap();
-        assert!(len <= MAX_EVENT_MSG_BYTES);
+        assert!(len <= MAX_EVENT_MSG_BYTES, "{len} B over the cap");
         assert_eq!(took, CATALOG_BATCH);
         match decode_event(&buf[..len]).unwrap() {
             EventMsg::Catalog {

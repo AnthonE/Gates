@@ -259,10 +259,15 @@ pub struct ShardHandle {
 /// "this slot has room for 40 more" is reading the same `u16` the sim will
 /// refuse it against, down to the conversion — `bake_gather`'s
 /// `u16::try_from` is the one place that narrowing happens.
+///
+/// `survival` (wire v80) is the third baked table read here, for the eat
+/// columns: the client makes a left click with food in hand a meal off
+/// them, so they are the rows `survival::consume` will charge.
 pub fn bake_catalog(
     content: &content::Content,
     combat: &sim_core::combat::CombatContent,
     gather: &sim_core::gather::GatherContent,
+    survival: &sim_core::survival::SurvivalContent,
 ) -> Result<ItemCatalog, String> {
     let mut cat = ItemCatalog::EMPTY;
     cat.count = content.items.len() as u16;
@@ -275,6 +280,7 @@ pub fn bake_catalog(
             )
         })?;
         let armor = combat.armor[idx];
+        let eat = survival.row(idx as u16).unwrap_or_default();
         cat.set(
             idx,
             item.name.as_bytes(),
@@ -283,6 +289,9 @@ pub fn bake_catalog(
                 armor_pct: armor.reduction_pct,
                 wear_slot: armor.slot,
                 stack_max: gather.stack_max_of(idx as u16),
+                food: eat.food,
+                water: eat.water,
+                health: eat.health,
             },
         )
         .map_err(|_| {
@@ -347,22 +356,23 @@ pub fn bake_all(content: &content::Content) -> Result<SimTables, String> {
     // reads their rows rather than re-deriving them (`bake_catalog`).
     let combat = content.bake_combat()?;
     let gather = content.bake_gather()?;
+    let survival = content.bake_survival()?;
     Ok(SimTables {
         craft: content.bake_craft()?,
         build: content.bake_building()?,
         deploy: content.bake_deployables()?,
         backpack: content.bake_backpack()?,
-        survival: content.bake_survival()?,
         cook: content.bake_cooking()?,
         spawn_kit: content.bake_spawn_kit()?,
         loot: content.bake_loot()?,
         mobs: content.bake_mobs()?,
         research: content.bake_research()?,
-        catalog: bake_catalog(content, &combat, &gather)?,
+        catalog: bake_catalog(content, &combat, &gather, &survival)?,
         skins: content.bake_skins()?,
         skin_catalog: bake_skin_catalog(content)?,
         combat,
         gather,
+        survival,
     })
 }
 

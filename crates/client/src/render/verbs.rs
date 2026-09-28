@@ -295,6 +295,22 @@ pub fn keys(
         keypad_keys(&keys, &net, &mut pad, &mut toast);
         return;
     }
+    // **A food slot's key eats one** and leaves the hand as it was — the
+    // other half of `input::gather`'s hotbar loop, off the same test
+    // (`hold::eats_on_key`). Below the keypad's claim, so a code typed into
+    // a door never eats the mushrooms in slot 3.
+    if !net.session.core.wounded {
+        for (i, k) in super::input::HOTBAR_KEYS.iter().enumerate() {
+            let core = &net.session.core;
+            let food = core
+                .inv
+                .get(i)
+                .is_some_and(|&s| crate::ui::hold::eats_on_key(&core.catalog, s));
+            if keys.just_pressed(*k) && food {
+                use_slot(&net, &mut toast, i as u8);
+            }
+        }
+    }
     if keys.just_pressed(KeyCode::KeyL) {
         access_aimed(&net, &aimed.0, &mut pad, &mut toast, Access::Join);
     }
@@ -373,6 +389,34 @@ pub fn keys(
     if hand.repairs() && !busy && mouse.just_pressed(MouseButton::Left) {
         repair_near(&net, &near.0, &mut toast);
     }
+    // **Left click eats what is in your hand** — Rust's belt: select the
+    // mushrooms, click, eat one. Until this the only way was `J`, which no
+    // prompt named, and the click swung the mushrooms at a tree instead
+    // (`input::gather` no longer sends that swing — `Click::swings`). A
+    // blueprint in the hand is read the same way. One per press: the action
+    // lane holds one action per client per tick, and a held button eating
+    // the whole stack would be the waste a meal ought not to be.
+    //
+    // Not while down: the sim ignores a downed body's hand
+    // (`World::live_slot_of`), so a sent eat would be a click that did
+    // nothing and said nothing.
+    if !busy && !net.session.core.wounded && mouse.just_pressed(MouseButton::Left) {
+        let core = &net.session.core;
+        let click = crate::ui::hold::click_in_hand(
+            &core.catalog,
+            &core.research,
+            &core.deploy_defs,
+            core.deploy_defs_have,
+            &core.inv,
+            net.sel,
+        );
+        if matches!(
+            click,
+            crate::ui::hold::Click::Eat | crate::ui::hold::Click::Read
+        ) {
+            use_slot(&net, &mut toast, net.sel);
+        }
+    }
     if keys.just_pressed(KeyCode::KeyX) {
         throw_near(&net, &near.0, &mut toast);
     }
@@ -387,11 +431,10 @@ pub fn keys(
         demolish_near(&net, &near.0, &mut toast);
     }
     if keys.just_pressed(KeyCode::KeyJ) {
-        // Eat what is in the selected hotbar slot. A key rather than a
-        // right-click because the swing arm is already spoken for, and a
-        // consume that shared it would fire every time you chopped a tree
-        // holding berries. Whether the slot holds food is the sim's verdict,
-        // announced back either way (`survival.rs`).
+        // Eat what is in the selected hotbar slot — the keyboard twin of the
+        // left click above, kept because it works with anything in the slot
+        // and says why when that is not food. Whether the slot holds food is
+        // the sim's verdict, announced back either way (`survival.rs`).
         //
         // **`J`, and it was `G` until 2026-08-16**, when `G` became the map
         // (`DECISIONS.md`, the control scheme). What the old binding was
@@ -402,26 +445,7 @@ pub fn keys(
         // A blueprint in the hand is READ rather than eaten (research table
         // v1): `ui::research::use_as` makes the call the inventory panel's
         // right-click makes, so the key and the click cannot disagree.
-        let slot = net.sel;
-        let stack = net
-            .session
-            .core
-            .inv
-            .get(slot as usize)
-            .copied()
-            .unwrap_or_default();
-        match crate::ui::research::use_as(&net.session.core.research, stack) {
-            crate::ui::research::UseAs::Read => {
-                send(&net, &mut toast, "read", |buf| {
-                    protocol::encode_action_research(slot, buf)
-                });
-            }
-            crate::ui::research::UseAs::Consume => {
-                send(&net, &mut toast, "eat", |buf| {
-                    protocol::encode_action_consume(slot, buf)
-                });
-            }
-        }
+        use_slot(&net, &mut toast, net.sel);
     }
     if keys.just_pressed(KeyCode::KeyV) {
         // Pick up the nearest spent arrow in reach (`sim-core/spent.rs`).
@@ -454,6 +478,31 @@ pub fn keys(
         // hand. Payload-free: the sim reads the heightfield under the body,
         // so there is nothing to aim and no reach for the client to guess.
         send(&net, &mut toast, "drink", protocol::encode_action_drink);
+    }
+}
+
+/// Use inventory `slot`: read it if it is a blueprint, eat it otherwise —
+/// `J`'s verb and the left click's, one call so the two cannot disagree.
+/// Whether it does anything is the sim's verdict, announced either way.
+fn use_slot(net: &Net, toast: &mut Toast, slot: u8) {
+    let stack = net
+        .session
+        .core
+        .inv
+        .get(slot as usize)
+        .copied()
+        .unwrap_or_default();
+    match crate::ui::research::use_as(&net.session.core.research, stack) {
+        crate::ui::research::UseAs::Read => {
+            send(net, toast, "read", |buf| {
+                protocol::encode_action_research(slot, buf)
+            });
+        }
+        crate::ui::research::UseAs::Consume => {
+            send(net, toast, "eat", |buf| {
+                protocol::encode_action_consume(slot, buf)
+            });
+        }
     }
 }
 

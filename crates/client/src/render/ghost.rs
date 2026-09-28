@@ -752,7 +752,12 @@ fn hide_deploy(commands: &mut Commands, ghost: &mut Ghost) {
     ghost.deploy_verdict = DeployVerdict::Unknown;
 }
 
-/// Right-click **outside** build mode places the held deployable.
+/// **Left** click places the held deployable — the reference's binding and
+/// the building plan's (`place_key`), so every placement in the game is one
+/// button. Right click still places too: it was this verb's only button
+/// until the belt went click-modal (`ui::hold::Click`), and taking it away
+/// would strand the players who learned it. Neither can swing any more
+/// (`input::gather`), so a box in hand is never swung at a tree.
 ///
 /// Without this a box, a bag and a furnace cannot be put down at all — which
 /// keeps the container panel and respawn-on-bag unreachable however well they
@@ -779,7 +784,8 @@ pub fn deploy_key(
         .map(|u| u.panel != super::panels::Panel::None)
         .unwrap_or(false)
         || chat.map(|c| c.open()).unwrap_or(false);
-    if busy || !mouse.just_pressed(MouseButton::Right) {
+    let pressed = mouse.just_pressed(MouseButton::Left) || mouse.just_pressed(MouseButton::Right);
+    if busy || !pressed || net.session.core.wounded {
         return;
     }
     let core = &net.session.core;

@@ -144,7 +144,12 @@ pub fn enter(
     // was given, so dying mid-stride would otherwise walk the corpse through
     // the screen. Yaw and pitch are kept — where you are looking is not
     // something you are doing.
+    //
+    // And the torch latch lets go: the body that held the flame is gone, and
+    // a latch carried through the respawn lit the kit's fresh torch with no
+    // click the moment slot 2 was in hand.
     if let Some(mut net) = net {
+        net.light = false;
         let sel = net.sel;
         net.session.core.set_input(
             0,
