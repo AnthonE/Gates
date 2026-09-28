@@ -346,14 +346,14 @@ impl Occupants<'_> {
                 if s <= feet_y {
                     continue;
                 }
-                if h < crate::movement::STEP_UP {
-                    hit = true;
-                } else if s > feet_y + crate::movement::STEP_UP
+                // A short volume is stopped by any rock above its feet; a
+                // body only by a rise it cannot step or a flank too steep
+                // to stand on.
+                if h < crate::movement::STEP_UP
+                    || s > feet_y + crate::movement::STEP_UP
                     || (s > feet_y + 0.05 && slope > terrain::CLIFF_SLOPE_RATIO)
                 {
                     hit = true;
-                }
-                if hit {
                     return;
                 }
             }

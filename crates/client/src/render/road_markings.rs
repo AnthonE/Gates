@@ -314,10 +314,13 @@ fn assign_runs(nodes: &mut [Node]) {
 mod tests {
     use super::*;
 
+    /// A ring halfway through the band the road may take.
+    const RING_R: f32 = (terrain::ROAD_R_MIN + terrain::ROAD_R_MAX) * 0.5;
+
     fn ring_nodes() -> Vec<Node> {
         vec![
             Node {
-                radius: 800.0,
+                radius: RING_R,
                 length: 1.0,
                 live: true,
                 paintable: true,
@@ -337,8 +340,8 @@ mod tests {
         assert!(end.cos() > 0.999);
         let chart = RoadChart { nodes };
         let c = terrain::ISLAND_SIZE * 0.5;
-        let a = chart.at(c + 800.0, c + 0.001).unwrap();
-        let b = chart.at(c + 800.0, c - 0.001).unwrap();
+        let a = chart.at(c + RING_R, c + 0.001).unwrap();
+        let b = chart.at(c + RING_R, c - 0.001).unwrap();
         assert!((a.phase[0] - b.phase[0]).abs() < 0.01);
         assert!((a.phase[1] - b.phase[1]).abs() < 0.01);
     }
@@ -352,8 +355,8 @@ mod tests {
         assert_eq!(nodes[0].run_length, (ROAD_CHART_SAMPLES - 1) as f32);
         let chart = RoadChart { nodes };
         let c = terrain::ISLAND_SIZE * 0.5;
-        assert!(chart.at(c - 800.0, c).is_none());
-        assert!(chart.at(c + 800.0, c).is_some());
+        assert!(chart.at(c - RING_R, c).is_none());
+        assert!(chart.at(c + RING_R, c).is_some());
     }
 
     #[test]

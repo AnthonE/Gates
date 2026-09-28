@@ -110,7 +110,7 @@ fn a_flank_stops_a_body_and_a_crown_holds_one() {
     let top = d.y + d.h;
     let g = occ.ground(seed, d.x, d.z, top);
     assert!(
-        (g - top).abs() < 0.6,
+        g > top - 0.6 && g < top + 0.6,
         "the crown of a rock is not ground: {g} against a top at {top}"
     );
 }

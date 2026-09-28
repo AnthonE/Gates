@@ -164,6 +164,9 @@ fn build_core(a: &Args) -> ShardCore {
     core
 }
 
+/// The herd's south-west corner: dry island interior on the default seed.
+const HERD_M: f32 = sim_core::terrain::ISLAND_SIZE * 0.44;
+
 /// Connect `n` clients and herd every body into one square, then hand each
 /// one an input frame so the sim has something to execute.
 fn fill_clients(core: &mut ShardCore, stats: &ShardStats, a: &Args) {
@@ -178,8 +181,8 @@ fn fill_clients(core: &mut ShardCore, stats: &ShardStats, a: &Args) {
         if !p.active {
             continue;
         }
-        p.body.qx = ((900.0 + (i % side) as f32 * a.pitch_m) / 0.03) as i32;
-        p.body.qz = ((900.0 + (i / side) as f32 * a.pitch_m) / 0.03) as i32;
+        p.body.qx = ((HERD_M + (i % side) as f32 * a.pitch_m) / 0.03) as i32;
+        p.body.qz = ((HERD_M + (i / side) as f32 * a.pitch_m) / 0.03) as i32;
     }
 }
 
@@ -188,7 +191,7 @@ fn fill_clients(core: &mut ShardCore, stats: &ShardStats, a: &Args) {
 /// back out. Deterministic in the slot, like everything else here.
 fn herd_near(core: &mut ShardCore, a: &Args) {
     let side = (a.clients as f32).sqrt().ceil().max(1.0);
-    let mid = 900.0 + side * a.pitch_m * 0.5;
+    let mid = HERD_M + side * a.pitch_m * 0.5;
     let seed = core.world.seed;
     let haven = core.world.haven;
     for (slot, m) in core.world.mobs.m.iter_mut().enumerate() {

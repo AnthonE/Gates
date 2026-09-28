@@ -1272,7 +1272,10 @@ mod tests {
         resolve_marks(&mut out, &haven, &deploys, &defs, have, &bags, 0, &[]);
 
         assert_eq!(out.count, MAP_MARKS_MAX);
-        assert_eq!(out.dropped, authored(&haven) + 1 + deploys.len() - MAP_MARKS_MAX);
+        assert_eq!(
+            out.dropped,
+            authored(&haven) + 1 + deploys.len() - MAP_MARKS_MAX
+        );
         let n = out.a[..out.count]
             .iter()
             .filter(|m| m.kind == MarkKind::Backpack)
@@ -1380,7 +1383,10 @@ mod tests {
         // Directly behind the authored tier — the rank that makes the
         // survival a property, and (reverse draw order) draws it on top.
         assert_eq!(out.a[authored(&haven)].kind, MarkKind::Bed);
-        assert_eq!((out.a[authored(&haven)].px, out.a[authored(&haven)].py), (px, py));
+        assert_eq!(
+            (out.a[authored(&haven)].px, out.a[authored(&haven)].py),
+            (px, py)
+        );
 
         // The same shard with no tag: drop-newest eats exactly this bed —
         // the defect this test exists to hold closed.
@@ -1408,10 +1414,17 @@ mod tests {
         resolve_marks(&mut out, &haven, &deploys, &defs, have, &[], 0, &own);
 
         assert_eq!(out.count, authored(&haven) + 3, "re-ranked, not duplicated");
-        assert_eq!(out.a[authored(&haven)].kind, MarkKind::Bed, "yours is first");
+        assert_eq!(
+            out.a[authored(&haven)].kind,
+            MarkKind::Bed,
+            "yours is first"
+        );
         let half = BUILD_CELL_M * 0.5;
         let (px, py) = world_to_map(10.0 * BUILD_CELL_M + half, 20.0 * BUILD_CELL_M + half, 1);
-        assert_eq!((out.a[authored(&haven)].px, out.a[authored(&haven)].py), (px, py));
+        assert_eq!(
+            (out.a[authored(&haven)].px, out.a[authored(&haven)].py),
+            (px, py)
+        );
         // The destroyed bed's anchor (900, 900) drew nothing: no mark
         // stands at its cell.
         let (gx, gy) = world_to_map(900.0 * BUILD_CELL_M + half, 900.0 * BUILD_CELL_M + half, 1);

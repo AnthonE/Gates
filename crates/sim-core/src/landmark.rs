@@ -533,7 +533,7 @@ fn try_site(
 
 /// The landmark whose disc (padded by `pad`) holds (`x`, `z`), if any. Cells
 /// are 512 m and a disc 26 m, so only the point's own cell can.
-pub fn at<'a>(marks: &'a [Landmark], x: f32, z: f32, pad: f32) -> Option<&'a Landmark> {
+pub fn at(marks: &[Landmark], x: f32, z: f32, pad: f32) -> Option<&Landmark> {
     let cx = floor_i32(x / LANDMARK_CELL_M);
     let cz = floor_i32(z / LANDMARK_CELL_M);
     if cx < 0 || cz < 0 || cx as usize >= LANDMARK_CELLS || cz as usize >= LANDMARK_CELLS {

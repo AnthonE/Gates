@@ -223,8 +223,9 @@ fn the_desktop_carries_the_range_and_a_browser_does_not() {
             .expect("props.rs");
     assert_eq!(
         props.matches("tree::lod_band(&lod.").count(),
-        3,
-        "every tree part's band goes through `tree::lod_band` — trunk, canopy, hull"
+        4,
+        "every tree part's band goes through `tree::lod_band` — trunk, canopy, \
+         and the hull as a mesh or as a card (`far_trees.rs`)"
     );
     assert!(
         !props.contains("lod.near.clone()") && !props.contains("lod.far.clone()"),

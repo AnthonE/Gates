@@ -498,45 +498,53 @@ fn chip(s: &mut Soup, at: Vec3, yaw: f32, size: Vec3, hex: u32, seed: u32) {
 }
 
 /// Corners around a [`stone`]'s base.
-pub const STONE_SIDES: usize = 6;
+const STONE_SIDES: usize = 6;
 
-/// A loose stone: a low, six-sided, flat-topped lump — scree, not a spike.
+/// Vertices one [`stone`] holds: its eight facets, unshared.
+pub const STONE_VERTS: usize = 24;
+
+/// A loose stone: a low six-cornered lump under a short ridge — scree, not a
+/// spike.
 ///
 /// **It replaced [`chip`] for the pebble and the shard** (2026-09-28). A chip
 /// is four facets to one apex, which is a square pyramid, and on bare rock —
 /// where every clutter cell is a shard — the ground read as a carpet of grey
 /// pyramids. A real stone lying on a surface is wider than it is tall and
-/// rounded on top, so this one has a shoulder ring at 70% of its height, pulled
-/// in, and a flat-ish cap: the same sink and the same volume-blended normals.
+/// rounded on top, so this one's top is a ridge, not a point: two crests
+/// along its long axis, each over three base corners, eight facets in all
+/// (`STONE_VERTS`, cheaper than a litter clump). Same sink and the same
+/// volume-blended normals as a chip.
 fn stone(s: &mut Soup, at: Vec3, yaw: f32, size: Vec3, hex: u32, seed: u32) {
     let base = linear(hex);
     let (sy, cy) = (yaw.sin(), yaw.cos());
     let rot = |p: Vec3| Vec3::new(p.x * cy + p.z * sy, p.y, -p.x * sy + p.z * cy);
     let sink = size.y * CHIP_SINK;
     let mut lo = [Vec3::ZERO; STONE_SIDES];
-    let mut hi = [Vec3::ZERO; STONE_SIDES];
-    for i in 0..STONE_SIDES {
+    for (i, p) in lo.iter_mut().enumerate() {
         let a = i as f32 * std::f32::consts::TAU / STONE_SIDES as f32 + 0.3;
         let r = 0.7 + 0.3 * hash01(seed, i as u32);
-        let (ca, sa) = (a.cos() * r, a.sin() * r);
-        lo[i] = at + rot(Vec3::new(ca * size.x, -sink, sa * size.z));
-        let k = 0.55 + 0.15 * hash01(seed, 20 + i as u32);
-        let hy = size.y * (0.62 + 0.16 * hash01(seed, 40 + i as u32));
-        hi[i] = at + rot(Vec3::new(ca * size.x * k, hy, sa * size.z * k));
+        *p = at + rot(Vec3::new(a.cos() * r * size.x, -sink, a.sin() * r * size.z));
     }
-    let top = at + Vec3::new(0.0, size.y, 0.0);
+    // The ridge: two crests on the long (x) axis, not quite level.
+    let crest = |k: u32, side: f32| {
+        let reach = 0.3 + 0.15 * hash01(seed, 20 + k);
+        let hy = size.y * (0.85 + 0.15 * hash01(seed, 40 + k));
+        at + rot(Vec3::new(side * reach * size.x, hy, 0.0))
+    };
+    let (h0, h1) = (crest(0, 1.0), crest(1, -1.0));
     let v = 0.8 + 0.4 * hash01(seed, 5);
     let col = move |_: Vec3| [base[0] * v, base[1] * v, base[2] * v, 1.0];
     let ctr = at + Vec3::new(0.0, (size.y - sink) * 0.4, 0.0);
-    for i in 0..STONE_SIDES {
-        let j = (i + 1) % STONE_SIDES;
-        s.tri(lo[i], hi[i], lo[j], col, Some(ctr), CHIP_VOLUME_BLEND);
-        s.tri(lo[j], hi[i], hi[j], col, Some(ctr), CHIP_VOLUME_BLEND);
-    }
-    for i in 0..STONE_SIDES {
-        let j = (i + 1) % STONE_SIDES;
-        s.tri(hi[i], top, hi[j], col, Some(ctr), CHIP_VOLUME_BLEND);
-    }
+    let mut tri = |a: Vec3, b: Vec3, c: Vec3| s.tri(a, b, c, col, Some(ctr), CHIP_VOLUME_BLEND);
+    // Corners 5, 0, 1 sit round crest 0 (bearing 0); 2, 3, 4 round crest 1.
+    tri(lo[5], h0, lo[0]);
+    tri(lo[0], h0, lo[1]);
+    tri(lo[1], h0, h1);
+    tri(lo[1], h1, lo[2]);
+    tri(lo[2], h1, lo[3]);
+    tri(lo[3], h1, lo[4]);
+    tri(lo[4], h1, h0);
+    tri(lo[4], h0, lo[5]);
 }
 
 /// Share of the rock channel's clutter cells that draw a stone at all.

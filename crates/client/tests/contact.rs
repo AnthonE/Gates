@@ -31,7 +31,7 @@
 use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::*;
 use client::render::clutter::{
-    element_mesh, CHIP_SINK, CHIP_VOLUME_BLEND, FRONDS_PER_CLUMP, STONE_SIDES, TUFT_H,
+    element_mesh, CHIP_SINK, CHIP_VOLUME_BLEND, FRONDS_PER_CLUMP, STONE_VERTS, TUFT_H,
 };
 use sim_core::terrain::{Clutter, ClutterElem};
 
@@ -52,8 +52,8 @@ const CHIP_VERTS: usize = 12;
 fn verts(kind: Clutter) -> usize {
     match kind {
         Clutter::Twig => CHIP_VERTS + FRONDS_PER_CLUMP as usize * 6,
-        // Pebble and shard are a `stone`: a side ring and a cap.
-        _ => STONE_SIDES * 9,
+        // Pebble and shard are a `stone`.
+        _ => STONE_VERTS,
     }
 }
 

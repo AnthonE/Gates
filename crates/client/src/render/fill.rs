@@ -182,7 +182,10 @@ pub const SKY_FILL_SCALE: f32 = 2.5;
 /// carries the exact number. The measured grass weight is 0.502_088; the
 /// 2e-6 it gained here is what makes the four a partition, which
 /// `tests/fill.rs` holds to 1e-6.
-pub const GROUND_MIX: [f32; 4] = [0.037_410, 0.502_090, 0.344_911, 0.115_589];
+/// Re-measured 2026-09-28 for the 4096 m island (from `[0.037_410,
+/// 0.502_090, 0.344_911, 0.115_589]`): more lowland per massif, so granite
+/// falls and sand rises.
+pub const GROUND_MIX: [f32; 4] = [0.045_678, 0.524_164, 0.350_093, 0.080_065];
 
 /// sRGB → linear, the exact piecewise transfer (not the 2.2 approximation).
 pub fn srgb_to_linear(v: f32) -> f32 {

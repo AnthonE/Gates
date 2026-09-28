@@ -123,6 +123,9 @@ const PINE_WHORL_BANDS: [u8; 5] = [1, 1, 2, 2, 2];
 #[allow(dead_code, reason = "pairs with pine_mesh, the far-LOD silhouette")]
 const PINE_MESH_POOL: usize = 4;
 
+/// A tree card's material per tint (`far_trees`).
+pub type CardMaterials = [Handle<super::far_trees::TreeCardMaterial>; TINT_POOL];
+
 /// Prop meshes and materials, built once and shared so a forest is instances
 /// rather than draw calls (`DESIGN.md` §9).
 #[derive(Resource)]
@@ -145,10 +148,7 @@ pub struct PropAssets {
     /// The far part as a turning card (`far_trees`), per variant, and its
     /// material per tint. `None` in the headless tier, where the lathed hull
     /// above stands in.
-    pub cards: Option<(
-        Vec<Handle<Mesh>>,
-        [Handle<super::far_trees::TreeCardMaterial>; TINT_POOL],
-    )>,
+    pub cards: Option<(Vec<Handle<Mesh>>, CardMaterials)>,
     blob: Handle<Mesh>,
     boulder: Handle<Mesh>,
     stump: Handle<Mesh>,

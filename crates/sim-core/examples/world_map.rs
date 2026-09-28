@@ -4,6 +4,14 @@
 //!
 //!   cargo run --release -p sim-core --example world_map -- [seed] [out.ppm] [px]
 
+// Host-side tool: printing, timing and writing a file are its job. The sim
+// walls ban them in SIM code; an example binary is not sim code.
+#![allow(
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    clippy::disallowed_types
+)]
+
 use sim_core::boulder;
 use sim_core::terrain::{self, RoadBand};
 use std::io::Write;
