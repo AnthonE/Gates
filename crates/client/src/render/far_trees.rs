@@ -51,6 +51,8 @@ pub type TreeCardMaterial = ExtendedMaterial<StandardMaterial, TreeCard>;
 
 /// The vertex shader, resolved against the asset root.
 pub const SHADER: &str = "shaders/tree_card.wgsl";
+/// Its depth-prepass twin.
+pub const PREPASS_SHADER: &str = "shaders/tree_card_prepass.wgsl";
 
 /// Edge of one tile of cards, metres — four prop chunks a side.
 pub const TILE_M: f32 = 256.0;
@@ -96,11 +98,17 @@ impl MaterialExtension for TreeCard {
         SHADER.into()
     }
     // A card is two triangles standing on a point until the vertex stage
-    // turns them; the stock prepass would draw them unturned. Past 290 m the
-    // depth prepass and the shadow cascades buy nothing a card could show.
-    fn enable_prepass() -> bool {
-        false
+    // turns them, so the prepass needs the same turn (`PREPASS_SHADER`).
+    // **It needs the prepass itself**: with a depth prepass on the camera the
+    // main pass writes no depth for masked meshes, and a card out of the
+    // prepass wrote none anywhere — the sky pass fogged it at the depth of
+    // the terrain behind it, a see-through ghost of a tree (2026-09-28).
+    fn prepass_vertex_shader() -> ShaderRef {
+        PREPASS_SHADER.into()
     }
+    // A card turned to the camera casts a card's shadow toward the sun, which
+    // is wrong from every angle but one; the shadow cascades end short of
+    // where cards begin anyway.
     fn enable_shadows() -> bool {
         false
     }
@@ -545,6 +553,10 @@ fn linear_to_srgb(v: f32) -> u8 {
 /// read as a pale ghost beside the mesh trees in front of it (2026-09-28).
 pub const CARD_CANOPY_SHADE: f32 = 0.6;
 
+/// How much a baked texel's coverage is scaled up before the alpha test:
+/// a texel half covered by needles is crown, not a gap.
+pub const CARD_COVERAGE_BOOST: f32 = 2.0;
+
 /// One tree, side-on, orthographic, into a `CARD_RES²` RGBA8 sRGB cell.
 fn bake_card(bark: &Mesh, needles: &Mesh, card: &Image) -> (Vec<u8>, CardDims) {
     let (h, _) = tree::bounds(&[bark, needles]);
@@ -694,6 +706,35 @@ fn bake_card(bark: &Mesh, needles: &Mesh, card: &Image) -> (Vec<u8>, CardDims) {
                 }
                 if s[3] > 0.0 {
                     acc[y * r + x] = [s[0] / s[3], s[1] / s[3], s[2] / s[3], 0.0];
+                }
+            }
+        }
+    }
+    // Close the crown. Needles rasterised through the needle photograph's own
+    // holes leave a speckled mask, and a speckled mask at a distance reads as
+    // a see-through ghost of a tree, not a tree (2026-09-28): coverage is
+    // boosted, then a hole whose neighbours are mostly crown is filled.
+    for t in acc.iter_mut() {
+        t[3] = (t[3] * CARD_COVERAGE_BOOST).min(1.0);
+    }
+    for _ in 0..2 {
+        let prev = acc.clone();
+        for y in 1..r - 1 {
+            for x in 1..r - 1 {
+                if prev[y * r + x][3] >= 0.5 {
+                    continue;
+                }
+                let mut solid = 0;
+                for dy in -1i32..=1 {
+                    for dx in -1i32..=1 {
+                        let q = prev[(y as i32 + dy) as usize * r + (x as i32 + dx) as usize];
+                        if (dx != 0 || dy != 0) && q[3] >= 0.5 {
+                            solid += 1;
+                        }
+                    }
+                }
+                if solid >= 5 {
+                    acc[y * r + x][3] = 1.0;
                 }
             }
         }
