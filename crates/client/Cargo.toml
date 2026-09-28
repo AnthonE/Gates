@@ -195,6 +195,11 @@ name = "tree"
 path = "tests/tree.rs"
 required-features = ["render"]
 
+[[test]]
+name = "far_trees"
+path = "tests/far_trees.rs"
+required-features = ["render"]
+
 # The tree LOD's spawn-site gate: it drives `props::spawn_slot` against a real
 # `World` and reads back what reached the ECS, which is the one thing a mesh
 # measurement cannot see. Same tier and same requirement as the suite above.

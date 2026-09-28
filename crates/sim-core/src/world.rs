@@ -44,8 +44,8 @@ const CH_SPAWN: u32 = 96;
 /// bearing's outer probe inside the 2048 m island square (an axis bearing
 /// lands exactly on its edge).
 const SPAWN_CANDIDATES: i32 = 48;
-const SPAWN_RAY_INNER: f32 = 640.0;
-const SPAWN_RAY_OUTER: f32 = 1024.0;
+const SPAWN_RAY_INNER: f32 = terrain::ISLAND_SIZE * 0.3125;
+const SPAWN_RAY_OUTER: f32 = terrain::ISLAND_SIZE * 0.5;
 /// Where on the beach to stand: above `movement::WADE_GROUND_MAX` (0.4 m,
 /// so a fresh spawn is on sand and not wading) and below the 2 m beach mask.
 const SPAWN_TARGET_H: f32 = 1.2;
@@ -6017,7 +6017,7 @@ mod tests {
     /// is deleted; this native guard is what it was written to back up, so a
     /// worldgen change that sinks or steepens the spawn fails here.
     const SMOKE_SEED: u64 = 20260731;
-    const SMOKE_SPAWN: (f32, f32) = (1024.0, 1024.0);
+    const SMOKE_SPAWN: (f32, f32) = (2048.0, 2048.0);
 
     /// **Wear is in `state_hash`, in all four container stores** (item
     /// durability v0, gate 4): two worlds differing ONLY in one stack's

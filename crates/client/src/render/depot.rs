@@ -57,9 +57,11 @@ pub enum Surface {
     Cargo,
     Paint,
     Timber,
+    /// Masonry — the landmarks' ruins and stones (`landmarks.rs`).
+    Stone,
 }
 
-pub const SURFACES: [Surface; 8] = [
+pub const SURFACES: [Surface; 9] = [
     Surface::Yard,
     Surface::Concrete,
     Surface::Sheet,
@@ -68,6 +70,7 @@ pub const SURFACES: [Surface; 8] = [
     Surface::Cargo,
     Surface::Paint,
     Surface::Timber,
+    Surface::Stone,
 ];
 
 impl Surface {
@@ -76,6 +79,7 @@ impl Surface {
             Self::Yard => 1.0 / DEPOT_YARD_TILE_M,
             Self::Concrete | Self::Paint => 1.0 / DEPOT_CONCRETE_TILE_M,
             Self::Timber => super::structures::tier(sim_core::build::MAT_WOOD).tiles_per_m,
+            Self::Stone => 1.0 / DEPOT_CONCRETE_TILE_M,
             _ => DEPOT_SHEET_TILES_PER_M,
         }
     }
@@ -85,6 +89,7 @@ impl Surface {
             Self::Yard => "gravel",
             Self::Concrete | Self::Paint => "concrete",
             Self::Timber => "wood",
+            Self::Stone => "stone",
             _ => "metal",
         }
     }
@@ -97,14 +102,14 @@ impl Surface {
 #[derive(Component)]
 pub struct DepotVisual;
 
-fn kit() -> [Soup; SURFACES.len()] {
+pub(super) fn kit() -> [Soup; SURFACES.len()] {
     std::array::from_fn(|_| Soup::default())
 }
 
 /// All materials are nonmetallic: oxidation/paint/concrete are dielectrics.
 /// The source's linear greyscale roughness occupies G; B cannot introduce
 /// metal because StandardMaterial multiplies it by the explicit zero below.
-fn material(surface: Surface, server: &AssetServer) -> StandardMaterial {
+pub(super) fn material(surface: Surface, server: &AssetServer) -> StandardMaterial {
     let maps = MapSet::load(server, surface.role());
     StandardMaterial {
         base_color_texture: Some(maps.albedo),
@@ -181,7 +186,7 @@ pub fn part_meshes(part: &Part, index: usize) -> Vec<(Surface, Mesh)> {
     finish(soups)
 }
 
-fn finish(soups: [Soup; SURFACES.len()]) -> Vec<(Surface, Mesh)> {
+pub(super) fn finish(soups: [Soup; SURFACES.len()]) -> Vec<(Surface, Mesh)> {
     soups
         .into_iter()
         .zip(SURFACES)
@@ -314,7 +319,12 @@ fn quad(
     }
 }
 
-fn cuboid(s: &mut [Soup; SURFACES.len()], b: [f32; 6], surface: Surface, tint: [f32; 3]) {
+pub(super) fn cuboid(
+    s: &mut [Soup; SURFACES.len()],
+    b: [f32; 6],
+    surface: Surface,
+    tint: [f32; 3],
+) {
     if b[0] >= b[3] || b[1] >= b[4] || b[2] >= b[5] {
         return;
     }

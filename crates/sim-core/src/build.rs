@@ -1915,7 +1915,10 @@ pub fn place(
         return;
     }
     let (ax, az) = anchor(cx, cz, loc);
-    if crate::depot::reserves(haven, ax, az, BUILD_CELL_M * 1.5) {
+    // A landmark's ground is its own, like the depot's (`landmark.rs`).
+    if crate::depot::reserves(haven, ax, az, BUILD_CELL_M * 1.5)
+        || crate::landmark::covers(&haven.marks, ax, az, BUILD_CELL_M * 1.5)
+    {
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SPOT, 0);
         return;
     }
@@ -2592,9 +2595,9 @@ mod tests {
         static HV: std::sync::OnceLock<crate::terrain::Haven> = std::sync::OnceLock::new();
         HV.get_or_init(|| crate::terrain::haven(SEED))
     }
-    /// The smoke spawn's build cell: (1024 m, 1024 m) / 3 m.
-    const CX: u16 = 341;
-    const CZ: u16 = 341;
+    /// The smoke spawn's build cell: (2048 m, 2048 m) / 3 m.
+    const CX: u16 = 682;
+    const CZ: u16 = 682;
 
     fn player_at_cell_center(items: &[(u16, u16)]) -> Player {
         let mut p = Player {

@@ -316,7 +316,7 @@ fn tiles_of_interest(haven: &Haven) -> Vec<(i32, i32)> {
             v.push((px + dx, pz + dz));
         }
     }
-    let c = (1024.0 / CLUTTER_TILE_M) as i32;
+    let c = (terrain::ISLAND_SIZE * 0.5 / CLUTTER_TILE_M) as i32;
     for dz in -2..=2 {
         for dx in -2..=2 {
             v.push((c + dx, c + dz));
@@ -705,7 +705,7 @@ fn the_rich_stratum_still_fires_at_the_rate_its_header_claims() {
     let haven = hv(seed);
     let mut rich = 0u64;
     let mut land = 0u64;
-    let c = (1024.0 / CLUTTER_CELL_M) as i32;
+    let c = (terrain::ISLAND_SIZE * 0.5 / CLUTTER_CELL_M) as i32;
     for j in 0..160 {
         for i in 0..160 {
             let (cx, cz) = (c + i, c + j);

@@ -45,6 +45,31 @@ use std::path::Path;
 ///   provably cannot move it across (sea level, at a site that sits well above
 ///   it), or it is a depiction at a scale the carve is invisible at.
 const RAW_READERS: &[(&str, &str, &str)] = &[
+    (
+        "landmark.rs",
+        "try_site",
+        "locator: a landmark is sited against the raw surface, off every road \
+         and site the carve touches, so over its disc the two are one surface.",
+    ),
+    (
+        "terrain.rs",
+        "smooth_ring",
+        "locator: `solve_ring`'s own corner-rounding pass, against the same raw \
+         surface the solve reads, for `ring_probe`'s reason.",
+    ),
+    (
+        "terrain.rs",
+        "trail_clear",
+        "locator: a landmark trail's corridor test, run inside `haven` while \
+         the carve it would read is still being solved.",
+    ),
+    (
+        "boulder.rs",
+        "formation",
+        "locator: a rock formation is placed against the raw surface, and it \
+         keeps clear of every road and site the carve touches, so over its \
+         footprint the two surfaces are the same one.",
+    ),
     // ---- terrain.rs: the solver itself -------------------------------------
     (
         "terrain.rs",

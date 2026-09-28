@@ -497,6 +497,55 @@ fn chip(s: &mut Soup, at: Vec3, yaw: f32, size: Vec3, hex: u32, seed: u32) {
     }
 }
 
+/// Corners around a [`stone`]'s base.
+pub const STONE_SIDES: usize = 6;
+
+/// A loose stone: a low, six-sided, flat-topped lump — scree, not a spike.
+///
+/// **It replaced [`chip`] for the pebble and the shard** (2026-09-28). A chip
+/// is four facets to one apex, which is a square pyramid, and on bare rock —
+/// where every clutter cell is a shard — the ground read as a carpet of grey
+/// pyramids. A real stone lying on a surface is wider than it is tall and
+/// rounded on top, so this one has a shoulder ring at 70% of its height, pulled
+/// in, and a flat-ish cap: the same sink and the same volume-blended normals.
+fn stone(s: &mut Soup, at: Vec3, yaw: f32, size: Vec3, hex: u32, seed: u32) {
+    let base = linear(hex);
+    let (sy, cy) = (yaw.sin(), yaw.cos());
+    let rot = |p: Vec3| Vec3::new(p.x * cy + p.z * sy, p.y, -p.x * sy + p.z * cy);
+    let sink = size.y * CHIP_SINK;
+    let mut lo = [Vec3::ZERO; STONE_SIDES];
+    let mut hi = [Vec3::ZERO; STONE_SIDES];
+    for i in 0..STONE_SIDES {
+        let a = i as f32 * std::f32::consts::TAU / STONE_SIDES as f32 + 0.3;
+        let r = 0.7 + 0.3 * hash01(seed, i as u32);
+        let (ca, sa) = (a.cos() * r, a.sin() * r);
+        lo[i] = at + rot(Vec3::new(ca * size.x, -sink, sa * size.z));
+        let k = 0.55 + 0.15 * hash01(seed, 20 + i as u32);
+        let hy = size.y * (0.62 + 0.16 * hash01(seed, 40 + i as u32));
+        hi[i] = at + rot(Vec3::new(ca * size.x * k, hy, sa * size.z * k));
+    }
+    let top = at + Vec3::new(0.0, size.y, 0.0);
+    let v = 0.8 + 0.4 * hash01(seed, 5);
+    let col = move |_: Vec3| [base[0] * v, base[1] * v, base[2] * v, 1.0];
+    let ctr = at + Vec3::new(0.0, (size.y - sink) * 0.4, 0.0);
+    for i in 0..STONE_SIDES {
+        let j = (i + 1) % STONE_SIDES;
+        s.tri(lo[i], hi[i], lo[j], col, Some(ctr), CHIP_VOLUME_BLEND);
+        s.tri(lo[j], hi[i], hi[j], col, Some(ctr), CHIP_VOLUME_BLEND);
+    }
+    for i in 0..STONE_SIDES {
+        let j = (i + 1) % STONE_SIDES;
+        s.tri(hi[i], top, hi[j], col, Some(ctr), CHIP_VOLUME_BLEND);
+    }
+}
+
+/// Share of the rock channel's clutter cells that draw a stone at all.
+///
+/// Every clutter cell on bare rock is a shard (`terrain::kind_from_splat`), one
+/// per 0.64 m, and a stone every 0.64 m is gravel spread by hand. A rock face
+/// carries a few loose stones; the rest is the face itself.
+pub const SHARD_KEEP: f32 = 0.22;
+
 /// A litter clump: the fallen stick this kind has always been, plus the
 /// standing stalks the growing channel was owed.
 ///
@@ -577,11 +626,11 @@ fn element(s: &mut Soup, e: &ClutterElem) {
     match e.kind {
         Clutter::None => {}
         Clutter::Tuft => card(s, at, yaw, seed, TUFT_H * e.scale),
-        Clutter::Pebble => chip(
+        Clutter::Pebble => stone(
             s,
             at,
             yaw,
-            Vec3::new(0.05, 0.035, 0.05) * e.scale,
+            Vec3::new(0.06, 0.028, 0.05) * e.scale,
             PEBBLE_C,
             seed,
         ),
@@ -590,11 +639,11 @@ fn element(s: &mut Soup, e: &ClutterElem) {
         // `BRUSH_H` for why that is the whole of the change, and why this arm
         // must stay beside `Tuft` in `masked` rather than being remembered to.
         Clutter::Brush => card(s, at, yaw, seed, BRUSH_H * e.scale),
-        Clutter::Shard => chip(
+        Clutter::Shard => stone(
             s,
             at,
             yaw,
-            Vec3::new(0.07, 0.06, 0.055) * e.scale,
+            Vec3::new(0.08, 0.035, 0.06) * e.scale,
             SHARD_C,
             seed,
         ),
@@ -732,6 +781,14 @@ pub fn stream(
             let mut n_solid = 0usize;
             let mut n_cards = 0usize;
             for e in buf.iter().take(n) {
+                if e.kind == Clutter::Shard
+                    && hash01(
+                        (e.x * 64.0) as i32 as u32,
+                        (e.z * 64.0) as i32 as u32 ^ 0x5eed,
+                    ) > SHARD_KEEP
+                {
+                    continue;
+                }
                 if masked(e.kind) {
                     n_cards += 1;
                     element(&mut cards, e);

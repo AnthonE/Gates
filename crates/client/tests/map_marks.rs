@@ -76,6 +76,7 @@ fn draw(kind: MarkKind, icons: bool) -> (App, Entity) {
         kind,
         px: 0.5,
         py: 0.5,
+        name: None,
     }));
     if icons {
         app.add_systems(Startup, client::render::icons::load);

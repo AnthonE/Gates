@@ -8,6 +8,7 @@
 pub mod assist;
 pub mod backpack;
 pub mod bots;
+pub mod boulder;
 pub mod brain;
 pub mod build;
 pub mod charge;
@@ -24,6 +25,7 @@ pub mod gather;
 pub mod grounditem;
 pub mod input;
 pub mod inventory;
+pub mod landmark;
 pub mod light;
 pub mod limits;
 pub mod lock;

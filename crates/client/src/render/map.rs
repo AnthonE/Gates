@@ -567,7 +567,11 @@ pub fn spawn_mark(
     // which is why this is a `match` and not `is_authored`.
     let hollow = matches!(
         m.kind,
-        MarkKind::Haven | MarkKind::Waystation | MarkKind::Depot | MarkKind::BedSpent
+        MarkKind::Haven
+            | MarkKind::Waystation
+            | MarkKind::Depot
+            | MarkKind::Landmark
+            | MarkKind::BedSpent
     );
     let mut node = Node {
         position_type: PositionType::Absolute,
@@ -626,7 +630,7 @@ pub fn spawn_mark(
     // centred row is what puts it under the badge's own axis: a text node
     // sized to its own string would hang off the right of the marker and the
     // two tiers' labels would not line up with each other.
-    if let Some(name) = m.kind.site_label() {
+    if let Some(name) = m.name.or_else(|| m.kind.site_label()) {
         e.with_children(|badge| {
             badge
                 .spawn(Node {

@@ -49,8 +49,8 @@ pub const CHUNK_M: f32 = 64.0;
 pub const NEAR_N: usize = 65;
 /// Near ring radius in chunks — a 5×5 ring, 160 m to the corner.
 pub const NEAR_RADIUS: i32 = 2;
-/// Vertices per far-mesh side: 2048 m at 8 m plus the edge.
-pub const FAR_N: usize = 257;
+/// Vertices per far-mesh side: the island at [`FAR_STEP`] plus the edge.
+pub const FAR_N: usize = (terrain::ISLAND_SIZE / FAR_STEP) as usize + 1;
 /// Far-mesh sample step, metres.
 pub const FAR_STEP: f32 = 8.0;
 /// How far the far mesh sits below the near ring so the boundary cannot
@@ -436,6 +436,11 @@ pub const RING_CHUNKS: usize = ((2 * NEAR_RADIUS + 1) * (2 * NEAR_RADIUS + 1)) a
 impl Ring {
     pub fn len(&self) -> usize {
         self.built.len()
+    }
+    /// The near ground's splat material, once built — what the rock
+    /// formations wear (`boulders.rs`), so a boulder and a cliff are one rock.
+    pub fn ground_material(&self) -> Option<Handle<GroundMaterial>> {
+        self.ground.clone()
     }
 
     /// Soak the island's ground to `wet` (`0..1`, weather v0): the near and
@@ -1032,28 +1037,16 @@ pub fn heightfield(
             let t_v = Vec3::new(2.0 * d, hx, 0.0).normalize();
             tangents.push([t_v.x, t_v.y, t_v.z, 1.0]);
 
-            // `terrain::ground_slope`'s own body, over taps already in hand.
-            //
-            // ⚠ The fallback must be `ground_slope` and NOT `slope`: the taps
-            // in `hcur`/`hnext`/`hprev` are `terrain::ground`'s, so the fast
-            // branch computes a gradient of the CARVED surface, and a raw
-            // `slope` here would make one vertex in a chunk shade against a
-            // different island than its neighbour. The two branches are one
-            // claim — "the gradient of the ground this mesh is drawing" — and
-            // the only difference between them is whether the taps were
-            // already in hand.
-            let sl = if grid_slope {
-                let sx = (hcur[ix + 2] - hcur[ix]) * 0.5;
-                let sz = (hnext[ix + 1] - hprev[ix + 1]) * 0.5;
-                (sx * sx + sz * sz).sqrt()
-            } else {
-                terrain::ground_slope_memo(&mut lat, seed, haven, x, z)
-            };
-
             // `splat_from` rather than `splat` because the height and the
             // slope are the ones this vertex just resolved; `splat` would
             // sample both again.
-            let mut w = terrain::splat_from(y, terrain::moisture_memo(&mut lat, seed, x, z), sl);
+            //
+            // **At zero slope: the biome weights alone.** The cliff veto is
+            // decided per pixel in `ground_splat.wgsl` from the interpolated
+            // normal (`ground_splat::CLIFF_TAN_LO`), because a near-binary
+            // weight interpolated across triangles draws the triangles — a
+            // grass/rock edge of teeth one vertex step wide.
+            let mut w = terrain::splat_from(y, terrain::moisture_memo(&mut lat, seed, x, z), 0.0);
             // …then the coast road worn into it, but only on a mesh fine
             // enough to draw one.
             //

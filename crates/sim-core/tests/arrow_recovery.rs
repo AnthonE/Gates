@@ -120,14 +120,14 @@ fn archer(id: u32, x: f32, feet_y: f32, z: f32, pitch: u8) -> Player {
 /// the flight is not what this suite is about, `tests/shoot.rs` owns that.
 fn fire_into_the_ground(seed: u64, break_pct: u16) -> (SpentArrows, u64) {
     let mut sc = Scratch::with(seed, Pristine);
-    let ground = sim_core::terrain::ground(seed, &sc.haven, 1024.0, 1024.0);
+    let ground = sim_core::terrain::ground(seed, &sc.haven, 2048.0, 2048.0);
     let cc = bow(break_pct);
     let cols = sim_core::collide::ColIndex::new();
     let mut players = Box::new([Player::default(); MAX_PLAYERS]);
     // 20 m up, aimed straight down. `pitch` is the wire's byte and its
     // poles are not where a reader guesses: `pitch_lut.rs` puts **0 at
     // straight down** and 255 straight up, with level between 127 and 128.
-    players[0] = archer(1, 1024.0, ground + 20.0, 1024.0, 0);
+    players[0] = archer(1, 2048.0, ground + 20.0, 2048.0, 0);
     let mut arrows = Arrows::new();
     let mut spent = SpentArrows::new();
     let mut kills = [Kill::default(); MAX_ARROWS];
@@ -242,20 +242,20 @@ fn an_arrow_that_drew_blood_waits_out_its_lodge() {
     let mut sc = Scratch::with(seed, Pristine);
     let cc = bow(0);
     let cols = sim_core::collide::ColIndex::new();
-    let ground = sim_core::terrain::ground(seed, &sc.haven, 1024.0, 1024.0);
+    let ground = sim_core::terrain::ground(seed, &sc.haven, 2048.0, 2048.0);
     let mut players = Box::new([Player::default(); MAX_PLAYERS]);
     // Shooter and victim on one level line 6 m apart along +Z, so the
     // arrow reaches flesh long before it reaches dirt.
     // 128 is level — the value a client actually sends looking at the
     // horizon (`pitch_lut.rs`: 0 rad has no exact byte).
-    players[0] = archer(1, 1024.0, ground, 1024.0, 128);
+    players[0] = archer(1, 2048.0, ground, 2048.0, 128);
     players[1] = Player {
         id: 2,
         active: true,
         hp: 100,
         hp_max: 100,
         body: Body {
-            qx: (1024.0 / POS_XZ_Q) as i32,
+            qx: (2048.0 / POS_XZ_Q) as i32,
             qy: ((ground + ARROW_EYE_MM as f32 / 1000.0 - 1.2) / POS_Y_Q) as i32,
             qz: (1030.0 / POS_XZ_Q) as i32,
             ..Body::default()

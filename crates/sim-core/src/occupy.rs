@@ -179,6 +179,25 @@ pub struct SlotCache {
     /// that motivated the cache.
     resolves: u32,
     lines: [Line; SLOT_CACHE_SLOTS],
+    /// Resolved rock formations (`boulder::formation`), keyed by formation
+    /// cell. On the heap: the line array above already sits in this struct.
+    rocks: Box<[RockLine; ROCK_CACHE_LINES]>,
+}
+
+/// Formation cells the cache keeps. A body touches at most four; a shard's
+/// roster spreads over a few hundred. A collision re-resolves, bit-identically.
+pub const ROCK_CACHE_LINES: usize = 256;
+
+/// How far a body is held off a rock's drawn surface, metres: the capsule's
+/// own radius, less a little so it reads as touching rather than hovering.
+pub const ROCK_SKIN_M: f32 = CAPSULE_RADIUS_M * 0.85;
+
+const _: () = assert!(ROCK_CACHE_LINES.is_power_of_two());
+
+#[derive(Clone, Copy)]
+struct RockLine {
+    key: u32,
+    f: crate::boulder::Formation,
 }
 
 impl SlotCache {
@@ -190,7 +209,32 @@ impl SlotCache {
                 key: NO_KEY,
                 slot: EMPTY_SLOT,
             }; SLOT_CACHE_SLOTS],
+            rocks: crate::boxed_array(RockLine {
+                key: NO_KEY,
+                f: crate::boulder::Formation::EMPTY,
+            }),
         }
+    }
+
+    /// The formation in rock cell (`bx`, `bz`), resolved once per seed.
+    pub fn formation(
+        &mut self,
+        seed: u64,
+        haven: &Haven,
+        bx: i32,
+        bz: i32,
+    ) -> crate::boulder::Formation {
+        if self.seed != seed {
+            self.reset(seed);
+        }
+        let key = ((bx as u32 & 0xFFFF) << 16) | (bz as u32 & 0xFFFF);
+        let ix = (key.wrapping_mul(2_654_435_761) >> 20) as usize & (ROCK_CACHE_LINES - 1);
+        if self.rocks[ix].key == key {
+            return self.rocks[ix].f;
+        }
+        let f = crate::boulder::formation(seed, haven, bx, bz);
+        self.rocks[ix] = RockLine { key, f };
+        f
     }
 
     /// The running count of `terrain::scatter` calls this cache has made.
@@ -204,6 +248,11 @@ impl SlotCache {
         let mut i = 0;
         while i < SLOT_CACHE_SLOTS {
             self.lines[i].key = NO_KEY;
+            i += 1;
+        }
+        let mut i = 0;
+        while i < ROCK_CACHE_LINES {
+            self.rocks[i].key = NO_KEY;
             i += 1;
         }
     }
@@ -257,6 +306,61 @@ pub struct Occupants<'a> {
 }
 
 impl Occupants<'_> {
+    /// The highest rock crown under (`x`, `z`) within a step of `feet_y`.
+    fn rock_ground(&mut self, seed: u64, x: f32, z: f32, feet_y: f32) -> f32 {
+        let mut best = crate::collide::NO_SURFACE;
+        let (cache, haven) = (&mut *self.cache, self.haven);
+        crate::boulder::cells_near(x, z, ROCK_SKIN_M, |bx, bz| {
+            let f = cache.formation(seed, haven, bx, bz);
+            for d in f.iter() {
+                if let Some((s, _)) = crate::boulder::surface(d, x, z, ROCK_SKIN_M) {
+                    if s <= feet_y + crate::movement::STEP_UP && s > best {
+                        best = s;
+                    }
+                }
+            }
+        });
+        best
+    }
+
+    /// Whether a rock stops a volume of radius `r` and height `h` at
+    /// (`x`, `z`) with its bottom at `feet_y`.
+    ///
+    /// A body (a volume a step or more tall) is stopped by a flank — rock
+    /// above its feet that is steeper than the cliff ratio or more than a
+    /// step up — and walks on a crown. Anything smaller (an arrow's probe) is
+    /// stopped by being inside the rock at all.
+    fn rock_blocks(&mut self, seed: u64, x: f32, z: f32, feet_y: f32, r: f32, h: f32) -> bool {
+        let mut hit = false;
+        let (cache, haven) = (&mut *self.cache, self.haven);
+        let dil = ROCK_SKIN_M.max(r);
+        crate::boulder::cells_near(x, z, dil, |bx, bz| {
+            if hit {
+                return;
+            }
+            let f = cache.formation(seed, haven, bx, bz);
+            for d in f.iter() {
+                let Some((s, slope)) = crate::boulder::surface(d, x, z, dil) else {
+                    continue;
+                };
+                if s <= feet_y {
+                    continue;
+                }
+                if h < crate::movement::STEP_UP {
+                    hit = true;
+                } else if s > feet_y + crate::movement::STEP_UP
+                    || (s > feet_y + 0.05 && slope > terrain::CLIFF_SLOPE_RATIO)
+                {
+                    hit = true;
+                }
+                if hit {
+                    return;
+                }
+            }
+        });
+        hit
+    }
+
     /// Does anything scattered stop a capsule standing at (`x`, `z`) with its
     /// feet at `feet_y`?
     ///
@@ -282,6 +386,11 @@ impl Occupants<'_> {
         let pcx = floor_i32(x / CELL_SIZE);
         let pcz = floor_i32(z / CELL_SIZE);
         let mut best = crate::depot::ground(self.haven, x, z, feet_y);
+        // The rock formations' crowns (`boulder.rs`): a dome's top is ground
+        // within a step of the feet, like any other occupant's lid. Its flank
+        // is a wall, which `blocks_volume` answers.
+        best = best.max(self.rock_ground(seed, x, z, feet_y));
+        best = best.max(crate::landmark::ground(&self.haven.marks, x, z, feet_y));
         let mut dz = -terrain::OCCUPANT_PROBE_CELLS;
         while dz <= terrain::OCCUPANT_PROBE_CELLS {
             let mut dx = -terrain::OCCUPANT_PROBE_CELLS;
@@ -339,6 +448,12 @@ impl Occupants<'_> {
              wider query needs OCCUPANT_PROBE_CELLS re-proved with it"
         );
         if crate::depot::blocks(self.haven, x, z, feet_y, r, h) {
+            return true;
+        }
+        if self.rock_blocks(seed, x, z, feet_y, r, h) {
+            return true;
+        }
+        if crate::landmark::blocks(&self.haven.marks, x, z, feet_y, r, h) {
             return true;
         }
         let pcx = floor_i32(x / CELL_SIZE);
@@ -413,6 +528,8 @@ impl Scratch<Barren> {
                 // No side road either, for the same reason.
                 roads: [terrain::SideRoad::NONE; terrain::SIDE_ROADS],
                 ore_pm: terrain::ORE_PM_UNIT,
+                marks: crate::landmark::NO_MARKS,
+                trails: [terrain::SideRoad::NONE; crate::landmark::LANDMARKS],
             },
             harvested: Barren,
             cache: SlotCache::new(),

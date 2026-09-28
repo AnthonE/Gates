@@ -1838,7 +1838,9 @@ pub fn place_deploy(
         return;
     }
     let (ax, az) = cell_center(cx, cz);
-    if crate::depot::reserves(haven, ax, az, crate::build::BUILD_CELL_M * 1.5) {
+    if crate::depot::reserves(haven, ax, az, crate::build::BUILD_CELL_M * 1.5)
+        || crate::landmark::covers(&haven.marks, ax, az, crate::build::BUILD_CELL_M * 1.5)
+    {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_SPOT, 0);
         return;
     }

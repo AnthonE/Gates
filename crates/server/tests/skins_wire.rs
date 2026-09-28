@@ -14,7 +14,7 @@ use sim_core::gather::{GatherContent, ItemStack};
 use sim_core::skin::{SkinContent, SkinDef, SkinSet};
 
 const SEED: u64 = 20_260_731;
-const SPAWN: (f32, f32) = (1024.0, 1024.0);
+const SPAWN: (f32, f32) = (2048.0, 2048.0);
 /// Recipe 1 of the craft probe fixture: 2 × item 1 + 1 × item 2 → item 3,
 /// no station.
 const RECIPE: u16 = 1;

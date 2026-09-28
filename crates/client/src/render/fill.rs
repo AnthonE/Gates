@@ -97,7 +97,15 @@ pub const SKY_FILL_SRGB: [f32; 3] = [0.80, 0.85, 0.95];
 /// cannot move. What moves is only how the fill is *distributed* over normal
 /// direction, which is a change no global statistic can be made worse by: the
 /// darks come back on down-facing faces and nowhere else.
-pub const SKY_FILL_LUX: f32 = lux::AMBIENT_DAYLIGHT * 1.7;
+///
+/// **Raised from ×1.7 to ×2.5 (2026-09-28).** A slope facing away from a 35°
+/// sun is lit by this term alone, and at ×1.7 against 100 klx of sun it sat
+/// more than two stops under the lit ground — the operator's frames showed
+/// whole hillsides in shade as near-black bands. Games lift the shade side
+/// well above a photograph's; ×2.5 keeps the shadow reading as shadow.
+pub const SKY_FILL_LUX: f32 = lux::AMBIENT_DAYLIGHT * SKY_FILL_SCALE;
+/// Multiple of `lux::AMBIENT_DAYLIGHT` the sky half delivers at the zenith.
+pub const SKY_FILL_SCALE: f32 = 2.5;
 
 /// The island's ground mix — **measured over the whole world square, which is
 /// the half this constant used to get wrong**.

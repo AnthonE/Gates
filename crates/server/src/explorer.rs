@@ -2526,7 +2526,7 @@ mod tests {
         let centre = terrain::ISLAND_SIZE * 0.5;
         let mut shore = None;
         'search: for (dx, dz) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
-            for step in 0..600 {
+            for step in 0..1020 {
                 let (x, z) = (
                     centre + dx * step as f32 * 2.0,
                     centre + dz * step as f32 * 2.0,

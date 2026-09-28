@@ -73,14 +73,14 @@ fn shore_eye() -> Vec3 {
     // the sea, then step back into the surf band. Found, never written down:
     // where a seed's coastline is is the seed's business.
     let haven = sim_core::terrain::haven(SEED);
-    let mut x = 1024.0f32;
+    let mut x = 2048.0f32;
     while x < 2048.0 {
-        if sim_core::terrain::ground(SEED, &haven, x, 1024.0) < 0.0 {
-            return Vec3::new(x - 4.0, 2.0, 1024.0);
+        if sim_core::terrain::ground(SEED, &haven, x, 2048.0) < 0.0 {
+            return Vec3::new(x - 4.0, 2.0, 2048.0);
         }
         x += 4.0;
     }
-    Vec3::new(1024.0, 2.0, 1024.0)
+    Vec3::new(2048.0, 2.0, 2048.0)
 }
 
 fn app(at: Vec3) -> App {
@@ -297,7 +297,7 @@ fn a_diagonal_and_a_long_jump_carry_nothing() {
 /// where a carry could look right for the wrong reason.
 #[test]
 fn walking_inland_carries_and_changes_nothing() {
-    let start = Vec3::new(1024.0, 20.0, 1024.0);
+    let start = Vec3::new(2048.0, 20.0, 2048.0);
     let mut walked = app(start);
     for k in 1..=5 {
         walked.world_mut().resource_mut::<Eye>().pos =

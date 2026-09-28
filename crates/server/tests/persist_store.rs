@@ -23,7 +23,7 @@ const SEED: u64 = 20_260_731;
 const CONTENT: u64 = 0x0123_4567_89ab_cdef;
 /// The dev shard's own fixture, `dev_spawn`-style: two clients on one point so
 /// a restored position is distinguishable from a spawn-ring one.
-const SPAWN: (f32, f32) = (1024.0, 1024.0);
+const SPAWN: (f32, f32) = (2048.0, 2048.0);
 
 fn id_of(slot: usize) -> u32 {
     (1 << 8) | slot as u32

@@ -25,8 +25,8 @@ use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, ARCH_BAG, ARCH_HEART
 use sim_core::movement::POS_XZ_Q;
 use sim_core::terrain::{self, Haven, ISLAND_SIZE, MINOR_SITES, SEA_LEVEL};
 
-/// Metres per grid square. 2048 / 128 = 16 squares a side.
-pub const GRID_M: f32 = 128.0;
+/// Metres per grid square. 4096 / 256 = 16 squares a side.
+pub const GRID_M: f32 = 256.0;
 /// Grid squares per side.
 pub const GRID_COLS: usize = (ISLAND_SIZE / GRID_M) as usize;
 /// Column letters, west to east — one per column, asserted rather than
@@ -481,7 +481,7 @@ fn paint_roads(size: usize, cov: &[f32], shade: &[f32], out: &mut [u8]) {
 /// a handful. Overflow policy: drop-newest, and the refused count is kept on
 /// [`Marks`] rather than discarded — a cap that truncates silently reads as
 /// "everything is drawn" when it is not. `DECISIONS.md` §open, map markers v1.
-pub const MAP_MARKS_MAX: usize = 64;
+pub const MAP_MARKS_MAX: usize = 128;
 /// …and a full rack of bags fits inside it with room to spare, so
 /// [`resolve_wake_marks`]' drop is unreachable by an ordinary player.
 /// Compile-time rather than a test for `protocol`'s reason: a cap that is
@@ -499,7 +499,7 @@ const _: () = assert!(
 /// assert above's reason: two of the three terms are other crates'
 /// constants.
 const _: () = assert!(
-    1 + MINOR_SITES + 1 + BAG_CAP <= MAP_MARKS_MAX,
+    1 + MINOR_SITES + sim_core::landmark::LANDMARKS + 1 + BAG_CAP <= MAP_MARKS_MAX,
     "the own tier outgrew the marker cap — a player's own bed would be dropped"
 );
 
@@ -515,6 +515,9 @@ pub enum MarkKind {
     Waystation,
     /// The inland freight depot: an industrial destination.
     Depot,
+    /// A landmark (`sim_core::landmark`): a ruin, a mast, a tower, a stone
+    /// ring or a container yard. Named by [`Mark::name`].
+    Landmark,
     /// A deployed sleeping bag: where you WAKE.
     Bed,
     /// One of **your own** bags whose cooldown has not lapsed — a bed the
@@ -548,6 +551,7 @@ impl MarkKind {
             // bug that draws it anyway is visible instead of plausible.
             MarkKind::None => [0.0, 0.0, 0.0],
             MarkKind::Haven | MarkKind::Waystation | MarkKind::Depot => [232.0, 228.0, 218.0],
+            MarkKind::Landmark => [214.0, 206.0, 186.0],
             // A spent bag is the SAME blue as a ready one: the colour says
             // "this is a bed of yours", and the renderer's shape says
             // whether it will answer. Two blues would be the one channel a
@@ -589,7 +593,9 @@ impl MarkKind {
     pub fn icon(self) -> Option<&'static str> {
         match self {
             MarkKind::None => None,
-            MarkKind::Haven | MarkKind::Waystation | MarkKind::Depot => Some("map_site"),
+            MarkKind::Haven | MarkKind::Waystation | MarkKind::Depot | MarkKind::Landmark => {
+                Some("map_site")
+            }
             MarkKind::Bed | MarkKind::BedSpent => Some("map_bed"),
             MarkKind::Hearth => Some("map_hearth"),
             MarkKind::Backpack => Some("backpack"),
@@ -614,7 +620,9 @@ impl MarkKind {
             MarkKind::Haven => Some("HAVEN"),
             MarkKind::Waystation => Some("WAYSTATION"),
             MarkKind::Depot => Some("DEPOT"),
+            // A landmark's name is its own, on the mark (`Mark::name`).
             MarkKind::None
+            | MarkKind::Landmark
             | MarkKind::Bed
             | MarkKind::BedSpent
             | MarkKind::Hearth
@@ -632,6 +640,8 @@ pub struct Mark {
     pub kind: MarkKind,
     pub px: f32,
     pub py: f32,
+    /// A landmark's own name; every other mark is named by its kind.
+    pub name: Option<&'static str>,
 }
 
 /// A reusable marker set: fixed storage, a live count, and the overflow
@@ -665,7 +675,12 @@ impl Marks {
         // positional defect class `CLAUDE.md` names: the island correct, the
         // player correct, and your bed drawn as far south as it is north.
         let (px, py) = world_to_map(x, z, 1);
-        self.a[self.count] = Mark { kind, px, py };
+        self.a[self.count] = Mark {
+            kind,
+            px,
+            py,
+            name: None,
+        };
         self.count += 1;
     }
 }
@@ -729,6 +744,14 @@ pub fn resolve_marks(
             MarkKind::Waystation
         };
         out.push(kind, w.x, w.z);
+    }
+    // The landmarks, behind the sites: named places, fewer than the cap
+    // leaves room for (the assert above `MarkKind`).
+    for m in haven.marks.iter().filter(|m| m.live) {
+        out.push(MarkKind::Landmark, m.x, m.z);
+        if out.count > 0 && out.a[out.count - 1].kind == MarkKind::Landmark {
+            out.a[out.count - 1].name = Some(sim_core::landmark::name(m.kind));
+        }
     }
 
     let have = have.min(defs.def_count);
@@ -1582,12 +1605,13 @@ mod tests {
 
     /// Every kind. The `match` is what keeps it honest: a kind added without
     /// a row here fails to compile rather than going unchecked.
-    fn all_kinds() -> [MarkKind; 8] {
+    fn all_kinds() -> [MarkKind; 9] {
         let all = [
             MarkKind::None,
             MarkKind::Haven,
             MarkKind::Waystation,
             MarkKind::Depot,
+            MarkKind::Landmark,
             MarkKind::Bed,
             MarkKind::BedSpent,
             MarkKind::Hearth,
@@ -1599,6 +1623,7 @@ mod tests {
                 | MarkKind::Haven
                 | MarkKind::Waystation
                 | MarkKind::Depot
+                | MarkKind::Landmark
                 | MarkKind::Bed
                 | MarkKind::BedSpent
                 | MarkKind::Hearth

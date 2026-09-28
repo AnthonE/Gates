@@ -20,7 +20,7 @@ use server::store::PlayerKey;
 use sim_core::gather::GatherContent;
 
 const SEED: u64 = 20_260_811;
-const SPAWN: (f32, f32) = (1024.0, 1024.0);
+const SPAWN: (f32, f32) = (2048.0, 2048.0);
 /// The admin's wallet, and a stranger's.
 const ADMIN_WALLET: &str = "0x00112233445566778899aabbccddeeff00112233";
 const OTHER_WALLET: &str = "0xffeeddccbbaa99887766554433221100ffeeddcc";

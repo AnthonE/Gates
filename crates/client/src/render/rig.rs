@@ -118,9 +118,9 @@ pub const RIG_SUN_ELEVATION: f32 = 0.61;
 /// 75 horizontal to ~46.7 vertical at 16:9 — would have silently narrowed the
 /// frame and broken agreement with a registered knob.
 pub const FOV_DEG: f32 = 75.0;
-/// Far plane, metres. The island is 2048 m across and the far mesh draws all
-/// of it.
-pub const FAR_M: f32 = 2000.0;
+/// Far plane, metres. The island is 4,096 m across and the far mesh draws all
+/// of it; a ridge top sees most of the way across.
+pub const FAR_M: f32 = 4000.0;
 
 /// How much thicker than earthlike this island's air is. PROPOSED — it is a
 /// number this path invented, so it registers in `DECISIONS.md` §open the day

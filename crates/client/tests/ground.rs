@@ -117,11 +117,10 @@ fn naive(seed: u64, ox: f32, oz: f32, n: usize, step: f32, drop: f32) -> Attrs {
             // shipped path has fed `splat_from` the carved pair since the
             // carve was armed, and `terrain_mesh`'s `sl` branch says so in as
             // many words.
-            let mut w = terrain::splat_from(
-                y,
-                terrain::moisture(seed, x, z),
-                terrain::ground_slope(seed, haven, x, z),
-            );
+            //
+            // At zero slope since 2026-09-28: the mesh carries the biome
+            // weights and the shader decides the cliff per pixel.
+            let mut w = terrain::splat_from(y, terrain::moisture(seed, x, z), 0.0);
             // …and the road, on the same guard the shipped path applies it
             // under. `road_band` is the published law rather than a rebuild of
             // it: what this side is proving is that the optimised path asks it

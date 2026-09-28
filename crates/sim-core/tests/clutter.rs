@@ -99,7 +99,7 @@ const ORIGINS_PER_SEED: usize = 24;
 /// nearly every draw), and it crosses the coast road, whose carriageway is
 /// the one place clutter is deliberately overridden.
 fn a_land_origin(seed: u64, stance: usize) -> (f32, f32) {
-    let c = 1024.0f32;
+    let c = terrain::ISLAND_SIZE * 0.5;
     // A golden-angle spiral: successive stances are far apart in bearing AND
     // in radius, so no two land in the same neighbourhood. Bearings come off
     // the yaw LUT rather than trig — sim-core forbids libm, and a test is in
@@ -110,7 +110,7 @@ fn a_land_origin(seed: u64, stance: usize) -> (f32, f32) {
     let (ux, uz) = sim_core::yaw_dir(idx << 8);
     // Reach outward across the whole island radius as the stance advances,
     // so the far stances are genuinely coastal and not just off-centre.
-    let want = 40.0 + (stance as f32 / ORIGINS_PER_SEED as f32) * 860.0;
+    let want = 40.0 + (stance as f32 / ORIGINS_PER_SEED as f32) * 1720.0;
 
     // March in from the wanted radius until the ground is land and standable
     // — the same conditions a spawn would want. Marching INWARD rather than
@@ -1105,9 +1105,9 @@ const COAST_BLOCK: i32 = 12;
 /// been tuning the fixture to the assertion; this asks for the shape of the
 /// ground and reports whatever stands on it.
 fn waterline_tiles(seed: u64) -> Vec<(i32, i32)> {
-    let c = 1024.0f32;
+    let c = terrain::ISLAND_SIZE * 0.5;
     let mut out = Vec::new();
-    let span = (1050.0 / CLUTTER_TILE_M) as i32;
+    let span = (2050.0 / CLUTTER_TILE_M) as i32;
     let ct = (c / CLUTTER_TILE_M) as i32;
     for tz in (ct - span)..=(ct + span) {
         for tx in (ct - span)..=(ct + span) {
@@ -1160,12 +1160,12 @@ fn inland_tiles(seed: u64) -> Vec<(i32, i32)> {
 fn a_coast_block(seed: u64) -> (i32, i32, Haven, ScatterTable) {
     let table = ScatterTable::alpha_default();
     let haven = terrain::haven(seed);
-    let c = 1024.0f32;
+    let c = terrain::ISLAND_SIZE * 0.5;
     // March out until the ground is sea and STAYS sea — an inland dip below
     // the waterline is a pond, and skirting a pond is not what this measures.
-    let mut r = 200.0f32;
+    let mut r = 400.0f32;
     let mut shore = None;
-    while r < 1000.0 {
+    while r < 2040.0 {
         if terrain::height(seed, c + r, c) < LAND_MIN_H
             && terrain::height(seed, c + r + 16.0, c) < LAND_MIN_H
             && terrain::height(seed, c + r + 32.0, c) < LAND_MIN_H
@@ -1468,6 +1468,8 @@ fn sites_parked_offshore() -> Haven {
         minor: terrain::empty_minor(),
         roads: [terrain::SideRoad::NONE; terrain::SIDE_ROADS],
         ore_pm: terrain::ORE_PM_UNIT,
+        marks: sim_core::landmark::NO_MARKS,
+        trails: [terrain::SideRoad::NONE; sim_core::landmark::LANDMARKS],
     }
 }
 

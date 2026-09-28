@@ -5484,7 +5484,7 @@ mod tests {
             assert_eq!(decode_event(&buf[..len]).unwrap(), want);
         }
         assert_eq!(
-            encode_event_removed(true, 1024, 0, 0, 0, &mut buf),
+            encode_event_removed(true, 2048, 0, 0, 0, &mut buf),
             Err(WireError::Range)
         );
 
@@ -5509,7 +5509,7 @@ mod tests {
             );
         }
         assert_eq!(
-            encode_event_struct_hit(false, 1024, 0, 0, 0, 0, 1, 1, &mut buf),
+            encode_event_struct_hit(false, 2048, 0, 0, 0, 0, 1, 1, &mut buf),
             Err(WireError::Range),
             "cell past the grid"
         );
@@ -5973,6 +5973,14 @@ mod wire_domains {
         Module {
             file: "bots.rs",
             src: include_str!("../../sim-core/src/bots.rs"),
+        },
+        Module {
+            file: "boulder.rs",
+            src: include_str!("../../sim-core/src/boulder.rs"),
+        },
+        Module {
+            file: "landmark.rs",
+            src: include_str!("../../sim-core/src/landmark.rs"),
         },
         Module {
             file: "build.rs",

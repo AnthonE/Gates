@@ -109,7 +109,7 @@ fn the_earth_half_is_warm_and_the_sky_half_is_cool() {
 /// derivations and not a tautology.
 #[test]
 fn the_zenith_fill_is_the_uniform_term_it_replaced() {
-    let want_scale = lux::AMBIENT_DAYLIGHT * 1.7;
+    let want_scale = lux::AMBIENT_DAYLIGHT * 2.5;
     assert!(
         (SKY_FILL_LUX - want_scale).abs() < 1e-3,
         "the sky half's magnitude moved: {SKY_FILL_LUX} vs {want_scale}"
