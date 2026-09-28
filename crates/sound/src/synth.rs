@@ -523,6 +523,8 @@ fn render_take(cue: Cue, take: u8) -> Vec<f32> {
         Cue::Collapse => collapse(&mut r),
         Cue::Knock => knock(&mut r),
         Cue::Reload => reload(&mut r),
+        Cue::Eat => munch(&mut r),
+        Cue::Bandage => bandage(&mut r),
 
         // ---- the score ---------------------------------------------------
         // Nine pieces, one generator, and the table decides which: the arm
@@ -1073,6 +1075,76 @@ fn reload(r: &mut Rng) -> Vec<f32> {
     for (k, v) in out[a..b].iter_mut().enumerate() {
         let t = k as f32 / (b - a) as f32;
         *v += lp.run(r.noise()) * 0.25 * (PI * t).sin();
+    }
+    for (i, v) in out.iter_mut().enumerate() {
+        *v *= edges(i, n);
+    }
+    out
+}
+
+/// Something eaten: three chews, each a crackled burst of band-limited
+/// noise over a low jaw thump, fading as the mouthful goes — `knock`'s
+/// bursts with `impact`'s crackle gate. The gap is jittered per take so a
+/// round-robin of them never chews in step.
+fn munch(r: &mut Rng) -> Vec<f32> {
+    let n = samples(0.46);
+    let sr = SAMPLE_RATE as f32;
+    let mut out = vec![0.0f32; n];
+    let gap = 0.12 + 0.04 * r.unit();
+    for (k, amp) in [1.0f32, 0.75, 0.55].into_iter().enumerate() {
+        let from = samples(k as f32 * gap + 0.01 * r.unit());
+        let (mut lp, mut hp, mut gate) = (Lp::new(3_600.0), Lp::new(350.0), 0.0f32);
+        for j in 0..samples(0.10) {
+            let i = from + j;
+            if i >= n {
+                break;
+            }
+            let t = j as f32 / sr;
+            let mut x = r.noise();
+            if r.unit() < 0.025 {
+                gate = 1.0;
+            }
+            gate *= 0.9985;
+            x *= 0.3 + 0.7 * gate;
+            let l = lp.run(x);
+            let crunch = (l - hp.run(l)) * (-t / 0.028).exp();
+            let jaw = (TAU * 120.0 * t).sin() * (-t / 0.020).exp() * 0.35;
+            out[i] += (crunch + jaw) * attack(t, 0.0015) * amp;
+        }
+    }
+    for (i, v) in out.iter_mut().enumerate() {
+        *v *= edges(i, n);
+    }
+    out
+}
+
+/// A heal put on: a cloth rip, then the wrap — a crackled noise tear and a
+/// moving band of `whoosh` under it a quarter-second on.
+fn bandage(r: &mut Rng) -> Vec<f32> {
+    let n = samples(0.52);
+    let mut out = vec![0.0f32; n];
+    let rip = impact(
+        r,
+        0.20,
+        Tone {
+            lo_hz: 180.0,
+            lo_amp: 0.1,
+            lo_tau: 0.02,
+            noise_amp: 1.0,
+            noise_tau: 0.07,
+            lp_hz: 6_500.0,
+            hp_hz: 900.0,
+            attack_s: 0.012,
+            crackle: 0.8,
+        },
+    );
+    for (o, v) in out.iter_mut().zip(rip) {
+        *o += v;
+    }
+    let wrap = whoosh(r, 0.28);
+    let from = samples(0.22);
+    for (o, v) in out[from..].iter_mut().zip(wrap) {
+        *o += v * 0.45;
     }
     for (i, v) in out.iter_mut().enumerate() {
         *v *= edges(i, n);

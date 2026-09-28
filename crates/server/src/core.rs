@@ -1122,12 +1122,22 @@ impl ShardCore {
         // Pending actions ride after inputs, at most one per client per
         // tick. A full command buffer defers the action to the next tick
         // (limits.rs policy) — it stays in the client's hand.
+        //
+        // **And no faster than a person** (`pace.rs`): each kind of action
+        // keeps its own gap on the sim's tick, and an early one waits in the
+        // hand — defer, never drop — so a script hammering a key gets a
+        // person's pace and a request still gets its answer.
+        let now = self.world.tick;
         for slot in 0..MAX_PLAYERS {
             let c = &mut self.clients[slot];
             if !c.connected || n == MAX_COMMANDS_PER_TICK {
                 continue;
             }
             if let Some(act) = c.pending_action.take() {
+                if !c.pace.go(&act, now) {
+                    c.pending_action = Some(act);
+                    continue;
+                }
                 self.cmd_buf[n] = match act {
                     // The action that is **usually** not a command, and the
                     // split is the whole of what world containers v0 added
@@ -4750,6 +4760,37 @@ mod tests {
         core
     }
 
+    /// **A client eating every tick eats about once a second** (`pace.rs`).
+    /// The lane is thirty actions a second and a mouthful is not: the ask
+    /// that comes early waits in the hand, so a stack is not gone in one.
+    #[test]
+    fn a_client_eating_every_tick_eats_about_once_a_second() {
+        let stats = ShardStats::default();
+        let mut core = Box::new(ShardCore::new(SEED));
+        core.world.survival = sim_core::survival::SurvivalContent::probe_fixture();
+        assert!(core.connect(0, PLAYER));
+        core.tick_bare(&stats, |_, _, _| true);
+        let w = core.live_wslot(0).unwrap();
+        // The fixture's item 0 heals, so a full body never refuses it.
+        core.world.players[w].inv[0] = ItemStack {
+            item: 0,
+            count: 60,
+            cond: 0,
+            skin: 0,
+        };
+        for _ in 0..90 {
+            if core.wants_action(0) {
+                core.push_action(0, ActionMsg::Consume { slot: 0 });
+            }
+            core.tick_bare(&stats, |_, _, _| true);
+        }
+        let eaten = 60 - core.world.players[w].inv[0].count;
+        assert!(
+            (3..=4).contains(&eaten),
+            "{eaten} eaten in three seconds of asking every tick"
+        );
+    }
+
     #[test]
     fn rotation_event_overflow_resyncs_each_clients_final_stair() {
         use client_core::core::{ClientCore, APPLIED_PIECE_RESET};
@@ -4803,7 +4844,11 @@ mod tests {
                     plate: 0,
                 },
             );
-            core.tick_bare(&stats, &mut receive);
+            // Two placements a tick apart: the second waits out the build
+            // pace in the hand (`pace.rs`) before it lands.
+            for _ in 0..=crate::pace::gap(crate::pace::Kind::Build) {
+                core.tick_bare(&stats, &mut receive);
+            }
         }
         assert_eq!(core.world.pieces.len(), 2);
         // Directly exercise the sim command ceiling: more than half the

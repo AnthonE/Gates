@@ -61,6 +61,29 @@ pub struct InWeak(pub bool);
 #[derive(Resource, Default)]
 pub struct Pad(pub crate::ui::keypad::Keypad);
 
+/// Rust's one second between bites, kept on this side: when this client
+/// last sent a mouthful (food, a heal or the sea), in `Time` seconds. The
+/// server throws away a bite inside the last one's gap (`server::pace`,
+/// `Kind::Mouth`, a little under a second for network jitter), so an honest
+/// press that waits the full second here never meets that refusal — and a
+/// hammered eat key eats once a second instead of queuing a stack.
+#[derive(Resource, Default)]
+pub struct Bite(Option<f64>);
+
+/// The wait between two bites, seconds — Rust's consume cooldown.
+pub const BITE_S: f64 = 1.0;
+
+impl Bite {
+    /// May a mouthful go at `now`? Starts the clock when it does.
+    pub fn take(&mut self, now: f64) -> bool {
+        if self.0.is_some_and(|last| now - last < BITE_S) {
+            return false;
+        }
+        self.0 = Some(now);
+        true
+    }
+}
+
 /// The nearest structure, either store. Its own resource beside [`Aimed`]
 /// because `L`, `U`, `R` and the raid verb address a structure and `E` does
 /// not — see `ui::structure`'s header for why they cannot share a metric.
@@ -260,9 +283,11 @@ pub fn keys(
     ui: Option<ResMut<Ui>>,
     chat: Option<Res<super::chat::Chat>>,
     time: Res<Time>,
+    mut bite: ResMut<Bite>,
     mut clear_armed_until: Local<f64>,
 ) {
     let mut ui = ui;
+    let now = time.elapsed_secs_f64();
     if keys.just_released(KeyCode::KeyE) {
         send(&net, &mut toast, "release help", |buf| {
             protocol::encode_action_assist(0, buf)
@@ -307,7 +332,7 @@ pub fn keys(
                 .get(i)
                 .is_some_and(|&s| crate::ui::hold::eats_on_key(&core.catalog, s));
             if keys.just_pressed(*k) && food {
-                use_slot(&net, &mut toast, i as u8);
+                use_slot(&net, &mut toast, &mut bite, now, i as u8);
             }
         }
     }
@@ -363,9 +388,9 @@ pub fn keys(
             // Payload-free, `V`'s shape: the sim reads the hand it already
             // has, so there is nothing to aim and no amount for the client
             // to guess. `just_pressed` for `V`'s reason too — the action
-            // lane holds one pending action per client per tick, so a held
-            // key would send a frame's worth and have all but one dropped
-            // at `push_action`.
+            // lane takes one pending action per client per tick, so a held
+            // key would send a frame's worth and queue them all behind
+            // each other (`server::pace` holds, it never drops).
             //
             // Sent blind, and the refusal is what makes that work: a press
             // with a rock in hand, a full cylinder or an empty pack each
@@ -414,7 +439,7 @@ pub fn keys(
             click,
             crate::ui::hold::Click::Eat | crate::ui::hold::Click::Read
         ) {
-            use_slot(&net, &mut toast, net.sel);
+            use_slot(&net, &mut toast, &mut bite, now, net.sel);
         }
     }
     if keys.just_pressed(KeyCode::KeyX) {
@@ -445,7 +470,7 @@ pub fn keys(
         // A blueprint in the hand is READ rather than eaten (research table
         // v1): `ui::research::use_as` makes the call the inventory panel's
         // right-click makes, so the key and the click cannot disagree.
-        use_slot(&net, &mut toast, net.sel);
+        use_slot(&net, &mut toast, &mut bite, now, net.sel);
     }
     if keys.just_pressed(KeyCode::KeyV) {
         // Pick up the nearest spent arrow in reach (`sim-core/spent.rs`).
@@ -462,9 +487,9 @@ pub fn keys(
         //
         // Payload-free, `H`'s shape — the sim reads the body it already
         // has, so there is nothing to aim and no reach for the client to
-        // guess. `just_pressed` because the action lane holds one pending
+        // guess. `just_pressed` because the action lane takes one pending
         // action per client per tick: a held key would send a frame's
-        // worth and have all but one dropped at `push_action`.
+        // worth and queue them all behind each other.
         //
         // `V` is a proposed default (`DECISIONS.md` §open) and is picked
         // for the hand rather than the letter: collecting arrows happens
@@ -477,14 +502,20 @@ pub fn keys(
         // the two are one gesture from the player's side — adjacent keys, one
         // hand. Payload-free: the sim reads the heightfield under the body,
         // so there is nothing to aim and no reach for the client to guess.
-        send(&net, &mut toast, "drink", protocol::encode_action_drink);
+        // A gulp is a mouthful: it waits on the bite clock with the food.
+        if bite.take(now) {
+            send(&net, &mut toast, "drink", protocol::encode_action_drink);
+        }
     }
 }
 
 /// Use inventory `slot`: read it if it is a blueprint, eat it otherwise —
 /// `J`'s verb and the left click's, one call so the two cannot disagree.
 /// Whether it does anything is the sim's verdict, announced either way.
-fn use_slot(net: &Net, toast: &mut Toast, slot: u8) {
+///
+/// A mouthful waits on [`Bite`]: inside the last one's second it is not
+/// sent at all, as the reference drops it.
+fn use_slot(net: &Net, toast: &mut Toast, bite: &mut Bite, now: f64, slot: u8) {
     let stack = net
         .session
         .core
@@ -499,9 +530,11 @@ fn use_slot(net: &Net, toast: &mut Toast, slot: u8) {
             });
         }
         crate::ui::research::UseAs::Consume => {
-            send(net, toast, "eat", |buf| {
-                protocol::encode_action_consume(slot, buf)
-            });
+            if bite.take(now) {
+                send(net, toast, "eat", |buf| {
+                    protocol::encode_action_consume(slot, buf)
+                });
+            }
         }
     }
 }

@@ -516,6 +516,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<verbs::InWeak>()
             .init_resource::<verbs::Near>()
             .init_resource::<verbs::Pad>()
+            .init_resource::<verbs::Bite>()
             .init_resource::<death::Answer>()
             .init_resource::<disconnected::Reason>()
             .init_resource::<disconnected::Chosen>()

@@ -139,7 +139,10 @@ pub fn check(c: &Content) -> Result<Anchors, String> {
     // `crates/content/tests/content.rs`, because two arithmetics that
     // disagree describe a fight nobody has.
     for w in &c.weapons {
+        // A light that hits (the torch) is banded as a light, not a weapon.
+        let light = c.item(&w.id).is_some_and(|i| i.light_burn > 0);
         let band = match w.kind {
+            WeaponKind::Melee if light => bands.ttk_light,
             WeaponKind::Melee => bands.ttk_melee,
             WeaponKind::Bow => bands.ttk_bow,
             WeaponKind::Firearm => bands.ttk_firearm,
@@ -147,6 +150,11 @@ pub fn check(c: &Content) -> Result<Anchors, String> {
         };
         let base = hits_to_kill(hp, w.damage, 0);
         in_band(base, band, &format!("ttk `{}`", w.id))?;
+        // Burning, it hits harder — and must still sit in its band.
+        if let Some(extra) = w.lit_damage {
+            let lit = hits_to_kill(hp, w.damage + extra, 0);
+            in_band(lit, band, &format!("ttk `{}` alight", w.id))?;
+        }
         if w.headshot_mult != bands.headshot_mult {
             return Err(format!(
                 "band break: headshot mult on `{}` is {}, the band says exactly {}",
@@ -159,7 +167,10 @@ pub fn check(c: &Content) -> Result<Anchors, String> {
                 w.id, w.limb_pct, bands.limb_pct
             ));
         }
-        for a in &c.armors {
+        // Armor's ceiling is a promise about fights between weapons. A
+        // light at half a rock's blow gains hits in proportion from any
+        // plate — that is what being a lamp and not a club costs.
+        for a in c.armors.iter().filter(|_| !light) {
             let with = hits_to_kill(hp, w.damage, a.reduction_pct);
             if with - base > bands.armor_extra_hits_max {
                 return Err(format!(

@@ -879,6 +879,12 @@ async fn run_bot_inner(
     let attacker = seed_stream % 2 == 1;
     let mut plan: Option<RaidPlan> = None;
     let mut steps_in_cycle: u16 = 0;
+    // The server's per-kind pace (`pace.rs`), kept on this side the way an
+    // honest client keeps it: a raid step that would come early is held
+    // here and sent when its gap is up, rather than queued at the server
+    // behind the rest of the lane. Counted on the walk's own ticks.
+    let mut pace = crate::pace::Pace::default();
+    let mut held: Option<Command> = None;
     // **Held, not one-shot, and that is the second half of the 2026-08-30
     // flaky-gate fix.** `raid_step` selects the satchel on one step and
     // throws it on the next, but `bot_frame` re-rolls `sel` at random every
@@ -1102,19 +1108,19 @@ async fn run_bot_inner(
                 }
 
                 // ---- the raid lane -----------------------------------
-                // One action per cadence tick, which is not a chosen
-                // number: `core::wants_action` hands the sim at most one
-                // action per client per tick and `push_action` *silently
-                // drops* the rest, so the ceiling the server already
-                // enforces is the rate. A real client cannot do better,
-                // and a load tool that pretended to would be measuring a
-                // pressure no player can apply.
+                // At most one action per cadence tick, which is not a
+                // chosen number: `core::wants_action` hands the sim at most
+                // one action per client per tick, and each kind keeps the
+                // server's pace besides (`pace.rs`), so the ceiling the
+                // server already enforces is the rate. A real client cannot
+                // do better, and a load tool that pretended to would be
+                // measuring a pressure no player can apply.
                 if let Some(rows) = raid.filter(|_| !took_the_tick) {
                     // Re-seat the plot from the live body every cycle. The
                     // bot walks, so a plan pinned at spawn would spend the
                     // whole run out of reach of its own foundation and
                     // measure nothing but `REFUSE_B_REACH`.
-                    if steps_in_cycle >= RAID_CYCLE {
+                    if steps_in_cycle >= RAID_CYCLE && held.is_none() {
                         plan = None;
                         sel_held.clear();
                     }
@@ -1128,12 +1134,23 @@ async fn run_bot_inner(
                         }
                     }
                     if let Some(p) = plan.as_mut() {
-                        let cmd = raid_step(p, &mut raid_rng, rows);
-                        steps_in_cycle += 1;
-                        report.raid_steps += 1;
+                        let cmd = match held.take() {
+                            Some(cmd) => cmd,
+                            None => {
+                                steps_in_cycle += 1;
+                                report.raid_steps += 1;
+                                raid_step(p, &mut raid_rng, rows)
+                            }
+                        };
                         match cmd {
                             Command::Input { frame, .. } => sel_held.set(frame.sel),
                             other => match encode_raid(&other, &mut act_buf) {
+                                Some(Ok(len))
+                                    if protocol::decode_action(&act_buf[..len])
+                                        .is_ok_and(|a| !pace.go(&a, report.ticks_walked)) =>
+                                {
+                                    held = Some(other);
+                                }
                                 Some(Ok(len)) => {
                                     if write_frame(&mut send, &act_buf[..len]).await.is_ok() {
                                         report.actions_sent += 1;

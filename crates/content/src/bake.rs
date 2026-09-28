@@ -735,12 +735,15 @@ impl Content {
             // existed — priced, banded and content-hashed — finally reach
             // the sim. Validate already bounded both; `u16` for the
             // ranged row's reason (`RangedDef::headshot_mult`).
+            let lit_bonus = u16::try_from(w.lit_damage.unwrap_or(0))
+                .map_err(|_| format!("bake: `{}` lit_damage overflows u16", w.id))?;
             cc.melee[idx] = MeleeDef {
                 damage,
                 structure,
                 reach_cm,
                 headshot_mult: w.headshot_mult as u16,
                 limb_pct: w.limb_pct as u16,
+                lit_bonus,
             };
         }
         Ok(cc)

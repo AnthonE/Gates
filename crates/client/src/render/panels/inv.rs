@@ -1056,6 +1056,10 @@ pub fn drag_pointer(
     // and a ghost asked for before it has run draws the label it drew before
     // rather than an empty tile.
     icons: Option<Res<super::super::icons::Icons>>,
+    // The bite clock (`verbs::Bite`): a right-click eat is a mouthful too.
+    // `Option` for `icons`' reason — a capture run registers no verbs.
+    bite: Option<ResMut<super::super::verbs::Bite>>,
+    time: Res<Time>,
 ) {
     if ui.panel != Panel::Inventory {
         if ui.drag.is_some() {
@@ -1238,7 +1242,7 @@ pub fn drag_pointer(
             };
             match quick {
                 Quick::Send(args) => send_move(&mut ui, &net, args),
-                Quick::Use(slot) => use_item(&mut ui, &net, slot),
+                Quick::Use(slot) => use_item(&mut ui, &net, bite, time.elapsed_secs_f64(), slot),
                 Quick::Refused(why) => ui.say(why),
             }
         }
@@ -1328,7 +1332,13 @@ fn send_move(ui: &mut Ui, net: &super::super::Net, args: crate::ui::slots::MoveA
 /// Use an inventory slot: read it if it is a blueprint (`ACT_RESEARCH`,
 /// research table v1), eat it otherwise (`ACT_CONSUME`). Which one is
 /// `ui::research::use_as`'s call; whether it does anything is the sim's.
-fn use_item(ui: &mut Ui, net: &super::super::Net, slot: usize) {
+fn use_item(
+    ui: &mut Ui,
+    net: &super::super::Net,
+    bite: Option<ResMut<super::super::verbs::Bite>>,
+    now: f64,
+    slot: usize,
+) {
     let Ok(slot) = u8::try_from(slot) else {
         return;
     };
@@ -1337,7 +1347,15 @@ fn use_item(ui: &mut Ui, net: &super::super::Net, slot: usize) {
     let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
     let encoded = match research_ui::use_as(&core.research, stack) {
         UseAs::Read => protocol::encode_action_research(slot, &mut buf),
-        UseAs::Consume => protocol::encode_action_consume(slot, &mut buf),
+        UseAs::Consume => {
+            // Inside the last bite's second: not sent (`verbs::Bite`).
+            if let Some(mut b) = bite {
+                if !b.take(now) {
+                    return;
+                }
+            }
+            protocol::encode_action_consume(slot, &mut buf)
+        }
     };
     match encoded {
         Ok(len) => match net.session.send_action(&buf[..len]) {

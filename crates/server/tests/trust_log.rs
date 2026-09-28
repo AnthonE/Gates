@@ -184,6 +184,10 @@ fn tick(core: &mut ShardCore, stats: &ShardStats) {
 /// One action from one connection, applied by one `ShardCore` tick.
 fn act(core: &mut ShardCore, stats: &ShardStats, slot: usize, a: ActionMsg) {
     assert!(core.wants_action(slot), "slot {slot} has a hand free");
+    // These lockstep tests act once a tick, faster than a person: the
+    // pace is its own gate (`server/src/pace.rs`), so it is reset here and
+    // every action lands on the tick that follows it.
+    core.clients[slot].pace = server::pace::Pace::default();
     core.push_action(slot, a);
     tick(core, stats);
 }

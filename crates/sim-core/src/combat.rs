@@ -113,6 +113,22 @@ pub struct MeleeDef {
     /// What a leg is worth, in **percent** of `damage` — the `limb_pct`
     /// column, `headshot_mult`'s other end. 100 is the identity.
     pub limb_pct: u16,
+    /// Extra body damage while the hand is alight (`light::is_lit`) — the
+    /// torch's heat on top of its blow, `weapons.toml`'s `lit_damage`. Zero
+    /// for everything that cannot burn.
+    pub lit_bonus: u16,
+}
+
+impl MeleeDef {
+    /// The body damage one blow deals, burning or not.
+    #[inline]
+    pub fn body_damage(&self, lit: bool) -> u16 {
+        if lit {
+            self.damage.saturating_add(self.lit_bonus)
+        } else {
+            self.damage
+        }
+    }
 }
 
 /// One item's throwable row — the raid tool (`charge.rs`). Separate from
@@ -492,6 +508,7 @@ impl CombatContent {
             reach_cm: 0,
             headshot_mult: 1,
             limb_pct: 100,
+            lit_bonus: 0,
         }; MAX_ITEM_DEFS],
         throw: [ThrowDef {
             damage: 0,
@@ -567,6 +584,7 @@ impl CombatContent {
                 // nothing (item 6's own lesson, below).
                 headshot_mult: 2,
                 limb_pct: 50,
+                lit_bonus: 0,
             };
             i += 1;
         }
@@ -686,6 +704,7 @@ impl CombatContent {
                 reach_cm: 200,
                 headshot_mult: 1,
                 limb_pct: 100,
+                lit_bonus: 0,
             };
             // One point a blast, for the swing's reason: `probe_parity`'s
             // bots must keep the base they built standing long enough to
@@ -1219,12 +1238,14 @@ pub fn bearing_sector(dx: i64, dz: i64) -> u8 {
 /// Only the **target** was rewound. The attacker's own eye is read live and
 /// deliberately: this swing is his own input, the server has already
 /// stepped him this tick, and he is exactly where he thinks he is.
+#[allow(clippy::too_many_arguments)]
 pub fn strike_body(
     cc: &CombatContent,
     attacker: usize,
     hit: &crate::ranged::BodyHit,
     ray: &crate::melee::Ray,
     stop_t: f32,
+    lit: bool,
     players: &mut [Player; MAX_PLAYERS],
     events: &mut EventQueue,
 ) -> Strike {
@@ -1255,7 +1276,7 @@ pub fn strike_body(
     let feet_mm = hit.qy as f32 * (POS_Y_Q * crate::ranged::MM_PER_M);
     let part =
         crate::ranged::part_crossed(ray.o.1, ray.s.1, feet_mm, hit.enter, hit.exit.min(stop_t));
-    let dmg = part_damage(def.damage, part, def.headshot_mult, def.limb_pct);
+    let dmg = part_damage(def.body_damage(lit), part, def.headshot_mult, def.limb_pct);
     // The death screen's range: the PLANAR distance to the victim's axis at
     // the closest approach, centimetres — `Strike::Killed`'s documented
     // meaning, kept. `hit.t` is the planar closest-approach fraction, so it
@@ -1409,7 +1430,7 @@ mod tests {
             qy: players[1].body.qy,
         };
         assert_eq!(
-            strike_body(&cc, 0, &hit, &ray, 1.0, &mut players, &mut ev),
+            strike_body(&cc, 0, &hit, &ray, 1.0, false, &mut players, &mut ev),
             Strike::Missed
         );
         assert_eq!(players[1].hp, 100);
@@ -1449,7 +1470,7 @@ mod tests {
         };
         let mut ev = EventQueue::default();
         assert_eq!(
-            strike_body(&cc, 0, &hit, &ray, 1.0, &mut players, &mut ev),
+            strike_body(&cc, 0, &hit, &ray, 1.0, false, &mut players, &mut ev),
             Strike::Hit
         );
         let e = ev

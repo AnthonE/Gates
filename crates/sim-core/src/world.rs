@@ -4865,6 +4865,9 @@ impl World {
                         );
                     }
                     melee::Reached::Body { hit, stop_t } => {
+                        // A burning torch hits with its heat too
+                        // (`MeleeDef::lit_bonus`).
+                        let lit = crate::light::is_lit(&self.players[i], &self.gather);
                         if let combat::Strike::Killed {
                             victim,
                             item,
@@ -4875,6 +4878,7 @@ impl World {
                             &hit,
                             &ray,
                             stop_t,
+                            lit,
                             &mut self.players,
                             &mut self.events,
                         ) {
@@ -4884,12 +4888,14 @@ impl World {
                         }
                     }
                     melee::Reached::Mob(m) => {
+                        let lit = crate::light::is_lit(&self.players[i], &self.gather);
                         mob::strike_slot(
                             &self.combat,
                             &self.backpack,
                             &self.mob,
                             tick,
                             i,
+                            lit,
                             &self.players,
                             &mut self.mobs,
                             &mut self.backpacks,

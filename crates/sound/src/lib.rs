@@ -294,11 +294,15 @@ pub enum Cue {
     Knock,
     /// Your own gun being reloaded.
     Reload,
+    /// You ate something: a few crunching chews.
+    Eat,
+    /// You used a heal (a bandage, a medkit): a rip and a wrap.
+    Bandage,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 58;
+pub const CUE_COUNT: usize = 60;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -365,6 +369,8 @@ impl Cue {
         Cue::Collapse,
         Cue::Knock,
         Cue::Reload,
+        Cue::Eat,
+        Cue::Bandage,
     ];
 
     /// Is this cue a piece of music?
@@ -456,7 +462,9 @@ impl Cue {
             | Cue::FleshHit
             | Cue::Collapse
             | Cue::Knock
-            | Cue::Reload => 0.07,
+            | Cue::Reload
+            | Cue::Eat
+            | Cue::Bandage => 0.07,
             // A whine's pitch is its whole character, and no two glances
             // leave at the same speed.
             Cue::Ricochet => 0.14,
@@ -755,6 +763,11 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // Your own hands, so non-positional; the cooldown is what keeps a
     // reload key held down from being a rattle.
     row(GAME,  0.0, 0.45, 250, 3, false),  // reload
+    // Your own mouth and your own hands: non-positional, and a meal is a
+    // second apart (`survival::CONSUME_TICKS`), so the cooldown is only
+    // there for two landing in one frame.
+    row(GAME,  0.0, 0.45,  60, 3, false),  // eat
+    row(GAME,  0.0, 0.45, 120, 3, false),  // bandage
 ];
 
 /// Your own arm. Named rather than written inline so [`RSWING`] can read its

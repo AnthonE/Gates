@@ -451,15 +451,23 @@ pub fn gather(
     // one), switch back and it is. The alternative — clearing it on every
     // swap — would make a torch something you re-light after every swing
     // of an axe, which is not the tradeoff `ALPHA.md` §1 is asking for.
-    // Burnt out, or knocked down (a downed body drops what it held, and
-    // getting up does not light it again by itself): the latch lets go.
-    if (holds_light && !fuel) || downed {
+    // Head under the sea: the sim reads no flame there (`light::submerged`,
+    // the same line from the same feet), so the latch lets go — surfacing
+    // is a dark torch until it is struck again, as the reference's is.
+    let under = {
+        let [_, feet, _] = core.predict.render_position();
+        feet + sim_core::light::FLAME_EYE_M < sim_core::terrain::SEA_LEVEL
+    };
+    // Burnt out, knocked down (a downed body drops what it held, and
+    // getting up does not light it again by itself) or under water: the
+    // latch lets go.
+    if (holds_light && !fuel) || downed || under {
         net.light = false;
     }
-    // Not while down: the sim reads no flame on a downed body
+    // Not while down or under: the sim reads no flame there
     // (`light::is_lit`), so a latch flipped there would be a light only
     // this screen draws.
-    if holds_light && fuel && !downed && mouse.just_pressed(MouseButton::Right) {
+    if holds_light && fuel && !downed && !under && mouse.just_pressed(MouseButton::Right) {
         net.light = !net.light;
     }
     if net.light {

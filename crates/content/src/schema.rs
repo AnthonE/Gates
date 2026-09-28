@@ -398,6 +398,11 @@ pub struct Weapon {
     /// standing in it takes, both falling off linearly to zero at this
     /// distance. That consumer does not exist; see `combat::ThrowDef`.
     pub blast_m: Option<u32>,
+    /// Extra body damage while the item is **alight** (the reference's
+    /// torch deals heat on top of its blow). Only on a melee row whose item
+    /// declares `light_burn` — a bonus for burning on something that cannot
+    /// burn is a number nothing reads (`validate.rs`).
+    pub lit_damage: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -771,6 +776,12 @@ pub struct Globals {
 #[serde(deny_unknown_fields)]
 pub struct Bands {
     pub ttk_melee: [u32; 2],
+    /// Hits to kill for a melee row whose item is a **light** (its item
+    /// declares `light_burn`): the torch. A light is a lamp that happens
+    /// to hit — the reference prices its torch at half a rock — so it has
+    /// its own band rather than being forced up into the weapons' band or
+    /// lowering that band for every real weapon.
+    pub ttk_light: [u32; 2],
     pub ttk_bow: [u32; 2],
     pub ttk_firearm: [u32; 2],
     /// Every banded weapon carries exactly this headshot multiplier.

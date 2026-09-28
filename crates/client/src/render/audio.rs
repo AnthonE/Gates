@@ -866,6 +866,19 @@ pub fn feed(
     for _ in feed.crafted() {
         sound.play(Request::own(Cue::CraftDone));
     }
+    // A mouthful landed (the refused half buzzes below, as `Refused::Consume`).
+    // Read off the drained list, never a second pop. A heal with nothing to
+    // eat in it — a bandage, a medkit — is wrapped rather than chewed: the
+    // HUD's EAT/USE line draws the same distinction off the same row.
+    for &(item, _slot) in feed.consumed() {
+        let row = net.session.core.catalog.row(item as usize);
+        let cue = if row.health > 0 && row.food == 0 && row.water == 0 {
+            Cue::Bandage
+        } else {
+            Cue::Eat
+        };
+        sound.play(Request::own(cue));
+    }
     // A magazine seated: your own hands, so an own-fact. (It borrowed the
     // positional `Cue::Place` with no position, which the mixer refuses —
     // a reload was silent.)

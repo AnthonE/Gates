@@ -94,6 +94,9 @@ arrow_lodge_s = 10
 [bands]
 # Anchor 2 — TTK in body hits, no armor; per weapon kind.
 ttk_melee = [3, 5]
+# A light that also hits (the torch): half a rock's blow, the reference's
+# ratio, lit or not — 10 hits dark, 9 burning.
+ttk_light = [8, 10]
 ttk_bow = [3, 4]
 ttk_firearm = [4, 6]
 # "headshot × 2" (CONTENT §4) — every banded weapon carries exactly this,

@@ -885,6 +885,17 @@ fn sense(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob) {
     } else {
         awake_r
     };
+    // **A flame is seen** (`ALPHA.md` §1, *light = visibility = target*):
+    // a lit torch is noticed at the day's reach whatever the hour — the dark
+    // halves a wolf's senses and a torch is the one thing that gives the
+    // half back — and a crouch does not hide it. Fog and rain still cut it,
+    // and a sleeping animal still notices at half. What the player buys with
+    // it is `fire`'s side: a wolf that sees the light keeps off it.
+    let lit_r = {
+        let day_r = def.spook_cm * ctx.sense_pm as i64 / 1000;
+        let day_r = if mob.state == Sleep { day_r / 2 } else { day_r };
+        day_r.max(r)
+    };
     let (fx, fz) = yaw_dir(mob.yaw);
     let mut best: Option<(i64, u8)> = None;
     for (i, p) in ctx.players.iter().enumerate() {
@@ -895,22 +906,26 @@ fn sense(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob) {
         let d2 = dist2_cm(dqx, dqz);
         let buttons = p.frame.buttons;
         let moving = p.frame.move_z != 0 || p.frame.move_x != 0;
+        let lit = ctx.lit[i];
+        let base = if lit { lit_r } else { r };
         // Sprint is asked first: the body moves at a run whether or not
         // crouch is also held (`movement::step` reads no crouch), so a
         // crouch-sprint is a sprint, not a stalk.
         let radius = if buttons & BTN_SPRINT != 0 && moving {
-            r * 13 / 10
+            base * 13 / 10
         } else if buttons & BTN_CROUCH != 0 {
             let (dx, dz) = (dqx as f32, dqz as f32);
             let cone = def.sight_dot_pm as f32 * 0.001;
             let seen = fx * dx + fz * dz >= cone * (dx * dx + dz * dz).sqrt();
-            if seen {
+            if seen && lit {
+                base
+            } else if seen {
                 r / 2
             } else {
                 BUMP_CM
             }
         } else {
-            r
+            base
         };
         if d2 > radius.max(BUMP_CM) * radius.max(BUMP_CM) {
             continue;

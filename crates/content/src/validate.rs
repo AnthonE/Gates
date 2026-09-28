@@ -524,6 +524,18 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 }
             }
         }
+        // A burning bonus belongs to a melee row whose item can burn —
+        // anywhere else it is a number nothing reads.
+        if let Some(extra) = w.lit_damage {
+            let burns = c.item(&w.id).is_some_and(|i| i.light_burn > 0);
+            if w.kind != WeaponKind::Melee || !burns || extra == 0 {
+                return Err(format!(
+                    "weapon `{}`: lit_damage is a nonzero bonus on a melee row whose \
+                     item declares light_burn",
+                    w.id
+                ));
+            }
+        }
         // The fuse belongs to exactly one kind, checked both ways for the
         // reason `ballistic` is: a throwable without one is a charge that
         // never blows, and a fuse on a hatchet is a number nothing reads,
