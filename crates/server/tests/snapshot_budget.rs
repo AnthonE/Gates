@@ -23,6 +23,10 @@ use std::collections::BTreeSet;
 
 const SEED: u64 = 0xB1D_6E75;
 
+/// The south-west corner of the herd: dry, rock-free island interior on
+/// `SEED` (the 4096 m island put the old 900 m corner in the sea).
+const INTERIOR_M: f32 = 1700.0;
+
 /// Player id for connection slot `s` as `install` mints them (generation 1).
 fn id_of(slot: usize) -> u32 {
     (1 << 8) | slot as u32
@@ -49,8 +53,8 @@ fn clustered_core(stats: &ShardStats) -> Box<ShardCore> {
             continue;
         }
         // 10×10 grid, 6 m pitch, island interior.
-        p.body.qx = ((900.0 + (i % 10) as f32 * 6.0) / 0.03) as i32;
-        p.body.qz = ((900.0 + (i / 10) as f32 * 6.0) / 0.03) as i32;
+        p.body.qx = ((INTERIOR_M + (i % 10) as f32 * 6.0) / 0.03) as i32;
+        p.body.qz = ((INTERIOR_M + (i / 10) as f32 * 6.0) / 0.03) as i32;
     }
     core
 }
@@ -1884,8 +1888,8 @@ fn storm_core(stats: &ShardStats) -> Box<ShardCore> {
             continue;
         }
         let p = &mut core.world.players[i];
-        p.body.qx = ((900.0 + (i % 4) as f32 * 0.6) / 0.03) as i32;
-        p.body.qz = ((900.0 + (i / 4) as f32 * 0.6) / 0.03) as i32;
+        p.body.qx = ((INTERIOR_M + (i % 4) as f32 * 0.6) / 0.03) as i32;
+        p.body.qz = ((INTERIOR_M + (i / 4) as f32 * 0.6) / 0.03) as i32;
         p.body.qy = y0;
         // Spawned before any combat content existed, so `player_hp` was 0
         // and `hitscan` — which checks `hp == 0` where `draw` does not —

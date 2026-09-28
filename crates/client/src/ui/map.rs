@@ -1082,9 +1082,14 @@ mod tests {
     use sim_core::deploy::{DeployDef, ARCH_BOX, ARCH_DOOR, ARCH_FIRE};
     use sim_core::terrain::MINOR_SITES;
 
-    /// `1 + MINOR_SITES` authored marks lead every resolve — the pad plus
+    /// `1 + MINOR_SITES` site marks lead every resolve — the pad plus
     /// every lesser tier, which is what `Haven::minor` holds.
-    const AUTHORED: usize = 1 + MINOR_SITES;
+    const SITES: usize = 1 + MINOR_SITES;
+
+    /// The whole authored tier: the sites, then every live landmark.
+    fn authored(haven: &Haven) -> usize {
+        SITES + haven.marks.iter().filter(|m| m.live).count()
+    }
 
     fn defs_with(arches: &[u8]) -> (DeployContent, u16) {
         let mut d = DeployContent::EMPTY;
@@ -1117,7 +1122,11 @@ mod tests {
         let mut out = Marks::default();
         resolve_marks(&mut out, &haven, &[], &defs, have, &[], 0, &[]);
 
-        assert_eq!(out.count, AUTHORED, "haven + {MINOR_SITES} lesser sites");
+        assert_eq!(
+            out.count,
+            authored(&haven),
+            "haven + {MINOR_SITES} lesser sites + the landmarks"
+        );
         assert_eq!(out.dropped, 0);
         assert_eq!(out.a[0].kind, MarkKind::Haven);
         let (px, py) = world_to_map(haven.x, haven.z, 1);
@@ -1137,7 +1146,7 @@ mod tests {
                 m.py
             );
         }
-        for (k, m) in out.a[1..AUTHORED].iter().enumerate() {
+        for (k, m) in out.a[1..SITES].iter().enumerate() {
             let w = &haven.minor[k];
             assert_eq!(
                 m.kind,
@@ -1168,21 +1177,21 @@ mod tests {
         let mut out = Marks::default();
         resolve_marks(&mut out, &haven, &deploys, &defs, have, &bags, 0, &[]);
 
-        assert_eq!(out.count, AUTHORED + 3);
+        assert_eq!(out.count, authored(&haven) + 3);
         let half = BUILD_CELL_M * 0.5;
-        let bag = &out.a[AUTHORED];
+        let bag = &out.a[authored(&haven)];
         assert_eq!(bag.kind, MarkKind::Backpack);
         assert_eq!(
             (bag.px, bag.py),
             world_to_map(40_000.0 * POS_XZ_Q, 20_000.0 * POS_XZ_Q, 1)
         );
-        let bed = &out.a[AUTHORED + 1];
+        let bed = &out.a[authored(&haven) + 1];
         assert_eq!(bed.kind, MarkKind::Bed);
         assert_eq!(
             (bed.px, bed.py),
             world_to_map(100.0 * BUILD_CELL_M + half, 200.0 * BUILD_CELL_M + half, 1)
         );
-        assert_eq!(out.a[AUTHORED + 2].kind, MarkKind::Hearth);
+        assert_eq!(out.a[authored(&haven) + 2].kind, MarkKind::Hearth);
     }
 
     /// Boxes, doors and fires stay off the map — the marked set is the two
@@ -1194,7 +1203,7 @@ mod tests {
         let deploys = [rec_at(10, 10, 0), rec_at(11, 10, 1), rec_at(12, 10, 2)];
         let mut out = Marks::default();
         resolve_marks(&mut out, &haven, &deploys, &defs, have, &[], 0, &[]);
-        assert_eq!(out.count, AUTHORED, "only the authored tier");
+        assert_eq!(out.count, authored(&haven), "only the authored tier");
     }
 
     /// An undripped row reads as `DeployDef::INERT`, whose arch is `ARCH_BAG`
@@ -1208,7 +1217,7 @@ mod tests {
         let deploys = [rec_at(10, 10, 0)];
         let mut out = Marks::default();
         resolve_marks(&mut out, &haven, &deploys, &defs, 0, &[], 0, &[]);
-        assert_eq!(out.count, AUTHORED, "an unknown row must not mark");
+        assert_eq!(out.count, authored(&haven), "an unknown row must not mark");
     }
 
     /// The cap drops NEWEST, counts what it dropped, and can never cost the
@@ -1230,12 +1239,12 @@ mod tests {
         resolve_marks(&mut out, &haven, &[], &defs, have, &bags, 0, &[]);
 
         assert_eq!(out.count, MAP_MARKS_MAX);
-        assert_eq!(out.dropped, AUTHORED + over);
+        assert_eq!(out.dropped, authored(&haven) + over);
         assert_eq!(out.a[0].kind, MarkKind::Haven, "authored is never dropped");
         // A second resolve on the same `Marks` starts clean — the reuse bug
         // the browser gated (an accumulating set draws yesterday's bags).
         resolve_marks(&mut out, &haven, &[], &defs, have, &[], 0, &[]);
-        assert_eq!(out.count, AUTHORED);
+        assert_eq!(out.count, authored(&haven));
         assert_eq!(out.dropped, 0);
     }
 
@@ -1263,7 +1272,7 @@ mod tests {
         resolve_marks(&mut out, &haven, &deploys, &defs, have, &bags, 0, &[]);
 
         assert_eq!(out.count, MAP_MARKS_MAX);
-        assert_eq!(out.dropped, AUTHORED + 1 + deploys.len() - MAP_MARKS_MAX);
+        assert_eq!(out.dropped, authored(&haven) + 1 + deploys.len() - MAP_MARKS_MAX);
         let n = out.a[..out.count]
             .iter()
             .filter(|m| m.kind == MarkKind::Backpack)
@@ -1326,9 +1335,9 @@ mod tests {
         resolve_marks(&mut out, &haven, &[], &defs, have, &bags, 0, &[]);
 
         assert_eq!(out.count, MAP_MARKS_MAX);
-        assert_eq!(out.dropped, AUTHORED + 1, "the overflow is counted");
+        assert_eq!(out.dropped, authored(&haven) + 1, "the overflow is counted");
         // Drop-newest with the authored tier pushed first: the last
-        // AUTHORED + 1 bags are all refused; the very last is the cheapest
+        // The authored tier + 1 bags are all refused; the very last is the cheapest
         // to name, so the assert names it.
         let last = bags.last().unwrap();
         let (px, py) = world_to_map(last.qx as f32 * POS_XZ_Q, last.qz as f32 * POS_XZ_Q, 1);
@@ -1370,8 +1379,8 @@ mod tests {
         );
         // Directly behind the authored tier — the rank that makes the
         // survival a property, and (reverse draw order) draws it on top.
-        assert_eq!(out.a[AUTHORED].kind, MarkKind::Bed);
-        assert_eq!((out.a[AUTHORED].px, out.a[AUTHORED].py), (px, py));
+        assert_eq!(out.a[authored(&haven)].kind, MarkKind::Bed);
+        assert_eq!((out.a[authored(&haven)].px, out.a[authored(&haven)].py), (px, py));
 
         // The same shard with no tag: drop-newest eats exactly this bed —
         // the defect this test exists to hold closed.
@@ -1398,11 +1407,11 @@ mod tests {
         let mut out = Marks::default();
         resolve_marks(&mut out, &haven, &deploys, &defs, have, &[], 0, &own);
 
-        assert_eq!(out.count, AUTHORED + 3, "re-ranked, not duplicated");
-        assert_eq!(out.a[AUTHORED].kind, MarkKind::Bed, "yours is first");
+        assert_eq!(out.count, authored(&haven) + 3, "re-ranked, not duplicated");
+        assert_eq!(out.a[authored(&haven)].kind, MarkKind::Bed, "yours is first");
         let half = BUILD_CELL_M * 0.5;
         let (px, py) = world_to_map(10.0 * BUILD_CELL_M + half, 20.0 * BUILD_CELL_M + half, 1);
-        assert_eq!((out.a[AUTHORED].px, out.a[AUTHORED].py), (px, py));
+        assert_eq!((out.a[authored(&haven)].px, out.a[authored(&haven)].py), (px, py));
         // The destroyed bed's anchor (900, 900) drew nothing: no mark
         // stands at its cell.
         let (gx, gy) = world_to_map(900.0 * BUILD_CELL_M + half, 900.0 * BUILD_CELL_M + half, 1);
@@ -1423,7 +1432,7 @@ mod tests {
         // guard holds inside the own tier too.
         deploys[0].row = 1; // hearth row, but pretend the drip is behind
         resolve_marks(&mut out, &haven, &deploys, &defs, 0, &[], 0, &own);
-        assert_eq!(out.count, AUTHORED, "an unknown row must not mark");
+        assert_eq!(out.count, authored(&haven), "an unknown row must not mark");
     }
 
     /// No marker fill may sit near a ground colour — a marker that shares

@@ -172,8 +172,8 @@ fn shore() -> (f32, f32) {
     let reach = sim_core::survival::DRINK_REACH_M;
     let c = terrain::ISLAND_SIZE * 0.5;
     for (dx, dz) in [(1.0f32, 0.0f32), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
-        for step in 0..600 {
-            let (x, z) = (c + dx * step as f32 * 2.0, c + dz * step as f32 * 2.0);
+        for step in 0..(c as usize) {
+            let (x, z) = (c + dx * step as f32, c + dz * step as f32);
             let wet = [
                 (0.0, 0.0),
                 (reach, 0.0),
