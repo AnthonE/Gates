@@ -132,6 +132,48 @@ pub fn read(r: &mut impl Read) -> io::Result<Recording> {
 /// carries; the join burst is the largest and it is dozens.
 pub const REPLAY_EVENTS: usize = 1024;
 
+/// A session with no shard behind it: its lanes are fed from a recording
+/// ([`Replay`]) instead of a socket, and its inputs go nowhere. Everything
+/// the renderer reads — the core, the welcome, `pump` — is the live session's
+/// own code, which is the point: a replay is drawn exactly as the game draws.
+///
+/// Here and not in `lib.rs`, whose one native `impl Session` is the desktop
+/// join sequence `tests/connect_twins.rs` holds against the browser's.
+#[cfg(feature = "native")]
+impl crate::Session {
+    pub fn replay(rec: Recording) -> (Self, Replay) {
+        use sim_core::limits::{CLIENT_DG_RING, DATAGRAM_BUDGET_BYTES};
+        let welcome = rec.welcome;
+        let datagrams = crate::net::datagram_lane();
+        let (ev_tx, events) = tokio::sync::mpsc::channel::<Vec<u8>>(REPLAY_EVENTS);
+        // No writer task holds the receiver, so an action is refused as
+        // `Closed` — nothing a replay could send has anywhere to go.
+        let (actions, _) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
+        let replay = Replay::new(rec, datagrams.clone(), ev_tx);
+        let session = Self {
+            core: client_core::core::ClientCore::new(welcome.seed, welcome.player_id, welcome.tick),
+            applied: 0,
+            applied2: 0,
+            welcome,
+            watching: None,
+            wire: crate::net::native::NativeWire::detached(),
+            actions,
+            events,
+            datagrams,
+            snapshots: 0,
+            input_buf: [0u8; DATAGRAM_BUDGET_BYTES],
+            dg_scratch: (0..CLIENT_DG_RING)
+                .map(|_| Vec::with_capacity(DATAGRAM_BUDGET_BYTES))
+                .collect(),
+            closed: false,
+            event_observer: None,
+            observer_failed: false,
+            tap: None,
+        };
+        (session, replay)
+    }
+}
+
 /// The recording's end of a replayed session's two inbound lanes.
 ///
 /// [`Session::replay`](crate::Session::replay) builds the session and this
