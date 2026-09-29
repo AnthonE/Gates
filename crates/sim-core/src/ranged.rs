@@ -702,34 +702,16 @@ pub fn draw(
     true
 }
 
-/// Retire a landed arrow into the world: break it, or lay it down where a
-/// player can take it back (`spent.rs`, `reference/PROJECTILES.md` §5).
-///
-/// `lodged` is the reference's own axis and it is *dealt damage* rather
-/// than *what was hit*: an arrow in a body waits out the lodge, an arrow
-/// in the scenery is takeable at once. §5 draws no distinction between a
-/// tree, a wall and a hillside, so neither does this.
+/// Retire a stopped arrow: break it, or hand it to `spent` to come to rest
+/// (`spent.rs`, `reference/PROJECTILES.md` §5). `host` is the body it is in
+/// and which life of it — `(id, life)` — when the arrow dealt damage; it
+/// rides that body for the lodge, then falls out. `None` rests this tick.
 ///
 /// **The break roll happens here and only here**, so every path that ends
-/// with an arrow on the ground pays the same odds and none of them can
-/// forget to. The slot is part of the key, which is what makes two arrows
-/// landing on one tick two independent draws.
-///
-/// ⚠ **A lodged arrow does not travel with the body it is in.** The
-/// reference sticks it to the victim; ours lies at the point of impact,
-/// so a hit player walking away leaves the arrow behind them. That is a
-/// simplification and not an oversight — attaching it needs the arrow to
-/// be a child of a moving entity, which is a second store and a second
-/// set of rules about what happens when the body dies, sleeps or is
-/// evicted. The lodge *timer* is what §5 says the mechanic is for, and
-/// the timer is exact.
-///
-/// **The arrow's own position is where it lies**, so the caller advances
-/// `a.q*` to the stop point before calling rather than passing the point
-/// beside the arrow that is already carrying one. That is one fewer
-/// argument than the obvious shape — clippy's limit is seven and the
-/// obvious shape was eight — and it is also the truer statement: an arrow
-/// that has stopped is at the place it stopped.
+/// with an arrow on the ground pays the same odds. The slot is part of the
+/// key, which is what makes two arrows landing on one tick two independent
+/// draws. The arrow's own position is where it stopped: the caller moves
+/// `a.q*` there first.
 #[inline]
 fn land(
     seed: u64,
@@ -738,21 +720,24 @@ fn land(
     spent: &mut SpentArrows,
     slot: usize,
     a: &Arrow,
-    lodged: bool,
+    host: Option<(u32, u64)>,
 ) {
     if crate::spent::breaks(seed, tick, slot, cc.arrow_break_pct) {
         return;
     }
+    let (host, life) = host.unwrap_or((0, 0));
     spent.lodge(SpentRec {
         qx: a.qx,
         qy: a.qy,
         qz: a.qz,
         round: a.round,
-        ready_at: if lodged {
+        ready_at: if host != 0 {
             tick + u64::from(cc.arrow_lodge_ticks)
         } else {
             tick
         },
+        host,
+        life,
     });
 }
 
@@ -931,7 +916,8 @@ fn step_in(
                 a.qx = crate::fmath::floor_i32(ox + sx * m.t);
                 a.qy = crate::fmath::floor_i32(oy + sy * m.t);
                 a.qz = crate::fmath::floor_i32(oz + sz * m.t);
-                land(seed, tick, cc, spent, ix, &a, true);
+                let host = (crate::mob::mob_id(m.slot), q.mobs.m[m.slot].respawn_at);
+                land(seed, tick, cc, spent, ix, &a, Some(host));
                 arrows.a[ix].life = 0;
                 continue;
             }
@@ -991,15 +977,16 @@ fn step_in(
                 };
                 n_kills += 1;
             }
-            // Dealt damage, so the lodge timer applies — this is the
+            // Dealt damage, so it rides this body for the lodge — the
             // arrow you may not re-use during the fight you fired it in.
             // The point is the closest approach the solve already found,
-            // which is the arrow's position at the instant it met the
-            // body, not a re-solve of it.
+            // the arrow's position at the instant it met the body; `die`
+            // has not run yet, so `deaths` names the life it went into.
             a.qx = crate::fmath::floor_i32(ox + sx * t);
             a.qy = crate::fmath::floor_i32(oy + sy * t);
             a.qz = crate::fmath::floor_i32(oz + sz * t);
-            land(seed, tick, cc, spent, ix, &a, true);
+            let host = (vid, u64::from(players[j].deaths));
+            land(seed, tick, cc, spent, ix, &a, Some(host));
             arrows.a[ix].life = 0;
             continue;
         }
@@ -1044,15 +1031,15 @@ fn step_in(
                     n_chips += 1;
                 }
             }
-            // Missed every body, so it is takeable at once. Same stop
-            // point the impact event just reported, in millimetres rather
-            // than in the body's coarser quanta: a decal is 20 cm across
-            // and does not care, but the hand reaching for the arrow is
-            // the thing `take_near` measures against.
-            a.qx = crate::fmath::floor_i32(ox + sx * stop_t);
-            a.qy = crate::fmath::floor_i32(oy + sy * stop_t);
-            a.qz = crate::fmath::floor_i32(oz + sz * stop_t);
-            land(seed, tick, cc, spent, ix, &a, false);
+            // Missed every body, so it rests this tick, under the last
+            // free sample before the stop: the stop sample itself is inside
+            // the trunk, the wall or the hillside, and a point inside a
+            // wall could fall to the wrong side of it.
+            let back = (stop_t - 1.0 / n as f32).max(0.0);
+            a.qx = crate::fmath::floor_i32(ox + sx * back);
+            a.qy = crate::fmath::floor_i32(oy + sy * back);
+            a.qz = crate::fmath::floor_i32(oz + sz * back);
+            land(seed, tick, cc, spent, ix, &a, None);
             arrows.a[ix].life = 0;
             continue;
         }
@@ -1062,6 +1049,11 @@ fn step_in(
         a.qz += dz;
         a.flown = a.flown.saturating_add(len_mm as u32);
         a.life -= 1;
+        if a.life == 0 {
+            // Out of flight in the air: it falls to whatever is under it
+            // rather than vanishing (`NOW.md` §5 item 2).
+            land(seed, tick, cc, spent, ix, &a, None);
+        }
         arrows.a[ix] = a;
     }
     (n_kills, n_chips)

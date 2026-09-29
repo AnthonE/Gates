@@ -888,6 +888,12 @@ pub fn held_model(catalog: &ItemCatalog, stack: ItemStack) -> Option<usize> {
     HELD_MODELS.iter().position(|m| m.key == s)
 }
 
+/// Whether an item is an arrow. A loose one is drawn standing in the ground
+/// where it fell (`render::structures`), not as the generic pouch.
+pub fn is_arrow(catalog: &ItemCatalog, item: u16) -> bool {
+    core::str::from_utf8(catalog.name(item as usize)).is_ok_and(|n| stem(n).ends_with("arrow"))
+}
+
 /// [`held_model`] on the selected hotbar slot. Clamped for [`held_in_hand`]'s
 /// reason: `sel` is a keypress, not a checked index.
 pub fn held_model_in_hand(catalog: &ItemCatalog, inv: &[ItemStack], sel: u8) -> Option<usize> {

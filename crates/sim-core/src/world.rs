@@ -1667,14 +1667,12 @@ pub enum Command {
     Loot {
         id: u32,
     },
-    /// Take the nearest ready spent arrow in reach back into the quiver
-    /// (spent.rs — arrow recovery v1, the verb `take_near` was gated for).
+    /// Take the nearest loose stack in reach (`grounditem.rs`) — a
+    /// barrel's scatter, or an arrow that came to rest (`spent.rs`).
     ///
     /// `Loot`'s shape and for `Loot`'s reason: no target crosses, so there
     /// is no id to forge and nothing can be picked up that the sender is
-    /// not standing on. It is the first verb whose pick is resolved in
-    /// **three** dimensions — an arrow lodged up a trunk is out of reach
-    /// where a backpack at your feet never is.
+    /// not standing on.
     Pickup {
         id: u32,
     },
@@ -2594,6 +2592,45 @@ impl World {
         if ground == inventory::CONT_BAG {
             self.backpacks.drop_if_empty(ci, &mut self.events);
         }
+    }
+
+    /// Lay down the arrows that are due (`spent::settle`): each falls onto
+    /// the surface under it (`grounditem::rest_at`) as a loose stack of its
+    /// round, or is lost in deep water.
+    fn settle_arrows(&mut self) {
+        if self.spent.is_empty() {
+            return;
+        }
+        let (seed, tick) = (self.seed, self.tick);
+        let haven = &self.haven;
+        let cols = self.pieces.cols();
+        let mut occ = crate::occupy::Occupants {
+            table: &self.scatter,
+            haven,
+            harvested: &self.slot_lives,
+            cache: &mut self.slot_cache,
+        };
+        let (bc, gc, ground) = (&self.backpack, &self.gather, &mut self.ground_items);
+        crate::spent::settle(
+            &mut self.spent,
+            tick,
+            &self.players,
+            &self.mobs,
+            |round, x, y, z| {
+                let (x, y, z) = (x as f32 / 1000.0, y as f32 / 1000.0, z as f32 / 1000.0);
+                let Some(at) = crate::grounditem::rest_at(seed, haven, cols, &mut occ, x, y, z)
+                else {
+                    return;
+                };
+                let stack = ItemStack {
+                    item: round,
+                    count: 1,
+                    cond: gc.cond_max_of(round),
+                    skin: 0,
+                };
+                ground.drop_one(bc, at, stack, tick);
+            },
+        );
     }
 
     /// Land the shots `ranged` found meeting animals (`ranged::MobShot`):
@@ -4324,37 +4361,17 @@ impl World {
             }
             Command::Pickup { id } => {
                 if let Some(slot) = self.live_slot_of(id) {
-                    // **Two stores, one verb, and the loose stack goes
-                    // first** (ground items v0). A spent arrow and a
-                    // dropped stack are one thing to a player — something
-                    // on the ground you bend down for — and they are one
-                    // thing in the reference too (an arrow lying in the
-                    // grass is a `WorldItem`, `reference/LOOT.md` §2).
-                    // Splitting them into two opcodes would put the choice
-                    // of WHICH on the client, where it can disagree with
-                    // the sim's own pick; one verb keeps the decision here.
-                    //
-                    // The stack is tried first because it is the one with a
-                    // prompt: ground items cross the wire, so `E` can name
-                    // what it is about to take, and a prompt that said
-                    // *Wood ×34* and produced an arrow would be a lie the
-                    // arrow path cannot tell (`V` is blind by design).
+                    // The nearest loose stack in reach — a barrel's scatter
+                    // or a landed arrow, which is a loose stack the tick it
+                    // comes to rest (`spent.rs`), so the prompt `E` draws
+                    // names exactly what this takes.
                     let mut spill = [ItemStack::default(); INV_SLOTS];
-                    let took = self.ground_items.take_nearest(
+                    self.ground_items.take_nearest(
                         &self.gather,
                         &mut self.players[slot],
                         &mut spill,
                         &mut self.events,
                     );
-                    if took.is_none() {
-                        crate::spent::pickup(
-                            &mut self.spent,
-                            &self.gather,
-                            self.tick,
-                            &mut self.players[slot],
-                            &mut self.events,
-                        );
-                    }
                     // A take into a full pack spills at the feet, the same
                     // drain every other payout uses — six producers, one
                     // drain (`backpack.rs`).
@@ -5258,6 +5275,9 @@ impl World {
         for k in kills.iter().take(n_kills) {
             self.down_or_die(k.victim, k.by, DEATH_BY_ARROW, k.item, k.range_cm, k.head);
         }
+        // After the deaths those arrows caused, so an arrow in a body that
+        // just died falls out where it fell.
+        self.settle_arrows();
         {
             // A slot a base now stands over does not grow back through it.
             let (table, haven, cols) = (&self.scatter, &self.haven, self.pieces.cols());
@@ -5683,13 +5703,15 @@ impl World {
         if !self.spent.is_empty() || self.spent.evictions() > 0 {
             h.update(&(self.spent.len() as u64).to_le_bytes());
             for e in self.spent.entries() {
-                let mut buf = [0u8; 14];
+                let mut buf = [0u8; 18];
                 buf[0..4].copy_from_slice(&e.qx.to_le_bytes());
                 buf[4..8].copy_from_slice(&e.qy.to_le_bytes());
                 buf[8..12].copy_from_slice(&e.qz.to_le_bytes());
                 buf[12..14].copy_from_slice(&e.round.to_le_bytes());
+                buf[14..18].copy_from_slice(&e.host.to_le_bytes());
                 h.update(&buf);
                 h.update(&e.ready_at.to_le_bytes());
+                h.update(&e.life.to_le_bytes());
             }
             h.update(&self.spent.evictions().to_le_bytes());
         }

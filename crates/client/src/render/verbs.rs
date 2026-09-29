@@ -473,28 +473,12 @@ pub fn keys(
         use_slot(&net, &mut toast, &mut bite, now, net.sel);
     }
     if keys.just_pressed(KeyCode::KeyV) {
-        // Pick up the nearest spent arrow in reach (`sim-core/spent.rs`).
-        //
-        // **A key and not an `E` prompt, and that is forced rather than
-        // chosen.** Every other thing `E` acts on is something the client
-        // can see — a door, a bag, a crate all reach it through the
-        // snapshot, so `interact::resolve` can put a prompt under the
-        // crosshair. Spent arrows are sim state that does not cross the
-        // wire at all, so there is nothing here to resolve against and a
-        // `Verb::Arrow` would be a prompt this build cannot decide to
-        // draw. The verb is blind on purpose: press it, and the server
-        // says what it found.
-        //
-        // Payload-free, `H`'s shape — the sim reads the body it already
-        // has, so there is nothing to aim and no reach for the client to
-        // guess. `just_pressed` because the action lane takes one pending
-        // action per client per tick: a held key would send a frame's
-        // worth and queue them all behind each other.
-        //
-        // `V` is a proposed default (`DECISIONS.md` §open) and is picked
-        // for the hand rather than the letter: collecting arrows happens
-        // while walking a field you just shot across, so the key has to be
-        // reachable without leaving `WASD`.
+        // Take the nearest loose stack in reach — the take `E`'s prompt
+        // names, landed arrows included (`sim-core/spent.rs`), on a key the
+        // hand reaches without leaving `WASD` while it walks the field it
+        // just shot across. Payload-free: the sim picks, from the body it
+        // already has. `just_pressed` because the action lane takes one
+        // pending action per client per tick.
         send(&net, &mut toast, "pick up", protocol::encode_action_pickup);
     }
     if keys.just_pressed(KeyCode::KeyH) {

@@ -186,33 +186,62 @@ impl GroundItems {
             if stack.count == 0 {
                 continue;
             }
-            if self.len == MAX_GROUND_ITEMS {
-                let mut worst = 0usize;
-                for i in 1..self.len {
-                    if self.entries[i].expires < self.entries[worst].expires {
-                        worst = i;
-                    }
-                }
-                self.remove(worst);
-            }
             let (ix, iy, iz) = rest_spot(seed, haven, key, k, qx, qz);
-            let id = self.next_id;
-            // Saturates rather than wraps: a wrapped id would alias an
-            // early one and a take would resolve to the wrong stack.
-            self.next_id = self.next_id.saturating_add(1);
-            let i = self.len;
-            self.entries[i] = GroundItemRec {
-                id,
-                qx: ix,
-                qy: iy,
-                qz: iz,
-                stack: *stack,
-                expires: tick + bc.stack_life_ticks(stack.item) as u64,
-            };
-            self.len += 1;
+            self.push(bc, (ix, iy, iz), *stack, tick);
             made += 1;
         }
         made
+    }
+
+    /// Lay one stack down at a spot already found — an arrow falling out
+    /// of the air or out of a body (`spent::settle`, [`rest_at`]). Disarmed
+    /// by inert content exactly as [`scatter`](Self::scatter) is. Returns
+    /// the new record's id, or 0 if nothing was laid.
+    pub fn drop_one(
+        &mut self,
+        bc: &crate::backpack::BackpackContent,
+        at: (i32, i32, i32),
+        stack: ItemStack,
+        tick: u64,
+    ) -> u32 {
+        if bc.base_ticks == 0 || stack.count == 0 {
+            return 0;
+        }
+        self.push(bc, at, stack, tick)
+    }
+
+    /// Append one record, evicting the one nearest its own despawn when
+    /// the store is full (`scatter`'s stated policy). Returns its id.
+    fn push(
+        &mut self,
+        bc: &crate::backpack::BackpackContent,
+        (qx, qy, qz): (i32, i32, i32),
+        stack: ItemStack,
+        tick: u64,
+    ) -> u32 {
+        if self.len == MAX_GROUND_ITEMS {
+            let mut worst = 0usize;
+            for i in 1..self.len {
+                if self.entries[i].expires < self.entries[worst].expires {
+                    worst = i;
+                }
+            }
+            self.remove(worst);
+        }
+        let id = self.next_id;
+        // Saturates rather than wraps: a wrapped id would alias an early
+        // one and a take would resolve to the wrong stack.
+        self.next_id = self.next_id.saturating_add(1);
+        self.entries[self.len] = GroundItemRec {
+            id,
+            qx,
+            qy,
+            qz,
+            stack,
+            expires: tick + bc.stack_life_ticks(stack.item) as u64,
+        };
+        self.len += 1;
+        id
     }
 
     /// Drop record `i`, swap-removing so the store stays dense.
@@ -391,4 +420,34 @@ pub fn rest_spot(
     let x = ix as f32 * POS_XZ_Q;
     let z = iz as f32 * POS_XZ_Q;
     (ix, quant_y(terrain::ground(seed, haven, x, z)), iz)
+}
+
+/// Deeper than this under the sea, a thing that falls is lost rather than
+/// left on the seabed.
+pub const SINK_DEPTH_M: f32 = 0.5;
+
+/// Where something let go of at `(x, y, z)` metres comes to rest, in body
+/// quanta: straight down onto the first surface a body could stand on at
+/// that height — terrain, a built floor or stair, a crate, rock or plinth
+/// top — which is `movement::step`'s own ground. `None` off the island or
+/// in water deeper than [`SINK_DEPTH_M`].
+pub fn rest_at(
+    seed: u64,
+    haven: &Haven,
+    cols: &crate::collide::ColIndex,
+    occ: &mut crate::occupy::Occupants,
+    x: f32,
+    y: f32,
+    z: f32,
+) -> Option<(i32, i32, i32)> {
+    if !(0.0..terrain::ISLAND_SIZE).contains(&x) || !(0.0..terrain::ISLAND_SIZE).contains(&z) {
+        return None;
+    }
+    let g = terrain::ground(seed, haven, x, z)
+        .max(crate::collide::piece_ground(seed, haven, cols, x, z, y))
+        .max(occ.ground(seed, x, z, y));
+    if g < terrain::SEA_LEVEL - SINK_DEPTH_M {
+        return None;
+    }
+    Some((quant_xz(x), quant_y(g), quant_xz(z)))
 }

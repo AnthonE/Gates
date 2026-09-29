@@ -1735,11 +1735,12 @@ const ACT_RESEARCH: u32 = 17;
 /// (`research::unlock`), so the only thing the client may claim is
 /// *which node it is pointing at*.
 const ACT_UNLOCK: u32 = 18;
-/// Take the nearest ready spent arrow in reach back into the quiver
-/// (`sim-core/spent.rs`). **Payload-free, `ACT_LOOT`'s shape and its whole
-/// argument** — an arrow lies wherever it stopped, so it has no grid
-/// address to name, and the sim re-derives the pick from the sender's own
-/// body. Nothing to forge and nothing to reach past a wall.
+/// Take the nearest loose stack in reach (`sim-core/grounditem.rs`) — a
+/// barrel's scatter, or an arrow that came to rest (`sim-core/spent.rs`).
+/// **Payload-free, `ACT_LOOT`'s shape and its whole argument** — a stack
+/// lies wherever it fell, so it has no grid address to name, and the sim
+/// re-derives the pick from the sender's own body. Nothing to forge and
+/// nothing to reach past a wall.
 ///
 /// The nineteenth code, and the first spent since `ACT_UNLOCK`. It is what
 /// `reference/PROJECTILES.md` §9.7 calls piece 3, and the `PROTO_VER` bump
@@ -2092,12 +2093,11 @@ pub enum ActionMsg {
     /// there is no id here to forge, no address to aim past a wall, and
     /// no way to loot something the sender is not standing on.
     Loot,
-    /// Take the nearest ready spent arrow in reach (`sim-core/spent.rs`).
+    /// Take the nearest loose stack in reach — a barrel's scatter or a
+    /// landed arrow (`sim-core/grounditem.rs`, `sim-core/spent.rs`).
     /// **Payload-free for `Loot`'s reason exactly**, and it is the second
     /// message on this lane to be so: the thing it acts on lies where it
-    /// fell rather than at an address. The one way it differs from `Loot`
-    /// is invisible from here — the sim's pick is a three-dimensional one,
-    /// because an arrow can be lodged above your head.
+    /// fell rather than at an address.
     Pickup,
     /// Eat what is in inventory slot `slot` (survival.rs). The slot is
     /// shape-checked here — past the sim's array it does not decode — and
@@ -2328,7 +2328,7 @@ pub fn encode_action_loot(buf: &mut [u8]) -> Result<usize, WireError> {
     Ok(w.finish())
 }
 
-/// `ActionMsg::Pickup` — take the nearest ready spent arrow in reach.
+/// `ActionMsg::Pickup` — take the nearest loose stack in reach.
 /// Payload-free, so this is the whole frame: a kind and a subtype.
 pub fn encode_action_pickup(buf: &mut [u8]) -> Result<usize, WireError> {
     let mut w = BitWriter::new(buf);

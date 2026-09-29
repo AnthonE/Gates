@@ -198,3 +198,59 @@ fn a_loading_model_keeps_the_pouch_then_replaces_it_without_wire_news() {
         "idle frames must not reconcile again"
     );
 }
+
+/// A landed arrow is drawn as a shaft standing in the ground where it
+/// fell, not as the pouch every other unmodelled item gets.
+#[test]
+fn a_landed_arrow_stands_in_the_ground() {
+    let mut app = app();
+    app.world_mut()
+        .resource_mut::<Mirror>()
+        .0
+        .catalog
+        .set(
+            16,
+            b"Wooden Arrow",
+            protocol::ItemRow {
+                stack_max: 64,
+                ..protocol::ItemRow::EMPTY
+            },
+        )
+        .unwrap();
+    sync(&mut app, &[item(1), item(2)]);
+    let ring = app.world().resource::<StructRing>();
+    let kit = ring.kit.as_ref().unwrap();
+    for id in [1, 2] {
+        let e = ring.gitems[&id].entity;
+        assert_eq!(
+            app.world().get::<Mesh3d>(e).unwrap().0,
+            kit.arrow_mesh,
+            "stack {id} drew the pouch"
+        );
+        let t = app.world().get::<Transform>(e).unwrap();
+        let axis = t.rotation * Vec3::Y;
+        let lean = axis.y.clamp(-1.0, 1.0).acos();
+        assert!(
+            (ARROW_LEAN[0] - 1e-3..=ARROW_LEAN[1] + 1e-3).contains(&lean),
+            "stack {id} leans {lean} rad"
+        );
+        let head = t.translation - axis * ARROW_LEN_M * 0.5;
+        let surface = item(id).qy as f32 * POS_Y_Q;
+        assert!(
+            head.y < surface - 0.05,
+            "stack {id}'s head is not in the ground ({} vs {surface})",
+            head.y
+        );
+    }
+    let a = app
+        .world()
+        .get::<Transform>(ring.gitems[&1].entity)
+        .unwrap()
+        .rotation;
+    let b = app
+        .world()
+        .get::<Transform>(ring.gitems[&2].entity)
+        .unwrap()
+        .rotation;
+    assert_ne!(a, b, "two arrows do not stand in ranks");
+}

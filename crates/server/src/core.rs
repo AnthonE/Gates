@@ -3725,15 +3725,26 @@ impl ShardCore {
         // `(next_id, len)` is complete — every insert bumps `next_id`, so
         // a barrel that dropped one stack while a player took another
         // still reads as a change where a length would not.
+        //
+        // **Growth alone does not restart it.** Every insert appends and
+        // bumps `next_id`, so when both moved by the same amount nothing
+        // was removed, every record already sent is where it was, and the
+        // walk carries on to the new tail. Landed arrows are loose stacks
+        // (`spent.rs`): a fight lands them tick after tick, and a restart
+        // per landing would never reach the newest ones.
         let c = &self.clients[slot];
         let fp = (
             self.world.ground_items.next_id(),
             self.world.ground_items.len(),
         );
         if c.gitem_seen != fp {
+            let (seen_id, seen_len) = c.gitem_seen;
+            let grew = fp.1 > seen_len && fp.0.wrapping_sub(seen_id) as usize == fp.1 - seen_len;
             let c = &mut self.clients[slot];
-            c.gitem_sync_cursor = 0;
-            c.gitem_sync_reset = true;
+            if !grew {
+                c.gitem_sync_cursor = 0;
+                c.gitem_sync_reset = true;
+            }
             c.gitem_seen = fp;
         }
         let c = &self.clients[slot];

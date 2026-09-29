@@ -1,138 +1,70 @@
-//! Arrows that have landed and can be picked up again
-//! (`reference/PROJECTILES.md` §5 and §9.7, arrow recovery v0).
+//! Arrows that have stopped, until they lie on the ground
+//! (`reference/PROJECTILES.md` §5; `NOW.md` §5 item 2).
 //!
-//! **Why this store exists at all, and it is not comfort.** Our arrow was
-//! spent permanently, so our ammunition was strictly harsher than the
-//! reference's — and §9.6 refuses their bow damage number on exactly that
-//! ground: theirs is priced against ammunition that comes back most of the
-//! time, ours against ammunition that never came back. Taking their number
-//! without their recovery loop is `BALANCE.md` §4.1's false-familiarity
-//! trap, where the number matches and the weapon means something else. So
-//! the loop has to land before the bow's numbers can track theirs at all.
+//! A stopped arrow ends up a **loose stack** (`grounditem.rs`): drawn,
+//! named by `E`'s prompt and taken back by the payload-free
+//! `Command::Pickup`, the same as a barrel's scatter. How it gets there:
 //!
-//! **All four of §9.7's pieces are here now, across two passes.** Pieces
-//! 1 and 2 — the store and the lodge timer — landed at arrow recovery v0
-//! with nothing able to reach them; pieces 3 and 4, the pickup verb
-//! ([`pickup`]) and the `PROTO_VER` bump it costs, landed at v1 on wire
-//! v53. `SpentArrows::take_near` was written and gated a pass ahead of its
-//! only caller precisely so that the wire pass would be a wire pass, which
-//! worked: the verb needed the store to grow one thing, a `peek_near` that
-//! looks before it takes.
+//!   * One that stopped on the world rests on the surface under where it
+//!     stopped, the same tick.
+//!   * One that ran out of flight in the air falls to the surface under it.
+//!   * One that **dealt damage rides the body it is in** for the lodge
+//!     (`content/balance.toml` `arrow_lodge_s`, theirs: 10 s), then falls
+//!     out at that body's feet. The lodge is the reference's rule and the
+//!     reason for it holds: an archer cannot re-collect the arrow they just
+//!     shot someone with *during* the fight. It falls at once if its host
+//!     dies, and where the host last stood if the host is gone.
+//!   * ~15 % of landings break instead (`arrow_break_pct`), rolled by
+//!     `ranged` at the stop.
 //!
-//! **§9.7's one piece of advice was not followed, and it is worth saying
-//! why rather than quietly.** It asks for this bump to ride *together
-//! with* `EV_SHOT` (§9.2), because two wire bumps for one feature is two
-//! sets of regenerated goldens and two chances to get wall 6 wrong. It
-//! did not, because the blocker on `EV_SHOT` was never the bump — it was
-//! a reading nobody had spoken: that event's payload is a muzzle speed and
-//! a drop and the client re-flies exactly those integers, so a hitscan,
-//! which has neither, needed a new event or a reading of its spare bit
-//! patterns. Waiting for a decision nobody had made would have held the
-//! operator's *"arrows come back"* behind it indefinitely. **The reading
-//! landed one pass later** (wire v54, `ranged::hitscan`): `speed == 0` is
-//! *instantaneous* and the low half becomes a reach. So the cost was
-//! exactly the one extra bump this paragraph predicted, and no more.
-//!
-//! **Two rules, both theirs (§5).**
-//!
-//!   * ~15 % of landings break and are destroyed. The odds live in
-//!     `content/balance.toml` (`arrow_break_pct`), never here.
-//!   * An arrow that **dealt damage** may not be taken for 10 s; one that
-//!     **missed** may be taken the moment it lands. That reads arbitrary
-//!     and is not — it stops an archer re-collecting the arrow they just
-//!     shot someone with *during* the fight, so a bow still runs dry in a
-//!     sustained engagement while losing almost nothing to a day of
-//!     hunting.
-//!
-//! **The clock is absolute, never a countdown.** `ready_at` is a tick
-//! compared against `world.tick`, which is `charge::ChargeRec::fires_at`'s
-//! rule and for its reason: a decremented counter is state a dropped tick
-//! can corrupt, and a deadline cannot drift.
-//!
-//! **It is saved, and the arrows in flight are not.** `worldsave.rs` says
-//! why it skips `Arrows` — "sub-second state whose whole meaning is a
-//! trajectory between two ticks". A spent arrow is the opposite of that in
-//! every respect: it is an item lying on a hillside with no velocity and
-//! no deadline to expire on, and dropping it across a restart would delete
-//! ammunition players had earned. Being in `state_hash` makes saving it
-//! compulsory rather than merely right — a blob that dropped it would load
-//! to a different hash than it was taken from, which is wall 5 failing at
-//! the origin.
+//! This store holds the arrows between the stop and the ground: the ones
+//! in a body, and — inside one tick only — the ones `ranged` just stopped,
+//! which [`settle`] lays down before the tick ends. Hashed and saved,
+//! because an arrow in a body is state that will become an item.
 
-use crate::gather::{inv_add, GatherContent};
-use crate::limits::MAX_SPENT_ARROWS;
-use crate::movement::{POS_XZ_Q, POS_Y_Q};
-use crate::world::{EventQueue, Player, EV_GATHER};
+use crate::limits::{MAX_PLAYERS, MAX_SPENT_ARROWS, MOB_ID_TAG};
+use crate::mob::Mobs;
+use crate::movement::{Body, POS_XZ_Q, POS_Y_Q};
+use crate::world::Player;
 
-/// How far a player may reach for a landed arrow.
-///
-/// **Not a new knob — deliberately the same one**, which is
-/// `LOOT_REACH_M`'s posture and `DRINK_REACH_M`'s, the third `pub use` of
-/// `BUILD_REACH_M` rather than the first invented pickup distance. The
-/// §open row that proposed this store said the reach "belongs beside
-/// `BUILD_REACH_M`" and left it to the pass that gives the player a key;
-/// beside it turned out to mean *it*. One argument for the alias over a
-/// number: a player who can place a foundation at arm's length and loot a
-/// backpack at arm's length has already been taught what arm's length is,
-/// and a fourth radius would be a fourth thing to learn for no mechanic.
-///
-/// Measured in **3D**, unlike `LOOT_REACH_M` — [`SpentArrows::peek_near`]
-/// compares `dy` as well, because an arrow lodged three metres up a trunk
-/// is genuinely out of reach where a backpack at your feet never is.
-pub use crate::build::BUILD_REACH_M as PICKUP_REACH_M;
-
-/// `PICKUP_REACH_M` in the arrow store's own quanta.
-///
-/// The store is millimetres (`SpentRec::qx`) and the reach is metres, so
-/// the conversion happens once, here, rather than at the call site where a
-/// second caller would eventually get it wrong.
-const PICKUP_REACH_MM: i32 = (PICKUP_REACH_M * 1000.0) as i32;
-
-/// One arrow on the ground.
+/// One stopped arrow.
 ///
 /// `round` is the **ammo** item, not the bow — the arrow you pull out of a
-/// tree is the arrow you fired (`reference/PROJECTILES.md` §1 fact 5), so
-/// a bow loaded with wooden arrows and firing them until they run out then
-/// firing high-velocity ones gives back exactly what it spent, in the
-/// right order. `Arrow::item` is the *weapon*, for the death screen, and
-/// the two must not be confused: `Arrow` carries both for that reason.
+/// tree is the arrow you fired (`reference/PROJECTILES.md` §1 fact 5).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SpentRec {
-    /// Where it lies, millimetres — the arrow's own quanta, not the body's
-    /// (`ranged::Arrow` says why they differ).
+    /// Millimetres, the arrow's own quanta (`ranged::Arrow`). Where it
+    /// stopped; while it rides a body, that body's feet on the last tick
+    /// the body stood.
     pub qx: i32,
     pub qy: i32,
     pub qz: i32,
-    /// The round's item index. What a pickup returns to the quiver.
+    /// The round's item index — what the loose stack will be.
     pub round: u16,
-    /// The first tick this may be taken. Absolute, never decremented; the
-    /// lodge is `ready_at - landed`, and a missed arrow's is zero so
-    /// `ready_at` is simply the tick it landed.
+    /// The tick a lodged arrow falls out of its host. Absolute, never
+    /// decremented (`charge::ChargeRec::fires_at`'s rule).
     pub ready_at: u64,
+    /// The body it is in: a player id, or `mob::mob_id(slot)`. Zero is an
+    /// arrow in nothing, which rests this tick.
+    pub host: u32,
+    /// Which life of the host it went into — `Player::deaths` or
+    /// `Mob::respawn_at` at the hit — so a host that died and came back
+    /// does not carry it on.
+    pub life: u64,
 }
 
-/// The spent-arrow store — sim state, hashed and saved.
+/// The stopped-arrow store — sim state, hashed and saved.
 ///
-/// Dense and insertion-ordered, rewritten by swap-remove, exactly like
-/// `Pieces`, `Charges` and `WorldConts`; the order is deterministic
-/// because every insert and every removal is a tick's or a command's
-/// consequence, replayed in the same order.
-///
-/// Boxed for `world_conts`' reason — `World` is built on the stack
-/// (`ShardCore::new`, every wire test) and this is 12 kB of fixed
-/// capacity. One allocation at construction, none in the tick.
+/// Dense and insertion-ordered, rewritten by swap-remove, like `Pieces`,
+/// `Charges` and `WorldConts`. Boxed: `World` is built on the stack and
+/// this is fixed capacity. One allocation at construction, none in the
+/// tick.
 #[derive(Clone, Debug)]
 pub struct SpentArrows {
     entries: Box<[SpentRec; MAX_SPENT_ARROWS]>,
     len: usize,
-    /// How many arrows this store has evicted to make room
-    /// (`MAX_SPENT_ARROWS`'s stated policy). Hashed, though it drives
-    /// nothing, for `World::evictions`' reason exactly: an eviction's only
-    /// evidence is an *absence*, and two shards that evicted different
-    /// arrows would hash the survivors identically for as long as nobody
-    /// walked over the missing one. The counter makes that divergence loud
-    /// on the tick it happens, and it is also the only way to tell whether
-    /// the policy has ever fired or is guarding an unreachable case.
+    /// How many arrows this store has evicted to make room. Hashed, though
+    /// it drives nothing: an eviction's only evidence is an absence.
     evictions: u32,
 }
 
@@ -180,18 +112,10 @@ impl SpentArrows {
         self.evictions = evictions;
     }
 
-    /// Lay a landed arrow down. Never refuses: at capacity it evicts the
-    /// entry with the smallest `ready_at` — the arrow that has been
-    /// available to collect for longest and was not collected — which is
-    /// `MAX_SPENT_ARROWS`'s stated policy and the argument for it.
-    ///
-    /// Returns `true` if an eviction paid for this insert.
-    ///
-    /// The scan is `MAX_SPENT_ARROWS` compares and no memmove, which is
-    /// the reason the policy is expressed as a swap rather than as a shift
-    /// of the whole array: a tick in which every one of `MAX_ARROWS`
-    /// arrows lands at once would shift 128 × 12 kB under the other shape
-    /// and compares 128 × 512 `u64`s under this one.
+    /// Add a stopped arrow. Never refuses: at capacity it evicts the entry
+    /// with the smallest `ready_at` — the arrow due out soonest — and
+    /// counts it (`MAX_SPENT_ARROWS`). Returns `true` if an eviction paid
+    /// for this insert.
     pub fn lodge(&mut self, rec: SpentRec) -> bool {
         if self.len < MAX_SPENT_ARROWS {
             self.entries[self.len] = rec;
@@ -199,8 +123,7 @@ impl SpentArrows {
             return false;
         }
         // Ties break on the lower index, which is deterministic because
-        // the array's order is. `min_by_key` would too; the loop is here
-        // because it states it.
+        // the array's order is.
         let mut worst = 0usize;
         for i in 1..self.len {
             if self.entries[i].ready_at < self.entries[worst].ready_at {
@@ -212,99 +135,17 @@ impl SpentArrows {
         true
     }
 
-    /// Take the nearest arrow that is ready and within `reach_mm` of
-    /// `(qx, qy, qz)`, removing it. Returns the round's item index.
-    ///
-    /// **The reach is the caller's and not this module's**, deliberately.
-    /// A pickup distance is the *verb's* knob — it belongs beside
-    /// `BUILD_REACH_M` and `gather::REACH_M`, decided by the pass that
-    /// gives the player a key to press (§9.7 piece 3). This function
-    /// answers only "which arrow, if any", which is the half that can be
-    /// gated before a wire exists.
-    ///
-    /// Nearest rather than first, for `reference/PROJECTILES.md` §7's
-    /// reason applied one level out: the first entry in an array is an
-    /// artefact of insertion order and the player is reaching for the one
-    /// under their hand.
-    pub fn take_near(
-        &mut self,
-        tick: u64,
-        qx: i32,
-        qy: i32,
-        qz: i32,
-        reach_mm: i32,
-    ) -> Option<u16> {
-        let (ix, _) = self.peek_near(tick, qx, qy, qz, reach_mm)?;
-        self.take_at(ix)
-    }
-
-    /// Which arrow [`take_near`](Self::take_near) would take, and what it
-    /// would return, **without taking it**.
-    ///
-    /// Split out of `take_near` on the pass that gave the player the key,
-    /// because a pickup has to know what it is about to receive before it
-    /// commits. The round is an item, the quiver has a cap, and a verb
-    /// that removed the arrow and *then* discovered `inv_add` took nothing
-    /// would have deleted ammunition the player earned — silently, since
-    /// the arrow's only evidence is that it is lying there. `EV_GATHER`'s
-    /// doc calls an unowed zero a lie; look-then-take is the shape that
-    /// keeps the zero owed. `take_near` is retained on top of the two so
-    /// the gates written before the verb still drive the same code.
-    ///
-    /// The index is into [`entries`](Self::entries) and is invalidated by
-    /// any insert or removal, which is why the pair is used within one
-    /// command and never held.
-    pub fn peek_near(
-        &self,
-        tick: u64,
-        qx: i32,
-        qy: i32,
-        qz: i32,
-        reach_mm: i32,
-    ) -> Option<(usize, u16)> {
-        let reach = i64::from(reach_mm) * i64::from(reach_mm);
-        let mut best: Option<(i64, usize)> = None;
-        for i in 0..self.len {
-            let e = self.entries[i];
-            if tick < e.ready_at {
-                continue;
-            }
-            // i64 throughout: two arrow coordinates are millimetres over a
-            // 2 048 m island, so a squared separation overflows i32 at
-            // 46 m and would wrap into a *near* answer.
-            let (dx, dy, dz) = (
-                i64::from(e.qx) - i64::from(qx),
-                i64::from(e.qy) - i64::from(qy),
-                i64::from(e.qz) - i64::from(qz),
-            );
-            let d2 = dx * dx + dy * dy + dz * dz;
-            if d2 > reach {
-                continue;
-            }
-            if best.is_none_or(|(bd, _)| d2 < bd) {
-                best = Some((d2, i));
-            }
-        }
-        let (_, ix) = best?;
-        Some((ix, self.entries[ix].round))
-    }
-
-    /// Remove the arrow at `ix`, returning its round. `None` if `ix` is
-    /// past the live length, which is the only way this can be asked a
-    /// question it cannot answer.
-    ///
-    /// Swap-remove, the store's one removal shape — the same one
-    /// `take_near` has always used, and the reason a `peek_near` index may
-    /// not outlive the command that took it.
-    pub fn take_at(&mut self, ix: usize) -> Option<u16> {
+    /// Remove the arrow at `ix`, returning it. Swap-remove, so an index is
+    /// invalidated by any removal.
+    pub fn take_at(&mut self, ix: usize) -> Option<SpentRec> {
         if ix >= self.len {
             return None;
         }
-        let round = self.entries[ix].round;
+        let rec = self.entries[ix];
         self.len -= 1;
         self.entries[ix] = self.entries[self.len];
         self.entries[self.len] = SpentRec::default();
-        Some(round)
+        Some(rec)
     }
 }
 
@@ -314,14 +155,9 @@ const CH_ARROW_BREAK: u32 = 114;
 
 /// Does this landing break the arrow?
 ///
-/// Keyed on `(seed, slot, tick)` — §9.7's own recipe — which is unique per
-/// landing because one arrow slot retires at most once on a tick. Stateless,
-/// so nothing is stored between ticks and a replay draws the same bit.
-///
-/// The draw is multiply-shift and not `% 100`, which is `loot.rs`'s form
-/// and for its reason: modulo over a range that does not divide 2⁶⁴ is
-/// biased, and a bias in the direction of "breaks" is a tax nobody wrote
-/// down.
+/// Keyed on `(seed, slot, tick)`, unique per landing because one arrow
+/// slot retires at most once on a tick. Stateless, so a replay draws the
+/// same bit. Multiply-shift rather than `% 100`, which is biased.
 #[inline]
 pub fn breaks(seed: u64, tick: u64, slot: usize, break_pct: u16) -> bool {
     if break_pct == 0 {
@@ -334,70 +170,79 @@ pub fn breaks(seed: u64, tick: u64, slot: usize, break_pct: u16) -> bool {
     (((h >> 32) * 100) >> 32) < u64::from(break_pct)
 }
 
-/// The pickup verb: take the nearest ready arrow within reach and put it
-/// back in the quiver (`reference/PROJECTILES.md` §9.7 pieces 3 and 4).
+/// A body's feet in the arrow's millimetres.
+#[inline]
+pub fn feet_mm(b: &Body) -> (i32, i32, i32) {
+    (
+        b.qx * (POS_XZ_Q * MM_PER_M) as i32,
+        b.qy * (POS_Y_Q * MM_PER_M) as i32,
+        b.qz * (POS_XZ_Q * MM_PER_M) as i32,
+    )
+}
+
+/// Where a lodged arrow's host is this tick: its feet if it still stands
+/// in the life the arrow went into, `None` if it died, left or is gone.
+fn host_feet(
+    rec: &SpentRec,
+    players: &[Player; MAX_PLAYERS],
+    mobs: &Mobs,
+) -> Option<(i32, i32, i32)> {
+    if rec.host & MOB_ID_TAG != 0 {
+        let m = mobs.m.get((rec.host & !MOB_ID_TAG) as usize)?;
+        return (m.alive && m.respawn_at == rec.life).then(|| feet_mm(&m.body));
+    }
+    let p = players.iter().find(|p| p.active && p.id == rec.host)?;
+    (!p.dead && u64::from(p.deaths) == rec.life).then(|| feet_mm(&p.body))
+}
+
+/// Lay down every arrow that is due, once a tick after the shots and the
+/// deaths they caused: the ones that stopped on the world or in the air
+/// this tick, and the lodged ones whose lodge ran out or whose host is
+/// gone. A lodged arrow whose host still stands follows it.
 ///
-/// **This is the caller `take_near` was written and gated for**, eighteen
-/// days after it. Everything below it — the store, the lodge timer, the
-/// break roll, the save section — landed with no way to reach it, because
-/// §9.7 asked for the verb and its wire bump together and the bump is what
-/// this pass spends.
-///
-/// **No target crosses the wire**, which is `ActionMsg::Loot`'s shape and
-/// its argument verbatim: there is no id here to forge, no address to aim
-/// past a wall, and no way to pick up an arrow the sender is not standing
-/// on. The sim re-derives the pick from the sender's own body, so a client
-/// that lies about where it is has to lie about it *to the movement code
-/// first*, which is the only place we want that argument to happen.
-///
-/// **The pack being full leaves the arrow on the ground**, and says so.
-/// `EV_GATHER`'s zero means exactly "the pack was full and every unit went
-/// to the ground", and here the unit going to the ground is the unit
-/// staying there — so the zero is owed rather than invented, and the
-/// look-then-take split above is what makes it truthful. The alternative
-/// shape, take-then-discover, deletes an arrow a player earned and reports
-/// it as a pickup.
-///
-/// Returns the round that entered the quiver, or `None` if nothing did.
-pub fn pickup(
+/// `lay(round, x, y, z)` is handed each falling arrow's round and the
+/// point it falls from, in millimetres; `World` finds the surface under it
+/// and makes the loose stack. Returns how many arrows fell.
+pub fn settle(
     spent: &mut SpentArrows,
-    gc: &GatherContent,
     tick: u64,
-    p: &mut Player,
-    events: &mut EventQueue,
-) -> Option<u16> {
-    // The player's body in the arrow's quanta. This is `ranged.rs`'s own
-    // muzzle expression minus `ARROW_EYE_MM`: an arrow is picked up from
-    // the body, not sighted from the eye, and the eye offset would tilt
-    // the sphere upward by the height of a person.
-    let qx = p.body.qx * (POS_XZ_Q * MM_PER_M) as i32;
-    let qy = p.body.qy * (POS_Y_Q * MM_PER_M) as i32;
-    let qz = p.body.qz * (POS_XZ_Q * MM_PER_M) as i32;
-
-    let (ix, round) = spent.peek_near(tick, qx, qy, qz, PICKUP_REACH_MM)?;
-
-    // An item the stack ladder cannot hold cannot be taken — `loot_nearest`
-    // guards the same way, and the zero-ceiling case is `inv_add`'s stated
-    // hazard rather than a hypothetical.
-    let cap = gc.stack_max_of(round);
-    if cap == 0 {
-        return None;
+    players: &[Player; MAX_PLAYERS],
+    mobs: &Mobs,
+    mut lay: impl FnMut(u16, i32, i32, i32),
+) -> usize {
+    let mut fell = 0usize;
+    let mut i = 0;
+    while i < spent.len {
+        let rec = spent.entries[i];
+        let from = if rec.host == 0 {
+            Some((rec.qx, rec.qy, rec.qz))
+        } else {
+            match host_feet(&rec, players, mobs) {
+                // Still in the body: follow it, and fall out at its feet
+                // when the lodge runs out.
+                Some(feet) if tick < rec.ready_at => {
+                    let e = &mut spent.entries[i];
+                    (e.qx, e.qy, e.qz) = feet;
+                    None
+                }
+                Some(feet) => Some(feet),
+                // Died or gone: where it last stood, which for a body that
+                // died this tick is where the hit landed or where it fell.
+                None => Some((rec.qx, rec.qy, rec.qz)),
+            }
+        };
+        match from {
+            Some((x, y, z)) => {
+                spent.take_at(i);
+                lay(rec.round, x, y, z);
+                fell += 1;
+            }
+            None => i += 1,
+        }
     }
-    let took = inv_add(&mut p.inv, round, 1, cap, gc.cond_max_of(round));
-    if took == 0 {
-        // Owed: an arrow was in reach and the quiver refused it. The arrow
-        // is deliberately still lying there.
-        events.push(EV_GATHER, p.id, (round as u32) << 16, 0);
-        return None;
-    }
-    spent.take_at(ix);
-    events.push(EV_GATHER, p.id, ((round as u32) << 16) | took as u32, 0);
-    Some(round)
+    fell
 }
 
 /// Millimetres per metre — `ranged.rs`'s constant of the same name, which
-/// is private to that module. Restated rather than exported because the
-/// two uses are the two halves of one round trip (an arrow leaves the body
-/// in `ranged`, and comes back to it here) and a shared `pub` constant for
-/// the number 1000 buys nothing.
+/// is private to that module.
 const MM_PER_M: f32 = 1000.0;
