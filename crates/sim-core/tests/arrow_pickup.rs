@@ -191,7 +191,10 @@ fn the_nearest_arrow_is_the_one_that_comes_back() {
     assert_eq!(w.ground_items.len(), 1, "one taken");
     let far = (feet_mm(&w.players[P].body).0 + 3_000) as f32 / 1000.0;
     let left = w.ground_items.entries()[0].qx as f32 * POS_XZ_Q;
-    assert!((left - far).abs() < 0.05, "the far one is what is left");
+    assert!(
+        (left - far).max(far - left) < 0.05,
+        "the far one is what is left"
+    );
 }
 
 #[test]
@@ -236,5 +239,8 @@ fn a_resting_arrow_is_in_body_quanta() {
     let g = w.ground_items.entries()[0];
     let y = g.qy as f32 * POS_Y_Q;
     let feet = w.players[P].body.qy as f32 * POS_Y_Q;
-    assert!((y - feet).abs() < 0.05, "{y} m against feet at {feet} m");
+    assert!(
+        (y - feet).max(feet - y) < 0.05,
+        "{y} m against feet at {feet} m"
+    );
 }
