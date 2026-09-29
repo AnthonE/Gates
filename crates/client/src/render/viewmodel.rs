@@ -1897,6 +1897,14 @@ pub fn animate(
             let aiming = buttons & sim_core::input::BTN_AIM != 0;
             let hz = sim_core::limits::TICK_HZ as f32;
             let (draw_s, nock_s) = (draw as f32 / hz, nock as f32 / hz);
+            // The creak is the draw starting: the right mouse going down.
+            if aiming && !m.draw.aiming() {
+                if let Some(sound) = sound.as_deref_mut() {
+                    sound.play(crate::sound::mixer::Request::own(
+                        crate::sound::Cue::BowDraw,
+                    ));
+                }
+            }
             pull = m.draw.step(now, aiming, draw_s, nock_s);
             let arrows = || {
                 net.as_deref().is_some_and(|n| {

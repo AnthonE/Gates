@@ -47,6 +47,11 @@ impl DrawClock {
         now >= (since + draw_s).max(loosed + nock_s)
     }
 
+    /// Is the aim held — has a draw begun and not been let go?
+    pub fn aiming(&self) -> bool {
+        self.aim_since.is_some()
+    }
+
     /// The arrow left at `now`: the next draw is full a nock later.
     pub fn loose(&mut self, now: f32) {
         self.loosed_at = Some(now);

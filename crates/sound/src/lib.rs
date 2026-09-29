@@ -298,11 +298,13 @@ pub enum Cue {
     Eat,
     /// You used a heal (a bandage, a medkit): a rip and a wrap.
     Bandage,
+    /// You drew a bow: the limbs creaking as the string comes back.
+    BowDraw,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 60;
+pub const CUE_COUNT: usize = 61;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -371,6 +373,7 @@ impl Cue {
         Cue::Reload,
         Cue::Eat,
         Cue::Bandage,
+        Cue::BowDraw,
     ];
 
     /// Is this cue a piece of music?
@@ -464,7 +467,8 @@ impl Cue {
             | Cue::Knock
             | Cue::Reload
             | Cue::Eat
-            | Cue::Bandage => 0.07,
+            | Cue::Bandage
+            | Cue::BowDraw => 0.07,
             // A whine's pitch is its whole character, and no two glances
             // leave at the same speed.
             Cue::Ricochet => 0.14,
@@ -768,6 +772,10 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // there for two landing in one frame.
     row(GAME,  0.0, 0.45,  60, 3, false),  // eat
     row(GAME,  0.0, 0.45, 120, 3, false),  // bandage
+    // Your own bow, so non-positional, and quieter than the release it
+    // leads to. The cooldown only stops a flutter on the right mouse from
+    // stacking creaks.
+    row(GAME,  0.0, 0.35, 300, 3, false),  // bow drawn
 ];
 
 /// Your own arm. Named rather than written inline so [`RSWING`] can read its
