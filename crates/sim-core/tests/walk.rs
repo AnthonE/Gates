@@ -286,10 +286,10 @@ fn the_scatter_memo_is_exact_under_eviction() {
         let mut occupied = 0u32;
         // 64 x 64 = 4096 cells against 1024 lines: every line is overwritten
         // several times over.
-        let mut cz = 40;
-        while cz < 104 {
-            let mut cx = 40;
-            while cx < 104 {
+        let mut cz = 200;
+        while cz < 264 {
+            let mut cx = 200;
+            while cx < 264 {
                 let want = terrain::scatter(seed, &table, &haven, cx, cz);
                 let a = cache.slot(seed, &table, &haven, cx, cz);
                 let b = cache.slot(seed, &table, &haven, cx, cz);

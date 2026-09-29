@@ -337,8 +337,8 @@ fn two_at_a_buildable_edge(w: &mut World) -> (u16, u16) {
                 if dx.abs() != r && dz.abs() != r {
                     continue;
                 }
-                let cx = (170 + dx).clamp(0, 1023);
-                let cz = (170 + dz).clamp(0, 1023);
+                let cx = (500 + dx).clamp(0, 2047);
+                let cz = (500 + dz).clamp(0, 2047);
                 let x0 = cx as f32 * BUILD_CELL_M;
                 let z_mid = (cz as f32 + 0.5) * BUILD_CELL_M;
                 let centre = (x0 + BUILD_CELL_M * 0.5, z_mid);
@@ -385,7 +385,7 @@ fn two_at_a_buildable_edge(w: &mut World) -> (u16, u16) {
         }
     }
     panic!(
-        "no quiet buildable cell within 64 of (170, 170) — the generator changed under this test"
+        "no quiet buildable cell within 64 of (500, 500) — the generator changed under this test"
     );
 }
 

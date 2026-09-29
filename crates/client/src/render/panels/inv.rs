@@ -850,7 +850,7 @@ pub fn slot_tip(
         let pct = (stack.cond as u32 * 100 / cond_max as u32).min(100);
         tip.push_str(&format!(" · {pct}%"));
     }
-    // What eating one pays (wire v80), and how — Rust's item panel lists
+    // What eating one pays (wire v81), and how — Rust's item panel lists
     // the calories and the water; a cell only had the name.
     let row = core.catalog.row(stack.item as usize);
     if row.eats() {

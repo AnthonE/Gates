@@ -6,7 +6,7 @@ use sim_core::terrain;
 fn half_wall_tops_and_half_floors_resolve_to_their_real_socket() {
     let seed = 20260731;
     let haven = terrain::haven(seed);
-    let (cx, cz) = (341, 341);
+    let (cx, cz) = (682, 682);
     let base = column_floor_y(seed, &haven, cx, cz, 0);
     let x = cx as f32 * BUILD_CELL_M;
     let z = cz as f32 * BUILD_CELL_M;
@@ -47,8 +47,8 @@ fn short_wall_meshes_end_inside_the_floor_they_bear() {
     for shape in [SHAPE_HALF_WALL, SHAPE_LOW_WALL] {
         for loc in [LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_DIAG_A, LOC_DIAG_B] {
             for level in [0, 8, 2, 10] {
-                let root = base_transform(seed, &haven, (341, 341, level, loc), 0);
-                let base = column_floor_y(seed, &haven, 341, 341, 0) + level_y(level);
+                let root = base_transform(seed, &haven, (682, 682, level, loc), 0);
+                let base = column_floor_y(seed, &haven, 682, 682, 0) + level_y(level);
                 let (parts, n) = parts_for(shape, loc);
                 for part in &parts[..n] {
                     let mesh = part_mesh(part);

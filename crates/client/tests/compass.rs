@@ -207,8 +207,9 @@ fn the_painted_island_is_lit_from_the_upper_left() {
             let rise_right = sim_core::terrain::height(seed, x - step, z) - h;
             let rise_down = sim_core::terrain::height(seed, x, z - step) - h;
             // Isolate the left–right axis: a real tilt across the image, and
-            // near nothing up–down, so this cannot pass on the z term.
-            if rise_right.abs() < 1.5 || rise_down.abs() > 0.3 {
+            // near nothing up–down, so this cannot pass on the z term. As
+            // grades, so the filter means the same thing at any island size.
+            if rise_right.abs() < 0.14 * step || rise_down.abs() > 0.028 * step {
                 continue;
             }
             let o = ((size - 1 - j) * size + (size - 1 - i)) * 4;

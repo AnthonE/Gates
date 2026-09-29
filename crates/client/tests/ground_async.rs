@@ -65,7 +65,7 @@ fn app() -> App {
     app.insert_resource(arrays());
     app.init_resource::<Ring>();
     app.insert_resource(Eye {
-        pos: Vec3::new(1024.0, 10.0, 1024.0),
+        pos: Vec3::new(2048.0, 10.0, 2048.0),
         ..default()
     });
     app.add_systems(Update, terrain_mesh::stream);

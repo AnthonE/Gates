@@ -37,9 +37,9 @@ use sim_core::survival::SurvivalContent;
 const SEED: u64 = 20_260_731;
 /// The canonical dev spawn point, guarded walkable in sim-core
 /// `world::tests` — walkable terrain also takes ground-class deploys.
-const SPAWN: (f32, f32) = (1024.0, 1024.0);
-const CX: u16 = 341;
-const CZ: u16 = 341;
+const SPAWN: (f32, f32) = (2048.0, 2048.0);
+const CX: u16 = 682;
+const CZ: u16 = 682;
 /// Row 3 of `DeployContent::probe_fixture` is the ground-class bag and it
 /// costs one unit of fixture item 5 — `sim-core`'s `bag_respawn` fixture,
 /// restated rather than re-derived so the two files place the same thing.

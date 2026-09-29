@@ -114,6 +114,10 @@ pub mod ui;
 // compiles them rather than inside the native session below.
 pub mod net;
 
+/// Recorded sessions for trailers: the file format a live session is taped
+/// to (`bin/record.rs`) and the replay `render::film` draws it back from.
+pub mod film;
+
 // An agent player's key (`NETCODE.md` §2.4), re-exported for the binaries
 // that load one. Desktop only by construction: see `Cargo.toml`.
 #[cfg(feature = "native")]
@@ -457,7 +461,14 @@ pub struct Session {
     closed: bool,
     event_observer: Option<EventObserver>,
     observer_failed: bool,
+    /// Sees every inbound datagram and event, raw and before the core does
+    /// (`Session::tap`). `bin/record.rs` is the one user: a trailer's
+    /// recording is exactly what the core was handed.
+    tap: Option<Tap>,
 }
+
+/// See [`Session::tap`].
+type Tap = Box<dyn FnMut(film::Lane, &[u8]) + Send>;
 
 /// A local observer of accepted reliable messages. Called on the frame thread:
 /// it must not block or allocate. Returning false stops outgoing input and
@@ -698,7 +709,46 @@ impl Session {
             closed: false,
             event_observer: None,
             observer_failed: false,
+            tap: None,
         })
+    }
+}
+
+/// A session with no shard behind it: its lanes are fed from a recording
+/// (`film::Replay`) instead of a socket, and its inputs go nowhere. Everything
+/// the renderer reads — the core, the welcome, `pump` — is the live session's
+/// own code, which is the point: a replay is drawn exactly as the game draws.
+#[cfg(feature = "native")]
+impl Session {
+    pub fn replay(rec: film::Recording) -> (Self, film::Replay) {
+        let welcome = rec.welcome;
+        let datagrams = datagram_lane();
+        let (ev_tx, events) = tokio::sync::mpsc::channel::<Vec<u8>>(film::REPLAY_EVENTS);
+        // No writer task holds the receiver, so an action is refused as
+        // `Closed` — nothing a replay could send has anywhere to go.
+        let (actions, _) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
+        let replay = film::Replay::new(rec, datagrams.clone(), ev_tx);
+        let session = Self {
+            core: ClientCore::new(welcome.seed, welcome.player_id, welcome.tick),
+            applied: 0,
+            applied2: 0,
+            welcome,
+            watching: None,
+            wire: net::native::NativeWire::detached(),
+            actions,
+            events,
+            datagrams,
+            snapshots: 0,
+            input_buf: [0u8; DATAGRAM_BUDGET_BYTES],
+            dg_scratch: (0..sim_core::limits::CLIENT_DG_RING)
+                .map(|_| Vec::with_capacity(DATAGRAM_BUDGET_BYTES))
+                .collect(),
+            closed: false,
+            event_observer: None,
+            observer_failed: false,
+            tap: None,
+        };
+        (session, replay)
     }
 }
 
@@ -902,6 +952,7 @@ impl Session {
             closed: false,
             event_observer: None,
             observer_failed: false,
+            tap: None,
         })
     }
 }
@@ -925,6 +976,12 @@ impl Session {
         }
         self.event_observer = Some(Box::new(observer));
         Ok(())
+    }
+
+    /// Hand every inbound datagram and event to `tap` as it is drained, before
+    /// the core decodes it — the whole of what `bin/record.rs` writes down.
+    pub fn tap(&mut self, tap: impl FnMut(film::Lane, &[u8]) + Send + 'static) {
+        self.tap = Some(Box::new(tap));
     }
 
     /// What the browser transport has REFUSED to send, and why.
@@ -1026,7 +1083,11 @@ impl Session {
         // interpolator wants the samples in between, and the view's
         // stale-guard already refuses any datagram a drop reordered past
         // (netcode v2 S2).
+        let tap = &mut self.tap;
         let dg_gone = drain_datagram(&self.datagrams, &mut self.dg_scratch, |dgram| {
+            if let Some(tap) = tap.as_mut() {
+                tap(film::Lane::Datagram, dgram);
+            }
             if core.on_datagram(dgram) != Ingest::Error {
                 *snapshots += 1;
             }
@@ -1036,6 +1097,9 @@ impl Session {
         let observer = &mut self.event_observer;
         let observer_failed = &mut self.observer_failed;
         let ev_gone = drain_lane(&mut self.events, |bytes| {
+            if let Some(tap) = tap.as_mut() {
+                tap(film::Lane::Event, bytes);
+            }
             // A malformed message contributes no flags. The `Err` is dropped
             // here exactly as the retired `let _` dropped it — surfacing a
             // decode error is its own slice and not this one's; what changes

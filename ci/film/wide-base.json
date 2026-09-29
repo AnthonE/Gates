@@ -1,0 +1,104 @@
+{
+  "recording": "film/take2.rec",
+  "out": "film/shots/wide",
+  "width": 1920,
+  "height": 1080,
+  "fps": 30,
+  "fov": 50,
+  "shots": [
+    {
+      "name": "scatter",
+      "at": 4.5,
+      "len": 8.0,
+      "hour": 0.72,
+      "weather": "clear",
+      "orbit": {
+        "center": [
+          1652,
+          1.5,
+          1592
+        ],
+        "radius": 24,
+        "height": 8,
+        "from": 60,
+        "to": 76
+      }
+    },
+    {
+      "name": "timelapse",
+      "at": 13,
+      "len": 5.0,
+      "speed": 10,
+      "hour": [
+        0.6,
+        0.74
+      ],
+      "weather": "clear",
+      "orbit": {
+        "center": [
+          1662,
+          1.5,
+          1588
+        ],
+        "radius": 36,
+        "height": 13,
+        "from": 15,
+        "to": 55
+      }
+    },
+    {
+      "name": "silhouette",
+      "at": 250,
+      "len": 5.0,
+      "hour": 0.855,
+      "weather": "clear",
+      "keys": [
+        {
+          "t": 0,
+          "pos": [
+            1625,
+            25,
+            1555
+          ],
+          "look": [
+            1760,
+            0,
+            1690
+          ]
+        },
+        {
+          "t": 5,
+          "pos": [
+            1631,
+            24,
+            1561
+          ],
+          "look": [
+            1766,
+            0,
+            1696
+          ]
+        }
+      ]
+    },
+    {
+      "name": "raid",
+      "at": 305.5,
+      "len": 8.0,
+      "hour": 0.8,
+      "weather": "clear",
+      "orbit": {
+        "center": [
+          1650,
+          0.5,
+          1592
+        ],
+        "radius": 13,
+        "height": 8.5,
+        "from": 48,
+        "to": 62
+      },
+      "fov": 38
+    }
+  ]
+}

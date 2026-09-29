@@ -893,7 +893,7 @@ pub fn event_catalog() -> ItemCatalog {
     let rows: [(&[u8], ItemRow); 11] = [
         (b"Wood", row(0, 0, WEAR_NONE, 1000)),
         (b"Stone", row(0, 0, WEAR_NONE, 1000)),
-        // The eat columns' coverage (v80): a food with all three, a heal
+        // The eat columns' coverage (v81): a food with all three, a heal
         // with only hp, and the width's corner on each column.
         (b"Mushrooms", food(10, 15, 5, 3)),
         (b"Bandage", food(3, 0, 0, 20)),
@@ -940,7 +940,7 @@ fn row(cond_max: u16, armor_pct: u8, wear_slot: u8, stack_max: u16) -> ItemRow {
     }
 }
 
-/// A food row: the eat columns (v80) on top of a plain stacking row.
+/// A food row: the eat columns (v81) on top of a plain stacking row.
 fn food(stack_max: u16, food: u16, water: u16, health: u16) -> ItemRow {
     ItemRow {
         food,

@@ -51,9 +51,9 @@ fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
 const SEED: u64 = 20_260_731;
 /// The canonical dev spawn point, guarded walkable in sim-core
 /// `world::tests` — walkable terrain also takes ground-class deploys.
-const SPAWN: (f32, f32) = (1024.0, 1024.0);
-const CX: u16 = 341;
-const CZ: u16 = 341;
+const SPAWN: (f32, f32) = (2048.0, 2048.0);
+const CX: u16 = 682;
+const CZ: u16 = 682;
 
 /// The nearest origin to `(cx0, cz0)` whose whole `w x h` block of build
 /// cells takes a foundation AND lies inside one plate window. Panics rather
@@ -94,8 +94,8 @@ fn buildable_block(seed: u64, cx0: u16, cz0: u16, w: u16, h: u16) -> (u16, u16) 
                 if dx.abs() != r && dz.abs() != r {
                     continue; // ring, not disc
                 }
-                let bx = (i32::from(cx0) + dx).clamp(0, 900) as u16;
-                let bz = (i32::from(cz0) + dz).clamp(0, 900) as u16;
+                let bx = (i32::from(cx0) + dx).clamp(0, 1900) as u16;
+                let bz = (i32::from(cz0) + dz).clamp(0, 1900) as u16;
                 if (0..w).all(|i| (0..h).all(|j| ok(bx + i, bz + j))) && flat(bx, bz) {
                     return (bx, bz);
                 }
@@ -1085,8 +1085,15 @@ fn a_removal_storm_leaves_every_walk_standing() {
     core.world.gather = GatherContent::probe_fixture();
     core.world.build = BuildContent::probe_fixture();
     core.world.deploy = DeployContent::probe_fixture();
-    core.world.dev_spawn = Some(SPAWN);
     core.catalog = ItemCatalog::EMPTY;
+    // The slab is FOUND (the sibling test's reason), one column wider than
+    // it is laid: the spare column is where the late placement lands, and
+    // the players join standing on it.
+    const PIECES: u16 = 64 + 11 * 12;
+    let (bx, bz) = buildable_block(SEED, CX, CZ, PIECES.div_ceil(24) + 1, 24);
+    let (late_x, late_z) = (bx, bz);
+    let (bx, bz) = (bx + 1, bz);
+    core.world.dev_spawn = Some(sim_core::build::anchor(late_x + 1, late_z, LOC_PLANE));
 
     // The base, built before anyone is connected so that every client in
     // this test is a joiner meeting a world that is already there. It is
@@ -1103,7 +1110,7 @@ fn a_removal_storm_leaves_every_walk_standing() {
     let builder = sim_core::limits::MAX_PLAYERS - 1;
     let mut n = 0u16;
     let mut place = |core: &mut ShardCore, hour: u64| {
-        let (cx, cz) = (CX + n / 24, CZ + n % 24);
+        let (cx, cz) = (bx + n / 24, bz + n % 24);
         n += 1;
         let (ax, az) = sim_core::build::anchor(cx, cz, LOC_PLANE);
         let p = &mut core.world.players[builder];
@@ -1187,8 +1194,8 @@ fn a_removal_storm_leaves_every_walk_standing() {
                 0,
                 ActionMsg::Place {
                     row: 0,
-                    cx: CX - 1,
-                    cz: CZ,
+                    cx: late_x,
+                    cz: late_z,
                     level: 0,
                     loc: LOC_PLANE,
                     freehand: false,
@@ -1242,7 +1249,7 @@ fn a_removal_storm_leaves_every_walk_standing() {
     assert!(!world.is_empty(), "the storm took the whole base");
     assert!(world.len() < built, "the storm removed nothing");
     assert!(
-        world.contains(&(CX - 1, CZ, 0, LOC_PLANE, 0)),
+        world.contains(&(late_x, late_z, 0, LOC_PLANE, 0)),
         "the late placement never landed, so the mirrors below prove nothing about it"
     );
     for (slot, c) in &clients {

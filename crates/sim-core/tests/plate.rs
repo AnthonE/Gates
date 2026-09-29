@@ -41,9 +41,42 @@ fn hv(seed: u64) -> &'static terrain::Haven {
 }
 
 const SEED: u64 = 20260731;
-/// `ghost.rs`' and `deploy.rs`' own buildable cell.
-const CX: u16 = 341;
-const CZ: u16 = 341;
+/// The fixture's cell: the first near the island's centre whose ground steps
+/// down one band within a few cells along +x, and never up on the way. Found
+/// rather than typed since the 4,096 m island: a typed cell is a claim about
+/// one terrain.
+fn origin() -> (u16, u16) {
+    static O: std::sync::OnceLock<(u16, u16)> = std::sync::OnceLock::new();
+    *O.get_or_init(|| {
+        for r in 0..60u16 {
+            for dz in 0..=2 * r {
+                for dx in 0..=2 * r {
+                    if dx != 0 && dx != 2 * r && dz != 0 && dz != 2 * r {
+                        continue;
+                    }
+                    let (cx, cz) = (682 - r + dx, 682 - r + dz);
+                    let here = terrain_band(SEED, hv(SEED), cx, cz);
+                    let steps: Vec<i32> = (1..=4u16)
+                        .map(|k| terrain_band(SEED, hv(SEED), cx + k, cz) - here)
+                        .collect();
+                    let Some(k) = steps.iter().position(|&d| d == -1) else {
+                        continue;
+                    };
+                    if steps[..k].iter().all(|&d| d == 0) && k < 3 {
+                        return (cx, cz);
+                    }
+                }
+            }
+        }
+        panic!("no cell near the centre steps down a band within three cells")
+    })
+}
+fn cx() -> u16 {
+    origin().0
+}
+fn cz() -> u16 {
+    origin().1
+}
 /// Row 0 of `BuildContent::probe_fixture` — a twig foundation.
 const ROW_FOUNDATION: u16 = 0;
 /// Row 1 — a twig wall.
@@ -186,25 +219,25 @@ fn neighbour_stepping(cx: u16, cz: u16, want: i32) -> Option<u16> {
 fn a_neighbour_latches_to_the_floor_that_is_already_there() {
     // A pair the terrain would have put on two different floors — so a plate
     // 0 answer would be a false pass.
-    let step = neighbour_stepping(CX, CZ, 1).or_else(|| neighbour_stepping(CX, CZ, -1));
+    let step = neighbour_stepping(cx(), cz(), 1).or_else(|| neighbour_stepping(cx(), cz(), -1));
     let Some(k) = step else {
         panic!("the fixture needs a stepped neighbour on this seed")
     };
-    let (nx, nz) = (CX + k, CZ);
+    let (nx, nz) = (cx() + k, cz());
 
     let mut r = Rig::new();
-    r.place(ROW_FOUNDATION, CX, CZ, 0, LOC_PLANE)
+    r.place(ROW_FOUNDATION, cx(), cz(), 0, LOC_PLANE)
         .expect("first");
-    let first = r.floor_at(CX, CZ);
+    let first = r.floor_at(cx(), cz());
     assert_eq!(
-        r.plate_at(CX, CZ),
+        r.plate_at(cx(), cz()),
         Some(0),
         "the first foundation of a base takes its own ground"
     );
 
     // Walk the plate out to the stepped cell one foundation at a time, which
     // is what a player does.
-    for x in CX + 1..=nx {
+    for x in cx() + 1..=nx {
         r.place(ROW_FOUNDATION, x, nz, 0, LOC_PLANE)
             .unwrap_or_else(|e| panic!("cell {x} refused with {e}"));
     }
@@ -215,7 +248,7 @@ fn a_neighbour_latches_to_the_floor_that_is_already_there() {
     );
     assert_ne!(
         terrain_band(SEED, hv(SEED), nx, nz),
-        terrain_band(SEED, hv(SEED), CX, CZ),
+        terrain_band(SEED, hv(SEED), cx(), cz()),
         "the fixture's two cells must disagree about terrain, or this proves nothing"
     );
     assert_ne!(
@@ -229,17 +262,17 @@ fn a_neighbour_latches_to_the_floor_that_is_already_there() {
 /// on a stilted foundation stands on that foundation, not on the dirt below.
 #[test]
 fn a_wall_stands_on_the_floor_under_it_and_not_on_the_ground() {
-    let Some(k) = neighbour_stepping(CX, CZ, -1) else {
+    let Some(k) = neighbour_stepping(cx(), cz(), -1) else {
         panic!("the fixture needs a neighbour one band lower")
     };
     let mut r = Rig::new();
-    r.place(ROW_FOUNDATION, CX, CZ, 0, LOC_PLANE)
+    r.place(ROW_FOUNDATION, cx(), cz(), 0, LOC_PLANE)
         .expect("first");
-    for x in CX + 1..=CX + k {
-        r.place(ROW_FOUNDATION, x, CZ, 0, LOC_PLANE)
+    for x in cx() + 1..=cx() + k {
+        r.place(ROW_FOUNDATION, x, cz(), 0, LOC_PLANE)
             .unwrap_or_else(|e| panic!("cell {x} refused with {e}"));
     }
-    let (nx, nz) = (CX + k, CZ);
+    let (nx, nz) = (cx() + k, cz());
     let floor = r.floor_at(nx, nz);
     r.place(ROW_WALL, nx, nz, 0, LOC_EDGE_XLO).expect("a wall");
     let wall = r
@@ -276,9 +309,9 @@ fn the_ground_running_away_refuses_by_name() {
     // which refusals the terrain produces. Every start is buildable ground.
     let mut seen_high = false;
     let mut seen_low = false;
-    for start in [CX, CX + 40, CX - 40, CX + 90, CX - 90] {
+    for start in [cx(), cx() + 40, cx() - 40, cx() + 90, cx() - 90] {
         for dir in [1i32, -1] {
-            let (sx, sz) = (start, CZ);
+            let (sx, sz) = (start, cz());
             let (ax, az) = sim_core::build::anchor(sx, sz, LOC_PLANE);
             if !sim_core::build::foundation_terrain_ok(SEED, hv(SEED), ax, az) {
                 continue;
@@ -346,11 +379,11 @@ fn the_verb_itself_refuses_the_step() {
     // March a base toward rising ground until the verb says no; the code it
     // says no with must be a plate refusal and not something else.
     let mut r = Rig::new();
-    r.place(ROW_FOUNDATION, CX, CZ, 0, LOC_PLANE)
+    r.place(ROW_FOUNDATION, cx(), cz(), 0, LOC_PLANE)
         .expect("first");
     let mut said = None;
-    for x in CX + 1..CX + 400 {
-        match r.place(ROW_FOUNDATION, x, CZ, 0, LOC_PLANE) {
+    for x in cx() + 1..cx() + 400 {
+        match r.place(ROW_FOUNDATION, x, cz(), 0, LOC_PLANE) {
             Ok(()) => continue,
             Err(e) => {
                 said = Some(e);
@@ -370,14 +403,14 @@ fn the_verb_itself_refuses_the_step() {
 #[test]
 fn a_plate_is_a_whole_number_of_bands() {
     let mut r = Rig::new();
-    r.place(ROW_FOUNDATION, CX, CZ, 0, LOC_PLANE)
+    r.place(ROW_FOUNDATION, cx(), cz(), 0, LOC_PLANE)
         .expect("first");
-    for x in CX + 1..CX + 12 {
-        if r.place(ROW_FOUNDATION, x, CZ, 0, LOC_PLANE).is_err() {
+    for x in cx() + 1..cx() + 12 {
+        if r.place(ROW_FOUNDATION, x, cz(), 0, LOC_PLANE).is_err() {
             break;
         }
     }
-    let first = r.floor_at(CX, CZ);
+    let first = r.floor_at(cx(), cz());
     for rec in r.pieces.entries() {
         let y = sim_core::build::column_floor_y(SEED, hv(SEED), rec.cx, rec.cz, rec.plate);
         assert_eq!(y, first, "one base, two floors");
@@ -397,17 +430,17 @@ fn a_plate_is_a_whole_number_of_bands() {
 /// backward-shift deletion gives for free, asserted so it stays free.
 #[test]
 fn an_emptied_column_forgets_its_plate() {
-    let Some(k) = neighbour_stepping(CX, CZ, -1) else {
+    let Some(k) = neighbour_stepping(cx(), cz(), -1) else {
         panic!("the fixture needs a lower neighbour")
     };
     let mut r = Rig::new();
-    r.place(ROW_FOUNDATION, CX, CZ, 0, LOC_PLANE)
+    r.place(ROW_FOUNDATION, cx(), cz(), 0, LOC_PLANE)
         .expect("first");
-    for x in CX + 1..=CX + k {
-        r.place(ROW_FOUNDATION, x, CZ, 0, LOC_PLANE)
+    for x in cx() + 1..=cx() + k {
+        r.place(ROW_FOUNDATION, x, cz(), 0, LOC_PLANE)
             .unwrap_or_else(|e| panic!("cell {x} refused with {e}"));
     }
-    let (nx, nz) = (CX + k, CZ);
+    let (nx, nz) = (cx() + k, cz());
     let stilted = r.plate_at(nx, nz).expect("the far cell is built");
     assert_ne!(stilted, 0, "the fixture's far cell must be stilted");
 
@@ -471,17 +504,17 @@ fn the_stilt_ceiling_is_half_a_storey_each_way() {
 /// distant cell would be testing a different thing (`the_ground_running_away`
 /// learned that the other way round, and its doc says so).
 fn adjacent_disagreeing_pair() -> Option<(u16, u16)> {
-    (CX..CX + 400)
+    (cx()..cx() + 400)
         .find(|&x| {
             let (a, b) = (
-                terrain_band(SEED, hv(SEED), x, CZ),
-                terrain_band(SEED, hv(SEED), x + 1, CZ),
+                terrain_band(SEED, hv(SEED), x, cz()),
+                terrain_band(SEED, hv(SEED), x + 1, cz()),
             );
             if a == b {
                 return false;
             }
             [x, x + 1].iter().all(|&c| {
-                let (ax, az) = sim_core::build::anchor(c, CZ, LOC_PLANE);
+                let (ax, az) = sim_core::build::anchor(c, cz(), LOC_PLANE);
                 sim_core::build::foundation_terrain_ok(SEED, hv(SEED), ax, az)
             })
         })
@@ -502,41 +535,41 @@ fn freehand_declines_the_latch_and_takes_its_own_ground() {
     // Latched — the behaviour build plate v1 shipped.
     let mut latched = Rig::new();
     latched
-        .place(ROW_FOUNDATION, ax, CZ, 0, LOC_PLANE)
+        .place(ROW_FOUNDATION, ax, cz(), 0, LOC_PLANE)
         .expect("first");
     latched
-        .place(ROW_FOUNDATION, bx, CZ, 0, LOC_PLANE)
+        .place(ROW_FOUNDATION, bx, cz(), 0, LOC_PLANE)
         .expect("second");
     assert_eq!(
-        latched.floor_at(bx, CZ),
-        latched.floor_at(ax, CZ),
+        latched.floor_at(bx, cz()),
+        latched.floor_at(ax, cz()),
         "the latched neighbour is not flush with the base it joined"
     );
     assert_ne!(
-        latched.plate_at(bx, CZ),
+        latched.plate_at(bx, cz()),
         Some(0),
         "the fixture's cells must disagree about terrain, or the contrast below proves nothing"
     );
 
     // Freehand — the same two cells, the same order, one bit different.
     let mut free = Rig::new();
-    free.place(ROW_FOUNDATION, ax, CZ, 0, LOC_PLANE)
+    free.place(ROW_FOUNDATION, ax, cz(), 0, LOC_PLANE)
         .expect("first");
-    free.place_freehand(ROW_FOUNDATION, bx, CZ, 0, LOC_PLANE)
+    free.place_freehand(ROW_FOUNDATION, bx, cz(), 0, LOC_PLANE)
         .expect("freehand second");
     assert_eq!(
-        free.plate_at(bx, CZ),
+        free.plate_at(bx, cz()),
         Some(0),
         "a freehand placement took a plate, so it latched to something"
     );
     assert_eq!(
-        free.floor_at(bx, CZ),
-        sim_core::build::band_y(terrain_band(SEED, hv(SEED), bx, CZ)),
+        free.floor_at(bx, cz()),
+        sim_core::build::band_y(terrain_band(SEED, hv(SEED), bx, cz())),
         "a freehand placement is not standing on its own ground"
     );
     assert_ne!(
-        free.floor_at(bx, CZ),
-        free.floor_at(ax, CZ),
+        free.floor_at(bx, cz()),
+        free.floor_at(ax, cz()),
         "freehand and latched produced the same floor, so the bit did nothing"
     );
 }
@@ -556,13 +589,13 @@ fn freehand_cannot_lift_a_piece_off_its_own_column() {
         panic!("the fixture needs an adjacent pair the terrain steps across")
     };
     let mut r = Rig::new();
-    r.place(ROW_FOUNDATION, ax, CZ, 0, LOC_PLANE)
+    r.place(ROW_FOUNDATION, ax, cz(), 0, LOC_PLANE)
         .expect("first");
-    r.place(ROW_FOUNDATION, bx, CZ, 0, LOC_PLANE)
+    r.place(ROW_FOUNDATION, bx, cz(), 0, LOC_PLANE)
         .expect("second");
-    let floor = r.floor_at(bx, CZ);
+    let floor = r.floor_at(bx, cz());
     let plate = r
-        .plate_at(bx, CZ)
+        .plate_at(bx, cz())
         .expect("the second foundation is in the store");
     assert_ne!(
         plate, 0,
@@ -571,20 +604,20 @@ fn freehand_cannot_lift_a_piece_off_its_own_column() {
 
     // A wall into that column, asking for freehand. The column has a floor;
     // the bit is not allowed to argue with it.
-    r.place_freehand(ROW_WALL, bx, CZ, 0, LOC_EDGE_XLO)
+    r.place_freehand(ROW_WALL, bx, cz(), 0, LOC_EDGE_XLO)
         .expect("a freehand wall on a built column");
     let wall = r
         .pieces
         .entries()
         .iter()
-        .find(|p| p.cx == bx && p.cz == CZ && p.loc == LOC_EDGE_XLO)
+        .find(|p| p.cx == bx && p.cz == cz() && p.loc == LOC_EDGE_XLO)
         .expect("the wall is in the store");
     assert_eq!(
         wall.plate, plate,
         "a freehand wall took a different plate from the floor it stands on"
     );
     assert_eq!(
-        sim_core::build::column_floor_y(SEED, hv(SEED), bx, CZ, wall.plate),
+        sim_core::build::column_floor_y(SEED, hv(SEED), bx, cz(), wall.plate),
         floor,
         "the freehand wall bases itself somewhere other than the floor under it"
     );
@@ -602,14 +635,14 @@ fn freehand_cannot_lift_a_piece_off_its_own_column() {
 #[test]
 fn freehand_is_the_answer_to_a_latch_that_ran_out_of_leg() {
     let mut proved = 0u32;
-    for start in [CX, CX + 40, CX - 40, CX + 90, CX - 90] {
+    for start in [cx(), cx() + 40, cx() - 40, cx() + 90, cx() - 90] {
         for dir in [1i32, -1] {
-            let (ax, az) = sim_core::build::anchor(start, CZ, LOC_PLANE);
+            let (ax, az) = sim_core::build::anchor(start, cz(), LOC_PLANE);
             if !sim_core::build::foundation_terrain_ok(SEED, hv(SEED), ax, az) {
                 continue;
             }
             let mut r = Rig::new();
-            if r.place(ROW_FOUNDATION, start, CZ, 0, LOC_PLANE).is_err() {
+            if r.place(ROW_FOUNDATION, start, cz(), 0, LOC_PLANE).is_err() {
                 continue;
             }
             let mut at = start as i32;
@@ -618,7 +651,7 @@ fn freehand_is_the_answer_to_a_latch_that_ran_out_of_leg() {
                 if !(0..1024).contains(&next) {
                     break;
                 }
-                let (nx, nz) = (next as u16, CZ);
+                let (nx, nz) = (next as u16, cz());
                 match r.place(ROW_FOUNDATION, nx, nz, 0, LOC_PLANE) {
                     Ok(()) => at = next,
                     Err(e) if e == REFUSE_B_PLATE_HIGH || e == REFUSE_B_PLATE_LOW => {
@@ -661,16 +694,16 @@ fn freehand_is_the_answer_to_a_latch_that_ran_out_of_leg() {
 fn a_first_foundation_takes_the_band_it_asked_for() {
     for want in -PLATE_SINK_MAX_BANDS..=PLATE_RISE_MAX_BANDS {
         let mut r = Rig::new();
-        r.place_asking(ROW_FOUNDATION, CX, CZ, 0, LOC_PLANE, false, want as i8)
+        r.place_asking(ROW_FOUNDATION, cx(), cz(), 0, LOC_PLANE, false, want as i8)
             .unwrap_or_else(|e| panic!("asking for band {want} refused with {e}"));
         assert_eq!(
-            r.plate_at(CX, CZ),
+            r.plate_at(cx(), cz()),
             Some(want as i8),
             "band {want} was not taken"
         );
         assert_eq!(
-            r.floor_at(CX, CZ),
-            sim_core::build::band_y(terrain_band(SEED, hv(SEED), CX, CZ) + want),
+            r.floor_at(cx(), cz()),
+            sim_core::build::band_y(terrain_band(SEED, hv(SEED), cx(), cz()) + want),
             "band {want}: the floor is not that many quanta off the column's ground"
         );
     }
@@ -683,7 +716,7 @@ fn a_first_foundation_takes_the_band_it_asked_for() {
 fn a_request_past_half_a_wall_refuses_by_name() {
     for want in -(PLATE_BIAS_I32)..=PLATE_BIAS_I32 - 1 {
         let mut r = Rig::new();
-        let got = r.place_asking(ROW_FOUNDATION, CX, CZ, 0, LOC_PLANE, false, want as i8);
+        let got = r.place_asking(ROW_FOUNDATION, cx(), cz(), 0, LOC_PLANE, false, want as i8);
         if want > PLATE_RISE_MAX_BANDS {
             assert_eq!(
                 got,
@@ -720,14 +753,14 @@ const PLATE_BIAS_I32: i32 = 8;
 #[test]
 fn a_latched_neighbour_ignores_the_request() {
     let mut r = Rig::new();
-    r.place_asking(ROW_FOUNDATION, CX, CZ, 0, LOC_PLANE, false, 1)
+    r.place_asking(ROW_FOUNDATION, cx(), cz(), 0, LOC_PLANE, false, 1)
         .expect("first, asked one band up");
-    let latched = plate_for(r.pieces.cols(), SEED, hv(SEED), CX + 1, CZ, false, 0)
+    let latched = plate_for(r.pieces.cols(), SEED, hv(SEED), cx() + 1, cz(), false, 0)
         .expect("the latch itself is in range for the fixture cell");
     r.place_asking(
         ROW_FOUNDATION,
-        CX + 1,
-        CZ,
+        cx() + 1,
+        cz(),
         0,
         LOC_PLANE,
         false,
@@ -735,13 +768,13 @@ fn a_latched_neighbour_ignores_the_request() {
     )
     .expect("second, asking for the ceiling");
     assert_eq!(
-        r.plate_at(CX + 1, CZ),
+        r.plate_at(cx() + 1, cz()),
         Some(latched),
         "a latched neighbour took the band it asked for instead of the base's"
     );
     assert_eq!(
-        r.floor_at(CX + 1, CZ),
-        r.floor_at(CX, CZ),
+        r.floor_at(cx() + 1, cz()),
+        r.floor_at(cx(), cz()),
         "the second foundation is not flush with the first"
     );
 }
@@ -752,12 +785,12 @@ fn a_latched_neighbour_ignores_the_request() {
 #[test]
 fn a_built_column_ignores_the_request() {
     let mut r = Rig::new();
-    r.place_asking(ROW_FOUNDATION, CX, CZ, 0, LOC_PLANE, false, 2)
+    r.place_asking(ROW_FOUNDATION, cx(), cz(), 0, LOC_PLANE, false, 2)
         .expect("a foundation two bands up");
     r.place_asking(
         ROW_WALL,
-        CX,
-        CZ,
+        cx(),
+        cz(),
         0,
         LOC_EDGE_XLO,
         false,
@@ -768,7 +801,7 @@ fn a_built_column_ignores_the_request() {
         .pieces
         .entries()
         .iter()
-        .find(|p| p.cx == CX && p.cz == CZ && p.loc == LOC_EDGE_XLO)
+        .find(|p| p.cx == cx() && p.cz == cz() && p.loc == LOC_EDGE_XLO)
         .expect("the wall is in the store");
     assert_eq!(
         wall.plate, 2,
@@ -785,18 +818,18 @@ fn a_freehand_neighbour_takes_its_request() {
         panic!("the fixture needs an adjacent pair the terrain steps across")
     };
     let mut r = Rig::new();
-    r.place(ROW_FOUNDATION, ax, CZ, 0, LOC_PLANE)
+    r.place(ROW_FOUNDATION, ax, cz(), 0, LOC_PLANE)
         .expect("first");
-    r.place_asking(ROW_FOUNDATION, bx, CZ, 0, LOC_PLANE, true, 2)
+    r.place_asking(ROW_FOUNDATION, bx, cz(), 0, LOC_PLANE, true, 2)
         .expect("freehand, two bands up");
     assert_eq!(
-        r.plate_at(bx, CZ),
+        r.plate_at(bx, cz()),
         Some(2),
         "the freehand request was not taken"
     );
     assert_eq!(
-        r.floor_at(bx, CZ),
-        sim_core::build::band_y(terrain_band(SEED, hv(SEED), bx, CZ) + 2),
+        r.floor_at(bx, cz()),
+        sim_core::build::band_y(terrain_band(SEED, hv(SEED), bx, cz()) + 2),
         "the freehand floor is not two bands off its own ground"
     );
 }

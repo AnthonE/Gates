@@ -256,8 +256,8 @@ fn buildable_cell(w: &World, seed: u64, cx0: u16, cz0: u16) -> (u16, u16) {
                 if dx.abs() != r && dz.abs() != r {
                     continue; // ring, not disc
                 }
-                let cx = (cx0 as i32 + dx).clamp(0, 1023) as u16;
-                let cz = (cz0 as i32 + dz).clamp(0, 1023) as u16;
+                let cx = (cx0 as i32 + dx).clamp(0, 2047) as u16;
+                let cz = (cz0 as i32 + dz).clamp(0, 2047) as u16;
                 let (x, z) = cell_center(cx, cz);
                 if sim_core::build::foundation_terrain_ok(seed, hv(seed), x, z)
                     && w.pieces.find(cx, cz, 0, LOC_PLANE).is_none()
@@ -395,7 +395,7 @@ fn test_alloc_zero() {
     let builder_cell = |w: &World| {
         let b = &w.players[0].body;
         let cell = |q: i32| {
-            sim_core::build::build_cell_of(q as f32 * sim_core::movement::POS_XZ_Q).clamp(0, 1023)
+            sim_core::build::build_cell_of(q as f32 * sim_core::movement::POS_XZ_Q).clamp(0, 2047)
                 as u16
         };
         (cell(b.qx), cell(b.qz))
@@ -438,7 +438,7 @@ fn test_alloc_zero() {
     // ring never would. Placed here rather than after the counters open
     // because a placement is the fixture's work; the *respawn* is the
     // sim's, and that is the half this window counts.
-    let bag_cell = buildable_cell(&world, SEED, 341, 341);
+    let bag_cell = buildable_cell(&world, SEED, 682, 682);
     let bag_at = {
         let (x, z) = cell_center(bag_cell.0, bag_cell.1);
         let b = sim_core::movement::Body::at(SEED, hv(SEED), x, z);

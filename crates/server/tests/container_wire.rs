@@ -88,7 +88,7 @@ fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
 const SEED: u64 = 20_260_804;
 /// The canonical dev spawn point, guarded walkable in sim-core
 /// `world::tests` — the same one `backpack_wire` stands its bodies on.
-const SPAWN: (f32, f32) = (1024.0, 1024.0);
+const SPAWN: (f32, f32) = (2048.0, 2048.0);
 /// Fixture items. Three different ones, and none of them a slot index or a
 /// count that appears anywhere else in this file: a container message is a
 /// positional payload with (slot, item, count) triples in it, which is the
@@ -685,8 +685,8 @@ fn buildable_cell(seed: u64) -> (u16, u16) {
                 if dx.abs() != r && dz.abs() != r {
                     continue;
                 }
-                let cx = (512 + dx).clamp(0, 1023) as u16;
-                let cz = (512 + dz).clamp(0, 1023) as u16;
+                let cx = (512 + dx).clamp(0, 2047) as u16;
+                let cz = (512 + dz).clamp(0, 2047) as u16;
                 let (x, z) = cell_center(cx, cz);
                 if foundation_terrain_ok(seed, hv(seed), x, z) {
                     return (cx, cz);

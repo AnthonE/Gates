@@ -30,6 +30,11 @@ certs/
 *.snapshot
 anomaly.log
 
+# Trailer work (`ci/film.sh`): tapes, rendered shots, the sound bank and the
+# ads cut from them. Hundreds of MB of re-renderable output; the shot and cut
+# lists that make it are committed under `ci/film/`.
+/film/
+
 # Editors / OS
 .DS_Store
 .vscode/

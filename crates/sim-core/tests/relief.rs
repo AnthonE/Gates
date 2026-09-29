@@ -497,7 +497,7 @@ fn the_island_has_a_beach_to_walk_up() {
             };
             let n = (ux * ux + uz * uz).sqrt();
             let (ux, uz) = (ux / n, uz / n);
-            let (mut lo, mut hi) = (200.0f32, 1150.0f32);
+            let (mut lo, mut hi) = (400.0f32, 2040.0f32);
             if terrain::height(seed, c + ux * lo, c + uz * lo) < 0.0 {
                 continue;
             }
@@ -606,7 +606,7 @@ fn the_coastline_has_headlands_and_coves() {
             };
             let n = (ux * ux + uz * uz).sqrt();
             let (ux, uz) = (ux / n, uz / n);
-            let (mut lo, mut hi) = (400.0f32, 1150.0f32);
+            let (mut lo, mut hi) = (800.0f32, 2040.0f32);
             if terrain::height(seed, c + ux * lo, c + uz * lo) < 0.0
                 || terrain::height(seed, c + ux * hi, c + uz * hi) > 0.0
             {

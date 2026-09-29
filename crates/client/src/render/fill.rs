@@ -97,7 +97,15 @@ pub const SKY_FILL_SRGB: [f32; 3] = [0.80, 0.85, 0.95];
 /// cannot move. What moves is only how the fill is *distributed* over normal
 /// direction, which is a change no global statistic can be made worse by: the
 /// darks come back on down-facing faces and nowhere else.
-pub const SKY_FILL_LUX: f32 = lux::AMBIENT_DAYLIGHT * 1.7;
+///
+/// **Raised from ×1.7 to ×2.5 (2026-09-28).** A slope facing away from a 35°
+/// sun is lit by this term alone, and at ×1.7 against 100 klx of sun it sat
+/// more than two stops under the lit ground — the operator's frames showed
+/// whole hillsides in shade as near-black bands. Games lift the shade side
+/// well above a photograph's; ×2.5 keeps the shadow reading as shadow.
+pub const SKY_FILL_LUX: f32 = lux::AMBIENT_DAYLIGHT * SKY_FILL_SCALE;
+/// Multiple of `lux::AMBIENT_DAYLIGHT` the sky half delivers at the zenith.
+pub const SKY_FILL_SCALE: f32 = 2.5;
 
 /// The island's ground mix — **measured over the whole world square, which is
 /// the half this constant used to get wrong**.
@@ -174,7 +182,10 @@ pub const SKY_FILL_LUX: f32 = lux::AMBIENT_DAYLIGHT * 1.7;
 /// carries the exact number. The measured grass weight is 0.502_088; the
 /// 2e-6 it gained here is what makes the four a partition, which
 /// `tests/fill.rs` holds to 1e-6.
-pub const GROUND_MIX: [f32; 4] = [0.037_410, 0.502_090, 0.344_911, 0.115_589];
+/// Re-measured 2026-09-28 for the 4096 m island (from `[0.037_410,
+/// 0.502_090, 0.344_911, 0.115_589]`): more lowland per massif, so granite
+/// falls and sand rises.
+pub const GROUND_MIX: [f32; 4] = [0.045_678, 0.524_164, 0.350_093, 0.080_065];
 
 /// sRGB → linear, the exact piecewise transfer (not the 2.2 approximation).
 pub fn srgb_to_linear(v: f32) -> f32 {

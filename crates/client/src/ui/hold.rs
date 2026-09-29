@@ -132,7 +132,7 @@ pub enum Click {
     /// A deployable goes down where its ghost stands (`ghost::deploy_key`).
     Deploy,
     /// Food or medicine: eat one (`ACT_CONSUME`) — the catalog's eat
-    /// columns (wire v80) say which.
+    /// columns (wire v81) say which.
     Eat,
     /// A blueprint: read it (`ACT_RESEARCH`), as `J` and the pack's
     /// right-click already do (`ui::research::use_as`).

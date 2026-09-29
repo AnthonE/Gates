@@ -13,16 +13,18 @@
 use crate::fmath::{fabs, fade, floor_i32, lerp};
 use crate::rng::cell_hash;
 
-/// Island edge length in meters (knob, DECISIONS.md: 2,048).
-pub const ISLAND_SIZE: f32 = 2048.0;
+/// Island edge length in meters. 4,096 since 2026-09-28 (operator: "the
+/// world as big as we can get") — Rust's own default map is ~4,000 m, and the
+/// wire carries it since v80 (`protocol::POS_XZ_BITS`). It was 2,048.
+pub const ISLAND_SIZE: f32 = 4096.0;
 /// Sea level (TERRAIN.md §6: 0).
 pub const SEA_LEVEL: f32 = 0.0;
 /// Relief amplitude (TERRAIN.md §1: ~90 m).
 pub const AMPLITUDE: f32 = 90.0;
 /// Scatter cell size in meters (TERRAIN.md §6: 8 m).
 pub const CELL_SIZE: f32 = 8.0;
-/// Scatter cells per island side (2048 / 8).
-pub const CELLS_PER_SIDE: i32 = 256;
+/// Scatter cells per island side.
+pub const CELLS_PER_SIDE: i32 = (ISLAND_SIZE / CELL_SIZE) as i32;
 /// Cliff threshold as a rise/run ratio: tan(50°), authored offline —
 /// no trig at runtime (TERRAIN.md §1 knob: slope > ~50°).
 pub const CLIFF_SLOPE_RATIO: f32 = 1.191_753_6;
@@ -52,8 +54,10 @@ const RELIEF_FREQ: f32 = 1.0 / 600.0;
 const RELIEF_GAIN: f32 = 2.4;
 const WARP_FREQ: f32 = 1.0 / 1200.0;
 const WARP_AMP: f32 = 45.0;
-const COAST_FREQ: f32 = 1.0 / 900.0;
-const COAST_WOBBLE: f32 = 100.0;
+// Doubled with the island (4,096 m), and the wobble more than doubled: a
+// bigger coast wants peninsulas and deep bays, not a wider disc.
+const COAST_FREQ: f32 = 1.0 / 2200.0;
+const COAST_WOBBLE: f32 = 380.0;
 /// The coastline's SECOND scale — headlands and coves, where [`COAST_FREQ`]
 /// alone gives lobes. **(knob)**, DECISIONS.md §open "world structure v1".
 ///
@@ -71,10 +75,10 @@ const COAST_WOBBLE: f32 = 100.0;
 /// which puts the 900 m band's own swing outside the bracket
 /// `ROAD_R_MIN..ROAD_R_MAX` reserves for the ring. Two terms let the two
 /// scales be priced separately, which is what they are.
-const COAST_BAY_FREQ: f32 = 1.0 / 260.0;
-const COAST_BAY_WOBBLE: f32 = 90.0;
-const CONTINENT_RADIUS: f32 = 960.0;
-const COAST_EDGE_WIDTH: f32 = 160.0;
+const COAST_BAY_FREQ: f32 = 1.0 / 380.0;
+const COAST_BAY_WOBBLE: f32 = 120.0;
+const CONTINENT_RADIUS: f32 = 1720.0;
+const COAST_EDGE_WIDTH: f32 = 240.0;
 const SEA_FLOOR_DEPTH: f32 = 12.0;
 
 // --- The shore terrace (TERRAIN.md §1 stage 4c) ---------------------------
@@ -905,36 +909,36 @@ pub const MASSIFS: usize = 2;
 /// The radial window the ranges live in: zero inside `MASSIF_R_IN`, full from
 /// `MASSIF_R_IN + MASSIF_R_IN_FADE` to `MASSIF_R_OUT − MASSIF_R_OUT_FADE`,
 /// zero again at `MASSIF_R_OUT`. Metres from the island centre.
-pub const MASSIF_R_IN: f32 = 170.0;
-pub const MASSIF_R_IN_FADE: f32 = 110.0;
-pub const MASSIF_R_OUT: f32 = 560.0;
-pub const MASSIF_R_OUT_FADE: f32 = 100.0;
+pub const MASSIF_R_IN: f32 = 340.0;
+pub const MASSIF_R_IN_FADE: f32 = 160.0;
+pub const MASSIF_R_OUT: f32 = 1060.0;
+pub const MASSIF_R_OUT_FADE: f32 = 150.0;
 /// Where a range's centre stands, metres from the island centre: the middle
 /// of the window, so a range's flanks have room on both sides.
-const MASSIF_CENTRE_R: [f32; 2] = [355.0, 375.0];
+const MASSIF_CENTRE_R: [f32; 2] = [690.0, 720.0];
 /// How far each range's bearing strays from its slot, and its spine from
 /// tangential, in yaw units (65,536 a turn).
 const MASSIF_JITTER: f32 = 3_000.0;
 const MASSIF_TILT: f32 = 4_000.0;
 /// The major range: spine half-length, envelope half-width, height (metres),
 /// each drawn between the two ends.
-const MAJOR_HALF_LEN: [f32; 2] = [210.0, 250.0];
-const MAJOR_HALF_W: [f32; 2] = [165.0, 180.0];
+const MAJOR_HALF_LEN: [f32; 2] = [400.0, 470.0];
+const MAJOR_HALF_W: [f32; 2] = [230.0, 260.0];
 const MAJOR_AMP: [f32; 2] = [80.0, 95.0];
 /// The minor range, the same three.
-const MINOR_HALF_LEN: [f32; 2] = [160.0, 200.0];
-const MINOR_HALF_W: [f32; 2] = [120.0, 135.0];
+const MINOR_HALF_LEN: [f32; 2] = [300.0, 370.0];
+const MINOR_HALF_W: [f32; 2] = [180.0, 200.0];
 const MINOR_AMP: [f32; 2] = [60.0, 75.0];
 /// Segments in a spine, the largest turn between two of them (yaw units), and
 /// the width of the fillet the smooth-min puts at a joint (metres).
 const SPINE_SEGS: usize = 4;
 const SPINE_TURN: f32 = 5_500.0;
-const SPINE_BLEND_M: f32 = 60.0;
+const SPINE_BLEND_M: f32 = 90.0;
 /// The ranges' own domain warp, on top of the relief's: amplitude (metres)
 /// and frequency. 85 m at 1/330 was tried first and compresses space by 4× in
 /// places, which reads as a flat-topped mesa on a range's crest.
-const MASSIF_WARP_AMP: f32 = 45.0;
-const MASSIF_WARP_FREQ: f32 = 1.0 / 420.0;
+const MASSIF_WARP_AMP: f32 = 70.0;
+const MASSIF_WARP_FREQ: f32 = 1.0 / 600.0;
 /// The farthest the warp can move a sample, with room: `MASSIF_WARP_AMP` on
 /// each axis is √2 of it on the diagonal, and fBm is normalised to ±1 but may
 /// touch it. Derived, not a knob — `massif_base`'s reach test rests on it.
@@ -1597,8 +1601,8 @@ pub const ROAD_SHOULDER_HALF_W: f32 = 5.0;
 /// The radial bracket the ring may live in, meters from island center.
 /// The shoreline sits at CONTINENT_RADIUS ± COAST_WOBBLE modulated by
 /// relief; these bound it with margin, and double as the broad phase.
-pub const ROAD_R_MIN: f32 = 600.0;
-pub const ROAD_R_MAX: f32 = 1000.0;
+pub const ROAD_R_MIN: f32 = 1100.0;
+pub const ROAD_R_MAX: f32 = 2000.0;
 /// The steepest shore the one-probe early-out will still find a crossing
 /// on, as rise/run. Above CLIFF_SLOPE_RATIO on purpose: the road declining
 /// to cross ground scatter itself vetoes costs nothing.
@@ -1705,7 +1709,131 @@ pub fn side_band(haven: &Haven, x: f32, z: f32) -> RoadBand {
             best = b;
         }
     }
+    if best == RoadBand::Off && trail_on(haven, x, z) {
+        return RoadBand::Carriageway;
+    }
     best
+}
+
+/// Half-width of a landmark's dirt trail, metres: a track, not a road. A
+/// trail is all carriageway and no shoulder, so it clears the scatter and
+/// wears the ground but lines itself with no barrels.
+pub const TRAIL_HALF_W: f32 = 1.4;
+/// The longest trail a landmark is given, metres. Farther in, a landmark is
+/// found across country.
+pub const TRAIL_MAX_M: f32 = 1_100.0;
+
+/// Is (`x`, `z`) on a landmark's trail?
+pub fn trail_on(haven: &Haven, x: f32, z: f32) -> bool {
+    let m = TRAIL_HALF_W + SIDE_ROAD_BEND_M;
+    for r in haven.trails.iter() {
+        if !r.live
+            || x < r.px.min(r.rx) - m
+            || x > r.px.max(r.rx) + m
+            || z < r.pz.min(r.rz) - m
+            || z > r.pz.max(r.rz) + m
+        {
+            continue;
+        }
+        if r.dist2(x, z) <= TRAIL_HALF_W * TRAIL_HALF_W {
+            return true;
+        }
+    }
+    false
+}
+
+/// A trail from every landmark to the ring: out of the landmark's disc on the
+/// bearing to the island's rim, bent like a side road (`bend_wave`), kept off
+/// water and cliffs. **Trails do not carve** — like the side roads they wear
+/// the ground and clear the scatter, and a player walks them.
+fn solve_trails(seed: u64, pad: &Haven) -> [SideRoad; crate::landmark::LANDMARKS] {
+    let mut out = [SideRoad::NONE; crate::landmark::LANDMARKS];
+    let c = ISLAND_SIZE * 0.5;
+    let mut lat = Lattice::new();
+    for (i, m) in pad.marks.iter().enumerate() {
+        if !m.live {
+            continue;
+        }
+        let (dx, dz) = (m.x - c, m.z - c);
+        let len = (dx * dx + dz * dz).sqrt();
+        if len <= 1.0 {
+            continue;
+        }
+        let b = bearing_index(dx / len, dz / len);
+        let (ux, uz) = crate::yaw_lut::yaw_dir((b as u16) << 8);
+        let rr = pad.ring.r[b];
+        let (rx, rz) = (c + ux * rr, c + uz * rr);
+        let (ex, ez) = (rx - m.x, rz - m.z);
+        let dist = (ex * ex + ez * ez).sqrt();
+        if !(crate::landmark::LANDMARK_R_M * 2.0..=TRAIL_MAX_M).contains(&dist) {
+            continue;
+        }
+        let (tx, tz) = (ex / dist, ez / dist);
+        let start = crate::landmark::LANDMARK_R_M + 2.0;
+        let port = bearing_index(tx, tz) as u8;
+        let mut road = SideRoad {
+            px: m.x + tx * start,
+            pz: m.z + tz * start,
+            rx,
+            rz,
+            bx: [0.0; SIDE_ROAD_BENDS],
+            bz: [0.0; SIDE_ROAD_BENDS],
+            port,
+            live: true,
+        };
+        road.straighten();
+        let (lx, lz) = (-tz, tx);
+        let mut found = None;
+        for shrink in 0..2u32 {
+            let amp = SIDE_ROAD_BEND_M * 0.6 / (1u32 << shrink) as f32;
+            let mut bent = road;
+            for k in 0..SIDE_ROAD_BENDS {
+                let t = bend_t(k);
+                let off = amp * 4.0 * t * (1.0 - t) * bend_wave(seed ^ 0x7a11, port, t);
+                bent.bx[k] = road.px + (road.rx - road.px) * t + lx * off;
+                bent.bz[k] = road.pz + (road.rz - road.pz) * t + lz * off;
+            }
+            if trail_clear(seed, pad, &bent, &mut lat) {
+                found = Some(bent);
+                break;
+            }
+        }
+        if found.is_none() && trail_clear(seed, pad, &road, &mut lat) {
+            found = Some(road);
+        }
+        if let Some(r) = found {
+            out[i] = r;
+        }
+    }
+    out
+}
+
+/// Whether a trail's centreline stays on dry, walkable ground and off every
+/// other landmark — sampled every 8 m, which is what a track needs where a
+/// road needs `road_corridor_clear`'s metre.
+fn trail_clear(seed: u64, pad: &Haven, road: &SideRoad, lat: &mut Lattice) -> bool {
+    let (mut ax, mut az) = road.node(0);
+    for k in 1..SIDE_ROAD_POINTS {
+        let (nx, nz) = road.node(k);
+        let (ex, ez) = (nx - ax, nz - az);
+        let len = (ex * ex + ez * ez).sqrt();
+        let n = (len / 8.0) as usize + 1;
+        for i in 0..=n {
+            let t = i as f32 / n as f32;
+            let (x, z) = (ax + ex * t, az + ez * t);
+            if height_memo(lat, seed, x, z) < LAND_MIN_H + 0.5
+                || slope_memo(lat, seed, x, z) > CLIFF_SLOPE_RATIO * 0.8
+            {
+                return false;
+            }
+            if k > 1 && crate::landmark::covers(&pad.marks, x, z, 0.0) {
+                return false;
+            }
+        }
+        ax = nx;
+        az = nz;
+    }
+    true
 }
 
 /// One road's band at a point. Split out of [`side_band`] because
@@ -1893,12 +2021,12 @@ pub const RING_BEARINGS: usize = 256;
 /// 20–70 takes the room that pays and stops short of a road on the beach or a
 /// road in the interior.
 pub const RING_INLAND_MIN: f32 = 20.0;
-pub const RING_INLAND_MAX: f32 = 70.0;
+pub const RING_INLAND_MAX: f32 = 280.0;
 
 /// **(knob)** Inland distances tried per shoreline crossing. 6 across a 50 m
 /// window is one every 10 m; the ladder was 11 until every crossing on a
 /// radial became a candidate source and the budget had to be shared.
-pub const RING_INLAND_STEPS: usize = 6;
+pub const RING_INLAND_STEPS: usize = 16;
 
 /// **(knob)** Shoreline crossings a radial may offer candidates from.
 ///
@@ -1915,7 +2043,7 @@ pub const RING_CROSSINGS: usize = 4;
 /// **(knob)** Candidates kept per bearing, best node cost first. Wall 4: the
 /// DP below is `O(RING_BEARINGS × RING_CANDIDATES³)` and this is the term
 /// that squares, so it is a cap and not a hope.
-pub const RING_CANDIDATES: usize = 24;
+pub const RING_CANDIDATES: usize = 48;
 
 /// **(knob)** What the solve pays to stand on ground a player cannot.
 ///
@@ -1976,7 +2104,7 @@ pub const RING_BEND_OVER_COST: f32 = 2_000.0;
 /// **(knob)** What a bearing with no shoreline at all pays. Above the widest
 /// offset so a real crossing always wins, below `RING_CLIFF_COST` so closing
 /// the loop still beats standing on a cliff.
-pub const RING_NO_SHORE_COST: f32 = 200.0;
+pub const RING_NO_SHORE_COST: f32 = 300.0;
 
 /// **(knob)** Extra walkability probes per candidate, spread along the ring's
 /// own direction either side of the node.
@@ -2240,6 +2368,67 @@ struct RingCand {
 /// than 256 independent argmins.
 ///
 /// Runs once, at `haven()`. Nothing in the tick repeats it.
+/// How far inland of the shore the ring WANTS to run at bearing `i`, metres.
+///
+/// **The ring used to want 40 m everywhere**, so it traced the coastline at a
+/// fixed offset — a concentric circle a player reads as a racetrack, not a
+/// road (operator, 2026-09-28: "roads needs to be more natural"). A real
+/// coast road leaves the shore to cut behind a headland and comes back to it
+/// in a bay. This is that wander: smooth value noise around the loop, eight
+/// lobes, between [`RING_WANDER_MIN`] and [`RING_WANDER_MAX`]. It only moves
+/// what the DP prefers — cliffs, water and the bend cap still decide.
+pub fn ring_wander(seed: u64, i: usize) -> f32 {
+    const LOBE: usize = 32;
+    const LOBES: usize = RING_BEARINGS / LOBE;
+    let k0 = (i / LOBE) % LOBES;
+    let k1 = (k0 + 1) % LOBES;
+    let t = (i % LOBE) as f32 * (1.0 / LOBE as f32);
+    let v = |k: usize| {
+        (cell_hash(seed, k as i32, 0, CH_RING_WANDER) >> 40) as f32 * (1.0 / 16_777_216.0)
+    };
+    let n = lerp(v(k0), v(k1), fade(t));
+    RING_WANDER_MIN + (RING_WANDER_MAX - RING_WANDER_MIN) * n
+}
+
+/// Nearest the ring's wander asks to come to the shore, metres.
+pub const RING_WANDER_MIN: f32 = 28.0;
+/// Farthest inland it asks to go, metres.
+pub const RING_WANDER_MAX: f32 = 260.0;
+const CH_RING_WANDER: u32 = 184;
+
+const _: () = {
+    assert!(RING_WANDER_MIN >= RING_INLAND_MIN && RING_WANDER_MAX <= RING_INLAND_MAX);
+    assert!(RING_BEARINGS.is_multiple_of(32));
+};
+
+/// Round the solved ring's corners: a few passes of a `[1, 2, 1]` kernel over
+/// the radii, each node moved only if the smoothed spot is still dry and
+/// walkable. The DP prices a bend by its size, not its sharpness, so what it
+/// returns is a polyline of radial kinks; this is what makes it sweep.
+fn smooth_ring(seed: u64, ring: &mut RingPath) {
+    let c = ISLAND_SIZE * 0.5;
+    for _ in 0..RING_SMOOTH_PASSES {
+        let prev = ring.r;
+        for i in 0..RING_BEARINGS {
+            let a = prev[(i + RING_BEARINGS - 1) % RING_BEARINGS];
+            let b = prev[(i + 1) % RING_BEARINGS];
+            let want = (a + 2.0 * prev[i] + b) * 0.25;
+            if !(ROAD_R_MIN..=ROAD_R_MAX).contains(&want) {
+                continue;
+            }
+            let (dx, dz) = crate::yaw_lut::yaw_dir((i as u16) << 8);
+            let (x, z) = (c + dx * want, c + dz * want);
+            if height(seed, x, z) < LAND_MIN_H || slope(seed, x, z) > CLIFF_SLOPE_RATIO {
+                continue;
+            }
+            ring.r[i] = want;
+        }
+    }
+}
+
+/// Passes of [`smooth_ring`].
+pub const RING_SMOOTH_PASSES: usize = 4;
+
 pub fn solve_ring(seed: u64) -> RingPath {
     let c = ISLAND_SIZE * 0.5;
     let mut cands: [RingCand; RING_BEARINGS] = core::array::from_fn(|_| RingCand {
@@ -2296,7 +2485,7 @@ pub fn solve_ring(seed: u64) -> RingPath {
                 let inland = RING_INLAND_MIN + (RING_INLAND_MAX - RING_INLAND_MIN) * f;
                 (
                     shore[xi] - inland,
-                    fabs(inland - ROAD_INLAND_M) * RING_OFFSET_COST,
+                    fabs(inland - ring_wander(seed, i)) * RING_OFFSET_COST,
                 )
             } else {
                 // No shore on this bearing: offer the bracket itself so the
@@ -2435,6 +2624,7 @@ pub fn solve_ring(seed: u64) -> RingPath {
         }
         start += 1;
     }
+    smooth_ring(seed, &mut best);
     for i in 0..RING_BEARINGS {
         let (x, z) = best.node(i as i32);
         best.y[i] = height(seed, x, z).max(LAND_MIN_H);
@@ -2500,11 +2690,11 @@ pub fn solve_ring(seed: u64) -> RingPath {
 /// bay rather than inside it (DECISIONS.md §open: bay slots v0).
 pub const BAY_SPAN_YAW: u16 = 2048;
 /// Per-mille of sheltered (bay) shoulder cells that become barrel slots.
-pub const ROAD_BAY_BARREL_PERMILLE: u16 = 430;
+pub const ROAD_BAY_BARREL_PERMILLE: u16 = 320;
 /// Per-mille on the open coast — headlands and straight shore. Set with the
 /// above so the measured island-wide shoulder mean stays on
 /// ROAD_BARREL_PERMILLE (DECISIONS.md §open: bay slots v0).
-pub const ROAD_OPEN_BARREL_PERMILLE: u16 = 170;
+pub const ROAD_OPEN_BARREL_PERMILLE: u16 = 150;
 
 const _: () = {
     // The bay is the denser end or the whole thing is decoration, and the
@@ -3090,6 +3280,12 @@ pub struct Haven {
     /// server, the client's mirror and the probe all draw against the same
     /// budget and no signature moved. [`ORE_PM_UNIT`] on the inert fixtures.
     pub ore_pm: [u16; 2],
+    /// The island's landmarks (`landmark.rs`), solved after the sites and
+    /// roads so they can keep clear of both.
+    pub marks: [crate::landmark::Landmark; crate::landmark::LANDMARKS],
+    /// A dirt trail from each landmark to the ring (`solve_trails`), slot for
+    /// slot with `marks`.
+    pub trails: [SideRoad; crate::landmark::LANDMARKS],
 }
 
 /// The altitude a site's floor is cut to — **the level of lowest error over
@@ -3183,6 +3379,8 @@ fn haven_ring_phase(ring: &RingPath, seed: u64, x: f32, z: f32) -> Option<u8> {
             minor: empty_minor(),
             roads: [SideRoad::NONE; SIDE_ROADS],
             ore_pm: ORE_PM_UNIT,
+            marks: crate::landmark::NO_MARKS,
+            trails: [SideRoad::NONE; crate::landmark::LANDMARKS],
         };
         let mut k = 0i32;
         let mut ok = true;
@@ -3233,6 +3431,8 @@ fn haven_shelter_bearing(ring: &RingPath, seed: u64, x: f32, z: f32, phase: u8) 
         minor: empty_minor(),
         roads: [SideRoad::NONE; SIDE_ROADS],
         ore_pm: ORE_PM_UNIT,
+        marks: crate::landmark::NO_MARKS,
+        trails: [SideRoad::NONE; crate::landmark::LANDMARKS],
     };
     let mut t = 0i32;
     while t < HAVEN_SHELTER_TRIES {
@@ -3407,6 +3607,8 @@ pub fn haven(seed: u64) -> Haven {
             minor: empty_minor(),
             roads: [SideRoad::NONE; SIDE_ROADS],
             ore_pm: ORE_PM_UNIT,
+            marks: crate::landmark::NO_MARKS,
+            trails: [SideRoad::NONE; crate::landmark::LANDMARKS],
         };
 
         if relaxed.is_none() || score < relaxed_score {
@@ -3434,6 +3636,8 @@ pub fn haven(seed: u64) -> Haven {
         minor: empty_minor(),
         roads: [SideRoad::NONE; SIDE_ROADS],
         ore_pm: ORE_PM_UNIT,
+        marks: crate::landmark::NO_MARKS,
+        trails: [SideRoad::NONE; crate::landmark::LANDMARKS],
     });
     // The pad is resolved before the lesser tier is chosen, and that order is
     // the design: a waystation is defined as "far from the destination", so
@@ -3443,6 +3647,10 @@ pub fn haven(seed: u64) -> Haven {
     let (minor, roads) = pick_minor(seed, &pad, &cand[..n_cand]);
     pad.minor = minor;
     pad.roads = roads;
+    // The landmarks after the sites and roads they keep clear of, and a
+    // trail from each to the ring.
+    pad.marks = crate::landmark::solve(seed, &pad);
+    pad.trails = solve_trails(seed, &pad);
     // The ore budget last: it is measured on the ground the draw will stand
     // on, and that ground is carved by every site and road above.
     pad.ore_pm = ore_budget(seed, &pad);
@@ -3846,7 +4054,7 @@ pub const MINOR_SITES: usize = WAYSTATIONS + INLAND_SITES;
 /// it: walk-to-nearest-road over walkable land is p50 218 m, p90 570 m, so
 /// 300 m sits between the median walk and the long tail. It is a spoken
 /// number, not a derived one — hence the registry row.
-pub const ROAD_REACH_M: f32 = 300.0;
+pub const ROAD_REACH_M: f32 = 600.0;
 
 /// The outermost radius an inland site may stand at, metres.
 ///
@@ -3980,7 +4188,7 @@ pub const SIDE_ROAD_RING_WINDOW_M: f32 = 20.0;
 /// uniform. `side_band_of` costs one leg test per node either way and it is
 /// the same cost it paid before as long as the AABB of the whole road is
 /// what a caller rejects against, which is what asking the ring first does.
-pub const SIDE_ROAD_BENDS: usize = 3;
+pub const SIDE_ROAD_BENDS: usize = 7;
 
 /// Nodes on the road, ends included: the gate, the bends, the junction.
 pub const SIDE_ROAD_POINTS: usize = SIDE_ROAD_BENDS + 2;
@@ -3993,7 +4201,7 @@ pub const SIDE_ROAD_POINTS: usize = SIDE_ROAD_BENDS + 2;
 /// drawn on a map, and small enough that the corridor almost always accepts
 /// it on the first try. It is a CEILING and not a target: `bend_taper` is
 /// below 1 at every node but the middle one, so the shipped maximum is less.
-pub const SIDE_ROAD_BEND_M: f32 = 60.0;
+pub const SIDE_ROAD_BEND_M: f32 = 180.0;
 
 /// **(knob)** How many halvings of [`SIDE_ROAD_BEND_M`] the solve tries
 /// before giving the straight road back.
@@ -4057,6 +4265,19 @@ fn bend_unit(h: u64) -> f32 {
 /// road handed in has already passed `road_corridor_clear`, so the worst
 /// outcome here is the road this repo shipped yesterday. Nothing about the
 /// ring junction, the gate approach or `ring_run` is re-decided.
+/// The side road's sideways wander at `t` along it, in -1..1: a smooth curve
+/// through four hashed knots, so neighbouring bends lean together and the
+/// road swings in long arcs rather than zig-zagging node to node
+/// (operator, 2026-09-28: "roads needs to be more natural").
+fn bend_wave(seed: u64, port: u8, t: f32) -> f32 {
+    const KNOTS: usize = 4;
+    let u = t * (KNOTS - 1) as f32;
+    let k = (floor_i32(u).max(0) as usize).min(KNOTS - 2);
+    let f = u - k as f32;
+    let knot = |j: usize| bend_unit(cell_hash(seed, port as i32, j as i32, CH_SIDE_BEND));
+    lerp(knot(k), knot(k + 1), fade(f.clamp(0.0, 1.0)))
+}
+
 fn bend_side_road(seed: u64, pad: &Haven, straight: &SideRoad, lat: &mut Lattice) -> SideRoad {
     let (dx, dz) = crate::yaw_lut::yaw_dir((straight.port as u16) << 8);
     // Left of travel. Which side is arbitrary — `bend_unit` carries the sign
@@ -4068,8 +4289,9 @@ fn bend_side_road(seed: u64, pad: &Haven, straight: &SideRoad, lat: &mut Lattice
         let mut bent = *straight;
         for i in 0..SIDE_ROAD_BENDS {
             let t = bend_t(i);
-            let h = cell_hash(seed, straight.port as i32, i as i32, CH_SIDE_BEND);
-            let off = amp * bend_taper(t) * bend_unit(h);
+            // Zero at both ends and widest past mid-way (`bend_taper`), riding
+            // one smooth wave rather than a hash per node.
+            let off = amp * bend_taper(t) * bend_wave(seed, straight.port, t);
             bent.bx[i] = straight.px + (straight.rx - straight.px) * t + lx * off;
             bent.bz[i] = straight.pz + (straight.rz - straight.pz) * t + lz * off;
         }
@@ -5798,7 +6020,7 @@ const _: () = {
 /// **(knob)** The four probe islands' mean with the ranges in (657 and 473
 /// over four), rounded; 4:3 is the Highland row's own ratio, so one scale
 /// would nearly serve both and two keep sulfur exact.
-pub const ORE_TARGET: [f32; 2] = [160.0, 120.0];
+pub const ORE_TARGET: [f32; 2] = [560.0, 400.0];
 
 /// The scale's bounds, per mille. The ceiling is the saturation rail: the
 /// Highland row with its ore at the ceiling, times the grove field's peak,
@@ -5814,7 +6036,9 @@ pub const ORE_PM_UNIT: [u16; 2] = [1000, 1000];
 /// The budget samples every second cell each way: 16,384 of the 65,536,
 /// which lands within ~1% of the full expectation on the twelve seeds it
 /// was measured on (every fourth cell: 7%). About 20 ms, once per island.
-const ORE_SAMPLE_STRIDE: i32 = 2;
+/// Every third since the 4,096 m island (29,000 of 262,144): every second
+/// was four times the taps for a budget that does not need them.
+const ORE_SAMPLE_STRIDE: i32 = 3;
 
 const _: () = {
     let row = ScatterTable::alpha_default().weights[Biome::Highland as usize];
@@ -6093,6 +6317,31 @@ fn scatter_in<C: Corners>(
         }
     }
 
+    // A landmark's crates (`landmark.rs`), seated like a site's: the anchor
+    // whose position falls in this cell.
+    let cell_mid_x = cell_x as f32 * CELL_SIZE + CELL_SIZE * 0.5;
+    let cell_mid_z = cell_z as f32 * CELL_SIZE + CELL_SIZE * 0.5;
+    if let Some(m) = crate::landmark::at(&haven.marks, cell_mid_x, cell_mid_z, CELL_SIZE) {
+        let mut k = 0usize;
+        while let Some((ax, az, yaw, occupant)) = crate::landmark::anchor(m, k) {
+            k += 1;
+            if (ax * (1.0 / CELL_SIZE)) as i32 != cell_x
+                || (az * (1.0 / CELL_SIZE)) as i32 != cell_z
+            {
+                continue;
+            }
+            return Slot {
+                occupant,
+                x: ax,
+                y: ground_in(c, seed, haven, ax, az),
+                z: az,
+                yaw,
+                scale: 1.0,
+                species: 0,
+            };
+        }
+    }
+
     let h = cell_hash(seed, cell_x, cell_z, CH_SCATTER);
 
     // Jittered position first: vetoes apply where the thing would stand.
@@ -6120,6 +6369,16 @@ fn scatter_in<C: Corners>(
     // and the shoulder rule below would otherwise line the destination with
     // the same barrels as the route to it (TERRAIN.md §1 stage 8).
     if in_haven(haven, x, z) || in_waystation(haven, x, z) {
+        return none;
+    }
+
+    // Nothing grows out of a rock formation (`boulder.rs`). Padded so a
+    // trunk or a node does not stand half inside one either.
+    if crate::boulder::covers(seed, haven, x, z, 1.5) {
+        return none;
+    }
+    // Nor inside a landmark's walls.
+    if crate::landmark::at(&haven.marks, x, z, 2.0).is_some() {
         return none;
     }
 
@@ -6342,8 +6601,8 @@ pub const CLUTTER_RICH_PER_TILE: usize = 96;
 /// this is a peak and not the typical count: the rich draw is refused on most
 /// cells, which is the whole point of it.
 pub const CLUTTER_PER_TILE: usize = 721;
-/// Clutter cells per island side (2048 / 0.64).
-pub const CLUTTER_CELLS_PER_SIDE: i32 = 3200;
+/// Clutter cells per island side.
+pub const CLUTTER_CELLS_PER_SIDE: i32 = (ISLAND_SIZE / CLUTTER_CELL_M) as i32;
 
 const _: () = {
     // The coverage stratum really is one element per cell — the premise rule
@@ -6689,6 +6948,13 @@ pub enum Clutter {
     /// and moving through woods feel different from crossing a meadow, which
     /// for a survival game is a gameplay property and not a visual one.
     Brush = 5,
+    /// Grass channel, lying: a loose stone in the turf, a sub-draw of the
+    /// grass channel the way [`Brush`](Clutter::Brush) is of litter. The
+    /// reference game's meadows are dotted with them (2026-09-28).
+    Stone = 6,
+    /// Forest-litter channel, standing: short grass growing through the
+    /// litter, so a forest floor is not bare soil between its sticks.
+    Sprig = 7,
 }
 
 /// Buckets an array indexed by `Clutter as usize` needs — the largest
@@ -6700,7 +6966,7 @@ pub enum Clutter {
 /// on the first haven cell of every seed. `Brush = 5` did the same thing to
 /// `tests/clutter.rs`'s `[0usize; 5]`, which is what this constant now stands
 /// in front of.
-pub const CLUTTER_SLOTS: usize = Clutter::Brush as usize + 1;
+pub const CLUTTER_SLOTS: usize = Clutter::Sprig as usize + 1;
 
 /// The splat channel a clutter kind was drawn from.
 ///
@@ -6716,8 +6982,8 @@ pub const CLUTTER_SLOTS: usize = Clutter::Brush as usize + 1;
 pub fn clutter_channel(kind: Clutter) -> usize {
     match kind {
         Clutter::Pebble => 0,
-        Clutter::Tuft => 1,
-        Clutter::Twig | Clutter::Brush => 2,
+        Clutter::Tuft | Clutter::Stone => 1,
+        Clutter::Twig | Clutter::Brush | Clutter::Sprig => 2,
         Clutter::Shard => 3,
         Clutter::None => usize::MAX,
     }
@@ -6732,6 +6998,14 @@ pub fn clutter_channel(kind: Clutter) -> usize {
 /// hash for a sub-kind would be a per-element cost on the densest population
 /// in the game.
 pub const BRUSH_SHARE_PERMILLE: u32 = 120;
+
+/// Share of the grass channel that lies as a [`Clutter::Stone`], per mille —
+/// spent the way [`BRUSH_SHARE_PERMILLE`] is. **(knob)**
+pub const STONE_SHARE_PERMILLE: u32 = 30;
+
+/// Share of the forest-litter channel that grows as a [`Clutter::Sprig`],
+/// per mille, taken above the brush's share. **(knob)**
+pub const SPRIG_SHARE_PERMILLE: u32 = 300;
 
 /// One resolved clutter element. Deliberately the same shape as `Slot` minus
 /// the things clutter does not have (an occupant identity the sim knows, a
@@ -6859,7 +7133,15 @@ pub fn kind_from_splat(w: [u8; 4], roll_bits: u64) -> Clutter {
         if roll < acc {
             k = match i {
                 0 => Clutter::Pebble,
-                1 => Clutter::Tuft,
+                // The turf's own share, split the brush's way: the bottom
+                // `STONE_SHARE_PERMILLE` of it is a stone lying in the grass.
+                1 => {
+                    if (roll - lo) * 1_000 < *v as u32 * STONE_SHARE_PERMILLE {
+                        Clutter::Stone
+                    } else {
+                        Clutter::Tuft
+                    }
+                }
                 // The forest floor's own share, split in place: the bottom
                 // `BRUSH_SHARE_PERMILLE` of channel 2's interval stands up.
                 // **Sub-dividing the interval rather than rolling again** is
@@ -6870,8 +7152,11 @@ pub fn kind_from_splat(w: [u8; 4], roll_bits: u64) -> Clutter {
                 // a channel weight is a byte, so the worst case is
                 // 255 × 1000.
                 2 => {
-                    if (roll - lo) * 1_000 < *v as u32 * BRUSH_SHARE_PERMILLE {
+                    let at = (roll - lo) * 1_000;
+                    if at < *v as u32 * BRUSH_SHARE_PERMILLE {
                         Clutter::Brush
+                    } else if at < *v as u32 * (BRUSH_SHARE_PERMILLE + SPRIG_SHARE_PERMILLE) {
+                        Clutter::Sprig
                     } else {
                         Clutter::Twig
                     }

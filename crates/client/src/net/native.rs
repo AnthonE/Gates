@@ -15,12 +15,20 @@ use wtransport::Connection;
 /// two halves keep the connection alive together and it dies when both are
 /// dropped — the same lifetime the field on `Session` had before this split.
 pub struct NativeWire {
-    connection: std::sync::Arc<Connection>,
+    /// `None` for a replayed session (`crate::film`): there is no shard, and
+    /// the inputs a replay's core still produces go nowhere.
+    connection: Option<std::sync::Arc<Connection>>,
 }
 
 impl NativeWire {
     pub(crate) fn new(connection: std::sync::Arc<Connection>) -> Self {
-        Self { connection }
+        Self {
+            connection: Some(connection),
+        }
+    }
+
+    pub(crate) fn detached() -> Self {
+        Self { connection: None }
     }
 }
 
@@ -33,6 +41,8 @@ impl Wire for NativeWire {
         // `Session::pump` — there is no recovery for a datagram that did not
         // go, and the next tick's input supersedes it. The connection dying
         // is noticed by the lane drains, not by this.
-        let _ = self.connection.send_datagram(payload);
+        if let Some(c) = &self.connection {
+            let _ = c.send_datagram(payload);
+        }
     }
 }

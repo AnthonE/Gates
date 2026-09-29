@@ -45,6 +45,45 @@ use std::path::Path;
 ///   provably cannot move it across (sea level, at a site that sits well above
 ///   it), or it is a depiction at a scale the carve is invisible at.
 const RAW_READERS: &[(&str, &str, &str)] = &[
+    (
+        "boulders.rs",
+        "formation_mesh",
+        "cosmetic: whether a rock formation's top is mossy reads the biome \
+         band it stands in, and never stands anything on the result.",
+    ),
+    (
+        "boulders.rs",
+        "talus",
+        "cosmetic: loose stones round a rock's foot sit on the raw surface; \
+         rocks keep clear of every carve, so over their footprint the two are \
+         one surface, and nothing stands on a stone.",
+    ),
+    (
+        "boulder.rs",
+        "seat",
+        "locator: a rock block is seated against the raw surface under its \
+         footprint, which keeps clear of every road and site the carve \
+         touches, so there the two surfaces are the same one.",
+    ),
+    (
+        "landmark.rs",
+        "try_site",
+        "locator: a landmark is sited against the raw surface, off every road \
+         and site the carve touches, so over its disc the two are one surface.",
+    ),
+    (
+        "terrain.rs",
+        "smooth_ring",
+        "locator: `solve_ring`'s own corner-rounding pass, against the same raw \
+         surface the solve reads, for `ring_probe`'s reason.",
+    ),
+    (
+        "boulder.rs",
+        "formation",
+        "locator: a rock formation is placed against the raw surface, and it \
+         keeps clear of every road and site the carve touches, so over its \
+         footprint the two surfaces are the same one.",
+    ),
     // ---- terrain.rs: the solver itself -------------------------------------
     (
         "terrain.rs",

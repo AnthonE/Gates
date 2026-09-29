@@ -412,7 +412,7 @@ fn the_shipped_catalog_carries_every_armor_row() {
     assert!(inert > 0, "every shipped item is armor?");
 }
 
-/// (6) The eat columns (wire v80): a left click with food in hand is a
+/// (6) The eat columns (wire v81): a left click with food in hand is a
 /// meal only if the catalog says the item is food, so every authored
 /// consumable must ride the catalog with its own numbers, and nothing else
 /// may look edible — a rock that "eats" is a click that neither swings nor

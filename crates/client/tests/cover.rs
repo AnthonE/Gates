@@ -32,8 +32,9 @@
 
 use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::*;
-use client::render::clutter::{element_mesh, FRONDS_PER_CLUMP, FROND_H, FROND_TIP_GAIN, TUFT_H};
-use client::render::terrain_mesh::GROUND_ALBEDO;
+use client::render::clutter::{
+    element_mesh, FRONDS_PER_CLUMP, FROND_H, FROND_ROOT, FROND_TIP_GAIN, TUFT_H,
+};
 use sim_core::terrain::{Clutter, ClutterElem};
 
 /// The channels `clutter_richness_at` counts into `grow`, in its own order:
@@ -42,9 +43,6 @@ use sim_core::terrain::{Clutter, ClutterElem};
 const GROWING: [Clutter; 2] = [Clutter::Tuft, Clutter::Twig];
 /// The two it refuses to thicken: sand and rock.
 const INERT: [Clutter; 2] = [Clutter::Pebble, Clutter::Shard];
-
-/// The litter identity's index into `GROUND_ALBEDO` / the splat.
-const LITTER: usize = 2;
 
 fn elem(kind: Clutter, yaw: u8, scale: f32) -> ClutterElem {
     ClutterElem {
@@ -165,31 +163,21 @@ fn the_litter_clump_still_has_the_stick_it_always_had() {
     );
 }
 
-/// **Standing litter is the colour of the ground it grew out of.**
-///
-/// Every other clutter colour in `clutter.rs` is a hex authored beside the
-/// ground rather than from it (`PEBBLE_C`, `TWIG_C`, `SHARD_C`, the tuft ramp),
-/// so a shard rolled off the rock channel is painted `0x7d7a73` while the rock
-/// under it is `GROUND_ALBEDO[3]` — and nothing in the tree measures that gap.
-/// `terrain.rs` argues the population cannot drift from its surface because
-/// "THE MIX IS THE SPLAT"; that argument covers WHICH kind is drawn where and
-/// does not reach what colour it is painted.
-///
-/// The stalk closes the seam for one kind by construction, and this holds it
-/// closed. It is also why no new hex was authored: `ART.md` §3 has no litter
-/// row to author one against, and `GROUND_ALBEDO[2]` already carries that
-/// identity's hue and saturation under `tests/ground_identity.rs`.
+/// **Standing litter roots in its own authored colour** (`FROND_ROOT`, dead
+/// bracken). It was the ground's litter albedo until 2026-09-28, when the
+/// grey stalks read as a bed of pale spikes; the ramp still starts at one
+/// colour and only its value may jitter.
 #[test]
-fn a_standing_stalk_is_rooted_in_the_grounds_own_litter_albedo() {
+fn a_standing_stalk_is_rooted_in_its_authored_colour() {
     let e = elem(Clutter::Twig, 12, 1.0);
     let m = element_mesh(&e);
     let (p, c) = (positions(&m), colors(&m));
-    let want = GROUND_ALBEDO[LITTER];
+    let want = FROND_ROOT;
 
     // The root vertices of the stalks: the quad corners sitting on the ground
     // plane. Their ramp parameter is 0, so their colour is the ramp's low end
-    // times that stalk's own value jitter — the DIRECTION must be the ground's
-    // litter albedo exactly, and only the magnitude may vary.
+    // times that stalk's own value jitter — the DIRECTION must be
+    // `FROND_ROOT` exactly, and only the magnitude may vary.
     let mut checked = 0;
     for i in 12..p.len() {
         if (p[i].y - e.y).abs() > 1e-6 {
@@ -204,9 +192,7 @@ fn a_standing_stalk_is_rooted_in_the_grounds_own_litter_albedo() {
             assert!(
                 d < 1e-5,
                 "stalk root vertex {i} is {got:?}, which is not {want:?} times \
-                 any scalar (channel {ch} off by {d:e}) — the standing litter \
-                 has been given a colour of its own and can now drift from the \
-                 ground it grows out of"
+                 any scalar (channel {ch} off by {d:e})"
             );
         }
         checked += 1;
@@ -241,10 +227,8 @@ fn standing_litter_is_understory_and_not_a_second_lawn() {
         )
     };
     // `ART.md` §5's `ALBEDO_LUMA_BAND = [0.05, 0.55]` linear, applied to the
-    // brightest thing the stalk ramp can produce. The root is `GROUND_ALBEDO`,
-    // which `tests/ground_identity.rs` already holds inside the band; the tip
-    // is the root times the gain and nothing was checking it.
-    let root = GROUND_ALBEDO[LITTER];
+    // brightest thing the stalk ramp can produce: the root times the gain.
+    let root = FROND_ROOT;
     let tip = 0.2126 * root[0] * FROND_TIP_GAIN
         + 0.7152 * root[1] * FROND_TIP_GAIN
         + 0.0722 * root[2] * FROND_TIP_GAIN;

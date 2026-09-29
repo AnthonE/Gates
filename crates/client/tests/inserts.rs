@@ -29,8 +29,8 @@ fn inserts_fit_both_edge_axes_at_raised_and_upper_storeys() {
         for loc in [LOC_EDGE_XLO, LOC_EDGE_ZLO] {
             for level in [0, 2] {
                 for plate in [0, 2] {
-                    let addr = (341, 341, level, loc);
-                    let base = level_base_y(seed, &haven, 341, 341, level, plate);
+                    let addr = (682, 682, level, loc);
+                    let base = level_base_y(seed, &haven, 682, 682, level, plate);
                     let t = deploy_transform(seed, &haven, addr, arch, false, plate);
                     let (mut low, mut high) =
                         (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
@@ -51,8 +51,8 @@ fn inserts_fit_both_edge_axes_at_raised_and_upper_storeys() {
                     } else {
                         (low.x, high.x)
                     };
-                    assert!((lo - 341.0 * BUILD_CELL_M - rim).abs() < 0.001);
-                    assert!((hi - 342.0 * BUILD_CELL_M + rim).abs() < 0.001);
+                    assert!((lo - 682.0 * BUILD_CELL_M - rim).abs() < 0.001);
+                    assert!((hi - 683.0 * BUILD_CELL_M + rim).abs() < 0.001);
                     if arch == ARCH_GARAGE_DOOR {
                         let open = deploy_transform(seed, &haven, addr, arch, true, plate);
                         for p in points {

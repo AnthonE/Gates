@@ -26,7 +26,6 @@ use sim_core::terrain::{
 };
 
 use super::props::{hash01, linear, Soup};
-use super::terrain_mesh::GROUND_ALBEDO;
 use super::{Eye, WorldId};
 
 /// Tiles either side of the player's own — a 5×5 ring, 40 m to an edge.
@@ -34,9 +33,12 @@ pub const CLUTTER_RING: i32 = 2;
 /// Tiles filled per frame. The fill is 721 hash draws and a few thousand
 /// triangles; one a frame keeps the spike off the frame the player turns on.
 pub const CLUTTER_FILLS_PER_FRAME: usize = 1;
-/// A tuft's blade height at scale 1, metres — the browser's, unchanged, and
-/// inside `ART.md` §1's measured 20–40 cm band.
-pub const TUFT_H: f32 = 0.34;
+/// A tuft's blade height at scale 1, metres — the top of `ART.md` §1's
+/// measured 20–40 cm band. A card is twice as wide as it is tall
+/// (`CARD_ASPECT`), so at 0.40 a tuft is 0.8 m across on a 0.64 m cell and
+/// neighbours overlap into turf; at 0.34 the soil showed between every one
+/// of them (2026-09-28, against the reference game's meadows).
+pub const TUFT_H: f32 = 0.40;
 
 /// A brush clump's height at scale 1, metres. **(knob)**
 ///
@@ -85,15 +87,16 @@ pub const FROND_H: f32 = 0.19;
 pub const FRONDS_PER_CLUMP: u32 = 3;
 
 /// How much brighter a standing litter stalk's tip is than its root.
-///
-/// The root colour is not authored here: it is `GROUND_ALBEDO[2]`, the island's
-/// own forest-litter identity, so a stalk is the same colour as the ground it
-/// grew out of and the two cannot drift. That seam was open — every other
-/// clutter colour in this file is a hex authored beside the ground rather than
-/// from it, and nothing measured the gap — and `ART.md` §3 has no litter row to
-/// author one against anyway (its "dirt path" sample pins that identity's hue
-/// and saturation, which `GROUND_ALBEDO` already carries).
 pub const FROND_TIP_GAIN: f32 = 1.45;
+
+/// A standing litter stalk's root colour, linear: dead bracken, sRGB
+/// (86, 66, 44).
+///
+/// **Authored, no longer the ground's own litter identity** (2026-09-28). A
+/// stalk the colour of grey forest gravel, lit from the side, read as a bed
+/// of pale spikes over the whole floor; standing dead matter is darker and
+/// warmer than the ground it stands in.
+pub const FROND_ROOT: [f32; 3] = [0.093, 0.0545, 0.0252];
 
 /// Authored colour per kind, sRGB.
 ///
@@ -108,6 +111,12 @@ pub const FROND_TIP_GAIN: f32 = 1.45;
 const PEBBLE_C: u32 = 0x8a8880;
 const TWIG_C: u32 = 0x5a4630;
 const SHARD_C: u32 = 0x7d7a73;
+/// A stone lying in the turf: pale, weathered — the reference game's
+/// meadows are dotted with them, and they read at any distance a tuft does.
+const STONE_C: u32 = 0xa9a59c;
+
+/// A sprig of grass through the forest litter: a tuft's card, shorter.
+pub const SPRIG_H: f32 = TUFT_H * 0.75;
 
 #[derive(Resource, Default)]
 pub struct ClutterRing {
@@ -336,6 +345,7 @@ pub const CARD_SINK: f32 = 0.04;
 /// used to author is in the scan already.
 fn card(s: &mut Soup, at: Vec3, yaw: f32, seed: u32, h: f32) {
     let root = at - Vec3::Y * h * CARD_SINK;
+    let tint = patch_tint(at.x, at.z);
     for i in 0..CARDS_PER_TUFT {
         let a = yaw + i as f32 * std::f32::consts::PI / CARDS_PER_TUFT as f32;
         let side = Vec3::new(a.sin(), 0.0, a.cos());
@@ -365,7 +375,7 @@ fn card(s: &mut Soup, at: Vec3, yaw: f32, seed: u32, h: f32) {
         let (uv_t0, uv_t1) = ([cu, cv], [cu + du, cv]);
 
         let v = 0.86 + 0.28 * hash01(seed, i + 13);
-        let col = move |_: Vec3| [v, v, v, 1.0];
+        let col = move |_: Vec3| [v * tint[0], v * tint[1], v * tint[2], 1.0];
         let root_y = root.y;
         let ramp = move |p: Vec3| {
             let t = ((p.y - root_y) / hj).clamp(0.0, 1.0);
@@ -386,6 +396,42 @@ fn card(s: &mut Soup, at: Vec3, yaw: f32, seed: u32, h: f32) {
             ramp,
         );
     }
+}
+
+/// Smooth value noise over the ground plane, in [0, 1]: the patches a meadow
+/// is made of, metres across rather than a tuft wide.
+fn patch(x: f32, z: f32) -> f32 {
+    let octave = |x: f32, z: f32| {
+        let (ix, iz) = (x.floor(), z.floor());
+        let (fx, fz) = (x - ix, z - iz);
+        let (ux, uz) = (fx * fx * (3.0 - 2.0 * fx), fz * fz * (3.0 - 2.0 * fz));
+        let h = |dx: i32, dz: i32| {
+            hash01(
+                (ix as i32 + dx) as u32,
+                ((iz as i32 + dz) as u32) ^ 0x5eed_0f1e,
+            )
+        };
+        let a = h(0, 0) + (h(1, 0) - h(0, 0)) * ux;
+        let b = h(0, 1) + (h(1, 1) - h(0, 1)) * ux;
+        a + (b - a) * uz
+    };
+    octave(x / 11.0, z / 11.0) * 0.65 + octave(x / 4.3 + 17.0, z / 4.3 + 5.0) * 0.35
+}
+
+/// A grass card's colour multiplier where it stands: straw-yellow in the dry
+/// patches, deeper green in the lush ones, the photograph's own colour
+/// between. **Not a second authored colour for grass** — a mean-1 shift of
+/// the photograph's, the variation the reference game's meadows have and a
+/// field of one photograph does not (2026-09-28).
+fn patch_tint(x: f32, z: f32) -> [f32; 3] {
+    let t = patch(x, z);
+    let dry = ((t - 0.55) / 0.25).clamp(0.0, 1.0);
+    let lush = ((0.42 - t) / 0.25).clamp(0.0, 1.0);
+    [
+        1.0 + 0.16 * dry - 0.08 * lush,
+        1.0 + 0.03 * dry + 0.06 * lush,
+        1.0 - 0.30 * dry - 0.02 * lush,
+    ]
 }
 
 /// How much of the volume normal a blade's TIP keeps. **(knob)**
@@ -497,6 +543,63 @@ fn chip(s: &mut Soup, at: Vec3, yaw: f32, size: Vec3, hex: u32, seed: u32) {
     }
 }
 
+/// Corners around a [`stone`]'s base.
+const STONE_SIDES: usize = 6;
+
+/// Vertices one [`stone`] holds: its eight facets, unshared.
+pub const STONE_VERTS: usize = 24;
+
+/// A loose stone: a low six-cornered lump under a short ridge — scree, not a
+/// spike.
+///
+/// **It replaced [`chip`] for the pebble and the shard** (2026-09-28). A chip
+/// is four facets to one apex, which is a square pyramid, and on bare rock —
+/// where every clutter cell is a shard — the ground read as a carpet of grey
+/// pyramids. A real stone lying on a surface is wider than it is tall and
+/// rounded on top, so this one's top is a ridge, not a point: two crests
+/// along its long axis, each over three base corners, eight facets in all
+/// (`STONE_VERTS`, cheaper than a litter clump). Same sink and the same
+/// volume-blended normals as a chip.
+fn stone(s: &mut Soup, at: Vec3, yaw: f32, size: Vec3, hex: u32, seed: u32) {
+    let base = linear(hex);
+    let (sy, cy) = (yaw.sin(), yaw.cos());
+    let rot = |p: Vec3| Vec3::new(p.x * cy + p.z * sy, p.y, -p.x * sy + p.z * cy);
+    let sink = size.y * CHIP_SINK;
+    let mut lo = [Vec3::ZERO; STONE_SIDES];
+    for (i, p) in lo.iter_mut().enumerate() {
+        let a = i as f32 * std::f32::consts::TAU / STONE_SIDES as f32 + 0.3;
+        let r = 0.7 + 0.3 * hash01(seed, i as u32);
+        *p = at + rot(Vec3::new(a.cos() * r * size.x, -sink, a.sin() * r * size.z));
+    }
+    // The ridge: two crests on the long (x) axis, not quite level.
+    let crest = |k: u32, side: f32| {
+        let reach = 0.3 + 0.15 * hash01(seed, 20 + k);
+        let hy = size.y * (0.85 + 0.15 * hash01(seed, 40 + k));
+        at + rot(Vec3::new(side * reach * size.x, hy, 0.0))
+    };
+    let (h0, h1) = (crest(0, 1.0), crest(1, -1.0));
+    let v = 0.8 + 0.4 * hash01(seed, 5);
+    let col = move |_: Vec3| [base[0] * v, base[1] * v, base[2] * v, 1.0];
+    let ctr = at + Vec3::new(0.0, (size.y - sink) * 0.4, 0.0);
+    let mut tri = |a: Vec3, b: Vec3, c: Vec3| s.tri(a, b, c, col, Some(ctr), CHIP_VOLUME_BLEND);
+    // Corners 5, 0, 1 sit round crest 0 (bearing 0); 2, 3, 4 round crest 1.
+    tri(lo[5], h0, lo[0]);
+    tri(lo[0], h0, lo[1]);
+    tri(lo[1], h0, h1);
+    tri(lo[1], h1, lo[2]);
+    tri(lo[2], h1, lo[3]);
+    tri(lo[3], h1, lo[4]);
+    tri(lo[4], h1, h0);
+    tri(lo[4], h0, lo[5]);
+}
+
+/// Share of the rock channel's clutter cells that draw a stone at all.
+///
+/// Every clutter cell on bare rock is a shard (`terrain::kind_from_splat`), one
+/// per 0.64 m, and a stone every 0.64 m is gravel spread by hand. A rock face
+/// carries a few loose stones; the rest is the face itself.
+pub const SHARD_KEEP: f32 = 0.22;
+
 /// A litter clump: the fallen stick this kind has always been, plus the
 /// standing stalks the growing channel was owed.
 ///
@@ -520,7 +623,7 @@ fn litter(s: &mut Soup, at: Vec3, yaw: f32, scale: f32, seed: u32) {
         TWIG_C,
         seed,
     );
-    let root = GROUND_ALBEDO[2];
+    let root = FROND_ROOT;
     // The seed is offset so the stalks' yaws do not correlate with the corner
     // jitter of the stick they stand in — rule 7, at clump scale.
     stand(
@@ -558,7 +661,7 @@ fn litter(s: &mut Soup, at: Vec3, yaw: f32, scale: f32, seed: u32) {
 /// cutout means a card rendered as an opaque grey quad, and for an opaque
 /// solid means an alpha test against a texture it has no UVs for.
 pub fn masked(kind: Clutter) -> bool {
-    matches!(kind, Clutter::Tuft | Clutter::Brush)
+    matches!(kind, Clutter::Tuft | Clutter::Brush | Clutter::Sprig)
 }
 
 pub fn element_mesh(e: &ClutterElem) -> Mesh {
@@ -577,11 +680,11 @@ fn element(s: &mut Soup, e: &ClutterElem) {
     match e.kind {
         Clutter::None => {}
         Clutter::Tuft => card(s, at, yaw, seed, TUFT_H * e.scale),
-        Clutter::Pebble => chip(
+        Clutter::Pebble => stone(
             s,
             at,
             yaw,
-            Vec3::new(0.05, 0.035, 0.05) * e.scale,
+            Vec3::new(0.06, 0.028, 0.05) * e.scale,
             PEBBLE_C,
             seed,
         ),
@@ -590,14 +693,28 @@ fn element(s: &mut Soup, e: &ClutterElem) {
         // `BRUSH_H` for why that is the whole of the change, and why this arm
         // must stay beside `Tuft` in `masked` rather than being remembered to.
         Clutter::Brush => card(s, at, yaw, seed, BRUSH_H * e.scale),
-        Clutter::Shard => chip(
+        Clutter::Shard => stone(
             s,
             at,
             yaw,
-            Vec3::new(0.07, 0.06, 0.055) * e.scale,
+            Vec3::new(0.08, 0.035, 0.06) * e.scale,
             SHARD_C,
             seed,
         ),
+        // A stone in the grass: a pebble's shape at two to five times its
+        // size, most of them small.
+        Clutter::Stone => {
+            let k = 0.6 + 1.4 * hash01(seed, 71) * hash01(seed, 72);
+            stone(
+                s,
+                at,
+                yaw,
+                Vec3::new(0.16, 0.08, 0.12) * e.scale * k,
+                STONE_C,
+                seed,
+            )
+        }
+        Clutter::Sprig => card(s, at, yaw, seed, SPRIG_H * e.scale),
     }
 }
 
@@ -732,6 +849,14 @@ pub fn stream(
             let mut n_solid = 0usize;
             let mut n_cards = 0usize;
             for e in buf.iter().take(n) {
+                if e.kind == Clutter::Shard
+                    && hash01(
+                        (e.x * 64.0) as i32 as u32,
+                        (e.z * 64.0) as i32 as u32 ^ 0x5eed,
+                    ) > SHARD_KEEP
+                {
+                    continue;
+                }
                 if masked(e.kind) {
                     n_cards += 1;
                     element(&mut cards, e);

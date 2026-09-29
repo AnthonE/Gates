@@ -260,7 +260,7 @@ pub struct ShardHandle {
 /// refuse it against, down to the conversion — `bake_gather`'s
 /// `u16::try_from` is the one place that narrowing happens.
 ///
-/// `survival` (wire v80) is the third baked table read here, for the eat
+/// `survival` (wire v81) is the third baked table read here, for the eat
 /// columns: the client makes a left click with food in hand a meal off
 /// them, so they are the rows `survival::consume` will charge.
 pub fn bake_catalog(

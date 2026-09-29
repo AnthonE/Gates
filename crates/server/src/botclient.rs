@@ -33,6 +33,7 @@ use sim_core::limits::{DATAGRAM_BUDGET_BYTES, MAX_BUILD_COORD, MAX_INPUT_FRAMES,
 use sim_core::movement::POS_XZ_Q;
 use sim_core::ranged::{REFUSE_RL_BUSY, REFUSE_RL_EMPTY};
 use sim_core::rng::Pcg32;
+use sim_core::terrain::Haven;
 use sim_core::world::Command;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -366,6 +367,34 @@ fn encode_raid(cmd: &Command, buf: &mut [u8]) -> Option<Result<usize, WireError>
 /// cells), so the clamp only ever bites on a body outside the playfield.
 fn body_cell(q: i32) -> u16 {
     build_cell_of(q as f32 * POS_XZ_Q).clamp(0, MAX_BUILD_COORD as i32 - 1) as u16
+}
+
+/// Would a foundation go on this cell? `build::place`'s ground rules: the
+/// terrain, the depot's and the landmarks' reserves.
+fn foundation_goes(seed: u64, hv: &Haven, cx: u16, cz: u16) -> bool {
+    let (ax, az) = sim_core::build::anchor(cx, cz, sim_core::build::LOC_PLANE);
+    let pad = sim_core::build::BUILD_CELL_M * 1.5;
+    sim_core::build::foundation_terrain_ok(seed, hv, ax, az)
+        && !sim_core::depot::reserves(hv, ax, az, pad)
+        && !sim_core::landmark::covers(&hv.marks, ax, az, pad)
+}
+
+/// The island's haven, built once for every raider in the process (a bot
+/// fleet dials one shard): `terrain::haven` costs a fraction of a second,
+/// too much to pay per bot, and it runs off the async workers so the
+/// shard's own tasks keep ticking. Another seed builds its own.
+async fn haven_of(seed: u64) -> Result<Arc<Haven>, String> {
+    static FIRST: std::sync::OnceLock<(u64, Arc<Haven>)> = std::sync::OnceLock::new();
+    tokio::task::spawn_blocking(move || {
+        let (first, hv) = FIRST.get_or_init(|| (seed, Arc::new(sim_core::terrain::haven(seed))));
+        if *first == seed {
+            hv.clone()
+        } else {
+            Arc::new(sim_core::terrain::haven(seed))
+        }
+    })
+    .await
+    .map_err(|e| format!("haven: {e}"))
 }
 
 /// `H3_EXCESSIVE_LOAD` — the HTTP/3 code a peer sends when it is shedding
@@ -879,6 +908,13 @@ async fn run_bot_inner(
     let attacker = seed_stream % 2 == 1;
     let mut plan: Option<RaidPlan> = None;
     let mut steps_in_cycle: u16 = 0;
+    // The ground a raider reads, as the client's build ghost reads it, and
+    // whether the seated plot is ground a foundation takes.
+    let haven = match raid {
+        Some(_) => Some(haven_of(welcome.seed).await?),
+        None => None,
+    };
+    let mut plot_ok = false;
     // The server's per-kind pace (`pace.rs`), kept on this side the way an
     // honest client keeps it: a raid step that would come early is held
     // here and sent when its gap is up, rather than queued at the server
@@ -950,6 +986,23 @@ async fn run_bot_inner(
                 // A raid's selection step rides the input lane, because that
                 // is the only place a hotbar slot exists on the wire.
                 sel_held.apply(&mut f);
+                // A raider walks the way a player with a satchel does: inland
+                // off the beach until its plot is ground a foundation takes,
+                // then it stands there while a paced step waits, or the
+                // second it waits walks it out of reach of the piece it
+                // plants on. The draws above still happen either way.
+                if haven.is_some() {
+                    if plot_ok {
+                        if held.is_some() {
+                            f.move_x = 0;
+                            f.move_z = 0;
+                        }
+                    } else if let Some(body) = view.get(report.player_id) {
+                        let c = sim_core::terrain::ISLAND_SIZE * 0.5;
+                        let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+                        f.yaw = sim_core::nav::yaw_toward(c - x, c - z, f.yaw);
+                    }
+                }
                 yaw = f.yaw;
                 seq = seq.wrapping_add(1);
                 if tail.len() == MAX_INPUT_FRAMES {
@@ -1120,14 +1173,32 @@ async fn run_bot_inner(
                     // bot walks, so a plan pinned at spawn would spend the
                     // whole run out of reach of its own foundation and
                     // measure nothing but `REFUSE_B_REACH`.
-                    if steps_in_cycle >= RAID_CYCLE && held.is_none() {
+                    //
+                    // A plot no foundation takes is dropped, held step and
+                    // all, the moment the raider stands on one that does:
+                    // fresh spawns are on beach sand, below
+                    // `FOUNDATION_MIN_H_M`, and a paced cycle is too slow
+                    // to spend finishing there.
+                    let here = view
+                        .get(report.player_id)
+                        .map(|body| (body_cell(body.qx), body_cell(body.qz)));
+                    let cycle_done = steps_in_cycle >= RAID_CYCLE && held.is_none();
+                    let doomed = plan.is_some() && !plot_ok;
+                    let ok_here = match (here, haven.as_deref()) {
+                        (Some((cx, cz)), Some(hv)) if cycle_done || doomed || plan.is_none() => {
+                            foundation_goes(welcome.seed, hv, cx, cz)
+                        }
+                        _ => false,
+                    };
+                    if cycle_done || (doomed && ok_here) {
                         plan = None;
+                        held = None;
                         sel_held.clear();
                     }
                     if plan.is_none() {
-                        if let Some(body) = view.get(report.player_id) {
-                            let (cx, cz) = (body_cell(body.qx), body_cell(body.qz));
+                        if let Some((cx, cz)) = here {
                             plan = Some(RaidPlan::new(report.player_id, cx, cz, attacker));
+                            plot_ok = ok_here;
                             steps_in_cycle = 0;
                             report.raid_cycles += 1;
                             report.last_plot = Some((cx, cz));

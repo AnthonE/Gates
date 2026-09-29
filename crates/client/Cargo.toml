@@ -93,6 +93,12 @@ name = "gates"
 path = "src/bin/gates.rs"
 required-features = ["render", "native"]
 
+# Tapes a live session for a trailer (`ci/film.sh`); `gates --film` draws it.
+[[bin]]
+name = "record"
+path = "src/bin/record.rs"
+required-features = ["native"]
+
 # **Declared rather than auto-discovered, which is the point.** `src/bin/
 # soundbank.rs` was an autobin: cargo picked it up with no manifest row, so it
 # carried no `required-features` and nothing said where it may be built. It
@@ -193,6 +199,11 @@ required-features = ["render"]
 [[test]]
 name = "tree"
 path = "tests/tree.rs"
+required-features = ["render"]
+
+[[test]]
+name = "far_trees"
+path = "tests/far_trees.rs"
 required-features = ["render"]
 
 # The tree LOD's spawn-site gate: it drives `props::spawn_slot` against a real

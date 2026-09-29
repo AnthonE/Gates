@@ -217,8 +217,14 @@ pub fn step(
         let clamp_x = |v: f32| v.clamp(BORDER_MARGIN, ISLAND_SIZE - BORDER_MARGIN);
         let candidates = [(x + dx, z + dz), (x + dx, z), (x, z + dz)];
         for (cx, cz) in candidates {
-            let cx = clamp_x(cx);
-            let cz = clamp_x(cz);
+            // ⚠ **Tested where the body will actually stand: quantized.** The
+            // body is stored in `POS_XZ_Q` steps, so an unquantized candidate
+            // that clears a wall by less than half a step can be stored
+            // inside it — and inside is exactly where the veto below lifts,
+            // so the next tick walks straight through. The 4,096 m island's
+            // seed 1 found it at the haven shelter's back wall.
+            let cx = quant_xz(clamp_x(cx)) as f32 * POS_XZ_Q;
+            let cz = quant_xz(clamp_x(cz)) as f32 * POS_XZ_Q;
             let run2 = (cx - x) * (cx - x) + (cz - z) * (cz - z);
             if run2 <= 0.0 {
                 continue;

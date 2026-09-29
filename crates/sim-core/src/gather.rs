@@ -1345,9 +1345,12 @@ mod tests {
     fn slot_lives_evicts_lowest_hits_standing_only() {
         let mut lives = SlotLives::new();
         // Fill to capacity: one harvested, the rest standing with rising hits.
+        // Two coordinates, since the cap outgrew one u16 (4,096 m island).
         for i in 0..MAX_SLOT_LIVES {
-            let e = lives.find_or_insert(i as u16, 0).unwrap();
-            e.hits = i as u16 + 2;
+            let e = lives
+                .find_or_insert((i & 0xFFFF) as u16, 10_000 + (i >> 16) as u16)
+                .unwrap();
+            e.hits = i.min(60_000) as u16 + 2;
             if i == 0 {
                 e.respawn_at = 999; // harvested — never evicted
             }
@@ -1357,8 +1360,14 @@ mod tests {
         let e = lives.find_or_insert(9999, 9999).unwrap();
         assert_eq!((e.cx, e.cz, e.hits), (9999, 9999, 0));
         assert_eq!(lives.len(), MAX_SLOT_LIVES);
-        assert!(lives.find(1, 0).is_none(), "standing lowest-hits evicted");
-        assert!(lives.find(0, 0).is_some(), "harvested survives eviction");
+        assert!(
+            lives.find(1, 10_000).is_none(),
+            "standing lowest-hits evicted"
+        );
+        assert!(
+            lives.find(0, 10_000).is_some(),
+            "harvested survives eviction"
+        );
     }
 
     #[test]
@@ -1442,8 +1451,10 @@ mod tests {
         // Full, with the sapling holding the fewest hits: it still stays.
         let mut full = SlotLives::new();
         for i in 0..MAX_SLOT_LIVES {
-            let e = full.find_or_insert(i as u16, 1).unwrap();
-            e.hits = i as u16 + 1;
+            let e = full
+                .find_or_insert((i & 0xFFFF) as u16, 1 + 2 * (i >> 16) as u16)
+                .unwrap();
+            e.hits = i.min(60_000) as u16 + 1;
             if i == 0 {
                 e.hits = 0;
                 e.grown_at = 50;

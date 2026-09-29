@@ -968,11 +968,17 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// `REFUSE_WATCH_ENDED`) are values in the old `u8`. Landed on its branch as
 /// v73, beside research table v1's v73 on `main`; the merge took the next
 /// number and regenerated every fixture.
-/// v80 — the belt eats. Each catalog row grows three 16-bit eat columns
+///
+/// v80 — the 4,096 m island (operator, 2026-09-28: "the world as big as we
+/// can get"). `POS_XZ_BITS` 17 → 18 and `BUILD_CELL_BITS` 10 → 11: 17 bits
+/// of 3 cm reached 3,932 m and 10 bits of 3 m cells reached 3,072 m.
+/// v81 — the belt eats. Each catalog row grows three 16-bit eat columns
 /// after `stack_max` (`ItemRow::food`, `water`, `health`: what one unit of
 /// the item pays when eaten, 0 for anything the eat verb refuses), so a
 /// client knows a left click with food in hand is a meal and not a swing.
-pub const PROTO_VER: u16 = 80;
+/// Landed on its branch as v80, beside the 4,096 m island's v80 on `main`;
+/// the merge took the next number and regenerated every fixture.
+pub const PROTO_VER: u16 = 81;
 
 /// This game's slug in the elo catalog.
 ///
@@ -1051,13 +1057,14 @@ const SEL_BITS: u32 = 3;
 // Position on the wire, absolute records (DESIGN.md §5.5 quanta: 3 cm x/z,
 // 1 cm y; widths + biases registered in DECISIONS.md §open, pinned by
 // `test_protocol_golden`):
-// x/z: 17 bits of 3 cm quanta = 0..3932 m, covers ISLAND_SIZE 2048 m.
+// x/z: 18 bits of 3 cm quanta = 0..7864 m, covers ISLAND_SIZE 4096 m (v80;
+//      17 bits reached 3932 m, short of it).
 // y: 14 bits of 1 cm quanta biased −20.48 m = −20.48..+143.35 m, covers
 //    sea floor −12 m through ridge ~60 m with fall headroom.
 // vy: 14 bits of 1 cm/s quanta biased −81.92 m/s = ±81.9 m/s, covers
 //     TERMINAL_VELOCITY 50 (NETCODE §3's ±16 figure predates the spoken
 //     terminal; the at-rest bit elides it entirely when still).
-pub const POS_XZ_BITS: u32 = 17;
+pub const POS_XZ_BITS: u32 = 18;
 pub const POS_Y_BITS: u32 = 14;
 pub const POS_Y_BIAS: i32 = 2048;
 pub const VEL_BITS: u32 = 14;
@@ -1825,11 +1832,11 @@ const MOVE_COUNT_BITS: u32 = 16;
 /// Cancel index width mirrors the queue (`CRAFT_QUEUE` = 4 fits 3 bits);
 /// values past the queue refuse at decode like a forged hotbar selector.
 const CANCEL_INDEX_BITS: u32 = 3;
-/// Build-grid field widths (limits.rs: `MAX_BUILD_COORD` 1024 cells,
+/// Build-grid field widths (limits.rs: `MAX_BUILD_COORD` 2048 cells,
 /// `MAX_BUILD_SOCKETS` 16, thirteen locs, `MAX_PIECE_DEFS` 96 rows). Coord,
 /// level, and loc widths are exact; piece rows past the cap refuse at
 /// decode. Shared with the event lane's piece records (`event.rs`).
-pub(crate) const BUILD_CELL_BITS: u32 = 10;
+pub(crate) const BUILD_CELL_BITS: u32 = 11;
 pub(crate) const BUILD_LEVEL_BITS: u32 = 4;
 /// Widened 2 → 4 in wire v40 (triangles v0): the piece grid gained four
 /// triangle halves and two diagonals, ten locs where four filled the old

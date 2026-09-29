@@ -54,9 +54,9 @@ fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
 }
 
 const SEED: u64 = 20_260_731;
-const SPAWN: (f32, f32) = (1024.0, 1024.0);
-const CX: u16 = 341;
-const CZ: u16 = 341;
+const SPAWN: (f32, f32) = (2048.0, 2048.0);
+const CX: u16 = 682;
+const CZ: u16 = 682;
 
 fn id_of(slot: usize) -> u32 {
     (1 << 8) | slot as u32
@@ -153,6 +153,44 @@ fn lay_base(core: &mut ShardCore, cx0: u16, cz0: u16, n: usize) -> Vec<(u16, u16
     laid
 }
 
+/// The nearest origin to `(cx0, cz0)`, within `reach` cells, whose whole
+/// `w x h` block takes a foundation and sits inside one plate window —
+/// `deploy_wire.rs`'s `buildable_block`: a fixture that needs a flat
+/// should look for one rather than trust the ground under a constant.
+fn buildable_block(cx0: u16, cz0: u16, w: u16, h: u16, reach: i32) -> (u16, u16) {
+    let hv = hv(SEED);
+    let ok = |cx: u16, cz: u16| {
+        let (ax, az) = sim_core::build::anchor(cx, cz, LOC_PLANE);
+        sim_core::build::foundation_terrain_ok(SEED, hv, ax, az)
+    };
+    let flat = |bx: u16, bz: u16| {
+        let (mut lo, mut hi) = (i32::MAX, i32::MIN);
+        for i in 0..w {
+            for j in 0..h {
+                let b = sim_core::build::terrain_band(SEED, hv, bx + i, bz + j);
+                lo = lo.min(b);
+                hi = hi.max(b);
+            }
+        }
+        hi - lo <= sim_core::build::PLATE_RISE_MAX_BANDS.min(sim_core::build::PLATE_SINK_MAX_BANDS)
+    };
+    for r in 0..=reach {
+        for dz in -r..=r {
+            for dx in -r..=r {
+                if dx.abs() != r && dz.abs() != r {
+                    continue;
+                }
+                let bx = (i32::from(cx0) + dx).clamp(0, 1900) as u16;
+                let bz = (i32::from(cz0) + dz).clamp(0, 1900) as u16;
+                if (0..w).all(|i| (0..h).all(|j| ok(bx + i, bz + j))) && flat(bx, bz) {
+                    return (bx, bz);
+                }
+            }
+        }
+    }
+    panic!("no {w}x{h} buildable block within {reach} cells of ({cx0},{cz0})");
+}
+
 fn fixture() -> Box<ShardCore> {
     let mut core = Box::new(ShardCore::new(SEED));
     core.world.gather = GatherContent::probe_fixture();
@@ -195,12 +233,18 @@ fn a_far_base_costs_a_joiner_nothing_and_the_near_one_arrives_whole() {
     let stats = ShardStats::default();
     let mut core = fixture();
 
-    let near = lay_base(&mut core, CX, CZ, 4 * PIECE_SYNC_BATCH);
-    // 500 m east: 167 cells at 3 m. Far outside both radii, and the walk
+    // Both bases on ground found to take them (the helper's reason), and
+    // the joiner spawns on the near one.
+    let rows = (4 * PIECE_SYNC_BATCH).div_ceil(24) as u16;
+    let (nx, nz) = buildable_block(CX, CZ, rows, 24, 64);
+    core.world.dev_spawn = Some(sim_core::build::anchor(nx, nz, LOC_PLANE));
+    let near = lay_base(&mut core, nx, nz, 4 * PIECE_SYNC_BATCH);
+    // ~500 m east: 167 cells at 3 m. Far outside both radii, and the walk
     // has to scan past all of it to reach the near base, which is the
     // scan-window path this fixture exists to drive.
     const FAR_CELLS: u16 = 167;
-    let far = lay_base(&mut core, CX + FAR_CELLS, CZ, 4 * PIECE_SYNC_BATCH);
+    let (fx, fz) = buildable_block(nx + FAR_CELLS, nz, rows, 24, 24);
+    let far = lay_base(&mut core, fx, fz, 4 * PIECE_SYNC_BATCH);
     assert!(
         near.len() >= 3 * PIECE_SYNC_BATCH && far.len() >= 3 * PIECE_SYNC_BATCH,
         "the fixture must lay both bases: near {} far {}",

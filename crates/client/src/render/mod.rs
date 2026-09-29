@@ -43,7 +43,12 @@ pub mod bodies;
 // `Session`. See `render/screen.rs` for the half both targets keep.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod boot;
+pub mod boulders;
 pub mod capture;
+// The trailer camera: a recorded session through a scripted lens, encoded as
+// it renders. Native only — it pipes frames to an `ffmpeg` process.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod film;
 pub mod icons;
 // Chat. Not registered on a capture run, like the panels: a gate whose
 // frames depend on whether a composer is open is not a gate.
@@ -54,6 +59,7 @@ pub mod collider_debug;
 // of what a sky-facing face and a ground-facing face each receive, because
 // Bevy's `AmbientLight` cannot tell them apart and `ART.md` §4 requires that
 // it can.
+pub mod far_trees;
 pub mod fill;
 // This frame's own-facts, drained from the core ONCE. Every `pop_*` call in
 // the client lives in there — see its header for the merge that made that a
@@ -78,6 +84,7 @@ pub mod ghost;
 // The blue wash over the piece a hammer is aimed at.
 pub mod decal;
 pub mod highlight;
+pub mod landmarks;
 pub mod tracer;
 // The launcher-backed nav entries: the title manifest's fetch, and the click
 // that hands NEWS / ITEM STORE / WORKSHOP to the launcher's own window. The
@@ -464,6 +471,13 @@ impl Plugin for GatesRenderPlugin {
         // Copied out so the `run_if` closures below capture a `bool` rather
         // than borrowing `self`, which does not outlive `build`.
         let plate = self.start.no_hud;
+        // **A film run is one `bin/gates.rs` inserted a `Film` into.** Read
+        // off the world rather than a plugin field, so the builders that never
+        // film (the browser, `jev-watch`) do not have to say so.
+        #[cfg(not(target_arch = "wasm32"))]
+        let filming = app.world().contains_resource::<film::Film>();
+        #[cfg(target_arch = "wasm32")]
+        let filming = false;
         // **The probe's hour is pinned; a player's is the server's.** Same
         // rule as the windowed pin two fields down — a capture run takes the
         // defaults wholesale except where the box would otherwise decide what
@@ -489,6 +503,11 @@ impl Plugin for GatesRenderPlugin {
         // material at all, which — as the asset-root trap in `bin/gates.rs`
         // records — is not an error the image shows you.
         app.add_plugins(MaterialPlugin::<ground_splat::GroundMaterial>::default());
+        // The far treeline's cards (`far_trees.rs`).
+        app.add_plugins(MaterialPlugin::<far_trees::TreeCardMaterial>::default());
+        app.init_resource::<far_trees::FarForest>();
+        app.init_resource::<boulders::RockRing>();
+        app.add_systems(Startup, far_trees::init);
         // The rain's streak material (weather v0, `rain.rs`).
         app.add_plugins(MaterialPlugin::<rain::RainMaterial>::default());
         app.add_plugins(MaterialPlugin::<stars::StarMaterial>::default());
@@ -547,7 +566,17 @@ impl Plugin for GatesRenderPlugin {
         // gate's frames must not depend on the box's config file, so it takes
         // the defaults and gets no `Disk` — which is also what makes
         // `save_on_change` a no-op there.
-        if self.capture.is_none() {
+        if filming {
+            // A film takes the top preset whatever this box's config file
+            // says, and never paces itself: every frame is written, however
+            // long it took.
+            app.insert_resource(Settings {
+                fullscreen: false,
+                vsync: false,
+                max_fps: 0,
+                ..Settings::with_preset(crate::config::Quality::High)
+            });
+        } else if self.capture.is_none() {
             let (settings, favourites, disk) = settings::load();
             app.insert_resource(settings);
             // The starred shards come off the same file and land on the
@@ -676,7 +705,18 @@ impl Plugin for GatesRenderPlugin {
         // `Engine::out_rate`, and `flush` is what moves each frame's buffer
         // across (`audio_out.rs`).
         #[cfg(not(target_arch = "wasm32"))]
-        {
+        if filming {
+            // A film renders its mix a frame at a time instead of letting a
+            // sound card pull it, so the audio is exactly as long as the
+            // picture and in step with it (`film::roll`).
+            let (native, feed) = audio_out::pair(film::FILM_RATE);
+            app.world_mut().resource_mut::<audio::Engine>().out_rate = film::FILM_RATE;
+            app.insert_non_send_resource(native);
+            app.insert_non_send_resource(film::Mix::new(feed));
+            app.add_systems(PostUpdate, audio_out::flush);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if !filming {
             let native = audio_out::open(app);
             // Non-send: `rtrb`'s ends are `Send` and not `Sync` (see `Native`).
             app.insert_non_send_resource(native);
@@ -816,7 +856,14 @@ impl Plugin for GatesRenderPlugin {
                     .chain()
                     .run_if(in_state(Screen::Dead)),
             )
-            .add_systems(Update, death::watch.run_if(in_state(Screen::InWorld)));
+            .add_systems(
+                Update,
+                // A film's recorder dying is the tape's business, not the
+                // shot's: its camera is somewhere else entirely.
+                death::watch
+                    .run_if(in_state(Screen::InWorld))
+                    .run_if(move || !filming),
+            );
 
         // ---- the involuntary disconnect ------------------------------
         // `watch` is ungated: its guard is `Net`'s presence (the module doc
@@ -1028,6 +1075,21 @@ impl Plugin for GatesRenderPlugin {
                 // pure row lookup, so neither has to run first.
                 viewmodel::hand_light.after(viewmodel::spawn_item),
                 viewmodel::hand_flame.after(viewmodel::spawn_item),
+                // The weak-spot cross, off the core's latched mark and the
+                // frame's sector answer — after the resolver that writes
+                // `InWeak`, so the cross brightens on the frame the prompt
+                // gains its suffix and not the one after.
+                decal::weak_spot.after(verbs::resolve),
+            )
+                .run_if(world_running)
+                .run_if(move || !plate),
+        )
+        // What a blow, a shot and a blast leave in the world. Off a plate
+        // like the HUD above, but ON for a film, which has no HUD and is
+        // mostly here to show exactly these.
+        .add_systems(
+            Update,
+            (
                 // The tracer's two halves. `launch` reads the drained feed,
                 // so it must follow the drain for the swing's reason —
                 // the other order reacts a frame late. `fly` then advances
@@ -1040,11 +1102,6 @@ impl Plugin for GatesRenderPlugin {
                 // everything and rewrites the one mark mesh if it moved.
                 decal::mark.after(impact::contacts).after(fx::gun::shots),
                 decal::fade.after(decal::mark),
-                // The weak-spot cross, off the core's latched mark and the
-                // frame's sector answer — after the resolver that writes
-                // `InWeak`, so the cross brightens on the frame the prompt
-                // gains its suffix and not the one after.
-                decal::weak_spot.after(verbs::resolve),
                 // The impact burst, in three halves now. `contacts` reads
                 // the drained feed AND the frame's swing pick, so it follows
                 // both — a burst resolved against last frame's pick is a
@@ -1064,7 +1121,7 @@ impl Plugin for GatesRenderPlugin {
                 fx::flash.after(impact::strike),
             )
                 .run_if(world_running)
-                .run_if(move || !plate),
+                .run_if(move || !plate || filming),
         )
         // The world's own effects: pieces going up and coming down (off the
         // drained feed, before the mark mesh is rewritten), and fires.
@@ -1075,7 +1132,7 @@ impl Plugin for GatesRenderPlugin {
                 fx::world::fires,
             )
                 .run_if(world_running)
-                .run_if(move || !plate),
+                .run_if(move || !plate || filming),
         )
         // The particles draw after the camera's transform is final for the
         // frame: a billboard faces the camera this frame renders.
@@ -1084,7 +1141,7 @@ impl Plugin for GatesRenderPlugin {
             fx::draw
                 .after(bevy::transform::TransformSystems::Propagate)
                 .run_if(world_running)
-                .run_if(move || !plate),
+                .run_if(move || !plate || filming),
         )
         // The rig. `build` runs until the glTF is in and then costs one
         // branch; `bind` catches every `AnimationPlayer` the scene spawner
@@ -1153,6 +1210,14 @@ impl Plugin for GatesRenderPlugin {
         // The sea's caches are one island's depths; the next island's would
         // be read off them until the eye happened to cross a snap cell.
         .add_systems(OnEnter(Screen::Menu), water::teardown.after(world_teardown))
+        .add_systems(
+            OnEnter(Screen::Menu),
+            far_trees::teardown.after(world_teardown),
+        )
+        .add_systems(
+            OnEnter(Screen::Menu),
+            boulders::teardown.after(world_teardown),
+        )
         // The swell runs wherever the world runs — it is a surface, not a
         // streamer, and a sea that froze while the Esc menu was up would
         // resume with a visible jump in every wave.
@@ -1248,7 +1313,7 @@ impl Plugin for GatesRenderPlugin {
             (
                 input::place_eye,
                 (
-                    (terrain_mesh::stream, depot::spawn),
+                    (terrain_mesh::stream, depot::spawn, landmarks::spawn),
                     // The sea re-centres like a ring does, and for the same
                     // reason: it reads `Eye::pos`, so it belongs where the
                     // other things that read it are.
@@ -1330,6 +1395,26 @@ impl Plugin for GatesRenderPlugin {
                 .chain()
                 .run_if(world_running),
         )
+        // The far treeline's cards: after the prop rings, so the card mask
+        // reads this frame's chunks and a card never stands beside its tree.
+        .add_systems(
+            Update,
+            far_trees::stream
+                .after(props::stream)
+                .in_set(Stream)
+                .run_if(world_placed)
+                .run_if(world_running),
+        )
+        // The rock formations wear the near ground's material, which the
+        // terrain streamer builds.
+        .add_systems(
+            Update,
+            boulders::stream
+                .after(terrain_mesh::stream)
+                .in_set(Stream)
+                .run_if(world_placed)
+                .run_if(world_running),
+        )
         // **The one `pop_*` call site in the client.** `hud::feedback`
         // (inside `Stream`) and `audio::feed` (after it) both want this
         // frame's hits, toasts and refusals, and the core hands each fact
@@ -1377,7 +1462,10 @@ impl Plugin for GatesRenderPlugin {
         // the clock. Not in the `Stream` tuple, which is at Bevy's limit.
         .add_systems(
             Update,
-            wounded::overlay.after(feed::drain).run_if(world_running),
+            wounded::overlay
+                .after(feed::drain)
+                .run_if(world_running)
+                .run_if(move || !filming),
         )
         // The rig follows the server's clock (day/night v0). After the
         // drain so it reads this frame's tick estimate, not last frame's.
@@ -1455,7 +1543,7 @@ impl Plugin for GatesRenderPlugin {
         // gate whose frames depend on which key was last pressed. The cost
         // is that nothing photographs these panels — the same missing menu
         // vantage `NOW.md` §0v already names, now owed twice.
-        if self.capture.is_none() {
+        if self.capture.is_none() && !filming {
             panels::register(app);
             chat::register(app);
             // ---- the screenshot key ----------------------------------
@@ -1507,6 +1595,30 @@ impl Plugin for GatesRenderPlugin {
             app.add_systems(
                 Update,
                 capture::drive.before(input::gather).run_if(world_running),
+            );
+        }
+
+        // The film: set the world's speed before `Time` advances, feed the
+        // tape ahead of the pump, aim after the pump put the eye where the
+        // recorder stood, and end the frame after the mix is flushed.
+        #[cfg(not(target_arch = "wasm32"))]
+        if filming {
+            app.insert_resource(input::Look {
+                frozen: true,
+                ..default()
+            })
+            .add_systems(First, film::steer.before(bevy::time::TimeSystems))
+            .add_systems(
+                Update,
+                (
+                    film::feed.before(input::place_eye),
+                    film::aim.after(input::place_eye).before(Stream),
+                )
+                    .run_if(world_running),
+            )
+            .add_systems(
+                PostUpdate,
+                film::roll.after(audio_out::flush).run_if(world_running),
             );
         }
     }

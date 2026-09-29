@@ -366,7 +366,14 @@ mod tests {
     fn a_world_normal_faces_out_of_the_thing_it_hit() {
         let world = WorldId::new(SEED);
         let empty = ColIndex::new();
-        let n = normal_at(&world, &empty, 512.3, 0.0, 733.7, SURF_WORLD);
+        // The first spot, walking in from the island's middle, with a
+        // standing thing near enough to be the one hit.
+        let c = terrain::ISLAND_SIZE * 0.5;
+        let (x, z) = (0..512)
+            .map(|i| (c + 0.3 + i as f32 * 3.1, c + 0.7 + i as f32 * 1.3))
+            .find(|&(x, z)| world_slot(&world, Vec3::new(x, 0.0, z)).is_some())
+            .expect("nothing stands anywhere near the island's middle");
+        let n = normal_at(&world, &empty, x, 0.0, z, SURF_WORLD);
         assert_eq!(n.y, 0.0, "a trunk's side has no vertical lean");
         assert!((n.length() - 1.0).abs() < 1e-3);
     }

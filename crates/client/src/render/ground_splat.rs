@@ -368,6 +368,9 @@ pub struct GroundSplatParams {
     /// x = [`AGGREGATE_GAIN`]: the road's layer is not an identity, so
     /// `gain` has no slot for it. yzw reserved and zero.
     pub aggregate: Vec4,
+    /// The per-pixel cliff: x/y = [`CLIFF_TAN_LO`]/[`CLIFF_TAN_HI`],
+    /// z = [`CLIFF_NOISE`], w = [`CLIFF_NOISE_M`].
+    pub cliff: Vec4,
 }
 
 impl GroundSplatParams {
@@ -438,6 +441,7 @@ impl GroundSplatParams {
                 ROCK_FACE_FULL,
             ),
             aggregate: Vec4::new(AGGREGATE_GAIN, 0.0, 0.0, 0.0),
+            cliff: Vec4::new(CLIFF_TAN_LO, CLIFF_TAN_HI, CLIFF_NOISE, CLIFF_NOISE_M),
         }
     }
 }
@@ -512,7 +516,7 @@ pub const ROCK_WEATHER: f32 = 0.12;
 /// How far the block lattice is pushed about before it is read, metres.
 pub const ROCK_WARP_M: f32 = 1.6;
 /// Share of block boundaries that are cracks.
-pub const ROCK_CRACK_SHARE: f32 = 0.3;
+pub const ROCK_CRACK_SHARE: f32 = 0.16;
 /// A crack's half-width in block units, and how dark its centre goes.
 ///
 /// At most 0.125: a crack shows from half a pixel wide, so it is gone by a
@@ -520,7 +524,7 @@ pub const ROCK_CRACK_SHARE: f32 = 0.3;
 /// `near_big` reaches zero and the shader skips the 7 m pass.
 pub const ROCK_CRACK_W: f32 = 0.025;
 const _: () = assert!(ROCK_CRACK_W <= 0.125);
-pub const ROCK_CRACK_DARK: f32 = 0.5;
+pub const ROCK_CRACK_DARK: f32 = 0.2;
 /// Peak departure of the streaks: darker in a streak, lighter between.
 pub const ROCK_STREAK: f32 = 0.2;
 /// The streak lattice's cell, metres: narrow across a face and tall down it.
@@ -530,6 +534,25 @@ pub const ROCK_STREAK_H_M: f32 = 14.0;
 /// down a face, it does not stripe a slope a player walks up.
 pub const ROCK_FACE_ON: f32 = 0.6;
 pub const ROCK_FACE_FULL: f32 = 0.85;
+
+/// **The cliff is decided per pixel, not per vertex.** The classifier's cliff
+/// veto is near-binary, and a binary weight interpolated across triangles
+/// draws the triangles: a grass/rock edge of regular teeth one vertex step
+/// wide (8 m on the far mesh). The mesh now carries the biome weights alone
+/// (`terrain_mesh::heightfield` asks `splat_from` at zero slope) and the
+/// shader forces rock from the interpolated normal's own tilt, with a
+/// world-space noise moving the threshold so the edge wanders like scree.
+///
+/// Rise/run where rock starts and where it is full — `terrain`'s
+/// `SPLAT_CLIFF_BAND` (0.95–1.43), so the rock the ground draws is the rock
+/// the clutter and the scatter were told about. A first cut at 0.82 painted
+/// granite over every 35° meadow and stood the litter's stalks on it.
+pub const CLIFF_TAN_LO: f32 = 0.95;
+pub const CLIFF_TAN_HI: f32 = 1.40;
+/// How far the noise moves that threshold, in rise/run, peak to peak.
+pub const CLIFF_NOISE: f32 = 0.45;
+/// The noise's wavelength, metres; a second octave rides at 0.37 of it.
+pub const CLIFF_NOISE_M: f32 = 6.0;
 
 /// Where the biplanar wall tap turns on, as `sin(tilt)`.
 ///
@@ -547,7 +570,12 @@ pub const ROCK_FACE_FULL: f32 = 0.85;
 /// own fall line rotates through that locus continuously. This is `DECISIONS.md`
 /// materials v4's design, which the browser client shipped and the native one
 /// never got.
-pub const WALL_ON: f32 = std::f32::consts::FRAC_1_SQRT_2;
+///
+/// ⚠ **Gated at 30°, not 45°.** At 45° the two weights are equal, so gating
+/// there switched the wall tap on at a 50% share in one pixel — a hard seam
+/// line along every 45° contour, which read as pencil lines on the hills. At
+/// 30° the sharpened share is ~1%, so the step is invisible.
+pub const WALL_ON: f32 = 0.5;
 
 /// The exponent the two plane weights are raised to before blending.
 ///
@@ -556,7 +584,12 @@ pub const WALL_ON: f32 = std::f32::consts::FRAC_1_SQRT_2;
 /// stretched 2.9×, which is the smear the wall tap exists to remove. At k = 8
 /// that share is 0.05%, and 45° and below are untouched because [`WALL_ON`]
 /// owns them. Proposed default, not spoken.
-pub const WALL_SHARPNESS: f32 = 8.0;
+///
+/// **16 since 2026-09-28.** At 8 the two projections share every face between
+/// ~35° and ~55°, and a hillside is mostly that band: two copies of one
+/// photograph at two stretches, which read as cross-hatching over the whole
+/// rock face. At 16 they share ~42°–48°.
+pub const WALL_SHARPNESS: f32 = 16.0;
 
 /// Three arrays — albedo, normal, roughness-with-AO — and one sampler.
 ///

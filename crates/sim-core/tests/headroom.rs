@@ -15,8 +15,8 @@ use sim_core::occupy::Scratch;
 use sim_core::terrain;
 
 const SEED: u64 = 20260731;
-const CX: u16 = 341;
-const CZ: u16 = 341;
+const CX: u16 = 682;
+const CZ: u16 = 682;
 
 fn haven() -> &'static terrain::Haven {
     use std::cell::OnceCell;

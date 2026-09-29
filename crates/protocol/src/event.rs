@@ -39,7 +39,7 @@ use sim_core::limits::{
 use sim_core::research::{ResearchRow, NO_RECIPE};
 
 /// Longest event-lane message. Sized by the worst subtype (a full catalog
-/// batch ≈ 290 B since v80's three eat columns — 29 header bits and 286 a
+/// batch ≈ 290 B since v81's three eat columns — 29 header bits and 286 a
 /// row; `catalog_batches_walk_the_table_within_cap` is the one that
 /// measures rather than remembers — a full slot-sync batch
 /// ≈ 258 B) with headroom; the client-side framer refuses past it.
@@ -689,7 +689,7 @@ pub struct ItemRow {
     /// scatters five stacks of wood across five slots beside the pile it
     /// should have joined.
     pub stack_max: u16,
-    /// What eating one unit pays (v80): `survival::ConsumableDef`'s food,
+    /// What eating one unit pays (v81): `survival::ConsumableDef`'s food,
     /// water and hp, all 0 for anything the eat verb refuses. The client
     /// needs the fact to make a left click with food in hand EAT rather
     /// than swing (`ui::hold`), and the numbers to say what it will do.
@@ -760,7 +760,7 @@ impl ItemRow {
 /// field's own doc has the case. Sixteen bits a row, and the batch's
 /// worst case is what the note on [`MAX_EVENT_MSG_BYTES`] tracks.
 ///
-/// v80 added the eat columns (`food`, `water`, `health`), the fourth turn:
+/// v81 added the eat columns (`food`, `water`, `health`), the fourth turn:
 /// which items are food lives in `content/consumables.toml`, and the belt
 /// could not eat from a left click without knowing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1784,7 +1784,7 @@ pub fn encode_event_catalog(
         // hold today's largest authored stack (1,000) and would silently
         // become wrong the day content names 1,024.
         w.write(row.stack_max as u32, 16)?;
-        // The eat columns (v80), full width for the same reason.
+        // The eat columns (v81), full width for the same reason.
         w.write(row.food as u32, 16)?;
         w.write(row.water as u32, 16)?;
         w.write(row.health as u32, 16)?;
@@ -4932,7 +4932,7 @@ mod tests {
                 // V7 pins the odd rows — the ones given a condition
                 // above — to a stack of 1.
                 stack_max: if i % 2 == 0 { u16::MAX } else { 1 },
-                // The eat columns (v80) at their corners, distinct per row
+                // The eat columns (v81) at their corners, distinct per row
                 // so a transposed pair shows up in the round trip below.
                 food: u16::MAX - i as u16,
                 water: u16::MAX - 2 * i as u16,
@@ -5522,7 +5522,7 @@ mod tests {
             assert_eq!(decode_event(&buf[..len]).unwrap(), want);
         }
         assert_eq!(
-            encode_event_removed(true, 1024, 0, 0, 0, &mut buf),
+            encode_event_removed(true, 2048, 0, 0, 0, &mut buf),
             Err(WireError::Range)
         );
 
@@ -5547,7 +5547,7 @@ mod tests {
             );
         }
         assert_eq!(
-            encode_event_struct_hit(false, 1024, 0, 0, 0, 0, 1, 1, &mut buf),
+            encode_event_struct_hit(false, 2048, 0, 0, 0, 0, 1, 1, &mut buf),
             Err(WireError::Range),
             "cell past the grid"
         );
@@ -6011,6 +6011,14 @@ mod wire_domains {
         Module {
             file: "bots.rs",
             src: include_str!("../../sim-core/src/bots.rs"),
+        },
+        Module {
+            file: "boulder.rs",
+            src: include_str!("../../sim-core/src/boulder.rs"),
+        },
+        Module {
+            file: "landmark.rs",
+            src: include_str!("../../sim-core/src/landmark.rs"),
         },
         Module {
             file: "build.rs",

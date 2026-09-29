@@ -111,15 +111,26 @@ fn adjacent_chunks_share_exact_coordinates_across_the_phase_seam() {
     let seed = 20260731;
     let haven = terrain::haven(seed);
     let chart = paint::RoadChart::build(seed, 1.0);
-    let mut a = terrain_mesh::heightfield(seed, &haven, 1856.0, 1020.0, 5, 1.0, 0.0);
-    let mut b = terrain_mesh::heightfield(seed, &haven, 1856.0, 1024.0, 5, 1.0, 0.0);
-    terrain_mesh::apply_road_markings(&mut a, &chart, &haven);
-    terrain_mesh::apply_road_markings(&mut b, &chart, &haven);
+    // Walk east from the middle along a chunk line until the ring's paint.
+    let z = terrain::ISLAND_SIZE * 0.5;
     let mut live = 0;
-    for k in 0..5 {
-        assert_eq!(coords(&a)[20 + k], coords(&b)[k]);
-        if coords(&b)[k][3] > 0.0 {
-            live += 1;
+    for x in (terrain::ISLAND_SIZE * 0.5) as i32..terrain::ISLAND_SIZE as i32 {
+        let x = x as f32;
+        if chart.at(x + 2.0, z).is_none() {
+            continue;
+        }
+        let mut a = terrain_mesh::heightfield(seed, &haven, x, z - 4.0, 5, 1.0, 0.0);
+        let mut b = terrain_mesh::heightfield(seed, &haven, x, z, 5, 1.0, 0.0);
+        terrain_mesh::apply_road_markings(&mut a, &chart, &haven);
+        terrain_mesh::apply_road_markings(&mut b, &chart, &haven);
+        for k in 0..5 {
+            assert_eq!(coords(&a)[20 + k], coords(&b)[k]);
+            if coords(&b)[k][3] > 0.0 {
+                live += 1;
+            }
+        }
+        if live > 0 {
+            break;
         }
     }
     assert!(live > 0, "phase-seam fixture must carry markings");
