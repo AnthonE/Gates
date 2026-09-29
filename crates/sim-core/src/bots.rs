@@ -13,6 +13,7 @@ use crate::build::{LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE};
 use crate::deploy::{box_key, ACCESS_OP_ENTER, ACCESS_OP_SET_CODE, ACCESS_OP_TAKE};
 use crate::input::{InputFrame, BTN_JUMP, BTN_PRIMARY, BTN_SPRINT};
 use crate::inventory::{CONT_BOX, CONT_SELF};
+use crate::limits::MAX_BUILD_LEVELS;
 use crate::lock::CODE_MAX;
 use crate::rng::Pcg32;
 use crate::world::Command;
@@ -93,7 +94,7 @@ pub fn bot_frame(rng: &mut Pcg32, prev_yaw: u16, seq: u16) -> InputFrame {
 ///
 /// The profile carries no row numbers of its own, and that is wall 7 and
 /// not tidiness: a raider that knew what a wall costs would be balance
-/// living in code. The caller names what a foundation, a wall, a
+/// living in code. The caller names what a foundation, a wall, a floor, a
 /// container, a lock and the held throwable are in the table *it* baked,
 /// and the script is the same script against `probe_fixture` or
 /// `content/`.
@@ -103,6 +104,9 @@ pub struct RaidRows {
     pub foundation: u16,
     /// Building-piece row for a wall, placed at the two edge locs.
     pub wall: u16,
+    /// Building-piece row for a floor: every storey of a tower above the
+    /// foundation stands on one, and one caps it ([`tower_piece`]).
+    pub floor: u16,
     /// Deployable row for a lockable container.
     pub container: u16,
     /// Deployable row for a code lock.
@@ -138,6 +142,13 @@ pub struct RaidPlan {
     /// Input sequence, so a selection frame is not mistaken for a replay
     /// of the last one.
     pub seq: u16,
+    /// Storeys the owner builds. 0 is the flat plot the storms drive — a
+    /// foundation and two walls, re-laid every cycle. Above 0 the owner's
+    /// three build steps walk [`tower_piece`] instead.
+    pub storeys: u8,
+    /// The next tower piece. It wraps, so a pass over a standing tower
+    /// re-lays whatever a raid took down (and is refused for the rest).
+    pub build: u16,
 }
 
 impl RaidPlan {
@@ -149,7 +160,121 @@ impl RaidPlan {
             attacker,
             step: 0,
             seq: 0,
+            storeys: 0,
+            build: 0,
         }
+    }
+
+    /// This owner builds a tower `storeys` high on its plot instead of the
+    /// flat plot, capped at [`MAX_TOWER_STOREYS`].
+    pub const fn with_storeys(mut self, storeys: u8) -> Self {
+        self.storeys = if storeys > MAX_TOWER_STOREYS {
+            MAX_TOWER_STOREYS
+        } else {
+            storeys
+        };
+        self
+    }
+}
+
+/// How high the shard's own owners build (`botclient.rs`): three storeys and
+/// a cap. 16 twig pieces, 725 wood at shipped prices, so one 1000 stack puts
+/// it up and still has some left to re-lay what a raid takes down.
+pub const TOWER_STOREYS: u8 = 3;
+
+/// The tallest tower the lattice holds: walls on whole storeys `0..storeys`
+/// and the cap on `storeys`, which must stay a whole storey (the sockets from
+/// `MAX_BUILD_LEVELS` up are the half-storeys, `build::level_y`).
+pub const MAX_TOWER_STOREYS: u8 = MAX_BUILD_LEVELS as u8 - 1;
+
+/// Cells between neighbouring owners' towers. Three, so an empty column
+/// separates two footprints (a tower's east and south walls sit in the next
+/// cells over) and neither base latches onto the other's plate
+/// (`build::plate_for`).
+pub const TOWER_SPACING: u16 = 3;
+
+/// The cell owner number `owner` builds its tower on, nearest `(cx, cz)`.
+///
+/// Four owners in a row keep to four disjoint lattices, `TOWER_SPACING`
+/// apart, so a crowd that walked in together (every trailer tape spawns on
+/// one point) builds a street of towers instead of one tower four times.
+pub fn tower_site(cx: u16, cz: u16, owner: u32) -> (u16, u16) {
+    let m = 2 * TOWER_SPACING;
+    let snap = |c: u16, at: u16| {
+        // How far past the lattice line below `c` is; the nearer line wins.
+        let r = (c % m + m - at) % m;
+        if r <= m / 2 {
+            c.saturating_sub(r)
+        } else {
+            c.saturating_add(m - r)
+        }
+    };
+    (
+        snap(cx, (owner % 2) as u16 * TOWER_SPACING),
+        snap(cz, (owner / 2 % 2) as u16 * TOWER_SPACING),
+    )
+}
+
+/// What a tower piece is, for the caller to turn into a row.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TowerPart {
+    Foundation,
+    Wall,
+    Floor,
+}
+
+/// Pieces in a `storeys`-high tower: a plane and four walls a storey, and
+/// the cap.
+pub const fn tower_len(storeys: u8) -> u16 {
+    5 * storeys as u16 + 1
+}
+
+/// Piece `i` of a one-cell tower on `(cx, cz)`: `(part, cx, cz, level, loc)`.
+///
+/// Bottom up — each storey is its plane (the foundation, or a floor on the
+/// walls below) and then its four walls, and the last piece is the floor
+/// that caps the top — so in this order every piece stands on the ones
+/// before it (`build::supported`). The east and south walls are the low
+/// edges of the next cells over, which is how the grid names them.
+pub fn tower_piece(cx: u16, cz: u16, storeys: u8, i: u16) -> (TowerPart, u16, u16, u8, u8) {
+    let (storey, k) = (i / 5, i % 5);
+    if storey >= storeys as u16 || k == 0 {
+        let level = storey.min(storeys as u16) as u8;
+        let part = if level == 0 {
+            TowerPart::Foundation
+        } else {
+            TowerPart::Floor
+        };
+        return (part, cx, cz, level, LOC_PLANE);
+    }
+    let (x, z, loc) = match k {
+        1 => (cx, cz, LOC_EDGE_XLO),
+        2 => (cx, cz, LOC_EDGE_ZLO),
+        3 => (cx.saturating_add(1), cz, LOC_EDGE_XLO),
+        _ => (cx, cz.saturating_add(1), LOC_EDGE_ZLO),
+    };
+    (TowerPart::Wall, x, z, storey as u8, loc)
+}
+
+/// The owner's next tower piece as a place request, advancing the cursor.
+fn tower_step(plan: &mut RaidPlan, rows: RaidRows) -> Command {
+    let len = tower_len(plan.storeys);
+    let i = plan.build % len;
+    plan.build = (i + 1) % len;
+    let (part, cx, cz, level, loc) = tower_piece(plan.cx, plan.cz, plan.storeys, i);
+    Command::Place {
+        id: plan.id,
+        row: match part {
+            TowerPart::Foundation => rows.foundation,
+            TowerPart::Wall => rows.wall,
+            TowerPart::Floor => rows.floor,
+        },
+        cx,
+        cz,
+        level,
+        loc,
+        freehand: false,
+        plate: 0,
     }
 }
 
@@ -278,6 +403,9 @@ pub fn raid_step(plan: &mut RaidPlan, rng: &mut Pcg32, rows: RaidRows) -> Comman
         }
     } else {
         match step {
+            // A tower owner spends the three build steps going up, a piece
+            // at a time (`tower_piece`), instead of re-laying the flat plot.
+            0..=2 if plan.storeys > 0 => tower_step(plan, rows),
             0 => Command::Place {
                 id,
                 row: rows.foundation,

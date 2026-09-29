@@ -274,6 +274,9 @@ async fn test_bots_raid_over_the_wire() {
         wall: content
             .piece_index("build.wall_twig")
             .expect("shipped wall"),
+        floor: content
+            .piece_index("build.floor_twig")
+            .expect("shipped floor"),
         container: content.deploy_index("item.box_small").expect("shipped box"),
         lock: content
             .deploy_index("item.lock_code")
@@ -558,10 +561,19 @@ async fn test_bots_raid_over_the_wire() {
     let deployed = reports.iter().map(|r| r.deploys_placed).max().unwrap_or(0);
     let planted = reports.iter().map(|r| r.charges_planted).max().unwrap_or(0);
     let auths: u64 = reports.iter().map(|r| r.auths).sum();
+    let top = reports.iter().map(|r| r.top_storey).max().unwrap_or(0);
     assert!(
         placed > 0,
         "no raider ever placed a piece: {per_plot} wood per plot, one stack \
          funds {plots_funded} ({walk})"
+    );
+    // The owners build up (`bots::TOWER_STOREYS`): they keep their plot and
+    // lay a floor on their walls. A fleet whose top storey is 0 is the
+    // one-storey base a trailer caught, where every owner re-laid a
+    // foundation and two walls wherever its walk had got to.
+    assert!(
+        top >= 1,
+        "no piece stood above the ground floor: {placed} placed ({walk})"
     );
     assert!(
         deployed > 0,

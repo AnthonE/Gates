@@ -146,6 +146,9 @@ const LOCK_ROW: u16 = 5;
 const LOCK_ITEM: u16 = 7;
 const FOUNDATION_ROW: u16 = 0;
 const WALL_ROW: u16 = 1;
+/// `probe_fixture`'s twig floor. The storm's owners keep the flat plot, so
+/// nothing places it; `RaidRows` names it for the tower owners.
+const FLOOR_ROW: u16 = 2;
 /// Item 3 is the combat fixture's designated throwable.
 const CHARGE_ITEM: u16 = 3;
 /// Build costs: row 0 wants 5 of item 0, row 1 wants 3 of item 0.
@@ -234,6 +237,7 @@ fn rows() -> RaidRows {
     RaidRows {
         foundation: FOUNDATION_ROW,
         wall: WALL_ROW,
+        floor: FLOOR_ROW,
         container: BOX_ROW,
         lock: LOCK_ROW,
         charge_slot: 0,

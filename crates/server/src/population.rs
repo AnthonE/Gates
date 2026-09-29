@@ -91,6 +91,7 @@ pub fn raid_rows(content: &content::Content) -> Result<RaidRows, String> {
             content.piece_index("build.foundation_twig"),
         )?,
         wall: row("build.wall_twig", content.piece_index("build.wall_twig"))?,
+        floor: row("build.floor_twig", content.piece_index("build.floor_twig"))?,
         container: row("item.box_small", content.deploy_index("item.box_small"))?,
         lock: row("item.lock_code", content.deploy_index("item.lock_code"))?,
         charge_slot: RAID_CHARGE_SLOT,
@@ -122,6 +123,9 @@ pub struct PopulationStats {
     pub deploys_placed: AtomicU64,
     pub charges_planted: AtomicU64,
     pub struct_hits: AtomicU64,
+    /// The highest storey a finished shift heard a piece placed on — how
+    /// high the owners' towers got (`BotReport::top_storey`). A max, not a sum.
+    pub top_storey: AtomicU64,
 }
 
 impl PopulationStats {
@@ -142,6 +146,8 @@ impl PopulationStats {
         ] {
             c.fetch_add(v, Ordering::Relaxed);
         }
+        self.top_storey
+            .fetch_max(r.top_storey as u64, Ordering::Relaxed);
     }
 }
 

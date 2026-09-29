@@ -300,10 +300,12 @@ seed = 20260731
 #
 # Bots, dialled over this shard's own wire after the bind — the full
 # QUIC handshake, `Address::GUEST`, and the same `run_bot` a load test uses,
-# so the server cannot tell one from a player. Half own (build a twig base,
-# deploy a box, arm a code lock) and half attack (select a charge, plant it,
-# guess the code, take the goods). Which half a post is depends on its index
-# and never changes, so a base outlives the raider shooting at it.
+# so the server cannot tell one from a player. Half own (settle a plot,
+# build a three-storey twig tower on it out of the wood `dev_spawn_kit`
+# gives them, deploy a box, arm a code lock) and half attack (select a
+# charge, plant it, guess the code, take the goods). Which half a post is
+# depends on its index and never changes, so a base outlives the raider
+# shooting at it.
 #
 # IT EXISTS BECAUSE THE OPPOSITE STATE WAS WORSE. Three consecutive
 # merge-gate judges ranked the same thing the largest playable gap in the

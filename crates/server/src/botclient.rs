@@ -26,10 +26,14 @@ use protocol::{
     encode_input, peek_kind, EventMsg, InputDatagram, Welcome, WireError, KIND_SNAPSHOT,
     MAX_STREAM_MSG_BYTES,
 };
-use sim_core::bots::{bot_frame, raid_step, RaidPlan, RaidRows, RAID_CYCLE};
-use sim_core::build::build_cell_of;
-use sim_core::input::InputFrame;
-use sim_core::limits::{DATAGRAM_BUDGET_BYTES, MAX_BUILD_COORD, MAX_INPUT_FRAMES, TICK_HZ};
+use sim_core::bots::{
+    bot_frame, raid_step, tower_site, RaidPlan, RaidRows, RAID_CYCLE, TOWER_STOREYS,
+};
+use sim_core::build::{build_cell_of, BUILD_CELL_M};
+use sim_core::input::{InputFrame, BTN_PRIMARY, BTN_SPRINT};
+use sim_core::limits::{
+    DATAGRAM_BUDGET_BYTES, MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_INPUT_FRAMES, TICK_HZ,
+};
 use sim_core::movement::POS_XZ_Q;
 use sim_core::ranged::{REFUSE_RL_BUSY, REFUSE_RL_EMPTY};
 use sim_core::rng::Pcg32;
@@ -132,6 +136,10 @@ pub struct BotReport {
     /// the body-to-cell derivation was a constant; the smoke asserts the
     /// spread, which is the only thing that can tell those two apart.
     pub last_plot: Option<(u16, u16)>,
+    /// The highest storey any piece this bot heard placed stood on (0 is the
+    /// ground; a half-storey socket counts as the storey under it). Placements
+    /// are broadcast, so it is the shard's, not this bot's own.
+    pub top_storey: u8,
     /// The sim's verdicts on this bot's claims, off the event lane. Roughly
     /// half of `raid_step` is *meant* to be refused (a stranger's code, a
     /// stranger's box, a foundation on somebody else's claim), so these are
@@ -203,6 +211,8 @@ struct EventTally {
     struct_hits: AtomicU64,
     auths: AtomicU64,
     pieces_placed: AtomicU64,
+    /// `BotReport::top_storey`.
+    top_storey: AtomicU64,
     deploys_placed: AtomicU64,
     charges_planted: AtomicU64,
     /// Trigger pulls on an empty magazine — `REFUSE_RL_EMPTY`, the dry
@@ -253,6 +263,10 @@ impl EventTally {
             self.rounds_loaded
                 .fetch_add(*took as u64, Ordering::Relaxed);
             return;
+        }
+        if let EventMsg::PiecePlaced { rec } = ev {
+            let storey = rec.level % MAX_BUILD_LEVELS as u8;
+            self.top_storey.fetch_max(storey as u64, Ordering::Relaxed);
         }
         let c = match ev {
             EventMsg::BuildRefused { .. } => &self.build_refused,
@@ -357,6 +371,19 @@ fn encode_raid(cmd: &Command, buf: &mut [u8]) -> Option<Result<usize, WireError>
     })
 }
 
+/// How close to the middle of its plot a tower owner stands, metres. Loose
+/// enough that the half-metre the snapshot lags behind a walking body does not
+/// set it pacing back and forth; from anywhere this close every piece of the
+/// tower is well inside `build::BUILD_REACH_M`.
+const TOWER_STAND_M: f32 = 0.75;
+
+/// The longest a tower owner waits to be standing in its plot with nobody
+/// else in it before it builds anyway (five seconds of ticks). Long enough to
+/// walk across the lattice to its plot (`bots::TOWER_SPACING` cells each way
+/// at most); short enough that a plot it cannot reach, or somebody who never
+/// leaves, costs a few seconds and not the shift.
+const TOWER_HOLD_TICKS: u32 = 5 * TICK_HZ;
+
 /// The build cell a quantized body coordinate stands in.
 ///
 /// `build_cell_of` is the sim's own function and the clamp is the one
@@ -367,6 +394,17 @@ fn encode_raid(cmd: &Command, buf: &mut [u8]) -> Option<Result<usize, WireError>
 /// cells), so the clamp only ever bites on a body outside the playfield.
 fn body_cell(q: i32) -> u16 {
     build_cell_of(q as f32 * POS_XZ_Q).clamp(0, MAX_BUILD_COORD as i32 - 1) as u16
+}
+
+/// Is another person (not an animal) standing within `r` cells of this one
+/// (`r` = 0: in it), as far as the snapshots say?
+fn someone_near(view: &ClientView, me: u32, cx: u16, cz: u16, r: u16) -> bool {
+    view.entities.iter().any(|(id, e)| {
+        *id != me
+            && sim_core::mob::slot_of_id(*id).is_none()
+            && body_cell(e.qx).abs_diff(cx) <= r
+            && body_cell(e.qz).abs_diff(cz) <= r
+    })
 }
 
 /// Would a foundation go on this cell? `build::place`'s ground rules: the
@@ -906,6 +944,10 @@ async fn run_bot_inner(
     // Odd streams raid, even streams own — the storm's `i % 2 == 1`, so a
     // fleet is half attackers and half owners however many bots you start.
     let attacker = seed_stream % 2 == 1;
+    // An owner builds a tower (`bots::TOWER_STOREYS`), so it keeps the first
+    // plot a foundation takes and stands on it, where re-seating every cycle
+    // left a trail of one-storey scraps wherever the walk had wandered.
+    let tower = !attacker;
     let mut plan: Option<RaidPlan> = None;
     let mut steps_in_cycle: u16 = 0;
     // The ground a raider reads, as the client's build ghost reads it, and
@@ -915,6 +957,10 @@ async fn run_bot_inner(
         None => None,
     };
     let mut plot_ok = false;
+    // A tower owner's wait to be standing in its plot, alone, before it lays
+    // anything (`TOWER_HOLD_TICKS`); `settled` once it is, or once it gave up.
+    let mut tower_hold: u32 = 0;
+    let mut tower_settled = false;
     // The server's per-kind pace (`pace.rs`), kept on this side the way an
     // honest client keeps it: a raid step that would come early is held
     // here and sent when its gap is up, rather than queued at the server
@@ -993,9 +1039,31 @@ async fn run_bot_inner(
                 // plants on. The draws above still happen either way.
                 if haven.is_some() {
                     if plot_ok {
-                        if held.is_some() {
-                            f.move_x = 0;
-                            f.move_z = 0;
+                        match (tower, plan, view.get(report.player_id)) {
+                            // A tower owner walks to the middle of its plot
+                            // and stays: the whole tower is in reach from
+                            // there, and it is not standing where a wall is
+                            // about to go up. No swinging at its own walls.
+                            (true, Some(p), Some(body)) => {
+                                let half = BUILD_CELL_M * 0.5;
+                                let dx = p.cx as f32 * BUILD_CELL_M + half
+                                    - body.qx as f32 * POS_XZ_Q;
+                                let dz = p.cz as f32 * BUILD_CELL_M + half
+                                    - body.qz as f32 * POS_XZ_Q;
+                                f.buttons &= !(BTN_SPRINT | BTN_PRIMARY);
+                                f.move_x = 0;
+                                f.move_z = 0;
+                                if dx * dx + dz * dz > TOWER_STAND_M * TOWER_STAND_M {
+                                    f.yaw = sim_core::nav::yaw_toward(dx, dz, f.yaw);
+                                    f.move_z = 127;
+                                }
+                            }
+                            _ => {
+                                if held.is_some() {
+                                    f.move_x = 0;
+                                    f.move_z = 0;
+                                }
+                            }
                         }
                     } else if let Some(body) = view.get(report.player_id) {
                         let c = sim_core::terrain::ISLAND_SIZE * 0.5;
@@ -1179,32 +1247,72 @@ async fn run_bot_inner(
                     // fresh spawns are on beach sand, below
                     // `FOUNDATION_MIN_H_M`, and a paced cycle is too slow
                     // to spend finishing there.
-                    let here = view
+                    //
+                    // A tower owner is the exception once it has such a
+                    // plot: it keeps it, and the cycle just starts over on
+                    // it with the tower cursor where it was. Its plot is the
+                    // cell it stands in, or in a crowd the nearest cell of
+                    // its own lattice (`bots::tower_site`), so owners who
+                    // walked in together build side by side; and never one
+                    // somebody is standing in, so a crowd on the spawn point
+                    // is not walled in.
+                    let standing = view
                         .get(report.player_id)
                         .map(|body| (body_cell(body.qx), body_cell(body.qz)));
+                    let here = standing.map(|(cx, cz)| {
+                        if tower && someone_near(&view, report.player_id, cx, cz, 1) {
+                            tower_site(cx, cz, (seed_stream / 2) as u32)
+                        } else {
+                            (cx, cz)
+                        }
+                    });
+                    let pinned = tower && plot_ok;
                     let cycle_done = steps_in_cycle >= RAID_CYCLE && held.is_none();
                     let doomed = plan.is_some() && !plot_ok;
                     let ok_here = match (here, haven.as_deref()) {
-                        (Some((cx, cz)), Some(hv)) if cycle_done || doomed || plan.is_none() => {
+                        (Some((cx, cz)), Some(hv))
+                            if !pinned && (cycle_done || doomed || plan.is_none()) =>
+                        {
                             foundation_goes(welcome.seed, hv, cx, cz)
+                                && !(tower && someone_near(&view, report.player_id, cx, cz, 0))
                         }
                         _ => false,
                     };
-                    if cycle_done || (doomed && ok_here) {
+                    if pinned {
+                        if cycle_done {
+                            steps_in_cycle = 0;
+                        }
+                    } else if cycle_done || (doomed && ok_here) {
                         plan = None;
                         held = None;
                         sel_held.clear();
                     }
                     if plan.is_none() {
                         if let Some((cx, cz)) = here {
-                            plan = Some(RaidPlan::new(report.player_id, cx, cz, attacker));
+                            let p = RaidPlan::new(report.player_id, cx, cz, attacker);
+                            plan = Some(if tower { p.with_storeys(TOWER_STOREYS) } else { p });
                             plot_ok = ok_here;
                             steps_in_cycle = 0;
+                            tower_hold = 0;
+                            tower_settled = false;
                             report.raid_cycles += 1;
                             report.last_plot = Some((cx, cz));
                         }
                     }
-                    if let Some(p) = plan.as_mut() {
+                    // A tower owner lays nothing until it stands in its plot
+                    // with nobody else in it, so its walls go up around it
+                    // rather than between it and the plot, and around nobody
+                    // else. Bounded: past `TOWER_HOLD_TICKS` it builds anyway.
+                    if tower && plot_ok && !tower_settled {
+                        let alone_inside = plan.is_some_and(|p| {
+                            standing == Some((p.cx, p.cz))
+                                && !someone_near(&view, report.player_id, p.cx, p.cz, 0)
+                        });
+                        tower_hold += 1;
+                        tower_settled = alone_inside || tower_hold >= TOWER_HOLD_TICKS;
+                    }
+                    let waiting = tower && plot_ok && !tower_settled;
+                    if let Some(p) = plan.as_mut().filter(|_| !waiting) {
                         let cmd = match held.take() {
                             Some(cmd) => cmd,
                             None => {
@@ -1325,6 +1433,7 @@ async fn run_bot_inner(
     report.struct_hits = tally.struct_hits.load(Ordering::Relaxed);
     report.auths = tally.auths.load(Ordering::Relaxed);
     report.pieces_placed = tally.pieces_placed.load(Ordering::Relaxed);
+    report.top_storey = tally.top_storey.load(Ordering::Relaxed) as u8;
     report.deploys_placed = tally.deploys_placed.load(Ordering::Relaxed);
     report.charges_planted = tally.charges_planted.load(Ordering::Relaxed);
     report.dry_clicks = tally.dry_clicks.load(Ordering::Relaxed);
