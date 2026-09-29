@@ -310,7 +310,7 @@ pub enum HeldSrc {
 /// `tests/held_assets.rs::nothing_held_glows`), and every greybox archetype
 /// (furnace, workbench 2/3, research table, lock), because a scaled cuboid in
 /// the hand tells the player less than the stand-in tool does.
-pub const HELD_MODELS: [HeldModelDef; 14] = [
+pub const HELD_MODELS: [HeldModelDef; 15] = [
     // **A stone is palmed, not hafted, which makes this the one row where
     // `lay` is wrong and the one where the scale cheat is not about
     // frame area.** Laid forward the model's 16 cm axis stands up and its
@@ -478,7 +478,7 @@ pub const HELD_MODELS: [HeldModelDef; 14] = [
         0.50,
         0.80,
     ),
-    // The two generated rows — `render::heldgen` owns the geometry, this
+    // The generated rows — `render::heldgen` owns the geometry, this
     // table owns where the hand goes, same split as the glb rows.
     // A torch stays upright: its whole read is the head above the fist.
     HeldModelDef {
@@ -502,7 +502,23 @@ pub const HELD_MODELS: [HeldModelDef; 14] = [
         scale: 1.0,
         lay: core::f32::consts::FRAC_PI_2,
         pose_yaw: -0.65,
-        stroke: Stroke::Chop,
+        stroke: Stroke::Shot,
+        light: None,
+    },
+    // A crossbow is laid forward the revolver's way and held at the wrist of
+    // the stock, just behind the trigger, with the butt reaching back out of
+    // the bottom of the frame. Turned IN rather than out: at +0.35 it points
+    // down the view with the prod across the horizon (judged on
+    // `ci/posesheet.py`'s projection against the revolver's -0.65).
+    HeldModelDef {
+        key: "crossbow",
+        src: HeldSrc::Gen("crossbow"),
+        height_m: 0.655,
+        grip_frac: 0.36,
+        scale: 0.8,
+        lay: core::f32::consts::FRAC_PI_2,
+        pose_yaw: 0.35,
+        stroke: Stroke::Shot,
         light: None,
     },
     // The deployables, palmed level. `height_m` restates each FILE's +Y
@@ -574,6 +590,10 @@ pub enum Stroke {
     /// converging on the crosshair — a spear. `render::viewmodel::thrust_pose`
     /// for the arm and `thrust_snap` for the wrist.
     Thrust,
+    /// Never swung: kicked back on each shot the sim fires — a crossbow, a
+    /// revolver. The sim never swings these (`ranged::draw` takes the arm),
+    /// so a chop drawn for one is a blow that did not happen.
+    Shot,
 }
 
 /// One held model: the item it answers to, its geometry source, and how the

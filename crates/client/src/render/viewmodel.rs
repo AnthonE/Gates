@@ -323,6 +323,10 @@ pub const VIEWMODEL_RAISE_RATE: f32 = 14.0;
 /// The loose: how far the release kicks the rig, metres, and how long.
 pub const VIEWMODEL_LOOSE_KICK: Vec3 = Vec3::new(0.0, 0.015, -0.08);
 pub const VIEWMODEL_LOOSE_S: f32 = 0.2;
+/// A [`Stroke::Shot`] row's recoil on the same clock: back toward the eye
+/// and up, metres, with the muzzle climbing, radians.
+pub const VIEWMODEL_SHOT_KICK: Vec3 = Vec3::new(0.0, 0.012, 0.05);
+pub const VIEWMODEL_SHOT_CLIMB: f32 = 0.10;
 /// How much a full draw narrows the view: raised, the bow zooms by most of
 /// this; the pull takes the rest.
 pub const DRAW_ZOOM: f32 = 0.15;
@@ -546,6 +550,7 @@ pub fn thrust_snap(def: &HeldModelDef, strike: f32) -> Quat {
 pub fn stroke_snap(def: Option<&HeldModelDef>, strike: f32) -> Quat {
     match def {
         Some(d) if d.stroke == Stroke::Thrust => thrust_snap(d, strike),
+        Some(d) if d.stroke == Stroke::Shot => Quat::IDENTITY,
         Some(d) => aim_snap(item_rest_dir(d), strike),
         None => aim_snap(Vec3::NEG_Z, strike),
     }
@@ -680,11 +685,13 @@ pub fn thrust_pose(s: f32) -> (Quat, Vec3) {
     )
 }
 
-/// [`swing_pose`] or [`thrust_pose`], by the row.
+/// [`swing_pose`] or [`thrust_pose`], by the row — or nothing, for a row
+/// that is fired rather than swung.
 pub fn stroke_pose(stroke: Stroke, s: f32) -> (Quat, Vec3) {
     match stroke {
         Stroke::Chop => swing_pose(s),
         Stroke::Thrust => thrust_pose(s),
+        Stroke::Shot => (Quat::IDENTITY, Vec3::ZERO),
     }
 }
 
@@ -1791,8 +1798,27 @@ pub fn animate(
         let c = &n.session.core;
         crate::ui::hold::draw_in_hand(&c.catalog, &c.inv, n.sel).map(|d| (d, c.buttons()))
     });
+    // Which way the tool is carried and how it is swung are both the row's,
+    // so the row is resolved once here for the arm and the wrist together.
+    // Resolved the way `swap` and `hand_light` resolve it —
+    // `held_model_in_hand` is a pure lookup over the catalog and the
+    // inventory mirror, and `hand_light`'s doc is the standing argument that
+    // a second reader of a pure function is two calls and not the
+    // second-drain defect `feed.rs` narrates.
+    //
+    // `None` is an empty hand, or a capture run with no session at all, and
+    // it chops: `stroke_snap` says why that is the historic swing and not an
+    // arbitrary default.
+    let def: Option<&'static HeldModelDef> = net
+        .as_deref()
+        .and_then(|n| held_model_in_hand(&n.session.core.catalog, &n.session.core.inv, n.sel))
+        .map(|i| &HELD_MODELS[i]);
+    // A crossbow or a revolver is fired, not swung: it kicks on each shot
+    // the sim reports as this player's, and never chops.
+    let shoots = def.is_some_and(|d| d.stroke == Stroke::Shot);
     // The byte the sim will act on, not the mouse — see `ClientCore::buttons`.
     let swinging = bow.is_none()
+        && !shoots
         && net
             .as_deref()
             .is_some_and(|n| n.session.core.buttons() & sim_core::input::BTN_PRIMARY != 0);
@@ -1856,7 +1882,8 @@ pub fn animate(
     // started, and restarting the arc there is a visible stutter. At rest
     // it can only mean the prediction missed one, and a swing drawn late
     // beats a swing not drawn.
-    let landed_at_rest = m.swing <= 0.0 && (feed.hits > 0 || !feed.gathered().is_empty());
+    let landed_at_rest =
+        !shoots && m.swing <= 0.0 && (feed.hits > 0 || !feed.gathered().is_empty());
     if predicted || landed_at_rest {
         m.swing = 1.0;
         m.strokes = m.strokes.wrapping_add(1);
@@ -1928,7 +1955,19 @@ pub fn animate(
         None => {
             m.draw = crate::ui::draw::DrawClock::default();
             m.raise = 0.0;
-            m.loose = 0.0;
+            if !shoots {
+                m.loose = 0.0;
+            }
+        }
+    }
+    // A shot row's kick is the sim's shot, not a prediction of it: nothing
+    // on this side mirrors a magazine or a reload, so the event is the one
+    // honest source — a round trip late, with the report it plays under.
+    if shoots {
+        let me = net.as_deref().map(|n| n.session.core.player_id);
+        if feed.shots().iter().any(|sh| Some(sh.0) == me) {
+            m.loose = 1.0;
+            m.looses = m.looses.wrapping_add(1);
         }
     }
     if m.loose > 0.0 {
@@ -1936,15 +1975,20 @@ pub fn animate(
     }
     zoom.0 = m.raise * (0.7 + 0.3 * pull);
     let raise = m.raise;
+    let kick = bump(1.0 - m.loose, 0.25);
+    let (kick_off, climb) = if shoots {
+        (VIEWMODEL_SHOT_KICK, VIEWMODEL_SHOT_CLIMB)
+    } else {
+        (VIEWMODEL_LOOSE_KICK, 0.0)
+    };
     let draw_turn = Quat::from_euler(
         EulerRot::YXZ,
         VIEWMODEL_DRAW_TURN.x * raise,
-        VIEWMODEL_DRAW_TURN.y * raise,
+        VIEWMODEL_DRAW_TURN.y * raise + climb * kick,
         VIEWMODEL_DRAW_TURN.z * raise,
     );
-    let draw_off = VIEWMODEL_DRAW_RAISE * raise
-        + VIEWMODEL_DRAW_PULL * (pull * raise)
-        + VIEWMODEL_LOOSE_KICK * bump(1.0 - m.loose, 0.25);
+    let draw_off =
+        VIEWMODEL_DRAW_RAISE * raise + VIEWMODEL_DRAW_PULL * (pull * raise) + kick_off * kick;
     // ── One pose for the whole assembly ─────────────────────────────────
     //
     // `1 - swing` runs the stroke forwards as `swing` counts down. The arc
@@ -1953,21 +1997,6 @@ pub fn animate(
     // and the tool head waggling on a stationary fist — the operator's
     // *"hardly anything moves"* (2026-08-30) was the second of those.
     let s = 1.0 - m.swing;
-    // Which way the tool is carried and how it is swung are both the row's,
-    // so the row is resolved once here for the arm and the wrist together.
-    // Resolved the way `swap` and `hand_light` resolve it —
-    // `held_model_in_hand` is a pure lookup over the catalog and the
-    // inventory mirror, and `hand_light`'s doc is the standing argument that
-    // a second reader of a pure function is two calls and not the
-    // second-drain defect `feed.rs` narrates.
-    //
-    // `None` is an empty hand, or a capture run with no session at all, and
-    // it chops: `stroke_snap` says why that is the historic swing and not an
-    // arbitrary default.
-    let def: Option<&'static HeldModelDef> = net
-        .as_deref()
-        .and_then(|n| held_model_in_hand(&n.session.core.catalog, &n.session.core.inv, n.sel))
-        .map(|i| &HELD_MODELS[i]);
     let (arc, throw) = stroke_pose(def.map_or(Stroke::Chop, |d| d.stroke), s);
     // The sway rides OUTSIDE the swing, so a turn taken mid-stroke lags the
     // whole assembly rather than bending the stroke.
