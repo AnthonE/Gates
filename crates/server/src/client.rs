@@ -332,6 +332,9 @@ pub struct ClientNetState {
     /// One decoded C→S action awaiting its command slot (the sim drains
     /// the ring only into an empty hand — defer, never drop).
     pub pending_action: Option<ActionMsg>,
+    /// When each kind of action may act again (`pace.rs`): an early one
+    /// waits in the hand.
+    pub pace: crate::pace::Pace,
     /// Last help state successfully queued. A failed cancellation retries.
     pub last_assist: (u32, u32, u16),
     /// The sky/clock record as last sent (weather v0). `None` owes the
@@ -417,6 +420,7 @@ impl ClientNetState {
             last_wear: [ItemStack::default(); WEAR_SLOTS],
             wear_reset: true,
             pending_action: None,
+            pace: crate::pace::Pace::default(),
             last_assist: (0, 0, 0),
             last_env: None,
             skins_cursor: 0,

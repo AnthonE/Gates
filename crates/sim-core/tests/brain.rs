@@ -251,6 +251,45 @@ fn a_lit_torch_keeps_a_wolf_from_biting() {
     }
 }
 
+/// **A flame is seen.** At night a wolf's senses shrink to half (the
+/// fixture's 15 m of 30), so a player standing 22 m off in the dark is not
+/// noticed — and the same player with a lit torch is, at the day's reach.
+/// A crouch hides a body in the dark and does not hide a flame.
+#[test]
+fn a_wolf_sees_a_torch_at_night_that_it_cannot_see_the_body_of() {
+    let [a, _, _] = free_pack();
+    let noticed = |buttons: u8| -> bool {
+        let mut w = world_with(&[(a, 22.0, 0.0)]);
+        // Found off `is_night` itself, `tests/mob.rs`'s way, rather than
+        // off day arithmetic repeated here.
+        let night = |o: u64| sim_core::world::is_night(w.tick + o);
+        w.env.day_offset = (0..sim_core::limits::DAY_TICKS)
+            .step_by(600)
+            .find(|&o| night(o) && night(o + 600))
+            .expect("the cycle must contain a night") as u32;
+        face(&mut w, a, true);
+        // The gather fixture's item 0 is its light, full of fuel.
+        w.players[0].inv[0] = ItemStack {
+            item: 0,
+            count: 1,
+            cond: 400,
+            skin: 0,
+        };
+        hold(&mut w, buttons, MOB_THINK_TICKS as u32 + 1, |_| {});
+        w.mobs.m[a].roused_until > 0
+    };
+    assert!(!noticed(0), "a wolf saw a dark body at 22 m at night");
+    assert!(
+        !noticed(BTN_CROUCH),
+        "a wolf saw a crouched dark body at 22 m at night"
+    );
+    assert!(noticed(BTN_LIGHT), "a wolf missed a lit torch at 22 m");
+    assert!(
+        noticed(BTN_LIGHT | BTN_CROUCH),
+        "crouching hid the flame from a wolf looking at it"
+    );
+}
+
 /// Planar distance², cm², from the player to a roster slot.
 fn gap2(w: &World, slot: usize) -> i64 {
     let (m, p) = (w.mobs.m[slot].body, w.players[0].body);
@@ -428,6 +467,7 @@ fn strike(w: &mut World, slot: usize) {
             &w.mob,
             tick,
             0,
+            false,
             &w.players,
             &mut w.mobs,
             &mut w.backpacks,

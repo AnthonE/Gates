@@ -972,7 +972,13 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// v80 — the 4,096 m island (operator, 2026-09-28: "the world as big as we
 /// can get"). `POS_XZ_BITS` 17 → 18 and `BUILD_CELL_BITS` 10 → 11: 17 bits
 /// of 3 cm reached 3,932 m and 10 bits of 3 m cells reached 3,072 m.
-pub const PROTO_VER: u16 = 80;
+/// v81 — the belt eats. Each catalog row grows three 16-bit eat columns
+/// after `stack_max` (`ItemRow::food`, `water`, `health`: what one unit of
+/// the item pays when eaten, 0 for anything the eat verb refuses), so a
+/// client knows a left click with food in hand is a meal and not a swing.
+/// Landed on its branch as v80, beside the 4,096 m island's v80 on `main`;
+/// the merge took the next number and regenerated every fixture.
+pub const PROTO_VER: u16 = 81;
 
 /// This game's slug in the elo catalog.
 ///

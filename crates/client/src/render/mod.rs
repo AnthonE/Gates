@@ -535,6 +535,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<verbs::InWeak>()
             .init_resource::<verbs::Near>()
             .init_resource::<verbs::Pad>()
+            .init_resource::<verbs::Bite>()
             .init_resource::<death::Answer>()
             .init_resource::<disconnected::Reason>()
             .init_resource::<disconnected::Chosen>()
@@ -1073,6 +1074,7 @@ impl Plugin for GatesRenderPlugin {
                 // on an emitter that outlives every swap. Both read the same
                 // pure row lookup, so neither has to run first.
                 viewmodel::hand_light.after(viewmodel::spawn_item),
+                viewmodel::hand_flame.after(viewmodel::spawn_item),
                 // The weak-spot cross, off the core's latched mark and the
                 // frame's sector answer — after the resolver that writes
                 // `InWeak`, so the cross brightens on the frame the prompt

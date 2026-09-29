@@ -1001,6 +1001,7 @@ pub fn strike_slot(
     mc: &MobContent,
     tick: u64,
     attacker: usize,
+    lit: bool,
     players: &[Player; MAX_PLAYERS],
     mobs: &mut Mobs,
     bags: &mut Backpacks,
@@ -1024,7 +1025,7 @@ pub fn strike_slot(
         bags,
         events,
         slot,
-        def.damage,
+        def.body_damage(lit),
     )
 }
 

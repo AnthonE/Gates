@@ -122,6 +122,7 @@ pub fn hash(c: &Content) -> u64 {
         h.u(w.limb_pct);
         h.u(w.rate_per_min);
         h.u(w.range_m);
+        h.u(w.lit_damage.unwrap_or(0));
         // The round list walks in **declared order, not sorted**, and that
         // is deliberate: order is the ammo policy (the sim spends the first
         // round the shooter carries), so two bows differing only in which
@@ -302,6 +303,7 @@ pub fn hash(c: &Content) -> u64 {
     let b = &c.balance.bands;
     for pair in [
         b.ttk_melee,
+        b.ttk_light,
         b.ttk_bow,
         b.ttk_firearm,
         b.node_yield,

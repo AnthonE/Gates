@@ -337,3 +337,33 @@ fn the_hand_light_is_hung_on_the_hand_and_burns_the_one_flame_colour() {
          `HeldItem`, not a child of it"
     );
 }
+
+/// The flame you can see (`viewmodel::HandFlame`) stands ON the torch head
+/// through its whole flicker: its foot on the crown, taller than wide, and
+/// the hot core inside the mantle. A flame whose foot drifted would float
+/// over the torch or sink into it, and no other value here would move.
+#[test]
+fn the_seen_flame_stands_on_the_torch_head() {
+    use client::render::viewmodel::{hand_flame_pose, FLAME_R_M, FLAME_TALL};
+    use client::ui::hold::FLAME_LIFT_M;
+    for i in 0..400 {
+        let t = i as f32 * 0.013;
+        let mantle = hand_flame_pose(false, t);
+        let core = hand_flame_pose(true, t);
+        for (name, p) in [("mantle", mantle), ("core", core)] {
+            let foot = p.translation.y - p.scale.y;
+            assert!(
+                (foot + FLAME_LIFT_M).abs() < 1e-5,
+                "the {name}'s foot is at {foot} m from the emitter at t={t}, \
+                 not on the crown {FLAME_LIFT_M} m below it"
+            );
+            assert!(p.scale.y > p.scale.x, "the {name} is squat at t={t}");
+            assert!(p.scale.x > 0.0 && p.scale.y > 0.0);
+        }
+        assert!(core.scale.x < mantle.scale.x && core.scale.y < mantle.scale.y);
+        assert!(
+            mantle.scale.y < FLAME_R_M * FLAME_TALL * 1.25,
+            "the flicker is out of hand at t={t}"
+        );
+    }
+}

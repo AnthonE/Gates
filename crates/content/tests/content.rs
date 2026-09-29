@@ -1295,11 +1295,17 @@ fn bake_combat_plays_the_band_the_data_declares() {
         "max hp is balance.toml's, not a code constant"
     );
 
-    let [lo, hi] = c.balance.bands.ttk_melee;
     let mut melee_rows = 0;
     for w in &c.weapons {
         let idx = c.item_index(&w.id).expect("weapon arms an item") as usize;
         let baked = cc.melee[idx];
+        // A light that hits (the torch) answers to its own band.
+        let light = c.item(&w.id).is_some_and(|i| i.light_burn > 0);
+        let [lo, hi] = if light {
+            c.balance.bands.ttk_light
+        } else {
+            c.balance.bands.ttk_melee
+        };
         if w.kind != content::schema::WeaponKind::Melee {
             assert_eq!(
                 baked.damage, 0,
@@ -1327,6 +1333,12 @@ fn bake_combat_plays_the_band_the_data_declares() {
         assert!(
             (lo..=hi).contains(&hits),
             "`{}` kills in {hits} swings, outside the declared melee TTK band {lo}..={hi}",
+            w.id
+        );
+        assert_eq!(
+            baked.lit_bonus as u32,
+            w.lit_damage.unwrap_or(0),
+            "`{}` burning bonus",
             w.id
         );
     }
@@ -4171,7 +4183,11 @@ fn the_band_and_the_sim_kill_in_the_same_number_of_hits() {
         if w.kind == content::schema::WeaponKind::Throwable {
             continue; // structure damage, no TTK
         }
-        for &pct in &sets {
+        // A light is not held to the armor anchor (`balance.rs` skips it:
+        // at half a rock's blow the per-hit rounding is the fight), so only
+        // its bare-body count has to agree.
+        let light = c.item(&w.id).is_some_and(|i| i.light_burn > 0);
+        for &pct in sets.iter().filter(|&&p| !light || p == 0) {
             let banded = content::balance::hits_to_kill(hp, w.damage, pct);
             let per = sim_core::combat::reduce(w.damage as u16, pct);
             assert!(per > 0, "`{}` under {pct}% deals nothing a hit", w.id);

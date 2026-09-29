@@ -71,6 +71,17 @@ pub struct Look {
 
 pub use crate::look::{pitch_u8, yaw_u16};
 
+/// The belt's keys, slot 1 to 6. Read here to select and by `verbs::keys` to
+/// eat — one list, so the two cannot disagree about which key is which slot.
+pub const HOTBAR_KEYS: [KeyCode; 6] = [
+    KeyCode::Digit1,
+    KeyCode::Digit2,
+    KeyCode::Digit3,
+    KeyCode::Digit4,
+    KeyCode::Digit5,
+    KeyCode::Digit6,
+];
+
 // Ten sources and two `Local`s. Every source is distinct: the session, the
 // free view, the cursor, the settings, two input maps, the accumulated motion,
 // the accumulated scroll, the sound queue, whether a panel has the pointer,
@@ -85,7 +96,7 @@ pub fn gather(
     aimed: Option<Res<super::verbs::Aimed>>,
     screen: Option<Res<State<super::Screen>>>,
     keys: Res<ButtonInput<KeyCode>>,
-    mouse: Res<ButtonInput<MouseButton>>,
+    mut mouse: ResMut<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
     // `Option`, because a capture run does not register the menus at all —
@@ -100,6 +111,9 @@ pub fn gather(
     // every player's client. `capture::drive` runs `.before` this system, so
     // the intent read here was decided this frame and not last one.
     cap: Option<Res<super::capture::Capture>>,
+    // The door keypad takes the digits while it is up (`verbs::keypad_keys`)
+    // and deliberately grabs no pointer, so nothing above sees it.
+    pad: Option<Res<super::verbs::Pad>>,
     // The pointer's memory across frames. A `Local` holding a pure type from
     // `ui::` rather than loose booleans, for that module's reason: the defect
     // it fixes is a SEQUENCE, and a sequence inside a system can only be
@@ -195,7 +209,21 @@ pub fn gather(
         .single()
         .map(|c| c.grab_mode == CursorGrabMode::Locked)
         .unwrap_or(false);
-    let want = pointer.step(locked, panel_open, mouse.just_pressed(MouseButton::Left));
+    let clicked = mouse.just_pressed(MouseButton::Left);
+    let want = pointer.step(locked, panel_open, clicked);
+    // The click that captures the pointer is not also a use
+    // (`Pointer::swallow`). Cleared here, before `place_eye` and so before
+    // every verb that reads the press: the plan's placement, a deployable's,
+    // the hammer's repair, a meal. The held half keeps the swing out below.
+    let swallowed = pointer.swallow(
+        locked,
+        panel_open,
+        clicked,
+        mouse.pressed(MouseButton::Left),
+    );
+    if swallowed && clicked {
+        mouse.clear_just_pressed(MouseButton::Left);
+    }
     if let Ok(mut c) = cursor.single_mut() {
         match want {
             crate::ui::pointer::Grab::Lock => {
@@ -312,67 +340,23 @@ pub fn gather(
     if keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight) {
         buttons |= BTN_CROUCH;
     }
-    // **The swing is held-item modal.** Left click means "place" with a
-    // building plan and "repair" with a hammer, and neither item has an
-    // attack to lose — the reference lists the hammer's damage total as 0
-    // and the plan has no damage stats at all. Without this the same press
-    // would place a foundation AND send a swing, which the sim answers with
-    // a gather attempt on whatever is in front of you.
-    let core = &net.session.core;
-    let hand = crate::ui::hold::held_in_hand(&core.catalog, &core.inv, net.sel);
-    let swings = !hand.opens_a_wheel();
-    // **A light is struck with the right hand, not a keyboard letter** —
-    // the reference's own binding for a torch, and it costs no key at a
-    // point where `R`, `F` and `G` are all spoken for (repair, the ghost's
-    // flip, the map). Right-click is already held-item modal in this
-    // client: `panels/mod.rs` opens the build wheel with it when the hand
-    // `opens_a_wheel`, and `ghost.rs` cancels a placement with it. A torch
-    // does neither, so the gesture is free exactly where it is wanted.
-    //
-    // Gated on the row declaring a light rather than on `swings`, so a
-    // right-click with a hatchet toggles nothing at all instead of
-    // flipping a latch nobody can see.
-    let toggles_light = crate::ui::hold::held_model_in_hand(&core.catalog, &core.inv, net.sel)
-        .is_some_and(|i| crate::ui::hold::HELD_MODELS[i].light.is_some());
-    // **Down (wounded v0): no swing, no sprint, no jump** — the sim strips
-    // the same three bits from a downed body's frame (`wound::crawl_frame`)
-    // and so does the predictor, so stripping them here changes no
-    // prediction; what it changes is the viewmodel's swing cadence and the
-    // swing cue below, both of which read the byte this sends rather than
-    // the mouse. A downed player clicking hears nothing and sees no arm,
-    // which is the truth.
-    let downed = core.wounded;
-    if swings && !downed && mouse.pressed(MouseButton::Left) {
-        buttons |= BTN_PRIMARY;
-    }
-    // **The swing is no longer heard here.** From audio v0 to 2026-09-13
-    // this block played `Cue::Swing` on `just_pressed`, on the argument that
-    // only this system knows a panel is not eating the click — true, and
-    // the `BTN_PRIMARY` bit above already carries that knowledge to the sim
-    // and to everything that reads `ClientCore::buttons`. What it got wrong
-    // is the CADENCE: a press is not a swing. The sim takes one swing per
-    // `SWING_INTERVAL_TICKS` however fast the button is worked, and the arm
-    // (`viewmodel::animate`) draws exactly those, so a player spamming the
-    // button heard a whoosh per click over an arm that moved once — the
-    // operator's *"sound doesnt sync with animation if i spam attack"*. The
-    // cue and the score's bump now fire where the stroke starts, so the
-    // sound is a fact about the arm and not about the mouse.
-
     // Hotbar 1–6. `set_input` clamps into range, so an out-of-range key
     // cannot reach the wire.
+    //
+    // **A food slot's key eats and does not select** — Rust's belt: the
+    // mushrooms are never "held", pressing their key eats one and the torch
+    // or the gun stays in your hand (`verbs::keys` sends the eat, off the
+    // same test). And **not while the door keypad is up**: typing 1234 into
+    // a lock used to walk the hand across four slots as well.
     let mut sel = net.sel;
-    for (i, k) in [
-        KeyCode::Digit1,
-        KeyCode::Digit2,
-        KeyCode::Digit3,
-        KeyCode::Digit4,
-        KeyCode::Digit5,
-        KeyCode::Digit6,
-    ]
-    .iter()
-    .enumerate()
-    {
-        if keys.just_pressed(*k) {
+    let typing = pad.as_ref().is_some_and(|p| p.0.is_open());
+    for (i, k) in HOTBAR_KEYS.iter().enumerate() {
+        let core = &net.session.core;
+        let food = core
+            .inv
+            .get(i)
+            .is_some_and(|&s| crate::ui::hold::eats_on_key(&core.catalog, s));
+        if keys.just_pressed(*k) && !typing && !food {
             sel = i as u8;
         }
     }
@@ -400,13 +384,90 @@ pub fn gather(
         sel = crate::ui::slots::hotbar_scrolled(sel, -notches);
     }
     net.sel = sel;
+    // Read after the slot keys above, so a click in the same frame as a
+    // slot switch acts on the item now in hand, not the one just put away.
+    let core = &net.session.core;
+    // **The swing is held-item modal** (`ui::hold::Click`): left click
+    // places with a plan, repairs with a hammer, places a deployable
+    // (`ghost::deploy_key`), and eats food or reads a blueprint
+    // (`verbs::keys`). Only a tool, a weapon or an empty hand swings —
+    // otherwise the same press would place a foundation, or eat a mushroom,
+    // AND send a gather at whatever is in front of you.
+    let swings = crate::ui::hold::click_in_hand(
+        &core.catalog,
+        &core.research,
+        &core.deploy_defs,
+        core.deploy_defs_have,
+        &core.inv,
+        sel,
+    )
+    .swings();
+    // **A light is struck with the right hand, not a keyboard letter** —
+    // the reference's own binding for a torch, and it costs no key at a
+    // point where `R`, `F` and `G` are all spoken for (repair, the ghost's
+    // flip, the map). Right-click is already held-item modal in this
+    // client: `panels/mod.rs` opens the build wheel with it when the hand
+    // `opens_a_wheel`, and `ghost.rs` cancels a placement with it. A torch
+    // does neither, so the gesture is free exactly where it is wanted.
+    //
+    // Gated on the row declaring a light rather than on `swings`, so a
+    // right-click with a hatchet toggles nothing at all instead of
+    // flipping a latch nobody can see.
+    let holds_light = crate::ui::hold::held_model_in_hand(&core.catalog, &core.inv, sel)
+        .is_some_and(|i| crate::ui::hold::HELD_MODELS[i].light.is_some());
+    // A spent torch is a stick: it strikes nothing, and a latch left set on
+    // it would light the next torch put in that hand with no click at all.
+    let fuel = core
+        .inv
+        .get(sel as usize)
+        .is_some_and(|s| s.count > 0 && s.cond > 0);
+    // **Down (wounded v0): no swing, no sprint, no jump** — the sim strips
+    // the same three bits from a downed body's frame (`wound::crawl_frame`)
+    // and so does the predictor, so stripping them here changes no
+    // prediction; what it changes is the viewmodel's swing cadence and the
+    // swing cue below, both of which read the byte this sends rather than
+    // the mouse. A downed player clicking hears nothing and sees no arm,
+    // which is the truth.
+    let downed = core.wounded;
+    if swings && !downed && !swallowed && mouse.pressed(MouseButton::Left) {
+        buttons |= BTN_PRIMARY;
+    }
+    // **The swing is no longer heard here.** From audio v0 to 2026-09-13
+    // this block played `Cue::Swing` on `just_pressed`, on the argument that
+    // only this system knows a panel is not eating the click — true, and
+    // the `BTN_PRIMARY` bit above already carries that knowledge to the sim
+    // and to everything that reads `ClientCore::buttons`. What it got wrong
+    // is the CADENCE: a press is not a swing. The sim takes one swing per
+    // `SWING_INTERVAL_TICKS` however fast the button is worked, and the arm
+    // (`viewmodel::animate`) draws exactly those, so a player spamming the
+    // button heard a whoosh per click over an arm that moved once — the
+    // operator's *"sound doesnt sync with animation if i spam attack"*. The
+    // cue and the score's bump now fire where the stroke starts, so the
+    // sound is a fact about the arm and not about the mouse.
+
     // After the immutable borrow above. The latch **persists across a slot
     // change**: switch to a rock and the flame is not burning (the sim's
     // `is_lit` fails on fact 2, this side's `lit_model_in_hand` on the same
     // one), switch back and it is. The alternative — clearing it on every
     // swap — would make a torch something you re-light after every swing
     // of an axe, which is not the tradeoff `ALPHA.md` §1 is asking for.
-    if toggles_light && mouse.just_pressed(MouseButton::Right) {
+    // Head under the sea: the sim reads no flame there (`light::submerged`,
+    // the same line from the same feet), so the latch lets go — surfacing
+    // is a dark torch until it is struck again, as the reference's is.
+    let under = {
+        let [_, feet, _] = core.predict.render_position();
+        feet + sim_core::light::FLAME_EYE_M < sim_core::terrain::SEA_LEVEL
+    };
+    // Burnt out, knocked down (a downed body drops what it held, and
+    // getting up does not light it again by itself) or under water: the
+    // latch lets go.
+    if (holds_light && !fuel) || downed || under {
+        net.light = false;
+    }
+    // Not while down or under: the sim reads no flame there
+    // (`light::is_lit`), so a latch flipped there would be a light only
+    // this screen draws.
+    if holds_light && fuel && !downed && !under && mouse.just_pressed(MouseButton::Right) {
         net.light = !net.light;
     }
     if net.light {

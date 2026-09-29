@@ -65,6 +65,22 @@ limb_pct = 50
 rate_per_min = 48
 range_m = 1
 
+# **The torch hits** — the reference's does: 5 a blow against its rock's 10,
+# plus a point of heat while it burns. Half the rock here too, and the heat
+# is `lit_damage` (the sim adds it only while `light::is_lit`). It is a light
+# first, so it answers to `[bands] ttk_light` rather than the weapons' band
+# (`balance.rs`), and it harvests nothing (no gatherable names it).
+[[weapon]]
+id = "item.torch"
+kind = "melee"
+damage = 10
+lit_damage = 2
+structure = 1
+headshot_mult = 2
+limb_pct = 50
+rate_per_min = 48
+range_m = 1
+
 [[weapon]]
 id = "item.hatchet_stone"
 kind = "melee"

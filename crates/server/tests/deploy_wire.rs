@@ -171,6 +171,10 @@ fn world_slot(core: &ShardCore, id: u32) -> usize {
 
 fn act(core: &mut ShardCore, slot: usize, a: ActionMsg) {
     assert!(core.wants_action(slot), "hand should be open");
+    // These lockstep tests act once a tick, faster than a person: the
+    // pace is its own gate (`server/src/pace.rs`), so it is reset here and
+    // every action lands on the tick that follows it.
+    core.clients[slot].pace = server::pace::Pace::default();
     core.push_action(slot, a);
 }
 

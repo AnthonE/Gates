@@ -112,6 +112,159 @@ pub fn held_in_hand(catalog: &ItemCatalog, inv: &[ItemStack], sel: u8) -> Held {
     held(catalog, inv[i])
 }
 
+/// What a **left click** does with the selected stack — Rust's belt, where
+/// the primary button uses whatever is in your hand. One answer read by the
+/// input frame (swing or not), the verbs that send (eat, read, place) and
+/// the HUD's hint line, so the three cannot disagree.
+///
+/// Until this existed only the plan and the hammer were modal, and a left
+/// click with mushrooms in hand SWUNG them — at a tree ("cannot harvest
+/// this") or at a person — while eating was a `J` nothing on screen named.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Click {
+    /// A tool, a weapon, a resource, an empty hand: the arm swings.
+    #[default]
+    Swing,
+    /// The building plan places its ghost (`ghost::place_key`).
+    Build,
+    /// The hammer's repair swing (`verbs::keys`).
+    Repair,
+    /// A deployable goes down where its ghost stands (`ghost::deploy_key`).
+    Deploy,
+    /// Food or medicine: eat one (`ACT_CONSUME`) — the catalog's eat
+    /// columns (wire v81) say which.
+    Eat,
+    /// A blueprint: read it (`ACT_RESEARCH`), as `J` and the pack's
+    /// right-click already do (`ui::research::use_as`).
+    Read,
+}
+
+impl Click {
+    /// Does this click send `BTN_PRIMARY`? Only a swing does: a placement,
+    /// a meal or a read that also swung would chop whatever it faced.
+    pub fn swings(self) -> bool {
+        self == Click::Swing
+    }
+}
+
+/// Does pressing this stack's hotbar key EAT it rather than select it?
+/// Rust's belt: food and medicine are never held — the key runs the eat and
+/// whatever was in your hand stays there. `render::input` skips the select
+/// and `render::verbs` sends the eat, both off this.
+pub fn eats_on_key(catalog: &ItemCatalog, stack: ItemStack) -> bool {
+    stack.count > 0 && catalog.row(stack.item as usize).eats()
+}
+
+/// [`Click`] for one stack.
+pub fn click_of(
+    catalog: &ItemCatalog,
+    research: &sim_core::research::ResearchContent,
+    deploys: &sim_core::deploy::DeployContent,
+    deploys_have: u16,
+    stack: ItemStack,
+) -> Click {
+    if stack.count == 0 {
+        return Click::Swing;
+    }
+    match held(catalog, stack) {
+        Held::Plan => return Click::Build,
+        Held::Hammer => return Click::Repair,
+        Held::Other => {}
+    }
+    if crate::ui::research::is_paper(research, stack) {
+        Click::Read
+    } else if catalog.row(stack.item as usize).eats() {
+        Click::Eat
+    } else if crate::ui::structure::row_for_item(deploys, deploys_have, stack.item).is_some() {
+        Click::Deploy
+    } else {
+        Click::Swing
+    }
+}
+
+/// The HUD's bottom-left line for a hand that places nothing: what the left
+/// click does with it, and a torch's light. Empty for a hand that only
+/// swings — a hatchet needs no caption. The plan's and a deployable's lines
+/// are `render::hud`'s, because they read the ghost.
+///
+/// `latch` is the client's torch latch (`render::Net::light`).
+pub fn hand_hint(
+    catalog: &ItemCatalog,
+    research: &sim_core::research::ResearchContent,
+    click: Click,
+    stack: ItemStack,
+    latch: bool,
+) -> String {
+    let name = || crate::ui::craft::item_label(catalog, stack.item).to_uppercase();
+    match click {
+        Click::Eat => {
+            let row = catalog.row(stack.item as usize);
+            let mut gives = Vec::new();
+            for (n, what) in [(row.food, "food"), (row.water, "water"), (row.health, "hp")] {
+                if n > 0 {
+                    gives.push(format!("+{n} {what}"));
+                }
+            }
+            // A bandage is USED, a mushroom EATEN — the verb the toast
+            // prints either way is "used", but a caption can be exact.
+            let verb = if row.food == 0 && row.water == 0 {
+                "USE"
+            } else {
+                "EAT"
+            };
+            format!("{verb}  {}  {}   (left click)", name(), gives.join(" · "))
+        }
+        Click::Read => format!(
+            "READ  {}   (left click)",
+            crate::ui::research::stack_label(catalog, research, stack).to_uppercase()
+        ),
+        Click::Repair => "REPAIR   (left click · hold right: upgrade, rotate, pick up)".to_string(),
+        Click::Swing => {
+            let Some(row) = held_model(catalog, stack) else {
+                return String::new();
+            };
+            if HELD_MODELS[row].light.is_none() {
+                return String::new();
+            }
+            let max = catalog.cond_max(stack.item as usize);
+            if stack.cond == 0 {
+                return format!("{}  BURNT OUT", name());
+            }
+            let left = if max > 0 {
+                format!(
+                    "  {}%",
+                    (stack.cond as u32 * 100).div_ceil(max as u32).min(100)
+                )
+            } else {
+                String::new()
+            };
+            if latch {
+                format!("{}  LIT{left}   (right click: put out)", name())
+            } else {
+                format!("{}{left}   (right click: light)", name())
+            }
+        }
+        Click::Build | Click::Deploy => String::new(),
+    }
+}
+
+/// [`click_of`] on the selected hotbar slot, clamped for [`held_in_hand`]'s
+/// reason.
+pub fn click_in_hand(
+    catalog: &ItemCatalog,
+    research: &sim_core::research::ResearchContent,
+    deploys: &sim_core::deploy::DeployContent,
+    deploys_have: u16,
+    inv: &[ItemStack],
+    sel: u8,
+) -> Click {
+    if inv.is_empty() {
+        return Click::Swing;
+    }
+    let stack = inv[(sel as usize).min(inv.len() - 1)];
+    click_of(catalog, research, deploys, deploys_have, stack)
+}
+
 /// Where a held row's geometry comes from.
 ///
 /// Data only, deliberately: this module is the headless arithmetic tier, so
@@ -979,6 +1132,143 @@ mod tests {
              rows that BURN for one have drifted apart. A row on the left \
              only glows for free; a row on the right only burns in the dark."
         );
+    }
+
+    /// A belt of one of each: the item index is the slot.
+    struct Belt {
+        catalog: ItemCatalog,
+        research: sim_core::research::ResearchContent,
+        deploys: sim_core::deploy::DeployContent,
+    }
+
+    const WOOD: u16 = 0;
+    const PLAN: u16 = 1;
+    const HAMMER: u16 = 2;
+    const MUSHROOMS: u16 = 3;
+    const BANDAGE: u16 = 4;
+    const TORCH: u16 = 5;
+    const PAPER: u16 = 6;
+    const BOX: u16 = 7;
+
+    fn belt() -> Belt {
+        let mut catalog = catalog_with(&[
+            "Wood",
+            "Building Plan",
+            "Hammer",
+            "Mushrooms",
+            "Bandage",
+            "Torch",
+            "Blueprint",
+            "Small Box",
+        ]);
+        catalog.rows[MUSHROOMS as usize] = protocol::ItemRow {
+            food: 15,
+            water: 5,
+            health: 3,
+            ..protocol::ItemRow::EMPTY
+        };
+        catalog.rows[BANDAGE as usize] = protocol::ItemRow {
+            health: 20,
+            ..protocol::ItemRow::EMPTY
+        };
+        catalog.rows[TORCH as usize] = protocol::ItemRow {
+            cond_max: 5_000,
+            stack_max: 1,
+            ..protocol::ItemRow::EMPTY
+        };
+        let mut research = sim_core::research::ResearchContent::EMPTY;
+        research.blueprint = PAPER;
+        let mut deploys = sim_core::deploy::DeployContent::EMPTY;
+        deploys.defs[0].item = BOX;
+        deploys.def_count = 1;
+        Belt {
+            catalog,
+            research,
+            deploys,
+        }
+    }
+
+    fn one(item: u16) -> ItemStack {
+        ItemStack {
+            item,
+            count: 1,
+            cond: 0,
+            skin: 0,
+        }
+    }
+
+    /// **What the operator could not do** (2026-09-28: *"i still cant eat
+    /// mushrooms from the hotbar"*): a left click with food in hand swung it.
+    /// Every item class on the belt, one click meaning each.
+    #[test]
+    fn a_left_click_uses_what_is_in_the_hand() {
+        let b = belt();
+        let click = |s: ItemStack| click_of(&b.catalog, &b.research, &b.deploys, 1, s);
+        assert_eq!(click(one(MUSHROOMS)), Click::Eat, "food is eaten");
+        assert_eq!(click(one(BANDAGE)), Click::Eat, "a heal is eaten too");
+        assert_eq!(click(one(PAPER)), Click::Read, "a blueprint is read");
+        assert_eq!(click(one(BOX)), Click::Deploy, "a box is put down");
+        assert_eq!(click(one(PLAN)), Click::Build);
+        assert_eq!(click(one(HAMMER)), Click::Repair);
+        assert_eq!(click(one(WOOD)), Click::Swing, "a resource swings");
+        assert_eq!(
+            click(one(TORCH)),
+            Click::Swing,
+            "a torch swings; right click lights it"
+        );
+        assert_eq!(click(ItemStack::default()), Click::Swing, "a fist");
+        // Rust's belt: a food slot's KEY eats; nothing else does.
+        assert!(eats_on_key(&b.catalog, one(MUSHROOMS)));
+        assert!(eats_on_key(&b.catalog, one(BANDAGE)));
+        for s in [one(WOOD), one(TORCH), one(PAPER), one(BOX), one(PLAN)] {
+            assert!(!eats_on_key(&b.catalog, s), "{s:?} is selected, not eaten");
+        }
+        let none_left = ItemStack {
+            count: 0,
+            ..one(MUSHROOMS)
+        };
+        assert!(!eats_on_key(&b.catalog, none_left), "an empty slot selects");
+        // Only the swing sends `BTN_PRIMARY`.
+        for s in [one(MUSHROOMS), one(PAPER), one(BOX), one(PLAN), one(HAMMER)] {
+            assert!(!click(s).swings(), "{s:?} must not also swing");
+        }
+        // A deployable the defs have not dripped yet is not placeable, so
+        // it swings rather than sending a placement for a row nobody knows.
+        assert_eq!(
+            click_of(&b.catalog, &b.research, &b.deploys, 0, one(BOX)),
+            Click::Swing
+        );
+    }
+
+    /// The bottom-left line says what the click will do, with the numbers,
+    /// and how to light a torch — the question the operator asked next.
+    #[test]
+    fn the_hint_names_the_click_and_the_torch() {
+        let b = belt();
+        let hint = |s: ItemStack, latch: bool| {
+            let click = click_of(&b.catalog, &b.research, &b.deploys, 1, s);
+            hand_hint(&b.catalog, &b.research, click, s, latch)
+        };
+        assert_eq!(
+            hint(one(MUSHROOMS), false),
+            "EAT  MUSHROOMS  +15 food · +5 water · +3 hp   (left click)"
+        );
+        assert_eq!(
+            hint(one(BANDAGE), false),
+            "USE  BANDAGE  +20 hp   (left click)"
+        );
+        let torch = |cond| ItemStack { cond, ..one(TORCH) };
+        assert_eq!(
+            hint(torch(5_000), false),
+            "TORCH  100%   (right click: light)"
+        );
+        assert_eq!(
+            hint(torch(2_000), true),
+            "TORCH  LIT  40%   (right click: put out)"
+        );
+        assert_eq!(hint(torch(0), true), "TORCH  BURNT OUT");
+        assert_eq!(hint(one(WOOD), false), "", "a resource says nothing");
+        assert_eq!(hint(ItemStack::default(), false), "", "nor a fist");
     }
 
     #[test]

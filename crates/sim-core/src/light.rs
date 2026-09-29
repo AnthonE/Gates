@@ -76,8 +76,20 @@ pub const BURN_DEN: u32 = TICK_HZ * 60 * 100;
 /// falls a non-wire frame back to slot 0, and this bounds it again rather
 /// than trusting that — one id arrives from a datagram and one from a WAL
 /// (`GatherContent::cond_max_of`'s reason, one layer up).
+///
+/// **A downed body is not holding it up either.** It has dropped what it
+/// held (`held` on the wire is empty, and `step` never runs on it), so a
+/// flame read here while down was a torch that warmed and held wolves off
+/// for free while every other screen showed an empty hand.
 pub fn is_lit(p: &Player, gc: &GatherContent) -> bool {
-    if p.dead || p.sleeping || p.frame.buttons & BTN_LIGHT == 0 {
+    if p.dead || p.sleeping || p.wounded || p.frame.buttons & BTN_LIGHT == 0 {
+        return false;
+    }
+    // **Water puts it out**, as the reference's does: a flame with the head
+    // under the sea is not burning, and it does not light there either. The
+    // client lets its latch go at the same line (`render::input`), so coming
+    // up for air is a dark torch until it is struck again.
+    if submerged(p) {
         return false;
     }
     let sel = p.frame.sel as usize;
@@ -86,6 +98,19 @@ pub fn is_lit(p: &Player, gc: &GatherContent) -> bool {
     }
     let s = p.inv[sel];
     s.count > 0 && s.cond > 0 && gc.light_burn_of(s.item) > 0
+}
+
+/// How high a held flame rides above the feet, metres: the eyes — the
+/// reference puts a torch out when the HEAD goes under. The arrow's own eye
+/// height (`ranged::ARROW_EYE_MM`), one number for "where the head is".
+pub const FLAME_EYE_M: f32 = crate::ranged::ARROW_EYE_MM as f32 / 1000.0;
+
+/// Is this body's head under the sea? The only water in the world is the
+/// ocean (`survival::water_in_reach`), so it is one compare against
+/// `terrain::SEA_LEVEL` — `+` and `<`, inside wall 1's float list.
+#[inline]
+pub fn submerged(p: &Player) -> bool {
+    p.body.qy as f32 * crate::movement::POS_Y_Q + FLAME_EYE_M < crate::terrain::SEA_LEVEL
 }
 
 /// One tick of burning, returning the whole condition **points** spent —
@@ -192,6 +217,20 @@ mod tests {
         assert!(!is_lit(&dead, &g), "a corpse is not holding a torch up");
         assert_eq!(step(&mut dead, &g), 0);
         assert_eq!(dead.inv[0].cond, 400, "and it spent nothing");
+
+        let mut down = holder(torch(), BTN_LIGHT);
+        down.wounded = true;
+        assert!(!is_lit(&down, &g), "a downed body dropped what it held");
+
+        let mut under = holder(torch(), BTN_LIGHT);
+        under.body.qy =
+            ((crate::terrain::SEA_LEVEL - FLAME_EYE_M - 0.5) / crate::movement::POS_Y_Q) as i32;
+        assert!(submerged(&under), "the fixture's head is under the sea");
+        assert!(!is_lit(&under, &g), "the sea puts a torch out");
+        assert_eq!(step(&mut under, &g), 0, "and it burns nothing there");
+        under.body.qy =
+            ((crate::terrain::SEA_LEVEL - FLAME_EYE_M + 0.5) / crate::movement::POS_Y_Q) as i32;
+        assert!(is_lit(&under, &g), "wading with the head up it burns on");
 
         let mut asleep = holder(torch(), BTN_LIGHT);
         asleep.sleeping = true;

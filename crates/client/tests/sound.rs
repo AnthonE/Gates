@@ -2824,13 +2824,23 @@ fn the_shipped_weapons_are_spread_across_the_curve() {
     let src = std::fs::read_to_string(root.join("weapons.toml")).expect("weapons.toml");
     let mut rows: Vec<(String, u16)> = Vec::new();
     let (mut kind, mut damage) = (None::<String>, None::<u16>);
+    // A row with `lit_damage` is a light that also hits (the torch): half a
+    // rock's blow, a tap rather than a hit, and ON the floor by design — so
+    // it is left out of the spread, like the charge that saturates it.
+    let mut light = false;
     for line in src.lines().chain(std::iter::once("[[weapon]]")) {
         let l = line.trim();
         if l.starts_with("[[") {
             if let (Some(k), Some(d)) = (kind.take(), damage.take()) {
-                rows.push((k, d));
+                if !light {
+                    rows.push((k, d));
+                }
             }
+            light = false;
             continue;
+        }
+        if l.starts_with("lit_damage") {
+            light = true;
         }
         if let Some(v) = l.strip_prefix("kind") {
             kind = v

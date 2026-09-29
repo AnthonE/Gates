@@ -1174,6 +1174,23 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                         Visibility::Hidden,
                         Pickable::IGNORE,
                     ));
+                    // The slot's key, top left and dim — Rust's "show belt
+                    // bar binds". A food slot's key EATS rather than selects
+                    // (`ui::hold::eats_on_key`), so which key is which cell
+                    // is now worth a glance.
+                    cell.spawn((
+                        Text::new((i + 1).to_string()),
+                        super::ui::font_bold(10.0),
+                        TextColor(Color::srgba(0.97, 0.95, 0.88, 0.55)),
+                        super::ui::TEXT_SHADOW,
+                        Node {
+                            position_type: PositionType::Absolute,
+                            left: Val::Px(3.0),
+                            top: Val::Px(1.0),
+                            ..default()
+                        },
+                        Pickable::IGNORE,
+                    ));
                     cell.spawn((
                         CellCount(i),
                         Text::new(""),
@@ -1758,11 +1775,23 @@ pub fn update(
         // a verdict to say while AIMING — the same grammar the build ghost
         // uses below, red reason and all, so a preview that has gone red
         // names the sim's own sentence before the click spends the item.
+        //
+        // **The line is the hand's, not the build latch's.** It used to read
+        // `BUILD TWIG FOUNDATION (hold right)` whatever you held — a
+        // mushroom, a torch, a gun — naming a wheel only the plan opens and
+        // saying nothing about what the thing in your hand does. It now
+        // follows `ui::hold::Click`: the plan builds, a deployable places,
+        // and everything else gets `hold::hand_hint` (eat, read, repair, the
+        // torch's light), or nothing for a hand that only swings.
         let held = core.inv[(net.sel as usize).min(core.inv.len().saturating_sub(1))];
-        let deploy_held =
-            crate::ui::structure::row_for_item(&core.deploy_defs, core.deploy_defs_have, held.item)
-                .is_some();
-        let out = if deploy_held {
+        let click = crate::ui::hold::click_of(
+            &core.catalog,
+            &core.research,
+            &core.deploy_defs,
+            core.deploy_defs_have,
+            held,
+        );
+        let out = if click == crate::ui::hold::Click::Deploy {
             let name = core
                 .catalog
                 .name(held.item as usize)
@@ -1774,10 +1803,14 @@ pub fn update(
                 _ => "",
             };
             if why.is_empty() {
-                format!("PLACE  {name}   (right click)")
+                format!("PLACE  {name}   (left click)")
             } else {
                 format!("PLACE  {name}  — {}", why.to_uppercase())
             }
+        } else if click != crate::ui::hold::Click::Build {
+            // The flame the sim reads: a downed body has dropped its torch.
+            let lit = net.light && !core.wounded && !core.dead;
+            crate::ui::hold::hand_hint(&core.catalog, &core.research, click, held, lit)
         } else {
             match row_for(&core.piece_defs, shape, material) {
                 Some(_) => {
