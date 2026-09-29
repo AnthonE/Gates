@@ -191,6 +191,9 @@ pub struct Replay {
 }
 
 impl Replay {
+    /// Built only beside a replayed `Session` (`Session::replay`), which is
+    /// the desktop's: a page has no recording to play.
+    #[cfg(feature = "native")]
     pub(crate) fn new(
         rec: Recording,
         datagrams: crate::net::DatagramRx,
