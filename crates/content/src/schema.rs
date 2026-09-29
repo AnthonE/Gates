@@ -370,6 +370,12 @@ pub struct Weapon {
     /// the sim — the bake does the division (`range_m` → `range_mm`'s
     /// treatment).
     pub reload_ms: Option<u32>,
+    /// Milliseconds the right mouse must be held before the weapon can
+    /// loose — the draw (`reference/PROJECTILES.md` §6: the hunting bow's
+    /// ~1 s). Only on a `bow`; absent is a weapon that fires from the hip,
+    /// the crossbow's case. Baked to ticks against `TICK_HZ` like
+    /// `reload_ms`.
+    pub draw_ms: Option<u32>,
     /// The rounds this weapon can fire, in **preference order** — the sim
     /// spends the first one the shooter is actually carrying. Required on
     /// `bow`, refused on melee and throwable.

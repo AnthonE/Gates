@@ -116,6 +116,7 @@ fn bow_fixture() -> CombatContent {
         magazine: 0,
         reload_ticks: 0,
         mag_slot: NO_MAG,
+        draw_ticks: 0,
     };
     // The ballistics belong to the round now (`reference/PROJECTILES.md`
     // §9.3), so the fixture arms the arrow rather than the bow.

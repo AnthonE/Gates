@@ -73,6 +73,7 @@ fn armed() -> Box<World> {
         magazine: MAG,
         reload_ticks: RELOAD_TICKS,
         mag_slot: 0,
+        draw_ticks: 0,
     };
     // The bow, on the same table and with no magazine at all — this is what
     // makes `REFUSE_RL_HAND` a real case rather than a code nothing raises.
@@ -88,6 +89,7 @@ fn armed() -> Box<World> {
         magazine: 0,
         reload_ticks: 0,
         mag_slot: NO_MAG,
+        draw_ticks: 0,
     };
     w.combat = c;
     // The survival clock, so `a_death_empties_the_cylinder` has a door to

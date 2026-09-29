@@ -3779,6 +3779,32 @@ impl World {
         frame
     }
 
+    /// Install a player's new input frame, and start a bow's draw on the
+    /// frame's edge (`ranged::draw`): the aim just pressed, or the hand
+    /// changed with it held, puts the shot a full draw away. The relaxed
+    /// bow's own push covers the ordinary case; this is the one it cannot
+    /// see — a weapon brought up already drawn, which would otherwise loose
+    /// on its first tick in the hand.
+    fn take_frame(&mut self, slot: usize, frame: InputFrame) {
+        use crate::input::BTN_AIM;
+        let frame = Self::sanitize_frame(frame);
+        let tick = self.tick;
+        let p = &mut self.players[slot];
+        if frame.buttons & BTN_AIM != 0
+            && (p.frame.buttons & BTN_AIM == 0 || p.frame.sel != frame.sel)
+        {
+            let held = p
+                .inv
+                .get(frame.sel as usize)
+                .filter(|s| s.count > 0)
+                .map_or(crate::gather::NO_ITEM, |s| s.item);
+            if let Some(def) = self.combat.held_ranged(held) {
+                p.next_swing = p.next_swing.max(tick + u64::from(def.draw_ticks));
+            }
+        }
+        p.frame = frame;
+    }
+
     /// `seat` is this command's right to one trust row (`trust.rs`). The
     /// three trust-bearing arms move it into `log_trust`; every other arm
     /// drops it unspent.
@@ -3887,7 +3913,7 @@ impl World {
                     // same reason the frame below is: the arm is one
                     // condition, and a sleeper's verbs do not run anyway.
                     favour[slot] = want.min(crate::rewind::Rewind::max_back());
-                    self.players[slot].frame = Self::sanitize_frame(frame);
+                    self.take_frame(slot, frame);
                 }
             }
             Command::InputPair {
@@ -3906,7 +3932,7 @@ impl World {
                     // double step bit for bit.
                     favour[slot] = want.min(crate::rewind::Rewind::max_back());
                     catchup[slot] = Some(Self::sanitize_frame(prev));
-                    self.players[slot].frame = Self::sanitize_frame(frame);
+                    self.take_frame(slot, frame);
                 }
             }
             Command::Craft {

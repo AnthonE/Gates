@@ -625,6 +625,23 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 }
             }
         }
+        // The draw belongs to the bow: a firearm or a club held drawn is a
+        // number nothing reads. Present, it must bake to a real wait — a
+        // draw that rounds to nothing is a bow that fires from the hip
+        // while its row says otherwise — and fit `RangedDef`'s `u16`.
+        if let Some(ms) = w.draw_ms {
+            if w.kind != WeaponKind::Bow {
+                return Err(format!("weapon `{}`: only a bow carries a draw_ms", w.id));
+            }
+            let ticks = ms as u64 * sim_core::limits::TICK_HZ as u64 / 1000;
+            if ticks == 0 || ticks > u16::MAX as u64 {
+                return Err(format!(
+                    "weapon `{}`: draw_ms {ms} is {ticks} ticks at {} Hz, outside 1..=u16",
+                    w.id,
+                    sim_core::limits::TICK_HZ
+                ));
+            }
+        }
         // Both baked fields are `u16` on `RangedDef`, so the ceiling is the
         // field and not a taste — refused here, where a person reads the
         // message, rather than truncated at the bake.

@@ -342,6 +342,14 @@ pub struct RangedDef {
     /// `sim-core/tests/reload.rs` gates the corner rather than leaving it
     /// to be rediscovered.
     pub mag_slot: u8,
+    /// Ticks the aim (`input::BTN_AIM`) must be held before this weapon can
+    /// loose — the draw, from `draw_ms` (`reference/PROJECTILES.md` §6: the
+    /// hunting bow's ~1 s). Zero is a weapon that fires from the hip, which
+    /// is every weapon but the bow. Paid on `Player::next_swing` like the
+    /// cadence and the reload: a relaxed bow keeps its earliest shot a
+    /// whole draw away (`ranged::draw`), so the clock starts when the aim
+    /// does and no second clock exists to keep in step.
+    pub draw_ticks: u16,
 }
 
 /// A weapon that carries no magazine, in [`RangedDef::mag_slot`].
@@ -377,6 +385,7 @@ impl Default for RangedDef {
             magazine: 0,
             reload_ticks: 0,
             mag_slot: NO_MAG,
+            draw_ticks: 0,
         }
     }
 }
@@ -538,6 +547,7 @@ impl CombatContent {
             magazine: 0,
             reload_ticks: 0,
             mag_slot: NO_MAG,
+            draw_ticks: 0,
         }; MAX_ITEM_DEFS],
         ammo: [AmmoDef {
             speed_mmpt: 0,
@@ -682,6 +692,7 @@ impl CombatContent {
             //     leg band is on the parity surface for a reason and not
             //     by hope.
             limb_pct: 50,
+            draw_ticks: 0,
         };
         c
     }

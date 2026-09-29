@@ -55,6 +55,7 @@ fn bow(break_pct: u16, range_mm: u32) -> CombatContent {
         magazine: 0,
         reload_ticks: 0,
         mag_slot: NO_MAG,
+        draw_ticks: 0,
     };
     c.ammo[ARROW as usize] = AmmoDef {
         speed_mmpt: 1333,

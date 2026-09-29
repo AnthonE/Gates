@@ -550,6 +550,7 @@ fn shot_names_the_shooter_then_the_aim_then_the_ballistics() {
         magazine: 0,
         reload_ticks: 0,
         mag_slot: NO_MAG,
+        draw_ticks: 0,
     };
     w.combat.ammo[ARROW as usize] = AmmoDef {
         speed_mmpt: SPEED_MMPT,
@@ -642,6 +643,7 @@ fn gun_world() -> World {
         magazine: RL_MAG,
         reload_ticks: RL_RELOAD_TICKS,
         mag_slot: 0,
+        draw_ticks: 0,
     };
     w.players[0].inv[0] = ItemStack {
         item: RL_GUN,
@@ -806,6 +808,7 @@ fn an_instant_shot_reads_zero_speed_and_a_reach() {
         magazine: 8,
         reload_ticks: 102,
         mag_slot: 0,
+        draw_ticks: 0,
     };
     w.players[0].inv[0] = ItemStack {
         item: GUN,
@@ -915,6 +918,7 @@ fn impact_names_the_surface_then_x_then_z_then_y() {
         magazine: 0,
         reload_ticks: 0,
         mag_slot: NO_MAG,
+        draw_ticks: 0,
     };
     w.combat.ammo[ARROW as usize] = AmmoDef {
         speed_mmpt: 1_333,

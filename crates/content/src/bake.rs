@@ -871,6 +871,13 @@ impl Content {
                 w.id
             ));
         }
+        let draw_ticks = u16::try_from(w.draw_ms.unwrap_or(0) as u64 * TICK_HZ as u64 / 1000)
+            .map_err(|_| {
+                format!(
+                    "bake: `{}` draw_ms {:?} overflows u16 ticks",
+                    w.id, w.draw_ms
+                )
+            })?;
         let mag_slot = if magazine > 0 {
             // Refused rather than wrapped or dropped. A weapon that lost
             // its slot would fall back to spending straight out of the
@@ -940,6 +947,9 @@ impl Content {
             magazine,
             reload_ticks,
             mag_slot,
+            // The draw (`reference/PROJECTILES.md` §6), validated to a bow
+            // and to a nonzero, `u16` tick count (`validate.rs`).
+            draw_ticks,
         };
         Ok(())
     }

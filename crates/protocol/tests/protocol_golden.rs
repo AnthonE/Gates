@@ -2297,7 +2297,7 @@ fn the_input_golden_fuzzes_the_whole_button_octet() {
          nothing pins that the encoder writes them: widen `input_full`'s \
          draw, or set the missing bits on a named frame the way \
          `rng_entity` sets `sleeping`. The wire width is the target, not \
-         `BTN_MASK` — bits 5–7 name no button and cross whole on purpose \
+         `BTN_MASK` — bit 7 names no button and crosses whole on purpose \
          (`decode_input`'s doc).",
         !ones
     );

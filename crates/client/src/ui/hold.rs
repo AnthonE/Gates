@@ -220,6 +220,14 @@ pub fn hand_hint(
         ),
         Click::Repair => "REPAIR   (left click · hold right: upgrade, rotate, pick up)".to_string(),
         Click::Swing => {
+            // A bow says how it is worked, which a first-time player cannot
+            // guess: the left click alone does nothing with one.
+            if catalog.row(stack.item as usize).draws() {
+                return format!(
+                    "{}   (hold right mouse to draw · left click to loose)",
+                    name()
+                );
+            }
             let Some(row) = held_model(catalog, stack) else {
                 return String::new();
             };
@@ -888,6 +896,24 @@ pub fn held_model(catalog: &ItemCatalog, stack: ItemStack) -> Option<usize> {
     HELD_MODELS.iter().position(|m| m.key == s)
 }
 
+/// The draw of the stack in hand — `(draw_ticks, nock_ticks)` off the
+/// catalog (wire v82) — or `None` for anything that fires from the hip or
+/// does not fire. Clamped for [`held_in_hand`]'s reason.
+pub fn draw_in_hand(catalog: &ItemCatalog, inv: &[ItemStack], sel: u8) -> Option<(u8, u8)> {
+    if inv.is_empty() {
+        return None;
+    }
+    let s = inv[(sel as usize).min(inv.len() - 1)];
+    let row = catalog.row(s.item as usize);
+    (s.count > 0 && row.draws()).then_some((row.draw_ticks, row.nock_ticks))
+}
+
+/// Does the pack hold any arrows? Asked before the viewmodel draws a loose
+/// the sim would refuse for an empty quiver.
+pub fn carries_arrows(catalog: &ItemCatalog, inv: &[ItemStack]) -> bool {
+    inv.iter().any(|s| s.count > 0 && is_arrow(catalog, s.item))
+}
+
 /// Whether an item is an arrow. A loose one is drawn standing in the ground
 /// where it fell (`render::structures`), not as the generic pouch.
 pub fn is_arrow(catalog: &ItemCatalog, item: u16) -> bool {
@@ -1504,5 +1530,37 @@ mod tests {
         assert!(!Held::Other.places() && !Held::Other.repairs());
         // Only the plan previews, because only the plan places.
         assert!(Held::Plan.shows_ghost() && !Held::Hammer.shows_ghost());
+    }
+
+    /// The draw rides the catalog (wire v82): a bow in hand draws, says how
+    /// it is worked, and a hatchet does neither.
+    #[test]
+    fn a_bow_draws_and_says_so() {
+        let mut c = catalog_with(&["Hunting Bow", "Stone Hatchet", "Wooden Arrow"]);
+        c.rows[0] = protocol::ItemRow {
+            stack_max: 1,
+            draw_ticks: 30,
+            nock_ticks: 60,
+            ..protocol::ItemRow::EMPTY
+        };
+        let stack = |item| ItemStack {
+            item,
+            count: 1,
+            cond: 0,
+            skin: 0,
+        };
+        let inv = [stack(0), stack(1)];
+        assert_eq!(draw_in_hand(&c, &inv, 0), Some((30, 60)));
+        assert_eq!(draw_in_hand(&c, &inv, 1), None);
+        assert_eq!(draw_in_hand(&c, &[], 0), None);
+        let research = sim_core::research::ResearchContent::EMPTY;
+        let hint = hand_hint(&c, &research, Click::Swing, stack(0), false);
+        assert!(
+            hint.contains("right mouse") && hint.contains("HUNTING BOW"),
+            "{hint}"
+        );
+        assert!(hand_hint(&c, &research, Click::Swing, stack(1), false).is_empty());
+        assert!(!carries_arrows(&c, &inv));
+        assert!(carries_arrows(&c, &[stack(1), stack(2)]));
     }
 }

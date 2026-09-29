@@ -176,6 +176,7 @@ fn fixture() -> CombatContent {
         magazine: 8,
         reload_ticks: 102,
         mag_slot: 0,
+        draw_ticks: 0,
     };
     c.ranged[BOW as usize] = RangedDef {
         damage: 30,
@@ -192,6 +193,7 @@ fn fixture() -> CombatContent {
         magazine: 0,
         reload_ticks: 0,
         mag_slot: NO_MAG,
+        draw_ticks: 0,
     };
     c.ammo[ARROW as usize] = sim_core::combat::AmmoDef {
         speed_mmpt: 1333,

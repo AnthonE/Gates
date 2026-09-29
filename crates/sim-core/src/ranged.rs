@@ -125,7 +125,7 @@ use crate::collide::{
 use crate::combat::{held_item, CombatContent};
 use crate::craft::{inv_count, inv_take};
 use crate::gather::NO_ITEM;
-use crate::input::BTN_PRIMARY;
+use crate::input::{BTN_AIM, BTN_PRIMARY};
 use crate::limits::{
     ARROW_STEP_MM, MAX_ARROWS, MAX_ARROW_LIFE_TICKS, MAX_ARROW_SUBSTEPS, MAX_HITSCAN_MARK_SAMPLES,
     MAX_HITSCAN_SAMPLES, MAX_MAGS, MAX_PLAYERS,
@@ -621,6 +621,16 @@ pub fn draw(
     // The cadence and the round are paid there, once, so nothing here may
     // charge for a shot it is not resolving.
     if def.hitscan {
+        return true;
+    }
+    // **A bow looses only from a full draw** (`reference/PROJECTILES.md`
+    // §6): the aim held for `draw_ticks`. Relaxed, it keeps its earliest
+    // shot a whole draw away, so the draw's clock starts when the aim does;
+    // after a shot the cadence below runs, and a draw held through it is
+    // ready when the cadence is.
+    if def.draw_ticks > 0 && p.frame.buttons & BTN_AIM == 0 {
+        // From the next tick: an aim that begins then is full a draw later.
+        p.next_swing = p.next_swing.max(tick + 1 + u64::from(def.draw_ticks));
         return true;
     }
     if p.frame.buttons & BTN_PRIMARY == 0 || tick < p.next_swing {

@@ -978,7 +978,13 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// client knows a left click with food in hand is a meal and not a swing.
 /// Landed on its branch as v80, beside the 4,096 m island's v80 on `main`;
 /// the merge took the next number and regenerated every fixture.
-pub const PROTO_VER: u16 = 81;
+/// v82 — the bow is drawn (`reference/PROJECTILES.md` §6). Input bit 6 means
+/// `BTN_AIM`, the right mouse held with a weapon that draws, and joins
+/// `BTN_MASK`; no layout moves, but a v81 server would refuse the bit as
+/// forged. Each catalog row grows two bytes after `health`
+/// (`ItemRow::draw_ticks`, `nock_ticks`) so a client knows what draws and
+/// when the draw is full.
+pub const PROTO_VER: u16 = 82;
 
 /// This game's slug in the elo catalog.
 ///
@@ -4339,7 +4345,7 @@ mod tests {
 
     /// An unmeant button bit crosses the codec intact — pinned, because
     /// both wrong answers are one edit away (`decode_input`'s doc has the
-    /// decision). Masking bit 6 off here would hide the forgery the
+    /// decision). Masking bit 7 off here would hide the forgery the
     /// server's domain wall exists to count (`accept_input`,
     /// `input_dg_forged`); refusing it here would re-route that counter to
     /// the generic `input_dg_bad` and tell the operator nothing. The codec
@@ -4349,7 +4355,7 @@ mod tests {
         let mut dg = InputDatagram::new(1, 2, 3);
         let f = InputFrame {
             seq: 9,
-            buttons: sim_core::input::BTN_MASK | (1 << 6),
+            buttons: sim_core::input::BTN_MASK | (1 << 7),
             ..InputFrame::default()
         };
         dg.push(f).unwrap();
@@ -4358,7 +4364,7 @@ mod tests {
         let back = decode_input(&buf[..len]).unwrap();
         assert_eq!(
             back.frames()[0].buttons,
-            sim_core::input::BTN_MASK | (1 << 6),
+            sim_core::input::BTN_MASK | (1 << 7),
             "the codec narrowed or dropped a button bit — the refusal \
              belongs to accept_input, where it is counted as forged"
         );

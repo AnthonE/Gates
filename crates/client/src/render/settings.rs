@@ -1337,12 +1337,18 @@ pub fn teardown(mut commands: Commands, roots: Query<Entity, With<SettingsRoot>>
 /// exist yet (menu) and may be rebuilt later (a second world), and a setting
 /// that only applied while the settings screen was open would be a setting
 /// that forgot itself on the way out.
-pub fn apply_view(settings: Res<Settings>, mut cam: Query<&mut Projection, With<EyeCam>>) {
+pub fn apply_view(
+    settings: Res<Settings>,
+    zoom: Option<Res<super::viewmodel::DrawZoom>>,
+    mut cam: Query<&mut Projection, With<EyeCam>>,
+) {
     let Ok(mut projection) = cam.single_mut() else {
         return;
     };
     if let Projection::Perspective(p) = &mut *projection {
-        let want = settings.fov_deg.to_radians();
+        // A drawn bow narrows the view (`viewmodel::DrawZoom`).
+        let z = zoom.map_or(0.0, |z| z.0.clamp(0.0, 1.0));
+        let want = settings.fov_deg.to_radians() * (1.0 - super::viewmodel::DRAW_ZOOM * z);
         if (p.fov - want).abs() > f32::EPSILON {
             p.fov = want;
         }

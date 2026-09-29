@@ -160,6 +160,7 @@ fn shooter_combat(structure: u16) -> CombatContent {
         magazine: 0,
         reload_ticks: 0,
         mag_slot: NO_MAG,
+        draw_ticks: 0,
     };
     c.ammo[ARROW as usize] = AmmoDef {
         speed_mmpt: 1333,
@@ -180,6 +181,7 @@ fn shooter_combat(structure: u16) -> CombatContent {
         magazine: 8,
         reload_ticks: 102,
         mag_slot: 0,
+        draw_ticks: 0,
     };
     c
 }

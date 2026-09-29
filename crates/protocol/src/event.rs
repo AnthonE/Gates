@@ -39,7 +39,7 @@ use sim_core::limits::{
 use sim_core::research::{ResearchRow, NO_RECIPE};
 
 /// Longest event-lane message. Sized by the worst subtype (a full catalog
-/// batch ≈ 290 B since v81's three eat columns — 29 header bits and 286 a
+/// batch ≈ 306 B since v82's two draw bytes — 29 header bits and 302 a
 /// row; `catalog_batches_walk_the_table_within_cap` is the one that
 /// measures rather than remembers — a full slot-sync batch
 /// ≈ 258 B) with headroom; the client-side framer refuses past it.
@@ -696,6 +696,18 @@ pub struct ItemRow {
     pub food: u16,
     pub water: u16,
     pub health: u16,
+    /// The draw (v82, `combat::RangedDef::draw_ticks`): ticks the right
+    /// mouse must be held before a shot will loose, 0 for anything that
+    /// fires from the hip or does not fire. With [`ItemRow::nock_ticks`] it
+    /// is what lets the client hold `BTN_AIM` for the right item and draw
+    /// the bow reaching full draw on the tick the sim will let it loose.
+    /// Ticks in a byte: the sim's own resolution, and 8.5 s is a ceiling
+    /// no draw nears (the bake refuses one that would not fit).
+    pub draw_ticks: u8,
+    /// The cadence after a loose, in ticks — `RangedDef::rate_ticks` on a
+    /// weapon that draws, 0 on everything else. A draw held through it is
+    /// ready when it ends (`ranged::draw`).
+    pub nock_ticks: u8,
 }
 
 impl ItemRow {
@@ -707,7 +719,14 @@ impl ItemRow {
         food: 0,
         water: 0,
         health: 0,
+        draw_ticks: 0,
+        nock_ticks: 0,
     };
+
+    /// Does a right mouse draw this item before it looses?
+    pub fn draws(&self) -> bool {
+        self.draw_ticks > 0
+    }
 
     /// Does the eat verb accept this item? `ConsumableDef::is_food`'s rule
     /// on the same three numbers.
@@ -734,6 +753,9 @@ impl ItemRow {
             && self.armor_pct as u32 <= ARMOR_MAX_PCT
             && (self.wear_slot != WEAR_NONE || self.armor_pct == 0)
             && (self.cond_max == 0 || self.stack_max <= 1)
+            // A nock is the cadence of a weapon that draws; on anything
+            // else it is a number nothing reads.
+            && (self.nock_ticks == 0 || self.draw_ticks > 0)
     }
 }
 
@@ -763,6 +785,10 @@ impl ItemRow {
 /// v81 added the eat columns (`food`, `water`, `health`), the fourth turn:
 /// which items are food lives in `content/consumables.toml`, and the belt
 /// could not eat from a left click without knowing.
+///
+/// v82 added the draw (`draw_ticks`, `nock_ticks`), the fifth: the right
+/// mouse draws a bow, and the client has to know which items draw and when
+/// the draw is full.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ItemCatalog {
     pub names: [[u8; MAX_ITEM_NAME_BYTES]; MAX_ITEM_DEFS],
@@ -1788,6 +1814,9 @@ pub fn encode_event_catalog(
         w.write(row.food as u32, 16)?;
         w.write(row.water as u32, 16)?;
         w.write(row.health as u32, 16)?;
+        // The draw (v82): bytes, because they are ticks.
+        w.write(row.draw_ticks as u32, 8)?;
+        w.write(row.nock_ticks as u32, 8)?;
     }
     Ok((w.finish(), count))
 }
@@ -3493,6 +3522,8 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     food: r.read(16)? as u16,
                     water: r.read(16)? as u16,
                     health: r.read(16)? as u16,
+                    draw_ticks: r.read(8)? as u8,
+                    nock_ticks: r.read(8)? as u8,
                 };
                 // Both fields fit their widths by construction; what the
                 // width cannot say is that 91 % is over the cap or that a
@@ -4937,6 +4968,9 @@ mod tests {
                 food: u16::MAX - i as u16,
                 water: u16::MAX - 2 * i as u16,
                 health: u16::MAX - 3 * i as u16,
+                // The draw (v82) at its corner, distinct per row.
+                draw_ticks: u8::MAX - i as u8,
+                nock_ticks: u8::MAX - 2 * i as u8,
             };
             cat.set(i, &name, row).unwrap();
         }
