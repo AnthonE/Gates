@@ -1776,18 +1776,18 @@ mod tests {
             + 64 * 25                       // charges
             + 512 * 22                      // spent arrows (format 10)
             + 256 * 32                      // loose ground stacks (format 14; 8 B stack at 16)
-            + 32_768 * 23; // harvested slots (format 15: the occupant and the sapling's clock)
-                           // 54 -> 56 at format 5: a ninth section count is a `u16` in the head.
-                           // 56 -> 62 at format 10: a tenth count, plus the
-                           // spent store's `u32` eviction counter beside the
-                           // body one. 62 -> 64 at format 14: an eleventh
-                           // count for the loose stacks. No head field beside
-                           // it — `next_id` is derived by the loader from the
-                           // ids it installs (`GroundItems::restore`), unlike
-                           // a bag's, and a head field duplicating a
-                           // derivable one is a second place for it to be
-                           // wrong. 64 -> 90 at format 15: the admin's sky and
-                           // clock (`ENV_BYTES`).
+            + 131_072 * 23; // harvested slots (format 15: the occupant and the sapling's clock)
+                            // 54 -> 56 at format 5: a ninth section count is a `u16` in the head.
+                            // 56 -> 62 at format 10: a tenth count, plus the
+                            // spent store's `u32` eviction counter beside the
+                            // body one. 62 -> 64 at format 14: an eleventh
+                            // count for the loose stacks. No head field beside
+                            // it — `next_id` is derived by the loader from the
+                            // ids it installs (`GroundItems::restore`), unlike
+                            // a bag's, and a head field duplicating a
+                            // derivable one is a second place for it to be
+                            // wrong. 64 -> 90 at format 15: the admin's sky and
+                            // clock (`ENV_BYTES`).
         assert_eq!(HEAD_BYTES, 90);
         // 4 id + 12 position + 8 stack + 8 deadline.
         assert_eq!(GROUND_ITEM_BYTES, 32);
@@ -1867,8 +1867,10 @@ mod tests {
         // the owned set.
         // 1_216_078 → 1_220_174 at format 17: a lock remembers ten, two
         // more four-byte ids on each of 512 locks.
+        // 1_220_174 → 3_481_166 at the 4,096 m island: four times the
+        // harvested-slot store, 23 bytes × 98,304 more.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 1_220_174,
+            WORLD_SAVE_MAX_BYTES, 3_481_166,
             "the world save ceiling moved"
         );
     }

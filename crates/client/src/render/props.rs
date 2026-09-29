@@ -123,6 +123,9 @@ const PINE_WHORL_BANDS: [u8; 5] = [1, 1, 2, 2, 2];
 #[allow(dead_code, reason = "pairs with pine_mesh, the far-LOD silhouette")]
 const PINE_MESH_POOL: usize = 4;
 
+/// A tree card's material per tint (`far_trees`).
+pub type CardMaterials = [Handle<super::far_trees::TreeCardMaterial>; TINT_POOL];
+
 /// Prop meshes and materials, built once and shared so a forest is instances
 /// rather than draw calls (`DESIGN.md` §9).
 #[derive(Resource)]
@@ -142,6 +145,10 @@ pub struct PropAssets {
     /// become one of ~105, in the depth prepass, the normal prepass, the main
     /// pass and all four shadow cascades alike.
     impostors: Vec<Handle<Mesh>>,
+    /// The far part as a turning card (`far_trees`), per variant, and its
+    /// material per tint. `None` in the headless tier, where the lathed hull
+    /// above stands in.
+    pub cards: Option<(Vec<Handle<Mesh>>, CardMaterials)>,
     blob: Handle<Mesh>,
     boulder: Handle<Mesh>,
     stump: Handle<Mesh>,
@@ -417,6 +424,11 @@ impl PropRing {
     }
     pub fn is_full(&self) -> bool {
         self.built.len() >= super::terrain_mesh::RING_CHUNKS
+    }
+    /// Every chunk either ring has trees standing in — what the far cards
+    /// step aside for (`far_trees`).
+    pub fn chunks(&self) -> impl Iterator<Item = (i32, i32)> + '_ {
+        self.built.keys().chain(self.outer.keys()).copied()
     }
     /// Chunks in the tree-only outer ring. Read by gates, not by the bar.
     pub fn outer_len(&self) -> usize {
@@ -1743,6 +1755,7 @@ pub fn assets(
         pines: conifers.iter().map(|(b, _, _)| b.clone()).collect(),
         needles: conifers.iter().map(|(_, n, _)| n.clone()).collect(),
         impostors: conifers.iter().map(|(_, _, f)| f.clone()).collect(),
+        cards: None,
         // Subdivision levels are picked per role against how close a player
         // gets and how many stand in a ring, not uniformly. 20·4^sub
         // triangles: the boulder is 1,280, the nodes 320, the bush 320.
@@ -1926,6 +1939,7 @@ pub fn stream(
     world: Res<WorldId>,
     eye: Res<Eye>,
     lod: Res<tree::TreeLod>,
+    cards: Option<Res<super::far_trees::TreeCards>>,
 ) {
     let a = store.get_or_insert_with(|| {
         let card = server.load_with_settings(BUSH_CARD_ATLAS, super::textures::atlas(true));
@@ -1939,6 +1953,11 @@ pub fn stream(
             models,
         )
     });
+    if a.cards.is_none() {
+        if let Some(c) = cards.as_ref() {
+            a.cards = Some((c.ring_meshes.clone(), c.ring_materials.clone()));
+        }
+    }
 
     let cx = (eye.pos.x / CHUNK_M).floor() as i32;
     let cz = (eye.pos.z / CHUNK_M).floor() as i32;
@@ -2120,7 +2139,7 @@ pub fn stream(
 /// remainder rather than panicking or wrapping, because a pool is whatever
 /// the asset directory happened to hold and a missing `.glb` must not be a
 /// crash.
-fn species_variant(slot: &terrain::Slot, pool: usize) -> usize {
+pub(super) fn species_variant(slot: &terrain::Slot, pool: usize) -> usize {
     if pool == 0 {
         return 0;
     }
@@ -2183,23 +2202,37 @@ pub fn spawn_outer_tree(
     // ridge. `terrain_mesh::far_ground_y` has the arithmetic and the one place
     // it is only an approximation.
     let y = super::terrain_mesh::far_ground_y(world.seed, &world.haven, slot.x, slot.z);
+    let fellable = Fellable {
+        key,
+        variant,
+        base_y: y,
+        yaw,
+        part: FellPart::Vanish,
+        felled: false,
+    };
+    let transform = Transform {
+        translation: Vec3::new(slot.x, y - SINK_M, slot.z),
+        rotation: Quat::from_rotation_y(yaw),
+        scale: Vec3::splat(slot.scale),
+    };
+    // The card where the client has one — two triangles for the hull's 105,
+    // and a tree's own silhouette rather than a lathed cone.
+    if let Some((meshes, mats)) = &a.cards {
+        commands.entity(parent).with_child((
+            fellable,
+            Grow { base: slot.scale },
+            Mesh3d(meshes[variant % meshes.len()].clone()),
+            MeshMaterial3d(mats[tint_of(key)].clone()),
+            transform,
+        ));
+        return;
+    }
     commands.entity(parent).with_child((
-        Fellable {
-            key,
-            variant,
-            base_y: y,
-            yaw,
-            part: FellPart::Vanish,
-            felled: false,
-        },
+        fellable,
         Grow { base: slot.scale },
         Mesh3d(a.impostors[variant].clone()),
         MeshMaterial3d(a.foliage[tint_of(key)].clone()),
-        Transform {
-            translation: Vec3::new(slot.x, y - SINK_M, slot.z),
-            rotation: Quat::from_rotation_y(yaw),
-            scale: Vec3::splat(slot.scale),
-        },
+        transform,
     ));
 }
 
@@ -2453,15 +2486,29 @@ pub fn spawn_slot(
     // is what the hull's own colours want and what makes the far forest ONE
     // material at six meshes. The bush already banks on that shader path.
     if is_tree {
-        e.with_child((
-            fellable(FellPart::Far),
-            Topple { t: -1.0 },
-            Grow { base: slot.scale },
-            Mesh3d(a.impostors[variant].clone()),
-            MeshMaterial3d(a.foliage[tint].clone()),
-            tree::lod_band(&lod.far),
-            transform,
-        ));
+        // The card where the client has one (`far_trees`); the lathed hull in
+        // the headless tier.
+        if let Some((meshes, mats)) = &a.cards {
+            e.with_child((
+                fellable(FellPart::Far),
+                Topple { t: -1.0 },
+                Grow { base: slot.scale },
+                Mesh3d(meshes[variant % meshes.len()].clone()),
+                MeshMaterial3d(mats[tint].clone()),
+                tree::lod_band(&lod.far),
+                transform,
+            ));
+        } else {
+            e.with_child((
+                fellable(FellPart::Far),
+                Topple { t: -1.0 },
+                Grow { base: slot.scale },
+                Mesh3d(a.impostors[variant].clone()),
+                MeshMaterial3d(a.foliage[tint].clone()),
+                tree::lod_band(&lod.far),
+                transform,
+            ));
+        }
     }
 }
 

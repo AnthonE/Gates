@@ -17,10 +17,10 @@ use sim_core::gather::GatherContent;
 const SEED: u64 = 20_260_731;
 /// The canonical dev spawn point, guarded walkable in sim-core
 /// `world::tests` — walkable terrain is also foundation-buildable.
-const SPAWN: (f32, f32) = (1024.0, 1024.0);
+const SPAWN: (f32, f32) = (2048.0, 2048.0);
 /// The spawn point's build cell: (1024 m, 1024 m) / 3 m.
-const CX: u16 = 341;
-const CZ: u16 = 341;
+const CX: u16 = 682;
+const CZ: u16 = 682;
 
 fn id_of(slot: usize) -> u32 {
     (1 << 8) | slot as u32

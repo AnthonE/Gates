@@ -471,7 +471,7 @@ pub const CHAT_LOCAL_CM: i64 = 2_000;
 /// a file written under the wider cap with more than the old 16,384 does
 /// not load on a shard built before it — the cap is a bound, not a layout,
 /// and `WORLD_SAVE_FORMAT` did not move for it.
-pub const MAX_SLOT_LIVES: usize = 32_768;
+pub const MAX_SLOT_LIVES: usize = 131_072;
 
 /// Lines in the direct-mapped memo of `terrain::scatter` that makes the
 /// occupant collision query affordable (occupy.rs). Sized past the
@@ -505,9 +505,9 @@ pub const MAX_PIECE_COSTS: usize = 2;
 pub const MAX_PIECES: usize = 8_192;
 
 /// Build-grid coordinate ceiling: cells index 0..MAX_BUILD_COORD on each
-/// axis, matching the wire's 10-bit cell fields (the 2,048 m island spans
-/// ~683 3 m cells; foundations further out die on the terrain rule first).
-pub const MAX_BUILD_COORD: usize = 1_024;
+/// axis, matching the wire's 11-bit cell fields (the 4,096 m island spans
+/// ~1,366 3 m cells; foundations further out die on the terrain rule first).
+pub const MAX_BUILD_COORD: usize = 2_048;
 
 /// Build levels (vertical storeys) per cell, 0-based. The wire carries the
 /// level in 3 bits — exactly this range. Proposed default, DECISIONS.md

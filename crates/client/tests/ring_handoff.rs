@@ -175,7 +175,7 @@ fn chunk_of(x_m: f32, z_m: f32) -> (i32, i32) {
 fn walking_into_the_treeline_takes_the_hulls_down() {
     // The island's middle, so both rings are entirely on land and full of
     // trees; the exact spot is not the claim.
-    let (x0, z0) = (1024.0, 1024.0);
+    let (x0, z0) = (2048.0, 2048.0);
     let mut app = app_at(x0, z0);
     let frames = settle(&mut app);
     {
@@ -253,7 +253,7 @@ fn walking_into_the_treeline_takes_the_hulls_down() {
 /// again, and only the outer ring's.
 #[test]
 fn walking_back_out_hands_the_chunks_over_the_other_way() {
-    let (x0, z0) = (1024.0, 1024.0);
+    let (x0, z0) = (2048.0, 2048.0);
     let mut app = app_at(x0, z0);
     settle(&mut app);
     let x1 = x0 + 3.0 * CHUNK_M;
@@ -294,7 +294,7 @@ fn walking_back_out_hands_the_chunks_over_the_other_way() {
 /// chunk is built, so there is no frame in which a player sees both.
 #[test]
 fn no_frame_of_the_walk_shows_both() {
-    let (x0, z0) = (1024.0, 1024.0);
+    let (x0, z0) = (2048.0, 2048.0);
     let mut app = app_at(x0, z0);
     settle(&mut app);
     // One chunk per step, the way a walk actually crosses chunk edges.

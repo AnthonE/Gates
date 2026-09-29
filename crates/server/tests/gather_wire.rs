@@ -384,7 +384,7 @@ fn a_swing_reaches_every_client_not_just_the_swinger() {
     let stats = ShardStats::default();
     let mut core = Box::new(ShardCore::new(SEED));
     core.world.gather = GatherContent::probe_fixture();
-    core.world.dev_spawn = Some((1024.0, 1024.0));
+    core.world.dev_spawn = Some((2048.0, 2048.0));
     core.catalog = probe_catalog();
     assert!(core.connect(0, id_of(0)));
     assert!(core.connect(1, id_of(1)));

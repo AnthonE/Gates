@@ -140,9 +140,12 @@ fn neighbouring_columns_in_one_band_are_bit_equal_flush() {
             flush_pairs > 0,
             "seed {seed}: no adjacent land pair shares a band — the identity went untested"
         );
+        // A quarter since the 4,096 m island (2026-09-28): its centre is
+        // rolling ground between two ranges, measured 34%, where the old
+        // island's was a shelf.
         if seed == SEEDS[0] {
             assert!(
-                flush_pairs * 2 > land_pairs,
+                flush_pairs * 4 > land_pairs,
                 "shipped seed: only {flush_pairs} of {land_pairs} adjacent land pairs are \
                  flush — the lattice is not doing its job on the island that ships"
             );

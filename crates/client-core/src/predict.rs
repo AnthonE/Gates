@@ -602,7 +602,7 @@ mod tests {
         let seed = 20260731u64;
         let mut world = World::new(seed);
         world.build = BuildContent::probe_fixture();
-        world.dev_spawn = Some((1024.5, 1024.5));
+        world.dev_spawn = Some((2047.5, 2047.5));
         world.tick(&[Command::Join { id: 7 }]);
         world.players[0].inv[0] = ItemStack {
             item: 0,
@@ -614,8 +614,8 @@ mod tests {
             Command::Place {
                 id: 7,
                 row: 0,
-                cx: 341,
-                cz: 341,
+                cx: 682,
+                cz: 682,
                 level: 0,
                 loc: LOC_PLANE,
                 freehand: false,
@@ -624,8 +624,8 @@ mod tests {
             Command::Place {
                 id: 7,
                 row: 1,
-                cx: 341,
-                cz: 341,
+                cx: 682,
+                cz: 682,
                 level: 0,
                 loc: LOC_EDGE_XLO,
                 freehand: false,
@@ -663,7 +663,7 @@ mod tests {
         assert_eq!(p.mispredictions, 0, "mirror and server must agree");
         let x = p.position()[0];
         assert!(
-            x >= 341.0 * 3.0 + 0.5,
+            x >= 682.0 * 3.0 + 0.5,
             "the wall never engaged: x {x} walked through the slab"
         );
     }

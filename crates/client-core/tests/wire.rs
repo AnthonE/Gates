@@ -433,8 +433,8 @@ fn an_impacts_weapon_crosses_whole() {
 ///
 /// **The forge is bit-exact and paired with a control**, `a_shot_with_no_
 /// speed_is_malformed`'s discipline: the header is 11 bits and the writer
-/// packs LSB-first, so the fields land at bit 11 (qx, 17), 28 (qy, 14), 42
-/// (qz, 17), **59 (surf, 2)** and 61 (kind, 2). Setting both surf bits
+/// packs LSB-first, so the fields land at bit 11 (qx, 18), 29 (qy, 14), 43
+/// (qz, 18), **61 (surf, 2)** and 63 (kind, 2). Setting both surf bits
 /// makes 3; the control sets only the low one, which is `SURF_WORLD` and
 /// must still decode.
 #[test]
@@ -444,10 +444,10 @@ fn an_unknown_impact_surface_is_malformed() {
     let len =
         encode_event_impact(0xA179, -312, 0x58A3, SURF_GROUND, IMPACT_ARROW, &mut buf).unwrap();
 
-    // Control: bit 59 is byte 7, offset 3 — set it alone and the surface
+    // Control: bit 61 is byte 7, offset 5 — set it alone and the surface
     // reads as `SURF_WORLD`, a kind this build knows.
     let mut control = buf[..len].to_vec();
-    control[7] |= 0b0000_1000;
+    control[7] |= 0b0010_0000;
     assert!(
         c.on_stream(&control).is_ok(),
         "the control must decode, or the forge below proves nothing"
@@ -455,7 +455,7 @@ fn an_unknown_impact_surface_is_malformed() {
     assert_eq!(c.pop_impact().map(|i| i.surf), Some(SURF_WORLD));
 
     let mut forged = buf[..len].to_vec();
-    forged[7] |= 0b0001_1000;
+    forged[7] |= 0b0110_0000;
     assert!(
         c.on_stream(&forged).is_err(),
         "a surface kind past SURF_BUILT must be refused, not drawn"

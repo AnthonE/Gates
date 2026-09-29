@@ -117,11 +117,10 @@ fn naive(seed: u64, ox: f32, oz: f32, n: usize, step: f32, drop: f32) -> Attrs {
             // shipped path has fed `splat_from` the carved pair since the
             // carve was armed, and `terrain_mesh`'s `sl` branch says so in as
             // many words.
-            let mut w = terrain::splat_from(
-                y,
-                terrain::moisture(seed, x, z),
-                terrain::ground_slope(seed, haven, x, z),
-            );
+            //
+            // At zero slope since 2026-09-28: the mesh carries the biome
+            // weights and the shader decides the cliff per pixel.
+            let mut w = terrain::splat_from(y, terrain::moisture(seed, x, z), 0.0);
             // …and the road, on the same guard the shipped path applies it
             // under. `road_band` is the published law rather than a rebuild of
             // it: what this side is proving is that the optimised path asks it
@@ -504,12 +503,9 @@ fn the_far_pitch_is_bit_identical_to_the_naive_build() {
 /// version of this test stayed green under a forced `grid_slope = true`.
 #[test]
 fn an_unshipped_origin_and_pitch_still_agree() {
-    for (label, ox, oz, n, step) in [
-        ("odd pitch on a bank", 428.0f32, 1398.0f32, 24usize, 1.7f32),
-        ("sub-metre pitch on a bank", 485.0, 1375.0, 20, 0.4),
-    ] {
-        // `splat_from`'s cliff ramp spans tan(50°)·0.8 … ·1.2; a patch that
-        // does not reach into it cannot tell two slopes apart.
+    // `splat_from`'s cliff ramp spans tan(50°)·0.8 … ·1.2; a patch that
+    // does not reach into it cannot tell two slopes apart.
+    let range = |ox: f32, oz: f32, n: usize, step: f32| {
         let (mut lo, mut hi) = (f32::INFINITY, 0.0f32);
         for iz in 0..n {
             for ix in 0..n {
@@ -518,6 +514,35 @@ fn an_unshipped_origin_and_pitch_still_agree() {
                 hi = hi.max(s);
             }
         }
+        (lo, hi)
+    };
+    // The banks are FOUND, the coast chunk's way: the first origin on a
+    // coarse walk whose patch straddles the band. The fractional offsets
+    // keep the origin off the lattice, which is the other half of the point.
+    let bank = |n: usize, step: f32, skip: usize| {
+        let c = terrain::ISLAND_SIZE * 0.5;
+        (0..128 * 128)
+            .map(|k| {
+                (
+                    c - 1024.0 + (k % 128) as f32 * 16.3,
+                    c - 1024.0 + (k / 128) as f32 * 16.7,
+                )
+            })
+            .filter(|&(x, z)| terrain::slope(SEED, x, z) > 0.6)
+            .filter(|&(x, z)| {
+                let (lo, hi) = range(x, z, n, step);
+                lo < 1.19 * 1.2 && hi > 1.19 * 0.8
+            })
+            .nth(skip)
+            .expect("no bank on the shipped seed")
+    };
+    let odd = bank(24, 1.7, 0);
+    let sub = bank(20, 0.4, 1);
+    for (label, ox, oz, n, step) in [
+        ("odd pitch on a bank", odd.0, odd.1, 24usize, 1.7f32),
+        ("sub-metre pitch on a bank", sub.0, sub.1, 20, 0.4),
+    ] {
+        let (lo, hi) = range(ox, oz, n, step);
         assert!(
             lo < 1.19 * 1.2 && hi > 1.19 * 0.8,
             "{label}: slopes {lo:.3}..{hi:.3} miss the cliff band — a wrong slope \

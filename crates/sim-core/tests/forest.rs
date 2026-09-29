@@ -312,15 +312,17 @@ fn understory(seed: u64) -> Understory {
 fn the_brush_is_a_split_of_the_litter_channel_and_nothing_else() {
     // A pure forest-litter ground: every draw lands in channel 2.
     let litter = [0u8, 0, 255, 0];
-    let (mut brush, mut twig) = (0u32, 0u32);
+    let (mut brush, mut twig, mut sprig) = (0u32, 0u32, 0u32);
     for roll in 0..255u64 {
         match terrain::kind_from_splat(litter, roll) {
             Clutter::Brush => brush += 1,
             Clutter::Twig => twig += 1,
+            // The litter channel's second split (`SPRIG_SHARE_PERMILLE`).
+            Clutter::Sprig => sprig += 1,
             other => panic!("pure litter ground drew {other:?}"),
         }
     }
-    let share = f64::from(brush) / f64::from(brush + twig) * 1000.0;
+    let share = f64::from(brush) / f64::from(brush + twig + sprig) * 1000.0;
     println!("pure-litter ground: brush {brush} twig {twig} = {share:.1} per-mille");
     // One roll of slack each way: the interval is integer arithmetic over 255
     // steps, so the achievable share is quantised to about 4 per-mille.
@@ -331,7 +333,8 @@ fn the_brush_is_a_split_of_the_litter_channel_and_nothing_else() {
          {BRUSH_SHARE_PERMILLE} `BRUSH_SHARE_PERMILLE` declares"
     );
 
-    // The other three channels are untouched by the split.
+    // The other channels are untouched by the split. The grass channel's
+    // own split, the stones in the turf, is its own and is allowed.
     for (ch, want) in [
         (0usize, Clutter::Pebble),
         (1, Clutter::Tuft),
@@ -340,9 +343,12 @@ fn the_brush_is_a_split_of_the_litter_channel_and_nothing_else() {
         let mut w = [0u8; 4];
         w[ch] = 255;
         for roll in 0..255u64 {
+            let got = terrain::kind_from_splat(w, roll);
+            if ch == 1 && got == Clutter::Stone {
+                continue;
+            }
             assert_eq!(
-                terrain::kind_from_splat(w, roll),
-                want,
+                got, want,
                 "channel {ch} drew something other than {want:?} — the brush split \
                  has leaked out of channel 2"
             );

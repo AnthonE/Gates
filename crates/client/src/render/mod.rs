@@ -43,6 +43,7 @@ pub mod bodies;
 // `Session`. See `render/screen.rs` for the half both targets keep.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod boot;
+pub mod boulders;
 pub mod capture;
 // The trailer camera: a recorded session through a scripted lens, encoded as
 // it renders. Native only — it pipes frames to an `ffmpeg` process.
@@ -58,6 +59,7 @@ pub mod collider_debug;
 // of what a sky-facing face and a ground-facing face each receive, because
 // Bevy's `AmbientLight` cannot tell them apart and `ART.md` §4 requires that
 // it can.
+pub mod far_trees;
 pub mod fill;
 // This frame's own-facts, drained from the core ONCE. Every `pop_*` call in
 // the client lives in there — see its header for the merge that made that a
@@ -82,6 +84,7 @@ pub mod ghost;
 // The blue wash over the piece a hammer is aimed at.
 pub mod decal;
 pub mod highlight;
+pub mod landmarks;
 pub mod tracer;
 // The launcher-backed nav entries: the title manifest's fetch, and the click
 // that hands NEWS / ITEM STORE / WORKSHOP to the launcher's own window. The
@@ -500,6 +503,11 @@ impl Plugin for GatesRenderPlugin {
         // material at all, which — as the asset-root trap in `bin/gates.rs`
         // records — is not an error the image shows you.
         app.add_plugins(MaterialPlugin::<ground_splat::GroundMaterial>::default());
+        // The far treeline's cards (`far_trees.rs`).
+        app.add_plugins(MaterialPlugin::<far_trees::TreeCardMaterial>::default());
+        app.init_resource::<far_trees::FarForest>();
+        app.init_resource::<boulders::RockRing>();
+        app.add_systems(Startup, far_trees::init);
         // The rain's streak material (weather v0, `rain.rs`).
         app.add_plugins(MaterialPlugin::<rain::RainMaterial>::default());
         app.add_plugins(MaterialPlugin::<stars::StarMaterial>::default());
@@ -1200,6 +1208,14 @@ impl Plugin for GatesRenderPlugin {
         // The sea's caches are one island's depths; the next island's would
         // be read off them until the eye happened to cross a snap cell.
         .add_systems(OnEnter(Screen::Menu), water::teardown.after(world_teardown))
+        .add_systems(
+            OnEnter(Screen::Menu),
+            far_trees::teardown.after(world_teardown),
+        )
+        .add_systems(
+            OnEnter(Screen::Menu),
+            boulders::teardown.after(world_teardown),
+        )
         // The swell runs wherever the world runs — it is a surface, not a
         // streamer, and a sea that froze while the Esc menu was up would
         // resume with a visible jump in every wave.
@@ -1295,7 +1311,7 @@ impl Plugin for GatesRenderPlugin {
             (
                 input::place_eye,
                 (
-                    (terrain_mesh::stream, depot::spawn),
+                    (terrain_mesh::stream, depot::spawn, landmarks::spawn),
                     // The sea re-centres like a ring does, and for the same
                     // reason: it reads `Eye::pos`, so it belongs where the
                     // other things that read it are.
@@ -1375,6 +1391,26 @@ impl Plugin for GatesRenderPlugin {
                     .run_if(world_placed),
             )
                 .chain()
+                .run_if(world_running),
+        )
+        // The far treeline's cards: after the prop rings, so the card mask
+        // reads this frame's chunks and a card never stands beside its tree.
+        .add_systems(
+            Update,
+            far_trees::stream
+                .after(props::stream)
+                .in_set(Stream)
+                .run_if(world_placed)
+                .run_if(world_running),
+        )
+        // The rock formations wear the near ground's material, which the
+        // terrain streamer builds.
+        .add_systems(
+            Update,
+            boulders::stream
+                .after(terrain_mesh::stream)
+                .in_set(Stream)
+                .run_if(world_placed)
                 .run_if(world_running),
         )
         // **The one `pop_*` call site in the client.** `hud::feedback`

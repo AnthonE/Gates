@@ -37,8 +37,8 @@ use sim_core::terrain;
 use sim_core::world::{EventQueue, Player, EV_BUILD_REFUSED, EV_PIECE_PLACED};
 
 const SEED: u64 = 20260731;
-const CX: u16 = 341;
-const CZ: u16 = 341;
+const CX: u16 = 682;
+const CZ: u16 = 682;
 const ROW_FOUNDATION: u16 = 0;
 const ROW_WALL: u16 = 1;
 const ROW_FLOOR: u16 = 2;

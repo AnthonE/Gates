@@ -121,6 +121,8 @@ fn brush_is_drawn_by_the_cutout_material() {
         Clutter::Twig,
         Clutter::Shard,
         Clutter::Brush,
+        Clutter::Stone,
+        Clutter::Sprig,
     ] {
         // **Exhaustive on purpose.** `grass_card.rs` already carries a
         // hand-written list of the opaque kinds, and a second copy of that
@@ -131,8 +133,10 @@ fn brush_is_drawn_by_the_cutout_material() {
         // which material draws it, which is the whole difference between a
         // list and a law.
         let cutout = match k {
-            Clutter::Tuft | Clutter::Brush => true,
-            Clutter::None | Clutter::Pebble | Clutter::Twig | Clutter::Shard => false,
+            Clutter::Tuft | Clutter::Brush | Clutter::Sprig => true,
+            Clutter::None | Clutter::Pebble | Clutter::Twig | Clutter::Shard | Clutter::Stone => {
+                false
+            }
         };
         assert_eq!(
             masked(k),

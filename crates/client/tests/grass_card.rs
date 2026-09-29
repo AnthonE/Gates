@@ -141,7 +141,12 @@ fn a_tuft_is_crossed_cards() {
         masked(Clutter::Tuft),
         "the tuft must draw through the cutout"
     );
-    for k in [Clutter::Pebble, Clutter::Twig, Clutter::Shard] {
+    for k in [
+        Clutter::Pebble,
+        Clutter::Twig,
+        Clutter::Shard,
+        Clutter::Stone,
+    ] {
         assert!(
             !masked(k),
             "{k:?} would be alpha-tested against a texture it has no UVs for"

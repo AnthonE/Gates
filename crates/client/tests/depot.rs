@@ -71,7 +71,8 @@ fn yard_is_at_the_walk_datum_and_decorations_keep_the_gate_and_door_open() {
     let meshes = depot::depot_meshes();
     assert_eq!(
         meshes.len(),
-        depot::SURFACES.len(),
+        // Every surface but `Stone`, which is the landmarks' masonry.
+        depot::SURFACES.len() - 1,
         "one draw group per material"
     );
     for (surface, mesh) in meshes {

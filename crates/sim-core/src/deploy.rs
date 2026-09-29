@@ -1838,7 +1838,9 @@ pub fn place_deploy(
         return;
     }
     let (ax, az) = cell_center(cx, cz);
-    if crate::depot::reserves(haven, ax, az, crate::build::BUILD_CELL_M * 1.5) {
+    if crate::depot::reserves(haven, ax, az, crate::build::BUILD_CELL_M * 1.5)
+        || crate::landmark::covers(&haven.marks, ax, az, crate::build::BUILD_CELL_M * 1.5)
+    {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_SPOT, 0);
         return;
     }
@@ -3161,8 +3163,8 @@ mod tests {
         static HV: std::sync::OnceLock<crate::terrain::Haven> = std::sync::OnceLock::new();
         HV.get_or_init(|| crate::terrain::haven(SEED))
     }
-    const CX: u16 = 341;
-    const CZ: u16 = 341;
+    const CX: u16 = 682;
+    const CZ: u16 = 682;
 
     fn player_at_cell(cx: u16, cz: u16, items: &[(u16, u16)]) -> Player {
         let mut p = Player {

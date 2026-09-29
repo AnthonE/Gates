@@ -31,7 +31,7 @@
 use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::*;
 use client::render::clutter::{
-    element_mesh, CHIP_SINK, CHIP_VOLUME_BLEND, FRONDS_PER_CLUMP, TUFT_H,
+    element_mesh, CHIP_SINK, CHIP_VOLUME_BLEND, FRONDS_PER_CLUMP, STONE_VERTS, TUFT_H,
 };
 use sim_core::terrain::{Clutter, ClutterElem};
 
@@ -52,7 +52,8 @@ const CHIP_VERTS: usize = 12;
 fn verts(kind: Clutter) -> usize {
     match kind {
         Clutter::Twig => CHIP_VERTS + FRONDS_PER_CLUMP as usize * 6,
-        _ => CHIP_VERTS,
+        // Pebble and shard are a `stone`.
+        _ => STONE_VERTS,
     }
 }
 
@@ -70,7 +71,12 @@ fn chip_span(m: &Mesh, kind: Clutter) -> (Vec<Vec3>, Vec<Vec3>) {
         verts(kind),
         "{kind:?}: element mesh is not the population it is supposed to be"
     );
-    (p[..CHIP_VERTS].to_vec(), n[..CHIP_VERTS].to_vec())
+    let k = if kind == Clutter::Twig {
+        CHIP_VERTS
+    } else {
+        p.len()
+    };
+    (p[..k].to_vec(), n[..k].to_vec())
 }
 
 fn elem(kind: Clutter, yaw: u8, scale: f32) -> ClutterElem {

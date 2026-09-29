@@ -214,8 +214,8 @@ fn marks(seed: u64) -> [(u16, u16); DUELS] {
                 if dx % DUEL_SPACING != 0 || dz % DUEL_SPACING != 0 {
                     continue;
                 }
-                let cx = (512 + dx).clamp(0, 1023) as u16;
-                let cz = (512 + dz).clamp(0, 1023) as u16;
+                let cx = (512 + dx).clamp(0, 2047) as u16;
+                let cz = (512 + dz).clamp(0, 2047) as u16;
                 let (x, z) = cell_center(cx, cz);
                 if !foundation_terrain_ok(seed, hv(seed), x, z) {
                     continue;

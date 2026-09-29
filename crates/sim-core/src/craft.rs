@@ -668,7 +668,7 @@ mod tests {
         let mut ev = EventQueue::default();
         const SEED: u64 = 20260731;
         let mut p = player(&[(4, 1), (3, 1), (0, 10)]);
-        p.body = Body::at(SEED, &hv(SEED), 1024.0, 1024.0);
+        p.body = Body::at(SEED, &hv(SEED), 2048.0, 2048.0);
 
         // Owned, but no bench in reach: the station refusal.
         p.skins.insert(0);
@@ -686,8 +686,8 @@ mod tests {
             &mut p,
             0,
             1, // fixture row 1: the workbench
-            341,
-            341,
+            682,
+            682,
             0,
             LOC_PLANE,
             &mut ev,
@@ -930,7 +930,7 @@ mod tests {
         const SEED: u64 = 20260731;
 
         let mut p = player(&[(0, 10), (3, 1)]);
-        p.body = Body::at(SEED, &hv(SEED), 1024.0, 1024.0);
+        p.body = Body::at(SEED, &hv(SEED), 2048.0, 2048.0);
         crate::deploy::place_deploy(
             SEED,
             &hv(SEED),
@@ -941,8 +941,8 @@ mod tests {
             &mut p,
             0,
             1, // fixture row 1: the workbench
-            341,
-            341,
+            682,
+            682,
             0,
             LOC_PLANE,
             &mut ev,
@@ -970,7 +970,7 @@ mod tests {
         // gate that outranks it.
         let mut far = player(&[(0, 10)]);
         far.known |= 1 << 2;
-        far.body = Body::at(SEED, &hv(SEED), 1024.0 + STATION_RADIUS_M + 2.0, 1024.0);
+        far.body = Body::at(SEED, &hv(SEED), 2048.0 + STATION_RADIUS_M + 2.0, 2048.0);
         enqueue(&cc, &SK, &dc, &nod, 10, &mut far, 2, 1, 0, &mut ev);
         let e = ev.entries()[ev.len() - 1];
         assert_eq!((e.code, e.b), (EV_CRAFT_REFUSED, REFUSE_STATION));
@@ -1011,7 +1011,7 @@ mod tests {
         let mut ev = EventQueue::default();
         let mut p = player(&[(0, 40), (3, 2)]);
         p.known |= 1 << 2;
-        p.body = Body::at(SEED, &hv(SEED), 1024.0, 1024.0);
+        p.body = Body::at(SEED, &hv(SEED), 2048.0, 2048.0);
 
         // A tier-1 bench beside the crafter: the tier-2 recipe still
         // refuses on the station, because near is not rung enough.
@@ -1025,8 +1025,8 @@ mod tests {
             &mut p,
             0,
             1, // fixture row 1: the tier-1 workbench
-            341,
-            341,
+            682,
+            682,
             0,
             LOC_PLANE,
             &mut ev,
@@ -1050,8 +1050,8 @@ mod tests {
             &mut p,
             0,
             wb2_row as u16,
-            342,
-            341,
+            683,
+            682,
             0,
             LOC_PLANE,
             &mut ev,
@@ -1079,7 +1079,7 @@ mod tests {
         let mut only_wb2 = Deploys::new();
         let mut q = player(&[(0, 40), (3, 2)]);
         q.known |= 1 << 2;
-        q.body = Body::at(SEED, &hv(SEED), 1024.0, 1024.0);
+        q.body = Body::at(SEED, &hv(SEED), 2048.0, 2048.0);
         crate::deploy::place_deploy(
             SEED,
             &hv(SEED),
@@ -1090,8 +1090,8 @@ mod tests {
             &mut q,
             0,
             wb2_row as u16,
-            341,
-            341,
+            682,
+            682,
             0,
             LOC_PLANE,
             &mut ev,
@@ -1214,7 +1214,7 @@ mod tests {
         let mut armed = |row: Option<u16>| -> u64 {
             let mut nod = Deploys::new();
             let mut p = player(&[(1, 4), (2, 2), (3, 1)]);
-            p.body = Body::at(SEED, &hv(SEED), 1024.0, 1024.0);
+            p.body = Body::at(SEED, &hv(SEED), 2048.0, 2048.0);
             if let Some(row) = row {
                 crate::deploy::place_deploy(
                     SEED,
@@ -1226,8 +1226,8 @@ mod tests {
                     &mut p,
                     0,
                     row,
-                    341,
-                    341,
+                    682,
+                    682,
                     0,
                     LOC_PLANE,
                     &mut ev,
@@ -1272,7 +1272,7 @@ mod tests {
         let mut ev = EventQueue::default();
         let mut spill = [ItemStack::default(); INV_SLOTS];
         let mut p = player(&[(1, 8), (2, 4), (3, 1)]);
-        let at_bench = Body::at(SEED, &hv(SEED), 1024.0, 1024.0);
+        let at_bench = Body::at(SEED, &hv(SEED), 2048.0, 2048.0);
         p.body = at_bench;
         crate::deploy::place_deploy(
             SEED,
@@ -1284,8 +1284,8 @@ mod tests {
             &mut p,
             0,
             1, // fixture row 1: the level-1 workbench
-            341,
-            341,
+            682,
+            682,
             0,
             LOC_PLANE,
             &mut ev,
@@ -1298,7 +1298,7 @@ mod tests {
 
         // Walk out of the station radius mid-unit: the unit in hand keeps
         // its rate, and the next one starts at full time.
-        p.body = Body::at(SEED, &hv(SEED), 1024.0 + STATION_RADIUS_M + 3.0, 1024.0);
+        p.body = Body::at(SEED, &hv(SEED), 2048.0 + STATION_RADIUS_M + 3.0, 2048.0);
         step(&cc, &gc, &dc, &nod, 120, &mut p, &mut ev, &mut spill);
         assert_eq!(p.jobs[0].remaining, 2, "the first unit landed");
         assert_eq!(

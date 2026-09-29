@@ -41,7 +41,8 @@ pub const PROBE_WINDOW_CELLS: i32 = 16;
 /// all three seeds, for ~2 ms. `tests/terrain_golden.rs` asserts that
 /// instead of trusting this comment.
 pub const PROBE_ROAD_BEARINGS: u16 = 64;
-pub const PROBE_ROAD_RADII: i32 = 51;
+/// Derived since the 4,096 m island: one sample every 8 m across the bracket.
+pub const PROBE_ROAD_RADII: i32 = ((terrain::ROAD_R_MAX - terrain::ROAD_R_MIN) / 8.0) as i32 + 1;
 
 /// World position of one road-sweep sample, off the island center on the
 /// yaw LUT — wall 1 bans libm, and the LUT is the exact table the rest of
@@ -311,17 +312,20 @@ pub extern "C" fn probe_sites(seed: u64) -> u64 {
 #[no_mangle]
 pub extern "C" fn probe_terrain(seed: u64) -> u64 {
     let mut h = Xxh3::new();
+    // A 64×64 grid over the whole island, whatever its size.
+    let step = terrain::ISLAND_SIZE / 64.0;
     for gz in 0..64i32 {
         for gx in 0..64i32 {
-            let x = gx as f32 * 32.0 + 16.0;
-            let z = gz as f32 * 32.0 + 16.0;
+            let x = gx as f32 * step + step * 0.5;
+            let z = gz as f32 * step + step * 0.5;
             h.update(&terrain::height(seed, x, z).to_bits().to_le_bytes());
         }
     }
     let table = ScatterTable::alpha_default();
     let haven = terrain::haven(seed);
-    for cz in 120..136i32 {
-        for cx in 120..136i32 {
+    let mid = terrain::CELLS_PER_SIDE / 2;
+    for cz in mid - 8..mid + 8 {
+        for cx in mid - 8..mid + 8 {
             let s = terrain::scatter(seed, &table, &haven, cx, cz);
             h.update(&[s.occupant as u8, s.yaw, s.species]);
             h.update(&s.x.to_bits().to_le_bytes());
@@ -394,7 +398,7 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                 let b = &world.players[0].body;
                 let cx = crate::build::build_cell_of(b.qx as f32 * crate::movement::POS_XZ_Q);
                 let cz = crate::build::build_cell_of(b.qz as f32 * crate::movement::POS_XZ_Q);
-                (cx.clamp(0, 1023) as u16, cz.clamp(0, 1023) as u16)
+                (cx.clamp(0, 2047) as u16, cz.clamp(0, 2047) as u16)
             };
             // t ≡ 11 (mod 16) on every place tick, so cycle on t/16.
             let place = Command::Place {
@@ -428,7 +432,7 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                 let b = &world.players[1].body;
                 let cx = crate::build::build_cell_of(b.qx as f32 * crate::movement::POS_XZ_Q);
                 let cz = crate::build::build_cell_of(b.qz as f32 * crate::movement::POS_XZ_Q);
-                (cx.clamp(0, 1023) as u16, cz.clamp(0, 1023) as u16)
+                (cx.clamp(0, 2047) as u16, cz.clamp(0, 2047) as u16)
             };
             let place_deploy = Command::PlaceDeploy {
                 id: 2,
@@ -797,7 +801,7 @@ pub extern "C" fn probe_bags(master_seed: u64, sequences: u32, ticks: u32) -> u6
             let (cx, cz) = {
                 let b = &world.players[placer].body;
                 let cell = |q: i32| {
-                    crate::build::build_cell_of(q as f32 * crate::movement::POS_XZ_Q).clamp(0, 1023)
+                    crate::build::build_cell_of(q as f32 * crate::movement::POS_XZ_Q).clamp(0, 2047)
                         as u16
                 };
                 (cell(b.qx), cell(b.qz))
@@ -1439,8 +1443,8 @@ pub struct HeadroomProbe {
 }
 
 const HEADROOM_SEED: u64 = 20260731;
-const HEADROOM_CX: u16 = 341;
-const HEADROOM_CZ: u16 = 341;
+const HEADROOM_CX: u16 = 682;
+const HEADROOM_CZ: u16 = 682;
 
 pub fn headroom_probe() -> HeadroomProbe {
     use crate::build::*;

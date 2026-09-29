@@ -34,7 +34,7 @@ fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
 }
 
 const SEED: u64 = 20_260_802;
-const SPAWN: (f32, f32) = (1024.0, 1024.0);
+const SPAWN: (f32, f32) = (2048.0, 2048.0);
 /// A fixture item with no weapon row: pure loot.
 const FILLER: u16 = 7;
 

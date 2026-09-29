@@ -526,7 +526,7 @@ const TICKS: u64 = 900;
 /// digest folds is eight bytes (its skin joins it), craft jobs hash their
 /// skin and each player its owned set. No command in the script names a
 /// skin, so every one of those fields is zero.
-const GOLDEN_FINAL_HASH: u64 = 0xF02C_144B_02EB_3D74;
+const GOLDEN_FINAL_HASH: u64 = 0xF04C_1CA2_FD8E_B00C;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -616,7 +616,7 @@ const GOLDEN_FINAL_HASH: u64 = 0xF02C_144B_02EB_3D74;
 /// **Moved `0x37FB_4909_FBC2_BD22` → `0xDA0B_802C_0E68_808E` at the heal-rate
 /// cap** (2026-09-25), with the final hash: stacked heals stretch the span
 /// instead of healing faster, so the script's heals land later.
-const GOLDEN_TRACE_HASH: u64 = 0xDA0B_802C_0E68_808E;
+const GOLDEN_TRACE_HASH: u64 = 0xB88A_09EE_2EDA_57B8;
 
 /// Fold a stamped trace into one number.
 ///
@@ -752,7 +752,12 @@ fn walk_up_the_beach(world: &mut World, seed: u64, slot: usize) {
                 sim_core::build::foundation_terrain_ok(seed, hv(seed), ax, az)
             })
         });
-        if room {
+        // …and clear of the island's rocks and landmarks for a walk's width,
+        // so the script's bodies are not turned aside by a boulder
+        // (`boulder.rs`) on their way back to the cell they build on.
+        let clear = !sim_core::boulder::covers(seed, hv(seed), x, z, 25.0)
+            && sim_core::landmark::at(&hv(seed).marks, x, z, 25.0).is_none();
+        if room && clear {
             break;
         }
         x += dx * sim_core::build::BUILD_CELL_M;
@@ -912,7 +917,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                 let b = &world.players[(id as usize - 1) % 64].body;
                 let cell = |q: i32| {
                     sim_core::build::build_cell_of(q as f32 * sim_core::movement::POS_XZ_Q)
-                        .clamp(0, 1023) as u16
+                        .clamp(0, 2047) as u16
                 };
                 // Row 5 is out of range (the fixture is 5 rows since the
                 // stone rung joined it) — the refusal path stays in
@@ -936,7 +941,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                 let b = &world.players[(id as usize - 1) % 64].body;
                 let cell = |q: i32| {
                     sim_core::build::build_cell_of(q as f32 * sim_core::movement::POS_XZ_Q)
-                        .clamp(0, 1023) as u16
+                        .clamp(0, 2047) as u16
                 };
                 let (cx, cz) = (cell(b.qx), cell(b.qz));
                 cmds.push(Command::PlaceDeploy {
@@ -1092,7 +1097,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
             let b = &world.players[0].body;
             let cell = |q: i32| {
                 sim_core::build::build_cell_of(q as f32 * sim_core::movement::POS_XZ_Q)
-                    .clamp(0, 1023) as u16
+                    .clamp(0, 2047) as u16
             };
             hearth_cell = (cell(b.qx), cell(b.qz));
         }

@@ -9,8 +9,8 @@ use sim_core::terrain;
 use sim_core::world::{EventQueue, Player, World};
 use sim_core::worldsave;
 const SEED: u64 = 20260731;
-const CX: u16 = 341;
-const CZ: u16 = 341;
+const CX: u16 = 682;
+const CZ: u16 = 682;
 fn fixture() -> (Box<World>, Player) {
     let mut w = Box::new(World::new(SEED));
     w.build = BuildContent::probe_fixture();

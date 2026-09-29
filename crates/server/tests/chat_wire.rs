@@ -21,7 +21,7 @@ const SEED: u64 = 20_260_731;
 /// The canonical dev spawn point, guarded walkable in sim-core
 /// `world::tests`. `dev_spawn` pins every join here, so the test starts
 /// with everyone in one place and moves them apart deliberately.
-const SPAWN: (f32, f32) = (1024.0, 1024.0);
+const SPAWN: (f32, f32) = (2048.0, 2048.0);
 /// Position quantum in centimeters (DESIGN.md §5.5: 3 cm x/z).
 const Q_CM: i32 = 3;
 

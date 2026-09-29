@@ -44,8 +44,8 @@ const CH_SPAWN: u32 = 96;
 /// bearing's outer probe inside the 2048 m island square (an axis bearing
 /// lands exactly on its edge).
 const SPAWN_CANDIDATES: i32 = 48;
-const SPAWN_RAY_INNER: f32 = 640.0;
-const SPAWN_RAY_OUTER: f32 = 1024.0;
+const SPAWN_RAY_INNER: f32 = terrain::ISLAND_SIZE * 0.3125;
+const SPAWN_RAY_OUTER: f32 = terrain::ISLAND_SIZE * 0.5;
 /// Where on the beach to stand: above `movement::WADE_GROUND_MAX` (0.4 m,
 /// so a fresh spawn is on sand and not wading) and below the 2 m beach mask.
 const SPAWN_TARGET_H: f32 = 1.2;
@@ -2112,6 +2112,13 @@ impl World {
     /// at most half a cell (4 m) from that center, and jitter moves a slot
     /// at most 3 m — so 16 − 4 − 3 = 9 m of unavoidable distance.
     fn scatter_clear(&self, x: f32, z: f32) -> bool {
+        // The rock formations and the landmarks are not scatter, and a beach
+        // boulder is exactly where a spawn ring lands.
+        if crate::boulder::covers(self.seed, &self.haven, x, z, SPAWN_CLEAR_M)
+            || crate::landmark::at(&self.haven.marks, x, z, SPAWN_CLEAR_M).is_some()
+        {
+            return false;
+        }
         let cx = floor_i32(x / terrain::CELL_SIZE);
         let cz = floor_i32(z / terrain::CELL_SIZE);
         let mut ox = -1i32;
@@ -6017,7 +6024,7 @@ mod tests {
     /// is deleted; this native guard is what it was written to back up, so a
     /// worldgen change that sinks or steepens the spawn fails here.
     const SMOKE_SEED: u64 = 20260731;
-    const SMOKE_SPAWN: (f32, f32) = (1024.0, 1024.0);
+    const SMOKE_SPAWN: (f32, f32) = (2048.0, 2048.0);
 
     /// **Wear is in `state_hash`, in all four container stores** (item
     /// durability v0, gate 4): two worlds differing ONLY in one stack's

@@ -17,7 +17,7 @@ use sim_core::gather::GatherContent;
 const SEED: u64 = 20_260_731;
 /// The canonical dev spawn point, guarded walkable in sim-core
 /// `world::tests` — craft needs standing room, not a tree.
-const SPAWN: (f32, f32) = (1024.0, 1024.0);
+const SPAWN: (f32, f32) = (2048.0, 2048.0);
 
 fn id_of(slot: usize) -> u32 {
     (1 << 8) | slot as u32

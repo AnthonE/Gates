@@ -53,7 +53,7 @@ fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
 const SEED: u64 = 20_260_802;
 /// The canonical dev spawn point, guarded walkable in sim-core
 /// `world::tests`.
-const SPAWN: (f32, f32) = (1024.0, 1024.0);
+const SPAWN: (f32, f32) = (2048.0, 2048.0);
 /// The gather fixture's item 0 — also the combat fixture's 34-damage
 /// weapon, so three hits kill.
 const SPEAR: u16 = 0;

@@ -109,6 +109,9 @@ struct GroundSplat {
     // it is layer 4, not an identity, so `gain` has no slot for it. yzw
     // reserved and zero.
     aggregate: vec4<f32>,
+    // The per-pixel cliff (`ground_splat::CLIFF_*`): x/y = rise/run where rock
+    // starts / is full, z = how far the noise moves that, w = its wavelength (m).
+    cliff: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> splat: GroundSplat;
@@ -447,7 +450,26 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
     // island. It stays because "no identity wins by being brighter" is a
     // property worth having when the classifier eventually softens, not because
     // it bought a frame anything today.
-    let w = clamp(in.color, vec4(0.0), vec4(1.0));
+    var w = clamp(in.color, vec4(0.0), vec4(1.0));
+
+    // --- The cliff, per pixel -------------------------------------------------
+    //
+    // The mesh carries the biome weights alone; the cliff veto is decided here
+    // from the interpolated normal's own tilt. Decided per vertex it was a
+    // near-binary weight interpolated across triangles, and that draws the
+    // triangles: a grass/rock edge of regular teeth one vertex step wide. A
+    // world-space noise moves the threshold so the edge wanders like scree.
+    let tan_tilt = sin_tilt / max(cos_tilt, 0.05);
+    let reach = splat.cliff.z * 0.5;
+    if tan_tilt > splat.cliff.x - reach {
+        var cn = 0.0;
+        if tan_tilt < splat.cliff.y + reach {
+            let q = wp / splat.cliff.w;
+            cn = value3(q) * 0.65 + value3(q * 2.7 + vec3<f32>(3.1, 7.7, 1.3)) * 0.35 - 0.5;
+        }
+        let cliff = smoothstep(splat.cliff.x, splat.cliff.y, tan_tilt + cn * splat.cliff.z);
+        w = w * (1.0 - cliff) + vec4<f32>(0.0, 0.0, 0.0, cliff);
+    }
 
     // --- The rock face ------------------------------------------------------
     //
@@ -632,10 +654,14 @@ fn fragment(in: VertexOutput, @location(8) road: vec2<f32>, @location(9) marking
 
     // The relief, blended as gradients and applied on the mesh's own written
     // tangent frame.
-    let g = to_gradient(unpack_normal(textureSample(normal_maps, ground_sampler, uv0, 0))) * bw.x
+    // On a wall the planar tap is stretched along the fall line, and a
+    // stretched normal map is streaks, not relief: fade it as the wall tap
+    // takes over. The rock face's own facets carry the relief there.
+    let planar_keep = 1.0 - 0.85 * wall_mix;
+    let g = (to_gradient(unpack_normal(textureSample(normal_maps, ground_sampler, uv0, 0))) * bw.x
         + to_gradient(unpack_normal(textureSample(normal_maps, ground_sampler, uv1, 1))) * bw.y
         + to_gradient(unpack_normal(textureSample(normal_maps, ground_sampler, uv2, 2))) * bw.z
-        + to_gradient(unpack_normal(textureSample(normal_maps, ground_sampler, uv3, 3))) * bw.w;
+        + to_gradient(unpack_normal(textureSample(normal_maps, ground_sampler, uv3, 3))) * bw.w) * planar_keep;
     // Binder flattens loose aggregate relief. Blend gradients from fixed
     // projections so the verge retains the ground's original relief.
     let road_g = to_gradient(unpack_normal(road_normal));

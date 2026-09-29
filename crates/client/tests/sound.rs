@@ -1337,13 +1337,15 @@ fn the_surf_reads_the_sea_around_it() {
     assert_eq!(inland, 0.0, "the island's centre hears surf");
     assert_eq!(surf_gain(inland), 0.0, "silence is not silent");
 
-    // Well outside the coast ring, every probe point is sea.
-    let at_sea = shore_exposure(seed, centre + 1_200.0, centre);
+    // Out in the map's corner, well outside the coast ring, every probe
+    // point is sea.
+    let corner = ISLAND_SIZE * 0.05;
+    let at_sea = shore_exposure(seed, corner, corner);
     assert_eq!(at_sea, 1.0, "the open sea is not all sea");
     assert!((surf_gain(at_sea) - 1.0).abs() < 1e-6);
 
     // Deterministic: same seed, same place, same answer.
-    assert_eq!(at_sea, shore_exposure(seed, centre + 1_200.0, centre));
+    assert_eq!(at_sea, shore_exposure(seed, corner, corner));
 
     // And the floor holds: any sea at all is more than nothing.
     assert!(surf_gain(0.02) >= SURF_FLOOR);

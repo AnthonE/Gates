@@ -107,7 +107,7 @@ pub const SKIRT_RATIO: f32 = 1.7;
 /// How far the mesh must reach, metres. The island is
 /// `terrain::ISLAND_SIZE` across, so a player standing on one shore has to
 /// have sea drawn past the far one; this is that diagonal with margin.
-pub const SEA_REACH_M: f32 = 2600.0;
+pub const SEA_REACH_M: f32 = sim_core::terrain::ISLAND_SIZE * 1.27;
 
 /// The grid re-centres on a lattice this coarse, metres.
 ///

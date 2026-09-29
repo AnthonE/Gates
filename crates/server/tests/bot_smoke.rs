@@ -918,7 +918,7 @@ async fn test_welcome_dev_bit_tracks_dev_spawn() {
     use server::net::client_handshake;
 
     // Same shard, same everything, one config key apart.
-    for (dev_spawn, want) in [(None, false), (Some((1024.0, 1024.0)), true)] {
+    for (dev_spawn, want) in [(None, false), (Some((2048.0, 2048.0)), true)] {
         let tables = baked_content();
         let mut cfg = ShardConfig::ephemeral(13);
         cfg.dev_spawn = dev_spawn;

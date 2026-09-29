@@ -586,7 +586,7 @@ impl ColMasks {
 /// Open-addressed column map, linear probing, backward-shift deletion —
 /// no tombstones, so a shard that builds and decays for months never
 /// degrades. Fixed capacity (limits.rs `COL_INDEX_SLOTS` = 2 × the piece
-/// cap), keys packed `1<<31 | cx<<10 | cz` so 0 means empty.
+/// cap), keys packed `1<<31 | cx<<12 | cz` so 0 means empty.
 ///
 /// The two arrays are boxed (`crate::boxed_array`) — CLAUDE.md's
 /// stack-frame trap, met a fourth time: they lived inline and
@@ -630,7 +630,8 @@ impl ColIndex {
 
     #[inline]
     fn key(cx: u16, cz: u16) -> u32 {
-        OCCUPIED | ((cx as u32) << 10) | cz as u32
+        // 12 bits a side: the 4,096 m island's grid is 2,048 cells (11 bits).
+        OCCUPIED | ((cx as u32) << 12) | cz as u32
     }
 
     /// Fibonacci-hash home slot — pure integer, wasm-identical.
@@ -2333,8 +2334,8 @@ mod tests {
         static HV: std::sync::OnceLock<crate::terrain::Haven> = std::sync::OnceLock::new();
         HV.get_or_init(|| crate::terrain::haven(SEED))
     }
-    const CX: u16 = 341;
-    const CZ: u16 = 341;
+    const CX: u16 = 682;
+    const CZ: u16 = 682;
 
     /// Free pieces (n_costs 0) so tests place without inventories: rows
     /// foundation, wall, doorway, floor, stairs, window, frame. **Twig**,
@@ -2438,13 +2439,13 @@ mod tests {
         // walks is not (occupy::Barren).
         let mut occ = crate::occupy::Scratch::barren();
         let bc = free_table();
-        let wall_x = CX as f32 * BUILD_CELL_M; // 1023: the low-x edge plane
+        let wall_x = CX as f32 * BUILD_CELL_M; // 2046: the low-x edge plane
 
         // A wall on the low-x edge stops a −x walk at the slab.
         let mut pieces = Pieces::new();
         put(&bc, &mut pieces, CX, CZ, 0, LOC_PLANE, 0);
         put(&bc, &mut pieces, CX, CZ, 0, crate::build::LOC_EDGE_XLO, 1);
-        let mut b = body_at(1024.5, 1024.5);
+        let mut b = body_at(2047.5, 2047.5);
         for _ in 0..120 {
             movement::step(
                 SEED,
@@ -2461,13 +2462,13 @@ mod tests {
             x >= wall_x + r - POS_XZ_Q,
             "wall failed to block: x {x} < plane {wall_x} + r {r}"
         );
-        assert!(x < 1024.0, "the walk never approached the wall");
+        assert!(x < 2048.0, "the walk never approached the wall");
 
         // Same walk, doorway instead: the centered opening passes.
         let mut pieces = Pieces::new();
         put(&bc, &mut pieces, CX, CZ, 0, LOC_PLANE, 0);
         put(&bc, &mut pieces, CX, CZ, 0, crate::build::LOC_EDGE_XLO, 2);
-        let mut b = body_at(1024.5, 1024.5);
+        let mut b = body_at(2047.5, 2047.5);
         for _ in 0..120 {
             movement::step(
                 SEED,
@@ -2485,7 +2486,7 @@ mod tests {
         );
 
         // Aimed at a post (z inside the low-z post span): blocked.
-        let mut b = body_at(1024.5, CZ as f32 * BUILD_CELL_M + 0.45);
+        let mut b = body_at(2047.5, CZ as f32 * BUILD_CELL_M + 0.45);
         for _ in 0..120 {
             movement::step(
                 SEED,
@@ -2511,7 +2512,7 @@ mod tests {
         put(&bc, &mut pieces, CX, CZ, 0, crate::build::LOC_EDGE_ZLO, 1);
         put(&bc, &mut pieces, CX, CZ, 1, LOC_PLANE, 3);
         put(&bc, &mut pieces, CX, CZ, 1, crate::build::LOC_EDGE_XLO, 1);
-        let mut b = body_at(1024.5, 1024.5);
+        let mut b = body_at(2047.5, 2047.5);
         for _ in 0..120 {
             movement::step(
                 SEED,
@@ -2540,7 +2541,7 @@ mod tests {
         let base = col_base_y(SEED, hv(), &ColIndex::new(), CX, CZ);
 
         // Standing in the cell snaps up onto the slab (lift ≤ step-up)…
-        let mut b = body_at(1024.5, 1024.5);
+        let mut b = body_at(2047.5, 2047.5);
         movement::step(
             SEED,
             hv(),
@@ -2574,7 +2575,7 @@ mod tests {
         );
 
         // Walking +x off the slab falls back to terrain.
-        let mut b = body_at(1024.5, 1024.5);
+        let mut b = body_at(2047.5, 2047.5);
         for _ in 0..240 {
             movement::step(
                 SEED,
@@ -2621,7 +2622,7 @@ mod tests {
         // The sim was right at every step; the fixture was standing in the
         // wrong place. A body that is on the storey it is about to climb from
         // is what this test has always meant to start with.
-        let mut b = body_at(1024.5, CZ as f32 * BUILD_CELL_M + 0.2);
+        let mut b = body_at(2047.5, CZ as f32 * BUILD_CELL_M + 0.2);
         b.qy = crate::movement::quant_y(base);
         let mut last_y = pos(&b).1;
         let mut top_y = last_y;
@@ -2673,7 +2674,7 @@ mod tests {
         let mut pieces = Pieces::new();
         put(&bc, &mut pieces, CX, CZ, 0, LOC_PLANE, 0);
         put(&bc, &mut pieces, CX, CZ, 0, crate::build::LOC_EDGE_XLO, 5);
-        let mut b = body_at(1024.5, 1024.5);
+        let mut b = body_at(2047.5, 2047.5);
         for _ in 0..120 {
             movement::step(
                 SEED,
@@ -2779,7 +2780,7 @@ mod tests {
         let mut framed = Pieces::new();
         put(&bc, &mut framed, CX, CZ, 0, LOC_PLANE, 0);
         put(&bc, &mut framed, CX, CZ, 0, crate::build::LOC_EDGE_XLO, 6);
-        let mut b = body_at(1024.5, 1024.5);
+        let mut b = body_at(2047.5, 2047.5);
         for _ in 0..120 {
             movement::step(
                 SEED,
@@ -3063,7 +3064,7 @@ mod tests {
         pieces.remove_at(wi, SHAPE_WALL);
         assert_eq!(pieces.cols().get(CX, CZ).walls_xlo, 0);
         assert_eq!(pieces.cols().get(CX, CZ).planes, 1, "the slab stays");
-        let mut b = body_at(1024.5, 1024.5);
+        let mut b = body_at(2047.5, 2047.5);
         for _ in 0..120 {
             movement::step(
                 SEED,

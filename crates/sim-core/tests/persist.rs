@@ -61,7 +61,7 @@ fn a_played_character() -> (Box<World>, PlayerSave) {
     w.tick(&[Command::Join { id: ID }]);
     // Move the body to a spot the spawn ring would never pick, so "restored
     // in place" is distinguishable from "spawned again".
-    let (x, z) = (1024.0f32, 1024.0f32);
+    let (x, z) = (2048.0f32, 2048.0f32);
     let p = &mut w.players[0];
     p.body.qx = quant_xz(x);
     p.body.qz = quant_xz(z);
@@ -327,7 +327,7 @@ fn a_craft_queue_survives_and_rearms_against_the_new_clock() {
 fn a_body_that_logged_off_dead_wakes_on_a_beach() {
     let mut w = armed();
     w.tick(&[Command::Join { id: ID }]);
-    let (x, z) = (1024.0f32, 1024.0f32);
+    let (x, z) = (2048.0f32, 2048.0f32);
     w.players[0].body.qx = quant_xz(x);
     w.players[0].body.qz = quant_xz(z);
     w.players[0].inv[0] = ItemStack {

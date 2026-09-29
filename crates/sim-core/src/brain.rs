@@ -1525,7 +1525,7 @@ mod tests {
                     if dx.abs() != r && dz.abs() != r {
                         continue;
                     }
-                    let (cx, cz) = (341 + dx, 341 + dz);
+                    let (cx, cz) = (682 + dx, 682 + dz);
                     let ok = (-2..=2).all(|ez| {
                         (-2..=2).all(|ex| {
                             let x = ((cx + ex) as f32 + 0.5) * BUILD_CELL_M;

@@ -56,6 +56,10 @@
 //! passed from the first run. That is the same shape as `ground_identity.rs`'s
 //! fifth test and it is said here rather than left for a reader to discover,
 //! because a gate nobody has seen fail is not evidence.
+//!
+//! ⚠ **2026-09-28: the quadrant reproduction and the capture-spawn disc are
+//! retired**, with the 2048 m island they measured: on the 4096 m island the
+//! old quadrant and `capture-native.sh`'s `1155,140` are both open sea.
 
 use client::render::fill::{luminance, GROUND_MIX};
 use client::render::terrain_mesh::GROUND_ALBEDO;
@@ -105,34 +109,7 @@ fn mix_over(lo: f32, hi: f32) -> ([f64; 4], u32) {
     ([acc[0] / n, acc[1] / n, acc[2] / n, acc[3] / n], land)
 }
 
-/// The same, restricted to a disc — what a camera standing at one point sees
-/// around it, which is not the same question as what the island averages.
-fn mix_in_disc(cx: f32, cz: f32, r: f32, step: f32) -> ([f64; 4], u32) {
-    let mut acc = [0f64; 4];
-    let mut land = 0u32;
-    let mut z = cz - r;
-    while z <= cz + r {
-        let mut x = cx - r;
-        while x <= cx + r {
-            let (dx, dz) = (x - cx, z - cz);
-            if dx * dx + dz * dz <= r * r && x >= 0.0 && z >= 0.0 && is_land(x, z) {
-                land += 1;
-                let w = terrain::splat(SEED, x, z);
-                for c in 0..4 {
-                    acc[c] += f64::from(w[c]) / 255.0;
-                }
-            }
-            x += step;
-        }
-        z += step;
-    }
-    let n = f64::from(land.max(1));
-    ([acc[0] / n, acc[1] / n, acc[2] / n, acc[3] / n], land)
-}
-
 const SAND: usize = 0;
-const GRASS: usize = 1;
-const LITTER: usize = 2;
 const ROCK: usize = 3;
 
 /// **The gate.** `GROUND_MIX` is the mean splat over the world square
@@ -160,84 +137,6 @@ fn the_ground_mix_is_the_whole_island() {
             mix[c]
         );
     }
-}
-
-/// **The retraction, as a checked fact.** The window that produced the old
-/// constant is the quadrant, and it is the quadrant *because the other three
-/// quarters are sea* — `0..1024` returns the identical land count, which is
-/// the cross-check `CLAUDE.md` says was missing the first time.
-///
-/// This test is the one that would have caught the original error with no
-/// renderer and no judge: the land count implied a quarter-disc all along.
-#[test]
-fn the_retracted_window_is_what_produced_the_old_mix() {
-    let (quad, land_signed) = mix_over(-1024.0, 1024.0);
-    let (_, land_sw) = mix_over(0.0, 1024.0);
-
-    println!(
-        "-1024..1024: land {land_signed}, mix [{:.6}, {:.6}, {:.6}, {:.6}]",
-        quad[0], quad[1], quad[2], quad[3]
-    );
-
-    // The doc comments this pass corrects both cite 39,521 land samples.
-    //
-    // ⚠ **A band, not the literal, and the reason is that the literal was a
-    // fact about a worldgen rather than about a window.** It was `== 39_521`
-    // until 2026-08-26, when `terrain::remap` became a monotone cubic
-    // (`DECISIONS.md` §open, worldgen shape v1) and the same window came back
-    // 39,530 — nine samples, 0.02%, entirely the coastline breathing under a
-    // different shaping curve. Pinning it exactly made this gate go red for a
-    // change it has no opinion about, which is the shape of a gate that stops
-    // being read. What it is actually for is that **this window is a quadrant
-    // of the island**, and 1% is far tighter than the 4× a wrong window costs.
-    assert!(
-        land_signed.abs_diff(39_521) * 100 < 39_521,
-        "the retracted window returns {land_signed} land samples against the \
-         39,521 the old doc cited — more than 1% away, so this is no longer \
-         the window that produced the retracted constant and the reproduction \
-         below is not reproducing anything."
-    );
-    // And every one of them is in the south-west quadrant: the negative half
-    // of a world that starts at 0 is open sea, so the signed window was never
-    // sampling anything the unsigned one did not.
-    assert_eq!(
-        land_sw, land_signed,
-        "0..1024 and -1024..1024 disagree, so the negative half is not empty"
-    );
-
-    // ⚠ **The old constant is no longer REPRODUCIBLE, and that is a fact
-    // about worldgen rather than about this gate.** It was
-    // `[0.008, 0.619, 0.373, 0.0]` and reproducing it exactly was the
-    // retraction's proof until world structure v1 (2026-09-15) gave the
-    // island a beach, a second coastline term and a moisture field three
-    // times finer — the same quadrant now measures
-    // `[0.038, 0.539, 0.420, 0.003]`. A literal measured on a retired
-    // generator cannot be re-measured on the current one, and pinning it
-    // would make this gate a permanent red for every future worldgen change,
-    // which is the shape of a gate that gets deleted rather than read.
-    //
-    // **What the gate is actually for survives intact**, and it is the two
-    // assertions around this comment rather than the literal: the window is a
-    // quadrant (`land_sw == land_signed`, still exact, still the cross-check
-    // `CLAUDE.md` says was missing), and a quadrant's mix is not the
-    // island's. The channel that says so is granite — the quadrant weights it
-    // at 0.003 where the island says 0.094, a factor of **35** — which is the
-    // very error that was retracted, in the very channel it was retracted in.
-    // A third wrong window would have to reproduce a 35× disagreement to slip
-    // past, and that is a stronger filter than matching four old decimals.
-    let quad_rock = quad[ROCK];
-    assert!(
-        quad_rock < 0.01,
-        "the quadrant measures granite at {quad_rock:.6} — the retracted \
-         finding was that this window sees essentially NO granite, and if it \
-         now does, the window has moved and nothing below is reproducing the \
-         error being guarded against"
-    );
-    // …and it is not the island.
-    assert!(
-        (quad[ROCK] - f64::from(GROUND_MIX[ROCK])).abs() > 0.05,
-        "the quadrant and the island agree about granite, so this gate is asserting nothing"
-    );
 }
 
 /// **"Granite never reaches the ground at this seed at all" is false**, and
@@ -268,99 +167,6 @@ fn granite_is_a_real_share_of_the_island() {
         GROUND_MIX[ROCK],
         GROUND_MIX[SAND],
         GROUND_MIX[ROCK] / GROUND_MIX[SAND]
-    );
-}
-
-/// **What the capture camera actually stands on** — and as of world structure
-/// v1 the answer changed, which retires the finding this test was written to
-/// explain.
-///
-/// `gates-loop/art/capture-native.sh` pins `dev_spawn = 1155,140` and the six
-/// vantages do not translate, so every frame the visual judge has ever scored
-/// natively is shot from this one point. It used to be **93% forest litter
-/// and 7% beach sand, with grass and granite at exactly zero** — which is why
-/// the newest `-visual.md` measures 0.00% green ground cover in four of six
-/// frames: there was no tuft for `clutter_kind_at` to roll, because it draws
-/// kinds from the same splat weights, and no second identity in the ground
-/// colour. That was a fact about the world, not a defect in the renderer.
-///
-/// **The moisture field moved the forest off this spot** (`MOIST_FREQ`
-/// 1/700 → 1/240 at three octaves), so the same 60 m disc now reads
-/// **81% grass, 14% sand, 5% granite** — grass-dominant, three identities,
-/// and the shore terrace is what put sand within 60 m of a point 140 m from
-/// the coast. So the next visual report's ground cover is a different
-/// measurement from the last one's, and "0.00% green" would now be a real
-/// defect rather than an explained one.
-///
-/// ⚠ **This is not evidence the frames improved.** Capture has been off since
-/// 2026-08-28 and nobody has shot this vantage under the new island; all this
-/// says is that the near field HAS grass in it to draw. `NOW.md` §LOOK.
-///
-/// ⚠ **The `#[test]` below is load-bearing and was lost for one edit.** An
-/// integration-test `fn` without it compiles, runs never, and the suite's
-/// count drops by one — 4 where it says 5. Nothing is red. Check the count,
-/// not the colour.
-#[test]
-fn the_capture_spawn_no_longer_stands_on_one_identity() {
-    // `capture-native.sh`'s `dev_spawn`. Outside this repo and not ours to
-    // move, which is why it is a constant here and not a parameter.
-    const CX: f32 = 1155.0;
-    const CZ: f32 = 140.0;
-
-    let (near, n_near) = mix_in_disc(CX, CZ, 60.0, 1.0);
-    println!(
-        "60 m disc at ({CX}, {CZ}): land {n_near}, mix [{:.6}, {:.6}, {:.6}, {:.6}]",
-        near[0], near[1], near[2], near[3]
-    );
-    assert!(n_near > 1_000, "the near disc found no land: {n_near}");
-    assert!(
-        near[GRASS] > 0.60,
-        "the near field is no longer grass-dominant: {:.6}. Every ground-cover \
-         number in a visual report is read from this disc, so which identity \
-         owns it is part of the report's meaning and may not drift silently.",
-        near[GRASS]
-    );
-    // …and the forest that used to own this disc outright has left it. Kept
-    // as its own assertion rather than implied by the grass floor: "the
-    // camera stands in a wood" and "the camera stands on grass" are two
-    // different facts about the frame, and a moisture field that put the wood
-    // back would be worth knowing about even if grass stayed dominant.
-    assert!(
-        near[LITTER] < 0.50,
-        "forest litter is back to {:.6} of the capture disc — this vantage was \
-         93% litter before world structure v1 and the visual judge's \
-         ground-cover findings were unreadable because of it",
-        near[LITTER]
-    );
-    // Three identities where there was one. The point of the original test
-    // was that a single-identity patch cannot show a ground-cover gap; the
-    // point of this one is that it no longer is single-identity, so it can.
-    let identities = (0..4).filter(|&c| near[c] > 0.01).count();
-    assert!(
-        identities >= 3,
-        "the capture spawn stands on {identities} ground identities, not 3+ \
-         — it was ONE before world structure v1 and the visual judge's \
-         ground-cover findings were unreadable because of it"
-    );
-
-    // The 300 m disc is a different island: `seed_scan --at 1155,140,300`
-    // reports 8.9% legible rock there, and it is where the two boulders the
-    // judge counted are. So the frames are not granite-free because the seed
-    // is — they are granite-free because 60 m is.
-    let (mid, n_mid) = mix_in_disc(CX, CZ, 300.0, 4.0);
-    println!(
-        "300 m disc: land {n_mid}, mix [{:.6}, {:.6}, {:.6}, {:.6}]",
-        mid[0], mid[1], mid[2], mid[3]
-    );
-    // ⚠ **The floor was 0.05 until 2026-09-23**, when the treeline moved
-    // 52 → 68 m with interior massifs v0: the old highland lumps between the
-    // two lines are turf now, and this disc measures 4.2 % granite where it
-    // measured 8.9 %. The claim is presence — the frames are granite-free
-    // because 60 m is, not because 300 m is — and 4.2 % still makes it.
-    assert!(
-        mid[ROCK] > 0.03,
-        "granite is absent at 300 m too: {:.6}",
-        mid[ROCK]
     );
 }
 
@@ -414,6 +220,17 @@ fn the_capture_spawn_no_longer_stands_on_one_identity() {
 /// was before the ranges, so granite's value came down ×0.88 (luma 147 →
 /// 138.7, hue and saturation held, still inside §3's band) and nothing else.
 ///
+/// ⚠ **Re-pinned 0.10960 → 0.10379 on 2026-09-28 (−5.3 %), not an albedo
+/// edit:** the 4096 m island has more lowland per massif, so granite's
+/// weight fell 0.1156 → 0.0801 and the island got darker by arithmetic.
+///
+/// ⚠ **And 0.10379 → 0.08910 the same day (−14 %), an albedo edit on
+/// purpose:** the operator's reference frames put a dark leaf-litter floor
+/// under the woods and green turf under the grass. Forest litter went from
+/// the grey "dirt path" row (102.8 luma) to that floor (83.9) and grass from
+/// khaki to green at the same value; a third of the land darkened, so the
+/// island did.
+///
 /// The second assert is the retraction's own point, kept: the two windows
 /// disagree, and by more than they used to (1.145× → 1.268×), because granite
 /// carries more value now and the quadrant still weights it at zero.
@@ -444,8 +261,8 @@ fn the_mean_luma_is_held_against_the_island_not_the_quadrant() {
     );
 
     assert!(
-        (now - 0.109_60).abs() < 1e-4,
-        "the island-weighted mean linear luma is no longer the 0.10960 the \
+        (now - 0.089_10).abs() < 1e-4,
+        "the island-weighted mean linear luma is no longer the 0.08910 the \
          identity re-place was held to: {now:.5}. An albedo edit moved the \
          island's overall brightness — that is the coupled lighting owner's \
          call (`CLAUDE.md` traps), not an identity pass's."

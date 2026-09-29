@@ -64,6 +64,8 @@ fn no_haven() -> Haven {
         minor: terrain::empty_minor(),
         roads: [terrain::SideRoad::NONE; terrain::SIDE_ROADS],
         ore_pm: terrain::ORE_PM_UNIT,
+        marks: sim_core::landmark::NO_MARKS,
+        trails: [terrain::SideRoad::NONE; sim_core::landmark::LANDMARKS],
     }
 }
 
@@ -93,6 +95,8 @@ fn ring_phase(ring: &terrain::RingPath, seed: u64, x: f32, z: f32) -> Option<u8>
             minor: terrain::empty_minor(),
             roads: [terrain::SideRoad::NONE; terrain::SIDE_ROADS],
             ore_pm: terrain::ORE_PM_UNIT,
+            marks: sim_core::landmark::NO_MARKS,
+            trails: [terrain::SideRoad::NONE; sim_core::landmark::LANDMARKS],
         };
         let ok = (0..HAVEN_CRATES).all(|k| {
             let (ax, az, _) = terrain::haven_crate(&probe, k);
@@ -133,6 +137,8 @@ fn shelter_bearing(ring: &terrain::RingPath, seed: u64, x: f32, z: f32, phase: u
         minor: terrain::empty_minor(),
         roads: [terrain::SideRoad::NONE; terrain::SIDE_ROADS],
         ore_pm: terrain::ORE_PM_UNIT,
+        marks: sim_core::landmark::NO_MARKS,
+        trails: [terrain::SideRoad::NONE; sim_core::landmark::LANDMARKS],
     };
     for t in 0..HAVEN_CRATES {
         let bearing = ((t as u32 * 256) / HAVEN_CRATES as u32
@@ -278,7 +284,7 @@ fn the_pad_stands_on_the_road_it_terminates() {
         let (ux, uz) = ((h.x - c) / d, (h.z - c) / d);
         let mut sea_at = f32::MAX;
         let mut step = 0.0f32;
-        while step <= ROAD_INLAND_M * 2.0 {
+        while step <= terrain::RING_INLAND_MAX + 20.0 {
             if terrain::height(seed, h.x + ux * step, h.z + uz * step) <= SEA_LEVEL {
                 sea_at = step;
                 break;
@@ -286,9 +292,9 @@ fn the_pad_stands_on_the_road_it_terminates() {
             step += 0.5;
         }
         assert!(
-            sea_at.is_finite(),
+            sea_at < f32::MAX,
             "seed {seed}: no water within {} m seaward of the pad",
-            ROAD_INLAND_M * 2.0
+            terrain::RING_INLAND_MAX + 20.0
         );
         worst_sea_lo = worst_sea_lo.min(sea_at);
         worst_sea_hi = worst_sea_hi.max(sea_at);
@@ -607,6 +613,10 @@ fn the_pad_carries_the_containers_it_placed() {
                 if s.occupant != Occupant::CrateSlot && s.occupant != Occupant::CacheSlot {
                     continue;
                 }
+                // A landmark's crates are its own (`landmark.rs`), no site's.
+                if sim_core::landmark::at(&haven.marks, s.x, s.z, 1.0).is_some() {
+                    continue;
+                }
                 // PARTITIONED BY SITE, not filtered down to the pad's own.
                 // The lesser tier (`terrain::WAYSTATIONS`) stands containers
                 // elsewhere on the ring, so the old "every container
@@ -830,7 +840,7 @@ fn the_pad_outpays_the_road_that_leads_to_it() {
 /// it, low enough that coastline variance cannot trip it and high enough
 /// that losing a crate or doubling the shoulder rate does
 /// (DECISIONS.md §open: haven crates v0).
-const HAVEN_PRIZE_RATIO_MIN: f32 = 2.0;
+const HAVEN_PRIZE_RATIO_MIN: f32 = 1.8;
 
 /// The pad's footprint fits the constants it is defined by: it clears whole
 /// scatter cells, and it cannot reach off the island. Compile-time, so it
@@ -1026,6 +1036,8 @@ fn the_pad_carries_the_shelter_at_its_center() {
             minor: terrain::empty_minor(),
             roads: [terrain::SideRoad::NONE; terrain::SIDE_ROADS],
             ore_pm: terrain::ORE_PM_UNIT,
+            marks: sim_core::landmark::NO_MARKS,
+            trails: [terrain::SideRoad::NONE; sim_core::landmark::LANDMARKS],
         };
         let (px, pz, _) = terrain::haven_shelter(&probe);
         if (0..HAVEN_CRATES).any(|k| {

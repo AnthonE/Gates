@@ -156,10 +156,11 @@ fn joins_reach_both_drawn_surfaces_without_moving_the_walkable_ground() {
 
 #[test]
 fn no_join_reaches_beyond_the_far_sheet() {
+    let side = (terrain::ISLAND_SIZE / ground::CHUNK_M) as i32;
     assert_eq!(seam::exposed((0, 0), |_| false), 0b1010);
-    assert_eq!(seam::exposed((31, 31), |_| false), 0b0101);
-    for key in [(-1, 0), (0, -1), (32, 0), (0, 32)] {
+    assert_eq!(seam::exposed((side - 1, side - 1), |_| false), 0b0101);
+    for key in [(-1, 0), (0, -1), (side, 0), (0, side)] {
         assert_eq!(seam::exposed(key, |_| false), 0);
     }
-    assert_eq!(seam::exposed((16, 16), |_| true), 0);
+    assert_eq!(seam::exposed((side / 2, side / 2), |_| true), 0);
 }
