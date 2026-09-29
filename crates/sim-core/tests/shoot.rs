@@ -116,6 +116,7 @@ fn bow_fixture() -> CombatContent {
         magazine: 0,
         reload_ticks: 0,
         mag_slot: NO_MAG,
+        draw_ticks: 0,
     };
     // The ballistics belong to the round now (`reference/PROJECTILES.md`
     // §9.3), so the fixture arms the arrow rather than the bow.
@@ -287,7 +288,7 @@ fn shoot_through(
     // store stays empty. `tests/arrow_recovery.rs` is where it is driven.
     let mut spent = SpentArrows::new();
     let mut ticks = 0;
-    // Long enough for a 45-tick arrow to expire on its own if nothing ever
+    // Long enough for a level arrow to come down on its own if nothing else
     // stops it — so "the store emptied" is never a timeout.
     while !arrows.is_empty() && ticks < 60 {
         events = EventQueue::default();
@@ -1251,12 +1252,12 @@ fn a_roof_stops_a_shot_fired_up_at_it() {
         );
 
         // The control, and it reads "not built" rather than "the dirt" for a
-        // measured reason: fired up, this fixture's arrow **outlives its own
-        // range**. The bow reaches 60 m at 1333 mm/tick, so the store frees
-        // the slot after 45 ticks of flight, and a shot at this angle is
-        // still airborne then — it announces no impact at all. Demanding
-        // `SURF_GROUND` here would be demanding the arrow come down, which is
-        // a claim about `range_mm` and not about the roof.
+        // measured reason: fired up, this fixture's arrow is **still in the
+        // air** when the control stops watching — at 1333 mm/tick under
+        // 22 mm/tick² it climbs for 60 ticks and is back past the eye at 120,
+        // and the control watches 90 — so it announces no impact at all.
+        // Demanding `SURF_GROUND` here would be demanding the arrow come
+        // down, which is a claim about the flight and not about the roof.
         let empty = ColIndex::new();
         let control = impact_of(seed, &empty, (cx, feet, cz), 255, 90);
         assert!(
@@ -1743,8 +1744,9 @@ fn a_furnace_stops_a_shot_the_bare_column_lets_through() {
 /// which is 1.4 m against a 0.3 m tolerance.
 ///
 /// The control is the roof case's, for its reason: fired up, this fixture's
-/// arrow outlives its own range and announces no impact at all, so
-/// "not built" is the honest read rather than "the dirt".
+/// arrow is still in the air when the control stops watching and announces
+/// no impact at all, so "not built" is the honest read rather than "the
+/// dirt".
 #[test]
 fn a_shot_fired_up_stops_on_the_furnace_underside_not_below_it() {
     for seed in SEEDS {

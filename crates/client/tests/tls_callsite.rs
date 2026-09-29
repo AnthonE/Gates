@@ -27,11 +27,16 @@
 use std::path::Path;
 
 /// Every place in the client that builds an endpoint and then dials with it.
-/// Three, across the two player binaries — `client` (`main.rs`), and the
-/// `gates` that `ci/depot.py` ships, which dials from two places: `--server`
-/// at boot (`bin/gates.rs`) and the shard clicked out of the menu's list
-/// (`render/menu.rs`).
-const SITES: [&str; 3] = ["src/main.rs", "src/bin/gates.rs", "src/render/menu.rs"];
+/// Four: the two player binaries — `client` (`main.rs`), and the `gates` that
+/// `ci/depot.py` ships, which dials from two places: `--server` at boot
+/// (`bin/gates.rs`) and the shard clicked out of the menu's list
+/// (`render/menu.rs`) — and film mode's recorder (`bin/record.rs`).
+const SITES: [&str; 4] = [
+    "src/main.rs",
+    "src/bin/gates.rs",
+    "src/render/menu.rs",
+    "src/bin/record.rs",
+];
 
 const ENDPOINT: &str = "client_endpoint(";
 const CONNECT: &str = "Session::connect(";

@@ -161,6 +161,14 @@ pub fn hash(c: &Content) -> u64 {
                 h.u(b);
             }
         }
+        // The draw reaches `RangedDef` and decides when a bow may loose.
+        match w.draw_ms {
+            None => h.u(0),
+            Some(d) => {
+                h.u(1);
+                h.u(d);
+            }
+        }
     }
 
     // The ballistics, on the object they belong to. These reach

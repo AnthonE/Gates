@@ -78,6 +78,7 @@ pub mod build;
 pub mod chat;
 pub mod craft;
 pub mod death;
+pub mod draw;
 pub mod hammer;
 pub mod hold;
 pub mod hub;

@@ -39,6 +39,7 @@ fn weapons() -> CombatContent {
         magazine: 8,
         reload_ticks: 102,
         mag_slot: 0,
+        draw_ticks: 0,
     };
     c.ranged[BOW as usize] = RangedDef {
         damage: 30,
@@ -52,6 +53,7 @@ fn weapons() -> CombatContent {
         magazine: 0,
         reload_ticks: 0,
         mag_slot: NO_MAG,
+        draw_ticks: 0,
     };
     c.ammo[ARROW as usize] = AmmoDef {
         speed_mmpt: 1333,

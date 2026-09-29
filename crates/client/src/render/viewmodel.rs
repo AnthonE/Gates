@@ -305,6 +305,37 @@ pub const VIEWMODEL_THRUST_PUSH: Vec3 = Vec3::new(-0.04, 0.06, -0.16);
 /// spear land beside the crosshair with nothing red anywhere.
 pub const VIEWMODEL_THRUST_WRIST_MAX: f32 = 0.70;
 
+/// Where a raised bow sits, as a displacement of the whole rig, metres: in
+/// to the middle of the frame and up, the bow arm lifted to aim
+/// (`reference/PROJECTILES.md` §6). Reached within [`VIEWMODEL_RAISE_RATE`]
+/// of the right mouse going down.
+pub const VIEWMODEL_DRAW_RAISE: Vec3 = Vec3::new(-0.22, 0.14, 0.0);
+/// What the draw adds as it fills, metres: the bow pulled back toward the
+/// eye as the string comes to the cheek. Full exactly when the sim would
+/// let it loose (`ui::draw`), so full draw is something the player sees.
+pub const VIEWMODEL_DRAW_PULL: Vec3 = Vec3::new(0.0, 0.0, 0.07);
+/// How far a raised bow turns the rig, YXZ Euler radians: yawed in toward
+/// the view axis and canted, the archer's hold.
+pub const VIEWMODEL_DRAW_TURN: Vec3 = Vec3::new(0.10, 0.04, -0.22);
+/// How fast the bow comes up and goes back down, per second, as `1 -
+/// exp(-k·dt)` (the sway's form).
+pub const VIEWMODEL_RAISE_RATE: f32 = 14.0;
+/// The loose: how far the release kicks the rig, metres, and how long.
+pub const VIEWMODEL_LOOSE_KICK: Vec3 = Vec3::new(0.0, 0.015, -0.08);
+pub const VIEWMODEL_LOOSE_S: f32 = 0.2;
+/// A [`Stroke::Shot`] row's recoil on the same clock: back toward the eye
+/// and up, metres, with the muzzle climbing, radians.
+pub const VIEWMODEL_SHOT_KICK: Vec3 = Vec3::new(0.0, 0.012, 0.05);
+pub const VIEWMODEL_SHOT_CLIMB: f32 = 0.10;
+/// How much a full draw narrows the view: raised, the bow zooms by most of
+/// this; the pull takes the rest.
+pub const DRAW_ZOOM: f32 = 0.15;
+
+/// How far the view is zoomed for a drawn bow, 0..=1 of [`DRAW_ZOOM`] —
+/// written by [`animate`], read by `settings::apply_view`.
+#[derive(Resource, Default)]
+pub struct DrawZoom(pub f32);
+
 /// Where the item sits in the **`RightHand` bone's own frame**, once
 /// [`dress_arms`] has hung it there.
 ///
@@ -519,6 +550,7 @@ pub fn thrust_snap(def: &HeldModelDef, strike: f32) -> Quat {
 pub fn stroke_snap(def: Option<&HeldModelDef>, strike: f32) -> Quat {
     match def {
         Some(d) if d.stroke == Stroke::Thrust => thrust_snap(d, strike),
+        Some(d) if d.stroke == Stroke::Shot => Quat::IDENTITY,
         Some(d) => aim_snap(item_rest_dir(d), strike),
         None => aim_snap(Vec3::NEG_Z, strike),
     }
@@ -653,11 +685,13 @@ pub fn thrust_pose(s: f32) -> (Quat, Vec3) {
     )
 }
 
-/// [`swing_pose`] or [`thrust_pose`], by the row.
+/// [`swing_pose`] or [`thrust_pose`], by the row — or nothing, for a row
+/// that is fired rather than swung.
 pub fn stroke_pose(stroke: Stroke, s: f32) -> (Quat, Vec3) {
     match stroke {
         Stroke::Chop => swing_pose(s),
         Stroke::Thrust => thrust_pose(s),
+        Stroke::Shot => (Quat::IDENTITY, Vec3::ZERO),
     }
 }
 
@@ -841,6 +875,14 @@ pub struct Motion {
     /// `Cue::Swing`, so this is the count a test of the sound's cadence
     /// would read. Wraps rather than saturates; it is a counter, not a sum.
     pub strokes: u32,
+    /// The bow's draw, mirrored (`ui::draw`).
+    draw: crate::ui::draw::DrawClock,
+    /// How far the bow is raised, 0..=1, eased toward the aim.
+    raise: f32,
+    /// The loose's kick, counting down from 1 to 0.
+    loose: f32,
+    /// Loosed shots since the session began, the draw's `strokes`.
+    pub looses: u32,
 }
 
 /// Spawn the held item under the camera, once.
@@ -1743,16 +1785,43 @@ pub fn animate(
     // markers do not prove it — an entity could carry both.
     mut q: Query<&mut Transform, (With<HeldRig>, Without<HeldItem>)>,
     mut item: Query<(&mut Transform, Has<InHand>), With<HeldItem>>,
+    mut zoom: ResMut<DrawZoom>,
 ) {
     let Ok(mut t) = q.single_mut() else { return };
     let dt = time.delta_secs();
     if dt <= 0.0 {
         return;
     }
-    // The byte the sim will act on, not the mouse — see `ClientCore::buttons`.
-    let swinging = net
+    // A bow in hand is drawn and loosed, never chopped: its draw and nock in
+    // ticks, and the byte this frame sends.
+    let bow = net.as_deref().and_then(|n| {
+        let c = &n.session.core;
+        crate::ui::hold::draw_in_hand(&c.catalog, &c.inv, n.sel).map(|d| (d, c.buttons()))
+    });
+    // Which way the tool is carried and how it is swung are both the row's,
+    // so the row is resolved once here for the arm and the wrist together.
+    // Resolved the way `swap` and `hand_light` resolve it —
+    // `held_model_in_hand` is a pure lookup over the catalog and the
+    // inventory mirror, and `hand_light`'s doc is the standing argument that
+    // a second reader of a pure function is two calls and not the
+    // second-drain defect `feed.rs` narrates.
+    //
+    // `None` is an empty hand, or a capture run with no session at all, and
+    // it chops: `stroke_snap` says why that is the historic swing and not an
+    // arbitrary default.
+    let def: Option<&'static HeldModelDef> = net
         .as_deref()
-        .is_some_and(|n| n.session.core.buttons() & sim_core::input::BTN_PRIMARY != 0);
+        .and_then(|n| held_model_in_hand(&n.session.core.catalog, &n.session.core.inv, n.sel))
+        .map(|i| &HELD_MODELS[i]);
+    // A crossbow or a revolver is fired, not swung: it kicks on each shot
+    // the sim reports as this player's, and never chops.
+    let shoots = def.is_some_and(|d| d.stroke == Stroke::Shot);
+    // The byte the sim will act on, not the mouse — see `ClientCore::buttons`.
+    let swinging = bow.is_none()
+        && !shoots
+        && net
+            .as_deref()
+            .is_some_and(|n| n.session.core.buttons() & sim_core::input::BTN_PRIMARY != 0);
 
     if !m.started {
         m.started = true;
@@ -1813,7 +1882,8 @@ pub fn animate(
     // started, and restarting the arc there is a visible stutter. At rest
     // it can only mean the prediction missed one, and a swing drawn late
     // beats a swing not drawn.
-    let landed_at_rest = m.swing <= 0.0 && (feed.hits > 0 || !feed.gathered().is_empty());
+    let landed_at_rest =
+        !shoots && m.swing <= 0.0 && (feed.hits > 0 || !feed.gathered().is_empty());
     if predicted || landed_at_rest {
         m.swing = 1.0;
         m.strokes = m.strokes.wrapping_add(1);
@@ -1840,6 +1910,85 @@ pub fn animate(
     if m.swing > 0.0 {
         m.swing = (m.swing - dt / VIEWMODEL_SWING_S).max(0.0);
     }
+
+    // ── The draw, off the right mouse ───────────────────────────────────
+    //
+    // Raised while the aim is held, pulled as the draw fills, and loosed on
+    // the frame the sim would let it (`ui::draw`): the left button held at
+    // full draw with arrows in the pack. The release sound is the shot's
+    // own (`Cue::ShotBow`, off the sim's `EV_SHOT`).
+    let now = time.elapsed_secs();
+    let mut pull = 0.0;
+    match bow {
+        Some(((draw, nock), buttons)) => {
+            let aiming = buttons & sim_core::input::BTN_AIM != 0;
+            let hz = sim_core::limits::TICK_HZ as f32;
+            let (draw_s, nock_s) = (draw as f32 / hz, nock as f32 / hz);
+            // The creak is the draw starting: the right mouse going down.
+            if aiming && !m.draw.aiming() {
+                if let Some(sound) = sound.as_deref_mut() {
+                    sound.play(crate::sound::mixer::Request::own(
+                        crate::sound::Cue::BowDraw,
+                    ));
+                }
+            }
+            pull = m.draw.step(now, aiming, draw_s, nock_s);
+            let arrows = || {
+                net.as_deref().is_some_and(|n| {
+                    crate::ui::hold::carries_arrows(&n.session.core.catalog, &n.session.core.inv)
+                })
+            };
+            if aiming
+                && buttons & sim_core::input::BTN_PRIMARY != 0
+                && m.draw.ready(now, draw_s, nock_s)
+                && arrows()
+            {
+                m.draw.loose(now);
+                m.loose = 1.0;
+                m.looses = m.looses.wrapping_add(1);
+                pull = 0.0;
+            }
+            let k = 1.0 - (-VIEWMODEL_RAISE_RATE * dt).exp();
+            let target = if aiming { 1.0 } else { 0.0 };
+            m.raise += (target - m.raise) * k;
+        }
+        None => {
+            m.draw = crate::ui::draw::DrawClock::default();
+            m.raise = 0.0;
+            if !shoots {
+                m.loose = 0.0;
+            }
+        }
+    }
+    // A shot row's kick is the sim's shot, not a prediction of it: nothing
+    // on this side mirrors a magazine or a reload, so the event is the one
+    // honest source — a round trip late, with the report it plays under.
+    if shoots {
+        let me = net.as_deref().map(|n| n.session.core.player_id);
+        if feed.shots().iter().any(|sh| Some(sh.0) == me) {
+            m.loose = 1.0;
+            m.looses = m.looses.wrapping_add(1);
+        }
+    }
+    if m.loose > 0.0 {
+        m.loose = (m.loose - dt / VIEWMODEL_LOOSE_S).max(0.0);
+    }
+    zoom.0 = m.raise * (0.7 + 0.3 * pull);
+    let raise = m.raise;
+    let kick = bump(1.0 - m.loose, 0.25);
+    let (kick_off, climb) = if shoots {
+        (VIEWMODEL_SHOT_KICK, VIEWMODEL_SHOT_CLIMB)
+    } else {
+        (VIEWMODEL_LOOSE_KICK, 0.0)
+    };
+    let draw_turn = Quat::from_euler(
+        EulerRot::YXZ,
+        VIEWMODEL_DRAW_TURN.x * raise,
+        VIEWMODEL_DRAW_TURN.y * raise + climb * kick,
+        VIEWMODEL_DRAW_TURN.z * raise,
+    );
+    let draw_off =
+        VIEWMODEL_DRAW_RAISE * raise + VIEWMODEL_DRAW_PULL * (pull * raise) + kick_off * kick;
     // ── One pose for the whole assembly ─────────────────────────────────
     //
     // `1 - swing` runs the stroke forwards as `swing` counts down. The arc
@@ -1848,26 +1997,11 @@ pub fn animate(
     // and the tool head waggling on a stationary fist — the operator's
     // *"hardly anything moves"* (2026-08-30) was the second of those.
     let s = 1.0 - m.swing;
-    // Which way the tool is carried and how it is swung are both the row's,
-    // so the row is resolved once here for the arm and the wrist together.
-    // Resolved the way `swap` and `hand_light` resolve it —
-    // `held_model_in_hand` is a pure lookup over the catalog and the
-    // inventory mirror, and `hand_light`'s doc is the standing argument that
-    // a second reader of a pure function is two calls and not the
-    // second-drain defect `feed.rs` narrates.
-    //
-    // `None` is an empty hand, or a capture run with no session at all, and
-    // it chops: `stroke_snap` says why that is the historic swing and not an
-    // arbitrary default.
-    let def: Option<&'static HeldModelDef> = net
-        .as_deref()
-        .and_then(|n| held_model_in_hand(&n.session.core.catalog, &n.session.core.inv, n.sel))
-        .map(|i| &HELD_MODELS[i]);
     let (arc, throw) = stroke_pose(def.map_or(Stroke::Chop, |d| d.stroke), s);
     // The sway rides OUTSIDE the swing, so a turn taken mid-stroke lags the
     // whole assembly rather than bending the stroke.
     let lag = Quat::from_euler(EulerRot::YXZ, m.sway.x, m.sway.y, 0.0);
-    *t = rig_transform(lag * arc, throw + bob);
+    *t = rig_transform(lag * arc * draw_turn, throw + bob + draw_off);
 
     // ── The wrist, on top of the arm ────────────────────────────────────
     //
@@ -1901,8 +2035,9 @@ pub fn animate(
 /// shard whose clock is *behind* the last one leaves the arm on a cooldown
 /// measured in somebody else's ticks (`ui::swing`'s
 /// `a_reset_lets_a_fresher_shard_swing_again`).
-pub fn forget(mut m: ResMut<Motion>) {
+pub fn forget(mut m: ResMut<Motion>, mut zoom: ResMut<DrawZoom>) {
     *m = Motion::default();
+    zoom.0 = 0.0;
 }
 
 /// Shortest signed arc into `-π..π`.

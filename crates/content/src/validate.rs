@@ -446,7 +446,18 @@ pub fn structural(c: &Content) -> Result<(), String> {
         // about `speed_mps`, and for the identical reason: a content bound
         // is a boot failure a person reads, and an encoder bound is an
         // event that silently stops arriving.
-        if w.range_m == 0 {
+        //
+        // A bow is the one kind that carries none: its arrow flies until
+        // something stops it, so its reach is its round's flight, and a
+        // `range_m` on one would be a number nothing reads.
+        if w.kind == WeaponKind::Bow {
+            if w.range_m != 0 {
+                return Err(format!(
+                    "weapon `{}`: a bow's reach is its round's flight — no range_m",
+                    w.id
+                ));
+            }
+        } else if w.range_m == 0 {
             return Err(format!("weapon `{}`: a weapon with no reach", w.id));
         }
         match w.kind {
@@ -623,6 +634,23 @@ pub fn structural(c: &Content) -> Result<(), String> {
                         w.id
                     ));
                 }
+            }
+        }
+        // The draw belongs to the bow: a firearm or a club held drawn is a
+        // number nothing reads. Present, it must bake to a real wait — a
+        // draw that rounds to nothing is a bow that fires from the hip
+        // while its row says otherwise — and fit `RangedDef`'s `u16`.
+        if let Some(ms) = w.draw_ms {
+            if w.kind != WeaponKind::Bow {
+                return Err(format!("weapon `{}`: only a bow carries a draw_ms", w.id));
+            }
+            let ticks = ms as u64 * sim_core::limits::TICK_HZ as u64 / 1000;
+            if ticks == 0 || ticks > u16::MAX as u64 {
+                return Err(format!(
+                    "weapon `{}`: draw_ms {ms} is {ticks} ticks at {} Hz, outside 1..=u16",
+                    w.id,
+                    sim_core::limits::TICK_HZ
+                ));
             }
         }
         // Both baked fields are `u16` on `RangedDef`, so the ceiling is the

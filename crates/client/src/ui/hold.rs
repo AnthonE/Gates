@@ -220,6 +220,14 @@ pub fn hand_hint(
         ),
         Click::Repair => "REPAIR   (left click · hold right: upgrade, rotate, pick up)".to_string(),
         Click::Swing => {
+            // A bow says how it is worked, which a first-time player cannot
+            // guess: the left click alone does nothing with one.
+            if catalog.row(stack.item as usize).draws() {
+                return format!(
+                    "{}   (hold right mouse to draw · left click to loose)",
+                    name()
+                );
+            }
             let Some(row) = held_model(catalog, stack) else {
                 return String::new();
             };
@@ -302,7 +310,7 @@ pub enum HeldSrc {
 /// `tests/held_assets.rs::nothing_held_glows`), and every greybox archetype
 /// (furnace, workbench 2/3, research table, lock), because a scaled cuboid in
 /// the hand tells the player less than the stand-in tool does.
-pub const HELD_MODELS: [HeldModelDef; 14] = [
+pub const HELD_MODELS: [HeldModelDef; 15] = [
     // **A stone is palmed, not hafted, which makes this the one row where
     // `lay` is wrong and the one where the scale cheat is not about
     // frame area.** Laid forward the model's 16 cm axis stands up and its
@@ -470,7 +478,7 @@ pub const HELD_MODELS: [HeldModelDef; 14] = [
         0.50,
         0.80,
     ),
-    // The two generated rows — `render::heldgen` owns the geometry, this
+    // The generated rows — `render::heldgen` owns the geometry, this
     // table owns where the hand goes, same split as the glb rows.
     // A torch stays upright: its whole read is the head above the fist.
     HeldModelDef {
@@ -494,7 +502,23 @@ pub const HELD_MODELS: [HeldModelDef; 14] = [
         scale: 1.0,
         lay: core::f32::consts::FRAC_PI_2,
         pose_yaw: -0.65,
-        stroke: Stroke::Chop,
+        stroke: Stroke::Shot,
+        light: None,
+    },
+    // A crossbow is laid forward the revolver's way and held at the wrist of
+    // the stock, just behind the trigger, with the butt reaching back out of
+    // the bottom of the frame. Turned IN rather than out: at +0.35 it points
+    // down the view with the prod across the horizon (judged on
+    // `ci/posesheet.py`'s projection against the revolver's -0.65).
+    HeldModelDef {
+        key: "crossbow",
+        src: HeldSrc::Gen("crossbow"),
+        height_m: 0.655,
+        grip_frac: 0.36,
+        scale: 0.8,
+        lay: core::f32::consts::FRAC_PI_2,
+        pose_yaw: 0.35,
+        stroke: Stroke::Shot,
         light: None,
     },
     // The deployables, palmed level. `height_m` restates each FILE's +Y
@@ -566,6 +590,10 @@ pub enum Stroke {
     /// converging on the crosshair — a spear. `render::viewmodel::thrust_pose`
     /// for the arm and `thrust_snap` for the wrist.
     Thrust,
+    /// Never swung: kicked back on each shot the sim fires — a crossbow, a
+    /// revolver. The sim never swings these (`ranged::draw` takes the arm),
+    /// so a chop drawn for one is a blow that did not happen.
+    Shot,
 }
 
 /// One held model: the item it answers to, its geometry source, and how the
@@ -886,6 +914,30 @@ pub fn held_model(catalog: &ItemCatalog, stack: ItemStack) -> Option<usize> {
     let name = core::str::from_utf8(catalog.name(stack.item as usize)).ok()?;
     let s = stem(name);
     HELD_MODELS.iter().position(|m| m.key == s)
+}
+
+/// The draw of the stack in hand — `(draw_ticks, nock_ticks)` off the
+/// catalog (wire v82) — or `None` for anything that fires from the hip or
+/// does not fire. Clamped for [`held_in_hand`]'s reason.
+pub fn draw_in_hand(catalog: &ItemCatalog, inv: &[ItemStack], sel: u8) -> Option<(u8, u8)> {
+    if inv.is_empty() {
+        return None;
+    }
+    let s = inv[(sel as usize).min(inv.len() - 1)];
+    let row = catalog.row(s.item as usize);
+    (s.count > 0 && row.draws()).then_some((row.draw_ticks, row.nock_ticks))
+}
+
+/// Does the pack hold any arrows? Asked before the viewmodel draws a loose
+/// the sim would refuse for an empty quiver.
+pub fn carries_arrows(catalog: &ItemCatalog, inv: &[ItemStack]) -> bool {
+    inv.iter().any(|s| s.count > 0 && is_arrow(catalog, s.item))
+}
+
+/// Whether an item is an arrow. A loose one is drawn standing in the ground
+/// where it fell (`render::structures`), not as the generic pouch.
+pub fn is_arrow(catalog: &ItemCatalog, item: u16) -> bool {
+    core::str::from_utf8(catalog.name(item as usize)).is_ok_and(|n| stem(n).ends_with("arrow"))
 }
 
 /// [`held_model`] on the selected hotbar slot. Clamped for [`held_in_hand`]'s
@@ -1498,5 +1550,37 @@ mod tests {
         assert!(!Held::Other.places() && !Held::Other.repairs());
         // Only the plan previews, because only the plan places.
         assert!(Held::Plan.shows_ghost() && !Held::Hammer.shows_ghost());
+    }
+
+    /// The draw rides the catalog (wire v82): a bow in hand draws, says how
+    /// it is worked, and a hatchet does neither.
+    #[test]
+    fn a_bow_draws_and_says_so() {
+        let mut c = catalog_with(&["Hunting Bow", "Stone Hatchet", "Wooden Arrow"]);
+        c.rows[0] = protocol::ItemRow {
+            stack_max: 1,
+            draw_ticks: 30,
+            nock_ticks: 60,
+            ..protocol::ItemRow::EMPTY
+        };
+        let stack = |item| ItemStack {
+            item,
+            count: 1,
+            cond: 0,
+            skin: 0,
+        };
+        let inv = [stack(0), stack(1)];
+        assert_eq!(draw_in_hand(&c, &inv, 0), Some((30, 60)));
+        assert_eq!(draw_in_hand(&c, &inv, 1), None);
+        assert_eq!(draw_in_hand(&c, &[], 0), None);
+        let research = sim_core::research::ResearchContent::EMPTY;
+        let hint = hand_hint(&c, &research, Click::Swing, stack(0), false);
+        assert!(
+            hint.contains("right mouse") && hint.contains("HUNTING BOW"),
+            "{hint}"
+        );
+        assert!(hand_hint(&c, &research, Click::Swing, stack(1), false).is_empty());
+        assert!(!carries_arrows(&c, &inv));
+        assert!(carries_arrows(&c, &[stack(1), stack(2)]));
     }
 }

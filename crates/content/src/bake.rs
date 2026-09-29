@@ -826,15 +826,14 @@ impl Content {
         }
         let rate_ticks = u16::try_from((TICK_HZ * 60 / w.rate_per_min).max(1))
             .map_err(|_| format!("bake: ranged weapon `{}` rate overflows u16 ticks", w.id))?;
-        // A reach of zero would be a weapon that fires into its own muzzle:
-        // an arrow whose derived life is one tick, or a hitscan segment with
-        // no length. Refused here rather than left to read as a strange
-        // weapon, because both are silent — neither errors, and neither can
-        // ever hit anything.
-        if w.range_m == 0 {
+        // A firearm's reach of zero would be a hitscan segment with no
+        // length. Refused here rather than left to read as a strange weapon,
+        // because it is silent — it never errors and can never hit anything.
+        // A bow carries none: its arrow flies until something stops it.
+        let hitscan = w.kind == WeaponKind::Firearm;
+        if hitscan && w.range_m == 0 {
             return Err(format!("bake: ranged weapon `{}` has no reach", w.id));
         }
-        let hitscan = w.kind == WeaponKind::Firearm;
         if hitscan {
             // The hitscan sampler wall. `ranged::hitscan` walks the reach at
             // `ARROW_STEP_MM`, and a gun that needs more taps than
@@ -871,6 +870,13 @@ impl Content {
                 w.id
             ));
         }
+        let draw_ticks = u16::try_from(w.draw_ms.unwrap_or(0) as u64 * TICK_HZ as u64 / 1000)
+            .map_err(|_| {
+                format!(
+                    "bake: `{}` draw_ms {:?} overflows u16 ticks",
+                    w.id, w.draw_ms
+                )
+            })?;
         let mag_slot = if magazine > 0 {
             // Refused rather than wrapped or dropped. A weapon that lost
             // its slot would fall back to spending straight out of the
@@ -940,6 +946,9 @@ impl Content {
             magazine,
             reload_ticks,
             mag_slot,
+            // The draw (`reference/PROJECTILES.md` §6), validated to a bow
+            // and to a nonzero, `u16` tick count (`validate.rs`).
+            draw_ticks,
         };
         Ok(())
     }

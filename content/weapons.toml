@@ -143,16 +143,27 @@ limb_pct = 50
 rate_per_min = 48
 range_m = 2
 
+# **Neither bow carries a `range_m`**: an arrow flies until something stops
+# it, so a bow's reach is its round's speed and drop (`[[ammo]]` below) —
+# about 80 m on flat ground for a wooden arrow, lobbed.
+#
+# The bow's 35 is the reference's (`reference/PROJECTILES.md` §4, §9.6),
+# held until arrows came back — they do now, and are seen where they fall —
+# and taken with the draw, which costs every first shot a second. 3 body
+# hits, inside `ttk_bow`.
 [[weapon]]
 id = "item.bow"
 kind = "bow"
-damage = 30
+damage = 35
 structure = 1
 headshot_mult = 2
 limb_pct = 50
 rate_per_min = 30
-range_m = 60
 ammo = ["item.arrow_wood"]
+# The draw: hold the right mouse this long before a shot will loose
+# (`reference/PROJECTILES.md` §6 — the hunting bow's ~1 s draw). The
+# crossbow carries none: it is cocked, and fires from the hip.
+draw_ms = 1000
 
 [[weapon]]
 id = "item.crossbow"
@@ -162,7 +173,6 @@ structure = 1
 headshot_mult = 2
 limb_pct = 50
 rate_per_min = 20
-range_m = 80
 ammo = ["item.arrow_metal"]
 
 [[weapon]]

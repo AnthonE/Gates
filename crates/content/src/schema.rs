@@ -341,6 +341,11 @@ pub struct Weapon {
     /// weapon that does not discount a leg at all.
     pub limb_pct: u32,
     pub rate_per_min: u32,
+    /// Reach in metres: a swing's, a firearm's trace, how far a throwable
+    /// is planted. **Absent on a bow**, and refused there (`validate.rs`):
+    /// an arrow flies until something stops it, so a bow's reach is its
+    /// round's flight (`[[ammo]]`).
+    #[serde(default)]
     pub range_m: u32,
     /// Rounds this weapon holds **loaded**, or absent for a weapon that
     /// spends straight out of the pack. Required on `firearm`, refused on
@@ -370,6 +375,12 @@ pub struct Weapon {
     /// the sim — the bake does the division (`range_m` → `range_mm`'s
     /// treatment).
     pub reload_ms: Option<u32>,
+    /// Milliseconds the right mouse must be held before the weapon can
+    /// loose — the draw (`reference/PROJECTILES.md` §6: the hunting bow's
+    /// ~1 s). Only on a `bow`; absent is a weapon that fires from the hip,
+    /// the crossbow's case. Baked to ticks against `TICK_HZ` like
+    /// `reload_ms`.
+    pub draw_ms: Option<u32>,
     /// The rounds this weapon can fire, in **preference order** — the sim
     /// spends the first one the shooter is actually carrying. Required on
     /// `bow`, refused on melee and throwable.

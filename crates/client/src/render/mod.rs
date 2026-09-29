@@ -530,6 +530,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<screen::Who>()
             .init_resource::<pause::Chosen>()
             .init_resource::<viewmodel::Motion>()
+            .init_resource::<viewmodel::DrawZoom>()
             .init_resource::<verbs::Aimed>()
             .init_resource::<verbs::Swung>()
             .init_resource::<verbs::InWeak>()

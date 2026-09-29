@@ -125,7 +125,7 @@ use crate::collide::{
 use crate::combat::{held_item, CombatContent};
 use crate::craft::{inv_count, inv_take};
 use crate::gather::NO_ITEM;
-use crate::input::BTN_PRIMARY;
+use crate::input::{BTN_AIM, BTN_PRIMARY};
 use crate::limits::{
     ARROW_STEP_MM, MAX_ARROWS, MAX_ARROW_LIFE_TICKS, MAX_ARROW_SUBSTEPS, MAX_HITSCAN_MARK_SAMPLES,
     MAX_HITSCAN_SAMPLES, MAX_MAGS, MAX_PLAYERS,
@@ -623,6 +623,16 @@ pub fn draw(
     if def.hitscan {
         return true;
     }
+    // **A bow looses only from a full draw** (`reference/PROJECTILES.md`
+    // §6): the aim held for `draw_ticks`. Relaxed, it keeps its earliest
+    // shot a whole draw away, so the draw's clock starts when the aim does;
+    // after a shot the cadence below runs, and a draw held through it is
+    // ready when the cadence is.
+    if def.draw_ticks > 0 && p.frame.buttons & BTN_AIM == 0 {
+        // From the next tick: an aim that begins then is full a draw later.
+        p.next_swing = p.next_swing.max(tick + 1 + u64::from(def.draw_ticks));
+        return true;
+    }
     if p.frame.buttons & BTN_PRIMARY == 0 || tick < p.next_swing {
         return true;
     }
@@ -662,12 +672,13 @@ pub fn draw(
     let (fx, fz) = yaw_dir(p.frame.yaw);
     let (ch, sv) = pitch_dir(p.frame.pitch);
     let speed = ball.speed_mmpt as f32;
-    // Flight time is the weapon's reach over this round's speed, so a fast
-    // arrow and a slow one out of the same bow both expire at the range
-    // the bow claims instead of at a baked tick count that only one of
-    // them earned. Integer division, once per shot. `speed_mmpt > 0` is
-    // `ammo_def`'s filter, so this cannot divide by zero.
-    let life = (def.range_mm / ball.speed_mmpt as u32).clamp(1, MAX_ARROW_LIFE_TICKS as u32) as u16;
+    // **An arrow flies until something stops it** — the ground, a trunk, a
+    // wall, a body — as the reference's does and as the client's tracer
+    // has always drawn it, so where a player watched it land is where it
+    // lies. A bow's reach is its round's speed and drop, not a number on
+    // the bow (`content/weapons.toml`). `MAX_ARROW_LIFE_TICKS` is only the
+    // backstop, and an arrow still in the air then falls (`land`).
+    let life = MAX_ARROW_LIFE_TICKS;
     arrows.a[ix] = Arrow {
         qx: p.body.qx * (POS_XZ_Q * MM_PER_M) as i32,
         qy: p.body.qy * (POS_Y_Q * MM_PER_M) as i32 + ARROW_EYE_MM,
@@ -702,34 +713,16 @@ pub fn draw(
     true
 }
 
-/// Retire a landed arrow into the world: break it, or lay it down where a
-/// player can take it back (`spent.rs`, `reference/PROJECTILES.md` §5).
-///
-/// `lodged` is the reference's own axis and it is *dealt damage* rather
-/// than *what was hit*: an arrow in a body waits out the lodge, an arrow
-/// in the scenery is takeable at once. §5 draws no distinction between a
-/// tree, a wall and a hillside, so neither does this.
+/// Retire a stopped arrow: break it, or hand it to `spent` to come to rest
+/// (`spent.rs`, `reference/PROJECTILES.md` §5). `host` is the body it is in
+/// and which life of it — `(id, life)` — when the arrow dealt damage; it
+/// rides that body for the lodge, then falls out. `None` rests this tick.
 ///
 /// **The break roll happens here and only here**, so every path that ends
-/// with an arrow on the ground pays the same odds and none of them can
-/// forget to. The slot is part of the key, which is what makes two arrows
-/// landing on one tick two independent draws.
-///
-/// ⚠ **A lodged arrow does not travel with the body it is in.** The
-/// reference sticks it to the victim; ours lies at the point of impact,
-/// so a hit player walking away leaves the arrow behind them. That is a
-/// simplification and not an oversight — attaching it needs the arrow to
-/// be a child of a moving entity, which is a second store and a second
-/// set of rules about what happens when the body dies, sleeps or is
-/// evicted. The lodge *timer* is what §5 says the mechanic is for, and
-/// the timer is exact.
-///
-/// **The arrow's own position is where it lies**, so the caller advances
-/// `a.q*` to the stop point before calling rather than passing the point
-/// beside the arrow that is already carrying one. That is one fewer
-/// argument than the obvious shape — clippy's limit is seven and the
-/// obvious shape was eight — and it is also the truer statement: an arrow
-/// that has stopped is at the place it stopped.
+/// with an arrow on the ground pays the same odds. The slot is part of the
+/// key, which is what makes two arrows landing on one tick two independent
+/// draws. The arrow's own position is where it stopped: the caller moves
+/// `a.q*` there first.
 #[inline]
 fn land(
     seed: u64,
@@ -738,21 +731,24 @@ fn land(
     spent: &mut SpentArrows,
     slot: usize,
     a: &Arrow,
-    lodged: bool,
+    host: Option<(u32, u64)>,
 ) {
     if crate::spent::breaks(seed, tick, slot, cc.arrow_break_pct) {
         return;
     }
+    let (host, life) = host.unwrap_or((0, 0));
     spent.lodge(SpentRec {
         qx: a.qx,
         qy: a.qy,
         qz: a.qz,
         round: a.round,
-        ready_at: if lodged {
+        ready_at: if host != 0 {
             tick + u64::from(cc.arrow_lodge_ticks)
         } else {
             tick
         },
+        host,
+        life,
     });
 }
 
@@ -854,15 +850,19 @@ fn step_in(
         };
 
         // How many samples this tick's segment needs, and the refusal when
-        // it needs more than it may have. That case is unreachable with
-        // shipped content — `bake_combat` refuses a muzzle speed past the
-        // sampler, and a derived life expires an arrow long before gravity
-        // could carry it there — so this is the backstop that lets the
-        // sample spacing be a guarantee rather than a hope. An arrow moving
-        // faster than the sim can honestly trace stops existing; it does
-        // not fly untraced.
+        // it needs more than it may have. Shipped content does not reach
+        // it — `bake_combat` refuses a muzzle speed past the sampler, and
+        // gravity carries the fastest round there only after a fall of
+        // some 90 m, more than the island's relief — so this is the
+        // backstop that lets the sample spacing be a guarantee rather than
+        // a hope. An arrow moving faster than the sim can honestly trace
+        // stops flying; it does not fly untraced.
         let need = (len_mm / ARROW_STEP_MM as f32) as usize + 1;
         if need > MAX_ARROW_SUBSTEPS {
+            // Falling faster than the sampler can honestly trace — a long
+            // drop off a height: it falls from where it is rather than
+            // flying on untraced.
+            land(seed, tick, cc, spent, ix, &a, None);
             arrows.a[ix].life = 0;
             continue;
         }
@@ -931,7 +931,8 @@ fn step_in(
                 a.qx = crate::fmath::floor_i32(ox + sx * m.t);
                 a.qy = crate::fmath::floor_i32(oy + sy * m.t);
                 a.qz = crate::fmath::floor_i32(oz + sz * m.t);
-                land(seed, tick, cc, spent, ix, &a, true);
+                let host = (crate::mob::mob_id(m.slot), q.mobs.m[m.slot].respawn_at);
+                land(seed, tick, cc, spent, ix, &a, Some(host));
                 arrows.a[ix].life = 0;
                 continue;
             }
@@ -991,15 +992,16 @@ fn step_in(
                 };
                 n_kills += 1;
             }
-            // Dealt damage, so the lodge timer applies — this is the
+            // Dealt damage, so it rides this body for the lodge — the
             // arrow you may not re-use during the fight you fired it in.
             // The point is the closest approach the solve already found,
-            // which is the arrow's position at the instant it met the
-            // body, not a re-solve of it.
+            // the arrow's position at the instant it met the body; `die`
+            // has not run yet, so `deaths` names the life it went into.
             a.qx = crate::fmath::floor_i32(ox + sx * t);
             a.qy = crate::fmath::floor_i32(oy + sy * t);
             a.qz = crate::fmath::floor_i32(oz + sz * t);
-            land(seed, tick, cc, spent, ix, &a, true);
+            let host = (vid, u64::from(players[j].deaths));
+            land(seed, tick, cc, spent, ix, &a, Some(host));
             arrows.a[ix].life = 0;
             continue;
         }
@@ -1044,15 +1046,15 @@ fn step_in(
                     n_chips += 1;
                 }
             }
-            // Missed every body, so it is takeable at once. Same stop
-            // point the impact event just reported, in millimetres rather
-            // than in the body's coarser quanta: a decal is 20 cm across
-            // and does not care, but the hand reaching for the arrow is
-            // the thing `take_near` measures against.
-            a.qx = crate::fmath::floor_i32(ox + sx * stop_t);
-            a.qy = crate::fmath::floor_i32(oy + sy * stop_t);
-            a.qz = crate::fmath::floor_i32(oz + sz * stop_t);
-            land(seed, tick, cc, spent, ix, &a, false);
+            // Missed every body, so it rests this tick, under the last
+            // free sample before the stop: the stop sample itself is inside
+            // the trunk, the wall or the hillside, and a point inside a
+            // wall could fall to the wrong side of it.
+            let back = (stop_t - 1.0 / n as f32).max(0.0);
+            a.qx = crate::fmath::floor_i32(ox + sx * back);
+            a.qy = crate::fmath::floor_i32(oy + sy * back);
+            a.qz = crate::fmath::floor_i32(oz + sz * back);
+            land(seed, tick, cc, spent, ix, &a, None);
             arrows.a[ix].life = 0;
             continue;
         }
@@ -1062,6 +1064,11 @@ fn step_in(
         a.qz += dz;
         a.flown = a.flown.saturating_add(len_mm as u32);
         a.life -= 1;
+        if a.life == 0 {
+            // Out of flight in the air: it falls to whatever is under it
+            // rather than vanishing (`NOW.md` §5 item 2).
+            land(seed, tick, cc, spent, ix, &a, None);
+        }
         arrows.a[ix] = a;
     }
     (n_kills, n_chips)

@@ -67,10 +67,20 @@ pub const BTN_LIGHT: u8 = 1 << 4;
 /// The reliable Assist action names the target; this bit owns its lifetime.
 pub const BTN_ASSIST: u8 = 1 << 5;
 
-/// Every button bit the sim means — the closed set of the six above.
+/// **Draw the bow in your hand** (`reference/PROJECTILES.md` §6): the right
+/// mouse held with a weapon that draws (`combat::RangedDef::draw_ticks`).
+/// A latch like [`BTN_LIGHT`], held for as long as the draw is: the sim
+/// looses only from a full draw, counted off how long this has been held
+/// (`ranged::draw`), and a body drawing a bow cannot sprint
+/// (`movement::step`), so the predictor reads it too. It rides a starved
+/// reuse ([`decay_frame`]) for the latch's reason: two lost packets must
+/// not throw away a draw the player is still holding.
+pub const BTN_AIM: u8 = 1 << 6;
+
+/// Every button bit the sim means — the closed set of the seven above.
 ///
 /// The wire carries `buttons` as a full unmasked octet (see the JUMP note),
-/// so bits 6–7 cross intact and mean nothing: no verb reads them, but
+/// so bit 7 crosses intact and means nothing: no verb reads it, but
 /// `state_hash` hashes the stored frame, so an unmasked garbage bit would be
 /// client-writable state that no rule owns (NOW.md §5b's forgery slack).
 /// The server refuses a wire frame carrying one (`net.rs` `accept_input`);
@@ -78,7 +88,8 @@ pub const BTN_ASSIST: u8 = 1 << 5;
 /// A new button joins this mask in the same commit that declares its bit,
 /// or every press of it is refused at the door;
 /// `tests/domain_ledger.rs` fails if the two drift apart.
-pub const BTN_MASK: u8 = BTN_SPRINT | BTN_CROUCH | BTN_PRIMARY | BTN_JUMP | BTN_LIGHT | BTN_ASSIST;
+pub const BTN_MASK: u8 =
+    BTN_SPRINT | BTN_CROUCH | BTN_PRIMARY | BTN_JUMP | BTN_LIGHT | BTN_ASSIST | BTN_AIM;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct InputFrame {
@@ -124,8 +135,8 @@ pub const DECAY_STEPS: u32 = 3;
 /// - **Edges and holds clear from the first reuse.** A reused `BTN_JUMP`
 ///   is a hop on every landing (`movement.rs` — grounded re-arms the
 ///   button), a reused `BTN_PRIMARY` swings an arm nobody is driving.
-/// - **Latches ride through untouched**: `yaw`, `pitch`, `sel`, and
-///   `BTN_LIGHT` — the frame's statements about what *is* rather than
+/// - **Latches ride through untouched**: `yaw`, `pitch`, `sel`,
+///   `BTN_LIGHT` and `BTN_AIM` — the frame's statements about what *is* rather than
 ///   what to *do*. A two-tick starve that snuffed a torch for everyone
 ///   watching would be a new defect wearing a fix's clothes.
 ///
@@ -143,7 +154,7 @@ pub fn decay_frame(f: &InputFrame, repeat: u32) -> InputFrame {
         buttons: if repeat == 0 {
             f.buttons
         } else {
-            f.buttons & BTN_LIGHT
+            f.buttons & (BTN_LIGHT | BTN_AIM)
         },
         yaw: f.yaw,
         pitch: f.pitch,
@@ -196,13 +207,14 @@ mod tests {
     }
 
     /// Edges and holds clear on the first reuse — the reused-jump hop and
-    /// the driverless swing — while the flame latch rides through, so a
-    /// short starve cannot snuff a torch for everyone watching.
+    /// the driverless swing — while the flame and draw latches ride
+    /// through, so a short starve cannot snuff a torch for everyone
+    /// watching or throw away a draw.
     #[test]
-    fn buttons_clear_except_the_light_latch() {
+    fn buttons_clear_except_the_latches() {
         let f = frame(50, 50, BTN_MASK);
         let d = decay_frame(&f, 1);
-        assert_eq!(d.buttons, BTN_LIGHT);
+        assert_eq!(d.buttons, BTN_LIGHT | BTN_AIM);
         let dark = frame(50, 50, BTN_SPRINT | BTN_JUMP | BTN_PRIMARY);
         assert_eq!(decay_frame(&dark, 1).buttons, 0);
     }

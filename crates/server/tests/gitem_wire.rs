@@ -270,3 +270,60 @@ fn a_late_joiner_is_handed_the_loose_stacks_by_the_walk() {
     assert_eq!(c1.ground_items()[0].id, id);
     assert_eq!(c1.ground_items()[0].count, 4);
 }
+
+/// Stacks that land are appended to the walk, never a restart — not the
+/// burst, and not the one that lands while the walk is still sending it:
+/// every earlier record is where it was, so the walk carries on and the
+/// client ends with all of them without a reset. A fight lands arrows tick
+/// after tick (`spent.rs`), and a restart per landing would never reach
+/// the newest. A removal still restarts it (the take above).
+#[test]
+fn a_stack_that_lands_mid_walk_is_appended_not_restarted() {
+    let stats = ShardStats::default();
+    let mut core = armed_core();
+    assert!(core.connect(0, id_of(0)));
+    let mut clients = vec![(0usize, ClientCore::new(SEED, id_of(0), 0))];
+    let mut warm = Vec::new();
+    for _ in 0..6 {
+        pump(&mut core, &stats, &mut clients, &mut warm);
+    }
+    let w0 = world_slot(&core, id_of(0));
+    let (qx, qy, qz) = {
+        let b = core.world.players[w0].body;
+        (b.qx, b.qy, b.qz)
+    };
+    let (bc, tick) = (core.world.backpack, core.world.tick);
+    let stack = ItemStack {
+        item: FILLER,
+        count: 1,
+        cond: 0,
+        skin: 0,
+    };
+    // More than one batch, so the walk is mid-way after one pump.
+    let batch = protocol::event::GITEM_SYNC_BATCH;
+    for k in 0..batch + 4 {
+        core.world
+            .ground_items
+            .drop_one(&bc, (qx + k as i32, qy, qz), stack, tick);
+    }
+    let mut seen = Vec::new();
+    pump(&mut core, &stats, &mut clients, &mut seen);
+    core.world
+        .ground_items
+        .drop_one(&bc, (qx - 5, qy, qz), stack, tick);
+    for _ in 0..6 {
+        pump(&mut core, &stats, &mut clients, &mut seen);
+    }
+
+    let resets = seen
+        .iter()
+        .filter(|(_, m)| matches!(m, EventMsg::GItemSync { reset: true, .. }))
+        .count();
+    assert_eq!(resets, 0, "a landing restarted the walk");
+    let c = &clients[0].1;
+    assert_eq!(
+        c.ground_items().len(),
+        batch + 5,
+        "the client has every stack, the late one included"
+    );
+}

@@ -113,6 +113,7 @@ fn gun_fixture() -> sim_core::combat::CombatContent {
         magazine: 8,
         reload_ticks: 102,
         mag_slot: 0,
+        draw_ticks: 0,
     };
     c
 }

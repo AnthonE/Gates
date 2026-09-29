@@ -1695,6 +1695,7 @@ fn bow_fixture() -> CombatContent {
         magazine: 0,
         reload_ticks: 0,
         mag_slot: NO_MAG,
+        draw_ticks: 0,
     };
     c.ammo[ARROW as usize] = AmmoDef {
         speed_mmpt: 1333,
@@ -1940,6 +1941,7 @@ fn storm_core(stats: &ShardStats) -> Box<ShardCore> {
         magazine: u16::MAX,
         reload_ticks: 1,
         mag_slot: 0,
+        draw_ticks: 0,
     };
     core.world.combat = c;
     core

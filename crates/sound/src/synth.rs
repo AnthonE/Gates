@@ -525,6 +525,7 @@ fn render_take(cue: Cue, take: u8) -> Vec<f32> {
         Cue::Reload => reload(&mut r),
         Cue::Eat => munch(&mut r),
         Cue::Bandage => bandage(&mut r),
+        Cue::BowDraw => creak(&mut r),
 
         // ---- the score ---------------------------------------------------
         // Nine pieces, one generator, and the table decides which: the arm
@@ -1111,6 +1112,38 @@ fn munch(r: &mut Rng) -> Vec<f32> {
             let jaw = (TAU * 120.0 * t).sin() * (-t / 0.020).exp() * 0.35;
             out[i] += (crunch + jaw) * attack(t, 0.0015) * amp;
         }
+    }
+    for (i, v) in out.iter_mut().enumerate() {
+        *v *= edges(i, n);
+    }
+    out
+}
+
+/// A bow drawn: the limbs creaking as the string comes back — a stick-slip
+/// pulse train whose rate climbs with the tension, through a woody body,
+/// over a thin band of string noise, swelling across the draw.
+fn creak(r: &mut Rng) -> Vec<f32> {
+    let dur = 0.7f32;
+    let n = samples(dur);
+    let sr = SAMPLE_RATE as f32;
+    let mut out = vec![0.0f32; n];
+    let (mut lp, mut hp, mut body) = (Lp::new(2_600.0), Lp::new(600.0), Lp::new(900.0));
+    let mut phase = 0.0f32;
+    for (i, v) in out.iter_mut().enumerate() {
+        let t = i as f32 / sr;
+        let u = t / dur;
+        phase += (45.0 + 80.0 * u + 12.0 * r.noise()) / sr;
+        let pulse = if phase >= 1.0 {
+            phase -= 1.0;
+            0.6 + 0.4 * r.unit()
+        } else {
+            0.0
+        };
+        let x = r.noise();
+        let l = lp.run(x);
+        let string = (l - hp.run(l)) * 0.12;
+        let swell = (PI * u).sin().max(0.0) * (0.35 + 0.65 * u);
+        *v = (body.run(pulse) * 3.0 + string) * swell;
     }
     for (i, v) in out.iter_mut().enumerate() {
         *v *= edges(i, n);

@@ -41,7 +41,9 @@
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit};
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
-use sim_core::input::{BTN_ASSIST, BTN_CROUCH, BTN_JUMP, BTN_LIGHT, BTN_PRIMARY, BTN_SPRINT};
+use sim_core::input::{
+    BTN_AIM, BTN_ASSIST, BTN_CROUCH, BTN_JUMP, BTN_LIGHT, BTN_PRIMARY, BTN_SPRINT,
+};
 
 use crate::look::{self, FREE_LOOK_YAW_LIMIT, MOUSE_RAD_PER_PX, PITCH_LIMIT};
 
@@ -431,6 +433,18 @@ pub fn gather(
     let downed = core.wounded;
     if swings && !downed && !swallowed && mouse.pressed(MouseButton::Left) {
         buttons |= BTN_PRIMARY;
+    }
+    // **A bow is drawn with the right hand** (the reference's binding): held,
+    // the draw runs; let go, it relaxes. The sim looses only from a full
+    // draw (`ranged::draw`) and a drawn bow walks (`movement::step`), so the
+    // sprint bit goes with it here as well — the predictor reads the same
+    // byte. Right-click is free with a bow: it opens no wheel and lights
+    // nothing. Only with the pointer captured: a right click that frees a
+    // window is not a draw.
+    let draws = crate::ui::hold::draw_in_hand(&core.catalog, &core.inv, sel).is_some();
+    if draws && !downed && locked && mouse.pressed(MouseButton::Right) {
+        buttons |= BTN_AIM;
+        buttons &= !BTN_SPRINT;
     }
     // **The swing is no longer heard here.** From audio v0 to 2026-09-13
     // this block played `Cue::Swing` on `just_pressed`, on the argument that

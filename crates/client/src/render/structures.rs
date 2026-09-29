@@ -546,6 +546,18 @@ const BAG_COLOR: Color = Color::srgb(0.627, 0.416, 0.235);
 /// family, one step toward the ground it lies on.
 const GITEM_COLOR: Color = Color::srgb(0.745, 0.667, 0.545);
 
+/// A landed arrow (`sim-core/spent.rs`): a shaft standing in the ground
+/// where it fell, head buried, leaning a little — how an arrow reads at a
+/// glance, where one lying flat reads as a twig. Longer and thicker than a
+/// real one, like the tracer, so it can be found in grass.
+const ARROW_LEN_M: f32 = 0.8;
+const ARROW_RADIUS_M: f32 = 0.012;
+const ARROW_BURY_M: f32 = 0.15;
+/// Lean from upright, radians: 15°–45°, drawn from the stack's id. The
+/// flight's direction is not on the wire.
+const ARROW_LEAN: [f32; 2] = [0.26, 0.79];
+const ARROW_COLOR: Color = Color::srgb(0.71, 0.58, 0.40);
+
 /// A grid address: the key both placed stores are addressed by.
 pub type Addr = (u16, u16, u8, u8);
 
@@ -629,6 +641,8 @@ pub struct Kit {
     bag_mat: Handle<StandardMaterial>,
     gitem_mesh: Handle<Mesh>,
     gitem_mat: Handle<StandardMaterial>,
+    arrow_mesh: Handle<Mesh>,
+    arrow_mat: Handle<StandardMaterial>,
 }
 
 struct LootLive {
@@ -2285,6 +2299,12 @@ pub fn build_kit(
             perceptual_roughness: 0.9,
             ..default()
         }),
+        arrow_mesh: meshes.add(Cylinder::new(ARROW_RADIUS_M, ARROW_LEN_M)),
+        arrow_mat: materials.add(StandardMaterial {
+            base_color: ARROW_COLOR,
+            perceptual_roughness: 0.8,
+            ..default()
+        }),
     }
 }
 
@@ -2665,26 +2685,41 @@ fn sync_loot(
             }
             commands.entity(old.entity).despawn();
         }
-        let (mesh, mat, scale) = match ready {
-            Some(i) => {
-                let (mesh, mat) = models.row(i);
-                (mesh, mat, crate::ui::hold::HELD_MODELS[i].scale)
-            }
-            None => (kit.gitem_mesh.clone(), kit.gitem_mat.clone(), 1.0),
-        };
         let position = Vec3::new(
             g.qx as f32 * POS_XZ_Q,
             g.qy as f32 * POS_Y_Q,
             g.qz as f32 * POS_XZ_Q,
         );
-        let transform = super::loot::resting_transform(
-            meshes.get(&mesh).expect("ready model or built pouch"),
-            position,
-            g.id,
-            scale,
-            ready.is_some(),
-            &ground,
-        );
+        let (mesh, mat, transform) = match ready {
+            Some(i) => {
+                let (mesh, mat) = models.row(i);
+                let transform = super::loot::resting_transform(
+                    meshes.get(&mesh).expect("ready model"),
+                    position,
+                    g.id,
+                    crate::ui::hold::HELD_MODELS[i].scale,
+                    true,
+                    &ground,
+                );
+                (mesh, mat, transform)
+            }
+            None if crate::ui::hold::is_arrow(catalog, g.item) => (
+                kit.arrow_mesh.clone(),
+                kit.arrow_mat.clone(),
+                planted_transform(position, g.id),
+            ),
+            None => {
+                let transform = super::loot::resting_transform(
+                    meshes.get(&kit.gitem_mesh).expect("built pouch"),
+                    position,
+                    g.id,
+                    1.0,
+                    false,
+                    &ground,
+                );
+                (kit.gitem_mesh.clone(), kit.gitem_mat.clone(), transform)
+            }
+        };
         let entity = commands
             .spawn((
                 super::WorldEntity,
@@ -2713,6 +2748,20 @@ fn sync_loot(
         false
     });
     pending
+}
+
+/// Where a landed arrow's shaft stands: planted at `position` (the surface
+/// it rests on) with [`ARROW_BURY_M`] of it underground, leaning by an
+/// angle and toward a bearing drawn from the stack's id so a volley does
+/// not stand in ranks.
+fn planted_transform(position: Vec3, id: u32) -> Transform {
+    let h = id.wrapping_mul(0x9E37_79B9);
+    let yaw = (h >> 8) as f32 / (1u32 << 24) as f32 * std::f32::consts::TAU;
+    let lean = ARROW_LEAN[0] + (h & 0xFF) as f32 / 255.0 * (ARROW_LEAN[1] - ARROW_LEAN[0]);
+    let rotation = Quat::from_rotation_y(yaw) * Quat::from_rotation_x(lean);
+    // The cylinder is centred on its length.
+    let translation = position + rotation * Vec3::Y * (ARROW_LEN_M * 0.5 - ARROW_BURY_M);
+    Transform::from_translation(translation).with_rotation(rotation)
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -281,6 +281,24 @@ pub fn bake_catalog(
         })?;
         let armor = combat.armor[idx];
         let eat = survival.row(idx as u16).unwrap_or_default();
+        // The draw: what a right mouse does with this item and when the bow
+        // is ready (`ItemRow::draw_ticks`). Bytes on the wire, so a draw or
+        // a cadence past 255 ticks is refused here rather than truncated.
+        let ranged = combat.ranged[idx];
+        let (draw_ticks, nock_ticks) = if ranged.draw_ticks > 0 {
+            (
+                u8::try_from(ranged.draw_ticks),
+                u8::try_from(ranged.rate_ticks),
+            )
+        } else {
+            (Ok(0), Ok(0))
+        };
+        let (Ok(draw_ticks), Ok(nock_ticks)) = (draw_ticks, nock_ticks) else {
+            return Err(format!(
+                "catalog: `{}` draws for {} ticks and nocks for {}, past a byte",
+                item.id, ranged.draw_ticks, ranged.rate_ticks
+            ));
+        };
         cat.set(
             idx,
             item.name.as_bytes(),
@@ -292,6 +310,8 @@ pub fn bake_catalog(
                 food: eat.food,
                 water: eat.water,
                 health: eat.health,
+                draw_ticks,
+                nock_ticks,
             },
         )
         .map_err(|_| {

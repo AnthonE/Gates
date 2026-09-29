@@ -189,7 +189,11 @@ use crate::worldcont::WorldContRec;
 ///
 /// **17 — a lock remembers ten** (`limits::LOCK_AUTH_CAP` 8 → 10, the
 /// crew's cap): every lock record's full-rights list grew two entries.
-pub const WORLD_SAVE_FORMAT: u16 = 17;
+///
+/// **18 — an arrow rides the body it is in** (`spent.rs`): a stopped arrow
+/// grew its host and the host's life. Landed arrows are loose stacks now,
+/// so this section only ever holds arrows in bodies.
+pub const WORLD_SAVE_FORMAT: u16 = 18;
 
 /// The head's `weather::Env`: mode, fade end, the six per-mille fields and
 /// the bearing it faded from, and the day offset.
@@ -300,12 +304,10 @@ const BACKPACK_BYTES: usize = 28 + INV_SLOTS * STACK_BYTES;
 /// decoder re-checks it against the cell it claims, so a hand-edited save
 /// cannot move a crate to the player's feet.
 const WORLD_CONT_BYTES: usize = 2 + 2 + 4 + 4 + 1 + 8 + INV_SLOTS * STACK_BYTES;
-/// One spent arrow (format 10, `spent.rs`): three millimetre coordinates,
-/// the round it is, and the tick it becomes takeable. Millimetres and not
-/// the body's coarser quanta because the reach test `spent::pickup` runs
-/// measures against this number, and a 3 cm floor on where an arrow lies
-/// is a 3 cm floor on how precisely you can reach for it.
-const SPENT_BYTES: usize = 4 + 4 + 4 + 2 + 8;
+/// One stopped arrow (format 10, `spent.rs`): three millimetre coordinates,
+/// the round it is, the tick it falls out, and (format 18) the body it is
+/// in and which life of it.
+const SPENT_BYTES: usize = 4 + 4 + 4 + 2 + 8 + 4 + 8;
 /// A burning fuse: address + store bit + the three copied-at-plant
 /// numbers (structure, damage, blast — format 4) + deadline + planter.
 const CHARGE_BYTES: usize = 25;
@@ -729,6 +731,8 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         o.i32(a.qz);
         o.u16(a.round);
         o.u64(a.ready_at);
+        o.u32(a.host);
+        o.u64(a.life);
     }
     // Loose stacks on the ground (format 14, `grounditem.rs`). Saved
     // rather than swept on reboot because they are **hashed**: a save
@@ -1501,7 +1505,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         };
     }
 
-    // --- arrows on the ground (format 10) --------------------------------
+    // --- stopped arrows: in a body, or resting this tick (format 10) ----
     // Heap-filled for `conts`' reason: `MAX_SPENT_ARROWS` records is 12 kB
     // of scratch, and a fixed array that size built in a decode frame is
     // the wasm shadow-stack trap `CLAUDE.md` lists three sightings of.
@@ -1512,6 +1516,8 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         let qz = r.i32()?;
         let round = r.u16()?;
         let ready_at = r.u64()?;
+        let host = r.u32()?;
+        let life = r.u64()?;
         // A save is the one non-command path into `World`, so the file is
         // checked and never trusted. Two claims here and they are not the
         // world container's three, because a spent arrow has no address to
@@ -1519,9 +1525,9 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         //
         // 1. It lies on the island. `qx`/`qz` are millimetres, and the only
         //    reader is a distance test — so a coordinate out past the edge
-        //    is not exploitable the way a moved crate is, but it IS the
-        //    coordinate `take_near` squares, and the i64 arithmetic there
-        //    is sized for an island rather than for `i32::MAX`.
+        //    is not exploitable the way a moved crate is, but it IS where
+        //    the arrow falls out, and a stack laid off the island is one no
+        //    body can reach and the wire cannot carry.
         // 2. The round is an item the content table actually has. A forged
         //    index would hand back a stack of whatever item happens to sit
         //    at that rank — the loot-table check's shape, one store over.
@@ -1542,6 +1548,8 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             qz,
             round,
             ready_at,
+            host,
+            life,
         };
     }
 
@@ -1774,8 +1782,8 @@ mod tests {
             + 256 * 268                     // bags: 28 + 30 eight-byte stacks
             + 64 * 261                      // world containers: 21 + 30 eight-byte stacks
             + 64 * 25                       // charges
-            + 512 * 22                      // spent arrows (format 10)
-            + 256 * 32                      // loose ground stacks (format 14; 8 B stack at 16)
+            + 512 * 34                      // stopped arrows (format 10; host + life at 18)
+            + 512 * 32                      // loose ground stacks (format 14; 8 B stack at 16; 512 at 18)
             + 131_072 * 23; // harvested slots (format 15: the occupant and the sapling's clock)
                             // 54 -> 56 at format 5: a ninth section count is a `u16` in the head.
                             // 56 -> 62 at format 10: a tenth count, plus the
@@ -1791,8 +1799,9 @@ mod tests {
         assert_eq!(HEAD_BYTES, 90);
         // 4 id + 12 position + 8 stack + 8 deadline.
         assert_eq!(GROUND_ITEM_BYTES, 32);
-        // Three millimetre coordinates, the round, and the ready deadline.
-        assert_eq!(SPENT_BYTES, 22);
+        // Three millimetre coordinates, the round, the ready deadline, the
+        // host and its life.
+        assert_eq!(SPENT_BYTES, 34);
         // A world container is 261: 4 cell + 8 quantized position + 1 table
         // + 8 refill deadline, then `INV_SLOTS` stacks at eight bytes
         // (format 16: item, count, condition, skin).
@@ -1869,8 +1878,10 @@ mod tests {
         // more four-byte ids on each of 512 locks.
         // 1_220_174 → 3_481_166 at the 4,096 m island: four times the
         // harvested-slot store, 23 bytes × 98,304 more.
+        // 3_481_166 → 3_495_502 at format 18: 12 bytes on each of 512
+        // stopped arrows (host + life), and 256 more loose stacks × 32.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 3_481_166,
+            WORLD_SAVE_MAX_BYTES, 3_495_502,
             "the world save ceiling moved"
         );
     }

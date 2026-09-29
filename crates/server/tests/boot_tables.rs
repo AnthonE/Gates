@@ -456,3 +456,46 @@ fn the_shipped_catalog_carries_every_consumable_row() {
         );
     }
 }
+
+/// (7) The draw columns (wire v82): the right mouse draws only what the
+/// catalog says draws, and the client times full draw off these numbers, so
+/// every authored `draw_ms` must ride the catalog as the sim's own ticks
+/// with the weapon's cadence beside it, and nothing else may draw.
+#[test]
+fn the_shipped_catalog_carries_every_draw() {
+    let content = content::Content::load_dir(&content_dir()).expect("shipped content loads");
+    let tables = server::net::bake_all(&content).expect("shipped content bakes");
+    let hz = u64::from(sim_core::limits::TICK_HZ);
+    let mut drawn = 0;
+    for item in &content.items {
+        let idx = content.item_index(&item.id).expect("own id resolves") as usize;
+        let row = tables.catalog.row(idx);
+        let authored = content
+            .weapons
+            .iter()
+            .find(|w| w.id == item.id)
+            .and_then(|w| w.draw_ms.map(|ms| (ms, w.rate_per_min)));
+        match authored {
+            Some((ms, per_min)) => {
+                drawn += 1;
+                assert_eq!(
+                    u64::from(row.draw_ticks),
+                    u64::from(ms) * hz / 1000,
+                    "`{}` draws as authored",
+                    item.id
+                );
+                assert_eq!(
+                    u64::from(row.nock_ticks),
+                    (hz * 60 / u64::from(per_min)).max(1),
+                    "`{}` nocks at its cadence",
+                    item.id
+                );
+            }
+            None => assert!(!row.draws(), "`{}` draws and authors no draw", item.id),
+        }
+    }
+    assert!(
+        drawn >= 1,
+        "no shipped weapon draws — this gate passes for free"
+    );
+}

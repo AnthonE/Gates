@@ -13,7 +13,7 @@
 
 use crate::collide::{self, ColIndex};
 use crate::fmath::floor_i32;
-use crate::input::{InputFrame, BTN_JUMP, BTN_SPRINT};
+use crate::input::{InputFrame, BTN_AIM, BTN_JUMP, BTN_SPRINT};
 use crate::occupy::Occupants;
 use crate::terrain::{self, CLIFF_SLOPE_RATIO, ISLAND_SIZE, SEA_LEVEL};
 use crate::yaw_lut::yaw_dir;
@@ -163,7 +163,9 @@ pub fn step(
     let ground_here = terrain::ground(seed, haven, x, z)
         .max(collide::piece_ground(seed, haven, cols, x, z, y))
         .max(occ.ground(seed, x, z, y));
-    let mut speed = if frame.buttons & BTN_SPRINT != 0 {
+    // A drawn bow walks (`BTN_AIM`, `reference/PROJECTILES.md` §6): the
+    // draw costs the legs as well as the time.
+    let mut speed = if frame.buttons & BTN_SPRINT != 0 && frame.buttons & BTN_AIM == 0 {
         SPRINT_SPEED
     } else {
         WALK_SPEED

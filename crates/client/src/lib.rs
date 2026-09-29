@@ -714,44 +714,6 @@ impl Session {
     }
 }
 
-/// A session with no shard behind it: its lanes are fed from a recording
-/// (`film::Replay`) instead of a socket, and its inputs go nowhere. Everything
-/// the renderer reads — the core, the welcome, `pump` — is the live session's
-/// own code, which is the point: a replay is drawn exactly as the game draws.
-#[cfg(feature = "native")]
-impl Session {
-    pub fn replay(rec: film::Recording) -> (Self, film::Replay) {
-        let welcome = rec.welcome;
-        let datagrams = datagram_lane();
-        let (ev_tx, events) = tokio::sync::mpsc::channel::<Vec<u8>>(film::REPLAY_EVENTS);
-        // No writer task holds the receiver, so an action is refused as
-        // `Closed` — nothing a replay could send has anywhere to go.
-        let (actions, _) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
-        let replay = film::Replay::new(rec, datagrams.clone(), ev_tx);
-        let session = Self {
-            core: ClientCore::new(welcome.seed, welcome.player_id, welcome.tick),
-            applied: 0,
-            applied2: 0,
-            welcome,
-            watching: None,
-            wire: net::native::NativeWire::detached(),
-            actions,
-            events,
-            datagrams,
-            snapshots: 0,
-            input_buf: [0u8; DATAGRAM_BUDGET_BYTES],
-            dg_scratch: (0..sim_core::limits::CLIENT_DG_RING)
-                .map(|_| Vec::with_capacity(DATAGRAM_BUDGET_BYTES))
-                .collect(),
-            closed: false,
-            event_observer: None,
-            observer_failed: false,
-            tap: None,
-        };
-        (session, replay)
-    }
-}
-
 /// The browser half of the session: connecting.
 ///
 /// **Read this against the `impl` above, not on its own.** It is the same

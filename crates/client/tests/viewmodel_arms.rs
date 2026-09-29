@@ -1474,3 +1474,39 @@ fn a_thrust_row_is_carried_point_forward() {
         );
     }
 }
+
+/// A drawn bow (`viewmodel::animate`'s draw) is raised toward the middle of
+/// the frame and stays in it — at full draw and through the loose's kick.
+#[test]
+fn a_drawn_bow_comes_up_to_the_middle_of_the_frame() {
+    use client::render::viewmodel::{
+        VIEWMODEL_DRAW_PULL, VIEWMODEL_DRAW_RAISE, VIEWMODEL_DRAW_TURN, VIEWMODEL_LOOSE_KICK,
+    };
+    let hold = bevy::math::Vec3::new(VIEWMODEL_HOLD.x, VIEWMODEL_HOLD.y, VIEWMODEL_HOLD.z);
+    let turn = bevy::math::Quat::from_euler(
+        bevy::math::EulerRot::YXZ,
+        VIEWMODEL_DRAW_TURN.x,
+        VIEWMODEL_DRAW_TURN.y,
+        VIEWMODEL_DRAW_TURN.z,
+    );
+    let at = |off: bevy::math::Vec3, rot: bevy::math::Quat| {
+        let v = rig_transform(rot, off).transform_point(hold);
+        ndc([v.x, v.y, v.z]).expect("in front of the near plane")
+    };
+    let rest = at(bevy::math::Vec3::ZERO, bevy::math::Quat::IDENTITY);
+    let full = at(VIEWMODEL_DRAW_RAISE + VIEWMODEL_DRAW_PULL, turn);
+    let kick = at(
+        VIEWMODEL_DRAW_RAISE + VIEWMODEL_DRAW_PULL + VIEWMODEL_LOOSE_KICK,
+        turn,
+    );
+    for (what, (x, y)) in [("full draw", full), ("the loose", kick)] {
+        assert!(
+            x.abs() <= 1.0 && y.abs() <= 1.0,
+            "{what} puts the bow at ndc ({x:.2}, {y:.2}), off the frame"
+        );
+    }
+    assert!(
+        full.0.abs() < rest.0.abs() && full.1 > rest.1,
+        "a drawn bow comes in and up from the carry: rest {rest:?}, drawn {full:?}"
+    );
+}

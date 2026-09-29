@@ -450,7 +450,7 @@ pub fn input_acks_only() -> InputDatagram {
 /// `decode_input`'s doc calls a silently narrowed octet the one wrong
 /// answer, and the golden was blind to precisely that.
 ///
-/// The draw is the **wire width**, not `BTN_MASK`: bits 5–7 name no button
+/// The draw is the **wire width**, not `BTN_MASK`: bit 7 names no button
 /// and the codec carries them whole on purpose, so a fixture that stopped
 /// at the mask would re-open half the hole. The seed happens to cover all
 /// eight bits set and all eight clear across the ten frames — happens to,
@@ -892,7 +892,15 @@ pub fn event_catalog() -> ItemCatalog {
     cat.count = 11;
     let rows: [(&[u8], ItemRow); 11] = [
         (b"Wood", row(0, 0, WEAR_NONE, 1000)),
-        (b"Stone", row(0, 0, WEAR_NONE, 1000)),
+        // The draw columns' coverage (v82), at the byte's corner.
+        (
+            b"Hunting Bow",
+            ItemRow {
+                draw_ticks: u8::MAX,
+                nock_ticks: u8::MAX - 1,
+                ..row(0, 0, WEAR_NONE, 1)
+            },
+        ),
         // The eat columns' coverage (v81): a food with all three, a heal
         // with only hp, and the width's corner on each column.
         (b"Mushrooms", food(10, 15, 5, 3)),
