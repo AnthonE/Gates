@@ -672,12 +672,13 @@ pub fn draw(
     let (fx, fz) = yaw_dir(p.frame.yaw);
     let (ch, sv) = pitch_dir(p.frame.pitch);
     let speed = ball.speed_mmpt as f32;
-    // Flight time is the weapon's reach over this round's speed, so a fast
-    // arrow and a slow one out of the same bow both expire at the range
-    // the bow claims instead of at a baked tick count that only one of
-    // them earned. Integer division, once per shot. `speed_mmpt > 0` is
-    // `ammo_def`'s filter, so this cannot divide by zero.
-    let life = (def.range_mm / ball.speed_mmpt as u32).clamp(1, MAX_ARROW_LIFE_TICKS as u32) as u16;
+    // **An arrow flies until something stops it** — the ground, a trunk, a
+    // wall, a body — as the reference's does and as the client's tracer
+    // has always drawn it, so where a player watched it land is where it
+    // lies. A bow's reach is its round's speed and drop, not a number on
+    // the bow (`content/weapons.toml`). `MAX_ARROW_LIFE_TICKS` is only the
+    // backstop, and an arrow still in the air then falls (`land`).
+    let life = MAX_ARROW_LIFE_TICKS;
     arrows.a[ix] = Arrow {
         qx: p.body.qx * (POS_XZ_Q * MM_PER_M) as i32,
         qy: p.body.qy * (POS_Y_Q * MM_PER_M) as i32 + ARROW_EYE_MM,
@@ -849,15 +850,19 @@ fn step_in(
         };
 
         // How many samples this tick's segment needs, and the refusal when
-        // it needs more than it may have. That case is unreachable with
-        // shipped content — `bake_combat` refuses a muzzle speed past the
-        // sampler, and a derived life expires an arrow long before gravity
-        // could carry it there — so this is the backstop that lets the
-        // sample spacing be a guarantee rather than a hope. An arrow moving
-        // faster than the sim can honestly trace stops existing; it does
-        // not fly untraced.
+        // it needs more than it may have. Shipped content does not reach
+        // it — `bake_combat` refuses a muzzle speed past the sampler, and
+        // gravity carries the fastest round there only after a fall of
+        // some 90 m, more than the island's relief — so this is the
+        // backstop that lets the sample spacing be a guarantee rather than
+        // a hope. An arrow moving faster than the sim can honestly trace
+        // stops flying; it does not fly untraced.
         let need = (len_mm / ARROW_STEP_MM as f32) as usize + 1;
         if need > MAX_ARROW_SUBSTEPS {
+            // Falling faster than the sampler can honestly trace — a long
+            // drop off a height: it falls from where it is rather than
+            // flying on untraced.
+            land(seed, tick, cc, spent, ix, &a, None);
             arrows.a[ix].life = 0;
             continue;
         }

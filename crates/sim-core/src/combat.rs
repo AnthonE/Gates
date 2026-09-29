@@ -227,13 +227,9 @@ pub struct RangedDef {
     /// `content/validate.rs` refuses that pairing at boot and this field
     /// records the answer once, at bake, so the sim never re-derives it.
     pub hitscan: bool,
-    /// The weapon's reach in **millimetres**, from `range_m`.
-    ///
-    /// Flight time used to be baked here as `life_ticks` and cannot be any
-    /// more: with ballistics on the round (§9.3), one bow's fast arrow and
-    /// its slow arrow cross the same range in different numbers of ticks.
-    /// The sim divides this by the chosen round's speed at the moment of
-    /// the shot — integer division, once per shot, never per tick.
+    /// The weapon's reach in **millimetres**, from `range_m` — a firearm's
+    /// trace. **Zero on a bow**: an arrow flies until something stops it,
+    /// so a bow's reach is its round's speed and drop (`ranged::draw`).
     pub range_mm: u32,
     /// What one hit takes off a **building piece** — `weapons.toml`'s
     /// second damage column, the same one `MeleeDef::structure` carries and

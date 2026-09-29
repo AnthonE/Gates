@@ -2723,10 +2723,11 @@ impl ShardCore {
                     // than drawn from the origin"* — and that is the same
                     // set this filter reads, so nothing that was ever
                     // drawn stops being drawn. And the arithmetic agrees:
-                    // the longest `range_m` in `content/weapons.toml` is
-                    // 80 against an `AOI_ENTER_CM` of 176 m, so a shot
-                    // from outside a client's interest cannot put a
-                    // projectile within 96 m of it.
+                    // the longest reach in `content/weapons.toml`, the
+                    // crossbow's metal arrow lobbed (`v²/g`, 151 m), is
+                    // inside an `AOI_ENTER_CM` of 176 m, so a shot from
+                    // outside a client's interest cannot land a projectile
+                    // within 25 m of it on flat ground.
                     // `content/tests/content.rs` gates that second reason,
                     // because it is a relationship between a content
                     // number and a limit and nothing else was holding it.

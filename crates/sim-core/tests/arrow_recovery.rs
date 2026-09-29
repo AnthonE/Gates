@@ -235,23 +235,51 @@ fn a_broken_arrow_leaves_nothing_and_that_is_the_inert_default() {
 }
 
 /// An arrow that ran out of flight in the air falls instead of vanishing
-/// (`NOW.md` §5 item 2). Mutant: dropping the landing on expiry leaves the
-/// store empty.
+/// (`NOW.md` §5 item 2). An arrow flies until something stops it, so the
+/// only one that runs out is one still up at the backstop: shot straight
+/// up, it is just coming back down past the archer's eye at four seconds.
+/// Mutant: dropping the landing on expiry leaves the store empty.
 #[test]
 fn an_arrow_out_of_flight_falls_instead_of_vanishing() {
     let seed = 7u64;
     let ground = ground_at(seed, 2048.0, 2048.0);
     let mut players = Box::new([Player::default(); MAX_PLAYERS]);
-    // Level, 30 m up, with a reach of one tick's flight.
-    players[0] = archer(1, 2048.0, ground + 30.0, 2048.0, 128);
-    let (spent, t) = fly(seed, &bow(0, 1_333), &mut players, 10);
-    assert_eq!(t, 1, "a one-tick reach expires on the first step");
+    players[0] = archer(1, 2048.0, ground, 2048.0, u8::MAX);
+    let life = u64::from(sim_core::limits::MAX_ARROW_LIFE_TICKS);
+    let (spent, t) = fly(seed, &bow(0, 60_000), &mut players, life + 5);
+    assert_eq!(
+        t, life,
+        "straight up, it is still in the air at the backstop"
+    );
     assert_eq!(spent.len(), 1, "the arrow is handed on to fall");
     let rec = spent.entries()[0];
     assert_eq!(rec.host, 0);
     assert!(
-        rec.qy > ((ground + 25.0) * 1000.0) as i32,
+        rec.qy > (ground * 1000.0) as i32 + 1_000,
         "it falls from where it ran out, still in the air"
+    );
+}
+
+/// A bow's range is not a flight time any more: a level shot from a height
+/// flies on past what the old 60 m reach allowed and lands, rather than
+/// running out in the air (`ranged::draw`). Mutant: restoring the derived
+/// life ends it mid-air, 45 ticks in.
+#[test]
+fn an_arrow_flies_until_it_lands() {
+    let seed = 7u64;
+    let ground = ground_at(seed, 2048.0, 2048.0);
+    let mut players = Box::new([Player::default(); MAX_PLAYERS]);
+    // A little above level, from 40 m up: well past 45 ticks of flight.
+    players[0] = archer(1, 2048.0, ground + 40.0, 2048.0, 140);
+    let life = u64::from(sim_core::limits::MAX_ARROW_LIFE_TICKS);
+    let (spent, t) = fly(seed, &bow(0, 60_000), &mut players, life + 5);
+    assert!(t > 45 && t < life, "it landed on tick {t}");
+    assert_eq!(spent.len(), 1);
+    let rec = spent.entries()[0];
+    assert!(
+        rec.qy < ((ground + 40.0) * 1000.0) as i32,
+        "it came down, not out of flight up there (y {} mm)",
+        rec.qy
     );
 }
 

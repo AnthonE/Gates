@@ -1508,14 +1508,14 @@ fn the_magazine_rules_refuse_what_they_name() {
     // would be a number nothing reads — the shape `fuse_s` is refused in.
     refuses(
         "weapons.toml",
-        "range_m = 60\nammo = [\"item.arrow_wood\"]",
-        "range_m = 60\nammo = [\"item.arrow_wood\"]\nmagazine = 4",
+        "ammo = [\"item.arrow_wood\"]",
+        "ammo = [\"item.arrow_wood\"]\nmagazine = 4",
         "only firearms carry a magazine",
     );
     refuses(
         "weapons.toml",
-        "range_m = 60\nammo = [\"item.arrow_wood\"]",
-        "range_m = 60\nammo = [\"item.arrow_wood\"]\nreload_ms = 1000",
+        "ammo = [\"item.arrow_wood\"]",
+        "ammo = [\"item.arrow_wood\"]\nreload_ms = 1000",
         "only a weapon with a magazine carries a reload_ms",
     );
 }
@@ -2665,12 +2665,10 @@ fn bows_bake_to_per_tick_integers_the_sim_can_integrate() {
             );
         }
 
-        // Every round the bow lists must fly, and must cover the reach the
-        // weapon claims. Flight time is no longer baked — it is
-        // `range_mm / speed` at the moment of the shot, because with the
-        // speed on the round one bow's fast arrow and its slow arrow cross
-        // the same range in different numbers of ticks. This asserts the
-        // sim's arithmetic against the data for each round in turn.
+        // Every round the bow lists must fly, and must come down: an arrow
+        // flies until something stops it (`ranged::draw`), so its reach is
+        // its own speed and drop. This asserts the sim's arithmetic against
+        // the data for each round in turn.
         for id in rounds {
             let a = c
                 .ammo
@@ -2691,25 +2689,16 @@ fn bows_bake_to_per_tick_integers_the_sim_can_integrate() {
                 "`{id}` drop in mm/tick^2"
             );
 
-            // The flight must actually cover the reach the data claims and
-            // then stop: derived too short makes `range_m` a lie, too long
-            // makes `MAX_ARROWS` a leak. Same expression `ranged::draw`
-            // evaluates, asserted against `weapons.toml` rather than a
-            // remembered constant.
-            let life =
-                (baked.range_mm / ball.speed_mmpt as u32).clamp(1, MAX_ARROW_LIFE_TICKS as u32);
+            // The longest honest shot lands before the backstop: on flat
+            // ground a 45° lob is in the air `√2·v/g` ticks, and one still
+            // up at `MAX_ARROW_LIFE_TICKS` falls short of where it was
+            // aimed. Squared, to stay in integers.
+            let (v, g) = (u64::from(ball.speed_mmpt), u64::from(ball.drop_mmpt2));
+            let life = u64::from(MAX_ARROW_LIFE_TICKS);
             assert!(
-                life > 0 && life <= MAX_ARROW_LIFE_TICKS as u32,
-                "`{}` firing `{id}` lives {life} ticks",
+                g > 0 && 2 * v * v < life * life * g * g,
+                "`{}` firing `{id}`: a lob on flat ground is still in the air at the backstop",
                 w.id
-            );
-            let reach_mm = life * ball.speed_mmpt as u32;
-            assert!(
-                reach_mm >= w.range_m * 1000 - ball.speed_mmpt as u32,
-                "`{}` firing `{id}` expires {} mm short of its declared {} m",
-                w.id,
-                w.range_m * 1000 - reach_mm,
-                w.range_m
             );
 
             // And the sampler wall, checked on the shipped rows rather than
@@ -2965,12 +2954,16 @@ fn one_bow_carries_several_rounds_each_with_its_own_ballistics() {
         a.speed_mmpt, b.speed_mmpt,
         "the two rounds must differ, or this proves nothing about per-round ballistics"
     );
-    // And the flight the sim would derive differs with them — the reason
-    // `life_ticks` could not stay a baked constant on the weapon.
+    // And they fly to different places: an arrow flies until something
+    // stops it, so its reach is the round's (`v²/g` on flat ground) — the
+    // reason neither a flight time nor a range could stay on the weapon.
+    let reach = |d: sim_core::combat::AmmoDef| {
+        u32::from(d.speed_mmpt) * u32::from(d.speed_mmpt) / u32::from(d.drop_mmpt2).max(1)
+    };
     assert_ne!(
-        baked.range_mm / a.speed_mmpt as u32,
-        baked.range_mm / b.speed_mmpt as u32,
-        "one bow's two rounds must not share a flight time"
+        reach(a),
+        reach(b),
+        "one bow's two rounds must not share a reach"
     );
 }
 
@@ -4255,23 +4248,33 @@ fn an_armor_row_that_cannot_work_never_reaches_the_sim() {
 /// `AOI_ENTER_CM` rather than `AOI_EXIT_CM`: enter is the *narrower* band
 /// and the one a client must have crossed to hold the body, so it is the
 /// conservative side to measure against.
+///
+/// A bow carries no `range_m` — its arrow flies until something stops it —
+/// so its reach is its rounds' flight on flat ground, `v²/g`.
 #[test]
 fn no_weapon_outranges_the_interest_band() {
     let c = build(&sources()).expect("shipped content builds");
     let band_m = (sim_core::limits::AOI_ENTER_CM / 100) as u32;
+    let reach = |w: &content::schema::Weapon| {
+        let flight = w.ammo.iter().flatten().filter_map(|id| {
+            let a = c.ammo.iter().find(|a| &a.id == id)?;
+            Some(a.speed_mps * a.speed_mps / a.drop_mps2.max(1))
+        });
+        w.range_m.max(flight.max().unwrap_or(0))
+    };
     let worst = c
         .weapons
         .iter()
-        .max_by_key(|w| w.range_m)
+        .max_by_key(|w| reach(w))
         .expect("content ships at least one weapon");
     assert!(
-        worst.range_m < band_m,
+        reach(worst) < band_m,
         "`{}` reaches {} m and the interest band is {} m — a shot from \
          outside a client's band could land inside its world, and \
          `EV_SHOT`'s filter would have thrown the tracer away. Do not \
          raise this assertion; decide what that weapon's audience is.",
         worst.id,
-        worst.range_m,
+        reach(worst),
         band_m
     );
 }

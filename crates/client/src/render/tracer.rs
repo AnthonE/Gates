@@ -163,12 +163,9 @@ impl Tracers {
             vy: (sv * speed) as i32,
             vz: (fz * ch * speed) as i32,
             drop: drop_mmpt2,
-            // The sim derives this from the weapon's reach and the round's
-            // speed; the wire does not carry reach, so the tracer runs on
-            // the store's own backstop instead. A streak that outlives the
-            // arrow by a few ticks is invisible — it is already past
-            // anything it could have hit — where one that dies early reads
-            // as the arrow vanishing.
+            // The sim's own: an arrow flies until something stops it, with
+            // the store's backstop behind that (`ranged::draw`), so the
+            // streak comes down where the arrow does.
             life: sim_core::limits::MAX_ARROW_LIFE_TICKS,
             carry: 0.0,
         };

@@ -446,7 +446,18 @@ pub fn structural(c: &Content) -> Result<(), String> {
         // about `speed_mps`, and for the identical reason: a content bound
         // is a boot failure a person reads, and an encoder bound is an
         // event that silently stops arriving.
-        if w.range_m == 0 {
+        //
+        // A bow is the one kind that carries none: its arrow flies until
+        // something stops it, so its reach is its round's flight, and a
+        // `range_m` on one would be a number nothing reads.
+        if w.kind == WeaponKind::Bow {
+            if w.range_m != 0 {
+                return Err(format!(
+                    "weapon `{}`: a bow's reach is its round's flight — no range_m",
+                    w.id
+                ));
+            }
+        } else if w.range_m == 0 {
             return Err(format!("weapon `{}`: a weapon with no reach", w.id));
         }
         match w.kind {
