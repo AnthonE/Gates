@@ -1,0 +1,158 @@
+{
+  "out": "film/ads/gates-trailer-30s-16x9.mp4",
+  "size": [
+    1920,
+    1080
+  ],
+  "fps": 30,
+  "shots": "film/shots/wide",
+  "bank": "film/bank",
+  "fade": 0.5,
+  "loudness": -14,
+  "clips": [
+    {
+      "shot": "opener",
+      "in": 0.0,
+      "len": 5.5,
+      "game": 2.0,
+      "grade": "curves=master='0/0.02 0.25/0.24 0.5/0.53 0.75/0.80 1/1',eq=saturation=1.28,colorbalance=rh=0.04:bh=-0.03:rm=0.015:bm=-0.015"
+    },
+    {
+      "shot": "silhouette",
+      "in": 0.6,
+      "len": 3.0,
+      "game": 1.6,
+      "fade": 0.5,
+      "grade": "curves=master='0/0.02 0.25/0.24 0.5/0.53 0.75/0.80 1/1',eq=saturation=1.28,colorbalance=rh=0.04:bh=-0.03:rm=0.015:bm=-0.015"
+    },
+    {
+      "shot": "timelapse",
+      "in": 0.5,
+      "len": 3.5,
+      "game": 0.0,
+      "fade": 0,
+      "grade": "curves=master='0/0.02 0.25/0.24 0.5/0.53 0.75/0.80 1/1',eq=saturation=1.28,colorbalance=rh=0.04:bh=-0.03:rm=0.015:bm=-0.015"
+    },
+    {
+      "shot": "scatter",
+      "in": 0.5,
+      "len": 2.5,
+      "game": 1.2,
+      "fade": 0,
+      "grade": "curves=master='0/0.02 0.25/0.24 0.5/0.53 0.75/0.80 1/1',eq=saturation=1.28,colorbalance=rh=0.04:bh=-0.03:rm=0.015:bm=-0.015"
+    },
+    {
+      "shot": "raid",
+      "in": 2.9,
+      "len": 5.1,
+      "game": 1.0,
+      "fade": 0,
+      "grade": "curves=master='0/0.02 0.25/0.24 0.5/0.53 0.75/0.80 1/1',eq=saturation=1.28,colorbalance=rh=0.04:bh=-0.03:rm=0.015:bm=-0.015"
+    },
+    {
+      "shot": "silhouette",
+      "in": 1.6,
+      "len": 3.4,
+      "game": 1.6,
+      "fade": 0.4,
+      "push": 0.08,
+      "grade": "curves=master='0/0.02 0.25/0.24 0.5/0.53 0.75/0.80 1/1',eq=saturation=1.28,colorbalance=rh=0.04:bh=-0.03:rm=0.015:bm=-0.015"
+    }
+  ],
+  "captions": [
+    {
+      "at": 0.6,
+      "len": 4.0,
+      "text": "YOU WAKE ON A BEACH",
+      "sub": "with a rock and a torch",
+      "size": 0.07,
+      "y": 0.76
+    },
+    {
+      "at": 5.4,
+      "len": 2.4,
+      "text": "EVERYONE WANTS WHAT YOU HAVE",
+      "size": 0.07,
+      "y": 0.8
+    },
+    {
+      "at": 8.15,
+      "len": 3.15,
+      "text": "BUILD",
+      "size": 0.14,
+      "y": 0.5
+    },
+    {
+      "at": 11.6,
+      "len": 2.3,
+      "text": "TRUST NO ONE",
+      "size": 0.09,
+      "y": 0.5
+    },
+    {
+      "at": 14.1,
+      "len": 1.8,
+      "text": "RAID",
+      "size": 0.14,
+      "y": 0.5
+    },
+    {
+      "at": 18.9,
+      "len": 2.4,
+      "text": "SURVIVE",
+      "size": 0.14,
+      "y": 0.5
+    }
+  ],
+  "music": [
+    {
+      "src": "29_MusicOpenCalm.wav",
+      "at": 0.0,
+      "gain": 0.85
+    },
+    {
+      "src": "33_MusicTurnTense.wav",
+      "at": 8.0,
+      "gain": 0.85
+    },
+    {
+      "src": "37_MusicCloseCombat.wav",
+      "at": 16.0,
+      "gain": 0.85
+    },
+    {
+      "src": "31_MusicOpenCombat.wav",
+      "at": 24.0,
+      "gain": 0.85,
+      "cut": 6.0,
+      "fade_out": 2.0
+    }
+  ],
+  "sfx": [
+    {
+      "src": "46_Thunder.wav",
+      "at": 21.7,
+      "gain": 0.6
+    }
+  ],
+  "card": {
+    "len": 8.5,
+    "fade": 0.6,
+    "shot": "silhouette",
+    "at": 3.0,
+    "title": "GATES",
+    "lines": [
+      "THE SURVIVAL GAME THAT RUNS IN YOUR BROWSER",
+      "PLAY NOW  \u00b7  ELOPROS.COM/GAMES/GATES"
+    ]
+  },
+  "poster": {
+    "out": "film/ads/gates-trailer-30s-16x9-poster.png",
+    "shot": "silhouette",
+    "at": 2.5,
+    "lines": [
+      "BUILD. RAID. SURVIVE.",
+      "PLAY IN YOUR BROWSER"
+    ]
+  }
+}

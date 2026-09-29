@@ -1,0 +1,50 @@
+{
+  "out": "film/ads/gates-bumper-6s-16x9.mp4",
+  "size": [
+    1920,
+    1080
+  ],
+  "fps": 30,
+  "shots": "film/shots/wide",
+  "bank": "film/bank",
+  "fade": 0.4,
+  "loudness": -14,
+  "clips": [
+    {
+      "shot": "raid",
+      "in": 3.9,
+      "len": 3.3,
+      "game": 1.0,
+      "grade": "curves=master='0/0.02 0.25/0.24 0.5/0.53 0.75/0.80 1/1',eq=saturation=1.28,colorbalance=rh=0.04:bh=-0.03:rm=0.015:bm=-0.015"
+    }
+  ],
+  "captions": [
+    {
+      "at": 0.15,
+      "len": 2.95,
+      "text": "BUILD. RAID. SURVIVE.",
+      "size": 0.08,
+      "y": 0.82
+    }
+  ],
+  "music": [
+    {
+      "src": "37_MusicCloseCombat.wav",
+      "at": 0.0,
+      "gain": 0.8,
+      "cut": 6.0,
+      "fade_out": 1.0
+    }
+  ],
+  "card": {
+    "len": 3.1,
+    "fade": 0.4,
+    "shot": "silhouette",
+    "at": 3.0,
+    "title": "GATES",
+    "lines": [
+      "PLAY IN YOUR BROWSER",
+      "ELOPROS.COM/GAMES/GATES"
+    ]
+  }
+}

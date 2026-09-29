@@ -64,6 +64,9 @@ gates — the Gates desktop client
                        joins as a guest. Empty is the same as absent
   --capture DIR        run the probe harness instead of a player: settle, warm
                        the pipelines, shoot the vantage list, exit (RENDER.md)
+  --film SHOTS.json    draw a recorded session (`record`) through a scripted
+                       camera and encode every shot (ci/film.sh). Connects to
+                       nothing: the tape is the world
   --no-hud             with --capture: shoot the world with no HUD, no
                        viewmodel and no compass — a clean PLATE. What it is
                        for is the menu backdrop, which is footage rather than
@@ -118,6 +121,9 @@ pub struct Args {
     /// (`RENDER.md`). Only the windowed binary honours it; the headless one
     /// parses it so a shared parser cannot silently mean two things.
     pub capture: Option<PathBuf>,
+    /// `--film SHOTS`: the trailer camera (`render::film`). Only the windowed
+    /// binary honours it, like `capture`.
+    pub film: Option<PathBuf>,
     /// `--no-hud`: shoot a clean plate. Only ever true alongside `capture`,
     /// which the parser enforces rather than leaving to the caller.
     pub no_hud: bool,
@@ -158,6 +164,7 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
     let mut servers_url: Option<String> = None;
     let mut identity: Option<String> = None;
     let mut capture: Option<PathBuf> = None;
+    let mut film: Option<PathBuf> = None;
     let mut cert_hash: Option<String> = None;
     let mut no_hud = false;
     let mut no_launcher = false;
@@ -227,6 +234,10 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
                 // `RENDER.md` already paid for once.
                 Some(v) if !v.trim().is_empty() => capture = Some(PathBuf::from(v)),
                 _ => return Parsed::Bad("--capture needs a directory".into()),
+            },
+            "--film" => match it.next() {
+                Some(v) if !v.trim().is_empty() => film = Some(PathBuf::from(v)),
+                _ => return Parsed::Bad("--film needs a shot list".into()),
             },
             other if other.starts_with('-') => {
                 // Refused rather than ignored. A typo'd flag that is silently
@@ -345,6 +356,12 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
         );
     }
 
+    // A film plays a tape and connects to nothing, so every flag that would
+    // aim it at a shard or a probe is refused rather than quietly dropped.
+    if film.is_some() && (capture.is_some() || spectate.is_some() || server_given) {
+        return Parsed::Bad("--film plays a tape; it takes no shard, probe or seat".into());
+    }
+
     Parsed::Run(Args {
         server: raw.trim().to_string(),
         server_given,
@@ -353,6 +370,7 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty()),
         capture,
+        film,
         no_hud,
         pin_hour_pm,
         pin_weather,

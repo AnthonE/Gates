@@ -1,0 +1,10 @@
+{
+  "recording": "film/take1.rec",
+  "out": "film/shots/wide",
+  "width": 1920, "height": 1080, "fps": 30, "fov": 50,
+  "shots": [
+    {"name": "opener", "at": 30, "len": 5.5, "hour": [0.843, 0.848], "weather": "clear",
+     "keys": [{"t": 0, "pos": [1653.0, 2.2, 1599.5], "look": [1963.0, 25, 1852.5]},
+              {"t": 5.5, "pos": [1657.2, 2.2, 1594.4], "look": [1967.2, 25, 1847.4]}]}
+  ]
+}

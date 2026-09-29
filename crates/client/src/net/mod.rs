@@ -196,6 +196,12 @@ pub(crate) struct DgRing {
 }
 
 impl DgRing {
+    /// Would the next [`push`](Self::push) drop the oldest? A replay asks
+    /// first, because a recorded snapshot is never droppable (`film`).
+    pub(crate) fn is_full(&self) -> bool {
+        self.len == sim_core::limits::CLIENT_DG_RING
+    }
+
     pub(crate) fn push(&mut self, bytes: &[u8]) {
         let cap = sim_core::limits::CLIENT_DG_RING;
         if self.len == cap {
