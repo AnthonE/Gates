@@ -41,7 +41,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 121] = [
+pub const FIXTURES: [&str; 122] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -225,6 +225,8 @@ pub const FIXTURES: [&str; 121] = [
     // one message only a watcher receives. Appended, positional as ever.
     "hello_spectate.bin",
     "watch.bin",
+    // Who a player id is (v85). Appended, positional as ever.
+    "event_tag.bin",
 ];
 
 /// The sky/clock event: a storm forced mid-fade, the clock pushed to dusk.
@@ -727,6 +729,21 @@ pub fn watch() -> crate::Watch {
             None => crate::Name::EMPTY,
         },
     }
+}
+
+/// Who a player id is (wire v85): a slot/generation id with bits in both
+/// halves, the `watch` address, a name with a space in it, and a `pic`
+/// whose four bytes all differ so a byte-order slip cannot pass.
+pub fn event_tag() -> (u32, crate::Address, crate::Name, u32) {
+    (
+        (0x51 << 8) | 7,
+        watch().address,
+        match crate::Name::new("Ash Walker") {
+            Some(n) => n,
+            None => crate::Name::EMPTY,
+        },
+        0x1a2b_3c4d,
+    )
 }
 
 /// The server's challenge. Every nonce byte is distinct so a transposition

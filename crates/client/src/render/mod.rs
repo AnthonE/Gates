@@ -71,6 +71,7 @@ pub mod fx;
 pub mod death;
 /// Authored depot geometry read directly from the authoritative sim kit.
 pub mod depot;
+pub mod faces;
 // The involuntary disconnect. The shard hanging up mid-play used to leave
 // the client in a dead world; `pause::Disconnect` is the verb the PLAYER
 // takes, and this is the state for when the shard takes it.
@@ -665,7 +666,9 @@ impl Plugin for GatesRenderPlugin {
         // The two resources the desktop front end owns outright.
         #[cfg(not(target_arch = "wasm32"))]
         app.init_resource::<menu::Picked>()
-            .init_resource::<hub::HubState>();
+            .init_resource::<hub::HubState>()
+            .init_resource::<menu::MyFace>()
+            .init_resource::<faces::Pics>();
         // The direct address is also what the loading and pause screens name,
         // and on a capture start nothing has been "picked" — so the field
         // those screens read is seeded here rather than left empty. Every
@@ -1592,6 +1595,7 @@ impl Plugin for GatesRenderPlugin {
         if self.capture.is_none() && !filming {
             panels::register(app);
             chat::register(app);
+            faces::register(app);
             // ---- the screenshot key ----------------------------------
             // **Not on a capture run either**, and for the same reason one
             // line up: the probe harness spawns its own `Screenshot`
@@ -1700,6 +1704,8 @@ fn add_desktop_front_end(app: &mut App) {
         Update,
         (
             menu::poll_fetch,
+            // Your platform name and picture for the identity chip.
+            menu::my_face,
             // The title manifest, beside the shard list: both are
             // documents a menu waits on, both raise a dirty flag, and
             // `menu::rebuild` at the end of this chain is the one redraw.

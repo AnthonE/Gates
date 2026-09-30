@@ -50,6 +50,8 @@ render = [
     "dep:bevy_procedural_tree",
     "dep:fastrand",
     "dep:ureq",
+    # Player pictures (`render/faces.rs`) are PNGs decoded off the frame.
+    "dep:png",
     "dep:basis-universal",
     "dep:ktx2",
     "dep:ruzstd",
@@ -805,4 +807,8 @@ web-sys = { version = "0.3", features = [
     "HtmlElement",
     "CssStyleDeclaration",
     "Location",
+    # `render/faces.rs`: a player's picture, fetched from the platform
+    # (`net/web.rs::fetch_bytes`, same-origin on elopros.com). `Window` above
+    # holds `fetch`; this is what it answers with.
+    "Response",
 ] }

@@ -426,6 +426,7 @@ pub fn setup(
     menu: Res<Menu>,
     browse: Res<Browse>,
     who: Res<Who>,
+    my: Res<MyFace>,
     state: Res<HubState>,
     backdrop: Option<Res<ui::Backdrop>>,
 ) {
@@ -434,9 +435,78 @@ pub fn setup(
         &menu,
         &browse,
         &who,
+        &my,
         &state.hub,
         backdrop.as_deref(),
     );
+}
+
+/// Your own name and picture on the platform, for the identity chip — read
+/// straight from `/api/face/{wallet}` for the address the launcher (or
+/// `--identity`) names, because the menu is up before any shard is.
+#[derive(Resource, Default)]
+pub struct MyFace {
+    asked: Option<protocol::Address>,
+    name: Option<String>,
+    pic: u32,
+    handle: Option<Handle<Image>>,
+    rx: Option<tokio::sync::mpsc::UnboundedReceiver<Option<(String, u32)>>>,
+}
+
+/// Ask for [`MyFace`] when the address changes, and raise `menu.dirty` when
+/// the name or the picture lands. Everything network is on a thread.
+pub fn my_face(
+    who: Res<Who>,
+    mut menu: ResMut<Menu>,
+    mut my: ResMut<MyFace>,
+    mut pics: ResMut<super::faces::Pics>,
+) {
+    let addr = who
+        .0
+        .address()
+        .and_then(|a| protocol::Address::from_hex(a.as_bytes()))
+        .filter(|a| !a.is_guest());
+    if addr != my.asked {
+        *my = MyFace {
+            asked: addr,
+            ..MyFace::default()
+        };
+        menu.dirty = true;
+        if let Some(a) = addr {
+            pics.origin = crate::ui::names::origin_of(menu.servers_url.as_deref());
+            let hex = a.to_hex();
+            let url = format!(
+                "{}/api/face/{}",
+                pics.origin,
+                core::str::from_utf8(&hex).unwrap_or("")
+            );
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            std::thread::spawn(move || {
+                let got = super::faces::get_bytes(&url, 4 * 1024)
+                    .and_then(|b| crate::ui::names::parse_face(&b));
+                let _ = tx.send(got);
+            });
+            my.rx = Some(rx);
+        }
+    }
+    if let Some(rx) = &mut my.rx {
+        if let Ok(got) = rx.try_recv() {
+            my.rx = None;
+            if let Some((name, pic)) = got {
+                my.name = (!name.is_empty()).then_some(name);
+                my.pic = pic;
+                menu.dirty = true;
+            }
+        }
+    }
+    if my.handle.is_none() && my.pic != 0 {
+        if let Some(a) = my.asked {
+            if let Some(h) = pics.want(a, my.pic) {
+                my.handle = Some(h);
+                menu.dirty = true;
+            }
+        }
+    }
 }
 
 /// Redraw. **One rebuild path for every reason the screen can change** — a
@@ -448,11 +518,13 @@ pub fn setup(
 /// rebuild than to diff, and a patch path is exactly where a drawn value
 /// drifts from the held one. Which matters more here than there, because the
 /// values on this screen are *numbers a player acts on*.
+#[allow(clippy::too_many_arguments)]
 pub fn rebuild(
     mut commands: Commands,
     mut menu: ResMut<Menu>,
     browse: Res<Browse>,
     who: Res<Who>,
+    my: Res<MyFace>,
     mut state: ResMut<HubState>,
     backdrop: Option<Res<ui::Backdrop>>,
     roots: Query<Entity, With<MenuRoot>>,
@@ -473,6 +545,7 @@ pub fn rebuild(
         &menu,
         &browse,
         &who,
+        &my,
         &state.hub,
         backdrop.as_deref(),
     );
@@ -493,6 +566,7 @@ fn build(
     menu: &Menu,
     browse: &Browse,
     who: &Who,
+    my: &MyFace,
     hub: &Hub,
     backdrop: Option<&ui::Backdrop>,
 ) {
@@ -521,7 +595,7 @@ fn build(
                 root.spawn(ui::backdrop(b.0.clone()));
                 root.spawn(ui::scrim());
             }
-            header(root, who);
+            header(root, who, my);
             root.spawn(Node {
                 flex_direction: FlexDirection::Row,
                 flex_grow: 1.0,
@@ -549,7 +623,7 @@ fn build(
 /// thing in this client to draw `Who` at all** — it was resolved at startup
 /// and read by nothing. `Player::line` is what says it, so the menu cannot
 /// disagree with the console line printed at boot.
-fn header(root: &mut ChildSpawnerCommands, who: &Who) {
+fn header(root: &mut ChildSpawnerCommands, who: &Who, my: &MyFace) {
     root.spawn(Node {
         flex_direction: FlexDirection::Row,
         align_items: AlignItems::Center,
@@ -565,17 +639,43 @@ fn header(root: &mut ChildSpawnerCommands, who: &Who) {
         // question: a shard that refuses you for `REFUSE_BUILD` says "update
         // the game", and the next thing anyone does is look for what they are
         // running. In-world it is only ever evidence in a screenshot.
-        bar.spawn((
-            Node {
+        // Your platform name and picture lead the chip when you set them on
+        // your Elo Pros account page (`MyFace`); the launcher line stays
+        // under them, because how the address was learned still matters.
+        bar.spawn(Node {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            column_gap: Val::Px(12.0),
+            ..default()
+        })
+        .with_children(|chip| {
+            chip.spawn(Node {
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::End,
                 ..default()
-            },
-            children![
-                ui::label(who.0.line(), 13.0, ui::DIM),
-                ui::label(protocol::version::BUILD_ID.to_string(), 11.0, ui::DIM),
-            ],
-        ));
+            })
+            .with_children(|col| {
+                if let Some(name) = &my.name {
+                    col.spawn(ui::strong(name.clone(), 18.0, ui::TEXT));
+                }
+                col.spawn(ui::label(who.0.line(), 13.0, ui::DIM));
+                col.spawn(ui::label(
+                    protocol::version::BUILD_ID.to_string(),
+                    11.0,
+                    ui::DIM,
+                ));
+            });
+            if let Some(h) = &my.handle {
+                chip.spawn((
+                    Node {
+                        width: Val::Px(44.0),
+                        height: Val::Px(44.0),
+                        ..default()
+                    },
+                    ImageNode::new(h.clone()),
+                ));
+            }
+        });
     });
 }
 

@@ -941,6 +941,13 @@ impl LitOvens {
 }
 
 impl ClientCore {
+    /// Who player `id` is, if the shard has said (`EventMsg::Tag`).
+    pub fn tag(&self, id: u32) -> Option<&Tag> {
+        self.tags
+            .get((id & 0xFF) as usize)
+            .filter(|t| t.id == id && t.id != 0)
+    }
+
     /// The fires this client has heard are burning.
     pub fn ovens(&self) -> &LitOvens {
         &self.ovens
@@ -1052,6 +1059,17 @@ const PLAYOUT_JITTER_K: f64 = 2.0;
 const PLAYOUT_SLEW_PER_S: f64 = 0.5;
 /// RFC 3550's jitter gain: a 16-sample memory, ~0.5 s at 30 Hz.
 const JITTER_GAIN: f64 = 1.0 / 16.0;
+
+/// One player's tag as the shard sent it (`EventMsg::Tag`): the proven
+/// address, the name that wallet set on the platform (possibly empty) and
+/// its picture's revision (0 for none).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Tag {
+    pub id: u32,
+    pub address: protocol::Address,
+    pub name: protocol::Name,
+    pub pic: u32,
+}
 
 pub struct ClientCore {
     pub player_id: u32,
@@ -1194,6 +1212,12 @@ pub struct ClientCore {
     /// and leaves `skins.count` alone, so a screen that redraws on the count
     /// kept showing the old price; this is the number that moves.
     pub skins_gen: u32,
+    /// Who each player is (`EventMsg::Tag`, v85), filed by connection slot
+    /// (the id's low byte) and answered only for the full id — a reused slot
+    /// never speaks for its previous tenant. Read with [`Self::tag`].
+    tags: Box<[Tag]>,
+    /// Bumped whenever a tag lands, so a view can redraw names only then.
+    pub tags_gen: u32,
     /// Cell changes the last `on_stream` call produced: (key, harvested).
     slot_changes: [(u32, bool); protocol::SLOT_SYNC_BATCH],
     n_slot_changes: usize,
@@ -1689,6 +1713,8 @@ impl ClientCore {
             skins: Box::new(protocol::SkinCatalog::EMPTY),
             skins_owned: sim_core::skin::SkinSet::EMPTY,
             skins_gen: 0,
+            tags: vec![Tag::default(); sim_core::limits::MAX_PLAYERS].into_boxed_slice(),
+            tags_gen: 0,
             slot_changes: [(0, false); protocol::SLOT_SYNC_BATCH],
             n_slot_changes: 0,
             toasts: [(0, 0); TOAST_RING],
@@ -2073,6 +2099,22 @@ impl ClientCore {
             }
             EventMsg::SkinsOwned { owned } => {
                 self.skins_owned = owned;
+            }
+            EventMsg::Tag {
+                id,
+                address,
+                name,
+                pic,
+            } => {
+                if let Some(row) = self.tags.get_mut((id & 0xFF) as usize) {
+                    *row = Tag {
+                        id,
+                        address,
+                        name,
+                        pic,
+                    };
+                    self.tags_gen = self.tags_gen.wrapping_add(1);
+                }
             }
             EventMsg::CraftQ {
                 jobs,
