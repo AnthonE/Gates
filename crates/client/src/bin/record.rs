@@ -3,8 +3,8 @@
 //!
 //! `record --scan <tape.rec> [every_s]` — play a tape back with no window and
 //! print what is in it: where every body and animal is, how many pieces
-//! stand, and when and where charges are planted and pieces come down. It is
-//! how a shot list finds its moments.
+//! stand and how many storeys high, and when and where charges are planted
+//! and pieces come down. It is how a shot list finds its moments.
 //!
 //! Joins as a guest player and stands still (after walking to `x,z`, if
 //! asked — out of a raid's way, say), which makes it the camera crew:
@@ -221,8 +221,17 @@ fn scan(path: &str, every: f64) {
                 }
             }
             let [ex, _, ez] = core.eye_position();
+            // How tall the bases are: the highest storey a piece stands on
+            // (0 is the ground; a half-storey socket counts as the one under).
+            let top = core
+                .pieces
+                .entries()
+                .iter()
+                .map(|r| r.level % sim_core::limits::MAX_BUILD_LEVELS as u8)
+                .max()
+                .unwrap_or(0);
             println!(
-                "{t:7.1}  pieces {:3} · animals {animals} · recorder {ex:.0},{ez:.0} · {}",
+                "{t:7.1}  pieces {:3} (top storey {top}) · animals {animals} · recorder {ex:.0},{ez:.0} · {}",
                 core.pieces.len(),
                 people.join(" ")
             );

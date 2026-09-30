@@ -281,6 +281,10 @@ async fn test_bots_raid_over_the_wire() {
         charge_slot: KIT_CHARGE as u8,
         goods_slot: KIT_GOODS as u8,
         code: 4242,
+        // The flat owner: this gate is the raid lane's round trip, and its
+        // kit has no cupboard or door to build a base with
+        // (`population.rs`'s wire test builds one).
+        base: None,
     };
 
     let mut tables = baked_content();

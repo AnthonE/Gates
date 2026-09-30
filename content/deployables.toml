@@ -10,10 +10,13 @@
 # lock dies with what it is bolted to, which is the reference's own rule
 # (`reference/DOORS.md` §2.2).
 
+# `any`: bare ground, a foundation or an upper floor. A bag goes inside
+# your base, which is where Rust's go, and the body wakes standing on the
+# floor it lies on (`deploy::bag_wake_body`).
 [[deployable]]
 id = "item.sleeping_bag"
 archetype = "bag"
-placement = "ground"
+placement = "any"
 hp = 200
 
 [[deployable]]

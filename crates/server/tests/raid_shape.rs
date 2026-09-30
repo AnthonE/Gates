@@ -77,6 +77,10 @@
 //!   address. The shard's own counters already show the loss is real —
 //!   `bot_smoke.rs` measured ~110 actions per bot across 120 ticks.
 //!
+//! Since the owners build real bases (`bots::STARTER`), `botclient.rs`'s
+//! owners settle one plot instead of re-seating it; this replay keeps the
+//! flat, re-seated owner it was written about (`RaidRows::base` = `None`).
+//!
 //! Every one of those leans the same way: this harness can only find *more*
 //! raiding than the shard, never less. That is what makes it evidence — the
 //! refutations above survive the divergences, because a more-favourable
@@ -256,6 +260,7 @@ fn replay(seating: Seating) -> Run {
         charge_slot: 0,
         goods_slot: 2,
         code: 4242,
+        base: None,
     };
     let satchel = c
         .item_index("item.satchel_charge")
@@ -568,6 +573,7 @@ fn a_raider_alone_on_its_own_plot_still_completes_a_raid() {
         charge_slot: 0,
         goods_slot: 2,
         code: 4242,
+        base: None,
     };
     let satchel = c
         .item_index("item.satchel_charge")

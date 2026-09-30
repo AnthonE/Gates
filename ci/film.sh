@@ -56,7 +56,9 @@ record)
     || fail "the shard or the recorder did not build"
   WORK="$(mktemp -d)"
   trap '[ -n "${SHARD_PID:-}" ] && kill "$SHARD_PID" 2>/dev/null; rm -rf "$WORK"' EXIT
-  KIT="item.wood:1000, item.box_small:1, item.lock_code:1"
+  # What a Rust starter base costs (sim_core::bots::STARTER): the owners build
+  # one, the raiders carry the same kit and use none of it.
+  KIT="item.wood:1000, item.stone:1000, item.hearth:1, item.door_metal:1, item.door_wood:1, item.box_small:1, item.lock_code:1"
   [ "$CHARGES" = 0 ] || KIT="item.satchel_charge:1, $KIT"
   cat > "$WORK/film.toml" <<TOML
 bind = "127.0.0.1:$PORT"

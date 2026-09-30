@@ -610,7 +610,7 @@ async fn main() {
             println!(
                 "population {}/{} live · shifts {}/{} started/ended, {} errored · \
                  sent in/act {}/{} · placed pieces/deploys {}/{} · \
-                 charges {} · struct hits {}",
+                 top storey {} · charges {} · struct hits {}",
                 p.live(),
                 population,
                 PopulationStats::get(&g.shifts_started),
@@ -620,6 +620,7 @@ async fn main() {
                 PopulationStats::get(&g.actions_sent),
                 PopulationStats::get(&g.pieces_placed),
                 PopulationStats::get(&g.deploys_placed),
+                PopulationStats::get(&g.top_storey),
                 PopulationStats::get(&g.charges_planted),
                 PopulationStats::get(&g.struct_hits),
             );

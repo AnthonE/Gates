@@ -21,15 +21,20 @@ use crate::net::{client_handshake, read_event_frame, write_frame, FRAME_PREFIX_B
 use crate::view::{Applied, ClientView};
 use protocol::{
     decode_event, encode_action_access, encode_action_demolish, encode_action_deploy,
-    encode_action_loot, encode_action_move, encode_action_pickup, encode_action_place,
-    encode_action_reload, encode_action_repair, encode_action_rotate, encode_action_throw,
-    encode_input, peek_kind, EventMsg, InputDatagram, Welcome, WireError, KIND_SNAPSHOT,
-    MAX_STREAM_MSG_BYTES,
+    encode_action_feed, encode_action_loot, encode_action_move, encode_action_pickup,
+    encode_action_place, encode_action_reload, encode_action_repair, encode_action_rotate,
+    encode_action_throw, encode_action_upgrade, encode_input, peek_kind, EventMsg, InputDatagram,
+    Welcome, WireError, KIND_SNAPSHOT, MAX_STREAM_MSG_BYTES,
 };
-use sim_core::bots::{bot_frame, raid_step, RaidPlan, RaidRows, RAID_CYCLE};
-use sim_core::build::build_cell_of;
-use sim_core::input::InputFrame;
-use sim_core::limits::{DATAGRAM_BUDGET_BYTES, MAX_BUILD_COORD, MAX_INPUT_FRAMES, TICK_HZ};
+use sim_core::bots::{
+    base_step, bot_frame, raid_step, BasePlan, RaidPlan, RaidRows, RAID_CYCLE, STARTER,
+    STARTER_FOOTPRINT, STARTER_STAND_M,
+};
+use sim_core::build::{build_cell_of, BUILD_CELL_M};
+use sim_core::input::{InputFrame, BTN_PRIMARY, BTN_SPRINT};
+use sim_core::limits::{
+    DATAGRAM_BUDGET_BYTES, MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_INPUT_FRAMES, TICK_HZ,
+};
 use sim_core::movement::POS_XZ_Q;
 use sim_core::ranged::{REFUSE_RL_BUSY, REFUSE_RL_EMPTY};
 use sim_core::rng::Pcg32;
@@ -132,6 +137,10 @@ pub struct BotReport {
     /// the body-to-cell derivation was a constant; the smoke asserts the
     /// spread, which is the only thing that can tell those two apart.
     pub last_plot: Option<(u16, u16)>,
+    /// The highest storey any piece this bot heard placed stood on (0 is the
+    /// ground; a half-storey socket counts as the storey under it). Placements
+    /// are broadcast, so it is the shard's, not this bot's own.
+    pub top_storey: u8,
     /// The sim's verdicts on this bot's claims, off the event lane. Roughly
     /// half of `raid_step` is *meant* to be refused (a stranger's code, a
     /// stranger's box, a foundation on somebody else's claim), so these are
@@ -203,6 +212,8 @@ struct EventTally {
     struct_hits: AtomicU64,
     auths: AtomicU64,
     pieces_placed: AtomicU64,
+    /// `BotReport::top_storey`.
+    top_storey: AtomicU64,
     deploys_placed: AtomicU64,
     charges_planted: AtomicU64,
     /// Trigger pulls on an empty magazine — `REFUSE_RL_EMPTY`, the dry
@@ -231,10 +242,134 @@ struct EventTally {
     /// Reloads refused for a reason that is neither dry nor busy — full,
     /// wrong hand, no rounds. The lane stops asking on these.
     reloads_refused: AtomicU64,
+    /// Where hearths stand, `(cx, cz, level)`, off the event lane — the
+    /// join's `DeploySync` and every `DeployPlaced` since — so an owner never
+    /// settles inside somebody else's claim (a person's base included). The
+    /// wire carries no owner (`DeployRec::owner` stays off it, so a raider
+    /// gets no census), so this is every hearth, and the owner leaves out the
+    /// one at its own plan's address. `HEARTHS_KEPT` slots, each a
+    /// [`hearth_key`] or 0 for empty: atomics and not a lock because the
+    /// event lane writes it and the frame loop reads it, and the server's
+    /// inter-thread rule is rings plus atomics. Empty unless a base owner.
+    hearths: Box<[AtomicU64]>,
+    /// Where the next hearth goes when every slot is full (the oldest).
+    hearth_next: AtomicU64,
+    /// The deploy row that is a hearth (`BaseRows::hearth`).
+    hearth_row: Option<u16>,
+}
+
+/// How many foreign hearths a bot remembers. A settling owner only needs the
+/// ones near it, and the join sync hands over the whole island.
+const HEARTHS_KEPT: usize = 256;
+
+/// A hearth's `(cx, cz, level)` as one slot word; never 0, which is empty.
+fn hearth_key(cx: u16, cz: u16, level: u8) -> u64 {
+    1 << 40 | (level as u64) << 32 | (cx as u64) << 16 | cz as u64
 }
 
 impl EventTally {
+    fn new(hearth_row: Option<u16>) -> Self {
+        let slots = if hearth_row.is_some() {
+            HEARTHS_KEPT
+        } else {
+            0
+        };
+        Self {
+            hearths: (0..slots).map(|_| AtomicU64::new(0)).collect(),
+            hearth_row,
+            ..Self::default()
+        }
+    }
+
+    /// Every hearth remembered, as `(cx, cz, level)`.
+    fn each_hearth(&self) -> impl Iterator<Item = (u16, u16, u8)> + '_ {
+        self.hearths.iter().filter_map(|s| {
+            let k = s.load(Ordering::Relaxed);
+            (k != 0).then_some(((k >> 16) as u16, k as u16, (k >> 32) as u8))
+        })
+    }
+
+    /// A deployable appeared: remember it if it is a hearth, in an empty
+    /// slot if there is one and over the oldest if not.
+    fn saw_deploy(&self, rec: &sim_core::deploy::DeployRec) {
+        if self.hearth_row != Some(rec.row as u16) || self.hearths.is_empty() {
+            return;
+        }
+        let k = hearth_key(rec.cx, rec.cz, rec.level);
+        if self.hearths.iter().any(|s| s.load(Ordering::Relaxed) == k) {
+            return;
+        }
+        let free = self.hearths.iter().any(|s| {
+            s.compare_exchange(0, k, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+        });
+        if !free {
+            let i = self.hearth_next.fetch_add(1, Ordering::Relaxed) as usize;
+            self.hearths[i % self.hearths.len()].store(k, Ordering::Relaxed);
+        }
+    }
+
+    /// Is there a hearth at exactly this address?
+    fn has_hearth(&self, at: (u16, u16, u8)) -> bool {
+        self.each_hearth().any(|h| h == at)
+    }
+
+    /// The way out of every claim near `(x, z)`: the sum of a push away from
+    /// each hearth within `r` metres, stronger the nearer it is — so a bot
+    /// between two bases heads for open ground rather than fleeing each in
+    /// turn. `None` when no hearth is that near.
+    fn away_from_hearths(&self, x: f32, z: f32, r: f32) -> Option<(f32, f32)> {
+        let half = BUILD_CELL_M * 0.5;
+        let mut push = None;
+        for (cx, cz, _) in self.each_hearth() {
+            let dx = x - (cx as f32 * BUILD_CELL_M + half);
+            let dz = z - (cz as f32 * BUILD_CELL_M + half);
+            let d = (dx * dx + dz * dz).sqrt();
+            if d > r || d <= 0.0 {
+                continue;
+            }
+            let w = (r - d) / (r * d);
+            let (px, pz) = push.unwrap_or((0.0, 0.0));
+            push = Some((px + dx * w, pz + dz * w));
+        }
+        push
+    }
+
+    /// Is `(x, z)` within `r` metres of a hearth other than the one at
+    /// `own` (the asker's own, which the wire cannot tell it apart from)?
+    fn near_hearth(&self, x: f32, z: f32, r: f32, own: Option<(u16, u16, u8)>) -> bool {
+        let half = BUILD_CELL_M * 0.5;
+        self.each_hearth()
+            .filter(|&k| Some(k) != own)
+            .any(|(cx, cz, _)| {
+                let dx = cx as f32 * BUILD_CELL_M + half - x;
+                let dz = cz as f32 * BUILD_CELL_M + half - z;
+                dx * dx + dz * dz <= r * r
+            })
+    }
+
     fn note(&self, ev: &EventMsg) {
+        match ev {
+            EventMsg::DeployPlaced { rec } => self.saw_deploy(rec),
+            EventMsg::DeploySync { reset, recs, count } => {
+                if *reset {
+                    for s in self.hearths.iter() {
+                        s.store(0, Ordering::Relaxed);
+                    }
+                    self.hearth_next.store(0, Ordering::Relaxed);
+                }
+                for rec in recs.iter().take(*count as usize) {
+                    self.saw_deploy(rec);
+                }
+            }
+            EventMsg::DeployRemoved { cx, cz, level, .. } => {
+                let k = hearth_key(*cx, *cz, *level);
+                for s in self.hearths.iter() {
+                    let _ = s.compare_exchange(k, 0, Ordering::Relaxed, Ordering::Relaxed);
+                }
+            }
+            _ => {}
+        }
         // The reload arms read a *field*, so they cannot ride the table
         // below: a refusal's meaning is its `reason`, and one counter for
         // all five would leave the bot unable to tell "you are empty" from
@@ -253,6 +388,10 @@ impl EventTally {
             self.rounds_loaded
                 .fetch_add(*took as u64, Ordering::Relaxed);
             return;
+        }
+        if let EventMsg::PiecePlaced { rec } = ev {
+            let storey = rec.level % MAX_BUILD_LEVELS as u8;
+            self.top_storey.fetch_max(storey as u64, Ordering::Relaxed);
         }
         let c = match ev {
             EventMsg::BuildRefused { .. } => &self.build_refused,
@@ -353,8 +492,49 @@ fn encode_raid(cmd: &Command, buf: &mut [u8]) -> Option<Result<usize, WireError>
         // picks the weapon and the amount, so there is nothing in the frame
         // to forge (`Command::Reload`'s own doc says why).
         Command::Reload { .. } => encode_action_reload(buf),
+        Command::Upgrade {
+            cx,
+            cz,
+            level,
+            loc,
+            material,
+            ..
+        } => encode_action_upgrade(cx, cz, level, loc, material, buf),
+        Command::Feed { cx, cz, level, .. } => encode_action_feed(cx, cz, level, buf),
         _ => return None,
     })
+}
+
+/// How close to its spot in the core (`bots::STARTER_STAND_M`) a base owner
+/// stands, metres. Loose enough that the half-metre the snapshot lags behind
+/// a walking body does not set it pacing back and forth.
+const BASE_STAND_M: f32 = 0.5;
+
+/// The longest a base owner waits to be standing in its core with nobody
+/// else on the plot before it builds anyway (five seconds of ticks). A walk
+/// across one cell takes a second; this bounds a plot it cannot reach, or
+/// somebody who never leaves, to a few seconds rather than the shift.
+const BASE_HOLD_TICKS: u32 = 5 * TICK_HZ;
+
+/// How often an owner looking for a plot checks it is getting anywhere, in
+/// ticks, and how far it must have got (metres, along the axes) not to turn:
+/// two seconds of walking covers six metres, so under one is a body pushing
+/// against something.
+const WAY_CHECK_TICKS: u64 = 2 * TICK_HZ as u64;
+const WAY_MIN_M: f32 = 1.0;
+
+/// How far from another cupboard an owner settles, metres: its claim reaches
+/// `claim::PRIV_CUSHION_M` past every cell of its building, and a base
+/// spreads a couple of cells from its cupboard on either side.
+const CLAIM_KEEP_M: f32 = sim_core::claim::PRIV_CUSHION_M + 4.0 * BUILD_CELL_M;
+
+/// The middle of a build cell, metres.
+fn cell_mid(cx: u16, cz: u16) -> (f32, f32) {
+    let half = BUILD_CELL_M * 0.5;
+    (
+        cx as f32 * BUILD_CELL_M + half,
+        cz as f32 * BUILD_CELL_M + half,
+    )
 }
 
 /// The build cell a quantized body coordinate stands in.
@@ -367,6 +547,17 @@ fn encode_raid(cmd: &Command, buf: &mut [u8]) -> Option<Result<usize, WireError>
 /// cells), so the clamp only ever bites on a body outside the playfield.
 fn body_cell(q: i32) -> u16 {
     build_cell_of(q as f32 * POS_XZ_Q).clamp(0, MAX_BUILD_COORD as i32 - 1) as u16
+}
+
+/// Is another person (not an animal) standing within `r` cells of this one
+/// (`r` = 0: in it), as far as the snapshots say?
+fn someone_near(view: &ClientView, me: u32, cx: u16, cz: u16, r: u16) -> bool {
+    view.entities.iter().any(|(id, e)| {
+        *id != me
+            && sim_core::mob::slot_of_id(*id).is_none()
+            && body_cell(e.qx).abs_diff(cx) <= r
+            && body_cell(e.qz).abs_diff(cz) <= r
+    })
 }
 
 /// Would a foundation go on this cell? `build::place`'s ground rules: the
@@ -862,7 +1053,7 @@ async fn run_bot_inner(
     } else {
         (None, None)
     };
-    let tally = Arc::new(EventTally::default());
+    let tally = Arc::new(EventTally::new(raid.and_then(|r| r.base).map(|b| b.hearth)));
     let _event_pump = {
         let tally = tally.clone();
         EventPump(tokio::spawn(async move {
@@ -906,6 +1097,13 @@ async fn run_bot_inner(
     // Odd streams raid, even streams own — the storm's `i % 2 == 1`, so a
     // fleet is half attackers and half owners however many bots you start.
     let attacker = seed_stream % 2 == 1;
+    // An owner given base rows builds a base to live in (`bots::STARTER`): it
+    // settles once, stands in its core and walks the blueprint, where
+    // re-seating every cycle left a trail of one-storey scraps wherever the
+    // walk had wandered. Without them it keeps the flat profile the storms
+    // drive.
+    let base_rows = raid.and_then(|r| r.base).filter(|_| !attacker);
+    let mut base_plan: Option<BasePlan> = None;
     let mut plan: Option<RaidPlan> = None;
     let mut steps_in_cycle: u16 = 0;
     // The ground a raider reads, as the client's build ghost reads it, and
@@ -915,6 +1113,15 @@ async fn run_bot_inner(
         None => None,
     };
     let mut plot_ok = false;
+    // A base owner's wait to be standing in its core, alone, before it lays
+    // anything (`BASE_HOLD_TICKS`); `settled` once it is, or once it gave up.
+    let mut base_hold: u32 = 0;
+    let mut base_settled = false;
+    // An owner looking for a plot that has stopped making way (a tree, a
+    // rock, somebody's wall) turns a quarter and walks on, the way a person
+    // steps round a trunk: where it last marked its position, and the turn.
+    let mut way_mark: Option<(i32, i32, u64)> = None;
+    let mut detour: u16 = 0;
     // The server's per-kind pace (`pace.rs`), kept on this side the way an
     // honest client keeps it: a raid step that would come early is held
     // here and sent when its gap is up, rather than queued at the server
@@ -992,15 +1199,67 @@ async fn run_bot_inner(
                 // second it waits walks it out of reach of the piece it
                 // plants on. The draws above still happen either way.
                 if haven.is_some() {
-                    if plot_ok {
-                        if held.is_some() {
+                    match (base_rows.is_some(), base_plan, view.get(report.player_id)) {
+                        // A base owner walks to its spot in the core and
+                        // stays there: the whole base is in reach from it,
+                        // it is not where a wall is about to go up, and once
+                        // the doors shut it is behind both of them. No
+                        // swinging at its own walls.
+                        (true, Some(bp), Some(body)) => {
+                            let dx = bp.cx as f32 * BUILD_CELL_M + STARTER_STAND_M.0
+                                - body.qx as f32 * POS_XZ_Q;
+                            let dz = bp.cz as f32 * BUILD_CELL_M + STARTER_STAND_M.1
+                                - body.qz as f32 * POS_XZ_Q;
+                            f.buttons &= !(BTN_SPRINT | BTN_PRIMARY);
                             f.move_x = 0;
                             f.move_z = 0;
+                            if dx * dx + dz * dz > BASE_STAND_M * BASE_STAND_M {
+                                f.yaw = sim_core::nav::yaw_toward(dx, dz, f.yaw);
+                                f.move_z = 127;
+                            }
                         }
-                    } else if let Some(body) = view.get(report.player_id) {
-                        let c = sim_core::terrain::ISLAND_SIZE * 0.5;
-                        let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
-                        f.yaw = sim_core::nav::yaw_toward(c - x, c - z, f.yaw);
+                        (false, _, _) if plot_ok => {
+                            if held.is_some() {
+                                f.move_x = 0;
+                                f.move_z = 0;
+                            }
+                        }
+                        (base, _, Some(body)) => {
+                            let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+                            // Inside somebody's claim with nowhere to settle:
+                            // walk away from their cupboards, not on through
+                            // their bases. Otherwise inland, off the beach.
+                            let (tx, tz) = match base
+                                .then(|| tally.away_from_hearths(x, z, CLAIM_KEEP_M))
+                                .flatten()
+                            {
+                                Some(away) => away,
+                                None => {
+                                    let c = sim_core::terrain::ISLAND_SIZE * 0.5;
+                                    (c - x, c - z)
+                                }
+                            };
+                            if base {
+                                match way_mark {
+                                    Some((mx, mz, at))
+                                        if report.ticks_walked - at >= WAY_CHECK_TICKS =>
+                                    {
+                                        let moved = ((body.qx - mx) as f32 * POS_XZ_Q).abs()
+                                            + ((body.qz - mz) as f32 * POS_XZ_Q).abs();
+                                        detour = if moved < WAY_MIN_M {
+                                            detour.wrapping_add(u16::MAX / 4 + 1)
+                                        } else {
+                                            0
+                                        };
+                                        way_mark = Some((body.qx, body.qz, report.ticks_walked));
+                                    }
+                                    None => way_mark = Some((body.qx, body.qz, report.ticks_walked)),
+                                    _ => {}
+                                }
+                            }
+                            f.yaw = sim_core::nav::yaw_toward(tx, tz, f.yaw).wrapping_add(detour);
+                        }
+                        _ => {}
                     }
                 }
                 yaw = f.yaw;
@@ -1169,77 +1428,141 @@ async fn run_bot_inner(
                 // do better, and a load tool that pretended to would be
                 // measuring a pressure no player can apply.
                 if let Some(rows) = raid.filter(|_| !took_the_tick) {
-                    // Re-seat the plot from the live body every cycle. The
-                    // bot walks, so a plan pinned at spawn would spend the
-                    // whole run out of reach of its own foundation and
-                    // measure nothing but `REFUSE_B_REACH`.
-                    //
-                    // A plot no foundation takes is dropped, held step and
-                    // all, the moment the raider stands on one that does:
-                    // fresh spawns are on beach sand, below
-                    // `FOUNDATION_MIN_H_M`, and a paced cycle is too slow
-                    // to spend finishing there.
-                    let here = view
+                    let standing = view
                         .get(report.player_id)
                         .map(|body| (body_cell(body.qx), body_cell(body.qz)));
-                    let cycle_done = steps_in_cycle >= RAID_CYCLE && held.is_none();
-                    let doomed = plan.is_some() && !plot_ok;
-                    let ok_here = match (here, haven.as_deref()) {
-                        (Some((cx, cz)), Some(hv)) if cycle_done || doomed || plan.is_none() => {
-                            foundation_goes(welcome.seed, hv, cx, cz)
-                        }
-                        _ => false,
-                    };
-                    if cycle_done || (doomed && ok_here) {
-                        plan = None;
-                        held = None;
-                        sel_held.clear();
-                    }
-                    if plan.is_none() {
-                        if let Some((cx, cz)) = here {
-                            plan = Some(RaidPlan::new(report.player_id, cx, cz, attacker));
-                            plot_ok = ok_here;
-                            steps_in_cycle = 0;
-                            report.raid_cycles += 1;
-                            report.last_plot = Some((cx, cz));
-                        }
-                    }
-                    if let Some(p) = plan.as_mut() {
-                        let cmd = match held.take() {
-                            Some(cmd) => cmd,
-                            None => {
-                                steps_in_cycle += 1;
-                                report.raid_steps += 1;
-                                raid_step(p, &mut raid_rng, rows)
-                            }
-                        };
-                        match cmd {
-                            Command::Input { frame, .. } => sel_held.set(frame.sel),
-                            other => match encode_raid(&other, &mut act_buf) {
-                                Some(Ok(len))
-                                    if protocol::decode_action(&act_buf[..len])
-                                        .is_ok_and(|a| !pace.go(&a, report.ticks_walked)) =>
-                                {
-                                    held = Some(other);
-                                }
-                                Some(Ok(len)) => {
-                                    if write_frame(&mut send, &act_buf[..len]).await.is_ok() {
-                                        report.actions_sent += 1;
-                                        report.act_out_bytes +=
-                                            (FRAME_PREFIX_BYTES + len) as u64;
-                                    } else {
-                                        // The stream is gone. Keep walking
-                                        // rather than ending the run: a
-                                        // dead action lane is a finding,
-                                        // not a reason to stop measuring
-                                        // the snapshot one.
-                                        report.action_lane_errors += 1;
-                                        raid = None;
+                    let next = match base_rows {
+                        // ---- an owner building a base to live in --------
+                        Some(brows) => {
+                            // Settle where it stands, once: the first spot
+                            // whose footprint takes foundations, with nobody
+                            // standing on it and no other cupboard's claim
+                            // within reach of it (`CLAIM_KEEP_M`) — a
+                            // person's base as much as another bot's.
+                            match (base_plan, standing, haven.as_deref()) {
+                                (None, Some((cx, cz)), Some(hv)) => {
+                                    let (x, z) = cell_mid(cx, cz);
+                                    let ok = STARTER_FOOTPRINT.iter().all(|&(dx, dz)| {
+                                        let (fx, fz) = BasePlan::new(0, cx, cz).cell(dx, dz);
+                                        foundation_goes(welcome.seed, hv, fx, fz)
+                                            && !someone_near(&view, report.player_id, fx, fz, 0)
+                                    }) && !tally.near_hearth(x, z, CLAIM_KEEP_M, None);
+                                    if ok {
+                                        base_plan = Some(BasePlan::new(report.player_id, cx, cz));
+                                        base_hold = 0;
+                                        base_settled = false;
+                                        report.raid_cycles += 1;
+                                        report.last_plot = Some((cx, cz));
                                     }
                                 }
-                                Some(Err(_)) | None => report.actions_unencodable += 1,
-                            },
+                                // Somebody else's cupboard went down within
+                                // reach before ours did: the plot is theirs
+                                // now, so walk on and settle somewhere else.
+                                (Some(bp), _, _) => {
+                                    let ours = (bp.cx, bp.cz, 0);
+                                    let (x, z) = cell_mid(bp.cx, bp.cz);
+                                    if !tally.has_hearth(ours)
+                                        && tally.near_hearth(x, z, CLAIM_KEEP_M, Some(ours))
+                                    {
+                                        base_plan = None;
+                                        held = None;
+                                    }
+                                }
+                                _ => {}
+                            }
+                            // Lay nothing until it stands in its core with
+                            // nobody else on the plot, so the walls go up
+                            // around it rather than between it and the base,
+                            // and around nobody else. Bounded: past
+                            // `BASE_HOLD_TICKS` it builds anyway.
+                            if let Some(bp) = base_plan.filter(|_| !base_settled) {
+                                let alone_inside = standing == Some((bp.cx, bp.cz))
+                                    && STARTER_FOOTPRINT.iter().all(|&(dx, dz)| {
+                                        let (fx, fz) = bp.cell(dx, dz);
+                                        !someone_near(&view, report.player_id, fx, fz, 0)
+                                    });
+                                base_hold += 1;
+                                base_settled = alone_inside || base_hold >= BASE_HOLD_TICKS;
+                            }
+                            base_plan.as_mut().filter(|_| base_settled).map(|bp| {
+                                held.take().unwrap_or_else(|| {
+                                    report.raid_steps += 1;
+                                    base_step(bp, brows, STARTER)
+                                })
+                            })
                         }
+                        // ---- the raid profile: raiders, and flat owners ---
+                        None => {
+                            // Re-seat the plot from the live body every
+                            // cycle. The bot walks, so a plan pinned at spawn
+                            // would spend the whole run out of reach of its
+                            // own foundation and measure nothing but
+                            // `REFUSE_B_REACH`.
+                            //
+                            // A plot no foundation takes is dropped, held
+                            // step and all, the moment the raider stands on
+                            // one that does: fresh spawns are on beach sand,
+                            // below `FOUNDATION_MIN_H_M`, and a paced cycle is
+                            // too slow to spend finishing there.
+                            let here = standing;
+                            let cycle_done = steps_in_cycle >= RAID_CYCLE && held.is_none();
+                            let doomed = plan.is_some() && !plot_ok;
+                            let ok_here = match (here, haven.as_deref()) {
+                                (Some((cx, cz)), Some(hv))
+                                    if cycle_done || doomed || plan.is_none() =>
+                                {
+                                    foundation_goes(welcome.seed, hv, cx, cz)
+                                }
+                                _ => false,
+                            };
+                            if cycle_done || (doomed && ok_here) {
+                                plan = None;
+                                held = None;
+                                sel_held.clear();
+                            }
+                            if plan.is_none() {
+                                if let Some((cx, cz)) = here {
+                                    plan = Some(RaidPlan::new(report.player_id, cx, cz, attacker));
+                                    plot_ok = ok_here;
+                                    steps_in_cycle = 0;
+                                    report.raid_cycles += 1;
+                                    report.last_plot = Some((cx, cz));
+                                }
+                            }
+                            plan.as_mut().map(|p| {
+                                held.take().unwrap_or_else(|| {
+                                    steps_in_cycle += 1;
+                                    report.raid_steps += 1;
+                                    raid_step(p, &mut raid_rng, rows)
+                                })
+                            })
+                        }
+                    };
+                    match next {
+                        Some(Command::Input { frame, .. }) => sel_held.set(frame.sel),
+                        Some(other) => match encode_raid(&other, &mut act_buf) {
+                            Some(Ok(len))
+                                if protocol::decode_action(&act_buf[..len])
+                                    .is_ok_and(|a| !pace.go(&a, report.ticks_walked)) =>
+                            {
+                                held = Some(other);
+                            }
+                            Some(Ok(len)) => {
+                                if write_frame(&mut send, &act_buf[..len]).await.is_ok() {
+                                    report.actions_sent += 1;
+                                    report.act_out_bytes += (FRAME_PREFIX_BYTES + len) as u64;
+                                } else {
+                                    // The stream is gone. Keep walking rather
+                                    // than ending the run: a dead action lane
+                                    // is a finding, not a reason to stop
+                                    // measuring the snapshot one.
+                                    report.action_lane_errors += 1;
+                                    raid = None;
+                                }
+                            }
+                            Some(Err(_)) | None => report.actions_unencodable += 1,
+                        },
+                        None => {}
                     }
                 }
                 // The walk ends on the budget of ticks being spent, which is
@@ -1325,6 +1648,7 @@ async fn run_bot_inner(
     report.struct_hits = tally.struct_hits.load(Ordering::Relaxed);
     report.auths = tally.auths.load(Ordering::Relaxed);
     report.pieces_placed = tally.pieces_placed.load(Ordering::Relaxed);
+    report.top_storey = tally.top_storey.load(Ordering::Relaxed) as u8;
     report.deploys_placed = tally.deploys_placed.load(Ordering::Relaxed);
     report.charges_planted = tally.charges_planted.load(Ordering::Relaxed);
     report.dry_clicks = tally.dry_clicks.load(Ordering::Relaxed);

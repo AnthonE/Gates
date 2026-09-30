@@ -130,7 +130,8 @@ async fn main() {
                         "bot {i}: id {} · snaps {} (delta {}, stale {}, nobase {}) · \
                          decode err {} · inputs {} (exec {}) · own {} · maxent {} · \
                          events {} (err {}) · raid {}c actions {} (unenc {}, lane err {}) · \
-                         refused b{} d{} m{} · placed p{} d{} · armed {} · hits {} · auth {} · \
+                         refused b{} d{} m{} · placed p{} d{} · top storey {} · armed {} · \
+                         hits {} · auth {} · \
                          bytes dg in {}/{} out {} · stream in {} out {}",
                         r.player_id,
                         r.snapshots_applied,
@@ -153,6 +154,7 @@ async fn main() {
                         r.move_refused,
                         r.pieces_placed,
                         r.deploys_placed,
+                        r.top_storey,
                         // The one number that says a raid ARMED. It was
                         // collected and never printed, so the operator's
                         // only view of the raid lane was `hits`, which is

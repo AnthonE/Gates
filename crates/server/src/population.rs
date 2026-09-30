@@ -28,7 +28,7 @@
 //! reports.
 
 use crate::botclient::{bot_endpoint, run_bot, BotReport};
-use sim_core::bots::RaidRows;
+use sim_core::bots::{BaseRows, RaidRows};
 use sim_core::limits::MAX_PLAYERS;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -96,6 +96,39 @@ pub fn raid_rows(content: &content::Content) -> Result<RaidRows, String> {
         charge_slot: RAID_CHARGE_SLOT,
         goods_slot: RAID_GOODS_SLOT,
         code: RAID_OWNER_CODE,
+        base: base_rows(content).ok(),
+    })
+}
+
+/// What an owner builds its base from (`sim_core::bots::STARTER`), by id like
+/// [`raid_rows`]. `Err` names the missing row; the caller then keeps the
+/// owners on the flat raid profile rather than building half a base.
+pub fn base_rows(content: &content::Content) -> Result<BaseRows, String> {
+    let piece = |id: &str| {
+        content
+            .piece_index(id)
+            .ok_or_else(|| format!("content: no {id}"))
+    };
+    let deploy = |id: &str| {
+        content
+            .deploy_index(id)
+            .ok_or_else(|| format!("content: no {id}"))
+    };
+    Ok(BaseRows {
+        foundation: piece("build.foundation_twig")?,
+        tri_foundation: piece("build.tri_foundation_twig")?,
+        wall: piece("build.wall_twig")?,
+        doorway: piece("build.doorway_twig")?,
+        floor: piece("build.floor_twig")?,
+        stairs: piece("build.stairs_l_twig")?,
+        roof: piece("build.roof_twig")?,
+        tri_roof: piece("build.tri_roof_twig")?,
+        hearth: deploy("item.hearth")?,
+        door: deploy("item.door_wood")?,
+        metal_door: deploy("item.door_metal")?,
+        lock: deploy("item.lock_code")?,
+        container: deploy("item.box_small")?,
+        code: RAID_OWNER_CODE,
     })
 }
 
@@ -122,6 +155,9 @@ pub struct PopulationStats {
     pub deploys_placed: AtomicU64,
     pub charges_planted: AtomicU64,
     pub struct_hits: AtomicU64,
+    /// The highest storey a finished shift heard a piece placed on — how
+    /// high the owners' bases got (`BotReport::top_storey`). A max, not a sum.
+    pub top_storey: AtomicU64,
 }
 
 impl PopulationStats {
@@ -142,6 +178,8 @@ impl PopulationStats {
         ] {
             c.fetch_add(v, Ordering::Relaxed);
         }
+        self.top_storey
+            .fetch_max(r.top_storey as u64, Ordering::Relaxed);
     }
 }
 

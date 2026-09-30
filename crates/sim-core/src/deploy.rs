@@ -1590,10 +1590,11 @@ impl Deploys {
 
     /// The bag a dying player wakes on, and the cooldown that spends it.
     ///
-    /// Scans `owner`'s own ready bags and returns the planar cell center of
-    /// the one **nearest the point given** — the body's position as it
-    /// fell, so a death defending a compound wakes on the bag inside that
-    /// compound rather than on one across the island. Ties go to the
+    /// Scans `owner`'s own ready bags and returns the address
+    /// `(cx, cz, level)` of the one **nearest the point given**, planar —
+    /// the body's position as it fell, so a death defending a compound wakes
+    /// on the bag inside that compound rather than on one across the island
+    /// ([`bag_wake_body`] stands the body on its floor). Ties go to the
     /// earlier entry, which is the store's insertion order and therefore
     /// the same on every replay of the same log.
     ///
@@ -1617,7 +1618,7 @@ impl Deploys {
         x: f32,
         z: f32,
         tick: u64,
-    ) -> Option<(f32, f32)> {
+    ) -> Option<(u16, u16, u8)> {
         let mut best: Option<(usize, f32)> = None;
         for (i, d) in self.entries[..self.len].iter().enumerate() {
             if d.owner != owner
@@ -1635,7 +1636,8 @@ impl Deploys {
         }
         let (i, _) = best?;
         self.bag_ready[i] = tick.saturating_add(BAG_COOLDOWN_TICKS);
-        Some(cell_center(self.entries[i].cx, self.entries[i].cz))
+        let d = &self.entries[i];
+        Some((d.cx, d.cz, d.level))
     }
 }
 
@@ -1672,6 +1674,32 @@ pub fn box_drop_pos(
             + crate::build::level_y(level),
         z,
     )
+}
+
+/// The body a player wakes into on the bag at this address: the centre of
+/// its cell, standing on the floor the bag lies on — a foundation's or an
+/// upper floor's top ([`box_drop_pos`]'s height) for a bag inside a base,
+/// and the terrain (`Body::at`) for one out on bare ground. Read off the
+/// column at the wake, so a bag is answered by what stands under it now.
+pub fn bag_wake_body(
+    seed: u64,
+    haven: &terrain::Haven,
+    cols: &crate::collide::ColIndex,
+    cx: u16,
+    cz: u16,
+    level: u8,
+) -> crate::movement::Body {
+    let (x, y, z) = box_drop_pos(seed, haven, cols, cx, cz, level);
+    if cols.get(cx, cz).planes & (1 << level) == 0 {
+        return crate::movement::Body::at(seed, haven, x, z);
+    }
+    crate::movement::Body {
+        qx: crate::movement::quant_xz(x),
+        qy: crate::movement::quant_y(y),
+        qz: crate::movement::quant_xz(z),
+        qvy: 0,
+        grounded: true,
+    }
 }
 
 /// The highest workbench rung among `recs` standing within `radius_m`
@@ -3713,15 +3741,14 @@ mod tests {
         let (fx, fz) = center(CX + 4);
         assert_eq!(
             deploys.claim_bag(&dc, 7, fx, fz, 100),
-            Some((fx, fz)),
+            Some((CX + 4, CZ, 0)),
             "the scan did not take the bag nearest the body"
         );
         // …and it is spent for exactly the cooldown, so the same death
         // point now walks to the next-nearest instead.
-        let (mx, mz) = center(CX + 2);
         assert_eq!(
             deploys.claim_bag(&dc, 7, fx, fz, 100),
-            Some((mx, mz)),
+            Some((CX + 2, CZ, 0)),
             "a bag answered twice inside its own cooldown"
         );
         // One tick before it wakes it is still spent; on its own tick it
@@ -3730,12 +3757,12 @@ mod tests {
         let ready = 100 + BAG_COOLDOWN_TICKS;
         assert_eq!(
             deploys.claim_bag(&dc, 7, fx, fz, ready - 1),
-            Some(center(CX)),
+            Some((CX, CZ, 0)),
             "the far bag woke early"
         );
         assert_eq!(
             deploys.claim_bag(&dc, 7, fx, fz, ready),
-            Some((fx, fz)),
+            Some((CX + 4, CZ, 0)),
             "the far bag did not wake on the tick its cooldown named"
         );
     }
@@ -3779,7 +3806,7 @@ mod tests {
              whole of base ownership here"
         );
         // The refused scan must not have spent the owner's bag either.
-        assert_eq!(deploys.claim_bag(&dc, 7, x, z, 0), Some((x, z)));
+        assert_eq!(deploys.claim_bag(&dc, 7, x, z, 0), Some((CX, CZ, 0)));
     }
 
     /// A workbench is not a bed. Every other archetype is invisible to the

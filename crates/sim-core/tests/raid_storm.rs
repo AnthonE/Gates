@@ -239,6 +239,7 @@ fn rows() -> RaidRows {
         charge_slot: 0,
         goods_slot: 2,
         code: OWNER_CODE,
+        base: None,
     }
 }
 
