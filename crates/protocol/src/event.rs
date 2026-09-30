@@ -1505,7 +1505,13 @@ pub enum EventMsg {
     /// all-that-fits, and shipping every stack to every client would put
     /// the whole shard's loot on every wire for a thing most of them will
     /// never reach.
-    BagDropped { id: u32, qx: i32, qy: i32, qz: i32 },
+    BagDropped {
+        id: u32,
+        qx: i32,
+        qy: i32,
+        qz: i32,
+        kind: u8,
+    },
     /// One batch of the standing-bag walk (join sync / event-lane
     /// resync). `reset` clears the client's bag set first.
     BagSync {
@@ -2807,7 +2813,24 @@ pub struct WireBag {
     pub qx: i32,
     pub qy: i32,
     pub qz: i32,
+    /// What the bag looks like (wire v84): [`BAG_KIND_PACK`] for a
+    /// player's or a box's, or `1 + species` for a killed animal's, which
+    /// the client draws as the carcass lying where it fell. Derived from
+    /// the bag's owner (an animal's is its tagged roster id), so the sim
+    /// stores nothing new and the owner itself still never crosses.
+    pub kind: u8,
 }
+
+/// A backpack's look: a pack.
+pub const BAG_KIND_PACK: u8 = 0;
+/// The width of [`WireBag::kind`]. A pack and one kind per species; the
+/// patterns past that are forgeable and refused.
+const BAG_KIND_BITS: u32 = 2;
+const _: () = assert!(
+    sim_core::mob::MOB_KINDS < (1 << BAG_KIND_BITS),
+    "a new species no longer fits BAG_KIND_BITS — widen it, bump PROTO_VER \
+     and regenerate the goldens in this same commit (CLAUDE.md wall 6)"
+);
 
 impl WireBag {
     /// The sim's record, narrowed to what crosses.
@@ -2817,7 +2840,14 @@ impl WireBag {
             qx: b.qx,
             qy: b.qy,
             qz: b.qz,
+            kind: sim_core::mob::slot_of_id(b.owner)
+                .map_or(BAG_KIND_PACK, |slot| 1 + sim_core::mob::kind_of(slot)),
         }
+    }
+
+    /// The species of the animal this bag is the carcass of, if any.
+    pub fn species(&self) -> Option<u8> {
+        self.kind.checked_sub(1)
     }
 }
 
@@ -2915,16 +2945,25 @@ fn write_bag(w: &mut BitWriter, b: &WireBag) -> Result<(), WireError> {
     w.write(b.qx as u32, POS_XZ_BITS)?;
     w.write((b.qy + POS_Y_BIAS) as u32, POS_Y_BITS)?;
     w.write(b.qz as u32, POS_XZ_BITS)?;
+    if b.kind as usize > sim_core::mob::MOB_KINDS {
+        return Err(WireError::Range);
+    }
+    w.write(b.kind as u32, BAG_KIND_BITS)?;
     Ok(())
 }
 
 fn read_bag(r: &mut BitReader) -> Result<WireBag, WireError> {
-    Ok(WireBag {
+    let b = WireBag {
         id: r.read(32)?,
         qx: r.read(POS_XZ_BITS)? as i32,
         qy: r.read(POS_Y_BITS)? as i32 - POS_Y_BIAS,
         qz: r.read(POS_XZ_BITS)? as i32,
-    })
+        kind: r.read(BAG_KIND_BITS)? as u8,
+    };
+    if b.kind as usize > sim_core::mob::MOB_KINDS {
+        return Err(WireError::Malformed);
+    }
+    Ok(b)
 }
 
 pub fn encode_event_bag_dropped(b: &WireBag, buf: &mut [u8]) -> Result<usize, WireError> {
@@ -4378,6 +4417,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 qx: b.qx,
                 qy: b.qy,
                 qz: b.qz,
+                kind: b.kind,
             }
         }
         SUB_BAG_SYNC => {
@@ -4474,6 +4514,24 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A bag's look comes off its owner (v84): an animal's tagged roster
+    /// id names its species, anyone else's bag is a pack.
+    #[test]
+    fn a_bag_is_a_carcass_exactly_when_an_animal_owned_it() {
+        use sim_core::mob::{kind_of, mob_id};
+        let mut b = BackpackRec {
+            id: 1,
+            owner: 7,
+            ..BackpackRec::default()
+        };
+        assert_eq!(WireBag::of(&b).kind, BAG_KIND_PACK);
+        assert_eq!(WireBag::of(&b).species(), None);
+        for slot in [0usize, 1, 2, 5] {
+            b.owner = mob_id(slot);
+            assert_eq!(WireBag::of(&b).species(), Some(kind_of(slot)));
+        }
+    }
     use sim_core::combat::{WEAR_BODY, WEAR_HEAD};
     use sim_core::inventory::{CONT_BAG, CONT_BOX};
     use sim_core::limits::BOX_SLOTS;
@@ -6878,6 +6936,10 @@ mod wire_domains {
         /// here, by whoever adds the width.
         const MAGNITUDES: &[&str] = &[
             "SUB_BITS",
+            // A bag's look (v84): `1 + species` over the count `MOB_KINDS`,
+            // which a const-assert beside the width guards, and both ends
+            // refuse past it.
+            "BAG_KIND_BITS",
             // A per-mille chance (wounded v0): a unit, not an enumeration.
             // `wound::recover_chance_pm` tops out at 450 by arithmetic and
             // the field holds 1000, so a re-tuned bonus cannot outgrow it

@@ -69,10 +69,10 @@ pub use event::{
     encode_event_slot_grow_sync, encode_event_slot_respawned, encode_event_slot_sync,
     encode_event_stock, encode_event_struct_hit, encode_event_swing, encode_event_vitals,
     encode_event_weak_mark, encode_event_wounded, shot_is_instant, EventMsg, InvSlot, ItemCatalog,
-    ItemRow, SkinCatalog, SkinRow, WireBag, WireGItem, BAG_SYNC_BATCH, CATALOG_BATCH, COIN_ELO,
-    COIN_NONE, COIN_ORBS, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH,
-    GROW_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH,
-    RECIPE_BATCH, RESEARCH_BATCH, SKIN_BATCH, SLOT_SYNC_BATCH,
+    ItemRow, SkinCatalog, SkinRow, WireBag, WireGItem, BAG_KIND_PACK, BAG_SYNC_BATCH,
+    CATALOG_BATCH, COIN_ELO, COIN_NONE, COIN_ORBS, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH,
+    DEPLOY_SYNC_BATCH, GITEM_SYNC_BATCH, GROW_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES,
+    PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH, SKIN_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSHOT_ENTITIES};
@@ -990,7 +990,11 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// it. Input bit 1 (`BTN_CROUCH`) now feeds `movement::step`, so a v82
 /// client would mispredict every crouched step. Every snapshot fixture
 /// moves by one bit per entity; `hello` carries the version.
-pub const PROTO_VER: u16 = 83;
+/// v84 — a killed animal leaves its carcass. `WireBag` (the bag drop and
+/// the bag sync) gains `kind:2` after `qz`: a pack, or `1 + species` for
+/// an animal's death bag, which the client draws as the body. Derived from
+/// the bag's owner; nothing new is stored.
+pub const PROTO_VER: u16 = 84;
 
 /// This game's slug in the elo catalog.
 ///

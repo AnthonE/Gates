@@ -193,6 +193,9 @@ impl Verb {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Pick {
     pub verb: Verb,
+    /// A bag that is a killed animal's carcass names the species
+    /// (`WireBag::species`, v84), so the prompt says what is lying there.
+    pub species: Option<u8>,
     /// The archetype of the record this pick resolved, exactly as the
     /// deploy sync named it (`ARCH_BAG` for a bag, which arrives on its
     /// own lane and has no deploy record). Carried so the access verb can
@@ -348,6 +351,14 @@ impl Pick {
                 crate::ui::craft::item_label(catalog, self.item).to_uppercase(),
                 self.count
             ),
+            Verb::Bag if self.species.is_some() => format!(
+                "[E] LOOT {}",
+                if self.species == Some(sim_core::mob::MOB_WOLF) {
+                    "WOLF"
+                } else {
+                    "PIG"
+                }
+            ),
             v => format!("[E] OPEN {}", v.label()),
         }
     }
@@ -469,6 +480,8 @@ impl Best {
         out.d2 = d2;
         out.perp2 = perp2;
         out.aimed = aimed;
+        // Only a bag's branch names a species; any other winner clears it.
+        out.species = None;
         true
     }
 }
@@ -562,6 +575,7 @@ pub fn resolve(
         }
         out.arch = ARCH_BAG;
         out.handle = bag.id;
+        out.species = bag.species();
         out.cx = 0;
         out.cz = 0;
         out.level = 0;
@@ -676,11 +690,32 @@ mod tests {
             qx: (2.0 / sim_core::movement::POS_XZ_Q) as i32,
             qy: 0,
             qz: 0,
+            kind: 0,
         };
         let p = resolve(Aim::new(0.0, 0.0, 1.0, 0.0), &[], &defs, have, &[bag]);
         assert_eq!(p.verb, Verb::Bag);
         assert_eq!(p.handle, 77);
         assert!(p.aimed);
+    }
+
+    /// A killed animal's bag is its carcass (v84): the prompt names it.
+    #[test]
+    fn a_carcass_prompts_to_loot_the_animal() {
+        let (defs, have) = defs_with(&[ARCH_BAG]);
+        let at = |kind| WireBag {
+            id: 5,
+            qx: (2.0 / sim_core::movement::POS_XZ_Q) as i32,
+            qy: 0,
+            qz: 0,
+            kind,
+        };
+        let prompt = |kind| {
+            resolve(Aim::new(0.0, 0.0, 1.0, 0.0), &[], &defs, have, &[at(kind)])
+                .prompt(&ItemCatalog::EMPTY)
+        };
+        assert_eq!(prompt(0), "[E] OPEN BACKPACK");
+        assert_eq!(prompt(1 + sim_core::mob::MOB_PIG), "[E] LOOT PIG");
+        assert_eq!(prompt(1 + sim_core::mob::MOB_WOLF), "[E] LOOT WOLF");
     }
 
     /// Out past `BUILD_REACH_M` is the server's refusal, so the client does
@@ -694,6 +729,7 @@ mod tests {
             qx: (just_past / sim_core::movement::POS_XZ_Q) as i32,
             qy: 0,
             qz: 0,
+            kind: 0,
         };
         let p = resolve(Aim::new(0.0, 0.0, 1.0, 0.0), &[], &defs, have, &[bag]);
         assert!(p.is_none());

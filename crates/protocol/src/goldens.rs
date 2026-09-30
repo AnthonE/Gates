@@ -1534,6 +1534,9 @@ pub fn event_bag_dropped() -> WireBag {
         qx: 34_133,
         qy: 512,
         qz: 22_050,
+        // A wolf's carcass (v84): nonzero, and not the pig's 1, so a kind
+        // read off by one bit cannot pass.
+        kind: 2,
     }
 }
 
@@ -1549,6 +1552,9 @@ pub fn event_bag_sync() -> (bool, [WireBag; BAG_SYNC_BATCH]) {
             qx: 10_000 + rng.next_bounded(50_000) as i32,
             qy: -1_200 + rng.next_bounded(7_000) as i32,
             qz: 10_000 + rng.next_bounded(50_000) as i32,
+            // Every look in turn, drawn from no `rng` call so no later
+            // field reshuffles: pack, pig, wolf.
+            kind: (i % 3) as u8,
         };
     }
     (true, recs)

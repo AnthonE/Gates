@@ -203,7 +203,7 @@ fn a_kill_puts_a_bag_on_every_client_and_the_loot_takes_it_off() {
     let dropped: Vec<usize> = seen
         .iter()
         .filter_map(|(slot, m)| match m {
-            EventMsg::BagDropped { id, qx, qy, qz } if *id == bag.id => {
+            EventMsg::BagDropped { id, qx, qy, qz, .. } if *id == bag.id => {
                 assert_eq!(
                     (*qx, *qy, *qz),
                     (bag.qx, bag.qy, bag.qz),

@@ -2284,8 +2284,20 @@ impl ClientCore {
                     }
                 }
             }
-            EventMsg::BagDropped { id, qx, qy, qz } => {
-                if self.bags.insert(WireBag { id, qx, qy, qz }) {
+            EventMsg::BagDropped {
+                id,
+                qx,
+                qy,
+                qz,
+                kind,
+            } => {
+                if self.bags.insert(WireBag {
+                    id,
+                    qx,
+                    qy,
+                    qz,
+                    kind,
+                }) {
                     flags |= APPLIED_BAGS;
                 }
                 // The own-bag join (`own_bag`'s field doc): while dead the
@@ -4674,6 +4686,7 @@ mod tests {
             qx: 90_000,
             qy: 0,
             qz: 90_000,
+            kind: 0,
         };
         let len = protocol::encode_event_bag_dropped(&far, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();
@@ -4692,6 +4705,7 @@ mod tests {
             qx: near_q,
             qy: 0,
             qz: 0,
+            kind: 0,
         };
         let len = protocol::encode_event_bag_dropped(&mine, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();
@@ -4704,6 +4718,7 @@ mod tests {
             qx: 0,
             qy: 0,
             qz: near_q,
+            kind: 0,
         };
         let len = protocol::encode_event_bag_dropped(&theirs, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();
@@ -4737,6 +4752,7 @@ mod tests {
             qx: far_q,
             qy: 0,
             qz: 0,
+            kind: 0,
         };
         let len = protocol::encode_event_bag_dropped(&theirs, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();
@@ -4747,6 +4763,7 @@ mod tests {
             qx: 0,
             qy: 0,
             qz: 0,
+            kind: 0,
         };
         let len = protocol::encode_event_bag_dropped(&mine, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();

@@ -606,6 +606,7 @@ fn the_bag_set_adds_syncs_and_removes() {
         qx: 1_000,
         qy: 2_000,
         qz: 3_000,
+        kind: 0,
     };
     let len = encode_event_bag_dropped(&bag, &mut buf).unwrap();
     assert_eq!(feed(&mut c, &buf[..len]) & APPLIED_BAGS, APPLIED_BAGS);
@@ -627,12 +628,14 @@ fn the_bag_set_adds_syncs_and_removes() {
             qx: 4,
             qy: 5,
             qz: 6,
+            kind: 0,
         },
         WireBag {
             id: 92,
             qx: 7,
             qy: 8,
             qz: 9,
+            kind: 0,
         },
     ];
     let len = encode_event_bag_sync(true, &synced, &mut buf).unwrap();
@@ -677,6 +680,7 @@ fn a_forged_refusal_reason_is_counted_and_dropped_at_the_pump() {
         qx: 1_000,
         qy: 2_000,
         qz: 3_000,
+        kind: 0,
     };
     let len = encode_event_bag_dropped(&bag, &mut buf).unwrap();
     feed(&mut c, &buf[..len]);
