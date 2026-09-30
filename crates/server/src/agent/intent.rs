@@ -50,11 +50,14 @@ impl Intent {
         sel: None,
     };
 
-    /// Walk forward along a heading.
+    /// Walk along a heading, facing it. The legs take the bearing at once
+    /// and the eyes follow at the hands' pace, so a body that turns away
+    /// from deep water or a blow does not first walk on into it while the
+    /// view comes round.
     pub const fn walk(yaw: u16) -> Self {
         Self {
             look: Look::Heading(yaw),
-            move_z: 127,
+            travel: Some(yaw),
             ..Self::IDLE
         }
     }

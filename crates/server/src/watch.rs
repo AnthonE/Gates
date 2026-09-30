@@ -445,7 +445,7 @@ mod tests {
                 // A second draw at the same client tick must hold the input,
                 // not consume another decision or advance the search scan.
                 assert_eq!(frame, controller.sample(&session, true).unwrap());
-                moved |= frame.move_z != 0;
+                moved |= frame.move_x != 0 || frame.move_z != 0;
                 swung |= frame.buttons & sim_core::input::BTN_PRIMARY != 0;
                 session.core.set_input(
                     frame.buttons,

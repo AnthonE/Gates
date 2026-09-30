@@ -7,7 +7,10 @@
 //! only while the hand believes it is on target.
 //!
 //! Everything here is counted in frames: the sim spends one input frame per
-//! tick, so a call to [`Hands::drive`] is a tick of the hand, with no clock.
+//! tick, and a frame's sequence number counts those ticks, so the hand's
+//! clock is the sequence it is handed, with no wall clock. A caller that
+//! skipped ticks (a slow screen) holds its last frame through them; the
+//! hand's timings still run in ticks, only its turn cap is per frame sent.
 //! The wobble comes from a [`Pcg32`] seeded by the island, the body and the
 //! preset, so a run replays exactly.
 
@@ -24,8 +27,9 @@ pub const YAW_STEP_DEG: f32 = 360.0 / 256.0;
 pub const PITCH_UNIT_DEG: f32 = 180.0 / 255.0;
 /// A target further than this from the aim is reached with a flick.
 pub const FLICK_MIN_DEG: f32 = 10.0;
-/// A look that jumps further than this in one frame is a new target, and
-/// takes a reaction before the hand answers it.
+/// A heading or point that jumps further than this in one frame is a new
+/// target, and takes a reaction before the hand answers it. A body is the
+/// same target however fast it crosses the view.
 pub const RETARGET_DEG: f32 = 15.0;
 /// Frames on target in a row before the aim counts as settled.
 pub const SETTLE_FRAMES: u32 = 3;
@@ -39,6 +43,9 @@ const WOBBLE_CARRY: f32 = 0.8;
 const WOBBLE_FRESH: f32 = 0.6;
 /// Keeps the reaction, lag and history windows inside the ring.
 const MAX_LAG: u32 = HIST as u32 - VEL_FRAMES - 1;
+/// The most ticks one call counts for: a longer gap is a stall, not a
+/// hand at work.
+const MAX_ELAPSED: u16 = 8;
 
 /// How good the hands are. The numbers are a starting point; the arena
 /// tunes them.
@@ -198,7 +205,8 @@ enum Key {
     None,
     Heading,
     Point,
-    Body(u32),
+    /// A body's id, and the part aimed at.
+    Body(u32, u8),
 }
 
 pub struct Hands {
@@ -214,14 +222,18 @@ pub struct Hands {
     /// The last view sent, on the wire grid.
     out: (u16, u8),
     key: Key,
-    /// Frames driven, the hand's clock.
+    /// Ticks driven, the hand's clock, and the sequence it last read.
     frame: u32,
+    seq: u16,
     react_until: u32,
     flick: Option<[f32; 2]>,
     lead_bias: f32,
     /// Where the target truly was, one entry a frame since it was taken.
     hist: [[f32; 2]; HIST],
     hist_n: u32,
+    /// Last frame the target was out of sight or not looked at: the hand
+    /// held a stale bearing, and a body found again is noticed afresh.
+    lost: bool,
     on: bool,
     on_streak: u32,
 }
@@ -238,14 +250,27 @@ impl Hands {
             out: (0, 128),
             key: Key::None,
             frame: 0,
+            seq: 0,
             react_until: 0,
             flick: None,
             lead_bias: 1.0,
             hist: [[0.0; 2]; HIST],
             hist_n: 0,
+            lost: false,
             on: false,
             on_streak: 0,
         }
+    }
+
+    /// A new life: whatever the hand was on belongs to the old one. The
+    /// view, the clock and the wobble's stream carry on.
+    pub fn forget(&mut self) {
+        self.key = Key::None;
+        self.hist_n = 0;
+        self.flick = None;
+        self.lost = false;
+        self.on = false;
+        self.on_streak = 0;
     }
 
     /// A new connection: the view is taken from the next frame's base, and
@@ -267,7 +292,8 @@ impl Hands {
     }
 
     /// The hand believes the aim is on the look's target: past the
-    /// reaction and within the fire cone of where the eye puts it.
+    /// reaction, within the fire cone of where the eye puts it, and with
+    /// the target in sight (never on a body's last known bearing).
     pub fn on_target(&self) -> bool {
         self.on
     }
@@ -306,12 +332,22 @@ impl Hands {
         eye: [f32; 3],
         base: InputFrame,
     ) -> InputFrame {
+        // Ticks since the last call: a repeated or older sequence (a test
+        // replaying one snapshot) is still one.
+        let gap = base.seq.wrapping_sub(self.seq);
+        let elapsed = if !self.live || gap == 0 || gap >= 0x8000 {
+            1
+        } else {
+            u32::from(gap.min(MAX_ELAPSED))
+        };
+        self.seq = base.seq;
         if !self.live {
             self.live = true;
             self.out = (base.yaw & 0xff00, base.pitch);
             self.aim = [yaw_deg(self.out.0), pitch_deg(self.out.1)];
         }
-        self.frame = self.frame.wrapping_add(1);
+        self.frame = self.frame.wrapping_add(elapsed);
+        let mut blind = false;
         let (key, truth) = match intent.look {
             Look::Keep => (Key::None, None),
             Look::Heading(yaw) => (Key::Heading, Some([yaw_deg(yaw), pitch_deg(LEVEL_PITCH)])),
@@ -320,17 +356,27 @@ impl Hands {
                 let seen = tracks
                     .aim_pose(id)
                     .map(|s| direction(eye, [s.x, s.y + part_height(part), s.z]));
-                // Out of sight, the hand stays on where the body was last.
-                let last = (self.key == Key::Body(id) && self.hist_n > 0).then(|| self.sample(0));
-                (Key::Body(id), seen.or(last))
+                // Out of sight, the view rests on where the body was last.
+                let last = (matches!(self.key, Key::Body(was, _) if was == id) && self.hist_n > 0)
+                    .then(|| self.sample(0));
+                blind = seen.is_none();
+                (Key::Body(id, part), seen.or(last))
             }
         };
         match truth {
-            Some(truth) => self.pursue(key, truth),
+            Some(truth) => {
+                self.pursue(key, truth, elapsed, blind);
+                if blind {
+                    self.on = false;
+                    self.on_streak = 0;
+                }
+                self.lost = blind;
+            }
             None => {
                 // Nothing to look at: the view rests where it is.
                 self.on = false;
                 self.on_streak = 0;
+                self.lost = true;
             }
         }
         let aimed = matches!(intent.look, Look::Point(_) | Look::Body { .. });
@@ -357,19 +403,46 @@ impl Hands {
         }
     }
 
-    fn pursue(&mut self, key: Key, truth: [f32; 2]) {
-        let jump = self.hist_n > 0 && {
-            let last = self.sample(0);
-            wrap(truth[0] - last[0])
-                .abs()
-                .max((truth[1] - last[1]).abs())
-                > RETARGET_DEG
-        };
-        if key != self.key || self.hist_n == 0 || jump {
-            self.take(key, truth);
+    fn pursue(&mut self, key: Key, truth: [f32; 2], elapsed: u32, blind: bool) {
+        match (key, self.key) {
+            _ if self.hist_n == 0 => self.take(key, truth),
+            // The same body: found again after a gap it is noticed afresh;
+            // another part of it, or any speed across the view, is only
+            // pursued. At arm's length head and legs are 40 degrees apart.
+            (Key::Body(id, part), Key::Body(was, was_part)) if id == was => {
+                if self.lost && !blind {
+                    self.take(key, truth);
+                } else if part != was_part {
+                    self.key = key;
+                    self.flick = None;
+                    self.hist_n = 0;
+                    self.on_streak = 0;
+                }
+            }
+            _ if key != self.key => self.take(key, truth),
+            _ => {
+                let last = self.sample(0);
+                let jump = wrap(truth[0] - last[0])
+                    .abs()
+                    .max((truth[1] - last[1]).abs());
+                if jump > RETARGET_DEG {
+                    self.take(key, truth);
+                }
+            }
         }
-        self.hist[self.hist_n as usize % HIST] = truth;
-        self.hist_n = self.hist_n.saturating_add(1);
+        // One entry a tick: ticks this call skipped are filled in along the
+        // way from the last entry, so the lag and the motion stay in ticks.
+        if self.hist_n > 0 {
+            let from = self.sample(0);
+            for k in 1..elapsed {
+                let t = k as f32 / elapsed as f32;
+                self.record([
+                    (from[0] + wrap(truth[0] - from[0]) * t).rem_euclid(360.0),
+                    from[1] + (truth[1] - from[1]) * t,
+                ]);
+            }
+        }
+        self.record(truth);
         if self.frame < self.react_until {
             self.on = false;
             self.on_streak = 0;
@@ -390,7 +463,11 @@ impl Hands {
                 }
                 e
             }
-            None => [err[0] * self.skill.gain, err[1] * self.skill.gain],
+            None => {
+                // The share closed per tick, over the ticks this call covers.
+                let gain = 1.0 - (1.0 - self.skill.gain).powi(elapsed as i32);
+                [err[0] * gain, err[1] * gain]
+            }
         };
         let scale = (cap / step[0].abs().max(step[1].abs()).max(f32::EPSILON)).min(1.0);
         self.aim = [
@@ -399,7 +476,8 @@ impl Hands {
         ];
         if key != Key::Heading {
             let floor = self.skill.wobble_floor_deg;
-            self.sigma = floor + (self.sigma - floor) * (1.0 - 1.0 / self.skill.settle_frames);
+            let keep = (1.0 - 1.0 / self.skill.settle_frames).powi(elapsed as i32);
+            self.sigma = floor + (self.sigma - floor) * keep;
             for axis in 0..2 {
                 let fresh = self.gauss() * self.sigma * WOBBLE_FRESH;
                 self.wobble[axis] = self.wobble[axis] * WOBBLE_CARRY + fresh;
@@ -408,18 +486,23 @@ impl Hands {
         let left = [wrap(goal[0] - self.aim[0]), goal[1] - self.aim[1]];
         self.on =
             self.flick.is_none() && left[0].abs().max(left[1].abs()) <= self.skill.fire_cone_deg;
-        self.on_streak = if self.on { self.on_streak + 1 } else { 0 };
+        self.on_streak = if self.on {
+            self.on_streak.saturating_add(elapsed)
+        } else {
+            0
+        };
     }
 
     /// A new target: noticed only after a reaction, unless it sits inside
     /// the fire cone of where the hand already points (the next tree along,
-    /// a heading nudged). A body is always noticed afresh.
+    /// a heading nudged). A body is always noticed afresh: first seen, or
+    /// seen again after a gap.
     fn take(&mut self, key: Key, truth: [f32; 2]) {
         let near = wrap(truth[0] - self.aim[0])
             .abs()
             .max((truth[1] - self.aim[1]).abs())
             <= self.skill.fire_cone_deg;
-        let continues = near && !matches!(key, Key::Body(_));
+        let continues = near && !matches!(key, Key::Body(..));
         if !continues {
             let jitter = self.rng.next_bounded(self.skill.react_jitter + 1);
             self.react_until = self.frame + self.skill.react_frames + jitter;
@@ -448,6 +531,11 @@ impl Hands {
             seen[0] + wrap(seen[0] - then[0]) * k,
             (seen[1] + (seen[1] - then[1]) * k).clamp(-90.0, 90.0),
         ]
+    }
+
+    fn record(&mut self, truth: [f32; 2]) {
+        self.hist[self.hist_n as usize % HIST] = truth;
+        self.hist_n = self.hist_n.saturating_add(1);
     }
 
     /// The target `back` frames ago (clamped to when it was taken).
@@ -730,6 +818,110 @@ mod tests {
             (0x8000, LEVEL_PITCH),
             "no wobble on a walk"
         );
+    }
+
+    const BODY: u32 = 2;
+
+    fn body(part: Part) -> Intent {
+        Intent {
+            look: Look::Body {
+                id: BODY,
+                part: part as u8,
+            },
+            buttons: BTN_PRIMARY,
+            ..Intent::IDLE
+        }
+    }
+
+    /// Drive at a body until the hand has settled on it.
+    fn settle(h: &mut Hands, tracks: &Tracks, intent: &Intent) {
+        for _ in 0..90 {
+            h.drive(intent, tracks, EYE, base());
+            if h.settled() {
+                return;
+            }
+        }
+        panic!("never settled");
+    }
+
+    #[test]
+    fn another_part_or_a_fast_sweep_of_one_body_is_pursued_without_a_new_reaction() {
+        let mut tracks = Tracks::new();
+        // 1.5 m off, feet 1.6 m below the eye: head and legs ~37° apart.
+        let feet = [EYE[0], EYE[1] - 1.6, EYE[2] + 1.5];
+        tracks.stand(BODY, feet, true);
+        let mut h = hands(Skill::GOOD, 8);
+        settle(&mut h, &tracks, &body(Part::Head));
+        let before = h.view();
+        let f = h.drive(&body(Part::Limb), &tracks, EYE, base());
+        assert!(f.pitch < before.1, "turned down to the legs at once");
+        // Circling at 1 m, 20 degrees a frame: the hand chases it every
+        // frame rather than restarting its reaction.
+        let mut turning = 0;
+        for n in 0..60u32 {
+            let r = (n as f32 * 20.0).to_radians();
+            tracks.stand(BODY, [EYE[0] + r.sin(), feet[1], EYE[2] + r.cos()], true);
+            let last = h.view();
+            let f = h.drive(&body(Part::Chest), &tracks, EYE, base());
+            turning += u32::from(f.yaw != last.0);
+        }
+        assert!(turning >= 50, "turned on {turning} of 60 frames");
+    }
+
+    #[test]
+    fn a_body_out_of_sight_is_never_on_target_and_is_noticed_afresh_when_found() {
+        let mut tracks = Tracks::new();
+        let at = bearing(40.0);
+        tracks.stand(BODY, [at[0], at[1] - 1.6, at[2]], true);
+        let mut h = hands(Skill::GOOD, 6);
+        let intent = body(Part::Chest);
+        settle(&mut h, &tracks, &intent);
+        tracks.stand(BODY, [at[0], at[1] - 1.6, at[2]], false);
+        for _ in 0..10 {
+            let f = h.drive(&intent, &tracks, EYE, base());
+            assert!(!h.on_target() && !h.settled());
+            assert_eq!(f.buttons, 0, "no swing at a memory");
+        }
+        tracks.stand(BODY, [at[0], at[1] - 1.6, at[2]], true);
+        for _ in 0..Skill::GOOD.react_frames {
+            h.drive(&intent, &tracks, EYE, base());
+            assert!(!h.on_target(), "found again, it takes a reaction");
+        }
+        // A new life: the old one's target is gone, not held as a bearing.
+        settle(&mut h, &tracks, &intent);
+        h.forget();
+        tracks.stand(BODY, [at[0], at[1] - 1.6, at[2]], false);
+        let view = h.view();
+        let f = h.drive(&intent, &tracks, EYE, base());
+        assert!(!h.on_target());
+        assert_eq!((f.yaw, f.pitch), view);
+    }
+
+    #[test]
+    fn the_clock_counts_ticks_not_calls() {
+        let tracks = Tracks::new();
+        let skill = Skill::GOOD;
+        let mut h = hands(skill, 12);
+        // Every other tick drawn, as a slow screen does.
+        let first = (1..=40u16)
+            .find(|&n| {
+                let frame = InputFrame {
+                    seq: 2 * n,
+                    ..base()
+                };
+                h.drive(&at(bearing(90.0)), &tracks, EYE, frame).yaw != 0
+            })
+            .expect("the hand moves");
+        let slowest = (skill.react_frames + skill.react_jitter) as u16 / 2 + 2;
+        assert!(first <= slowest, "moved on call {first}");
+    }
+
+    #[test]
+    fn a_walk_takes_its_bearing_before_the_eyes_come_round() {
+        let tracks = Tracks::new();
+        let mut h = hands(Skill::NOVICE, 1);
+        let f = h.drive(&Intent::walk(0x8000), &tracks, EYE, base());
+        assert_eq!((f.yaw, f.move_x, f.move_z), (0, 0, -127));
     }
 
     #[test]

@@ -888,6 +888,57 @@ pub fn clear_line(
 }
 
 #[cfg(test)]
+impl Tracks {
+    /// Put a body where the next snapshot has it, in sight or not, with
+    /// no playout behind it: for tests of what aims at bodies.
+    pub(crate) fn stand(&mut self, id: u32, pos: [f32; 3], visible: bool) {
+        let tick = self.fed.map_or(1, |f| f + 1);
+        let e = protocol::EntityState {
+            id,
+            qx: (pos[0] / POS_XZ_Q).round() as i32,
+            qy: (pos[1] / POS_Y_Q).round() as i32,
+            qz: (pos[2] / POS_XZ_Q).round() as i32,
+            ..Default::default()
+        };
+        self.interp.push(tick, &e);
+        self.fed = Some(tick);
+        self.playout = 0;
+        let i = self.slot_of(id).unwrap_or(0);
+        let mut s = RemoteState::default();
+        self.interp.sample(id, f64::from(tick), &mut s);
+        let track = Track {
+            id,
+            species: Species::of(id),
+            first_seen: 0,
+            last_seen: tick,
+            pos,
+            vel: [0.0; 3],
+            yaw: 0,
+            pitch: 128,
+            held: None,
+            lit: false,
+            wounded: false,
+            dead: false,
+            sleeping: false,
+            dealt: 0,
+            last_swing: None,
+            last_shot: None,
+            aiming_at_me: false,
+            visible,
+        };
+        self.rows[i] = Some(Row {
+            track,
+            seen: true,
+            in_view: visible,
+            sample: s,
+            los_at: Some(tick),
+            los_ok: visible,
+            los_since: None,
+        });
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

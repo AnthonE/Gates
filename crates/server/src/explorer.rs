@@ -963,7 +963,7 @@ impl Survivor {
                         ..Intent::walk(yaw)
                     };
                     if into_deeper_water(core, body, yaw) {
-                        walk.move_z = 0;
+                        walk.travel = None;
                     }
                     return walk;
                 }
@@ -1467,6 +1467,7 @@ impl Survivor {
             // A new body on a new beach: what the old one saw is elsewhere.
             self.recall = [None; 4];
             self.tracks.forget();
+            self.hands.forget();
             self.sensed = false;
             self.halt();
             self.heading = None;
@@ -2239,10 +2240,16 @@ mod tests {
         bot.frame_at(&view, 1, 2, now);
         assert!(bot.target.is_none());
         assert_eq!(bot.skipped, Some(target.key()));
-        let frame = bot.frame_at(&view, 1, 3, now);
-        assert_eq!(bot.stats.phase, Phase::Recovering);
-        assert_ne!(frame.move_z, 0);
-        assert_eq!(frame.buttons, 0);
+        // The side-step walks sideways from its first frame, not on into
+        // what stopped it while the view comes round.
+        let (sx, sz) = yaw_dir(view.get(1).unwrap().yaw.wrapping_add(1 << 14));
+        for seq in 3..10 {
+            let frame = bot.frame_at(&view, 1, seq, now);
+            assert_eq!(bot.stats.phase, Phase::Recovering);
+            let (wx, wz) = walked(&frame);
+            assert!(wx * sx + wz * sz > 120.0, "({wx}, {wz})");
+            assert_eq!(frame.buttons, 0);
+        }
     }
 
     #[test]
@@ -2679,11 +2686,13 @@ mod tests {
         view.entities[0].1.wounded = true;
         let (_, away) = bot.last_hurt.unwrap();
         let mut frame = bot.frame_at(&view, 1, 2, now);
-        // The hands turn the body round at their own speed, crawling as
-        // they go, and end up crawling straight away.
+        // The hands turn the body round at their own speed while it crawls
+        // straight away from the first frame, never toward the blow.
+        let (ax, az) = yaw_dir(away);
         for _ in 0..40 {
             assert_eq!(bot.stats.phase, Phase::Wounded);
-            assert_eq!(frame.move_z, 127, "crawl");
+            let (wx, wz) = walked(&frame);
+            assert!(wx * ax + wz * az > 120.0, "crawled ({wx}, {wz})");
             assert_eq!(frame.buttons, 0, "no swing, no sprint");
             if frame.yaw == away {
                 break;
