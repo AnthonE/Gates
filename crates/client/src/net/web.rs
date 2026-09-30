@@ -50,6 +50,25 @@ pub(crate) fn js_err(what: &str, v: &JsValue) -> String {
     format!("{what}: {msg}")
 }
 
+/// One capped GET from the page — a player's picture (`render/faces.rs`).
+/// `None` for any failure, a non-2xx, or a body past `cap` (refused, never
+/// truncated). The only fetch this client makes; everything else it hears
+/// from the platform arrives through the page.
+pub async fn fetch_bytes(url: &str, cap: usize) -> Option<Vec<u8>> {
+    let window = web_sys::window()?;
+    let res = JsFuture::from(window.fetch_with_str(url)).await.ok()?;
+    let res: web_sys::Response = res.dyn_into().ok()?;
+    if !res.ok() {
+        return None;
+    }
+    let buf = JsFuture::from(res.array_buffer().ok()?).await.ok()?;
+    let bytes = Uint8Array::new(&buf);
+    if bytes.length() as usize > cap {
+        return None;
+    }
+    Some(bytes.to_vec())
+}
+
 /// A connected page's datagram send half.
 ///
 /// Holds the duplex stream as well as the writer because **the MTU has to be

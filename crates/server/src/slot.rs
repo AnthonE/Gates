@@ -205,6 +205,17 @@ pub struct SkinsMsg {
     pub owned: sim_core::skin::SkinSet,
 }
 
+/// Accept→sim: the name and picture the platform holds for the wallet in
+/// `slot` (`faces.rs`). `id` is the tenant the read was made for, and
+/// `ShardCore` drops it if the slot has moved on.
+#[derive(Clone, Copy)]
+pub struct FaceMsg {
+    pub slot: usize,
+    pub id: u32,
+    pub name: protocol::Name,
+    pub pic: u32,
+}
+
 /// Accept→sim: what the platform's item store charges, one entry per baked
 /// skin row (`skins::prices_of`). Fixed storage, so the sim thread takes it
 /// without touching the heap.

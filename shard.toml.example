@@ -210,6 +210,12 @@ seed = 20260731
 # skins_origin = "https://elopros.com"
 # skins_timeout_secs = 8
 #
+# Player names and pictures: what each wallet set on its elopros.com account
+# page (`/api/face/{wallet}`), read once per join. Unset ⇒ players show as
+# their short address.
+#
+# faces_origin = "https://elopros.com"
+#
 # Dev and test shards only: every player owns every skin in content/skins.toml,
 # so the looks can be seen before anything is sold. Refused at boot together
 # with entitle_origin — a shard that sells the game does not give its skins away.

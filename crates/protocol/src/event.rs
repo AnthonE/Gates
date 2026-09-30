@@ -390,7 +390,9 @@ const SUB_SKINS: u32 = 64;
 /// What skins the owner owns (skins v0): a bitset over catalog rows,
 /// `sim_core::skin::SkinSet` exactly, sent whenever the sim's copy moves.
 const SUB_SKINS_OWNED: u32 = 65;
-const SUB_MAX: u32 = SUB_SKINS_OWNED;
+/// Who a player id is: proven address, platform name, picture (v85).
+const SUB_TAG: u32 = 66;
+const SUB_MAX: u32 = SUB_TAG;
 /// A grow-sync batch's count: 1..=`GROW_SYNC_BATCH` in six bits.
 const GROW_SYNC_COUNT_BITS: u32 = 6;
 /// Width of an exposure reading: per cent, 0..=100 in seven bits.
@@ -1381,6 +1383,23 @@ pub enum EventMsg {
         from: u32,
         global: bool,
         text: ChatText,
+    },
+    /// Who player `id` is (v85): the shard's **proven** address and the name
+    /// and picture that wallet set on the platform (`/api/face/{wallet}`).
+    /// `name` may be empty (nothing set, or the read has not landed) and
+    /// `pic` is the first four bytes of the picture's sha256, 0 for none —
+    /// the client builds the picture's url from the address and uses `pic`
+    /// to tell a changed picture from a cached one.
+    ///
+    /// Sent to every connected session when learned, and in full to a late
+    /// joiner, one per tick. The low byte of `id` is the connection slot
+    /// (`server/net.rs`), which is how a client files it. Never a guest's
+    /// and never an animal's: both ends refuse one.
+    Tag {
+        id: u32,
+        address: crate::Address,
+        name: crate::Name,
+        pic: u32,
     },
     /// Your shot landed on `victim` for `damage`, on `part` (combat.rs).
     /// The attacker's fact and the attacker's alone — a hitmarker, not a
@@ -3400,6 +3419,25 @@ pub fn encode_event_chat(
     Ok(w.finish())
 }
 
+/// Who player `id` is — see [`EventMsg::Tag`].
+pub fn encode_event_tag(
+    id: u32,
+    address: &crate::Address,
+    name: &crate::Name,
+    pic: u32,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if address.is_guest() || id & sim_core::limits::MOB_ID_TAG != 0 {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_TAG)?;
+    w.write(id, 32)?;
+    crate::write_address(&mut w, address)?;
+    crate::write_name(&mut w, name)?;
+    w.write(pic, 32)?;
+    Ok(w.finish())
+}
+
 /// Total decode of one event-lane message: arbitrary bytes in, `Ok` or a
 /// `WireError` out, never a panic — same contract as the datagrams.
 pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
@@ -4202,6 +4240,21 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
         // The relay is held to the sender's own rule: `read_text`
         // sanitizes or refuses, so a client never renders a line the
         // server would not have accepted.
+        SUB_TAG => {
+            let id = r.read(32)?;
+            let address = crate::read_address(&mut r)?;
+            let name = crate::read_name(&mut r)?;
+            let pic = r.read(32)?;
+            if address.is_guest() || id & sim_core::limits::MOB_ID_TAG != 0 {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Tag {
+                id,
+                address,
+                name,
+                pic,
+            }
+        }
         SUB_CHAT => {
             let from = r.read(32)?;
             let global = r.read_bit()?;

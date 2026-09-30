@@ -88,6 +88,7 @@ pub mod interact;
 pub mod keypad;
 pub mod load;
 pub mod map;
+pub mod names;
 pub mod nav;
 pub mod notices;
 pub mod place;

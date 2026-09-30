@@ -137,6 +137,13 @@ const KNOWN: &[(&str, u32, &str)] = &[
     ("src/render/boot.rs", 114, "the launcher handshake's thread"),
     ("src/render/hub.rs", 41, "the title manifest fetch thread"),
     ("src/render/menu.rs", 236, "the shard-list fetch thread"),
+    // `menu` is compiled out of the browser build (`render/mod.rs`); the
+    // chip's own platform read, like the shard list beside it.
+    (
+        "src/render/menu.rs",
+        484,
+        "your name and picture for the identity chip",
+    ),
     (
         "src/render/menu.rs",
         357,

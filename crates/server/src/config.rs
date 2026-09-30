@@ -202,6 +202,9 @@ pub struct ShardConfig {
     /// dev knob `skins_all`. Off by default — nobody owns a skin, so every
     /// item wears its own look and every skinned craft refuses.
     pub skins: crate::skins::Config,
+    /// Where a player's platform name and picture are read (`faces.rs`):
+    /// `faces_origin`. Off by default — everyone is their short address.
+    pub faces: crate::faces::Config,
     /// The oldest client **release** this shard will admit, packed by
     /// [`protocol::version::pack`]. A joiner below it meets `REFUSE_BUILD`.
     ///
@@ -356,6 +359,7 @@ impl ShardConfig {
             domain: "127.0.0.1".into(),
             entitle: crate::entitle::Config::off(),
             skins: crate::skins::Config::off(),
+            faces: crate::faces::Config::off(),
             min_client: 0,
             admins: crate::admin::Admins::none(),
             anomaly_file: None,
@@ -452,6 +456,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut spectate_per_target: Option<usize> = None;
     let mut spectate_human_delay_s: Option<u32> = None;
     let mut skins_origin: Option<String> = None;
+    let mut faces_origin: Option<String> = None;
     let mut skins_all: Option<bool> = None;
     let mut skins_timeout_secs: Option<u64> = None;
     for (n, line) in text.lines().enumerate() {
@@ -750,6 +755,25 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                 }
                 skins_origin = Some(value.trim_end_matches('/').to_string());
             }
+            // Names and pictures (`faces.rs`): the platform whose account
+            // page they are set on. Absent ⇒ every player is an address.
+            "faces_origin" => {
+                if value.is_empty() {
+                    return Err(format!(
+                        "shard.toml line {}: faces_origin is empty — omit the key \
+                         to read no names, rather than naming nowhere",
+                        n + 1
+                    ));
+                }
+                if !value.starts_with("https://") && !value.starts_with("http://") {
+                    return Err(format!(
+                        "shard.toml line {}: faces_origin needs a scheme, e.g. \
+                         https://elopros.com",
+                        n + 1
+                    ));
+                }
+                faces_origin = Some(value.trim_end_matches('/').to_string());
+            }
             "skins_all" => match value {
                 "true" => skins_all = Some(true),
                 "false" => skins_all = Some(false),
@@ -938,6 +962,10 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     // Refused here rather than clamped at the call site: a cadence nobody
     // chose is worse than a boot that says which line to fix.
     entitle.sane().map_err(|e| format!("shard.toml: {e}"))?;
+    let faces = crate::faces::Config {
+        origin: faces_origin,
+        ..crate::faces::Config::off()
+    };
     let skins = crate::skins::Config {
         origin: skins_origin,
         all: skins_all.unwrap_or(false),
@@ -1016,6 +1044,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         }),
         entitle,
         skins,
+        faces,
         admins: admins.unwrap_or_else(crate::admin::Admins::none),
         anomaly_file,
         // Unset ⇒ 0, a shard that seats nobody but the players who dial it.

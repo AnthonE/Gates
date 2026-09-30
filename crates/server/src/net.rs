@@ -559,6 +559,9 @@ pub async fn spawn_shard(
     // in flight at a time, so two deep cannot fill; a full ring drops the
     // answer and the next sweep brings it again.
     let (prices_tx, prices_rx) = RingBuffer::<crate::slot::SkinPricesMsg>::new(2);
+    // Names and pictures (`faces.rs`), same direction: one read per join,
+    // so a slot's worth of depth cannot fill.
+    let (faces_tx, faces_rx) = RingBuffer::<crate::slot::FaceMsg>::new(MAX_PLAYERS);
     let skin_content = Arc::new(tables.skins);
     let crate::worldfile::WorldBoot {
         file: world_file,
@@ -608,6 +611,7 @@ pub async fn spawn_shard(
                     ctrl_rx,
                     skins_rx,
                     prices_rx,
+                    faces_rx,
                     grave_tx,
                     save_tx,
                     world_tx,
@@ -657,6 +661,7 @@ pub async fn spawn_shard(
             domain: cfg.domain.clone(),
             entitle: cfg.entitle.clone(),
             skins: cfg.skins.clone(),
+            faces: cfg.faces.clone(),
             skin_content,
             min_client: cfg.min_client,
             netsim: cfg.netsim,
@@ -665,6 +670,7 @@ pub async fn spawn_shard(
         ctrl_tx,
         skins_tx,
         prices_tx,
+        faces_tx,
         grave_rx,
         save_rx,
         write_tx,
@@ -706,6 +712,8 @@ struct ShardFacts {
     /// Where skin ownership is read (`skins.rs`), and the baked rows an
     /// answer's catalog ids map onto.
     skins: crate::skins::Config,
+    /// Where names and pictures are read (`faces.rs`).
+    faces: crate::faces::Config,
     skin_content: Arc<sim_core::skin::SkinContent>,
     /// `shard.toml min_client`, packed. 0 — the default — admits every client
     /// whose `PROTO_VER` already matched, which is every client that could
@@ -859,6 +867,36 @@ impl SkinReads {
     }
 }
 
+/// Start the name-and-picture read for tenant `gen` of `slot` (`faces.rs`).
+/// A guest has no wallet and an unarmed shard no origin: both stay their
+/// address (a guest, `#id`) and nothing is asked.
+fn ask_face(
+    slot: usize,
+    gen: u32,
+    keys: &[KeySlot; MAX_PLAYERS],
+    facts: &ShardFacts,
+    face_tx: &tokio::sync::mpsc::Sender<(usize, u32, crate::faces::Face)>,
+) {
+    if slot >= MAX_PLAYERS || facts.faces.origin.is_none() {
+        return;
+    }
+    // The key IS the wallet (`auth::key_of`), lowercase.
+    let Some(wallet) = keys[slot]
+        .key
+        .as_ref()
+        .and_then(|k| std::str::from_utf8(k.as_bytes()).ok())
+        .map(str::to_string)
+    else {
+        return;
+    };
+    let cfg = facts.faces.clone();
+    let tx = face_tx.clone();
+    tokio::task::spawn_blocking(move || {
+        let face = crate::faces::face_of(&cfg, &wallet);
+        let _ = tx.blocking_send((slot, gen, face));
+    });
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn accept_loop(
     endpoint: Endpoint<Server>,
@@ -866,6 +904,7 @@ async fn accept_loop(
     mut ctrl_tx: rtrb::Producer<Connect>,
     mut skins_tx: rtrb::Producer<crate::slot::SkinsMsg>,
     mut prices_tx: rtrb::Producer<crate::slot::SkinPricesMsg>,
+    mut faces_tx: rtrb::Producer<crate::slot::FaceMsg>,
     mut grave_rx: rtrb::Consumer<Link>,
     mut save_rx: rtrb::Consumer<SaveMsg>,
     mut write_tx: rtrb::Producer<WriteMsg>,
@@ -922,6 +961,10 @@ async fn accept_loop(
     let (owned_tx, mut owned_rx) =
         tokio::sync::mpsc::channel::<(usize, u32, crate::skins::Owned)>(MAX_PLAYERS);
     let mut skin_reads = SkinReads::new();
+    // Names and pictures (`faces.rs`): once per join, answered on a channel
+    // for the same reason — the platform being slow never slows the door.
+    let (face_tx, mut face_rx) =
+        tokio::sync::mpsc::channel::<(usize, u32, crate::faces::Face)>(MAX_PLAYERS);
     // The item store's prices: at boot, then every `PRICES_EVERY`. Only a
     // shard that reads ownership from the platform reads prices from it.
     let prices_armed = facts.skins.origin.is_some() && !facts.skins.all;
@@ -990,6 +1033,7 @@ async fn accept_loop(
                     // The door's read: what this player owns, before they
                     // reach a bench.
                     skin_reads.ask(slot, gen, true, &keys, &facts, &owned_tx);
+                    ask_face(slot, gen, &keys, &facts, &face_tx);
                 }
             }
             Some((slot, gen)) = refresh_rx.recv() => {
@@ -1018,6 +1062,24 @@ async fn accept_loop(
                         }
                     }
                     crate::skins::Prices::Unknown => ShardStats::bump(&stats.skin_prices_unknown),
+                }
+            }
+            Some((slot, gen, face)) = face_rx.recv() => {
+                if slot < MAX_PLAYERS
+                    && crate::slot::generation_of(slots.load(slot)) == gen
+                    && crate::slot::state_of(slots.load(slot)) == crate::slot::SLOT_LIVE
+                {
+                    match face {
+                        crate::faces::Face::Known { name, pic } => {
+                            let msg = crate::slot::FaceMsg { slot, id: keys[slot].id, name, pic };
+                            if faces_tx.push(msg).is_ok() {
+                                ShardStats::bump(&stats.faces_read);
+                            } else {
+                                ShardStats::bump(&stats.faces_dropped);
+                            }
+                        }
+                        crate::faces::Face::Unknown => ShardStats::bump(&stats.faces_unknown),
+                    }
                 }
             }
             Some((slot, gen, owned)) = owned_rx.recv() => {
@@ -2946,6 +3008,7 @@ fn sim_thread(
     mut ctrl_rx: rtrb::Consumer<Connect>,
     mut skins_rx: rtrb::Consumer<crate::slot::SkinsMsg>,
     mut prices_rx: rtrb::Consumer<crate::slot::SkinPricesMsg>,
+    mut faces_rx: rtrb::Consumer<crate::slot::FaceMsg>,
     mut grave_tx: rtrb::Producer<Link>,
     mut save_tx: rtrb::Producer<SaveMsg>,
     mut world_tx: rtrb::Producer<WorldMsg>,
@@ -3070,9 +3133,13 @@ fn sim_thread(
                 }
                 continue;
             }
+            let key = c.key;
             if let Some((how, evicted)) = core.connect_as(c.slot, c.id, c.key, c.save) {
                 links[c.slot] = Some(c.link);
                 ShardStats::bump(&stats.joins);
+                // Who this is, for everyone's chat and nametags: the proven
+                // address now, the platform name when its read lands.
+                core.tag_join(c.slot, c.id, key.as_ref());
                 // Two-phase eviction, the filing half: this join is about
                 // to cost a sleeper its slot, and this record is that body
                 // as it stands NOW — raid included — not as its leave left
@@ -3107,6 +3174,10 @@ fn sim_thread(
         // above so a set read for a joiner finds the client it belongs to.
         while let Ok(m) = skins_rx.pop() {
             core.skins_owned(m.slot, m.id, m.owned);
+        }
+        // The names and pictures players set on the platform (`faces.rs`).
+        while let Ok(m) = faces_rx.pop() {
+            core.set_face(m.slot, m.id, m.name, m.pic);
         }
         // What the platform's store charges for each skin.
         while let Ok(m) = prices_rx.pop() {
