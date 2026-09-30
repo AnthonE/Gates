@@ -33,6 +33,11 @@ pub const FLICK_MIN_DEG: f32 = 10.0;
 pub const RETARGET_DEG: f32 = 15.0;
 /// Frames on target in a row before the aim counts as settled.
 pub const SETTLE_FRAMES: u32 = 3;
+/// A body counts as on target while the aim is this close to its centre
+/// line, metres: inside its 0.4 m capsule, with room for the wobble. Up
+/// close a body fills the view and a swing at its edge still lands; far
+/// off, the fire cone is the tighter of the two.
+pub const BODY_ON_M: f32 = 0.3;
 /// Frames the eye averages a target's motion over.
 const VEL_FRAMES: u32 = 4;
 /// Frames of look history kept: the longest lag plus the motion window.
@@ -236,6 +241,8 @@ pub struct Hands {
     lost: bool,
     on: bool,
     on_streak: u32,
+    /// How close counts as on target this frame, degrees.
+    cone: f32,
 }
 
 impl Hands {
@@ -259,6 +266,7 @@ impl Hands {
             lost: false,
             on: false,
             on_streak: 0,
+            cone: skill.fire_cone_deg,
         }
     }
 
@@ -348,14 +356,18 @@ impl Hands {
         }
         self.frame = self.frame.wrapping_add(elapsed);
         let mut blind = false;
+        self.cone = self.skill.fire_cone_deg;
         let (key, truth) = match intent.look {
             Look::Keep => (Key::None, None),
             Look::Heading(yaw) => (Key::Heading, Some([yaw_deg(yaw), pitch_deg(LEVEL_PITCH)])),
             Look::Point(p) => (Key::Point, Some(direction(eye, p))),
             Look::Body { id, part } => {
-                let seen = tracks
-                    .aim_pose(id)
-                    .map(|s| direction(eye, [s.x, s.y + part_height(part), s.z]));
+                let pose = tracks.aim_pose(id);
+                if let Some(s) = pose {
+                    let far = (s.x - eye[0]).hypot(s.z - eye[2]).max(BODY_ON_M);
+                    self.cone = self.cone.max(BODY_ON_M.atan2(far).to_degrees());
+                }
+                let seen = pose.map(|s| direction(eye, [s.x, s.y + part_height(part), s.z]));
                 // Out of sight, the view rests on where the body was last.
                 let last = (matches!(self.key, Key::Body(was, _) if was == id) && self.hist_n > 0)
                     .then(|| self.sample(0));
@@ -484,8 +496,7 @@ impl Hands {
             }
         }
         let left = [wrap(goal[0] - self.aim[0]), goal[1] - self.aim[1]];
-        self.on =
-            self.flick.is_none() && left[0].abs().max(left[1].abs()) <= self.skill.fire_cone_deg;
+        self.on = self.flick.is_none() && left[0].abs().max(left[1].abs()) <= self.cone;
         self.on_streak = if self.on {
             self.on_streak.saturating_add(elapsed)
         } else {

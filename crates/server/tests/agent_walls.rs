@@ -431,6 +431,9 @@ struct Harness {
     buttons: u8,
     /// While set, the puppet stands on the bot swinging this weapon.
     puppet: Option<sim_core::gather::ItemStack>,
+    /// Which body is the puppet, and on which slot.
+    puppet_id: u32,
+    puppet_slot: usize,
     spear: sim_core::gather::ItemStack,
     /// The last yaw sent in this life, and the largest turn between two
     /// frames: the hands wall.
@@ -472,6 +475,8 @@ impl Harness {
             verbs: BTreeSet::new(),
             buttons: 0,
             puppet: None,
+            puppet_id: PUPPET,
+            puppet_slot: 1,
             spear,
             last_yaw: None,
             life: 0,
@@ -482,13 +487,15 @@ impl Harness {
     /// Join the puppet in both shards; it swings only while `puppet` is set.
     fn with_puppet(&mut self) {
         for core in [&mut self.shard, &mut self.replay] {
-            assert!(core.connect(1, PUPPET));
+            assert!(core.connect(self.puppet_slot, self.puppet_id));
         }
     }
 
     /// Point-blank, like `alloc_zero.rs`'s duel: the puppet is stood on the
     /// bot each tick and holds primary, so the blow lands wherever the bot
-    /// crawls. Scene staging, applied to both shards alike.
+    /// crawls. While it is staged it is also kept whole: the bot fights
+    /// back now, and the hazard must outlast it. Scene staging, applied to
+    /// both shards alike.
     fn puppet_step(&mut self, weapon: sim_core::gather::ItemStack) {
         let body = self
             .shard
@@ -504,12 +511,13 @@ impl Harness {
                 .world
                 .players
                 .iter_mut()
-                .find(|p| p.active && p.id == PUPPET)
+                .find(|p| p.active && p.id == self.puppet_id)
             else {
                 return;
             };
             p.body = body;
             p.inv[0] = weapon;
+            p.hp = p.hp_max;
         }
         let mut dg = InputDatagram::new(0, 0, sim_core::limits::INTERP_DELAY_TICKS);
         dg.push(sim_core::input::InputFrame {
@@ -522,8 +530,8 @@ impl Harness {
         let mut bytes = [0u8; sim_core::limits::DATAGRAM_BUDGET_BYTES];
         let len = encode_input(&dg, &mut bytes).unwrap();
         let decoded = decode_input(&bytes[..len]).unwrap();
-        self.shard.push_input(1, &decoded);
-        self.replay.push_input(1, &decoded);
+        self.shard.push_input(self.puppet_slot, &decoded);
+        self.replay.push_input(self.puppet_slot, &decoded);
     }
 
     /// Stage the same server-side scene change in both shards.
@@ -675,18 +683,19 @@ fn a_survivor_plays_a_whole_life_and_the_next_one_in_lockstep() {
     assert!(fed, "no drink and meal: {}", h.explain());
     assert_ne!(h.bot.memory().food.feeds, 0, "a meal teaches what feeds");
 
-    // 3. A blow it survives, mid-goal: the fight reflex takes the frames
-    //    (a route-led retreat), the goal waits and is then handed back or
-    //    ended, all under the counting allocator.
+    // 3. A blow it survives, mid-goal: the fight reflex takes the frames —
+    //    it turns on the body that struck it and fights back — the goal
+    //    waits and is then handed back or ended, all under the counting
+    //    allocator. (Until lane A the reflex only backed away.)
     let busy = h.until(3_000, |b| b.goal().is_some() && !b.combat().engaged());
     assert!(busy, "no goal to pause: {}", h.explain());
     let settled = |b: &Survivor| b.stats.goals_resumed + b.stats.goals_interrupted;
     let before = settled(&h.bot);
-    let retreats = h.bot.stats.retreats;
+    let hurts = h.bot.stats.hurts;
     h.stage(|p| p.hp = p.hp_max);
     h.with_puppet();
     h.puppet = Some(h.spear);
-    let hit = h.until(600, |b| b.stats.retreats > retreats);
+    let hit = h.until(600, |b| b.stats.hurts > hurts);
     h.puppet = None;
     assert!(hit, "the blow did not land: {}", h.explain());
     assert!(!h.bot.core().unwrap().wounded, "one blow must not down it");
@@ -698,11 +707,20 @@ fn a_survivor_plays_a_whole_life_and_the_next_one_in_lockstep() {
         "the fight never ended, or the paused goal was neither resumed nor ended: {}",
         h.explain()
     );
+    assert!(
+        h.bot.stats.landed > 0,
+        "it never struck back: {}",
+        h.explain()
+    );
 
     // 4. Go down, die, answer the death screen in-game, and play on. A
     //    starved body no longer serves: the survivor forages and eats its
     //    way out even at 1 hp. So a second body stands on it swinging a
-    //    spear until it lays it down, and then kills it.
+    //    spear until it lays it down, and then kills it. A fresh one: the
+    //    first may not have survived the answer to its blow.
+    h.puppet_id = PUPPET + 1;
+    h.puppet_slot = 2;
+    h.with_puppet();
     h.puppet = Some(h.spear);
     let downed = h.until(3_000, |b| b.core().is_some_and(|c| c.wounded || c.dead));
     assert!(downed, "the blow did not land: {}", h.explain());

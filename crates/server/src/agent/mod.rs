@@ -2,8 +2,8 @@
 //! ([`intent`]), the hands that turn it into input at a person's speed
 //! ([`hands`]), what its eyes and ears know of other bodies ([`tracks`]),
 //! what a player knows of the game's rules ([`wiki`]), the legs that find
-//! a way somewhere ([`route`]) and the reflex that answers a fight
-//! ([`combat`]).
+//! a way somewhere ([`route`]), the reflex that answers a fight
+//! ([`combat`]) and what goes on the belt for it ([`loadout`]).
 //! `explorer.rs` stays the orchestrator; these modules never drain
 //! `ClientCore`'s event rings — `Survivor::event_with` is the one reader
 //! and hands them facts.
@@ -15,6 +15,7 @@
 pub mod combat;
 pub mod hands;
 pub mod intent;
+pub mod loadout;
 pub mod route;
 pub mod tracks;
 pub mod wiki;

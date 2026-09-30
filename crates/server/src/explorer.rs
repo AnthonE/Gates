@@ -6,22 +6,23 @@
 //! client holds, never from a server `World`.
 //!
 //! Reflexes run under every goal and need no decision: answer the death
-//! screen with the respawn verb, crawl away while wounded, and answer a
-//! fight (`agent::combat`), which pauses the goal rather than ending it.
+//! screen with the respawn verb, crawl away while wounded, and fight or
+//! run (`agent::combat`), which pauses the goal rather than ending it.
 //! The only verbs sent are the ones a human client sends: input frames,
 //! and `Respawn`, `Craft`, `Consume`, `Drink` and `Move` actions
 //! (`crates/server/tests/agent_walls.rs` holds that to the client).
 
-use crate::agent::combat::{Assess, Combat, RESUME_TICKS};
+use crate::agent::combat::{Assess, Combat, End, Kit, Mode, Temperament, RESUME_TICKS};
 use crate::agent::hands::{Hands, Skill};
 use crate::agent::intent::{pitch_toward, yaw_toward, Intent, Look};
+use crate::agent::loadout::{Loadout, Role};
 use crate::agent::route::{into_deeper_water, Frontier, Route, Step};
 use crate::agent::tracks::{self, Sight, Species, Tracks};
-use crate::agent::wiki::{Book, Rules};
+use crate::agent::wiki::{Book, Class, Rules};
 use crate::botclient::BotDriver;
 use crate::mind::{
-    BodyState, Choice, Goal, History, Mind, Name, Outcome, Report, Sighting, Summary, Trigger, Why,
-    SUMMARY_CRAFTS, SUMMARY_ITEMS,
+    Arms, BodyState, Choice, Goal, History, Mind, Name, Outcome, Range, Report, Sighting, Summary,
+    Threat, Trigger, Why, SUMMARY_CRAFTS, SUMMARY_ITEMS, SUMMARY_THREATS,
 };
 use crate::pace::Pace;
 use client_core::core::{
@@ -86,6 +87,12 @@ pub const SCAN_CELLS_MAX: u32 = 8;
 pub const BODY_RECALL_SECS: u32 = 2;
 /// A flee goal runs from the nearest body seen this recently.
 pub const THREAT_RECALL_SECS: u32 = 10;
+/// A body standing on the swing's own ray this close would take the blow
+/// meant for a node: the swing waits.
+pub const BYSTANDER_RAY_M: f32 = 3.0;
+/// A heal goal uses meds until health reaches this percentage, counting
+/// what the last one is still delivering.
+pub const HEAL_TARGET_PCT: u32 = 90;
 
 /// Tool ladders, best first, by catalog name — the player's knowledge of
 /// which tool fells a tree and which breaks rock. Never indices; yields,
@@ -110,6 +117,8 @@ pub enum Phase {
     Harvesting,
     Recovering,
     Fleeing,
+    Fighting,
+    Healing,
     Crafting,
     Equipping,
     Eating,
@@ -133,6 +142,8 @@ impl Phase {
             Phase::Harvesting => "Harvesting",
             Phase::Recovering => "Trying another route",
             Phase::Fleeing => "Retreating from danger",
+            Phase::Fighting => "Fighting",
+            Phase::Healing => "Healing",
             Phase::Crafting => "Crafting",
             Phase::Equipping => "Moving a tool to the belt",
             Phase::Eating => "Eating",
@@ -215,6 +226,9 @@ pub struct Senses {
     pub players: Sighting,
     pub animals: Sighting,
     pub water: Sighting,
+    /// Bodies in sight that could hurt this one, nearest first.
+    pub threats: [Threat; SUMMARY_THREATS],
+    pub threats_len: u8,
 }
 
 /// What this body remembers of its own recent history, all of it learned
@@ -227,6 +241,8 @@ pub struct Memory {
     pub deaths: u32,
     pub respawns: u32,
     pub trigger: Trigger,
+    /// How the last fight went.
+    pub fight: Option<Why>,
     pub food: FoodBook,
     /// Items each resource kind has been seen to pay (gather receipts),
     /// as masks over item indices: what "room for it" means.
@@ -244,7 +260,11 @@ pub struct SurvivorStats {
     pub deaths: u64,
     pub respawns: u64,
     pub respawn_asks: u64,
+    /// Retreats begun: guarding from an unseen blow, or escaping.
     pub retreats: u64,
+    /// Blows taken, and blows landed (my hit markers).
+    pub hurts: u64,
+    pub landed: u64,
     pub goals_done: u64,
     pub goals_failed: u64,
     pub goals_interrupted: u64,
@@ -277,6 +297,8 @@ pub struct SurvivorStats {
 pub struct SurvivorOpts {
     /// How good its hands are (`--skill`).
     pub skill: Skill,
+    /// How ready it is to start a fight (`--temperament`).
+    pub temperament: Temperament,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -299,6 +321,13 @@ enum Pending {
     Equip,
     Consume { item: u16, food: u16, water: u16 },
     Drink,
+}
+
+/// A heal goal's last med: health when it went in, and what it heals.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Dose {
+    hp: u16,
+    heal: u16,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -351,6 +380,9 @@ pub struct Survivor {
     frontier: Frontier,
     /// The fight reflex; it takes the frame from the goal while it runs.
     combat: Combat,
+    /// The belt policy's ladders, by wire id once the catalog is in.
+    loadout: Loadout,
+    dose: Option<Dose>,
     /// An answer that arrived mid-fight, and when; judged once the fight
     /// is over.
     deferred: Option<(Choice, Instant)>,
@@ -413,7 +445,9 @@ impl Survivor {
             hands: Hands::new(opts.skill),
             route: Route::new(),
             frontier: Frontier::new(),
-            combat: Combat::new(),
+            combat: Combat::new(opts.temperament),
+            loadout: Loadout::new(),
+            dose: None,
             deferred: None,
             glance: None,
             water_at: None,
@@ -527,7 +561,7 @@ impl Survivor {
 
     /// `observe`, plus the goal this body is running now.
     fn summarize(&self, core: &ClientCore, view: &ClientView, player: u32) -> Summary {
-        let mut s = observe(core, view, player, &self.senses, &self.memory);
+        let mut s = observe(core, view, player, &self.senses, &self.memory, &self.book);
         let tick = view.newest_applied.unwrap_or_default();
         s.current = self.goal.map(|a| Report {
             goal: a.goal,
@@ -631,6 +665,7 @@ impl Survivor {
         if !self.book.ready() {
             if let Some(rules) = self.rules.as_deref() {
                 self.book.learn(rules, &core.catalog);
+                self.loadout.learn(rules, &self.book);
             }
         }
         // Bodies come from the tracks alone: seen through the cone and a
@@ -644,7 +679,7 @@ impl Survivor {
             // body places none, and a bag is where it just lost a fight.
             // Asked on the event lane's own fact: a snapshot can still show
             // the corpse for a frame after the wake has landed.
-            self.end_goal(tick, Outcome::Interrupted(Why::Died));
+            self.lose(tick, Why::Died);
             self.halt();
             let due = core.dead
                 && match self.awaiting {
@@ -667,8 +702,9 @@ impl Survivor {
         if body.wounded || core.wounded {
             // Down: crawl away from the last blow's bearing while it is
             // fresh, otherwise lie still. Nothing else is possible here.
-            self.end_goal(tick, Outcome::Interrupted(Why::Wounded));
+            self.lose(tick, Why::Wounded);
             self.halt();
+            self.combat.down();
             self.stats.phase = Phase::Wounded;
             return match self.last_hurt {
                 Some((at, away)) if tick.wrapping_sub(at) < FLEE_TICKS => Intent::walk(away),
@@ -685,27 +721,51 @@ impl Survivor {
                 self.stats.deferred += 1;
             } else {
                 self.deferred = None;
+                let running = self.combat.engaged();
                 self.adopt(choice, tick);
+                // Told to run mid-fight: the run is the fight's answer now.
+                if running && choice.goal == Goal::Flee {
+                    self.start_flee(&body, tick);
+                }
             }
         }
         self.perceive(core, &body, tick);
         let x = body.qx as f32 * POS_XZ_Q;
         let z = body.qz as f32 * POS_XZ_Q;
         self.frontier.visit(Frontier::cell_of(x, z));
-        match self
+        let kit = Kit {
+            book: &self.book,
+            melee: self.loadout.on_belt(core, Role::Melee),
+            hp: core.hp,
+            hp_max: core.hp_max,
+            on_target: self.hands.on_target(),
+        };
+        let assessed = self
             .combat
-            .assess(core, &body, &self.tracks, &mut self.route, tick)
-        {
+            .assess(core, &body, &self.tracks, &mut self.route, &kit, tick);
+        self.stats.retreats = self.combat.stats.retreats();
+        match assessed {
             Assess::Fight(intent) => {
                 self.pause_goal(tick);
                 self.glance = None;
-                self.stats.phase = Phase::Fleeing;
+                self.stats.phase = if self.combat.mode() == Mode::Engage {
+                    Phase::Fighting
+                } else {
+                    Phase::Fleeing
+                };
                 return intent;
             }
-            Assess::Over { away } => {
+            Assess::Over { away, end } => {
                 // We were looking back at the danger. Resume travelling
                 // away, rather than turning the retreat into a return trip.
-                self.heading = Some(away);
+                if let Some(away) = away {
+                    self.heading = Some(away);
+                }
+                match end {
+                    End::Won => self.memory.fight = Some(Why::Won),
+                    End::Escaped => self.memory.fight = Some(Why::Escaped),
+                    End::Parted => {}
+                }
                 self.after_fight(core, view, player, tick, now);
             }
             Assess::Calm => {
@@ -741,10 +801,24 @@ impl Survivor {
                         }
                     }
                 }
-                self.run_goal(core, view, &body, tick)
+                self.run_goal(core, &body, tick)
             }
         };
         self.overlay(intent, tick)
+    }
+
+    /// Down or dead: the goal ends there, and a fight in hand was lost.
+    fn lose(&mut self, tick: u32, why: Why) {
+        let fighting =
+            self.combat.engaged() || matches!(self.goal(), Some(Goal::Fight | Goal::Hunt));
+        if fighting {
+            self.memory.fight = Some(Why::Lost);
+        }
+        let outcome = match self.goal() {
+            Some(Goal::Fight | Goal::Hunt) => Outcome::Failed(Why::Lost),
+            _ => Outcome::Interrupted(why),
+        };
+        self.end_goal(tick, outcome);
     }
 
     /// A fight took this frame: the goal waits, where it was.
@@ -797,8 +871,9 @@ impl Survivor {
             // A held answer naming another goal replaces this one below;
             // one naming this goal is this goal carrying on.
             if held.is_none_or(|c| c.goal == goal) {
-                // A flee goal's retreat was the fight; it finishes itself.
-                let keep = goal == Goal::Flee
+                // A flee, fight or hunt goal's fight was the goal; it
+                // finishes itself with how it went.
+                let keep = matches!(goal, Goal::Flee | Goal::Fight | Goal::Hunt)
                     || (fought < RESUME_TICKS && self.summarize(core, view, player).offers(goal));
                 if keep {
                     self.stats.goals_resumed += 1;
@@ -886,6 +961,7 @@ impl Survivor {
         self.recovery = None;
         self.seek = None;
         self.verdict = None;
+        self.dose = None;
     }
 
     fn end_goal(&mut self, tick: u32, outcome: Outcome) {
@@ -943,13 +1019,7 @@ impl Survivor {
         }
     }
 
-    fn run_goal(
-        &mut self,
-        core: &mut ClientCore,
-        view: &ClientView,
-        body: &EntityState,
-        tick: u32,
-    ) -> Intent {
+    fn run_goal(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
         let Some(active) = self.goal else {
             return Intent::IDLE;
         };
@@ -984,9 +1054,27 @@ impl Survivor {
                 self.eat(core, tick);
                 Intent::IDLE
             }
+            Goal::Heal => {
+                self.heal(core, tick);
+                Intent::IDLE
+            }
+            Goal::Fight | Goal::Hunt => {
+                if active.fled {
+                    // The fight has been and gone: say how it went.
+                    let outcome = match self.combat.last_end() {
+                        Some(End::Won) => Outcome::Done,
+                        Some(End::Escaped) => Outcome::Failed(Why::Escaped),
+                        _ => Outcome::Failed(Why::NotFound),
+                    };
+                    self.end_goal(tick, outcome);
+                } else if !self.start_fight(core, body, active.goal == Goal::Hunt, tick) {
+                    self.end_goal(tick, Outcome::Failed(Why::NotFound));
+                }
+                Intent::IDLE
+            }
             Goal::Drink => self.drink(core, body, tick),
             goal => match Kind::of_goal(goal) {
-                Some(kind) => self.gather(core, view, body, tick, kind),
+                Some(kind) => self.gather(core, body, tick, kind),
                 None => Intent::IDLE,
             },
         }
@@ -1007,7 +1095,41 @@ impl Survivor {
         };
         let away = yaw_toward(bx - x, bz - z);
         self.combat.flee(tick, away);
-        self.stats.retreats += 1;
+        self.stats.retreats = self.combat.stats.retreats();
+        if let Some(a) = self.goal.as_mut() {
+            a.fled = true;
+        }
+        true
+    }
+
+    /// Take on the nearest body in sight of the kind the goal names (a
+    /// player to fight, an animal to hunt), with a weapon on the belt. The
+    /// reflex runs the fight from the next frame; the goal waits for it.
+    fn start_fight(
+        &mut self,
+        core: &ClientCore,
+        body: &EntityState,
+        hunt: bool,
+        tick: u32,
+    ) -> bool {
+        if self.loadout.on_belt(core, Role::Melee).is_none() {
+            return false;
+        }
+        let (bx, bz) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+        let mut nearest: Option<(f32, u32)> = None;
+        for t in self.tracks.seen() {
+            if !t.visible || !t.active() || (t.species == Species::Player) == hunt {
+                continue;
+            }
+            let d = (t.pos[0] - bx).hypot(t.pos[2] - bz);
+            if nearest.is_none_or(|n| d < n.0) {
+                nearest = Some((d, t.id));
+            }
+        }
+        let Some((_, id)) = nearest else {
+            return false;
+        };
+        self.combat.command(id, tick);
         if let Some(a) = self.goal.as_mut() {
             a.fled = true;
         }
@@ -1072,7 +1194,6 @@ impl Survivor {
     fn gather(
         &mut self,
         core: &mut ClientCore,
-        view: &ClientView,
         body: &EntityState,
         tick: u32,
         kind: Kind,
@@ -1182,21 +1303,15 @@ impl Survivor {
             return intent;
         }
         if swing_reaches(core, body, yaw, pitch, target) {
-            // Holding primary is the human harvesting verb. Keep a bystander
-            // out of the swing: this skill never deliberately attacks a body.
+            // Holding primary is the human harvesting verb. A harvest swing
+            // never lands on a body: one standing on the swing's own ray
+            // holds it, wherever else bodies stand round the node.
             self.stats.phase = Phase::Harvesting;
-            // The lowest id among the bodies at a node keeps it; the others
-            // give way. Two agents that spawned together and chose alike
-            // would otherwise stand at one tree waiting for each other.
-            let mut bystander = None;
-            for (id, other) in view.entities.iter() {
-                let near = ((other.qx - body.qx) as f32 * POS_XZ_Q)
-                    .hypot((other.qz - body.qz) as f32 * POS_XZ_Q)
-                    <= 2.0 * REACH_M;
-                if *id != body.id && !other.dead && near {
-                    bystander = Some(bystander.map_or(*id, |b: u32| b.min(*id)));
-                }
-            }
+            let (held_yaw, held_pitch) = self.hands.view();
+            let bystander = self.body_on_ray(body, held_yaw);
+            // Of two bodies in each other's way at a node, the lower id
+            // keeps it and the other gives way; otherwise both would stand
+            // there waiting.
             if bystander.is_some_and(|other| other < body.id) {
                 self.skipped = Some(target.key());
                 self.target = None;
@@ -1207,7 +1322,6 @@ impl Survivor {
             let haven = self.haven.expect("connected haven");
             // Swing only once the view the hands hold is on the node too:
             // standing in reach is not yet aiming at it.
-            let (held_yaw, held_pitch) = self.hands.view();
             if bystander.is_none()
                 && visible(core, &haven, body, target)
                 && swing_reaches(core, body, held_yaw, held_pitch, target)
@@ -1236,6 +1350,31 @@ impl Survivor {
             }
         }
         intent
+    }
+
+    /// The lowest id among the bodies in sight standing across a swing
+    /// along this bearing, within [`BYSTANDER_RAY_M`].
+    fn body_on_ray(&self, body: &EntityState, yaw: u16) -> Option<u32> {
+        let (fx, fz) = yaw_dir(yaw);
+        let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+        let mut lowest: Option<u32> = None;
+        for t in self.tracks.seen() {
+            if !t.visible || t.dead || t.id == body.id {
+                continue;
+            }
+            let (dx, dz) = (t.pos[0] - x, t.pos[2] - z);
+            let along = dx * fx + dz * fz;
+            let across = (dx * fz - dz * fx).abs();
+            let radius = match t.species {
+                Species::Player => sim_core::collide::CAPSULE_RADIUS_M,
+                Species::Pig => f32::from(self.book.pig().radius_cm) * 0.01,
+                Species::Wolf => f32::from(self.book.wolf().radius_cm) * 0.01,
+            };
+            if along > -radius && along <= BYSTANDER_RAY_M + radius && across <= radius {
+                lowest = Some(lowest.map_or(t.id, |b| b.min(t.id)));
+            }
+        }
+        lowest
     }
 
     fn take_verdict(&mut self, tick: u32, budget: u32) -> Result<Option<Verdict>, ()> {
@@ -1288,11 +1427,12 @@ impl Survivor {
                 }
             }
             CraftStep::Equip => {
-                // A better tool belongs on the belt, where a swing uses it.
-                let tool =
-                    TREE_TOOLS.contains(&name.as_str()) || NODE_TOOLS.contains(&name.as_str());
-                match (tool, equip_move(core, name)) {
-                    (true, Some((from, to, count))) => {
+                // A better tool, weapon or med belongs on the belt, where a
+                // key selects it (`agent::loadout`'s belt policy).
+                let item = (0..usize::from(core.catalog.count).min(MAX_ITEM_DEFS))
+                    .find(|&i| core.catalog.name(i) == name.as_bytes());
+                match item.and_then(|i| self.loadout.belt_move(core, i as u16)) {
+                    Some((from, to, count)) => {
                         if self.queue(|buf| {
                             protocol::encode_action_move(
                                 0, CONT_SELF, from, CONT_SELF, to, count, buf,
@@ -1304,7 +1444,7 @@ impl Survivor {
                             self.set_craft(CraftStep::Equipped);
                         }
                     }
-                    _ => self.end_goal(tick, Outcome::Done),
+                    None => self.end_goal(tick, Outcome::Done),
                 }
             }
             CraftStep::Equipped => {
@@ -1364,6 +1504,51 @@ impl Survivor {
             return;
         };
         self.consume(core, slot, tick);
+    }
+
+    /// Use meds until health, with what the last one is still delivering,
+    /// reaches [`HEAL_TARGET_PCT`]: a bandage heals over seconds, and a
+    /// second one only stretches the first (`survival.rs`).
+    fn heal(&mut self, core: &mut ClientCore, tick: u32) {
+        self.stats.phase = Phase::Healing;
+        match self.take_verdict(tick, VERDICT_SECS * TICK_HZ) {
+            Err(()) => {
+                self.end_goal(tick, Outcome::Failed(Why::NoAnswer));
+                return;
+            }
+            Ok(Some(Verdict::Ok)) => {
+                if let Some(a) = self.goal.as_mut() {
+                    a.gained += 1;
+                }
+            }
+            Ok(Some(_)) => {
+                self.dose = None;
+                self.end_goal(tick, Outcome::Failed(Why::Refused));
+                return;
+            }
+            Ok(None) if self.awaiting.is_some() => return,
+            Ok(None) => {}
+        }
+        let owed = self.dose.map_or(0, |d| u32::from(d.hp) + u32::from(d.heal));
+        let health = u32::from(core.hp).max(owed);
+        if core.hp_max == 0 || health * 100 >= u32::from(core.hp_max) * HEAL_TARGET_PCT {
+            self.end_goal(tick, Outcome::Done);
+            return;
+        }
+        let Some((slot, item)) = self.loadout.best(core, Role::Meds) else {
+            let outcome = if self.goal.is_some_and(|a| a.gained > 0) {
+                Outcome::Done
+            } else {
+                Outcome::Failed(Why::NoMeds)
+            };
+            self.end_goal(tick, outcome);
+            return;
+        };
+        let (hp, heal) = (core.hp, self.book.page(item).heal);
+        self.consume(core, slot, tick);
+        if matches!(self.awaiting, Some((Pending::Consume { .. }, _))) {
+            self.dose = Some(Dose { hp, heal });
+        }
     }
 
     fn consume(&mut self, core: &ClientCore, slot: usize, tick: u32) {
@@ -1480,11 +1665,41 @@ impl Survivor {
             self.scan_cell(core, body, &haven, tick);
         }
         let mut bodies = [Sighting::default(); 2];
+        // The nearest bodies that could hurt this one, as a player would
+        // size them up: what is in their hands, which way, how hurt.
+        let mut threats = [(f32::INFINITY, Threat::default()); SUMMARY_THREATS];
         for t in self.tracks.recent(tick, BODY_RECALL_SECS * TICK_HZ) {
             let (d, b) = relative(body, t.pos[0], t.pos[2]);
             bodies[usize::from(t.species != Species::Player)].add(d, b);
+            let (arms, hp) = match t.species {
+                Species::Pig => continue,
+                Species::Wolf => (Arms::Teeth, u32::from(self.book.wolf().hp)),
+                Species::Player => (
+                    match t.held.map(|h| self.book.page(h).class) {
+                        Some(Class::Melee) => Arms::Melee,
+                        Some(Class::Tool) => Arms::Tool,
+                        Some(Class::Ranged) => Arms::Ranged,
+                        Some(Class::Throw) => Arms::Explosive,
+                        _ => Arms::Unarmed,
+                    },
+                    u32::from(core.hp_max),
+                ),
+            };
+            let threat = Threat {
+                arms,
+                range: Range::of(d),
+                bearing: b,
+                wounded: t.wounded || (t.dealt > 0 && t.dealt * 2 >= hp),
+                aiming_at_me: t.aiming_at_me,
+            };
+            if let Some(i) = threats.iter().position(|(m, _)| d < *m) {
+                threats.copy_within(i..SUMMARY_THREATS - 1, i + 1);
+                threats[i] = (d, threat);
+            }
         }
         [self.senses.players, self.senses.animals] = bodies;
+        self.senses.threats_len = threats.iter().filter(|(d, _)| d.is_finite()).count() as u8;
+        self.senses.threats = threats.map(|(_, t)| t);
         if self
             .water_at
             .is_none_or(|at| tick.wrapping_sub(at) >= TICK_HZ)
@@ -1638,6 +1853,7 @@ impl Survivor {
             // Compass bearings turn toward -X; wire yaw turns toward +X.
             self.tracks.on_hurt(0u16.wrapping_sub(toward), tick);
             let away = 0u16.wrapping_sub(toward).wrapping_add(1 << 15);
+            // The alarm: the reflex turns to find who struck it.
             self.combat.on_hurt(tick, away);
             self.last_hurt = Some((tick, away));
             self.recovery = None;
@@ -1645,7 +1861,7 @@ impl Survivor {
                 self.skipped = Some(target.key());
                 self.stats.targets_abandoned += 1;
             }
-            self.stats.retreats += 1;
+            self.stats.hurts += 1;
             self.memory.hits = self.memory.hits.saturating_add(1);
         }
         while let Some(victim) = core.pop_death() {
@@ -1661,6 +1877,9 @@ impl Survivor {
             self.tracks.on_shot(shooter, tick);
         }
         while let Some(swinger) = core.pop_swing() {
+            if swinger == core.player_id {
+                self.combat.swung(tick);
+            }
             self.tracks.on_swing(swinger, tick);
         }
         while let Some(i) = core.pop_impact() {
@@ -1672,6 +1891,7 @@ impl Survivor {
             self.tracks.on_impact(at, tick);
         }
         while let Some(hit) = core.pop_hit() {
+            self.stats.landed += 1;
             self.tracks.on_hit(hit.victim, hit.damage);
         }
         if flags & APPLIED_RESPAWN != 0 && !core.dead {
@@ -1788,7 +2008,7 @@ impl BotDriver for Survivor {
         self.hands.reset(welcome.seed, welcome.player_id);
         self.route.reset();
         self.frontier.clear();
-        self.combat.forget();
+        self.combat.reset(welcome.seed, welcome.player_id);
         self.deferred = None;
         self.glance = None;
         // Off the frame path: parsing the content allocates. A body that
@@ -1839,9 +2059,10 @@ impl BotDriver for Survivor {
     }
 }
 
-/// An answer that cannot wait for a fight to end: running is part of it.
+/// An answer that cannot wait for a fight to end: running, fighting and
+/// healing are part of it.
 fn urgent(goal: Goal) -> bool {
-    goal == Goal::Flee
+    matches!(goal, Goal::Flee | Goal::Fight | Goal::Heal)
 }
 
 fn heartbeat_ticks(mind: &Mind) -> u32 {
@@ -1939,31 +2160,6 @@ fn inputs_ok(core: &ClientCore, recipe: u16) -> bool {
         .all(|&(item, need)| count_item(core, item) >= u32::from(need))
 }
 
-/// The whole-stack move that puts the named tool on the belt, if it is in
-/// the pack and not already there: an empty belt slot, else the last belt
-/// slot not holding a tool (the two stacks swap).
-fn equip_move(core: &ClientCore, name: Name) -> Option<(u8, u8, u16)> {
-    let named = |s: &sim_core::gather::ItemStack| {
-        s.count > 0 && core.catalog.name(s.item as usize) == name.as_bytes()
-    };
-    if core.inv[..HOTBAR_SLOTS].iter().any(named) {
-        return None;
-    }
-    let from = (HOTBAR_SLOTS..INV_SLOTS).find(|&i| named(&core.inv[i]))?;
-    let is_tool = |s: &sim_core::gather::ItemStack| {
-        let n = core.catalog.name(s.item as usize);
-        s.count > 0
-            && TREE_TOOLS
-                .iter()
-                .chain(NODE_TOOLS.iter())
-                .any(|t| t.as_bytes() == n)
-    };
-    let to = (0..HOTBAR_SLOTS)
-        .find(|&i| core.inv[i].count == 0)
-        .or_else(|| (0..HOTBAR_SLOTS).rev().find(|&i| !is_tool(&core.inv[i])))?;
-    Some((from as u8, to as u8, core.inv[from].count))
-}
-
 /// A slot worth eating: one known to restore water (`thirst`), or one known
 /// to feed, else one never tried that the eat verb has not refused.
 fn food_slot(core: &ClientCore, book: &FoodBook, thirst: bool) -> Option<usize> {
@@ -1994,6 +2190,7 @@ pub fn observe(
     player: u32,
     senses: &Senses,
     memory: &Memory,
+    book: &Book,
 ) -> Summary {
     let mut s = Summary::EMPTY;
     s.tick = view.newest_applied.unwrap_or_default();
@@ -2028,10 +2225,16 @@ pub fn observe(
     s.free_slots = free;
     if core.recipes_have >= core.recipes.recipe_count {
         let known = core.known();
-        // Tools first: the list is bounded, and with a full pack more than
-        // `SUMMARY_CRAFTS` recipes can be craftable at once — the better
-        // tool is the one that must not fall off the end.
-        for tools_first in [true, false] {
+        // Tools first, then arms (weapons, their rounds, meds): the list is
+        // bounded, and with a full pack more than `SUMMARY_CRAFTS` recipes
+        // can be craftable at once — the better tool and the first spear
+        // are the ones that must not fall off the end.
+        let arm = |item: u16| {
+            let page = book.page(item);
+            matches!(page.class, Class::Melee | Class::Ranged | Class::Med)
+                || (0..MAX_ITEM_DEFS as u16).any(|w| book.page(w).ranged.round == item)
+        };
+        for pass in 0..3 {
             for r in 0..usize::from(core.recipes.recipe_count).min(core.recipes.recipes.len()) {
                 let def = core.recipes.recipes[r];
                 if def.out_count == 0
@@ -2046,8 +2249,15 @@ pub fn observe(
                 };
                 let tool =
                     TREE_TOOLS.contains(&name.as_str()) || NODE_TOOLS.contains(&name.as_str());
+                let rank = if tool {
+                    0
+                } else if arm(def.output) {
+                    1
+                } else {
+                    2
+                };
                 let n = s.craftable_len as usize;
-                if tool == tools_first && n < SUMMARY_CRAFTS && !s.craftable[..n].contains(&name) {
+                if rank == pass && n < SUMMARY_CRAFTS && !s.craftable[..n].contains(&name) {
                     s.craftable[n] = name;
                     s.craftable_len += 1;
                 }
@@ -2061,6 +2271,9 @@ pub fn observe(
     s.players = senses.players;
     s.animals = senses.animals;
     s.water_near = senses.water;
+    s.threats = senses.threats;
+    s.threats_len = senses.threats_len;
+    s.last_fight = memory.fight;
     s.last = memory.last;
     s.hits = memory.hits;
     s.deaths = memory.deaths;
@@ -2107,6 +2320,27 @@ pub fn observe(
     }
     if s.players.count > 0 || s.animals.count > 0 {
         s.offer(Goal::Flee);
+    }
+    // A fight or a hunt needs something to swing on the belt and someone
+    // in sight; a heal, a med in the pack and health to restore.
+    let armed = core.inv[..HOTBAR_SLOTS]
+        .iter()
+        .any(|st| st.count > 0 && book.page(st.item).swings());
+    let meds = core.inv.iter().any(|st| {
+        let page = book.page(st.item);
+        st.count > 0 && page.class == Class::Med && page.heal > 0
+    });
+    let player = senses.threats[..usize::from(senses.threats_len)]
+        .iter()
+        .any(|t| t.arms != Arms::Teeth);
+    if armed && player {
+        s.offer(Goal::Fight);
+    }
+    if armed && s.animals.count > 0 {
+        s.offer(Goal::Hunt);
+    }
+    if meds && core.hp < core.hp_max && pct(core.hp, core.hp_max) < HEAL_TARGET_PCT {
+        s.offer(Goal::Heal);
     }
     s.offer(Goal::Wait);
     for i in 0..s.craftable_len as usize {
@@ -2475,9 +2709,16 @@ mod tests {
         }
     }
 
+    /// A harvest swing never lands on a body: one standing across the
+    /// swing's ray holds it, one beside the node does not. (Until lane A,
+    /// any body within 4 m held every swing, so two bodies at one tree
+    /// stood waiting; this test pinned that.)
     #[test]
-    fn a_nearby_body_interrupts_the_harvest_swing() {
+    fn a_body_on_the_swing_ray_holds_the_harvest_swing() {
         let (mut bot, mut view, target) = fixture();
+        // The bystanders here are unarmed: an opportunist would take that
+        // opening, and this test is about the harvest.
+        bot.combat = Combat::new(Temperament::Defensive);
         let now = Instant::now();
         let radius = terrain::occupant_volume(Occupant::Tree).0 * target.slot.scale;
         let body = &mut view.entities[0].1;
@@ -2488,23 +2729,33 @@ mod tests {
             body.qx as f32 * POS_XZ_Q,
             body.qz as f32 * POS_XZ_Q,
         ));
+        let me = *view.get(1).unwrap();
+        let (x, y, z) = (
+            me.qx as f32 * POS_XZ_Q,
+            me.qy as f32 * POS_Y_Q,
+            me.qz as f32 * POS_XZ_Q,
+        );
         goal(&mut bot, Goal::GatherWood, 1);
         bot.target = Some(target);
         assert_eq!(bot.frame_at(&view, 1, 1, now).buttons, BTN_PRIMARY);
-        let mut bystander = *view.get(1).unwrap();
-        bystander.id = 2;
-        bystander.qx += quant_xz(REACH_M);
-        view.entities.push((2, bystander));
-        assert_eq!(bot.frame_at(&view, 1, 2, now).buttons, 0);
-        view.entities.pop();
-        assert_eq!(bot.frame_at(&view, 1, 3, now).buttons, BTN_PRIMARY);
-        // A body with a lower id keeps the node: this one gives way and does
-        // not retry it straight away, and it is not counted as stuck.
-        let mut first = *view.get(1).unwrap();
-        first.id = 0;
-        first.qx += quant_xz(REACH_M);
-        view.entities.push((0, first));
-        assert_eq!(bot.frame_at(&view, 1, 4, now).buttons, 0);
+        // Beside the node, off the ray: the swing goes on.
+        bot.tracks.stand(2, [x + REACH_M, y, z], true);
+        assert_eq!(bot.frame_at(&view, 1, 2, now).buttons, BTN_PRIMARY);
+        // On the ray, within reach of a swing: held, the node kept.
+        bot.tracks
+            .stand(2, [x, y, z + REACH_M + radius + 0.5], true);
+        assert_eq!(bot.frame_at(&view, 1, 3, now).buttons, 0);
+        assert!(bot.target.is_some());
+        // Out of sight is out of mind: the eyes decide, not the snapshot.
+        bot.tracks
+            .stand(2, [x, y, z + REACH_M + radius + 0.5], false);
+        assert_eq!(bot.frame_at(&view, 1, 4, now).buttons, BTN_PRIMARY);
+        // A body with a lower id on the ray keeps the node: this one gives
+        // way and does not retry it straight away, and it is not counted
+        // as stuck.
+        bot.tracks
+            .stand(0, [x, y, z + REACH_M + radius + 0.5], true);
+        assert_eq!(bot.frame_at(&view, 1, 5, now).buttons, 0);
         assert!(bot.target.is_none());
         assert_eq!(bot.skipped, Some(target.key()));
         assert_eq!(bot.stats.gave_way, 1);
@@ -2855,7 +3106,7 @@ mod tests {
     /// hit ended the goal outright; this test pinned that.)
     #[test]
     fn damage_pauses_work_and_escapes_away_from_every_announced_bearing() {
-        use sim_core::input::{BTN_JUMP, BTN_SPRINT};
+        use sim_core::input::BTN_JUMP;
         let (mut bot, mut view, target) = fixture();
         let now = Instant::now();
         let cap = bot.hands().skill().max_turn();
@@ -2874,12 +3125,10 @@ mod tests {
             let mut frame = bot.frame_at(&view, 1, 2, now);
             for _ in 0..40 {
                 assert_eq!(bot.stats.phase, Phase::Fleeing);
-                // A retreat caught on a lip may jump too.
-                assert_eq!(
-                    frame.buttons & !BTN_JUMP,
-                    BTN_SPRINT,
-                    "a retreat must release primary"
-                );
+                // A guard walks back while it looks for the attacker, and
+                // one caught on a lip may jump. (It sprinted until lane A:
+                // the body it looks for must still be near when found.)
+                assert_eq!(frame.buttons & !BTN_JUMP, 0, "a guard must release primary");
                 assert!(bot.target.is_none());
                 assert!(
                     bot.goal.is_some_and(|a| a.paused.is_some()),

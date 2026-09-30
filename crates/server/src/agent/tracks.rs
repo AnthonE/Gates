@@ -89,6 +89,8 @@ pub const MID_M: f32 = 60.0;
 /// wall for a player, the back of an animal.
 const PLAYER_SIGHT_Y_M: f32 = 1.4;
 const ANIMAL_SIGHT_Y_M: f32 = 0.5;
+/// Closer than this, a body anywhere in front is in view.
+pub const ARMS_LENGTH_M: f32 = 2.0;
 /// Where a look ray is tested against this body.
 const CHEST_Y_M: f32 = 1.2;
 
@@ -400,10 +402,16 @@ impl Tracks {
             if dark && !s.lit {
                 range *= NIGHT_SIGHT;
             }
-            // Range is along the line, the cone on the ground.
-            if d * d + dy * dy > range * range
-                || dx * fx + dz * fz < d * std::f32::consts::FRAC_1_SQRT_2
-            {
+            // Range is along the line, the cone on the ground. A body at
+            // arm's length is seen anywhere in front, not only in the
+            // cone: at that range it fills the side of the view.
+            let ahead = dx * fx + dz * fz;
+            let cone = if d < ARMS_LENGTH_M {
+                0.0
+            } else {
+                d * std::f32::consts::FRAC_1_SQRT_2
+            };
+            if d * d + dy * dy > range * range || ahead < cone {
                 continue;
             }
             let i = match self.slot_of(id) {
