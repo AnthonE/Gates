@@ -74,11 +74,19 @@ fn root() -> std::path::PathBuf {
 /// The verbs the agent may send, in `encode_action_*` spelling. The one
 /// list to extend when a lane gives the agent a new verb: the source grep,
 /// the lockstep run and PLAYERS.md all answer to it.
-const EXPECTED_VERBS: [&str; 5] = ["craft", "consume", "drink", "move", "respawn"];
+const EXPECTED_VERBS: [&str; 8] = [
+    "craft", "consume", "drink", "move", "respawn", "reload", "loot", "pickup",
+];
+
+/// The verbs a lockstep life sends every time. The rest of the set comes
+/// after a won fight or with a gun in hand, which the arena exercises
+/// (`tests/arena.rs`: the bow hunt loots and picks up, the revolver
+/// reloads).
+const LIFE_VERBS: [&str; 5] = ["craft", "consume", "drink", "move", "respawn"];
 
 /// The buttons the agent presses today. Always within what the human
 /// client sends (`human_buttons`); widened here when a lane presses more.
-const EXPECTED_BUTTONS: u8 = BTN_PRIMARY | BTN_SPRINT | BTN_JUMP;
+const EXPECTED_BUTTONS: u8 = BTN_PRIMARY | BTN_SPRINT | BTN_JUMP | BTN_AIM | BTN_CROUCH;
 
 fn expected_verbs() -> BTreeSet<String> {
     EXPECTED_VERBS.into_iter().map(String::from).collect()
@@ -742,9 +750,15 @@ fn a_survivor_plays_a_whole_life_and_the_next_one_in_lockstep() {
     let me = h.view.get(ID).copied().unwrap();
     assert!(!me.dead && !me.wounded, "a live body after the wake");
 
-    // Wall 1, as sent: every verb in the set, and nothing else.
+    // Wall 1, as sent: every verb a life sends, and nothing outside the set.
     let expected: BTreeSet<&str> = EXPECTED_VERBS.into_iter().collect();
-    assert_eq!(h.verbs, expected, "{}", h.explain());
+    let life: BTreeSet<&str> = LIFE_VERBS.into_iter().collect();
+    assert!(
+        h.verbs.is_subset(&expected) && life.is_subset(&h.verbs),
+        "{:?}: {}",
+        h.verbs,
+        h.explain()
+    );
     assert_eq!(
         h.buttons & !(EXPECTED_BUTTONS & human_buttons()),
         0,

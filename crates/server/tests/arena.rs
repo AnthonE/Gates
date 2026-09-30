@@ -95,14 +95,23 @@ struct Arena {
     /// bearing every tick: however the agent walks, it never gets nearer.
     keep_off: Option<(f32, u16)>,
     chopper: Option<Chopper>,
+    /// The other body stands where it is with a bow up, eyes on the
+    /// agent's chest; drawing and loosing when `true`.
+    archer: Option<bool>,
     haven: sim_core::terrain::Haven,
 }
 
 impl Arena {
     fn new(temperament: Temperament) -> Self {
+        let mind = Mind::inline(Scripted::default(), MindConfig::default()).unwrap();
+        Self::with(temperament, mind, false)
+    }
+
+    /// With a mind of the test's choosing, and animals if asked for.
+    fn with(temperament: Temperament, mind: Mind, wildlife: bool) -> Self {
         let content = content();
         let mut bot = Survivor::with(
-            Mind::inline(Scripted::default(), MindConfig::default()).unwrap(),
+            mind,
             SurvivorOpts {
                 temperament,
                 ..SurvivorOpts::default()
@@ -116,7 +125,7 @@ impl Arena {
             dev: true,
         });
         Self {
-            shard: shard(&content, scene(), false, ID),
+            shard: shard(&content, scene(), wildlife, ID),
             stats: ShardStats::default(),
             view: ClientView::new(),
             bot,
@@ -130,6 +139,7 @@ impl Arena {
             peer: None,
             keep_off: None,
             chopper: None,
+            archer: None,
             haven: sim_core::terrain::haven(SEED),
         }
     }
@@ -249,6 +259,25 @@ impl Arena {
                 yaw: c.yaw,
                 pitch: 128,
                 buttons: BTN_PRIMARY,
+                sel: 0,
+                ..Default::default()
+            };
+            self.push(1, frame, (0, 0));
+        }
+        if let Some(shoot) = self.archer {
+            let (me, them) = (self.player(RUSHER).body, self.player(ID).body);
+            let dx = (them.qx - me.qx) as f32 * POS_XZ_Q;
+            let dz = (them.qz - me.qz) as f32 * POS_XZ_Q;
+            let dy = (them.qy - me.qy) as f32 * sim_core::movement::POS_Y_Q - 0.4;
+            let frame = InputFrame {
+                seq: self.tick as u16,
+                yaw: yaw_toward(dx, dz),
+                pitch: server::agent::intent::pitch_toward(dy, dx.hypot(dz)),
+                buttons: if shoot {
+                    sim_core::input::BTN_AIM | BTN_PRIMARY
+                } else {
+                    0
+                },
                 sel: 0,
                 ..Default::default()
             };
@@ -604,5 +633,302 @@ fn a_heal_counts_the_bandages_still_working() {
         a.explain()
     );
     assert_eq!(left, 2, "used {} bandages", 5 - left);
+    assert_eq!(a.heap_ops, 0);
+}
+
+/// A mind that hunts whatever animal is on offer and otherwise waits,
+/// looking about: the test's way of pointing the agent at the pig.
+struct Hunter;
+
+impl server::mind::DecisionSource for Hunter {
+    fn kind(&self) -> server::mind::SourceKind {
+        server::mind::SourceKind::Scripted
+    }
+
+    fn decide(&mut self, s: &server::mind::Summary) -> Result<server::mind::Choice, String> {
+        use server::mind::Goal;
+        let goal = if s.offers(Goal::Hunt) {
+            Goal::Hunt
+        } else {
+            Goal::Wait
+        };
+        Ok(server::mind::Choice {
+            goal,
+            confidence: 1.0,
+            reason: server::mind::Reason::from_text("test: hunt what is in view"),
+            input_tokens: 0,
+            output_tokens: 0,
+        })
+    }
+}
+
+/// A hunter on the island with one pig: every other animal slot is
+/// emptied, and the pig stands `off` metres ahead of the agent, grazing.
+/// The agent holds a rock (slot 0) and `weapon` (slot 1), with `rounds` of
+/// `round` in the pack.
+fn hunt(weapon: &str, round: &str, rounds: u16, off: f32) -> (Arena, usize) {
+    let content = content();
+    // Asked every second, so a pig glimpsed while looking about is hunted
+    // while it is still fresh in the mind's census.
+    let cfg = MindConfig {
+        heartbeat: Duration::from_secs(1),
+        per_hour: 100_000,
+        per_day: 100_000,
+        ..MindConfig::default()
+    };
+    let mind = Mind::inline(Hunter, cfg).unwrap();
+    let mut a = Arena::with(Temperament::Opportunist, mind, true);
+    a.step();
+    for m in a.shard.world.mobs.m.iter_mut() {
+        m.alive = false;
+        m.homed = false;
+    }
+    let pig = (0..sim_core::limits::MAX_MOBS)
+        .find(|&s| sim_core::mob::kind_of(s) == sim_core::mob::MOB_PIG)
+        .unwrap();
+    assert!(a.until(900, |a| a.bot.goal().is_some()), "{}", a.explain());
+    let (rock, gun) = (stack(&content, "item.rock"), stack(&content, weapon));
+    let mut ammo = stack(&content, round);
+    ammo.count = rounds;
+    a.stage(ID, |p| {
+        p.inv[0] = rock;
+        p.inv[1] = gun;
+        p.inv[HOTBAR_SLOTS + 3] = ammo;
+        p.hp = p.hp_max;
+    });
+    let me = a.player(ID);
+    let (fx, fz) = sim_core::yaw_dir(me.frame.yaw);
+    let (x, z) = (
+        me.body.qx as f32 * POS_XZ_Q + fx * off,
+        me.body.qz as f32 * POS_XZ_Q + fz * off,
+    );
+    let body = Body::at(SEED, &a.haven, x, z);
+    let hp = a.shard.world.mob.def(sim_core::mob::MOB_PIG).hp;
+    let m = &mut a.shard.world.mobs.m[pig];
+    m.homed = true;
+    m.alive = true;
+    m.hp = hp;
+    m.body = body;
+    m.home_qx = body.qx;
+    m.home_qz = body.qz;
+    m.respawn_at = u64::MAX;
+    (a, pig)
+}
+
+fn count_of(a: &Arena, id: &str) -> u32 {
+    let item = content().item_index(id).unwrap();
+    a.player(ID)
+        .inv
+        .iter()
+        .filter(|s| s.count > 0 && s.item == item)
+        .map(|s| u32::from(s.count))
+        .sum()
+}
+
+/// With a bow and arrows, the agent stalks a pig crouched, shoots it dead
+/// from range (drawing, leading, loosing only once settled), then walks
+/// to the carcass bag and loots it, and picks up the arrows lying about.
+#[test]
+fn the_agent_kills_a_pig_with_a_bow_and_loots_it() {
+    use sim_core::input::{BTN_AIM, BTN_CROUCH};
+    let (mut a, pig) = hunt("item.bow", "item.arrow_wood", 20, 24.0);
+    let mut pressed = 0u8;
+    for _ in 0..90 * TICK_HZ {
+        if !a.shard.world.mobs.m[pig].alive {
+            break;
+        }
+        pressed |= a.player(ID).frame.buttons;
+        a.step();
+    }
+    assert!(
+        !a.shard.world.mobs.m[pig].alive,
+        "the pig lives: {}",
+        a.explain()
+    );
+    let arrows = count_of(&a, "item.arrow_wood");
+    let looted = a.until(30 * TICK_HZ, |a| {
+        count_of(a, "item.raw_meat") > 0 && !a.bot.combat().engaged()
+    });
+    let c = a.bot.combat().stats;
+    println!(
+        "bow hunt: arrows {arrows} after the kill, {} after the pickups; {}",
+        count_of(&a, "item.arrow_wood"),
+        a.explain()
+    );
+    assert!(pressed & BTN_AIM != 0, "never drew the bow");
+    assert!(pressed & BTN_CROUCH != 0, "never crouched to stalk");
+    assert!(c.shots >= 1 && c.won >= 1, "{}", a.explain());
+    assert!(looted, "never looted the carcass: {}", a.explain());
+    assert!(c.loots >= 1 && c.pickups >= 1, "{}", a.explain());
+    assert!(
+        count_of(&a, "item.arrow_wood") > arrows,
+        "no arrow picked back up: {}",
+        a.explain()
+    );
+    assert_eq!(a.heap_ops, 0);
+}
+
+/// With a revolver (bought dry, as it comes off the bench), the agent
+/// loads it before it can shoot, kills the pig with it, and tops the
+/// cylinder up once things are quiet.
+#[test]
+fn a_dry_revolver_is_loaded_fired_and_topped_up() {
+    let (mut a, pig) = hunt("item.revolver", "item.pistol_ammo", 24, 20.0);
+    let dead = a.until(90 * TICK_HZ, |a| !a.shard.world.mobs.m[pig].alive);
+    assert!(dead, "the pig lives: {}", a.explain());
+    let reloads = a.bot.stats.reloads;
+    a.until(20 * TICK_HZ, |_| false);
+    let c = a.bot.combat().stats;
+    let p = a.player(ID);
+    println!(
+        "revolver: mag {:?} rounds {}; {}",
+        p.mag,
+        count_of(&a, "item.pistol_ammo"),
+        a.explain()
+    );
+    assert!(reloads >= 1, "fired a dry gun: {}", a.explain());
+    assert!(c.shots >= 1 && c.won >= 1, "{}", a.explain());
+    assert!(
+        a.bot.stats.reloads > reloads,
+        "never topped up: {}",
+        a.explain()
+    );
+    assert_eq!(a.heap_ops, 0);
+}
+
+/// Hurt in a fight it wins, the agent bandages itself once the foe is dead
+/// and its bag taken: under whatever goal it had, with no heal goal asked
+/// for. The bandages reach its pack only once the fight is under way, so
+/// none goes on before it.
+#[test]
+fn the_agent_heals_after_a_fight() {
+    let content = content();
+    let mut a = Arena::new(Temperament::Opportunist);
+    assert!(a.until(900, |a| a.bot.goal().is_some()), "{}", a.explain());
+    let spear = stack(&content, "item.spear_wood");
+    a.stage(ID, |p| {
+        p.inv[0] = spear;
+        p.hp = p.hp_max;
+    });
+    assert!(a.shard.connect(1, RUSHER));
+    a.step();
+    let (at, facing) = (a.player(ID).body, a.player(ID).frame.yaw);
+    let (fx, fz) = sim_core::yaw_dir(facing);
+    let (x, z) = (
+        at.qx as f32 * POS_XZ_Q + fx * 8.0,
+        at.qz as f32 * POS_XZ_Q + fz * 8.0,
+    );
+    let rock = stack(&content, "item.rock");
+    let body = Body::at(SEED, &a.haven, x, z);
+    a.stage(RUSHER, |p| {
+        p.body = body;
+        p.inv[0] = rock;
+    });
+    let reach_cm = a.shard.world.combat.held_melee(rock.item).unwrap().reach_cm;
+    a.rusher = Some(Rusher {
+        reach_m: f32::from(reach_cm) * 0.01 + sim_core::collide::CAPSULE_RADIUS_M - 0.1,
+    });
+    assert!(
+        a.until(20 * TICK_HZ, |a| a.bot.combat().mode() == Mode::Engage),
+        "{}",
+        a.explain()
+    );
+    let slot = HOTBAR_SLOTS + 2;
+    let mut bandages = stack(&content, "item.bandage");
+    bandages.count = 3;
+    a.stage(ID, |p| p.inv[slot] = bandages);
+    let won = a.until(60 * TICK_HZ, |a| {
+        a.player(RUSHER).dead || a.player(ID).wounded || a.player(ID).dead
+    });
+    a.rusher = None;
+    assert!(won && a.player(RUSHER).dead, "{}", a.explain());
+    assert_eq!(a.player(ID).inv[slot].count, 3, "a bandage mid-fight");
+    let over = a.until(30 * TICK_HZ, |a| !a.bot.combat().engaged());
+    let hp = a.player(ID).hp;
+    assert!(over, "{}", a.explain());
+    assert!(
+        u32::from(hp) * 100 < u32::from(a.player(ID).hp_max) * 80,
+        "not hurt enough to need a bandage: {hp}"
+    );
+    let healed = a.until(20 * TICK_HZ, |a| {
+        let p = a.player(ID);
+        p.hp > hp && p.inv[slot].count < 3
+    });
+    println!(
+        "heal: {hp} hp after the fight, {} now, {} bandages left; {}",
+        a.player(ID).hp,
+        a.player(ID).inv[slot].count,
+        a.explain()
+    );
+    assert!(healed, "no bandage after the fight: {}", a.explain());
+    assert!(a.bot.stats.reflex_heals >= 1, "{}", a.explain());
+    assert_eq!(a.heap_ops, 0);
+}
+
+/// A body aiming a bow at the agent from 25 m is sidestepped, eyes on it;
+/// once it looses arrows, the agent (nothing to shoot back with) runs for
+/// a trunk or a rock between them, weaving, rather than across open ground.
+#[test]
+fn an_archer_is_sidestepped_then_run_from_to_cover() {
+    let content = content();
+    // A body standing about (the hunter's mind waits with nothing to
+    // hunt), so the test is about the archer and not about exploring.
+    let mind = Mind::inline(Hunter, MindConfig::default()).unwrap();
+    let mut a = Arena::with(Temperament::Opportunist, mind, false);
+    // The archer joins with the agent, far off with its bow already up:
+    // first seen holding it.
+    assert!(a.shard.connect(1, RUSHER));
+    a.step();
+    let at = a.player(ID).body;
+    let bow = stack(&content, "item.bow");
+    let far = Body::at(
+        SEED,
+        &a.haven,
+        at.qx as f32 * POS_XZ_Q + 150.0,
+        at.qz as f32 * POS_XZ_Q,
+    );
+    a.stage(RUSHER, |p| {
+        p.inv[0] = bow;
+        p.body = far;
+    });
+    assert!(a.until(900, |a| a.bot.goal().is_some()), "{}", a.explain());
+    let spear = stack(&content, "item.spear_wood");
+    a.stage(ID, |p| {
+        p.inv[0] = spear;
+        p.hp = p.hp_max;
+    });
+    a.step();
+    let (at, facing) = (a.player(ID).body, a.player(ID).frame.yaw);
+    let (fx, fz) = sim_core::yaw_dir(facing);
+    let (x, z) = (
+        at.qx as f32 * POS_XZ_Q + fx * 18.0,
+        at.qz as f32 * POS_XZ_Q + fz * 18.0,
+    );
+    let body = Body::at(SEED, &a.haven, x, z);
+    a.stage(RUSHER, |p| p.body = body);
+    a.archer = Some(false);
+    let dodged = a.until(10 * TICK_HZ, |a| a.bot.combat().stats.evades > 0);
+    assert!(dodged, "never sidestepped the bow: {}", a.explain());
+    // Side to side: the path is long, the ground covered short.
+    let mut moved = 0.0;
+    for _ in 0..2 * TICK_HZ {
+        let from = a.player(ID).body;
+        a.step();
+        let to = a.player(ID).body;
+        moved += ((to.qx - from.qx) as f32 * POS_XZ_Q).hypot((to.qz - from.qz) as f32 * POS_XZ_Q);
+    }
+    assert!(moved > 4.0, "stood still under a drawn bow: {moved:.2} m");
+    assert_eq!(a.bot.combat().stats.engages, 0, "{}", a.explain());
+    assert_eq!(a.bot.combat().mode(), Mode::Idle, "a dodge is not a fight");
+    let mut arrows = stack(&content, "item.arrow_wood");
+    arrows.count = 50;
+    a.stage(RUSHER, |p| p.inv[HOTBAR_SLOTS] = arrows);
+    a.archer = Some(true);
+    let ran = a.until(20 * TICK_HZ, |a| a.bot.combat().stats.covers > 0);
+    a.until(5 * TICK_HZ, |_| false);
+    a.archer = None;
+    println!("archer: {}", a.explain());
+    assert!(ran, "never made for cover: {}", a.explain());
+    assert!(a.bot.combat().stats.escapes > 0, "{}", a.explain());
     assert_eq!(a.heap_ops, 0);
 }
