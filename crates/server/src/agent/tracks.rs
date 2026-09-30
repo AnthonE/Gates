@@ -794,7 +794,7 @@ fn velocity(now: [f32; 3], before: [f32; 3], ticks: u32) -> [f32; 3] {
 /// After dusk, by the day clock the client reads (`weather::day_tick`).
 /// The same numbers the sim's own test uses; restated here because the
 /// agent may not name the sim's world module.
-fn night(tick: u32, env: &Env) -> bool {
+pub fn night(tick: u32, env: &Env) -> bool {
     let t = (weather::day_tick(u64::from(tick), env) + DAY_PHASE_TICKS) % DAY_TICKS;
     t as f32 / DAY_TICKS as f32 >= DAY_PORTION
 }

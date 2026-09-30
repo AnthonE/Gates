@@ -74,12 +74,12 @@ fn root() -> std::path::PathBuf {
 /// The verbs the agent may send, in `encode_action_*` spelling. The one
 /// list to extend when a lane gives the agent a new verb: the source grep,
 /// the lockstep run and PLAYERS.md all answer to it.
-const EXPECTED_VERBS: [&str; 7] = [
-    "craft", "consume", "drink", "move", "respawn", "deploy", "loot",
+const EXPECTED_VERBS: [&str; 10] = [
+    "craft", "consume", "drink", "move", "respawn", "deploy", "loot", "place", "upgrade", "use",
 ];
 
 /// The verbs a life of gathering, crafting, eating, drinking and dying
-/// sends; the bag lifecycle's run sends the rest.
+/// sends; the bag lifecycle's and the builder's runs send the rest.
 const LIFE_VERBS: [&str; 5] = ["craft", "consume", "drink", "move", "respawn"];
 
 /// The buttons the agent presses today. Always within what the human
@@ -453,8 +453,11 @@ struct Harness {
 
 impl Harness {
     fn new(wildlife: bool) -> Self {
+        Self::at(wildlife, scene())
+    }
+
+    fn at(wildlife: bool, at: (f32, f32)) -> Self {
         let content = content::Content::load_dir(&root().join("content")).unwrap();
-        let at = scene();
         let spear = content.item_index("item.spear_wood").unwrap();
         let catalog = server::net::bake_all(&content).unwrap().catalog;
         let spear = sim_core::gather::ItemStack {
@@ -981,8 +984,16 @@ fn half_an_hour_alone_keeps_food_and_water_up() {
         h.explain()
     );
     // With stone tools in hand the playbook forages the cloth for a
-    // sleeping bag, crafts it and puts it down, unstaged.
-    assert_eq!(h.bot.home().stats.bags_placed, 1, "{}", h.explain());
+    // sleeping bag, crafts it and puts it down, unstaged; then it gathers
+    // for a base and builds one, whose second milestone puts a bag inside.
+    let bags = h.bot.home().stats.bags_placed;
+    assert!((1..=2).contains(&bags), "{bags} bags: {}", h.explain());
+    assert!(
+        h.bot.builder().survey().hearth,
+        "no cupboard in half an hour: {:?} {}",
+        h.bot.builder().stats,
+        h.explain()
+    );
     assert!(h.bot.mind.stats.requests * u64::from(TICK_HZ) <= u64::from(h.tick));
     assert_eq!(h.heap_ops, 0);
 }
@@ -1025,4 +1036,246 @@ fn half_an_hour_with_wildlife_answers_every_death_in_game() {
     }
     assert!(h.bot.mind.stats.requests * u64::from(TICK_HZ) <= u64::from(h.tick));
     assert_eq!(h.heap_ops, 0);
+}
+
+/// A home, in lockstep. With stone tools and the wood, stone and cloth for
+/// the first three milestones staged in the pack, the playbook puts a bag
+/// down, chooses a plot and builds on it from inside: the cupboard and the
+/// twig shell, the wooden doors, a bag and a box inside, then the core
+/// graded to stone. Every piece goes down with the plan in hand, every
+/// grade with the hammer, every deployable itself in hand. Short of wood
+/// for the storey above, it walks out through its own doors and shuts them
+/// behind. What it built then keeps a stranger out, the way
+/// `tests/base.rs` uses a base: a shut door is a wall, and nobody else
+/// builds inside its claim.
+#[test]
+fn a_survivor_builds_its_starter_and_the_base_keeps_strangers_out() {
+    use server::agent::build::{Milestone, Region};
+    use sim_core::build::{BUILD_CELL_M, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, MAT_STONE};
+    use sim_core::deploy::{ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_HEARTH};
+
+    let mut h = Harness::new(false);
+    let content = content::Content::load_dir(&root().join("content")).unwrap();
+    let catalog = server::net::bake_all(&content).unwrap().catalog;
+    let stack = |id: &str, count: u16| {
+        let item = content.item_index(id).unwrap();
+        sim_core::gather::ItemStack {
+            item,
+            count,
+            cond: catalog.cond_max(item as usize),
+            skin: 0,
+        }
+    };
+    // The join lands on the tick after `connect`.
+    h.until(5, |_| false);
+    let kit = [
+        stack("item.wood", 1000),
+        stack("item.wood", 1000),
+        stack("item.wood", 400),
+        stack("item.stone", 1000),
+        stack("item.stone", 1000),
+        stack("item.stone", 1000),
+        stack("item.cloth", 60),
+    ];
+    let (hatchet, pickaxe) = (
+        stack("item.hatchet_stone", 1),
+        stack("item.pickaxe_stone", 1),
+    );
+    h.stage(|p| {
+        p.inv[1] = hatchet;
+        p.inv[2] = pickaxe;
+        for (i, s) in kit.iter().enumerate() {
+            p.inv[10 + i] = *s;
+        }
+    });
+
+    // 1. The shell, the doors, the bag and box inside, the stone core.
+    let built = h.until(24_000, |b| {
+        b.builder().survey().milestone >= Milestone::Upstairs
+    });
+    if !built {
+        let me = h.view.get(ID).copied().unwrap();
+        let plan = h.bot.builder().plan().unwrap();
+        eprintln!(
+            "DEBUG rel ({}, {}) builder {:?}",
+            me.qx as f32 * sim_core::movement::POS_XZ_Q - f32::from(plan.cx + 1) * 3.0,
+            me.qz as f32 * sim_core::movement::POS_XZ_Q - f32::from(plan.cz + 1) * 3.0,
+            h.bot.builder()
+        );
+    }
+    assert!(
+        built,
+        "the base stopped at {:?}: {:?} {}",
+        h.bot.builder().survey(),
+        h.bot.builder().stats,
+        h.explain()
+    );
+    let plan = h.bot.builder().plan().expect("a plot");
+    let (cx, cz) = (plan.cx, plan.cz);
+    {
+        let w = &h.shard.world;
+        let arch = |x: u16, z: u16, level: u8, loc: u8| {
+            w.deploys
+                .find(x, z, level, loc)
+                .filter(|d| d.owner == ID)
+                .map(|d| w.deploy.defs[usize::from(d.row)].arch)
+        };
+        assert_eq!(
+            arch(cx, cz, 0, LOC_PLANE),
+            Some(ARCH_HEARTH),
+            "the cupboard"
+        );
+        assert_eq!(
+            arch(cx + 1, cz + 1, 0, LOC_EDGE_XLO),
+            Some(ARCH_DOOR),
+            "front door"
+        );
+        assert_eq!(
+            arch(cx + 1, cz + 1, 0, LOC_EDGE_ZLO),
+            Some(ARCH_DOOR),
+            "inner door"
+        );
+        assert_eq!(
+            arch(cx + 1, cz, 0, LOC_PLANE),
+            Some(ARCH_BOX),
+            "the box inside"
+        );
+        assert_eq!(
+            arch(cx + 1, cz + 1, 0, LOC_PLANE),
+            Some(ARCH_BAG),
+            "the bag inside"
+        );
+        let wood_door = content.item_index("item.door_wood").unwrap();
+        for loc in [LOC_EDGE_XLO, LOC_EDGE_ZLO] {
+            let d = w.deploys.find(cx + 1, cz + 1, 0, loc).unwrap();
+            assert_eq!(w.deploy.defs[usize::from(d.row)].item, wood_door);
+        }
+        // The shell, and the core's walls in stone.
+        for (x, z, loc) in [
+            (cx, cz, LOC_EDGE_XLO),
+            (cx, cz, LOC_EDGE_ZLO),
+            (cx, cz + 1, LOC_EDGE_ZLO),
+            (cx + 1, cz, LOC_EDGE_ZLO),
+            (cx + 2, cz, LOC_EDGE_XLO),
+        ] {
+            let rec = w.pieces.find(x, z, 0, loc).expect("a shell wall");
+            assert_eq!(
+                w.build.pieces[rec.row as usize].material, MAT_STONE,
+                "wall at {x},{z} loc {loc}"
+            );
+        }
+    }
+    let stats = h.bot.builder().stats;
+    assert!(
+        stats.placed >= 11 && stats.deployed >= 5 && stats.graded >= 11,
+        "{stats:?}"
+    );
+    assert!(
+        h.held_checks as u64 >= stats.placed + stats.graded + stats.deployed,
+        "every place, grade and deploy went out with its item in hand: {} checks, {stats:?}",
+        h.held_checks
+    );
+
+    // 2. Short of wood for the storey above: out through its own doors,
+    //    shut behind it.
+    let mut outside = false;
+    for _ in 0..9_000 {
+        h.step();
+        let me = h.view.get(ID).copied().unwrap();
+        let shut = |loc: u8| {
+            h.shard
+                .world
+                .deploys
+                .find(cx + 1, cz + 1, 0, loc)
+                .is_some_and(|d| !d.open)
+        };
+        if h.bot.builder().region(&me) == Region::Outside
+            && !h.bot.builder().passing()
+            && h.bot.builder().stats.uses >= 4
+            && shut(LOC_EDGE_XLO)
+            && shut(LOC_EDGE_ZLO)
+        {
+            outside = true;
+            break;
+        }
+    }
+    assert!(
+        outside,
+        "never left through the doors and shut them: {:?} {}",
+        h.bot.builder().stats,
+        h.explain()
+    );
+    for verb in ["place", "upgrade", "deploy", "use", "craft"] {
+        assert!(h.verbs.contains(verb), "{verb} never sent: {:?}", h.verbs);
+    }
+    let expected: BTreeSet<&str> = EXPECTED_VERBS.into_iter().collect();
+    assert!(h.verbs.is_subset(&expected));
+    assert_eq!(
+        h.heap_ops, 0,
+        "the agent's frame loop touched the allocator"
+    );
+    println!("{:?} {}", h.bot.builder().stats, h.explain());
+
+    // 3. Its base, used by somebody else. The lockstep is over, so the live
+    //    world may be driven directly now.
+    let w = &mut h.shard.world;
+    let (ax, az) = (
+        f32::from(cx + 1) * BUILD_CELL_M,
+        f32::from(cz + 1) * BUILD_CELL_M,
+    );
+    // Outside the shut front door, walking at it: a wall.
+    let mut body = sim_core::movement::Body::at(SEED, &w.haven, ax - 1.2, az + 1.5);
+    let mut scratch = sim_core::occupy::Scratch::barren();
+    for _ in 0..60 {
+        sim_core::movement::step(
+            SEED,
+            &w.haven,
+            w.pieces.cols(),
+            &mut scratch.occupants(),
+            &mut body,
+            &sim_core::input::InputFrame {
+                move_x: 127,
+                ..Default::default()
+            },
+        );
+    }
+    let x = body.qx as f32 * sim_core::movement::POS_XZ_Q;
+    assert!(x < ax + 0.5, "walked through the shut front door to x {x}");
+    // A stranger two cells south of the front door, with a foundation's
+    // wood in hand: refused for the claim.
+    const STRANGER: u32 = 300;
+    w.tick(&[sim_core::world::Command::Join { id: STRANGER }]);
+    let slot = w
+        .players
+        .iter()
+        .position(|p| p.active && p.id == STRANGER)
+        .expect("the stranger joined");
+    w.players[slot].body = sim_core::movement::Body::at(
+        SEED,
+        &w.haven,
+        f32::from(cx + 1) * BUILD_CELL_M + 1.5,
+        f32::from(cz + 3) * BUILD_CELL_M + 1.5,
+    );
+    w.players[slot].inv[0] = stack("item.wood", 1000);
+    let foundation = server::population::base_rows(&content).unwrap().foundation;
+    w.tick(&[sim_core::world::Command::Place {
+        id: STRANGER,
+        row: foundation,
+        cx: cx + 1,
+        cz: cz + 3,
+        level: 0,
+        loc: LOC_PLANE,
+        freehand: false,
+        plate: 0,
+    }]);
+    assert!(
+        w.events
+            .entries()
+            .iter()
+            .any(|e| e.code == sim_core::world::EV_BUILD_REFUSED
+                && e.a == STRANGER
+                && e.b == sim_core::build::REFUSE_B_CLAIM),
+        "a stranger built inside the base's claim"
+    );
+    assert!(w.pieces.find(cx + 1, cz + 3, 0, LOC_PLANE).is_none());
 }

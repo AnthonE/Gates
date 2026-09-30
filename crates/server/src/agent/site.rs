@@ -262,11 +262,23 @@ fn terrain_hides(seed: u64, haven: &Haven, from: [f32; 3], to: [f32; 3]) -> bool
     })
 }
 
+/// Every column the starter's walls stand on, from the plot: its footprint
+/// and the cells whose low edges close it (`sim_core::bots::STARTER`).
+const PLOT_COLUMNS: [(u16, u16); 5] = [(0, 0), (1, 0), (2, 0), (0, 1), (1, 1)];
+
 /// Would the starter base go on this plot? Every cell of its footprint
-/// takes a foundation, off the roads and clear of the landmarks, and no
-/// building this body has seen is within a claim's reach.
+/// takes a foundation, off the roads and clear of the landmarks, no
+/// building this body has seen is within a claim's reach, and the ground
+/// is even enough that every wall latches to the core's plate.
 pub fn plot_goes(seed: u64, haven: &Haven, seen: &Seen, cx: u16, cz: u16) -> bool {
-    STARTER_FOOTPRINT.iter().all(|&(dx, dz)| {
+    if usize::from(cx) + 2 >= MAX_BUILD_COORD || usize::from(cz) + 1 >= MAX_BUILD_COORD {
+        return false;
+    }
+    let band = sim_core::build::terrain_band(seed, haven, cx, cz);
+    let even = PLOT_COLUMNS.iter().all(|&(dx, dz)| {
+        (sim_core::build::terrain_band(seed, haven, cx + dx, cz + dz) - band).abs() <= 1
+    });
+    even && STARTER_FOOTPRINT.iter().all(|&(dx, dz)| {
         let (Some(x), Some(z)) = (
             cx.checked_add_signed(i16::from(dx)),
             cz.checked_add_signed(i16::from(dz)),
@@ -284,9 +296,10 @@ pub fn plot_goes(seed: u64, haven: &Haven, seen: &Seen, cx: u16, cz: u16) -> boo
 }
 
 /// The plot to build the starter on, near `from`: the one that goes
-/// ([`plot_goes`]) with the least walking to it and from it to the wood and
-/// stone this body remembers. Bounded (`PLOT_SEARCH_CELLS` on each side)
-/// and allocation-free; `None` when nothing near goes.
+/// ([`plot_goes`]) and that the caller does not `avoid`, with the least
+/// walking to it and from it to the wood and stone this body remembers.
+/// Bounded (`PLOT_SEARCH_CELLS` on each side) and allocation-free; `None`
+/// when nothing near goes.
 pub fn pick_plot(
     seed: u64,
     haven: &Haven,
@@ -294,6 +307,7 @@ pub fn pick_plot(
     from: [f32; 2],
     wood: Option<[f32; 2]>,
     stone: Option<[f32; 2]>,
+    avoid: impl Fn(u16, u16) -> bool,
 ) -> Option<(u16, u16)> {
     let fx = build_cell_of(from[0]);
     let fz = build_cell_of(from[1]);
@@ -315,7 +329,10 @@ pub fn pick_plot(
             let (x, z) = cell_mid(cx, cz);
             let score = (x - from[0]).hypot(z - from[1]) + near(wood, x, z) + near(stone, x, z);
             // The cheap score first: the ground rules cost terrain samples.
-            if best.is_some_and(|(b, ..)| score >= b) || !plot_goes(seed, haven, seen, cx, cz) {
+            if best.is_some_and(|(b, ..)| score >= b)
+                || !plot_goes(seed, haven, seen, cx, cz)
+                || avoid(cx, cz)
+            {
                 continue;
             }
             best = Some((score, cx, cz));
@@ -379,7 +396,7 @@ mod tests {
         }
         assert!(seen.places().next().is_none());
         assert_eq!(
-            pick_plot(SEED, &haven, &seen, [x, z], None, None),
+            pick_plot(SEED, &haven, &seen, [x, z], None, None, |_, _| false),
             Some((cx, cz))
         );
         // Its own building is not someone else's.
@@ -393,7 +410,7 @@ mod tests {
         }
         assert_eq!(seen.places().count(), 1, "{:?}", seen.stats);
         assert!(!seen.clear_of(x, z, CLAIM_KEEP_M));
-        let moved = pick_plot(SEED, &haven, &seen, [x, z], None, None);
+        let moved = pick_plot(SEED, &haven, &seen, [x, z], None, None, |_, _| false);
         if let Some((mx, mz)) = moved {
             let (px, pz) = cell_mid(mx, mz);
             assert!((px - x).hypot(pz - z) > CLAIM_KEEP_M);
@@ -456,9 +473,17 @@ mod tests {
         let seen = Seen::new();
         let east = [x + 30.0, z];
         let (px, _) = cell_mid(
-            pick_plot(SEED, &haven, &seen, [x, z], Some(east), Some(east))
-                .expect("a plot near a plot that goes")
-                .0,
+            pick_plot(
+                SEED,
+                &haven,
+                &seen,
+                [x, z],
+                Some(east),
+                Some(east),
+                |_, _| false,
+            )
+            .expect("a plot near a plot that goes")
+            .0,
             0,
         );
         assert!(px > x, "{px} not east of {x}");

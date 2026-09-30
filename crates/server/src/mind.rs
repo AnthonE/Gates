@@ -11,6 +11,7 @@
 //! the input loop neither waits nor allocates. Defaults: `DECISIONS.md`
 //! §open, "Jev goals v0".
 
+pub use crate::agent::build::Milestone;
 use protocol::MAX_ITEM_NAME_BYTES;
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
@@ -28,6 +29,8 @@ pub const GOAL_HISTORY: usize = 8;
 /// Pack entries and craftable names a summary carries.
 pub const SUMMARY_ITEMS: usize = 16;
 pub const SUMMARY_CRAFTS: usize = 8;
+/// Materials the next part of the base is short of, as a summary carries them.
+pub const SUMMARY_NEEDS: usize = crate::agent::build::NEED_ROWS;
 /// The deployable a body wakes on, by catalog name: what the playbook
 /// crafts once it has stone tools.
 pub const BAG_ITEM: &str = "Sleeping Bag";
@@ -104,6 +107,11 @@ pub enum Goal {
     /// Walk back to the backpack this body dropped where it died, and take
     /// what it held.
     Recover,
+    /// Work on the base: choose a plot if there is none, then build the
+    /// next milestone as far as the pack pays for it.
+    Build,
+    /// Walk home and in through its own doors, shutting them behind.
+    GoHome,
 }
 
 /// `craft:` plus the longest catalog name.
@@ -131,7 +139,7 @@ impl std::fmt::Debug for Label {
 
 impl Goal {
     /// Every goal but the per-item craft, in the order they are offered.
-    pub const FIXED: [Goal; 11] = [
+    pub const FIXED: [Goal; 13] = [
         Goal::Explore,
         Goal::GatherWood,
         Goal::GatherStone,
@@ -143,6 +151,8 @@ impl Goal {
         Goal::Wait,
         Goal::Bag,
         Goal::Recover,
+        Goal::Build,
+        Goal::GoHome,
     ];
 
     /// The vocabulary's base keys, for documentation and tests.
@@ -160,6 +170,8 @@ impl Goal {
             Goal::Wait => "wait",
             Goal::Bag => "bag",
             Goal::Recover => "recover",
+            Goal::Build => "build",
+            Goal::GoHome => "go_home",
         }
     }
 
@@ -223,6 +235,10 @@ impl Goal {
                 "Walk back to the backpack dropped at the last death and take what it holds."
                     .into()
             }
+            Goal::Build => {
+                "Build the next part of the base from what is in the pack; choose a plot first if there is none.".into()
+            }
+            Goal::GoHome => "Walk home and in through the doors, shutting them behind.".into(),
         }
     }
 }
@@ -389,6 +405,86 @@ impl Sighting {
     }
 }
 
+/// Where home stands for this body.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum HomeState {
+    /// No plot chosen.
+    #[default]
+    None,
+    /// A plot chosen, no cupboard standing on it yet.
+    Plot,
+    /// Its cupboard stands.
+    Built,
+    /// Built, and this body is inside it.
+    Inside,
+}
+
+impl HomeState {
+    pub fn word(self) -> &'static str {
+        match self {
+            HomeState::None => "none",
+            HomeState::Plot => "plot_chosen",
+            HomeState::Built => "built",
+            HomeState::Inside => "inside",
+        }
+    }
+}
+
+/// A coarse distance: here (under 10 m), near (50), mid (200), far.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Distance {
+    #[default]
+    Here,
+    Near,
+    Mid,
+    Far,
+}
+
+impl Distance {
+    pub fn of(metres: f32) -> Self {
+        if metres < 10.0 {
+            Distance::Here
+        } else if metres < 50.0 {
+            Distance::Near
+        } else if metres < 200.0 {
+            Distance::Mid
+        } else {
+            Distance::Far
+        }
+    }
+
+    pub fn word(self) -> &'static str {
+        match self {
+            Distance::Here => "here",
+            Distance::Near => "near",
+            Distance::Mid => "mid",
+            Distance::Far => "far",
+        }
+    }
+}
+
+/// Home as a summary carries it: no position, a relative bearing (an index
+/// into [`BEARINGS`]) and a distance band.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct HomeSense {
+    pub state: HomeState,
+    pub distance: Distance,
+    pub bearing: u8,
+}
+
+impl HomeSense {
+    fn json(&self) -> Value {
+        if self.state == HomeState::None {
+            return json!({ "state": "none" });
+        }
+        json!({
+            "state": self.state.word(),
+            "distance": self.distance.word(),
+            "bearing": BEARINGS[self.bearing as usize % 8],
+        })
+    }
+}
+
 /// The most goals one request can offer: the fixed set and every craft.
 pub const MAX_OPTIONS: usize = Goal::FIXED.len() + SUMMARY_CRAFTS;
 
@@ -428,6 +524,15 @@ pub struct Summary {
     pub bags: u8,
     /// The backpack it dropped at its last death, while it stands.
     pub backpack: Sighting,
+    /// Its base, if it has one.
+    pub home: HomeSense,
+    /// One of its sleeping bags would take it now.
+    pub bag_ready: bool,
+    pub night: bool,
+    /// The next part of the base, and what the pack is short of for it.
+    pub milestone: Milestone,
+    pub needs: [(Name, u32); SUMMARY_NEEDS],
+    pub needs_len: u8,
     pub trigger: Trigger,
     pub options: [Goal; MAX_OPTIONS],
     pub options_len: u8,
@@ -494,6 +599,16 @@ impl Summary {
             nearest_m: 0,
             bearing: 0,
         },
+        home: HomeSense {
+            state: HomeState::None,
+            distance: Distance::Here,
+            bearing: 0,
+        },
+        bag_ready: false,
+        night: false,
+        milestone: Milestone::Shell,
+        needs: [(Name::EMPTY, 0); SUMMARY_NEEDS],
+        needs_len: 0,
         trigger: Trigger::Start,
         options: [Goal::Wait; MAX_OPTIONS],
         options_len: 0,
@@ -505,6 +620,10 @@ impl Summary {
 
     pub fn craftable(&self) -> &[Name] {
         &self.craftable[..self.craftable_len as usize]
+    }
+
+    pub fn needs(&self) -> &[(Name, u32)] {
+        &self.needs[..self.needs_len as usize]
     }
 
     pub fn options(&self) -> &[Goal] {
@@ -581,6 +700,13 @@ impl Summary {
             "respawns": self.respawns,
             "sleeping_bags_down": self.bags,
             "my_death_backpack": self.backpack.json(),
+            "home": self.home.json(),
+            "a_sleeping_bag_is_ready": self.bag_ready,
+            "night": self.night,
+            "base_next": {
+                "milestone": self.milestone.word(),
+                "missing": self.needs().iter().map(|(n, c)| json!({"name": n.as_str(), "count": c})).collect::<Vec<_>>(),
+            },
             "asked_because": self.trigger.word(),
         })
     }
@@ -1179,6 +1305,28 @@ impl Scripted {
                 }
             }
         }
+        // Then a home: the next milestone's materials, gathered where they
+        // are in view, then the building. Short of something nobody can see,
+        // it builds what the pack pays for, and otherwise looks round.
+        if tooled && s.milestone != Milestone::Done {
+            if s.needs_len == 0 && s.offers(Goal::Build) {
+                return (Goal::Build, "scripted: build the next part of the base");
+            }
+            for (name, _) in s.needs() {
+                let (goal, seen) = match name.as_str() {
+                    "Wood" => (Goal::GatherWood, s.trees.count > 0),
+                    "Stone" => (Goal::GatherStone, s.stone_nodes.count > 0),
+                    "Cloth" => (Goal::Forage, s.bushes.count > 0),
+                    _ => continue,
+                };
+                if seen && s.offers(goal) {
+                    return (goal, "scripted: materials for the base");
+                }
+            }
+            if s.offers(Goal::Build) {
+                return (Goal::Build, "scripted: build what the pack pays for");
+            }
+        }
         // Alternate the resources, preferring one that is in view.
         let order = [
             Goal::GatherWood,
@@ -1450,5 +1598,42 @@ mod tests {
             secs: 3,
         });
         assert_eq!(scripted.pick(&s).0, Goal::Recover);
+    }
+
+    #[test]
+    fn with_a_bag_down_the_playbook_gathers_for_the_base_then_builds_it() {
+        let mut scripted = Scripted::default();
+        let mut s = Summary::EMPTY;
+        (s.food, s.food_max, s.water, s.water_max) = (100, 100, 100, 100);
+        s.items[0] = (name("Stone Hatchet"), 1);
+        s.items[1] = (name("Stone Pickaxe"), 1);
+        s.items_len = 2;
+        s.bags = 1;
+        for g in [
+            Goal::Explore,
+            Goal::GatherWood,
+            Goal::GatherStone,
+            Goal::Build,
+        ] {
+            s.offer(g);
+        }
+        s.trees.add(10.0, 0);
+        s.stone_nodes.add(12.0, 2);
+        s.needs[0] = (name("Stone"), 900);
+        s.needs_len = 1;
+        s.milestone = Milestone::Stone;
+        assert_eq!(scripted.pick(&s).0, Goal::GatherStone, "the missing stone");
+        // None in sight: what the pack pays for goes up meanwhile.
+        s.stone_nodes = Sighting::default();
+        assert_eq!(scripted.pick(&s).0, Goal::Build);
+        s.needs_len = 0;
+        assert_eq!(scripted.pick(&s).0, Goal::Build, "all in the pack");
+        // A finished base is not built again.
+        s.milestone = Milestone::Done;
+        assert_eq!(scripted.pick(&s).0, Goal::GatherWood);
+        assert_eq!(Goal::GoHome.label().as_str(), "go_home");
+        assert!(Goal::FIXED
+            .iter()
+            .all(|g| g.label().as_str().len() <= LABEL_BYTES));
     }
 }

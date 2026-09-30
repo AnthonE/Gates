@@ -4,7 +4,7 @@
 //! what a player knows of the game's rules ([`wiki`]), the legs that find
 //! a way somewhere ([`route`]), the reflex that answers a fight
 //! ([`combat`]), its bags and the walk back to what it dropped ([`home`]),
-//! and where it would build ([`site`]).
+//! where it would build ([`site`]), and the building ([`build`]).
 //! `explorer.rs` stays the orchestrator; these modules never drain
 //! `ClientCore`'s event rings — `Survivor::event_with` is the one reader
 //! and hands them facts.
@@ -13,6 +13,7 @@
 //! (`tests/agent_walls.rs`): human verbs and buttons only, no server-side
 //! state by name, and nothing allocated on the frame path.
 
+pub mod build;
 pub mod combat;
 pub mod hands;
 pub mod home;

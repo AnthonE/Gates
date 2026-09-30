@@ -222,6 +222,17 @@ mod tests {
         (s.trees, s.stone_nodes, s.ore_nodes, s.bushes) = (seen, seen, seen, seen);
         (s.players, s.animals, s.water_near, s.backpack) = (seen, seen, seen, seen);
         s.bags = u8::MAX;
+        s.home = crate::mind::HomeSense {
+            state: crate::mind::HomeState::Inside,
+            distance: crate::mind::Distance::Far,
+            bearing: 5,
+        };
+        (s.bag_ready, s.night) = (true, true);
+        s.milestone = crate::mind::Milestone::Upstairs;
+        for i in 0..crate::mind::SUMMARY_NEEDS {
+            s.needs[i] = (long(200 + i), u32::MAX);
+        }
+        s.needs_len = crate::mind::SUMMARY_NEEDS as u8;
         (s.hp, s.hp_max, s.food, s.food_max, s.water, s.water_max) = (100, 100, 500, 500, 250, 250);
         s.last = Some(Report {
             goal: Goal::Craft(long(7)),
