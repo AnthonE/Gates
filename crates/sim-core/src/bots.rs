@@ -9,11 +9,13 @@
 //! build, bolt, arm, plant, guess, take — and spends its own stream on
 //! its own `Pcg32`, so nothing here moves a digest that existed before it.
 
-use crate::build::{LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE};
+use crate::build::{
+    LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, LOC_RISER_ZLO, LOC_TRI_XLO_ZLO, MAT_STONE,
+    MAT_WOOD,
+};
 use crate::deploy::{box_key, ACCESS_OP_ENTER, ACCESS_OP_SET_CODE, ACCESS_OP_TAKE};
 use crate::input::{InputFrame, BTN_JUMP, BTN_PRIMARY, BTN_SPRINT};
 use crate::inventory::{CONT_BOX, CONT_SELF};
-use crate::limits::MAX_BUILD_LEVELS;
 use crate::lock::CODE_MAX;
 use crate::rng::Pcg32;
 use crate::world::Command;
@@ -94,7 +96,7 @@ pub fn bot_frame(rng: &mut Pcg32, prev_yaw: u16, seq: u16) -> InputFrame {
 ///
 /// The profile carries no row numbers of its own, and that is wall 7 and
 /// not tidiness: a raider that knew what a wall costs would be balance
-/// living in code. The caller names what a foundation, a wall, a floor, a
+/// living in code. The caller names what a foundation, a wall, a
 /// container, a lock and the held throwable are in the table *it* baked,
 /// and the script is the same script against `probe_fixture` or
 /// `content/`.
@@ -104,9 +106,6 @@ pub struct RaidRows {
     pub foundation: u16,
     /// Building-piece row for a wall, placed at the two edge locs.
     pub wall: u16,
-    /// Building-piece row for a floor: every storey of a tower above the
-    /// foundation stands on one, and one caps it ([`tower_piece`]).
-    pub floor: u16,
     /// Deployable row for a lockable container.
     pub container: u16,
     /// Deployable row for a code lock.
@@ -121,6 +120,10 @@ pub struct RaidRows {
     /// The code the owner arms its lock with. The attacker never gets it:
     /// it guesses, which is the point of the verb.
     pub code: u16,
+    /// What an owner builds a real base out of ([`base_step`]). `None` keeps
+    /// the flat plot the storms drive: a foundation and two walls, re-laid
+    /// every cycle.
+    pub base: Option<BaseRows>,
 }
 
 /// One synthetic player's raid script: who it is, which plot it is on, and
@@ -142,13 +145,6 @@ pub struct RaidPlan {
     /// Input sequence, so a selection frame is not mistaken for a replay
     /// of the last one.
     pub seq: u16,
-    /// Storeys the owner builds. 0 is the flat plot the storms drive — a
-    /// foundation and two walls, re-laid every cycle. Above 0 the owner's
-    /// three build steps walk [`tower_piece`] instead.
-    pub storeys: u8,
-    /// The next tower piece. It wraps, so a pass over a standing tower
-    /// re-lays whatever a raid took down (and is refused for the rest).
-    pub build: u16,
 }
 
 impl RaidPlan {
@@ -160,121 +156,7 @@ impl RaidPlan {
             attacker,
             step: 0,
             seq: 0,
-            storeys: 0,
-            build: 0,
         }
-    }
-
-    /// This owner builds a tower `storeys` high on its plot instead of the
-    /// flat plot, capped at [`MAX_TOWER_STOREYS`].
-    pub const fn with_storeys(mut self, storeys: u8) -> Self {
-        self.storeys = if storeys > MAX_TOWER_STOREYS {
-            MAX_TOWER_STOREYS
-        } else {
-            storeys
-        };
-        self
-    }
-}
-
-/// How high the shard's own owners build (`botclient.rs`): three storeys and
-/// a cap. 16 twig pieces, 725 wood at shipped prices, so one 1000 stack puts
-/// it up and still has some left to re-lay what a raid takes down.
-pub const TOWER_STOREYS: u8 = 3;
-
-/// The tallest tower the lattice holds: walls on whole storeys `0..storeys`
-/// and the cap on `storeys`, which must stay a whole storey (the sockets from
-/// `MAX_BUILD_LEVELS` up are the half-storeys, `build::level_y`).
-pub const MAX_TOWER_STOREYS: u8 = MAX_BUILD_LEVELS as u8 - 1;
-
-/// Cells between neighbouring owners' towers. Three, so an empty column
-/// separates two footprints (a tower's east and south walls sit in the next
-/// cells over) and neither base latches onto the other's plate
-/// (`build::plate_for`).
-pub const TOWER_SPACING: u16 = 3;
-
-/// The cell owner number `owner` builds its tower on, nearest `(cx, cz)`.
-///
-/// Four owners in a row keep to four disjoint lattices, `TOWER_SPACING`
-/// apart, so a crowd that walked in together (every trailer tape spawns on
-/// one point) builds a street of towers instead of one tower four times.
-pub fn tower_site(cx: u16, cz: u16, owner: u32) -> (u16, u16) {
-    let m = 2 * TOWER_SPACING;
-    let snap = |c: u16, at: u16| {
-        // How far past the lattice line below `c` is; the nearer line wins.
-        let r = (c % m + m - at) % m;
-        if r <= m / 2 {
-            c.saturating_sub(r)
-        } else {
-            c.saturating_add(m - r)
-        }
-    };
-    (
-        snap(cx, (owner % 2) as u16 * TOWER_SPACING),
-        snap(cz, (owner / 2 % 2) as u16 * TOWER_SPACING),
-    )
-}
-
-/// What a tower piece is, for the caller to turn into a row.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum TowerPart {
-    Foundation,
-    Wall,
-    Floor,
-}
-
-/// Pieces in a `storeys`-high tower: a plane and four walls a storey, and
-/// the cap.
-pub const fn tower_len(storeys: u8) -> u16 {
-    5 * storeys as u16 + 1
-}
-
-/// Piece `i` of a one-cell tower on `(cx, cz)`: `(part, cx, cz, level, loc)`.
-///
-/// Bottom up — each storey is its plane (the foundation, or a floor on the
-/// walls below) and then its four walls, and the last piece is the floor
-/// that caps the top — so in this order every piece stands on the ones
-/// before it (`build::supported`). The east and south walls are the low
-/// edges of the next cells over, which is how the grid names them.
-pub fn tower_piece(cx: u16, cz: u16, storeys: u8, i: u16) -> (TowerPart, u16, u16, u8, u8) {
-    let (storey, k) = (i / 5, i % 5);
-    if storey >= storeys as u16 || k == 0 {
-        let level = storey.min(storeys as u16) as u8;
-        let part = if level == 0 {
-            TowerPart::Foundation
-        } else {
-            TowerPart::Floor
-        };
-        return (part, cx, cz, level, LOC_PLANE);
-    }
-    let (x, z, loc) = match k {
-        1 => (cx, cz, LOC_EDGE_XLO),
-        2 => (cx, cz, LOC_EDGE_ZLO),
-        3 => (cx.saturating_add(1), cz, LOC_EDGE_XLO),
-        _ => (cx, cz.saturating_add(1), LOC_EDGE_ZLO),
-    };
-    (TowerPart::Wall, x, z, storey as u8, loc)
-}
-
-/// The owner's next tower piece as a place request, advancing the cursor.
-fn tower_step(plan: &mut RaidPlan, rows: RaidRows) -> Command {
-    let len = tower_len(plan.storeys);
-    let i = plan.build % len;
-    plan.build = (i + 1) % len;
-    let (part, cx, cz, level, loc) = tower_piece(plan.cx, plan.cz, plan.storeys, i);
-    Command::Place {
-        id: plan.id,
-        row: match part {
-            TowerPart::Foundation => rows.foundation,
-            TowerPart::Wall => rows.wall,
-            TowerPart::Floor => rows.floor,
-        },
-        cx,
-        cz,
-        level,
-        loc,
-        freehand: false,
-        plate: 0,
     }
 }
 
@@ -403,9 +285,6 @@ pub fn raid_step(plan: &mut RaidPlan, rng: &mut Pcg32, rows: RaidRows) -> Comman
         }
     } else {
         match step {
-            // A tower owner spends the three build steps going up, a piece
-            // at a time (`tower_piece`), instead of re-laying the flat plot.
-            0..=2 if plan.storeys > 0 => tower_step(plan, rows),
             0 => Command::Place {
                 id,
                 row: rows.foundation,
@@ -628,5 +507,337 @@ pub fn brawl_step(plan: &mut BrawlPlan, rng: &mut Pcg32, down: bool) -> Command 
             sel: plan.weapon_slot,
         },
         favour,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bases: what an owner builds when it is building to live there
+// ---------------------------------------------------------------------------
+
+/// A building piece a base blueprint names; the caller's [`BaseRows`] turn it
+/// into a row, so the blueprint carries no row numbers (wall 7).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Part {
+    Foundation,
+    /// The half-cell triangle (`build::LOC_TRI_*`): the airlock's floor.
+    TriFoundation,
+    /// A wall; at `LOC_DIAG_*` it closes a triangle's long side.
+    Wall,
+    Doorway,
+    Floor,
+    /// An L flight: a full storey inside one cell.
+    Stairs,
+    Roof,
+    TriRoof,
+}
+
+/// A deployable a base blueprint names.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Kit {
+    /// The cupboard: the claim, and the upkeep.
+    Hearth,
+    /// A wooden door.
+    Door,
+    /// A sheet metal door: what goes on the front when there is one.
+    MetalDoor,
+    /// A code lock, bolted onto whatever lockable stands at the address.
+    Lock,
+    Box,
+}
+
+/// One step of a base blueprint, addressed from the plot cell: `dx, dz`
+/// cells over, on `level`, at `loc` (`build::LOC_*`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BaseOp {
+    /// Lay a piece. Always twig — `build::place` takes nothing else, and the
+    /// grade is the `Upgrade` further down the list, as in the reference.
+    Place(Part, i8, i8, u8, u8),
+    /// Put a deployable down: a door in its doorway, a lock on its door, the
+    /// cupboard and the box on a plane.
+    Deploy(Kit, i8, i8, u8, u8),
+    /// Arm the lock at the address with the owner's code.
+    Code(i8, i8, u8, u8),
+    /// Grade the piece at the address up to a material (`build::MAT_*`).
+    Upgrade(i8, i8, u8, u8, u8),
+    /// Stock the cupboard in the cell for upkeep (`deploy::feed`).
+    Feed(i8, i8, u8),
+}
+
+/// The rows a base is built from, resolved out of the baked tables by id
+/// (`server::population::base_rows`).
+#[derive(Clone, Copy, Debug)]
+pub struct BaseRows {
+    pub foundation: u16,
+    pub tri_foundation: u16,
+    pub wall: u16,
+    pub doorway: u16,
+    pub floor: u16,
+    pub stairs: u16,
+    pub roof: u16,
+    pub tri_roof: u16,
+    pub hearth: u16,
+    pub door: u16,
+    pub metal_door: u16,
+    pub lock: u16,
+    pub container: u16,
+    /// The code the owner arms its locks with.
+    pub code: u16,
+}
+
+use BaseOp::{Code, Deploy, Feed, Place, Upgrade};
+const X: u8 = LOC_EDGE_XLO;
+const Z: u8 = LOC_EDGE_ZLO;
+const P: u8 = LOC_PLANE;
+
+const T: u8 = LOC_TRI_XLO_ZLO;
+const D: u8 = LOC_DIAG_B;
+
+/// The Rust starter a bot builds: a **2x1 with a triangle airlock, two
+/// storeys and a roof**, laid out and built in the order players build it
+/// (`reference/BUILDING.md` §7b). Seen from above, the plot cell is the core:
+///
+/// ```text
+///               north
+///        +--------+--------+
+///        |  core  | stair  |      one room: the edge between the
+///  west  |   TC   |  cell  |  east  two cells stays open
+///        |        |   L    |
+///        +--------+--door--+      the inner door
+///                 d       /
+///   outer door -> o     /         the airlock: half a cell, its long
+///                 o   /           side a diagonal wall
+///                 r /
+///                 +
+///               south
+/// ```
+///
+/// - **The cupboard goes down first**, right after the core's foundation, so
+///   the plot is claimed before anybody else can build on it.
+/// - **Two doors between the outside and the cupboard.** The front door opens
+///   into a triangle, the second out of it into the room: whoever follows you
+///   in meets a shut door, which is what an airlock is for, and the triangle
+///   is the cheapest room there is (half a foundation).
+/// - **An L flight in the stair cell** climbs north up its east side, turns
+///   west along its north wall and lands on the core's upper floor through
+///   the open edge between the cells. A flight lands a full storey up right
+///   at a cell edge, so nothing may stand under that edge on the ground
+///   floor — that is why the second door is on the airlock and not between
+///   the cells — and the stairwell has no floor (a floor there would stop
+///   the climbing head).
+/// - **Graded before it is grown**: the core's walls first, then the rest of
+///   the shell, to stone while there is stone; then the second storey goes
+///   up in twig (stone and wood are separate purses, so the stone costs it
+///   nothing); then whatever stone missed goes to wood with the wood that is
+///   left, the ground floor before the upper. Twig rots in an hour, and
+///   nobody leaves the room with the cupboard in it that way.
+/// - **Then the cupboard is stocked** with what is left, for upkeep.
+pub const STARTER: &[BaseOp] = &[
+    // Claim it.
+    Place(Part::Foundation, 0, 0, 0, P),
+    Deploy(Kit::Hearth, 0, 0, 0, P),
+    Place(Part::Foundation, 1, 0, 0, P),
+    Place(Part::TriFoundation, 1, 1, 0, T),
+    // The ground floor's shell, the airlock's two doorways and its long side.
+    Place(Part::Wall, 0, 0, 0, X),
+    Place(Part::Wall, 0, 0, 0, Z),
+    Place(Part::Wall, 0, 1, 0, Z),
+    Place(Part::Wall, 1, 0, 0, Z),
+    Place(Part::Wall, 2, 0, 0, X),
+    Place(Part::Doorway, 1, 1, 0, Z),
+    Place(Part::Doorway, 1, 1, 0, X),
+    Place(Part::Wall, 1, 1, 0, D),
+    // Doors: metal on the front if there is one, else wood; wood on the
+    // inner one (refused wherever a door already hangs). The front door is
+    // first because it is the one a single door goes on. Then a lock on each
+    // there is a lock for.
+    Deploy(Kit::MetalDoor, 1, 1, 0, X),
+    Deploy(Kit::Door, 1, 1, 0, X),
+    Deploy(Kit::Door, 1, 1, 0, Z),
+    Deploy(Kit::Lock, 1, 1, 0, X),
+    Code(1, 1, 0, X),
+    Deploy(Kit::Lock, 1, 1, 0, Z),
+    Code(1, 1, 0, Z),
+    // Grade in stone: the core's walls first, then the rest of the shell.
+    Upgrade(0, 0, 0, X, MAT_STONE),
+    Upgrade(0, 0, 0, Z, MAT_STONE),
+    Upgrade(0, 1, 0, Z, MAT_STONE),
+    Upgrade(1, 0, 0, Z, MAT_STONE),
+    Upgrade(2, 0, 0, X, MAT_STONE),
+    Upgrade(1, 1, 0, Z, MAT_STONE),
+    Upgrade(1, 1, 0, X, MAT_STONE),
+    Upgrade(1, 1, 0, D, MAT_STONE),
+    Upgrade(0, 0, 0, P, MAT_STONE),
+    Upgrade(1, 0, 0, P, MAT_STONE),
+    Upgrade(1, 1, 0, T, MAT_STONE),
+    // Up.
+    Place(Part::Stairs, 1, 0, 0, LOC_RISER_ZLO),
+    Place(Part::Floor, 0, 0, 1, P),
+    Place(Part::Wall, 0, 0, 1, X),
+    Place(Part::Wall, 0, 0, 1, Z),
+    Place(Part::Wall, 0, 1, 1, Z),
+    Place(Part::Wall, 1, 0, 1, Z),
+    Place(Part::Wall, 2, 0, 1, X),
+    Place(Part::Wall, 1, 1, 1, Z),
+    Place(Part::Roof, 0, 0, 2, P),
+    Place(Part::Roof, 1, 0, 2, P),
+    Place(Part::TriRoof, 1, 1, 1, T),
+    // Loot upstairs, over the cupboard.
+    Deploy(Kit::Box, 0, 0, 1, P),
+    // What stone did not reach goes to wood with what wood is left (refused
+    // as a step down wherever stone got there first).
+    Upgrade(0, 0, 0, X, MAT_WOOD),
+    Upgrade(0, 0, 0, Z, MAT_WOOD),
+    Upgrade(0, 1, 0, Z, MAT_WOOD),
+    Upgrade(1, 0, 0, Z, MAT_WOOD),
+    Upgrade(2, 0, 0, X, MAT_WOOD),
+    Upgrade(1, 1, 0, Z, MAT_WOOD),
+    Upgrade(1, 1, 0, X, MAT_WOOD),
+    Upgrade(1, 1, 0, D, MAT_WOOD),
+    Upgrade(0, 0, 0, P, MAT_WOOD),
+    Upgrade(1, 0, 0, P, MAT_WOOD),
+    Upgrade(1, 1, 0, T, MAT_WOOD),
+    // And the second storey the same way, once the ground floor is done.
+    Upgrade(1, 0, 0, LOC_RISER_ZLO, MAT_STONE),
+    Upgrade(0, 0, 1, P, MAT_STONE),
+    Upgrade(0, 0, 1, X, MAT_STONE),
+    Upgrade(0, 0, 1, Z, MAT_STONE),
+    Upgrade(0, 1, 1, Z, MAT_STONE),
+    Upgrade(1, 0, 1, Z, MAT_STONE),
+    Upgrade(2, 0, 1, X, MAT_STONE),
+    Upgrade(1, 1, 1, Z, MAT_STONE),
+    Upgrade(0, 0, 2, P, MAT_STONE),
+    Upgrade(1, 0, 2, P, MAT_STONE),
+    Upgrade(1, 1, 1, T, MAT_STONE),
+    Upgrade(1, 0, 0, LOC_RISER_ZLO, MAT_WOOD),
+    Upgrade(0, 0, 1, P, MAT_WOOD),
+    Upgrade(0, 0, 1, X, MAT_WOOD),
+    Upgrade(0, 0, 1, Z, MAT_WOOD),
+    Upgrade(0, 1, 1, Z, MAT_WOOD),
+    Upgrade(1, 0, 1, Z, MAT_WOOD),
+    Upgrade(2, 0, 1, X, MAT_WOOD),
+    Upgrade(1, 1, 1, Z, MAT_WOOD),
+    Upgrade(0, 0, 2, P, MAT_WOOD),
+    Upgrade(1, 0, 2, P, MAT_WOOD),
+    Upgrade(1, 1, 1, T, MAT_WOOD),
+    // Rent.
+    Feed(0, 0, 0),
+];
+
+/// The cells a blueprint stands on at ground level, as `(dx, dz)` from the
+/// plot — what has to be ground a foundation takes before an owner settles.
+pub const STARTER_FOOTPRINT: [(i8, i8); 3] = [(0, 0), (1, 0), (1, 1)];
+
+/// Where the owner stands while it builds, in metres from the plot cell's
+/// low corner: in the core, between the cupboard and the north wall, where
+/// every address of [`STARTER`] is inside `build::BUILD_REACH_M` (planar
+/// reach, so every storey is) and which both doors stand between and the
+/// outside.
+pub const STARTER_STAND_M: (f32, f32) = (1.8, 0.75);
+
+/// An owner's place in its blueprint.
+#[derive(Clone, Copy, Debug)]
+pub struct BasePlan {
+    pub id: u32,
+    /// The plot cell every [`BaseOp`] is addressed from.
+    pub cx: u16,
+    pub cz: u16,
+    /// The next op. It wraps, so a pass over a standing base re-lays what a
+    /// raid took down, re-hangs a blown door, and is refused for the rest.
+    pub next: u16,
+}
+
+impl BasePlan {
+    pub const fn new(id: u32, cx: u16, cz: u16) -> Self {
+        Self {
+            id,
+            cx,
+            cz,
+            next: 0,
+        }
+    }
+
+    /// The absolute cell `(dx, dz)` from the plot, clamped to the grid.
+    pub fn cell(&self, dx: i8, dz: i8) -> (u16, u16) {
+        let at = |c: u16, d: i8| (c as i32 + d as i32).clamp(0, u16::MAX as i32) as u16;
+        (at(self.cx, dx), at(self.cz, dz))
+    }
+}
+
+/// The owner's next command from `blueprint`, advancing its place. One per
+/// call, allocation-free; like `raid_step`, every command is a claim and the
+/// sim decides — a piece already standing is refused and costs nothing.
+pub fn base_step(plan: &mut BasePlan, rows: BaseRows, blueprint: &[BaseOp]) -> Command {
+    let op = blueprint[plan.next as usize % blueprint.len()];
+    plan.next = ((plan.next as usize + 1) % blueprint.len()) as u16;
+    let id = plan.id;
+    match op {
+        Place(part, dx, dz, level, loc) => {
+            let (cx, cz) = plan.cell(dx, dz);
+            let row = match part {
+                Part::Foundation => rows.foundation,
+                Part::TriFoundation => rows.tri_foundation,
+                Part::Wall => rows.wall,
+                Part::Doorway => rows.doorway,
+                Part::Floor => rows.floor,
+                Part::Stairs => rows.stairs,
+                Part::Roof => rows.roof,
+                Part::TriRoof => rows.tri_roof,
+            };
+            Command::Place {
+                id,
+                row,
+                cx,
+                cz,
+                level,
+                loc,
+                freehand: false,
+                plate: 0,
+            }
+        }
+        Deploy(kit, dx, dz, level, loc) => {
+            let (cx, cz) = plan.cell(dx, dz);
+            let row = match kit {
+                Kit::Hearth => rows.hearth,
+                Kit::Door => rows.door,
+                Kit::MetalDoor => rows.metal_door,
+                Kit::Lock => rows.lock,
+                Kit::Box => rows.container,
+            };
+            Command::PlaceDeploy {
+                id,
+                row,
+                cx,
+                cz,
+                level,
+                loc,
+            }
+        }
+        Code(dx, dz, level, loc) => {
+            let (cx, cz) = plan.cell(dx, dz);
+            Command::Access {
+                id,
+                cx,
+                cz,
+                level,
+                loc,
+                op: ACCESS_OP_SET_CODE,
+                code: rows.code,
+            }
+        }
+        Upgrade(dx, dz, level, loc, material) => {
+            let (cx, cz) = plan.cell(dx, dz);
+            Command::Upgrade {
+                id,
+                cx,
+                cz,
+                level,
+                loc,
+                material,
+            }
+        }
+        Feed(dx, dz, level) => {
+            let (cx, cz) = plan.cell(dx, dz);
+            Command::Feed { id, cx, cz, level }
+        }
     }
 }
