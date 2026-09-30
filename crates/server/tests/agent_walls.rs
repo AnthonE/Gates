@@ -25,7 +25,9 @@ use server::explorer::Survivor;
 use server::mind::{Mind, MindConfig, Outcome, Scripted, Why};
 use server::stats::ShardStats;
 use server::view::ClientView;
-use sim_core::input::{BTN_JUMP, BTN_PRIMARY, BTN_SPRINT};
+use sim_core::input::{
+    BTN_AIM, BTN_ASSIST, BTN_CROUCH, BTN_JUMP, BTN_LIGHT, BTN_PRIMARY, BTN_SPRINT,
+};
 use sim_core::limits::{HOTBAR_SLOTS, TICK_HZ};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -68,8 +70,21 @@ fn root() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// The `encode_action_*` verbs a source file calls, read off the source.
-fn verbs_in(dir: &std::path::Path, only: Option<&str>) -> BTreeSet<String> {
+/// The verbs the agent may send, in `encode_action_*` spelling. The one
+/// list to extend when a lane gives the agent a new verb: the source grep,
+/// the lockstep run and PLAYERS.md all answer to it.
+const EXPECTED_VERBS: [&str; 5] = ["craft", "consume", "drink", "move", "respawn"];
+
+/// The buttons the agent presses today. Always within what the human
+/// client sends (`human_buttons`); widened here when a lane presses more.
+const EXPECTED_BUTTONS: u8 = BTN_PRIMARY | BTN_SPRINT | BTN_JUMP;
+
+fn expected_verbs() -> BTreeSet<String> {
+    EXPECTED_VERBS.into_iter().map(String::from).collect()
+}
+
+/// Every `.rs` file under `dir`, recursively.
+fn rs_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
         for entry in std::fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
@@ -82,14 +97,33 @@ fn verbs_in(dir: &std::path::Path, only: Option<&str>) -> BTreeSet<String> {
     }
     let mut files = Vec::new();
     walk(dir, &mut files);
+    files.sort();
+    files
+}
+
+/// The agent layer's source: the orchestrator and everything under
+/// `src/agent/`, so a new skill file cannot escape the walls.
+fn agent_sources() -> Vec<std::path::PathBuf> {
+    let src = root().join("crates/server/src");
+    let mut files = vec![src.join("explorer.rs")];
+    files.extend(rs_files(&src.join("agent")));
+    files
+}
+
+/// A file's shipped text: test modules may name anything.
+fn shipped(file: &std::path::Path) -> String {
+    let text = std::fs::read_to_string(file).unwrap();
+    text.split("#[cfg(test)]")
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// The `encode_action_*` verbs these files call, read off the source.
+fn verbs_in(files: &[std::path::PathBuf]) -> BTreeSet<String> {
     let mut verbs = BTreeSet::new();
     for file in files {
-        if only.is_some_and(|name| !file.ends_with(name)) {
-            continue;
-        }
-        let text = std::fs::read_to_string(&file).unwrap();
-        // Test modules may encode anything; the shipped code is what binds.
-        let text = text.split("#[cfg(test)]").next().unwrap_or_default();
+        let text = shipped(file);
         for piece in text.split("encode_action_").skip(1) {
             let verb: String = piece
                 .chars()
@@ -103,17 +137,79 @@ fn verbs_in(dir: &std::path::Path, only: Option<&str>) -> BTreeSet<String> {
     verbs
 }
 
+/// A decoded action's verb, in `encode_action_*` spelling. Exhaustive, so
+/// a new wire verb is a compile error here rather than a silent pass.
+fn verb_of(msg: &ActionMsg) -> &'static str {
+    match msg {
+        ActionMsg::Assist { .. } => "assist",
+        ActionMsg::Craft { .. } => "craft",
+        ActionMsg::Reskin { .. } => "reskin",
+        ActionMsg::SkinsRefresh => "skins_refresh",
+        ActionMsg::CraftCancel { .. } => "cancel",
+        ActionMsg::Research { .. } => "research",
+        ActionMsg::Unlock { .. } => "unlock",
+        ActionMsg::Consume { .. } => "consume",
+        ActionMsg::Drink => "drink",
+        ActionMsg::Move { .. } => "move",
+        ActionMsg::Container { .. } => "container",
+        ActionMsg::Respawn { .. } => "respawn",
+        ActionMsg::Reload => "reload",
+        ActionMsg::Loot => "loot",
+        ActionMsg::Pickup => "pickup",
+        ActionMsg::Place { .. } => "place",
+        ActionMsg::Deploy { .. } => "deploy",
+        ActionMsg::Feed { .. } => "feed",
+        ActionMsg::Use { .. } => "use",
+        ActionMsg::Repair { .. } => "repair",
+        ActionMsg::Throw { .. } => "throw",
+        ActionMsg::Access { .. } => "access",
+        ActionMsg::Demolish { .. } => "demolish",
+        ActionMsg::Rotate { .. } => "rotate",
+        ActionMsg::Upgrade { .. } => "upgrade",
+    }
+}
+
+/// The input buttons the human client sends: every `BTN_*` it names,
+/// read off its source and mapped to the wire bits.
+fn human_buttons() -> u8 {
+    let mut mask = 0;
+    for file in rs_files(&root().join("crates/client/src")) {
+        let text = shipped(&file);
+        let mut rest = text.as_str();
+        while let Some(at) = rest.find("BTN_") {
+            let before = rest[..at].chars().next_back();
+            let name: String = rest[at..]
+                .chars()
+                .take_while(|c| c.is_ascii_uppercase() || *c == '_')
+                .collect();
+            rest = &rest[at + 4..];
+            // Part of a longer identifier, or prose about `BTN_*` as a set.
+            if before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') || name == "BTN_" {
+                continue;
+            }
+            mask |= match name.as_str() {
+                "BTN_SPRINT" => BTN_SPRINT,
+                "BTN_CROUCH" => BTN_CROUCH,
+                "BTN_PRIMARY" => BTN_PRIMARY,
+                "BTN_JUMP" => BTN_JUMP,
+                "BTN_LIGHT" => BTN_LIGHT,
+                "BTN_ASSIST" => BTN_ASSIST,
+                "BTN_AIM" => BTN_AIM,
+                other => panic!("{}: map {other} to its sim_core::input bit", file.display()),
+            };
+        }
+    }
+    mask
+}
+
 #[test]
 fn the_agent_encodes_only_verbs_the_human_client_encodes() {
-    let human = verbs_in(&root().join("crates/client/src"), None);
-    let agent = verbs_in(&root().join("crates/server/src"), Some("explorer.rs"));
-    let expected: BTreeSet<String> = ["craft", "consume", "drink", "move", "respawn"]
-        .into_iter()
-        .map(String::from)
-        .collect();
+    let human = verbs_in(&rs_files(&root().join("crates/client/src")));
+    let agent = verbs_in(&agent_sources());
     assert_eq!(
-        agent, expected,
-        "the agent's verb set changed; update PLAYERS.md"
+        agent,
+        expected_verbs(),
+        "the agent's verb set changed; update EXPECTED_VERBS and PLAYERS.md"
     );
     assert!(
         agent.is_subset(&human),
@@ -123,14 +219,28 @@ fn the_agent_encodes_only_verbs_the_human_client_encodes() {
 }
 
 #[test]
+fn the_agent_presses_only_buttons_the_human_client_sends() {
+    let human = human_buttons();
+    assert_ne!(human & BTN_PRIMARY, 0, "the client source was not read");
+    assert_eq!(
+        EXPECTED_BUTTONS & !human,
+        0,
+        "the agent may press a button no human client sends"
+    );
+}
+
+#[test]
 fn the_observation_encoder_and_the_mind_read_no_world() {
-    for file in ["explorer.rs", "mind.rs", "jev.rs", "external.rs"] {
-        let text = std::fs::read_to_string(root().join("crates/server/src").join(file)).unwrap();
-        let shipped = text.split("#[cfg(test)]").next().unwrap_or_default();
+    let src = root().join("crates/server/src");
+    let mut files = agent_sources();
+    files.extend(["mind.rs", "jev.rs", "external.rs"].map(|f| src.join(f)));
+    for file in files {
+        let shipped = shipped(&file);
         for banned in ["sim_core::world", "World::", ".world.", "ShardCore"] {
             assert!(
                 !shipped.contains(banned),
-                "{file} names {banned}: the agent may only read what its client received"
+                "{} names {banned}: the agent may only read what its client received",
+                file.display()
             );
         }
     }
@@ -349,14 +459,12 @@ impl Harness {
         self.replay.push_input(0, &decoded);
         if let Some(len) = action {
             let msg = decode_action(&act[..len]).expect("agent actions decode as player actions");
-            self.verbs.insert(match msg {
-                ActionMsg::Respawn { .. } => "respawn",
-                ActionMsg::Craft { .. } => "craft",
-                ActionMsg::Consume { .. } => "consume",
-                ActionMsg::Drink => "drink",
-                ActionMsg::Move { .. } => "move",
-                other => panic!("the agent sent a verb outside its set: {other:?}"),
-            });
+            let verb = verb_of(&msg);
+            assert!(
+                EXPECTED_VERBS.contains(&verb),
+                "the agent sent a verb outside its set: {msg:?}"
+            );
+            self.verbs.insert(verb);
             assert!(self.shard.wants_action(0) && self.replay.wants_action(0));
             self.shard.push_action(0, msg);
             let again = decode_action(&act[..len]).unwrap();
@@ -469,12 +577,10 @@ fn a_survivor_plays_a_whole_life_and_the_next_one_in_lockstep() {
     assert!(!me.dead && !me.wounded, "a live body after the wake");
 
     // Wall 1, as sent: every verb in the set, and nothing else.
-    let expected: BTreeSet<&str> = ["craft", "consume", "drink", "move", "respawn"]
-        .into_iter()
-        .collect();
+    let expected: BTreeSet<&str> = EXPECTED_VERBS.into_iter().collect();
     assert_eq!(h.verbs, expected, "{}", h.explain());
     assert_eq!(
-        h.buttons & !(BTN_PRIMARY | BTN_SPRINT | BTN_JUMP),
+        h.buttons & !(EXPECTED_BUTTONS & human_buttons()),
         0,
         "only the buttons a player's keys produce"
     );
@@ -483,6 +589,9 @@ fn a_survivor_plays_a_whole_life_and_the_next_one_in_lockstep() {
         h.heap_ops, 0,
         "the agent's frame loop touched the allocator"
     );
+    // The wiki read the shipped rules and the wire's catalog agreed.
+    let wiki = h.bot.wiki();
+    assert!(wiki.ready() && wiki.unknown == 0 && wiki.disagreements == 0);
     println!("{}", h.explain());
     // Far fewer decisions than ticks: goals, not steps.
     assert!(

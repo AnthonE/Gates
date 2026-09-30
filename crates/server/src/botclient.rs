@@ -1163,7 +1163,9 @@ async fn run_bot_inner(
     let mut fills_seen: u64 = 0;
     // The action stream is gone. `raid` served this for the raid lane and
     // cannot serve it here, because a bot with no raid rows still shoots.
-    let mut reload_lane = true;
+    // Load bots only: a driven agent reloads with its own verb, and a hidden
+    // `R` here would steal its action slot behind its back.
+    let mut reload_lane = driver.is_none();
 
     let mut cadence = tokio::time::interval(Duration::from_nanos(1_000_000_000 / TICK_HZ as u64));
     // **`Delay`, not `Skip`, and the difference is the bug.** `Skip` throws

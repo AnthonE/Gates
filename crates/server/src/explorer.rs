@@ -11,11 +11,14 @@
 //! input frames, and `Respawn`, `Craft`, `Consume`, `Drink` and `Move`
 //! actions (`crates/server/tests/agent_walls.rs` holds that to the client).
 
+use crate::agent::intent::{pitch_toward, yaw_toward, Intent};
+use crate::agent::wiki::{Book, Rules};
 use crate::botclient::BotDriver;
 use crate::mind::{
     BodyState, Choice, Goal, History, Mind, Name, Outcome, Report, Sighting, Summary, Trigger, Why,
     SUMMARY_CRAFTS, SUMMARY_ITEMS,
 };
+use crate::pace::Pace;
 use client_core::core::{
     ClientCore, APPLIED2_MOVE, APPLIED_DRANK, APPLIED_RESPAWN, APPLIED_VITALS,
 };
@@ -246,6 +249,8 @@ pub struct SurvivorStats {
     pub drinks: u64,
     pub equips: u64,
     pub actions: u64,
+    /// Frames an action waited in the hand for its kind's pace.
+    pub paced: u64,
     pub unencodable: u64,
 }
 
@@ -337,6 +342,14 @@ pub struct Survivor {
     wander_mark: Option<(u32, i32, i32)>,
     wander_turn: u32,
     outbox: Option<([u8; MAX_STREAM_MSG_BYTES], usize)>,
+    /// The server's per-kind pace, kept on this side the way an honest
+    /// client keeps it: an early action waits in the outbox rather than in
+    /// the server's hand, where it would block the next one.
+    pace: Pace,
+    /// The game's rules from the shipped content, built at the first
+    /// welcome, and the same rules keyed by wire item once the catalog is in.
+    rules: Option<Box<Rules>>,
+    book: Book,
     awaiting: Option<(Pending, u32)>,
     verdict: Option<Verdict>,
     learning: Option<(u16, u16, u16)>,
@@ -380,6 +393,9 @@ impl Survivor {
             wander_mark: None,
             wander_turn: 0,
             outbox: None,
+            pace: Pace::default(),
+            rules: None,
+            book: Book::EMPTY,
             awaiting: None,
             verdict: None,
             learning: None,
@@ -407,6 +423,12 @@ impl Survivor {
 
     pub fn memory(&self) -> &Memory {
         &self.memory
+    }
+
+    /// What this body knows of the game's rules, by wire item id; empty
+    /// until the catalog has arrived.
+    pub fn wiki(&self) -> &Book {
+        &self.book
     }
 
     /// Units of the named item this body has received in all its lives.
@@ -471,7 +493,28 @@ impl Survivor {
         self.retreat = None;
     }
 
+    /// One frame, with the client state kept the way the human client
+    /// keeps it: regrowth measured at the newest tick (the client's own
+    /// `advance` does this, and the agent never calls it), and the frame
+    /// sent recorded as the live input, which readers such as
+    /// `ClientCore::mag` key on.
     fn frame_with(
+        &mut self,
+        core: &mut ClientCore,
+        view: &ClientView,
+        player: u32,
+        seq: u16,
+        now: Instant,
+    ) -> InputFrame {
+        if let Some(tick) = view.newest_applied {
+            core.harvested.set_now(tick);
+        }
+        let f = self.decide(core, view, player, seq, now);
+        core.set_input(f.buttons, f.yaw, f.pitch, f.move_x, f.move_z, f.sel);
+        f
+    }
+
+    fn decide(
         &mut self,
         core: &mut ClientCore,
         view: &ClientView,
@@ -502,6 +545,11 @@ impl Survivor {
         if !catalog_ready(core) {
             self.stats.phase = Phase::Waiting;
             return frame;
+        }
+        if !self.book.ready() {
+            if let Some(rules) = self.rules.as_deref() {
+                self.book.learn(rules, &core.catalog);
+            }
         }
         self.mind.expire(now);
         if body.dead || core.dead {
@@ -536,8 +584,7 @@ impl Survivor {
             self.halt();
             if let Some((at, away)) = self.last_hurt {
                 if tick.wrapping_sub(at) < FLEE_TICKS {
-                    frame.yaw = away;
-                    frame.move_z = 127;
+                    frame = Intent::walk(away).frame(frame, eye_point(&body));
                 }
             }
             self.stats.phase = Phase::Wounded;
@@ -657,6 +704,9 @@ impl Survivor {
         self.recovery = None;
         if !matches!(self.awaiting, Some((Pending::Respawn, _))) {
             self.awaiting = None;
+            // An action still waiting on its pace was this goal's; the
+            // next goal asks for its own.
+            self.outbox = None;
         }
         self.verdict = None;
     }
@@ -1100,7 +1150,7 @@ impl Survivor {
         core: &mut ClientCore,
         body: &EntityState,
         tick: u32,
-        mut frame: InputFrame,
+        frame: InputFrame,
     ) -> InputFrame {
         let Some(active) = self.goal else {
             return frame;
@@ -1167,9 +1217,7 @@ impl Survivor {
             return frame;
         }
         self.stats.phase = Phase::SeekingWater;
-        frame.yaw = yaw;
-        frame.move_z = 127;
-        frame
+        Intent::walk(yaw).frame(frame, eye_point(body))
     }
 
     /// One cell of the sight window, one body and — once a second — the
@@ -1492,6 +1540,14 @@ impl BotDriver for Survivor {
         ));
         self.haven = Some(*core.island().1.haven);
         self.core = Some(core);
+        // Off the frame path: parsing the content allocates. A body that
+        // cannot read it plays on without the wiki.
+        if self.rules.is_none() {
+            self.rules = Rules::shipped().ok();
+        }
+        self.book = Book::EMPTY;
+        self.pace = Pace::default();
+        self.outbox = None;
         self.seen_tick = Some(welcome.tick);
         self.seen_at = Instant::now();
     }
@@ -1510,6 +1566,17 @@ impl BotDriver for Survivor {
     }
 
     fn action(&mut self, out: &mut [u8]) -> Option<usize> {
+        let (buf, len) = self.outbox.as_ref()?;
+        // The tick this action reaches the server's lane on, as far as this
+        // client can tell; the gaps are what matter, and they hold.
+        let at = u64::from(self.seen_tick.unwrap_or_default()) + 1;
+        match protocol::decode_action(&buf[..*len]) {
+            Ok(msg) if !self.pace.go(&msg, at) => {
+                self.stats.paced += 1;
+                return None;
+            }
+            _ => {}
+        }
         let (buf, len) = self.outbox.take()?;
         if out.len() < len {
             self.stats.unencodable += 1;
@@ -1802,17 +1869,17 @@ fn as_body(body: EntityState) -> Body {
     }
 }
 
+fn eye_point(body: &EntityState) -> [f32; 3] {
+    let (x, y, z) = eye(body);
+    [x, y, z]
+}
+
 fn eye(body: &EntityState) -> (f32, f32, f32) {
     (
         body.qx as f32 * POS_XZ_Q,
         body.qy as f32 * POS_Y_Q + ARROW_EYE_MM as f32 / MM_PER_M,
         body.qz as f32 * POS_XZ_Q,
     )
-}
-
-/// The wire yaw that faces along `(dx, dz)`, on the 256-step grid.
-fn yaw_toward(dx: f32, dz: f32) -> u16 {
-    (((dx.atan2(dz) / std::f32::consts::TAU * 256.0).round() as i32).rem_euclid(256) as u16) << 8
 }
 
 /// Distance and relative bearing (index into `mind::BEARINGS`, clockwise
@@ -1863,8 +1930,7 @@ fn aim(body: &EntityState, slot: &Slot) -> (u16, u8, f32) {
         (slot.y + top - melee::MELEE_PROBE_M).max(slot.y + melee::MELEE_PROBE_M),
     );
     let yaw = yaw_toward(dx, dz);
-    let pitch = (((y - eye).atan2(distance) / std::f32::consts::PI + 0.5) * 255.0).round() as u8;
-    (yaw, pitch, distance)
+    (yaw, pitch_toward(y - eye, distance), distance)
 }
 
 /// Conservative line of sight to the near face of the target. Uses the
@@ -2471,7 +2537,7 @@ mod tests {
 
     #[test]
     fn eating_learns_food_from_the_verdicts_alone() {
-        let (mut bot, view, _) = fixture();
+        let (mut bot, mut view, _) = fixture();
         let now = Instant::now();
         let core = bot.core.as_mut().unwrap();
         core.food = 100;
@@ -2501,7 +2567,13 @@ mod tests {
         let n = protocol::event::encode_event_consume_refused(REFUSE_C_NOT_FOOD as u8, &mut buf)
             .unwrap();
         event(&mut bot, n, &buf);
+        // A mouthful a second, as the server paces it: the next bite waits
+        // in the hand rather than in the server's.
         bot.frame_at(&view, 1, 2, now);
+        assert!(bot.action(&mut out).is_none(), "a second bite in one tick");
+        let gap = crate::pace::gap(crate::pace::Kind::Mouth) as u32;
+        view.newest_applied = Some(view.newest_applied.unwrap_or_default() + gap);
+        bot.frame_at(&view, 1, 3, now);
         let len = bot.action(&mut out).unwrap();
         assert!(matches!(
             protocol::decode_action(&out[..len]),
