@@ -1079,6 +1079,11 @@ pub fn toggle_diagnostics(
 #[derive(Component)]
 pub struct PadRoot;
 
+/// The hearth's upkeep panel (`hearth_overlay`), a keypad-shaped HUD panel
+/// for the keypad's reason.
+#[derive(Component)]
+pub struct HearthRoot;
+
 /// The ammo readout — `loaded / ceiling` for the weapon in hand, blank for
 /// a hand that takes no magazine.
 ///
@@ -2027,6 +2032,7 @@ pub fn feedback(
     net: NonSend<Net>,
     feed: Res<super::feed::Feed>,
     mut toast: ResMut<Toast>,
+    hearth_view: Res<super::verbs::HearthView>,
     time: Res<Time>,
     mut marks: Query<&mut BackgroundColor, With<HitMark>>,
     mut lines: Query<(&ToastLine, &mut Text, &mut TextColor)>,
@@ -2184,7 +2190,9 @@ pub fn feedback(
     // slice is taken rather than the array walked whole.
     if feed.applied & client_core::core::APPLIED_STOCK != 0 {
         let rows = &core.stock[..(core.stock_count as usize).min(core.stock.len())];
-        if let Some(line) = stock_line(rows, &core.catalog) {
+        // The panel says it better when it is up on this hearth.
+        let shown = hearth_view.0 == Some(core.stock_addr);
+        if let Some(line) = stock_line(rows, &core.catalog).filter(|_| !shown) {
             toast.say(line);
         }
     }
@@ -2630,6 +2638,132 @@ pub fn pad_overlay(
                     });
                 panel.spawn((
                     Text::new(crate::ui::keypad::OPS_HINT),
+                    super::ui::font(11.0),
+                    TextColor(TEXT_DIM),
+                    Pickable::IGNORE,
+                ));
+            });
+        });
+}
+
+/// The hearth's upkeep panel: per material what it holds and what a day
+/// costs, then how long the base stays protected (`crate::ui::hearth`).
+/// Rebuilt only when the view or the latched stock changes.
+/// What `hearth_overlay` last drew: the view, and the latched stock ack.
+type HearthSeen = (
+    Option<(u16, u16, u8)>,
+    (u16, u16, u8),
+    u8,
+    [(u16, u32, u32); sim_core::limits::HEARTH_STOCK_ROWS],
+);
+
+pub fn hearth_overlay(
+    mut commands: Commands,
+    view: Res<super::verbs::HearthView>,
+    net: NonSend<super::Net>,
+    roots: Query<Entity, With<HearthRoot>>,
+    mut seen: Local<Option<HearthSeen>>,
+) {
+    let core = &net.session.core;
+    let now = (view.0, core.stock_addr, core.stock_count, core.stock);
+    if *seen == Some(now) {
+        return;
+    }
+    *seen = Some(now);
+    for e in roots.iter() {
+        commands.entity(e).despawn();
+    }
+    let Some(at) = view.0 else {
+        return;
+    };
+    use super::panels::{LINE, PANEL_BG, TEXT_DIM};
+    let bright = Color::srgb(0.98, 0.97, 0.95);
+    let rows = &core.stock[..(core.stock_count as usize).min(core.stock.len())];
+    let known = core.stock_addr == at;
+    commands
+        .spawn((
+            super::WorldEntity,
+            HearthRoot,
+            Node {
+                position_type: PositionType::Absolute,
+                bottom: Val::Px(76.0),
+                width: Val::Percent(100.0),
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            Pickable::IGNORE,
+        ))
+        .with_children(|row| {
+            row.spawn((
+                Node {
+                    flex_direction: FlexDirection::Column,
+                    padding: UiRect::all(Val::Px(12.0)),
+                    row_gap: Val::Px(6.0),
+                    min_width: Val::Px(340.0),
+                    border: UiRect::all(Val::Px(1.0)),
+                    ..default()
+                },
+                BackgroundColor(PANEL_BG),
+                BorderColor::all(LINE),
+                Pickable::IGNORE,
+            ))
+            .with_children(|panel| {
+                panel.spawn((
+                    Text::new("HEARTH  ·  UPKEEP"),
+                    super::ui::font_bold(13.0),
+                    TextColor(TEXT_DIM),
+                    Pickable::IGNORE,
+                ));
+                if !known {
+                    panel.spawn((
+                        Text::new(crate::ui::hearth::NO_REPORT),
+                        super::ui::font(13.0),
+                        TextColor(bright),
+                        Pickable::IGNORE,
+                    ));
+                } else {
+                    for r in crate::ui::hearth::rows(rows) {
+                        let name = crate::ui::craft::item_label(&core.catalog, r.item);
+                        panel
+                            .spawn((
+                                Node {
+                                    flex_direction: FlexDirection::Row,
+                                    justify_content: JustifyContent::SpaceBetween,
+                                    column_gap: Val::Px(18.0),
+                                    ..default()
+                                },
+                                Pickable::IGNORE,
+                            ))
+                            .with_children(|line| {
+                                line.spawn((
+                                    Text::new(name.to_uppercase()),
+                                    super::ui::font_bold(14.0),
+                                    TextColor(bright),
+                                    Pickable::IGNORE,
+                                ));
+                                line.spawn((
+                                    Text::new(format!("{}  ·  {} / DAY", r.units, r.per_day)),
+                                    super::ui::font(14.0),
+                                    TextColor(bright),
+                                    Pickable::IGNORE,
+                                ));
+                            });
+                    }
+                    let status = crate::ui::hearth::status_line(rows);
+                    let warn = crate::ui::hearth::minutes_left(rows) == Some(0);
+                    panel.spawn((
+                        Text::new(status),
+                        super::ui::font_bold(15.0),
+                        TextColor(if warn {
+                            Color::srgb(0.95, 0.45, 0.35)
+                        } else {
+                            Color::srgb(0.60, 0.88, 0.55)
+                        }),
+                        Pickable::IGNORE,
+                    ));
+                }
+                panel.spawn((
+                    Text::new(crate::ui::hearth::HINT),
                     super::ui::font(11.0),
                     TextColor(TEXT_DIM),
                     Pickable::IGNORE,

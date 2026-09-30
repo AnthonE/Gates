@@ -391,6 +391,7 @@ pub fn world_teardown(
     mut look: ResMut<input::Look>,
     mut readout: ResMut<hud::Readout>,
     mut pad: ResMut<verbs::Pad>,
+    mut hearth: ResMut<verbs::HearthView>,
 ) {
     let mut n = 0usize;
     for e in entities.iter() {
@@ -422,6 +423,7 @@ pub fn world_teardown(
     // The keypad addresses a lock in the world that just went; left open it
     // would draw over the next one and eat its digit keys.
     pad.0.close();
+    hearth.0 = None;
     *eye = Eye::default();
     *look = input::Look::default();
     commands.remove_resource::<WorldId>();
@@ -558,6 +560,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<verbs::InWeak>()
             .init_resource::<verbs::Near>()
             .init_resource::<verbs::Pad>()
+            .init_resource::<verbs::HearthView>()
             .init_resource::<verbs::Bite>()
             .init_resource::<death::Answer>()
             .init_resource::<disconnected::Reason>()
@@ -865,7 +868,13 @@ impl Plugin for GatesRenderPlugin {
                 .chain()
                 .run_if(in_state(Screen::Paused)),
         )
-        .add_systems(Update, pause::open.run_if(in_state(Screen::InWorld)));
+        .add_systems(Update, pause::open.run_if(in_state(Screen::InWorld)))
+        .add_systems(
+            Update,
+            verbs::hearth_close
+                .before(pause::open)
+                .run_if(in_state(Screen::InWorld)),
+        );
 
         // ---- the death screen ----------------------------------------
         // `watch` runs in `InWorld` and nowhere else: a death that lands
@@ -1424,7 +1433,7 @@ impl Plugin for GatesRenderPlugin {
                     // Fires light the ground beside them. Reads the lit set
                     // `EV_OVEN` already puts in `ClientCore`; no wire change.
                     structures::fire_lights,
-                    hud::pad_overlay,
+                    (hud::pad_overlay, hud::hearth_overlay),
                 )
                     .in_set(Stream)
                     .run_if(world_placed),

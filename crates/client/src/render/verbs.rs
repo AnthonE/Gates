@@ -61,6 +61,12 @@ pub struct InWeak(pub bool);
 #[derive(Resource, Default)]
 pub struct Pad(pub crate::ui::keypad::Keypad);
 
+/// The hearth's upkeep panel, when one is up: the hearth's address. A
+/// resource rather than a `Panel` for [`Pad`]'s reason — it must not hold
+/// the player still (`crate::ui::hearth`).
+#[derive(Resource, Default)]
+pub struct HearthView(pub Option<(u16, u16, u8)>);
+
 /// Rust's one second between bites, kept on this side: when this client
 /// last sent a mouthful (food, a heal or the sea), in `Time` seconds. The
 /// server throws away a bite inside the last one's gap (`server::pace`,
@@ -286,6 +292,7 @@ pub fn keys(
     near: Res<Near>,
     mut toast: ResMut<Toast>,
     mut pad: ResMut<Pad>,
+    mut hearth: ResMut<HearthView>,
     ui: Option<ResMut<Ui>>,
     chat: Option<Res<super::chat::Chat>>,
     time: Res<Time>,
@@ -320,7 +327,15 @@ pub fn keys(
         .unwrap_or(false);
 
     if keys.just_pressed(KeyCode::KeyE) {
-        use_aimed(&mut net, &aimed.0, &mut toast, ui.as_deref_mut());
+        // A second `E` closes the hearth's panel rather than feeding again.
+        if hearth.0.is_some() {
+            hearth.0 = None;
+        } else {
+            use_aimed(&mut net, &aimed.0, &mut toast, ui.as_deref_mut());
+            if aimed.0.verb == Verb::Hearth {
+                hearth.0 = Some((aimed.0.cx, aimed.0.cz, aimed.0.level));
+            }
+        }
     }
     // The keypad claims its own keys while it is up, and gives every
     // other binding back the moment it closes. Checked before the rest,
@@ -1102,5 +1117,36 @@ fn send(
             toast.warn(format!("{what} would not encode ({e:?})"));
             false
         }
+    }
+}
+
+/// Close the hearth's panel on `Esc`, on walking out of feeding reach, or
+/// when the hearth is gone. Ordered before `pause::open` and consuming the
+/// `Esc`, so closing the panel does not also open the pause menu.
+pub fn hearth_close(
+    mut keys: ResMut<ButtonInput<KeyCode>>,
+    net: NonSend<Net>,
+    mut hearth: ResMut<HearthView>,
+) {
+    let Some((cx, cz, level)) = hearth.0 else {
+        return;
+    };
+    if keys.just_pressed(KeyCode::Escape) {
+        keys.clear_just_pressed(KeyCode::Escape);
+        hearth.0 = None;
+        return;
+    }
+    let core = &net.session.core;
+    let standing = core.deploys.entries().iter().any(|r| {
+        (r.cx, r.cz, r.level) == (cx, cz, level)
+            && (r.row as u16) < core.deploy_defs_have
+            && core.deploy_defs.defs[r.row as usize].arch == sim_core::deploy::ARCH_HEARTH
+    });
+    if !standing
+        || core.wounded
+        || core.dead
+        || !crate::ui::hearth::in_reach(core.predict.position(), cx, cz)
+    {
+        hearth.0 = None;
     }
 }
