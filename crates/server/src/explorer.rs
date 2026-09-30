@@ -12,6 +12,7 @@
 //! actions (`crates/server/tests/agent_walls.rs` holds that to the client).
 
 use crate::agent::intent::{pitch_toward, yaw_toward, Intent};
+use crate::agent::tracks::{self, Sight, Species, Tracks};
 use crate::agent::wiki::{Book, Rules};
 use crate::botclient::BotDriver;
 use crate::mind::{
@@ -24,12 +25,11 @@ use client_core::core::{
 };
 use client_core::view::ClientView;
 use protocol::{EntityState, Welcome, WireError, MAX_STREAM_MSG_BYTES};
-use sim_core::collide;
 use sim_core::craft::STATION_NONE;
 use sim_core::gather::{cell_key, REACH_M};
 use sim_core::input::{InputFrame, BTN_PRIMARY, BTN_SPRINT};
 use sim_core::inventory::CONT_SELF;
-use sim_core::limits::{ARROW_STEP_MM, HOTBAR_SLOTS, INV_SLOTS, MAX_ITEM_DEFS, TICK_HZ};
+use sim_core::limits::{HOTBAR_SLOTS, INV_SLOTS, MAX_ITEM_DEFS, TICK_HZ};
 use sim_core::melee;
 use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q, WADE_GROUND_MAX};
 use sim_core::ranged::{ARROW_EYE_MM, MM_PER_M};
@@ -75,6 +75,10 @@ pub const RECALL_SECS: u32 = 60;
 /// rendered frame still sweeps at the game's pace, and a call's work stays
 /// bounded (each cell is at most one sight ray).
 pub const SCAN_CELLS_MAX: u32 = 8;
+/// Bodies seen this recently count in the census a request carries.
+pub const BODY_RECALL_SECS: u32 = 2;
+/// A flee goal runs from the nearest body seen this recently.
+pub const THREAT_RECALL_SECS: u32 = 10;
 
 /// Tool ladders, best first, by catalog name — the player's knowledge of
 /// which tool fells a tree and which breaks rock. Never indices; yields,
@@ -314,14 +318,13 @@ pub struct Survivor {
     senses: Senses,
     memory: Memory,
     sweep: Sweep,
-    bodies: [Sighting; 2],
-    body_threat: Option<(f32, f32, f32)>,
-    threat: Option<(f32, f32)>,
+    /// Other bodies, as eyes and ears found them. Boxed once here: the
+    /// interpolation history behind it is the frame path's largest buffer.
+    tracks: Box<Tracks>,
     water_at: Option<u32>,
     water_yaw: Option<u16>,
     scan: i32,
     scanned_at: Option<u32>,
-    ent_scan: usize,
     /// The nearest resource of each kind last seen, and when.
     recall: [Option<(Target, u32)>; 4],
     /// A sweep of the sight window has completed since the body appeared.
@@ -367,14 +370,11 @@ impl Survivor {
             senses: Senses::default(),
             memory: Memory::default(),
             sweep: Sweep::default(),
-            bodies: [Sighting::default(); 2],
-            body_threat: None,
-            threat: None,
+            tracks: Box::new(Tracks::new()),
             water_at: None,
             water_yaw: None,
             scan: 0,
             scanned_at: None,
-            ent_scan: 0,
             recall: [None; 4],
             sensed: false,
             seen_tick: None,
@@ -423,6 +423,18 @@ impl Survivor {
 
     pub fn memory(&self) -> &Memory {
         &self.memory
+    }
+
+    /// What this body's eyes and ears know of other bodies.
+    pub fn tracks(&self) -> &Tracks {
+        &self.tracks
+    }
+
+    /// Sample other bodies this many ticks behind the newest snapshot: the
+    /// session's playout delay, where one runs (`sim_core::limits::
+    /// INTERP_DELAY_TICKS` until told).
+    pub fn set_playout(&mut self, ticks: u8) {
+        self.tracks.set_playout(ticks);
     }
 
     /// What this body knows of the game's rules, by wire item id; empty
@@ -531,6 +543,7 @@ impl Survivor {
             self.seen_tick = view.newest_applied;
             self.seen_at = now;
         }
+        self.tracks.feed(view, player);
         let Some(body) = view.get(player).copied() else {
             self.stats.phase = Phase::Waiting;
             return frame;
@@ -601,8 +614,8 @@ impl Survivor {
         if let Some(choice) = self.mind.poll(now) {
             self.adopt(choice, tick);
         }
-        self.perceive(core, view, &body, player, tick);
-        if let Some(retreat) = self.retreat_frame(core, view, &body, tick, frame) {
+        self.perceive(core, &body, tick);
+        if let Some(retreat) = self.retreat_frame(core, &body, tick, frame) {
             return retreat;
         }
         let Some(active) = self.goal else {
@@ -774,11 +787,18 @@ impl Survivor {
     }
 
     fn start_flee(&mut self, body: &EntityState, tick: u32) -> bool {
-        let Some((x, z)) = self.threat else {
-            return false;
-        };
         let bx = body.qx as f32 * POS_XZ_Q;
         let bz = body.qz as f32 * POS_XZ_Q;
+        let mut nearest: Option<(f32, f32, f32)> = None;
+        for t in self.tracks.recent(tick, THREAT_RECALL_SECS * TICK_HZ) {
+            let d = (t.pos[0] - bx).hypot(t.pos[2] - bz);
+            if nearest.is_none_or(|n| d < n.0) {
+                nearest = Some((d, t.pos[0], t.pos[2]));
+            }
+        }
+        let Some((_, x, z)) = nearest else {
+            return false;
+        };
         let away = yaw_toward(bx - x, bz - z);
         self.retreat = Some((tick, away));
         self.stats.retreats += 1;
@@ -791,15 +811,15 @@ impl Survivor {
     fn retreat_frame(
         &mut self,
         core: &mut ClientCore,
-        view: &ClientView,
         body: &EntityState,
         tick: u32,
         mut frame: InputFrame,
     ) -> Option<InputFrame> {
         let (mut start, mut yaw) = self.retreat?;
         // A received damage bearing is the human's hit indicator, not an
-        // opponent position; every fresh hit renews the bounded retreat.
-        if visible_pursuer(core, self.haven.as_ref()?, body, view) {
+        // opponent position; every fresh hit renews the bounded retreat,
+        // and so does a body still in sight behind it.
+        if self.tracks.any_in_sight() {
             start = tick;
             self.retreat = Some((start, yaw));
         }
@@ -1220,16 +1240,10 @@ impl Survivor {
         Intent::walk(yaw).frame(frame, eye_point(body))
     }
 
-    /// One cell of the sight window, one body and — once a second — the
-    /// water probe. Publishes the census when a sweep completes.
-    fn perceive(
-        &mut self,
-        core: &mut ClientCore,
-        view: &ClientView,
-        body: &EntityState,
-        player: u32,
-        tick: u32,
-    ) {
+    /// Cells of the sight window, the eyes on other bodies and — once a
+    /// second — the water probe. Publishes the census when a sweep
+    /// completes.
+    fn perceive(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) {
         let Some(haven) = self.haven else {
             return;
         };
@@ -1240,43 +1254,15 @@ impl Survivor {
         for _ in 0..cells {
             self.scan_cell(core, body, &haven, tick);
         }
-        // Bodies, one per frame, with the same cone and cover checks.
-        let n = view.entities.len();
-        if n > 0 {
-            let i = self.ent_scan % n;
-            self.ent_scan = self.ent_scan.wrapping_add(1);
-            let (id, other) = view.entities[i];
-            if id != player && !other.dead && !other.sleeping {
-                let x = other.qx as f32 * POS_XZ_Q;
-                let z = other.qz as f32 * POS_XZ_Q;
-                if in_cone(body, x, z)
-                    && clear_line(
-                        core,
-                        &haven,
-                        eye(body),
-                        (x, other.qy as f32 * POS_Y_Q + collide::CAPSULE_RADIUS_M, z),
-                    )
-                {
-                    let (d, b) = relative(body, x, z);
-                    let animal = sim_core::mob::slot_of_id(id).is_some();
-                    self.bodies[usize::from(animal)].add(d, b);
-                    if self.body_threat.is_none_or(|t| d < t.0) {
-                        self.body_threat = Some((d, x, z));
-                    }
-                }
-            }
-            if i + 1 >= n {
-                self.senses.players = self.bodies[0];
-                self.senses.animals = self.bodies[1];
-                self.threat = self.body_threat.map(|(_, x, z)| (x, z));
-                self.bodies = [Sighting::default(); 2];
-                self.body_threat = None;
-            }
-        } else {
-            self.senses.players = Sighting::default();
-            self.senses.animals = Sighting::default();
-            self.threat = None;
+        // Bodies come from the tracks alone: seen through the cone and a
+        // held line of sight, and placed where they were last seen.
+        self.tracks.perceive(core, &haven, tick);
+        let mut bodies = [Sighting::default(); 2];
+        for t in self.tracks.recent(tick, BODY_RECALL_SECS * TICK_HZ) {
+            let (d, b) = relative(body, t.pos[0], t.pos[2]);
+            bodies[usize::from(t.species != Species::Player)].add(d, b);
         }
+        [self.senses.players, self.senses.animals] = bodies;
         if self
             .water_at
             .is_none_or(|at| tick.wrapping_sub(at) >= TICK_HZ)
@@ -1418,6 +1404,7 @@ impl Survivor {
             let toward =
                 (u32::from(sector) * 65536 / u32::from(sim_core::combat::HURT_SECTORS)) as u16;
             // Compass bearings turn toward -X; wire yaw turns toward +X.
+            self.tracks.on_hurt(0u16.wrapping_sub(toward), tick);
             let away = 0u16.wrapping_sub(toward).wrapping_add(1 << 15);
             self.retreat = Some((tick, away));
             self.last_hurt = Some((tick, away));
@@ -1431,10 +1418,30 @@ impl Survivor {
             self.interrupt = Some(Why::Hit);
         }
         while let Some(victim) = core.pop_death() {
+            self.tracks.on_death(victim, tick);
             if victim == core.player_id {
                 self.stats.deaths += 1;
                 self.memory.deaths = self.memory.deaths.saturating_add(1);
             }
+        }
+        // What the eyes and ears make of the fight around this body: the
+        // tracks take facts, never the rings.
+        while let Some((shooter, ..)) = core.pop_shot() {
+            self.tracks.on_shot(shooter, tick);
+        }
+        while let Some(swinger) = core.pop_swing() {
+            self.tracks.on_swing(swinger, tick);
+        }
+        while let Some(i) = core.pop_impact() {
+            let at = [
+                i.qx as f32 * POS_XZ_Q,
+                i.qy as f32 * POS_Y_Q,
+                i.qz as f32 * POS_XZ_Q,
+            ];
+            self.tracks.on_impact(at, tick);
+        }
+        while let Some(hit) = core.pop_hit() {
+            self.tracks.on_hit(hit.victim, hit.damage);
         }
         if flags & APPLIED_RESPAWN != 0 && !core.dead {
             self.stats.respawns += 1;
@@ -1447,6 +1454,7 @@ impl Survivor {
             self.outbox = None;
             // A new body on a new beach: what the old one saw is elsewhere.
             self.recall = [None; 4];
+            self.tracks.forget();
             self.sensed = false;
             self.halt();
             self.heading = None;
@@ -1540,6 +1548,7 @@ impl BotDriver for Survivor {
         ));
         self.haven = Some(*core.island().1.haven);
         self.core = Some(core);
+        self.tracks.reset(welcome.seed, welcome.player_id);
         // Off the frame path: parsing the content allocates. A body that
         // cannot read it plays on without the wiki.
         if self.rules.is_none() {
@@ -1952,88 +1961,13 @@ fn visible(core: &mut ClientCore, haven: &Haven, body: &EntityState, target: Tar
         0.0
     };
     let origin = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
-    clear_line(
+    tracks::clear_line(
         core,
         haven,
-        (origin.0, eye, origin.1),
-        (origin.0 + dx * stop, eye + dy * stop, origin.1 + dz * stop),
-    )
-}
-
-/// Check just the nearest candidate in the current view cone: at most one
-/// extra sight ray per frame. An occluded nearer body can hide a farther one,
-/// which is conservative; no body behind cover prolongs the retreat.
-fn visible_pursuer(
-    core: &mut ClientCore,
-    haven: &Haven,
-    body: &EntityState,
-    view: &ClientView,
-) -> bool {
-    let mut nearest = None;
-    let mut distance = f32::INFINITY;
-    for (_, other) in &view.entities {
-        if other.id == body.id || other.dead || other.sleeping {
-            continue;
-        }
-        let x = other.qx as f32 * POS_XZ_Q;
-        let z = other.qz as f32 * POS_XZ_Q;
-        let d = (x - body.qx as f32 * POS_XZ_Q).hypot(z - body.qz as f32 * POS_XZ_Q);
-        if d < distance && in_cone(body, x, z) {
-            distance = d;
-            nearest = Some((x, other.qy as f32 * POS_Y_Q + collide::CAPSULE_RADIUS_M, z));
-        }
-    }
-    nearest.is_some_and(|to| clear_line(core, haven, eye(body), to))
-}
-
-fn clear_line(
-    core: &mut ClientCore,
-    haven: &Haven,
-    from: (f32, f32, f32),
-    to: (f32, f32, f32),
-) -> bool {
-    let delta = (to.0 - from.0, to.1 - from.1, to.2 - from.2);
-    let length = delta.0.hypot(delta.1).hypot(delta.2);
-    if length > SIGHT_M {
-        return false;
-    }
-    let steps = (length * MM_PER_M / ARROW_STEP_MM as f32).ceil() as usize;
-    let point = |i: usize| {
-        let t = i as f32 / steps.max(1) as f32;
-        (
-            from.0 + delta.0 * t,
-            from.1 + delta.1 * t,
-            from.2 + delta.2 * t,
-        )
-    };
-    let (seed, mut island) = core.island();
-    for i in 1..=steps {
-        let (x, y, z) = point(i);
-        if y <= terrain::ground(seed, haven, x, z) || island.blocks_volume(seed, x, z, y, 0.0, 0.0)
-        {
-            return false;
-        }
-    }
-    let mut prev = (from.0, from.2);
-    for i in 1..=steps {
-        let (x, y, z) = point(i);
-        if collide::shot_blocked(
-            seed,
-            haven,
-            core.pieces.cols(),
-            prev.0,
-            prev.1,
-            x,
-            z,
-            y,
-            0.0,
-        ) || collide::deploy_stop(seed, haven, core.pieces.cols(), x, z, y, 0.0).is_some()
-        {
-            return false;
-        }
-        prev = (x, z);
-    }
-    true
+        [origin.0, eye, origin.1],
+        [origin.0 + dx * stop, eye + dy * stop, origin.1 + dz * stop],
+        SIGHT_M,
+    ) == Sight::Clear
 }
 
 #[cfg(test)]
@@ -2732,6 +2666,108 @@ mod tests {
         };
         assert!(room_for(core, bot.memory.yields[Kind::Wood as usize]));
         assert!(bot.summary(&view, 1).unwrap().offers(Goal::GatherWood));
+    }
+
+    /// Apply one zero-state snapshot holding `bodies`, as the shard sends.
+    fn keyframe(view: &mut ClientView, tick: u32, bodies: &[EntityState]) {
+        let mut buf = [0u8; sim_core::limits::DATAGRAM_BUDGET_BYTES];
+        let header = protocol::SnapshotHeader {
+            tick,
+            baseline_age: 0,
+            last_executed_seq: 0,
+            nudge: protocol::Nudge::Ok,
+            buffered_depth: 0,
+            repeat_count: 0,
+        };
+        let n = protocol::encode_snapshot(&header, &[], bodies, &[], &mut buf).unwrap();
+        view.apply(&buf[..n]).unwrap();
+    }
+
+    /// A player standing on the ground at `(x, z)`.
+    fn stander(id: u32, haven: &Haven, x: f32, z: f32) -> EntityState {
+        EntityState {
+            id,
+            qx: quant_xz(x),
+            qy: quant_y(terrain::ground(SEED, haven, x, z)),
+            qz: quant_xz(z),
+            grounded: true,
+            pitch: 128,
+            ..EntityState::default()
+        }
+    }
+
+    #[test]
+    fn only_bodies_seen_in_the_cone_with_a_held_sight_line_become_tracks() {
+        let (mut bot, view, _) = fixture();
+        let me = *view.get(1).unwrap();
+        let haven = *bot.haven.as_ref().unwrap();
+        let (mx, mz) = (me.qx as f32 * POS_XZ_Q, me.qz as f32 * POS_XZ_Q);
+        let eye = eye_point(&me);
+        let core = bot.core.as_mut().unwrap();
+        // Ahead (wire yaw 0 faces +Z), inside the cone and the range: one
+        // body in the open, one the ground hides.
+        let mut open = None;
+        let mut hidden = None;
+        for step in 4..60 {
+            for side in -6..=6 {
+                let (x, z) = (mx + side as f32 * 2.0, mz + step as f32 * 2.0);
+                if (x - mx).abs() > (z - mz) * 0.9 {
+                    continue;
+                }
+                let b = stander(0, &haven, x, z);
+                let to = [x, b.qy as f32 * POS_Y_Q + 1.4, z];
+                match tracks::clear_line(core, &haven, eye, to, tracks::PLAYER_SIGHT_M) {
+                    Sight::Clear if open.is_none() && step < 12 => open = Some((x, z)),
+                    Sight::Terrain if hidden.is_none() => hidden = Some((x, z)),
+                    _ => {}
+                }
+            }
+        }
+        let (ox, oz) = open.expect("an open spot ahead");
+        let (hx, hz) = hidden.expect("a spot ahead the ground hides");
+        let bodies = [
+            me,
+            stander(2, &haven, ox, oz),
+            stander(3, &haven, hx, hz),
+            // Behind, close and in the open: outside the cone.
+            stander(4, &haven, mx, mz - 6.0),
+        ];
+        let mut view = ClientView::new();
+        goal(&mut bot, Goal::Wait, 1);
+        let now = Instant::now();
+        for tick in 2..40u32 {
+            keyframe(&mut view, tick, &bodies);
+            bot.frame_at(&view, 1, tick as u16, now);
+            if tick == 2 {
+                assert!(bot.tracks.get(2).is_none(), "a glimpse is not a sighting");
+            }
+            assert!(bot.tracks.get(3).is_none(), "seen through the ground");
+            assert!(bot.tracks.get(4).is_none(), "seen behind its back");
+        }
+        let seen = bot.tracks.get(2).expect("the body in the open is seen");
+        assert!(seen.visible && seen.species == Species::Player);
+        assert_eq!(bot.tracks.seen().count(), 1);
+        assert_eq!(bot.senses.players.count, 1);
+        // A shot from behind is heard as a sound from behind, not a body.
+        let mut buf = [0u8; protocol::event::MAX_EVENT_MSG_BYTES];
+        let n = protocol::event::encode_event_shot(4, 0, 128, 900, 10, &mut buf).unwrap();
+        event(&mut bot, n, &buf);
+        let heard = *bot.tracks.heard().last().expect("the shot was heard");
+        assert_eq!(heard.sound, tracks::Sound::Shot);
+        assert_eq!(heard.band, tracks::Band::Near);
+        let off = heard.bearing.wrapping_sub(1 << 15) as i16;
+        assert!(i32::from(off).abs() <= 2 * tracks::HEAR_BEARING_NOISE as i32);
+        assert!(bot.tracks.get(4).is_none());
+        // Turned away, the body is remembered where it stood, out of sight.
+        let mut turned = bodies;
+        turned[0].yaw = 1 << 15;
+        for tick in 40..50u32 {
+            keyframe(&mut view, tick, &turned);
+            bot.frame_at(&view, 1, tick as u16, now);
+        }
+        let kept = bot.tracks.get(2).expect("remembered");
+        assert!(!kept.visible);
+        assert!(bot.tracks.aim_pose(2).is_none(), "nobody aims at a memory");
     }
 
     #[test]

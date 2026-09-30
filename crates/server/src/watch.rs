@@ -98,6 +98,10 @@ impl Controller {
         self.playing.get_or_insert_with(Instant::now);
         let tick = session.core.clock.client_tick;
         if self.last_tick != Some(tick) {
+            // Other bodies are judged where this session's screen draws
+            // them: behind the newest snapshot by its adaptive playout.
+            self.survivor
+                .set_playout(session.core.playout_ticks().round() as u8);
             self.held =
                 self.survivor
                     .frame(&session.core.view, session.welcome.player_id, tick as u16);
