@@ -20,7 +20,9 @@
 //! A fight is fought with whatever suits the range: a swung weapon close
 //! in, and beyond a few metres a bow, crossbow or gun with rounds for it
 //! ([`Combat::shoot`]). An arrow is aimed ahead of a moving body
-//! (`super::aim`); a bullet at the pose on my screen. Under fire from
+//! (`super::aim`); a bullet at a player's pose on my screen (the server
+//! rewinds players to it), and ahead of an animal (it does not rewind
+//! them). Under fire from
 //! further than a charge, a body with nothing to shoot back runs for cover
 //! (`super::cover`), weaving; one merely aimed at sidesteps.
 //!
@@ -133,8 +135,13 @@ pub const DRAW_SLACK_TICKS: u32 = 2;
 pub const HUNT_SHOT_M: f32 = 16.0;
 /// A swung weapon closing inside this is backed away from while shooting.
 pub const KITE_M: f32 = 8.0;
-/// A body aiming something that shoots at me from within this is dodged.
+/// A body aiming something that shoots at me from within this is dodged,
+/// for this long at a stretch, and then not again for this long unless it
+/// shoots: two bodies each dodging the other's aim would otherwise dance
+/// with their goals waiting for as long as they stay in sight.
 pub const EVADE_M: f32 = 40.0;
+pub const DODGE_MAX_TICKS: u32 = 3 * TICK_HZ;
+pub const DODGE_REST_TICKS: u32 = 10 * TICK_HZ;
 /// Cover is looked for this far off, and thought again about this often.
 pub const COVER_M: f32 = 24.0;
 pub const COVER_RETHINK_TICKS: u32 = 3 * TICK_HZ;
@@ -236,6 +243,9 @@ pub struct Foe {
     pub threat: u32,
     /// Told to (a fight or hunt goal): no temperament asked.
     pub commanded: bool,
+    /// My hit markers on an animal when this fight began: it heals
+    /// between fights, so only what landed since counts against it.
+    pub dealt_from: Option<u32>,
 }
 
 /// What the reflex made of this frame.
@@ -271,6 +281,8 @@ pub struct Kit<'a> {
     /// input landing on the server: the playout plus the input's round
     /// trip. What an arrow, which is judged live, has to lead by.
     pub lead_ticks: u32,
+    /// The action lane is free this frame: a take pressed now is sent.
+    pub lane_free: bool,
 }
 
 /// A verb the reflex wants sent; the orchestrator owns the action lane.
@@ -377,10 +389,14 @@ pub struct Combat {
     /// What the escape runs from: its body, where it last stood, and
     /// whether it shoots.
     threat: Option<(u32, [f32; 2], bool)>,
-    /// Cover the escape is making for, and when it was chosen.
-    cover: Option<([f32; 2], u32)>,
-    /// A body aiming at me, being sidestepped, until when.
-    dodge: Option<(u32, u32)>,
+    /// Cover the escape is making for, and when it was last looked for
+    /// (found or not: the scan is not cheap).
+    cover: Option<[f32; 2]>,
+    cover_tried: Option<u32>,
+    /// A body aiming at me, being sidestepped: until when, and since when.
+    dodge: Option<(u32, u32, u32)>,
+    /// A body dodged its full stretch, and until when it is not again.
+    dodged: Option<(u32, u32)>,
     spoils: Option<Spoils>,
     verb: Option<Verb>,
     rng: Pcg32,
@@ -412,7 +428,9 @@ impl Combat {
             fire_gap: 1,
             threat: None,
             cover: None,
+            cover_tried: None,
             dodge: None,
+            dodged: None,
             spoils: None,
             verb: None,
             rng: Pcg32::new(0, 0),
@@ -438,7 +456,9 @@ impl Combat {
         self.draw = None;
         self.threat = None;
         self.cover = None;
+        self.cover_tried = None;
         self.dodge = None;
+        self.dodged = None;
         self.spoils = None;
         self.verb = None;
     }
@@ -552,6 +572,7 @@ impl Combat {
                 since: tick,
                 threat: tick,
                 commanded,
+                dealt_from: None,
             });
             self.stuck = None;
         }
@@ -575,6 +596,7 @@ impl Combat {
         self.draw = None;
         self.threat = None;
         self.cover = None;
+        self.cover_tried = None;
         self.spoils = None;
         self.last_end = Some(end);
         Assess::Over { away, end }
@@ -633,15 +655,25 @@ impl Combat {
         );
         self.threat = Some((t.id, [t.pos[0], t.pos[2]], ranged));
         self.cover = None;
+        self.cover_tried = None;
         self.draw = None;
     }
 
     /// A body aiming something that shoots at me, not yet shooting: step
     /// side to side while it does, eyes on it, and let the goal wait.
     fn sidestep(&mut self, tracks: &Tracks, book: &Book, me: [f32; 3], tick: u32) -> Assess {
+        let rested = |until: u32| tick.wrapping_sub(until) < 1 << 31;
+        if self.dodged.is_some_and(|(_, until)| rested(until)) {
+            self.dodged = None;
+        }
         let mut aimer: Option<(f32, &Track)> = None;
         for t in tracks.seen() {
             if !t.visible || !t.active() || t.species != Species::Player || !t.aiming_at_me {
+                continue;
+            }
+            // Dodged its stretch already: a shot from it is an attack
+            // ([`Combat::attacker`]); a held aim alone is not, for a while.
+            if self.dodged.is_some_and(|(id, _)| id == t.id) {
                 continue;
             }
             let fires = t.held.is_some_and(|h| book.page(h).fires());
@@ -651,20 +683,29 @@ impl Combat {
             }
         }
         if let Some((_, t)) = aimer {
-            if self.dodge.is_none_or(|(id, _)| id != t.id) {
-                self.stats.evades += 1;
-            }
-            self.dodge = Some((t.id, tick.wrapping_add(TICK_HZ)));
+            let since = match self.dodge {
+                Some((id, _, since)) if id == t.id => since,
+                _ => {
+                    self.stats.evades += 1;
+                    tick
+                }
+            };
+            self.dodge = Some((t.id, tick.wrapping_add(TICK_HZ), since));
         }
-        let Some((id, until)) = self.dodge else {
+        let Some((id, until, since)) = self.dodge else {
             return Assess::Calm;
         };
         let Some(t) = tracks.get(id).filter(|t| t.active()) else {
             self.dodge = None;
             return Assess::Calm;
         };
-        if tick.wrapping_sub(until) < 1 << 31 {
+        if rested(until) {
             self.dodge = None;
+            return Assess::Calm;
+        }
+        if tick.wrapping_sub(since) >= DODGE_MAX_TICKS {
+            self.dodge = None;
+            self.dodged = Some((id, tick.wrapping_add(DODGE_REST_TICKS)));
             return Assess::Calm;
         }
         self.rhythm(tick);
@@ -804,9 +845,15 @@ impl Combat {
             return self.over(None, End::Parted);
         };
         let me = pos(body);
-        let Some(t) = tracks.get(foe.id).copied() else {
+        let Some(mut t) = tracks.get(foe.id).copied() else {
             return self.over(None, End::Parted);
         };
+        if t.species != Species::Player {
+            // An animal hurt in an earlier fight has healed since: only
+            // my markers from this one say how much it has left.
+            let from = *foe.dealt_from.get_or_insert(t.dealt);
+            t.dealt = t.dealt.saturating_sub(from);
+        }
         // A body lies down dead; an animal drops where my markers say it
         // had no more to give (its carcass leaves the snapshot).
         let beast_hp = match t.species {
@@ -872,10 +919,7 @@ impl Combat {
                 self.draw = None;
                 self.melee(core, body, route, &t, &odds, kit, tick)
             }
-            Arm::Ranged => {
-                self.stuck = None;
-                self.shoot(core, body, route, &t, &odds, kit, tick)
-            }
+            Arm::Ranged => self.shoot(core, body, route, &t, &odds, kit, tick),
         };
         if self
             .stuck
@@ -917,7 +961,8 @@ impl Combat {
     /// A shot: bow, crossbow or gun. Get the body in sight and in range
     /// (a prey animal crouched, at a walk, to where it will not hear);
     /// then hold the draw, lead the body by where it will be when the
-    /// round arrives (a bullet goes where my screen shows it), and loose
+    /// round arrives (a bullet at a player goes where my screen shows
+    /// it), and loose
     /// only once the hands have settled on it. Against a player keep
     /// stepping side to side, and away from a swung weapon closing in.
     #[allow(clippy::too_many_arguments)]
@@ -960,7 +1005,9 @@ impl Combat {
                     id: t.id,
                     part: Part::Chest.bits(),
                 },
-                _ => Look::Point(at),
+                // The server rewinds players for a bullet, not animals: it
+                // lands where the animal is when my press arrives.
+                _ => Look::Point(ahead(t, at, kit.lead_ticks)),
             };
             (look, true)
         } else {
@@ -994,9 +1041,18 @@ impl Combat {
                 tick,
             );
             let (travel, jump) = match step {
-                Step::Walk { yaw, jump, .. } => (Some(yaw), jump),
+                Step::Walk { yaw, jump, .. } => {
+                    self.stuck = None;
+                    (Some(yaw), jump)
+                }
                 Step::Wait => (Some(toward), false),
-                Step::Arrived | Step::Blocked => (None, false),
+                // As near as the ground goes and still no shot (water or
+                // a wall between, or too steep an arc): the same clock as
+                // a foe out of a swing's reach.
+                Step::Arrived | Step::Blocked => {
+                    self.closing_from(d, tick);
+                    (None, false)
+                }
             };
             let mut buttons = if stalking { BTN_CROUCH } else { BTN_SPRINT };
             if jump {
@@ -1008,6 +1064,7 @@ impl Combat {
                 ..base
             };
         }
+        self.stuck = None;
         let mut buttons = 0;
         if stalking {
             buttons |= BTN_CROUCH;
@@ -1171,7 +1228,7 @@ impl Combat {
             Some((at, was, _)) if was == id => tick.wrapping_sub(at) >= VERB_RETRY_TICKS,
             _ => true,
         };
-        if due {
+        if due && kit.lane_free {
             let n = match s.sent {
                 Some((_, was, n)) if was == id => n + 1,
                 _ => 1,
@@ -1232,8 +1289,11 @@ impl Combat {
                     f32::from(beast.radius_cm) * 0.01,
                     f32::from(beast.height_cm) * 0.01,
                 );
+                // A swing at an animal is judged where it stands when the
+                // press arrives, not where my screen shows it.
                 let k = if d > 0.0 { r * 0.5 / d } else { 0.0 };
-                Look::Point([t.pos[0] - dx * k, t.pos[1] + h * 0.9, t.pos[2] - dz * k])
+                let back = [t.pos[0] - dx * k, t.pos[1] + h * 0.9, t.pos[2] - dz * k];
+                Look::Point(ahead(t, back, kit.lead_ticks))
             }
         };
         let base = Intent {
@@ -1368,18 +1428,20 @@ impl Combat {
                 .map(|t| [t.pos[0], t.pos[2]]);
             let at = seen.unwrap_or(at);
             self.threat = Some((id, at, true));
+            // A scan that found nothing is not run again every frame.
             let rethink = self
-                .cover
-                .is_none_or(|(_, since)| tick.wrapping_sub(since) >= COVER_RETHINK_TICKS);
+                .cover_tried
+                .is_none_or(|at| tick.wrapping_sub(at) >= COVER_RETHINK_TICKS);
             // Still in its sight where the cover was: somewhere else.
             if rethink && (self.cover.is_none() || seen.is_some()) {
-                let had = self.cover.map(|(c, _)| c);
-                self.cover = cover::find(core, [x, z], at, COVER_M, had).map(|c| (c, tick));
+                let had = self.cover;
+                self.cover = cover::find(core, [x, z], at, COVER_M, had, None);
+                self.cover_tried = Some(tick);
                 if had.is_none() && self.cover.is_some() {
                     self.stats.covers += 1;
                 }
             }
-            if let Some((spot, _)) = self.cover {
+            if let Some(spot) = self.cover {
                 self.retreat = Some(r);
                 let face = Look::Heading(yaw_toward(at[0] - x, at[1] - z));
                 return Assess::Fight(match route.to(core, body, spot, 0.6, true, tick) {
@@ -1489,6 +1551,17 @@ fn beast_reach(reach: f32, beast: &super::wiki::Beast) -> f32 {
     );
     let drop = EYE_M - h;
     (reach * reach - drop * drop).max(0.0).sqrt() + r * 0.8
+}
+
+/// Where a point on an animal will be when my next press lands: the
+/// server judges shots and swings at animals live, with no rewind. A
+/// player's pose is the one on my screen, as the server rewinds to it.
+fn ahead(t: &Track, p: [f32; 3], lead_ticks: u32) -> [f32; 3] {
+    if t.species == Species::Player {
+        return p;
+    }
+    let k = lead_ticks as f32 / TICK_HZ as f32;
+    [p[0] + t.vel[0] * k, p[1], p[2] + t.vel[2] * k]
 }
 
 fn ground_dist(a: [f32; 2], b: [f32; 2]) -> f32 {
@@ -1764,6 +1837,7 @@ mod tests {
             on_target: true,
             settled: true,
             lead_ticks: 4,
+            lane_free: true,
         };
         let with_spear = kit(spear, 100);
         let o = odds(&player(Some(rock)), &with_spear, 0);

@@ -438,8 +438,9 @@ pub struct Survivor {
     ack_age: u32,
     /// When a reload was last asked for.
     reload_at: Option<u32>,
-    /// Where a downed body is crawling to.
-    crawl_to: Option<[f32; 2]>,
+    /// Where a downed body is crawling to, if anywhere, and when that was
+    /// looked for: a scan that found nothing waits before the next.
+    crawl_to: Option<(Option<[f32; 2]>, u32)>,
     /// An answer that arrived mid-fight, and when; judged once the fight
     /// is over.
     deferred: Option<(Choice, Instant)>,
@@ -811,14 +812,15 @@ impl Survivor {
             on_target: self.hands.on_target(),
             settled: self.hands.settled(),
             lead_ticks: u32::from(self.tracks.playout()) + self.ack_age,
+            lane_free: self.outbox.is_none(),
         };
         let assessed = self
             .combat
             .assess(core, &body, &self.tracks, &mut self.route, &kit, tick);
         self.stats.retreats = self.combat.stats.retreats();
         if let Some(verb) = self.combat.take_verb() {
-            // The reflex's take: the lane is shared with the goal, and a
-            // press that finds it busy is pressed again next second.
+            // The reflex's take: pressed only while the lane is free
+            // (`Kit::lane_free`), so it counts as a try.
             let _ = match verb {
                 Verb::Loot => self.queue(protocol::encode_action_loot),
                 Verb::Pickup => self.queue(protocol::encode_action_pickup),
@@ -1036,6 +1038,14 @@ impl Survivor {
                 return;
             }
             self.end_goal(tick, Outcome::Interrupted(Why::Replaced));
+        }
+        if self.medic {
+            // The reflex's bandage still in flight answers to no goal: its
+            // toast is not the new goal's to count.
+            self.medic = false;
+            if matches!(self.awaiting, Some((Pending::Consume { .. }, _))) {
+                self.awaiting = None;
+            }
         }
         self.goal = Some(Active {
             goal: choice.goal,
@@ -1799,18 +1809,18 @@ impl Survivor {
             return Intent::IDLE;
         };
         let me = [body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q];
-        if self.crawl_to.is_none() {
-            // The blow's author is somewhere back along its bearing.
+        let due = self.crawl_to.is_none_or(|(spot, at)| {
+            spot.is_none() && tick.wrapping_sub(at) >= combat::COVER_RETHINK_TICKS
+        });
+        if due {
+            // The blow's author is somewhere back along its bearing. Only
+            // cover that lies away from the blow, not past it.
             let (bx, bz) = yaw_dir(away.wrapping_add(1 << 15));
             let threat = [me[0] + bx * 6.0, me[1] + bz * 6.0];
-            self.crawl_to = cover::find(core, me, threat, CRAWL_COVER_M, None).filter(|c| {
-                // Only cover that lies away from the blow, not past it.
-                let (ax, az) = yaw_dir(away);
-                let (dx, dz) = (c[0] - me[0], c[1] - me[1]);
-                (dx * ax + dz * az) >= 0.5 * dx.hypot(dz)
-            });
+            let spot = cover::find(core, me, threat, CRAWL_COVER_M, None, Some(away));
+            self.crawl_to = Some((spot, tick));
         }
-        match self.crawl_to {
+        match self.crawl_to.and_then(|(spot, _)| spot) {
             Some(spot) => match self.route.to(core, body, spot, 0.5, false, tick) {
                 Step::Walk { yaw, .. } => Intent::walk(yaw),
                 Step::Wait => Intent::walk(yaw_toward(spot[0] - me[0], spot[1] - me[1])),
@@ -2240,9 +2250,21 @@ impl Survivor {
         }
         while let Some((item, _slot)) = core.pop_consume_toast() {
             self.stats.eaten += 1;
-            if let Some((Pending::Consume { food, water, .. }, _)) = self.awaiting {
-                self.learning = Some((item, food, water));
-                self.verdict = Some(Verdict::Ok);
+            // Only the toast for what was asked for: a late one for an
+            // earlier consume is not this one's answer.
+            if let Some((
+                Pending::Consume {
+                    item: want,
+                    food,
+                    water,
+                },
+                _,
+            )) = self.awaiting
+            {
+                if want == item {
+                    self.learning = Some((item, food, water));
+                    self.verdict = Some(Verdict::Ok);
+                }
             }
         }
         while let Some(reason) = core.pop_consume_refusal() {
@@ -3631,19 +3653,30 @@ mod tests {
         let (_, away) = bot.last_hurt.unwrap();
         let mut frame = bot.frame_at(&view, 1, 2, now);
         // The hands turn the body round at their own speed while it crawls
-        // straight away from the first frame, never toward the blow.
+        // away from the first frame, never toward the blow: straight
+        // away, or to the nearest cover that lies that way.
         let (ax, az) = yaw_dir(away);
+        let mut last = frame.yaw.wrapping_add(1);
         for _ in 0..40 {
             assert_eq!(bot.stats.phase, Phase::Wounded);
             let (wx, wz) = walked(&frame);
             assert!(wx * ax + wz * az > 120.0, "crawled ({wx}, {wz})");
             assert_eq!(frame.buttons, 0, "no swing, no sprint");
-            if frame.yaw == away {
+            let off = (frame.yaw.wrapping_sub(away) as i16).unsigned_abs();
+            if frame.yaw == last && off <= 0x1556 {
                 break;
             }
+            last = frame.yaw;
             frame = bot.frame_at(&view, 1, 2, now);
         }
-        assert_eq!(frame.yaw, away);
+        let off = (frame.yaw.wrapping_sub(away) as i16).unsigned_abs();
+        assert!(off <= 0x1556, "settled {off} off the way away");
+        // Found once, cover is kept; none found is looked for again only
+        // after a while.
+        let Some((_, at)) = bot.crawl_to else {
+            panic!("never looked for cover");
+        };
+        assert_eq!(at, 1, "looked for cover again every frame");
     }
 
     #[test]

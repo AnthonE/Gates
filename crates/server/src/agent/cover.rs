@@ -9,6 +9,7 @@
 
 use client_core::core::ClientCore;
 use sim_core::terrain::{self, Occupant, CELL_SIZE};
+use sim_core::yaw_dir;
 
 /// Stand this far past the far edge of what hides me, found in steps of
 /// [`EDGE_STEP_M`] out from its middle, no further than [`EDGE_MAX_M`].
@@ -25,17 +26,23 @@ pub const MIN_THREAT_M: f32 = 4.0;
 pub const HIDE_Y_M: f32 = 1.5;
 /// A spot this near one that already failed is the same spot.
 pub const SAME_SPOT_M: f32 = 2.0;
+/// A spot asked for ahead lies within 60° of that bearing from me.
+pub const AHEAD_COS: f32 = 0.5;
 
 /// The nearest place within `max_m` of `me` with a tree or a rock between
 /// it and `threat` (ground positions, metres), other than `avoid` (a spot
-/// that turned out to be in their sight after all).
+/// that turned out to be in their sight after all), and, if `ahead` names
+/// a world bearing, within [`AHEAD_COS`] of it: the nearest such spot, not
+/// the nearest of all with the rest thrown away.
 pub fn find(
     core: &mut ClientCore,
     me: [f32; 2],
     threat: [f32; 2],
     max_m: f32,
     avoid: Option<[f32; 2]>,
+    ahead: Option<u16>,
 ) -> Option<[f32; 2]> {
+    let ahead = ahead.map(yaw_dir);
     let reach = (max_m / CELL_SIZE).ceil() as i32 + 1;
     let (mcx, mcz) = (
         (me[0] / CELL_SIZE).floor() as i32,
@@ -91,7 +98,11 @@ pub fn find(
                 o[1] + away[1] * (edge + BEHIND_M),
             ];
             let d = dist(me, spot);
+            let off_ahead = ahead.is_some_and(|(ax, az)| {
+                (spot[0] - me[0]) * ax + (spot[1] - me[1]) * az < AHEAD_COS * d
+            });
             if d > max_m
+                || off_ahead
                 || dist(spot, threat) < from_threat - TOWARD_SLACK_M
                 || avoid.is_some_and(|a| dist(a, spot) < SAME_SPOT_M)
             {
@@ -126,7 +137,7 @@ mod tests {
             for cx in (40..200).step_by(13) {
                 let me = [cx as f32 * CELL_SIZE, cz as f32 * CELL_SIZE];
                 let threat = [me[0] + 20.0, me[1] + 5.0];
-                let Some(spot) = find(&mut core, me, threat, 20.0, None) else {
+                let Some(spot) = find(&mut core, me, threat, 20.0, None, None) else {
                     continue;
                 };
                 found += 1;
@@ -145,8 +156,18 @@ mod tests {
                     island.blocks_volume(seed, x, z, y, 0.0, 0.0)
                 });
                 assert!(hidden, "nothing in front of {spot:?}");
-                let other = find(&mut core, me, threat, 20.0, Some(spot));
+                let other = find(&mut core, me, threat, 20.0, Some(spot), None);
                 assert!(other.is_none_or(|o| dist(o, spot) >= SAME_SPOT_M));
+                // Asked for away from the threat, the nearest spot that
+                // way, where the nearest of all may lie to the side.
+                let bearing =
+                    crate::agent::intent::yaw_toward(me[0] - threat[0], me[1] - threat[1]);
+                if let Some(o) = find(&mut core, me, threat, 20.0, None, Some(bearing)) {
+                    let (ax, az) = yaw_dir(bearing);
+                    let d = dist(me, o);
+                    assert!((o[0] - me[0]) * ax + (o[1] - me[1]) * az >= AHEAD_COS * d - 1e-3);
+                    assert!(d >= dist(me, spot) - 1e-3, "nearer than the nearest");
+                }
             }
         }
         assert!(found > 5, "only {found} spots had cover");

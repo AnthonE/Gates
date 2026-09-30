@@ -636,6 +636,80 @@ fn a_heal_counts_the_bandages_still_working() {
     assert_eq!(a.heap_ops, 0);
 }
 
+/// A mind that heals whenever healing is on offer and otherwise waits.
+struct Healer;
+
+impl server::mind::DecisionSource for Healer {
+    fn kind(&self) -> server::mind::SourceKind {
+        server::mind::SourceKind::Scripted
+    }
+
+    fn decide(&mut self, s: &server::mind::Summary) -> Result<server::mind::Choice, String> {
+        use server::mind::Goal;
+        let goal = if s.offers(Goal::Heal) {
+            Goal::Heal
+        } else {
+            Goal::Wait
+        };
+        Ok(server::mind::Choice {
+            goal,
+            confidence: 1.0,
+            reason: server::mind::Reason::from_text("test: heal when offered"),
+            input_tokens: 0,
+            output_tokens: 0,
+        })
+    }
+}
+
+/// The heal goal on its own, above where the reflex bandages: told to
+/// heal at 85 %, one bandage takes it past 90 % and the goal ends done
+/// with that one counted, the rest left in the pack.
+#[test]
+fn a_heal_goal_uses_what_it_needs_and_ends_done() {
+    use server::mind::{Goal, Outcome};
+    let content = content();
+    let cfg = MindConfig {
+        heartbeat: Duration::from_secs(1),
+        per_hour: 100_000,
+        per_day: 100_000,
+        ..MindConfig::default()
+    };
+    let mut a = Arena::with(
+        Temperament::Opportunist,
+        Mind::inline(Healer, cfg).unwrap(),
+        false,
+    );
+    assert!(a.until(900, |a| a.bot.goal().is_some()), "{}", a.explain());
+    let mut bandages = stack(&content, "item.bandage");
+    bandages.count = 5;
+    let slot = HOTBAR_SLOTS + 2;
+    a.stage(ID, |p| {
+        p.inv[slot] = bandages;
+        p.hp = p.hp_max * 85 / 100;
+    });
+    let healed = |a: &Arena| {
+        a.bot
+            .memory()
+            .last
+            .is_some_and(|r| r.goal == Goal::Heal && r.outcome != Outcome::Running)
+    };
+    assert!(a.until(30 * TICK_HZ, healed), "{}", a.explain());
+    let report = a.bot.memory().last.unwrap();
+    let p = a.player(ID);
+    println!(
+        "heal goal: {report:?}, {} hp, {} left; {}",
+        p.hp,
+        p.inv[slot].count,
+        a.explain()
+    );
+    assert_eq!(report.outcome, Outcome::Done, "{}", a.explain());
+    assert_eq!(report.gained, 1, "{}", a.explain());
+    assert_eq!(p.inv[slot].count, 4);
+    assert!(u32::from(p.hp) * 100 >= u32::from(p.hp_max) * 90);
+    assert_eq!(a.bot.stats.reflex_heals, 0, "the reflex took it");
+    assert_eq!(a.heap_ops, 0);
+}
+
 /// A mind that hunts whatever animal is on offer and otherwise waits,
 /// looking about: the test's way of pointing the agent at the pig.
 struct Hunter;
@@ -733,11 +807,17 @@ fn the_agent_kills_a_pig_with_a_bow_and_loots_it() {
     use sim_core::input::{BTN_AIM, BTN_CROUCH};
     let (mut a, pig) = hunt("item.bow", "item.arrow_wood", 20, 24.0);
     let mut pressed = 0u8;
+    // The rock is in slot 0: a kill with it would be no bow kill.
+    let mut clubbed = 0u32;
     for _ in 0..90 * TICK_HZ {
         if !a.shard.world.mobs.m[pig].alive {
             break;
         }
-        pressed |= a.player(ID).frame.buttons;
+        let f = a.player(ID).frame;
+        pressed |= f.buttons;
+        if f.buttons & BTN_PRIMARY != 0 && f.sel == 0 {
+            clubbed += 1;
+        }
         a.step();
     }
     assert!(
@@ -756,6 +836,7 @@ fn the_agent_kills_a_pig_with_a_bow_and_loots_it() {
         a.explain()
     );
     assert!(pressed & BTN_AIM != 0, "never drew the bow");
+    assert_eq!(clubbed, 0, "swung the rock at the pig: {}", a.explain());
     assert!(pressed & BTN_CROUCH != 0, "never crouched to stalk");
     assert!(c.shots >= 1 && c.won >= 1, "{}", a.explain());
     assert!(looted, "never looted the carcass: {}", a.explain());
@@ -774,25 +855,40 @@ fn the_agent_kills_a_pig_with_a_bow_and_loots_it() {
 #[test]
 fn a_dry_revolver_is_loaded_fired_and_topped_up() {
     let (mut a, pig) = hunt("item.revolver", "item.pistol_ammo", 24, 20.0);
-    let dead = a.until(90 * TICK_HZ, |a| !a.shard.world.mobs.m[pig].alive);
-    assert!(dead, "the pig lives: {}", a.explain());
-    let reloads = a.bot.stats.reloads;
+    let gun = content().item_index("item.revolver").unwrap();
+    let def = a.shard.world.combat.held_ranged(gun).unwrap();
+    let mag = |a: &Arena| a.player(ID).mag[usize::from(def.mag_slot)];
+    assert_eq!(mag(&a), 0, "the revolver comes dry");
+    // The server's own count: loaded (accepted, not just asked for)
+    // before the first shot.
+    let mut loaded_first = None;
+    for _ in 0..90 * TICK_HZ {
+        if !a.shard.world.mobs.m[pig].alive {
+            break;
+        }
+        if mag(&a) > 0 && loaded_first.is_none() {
+            loaded_first = Some(a.bot.combat().stats.shots);
+        }
+        a.step();
+    }
+    assert!(
+        !a.shard.world.mobs.m[pig].alive,
+        "the pig lives: {}",
+        a.explain()
+    );
+    assert_eq!(loaded_first, Some(0), "no load before the first shot");
+    let after_kill = mag(&a);
     a.until(20 * TICK_HZ, |_| false);
     let c = a.bot.combat().stats;
-    let p = a.player(ID);
     println!(
-        "revolver: mag {:?} rounds {}; {}",
-        p.mag,
+        "revolver: mag {after_kill} after the kill, {} now, rounds {}; {}",
+        mag(&a),
         count_of(&a, "item.pistol_ammo"),
         a.explain()
     );
-    assert!(reloads >= 1, "fired a dry gun: {}", a.explain());
     assert!(c.shots >= 1 && c.won >= 1, "{}", a.explain());
-    assert!(
-        a.bot.stats.reloads > reloads,
-        "never topped up: {}",
-        a.explain()
-    );
+    assert!(after_kill < def.magazine, "no shot spent: {}", a.explain());
+    assert_eq!(mag(&a), def.magazine, "never topped up: {}", a.explain());
     assert_eq!(a.heap_ops, 0);
 }
 
