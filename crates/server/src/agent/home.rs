@@ -51,6 +51,12 @@ pub const LOOT_STAND_M: f32 = 2.0;
 pub const LOOT_TRIES: u8 = 3;
 /// An action's answer arrives within this long (`explorer::VERDICT_SECS`).
 const VERDICT_TICKS: u32 = 3 * TICK_HZ;
+/// A bag that failed to go down is not tried again until the body has
+/// walked this far from where it failed...
+pub const BAG_RETRY_M: f32 = 10.0;
+/// ...or this long has passed: the same ground, claim or crowd would
+/// refuse it again.
+pub const BAG_RETRY_TICKS: u32 = 120 * TICK_HZ;
 
 /// What the server said about a deploy this body sent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,6 +90,16 @@ pub struct Home {
     /// The address a deploy was sent to, until its answer.
     asked: Option<(u16, u16, u8, u8)>,
     verdict: Option<Placed>,
+    /// The server said it has all the bags it may have down: none of the
+    /// ones it knows of this session, maybe, but the cap stands until a
+    /// death screen lists them.
+    capped: bool,
+    /// Where and when the last bag failed to go down.
+    bag_failed: Option<([f32; 2], u32)>,
+    /// The death backpack (`ClientCore::own_bag`) whose recovery came to
+    /// nothing more, and the free pack slots then: not walked to again
+    /// until the pack has more room, or a new death leaves a new one.
+    pack_tried: Option<(u32, u8)>,
     pub stats: HomeStats,
 }
 
@@ -100,6 +116,9 @@ impl Home {
             alarm: None,
             asked: None,
             verdict: None,
+            capped: false,
+            bag_failed: None,
+            pack_tried: None,
             stats: HomeStats {
                 bags_placed: 0,
                 deploy_refusals: 0,
@@ -124,6 +143,47 @@ impl Home {
         self.bags.iter().flatten().count() as u8
     }
 
+    /// Sleeping bags it counts as down when choosing: all it may have
+    /// once the server has said so.
+    pub fn bags_known(&self) -> u8 {
+        if self.capped {
+            BAG_CAP as u8
+        } else {
+            self.bags()
+        }
+    }
+
+    /// A bag failed to go down with the body standing here.
+    pub fn bag_failed(&mut self, at: [f32; 2], tick: u32) {
+        self.bag_failed = Some((at, tick));
+    }
+
+    /// Is a bag not worth trying here and now: it failed close by, a
+    /// moment ago? Moving on or waiting a while gives it another go.
+    pub fn bag_held(&self, at: [f32; 2], tick: u32) -> bool {
+        self.bag_failed.is_some_and(|(p, t)| {
+            tick.wrapping_sub(t) < BAG_RETRY_TICKS
+                && (p[0] - at[0]).hypot(p[1] - at[1]) <= BAG_RETRY_M
+        })
+    }
+
+    /// The recovery of this death backpack came to all it will.
+    pub fn pack_tried(&mut self, core: &ClientCore) {
+        if core.own_bag != 0 {
+            self.pack_tried = Some((core.own_bag, free_slots(core)));
+        }
+    }
+
+    /// Is the walk back not worth it: no free slot for what it holds, or
+    /// this backpack was tried already and the pack has no more room.
+    pub fn recover_held(&self, core: &ClientCore) -> bool {
+        let free = free_slots(core);
+        free == 0
+            || self
+                .pack_tried
+                .is_some_and(|(id, then)| id == core.own_bag && free <= then)
+    }
+
     /// Did this body build what stands at this address?
     pub fn owns(&self, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
         loc == LOC_PLANE && self.bags.contains(&Some((cx, cz, level)))
@@ -133,6 +193,7 @@ impl Home {
     /// cut is gone from it, one from an earlier session is on it.
     pub fn on_bags(&mut self, anchors: &[BagAnchor]) {
         self.bags = [None; BAG_CAP];
+        self.capped = false;
         for (slot, a) in self.bags.iter_mut().zip(anchors) {
             *slot = Some((a.cx, a.cz, a.level));
         }
@@ -159,6 +220,11 @@ impl Home {
     /// A deploy refusal: its own, since the ring carries only the owner's.
     pub fn on_refused(&mut self, reason: u8) {
         self.stats.deploy_refusals += 1;
+        // Bags from an earlier session count against the cap before the
+        // death screen has listed them.
+        if u32::from(reason) == REFUSE_D_BAG_CAP {
+            self.capped = true;
+        }
         if self.asked.take().is_some() {
             self.verdict = Some(Placed::Refused(reason));
         }
@@ -274,6 +340,14 @@ pub fn bag_cell(
     best.map(|(_, cx, cz)| (cx, cz))
 }
 
+/// Empty pack and belt slots.
+fn free_slots(core: &ClientCore) -> u8 {
+    core.inv[..INV_SLOTS]
+        .iter()
+        .filter(|s| s.count == 0)
+        .count() as u8
+}
+
 /// The whole-stack move that puts `item` on the belt from the pack: an
 /// empty belt slot, else the last one (the stacks swap).
 fn belt_move(core: &ClientCore, item: u16) -> Option<(u8, u8, u16)> {
@@ -333,8 +407,29 @@ impl BagJob {
         self.sent = Some(tick);
     }
 
+    /// The next move; a failure is remembered where it happened (in
+    /// `Home`, which outlives the job) so the goal is not chosen again on
+    /// the same spot.
     #[allow(clippy::too_many_arguments)]
     pub fn step(
+        &mut self,
+        core: &ClientCore,
+        seed: u64,
+        haven: &Haven,
+        body: &EntityState,
+        hands: &Hands,
+        home: &mut Home,
+        tick: u32,
+    ) -> Do {
+        let step = self.next(core, seed, haven, body, hands, home, tick);
+        if let Do::Fail(_) = step {
+            home.bag_failed([body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q], tick);
+        }
+        step
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn next(
         &mut self,
         core: &ClientCore,
         seed: u64,
@@ -435,8 +530,32 @@ impl RecoverJob {
         self.sent = Some((tick, gained));
     }
 
+    /// The next move. A recovery that ends with the backpack still
+    /// standing (the pack took what fitted, the presses went unanswered,
+    /// no way there) marks it tried in `Home`, so it is not chosen again
+    /// until there is more room.
     #[allow(clippy::too_many_arguments)]
     pub fn step(
+        &mut self,
+        core: &mut ClientCore,
+        body: &EntityState,
+        route: &mut Route,
+        hands: &Hands,
+        home: &mut Home,
+        hostile: bool,
+        gained: u32,
+        tick: u32,
+    ) -> Do {
+        let step = self.next(core, body, route, hands, hostile, gained, tick);
+        let ended = matches!(step, Do::Done | Do::Fail(Why::Refused | Why::Stuck));
+        if ended && death_bag(core).is_some() {
+            home.pack_tried(core);
+        }
+        step
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn next(
         &mut self,
         core: &mut ClientCore,
         body: &EntityState,
@@ -529,5 +648,42 @@ mod tests {
         home.asked(5, 5, 0, LOC_PLANE);
         home.on_refused(3);
         assert_eq!(home.take_verdict(), Some(Placed::Refused(3)));
+    }
+
+    #[test]
+    fn a_bag_that_failed_here_waits_for_a_walk_or_a_while_and_the_cap_sticks() {
+        let mut home = Home::new();
+        home.bag_failed([100.0, 100.0], 50);
+        assert!(home.bag_held([103.0, 100.0], 51), "the same ground again");
+        assert!(!home.bag_held([100.0 + BAG_RETRY_M + 1.0, 100.0], 51));
+        assert!(!home.bag_held([100.0, 100.0], 50 + BAG_RETRY_TICKS));
+        // Bags from an earlier session fill the cap: the server's word
+        // stands until a death screen lists them.
+        home.asked(5, 5, 0, LOC_PLANE);
+        home.on_refused(REFUSE_D_BAG_CAP as u8);
+        assert_eq!((home.bags(), home.bags_known()), (0, BAG_CAP as u8));
+        home.on_bags(&[]);
+        assert_eq!(home.bags_known(), 0);
+    }
+
+    #[test]
+    fn a_backpack_that_gave_all_it_could_waits_for_room_or_a_new_death() {
+        let mut core = Box::new(ClientCore::new(1, 1, 0));
+        let mut home = Home::new();
+        for s in core.inv.iter_mut() {
+            (s.item, s.count) = (1, 1);
+        }
+        core.own_bag = 7;
+        assert!(home.recover_held(&core), "no room for anything");
+        core.inv[3].count = 0;
+        assert!(!home.recover_held(&core));
+        // The press took what fitted; the rest stays in the backpack.
+        home.pack_tried(&core);
+        assert!(home.recover_held(&core), "the same pack, no more room");
+        core.inv[4].count = 0;
+        assert!(!home.recover_held(&core), "room was made");
+        home.pack_tried(&core);
+        core.own_bag = 8;
+        assert!(!home.recover_held(&core), "a new death, a new backpack");
     }
 }

@@ -245,6 +245,10 @@ pub struct Memory {
     pub yields: [u64; 4],
     /// Sleeping bags it knows it has down.
     pub bags: u8,
+    /// A bag failed to go down near here a moment ago (`Home::bag_held`).
+    pub bag_held: bool,
+    /// The death backpack is not worth the walk (`Home::recover_held`).
+    pub recover_held: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -1582,6 +1586,7 @@ impl Survivor {
             body,
             &mut self.route,
             &self.hands,
+            &mut self.home,
             self.senses.hostile,
             gained,
             tick,
@@ -1638,7 +1643,10 @@ impl Survivor {
             backpack.add(d, b);
         }
         self.senses.backpack = backpack;
-        self.memory.bags = self.home.bags();
+        self.memory.bags = self.home.bags_known();
+        let at = [body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q];
+        self.memory.bag_held = self.home.bag_held(at, tick);
+        self.memory.recover_held = self.home.recover_held(core);
         if self
             .water_at
             .is_none_or(|at| tick.wrapping_sub(at) >= TICK_HZ)
@@ -2298,6 +2306,7 @@ pub fn observe(
     // back to the last death's backpack while it is near and nobody who
     // could start the fight again is in view.
     if usize::from(memory.bags) < BAG_CAP
+        && !memory.bag_held
         && home::bag_row(core).is_some_and(|(_, item)| count_item(core, item) > 0)
     {
         s.offer(Goal::Bag);
@@ -2305,6 +2314,7 @@ pub fn observe(
     if senses.backpack.count > 0
         && f32::from(senses.backpack.nearest_m) <= home::RECOVER_M
         && !senses.hostile
+        && !memory.recover_held
     {
         s.offer(Goal::Recover);
     }
@@ -2820,19 +2830,64 @@ mod tests {
             protocol::ActionMsg::Respawn { on_bag: true }
         ));
         assert_eq!(bot.home.bags(), 1, "the screen's list is what it owns");
-        // Hurt beside that bag a moment ago: home is being fought over,
-        // and the beach is the way back in.
-        let (x, z) = sim_core::deploy::cell_center(bag.cx, bag.cz);
-        let tick = view.newest_applied.unwrap();
-        bot.home.on_hurt([x, z], tick);
+        // Hurt beside that bag a moment ago (the blow arrives as a person
+        // feels it, with the eyes on where it stands): home is being
+        // fought over, and the beach is the way back in.
+        let me = *view.get(1).unwrap();
+        let tick = view.newest_applied.unwrap() + 1;
+        keyframe(&mut view, tick, &[me]);
+        bot.frame_at(&view, 1, 7, now);
+        assert!(!bot.home.under_attack(view.newest_applied.unwrap()));
+        let n = protocol::event::encode_event_hurt(0, 15, &mut buf).unwrap();
+        event(&mut bot, n, &buf);
+        assert!(bot.home.under_attack(view.newest_applied.unwrap()));
         assert!(matches!(
-            die(&mut bot, &mut view, 7),
+            die(&mut bot, &mut view, 8),
             protocol::ActionMsg::Respawn { on_bag: false }
         ));
         assert_eq!(
             (bot.home.stats.wakes_on_bag, bot.home.stats.wakes_on_beach),
             (1, 3)
         );
+    }
+
+    #[test]
+    fn a_bag_that_failed_is_not_chosen_again_where_it_failed() {
+        let (mut bot, mut view, _) = fixture();
+        let now = Instant::now();
+        let core = bot.core.as_mut().unwrap();
+        core.deploy_defs.defs[0] = sim_core::deploy::DeployDef {
+            arch: sim_core::deploy::ARCH_BAG,
+            hp: 10,
+            item: 7,
+            ..sim_core::deploy::DeployDef::INERT
+        };
+        (core.deploy_defs.def_count, core.deploy_defs_have) = (1, 1);
+        core.inv[HOTBAR_SLOTS + 2] = ItemStack {
+            item: 7,
+            count: 1,
+            ..ItemStack::default()
+        };
+        view.newest_applied = Some(1);
+        bot.frame_at(&view, 1, 1, now);
+        assert!(bot.summary(&view, 1).unwrap().offers(Goal::Bag));
+        // The move to the belt goes unanswered: the goal fails here...
+        goal(&mut bot, Goal::Bag, 1);
+        bot.frame_at(&view, 1, 2, now);
+        view.newest_applied = Some(2 + VERDICT_SECS * TICK_HZ);
+        bot.frame_at(&view, 1, 3, now);
+        assert_eq!(
+            bot.memory.last.unwrap().outcome,
+            Outcome::Failed(Why::NoAnswer)
+        );
+        // ...and is not offered again on the same spot, only after a walk.
+        view.newest_applied = Some(3 + VERDICT_SECS * TICK_HZ);
+        bot.frame_at(&view, 1, 4, now);
+        assert!(!bot.summary(&view, 1).unwrap().offers(Goal::Bag));
+        view.entities[0].1.qx += ((home::BAG_RETRY_M + 2.0) / POS_XZ_Q) as i32;
+        view.newest_applied = Some(4 + VERDICT_SECS * TICK_HZ);
+        bot.frame_at(&view, 1, 5, now);
+        assert!(bot.summary(&view, 1).unwrap().offers(Goal::Bag));
     }
 
     #[test]
