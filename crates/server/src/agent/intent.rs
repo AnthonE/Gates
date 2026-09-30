@@ -26,18 +26,23 @@ pub struct Intent {
     pub look: Look,
     pub move_x: i8,
     pub move_z: i8,
+    /// The buttons held this frame. A frame states every held button, as a
+    /// human's does, so a skill that keeps a bow drawn says so each frame.
     pub buttons: u8,
-    pub sel: u8,
+    /// The hotbar slot to hold, or `None` to keep the one in hand: the sim
+    /// equips by slot every tick, so a skill that only moves must not
+    /// swap the weapon out from under the skill that chose it.
+    pub sel: Option<u8>,
 }
 
 impl Intent {
-    /// Stand still, look where you are looking, hold slot 0.
+    /// Stand still, look where you are looking, keep the slot in hand.
     pub const IDLE: Self = Self {
         look: Look::Keep,
         move_x: 0,
         move_z: 0,
         buttons: 0,
-        sel: 0,
+        sel: None,
     };
 
     /// Walk forward along a heading.
@@ -67,7 +72,7 @@ impl Intent {
             move_x: self.move_x,
             move_z: self.move_z,
             buttons: self.buttons,
-            sel: self.sel,
+            sel: self.sel.unwrap_or(base.sel),
             ..base
         }
     }
@@ -106,7 +111,7 @@ mod tests {
     fn keep_holds_the_view_and_takes_the_rest_from_the_intent() {
         let f = Intent {
             buttons: sim_core::input::BTN_PRIMARY,
-            sel: 2,
+            sel: Some(2),
             ..Intent::IDLE
         }
         .frame(base(), [0.0; 3]);
@@ -115,6 +120,12 @@ mod tests {
             (f.buttons, f.sel, f.move_z),
             (sim_core::input::BTN_PRIMARY, 2, 0)
         );
+    }
+
+    #[test]
+    fn walking_keeps_the_slot_in_hand() {
+        let f = Intent::walk(0x8000).frame(base(), [0.0; 3]);
+        assert_eq!((f.sel, f.buttons), (3, 0));
     }
 
     #[test]

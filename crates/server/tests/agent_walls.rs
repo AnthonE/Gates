@@ -110,13 +110,70 @@ fn agent_sources() -> Vec<std::path::PathBuf> {
     files
 }
 
-/// A file's shipped text: test modules may name anything.
+/// A file's shipped text: every `#[cfg(test)]` item cut out, since test
+/// code may name anything. Only the gated items go, not the rest of the
+/// file after the first one, so a test-only const near the top cannot hide
+/// the code below it from the walls.
 fn shipped(file: &std::path::Path) -> String {
-    let text = std::fs::read_to_string(file).unwrap();
-    text.split("#[cfg(test)]")
-        .next()
-        .unwrap_or_default()
-        .to_string()
+    strip_test_items(&std::fs::read_to_string(file).unwrap())
+}
+
+fn strip_test_items(text: &str) -> String {
+    const GATE: &str = "#[cfg(test)]";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(GATE) {
+        out.push_str(&rest[..at]);
+        rest = &rest[at + GATE.len()..];
+        rest = &rest[item_len(rest)..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The length of the item at the start of `text`: up to its `;` or the
+/// brace that closes its body, skipping strings, chars and comments so a
+/// brace inside one does not end the item early.
+fn item_len(text: &str) -> usize {
+    let bytes = text.as_bytes();
+    let mut depth = 0usize;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                i += text[i..].find('\n').unwrap_or(text.len() - i);
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                i += text[i..].find("*/").map_or(text.len() - i, |e| e + 1);
+            }
+            b'r' if matches!(bytes.get(i + 1), Some(b'"' | b'#'))
+                && !bytes[i.saturating_sub(1)].is_ascii_alphanumeric() =>
+            {
+                let hashes = bytes[i + 1..].iter().take_while(|&&b| b == b'#').count();
+                let close = format!("\"{}", "#".repeat(hashes));
+                let open = i + 1 + hashes + 1;
+                i = open + text[open..].find(&close).unwrap_or(text.len() - open) + close.len() - 1;
+            }
+            b'"' => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != b'"' {
+                    i += if bytes[i] == b'\\' { 2 } else { 1 };
+                }
+            }
+            b'\'' if bytes.get(i + 2) == Some(&b'\'') => i += 2,
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return i + 1;
+                }
+            }
+            b';' if depth == 0 => return i + 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    text.len()
 }
 
 /// The `encode_action_*` verbs these files call, read off the source.
@@ -227,6 +284,40 @@ fn the_agent_presses_only_buttons_the_human_client_sends() {
         0,
         "the agent may press a button no human client sends"
     );
+}
+
+/// The walls read `shipped` text, so a cut that eats real code blinds them
+/// without failing. jev.rs gates a const near the top, well above its test
+/// module: its request code must survive, and no test code may.
+#[test]
+fn shipped_text_cuts_only_the_test_items() {
+    let src = root().join("crates/server/src");
+    let jev = shipped(&src.join("jev.rs"));
+    for kept in [
+        "pub struct Jev",
+        "impl Jev",
+        "INSTRUCTIONS",
+        "MAX_RESPONSE_BYTES",
+    ] {
+        assert!(jev.contains(kept), "shipped jev.rs lost {kept}");
+    }
+    assert!(!jev.contains("REQUEST_BYTES_MAX"), "a gated const survived");
+    let mut files = agent_sources();
+    files.extend(["mind.rs", "jev.rs", "external.rs"].map(|f| src.join(f)));
+    for file in files {
+        let text = shipped(&file);
+        for test_only in ["#[cfg(test)]", "#[test]", "mod tests"] {
+            assert!(
+                !text.contains(test_only),
+                "{} keeps {test_only}",
+                file.display()
+            );
+        }
+    }
+    let strip = strip_test_items(
+        "a\n#[cfg(test)]\nconst X: char = '}';\nb\n#[cfg(test)]\nmod t { fn f() { let _ = \"}\"; } }\nc",
+    );
+    assert_eq!(strip.split_whitespace().collect::<String>(), "abc");
 }
 
 #[test]
