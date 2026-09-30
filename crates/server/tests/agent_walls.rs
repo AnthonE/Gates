@@ -675,11 +675,34 @@ fn a_survivor_plays_a_whole_life_and_the_next_one_in_lockstep() {
     assert!(fed, "no drink and meal: {}", h.explain());
     assert_ne!(h.bot.memory().food.feeds, 0, "a meal teaches what feeds");
 
-    // 3. Go down, die, answer the death screen in-game, and play on. A
+    // 3. A blow it survives, mid-goal: the fight reflex takes the frames
+    //    (a route-led retreat), the goal waits and is then handed back or
+    //    ended, all under the counting allocator.
+    let busy = h.until(3_000, |b| b.goal().is_some() && !b.combat().engaged());
+    assert!(busy, "no goal to pause: {}", h.explain());
+    let settled = |b: &Survivor| b.stats.goals_resumed + b.stats.goals_interrupted;
+    let before = settled(&h.bot);
+    let retreats = h.bot.stats.retreats;
+    h.stage(|p| p.hp = p.hp_max);
+    h.with_puppet();
+    h.puppet = Some(h.spear);
+    let hit = h.until(600, |b| b.stats.retreats > retreats);
+    h.puppet = None;
+    assert!(hit, "the blow did not land: {}", h.explain());
+    assert!(!h.bot.core().unwrap().wounded, "one blow must not down it");
+    let over = h.until(60 * TICK_HZ, |b| {
+        !b.combat().engaged() && settled(b) > before
+    });
+    assert!(
+        over,
+        "the fight never ended, or the paused goal was neither resumed nor ended: {}",
+        h.explain()
+    );
+
+    // 4. Go down, die, answer the death screen in-game, and play on. A
     //    starved body no longer serves: the survivor forages and eats its
     //    way out even at 1 hp. So a second body stands on it swinging a
-    //    spear — the first blow lays it down, the next one kills.
-    h.with_puppet();
+    //    spear until it lays it down, and then kills it.
     h.puppet = Some(h.spear);
     let downed = h.until(3_000, |b| b.core().is_some_and(|c| c.wounded || c.dead));
     assert!(downed, "the blow did not land: {}", h.explain());

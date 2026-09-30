@@ -40,7 +40,9 @@ pub const STALL_TICKS: u32 = TICK_HZ;
 pub const STALL_M: f32 = 0.5;
 /// A goal the body has got no closer to in this long is given up, however
 /// busy the legs are: a route that ends each leg where the last began walks
-/// back and forth without ever stalling.
+/// back and forth without ever stalling. Only a route of legs and guesses
+/// is judged so; a path that reaches the goal may go the long way round a
+/// wall, and walking it is progress.
 pub const GIVE_UP_TICKS: u32 = 10 * TICK_HZ;
 /// Closer than the best so far by this much counts as getting closer.
 const CLOSER_M: f32 = 1.0;
@@ -213,8 +215,9 @@ impl Route {
             self.unstick = Unstick::Walking;
             return Step::Arrived;
         }
+        let whole = matches!(self.last, Some(Plan::Found | Plan::Direct));
         match self.best {
-            Some((best, at)) if !resumed && left + CLOSER_M > best => {
+            Some((best, at)) if !resumed && !whole && left + CLOSER_M > best => {
                 if tick.wrapping_sub(at) >= GIVE_UP_TICKS {
                     self.best = None;
                     self.stats.blocked += 1;
@@ -223,7 +226,8 @@ impl Route {
                     return Step::Blocked;
                 }
             }
-            // Closer, or a fresh start: the clock runs from here.
+            // Closer, a fresh start, or on a whole path: the clock runs
+            // from here.
             _ => self.best = Some((left, tick)),
         }
         if self.stalled(body, tick, resumed) {

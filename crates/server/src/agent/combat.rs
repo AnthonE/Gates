@@ -13,7 +13,7 @@ use super::route::{into_deeper_water, Route, Step};
 use super::tracks::Tracks;
 use client_core::core::ClientCore;
 use protocol::EntityState;
-use sim_core::input::BTN_SPRINT;
+use sim_core::input::{BTN_JUMP, BTN_SPRINT};
 use sim_core::limits::TICK_HZ;
 use sim_core::movement::POS_XZ_Q;
 use sim_core::yaw_dir;
@@ -134,14 +134,19 @@ impl Combat {
         self.retreat = Some(r);
         // Keep the danger in view while retreating: turn to face back and
         // back away along the route, whatever the view is doing.
-        let travel = match step {
-            Step::Walk { yaw, .. } => yaw,
-            Step::Arrived | Step::Blocked | Step::Wait => r.away,
+        // A lip the route is fighting is jumped, as on any other walk.
+        let (travel, jump) = match step {
+            Step::Walk { yaw, jump, .. } => (yaw, jump),
+            Step::Arrived | Step::Blocked | Step::Wait => (r.away, false),
         };
         Assess::Fight(Intent {
             look: Look::Heading(r.away.wrapping_add(1 << 15)),
             travel: Some(travel),
-            buttons: BTN_SPRINT,
+            buttons: if jump {
+                BTN_SPRINT | BTN_JUMP
+            } else {
+                BTN_SPRINT
+            },
             ..Intent::IDLE
         })
     }

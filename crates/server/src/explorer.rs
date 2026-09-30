@@ -252,6 +252,9 @@ pub struct SurvivorStats {
     pub goals_resumed: u64,
     /// Answers from the mind held until a fight ended.
     pub deferred: u64,
+    /// Held answers dropped when the fight ended: too old by then, the
+    /// fight too long, or the goal no longer on offer.
+    pub deferred_dropped: u64,
     pub targets_seen: u64,
     pub targets_completed: u64,
     pub targets_abandoned: u64,
@@ -348,8 +351,9 @@ pub struct Survivor {
     frontier: Frontier,
     /// The fight reflex; it takes the frame from the goal while it runs.
     combat: Combat,
-    /// An answer that arrived mid-fight, adopted once the fight is over.
-    deferred: Option<Choice>,
+    /// An answer that arrived mid-fight, and when; judged once the fight
+    /// is over.
+    deferred: Option<(Choice, Instant)>,
     /// An idle look round: since when, from which heading, which offset.
     glance: Option<(u32, u16, u8)>,
     water_at: Option<u32>,
@@ -553,10 +557,13 @@ impl Survivor {
         frame
     }
 
+    /// Stop what this body was doing: down, dead, a stale link or a new
+    /// life. An answer held for the old situation goes with it.
     fn halt(&mut self) {
         self.target = None;
         self.recovery = None;
         self.combat.forget();
+        self.deferred = None;
     }
 
     /// One frame, with the client state kept the way the human client
@@ -671,12 +678,13 @@ impl Survivor {
         // Answers are taken only by a body that can act on them; one that
         // arrives while it is down waits in the ring and is judged fresh
         // or late when it is read. Mid-fight a routine answer waits for
-        // the fight to end; it is held, never swapped for another.
+        // the fight to end; a newer one, held or adopted, supersedes it.
         if let Some(choice) = self.mind.poll(now) {
             if self.combat.engaged() && !urgent(choice.goal) {
-                self.deferred = Some(choice);
+                self.deferred = Some((choice, now));
                 self.stats.deferred += 1;
             } else {
+                self.deferred = None;
                 self.adopt(choice, tick);
             }
         }
@@ -698,11 +706,11 @@ impl Survivor {
                 // We were looking back at the danger. Resume travelling
                 // away, rather than turning the retreat into a return trip.
                 self.heading = Some(away);
-                self.after_fight(core, view, player, tick);
+                self.after_fight(core, view, player, tick, now);
             }
             Assess::Calm => {
                 if self.deferred.is_some() || self.goal.is_some_and(|a| a.paused.is_some()) {
-                    self.after_fight(core, view, player, tick);
+                    self.after_fight(core, view, player, tick, now);
                 }
             }
         }
@@ -752,10 +760,28 @@ impl Survivor {
     /// The fight is over. A short one leaves the goal to carry on, if it is
     /// still on offer; a long one has changed the situation enough that
     /// the mind should choose again. An answer held through the fight is
-    /// adopted now, over either.
-    fn after_fight(&mut self, core: &ClientCore, view: &ClientView, player: u32, tick: u32) {
-        if let Some((goal, at)) = self.goal.and_then(|a| a.paused.map(|at| (a.goal, at))) {
-            let fought = tick.wrapping_sub(at);
+    /// judged the way the mind judges its own: adopted over the paused goal
+    /// only if it is still fresh, the fight was short and it is on offer.
+    fn after_fight(
+        &mut self,
+        core: &ClientCore,
+        view: &ClientView,
+        player: u32,
+        tick: u32,
+        now: Instant,
+    ) {
+        let paused = self.goal.and_then(|a| a.paused.map(|at| (a.goal, at)));
+        let fought = paused.map(|(_, at)| tick.wrapping_sub(at));
+        let held = self.deferred.take().and_then(|(choice, since)| {
+            let fresh = now.saturating_duration_since(since) < self.mind.config().timeout;
+            let short = fought.is_none_or(|f| f < RESUME_TICKS);
+            let keep = fresh && short && self.summarize(core, view, player).offers(choice.goal);
+            if !keep {
+                self.stats.deferred_dropped += 1;
+            }
+            keep.then_some(choice)
+        });
+        if let (Some((goal, _)), Some(fought)) = (paused, fought) {
             if let Some(a) = self.goal.as_mut() {
                 a.paused = None;
                 // The goal's own clocks do not count the fight.
@@ -768,7 +794,9 @@ impl Survivor {
             }
             self.progress_tick = tick;
             self.best_distance = f32::INFINITY;
-            if self.deferred.is_none() {
+            // A held answer naming another goal replaces this one below;
+            // one naming this goal is this goal carrying on.
+            if held.is_none_or(|c| c.goal == goal) {
                 // A flee goal's retreat was the fight; it finishes itself.
                 let keep = goal == Goal::Flee
                     || (fought < RESUME_TICKS && self.summarize(core, view, player).offers(goal));
@@ -780,7 +808,7 @@ impl Survivor {
                 }
             }
         }
-        if let Some(choice) = self.deferred.take() {
+        if let Some(choice) = held {
             self.adopt(choice, tick);
         }
     }
@@ -2827,7 +2855,7 @@ mod tests {
     /// hit ended the goal outright; this test pinned that.)
     #[test]
     fn damage_pauses_work_and_escapes_away_from_every_announced_bearing() {
-        use sim_core::input::BTN_SPRINT;
+        use sim_core::input::{BTN_JUMP, BTN_SPRINT};
         let (mut bot, mut view, target) = fixture();
         let now = Instant::now();
         let cap = bot.hands().skill().max_turn();
@@ -2846,7 +2874,12 @@ mod tests {
             let mut frame = bot.frame_at(&view, 1, 2, now);
             for _ in 0..40 {
                 assert_eq!(bot.stats.phase, Phase::Fleeing);
-                assert_eq!(frame.buttons, BTN_SPRINT, "a retreat must release primary");
+                // A retreat caught on a lip may jump too.
+                assert_eq!(
+                    frame.buttons & !BTN_JUMP,
+                    BTN_SPRINT,
+                    "a retreat must release primary"
+                );
                 assert!(bot.target.is_none());
                 assert!(
                     bot.goal.is_some_and(|a| a.paused.is_some()),
@@ -2893,6 +2926,17 @@ mod tests {
             let n = protocol::event::encode_event_hurt(0, 15, &mut buf).unwrap();
             event(&mut bot, n, &buf);
         }
+        // An answer chosen before all that is stale by the end of it.
+        bot.deferred = Some((
+            Choice {
+                goal: Goal::Wait,
+                confidence: 1.0,
+                reason: crate::mind::Reason::EMPTY,
+                input_tokens: 0,
+                output_tokens: 0,
+            },
+            now,
+        ));
         let (start, _) = bot.combat.retreat().unwrap();
         view.newest_applied = Some(start + FLEE_TICKS);
         bot.frame_at(&view, 1, 6, now);
@@ -2903,22 +2947,36 @@ mod tests {
         );
         assert_eq!(bot.memory.trigger, Trigger::Fought);
         assert_eq!(bot.stats.goals_resumed, 1);
+        assert_eq!(bot.stats.deferred_dropped, 1);
+        assert_eq!(bot.goal(), None, "the mind chooses again");
     }
 
     /// An answer that lands mid-fight waits for the fight to end and is
-    /// then adopted as it was, never dropped and never swapped.
+    /// then judged the way the mind judges its own: adopted only while it
+    /// is fresh and on offer, and never carried into a new situation.
+    /// (Until the review, a held answer was adopted as it was.)
     #[test]
-    fn an_answer_mid_fight_is_held_until_the_fight_ends() {
+    fn an_answer_mid_fight_is_held_and_judged_when_the_fight_ends() {
         let (mut bot, mut view, _) = fixture();
         let now = Instant::now();
         let mut buf = [0u8; protocol::event::MAX_EVENT_MSG_BYTES];
+        let mut hurt = |bot: &mut Survivor| {
+            let n = protocol::event::encode_event_hurt(2, 15, &mut buf).unwrap();
+            event(bot, n, &buf);
+        };
+        let choice = |goal| Choice {
+            goal,
+            confidence: 1.0,
+            reason: crate::mind::Reason::EMPTY,
+            input_tokens: 0,
+            output_tokens: 0,
+        };
         goal(&mut bot, Goal::GatherWood, 1);
-        let n = protocol::event::encode_event_hurt(2, 15, &mut buf).unwrap();
-        event(&mut bot, n, &buf);
+        hurt(&mut bot);
         bot.frame_at(&view, 1, 1, now);
         assert!(bot.combat.engaged());
-        // Ask while backing away: thirsty, with water on offer, the scripted
-        // mind answers drink, and the answer lands mid-fight.
+        // Ask while backing away: told it is thirsty with water on offer,
+        // the scripted mind answers drink, and the answer lands mid-fight.
         let mut summary = bot.summary(&view, 1).unwrap();
         summary.water = 1;
         summary.current = None;
@@ -2926,22 +2984,55 @@ mod tests {
         assert!(bot.mind.ask(now, &summary));
         bot.frame_at(&view, 1, 2, now);
         assert_eq!(bot.stats.deferred, 1);
-        assert!(bot.deferred.is_some_and(|c| c.goal == Goal::Drink));
+        assert!(bot.deferred.is_some_and(|(c, _)| c.goal == Goal::Drink));
         assert_eq!(bot.goal(), Some(Goal::GatherWood), "held, not adopted");
         assert_eq!(bot.stats.phase, Phase::Fleeing);
+        // The fight ends with the water meter full: drink is not on offer,
+        // so the answer is dropped and the paused goal carries on.
         let (start, _) = bot.combat.retreat().unwrap();
         view.newest_applied = Some(start + FLEE_TICKS);
         bot.frame_at(&view, 1, 3, now);
-        // Adopted once it ended (and, with a full water meter, done at once).
         assert!(bot.deferred.is_none());
-        let reports: Vec<Report> = bot.history.iter().collect();
-        let n = reports.len();
-        assert!(n >= 2, "{reports:?}");
+        assert_eq!(bot.stats.deferred_dropped, 1);
+        assert_eq!(bot.goal(), Some(Goal::GatherWood));
+        assert_eq!(bot.stats.goals_resumed, 1);
+
+        // Fresh and on offer after a short fight: adopted over the goal.
+        let tick = start + FLEE_TICKS + 1;
+        view.newest_applied = Some(tick);
+        hurt(&mut bot);
+        bot.frame_at(&view, 1, 4, now);
+        bot.deferred = Some((choice(Goal::Explore), now));
+        let (start, _) = bot.combat.retreat().unwrap();
+        view.newest_applied = Some(start + FLEE_TICKS);
+        bot.frame_at(&view, 1, 5, now);
+        assert_eq!(bot.goal(), Some(Goal::Explore));
         assert_eq!(
-            (reports[n - 2].goal, reports[n - 2].outcome),
-            (Goal::GatherWood, Outcome::Interrupted(Why::Replaced))
+            bot.memory.last.map(|r| (r.goal, r.outcome)),
+            Some((Goal::GatherWood, Outcome::Interrupted(Why::Replaced)))
         );
-        assert_eq!(reports[n - 1].goal, Goal::Drink);
+
+        // Older than the mind's own timeout by the end: dropped.
+        view.newest_applied = Some(start + FLEE_TICKS + 1);
+        hurt(&mut bot);
+        bot.frame_at(&view, 1, 6, now);
+        bot.deferred = Some((choice(Goal::Wait), now));
+        let (start, _) = bot.combat.retreat().unwrap();
+        view.newest_applied = Some(start + FLEE_TICKS);
+        let late = now + bot.mind.config().timeout;
+        bot.frame_at(&view, 1, 7, late);
+        assert_eq!(bot.goal(), Some(Goal::Explore));
+        assert_eq!(bot.stats.deferred_dropped, 2);
+
+        // A body that goes down takes no answer from its old life along.
+        view.newest_applied = Some(start + FLEE_TICKS + 1);
+        hurt(&mut bot);
+        bot.frame_at(&view, 1, 8, late);
+        bot.deferred = Some((choice(Goal::Wait), late));
+        view.entities[0].1.wounded = true;
+        bot.frame_at(&view, 1, 9, late);
+        assert!(bot.deferred.is_none());
+        assert_eq!(bot.stats.phase, Phase::Wounded);
     }
 
     /// An idle body looks about: while it waits, the view leaves where it
