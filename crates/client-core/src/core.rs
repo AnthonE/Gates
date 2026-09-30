@@ -983,6 +983,28 @@ impl ClientCore {
             },
         )
     }
+
+    /// Lend a path search the ground this client predicts on: the same
+    /// seed, haven, occupants and collision index `advance` hands
+    /// `movement::step`, so a planned route agrees with the capsule about
+    /// what is solid. Pieces and closed doors in the index are walls; rows
+    /// that have not dripped in yet are not (the predictor's own gap).
+    /// Disjoint field borrows, the split `advance` makes.
+    pub fn with_ground<R>(&mut self, f: impl FnOnce(&mut sim_core::nav::Ground<'_, '_>) -> R) -> R {
+        let mut occ = Occupants {
+            table: &self.scatter_table,
+            haven: &self.haven,
+            harvested: &self.harvested,
+            cache: &mut self.slot_cache,
+        };
+        let mut gr = sim_core::nav::Ground {
+            seed: self.predict.seed(),
+            haven: &self.haven,
+            cols: self.pieces.cols(),
+            occ: &mut occ,
+        };
+        f(&mut gr)
+    }
 }
 
 /// True if deploy row `row` is a door **and this client knows it is**.
@@ -4735,5 +4757,72 @@ mod tests {
         let len = protocol::encode_event_bag_dropped(&mine, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();
         assert_eq!(c.own_bag, 22, "the latch waited for the drop at the body");
+    }
+
+    /// **A route planned on the client's ground goes round a piece.**
+    /// `with_ground` lends the predictor's own collision index, so a wall in
+    /// `pieces` must block the straight line and push the plan round its end.
+    #[test]
+    fn with_ground_plans_round_a_placed_wall() {
+        use sim_core::build::{self, BUILD_CELL_M, LOC_EDGE_XLO, SHAPE_WALL};
+        use sim_core::movement::{Body, POS_Y_Q};
+        use sim_core::nav::{Nav, NavPath, Plan};
+
+        const SEED: u64 = 7;
+        let mut c = ClientCore::new(SEED, 1, 0);
+        let mut nav = Box::new(Nav::new());
+        // A flat patch with a clear straight line across it before the wall.
+        let mut site = None;
+        'search: for r in 0..96i32 {
+            for dz in -r..=r {
+                for dx in -r..=r {
+                    if dx.abs() != r && dz.abs() != r {
+                        continue;
+                    }
+                    let (cx, cz) = (340 + dx, 340 + dz);
+                    let flat = (-5..=5).all(|ez| {
+                        (-5..=5).all(|ex| {
+                            let x = ((cx + ex) as f32 + 0.5) * BUILD_CELL_M;
+                            let z = ((cz + ez) as f32 + 0.5) * BUILD_CELL_M;
+                            build::foundation_terrain_ok(SEED, &c.haven, x, z)
+                        })
+                    });
+                    if !flat {
+                        continue;
+                    }
+                    let wall_x = cx as f32 * BUILD_CELL_M;
+                    let z = (cz as f32 + 0.5) * BUILD_CELL_M;
+                    let y = Body::at(SEED, &c.haven, wall_x - 6.0, z).qy as f32 * POS_Y_Q;
+                    if c.with_ground(|g| nav.clear_line(g, wall_x - 6.0, y, z, wall_x + 6.0, z)) {
+                        site = Some((cx as u16, cz as u16, y));
+                        break 'search;
+                    }
+                }
+            }
+        }
+        let (cx, cz, y) = site.expect("seed 7 has an open flat patch near the centre");
+        for k in -4i32..=4 {
+            c.pieces
+                .cols
+                .add(cx, (cz as i32 + k) as u16, 0, LOC_EDGE_XLO, SHAPE_WALL, 0);
+        }
+        let wall_x = cx as f32 * BUILD_CELL_M;
+        let z = (cz as f32 + 0.5) * BUILD_CELL_M;
+        let (sx, gx) = (wall_x - 6.0, wall_x + 6.0);
+        let mut path = NavPath::default();
+        let plan = c.with_ground(|g| {
+            assert!(
+                !nav.clear_line(g, sx, y, z, gx, z),
+                "the placed wall must block the straight line"
+            );
+            nav.plan(g, sx, y, z, gx, z, 80, &mut path)
+        });
+        assert_eq!(plan, Plan::Found, "the route must reach the far side");
+        let half = 4.5 * BUILD_CELL_M;
+        let round = (0..path.len as usize).any(|i| {
+            let pz = f32::from(path.cz[i]) + 0.5;
+            (pz - z).abs() > half
+        });
+        assert!(round, "a corner must pass beyond the wall's end: {path:?}");
     }
 }
