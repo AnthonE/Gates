@@ -64,6 +64,10 @@ pub const SEARCH_GOAL_SECS: u32 = 20;
 pub const EXPLORE_GOAL_SECS: u32 = 20;
 /// A wait goal stands still this long.
 pub const WAIT_GOAL_SECS: u32 = 5;
+/// A build goal that has not finished its milestone in this long is stuck
+/// somewhere the builder's own checks missed; it ends, and the mind chooses
+/// again. A milestone's crafts and ops take a few minutes.
+pub const BUILD_GOAL_SECS: u32 = 600;
 /// An action's answer must arrive within this long (after any craft time).
 pub const VERDICT_SECS: u32 = 3;
 /// An exploring walk counts a map cell reached this close to its centre.
@@ -1097,6 +1101,10 @@ impl Survivor {
             Goal::Drink => self.drink(core, body, tick),
             Goal::Bag => self.place_bag(core, body, tick),
             Goal::Recover => self.recover(core, body, tick),
+            Goal::Build if elapsed >= BUILD_GOAL_SECS * TICK_HZ => {
+                self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                Intent::IDLE
+            }
             Goal::Build => self.build_home(core, body, tick),
             Goal::GoHome => self.go_home(core, body, tick),
             goal => match Kind::of_goal(goal) {

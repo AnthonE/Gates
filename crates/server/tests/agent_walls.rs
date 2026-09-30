@@ -449,6 +449,8 @@ struct Harness {
     hammer: u16,
     /// Held-item checks passed at send time.
     held_checks: u32,
+    /// Door uses that were the human client's `E` pick when sent.
+    use_checks: u32,
 }
 
 impl Harness {
@@ -496,6 +498,7 @@ impl Harness {
             plan,
             hammer,
             held_checks: 0,
+            use_checks: 0,
         }
     }
 
@@ -652,6 +655,29 @@ impl Harness {
                     self.tick
                 );
                 self.held_checks += 1;
+            }
+            // Wall 1, the eyes' half: a use goes to what the human client's
+            // `E` would pick from this body, facing this frame's bearing.
+            if let ActionMsg::Use { cx, cz, level, loc } = msg {
+                use client::ui::interact::{resolve, Aim, Verb};
+                let core = self.bot.core().unwrap();
+                let me = self.view.get(ID).copied().unwrap();
+                let q = sim_core::movement::POS_XZ_Q;
+                let (fx, fz) = sim_core::yaw_dir(frame.yaw);
+                let pick = resolve(
+                    Aim::new(me.qx as f32 * q, me.qz as f32 * q, fx, fz),
+                    core.deploys.entries(),
+                    &core.deploy_defs,
+                    core.deploy_defs_have,
+                    core.bags.entries(),
+                );
+                assert_eq!(
+                    (pick.verb, pick.cx, pick.cz, pick.level, pick.loc),
+                    (Verb::Door, cx, cz, level, loc),
+                    "the agent used a door `E` would not pick, at tick {}",
+                    self.tick
+                );
+                self.use_checks += 1;
             }
             assert!(self.shard.wants_action(0) && self.replay.wants_action(0));
             self.shard.push_action(0, msg);
@@ -1205,6 +1231,7 @@ fn a_survivor_builds_its_starter_and_the_base_keeps_strangers_out() {
         h.bot.builder().stats,
         h.explain()
     );
+    assert!(u64::from(h.use_checks) >= h.bot.builder().stats.uses);
     for verb in ["place", "upgrade", "deploy", "use", "craft"] {
         assert!(h.verbs.contains(verb), "{verb} never sent: {:?}", h.verbs);
     }
@@ -1215,6 +1242,49 @@ fn a_survivor_builds_its_starter_and_the_base_keeps_strangers_out() {
         "the agent's frame loop touched the allocator"
     );
     println!("{:?} {}", h.bot.builder().stats, h.explain());
+
+    // 2b. The wood and stone for the storey above: back in through its own
+    //     doors to build it, both shut behind. Once on the stand spot the
+    //     walk is over, so the build goal is at a checkpoint between ops
+    //     and an answer held for one (hunger, here) is taken there.
+    let (wood, stone, berries) = (
+        stack("item.wood", 1000),
+        stack("item.stone", 1000),
+        stack("item.berries", 5),
+    );
+    h.stage(|p| {
+        for s in [wood, wood, stone, berries] {
+            if let Some(free) = p.inv.iter_mut().skip(HOTBAR_SLOTS).find(|x| x.count == 0) {
+                *free = s;
+            }
+        }
+    });
+    let uses = h.bot.builder().stats.uses;
+    let mut inside = false;
+    for _ in 0..9_000 {
+        h.step();
+        let me = h.view.get(ID).copied().unwrap();
+        let b = h.bot.builder();
+        if h.bot.goal() == Some(Goal::Build)
+            && b.stats.uses >= uses + 4
+            && b.region(&me) == Region::Room
+            && !b.passing()
+            && b.at_checkpoint()
+        {
+            inside = true;
+            break;
+        }
+    }
+    assert!(
+        inside,
+        "never back in to build, or the walk in never ended: {:?} {}",
+        h.bot.builder().stats,
+        h.explain()
+    );
+    h.stage(|p| p.food = 5);
+    let fed = h.until(3 * 30 * TICK_HZ, |b| b.goal() == Some(Goal::Eat));
+    assert!(fed, "hunger mid-build was never answered: {}", h.explain());
+    assert_eq!(h.heap_ops, 0);
 
     // 3. Its base, used by somebody else. The lockstep is over, so the live
     //    world may be driven directly now.

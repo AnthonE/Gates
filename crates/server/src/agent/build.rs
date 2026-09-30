@@ -34,9 +34,10 @@ use protocol::EntityState;
 use sim_core::bots::STARTER_STAND_M;
 use sim_core::bots::{op_addr, part_shape, BaseOp, BasePlan, Kit, OpAddr, Part, STARTER};
 use sim_core::build::{
-    anchor, column_floor_y, level_y, row_of, BUILD_CELL_M, LOC_DIAG_A, LOC_DIAG_B, LOC_EDGE_XLO,
-    LOC_EDGE_ZLO, LOC_PLANE, LOC_RISER_ZLO, MAT_STONE, MAT_TWIG, REFUSE_B_CLAIM, REFUSE_B_COST,
-    REFUSE_B_REACH, REFUSE_B_SPOT, REFUSE_B_SUPPORT, REFUSE_B_TERRAIN, REFUSE_B_TIER,
+    anchor, column_floor_y, level_y, row_of, BUILD_CELL_M, BUILD_REACH_M, LOC_DIAG_A, LOC_DIAG_B,
+    LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, LOC_RISER_ZLO, MAT_STONE, MAT_TWIG, REFUSE_B_CLAIM,
+    REFUSE_B_COST, REFUSE_B_REACH, REFUSE_B_SPOT, REFUSE_B_SUPPORT, REFUSE_B_TERRAIN,
+    REFUSE_B_TIER,
 };
 use sim_core::craft::STATION_NONE;
 use sim_core::deploy::{
@@ -114,11 +115,17 @@ const VERDICT_TICKS: u32 = 3 * TICK_HZ;
 pub const MAX_FAILS: u8 = 3;
 /// The builder stands this close to its spot in the core.
 pub const STAND_M: f32 = 0.25;
+/// A route to the stand spot ends this close (`Route::to`'s least); the
+/// rest is walked straight.
+const ROUTE_STOP_M: f32 = 0.5;
 /// A walk through the airlock counts a waypoint reached this close.
 pub const WAYPOINT_M: f32 = 0.1;
 /// A waypoint the body has got no closer to in this long is not going to
 /// be reached.
 pub const PASSAGE_STALL_TICKS: u32 = 2 * TICK_HZ;
+/// How far off the aim line `E` still takes a thing: the human client's
+/// `interact::AIM_RADIUS_M`.
+const E_AIM_RADIUS_M: f32 = 1.0;
 /// Plots refused by the ground or a claim, remembered so as not to be
 /// chosen again.
 pub const BAD_PLOTS: usize = 4;
@@ -409,7 +416,12 @@ pub enum Pass {
 }
 
 /// Walking in or out through its own doors: open the one ahead, walk the
-/// airlock's fixed points, shut both behind.
+/// airlock's fixed points, shut each behind as soon as it is passed.
+///
+/// A door is shut from the chain point just past it, looking back at it:
+/// from there it is the one a player's `E` picks (the other door of the
+/// cell is behind the eye or well off the aim line), and the eye does not
+/// look through a leaf already shut.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Passage {
     way: Option<Way>,
@@ -418,7 +430,10 @@ pub struct Passage {
     at: usize,
     /// Where the walk began on the chain.
     start: usize,
-    closing: bool,
+    /// The door just passed, to shut before walking on.
+    shut: Option<(i8, i8, u8, u8)>,
+    /// Out: the last point is reached, and the walk ends once it is shut.
+    out: bool,
     /// A use sent at this door, wanting it open or shut, and when.
     door: Option<(OpAddr, bool, u32)>,
     use_ready: bool,
@@ -428,6 +443,19 @@ pub struct Passage {
 }
 
 impl Passage {
+    const IDLE: Passage = Passage {
+        way: None,
+        at: 0,
+        start: 0,
+        shut: None,
+        out: false,
+        door: None,
+        use_ready: false,
+        held: None,
+        tries: 0,
+        best: None,
+    };
+
     /// Mid-walk: a door may stand open, and switching now would leave it.
     pub fn busy(&self) -> bool {
         self.way.is_some()
@@ -439,6 +467,16 @@ impl Passage {
             d.2 = tick;
         }
         self.use_ready = false;
+    }
+
+    /// A door that would not answer, or that `E` would not pick from
+    /// here: one more try, and the walk fails after `MAX_FAILS`.
+    fn tried(&mut self) -> Option<Pass> {
+        self.tries += 1;
+        (self.tries >= MAX_FAILS).then(|| {
+            self.way = None;
+            Pass::Fail(Why::Refused)
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -459,7 +497,7 @@ impl Passage {
         if self.way != Some(way) {
             *self = Passage {
                 way: Some(way),
-                ..Passage::default()
+                ..Passage::IDLE
             };
             let rel = [x - corner[0], z - corner[1]];
             let nearest = |range: std::ops::RangeInclusive<usize>| {
@@ -495,26 +533,23 @@ impl Passage {
                 }
                 Some(_) => {
                     self.door = None;
-                    self.tries += 1;
-                    if self.tries >= MAX_FAILS {
-                        self.way = None;
-                        return Pass::Fail(Why::Refused);
+                    if let Some(fail) = self.tried() {
+                        return fail;
                     }
                 }
             }
         }
-        if self.closing {
-            for d in [FRONT, INNER] {
-                let door = door_addr(plan, d);
-                if door_open(core, door) == Some(true) {
-                    return self.press(seed, haven, core, hands, door, false, tick);
-                }
+        if let Some(d) = self.shut {
+            let door = door_addr(plan, d);
+            if door_open(core, door) == Some(true) {
+                return self.press(seed, haven, core, body, hands, door, false, tick);
             }
-            self.closing = false;
-            if way == Way::Out {
-                self.way = None;
-                return Pass::Done;
-            }
+            self.shut = None;
+            self.held = None;
+        }
+        if self.out {
+            self.way = None;
+            return Pass::Done;
         }
         if self.at == CHAIN.len() {
             let p0 = at_corner(corner, CHAIN[CHAIN.len() - 1]);
@@ -542,31 +577,21 @@ impl Passage {
                 self.at >= 1 && self.start < self.at,
             ),
         };
-        let door = if !crosses {
-            None
-        } else if leg == INNER_LEG {
-            Some(INNER)
-        } else if leg == FRONT_LEG {
-            Some(FRONT)
-        } else {
-            None
-        };
+        let door = crosses.then(|| door_across(leg)).flatten();
         if let Some(d) = door {
             let door = door_addr(plan, d);
             if door_open(core, door) == Some(false) {
-                return self.press(seed, haven, core, hands, door, true, tick);
+                return self.press(seed, haven, core, body, hands, door, true, tick);
             }
         }
         let target = at_corner(corner, CHAIN[self.at]);
         let left = (target[0] - x).hypot(target[1] - z);
         if left <= WAYPOINT_M {
             self.best = None;
+            // The leg just walked had its door open: shut it from here.
+            self.shut = door;
             match way {
                 Way::In => {
-                    if self.at == INNER_LEG {
-                        // In the room: both doors shut behind.
-                        self.closing = true;
-                    }
                     if self.at == 0 {
                         self.way = None;
                         return Pass::Done;
@@ -575,10 +600,10 @@ impl Passage {
                 }
                 Way::Out => {
                     if self.at + 1 == CHAIN.len() {
-                        self.closing = true;
-                        return Pass::Go(Intent::IDLE);
+                        self.out = true;
+                    } else {
+                        self.at += 1;
                     }
-                    self.at += 1;
                 }
             }
             return Pass::Go(Intent::IDLE);
@@ -595,13 +620,15 @@ impl Passage {
         Pass::Go(Intent::walk(yaw_toward(target[0] - x, target[1] - z)))
     }
 
-    /// Eyes on the door, then the press once they have settled on it.
+    /// Eyes on the door, then the press once they have settled on it and
+    /// the door is what a player's `E` would take from here.
     #[allow(clippy::too_many_arguments)]
     fn press(
         &mut self,
         seed: u64,
         haven: &Haven,
         core: &ClientCore,
+        body: &EntityState,
         hands: &Hands,
         door: OpAddr,
         open: bool,
@@ -610,13 +637,82 @@ impl Passage {
         let intent = look_at(seed, haven, core, door);
         let held = *self.held.get_or_insert(tick);
         if tick.wrapping_sub(held) >= HOLD_TICKS && hands.settled() {
+            let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+            if e_picks(core, x, z, hands.view().0, door) {
+                self.held = None;
+                self.door = Some((door, open, tick));
+                self.use_ready = true;
+                return Pass::Use(door, intent);
+            }
+        }
+        if tick.wrapping_sub(held) >= VERDICT_TICKS {
+            // Settled on it this long and `E` still takes something else.
             self.held = None;
-            self.door = Some((door, open, tick));
-            self.use_ready = true;
-            return Pass::Use(door, intent);
+            if let Some(fail) = self.tried() {
+                return fail;
+            }
         }
         Pass::Go(intent)
     }
+}
+
+/// The door across chain leg `leg`, if any.
+fn door_across(leg: usize) -> Option<(i8, i8, u8, u8)> {
+    match leg {
+        INNER_LEG => Some(INNER),
+        FRONT_LEG => Some(FRONT),
+        _ => None,
+    }
+}
+
+/// Would a player standing at (`x`, `z`) and facing wire yaw `yaw` press
+/// `E` on this door? The human client's pick (`client::ui::interact::
+/// resolve`), asked conservatively: the door is on the aim line and nearer
+/// than anything else there that `E` could take (every deployable in
+/// reach, a door scored where it hangs and the rest at its cell's centre,
+/// and every backpack). A dead tie counts as not picked.
+fn e_picks(core: &ClientCore, x: f32, z: f32, yaw: u16, door: OpAddr) -> bool {
+    let (fx, fz) = sim_core::yaw_dir(yaw);
+    let reach2 = BUILD_REACH_M * BUILD_REACH_M;
+    // (aimed, squared distance) of a point, from here.
+    let score = |px: f32, pz: f32| {
+        let (dx, dz) = (px - x, pz - z);
+        let t = dx * fx + dz * fz;
+        let (ox, oz) = (dx - t * fx, dz - t * fz);
+        (
+            t > 0.0 && ox * ox + oz * oz <= E_AIM_RADIUS_M * E_AIM_RADIUS_M,
+            dx * dx + dz * dz,
+        )
+    };
+    let in_reach = |cx: u16, cz: u16| {
+        let (cx, cz) = sim_core::deploy::cell_center(cx, cz);
+        (cx - x) * (cx - x) + (cz - z) * (cz - z) <= reach2
+    };
+    if !in_reach(door.cx, door.cz) {
+        return false;
+    }
+    let (ax, az) = anchor(door.cx, door.cz, door.loc);
+    let (aimed, mine) = score(ax, az);
+    if !aimed || mine > reach2 {
+        return false;
+    }
+    let deploys = core.deploys.entries().iter().filter(|d| {
+        (d.cx, d.cz, d.level, d.loc) != (door.cx, door.cz, door.level, door.loc)
+            && in_reach(d.cx, d.cz)
+    });
+    let rivals = deploys.map(|d| anchor(d.cx, d.cz, d.loc)).chain(
+        core.bags
+            .entries()
+            .iter()
+            .map(|b| (b.qx as f32 * POS_XZ_Q, b.qz as f32 * POS_XZ_Q)),
+    );
+    for (px, pz) in rivals {
+        let (aimed, d2) = score(px, pz);
+        if aimed && d2 <= mine && d2 <= reach2 {
+            return false;
+        }
+    }
+    true
 }
 
 /// The plot cell's far corner, where the core, the stair cell and the
@@ -805,6 +901,9 @@ pub struct BuildStats {
 pub struct Builder {
     plan: Option<BasePlan>,
     done: u128,
+    /// Deployables the server said it put down for this body: the mirror
+    /// shows where every deployable stands, not whose it is.
+    mine: u128,
     /// Refused for want of support: tried again once something else stands.
     deferred: u128,
     /// Tried `MAX_FAILS` times, or out of reach of what this body can do.
@@ -816,8 +915,16 @@ pub struct Builder {
     want: Option<Await>,
     verdict: Option<Verdict>,
     held: Option<(usize, u32)>,
-    /// Walk back to the stand spot before the next op (a reach refusal).
+    /// Walk back onto the stand spot itself before the next op (a reach
+    /// refusal).
     restand: bool,
+    /// The last straight walk onto the stand spot: the nearest it came,
+    /// and when.
+    approach: Option<(f32, u32)>,
+    /// An op that got no answer in time, whose answer may still come: its
+    /// kind, address, and when it was given up on. A refusal of that kind
+    /// is its, not the next op's.
+    late: Option<(usize, bool, OpAddr, u32)>,
     /// The milestone a build goal began on; it ends when that one does.
     began: Option<Milestone>,
     passage: Passage,
@@ -838,6 +945,7 @@ impl Builder {
         Self {
             plan: None,
             done: 0,
+            mine: 0,
             deferred: 0,
             given_up: 0,
             fails: [0; OPS],
@@ -847,18 +955,10 @@ impl Builder {
             verdict: None,
             held: None,
             restand: false,
+            approach: None,
+            late: None,
             began: None,
-            passage: Passage {
-                way: None,
-                at: 0,
-                start: 0,
-                closing: false,
-                door: None,
-                use_ready: false,
-                held: None,
-                tries: 0,
-                best: None,
-            },
+            passage: Passage::IDLE,
             use_out: false,
             survey: Survey {
                 milestone: Milestone::Shell,
@@ -897,8 +997,9 @@ impl Builder {
         self.verdict = None;
         self.held = None;
         self.restand = false;
+        self.approach = None;
         self.began = None;
-        self.passage = Passage::default();
+        self.passage = Passage::IDLE;
         self.use_out = false;
     }
 
@@ -1012,6 +1113,14 @@ impl Builder {
 
     /// A placement broadcast: the answer when it is the address asked.
     pub fn on_placed(&mut self, cx: u16, cz: u16, level: u8, loc: u8, deploy: bool) {
+        if let Some((op, d, at, _)) = self.late {
+            if (at.cx, at.cz, at.level, at.loc) == (cx, cz, level, loc) && d == deploy {
+                self.late = None;
+                if deploy {
+                    self.mine |= bit(op);
+                }
+            }
+        }
         if let Some(Await::Op { at, deploy: d, .. }) = self.waiting {
             if (at.cx, at.cz, at.level, at.loc) == (cx, cz, level, loc) && d == deploy {
                 self.verdict = Some(Verdict::Yes);
@@ -1020,8 +1129,14 @@ impl Builder {
     }
 
     /// A build or deploy refusal: the answer when that kind is in flight
-    /// (the rings carry only this player's own).
+    /// (the rings carry only this player's own), unless an op of that kind
+    /// timed out and its answer is still owed: a refusal carries no
+    /// address, and this one is most likely the late op's.
     pub fn on_refused(&mut self, deploy: bool, reason: u8) {
+        if self.late.is_some_and(|(_, d, _, _)| d == deploy) {
+            self.late = None;
+            return;
+        }
         if let Some(Await::Op { deploy: d, .. }) = self.waiting {
             if d == deploy && self.verdict.is_none() {
                 self.verdict = Some(Verdict::No { deploy, reason });
@@ -1061,7 +1176,10 @@ impl Builder {
             milestone,
             needs,
             needs_len: n as u8,
-            ready: milestone != Milestone::Done && self.pick(core, &plan, milestone).is_some(),
+            // An op refused for want of support counts: only a build goal
+            // tries it again, once something else stands.
+            ready: milestone != Milestone::Done
+                && self.pick_among(core, &plan, milestone, 0).is_some(),
             hearth,
         };
     }
@@ -1069,7 +1187,9 @@ impl Builder {
     fn hearth_stands(&self, core: &ClientCore, plan: &BasePlan) -> bool {
         (0..STARTER.len()).any(|i| {
             let s = spec(i);
-            s.op == Op::Kit(HEARTH_ITEM) && deploy_at(core, addr(plan, &s)).is_some()
+            s.op == Op::Kit(HEARTH_ITEM)
+                && self.mine & bit(i) != 0
+                && deploy_at(core, addr(plan, &s)).is_some()
         })
     }
 
@@ -1082,66 +1202,70 @@ impl Builder {
             .unwrap_or(Milestone::Done)
     }
 
-    /// Mark done what stands already: a piece at its address, a deployable
-    /// at its, a grade the piece has reached.
+    /// What stands on the plot is what is done: a piece at its address,
+    /// its own deployable at its, a grade the piece has reached. Worked out
+    /// afresh from the mirror each time, never only added to: twig rots
+    /// within the upkeep hour it went down in, and what rots or is broken
+    /// is built again (with its grades after it).
     fn reconcile(&mut self, core: &ClientCore, plan: &BasePlan) {
         // One pass over each mirror, keeping what stands on the plot: the
         // mirror is the island's, the plot a few cells of it.
         let on_plot =
             |cx: u16, cz: u16| cx.wrapping_sub(plan.cx) <= 2 && cz.wrapping_sub(plan.cz) <= 1;
-        let open = !(self.done | self.given_up);
         let mut stands = 0u128;
         for p in core.pieces.entries().iter().filter(|p| on_plot(p.cx, p.cz)) {
             let material = (u16::from(p.row) < core.piece_defs_have)
                 .then(|| core.piece_defs.pieces[usize::from(p.row)].material);
-            for i in (0..OPS).filter(|&i| open & bit(i) != 0) {
+            let here = OpAddr {
+                cx: p.cx,
+                cz: p.cz,
+                level: p.level,
+                loc: p.loc,
+            };
+            for i in 0..OPS {
                 let s = spec(i);
-                if s.stage.is_none()
-                    || addr(plan, &s)
-                        != (OpAddr {
-                            cx: p.cx,
-                            cz: p.cz,
-                            level: p.level,
-                            loc: p.loc,
-                        })
-                {
+                if s.stage.is_none() || addr(plan, &s) != here {
                     continue;
                 }
-                let here = match s.op {
+                let done = match s.op {
                     Op::Piece(_) => true,
                     Op::Grade(m) => material.is_some_and(|have| have >= m),
                     Op::Kit(_) => false,
                 };
-                if here {
+                if done {
                     stands |= bit(i);
                 }
             }
         }
+        // Only what it put down itself (the mirror does not say whose a
+        // deployable is): a stranger's bag in the airlock is not its bag.
         for d in core
             .deploys
             .entries()
             .iter()
             .filter(|d| on_plot(d.cx, d.cz))
         {
-            for i in (0..OPS).filter(|&i| open & bit(i) != 0) {
+            let here = OpAddr {
+                cx: d.cx,
+                cz: d.cz,
+                level: d.level,
+                loc: d.loc,
+            };
+            for i in 0..OPS {
                 let s = spec(i);
                 if s.stage.is_some()
                     && matches!(s.op, Op::Kit(_))
-                    && addr(plan, &s)
-                        == (OpAddr {
-                            cx: d.cx,
-                            cz: d.cz,
-                            level: d.level,
-                            loc: d.loc,
-                        })
+                    && self.mine & bit(i) != 0
+                    && addr(plan, &s) == here
                 {
                     stands |= bit(i);
                 }
             }
         }
-        self.done |= stands;
+        self.done = stands;
         // A grade whose piece was given up never comes.
-        for i in (0..OPS).filter(|&i| open & !stands & bit(i) != 0) {
+        let open = !(stands | self.given_up);
+        for i in (0..OPS).filter(|&i| open & bit(i) != 0) {
             let s = spec(i);
             if matches!(s.op, Op::Grade(_))
                 && place_of(&s).is_some_and(|p| self.given_up & bit(p) != 0)
@@ -1252,10 +1376,22 @@ impl Builder {
     /// The first op of `milestone` not done, not waiting for support, that
     /// the pack pays for and whose piece stands (a grade).
     fn pick(&self, core: &ClientCore, plan: &BasePlan, milestone: Milestone) -> Option<usize> {
+        self.pick_among(core, plan, milestone, self.deferred)
+    }
+
+    /// [`Self::pick`], passing over the ops in `skip` as well as those done
+    /// or given up.
+    fn pick_among(
+        &self,
+        core: &ClientCore,
+        plan: &BasePlan,
+        milestone: Milestone,
+        skip: u128,
+    ) -> Option<usize> {
         (0..OPS).find(|&i| {
             let s = spec(i);
             s.stage == Some(milestone)
-                && (self.done | self.given_up | self.deferred) & bit(i) == 0
+                && (self.done | self.given_up | skip) & bit(i) == 0
                 && (!matches!(s.op, Op::Grade(_))
                     || (!self.superseded(&s) && piece_at(core, addr(plan, &s)).is_some()))
                 && self.op_bill(core, &s).is_some_and(|b| b.paid_by(core))
@@ -1273,6 +1409,9 @@ impl Builder {
 
     fn succeed(&mut self, i: usize, deploy: bool, grade: bool) {
         self.done |= bit(i);
+        if deploy {
+            self.mine |= bit(i);
+        }
         // Something new stands: what lacked support may have it now.
         self.deferred = 0;
         if grade {
@@ -1295,6 +1434,7 @@ impl Builder {
             }
         }
         self.done = 0;
+        self.mine = 0;
         self.deferred = 0;
         self.given_up = 0;
         self.fails = [0; OPS];
@@ -1370,6 +1510,13 @@ impl Builder {
     ) -> Act {
         // A move not sent last frame is asked for again below.
         self.want = None;
+        // A late answer that has not come in twice its time is not coming.
+        if self
+            .late
+            .is_some_and(|(_, _, _, at)| tick.wrapping_sub(at) >= VERDICT_TICKS)
+        {
+            self.late = None;
+        }
         // What the last move is waiting on.
         match self.waiting {
             Some(Await::Craft {
@@ -1403,10 +1550,10 @@ impl Builder {
             }
             Some(Await::Op {
                 op,
+                at,
                 deploy,
                 since,
                 intent,
-                ..
             }) => {
                 let grade = matches!(spec(op).op, Op::Grade(_));
                 match self.verdict.take() {
@@ -1418,13 +1565,14 @@ impl Builder {
                     Some(Verdict::No { deploy, reason }) => {
                         self.waiting = None;
                         self.stats.refusals += 1;
-                        if let Some(end) = self.refused(op, deploy, u32::from(reason)) {
+                        if let Some(end) = self.refused(core, op, deploy, u32::from(reason)) {
                             return end;
                         }
                     }
                     None if tick.wrapping_sub(since) >= VERDICT_TICKS => {
                         self.waiting = None;
                         self.stats.no_answer += 1;
+                        self.late = Some((op, deploy, at, tick));
                         self.fail(op);
                     }
                     // The answer is on its way; the plan stays in hand.
@@ -1499,39 +1647,68 @@ impl Builder {
         };
         let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
         let far = (stand[0] - x).hypot(stand[1] - z);
-        if far > STAND_M || self.restand {
+        // After a reach refusal, onto the spot itself rather than near it.
+        let close = if self.restand { WAYPOINT_M } else { STAND_M };
+        if far > close {
             self.held = None;
-            self.restand = false;
-            if far > STAND_M {
-                if self.walled(core) {
-                    // Through the airlock, or round the cupboard and the
-                    // box inside, by the chain.
-                    return match self.passage.step(
-                        core,
-                        seed,
-                        haven,
-                        &plan,
-                        body,
-                        hands,
-                        route,
-                        Way::In,
-                        tick,
-                    ) {
-                        Pass::Go(intent) => Act::Go(intent),
-                        Pass::Use(at, intent) => Act::Use { at, intent },
-                        Pass::Done => Act::Go(Intent::IDLE),
-                        Pass::Fail(why) => Act::Fail(why),
-                    };
-                }
-                if far > 1.5 {
-                    return match route.to(core, body, stand, 1.0, true, tick) {
-                        step @ Step::Walk { .. } => Act::Go(step.walk().unwrap_or(Intent::IDLE)),
-                        Step::Blocked => Act::Fail(Why::Stuck),
-                        _ => Act::Go(Intent::walk(yaw_toward(stand[0] - x, stand[1] - z))),
-                    };
-                }
-                return Act::Go(Intent::walk(yaw_toward(stand[0] - x, stand[1] - z)));
+            if far > STAND_M && self.walled(core) {
+                // Through the airlock, or round the cupboard and the box
+                // inside, by the chain.
+                return match self.passage.step(
+                    core,
+                    seed,
+                    haven,
+                    &plan,
+                    body,
+                    hands,
+                    route,
+                    Way::In,
+                    tick,
+                ) {
+                    Pass::Go(intent) => Act::Go(intent),
+                    Pass::Use(at, intent) => Act::Use { at, intent },
+                    Pass::Done => Act::Go(Intent::IDLE),
+                    Pass::Fail(why) => Act::Fail(why),
+                };
             }
+            // No doorway yet: routed round what stands (a wall between the
+            // body and the spot) to the route's closest, then straight on.
+            if far > ROUTE_STOP_M {
+                match route.to(core, body, stand, ROUTE_STOP_M, true, tick) {
+                    step @ Step::Walk { .. } => {
+                        self.approach = None;
+                        return Act::Go(step.walk().unwrap_or(Intent::IDLE));
+                    }
+                    Step::Blocked => return Act::Fail(Why::Stuck),
+                    Step::Wait => return Act::Go(Intent::IDLE),
+                    Step::Arrived => {}
+                }
+            }
+            match self.approach {
+                Some((best, since)) if far > best - 0.05 => {
+                    if tick.wrapping_sub(since) >= PASSAGE_STALL_TICKS {
+                        self.approach = None;
+                        if !self.restand {
+                            return Act::Fail(Why::Stuck);
+                        }
+                        // Near enough to work from, if not onto it.
+                        self.restand = false;
+                    } else {
+                        return Act::Go(Intent::walk(yaw_toward(stand[0] - x, stand[1] - z)));
+                    }
+                }
+                _ => {
+                    self.approach = Some((far, tick));
+                    return Act::Go(Intent::walk(yaw_toward(stand[0] - x, stand[1] - z)));
+                }
+            }
+        }
+        // On the spot: any walk in has ended here (the chain's last point is
+        // the spot, and the builder stops short of the chain's own radius).
+        self.restand = false;
+        self.approach = None;
+        if self.passage.busy() {
+            self.passage = Passage::IDLE;
         }
         // In hand, from the belt.
         let Some(slot) = belt_slot(core, tool) else {
@@ -1593,7 +1770,7 @@ impl Builder {
     }
 
     /// What a refusal of op `i` means for the job; `Some` ends the goal.
-    fn refused(&mut self, i: usize, deploy: bool, reason: u32) -> Option<Act> {
+    fn refused(&mut self, core: &ClientCore, i: usize, deploy: bool, reason: u32) -> Option<Act> {
         let (spot, reach, support, cost, claim, terrain) = if deploy {
             (
                 reason == REFUSE_D_SPOT,
@@ -1615,8 +1792,14 @@ impl Builder {
             )
         };
         if spot {
-            // Taken, by this body before or by the address itself.
-            self.done |= bit(i);
+            // Taken. Done if what stands there is this body's own (the next
+            // reconcile counts it); somebody else's is one more failure.
+            if let Some(plan) = self.plan {
+                self.reconcile(core, &plan);
+            }
+            if self.done & bit(i) == 0 {
+                self.fail(i);
+            }
         } else if reach {
             self.restand = true;
             self.fail(i);
@@ -1775,6 +1958,155 @@ mod tests {
         for i in [INNER_LEG, INNER_LEG + 1, FRONT_LEG, FRONT_LEG + 1] {
             let p = at_corner(c, CHAIN[i]);
             assert!((p[0] - dx).hypot(p[1] - dz) < sim_core::build::BUILD_REACH_M - 1.0);
+        }
+    }
+
+    fn stream(
+        core: &mut ClientCore,
+        encode: impl FnOnce(&mut [u8]) -> Result<usize, protocol::WireError>,
+    ) {
+        let mut buf = [0u8; protocol::event::MAX_EVENT_MSG_BYTES];
+        let n = encode(&mut buf).unwrap();
+        core.on_stream(&buf[..n]).unwrap();
+    }
+
+    /// Twig rots within the upkeep hour it went down in, and a raid breaks
+    /// what it likes: what is gone from the mirror is not done any more,
+    /// and the base goes back to the milestone that builds it.
+    #[test]
+    fn what_rots_away_is_built_again() {
+        let mut core = Box::new(ClientCore::new(1, 1, 0));
+        let plan = BasePlan::new(0, 100, 100);
+        let mut b = Builder::new();
+        b.plan = Some(plan);
+        for i in (0..OPS).filter(|&i| spec(i).stage == Some(Milestone::Shell)) {
+            let at = addr(&plan, &spec(i));
+            if matches!(spec(i).op, Op::Kit(_)) {
+                b.succeed(i, true, false);
+                let rec = sim_core::deploy::DeployRec {
+                    cx: at.cx,
+                    cz: at.cz,
+                    level: at.level,
+                    loc: at.loc,
+                    ..Default::default()
+                };
+                stream(&mut core, |buf| {
+                    protocol::event::encode_event_deploy_placed(&rec, buf)
+                });
+            } else {
+                let rec = sim_core::build::PieceRec {
+                    cx: at.cx,
+                    cz: at.cz,
+                    level: at.level,
+                    loc: at.loc,
+                    ..Default::default()
+                };
+                stream(&mut core, |buf| {
+                    protocol::event::encode_event_piece_placed(&rec, buf)
+                });
+            }
+        }
+        b.survey_now(&core);
+        assert_eq!(b.survey().milestone, Milestone::Doors);
+        assert!(b.survey().hearth);
+        let wall = (0..OPS)
+            .find(|&i| spec(i).op == Op::Piece(Part::Wall))
+            .unwrap();
+        let at = addr(&plan, &spec(wall));
+        stream(&mut core, |buf| {
+            protocol::event::encode_event_removed(true, at.cx, at.cz, at.level, at.loc, buf)
+        });
+        b.survey_now(&core);
+        assert_eq!(b.survey().milestone, Milestone::Shell);
+        assert_eq!(b.done & bit(wall), 0, "the wall is built again");
+
+        // A deployable at the bag's address that this body did not put
+        // down is not its bag.
+        let bag = STARTER.len() + 1;
+        assert_eq!(spec(bag).op, Op::Kit(BAG_ITEM));
+        let at = addr(&plan, &spec(bag));
+        let rec = sim_core::deploy::DeployRec {
+            cx: at.cx,
+            cz: at.cz,
+            level: at.level,
+            loc: at.loc,
+            ..Default::default()
+        };
+        stream(&mut core, |buf| {
+            protocol::event::encode_event_deploy_placed(&rec, buf)
+        });
+        b.survey_now(&core);
+        assert_eq!(b.done & bit(bag), 0);
+    }
+
+    /// A refusal that comes after its op was given up on (three seconds of
+    /// nothing) is that op's, not the next one's of the same kind.
+    #[test]
+    fn a_late_refusal_is_not_the_next_ops() {
+        let mut b = Builder::new();
+        let at = OpAddr {
+            cx: 1,
+            cz: 1,
+            level: 0,
+            loc: LOC_PLANE,
+        };
+        b.late = Some((1, true, at, 0));
+        b.waiting = Some(Await::Op {
+            op: 2,
+            at,
+            deploy: true,
+            since: 10,
+            intent: Intent::IDLE,
+        });
+        b.on_refused(true, REFUSE_D_SPOT as u8);
+        assert_eq!(b.verdict, None, "the late op's");
+        assert_eq!(b.late, None);
+        b.on_refused(true, REFUSE_D_SPOT as u8);
+        assert!(matches!(b.verdict, Some(Verdict::No { .. })), "this op's");
+    }
+
+    /// Doors are pressed only where a player's `E` would take that door:
+    /// from each point the airlock walk presses one, the other door of the
+    /// cell is never the pick.
+    #[test]
+    fn the_airlock_doors_are_pressed_where_e_picks_them() {
+        let mut core = Box::new(ClientCore::new(1, 1, 0));
+        let plan = BasePlan::new(0, 100, 100);
+        let c = corner(&plan);
+        for d in [FRONT, INNER] {
+            let at = door_addr(&plan, d);
+            let rec = sim_core::deploy::DeployRec {
+                cx: at.cx,
+                cz: at.cz,
+                level: at.level,
+                loc: at.loc,
+                ..Default::default()
+            };
+            stream(&mut core, |buf| {
+                protocol::event::encode_event_deploy_placed(&rec, buf)
+            });
+        }
+        let yaw_at = |from: [f32; 2], to: (f32, f32)| {
+            let (dx, dz) = (to.0 - from[0], to.1 - from[1]);
+            yaw_toward(dx, dz)
+        };
+        // Opened from one end of its leg and shut from the other.
+        for (door, points) in [
+            (INNER, [INNER_LEG, INNER_LEG + 1]),
+            (FRONT, [FRONT_LEG, FRONT_LEG + 1]),
+        ] {
+            let at = door_addr(&plan, door);
+            let (ax, az) = anchor(at.cx, at.cz, at.loc);
+            for i in points {
+                let p = at_corner(c, CHAIN[i]);
+                let yaw = yaw_at(p, (ax, az));
+                assert!(
+                    e_picks(&core, p[0], p[1], yaw, at),
+                    "{door:?} from point {i}"
+                );
+                let other = door_addr(&plan, if door == FRONT { INNER } else { FRONT });
+                assert!(!e_picks(&core, p[0], p[1], yaw, other));
+            }
         }
     }
 
