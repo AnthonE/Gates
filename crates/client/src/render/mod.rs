@@ -177,6 +177,7 @@ pub mod weather;
 pub mod web;
 // The in-world keys: what the crosshair is on, and what E/G/H do about it.
 pub mod anim;
+pub mod bow;
 pub mod verbs;
 pub mod viewmodel;
 pub mod wounded;
@@ -530,6 +531,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<screen::Who>()
             .init_resource::<pause::Chosen>()
             .init_resource::<viewmodel::Motion>()
+            .init_resource::<bow::FpBow>()
             .init_resource::<viewmodel::DrawZoom>()
             .init_resource::<verbs::Aimed>()
             .init_resource::<verbs::Swung>()
@@ -1069,6 +1071,11 @@ impl Plugin for GatesRenderPlugin {
                 // `animate` writes only a transform, so the two never
                 // contend for one entity and need no order between them.
                 viewmodel::swap.after(viewmodel::spawn_item),
+                // The bow's live string and the arrow on it: the stringless
+                // copy is built once the file loads, then every frame draws
+                // the draw `animate` just stepped on whatever `swap` shows.
+                bow::prepare,
+                bow::drive.after(viewmodel::animate).after(viewmodel::swap),
                 // What the hand puts into the WORLD, which is a different
                 // question from what it draws — `swap` writes handles and
                 // visibility on the model, this writes lumens and one offset
