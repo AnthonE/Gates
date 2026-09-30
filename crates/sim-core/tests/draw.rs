@@ -334,7 +334,7 @@ fn a_crouch_is_the_slowest_walk_whatever_else_is_held() {
         "crouch {crouch} must be slower than walk {walk}"
     );
     assert!(
-        (crouch as f32 - 30.0 * per_tick).abs() <= 15.0,
+        (crouch as f32 - 30.0 * per_tick).max(30.0 * per_tick - crouch as f32) <= 15.0,
         "crouch {crouch} quanta over 30 ticks vs {per_tick} a tick (walk {walk}, {WALK_SPEED} m/s)"
     );
 }
