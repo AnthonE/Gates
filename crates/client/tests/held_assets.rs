@@ -519,3 +519,34 @@ fn the_fist_closes_on_the_model_and_not_on_air() {
         );
     }
 }
+
+/// The bow in your own hand draws a live string (`render::bow`), so the one
+/// baked into the file has to come out, all of it and nothing else: found,
+/// tied on at the two tips, and leaving both limbs whole.
+#[test]
+fn the_bows_baked_string_comes_out() {
+    let row = client::render::bow::bow_row().expect("the hunting bow has a row");
+    let def = &HELD_MODELS[row];
+    let (pos, idx) = row_tris(def);
+    let (keep, lo, hi) = client::render::bow::strip_string(&pos, &idx)
+        .expect("found no string in the bow: the first-person bow would draw two");
+    let taken = (idx.len() - keep.len()) / 3;
+    assert!(
+        taken * 10 < idx.len() / 3,
+        "{taken} of {} triangles taken for the string",
+        idx.len() / 3
+    );
+    let h = def.height_m;
+    assert!(
+        lo.y < 0.1 * h && hi.y > 0.9 * h,
+        "the string runs {lo} to {hi}, not tip to tip of a {h} m bow"
+    );
+    let (y0, y1) = keep.iter().fold((f32::MAX, f32::MIN), |(a, b), &i| {
+        let y = pos[i as usize][1];
+        (a.min(y), b.max(y))
+    });
+    assert!(
+        y0 < 0.01 * h && y1 > 0.99 * h,
+        "the bow without its string spans {y0}..{y1} of {h} m: a tip went with it"
+    );
+}

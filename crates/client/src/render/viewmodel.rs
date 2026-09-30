@@ -330,6 +330,24 @@ pub const VIEWMODEL_SHOT_CLIMB: f32 = 0.10;
 /// How much a full draw narrows the view: raised, the bow zooms by most of
 /// this; the pull takes the rest.
 pub const DRAW_ZOOM: f32 = 0.15;
+/// How far a raised bow is canted about its arrow, radians: the top limb
+/// tipped in toward the frame's middle, so the limbs and the string read
+/// across the view instead of edge-on. See [`bow_aim`].
+pub const VIEWMODEL_BOW_CANT: f32 = 0.5;
+/// How fast a draw let down without a shot eases the string home, per
+/// second, as `1 - exp(-k·dt)`.
+pub const VIEWMODEL_STRING_EASE: f32 = 10.0;
+
+/// The heave (`animate`): how much of a jolt in the body's vertical speed
+/// the arm takes, the spring that brings it back (stiffness per second²,
+/// damping per second: about 1.7 Hz, well damped), the most it moves,
+/// metres, and the largest jolt it hears, m/s, so a respawn's teleport is a
+/// nudge. A jump dips it about 2 cm on the way up and on landing.
+pub const VIEWMODEL_HEAVE_GAIN: f32 = 0.07;
+pub const VIEWMODEL_HEAVE_K: f32 = 120.0;
+pub const VIEWMODEL_HEAVE_C: f32 = 13.0;
+pub const VIEWMODEL_HEAVE_MAX: f32 = 0.04;
+pub const VIEWMODEL_HEAVE_JOLT_MAX: f32 = 12.0;
 
 /// How far the view is zoomed for a drawn bow, 0..=1 of [`DRAW_ZOOM`] —
 /// written by [`animate`], read by `settings::apply_view`.
@@ -438,6 +456,28 @@ pub fn item_pose(in_hand: bool, snap: Quat) -> Transform {
             scale: Vec3::ONE,
         }
     }
+}
+
+/// The wrist turn that aims a raised bow, at raise `k` in 0..=1.
+///
+/// The bow is carried side-on, so its arrow (the model's −X, through the
+/// row's pose) points off to the left. Raised, the turn lays the arrow along
+/// the view axis for the rig's full-raise attitude, so the nocked arrow
+/// points at the crosshair and the shot leaves where it looks like it will;
+/// then it cants the bow about that arrow by [`VIEWMODEL_BOW_CANT`]. Both
+/// scale with `k`, so the bow comes round as it comes up.
+pub fn bow_aim(def: &crate::ui::hold::HeldModelDef, k: f32) -> Quat {
+    let pose = Quat::from_rotation_y(def.pose_yaw) * Quat::from_rotation_x(-def.lay);
+    let arrow = pose * Vec3::NEG_X;
+    let raised = Quat::from_euler(
+        EulerRot::YXZ,
+        VIEWMODEL_DRAW_TURN.x,
+        VIEWMODEL_DRAW_TURN.y,
+        VIEWMODEL_DRAW_TURN.z,
+    );
+    let want = (raised * tilt()).inverse() * Vec3::NEG_Z;
+    turn_toward(arrow, want, std::f32::consts::PI, k)
+        * Quat::from_axis_angle(pose * Vec3::X, VIEWMODEL_BOW_CANT * k)
 }
 
 /// The strike's turn for an item whose long axis rests along `rest` in the hold
@@ -787,6 +827,16 @@ pub struct HeldModel {
     shown: Option<usize>,
     /// The skin the shown model is drawn in (skins v0), 0 for its own look.
     skin: u16,
+    /// The shown model is the first-person copy (`bow::FpBow`, the bow
+    /// without its baked string) rather than the row's own mesh.
+    fp: bool,
+}
+
+impl HeldModel {
+    /// The [`crate::ui::hold::HELD_MODELS`] row on screen, if any.
+    pub fn shown(&self) -> Option<usize> {
+        self.shown
+    }
 }
 
 /// Tinted copies of the held-model materials (skins v0), one per
@@ -861,6 +911,11 @@ pub struct Motion {
     last_pos: Vec3,
     last_yaw: f32,
     last_pitch: f32,
+    /// The heave: the arm's vertical offset, metres, its speed, and the
+    /// body's vertical speed last frame.
+    heave: f32,
+    heave_v: f32,
+    last_vy: f32,
     /// Seeded on the first frame, so the first delta is not the whole world.
     /// Without it the eye's jump from the origin to the spawn — 2,179 m on the
     /// measured seed (`RENDER.md` §1.1) — lands in the first frame's speed.
@@ -883,6 +938,54 @@ pub struct Motion {
     loose: f32,
     /// Loosed shots since the session began, the draw's `strokes`.
     pub looses: u32,
+    /// How far the string is drawn, 0..=1: the draw clock on the way back,
+    /// zero the instant an arrow leaves, and eased home when the aim is let
+    /// go without a shot (`bow::drive` draws it).
+    string: f32,
+    /// An arrow sits on the string: raised, arrows in the pack, and not
+    /// mid-loose.
+    nocked: bool,
+    /// Where the drawing hand is along the draw, 0..=1: with the string on
+    /// the way back, left where it was when the arrow goes, then eased back
+    /// onto the string (`bow::draw_arm`).
+    hand: f32,
+    /// A stroke asked for by something other than the swing button (the
+    /// hammer's repair): taken next frame if the arm is at rest, dropped if
+    /// it is mid-stroke, so clicking faster does not chain strokes.
+    queued: bool,
+}
+
+/// What the bow's string and arrow are drawn from this frame (`bow::drive`).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BowPose {
+    /// The string's draw, 0..=1.
+    pub pull: f32,
+    /// The loose, counting down from 1 to 0.
+    pub loose: f32,
+    /// An arrow is on the string.
+    pub nocked: bool,
+    /// How far the bow is raised, 0..=1.
+    pub raise: f32,
+    /// The drawing hand's place along the draw, 0..=1.
+    pub hand: f32,
+}
+
+impl Motion {
+    /// Swing the arm once, for a verb that is a swing without being the
+    /// swing button: the hammer's repair (`verbs::keys`).
+    pub fn strike(&mut self) {
+        self.queued = true;
+    }
+
+    pub fn bow(&self) -> BowPose {
+        BowPose {
+            pull: self.string,
+            loose: self.loose,
+            nocked: self.nocked,
+            raise: self.raise,
+            hand: self.hand,
+        }
+    }
 }
 
 /// Spawn the held item under the camera, once.
@@ -988,12 +1091,18 @@ pub fn spawn_item(
                         HeldModel {
                             shown: None,
                             skin: 0,
+                            fp: false,
                         },
                         Mesh3d(Handle::default()),
                         MeshMaterial3d::<StandardMaterial>(Handle::default()),
                         Transform::from_rotation(Quat::from_rotation_x(MODEL_UPRIGHT_TO_HELD)),
                         Visibility::Hidden,
-                    ));
+                    ))
+                    // The bow's live string and the arrow on it, in the
+                    // model's own frame (`bow::drive` shows them).
+                    .with_children(|model| {
+                        super::bow::spawn_parts(model, &mut meshes, &mut materials)
+                    });
                     // What the item puts into the world, dark until `hand_light`
                     // says otherwise. See [`HandLight`] for why it hangs here and
                     // not on the model, and `structures::FireLight` for why its
@@ -1288,6 +1397,7 @@ pub fn dress_arms(
     players: Query<Entity, With<AnimationPlayer>>,
     meshes: Query<(), With<Mesh3d>>,
     item: Query<Entity, With<HeldItem>>,
+    mut draw_arm: ResMut<super::bow::DrawArm>,
 ) {
     let Ok((root, mut arms)) = arms.single_mut() else {
         return;
@@ -1300,6 +1410,8 @@ pub fn dress_arms(
     let mut seen = 0usize;
     let (mut body_half, mut hand, mut player) = (None, None, None);
     let mut off_arm = None;
+    // The folded arm's joints below the shoulder, for the bow's draw hand.
+    let (mut upper, mut fore, mut left_hand) = (None, None, None);
     let mut drawn = Vec::new();
     while let Some(e) = stack.pop() {
         seen += 1;
@@ -1314,6 +1426,9 @@ pub fn dress_arms(
                 super::anim::BODY_NODE => body_half = Some(e),
                 "RightHand" => hand = Some(e),
                 VIEWMODEL_HIDDEN_ARM => off_arm = Some(e),
+                "LeftArm" => upper = Some(e),
+                "LeftForeArm" => fore = Some(e),
+                "LeftHand" => left_hand = Some(e),
                 _ => {}
             }
         }
@@ -1410,6 +1525,12 @@ pub fn dress_arms(
     arms.hand = Some(hand);
     arms.player = Some(player);
     arms.dressed = true;
+    // Optional where the rest is required: without them a raised bow is
+    // simply drawn by no hand, which is how it shipped.
+    draw_arm.bones = upper
+        .zip(fore)
+        .zip(left_hand)
+        .map(|((u, f), h)| [off_arm, u, f, h]);
     info!("viewmodel: arms up, body half hidden, {VIEWMODEL_HIDDEN_ARM} collapsed, item in hand");
 }
 
@@ -1499,6 +1620,7 @@ pub fn pose(def: &crate::ui::hold::HeldModelDef, palm: Vec3) -> Transform {
 pub fn swap(
     net: Option<NonSend<Net>>,
     models: Res<Models>,
+    fp_bow: Res<super::bow::FpBow>,
     mut skin_mats: ResMut<SkinMats>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut q: Query<(
@@ -1543,12 +1665,19 @@ pub fn swap(
         None => (None, true, 0, None, true),
     };
 
+    // The bow in your own hand is drawn without its baked string once that
+    // copy exists; `bow::drive` draws a live one on it.
+    let fp = fp_bow
+        .mesh
+        .as_ref()
+        .filter(|_| want.is_some() && want == super::bow::bow_row());
     for (mut held, mut mesh, mut mat, mut vis, mut tf) in &mut q {
-        if held.shown != want || held.skin != skin {
+        if held.shown != want || held.skin != skin || held.fp != fp.is_some() {
+            held.fp = fp.is_some();
             match want {
                 Some(i) => {
                     let (m, mt) = models.row(i);
-                    mesh.0 = m;
+                    mesh.0 = fp.cloned().unwrap_or(m);
                     *tf = pose(&crate::ui::hold::HELD_MODELS[i], VIEWMODEL_PALM);
                     // The skin's tinted copy when it is ready; the plain look
                     // (and a retry next frame, by not recording the skin)
@@ -1865,6 +1994,23 @@ pub fn animate(
     let sway = m.sway;
     m.sway = sway + (target - sway) * k;
 
+    // ── Heave, off changes in vertical speed ─────────────────────────────
+    // The arm is a weight on a spring from the shoulder: a take-off or a
+    // landing jolts it down and it rings back, and a fall lets it float. A
+    // change in speed drives it, not the speed, so a steady slope leaves it
+    // still. Sub-stepped: a spring this stiff is unstable at a slow frame.
+    let vy = step.y / dt;
+    let jolt = (vy - m.last_vy).clamp(-VIEWMODEL_HEAVE_JOLT_MAX, VIEWMODEL_HEAVE_JOLT_MAX);
+    m.last_vy = vy;
+    m.heave_v -= jolt * VIEWMODEL_HEAVE_GAIN;
+    let n = (dt * 120.0).ceil().clamp(1.0, 16.0);
+    let h = dt / n;
+    for _ in 0..n as u32 {
+        m.heave_v += (-VIEWMODEL_HEAVE_K * m.heave - VIEWMODEL_HEAVE_C * m.heave_v) * h;
+        m.heave += m.heave_v * h;
+    }
+    m.heave = m.heave.clamp(-VIEWMODEL_HEAVE_MAX, VIEWMODEL_HEAVE_MAX);
+
     // ── Swing, off the cadence ───────────────────────────────────────────
     // The sim's own rule, mirrored: button down and the cooldown lapsed.
     // This is what draws a MISS, which is most swings — see the header.
@@ -1882,9 +2028,16 @@ pub fn animate(
     // started, and restarting the arc there is a visible stutter. At rest
     // it can only mean the prediction missed one, and a swing drawn late
     // beats a swing not drawn.
-    let landed_at_rest =
-        !shoots && m.swing <= 0.0 && (feed.hits > 0 || !feed.gathered().is_empty());
-    if predicted || landed_at_rest {
+    //
+    // Melee only: a bow's hits are its arrows landing, a flight after the
+    // loose, and taking one for a missed swing chopped the bow like an axe.
+    let landed_at_rest = bow.is_none()
+        && !shoots
+        && m.swing <= 0.0
+        && (feed.hits > 0 || !feed.gathered().is_empty());
+    // A queued stroke only starts from rest, like the backstop.
+    let queued = std::mem::take(&mut m.queued) && m.swing <= 0.0;
+    if predicted || landed_at_rest || queued {
         m.swing = 1.0;
         m.strokes = m.strokes.wrapping_add(1);
         // **The whoosh is a fact about the arm, so it fires with the arm**
@@ -1938,11 +2091,11 @@ pub fn animate(
                     crate::ui::hold::carries_arrows(&n.session.core.catalog, &n.session.core.inv)
                 })
             };
-            if aiming
+            let loosed = aiming
                 && buttons & sim_core::input::BTN_PRIMARY != 0
                 && m.draw.ready(now, draw_s, nock_s)
-                && arrows()
-            {
+                && arrows();
+            if loosed {
                 m.draw.loose(now);
                 m.loose = 1.0;
                 m.looses = m.looses.wrapping_add(1);
@@ -1951,10 +2104,32 @@ pub fn animate(
             let k = 1.0 - (-VIEWMODEL_RAISE_RATE * dt).exp();
             let target = if aiming { 1.0 } else { 0.0 };
             m.raise += (target - m.raise) * k;
+            // The string follows the draw back and leaves with the arrow,
+            // but a draw let down without a shot is eased home rather than
+            // snapped, which would read as a dry fire.
+            m.string = if loosed || pull >= m.string {
+                pull
+            } else {
+                m.string + (pull - m.string) * (1.0 - (-VIEWMODEL_STRING_EASE * dt).exp())
+            };
+            m.nocked = m.raise > 0.5 && m.loose <= 0.0 && arrows();
+            // The hand lets go of the string rather than riding it home: it
+            // holds where it was through the loose, then comes back for the
+            // next arrow, and follows the string again once it has it.
+            m.hand = if loosed || m.loose > 0.0 {
+                m.hand
+            } else if m.string >= m.hand {
+                m.string
+            } else {
+                m.hand + (m.string - m.hand) * (1.0 - (-VIEWMODEL_STRING_EASE * dt).exp())
+            };
         }
         None => {
             m.draw = crate::ui::draw::DrawClock::default();
             m.raise = 0.0;
+            m.string = 0.0;
+            m.nocked = false;
+            m.hand = 0.0;
             if !shoots {
                 m.loose = 0.0;
             }
@@ -2001,7 +2176,10 @@ pub fn animate(
     // The sway rides OUTSIDE the swing, so a turn taken mid-stroke lags the
     // whole assembly rather than bending the stroke.
     let lag = Quat::from_euler(EulerRot::YXZ, m.sway.x, m.sway.y, 0.0);
-    *t = rig_transform(lag * arc * draw_turn, throw + bob + draw_off);
+    *t = rig_transform(
+        lag * arc * draw_turn,
+        throw + bob + draw_off + Vec3::Y * m.heave,
+    );
 
     // ── The wrist, on top of the arm ────────────────────────────────────
     //
@@ -2017,7 +2195,12 @@ pub fn animate(
     // systems own one entity each and need no order between them.
     if let Ok((mut it, in_hand)) = item.single_mut() {
         let (_, strike) = swing_phases(s);
-        *it = item_pose(in_hand, stroke_snap(def, strike));
+        // A raised bow turns in the hand to aim; nothing else does.
+        let aim = match (bow, def) {
+            (Some(_), Some(d)) => bow_aim(d, m.raise),
+            _ => Quat::IDENTITY,
+        };
+        *it = item_pose(in_hand, stroke_snap(def, strike) * aim);
     }
 }
 

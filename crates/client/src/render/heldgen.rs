@@ -403,6 +403,60 @@ fn taper(s: &mut Soup, a: Vec3, b: Vec3, ha: Vec2, hb: Vec2, tint: [f32; 3]) {
     hexa(s, ring(a, ha), ring(b, hb), tint);
 }
 
+/// An arrow `len` long up +Y, nock at the origin and point at the far end:
+/// the shaft, a steel point and three vanes, one of them the cock feather.
+/// The colours are the crossbow bolt's, so the two read as one family. Drawn
+/// on the string of the bow in your own hand (`render::bow`).
+pub fn arrow_mesh(len: f32) -> Mesh {
+    let mut s = Soup::tiling(1.0);
+    let pale = [0.52, 0.40, 0.26];
+    let nock = [0.17, 0.12, 0.08];
+    let steel = [0.29, 0.30, 0.33];
+    let vane = [0.45, 0.13, 0.10];
+    let hen = [0.36, 0.32, 0.26];
+    let (r, head) = (0.0045, 0.065);
+    turned(
+        &mut s,
+        Vec3::ZERO,
+        &[(0.0, 0.0), (0.0, 0.0055), (0.014, 0.0055), (0.014, r)],
+        nock,
+    );
+    turned(&mut s, Vec3::ZERO, &[(0.014, r), (len - head, r)], pale);
+    turned(
+        &mut s,
+        Vec3::ZERO,
+        &[(len - head, r), (len - head + 0.012, 0.012), (len, 0.0)],
+        steel,
+    );
+    // The vanes, both faces each: a plate standing off the shaft, cut back
+    // toward the nock.
+    for (i, tint) in [vane, hen, hen].into_iter().enumerate() {
+        let a = std::f32::consts::FRAC_PI_2 + i as f32 * std::f32::consts::TAU / 3.0;
+        let out = Vec3::new(a.cos(), 0.0, a.sin());
+        let at = |y: f32, h: f32| Vec3::Y * y + out * (r + h);
+        let q = [
+            at(0.025, 0.0),
+            at(0.105, 0.0),
+            at(0.10, 0.003),
+            at(0.04, 0.010),
+        ];
+        let col = move |_: Vec3| [tint[0], tint[1], tint[2], 1.0];
+        for (x, y, z) in [(0, 1, 2), (0, 2, 3), (0, 2, 1), (0, 3, 2)] {
+            s.tri(q[x], q[y], q[z], col, None, 0.0);
+        }
+    }
+    s.mesh()
+}
+
+/// The arrow's surface: wood, mostly. See [`arrow_mesh`].
+pub fn arrow_material() -> StandardMaterial {
+    StandardMaterial {
+        perceptual_roughness: 0.72,
+        reflectance: super::fresnel::DIELECTRIC,
+        ..default()
+    }
+}
+
 /// Laid forward the revolver's way — +Y becomes forward in the hand, +Z is
 /// up. A stock with a shoulder butt, a bolt on the rail, the prod across the
 /// front swept back to its tips, the string drawn back to the latch, a
@@ -621,6 +675,7 @@ mod tests {
             mesh("torch"),
             mesh("revolver"),
             mesh("crossbow"),
+            arrow_mesh(0.8),
         ] {
             assert!(m.attribute(Mesh::ATTRIBUTE_UV_0).is_some());
             assert!(m.attribute(Mesh::ATTRIBUTE_TANGENT).is_some());

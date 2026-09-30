@@ -297,6 +297,7 @@ pub fn stream(
                     // `dead` is the v48 bit: a corpse keeps its slot until
                     // its owner leaves the death screen, so without it a
                     // killed player is drawn standing at idle.
+                    anim.airborne = rs.airborne;
                     anim.observe(pos, time.delta_secs(), rs.sleeping, rs.dead, rs.wounded);
                     anim.pitch = wire_pitch_to_radians(rs.pitch);
                     // **The one thing the sim sends that state cannot
@@ -310,6 +311,11 @@ pub fn stream(
                     // moving.
                     if feed.swings().contains(&id) {
                         anim.swing();
+                    }
+                    // A shot is the same kind of fact on its own broadcast
+                    // (`EV_SHOT`): an arrow or a round left this body's hands.
+                    if feed.shots().iter().any(|sh| sh.0 == id) {
+                        anim.shoot();
                     }
                     // **And the blow you just landed on them** — the other
                     // fact no amount of interpolated state can imply.
@@ -349,7 +355,10 @@ pub fn stream(
                 }
             }
             None => {
-                let mut anim = BodyAnim::default();
+                let mut anim = BodyAnim {
+                    airborne: rs.airborne,
+                    ..BodyAnim::default()
+                };
                 anim.observe(pos, 0.0, rs.sleeping, rs.dead, rs.wounded);
                 anim.pitch = wire_pitch_to_radians(rs.pitch);
                 // A body that enters AOI on the same frame it swings still
@@ -357,6 +366,9 @@ pub fn stream(
                 // newly-visible raider is the one nobody sees.
                 if feed.swings().contains(&id) {
                     anim.swing();
+                }
+                if feed.shots().iter().any(|sh| sh.0 == id) {
+                    anim.shoot();
                 }
                 // Same for the blow: a body that enters AOI on the frame
                 // your arrow reaches it still flinches.

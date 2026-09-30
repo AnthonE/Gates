@@ -285,6 +285,9 @@ pub fn keys(
     time: Res<Time>,
     mut bite: ResMut<Bite>,
     mut clear_armed_until: Local<f64>,
+    // The arm, for the hammer's repair swing: a repair is an action, not
+    // the swing button, so nothing else moves it.
+    mut motion: ResMut<super::viewmodel::Motion>,
 ) {
     let mut ui = ui;
     let now = time.elapsed_secs_f64();
@@ -383,7 +386,9 @@ pub fn keys(
     // modal rule, one hand further along: a plan has nothing to reload.
     if !wheel_up && !hand.places() && keys.just_pressed(KeyCode::KeyR) {
         if hand.repairs() {
-            repair_near(&net, &near.0, &mut toast);
+            if repair_near(&net, &near.0, &mut toast) {
+                motion.strike();
+            }
         } else {
             // Payload-free, `V`'s shape: the sim reads the hand it already
             // has, so there is nothing to aim and no amount for the client
@@ -411,8 +416,12 @@ pub fn keys(
     // Not while a panel owns the pointer, for the reason `place_key` states:
     // a left click on the wheel is a wedge being chosen.
     let busy = ui.as_ref().map(|u| u.panel != Panel::None).unwrap_or(false);
-    if hand.repairs() && !busy && mouse.just_pressed(MouseButton::Left) {
-        repair_near(&net, &near.0, &mut toast);
+    if hand.repairs()
+        && !busy
+        && mouse.just_pressed(MouseButton::Left)
+        && repair_near(&net, &near.0, &mut toast)
+    {
+        motion.strike();
     }
     // **Left click eats what is in your hand** — Rust's belt: select the
     // mushrooms, click, eat one. Until this the only way was `J`, which no
@@ -971,23 +980,24 @@ fn upgrade_near(net: &Net, near: &Option<Target>, toast: &mut Toast) {
     });
 }
 
-/// `R` — mend the nearest structure, either store.
-fn repair_near(net: &Net, near: &Option<Target>, toast: &mut Toast) {
+/// `R` — mend the nearest structure, either store. Whether a repair went.
+fn repair_near(net: &Net, near: &Option<Target>, toast: &mut Toast) -> bool {
     let Some(t) = near else {
         toast.warn("nothing to repair in reach");
-        return;
+        return false;
     };
     if !t.damaged() && t.hp_max > 0 {
         // `REFUSE_B_INTACT`'s sentence, said before the round trip. Guarded
         // on a known maximum: an undripped row reports 0 and the server is
         // the one that knows.
         toast.warn("not damaged");
-        return;
+        return false;
     }
     let (deploy, cx, cz, level, loc) = (t.store.is_deploy(), t.cx, t.cz, t.level, t.loc);
     send(net, toast, "repair", |buf| {
         protocol::encode_action_repair(deploy, cx, cz, level, loc, buf)
     });
+    true
 }
 
 /// `X` — plant the held throwable on the nearest structure.

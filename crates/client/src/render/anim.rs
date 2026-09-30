@@ -107,6 +107,16 @@ pub enum Clip {
     /// is inside no volume the server tests. There is nothing left for the
     /// drawn pose to disagree with.
     Death,
+    /// **A body loosing a shot**: a bow, a crossbow or a revolver. The third
+    /// one-shot, and like the swing it is an input fact the snapshot cannot
+    /// imply, so it rides the shot's own broadcast (`EV_SHOT`). Before it a
+    /// remote archer stood at idle while arrows left their face.
+    Shoot,
+    /// **Off the ground**: a jump, or a fall off something. A looping state
+    /// like the gait, off the `grounded` bit every record has carried since
+    /// the first wire; until it was read a jumping player rose a metre and
+    /// came back down still walking.
+    Air,
 }
 
 impl Clip {
@@ -180,13 +190,23 @@ impl Clip {
             // honest reading of "you were hit".
             Clip::Flinch => "Hit_Chest",
             Clip::Death => "Death01",
+            // Both arms out and a kick: the rig's one firing clip, and it
+            // reads for a bow too. The `Archery_Shot_*` clips hold the bow
+            // in the LEFT hand, where this client hangs every item off the
+            // right (`HAND_BONE`).
+            Clip::Shoot => "Pistol_Shoot",
+            // Arms out and a knee tucked, looped: a jump is 0.7 s in the air
+            // (`movement::JUMP_SPEED`, `GRAVITY`), shorter than any of the
+            // rig's take-off or landing clips, so the arc is this and the
+            // blends either side.
+            Clip::Air => "Jump_Loop",
         }
     }
 
     /// Public because the asset gate reads it: `tests/rig_asset.rs` walks this
     /// list against the shipped file, and a gate holding its own copy would be
     /// checking itself rather than the client.
-    pub const ALL: [Clip; 8] = [
+    pub const ALL: [Clip; 10] = [
         Clip::Idle,
         Clip::Walk,
         Clip::Jog,
@@ -195,6 +215,8 @@ impl Clip {
         Clip::Swing,
         Clip::Flinch,
         Clip::Death,
+        Clip::Shoot,
+        Clip::Air,
     ];
 
     fn slot(self) -> usize {
@@ -207,6 +229,8 @@ impl Clip {
             Clip::Swing => 5,
             Clip::Flinch => 6,
             Clip::Death => 7,
+            Clip::Shoot => 8,
+            Clip::Air => 9,
         }
     }
 }
@@ -275,6 +299,12 @@ pub const FLINCH_CLIP_S: f32 = 0.33333;
 /// is allowed to be softer than an impact.
 pub const FLINCH_BLEND_S: f32 = 0.16667;
 
+/// How long the one-shot shot runs, seconds: `Pistol_Shoot` as authored,
+/// measured off the file like [`FLINCH_CLIP_S`] and held to it by
+/// `tests/rig_asset.rs`. A bow looses every two seconds at most, so it
+/// always finishes.
+pub const SHOOT_CLIP_S: f32 = 0.625;
+
 /// Speed thresholds, m/s, and the band around each that a body must cross to
 /// change its mind. Derived speed is noisy — a packet arriving a millisecond
 /// late reads as a lurch — so a bare `>` at a boundary makes a body alternate
@@ -331,7 +361,7 @@ pub struct Rig {
     /// on a one-shot means the first time anybody swings near you.
     /// `tests/anim.rs` counts them against `Clip::ALL` as text for exactly
     /// that reason.
-    nodes: [AnimationNodeIndex; 8],
+    nodes: [AnimationNodeIndex; 10],
     /// Uniform scale that puts the rig at [`ANIM_BODY_H_M`]. A constant ratio
     /// of two measured heights, not a runtime fit — see [`ANIM_RIG_H_M`].
     pub scale: f32,
@@ -402,7 +432,7 @@ pub fn load(
         gltf: assets.load("models/stumpy.glb"),
         scene: None,
         graph: None,
-        nodes: [AnimationNodeIndex::default(); 8],
+        nodes: [AnimationNodeIndex::default(); 10],
         arms: AnimationNodeIndex::default(),
         scale: ANIM_BODY_H_M / ANIM_RIG_H_M,
         missing: Vec::new(),
@@ -484,7 +514,7 @@ pub fn build(
 
     let mut graph = AnimationGraph::new();
     let root = graph.root;
-    let mut nodes = [AnimationNodeIndex::default(); 8];
+    let mut nodes = [AnimationNodeIndex::default(); 10];
     let mut missing = Vec::new();
     for clip in Clip::ALL {
         match gltf.named_animations.get(clip.name()) {
@@ -551,6 +581,13 @@ pub struct BodyAnim {
     /// [`BodyAnim::swing_s`]'s reason, and beside the SWING because the two
     /// are one slot: see [`BodyAnim::flinch`].
     pub flinch_s: f32,
+    /// Seconds left of a one-shot shot. The third transient in the same
+    /// slot: see [`BodyAnim::flinch`].
+    pub shoot_s: f32,
+    /// Off the ground this frame, straight off the wire
+    /// (`RemoteState::airborne`); `bodies::stream` sets it before
+    /// [`BodyAnim::observe`] reads it.
+    pub airborne: bool,
     /// Bumped once per transient heard — a swing **or** a flinch. `drive`
     /// compares it against what it last started, so a second one arriving
     /// while the first is still playing restarts the clip instead of being
@@ -577,6 +614,7 @@ impl BodyAnim {
         // so a swing heard this frame gets its whole span.
         self.swing_s = (self.swing_s - dt).max(0.0);
         self.flinch_s = (self.flinch_s - dt).max(0.0);
+        self.shoot_s = (self.shoot_s - dt).max(0.0);
         if let (Some(last), true) = (self.last, dt > 0.0) {
             // Horizontal only. A body riding terrain up a hill is walking, not
             // climbing, and counting the vertical would read a slope as speed.
@@ -615,6 +653,12 @@ impl BodyAnim {
         }
         if sleeping {
             self.clip = Some(Clip::Sleep);
+            return;
+        }
+        // In the air the legs are not walking, whatever the speed says. The
+        // speed above keeps integrating, so the landing picks the right gait.
+        if self.airborne {
+            self.clip = Some(Clip::Air);
             return;
         }
         // Hysteresis: the threshold to speed UP is above the nominal and the
@@ -673,6 +717,9 @@ impl BodyAnim {
         if self.swing_s > 0.0 {
             return Some(Clip::Swing);
         }
+        if self.shoot_s > 0.0 {
+            return Some(Clip::Shoot);
+        }
         Some(gait)
     }
 
@@ -683,12 +730,23 @@ impl BodyAnim {
     pub fn swing(&mut self) {
         self.swing_s = SWING_CLIP_S;
         self.flinch_s = 0.0;
+        self.shoot_s = 0.0;
+        self.transient_seq = self.transient_seq.wrapping_add(1);
+    }
+
+    /// Start a one-shot shot on this body: it just loosed an arrow or fired
+    /// a round. Clears the other transients, the newest-wins rule
+    /// [`BodyAnim::flinch`] argues.
+    pub fn shoot(&mut self) {
+        self.shoot_s = SHOOT_CLIP_S;
+        self.swing_s = 0.0;
+        self.flinch_s = 0.0;
         self.transient_seq = self.transient_seq.wrapping_add(1);
     }
 
     /// Start a one-shot flinch on this body: it just took a blow of yours.
     ///
-    /// ## The two transients are one slot, and the newest wins
+    /// ## The transients are one slot, and the newest wins
     ///
     /// A body has one `AnimationPlayer` and one clip at a time, so a flinch
     /// arriving mid-swing is a ranking question. This clears the swing
@@ -720,6 +778,7 @@ impl BodyAnim {
     pub fn flinch(&mut self) {
         self.flinch_s = FLINCH_CLIP_S;
         self.swing_s = 0.0;
+        self.shoot_s = 0.0;
         self.transient_seq = self.transient_seq.wrapping_add(1);
     }
 }
@@ -1114,7 +1173,7 @@ pub fn drive(
         // clip: without it the `playing == want` guard below would swallow
         // every swing after the first for as long as the body kept swinging.
         let Some(want) = anim.wants() else { continue };
-        let transient = matches!(want, Clip::Swing | Clip::Flinch);
+        let transient = matches!(want, Clip::Swing | Clip::Flinch | Clip::Shoot);
         let restart = transient && playing.1 != anim.transient_seq;
         if playing.0 == Some(want) && !restart {
             continue;
@@ -1126,14 +1185,14 @@ pub fn drive(
             rig.node(want),
             Duration::from_secs_f32(blend(want)),
         );
-        // **`.repeat()` for a gait and nothing for the three one-shots.**
-        // `RepeatAnimation::default()` is `Never`, so the swing, the flinch
-        // and the death are omissions rather than features — and none needs
-        // a completion callback. The two transients' clocks run out and the
+        // **`.repeat()` for a gait and nothing for the four one-shots.**
+        // `RepeatAnimation::default()` is `Never`, so the swing, the flinch,
+        // the shot and the death are omissions rather than features — and
+        // none needs a completion callback. The transients' clocks run out and the
         // next frame's `want` is the gait again; the death simply never
         // stops being wanted, so Bevy holds its final pose and the body
         // stays down for as long as the corpse is on the wire.
-        if !matches!(want, Clip::Swing | Clip::Flinch | Clip::Death) {
+        if !matches!(want, Clip::Swing | Clip::Flinch | Clip::Death | Clip::Shoot) {
             active.repeat();
         }
     }
@@ -1205,6 +1264,27 @@ mod tests {
         step(&mut a, 6.0, 60);
         a.observe(a.last.unwrap(), 1.0 / 60.0, true, false, false);
         assert_eq!(a.clip, Some(Clip::Sleep));
+    }
+
+    #[test]
+    fn a_body_in_the_air_is_in_the_air_until_it_lands() {
+        let mut a = BodyAnim::default();
+        step(&mut a, 4.2, 120);
+        a.airborne = true;
+        step(&mut a, 4.2, 10);
+        assert_eq!(a.wants(), Some(Clip::Air));
+        // A swing mid-jump is still a swing; a corpse is still a corpse.
+        a.swing();
+        assert_eq!(a.wants(), Some(Clip::Swing));
+        a.observe(a.last.unwrap(), 1.0 / 60.0, false, true, false);
+        assert_eq!(a.wants(), Some(Clip::Death));
+        let mut a = BodyAnim::default();
+        step(&mut a, 4.2, 120);
+        a.airborne = true;
+        step(&mut a, 4.2, 20);
+        a.airborne = false;
+        step(&mut a, 4.2, 1);
+        assert_eq!(a.clip, Some(Clip::Jog), "landed into the wrong gait");
     }
 
     #[test]
@@ -1321,6 +1401,30 @@ mod tests {
         a.swing();
         assert_eq!(a.wants(), Some(Clip::Swing));
         assert_eq!(a.flinch_s, 0.0, "the flinch clock kept running");
+    }
+
+    #[test]
+    fn a_shot_plays_once_and_yields_to_a_flinch() {
+        let mut a = BodyAnim::default();
+        a.observe(Vec3::ZERO, 1.0 / 60.0, false, false, false);
+        let seq = a.transient_seq;
+        a.shoot();
+        assert_eq!(a.wants(), Some(Clip::Shoot));
+        assert_ne!(
+            a.transient_seq, seq,
+            "a second shot would not restart the clip"
+        );
+        a.flinch();
+        assert_eq!(a.wants(), Some(Clip::Flinch));
+        assert_eq!(
+            a.shoot_s, 0.0,
+            "the shot's clock kept running under the flinch"
+        );
+        a.shoot();
+        for _ in 0..(SHOOT_CLIP_S * 60.0).ceil() as usize {
+            a.observe(Vec3::ZERO, 1.0 / 60.0, false, false, false);
+        }
+        assert_eq!(a.wants(), Some(Clip::Idle), "the shot outlived its clip");
     }
 
     #[test]

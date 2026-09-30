@@ -37,7 +37,7 @@
 #![cfg(feature = "render")]
 
 use client::render::anim::{
-    Clip, ANIM_BODY_H_M, ANIM_RIG_H_M, FLINCH_BLEND_S, FLINCH_CLIP_S, SWING_CLIP_S,
+    Clip, ANIM_BODY_H_M, ANIM_RIG_H_M, FLINCH_BLEND_S, FLINCH_CLIP_S, SHOOT_CLIP_S, SWING_CLIP_S,
 };
 
 /// Assets live beside the crate, not inside it — the same hop
@@ -549,6 +549,20 @@ fn the_flinch_clip_is_the_length_the_client_thinks_it_is() {
         (dur - FLINCH_CLIP_S).abs() < 1.0 / 30.0,
         "{RIG}'s {name:?} runs {dur:.5} s and FLINCH_CLIP_S is {FLINCH_CLIP_S:.5} s — \
          the constant is measured off this file and has drifted from it"
+    );
+}
+
+/// The shot's length is measured off the file too: the flinch's reason.
+#[test]
+fn the_shoot_clip_is_the_length_the_client_thinks_it_is() {
+    let glb = Glb::open(&asset_path(RIG));
+    let name = Clip::Shoot.name();
+    let dur = glb
+        .clip_duration(name)
+        .unwrap_or_else(|| panic!("{RIG} has no clip {name:?}"));
+    assert!(
+        (dur - SHOOT_CLIP_S).abs() < 1.0 / 30.0,
+        "{RIG}'s {name:?} runs {dur:.5} s and SHOOT_CLIP_S is {SHOOT_CLIP_S:.5} s"
     );
 }
 
