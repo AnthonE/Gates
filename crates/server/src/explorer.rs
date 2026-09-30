@@ -6,13 +6,16 @@
 //! client holds, never from a server `World`.
 //!
 //! Reflexes run under every goal and need no decision: answer the death
-//! screen with the respawn verb, crawl away while wounded, and back away
-//! from a hit. The only verbs sent are the ones a human client sends:
-//! input frames, and `Respawn`, `Craft`, `Consume`, `Drink` and `Move`
-//! actions (`crates/server/tests/agent_walls.rs` holds that to the client).
+//! screen with the respawn verb, crawl away while wounded, and answer a
+//! fight (`agent::combat`), which pauses the goal rather than ending it.
+//! The only verbs sent are the ones a human client sends: input frames,
+//! and `Respawn`, `Craft`, `Consume`, `Drink` and `Move` actions
+//! (`crates/server/tests/agent_walls.rs` holds that to the client).
 
+use crate::agent::combat::{Assess, Combat, RESUME_TICKS};
 use crate::agent::hands::{Hands, Skill};
 use crate::agent::intent::{pitch_toward, yaw_toward, Intent, Look};
+use crate::agent::route::{into_deeper_water, Frontier, Route, Step};
 use crate::agent::tracks::{self, Sight, Species, Tracks};
 use crate::agent::wiki::{Book, Rules};
 use crate::botclient::BotDriver;
@@ -28,11 +31,11 @@ use client_core::view::ClientView;
 use protocol::{EntityState, Welcome, WireError, MAX_STREAM_MSG_BYTES};
 use sim_core::craft::STATION_NONE;
 use sim_core::gather::{cell_key, REACH_M};
-use sim_core::input::{InputFrame, BTN_PRIMARY, BTN_SPRINT};
+use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::inventory::CONT_SELF;
 use sim_core::limits::{HOTBAR_SLOTS, INV_SLOTS, MAX_ITEM_DEFS, TICK_HZ};
 use sim_core::melee;
-use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q, WADE_GROUND_MAX};
+use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q};
 use sim_core::ranged::{ARROW_EYE_MM, MM_PER_M};
 use sim_core::survival::{DRINK_REACH_M, REFUSE_C_FULL, REFUSE_C_NOT_FOOD};
 use sim_core::terrain::{self, Haven, Occupant, Slot, CELL_SIZE};
@@ -45,7 +48,7 @@ pub const SIGHT_M: f32 = 32.0;
 pub const SIGHT_CELLS: i32 = (SIGHT_M / CELL_SIZE) as i32;
 pub const NO_PROGRESS_TICKS: u32 = 3 * TICK_HZ;
 pub const RECOVER_TICKS: u32 = TICK_HZ;
-pub const FLEE_TICKS: u32 = 6 * TICK_HZ;
+pub use crate::agent::combat::FLEE_TICKS;
 const SIGHT_WIDTH: i32 = 2 * SIGHT_CELLS + 1;
 
 // Survivor v0 defaults (DECISIONS.md §open "Jev survivor v0"), proposed.
@@ -57,10 +60,13 @@ pub const EXPLORE_GOAL_SECS: u32 = 20;
 pub const WAIT_GOAL_SECS: u32 = 5;
 /// An action's answer must arrive within this long (after any craft time).
 pub const VERDICT_SECS: u32 = 3;
-/// A wandering walk changes heading this often.
-pub const WANDER_TURN_SECS: u32 = 10;
-/// Less progress than this in a second is a stalled walk.
-pub const WANDER_STALL_M: f32 = 0.5;
+/// An exploring walk counts a map cell reached this close to its centre.
+pub const FRONTIER_STOP_M: f32 = 8.0;
+/// An idle body looks somewhere else this often.
+pub const GLANCE_TICKS: u32 = 3 * TICK_HZ / 2;
+/// Where an idle glance goes, relative to where the idle began: either
+/// side just past the cone's edge, over the shoulder, and back.
+const GLANCE_OFFSETS: [u16; 4] = [0x2e00, 0u16.wrapping_sub(0x2e00), 0x6a00, 0];
 /// Eat or drink until the meter reaches this percentage.
 pub const METER_TARGET_PCT: u32 = 80;
 /// Stop drinking sea water at or below this share of health.
@@ -242,6 +248,10 @@ pub struct SurvivorStats {
     pub goals_done: u64,
     pub goals_failed: u64,
     pub goals_interrupted: u64,
+    /// Goals a short fight paused and that then carried on.
+    pub goals_resumed: u64,
+    /// Answers from the mind held until a fight ended.
+    pub deferred: u64,
     pub targets_seen: u64,
     pub targets_completed: u64,
     pub targets_abandoned: u64,
@@ -313,6 +323,8 @@ struct Active {
     abandons: u32,
     craft: CraftStep,
     fled: bool,
+    /// A fight took the frames from this tick on; the goal waits.
+    paused: Option<u32>,
 }
 
 pub struct Survivor {
@@ -331,8 +343,21 @@ pub struct Survivor {
     tracks: Box<Tracks>,
     /// The only writer of the view: every skill's look goes through them.
     hands: Hands,
+    /// The legs' way somewhere, and the coarse map of where they have been.
+    route: Route,
+    frontier: Frontier,
+    /// The fight reflex; it takes the frame from the goal while it runs.
+    combat: Combat,
+    /// An answer that arrived mid-fight, adopted once the fight is over.
+    deferred: Option<Choice>,
+    /// An idle look round: since when, from which heading, which offset.
+    glance: Option<(u32, u16, u8)>,
     water_at: Option<u32>,
     water_yaw: Option<u16>,
+    /// The nearest open water the last probe found, metres.
+    water_point: Option<[f32; 2]>,
+    /// The water a drink goal's seek is walking to.
+    seek: Option<[f32; 2]>,
     scan: i32,
     scanned_at: Option<u32>,
     /// The nearest resource of each kind last seen, and when.
@@ -348,12 +373,8 @@ pub struct Survivor {
     progress_tick: u32,
     best_distance: f32,
     recovery: Option<(u32, u16)>,
-    retreat: Option<(u32, u16)>,
     last_hurt: Option<(u32, u16)>,
-    interrupt: Option<Why>,
     heading: Option<u16>,
-    wander_mark: Option<(u32, i32, i32)>,
-    wander_turn: u32,
     outbox: Option<([u8; MAX_STREAM_MSG_BYTES], usize)>,
     /// The server's per-kind pace, kept on this side the way an honest
     /// client keeps it: an early action waits in the outbox rather than in
@@ -386,8 +407,15 @@ impl Survivor {
             sweep: Sweep::default(),
             tracks: Box::new(Tracks::new()),
             hands: Hands::new(opts.skill),
+            route: Route::new(),
+            frontier: Frontier::new(),
+            combat: Combat::new(),
+            deferred: None,
+            glance: None,
             water_at: None,
             water_yaw: None,
+            water_point: None,
+            seek: None,
             scan: 0,
             scanned_at: None,
             recall: [None; 4],
@@ -401,12 +429,8 @@ impl Survivor {
             progress_tick: 0,
             best_distance: f32::INFINITY,
             recovery: None,
-            retreat: None,
             last_hurt: None,
-            interrupt: None,
             heading: None,
-            wander_mark: None,
-            wander_turn: 0,
             outbox: None,
             pace: Pace::default(),
             rules: None,
@@ -448,6 +472,16 @@ impl Survivor {
     /// The hands that turn every look into a view.
     pub fn hands(&self) -> &Hands {
         &self.hands
+    }
+
+    /// The legs' routes, and what they cost.
+    pub fn route(&self) -> &Route {
+        &self.route
+    }
+
+    /// The fight reflex.
+    pub fn combat(&self) -> &Combat {
+        &self.combat
     }
 
     /// Sample other bodies this many ticks behind the newest snapshot: the
@@ -522,7 +556,7 @@ impl Survivor {
     fn halt(&mut self) {
         self.target = None;
         self.recovery = None;
-        self.retreat = None;
+        self.combat.forget();
     }
 
     /// One frame, with the client state kept the way the human client
@@ -556,6 +590,10 @@ impl Survivor {
         f
     }
 
+    /// The frame's arbitration, in order: eyes and ears; the body's own
+    /// state (dead, asleep, down); the mind's answer; the fight reflex,
+    /// which pauses the goal while it runs; the goal; then the overlays.
+    /// The hands come after, in `frame_with`.
     fn decide(
         &mut self,
         core: &mut ClientCore,
@@ -568,6 +606,7 @@ impl Survivor {
             self.seen_at = now;
         }
         self.tracks.feed(view, player);
+        self.route.begin_tick();
         let Some(body) = view.get(player).copied() else {
             self.stats.phase = Phase::Waiting;
             return Intent::IDLE;
@@ -586,6 +625,11 @@ impl Survivor {
             if let Some(rules) = self.rules.as_deref() {
                 self.book.learn(rules, &core.catalog);
             }
+        }
+        // Bodies come from the tracks alone: seen through the cone and a
+        // held line of sight, and placed where they were last seen.
+        if let Some(haven) = self.haven {
+            self.tracks.perceive(core, &haven, tick);
         }
         self.mind.expire(now);
         if body.dead || core.dead {
@@ -624,45 +668,153 @@ impl Survivor {
                 _ => Intent::IDLE,
             };
         }
-        if let Some(why) = self.interrupt.take() {
-            if self.goal.is_some_and(|a| a.goal != Goal::Flee) {
-                self.end_goal(tick, Outcome::Interrupted(why));
-            }
-        }
         // Answers are taken only by a body that can act on them; one that
         // arrives while it is down waits in the ring and is judged fresh
-        // or late when it is read.
+        // or late when it is read. Mid-fight a routine answer waits for
+        // the fight to end; it is held, never swapped for another.
         if let Some(choice) = self.mind.poll(now) {
-            self.adopt(choice, tick);
+            if self.combat.engaged() && !urgent(choice.goal) {
+                self.deferred = Some(choice);
+                self.stats.deferred += 1;
+            } else {
+                self.adopt(choice, tick);
+            }
         }
         self.perceive(core, &body, tick);
-        if let Some(retreat) = self.retreat(core, &body, tick) {
-            return retreat;
-        }
-        let Some(active) = self.goal else {
-            // Look before choosing: the first sweep of the sight window
-            // after appearing takes under three seconds.
-            if !self.sensed {
-                self.stats.phase = Phase::Waiting;
-                return Intent::IDLE;
+        let x = body.qx as f32 * POS_XZ_Q;
+        let z = body.qz as f32 * POS_XZ_Q;
+        self.frontier.visit(Frontier::cell_of(x, z));
+        match self
+            .combat
+            .assess(core, &body, &self.tracks, &mut self.route, tick)
+        {
+            Assess::Fight(intent) => {
+                self.pause_goal(tick);
+                self.glance = None;
+                self.stats.phase = Phase::Fleeing;
+                return intent;
             }
-            self.request(core, view, player, tick, now);
-            self.stats.phase = if self.mind.mode(now) == crate::mind::Mode::Paused {
-                Phase::Paused
-            } else {
-                Phase::Deciding
-            };
-            return Intent::IDLE;
-        };
-        if tick.wrapping_sub(active.asked) >= heartbeat_ticks(&self.mind) && !self.mind.pending() {
-            self.memory.trigger = Trigger::Heartbeat;
-            if self.request(core, view, player, tick, now) {
-                if let Some(a) = self.goal.as_mut() {
-                    a.asked = tick;
+            Assess::Over { away } => {
+                // We were looking back at the danger. Resume travelling
+                // away, rather than turning the retreat into a return trip.
+                self.heading = Some(away);
+                self.after_fight(core, view, player, tick);
+            }
+            Assess::Calm => {
+                if self.deferred.is_some() || self.goal.is_some_and(|a| a.paused.is_some()) {
+                    self.after_fight(core, view, player, tick);
                 }
             }
         }
-        self.run_goal(core, view, &body, tick)
+        let intent = match self.goal {
+            None => {
+                // Look before choosing: the first sweep of the sight window
+                // after appearing takes under three seconds.
+                if !self.sensed {
+                    self.stats.phase = Phase::Waiting;
+                } else {
+                    self.request(core, view, player, tick, now);
+                    self.stats.phase = if self.mind.mode(now) == crate::mind::Mode::Paused {
+                        Phase::Paused
+                    } else {
+                        Phase::Deciding
+                    };
+                }
+                Intent::IDLE
+            }
+            Some(active) => {
+                if tick.wrapping_sub(active.asked) >= heartbeat_ticks(&self.mind)
+                    && !self.mind.pending()
+                {
+                    self.memory.trigger = Trigger::Heartbeat;
+                    if self.request(core, view, player, tick, now) {
+                        if let Some(a) = self.goal.as_mut() {
+                            a.asked = tick;
+                        }
+                    }
+                }
+                self.run_goal(core, view, &body, tick)
+            }
+        };
+        self.overlay(intent, tick)
+    }
+
+    /// A fight took this frame: the goal waits, where it was.
+    fn pause_goal(&mut self, tick: u32) {
+        if let Some(a) = self.goal.as_mut() {
+            if a.paused.is_none() {
+                a.paused = Some(tick);
+            }
+        }
+        self.recovery = None;
+    }
+
+    /// The fight is over. A short one leaves the goal to carry on, if it is
+    /// still on offer; a long one has changed the situation enough that
+    /// the mind should choose again. An answer held through the fight is
+    /// adopted now, over either.
+    fn after_fight(&mut self, core: &ClientCore, view: &ClientView, player: u32, tick: u32) {
+        if let Some((goal, at)) = self.goal.and_then(|a| a.paused.map(|at| (a.goal, at))) {
+            let fought = tick.wrapping_sub(at);
+            if let Some(a) = self.goal.as_mut() {
+                a.paused = None;
+                // The goal's own clocks do not count the fight.
+                a.started = a.started.wrapping_add(fought);
+            }
+            if let Some((pending, since)) = self.awaiting {
+                if pending != Pending::Respawn {
+                    self.awaiting = Some((pending, since.wrapping_add(fought)));
+                }
+            }
+            self.progress_tick = tick;
+            self.best_distance = f32::INFINITY;
+            if self.deferred.is_none() {
+                // A flee goal's retreat was the fight; it finishes itself.
+                let keep = goal == Goal::Flee
+                    || (fought < RESUME_TICKS && self.summarize(core, view, player).offers(goal));
+                if keep {
+                    self.stats.goals_resumed += 1;
+                } else {
+                    self.end_goal(tick, Outcome::Interrupted(Why::Fight));
+                    self.memory.trigger = Trigger::Fought;
+                }
+            }
+        }
+        if let Some(choice) = self.deferred.take() {
+            self.adopt(choice, tick);
+        }
+    }
+
+    /// What runs over an idle frame: a body standing at a bench or waiting
+    /// on an answer still looks about, the way a person does, which is
+    /// also how its eyes find what is beside and behind it.
+    fn overlay(&mut self, intent: Intent, tick: u32) -> Intent {
+        let idle = intent.look == Look::Keep
+            && intent.travel.is_none()
+            && intent.move_x == 0
+            && intent.move_z == 0
+            && intent.buttons == 0;
+        if !idle {
+            self.glance = None;
+            return intent;
+        }
+        let (from, step) = match self.glance {
+            Some((at, from, step)) if tick.wrapping_sub(at) < GLANCE_TICKS => (from, step),
+            Some((_, from, step)) => {
+                let step = (step + 1) % GLANCE_OFFSETS.len() as u8;
+                self.glance = Some((tick, from, step));
+                (from, step)
+            }
+            None => {
+                let from = self.hands.view().0;
+                self.glance = Some((tick, from, 0));
+                (from, 0)
+            }
+        };
+        Intent {
+            look: Look::Heading(from.wrapping_add(GLANCE_OFFSETS[usize::from(step)])),
+            ..intent
+        }
     }
 
     /// Ask for a goal. True when a request went out.
@@ -700,11 +852,11 @@ impl Survivor {
             abandons: 0,
             craft: CraftStep::Start,
             fled: false,
+            paused: None,
         });
         self.target = None;
         self.recovery = None;
-        self.wander_mark = None;
-        self.wander_turn = tick;
+        self.seek = None;
         self.verdict = None;
     }
 
@@ -826,7 +978,7 @@ impl Survivor {
             return false;
         };
         let away = yaw_toward(bx - x, bz - z);
-        self.retreat = Some((tick, away));
+        self.combat.flee(tick, away);
         self.stats.retreats += 1;
         if let Some(a) = self.goal.as_mut() {
             a.fled = true;
@@ -834,65 +986,54 @@ impl Survivor {
         true
     }
 
-    fn retreat(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Option<Intent> {
-        let (mut start, mut yaw) = self.retreat?;
-        // A received damage bearing is the human's hit indicator, not an
-        // opponent position; every fresh hit renews the bounded retreat,
-        // and so does a pursuer still in sight behind it.
-        if self.tracks.pursuer_in_sight(SIGHT_M) {
-            start = tick;
-            self.retreat = Some((start, yaw));
-        }
-        if tick.wrapping_sub(start) < FLEE_TICKS {
-            if into_deeper_water(core, body, yaw) {
-                yaw = yaw.wrapping_add(1 << 14);
-                self.retreat = Some((start, yaw));
+    /// Explore: walk to the nearest part of the map this body has not been
+    /// to, ahead of it by preference, by a route round what stands in the
+    /// way. A cell reached or found unreachable is crossed off.
+    fn wander(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
+        let heading = *self.heading.get_or_insert(body.yaw);
+        let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+        let target = match self.frontier.target {
+            Some(t) => t,
+            None => {
+                let haven = self.haven.expect("connected haven");
+                let (seed, _) = core.island();
+                match self.frontier.pick(seed, &haven, x, z, heading) {
+                    Some(t) => t,
+                    None => {
+                        // Everything near is walked: start the map afresh
+                        // and keep going meanwhile.
+                        self.frontier.clear();
+                        self.frontier.visit(Frontier::cell_of(x, z));
+                        return self.walk_on(core, body, heading);
+                    }
+                }
             }
-            self.stats.phase = Phase::Fleeing;
-            // Keep the pursuer in view while retreating: turn to face back
-            // and walk away, backwards once the turn is done. No unseen-body
-            // distance check is used.
-            return Some(Intent {
-                look: Look::Heading(yaw.wrapping_add(1 << 15)),
-                travel: Some(yaw),
-                buttons: BTN_SPRINT,
-                ..Intent::IDLE
-            });
+        };
+        let goal = Frontier::centre(target);
+        match self.route.to(core, body, goal, FRONTIER_STOP_M, true, tick) {
+            step @ Step::Walk { yaw, .. } => {
+                if into_deeper_water(core, body, yaw) {
+                    // Not worth a swim: somewhere else.
+                    self.frontier.visit(target);
+                    return self.walk_on(core, body, yaw.wrapping_add(1 << 14));
+                }
+                self.heading = Some(yaw);
+                step.walk().unwrap_or(Intent::walk(yaw))
+            }
+            Step::Arrived | Step::Blocked => {
+                self.frontier.visit(target);
+                self.walk_on(core, body, heading)
+            }
+            Step::Wait => {
+                let yaw = yaw_toward(goal[0] - x, goal[1] - z);
+                self.walk_on(core, body, yaw)
+            }
         }
-        self.retreat = None;
-        // We were looking backwards at the pursuer. Resume travelling
-        // away, rather than turning the retreat into a return trip.
-        self.heading = Some(yaw);
-        None
     }
 
-    /// Walk somewhere new: straight, turning on a stall, on deeper water
-    /// ahead, and on a fixed cadence, so a search covers ground.
-    fn wander(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
-        let mut heading = *self.heading.get_or_insert(body.yaw);
-        match self.wander_mark {
-            Some((at, qx, qz)) if tick.wrapping_sub(at) >= TICK_HZ => {
-                let moved =
-                    ((body.qx - qx) as f32 * POS_XZ_Q).hypot((body.qz - qz) as f32 * POS_XZ_Q);
-                if moved < WANDER_STALL_M {
-                    heading = heading.wrapping_add(1 << 14);
-                }
-                self.wander_mark = Some((tick, body.qx, body.qz));
-            }
-            None => self.wander_mark = Some((tick, body.qx, body.qz)),
-            _ => {}
-        }
-        if tick.wrapping_sub(self.wander_turn) >= WANDER_TURN_SECS * TICK_HZ {
-            self.wander_turn = tick;
-            // A deterministic eighth or quarter turn either way.
-            let turn: [u16; 4] = [
-                0u16.wrapping_sub(1 << 14),
-                0u16.wrapping_sub(1 << 13),
-                1 << 13,
-                1 << 14,
-            ];
-            heading = heading.wrapping_add(turn[(tick.wrapping_mul(2_654_435_761) >> 30) as usize]);
-        }
+    /// Walk straight along a heading, turning off it rather than wading
+    /// deeper: what the legs do while no route is in hand.
+    fn walk_on(&mut self, core: &mut ClientCore, body: &EntityState, mut heading: u16) -> Intent {
         if into_deeper_water(core, body, heading) {
             heading = heading.wrapping_add(1 << 14);
         }
@@ -955,12 +1096,25 @@ impl Survivor {
                     && !core.harvested.contains(seen.key())
                     && Some(seen.key()) != self.skipped;
                 let (yaw, _, distance) = aim(body, &seen.slot);
-                if fresh && distance > REACH_M {
+                let step = if fresh && distance > REACH_M {
+                    self.route
+                        .to(core, body, [seen.slot.x, seen.slot.z], REACH_M, true, tick)
+                } else {
+                    Step::Arrived
+                };
+                // Walking the route, or straight at it until a route is
+                // planned; there, blocked or gone ends the walk.
+                let walking = match step {
+                    Step::Walk { yaw, .. } => Some(yaw),
+                    Step::Wait => Some(yaw),
+                    Step::Arrived | Step::Blocked => None,
+                };
+                if let Some(yaw) = walking {
                     self.stats.phase = Phase::Approaching;
                     self.heading = Some(yaw);
                     let mut walk = Intent {
                         sel: Some(sel),
-                        ..Intent::walk(yaw)
+                        ..step.walk().unwrap_or(Intent::walk(yaw))
                     };
                     if into_deeper_water(core, body, yaw) {
                         walk.travel = None;
@@ -1034,7 +1188,24 @@ impl Survivor {
             }
         } else {
             self.stats.phase = Phase::Approaching;
-            intent.move_z = 127;
+            // By a route round what stands between; straight on once the
+            // route has nothing better to say.
+            match self.route.to(
+                core,
+                body,
+                [target.slot.x, target.slot.z],
+                REACH_M,
+                false,
+                tick,
+            ) {
+                Step::Walk { yaw, jump, .. } => {
+                    intent.travel = Some(yaw);
+                    if jump {
+                        intent.buttons |= sim_core::input::BTN_JUMP;
+                    }
+                }
+                _ => intent.move_z = 127,
+            }
         }
         intent
     }
@@ -1249,7 +1420,21 @@ impl Survivor {
             return Intent::IDLE;
         }
         self.stats.phase = Phase::SeekingWater;
-        Intent::walk(yaw)
+        // The water seen when the seek began, by a route there: the
+        // probe's next answer is relative to wherever the walk has got to.
+        let Some(to) = self.seek.or(self.water_point) else {
+            return Intent::walk(yaw);
+        };
+        self.seek = Some(to);
+        match self.route.to(core, body, to, 1.0, false, tick) {
+            step @ Step::Walk { .. } => step.walk().unwrap_or(Intent::walk(yaw)),
+            _ => {
+                // There, or no way there, and still not in reach: the
+                // bearing the probe gives now.
+                self.seek = None;
+                Intent::walk(yaw)
+            }
+        }
     }
 
     /// Cells of the sight window, the eyes on other bodies and — once a
@@ -1266,9 +1451,6 @@ impl Survivor {
         for _ in 0..cells {
             self.scan_cell(core, body, &haven, tick);
         }
-        // Bodies come from the tracks alone: seen through the cone and a
-        // held line of sight, and placed where they were last seen.
-        self.tracks.perceive(core, &haven, tick);
         let mut bodies = [Sighting::default(); 2];
         for t in self.tracks.recent(tick, BODY_RECALL_SECS * TICK_HZ) {
             let (d, b) = relative(body, t.pos[0], t.pos[2]);
@@ -1304,6 +1486,10 @@ impl Survivor {
             }
             self.senses.water = water;
             self.water_yaw = best.map(|b| b.1);
+            self.water_point = best.map(|(m, yaw)| {
+                let (fx, fz) = yaw_dir(yaw);
+                [x + fx * m, z + fz * m]
+            });
         }
     }
 
@@ -1340,7 +1526,13 @@ impl Survivor {
                     if nearer && Some(target.key()) != self.skipped {
                         self.recall[kind as usize] = Some((target, tick));
                     }
-                    let wanted = self.goal.and_then(|a| Kind::of_goal(a.goal)) == Some(kind);
+                    // A goal a fight paused picks its next target when it
+                    // resumes, from where the fight left the body.
+                    let wanted = self
+                        .goal
+                        .filter(|a| a.paused.is_none())
+                        .and_then(|a| Kind::of_goal(a.goal))
+                        == Some(kind);
                     if wanted
                         && self.target.is_none()
                         && self.recovery.is_none()
@@ -1418,7 +1610,7 @@ impl Survivor {
             // Compass bearings turn toward -X; wire yaw turns toward +X.
             self.tracks.on_hurt(0u16.wrapping_sub(toward), tick);
             let away = 0u16.wrapping_sub(toward).wrapping_add(1 << 15);
-            self.retreat = Some((tick, away));
+            self.combat.on_hurt(tick, away);
             self.last_hurt = Some((tick, away));
             self.recovery = None;
             if let Some(target) = self.target.take() {
@@ -1427,7 +1619,6 @@ impl Survivor {
             }
             self.stats.retreats += 1;
             self.memory.hits = self.memory.hits.saturating_add(1);
-            self.interrupt = Some(Why::Hit);
         }
         while let Some(victim) = core.pop_death() {
             self.tracks.on_death(victim, tick);
@@ -1468,11 +1659,15 @@ impl Survivor {
             self.recall = [None; 4];
             self.tracks.forget();
             self.hands.forget();
+            // The map this body walked stays learned; the way it was
+            // walking starts from the new beach.
+            self.route.reset();
+            self.frontier.target = None;
+            self.seek = None;
             self.sensed = false;
             self.halt();
             self.heading = None;
             self.last_hurt = None;
-            self.interrupt = None;
         }
         while let Some((item, added)) = core.pop_craft_toast() {
             self.stats.crafted += u64::from(added);
@@ -1563,6 +1758,11 @@ impl BotDriver for Survivor {
         self.core = Some(core);
         self.tracks.reset(welcome.seed, welcome.player_id);
         self.hands.reset(welcome.seed, welcome.player_id);
+        self.route.reset();
+        self.frontier.clear();
+        self.combat.forget();
+        self.deferred = None;
+        self.glance = None;
         // Off the frame path: parsing the content allocates. A body that
         // cannot read it plays on without the wiki.
         if self.rules.is_none() {
@@ -1609,6 +1809,11 @@ impl BotDriver for Survivor {
         self.stats.actions += 1;
         Some(len)
     }
+}
+
+/// An answer that cannot wait for a fight to end: running is part of it.
+fn urgent(goal: Goal) -> bool {
+    goal == Goal::Flee
 }
 
 fn heartbeat_ticks(mind: &Mind) -> u32 {
@@ -1918,16 +2123,6 @@ fn relative(body: &EntityState, x: f32, z: f32) -> (f32, u8) {
     let angle = right.atan2(ahead).rem_euclid(std::f32::consts::TAU);
     let sector = ((angle / (std::f32::consts::TAU / 8.0)).round() as i32).rem_euclid(8);
     (distance, sector as u8)
-}
-
-fn into_deeper_water(core: &mut ClientCore, body: &EntityState, yaw: u16) -> bool {
-    let x = body.qx as f32 * POS_XZ_Q;
-    let z = body.qz as f32 * POS_XZ_Q;
-    let (dx, dz) = yaw_dir(yaw);
-    let (seed, island) = core.island();
-    let here = terrain::ground(seed, island.haven, x, z);
-    let ahead = terrain::ground(seed, island.haven, x + dx * REACH_M, z + dz * REACH_M);
-    ahead <= WADE_GROUND_MAX && ahead < here
 }
 
 fn in_view(body: &EntityState, slot: &Slot) -> bool {
@@ -2625,8 +2820,14 @@ mod tests {
         (fx * ahead + fz * right, fz * ahead - fx * right)
     }
 
+    /// A blow pauses the goal, never ends it: the body backs away from every
+    /// announced bearing with the goal waiting, a short fight hands the goal
+    /// back where it was, and one that outlasts `RESUME_TICKS` ends it as
+    /// fought, so the mind chooses afresh. (Until the frame arbitration, a
+    /// hit ended the goal outright; this test pinned that.)
     #[test]
-    fn damage_interrupts_work_and_escapes_away_from_every_announced_bearing() {
+    fn damage_pauses_work_and_escapes_away_from_every_announced_bearing() {
+        use sim_core::input::BTN_SPRINT;
         let (mut bot, mut view, target) = fixture();
         let now = Instant::now();
         let cap = bot.hands().skill().max_turn();
@@ -2640,14 +2841,17 @@ mod tests {
             event(&mut bot, n, &buf);
             // From the first frame the body backs away from the blow, while
             // the hands are still turning to face where it came from.
-            let (_, away) = bot.retreat.unwrap();
+            let (_, away) = bot.combat.retreat().unwrap();
             let (ax, az) = yaw_dir(away);
             let mut frame = bot.frame_at(&view, 1, 2, now);
             for _ in 0..40 {
                 assert_eq!(bot.stats.phase, Phase::Fleeing);
                 assert_eq!(frame.buttons, BTN_SPRINT, "a retreat must release primary");
                 assert!(bot.target.is_none());
-                assert!(bot.goal.is_none(), "a hit interrupts the goal");
+                assert!(
+                    bot.goal.is_some_and(|a| a.paused.is_some()),
+                    "a hit pauses the goal"
+                );
                 let (wx, wz) = walked(&frame);
                 assert!(wx * ax + wz * az > 100.0, "walked toward the blow");
                 assert!((frame.yaw.wrapping_sub(last) as i16).unsigned_abs() <= cap);
@@ -2665,15 +2869,103 @@ mod tests {
                 sector
             );
         }
-        let (start, _) = bot.retreat.unwrap();
+        // A short fight: the goal carries on, uninterrupted.
+        let (start, _) = bot.combat.retreat().unwrap();
         view.newest_applied = Some(start + FLEE_TICKS);
         let frame = bot.frame_at(&view, 1, 4, now);
         assert_ne!(bot.stats.phase, Phase::Fleeing);
-        assert_eq!(frame.buttons, 0);
+        assert_eq!(frame.buttons & BTN_PRIMARY, 0);
+        assert!(bot
+            .goal
+            .is_some_and(|a| a.goal == Goal::GatherWood && a.paused.is_none()));
+        assert_eq!(bot.stats.goals_interrupted, 0);
+        assert_eq!(bot.stats.goals_resumed, 1);
+
+        // A long one: blows every five seconds for half a minute.
+        let t0 = start + FLEE_TICKS + 1;
+        for k in 0..7 {
+            view.newest_applied = Some(t0 + k * 5 * TICK_HZ);
+            bot.frame_at(&view, 1, 5, now);
+            if k > 0 {
+                assert_eq!(bot.stats.phase, Phase::Fleeing);
+                assert!(bot.goal.is_some_and(|a| a.paused.is_some()));
+            }
+            let n = protocol::event::encode_event_hurt(0, 15, &mut buf).unwrap();
+            event(&mut bot, n, &buf);
+        }
+        let (start, _) = bot.combat.retreat().unwrap();
+        view.newest_applied = Some(start + FLEE_TICKS);
+        bot.frame_at(&view, 1, 6, now);
+        let last = bot.memory.last.unwrap();
         assert_eq!(
-            bot.memory.last.unwrap().outcome,
-            Outcome::Interrupted(Why::Hit)
+            (last.goal, last.outcome),
+            (Goal::GatherWood, Outcome::Interrupted(Why::Fight))
         );
+        assert_eq!(bot.memory.trigger, Trigger::Fought);
+        assert_eq!(bot.stats.goals_resumed, 1);
+    }
+
+    /// An answer that lands mid-fight waits for the fight to end and is
+    /// then adopted as it was, never dropped and never swapped.
+    #[test]
+    fn an_answer_mid_fight_is_held_until_the_fight_ends() {
+        let (mut bot, mut view, _) = fixture();
+        let now = Instant::now();
+        let mut buf = [0u8; protocol::event::MAX_EVENT_MSG_BYTES];
+        goal(&mut bot, Goal::GatherWood, 1);
+        let n = protocol::event::encode_event_hurt(2, 15, &mut buf).unwrap();
+        event(&mut bot, n, &buf);
+        bot.frame_at(&view, 1, 1, now);
+        assert!(bot.combat.engaged());
+        // Ask while backing away: thirsty, with water on offer, the scripted
+        // mind answers drink, and the answer lands mid-fight.
+        let mut summary = bot.summary(&view, 1).unwrap();
+        summary.water = 1;
+        summary.current = None;
+        summary.offer(Goal::Drink);
+        assert!(bot.mind.ask(now, &summary));
+        bot.frame_at(&view, 1, 2, now);
+        assert_eq!(bot.stats.deferred, 1);
+        assert!(bot.deferred.is_some_and(|c| c.goal == Goal::Drink));
+        assert_eq!(bot.goal(), Some(Goal::GatherWood), "held, not adopted");
+        assert_eq!(bot.stats.phase, Phase::Fleeing);
+        let (start, _) = bot.combat.retreat().unwrap();
+        view.newest_applied = Some(start + FLEE_TICKS);
+        bot.frame_at(&view, 1, 3, now);
+        // Adopted once it ended (and, with a full water meter, done at once).
+        assert!(bot.deferred.is_none());
+        let reports: Vec<Report> = bot.history.iter().collect();
+        let n = reports.len();
+        assert!(n >= 2, "{reports:?}");
+        assert_eq!(
+            (reports[n - 2].goal, reports[n - 2].outcome),
+            (Goal::GatherWood, Outcome::Interrupted(Why::Replaced))
+        );
+        assert_eq!(reports[n - 1].goal, Goal::Drink);
+    }
+
+    /// An idle body looks about: while it waits, the view leaves where it
+    /// was, to either side and over the shoulder, at the hands' pace, and
+    /// never moves the body.
+    #[test]
+    fn an_idle_body_glances_around() {
+        let (mut bot, mut view, _) = fixture();
+        let now = Instant::now();
+        goal(&mut bot, Goal::Wait, 1);
+        let start = view.get(1).unwrap().yaw;
+        let cap = bot.hands().skill().max_turn();
+        let (mut last, mut widest) = (start, 0u16);
+        for tick in 1..4 * GLANCE_TICKS {
+            view.newest_applied = Some(tick);
+            goal(&mut bot, Goal::Wait, tick);
+            let frame = bot.frame_at(&view, 1, tick as u16, now);
+            assert_eq!((frame.move_x, frame.move_z, frame.buttons), (0, 0, 0));
+            assert!((frame.yaw.wrapping_sub(last) as i16).unsigned_abs() <= cap);
+            last = frame.yaw;
+            widest = widest.max((frame.yaw.wrapping_sub(start) as i16).unsigned_abs());
+        }
+        // Over the shoulder: well past the cone's edge.
+        assert!(widest >= 0x6000, "looked at most {widest} away");
     }
 
     #[test]

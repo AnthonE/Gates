@@ -225,6 +225,7 @@ pub enum Why {
     Died,
     Wounded,
     Replaced,
+    Fight,
 }
 
 impl Why {
@@ -245,6 +246,7 @@ impl Why {
             Why::Died => "died",
             Why::Wounded => "went down wounded",
             Why::Replaced => "a new goal replaced it",
+            Why::Fight => "a fight outlasted it",
         }
     }
 }
@@ -295,6 +297,7 @@ pub enum Trigger {
     Interrupted,
     Respawned,
     Heartbeat,
+    Fought,
 }
 
 impl Trigger {
@@ -306,6 +309,7 @@ impl Trigger {
             Trigger::Interrupted => "interrupted",
             Trigger::Respawned => "respawned",
             Trigger::Heartbeat => "heartbeat",
+            Trigger::Fought => "fought",
         }
     }
 }

@@ -23,7 +23,7 @@
 use protocol::{decode_action, decode_input, encode_input, ActionMsg, InputDatagram};
 use server::core::{Lane, ShardCore};
 use server::explorer::Survivor;
-use server::mind::{Mind, MindConfig, Outcome, Scripted, Why};
+use server::mind::{Goal, Mind, MindConfig, Outcome, Scripted, Why};
 use server::stats::ShardStats;
 use server::view::ClientView;
 use sim_core::input::{
@@ -626,10 +626,11 @@ impl Harness {
 
     fn explain(&self) -> String {
         format!(
-            "tick {} widest turn {} stats {:?} mind {:?} goals {:?}",
+            "tick {} widest turn {} stats {:?} route {:?} mind {:?} goals {:?}",
             self.tick,
             self.max_turn,
             self.bot.stats,
+            self.bot.route().stats,
             self.bot.mind.stats,
             self.bot.history.iter().collect::<Vec<_>>()
         )
@@ -640,9 +641,14 @@ impl Harness {
 fn a_survivor_plays_a_whole_life_and_the_next_one_in_lockstep() {
     let mut h = Harness::new(false);
 
-    // 1. Gather both resources, then craft a better tool by name.
+    // 1. Gather both resources, then craft a better tool by name. The
+    //    craft goal ends once the tool is on the belt, whether it landed
+    //    there or had to be moved.
     let crafted = h.until(12_000, |b| {
-        b.stats.crafted >= 1 && b.gathered_of("Wood") > 0 && b.gathered_of("Stone") > 0
+        b.stats.crafted >= 1
+            && b.gathered_of("Wood") > 0
+            && b.gathered_of("Stone") > 0
+            && !matches!(b.goal(), Some(Goal::Craft(_)))
     });
     assert!(crafted, "no wood, stone and craft: {}", h.explain());
     let core = h.bot.core().unwrap();
