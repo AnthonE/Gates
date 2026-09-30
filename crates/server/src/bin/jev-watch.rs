@@ -93,7 +93,7 @@ fn run() -> Result<AppExit, String> {
     let brain = mind.build()?;
     let (broadcast, capture) = Broadcast::start(listen)?;
     println!("shared watch page: http://{}/", broadcast.address);
-    println!("controller: {}", mind.label());
+    println!("controller: {} · {} hands", mind.label(), mind.skill.name());
     let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
     let shard = rt.block_on(server::agent_demo::spawn_local_with_content(&content))?;
     struct Stop(std::sync::Arc<std::sync::atomic::AtomicBool>);
@@ -143,7 +143,8 @@ fn run() -> Result<AppExit, String> {
         ),
     }
     println!("  desktop: {}", door.desktop_command());
-    let controller = Controller::attach(&mut session, Survivor::new(brain), duration)?;
+    let controller =
+        Controller::attach(&mut session, Survivor::with(brain, mind.opts()), duration)?;
     let world = WorldId::new(session.welcome.seed);
     let mut app = App::new();
     app.add_plugins(

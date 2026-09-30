@@ -4,7 +4,8 @@
 //! agent layer can encode is one the human client encodes (read off both
 //! sources, not a hand-kept list), every action it actually sent in a long
 //! run decodes as an ordinary `ActionMsg`, every frame uses only buttons a
-//! player's keys produce, and the observation encoder reads no `World`.
+//! player's keys produce and turns the view no faster than the hands'
+//! preset allows, and the observation encoder reads no `World`.
 //!
 //! **Wall 4 — determinism with agents in the loop**, through the shard's
 //! own path: the agent plays a whole life cycle against `ShardCore` in
@@ -431,6 +432,11 @@ struct Harness {
     /// While set, the puppet stands on the bot swinging this weapon.
     puppet: Option<sim_core::gather::ItemStack>,
     spear: sim_core::gather::ItemStack,
+    /// The last yaw sent in this life, and the largest turn between two
+    /// frames: the hands wall.
+    last_yaw: Option<u16>,
+    life: u64,
+    max_turn: u16,
 }
 
 impl Harness {
@@ -467,6 +473,9 @@ impl Harness {
             buttons: 0,
             puppet: None,
             spear,
+            last_yaw: None,
+            life: 0,
+            max_turn: 0,
         }
     }
 
@@ -540,6 +549,24 @@ impl Harness {
         self.heap_ops += ALLOCS.with(|c| c.replace(None).unwrap());
         self.buttons |= frame.buttons;
         assert!(usize::from(frame.sel) < HOTBAR_SLOTS);
+        // Wall 1, the hands' half: the view turns no faster than the
+        // preset's hands. A new life starts from a fresh view, so its first
+        // frame is not a turn.
+        if self.life != self.bot.stats.respawns {
+            self.life = self.bot.stats.respawns;
+            self.last_yaw = None;
+        }
+        if let Some(last) = self.last_yaw {
+            let turn = (frame.yaw.wrapping_sub(last) as i16).unsigned_abs();
+            self.max_turn = self.max_turn.max(turn);
+            let cap = self.bot.hands().skill().max_turn();
+            assert!(
+                turn <= cap,
+                "the view turned {turn} in one frame at tick {}, over the cap {cap}",
+                self.tick
+            );
+        }
+        self.last_yaw = Some(frame.yaw);
         let (ack, ack_bits) = self.view.ack_fields();
         let mut dg = InputDatagram::new(ack, ack_bits, sim_core::limits::INTERP_DELAY_TICKS);
         dg.push(frame).unwrap();
@@ -599,8 +626,9 @@ impl Harness {
 
     fn explain(&self) -> String {
         format!(
-            "tick {} stats {:?} mind {:?} goals {:?}",
+            "tick {} widest turn {} stats {:?} mind {:?} goals {:?}",
             self.tick,
+            self.max_turn,
             self.bot.stats,
             self.bot.mind.stats,
             self.bot.history.iter().collect::<Vec<_>>()
@@ -680,6 +708,8 @@ fn a_survivor_plays_a_whole_life_and_the_next_one_in_lockstep() {
         h.heap_ops, 0,
         "the agent's frame loop touched the allocator"
     );
+    // Wall 1's turn cap held every frame (`step`), and the hands did turn.
+    assert!(h.max_turn > 0, "{}", h.explain());
     // The wiki read the shipped rules and the wire's catalog agreed.
     let wiki = h.bot.wiki();
     assert!(wiki.ready() && wiki.unknown == 0 && wiki.disagreements == 0);

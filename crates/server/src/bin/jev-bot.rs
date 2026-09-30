@@ -126,7 +126,12 @@ async fn run(options: Options) -> Result<(), String> {
     for _ in 0..options.bots {
         minds.push(options.mind.build()?);
     }
-    println!("mind: {} × {}", options.mind.label(), options.bots);
+    println!(
+        "mind: {} × {} · {} hands",
+        options.mind.label(),
+        options.bots,
+        options.mind.skill.name()
+    );
     let shard = if options.local {
         let handle = server::agent_demo::spawn_local().await?;
         println!(
@@ -171,8 +176,9 @@ async fn run(options: Options) -> Result<(), String> {
         let door = door.clone();
         let duration = options.duration;
         let name = bot_name(&options.agent_name, i, options.bots)?;
+        let opts = options.mind.opts();
         fleet.spawn(async move {
-            let mut survivor = Survivor::new(mind);
+            let mut survivor = Survivor::with(mind, opts);
             let result = door.play(&endpoint, name, duration, &mut survivor).await;
             (i, survivor, result)
         });

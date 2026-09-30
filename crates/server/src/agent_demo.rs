@@ -1,8 +1,10 @@
 //! Shared setup for the headless survivor and its rendered local broadcast.
 
+use crate::agent::hands::Preset;
 use crate::botclient::{
     agent_endpoint, run_agent_bot, run_guest_agent, AgentIdentity, BotDriver, BotReport,
 };
+use crate::explorer::SurvivorOpts;
 /// Explicit offline goals (`mind::Scripted`), never a fallback for a
 /// failed model request. Re-exported here for the bins that name it.
 pub use crate::mind::Scripted;
@@ -167,7 +169,7 @@ pub fn spectate_url(page: &str, query: &str) -> String {
 }
 
 /// The decision-source flags both agent binaries accept.
-pub const MIND_USAGE: &str = "[--scripted | --external PROGRAM [ARG...]] [--think-ms 1000] [--timeout-ms 3000] [--heartbeat-s 30] [--max-requests-hour 600] [--max-requests-day 7200]\nJev needs TYPESAFE_API_KEY. --scripted makes no model calls. --external runs your own agent as a child speaking JSON lines (JEV.md) and must come last. Decisions are never more often than once a second.";
+pub const MIND_USAGE: &str = "[--scripted | --external PROGRAM [ARG...]] [--think-ms 1000] [--timeout-ms 3000] [--heartbeat-s 30] [--max-requests-hour 600] [--max-requests-day 7200] [--skill novice|average|good|pro]\nJev needs TYPESAFE_API_KEY. --scripted makes no model calls. --external runs your own agent as a child speaking JSON lines (JEV.md) and must come last. Decisions are never more often than once a second. --skill sets how fast and steady the bot's hands aim (default good): its view turns and settles like a player's, whatever decides.";
 
 /// Which source decides: Jev, the explicit scripted policy, or an agent
 /// the operator brings. Never swapped for another at runtime.
@@ -182,6 +184,8 @@ pub enum Source {
 pub struct MindArgs {
     pub source: Source,
     pub cfg: MindConfig,
+    /// How good the survivor's hands are; not the mind's, but chosen with it.
+    pub skill: Preset,
 }
 
 impl Default for MindArgs {
@@ -189,6 +193,7 @@ impl Default for MindArgs {
         Self {
             source: Source::Jev,
             cfg: MindConfig::default(),
+            skill: Preset::default(),
         }
     }
 }
@@ -217,6 +222,11 @@ impl MindArgs {
             "--max-requests-day" => {
                 self.cfg.per_day = u32::try_from(number(arg)?).map_err(|_| "ceiling too large")?
             }
+            "--skill" => {
+                let name = args.next().ok_or("--skill needs a value")?;
+                self.skill =
+                    Preset::parse(&name).ok_or("--skill is one of novice, average, good, pro")?;
+            }
             "--external" => {
                 let program = args.next().ok_or("--external needs a program")?;
                 self.source = Source::External(program, args.collect());
@@ -224,6 +234,13 @@ impl MindArgs {
             _ => return Ok(false),
         }
         Ok(true)
+    }
+
+    /// The survivor's setup beyond its mind.
+    pub fn opts(&self) -> SurvivorOpts {
+        SurvivorOpts {
+            skill: self.skill.skill(),
+        }
     }
 
     pub fn label(&self) -> String {
@@ -310,5 +327,10 @@ mod tests {
         assert!(parse("--max-requests-day 0").is_err());
         assert!(parse("--heartbeat-s").is_err());
         assert_eq!(parse("--scripted").unwrap().source, Source::Scripted);
+        assert_eq!(parse("--scripted").unwrap().skill, Preset::Good);
+        let pro = parse("--skill pro --scripted").unwrap();
+        assert_eq!(pro.opts().skill, crate::agent::hands::Skill::PRO);
+        assert!(parse("--skill").is_err());
+        assert!(parse("--skill godlike").is_err());
     }
 }

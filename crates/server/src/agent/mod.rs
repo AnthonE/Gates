@@ -1,5 +1,6 @@
 //! The agent player's parts below the mind: what a skill asks of the body
-//! ([`intent`]), what its eyes and ears know of other bodies ([`tracks`])
+//! ([`intent`]), the hands that turn it into input at a person's speed
+//! ([`hands`]), what its eyes and ears know of other bodies ([`tracks`])
 //! and what a player knows of the game's rules ([`wiki`]).
 //! `explorer.rs` stays the orchestrator; these modules never drain
 //! `ClientCore`'s event rings — `Survivor::event_with` is the one reader
@@ -9,6 +10,7 @@
 //! (`tests/agent_walls.rs`): human verbs and buttons only, no server-side
 //! state by name, and nothing allocated on the frame path.
 
+pub mod hands;
 pub mod intent;
 pub mod tracks;
 pub mod wiki;

@@ -1,9 +1,7 @@
 //! What a skill wants the body to do this frame, before hands turn it into
 //! an input frame. A skill says where to look and how to move; it never
-//! writes yaw or pitch itself, so one place (the hands) can hold every
-//! turn to a person's speed and aim.
-
-use sim_core::input::InputFrame;
+//! writes yaw or pitch itself, so one place ([`super::hands`]) can hold
+//! every turn to a person's speed and aim.
 
 /// Where the eyes go.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -15,8 +13,8 @@ pub enum Look {
     /// Look at a point in the world, metres.
     Point([f32; 3]),
     /// Look at a body this agent has seen, at a part of it (head, chest,
-    /// legs). Resolving it needs what perception tracked of that body, so
-    /// the plain resolver below keeps the current view.
+    /// legs, as `sim_core::collide::Part` bits), where perception last
+    /// had it in sight.
     Body { id: u32, part: u8 },
 }
 
@@ -24,8 +22,14 @@ pub enum Look {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Intent {
     pub look: Look,
+    /// Strafe and forward, relative to the view the hands hold.
     pub move_x: i8,
     pub move_z: i8,
+    /// Walk along this world bearing (wire yaw) at full stride, whatever
+    /// the view: the hands turn it into strafe and forward for the view
+    /// they actually hold this frame. Backing away from a pursuer while
+    /// still turning to face it must not walk into it. Overrides the axes.
+    pub travel: Option<u16>,
     /// The buttons held this frame. A frame states every held button, as a
     /// human's does, so a skill that keeps a bow drawn says so each frame.
     pub buttons: u8,
@@ -41,6 +45,7 @@ impl Intent {
         look: Look::Keep,
         move_x: 0,
         move_z: 0,
+        travel: None,
         buttons: 0,
         sel: None,
     };
@@ -51,29 +56,6 @@ impl Intent {
             look: Look::Heading(yaw),
             move_z: 127,
             ..Self::IDLE
-        }
-    }
-
-    /// The frame this intent asks for, laid over `base` (which carries the
-    /// sequence number and the view to keep). `eye` is where this body
-    /// looks from, for [`Look::Point`].
-    pub fn frame(&self, base: InputFrame, eye: [f32; 3]) -> InputFrame {
-        let (yaw, pitch) = match self.look {
-            Look::Keep | Look::Body { .. } => (base.yaw, base.pitch),
-            Look::Heading(yaw) => (yaw, LEVEL_PITCH),
-            Look::Point([x, y, z]) => {
-                let (dx, dy, dz) = (x - eye[0], y - eye[1], z - eye[2]);
-                (yaw_toward(dx, dz), pitch_toward(dy, dx.hypot(dz)))
-            }
-        };
-        InputFrame {
-            yaw,
-            pitch,
-            move_x: self.move_x,
-            move_z: self.move_z,
-            buttons: self.buttons,
-            sel: self.sel.unwrap_or(base.sel),
-            ..base
         }
     }
 }
@@ -97,66 +79,14 @@ pub fn pitch_toward(dy: f32, distance: f32) -> u8 {
 mod tests {
     use super::*;
 
-    fn base() -> InputFrame {
-        InputFrame {
-            seq: 7,
-            yaw: 0x4000,
-            pitch: 90,
-            sel: 3,
-            ..InputFrame::default()
-        }
-    }
-
     #[test]
-    fn keep_holds_the_view_and_takes_the_rest_from_the_intent() {
-        let f = Intent {
-            buttons: sim_core::input::BTN_PRIMARY,
-            sel: Some(2),
-            ..Intent::IDLE
-        }
-        .frame(base(), [0.0; 3]);
-        assert_eq!((f.seq, f.yaw, f.pitch), (7, 0x4000, 90));
-        assert_eq!(
-            (f.buttons, f.sel, f.move_z),
-            (sim_core::input::BTN_PRIMARY, 2, 0)
-        );
-    }
-
-    #[test]
-    fn walking_keeps_the_slot_in_hand() {
-        let f = Intent::walk(0x8000).frame(base(), [0.0; 3]);
-        assert_eq!((f.sel, f.buttons), (3, 0));
-    }
-
-    #[test]
-    fn a_heading_looks_level_and_a_body_keeps_the_view_until_tracked() {
-        let f = Intent::walk(0x8000).frame(base(), [0.0; 3]);
-        assert_eq!((f.yaw, f.pitch, f.move_z), (0x8000, LEVEL_PITCH, 127));
-        let f = Intent {
-            look: Look::Body { id: 9, part: 0 },
-            ..Intent::IDLE
-        }
-        .frame(base(), [0.0; 3]);
-        assert_eq!((f.yaw, f.pitch), (0x4000, 90));
-    }
-
-    #[test]
-    fn a_point_is_faced_on_the_wire_grid() {
-        let eye = [10.0, 2.0, 10.0];
-        let look = |p| {
-            Intent {
-                look: Look::Point(p),
-                ..Intent::IDLE
-            }
-            .frame(base(), eye)
-        };
+    fn bearings_are_on_the_wire_grid() {
         // +Z is yaw 0 and +X a quarter turn (the sim's `yaw_dir`).
-        let ahead = look([10.0, 2.0, 20.0]);
-        assert_eq!((ahead.yaw, ahead.pitch), (0, LEVEL_PITCH));
-        let (fx, fz) = sim_core::yaw_dir(look([20.0, 2.0, 10.0]).yaw);
-        assert!(fx > 0.99 && fz.abs() < 0.01);
-        let up = look([10.0, 12.0, 20.0]);
-        assert!(up.pitch > LEVEL_PITCH && up.pitch < 255);
-        assert!(look([10.0, -8.0, 20.0]).pitch < LEVEL_PITCH);
+        assert_eq!(yaw_toward(0.0, 1.0), 0);
+        assert_eq!(yaw_toward(1.0, 0.0), 1 << 14);
+        assert_eq!(yaw_toward(-1.0, -0.001) & 0xff, 0);
+        assert_eq!(pitch_toward(0.0, 5.0), LEVEL_PITCH);
+        assert!(pitch_toward(10.0, 10.0) > LEVEL_PITCH);
+        assert!(pitch_toward(-8.0, 10.0) < LEVEL_PITCH);
     }
 }
