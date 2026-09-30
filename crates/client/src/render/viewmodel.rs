@@ -338,6 +338,17 @@ pub const VIEWMODEL_BOW_CANT: f32 = 0.5;
 /// second, as `1 - exp(-k·dt)`.
 pub const VIEWMODEL_STRING_EASE: f32 = 10.0;
 
+/// The heave (`animate`): how much of a jolt in the body's vertical speed
+/// the arm takes, the spring that brings it back (stiffness per second²,
+/// damping per second: about 1.7 Hz, well damped), the most it moves,
+/// metres, and the largest jolt it hears, m/s, so a respawn's teleport is a
+/// nudge. A jump dips it about 2 cm on the way up and on landing.
+pub const VIEWMODEL_HEAVE_GAIN: f32 = 0.07;
+pub const VIEWMODEL_HEAVE_K: f32 = 120.0;
+pub const VIEWMODEL_HEAVE_C: f32 = 13.0;
+pub const VIEWMODEL_HEAVE_MAX: f32 = 0.04;
+pub const VIEWMODEL_HEAVE_JOLT_MAX: f32 = 12.0;
+
 /// How far the view is zoomed for a drawn bow, 0..=1 of [`DRAW_ZOOM`] —
 /// written by [`animate`], read by `settings::apply_view`.
 #[derive(Resource, Default)]
@@ -900,6 +911,11 @@ pub struct Motion {
     last_pos: Vec3,
     last_yaw: f32,
     last_pitch: f32,
+    /// The heave: the arm's vertical offset, metres, its speed, and the
+    /// body's vertical speed last frame.
+    heave: f32,
+    heave_v: f32,
+    last_vy: f32,
     /// Seeded on the first frame, so the first delta is not the whole world.
     /// Without it the eye's jump from the origin to the spawn — 2,179 m on the
     /// measured seed (`RENDER.md` §1.1) — lands in the first frame's speed.
@@ -933,6 +949,10 @@ pub struct Motion {
     /// the way back, left where it was when the arrow goes, then eased back
     /// onto the string (`bow::draw_arm`).
     hand: f32,
+    /// A stroke asked for by something other than the swing button (the
+    /// hammer's repair): taken next frame if the arm is at rest, dropped if
+    /// it is mid-stroke, so clicking faster does not chain strokes.
+    queued: bool,
 }
 
 /// What the bow's string and arrow are drawn from this frame (`bow::drive`).
@@ -951,6 +971,12 @@ pub struct BowPose {
 }
 
 impl Motion {
+    /// Swing the arm once, for a verb that is a swing without being the
+    /// swing button: the hammer's repair (`verbs::keys`).
+    pub fn strike(&mut self) {
+        self.queued = true;
+    }
+
     pub fn bow(&self) -> BowPose {
         BowPose {
             pull: self.string,
@@ -1968,6 +1994,23 @@ pub fn animate(
     let sway = m.sway;
     m.sway = sway + (target - sway) * k;
 
+    // ── Heave, off changes in vertical speed ─────────────────────────────
+    // The arm is a weight on a spring from the shoulder: a take-off or a
+    // landing jolts it down and it rings back, and a fall lets it float. A
+    // change in speed drives it, not the speed, so a steady slope leaves it
+    // still. Sub-stepped: a spring this stiff is unstable at a slow frame.
+    let vy = step.y / dt;
+    let jolt = (vy - m.last_vy).clamp(-VIEWMODEL_HEAVE_JOLT_MAX, VIEWMODEL_HEAVE_JOLT_MAX);
+    m.last_vy = vy;
+    m.heave_v -= jolt * VIEWMODEL_HEAVE_GAIN;
+    let n = (dt * 120.0).ceil().clamp(1.0, 16.0);
+    let h = dt / n;
+    for _ in 0..n as u32 {
+        m.heave_v += (-VIEWMODEL_HEAVE_K * m.heave - VIEWMODEL_HEAVE_C * m.heave_v) * h;
+        m.heave += m.heave_v * h;
+    }
+    m.heave = m.heave.clamp(-VIEWMODEL_HEAVE_MAX, VIEWMODEL_HEAVE_MAX);
+
     // ── Swing, off the cadence ───────────────────────────────────────────
     // The sim's own rule, mirrored: button down and the cooldown lapsed.
     // This is what draws a MISS, which is most swings — see the header.
@@ -1992,7 +2035,9 @@ pub fn animate(
         && !shoots
         && m.swing <= 0.0
         && (feed.hits > 0 || !feed.gathered().is_empty());
-    if predicted || landed_at_rest {
+    // A queued stroke only starts from rest, like the backstop.
+    let queued = std::mem::take(&mut m.queued) && m.swing <= 0.0;
+    if predicted || landed_at_rest || queued {
         m.swing = 1.0;
         m.strokes = m.strokes.wrapping_add(1);
         // **The whoosh is a fact about the arm, so it fires with the arm**
@@ -2131,7 +2176,10 @@ pub fn animate(
     // The sway rides OUTSIDE the swing, so a turn taken mid-stroke lags the
     // whole assembly rather than bending the stroke.
     let lag = Quat::from_euler(EulerRot::YXZ, m.sway.x, m.sway.y, 0.0);
-    *t = rig_transform(lag * arc * draw_turn, throw + bob + draw_off);
+    *t = rig_transform(
+        lag * arc * draw_turn,
+        throw + bob + draw_off + Vec3::Y * m.heave,
+    );
 
     // ── The wrist, on top of the arm ────────────────────────────────────
     //
