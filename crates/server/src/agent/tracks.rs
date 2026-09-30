@@ -89,8 +89,12 @@ pub const MID_M: f32 = 60.0;
 /// wall for a player, the back of an animal.
 const PLAYER_SIGHT_Y_M: f32 = 1.4;
 const ANIMAL_SIGHT_Y_M: f32 = 0.5;
-/// Closer than this, a body anywhere in front is in view.
+/// Closer than this, a body is in view across the whole width of the
+/// screen, not only the cone the eyes attend to further out.
 pub const ARMS_LENGTH_M: f32 = 2.0;
+/// The cosine of half the screen's width: the client's 75° vertical view
+/// at 16:9 is about 107° across, so a body up to ~54° off the facing.
+pub const SCREEN_HALF_COS: f32 = 0.59;
 /// Where a look ray is tested against this body.
 const CHEST_Y_M: f32 = 1.2;
 
@@ -403,11 +407,12 @@ impl Tracks {
                 range *= NIGHT_SIGHT;
             }
             // Range is along the line, the cone on the ground. A body at
-            // arm's length is seen anywhere in front, not only in the
-            // cone: at that range it fills the side of the view.
+            // arm's length is seen anywhere on the screen, not only in the
+            // cone: at that range it fills the side of the view. Beside
+            // me, off the screen, it is not seen at all.
             let ahead = dx * fx + dz * fz;
             let cone = if d < ARMS_LENGTH_M {
-                0.0
+                d * SCREEN_HALF_COS
             } else {
                 d * std::f32::consts::FRAC_1_SQRT_2
             };
@@ -614,6 +619,20 @@ impl Tracks {
             .flatten()
             .filter(|r| r.seen)
             .map(|r| &r.track)
+    }
+
+    /// Bodies in view but not yet held long enough to be tracks (and not
+    /// found behind something), where the snapshots put them: enough to
+    /// keep a swing off them, not to act on.
+    pub fn glimpses(&self) -> impl Iterator<Item = (u32, Species, [f32; 3])> + '_ {
+        self.rows
+            .iter()
+            .flatten()
+            .filter(|r| r.in_view && !r.seen && !r.sample.dead && (r.los_ok || r.los_at.is_none()))
+            .map(|r| {
+                let s = &r.sample;
+                (r.track.id, r.track.species, [s.x, s.y, s.z])
+            })
     }
 
     /// Bodies that can act, seen within `within` ticks of `tick`.

@@ -64,6 +64,19 @@ pub const ALARM_TICKS: u32 = 3 * TICK_HZ;
 /// A blow's author is looked for within this far past their reach: the
 /// ground a body covers while the eyes come round and find it.
 pub const ATTACKER_SLACK_M: f32 = 6.0;
+/// A swing seen but not felt is at me only if it could have landed: I
+/// stand within its reach plus this (a pose a few ticks old), and no
+/// further off its line than a body's width plus [`SWING_MISS_M`]. Kept
+/// under the margin a harvest swing clears bodies by, so a body chopping
+/// beside me is not an attack.
+pub const SWING_SLACK_M: f32 = 0.5;
+pub const SWING_MISS_M: f32 = 0.1;
+/// A foe not closed on by [`CLOSE_M`] in this long, while trying, cannot be
+/// reached: the fight is let go, and the body is not picked again for
+/// [`SHUN_TICKS`].
+pub const UNREACHABLE_TICKS: u32 = 3 * TICK_HZ;
+pub const CLOSE_M: f32 = 0.5;
+pub const SHUN_TICKS: u32 = 30 * TICK_HZ;
 /// A wolf closing inside this is already attacking.
 pub const WOLF_ALARM_M: f32 = 10.0;
 /// A shooter further off than this is not charged with a melee weapon.
@@ -241,6 +254,11 @@ pub struct Combat {
     strafe: (i8, u32),
     /// When my own next swing is ready, from the last one it felt.
     ready_at: u32,
+    /// Trying to close on the foe and not getting nearer: since when, and
+    /// the nearest it has been since.
+    stuck: Option<(u32, f32)>,
+    /// A body found unreachable, and until when it is not picked again.
+    shun: Option<(u32, u32)>,
     last_end: Option<End>,
     rng: Pcg32,
     pub stats: CombatStats,
@@ -262,6 +280,8 @@ impl Combat {
             hurt: None,
             strafe: (1, 0),
             ready_at: 0,
+            stuck: None,
+            shun: None,
             last_end: None,
             rng: Pcg32::new(0, 0),
             stats: CombatStats {
@@ -288,6 +308,8 @@ impl Combat {
         self.retreat = None;
         self.foe = None;
         self.hurt = None;
+        self.stuck = None;
+        self.shun = None;
     }
 
     /// Down: the orchestrator crawls; the reflex waits for the body.
@@ -348,6 +370,13 @@ impl Combat {
         self.ready_at = tick.wrapping_add(SWING_INTERVAL_TICKS as u32);
     }
 
+    /// A body a fight was let go with because it could not be reached:
+    /// not worth picking again yet.
+    pub fn shuns(&self, id: u32, tick: u32) -> bool {
+        self.shun
+            .is_some_and(|(who, until)| who == id && tick.wrapping_sub(until) >= 1 << 31)
+    }
+
     /// Fight this body because the mind said so (a fight or hunt goal).
     pub fn command(&mut self, id: u32, tick: u32) {
         self.engage(id, tick, true);
@@ -378,6 +407,7 @@ impl Combat {
                 threat: tick,
                 commanded,
             });
+            self.stuck = None;
         }
         if let Some(f) = self.foe.as_mut() {
             f.commanded |= commanded;
@@ -395,6 +425,7 @@ impl Combat {
         self.mode = Mode::Idle;
         self.retreat = None;
         self.foe = None;
+        self.stuck = None;
         self.last_end = Some(end);
         Assess::Over { away, end }
     }
@@ -466,8 +497,8 @@ impl Combat {
     }
 
     /// The body that is attacking me now, if the eyes have it: one that
-    /// swung or shot at me just now, one standing where a blow came from,
-    /// or a wolf coming in.
+    /// swung at me from where the swing could land, or shot at me, just
+    /// now; one standing where a blow came from; or a wolf coming in.
     fn attacker(&self, tracks: &Tracks, book: &Book, me: [f32; 3], tick: u32) -> Option<u32> {
         let recent = |at: Option<u32>| at.is_some_and(|a| tick.wrapping_sub(a) < ALARM_TICKS);
         let blow = self
@@ -480,7 +511,7 @@ impl Combat {
             }
             let d = flat(me, t.pos);
             let (reach, ranged) = their_reach(t, book);
-            let swung = recent(t.last_swing) && t.aiming_at_me && d <= reach + ATTACKER_SLACK_M;
+            let swung = recent(t.last_swing) && swing_reaches(t, me, reach);
             let shot = recent(t.last_shot) && t.aiming_at_me;
             let struck = blow.is_some_and(|(_, toward)| {
                 let bearing = yaw_toward(t.pos[0] - me[0], t.pos[2] - me[2]);
@@ -512,7 +543,7 @@ impl Combat {
         }
         let mut best: Option<(f32, u32)> = None;
         for t in tracks.seen() {
-            if !t.visible || !t.active() || t.species != Species::Player {
+            if !t.visible || !t.active() || t.species != Species::Player || self.shuns(t.id, tick) {
                 continue;
             }
             let d = flat(me, t.pos);
@@ -569,7 +600,9 @@ impl Combat {
         let d = flat(me, t.pos);
         // Anything aimed at me from this body keeps the fight live.
         let recent = |at: Option<u32>| at.is_some_and(|a| tick.wrapping_sub(a) < ALARM_TICKS);
-        if (t.aiming_at_me && (recent(t.last_swing) || recent(t.last_shot)))
+        let (reach, _) = their_reach(&t, kit.book);
+        if (recent(t.last_swing) && swing_reaches(&t, me, reach))
+            || (recent(t.last_shot) && t.aiming_at_me)
             || self
                 .hurt
                 .is_some_and(|(at, _)| tick.wrapping_sub(at) < ALARM_TICKS && at > foe.threat)
@@ -588,7 +621,26 @@ impl Combat {
                 return self.over(Some(away), End::Parted);
             }
         }
-        Assess::Fight(self.melee(core, body, route, &t, &odds, kit, tick))
+        let intent = self.melee(core, body, route, &t, &odds, kit, tick);
+        if self
+            .stuck
+            .is_some_and(|(since, _)| tick.wrapping_sub(since) >= UNREACHABLE_TICKS)
+        {
+            // No way to them: standing and staring is no fight. A goal
+            // that asked for it hears the foe was not found.
+            self.shun = Some((foe.id, tick.wrapping_add(SHUN_TICKS)));
+            return self.over(Some(away), End::Parted);
+        }
+        Assess::Fight(intent)
+    }
+
+    /// Trying to close on the foe from `d`: the clock on an unreachable foe
+    /// runs until it gets nearer.
+    fn closing_from(&mut self, d: f32, tick: u32) {
+        self.stuck = match self.stuck {
+            Some((since, best)) if d > best - CLOSE_M => Some((since, best)),
+            _ => Some((tick, d)),
+        };
     }
 
     /// Melee footwork. Close the gap; where my reach is the longer, hold
@@ -639,9 +691,16 @@ impl Combat {
             // Out of reach by a distance: by a route, running.
             let step = route.to(core, body, [t.pos[0], t.pos[2]], odds.my_reach, true, tick);
             let (travel, jump) = match step {
-                Step::Walk { yaw, jump, .. } => (Some(yaw), jump),
+                Step::Walk { yaw, jump, .. } => {
+                    // The route is on its way; it says so when it is not.
+                    self.stuck = None;
+                    (Some(yaw), jump)
+                }
                 Step::Wait => (Some(toward), false),
-                Step::Arrived | Step::Blocked => (None, false),
+                Step::Arrived | Step::Blocked => {
+                    self.closing_from(d, tick);
+                    (None, false)
+                }
             };
             return Intent {
                 travel,
@@ -686,6 +745,11 @@ impl Combat {
         } else {
             0.0
         };
+        if radial > 0.0 && d > odds.my_reach {
+            self.closing_from(d, tick);
+        } else {
+            self.stuck = None;
+        }
         if tick.wrapping_sub(self.strafe.1) < 1 << 31 {
             let span = self.rng.next_bounded(STRAFE_SPAN_TICKS + 1);
             self.strafe = (-self.strafe.0, tick + STRAFE_MIN_TICKS + span);
@@ -798,6 +862,21 @@ fn pos(body: &EntityState) -> [f32; 3] {
 fn flat(a: [f32; 3], b: [f32; 3]) -> f32 {
     let (dx, dz) = (a[0] - b[0], a[2] - b[2]);
     (dx * dx + dz * dz).sqrt()
+}
+
+/// Could this player's last swing have landed on me: am I ahead of it,
+/// within `reach` (centre to centre) and across its line by no more than a
+/// body? The look ray alone says only where it faces; a body chopping a
+/// tree faces the tree, and whoever stands a step off that line with it.
+fn swing_reaches(t: &Track, me: [f32; 3], reach: f32) -> bool {
+    if t.species != Species::Player || reach <= 0.0 {
+        return false;
+    }
+    let (fx, fz) = yaw_dir(t.yaw);
+    let (dx, dz) = (me[0] - t.pos[0], me[2] - t.pos[2]);
+    let along = dx * fx + dz * fz;
+    let across = (dx * fz - dz * fx).abs();
+    along > 0.0 && along <= reach + SWING_SLACK_M && across <= CAPSULE_RADIUS_M + SWING_MISS_M
 }
 
 fn closing(t: &Track, me: [f32; 3], d: f32) -> bool {
@@ -1029,6 +1108,22 @@ mod tests {
             odds(&player(Some(rock)), &none, 0).losing,
             "nothing to swing"
         );
+    }
+
+    /// A swing seen is at me only where it could land: ahead of it, in
+    /// its reach, and on its line, not a step off it or a tree away.
+    #[test]
+    fn a_swing_is_at_me_only_where_it_could_land() {
+        let mut t = player(None);
+        t.yaw = yaw_toward(0.0, 1.0);
+        let reach = 1.4;
+        assert!(swing_reaches(&t, [0.0, 0.0, 1.2], reach));
+        assert!(swing_reaches(&t, [0.4, 0.0, 1.2], reach), "the arm");
+        assert!(!swing_reaches(&t, [0.8, 0.0, 1.2], reach), "a step aside");
+        assert!(!swing_reaches(&t, [0.0, 0.0, 3.0], reach), "out of reach");
+        assert!(!swing_reaches(&t, [0.0, 0.0, -1.0], reach), "behind it");
+        t.species = Species::Wolf;
+        assert!(!swing_reaches(&t, [0.0, 0.0, 1.2], reach), "not a swing");
     }
 
     #[test]

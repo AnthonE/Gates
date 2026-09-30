@@ -90,9 +90,16 @@ pub const THREAT_RECALL_SECS: u32 = 10;
 /// A body standing on the swing's own ray this close would take the blow
 /// meant for a node: the swing waits.
 pub const BYSTANDER_RAY_M: f32 = 3.0;
+/// The ray is held off a body by this much more than its radius: a pose
+/// that moved since the frame drawn, and hands that wobble. Wider than the
+/// margin a watcher calls a seen swing an attack by (`combat::SWING_MISS_M`).
+pub const BYSTANDER_MISS_M: f32 = 0.3;
 /// A heal goal uses meds until health reaches this percentage, counting
-/// what the last one is still delivering.
+/// what the meds already used are still delivering.
 pub const HEAL_TARGET_PCT: u32 = 90;
+/// A health bar that has not risen for this long has no heal coming (the
+/// slowest med fills a point every few ticks).
+pub const HEAL_STALL_TICKS: u32 = TICK_HZ;
 
 /// Tool ladders, best first, by catalog name — the player's knowledge of
 /// which tool fells a tree and which breaks rock. Never indices; yields,
@@ -262,7 +269,7 @@ pub struct SurvivorStats {
     pub respawn_asks: u64,
     /// Retreats begun: guarding from an unseen blow, or escaping.
     pub retreats: u64,
-    /// Blows taken, and blows landed (my hit markers).
+    /// Blows taken, and blows landed on bodies (my hit markers).
     pub hurts: u64,
     pub landed: u64,
     pub goals_done: u64,
@@ -323,11 +330,19 @@ enum Pending {
     Drink,
 }
 
-/// A heal goal's last med: health when it went in, and what it heals.
+/// Health still on its way from meds used, read off the bar the way a
+/// player reads it: the server folds what is left of one bandage into the
+/// next (`survival.rs`), so the pool is what counts, not the last dose.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Dose {
+    /// Health when last looked at.
     hp: u16,
-    heal: u16,
+    /// Heal still to arrive, the med awaiting its answer included.
+    rem: u16,
+    /// That med's heal, taken back if it is refused.
+    sent: u16,
+    /// When the bar last rose, or a med went in.
+    rose: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -961,7 +976,6 @@ impl Survivor {
         self.recovery = None;
         self.seek = None;
         self.verdict = None;
-        self.dose = None;
     }
 
     fn end_goal(&mut self, tick: u32, outcome: Outcome) {
@@ -1118,7 +1132,11 @@ impl Survivor {
         let (bx, bz) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
         let mut nearest: Option<(f32, u32)> = None;
         for t in self.tracks.seen() {
-            if !t.visible || !t.active() || (t.species == Species::Player) == hunt {
+            if !t.visible
+                || !t.active()
+                || (t.species == Species::Player) == hunt
+                || self.combat.shuns(t.id, tick)
+            {
                 continue;
             }
             let d = (t.pos[0] - bx).hypot(t.pos[2] - bz);
@@ -1352,26 +1370,42 @@ impl Survivor {
         intent
     }
 
-    /// The lowest id among the bodies in sight standing across a swing
-    /// along this bearing, within [`BYSTANDER_RAY_M`].
+    /// The lowest id among the bodies in view standing across a swing
+    /// along this bearing, within [`BYSTANDER_RAY_M`]: where my screen
+    /// draws them (the pose the server judges the swing against), and
+    /// bodies just come into view as well as those long in sight.
     fn body_on_ray(&self, body: &EntityState, yaw: u16) -> Option<u32> {
         let (fx, fz) = yaw_dir(yaw);
         let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+        let on_ray = |species: Species, at: [f32; 3]| {
+            let (dx, dz) = (at[0] - x, at[2] - z);
+            let along = dx * fx + dz * fz;
+            let across = (dx * fz - dz * fx).abs();
+            let radius = match species {
+                Species::Player => sim_core::collide::CAPSULE_RADIUS_M,
+                Species::Pig => f32::from(self.book.pig().radius_cm) * 0.01,
+                Species::Wolf => f32::from(self.book.wolf().radius_cm) * 0.01,
+            };
+            along > -radius
+                && along <= BYSTANDER_RAY_M + radius
+                && across <= radius + BYSTANDER_MISS_M
+        };
         let mut lowest: Option<u32> = None;
         for t in self.tracks.seen() {
             if !t.visible || t.dead || t.id == body.id {
                 continue;
             }
-            let (dx, dz) = (t.pos[0] - x, t.pos[2] - z);
-            let along = dx * fx + dz * fz;
-            let across = (dx * fz - dz * fx).abs();
-            let radius = match t.species {
-                Species::Player => sim_core::collide::CAPSULE_RADIUS_M,
-                Species::Pig => f32::from(self.book.pig().radius_cm) * 0.01,
-                Species::Wolf => f32::from(self.book.wolf().radius_cm) * 0.01,
-            };
-            if along > -radius && along <= BYSTANDER_RAY_M + radius && across <= radius {
+            let at = self
+                .tracks
+                .aim_pose(t.id)
+                .map_or(t.pos, |s| [s.x, s.y, s.z]);
+            if on_ray(t.species, at) {
                 lowest = Some(lowest.map_or(t.id, |b| b.min(t.id)));
+            }
+        }
+        for (id, species, at) in self.tracks.glimpses() {
+            if id != body.id && on_ray(species, at) {
+                lowest = Some(lowest.map_or(id, |b| b.min(id)));
             }
         }
         lowest
@@ -1506,33 +1540,48 @@ impl Survivor {
         self.consume(core, slot, tick);
     }
 
-    /// Use meds until health, with what the last one is still delivering,
+    /// Use meds until health, with what those used are still delivering,
     /// reaches [`HEAL_TARGET_PCT`]: a bandage heals over seconds, and a
-    /// second one only stretches the first (`survival.rs`).
+    /// second one only stretches the first (`survival.rs`). While the bar
+    /// is still filling to the target, wait on it rather than waste one.
     fn heal(&mut self, core: &mut ClientCore, tick: u32) {
         self.stats.phase = Phase::Healing;
-        match self.take_verdict(tick, VERDICT_SECS * TICK_HZ) {
-            Err(()) => {
-                self.end_goal(tick, Outcome::Failed(Why::NoAnswer));
-                return;
-            }
+        self.watch_dose(core, tick);
+        let verdict = self.take_verdict(tick, VERDICT_SECS * TICK_HZ);
+        match verdict {
             Ok(Some(Verdict::Ok)) => {
                 if let Some(a) = self.goal.as_mut() {
                     a.gained += 1;
                 }
+                if let Some(d) = self.dose.as_mut() {
+                    d.sent = 0;
+                    d.rose = tick;
+                }
             }
-            Ok(Some(_)) => {
-                self.dose = None;
-                self.end_goal(tick, Outcome::Failed(Why::Refused));
+            Err(()) | Ok(Some(_)) => {
+                // Not taken, or not known to be: that med is not coming.
+                if let Some(d) = self.dose.as_mut() {
+                    d.rem = d.rem.saturating_sub(d.sent);
+                    d.sent = 0;
+                }
+                let why = if verdict.is_err() {
+                    Why::NoAnswer
+                } else {
+                    Why::Refused
+                };
+                self.end_goal(tick, Outcome::Failed(why));
                 return;
             }
             Ok(None) if self.awaiting.is_some() => return,
             Ok(None) => {}
         }
-        let owed = self.dose.map_or(0, |d| u32::from(d.hp) + u32::from(d.heal));
-        let health = u32::from(core.hp).max(owed);
-        if core.hp_max == 0 || health * 100 >= u32::from(core.hp_max) * HEAL_TARGET_PCT {
+        let max = u32::from(core.hp_max) * HEAL_TARGET_PCT;
+        if core.hp_max == 0 || u32::from(core.hp) * 100 >= max {
             self.end_goal(tick, Outcome::Done);
+            return;
+        }
+        let owed = self.dose.map_or(0, |d| u32::from(d.hp) + u32::from(d.rem));
+        if owed * 100 >= max {
             return;
         }
         let Some((slot, item)) = self.loadout.best(core, Role::Meds) else {
@@ -1544,10 +1593,43 @@ impl Survivor {
             self.end_goal(tick, outcome);
             return;
         };
-        let (hp, heal) = (core.hp, self.book.page(item).heal);
+        let heal = self.book.page(item).heal;
         self.consume(core, slot, tick);
         if matches!(self.awaiting, Some((Pending::Consume { .. }, _))) {
-            self.dose = Some(Dose { hp, heal });
+            let d = self.dose.get_or_insert(Dose {
+                hp: core.hp,
+                rem: 0,
+                sent: 0,
+                rose: tick,
+            });
+            d.rem = d.rem.saturating_add(heal);
+            d.sent = heal;
+            d.rose = tick;
+        }
+    }
+
+    /// Read the health bar against the heal pool: what it rose by came out
+    /// of the pool. A full bar, an empty pool or a bar that stopped rising
+    /// has nothing more coming.
+    fn watch_dose(&mut self, core: &ClientCore, tick: u32) {
+        let asking = matches!(self.awaiting, Some((Pending::Consume { .. }, _)));
+        let Some(d) = self.dose.as_mut() else {
+            return;
+        };
+        if !asking {
+            // Its goal ended before the answer came: count it as taken,
+            // and let a still bar say otherwise.
+            d.sent = 0;
+        }
+        if core.hp > d.hp {
+            d.rem = d.rem.saturating_sub(core.hp - d.hp);
+            d.rose = tick;
+        }
+        d.hp = core.hp;
+        let done =
+            d.rem == 0 || core.hp >= core.hp_max || tick.wrapping_sub(d.rose) >= HEAL_STALL_TICKS;
+        if d.sent == 0 && done {
+            self.dose = None;
         }
     }
 
@@ -1891,7 +1973,10 @@ impl Survivor {
             self.tracks.on_impact(at, tick);
         }
         while let Some(hit) = core.pop_hit() {
-            self.stats.landed += 1;
+            // A blow on a body; a wall's marker is not one.
+            if hit.victim != client_core::core::NO_VICTIM {
+                self.stats.landed += 1;
+            }
             self.tracks.on_hit(hit.victim, hit.damage);
         }
         if flags & APPLIED_RESPAWN != 0 && !core.dead {
