@@ -220,7 +220,8 @@ mod tests {
             bearing: 5,
         };
         (s.trees, s.stone_nodes, s.ore_nodes, s.bushes) = (seen, seen, seen, seen);
-        (s.players, s.animals, s.water_near) = (seen, seen, seen);
+        (s.players, s.animals, s.water_near, s.backpack) = (seen, seen, seen, seen);
+        s.bags = u8::MAX;
         (s.hp, s.hp_max, s.food, s.food_max, s.water, s.water_max) = (100, 100, 500, 500, 250, 250);
         s.last = Some(Report {
             goal: Goal::Craft(long(7)),

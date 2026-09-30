@@ -74,7 +74,13 @@ fn root() -> std::path::PathBuf {
 /// The verbs the agent may send, in `encode_action_*` spelling. The one
 /// list to extend when a lane gives the agent a new verb: the source grep,
 /// the lockstep run and PLAYERS.md all answer to it.
-const EXPECTED_VERBS: [&str; 5] = ["craft", "consume", "drink", "move", "respawn"];
+const EXPECTED_VERBS: [&str; 7] = [
+    "craft", "consume", "drink", "move", "respawn", "deploy", "loot",
+];
+
+/// The verbs a life of gathering, crafting, eating, drinking and dying
+/// sends; the bag lifecycle's run sends the rest.
+const LIFE_VERBS: [&str; 5] = ["craft", "consume", "drink", "move", "respawn"];
 
 /// The buttons the agent presses today. Always within what the human
 /// client sends (`human_buttons`); widened here when a lane presses more.
@@ -437,6 +443,12 @@ struct Harness {
     last_yaw: Option<u16>,
     life: u64,
     max_turn: u16,
+    /// What the human UI makes a player hold for the verbs that need it:
+    /// the building plan to place, the hammer to upgrade or repair.
+    plan: u16,
+    hammer: u16,
+    /// Held-item checks passed at send time.
+    held_checks: u32,
 }
 
 impl Harness {
@@ -451,6 +463,8 @@ impl Harness {
             cond: catalog.cond_max(spear as usize),
             skin: 0,
         };
+        let plan = content.item_index("item.building_plan").unwrap();
+        let hammer = content.item_index("item.hammer").unwrap();
         let mut bot =
             Survivor::new(Mind::inline(Scripted::default(), MindConfig::default()).unwrap());
         use server::botclient::BotDriver;
@@ -476,6 +490,47 @@ impl Harness {
             last_yaw: None,
             life: 0,
             max_turn: 0,
+            plan,
+            hammer,
+            held_checks: 0,
+        }
+    }
+
+    /// The item the human client makes a player hold to send this verb,
+    /// if any: the deployable itself, the plan, the hammer.
+    fn required_item(&self, msg: &ActionMsg) -> Option<u16> {
+        match *msg {
+            ActionMsg::Deploy { row, .. } => {
+                Some(self.shard.world.deploy.defs[usize::from(row)].item)
+            }
+            ActionMsg::Place { .. } => Some(self.plan),
+            ActionMsg::Upgrade { .. } | ActionMsg::Repair { .. } => Some(self.hammer),
+            _ => None,
+        }
+    }
+
+    /// The bot's body in the live shard.
+    fn me(&self) -> &sim_core::world::Player {
+        self.shard
+            .world
+            .players
+            .iter()
+            .find(|p| p.active && p.id == ID)
+            .unwrap()
+    }
+
+    /// Stage the puppet's body in both shards (scene staging, never the
+    /// agent's).
+    fn stage_puppet(&mut self, f: impl Fn(&mut sim_core::world::Player)) {
+        for core in [&mut self.shard, &mut self.replay] {
+            if let Some(p) = core
+                .world
+                .players
+                .iter_mut()
+                .find(|p| p.active && p.id == PUPPET)
+            {
+                f(p);
+            }
         }
     }
 
@@ -583,6 +638,18 @@ impl Harness {
                 "the agent sent a verb outside its set: {msg:?}"
             );
             self.verbs.insert(verb);
+            // Wall 1, the hands' other half: a verb the human UI sends only
+            // with something in hand goes with it in hand, in the world's
+            // own selected slot at the moment it is sent.
+            if let Some(need) = self.required_item(&msg) {
+                let held = sim_core::combat::held_item(self.me());
+                assert_eq!(
+                    held, need,
+                    "the agent sent {msg:?} holding item {held}, not {need}, at tick {}",
+                    self.tick
+                );
+                self.held_checks += 1;
+            }
             assert!(self.shard.wants_action(0) && self.replay.wants_action(0));
             self.shard.push_action(0, msg);
             let again = decode_action(&act[..len]).unwrap();
@@ -626,11 +693,12 @@ impl Harness {
 
     fn explain(&self) -> String {
         format!(
-            "tick {} widest turn {} stats {:?} route {:?} mind {:?} goals {:?}",
+            "tick {} widest turn {} stats {:?} route {:?} home {:?} mind {:?} goals {:?}",
             self.tick,
             self.max_turn,
             self.bot.stats,
             self.bot.route().stats,
+            self.bot.home().stats,
             self.bot.mind.stats,
             self.bot.history.iter().collect::<Vec<_>>()
         )
@@ -724,9 +792,16 @@ fn a_survivor_plays_a_whole_life_and_the_next_one_in_lockstep() {
     let me = h.view.get(ID).copied().unwrap();
     assert!(!me.dead && !me.wounded, "a live body after the wake");
 
-    // Wall 1, as sent: every verb in the set, and nothing else.
+    // Wall 1, as sent: every verb a life needs, and nothing outside the
+    // set (the bag run below sends the rest of it).
     let expected: BTreeSet<&str> = EXPECTED_VERBS.into_iter().collect();
-    assert_eq!(h.verbs, expected, "{}", h.explain());
+    let life: BTreeSet<&str> = LIFE_VERBS.into_iter().collect();
+    assert!(
+        h.verbs.is_subset(&expected) && life.is_subset(&h.verbs),
+        "{:?}: {}",
+        h.verbs,
+        h.explain()
+    );
     assert_eq!(
         h.buttons & !(EXPECTED_BUTTONS & human_buttons()),
         0,
@@ -749,6 +824,125 @@ fn a_survivor_plays_a_whole_life_and_the_next_one_in_lockstep() {
         "more than one request a second: {}",
         h.explain()
     );
+}
+
+/// Somewhere to come back to, in lockstep: with stone tools and cloth in
+/// the pack the playbook crafts a sleeping bag and puts it down on bare
+/// ground, holding it the way the human client makes a player; killed a
+/// walk away, it wakes on that bag, walks back and loots its backpack.
+#[test]
+fn a_survivor_wakes_on_its_bag_and_walks_back_for_its_backpack() {
+    let mut h = Harness::new(false);
+    let content = content::Content::load_dir(&root().join("content")).unwrap();
+    let catalog = server::net::bake_all(&content).unwrap().catalog;
+    let stack = |id: &str, count: u16| {
+        let item = content.item_index(id).unwrap();
+        sim_core::gather::ItemStack {
+            item,
+            count,
+            cond: catalog.cond_max(item as usize),
+            skin: 0,
+        }
+    };
+    let (hatchet, pickaxe) = (
+        stack("item.hatchet_stone", 1),
+        stack("item.pickaxe_stone", 1),
+    );
+    let cloth = stack("item.cloth", 40);
+    // The join lands on the tick after `connect`.
+    h.until(5, |_| false);
+    h.stage(|p| {
+        p.inv[1] = hatchet;
+        p.inv[2] = pickaxe;
+        p.inv[12] = cloth;
+    });
+
+    // 1. Craft the bag and put it down.
+    let placed = h.until(9_000, |b| b.home().stats.bags_placed >= 1);
+    assert!(placed, "no bag down: {}", h.explain());
+    let bags: Vec<_> = h
+        .shard
+        .world
+        .deploys
+        .entries()
+        .iter()
+        .filter(|d| {
+            d.owner == ID
+                && h.shard.world.deploy.defs[usize::from(d.row)].arch == sim_core::deploy::ARCH_BAG
+        })
+        .copied()
+        .collect();
+    assert_eq!(bags.len(), 1, "{}", h.explain());
+    assert!(
+        h.held_checks >= 1,
+        "the deploy went out with the bag in hand"
+    );
+    let (bx, bz) = sim_core::deploy::cell_center(bags[0].cx, bags[0].cz);
+
+    // 2. A walk away from it (well outside the alarm around home, inside
+    //    the recovery range), a puppet lays it down and kills it.
+    let haven = sim_core::terrain::haven(SEED);
+    let away = [
+        (70.0f32, 0.0f32),
+        (-70.0, 0.0),
+        (0.0, 70.0),
+        (0.0, -70.0),
+        (50.0, 50.0),
+    ]
+    .into_iter()
+    .map(|(dx, dz)| (bx + dx, bz + dz))
+    .find(|&(x, z)| sim_core::terrain::ground(SEED, &haven, x, z) > 1.0)
+    .expect("dry ground a walk from the bag");
+    h.stage(|p| p.body = sim_core::movement::Body::at(SEED, &haven, away.0, away.1));
+    h.with_puppet();
+    h.puppet = Some(h.spear);
+    let died = h.until(3_000, |b| b.stats.deaths >= 1);
+    h.puppet = None;
+    assert!(died, "no death: {}", h.explain());
+    // The killer leaves: nobody dangerous stands between it and its pack.
+    let far = sim_core::movement::Body::at(SEED, &haven, bx + 400.0, bz + 400.0);
+    h.stage_puppet(|p| p.body = far);
+    let woke = h.until(3_000, |b| b.stats.respawns >= 1);
+    assert!(woke, "no wake: {}", h.explain());
+    assert_eq!(h.bot.home().stats.wakes_on_bag, 1, "{}", h.explain());
+    h.step();
+    let me = h.me().body;
+    let (x, z) = (
+        me.qx as f32 * sim_core::movement::POS_XZ_Q,
+        me.qz as f32 * sim_core::movement::POS_XZ_Q,
+    );
+    assert!(
+        (x - bx).hypot(z - bz) < 4.0,
+        "woke at ({x}, {z}), not at the bag ({bx}, {bz})"
+    );
+    assert_ne!(
+        h.bot.core().unwrap().own_bag,
+        0,
+        "the death backpack is tagged"
+    );
+
+    // 3. Back to the backpack, and everything in it comes home.
+    let back = h.until(4_000, |b| b.home().stats.recovered >= 1);
+    assert!(back, "no recovery: {}", h.explain());
+    let core = h.bot.core().unwrap();
+    assert_eq!(core.own_bag, 0, "the backpack was emptied");
+    assert!(
+        core.inv
+            .iter()
+            .any(|s| s.count > 0 && s.item == hatchet.item),
+        "the hatchet came back: {}",
+        h.explain()
+    );
+    for verb in ["craft", "deploy", "respawn", "loot"] {
+        assert!(h.verbs.contains(verb), "{verb} never sent: {:?}", h.verbs);
+    }
+    let expected: BTreeSet<&str> = EXPECTED_VERBS.into_iter().collect();
+    assert!(h.verbs.is_subset(&expected));
+    assert_eq!(
+        h.heap_ops, 0,
+        "the agent's frame loop touched the allocator"
+    );
+    println!("{}", h.explain());
 }
 
 /// Half an hour of play, the shipped clock, no staging and no animals: the
@@ -786,6 +980,9 @@ fn half_an_hour_alone_keeps_food_and_water_up() {
         "{}",
         h.explain()
     );
+    // With stone tools in hand the playbook forages the cloth for a
+    // sleeping bag, crafts it and puts it down, unstaged.
+    assert_eq!(h.bot.home().stats.bags_placed, 1, "{}", h.explain());
     assert!(h.bot.mind.stats.requests * u64::from(TICK_HZ) <= u64::from(h.tick));
     assert_eq!(h.heap_ops, 0);
 }

@@ -285,12 +285,7 @@ pub fn segment_angle(index: usize, n: usize) -> f32 {
 /// wheel segment with nothing behind it, and the right thing to draw is a
 /// dead segment rather than a live one that places the wrong piece.
 pub fn row_for(content: &BuildContent, shape: u8, material: u8) -> Option<u16> {
-    content
-        .pieces
-        .iter()
-        .take(content.piece_count as usize)
-        .position(|p| p.hp > 0 && p.shape == shape && p.material == material)
-        .and_then(|i| u16::try_from(i).ok())
+    sim_core::build::row_of(content, shape, material)
 }
 
 /// One line of the centre readout's price. Same shape as the craft panel's

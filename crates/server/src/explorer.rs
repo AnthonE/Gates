@@ -9,13 +9,15 @@
 //! screen with the respawn verb, crawl away while wounded, and answer a
 //! fight (`agent::combat`), which pauses the goal rather than ending it.
 //! The only verbs sent are the ones a human client sends: input frames,
-//! and `Respawn`, `Craft`, `Consume`, `Drink` and `Move` actions
-//! (`crates/server/tests/agent_walls.rs` holds that to the client).
+//! and `Respawn`, `Craft`, `Consume`, `Drink`, `Move`, `Deploy` and `Loot`
+//! actions (`crates/server/tests/agent_walls.rs` holds that to the client).
 
 use crate::agent::combat::{Assess, Combat, RESUME_TICKS};
 use crate::agent::hands::{Hands, Skill};
+use crate::agent::home::{self, BagJob, Do, Home, RecoverJob};
 use crate::agent::intent::{pitch_toward, yaw_toward, Intent, Look};
 use crate::agent::route::{into_deeper_water, Frontier, Route, Step};
+use crate::agent::site::Seen;
 use crate::agent::tracks::{self, Sight, Species, Tracks};
 use crate::agent::wiki::{Book, Rules};
 use crate::botclient::BotDriver;
@@ -25,11 +27,13 @@ use crate::mind::{
 };
 use crate::pace::Pace;
 use client_core::core::{
-    ClientCore, APPLIED2_MOVE, APPLIED_DRANK, APPLIED_RESPAWN, APPLIED_VITALS,
+    ClientCore, APPLIED2_BAGS, APPLIED2_MOVE, APPLIED_DRANK, APPLIED_RESPAWN, APPLIED_VITALS,
 };
 use client_core::view::ClientView;
 use protocol::{EntityState, Welcome, WireError, MAX_STREAM_MSG_BYTES};
+use sim_core::build::LOC_PLANE;
 use sim_core::craft::STATION_NONE;
+use sim_core::deploy::BAG_CAP;
 use sim_core::gather::{cell_key, REACH_M};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::inventory::CONT_SELF;
@@ -116,6 +120,8 @@ pub enum Phase {
     Drinking,
     SeekingWater,
     Resting,
+    Bagging,
+    Returning,
 }
 
 impl Phase {
@@ -139,6 +145,8 @@ impl Phase {
             Phase::Drinking => "Drinking",
             Phase::SeekingWater => "Walking to water",
             Phase::Resting => "Waiting",
+            Phase::Bagging => "Putting a sleeping bag down",
+            Phase::Returning => "Walking back to the death backpack",
         }
     }
 }
@@ -215,6 +223,10 @@ pub struct Senses {
     pub players: Sighting,
     pub animals: Sighting,
     pub water: Sighting,
+    /// The backpack from its last death, while it stands.
+    pub backpack: Sighting,
+    /// A person or a wolf seen within `THREAT_RECALL_SECS`.
+    pub hostile: bool,
 }
 
 /// What this body remembers of its own recent history, all of it learned
@@ -231,6 +243,8 @@ pub struct Memory {
     /// Items each resource kind has been seen to pay (gather receipts),
     /// as masks over item indices: what "room for it" means.
     pub yields: [u64; 4],
+    /// Sleeping bags it knows it has down.
+    pub bags: u8,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -351,6 +365,12 @@ pub struct Survivor {
     frontier: Frontier,
     /// The fight reflex; it takes the frame from the goal while it runs.
     combat: Combat,
+    /// Its bags and death backpack, the skills that use them, and the
+    /// buildings it has seen.
+    home: Home,
+    bag_job: BagJob,
+    recover_job: RecoverJob,
+    seen: Seen,
     /// An answer that arrived mid-fight, and when; judged once the fight
     /// is over.
     deferred: Option<(Choice, Instant)>,
@@ -414,6 +434,10 @@ impl Survivor {
             route: Route::new(),
             frontier: Frontier::new(),
             combat: Combat::new(),
+            home: Home::new(),
+            bag_job: BagJob::default(),
+            recover_job: RecoverJob::default(),
+            seen: Seen::new(),
             deferred: None,
             glance: None,
             water_at: None,
@@ -486,6 +510,16 @@ impl Survivor {
     /// The fight reflex.
     pub fn combat(&self) -> &Combat {
         &self.combat
+    }
+
+    /// Its bags, and what waking and recovering have come to.
+    pub fn home(&self) -> &Home {
+        &self.home
+    }
+
+    /// Other people's building, as far as its eyes found it.
+    pub fn seen(&self) -> &Seen {
+        &self.seen
     }
 
     /// Sample other bodies this many ticks behind the newest snapshot: the
@@ -568,7 +602,8 @@ impl Survivor {
 
     /// One frame, with the client state kept the way the human client
     /// keeps it: regrowth measured at the newest tick (the client's own
-    /// `advance` does this, and the agent never calls it), and the frame
+    /// `advance` does this, and the agent never calls it), the body where
+    /// the snapshot has it, and the frame
     /// sent recorded as the live input, which readers such as
     /// `ClientCore::mag` key on. Whatever the skills decided, the hands
     /// turn into the frame.
@@ -582,6 +617,12 @@ impl Survivor {
     ) -> InputFrame {
         if let Some(tick) = view.newest_applied {
             core.harvested.set_now(tick);
+        }
+        // No prediction runs here: the snapshot's body is the body, the way
+        // a spectator's client takes it. Readers keyed on the predicted
+        // body (the own-backpack tag at a death) then see where it stands.
+        if let Some(body) = view.get(player) {
+            core.predict.adopt_authoritative(body);
         }
         let intent = self.decide(core, view, player, now);
         let body = view.get(player);
@@ -637,11 +678,22 @@ impl Survivor {
         // held line of sight, and placed where they were last seen.
         if let Some(haven) = self.haven {
             self.tracks.perceive(core, &haven, tick);
+            let (seed, _) = core.island();
+            let home = &self.home;
+            self.seen.look(
+                core,
+                seed,
+                &haven,
+                eye_point(&body),
+                body.yaw,
+                tick,
+                |cx, cz, l, loc| home.owns(cx, cz, l, loc),
+            );
         }
         self.mind.expire(now);
         if body.dead || core.dead {
-            // The death screen's one answer. A beach, never a bag: this
-            // body places none, and a bag is where it just lost a fight.
+            // The death screen's answer: one of its own ready bags, unless
+            // home is where it was just fought over; else the beach.
             // Asked on the event lane's own fact: a snapshot can still show
             // the corpse for a frame after the wake has landed.
             self.end_goal(tick, Outcome::Interrupted(Why::Died));
@@ -653,9 +705,11 @@ impl Survivor {
                     }
                     _ => true,
                 };
-            if due && self.queue(|buf| protocol::encode_action_respawn(false, buf)) {
+            let on_bag = self.home.wake_on_bag(core, tick);
+            if due && self.queue(|buf| protocol::encode_action_respawn(on_bag, buf)) {
                 self.awaiting = Some((Pending::Respawn, tick));
                 self.stats.respawn_asks += 1;
+                self.home.woke(on_bag);
             }
             self.stats.phase = Phase::Dead;
             return Intent::IDLE;
@@ -886,6 +940,8 @@ impl Survivor {
         self.recovery = None;
         self.seek = None;
         self.verdict = None;
+        self.bag_job = BagJob::default();
+        self.recover_job = RecoverJob::default();
     }
 
     fn end_goal(&mut self, tick: u32, outcome: Outcome) {
@@ -985,6 +1041,8 @@ impl Survivor {
                 Intent::IDLE
             }
             Goal::Drink => self.drink(core, body, tick),
+            Goal::Bag => self.place_bag(core, body, tick),
+            Goal::Recover => self.recover(core, body, tick),
             goal => match Kind::of_goal(goal) {
                 Some(kind) => self.gather(core, view, body, tick, kind),
                 None => Intent::IDLE,
@@ -1465,6 +1523,91 @@ impl Survivor {
         }
     }
 
+    /// Put a sleeping bag down near here (`agent::home::BagJob`): on the
+    /// belt, in hand, eyes on the spot, then the deploy verb.
+    fn place_bag(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
+        self.stats.phase = Phase::Bagging;
+        let Some(haven) = self.haven else {
+            return Intent::IDLE;
+        };
+        let (seed, _) = core.island();
+        let step = self
+            .bag_job
+            .step(core, seed, &haven, body, &self.hands, &mut self.home, tick);
+        match step {
+            Do::Go(intent) => intent,
+            Do::Belt { from, to, count } => {
+                if self.queue(|buf| {
+                    protocol::encode_action_move(0, CONT_SELF, from, CONT_SELF, to, count, buf)
+                }) {
+                    self.bag_job.belt_sent(tick);
+                }
+                Intent::IDLE
+            }
+            Do::Deploy {
+                row,
+                cx,
+                cz,
+                intent,
+            } => {
+                if self.queue(|buf| protocol::encode_action_deploy(row, cx, cz, 0, LOC_PLANE, buf))
+                {
+                    self.home.asked(cx, cz, 0, LOC_PLANE);
+                    self.bag_job.deploy_sent(tick);
+                }
+                intent
+            }
+            Do::Done => {
+                if let Some(a) = self.goal.as_mut() {
+                    a.gained += 1;
+                }
+                self.end_goal(tick, Outcome::Done);
+                Intent::IDLE
+            }
+            Do::Fail(why) => {
+                self.end_goal(tick, Outcome::Failed(why));
+                Intent::IDLE
+            }
+            Do::Loot(_) => Intent::IDLE,
+        }
+    }
+
+    /// Walk back to the backpack from the last death and loot it
+    /// (`agent::home::RecoverJob`); anyone dangerous in view ends it.
+    fn recover(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
+        self.stats.phase = Phase::Returning;
+        let gained = self.goal.map_or(0, |a| a.gained);
+        let step = self.recover_job.step(
+            core,
+            body,
+            &mut self.route,
+            &self.hands,
+            self.senses.hostile,
+            gained,
+            tick,
+        );
+        match step {
+            Do::Go(intent) => intent,
+            Do::Loot(intent) => {
+                if self.queue(protocol::encode_action_loot) {
+                    self.recover_job.loot_sent(tick, gained);
+                    self.home.stats.loots += 1;
+                }
+                intent
+            }
+            Do::Done => {
+                self.home.stats.recovered += 1;
+                self.end_goal(tick, Outcome::Done);
+                Intent::IDLE
+            }
+            Do::Fail(why) => {
+                self.end_goal(tick, Outcome::Failed(why));
+                Intent::IDLE
+            }
+            Do::Belt { .. } | Do::Deploy { .. } => Intent::IDLE,
+        }
+    }
+
     /// Cells of the sight window, the eyes on other bodies and — once a
     /// second — the water probe. Publishes the census when a sweep
     /// completes.
@@ -1485,6 +1628,17 @@ impl Survivor {
             bodies[usize::from(t.species != Species::Player)].add(d, b);
         }
         [self.senses.players, self.senses.animals] = bodies;
+        self.senses.hostile = self
+            .tracks
+            .recent(tick, THREAT_RECALL_SECS * TICK_HZ)
+            .any(|t| t.species != Species::Pig);
+        let mut backpack = Sighting::default();
+        if let Some([x, _, z]) = home::death_bag(core) {
+            let (d, b) = relative(body, x, z);
+            backpack.add(d, b);
+        }
+        self.senses.backpack = backpack;
+        self.memory.bags = self.home.bags();
         if self
             .water_at
             .is_none_or(|at| tick.wrapping_sub(at) >= TICK_HZ)
@@ -1647,12 +1801,18 @@ impl Survivor {
             }
             self.stats.retreats += 1;
             self.memory.hits = self.memory.hits.saturating_add(1);
+            if let Some(own) = self.tracks.own() {
+                self.home.on_hurt([own.pos[0], own.pos[2]], tick);
+            }
         }
         while let Some(victim) = core.pop_death() {
             self.tracks.on_death(victim, tick);
             if victim == core.player_id {
                 self.stats.deaths += 1;
                 self.memory.deaths = self.memory.deaths.saturating_add(1);
+                if let Some(own) = self.tracks.own() {
+                    self.home.on_hurt([own.pos[0], own.pos[2]], tick);
+                }
             }
         }
         // What the eyes and ears make of the fight around this body: the
@@ -1673,6 +1833,18 @@ impl Survivor {
         }
         while let Some(hit) = core.pop_hit() {
             self.tracks.on_hit(hit.victim, hit.damage);
+        }
+        // Its own deploys' answers, and the bag list each death screen
+        // brings: home takes the facts.
+        while let Some((cx, cz, level, loc, deploy)) = core.pop_placed() {
+            self.home.on_placed(cx, cz, level, loc, deploy);
+        }
+        while let Some(reason) = core.pop_deploy_refusal() {
+            self.stats.refusals += 1;
+            self.home.on_refused(reason);
+        }
+        if applied2 & APPLIED2_BAGS != 0 {
+            self.home.on_bags(core.own_bags());
         }
         if flags & APPLIED_RESPAWN != 0 && !core.dead {
             self.stats.respawns += 1;
@@ -1789,6 +1961,10 @@ impl BotDriver for Survivor {
         self.route.reset();
         self.frontier.clear();
         self.combat.forget();
+        self.home.reset();
+        self.seen.clear();
+        self.bag_job = BagJob::default();
+        self.recover_job = RecoverJob::default();
         self.deferred = None;
         self.glance = None;
         // Off the frame path: parsing the content allocates. A body that
@@ -2028,10 +2204,19 @@ pub fn observe(
     s.free_slots = free;
     if core.recipes_have >= core.recipes.recipe_count {
         let known = core.known();
-        // Tools first: the list is bounded, and with a full pack more than
-        // `SUMMARY_CRAFTS` recipes can be craftable at once — the better
-        // tool is the one that must not fall off the end.
-        for tools_first in [true, false] {
+        // Tools first, then the sleeping bag: the list is bounded, and with
+        // a full pack more than `SUMMARY_CRAFTS` recipes can be craftable
+        // at once — what the playbook wants next must not fall off the end.
+        let rank = |name: &Name| {
+            if TREE_TOOLS.contains(&name.as_str()) || NODE_TOOLS.contains(&name.as_str()) {
+                0
+            } else if name.as_str() == crate::mind::BAG_ITEM {
+                1
+            } else {
+                2
+            }
+        };
+        for pass in 0..3 {
             for r in 0..usize::from(core.recipes.recipe_count).min(core.recipes.recipes.len()) {
                 let def = core.recipes.recipes[r];
                 if def.out_count == 0
@@ -2044,10 +2229,8 @@ pub fn observe(
                 let Some(name) = Name::new(core.catalog.name(def.output as usize)) else {
                     continue;
                 };
-                let tool =
-                    TREE_TOOLS.contains(&name.as_str()) || NODE_TOOLS.contains(&name.as_str());
                 let n = s.craftable_len as usize;
-                if tool == tools_first && n < SUMMARY_CRAFTS && !s.craftable[..n].contains(&name) {
+                if rank(&name) == pass && n < SUMMARY_CRAFTS && !s.craftable[..n].contains(&name) {
                     s.craftable[n] = name;
                     s.craftable_len += 1;
                 }
@@ -2065,6 +2248,8 @@ pub fn observe(
     s.hits = memory.hits;
     s.deaths = memory.deaths;
     s.respawns = memory.respawns;
+    s.bags = memory.bags;
+    s.backpack = senses.backpack;
     s.trigger = memory.trigger;
     if s.body != BodyState::Alive {
         return s;
@@ -2109,6 +2294,20 @@ pub fn observe(
         s.offer(Goal::Flee);
     }
     s.offer(Goal::Wait);
+    // A bag in the pack and room for one more of its own down; the way
+    // back to the last death's backpack while it is near and nobody who
+    // could start the fight again is in view.
+    if usize::from(memory.bags) < BAG_CAP
+        && home::bag_row(core).is_some_and(|(_, item)| count_item(core, item) > 0)
+    {
+        s.offer(Goal::Bag);
+    }
+    if senses.backpack.count > 0
+        && f32::from(senses.backpack.nearest_m) <= home::RECOVER_M
+        && !senses.hostile
+    {
+        s.offer(Goal::Recover);
+    }
     for i in 0..s.craftable_len as usize {
         s.offer(Goal::Craft(s.craftable[i]));
     }
@@ -2588,6 +2787,52 @@ mod tests {
         }
         assert!(bot.mind.stats.requests > asked, "play resumes");
         assert_ne!(bot.stats.phase, Phase::Dead);
+
+        // The screen lists a ready bag of its own (it comes before the
+        // death on the event lane): the second death wakes there.
+        let body = *view.get(1).unwrap();
+        let cell = |q: i32| sim_core::build::build_cell_of(q as f32 * POS_XZ_Q) as u16;
+        let bag = sim_core::deploy::BagAnchor {
+            cx: cell(body.qx),
+            cz: cell(body.qz),
+            level: 0,
+            ready: true,
+        };
+        let die = |bot: &mut Survivor, view: &mut ClientView, seq: u16| {
+            let mut buf = [0u8; protocol::event::MAX_EVENT_MSG_BYTES];
+            let n = protocol::event::encode_event_bags(&[bag], &mut buf).unwrap();
+            event(bot, n, &buf);
+            let n = protocol::event::encode_event_death(1, 0, 0, 0, 0, &mut buf).unwrap();
+            event(bot, n, &buf);
+            view.entities[0].1.dead = true;
+            view.newest_applied = Some(view.newest_applied.unwrap() + 1);
+            bot.frame_at(view, 1, seq, now);
+            let mut out = [0u8; MAX_STREAM_MSG_BYTES];
+            let len = bot.action(&mut out).expect("the respawn verb");
+            let n = protocol::event::encode_event_respawn(false, &mut buf).unwrap();
+            event(bot, n, &buf);
+            view.entities[0].1.dead = false;
+            protocol::decode_action(&out[..len]).unwrap()
+        };
+        assert_eq!(bot.home.bags(), 0, "no bag of its own yet");
+        assert!(matches!(
+            die(&mut bot, &mut view, 6),
+            protocol::ActionMsg::Respawn { on_bag: true }
+        ));
+        assert_eq!(bot.home.bags(), 1, "the screen's list is what it owns");
+        // Hurt beside that bag a moment ago: home is being fought over,
+        // and the beach is the way back in.
+        let (x, z) = sim_core::deploy::cell_center(bag.cx, bag.cz);
+        let tick = view.newest_applied.unwrap();
+        bot.home.on_hurt([x, z], tick);
+        assert!(matches!(
+            die(&mut bot, &mut view, 7),
+            protocol::ActionMsg::Respawn { on_bag: false }
+        ));
+        assert_eq!(
+            (bot.home.stats.wakes_on_bag, bot.home.stats.wakes_on_beach),
+            (1, 3)
+        );
     }
 
     #[test]

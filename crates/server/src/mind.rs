@@ -28,6 +28,9 @@ pub const GOAL_HISTORY: usize = 8;
 /// Pack entries and craftable names a summary carries.
 pub const SUMMARY_ITEMS: usize = 16;
 pub const SUMMARY_CRAFTS: usize = 8;
+/// The deployable a body wakes on, by catalog name: what the playbook
+/// crafts once it has stone tools.
+pub const BAG_ITEM: &str = "Sleeping Bag";
 /// The scripted policy's "running low" line for food and water, percent of
 /// the meter. Also the default for when a model is told a meter is low.
 pub const SCRIPTED_LOW_METER_PCT: u32 = 40;
@@ -95,6 +98,12 @@ pub enum Goal {
     Drink,
     Flee,
     Wait,
+    /// Put a sleeping bag down near here: somewhere to wake that is not
+    /// the beach.
+    Bag,
+    /// Walk back to the backpack this body dropped where it died, and take
+    /// what it held.
+    Recover,
 }
 
 /// `craft:` plus the longest catalog name.
@@ -122,7 +131,7 @@ impl std::fmt::Debug for Label {
 
 impl Goal {
     /// Every goal but the per-item craft, in the order they are offered.
-    pub const FIXED: [Goal; 9] = [
+    pub const FIXED: [Goal; 11] = [
         Goal::Explore,
         Goal::GatherWood,
         Goal::GatherStone,
@@ -132,6 +141,8 @@ impl Goal {
         Goal::Drink,
         Goal::Flee,
         Goal::Wait,
+        Goal::Bag,
+        Goal::Recover,
     ];
 
     /// The vocabulary's base keys, for documentation and tests.
@@ -147,6 +158,8 @@ impl Goal {
             Goal::Drink => "drink",
             Goal::Flee => "flee",
             Goal::Wait => "wait",
+            Goal::Bag => "bag",
+            Goal::Recover => "recover",
         }
     }
 
@@ -203,6 +216,13 @@ impl Goal {
             }
             Goal::Flee => "Run away from the players or animals in view.".into(),
             Goal::Wait => "Stand still for a few seconds.".into(),
+            Goal::Bag => {
+                "Put a sleeping bag down near here, to wake beside it after a death.".into()
+            }
+            Goal::Recover => {
+                "Walk back to the backpack dropped at the last death and take what it holds."
+                    .into()
+            }
         }
     }
 }
@@ -226,6 +246,8 @@ pub enum Why {
     Wounded,
     Replaced,
     Fight,
+    Hostile,
+    NoSpot,
 }
 
 impl Why {
@@ -247,6 +269,8 @@ impl Why {
             Why::Wounded => "went down wounded",
             Why::Replaced => "a new goal replaced it",
             Why::Fight => "a fight outlasted it",
+            Why::Hostile => "someone dangerous is in view",
+            Why::NoSpot => "no spot here takes it",
         }
     }
 }
@@ -400,6 +424,10 @@ pub struct Summary {
     pub hits: u16,
     pub deaths: u32,
     pub respawns: u32,
+    /// Sleeping bags this body knows it has down.
+    pub bags: u8,
+    /// The backpack it dropped at its last death, while it stands.
+    pub backpack: Sighting,
     pub trigger: Trigger,
     pub options: [Goal; MAX_OPTIONS],
     pub options_len: u8,
@@ -460,6 +488,12 @@ impl Summary {
         hits: 0,
         deaths: 0,
         respawns: 0,
+        bags: 0,
+        backpack: Sighting {
+            count: 0,
+            nearest_m: 0,
+            bearing: 0,
+        },
         trigger: Trigger::Start,
         options: [Goal::Wait; MAX_OPTIONS],
         options_len: 0,
@@ -545,6 +579,8 @@ impl Summary {
             "hits_taken_since_last_decision": self.hits,
             "deaths": self.deaths,
             "respawns": self.respawns,
+            "sleeping_bags_down": self.bags,
+            "my_death_backpack": self.backpack.json(),
             "asked_because": self.trigger.word(),
         })
     }
@@ -1099,6 +1135,14 @@ impl Scripted {
                 return (Goal::Forage, "scripted: food is low, a bush is in view");
             }
         }
+        // What it died holding is worth a walk while nobody is about: the
+        // offer says it is near and no one dangerous is in view.
+        if s.offers(Goal::Recover) {
+            return (
+                Goal::Recover,
+                "scripted: my backpack is near and nobody is about",
+            );
+        }
         // A heartbeat with no urgent need lets a working goal finish: the
         // rotation below is for choosing a new one, not for abandoning a
         // tree half felled.
@@ -1114,6 +1158,24 @@ impl Scripted {
                 }
                 if let Some(name) = s.craftable().iter().find(|n| n.as_str() == *tool) {
                     return (Goal::Craft(*name), "scripted: a better tool is craftable");
+                }
+            }
+        }
+        // With stone tools in hand, somewhere to wake that is not the beach:
+        // a sleeping bag, crafted and put down where it works.
+        let tooled = [crate::explorer::TREE_TOOLS, crate::explorer::NODE_TOOLS]
+            .iter()
+            .all(|ladder| ladder[..ladder.len() - 1].iter().any(|t| s.count_of(t) > 0));
+        if tooled && s.bags == 0 {
+            if s.offers(Goal::Bag) {
+                return (Goal::Bag, "scripted: put a sleeping bag down");
+            }
+            if s.count_of(BAG_ITEM) == 0 {
+                if let Some(name) = s.craftable().iter().find(|n| n.as_str() == BAG_ITEM) {
+                    return (Goal::Craft(*name), "scripted: a sleeping bag is craftable");
+                }
+                if s.offers(Goal::Forage) && s.bushes.count > 0 {
+                    return (Goal::Forage, "scripted: cloth for a sleeping bag");
                 }
             }
         }
@@ -1351,5 +1413,42 @@ mod tests {
         assert_eq!(scripted.pick(&s).0, Goal::GatherWood);
         s.water = 10;
         assert_eq!(scripted.pick(&s).0, Goal::Drink, "thirst outranks the work");
+    }
+
+    #[test]
+    fn with_stone_tools_the_playbook_makes_a_bag_and_puts_it_down() {
+        let mut scripted = Scripted::default();
+        let mut s = Summary::EMPTY;
+        (s.food, s.food_max, s.water, s.water_max) = (100, 100, 100, 100);
+        s.offer(Goal::Explore);
+        s.offer(Goal::Forage);
+        s.bushes.add(10.0, 0);
+        let bag = name(BAG_ITEM);
+        s.craftable[0] = bag;
+        s.craftable_len = 1;
+        s.offer(Goal::Craft(bag));
+        s.items[0] = (name("Stone Hatchet"), 1);
+        s.items_len = 1;
+        assert_ne!(scripted.pick(&s).0, Goal::Craft(bag), "a pickaxe first");
+        s.items[1] = (name("Stone Pickaxe"), 1);
+        s.items_len = 2;
+        assert_eq!(scripted.pick(&s).0, Goal::Craft(bag));
+        s.craftable_len = 0;
+        assert_eq!(scripted.pick(&s).0, Goal::Forage, "cloth for one");
+        s.items[2] = (bag, 1);
+        s.items_len = 3;
+        s.offer(Goal::Bag);
+        assert_eq!(scripted.pick(&s).0, Goal::Bag);
+        s.bags = 1;
+        assert_ne!(scripted.pick(&s).0, Goal::Bag, "one is enough for now");
+        // The backpack from a death, near and unwatched, comes before work.
+        s.offer(Goal::Recover);
+        s.current = Some(Report {
+            goal: Goal::Forage,
+            outcome: Outcome::Running,
+            gained: 0,
+            secs: 3,
+        });
+        assert_eq!(scripted.pick(&s).0, Goal::Recover);
     }
 }

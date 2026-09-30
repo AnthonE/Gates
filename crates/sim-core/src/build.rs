@@ -2005,7 +2005,10 @@ pub fn place(
 /// The baked row for a shape in a material, if the table holds one.
 /// Linear over `MAX_PIECE_DEFS` (32) — the table is tiny and the scan
 /// keeps the ladder a property of the content, not of row ordering.
-fn row_of(bc: &BuildContent, shape: u8, material: u8) -> Option<u16> {
+///
+/// Public so the client's build wheel and the agent's builder resolve a
+/// (shape, material) pair by the one search the upgrade verb uses.
+pub fn row_of(bc: &BuildContent, shape: u8, material: u8) -> Option<u16> {
     bc.pieces
         .iter()
         .take(bc.piece_count as usize)
