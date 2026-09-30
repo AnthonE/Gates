@@ -309,6 +309,26 @@ pub fn wolf_mesh() -> Mesh {
     boxes_mesh_with(&parts, linear, 1.0)
 }
 
+/// A killed animal lying on its side (wire v84): the whole animal at rest,
+/// rolled a quarter turn about its length so the legs stick out sideways,
+/// and lifted so the flank rests on its feet's ground. Drawn for a death
+/// bag whose `WireBag::kind` names the species, where the bag would be.
+pub fn carcass_mesh(species: u8) -> Mesh {
+    let (mesh, body) = if species == mob::MOB_WOLF {
+        (wolf_mesh(), WOLF_BODY)
+    } else {
+        (pig_mesh(), PIG_BODY)
+    };
+    let flank = body
+        .iter()
+        .map(|(c, h, _)| c[0].abs() + h[0])
+        .fold(0.0f32, f32::max);
+    mesh.transformed_by(
+        Transform::from_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2))
+            .with_translation(Vec3::Y * flank),
+    )
+}
+
 /// The wolf's body alone — what the entity itself wears.
 pub fn wolf_body_mesh() -> Mesh {
     boxes_mesh_with(WOLF_BODY, linear, 1.0)

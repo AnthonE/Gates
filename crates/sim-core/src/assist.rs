@@ -18,8 +18,16 @@ pub fn holding(frame: &InputFrame) -> bool {
         && frame.move_z == 0
 }
 
-pub fn ray(body: &Body, frame: &InputFrame) -> Ray {
-    melee::ray(body, frame.yaw, frame.pitch, ASSIST_REACH_M * 1000.0)
+/// `crouched` is the reviver's stance (`Player::crouched`), passed rather
+/// than read off `frame`, because the client builds a frame with no buttons.
+pub fn ray(body: &Body, frame: &InputFrame, crouched: bool) -> Ray {
+    melee::ray(
+        body,
+        crouched,
+        frame.yaw,
+        frame.pitch,
+        ASSIST_REACH_M * 1000.0,
+    )
 }
 
 /// Same cylinder and quantized ray on both targets. The client uses this to

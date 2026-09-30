@@ -119,9 +119,7 @@
 //! vertical step between two taps is at most `ARROW_STEP_MM`, under the band
 //! a slab presents.
 
-use crate::collide::{
-    self, ColIndex, Part, CAPSULE_HEIGHT_M, CAPSULE_RADIUS_M, HEAD_BAND_M, LIMB_BAND_M,
-};
+use crate::collide::{self, ColIndex, Part, CAPSULE_RADIUS_M, HEAD_BAND_M};
 use crate::combat::{held_item, CombatContent};
 use crate::craft::{inv_count, inv_take};
 use crate::gather::NO_ITEM;
@@ -308,6 +306,20 @@ pub fn reload(tick: u64, cc: &CombatContent, events: &mut EventQueue, p: &mut Pl
 /// under it, the same relationship the client's camera has.
 /// Proposed default, DECISIONS.md §open (ranged v0).
 pub const ARROW_EYE_MM: i32 = 1600;
+/// A crouched eye, millimetres (v83): 10 cm under the crouched hit height
+/// (`collide::CROUCH_HEIGHT_M`), the same relationship the standing eye has.
+pub const CROUCH_EYE_MM: i32 = 950;
+
+/// The eye for a stance — the one origin every shot and swing leaves from,
+/// so a crouched player fires from where their camera is.
+#[inline]
+pub const fn eye_mm(crouched: bool) -> i32 {
+    if crouched {
+        CROUCH_EYE_MM
+    } else {
+        ARROW_EYE_MM
+    }
+}
 
 /// The arrowhead's collision extent, metres — used as both radius and
 /// height, because an arrow is a point that needs just enough extent to
@@ -681,7 +693,7 @@ pub fn draw(
     let life = MAX_ARROW_LIFE_TICKS;
     arrows.a[ix] = Arrow {
         qx: p.body.qx * (POS_XZ_Q * MM_PER_M) as i32,
-        qy: p.body.qy * (POS_Y_Q * MM_PER_M) as i32 + ARROW_EYE_MM,
+        qy: p.body.qy * (POS_Y_Q * MM_PER_M) as i32 + eye_mm(p.crouched()),
         qz: p.body.qz * (POS_XZ_Q * MM_PER_M) as i32,
         // The one place a float becomes an integer. After this the path is
         // exact, so this rounding happens once per shot and never per tick.
@@ -944,6 +956,7 @@ fn step_in(
             enter,
             exit,
             qy: feet_q,
+            crouched: struck_low,
         }) = best
         {
             let range_cm = ((a.flown as f32 + len_mm * t) / 10.0) as u16;
@@ -959,7 +972,7 @@ fn step_in(
             let feet_mm = feet_q as f32 * (POS_Y_Q * MM_PER_M);
             // Hoisted, because the rung is now a fact the shooter is told
             // and not only a multiplier: `EV_HIT` carries it (v58).
-            let part = part_crossed(oy, sy, feet_mm, enter, exit.min(stop_t));
+            let part = part_crossed(oy, sy, feet_mm, enter, exit.min(stop_t), struck_low);
             let dmg = crate::combat::part_damage(a.damage, part, a.head_mult, a.limb_pct);
             // The funnel, reduced: an arrow is a hit like any other.
             let h = crate::combat::hurt(cc, v, dmg);
@@ -1329,7 +1342,7 @@ impl Pose<'_> {
     /// same idea.
     #[inline]
     fn of(self, slot: usize, p: &Player) -> RewindPose {
-        let live = RewindPose::live(p.id, &p.body);
+        let live = RewindPose::live(p);
         match self {
             Self::Live => live,
             Self::Rewound { rewind, tick, back } => rewind.pose_at(tick, slot, back, live),
@@ -1383,6 +1396,10 @@ pub struct BodyHit {
     /// At [`Pose::Live`] this is exactly `players[slot].body.qy`, so the
     /// arrow's arithmetic is unchanged to the bit.
     pub qy: i32,
+    /// The victim's stance as the scan resolved it (v83), for the same
+    /// reason as `qy`: a rewound hit is scored against the crouch the
+    /// shooter saw, not the one the victim holds now.
+    pub crouched: bool,
 }
 
 /// Which body part did the shot's span inside this body reach?
@@ -1423,7 +1440,7 @@ pub struct BodyHit {
 ///
 /// Wall 1: `+ − × min max` only.
 #[inline]
-pub fn part_crossed(oy: f32, sy: f32, feet_mm: f32, t_lo: f32, t_hi: f32) -> Part {
+pub fn part_crossed(oy: f32, sy: f32, feet_mm: f32, t_lo: f32, t_hi: f32, crouched: bool) -> Part {
     // A stop before the entry means the shot never got inside this body at
     // all on the part of the segment that survived the world.
     if t_hi < t_lo {
@@ -1431,14 +1448,15 @@ pub fn part_crossed(oy: f32, sy: f32, feet_mm: f32, t_lo: f32, t_hi: f32) -> Par
     }
     let (a, b) = (oy + sy * t_lo, oy + sy * t_hi);
     let (lo, hi) = (a.min(b), a.max(b));
-    let head_lo = feet_mm + (CAPSULE_HEIGHT_M - HEAD_BAND_M) * MM_PER_M;
-    let head_hi = feet_mm + CAPSULE_HEIGHT_M * MM_PER_M;
+    let height = crate::collide::hit_height_m(crouched);
+    let head_lo = feet_mm + (height - HEAD_BAND_M) * MM_PER_M;
+    let head_hi = feet_mm + height * MM_PER_M;
     if hi >= head_lo && lo <= head_hi {
         return Part::Head;
     }
     // The legs, and the order matters: this is asked only after the head
     // has said no, so a span running shin-to-skull never reaches it.
-    let limb_hi = feet_mm + LIMB_BAND_M * MM_PER_M;
+    let limb_hi = feet_mm + crate::collide::limb_band_m(crouched) * MM_PER_M;
     if hi >= feet_mm && lo <= limb_hi {
         // Reaching the legs does not mean stopping there. A span from a
         // shin to a sternum touches both bands, and §7 scores it at the
@@ -1514,7 +1532,7 @@ pub(crate) fn nearest_body(
         if ddx * ddx + ddz * ddz > CAPSULE_RADIUS_M * CAPSULE_RADIUS_M {
             continue;
         }
-        if cy < by || cy > by + CAPSULE_HEIGHT_M {
+        if cy < by || cy > by + crate::collide::hit_height_m(at.crouched) {
             continue;
         }
         // The rest of the quadratic the closest approach is the vertex of:
@@ -1549,6 +1567,7 @@ pub(crate) fn nearest_body(
                 enter,
                 exit,
                 qy: at.qy,
+                crouched: at.crouched,
             });
         }
     }
@@ -1787,6 +1806,7 @@ fn hitscan_in(
         };
         let (id, yaw, pitch) = (p.id, p.frame.yaw, p.frame.pitch);
         let (qx, qy, qz) = (p.body.qx, p.body.qy, p.body.qz);
+        let crouched = p.crouched();
         let (held, magazine) = (held_item(p), def.magazine);
         // The cadence is the weapon's and it is paid on the pull, not on
         // the hit — `draw`'s rule, for `draw`'s reason: a refused shot must
@@ -1862,7 +1882,7 @@ fn hitscan_in(
         // from the navel would clear cover the shooter cannot see over.
         let (ox, oy, oz) = (
             (qx * (POS_XZ_Q * MM_PER_M) as i32) as f32,
-            (qy * (POS_Y_Q * MM_PER_M) as i32 + ARROW_EYE_MM) as f32,
+            (qy * (POS_Y_Q * MM_PER_M) as i32 + eye_mm(crouched)) as f32,
             (qz * (POS_XZ_Q * MM_PER_M) as i32) as f32,
         );
         // The whole reach as one segment. The two LUTs give a unit
@@ -1956,6 +1976,7 @@ fn hitscan_in(
             enter,
             exit,
             qy: feet_q,
+            crouched: struck_low,
         }) = best
         {
             let range_cm = (reach * t / 10.0) as u16;
@@ -1976,7 +1997,7 @@ fn hitscan_in(
             let feet_mm = feet_q as f32 * (POS_Y_Q * MM_PER_M);
             // Hoisted for the same reason as the arrow's: the rung reaches
             // the shooter's screen now, not just their damage number.
-            let part = part_crossed(oy, sy, feet_mm, enter, exit.min(stop_t));
+            let part = part_crossed(oy, sy, feet_mm, enter, exit.min(stop_t), struck_low);
             let dmg = crate::combat::part_damage(def.damage, part, def.headshot_mult, def.limb_pct);
             // The funnel, reduced: a bullet is a hit like any other, and
             // armor blunts it (armor v0, 2026-08-19 — this said "the day

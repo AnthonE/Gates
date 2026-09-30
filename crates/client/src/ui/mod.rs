@@ -80,6 +80,7 @@ pub mod craft;
 pub mod death;
 pub mod draw;
 pub mod hammer;
+pub mod hearth;
 pub mod hold;
 pub mod hub;
 pub mod icons;

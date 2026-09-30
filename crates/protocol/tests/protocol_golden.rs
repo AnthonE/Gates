@@ -1449,6 +1449,7 @@ fn golden_event(fixture: &[u8], name: &str) {
                     qx: b.qx,
                     qy: b.qy,
                     qz: b.qz,
+                    kind: b.kind,
                 },
                 "{name}: decode mismatch"
             );

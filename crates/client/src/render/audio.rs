@@ -545,9 +545,12 @@ pub fn steps(
 ) {
     let body = &net.session.core.predict.body;
     let pos = net.session.core.predict.render_position();
-    let Some(step) = sound.steps.sample(pos, body.grounded, time.delta_secs()) else {
+    let Some(mut step) = sound.steps.sample(pos, body.grounded, time.delta_secs()) else {
         return;
     };
+    if net.session.core.crouched() {
+        step.gain *= CROUCH_STEP_GAIN;
+    }
     // The same `splat` the ground under the player is DRAWN with, so the
     // sound cannot disagree with the picture — see `sound::steps`.
     let splat = sim_core::terrain::splat(world.seed, pos[0], pos[2]);
@@ -558,6 +561,10 @@ pub fn steps(
         super::fx::world::footstep(&mut fx, cue, Vec3::from(pos), step.gain);
     }
 }
+
+/// A crouched step's gain against a standing one at the same speed (v83):
+/// the crouch is the quiet walk, heard by players as well as animals.
+pub const CROUCH_STEP_GAIN: f32 = 0.5;
 
 /// One remote body's step odometer — the same `sound::steps::Steps` the
 /// local player runs, one per drawn body, carried as a component so it dies
@@ -584,17 +591,23 @@ pub struct RemoteSteps(pub Steps);
 pub fn remote_steps(
     world: Res<super::WorldId>,
     time: Res<Time>,
-    mut bodies: Query<(&Transform, &mut RemoteSteps), With<super::bodies::Body>>,
+    mut bodies: Query<
+        (&Transform, &mut RemoteSteps, &super::anim::BodyAnim),
+        With<super::bodies::Body>,
+    >,
     mut sound: ResMut<Sound>,
     eye: Res<Eye>,
     mut fx: Option<ResMut<super::fx::Fx>>,
 ) {
     let dt = time.delta_secs();
-    for (t, mut steps) in bodies.iter_mut() {
+    for (t, mut steps, anim) in bodies.iter_mut() {
         let pos = [t.translation.x, t.translation.y, t.translation.z];
-        let Some(step) = steps.0.sample(pos, true, dt) else {
+        let Some(mut step) = steps.0.sample(pos, true, dt) else {
             continue;
         };
+        if anim.crouched {
+            step.gain *= CROUCH_STEP_GAIN;
+        }
         let splat = sim_core::terrain::splat(world.seed, pos[0], pos[2]);
         let below_sea = pos[1] < sim_core::terrain::SEA_LEVEL;
         let cue = crate::sound::steps::remote(crate::sound::steps::surface_cue(splat, below_sea));

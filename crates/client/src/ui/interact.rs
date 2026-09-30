@@ -193,6 +193,9 @@ impl Verb {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Pick {
     pub verb: Verb,
+    /// A bag that is a killed animal's carcass names the species
+    /// (`WireBag::species`, v84), so the prompt says what is lying there.
+    pub species: Option<u8>,
     /// The archetype of the record this pick resolved, exactly as the
     /// deploy sync named it (`ARCH_BAG` for a bag, which arrives on its
     /// own lane and has no deploy record). Carried so the access verb can
@@ -348,6 +351,14 @@ impl Pick {
                 crate::ui::craft::item_label(catalog, self.item).to_uppercase(),
                 self.count
             ),
+            Verb::Bag if self.species.is_some() => format!(
+                "[E] LOOT {}",
+                if self.species == Some(sim_core::mob::MOB_WOLF) {
+                    "WOLF"
+                } else {
+                    "PIG"
+                }
+            ),
             v => format!("[E] OPEN {}", v.label()),
         }
     }
@@ -469,6 +480,8 @@ impl Best {
         out.d2 = d2;
         out.perp2 = perp2;
         out.aimed = aimed;
+        // Only a bag's branch names a species; any other winner clears it.
+        out.species = None;
         true
     }
 }
@@ -562,6 +575,7 @@ pub fn resolve(
         }
         out.arch = ARCH_BAG;
         out.handle = bag.id;
+        out.species = bag.species();
         out.cx = 0;
         out.cz = 0;
         out.level = 0;
@@ -676,11 +690,32 @@ mod tests {
             qx: (2.0 / sim_core::movement::POS_XZ_Q) as i32,
             qy: 0,
             qz: 0,
+            kind: 0,
         };
         let p = resolve(Aim::new(0.0, 0.0, 1.0, 0.0), &[], &defs, have, &[bag]);
         assert_eq!(p.verb, Verb::Bag);
         assert_eq!(p.handle, 77);
         assert!(p.aimed);
+    }
+
+    /// A killed animal's bag is its carcass (v84): the prompt names it.
+    #[test]
+    fn a_carcass_prompts_to_loot_the_animal() {
+        let (defs, have) = defs_with(&[ARCH_BAG]);
+        let at = |kind| WireBag {
+            id: 5,
+            qx: (2.0 / sim_core::movement::POS_XZ_Q) as i32,
+            qy: 0,
+            qz: 0,
+            kind,
+        };
+        let prompt = |kind| {
+            resolve(Aim::new(0.0, 0.0, 1.0, 0.0), &[], &defs, have, &[at(kind)])
+                .prompt(&ItemCatalog::EMPTY)
+        };
+        assert_eq!(prompt(0), "[E] OPEN BACKPACK");
+        assert_eq!(prompt(1 + sim_core::mob::MOB_PIG), "[E] LOOT PIG");
+        assert_eq!(prompt(1 + sim_core::mob::MOB_WOLF), "[E] LOOT WOLF");
     }
 
     /// Out past `BUILD_REACH_M` is the server's refusal, so the client does
@@ -694,6 +729,7 @@ mod tests {
             qx: (just_past / sim_core::movement::POS_XZ_Q) as i32,
             qy: 0,
             qz: 0,
+            kind: 0,
         };
         let p = resolve(Aim::new(0.0, 0.0, 1.0, 0.0), &[], &defs, have, &[bag]);
         assert!(p.is_none());
@@ -898,11 +934,14 @@ pub struct SwingAim {
     pub z: f32,
     pub yaw: u16,
     pub pitch: u8,
+    /// The stance the sim will swing from (`ClientCore::crouched`, v83):
+    /// a crouched eye is `ranged::CROUCH_EYE_MM` over the feet.
+    pub crouched: bool,
 }
 
 impl SwingAim {
-    /// The sim's own ray for this aim, `reach_m` long: the eye
-    /// `ranged::ARROW_EYE_MM` over the feet, along the look — `melee::ray`,
+    /// The sim's own ray for this aim, `reach_m` long: the stance's eye
+    /// (`ranged::eye_mm`) over the feet, along the look — `melee::ray`,
     /// from a body quantized the way the server holds one.
     fn ray(&self, reach_m: f32) -> Ray {
         let body = Body {
@@ -911,7 +950,13 @@ impl SwingAim {
             qz: quant_xz(self.z),
             ..Body::default()
         };
-        melee::ray(&body, self.yaw, self.pitch, reach_m * MM_PER_M)
+        melee::ray(
+            &body,
+            self.crouched,
+            self.yaw,
+            self.pitch,
+            reach_m * MM_PER_M,
+        )
     }
 }
 
@@ -1112,6 +1157,7 @@ pub fn resolve_assist(aim: SwingAim, own: u32, entities: &[(u32, protocol::Entit
             pitch: aim.pitch,
             ..Default::default()
         },
+        aim.crouched,
     );
     let mut best = Pick::default();
     let mut distance = f32::MAX;
@@ -1154,6 +1200,7 @@ mod assist_tests {
             z: 10.0,
             yaw: 0,
             pitch: 128,
+            crouched: false,
         };
         let target = protocol::EntityState {
             qx: quant_xz(10.0),

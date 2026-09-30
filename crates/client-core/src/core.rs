@@ -2284,8 +2284,20 @@ impl ClientCore {
                     }
                 }
             }
-            EventMsg::BagDropped { id, qx, qy, qz } => {
-                if self.bags.insert(WireBag { id, qx, qy, qz }) {
+            EventMsg::BagDropped {
+                id,
+                qx,
+                qy,
+                qz,
+                kind,
+            } => {
+                if self.bags.insert(WireBag {
+                    id,
+                    qx,
+                    qy,
+                    qz,
+                    kind,
+                }) {
                     flags |= APPLIED_BAGS;
                 }
                 // The own-bag join (`own_bag`'s field doc): while dead the
@@ -3601,6 +3613,22 @@ impl ClientCore {
         self.input.buttons
     }
 
+    /// Is the body this client looks through crouched? The same predicate
+    /// the sim reads (`Player::crouched`, v83): for a player, the crouch bit
+    /// just sent on a predicted body that stands on something, upright and
+    /// alive; for a spectator, the watched body's wire bit — a watcher sends
+    /// no buttons. Read by the camera's eye height, the footsteps, and every
+    /// client ray that has to leave from where the sim's swing will.
+    pub fn crouched(&self) -> bool {
+        if self.spectating {
+            return self.spectate_view().is_some_and(|v| v.crouched);
+        }
+        self.input.buttons & sim_core::input::BTN_CROUCH != 0
+            && self.predict.body.grounded
+            && !self.wounded
+            && !self.dead
+    }
+
     /// Advance real time: run the fixed client ticks that elapsed, each
     /// generating one input frame and stepping prediction. Returns steps.
     ///
@@ -4658,6 +4686,7 @@ mod tests {
             qx: 90_000,
             qy: 0,
             qz: 90_000,
+            kind: 0,
         };
         let len = protocol::encode_event_bag_dropped(&far, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();
@@ -4676,6 +4705,7 @@ mod tests {
             qx: near_q,
             qy: 0,
             qz: 0,
+            kind: 0,
         };
         let len = protocol::encode_event_bag_dropped(&mine, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();
@@ -4688,6 +4718,7 @@ mod tests {
             qx: 0,
             qy: 0,
             qz: near_q,
+            kind: 0,
         };
         let len = protocol::encode_event_bag_dropped(&theirs, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();
@@ -4721,6 +4752,7 @@ mod tests {
             qx: far_q,
             qy: 0,
             qz: 0,
+            kind: 0,
         };
         let len = protocol::encode_event_bag_dropped(&theirs, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();
@@ -4731,6 +4763,7 @@ mod tests {
             qx: 0,
             qy: 0,
             qz: 0,
+            kind: 0,
         };
         let len = protocol::encode_event_bag_dropped(&mine, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();

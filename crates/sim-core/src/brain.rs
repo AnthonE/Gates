@@ -36,7 +36,7 @@
 //! and buttons, the roster, the clock) and every draw is a `cell_hash` of the
 //! slot and the tick, so a replay thinks the same thoughts on the same ticks.
 
-use crate::input::{BTN_CROUCH, BTN_SPRINT};
+use crate::input::BTN_SPRINT;
 use crate::limits::{MAX_MOBS, MAX_PLAYERS, MOB_THINK_TICKS, MOB_WAKE_CM};
 use crate::mob::{Bite, Bites, Mob, MobDef};
 use crate::movement::POS_XZ_Q;
@@ -908,12 +908,12 @@ fn sense(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob) {
         let moving = p.frame.move_z != 0 || p.frame.move_x != 0;
         let lit = ctx.lit[i];
         let base = if lit { lit_r } else { r };
-        // Sprint is asked first: the body moves at a run whether or not
-        // crouch is also held (`movement::step` reads no crouch), so a
-        // crouch-sprint is a sprint, not a stalk.
-        let radius = if buttons & BTN_SPRINT != 0 && moving {
-            base * 13 / 10
-        } else if buttons & BTN_CROUCH != 0 {
+        // Crouch is asked first (v83): a crouched body moves at the crouch
+        // speed whatever else is held (`movement::step`), so a crouch-sprint
+        // is a stalk, not a run. `Player::crouched` is the stance every
+        // rule reads — grounded and upright, so a crouch held mid-jump or
+        // while downed is no sneak.
+        let radius = if p.crouched() {
             let (dx, dz) = (dqx as f32, dqz as f32);
             let cone = def.sight_dot_pm as f32 * 0.001;
             let seen = fx * dx + fz * dz >= cone * (dx * dx + dz * dz).sqrt();
@@ -924,6 +924,8 @@ fn sense(ctx: &mut Ctx, slot: usize, def: &MobDef, mob: &mut Mob) {
             } else {
                 BUMP_CM
             }
+        } else if buttons & BTN_SPRINT != 0 && moving {
+            base * 13 / 10
         } else {
             base
         };

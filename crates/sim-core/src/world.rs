@@ -1227,6 +1227,22 @@ pub struct Player {
     pub skins: crate::skin::SkinSet,
 }
 
+impl Player {
+    /// Crouched, as every rule that cares reads it (v83): the frame holds
+    /// `BTN_CROUCH`, the body stands on something, and it is alive, awake
+    /// and not downed. Derived, never stored — `frame` and `body` are
+    /// already hashed and saved, so the stance costs no format. A corpse
+    /// or a sleeper keeps a stale frame, which is why the flags are here.
+    #[inline]
+    pub fn crouched(&self) -> bool {
+        self.frame.buttons & crate::input::BTN_CROUCH != 0
+            && self.body.grounded
+            && !self.dead
+            && !self.sleeping
+            && !self.wounded
+    }
+}
+
 impl Default for Player {
     fn default() -> Self {
         Self {
@@ -2883,7 +2899,7 @@ impl World {
         {
             return false;
         }
-        let ray = crate::assist::ray(&p.body, &p.frame);
+        let ray = crate::assist::ray(&p.body, &p.frame, p.crouched());
         let Some(enter) = crate::assist::aimed(&ray, &q.body) else {
             return false;
         };
@@ -4878,12 +4894,18 @@ impl World {
                 &mut self.players[i],
             );
             if !took_arm && gather::take_swing(tick, &mut self.events, &mut self.players[i]) {
-                let (body, yaw, pitch, held) = {
+                let (body, crouched, yaw, pitch, held) = {
                     let p = &self.players[i];
-                    (p.body, p.frame.yaw, p.frame.pitch, combat::held_item(p))
+                    (
+                        p.body,
+                        p.crouched(),
+                        p.frame.yaw,
+                        p.frame.pitch,
+                        combat::held_item(p),
+                    )
                 };
                 let reaches = melee::Reaches::for_hand(&self.combat, held);
-                let ray = melee::ray(&body, yaw, pitch, reaches.longest());
+                let ray = melee::ray(&body, crouched, yaw, pitch, reaches.longest());
                 let reached = melee::cast(
                     seed,
                     &self.haven,

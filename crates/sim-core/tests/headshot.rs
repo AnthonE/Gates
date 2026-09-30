@@ -702,7 +702,7 @@ fn the_band_is_closed_at_both_rails() {
         let hi = feet_mm + CAPSULE_HEIGHT_M * 1000.0;
         // A stationary "segment": the same altitude at both ends, so the
         // span is one point and the check is the rail and nothing else.
-        let at = |y: f32| part_crossed(y, 0.0, feet_mm, 0.0, 1.0);
+        let at = |y: f32| part_crossed(y, 0.0, feet_mm, 0.0, 1.0, false);
 
         assert_eq!(
             at(lo),
@@ -753,7 +753,7 @@ fn the_band_is_closed_at_both_rails() {
 fn the_leg_band_is_closed_at_both_rails() {
     for (feet_mm, eps) in [(0.0f32, 0.001f32), (400_000.0, 1.0)] {
         let hip = feet_mm + LIMB_BAND_M * 1000.0;
-        let at = |y: f32| part_crossed(y, 0.0, feet_mm, 0.0, 1.0);
+        let at = |y: f32| part_crossed(y, 0.0, feet_mm, 0.0, 1.0, false);
 
         assert_eq!(
             at(feet_mm),
@@ -811,12 +811,12 @@ fn a_shin_on_the_way_into_a_chest_is_a_chest_hit() {
     let oy = feet_mm + 100.0;
     let sy = hip + 200.0 - oy;
     assert_eq!(
-        part_crossed(oy, sy, feet_mm, 0.0, 0.0),
+        part_crossed(oy, sy, feet_mm, 0.0, 0.0, false),
         Part::Limb,
         "the entry alone is a leg, so a first-intersection rule would score one"
     );
     assert_eq!(
-        part_crossed(oy, sy, feet_mm, 0.0, 1.0),
+        part_crossed(oy, sy, feet_mm, 0.0, 1.0, false),
         Part::Chest,
         "and the span rule scores the chest the line reached"
     );
@@ -824,7 +824,7 @@ fn a_shin_on_the_way_into_a_chest_is_a_chest_hit() {
     // the ordering is a ladder and not a pair of special cases.
     let sy_head = feet_mm + CAPSULE_HEIGHT_M * 1000.0 - oy;
     assert_eq!(
-        part_crossed(oy, sy_head, feet_mm, 0.0, 1.0),
+        part_crossed(oy, sy_head, feet_mm, 0.0, 1.0, false),
         Part::Head,
         "a shin-to-skull line is a headshot"
     );
@@ -854,12 +854,12 @@ fn a_climb_through_the_body_counts_the_head_it_left_by() {
     let mid = oy + sy * 0.5;
     assert!(mid < head_lo, "the closest approach must be a chest hit");
     assert_eq!(
-        part_crossed(oy, sy, feet_mm, 0.5, 0.5),
+        part_crossed(oy, sy, feet_mm, 0.5, 0.5, false),
         Part::Chest,
         "and a closest-approach-only rule must call it a chest hit"
     );
     assert_eq!(
-        part_crossed(oy, sy, feet_mm, 0.0, 1.0),
+        part_crossed(oy, sy, feet_mm, 0.0, 1.0, false),
         Part::Head,
         "while the span rule sees the head the line left by"
     );
@@ -881,10 +881,10 @@ fn a_stop_before_the_head_is_not_a_headshot() {
     let oy = head_lo - 500.0;
     let sy = 600.0;
     // Unclipped, the line reaches the band.
-    assert_eq!(part_crossed(oy, sy, feet_mm, 0.0, 1.0), Part::Head);
+    assert_eq!(part_crossed(oy, sy, feet_mm, 0.0, 1.0, false), Part::Head);
     // Stopped at the chest, it does not.
     assert_eq!(
-        part_crossed(oy, sy, feet_mm, 0.0, 0.4),
+        part_crossed(oy, sy, feet_mm, 0.0, 0.4, false),
         Part::Chest,
         "a span clipped before the band must not be a head"
     );
@@ -892,7 +892,7 @@ fn a_stop_before_the_head_is_not_a_headshot() {
     // at all — the guard, so a caller's `exit.min(stop_t)` going negative
     // relative to `enter` cannot read as a crossing.
     assert_eq!(
-        part_crossed(oy, sy, feet_mm, 0.6, 0.4),
+        part_crossed(oy, sy, feet_mm, 0.6, 0.4, false),
         Part::Chest,
         "an inverted span is not a crossing"
     );
@@ -905,12 +905,12 @@ fn a_stop_before_the_head_is_not_a_headshot() {
     let ankle = feet_mm + 100.0;
     let rise = LIMB_BAND_M * 1000.0 + 400.0;
     assert_eq!(
-        part_crossed(ankle, rise, feet_mm, 0.0, 1.0),
+        part_crossed(ankle, rise, feet_mm, 0.0, 1.0, false),
         Part::Chest,
         "unclipped, the line reaches the chest"
     );
     assert_eq!(
-        part_crossed(ankle, rise, feet_mm, 0.0, 0.4),
+        part_crossed(ankle, rise, feet_mm, 0.0, 0.4, false),
         Part::Limb,
         "clipped inside the leg, it is a leg"
     );
@@ -1110,4 +1110,56 @@ fn a_shot_that_enters_through_the_crown_is_a_headshot_at_the_chest() {
         "a shot through the crown is a headshot even though its nearest \
          point to the body was the chest"
     );
+}
+
+/// **A crouched body is the crouch's cylinder** (v83): a level shot from a
+/// standing eye passes over a crouched target it would have headshot
+/// standing, and a crouched shooter's level shot meets the crouched head.
+/// The target's stance is `Player::crouched` — the frame's bit on a body
+/// that stands on something.
+#[test]
+fn a_level_shot_passes_over_a_crouched_body() {
+    use sim_core::input::BTN_CROUCH;
+    let cc = fixture();
+    let shot = |shooter_crouched: bool, target_crouched: bool| {
+        let mut players = Box::new([Player::default(); MAX_PLAYERS]);
+        players[0] = shooter(1, 0.0, 400.0, 0.0, GUN, ROUND, LEVEL);
+        players[0].body.grounded = true;
+        if shooter_crouched {
+            players[0].frame.buttons |= BTN_CROUCH;
+        }
+        players[1] = target(2, 0.0, 400.0, 10.0);
+        players[1].body.grounded = true;
+        if target_crouched {
+            players[1].frame.buttons = BTN_CROUCH;
+        }
+        pull(&cc, &mut players);
+        100 - players[1].hp
+    };
+    assert_eq!(shot(false, false), 40, "standing on standing is a headshot");
+    assert_eq!(
+        shot(false, true),
+        0,
+        "a standing eye clears a crouched crown"
+    );
+    assert_eq!(shot(true, true), 40, "crouched on crouched is a headshot");
+    assert_eq!(
+        shot(true, false),
+        20,
+        "a crouched eye meets a standing chest"
+    );
+}
+
+/// The crouched ladder's rails, closed like the standing ones: the head is
+/// the top `HEAD_BAND_M` of `CROUCH_HEIGHT_M`, the legs `CROUCH_LIMB_BAND_M`.
+#[test]
+fn the_crouched_bands_are_the_crouch_heights() {
+    use sim_core::collide::{CROUCH_HEIGHT_M, CROUCH_LIMB_BAND_M};
+    let feet_mm = 1000.0;
+    let at = |y: f32| part_crossed(y, 0.0, feet_mm, 0.0, 1.0, true);
+    let head_lo = feet_mm + (CROUCH_HEIGHT_M - HEAD_BAND_M) * 1000.0;
+    assert_eq!(at(head_lo), Part::Head);
+    assert_eq!(at(head_lo - 1.0), Part::Chest);
+    assert_eq!(at(feet_mm + CROUCH_LIMB_BAND_M * 1000.0), Part::Limb);
+    assert_eq!(at(feet_mm + CROUCH_LIMB_BAND_M * 1000.0 + 1.0), Part::Chest);
 }

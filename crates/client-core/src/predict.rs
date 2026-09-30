@@ -421,6 +421,7 @@ mod tests {
             sleeping: p.sleeping,
             dead: p.dead,
             wounded: p.wounded,
+            crouched: false,
             yaw: p.frame.yaw,
             pitch: p.frame.pitch,
             // The predictor reconciles the OWN body, whose hand this
