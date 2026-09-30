@@ -532,6 +532,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<pause::Chosen>()
             .init_resource::<viewmodel::Motion>()
             .init_resource::<bow::FpBow>()
+            .init_resource::<bow::DrawArm>()
             .init_resource::<viewmodel::DrawZoom>()
             .init_resource::<verbs::Aimed>()
             .init_resource::<verbs::Swung>()
@@ -1182,6 +1183,15 @@ impl Plugin for GatesRenderPlugin {
         .add_systems(
             PostUpdate,
             anim::head_look
+                .after(bevy::app::AnimationSystems)
+                .before(bevy::transform::TransformSystems::Propagate)
+                .run_if(world_running),
+        )
+        // The bow's drawing hand, in the same window and for the same
+        // reason: it overrides the hold clip's left arm for the frame.
+        .add_systems(
+            PostUpdate,
+            bow::draw_arm
                 .after(bevy::app::AnimationSystems)
                 .before(bevy::transform::TransformSystems::Propagate)
                 .run_if(world_running),

@@ -412,8 +412,8 @@ pub fn arrow_mesh(len: f32) -> Mesh {
     let pale = [0.52, 0.40, 0.26];
     let nock = [0.17, 0.12, 0.08];
     let steel = [0.29, 0.30, 0.33];
-    let vane = [0.55, 0.16, 0.12];
-    let hen = [0.62, 0.58, 0.48];
+    let vane = [0.45, 0.13, 0.10];
+    let hen = [0.36, 0.32, 0.26];
     let (r, head) = (0.0045, 0.065);
     turned(
         &mut s,
@@ -436,9 +436,9 @@ pub fn arrow_mesh(len: f32) -> Mesh {
         let at = |y: f32, h: f32| Vec3::Y * y + out * (r + h);
         let q = [
             at(0.025, 0.0),
-            at(0.125, 0.0),
-            at(0.12, 0.004),
-            at(0.045, 0.014),
+            at(0.105, 0.0),
+            at(0.10, 0.003),
+            at(0.04, 0.010),
         ];
         let col = move |_: Vec3| [tint[0], tint[1], tint[2], 1.0];
         for (x, y, z) in [(0, 1, 2), (0, 2, 3), (0, 2, 1), (0, 3, 2)] {

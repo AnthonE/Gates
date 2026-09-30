@@ -929,6 +929,10 @@ pub struct Motion {
     /// An arrow sits on the string: raised, arrows in the pack, and not
     /// mid-loose.
     nocked: bool,
+    /// Where the drawing hand is along the draw, 0..=1: with the string on
+    /// the way back, left where it was when the arrow goes, then eased back
+    /// onto the string (`bow::draw_arm`).
+    hand: f32,
 }
 
 /// What the bow's string and arrow are drawn from this frame (`bow::drive`).
@@ -940,6 +944,10 @@ pub struct BowPose {
     pub loose: f32,
     /// An arrow is on the string.
     pub nocked: bool,
+    /// How far the bow is raised, 0..=1.
+    pub raise: f32,
+    /// The drawing hand's place along the draw, 0..=1.
+    pub hand: f32,
 }
 
 impl Motion {
@@ -948,6 +956,8 @@ impl Motion {
             pull: self.string,
             loose: self.loose,
             nocked: self.nocked,
+            raise: self.raise,
+            hand: self.hand,
         }
     }
 }
@@ -1361,6 +1371,7 @@ pub fn dress_arms(
     players: Query<Entity, With<AnimationPlayer>>,
     meshes: Query<(), With<Mesh3d>>,
     item: Query<Entity, With<HeldItem>>,
+    mut draw_arm: ResMut<super::bow::DrawArm>,
 ) {
     let Ok((root, mut arms)) = arms.single_mut() else {
         return;
@@ -1373,6 +1384,8 @@ pub fn dress_arms(
     let mut seen = 0usize;
     let (mut body_half, mut hand, mut player) = (None, None, None);
     let mut off_arm = None;
+    // The folded arm's joints below the shoulder, for the bow's draw hand.
+    let (mut upper, mut fore, mut left_hand) = (None, None, None);
     let mut drawn = Vec::new();
     while let Some(e) = stack.pop() {
         seen += 1;
@@ -1387,6 +1400,9 @@ pub fn dress_arms(
                 super::anim::BODY_NODE => body_half = Some(e),
                 "RightHand" => hand = Some(e),
                 VIEWMODEL_HIDDEN_ARM => off_arm = Some(e),
+                "LeftArm" => upper = Some(e),
+                "LeftForeArm" => fore = Some(e),
+                "LeftHand" => left_hand = Some(e),
                 _ => {}
             }
         }
@@ -1483,6 +1499,12 @@ pub fn dress_arms(
     arms.hand = Some(hand);
     arms.player = Some(player);
     arms.dressed = true;
+    // Optional where the rest is required: without them a raised bow is
+    // simply drawn by no hand, which is how it shipped.
+    draw_arm.bones = upper
+        .zip(fore)
+        .zip(left_hand)
+        .map(|((u, f), h)| [off_arm, u, f, h]);
     info!("viewmodel: arms up, body half hidden, {VIEWMODEL_HIDDEN_ARM} collapsed, item in hand");
 }
 
@@ -2046,12 +2068,23 @@ pub fn animate(
                 m.string + (pull - m.string) * (1.0 - (-VIEWMODEL_STRING_EASE * dt).exp())
             };
             m.nocked = m.raise > 0.5 && m.loose <= 0.0 && arrows();
+            // The hand lets go of the string rather than riding it home: it
+            // holds where it was through the loose, then comes back for the
+            // next arrow, and follows the string again once it has it.
+            m.hand = if loosed || m.loose > 0.0 {
+                m.hand
+            } else if m.string >= m.hand {
+                m.string
+            } else {
+                m.hand + (m.string - m.hand) * (1.0 - (-VIEWMODEL_STRING_EASE * dt).exp())
+            };
         }
         None => {
             m.draw = crate::ui::draw::DrawClock::default();
             m.raise = 0.0;
             m.string = 0.0;
             m.nocked = false;
+            m.hand = 0.0;
             if !shoots {
                 m.loose = 0.0;
             }

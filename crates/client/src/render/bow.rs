@@ -10,14 +10,18 @@
 //! Everything here hangs under `viewmodel::HeldModel`, so it is in the bow
 //! model's own frame (metres before the row's in-hand scale) and inherits the
 //! hold, the raise and every sway for free. The draw itself is `viewmodel`'s
-//! (`Motion::bow`); this only draws it.
+//! (`Motion::bow`); this only draws it, and puts the left hand on the string
+//! to draw it ([`draw_arm`]).
 
 use std::collections::HashMap;
 
+use bevy::math::Affine3A;
 use bevy::mesh::{Indices, VertexAttributeValues};
 use bevy::prelude::*;
 
-use super::viewmodel::{HeldModel, Motion};
+use super::viewmodel::{
+    HeldModel, HeldRig, Motion, VIEWMODEL_HIDDEN_OFFSET, VIEWMODEL_HIDDEN_SCALE,
+};
 
 /// The `HELD_MODELS` key of the one row that has a string.
 pub const BOW_KEY: &str = "hunting_bow";
@@ -37,10 +41,11 @@ const WELD_M: f32 = 1e-5;
 /// about 6 cm above it at the row's 0.8 scale.
 pub const NOCK_Y_M: f32 = 0.93;
 /// How far a full draw pulls the nock back off the braced string, model
-/// metres. Brace to full draw is 0.2 m to 0.7 m from the riser, a real draw
-/// length; drawn in hand that puts the nock at the cheek, just past the
-/// near plane, so the string at full draw runs out of the frame.
-pub const DRAW_M: f32 = 0.5;
+/// metres. Short of a real draw (0.5 would take it to the cheek): the
+/// first-person shoulders sit in front of the eye, so a hand drawn that far
+/// is a fist over half the frame. This keeps the drawing hand beside the bow
+/// and out of the crosshair.
+pub const DRAW_M: f32 = 0.25;
 /// The string's radius, model metres.
 pub const STRING_R_M: f32 = 0.0022;
 /// The arrow on the string: its length, and how far to the side of the string
@@ -222,15 +227,207 @@ pub fn nock_at(ends: [Vec3; 2], back: f32) -> Vec3 {
     lo.lerp(hi, t) + Vec3::X * back
 }
 
-/// How far back the nock sits for a draw state: the draw eased so it leaves
-/// the frame early (there is no drawing hand to hold it), plus the shiver
-/// after a loose. `loose` counts down from 1 to 0 across the loose.
+/// How far back the nock sits for a draw state: the draw eased in and out,
+/// plus the shiver after a loose. `loose` counts down from 1 to 0 across the
+/// loose.
 pub fn nock_back(pull: f32, loose: f32) -> f32 {
     let p = pull.clamp(0.0, 1.0);
-    let eased = 1.0 - (1.0 - p) * (1.0 - p);
+    let eased = p * p * (3.0 - 2.0 * p);
     let t = (1.0 - loose) * super::viewmodel::VIEWMODEL_LOOSE_S;
     let shiver = SHIVER_M * loose * loose * (std::f32::consts::TAU * SHIVER_HZ * t).sin();
     DRAW_M * eased + shiver
+}
+
+/// Where the drawing arm's shoulder joint is set while the bow is up, in the
+/// viewmodel rig's frame (`viewmodel::HeldRig`), metres: below and left of
+/// the frame. The arms rig's own left shoulder sits a hand's width from the
+/// eye, and an arm from there fills the view; from here the forearm comes
+/// in from the lower left, the way an archer's does.
+pub const DRAW_SHOULDER: Vec3 = Vec3::new(0.121, -0.555, -0.187);
+/// Which way the drawing elbow points, same frame: out, down and a little
+/// back.
+pub const DRAW_ELBOW: Vec3 = Vec3::new(-0.542, -0.824, 0.165);
+/// Where the wrist sits from the nock, metres: back along the arrow and down,
+/// so the string runs between the fingers (a 20 cm hand) and the arrow shows
+/// above them rather than the fingertips reaching over the crosshair. The
+/// fingers aim just under the nock.
+pub const DRAW_WRIST_BACK_M: f32 = 0.12;
+pub const DRAW_WRIST_DROP_M: f32 = 0.03;
+pub const DRAW_FINGERS_DROP_M: f32 = 0.025;
+
+/// The first-person arms' left arm, found when the arms are dressed
+/// (`viewmodel::dress_arms`): shoulder, upper arm, forearm, hand.
+#[derive(Resource, Default)]
+pub struct DrawArm {
+    pub bones: Option<[Entity; 4]>,
+}
+
+/// `e`'s transform in `root`'s frame, from this frame's local transforms.
+fn in_frame(
+    e: Entity,
+    root: Entity,
+    parents: &Query<&ChildOf>,
+    xf: &Query<&mut Transform>,
+) -> Option<Affine3A> {
+    let mut m = Affine3A::IDENTITY;
+    let mut at = e;
+    for _ in 0..32 {
+        if at == root {
+            return Some(m);
+        }
+        m = xf.get(at).ok()?.compute_affine() * m;
+        at = parents.get(at).ok()?.0;
+    }
+    None
+}
+
+fn rot(m: &Affine3A) -> Quat {
+    m.to_scale_rotation_translation().1
+}
+
+/// The turn from one direction to another, or none if they are opposite
+/// (where the arc has no axis).
+fn arc(from: Vec3, to: Vec3) -> Quat {
+    let (a, b) = (from.normalize_or_zero(), to.normalize_or_zero());
+    if a.dot(b) < -0.999 {
+        return Quat::IDENTITY;
+    }
+    Quat::from_rotation_arc(a, b)
+}
+
+/// Where a shoulder at `s`, with an upper arm `a` long and a forearm `b`
+/// long, puts its elbow to reach toward `t`, bending toward `pole`; and the
+/// point it actually reaches (`t`, or as near as the arm goes).
+pub fn two_bone(s: Vec3, t: Vec3, a: f32, b: f32, pole: Vec3) -> (Vec3, Vec3) {
+    let to = t - s;
+    let u = to.normalize_or(Vec3::NEG_Z);
+    let d = to.length().clamp((a - b).abs() + 1e-3, a + b - 1e-3);
+    let v = (pole - u * pole.dot(u)).normalize_or(Vec3::NEG_Y);
+    let cos = ((a * a + d * d - b * b) / (2.0 * a * d)).clamp(-1.0, 1.0);
+    let sin = (1.0 - cos * cos).max(0.0).sqrt();
+    (s + a * (u * cos + v * sin), s + u * d)
+}
+
+/// Put the left hand on the string while the bow is up.
+///
+/// The first-person arms hold everything in the right hand and fold the left
+/// arm away (`viewmodel::VIEWMODEL_HIDDEN_ARM`). A raised bow brings it back:
+/// the shoulder is set at [`DRAW_SHOULDER`] and the arm solved so the wrist is
+/// just behind the nock, so a hand draws the string instead of the string
+/// drawing itself. Between the animation and the propagation like
+/// `anim::head_look`: it overrides this frame's hold pose on the left arm and
+/// costs no second propagation.
+#[allow(clippy::type_complexity)]
+pub fn draw_arm(
+    fp: Res<FpBow>,
+    motion: Res<Motion>,
+    arm: Res<DrawArm>,
+    rig: Query<Entity, With<HeldRig>>,
+    held: Query<(Entity, &HeldModel)>,
+    parents: Query<&ChildOf>,
+    mut xf: Query<&mut Transform>,
+) {
+    let Some([sh, up, fore, hand]) = arm.bones else {
+        return;
+    };
+    let pose = motion.bow();
+    let model = held
+        .iter()
+        .find(|(_, h)| h.shown().is_some() && h.shown() == bow_row())
+        .map(|(e, _)| e);
+    let solved = match (model, rig.single()) {
+        (Some(model), Ok(rig)) if fp.mesh.is_some() && pose.raise > 0.5 => solve(
+            &fp,
+            pose.hand,
+            sh,
+            [up, fore, hand],
+            model,
+            rig,
+            &parents,
+            &xf,
+        ),
+        _ => None,
+    };
+    let Some((t_sh, [q_up, q_fore, q_hand])) = solved else {
+        // Folded away, as `dress_arms` left it.
+        if let Ok(mut t) = xf.get_mut(sh) {
+            if t.translation != VIEWMODEL_HIDDEN_OFFSET {
+                t.translation = VIEWMODEL_HIDDEN_OFFSET;
+                t.scale = Vec3::splat(VIEWMODEL_HIDDEN_SCALE);
+            }
+        }
+        return;
+    };
+    for (e, write) in [
+        (sh, None),
+        (up, Some(q_up)),
+        (fore, Some(q_fore)),
+        (hand, Some(q_hand)),
+    ] {
+        if let Ok(mut t) = xf.get_mut(e) {
+            match write {
+                None => {
+                    t.translation = t_sh;
+                    t.scale = Vec3::ONE;
+                }
+                Some(q) => t.rotation = q,
+            }
+        }
+    }
+}
+
+/// The left arm's new locals: the shoulder's translation, then the upper
+/// arm's, the forearm's and the hand's rotations. Everything is worked in the
+/// viewmodel rig's frame.
+#[allow(clippy::too_many_arguments)]
+fn solve(
+    fp: &FpBow,
+    pull: f32,
+    sh: Entity,
+    [up, fore, hand]: [Entity; 3],
+    model: Entity,
+    rig: Entity,
+    parents: &Query<&ChildOf>,
+    xf: &Query<&mut Transform>,
+) -> Option<(Vec3, [Quat; 3])> {
+    let local = |e: Entity| xf.get(e).ok().copied();
+    let (t_sh, t_up, t_fore, t_hand) = (local(sh)?, local(up)?, local(fore)?, local(hand)?);
+    // The nock the fingers hold and the arrow's line through it.
+    let m_model = in_frame(model, rig, parents, xf)?;
+    let at = nock_at(fp.ends, nock_back(pull, 0.0));
+    let nock = m_model.transform_point3(at);
+    let fwd = m_model
+        .transform_vector3(Vec3::new(0.0, NOCK_Y_M, ARROW_SIDE_M) - at)
+        .normalize_or(Vec3::NEG_Z);
+    let wrist = nock - fwd * DRAW_WRIST_BACK_M + Vec3::NEG_Y * DRAW_WRIST_DROP_M;
+    let fingers = nock + Vec3::NEG_Y * DRAW_FINGERS_DROP_M;
+    // The shoulder, moved so the upper arm starts at `DRAW_SHOULDER`.
+    let m_p = in_frame(parents.get(sh).ok()?.0, rig, parents, xf)?;
+    let t_sh_new = m_p.inverse().transform_point3(DRAW_SHOULDER) - t_sh.rotation * t_up.translation;
+    let m_sh = m_p * Affine3A::from_rotation_translation(t_sh.rotation, t_sh_new);
+    let m_up = m_sh * t_up.compute_affine();
+    let m_fore = m_up * t_fore.compute_affine();
+    let (s, e0) = (Vec3::from(m_up.translation), Vec3::from(m_fore.translation));
+    let h0 = Vec3::from((m_fore * t_hand.compute_affine()).translation);
+    let (elbow, reach) = two_bone(s, wrist, e0.distance(s), h0.distance(e0), DRAW_ELBOW);
+    // The upper arm onto the elbow, the forearm onto the wrist, the hand's
+    // fingers onto the string.
+    let q_up = rot(&m_sh).inverse() * arc(e0 - s, elbow - s) * rot(&m_up);
+    let m_up = m_sh * Affine3A::from_scale_rotation_translation(t_up.scale, q_up, t_up.translation);
+    let m_fore = m_up * t_fore.compute_affine();
+    let e1 = Vec3::from(m_fore.translation);
+    let h1 = Vec3::from((m_fore * t_hand.compute_affine()).translation);
+    let q_fore = rot(&m_up).inverse() * arc(h1 - e1, reach - e1) * rot(&m_fore);
+    let m_fore =
+        m_up * Affine3A::from_scale_rotation_translation(t_fore.scale, q_fore, t_fore.translation);
+    let m_hand = m_fore * t_hand.compute_affine();
+    let q_hand = rot(&m_fore).inverse()
+        * arc(
+            rot(&m_hand) * Vec3::Y,
+            fingers - Vec3::from(m_hand.translation),
+        )
+        * rot(&m_hand);
+    Some((t_sh_new, [q_up, q_fore, q_hand]))
 }
 
 /// A unit cylinder along +Y stretched from `a` to `b`. The string runs up the
@@ -334,6 +531,18 @@ mod tests {
         assert!(strip_string(&pos, &[0, 1, 2]).is_none());
     }
 
+    /// The elbow is an upper arm from the shoulder and a forearm from the
+    /// wrist, on the pole's side; out of reach, the arm points straight at it.
+    #[test]
+    fn the_arm_reaches_and_bends_the_right_way() {
+        let (s, t, pole) = (Vec3::ZERO, Vec3::new(0.0, 0.0, -0.4), Vec3::NEG_Y);
+        let (e, r) = two_bone(s, t, 0.25, 0.25, pole);
+        assert!((e.length() - 0.25).abs() < 1e-4 && (r.distance(e) - 0.25).abs() < 1e-4);
+        assert!((r - t).length() < 1e-4 && e.y < 0.0, "elbow {e}");
+        let (_, r) = two_bone(s, Vec3::new(0.0, 0.0, -2.0), 0.25, 0.25, pole);
+        assert!(r.z < -0.49 && r.x.abs() < 1e-5, "reach {r}");
+    }
+
     /// The nock is on the braced string at rest, pulled straight back at full
     /// draw, and the shiver is gone once the loose is over.
     #[test]
@@ -343,7 +552,7 @@ mod tests {
         assert!((rest - Vec3::new(0.19, NOCK_Y_M, 0.0)).length() < 1e-5);
         let full = nock_at(ends, nock_back(1.0, 0.0));
         assert!((full - rest - Vec3::X * DRAW_M).length() < 1e-5);
-        assert!(nock_back(0.5, 0.0) > 0.5 * DRAW_M, "the draw is eased out");
+        assert!((nock_back(0.5, 0.0) - 0.5 * DRAW_M).abs() < 1e-6);
         assert!(
             nock_back(0.0, 1.0).abs() < 1e-6,
             "the shiver starts at brace"
