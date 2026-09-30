@@ -22,14 +22,15 @@ use client_core::view::ClientView;
 use sim_core::limits::{
     ARROW_STEP_MM, DAY_PHASE_TICKS, DAY_PORTION, DAY_TICKS, INTERP_DELAY_TICKS, TICK_HZ,
 };
-use sim_core::movement::{POS_XZ_Q, POS_Y_Q};
+use sim_core::movement::{POS_XZ_Q, POS_Y_Q, SPRINT_SPEED, TERMINAL_VELOCITY, WALK_SPEED};
 use sim_core::ranged::{ARROW_EYE_MM, MM_PER_M};
 use sim_core::rng::Pcg32;
 use sim_core::terrain::{self, Haven};
 use sim_core::weather::{self, Env};
 use sim_core::{collide, mob, pitch_dir, yaw_dir};
 
-/// Bodies remembered at once. A full table forgets the one seen longest ago.
+/// Bodies remembered at once. A full table forgets the one out of sight
+/// longest, and while every row is in sight a newcomer waits.
 pub const TRACK_ROWS: usize = 32;
 /// How far a player is picked out in daylight and clear air.
 pub const PLAYER_SIGHT_M: f32 = 120.0;
@@ -40,7 +41,10 @@ pub const NIGHT_SIGHT: f32 = 0.3;
 /// A line of sight must still be clear this many ticks after it first was
 /// before a body counts as seen: a glimpse is not a sighting.
 pub const SPOT_TICKS: u32 = 4;
-/// A sight line's answer is trusted this long before it is cast again.
+/// A blocked sight line's answer is trusted this long before it is cast
+/// again. A clear one is recast every [`SPOT_TICKS`], and a body goes out of
+/// sight once its clear answer is older than this: a body that steps behind
+/// a wall is lost about as fast as a human's eye loses it.
 pub const LOS_CACHE_TICKS: u32 = 8;
 /// Rays at most this long are cheap; longer ones have their own budget.
 pub const SHORT_RAY_M: f32 = 32.0;
@@ -68,6 +72,15 @@ pub const IMPACT_NEAR_M: f32 = 6.0;
 /// A heard bearing is off by up to this much either way (wire yaw units,
 /// about 10°); a heard distance by up to a quarter.
 pub const HEAR_BEARING_NOISE: u32 = 1820;
+/// For this long after my own shot, an arrow landing near me is taken for
+/// mine: an impact names no shooter, and my miss at something close is not
+/// me being shot at.
+pub const OWN_SHOT_QUIET_TICKS: u32 = TICK_HZ;
+/// A body coming at me at least this fast is closing.
+pub const CLOSING_MPS: f32 = WALK_SPEED * 0.5;
+/// Nothing runs or falls faster: a larger difference between two poses is a
+/// respawn or a teleport, and says nothing about how the body moves.
+const MAX_BODY_MPS: f32 = TERMINAL_VELOCITY + SPRINT_SPEED;
 /// Distance bands a sound is placed in.
 pub const NEAR_M: f32 = 20.0;
 pub const MID_M: f32 = 60.0;
@@ -227,6 +240,8 @@ pub struct Tracks {
     fed: Option<u32>,
     me: u32,
     own: Option<Own>,
+    /// When this body last fired, from its own echoed shot.
+    own_shot: Option<u32>,
     playout: u8,
     rng: Pcg32,
     pub stats: TrackStats,
@@ -248,6 +263,7 @@ impl Tracks {
             fed: None,
             me: 0,
             own: None,
+            own_shot: None,
             playout: INTERP_DELAY_TICKS,
             rng: Pcg32::new(0, 0),
             stats: TrackStats::default(),
@@ -260,15 +276,17 @@ impl Tracks {
         self.interp.clear();
         self.fed = None;
         self.me = player;
-        self.own = None;
         self.rng = Pcg32::new(seed, u64::from(player));
         self.forget();
     }
 
     /// A new body on a new beach: what the old one saw is elsewhere.
+    /// The old pose goes too, so no velocity is differenced across the jump.
     pub fn forget(&mut self) {
         self.rows = [None; TRACK_ROWS];
         self.heard = [None; HEARD_ROWS];
+        self.own = None;
+        self.own_shot = None;
     }
 
     /// The playout delay bodies are sampled behind the newest snapshot,
@@ -324,12 +342,7 @@ impl Tracks {
                             Some(o)
                                 if t.wrapping_sub(o.tick) > 0 && t.wrapping_sub(o.tick) <= 2 =>
                             {
-                                let k = TICK_HZ as f32 / t.wrapping_sub(o.tick) as f32;
-                                [
-                                    (pos[0] - o.pos[0]) * k,
-                                    (pos[1] - o.pos[1]) * k,
-                                    (pos[2] - o.pos[2]) * k,
-                                ]
+                                velocity(pos, o.pos, t.wrapping_sub(o.tick))
                             }
                             _ => [0.0; 3],
                         };
@@ -381,19 +394,24 @@ impl Tracks {
                 continue;
             }
             let species = Species::of(id);
-            let (dx, dz) = (s.x - eye[0], s.z - eye[2]);
+            let (dx, dy, dz) = (s.x - eye[0], s.y - eye[1], s.z - eye[2]);
             let d = (dx * dx + dz * dz).sqrt();
             let mut range = species.sight_m() * clarity;
             if dark && !s.lit {
                 range *= NIGHT_SIGHT;
             }
-            if d > range || dx * fx + dz * fz < d * std::f32::consts::FRAC_1_SQRT_2 {
+            // Range is along the line, the cone on the ground.
+            if d * d + dy * dy > range * range
+                || dx * fx + dz * fz < d * std::f32::consts::FRAC_1_SQRT_2
+            {
                 continue;
             }
             let i = match self.slot_of(id) {
                 Some(i) => i,
                 None => {
-                    let i = self.free_slot();
+                    let Some(i) = self.free_slot(tick) else {
+                        continue;
+                    };
                     self.rows[i] = Some(Row {
                         track: Track {
                             id,
@@ -442,19 +460,17 @@ impl Tracks {
                 row.los_since = None;
                 row.los_ok = false;
             }
-            let visible = row.seen && row.in_view && row.los_ok;
+            let fresh = row
+                .los_at
+                .is_some_and(|at| tick.wrapping_sub(at) <= LOS_CACHE_TICKS);
+            let visible = row.seen && row.in_view && row.los_ok && fresh;
             row.track.visible = visible;
             if visible {
                 let s = row.sample;
                 let t = &mut row.track;
                 let mut before = RemoteState::default();
                 t.vel = if self.interp.sample(t.id, at - 1.0, &mut before) {
-                    let k = TICK_HZ as f32;
-                    [
-                        (s.x - before.x) * k,
-                        (s.y - before.y) * k,
-                        (s.z - before.z) * k,
-                    ]
+                    velocity([s.x, s.y, s.z], [before.x, before.y, before.z], 1)
                 } else {
                     [0.0; 3]
                 };
@@ -493,19 +509,24 @@ impl Tracks {
                     continue;
                 };
                 let s = row.sample;
-                let d = ((s.x - eye[0]).powi(2) + (s.z - eye[2]).powi(2)).sqrt();
+                let d = ((s.x - eye[0]).powi(2) + (s.y - eye[1]).powi(2) + (s.z - eye[2]).powi(2))
+                    .sqrt();
                 let is_long = d > SHORT_RAY_M;
                 if (is_long && long == 0) || (!is_long && short == 0) {
                     continue;
                 }
-                let wait = if !row.seen && row.los_ok {
+                // A clear line is rechecked sooner than a blocked one: it is
+                // what keeps a track in sight, and what a glimpse is timed on.
+                let wait = if row.los_ok {
                     SPOT_TICKS
                 } else {
                     LOS_CACHE_TICKS
                 };
+                // Most late past its own due tick first, so a backlog is
+                // shared between clear and blocked lines.
                 let overdue = match row.los_at {
                     None => u32::MAX,
-                    Some(at) if tick.wrapping_sub(at) >= wait => tick.wrapping_sub(at),
+                    Some(at) if tick.wrapping_sub(at) >= wait => tick.wrapping_sub(at) - wait,
                     Some(_) => continue,
                 };
                 if pick.is_none_or(|(_, o, _)| overdue > o) {
@@ -526,7 +547,8 @@ impl Tracks {
             let s = row.sample;
             let to = [s.x, s.y + row.track.species.sight_y(), s.z];
             self.stats.rays += 1;
-            let clear = match clear_line(core, haven, eye, to, PLAYER_SIGHT_M) {
+            // `perceive` has range-checked it; the head sits above that.
+            let clear = match clear_line(core, haven, eye, to, f32::INFINITY) {
                 Sight::Clear => true,
                 Sight::Terrain => {
                     self.stats.coarse_rejects += 1;
@@ -555,24 +577,26 @@ impl Tracks {
             .position(|r| r.as_ref().is_some_and(|r| r.track.id == id))
     }
 
-    /// An empty row, else the one whose body was seen longest ago (a
-    /// glimpse before any track).
-    fn free_slot(&self) -> usize {
+    /// An empty row, else the track out of sight longest. A track in sight
+    /// and a glimpse under way are never given up for a newcomer: with the
+    /// table full of those the newcomer waits, rather than newcomers
+    /// evicting each other every frame and none ever held long enough to
+    /// be spotted.
+    fn free_slot(&self, tick: u32) -> Option<usize> {
         if let Some(i) = self.rows.iter().position(Option::is_none) {
-            return i;
+            return Some(i);
         }
-        let mut worst = 0;
-        let mut key = (true, u32::MAX);
+        let mut worst = None;
         for (i, row) in self.rows.iter().enumerate() {
-            if let Some(r) = row {
-                let k = (r.seen, r.track.last_seen);
-                if k < key {
-                    key = k;
-                    worst = i;
-                }
+            let Some(r) = row.as_ref().filter(|r| r.seen && !r.track.visible) else {
+                continue;
+            };
+            let age = tick.wrapping_sub(r.track.last_seen);
+            if worst.is_none_or(|(_, a)| age > a) {
+                worst = Some((i, age));
             }
         }
-        worst
+        worst.map(|(i, _)| i)
     }
 
     /// Every body seen, in sight or remembered.
@@ -590,9 +614,21 @@ impl Tracks {
             .filter(move |t| t.active() && tick.wrapping_sub(t.last_seen) < within)
     }
 
-    /// A body that can act is in sight now.
-    pub fn any_in_sight(&self) -> bool {
-        self.seen().any(|t| t.visible && t.active())
+    /// A body in sight now that could be after me: a player or a wolf, up,
+    /// and within `near_m`, aiming at me or closing on me. A pig grazing or
+    /// a stranger far off walking past is not.
+    pub fn pursuer_in_sight(&self, near_m: f32) -> bool {
+        let Some(own) = self.own else {
+            return false;
+        };
+        self.seen().any(|t| {
+            if !t.visible || !t.active() || t.species == Species::Pig {
+                return false;
+            }
+            let (dx, dz) = (own.pos[0] - t.pos[0], own.pos[2] - t.pos[2]);
+            let d = (dx * dx + dz * dz).sqrt();
+            d <= near_m || t.aiming_at_me || t.vel[0] * dx + t.vel[2] * dz >= CLOSING_MPS * d
+        })
     }
 
     pub fn get(&self, id: u32) -> Option<&Track> {
@@ -670,6 +706,7 @@ impl Tracks {
     /// A shot was fired. Seen if its shooter is in sight; heard either way.
     pub fn on_shot(&mut self, shooter: u32, tick: u32) {
         if shooter == self.me {
+            self.own_shot = Some(tick);
             return;
         }
         if let Some(t) = self.in_sight_mut(shooter) {
@@ -694,6 +731,12 @@ impl Tracks {
 
     /// An arrow stopped here: the mark is where it is, no guess needed.
     pub fn on_impact(&mut self, at: [f32; 3], tick: u32) {
+        if self
+            .own_shot
+            .is_some_and(|t| tick.wrapping_sub(t) <= OWN_SHOT_QUIET_TICKS)
+        {
+            return;
+        }
         self.hear(Sound::Impact, at, IMPACT_NEAR_M, false, tick);
     }
 
@@ -729,6 +772,22 @@ impl Tracks {
         {
             r.track.dealt = r.track.dealt.saturating_add(u32::from(damage));
         }
+    }
+}
+
+/// Metres per second between two poses `ticks` apart; zero across a jump
+/// no body could make.
+fn velocity(now: [f32; 3], before: [f32; 3], ticks: u32) -> [f32; 3] {
+    let k = TICK_HZ as f32 / ticks as f32;
+    let v = [
+        (now[0] - before[0]) * k,
+        (now[1] - before[1]) * k,
+        (now[2] - before[2]) * k,
+    ];
+    if v[0] * v[0] + v[1] * v[1] + v[2] * v[2] > MAX_BODY_MPS * MAX_BODY_MPS {
+        [0.0; 3]
+    } else {
+        v
     }
 }
 
@@ -843,6 +902,104 @@ mod tests {
         assert!(!aimed_at(feet, 0, 128, chest(-30.0)), "behind it");
         assert!(!aimed_at(feet, 1 << 13, 128, chest(30.0)), "45° off");
         assert!(!aimed_at(feet, 0, 128, [3.0, CHEST_Y_M, 30.0]), "3 m wide");
+    }
+
+    /// A seen track standing at `(x, z)`, in sight or not.
+    fn row(id: u32, x: f32, z: f32, visible: bool, last_seen: u32) -> Option<Row> {
+        Some(Row {
+            track: Track {
+                id,
+                species: Species::of(id),
+                first_seen: 0,
+                last_seen,
+                pos: [x, 0.0, z],
+                vel: [0.0; 3],
+                yaw: 0,
+                pitch: 128,
+                held: None,
+                lit: false,
+                wounded: false,
+                dead: false,
+                sleeping: false,
+                dealt: 0,
+                last_swing: None,
+                last_shot: None,
+                aiming_at_me: false,
+                visible,
+            },
+            seen: true,
+            in_view: visible,
+            sample: RemoteState::default(),
+            los_at: Some(last_seen),
+            los_ok: visible,
+            los_since: None,
+        })
+    }
+
+    fn one(r: Option<Row>) -> Tracks {
+        let mut t = Tracks::new();
+        t.reset(1, 1);
+        t.own = Some(Own::default());
+        t.rows[0] = r;
+        t
+    }
+
+    #[test]
+    fn only_a_near_aiming_or_closing_player_or_wolf_is_a_pursuer() {
+        let (wolf, pig) = (mob::mob_id(0), mob::mob_id(1));
+        assert_eq!(
+            (Species::of(wolf), Species::of(pig)),
+            (Species::Wolf, Species::Pig)
+        );
+        assert!(one(row(2, 0.0, 20.0, true, 0)).pursuer_in_sight(32.0));
+        assert!(one(row(wolf, 0.0, 20.0, true, 0)).pursuer_in_sight(32.0));
+        assert!(!one(row(2, 0.0, 20.0, false, 0)).pursuer_in_sight(32.0));
+        assert!(!one(row(pig, 0.0, 5.0, true, 0)).pursuer_in_sight(32.0));
+        let mut far = one(row(2, 0.0, 80.0, true, 0));
+        assert!(!far.pursuer_in_sight(32.0), "a stranger far off");
+        far.rows[0].as_mut().unwrap().track.vel = [0.0, 0.0, -SPRINT_SPEED];
+        assert!(far.pursuer_in_sight(32.0), "running at me");
+        far.rows[0].as_mut().unwrap().track.vel = [SPRINT_SPEED, 0.0, 0.0];
+        assert!(!far.pursuer_in_sight(32.0), "running past");
+        far.rows[0].as_mut().unwrap().track.aiming_at_me = true;
+        assert!(far.pursuer_in_sight(32.0), "aiming at me");
+        far.rows[0].as_mut().unwrap().track.dead = true;
+        assert!(!far.pursuer_in_sight(32.0));
+    }
+
+    #[test]
+    fn a_full_table_gives_up_only_the_track_out_of_sight_longest() {
+        let mut t = Tracks::new();
+        for i in 0..TRACK_ROWS {
+            t.rows[i] = row(10 + i as u32, 0.0, 10.0, true, 100);
+        }
+        assert_eq!(
+            t.free_slot(100),
+            None,
+            "every row in sight: a newcomer waits"
+        );
+        t.rows[5] = row(5, 0.0, 10.0, false, 40);
+        t.rows[9] = row(9, 0.0, 10.0, false, 20);
+        assert_eq!(t.free_slot(100), Some(9));
+    }
+
+    #[test]
+    fn my_own_arrow_landing_near_me_is_not_heard_as_being_shot_at() {
+        let mut t = one(None);
+        t.on_shot(1, 10);
+        t.on_impact([1.0, 0.0, 1.0], 12);
+        assert_eq!(t.heard().count(), 0);
+        t.on_impact([1.0, 0.0, 1.0], 12 + OWN_SHOT_QUIET_TICKS + 1);
+        assert_eq!(t.heard().map(|h| h.sound).last(), Some(Sound::Impact));
+    }
+
+    #[test]
+    fn a_jump_no_body_could_make_has_no_velocity() {
+        assert_eq!(
+            velocity([0.1, 0.0, 0.0], [0.0; 3], 1)[0],
+            0.1 * TICK_HZ as f32
+        );
+        assert_eq!(velocity([300.0, 0.0, 0.0], [0.0; 3], 1), [0.0; 3]);
     }
 
     #[test]

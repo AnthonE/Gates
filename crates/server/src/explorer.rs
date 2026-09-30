@@ -818,8 +818,8 @@ impl Survivor {
         let (mut start, mut yaw) = self.retreat?;
         // A received damage bearing is the human's hit indicator, not an
         // opponent position; every fresh hit renews the bounded retreat,
-        // and so does a body still in sight behind it.
-        if self.tracks.any_in_sight() {
+        // and so does a pursuer still in sight behind it.
+        if self.tracks.pursuer_in_sight(SIGHT_M) {
             start = tick;
             self.retreat = Some((start, yaw));
         }
@@ -2704,33 +2704,48 @@ mod tests {
         let (mx, mz) = (me.qx as f32 * POS_XZ_Q, me.qz as f32 * POS_XZ_Q);
         let eye = eye_point(&me);
         let core = bot.core.as_mut().unwrap();
-        // Ahead (wire yaw 0 faces +Z), inside the cone and the range: one
-        // body in the open, one the ground hides.
-        let mut open = None;
-        let mut hidden = None;
-        for step in 4..60 {
-            for side in -6..=6 {
-                let (x, z) = (mx + side as f32 * 2.0, mz + step as f32 * 2.0);
-                if (x - mx).abs() > (z - mz) * 0.9 {
+        // A facing with a body the ground hides well inside the day's range
+        // (120 m scaled by the weather), and one in the open close by in
+        // the same cone.
+        let mut pick = None;
+        'search: for r in 8..40 {
+            for k in 0..32u16 {
+                let yaw = k << 11;
+                let (fx, fz) = yaw_dir(yaw);
+                let (hx, hz) = (mx + fx * r as f32 * 2.0, mz + fz * r as f32 * 2.0);
+                let b = stander(0, &haven, hx, hz);
+                let to = [hx, b.qy as f32 * POS_Y_Q + 1.4, hz];
+                if tracks::clear_line(core, &haven, eye, to, tracks::PLAYER_SIGHT_M)
+                    != Sight::Terrain
+                {
                     continue;
                 }
-                let b = stander(0, &haven, x, z);
-                let to = [x, b.qy as f32 * POS_Y_Q + 1.4, z];
-                match tracks::clear_line(core, &haven, eye, to, tracks::PLAYER_SIGHT_M) {
-                    Sight::Clear if open.is_none() && step < 12 => open = Some((x, z)),
-                    Sight::Terrain if hidden.is_none() => hidden = Some((x, z)),
-                    _ => {}
+                for step in 4..12 {
+                    for side in -3..=3 {
+                        let (f, sd) = (step as f32 * 2.0, side as f32 * 2.0);
+                        let (x, z) = (mx + fx * f + fz * sd, mz + fz * f - fx * sd);
+                        let b = stander(0, &haven, x, z);
+                        let to = [x, b.qy as f32 * POS_Y_Q + 1.4, z];
+                        if tracks::clear_line(core, &haven, eye, to, tracks::PLAYER_SIGHT_M)
+                            == Sight::Clear
+                        {
+                            pick = Some((yaw, (x, z), (hx, hz)));
+                            break 'search;
+                        }
+                    }
                 }
             }
         }
-        let (ox, oz) = open.expect("an open spot ahead");
-        let (hx, hz) = hidden.expect("a spot ahead the ground hides");
+        let (yaw, (ox, oz), (hx, hz)) = pick.expect("a hidden spot and an open one ahead");
+        let (fx, fz) = yaw_dir(yaw);
+        let mut me = me;
+        me.yaw = yaw;
         let bodies = [
             me,
             stander(2, &haven, ox, oz),
             stander(3, &haven, hx, hz),
             // Behind, close and in the open: outside the cone.
-            stander(4, &haven, mx, mz - 6.0),
+            stander(4, &haven, mx - fx * 6.0, mz - fz * 6.0),
         ];
         let mut view = ClientView::new();
         goal(&mut bot, Goal::Wait, 1);
@@ -2744,6 +2759,10 @@ mod tests {
             assert!(bot.tracks.get(3).is_none(), "seen through the ground");
             assert!(bot.tracks.get(4).is_none(), "seen behind its back");
         }
+        assert!(
+            bot.tracks.stats.coarse_rejects > 0,
+            "the hidden body was in range and a sight line was cast at it"
+        );
         let seen = bot.tracks.get(2).expect("the body in the open is seen");
         assert!(seen.visible && seen.species == Species::Player);
         assert_eq!(bot.tracks.seen().count(), 1);
@@ -2755,12 +2774,12 @@ mod tests {
         let heard = *bot.tracks.heard().last().expect("the shot was heard");
         assert_eq!(heard.sound, tracks::Sound::Shot);
         assert_eq!(heard.band, tracks::Band::Near);
-        let off = heard.bearing.wrapping_sub(1 << 15) as i16;
+        let off = heard.bearing.wrapping_sub(yaw.wrapping_add(1 << 15)) as i16;
         assert!(i32::from(off).abs() <= 2 * tracks::HEAR_BEARING_NOISE as i32);
         assert!(bot.tracks.get(4).is_none());
         // Turned away, the body is remembered where it stood, out of sight.
         let mut turned = bodies;
-        turned[0].yaw = 1 << 15;
+        turned[0].yaw = yaw.wrapping_add(1 << 15);
         for tick in 40..50u32 {
             keyframe(&mut view, tick, &turned);
             bot.frame_at(&view, 1, tick as u16, now);
