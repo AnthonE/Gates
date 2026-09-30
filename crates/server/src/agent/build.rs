@@ -28,6 +28,7 @@ use crate::agent::home::{Home, HOLD_TICKS};
 use crate::agent::intent::{yaw_toward, Intent, Look};
 use crate::agent::route::{Route, Step};
 use crate::agent::site::{self, Seen};
+use crate::agent::stash::Ledger;
 use crate::mind::{Why, BAG_ITEM};
 use client_core::core::ClientCore;
 use protocol::EntityState;
@@ -130,7 +131,7 @@ const E_AIM_RADIUS_M: f32 = 1.0;
 /// chosen again.
 pub const BAD_PLOTS: usize = 4;
 /// Distinct items one bill of materials can name.
-pub const BILL_ROWS: usize = 6;
+pub const BILL_ROWS: usize = 8;
 /// Shortfalls the survey reports.
 pub const NEED_ROWS: usize = 3;
 
@@ -666,23 +667,38 @@ fn door_across(leg: usize) -> Option<(i8, i8, u8, u8)> {
 }
 
 /// Would a player standing at (`x`, `z`) and facing wire yaw `yaw` press
-/// `E` on this door? The human client's pick (`client::ui::interact::
+/// `E` on this door (or the box or cupboard on this plane)? The human
+/// client's pick (`client::ui::interact::
 /// resolve`), asked conservatively: the door is on the aim line and nearer
 /// than anything else there that `E` could take (every deployable in
 /// reach, a door scored where it hangs and the rest at its cell's centre,
 /// and every backpack). A dead tie counts as not picked.
-fn e_picks(core: &ClientCore, x: f32, z: f32, yaw: u16, door: OpAddr) -> bool {
+pub(crate) fn e_picks(core: &ClientCore, x: f32, z: f32, yaw: u16, door: OpAddr) -> bool {
+    e_picks_by(core, x, z, yaw, door, 0.0)
+}
+
+/// [`e_picks`] with `slack` metres to spare: the thing stays on the aim
+/// line, and nothing nearer comes onto it, if the view drifts that far
+/// sideways. A cupboard at arm's length sits right on the edge of what is
+/// in front of the eye, where a degree decides whether `E` takes it.
+pub(crate) fn e_picks_by(
+    core: &ClientCore,
+    x: f32,
+    z: f32,
+    yaw: u16,
+    door: OpAddr,
+    slack: f32,
+) -> bool {
     let (fx, fz) = sim_core::yaw_dir(yaw);
     let reach2 = BUILD_REACH_M * BUILD_REACH_M;
-    // (aimed, squared distance) of a point, from here.
-    let score = |px: f32, pz: f32| {
+    // (aimed, squared distance) of a point from here: `give` metres
+    // narrower (the target) or wider (a rival) than the aim really is.
+    let score = |px: f32, pz: f32, give: f32| {
         let (dx, dz) = (px - x, pz - z);
         let t = dx * fx + dz * fz;
         let (ox, oz) = (dx - t * fx, dz - t * fz);
-        (
-            t > 0.0 && ox * ox + oz * oz <= E_AIM_RADIUS_M * E_AIM_RADIUS_M,
-            dx * dx + dz * dz,
-        )
+        let r = (E_AIM_RADIUS_M + give).max(0.0);
+        (t > -give && ox * ox + oz * oz <= r * r, dx * dx + dz * dz)
     };
     let in_reach = |cx: u16, cz: u16| {
         let (cx, cz) = sim_core::deploy::cell_center(cx, cz);
@@ -692,7 +708,7 @@ fn e_picks(core: &ClientCore, x: f32, z: f32, yaw: u16, door: OpAddr) -> bool {
         return false;
     }
     let (ax, az) = anchor(door.cx, door.cz, door.loc);
-    let (aimed, mine) = score(ax, az);
+    let (aimed, mine) = score(ax, az, -slack);
     if !aimed || mine > reach2 {
         return false;
     }
@@ -707,7 +723,7 @@ fn e_picks(core: &ClientCore, x: f32, z: f32, yaw: u16, door: OpAddr) -> bool {
             .map(|b| (b.qx as f32 * POS_XZ_Q, b.qz as f32 * POS_XZ_Q)),
     );
     for (px, pz) in rivals {
-        let (aimed, d2) = score(px, pz);
+        let (aimed, d2) = score(px, pz, slack);
         if aimed && d2 <= mine && d2 <= reach2 {
             return false;
         }
@@ -761,7 +777,7 @@ fn door_open(core: &ClientCore, at: OpAddr) -> Option<bool> {
 
 /// Where the eyes go to work an address: the piece's middle, a door's
 /// handle height, a plane's top.
-fn look_point(seed: u64, haven: &Haven, core: &ClientCore, at: OpAddr) -> [f32; 3] {
+pub(crate) fn look_point(seed: u64, haven: &Haven, core: &ClientCore, at: OpAddr) -> [f32; 3] {
     let (x, z) = anchor(at.cx, at.cz, at.loc);
     let floor = match core.pieces.cols().plate(at.cx, at.cz) {
         Some(plate) => column_floor_y(seed, haven, at.cx, at.cz, plate),
@@ -775,7 +791,7 @@ fn look_point(seed: u64, haven: &Haven, core: &ClientCore, at: OpAddr) -> [f32; 
     [x, floor + level_y(at.level) + up, z]
 }
 
-fn look_at(seed: u64, haven: &Haven, core: &ClientCore, at: OpAddr) -> Intent {
+pub(crate) fn look_at(seed: u64, haven: &Haven, core: &ClientCore, at: OpAddr) -> Intent {
     Intent {
         look: Look::Point(look_point(seed, haven, core, at)),
         ..Intent::IDLE
@@ -871,11 +887,21 @@ pub struct Survey {
     pub ready: bool,
     /// Its own cupboard stands on the plot.
     pub hearth: bool,
+    /// Everything the rest of the milestone costs from the pack: what a
+    /// visit to the box keeps in the pack, or takes out of the box.
+    pub bill: [(u16, u32); BILL_ROWS],
+    pub bill_len: u8,
+    /// The pack is short of something the box held when last opened.
+    pub take_out: bool,
 }
 
 impl Survey {
     pub fn needs(&self) -> &[(u16, u32)] {
         &self.needs[..usize::from(self.needs_len)]
+    }
+
+    pub fn bill(&self) -> &[(u16, u32)] {
+        &self.bill[..usize::from(self.bill_len)]
     }
 }
 
@@ -966,6 +992,9 @@ impl Builder {
                 needs_len: 0,
                 ready: false,
                 hearth: false,
+                bill: [(0, 0); BILL_ROWS],
+                bill_len: 0,
+                take_out: false,
             },
             stats: BuildStats {
                 sites: 0,
@@ -1059,9 +1088,23 @@ impl Builder {
         self.region(body) != Region::Outside && self.walled(core)
     }
 
+    /// Does one of its doors stand open, per the mirror?
+    pub fn door_open(&self, core: &ClientCore) -> bool {
+        self.plan.is_some_and(|p| {
+            [FRONT, INNER]
+                .iter()
+                .any(|&d| door_open(core, door_addr(&p, d)) == Some(true))
+        })
+    }
+
     /// A walk through the doors is under way.
     pub fn passing(&self) -> bool {
         self.passage.busy()
+    }
+
+    /// A walk out through the doors is under way.
+    pub fn leaving(&self) -> bool {
+        self.passage.way == Some(Way::Out)
     }
 
     /// Walk in or out through the doors (`GoHome`, or leaving for work).
@@ -1152,8 +1195,10 @@ impl Builder {
     }
 
     /// Bring `done` up to what the mirror shows standing on the plot, and
-    /// work out the next milestone and what it needs. Once a second.
-    pub fn survey_now(&mut self, core: &ClientCore) {
+    /// work out the next milestone and what it needs: what the pack and the
+    /// box (as `stored` last showed it) are short of between them. Once a
+    /// second.
+    pub fn survey_now(&mut self, core: &ClientCore, stored: &Ledger) {
         // Before a plot is chosen the work is the whole blueprint, and its
         // price does not depend on where.
         let plan = self.plan.unwrap_or(BasePlan::new(0, 0, 0));
@@ -1163,9 +1208,13 @@ impl Builder {
         let milestone = self.milestone();
         let mut needs = [(0u16, 0u32); NEED_ROWS];
         let mut n = 0;
-        let bill = self.bill(core, milestone);
+        let bill = self.bill(core, milestone, stored);
+        let mut take_out = false;
         for &(item, units) in &bill.rows[..bill.n] {
-            let short = units.saturating_sub(count(core, item));
+            let carried = count(core, item);
+            let boxed = stored.units(item);
+            take_out |= carried < units && boxed > 0;
+            let short = units.saturating_sub(carried.saturating_add(boxed));
             if short > 0 && n < NEED_ROWS {
                 needs[n] = (item, short);
                 n += 1;
@@ -1181,7 +1230,53 @@ impl Builder {
             ready: milestone != Milestone::Done
                 && self.pick_among(core, &plan, milestone, 0).is_some(),
             hearth,
+            bill: bill.rows,
+            bill_len: bill.n as u8,
+            take_out,
         };
+    }
+
+    /// Its own cupboard, standing on the plot.
+    pub fn hearth_addr(&self, core: &ClientCore) -> Option<OpAddr> {
+        self.own_kit(core, HEARTH_ITEM)
+    }
+
+    /// Its own box, standing in the base.
+    pub fn box_addr(&self, core: &ClientCore) -> Option<OpAddr> {
+        self.own_kit(core, BOX_ITEM)
+    }
+
+    /// The deployable this body put down for the op that places `name`,
+    /// where the mirror still shows one.
+    fn own_kit(&self, core: &ClientCore, name: &'static str) -> Option<OpAddr> {
+        let plan = self.plan?;
+        (0..OPS).find_map(|i| {
+            let s = spec(i);
+            let at = addr(&plan, &s);
+            (s.stage.is_some()
+                && s.op == Op::Kit(name)
+                && self.mine & bit(i) != 0
+                && deploy_at(core, at).is_some())
+            .then_some(at)
+        })
+    }
+
+    /// Grades that pay upkeep, counted once the stone core stands: until
+    /// then every stone the pack holds is going into those walls, and a
+    /// fresh grade has an upkeep period before anything rots.
+    pub fn charged(&self) -> u32 {
+        if self.survey.milestone > Milestone::Stone {
+            self.graded()
+        } else {
+            0
+        }
+    }
+
+    /// Grades that stand: what upkeep is charged on (twig never is).
+    pub fn graded(&self) -> u32 {
+        (0..OPS)
+            .filter(|&i| self.done & bit(i) != 0 && matches!(spec(i).op, Op::Grade(_)))
+            .count() as u32
     }
 
     fn hearth_stands(&self, core: &ClientCore, plan: &BasePlan) -> bool {
@@ -1276,10 +1371,11 @@ impl Builder {
     }
 
     /// Everything the rest of `milestone` costs from the pack: pieces and
-    /// grades at their price, a deployable not in the pack at its recipe's,
-    /// and the plan or hammer if it is missing. A wood grade that a stone
-    /// grade of the same piece would make pointless is not counted.
-    fn bill(&self, core: &ClientCore, milestone: Milestone) -> Bill {
+    /// grades at their price, a deployable itself where the pack or the box
+    /// has one and at its recipe's price where neither does, and the plan
+    /// or hammer if it is missing. A wood grade that a stone grade of the
+    /// same piece would make pointless is not counted.
+    fn bill(&self, core: &ClientCore, milestone: Milestone, stored: &Ledger) -> Bill {
         let mut bill = Bill::default();
         let mut kits: [(&str, u32); 4] = [("", 0); 4];
         let (mut plan_needed, mut hammer_needed) = (false, false);
@@ -1316,7 +1412,11 @@ impl Builder {
             let Some(item) = (!name.is_empty()).then(|| item_named(core, name)).flatten() else {
                 continue;
             };
-            let missing = wanted.saturating_sub(count(core, item));
+            let have = count(core, item).saturating_add(stored.units(item));
+            if have > 0 {
+                bill.add(item, wanted.min(have));
+            }
+            let missing = wanted.saturating_sub(have);
             if let Some(r) = recipe_bill(core, item) {
                 for _ in 0..missing {
                     bill.add_bill(&r);
@@ -2006,7 +2106,7 @@ mod tests {
                 });
             }
         }
-        b.survey_now(&core);
+        b.survey_now(&core, &Ledger::EMPTY);
         assert_eq!(b.survey().milestone, Milestone::Doors);
         assert!(b.survey().hearth);
         let wall = (0..OPS)
@@ -2016,7 +2116,7 @@ mod tests {
         stream(&mut core, |buf| {
             protocol::event::encode_event_removed(true, at.cx, at.cz, at.level, at.loc, buf)
         });
-        b.survey_now(&core);
+        b.survey_now(&core, &Ledger::EMPTY);
         assert_eq!(b.survey().milestone, Milestone::Shell);
         assert_eq!(b.done & bit(wall), 0, "the wall is built again");
 
@@ -2035,7 +2135,7 @@ mod tests {
         stream(&mut core, |buf| {
             protocol::event::encode_event_deploy_placed(&rec, buf)
         });
-        b.survey_now(&core);
+        b.survey_now(&core, &Ledger::EMPTY);
         assert_eq!(b.done & bit(bag), 0);
     }
 

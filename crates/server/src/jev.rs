@@ -226,7 +226,13 @@ mod tests {
             state: crate::mind::HomeState::Inside,
             distance: crate::mind::Distance::Far,
             bearing: 5,
+            attacked: true,
         };
+        for i in 0..crate::mind::SUMMARY_STORED {
+            s.stored[i] = (long(300 + i), u32::MAX);
+        }
+        s.stored_len = crate::mind::SUMMARY_STORED as u8;
+        (s.take_out, s.feed) = (true, true);
         (s.bag_ready, s.night) = (true, true);
         s.milestone = crate::mind::Milestone::Upstairs;
         for i in 0..crate::mind::SUMMARY_NEEDS {

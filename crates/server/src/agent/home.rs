@@ -16,17 +16,20 @@ use crate::agent::hands::Hands;
 use crate::agent::intent::{yaw_toward, Intent, Look};
 use crate::agent::route::{Route, Step};
 use crate::agent::site::foundation_goes;
+use crate::agent::stash::STASH_RETRY_TICKS;
 use crate::mind::Why;
 use client_core::core::ClientCore;
 use protocol::EntityState;
 use sim_core::backpack::LOOT_REACH_M;
 use sim_core::build::{build_cell_of, BUILD_REACH_M, LOC_PLANE};
+use sim_core::deploy::UPKEEP_PERIOD_TICKS;
 use sim_core::deploy::{
     cell_center, BagAnchor, ARCH_BAG, BAG_CAP, REFUSE_D_BAG_CAP, REFUSE_D_COST,
 };
-use sim_core::limits::{HOTBAR_SLOTS, INV_SLOTS, MAX_BUILD_COORD, TICK_HZ};
+use sim_core::limits::{HEARTH_STOCK_ROWS, HOTBAR_SLOTS, INV_SLOTS, MAX_BUILD_COORD, TICK_HZ};
 use sim_core::movement::{POS_XZ_Q, POS_Y_Q};
 use sim_core::terrain::{self, Haven};
+use sim_core::upkeep;
 
 /// A death backpack further than this is not worth the walk back.
 pub const RECOVER_M: f32 = 150.0;
@@ -57,6 +60,53 @@ pub const BAG_RETRY_M: f32 = 10.0;
 /// ...or this long has passed: the same ground, claim or crowd would
 /// refuse it again.
 pub const BAG_RETRY_TICKS: u32 = 120 * TICK_HZ;
+
+/// A cupboard whose last reading covers fewer upkeep periods than this
+/// (hours) is fed on the next visit home.
+pub const UPKEEP_LOW_PERIODS: u32 = 6;
+
+/// The reply to the last feed: the cupboard's stock, per upkeep material,
+/// against what one upkeep period charges in it, and when it was read.
+/// The only stock readout the game gives, so it is what this body goes by
+/// until it feeds again.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Reading {
+    pub items: [u16; HEARTH_STOCK_ROWS],
+    pub stock: [u32; HEARTH_STOCK_ROWS],
+    pub bill: [u32; HEARTH_STOCK_ROWS],
+    pub rows: u8,
+    pub at: u32,
+    /// Grades standing when it was read: a base that has grown since pays
+    /// a bigger bill than the reading says.
+    pub grades: u32,
+}
+
+impl Reading {
+    /// Whole upkeep periods the stock still covers at `tick`; `None` when
+    /// nothing is charged (twig, or nothing the cupboard pays for).
+    pub fn periods_left(&self, tick: u32) -> Option<u32> {
+        let n = usize::from(self.rows);
+        let covers = upkeep::lasts(&self.stock[..n], &self.bill[..n])?;
+        Some(covers.saturating_sub(self.gone(tick)))
+    }
+
+    /// Upkeep periods charged since the reading.
+    fn gone(&self, tick: u32) -> u32 {
+        let gone = u64::from(tick.wrapping_sub(self.at)) / UPKEEP_PERIOD_TICKS;
+        gone.min(u64::from(u32::MAX)) as u32
+    }
+
+    /// The charged materials running low at `tick`.
+    fn low(&self, tick: u32) -> impl Iterator<Item = u16> + '_ {
+        let gone = self.gone(tick);
+        (0..usize::from(self.rows))
+            .filter(move |&i| {
+                self.bill[i] > 0
+                    && (self.stock[i] / self.bill[i]).saturating_sub(gone) < UPKEEP_LOW_PERIODS
+            })
+            .map(|i| self.items[i])
+    }
+}
 
 /// What the server said about a deploy this body sent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,6 +150,12 @@ pub struct Home {
     /// nothing more, and the free pack slots then: not walked to again
     /// until the pack has more room, or a new death leaves a new one.
     pack_tried: Option<(u32, u8)>,
+    /// Where its base stands (the spot in its core), once it has one.
+    base: Option<[f32; 2]>,
+    /// The last feed's reply.
+    upkeep: Option<Reading>,
+    /// When the last visit to the box came to nothing.
+    stash_failed: Option<u32>,
     pub stats: HomeStats,
 }
 
@@ -119,6 +175,9 @@ impl Home {
             capped: false,
             bag_failed: None,
             pack_tried: None,
+            base: None,
+            upkeep: None,
+            stash_failed: None,
             stats: HomeStats {
                 bags_placed: 0,
                 deploy_refusals: 0,
@@ -234,16 +293,121 @@ impl Home {
         self.verdict.take()
     }
 
-    /// Hurt, or killed, standing here: near one of its bags that is home
-    /// being fought over.
+    /// Where its base stands, if it has one (the builder's plot).
+    pub fn set_base(&mut self, at: Option<[f32; 2]>) {
+        self.base = at;
+    }
+
+    /// Is this spot home ground: near its base or one of its bags?
+    fn near_home(&self, at: [f32; 2]) -> bool {
+        let near = |x: f32, z: f32| (x - at[0]).hypot(z - at[1]) <= HOME_ALARM_M;
+        self.base.is_some_and(|[x, z]| near(x, z))
+            || self.bags.iter().flatten().any(|&(cx, cz, _)| {
+                let (x, z) = cell_center(cx, cz);
+                near(x, z)
+            })
+    }
+
+    /// Hurt, or killed, standing here: near its base or one of its bags
+    /// that is home being fought over.
     pub fn on_hurt(&mut self, at: [f32; 2], tick: u32) {
-        let near = self.bags.iter().flatten().any(|&(cx, cz, _)| {
-            let (x, z) = cell_center(cx, cz);
-            (x - at[0]).hypot(z - at[1]) <= HOME_ALARM_M
-        });
-        if near {
+        if self.near_home(at) {
             self.alarm = Some(tick);
         }
+    }
+
+    /// A blast heard here: near home, somebody is blowing their way in.
+    pub fn on_blast(&mut self, at: [f32; 2], tick: u32) {
+        if self.near_home(at) {
+            self.alarm = Some(tick);
+        }
+    }
+
+    /// A blow landed on a piece or deployable of its own base.
+    pub fn on_struck(&mut self, tick: u32) {
+        self.alarm = Some(tick);
+    }
+
+    /// Something of its own base that does not rot came down: while the
+    /// cupboard's stock covers the upkeep nothing decays, so somebody
+    /// broke it. Without a reading (or with the stock run out) it may be
+    /// rot, and says nothing.
+    pub fn on_removed(&mut self, tick: u32) {
+        if self
+            .upkeep
+            .and_then(|r| r.periods_left(tick))
+            .is_some_and(|p| p > 0)
+        {
+            self.alarm = Some(tick);
+        }
+    }
+
+    /// The reply to a feed of its own cupboard arrived.
+    pub fn on_stock(&mut self, core: &ClientCore, tick: u32, grades: u32) {
+        let n = usize::from(core.stock_count).min(HEARTH_STOCK_ROWS);
+        let mut r = Reading {
+            rows: n as u8,
+            at: tick,
+            grades,
+            ..Reading::default()
+        };
+        for (i, &(item, units, bill)) in core.stock[..n].iter().enumerate() {
+            (r.items[i], r.stock[i], r.bill[i]) = (item, units, bill);
+        }
+        self.upkeep = Some(r);
+    }
+
+    pub fn upkeep(&self) -> Option<Reading> {
+        self.upkeep
+    }
+
+    /// Does the cupboard want feeding: a base with `grades` standing pays
+    /// upkeep, and the last reading is missing, running low, or was taken
+    /// before the base grew into paying anything.
+    pub fn upkeep_due(&self, tick: u32, grades: u32) -> bool {
+        if grades == 0 {
+            // Twig is never charged.
+            return false;
+        }
+        match self.upkeep {
+            None => true,
+            Some(r) => match r.periods_left(tick) {
+                Some(left) => left < UPKEEP_LOW_PERIODS,
+                None => grades > r.grades,
+            },
+        }
+    }
+
+    /// Would a feed now top up what runs low? A feed takes a chunk of
+    /// every material the cupboard eats, charged or not, so it waits until
+    /// the pack carries one that is both charged and running low: a pack
+    /// of wood fed to a cupboard short of stone is wood lost. Before any
+    /// reading (or once the base has grown past what the last one charged)
+    /// the charges are not known, and a feed is how a player learns them.
+    pub fn can_feed(&self, core: &ClientCore, tick: u32) -> bool {
+        let carried = |item: u16| {
+            core.inv[..INV_SLOTS]
+                .iter()
+                .any(|s| s.count > 0 && s.item == item)
+        };
+        match self.upkeep {
+            None => true,
+            Some(r) if r.periods_left(tick).is_none() => {
+                r.items[..usize::from(r.rows)].iter().any(|&i| carried(i))
+            }
+            Some(r) => r.low(tick).any(carried),
+        }
+    }
+
+    /// A visit to the box came to nothing here and now.
+    pub fn stash_failed(&mut self, tick: u32) {
+        self.stash_failed = Some(tick);
+    }
+
+    /// Is a visit to the box not worth another try yet?
+    pub fn stash_held(&self, tick: u32) -> bool {
+        self.stash_failed
+            .is_some_and(|t| tick.wrapping_sub(t) < STASH_RETRY_TICKS)
     }
 
     pub fn under_attack(&self, tick: u32) -> bool {
@@ -685,5 +849,68 @@ mod tests {
         home.pack_tried(&core);
         core.own_bag = 8;
         assert!(!home.recover_held(&core), "a new death, a new backpack");
+    }
+
+    #[test]
+    fn blows_blasts_and_breaks_at_home_raise_the_alarm_and_upkeep_goes_by_the_last_feed() {
+        let mut home = Home::new();
+        home.set_base(Some([300.0, 300.0]));
+        home.on_blast([300.0 + HOME_ALARM_M + 1.0, 300.0], 10);
+        assert!(!home.under_attack(10), "a blast somewhere else");
+        home.on_blast([310.0, 300.0], 20);
+        assert!(home.under_attack(20), "a blast at home");
+        home.on_hurt([305.0, 305.0], 30);
+        assert_eq!(home.alarm, Some(30), "a blow by the base, no bag needed");
+        let mut home = Home::new();
+        home.on_struck(5);
+        assert!(home.under_attack(5), "a hit on its own wall");
+        // Upkeep: twig is never charged; a graded base never read is fed.
+        let mut home = Home::new();
+        assert!(!home.upkeep_due(0, 0));
+        assert!(home.upkeep_due(0, 3));
+        // Without a reading, a piece coming down may be rot.
+        home.on_removed(5);
+        assert!(!home.under_attack(5));
+        let mut core = Box::new(ClientCore::new(1, 1, 0));
+        core.stock[0] = (50, 500, 10);
+        core.stock[1] = (58, 0, 0);
+        core.stock_count = 2;
+        home.on_stock(&core, 100, 3);
+        let r = home.upkeep().unwrap();
+        assert_eq!(r.periods_left(100), Some(50));
+        assert!(!home.upkeep_due(100, 3));
+        let period = UPKEEP_PERIOD_TICKS as u32;
+        assert!(!home.upkeep_due(100 + (50 - UPKEEP_LOW_PERIODS) * period - 1, 3));
+        assert!(home.upkeep_due(100 + (50 - UPKEEP_LOW_PERIODS + 1) * period, 3));
+        // Fed, nothing rots: what comes down was broken.
+        home.on_removed(200);
+        assert!(home.under_attack(200));
+        // The reading names what it eats, and what of that is charged:
+        // wood the cupboard would eat uncharged is not fed while the
+        // stone is not in the pack.
+        let low = 100 + (50 - UPKEEP_LOW_PERIODS + 1) * period;
+        assert!(!home.can_feed(&core, low));
+        core.inv[7] = sim_core::gather::ItemStack {
+            item: 58,
+            count: 5,
+            ..Default::default()
+        };
+        assert!(!home.can_feed(&core, low), "only the uncharged wood");
+        core.inv[8] = sim_core::gather::ItemStack {
+            item: 50,
+            count: 5,
+            ..Default::default()
+        };
+        assert!(!home.can_feed(&core, 100), "the stone is not low yet");
+        assert!(home.can_feed(&core, low));
+        // A reading that charged nothing is taken again once the base grew.
+        core.stock[0] = (50, 500, 0);
+        home.on_stock(&core, 300, 3);
+        assert!(!home.upkeep_due(300, 3));
+        assert!(home.upkeep_due(300, 4));
+        // A visit that failed waits a while.
+        home.stash_failed(1000);
+        assert!(home.stash_held(1000 + STASH_RETRY_TICKS - 1));
+        assert!(!home.stash_held(1000 + STASH_RETRY_TICKS));
     }
 }

@@ -31,6 +31,11 @@ pub const SUMMARY_ITEMS: usize = 16;
 pub const SUMMARY_CRAFTS: usize = 8;
 /// Materials the next part of the base is short of, as a summary carries them.
 pub const SUMMARY_NEEDS: usize = crate::agent::build::NEED_ROWS;
+/// What its box holds, as a summary carries it.
+pub const SUMMARY_STORED: usize = crate::agent::stash::STORED_ROWS;
+/// The scripted policy goes home to put things away once the pack is down
+/// to this many free slots.
+pub const SCRIPTED_STASH_FREE_SLOTS: u8 = 4;
 /// The deployable a body wakes on, by catalog name: what the playbook
 /// crafts once it has stone tools.
 pub const BAG_ITEM: &str = "Sleeping Bag";
@@ -112,6 +117,9 @@ pub enum Goal {
     Build,
     /// Walk home and in through its own doors, shutting them behind.
     GoHome,
+    /// Go home and see to it: feed the cupboard when its stock runs low,
+    /// put away what the belt does not keep, take out what the base needs.
+    Stash,
 }
 
 /// `craft:` plus the longest catalog name.
@@ -139,7 +147,7 @@ impl std::fmt::Debug for Label {
 
 impl Goal {
     /// Every goal but the per-item craft, in the order they are offered.
-    pub const FIXED: [Goal; 13] = [
+    pub const FIXED: [Goal; 14] = [
         Goal::Explore,
         Goal::GatherWood,
         Goal::GatherStone,
@@ -153,6 +161,7 @@ impl Goal {
         Goal::Recover,
         Goal::Build,
         Goal::GoHome,
+        Goal::Stash,
     ];
 
     /// The vocabulary's base keys, for documentation and tests.
@@ -172,6 +181,7 @@ impl Goal {
             Goal::Recover => "recover",
             Goal::Build => "build",
             Goal::GoHome => "go_home",
+            Goal::Stash => "stash",
         }
     }
 
@@ -239,6 +249,9 @@ impl Goal {
                 "Build the next part of the base from what is in the pack; choose a plot first if there is none.".into()
             }
             Goal::GoHome => "Walk home and in through the doors, shutting them behind.".into(),
+            Goal::Stash => {
+                "Go home: feed the cupboard if it runs low, put what the belt does not need in the box, take out what the base needs.".into()
+            }
         }
     }
 }
@@ -264,6 +277,8 @@ pub enum Why {
     Fight,
     Hostile,
     NoSpot,
+    /// The session is ending: home, to sleep behind shut doors.
+    LogOff,
 }
 
 impl Why {
@@ -287,6 +302,7 @@ impl Why {
             Why::Fight => "a fight outlasted it",
             Why::Hostile => "someone dangerous is in view",
             Why::NoSpot => "no spot here takes it",
+            Why::LogOff => "the session is ending, so it went home",
         }
     }
 }
@@ -470,6 +486,8 @@ pub struct HomeSense {
     pub state: HomeState,
     pub distance: Distance,
     pub bearing: u8,
+    /// Blows, breaks or blasts at home a moment ago.
+    pub attacked: bool,
 }
 
 impl HomeSense {
@@ -481,6 +499,7 @@ impl HomeSense {
             "state": self.state.word(),
             "distance": self.distance.word(),
             "bearing": BEARINGS[self.bearing as usize % 8],
+            "under_attack": self.attacked,
         })
     }
 }
@@ -533,6 +552,13 @@ pub struct Summary {
     pub milestone: Milestone,
     pub needs: [(Name, u32); SUMMARY_NEEDS],
     pub needs_len: u8,
+    /// What its box held when last opened.
+    pub stored: [(Name, u32); SUMMARY_STORED],
+    pub stored_len: u8,
+    /// The box holds something the pack is short of for the base.
+    pub take_out: bool,
+    /// The cupboard's stock is running low, and the pack can feed it.
+    pub feed: bool,
     pub trigger: Trigger,
     pub options: [Goal; MAX_OPTIONS],
     pub options_len: u8,
@@ -603,12 +629,17 @@ impl Summary {
             state: HomeState::None,
             distance: Distance::Here,
             bearing: 0,
+            attacked: false,
         },
         bag_ready: false,
         night: false,
         milestone: Milestone::Shell,
         needs: [(Name::EMPTY, 0); SUMMARY_NEEDS],
         needs_len: 0,
+        stored: [(Name::EMPTY, 0); SUMMARY_STORED],
+        stored_len: 0,
+        take_out: false,
+        feed: false,
         trigger: Trigger::Start,
         options: [Goal::Wait; MAX_OPTIONS],
         options_len: 0,
@@ -624,6 +655,10 @@ impl Summary {
 
     pub fn needs(&self) -> &[(Name, u32)] {
         &self.needs[..self.needs_len as usize]
+    }
+
+    pub fn stored(&self) -> &[(Name, u32)] {
+        &self.stored[..self.stored_len as usize]
     }
 
     pub fn options(&self) -> &[Goal] {
@@ -707,6 +742,11 @@ impl Summary {
                 "milestone": self.milestone.word(),
                 "missing": self.needs().iter().map(|(n, c)| json!({"name": n.as_str(), "count": c})).collect::<Vec<_>>(),
             },
+            "my_box": {
+                "holds": self.stored().iter().map(|(n, c)| json!({"name": n.as_str(), "count": c})).collect::<Vec<_>>(),
+                "has_what_the_base_needs": self.take_out,
+            },
+            "cupboard_needs_feeding": self.feed,
             "asked_because": self.trigger.word(),
         })
     }
@@ -1305,6 +1345,14 @@ impl Scripted {
                 }
             }
         }
+        // Home chores: the box holds what the base needs, the cupboard runs
+        // low, or the pack is nearly full.
+        if tooled
+            && s.offers(Goal::Stash)
+            && (s.take_out || s.feed || s.free_slots <= SCRIPTED_STASH_FREE_SLOTS)
+        {
+            return (Goal::Stash, "scripted: home to the box and the cupboard");
+        }
         // Then a home: the next milestone's materials, gathered where they
         // are in view, then the building. Short of something nobody can see,
         // it builds what the pack pays for, and otherwise looks round.
@@ -1632,8 +1680,50 @@ mod tests {
         s.milestone = Milestone::Done;
         assert_eq!(scripted.pick(&s).0, Goal::GatherWood);
         assert_eq!(Goal::GoHome.label().as_str(), "go_home");
+        assert_eq!(Goal::Stash.label().as_str(), "stash");
         assert!(Goal::FIXED
             .iter()
             .all(|g| g.label().as_str().len() <= LABEL_BYTES));
+    }
+
+    #[test]
+    fn the_playbook_goes_home_for_the_box_and_the_cupboard() {
+        let mut scripted = Scripted::default();
+        let mut s = Summary::EMPTY;
+        (s.food, s.food_max, s.water, s.water_max) = (100, 100, 100, 100);
+        s.items[0] = (name("Stone Hatchet"), 1);
+        s.items[1] = (name("Stone Pickaxe"), 1);
+        s.items_len = 2;
+        s.bags = 1;
+        s.free_slots = 20;
+        for g in [Goal::Explore, Goal::GatherWood, Goal::Build, Goal::Stash] {
+            s.offer(g);
+        }
+        s.trees.add(10.0, 0);
+        s.milestone = Milestone::Upstairs;
+        assert_eq!(
+            scripted.pick(&s).0,
+            Goal::Build,
+            "nothing to see to at home"
+        );
+        s.take_out = true;
+        assert_eq!(
+            scripted.pick(&s).0,
+            Goal::Stash,
+            "the box has what the base needs"
+        );
+        s.take_out = false;
+        s.feed = true;
+        assert_eq!(scripted.pick(&s).0, Goal::Stash, "the cupboard runs low");
+        s.feed = false;
+        s.free_slots = SCRIPTED_STASH_FREE_SLOTS;
+        assert_eq!(scripted.pick(&s).0, Goal::Stash, "the pack is nearly full");
+        // Not offered (no box, or a visit just failed): not chosen.
+        s.options_len = 0;
+        s.offer(Goal::Build);
+        assert_eq!(scripted.pick(&s).0, Goal::Build);
+        let v = s.to_json();
+        assert_eq!(v["home"]["state"], "none");
+        assert_eq!(v["cupboard_needs_feeding"], false);
     }
 }

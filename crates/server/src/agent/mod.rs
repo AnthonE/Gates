@@ -4,7 +4,8 @@
 //! what a player knows of the game's rules ([`wiki`]), the legs that find
 //! a way somewhere ([`route`]), the reflex that answers a fight
 //! ([`combat`]), its bags and the walk back to what it dropped ([`home`]),
-//! where it would build ([`site`]), and the building ([`build`]).
+//! where it would build ([`site`]), the building ([`build`]), living in
+//! it ([`stash`]), and the code on its locks ([`lock`]).
 //! `explorer.rs` stays the orchestrator; these modules never drain
 //! `ClientCore`'s event rings — `Survivor::event_with` is the one reader
 //! and hands them facts.
@@ -18,7 +19,9 @@ pub mod combat;
 pub mod hands;
 pub mod home;
 pub mod intent;
+pub mod lock;
 pub mod route;
 pub mod site;
+pub mod stash;
 pub mod tracks;
 pub mod wiki;
