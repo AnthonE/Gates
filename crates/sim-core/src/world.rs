@@ -3171,9 +3171,14 @@ impl World {
         } else {
             None
         };
-        let (x, z) = match bag {
-            Some(p) => p,
-            None => self.spawn_pos_n(id, deaths as u32),
+        let woke = match bag {
+            Some((cx, cz, level)) => {
+                deploy::bag_wake_body(self.seed, &self.haven, self.pieces.cols(), cx, cz, level)
+            }
+            None => {
+                let (x, z) = self.spawn_pos_n(id, deaths as u32);
+                Body::at(self.seed, &self.haven, x, z)
+            }
         };
         let hp = self.combat.player_hp;
         // `known` is the fifth thing a body carries through a death, and
@@ -3206,7 +3211,7 @@ impl World {
         self.players[slot] = Player {
             id,
             active: true,
-            body: Body::at(self.seed, &self.haven, x, z),
+            body: woke,
             frame,
             hp,
             hp_max: hp,

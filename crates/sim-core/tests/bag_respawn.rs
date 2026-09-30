@@ -15,9 +15,12 @@
 //! whole death fits inside a test; the cooldown is `BAG_COOLDOWN_TICKS`,
 //! which is `DECISIONS.md` §open's spoken five minutes.
 
-use sim_core::build::{foundation_terrain_ok, BUILD_CELL_M, LOC_PLANE};
+use sim_core::build::{
+    column_floor_y, foundation_terrain_ok, BuildContent, BUILD_CELL_M, LEVEL_H_M, LOC_EDGE_XLO,
+    LOC_PLANE,
+};
 use sim_core::combat::CombatContent;
-use sim_core::deploy::{DeployContent, BAG_COOLDOWN_TICKS};
+use sim_core::deploy::{DeployContent, BAG_COOLDOWN_TICKS, PLACE_ANY};
 use sim_core::gather::ItemStack;
 use sim_core::limits::TICK_HZ;
 use sim_core::survival::SurvivalContent;
@@ -121,6 +124,12 @@ fn stand(w: &mut World, cx: u16, cz: u16) {
 /// store surgery, so every refusal the sim would raise is one this fixture
 /// would trip over rather than route around.
 fn place_bag(w: &mut World, cx: u16, cz: u16) {
+    place_bag_on(w, cx, cz, 0);
+}
+
+/// [`place_bag`] on a storey: level 0 is the ground or a foundation, 1 the
+/// floor above it.
+fn place_bag_on(w: &mut World, cx: u16, cz: u16, level: u8) {
     stand(w, cx, cz);
     w.players[0].inv[10] = ItemStack {
         item: BAG_ITEM,
@@ -134,13 +143,13 @@ fn place_bag(w: &mut World, cx: u16, cz: u16) {
         row: BAG_ROW,
         cx,
         cz,
-        level: 0,
+        level,
         loc: LOC_PLANE,
     }]);
     assert_eq!(
         w.deploys.len(),
         before + 1,
-        "the bag did not place at ({cx}, {cz}) — the fixture, not the mechanic"
+        "the bag did not place at ({cx}, {cz}, {level}) — the fixture, not the mechanic"
     );
 }
 
@@ -362,7 +371,7 @@ fn the_cooldown_is_hashed_state() {
     let before = w.state_hash();
     assert_eq!(
         w.deploys.claim_bag(&w.deploy, 1, x, z, w.tick),
-        Some((x, z))
+        Some((cx, cz, 0))
     );
     assert!(w.deploys.bag_ready()[0] > 0, "the bag was not stamped");
     assert_ne!(
@@ -830,4 +839,77 @@ fn a_live_body_pressing_respawn_is_not_paid() {
         ItemStack::default(),
         "a live press paid out a spawn kit — the kit is a free action"
     );
+}
+
+/// **A bag inside a base wakes you standing on its floor**, which is where
+/// Rust's bags go. The shipped bag is placement `any` — bare ground, a
+/// foundation or an upper floor — and the terrain height a ground bag wakes
+/// at is inside a foundation's slab and a whole storey under a floor.
+///
+/// One bag per storey in one column: the planar distances tie, so the
+/// ground-floor bag (the earlier one) answers first, and the death inside
+/// its cooldown falls through to the one upstairs.
+#[test]
+fn a_bag_inside_a_base_wakes_you_on_its_floor() {
+    let mut w = lone_world();
+    w.build = BuildContent::probe_fixture();
+    w.deploy.defs[BAG_ROW as usize].placement = PLACE_ANY;
+    let (cx, cz) = buildable_cell_near(SEED, 682, 682, 0);
+    stand(&mut w, cx, cz);
+    // The build fixture's foundation, wall and floor rows, paid in items 0
+    // and 1: a foundation, a wall on its edge and a floor on the wall.
+    for (slot, item) in [(11, 0), (12, 1)] {
+        w.players[0].inv[slot] = ItemStack {
+            item,
+            count: 100,
+            cond: 0,
+            skin: 0,
+        };
+    }
+    for (row, level, loc) in [(0, 0, LOC_PLANE), (1, 0, LOC_EDGE_XLO), (2, 1, LOC_PLANE)] {
+        let before = w.pieces.len();
+        w.tick(&[Command::Place {
+            id: 1,
+            row,
+            cx,
+            cz,
+            level,
+            loc,
+            freehand: false,
+            plate: 0,
+        }]);
+        assert_eq!(
+            w.pieces.len(),
+            before + 1,
+            "build row {row} did not place — the fixture, not the mechanic"
+        );
+    }
+    place_bag_on(&mut w, cx, cz, 0);
+    place_bag_on(&mut w, cx, cz, 1);
+
+    let plate = w
+        .pieces
+        .cols()
+        .plate(cx, cz)
+        .expect("the foundation stands");
+    let floor = column_floor_y(SEED, hv(SEED), cx, cz, plate);
+    let (x, z) = cell_center(cx, cz);
+    assert!(
+        floor > sim_core::terrain::ground(SEED, hv(SEED), x, z),
+        "the foundation's top is not above the ground — this test proves nothing here"
+    );
+    for (level, want) in [(0, floor), (1, floor + LEVEL_H_M)] {
+        let woke = die_and_wake(&mut w, true);
+        assert_eq!(
+            woke,
+            body_on(&w, cx, cz),
+            "storey {level}: not on the bag's cell"
+        );
+        assert_eq!(
+            w.players[0].body.qy,
+            sim_core::movement::quant_y(want),
+            "storey {level}: the body did not wake standing on the bag's floor"
+        );
+        assert_eq!(respawn_event(&w), Some((1, true)));
+    }
 }
