@@ -119,6 +119,9 @@ pub fn resolve(
     // The wire's own two bytes for the look, so the swing prompt is cast
     // from exactly what the frame will carry (`SwingAim`'s header).
     let (yaw, pitch) = (yaw_u16(look.yaw), pitch_u8(look.pitch));
+    // The stance the sim will swing from, so the prompt's ray leaves the
+    // crouched eye when the swing will (v83).
+    let crouched = core.crouched();
     let (fx, fz) = sim_core::yaw_dir(yaw);
     aimed.0 = interact::resolve(
         Aim::new(x, z, fx, fz),
@@ -163,6 +166,7 @@ pub fn resolve(
                     z,
                     yaw,
                     pitch,
+                    crouched,
                 },
                 &mut island,
             );
@@ -182,6 +186,7 @@ pub fn resolve(
                         z,
                         yaw,
                         pitch,
+                        crouched,
                     },
                     &mut island,
                 );
@@ -223,6 +228,7 @@ pub fn resolve(
                 z,
                 yaw,
                 pitch,
+                crouched,
             },
             core.player_id,
             &core.view.entities,

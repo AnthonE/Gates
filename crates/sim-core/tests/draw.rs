@@ -7,7 +7,7 @@
 
 use sim_core::combat::{AmmoDef, CombatContent, RangedDef, NO_MAG};
 use sim_core::gather::{ItemStack, NO_ITEM};
-use sim_core::input::{InputFrame, BTN_AIM, BTN_PRIMARY, BTN_SPRINT};
+use sim_core::input::{InputFrame, BTN_AIM, BTN_CROUCH, BTN_PRIMARY, BTN_SPRINT};
 use sim_core::ranged::{self, Arrows};
 use sim_core::world::{EventQueue, Player};
 
@@ -292,4 +292,91 @@ fn a_bow_brought_up_drawn_still_takes_a_draw() {
         "brought up drawn, it loosed {} ticks after coming up, under the {DRAW}-tick draw",
         shot - up
     );
+}
+
+/// A crouch walks slower still, and beats sprint and the draw (v83): the
+/// distance is `CROUCH_SPEED`'s over flat ground, whatever else is held.
+#[test]
+fn a_crouch_is_the_slowest_walk_whatever_else_is_held() {
+    use sim_core::movement::{self, Body, CROUCH_SPEED, DT, POS_XZ_Q, WALK_SPEED};
+    use sim_core::occupy::{Pristine, Scratch};
+    let seed = 7;
+    let mut sc = Scratch::with(seed, Pristine);
+    let cols = sim_core::collide::ColIndex::new();
+    let start = Body::at(seed, &sc.haven, 2048.0, 2048.0);
+    let mut run = |buttons: u8| {
+        let mut b = start;
+        let f = InputFrame {
+            buttons,
+            move_z: 127,
+            ..InputFrame::default()
+        };
+        for _ in 0..30 {
+            let mut occ = sim_core::occupy::Occupants {
+                table: &sc.table,
+                haven: &sc.haven,
+                harvested: &sc.harvested,
+                cache: &mut sc.cache,
+            };
+            movement::step(seed, &sc.haven, &cols, &mut occ, &mut b, &f);
+        }
+        (b.qz - start.qz).abs() + (b.qx - start.qx).abs()
+    };
+    let walk = run(0);
+    let crouch = run(BTN_CROUCH);
+    assert_eq!(run(BTN_CROUCH | BTN_SPRINT), crouch, "crouch beats sprint");
+    assert_eq!(run(BTN_CROUCH | BTN_AIM), crouch, "and the draw");
+    // The body is stored in 3 cm quanta, so each tick's step rounds to a
+    // whole quantum: the claim is the per-tick speed to half a quantum.
+    let per_tick = CROUCH_SPEED * DT / POS_XZ_Q;
+    assert!(
+        crouch < walk,
+        "crouch {crouch} must be slower than walk {walk}"
+    );
+    assert!(
+        (crouch as f32 - 30.0 * per_tick).abs() <= 15.0,
+        "crouch {crouch} quanta over 30 ticks vs {per_tick} a tick (walk {walk}, {WALK_SPEED} m/s)"
+    );
+}
+
+/// A downed body's crawl ignores crouch: `crawl_frame` strips the bit, so
+/// the crawl is not slowed twice.
+#[test]
+fn a_crawl_strips_the_crouch() {
+    let f = InputFrame {
+        buttons: BTN_CROUCH,
+        move_z: 120,
+        ..InputFrame::default()
+    };
+    assert_eq!(sim_core::wound::crawl_frame(&f).buttons & BTN_CROUCH, 0);
+}
+
+/// A crouched archer's arrow leaves from the crouched eye (v83), not the
+/// standing one: a crouched player cannot shoot over cover they cannot see
+/// over.
+#[test]
+fn a_crouched_archer_looses_from_the_crouched_eye() {
+    use sim_core::movement::POS_Y_Q;
+    let cc = bow(0);
+    let spawn_y = |crouch: bool| {
+        let mut p = archer();
+        p.body.qy = 500;
+        p.body.grounded = true;
+        p.frame = InputFrame {
+            buttons: BTN_PRIMARY | if crouch { BTN_CROUCH } else { 0 },
+            ..InputFrame::default()
+        };
+        let mut arrows = Arrows::new();
+        assert!(ranged::draw(
+            100,
+            &cc,
+            &mut arrows,
+            &mut EventQueue::default(),
+            &mut p
+        ));
+        let a = arrows.entries().next().expect("the bow looses");
+        a.qy - (500.0 * POS_Y_Q * 1000.0) as i32
+    };
+    assert_eq!(spawn_y(false), ranged::ARROW_EYE_MM);
+    assert_eq!(spawn_y(true), ranged::CROUCH_EYE_MM);
 }

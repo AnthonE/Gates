@@ -898,11 +898,14 @@ pub struct SwingAim {
     pub z: f32,
     pub yaw: u16,
     pub pitch: u8,
+    /// The stance the sim will swing from (`ClientCore::crouched`, v83):
+    /// a crouched eye is `ranged::CROUCH_EYE_MM` over the feet.
+    pub crouched: bool,
 }
 
 impl SwingAim {
-    /// The sim's own ray for this aim, `reach_m` long: the eye
-    /// `ranged::ARROW_EYE_MM` over the feet, along the look — `melee::ray`,
+    /// The sim's own ray for this aim, `reach_m` long: the stance's eye
+    /// (`ranged::eye_mm`) over the feet, along the look — `melee::ray`,
     /// from a body quantized the way the server holds one.
     fn ray(&self, reach_m: f32) -> Ray {
         let body = Body {
@@ -911,7 +914,13 @@ impl SwingAim {
             qz: quant_xz(self.z),
             ..Body::default()
         };
-        melee::ray(&body, self.yaw, self.pitch, reach_m * MM_PER_M)
+        melee::ray(
+            &body,
+            self.crouched,
+            self.yaw,
+            self.pitch,
+            reach_m * MM_PER_M,
+        )
     }
 }
 
@@ -1112,6 +1121,7 @@ pub fn resolve_assist(aim: SwingAim, own: u32, entities: &[(u32, protocol::Entit
             pitch: aim.pitch,
             ..Default::default()
         },
+        aim.crouched,
     );
     let mut best = Pick::default();
     let mut distance = f32::MAX;
@@ -1154,6 +1164,7 @@ mod assist_tests {
             z: 10.0,
             yaw: 0,
             pitch: 128,
+            crouched: false,
         };
         let target = protocol::EntityState {
             qx: quant_xz(10.0),

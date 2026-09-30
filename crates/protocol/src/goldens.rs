@@ -415,6 +415,8 @@ fn rng_entity(rng: &mut Pcg32, id: u32) -> EntityState {
         // Standing, from no `rng` call, for `dead`'s reason one line up
         // (wounded v0, v63): the bit is pinned deliberately or not at all.
         wounded: false,
+        // Upright, from no `rng` call, for the same reason (crouch, v83).
+        crouched: false,
         yaw: rng.next_bounded(0x1_0000) as u16,
         pitch: rng.next_bounded(0x100) as u8,
         // Empty-handed and unlit, from no `rng` call, for the reason
@@ -535,6 +537,10 @@ pub fn snapshot_keyframe() -> SnapshotCase {
     // had, which is exactly why the bit has to be carried rather than
     // inferred from any of the others.
     entities[0].dead = true;
+    // One crouch (v83), so the absolute encoder's `crouched` bit is pinned at
+    // **true** — on the at-rest body, a third entity, so no two state bits
+    // share a record and a swap between any pair cannot pass.
+    entities[1].crouched = true;
     // Two hands on the absolute path, and they are two different pins.
     // id 101 carries an item id with the flame OFF and id 100 an id with
     // the flame ON, so neither the field nor the bit can be read as the
@@ -640,6 +646,13 @@ pub fn snapshot_delta() -> SnapshotCase {
     entities[3].qz -= 600;
     // id 5: entered the interest set this snapshot.
     entities[4] = rng_entity(&mut rng, 5);
+    // id 6: crouched this snapshot — the delta encoder's `crouched` bit at
+    // **true** as a TRANSITION (baseline upright → record crouched), on a
+    // body carrying no other state bit. Drawn after id 5 so no earlier
+    // field reshuffles.
+    baseline[4] = rng_entity(&mut rng, 6);
+    entities[5] = baseline[4];
+    entities[5].crouched = true;
     SnapshotCase {
         header: SnapshotHeader {
             tick: 3_000,
@@ -652,9 +665,9 @@ pub fn snapshot_delta() -> SnapshotCase {
         },
         removed: &[90, 91],
         baseline,
-        baseline_len: 4,
+        baseline_len: 5,
         entities,
-        entity_len: 5,
+        entity_len: 6,
     }
 }
 

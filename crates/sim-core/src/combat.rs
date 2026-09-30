@@ -1281,8 +1281,14 @@ pub fn strike_body(
     // its most significant band — `hitscan`'s three lines, with the
     // rewound feet the cast carried out.
     let feet_mm = hit.qy as f32 * (POS_Y_Q * crate::ranged::MM_PER_M);
-    let part =
-        crate::ranged::part_crossed(ray.o.1, ray.s.1, feet_mm, hit.enter, hit.exit.min(stop_t));
+    let part = crate::ranged::part_crossed(
+        ray.o.1,
+        ray.s.1,
+        feet_mm,
+        hit.enter,
+        hit.exit.min(stop_t),
+        hit.crouched,
+    );
     let dmg = part_damage(def.body_damage(lit), part, def.headshot_mult, def.limb_pct);
     // The death screen's range: the PLANAR distance to the victim's axis at
     // the closest approach, centimetres — `Strike::Killed`'s documented
@@ -1428,13 +1434,14 @@ mod tests {
         }
         let mut ev = EventQueue::default();
         // A hit the cast would have handed over, at a body one metre out.
-        let ray = crate::melee::ray(&players[0].body, 0, 128, 2000.0);
+        let ray = crate::melee::ray(&players[0].body, false, 0, 128, 2000.0);
         let hit = crate::ranged::BodyHit {
             t: 0.5,
             slot: 1,
             enter: 0.3,
             exit: 0.7,
             qy: players[1].body.qy,
+            crouched: false,
         };
         assert_eq!(
             strike_body(&cc, 0, &hit, &ray, 1.0, false, &mut players, &mut ev),
@@ -1467,13 +1474,14 @@ mod tests {
         let def = cc.held_melee(0).unwrap();
         // Level, from the eye: the ray runs at 1.6 m the whole way, inside
         // the head band of a body standing on the same ground.
-        let ray = crate::melee::ray(&players[0].body, 0, 128, 2000.0);
+        let ray = crate::melee::ray(&players[0].body, false, 0, 128, 2000.0);
         let hit = crate::ranged::BodyHit {
             t: 0.5,
             slot: 1,
             enter: 0.3,
             exit: 0.7,
             qy: players[1].body.qy,
+            crouched: false,
         };
         let mut ev = EventQueue::default();
         assert_eq!(

@@ -63,7 +63,6 @@
 //! forbids. Said here because it reads like a rough edge and is the design.
 
 use crate::limits::{MAX_PLAYERS, REWIND_MAX_TICKS, REWIND_TICKS};
-use crate::movement::Body;
 use crate::world::Player;
 
 /// A slot with no live tenant. The same sentinel `server/src/core.rs` writes
@@ -76,8 +75,8 @@ pub const NO_TENANT: u32 = 0;
 /// stamp and the ring needs no second "filled" array to say so.
 const COLD: u64 = u64::MAX;
 
-/// One body's position at the end of one tick — exactly 16 B, four `i32`s
-/// wide with no padding.
+/// One body's position and stance at the end of one tick — 20 B: four
+/// `i32`s and the crouch (v83), padded to the `i32` alignment.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RewindPose {
     /// The id of the player this position belonged to, or [`NO_TENANT`].
@@ -85,6 +84,9 @@ pub struct RewindPose {
     pub qx: i32,
     pub qy: i32,
     pub qz: i32,
+    /// Crouched at the end of this tick (`Player::crouched`): a rewound hit
+    /// is scored against the stance the shooter saw.
+    pub crouched: bool,
 }
 
 impl RewindPose {
@@ -94,6 +96,7 @@ impl RewindPose {
         qx: 0,
         qy: 0,
         qz: 0,
+        crouched: false,
     };
 
     /// The present-tick pose of a live body — what a caller hands `pose_at`
@@ -101,12 +104,13 @@ impl RewindPose {
     /// honestly answer.
     #[inline]
     #[must_use]
-    pub fn live(id: u32, body: &Body) -> Self {
+    pub fn live(p: &Player) -> Self {
         Self {
-            id,
-            qx: body.qx,
-            qy: body.qy,
-            qz: body.qz,
+            id: p.id,
+            qx: p.body.qx,
+            qy: p.body.qy,
+            qz: p.body.qz,
+            crouched: p.crouched(),
         }
     }
 }
@@ -119,7 +123,7 @@ impl RewindPose {
 /// posture with a smaller `World` — `world_conts` already does exactly this
 /// (*"Boxed inside, for `backpacks`' reason"*). `World` is built on the
 /// stack by `ShardCore::new`, every wire test and `probe_parity`, and
-/// wasm32's shadow stack has no guard page, so 12.8 kB belongs on the heap
+/// wasm32's shadow stack has no guard page, so 16 kB belongs on the heap
 /// however it is spelled. Nothing here allocates in the tick.
 pub struct Rewind {
     /// `rows[tick & (REWIND_TICKS - 1)][slot]`.
@@ -161,7 +165,7 @@ impl Rewind {
         while i < MAX_PLAYERS {
             let p = &players[i];
             row[i] = if p.active {
-                RewindPose::live(p.id, &p.body)
+                RewindPose::live(p)
             } else {
                 RewindPose::EMPTY
             };

@@ -561,12 +561,12 @@ fn hold_moving(w: &mut World, buttons: u8, ticks: u32) {
     }
 }
 
-/// **A crouch-sprint is a sprint.** `movement::step` reads no crouch, so a
-/// player holding both runs at full speed; the pig behind them hears a
-/// runner, not a stalker. Crouch was asked before sprint, which made
-/// holding both the quietest way to cross the island at a run.
+/// **A crouch-sprint is a crouch** (v83). `movement::step` gives a crouched
+/// body the crouch speed whatever else is held, so a player holding both is
+/// stalking at a crawl, and the pig behind them hears nothing — the same
+/// answer as a plain crouch.
 #[test]
-fn a_crouch_sprint_behind_a_pig_is_heard() {
+fn a_crouch_sprint_behind_a_pig_is_a_stalk() {
     let slot = {
         let mut w = World::new(SEED);
         w.mob = MobContent::probe_fixture();
@@ -576,9 +576,9 @@ fn a_crouch_sprint_behind_a_pig_is_heard() {
     let mut w = world_with(&[(slot, 5.0, 0.0)]);
     face(&mut w, slot, false);
     hold_moving(&mut w, BTN_CROUCH | BTN_SPRINT, MOB_THINK_TICKS as u32 + 1);
-    assert!(
-        w.mobs.m[slot].roused_until > 0,
-        "a pig did not hear a player crouch-sprinting past behind it"
+    assert_eq!(
+        w.mobs.m[slot].roused_until, 0,
+        "a pig heard a player crouch-sprinting (stalking) behind it"
     );
 }
 

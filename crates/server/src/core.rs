@@ -4437,6 +4437,9 @@ impl ShardCore {
             sleeping: p.sleeping,
             dead: p.dead,
             wounded: p.wounded,
+            // The stance every sim rule reads (v83), so what is drawn is
+            // what a shot is tested against.
+            crouched: p.crouched(),
             yaw: p.frame.yaw,
             pitch: p.frame.pitch,
             // A downed body has dropped what it held (wounded v0 — the
@@ -4506,6 +4509,7 @@ impl ShardCore {
             sleeping: m.state == sim_core::brain::AiState::Sleep,
             dead: false,
             wounded: false,
+            crouched: false,
             yaw: m.yaw,
             pitch: 0,
             // Six of twelve now. A pig has no hotbar, so the hand is

@@ -293,11 +293,30 @@ pub struct Eye {
     /// not a fact — the sim casts a swing from `ARROW_EYE_MM` regardless,
     /// and a downed body has no swing to cast.
     pub down: f32,
+    /// **How crouched the camera is**, 0 standing to 1 crouched (v83),
+    /// eased by `input::place_eye` toward `ClientCore::crouched` at
+    /// [`CROUCH_EASE_S`]. Unlike `down` this one IS a fact the sim acts on —
+    /// a crouched swing or shot leaves `ranged::CROUCH_EYE_MM` — so the ease
+    /// is short: the camera must not stay high while the shot already
+    /// leaves low.
+    pub crouch: f32,
+    /// The eye's height above the feet this frame, metres, after both
+    /// eases. `pos.y - height` is the feet; nothing may assume
+    /// [`EYE_HEIGHT`] for that, because a crouched or downed eye is lower.
+    pub height: f32,
 }
 
 /// Eye height above the capsule's feet, metres (`DECISIONS.md` §open, client
 /// cosmetics — the same 1.6 the browser client stands at).
 pub const EYE_HEIGHT: f32 = 1.6;
+
+/// A crouched eye above the feet, metres: the sim's own
+/// (`ranged::CROUCH_EYE_MM`), since a crouched shot leaves from it.
+pub const CROUCH_EYE_M: f32 = sim_core::ranged::CROUCH_EYE_MM as f32 / 1000.0;
+
+/// The crouch ease's time constant, seconds: short, so the camera reaches
+/// the eye the sim already fires from within a few frames.
+pub const CROUCH_EASE_S: f32 = 0.06;
 
 /// The system set the world-streaming systems run in, after the eye has been
 /// placed for the frame.

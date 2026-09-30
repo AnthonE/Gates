@@ -117,6 +117,14 @@ pub enum Clip {
     /// the first wire; until it was read a jumping player rose a metre and
     /// came back down still walking.
     Air,
+    /// **Crouched, still** (wire v83). The sim tests a crouched body's
+    /// shorter cylinder (`collide::CROUCH_HEIGHT_M`, measured off this very
+    /// clip's head), so drawing it standing would show a head where no head
+    /// is. A crouch outranks the swing, the shot and the flinch: those clips
+    /// drive the hips and legs and would stand the body up for their span.
+    CrouchIdle,
+    /// Crouched and moving.
+    CrouchWalk,
 }
 
 impl Clip {
@@ -200,13 +208,15 @@ impl Clip {
             // rig's take-off or landing clips, so the arc is this and the
             // blends either side.
             Clip::Air => "Jump_Loop",
+            Clip::CrouchIdle => "Crouch_Idle_Loop",
+            Clip::CrouchWalk => "Crouch_Fwd_Loop",
         }
     }
 
     /// Public because the asset gate reads it: `tests/rig_asset.rs` walks this
     /// list against the shipped file, and a gate holding its own copy would be
     /// checking itself rather than the client.
-    pub const ALL: [Clip; 10] = [
+    pub const ALL: [Clip; 12] = [
         Clip::Idle,
         Clip::Walk,
         Clip::Jog,
@@ -217,6 +227,8 @@ impl Clip {
         Clip::Death,
         Clip::Shoot,
         Clip::Air,
+        Clip::CrouchIdle,
+        Clip::CrouchWalk,
     ];
 
     fn slot(self) -> usize {
@@ -231,6 +243,8 @@ impl Clip {
             Clip::Death => 7,
             Clip::Shoot => 8,
             Clip::Air => 9,
+            Clip::CrouchIdle => 10,
+            Clip::CrouchWalk => 11,
         }
     }
 }
@@ -316,6 +330,11 @@ pub const ANIM_SPRINT_MPS: f32 = 5.4;
 /// Half-width of the dead band around each threshold, m/s.
 pub const ANIM_SPEED_HYSTERESIS: f32 = 0.35;
 
+/// How far a crouch clip's head is lifted back toward level, radians: the
+/// difference between `Crouch_Idle_Loop`'s gaze and `Idle_Loop`'s on the
+/// shipped rig (−49.6° vs −7.9°).
+pub const CROUCH_HEAD_LIFT: f32 = 0.73;
+
 /// How long a clip change takes to cross-fade, seconds. Long enough that a
 /// walk→jog is not a snap, short enough that it is not a slide.
 pub const ANIM_BLEND_S: f32 = 0.18;
@@ -361,7 +380,7 @@ pub struct Rig {
     /// on a one-shot means the first time anybody swings near you.
     /// `tests/anim.rs` counts them against `Clip::ALL` as text for exactly
     /// that reason.
-    nodes: [AnimationNodeIndex; 10],
+    nodes: [AnimationNodeIndex; 12],
     /// Uniform scale that puts the rig at [`ANIM_BODY_H_M`]. A constant ratio
     /// of two measured heights, not a runtime fit — see [`ANIM_RIG_H_M`].
     pub scale: f32,
@@ -432,7 +451,7 @@ pub fn load(
         gltf: assets.load("models/stumpy.glb"),
         scene: None,
         graph: None,
-        nodes: [AnimationNodeIndex::default(); 10],
+        nodes: [AnimationNodeIndex::default(); 12],
         arms: AnimationNodeIndex::default(),
         scale: ANIM_BODY_H_M / ANIM_RIG_H_M,
         missing: Vec::new(),
@@ -514,7 +533,7 @@ pub fn build(
 
     let mut graph = AnimationGraph::new();
     let root = graph.root;
-    let mut nodes = [AnimationNodeIndex::default(); 10];
+    let mut nodes = [AnimationNodeIndex::default(); 12];
     let mut missing = Vec::new();
     for clip in Clip::ALL {
         match gltf.named_animations.get(clip.name()) {
@@ -588,6 +607,9 @@ pub struct BodyAnim {
     /// (`RemoteState::airborne`); `bodies::stream` sets it before
     /// [`BodyAnim::observe`] reads it.
     pub airborne: bool,
+    /// Crouched this frame, straight off the wire (`RemoteState::crouched`,
+    /// v83); set beside [`BodyAnim::airborne`].
+    pub crouched: bool,
     /// Bumped once per transient heard — a swing **or** a flinch. `drive`
     /// compares it against what it last started, so a second one arriving
     /// while the first is still playing restarts the clip instead of being
@@ -661,6 +683,27 @@ impl BodyAnim {
             self.clip = Some(Clip::Air);
             return;
         }
+        // **Crouched** (v83): the crouch gait, and no transient under it.
+        // The one-shots' clocks are zeroed rather than left running, so
+        // standing back up mid-swing does not replay the swing's tail.
+        if self.crouched {
+            self.swing_s = 0.0;
+            self.flinch_s = 0.0;
+            self.shoot_s = 0.0;
+            let h = ANIM_SPEED_HYSTERESIS;
+            let moving = self.clip == Some(Clip::CrouchWalk);
+            let walk = if moving {
+                self.speed > ANIM_WALK_MPS - h
+            } else {
+                self.speed > ANIM_WALK_MPS + h
+            };
+            self.clip = Some(if walk {
+                Clip::CrouchWalk
+            } else {
+                Clip::CrouchIdle
+            });
+            return;
+        }
         // Hysteresis: the threshold to speed UP is above the nominal and the
         // one to slow DOWN is below it, so a body sitting on a boundary keeps
         // whatever it already had.
@@ -708,8 +751,8 @@ impl BodyAnim {
     /// argument, including why a bare priority compare here would be a bug.
     pub fn wants(&self) -> Option<Clip> {
         let gait = self.clip?;
-        if gait == Clip::Death {
-            return Some(Clip::Death);
+        if matches!(gait, Clip::Death | Clip::CrouchIdle | Clip::CrouchWalk) {
+            return Some(gait);
         }
         if self.flinch_s > 0.0 {
             return Some(Clip::Flinch);
@@ -1069,10 +1112,15 @@ pub fn head_look(mut bodies: Query<(&BodyAnim, &mut HeadBone)>, mut bones: Query
         // level rather than frozen at its last value, and dropped through
         // the same `applied` bookkeeping so the delta it already wrote is
         // still removed.
-        let want = if matches!(anim.clip, Some(Clip::Death)) {
-            0.0
-        } else {
-            anim.pitch.clamp(-ANIM_HEAD_PITCH_MAX, ANIM_HEAD_PITCH_MAX)
+        let want = match anim.clip {
+            Some(Clip::Death) => 0.0,
+            // The crouch clips hold the head ~42° further down than `Idle`
+            // (gaze −49.6° vs −7.9°), so a crouched body looking level would
+            // stare at the ground: lift the head by the difference.
+            Some(Clip::CrouchIdle | Clip::CrouchWalk) => {
+                anim.pitch.clamp(-ANIM_HEAD_PITCH_MAX, ANIM_HEAD_PITCH_MAX) + CROUCH_HEAD_LIFT
+            }
+            _ => anim.pitch.clamp(-ANIM_HEAD_PITCH_MAX, ANIM_HEAD_PITCH_MAX),
         };
         let delta = Quat::from_axis_angle(head.axis, want);
         t.rotation = delta * base;
@@ -1285,6 +1333,30 @@ mod tests {
         a.airborne = false;
         step(&mut a, 4.2, 1);
         assert_eq!(a.clip, Some(Clip::Jog), "landed into the wrong gait");
+    }
+
+    #[test]
+    fn a_crouched_body_holds_its_crouch_through_a_swing() {
+        let mut a = BodyAnim {
+            crouched: true,
+            ..BodyAnim::default()
+        };
+        step(&mut a, 0.0, 30);
+        assert_eq!(a.wants(), Some(Clip::CrouchIdle));
+        step(&mut a, 1.7, 60);
+        assert_eq!(a.wants(), Some(Clip::CrouchWalk));
+        // A swing while crouched does not stand the body up...
+        a.swing();
+        assert_eq!(a.wants(), Some(Clip::CrouchWalk));
+        step(&mut a, 1.7, 1);
+        // ...and standing up afterwards does not replay its tail.
+        a.crouched = false;
+        step(&mut a, 1.7, 1);
+        assert_eq!(a.wants(), Some(Clip::Walk));
+        // A crouched corpse is a corpse.
+        a.crouched = true;
+        a.observe(a.last.unwrap(), 1.0 / 60.0, false, true, false);
+        assert_eq!(a.wants(), Some(Clip::Death));
     }
 
     #[test]

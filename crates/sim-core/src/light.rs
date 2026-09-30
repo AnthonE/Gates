@@ -103,6 +103,9 @@ pub fn is_lit(p: &Player, gc: &GatherContent) -> bool {
 /// How high a held flame rides above the feet, metres: the eyes — the
 /// reference puts a torch out when the HEAD goes under. The arrow's own eye
 /// height (`ranged::ARROW_EYE_MM`), one number for "where the head is".
+/// **Standing, even when crouched** (v83): the client drops its torch latch
+/// for good when the head goes under, so a crouch in the shallows would
+/// snuff a torch the player cannot tell is lost.
 pub const FLAME_EYE_M: f32 = crate::ranged::ARROW_EYE_MM as f32 / 1000.0;
 
 /// Is this body's head under the sea? The only water in the world is the

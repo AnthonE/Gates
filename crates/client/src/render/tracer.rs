@@ -146,6 +146,21 @@ impl Tracers {
         speed_mmpt: u16,
         drop_mmpt2: u16,
     ) -> bool {
+        self.claim_from(feet, ARROW_EYE_MM, yaw, pitch, speed_mmpt, drop_mmpt2)
+    }
+
+    /// [`Self::claim`] from an eye `eye_mm` over the feet — a crouched
+    /// shooter's arrow leaves `ranged::CROUCH_EYE_MM` (v83), as the sim's
+    /// does.
+    pub fn claim_from(
+        &mut self,
+        feet: [f32; 3],
+        eye_mm: i32,
+        yaw: u16,
+        pitch: u8,
+        speed_mmpt: u16,
+        drop_mmpt2: u16,
+    ) -> bool {
         if protocol::shot_is_instant(speed_mmpt) {
             return false;
         }
@@ -157,7 +172,7 @@ impl Tracers {
         let speed = speed_mmpt as f32;
         self.slots[ix] = Flight {
             qx: (feet[0] * MM_PER_M) as i32,
-            qy: (feet[1] * MM_PER_M) as i32 + ARROW_EYE_MM,
+            qy: (feet[1] * MM_PER_M) as i32 + eye_mm,
             qz: (feet[2] * MM_PER_M) as i32,
             vx: (fx * ch * speed) as i32,
             vy: (sv * speed) as i32,
@@ -235,10 +250,10 @@ pub fn launch(mut pool: ResMut<Tracers>, feed: Res<Feed>, net: NonSend<Net>) {
         // else's off the same sample `bodies::stream` draws them at, so a
         // tracer leaves the bow the player can actually see rather than the
         // server's older copy of it.
-        let feet = if shooter == core.player_id {
-            core.predict.position()
+        let (feet, crouched) = if shooter == core.player_id {
+            (core.predict.position(), core.crouched())
         } else if core.interp.sample(shooter, at, &mut rs) {
-            [rs.x, rs.y, rs.z]
+            ([rs.x, rs.y, rs.z], rs.crouched)
         } else {
             // A shot from someone outside AOI, or one that arrived before
             // their first snapshot. Nothing to hang it on, so it is dropped
@@ -250,7 +265,14 @@ pub fn launch(mut pool: ResMut<Tracers>, feed: Res<Feed>, net: NonSend<Net>) {
         // bounded by the event ring either way, and a later shot in the same
         // frame cannot free a slot, so the two differ by a `free()` scan of
         // sixteen and nothing else.
-        pool.claim(feet, yaw, pitch, speed_mmpt, drop_mmpt2);
+        pool.claim_from(
+            feet,
+            sim_core::ranged::eye_mm(crouched),
+            yaw,
+            pitch,
+            speed_mmpt,
+            drop_mmpt2,
+        );
     }
 }
 

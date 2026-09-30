@@ -284,11 +284,21 @@ pub fn gather(
         // for the same reason: opening a bag does not change what is in
         // your hand, and it must not blow out the flame you are reading by
         // — which is precisely when a player opens one.
+        //
+        // **And the crouch, as it was when the panel opened** (v83): a player
+        // looting a box from behind cover stays down, and Ctrl inside the
+        // inventory is its "grab one" modifier, not a stance.
         let sel = net.sel;
         let lit = if net.light { BTN_LIGHT } else { 0 };
-        net.session
-            .core
-            .set_input(lit, yaw_u16(look.yaw), pitch_u8(look.pitch), 0, 0, sel);
+        let crouch = net.session.core.buttons() & BTN_CROUCH;
+        net.session.core.set_input(
+            lit | crouch,
+            yaw_u16(look.yaw),
+            pitch_u8(look.pitch),
+            0,
+            0,
+            sel,
+        );
         return;
     }
 
@@ -332,14 +342,20 @@ pub fn gather(
     if keys.pressed(KeyCode::Space) {
         buttons |= BTN_JUMP;
     }
-    // **Crouch is a sneak.** `movement::step` does not read `BTN_CROUCH`, so
-    // prediction cannot drift on it; the animal brain does (`sim-core/src/
-    // brain.rs`): a crouched player is silent to wildlife and seen only
-    // inside an animal's sight cone, at half range.
+    // **Crouch is a stance** (v83): slower (`movement::step`, which the
+    // predictor runs too), a lower eye and a shorter hit volume
+    // (`Player::crouched`), quieter steps, and the sneak the animal brain
+    // listens for (`sim-core/src/brain.rs`).
     //
     // `ControlRight` too: `panels/inv.rs` already treats the two as one
     // modifier, and a split would be a keyboard the player has to think about.
-    if keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight) {
+    // **And `Z`**: in the browser build Ctrl+W — crouch and walk forward —
+    // closes the tab, and no page can stop it (`client-web/web/app.js`
+    // guards the close; `Z` is the key that never asks it).
+    if keys.pressed(KeyCode::ControlLeft)
+        || keys.pressed(KeyCode::ControlRight)
+        || keys.pressed(KeyCode::KeyZ)
+    {
         buttons |= BTN_CROUCH;
     }
     // Hotbar 1–6. `set_input` clamps into range, so an out-of-range key
@@ -573,7 +589,15 @@ pub fn place_eye(
     let want = if core.wounded || core.dead { 1.0 } else { 0.0 };
     let k = 1.0 - (-time.delta_secs() / super::wounded::WOUND_DROP_S).exp();
     eye.down += (want - eye.down) * k;
-    let height = EYE_HEIGHT - (EYE_HEIGHT - super::wounded::CRAWL_EYE_M) * eye.down;
+    // **Crouch** (v83): the same one-pole toward the stance the sim reads,
+    // and the two compose — a crouched body knocked down falls from the
+    // crouched eye to the crawl's, not from standing.
+    let want = if core.crouched() { 1.0 } else { 0.0 };
+    let k = 1.0 - (-time.delta_secs() / super::CROUCH_EASE_S).exp();
+    eye.crouch += (want - eye.crouch) * k;
+    let base = EYE_HEIGHT - (EYE_HEIGHT - super::CROUCH_EYE_M) * eye.crouch;
+    let height = base - (base - super::wounded::CRAWL_EYE_M) * eye.down;
+    eye.height = height;
     eye.pos = Vec3::new(x, y + height, z);
     // **A spectator looks where the watched body looks** (wire v73): the
     // body's angles come off the interpolated wire record, not off a mouse,

@@ -21,7 +21,7 @@ use super::table::{emit, Layer};
 use super::{FlashDef, Fx};
 use sim_core::limits::MAX_HITSCAN_MARK_SAMPLES;
 use sim_core::occupy::{Occupants, SlotCache};
-use sim_core::ranged::{beam_stop, ARROW_EYE_MM, MM_PER_M};
+use sim_core::ranged::{beam_stop, MM_PER_M};
 
 /// Client traces per frame — a volley is bounded by the feed, and this keeps
 /// a frame's cost to a handful of walks (~0.1 ms each natively).
@@ -113,18 +113,18 @@ pub fn shots(
             continue;
         }
         let own = shooter == core.player_id;
-        let feet = if own {
+        let (feet, crouched) = if own {
             let p = core.predict.position();
-            Vec3::new(p[0], p[1], p[2])
+            (Vec3::new(p[0], p[1], p[2]), core.crouched())
         } else if core.interp.sample(shooter, at_tick, &mut rs) {
-            Vec3::new(rs.x, rs.y, rs.z)
+            (Vec3::new(rs.x, rs.y, rs.z), rs.crouched)
         } else {
             continue;
         };
         let (fx_, fz) = sim_core::yaw_dir(yaw);
         let (ch, sv) = sim_core::pitch_dir(pitch);
         let dir = Vec3::new(fx_ * ch, sv, fz * ch).normalize_or(Vec3::Z);
-        let eye_at = feet + Vec3::Y * (ARROW_EYE_MM as f32 / MM_PER_M);
+        let eye_at = feet + Vec3::Y * (sim_core::ranged::eye_mm(crouched) as f32 / MM_PER_M);
 
         // The muzzle: your own is just ahead of the camera, down and to the
         // right where the held gun is; anyone else's at their drawn body's
@@ -137,7 +137,9 @@ pub fn shots(
                 .iter()
                 .find(|(b, _)| b.0 == shooter)
                 .map_or(feet, |(_, gt)| gt.translation());
-            drawn + Vec3::Y * 1.42 + dir * 0.55
+            // A crouched body's hands ride as far below as its eye does.
+            let hands = if crouched { 1.42 - 0.65 } else { 1.42 };
+            drawn + Vec3::Y * hands + dir * 0.55
         };
         emit(&mut fx.glow, Layer::Flash, 2, muzzle, dir, Matter::Metal);
         emit(&mut fx.soft, Layer::GunSmoke, 2, muzzle, dir, Matter::Metal);

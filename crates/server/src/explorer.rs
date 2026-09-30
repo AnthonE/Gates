@@ -905,7 +905,7 @@ impl Survivor {
             }
             return frame;
         }
-        let ray = melee::ray(&as_body(*body), yaw, pitch, REACH_M * MM_PER_M);
+        let ray = melee::ray(&as_body(*body), false, yaw, pitch, REACH_M * MM_PER_M);
         let (seed, mut island) = core.island();
         let reached = melee::node_cast(seed, &mut island, &ray)
             .is_some_and(|hit| hit.cx == target.cx && hit.cz == target.cz);

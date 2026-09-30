@@ -240,7 +240,7 @@ pub const INPUT_DRIFT_CREDIT_TICKS: u16 = 30;
 /// Overflow policy: **overwrite oldest**. It is a ring by construction and
 /// the row it overwrites is older than `REWIND_MAX_TICKS` can ask for, so
 /// nothing reachable is ever discarded. Cost:
-/// `MAX_PLAYERS * REWIND_TICKS * 16 B = 12,800 B` of poses plus a
+/// `MAX_PLAYERS * REWIND_TICKS * 20 B = 16,000 B` of poses plus a
 /// `[u64; REWIND_TICKS]` of stamps, all preallocated at construction —
 /// nothing allocates in the tick (wall 2).
 ///

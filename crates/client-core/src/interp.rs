@@ -141,6 +141,9 @@ pub struct RemoteState {
     /// renderer drew the jump). Newer sample, `sleeping`'s reason; stored as
     /// its negation so a state nobody sampled reads as standing.
     pub airborne: bool,
+    /// Crouched (wire v83, `Player::crouched`): the stance the sim tests
+    /// hits against. Newer sample, `sleeping`'s reason.
+    pub crouched: bool,
 }
 
 fn dequant(s: &Sample, out: &mut RemoteState) {
@@ -157,6 +160,7 @@ fn dequant(s: &Sample, out: &mut RemoteState) {
     out.lit = s.e.lit;
     out.held_skin = s.e.held_skin;
     out.airborne = !s.e.grounded;
+    out.crouched = s.e.crouched;
 }
 
 pub struct Interp {
@@ -408,6 +412,7 @@ impl Interp {
                 out.lit = s1.e.lit;
                 out.held_skin = s1.e.held_skin;
                 out.airborne = !s1.e.grounded;
+                out.crouched = s1.e.crouched;
                 out.live = true;
                 return true;
             }
@@ -437,6 +442,7 @@ mod tests {
             sleeping: false,
             dead: false,
             wounded: false,
+            crouched: false,
             yaw,
             pitch: 100,
             held: None,

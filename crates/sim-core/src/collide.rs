@@ -107,6 +107,36 @@ pub const HEAD_BAND_M: f32 = 0.25;
 /// theirs and the geometry is ours.
 pub const LIMB_BAND_M: f32 = 0.85;
 
+/// A crouched body's **hit** height (v83): the crouch clip's head top on
+/// the rig (`stumpy.glb` `Crouch_Idle_Loop`, ~1.05 m). Only what a shot or a
+/// swing is tested against shrinks; collision keeps [`CAPSULE_HEIGHT_M`],
+/// so a crouch never fits a body under anything a standing one cannot
+/// clear, and standing back up can never wedge it into a ceiling.
+/// [`HEAD_BAND_M`] stays the top of whichever height applies.
+pub const CROUCH_HEIGHT_M: f32 = 1.05;
+/// A crouched body's legs band: the folded hips sit near 0.4 m.
+pub const CROUCH_LIMB_BAND_M: f32 = 0.45;
+
+/// The hit cylinder's height for a stance.
+#[inline]
+pub const fn hit_height_m(crouched: bool) -> f32 {
+    if crouched {
+        CROUCH_HEIGHT_M
+    } else {
+        CAPSULE_HEIGHT_M
+    }
+}
+
+/// The limb band's top for a stance.
+#[inline]
+pub const fn limb_band_m(crouched: bool) -> f32 {
+    if crouched {
+        CROUCH_LIMB_BAND_M
+    } else {
+        LIMB_BAND_M
+    }
+}
+
 /// Which body part a shot is scored against, **least significant first**,
 /// so the derived `Ord` *is* `reference/PROJECTILES.md` §7's rule: a
 /// segment that touches several bands is scored at the `max`, never at

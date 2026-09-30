@@ -3601,6 +3601,22 @@ impl ClientCore {
         self.input.buttons
     }
 
+    /// Is the body this client looks through crouched? The same predicate
+    /// the sim reads (`Player::crouched`, v83): for a player, the crouch bit
+    /// just sent on a predicted body that stands on something, upright and
+    /// alive; for a spectator, the watched body's wire bit — a watcher sends
+    /// no buttons. Read by the camera's eye height, the footsteps, and every
+    /// client ray that has to leave from where the sim's swing will.
+    pub fn crouched(&self) -> bool {
+        if self.spectating {
+            return self.spectate_view().is_some_and(|v| v.crouched);
+        }
+        self.input.buttons & sim_core::input::BTN_CROUCH != 0
+            && self.predict.body.grounded
+            && !self.wounded
+            && !self.dead
+    }
+
     /// Advance real time: run the fixed client ticks that elapsed, each
     /// generating one input frame and stepping prediction. Returns steps.
     ///

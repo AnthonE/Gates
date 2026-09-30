@@ -80,7 +80,7 @@ use crate::mob::{MobContent, Mobs};
 use crate::movement::{Body, POS_XZ_Q, POS_Y_Q};
 use crate::occupy::Occupants;
 use crate::pitch_lut::pitch_dir;
-use crate::ranged::{self, BodyHit, Struck, ARROW_EYE_MM, MM_PER_M};
+use crate::ranged::{self, BodyHit, Struck, MM_PER_M};
 use crate::rewind::Rewind;
 use crate::terrain::{self, Haven, Occupant, Slot, CELL_SIZE, SLOT_SCALE_MAX};
 use crate::world::Player;
@@ -156,8 +156,8 @@ const _: () = {
 /// must agree with a shot to the bit about where the world is.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Ray {
-    /// The eye: the body's quanta as whole millimetres, plus
-    /// [`ARROW_EYE_MM`] — the same origin a bow and a gun fire from, so a
+    /// The eye: the body's quanta as whole millimetres, plus the stance's
+    /// eye (`ranged::eye_mm`) — the same origin a bow and a gun fire from, so a
     /// swing clears exactly the cover its owner can see over.
     pub o: (f32, f32, f32),
     /// The whole reach as one segment, so a fraction `t` of it is a distance
@@ -182,15 +182,16 @@ impl Ray {
 /// The ray a body swings along: from its eye, the way it is looking, for
 /// `len_mm`. `yaw` and `pitch` are the wire's bytes and go through the two
 /// LUTs the shot path uses, so there is no trig and no second opinion about
-/// which way a byte points.
-pub fn ray(body: &Body, yaw: u16, pitch: u8, len_mm: f32) -> Ray {
+/// which way a byte points. `crouched` lowers the eye (v83): a crouched
+/// body swings from where its camera is.
+pub fn ray(body: &Body, crouched: bool, yaw: u16, pitch: u8, len_mm: f32) -> Ray {
     let (fx, fz) = yaw_dir(yaw);
     let (ch, sv) = pitch_dir(pitch);
     // `hitscan`'s own arithmetic for the muzzle, verbatim: quanta to whole
     // millimetres in integers, then the eye lift.
     let o = (
         (body.qx * (POS_XZ_Q * MM_PER_M) as i32) as f32,
-        (body.qy * (POS_Y_Q * MM_PER_M) as i32 + ARROW_EYE_MM) as f32,
+        (body.qy * (POS_Y_Q * MM_PER_M) as i32 + ranged::eye_mm(crouched)) as f32,
         (body.qz * (POS_XZ_Q * MM_PER_M) as i32) as f32,
     );
     Ray {
@@ -699,14 +700,14 @@ mod tests {
             qz: -200,
             ..Body::default()
         };
-        let r = ray(&body, 0, 128, 2000.0);
+        let r = ray(&body, false, 0, 128, 2000.0);
         assert_eq!(r.o.0, 3000.0);
-        assert_eq!(r.o.1, 500.0 + ARROW_EYE_MM as f32);
+        assert_eq!(r.o.1, 500.0 + ranged::ARROW_EYE_MM as f32);
         assert_eq!(r.o.2, -6000.0);
         let (fx, fz) = yaw_dir(0);
         let (ch, sv) = pitch_dir(128);
         assert_eq!(r.s, (fx * ch * 2000.0, sv * 2000.0, fz * ch * 2000.0));
-        let down = ray(&body, 0, 64, 2000.0);
+        let down = ray(&body, false, 0, 64, 2000.0);
         assert!(down.s.1 < 0.0, "a pitch under level points down");
     }
 }
