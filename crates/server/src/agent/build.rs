@@ -1037,6 +1037,12 @@ impl Builder {
         self.plan
     }
 
+    /// A plot chosen already (a unit test's scene).
+    #[cfg(test)]
+    pub(crate) fn set_plan(&mut self, plan: BasePlan) {
+        self.plan = Some(plan);
+    }
+
     pub fn survey(&self) -> &Survey {
         &self.survey
     }
@@ -1239,6 +1245,16 @@ impl Builder {
     /// Its own cupboard, standing on the plot.
     pub fn hearth_addr(&self, core: &ClientCore) -> Option<OpAddr> {
         self.own_kit(core, HEARTH_ITEM)
+    }
+
+    /// Where its cupboard goes on the plot, standing or not: a removal
+    /// there is its own cupboard coming down.
+    pub fn hearth_spot(&self) -> Option<OpAddr> {
+        let plan = self.plan?;
+        (0..OPS).find_map(|i| {
+            let s = spec(i);
+            (s.stage.is_some() && s.op == Op::Kit(HEARTH_ITEM)).then(|| addr(&plan, &s))
+        })
     }
 
     /// Its own box, standing in the base.

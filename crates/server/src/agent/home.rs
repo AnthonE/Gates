@@ -22,9 +22,9 @@ use client_core::core::ClientCore;
 use protocol::EntityState;
 use sim_core::backpack::LOOT_REACH_M;
 use sim_core::build::{build_cell_of, BUILD_REACH_M, LOC_PLANE};
-use sim_core::deploy::UPKEEP_PERIOD_TICKS;
 use sim_core::deploy::{
-    cell_center, BagAnchor, ARCH_BAG, BAG_CAP, REFUSE_D_BAG_CAP, REFUSE_D_COST,
+    cell_center, BagAnchor, ARCH_BAG, BAG_CAP, FEED_CHUNK, REFUSE_D_BAG_CAP, REFUSE_D_COST,
+    UPKEEP_PERIOD_TICKS,
 };
 use sim_core::limits::{HEARTH_STOCK_ROWS, HOTBAR_SLOTS, INV_SLOTS, MAX_BUILD_COORD, TICK_HZ};
 use sim_core::movement::{POS_XZ_Q, POS_Y_Q};
@@ -331,15 +331,24 @@ impl Home {
     /// Something of its own base that does not rot came down: while the
     /// cupboard's stock covers the upkeep nothing decays, so somebody
     /// broke it. Without a reading (or with the stock run out) it may be
-    /// rot, and says nothing.
-    pub fn on_removed(&mut self, tick: u32) {
+    /// rot, and says nothing; so does a reading taken before the base grew
+    /// past `grades` then, since a bigger bill burns the stock faster than
+    /// it says.
+    pub fn on_removed(&mut self, tick: u32, grades: u32) {
         if self
             .upkeep
+            .filter(|r| grades <= r.grades)
             .and_then(|r| r.periods_left(tick))
             .is_some_and(|p| p > 0)
         {
             self.alarm = Some(tick);
         }
+    }
+
+    /// Its own cupboard came down: what the last feed read was that
+    /// cupboard's stock, not the one built in its place.
+    pub fn lost_hearth(&mut self) {
+        self.upkeep = None;
     }
 
     /// The reply to a feed of its own cupboard arrived.
@@ -378,25 +387,44 @@ impl Home {
         }
     }
 
-    /// Would a feed now top up what runs low? A feed takes a chunk of
-    /// every material the cupboard eats, charged or not, so it waits until
-    /// the pack carries one that is both charged and running low: a pack
-    /// of wood fed to a cupboard short of stone is wood lost. Before any
-    /// reading (or once the base has grown past what the last one charged)
-    /// the charges are not known, and a feed is how a player learns them.
-    pub fn can_feed(&self, core: &ClientCore, tick: u32) -> bool {
-        let carried = |item: u16| {
-            core.inv[..INV_SLOTS]
-                .iter()
-                .any(|s| s.count > 0 && s.item == item)
-        };
+    /// Would a feed now top up what runs low, with what `has` says is to
+    /// hand (the pack, or the box too)? A feed takes a chunk of every
+    /// material the cupboard eats, charged or not, so it waits for one
+    /// that is both charged and running low: a pack of wood fed to a
+    /// cupboard short of stone is wood lost. Before any reading (or once
+    /// the base has grown past what the last one charged) the charges are
+    /// not known, and a feed is how a player learns them.
+    pub fn can_feed(&self, has: impl Fn(u16) -> bool, tick: u32) -> bool {
         match self.upkeep {
             None => true,
             Some(r) if r.periods_left(tick).is_none() => {
-                r.items[..usize::from(r.rows)].iter().any(|&i| carried(i))
+                r.items[..usize::from(r.rows)].iter().any(|&i| has(i))
             }
-            Some(r) => r.low(tick).any(carried),
+            Some(r) => r.low(tick).any(has),
         }
+    }
+
+    /// What a feed wants in the pack while the cupboard is due one: a
+    /// feed's worth of each material running low (of each it eats, when
+    /// the charges are not known), into `out`; the rows filled. Nothing
+    /// without a reading, which names no material.
+    pub fn feed_rows(&self, tick: u32, grades: u32, out: &mut [(u16, u32)]) -> usize {
+        let Some(r) = self.upkeep.filter(|_| self.upkeep_due(tick, grades)) else {
+            return 0;
+        };
+        let mut n = 0;
+        let mut push = |item: u16| {
+            if n < out.len() {
+                out[n] = (item, FEED_CHUNK);
+                n += 1;
+            }
+        };
+        if r.periods_left(tick).is_none() {
+            r.items[..usize::from(r.rows)].iter().for_each(|&i| push(i));
+        } else {
+            r.low(tick).for_each(push);
+        }
+        n
     }
 
     /// A visit to the box came to nothing here and now.
@@ -869,7 +897,7 @@ mod tests {
         assert!(!home.upkeep_due(0, 0));
         assert!(home.upkeep_due(0, 3));
         // Without a reading, a piece coming down may be rot.
-        home.on_removed(5);
+        home.on_removed(5, 3);
         assert!(!home.under_attack(5));
         let mut core = Box::new(ClientCore::new(1, 1, 0));
         core.stock[0] = (50, 500, 10);
@@ -882,32 +910,55 @@ mod tests {
         let period = UPKEEP_PERIOD_TICKS as u32;
         assert!(!home.upkeep_due(100 + (50 - UPKEEP_LOW_PERIODS) * period - 1, 3));
         assert!(home.upkeep_due(100 + (50 - UPKEEP_LOW_PERIODS + 1) * period, 3));
-        // Fed, nothing rots: what comes down was broken.
-        home.on_removed(200);
+        // Fed, nothing rots: what comes down was broken. Not so once the
+        // base grew past the reading: a bigger bill may have eaten it.
+        home.on_removed(200, 4);
+        assert!(!home.under_attack(200));
+        home.on_removed(200, 3);
         assert!(home.under_attack(200));
         // The reading names what it eats, and what of that is charged:
         // wood the cupboard would eat uncharged is not fed while the
         // stone is not in the pack.
         let low = 100 + (50 - UPKEEP_LOW_PERIODS + 1) * period;
-        assert!(!home.can_feed(&core, low));
+        let carried = |core: &ClientCore| {
+            let inv = core.inv;
+            move |item: u16| inv.iter().any(|s| s.count > 0 && s.item == item)
+        };
+        assert!(!home.can_feed(carried(&core), low));
+        // What it wants in the pack for that feed: the low stone.
+        let mut rows = [(0, 0); HEARTH_STOCK_ROWS];
+        assert_eq!(home.feed_rows(100, 3, &mut rows), 0, "not due yet");
+        assert_eq!(home.feed_rows(low, 3, &mut rows), 1);
+        assert_eq!(rows[0], (50, FEED_CHUNK));
         core.inv[7] = sim_core::gather::ItemStack {
             item: 58,
             count: 5,
             ..Default::default()
         };
-        assert!(!home.can_feed(&core, low), "only the uncharged wood");
+        assert!(
+            !home.can_feed(carried(&core), low),
+            "only the uncharged wood"
+        );
         core.inv[8] = sim_core::gather::ItemStack {
             item: 50,
             count: 5,
             ..Default::default()
         };
-        assert!(!home.can_feed(&core, 100), "the stone is not low yet");
-        assert!(home.can_feed(&core, low));
+        assert!(
+            !home.can_feed(carried(&core), 100),
+            "the stone is not low yet"
+        );
+        assert!(home.can_feed(carried(&core), low));
         // A reading that charged nothing is taken again once the base grew.
         core.stock[0] = (50, 500, 0);
         home.on_stock(&core, 300, 3);
         assert!(!home.upkeep_due(300, 3));
         assert!(home.upkeep_due(300, 4));
+        assert_eq!(home.feed_rows(300, 4, &mut rows), 2, "all it eats");
+        // Its cupboard came down: a new one there starts unread.
+        home.lost_hearth();
+        assert_eq!(home.upkeep(), None);
+        assert!(home.upkeep_due(300, 3));
         // A visit that failed waits a while.
         home.stash_failed(1000);
         assert!(home.stash_held(1000 + STASH_RETRY_TICKS - 1));

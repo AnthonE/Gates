@@ -1477,8 +1477,9 @@ fn a_survivor_builds_its_starter_and_the_base_keeps_strangers_out() {
     assert_eq!(h.bot.mind.stats.requests, asked, "the mind is not asked");
     assert_eq!(h.heap_ops, 0);
 
-    // 2d. Somebody opens its front door from outside: it walks out through
-    //     both doors and back in, shutting each behind it.
+    // 2d. Somebody opens its front door from outside (doors go up with no
+    //     lock until lane C, so a plain use opens them): it walks out
+    //     through both doors and back in, shutting each behind it.
     h.with_puppet();
     h.step();
     let (fx, fz) = (
@@ -1525,6 +1526,59 @@ fn a_survivor_builds_its_starter_and_the_base_keeps_strangers_out() {
         h.explain()
     );
     assert_eq!(h.bot.mind.stats.requests, asked, "the mind is not asked");
+    assert_eq!(h.heap_ops, 0);
+
+    // 2e. Somebody swings a spear at its shut front door from outside. The
+    //     blow reaches it as any player hears one, the wall's own broadcast
+    //     on the event lane: home is under attack, and the summary says so.
+    let tick = h.tick;
+    assert!(!h.bot.home().under_attack(tick));
+    let spear = h.spear;
+    let at_door = sim_core::movement::Body::at(SEED, &h.shard.world.haven, fx - 1.0, fz + 1.5);
+    h.stage_puppet(move |p| {
+        p.body = at_door;
+        p.inv[0] = spear;
+    });
+    let struck = |h: &Harness| {
+        h.shard
+            .world
+            .deploys
+            .find(cx + 1, cz + 1, 0, LOC_EDGE_XLO)
+            .is_some_and(|d| d.hp < h.shard.world.deploy.defs[usize::from(d.row)].hp)
+    };
+    let mut alarmed = false;
+    for _ in 0..5 * TICK_HZ {
+        // Facing +X, level, primary held: into the door.
+        let mut dg = InputDatagram::new(0, 0, sim_core::limits::INTERP_DELAY_TICKS);
+        dg.push(sim_core::input::InputFrame {
+            seq: h.tick as u16,
+            buttons: BTN_PRIMARY,
+            yaw: 1 << 14,
+            pitch: 128,
+            ..Default::default()
+        })
+        .unwrap();
+        let mut bytes = [0u8; sim_core::limits::DATAGRAM_BUDGET_BYTES];
+        let len = encode_input(&dg, &mut bytes).unwrap();
+        let decoded = decode_input(&bytes[..len]).unwrap();
+        h.shard.push_input(1, &decoded);
+        h.replay.push_input(1, &decoded);
+        h.step();
+        if struck(&h) && h.bot.home().under_attack(h.tick) {
+            alarmed = true;
+            break;
+        }
+    }
+    assert!(
+        struck(&h),
+        "the puppet's spear never reached the door: {}",
+        h.explain()
+    );
+    assert!(alarmed, "a blow on its own door raised no alarm");
+    h.step();
+    assert!(h.bot.summary(&h.view, ID).unwrap().home.attacked);
+    let away = sim_core::movement::Body::at(SEED, &h.shard.world.haven, fx - 25.0, fz + 25.0);
+    h.stage_puppet(move |p| p.body = away);
     assert_eq!(h.heap_ops, 0);
 
     // 3. Its base, used by somebody else, with its owner asleep inside. The

@@ -31,7 +31,7 @@ use crate::mind::{
 use crate::pace::Pace;
 use client_core::core::{
     ClientCore, APPLIED2_BAGS, APPLIED2_CONT, APPLIED2_MOVE, APPLIED2_OWN_STRUCT_HIT,
-    APPLIED_DRANK, APPLIED_HIT, APPLIED_RESPAWN, APPLIED_STOCK, APPLIED_STRUCT_HIT, APPLIED_VITALS,
+    APPLIED_DRANK, APPLIED_RESPAWN, APPLIED_STOCK, APPLIED_STRUCT_HIT, APPLIED_VITALS,
 };
 use client_core::view::ClientView;
 use protocol::{EntityState, Welcome, WireError, MAX_STREAM_MSG_BYTES};
@@ -2106,22 +2106,27 @@ impl Survivor {
     /// word, an empty box until its panel has been seen.
     fn chores(&mut self, core: &ClientCore, chest: bool, tick: u32) {
         let survey = self.builder.survey();
-        self.memory.take_out = chest && survey.take_out;
+        let grades = self.builder.charged();
         self.memory.feed = survey.hearth
             && self.builder.hearth_addr(core).is_some()
-            && stash::feed_due(core, &self.home, self.builder.charged(), tick);
+            && stash::feed_due(core, &self.home, &self.ledger, grades, tick);
+        // Only a move the visit would make calls it home: a take the pack
+        // has no room for is no chore.
         let book = &self.book;
-        self.memory.put_away = chest
-            && book.ready()
-            && matches!(
+        let mut bill = [(0, 0); stash::VISIT_ROWS];
+        let n = stash::visit_bill(survey.bill(), &self.home, grades, tick, &mut bill);
+        let next = (chest && book.ready())
+            .then(|| {
                 stash::plan(
                     core,
                     |item| stash::loadout(core, book, item),
-                    survey.bill(),
+                    &bill[..n],
                     self.ledger.slots(),
-                ),
-                Some(Transfer::Put { .. })
-            );
+                )
+            })
+            .flatten();
+        self.memory.take_out = survey.take_out && matches!(next, Some(Transfer::Take { .. }));
+        self.memory.put_away = matches!(next, Some(Transfer::Put { .. }));
         let mut rows = [(0u16, 0u32); stash::STORED_ROWS];
         self.memory.stored_len = self.ledger.totals(&mut rows) as u8;
         self.memory.stored = rows;
@@ -2291,12 +2296,11 @@ impl Survivor {
         }
         // Its own base struck, or broken (not rotting: `Home::on_removed`
         // weighs that against the cupboard's stock): home under attack.
-        if flags & APPLIED_STRUCT_HIT != 0
-            && flags & APPLIED_HIT != 0
-            && applied2 & APPLIED2_OWN_STRUCT_HIT == 0
-        {
-            let (cx, cz, level, loc, ..) = core.struct_hit;
-            if self.builder.owns(cx, cz, level, loc) {
+        // A `StructHit` never sets `APPLIED_HIT` (wire v77); a repair
+        // latches the piece at its whole hp, so hp short of it is a blow.
+        if flags & APPLIED_STRUCT_HIT != 0 && applied2 & APPLIED2_OWN_STRUCT_HIT == 0 {
+            let (cx, cz, level, loc, left, max) = core.struct_hit;
+            if left != max && self.builder.owns(cx, cz, level, loc) {
                 self.home.on_struck(tick);
             }
         }
@@ -2305,7 +2309,15 @@ impl Survivor {
                 && u16::from(r.row) < core.piece_defs_have
                 && core.piece_defs.pieces[usize::from(r.row)].material == MAT_TWIG;
             if !twig && self.builder.owns(r.cx, r.cz, r.level, r.loc) {
-                self.home.on_removed(tick);
+                self.home.on_removed(tick, self.builder.charged());
+            }
+            if r.deploy
+                && self
+                    .builder
+                    .hearth_spot()
+                    .is_some_and(|h| (h.cx, h.cz, h.level, h.loc) == (r.cx, r.cz, r.level, r.loc))
+            {
+                self.home.lost_hearth();
             }
         }
         // Its own deploys' answers, and the bag list each death screen
@@ -3393,6 +3405,34 @@ mod tests {
             (bot.home.stats.wakes_on_bag, bot.home.stats.wakes_on_beach),
             (1, 3)
         );
+    }
+
+    #[test]
+    fn a_stranger_striking_its_base_raises_the_alarm_and_a_repair_does_not() {
+        let (mut bot, _, _) = fixture();
+        let plan = sim_core::bots::BasePlan::new(0, 100, 100);
+        bot.builder.set_plan(plan);
+        let mut buf = [0u8; protocol::event::MAX_EVENT_MSG_BYTES];
+        let loc = sim_core::build::LOC_EDGE_XLO;
+        // Mended to its whole hp: nobody struck anything.
+        let n = protocol::event::encode_event_piece_repaired(
+            false, 101, 100, 0, loc, 0, 5, 250, &mut buf,
+        )
+        .unwrap();
+        event(&mut bot, n, &buf);
+        assert!(!bot.home.under_attack(0));
+        // Somebody's wall off the plot.
+        let n =
+            protocol::event::encode_event_struct_hit(false, 90, 90, 0, loc, 0, 10, 240, &mut buf)
+                .unwrap();
+        event(&mut bot, n, &buf);
+        assert!(!bot.home.under_attack(0));
+        // Its own wall, struck by somebody else.
+        let n =
+            protocol::event::encode_event_struct_hit(false, 101, 100, 0, loc, 0, 10, 240, &mut buf)
+                .unwrap();
+        event(&mut bot, n, &buf);
+        assert!(bot.home.under_attack(0), "a blow on its own wall");
     }
 
     #[test]

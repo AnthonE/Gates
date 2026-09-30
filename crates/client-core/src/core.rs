@@ -213,9 +213,11 @@ pub const APPLIED_BAGS: u32 = 1 << 25;
 /// it back. `struct_hit` names the address and where the piece now stands
 /// out of its maximum.
 ///
-/// A hit sets this **and** `APPLIED_HIT`, which is what drains the
-/// hitmarker ring; a repair sets this alone, because nobody was struck.
-/// A reader that wants only raid damage checks for both.
+/// A hit and a repair both set it alone: since wire v77 the hit is the
+/// wall's broadcast to the whole island, not the raider's hitmarker (that
+/// is `APPLIED_HIT`, off the striker's own `EV_HIT`). A repair latches the
+/// piece at its whole hp, so a reader that wants only raid damage checks
+/// that `struct_hit`'s hp is short of its maximum.
 pub const APPLIED_STRUCT_HIT: u32 = 1 << 26;
 /// Own food/water changed (`EventMsg::Vitals`).
 pub const APPLIED_VITALS: u32 = 1 << 27;

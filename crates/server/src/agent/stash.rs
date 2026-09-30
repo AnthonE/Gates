@@ -28,7 +28,7 @@ use sim_core::bots::OpAddr;
 use sim_core::deploy::box_key;
 use sim_core::gather::ItemStack;
 use sim_core::inventory::CONT_BOX;
-use sim_core::limits::{BOX_SLOTS, HOTBAR_SLOTS, INV_SLOTS, TICK_HZ};
+use sim_core::limits::{BOX_SLOTS, HEARTH_STOCK_ROWS, HOTBAR_SLOTS, INV_SLOTS, TICK_HZ};
 use sim_core::movement::POS_XZ_Q;
 use sim_core::terrain::Haven;
 
@@ -276,9 +276,41 @@ pub fn plan(
 
 /// Is the cupboard worth a feed now: its stock is running low by the last
 /// reading (or there is none yet for a base that pays upkeep), and the pack
-/// carries something it is fed.
-pub fn feed_due(core: &ClientCore, home: &Home, grades: u32, tick: u32) -> bool {
-    home.upkeep_due(tick, grades) && home.can_feed(core, tick)
+/// or the box (as `stored` last showed it) holds something it is fed.
+pub fn feed_due(core: &ClientCore, home: &Home, stored: &Ledger, grades: u32, tick: u32) -> bool {
+    home.upkeep_due(tick, grades)
+        && home.can_feed(|i| carried(core, i) > 0 || stored.units(i) > 0, tick)
+}
+
+/// Rows a visit's bill holds: the base's, and a feed's worth per upkeep
+/// material.
+pub const VISIT_ROWS: usize = build::BILL_ROWS + HEARTH_STOCK_ROWS;
+
+/// What a visit keeps in the pack, into `out`: the base's `bill`, and a
+/// feed's worth of each upkeep material running low while the cupboard
+/// is due one, so the box gives up what the cupboard eats instead of
+/// taking it in. The rows filled.
+pub fn visit_bill(
+    bill: &[(u16, u32)],
+    home: &Home,
+    grades: u32,
+    tick: u32,
+    out: &mut [(u16, u32); VISIT_ROWS],
+) -> usize {
+    let mut n = bill.len().min(VISIT_ROWS);
+    out[..n].copy_from_slice(&bill[..n]);
+    let mut feed = [(0u16, 0u32); HEARTH_STOCK_ROWS];
+    let fed = home.feed_rows(tick, grades, &mut feed);
+    for &(item, units) in &feed[..fed] {
+        // One row per item: `plan` takes out what each row is short of.
+        if let Some(row) = out[..n].iter_mut().find(|r| r.0 == item) {
+            row.1 = row.1.saturating_add(units);
+        } else if n < VISIT_ROWS {
+            out[n] = (item, units);
+            n += 1;
+        }
+    }
+    n
 }
 
 /// What a visit wants next. `explorer.rs` sends the verbs.
@@ -340,8 +372,12 @@ pub struct StashJob {
     tries: u8,
     /// Presses `E` would not take here, at the feed.
     feed_tries: u8,
-    /// The feed was given up without a reply.
+    /// The feed was given up without a reply, or refused.
     feed_missed: bool,
+    /// The server refused the feed in flight (reach, or no cupboard).
+    refused: bool,
+    /// The panel is shut: what is left is a feed of what the box gave up.
+    closed: bool,
     /// This visit opened the box, and its panel has shown the box since
     /// the open went out. The client's panel is not cleared when the
     /// agent shuts it (the server sends nothing back), so what an earlier
@@ -361,10 +397,11 @@ impl StashJob {
     }
 
     /// Part of the visit came to nothing (the cupboard would not take a
-    /// feed, or the box would not take the moves): not worth offering
-    /// again straight away.
+    /// feed, or the box would not take the moves), or all of it did (no
+    /// move and no feed: what called it home could not be done, a full
+    /// pack and a full box say): not worth offering again straight away.
     pub fn gave_up(&self) -> bool {
-        self.feed_missed || self.cut_short
+        self.feed_missed || self.cut_short || (self.moves == 0 && !self.answered)
     }
 
     /// The box's panel showed the box (`APPLIED2_CONT` with it open).
@@ -382,6 +419,7 @@ impl StashJob {
             }
             if w == Wait::Feed {
                 self.answered = false;
+                self.refused = false;
             }
             if w == Wait::Open {
                 self.fresh = false;
@@ -397,10 +435,11 @@ impl StashJob {
     }
 
     /// A deploy refusal: a feed in flight was refused (reach, or no
-    /// cupboard there).
+    /// cupboard there). The reading is as it was, so the feed would be
+    /// due again at once: the visit counts it missed, and waits.
     pub fn on_refused(&mut self) {
         if matches!(self.waiting, Some((Wait::Feed, _))) {
-            self.answered = true;
+            self.refused = true;
         }
     }
 
@@ -464,7 +503,7 @@ impl StashJob {
             let late = tick.wrapping_sub(since) >= VERDICT_TICKS;
             match wait {
                 Wait::Feed => {
-                    if self.answered || late {
+                    if self.answered || self.refused || late {
                         self.waiting = None;
                         self.fed = true;
                         self.feed_missed |= !self.answered;
@@ -512,8 +551,15 @@ impl StashJob {
                     }
                 },
                 // The panel is shut (or the close waits on its pace, which
-                // `explorer.rs` sees to before ending the visit).
-                Wait::Close => return Chore::Done,
+                // `explorer.rs` sees to before ending the visit). A feed
+                // put off for what the box held comes now.
+                Wait::Close => {
+                    self.waiting = None;
+                    self.closed = true;
+                    if self.fed {
+                        return Chore::Done;
+                    }
+                }
             }
         }
         // In through the doors, onto the spot in the core that both the
@@ -527,10 +573,17 @@ impl StashJob {
         }
         let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
         let yaw = hands.view().0;
-        // The cupboard first, while the pack still carries what it eats.
+        // The cupboard first, while the pack still carries what it eats;
+        // short of that, once the box has given it up and the panel is
+        // shut.
+        let grades = builder.charged();
         if !self.fed {
-            match hearth.filter(|_| feed_due(core, home, builder.charged(), tick)) {
+            let due = hearth.filter(|_| home.upkeep_due(tick, grades));
+            let carries = home.can_feed(|i| carried(core, i) > 0, tick);
+            match due {
                 None => self.fed = true,
+                Some(_) if !carries && chest.is_some() && !self.closed => {}
+                Some(_) if !carries => self.fed = true,
                 Some(h) => match self.aim(core, seed, haven, hands, h, x, z, yaw, tick) {
                     Aim::Press(intent) => return Chore::Feed { at: h, intent },
                     Aim::Wait(intent) => return Chore::Go(intent),
@@ -543,18 +596,25 @@ impl StashJob {
                     }
                 },
             }
-            if !self.fed {
+            if !self.fed && (carries || self.closed) {
                 return Chore::Go(Intent::IDLE);
             }
         }
-        let (Some(b), Some(key)) = (chest, key) else {
-            // No box to visit: a feed was all there was.
+        let (Some(b), Some(key), false) = (chest, key, self.closed) else {
+            // No box to visit (a feed was all there was), or the visit to
+            // it is over.
             return Chore::Done;
         };
         let look = build::look_at(seed, haven, core, b);
         if self.opened && !box_open(core, key) {
             // It was open and the server shut it: out of reach, or gone.
-            return Chore::Done;
+            // A feed put off for the box is tried with what the pack has.
+            self.closed = true;
+            return if self.fed {
+                Chore::Done
+            } else {
+                Chore::Go(look)
+            };
         }
         if !self.opened {
             return match self.aim(core, seed, haven, hands, b, x, z, yaw, tick) {
@@ -574,11 +634,12 @@ impl StashJob {
             self.cut_short = true;
             None
         } else {
-            let bill = builder.survey().bill();
+            let mut bill = [(0, 0); VISIT_ROWS];
+            let n = visit_bill(builder.survey().bill(), home, grades, tick, &mut bill);
             plan(
                 core,
                 |item| loadout(core, book, item),
-                bill,
+                &bill[..n],
                 &core.cont[..BOX_SLOTS],
             )
         };
@@ -794,6 +855,43 @@ mod tests {
             .any(|s| s.item == SPEAR && s.count == 1));
         // Nothing left to do: a second visit makes no move.
         assert_eq!(visit(&mut core, &bill, &mut boxed), 0);
+    }
+
+    #[test]
+    fn the_box_gives_up_what_the_cupboard_eats_and_a_visit_that_did_nothing_waits() {
+        use sim_core::deploy::FEED_CHUNK;
+        let mut core = core();
+        // The last feed read 5 periods of stone: running low.
+        core.stock[0] = (STONE, 50, 10);
+        core.stock_count = 1;
+        let mut home = Home::new();
+        home.on_stock(&core, 0, 3);
+        let mut bill = [(0, 0); VISIT_ROWS];
+        let n = visit_bill(&[(WOOD, 300), (STONE, 100)], &home, 3, 0, &mut bill);
+        assert_eq!(&bill[..n], &[(WOOD, 300), (STONE, 100 + FEED_CHUNK)]);
+        // None in the pack, some in the box: a feed is due, from the box.
+        let mut ledger = Ledger::EMPTY;
+        assert!(!feed_due(&core, &home, &ledger, 3, 0));
+        ledger.slots[0] = stack(STONE, 2000);
+        assert!(feed_due(&core, &home, &ledger, 3, 0));
+        let mut boxed = ledger.slots;
+        visit(&mut core, &bill[..n], &mut boxed);
+        assert_eq!(carried(&core, STONE), 100 + FEED_CHUNK, "out for the feed");
+        // A full pack and a full box: nothing moves, and a visit that made
+        // no move and fed nothing is held off.
+        let mut boxed = [stack(ORE, 1000); BOX_SLOTS];
+        for s in core.inv[..INV_SLOTS].iter_mut() {
+            *s = stack(WOOD, 1000);
+        }
+        let keep = |_| 0;
+        assert_eq!(plan(&core, keep, &bill[..n], &boxed), None);
+        boxed[0] = stack(STONE, 1000);
+        assert_eq!(
+            plan(&core, keep, &bill[..n], &boxed),
+            None,
+            "no room for it"
+        );
+        assert!(StashJob::default().gave_up());
     }
 
     #[test]
