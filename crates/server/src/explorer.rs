@@ -100,6 +100,9 @@ pub const GO_HOME_GOAL_SECS: u32 = 120;
 /// After a walk home came to nothing (its own lock would not take the
 /// code, say), this long before the next.
 pub const GO_HOME_RETRY_TICKS: u32 = 60 * TICK_HZ;
+/// After a build goal could not reach its work (a spot nothing routes to,
+/// a passage that will not open), this long before the next.
+pub const BUILD_RETRY_TICKS: u32 = 60 * TICK_HZ;
 /// A loot run reports back after this long.
 pub const LOOT_GOAL_SECS: u32 = 240;
 /// A cook at a fire that has not finished in this long is stuck.
@@ -640,6 +643,8 @@ pub struct Survivor {
     recycle_failed: Option<u32>,
     /// When a walk home last came to nothing.
     home_failed: Option<u32>,
+    /// When a build goal last could not reach its work.
+    build_failed: Option<u32>,
     /// A defence of home, and what defences came to.
     defend_job: DefendJob,
     pub defend_stats: DefendStats,
@@ -750,6 +755,7 @@ impl Survivor {
             cook_failed: None,
             recycle_failed: None,
             home_failed: None,
+            build_failed: None,
             defend_job: DefendJob::default(),
             defend_stats: DefendStats::default(),
             defend_failed: None,
@@ -1515,6 +1521,9 @@ impl Survivor {
         self.history.push(report);
         if active.goal == Goal::GoHome && matches!(outcome, Outcome::Failed(_)) {
             self.home_failed = Some(tick);
+        }
+        if active.goal == Goal::Build && outcome == Outcome::Failed(Why::Stuck) {
+            self.build_failed = Some(tick);
         }
         self.memory.trigger = match outcome {
             Outcome::Done | Outcome::Running => {
@@ -3753,6 +3762,14 @@ impl Survivor {
         self.memory.recover_held = self.home.recover_held(core);
         let survey = *self.builder.survey();
         self.memory.base = survey;
+        // A build that could not reach its work is not offered again at
+        // once: two seconds a try, it would be all the body did.
+        if self
+            .build_failed
+            .is_some_and(|at| tick.wrapping_sub(at) < BUILD_RETRY_TICKS)
+        {
+            self.memory.base.ready = false;
+        }
         self.home.set_base(self.builder.stand());
         self.memory.stash_held = self.home.stash_held(tick);
         self.memory.home_held = self.home_held(tick);
