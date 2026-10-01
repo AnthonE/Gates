@@ -100,6 +100,8 @@ entries = [
     { item = "item.tarp", weight = 10, count_min = 1, count_max = 2 },
     { item = "item.bandage", weight = 10, count_min = 1, count_max = 2 },
     { item = "item.arrow_wood", weight = 5, count_min = 5, count_max = 10 },
+    # The first rung of the ziggurat's card loop: found out on the route.
+    { item = "item.keycard_green", weight = 2, count_min = 1, count_max = 1 },
 ]
 
 [[loot_table]]
@@ -123,4 +125,65 @@ entries = [
     { item = "item.medkit", weight = 8, count_min = 1, count_max = 1 },
     { item = "item.pistol_ammo", weight = 8, count_min = 4, count_max = 8 },
     { item = "item.arrow_metal", weight = 10, count_min = 5, count_max = 10 },
+    { item = "item.keycard_green", weight = 4, count_min = 1, count_max = 1 },
+]
+
+# The Black Ziggurat (`sim-core/src/monument.rs`): three rooms behind card
+# doors. Each pays more certain junk than the crate ladder and **guarantees
+# the next card** — Rust learned that players resent a random vault
+# (Meta Madness), so the loop is certain and the extras are the gamble.
+[[loot_table]]
+id = "loot.green"
+container = "green"
+rolls_min = 2
+rolls_max = 3
+hits = 5
+guaranteed = [
+    { item = "item.junk", count_min = 10, count_max = 10 },
+    { item = "item.keycard_blue", count_min = 1, count_max = 1 },
+]
+entries = [
+    { item = "item.metal_frags", weight = 15, count_min = 40, count_max = 80 },
+    { item = "item.gunpowder", weight = 10, count_min = 20, count_max = 40 },
+    { item = "item.gears", weight = 12, count_min = 2, count_max = 3 },
+    { item = "item.tarp", weight = 10, count_min = 1, count_max = 2 },
+    { item = "item.medkit", weight = 8, count_min = 1, count_max = 1 },
+    { item = "item.arrow_metal", weight = 10, count_min = 10, count_max = 15 },
+]
+
+[[loot_table]]
+id = "loot.blue"
+container = "blue"
+rolls_min = 3
+rolls_max = 3
+hits = 5
+guaranteed = [
+    { item = "item.junk", count_min = 15, count_max = 15 },
+    { item = "item.keycard_red", count_min = 1, count_max = 1 },
+]
+entries = [
+    { item = "item.metal_frags", weight = 15, count_min = 60, count_max = 100 },
+    { item = "item.gunpowder", weight = 12, count_min = 30, count_max = 60 },
+    { item = "item.pistol_ammo", weight = 10, count_min = 8, count_max = 16 },
+    { item = "item.gears", weight = 12, count_min = 2, count_max = 4 },
+    { item = "item.medkit", weight = 8, count_min = 1, count_max = 2 },
+    { item = "item.satchel_charge", weight = 4, count_min = 1, count_max = 1 },
+]
+
+[[loot_table]]
+id = "loot.elite"
+container = "elite"
+rolls_min = 3
+rolls_max = 4
+hits = 5
+# Their elite crate: 25 scrap, certain.
+guaranteed = [{ item = "item.junk", count_min = 25, count_max = 25 }]
+entries = [
+    { item = "item.revolver", weight = 8, count_min = 1, count_max = 1 },
+    { item = "item.pistol_ammo", weight = 12, count_min = 12, count_max = 24 },
+    { item = "item.satchel_charge", weight = 8, count_min = 1, count_max = 2 },
+    { item = "item.armor_roadsign_body", weight = 8, count_min = 1, count_max = 1 },
+    { item = "item.gunpowder", weight = 10, count_min = 50, count_max = 100 },
+    { item = "item.medkit", weight = 10, count_min = 1, count_max = 2 },
+    { item = "item.gears", weight = 10, count_min = 3, count_max = 5 },
 ]

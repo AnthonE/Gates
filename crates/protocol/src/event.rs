@@ -64,6 +64,13 @@ pub const CATALOG_BATCH: usize = 8;
 /// measures it rather than trusting this sum.
 pub const SKIN_BATCH: usize = 8;
 
+/// Vendor offers one message carries (`sim_core::vend`, wire v86). A row is
+/// 3 + 4 × 16 + 5 bits plus the vendor's name on its first row (≤ 16
+/// bytes), so eight are well inside `MAX_EVENT_MSG_BYTES`.
+pub const VEND_BATCH: usize = 8;
+/// Longest vendor name on the wire.
+pub const VENDOR_NAME_BYTES: usize = 16;
+
 /// Loose ground stacks one sync message carries (ground items v0).
 /// Sixteen × 14 B is ~230 B, inside `MAX_EVENT_MSG_BYTES` with the
 /// headroom the catalog batch leaves. Overflow policy: the next message
@@ -392,7 +399,20 @@ const SUB_SKINS: u32 = 64;
 const SUB_SKINS_OWNED: u32 = 65;
 /// Who a player id is: proven address, platform name, picture (v85).
 const SUB_TAG: u32 = 66;
-const SUB_MAX: u32 = SUB_TAG;
+/// The town's vendor offers (wire v86), dripped at join: rows
+/// `first..first + count` of `total`, each naming its vendor (kiosk), what
+/// it takes and what it gives; a vendor's first row carries its name.
+const SUB_VEND_OFFERS: u32 = 67;
+/// A trade went through (own-fact): the offer and how many times.
+const SUB_VEND: u32 = 68;
+/// A trade was refused (own-fact): why, and which offer.
+const SUB_VEND_REFUSED: u32 = 69;
+/// The ziggurat's card doors that stand open (wire v87), a bit per door:
+/// sent to everyone when the set changes and to a joiner.
+const SUB_CARD_DOORS: u32 = 70;
+/// A swipe was refused (own-fact): why, and which door.
+const SUB_SWIPE_REFUSED: u32 = 71;
+const SUB_MAX: u32 = SUB_SWIPE_REFUSED;
 /// A grow-sync batch's count: 1..=`GROW_SYNC_BATCH` in six bits.
 const GROW_SYNC_COUNT_BITS: u32 = 6;
 /// Width of an exposure reading: per cent, 0..=100 in seven bits.
@@ -1361,6 +1381,23 @@ pub enum EventMsg {
     /// The skins the owner owns, as the sim holds them: bit `i` is row `i`
     /// of the skin catalog.
     SkinsOwned { owned: sim_core::skin::SkinSet },
+    /// One batch of the vendor offers (wire v86).
+    VendOffers {
+        total: u16,
+        first: u16,
+        count: u8,
+        rows: [sim_core::vend::VendOffer; VEND_BATCH],
+        names: [[u8; VENDOR_NAME_BYTES]; VEND_BATCH],
+        lens: [u8; VEND_BATCH],
+    },
+    /// Your trade went through: offer `offer`, `times` over.
+    Vend { offer: u8, times: u8 },
+    /// Your trade was refused (`sim_core::vend::REFUSE_V_*`).
+    VendRefused { code: u8, offer: u8 },
+    /// The card doors open now, bit `d` for door `d`.
+    CardDoors { bits: u8 },
+    /// Your swipe was refused (`sim_core::monument::REFUSE_S_*`).
+    SwipeRefused { code: u8, door: u8 },
     /// The feed ack: the hearth's stock rows after the transfer, aligned
     /// to the baked upkeep-material list — (item index, units, what one
     /// upkeep period charges in it). The third column is upkeep v2's
@@ -2808,6 +2845,93 @@ pub fn encode_event_skins(
     Ok((w.finish(), count))
 }
 
+/// Encode up to `VEND_BATCH` vendor offers starting at `first`. `names`
+/// is each vendor's name, kiosk order; a vendor's first offer carries it.
+pub fn encode_event_vend_offers(
+    vc: &sim_core::vend::VendContent,
+    names: &[&[u8]],
+    first: usize,
+    buf: &mut [u8],
+) -> Result<(usize, usize), WireError> {
+    let total = vc.count as usize;
+    if total > sim_core::limits::MAX_VEND_OFFERS || first >= total {
+        return Err(WireError::Range);
+    }
+    let count = VEND_BATCH.min(total - first);
+    let mut w = begin(buf, SUB_VEND_OFFERS)?;
+    w.write(total as u32, 7)?;
+    w.write(first as u32, 7)?;
+    w.write(count as u32, 4)?;
+    for idx in first..first + count {
+        let o = vc.offers[idx];
+        w.write(o.vendor as u32, 3)?;
+        w.write(o.pay as u32, 16)?;
+        w.write(o.pay_n as u32, 16)?;
+        w.write(o.get as u32, 16)?;
+        w.write(o.get_n as u32, 16)?;
+        let lead = idx == 0 || vc.offers[idx - 1].vendor != o.vendor;
+        let name: &[u8] = if lead {
+            names.get(o.vendor as usize).copied().unwrap_or(&[])
+        } else {
+            &[]
+        };
+        if name.len() > VENDOR_NAME_BYTES {
+            return Err(WireError::Range);
+        }
+        w.write(name.len() as u32, 5)?;
+        for &b in name {
+            w.write(b as u32, 8)?;
+        }
+    }
+    Ok((w.finish(), count))
+}
+
+/// Your trade went through.
+pub fn encode_event_vend(offer: u8, times: u8, buf: &mut [u8]) -> Result<usize, WireError> {
+    if times == 0 || times > sim_core::vend::VEND_TIMES_MAX || offer as usize >= 128 {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_VEND)?;
+    w.write(offer as u32, 7)?;
+    w.write(times as u32, 5)?;
+    Ok(w.finish())
+}
+
+/// Your trade was refused.
+pub fn encode_event_vend_refused(code: u8, offer: u8, buf: &mut [u8]) -> Result<usize, WireError> {
+    if code == 0 || code as u32 > sim_core::vend::REFUSE_V_MAX || offer as usize >= 128 {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_VEND_REFUSED)?;
+    w.write(code as u32, 3)?;
+    w.write(offer as u32, 7)?;
+    Ok(w.finish())
+}
+
+/// The card doors open now.
+pub fn encode_event_card_doors(bits: u8, buf: &mut [u8]) -> Result<usize, WireError> {
+    if bits as u32 >= 1 << sim_core::monument::CARD_DOORS {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_CARD_DOORS)?;
+    w.write(bits as u32, sim_core::monument::CARD_DOORS as u32)?;
+    Ok(w.finish())
+}
+
+/// Your swipe was refused.
+pub fn encode_event_swipe_refused(code: u8, door: u8, buf: &mut [u8]) -> Result<usize, WireError> {
+    if code == 0
+        || code as u32 > sim_core::monument::REFUSE_S_MAX
+        || door as usize >= sim_core::monument::CARD_DOORS
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_SWIPE_REFUSED)?;
+    w.write(code as u32, 2)?;
+    w.write(door as u32, 2)?;
+    Ok(w.finish())
+}
+
 /// The owner's skin set, every word of it.
 pub fn encode_event_skins_owned(
     owned: &sim_core::skin::SkinSet,
@@ -4152,6 +4276,86 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 lens,
                 rows,
             }
+        }
+        SUB_VEND_OFFERS => {
+            let total = r.read(7)? as usize;
+            let first = r.read(7)? as usize;
+            let count = r.read(4)? as usize;
+            if total > sim_core::limits::MAX_VEND_OFFERS
+                || count == 0
+                || count > VEND_BATCH
+                || first + count > total
+            {
+                return Err(WireError::Malformed);
+            }
+            let mut rows = [sim_core::vend::VendOffer::default(); VEND_BATCH];
+            let mut names = [[0u8; VENDOR_NAME_BYTES]; VEND_BATCH];
+            let mut lens = [0u8; VEND_BATCH];
+            for i in 0..count {
+                let vendor = r.read(3)? as u8;
+                let o = sim_core::vend::VendOffer {
+                    vendor,
+                    pay: r.read(16)? as u16,
+                    pay_n: r.read(16)? as u16,
+                    get: r.read(16)? as u16,
+                    get_n: r.read(16)? as u16,
+                };
+                if vendor as usize >= sim_core::limits::MAX_VENDORS
+                    || o.pay as usize >= MAX_ITEM_DEFS
+                    || o.get as usize >= MAX_ITEM_DEFS
+                    || o.pay_n == 0
+                    || o.get_n == 0
+                {
+                    return Err(WireError::Malformed);
+                }
+                rows[i] = o;
+                let len = r.read(5)? as usize;
+                if len > VENDOR_NAME_BYTES {
+                    return Err(WireError::Malformed);
+                }
+                for b in names[i].iter_mut().take(len) {
+                    *b = r.read(8)? as u8;
+                }
+                lens[i] = len as u8;
+            }
+            EventMsg::VendOffers {
+                total: total as u16,
+                first: first as u16,
+                count: count as u8,
+                rows,
+                names,
+                lens,
+            }
+        }
+        SUB_VEND => {
+            let offer = r.read(7)? as u8;
+            let times = r.read(5)? as u8;
+            if times == 0 || times > sim_core::vend::VEND_TIMES_MAX {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Vend { offer, times }
+        }
+        SUB_VEND_REFUSED => {
+            let code = r.read(3)? as u8;
+            let offer = r.read(7)? as u8;
+            if code == 0 || code as u32 > sim_core::vend::REFUSE_V_MAX {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::VendRefused { code, offer }
+        }
+        SUB_CARD_DOORS => EventMsg::CardDoors {
+            bits: r.read(sim_core::monument::CARD_DOORS as u32)? as u8,
+        },
+        SUB_SWIPE_REFUSED => {
+            let code = r.read(2)? as u8;
+            let door = r.read(2)? as u8;
+            if code == 0
+                || code as u32 > sim_core::monument::REFUSE_S_MAX
+                || door as usize >= sim_core::monument::CARD_DOORS
+            {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::SwipeRefused { code, door }
         }
         SUB_SKINS_OWNED => {
             let mut owned = sim_core::skin::SkinSet::EMPTY;
@@ -6320,6 +6524,22 @@ mod wire_domains {
         Module {
             file: "trust.rs",
             src: include_str!("../../sim-core/src/trust.rs"),
+        },
+        Module {
+            file: "kit.rs",
+            src: include_str!("../../sim-core/src/kit.rs"),
+        },
+        Module {
+            file: "monument.rs",
+            src: include_str!("../../sim-core/src/monument.rs"),
+        },
+        Module {
+            file: "town.rs",
+            src: include_str!("../../sim-core/src/town.rs"),
+        },
+        Module {
+            file: "vend.rs",
+            src: include_str!("../../sim-core/src/vend.rs"),
         },
         Module {
             file: "terrain.rs",

@@ -64,6 +64,9 @@ pub fn container_index(name: &str) -> Option<usize> {
         "barrel" => LOOT_BARREL,
         "crate" => LOOT_CRATE,
         "cache" => LOOT_CACHE,
+        "green" => sim_core::loot::LOOT_GREEN,
+        "blue" => sim_core::loot::LOOT_BLUE,
+        "elite" => sim_core::loot::LOOT_ELITE,
         _ => return None,
     })
 }
@@ -82,6 +85,14 @@ fn node_slot(a: NodeArchetype) -> usize {
 impl Content {
     /// Rank of `id` among all item ids, sorted — the sim-side item index.
     /// The wire slice will ship this same mapping in the join bundle.
+    /// The id at a baked index — [`Self::item_index`] backwards.
+    fn item_id(&self, index: u16) -> &str {
+        self.items
+            .iter()
+            .find(|i| self.item_index(&i.id) == Some(index))
+            .map_or("?", |i| i.id.as_str())
+    }
+
     pub fn item_index(&self, id: &str) -> Option<u16> {
         let mut rank = 0u16;
         let mut found = false;
@@ -1553,6 +1564,125 @@ impl Content {
         }
         sc.count = self.skins.len() as u16;
         Ok(sc)
+    }
+
+    /// The town's vendor offers (`sim_core::vend`), vendor-major in file
+    /// order: the wire's offer index. Refuses what the sim could not honour
+    /// and any table a player could farm: junk on exactly one side of every
+    /// offer, and buying anything must cost more junk than selling it back
+    /// fetches — directly or after a recycler has turned it into other
+    /// things SALVAGE buys.
+    pub fn bake_vend(&self) -> Result<sim_core::vend::VendContent, String> {
+        use sim_core::limits::{MAX_VENDORS, MAX_VEND_OFFERS};
+        if self.vendors.len() > MAX_VENDORS {
+            return Err(format!(
+                "sites: {} vendors, {MAX_VENDORS} kiosks",
+                self.vendors.len()
+            ));
+        }
+        let junk = self
+            .item_index("item.junk")
+            .ok_or("sites: no item.junk to trade in")?;
+        let mut vc = sim_core::vend::VendContent::EMPTY;
+        let mut n = 0usize;
+        for (v, vendor) in self.vendors.iter().enumerate() {
+            if vendor.name.is_empty() || vendor.name.len() > 16 {
+                return Err(format!("sites: vendor {v} name must be 1..=16 bytes"));
+            }
+            for o in &vendor.offer {
+                let pay = self
+                    .item_index(&o.pay)
+                    .ok_or_else(|| format!("sites: {}: `{}` is not an item", vendor.name, o.pay))?;
+                let get = self
+                    .item_index(&o.get)
+                    .ok_or_else(|| format!("sites: {}: `{}` is not an item", vendor.name, o.get))?;
+                if (pay == junk) == (get == junk) {
+                    return Err(format!(
+                        "sites: {}: {} -> {}: junk must be on exactly one side",
+                        vendor.name, o.pay, o.get
+                    ));
+                }
+                if o.pay_n == 0 || o.get_n == 0 {
+                    return Err(format!("sites: {}: a zero count", vendor.name));
+                }
+                if n == MAX_VEND_OFFERS {
+                    return Err(format!("sites: more than {MAX_VEND_OFFERS} offers"));
+                }
+                vc.offers[n] = sim_core::vend::VendOffer {
+                    vendor: v as u8,
+                    pay,
+                    pay_n: o.pay_n,
+                    get,
+                    get_n: o.get_n,
+                };
+                n += 1;
+            }
+        }
+        vc.count = n as u16;
+        // No arbitrage. Junk per unit as a fraction, compared by cross-
+        // multiplying in u64 so nothing rounds.
+        let offers = &vc.offers[..n];
+        // Best junk per unit SALVAGE pays for an item: (junk, units).
+        let sell_rate = |item: u16| -> (u64, u64) {
+            let mut best = (0u64, 1u64);
+            for o in offers.iter().filter(|o| o.pay == item && o.get == junk) {
+                let r = (o.get_n as u64, o.pay_n as u64);
+                if r.0 * best.1 > best.0 * r.1 {
+                    best = r;
+                }
+            }
+            best
+        };
+        for o in offers.iter().filter(|o| o.pay == junk) {
+            let item = o.get;
+            // Price per unit: pay_n / get_n junk.
+            let (price_j, price_u) = (o.pay_n as u64, o.get_n as u64);
+            let (sell_j, sell_u) = sell_rate(item);
+            if sell_j * price_u >= price_j * sell_u {
+                return Err(format!(
+                    "sites: {} sells back for as much as it costs",
+                    self.item_id(item)
+                ));
+            }
+            // Through a recycler: every row out of this item, valued at
+            // SALVAGE's best rate (junk itself at one).
+            let mut value = (0u64, 1u64);
+            for c in self.cooks.iter().filter(|c| {
+                matches!(c.station, crate::schema::CookStation::Recycler)
+                    && self.item_index(&c.input) == Some(item)
+            }) {
+                let Some(out) = self.item_index(&c.output) else {
+                    continue;
+                };
+                let (j, u) = if out == junk { (1, 1) } else { sell_rate(out) };
+                // value += count * j / u
+                value = (value.0 * u + c.count as u64 * j * value.1, value.1 * u);
+            }
+            if value.0 * price_u >= price_j * value.1 {
+                return Err(format!(
+                    "sites: {} recycles into more junk than it costs",
+                    self.item_id(item)
+                ));
+            }
+        }
+        Ok(vc)
+    }
+
+    /// The keycard each ziggurat door takes (`monument::DOORS`), as item
+    /// indices. A door naming an item content lacks is a refused boot.
+    pub fn bake_cards(&self) -> Result<[u16; sim_core::monument::CARD_DOORS], String> {
+        let mut out = [sim_core::gather::NO_ITEM; sim_core::monument::CARD_DOORS];
+        for (d, door) in sim_core::monument::DOORS.iter().enumerate() {
+            out[d] = self
+                .item_index(door.card)
+                .ok_or_else(|| format!("monument: door {d} takes `{}`, not an item", door.card))?;
+        }
+        Ok(out)
+    }
+
+    /// Each vendor's name, kiosk order, for the wire's offer catalog.
+    pub fn bake_vendor_names(&self) -> Vec<String> {
+        self.vendors.iter().map(|v| v.name.clone()).collect()
     }
 
     /// The animal species table (`sim-core/src/mob.rs`).

@@ -20,7 +20,7 @@ pub use balance::Anchors;
 
 /// Every file the content set is made of — exactly these, no extras.
 /// A missing file is a loud failure, never a defaulted section.
-pub const FILES: [&str; 14] = [
+pub const FILES: [&str; 15] = [
     "items.toml",
     "gatherables.toml",
     "recipes.toml",
@@ -35,6 +35,7 @@ pub const FILES: [&str; 14] = [
     "mobs.toml",
     "skins.toml",
     "balance.toml",
+    "sites.toml",
 ];
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -136,6 +137,12 @@ struct SkinsFile {
     skin: Vec<Skin>,
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SitesFile {
+    vendor: Vec<Vendor>,
+}
+
 /// The whole validated content set. Construction is the only way in, so
 /// holding a `Content` means every check in `validate` and every band in
 /// `balance` passed.
@@ -166,6 +173,8 @@ pub struct Content {
     /// missing file is a loud failure here and never a defaulted section.
     pub mobs: Vec<Mob>,
     pub skins: Vec<Skin>,
+    /// The town's vendors, kiosk order (`sites.toml`).
+    pub vendors: Vec<Vendor>,
     pub balance: Balance,
     anchors: Anchors,
 }
@@ -235,6 +244,7 @@ impl Content {
         let mobs: MobsFile = parse("mobs.toml", get("mobs.toml")?)?;
         let skins: SkinsFile = parse("skins.toml", get("skins.toml")?)?;
         let balance: Balance = parse("balance.toml", get("balance.toml")?)?;
+        let sites: SitesFile = parse("sites.toml", get("sites.toml")?)?;
 
         let mut content = Content {
             items: items.item,
@@ -254,6 +264,7 @@ impl Content {
             loot_tables: loot.loot_table,
             mobs: mobs.mob,
             skins: skins.skin,
+            vendors: sites.vendor,
             balance,
             anchors: Anchors::default(),
         };

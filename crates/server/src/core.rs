@@ -53,7 +53,8 @@ use sim_core::world::{
     EV_KNOCK, EV_KNOWN, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED,
     EV_PIECE_REPAIRED, EV_RECOVERED, EV_RELOAD, EV_RELOAD_REFUSED, EV_RESEARCH,
     EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK,
-    EV_STRUCT_HIT, EV_SWING, EV_VITALS, EV_WEAK_MARK, EV_WOUNDED, STRUCT_DEPLOY_BIT,
+    EV_STRUCT_HIT, EV_SWING, EV_SWIPE, EV_SWIPE_REFUSED, EV_VEND, EV_VEND_REFUSED, EV_VITALS,
+    EV_WEAK_MARK, EV_WOUNDED, STRUCT_DEPLOY_BIT,
 };
 
 /// A piece row's baked maximum hp, or 0 if the row is past the table.
@@ -159,6 +160,8 @@ pub struct ShardCore {
     /// from `content/skins.toml`. Boxed: ~9 kB of fixed capacity. Empty
     /// sends nothing.
     pub skin_catalog: Box<protocol::SkinCatalog>,
+    /// Each vendor's name, kiosk order (wire v85's offer drip carries them).
+    pub vendor_names: Vec<String>,
     /// Scratch: event-lane encode target.
     ev_buf: [u8; MAX_EVENT_MSG_BYTES],
     /// Who each player slot is (`EventMsg::Tag`): the proven address from
@@ -395,6 +398,7 @@ impl ShardCore {
             dg_buf: [0; DATAGRAM_BUDGET_BYTES],
             catalog: ItemCatalog::EMPTY,
             skin_catalog: Box::new(protocol::SkinCatalog::EMPTY),
+            vendor_names: Vec::new(),
             ev_buf: [0; MAX_EVENT_MSG_BYTES],
             tags: vec![TagRow::default(); MAX_PLAYERS].into_boxed_slice(),
             admins: crate::admin::Admins::none(),
@@ -1380,6 +1384,12 @@ impl ShardCore {
                     ActionMsg::Loot => Command::Loot { id: c.id },
                     ActionMsg::Pickup => Command::Pickup { id: c.id },
                     ActionMsg::Consume { slot } => Command::Consume { id: c.id, slot },
+                    ActionMsg::Vend { offer, times } => Command::Vend {
+                        id: c.id,
+                        offer,
+                        times,
+                    },
+                    ActionMsg::Swipe { door } => Command::Swipe { id: c.id, door },
                     ActionMsg::Research { slot } => Command::Research { id: c.id, slot },
                     ActionMsg::Unlock { recipe } => Command::Unlock { id: c.id, recipe },
                     ActionMsg::Drink => Command::Drink { id: c.id },
@@ -1977,6 +1987,48 @@ impl ShardCore {
                         Err(_) => ShardStats::bump(&stats.encode_range_errors),
                     }
                 }
+                EV_VEND | EV_VEND_REFUSED => {
+                    let Some(slot) = self.client_slot_of(ev.a) else {
+                        continue;
+                    };
+                    let r = if ev.code == EV_VEND {
+                        protocol::encode_event_vend(ev.b as u8, ev.c as u8, &mut self.ev_buf)
+                    } else {
+                        protocol::encode_event_vend_refused(
+                            ev.b as u8,
+                            ev.c as u8,
+                            &mut self.ev_buf,
+                        )
+                    };
+                    match r {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_SWIPE_REFUSED => {
+                    let Some(slot) = self.client_slot_of(ev.a) else {
+                        continue;
+                    };
+                    match protocol::encode_event_swipe_refused(
+                        ev.b as u8,
+                        ev.c as u8,
+                        &mut self.ev_buf,
+                    ) {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                // Every client hears a door through the open-door mirror
+                // (the drip below), so the swipe itself rides no wire.
+                EV_SWIPE => {}
                 EV_RELOAD_REFUSED => {
                     let Some(slot) = self.client_slot_of(ev.a) else {
                         continue; // shooter left this tick
@@ -3402,6 +3454,45 @@ impl ShardCore {
                     if send(Lane::Event, slot, &self.ev_buf[..len]) {
                         ShardStats::bump(&stats.ev_sent);
                         self.clients[slot].skins_cursor += took;
+                    } else {
+                        return;
+                    }
+                }
+                Err(_) => ShardStats::bump(&stats.encode_range_errors),
+            }
+        }
+
+        // The town's vendor offers (wire v85), the skins' drip shape.
+        let c = &self.clients[slot];
+        let vc = &self.world.vend;
+        if vc.count > 0 && c.vend_cursor < vc.count as usize {
+            let names: [&[u8]; sim_core::limits::MAX_VENDORS] = core::array::from_fn(|i| {
+                self.vendor_names
+                    .get(i)
+                    .map(|n| n.as_bytes())
+                    .unwrap_or(&[])
+            });
+            match protocol::encode_event_vend_offers(vc, &names, c.vend_cursor, &mut self.ev_buf) {
+                Ok((len, took)) => {
+                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                        ShardStats::bump(&stats.ev_sent);
+                        self.clients[slot].vend_cursor += took;
+                    } else {
+                        return;
+                    }
+                }
+                Err(_) => ShardStats::bump(&stats.encode_range_errors),
+            }
+        }
+
+        // The ziggurat's open doors (wire v86), whenever they move.
+        let bits = self.world.card_door_bits as u8;
+        if self.clients[slot].last_doors != Some(bits) {
+            match protocol::encode_event_card_doors(bits, &mut self.ev_buf) {
+                Ok(len) => {
+                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                        ShardStats::bump(&stats.ev_sent);
+                        self.clients[slot].last_doors = Some(bits);
                     } else {
                         return;
                     }

@@ -66,6 +66,8 @@ fn no_haven() -> Haven {
         ore_pm: terrain::ORE_PM_UNIT,
         marks: sim_core::landmark::NO_MARKS,
         trails: [terrain::SideRoad::NONE; sim_core::landmark::LANDMARKS],
+        town: sim_core::town::Town::NONE,
+        ziggurat: sim_core::monument::Ziggurat::NONE,
     }
 }
 
@@ -97,6 +99,8 @@ fn ring_phase(ring: &terrain::RingPath, seed: u64, x: f32, z: f32) -> Option<u8>
             ore_pm: terrain::ORE_PM_UNIT,
             marks: sim_core::landmark::NO_MARKS,
             trails: [terrain::SideRoad::NONE; sim_core::landmark::LANDMARKS],
+            town: sim_core::town::Town::NONE,
+            ziggurat: sim_core::monument::Ziggurat::NONE,
         };
         let ok = (0..HAVEN_CRATES).all(|k| {
             let (ax, az, _) = terrain::haven_crate(&probe, k);
@@ -139,6 +143,8 @@ fn shelter_bearing(ring: &terrain::RingPath, seed: u64, x: f32, z: f32, phase: u
         ore_pm: terrain::ORE_PM_UNIT,
         marks: sim_core::landmark::NO_MARKS,
         trails: [terrain::SideRoad::NONE; sim_core::landmark::LANDMARKS],
+        town: sim_core::town::Town::NONE,
+        ziggurat: sim_core::monument::Ziggurat::NONE,
     };
     for t in 0..HAVEN_CRATES {
         let bearing = ((t as u32 * 256) / HAVEN_CRATES as u32
@@ -617,6 +623,10 @@ fn the_pad_carries_the_containers_it_placed() {
                 if sim_core::landmark::at(&haven.marks, s.x, s.z, 1.0).is_some() {
                     continue;
                 }
+                // Nor are the ziggurat's (`monument.rs`).
+                if sim_core::monument::covers(&haven.ziggurat, s.x, s.z, 0.0) {
+                    continue;
+                }
                 // PARTITIONED BY SITE, not filtered down to the pad's own.
                 // The lesser tier (`terrain::WAYSTATIONS`) stands containers
                 // elsewhere on the ring, so the old "every container
@@ -1038,6 +1048,8 @@ fn the_pad_carries_the_shelter_at_its_center() {
             ore_pm: terrain::ORE_PM_UNIT,
             marks: sim_core::landmark::NO_MARKS,
             trails: [terrain::SideRoad::NONE; sim_core::landmark::LANDMARKS],
+            town: sim_core::town::Town::NONE,
+            ziggurat: sim_core::monument::Ziggurat::NONE,
         };
         let (px, pz, _) = terrain::haven_shelter(&probe);
         if (0..HAVEN_CRATES).any(|k| {

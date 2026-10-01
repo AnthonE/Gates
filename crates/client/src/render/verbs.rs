@@ -159,6 +159,7 @@ pub fn resolve(
         Some(_) => {
             let (seed, occ) = core.island();
             let mut island = interact::Island {
+                doors: occ.doors,
                 seed,
                 table: occ.table,
                 haven: occ.haven,
@@ -261,6 +262,21 @@ pub fn resolve(
         let take = interact::resolve_take(x, z, core.ground_items());
         if take.verb != interact::Verb::None {
             aimed.0 = take;
+        }
+    }
+    // A town kiosk (THE GATE): last, by nearness — the counter is a place
+    // you walk up to, not a thing you aim at.
+    if aimed.0.is_none() {
+        let trade = interact::resolve_trade(x, z, &core.haven().town);
+        if trade.verb != interact::Verb::None {
+            aimed.0 = trade;
+        }
+    }
+    // A ziggurat door's reader or lever, the same way.
+    if aimed.0.is_none() {
+        let swipe = interact::resolve_swipe(x, y, z, &core.haven().ziggurat);
+        if swipe.verb != interact::Verb::None {
+            aimed.0 = swipe;
         }
     }
     near.0 = structure::nearest(
@@ -556,6 +572,12 @@ fn use_slot(net: &Net, toast: &mut Toast, bite: &mut Bite, now: f64, slot: u8) {
 /// Dispatch `E` on the resolved pick.
 fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>) {
     match pick.verb {
+        Verb::Swipe => {
+            let door = pick.handle as u8;
+            send(net, toast, "swipe", |buf| {
+                protocol::encode_action_swipe(door, buf)
+            });
+        }
         Verb::Assist => {
             send(net, toast, "help up", |buf| {
                 protocol::encode_action_assist(pick.handle, buf)
@@ -683,6 +705,18 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
         // (`panels::tech::clicks`). No `open_panel` — that helper opens
         // the INVENTORY, and this is the one verb that opens something
         // else.
+        // A kiosk opens its stall's offers and sends nothing; the buy
+        // buttons send (`panels::vendor::clicks`).
+        Verb::Trade => {
+            if let Some(ui) = ui {
+                if ui.panel == Panel::None {
+                    ui.panel = Panel::Vendor;
+                    ui.vendor = pick.handle as u8;
+                    ui.status.clear();
+                    ui.dirty = true;
+                }
+            }
+        }
         Verb::TechTree => {
             if let Some(ui) = ui {
                 if ui.panel == Panel::None {

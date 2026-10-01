@@ -1,0 +1,83 @@
+# The town's vendors — THE GATE's kiosks (`sim-core/src/town.rs` KIOSKS,
+# `sim-core/src/vend.rs`). Vendor k trades at kiosk k, in file order; there
+# are six kiosks, three either side of the market street.
+#
+# Rust's Outpost is the shape (research 2026-09-30): category stalls for
+# food, building, tools, components and a resource exchange, unlimited
+# stock, and **no keycards for sale** — Facepunch pulled the blue card from
+# Outpost because buying it skipped the monument ladder. SALVAGE buys cards
+# back instead.
+#
+# Every price is junk on exactly one side, and the loader refuses a table
+# that can be arbitraged: buying anything and selling it back — directly, or
+# after running it through a recycler — must lose junk.
+
+[[vendor]]
+name = "RATIONS"
+offer = [
+    { pay = "item.junk", pay_n = 3, get = "item.corn", get_n = 4 },
+    { pay = "item.junk", pay_n = 4, get = "item.cooked_meat", get_n = 2 },
+    { pay = "item.junk", pay_n = 3, get = "item.berries", get_n = 10 },
+    { pay = "item.junk", pay_n = 3, get = "item.bandage", get_n = 1 },
+    { pay = "item.junk", pay_n = 25, get = "item.medkit", get_n = 1 },
+    { pay = "item.junk", pay_n = 2, get = "item.torch", get_n = 1 },
+]
+
+[[vendor]]
+name = "BUILDERS"
+offer = [
+    { pay = "item.junk", pay_n = 15, get = "item.wood", get_n = 500 },
+    { pay = "item.junk", pay_n = 20, get = "item.stone", get_n = 500 },
+    { pay = "item.junk", pay_n = 3, get = "item.building_plan", get_n = 1 },
+    { pay = "item.junk", pay_n = 3, get = "item.hammer", get_n = 1 },
+    { pay = "item.junk", pay_n = 8, get = "item.door_wood", get_n = 1 },
+    { pay = "item.junk", pay_n = 30, get = "item.lock_code", get_n = 1 },
+    { pay = "item.junk", pay_n = 6, get = "item.box_small", get_n = 1 },
+    { pay = "item.junk", pay_n = 6, get = "item.sleeping_bag", get_n = 1 },
+    { pay = "item.junk", pay_n = 10, get = "item.hearth", get_n = 1 },
+]
+
+[[vendor]]
+name = "TOOLS"
+offer = [
+    { pay = "item.junk", pay_n = 4, get = "item.hatchet_stone", get_n = 1 },
+    { pay = "item.junk", pay_n = 4, get = "item.pickaxe_stone", get_n = 1 },
+    { pay = "item.junk", pay_n = 50, get = "item.hatchet_metal", get_n = 1 },
+    { pay = "item.junk", pay_n = 50, get = "item.pickaxe_metal", get_n = 1 },
+    { pay = "item.junk", pay_n = 3, get = "item.spear_wood", get_n = 1 },
+    { pay = "item.junk", pay_n = 6, get = "item.armor_burlap_head", get_n = 1 },
+    { pay = "item.junk", pay_n = 10, get = "item.armor_burlap_body", get_n = 1 },
+]
+
+[[vendor]]
+name = "PARTS"
+offer = [
+    { pay = "item.junk", pay_n = 20, get = "item.gears", get_n = 1 },
+    { pay = "item.junk", pay_n = 8, get = "item.rope", get_n = 1 },
+    { pay = "item.junk", pay_n = 25, get = "item.tarp", get_n = 1 },
+    { pay = "item.junk", pay_n = 25, get = "item.metal_frags", get_n = 100 },
+    { pay = "item.junk", pay_n = 12, get = "item.lowgrade", get_n = 50 },
+    { pay = "item.junk", pay_n = 8, get = "item.cloth", get_n = 50 },
+    { pay = "item.junk", pay_n = 10, get = "item.charcoal", get_n = 50 },
+]
+
+[[vendor]]
+name = "SALVAGE"
+offer = [
+    { pay = "item.cloth", pay_n = 100, get = "item.junk", get_n = 3 },
+    { pay = "item.metal_frags", pay_n = 100, get = "item.junk", get_n = 4 },
+    { pay = "item.fat", pay_n = 50, get = "item.junk", get_n = 2 },
+    { pay = "item.wood", pay_n = 1000, get = "item.junk", get_n = 4 },
+    { pay = "item.stone", pay_n = 1000, get = "item.junk", get_n = 5 },
+]
+
+[[vendor]]
+name = "ARMS"
+offer = [
+    { pay = "item.junk", pay_n = 20, get = "item.bow", get_n = 1 },
+    { pay = "item.junk", pay_n = 5, get = "item.arrow_wood", get_n = 10 },
+    { pay = "item.junk", pay_n = 15, get = "item.arrow_metal", get_n = 10 },
+    { pay = "item.junk", pay_n = 30, get = "item.pistol_ammo", get_n = 10 },
+    { pay = "item.junk", pay_n = 60, get = "item.armor_roadsign_body", get_n = 1 },
+    { pay = "item.junk", pay_n = 200, get = "item.revolver", get_n = 1 },
+]

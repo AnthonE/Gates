@@ -65,6 +65,8 @@ const MARK_ICON_FRAC: f32 = 0.62;
 /// destination, and the two tiers are separated by size alone
 /// (`ui::map::MarkKind::icon`).
 const HAVEN_PX: f32 = MAP_MARK_PX + 8.0;
+/// THE GATE is the island's hub, so it draws biggest.
+const TOWN_PX: f32 = MAP_MARK_PX + 14.0;
 
 /// The player's arrow, screen px. The largest mark on the screen, because
 /// *where am I* is the panel's first job and it is the one question that has
@@ -560,6 +562,7 @@ pub fn spawn_mark(
     let fill = Color::srgb(f[0] / 255.0, f[1] / 255.0, f[2] / 255.0);
     let px = match m.kind {
         MarkKind::Haven => HAVEN_PX,
+        MarkKind::Town | MarkKind::Monument => TOWN_PX,
         _ => MAP_MARK_PX,
     };
     // A place you go is an outline; a thing you own is solid. The hollow
@@ -568,6 +571,8 @@ pub fn spawn_mark(
     let hollow = matches!(
         m.kind,
         MarkKind::Haven
+            | MarkKind::Town
+            | MarkKind::Monument
             | MarkKind::Waystation
             | MarkKind::Depot
             | MarkKind::Landmark

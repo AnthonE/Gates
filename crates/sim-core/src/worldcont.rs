@@ -56,6 +56,9 @@ use crate::world::Player;
 /// (`build::BUILD_REACH_M` by way of `backpack::LOOT_REACH_M`). Reused,
 /// never re-spoken: a crate is not a special distance.
 pub use crate::backpack::LOOT_REACH_M;
+/// How far above or below a container a body may open it, metres — a room
+/// stacked on a room is not reached through its floor (`monument.rs`).
+pub const LOOT_REACH_DY_M: f32 = 2.5;
 
 /// Noise channel for the refill jitter. Its own, not `CH_RESPAWN`'s: a
 /// waystation cache and a barrel can stand in the same cell, and sharing
@@ -118,6 +121,9 @@ pub fn table_of(o: Occupant) -> Option<usize> {
     match o {
         Occupant::CrateSlot => Some(LOOT_CRATE),
         Occupant::CacheSlot => Some(LOOT_CACHE),
+        Occupant::GreenCrate => Some(crate::loot::LOOT_GREEN),
+        Occupant::BlueCrate => Some(crate::loot::LOOT_BLUE),
+        Occupant::EliteCrate => Some(crate::loot::LOOT_ELITE),
         _ => None,
     }
 }
@@ -292,6 +298,12 @@ impl WorldConts {
         let dx = qx as f32 * POS_XZ_Q - p.body.qx as f32 * POS_XZ_Q;
         let dz = qz as f32 * POS_XZ_Q - p.body.qz as f32 * POS_XZ_Q;
         if dx * dx + dz * dz > LOOT_REACH_M * LOOT_REACH_M {
+            return None;
+        }
+        // And level with it: the ziggurat stacks rooms, and a crate is not
+        // opened through the floor above it.
+        let feet = p.body.qy as f32 * crate::movement::POS_Y_Q;
+        if crate::fmath::fabs(feet - slot.y) > LOOT_REACH_DY_M {
             return None;
         }
 

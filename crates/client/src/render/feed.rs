@@ -65,6 +65,10 @@ pub enum Refused {
     Build,
     Deploy,
     Research,
+    /// A kiosk trade the sim refused (`sim_core::vend::REFUSE_V_*`).
+    Vend,
+    /// A ziggurat door that would not open (`sim_core::monument::REFUSE_S_*`).
+    Swipe,
     /// An eat (`J`) or a drink (`H`) that did nothing —
     /// `sim_core::survival`'s `REFUSE_C_*`.
     ///
@@ -233,6 +237,8 @@ pub struct Feed {
     /// `(recipe, coin burned)` per blueprint learned this frame.
     learned: [(u16, u16); FEED_CAP],
     n_learned: usize,
+    traded: [(u8, u8); FEED_CAP],
+    n_traded: usize,
     /// Eats that landed this frame: (item index, the slot it was spent
     /// from). Own-fact; the refused half rides `refusals` as
     /// `Refused::Consume`. A ring since 2026-08-15 — it was a latched field
@@ -358,6 +364,10 @@ impl Feed {
         &self.spills[..self.n_spills]
     }
 
+    /// `(offer, times)` traded at a kiosk this frame (wire v85).
+    pub fn traded(&self) -> &[(u8, u8)] {
+        &self.traded[..self.n_traded]
+    }
     /// `(recipe index, coin burned)` learned this frame (research v0).
     pub fn learned(&self) -> &[(u16, u16)] {
         &self.learned[..self.n_learned]
@@ -470,6 +480,7 @@ impl Feed {
         self.n_crafted = 0;
         self.n_spills = 0;
         self.n_learned = 0;
+        self.n_traded = 0;
         self.n_consumed = 0;
         self.reloaded = 0;
         self.n_knocks = 0;
@@ -560,6 +571,18 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
             let n = feed.n_learned;
             feed.learned[n] = t;
             feed.n_learned += 1;
+        }
+    }
+    while let Some((code, door)) = core.pop_swipe_refused() {
+        feed.push_refusal(Refused::Swipe, code, door as u16);
+    }
+    while let Some((refused, code, offer, times)) = core.pop_vend() {
+        if refused {
+            feed.push_refusal(Refused::Vend, code, offer as u16);
+        } else if feed.n_traded < FEED_CAP {
+            let n = feed.n_traded;
+            feed.traded[n] = (offer, times);
+            feed.n_traded += 1;
         }
     }
     while let Some(code) = core.pop_research_refusal() {

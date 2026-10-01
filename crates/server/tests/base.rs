@@ -59,8 +59,7 @@ fn buildable(w: &World, cx: u16, cz: u16) -> bool {
     let (ax, az) = anchor(cx, cz, LOC_PLANE);
     let pad = BUILD_CELL_M * 1.5;
     foundation_terrain_ok(SEED, &w.haven, ax, az)
-        && !sim_core::depot::reserves(&w.haven, ax, az, pad)
-        && !sim_core::landmark::covers(&w.haven.marks, ax, az, pad)
+        && !sim_core::terrain::build_reserved(&w.haven, ax, az, pad)
 }
 
 /// The plot nearest the island's middle where the whole base stands on even

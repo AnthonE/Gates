@@ -831,7 +831,7 @@ pub fn verdict(
     // Reach, measured to the ANCHOR — the sim's own corner, via the sim's own
     // function. See the header.
     let (ax, az) = anchor(t.cx, t.cz, t.loc);
-    if sim_core::depot::reserves(site.haven, ax, az, BUILD_CELL_M * 1.5) {
+    if sim_core::terrain::build_reserved(site.haven, ax, az, BUILD_CELL_M * 1.5) {
         return Verdict::No("spot taken");
     }
     let (dx, dz) = (ax - site.at.0, az - site.at.1);
@@ -1216,7 +1216,7 @@ pub fn deploy_verdict(t: Target, row: u8, site: &DeploySite<'_>) -> DeployVerdic
     // REACH, measured to the sim's own point via the sim's own function —
     // the cell CENTRE for every loc, where build reach uses the anchor.
     let (ax, az) = cell_center(t.cx, t.cz);
-    if sim_core::depot::reserves(site.haven, ax, az, BUILD_CELL_M * 1.5) {
+    if sim_core::terrain::build_reserved(site.haven, ax, az, BUILD_CELL_M * 1.5) {
         return DeployVerdict::No("spot taken");
     }
     let (dx, dz) = (ax - site.at.0, az - site.at.1);
