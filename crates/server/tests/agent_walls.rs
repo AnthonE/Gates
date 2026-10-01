@@ -655,22 +655,18 @@ impl Harness {
                     );
                     self.pick_checks += 1;
                 }
-                // A crate: opened in reach of its cell, emptied with its
-                // panel open.
+                // A crate: the one the human's `E` would open, cast from
+                // this body along this frame's look; emptied with its panel
+                // open.
                 ActionMsg::Container {
                     kind: CONT_WORLD,
                     cont,
                 } => {
-                    let me = self.me().body;
-                    let q = sim_core::movement::POS_XZ_Q;
-                    let (cx, cz) = ((cont >> 16) as i32, (cont & 0xFFFF) as i32);
-                    let w = &self.shard.world;
-                    let slot = sim_core::terrain::scatter(SEED, &w.scatter, &w.haven, cx, cz);
-                    let d = (slot.x - me.qx as f32 * q).hypot(slot.z - me.qz as f32 * q);
+                    let pick = self.open_pick(frame.yaw, frame.pitch);
                     assert!(
-                        sim_core::worldcont::table_of(slot.occupant).is_some()
-                            && d <= sim_core::worldcont::LOOT_REACH_M,
-                        "the agent opened {cont:#x}, not a crate in reach ({d} m), at tick {}",
+                        pick.occupant != 0 && sim_core::gather::cell_key(pick.cx, pick.cz) == cont,
+                        "the agent opened {cont:#x}, not the crate `E` would pick ({pick:?}), \
+                         at tick {}",
                         self.tick
                     );
                     self.pick_checks += 1;
@@ -749,6 +745,31 @@ impl Harness {
             &core.deploy_defs,
             core.deploy_defs_have,
             core.bags.entries(),
+        )
+    }
+
+    /// What the human client's `E` would open in the scatter (a crate or a
+    /// cache) from this body, looking along `yaw` and `pitch`.
+    fn open_pick(&self, yaw: u16, pitch: u8) -> client::ui::interact::SwingPick {
+        use client::ui::interact::{resolve_open, Island, SwingAim};
+        let me = self.view.get(ID).copied().unwrap();
+        let w = &self.shard.world;
+        let mut cache = sim_core::occupy::SlotCache::new();
+        resolve_open(
+            SwingAim {
+                x: me.qx as f32 * sim_core::movement::POS_XZ_Q,
+                y: me.qy as f32 * sim_core::movement::POS_Y_Q,
+                z: me.qz as f32 * sim_core::movement::POS_XZ_Q,
+                yaw,
+                pitch,
+            },
+            &mut Island {
+                seed: SEED,
+                table: &w.scatter,
+                haven: &w.haven,
+                harvested: &w.slot_lives,
+                cache: &mut cache,
+            },
         )
     }
 
@@ -1843,7 +1864,16 @@ fn a_survivor_puts_down_its_bench_and_furnace_and_smelts_ore() {
         "every deploy went out with its item in hand"
     );
 
-    // 2. Ore in the pack: home to the furnace, and fragments come of it.
+    // 2. Ore in the pack, once the body is off somewhere out of the
+    //    furnace's reach: home to it, and fragments come of it.
+    let stand = h.bot.builder().stand().expect("a stand spot");
+    let away = h.until(5 * 60 * TICK_HZ, |b| {
+        b.core().is_some_and(|c| {
+            let me = c.predict.render_position();
+            (me[0] - stand[0]).hypot(me[2] - stand[1]) > 2.0 * sim_core::craft::STATION_RADIUS_M
+        })
+    });
+    assert!(away, "the body never left its base: {}", h.explain());
     let frags = content.item_index("item.metal_frags").unwrap();
     let before = units_of(h.me(), frags);
     let ore = stack("item.metal_ore", 60);
@@ -1852,7 +1882,7 @@ fn a_survivor_puts_down_its_bench_and_furnace_and_smelts_ore() {
             *free = ore;
         }
     });
-    let smelted = h.until(3 * 60 * TICK_HZ, |b| {
+    let smelted = h.until(5 * 60 * TICK_HZ, |b| {
         b.held("Metal Fragments") >= before + 40
     });
     assert!(
@@ -1863,10 +1893,16 @@ fn a_survivor_puts_down_its_bench_and_furnace_and_smelts_ore() {
         h.explain()
     );
     assert!(
+        units_of(h.me(), frags) >= before + 40,
+        "fragments the body holds: {}",
+        h.explain()
+    );
+    assert!(
         h.bot
             .history
             .iter()
-            .any(|r| r.goal.label().as_str() == "craft:Metal Fragments" && r.gained >= 40),
+            .any(|r| r.goal.label().as_str() == "craft:Metal Fragments"
+                && r.outcome == Outcome::Done),
         "{}",
         h.explain()
     );

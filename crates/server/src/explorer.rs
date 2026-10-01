@@ -18,7 +18,7 @@
 //! `Pickup`, `Deploy`, `Place`, `Upgrade`, `Use`, `Container` and `Feed`
 //! actions (`crates/server/tests/agent_walls.rs` holds that to the client).
 
-use crate::agent::build::{Act, Builder, Region, Stations, Way};
+use crate::agent::build::{queue_wait, queued, Act, Builder, Region, Stations, Way};
 use crate::agent::combat::{self, Assess, Combat, End, Kit, Mode, Temperament, Verb, RESUME_TICKS};
 use crate::agent::cover;
 use crate::agent::hands::{Hands, Skill};
@@ -51,7 +51,9 @@ use sim_core::deploy::{box_key, BAG_CAP};
 use sim_core::gather::{cell_key, REACH_M};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::inventory::{CONT_BOX, CONT_SELF, CONT_WORLD};
-use sim_core::limits::{CRAFT_COUNT_MAX, HOTBAR_SLOTS, INV_SLOTS, MAX_ITEM_DEFS, TICK_HZ};
+use sim_core::limits::{
+    CRAFT_COUNT_MAX, CRAFT_QUEUE, HOTBAR_SLOTS, INV_SLOTS, MAX_ITEM_DEFS, TICK_HZ,
+};
 use sim_core::melee;
 use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q};
 use sim_core::ranged::{ARROW_EYE_MM, IMPACT_BLAST, MM_PER_M};
@@ -111,6 +113,12 @@ pub const LID_SETTLE_TICKS: u32 = 3;
 pub const LOG_OFF_SECS: u32 = 90;
 /// An action's answer must arrive within this long (after any craft time).
 pub const VERDICT_SECS: u32 = 3;
+/// A craft queued behind other jobs is waited for this long at most; past
+/// it, a job the queue shows is left to pay out while the body goes on.
+pub const QUEUE_WAIT_SECS: u32 = 20;
+/// A furnace batch smelts at most this long, so a craft asked after it is
+/// not stuck behind it for minutes.
+pub const SMELT_BATCH_SECS: u32 = 60;
 /// An exploring walk counts a map cell reached this close to its centre.
 pub const FRONTIER_STOP_M: f32 = 8.0;
 /// An idle body looks somewhere else this often.
@@ -485,7 +493,7 @@ enum Verdict {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CraftStep {
     Start,
-    Sent { ticks: u32, count: u16 },
+    Sent { ticks: u32, recipe: u16 },
     Equip,
     Equipped,
 }
@@ -1875,25 +1883,39 @@ impl Survivor {
                     self.end_goal(tick, Outcome::Failed(Why::PackFull));
                     return Intent::IDLE;
                 }
+                // A full queue refuses whatever is asked.
+                if usize::from(core.jobs_count) >= CRAFT_QUEUE {
+                    self.end_goal(tick, Outcome::Failed(Why::Refused));
+                    return Intent::IDLE;
+                }
                 let here = [body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q];
                 if !has.in_reach(station, here) {
                     return self.walk_to_station(core, body, tick);
                 }
                 let count = batch(core, recipe);
+                // Behind other jobs the first unit starts when they are
+                // done: waited for, up to a point.
+                let ahead = queue_wait(core).min(QUEUE_WAIT_SECS * TICK_HZ);
                 if self.queue(|buf| protocol::encode_action_craft(recipe, count, 0, buf)) {
                     self.awaiting = Some((Pending::Craft { item }, tick));
                     self.verdict = None;
-                    self.set_craft(CraftStep::Sent { ticks, count });
+                    self.set_craft(CraftStep::Sent {
+                        ticks: ticks + ahead,
+                        recipe,
+                    });
                 }
             }
-            CraftStep::Sent { ticks, count } => {
+            CraftStep::Sent { ticks, recipe } => {
                 match self.take_verdict(tick, ticks + VERDICT_SECS * TICK_HZ) {
+                    // Queued behind a long job: it pays out on its own, and
+                    // the inputs are already spent on it.
+                    Err(()) if queued(core, recipe) => self.end_goal(tick, Outcome::Done),
                     Err(()) => self.end_goal(tick, Outcome::Failed(Why::NoAnswer)),
                     Ok(Some(Verdict::Ok)) => {
                         // The first unit is in; a batch pays the rest out
                         // while the body goes on.
                         if let Some(a) = self.goal.as_mut() {
-                            a.gained += u32::from(count);
+                            a.gained += 1;
                         }
                         self.set_craft(CraftStep::Equip);
                     }
@@ -1992,6 +2014,13 @@ impl Survivor {
         if tick.wrapping_sub(active.started) >= LOOT_GOAL_SECS * TICK_HZ
             || self.loot_job.stops >= loot::MAX_STOPS
         {
+            // What it was still working on when time ran out is not picked
+            // first again on the next run.
+            if self.loot_job.smashed.is_none() {
+                if let Some(spot) = self.loot_job.target.take() {
+                    self.loot.emptied(spot.key(), tick);
+                }
+            }
             return self.loot_over(tick);
         }
         if let Some((spot, at)) = self.loot_job.smashed {
@@ -2176,12 +2205,19 @@ impl Survivor {
         let (yaw, pitch, _) = aim(body, &spot.slot);
         if !swing_reaches(core, body, yaw, pitch, target) {
             self.loot_job.swinging = None;
-            return self
-                .loot_approach(core, body, spot, REACH_M, intent, tick)
-                .unwrap_or(Intent {
-                    move_z: 127,
-                    ..intent
-                });
+            if let Some(walk) = self.loot_approach(core, body, spot, REACH_M, intent, tick) {
+                return walk;
+            }
+            // Near it, and still no swing lands: a step in, for a while.
+            let since = *self.loot_job.close.get_or_insert(tick);
+            if tick.wrapping_sub(since) >= SMASH_TICKS {
+                self.loot.emptied(target.key(), tick);
+                self.loot_job.next();
+            }
+            return Intent {
+                move_z: 127,
+                ..intent
+            };
         }
         self.loot_job.best = None;
         let since = *self.loot_job.swinging.get_or_insert(tick);
@@ -3807,7 +3843,8 @@ fn resolve_recipe(core: &ClientCore, name: Name, has: &Stations) -> Option<(u16,
 
 /// How many to queue in one craft: one, or at a furnace a batch, which
 /// smelts on while the body walks off (the queue is the server's), as
-/// many as the inputs and the pack's room for the output allow.
+/// many as the inputs, the pack's room for the output and
+/// `SMELT_BATCH_SECS` allow.
 fn batch(core: &ClientCore, recipe: u16) -> u16 {
     let Some(def) = core.recipes.recipes.get(usize::from(recipe)) else {
         return 1;
@@ -3832,6 +3869,7 @@ fn batch(core: &ClientCore, recipe: u16) -> u16 {
         .sum();
     inputs
         .min(room / u32::from(def.out_count))
+        .min(SMELT_BATCH_SECS * TICK_HZ / def.ticks.max(1))
         .min(u32::from(CRAFT_COUNT_MAX))
         .max(1) as u16
 }
@@ -3958,7 +3996,11 @@ pub fn observe(
         for pass in 0..5 {
             for r in 0..usize::from(core.recipes.recipe_count).min(core.recipes.recipes.len()) {
                 let def = core.recipes.recipes[r];
+                // What the queue already holds is coming; a full queue
+                // takes nothing more.
                 if def.out_count == 0
+                    || usize::from(core.jobs_count) >= CRAFT_QUEUE
+                    || queued(core, r as u16)
                     || !memory.stations.usable(def.station)
                     || (def.blueprint && (r >= 64 || known & (1 << r) == 0))
                     || !inputs_ok(core, r as u16)
@@ -4867,6 +4909,64 @@ mod tests {
             bot.memory.last.unwrap().outcome,
             Outcome::Failed(Why::NoRecipe)
         );
+    }
+
+    /// A craft queued behind a long smelt is not offered again, and its
+    /// slow answer is not a failure while the queue shows it coming.
+    #[test]
+    fn a_craft_behind_a_long_batch_is_coming_not_lost() {
+        let (mut bot, mut view, _) = fixture();
+        let now = Instant::now();
+        let core = bot.core.as_mut().unwrap();
+        core.recipes.recipe_count = 3;
+        core.recipes_have = 3;
+        core.recipes.recipes[2] = sim_core::craft::RecipeDef {
+            output: 9,
+            out_count: 1,
+            ticks: 10,
+            station: STATION_NONE,
+            blueprint: false,
+            n_inputs: 1,
+            inputs: [(5, 20), (0, 0), (0, 0), (0, 0)],
+        };
+        core.recipes.recipes[1].ticks = 2 * TICK_HZ;
+        core.inv[7] = ItemStack {
+            item: 5,
+            count: 30,
+            cond: 0,
+            skin: 0,
+        };
+        // A smelt of fifty units is in the queue ahead.
+        core.jobs[0] = (1, 50);
+        core.jobs_count = 1;
+        core.craft_eta_ticks = 2 * TICK_HZ as u16;
+        let hatchet = Name::new(b"Stone Hatchet").unwrap();
+        assert!(bot.summary(&view, 1).unwrap().offers(Goal::Craft(hatchet)));
+        view.newest_applied = Some(1);
+        goal(&mut bot, Goal::Craft(hatchet), 1);
+        bot.frame_at(&view, 1, 1, now);
+        let mut out = [0u8; MAX_STREAM_MSG_BYTES];
+        assert!(bot.action(&mut out).is_some(), "the craft went out");
+        let core = bot.core.as_mut().unwrap();
+        core.jobs[1] = (2, 1);
+        core.jobs_count = 2;
+        assert!(
+            !bot.summary(&view, 1).unwrap().offers(Goal::Craft(hatchet)),
+            "what the queue holds is not offered again"
+        );
+        // Past the plain window it still waits: the jobs ahead take longer.
+        view.newest_applied = Some(2 + 10 + VERDICT_SECS * TICK_HZ);
+        bot.frame_at(&view, 1, 2, now);
+        assert_eq!(bot.goal(), Some(Goal::Craft(hatchet)));
+        // Past the longest wait, it is left to pay out on its own.
+        view.newest_applied = Some(2 + 10 + (QUEUE_WAIT_SECS + VERDICT_SECS) * TICK_HZ);
+        bot.frame_at(&view, 1, 3, now);
+        assert_eq!(bot.memory.last.unwrap().outcome, Outcome::Done);
+        // A full queue takes nothing more.
+        let core = bot.core.as_mut().unwrap();
+        core.jobs = [(1, 50), (1, 50), (1, 50), (1, 50)];
+        core.jobs_count = CRAFT_QUEUE as u8;
+        assert!(!bot.summary(&view, 1).unwrap().offers(Goal::Craft(hatchet)));
     }
 
     #[test]

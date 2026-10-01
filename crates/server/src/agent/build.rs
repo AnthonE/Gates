@@ -48,7 +48,7 @@ use sim_core::deploy::{
     arch_is_door, REFUSE_D_CLAIM, REFUSE_D_COST, REFUSE_D_OVERLAP, REFUSE_D_REACH, REFUSE_D_SPOT,
     REFUSE_D_SUPPORT, REFUSE_D_TERRAIN,
 };
-use sim_core::limits::{HOTBAR_SLOTS, INV_SLOTS, MAX_ITEM_DEFS, TICK_HZ};
+use sim_core::limits::{CRAFT_QUEUE, HOTBAR_SLOTS, INV_SLOTS, MAX_ITEM_DEFS, TICK_HZ};
 use sim_core::movement::POS_XZ_Q;
 use sim_core::terrain::{self, Haven};
 
@@ -131,6 +131,17 @@ const EXTRAS: [(&str, i8, i8, u8, Milestone); 4] = [
 ];
 /// The cell behind the core the furnace stands on, from the plot.
 pub const YARD: (i8, i8) = (0, -1);
+/// The plot's cells: the core's three by two, and the one yard cell behind
+/// it the furnace takes (not the rest of that row, which may be a
+/// neighbour's).
+fn on_plot(plan: &BasePlan, cx: u16, cz: u16) -> bool {
+    let yard = (
+        plan.cx.wrapping_add_signed(i16::from(YARD.0)),
+        plan.cz.wrapping_add_signed(i16::from(YARD.1)),
+    );
+    (cx.wrapping_sub(plan.cx) <= 2 && cz.wrapping_sub(plan.cz) <= 1) || (cx, cz) == yard
+}
+
 /// Every op the builder knows: the blueprint's, then its own.
 pub const OPS: usize = STARTER.len() + EXTRAS.len();
 const _: () = assert!(OPS <= 128, "op sets are u128 masks");
@@ -402,6 +413,33 @@ pub fn recipe_for(core: &ClientCore, item: u16, has: &Stations) -> Option<(u16, 
             && (!def.blueprint || (r < 64 && known & (1 << r) != 0));
         usable.then_some((r as u16, def.ticks, def.station))
     })
+}
+
+/// Ticks until this player's own craft queue, as the server last announced
+/// it, has paid out: the head unit's countdown and every unit behind it,
+/// at the recipe's full time (a bench rebate only makes it sooner).
+pub fn queue_wait(core: &ClientCore) -> u32 {
+    let live = &core.jobs[..usize::from(core.jobs_count).min(core.jobs.len())];
+    let unit = |r: u8| {
+        core.recipes
+            .recipes
+            .get(usize::from(r))
+            .map_or(0, |d| d.ticks)
+    };
+    let behind: u32 = live
+        .iter()
+        .enumerate()
+        .map(|(i, &(r, n))| unit(r) * u32::from(n).saturating_sub(u32::from(i == 0)))
+        .sum();
+    u32::from(core.craft_eta_ticks) + behind
+}
+
+/// The announced queue holds a job of `recipe`: what was asked is coming,
+/// however long the jobs ahead of it take.
+pub fn queued(core: &ClientCore, recipe: u16) -> bool {
+    core.jobs[..usize::from(core.jobs_count).min(core.jobs.len())]
+        .iter()
+        .any(|&(r, n)| u16::from(r) == recipe && n > 0)
 }
 
 /// What crafting one `item` takes from the pack.
@@ -936,11 +974,12 @@ enum Verdict {
 /// What the builder is waiting on.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Await {
-    /// A craft of `item` for op `op`, with this many in the pack before,
-    /// done by then.
+    /// A craft of `item` (by `recipe`) for op `op`, with this many in the
+    /// pack before, done by then.
     Craft {
         op: usize,
         item: u16,
+        recipe: u16,
         before: u32,
         until: u32,
     },
@@ -1139,11 +1178,9 @@ impl Builder {
         self.waiting.is_none() && self.want.is_none() && !self.passage.busy()
     }
 
-    /// Is this address part of its own base (the yard behind it too)?
+    /// Is this address part of its own base (the furnace's yard cell too)?
     pub fn owns(&self, cx: u16, cz: u16, _level: u8, _loc: u8) -> bool {
-        self.plan.is_some_and(|p| {
-            (p.cx..=p.cx + 2).contains(&cx) && (p.cz.saturating_sub(1)..=p.cz + 1).contains(&cz)
-        })
+        self.plan.is_some_and(|p| on_plot(&p, cx, cz))
     }
 
     /// Where the body stands in its base.
@@ -1419,9 +1456,7 @@ impl Builder {
     fn reconcile(&mut self, core: &ClientCore, plan: &BasePlan) {
         // One pass over each mirror, keeping what stands on the plot: the
         // mirror is the island's, the plot a few cells of it.
-        let on_plot = |cx: u16, cz: u16| {
-            cx.wrapping_sub(plan.cx) <= 2 && cz.wrapping_sub(plan.cz.wrapping_sub(1)) <= 2
-        };
+        let on_plot = |cx: u16, cz: u16| on_plot(plan, cx, cz);
         let mut stands = 0u128;
         for p in core.pieces.entries().iter().filter(|p| on_plot(p.cx, p.cz)) {
             let material = (u16::from(p.row) < core.piece_defs_have)
@@ -1482,7 +1517,38 @@ impl Builder {
             {
                 self.given_up |= bit(i);
             }
+            // Nor a station made only at one whose own op was given up (the
+            // furnace, at a bench that never stood).
+            if let Op::Kit(name) = s.op {
+                if item_named(core, name)
+                    .is_some_and(|item| count(core, item) == 0 && self.unmakeable(core, item))
+                {
+                    self.given_up |= bit(i);
+                }
+            }
         }
+    }
+
+    /// Every recipe for `item` is made at a station of its own base whose op
+    /// was given up. Nothing is concluded before the table has arrived.
+    fn unmakeable(&self, core: &ClientCore, item: u16) -> bool {
+        if core.recipes_have < core.recipes.recipe_count {
+            return false;
+        }
+        let station_lost = |station: u8| {
+            let name = match station {
+                STATION_WORKBENCH1 => BENCH_ITEM,
+                STATION_FURNACE => FURNACE_ITEM,
+                _ => return false,
+            };
+            (0..OPS).any(|j| spec(j).op == Op::Kit(name) && self.given_up & bit(j) != 0)
+        };
+        let mut recipes = core.recipes.recipes
+            [..usize::from(core.recipes.recipe_count).min(core.recipes.recipes.len())]
+            .iter()
+            .filter(|d| d.out_count > 0 && d.output == item)
+            .peekable();
+        recipes.peek().is_some() && recipes.all(|d| station_lost(d.station))
     }
 
     /// Everything the rest of `milestone` costs from the pack: pieces and
@@ -1635,11 +1701,17 @@ impl Builder {
         if !room_for(core, tool) {
             return Act::Fail(Why::PackFull);
         }
+        // A full queue refuses whatever is asked: it drains on its own.
+        if usize::from(core.jobs_count) >= CRAFT_QUEUE {
+            return Act::Go(Intent::IDLE);
+        }
+        // Behind a smelt batch the unit starts when the queue drains.
         self.want = Some(Await::Craft {
             op: i,
             item: tool,
+            recipe,
             before: 0,
-            until: ticks + VERDICT_TICKS,
+            until: queue_wait(core) + ticks + VERDICT_TICKS,
         });
         Act::Craft { recipe }
     }
@@ -1769,13 +1841,22 @@ impl Builder {
             Some(Await::Craft {
                 op,
                 item,
+                recipe,
                 before,
                 until,
             }) => {
+                let late = until == 0 || tick.wrapping_sub(until) < u32::MAX / 2;
                 if count(core, item) > before {
                     self.waiting = None;
                     self.stats.crafted += 1;
-                } else if until == 0 || tick.wrapping_sub(until) < u32::MAX / 2 {
+                } else if late && until != 0 && queued(core, recipe) {
+                    // Still in the queue, behind longer jobs: it is coming,
+                    // and no fault of the op's.
+                    if let Some(Await::Craft { until, .. }) = self.waiting.as_mut() {
+                        *until = tick.wrapping_add(VERDICT_TICKS);
+                    }
+                    return Act::Go(Intent::IDLE);
+                } else if late {
                     self.waiting = None;
                     self.stats.no_answer += 1;
                     self.fail(op);
@@ -2355,6 +2436,46 @@ mod tests {
         core.inv[INV_SLOTS - 1].count = 0;
         assert!(matches!(b.craft(&core, 0, tool), Act::Craft { recipe: 0 }));
         assert!(matches!(b.want, Some(Await::Craft { op: 0, .. })));
+    }
+
+    /// The furnace is made at the bench: once the bench is given up, so is
+    /// the furnace, and the milestones move past it rather than stall.
+    #[test]
+    fn a_station_made_at_a_bench_given_up_is_given_up_too() {
+        let mut core = Box::new(ClientCore::new(1, 1, 0));
+        let furnace_item = 9;
+        core.catalog.count = 10;
+        core.catalog
+            .set(
+                usize::from(furnace_item),
+                FURNACE_ITEM.as_bytes(),
+                protocol::ItemRow {
+                    stack_max: 1,
+                    ..protocol::ItemRow::EMPTY
+                },
+            )
+            .unwrap();
+        (core.recipes.recipe_count, core.recipes_have) = (1, 1);
+        core.recipes.recipes[0] = sim_core::craft::RecipeDef {
+            output: furnace_item,
+            out_count: 1,
+            ticks: 10,
+            station: STATION_WORKBENCH1,
+            blueprint: false,
+            n_inputs: 1,
+            inputs: [(5, 100), (0, 0), (0, 0), (0, 0)],
+        };
+        let plan = BasePlan::new(0, 100, 100);
+        let mut b = Builder::new();
+        b.plan = Some(plan);
+        let op = |name| (0..OPS).find(|&i| spec(i).op == Op::Kit(name)).unwrap();
+        let (bench, furnace) = (op(BENCH_ITEM), op(FURNACE_ITEM));
+        b.reconcile(&core, &plan);
+        assert_eq!(b.given_up & bit(furnace), 0, "the bench may still come");
+        b.given_up |= bit(bench);
+        b.reconcile(&core, &plan);
+        assert_ne!(b.given_up & bit(furnace), 0);
+        assert_ne!(b.milestone(), Milestone::Furnace);
     }
 
     /// A refusal that comes after its op was given up on (three seconds of

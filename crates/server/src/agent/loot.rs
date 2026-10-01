@@ -354,6 +354,9 @@ pub struct LootJob {
     pub best: Option<(f32, u32)>,
     /// Swinging at the barrel since.
     pub swinging: Option<u32>,
+    /// In reach of the barrel, but not of a swing, since: one on a ledge
+    /// or behind a rock is given up.
+    pub close: Option<u32>,
     pub lid: Option<Lid>,
     /// The panel showed this container since the open went out.
     pub fresh: bool,
@@ -387,6 +390,7 @@ impl LootJob {
         self.pick = None;
         self.best = None;
         self.swinging = None;
+        self.close = None;
         self.lid = None;
         self.fresh = false;
         self.moved = None;
