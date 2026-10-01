@@ -71,12 +71,9 @@ fn a_tree_sways_as_one() {
 /// streaming in and out — the popping square the fade exists to remove.
 #[test]
 fn the_grass_has_faded_before_the_ring_ends() {
-    let nearest_edge = CLUTTER_RING as f32 * CLUTTER_TILE_M;
-    assert!(GRASS_FADE_START_M < GRASS_FADE_END_M);
-    assert!(
-        GRASS_FADE_END_M < nearest_edge,
-        "fade ends at {GRASS_FADE_END_M} m, the ring's nearest edge is {nearest_edge} m"
-    );
+    const NEAREST_EDGE: f32 = CLUTTER_RING as f32 * CLUTTER_TILE_M;
+    const { assert!(GRASS_FADE_START_M < GRASS_FADE_END_M) };
+    const { assert!(GRASS_FADE_END_M < NEAREST_EDGE) };
 }
 
 /// A grass card tells the shader how high each corner stands above its root

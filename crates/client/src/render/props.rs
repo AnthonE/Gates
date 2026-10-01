@@ -32,7 +32,7 @@
 //! already lists.
 
 use bevy::asset::RenderAssetUsages;
-use bevy::mesh::{Indices, PrimitiveTopology};
+use bevy::mesh::{Indices, PrimitiveTopology, VertexAttributeValues};
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use sim_core::gather::cell_key;
@@ -1112,10 +1112,16 @@ pub fn bush_card_mesh(variant: u32) -> Mesh {
 /// (devblog 198). A bush is passable already (`terrain::occupant_volume`), so
 /// height is the whole of what hiding in one needs. **(knob)**
 pub const TALL_BUSH_SHARE: f32 = 0.5;
-/// How much the tall bush's interior mass is stretched upward, and how far
-/// its centre rises, in the blob's frame.
-pub const TALL_BUSH_STRETCH: f32 = 1.5;
-pub const TALL_BUSH_RISE: f32 = 0.4;
+/// How much the tall bush's interior mass is stretched upward, narrowed, and
+/// how far its centre rises, in the blob's frame. Narrower than the leaves on
+/// purpose: stretched to the leaves' own size it read as a tall green potato
+/// with leaves stuck on (the first capture).
+pub const TALL_BUSH_STRETCH: f32 = 1.3;
+pub const TALL_BUSH_NARROW: f32 = 0.78;
+pub const TALL_BUSH_RISE: f32 = 0.35;
+/// The tall bush's interior mass is the SHADED inside of a leaf mass, so it
+/// is drawn darker than the blob it is made from.
+pub const TALL_BUSH_SHADE: f32 = 0.55;
 /// The upper tier of leaves above the blob's centre, metres. With the base
 /// tier's `BUSH_CARD_HALF` this puts the crown at ~2.1 m over the ground.
 pub const TALL_BUSH_TIER_M: f32 = 0.95;
@@ -1128,15 +1134,23 @@ pub fn tall_bush(key: u32) -> bool {
 
 /// The tall bush's interior mass: the bush blob, stretched up.
 pub fn tall_bush_mesh() -> Mesh {
-    archetype_mesh(Occupant::Bush)
+    let mut m = archetype_mesh(Occupant::Bush)
         .expect("bush mesh")
         .transformed_by(
             Transform::from_xyz(0.0, TALL_BUSH_RISE, 0.0).with_scale(Vec3::new(
-                1.05,
+                TALL_BUSH_NARROW,
                 TALL_BUSH_STRETCH,
-                1.05,
+                TALL_BUSH_NARROW,
             )),
-        )
+        );
+    if let Some(VertexAttributeValues::Float32x4(c)) = m.attribute_mut(Mesh::ATTRIBUTE_COLOR) {
+        for v in c.iter_mut() {
+            for ch in &mut v[..3] {
+                *ch *= TALL_BUSH_SHADE;
+            }
+        }
+    }
+    m
 }
 
 /// A tall bush's leaves: the ordinary bush's cluster, a smaller one stacked
@@ -1148,7 +1162,7 @@ pub fn tall_bush_card_mesh(variant: u32) -> Mesh {
     bush_cluster(&mut s, seed, Vec3::ZERO, 1.0, BUSH_CARDS, dome);
     let lean = (hash01(seed, 101) - 0.5) * 0.3;
     let crown = Vec3::new(lean, TALL_BUSH_TIER_M, (hash01(seed, 103) - 0.5) * 0.3);
-    bush_cluster(&mut s, seed ^ 0x51, crown, 0.88, BUSH_CARDS, dome);
+    bush_cluster(&mut s, seed ^ 0x51, crown, 0.88, BUSH_CARDS + 1, dome);
     let a = hash01(seed, 107) * std::f32::consts::TAU;
     for (k, side) in [(0u32, 1.0f32), (1, -1.0)] {
         let r = 0.55 + 0.15 * hash01(seed, 109 + k);
