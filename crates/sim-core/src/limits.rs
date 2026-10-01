@@ -343,7 +343,7 @@ pub const PENDING_REMOVALS_CAP: usize = 256;
 /// Item definitions the sim preallocates for (the alpha set is ~48 rows,
 /// CONTENT.md §2). The content bake refuses a set past this. Proposed
 /// default, DECISIONS.md §open (gather bounds row).
-pub const MAX_ITEM_DEFS: usize = 64;
+pub const MAX_ITEM_DEFS: usize = 96;
 
 /// Rounds one weapon may list in `weapons.toml`'s `ammo` (`RangedDef::ammo`).
 ///
@@ -713,6 +713,12 @@ pub const MAX_BOXES: usize = 256;
 /// immediately, which turns the cap into a dupe rather than a limit.
 /// Proposed default, DECISIONS.md §open (world containers v0).
 pub const MAX_WORLD_CONTS: usize = 64;
+
+/// Vendor offers on the island, all kiosks together (`vend.rs`). Refused
+/// past at bake.
+pub const MAX_VEND_OFFERS: usize = 64;
+/// Vendors: one per town kiosk.
+pub const MAX_VENDORS: usize = crate::town::KIOSKS.len();
 
 /// Slots inside one deployed box. Deliberately under `INV_SLOTS`: a box
 /// is a place to put things down, not a second inventory, and the whole

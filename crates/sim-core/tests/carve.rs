@@ -82,6 +82,22 @@ fn sites(h: &Haven) -> Vec<(f32, f32, f32, terrain::SiteFootprint)> {
             v.push((ws.x, ws.z, ws.floor_y, *terrain::site_footprint(ws.kind)));
         }
     }
+    if h.town.live {
+        v.push((
+            h.town.x,
+            h.town.z,
+            h.town.floor_y,
+            sim_core::town::TOWN_FOOTPRINT,
+        ));
+    }
+    if h.ziggurat.live {
+        v.push((
+            h.ziggurat.x,
+            h.ziggurat.z,
+            h.ziggurat.floor_y,
+            sim_core::monument::ZIG_FOOTPRINT,
+        ));
+    }
     v
 }
 

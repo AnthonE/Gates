@@ -557,7 +557,7 @@ fn detonate(
         let pz = p.body.qz as f32 * crate::movement::POS_XZ_Q;
         let d = dist_cm(px, py, pz);
         let scaled = falloff(c.damage, d, blast);
-        if scaled == 0 {
+        if scaled == 0 || crate::combat::protected(p) {
             continue;
         }
         // Which way the bomb was, from the body that just took it.

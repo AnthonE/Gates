@@ -1160,6 +1160,7 @@ fn a_swing_names_what_it_would_hit() {
         let pick = resolve_swing(
             aim_at(stance(sx, r), sy, sz, sx, aim_y, sz),
             &mut Island {
+                doors: 0,
                 seed,
                 table: &table,
                 haven: &haven,
@@ -1214,6 +1215,7 @@ fn the_look_is_the_aim() {
     let toward = resolve_swing(
         level(px, sy, sz, YAW_PLUS_X),
         &mut Island {
+            doors: 0,
             seed,
             table: &table,
             haven: &haven,
@@ -1226,6 +1228,7 @@ fn the_look_is_the_aim() {
     let away = resolve_swing(
         level(px, sy, sz, YAW_MINUS_X),
         &mut Island {
+            doors: 0,
             seed,
             table: &table,
             haven: &haven,
@@ -1262,6 +1265,7 @@ fn the_pitch_is_the_aim_too() {
     let over = resolve_swing(
         level(px, sy, sz, YAW_PLUS_X),
         &mut Island {
+            doors: 0,
             seed,
             table: &table,
             haven: &haven,
@@ -1276,6 +1280,7 @@ fn the_pitch_is_the_aim_too() {
     let onto = resolve_swing(
         aim_at(px, sy, sz, sx, sy + top * 0.5, sz),
         &mut Island {
+            doors: 0,
             seed,
             table: &table,
             haven: &haven,
@@ -1300,6 +1305,7 @@ fn the_pitch_is_the_aim_too() {
             crouched: false,
         },
         &mut Island {
+            doors: 0,
             seed,
             table: &table,
             haven: &haven,
@@ -1329,6 +1335,7 @@ fn reach_bounds_the_prompt() {
     let inside = resolve_swing(
         level(sx - (r + SWING_REACH_M * 0.9), sy, sz, YAW_PLUS_X),
         &mut Island {
+            doors: 0,
             seed,
             table: &table,
             haven: &haven,
@@ -1345,6 +1352,7 @@ fn reach_bounds_the_prompt() {
     let outside = resolve_swing(
         level(sx - (r + SWING_REACH_M * 1.1), sy, sz, YAW_PLUS_X),
         &mut Island {
+            doors: 0,
             seed,
             table: &table,
             haven: &haven,
@@ -1372,6 +1380,7 @@ fn the_sim_having_taken_it_ends_the_prompt() {
     let standing = resolve_swing(
         level(px, sy, sz, YAW_PLUS_X),
         &mut Island {
+            doors: 0,
             seed,
             table: &table,
             haven: &haven,
@@ -1385,6 +1394,7 @@ fn the_sim_having_taken_it_ends_the_prompt() {
     let gone = resolve_swing(
         level(px, sy, sz, YAW_PLUS_X),
         &mut Island {
+            doors: 0,
             seed,
             table: &table,
             haven: &haven,
@@ -1411,6 +1421,7 @@ fn the_swing_pick_is_stable() {
     let a = resolve_swing(
         level(stance(sx, r), sy, sz, YAW_PLUS_X),
         &mut Island {
+            doors: 0,
             seed,
             table: &table,
             haven: &haven,
@@ -1421,6 +1432,7 @@ fn the_swing_pick_is_stable() {
     let b = resolve_swing(
         level(stance(sx, r), sy, sz, YAW_PLUS_X),
         &mut Island {
+            doors: 0,
             seed,
             table: &table,
             haven: &haven,
@@ -1526,6 +1538,7 @@ fn the_prompt_and_the_swing_agree() {
         let prompt = resolve_swing(
             aim,
             &mut Island {
+                doors: 0,
                 seed,
                 table: &table,
                 haven: &haven,
@@ -3091,6 +3104,7 @@ fn the_memo_is_the_function() {
     let haven = sim_core::terrain::haven(seed);
     let mut cache = SlotCache::new();
     let mut island = Island {
+        doors: 0,
         seed,
         table: &table,
         haven: &haven,
@@ -3154,6 +3168,7 @@ fn a_shared_cache_picks_the_same() {
         carried.push(resolve_swing(
             aim,
             &mut Island {
+                doors: 0,
                 seed,
                 table: &table,
                 haven: &haven,
@@ -3165,6 +3180,7 @@ fn a_shared_cache_picks_the_same() {
         fresh.push(resolve_swing(
             aim,
             &mut Island {
+                doors: 0,
                 seed,
                 table: &table,
                 haven: &haven,
@@ -3211,6 +3227,7 @@ fn standing_still_costs_nothing_after_the_first() {
     let first = resolve_swing(
         aim,
         &mut Island {
+            doors: 0,
             seed,
             table: &table,
             haven: &haven,
@@ -3233,6 +3250,7 @@ fn standing_still_costs_nothing_after_the_first() {
         let again = resolve_swing(
             aim,
             &mut Island {
+                doors: 0,
                 seed,
                 table: &table,
                 haven: &haven,

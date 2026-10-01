@@ -51,6 +51,7 @@ use sim_core::limits::{MAX_ITEM_DEFS, TICK_HZ};
 use sim_core::movement::{POS_XZ_Q, POS_Y_Q, SPRINT_SPEED, WALK_SPEED};
 use sim_core::ranged::{ARROW_EYE_MM, MM_PER_M};
 use sim_core::rng::Pcg32;
+use sim_core::town::Town;
 use sim_core::wound::WOUNDED_HP;
 use sim_core::{pitch_dir, yaw_dir};
 
@@ -317,6 +318,9 @@ pub struct Foe {
     pub since: u32,
     /// Last tick it struck, swung or shot at me.
     pub threat: u32,
+    /// Last tick it actually swung or shot at me or a blow landed: what
+    /// keeps a fight in the safe zone answered.
+    pub struck: Option<u32>,
     /// Told to (a fight or hunt goal): no temperament asked.
     pub commanded: bool,
     /// My hit markers on an animal when this fight began: it heals
@@ -365,6 +369,10 @@ pub struct Kit<'a> {
     /// Standing inside its own base: its walls are its cover, and running
     /// out of them is no escape. A fight met here is stood.
     pub home_ground: bool,
+    /// The town on the map (`Haven::town`): inside its safe zone no player
+    /// hurts another, so no fight is started there or into it, and one is
+    /// only answered while it strikes.
+    pub town: Town,
 }
 
 /// A verb the reflex wants sent; the orchestrator owns the action lane.
@@ -779,6 +787,11 @@ impl Combat {
                 id,
                 since: tick,
                 threat: tick,
+                // A blow just taken is what an answered fight answers.
+                struck: self
+                    .hurt
+                    .filter(|(at, _)| tick.wrapping_sub(*at) < ALARM_TICKS)
+                    .map(|(at, _)| at),
                 commanded,
                 dealt_from: None,
             });
@@ -1155,7 +1168,11 @@ impl Combat {
                 && self.drawer.is_some_and(|(id, since)| {
                     id == t.id && tick.wrapping_sub(since) >= DRAWN_TICKS
                 });
-            if (swung || shot || struck || charging || rushing || drawn || raiding)
+            // In the safe zone (either of us) only a blow or a shot at me
+            // is an attack: nobody is started on there.
+            let zone = t.species == Species::Player && (in_zone(kit, me) || in_zone(kit, t.pos));
+            let provoked = rushing || drawn || raiding;
+            if (swung || shot || struck || charging || (provoked && !zone))
                 && best.is_none_or(|(b, _)| d < b)
             {
                 best = Some((d, t.id));
@@ -1178,9 +1195,18 @@ impl Combat {
         if picky && u32::from(kit.hp) * 2 <= u32::from(kit.hp_max) {
             return None;
         }
+        // No fight is started from the safe zone, nor on anyone in it.
+        if in_zone(kit, me) {
+            return None;
+        }
         let mut best: Option<(f32, u32)> = None;
         for t in tracks.seen() {
-            if !t.visible || !t.active() || t.species != Species::Player || self.shuns(t.id, tick) {
+            if !t.visible
+                || !t.active()
+                || t.species != Species::Player
+                || self.shuns(t.id, tick)
+                || in_zone(kit, t.pos)
+            {
                 continue;
             }
             let d = flat(me, t.pos);
@@ -1272,18 +1298,33 @@ impl Combat {
         // Anything aimed at me from this body keeps the fight live.
         let recent = |at: Option<u32>| at.is_some_and(|a| tick.wrapping_sub(a) < ALARM_TICKS);
         let (reach, _) = their_reach(&t, kit.book);
-        if (recent(t.last_swing) && swing_reaches(&t, me, reach))
+        let struck = (recent(t.last_swing) && swing_reaches(&t, me, reach))
             || (recent(t.last_shot) && aimed(&t, me, me_low(tracks), kit.book))
+            || self
+                .hurt
+                .is_some_and(|(at, _)| tick.wrapping_sub(at) < ALARM_TICKS && at > foe.threat);
+        if struck {
+            foe.struck = Some(tick);
+        }
+        if struck
             || self.drawer.is_some_and(|(id, _)| id == t.id)
             || self.menace.is_some_and(|(id, _)| id == t.id)
             || raiding(&t, kit, me, tick)
-            || self
-                .hurt
-                .is_some_and(|(at, _)| tick.wrapping_sub(at) < ALARM_TICKS && at > foe.threat)
         {
             foe.threat = tick;
         }
         self.foe = Some(foe);
+        // The safe zone: a player in it, or me in it, is fought only while
+        // it is striking me. Otherwise the fight is let go, never carried
+        // or shot into the town.
+        if t.species == Species::Player
+            && (in_zone(kit, me) || in_zone(kit, t.pos))
+            && !foe
+                .struck
+                .is_some_and(|at| tick.wrapping_sub(at) < CALM_TICKS)
+        {
+            return self.over(Some(away), End::Parted);
+        }
         let odds = odds(&t, kit, crowd(tracks, foe.id, me, tick));
         let unarmed = kit.melee.is_none() && kit.ranged.is_none();
         if unarmed || odds.losing || (odds.ranged && d > CHARGE_M && kit.ranged.is_none()) {
@@ -1994,6 +2035,11 @@ impl Combat {
     }
 }
 
+/// Inside the town's safe zone (`town::safe`, a map fact).
+fn in_zone(kit: &Kit, p: [f32; 3]) -> bool {
+    sim_core::town::safe(&kit.town, p[0], p[2])
+}
+
 fn pos(body: &EntityState) -> [f32; 3] {
     [
         body.qx as f32 * POS_XZ_Q,
@@ -2430,6 +2476,7 @@ mod tests {
             lane_free: true,
             raided: None,
             home_ground: false,
+            town: Town::NONE,
         };
         let with_spear = kit(spear, 100);
         let o = odds(&player(Some(rock)), &with_spear, 0);
@@ -2486,6 +2533,7 @@ mod tests {
             lane_free: true,
             raided,
             home_ground: false,
+            town: Town::NONE,
         };
         let me = [0.0, 0.0, 30.0];
         let mut combat = Combat::new(Temperament::Opportunist);
@@ -2544,6 +2592,7 @@ mod tests {
             lane_free: true,
             raided: Some([0.0, 0.0]),
             home_ground: false,
+            town: Town::NONE,
         };
         let mut core = Box::new(ClientCore::new(1, 1, 0));
         let mut route = Route::new();
@@ -2588,6 +2637,7 @@ mod tests {
             lane_free: true,
             raided: Some([0.0, 0.0]),
             home_ground,
+            town: Town::NONE,
         };
         let mut core = Box::new(ClientCore::new(1, 1, 0));
         let mut route = Route::new();
@@ -2601,6 +2651,58 @@ mod tests {
         let mut combat = Combat::new(Temperament::Passive);
         combat.assess(&mut core, &me, &tracks, &mut route, &kit(true), 6);
         assert_eq!((combat.stats.escapes, combat.stats.engages), (0, 1));
+    }
+
+    /// No fight is started in the town's safe zone: not on a player
+    /// standing in it, not from inside it. A swing at me there is still
+    /// answered.
+    #[test]
+    fn no_fight_is_started_in_the_safe_zone() {
+        let book = book();
+        let town = Town {
+            live: true,
+            ..Town::NONE
+        };
+        let kit = Kit {
+            book: &book,
+            melee: Some((0, wire("Wooden Spear"))),
+            ranged: None,
+            rounds: 0,
+            loaded: None,
+            hp: 100,
+            hp_max: 100,
+            on_target: false,
+            settled: false,
+            lead_ticks: 4,
+            lane_free: true,
+            raided: None,
+            home_ground: false,
+            town,
+        };
+        let edge = sim_core::town::SAFE_HALF_M;
+        let combat = Combat::new(Temperament::Kos);
+        // Outside, an unarmed player 4 m off is an opening.
+        let mut tracks = Tracks::new();
+        tracks.stand(7, [0.0, 0.0, edge + 7.0], true);
+        let me = [0.0, 0.0, edge + 3.0];
+        assert_eq!(combat.opening(&tracks, &kit, me, 10), Some(7));
+        // The same player just inside the zone is not.
+        let mut tracks = Tracks::new();
+        tracks.stand(7, [0.0, 0.0, edge - 1.0], true);
+        assert_eq!(combat.opening(&tracks, &kit, me, 10), None);
+        // Nor is anyone, seen from inside it.
+        let mut tracks = Tracks::new();
+        tracks.stand(7, [0.0, 0.0, edge + 3.0], true);
+        let inside = [0.0, 0.0, edge - 1.0];
+        assert_eq!(combat.opening(&tracks, &kit, inside, 10), None);
+        assert_eq!(combat.attacker(&tracks, &kit, inside, 10), None);
+        // A blow from beside me there is an attack all the same.
+        let mut combat = combat;
+        let mut tracks = Tracks::new();
+        tracks.stand(7, [0.0, 0.0, edge], true);
+        combat.on_hurt(9, yaw_toward(0.0, -1.0));
+        let struck = [0.0, 0.0, edge - 1.0];
+        assert_eq!(combat.attacker(&tracks, &kit, struck, 10), Some(7));
     }
 
     /// A swing seen is at me only where it could land: ahead of it, in

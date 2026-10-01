@@ -152,6 +152,7 @@ pub fn shots(
         let stop = traced.then(|| {
             traces += 1;
             let mut occ = Occupants {
+                doors: core.card_doors,
                 table: &world.table,
                 haven: &world.haven,
                 harvested: &core.harvested,

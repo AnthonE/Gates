@@ -960,6 +960,24 @@ fn step_in(
         }) = best
         {
             let range_cm = ((a.flown as f32 + len_mm * t) / 10.0) as u16;
+            // The safe zone: the archer's body now, if they are still here.
+            let shooter = players.iter().position(|p| p.active && p.id == a.owner);
+            let shield = match shooter {
+                Some(s) if s != j => {
+                    let (sh, v) = crate::combat::pair_mut(players, s, j);
+                    crate::combat::shielded(sh, v)
+                }
+                _ => crate::combat::protected(&players[j]),
+            };
+            if shield {
+                // It glances off a body the zone protects and drops there.
+                a.qx = crate::fmath::floor_i32(ox + sx * t);
+                a.qy = crate::fmath::floor_i32(oy + sy * t);
+                a.qz = crate::fmath::floor_i32(oz + sz * t);
+                land(seed, tick, cc, spent, ix, &a, None);
+                arrows.a[ix].life = 0;
+                continue;
+            }
             let v = &mut players[j];
             // Did the shaft cross the head on its way through? The span is
             // clipped against the world's stop first, so an arrow that
@@ -1980,6 +1998,12 @@ fn hitscan_in(
         }) = best
         {
             let range_cm = (reach * t / 10.0) as u16;
+            if j != i {
+                let (sh, v) = crate::combat::pair_mut(players, i, j);
+                if crate::combat::shielded(sh, v) {
+                    continue;
+                }
+            }
             let v = &mut players[j];
             // Same question the arrow asks, from the same two functions —
             // the head band is a property of the body, not of what is

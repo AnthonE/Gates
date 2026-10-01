@@ -256,13 +256,19 @@ fn test_content() {
 
     // Preserve the core alpha budget and account for the two new fittings
     // explicitly; a missing fitting must not hide inside a loose count range.
-    let fittings = ["item.window_glass", "item.window_shutters"];
+    let fittings = [
+        "item.window_glass",
+        "item.window_shutters",
+        "item.keycard_green",
+        "item.keycard_blue",
+        "item.keycard_red",
+    ];
     for id in fittings {
         assert!(c.items.iter().any(|item| item.id == id), "missing {id}");
     }
     assert!(
         (40..=60).contains(&(c.items.len() - fittings.len())),
-        "alpha core plus two window fittings, got {} items",
+        "alpha core plus the window fittings and keycards, got {} items",
         c.items.len()
     );
     // The catalog ships looks (skins v0); what is for sale is the price,
@@ -2277,7 +2283,7 @@ fn the_shipped_loot_tables_bake() {
     let k = lc
         .table(sim_core::loot::LOOT_CRATE)
         .expect("the crate table is armed");
-    assert_eq!(k.len, 9);
+    assert_eq!(k.len, 10);
     assert_eq!(k.hits, 5);
 }
 
@@ -4402,5 +4408,40 @@ fn a_skin_row_does_not_move_the_hash() {
         shipped.hash(),
         grown.hash(),
         "a new skin row moved the save hash — every new look would be a wipe"
+    );
+}
+
+/// The shipped vendor table bakes: every offer resolves and none can be
+/// bought and sold back — or recycled — for a profit (`bake_vend`).
+#[test]
+fn the_shipped_vendors_bake_without_arbitrage() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let vc = c.bake_vend().expect("shipped vendors must bake");
+    assert!(vc.count > 0);
+    assert_eq!(c.bake_vendor_names().len(), sim_core::town::KIOSKS.len());
+}
+
+/// Every ziggurat door's card is a shipped item, and each card is found in
+/// the room before its door (the loop is certain).
+#[test]
+fn the_card_loop_is_whole() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    c.bake_cards().expect("every door's card is an item");
+    let lc = c.bake_loot().expect("shipped loot bakes");
+    let blue = c.item_index("item.keycard_blue").unwrap();
+    let red = c.item_index("item.keycard_red").unwrap();
+    let pays = |t: usize, item: u16| {
+        let d = &lc.tables[t];
+        d.guaranteed[..d.guaranteed_len as usize]
+            .iter()
+            .any(|g| g.item == item && g.count_min >= 1)
+    };
+    assert!(
+        pays(sim_core::loot::LOOT_GREEN, blue),
+        "the green room pays the blue card"
+    );
+    assert!(
+        pays(sim_core::loot::LOOT_BLUE, red),
+        "the blue room pays the red card"
     );
 }

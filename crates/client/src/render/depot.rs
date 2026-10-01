@@ -59,9 +59,20 @@ pub enum Surface {
     Timber,
     /// Masonry — the landmarks' ruins and stones (`landmarks.rs`).
     Stone,
+    /// The ancient dark stone of THE GATE's pylons and the ziggurat: the
+    /// stone maps, darkened and polished.
+    Obsidian,
+    /// Tarnished gold trim: the metal maps, gold and metallic.
+    Gilt,
+    /// Awnings and tarps; the stripes ride the vertex colour.
+    Canvas,
+    /// Glowing lapis conduits.
+    Lapis,
+    /// Lamp bulbs and string lights.
+    Bulb,
 }
 
-pub const SURFACES: [Surface; 9] = [
+pub const SURFACES: [Surface; 14] = [
     Surface::Yard,
     Surface::Concrete,
     Surface::Sheet,
@@ -71,15 +82,22 @@ pub const SURFACES: [Surface; 9] = [
     Surface::Paint,
     Surface::Timber,
     Surface::Stone,
+    Surface::Obsidian,
+    Surface::Gilt,
+    Surface::Canvas,
+    Surface::Lapis,
+    Surface::Bulb,
 ];
 
 impl Surface {
-    fn tiles(self) -> f32 {
+    pub(super) fn tiles(self) -> f32 {
         match self {
             Self::Yard => 1.0 / DEPOT_YARD_TILE_M,
-            Self::Concrete | Self::Paint => 1.0 / DEPOT_CONCRETE_TILE_M,
+            Self::Concrete | Self::Paint | Self::Canvas | Self::Lapis | Self::Bulb => {
+                1.0 / DEPOT_CONCRETE_TILE_M
+            }
             Self::Timber => super::structures::tier(sim_core::build::MAT_WOOD).tiles_per_m,
-            Self::Stone => 1.0 / DEPOT_CONCRETE_TILE_M,
+            Self::Stone | Self::Obsidian => 1.0 / DEPOT_CONCRETE_TILE_M,
             _ => DEPOT_SHEET_TILES_PER_M,
         }
     }
@@ -87,11 +105,30 @@ impl Surface {
     fn role(self) -> &'static str {
         match self {
             Self::Yard => "gravel",
-            Self::Concrete | Self::Paint => "concrete",
+            Self::Concrete | Self::Paint | Self::Canvas | Self::Lapis | Self::Bulb => "concrete",
             Self::Timber => "wood",
-            Self::Stone => "stone",
+            Self::Stone | Self::Obsidian => "stone",
             _ => "metal",
         }
+    }
+
+    /// The Blender dressing's mesh name for this surface (`ci/site_kit.py`).
+    pub fn from_role(role: &str) -> Option<Surface> {
+        Some(match role {
+            "yard" => Self::Yard,
+            "concrete" => Self::Concrete,
+            "sheet" => Self::Sheet,
+            "cargo" => Self::Cargo,
+            "timber" => Self::Timber,
+            "steel" => Self::Steel,
+            "obsidian" => Self::Obsidian,
+            "gilt" => Self::Gilt,
+            "canvas" => Self::Canvas,
+            "lapis" => Self::Lapis,
+            "bulb" => Self::Bulb,
+            "stone" => Self::Stone,
+            _ => return None,
+        })
     }
 
     fn sheet(self) -> bool {
@@ -111,13 +148,37 @@ pub(super) fn kit() -> [Soup; SURFACES.len()] {
 /// metal because StandardMaterial multiplies it by the explicit zero below.
 pub(super) fn material(surface: Surface, server: &AssetServer) -> StandardMaterial {
     let maps = MapSet::load(server, surface.role());
+    // THE GATE's surfaces: the same photographed maps, with the three things
+    // a map cannot say — how dark the ancient stone is, that gilt is a
+    // metal, and that a bulb and a lapis seam give light.
+    let (base_color, metallic, roughness, emissive) = match surface {
+        Surface::Obsidian => (Color::srgb(0.13, 0.13, 0.15), 0.0, 0.42, LinearRgba::BLACK),
+        Surface::Gilt => (Color::srgb(1.0, 0.8, 0.42), 0.9, 0.38, LinearRgba::BLACK),
+        Surface::Lapis => (
+            Color::srgb(0.2, 0.45, 1.0),
+            0.0,
+            0.6,
+            LinearRgba::rgb(0.6, 1.4, 4.0),
+        ),
+        Surface::Bulb => (
+            Color::srgb(1.0, 0.85, 0.55),
+            0.0,
+            0.6,
+            LinearRgba::rgb(6.0, 4.5, 2.2),
+        ),
+        _ => (Color::WHITE, 0.0, 1.0, LinearRgba::BLACK),
+    };
     StandardMaterial {
-        base_color_texture: Some(maps.albedo),
+        base_color,
+        emissive,
+        // Polished black stone wears the stone's relief but not its
+        // photograph: the photo's light joints read as stripes up a pylon.
+        base_color_texture: (surface != Surface::Obsidian).then_some(maps.albedo),
         normal_map_texture: Some(maps.normal),
         metallic_roughness_texture: Some(maps.rough),
         occlusion_texture: maps.ao,
-        perceptual_roughness: 1.0,
-        metallic: 0.0,
+        perceptual_roughness: roughness,
+        metallic,
         reflectance: super::fresnel::DIELECTRIC,
         depth_bias: match surface {
             Surface::Yard => DEPOT_YARD_DEPTH_BIAS,

@@ -250,6 +250,8 @@ fn verb_of(msg: &ActionMsg) -> &'static str {
         ActionMsg::Demolish { .. } => "demolish",
         ActionMsg::Rotate { .. } => "rotate",
         ActionMsg::Upgrade { .. } => "upgrade",
+        ActionMsg::Vend { .. } => "vend",
+        ActionMsg::Swipe { .. } => "swipe",
     }
 }
 
@@ -879,6 +881,7 @@ impl Harness {
             },
             &mut Island {
                 seed: SEED,
+                doors: w.card_door_bits,
                 table: &w.scatter,
                 haven: &w.haven,
                 harvested: &w.slot_lives,

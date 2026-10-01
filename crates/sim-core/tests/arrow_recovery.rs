@@ -138,6 +138,7 @@ fn fly(
     while !arrows.is_empty() && t < max_ticks {
         t += 1;
         let mut occ = Occupants {
+            doors: 0,
             table: &sc.table,
             haven: &sc.haven,
             harvested: &sc.harvested,

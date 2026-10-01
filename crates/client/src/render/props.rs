@@ -176,6 +176,9 @@ pub struct PropAssets {
     node_models: [Option<(Handle<Mesh>, Handle<StandardMaterial>)>; 3],
     /// Barrel, supply crate, cache box — one apiece, `None` for the massing.
     small_models: [Option<(Handle<Mesh>, Handle<StandardMaterial>)>; 3],
+    /// The ziggurat's green, blue and elite crates: the supply crate's shape
+    /// in painted steel, so a tier reads at a glance.
+    tier_crates: [Handle<StandardMaterial>; 3],
     foliage: [Handle<StandardMaterial>; TINT_POOL],
     /// The bush's leaf cards, a pool indexed by yaw. See [`bush_card_mesh`].
     bush_cards: Vec<Handle<Mesh>>,
@@ -1423,7 +1426,7 @@ impl PropModels {
     /// draw path; the cost is that a node transform is dropped at load, which
     /// is why `ci/import_meshy.py` bakes its scale into the vertices.
     pub fn load(server: &AssetServer) -> Self {
-        let n = Occupant::WaystationCanopy as usize + 1;
+        let n = Occupant::EliteCrate as usize + 1;
         let pools = (0..n)
             .map(|i| match OCCUPANTS.iter().find(|o| **o as usize == i) {
                 Some(o) => prop_models(*o)
@@ -1462,7 +1465,7 @@ impl PropModels {
 /// Every occupant the sim can place. `Occupant` is not dense — it skips 8 on
 /// purpose — so [`PropModels::load`] cannot walk discriminants and needs the
 /// list. `tests/prop_assets.rs` holds it to the enum.
-pub const OCCUPANTS: [Occupant; 12] = [
+pub const OCCUPANTS: [Occupant; 15] = [
     Occupant::None,
     Occupant::Tree,
     Occupant::StoneNode,
@@ -1475,6 +1478,9 @@ pub const OCCUPANTS: [Occupant; 12] = [
     Occupant::CacheSlot,
     Occupant::HavenShelter,
     Occupant::WaystationCanopy,
+    Occupant::GreenCrate,
+    Occupant::BlueCrate,
+    Occupant::EliteCrate,
 ];
 
 /// The mesh the client draws for one occupant, as a pure function.
@@ -1513,7 +1519,9 @@ pub fn archetype_mesh(o: Occupant) -> Option<Mesh> {
         // `OCCUPANT_R_M`/`OCCUPANT_TOP_M` moved in the same commit and the
         // replay golden moved with them.
         Occupant::BarrelSlot => Cylinder::new(0.2925, 0.88).mesh().resolution(10).build(),
-        Occupant::CrateSlot => boxes_mesh(&[([0., 0., 0.], [0.55, 0.4, 0.4], 0x6b5334)]),
+        Occupant::CrateSlot | Occupant::GreenCrate | Occupant::BlueCrate | Occupant::EliteCrate => {
+            boxes_mesh(&[([0., 0., 0.], [0.55, 0.4, 0.4], 0x6b5334)])
+        }
         Occupant::CacheSlot => boxes_mesh(&[([0., 0., 0.], [0.45, 0.275, 0.35], 0x6a5940)]),
         Occupant::HavenShelter => boxes_mesh(&authored(&terrain::SHELTER_BOXES, &SHELTER_HEX)),
         Occupant::WaystationCanopy => {
@@ -1538,7 +1546,9 @@ pub fn archetype_lift(o: Occupant) -> f32 {
         // The half-height, so the drum's base is the slot's ground and its
         // top is its own 0.88 m. It was 0.5 against a half-height of 0.475.
         Occupant::BarrelSlot => 0.44,
-        Occupant::CrateSlot => 0.4,
+        Occupant::CrateSlot | Occupant::GreenCrate | Occupant::BlueCrate | Occupant::EliteCrate => {
+            0.4
+        }
         Occupant::CacheSlot => 0.275,
         // The two authored structures and the tree stand on their own base:
         // their tables put ground at y = 0 rather than centring the mesh.
@@ -1812,6 +1822,19 @@ pub fn assets(
             models.pool(Occupant::CrateSlot).first().cloned(),
             models.pool(Occupant::CacheSlot).first().cloned(),
         ],
+        tier_crates: [
+            Color::srgb(0.22, 0.55, 0.28),
+            Color::srgb(0.20, 0.36, 0.78),
+            Color::srgb(0.62, 0.14, 0.12),
+        ]
+        .map(|c| {
+            materials.add(StandardMaterial {
+                base_color: c,
+                metallic: 0.6,
+                perceptual_roughness: 0.45,
+                ..default()
+            })
+        }),
         foliage: surface_pool(0.86, fresnel::DIELECTRIC, materials),
         bush_cards: (0..BUSH_CARD_POOL as u32)
             .map(|v| meshes.add(bush_card_mesh(v)))
@@ -2343,6 +2366,13 @@ pub fn spawn_slot(
         },
         Occupant::HavenShelter => (a.shelter.clone(), a.shelter_mat.clone()),
         Occupant::WaystationCanopy => (a.canopy.clone(), a.canopy_mat.clone()),
+        Occupant::GreenCrate | Occupant::BlueCrate | Occupant::EliteCrate => {
+            let tier = slot.occupant as usize - Occupant::GreenCrate as usize;
+            let mesh = a.small_models[1]
+                .as_ref()
+                .map_or_else(|| a.crate_box.clone(), |(m, _)| m.clone());
+            (mesh, a.tier_crates[tier].clone())
+        }
         Occupant::None => return,
     };
     let sink = SINK_M;

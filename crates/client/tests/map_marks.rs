@@ -29,9 +29,11 @@ use client::ui::map::{Mark, MarkKind};
 
 /// Every kind. A `match` over each one so a kind added without a row here
 /// fails to compile rather than going unspawned.
-const KINDS: [MarkKind; 8] = [
+const KINDS: [MarkKind; 10] = [
     MarkKind::None,
     MarkKind::Haven,
+    MarkKind::Town,
+    MarkKind::Monument,
     MarkKind::Waystation,
     MarkKind::Depot,
     MarkKind::Bed,

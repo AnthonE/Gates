@@ -142,6 +142,8 @@ $NICE python3 ci/unbake_ktx.py --self-test || fail "map un-bake"
 # exit 2 on a box without Blender rather than pass on nothing.
 echo "== gate: rock kit (ci/rock_kit.py --self-test: the fit and the layout the Blender stage promises)"
 $NICE python3 ci/rock_kit.py --self-test || fail "rock kit"
+echo "== gate: site kit (ci/site_kit.py --self-test: the kit parse and the dressing's arithmetic)"
+$NICE python3 ci/site_kit.py --self-test || fail "site kit"
 
 echo "== gate: rustfmt"
 $NICE cargo fmt --all --check || fail "rustfmt"

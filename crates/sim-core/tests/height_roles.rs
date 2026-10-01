@@ -46,6 +46,22 @@ use std::path::Path;
 ///   it), or it is a depiction at a scale the carve is invisible at.
 const RAW_READERS: &[(&str, &str, &str)] = &[
     (
+        "terrain.rs",
+        "solve_town",
+        "solver: locates the town on raw terrain, before the carve it causes.",
+    ),
+    (
+        "terrain.rs",
+        "solve_ziggurat",
+        "solver: locates the ziggurat on raw terrain, before the carve it causes.",
+    ),
+    (
+        "terrain.rs",
+        "town_approach",
+        "solver: marches a town road to the ring on raw terrain, as \
+         `solve_side_roads` does for the depot.",
+    ),
+    (
         "boulders.rs",
         "formation_mesh",
         "cosmetic: whether a rock formation's top is mossy reads the biome \

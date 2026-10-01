@@ -206,7 +206,10 @@ pub const DRESS_TICKS: u32 = TICK_HZ;
 pub const TREE_TOOLS: [&str; 3] = ["Metal Hatchet", "Stone Hatchet", "Rock"];
 pub const NODE_TOOLS: [&str; 3] = ["Metal Pickaxe", "Stone Pickaxe", "Rock"];
 
-const _: () = assert!(MAX_ITEM_DEFS <= 64, "FoodBook and yield sets are u64 masks");
+const _: () = assert!(
+    MAX_ITEM_DEFS <= 128,
+    "FoodBook and yield sets are u128 masks"
+);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Phase {
@@ -321,15 +324,15 @@ impl Kind {
 /// verdicts, the way a player learns by pressing eat. No food table.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FoodBook {
-    pub not_food: u64,
-    pub feeds: u64,
-    pub waters: u64,
-    pub tried: u64,
+    pub not_food: u128,
+    pub feeds: u128,
+    pub waters: u128,
+    pub tried: u128,
 }
 
 impl FoodBook {
-    fn bit(item: u16) -> u64 {
-        if (item as usize) < 64 {
+    fn bit(item: u16) -> u128 {
+        if (item as usize) < 128 {
             1 << item
         } else {
             0
@@ -389,7 +392,7 @@ pub struct Memory {
     pub food: FoodBook,
     /// Items each resource kind has been seen to pay (gather receipts),
     /// as masks over item indices: what "room for it" means.
-    pub yields: [u64; 4],
+    pub yields: [u128; 4],
     /// Sleeping bags it knows it has down.
     pub bags: u8,
     /// A bag failed to go down near here a moment ago (`Home::bag_held`).
@@ -995,7 +998,8 @@ impl Survivor {
         // where it stands rather than at a door that will not open.
         if self.home_held(tick) && self.builder.region(body) == Region::Outside {
             self.stats.phase = Phase::LoggingOff;
-            return Intent::IDLE;
+            // Never asleep in the town: its safe zone puts sleepers out.
+            return out_of_town(core, body).unwrap_or(Intent::IDLE);
         }
         let settled = self.builder.region(body) == Region::Room && !self.builder.passing();
         if settled && !self.builder.door_open(core) {
@@ -1208,6 +1212,7 @@ impl Survivor {
             lane_free: self.outbox.is_none(),
             raided: self.home.raided(tick, combat::ALARM_TICKS),
             home_ground: self.builder.region(&body) != Region::Outside,
+            town: core.haven().town,
         };
         let assessed = self
             .combat
@@ -4546,9 +4551,26 @@ fn wear_move(core: &ClientCore) -> Option<(u8, u8)> {
     best.map(|(from, to, _)| (from, to))
 }
 
+/// Out of the town's safe zone, if the body stands in it: along the
+/// market street to the nearer gate and on past the zone's edge, where the
+/// town puts its sleepers. The town is on the map.
+fn out_of_town(core: &ClientCore, body: &EntityState) -> Option<Intent> {
+    let town = core.haven().town;
+    let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+    if !sim_core::town::safe(&town, x, z) {
+        return None;
+    }
+    let out = sim_core::town::SAFE_HALF_M + 8.0;
+    let gate = |side: f32| sim_core::kit::to_world(&town.placed(), 0.0, side * out);
+    let (a, b) = (gate(1.0), gate(-1.0));
+    let d2 = |p: (f32, f32)| (p.0 - x) * (p.0 - x) + (p.1 - z) * (p.1 - z);
+    let (gx, gz) = if d2(a) <= d2(b) { a } else { b };
+    Some(Intent::walk(yaw_toward(gx - x, gz - z)))
+}
+
 /// Room for a node's yield: an empty slot, or a stack of something this
 /// kind has been seen to pay that is not yet at its ceiling.
-fn room_for(core: &ClientCore, yields: u64) -> bool {
+fn room_for(core: &ClientCore, yields: u128) -> bool {
     core.inv.iter().any(|s| {
         s.count == 0
             || (yields & FoodBook::bit(s.item) != 0

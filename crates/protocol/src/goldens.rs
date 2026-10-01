@@ -41,7 +41,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 122] = [
+pub const FIXTURES: [&str; 129] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -227,6 +227,15 @@ pub const FIXTURES: [&str; 122] = [
     "watch.bin",
     // Who a player id is (v85). Appended, positional as ever.
     "event_tag.bin",
+    // THE GATE's vendors (v86): the offer drip, the two answers, the verb.
+    "event_vend_offers.bin",
+    "event_vend.bin",
+    "event_vend_refused.bin",
+    "action_vend.bin",
+    // The Black Ziggurat's card doors (v87): the mirror, the refusal, the verb.
+    "event_card_doors.bin",
+    "event_swipe_refused.bin",
+    "action_swipe.bin",
 ];
 
 /// The sky/clock event: a storm forced mid-fade, the clock pushed to dusk.
@@ -1922,6 +1931,65 @@ pub fn event_skins_owned() -> sim_core::skin::SkinSet {
         s.insert(row);
     }
     s
+}
+
+/// Three offers at two vendors (wire v86): a buy and a sell at vendor 0,
+/// which carries its name on its first row only, and a buy at vendor 5.
+pub fn event_vend_offers() -> (sim_core::vend::VendContent, [&'static [u8]; 6]) {
+    let mut vc = sim_core::vend::VendContent::EMPTY;
+    vc.offers[0] = sim_core::vend::VendOffer {
+        vendor: 0,
+        pay: 17,
+        pay_n: 3,
+        get: 42,
+        get_n: 500,
+    };
+    vc.offers[1] = sim_core::vend::VendOffer {
+        vendor: 0,
+        pay: 8,
+        pay_n: 1000,
+        get: 17,
+        get_n: 4,
+    };
+    vc.offers[2] = sim_core::vend::VendOffer {
+        vendor: 5,
+        pay: 17,
+        pay_n: 200,
+        get: 55,
+        get_n: 1,
+    };
+    vc.count = 3;
+    (vc, [b"RATIONS", b"", b"", b"", b"", b"ARMS"])
+}
+
+/// A trade of offer 9, twenty times over.
+pub fn event_vend() -> (u8, u8) {
+    (9, 20)
+}
+
+/// Offer 41 refused for want of funds.
+pub fn event_vend_refused() -> (u8, u8) {
+    (sim_core::vend::REFUSE_V_FUNDS as u8, 41)
+}
+
+/// Trade offer 37 five times.
+pub fn action_vend() -> (u8, u8) {
+    (37, 5)
+}
+
+/// The green and red doors open, the blue shut.
+pub fn event_card_doors() -> u8 {
+    0b101
+}
+
+/// A swipe at the red door without its card.
+pub fn event_swipe_refused() -> (u8, u8) {
+    (sim_core::monument::REFUSE_S_CARD as u8, 2)
+}
+
+/// Swipe at the blue door.
+pub fn action_swipe() -> u8 {
+    1
 }
 
 /// Put catalog id 0x0B72 on the item in slot 17 (wire v77).

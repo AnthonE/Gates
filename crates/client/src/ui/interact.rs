@@ -119,6 +119,14 @@ pub enum Verb {
     /// not press.
     TechTree,
     Assist,
+    /// A kiosk in the town (THE GATE, `sim_core::vend`): `handle` is the
+    /// vendor index. Resolved by nearness like `Take`, from the town's own
+    /// layout — there is no record on the wire to aim at.
+    Trade,
+    /// A card reader or an exit lever at the Black Ziggurat
+    /// (`sim_core::monument`): `handle` is the door, `lit` true for the
+    /// lever. Resolved by nearness, like `Trade`.
+    Swipe,
 }
 
 impl Verb {
@@ -162,6 +170,8 @@ impl Verb {
             // exists so the order stays total.
             Verb::Take => 10,
             Verb::Assist => 11,
+            Verb::Trade => 12,
+            Verb::Swipe => 13,
         }
     }
 
@@ -185,6 +195,8 @@ impl Verb {
             // ground is the same mesh whatever is in it).
             Verb::Take => "ITEM",
             Verb::Assist => "WOUNDED PLAYER",
+            Verb::Trade => "VENDOR",
+            Verb::Swipe => "CARD READER",
         }
     }
 }
@@ -341,6 +353,12 @@ impl Pick {
             // and opens nothing — what `E` does here is show the tree
             // (tech tree v0), so the prompt names the thing you get.
             Verb::TechTree => "[E] TECH TREE".to_string(),
+            Verb::Trade => "[E] TRADE".to_string(),
+            Verb::Swipe if self.lit => "[E] OPEN DOOR".to_string(),
+            Verb::Swipe => format!(
+                "[E] SWIPE {} KEYCARD",
+                ["GREEN", "BLUE", "RED"][(self.handle as usize).min(2)]
+            ),
             // Not "OPEN": a loose stack has nothing to open, and the
             // count is the half of this line a player acts on — a sack
             // holding 4 cloth and a sack holding 300 metal are the same
@@ -361,6 +379,70 @@ impl Pick {
             ),
             v => format!("[E] OPEN {}", v.label()),
         }
+    }
+}
+
+/// The town kiosk `E` would trade at, or a `None` pick: the nearest counter
+/// within the sim's own `VEND_REACH_M`.
+pub fn resolve_trade(x: f32, z: f32, town: &sim_core::town::Town) -> Pick {
+    if !town.live {
+        return Pick::default();
+    }
+    let mut best: Option<(usize, f32)> = None;
+    for k in 0..sim_core::town::KIOSKS.len() {
+        let Some((kx, kz)) = sim_core::town::kiosk_world(town, k) else {
+            continue;
+        };
+        let d2 = (kx - x) * (kx - x) + (kz - z) * (kz - z);
+        if d2 > sim_core::vend::VEND_REACH_M * sim_core::vend::VEND_REACH_M {
+            continue;
+        }
+        if best.is_none_or(|(_, b)| d2 < b) {
+            best = Some((k, d2));
+        }
+    }
+    match best {
+        Some((k, d2)) => Pick {
+            verb: Verb::Trade,
+            handle: k as u32,
+            d2,
+            ..Pick::default()
+        },
+        None => Pick::default(),
+    }
+}
+
+/// The ziggurat reader or lever `E` would use, or a `None` pick: the
+/// nearest within the sim's own `SWIPE_REACH_M`, on its own floor.
+pub fn resolve_swipe(x: f32, y: f32, z: f32, zig: &sim_core::monument::Ziggurat) -> Pick {
+    if !zig.live {
+        return Pick::default();
+    }
+    let reach = sim_core::monument::SWIPE_REACH_M;
+    let mut best: Option<(usize, bool, f32)> = None;
+    for d in 0..sim_core::monument::CARD_DOORS {
+        for inside in [false, true] {
+            let Some((rx, ry, rz)) = sim_core::monument::reader_world(zig, d, inside) else {
+                continue;
+            };
+            let d2 = (rx - x) * (rx - x) + (rz - z) * (rz - z);
+            if d2 > reach * reach || (ry - y).abs() > 2.0 {
+                continue;
+            }
+            if best.is_none_or(|(_, _, b)| d2 < b) {
+                best = Some((d, inside, d2));
+            }
+        }
+    }
+    match best {
+        Some((d, lever, d2)) => Pick {
+            verb: Verb::Swipe,
+            handle: d as u32,
+            lit: lever,
+            d2,
+            ..Pick::default()
+        },
+        None => Pick::default(),
     }
 }
 
@@ -1031,6 +1113,8 @@ pub struct Island<'a> {
     pub table: &'a ScatterTable,
     pub haven: &'a Haven,
     pub harvested: &'a dyn Harvested,
+    /// The card doors open now (`occupy::Occupants::doors`).
+    pub doors: u32,
     /// **The memo, and the only door to `terrain::scatter` on this path.**
     /// A cold `scatter` costs ~60 `noise2` taps, a 3×3 window nine of them,
     /// and the crosshair resolves that window every frame — so the resolver
@@ -1055,6 +1139,7 @@ impl Island<'_> {
     /// run over the client's memo exactly as they run over the server's.
     fn occupants(&mut self) -> Occupants<'_> {
         Occupants {
+            doors: self.doors,
             table: self.table,
             haven: self.haven,
             harvested: self.harvested,

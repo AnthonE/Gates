@@ -65,7 +65,7 @@ pub fn icon_stem(
 /// (`ci/finish_icons.py`: a render of the model, or the silhouette painted)
 /// and draw untinted; everything else is a white glyph the draw tints —
 /// see [`is_glyph`].
-pub const STEMS: [&str; 98] = [
+pub const STEMS: [&str; 101] = [
     // the shape wheel
     "metal_window_bars",
     "garage_door",
@@ -161,6 +161,10 @@ pub const STEMS: [&str; 98] = [
     "raw_meat",
     "cooked_meat",
     "burnt_meat",
+    // The ziggurat's keycards (`ci/icons/keycards.py`, ours).
+    "green_keycard",
+    "blue_keycard",
+    "red_keycard",
     // The map screen's markers (`ui::map::MarkKind::icon`). Not items, for
     // the same reason the vitals below are not: they name something on the
     // ISLAND — a site the worldgen placed, the player themselves — which the

@@ -892,7 +892,11 @@ impl Vital {
 pub enum ExposureChip {
     Wet,
     Cold,
+    /// Inside THE GATE's safe zone (`sim_core::town::safe`).
+    Safe,
 }
+
+const SAFE_CHIP: Color = Color::srgba(0.18, 0.52, 0.30, 0.85);
 
 const WET_CHIP: Color = Color::srgba(0.16, 0.36, 0.62, 0.85);
 const COLD_CHIP: Color = Color::srgba(0.42, 0.58, 0.70, 0.85);
@@ -915,6 +919,14 @@ pub fn exposure(
                 FREEZE_CHIP,
             ),
             ExposureChip::Cold => (core.cold_pct >= 25, "COLD".to_string(), COLD_CHIP),
+            ExposureChip::Safe => {
+                let [x, _, z] = core.eye_position();
+                (
+                    sim_core::town::safe(&core.haven().town, x, z),
+                    "SAFE ZONE".to_string(),
+                    SAFE_CHIP,
+                )
+            }
         };
         // Out of the layout, not just invisible: a hidden chip that still
         // took its row left a gap between the vitals and the notices over
@@ -1366,7 +1378,7 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                 });
             // Wet and cold (weather v0): two chips over the bars, hidden
             // until there is something to say.
-            for chip in [ExposureChip::Wet, ExposureChip::Cold] {
+            for chip in [ExposureChip::Safe, ExposureChip::Wet, ExposureChip::Cold] {
                 stack.spawn((
                     chip,
                     Text::new(""),
@@ -2074,6 +2086,8 @@ pub fn feedback(
             super::feed::Refused::Build => crate::ui::refusals::build(code),
             super::feed::Refused::Deploy => crate::ui::refusals::deploy(code),
             super::feed::Refused::Research => crate::ui::refusals::research(code),
+            super::feed::Refused::Vend => crate::ui::refusals::vend(code),
+            super::feed::Refused::Swipe => crate::ui::refusals::swipe(code),
             super::feed::Refused::Consume => crate::ui::refusals::consume(code),
             // The one refusal whose sentence names the held item: "your
             // Torch cannot harvest this", or bare hands when nothing was.

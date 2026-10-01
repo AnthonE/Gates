@@ -594,15 +594,28 @@ fn test_clump_leaves_authored_slots_alone() {
             .filter(|w| w.live)
             .map(|w| terrain::site_crates(w.kind) as u32)
             .sum();
+        // The ziggurat's rooms hold ordinary crates and caches beside their
+        // tier crates (`monument::CRATES`), placed because it is there.
+        let zig = terrain::haven(seed).ziggurat;
+        let zig_of = |o: Occupant| {
+            if zig.live {
+                sim_core::monument::CRATES
+                    .iter()
+                    .filter(|c| c.3 == o)
+                    .count() as u32
+            } else {
+                0
+            }
+        };
         assert_eq!(
             f.counts[Occupant::CrateSlot as usize],
-            HAVEN_CRATES as u32,
+            HAVEN_CRATES as u32 + zig_of(Occupant::CrateSlot),
             "seed {seed}: the pad's container ring lost a crate — the clump \
              field is meant to sit below the haven branch in `scatter`."
         );
         assert_eq!(
             f.counts[Occupant::CacheSlot as usize],
-            caches,
+            caches + zig_of(Occupant::CacheSlot),
             "seed {seed}: the lesser tier's {live} site(s) do not carry the \
              {caches} cache(s) their tiers owe — same rule one tier down."
         );

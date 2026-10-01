@@ -1,0 +1,17 @@
+{
+  "kit": "ci/kits/ziggurat.json",
+  "seed": 1,
+  "label": "",
+  "blender": "4.5.14 LTS",
+  "python": "3.11.15",
+  "script_sha256": "676907017b7187791ceafb08f7b2ad51aed774aa3966087768066102b0ab1c3a",
+  "kit_sha256": "8b32c35760a14d7718884d1d2da2a0fb2e90463c9541e435fb17e8af1e8096fe",
+  "triangles": 15084,
+  "meshes": [
+    "concrete",
+    "gilt",
+    "lapis",
+    "obsidian"
+  ],
+  "bytes": 1907560
+}

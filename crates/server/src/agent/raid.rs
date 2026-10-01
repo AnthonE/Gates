@@ -539,6 +539,17 @@ impl Bases {
         }
     }
 
+    /// A face read again: its row takes what it is now.
+    pub fn refresh(&mut self, i: usize, face: &Face) {
+        if let Some(b) = self.bases.get_mut(i) {
+            for f in b.faces.iter_mut() {
+                if f.is_some_and(|f| f.deploy == face.deploy && f.at == face.at) {
+                    *f = Some(*face);
+                }
+            }
+        }
+    }
+
     /// A face that is no way in from outside it (`X` takes something
     /// else there): forgotten, until the eyes find it again.
     pub fn gone(&mut self, i: usize, face: &Face) {
@@ -855,6 +866,32 @@ impl RaidJob {
         }
     }
 
+    /// The face's full hp by what stands there now (its grade, read off
+    /// the wall up close).
+    fn hp_max(core: &ClientCore, face: &Face) -> u16 {
+        let at = face.at;
+        let same = |cx: u16, cz: u16, level: u8, loc: u8| {
+            (cx, cz, level, loc) == (at.cx, at.cz, at.level, at.loc)
+        };
+        let row = if face.deploy {
+            let have = core.deploy_defs_have.min(core.deploy_defs.def_count);
+            core.deploys
+                .entries()
+                .iter()
+                .find(|r| same(r.cx, r.cz, r.level, r.loc))
+                .filter(|r| u16::from(r.row) < have)
+                .map(|r| core.deploy_defs.defs[usize::from(r.row)].hp)
+        } else {
+            core.pieces
+                .entries()
+                .iter()
+                .find(|r| same(r.cx, r.cz, r.level, r.loc))
+                .filter(|r| u16::from(r.row) < core.piece_defs_have)
+                .map(|r| core.piece_defs.pieces[usize::from(r.row)].hp)
+        };
+        row.filter(|&hp| hp > 0).unwrap_or(face.hp_max)
+    }
+
     /// The damage band drawn on the face now.
     fn dmg(core: &ClientCore, face: &Face) -> u8 {
         let at = face.at;
@@ -1120,6 +1157,22 @@ impl RaidJob {
             Some(Ok(intent)) => return Raid::Go(intent),
             Some(Err(why)) => return self.give_up(bases, why, tick),
             None => {}
+        }
+        // Up at it, the face reads as it stands now: one remembered from
+        // a glance while it was still twig is priced again, and when that
+        // changes the way in, the base's best face is chosen afresh.
+        if self.swinging.is_none() && self.charges == 0 {
+            let now = Face {
+                hp_max: Self::hp_max(core, &face),
+                dmg: Self::dmg(core, &face),
+                ..face
+            };
+            if now.hp_max != face.hp_max && breach(&now, means) != Some(way) {
+                bases.refresh(base, &now);
+                self.target = None;
+                self.held = None;
+                return Raid::Go(Intent::IDLE);
+            }
         }
         let item = match way {
             Breach::Satchels(_) => means.satchel.map(|(item, _)| item),

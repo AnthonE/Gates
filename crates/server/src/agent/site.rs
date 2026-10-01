@@ -80,13 +80,12 @@ pub(crate) fn someone_near(view: &ClientView, me: u32, cx: u16, cz: u16, r: u16)
 }
 
 /// Would a foundation go on this cell? `build::place`'s ground rules: the
-/// terrain, the depot's and the landmarks' reserves.
+/// terrain, and every reserve (the depot, the town, the landmarks).
 pub(crate) fn foundation_goes(seed: u64, hv: &Haven, cx: u16, cz: u16) -> bool {
     let (ax, az) = sim_core::build::anchor(cx, cz, sim_core::build::LOC_PLANE);
     let pad = BUILD_CELL_M * 1.5;
     sim_core::build::foundation_terrain_ok(seed, hv, ax, az)
-        && !sim_core::depot::reserves(hv, ax, az, pad)
-        && !sim_core::landmark::covers(&hv.marks, ax, az, pad)
+        && !sim_core::terrain::build_reserved(hv, ax, az, pad)
 }
 
 #[derive(Clone, Copy, Debug, Default)]

@@ -129,6 +129,9 @@ more (`ci/bake_icons.py` fetches from GitHub).
 | file | source |
 |---|---|
 | `burnt_meat.png` | `ci/icons/burnt_meat.svg` (ours) |
+| `green_keycard.png` | `ci/icons/keycards.py` (ours) |
+| `blue_keycard.png` | `ci/icons/keycards.py` (ours) |
+| `red_keycard.png` | `ci/icons/keycards.py` (ours) |
 | `map_player.png` | `ci/icons/map_player.svg` (ours) |
 | `shape_foundation_steps.png` | `ci/icons/shape_foundation_steps.svg` (ours) |
 | `shape_half_wall.png` | `ci/icons/shape_half_wall.svg` (ours) |

@@ -1,6 +1,7 @@
 # The wasm shadow stack, stated rather than defaulted.
 #
-# `World` is 78 kB — fixed-capacity by design (wall 4), and
+# `World` is 82 kB — fixed-capacity by design (wall 4), and
+# (78 kB until THE GATE put the town and the vendor offers on the world;
 # (72 kB until world v2 put the landmarks and their trails on `Haven`;
 # 60 kB until skins v0: every stack grew its skin, each player its owned
 # set and craft jobs their skin, and the world holds the baked catalog.
