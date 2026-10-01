@@ -802,12 +802,16 @@ fn bad_ground_is_red_on_both_sides() {
     // ...and a cell whose terrain a foundation would refuse — found by the
     // sim's own predicate, because this test must not guess where the sea
     // is. Walking out from the island's build area, the first unbuildable
-    // cell is the shared answer.
+    // cell is the shared answer. Reserved ground (the town, the ziggurat)
+    // is refused before the terrain is asked, as a spot, so it is walked
+    // past.
     let unbuildable = (2..CX)
         .map(|k| (CX - k, CZ))
         .find(|&(cx, cz)| {
             let (ax, az) = sim_core::deploy::cell_center(cx, cz);
-            !sim_core::build::foundation_terrain_ok(SEED, hv(SEED), ax, az)
+            let margin = sim_core::build::BUILD_CELL_M * 1.5;
+            !sim_core::terrain::build_reserved(hv(SEED), ax, az, margin)
+                && !sim_core::build::foundation_terrain_ok(SEED, hv(SEED), ax, az)
         })
         .expect("an island has an edge");
     let mut swimmer = rich(unbuildable.0, unbuildable.1);

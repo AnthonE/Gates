@@ -73,10 +73,16 @@ const BENT_BY_THE_PACKER: &[&str] = &[];
 const PATCHY_AS_SHIPPED: &[(&str, f64)] = &[];
 const PIN_TOL: f64 = 0.01;
 
-/// The one packed model with no normal map: the character, whose delivery
-/// carried an albedo only (`assets/models/MANIFEST.md`). Named so the census
-/// below cannot pass by skipping a file nobody listed.
-const NO_NORMAL_MAP: &[&str] = &["models/stumpy.glb"];
+/// The packed models with no normal map: the character, whose delivery
+/// carried an albedo only (`assets/models/MANIFEST.md`), and the two
+/// Blender-dressed sites, which carry no images at all — the client lays the
+/// depot's photographed surfaces on them (`render::town`, `render::ziggurat`).
+/// Named so the census below cannot pass by skipping a file nobody listed.
+const NO_NORMAL_MAP: &[&str] = &[
+    "models/stumpy.glb",
+    "models/site/town.glb",
+    "models/site/ziggurat.glb",
+];
 
 fn asset_path(rel: &str) -> PathBuf {
     Path::new("../../assets").join(rel)
