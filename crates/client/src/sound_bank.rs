@@ -1,6 +1,7 @@
 //! The bank the engine plays, cue by cue: recorded takes where the game has
-//! them (Kenney's CC0 impact pack, `assets/sound/MANIFEST.md`), the
-//! synthesizer's everywhere else (`sound::synth`).
+//! them (Kenney's CC0 impact pack and CC0 Freesound recordings,
+//! `assets/sound/MANIFEST.md`), the synthesizer's everywhere else
+//! (`sound::synth`).
 //!
 //! A cue with several takes is one buffer of equal slices
 //! (`synth::join_takes`): the renderer plays one slice per start and
@@ -8,7 +9,7 @@
 //! Rust's own answer to a repeated sound (several recorded variations per
 //! action); the pitch nudge (`Cue::pitch_var`) rides on top of it.
 //!
-//! The recordings are decoded here at boot rather than shipped decoded: ~0.6 MB
+//! The recordings are decoded here at boot rather than shipped decoded: ~1.7 MB
 //! of OGG against several MB of PCM, and the browser decodes the same bytes
 //! with the same code. Not behind `render`, so `tests/sound.rs` checks every
 //! take headless.
@@ -18,7 +19,7 @@ use sound::{synth, Cue, SAMPLE_RATE};
 /// Five takes of one Kenney group, compiled in.
 macro_rules! five {
     ($name:literal) => {
-        [
+        &[
             include_bytes!(concat!("../../../assets/sound/kenney/", $name, "_000.ogg")),
             include_bytes!(concat!("../../../assets/sound/kenney/", $name, "_001.ogg")),
             include_bytes!(concat!("../../../assets/sound/kenney/", $name, "_002.ogg")),
@@ -28,11 +29,27 @@ macro_rules! five {
     };
 }
 
+/// Numbered takes of one Freesound group, compiled in:
+/// `freesound!("howl", 0 1)` is `freesound/howl_0.ogg` and `howl_1.ogg`.
+macro_rules! freesound {
+    ($name:literal, $($n:literal)+) => {
+        &[$(include_bytes!(concat!("../../../assets/sound/freesound/", $name, "_", $n, ".ogg"))),+]
+    };
+}
+
 /// Which recording plays which cue. One row per cue; `MANIFEST.md` lists the
 /// files.
-static RECORDED: [(Cue, [&[u8]; 5]); 12] = [
-    (Cue::StepGrass, five!("footstep_grass")),
-    (Cue::StepRock, five!("footstep_concrete")),
+static RECORDED: [(Cue, &[&[u8]]); 19] = [
+    (Cue::StepSand, freesound!("step_sand", 0 1 2 3 4 5 6 7)),
+    (Cue::StepGrass, freesound!("step_grass", 0 1 2 3 4 5 6 7)),
+    (Cue::StepLitter, freesound!("step_litter", 0 1 2 3 4 5 6 7)),
+    (Cue::StepRock, freesound!("step_rock", 0 1 2 3 4 5 6 7)),
+    (Cue::StepWater, freesound!("step_water", 0 1 2 3 4)),
+    (Cue::Howl, freesound!("howl", 0 1 2 3)),
+    (Cue::Growl, freesound!("growl", 0 1 2 3 4 5)),
+    (Cue::Hurt, freesound!("hurt", 0 1 2 3 4 5)),
+    (Cue::Death, freesound!("death", 0 1 2 3)),
+    (Cue::FleshHit, freesound!("flesh", 0 1 2 3 4 5)),
     (Cue::ImpactStone, five!("impactMining")),
     (Cue::ImpactWood, five!("impactWood_medium")),
     (Cue::ImpactMetal, five!("impactMetal_heavy")),
@@ -41,7 +58,6 @@ static RECORDED: [(Cue, [&[u8]; 5]); 12] = [
     (Cue::BulletStone, five!("impactGeneric_light")),
     (Cue::BulletWood, five!("impactWood_light")),
     (Cue::BulletMetal, five!("impactMetal_light")),
-    (Cue::FleshHit, five!("impactPunch_medium")),
     (Cue::Knock, five!("impactWood_heavy")),
 ];
 

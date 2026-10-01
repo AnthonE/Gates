@@ -434,6 +434,30 @@ fn cadence_is_distance_not_time() {
     assert_eq!(steps, 4, "four strides of ground did not make four steps");
 }
 
+/// A sprint lengthens the stride instead of quickening the steps: at a fixed
+/// stride a sprint fired 6.5 recorded steps a second and they piled up.
+#[test]
+fn a_sprint_lengthens_the_stride_not_the_cadence() {
+    let per_second = |speed: f32| {
+        let mut s = Steps::default();
+        s.sample([0.0, 0.0, 0.0], true, 0.016);
+        let steps = (1..=625)
+            .filter(|i| {
+                s.sample([speed * 0.016 * *i as f32, 0.0, 0.0], true, 0.016)
+                    .is_some()
+            })
+            .count();
+        steps as f32 / 10.0
+    };
+    let walk = per_second(sim_core::movement::WALK_SPEED);
+    let sprint = per_second(sim_core::movement::SPRINT_SPEED);
+    assert!(sprint < 4.0, "a sprint is {sprint} steps a second");
+    assert!(
+        sprint >= walk * 0.9,
+        "a sprint ({sprint}/s) is slower than a walk ({walk}/s)"
+    );
+}
+
 #[test]
 fn standing_still_and_falling_are_both_silent() {
     let mut s = Steps::default();
@@ -2485,12 +2509,14 @@ fn the_wolf_cadences_are_an_order_apart() {
              threat that speaks at ambience's rate is ambience"
         );
     }
-    // And it must not machine-gun either. Measured against the **rendered**
-    // buffer rather than a repeated literal: the shortest interval the
-    // cadence can draw has to outlast the call itself, or a wolf growls over
-    // its own last growl, and lengthening `synth::growl` must be what breaks
-    // this rather than someone remembering to update a number here.
-    let growl_s = pcm(&synth::wav(Cue::Growl)).len() as f32 / SAMPLE_RATE as f32;
+    // And it must not machine-gun either. Measured against the take the
+    // engine plays (`sound_bank`, recorded since the Freesound swap) rather
+    // than a repeated literal: the shortest interval the cadence can draw has
+    // to outlast the call itself, or a wolf growls over its own last growl,
+    // and lengthening a growl take must be what breaks this rather than
+    // someone remembering to update a number here.
+    let (growl, takes) = client::sound_bank::pcm(Cue::Growl);
+    let growl_s = (growl.len() / takes as usize) as f32 / SAMPLE_RATE as f32;
     assert!(
         GROWL_PERIOD_S * (1.0 - VOICE_JITTER) > growl_s,
         "the growl's shortest interval ({:.2}s) is under the growl's own length ({growl_s:.2}s)",
