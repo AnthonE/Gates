@@ -36,6 +36,10 @@ pub const SUMMARY_STORED: usize = crate::agent::stash::STORED_ROWS;
 /// The scripted policy goes home to put things away once the pack is down
 /// to this many free slots.
 pub const SCRIPTED_STASH_FREE_SLOTS: u8 = 4;
+/// A raw material the pack already holds this much of is not gathered for
+/// its own sake: a pack full of wood has no room for the pickaxe the next
+/// stone makes. The base's needs ask for more by name.
+pub const SCRIPTED_PLENTY: u32 = 3000;
 /// The deployable a body wakes on, by catalog name: what the playbook
 /// crafts once it has stone tools.
 pub const BAG_ITEM: &str = "Sleeping Bag";
@@ -1541,8 +1545,8 @@ impl Scripted {
             Goal::GatherOre,
         ];
         let seen = |g: Goal| match g {
-            Goal::GatherWood => s.trees.count > 0,
-            Goal::GatherStone => s.stone_nodes.count > 0,
+            Goal::GatherWood => s.trees.count > 0 && s.count_of("Wood") < SCRIPTED_PLENTY,
+            Goal::GatherStone => s.stone_nodes.count > 0 && s.count_of("Stone") < SCRIPTED_PLENTY,
             Goal::GatherOre => s.ore_nodes.count > 0,
             _ => false,
         };

@@ -438,6 +438,13 @@ impl Home {
             .is_some_and(|t| tick.wrapping_sub(t) < STASH_RETRY_TICKS)
     }
 
+    /// Where its base stands, while a blow, break or blast there is
+    /// fresher than `within`: where whoever is doing it is to be found.
+    pub fn raided(&self, tick: u32, within: u32) -> Option<[f32; 2]> {
+        self.base
+            .filter(|_| self.alarm.is_some_and(|at| tick.wrapping_sub(at) < within))
+    }
+
     pub fn under_attack(&self, tick: u32) -> bool {
         self.alarm
             .is_some_and(|at| tick.wrapping_sub(at) < HOME_ALARM_TICKS)

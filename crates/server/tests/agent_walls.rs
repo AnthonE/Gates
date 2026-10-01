@@ -22,7 +22,7 @@
 
 mod common;
 
-use common::{root, scene, SEED};
+use common::{root, scene, shore, SEED};
 use protocol::{decode_action, decode_input, encode_input, ActionMsg, InputDatagram};
 use server::core::{Lane, ShardCore};
 use server::explorer::Survivor;
@@ -358,32 +358,6 @@ fn the_observation_encoder_and_the_mind_read_no_world() {
     }
 }
 
-/// A dry standing point with open sea inside the drink reach.
-fn shore() -> (f32, f32) {
-    use sim_core::terrain;
-    let haven = terrain::haven(SEED);
-    let reach = sim_core::survival::DRINK_REACH_M;
-    let c = terrain::ISLAND_SIZE * 0.5;
-    for (dx, dz) in [(1.0f32, 0.0f32), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
-        for step in 0..(c as usize) {
-            let (x, z) = (c + dx * step as f32, c + dz * step as f32);
-            let wet = [
-                (0.0, 0.0),
-                (reach, 0.0),
-                (-reach, 0.0),
-                (0.0, reach),
-                (0.0, -reach),
-            ]
-            .iter()
-            .any(|(ox, oz)| terrain::height(SEED, x + ox, z + oz) < terrain::SEA_LEVEL);
-            if wet && terrain::ground(SEED, &haven, x, z) > 0.3 {
-                return (x, z);
-            }
-        }
-    }
-    panic!("fixture seed has no shore");
-}
-
 /// The shared lockstep shard (`common::shard`), the agent joined as [`ID`].
 /// Wildlife only where a test says so: elsewhere it would make an
 /// acceptance run a test of the animals.
@@ -433,7 +407,7 @@ impl Harness {
     }
 
     fn at(wildlife: bool, at: (f32, f32)) -> Self {
-        let content = content::Content::load_dir(&root().join("content")).unwrap();
+        let content = common::content();
         let spear = content.item_index("item.spear_wood").unwrap();
         let catalog = server::net::bake_all(&content).unwrap().catalog;
         let spear = sim_core::gather::ItemStack {
@@ -904,16 +878,10 @@ fn a_survivor_plays_a_whole_life_and_the_next_one_in_lockstep() {
 #[test]
 fn a_survivor_wakes_on_its_bag_and_walks_back_for_its_backpack() {
     let mut h = Harness::new(false);
-    let content = content::Content::load_dir(&root().join("content")).unwrap();
-    let catalog = server::net::bake_all(&content).unwrap().catalog;
-    let stack = |id: &str, count: u16| {
-        let item = content.item_index(id).unwrap();
-        sim_core::gather::ItemStack {
-            item,
-            count,
-            cond: catalog.cond_max(item as usize),
-            skin: 0,
-        }
+    let content = common::content();
+    let stack = |id: &str, count: u16| sim_core::gather::ItemStack {
+        count,
+        ..common::stack(&content, id)
     };
     let (hatchet, pickaxe) = (
         stack("item.hatchet_stone", 1),
@@ -1125,16 +1093,10 @@ fn a_survivor_builds_its_starter_and_the_base_keeps_strangers_out() {
     use sim_core::deploy::{ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_HEARTH};
 
     let mut h = Harness::new(false);
-    let content = content::Content::load_dir(&root().join("content")).unwrap();
-    let catalog = server::net::bake_all(&content).unwrap().catalog;
-    let stack = |id: &str, count: u16| {
-        let item = content.item_index(id).unwrap();
-        sim_core::gather::ItemStack {
-            item,
-            count,
-            cond: catalog.cond_max(item as usize),
-            skin: 0,
-        }
+    let content = common::content();
+    let stack = |id: &str, count: u16| sim_core::gather::ItemStack {
+        count,
+        ..common::stack(&content, id)
     };
     // The join lands on the tick after `connect`.
     h.until(5, |_| false);

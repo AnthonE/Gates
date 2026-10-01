@@ -1004,6 +1004,7 @@ impl Survivor {
             settled: self.hands.settled(),
             lead_ticks: u32::from(self.tracks.playout()) + self.ack_age,
             lane_free: self.outbox.is_none(),
+            raided: self.home.raided(tick, combat::ALARM_TICKS),
         };
         let assessed = self
             .combat
@@ -1351,6 +1352,8 @@ impl Survivor {
                 | Goal::Drink
                 | Goal::Recover
                 | Goal::Bag
+                | Goal::Fight
+                | Goal::Hunt
         );
         if walks && (self.builder.passing() || self.builder.must_exit(core, body)) {
             if let Some(intent) = self.leave(core, body, tick) {
@@ -1793,6 +1796,12 @@ impl Survivor {
                 };
                 if !inputs_ok(core, recipe) {
                     self.end_goal(tick, Outcome::Failed(Why::MissingInputs));
+                    return;
+                }
+                // A full pack drops what is made at the crafter's feet, and
+                // the inputs are spent either way.
+                if !room_for(core, FoodBook::bit(item)) {
+                    self.end_goal(tick, Outcome::Failed(Why::PackFull));
                     return;
                 }
                 if self.queue(|buf| protocol::encode_action_craft(recipe, 1, 0, buf)) {
@@ -3315,6 +3324,7 @@ pub fn observe(
                     || def.station != STATION_NONE
                     || (def.blueprint && (r >= 64 || known & (1 << r) == 0))
                     || !inputs_ok(core, r as u16)
+                    || !room_for(core, FoodBook::bit(def.output))
                 {
                     continue;
                 }

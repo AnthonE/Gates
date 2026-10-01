@@ -43,6 +43,32 @@ pub fn scene() -> (f32, f32) {
     panic!("fixture seed has no stone node beside a tree");
 }
 
+/// A dry standing point with open sea inside the drink reach.
+pub fn shore() -> (f32, f32) {
+    use sim_core::terrain;
+    let haven = terrain::haven(SEED);
+    let reach = sim_core::survival::DRINK_REACH_M;
+    let c = terrain::ISLAND_SIZE * 0.5;
+    for (dx, dz) in [(1.0f32, 0.0f32), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
+        for step in 0..(c as usize) {
+            let (x, z) = (c + dx * step as f32, c + dz * step as f32);
+            let wet = [
+                (0.0, 0.0),
+                (reach, 0.0),
+                (-reach, 0.0),
+                (0.0, reach),
+                (0.0, -reach),
+            ]
+            .iter()
+            .any(|(ox, oz)| terrain::height(SEED, x + ox, z + oz) < terrain::SEA_LEVEL);
+            if wet && terrain::ground(SEED, &haven, x, z) > 0.3 {
+                return (x, z);
+            }
+        }
+    }
+    panic!("fixture seed has no shore");
+}
+
 /// A level, dry clearing: no tree, rock or node within `radius_cells`
 /// scatter cells of it, and the ground within a few metres of level over
 /// it. Where two bodies meet in the arena with nothing between them.

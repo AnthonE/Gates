@@ -228,6 +228,9 @@ pub const LOOT_TRIES: u8 = 3;
 /// Arrows lying this near are picked up after a win, up to this many.
 pub const ARROW_SEEK_M: f32 = 25.0;
 pub const PICKUPS_MAX: u8 = 12;
+/// While its base is being struck, a player swinging or shooting this near
+/// it is the one doing it: the base's footprint and a reach beyond.
+pub const RAID_M: f32 = 12.0;
 /// Eye height above the feet, metres (where a shot leaves from).
 const EYE_M: f32 = ARROW_EYE_MM as f32 / MM_PER_M;
 
@@ -350,6 +353,9 @@ pub struct Kit<'a> {
     pub lead_ticks: u32,
     /// The action lane is free this frame: a take pressed now is sent.
     pub lane_free: bool,
+    /// Where its own base stands, while blows, breaks or blasts there are
+    /// fresh (`Home::raided`): a player at work beside it is attacking me.
+    pub raided: Option<[f32; 2]>,
 }
 
 /// A verb the reflex wants sent; the orchestrator owns the action lane.
@@ -1095,6 +1101,8 @@ impl Combat {
                     && (off <= HURT_CONE || d < 1.0)
             });
             let charging = t.species == Species::Wolf && d < WOLF_ALARM_M && closing(t, me, d);
+            // One I could not get at is let be: it is the base it is after.
+            let raiding = raiding(t, kit, tick) && !self.shuns(t.id, tick);
             // Coming on at me for a moment, not a stride that happens to
             // point my way on its way past.
             let rushing = self
@@ -1108,7 +1116,7 @@ impl Combat {
                 && self.drawer.is_some_and(|(id, since)| {
                     id == t.id && tick.wrapping_sub(since) >= DRAWN_TICKS
                 });
-            if (swung || shot || struck || charging || rushing || drawn)
+            if (swung || shot || struck || charging || rushing || drawn || raiding)
                 && best.is_none_or(|(b, _)| d < b)
             {
                 best = Some((d, t.id));
@@ -1228,6 +1236,7 @@ impl Combat {
             || (recent(t.last_shot) && aimed(&t, me, kit.book))
             || self.drawer.is_some_and(|(id, _)| id == t.id)
             || self.menace.is_some_and(|(id, _)| id == t.id)
+            || raiding(&t, kit, tick)
             || self
                 .hurt
                 .is_some_and(|(at, _)| tick.wrapping_sub(at) < ALARM_TICKS && at > foe.threat)
@@ -1994,6 +2003,18 @@ fn aim_height(t: &Track, book: &Book, d: f32) -> f32 {
     }
 }
 
+/// A player swinging or shooting beside my base while it is being struck:
+/// the raid is an attack on me, answered as one wherever I stand in sight
+/// of it.
+fn raiding(t: &Track, kit: &Kit, tick: u32) -> bool {
+    let recent = |at: Option<u32>| at.is_some_and(|a| tick.wrapping_sub(a) < ALARM_TICKS);
+    kit.raided.is_some_and(|[hx, hz]| {
+        t.species == Species::Player
+            && (recent(t.last_swing) || recent(t.last_shot))
+            && (t.pos[0] - hx).hypot(t.pos[2] - hz) <= RAID_M
+    })
+}
+
 /// Nobody who could hurt me near enough and in sight to stop a bandage:
 /// no player or wolf in sight within [`HEAL_SAFE_M`]. One further off, or
 /// out of sight behind cover, gives the seconds a med takes.
@@ -2331,6 +2352,7 @@ mod tests {
             settled: true,
             lead_ticks: 4,
             lane_free: true,
+            raided: None,
         };
         let with_spear = kit(spear, 100);
         let o = odds(&player(Some(rock)), &with_spear, 0);
@@ -2360,6 +2382,54 @@ mod tests {
         assert!(
             odds(&player(Some(rock)), &none, 0).losing,
             "nothing to swing"
+        );
+    }
+
+    /// A player swinging beside my base while it is being struck is an
+    /// attack on me, from wherever I see it; not before the base is struck,
+    /// not one further off it, and not one I already found I cannot reach.
+    #[test]
+    fn a_raid_on_my_base_is_an_attack_on_me() {
+        let book = book();
+        let raider = 7;
+        let mut tracks = Tracks::new();
+        tracks.stand(raider, [0.0, 0.0, 8.0], true);
+        tracks.on_swing(raider, 5);
+        let kit = |raided: Option<[f32; 2]>| Kit {
+            book: &book,
+            melee: Some((0, wire("Wooden Spear"))),
+            ranged: None,
+            rounds: 0,
+            loaded: None,
+            hp: 100,
+            hp_max: 100,
+            on_target: false,
+            settled: false,
+            lead_ticks: 4,
+            lane_free: true,
+            raided,
+        };
+        let me = [0.0, 0.0, 30.0];
+        let mut combat = Combat::new(Temperament::Opportunist);
+        assert_eq!(combat.attacker(&tracks, &kit(None), me, 10), None);
+        let home = Some([0.0, 0.0]);
+        assert_eq!(combat.attacker(&tracks, &kit(home), me, 10), Some(raider));
+        assert_eq!(
+            combat.attacker(&tracks, &kit(home), me, 5 + ALARM_TICKS),
+            None,
+            "a swing long ago"
+        );
+        let far = Some([0.0, -RAID_M]);
+        assert_eq!(
+            combat.attacker(&tracks, &kit(far), me, 10),
+            None,
+            "not at my base"
+        );
+        combat.shun = Some((raider, 10 + SHUN_TICKS));
+        assert_eq!(
+            combat.attacker(&tracks, &kit(home), me, 10),
+            None,
+            "out of reach"
         );
     }
 
