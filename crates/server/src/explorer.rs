@@ -24,7 +24,6 @@
 
 use crate::agent::build::{craft_fits, queue_wait, queued, Act, Builder, Region, Stations, Way};
 use crate::agent::combat::{self, Assess, Combat, End, Kit, Mode, Temperament, Verb, RESUME_TICKS};
-use crate::agent::cook::{self, Cook, CookJob, CookStats};
 use crate::agent::cover;
 use crate::agent::hands::{Hands, Skill};
 use crate::agent::home::{self, BagJob, Do, Home, RecoverJob};
@@ -32,6 +31,7 @@ use crate::agent::intent::{pitch_toward, yaw_toward, Intent, Look};
 use crate::agent::loadout::{Loadout, Role, BELT};
 use crate::agent::lock::{LockCode, LockSecret};
 use crate::agent::loot::{self, Lid, Loot, LootJob, Prize, Spot};
+use crate::agent::oven::{self, DeviceJob, OvenStats, Tend, Work};
 use crate::agent::plan::{raw_needs, RAW_ROWS};
 use crate::agent::route::{into_deeper_water, Frontier, Route, Step};
 use crate::agent::site::Seen;
@@ -220,6 +220,7 @@ pub enum Phase {
     Leaving,
     Stashing,
     Cooking,
+    Recycling,
     LoggingOff,
 }
 
@@ -254,6 +255,7 @@ impl Phase {
             Phase::Leaving => "Leaving the base through its doors",
             Phase::Stashing => "At home: the cupboard and the box",
             Phase::Cooking => "Cooking at a fire",
+            Phase::Recycling => "Recycling salvage",
             Phase::LoggingOff => "Home for the log-off, doors shut",
         }
     }
@@ -388,9 +390,12 @@ pub struct Memory {
     pub raw_len: u8,
     /// A loot run came to nothing a moment ago (`Loot::held`).
     pub loot_held: bool,
-    /// Raw meat, fuel and a fire to cook on (`agent::cook::can_cook`), and
+    /// Raw meat, fuel and a fire to cook on (`agent::oven::can_tend`), and
     /// no cook came to nothing a moment ago.
     pub cook: bool,
+    /// Salvage the base does not want whole and a recycler to take it
+    /// apart at, and no recycle came to nothing a moment ago.
+    pub recycle: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -586,12 +591,15 @@ pub struct Survivor {
     /// The barrels and crates it knows of, and the loot run in hand.
     loot: Loot,
     loot_job: LootJob,
-    /// A cook at a fire, the fire pit it put down last, what cooking has
-    /// come to, and when a cook last came to nothing.
-    cook_job: CookJob,
+    /// A cook at a fire or a recycle at a recycler, the fire pit and the
+    /// recycler it put down last, what they have come to, and when a cook
+    /// or a recycle last came to nothing.
+    oven_job: DeviceJob,
     fire: Option<(u16, u16)>,
-    pub cook_stats: CookStats,
+    recycler: Option<(u16, u16)>,
+    pub oven_stats: OvenStats,
     cook_failed: Option<u32>,
+    recycle_failed: Option<u32>,
     /// The session ends this many ticks after the welcome (`set_deadline`),
     /// and the tick that is, once welcomed.
     deadline_after: Option<u32>,
@@ -680,10 +688,12 @@ impl Survivor {
             ledger: Ledger::EMPTY,
             loot: Loot::new(),
             loot_job: LootJob::default(),
-            cook_job: CookJob::default(),
+            oven_job: DeviceJob::new(Work::Cook),
             fire: None,
-            cook_stats: CookStats::default(),
+            recycler: None,
+            oven_stats: OvenStats::default(),
             cook_failed: None,
+            recycle_failed: None,
             deadline_after: None,
             deadline: None,
             welcomed: None,
@@ -880,7 +890,7 @@ impl Survivor {
         self.goal.is_none()
             || (self.builder.at_checkpoint()
                 && self.stash_job.at_checkpoint()
-                && self.cook_job.at_checkpoint())
+                && self.oven_job.at_checkpoint())
     }
 
     /// The session's end is near and there is a home to sleep in.
@@ -1378,7 +1388,11 @@ impl Survivor {
         self.recover_job = RecoverJob::default();
         self.stash_job = StashJob::default();
         self.loot_job = LootJob::default();
-        self.cook_job = CookJob::default();
+        self.oven_job = DeviceJob::new(if goal == Goal::Recycle {
+            Work::Recycle
+        } else {
+            Work::Cook
+        });
         if goal == Goal::Loot {
             self.loot.stats.runs += 1;
         }
@@ -1460,7 +1474,8 @@ impl Survivor {
             | Goal::Recover
             | Goal::Bag
             | Goal::Loot
-            | Goal::Cook => true,
+            | Goal::Cook
+            | Goal::Recycle => true,
             Goal::Fight | Goal::Hunt => self
                 .quarry(body, active.goal == Goal::Hunt, tick)
                 .is_none_or(|(_, [x, _, z])| self.builder.region_of([x, z]) == Region::Outside),
@@ -1532,12 +1547,12 @@ impl Survivor {
                 Intent::IDLE
             }
             Goal::Stash => self.stash(core, body, tick),
-            Goal::Cook if elapsed >= COOK_GOAL_SECS * TICK_HZ => {
-                self.cook_failed = Some(tick);
+            Goal::Cook | Goal::Recycle if elapsed >= COOK_GOAL_SECS * TICK_HZ => {
+                self.oven_failed(tick);
                 self.end_goal(tick, Outcome::Failed(Why::Stuck));
                 Intent::IDLE
             }
-            Goal::Cook => self.cook(core, body, tick),
+            Goal::Cook | Goal::Recycle => self.tend(core, body, tick),
             goal => match Kind::of_goal(goal) {
                 Some(kind) => self.gather(core, body, tick, kind),
                 None => Intent::IDLE,
@@ -3128,18 +3143,43 @@ impl Survivor {
         intent
     }
 
-    /// A cook at a fire (`agent::cook::CookJob`): its own fire if one
-    /// stands near, else a fire pit put down here (crafted first), wood and
-    /// a piece of meat a slot laid in, lit, each piece taken off done, the
-    /// fire put out and the panel shut.
-    fn cook(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
-        self.stats.phase = Phase::Cooking;
+    /// The device a work is done at that is worth walking to from here:
+    /// its own fire near, or its own recycler within a longer walk.
+    fn device_near(&self, core: &ClientCore, work: Work, x: f32, z: f32) -> Option<(u16, u16)> {
+        let (own, within) = match work {
+            Work::Cook => (self.fire, oven::KEEP_M),
+            _ => (self.recycler, oven::SEEN_NEAR_M),
+        };
+        oven::nearest(core, work, own.into_iter(), x, z, within)
+    }
+
+    fn oven_failed(&mut self, tick: u32) {
+        match self.oven_job.work() {
+            Work::Cook => self.cook_failed = Some(tick),
+            _ => self.recycle_failed = Some(tick),
+        }
+    }
+
+    /// A cook at a fire or a recycle at a recycler (`agent::oven`): its own
+    /// device if one stands near, else one put down here (a fire pit
+    /// crafted first; a recycler is made at the bench by the craft goal),
+    /// what it works on laid in, switched on, what it makes taken off, then
+    /// switched off and the panel shut.
+    fn tend(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
+        let work = self.oven_job.work();
+        self.stats.phase = if work == Work::Cook {
+            Phase::Cooking
+        } else {
+            Phase::Recycling
+        };
         let Some(haven) = self.haven else {
             return Intent::IDLE;
         };
         let (seed, _) = core.island();
+        let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+        let go_to = self.device_near(core, work, x, z);
         let builder = &self.builder;
-        let step = self.cook_job.step(
+        let step = self.oven_job.step(
             core,
             seed,
             &haven,
@@ -3147,27 +3187,30 @@ impl Survivor {
             &self.hands,
             &mut self.route,
             &self.book,
-            self.fire,
+            go_to,
             |cx, cz| builder.near_plot(cx, cz),
-            &mut self.cook_stats,
+            &mut self.oven_stats,
             tick,
         );
-        if let Some(fire) = self.cook_job.placed() {
-            self.fire = Some(fire);
+        if let Some(at) = self.oven_job.placed() {
+            match work {
+                Work::Cook => self.fire = Some(at),
+                _ => self.recycler = Some(at),
+            }
         }
         let (sent, intent) = match step {
-            Cook::Go(intent) => return intent,
-            Cook::Craft { recipe } => (
+            Tend::Go(intent) => return intent,
+            Tend::Craft { recipe } => (
                 self.queue(|buf| protocol::encode_action_craft(recipe, 1, 0, buf)),
                 Intent::IDLE,
             ),
-            Cook::Belt { from, to, count } => (
+            Tend::Belt { from, to, count } => (
                 self.queue(|buf| {
                     protocol::encode_action_move(0, CONT_SELF, from, CONT_SELF, to, count, buf)
                 }),
                 Intent::IDLE,
             ),
-            Cook::Deploy {
+            Tend::Deploy {
                 row,
                 cx,
                 cz,
@@ -3176,19 +3219,19 @@ impl Survivor {
                 self.queue(|buf| protocol::encode_action_deploy(row, cx, cz, 0, LOC_PLANE, buf)),
                 intent,
             ),
-            Cook::Open { key, intent } => (
+            Tend::Open { key, intent } => (
                 self.queue(|buf| protocol::encode_action_container(CONT_BOX, key, buf)),
                 intent,
             ),
-            Cook::Move {
+            Tend::Move {
                 key,
-                to_fire,
+                into,
                 from,
                 to,
                 count,
                 intent,
             } => {
-                let (from_kind, to_kind) = if to_fire {
+                let (from_kind, to_kind) = if into {
                     (CONT_SELF, CONT_BOX)
                 } else {
                     (CONT_BOX, CONT_SELF)
@@ -3200,29 +3243,29 @@ impl Survivor {
                     intent,
                 )
             }
-            Cook::Switch { at, intent } => (
+            Tend::Switch { at, intent } => (
                 self.queue(|buf| protocol::encode_action_use(at.cx, at.cz, at.level, at.loc, buf)),
                 intent,
             ),
-            Cook::Close(intent) => (
+            Tend::Close(intent) => (
                 self.queue(|buf| protocol::encode_action_container(CONT_SELF, 0, buf)),
                 intent,
             ),
-            Cook::Done => {
+            Tend::Done => {
                 // The shut panel may still wait on its pace.
                 if self.outbox.is_none() {
                     self.end_goal(tick, Outcome::Done);
                 }
                 return Intent::IDLE;
             }
-            Cook::Fail(why) => {
-                self.cook_failed = Some(tick);
+            Tend::Fail(why) => {
+                self.oven_failed(tick);
                 self.end_goal(tick, Outcome::Failed(why));
                 return Intent::IDLE;
             }
         };
         if sent {
-            self.cook_job.sent(tick);
+            self.oven_job.sent(tick);
         }
         intent
     }
@@ -3434,10 +3477,24 @@ impl Survivor {
             self.memory.stations = stations;
             self.memory.loot_held = self.loot.held(tick);
             let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
-            self.memory.cook = cook::can_cook(core, &self.book, self.fire, x, z)
+            let fire = self.device_near(core, Work::Cook, x, z);
+            self.memory.cook = oven::can_tend(core, &self.book, Work::Cook, fire.is_some())
                 && self
                     .cook_failed
-                    .is_none_or(|at| tick.wrapping_sub(at) >= cook::COOK_RETRY_TICKS);
+                    .is_none_or(|at| tick.wrapping_sub(at) >= oven::RETRY_TICKS);
+            // Salvage is taken apart unless the base wants it whole.
+            let recycler = self.device_near(core, Work::Recycle, x, z);
+            let book = &self.book;
+            self.memory.recycle = oven::can_tend(core, book, Work::Recycle, recycler.is_some())
+                && !self
+                    .builder
+                    .survey()
+                    .needs()
+                    .iter()
+                    .any(|&(item, _)| book.page(item).recycles)
+                && self
+                    .recycle_failed
+                    .is_none_or(|at| tick.wrapping_sub(at) >= oven::RETRY_TICKS);
             let here = [body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q];
             let mut known = Sighting::default();
             for spot in self.loot.live(core, tick) {
@@ -3739,14 +3796,14 @@ impl Survivor {
         while let Some((cx, cz, level, loc, deploy)) = core.pop_placed() {
             self.home.on_placed(cx, cz, level, loc, deploy);
             self.builder.on_placed(cx, cz, level, loc, deploy);
-            self.cook_job.on_placed(cx, cz, level, loc, deploy);
+            self.oven_job.on_placed(cx, cz, level, loc, deploy);
         }
         while let Some(reason) = core.pop_deploy_refusal() {
             self.stats.refusals += 1;
             self.home.on_refused(reason);
             self.builder.on_refused(true, reason);
             self.stash_job.on_refused();
-            self.cook_job.on_refused(reason);
+            self.oven_job.on_refused(reason);
         }
         // The reply to a feed of its own cupboard: the stock readout.
         if flags & APPLIED_STOCK != 0 {
@@ -3771,11 +3828,11 @@ impl Survivor {
         if applied2 & APPLIED2_MOVE != 0 {
             self.stash_job.on_moved(core.last_move_refused != 0, tick);
             self.loot_job.on_moved(core.last_move_refused != 0);
-            self.cook_job.on_moved(core.last_move_refused != 0, tick);
+            self.oven_job.on_moved(core.last_move_refused != 0, tick);
         }
-        // A fire's panel: the cook's open was answered.
+        // A fire's or a recycler's panel: the session's open was answered.
         if applied2 & APPLIED2_CONT != 0 && core.cont_kind == CONT_BOX {
-            self.cook_job.on_panel(core.cont_handle);
+            self.oven_job.on_panel(core.cont_handle);
         }
         // A crate's panel: the loot run's open was answered.
         if applied2 & APPLIED2_CONT != 0 && core.cont_kind == CONT_WORLD {
@@ -3938,8 +3995,9 @@ impl BotDriver for Survivor {
         self.ledger.clear();
         self.loot.clear();
         self.loot_job = LootJob::default();
-        self.cook_job = CookJob::default();
+        self.oven_job = DeviceJob::new(Work::Cook);
         self.fire = None;
+        self.recycler = None;
         if self.welcomed.is_none() {
             self.welcomed = Some(welcome.tick);
             self.set_deadline(self.deadline_after);
@@ -4468,6 +4526,9 @@ pub fn observe(
     // about.
     if memory.cook && !senses.hostile {
         s.offer(Goal::Cook);
+    }
+    if memory.recycle && !senses.hostile {
+        s.offer(Goal::Recycle);
     }
     // A visit home while there is something to see to there.
     if matches!(memory.home.state, HomeState::Built | HomeState::Inside)

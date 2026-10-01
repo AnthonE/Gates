@@ -60,6 +60,10 @@ pub const LOOTED: [&str; 9] = [
     "Cloth",
     "Sulfur",
 ];
+/// The recycler, by catalog name (`agent::oven`), and the gears held before
+/// one is worth making: two go into it, the rest come apart in it.
+pub const RECYCLER_ITEM: &str = crate::agent::oven::RECYCLER_ITEM;
+const SCRIPTED_RECYCLER_GEARS: u32 = 4;
 /// Ore, and what its furnace makes of it.
 pub const SMELTS: [(&str, &str); 2] = [("Metal Ore", "Metal Fragments"), ("Sulfur Ore", "Sulfur")];
 /// The deployable a body wakes on, by catalog name: what the playbook
@@ -163,6 +167,9 @@ pub enum Goal {
     /// Cook the raw meat in the pack at a fire, putting one down if there
     /// is none near.
     Cook,
+    /// Take gears, rope and tarp apart at its recycler, putting it down if
+    /// none stands near: junk, fragments and cloth.
+    Recycle,
 }
 
 /// `craft:` plus the longest catalog name.
@@ -190,7 +197,7 @@ impl std::fmt::Debug for Label {
 
 impl Goal {
     /// Every goal but the per-item craft, in the order they are offered.
-    pub const FIXED: [Goal; 19] = [
+    pub const FIXED: [Goal; 20] = [
         Goal::Explore,
         Goal::GatherWood,
         Goal::GatherStone,
@@ -210,6 +217,7 @@ impl Goal {
         Goal::Stash,
         Goal::Loot,
         Goal::Cook,
+        Goal::Recycle,
     ];
 
     /// The vocabulary's base keys, for documentation and tests.
@@ -235,6 +243,7 @@ impl Goal {
             Goal::Stash => "stash",
             Goal::Loot => "loot",
             Goal::Cook => "cook",
+            Goal::Recycle => "recycle",
         }
     }
 
@@ -314,6 +323,7 @@ impl Goal {
             Goal::Cook => {
                 "Cook the raw meat at a fire, putting one down if none is near; cooked meat is good food.".into()
             }
+            Goal::Recycle => "Take gears, rope and tarp apart at a recycler for junk.".into(),
         }
     }
 }
@@ -1589,6 +1599,21 @@ impl Scripted {
         // Raw meat off a kill is no food until it is cooked.
         if s.offers(Goal::Cook) {
             return (Goal::Cook, "scripted: cook the raw meat");
+        }
+        // Salvage the base does not want whole is junk for research and
+        // fragments for the base, at its own recycler.
+        if s.offers(Goal::Recycle) {
+            return (Goal::Recycle, "scripted: recycle the salvage");
+        }
+        // Gears enough for a recycler and some over for it to take apart,
+        // and none to take them to: one is made at the bench.
+        if tooled
+            && s.count_of("Gears") >= SCRIPTED_RECYCLER_GEARS
+            && s.count_of(RECYCLER_ITEM) == 0
+        {
+            if let Some(name) = s.craftable().iter().find(|n| n.as_str() == RECYCLER_ITEM) {
+                return (Goal::Craft(*name), "scripted: a recycler for the gears");
+            }
         }
         // Then arms, once stone tools make gathering cheap and home's chores
         // are seen to (the bag's cloth first): a spear, a bow and arrows for

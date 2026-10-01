@@ -2388,6 +2388,58 @@ fn a_survivor_learns_makes_and_wears_its_gear() {
     println!("{stats:?} {}", h.explain());
 }
 
+/// Gears and rope with a recycler in the pack: it puts the recycler down,
+/// feeds it through its panel, switches it on, and takes off the junk,
+/// fragments and cloth they come apart into.
+#[test]
+fn a_survivor_recycles_its_salvage() {
+    let mut h = Harness::new(false);
+    let content = common::content();
+    let stack = |id: &str, count: u16| sim_core::gather::ItemStack {
+        count,
+        ..common::stack(&content, id)
+    };
+    h.until(5, |_| false);
+    let staged = [
+        stack("item.recycler", 1),
+        stack("item.gears", 5),
+        stack("item.rope", 3),
+    ];
+    h.stage(|p| {
+        for (i, s) in staged.iter().enumerate() {
+            p.inv[HOTBAR_SLOTS + i] = *s;
+        }
+    });
+    let id = |name: &str| content.item_index(name).unwrap();
+    let done = h.until(3 * 60 * TICK_HZ, |b| {
+        b.oven_stats.recycled >= 2 && b.goal() != Some(Goal::Recycle)
+    });
+    assert!(
+        done,
+        "nothing was recycled: {:?} {}",
+        h.bot.oven_stats,
+        h.explain()
+    );
+    let me = h.me();
+    assert_eq!(units_of(me, id("item.gears")), 0);
+    assert_eq!(units_of(me, id("item.rope")), 0);
+    assert_eq!(units_of(me, id("item.junk")), 5 * 12);
+    assert_eq!(units_of(me, id("item.metal_frags")), 5 * 15);
+    assert_eq!(units_of(me, id("item.cloth")), 3 * 18);
+    assert_eq!(h.bot.oven_stats.placed, 1, "{:?}", h.bot.oven_stats);
+    for verb in ["deploy", "container", "move", "use"] {
+        assert!(h.verbs.contains(verb), "{verb} never sent: {:?}", h.verbs);
+    }
+    assert!(h.pick_checks >= 1 && h.panel_checks >= 5 && h.use_checks >= 2);
+    let expected: BTreeSet<&str> = EXPECTED_VERBS.into_iter().collect();
+    assert!(h.verbs.is_subset(&expected));
+    assert_eq!(
+        h.heap_ops, 0,
+        "the agent's frame loop touched the allocator"
+    );
+    println!("{:?} {}", h.bot.oven_stats, h.explain());
+}
+
 /// Raw meat in the pack is cooked before it is eaten: a fire pit crafted
 /// and put down in front of it, opened (`E` on the fire), wood and a piece
 /// of meat a slot laid in with its panel open, lit (`C` on the same fire),
@@ -2414,19 +2466,19 @@ fn a_survivor_cooks_its_meat_and_eats_it() {
         id("item.burnt_meat"),
     );
     let done = h.until(4 * 60 * TICK_HZ, |b| {
-        b.cook_stats.cooked >= 10 && b.goal() != Some(Goal::Cook)
+        b.oven_stats.cooked >= 10 && b.goal() != Some(Goal::Cook)
     });
     assert!(
         done,
         "the meat was not cooked: {:?} {}",
-        h.bot.cook_stats,
+        h.bot.oven_stats,
         h.explain()
     );
     let me = h.me();
     assert_eq!(units_of(me, raw), 0, "all of it went on the fire");
     assert_eq!(units_of(me, cooked), 10, "every piece taken off cooked");
     assert_eq!(units_of(me, burnt), 0, "none left on to burn");
-    assert_eq!(h.bot.cook_stats.fires, 1, "{:?}", h.bot.cook_stats);
+    assert_eq!(h.bot.oven_stats.placed, 1, "{:?}", h.bot.oven_stats);
     // Its fire stands, put out, and holds no meat.
     let w = &h.shard.world;
     let fire_row = w
@@ -2468,5 +2520,5 @@ fn a_survivor_cooks_its_meat_and_eats_it() {
         h.heap_ops, 0,
         "the agent's frame loop touched the allocator"
     );
-    println!("{:?} {}", h.bot.cook_stats, h.explain());
+    println!("{:?} {}", h.bot.oven_stats, h.explain());
 }
