@@ -137,6 +137,9 @@ pub struct Home {
     bags: [Option<(u16, u16, u8)>; BAG_CAP],
     /// The last blow or death near one of them.
     alarm: Option<u32>,
+    /// The last blow, break or blast on the base itself: not a bite taken
+    /// standing beside it.
+    raid: Option<u32>,
     /// The address a deploy was sent to, until its answer.
     asked: Option<(u16, u16, u8, u8)>,
     verdict: Option<Placed>,
@@ -170,6 +173,7 @@ impl Home {
         Self {
             bags: [None; BAG_CAP],
             alarm: None,
+            raid: None,
             asked: None,
             verdict: None,
             capped: false,
@@ -301,11 +305,16 @@ impl Home {
     /// Is this spot home ground: near its base or one of its bags?
     fn near_home(&self, at: [f32; 2]) -> bool {
         let near = |x: f32, z: f32| (x - at[0]).hypot(z - at[1]) <= HOME_ALARM_M;
-        self.base.is_some_and(|[x, z]| near(x, z))
+        self.near_base(at)
             || self.bags.iter().flatten().any(|&(cx, cz, _)| {
                 let (x, z) = cell_center(cx, cz);
                 near(x, z)
             })
+    }
+
+    fn near_base(&self, at: [f32; 2]) -> bool {
+        self.base
+            .is_some_and(|[x, z]| (x - at[0]).hypot(z - at[1]) <= HOME_ALARM_M)
     }
 
     /// Hurt, or killed, standing here: near its base or one of its bags
@@ -321,11 +330,15 @@ impl Home {
         if self.near_home(at) {
             self.alarm = Some(tick);
         }
+        if self.near_base(at) {
+            self.raid = Some(tick);
+        }
     }
 
     /// A blow landed on a piece or deployable of its own base.
     pub fn on_struck(&mut self, tick: u32) {
         self.alarm = Some(tick);
+        self.raid = Some(tick);
     }
 
     /// Something of its own base that does not rot came down: while the
@@ -342,6 +355,7 @@ impl Home {
             .is_some_and(|p| p > 0)
         {
             self.alarm = Some(tick);
+            self.raid = Some(tick);
         }
     }
 
@@ -438,11 +452,12 @@ impl Home {
             .is_some_and(|t| tick.wrapping_sub(t) < STASH_RETRY_TICKS)
     }
 
-    /// Where its base stands, while a blow, break or blast there is
+    /// Where its base stands, while a blow, break or blast on it is
     /// fresher than `within`: where whoever is doing it is to be found.
+    /// Being hurt beside it is not one: that blow has its own author.
     pub fn raided(&self, tick: u32, within: u32) -> Option<[f32; 2]> {
         self.base
-            .filter(|_| self.alarm.is_some_and(|at| tick.wrapping_sub(at) < within))
+            .filter(|_| self.raid.is_some_and(|at| tick.wrapping_sub(at) < within))
     }
 
     pub fn under_attack(&self, tick: u32) -> bool {
@@ -894,8 +909,12 @@ mod tests {
         assert!(!home.under_attack(10), "a blast somewhere else");
         home.on_blast([310.0, 300.0], 20);
         assert!(home.under_attack(20), "a blast at home");
+        assert_eq!(home.raided(20, 5), Some([300.0, 300.0]));
         home.on_hurt([305.0, 305.0], 30);
         assert_eq!(home.alarm, Some(30), "a blow by the base, no bag needed");
+        assert_eq!(home.raided(30, 5), None, "a bite by the base is no raid");
+        home.on_struck(31);
+        assert_eq!(home.raided(31, 5), Some([300.0, 300.0]), "a blow on it");
         let mut home = Home::new();
         home.on_struck(5);
         assert!(home.under_attack(5), "a hit on its own wall");

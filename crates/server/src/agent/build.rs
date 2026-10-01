@@ -299,6 +299,14 @@ fn count(core: &ClientCore, item: u16) -> u32 {
         .sum()
 }
 
+/// One more `item` fits the pack: an empty slot, or a stack of it with room.
+fn room_for(core: &ClientCore, item: u16) -> bool {
+    let max = core.catalog.row(usize::from(item)).stack_max;
+    core.inv[..INV_SLOTS]
+        .iter()
+        .any(|s| s.count == 0 || (s.item == item && s.count < max))
+}
+
 /// The item a catalog name means on this server.
 pub fn item_named(core: &ClientCore, name: &str) -> Option<u16> {
     (0..usize::from(core.catalog.count).min(MAX_ITEM_DEFS))
@@ -1066,14 +1074,16 @@ impl Builder {
 
     /// Where the body stands in its base.
     pub fn region(&self, body: &EntityState) -> Region {
+        self.region_of([body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q])
+    }
+
+    /// Where a spot on the ground (x, z) is in its base.
+    pub fn region_of(&self, at: [f32; 2]) -> Region {
         let Some(plan) = self.plan else {
             return Region::Outside;
         };
         let c = corner(&plan);
-        region_at([
-            body.qx as f32 * POS_XZ_Q - c[0],
-            body.qz as f32 * POS_XZ_Q - c[1],
-        ])
+        region_at([at[0] - c[0], at[1] - c[1]])
     }
 
     /// The spot in the core every op is in reach of.
@@ -1234,7 +1244,9 @@ impl Builder {
             // An op refused for want of support counts: only a build goal
             // tries it again, once something else stands.
             ready: milestone != Milestone::Done
-                && self.pick_among(core, &plan, milestone, 0).is_some(),
+                && self
+                    .pick_among(core, &plan, milestone, 0)
+                    .is_some_and(|i| self.tool_fits(core, &spec(i))),
             hearth,
             bill: bill.rows,
             bill_len: bill.n as u8,
@@ -1474,6 +1486,13 @@ impl Builder {
         }
     }
 
+    /// What op `s` is done with is in the pack, or would fit it once made:
+    /// a craft into a full pack is not sent (`Self::craft`).
+    fn tool_fits(&self, core: &ClientCore, s: &Spec) -> bool {
+        self.tool(core, s)
+            .is_some_and(|t| count(core, t) > 0 || room_for(core, t))
+    }
+
     /// What one op costs from the pack, including crafting what it is done
     /// with if that is not in the pack.
     fn op_bill(&self, core: &ClientCore, s: &Spec) -> Option<Bill> {
@@ -1512,6 +1531,26 @@ impl Builder {
                     || (!self.superseded(&s) && piece_at(core, addr(plan, &s)).is_some()))
                 && self.op_bill(core, &s).is_some_and(|b| b.paid_by(core))
         })
+    }
+
+    /// Craft `tool` for op `i`. A full pack drops what is made at the
+    /// crafter's feet and spends the inputs either way: not sent, and no
+    /// fault of the op's, so the op is not given up over it.
+    fn craft(&mut self, core: &ClientCore, i: usize, tool: u16) -> Act {
+        let Some((recipe, ticks)) = recipe_for(core, tool) else {
+            self.fail(i);
+            return Act::Fail(Why::NoRecipe);
+        };
+        if !room_for(core, tool) {
+            return Act::Fail(Why::PackFull);
+        }
+        self.want = Some(Await::Craft {
+            op: i,
+            item: tool,
+            before: 0,
+            until: ticks + VERDICT_TICKS,
+        });
+        Act::Craft { recipe }
     }
 
     fn fail(&mut self, i: usize) {
@@ -1745,17 +1784,7 @@ impl Builder {
         };
         // What the op is done with, crafted from the pack first.
         if count(core, tool) == 0 {
-            let Some((recipe, ticks)) = recipe_for(core, tool) else {
-                self.fail(i);
-                return Act::Fail(Why::NoRecipe);
-            };
-            self.want = Some(Await::Craft {
-                op: i,
-                item: tool,
-                before: 0,
-                until: ticks + VERDICT_TICKS,
-            });
-            return Act::Craft { recipe };
+            return self.craft(core, i, tool);
         }
         // Every op is worked from the stand spot in the core.
         let Some(stand) = self.stand() else {
@@ -2153,6 +2182,51 @@ mod tests {
         });
         b.survey_now(&core, &Ledger::EMPTY);
         assert_eq!(b.done & bit(bag), 0);
+    }
+
+    /// A craft into a full pack spills what it makes and spends the inputs:
+    /// it is not sent, and the op is not given up over it. Room in the pack
+    /// (an empty slot) sends it.
+    #[test]
+    fn a_full_pack_crafts_nothing_and_gives_up_on_nothing() {
+        let mut core = Box::new(ClientCore::new(1, 1, 0));
+        let tool = 9;
+        core.catalog.count = 10;
+        core.catalog
+            .set(
+                usize::from(tool),
+                b"Hammer",
+                protocol::ItemRow {
+                    stack_max: 1,
+                    ..protocol::ItemRow::EMPTY
+                },
+            )
+            .unwrap();
+        (core.recipes.recipe_count, core.recipes_have) = (1, 1);
+        core.recipes.recipes[0] = sim_core::craft::RecipeDef {
+            output: tool,
+            out_count: 1,
+            ticks: 10,
+            station: STATION_NONE,
+            blueprint: false,
+            n_inputs: 1,
+            inputs: [(5, 100), (0, 0), (0, 0), (0, 0)],
+        };
+        core.inv.fill(sim_core::gather::ItemStack {
+            item: 6,
+            count: 1,
+            cond: 0,
+            skin: 0,
+        });
+        let mut b = Builder::new();
+        for _ in 0..MAX_FAILS + 1 {
+            assert!(matches!(b.craft(&core, 0, tool), Act::Fail(Why::PackFull)));
+        }
+        assert_eq!((b.fails[0], b.given_up), (0, 0));
+        assert!(b.want.is_none(), "nothing sent, nothing awaited");
+        core.inv[INV_SLOTS - 1].count = 0;
+        assert!(matches!(b.craft(&core, 0, tool), Act::Craft { recipe: 0 }));
+        assert!(matches!(b.want, Some(Await::Craft { op: 0, .. })));
     }
 
     /// A refusal that comes after its op was given up on (three seconds of

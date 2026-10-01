@@ -93,6 +93,9 @@ pub const SWING_MISS_M: f32 = 0.1;
 pub const UNREACHABLE_TICKS: u32 = 3 * TICK_HZ;
 pub const CLOSE_M: f32 = 0.5;
 pub const SHUN_TICKS: u32 = 30 * TICK_HZ;
+/// Bodies shunned at once: a raid's few players, each found out of reach,
+/// are not taken up again in turn.
+pub const SHUN_MAX: usize = 4;
 /// A wolf closing inside this is already attacking.
 pub const WOLF_ALARM_M: f32 = 10.0;
 /// A player with a swung weapon out, facing me and stepping in on me from
@@ -448,8 +451,8 @@ pub struct Combat {
     /// Trying to close on the foe and not getting nearer: since when, and
     /// the nearest it has been since.
     stuck: Option<(u32, f32)>,
-    /// A body found unreachable, and until when it is not picked again.
-    shun: Option<(u32, u32)>,
+    /// Bodies found unreachable, and until when each is not picked again.
+    shunned: [Option<(u32, u32)>; SHUN_MAX],
     last_end: Option<End>,
     /// Which weapon the fight is in, for the band where either would do.
     arm: Arm,
@@ -587,7 +590,7 @@ impl Combat {
             strafe: (1, 0),
             ready_at: 0,
             stuck: None,
-            shun: None,
+            shunned: [None; SHUN_MAX],
             last_end: None,
             arm: Arm::Melee,
             draw: None,
@@ -625,7 +628,7 @@ impl Combat {
         self.foe = None;
         self.hurt = None;
         self.stuck = None;
-        self.shun = None;
+        self.shunned = [None; SHUN_MAX];
         self.draw = None;
         self.threat = None;
         self.cover = None;
@@ -715,8 +718,28 @@ impl Combat {
     /// A body a fight was let go with because it could not be reached:
     /// not worth picking again yet.
     pub fn shuns(&self, id: u32, tick: u32) -> bool {
-        self.shun
-            .is_some_and(|(who, until)| who == id && tick.wrapping_sub(until) >= 1 << 31)
+        self.shunned
+            .iter()
+            .flatten()
+            .any(|&(who, until)| who == id && tick.wrapping_sub(until) >= 1 << 31)
+    }
+
+    /// Let `id` be for [`SHUN_TICKS`]: in its own place, a lapsed one's, or
+    /// the one that lapses soonest.
+    fn shun(&mut self, id: u32, tick: u32) {
+        let list = &self.shunned;
+        let slot = list
+            .iter()
+            .position(|e| e.is_some_and(|(who, _)| who == id))
+            .or_else(|| {
+                list.iter()
+                    .position(|e| e.is_none_or(|(_, until)| tick.wrapping_sub(until) < 1 << 31))
+            })
+            .or_else(|| {
+                (0..SHUN_MAX).min_by_key(|&i| list[i].map_or(0, |(_, u)| u.wrapping_sub(tick)))
+            })
+            .unwrap_or(0);
+        self.shunned[slot] = Some((id, tick.wrapping_add(SHUN_TICKS)));
     }
 
     /// Fight this body because the mind said so (a fight or hunt goal).
@@ -1102,7 +1125,7 @@ impl Combat {
             });
             let charging = t.species == Species::Wolf && d < WOLF_ALARM_M && closing(t, me, d);
             // One I could not get at is let be: it is the base it is after.
-            let raiding = raiding(t, kit, tick) && !self.shuns(t.id, tick);
+            let raiding = raiding(t, kit, me, tick) && !self.shuns(t.id, tick);
             // Coming on at me for a moment, not a stride that happens to
             // point my way on its way past.
             let rushing = self
@@ -1236,7 +1259,7 @@ impl Combat {
             || (recent(t.last_shot) && aimed(&t, me, kit.book))
             || self.drawer.is_some_and(|(id, _)| id == t.id)
             || self.menace.is_some_and(|(id, _)| id == t.id)
-            || raiding(&t, kit, tick)
+            || raiding(&t, kit, me, tick)
             || self
                 .hurt
                 .is_some_and(|(at, _)| tick.wrapping_sub(at) < ALARM_TICKS && at > foe.threat)
@@ -1272,7 +1295,7 @@ impl Combat {
         {
             // No way to them: standing and staring is no fight. A goal
             // that asked for it hears the foe was not found.
-            self.shun = Some((foe.id, tick.wrapping_add(SHUN_TICKS)));
+            self.shun(foe.id, tick);
             return self.over(Some(away), End::Parted);
         }
         Assess::Fight(intent)
@@ -2004,14 +2027,16 @@ fn aim_height(t: &Track, book: &Book, d: f32) -> f32 {
 }
 
 /// A player swinging or shooting beside my base while it is being struck:
-/// the raid is an attack on me, answered as one wherever I stand in sight
-/// of it.
-fn raiding(t: &Track, kit: &Kit, tick: u32) -> bool {
+/// the raid is an attack on me, answered as one from within a chase of it.
+/// One further off is too far to close on before the fight is let go; the
+/// way home is the mind's.
+fn raiding(t: &Track, kit: &Kit, me: [f32; 3], tick: u32) -> bool {
     let recent = |at: Option<u32>| at.is_some_and(|a| tick.wrapping_sub(a) < ALARM_TICKS);
     kit.raided.is_some_and(|[hx, hz]| {
         t.species == Species::Player
             && (recent(t.last_swing) || recent(t.last_shot))
             && (t.pos[0] - hx).hypot(t.pos[2] - hz) <= RAID_M
+            && flat(me, t.pos) <= CHASE_M
     })
 }
 
@@ -2425,12 +2450,64 @@ mod tests {
             None,
             "not at my base"
         );
-        combat.shun = Some((raider, 10 + SHUN_TICKS));
+        combat.shun(raider, 10);
         assert_eq!(
             combat.attacker(&tracks, &kit(home), me, 10),
             None,
             "out of reach"
         );
+        // A second raider out of reach does not free the first to be taken
+        // up again; past the list's room the soonest to lapse goes.
+        combat.shun(8, 11);
+        assert!(combat.shuns(raider, 12) && combat.shuns(8, 12));
+        for id in 20..20 + SHUN_MAX as u32 - 1 {
+            combat.shun(id, 12);
+        }
+        assert!(!combat.shuns(raider, 13) && combat.shuns(8, 13));
+        assert!(!combat.shuns(8, 11 + SHUN_TICKS), "lapsed");
+    }
+
+    /// A raid seen from past a chase is not taken up only to be let go
+    /// the same frame, over and over; from within one it is a fight, taken
+    /// up once.
+    #[test]
+    fn a_raid_past_a_chase_is_not_taken_up_frame_after_frame() {
+        let book = book();
+        let raider = 7;
+        let mut tracks = Tracks::new();
+        tracks.stand(raider, [0.0, 0.0, 8.0], true);
+        tracks.on_swing(raider, 5);
+        let kit = Kit {
+            book: &book,
+            melee: Some((0, wire("Wooden Spear"))),
+            ranged: None,
+            rounds: 0,
+            loaded: None,
+            hp: 100,
+            hp_max: 100,
+            on_target: false,
+            settled: false,
+            lead_ticks: 4,
+            lane_free: true,
+            raided: Some([0.0, 0.0]),
+        };
+        let mut core = Box::new(ClientCore::new(1, 1, 0));
+        let mut route = Route::new();
+        let at = |z: f32| EntityState {
+            qz: (z / POS_XZ_Q) as i32,
+            ..EntityState::default()
+        };
+        let mut combat = Combat::new(Temperament::Opportunist);
+        let far = at(8.0 + CHASE_M + 5.0);
+        for tick in 6..6 + ALARM_TICKS / 2 {
+            combat.assess(&mut core, &far, &tracks, &mut route, &kit, tick);
+        }
+        assert_eq!((combat.stats.engages, combat.stats.parted), (0, 0));
+        let near = at(30.0);
+        for tick in 6..6 + ALARM_TICKS / 2 {
+            combat.assess(&mut core, &near, &tracks, &mut route, &kit, tick);
+        }
+        assert_eq!((combat.stats.engages, combat.stats.parted), (1, 0));
     }
 
     /// A swing seen is at me only where it could land: ahead of it, in

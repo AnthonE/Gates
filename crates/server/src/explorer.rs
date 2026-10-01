@@ -1341,20 +1341,23 @@ impl Survivor {
         };
         let elapsed = tick.wrapping_sub(active.started);
         // A goal that walks the island starts from outside: out through the
-        // doors first, shutting them behind.
-        let walks = matches!(
-            active.goal,
+        // doors first, shutting them behind. A fight is out there when its
+        // quarry is, or when none is in sight from in here; one in the room
+        // with me is fought where it stands, doors shut.
+        let walks = match active.goal {
             Goal::Explore
-                | Goal::GatherWood
-                | Goal::GatherStone
-                | Goal::GatherOre
-                | Goal::Forage
-                | Goal::Drink
-                | Goal::Recover
-                | Goal::Bag
-                | Goal::Fight
-                | Goal::Hunt
-        );
+            | Goal::GatherWood
+            | Goal::GatherStone
+            | Goal::GatherOre
+            | Goal::Forage
+            | Goal::Drink
+            | Goal::Recover
+            | Goal::Bag => true,
+            Goal::Fight | Goal::Hunt => self
+                .quarry(body, active.goal == Goal::Hunt, tick)
+                .is_none_or(|(_, [x, _, z])| self.builder.region_of([x, z]) == Region::Outside),
+            _ => false,
+        };
         if walks && (self.builder.passing() || self.builder.must_exit(core, body)) {
             if let Some(intent) = self.leave(core, body, tick) {
                 return intent;
@@ -1465,8 +1468,21 @@ impl Survivor {
         if self.loadout.on_belt(core, Role::Melee).is_none() && self.shooter(core).0.is_none() {
             return false;
         }
+        let Some((id, _)) = self.quarry(body, hunt, tick) else {
+            return false;
+        };
+        self.combat.command(id, tick);
+        if let Some(a) = self.goal.as_mut() {
+            a.fled = true;
+        }
+        true
+    }
+
+    /// The nearest body in sight of the kind a fight or hunt goal names,
+    /// and where it stands.
+    fn quarry(&self, body: &EntityState, hunt: bool, tick: u32) -> Option<(u32, [f32; 3])> {
         let (bx, bz) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
-        let mut nearest: Option<(f32, u32)> = None;
+        let mut nearest: Option<(f32, u32, [f32; 3])> = None;
         for t in self.tracks.seen() {
             if !t.visible
                 || !t.active()
@@ -1477,17 +1493,10 @@ impl Survivor {
             }
             let d = (t.pos[0] - bx).hypot(t.pos[2] - bz);
             if nearest.is_none_or(|n| d < n.0) {
-                nearest = Some((d, t.id));
+                nearest = Some((d, t.id, t.pos));
             }
         }
-        let Some((_, id)) = nearest else {
-            return false;
-        };
-        self.combat.command(id, tick);
-        if let Some(a) = self.goal.as_mut() {
-            a.fled = true;
-        }
-        true
+        nearest.map(|(_, id, pos)| (id, pos))
     }
 
     /// Explore: walk to the nearest part of the map this body has not been
@@ -3276,24 +3285,35 @@ pub fn observe(
     (s.hp, s.hp_max) = (core.hp, core.hp_max);
     (s.food, s.food_max) = (core.food, core.max_food);
     (s.water, s.water_max) = (core.water, core.max_water);
-    let mut free = 0u8;
-    for stack in core.inv.iter() {
-        if stack.count == 0 {
-            free += 1;
-            continue;
-        }
-        let Some(name) = Name::new(core.catalog.name(stack.item as usize)) else {
-            continue;
-        };
-        let n = s.items_len as usize;
-        if let Some(entry) = s.items[..n].iter_mut().find(|(e, _)| *e == name) {
-            entry.1 = entry.1.saturating_add(u32::from(stack.count));
-        } else if n < SUMMARY_ITEMS {
-            s.items[n] = (name, u32::from(stack.count));
-            s.items_len += 1;
+    s.free_slots = core.inv.iter().filter(|st| st.count == 0).count() as u8;
+    // What the playbook counts by name goes in first: a pack of many kinds
+    // must not push its wood, its stone or its tools off the list's end.
+    let counted = |name: &Name| {
+        let name = name.as_str();
+        matches!(name, "Wood" | "Stone" | crate::mind::BAG_ITEM)
+            || TREE_TOOLS.contains(&name)
+            || NODE_TOOLS.contains(&name)
+            || crate::agent::loadout::ARM_UP
+                .iter()
+                .any(|&(item, ..)| item == name)
+    };
+    for first in [true, false] {
+        for stack in core.inv.iter().filter(|st| st.count > 0) {
+            let Some(name) = Name::new(core.catalog.name(stack.item as usize)) else {
+                continue;
+            };
+            if counted(&name) != first {
+                continue;
+            }
+            let n = s.items_len as usize;
+            if let Some(entry) = s.items[..n].iter_mut().find(|(e, _)| *e == name) {
+                entry.1 = entry.1.saturating_add(u32::from(stack.count));
+            } else if n < SUMMARY_ITEMS {
+                s.items[n] = (name, u32::from(stack.count));
+                s.items_len += 1;
+            }
         }
     }
-    s.free_slots = free;
     if core.recipes_have >= core.recipes.recipe_count {
         let known = core.known();
         // Tools first, then arms (weapons, their rounds, meds), then the

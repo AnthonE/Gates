@@ -1474,21 +1474,6 @@ impl Scripted {
                 }
             }
         }
-        // Then arms, once stone tools make gathering cheap: a spear, a bow
-        // and arrows for it, and bandages. Gear decides early fights.
-        let started = [crate::explorer::TREE_TOOLS, crate::explorer::NODE_TOOLS]
-            .iter()
-            .any(|ladder| ladder[..ladder.len() - 1].iter().any(|t| s.count_of(t) > 0));
-        if started {
-            for (item, want, needs) in crate::agent::loadout::ARM_UP {
-                if s.count_of(item) >= want || needs.is_some_and(|n| s.count_of(n) == 0) {
-                    continue;
-                }
-                if let Some(name) = s.craftable().iter().find(|n| n.as_str() == item) {
-                    return (Goal::Craft(*name), "scripted: arming up");
-                }
-            }
-        }
         // With stone tools in hand, somewhere to wake that is not the beach:
         // a sleeping bag, crafted and put down where it works.
         let tooled = [crate::explorer::TREE_TOOLS, crate::explorer::NODE_TOOLS]
@@ -1514,6 +1499,29 @@ impl Scripted {
             && (s.take_out || s.feed || s.free_slots <= SCRIPTED_STASH_FREE_SLOTS)
         {
             return (Goal::Stash, "scripted: home to the box and the cupboard");
+        }
+        // Then arms, once stone tools make gathering cheap and home's chores
+        // are seen to (the bag's cloth first): a spear, a bow and arrows for
+        // it, and bandages. Gear decides early fights.
+        let started = [crate::explorer::TREE_TOOLS, crate::explorer::NODE_TOOLS]
+            .iter()
+            .any(|ladder| ladder[..ladder.len() - 1].iter().any(|t| s.count_of(t) > 0));
+        // While the bag is still to be made, its cloth is not spent on a bow
+        // or bandages: only the spear, which takes none, goes first.
+        let bag_wanted = tooled && s.bags == 0 && s.count_of(BAG_ITEM) == 0;
+        if started {
+            let [(spear, ..), ..] = crate::agent::loadout::ARM_UP;
+            for (item, want, needs) in crate::agent::loadout::ARM_UP {
+                if s.count_of(item) >= want
+                    || needs.is_some_and(|n| s.count_of(n) == 0)
+                    || (bag_wanted && item != spear)
+                {
+                    continue;
+                }
+                if let Some(name) = s.craftable().iter().find(|n| n.as_str() == item) {
+                    return (Goal::Craft(*name), "scripted: arming up");
+                }
+            }
         }
         // Then a home: the next milestone's materials, gathered where they
         // are in view, then the building. Short of something nobody can see,
