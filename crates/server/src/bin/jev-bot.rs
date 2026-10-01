@@ -127,10 +127,11 @@ async fn run(options: Options) -> Result<(), String> {
         minds.push(options.mind.build()?);
     }
     println!(
-        "mind: {} × {} · {} hands",
+        "mind: {} × {} · {} hands · {}",
         options.mind.label(),
         options.bots,
-        options.mind.skill.name()
+        options.mind.skill.name(),
+        options.mind.temperament.name()
     );
     let shard = if options.local {
         let handle = server::agent_demo::spawn_local().await?;

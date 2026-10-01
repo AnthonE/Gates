@@ -185,12 +185,34 @@ impl Page {
     }
 }
 
-/// The content's pages, by content index, with each item's display name.
+/// Bytes kept of a content id (`item.hatchet_stone`): what a ladder names
+/// an item by.
+pub const ID_BYTES: usize = 40;
+
+/// An animal's entry: what its bite does and how big a target it is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Beast {
+    pub hp: u16,
+    pub bite: u16,
+    pub reach_cm: u16,
+    pub bite_ticks: u16,
+    /// The hit volume a swing has to enter: a cylinder on its feet.
+    pub radius_cm: u16,
+    pub height_cm: u16,
+}
+
+/// The content's pages, by content index, with each item's display name
+/// and content id.
 pub struct Rules {
     names: [[u8; MAX_ITEM_NAME_BYTES]; MAX_ITEM_DEFS],
     lens: [u8; MAX_ITEM_DEFS],
+    ids: [[u8; ID_BYTES]; MAX_ITEM_DEFS],
+    id_lens: [u8; MAX_ITEM_DEFS],
     pages: [Page; MAX_ITEM_DEFS],
     count: usize,
+    /// The pig's and the wolf's rows.
+    pig: Beast,
+    wolf: Beast,
 }
 
 impl Rules {
@@ -205,18 +227,43 @@ impl Rules {
         let mut rules = Box::new(Self {
             names: [[0; MAX_ITEM_NAME_BYTES]; MAX_ITEM_DEFS],
             lens: [0; MAX_ITEM_DEFS],
+            ids: [[0; ID_BYTES]; MAX_ITEM_DEFS],
+            id_lens: [0; MAX_ITEM_DEFS],
             pages: [Page::EMPTY; MAX_ITEM_DEFS],
             count: content.items.len().min(MAX_ITEM_DEFS),
+            pig: Beast::default(),
+            wolf: Beast::default(),
         });
+        for m in &content.mobs {
+            let n = |v: u32| u16::try_from(v).unwrap_or(u16::MAX);
+            let beast = Beast {
+                hp: n(m.hp),
+                bite: n(m.attack),
+                reach_cm: n(m.attack_range_m.saturating_mul(100)),
+                bite_ticks: n(m.attack_seconds.saturating_mul(sim_core::limits::TICK_HZ)),
+                radius_cm: n(m.body_r_cm),
+                height_cm: n(m.body_h_cm),
+            };
+            match m.id.as_str() {
+                "mob.pig" => rules.pig = beast,
+                "mob.wolf" => rules.wolf = beast,
+                _ => {}
+            }
+        }
         for item in &content.items {
             let Some(idx) = content.item_index(&item.id).map(usize::from) else {
                 continue;
             };
-            if idx >= MAX_ITEM_DEFS || item.name.len() > MAX_ITEM_NAME_BYTES {
+            if idx >= MAX_ITEM_DEFS
+                || item.name.len() > MAX_ITEM_NAME_BYTES
+                || item.id.len() > ID_BYTES
+            {
                 return Err(format!("wiki: item `{}` does not fit the book", item.id));
             }
             rules.names[idx][..item.name.len()].copy_from_slice(item.name.as_bytes());
             rules.lens[idx] = item.name.len() as u8;
+            rules.ids[idx][..item.id.len()].copy_from_slice(item.id.as_bytes());
+            rules.id_lens[idx] = item.id.len() as u8;
             let page = &mut rules.pages[idx];
             let m = combat.melee[idx];
             if m.damage > 0 {
@@ -281,6 +328,13 @@ impl Rules {
     fn index_of(&self, name: &[u8]) -> Option<usize> {
         (0..self.count).find(|&i| !name.is_empty() && self.name(i) == name)
     }
+
+    /// The content index of an item by its content id.
+    pub fn index_of_id(&self, id: &str) -> Option<usize> {
+        (0..self.count).find(|&i| {
+            !id.is_empty() && &self.ids[i][..usize::from(self.id_lens[i])] == id.as_bytes()
+        })
+    }
 }
 
 /// The rules re-keyed by wire item id: what this body looks an item up in.
@@ -289,6 +343,10 @@ impl Rules {
 #[derive(Clone, Copy, Debug)]
 pub struct Book {
     pages: [Page; MAX_ITEM_DEFS],
+    /// Content index → wire id, `NO_ITEM` for an item the wire lacks.
+    wire_of: [u16; MAX_ITEM_DEFS],
+    pig: Beast,
+    wolf: Beast,
     ready: bool,
     /// Wire items no page was found for, by name.
     pub unknown: u16,
@@ -305,6 +363,23 @@ impl Default for Book {
 impl Book {
     pub const EMPTY: Self = Self {
         pages: [Page::EMPTY; MAX_ITEM_DEFS],
+        wire_of: [NO_ITEM; MAX_ITEM_DEFS],
+        pig: Beast {
+            hp: 0,
+            bite: 0,
+            reach_cm: 0,
+            bite_ticks: 0,
+            radius_cm: 0,
+            height_cm: 0,
+        },
+        wolf: Beast {
+            hp: 0,
+            bite: 0,
+            reach_cm: 0,
+            bite_ticks: 0,
+            radius_cm: 0,
+            height_cm: 0,
+        },
         ready: false,
         unknown: 0,
         disagreements: 0,
@@ -317,6 +392,20 @@ impl Book {
     /// One wire item's page; the empty page for anything unknown.
     pub fn page(&self, item: u16) -> &Page {
         self.pages.get(usize::from(item)).unwrap_or(&Page::EMPTY)
+    }
+
+    /// The wire id of an item named by its content id, once learned.
+    pub fn wire(&self, rules: &Rules, id: &str) -> Option<u16> {
+        let w = *self.wire_of.get(rules.index_of_id(id)?)?;
+        (w != NO_ITEM).then_some(w)
+    }
+
+    pub fn pig(&self) -> &Beast {
+        &self.pig
+    }
+
+    pub fn wolf(&self) -> &Beast {
+        &self.wolf
     }
 
     /// Fill from the rules and a complete wire catalog.
@@ -359,6 +448,9 @@ impl Book {
             let round = usize::from(page.ranged.round);
             page.ranged.round = wire_of.get(round).copied().unwrap_or(NO_ITEM);
         }
+        self.wire_of = wire_of;
+        self.pig = rules.pig;
+        self.wolf = rules.wolf;
         self.unknown = unknown;
         self.disagreements = disagreements;
         self.ready = count > 0;
@@ -436,6 +528,27 @@ mod tests {
         assert_eq!((bandage.class, bandage.heal > 0), (Class::Med, true));
         assert_eq!(by_name("Corn").class, Class::Food);
         assert_eq!(by_name("Wood").class, Class::Other);
+    }
+
+    /// Ladders name items by content id, and animals have entries too.
+    #[test]
+    fn content_ids_and_animals_resolve() {
+        let content = content::Content::from_sources(&SOURCES).unwrap();
+        let catalog = crate::net::bake_all(&content).unwrap().catalog;
+        let rules = Rules::from_content(&content).unwrap();
+        let mut book = Book::EMPTY;
+        assert_eq!(
+            book.wire(&rules, "item.spear_wood"),
+            None,
+            "not learned yet"
+        );
+        book.learn(&rules, &catalog);
+        let spear = book.wire(&rules, "item.spear_wood").unwrap();
+        assert_eq!(catalog.name(usize::from(spear)), b"Wooden Spear");
+        assert_eq!(book.wire(&rules, "item.no_such_thing"), None);
+        let (wolf, pig) = (book.wolf(), book.pig());
+        assert!(wolf.hp > 0 && wolf.bite > 0 && wolf.reach_cm > 0 && wolf.bite_ticks > 0);
+        assert!(wolf.radius_cm > 0 && wolf.height_cm > 0 && pig.hp > 0);
     }
 
     /// Where the wire disagrees, the wire is kept and the difference

@@ -31,6 +31,11 @@ pub const SUMMARY_CRAFTS: usize = 8;
 /// The scripted policy's "running low" line for food and water, percent of
 /// the meter. Also the default for when a model is told a meter is low.
 pub const SCRIPTED_LOW_METER_PCT: u32 = 40;
+/// The scripted policy runs from a fight below this share of health (the
+/// fight reflex answers one above it), and heals below the second when
+/// nobody is about.
+pub const SCRIPTED_FLEE_HP_PCT: u32 = 30;
+pub const SCRIPTED_HEAL_HP_PCT: u32 = 60;
 
 /// An item name as the wire catalog spells it, restricted to printable
 /// ASCII so it can be shown, logged and sent without escaping surprises.
@@ -95,6 +100,12 @@ pub enum Goal {
     Drink,
     Flee,
     Wait,
+    /// Fight the nearest player in sight.
+    Fight,
+    /// Kill the nearest animal in sight.
+    Hunt,
+    /// Use meds from the pack.
+    Heal,
 }
 
 /// `craft:` plus the longest catalog name.
@@ -122,7 +133,7 @@ impl std::fmt::Debug for Label {
 
 impl Goal {
     /// Every goal but the per-item craft, in the order they are offered.
-    pub const FIXED: [Goal; 9] = [
+    pub const FIXED: [Goal; 12] = [
         Goal::Explore,
         Goal::GatherWood,
         Goal::GatherStone,
@@ -132,6 +143,9 @@ impl Goal {
         Goal::Drink,
         Goal::Flee,
         Goal::Wait,
+        Goal::Fight,
+        Goal::Hunt,
+        Goal::Heal,
     ];
 
     /// The vocabulary's base keys, for documentation and tests.
@@ -147,6 +161,9 @@ impl Goal {
             Goal::Drink => "drink",
             Goal::Flee => "flee",
             Goal::Wait => "wait",
+            Goal::Fight => "fight",
+            Goal::Hunt => "hunt",
+            Goal::Heal => "heal",
         }
     }
 
@@ -203,6 +220,12 @@ impl Goal {
             }
             Goal::Flee => "Run away from the players or animals in view.".into(),
             Goal::Wait => "Stand still for a few seconds.".into(),
+            Goal::Fight => {
+                "Fight the nearest player in view with the belt's best weapon; backs off if losing."
+                    .into()
+            }
+            Goal::Hunt => "Kill the nearest animal in view for meat and hide.".into(),
+            Goal::Heal => "Use a bandage or medkit until health is mostly full.".into(),
         }
     }
 }
@@ -226,6 +249,10 @@ pub enum Why {
     Wounded,
     Replaced,
     Fight,
+    Won,
+    Lost,
+    Escaped,
+    NoMeds,
 }
 
 impl Why {
@@ -247,6 +274,10 @@ impl Why {
             Why::Wounded => "went down wounded",
             Why::Replaced => "a new goal replaced it",
             Why::Fight => "a fight outlasted it",
+            Why::Won => "won the fight",
+            Why::Lost => "lost the fight",
+            Why::Escaped => "got away from a losing fight",
+            Why::NoMeds => "no bandage or medkit in the pack",
         }
     }
 }
@@ -365,6 +396,93 @@ impl Sighting {
     }
 }
 
+/// Bodies that could hurt this one that a summary describes, nearest first.
+pub const SUMMARY_THREATS: usize = 3;
+
+/// What a body in sight is holding, as a threat: never which item.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Arms {
+    #[default]
+    Unarmed,
+    Tool,
+    Melee,
+    Ranged,
+    Explosive,
+    /// An animal's bite.
+    Teeth,
+}
+
+impl Arms {
+    pub fn word(self) -> &'static str {
+        match self {
+            Arms::Unarmed => "unarmed",
+            Arms::Tool => "tool",
+            Arms::Melee => "melee",
+            Arms::Ranged => "ranged",
+            Arms::Explosive => "explosive",
+            Arms::Teeth => "teeth",
+        }
+    }
+}
+
+/// How far off, coarsely.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Range {
+    /// Within a spear's reach or two.
+    #[default]
+    Close,
+    Near,
+    Mid,
+    Far,
+}
+
+impl Range {
+    pub fn of(m: f32) -> Range {
+        if m < 5.0 {
+            Range::Close
+        } else if m < 20.0 {
+            Range::Near
+        } else if m < 60.0 {
+            Range::Mid
+        } else {
+            Range::Far
+        }
+    }
+
+    pub fn word(self) -> &'static str {
+        match self {
+            Range::Close => "close",
+            Range::Near => "near",
+            Range::Mid => "mid",
+            Range::Far => "far",
+        }
+    }
+}
+
+/// One body in sight that could hurt this one, anonymous: what it holds,
+/// how far, which way (an index into [`BEARINGS`]), whether it is badly
+/// hurt, and whether it is aiming at me.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Threat {
+    pub arms: Arms,
+    pub range: Range,
+    pub bearing: u8,
+    pub wounded: bool,
+    pub aiming_at_me: bool,
+}
+
+impl Threat {
+    fn json(&self) -> Value {
+        json!({
+            "arms": self.arms.word(),
+            "range": self.range.word(),
+            "bearing": BEARINGS[self.bearing as usize % 8],
+            "wounded": self.wounded,
+            "aiming_at_me": self.aiming_at_me,
+        })
+    }
+}
+
 /// The most goals one request can offer: the fixed set and every craft.
 pub const MAX_OPTIONS: usize = Goal::FIXED.len() + SUMMARY_CRAFTS;
 
@@ -393,6 +511,10 @@ pub struct Summary {
     pub players: Sighting,
     pub animals: Sighting,
     pub water_near: Sighting,
+    pub threats: [Threat; SUMMARY_THREATS],
+    pub threats_len: u8,
+    /// How the last fight went: won, lost or escaped.
+    pub last_fight: Option<Why>,
     pub last: Option<Report>,
     /// The goal still running when this was asked (a heartbeat), with what
     /// it has gained so far — so a source can let it finish.
@@ -455,6 +577,15 @@ impl Summary {
             nearest_m: 0,
             bearing: 0,
         },
+        threats: [Threat {
+            arms: Arms::Unarmed,
+            range: Range::Close,
+            bearing: 0,
+            wounded: false,
+            aiming_at_me: false,
+        }; SUMMARY_THREATS],
+        threats_len: 0,
+        last_fight: None,
         last: None,
         current: None,
         hits: 0,
@@ -475,6 +606,10 @@ impl Summary {
 
     pub fn options(&self) -> &[Goal] {
         &self.options[..self.options_len as usize]
+    }
+
+    pub fn threats(&self) -> &[Threat] {
+        &self.threats[..self.threats_len as usize]
     }
 
     pub fn offers(&self, goal: Goal) -> bool {
@@ -530,6 +665,8 @@ impl Summary {
                 "animals": self.animals.json(),
             },
             "water_nearby": self.water_near.json(),
+            "threats": self.threats().iter().map(Threat::json).collect::<Vec<_>>(),
+            "last_fight": self.last_fight.map(Why::text),
             "last_goal": self.last.map(|r| json!({
                 "goal": r.goal.label().as_str(),
                 "outcome": r.outcome.word(),
@@ -1069,9 +1206,15 @@ impl DecisionSource for Scripted {
 
 impl Scripted {
     fn pick(&mut self, s: &Summary) -> (Goal, &'static str) {
+        // Survive now. The fight reflex answers blows on its own; the
+        // policy only calls a retreat once staying would be the end.
         let threat = s.players.count > 0 || s.animals.count > 0;
-        if s.hits > 0 && threat && s.offers(Goal::Flee) {
-            return (Goal::Flee, "scripted: hit with a body in view");
+        let hp = pct(s.hp, s.hp_max);
+        if s.hits > 0 && threat && hp < SCRIPTED_FLEE_HP_PCT && s.offers(Goal::Flee) {
+            return (Goal::Flee, "scripted: badly hurt with a body in view");
+        }
+        if hp < SCRIPTED_HEAL_HP_PCT && s.threats_len == 0 && s.offers(Goal::Heal) {
+            return (Goal::Heal, "scripted: hurt, and nobody about");
         }
         let low = SCRIPTED_LOW_METER_PCT;
         let bush = s.offers(Goal::Forage) && s.bushes.count > 0;
@@ -1114,6 +1257,21 @@ impl Scripted {
                 }
                 if let Some(name) = s.craftable().iter().find(|n| n.as_str() == *tool) {
                     return (Goal::Craft(*name), "scripted: a better tool is craftable");
+                }
+            }
+        }
+        // Then arms, once stone tools make gathering cheap: a spear, a bow
+        // and arrows for it, and bandages. Gear decides early fights.
+        let tooled = [crate::explorer::TREE_TOOLS, crate::explorer::NODE_TOOLS]
+            .iter()
+            .any(|ladder| ladder[..ladder.len() - 1].iter().any(|t| s.count_of(t) > 0));
+        if tooled {
+            for (item, want, needs) in crate::agent::loadout::ARM_UP {
+                if s.count_of(item) >= want || needs.is_some_and(|n| s.count_of(n) == 0) {
+                    continue;
+                }
+                if let Some(name) = s.craftable().iter().find(|n| n.as_str() == item) {
+                    return (Goal::Craft(*name), "scripted: arming up");
                 }
             }
         }
@@ -1351,5 +1509,52 @@ mod tests {
         assert_eq!(scripted.pick(&s).0, Goal::GatherWood);
         s.water = 10;
         assert_eq!(scripted.pick(&s).0, Goal::Drink, "thirst outranks the work");
+    }
+
+    /// Hurt: heal when nobody is about, run only when nearly done, and
+    /// otherwise leave the fight to the reflex. With stone tools, arm up
+    /// in order, arrows only for a bow owned.
+    #[test]
+    fn the_scripted_policy_heals_runs_late_and_arms_up() {
+        let mut scripted = Scripted::default();
+        let mut s = Summary::EMPTY;
+        for g in [Goal::Explore, Goal::Flee, Goal::Heal] {
+            s.offer(g);
+        }
+        (s.hp, s.hp_max) = (50, 100);
+        assert_eq!(scripted.pick(&s).0, Goal::Heal);
+        s.threats_len = 1;
+        s.players.add(4.0, 0);
+        s.hits = 1;
+        assert_eq!(scripted.pick(&s).0, Goal::Explore, "the reflex fights");
+        s.hp = 20;
+        assert_eq!(scripted.pick(&s).0, Goal::Flee);
+        s = Summary::EMPTY;
+        s.offer(Goal::Explore);
+        let craft = |s: &mut Summary, n: &str| {
+            let n = name(n);
+            s.craftable[s.craftable_len as usize] = n;
+            s.craftable_len += 1;
+            s.offer(Goal::Craft(n));
+        };
+        for n in ["Wooden Spear", "Hunting Bow", "Wooden Arrow", "Bandage"] {
+            craft(&mut s, n);
+        }
+        assert_eq!(scripted.pick(&s).0, Goal::Explore, "no stone tool yet");
+        s.items[0] = (name("Stone Hatchet"), 1);
+        s.items_len = 1;
+        assert_eq!(scripted.pick(&s).0, Goal::Craft(name("Wooden Spear")));
+        s.items[1] = (name("Wooden Spear"), 1);
+        s.items_len = 2;
+        assert_eq!(scripted.pick(&s).0, Goal::Craft(name("Hunting Bow")));
+        // No cloth for the bow: arrows wait for one, bandages do not.
+        s.craftable[1] = name("Bandage");
+        s.craftable_len = 1;
+        s.craftable[0] = name("Wooden Arrow");
+        s.craftable_len = 2;
+        assert_eq!(scripted.pick(&s).0, Goal::Craft(name("Bandage")));
+        s.items[2] = (name("Hunting Bow"), 1);
+        s.items_len = 3;
+        assert_eq!(scripted.pick(&s).0, Goal::Craft(name("Wooden Arrow")));
     }
 }

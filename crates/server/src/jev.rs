@@ -229,6 +229,16 @@ mod tests {
             secs: u32::MAX,
         });
         s.trigger = Trigger::Heartbeat;
+        let threat = crate::mind::Threat {
+            arms: crate::mind::Arms::Explosive,
+            range: crate::mind::Range::Close,
+            bearing: 5,
+            wounded: true,
+            aiming_at_me: true,
+        };
+        s.threats = [threat; crate::mind::SUMMARY_THREATS];
+        s.threats_len = crate::mind::SUMMARY_THREATS as u8;
+        s.last_fight = Some(crate::mind::Why::Escaped);
         s.current = Some(Report {
             goal: Goal::Craft(long(9)),
             outcome: crate::mind::Outcome::Running,
