@@ -370,6 +370,8 @@ pub struct SimTables {
     /// The town's vendor offers (`content/sites.toml`) and their names.
     pub vend: sim_core::vend::VendContent,
     pub vendor_names: Vec<String>,
+    /// The keycard each ziggurat door takes (`monument::DOORS`).
+    pub cards: [u16; sim_core::monument::CARD_DOORS],
 }
 
 /// Bake every table a shard needs, or refuse the boot naming the one that
@@ -395,6 +397,7 @@ pub fn bake_all(content: &content::Content) -> Result<SimTables, String> {
         skin_catalog: bake_skin_catalog(content)?,
         vend: content.bake_vend()?,
         vendor_names: content.bake_vendor_names(),
+        cards: content.bake_cards()?,
         combat,
         gather,
         survival,
@@ -2987,6 +2990,7 @@ fn sim_thread(
         skin_catalog,
         vend,
         vendor_names,
+        cards,
     } = tables;
     core.world.gather = gather;
     core.world.craft = craft;
@@ -3005,6 +3009,7 @@ fn sim_thread(
     core.skin_catalog = skin_catalog;
     core.world.vend = vend;
     core.vendor_names = vendor_names;
+    core.world.cards = cards;
     core.install_admins(admins);
     core.trust = trust;
     // The counter sweep's memory, beside the sink it feeds (`anomaly.rs`).

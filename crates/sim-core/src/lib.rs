@@ -33,6 +33,7 @@ pub mod lock;
 pub mod loot;
 pub mod melee;
 pub mod mob;
+pub mod monument;
 pub mod movement;
 pub mod nav;
 pub mod noise;

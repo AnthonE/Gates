@@ -499,7 +499,7 @@ const _: () = assert!(
 /// assert above's reason: two of the three terms are other crates'
 /// constants.
 const _: () = assert!(
-    2 + MINOR_SITES + sim_core::landmark::LANDMARKS + 1 + BAG_CAP <= MAP_MARKS_MAX,
+    3 + MINOR_SITES + sim_core::landmark::LANDMARKS + 1 + BAG_CAP <= MAP_MARKS_MAX,
     "the own tier outgrew the marker cap — a player's own bed would be dropped"
 );
 
@@ -514,6 +514,8 @@ pub enum MarkKind {
     Haven,
     /// The town, THE GATE (`sim_core::town`): the island's safe hub.
     Town,
+    /// The Black Ziggurat (`sim_core::monument`): the card-door monument.
+    Monument,
     /// A waystation: the lesser tier of the same search.
     Waystation,
     /// The inland freight depot: an industrial destination.
@@ -556,6 +558,8 @@ impl MarkKind {
             MarkKind::Haven | MarkKind::Waystation | MarkKind::Depot => [232.0, 228.0, 218.0],
             // Gilt: the ring over the plaza.
             MarkKind::Town => [236.0, 190.0, 96.0],
+            // Lapis: the ziggurat's seams.
+            MarkKind::Monument => [96.0, 140.0, 255.0],
             MarkKind::Landmark => [214.0, 206.0, 186.0],
             // A spent bag is the SAME blue as a ready one: the colour says
             // "this is a bed of yours", and the renderer's shape says
@@ -600,6 +604,7 @@ impl MarkKind {
             MarkKind::None => None,
             MarkKind::Haven
             | MarkKind::Town
+            | MarkKind::Monument
             | MarkKind::Waystation
             | MarkKind::Depot
             | MarkKind::Landmark => Some("map_site"),
@@ -626,6 +631,7 @@ impl MarkKind {
         match self {
             MarkKind::Haven => Some("LOOKOUT"),
             MarkKind::Town => Some("THE GATE"),
+            MarkKind::Monument => Some("BLACK ZIGGURAT"),
             MarkKind::Waystation => Some("WAYSTATION"),
             MarkKind::Depot => Some("DEPOT"),
             // A landmark's name is its own, on the mark (`Mark::name`).
@@ -755,6 +761,9 @@ pub fn resolve_marks(
     }
     if haven.town.live {
         out.push(MarkKind::Town, haven.town.x, haven.town.z);
+    }
+    if haven.ziggurat.live {
+        out.push(MarkKind::Monument, haven.ziggurat.x, haven.ziggurat.z);
     }
     // The landmarks, behind the sites: named places, fewer than the cap
     // leaves room for (the assert above `MarkKind`).
@@ -1099,7 +1108,10 @@ mod tests {
 
     /// The whole authored tier: the sites, then every live landmark.
     fn authored(haven: &Haven) -> usize {
-        SITES + usize::from(haven.town.live) + haven.marks.iter().filter(|m| m.live).count()
+        SITES
+            + usize::from(haven.town.live)
+            + usize::from(haven.ziggurat.live)
+            + haven.marks.iter().filter(|m| m.live).count()
     }
 
     fn defs_with(arches: &[u8]) -> (DeployContent, u16) {
@@ -1482,6 +1494,7 @@ mod tests {
         for kind in [
             MarkKind::Haven,
             MarkKind::Town,
+            MarkKind::Monument,
             MarkKind::Waystation,
             MarkKind::Depot,
             MarkKind::Bed,
@@ -1645,11 +1658,12 @@ mod tests {
 
     /// Every kind. The `match` is what keeps it honest: a kind added without
     /// a row here fails to compile rather than going unchecked.
-    fn all_kinds() -> [MarkKind; 10] {
+    fn all_kinds() -> [MarkKind; 11] {
         let all = [
             MarkKind::None,
             MarkKind::Haven,
             MarkKind::Town,
+            MarkKind::Monument,
             MarkKind::Waystation,
             MarkKind::Depot,
             MarkKind::Landmark,
@@ -1663,6 +1677,7 @@ mod tests {
                 MarkKind::None
                 | MarkKind::Haven
                 | MarkKind::Town
+                | MarkKind::Monument
                 | MarkKind::Waystation
                 | MarkKind::Depot
                 | MarkKind::Landmark
@@ -1708,7 +1723,11 @@ mod tests {
                 k.site_label().is_some(),
                 matches!(
                     k,
-                    MarkKind::Haven | MarkKind::Town | MarkKind::Waystation | MarkKind::Depot
+                    MarkKind::Haven
+                        | MarkKind::Town
+                        | MarkKind::Monument
+                        | MarkKind::Waystation
+                        | MarkKind::Depot
                 ),
                 "{k:?} is the wrong way round about carrying a name"
             );

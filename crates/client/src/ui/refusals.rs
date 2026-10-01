@@ -240,6 +240,15 @@ pub fn vend(code: u8) -> String {
     }
 }
 
+/// Why a ziggurat door stayed shut.
+pub fn swipe(code: u8) -> String {
+    match code as u32 {
+        sim_core::monument::REFUSE_S_REACH => "step up to the reader".into(),
+        sim_core::monument::REFUSE_S_CARD => "you need this door's keycard".into(),
+        _ => "the door does not answer".into(),
+    }
+}
+
 /// Why the build, upgrade or repair was turned down.
 pub fn build(code: u8) -> String {
     text(&BUILD, code as u32)

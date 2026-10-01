@@ -2087,6 +2087,7 @@ pub fn feedback(
             super::feed::Refused::Deploy => crate::ui::refusals::deploy(code),
             super::feed::Refused::Research => crate::ui::refusals::research(code),
             super::feed::Refused::Vend => crate::ui::refusals::vend(code),
+            super::feed::Refused::Swipe => crate::ui::refusals::swipe(code),
             super::feed::Refused::Consume => crate::ui::refusals::consume(code),
             // The one refusal whose sentence names the held item: "your
             // Torch cannot harvest this", or bare hands when nothing was.

@@ -87,6 +87,7 @@ pub mod highlight;
 pub mod landmarks;
 pub mod town;
 pub mod tracer;
+pub mod ziggurat;
 // The launcher-backed nav entries: the title manifest's fetch, and the click
 // that hands NEWS / ITEM STORE / WORKSHOP to the launcher's own window. The
 // model is `crate::ui::hub`.
@@ -1364,7 +1365,7 @@ impl Plugin for GatesRenderPlugin {
                         terrain_mesh::stream,
                         depot::spawn,
                         landmarks::spawn,
-                        town::spawn,
+                        (town::spawn, ziggurat::spawn),
                     ),
                     // The sea re-centres like a ring does, and for the same
                     // reason: it reads `Eye::pos`, so it belongs where the
@@ -1438,7 +1439,13 @@ impl Plugin for GatesRenderPlugin {
                     // build too (where the pad simply never opens).
                     // Fires light the ground beside them. Reads the lit set
                     // `EV_OVEN` already puts in `ClientCore`; no wire change.
-                    (structures::fire_lights, town::dress, town::lamps),
+                    (
+                        structures::fire_lights,
+                        town::dress,
+                        town::lamps,
+                        ziggurat::dress,
+                        ziggurat::doors,
+                    ),
                     (hud::pad_overlay, hud::hearth_overlay),
                 )
                     .in_set(Stream)

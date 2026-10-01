@@ -52,6 +52,11 @@ const RAW_READERS: &[(&str, &str, &str)] = &[
     ),
     (
         "terrain.rs",
+        "solve_ziggurat",
+        "solver: locates the ziggurat on raw terrain, before the carve it causes.",
+    ),
+    (
+        "terrain.rs",
         "town_approach",
         "solver: marches a town road to the ring on raw terrain, as \
          `solve_side_roads` does for the depot.",

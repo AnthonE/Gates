@@ -219,6 +219,7 @@ fn a_drawn_bow_walks() {
         };
         for _ in 0..30 {
             let mut occ = sim_core::occupy::Occupants {
+                doors: 0,
                 table: &sc.table,
                 haven: &sc.haven,
                 harvested: &sc.harvested,
@@ -313,6 +314,7 @@ fn a_crouch_is_the_slowest_walk_whatever_else_is_held() {
         };
         for _ in 0..30 {
             let mut occ = sim_core::occupy::Occupants {
+                doors: 0,
                 table: &sc.table,
                 haven: &sc.haven,
                 harvested: &sc.harvested,

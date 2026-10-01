@@ -159,6 +159,7 @@ pub fn resolve(
         Some(_) => {
             let (seed, occ) = core.island();
             let mut island = interact::Island {
+                doors: occ.doors,
                 seed,
                 table: occ.table,
                 haven: occ.haven,
@@ -269,6 +270,13 @@ pub fn resolve(
         let trade = interact::resolve_trade(x, z, &core.haven().town);
         if trade.verb != interact::Verb::None {
             aimed.0 = trade;
+        }
+    }
+    // A ziggurat door's reader or lever, the same way.
+    if aimed.0.is_none() {
+        let swipe = interact::resolve_swipe(x, y, z, &core.haven().ziggurat);
+        if swipe.verb != interact::Verb::None {
+            aimed.0 = swipe;
         }
     }
     near.0 = structure::nearest(
@@ -564,6 +572,12 @@ fn use_slot(net: &Net, toast: &mut Toast, bite: &mut Bite, now: f64, slot: u8) {
 /// Dispatch `E` on the resolved pick.
 fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>) {
     match pick.verb {
+        Verb::Swipe => {
+            let door = pick.handle as u8;
+            send(net, toast, "swipe", |buf| {
+                protocol::encode_action_swipe(door, buf)
+            });
+        }
         Verb::Assist => {
             send(net, toast, "help up", |buf| {
                 protocol::encode_action_assist(pick.handle, buf)

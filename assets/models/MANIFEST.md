@@ -828,3 +828,15 @@ its photographed surfaces on it (`render/town.rs`). The sidecar
 | file | kit | tris | size |
 |---|---|---|---|
 | `site/town.glb` | `ci/kits/town.json` | 60,680 | 5.0 MB |
+
+## `site/ziggurat.glb` — the Black Ziggurat, dressed in Blender
+
+**Our own work (CC0)**, the town's pipeline: `cargo run -p sim-core --example
+kit_dump -- ziggurat > ci/kits/ziggurat.json`, then `ci/site_kit.py gen --kit
+ci/kits/ziggurat.json --out assets/models/site/ziggurat.glb --seed 1 --label ""`.
+The card doors' leaves are left out: the client draws them apart so an open
+door can stand aside (`render/ziggurat.rs`).
+
+| file | kit | tris | size |
+|---|---|---|---|
+| `site/ziggurat.glb` | `ci/kits/ziggurat.json` | 15,084 | 1.4 MB |

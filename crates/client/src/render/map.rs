@@ -562,7 +562,7 @@ pub fn spawn_mark(
     let fill = Color::srgb(f[0] / 255.0, f[1] / 255.0, f[2] / 255.0);
     let px = match m.kind {
         MarkKind::Haven => HAVEN_PX,
-        MarkKind::Town => TOWN_PX,
+        MarkKind::Town | MarkKind::Monument => TOWN_PX,
         _ => MAP_MARK_PX,
     };
     // A place you go is an outline; a thing you own is solid. The hollow
@@ -572,6 +572,7 @@ pub fn spawn_mark(
         m.kind,
         MarkKind::Haven
             | MarkKind::Town
+            | MarkKind::Monument
             | MarkKind::Waystation
             | MarkKind::Depot
             | MarkKind::Landmark

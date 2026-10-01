@@ -41,7 +41,7 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names. Not versioned: a wire change regenerates only the
 /// fixtures whose bytes moved, so a diff shows what changed and nothing else.
-pub const FIXTURES: [&str; 125] = [
+pub const FIXTURES: [&str; 128] = [
     "input_acks_only.bin",
     "input_full.bin",
     "snapshot_keyframe.bin",
@@ -230,6 +230,10 @@ pub const FIXTURES: [&str; 125] = [
     "event_vend.bin",
     "event_vend_refused.bin",
     "action_vend.bin",
+    // The Black Ziggurat's card doors (v86): the mirror, the refusal, the verb.
+    "event_card_doors.bin",
+    "event_swipe_refused.bin",
+    "action_swipe.bin",
 ];
 
 /// The sky/clock event: a storm forced mid-fade, the clock pushed to dusk.
@@ -1954,6 +1958,21 @@ pub fn event_vend_refused() -> (u8, u8) {
 /// Trade offer 37 five times.
 pub fn action_vend() -> (u8, u8) {
     (37, 5)
+}
+
+/// The green and red doors open, the blue shut.
+pub fn event_card_doors() -> u8 {
+    0b101
+}
+
+/// A swipe at the red door without its card.
+pub fn event_swipe_refused() -> (u8, u8) {
+    (sim_core::monument::REFUSE_S_CARD as u8, 2)
+}
+
+/// Swipe at the blue door.
+pub fn action_swipe() -> u8 {
+    1
 }
 
 /// Put catalog id 0x0B72 on the item in slot 17 (wire v77).

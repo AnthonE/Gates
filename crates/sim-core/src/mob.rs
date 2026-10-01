@@ -1209,6 +1209,7 @@ fn home_of(seed: u64, haven: &Haven, slot: usize) -> Option<(f32, f32)> {
         if terrain::in_haven(haven, x, z)
             || terrain::in_waystation(haven, x, z)
             || crate::town::covers(&haven.town, x, z, 20.0)
+            || crate::monument::covers(&haven.ziggurat, x, z, 20.0)
         {
             continue;
         }

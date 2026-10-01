@@ -91,6 +91,14 @@ fn main() {
     let (offer, times) = goldens::action_vend();
     let len = protocol::encode_action_vend(offer, times, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[124], &buf[..len]);
+    // The ziggurat's card doors (v86).
+    let len = protocol::encode_event_card_doors(goldens::event_card_doors(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[125], &buf[..len]);
+    let (code, door) = goldens::event_swipe_refused();
+    let len = protocol::encode_event_swipe_refused(code, door, &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[126], &buf[..len]);
+    let len = protocol::encode_action_swipe(goldens::action_swipe(), &mut buf).unwrap();
+    write_fixture(goldens::FIXTURES[127], &buf[..len]);
     // The handshake's identity pair (v27), written last because they were
     // added last and the manifest is index-ordered.
     let len = protocol::encode_challenge(&goldens::challenge(), &mut buf).unwrap();

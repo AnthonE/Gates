@@ -67,6 +67,8 @@ pub enum Refused {
     Research,
     /// A kiosk trade the sim refused (`sim_core::vend::REFUSE_V_*`).
     Vend,
+    /// A ziggurat door that would not open (`sim_core::monument::REFUSE_S_*`).
+    Swipe,
     /// An eat (`J`) or a drink (`H`) that did nothing —
     /// `sim_core::survival`'s `REFUSE_C_*`.
     ///
@@ -570,6 +572,9 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
             feed.learned[n] = t;
             feed.n_learned += 1;
         }
+    }
+    while let Some((code, door)) = core.pop_swipe_refused() {
+        feed.push_refusal(Refused::Swipe, code, door as u16);
     }
     while let Some((refused, code, offer, times)) = core.pop_vend() {
         if refused {

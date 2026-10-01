@@ -343,7 +343,7 @@ pub const PENDING_REMOVALS_CAP: usize = 256;
 /// Item definitions the sim preallocates for (the alpha set is ~48 rows,
 /// CONTENT.md §2). The content bake refuses a set past this. Proposed
 /// default, DECISIONS.md §open (gather bounds row).
-pub const MAX_ITEM_DEFS: usize = 64;
+pub const MAX_ITEM_DEFS: usize = 96;
 
 /// Rounds one weapon may list in `weapons.toml`'s `ammo` (`RangedDef::ammo`).
 ///

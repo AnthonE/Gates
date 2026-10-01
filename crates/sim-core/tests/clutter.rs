@@ -1471,6 +1471,7 @@ fn sites_parked_offshore() -> Haven {
         marks: sim_core::landmark::NO_MARKS,
         trails: [terrain::SideRoad::NONE; sim_core::landmark::LANDMARKS],
         town: sim_core::town::Town::NONE,
+        ziggurat: sim_core::monument::Ziggurat::NONE,
     }
 }
 

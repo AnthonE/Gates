@@ -52,7 +52,7 @@ pub use chat::{decode_chat, encode_chat, ChatMsg, ChatText, CHAT_MAX_BYTES};
 pub use event::{
     decode_event, encode_event_assist, encode_event_auth, encode_event_bag_dropped,
     encode_event_bag_removed, encode_event_bag_sync, encode_event_bags, encode_event_build_refused,
-    encode_event_catalog, encode_event_charge_placed, encode_event_chat,
+    encode_event_card_doors, encode_event_catalog, encode_event_charge_placed, encode_event_chat,
     encode_event_consume_refused, encode_event_consumed, encode_event_cont_sync,
     encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused, encode_event_death,
     encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
@@ -67,8 +67,8 @@ pub use event::{
     encode_event_research_refused, encode_event_research_rows, encode_event_respawn,
     encode_event_shot, encode_event_skins, encode_event_skins_owned, encode_event_slot_change,
     encode_event_slot_grow_sync, encode_event_slot_respawned, encode_event_slot_sync,
-    encode_event_stock, encode_event_struct_hit, encode_event_swing, encode_event_vend,
-    encode_event_vend_offers, encode_event_vend_refused, encode_event_vitals,
+    encode_event_stock, encode_event_struct_hit, encode_event_swing, encode_event_swipe_refused,
+    encode_event_vend, encode_event_vend_offers, encode_event_vend_refused, encode_event_vitals,
     encode_event_weak_mark, encode_event_wounded, shot_is_instant, EventMsg, InvSlot, ItemCatalog,
     ItemRow, SkinCatalog, SkinRow, WireBag, WireGItem, BAG_KIND_PACK, BAG_SYNC_BATCH,
     CATALOG_BATCH, COIN_ELO, COIN_NONE, COIN_ORBS, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH,
@@ -999,7 +999,10 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// v85 — THE GATE, the town's vendors: `ACT_VEND` (25) trades at a kiosk,
 /// `SUB_VEND_OFFERS` (66) drips the offers at join, `SUB_VEND` (67) and
 /// `SUB_VEND_REFUSED` (68) answer the trader.
-pub const PROTO_VER: u16 = 85;
+/// v86 — the Black Ziggurat's card doors: `ACT_SWIPE` (26) swipes a card or
+/// pulls a lever, `SUB_CARD_DOORS` (69) mirrors which doors stand open,
+/// `SUB_SWIPE_REFUSED` (70) answers the swiper.
+pub const PROTO_VER: u16 = 86;
 
 /// This game's slug in the elo catalog.
 ///
@@ -1796,6 +1799,9 @@ const ACT_RESKIN: u32 = 23;
 const ACT_SKINS_REFRESH: u32 = 24;
 /// Trade at a town kiosk (wire v85, `sim_core::vend`): offer and times.
 const ACT_VEND: u32 = 25;
+/// Swipe a keycard at a ziggurat door, or pull its lever (wire v86,
+/// `sim_core::monument`): the door.
+const ACT_SWIPE: u32 = 26;
 /// The highest live action code, named rather than counted — the event
 /// lane's `SUB_MAX` discipline, which this lane did not have.
 ///
@@ -1805,7 +1811,7 @@ const ACT_VEND: u32 = 25;
 /// prevents is the worst shape of wire drift there is: an action past the
 /// field width truncates into a *live* code, and both ends then agree on
 /// bytes that mean two different things.
-const ACT_MAX: u32 = ACT_VEND;
+const ACT_MAX: u32 = ACT_SWIPE;
 const _: () = assert!(
     ACT_MAX < (1 << ACTION_SUB_BITS),
     "an action subtype past the field width would truncate into a live code"
@@ -2132,6 +2138,9 @@ pub enum ActionMsg {
     /// catalog, `times` over (1..=`VEND_TIMES_MAX`). Everything past the
     /// shape is the sim's verdict.
     Vend { offer: u8, times: u8 },
+    /// Swipe at ziggurat door `door` (wire v86); reach and card are the
+    /// sim's verdict.
+    Swipe { door: u8 },
     /// Learn the blueprint for what is in inventory `slot` (research.rs).
     /// `Consume`'s shape exactly, and for the same reason: the slot is the
     /// sender's claim and the sim is the verdict, so a forged index is a
@@ -2414,6 +2423,18 @@ pub fn encode_action_vend(offer: u8, times: u8, buf: &mut [u8]) -> Result<usize,
     w.write(ACT_VEND, ACTION_SUB_BITS)?;
     w.write(offer as u32, 7)?;
     w.write(times as u32, 5)?;
+    Ok(w.finish())
+}
+
+/// `ActionMsg::Swipe` — swipe at card door `door`.
+pub fn encode_action_swipe(door: u8, buf: &mut [u8]) -> Result<usize, WireError> {
+    if door as usize >= sim_core::monument::CARD_DOORS {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_SWIPE, ACTION_SUB_BITS)?;
+    w.write(door as u32, 2)?;
     Ok(w.finish())
 }
 
@@ -2782,6 +2803,13 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
                 return Err(WireError::Malformed);
             }
             ActionMsg::Vend { offer, times }
+        }
+        ACT_SWIPE => {
+            let door = r.read(2)? as u8;
+            if door as usize >= sim_core::monument::CARD_DOORS {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::Swipe { door }
         }
         ACT_CANCEL => {
             let index = r.read(CANCEL_INDEX_BITS)? as u16;
@@ -4290,14 +4318,17 @@ mod tests {
             };
             read_held(&mut BitReader::new(&buf[..n]))
         };
-        // Every unreachable code point, all 63 of them.
+        // Every unreachable code point.
         for v in MAX_ITEM_DEFS as u16..HELD_NONE {
             assert_eq!(read(v), Err(WireError::Range), "id {v} was accepted");
         }
         // Both ends of the legal range are taken, so the bound is exact
         // and not conservative in either direction.
         assert_eq!(read(0), Ok(Some(0)));
-        assert_eq!(read(MAX_ITEM_DEFS as u16 - 1), Ok(Some(63)));
+        assert_eq!(
+            read(MAX_ITEM_DEFS as u16 - 1),
+            Ok(Some(MAX_ITEM_DEFS as u16 - 1))
+        );
         // And the sentinel is an empty hand rather than an id.
         assert_eq!(read(HELD_NONE), Ok(None));
     }
@@ -4613,12 +4644,12 @@ mod tests {
     #[test]
     fn the_action_lane_has_the_room_it_claims() {
         // Hammer rotation (v68) spent code 22; skins v0 (v77) spends 23 and
-        // 24 (re-skin, refresh); the town's vendors (v85) spend 25, leaving
-        // six five-bit codes.
-        assert_eq!(ACT_MAX, ACT_VEND);
+        // 24 (re-skin, refresh); the town's vendors (v85) spend 25 and the
+        // ziggurat's doors (v86) 26, leaving five five-bit codes.
+        assert_eq!(ACT_MAX, ACT_SWIPE);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
-            6,
+            5,
             "the spare action codes moved — say so where the count is written"
         );
     }

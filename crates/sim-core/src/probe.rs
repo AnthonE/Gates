@@ -211,6 +211,22 @@ pub extern "C" fn probe_sites(seed: u64) -> u64 {
             crate::town::ground(&town, x, z, town.floor_y + b[4]),
         );
     }
+    // The Black Ziggurat, the same way, its doors shut.
+    let zig = haven.ziggurat;
+    hash_f32(&mut h, zig.x);
+    hash_f32(&mut h, zig.z);
+    hash_f32(&mut h, zig.floor_y);
+    h.update(&[zig.rot, zig.live as u8]);
+    for part in crate::monument::PARTS {
+        let b = part.b;
+        let (x, z) = crate::kit::to_world(&zig.placed(), (b[0] + b[3]) * 0.5, (b[2] + b[5]) * 0.5);
+        let y = zig.floor_y + (b[1] + b[4]) * 0.5;
+        h.update(&[crate::monument::blocks(&zig, 0, x, z, y, 0.01, 0.01) as u8]);
+        hash_f32(
+            &mut h,
+            crate::monument::ground(&zig, 0, x, z, zig.floor_y + b[4]),
+        );
+    }
     // The ore budget: it moves every rock-channel cell's draw, and none of
     // those need lie inside the scatter windows `probe_terrain` hashes — on
     // the golden seed none does. Folded here so a budget change moves the

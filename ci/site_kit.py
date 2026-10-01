@@ -516,9 +516,45 @@ def sign(s, text, beam, outward):
             s.box("gilt", (x0 - 0.06, v1 - step, cz + u0, x0, v1, cz + u0 + step), gold)
 
 
+def terraces(s, rng):
+    """The ziggurat's trim: a gilt cornice under each terrace's lip and a row
+    of lapis glyph tiles along each face, broken where the stairs climb."""
+    gold = (0.95, 0.78, 0.45)
+    for k, hw in enumerate((32.0, 26.0, 20.0, 14.0, 8.0)):
+        top = 5.0 * (k + 1)
+        o = hw + 0.05
+        for side in range(4):
+            # Each face as segments along its length, skipping the stairs.
+            segs = [(-hw, -3.2), (3.2, hw)] if side == 0 else [(-hw, hw)]
+            for a0, a1 in segs:
+                if side in (0, 1):
+                    zz = -o if side == 0 else o
+                    s.box("gilt", (a0, top - 0.45, min(zz, zz * 1.0 + 0.0) - 0.1, a1, top - 0.2, zz + 0.1), gold, bevel=0.02)
+                else:
+                    xx = -o if side == 2 else o
+                    s.box("gilt", (xx - 0.1, top - 0.45, a0, xx + 0.1, top - 0.2, a1), gold, bevel=0.02)
+                # Glyph tiles every 3 m at mid-height.
+                n = int((a1 - a0) / 3.0)
+                for i in range(n):
+                    c = a0 + (i + 0.5) * (a1 - a0) / n
+                    y = top - 2.6
+                    lit = rng.random() < 0.35
+                    role = "lapis" if lit else "gilt"
+                    col = (1, 1, 1) if lit else (0.62, 0.48, 0.26)
+                    if side in (0, 1):
+                        zz = -o - 0.04 if side == 0 else o + 0.04
+                        s.box(role, (c - 0.35, y - 0.35, min(zz, zz + 0.03), c + 0.35, y + 0.35, max(zz, zz + 0.03)), col)
+                    else:
+                        xx = -o - 0.04 if side == 2 else o + 0.04
+                        s.box(role, (min(xx, xx + 0.03), y - 0.35, c - 0.35, max(xx, xx + 0.03), y + 0.35, c + 0.35), col)
+
+
 def dress(s, kit, rng, label):
     parts = kit["parts"]
-    ring_parts = [p for p in parts if p["mat"] == "gilt" and p["flags"] & DECOR]
+    # The town's broken ring is fitted from its gilt decor; elsewhere gilt
+    # decor (the ziggurat's crown) is shards, drawn as boxes.
+    ring_parts = [p for p in parts if p["mat"] == "gilt" and p["flags"] & DECOR
+                  and kit["name"] == "town"]
     for p in parts:
         b = p["b"]
         mat, flags = p["mat"], p["flags"]
@@ -567,6 +603,8 @@ def dress(s, kit, rng, label):
         elif dz >= 10 and dx < 2:
             sign(s, label, b, "x+" if b[3] > 0 else "x-")
     lights(s, kit["anchors"], rng)
+    if kit["name"] == "ziggurat":
+        terraces(s, rng)
 
 
 def bake_ao(bpy, objs, samples):

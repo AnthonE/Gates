@@ -467,7 +467,9 @@ fn clear(haven: &Haven, x: f32, z: f32, r: f32) -> bool {
     if crate::landmark::covers(&haven.marks, x, z, r + SITE_CLEAR_M) {
         return false;
     }
-    if crate::town::covers(&haven.town, x, z, r + SITE_CLEAR_M) {
+    if crate::town::covers(&haven.town, x, z, r + SITE_CLEAR_M)
+        || crate::monument::covers(&haven.ziggurat, x, z, r + SITE_CLEAR_M)
+    {
         return false;
     }
     for ws in haven.minor.iter() {

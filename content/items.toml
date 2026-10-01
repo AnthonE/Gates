@@ -621,3 +621,35 @@ stack = 20
 tier = 0
 rarity = "common"
 slot = "hand"
+
+# Keycards: the Black Ziggurat's doors (`sim-core/src/monument.rs`), Rust's
+# green → blue → red loop. Green is found out in the world, blue only in the
+# green room, red only in the blue room (`loot.toml`). A swipe wears 100
+# condition points (`monument::SWIPE_WEAR`): green and blue open four doors,
+# red two. Never sold (`sites.toml`).
+[[item]]
+id = "item.keycard_green"
+name = "Green Keycard"
+stack = 1
+tier = 1
+rarity = "uncommon"
+slot = "none"
+condition_max = 400
+
+[[item]]
+id = "item.keycard_blue"
+name = "Blue Keycard"
+stack = 1
+tier = 2
+rarity = "rare"
+slot = "none"
+condition_max = 400
+
+[[item]]
+id = "item.keycard_red"
+name = "Red Keycard"
+stack = 1
+tier = 2
+rarity = "rare"
+slot = "none"
+condition_max = 200

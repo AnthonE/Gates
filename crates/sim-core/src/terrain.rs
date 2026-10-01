@@ -1829,7 +1829,9 @@ fn trail_clear(seed: u64, pad: &Haven, road: &SideRoad, lat: &mut Lattice) -> bo
             if k > 1 && crate::landmark::covers(&pad.marks, x, z, 0.0) {
                 return false;
             }
-            if crate::town::covers(&pad.town, x, z, 10.0) {
+            if crate::town::covers(&pad.town, x, z, 10.0)
+                || crate::monument::covers(&pad.ziggurat, x, z, 10.0)
+            {
                 return false;
             }
         }
@@ -3292,6 +3294,9 @@ pub struct Haven {
     /// The town, "THE GATE" (`town.rs`): the safe hub in the central plain,
     /// solved after the lesser sites. Its two roads are `roads[DEPOT_ROADS..]`.
     pub town: crate::town::Town,
+    /// The Black Ziggurat (`monument.rs`), solved after the town and kept
+    /// well away from it. No road: it is found, not driven to.
+    pub ziggurat: crate::monument::Ziggurat,
 }
 
 /// The altitude a site's floor is cut to — **the level of lowest error over
@@ -3388,6 +3393,7 @@ fn haven_ring_phase(ring: &RingPath, seed: u64, x: f32, z: f32) -> Option<u8> {
             marks: crate::landmark::NO_MARKS,
             trails: [SideRoad::NONE; crate::landmark::LANDMARKS],
             town: crate::town::Town::NONE,
+            ziggurat: crate::monument::Ziggurat::NONE,
         };
         let mut k = 0i32;
         let mut ok = true;
@@ -3441,6 +3447,7 @@ fn haven_shelter_bearing(ring: &RingPath, seed: u64, x: f32, z: f32, phase: u8) 
         marks: crate::landmark::NO_MARKS,
         trails: [SideRoad::NONE; crate::landmark::LANDMARKS],
         town: crate::town::Town::NONE,
+        ziggurat: crate::monument::Ziggurat::NONE,
     };
     let mut t = 0i32;
     while t < HAVEN_SHELTER_TRIES {
@@ -3618,6 +3625,7 @@ pub fn haven(seed: u64) -> Haven {
             marks: crate::landmark::NO_MARKS,
             trails: [SideRoad::NONE; crate::landmark::LANDMARKS],
             town: crate::town::Town::NONE,
+            ziggurat: crate::monument::Ziggurat::NONE,
         };
 
         if relaxed.is_none() || score < relaxed_score {
@@ -3648,6 +3656,7 @@ pub fn haven(seed: u64) -> Haven {
         marks: crate::landmark::NO_MARKS,
         trails: [SideRoad::NONE; crate::landmark::LANDMARKS],
         town: crate::town::Town::NONE,
+        ziggurat: crate::monument::Ziggurat::NONE,
     });
     // The pad is resolved before the lesser tier is chosen, and that order is
     // the design: a waystation is defined as "far from the destination", so
@@ -3663,6 +3672,9 @@ pub fn haven(seed: u64) -> Haven {
     if let Some((town, town_roads)) = solve_town(seed, &pad) {
         pad.town = town;
         pad.roads[DEPOT_ROADS..].copy_from_slice(&town_roads);
+    }
+    if let Some(z) = solve_ziggurat(seed, &pad) {
+        pad.ziggurat = z;
     }
     // The landmarks after the sites and roads they keep clear of, and a
     // trail from each to the ring.
@@ -4066,6 +4078,136 @@ fn solve_town(
             out[1] = bend_side_road(seed, &trial, &back, &mut lat);
         }
         return Some((trial.town, out));
+    }
+    None
+}
+
+/// Where the Black Ziggurat stands (`monument.rs`): on the 24 m lattice, at
+/// least `ZIG_TOWN_CLEAR_M` from the town, clear of every site and road,
+/// on ground the carve can level — and, among those, high. The rotation
+/// turns the front stairs toward the town, so the approach is the face.
+fn solve_ziggurat(seed: u64, pad: &Haven) -> Option<crate::monument::Ziggurat> {
+    use crate::monument::{Ziggurat, ZIG_FOOTPRINT as FP, ZIG_SNAP_M, ZIG_TOWN_CLEAR_M};
+    const SHORT: usize = 32;
+    const STEP: f32 = 96.0;
+    let cut = max_cut(&FP);
+    let mut short = [(0.0f32, 0.0f32, 0.0f32, f32::MAX); SHORT];
+    let n = (ISLAND_SIZE / STEP) as i32;
+    for gz in 1..n {
+        for gx in 1..n {
+            let x = gx as f32 * STEP;
+            let z = gz as f32 * STEP;
+            let x = floor_i32(x / ZIG_SNAP_M + 0.5) as f32 * ZIG_SNAP_M;
+            let z = floor_i32(z / ZIG_SNAP_M + 0.5) as f32 * ZIG_SNAP_M;
+            let y = height(seed, x, z);
+            if y < LAND_MIN_H + 3.0 {
+                continue;
+            }
+            if pad.town.live {
+                let (dx, dz) = (x - pad.town.x, z - pad.town.z);
+                if dx * dx + dz * dz < ZIG_TOWN_CLEAR_M * ZIG_TOWN_CLEAR_M {
+                    continue;
+                }
+            }
+            let far = |sx: f32, sz: f32, fp: &SiteFootprint| {
+                let d = FP.blend_m + fp.blend_m + 60.0;
+                let (dx, dz) = (x - sx, z - sz);
+                dx * dx + dz * dz >= d * d
+            };
+            if !far(pad.x, pad.z, &HAVEN_FOOTPRINT) {
+                continue;
+            }
+            if pad
+                .minor
+                .iter()
+                .any(|w| w.live && !far(w.x, w.z, site_footprint(w.kind)))
+            {
+                continue;
+            }
+            let road = FP.blend_m;
+            if pad.ring.dist2(x, z) < road * road
+                || pad
+                    .roads
+                    .iter()
+                    .any(|r| r.live && r.dist2(x, z) < road * road)
+            {
+                continue;
+            }
+            let (mut lo, mut hi) = (y, y);
+            for k in 0..8u16 {
+                let (sx, sz) = crate::yaw_lut::yaw_dir((k * 32) << 8);
+                let h = height(seed, x + sx * FP.stamp_m, z + sz * FP.stamp_m);
+                lo = lo.min(h);
+                hi = hi.max(h);
+            }
+            if hi - lo > 2.0 * cut {
+                continue;
+            }
+            // Level first, then high: a metre of relief is worth 20 m of
+            // altitude.
+            let score = (hi - lo) - 0.05 * y;
+            let Some(pos) = short.iter().position(|s| score < s.3) else {
+                continue;
+            };
+            for i in (pos + 1..SHORT).rev() {
+                short[i] = short[i - 1];
+            }
+            short[pos] = (x, z, y, score);
+        }
+    }
+    for (x, z, y, score) in short {
+        if score == f32::MAX {
+            break;
+        }
+        let floor = site_floor_y(seed, x, z, FP.stamp_m);
+        let floor = floor_i32(floor * 2.0 + 0.5) as f32 * 0.5;
+        let mut fits = true;
+        let mut probe = |sx: f32, sz: f32| {
+            let h = height(seed, sx, sz);
+            if h < LAND_MIN_H + 0.5 || fabs(h - floor) > cut {
+                fits = false;
+            }
+        };
+        for k in 0..16u16 {
+            let (sx, sz) = crate::yaw_lut::yaw_dir((k * 16) << 8);
+            probe(x + sx * FP.stamp_m, z + sz * FP.stamp_m);
+            probe(x + sx * FP.stamp_m * 0.5, z + sz * FP.stamp_m * 0.5);
+        }
+        for gx in -3..=3 {
+            for gz in -3..=3 {
+                probe(x + gx as f32 * 12.0, z + gz as f32 * 12.0);
+            }
+        }
+        if !fits {
+            continue;
+        }
+        // Local -Z (the stairs) toward the town, or the island's centre.
+        let (tx, tz) = if pad.town.live {
+            (pad.town.x, pad.town.z)
+        } else {
+            (ISLAND_SIZE * 0.5, ISLAND_SIZE * 0.5)
+        };
+        let (dx, dz) = (tx - x, tz - z);
+        // `to_world` turns local -Z to (0,-1), (-1,0), (0,1), (1,0) by rot.
+        let rot = if fabs(dx) > fabs(dz) {
+            if dx > 0.0 {
+                3
+            } else {
+                1
+            }
+        } else if dz > 0.0 {
+            2
+        } else {
+            0
+        };
+        return Some(Ziggurat {
+            x,
+            z,
+            y,
+            floor_y: floor,
+            rot,
+            live: true,
+        });
     }
     None
 }
@@ -5255,6 +5397,7 @@ pub fn build_reserved(haven: &Haven, x: f32, z: f32, margin: f32) -> bool {
     crate::depot::reserves(haven, x, z, margin)
         || crate::landmark::covers(&haven.marks, x, z, margin)
         || crate::town::reserves(&haven.town, x, z, margin)
+        || crate::monument::reserves(&haven.ziggurat, x, z, margin)
 }
 
 /// True if (x, z) stands inside the pad's **scatter** mask
@@ -5558,6 +5701,10 @@ pub fn site_sweep(haven: &Haven, x: f32, z: f32) -> f32 {
         let t = &haven.town;
         s = s.max(sweep_of(&crate::town::TOWN_FOOTPRINT, t.x, t.z, x, z));
     }
+    if haven.ziggurat.live {
+        let g = &haven.ziggurat;
+        s = s.max(sweep_of(&crate::monument::ZIG_FOOTPRINT, g.x, g.z, x, z));
+    }
     s
 }
 
@@ -5688,6 +5835,19 @@ pub fn site_stamp_with(strength: f32, haven: &Haven, raw: f32, x: f32, z: f32) -
             t.floor_y,
             t.x,
             t.z,
+            raw,
+            x,
+            z,
+        );
+    }
+    if haven.ziggurat.live {
+        let g = &haven.ziggurat;
+        s += stamp_of(
+            strength,
+            &crate::monument::ZIG_FOOTPRINT,
+            g.floor_y,
+            g.x,
+            g.z,
             raw,
             x,
             z,
@@ -6111,6 +6271,13 @@ pub enum Occupant {
     /// two apart. One slot, one structure, the same reasoning row 10 gives.
     /// `web/src/props.js` index 12.
     WaystationCanopy = 12,
+    /// The Black Ziggurat's green room crate (`monument.rs`): content's
+    /// `green`, which guarantees the blue card.
+    GreenCrate = 13,
+    /// The blue room's crate: content's `blue`, guaranteeing the red card.
+    BlueCrate = 14,
+    /// The sanctum's crate: content's `elite`.
+    EliteCrate = 15,
 }
 
 /// How many species a [`Slot`] may be. **The client's own pools must agree
@@ -6591,6 +6758,36 @@ fn scatter_in<C: Corners>(
         }
     }
 
+    // The ziggurat's crates (`monument.rs`), seated on their own floors —
+    // a room's floor, not the ground under the stone.
+    if crate::monument::covers(
+        &haven.ziggurat,
+        cell_x as f32 * CELL_SIZE + CELL_SIZE * 0.5,
+        cell_z as f32 * CELL_SIZE + CELL_SIZE * 0.5,
+        0.0,
+    ) {
+        let mut k = 0usize;
+        while let Some((ax, ay, az, yaw, occupant)) =
+            crate::monument::crate_world(&haven.ziggurat, k)
+        {
+            k += 1;
+            if (ax * (1.0 / CELL_SIZE)) as i32 != cell_x
+                || (az * (1.0 / CELL_SIZE)) as i32 != cell_z
+            {
+                continue;
+            }
+            return Slot {
+                occupant,
+                x: ax,
+                y: ay,
+                z: az,
+                yaw,
+                scale: 1.0,
+                species: 0,
+            };
+        }
+    }
+
     // A landmark's crates (`landmark.rs`), seated like a site's: the anchor
     // whose position falls in this cell.
     let cell_mid_x = cell_x as f32 * CELL_SIZE + CELL_SIZE * 0.5;
@@ -6645,6 +6842,7 @@ fn scatter_in<C: Corners>(
     if in_haven(haven, x, z)
         || in_waystation(haven, x, z)
         || crate::town::covers(&haven.town, x, z, 0.0)
+        || crate::monument::covers(&haven.ziggurat, x, z, 0.0)
     {
         return none;
     }
@@ -8488,7 +8686,7 @@ const fn boxes_peak(boxes: &[[f32; 6]]) -> f32 {
 /// volume, because an invisible collision skirt is a player passing through
 /// geometry — so the pair moved in one commit and `test_replay`'s golden
 /// moved with it.
-pub const OCCUPANT_R_M: [f32; 13] = [
+pub const OCCUPANT_R_M: [f32; 16] = [
     0.0, // None
     // Tree — the TRUNK, not the canopy, measured off the drawn bark mesh at
     // its base by `client/tests/tree.rs`. **It read 0.26 until 2026-08-17,
@@ -8529,6 +8727,9 @@ pub const OCCUPANT_R_M: [f32; 13] = [
     // the volume. A canopy is the other shape a radius cannot express: a
     // cylinder here would seal four open bays a player is meant to walk into.
     WAYSTATION_CANOPY_R_M,
+    0.6801, // GreenCrate — the crate's box
+    0.6801, // BlueCrate
+    0.6801, // EliteCrate
 ];
 
 /// How high above the slot's own ground each occupant blocks, meters, at a
@@ -8545,7 +8746,7 @@ pub const OCCUPANT_R_M: [f32; 13] = [
 /// canopy, and a body is 1.7 m against a 5.7 m trunk, so the distinction
 /// costs nothing today and is the correct shape when something flies or a
 /// tree falls. (knob, DECISIONS.md §open: occupant volume v0.)
-pub const OCCUPANT_TOP_M: [f32; 13] = [
+pub const OCCUPANT_TOP_M: [f32; 16] = [
     0.0, // None
     5.7, // Tree — PINE_TRUNK_H
     // `lift + the mesh's own max y`, measured, not `lift + the nominal
@@ -8565,6 +8766,9 @@ pub const OCCUPANT_TOP_M: [f32; 13] = [
     // overhead are inside this interval and a standing body is not; the box
     // loop is what lets a player walk under them.
     WAYSTATION_CANOPY_PEAK_M,
+    0.8, // GreenCrate
+    0.8, // BlueCrate
+    0.8, // EliteCrate
 ];
 
 /// Widest scale `scatter` can hand a slot. The draw is `0.9 + u8 * (0.2/255)`,
@@ -8628,6 +8832,7 @@ pub const fn occupant_volume(o: Occupant) -> (f32, f32) {
         Occupant::HavenShelter => (SHELTER_CORNER_R_M, SHELTER_PEAK_M),
         Occupant::CacheSlot => (0.5701, 0.55),
         Occupant::WaystationCanopy => (WAYSTATION_CANOPY_R_M, WAYSTATION_CANOPY_PEAK_M),
+        Occupant::GreenCrate | Occupant::BlueCrate | Occupant::EliteCrate => (0.6801, 0.8),
     }
 }
 
@@ -8636,7 +8841,7 @@ const _: () = {
     // than looped because a loop would need the variant list this file is
     // trying not to keep twice; here the compiler checks the pairing and the
     // match checks the completeness.
-    assert!(OCCUPANT_R_M.len() == 13 && OCCUPANT_TOP_M.len() == 13);
+    assert!(OCCUPANT_R_M.len() == 16 && OCCUPANT_TOP_M.len() == 16);
     // Index 8 is the client's stump and has no variant, so it is the one row
     // the match cannot speak for; it is a hole and stays zero.
     assert!(OCCUPANT_R_M[8] == 0.0 && OCCUPANT_TOP_M[8] == 0.0);
@@ -8664,6 +8869,12 @@ const _: () = {
     assert!(occupant_volume(Occupant::HavenShelter).1 == OCCUPANT_TOP_M[10]);
     assert!(occupant_volume(Occupant::CacheSlot).1 == OCCUPANT_TOP_M[11]);
     assert!(occupant_volume(Occupant::WaystationCanopy).1 == OCCUPANT_TOP_M[12]);
+    assert!(occupant_volume(Occupant::GreenCrate).0 == OCCUPANT_R_M[13]);
+    assert!(occupant_volume(Occupant::BlueCrate).0 == OCCUPANT_R_M[14]);
+    assert!(occupant_volume(Occupant::EliteCrate).0 == OCCUPANT_R_M[15]);
+    assert!(occupant_volume(Occupant::GreenCrate).1 == OCCUPANT_TOP_M[13]);
+    assert!(occupant_volume(Occupant::BlueCrate).1 == OCCUPANT_TOP_M[14]);
+    assert!(occupant_volume(Occupant::EliteCrate).1 == OCCUPANT_TOP_M[15]);
     // The lesser tier's container is the lesser silhouette, and it is a
     // structural claim rather than a taste one: the two tiers must be
     // distinguishable at the range either is legible from, and a player who
@@ -8896,7 +9107,9 @@ pub fn site_roofed(seed: u64, haven: &Haven, x: f32, z: f32, feet_y: f32) -> boo
             return true;
         }
     }
-    crate::depot::roofed(haven, x, z, head) || crate::town::roofed(&haven.town, x, z, feet_y)
+    crate::depot::roofed(haven, x, z, head)
+        || crate::town::roofed(&haven.town, x, z, feet_y)
+        || crate::monument::roofed(&haven.ziggurat, x, z, feet_y)
 }
 
 /// [`site_roofed`] for one authored box list standing at `(sx, sz, yaw)` on

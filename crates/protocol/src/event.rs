@@ -405,7 +405,12 @@ const SUB_VEND_OFFERS: u32 = 66;
 const SUB_VEND: u32 = 67;
 /// A trade was refused (own-fact): why, and which offer.
 const SUB_VEND_REFUSED: u32 = 68;
-const SUB_MAX: u32 = SUB_VEND_REFUSED;
+/// The ziggurat's card doors that stand open (wire v86), a bit per door:
+/// sent to everyone when the set changes and to a joiner.
+const SUB_CARD_DOORS: u32 = 69;
+/// A swipe was refused (own-fact): why, and which door.
+const SUB_SWIPE_REFUSED: u32 = 70;
+const SUB_MAX: u32 = SUB_SWIPE_REFUSED;
 /// A grow-sync batch's count: 1..=`GROW_SYNC_BATCH` in six bits.
 const GROW_SYNC_COUNT_BITS: u32 = 6;
 /// Width of an exposure reading: per cent, 0..=100 in seven bits.
@@ -1387,6 +1392,10 @@ pub enum EventMsg {
     Vend { offer: u8, times: u8 },
     /// Your trade was refused (`sim_core::vend::REFUSE_V_*`).
     VendRefused { code: u8, offer: u8 },
+    /// The card doors open now, bit `d` for door `d`.
+    CardDoors { bits: u8 },
+    /// Your swipe was refused (`sim_core::monument::REFUSE_S_*`).
+    SwipeRefused { code: u8, door: u8 },
     /// The feed ack: the hearth's stock rows after the transfer, aligned
     /// to the baked upkeep-material list — (item index, units, what one
     /// upkeep period charges in it). The third column is upkeep v2's
@@ -2880,6 +2889,30 @@ pub fn encode_event_vend_refused(code: u8, offer: u8, buf: &mut [u8]) -> Result<
     Ok(w.finish())
 }
 
+/// The card doors open now.
+pub fn encode_event_card_doors(bits: u8, buf: &mut [u8]) -> Result<usize, WireError> {
+    if bits as u32 >= 1 << sim_core::monument::CARD_DOORS {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_CARD_DOORS)?;
+    w.write(bits as u32, sim_core::monument::CARD_DOORS as u32)?;
+    Ok(w.finish())
+}
+
+/// Your swipe was refused.
+pub fn encode_event_swipe_refused(code: u8, door: u8, buf: &mut [u8]) -> Result<usize, WireError> {
+    if code == 0
+        || code as u32 > sim_core::monument::REFUSE_S_MAX
+        || door as usize >= sim_core::monument::CARD_DOORS
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_SWIPE_REFUSED)?;
+    w.write(code as u32, 2)?;
+    w.write(door as u32, 2)?;
+    Ok(w.finish())
+}
+
 /// The owner's skin set, every word of it.
 pub fn encode_event_skins_owned(
     owned: &sim_core::skin::SkinSet,
@@ -4271,6 +4304,20 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 return Err(WireError::Malformed);
             }
             EventMsg::VendRefused { code, offer }
+        }
+        SUB_CARD_DOORS => EventMsg::CardDoors {
+            bits: r.read(sim_core::monument::CARD_DOORS as u32)? as u8,
+        },
+        SUB_SWIPE_REFUSED => {
+            let code = r.read(2)? as u8;
+            let door = r.read(2)? as u8;
+            if code == 0
+                || code as u32 > sim_core::monument::REFUSE_S_MAX
+                || door as usize >= sim_core::monument::CARD_DOORS
+            {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::SwipeRefused { code, door }
         }
         SUB_SKINS_OWNED => {
             let mut owned = sim_core::skin::SkinSet::EMPTY;
@@ -6428,6 +6475,10 @@ mod wire_domains {
         Module {
             file: "kit.rs",
             src: include_str!("../../sim-core/src/kit.rs"),
+        },
+        Module {
+            file: "monument.rs",
+            src: include_str!("../../sim-core/src/monument.rs"),
         },
         Module {
             file: "town.rs",

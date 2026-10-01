@@ -303,6 +303,9 @@ pub struct Occupants<'a> {
     pub haven: &'a Haven,
     pub harvested: &'a dyn Harvested,
     pub cache: &'a mut SlotCache,
+    /// The card doors open now (`monument::open_bits`): an open door's leaf
+    /// does not collide.
+    pub doors: u32,
 }
 
 impl Occupants<'_> {
@@ -393,6 +396,13 @@ impl Occupants<'_> {
         best = best.max(self.rock_ground(seed, x, z, feet_y));
         best = best.max(crate::landmark::ground(&self.haven.marks, x, z, feet_y));
         best = best.max(crate::town::ground(&self.haven.town, x, z, feet_y));
+        best = best.max(crate::monument::ground(
+            &self.haven.ziggurat,
+            self.doors,
+            x,
+            z,
+            feet_y,
+        ));
         let mut dz = -terrain::OCCUPANT_PROBE_CELLS;
         while dz <= terrain::OCCUPANT_PROBE_CELLS {
             let mut dx = -terrain::OCCUPANT_PROBE_CELLS;
@@ -459,6 +469,9 @@ impl Occupants<'_> {
             return true;
         }
         if crate::town::blocks(&self.haven.town, x, z, feet_y, r, h) {
+            return true;
+        }
+        if crate::monument::blocks(&self.haven.ziggurat, self.doors, x, z, feet_y, r, h) {
             return true;
         }
         let pcx = floor_i32(x / CELL_SIZE);
@@ -536,6 +549,7 @@ impl Scratch<Barren> {
                 marks: crate::landmark::NO_MARKS,
                 trails: [terrain::SideRoad::NONE; crate::landmark::LANDMARKS],
                 town: crate::town::Town::NONE,
+                ziggurat: crate::monument::Ziggurat::NONE,
             },
             harvested: Barren,
             cache: SlotCache::new(),
@@ -568,6 +582,7 @@ impl<H: Harvested> Scratch<H> {
 
     pub fn occupants(&mut self) -> Occupants<'_> {
         Occupants {
+            doors: 0,
             table: &self.table,
             haven: &self.haven,
             harvested: &self.harvested,

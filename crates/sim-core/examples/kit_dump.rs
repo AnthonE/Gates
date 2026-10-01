@@ -11,6 +11,7 @@ fn main() {
     let mut out = String::new();
     match which.as_str() {
         "town" => sim_core::town::dump(&mut out).unwrap(),
+        "ziggurat" => sim_core::monument::dump(&mut out).unwrap(),
         other => panic!("no kit named {other}"),
     }
     print!("{out}");

@@ -566,6 +566,15 @@ fn try_site(
     if pad.town.live && !clear(pad.town.x, pad.town.z, &crate::town::TOWN_FOOTPRINT) {
         return None;
     }
+    if pad.ziggurat.live
+        && !clear(
+            pad.ziggurat.x,
+            pad.ziggurat.z,
+            &crate::monument::ZIG_FOOTPRINT,
+        )
+    {
+        return None;
+    }
     // The kind by where it stands.
     let moist = terrain::moisture_memo(lat, seed, x, z);
     let roll = unit(h, 32);

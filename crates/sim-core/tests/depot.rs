@@ -75,6 +75,7 @@ fn complete_compounds_have_opposite_distinct_connections_and_flat_footings() {
 
 fn occupants<'a>(h: &'a Haven, table: &'a ScatterTable, cache: &'a mut SlotCache) -> Occupants<'a> {
     Occupants {
+        doors: 0,
         table,
         haven: h,
         harvested: &Pristine,

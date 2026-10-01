@@ -37,6 +37,7 @@ const SEEDS: [u64; 16] = [
 
 fn occupants<'a>(h: &'a Haven, table: &'a ScatterTable, cache: &'a mut SlotCache) -> Occupants<'a> {
     Occupants {
+        doors: 0,
         table,
         haven: h,
         harvested: &Pristine,

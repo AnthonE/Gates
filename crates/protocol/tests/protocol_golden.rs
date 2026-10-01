@@ -62,7 +62,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 125] = [
+const GOLDEN: [&[u8]; 128] = [
     include_bytes!("golden/input_acks_only.bin"),
     include_bytes!("golden/input_full.bin"),
     include_bytes!("golden/snapshot_keyframe.bin"),
@@ -188,6 +188,9 @@ const GOLDEN: [&[u8]; 125] = [
     include_bytes!("golden/event_vend.bin"),
     include_bytes!("golden/event_vend_refused.bin"),
     include_bytes!("golden/action_vend.bin"),
+    include_bytes!("golden/event_card_doors.bin"),
+    include_bytes!("golden/event_swipe_refused.bin"),
+    include_bytes!("golden/action_swipe.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -400,8 +403,12 @@ fn test_protocol_golden() {
     g!(seen, golden_event, 122);
     g!(seen, golden_event, 123);
     g!(seen, golden_action, 124);
+    // The ziggurat's card doors (v86).
+    g!(seen, golden_event, 125);
+    g!(seen, golden_event, 126);
+    g!(seen, golden_action, 127);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 125, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 128, "a new fixture must be dispatched above");
     // **The count above cannot see the failure it claims to.** Its comment
     // said a fixture added to `FIXTURES` and forgotten here "would be a
     // golden nobody checks" and that the count makes that impossible to
@@ -487,6 +494,15 @@ fn golden_action(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             protocol::encode_action_reskin(slot, skin, &mut buf).unwrap()
+        }
+        "action_swipe.bin" => {
+            let door = protocol::goldens::action_swipe();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::Swipe { door },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_action_swipe(door, &mut buf).unwrap()
         }
         "action_vend.bin" => {
             let (offer, times) = protocol::goldens::action_vend();
@@ -1810,6 +1826,24 @@ fn golden_event(fixture: &[u8], name: &str) {
             protocol::encode_event_vend_offers(&vc, &names, 0, &mut buf)
                 .unwrap()
                 .0
+        }
+        "event_card_doors.bin" => {
+            let bits = protocol::goldens::event_card_doors();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::CardDoors { bits },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_event_card_doors(bits, &mut buf).unwrap()
+        }
+        "event_swipe_refused.bin" => {
+            let (code, door) = protocol::goldens::event_swipe_refused();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::SwipeRefused { code, door },
+                "{name}: decode mismatch"
+            );
+            protocol::encode_event_swipe_refused(code, door, &mut buf).unwrap()
         }
         "event_vend.bin" => {
             let (offer, times) = protocol::goldens::event_vend();

@@ -1333,6 +1333,7 @@ pub fn foundation_terrain_ok(seed: u64, haven: &terrain::Haven, ax: f32, az: f32
         // The town's floor is flat and nobody's: it answers here too, so
         // every scan for buildable ground passes it by.
         && !crate::town::reserves(&haven.town, ax, az, BUILD_CELL_M * 1.5)
+        && !crate::monument::reserves(&haven.ziggurat, ax, az, BUILD_CELL_M * 1.5)
 }
 
 /// Whether `loc` is the kind of slot `shape` occupies.

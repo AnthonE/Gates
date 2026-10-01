@@ -83,7 +83,7 @@ use crate::limits::{
     MAX_SPENT_ARROWS, MAX_WORLD_CONTS, SKIN_WORDS,
 };
 use crate::lock::{LockRec, CODE_MAX, CODE_NONE};
-use crate::loot::{LOOT_CACHE, LOOT_CRATE};
+use crate::loot::{LOOT_BLUE, LOOT_CACHE, LOOT_CRATE, LOOT_ELITE, LOOT_GREEN};
 use crate::movement;
 use crate::oven::OvenState;
 use crate::persist::{PlayerSave, SaveError, PLAYER_SAVE_BYTES};
@@ -1431,7 +1431,8 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         {
             return Err(WorldSaveError::AddressOutOfRange);
         }
-        if table as usize != LOOT_CRATE && table as usize != LOOT_CACHE {
+        if ![LOOT_CRATE, LOOT_CACHE, LOOT_GREEN, LOOT_BLUE, LOOT_ELITE].contains(&(table as usize))
+        {
             return Err(WorldSaveError::BadWorldContTable);
         }
         let cell_m = terrain::CELL_SIZE;

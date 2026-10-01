@@ -976,6 +976,7 @@ impl ClientCore {
         (
             self.predict.seed(),
             Occupants {
+                doors: self.card_doors,
                 table: &self.scatter_table,
                 haven: &self.haven,
                 harvested: &self.harvested,
@@ -1265,6 +1266,12 @@ pub struct ClientCore {
     vend_results: [(bool, u8, u8, u8); REFUSAL_RING],
     vend_result_head: usize,
     vend_result_len: usize,
+    /// The ziggurat's card doors open now (`SUB_CARD_DOORS`): prediction
+    /// walks through an open door exactly as the sim does.
+    pub card_doors: u32,
+    swipe_refusals: [(u8, u8); REFUSAL_RING],
+    swipe_refusal_head: usize,
+    swipe_refusal_len: usize,
     research_refusal_head: usize,
     research_refusal_len: usize,
     refusals: [u8; REFUSAL_RING],
@@ -1840,6 +1847,10 @@ impl ClientCore {
             vend_results: [(false, 0, 0, 0); REFUSAL_RING],
             vend_result_head: 0,
             vend_result_len: 0,
+            card_doors: 0,
+            swipe_refusals: [(0, 0); REFUSAL_RING],
+            swipe_refusal_head: 0,
+            swipe_refusal_len: 0,
             gather_refusals: [(0, 0); REFUSAL_RING],
             reload_refusals: [(0, 0); REFUSAL_RING],
             reload_refusal_head: 0,
@@ -2113,6 +2124,16 @@ impl ClientCore {
             }
             EventMsg::Vend { offer, times } => self.push_vend((false, 0, offer, times)),
             EventMsg::VendRefused { code, offer } => self.push_vend((true, code, offer, 0)),
+            EventMsg::CardDoors { bits } => self.card_doors = bits as u32,
+            EventMsg::SwipeRefused { code, door } => {
+                if self.swipe_refusal_len == REFUSAL_RING {
+                    self.swipe_refusal_head = (self.swipe_refusal_head + 1) % REFUSAL_RING;
+                    self.swipe_refusal_len -= 1;
+                }
+                let at = (self.swipe_refusal_head + self.swipe_refusal_len) % REFUSAL_RING;
+                self.swipe_refusals[at] = (code, door);
+                self.swipe_refusal_len += 1;
+            }
             EventMsg::CraftQ {
                 jobs,
                 count,
@@ -3499,6 +3520,17 @@ impl ClientCore {
         Some(r)
     }
 
+    /// Oldest swipe refusal: `(code, door)`.
+    pub fn pop_swipe_refused(&mut self) -> Option<(u8, u8)> {
+        if self.swipe_refusal_len == 0 {
+            return None;
+        }
+        let r = self.swipe_refusals[self.swipe_refusal_head];
+        self.swipe_refusal_head = (self.swipe_refusal_head + 1) % REFUSAL_RING;
+        self.swipe_refusal_len -= 1;
+        Some(r)
+    }
+
     /// A vendor's name as the server sent it.
     pub fn vendor_name(&self, v: usize) -> &[u8] {
         if v < sim_core::limits::MAX_VENDORS {
@@ -3787,6 +3819,7 @@ impl ClientCore {
                 frame,
                 self.pieces.cols(),
                 &mut Occupants {
+                    doors: self.card_doors,
                     table: &self.scatter_table,
                     haven: &self.haven,
                     harvested: &self.harvested,
@@ -3944,6 +3977,7 @@ impl ClientCore {
                         header.last_executed_seq,
                         self.pieces.cols(),
                         &mut Occupants {
+                            doors: self.card_doors,
                             table: &self.scatter_table,
                             haven: &self.haven,
                             harvested: &self.harvested,

@@ -51,6 +51,12 @@ pub const LOOT_CRATE: usize = 1;
 /// lesser tier placed `CrateSlot`, it paid the destination's table and the
 /// gradient was geometry alone. `ci/haven_prize.mjs` gates the ordering.
 pub const LOOT_CACHE: usize = 2;
+/// `container = "green"` — the ziggurat's green room (`Occupant::GreenCrate`).
+pub const LOOT_GREEN: usize = 3;
+/// `container = "blue"` — the blue room (`Occupant::BlueCrate`).
+pub const LOOT_BLUE: usize = 4;
+/// `container = "elite"` — the sanctum (`Occupant::EliteCrate`).
+pub const LOOT_ELITE: usize = 5;
 
 /// One weighted row. Counts are inclusive bounds.
 #[derive(Clone, Copy, Debug)]

@@ -78,6 +78,7 @@ pub fn kind_of(act: &ActionMsg) -> Kind {
     match act {
         ActionMsg::Consume { .. } | ActionMsg::Drink => Kind::Mouth,
         ActionMsg::Vend { .. } => Kind::Move,
+        ActionMsg::Swipe { .. } => Kind::Move,
         ActionMsg::Use { .. } => Kind::Use,
         ActionMsg::Repair { .. } => Kind::Repair,
         ActionMsg::Throw { .. } => Kind::Throw,

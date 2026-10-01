@@ -53,8 +53,8 @@ use sim_core::world::{
     EV_KNOCK, EV_KNOWN, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED,
     EV_PIECE_REPAIRED, EV_RECOVERED, EV_RELOAD, EV_RELOAD_REFUSED, EV_RESEARCH,
     EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK,
-    EV_STRUCT_HIT, EV_SWING, EV_VEND, EV_VEND_REFUSED, EV_VITALS, EV_WEAK_MARK, EV_WOUNDED,
-    STRUCT_DEPLOY_BIT,
+    EV_STRUCT_HIT, EV_SWING, EV_SWIPE, EV_SWIPE_REFUSED, EV_VEND, EV_VEND_REFUSED, EV_VITALS,
+    EV_WEAK_MARK, EV_WOUNDED, STRUCT_DEPLOY_BIT,
 };
 
 /// A piece row's baked maximum hp, or 0 if the row is past the table.
@@ -1330,6 +1330,7 @@ impl ShardCore {
                         offer,
                         times,
                     },
+                    ActionMsg::Swipe { door } => Command::Swipe { id: c.id, door },
                     ActionMsg::Research { slot } => Command::Research { id: c.id, slot },
                     ActionMsg::Unlock { recipe } => Command::Unlock { id: c.id, recipe },
                     ActionMsg::Drink => Command::Drink { id: c.id },
@@ -1949,6 +1950,26 @@ impl ShardCore {
                         Err(_) => ShardStats::bump(&stats.encode_range_errors),
                     }
                 }
+                EV_SWIPE_REFUSED => {
+                    let Some(slot) = self.client_slot_of(ev.a) else {
+                        continue;
+                    };
+                    match protocol::encode_event_swipe_refused(
+                        ev.b as u8,
+                        ev.c as u8,
+                        &mut self.ev_buf,
+                    ) {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                // Every client hears a door through the open-door mirror
+                // (the drip below), so the swipe itself rides no wire.
+                EV_SWIPE => {}
                 EV_RELOAD_REFUSED => {
                     let Some(slot) = self.client_slot_of(ev.a) else {
                         continue; // shooter left this tick
@@ -3397,6 +3418,22 @@ impl ShardCore {
                     if send(Lane::Event, slot, &self.ev_buf[..len]) {
                         ShardStats::bump(&stats.ev_sent);
                         self.clients[slot].vend_cursor += took;
+                    } else {
+                        return;
+                    }
+                }
+                Err(_) => ShardStats::bump(&stats.encode_range_errors),
+            }
+        }
+
+        // The ziggurat's open doors (wire v86), whenever they move.
+        let bits = self.world.card_door_bits as u8;
+        if self.clients[slot].last_doors != Some(bits) {
+            match protocol::encode_event_card_doors(bits, &mut self.ev_buf) {
+                Ok(len) => {
+                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                        ShardStats::bump(&stats.ev_sent);
+                        self.clients[slot].last_doors = Some(bits);
                     } else {
                         return;
                     }

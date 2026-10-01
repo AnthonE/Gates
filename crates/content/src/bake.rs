@@ -64,6 +64,9 @@ pub fn container_index(name: &str) -> Option<usize> {
         "barrel" => LOOT_BARREL,
         "crate" => LOOT_CRATE,
         "cache" => LOOT_CACHE,
+        "green" => sim_core::loot::LOOT_GREEN,
+        "blue" => sim_core::loot::LOOT_BLUE,
+        "elite" => sim_core::loot::LOOT_ELITE,
         _ => return None,
     })
 }
@@ -1663,6 +1666,18 @@ impl Content {
             }
         }
         Ok(vc)
+    }
+
+    /// The keycard each ziggurat door takes (`monument::DOORS`), as item
+    /// indices. A door naming an item content lacks is a refused boot.
+    pub fn bake_cards(&self) -> Result<[u16; sim_core::monument::CARD_DOORS], String> {
+        let mut out = [sim_core::gather::NO_ITEM; sim_core::monument::CARD_DOORS];
+        for (d, door) in sim_core::monument::DOORS.iter().enumerate() {
+            out[d] = self
+                .item_index(door.card)
+                .ok_or_else(|| format!("monument: door {d} takes `{}`, not an item", door.card))?;
+        }
+        Ok(out)
     }
 
     /// Each vendor's name, kiosk order, for the wire's offer catalog.

@@ -12,3 +12,14 @@ fn the_town_kit_file_matches_the_source() {
     let file = include_str!("../../../ci/kits/town.json");
     assert!(file == out, "ci/kits/town.json is stale — regenerate it");
 }
+
+#[test]
+fn the_ziggurat_kit_file_matches_the_source() {
+    let mut out = String::new();
+    sim_core::monument::dump(&mut out).unwrap();
+    let file = include_str!("../../../ci/kits/ziggurat.json");
+    assert!(
+        file == out,
+        "ci/kits/ziggurat.json is stale — regenerate it"
+    );
+}

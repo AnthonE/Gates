@@ -102,9 +102,9 @@ use sim_core::world::{
     EV_KNOCK, EV_KNOWN, EV_MAX, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED,
     EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RECOVERED, EV_RELOAD, EV_RELOAD_REFUSED, EV_RESEARCH,
     EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK,
-    EV_STRUCT_HIT, EV_SWING, EV_TRUST, EV_VEND, EV_VEND_REFUSED, EV_VITALS, EV_WEAK_MARK,
-    EV_WOUNDED, PRESENCE_ASLEEP, PRESENCE_AWAKE, PRESENCE_GONE, PRESENCE_MAX, STRUCT_DEPLOY_BIT,
-    TRUST_AUTH, TRUST_CONT, TRUST_DOOR, TRUST_VERB_MAX,
+    EV_STRUCT_HIT, EV_SWING, EV_SWIPE, EV_SWIPE_REFUSED, EV_TRUST, EV_VEND, EV_VEND_REFUSED,
+    EV_VITALS, EV_WEAK_MARK, EV_WOUNDED, PRESENCE_ASLEEP, PRESENCE_AWAKE, PRESENCE_GONE,
+    PRESENCE_MAX, STRUCT_DEPLOY_BIT, TRUST_AUTH, TRUST_CONT, TRUST_DOOR, TRUST_VERB_MAX,
 };
 use sim_core::wound::{recover_chance_pm, recovers, WOUNDED_HP, WOUND_MAX_TICKS, WOUND_MIN_TICKS};
 use sim_core::yaw_dir;
@@ -4119,7 +4119,7 @@ fn howl_names_the_animal_that_called_its_pack() {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 49] = [
+    const COVERED: [(&str, u8); 51] = [
         ("EV_GATHER", EV_GATHER),
         ("EV_GATHER_REFUSED", EV_GATHER_REFUSED),
         ("EV_SLOT_HARVESTED", EV_SLOT_HARVESTED),
@@ -4169,6 +4169,8 @@ fn coverage_is_stated_not_implied() {
         ("EV_HOWL", EV_HOWL),
         ("EV_VEND", EV_VEND),
         ("EV_VEND_REFUSED", EV_VEND_REFUSED),
+        ("EV_SWIPE", EV_SWIPE),
+        ("EV_SWIPE_REFUSED", EV_SWIPE_REFUSED),
     ];
     /// What is knowingly still byte-golden only: nothing, since the last
     /// five landed. The seat stays — named, not just counted — so the next
@@ -5469,4 +5471,57 @@ fn a_vend_names_the_player_the_offer_and_the_times() {
     let inv = &w.players[0].inv;
     assert_eq!(sim_core::craft::inv_count(inv, 1), 0, "paid 3 × 2");
     assert_eq!(sim_core::craft::inv_count(inv, 2), 8, "got 4 × 2");
+}
+
+/// `EV_SWIPE_REFUSED: a = player, b = reason, c = door`, then `EV_SWIPE:
+/// a = player, b = door, c = lever` — at the green reader without the card,
+/// with it (one swipe's wear off it, the door open), then from inside by
+/// the lever with no card at all.
+#[test]
+fn a_swipe_names_the_player_the_door_and_how() {
+    use sim_core::monument::{self, REFUSE_S_CARD, SWIPE_WEAR};
+    let mut w = World::new(SEED);
+    w.gather = GatherContent::probe_fixture();
+    w.cards = [9, 10, 11];
+    w.tick(&[Command::Join { id: BUILDER }]);
+    let z = w.haven.ziggurat;
+    assert!(z.live, "the fixture seed has a ziggurat");
+    let (x, _, wz) = monument::reader_world(&z, 0, false).unwrap();
+    w.players[0].body = Body::at(SEED, hv(SEED), x, wz);
+    w.tick(&[Command::Swipe {
+        id: BUILDER,
+        door: 0,
+    }]);
+    let ev = only(&w, EV_SWIPE_REFUSED);
+    assert_eq!((ev.a, ev.b, ev.c), (BUILDER, REFUSE_S_CARD, 0));
+    assert_eq!(w.card_door_bits, 0);
+
+    w.players[0].inv[3] = ItemStack {
+        item: 9,
+        count: 1,
+        cond: 400,
+        skin: 0,
+    };
+    w.tick(&[Command::Swipe {
+        id: BUILDER,
+        door: 0,
+    }]);
+    let ev = only(&w, EV_SWIPE);
+    assert_eq!((ev.a, ev.b, ev.c), (BUILDER, 0, 0));
+    assert_eq!(w.players[0].inv[3].cond, 400 - SWIPE_WEAR);
+    assert_eq!(w.card_door_bits, 1, "the green door stands open");
+
+    let (x, _, wz) = monument::reader_world(&z, 0, true).unwrap();
+    w.players[0].body = Body::at(SEED, hv(SEED), x, wz);
+    w.players[0].inv[3] = ItemStack::default();
+    w.tick(&[Command::Swipe {
+        id: BUILDER,
+        door: 0,
+    }]);
+    let ev = only(&w, EV_SWIPE);
+    assert_eq!(
+        (ev.a, ev.b, ev.c),
+        (BUILDER, 0, 1),
+        "the lever needs no card"
+    );
 }

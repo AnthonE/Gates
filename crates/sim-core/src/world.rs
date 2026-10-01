@@ -802,7 +802,15 @@ pub const EV_VEND: u8 = 48;
 /// EV_VEND_REFUSED: a = trader id, b = `vend::REFUSE_V_*`, c = the offer.
 pub const EV_VEND_REFUSED: u8 = 49;
 
-pub const EV_MAX: u8 = EV_VEND_REFUSED;
+/// EV_SWIPE: a = player id, b = the card door (`monument::DOORS`), c = 1
+/// from the inside lever, 0 with a card. Every client hears the door through
+/// the open-door mirror, not this.
+pub const EV_SWIPE: u8 = 50;
+
+/// EV_SWIPE_REFUSED: a = player id, b = `monument::REFUSE_S_*`, c = door.
+pub const EV_SWIPE_REFUSED: u8 = 51;
+
+pub const EV_MAX: u8 = EV_SWIPE_REFUSED;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -1770,6 +1778,12 @@ pub enum Command {
         offer: u8,
         times: u8,
     },
+    /// Swipe a keycard at one of the ziggurat's doors, or pull its inside
+    /// lever (`monument.rs`). The sim checks reach and the card.
+    Swipe {
+        id: u32,
+        door: u8,
+    },
     /// Drink from the water under your own feet (survival.rs). No target
     /// and no position: the heightfield is a pure function of the seed,
     /// so the sim asks it where the body already is.
@@ -1836,6 +1850,15 @@ pub struct World {
     pub skins: crate::skin::SkinContent,
     /// The town's vendor offers (`content/sites.toml`, `vend.rs`).
     pub vend: crate::vend::VendContent,
+    /// The keycard item each card door takes (`monument::DOORS`), baked
+    /// from content; `NO_ITEM` opens nothing.
+    pub cards: [u16; crate::monument::CARD_DOORS],
+    /// When each card door shuts, a tick (0 = shut). Transient: neither
+    /// hashed nor saved — a loaded world's doors are shut.
+    pub card_doors: [u64; crate::monument::CARD_DOORS],
+    /// `card_doors` as `kit::blocks_local`'s open mask, refreshed at the top
+    /// of the tick and on a swipe.
+    pub card_door_bits: u32,
     /// Baked melee rows + max hp (combat.rs). Construction input too; the
     /// inert default leaves the world unable to hurt anyone.
     pub combat: CombatContent,
@@ -2036,6 +2059,9 @@ impl World {
             research: crate::research::ResearchContent::EMPTY,
             skins: crate::skin::SkinContent::EMPTY,
             vend: crate::vend::VendContent::EMPTY,
+            cards: [crate::gather::NO_ITEM; crate::monument::CARD_DOORS],
+            card_doors: [0; crate::monument::CARD_DOORS],
+            card_door_bits: 0,
             combat: CombatContent::EMPTY,
             backpack: BackpackContent::EMPTY,
             survival: SurvivalContent::EMPTY,
@@ -2653,6 +2679,7 @@ impl World {
         let haven = &self.haven;
         let cols = self.pieces.cols();
         let mut occ = crate::occupy::Occupants {
+            doors: self.card_door_bits,
             table: &self.scatter,
             haven,
             harvested: &self.slot_lives,
@@ -2941,6 +2968,7 @@ impl World {
             &self.haven,
             self.pieces.cols(),
             &mut crate::occupy::Occupants {
+                doors: self.card_door_bits,
                 table: &self.scatter,
                 haven: &self.haven,
                 harvested: &self.slot_lives,
@@ -4415,6 +4443,21 @@ impl World {
                     );
                 }
             }
+            Command::Swipe { id, door } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    let z = self.haven.ziggurat;
+                    crate::monument::swipe(
+                        &z,
+                        &self.cards,
+                        &mut self.card_doors,
+                        self.tick,
+                        &mut self.players[slot],
+                        door as usize,
+                        &mut self.events,
+                    );
+                    self.card_door_bits = crate::monument::open_bits(&self.card_doors, self.tick);
+                }
+            }
             Command::Consume { id, slot: inv } => {
                 if let Some(slot) = self.live_slot_of(id) {
                     survival::consume(
@@ -4681,10 +4724,40 @@ impl World {
         }
     }
 
+    /// The card doors, once a tick: a door whose time is up does not shut on
+    /// a body in its doorway (it waits a second and tries again).
+    fn card_door_sweep(&mut self) {
+        let z = self.haven.ziggurat;
+        if !z.live {
+            return;
+        }
+        for d in 0..crate::monument::CARD_DOORS {
+            let until = self.card_doors[d];
+            if until == 0 || self.tick < until {
+                continue;
+            }
+            let blocked = self.players.iter().any(|p| {
+                p.active && {
+                    let x = p.body.qx as f32 * crate::movement::POS_XZ_Q;
+                    let wz = p.body.qz as f32 * crate::movement::POS_XZ_Q;
+                    let feet = p.body.qy as f32 * crate::movement::POS_Y_Q;
+                    crate::monument::in_doorway(&z, d, x, wz, feet)
+                }
+            });
+            self.card_doors[d] = if blocked {
+                self.tick + crate::limits::TICK_HZ as u64
+            } else {
+                0
+            };
+        }
+        self.card_door_bits = crate::monument::open_bits(&self.card_doors, self.tick);
+    }
+
     pub fn tick(&mut self, commands: &[Command]) {
         self.events.clear();
         self.trust.clear(self.tick);
         self.safe_zone();
+        self.card_door_sweep();
         // The tick's structural removal budget is minted **before** the
         // commands rather than after them, because since demolish v1 a
         // command can take a piece out of the store and seed a cascade —
@@ -4796,6 +4869,7 @@ impl World {
                     &self.haven,
                     self.pieces.cols(),
                     &mut crate::occupy::Occupants {
+                        doors: self.card_door_bits,
                         table: &self.scatter,
                         haven: &self.haven,
                         harvested: &self.slot_lives,
@@ -4845,6 +4919,7 @@ impl World {
                     &self.haven,
                     self.pieces.cols(),
                     &mut crate::occupy::Occupants {
+                        doors: self.card_door_bits,
                         table: &self.scatter,
                         haven: &self.haven,
                         harvested: &self.slot_lives,
@@ -4887,6 +4962,7 @@ impl World {
                         &self.haven,
                         self.pieces.cols(),
                         &mut crate::occupy::Occupants {
+                            doors: self.card_door_bits,
                             table: &self.scatter,
                             haven: &self.haven,
                             harvested: &self.slot_lives,
@@ -4902,6 +4978,7 @@ impl World {
                     &self.haven,
                     self.pieces.cols(),
                     &mut crate::occupy::Occupants {
+                        doors: self.card_door_bits,
                         table: &self.scatter,
                         haven: &self.haven,
                         harvested: &self.slot_lives,
@@ -4955,6 +5032,7 @@ impl World {
                     &self.haven,
                     self.pieces.cols(),
                     &mut crate::occupy::Occupants {
+                        doors: self.card_door_bits,
                         table: &self.scatter,
                         haven: &self.haven,
                         harvested: &self.slot_lives,
@@ -4970,6 +5048,7 @@ impl World {
                 &self.haven,
                 self.pieces.cols(),
                 &mut crate::occupy::Occupants {
+                    doors: self.card_door_bits,
                     table: &self.scatter,
                     haven: &self.haven,
                     harvested: &self.slot_lives,
@@ -5023,6 +5102,7 @@ impl World {
                     &self.haven,
                     self.pieces.cols(),
                     &mut crate::occupy::Occupants {
+                        doors: self.card_door_bits,
                         table: &self.scatter,
                         haven: &self.haven,
                         harvested: &self.slot_lives,
@@ -5261,6 +5341,7 @@ impl World {
             &self.mob,
             self.pieces.cols(),
             &mut crate::occupy::Occupants {
+                doors: self.card_door_bits,
                 table: &self.scatter,
                 haven: &self.haven,
                 harvested: &self.slot_lives,
@@ -5372,6 +5453,7 @@ impl World {
             &self.haven,
             self.pieces.cols(),
             &mut crate::occupy::Occupants {
+                doors: self.card_door_bits,
                 table: &self.scatter,
                 haven: &self.haven,
                 harvested: &self.slot_lives,
@@ -5422,6 +5504,7 @@ impl World {
             &self.haven,
             self.pieces.cols(),
             &mut crate::occupy::Occupants {
+                doors: self.card_door_bits,
                 table: &self.scatter,
                 haven: &self.haven,
                 harvested: &self.slot_lives,

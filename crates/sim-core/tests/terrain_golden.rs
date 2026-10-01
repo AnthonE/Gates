@@ -185,7 +185,7 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// `terrain::ORE_TARGET`, and `probe_sites` now hashes `Haven::ore_pm`. No
 /// height moved; the golden seed's windows hold no rock-channel cell, which
 /// is why the budget had to be hashed rather than seen.
-const GOLDEN_TERRAIN_HASH: u64 = 0xED89_28EE_94AE_DFC9;
+const GOLDEN_TERRAIN_HASH: u64 = 0x84F6_8634_EF76_C694;
 
 #[test]
 fn test_terrain_golden() {

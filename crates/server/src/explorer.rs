@@ -79,7 +79,10 @@ pub const SCAN_CELLS_MAX: u32 = 8;
 pub const TREE_TOOLS: [&str; 3] = ["Metal Hatchet", "Stone Hatchet", "Rock"];
 pub const NODE_TOOLS: [&str; 3] = ["Metal Pickaxe", "Stone Pickaxe", "Rock"];
 
-const _: () = assert!(MAX_ITEM_DEFS <= 64, "FoodBook and yield sets are u64 masks");
+const _: () = assert!(
+    MAX_ITEM_DEFS <= 128,
+    "FoodBook and yield sets are u128 masks"
+);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Phase {
@@ -164,15 +167,15 @@ impl Kind {
 /// verdicts, the way a player learns by pressing eat. No food table.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FoodBook {
-    pub not_food: u64,
-    pub feeds: u64,
-    pub waters: u64,
-    pub tried: u64,
+    pub not_food: u128,
+    pub feeds: u128,
+    pub waters: u128,
+    pub tried: u128,
 }
 
 impl FoodBook {
-    fn bit(item: u16) -> u64 {
-        if (item as usize) < 64 {
+    fn bit(item: u16) -> u128 {
+        if (item as usize) < 128 {
             1 << item
         } else {
             0
@@ -216,7 +219,7 @@ pub struct Memory {
     pub food: FoodBook,
     /// Items each resource kind has been seen to pay (gather receipts),
     /// as masks over item indices: what "room for it" means.
-    pub yields: [u64; 4],
+    pub yields: [u128; 4],
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -1582,7 +1585,7 @@ pub fn best_tool(core: &ClientCore, kind: Kind) -> Option<u8> {
 
 /// Room for a node's yield: an empty slot, or a stack of something this
 /// kind has been seen to pay that is not yet at its ceiling.
-fn room_for(core: &ClientCore, yields: u64) -> bool {
+fn room_for(core: &ClientCore, yields: u128) -> bool {
     core.inv.iter().any(|s| {
         s.count == 0
             || (yields & FoodBook::bit(s.item) != 0

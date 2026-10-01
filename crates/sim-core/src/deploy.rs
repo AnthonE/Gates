@@ -1813,6 +1813,7 @@ fn ground_ok(seed: u64, haven: &terrain::Haven, pieces: &Pieces, cx: u16, cz: u1
     terrain::ground(seed, haven, x, z) >= crate::build::FOUNDATION_MIN_H_M
         && terrain::ground_slope(seed, haven, x, z) < crate::build::FOUNDATION_MAX_SLOPE
         && !crate::town::reserves(&haven.town, x, z, crate::build::BUILD_CELL_M * 1.5)
+        && !crate::monument::reserves(&haven.ziggurat, x, z, crate::build::BUILD_CELL_M * 1.5)
 }
 
 /// The owner of a deployable no player placed: the town's public stations.
