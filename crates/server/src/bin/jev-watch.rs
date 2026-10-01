@@ -1,17 +1,24 @@
 //! Render one local bot and share its viewpoint through a read-only web page.
 use bevy::prelude::*;
 use bevy::window::WindowResolution;
-use client::render::{input, GatesRenderPlugin, Net, Rt, Settings, Start, WorldId};
+use client::render::{GatesRenderPlugin, Net, Rt, Settings, Start, WorldId};
 use server::agent_demo::{
     bot_name, check_page, spectate_url, Door, MindArgs, AGENT_NAME, MIND_USAGE,
 };
 use server::explorer::Survivor;
+use server::watch;
 use server::watch::http::{Broadcast, SpectateLink};
-use server::watch::{self, Controller};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::Duration;
+
+/// A continuous run's bot session: one that never times out. If it ever
+/// ends, the process does, and the supervisor restarts it.
+const CONTINUOUS_RUN: Duration = Duration::from_secs(30 * 86_400);
+/// How long the bot has to join its own loopback shard.
+const JOIN_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn usage() -> String {
     format!(
@@ -109,25 +116,54 @@ fn run() -> Result<AppExit, String> {
     }
     let _stop = Stop(shard.shutdown.clone());
     let server = shard.local_addr.to_string();
-    let door = Door::new(server.clone(), Some(shard.cert_hash.clone()), key)?;
-    let (_endpoint, mut session) = rt.block_on(async {
-        let endpoint = client::client_endpoint(&server, Some(&shard.cert_hash))?;
-        // Declared an agent either way, so a spectator can follow it; a key
-        // also proves the address, so a viewer can name this wallet.
-        let session = match &door.key {
-            Some(key) => client::Session::connect_agent(&endpoint, &server, key, name).await,
-            None => {
-                client::Session::connect_as(
-                    &endpoint,
-                    &server,
-                    protocol::Address::GUEST,
-                    &client::Join::Agent { name },
-                    |_, _, _| None,
-                )
-                .await
+    let door = Arc::new(Door::new(
+        server.clone(),
+        Some(shard.cert_hash.clone()),
+        key,
+    )?);
+    // The bot plays its own session at the shard's tick rate, on the
+    // runtime's threads; the window below only watches it (`watch`'s header
+    // says why). Declared an agent either way, so a seat can follow it; a
+    // key also proves the address, so a viewer can name this wallet.
+    let (mut watched, bot) = watch::pair(Survivor::with(brain, mind.opts()));
+    let live = bot.live.clone();
+    {
+        let door = door.clone();
+        let run_for = if continuous { CONTINUOUS_RUN } else { duration };
+        rt.spawn(async move {
+            let result = match door.endpoint() {
+                Ok(endpoint) => door.play(&endpoint, name, run_for, &mut watched).await,
+                Err(why) => Err(why),
+            };
+            println!("{}", watch::report(&watched.survivor));
+            if let Err(why) = &result {
+                eprintln!("jev-watch: the bot's session ended: {why}");
             }
-        }
-        .map_err(|e| e.to_string())?;
+            watched.live.finish(result.is_ok());
+        });
+    }
+    // A seat follows an agent in the world, so the bot is in first.
+    rt.block_on(async {
+        tokio::time::timeout(JOIN_TIMEOUT, async {
+            while !live.joined() && live.ended().is_none() {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+    })
+    .map_err(|_| "the bot did not join its shard")?;
+    if live.ended().is_some() {
+        return Err("the bot's session ended before the window opened".into());
+    }
+    let target = door
+        .key
+        .as_ref()
+        .map_or(protocol::Address::GUEST, |k| k.address());
+    let (_endpoint, session) = rt.block_on(async {
+        let endpoint = client::client_endpoint(&server, Some(&shard.cert_hash))?;
+        let session = client::Session::watch(&endpoint, &server, target)
+            .await
+            .map_err(|e| e.to_string())?;
         Ok::<_, String>((endpoint, session))
     })?;
     println!(
@@ -148,8 +184,6 @@ fn run() -> Result<AppExit, String> {
         ),
     }
     println!("  desktop: {}", door.desktop_command());
-    let controller =
-        Controller::attach(&mut session, Survivor::with(brain, mind.opts()), duration)?;
     let world = WorldId::new(session.welcome.seed);
     let mut app = App::new();
     app.add_plugins(
@@ -202,22 +236,15 @@ fn run() -> Result<AppExit, String> {
         max_fps: sim_core::limits::TICK_HZ as u16,
         ..default()
     });
-    app.insert_non_send_resource(controller);
+    app.insert_non_send_resource(bot);
     if continuous {
         app.insert_resource(watch::Continuous);
     }
     app.insert_non_send_resource(capture);
-    app.add_systems(Update, watch::lifetime);
+    app.add_systems(Update, (watch::lifetime, watch::hide_seat_label));
     app.add_systems(
         PreUpdate,
         watch::clear_human_input.after(bevy::input::InputSystems),
-    );
-    app.add_systems(
-        Update,
-        watch::drive
-            .after(input::gather)
-            .before(input::place_eye)
-            .run_if(client::render::world_running),
     );
     app.add_systems(
         PostUpdate,
