@@ -7,7 +7,8 @@
 //! hide from one ([`cover`]), what goes on the belt for it ([`loadout`]),
 //! its bags and the walk back to what it dropped ([`home`]), where it
 //! would build ([`site`]), the building ([`build`]), living in it
-//! ([`stash`]), and the code on its locks ([`lock`]).
+//! ([`stash`]), the code on its locks ([`lock`]), loot runs to barrels and
+//! crates ([`loot`]), and what the next milestone comes down to ([`plan`]).
 //! `explorer.rs` stays the orchestrator; these modules never drain
 //! `ClientCore`'s event rings — `Survivor::event_with` is the one reader
 //! and hands them facts.
@@ -25,6 +26,8 @@ pub mod home;
 pub mod intent;
 pub mod loadout;
 pub mod lock;
+pub mod loot;
+pub mod plan;
 pub mod route;
 pub mod site;
 pub mod stash;

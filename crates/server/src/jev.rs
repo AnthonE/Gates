@@ -239,6 +239,16 @@ mod tests {
             s.needs[i] = (long(200 + i), u32::MAX);
         }
         s.needs_len = crate::mind::SUMMARY_NEEDS as u8;
+        for i in 0..crate::mind::SUMMARY_RAW {
+            s.raw[i] = (long(400 + i), u32::MAX);
+        }
+        s.raw_len = crate::mind::SUMMARY_RAW as u8;
+        (s.bench, s.furnace) = (true, true);
+        s.loot = seen;
+        s.loot_place = Some(crate::mind::Place {
+            distance: crate::mind::Distance::Far,
+            bearing: 5,
+        });
         (s.hp, s.hp_max, s.food, s.food_max, s.water, s.water_max) = (100, 100, 500, 500, 250, 250);
         s.last = Some(Report {
             goal: Goal::Craft(long(7)),

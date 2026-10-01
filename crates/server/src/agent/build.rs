@@ -14,8 +14,11 @@
 //! and a twig shell; the wooden doors, a sleeping bag and a box inside;
 //! the stone core; the storey above; the wood grades. The job pauses when
 //! a milestone is done or the pack runs short, and the mind sends it off
-//! for what the next one needs ([`Survey::needs`]). Locks, metal doors and
-//! the upkeep feed wait for a workbench (lane C) and are passed over.
+//! for what the next one needs ([`Survey::needs`]). Once the starter
+//! stands come its stations: a workbench on the upstairs floor and a
+//! furnace on the ground behind the core, both in reach of the stand spot,
+//! where a station's recipes are crafted. Locks and metal doors are passed
+//! over.
 //!
 //! What it knows is its own: the plot it chose, what it built there (the
 //! client's mirror of its own base, which it stands in), and the game's
@@ -40,7 +43,7 @@ use sim_core::build::{
     REFUSE_B_COST, REFUSE_B_REACH, REFUSE_B_SPOT, REFUSE_B_SUPPORT, REFUSE_B_TERRAIN,
     REFUSE_B_TIER,
 };
-use sim_core::craft::STATION_NONE;
+use sim_core::craft::{STATION_FURNACE, STATION_NONE, STATION_RADIUS_M, STATION_WORKBENCH1};
 use sim_core::deploy::{
     arch_is_door, REFUSE_D_CLAIM, REFUSE_D_COST, REFUSE_D_OVERLAP, REFUSE_D_REACH, REFUSE_D_SPOT,
     REFUSE_D_SUPPORT, REFUSE_D_TERRAIN,
@@ -63,17 +66,24 @@ pub enum Milestone {
     Upstairs,
     /// Whatever stone missed, graded to wood; the upper storey graded.
     Wood,
+    /// A workbench on the floor over the cupboard: its 100 fragments are
+    /// what the first loot runs are for.
+    Bench,
+    /// A furnace behind the core, crafted at the bench; ore smelts there.
+    Furnace,
     /// Everything this body can build without a workbench.
     Done,
 }
 
 impl Milestone {
-    pub const ALL: [Milestone; 6] = [
+    pub const ALL: [Milestone; 8] = [
         Milestone::Shell,
         Milestone::Doors,
         Milestone::Stone,
         Milestone::Upstairs,
         Milestone::Wood,
+        Milestone::Bench,
+        Milestone::Furnace,
         Milestone::Done,
     ];
 
@@ -83,6 +93,8 @@ impl Milestone {
             Milestone::Doors => "doors_bag_and_box",
             Milestone::Stone => "stone_core",
             Milestone::Upstairs => "upstairs",
+            Milestone::Bench => "workbench",
+            Milestone::Furnace => "furnace",
             Milestone::Wood => "wood_grades",
             Milestone::Done => "done",
         }
@@ -94,17 +106,31 @@ impl Milestone {
 pub const HEARTH_ITEM: &str = "Hearth";
 pub const DOOR_ITEM: &str = "Wooden Door";
 pub const BOX_ITEM: &str = "Small Box";
+pub const BENCH_ITEM: &str = "Workbench";
+pub const FURNACE_ITEM: &str = "Furnace";
 /// What a player holds to place a piece, and to grade one.
 pub const PLAN_ITEM: &str = "Building Plan";
 pub const HAMMER_ITEM: &str = "Hammer";
 
-/// What the agent adds to the blueprint for its own use: the bag it wakes
-/// on and the box it keeps things in, both behind the front door from the
-/// second milestone on. The box stands in the stair cell, the one plane
-/// inside the room the cupboard does not take (a box is solid, and the
-/// airlock's walk passes beside it); the bag in the airlock, where a
-/// walk-over mat blocks nobody.
-const EXTRAS: [(&str, i8, i8); 2] = [(BOX_ITEM, 1, 0), (BAG_ITEM, 1, 1)];
+/// What the agent adds to the blueprint for its own use, as `(item, dx,
+/// dz, level, milestone)`: the bag it wakes on and the box it keeps things
+/// in, both behind the front door from the second milestone on. The box
+/// stands in the stair cell, the one plane inside the room the cupboard
+/// does not take (a box is solid, and the airlock's walk passes beside
+/// it); the bag in the airlock, where a walk-over mat blocks nobody. Then
+/// its stations, both within `craft::STATION_RADIUS_M` of the stand spot
+/// (the gate is planar, so the floor above counts): the workbench on the
+/// floor over the cupboard, the blueprint's own box spot, and the furnace
+/// on the bare ground behind the core (`YARD`), which the plot is chosen
+/// to have.
+const EXTRAS: [(&str, i8, i8, u8, Milestone); 4] = [
+    (BOX_ITEM, 1, 0, 0, Milestone::Doors),
+    (BAG_ITEM, 1, 1, 0, Milestone::Doors),
+    (BENCH_ITEM, 0, 0, 1, Milestone::Bench),
+    (FURNACE_ITEM, YARD.0, YARD.1, 0, Milestone::Furnace),
+];
+/// The cell behind the core the furnace stands on, from the plot.
+pub const YARD: (i8, i8) = (0, -1);
 /// Every op the builder knows: the blueprint's, then its own.
 pub const OPS: usize = STARTER.len() + EXTRAS.len();
 const _: () = assert!(OPS <= 128, "op sets are u128 masks");
@@ -160,14 +186,16 @@ struct Spec {
 
 /// Op `i`: the blueprint's in order, then [`EXTRAS`].
 fn spec(i: usize) -> Spec {
-    if let Some(&(name, dx, dz)) = i.checked_sub(STARTER.len()).and_then(|k| EXTRAS.get(k)) {
+    if let Some(&(name, dx, dz, level, stage)) =
+        i.checked_sub(STARTER.len()).and_then(|k| EXTRAS.get(k))
+    {
         return Spec {
             op: Op::Kit(name),
             dx,
             dz,
-            level: 0,
+            level,
             loc: LOC_PLANE,
-            stage: Some(Milestone::Doors),
+            stage: Some(stage),
         };
     }
     let none = |dx, dz, level, loc| Spec {
@@ -314,9 +342,54 @@ pub fn item_named(core: &ClientCore, name: &str) -> Option<u16> {
         .map(|i| i as u16)
 }
 
-/// The recipe that makes `item` with no station and no blueprint missing,
-/// and how long one takes.
-fn recipe_for(core: &ClientCore, item: u16) -> Option<(u16, u32)> {
+/// The crafting stations this body has standing in its base, where the
+/// mirror still shows them: what the craft gate (`craft::enqueue`) asks
+/// for, a deployable of the station's kind within `STATION_RADIUS_M`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Stations {
+    /// Its workbench (the first rung) and its furnace, where they stand.
+    pub bench: Option<[f32; 2]>,
+    pub furnace: Option<[f32; 2]>,
+}
+
+impl Stations {
+    pub const NONE: Self = Self {
+        bench: None,
+        furnace: None,
+    };
+
+    /// Where the station a recipe names stands, if this body has one: no
+    /// station needs nothing ([`Self::usable`]); a first-rung recipe takes
+    /// the workbench; a higher rung is not built yet.
+    pub fn spot(&self, station: u8) -> Option<[f32; 2]> {
+        match station {
+            STATION_WORKBENCH1 => self.bench,
+            STATION_FURNACE => self.furnace,
+            _ => None,
+        }
+    }
+
+    /// A recipe at this station can be crafted here, somewhere.
+    pub fn usable(&self, station: u8) -> bool {
+        station == STATION_NONE || self.spot(station).is_some()
+    }
+
+    /// A crafter standing at `at` passes the station gate for this recipe,
+    /// with a little to spare for the body's drift.
+    pub fn in_reach(&self, station: u8, at: [f32; 2]) -> bool {
+        station == STATION_NONE
+            || self.spot(station).is_some_and(|[x, z]| {
+                (x - at[0]).hypot(z - at[1]) <= STATION_RADIUS_M - STATION_SLACK_M
+            })
+    }
+}
+
+/// How far inside `STATION_RADIUS_M` a crafter keeps.
+pub const STATION_SLACK_M: f32 = 0.5;
+
+/// The recipe that makes `item` with no blueprint missing, at no station
+/// or one this body has: `(recipe, ticks per unit, station)`.
+pub fn recipe_for(core: &ClientCore, item: u16, has: &Stations) -> Option<(u16, u32, u8)> {
     if core.recipes_have < core.recipes.recipe_count {
         return None;
     }
@@ -325,15 +398,15 @@ fn recipe_for(core: &ClientCore, item: u16) -> Option<(u16, u32)> {
         let def = core.recipes.recipes[r];
         let usable = def.out_count > 0
             && def.output == item
-            && def.station == STATION_NONE
+            && has.usable(def.station)
             && (!def.blueprint || (r < 64 && known & (1 << r) != 0));
-        usable.then_some((r as u16, def.ticks))
+        usable.then_some((r as u16, def.ticks, def.station))
     })
 }
 
 /// What crafting one `item` takes from the pack.
-fn recipe_bill(core: &ClientCore, item: u16) -> Option<Bill> {
-    let (r, _) = recipe_for(core, item)?;
+fn recipe_bill(core: &ClientCore, item: u16, has: &Stations) -> Option<Bill> {
+    let (r, ..) = recipe_for(core, item, has)?;
     let def = core.recipes.recipes[usize::from(r)];
     let mut bill = Bill::default();
     for &(input, need) in &def.inputs[..usize::from(def.n_inputs).min(def.inputs.len())] {
@@ -1066,10 +1139,11 @@ impl Builder {
         self.waiting.is_none() && self.want.is_none() && !self.passage.busy()
     }
 
-    /// Is this address part of its own base?
+    /// Is this address part of its own base (the yard behind it too)?
     pub fn owns(&self, cx: u16, cz: u16, _level: u8, _loc: u8) -> bool {
-        self.plan
-            .is_some_and(|p| (p.cx..=p.cx + 2).contains(&cx) && (p.cz..=p.cz + 1).contains(&cz))
+        self.plan.is_some_and(|p| {
+            (p.cx..=p.cx + 2).contains(&cx) && (p.cz.saturating_sub(1)..=p.cz + 1).contains(&cz)
+        })
     }
 
     /// Where the body stands in its base.
@@ -1274,6 +1348,18 @@ impl Builder {
         self.own_kit(core, BOX_ITEM)
     }
 
+    /// Its workbench and furnace, standing in the base.
+    pub fn stations(&self, core: &ClientCore) -> Stations {
+        let at = |a: OpAddr| {
+            let (x, z) = sim_core::deploy::cell_center(a.cx, a.cz);
+            [x, z]
+        };
+        Stations {
+            bench: self.own_kit(core, BENCH_ITEM).map(at),
+            furnace: self.own_kit(core, FURNACE_ITEM).map(at),
+        }
+    }
+
     /// The deployable this body put down for the op that places `name`,
     /// where the mirror still shows one.
     fn own_kit(&self, core: &ClientCore, name: &'static str) -> Option<OpAddr> {
@@ -1333,8 +1419,9 @@ impl Builder {
     fn reconcile(&mut self, core: &ClientCore, plan: &BasePlan) {
         // One pass over each mirror, keeping what stands on the plot: the
         // mirror is the island's, the plot a few cells of it.
-        let on_plot =
-            |cx: u16, cz: u16| cx.wrapping_sub(plan.cx) <= 2 && cz.wrapping_sub(plan.cz) <= 1;
+        let on_plot = |cx: u16, cz: u16| {
+            cx.wrapping_sub(plan.cx) <= 2 && cz.wrapping_sub(plan.cz.wrapping_sub(1)) <= 2
+        };
         let mut stands = 0u128;
         for p in core.pieces.entries().iter().filter(|p| on_plot(p.cx, p.cz)) {
             let material = (u16::from(p.row) < core.piece_defs_have)
@@ -1404,6 +1491,7 @@ impl Builder {
     /// or hammer if it is missing. A wood grade that a stone grade of the
     /// same piece would make pointless is not counted.
     fn bill(&self, core: &ClientCore, milestone: Milestone, stored: &Ledger) -> Bill {
+        let has = self.stations(core);
         let mut bill = Bill::default();
         let mut kits: [(&str, u32); 4] = [("", 0); 4];
         let (mut plan_needed, mut hammer_needed) = (false, false);
@@ -1445,7 +1533,7 @@ impl Builder {
                 bill.add(item, wanted.min(have));
             }
             let missing = wanted.saturating_sub(have);
-            if let Some(r) = recipe_bill(core, item) {
+            if let Some(r) = recipe_bill(core, item, &has) {
                 for _ in 0..missing {
                     bill.add_bill(&r);
                 }
@@ -1454,7 +1542,7 @@ impl Builder {
         for (needed, name) in [(plan_needed, PLAN_ITEM), (hammer_needed, HAMMER_ITEM)] {
             if let Some(item) = needed.then(|| item_named(core, name)).flatten() {
                 if count(core, item) == 0 {
-                    if let Some(r) = recipe_bill(core, item) {
+                    if let Some(r) = recipe_bill(core, item, &has) {
                         bill.add_bill(&r);
                     }
                 }
@@ -1495,7 +1583,7 @@ impl Builder {
 
     /// What one op costs from the pack, including crafting what it is done
     /// with if that is not in the pack.
-    fn op_bill(&self, core: &ClientCore, s: &Spec) -> Option<Bill> {
+    fn op_bill(&self, core: &ClientCore, s: &Spec, has: &Stations) -> Option<Bill> {
         let mut bill = match s.op {
             Op::Piece(part) => piece_bill(core, piece_row(core, part_shape(part), MAT_TWIG)?),
             Op::Grade(material) => piece_bill(core, piece_row(core, shape_at(s)?, material)?),
@@ -1503,7 +1591,7 @@ impl Builder {
         };
         let tool = self.tool(core, s)?;
         if count(core, tool) == 0 {
-            bill.add_bill(&recipe_bill(core, tool)?);
+            bill.add_bill(&recipe_bill(core, tool, has)?);
         }
         Some(bill)
     }
@@ -1523,13 +1611,16 @@ impl Builder {
         milestone: Milestone,
         skip: u128,
     ) -> Option<usize> {
+        let has = self.stations(core);
         (0..OPS).find(|&i| {
             let s = spec(i);
             s.stage == Some(milestone)
                 && (self.done | self.given_up | skip) & bit(i) == 0
                 && (!matches!(s.op, Op::Grade(_))
                     || (!self.superseded(&s) && piece_at(core, addr(plan, &s)).is_some()))
-                && self.op_bill(core, &s).is_some_and(|b| b.paid_by(core))
+                && self
+                    .op_bill(core, &s, &has)
+                    .is_some_and(|b| b.paid_by(core))
         })
     }
 
@@ -1537,7 +1628,7 @@ impl Builder {
     /// crafter's feet and spends the inputs either way: not sent, and no
     /// fault of the op's, so the op is not given up over it.
     fn craft(&mut self, core: &ClientCore, i: usize, tool: u16) -> Act {
-        let Some((recipe, ticks)) = recipe_for(core, tool) else {
+        let Some((recipe, ticks, _)) = recipe_for(core, tool, &self.stations(core)) else {
             self.fail(i);
             return Act::Fail(Why::NoRecipe);
         };
@@ -1619,6 +1710,7 @@ impl Builder {
             bad.contains(&Some((cx, cz)))
                 || (0..=2).any(|dx| (0..=1).any(|dz| home.owns(cx + dx, cz + dz, 0, LOC_PLANE)))
                 || scatter_in(seed, table, haven, cx, cz)
+                || !yard_goes(seed, haven, cx, cz)
         };
         let (cx, cz) = site::pick_plot(seed, haven, seen, from, wood, stone, avoid)?;
         self.stats.sites += 1;
@@ -1782,8 +1874,12 @@ impl Builder {
             self.fail(i);
             return Act::Fail(Why::NoRecipe);
         };
-        // What the op is done with, crafted from the pack first.
-        if count(core, tool) == 0 {
+        // What the op is done with, crafted from the pack first; what a
+        // station makes, on the stand spot, which its stations are in
+        // reach of.
+        let at_station = recipe_for(core, tool, &self.stations(core))
+            .is_some_and(|(.., station)| station != STATION_NONE);
+        if count(core, tool) == 0 && !at_station {
             return self.craft(core, i, tool);
         }
         // Every op is worked from the stand spot in the core.
@@ -1854,6 +1950,9 @@ impl Builder {
         self.approach = None;
         if self.passage.busy() {
             self.passage = Passage::IDLE;
+        }
+        if count(core, tool) == 0 {
+            return self.craft(core, i, tool);
         }
         // In hand, from the belt.
         let Some(slot) = belt_slot(core, tool) else {
@@ -2002,8 +2101,20 @@ fn belt_move(core: &ClientCore, item: u16) -> Option<(u8, u8, u16)> {
     Some((from as u8, to as u8, core.inv[from].count))
 }
 
-/// Does a tree, a rock or a bush stand where the base would? The map's
-/// scatter, which a player sees standing there.
+/// The ground behind the core takes the furnace: what a deployable on bare
+/// ground asks of it (the foundation's terrain rule), clear of the edge.
+fn yard_goes(seed: u64, haven: &Haven, cx: u16, cz: u16) -> bool {
+    let (Some(x), Some(z)) = (
+        cx.checked_add_signed(i16::from(YARD.0)),
+        cz.checked_add_signed(i16::from(YARD.1)),
+    ) else {
+        return false;
+    };
+    site::foundation_goes(seed, haven, x, z)
+}
+
+/// Does a tree, a rock or a bush stand where the base, or its yard behind
+/// it, would? The map's scatter, which a player sees standing there.
 fn scatter_in(
     seed: u64,
     table: &sim_core::terrain::ScatterTable,
@@ -2011,8 +2122,12 @@ fn scatter_in(
     cx: u16,
     cz: u16,
 ) -> bool {
-    let (x0, z0) = (f32::from(cx) * BUILD_CELL_M, f32::from(cz) * BUILD_CELL_M);
-    let (x1, z1) = (x0 + 3.0 * BUILD_CELL_M, z0 + 2.0 * BUILD_CELL_M);
+    let x0 = f32::from(cx) * BUILD_CELL_M;
+    let z0 = (f32::from(cz) + f32::from(YARD.1)) * BUILD_CELL_M;
+    let (x1, z1) = (
+        x0 + 3.0 * BUILD_CELL_M,
+        f32::from(cz) * BUILD_CELL_M + 2.0 * BUILD_CELL_M,
+    );
     let pad = 1.5;
     let cell = |v: f32| (v / terrain::CELL_SIZE).floor() as i32;
     for tz in cell(z0 - pad)..=cell(z1 + pad) {
@@ -2037,7 +2152,7 @@ mod tests {
     #[allow(clippy::needless_range_loop)]
     fn the_milestones_cover_the_blueprint_in_building_order() {
         let mut last = Milestone::Shell;
-        let mut seen = [0usize; 6];
+        let mut seen = [0usize; Milestone::ALL.len()];
         for i in 0..OPS {
             let s = spec(i);
             let Some(m) = s.stage else {
@@ -2071,7 +2186,20 @@ mod tests {
         assert_eq!(seen[Milestone::Doors as usize], 4);
         assert_eq!(seen[Milestone::Stone as usize], 11);
         assert!(seen[Milestone::Upstairs as usize] >= 10);
+        // Its stations, one each, in reach of the stand spot.
+        assert_eq!(seen[Milestone::Bench as usize], 1);
+        assert_eq!(seen[Milestone::Furnace as usize], 1);
         assert_eq!(seen[Milestone::Done as usize], 0);
+        let plan = BasePlan::new(0, 100, 100);
+        let stand = at_corner(corner(&plan), CHAIN[0]);
+        for name in [BENCH_ITEM, FURNACE_ITEM] {
+            let s = (0..OPS).map(spec).find(|s| s.op == Op::Kit(name)).unwrap();
+            let at = addr(&plan, &s);
+            let (x, z) = sim_core::deploy::cell_center(at.cx, at.cz);
+            let d = (x - stand[0]).hypot(z - stand[1]);
+            assert!(d <= STATION_RADIUS_M - STATION_SLACK_M, "{name} {d} m off");
+            assert!(d <= BUILD_REACH_M, "{name} out of reach");
+        }
     }
 
     #[test]

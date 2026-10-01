@@ -407,6 +407,11 @@ impl Harness {
     }
 
     fn at(wildlife: bool, at: (f32, f32)) -> Self {
+        let mind = Mind::inline(Scripted::default(), MindConfig::default()).unwrap();
+        Self::with_mind(wildlife, at, mind)
+    }
+
+    fn with_mind(wildlife: bool, at: (f32, f32), mind: Mind) -> Self {
         let content = common::content();
         let spear = content.item_index("item.spear_wood").unwrap();
         let catalog = server::net::bake_all(&content).unwrap().catalog;
@@ -418,8 +423,7 @@ impl Harness {
         };
         let plan = content.item_index("item.building_plan").unwrap();
         let hammer = content.item_index("item.hammer").unwrap();
-        let mut bot =
-            Survivor::new(Mind::inline(Scripted::default(), MindConfig::default()).unwrap());
+        let mut bot = Survivor::new(mind);
         use server::botclient::BotDriver;
         bot.welcome(&protocol::Welcome {
             seed: SEED,
@@ -616,7 +620,7 @@ impl Harness {
             // body, facing this frame's bearing; a move into or out of a
             // box goes with that box's panel open.
             use client::ui::interact::Verb;
-            use sim_core::inventory::CONT_BOX;
+            use sim_core::inventory::{CONT_BOX, CONT_WORLD};
             match msg {
                 ActionMsg::Use { cx, cz, level, loc } => {
                     let pick = self.e_pick(frame.yaw);
@@ -650,6 +654,38 @@ impl Harness {
                         self.tick
                     );
                     self.pick_checks += 1;
+                }
+                // A crate: opened in reach of its cell, emptied with its
+                // panel open.
+                ActionMsg::Container {
+                    kind: CONT_WORLD,
+                    cont,
+                } => {
+                    let me = self.me().body;
+                    let q = sim_core::movement::POS_XZ_Q;
+                    let (cx, cz) = ((cont >> 16) as i32, (cont & 0xFFFF) as i32);
+                    let w = &self.shard.world;
+                    let slot = sim_core::terrain::scatter(SEED, &w.scatter, &w.haven, cx, cz);
+                    let d = (slot.x - me.qx as f32 * q).hypot(slot.z - me.qz as f32 * q);
+                    assert!(
+                        sim_core::worldcont::table_of(slot.occupant).is_some()
+                            && d <= sim_core::worldcont::LOOT_REACH_M,
+                        "the agent opened {cont:#x}, not a crate in reach ({d} m), at tick {}",
+                        self.tick
+                    );
+                    self.pick_checks += 1;
+                }
+                ActionMsg::Move {
+                    cont, from_kind, ..
+                } if from_kind == CONT_WORLD => {
+                    let core = self.bot.core().unwrap();
+                    assert_eq!(
+                        (core.cont_kind, core.cont_handle),
+                        (CONT_WORLD, cont),
+                        "the agent moved a crate's stack without its panel open, at tick {}",
+                        self.tick
+                    );
+                    self.panel_checks += 1;
                 }
                 ActionMsg::Move {
                     cont,
@@ -1579,4 +1615,267 @@ fn a_survivor_builds_its_starter_and_the_base_keeps_strangers_out() {
         "a stranger built inside the base's claim"
     );
     assert!(w.pieces.find(cx + 1, cz + 3, 0, LOC_PLANE).is_none());
+}
+
+/// The test's own decision source: a loot run whenever one is on offer and
+/// a barrel or crate is in its eyes' memory, else stand and look round.
+struct LootWhenSeen;
+
+impl server::mind::DecisionSource for LootWhenSeen {
+    fn kind(&self) -> server::mind::SourceKind {
+        server::mind::SourceKind::Scripted
+    }
+
+    fn decide(&mut self, s: &server::mind::Summary) -> Result<server::mind::Choice, String> {
+        let goal = if s.offers(Goal::Loot) && s.loot.count > 0 {
+            Goal::Loot
+        } else {
+            Goal::Wait
+        };
+        Ok(server::mind::Choice {
+            goal,
+            confidence: 1.0,
+            reason: server::mind::Reason::EMPTY,
+            input_tokens: 0,
+            output_tokens: 0,
+        })
+    }
+}
+
+/// Units of `item` in a player's pack and belt.
+fn units_of(p: &sim_core::world::Player, item: u16) -> u32 {
+    p.inv
+        .iter()
+        .filter(|s| s.count > 0 && s.item == item)
+        .map(|s| u32::from(s.count))
+        .sum()
+}
+
+#[test]
+fn a_survivor_breaks_a_barrel_and_picks_up_what_falls_out() {
+    use sim_core::terrain::Occupant;
+    let ((cx, cz), at) = common::container(Occupant::BarrelSlot);
+    let mind = Mind::inline(LootWhenSeen, MindConfig::default()).unwrap();
+    let mut h = Harness::with_mind(false, at, mind);
+    let content = common::content();
+    let junk = content.item_index("item.junk").unwrap();
+    let hatchet = common::stack(&content, "item.hatchet_stone");
+    // The join lands on the tick after `connect`.
+    h.until(5, |_| false);
+    h.stage(|p| p.inv[1] = hatchet);
+
+    let key = sim_core::gather::cell_key(cx, cz);
+    let broke = h.until(60 * TICK_HZ, |b| {
+        b.loot().stats.barrels >= 1 && b.core().unwrap().harvested.contains(key)
+    });
+    assert!(
+        broke,
+        "the barrel never broke: {:?} {}",
+        h.bot.loot().stats,
+        h.explain()
+    );
+    // What fell out is picked up, a stack a press: the barrel's two junk
+    // are guaranteed, whatever else it rolled.
+    let taken = h.until(30 * TICK_HZ, |b| {
+        b.goal() != Some(Goal::Loot) && b.loot().stats.pickups >= 1
+    });
+    assert!(
+        taken,
+        "nothing was picked up: {:?} {}",
+        h.bot.loot().stats,
+        h.explain()
+    );
+    assert!(
+        units_of(h.me(), junk) >= 2,
+        "the barrel's junk is in the pack: {}",
+        h.explain()
+    );
+    let left = h
+        .shard
+        .world
+        .ground_items
+        .entries()
+        .iter()
+        .filter(|g| {
+            let q = sim_core::movement::POS_XZ_Q;
+            let slot = sim_core::terrain::scatter(
+                SEED,
+                &h.shard.world.scatter,
+                &h.shard.world.haven,
+                i32::from(cx),
+                i32::from(cz),
+            );
+            (g.qx as f32 * q - slot.x).hypot(g.qz as f32 * q - slot.z) < 4.0
+        })
+        .count();
+    assert_eq!(left, 0, "stacks were left lying by the barrel");
+    let run = h.bot.history.iter().find(|r| r.goal == Goal::Loot).unwrap();
+    assert_eq!(run.outcome, Outcome::Done, "{}", h.explain());
+    assert!(h.verbs.contains("pickup"), "never picked up: {:?}", h.verbs);
+    assert_eq!(
+        h.heap_ops, 0,
+        "the agent's frame loop touched the allocator"
+    );
+}
+
+#[test]
+fn a_survivor_empties_a_crate_through_its_panel() {
+    use sim_core::terrain::Occupant;
+    let ((cx, cz), at) = common::container(Occupant::CrateSlot);
+    let mind = Mind::inline(LootWhenSeen, MindConfig::default()).unwrap();
+    let mut h = Harness::with_mind(false, at, mind);
+    let content = common::content();
+    let junk = content.item_index("item.junk").unwrap();
+    h.until(5, |_| false);
+
+    let done = h.until(60 * TICK_HZ, |b| {
+        b.loot().stats.emptied >= 1 && b.goal() != Some(Goal::Loot) && b.loot().stats.moves >= 1
+    });
+    assert!(
+        done,
+        "the crate was not emptied: {:?} {}",
+        h.bot.loot().stats,
+        h.explain()
+    );
+    // The junk every crate and cache pays (five at the least).
+    assert!(units_of(h.me(), junk) >= 5, "{}", h.explain());
+    // What it opened (this one, or another standing beside it) it left
+    // empty.
+    let w = &h.shard.world;
+    let opened = w.world_conts.entries();
+    assert!(!opened.is_empty(), "no crate was opened");
+    assert!(
+        opened.iter().all(|c| c.is_empty()),
+        "a crate was left with loot in it"
+    );
+    assert!(opened
+        .iter()
+        .all(|c| (i32::from(c.cx) - i32::from(cx)).abs() <= 8
+            && (i32::from(c.cz) - i32::from(cz)).abs() <= 8));
+    assert!(h.pick_checks >= 1 && h.panel_checks >= 1);
+    for verb in ["container", "move"] {
+        assert!(h.verbs.contains(verb), "{verb} never sent: {:?}", h.verbs);
+    }
+    assert_eq!(
+        h.heap_ops, 0,
+        "the agent's frame loop touched the allocator"
+    );
+}
+
+/// The starter stands, the pack holds what the stations cost: the
+/// workbench goes on the floor over the cupboard, the furnace is crafted at
+/// it and goes behind the core, and ore staged afterwards is smelted there
+/// into fragments, a batch at a time.
+#[test]
+fn a_survivor_puts_down_its_bench_and_furnace_and_smelts_ore() {
+    use server::agent::build::{Milestone, YARD};
+    use sim_core::build::LOC_PLANE;
+    use sim_core::deploy::{ARCH_FURNACE, ARCH_WORKBENCH};
+
+    let mut h = Harness::new(false);
+    let content = common::content();
+    let stack = |id: &str, count: u16| sim_core::gather::ItemStack {
+        count,
+        ..common::stack(&content, id)
+    };
+    h.until(5, |_| false);
+    let kit = [
+        stack("item.wood", 1000),
+        stack("item.wood", 1000),
+        stack("item.wood", 1000),
+        stack("item.wood", 1000),
+        stack("item.wood", 1000),
+        stack("item.stone", 1000),
+        stack("item.stone", 1000),
+        stack("item.stone", 1000),
+        stack("item.stone", 1000),
+        stack("item.stone", 1000),
+        stack("item.stone", 1000),
+        stack("item.stone", 1000),
+        stack("item.cloth", 60),
+        stack("item.metal_frags", 100),
+        stack("item.lowgrade", 50),
+    ];
+    let (hatchet, pickaxe) = (
+        stack("item.hatchet_stone", 1),
+        stack("item.pickaxe_stone", 1),
+    );
+    h.stage(|p| {
+        p.inv[1] = hatchet;
+        p.inv[2] = pickaxe;
+        for (i, s) in kit.iter().enumerate() {
+            p.inv[HOTBAR_SLOTS + i] = *s;
+        }
+    });
+
+    // 1. The starter, then the bench, then the furnace crafted at it.
+    let stations = h.until(60_000, |b| {
+        b.builder().survey().milestone >= Milestone::Done
+            || b.core()
+                .is_some_and(|c| b.builder().stations(c).furnace.is_some())
+    });
+    assert!(
+        stations,
+        "the stations never stood: {:?} {:?} {}",
+        h.bot.builder().survey(),
+        h.bot.builder().stats,
+        h.explain()
+    );
+    let plan = h.bot.builder().plan().expect("a plot");
+    let (cx, cz) = (plan.cx, plan.cz);
+    {
+        let w = &h.shard.world;
+        let arch = |x: u16, z: u16, level: u8| {
+            w.deploys
+                .find(x, z, level, LOC_PLANE)
+                .filter(|d| d.owner == ID)
+                .map(|d| w.deploy.defs[usize::from(d.row)].arch)
+        };
+        assert_eq!(arch(cx, cz, 1), Some(ARCH_WORKBENCH), "the bench upstairs");
+        let (yx, yz) = (
+            cx.checked_add_signed(i16::from(YARD.0)).unwrap(),
+            cz.checked_add_signed(i16::from(YARD.1)).unwrap(),
+        );
+        assert_eq!(arch(yx, yz, 0), Some(ARCH_FURNACE), "the furnace behind");
+    }
+    assert!(
+        h.held_checks as u64 >= h.bot.builder().stats.deployed,
+        "every deploy went out with its item in hand"
+    );
+
+    // 2. Ore in the pack: home to the furnace, and fragments come of it.
+    let frags = content.item_index("item.metal_frags").unwrap();
+    let before = units_of(h.me(), frags);
+    let ore = stack("item.metal_ore", 60);
+    h.stage(|p| {
+        if let Some(free) = p.inv.iter_mut().skip(HOTBAR_SLOTS).find(|x| x.count == 0) {
+            *free = ore;
+        }
+    });
+    let smelted = h.until(3 * 60 * TICK_HZ, |b| {
+        b.held("Metal Fragments") >= before + 40
+    });
+    assert!(
+        smelted,
+        "the ore was not smelted: {} fragments, {} before {}",
+        units_of(h.me(), frags),
+        before,
+        h.explain()
+    );
+    assert!(
+        h.bot
+            .history
+            .iter()
+            .any(|r| r.goal.label().as_str() == "craft:Metal Fragments" && r.gained >= 40),
+        "{}",
+        h.explain()
+    );
+    for verb in ["craft", "deploy", "place"] {
+        assert!(h.verbs.contains(verb), "{verb} never sent: {:?}", h.verbs);
+    }
+    assert_eq!(
+        h.heap_ops, 0,
+        "the agent's frame loop touched the allocator"
+    );
+    println!("{:?} {}", h.bot.builder().stats, h.explain());
 }

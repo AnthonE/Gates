@@ -10,18 +10,23 @@
 //! run (`agent::combat`), which pauses the goal rather than ending it,
 //! then take the loser's bag; bandage when hurt and nobody is near; keep
 //! a gun loaded.
+//! Loot runs (`agent::loot`) smash barrels and pick up what falls out, and
+//! empty crates through their panel; a recipe made at a station is crafted
+//! at its own workbench or furnace, walking home to it first.
 //! The only verbs sent are the ones a human client sends: input frames,
 //! and `Respawn`, `Craft`, `Consume`, `Drink`, `Move`, `Reload`, `Loot`,
 //! `Pickup`, `Deploy`, `Place`, `Upgrade`, `Use`, `Container` and `Feed`
 //! actions (`crates/server/tests/agent_walls.rs` holds that to the client).
 
-use crate::agent::build::{Act, Builder, Region, Way};
+use crate::agent::build::{Act, Builder, Region, Stations, Way};
 use crate::agent::combat::{self, Assess, Combat, End, Kit, Mode, Temperament, Verb, RESUME_TICKS};
 use crate::agent::cover;
 use crate::agent::hands::{Hands, Skill};
 use crate::agent::home::{self, BagJob, Do, Home, RecoverJob};
 use crate::agent::intent::{pitch_toward, yaw_toward, Intent, Look};
 use crate::agent::loadout::{Loadout, Role};
+use crate::agent::loot::{self, Lid, Loot, LootJob, Prize, Spot};
+use crate::agent::plan::{raw_needs, RAW_ROWS};
 use crate::agent::route::{into_deeper_water, Frontier, Route, Step};
 use crate::agent::site::Seen;
 use crate::agent::stash::{self, Chore, Ledger, StashJob, Transfer};
@@ -30,7 +35,7 @@ use crate::agent::wiki::{Book, Class, Rules};
 use crate::botclient::BotDriver;
 use crate::mind::{
     Arms, BodyState, Choice, Distance, Goal, History, HomeSense, HomeState, Mind, Name, Outcome,
-    Range, Report, Sighting, Summary, Threat, Trigger, Why, SUMMARY_CRAFTS, SUMMARY_ITEMS,
+    Place, Range, Report, Sighting, Summary, Threat, Trigger, Why, SUMMARY_CRAFTS, SUMMARY_ITEMS,
     SUMMARY_THREATS,
 };
 use crate::pace::Pace;
@@ -41,12 +46,12 @@ use client_core::core::{
 use client_core::view::ClientView;
 use protocol::{EntityState, Welcome, WireError, MAX_STREAM_MSG_BYTES};
 use sim_core::build::{LOC_PLANE, MAT_TWIG};
-use sim_core::craft::STATION_NONE;
+use sim_core::craft::STATION_FURNACE;
 use sim_core::deploy::{box_key, BAG_CAP};
 use sim_core::gather::{cell_key, REACH_M};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
-use sim_core::inventory::{CONT_BOX, CONT_SELF};
-use sim_core::limits::{HOTBAR_SLOTS, INV_SLOTS, MAX_ITEM_DEFS, TICK_HZ};
+use sim_core::inventory::{CONT_BOX, CONT_SELF, CONT_WORLD};
+use sim_core::limits::{CRAFT_COUNT_MAX, HOTBAR_SLOTS, INV_SLOTS, MAX_ITEM_DEFS, TICK_HZ};
 use sim_core::melee;
 use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q};
 use sim_core::ranged::{ARROW_EYE_MM, IMPACT_BLAST, MM_PER_M};
@@ -78,6 +83,29 @@ pub const BUILD_GOAL_SECS: u32 = 600;
 /// A visit home (the walk in, the feed, the box) that has not finished in
 /// this long is stuck.
 pub const STASH_GOAL_SECS: u32 = 120;
+/// A loot run reports back after this long.
+pub const LOOT_GOAL_SECS: u32 = 240;
+/// At a place on the map, how long the eyes look round for its crates.
+pub const LOOK_ROUND_TICKS: u32 = 8 * TICK_HZ;
+/// Swings at one barrel before it is left: three break it.
+pub const SMASH_TICKS: u32 = 12 * TICK_HZ;
+/// After a barrel breaks, how long its stacks are waited for, and how far
+/// round it they are looked for.
+pub const GROUND_WAIT_TICKS: u32 = 3 * TICK_HZ / 2;
+pub const PICK_AROUND_M: f32 = 3.5;
+/// A stack is picked up from this near (the take reaches the nearest one
+/// within `LOOT_REACH_M`, so near makes it this one), and pressed for again
+/// this often, this many times.
+pub const PICK_STAND_M: f32 = 1.0;
+pub const PICK_RETRY_TICKS: u32 = TICK_HZ;
+pub const PICK_TRIES: u8 = 3;
+/// A crate is opened from this near.
+pub const OPEN_STAND_M: f32 = 2.5;
+/// Presses at one crate that went unanswered or were refused before it
+/// is left.
+pub const LID_TRIES: u8 = 3;
+/// After a move is answered, the panel catches up this soon.
+pub const LID_SETTLE_TICKS: u32 = 3;
 /// From this long before the session's end the body goes home, shuts its
 /// doors and stands inside, so what sleeps there is not free loot.
 pub const LOG_OFF_SECS: u32 = 90;
@@ -289,6 +317,10 @@ pub struct Senses {
     pub backpack: Sighting,
     /// A person or a wolf seen within `THREAT_RECALL_SECS`.
     pub hostile: bool,
+    /// Barrels and crates it knows of and has not emptied, and the nearest
+    /// place on the map that keeps crates.
+    pub loot: Sighting,
+    pub loot_place: Option<Place>,
 }
 
 /// What this body remembers of its own recent history, all of it learned
@@ -327,6 +359,14 @@ pub struct Memory {
     /// What the box held when it was last open.
     pub stored: [(u16, u32); stash::STORED_ROWS],
     pub stored_len: u8,
+    /// Its own workbench and furnace (`Builder::stations`).
+    pub stations: Stations,
+    /// What the next milestone's shortfalls come down to
+    /// (`agent::plan::raw_needs`).
+    pub raw: [(u16, u32); RAW_ROWS],
+    pub raw_len: u8,
+    /// A loot run came to nothing a moment ago (`Loot::held`).
+    pub loot_held: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -445,7 +485,7 @@ enum Verdict {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CraftStep {
     Start,
-    Sent { ticks: u32 },
+    Sent { ticks: u32, count: u16 },
     Equip,
     Equipped,
 }
@@ -510,6 +550,9 @@ pub struct Survivor {
     /// A visit home, and what the box held when last open.
     stash_job: StashJob,
     ledger: Ledger,
+    /// The barrels and crates it knows of, and the loot run in hand.
+    loot: Loot,
+    loot_job: LootJob,
     /// The session ends this many ticks after the welcome (`set_deadline`),
     /// and the tick that is, once welcomed.
     deadline_after: Option<u32>,
@@ -592,6 +635,8 @@ impl Survivor {
             builder: Builder::new(),
             stash_job: StashJob::default(),
             ledger: Ledger::EMPTY,
+            loot: Loot::new(),
+            loot_job: LootJob::default(),
             deadline_after: None,
             deadline: None,
             welcomed: None,
@@ -687,6 +732,11 @@ impl Survivor {
     /// What its box held when the panel was last open.
     pub fn ledger(&self) -> &Ledger {
         &self.ledger
+    }
+
+    /// The barrels and crates it knows of, and what its loot runs took.
+    pub fn loot(&self) -> &Loot {
+        &self.loot
     }
 
     /// The session ends `ticks` server ticks after the welcome (`jev-bot
@@ -1276,6 +1326,10 @@ impl Survivor {
         self.bag_job = BagJob::default();
         self.recover_job = RecoverJob::default();
         self.stash_job = StashJob::default();
+        self.loot_job = LootJob::default();
+        if goal == Goal::Loot {
+            self.loot.stats.runs += 1;
+        }
         self.builder.halt();
     }
 
@@ -1352,7 +1406,8 @@ impl Survivor {
             | Goal::Forage
             | Goal::Drink
             | Goal::Recover
-            | Goal::Bag => true,
+            | Goal::Bag
+            | Goal::Loot => true,
             Goal::Fight | Goal::Hunt => self
                 .quarry(body, active.goal == Goal::Hunt, tick)
                 .is_none_or(|(_, [x, _, z])| self.builder.region_of([x, z]) == Region::Outside),
@@ -1385,10 +1440,8 @@ impl Survivor {
                 }
                 Intent::IDLE
             }
-            Goal::Craft(name) => {
-                self.craft(core, name, tick);
-                Intent::IDLE
-            }
+            Goal::Craft(name) => self.craft(core, body, name, tick),
+            Goal::Loot => self.loot_run(core, body, tick),
             Goal::Eat => {
                 self.eat(core, tick);
                 Intent::IDLE
@@ -1792,39 +1845,55 @@ impl Survivor {
         Ok(None)
     }
 
-    fn craft(&mut self, core: &mut ClientCore, name: Name, tick: u32) {
+    /// Craft one of the named item (a batch, at a furnace), at one of its
+    /// own stations where the recipe needs one, walking home to it first.
+    fn craft(
+        &mut self,
+        core: &mut ClientCore,
+        body: &EntityState,
+        name: Name,
+        tick: u32,
+    ) -> Intent {
         let Some(active) = self.goal else {
-            return;
+            return Intent::IDLE;
         };
         self.stats.phase = Phase::Crafting;
         match active.craft {
             CraftStep::Start => {
-                let Some((recipe, item, ticks)) = resolve_recipe(core, name) else {
+                let has = self.builder.stations(core);
+                let Some((recipe, item, ticks, station)) = resolve_recipe(core, name, &has) else {
                     self.end_goal(tick, Outcome::Failed(Why::NoRecipe));
-                    return;
+                    return Intent::IDLE;
                 };
                 if !inputs_ok(core, recipe) {
                     self.end_goal(tick, Outcome::Failed(Why::MissingInputs));
-                    return;
+                    return Intent::IDLE;
                 }
                 // A full pack drops what is made at the crafter's feet, and
                 // the inputs are spent either way.
                 if !room_for(core, FoodBook::bit(item)) {
                     self.end_goal(tick, Outcome::Failed(Why::PackFull));
-                    return;
+                    return Intent::IDLE;
                 }
-                if self.queue(|buf| protocol::encode_action_craft(recipe, 1, 0, buf)) {
+                let here = [body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q];
+                if !has.in_reach(station, here) {
+                    return self.walk_to_station(core, body, tick);
+                }
+                let count = batch(core, recipe);
+                if self.queue(|buf| protocol::encode_action_craft(recipe, count, 0, buf)) {
                     self.awaiting = Some((Pending::Craft { item }, tick));
                     self.verdict = None;
-                    self.set_craft(CraftStep::Sent { ticks });
+                    self.set_craft(CraftStep::Sent { ticks, count });
                 }
             }
-            CraftStep::Sent { ticks } => {
+            CraftStep::Sent { ticks, count } => {
                 match self.take_verdict(tick, ticks + VERDICT_SECS * TICK_HZ) {
                     Err(()) => self.end_goal(tick, Outcome::Failed(Why::NoAnswer)),
                     Ok(Some(Verdict::Ok)) => {
+                        // The first unit is in; a batch pays the rest out
+                        // while the body goes on.
                         if let Some(a) = self.goal.as_mut() {
-                            a.gained += 1;
+                            a.gained += u32::from(count);
                         }
                         self.set_craft(CraftStep::Equip);
                     }
@@ -1867,6 +1936,464 @@ impl Survivor {
                 }
             }
         }
+        Intent::IDLE
+    }
+
+    /// Home to its stations: in through the doors to the stand spot, which
+    /// its workbench and furnace are both in reach of.
+    fn walk_to_station(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
+        self.stats.phase = Phase::GoingHome;
+        let (Some(haven), Some(stand)) = (self.haven, self.builder.stand()) else {
+            self.end_goal(tick, Outcome::Failed(Why::NoRecipe));
+            return Intent::IDLE;
+        };
+        let (seed, _) = core.island();
+        if self.builder.walled(core) && self.builder.region(body) != Region::Room {
+            let act = self.builder.pass(
+                core,
+                seed,
+                &haven,
+                body,
+                &self.hands,
+                &mut self.route,
+                Way::In,
+                tick,
+            );
+            match act {
+                Act::Done => {}
+                Act::Fail(why) => {
+                    self.end_goal(tick, Outcome::Failed(why));
+                    return Intent::IDLE;
+                }
+                act => return self.act(act, tick),
+            }
+        }
+        let (x, z) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
+        match self.route.to(core, body, stand, 1.0, false, tick) {
+            step @ Step::Walk { .. } => step.walk().unwrap_or(Intent::IDLE),
+            Step::Blocked => {
+                self.end_goal(tick, Outcome::Failed(Why::Stuck));
+                Intent::IDLE
+            }
+            Step::Arrived | Step::Wait => Intent::walk(yaw_toward(stand[0] - x, stand[1] - z)),
+        }
+    }
+
+    /// A loot run (`agent::loot`): the nearest barrel or crate it knows of,
+    /// the next one near it, and so on; with none known, the nearest place
+    /// on the map that keeps crates, and a look round there. A run ends
+    /// when the pack is full, nothing more is near, or it has taken
+    /// [`loot::MAX_STOPS`] containers.
+    fn loot_run(&mut self, core: &mut ClientCore, body: &EntityState, tick: u32) -> Intent {
+        self.stats.phase = Phase::Looting;
+        let (Some(active), Some(haven)) = (self.goal, self.haven) else {
+            return Intent::IDLE;
+        };
+        if tick.wrapping_sub(active.started) >= LOOT_GOAL_SECS * TICK_HZ
+            || self.loot_job.stops >= loot::MAX_STOPS
+        {
+            return self.loot_over(tick);
+        }
+        if let Some((spot, at)) = self.loot_job.smashed {
+            return self.loot_pickup(core, body, spot, at, tick);
+        }
+        if let Some(spot) = self.loot_job.target {
+            return match spot.prize {
+                Prize::Barrel => self.loot_barrel(core, body, spot, tick),
+                Prize::Crate => self.loot_crate(core, body, spot, tick),
+            };
+        }
+        if loot::free_slots(core) == 0 {
+            return self.loot_over(tick);
+        }
+        let here = [body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q];
+        // The next container: on the first stop any it knows of on the
+        // island's near side, after that only one near the last.
+        let within = if self.loot_job.stops == 0 && self.loot_job.place.is_none() {
+            loot::TRIP_M
+        } else {
+            loot::NEXT_SPOT_M
+        };
+        if let Some(spot) = self.loot.nearest(core, here, within, tick) {
+            self.loot_job.target = Some(spot);
+            self.loot_job.arrived = None;
+            return Intent::IDLE;
+        }
+        if self.loot_job.stops > 0 && self.loot_job.place.is_none() {
+            // Nothing more near what it took.
+            return self.loot_over(tick);
+        }
+        // None known: to the map.
+        let Some((place, at)) = self
+            .loot_job
+            .place
+            .or_else(|| self.loot.place(&haven, here, tick))
+        else {
+            return self.loot_over(tick);
+        };
+        self.loot_job.place = Some((place, at));
+        let d = (at[0] - here[0]).hypot(at[1] - here[1]);
+        if d <= loot::PLACE_NEAR_M || self.loot_job.arrived.is_some() {
+            // There: a slow turn round finds what stands about.
+            let since = *self.loot_job.arrived.get_or_insert(tick);
+            if tick.wrapping_sub(since) >= LOOK_ROUND_TICKS {
+                self.loot.visited(place, tick);
+                self.loot_job.place = None;
+                self.loot_job.arrived = None;
+                return self.loot_over(tick);
+            }
+            let turn = (tick.wrapping_sub(since) * 65536 / LOOK_ROUND_TICKS) as u16;
+            return Intent {
+                look: Look::Heading(body.yaw.wrapping_add(turn.min(0x3000))),
+                ..Intent::IDLE
+            };
+        }
+        match self
+            .route
+            .to(core, body, at, loot::PLACE_NEAR_M * 0.5, true, tick)
+        {
+            step @ Step::Walk { yaw, .. } => {
+                if into_deeper_water(core, body, yaw) {
+                    self.loot.visited(place, tick);
+                    self.loot_job.place = None;
+                    return Intent::IDLE;
+                }
+                step.walk().unwrap_or(Intent::walk(yaw))
+            }
+            Step::Blocked => {
+                // No way there: somewhere else, another time.
+                self.loot.visited(place, tick);
+                self.loot_job.place = None;
+                Intent::IDLE
+            }
+            Step::Arrived => {
+                self.loot_job.arrived = Some(tick);
+                Intent::IDLE
+            }
+            Step::Wait => self.walk_on(core, body, yaw_toward(at[0] - here[0], at[1] - here[1])),
+        }
+    }
+
+    /// The run is over: what it took comes home with it. An open panel is
+    /// shut on the way out.
+    fn loot_over(&mut self, tick: u32) -> Intent {
+        if matches!(
+            self.loot_job.lid,
+            Some(Lid::Open | Lid::Moving(..) | Lid::Settling(_))
+        ) {
+            if !self.queue(|buf| protocol::encode_action_container(CONT_SELF, 0, buf)) {
+                // The hand is busy: the close goes next frame.
+                return Intent::IDLE;
+            }
+            self.loot_job.lid = None;
+        }
+        let gained = self.goal.map_or(0, |a| a.gained);
+        if gained > 0 {
+            self.end_goal(tick, Outcome::Done);
+        } else {
+            self.loot.failed(tick);
+            self.end_goal(tick, Outcome::Failed(Why::NotFound));
+        }
+        Intent::IDLE
+    }
+
+    /// Walk to a container; `Some` while the walk goes on. A walk that
+    /// stops getting nearer gives the container up for this run.
+    fn loot_approach(
+        &mut self,
+        core: &mut ClientCore,
+        body: &EntityState,
+        spot: Spot,
+        stand: f32,
+        look: Intent,
+        tick: u32,
+    ) -> Option<Intent> {
+        let here = [body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q];
+        let d = (spot.slot.x - here[0]).hypot(spot.slot.z - here[1]);
+        if d <= stand {
+            self.loot_job.best = None;
+            return None;
+        }
+        match self.loot_job.best {
+            Some((best, since)) if d + POS_XZ_Q >= best => {
+                if tick.wrapping_sub(since) >= 2 * NO_PROGRESS_TICKS {
+                    self.loot.emptied(spot.key(), tick);
+                    self.loot_job.next();
+                    return Some(look);
+                }
+            }
+            _ => self.loot_job.best = Some((d, tick)),
+        }
+        let mut intent = look;
+        match self
+            .route
+            .to(core, body, spot.at(), stand * 0.8, false, tick)
+        {
+            Step::Walk { yaw, jump, .. } => {
+                intent.travel = Some(yaw);
+                if jump {
+                    intent.buttons |= sim_core::input::BTN_JUMP;
+                }
+            }
+            _ => intent.travel = Some(yaw_toward(spot.slot.x - here[0], spot.slot.z - here[1])),
+        }
+        Some(intent)
+    }
+
+    /// A barrel: swung at like a node with whatever is in hand until it
+    /// breaks, then its stacks are picked up.
+    fn loot_barrel(
+        &mut self,
+        core: &mut ClientCore,
+        body: &EntityState,
+        spot: Spot,
+        tick: u32,
+    ) -> Intent {
+        let target = Target {
+            cx: spot.cx,
+            cz: spot.cz,
+            slot: spot.slot,
+        };
+        if core.harvested.contains(target.key()) {
+            // Broken, by these swings or somebody's: what lies there.
+            self.loot.stats.barrels += 1;
+            self.loot.emptied(target.key(), tick);
+            self.loot_job.smashed = Some((spot, tick));
+            self.loot_job.swinging = None;
+            return Intent::IDLE;
+        }
+        let sel = self
+            .loadout
+            .on_belt(core, Role::Melee)
+            .map(|(slot, _)| slot)
+            .or_else(|| best_tool(core, Kind::Wood))
+            .or_else(|| best_tool(core, Kind::Stone));
+        let mut intent = Intent {
+            look: Look::Point(aim_point(body, &spot.slot)),
+            sel,
+            ..Intent::IDLE
+        };
+        let (yaw, pitch, _) = aim(body, &spot.slot);
+        if !swing_reaches(core, body, yaw, pitch, target) {
+            self.loot_job.swinging = None;
+            return self
+                .loot_approach(core, body, spot, REACH_M, intent, tick)
+                .unwrap_or(Intent {
+                    move_z: 127,
+                    ..intent
+                });
+        }
+        self.loot_job.best = None;
+        let since = *self.loot_job.swinging.get_or_insert(tick);
+        if tick.wrapping_sub(since) >= SMASH_TICKS {
+            self.loot.emptied(target.key(), tick);
+            self.loot_job.next();
+            return intent;
+        }
+        // Swing only with the view the hands hold on it, and nobody on the
+        // swing's ray.
+        let Some(haven) = self.haven else {
+            return intent;
+        };
+        let (held_yaw, held_pitch) = self.hands.view();
+        if self.body_on_ray(body, held_yaw).is_none()
+            && visible(core, &haven, body, target)
+            && swing_reaches(core, body, held_yaw, held_pitch, target)
+        {
+            intent.buttons = BTN_PRIMARY;
+        }
+        intent
+    }
+
+    /// What a broken barrel scattered: the nearest stack round it, walked
+    /// up to and taken, one press each, until none is left.
+    fn loot_pickup(
+        &mut self,
+        core: &mut ClientCore,
+        body: &EntityState,
+        spot: Spot,
+        smashed: u32,
+        tick: u32,
+    ) -> Intent {
+        let here = [body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q];
+        // The stack pressed for is gone: taken.
+        if let Some((id, at, n)) = self.loot_job.pick {
+            if core.ground_items().iter().all(|g| g.id != id) {
+                self.loot_job.pick = None;
+                self.loot.stats.pickups += 1;
+            } else if n >= PICK_TRIES && tick.wrapping_sub(at) >= PICK_RETRY_TICKS {
+                self.loot_job.skip_item(id);
+            }
+        }
+        let around = spot.at();
+        let mut best: Option<(f32, u32, [f32; 3])> = None;
+        for g in core.ground_items() {
+            let p = [
+                g.qx as f32 * POS_XZ_Q,
+                g.qy as f32 * POS_Y_Q,
+                g.qz as f32 * POS_XZ_Q,
+            ];
+            let d = (p[0] - here[0]).hypot(p[2] - here[1]);
+            if (p[0] - around[0]).hypot(p[2] - around[1]) > PICK_AROUND_M
+                || self.loot_job.skips(g.id)
+                || best.is_some_and(|(b, ..)| d >= b)
+            {
+                continue;
+            }
+            if !loot::room_for(core, g.item) {
+                // No room for it: left lying.
+                self.loot_job.skip_item(g.id);
+                continue;
+            }
+            best = Some((d, g.id, p));
+        }
+        let Some((d, id, p)) = best else {
+            if tick.wrapping_sub(smashed) < GROUND_WAIT_TICKS {
+                // The stacks' word comes after the barrel's.
+                return Intent {
+                    look: Look::Point([around[0], spot.slot.y, around[1]]),
+                    ..Intent::IDLE
+                };
+            }
+            self.loot_job.next();
+            return Intent::IDLE;
+        };
+        let look = Intent {
+            look: Look::Point(p),
+            ..Intent::IDLE
+        };
+        if d > PICK_STAND_M {
+            let mut intent = look;
+            intent.travel = Some(
+                match self
+                    .route
+                    .to(core, body, [p[0], p[2]], PICK_STAND_M * 0.8, false, tick)
+                {
+                    Step::Walk { yaw, .. } => yaw,
+                    _ => yaw_toward(p[0] - here[0], p[2] - here[1]),
+                },
+            );
+            return intent;
+        }
+        let (due, n) = match self.loot_job.pick {
+            Some((was, at, n)) if was == id => (tick.wrapping_sub(at) >= PICK_RETRY_TICKS, n + 1),
+            _ => (true, 1),
+        };
+        if due && self.queue(protocol::encode_action_pickup) {
+            self.loot_job.pick = Some((id, tick, n));
+        }
+        look
+    }
+
+    /// A crate or a cache: eyes on it, `E` to open it, every stack moved
+    /// into the pack with its panel open, then shut.
+    fn loot_crate(
+        &mut self,
+        core: &mut ClientCore,
+        body: &EntityState,
+        spot: Spot,
+        tick: u32,
+    ) -> Intent {
+        let key = spot.key();
+        let look = Intent {
+            look: Look::Point(aim_point(body, &spot.slot)),
+            ..Intent::IDLE
+        };
+        let open = core.cont_kind == CONT_WORLD && core.cont_handle == key;
+        let late = |at: u32| tick.wrapping_sub(at) >= VERDICT_SECS * TICK_HZ;
+        match self.loot_job.lid {
+            None | Some(Lid::Aiming(_)) => {
+                if let Some(walk) = self.loot_approach(core, body, spot, OPEN_STAND_M, look, tick) {
+                    self.loot_job.lid = None;
+                    return walk;
+                }
+                let since = match self.loot_job.lid {
+                    Some(Lid::Aiming(at)) => at,
+                    _ => {
+                        self.loot_job.lid = Some(Lid::Aiming(tick));
+                        tick
+                    }
+                };
+                if tick.wrapping_sub(since) >= home::HOLD_TICKS
+                    && self.hands.settled()
+                    && self.queue(|buf| protocol::encode_action_container(CONT_WORLD, key, buf))
+                {
+                    self.loot_job.lid = Some(Lid::Opening(tick));
+                    self.loot_job.fresh = false;
+                    self.loot.stats.opened += 1;
+                }
+                return look;
+            }
+            Some(Lid::Opening(at)) => {
+                if self.loot_job.fresh && open {
+                    self.loot_job.lid = Some(Lid::Open);
+                } else if late(at) {
+                    self.loot_job.tries += 1;
+                    self.loot_job.lid = None;
+                    if self.loot_job.tries >= LID_TRIES {
+                        self.loot.emptied(key, tick);
+                        self.loot_job.next();
+                    }
+                    return look;
+                } else {
+                    return look;
+                }
+            }
+            Some(Lid::Moving(at, count)) => match self.loot_job.moved.take() {
+                Some(refused) => {
+                    if refused {
+                        self.loot_job.tries += 1;
+                    } else {
+                        self.loot_job.taken += u32::from(count);
+                        if let Some(a) = self.goal.as_mut() {
+                            a.gained = a.gained.saturating_add(u32::from(count));
+                        }
+                    }
+                    self.loot_job.lid = Some(Lid::Settling(tick));
+                    return look;
+                }
+                None if late(at) => {
+                    self.loot_job.tries += 1;
+                    self.loot_job.lid = Some(Lid::Open);
+                }
+                None => return look,
+            },
+            Some(Lid::Settling(at)) => {
+                if tick.wrapping_sub(at) < LID_SETTLE_TICKS {
+                    return look;
+                }
+                self.loot_job.lid = Some(Lid::Open);
+            }
+            Some(Lid::Open) => {}
+        }
+        if !open {
+            // Shut by the server: out of reach, or gone.
+            self.loot.emptied(key, tick);
+            self.loot_job.next();
+            return look;
+        }
+        let next = (self.loot_job.tries < LID_TRIES)
+            .then(|| loot::take_plan(core))
+            .flatten();
+        match next {
+            Some((from, to, count)) => {
+                if self.queue(|buf| {
+                    protocol::encode_action_move(key, CONT_WORLD, from, CONT_SELF, to, count, buf)
+                }) {
+                    self.loot_job.lid = Some(Lid::Moving(tick, count));
+                    self.loot_job.moved = None;
+                    self.loot.stats.moves += 1;
+                }
+            }
+            None => {
+                // Empty, or no room for the rest: shut it.
+                if self.queue(|buf| protocol::encode_action_container(CONT_SELF, 0, buf)) {
+                    self.loot.emptied(key, tick);
+                    self.loot_job.next();
+                }
+            }
+        }
+        look
     }
 
     fn set_craft(&mut self, step: CraftStep) {
@@ -2640,6 +3167,29 @@ impl Survivor {
             }
             self.builder.survey_now(core, &self.ledger);
             self.chores(core, chest.is_some(), tick);
+            // Its stations, what the next milestone comes down to at them,
+            // and where loot is: what it has seen, and the map.
+            let stations = self.builder.stations(core);
+            let mut raw = [(0, 0); RAW_ROWS];
+            self.memory.raw_len =
+                raw_needs(core, &stations, self.builder.survey().needs(), &mut raw) as u8;
+            self.memory.raw = raw;
+            self.memory.stations = stations;
+            self.memory.loot_held = self.loot.held(tick);
+            let here = [body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q];
+            let mut known = Sighting::default();
+            for spot in self.loot.live(core, tick) {
+                let (d, b) = relative(body, spot.slot.x, spot.slot.z);
+                known.add(d, b);
+            }
+            self.senses.loot = known;
+            self.senses.loot_place = self.loot.place(&haven, here, tick).map(|(_, [x, z])| {
+                let (d, bearing) = relative(body, x, z);
+                Place {
+                    distance: Distance::of(d),
+                    bearing,
+                }
+            });
             let (seed, _) = core.island();
             let x = body.qx as f32 * POS_XZ_Q;
             let z = body.qz as f32 * POS_XZ_Q;
@@ -2753,6 +3303,22 @@ impl Survivor {
                         self.best_distance = f32::INFINITY;
                         self.stats.targets_seen += 1;
                     }
+                }
+            }
+            // A barrel still standing, or a crate, in the cone with a
+            // clear line: somewhere loot is.
+            if let Some(prize) = Prize::of(slot.occupant) {
+                if (prize == Prize::Crate || !core.harvested.contains(target.key()))
+                    && in_view(body, &slot)
+                    && visible(core, &haven, body, target)
+                {
+                    self.loot.saw(Spot {
+                        cx: target.cx,
+                        cz: target.cz,
+                        slot,
+                        prize,
+                        seen: tick,
+                    });
                 }
             }
         }
@@ -2940,6 +3506,11 @@ impl Survivor {
         }
         if applied2 & APPLIED2_MOVE != 0 {
             self.stash_job.on_moved(core.last_move_refused != 0, tick);
+            self.loot_job.on_moved(core.last_move_refused != 0);
+        }
+        // A crate's panel: the loot run's open was answered.
+        if applied2 & APPLIED2_CONT != 0 && core.cont_kind == CONT_WORLD {
+            self.loot_job.on_panel(core.cont_handle);
         }
         while let Some(reason) = core.pop_build_refusal() {
             self.stats.refusals += 1;
@@ -3085,6 +3656,8 @@ impl BotDriver for Survivor {
         self.recover_job = RecoverJob::default();
         self.stash_job = StashJob::default();
         self.ledger.clear();
+        self.loot.clear();
+        self.loot_job = LootJob::default();
         if self.welcomed.is_none() {
             self.welcomed = Some(welcome.tick);
             self.set_deadline(self.deadline_after);
@@ -3214,9 +3787,10 @@ fn room_for(core: &ClientCore, yields: u64) -> bool {
     })
 }
 
-/// A recipe this player can use for the named output: no station, and any
-/// blueprint already known. `(recipe, output item, ticks per unit)`.
-fn resolve_recipe(core: &ClientCore, name: Name) -> Option<(u16, u16, u32)> {
+/// A recipe this player can use for the named output: no station or one of
+/// its own standing, and any blueprint already known. `(recipe, output
+/// item, ticks per unit, station)`.
+fn resolve_recipe(core: &ClientCore, name: Name, has: &Stations) -> Option<(u16, u16, u32, u8)> {
     if core.recipes_have < core.recipes.recipe_count {
         return None;
     }
@@ -3224,11 +3798,42 @@ fn resolve_recipe(core: &ClientCore, name: Name) -> Option<(u16, u16, u32)> {
     (0..usize::from(core.recipes.recipe_count).min(core.recipes.recipes.len())).find_map(|r| {
         let def = core.recipes.recipes[r];
         let usable = def.out_count > 0
-            && def.station == STATION_NONE
+            && has.usable(def.station)
             && (!def.blueprint || (r < 64 && known & (1 << r) != 0))
             && core.catalog.name(def.output as usize) == name.as_bytes();
-        usable.then_some((r as u16, def.output, def.ticks))
+        usable.then_some((r as u16, def.output, def.ticks, def.station))
     })
+}
+
+/// How many to queue in one craft: one, or at a furnace a batch, which
+/// smelts on while the body walks off (the queue is the server's), as
+/// many as the inputs and the pack's room for the output allow.
+fn batch(core: &ClientCore, recipe: u16) -> u16 {
+    let Some(def) = core.recipes.recipes.get(usize::from(recipe)) else {
+        return 1;
+    };
+    if def.station != STATION_FURNACE || def.out_count == 0 {
+        return 1;
+    }
+    let inputs = def.inputs[..usize::from(def.n_inputs).min(def.inputs.len())]
+        .iter()
+        .filter(|&&(_, per)| per > 0)
+        .map(|&(item, per)| count_item(core, item) / u32::from(per))
+        .min()
+        .unwrap_or(0);
+    let max = u32::from(core.catalog.row(usize::from(def.output)).stack_max.max(1));
+    let room: u32 = core.inv[..INV_SLOTS]
+        .iter()
+        .map(|s| match s.count {
+            0 => max,
+            n if s.item == def.output => max.saturating_sub(u32::from(n)),
+            _ => 0,
+        })
+        .sum();
+    inputs
+        .min(room / u32::from(def.out_count))
+        .min(u32::from(CRAFT_COUNT_MAX))
+        .max(1) as u16
 }
 
 fn inputs_ok(core: &ClientCore, recipe: u16) -> bool {
@@ -3293,6 +3898,8 @@ pub fn observe(
         matches!(name, "Wood" | "Stone" | crate::mind::BAG_ITEM)
             || TREE_TOOLS.contains(&name)
             || NODE_TOOLS.contains(&name)
+            || crate::mind::LOOTED.contains(&name)
+            || crate::mind::SMELTS.iter().any(|&(ore, _)| ore == name)
             || crate::agent::loadout::ARM_UP
                 .iter()
                 .any(|&(item, ..)| item == name)
@@ -3316,32 +3923,43 @@ pub fn observe(
     }
     if core.recipes_have >= core.recipes.recipe_count {
         let known = core.known();
-        // Tools first, then arms (weapons, their rounds, meds), then the
+        // Tools first, then what the base needs and what its furnace makes
+        // of the pack, then arms (weapons, their rounds, meds), then the
         // sleeping bag: the list is bounded, and with a full pack more than
         // `SUMMARY_CRAFTS` recipes can be craftable at once — the better
         // tool, the first spear and what the playbook wants next are the
-        // ones that must not fall off the end.
+        // ones that must not fall off the end. A recipe made at one of its
+        // own stations is craftable wherever it stands: the craft walks
+        // there.
         let arm = |item: u16| {
             let page = book.page(item);
             matches!(page.class, Class::Melee | Class::Ranged | Class::Med)
                 || (0..MAX_ITEM_DEFS as u16).any(|w| book.page(w).ranged.round == item)
         };
+        let needed = |item: u16, name: &Name| {
+            crate::mind::SMELTS
+                .iter()
+                .any(|&(_, out)| out == name.as_str())
+                || memory.base.needs().iter().any(|&(i, _)| i == item)
+        };
         let rank = |item: u16, name: &Name| {
             if TREE_TOOLS.contains(&name.as_str()) || NODE_TOOLS.contains(&name.as_str()) {
                 0
-            } else if arm(item) {
+            } else if needed(item, name) {
                 1
-            } else if name.as_str() == crate::mind::BAG_ITEM {
+            } else if arm(item) {
                 2
-            } else {
+            } else if name.as_str() == crate::mind::BAG_ITEM {
                 3
+            } else {
+                4
             }
         };
-        for pass in 0..3 {
+        for pass in 0..5 {
             for r in 0..usize::from(core.recipes.recipe_count).min(core.recipes.recipes.len()) {
                 let def = core.recipes.recipes[r];
                 if def.out_count == 0
-                    || def.station != STATION_NONE
+                    || !memory.stations.usable(def.station)
                     || (def.blueprint && (r >= 64 || known & (1 << r) == 0))
                     || !inputs_ok(core, r as u16)
                     || !room_for(core, FoodBook::bit(def.output))
@@ -3392,6 +4010,20 @@ pub fn observe(
             s.needs_len += 1;
         }
     }
+    for &(item, units) in &memory.raw[..usize::from(memory.raw_len)] {
+        let n = usize::from(s.raw_len);
+        if let (Some(name), true) = (
+            Name::new(core.catalog.name(usize::from(item))),
+            n < s.raw.len(),
+        ) {
+            s.raw[n] = (name, units);
+            s.raw_len += 1;
+        }
+    }
+    s.bench = memory.stations.bench.is_some();
+    s.furnace = memory.stations.furnace.is_some();
+    s.loot = senses.loot;
+    s.loot_place = senses.loot_place;
     for &(item, units) in &memory.stored[..usize::from(memory.stored_len)] {
         let n = usize::from(s.stored_len);
         if let (Some(name), true) = (
@@ -3496,6 +4128,15 @@ pub fn observe(
     }
     if memory.home.state == HomeState::Built {
         s.offer(Goal::GoHome);
+    }
+    // A loot run: a barrel or crate it knows of, or a place on the map
+    // that keeps them, room in the pack, and nobody dangerous in view.
+    if (senses.loot.count > 0 || senses.loot_place.is_some())
+        && s.free_slots >= loot::MIN_FREE_SLOTS
+        && !senses.hostile
+        && !memory.loot_held
+    {
+        s.offer(Goal::Loot);
     }
     // A visit home while there is something to see to there.
     if matches!(memory.home.state, HomeState::Built | HomeState::Inside)
@@ -3633,6 +4274,7 @@ mod tests {
     use super::*;
     use crate::mind::{MindConfig, Scripted};
     use protocol::{InvSlot, ItemRow};
+    use sim_core::craft::STATION_NONE;
     use sim_core::gather::ItemStack;
     use sim_core::movement::{quant_xz, quant_y};
 

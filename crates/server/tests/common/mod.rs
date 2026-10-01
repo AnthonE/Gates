@@ -159,3 +159,40 @@ pub fn stack(content: &content::Content, id: &str) -> sim_core::gather::ItemStac
         skin: 0,
     }
 }
+
+/// A loot container of this kind (`Occupant::BarrelSlot`, `CrateSlot` or
+/// `CacheSlot`) and a dry, level standing point a few metres from it with
+/// nothing scattered between: `(cell, stand)`.
+pub fn container(kind: sim_core::terrain::Occupant) -> ((u16, u16), (f32, f32)) {
+    use sim_core::terrain::{self, Occupant, ScatterTable};
+    let haven = terrain::haven(SEED);
+    let table = ScatterTable::alpha_default();
+    for cz in 16..terrain::CELLS_PER_SIDE - 16 {
+        for cx in 16..terrain::CELLS_PER_SIDE - 16 {
+            let slot = terrain::scatter(SEED, &table, &haven, cx, cz);
+            if slot.occupant != kind {
+                continue;
+            }
+            for (dx, dz) in [(0.0f32, -4.0f32), (0.0, 4.0), (-4.0, 0.0), (4.0, 0.0)] {
+                let at = (slot.x + dx, slot.z + dz);
+                let floor = terrain::ground(SEED, &haven, at.0, at.1);
+                let open = (1..=3).all(|k| {
+                    let f = k as f32 / 4.0;
+                    let (x, z) = (slot.x + dx * f, slot.z + dz * f);
+                    let c = terrain::scatter(
+                        SEED,
+                        &table,
+                        &haven,
+                        (x / terrain::CELL_SIZE).floor() as i32,
+                        (z / terrain::CELL_SIZE).floor() as i32,
+                    );
+                    c.occupant == Occupant::None || c.occupant == kind
+                });
+                if floor > 1.0 && (floor - slot.y).abs() < 0.4 && open {
+                    return ((cx as u16, cz as u16), at);
+                }
+            }
+        }
+    }
+    panic!("fixture seed has no {kind:?} with open ground beside it");
+}

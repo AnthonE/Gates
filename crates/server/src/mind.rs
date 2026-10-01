@@ -33,6 +33,9 @@ pub const SUMMARY_CRAFTS: usize = 8;
 pub const SUMMARY_NEEDS: usize = crate::agent::build::NEED_ROWS;
 /// What its box holds, as a summary carries it.
 pub const SUMMARY_STORED: usize = crate::agent::stash::STORED_ROWS;
+/// The raw materials the next milestone comes down to, as a summary
+/// carries them.
+pub const SUMMARY_RAW: usize = crate::agent::plan::RAW_ROWS;
 /// The scripted policy goes home to put things away once the pack is down
 /// to this many free slots.
 pub const SCRIPTED_STASH_FREE_SLOTS: u8 = 4;
@@ -40,6 +43,25 @@ pub const SCRIPTED_STASH_FREE_SLOTS: u8 = 4;
 /// its own sake: a pack full of wood has no room for the pickaxe the next
 /// stone makes. The base's needs ask for more by name.
 pub const SCRIPTED_PLENTY: u32 = 3000;
+/// A barrel or crate known this near (metres) is worth taking on the way,
+/// whatever the base needs.
+pub const SCRIPTED_LOOT_NEAR_M: u8 = 40;
+/// What loot pays that the playbook goes for when the base is short of it:
+/// barrels, crates and caches pay these, and before a furnace stands
+/// nothing else pays fragments (`content/loot.toml`).
+pub const LOOTED: [&str; 9] = [
+    "Metal Fragments",
+    "Low Grade Fuel",
+    "Junk",
+    "Rope",
+    "Tarp",
+    "Gears",
+    "Animal Fat",
+    "Cloth",
+    "Sulfur",
+];
+/// Ore, and what its furnace makes of it.
+pub const SMELTS: [(&str, &str); 2] = [("Metal Ore", "Metal Fragments"), ("Sulfur Ore", "Sulfur")];
 /// The deployable a body wakes on, by catalog name: what the playbook
 /// crafts once it has stone tools.
 pub const BAG_ITEM: &str = "Sleeping Bag";
@@ -135,6 +157,9 @@ pub enum Goal {
     /// Go home and see to it: feed the cupboard when its stock runs low,
     /// put away what the belt does not keep, take out what the base needs.
     Stash,
+    /// Go for the barrels, crates and caches it knows of, or the nearest
+    /// place on the map that has them: smash, open, take.
+    Loot,
 }
 
 /// `craft:` plus the longest catalog name.
@@ -162,7 +187,7 @@ impl std::fmt::Debug for Label {
 
 impl Goal {
     /// Every goal but the per-item craft, in the order they are offered.
-    pub const FIXED: [Goal; 17] = [
+    pub const FIXED: [Goal; 18] = [
         Goal::Explore,
         Goal::GatherWood,
         Goal::GatherStone,
@@ -180,6 +205,7 @@ impl Goal {
         Goal::Build,
         Goal::GoHome,
         Goal::Stash,
+        Goal::Loot,
     ];
 
     /// The vocabulary's base keys, for documentation and tests.
@@ -203,6 +229,7 @@ impl Goal {
             Goal::Build => "build",
             Goal::GoHome => "go_home",
             Goal::Stash => "stash",
+            Goal::Loot => "loot",
         }
     }
 
@@ -278,6 +305,9 @@ impl Goal {
             Goal::GoHome => "Walk home and in through the doors, shutting them behind.".into(),
             Goal::Stash => {
                 "Go home: feed the cupboard if it runs low, put what the belt does not need in the box, take out what the base needs.".into()
+            }
+            Goal::Loot => {
+                "Smash known barrels and empty crates, or go to the nearest loot place on the map.".into()
             }
         }
     }
@@ -626,6 +656,23 @@ impl HomeSense {
     }
 }
 
+/// A place on the map, as a summary carries it: a distance band and a
+/// relative bearing (an index into [`BEARINGS`]), never where.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Place {
+    pub distance: Distance,
+    pub bearing: u8,
+}
+
+impl Place {
+    fn json(&self) -> Value {
+        json!({
+            "distance": self.distance.word(),
+            "bearing": BEARINGS[self.bearing as usize % 8],
+        })
+    }
+}
+
 /// The most goals one request can offer: the fixed set and every craft.
 pub const MAX_OPTIONS: usize = Goal::FIXED.len() + SUMMARY_CRAFTS;
 
@@ -678,6 +725,17 @@ pub struct Summary {
     pub milestone: Milestone,
     pub needs: [(Name, u32); SUMMARY_NEEDS],
     pub needs_len: u8,
+    /// What those come down to that nobody crafts here: to gather, hunt
+    /// or loot.
+    pub raw: [(Name, u32); SUMMARY_RAW],
+    pub raw_len: u8,
+    /// Its own workbench and furnace stand.
+    pub bench: bool,
+    pub furnace: bool,
+    /// Barrels and crates it knows of and has not emptied.
+    pub loot: Sighting,
+    /// The nearest place on the map with crates it has not found bare.
+    pub loot_place: Option<Place>,
     /// What its box held when last opened.
     pub stored: [(Name, u32); SUMMARY_STORED],
     pub stored_len: u8,
@@ -771,6 +829,16 @@ impl Summary {
         milestone: Milestone::Shell,
         needs: [(Name::EMPTY, 0); SUMMARY_NEEDS],
         needs_len: 0,
+        raw: [(Name::EMPTY, 0); SUMMARY_RAW],
+        raw_len: 0,
+        bench: false,
+        furnace: false,
+        loot: Sighting {
+            count: 0,
+            nearest_m: 0,
+            bearing: 0,
+        },
+        loot_place: None,
         stored: [(Name::EMPTY, 0); SUMMARY_STORED],
         stored_len: 0,
         take_out: false,
@@ -790,6 +858,10 @@ impl Summary {
 
     pub fn needs(&self) -> &[(Name, u32)] {
         &self.needs[..self.needs_len as usize]
+    }
+
+    pub fn raw(&self) -> &[(Name, u32)] {
+        &self.raw[..self.raw_len as usize]
     }
 
     pub fn stored(&self) -> &[(Name, u32)] {
@@ -882,7 +954,11 @@ impl Summary {
             "base_next": {
                 "milestone": self.milestone.word(),
                 "missing": self.needs().iter().map(|(n, c)| json!({"name": n.as_str(), "count": c})).collect::<Vec<_>>(),
+                "raw": self.raw().iter().map(|(n, c)| json!({"name": n.as_str(), "count": c})).collect::<Vec<_>>(),
             },
+            "stations": { "workbench": self.bench, "furnace": self.furnace },
+            "loot_known": self.loot.json(),
+            "loot_place": self.loot_place.map(|p| p.json()),
             "my_box": {
                 "holds": self.stored().iter().map(|(n, c)| json!({"name": n.as_str(), "count": c})).collect::<Vec<_>>(),
                 "has_what_the_base_needs": self.take_out,
@@ -1523,27 +1599,61 @@ impl Scripted {
                 }
             }
         }
-        // Then a home: the next milestone's materials, gathered where they
-        // are in view, then the building. Short of something nobody can see,
-        // it builds what the pack pays for, and otherwise looks round.
+        // Ore in the pack and its own furnace standing: smelted, a batch at
+        // a time (the craft walks home to it).
+        if s.furnace {
+            for (ore, out) in SMELTS {
+                if s.count_of(ore) == 0 {
+                    continue;
+                }
+                if let Some(name) = s.craftable().iter().find(|n| n.as_str() == out) {
+                    return (Goal::Craft(*name), "scripted: smelt the ore at my furnace");
+                }
+            }
+        }
+        // Then a home and its stations: the next milestone's materials,
+        // gathered where they are in view, then the building. What the pack
+        // can make of what it holds is made (fuel, fragments at the
+        // furnace); what it comes down to is gathered, hunted or looted.
+        // Short of something nobody can see, it builds what the pack pays
+        // for, and otherwise looks round.
         if tooled && s.milestone != Milestone::Done {
             if s.needs_len == 0 && s.offers(Goal::Build) {
                 return (Goal::Build, "scripted: build the next part of the base");
             }
             for (name, _) in s.needs() {
+                if let Some(name) = s.craftable().iter().find(|n| *n == name) {
+                    return (Goal::Craft(*name), "scripted: make what the base needs");
+                }
+            }
+            let raw = if s.raw_len > 0 { s.raw() } else { s.needs() };
+            for (name, _) in raw {
                 let (goal, seen) = match name.as_str() {
                     "Wood" => (Goal::GatherWood, s.trees.count > 0),
                     "Stone" => (Goal::GatherStone, s.stone_nodes.count > 0),
                     "Cloth" => (Goal::Forage, s.bushes.count > 0),
-                    _ => continue,
+                    "Metal Ore" | "Sulfur Ore" => (Goal::GatherOre, s.ore_nodes.count > 0),
+                    "Animal Fat" => (Goal::Hunt, s.animals.count > 0),
+                    _ => (Goal::Loot, false),
                 };
                 if seen && s.offers(goal) {
                     return (goal, "scripted: materials for the base");
+                }
+                if LOOTED.contains(&name.as_str()) && s.offers(Goal::Loot) {
+                    return (Goal::Loot, "scripted: loot for what the base needs");
                 }
             }
             if s.offers(Goal::Build) {
                 return (Goal::Build, "scripted: build what the pack pays for");
             }
+        }
+        // A barrel or a crate close by is worth the detour.
+        if tooled
+            && s.offers(Goal::Loot)
+            && s.loot.count > 0
+            && s.loot.nearest_m <= SCRIPTED_LOOT_NEAR_M
+        {
+            return (Goal::Loot, "scripted: a barrel or crate is near");
         }
         // Alternate the resources, preferring one that is in view.
         let order = [
@@ -1942,5 +2052,68 @@ mod tests {
         let v = s.to_json();
         assert_eq!(v["home"]["state"], "none");
         assert_eq!(v["cupboard_needs_feeding"], false);
+    }
+
+    /// The stations: fragments for the bench come from loot until a
+    /// furnace stands; the furnace's fuel is crafted from what the pack
+    /// holds, its fat hunted where an animal is in view; ore is smelted at
+    /// the furnace before anything else is built; and a barrel or crate
+    /// close by is taken on the way.
+    #[test]
+    fn the_playbook_loots_for_the_bench_and_smelts_at_the_furnace() {
+        let mut scripted = Scripted::default();
+        let mut s = Summary::EMPTY;
+        (s.food, s.food_max, s.water, s.water_max) = (100, 100, 100, 100);
+        s.items[0] = (name("Stone Hatchet"), 1);
+        s.items[1] = (name("Stone Pickaxe"), 1);
+        s.items_len = 2;
+        s.bags = 1;
+        s.free_slots = 20;
+        for g in [Goal::Explore, Goal::GatherWood, Goal::Hunt, Goal::Loot] {
+            s.offer(g);
+        }
+        s.trees.add(10.0, 0);
+        s.milestone = Milestone::Bench;
+        s.needs[0] = (name("Metal Fragments"), 100);
+        s.needs_len = 1;
+        s.raw[0] = s.needs[0];
+        s.raw_len = 1;
+        assert_eq!(scripted.pick(&s).0, Goal::Loot, "fragments are loot");
+        // The furnace: fuel made from the pack when it can be...
+        s.milestone = Milestone::Furnace;
+        s.needs[0] = (name("Low Grade Fuel"), 50);
+        s.raw[0] = (name("Animal Fat"), 39);
+        s.raw[1] = (name("Cloth"), 13);
+        s.raw_len = 2;
+        let fuel = name("Low Grade Fuel");
+        s.craftable[0] = fuel;
+        s.craftable_len = 1;
+        s.offer(Goal::Craft(fuel));
+        assert_eq!(scripted.pick(&s).0, Goal::Craft(fuel));
+        // ...else its fat hunted, with an animal in view, or looted.
+        s.craftable_len = 0;
+        s.animals.add(20.0, 1);
+        assert_eq!(scripted.pick(&s).0, Goal::Hunt);
+        s.animals = Sighting::default();
+        assert_eq!(scripted.pick(&s).0, Goal::Loot);
+        // Ore and a furnace: smelted first.
+        s.furnace = true;
+        s.items[2] = (name("Metal Ore"), 60);
+        s.items_len = 3;
+        let frags = name("Metal Fragments");
+        s.craftable[0] = frags;
+        s.craftable_len = 1;
+        s.offer(Goal::Craft(frags));
+        assert_eq!(scripted.pick(&s).0, Goal::Craft(frags));
+        // A finished base, a barrel close by: taken on the way.
+        s.items_len = 2;
+        s.milestone = Milestone::Done;
+        assert_eq!(scripted.pick(&s).0, Goal::GatherWood);
+        s.loot.add(25.0, 0);
+        assert_eq!(scripted.pick(&s).0, Goal::Loot);
+        let v = s.to_json();
+        assert_eq!(v["stations"]["furnace"], true);
+        assert_eq!(v["loot_known"]["count"], 1);
+        assert_eq!(Goal::Loot.label().as_str(), "loot");
     }
 }
