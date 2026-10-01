@@ -2,7 +2,7 @@
 //!
 //! Two facts, both pure, both testable without a window:
 //!
-//! - **Cadence is distance, not time.** One step per [`STRIDE_M`] of ground
+//! - **Cadence is distance, not time.** One step per [`stride_m`] of ground
 //!   covered. A timer would make a sprinting player's steps land at the same
 //!   rate as a walking player's, which is the tell that gives away a
 //!   footstep system built on a clock; distance gets sprint cadence for free
@@ -20,12 +20,32 @@
 //! as a number.
 
 use super::Cue;
+use sim_core::movement::{SPRINT_SPEED, WALK_SPEED};
 
-/// Metres of ground covered per footstep (`DECISIONS.md` §open, "audio v0").
+/// Metres of ground covered per footstep at walking speed and below
+/// (`DECISIONS.md` §open, "audio v0").
 ///
 /// Not measured against the reference — a stride is a knob and this one ships
 /// at roughly a walking pace for a 1.6 m eye.
 pub const STRIDE_M: f32 = 0.85;
+
+/// Metres per footstep at full sprint. A runner lengthens their stride far
+/// more than they quicken it, so sprint cadence stays near walk cadence
+/// (~3.5 steps/s). At [`STRIDE_M`] a sprint was 6.5 steps a second, and the
+/// recorded steps piled into a clatter.
+pub const SPRINT_STRIDE_M: f32 = 1.5;
+
+/// Where the stride starts to lengthen, m/s: half a metre a second over a
+/// walk, because a sampled speed jitters frame to frame and a walk's
+/// cadence should not jitter with it.
+const STRIDE_RAMP_FROM: f32 = WALK_SPEED + 0.5;
+
+/// The stride at a speed: [`STRIDE_M`] at a walk, growing to
+/// [`SPRINT_STRIDE_M`] at sprint speed.
+pub fn stride_m(speed: f32) -> f32 {
+    let t = ((speed - STRIDE_RAMP_FROM) / (SPRINT_SPEED - STRIDE_RAMP_FROM)).clamp(0.0, 1.0);
+    STRIDE_M + (SPRINT_STRIDE_M - STRIDE_M) * t
+}
 
 /// Below this speed nothing is heard at all, m/s. Stops a player nudged by a
 /// collision resolve from ticking the odometer into a step.
@@ -86,6 +106,11 @@ pub fn remote(cue: Cue) -> Cue {
 pub struct Steps {
     /// Ground covered since the last step, metres.
     travelled: f32,
+    /// The stride `travelled` was banked against, metres (0 before the first
+    /// moving sample). When the pace changes the banked ground is rescaled to
+    /// the new stride, so ground banked at a sprint and spent at a walk cannot
+    /// buy an extra step.
+    stride: f32,
     /// Last sampled position, or `None` before the first sample.
     last: Option<[f32; 3]>,
     /// Last sampled speed, m/s — the gain of the step that fires.
@@ -124,8 +149,14 @@ impl Steps {
         if self.speed < STEP_MIN_SPEED {
             return None;
         }
+        let stride = stride_m(self.speed);
+        if self.stride > 0.0 {
+            // Exactly 1.0 at a steady pace, so a walk's arithmetic is untouched.
+            self.travelled *= stride / self.stride;
+        }
+        self.stride = stride;
         self.travelled += d;
-        if self.travelled < STRIDE_M {
+        if self.travelled < stride {
             return None;
         }
         // Subtract rather than zero: a frame that covered two strides has the
@@ -133,7 +164,7 @@ impl Steps {
         // frame rates instead of quietly dropping steps. Capped at one stride
         // of banked ground, because a hitch that covered ten metres must not
         // buy a burst of eleven footsteps once the frames come back.
-        self.travelled = (self.travelled - STRIDE_M).min(STRIDE_M);
+        self.travelled = (self.travelled - stride).min(stride);
         let t = (self.speed / STEP_FULL_SPEED).clamp(0.0, 1.0);
         Some(Step {
             gain: STEP_MIN_GAIN + (1.0 - STEP_MIN_GAIN) * t,
@@ -142,7 +173,7 @@ impl Steps {
 
     /// Forget where we were — a teleport, a respawn, or a new world. Without
     /// this the next sample measures the whole jump as ground covered and
-    /// fires a step for every 0.85 m of it.
+    /// fires a step for every stride of it.
     pub fn reset(&mut self) {
         self.travelled = 0.0;
         self.last = None;
