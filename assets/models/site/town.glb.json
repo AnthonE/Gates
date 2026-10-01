@@ -4,7 +4,7 @@
   "label": "THE GATE",
   "blender": "4.5.14 LTS",
   "python": "3.11.15",
-  "script_sha256": "958c232513640c35dbffcb4494d515f38c6bf29ef4f2d42077966a99d1f0b02e",
+  "script_sha256": "676907017b7187791ceafb08f7b2ad51aed774aa3966087768066102b0ab1c3a",
   "kit_sha256": "939c98082006337d5da0f6aab9e6b3fa7c50096dc0e193914483eaa36941c6e4",
   "triangles": 60680,
   "meshes": [
@@ -20,5 +20,5 @@
     "timber",
     "yard"
   ],
-  "bytes": 5006132
+  "bytes": 7021724
 }

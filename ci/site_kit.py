@@ -159,7 +159,10 @@ class Soup:
         bm = self.bm[role]
         c = [(x0, y0, z0), (x1, y0, z0), (x1, y0, z1), (x0, y0, z1),
              (x0, y1, z0), (x1, y1, z0), (x1, y1, z1), (x0, y1, z1)]
-        quads = [(0, 3, 2, 1), (4, 5, 6, 7), (0, 1, 5, 4), (2, 3, 7, 6), (1, 2, 6, 5), (3, 0, 4, 7)]
+        # Counter-clockwise seen from outside, in the kit's right-handed
+        # frame: an engine culls back faces, so a box wound the other way
+        # draws inside out (and its AO bake shoots into itself).
+        quads = [(0, 1, 2, 3), (4, 7, 6, 5), (0, 4, 5, 1), (2, 6, 7, 3), (1, 5, 6, 2), (3, 7, 4, 0)]
         vs = [bm.verts.new(kit_to_blender(p)) for p in c]
         faces = []
         lay = self.tint[role]
@@ -630,8 +633,11 @@ def bake_ao(bpy, objs, samples):
         mesh.attributes["ao"].data.foreach_get("color", aov)
         col = mesh.color_attributes.new("Col", "FLOAT_COLOR", "CORNER")
         out = [0.0] * (n * 4)
+        # Per-corner AO smears into triangles across a face tens of metres
+        # long; the dressed stone's faces are, so the stone goes without.
+        flat = obj.name.startswith("obsidian")
         for i in range(n):
-            a = 0.35 + 0.65 * aov[i * 4]
+            a = 1.0 if flat else 0.35 + 0.65 * aov[i * 4]
             out[i * 4 + 0] = tint[i * 4 + 0] * a
             out[i * 4 + 1] = tint[i * 4 + 1] * a
             out[i * 4 + 2] = tint[i * 4 + 2] * a
@@ -696,7 +702,7 @@ def gen(args):
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     bpy.ops.export_scene.gltf(
         filepath=args.out, export_format="GLB", use_selection=True, export_apply=True,
-        export_texcoords=True, export_normals=True, export_tangents=False,
+        export_texcoords=True, export_normals=True, export_tangents=True,
         export_materials="EXPORT", export_vertex_color="ACTIVE", export_yup=True,
         export_animations=False, export_skins=False, export_morph=False,
         export_lights=False, export_cameras=False, export_extras=False,

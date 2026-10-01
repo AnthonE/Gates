@@ -152,8 +152,8 @@ pub(super) fn material(surface: Surface, server: &AssetServer) -> StandardMateri
     // a map cannot say — how dark the ancient stone is, that gilt is a
     // metal, and that a bulb and a lapis seam give light.
     let (base_color, metallic, roughness, emissive) = match surface {
-        Surface::Obsidian => (Color::srgb(0.2, 0.2, 0.23), 0.0, 0.55, LinearRgba::BLACK),
-        Surface::Gilt => (Color::srgb(0.92, 0.7, 0.34), 0.85, 0.55, LinearRgba::BLACK),
+        Surface::Obsidian => (Color::srgb(0.13, 0.13, 0.15), 0.0, 0.42, LinearRgba::BLACK),
+        Surface::Gilt => (Color::srgb(1.0, 0.8, 0.42), 0.9, 0.38, LinearRgba::BLACK),
         Surface::Lapis => (
             Color::srgb(0.2, 0.45, 1.0),
             0.0,
@@ -171,7 +171,9 @@ pub(super) fn material(surface: Surface, server: &AssetServer) -> StandardMateri
     StandardMaterial {
         base_color,
         emissive,
-        base_color_texture: Some(maps.albedo),
+        // Polished black stone wears the stone's relief but not its
+        // photograph: the photo's light joints read as stripes up a pylon.
+        base_color_texture: (surface != Surface::Obsidian).then_some(maps.albedo),
         normal_map_texture: Some(maps.normal),
         metallic_roughness_texture: Some(maps.rough),
         occlusion_texture: maps.ao,

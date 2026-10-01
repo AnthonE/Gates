@@ -174,14 +174,21 @@ pub fn dress(
             .get_or_insert_with(|| {
                 let mut m = depot::material(surface, &server);
                 m.uv_transform = bevy::math::Affine2::from_scale(Vec2::splat(surface.tiles()));
+                // Sheets, awnings and trim are single faces seen from both sides;
+                // a back face lights with its normal flipped.
+                m.double_sided = true;
+                m.cull_mode = None;
                 materials.add(m)
             })
             .clone();
         commands.spawn((ChildOf(root), Mesh3d(mesh), MeshMaterial3d(mat), tf));
     }
+    let mut gone = 0;
     for e in fallback.iter() {
         commands.entity(e).despawn();
+        gone += 1;
     }
+    info!("ziggurat: dressed, {gone} stand-in meshes removed");
 }
 
 /// Hide a leaf while its door stands open.
