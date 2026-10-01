@@ -1881,6 +1881,13 @@ pub struct World {
     /// hatches, so a content set with no `mobs.toml` rows is a shard
     /// without wildlife rather than a shard with invisible wildlife.
     pub mob: mob::MobContent,
+    /// The attack helicopter's baked numbers (`heli.rs`). Construction
+    /// input like `mob`; inert by default, so it never arrives in a world
+    /// nobody armed — the shard's boot arms it (`server::net`).
+    pub heli_def: crate::heli::HeliDef,
+    /// The attack helicopter's brain — sim state, hashed whenever it is
+    /// not `Default`. Its body is the roster's `heli::HELI_SLOT`.
+    pub heli: crate::heli::Heli,
     /// The animal roster — sim state, hashed. Homes are drawn from the
     /// seed at construction beside `haven` and never move; everything else
     /// in it is a tick's business.
@@ -2045,6 +2052,8 @@ impl World {
             players: [Player::default(); MAX_PLAYERS],
             scatter: ScatterTable::alpha_default(),
             mob: mob::MobContent::EMPTY,
+            heli_def: crate::heli::HeliDef::INERT,
+            heli: crate::heli::Heli::default(),
             // After `haven`, because a home is rejected against the two
             // authored sites (mob.rs `home_of`).
             mobs: Box::new(mob::Mobs::new(seed, &haven)),
@@ -5412,6 +5421,56 @@ impl World {
             }
         }
 
+        // The heli flies after the roster, on the same final player
+        // positions, and its round lands the way a bite does — through
+        // `combat::hurt`, never in the town's safe zone, and a kill is
+        // `DEATH_BY_MOB` from the heli's tagged id.
+        let round = crate::heli::step(
+            seed,
+            &self.haven,
+            tick,
+            &self.heli_def,
+            self.pieces.cols(),
+            &mut crate::occupy::Occupants {
+                doors: self.card_door_bits,
+                table: &self.scatter,
+                haven: &self.haven,
+                harvested: &self.slot_lives,
+                cache: &mut self.slot_cache,
+            },
+            &mut self.heli,
+            &mut self.mobs.m[crate::heli::HELI_SLOT],
+            &self.players,
+            &mut self.events,
+        );
+        if let Some(r) = round {
+            let victim = r.victim as usize;
+            let (hqx, hqz) = {
+                let body = &self.mobs.m[crate::heli::HELI_SLOT].body;
+                (body.qx as i64, body.qz as i64)
+            };
+            let v = &mut self.players[victim];
+            if v.active && v.hp > 0 && !crate::combat::protected(v) {
+                let sector =
+                    crate::combat::bearing_sector(hqx - v.body.qx as i64, hqz - v.body.qz as i64);
+                let crate::combat::Hurt { left, died, .. } =
+                    crate::combat::hurt(&self.combat, v, r.damage);
+                let victim_id = v.id;
+                self.events
+                    .push(EV_HURT, victim_id, sector as u32, r.damage as u32);
+                self.events.push(
+                    EV_HEALTH,
+                    victim_id,
+                    left as u32,
+                    self.combat.player_hp as u32,
+                );
+                if died {
+                    let by = mob::mob_id(crate::heli::HELI_SLOT);
+                    self.down_or_die(victim, by, DEATH_BY_MOB, NO_ITEM, r.range_cm, false);
+                }
+            }
+        }
+
         // Arrows fly after the player loop, never inside it. Two reasons,
         // both structural: every body has already taken its step, so a shot
         // resolves against final positions instead of positions that are
@@ -6036,6 +6095,11 @@ impl World {
                 h.update(&m.path.cx[k].to_le_bytes());
                 h.update(&m.path.cz[k].to_le_bytes());
             }
+        }
+        // The heli's brain, only once it has one: an unarmed world's
+        // `Heli` is `Default` and folds nothing, so no golden moves.
+        if self.heli != crate::heli::Heli::default() {
+            h.update(&self.heli.hash_bytes());
         }
         h.update(&(self.deploys.len() as u64).to_le_bytes());
         for d in self.deploys.entries() {

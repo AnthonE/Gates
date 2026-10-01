@@ -1005,7 +1005,11 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// v87 — the Black Ziggurat's card doors: `ACT_SWIPE` (26) swipes a card or
 /// pulls a lever, `SUB_CARD_DOORS` (70) mirrors which doors stand open,
 /// `SUB_SWIPE_REFUSED` (71) answers the swiper.
-pub const PROTO_VER: u16 = 87;
+/// v88 — the attack helicopter (`sim-core/src/heli.rs`). No layout moves: it
+/// is the roster's last slot (`mob::HELI_SLOT`, species `MOB_HELI`), an
+/// entity record flying up to 140 m, and its gun is an `EV_SHOT` from that
+/// mob id. A v87 client reads the slot as a pig and would draw one in the sky.
+pub const PROTO_VER: u16 = 88;
 
 /// This game's slug in the elo catalog.
 ///
@@ -1094,6 +1098,8 @@ const SEL_BITS: u32 = 3;
 pub const POS_XZ_BITS: u32 = 18;
 pub const POS_Y_BITS: u32 = 14;
 pub const POS_Y_BIAS: i32 = 2048;
+// The heli flies no higher than the y window carries (`heli::Y_CEIL_Q`).
+const _: () = assert!(sim_core::heli::Y_CEIL_Q < (1 << POS_Y_BITS) - POS_Y_BIAS);
 pub const VEL_BITS: u32 = 14;
 pub const VEL_BIAS: i32 = 8192;
 

@@ -80,11 +80,19 @@ use crate::yaw_lut::yaw_dir;
 /// worldgen and worldgen is shared.
 pub const MOB_PIG: u8 = 0;
 pub const MOB_WOLF: u8 = 1;
+/// The content species — the rows `content/mobs.toml` bakes.
 pub const MOB_KINDS: usize = 2;
+/// The attack helicopter (`heli.rs`), in [`HELI_SLOT`]. **Not a content
+/// species**: past [`MOB_KINDS`], so `MobContent::def` hands back
+/// `MobDef::INERT` for it (no hit volume, no hp, no loot) and nothing here
+/// steps it — the slot is never homed. It rides the roster for the wire's
+/// sake alone.
+pub const MOB_HELI: u8 = 2;
+pub use crate::heli::HELI_SLOT;
 
 /// One roster slot in this many is a predator (`DECISIONS.md` §open,
-/// "predator v0"). 64 slots at 1-in-4 is **16 wolves and 48 pigs**, exactly,
-/// on every seed.
+/// "predator v0"). 64 slots at 1-in-4 is **16 wolves and 47 pigs**, exactly,
+/// on every seed — the last slot is the heli's ([`HELI_SLOT`]).
 ///
 /// A stride and not a hashed draw, which is the bounded form wall 4 wants:
 /// the predator count is a stated number a gate can count rather than a
@@ -110,7 +118,9 @@ pub(crate) const WOLF_SLOT_EVERY: usize = 4;
 /// variety a world needs.
 #[inline]
 pub const fn kind_of(slot: usize) -> u8 {
-    if slot.is_multiple_of(WOLF_SLOT_EVERY) {
+    if slot == HELI_SLOT {
+        MOB_HELI
+    } else if slot.is_multiple_of(WOLF_SLOT_EVERY) {
         MOB_WOLF
     } else {
         MOB_PIG
@@ -656,6 +666,13 @@ impl Mobs {
         // Slot order, so a pack's leader has its home before any member
         // draws a den around it.
         for slot in 0..MAX_MOBS {
+            // The heli's slot has no home: `heli.rs` flies it, and an
+            // unhomed slot is one `step` never walks or hatches.
+            if slot == HELI_SLOT {
+                mobs.m[slot].kind = MOB_HELI;
+                mobs.m[slot].target = NO_TARGET;
+                continue;
+            }
             let leader = pack_leader_of(slot).filter(|&l| l != slot && mobs.m[l].homed);
             let home = match leader {
                 Some(l) => {

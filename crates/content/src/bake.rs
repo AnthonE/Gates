@@ -1698,6 +1698,40 @@ impl Content {
     /// never a silently ignored row, because a shard that booted with a row
     /// nothing reads is a shard whose content hash promises wildlife it
     /// does not have.
+    /// The attack helicopter (`[heli]`), in sim units, or
+    /// `HeliDef::INERT` for a set without one. Validate bounded every field,
+    /// so no product here can overflow.
+    pub fn bake_heli(&self) -> Result<sim_core::heli::HeliDef, String> {
+        let Some(h) = &self.heli else {
+            return Ok(sim_core::heli::HeliDef::INERT);
+        };
+        let ticks = |s: u32| s as u64 * TICK_HZ as u64;
+        let ms_ticks = |ms: u32| -> Result<u16, String> {
+            u16::try_from((ms as u64 * TICK_HZ as u64 / 1000).max(1))
+                .map_err(|_| format!("bake: heli {ms} ms overflows the sim"))
+        };
+        let mm = |m: u32| m * 1000;
+        Ok(sim_core::heli::HeliDef {
+            first_ticks: ticks(h.first_seconds),
+            every_ticks: ticks(h.every_seconds),
+            patrol_ticks: ticks(h.patrol_seconds),
+            speed_mmpt: mm(h.speed_mps) / TICK_HZ,
+            engage_speed_mmpt: mm(h.engage_speed_mps) / TICK_HZ,
+            cruise_mm: mm(h.cruise_m),
+            engage_mm: mm(h.engage_m),
+            orbit_mm: mm(h.orbit_m),
+            detect_mm: mm(h.detect_m),
+            lose_ticks: ticks(h.lose_seconds),
+            range_mm: mm(h.range_m),
+            damage: h.damage as u16,
+            burst: h.burst as u8,
+            rate_ticks: ms_ticks(h.rate_ms)?,
+            gap_ticks: ms_ticks(h.burst_gap_ms)?,
+            // Centimetres per 10 m is millimetres per metre.
+            spread_pm: h.spread_cm_per_10m as u16,
+        })
+    }
+
     pub fn bake_mobs(&self) -> Result<MobContent, String> {
         let mut mc = MobContent::EMPTY;
         for m in &self.mobs {

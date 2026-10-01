@@ -2845,13 +2845,24 @@ impl ShardCore {
                     let (yaw, pitch) = ((ev.b >> 8) as u16, ev.b as u8);
                     let (speed, drop) = ((ev.c >> 16) as u16, ev.c as u16);
                     let sh = Self::world_slot_of(&self.world, ev.a);
+                    // The heli's gun (`heli.rs`) shoots from a roster slot,
+                    // which no world slot names: filtered by the roster's
+                    // interest instead, or a burst would reach the island.
+                    let beast = mob::slot_of_id(ev.a);
                     match encode_event_shot(ev.a, yaw, pitch, speed, drop, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {
                                     continue;
                                 }
-                                if !self.body_event_visible(slot, ev.a, sh) {
+                                let seen = match beast {
+                                    Some(m) => {
+                                        !self.interest_settled(slot)
+                                            || self.clients[slot].m_interest[m]
+                                    }
+                                    None => self.body_event_visible(slot, ev.a, sh),
+                                };
+                                if !seen {
                                     ShardStats::bump(&stats.ev_interest_skipped);
                                     continue;
                                 }

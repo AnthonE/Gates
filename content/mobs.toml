@@ -304,3 +304,33 @@ drops = [
   { item = "item.raw_meat", count = 4 },
   { item = "item.fat", count = 8 },
 ]
+
+# ── The attack helicopter ──────────────────────────────────────────────────
+# Rust's Patrol Heli, cut down to "just fly over and be a threat… just a
+# strong gun" (operator, 2026-10-01). An AI gunship (`sim-core/src/heli.rs`):
+# it comes in from the sea, patrols the island (every other leg goes looking
+# for a player), and when it sees somebody outside the town it circles them
+# and fires bursts. Cover works — it needs line of sight to pick you, circles
+# where it last saw you, and gives up after `lose_seconds`. It cannot be hurt
+# yet, nobody flies it, and it carries no rockets.
+#
+# Proposed defaults, tuned on three seeds against a player standing on the
+# spawn beach: spotted, a two-second beat, then two to four bursts (3–8 s of
+# fire) and an unarmoured player is down. Reaching cover in the gaps works.
+[heli]
+first_seconds = 300
+every_seconds = 1200
+patrol_seconds = 600
+speed_mps = 22
+engage_speed_mps = 10
+cruise_m = 45
+engage_m = 26
+orbit_m = 32
+detect_m = 130
+lose_seconds = 8
+range_m = 90
+damage = 18
+burst = 8
+rate_ms = 100
+burst_gap_ms = 1800
+spread_cm_per_10m = 18

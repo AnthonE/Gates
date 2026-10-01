@@ -698,6 +698,44 @@ pub struct Mob {
     pub drops: Vec<Stack>,
 }
 
+/// The attack helicopter (`sim-core/src/heli.rs`): an AI gunship that
+/// patrols the island on a schedule and shoots the players it can see.
+/// Optional — a `mobs.toml` without `[heli]` is a shard without one.
+/// Metres, seconds and milliseconds; the bake converts.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Heli {
+    /// From boot to the first arrival.
+    pub first_seconds: u32,
+    /// From one departure to the next arrival.
+    pub every_seconds: u32,
+    /// How long one visit patrols before heading back out to sea.
+    pub patrol_seconds: u32,
+    pub speed_mps: u32,
+    /// While circling a target.
+    pub engage_speed_mps: u32,
+    /// Height over the ground on patrol, and while circling a target.
+    pub cruise_m: u32,
+    pub engage_m: u32,
+    /// The circle's radius round a target.
+    pub orbit_m: u32,
+    /// How far it spots a player, given line of sight.
+    pub detect_m: u32,
+    /// Unseen this long and it gives up on its target.
+    pub lose_seconds: u32,
+    /// The gun's reach.
+    pub range_m: u32,
+    /// Per round that lands, before armour.
+    pub damage: u32,
+    /// Rounds per burst, between rounds, and between bursts.
+    pub burst: u32,
+    pub rate_ms: u32,
+    pub burst_gap_ms: u32,
+    /// Aim wobble: the aim point lands within this many centimetres per
+    /// 10 m of range, on each axis.
+    pub spread_cm_per_10m: u32,
+}
+
 /// Bare tickers only (CLAUDE.md wall 8) — the enum cannot spell `$ELO`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub enum Coin {

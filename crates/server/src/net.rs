@@ -361,6 +361,9 @@ pub struct SimTables {
     pub spawn_kit: sim_core::inventory::SpawnKit,
     pub loot: sim_core::loot::LootContent,
     pub mobs: sim_core::mob::MobContent,
+    /// The attack helicopter (`heli.rs`). Armed by the boot alone: test
+    /// shards assign their tables field by field and leave it inert.
+    pub heli: sim_core::heli::HeliDef,
     pub research: sim_core::research::ResearchContent,
     pub catalog: ItemCatalog,
     /// The skin catalog, twice: the sim's half (what fits what) and the
@@ -391,6 +394,7 @@ pub fn bake_all(content: &content::Content) -> Result<SimTables, String> {
         spawn_kit: content.bake_spawn_kit()?,
         loot: content.bake_loot()?,
         mobs: content.bake_mobs()?,
+        heli: content.bake_heli()?,
         research: content.bake_research()?,
         catalog: bake_catalog(content, &combat, &gather, &survival)?,
         skins: content.bake_skins()?,
@@ -3047,6 +3051,7 @@ fn sim_thread(
         spawn_kit,
         loot,
         mobs,
+        heli,
         research,
         catalog,
         skins,
@@ -3066,6 +3071,7 @@ fn sim_thread(
     core.world.spawn_kit = spawn_kit;
     core.world.loot = loot;
     core.world.mob = mobs;
+    core.world.heli_def = heli;
     core.world.research = research;
     core.world.skins = skins;
     core.catalog = catalog;

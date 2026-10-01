@@ -104,6 +104,7 @@ pub fn sentence(d: &Death, catalog: &ItemCatalog, killer: &str) -> String {
         // the cheapest possible way to find out the three had drifted.
         DEATH_BY_MOB => match mob::slot_of_id(d.killer).map(mob::kind_of) {
             Some(mob::MOB_WOLF) => "a wolf ran you down".to_string(),
+            Some(mob::MOB_HELI) => "the attack helicopter gunned you down".to_string(),
             _ => "a pig gored you".to_string(),
         },
         // The blast's whole story is the distance, an arrow's rule — and
@@ -329,6 +330,10 @@ mod tests {
             .expect("the roster holds prey");
         assert_eq!(said(wolf), "a wolf ran you down");
         assert_eq!(said(pig), "a pig gored you");
+        assert_eq!(
+            said(mob::HELI_SLOT),
+            "the attack helicopter gunned you down"
+        );
         assert_ne!(
             said(wolf),
             said(pig),
