@@ -167,21 +167,63 @@ pub struct SpeciesAssets {
     pub body: Handle<Mesh>,
     pub leg: Handle<Mesh>,
     pub anchors: [([f32; 3], f32); 4],
+    /// The species' baked hide, from its body model. The leg model is baked
+    /// onto its own atlas, so it carries its own.
+    pub material: Handle<StandardMaterial>,
+    pub leg_material: Handle<StandardMaterial>,
 }
 
-/// The roster's meshes and the one material, built once.
+/// The models `ci/prop_kit.py` builds for the roster (`ci/prop_recipes.py`),
+/// authored in this file's frame: +Z forward, feet at 0, a leg's hip at its
+/// origin. The box tables above stay the arithmetic truth the gates measure
+/// (size, facing, hips, the hit cylinder); the models are drawn to them.
+pub const PIG_BODY_GLB: &str = "models/mob/pig_body.glb";
+pub const PIG_LEG_GLB: &str = "models/mob/pig_leg.glb";
+pub const WOLF_BODY_GLB: &str = "models/mob/wolf_body.glb";
+pub const WOLF_LEG_GLB: &str = "models/mob/wolf_leg.glb";
+/// Killed animals lying on their side, indexed by species.
+pub const CARCASS_GLB: [&str; mob::MOB_KINDS] =
+    ["models/mob/pig_carcass.glb", "models/mob/wolf_carcass.glb"];
+/// Every model this file loads — what `tests/packed_maps.rs` censuses.
+pub const MOB_GLBS: [&str; 6] = [
+    PIG_BODY_GLB,
+    PIG_LEG_GLB,
+    WOLF_BODY_GLB,
+    WOLF_LEG_GLB,
+    CARCASS_GLB[0],
+    CARCASS_GLB[1],
+];
+
+/// A model's single primitive and its material — `build_kit`'s loading
+/// shape, for the same reason (`tests/deploy_assets.rs`).
+pub fn model(assets: &AssetServer, path: &'static str) -> (Handle<Mesh>, Handle<StandardMaterial>) {
+    (
+        assets.load(
+            GltfAssetLabel::Primitive {
+                mesh: 0,
+                primitive: 0,
+            }
+            .from_asset(path),
+        ),
+        assets.load(
+            GltfAssetLabel::Material {
+                index: 0,
+                is_scale_inverted: false,
+            }
+            .from_asset(path),
+        ),
+    )
+}
+
+/// The roster's meshes and materials, loaded once.
 ///
-/// **One material across both species**, so a mixed herd still batches — the
-/// hexes are vertex colours, which is what makes a second animal free at
-/// draw time. Two species is the roster's whole shape and the resource
-/// carries them by name rather than by index, because a `[SpeciesAssets;
-/// MOB_KINDS]` would be a table this file has to keep in step with an
-/// ordinal in another crate.
+/// Two species is the roster's whole shape and the resource carries them by
+/// name rather than by index, because a `[SpeciesAssets; MOB_KINDS]` would be
+/// a table this file has to keep in step with an ordinal in another crate.
 #[derive(Resource)]
 pub struct HerdAssets {
     pub pig: SpeciesAssets,
     pub wolf: SpeciesAssets,
-    pub material: Handle<StandardMaterial>,
 }
 
 impl HerdAssets {
@@ -309,26 +351,6 @@ pub fn wolf_mesh() -> Mesh {
     boxes_mesh_with(&parts, linear, 1.0)
 }
 
-/// A killed animal lying on its side (wire v84): the whole animal at rest,
-/// rolled a quarter turn about its length so the legs stick out sideways,
-/// and lifted so the flank rests on its feet's ground. Drawn for a death
-/// bag whose `WireBag::kind` names the species, where the bag would be.
-pub fn carcass_mesh(species: u8) -> Mesh {
-    let (mesh, body) = if species == mob::MOB_WOLF {
-        (wolf_mesh(), WOLF_BODY)
-    } else {
-        (pig_mesh(), PIG_BODY)
-    };
-    let flank = body
-        .iter()
-        .map(|(c, h, _)| c[0].abs() + h[0])
-        .fold(0.0f32, f32::max);
-    mesh.transformed_by(
-        Transform::from_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2))
-            .with_translation(Vec3::Y * flank),
-    )
-}
-
 /// The wolf's body alone — what the entity itself wears.
 pub fn wolf_body_mesh() -> Mesh {
     boxes_mesh_with(WOLF_BODY, linear, 1.0)
@@ -339,35 +361,21 @@ pub fn wolf_leg_mesh() -> Mesh {
     boxes_mesh_with(WOLF_LEG, linear, 1.0)
 }
 
-pub fn load(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
+pub fn load(mut commands: Commands, assets: Res<AssetServer>) {
+    let species = |body, leg, anchors| {
+        let (body, material) = model(&assets, body);
+        let (leg, leg_material) = model(&assets, leg);
+        SpeciesAssets {
+            body,
+            leg,
+            anchors,
+            material,
+            leg_material,
+        }
+    };
     commands.insert_resource(HerdAssets {
-        pig: SpeciesAssets {
-            body: meshes.add(pig_body_mesh()),
-            leg: meshes.add(pig_leg_mesh()),
-            anchors: LEG_ANCHORS,
-        },
-        wolf: SpeciesAssets {
-            body: meshes.add(wolf_body_mesh()),
-            leg: meshes.add(wolf_leg_mesh()),
-            anchors: WOLF_LEG_ANCHORS,
-        },
-        // Untextured, like the bush and the crate: `assets/textures/` has no
-        // hide map and a bristled animal wearing the bark photograph would
-        // be worse than one wearing its own vertex colours. The roughness is
-        // the same register the foliage material uses — hair is not shiny.
-        material: materials.add(StandardMaterial {
-            base_color: Color::WHITE,
-            perceptual_roughness: 0.88,
-            // Hide, not stone — `fresnel::FLESH` is 2.8% where the island
-            // is 4%. It shipped at 0.06, i.e. F0 0.06%, the darkest specular
-            // anywhere in the client.
-            reflectance: super::fresnel::FLESH,
-            ..default()
-        }),
+        pig: species(PIG_BODY_GLB, PIG_LEG_GLB, LEG_ANCHORS),
+        wolf: species(WOLF_BODY_GLB, WOLF_LEG_GLB, WOLF_LEG_ANCHORS),
     });
 }
 
@@ -443,7 +451,7 @@ pub fn stream(
                         Animal(id),
                         Gait::new(slot),
                         Mesh3d(species.body.clone()),
-                        MeshMaterial3d(assets.material.clone()),
+                        MeshMaterial3d(species.material.clone()),
                         Transform::from_translation(pos).with_rotation(facing),
                     ))
                     // The legs: child transforms, NOT `WorldEntity` — the
@@ -454,7 +462,7 @@ pub fn stream(
                             parent.spawn((
                                 AnimalLeg(leg_phase),
                                 Mesh3d(species.leg.clone()),
-                                MeshMaterial3d(assets.material.clone()),
+                                MeshMaterial3d(species.leg_material.clone()),
                                 Transform::from_translation(Vec3::from_array(anchor)),
                             ));
                         }

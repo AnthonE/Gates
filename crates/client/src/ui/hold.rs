@@ -307,10 +307,9 @@ pub enum HeldSrc {
 /// down — holding a box shows the box you would place, out of assets already
 /// shipped. Absent on purpose: the fire pit (`fire.glb` bakes a lit
 /// `emissiveFactor` and a carried unlit one must not glow —
-/// `tests/held_assets.rs::nothing_held_glows`), and every greybox archetype
-/// (furnace, workbench 2/3, research table, lock), because a scaled cuboid in
-/// the hand tells the player less than the stand-in tool does.
-pub const HELD_MODELS: [HeldModelDef; 15] = [
+/// `tests/held_assets.rs::nothing_held_glows`), and the lock, which has no
+/// model.
+pub const HELD_MODELS: [HeldModelDef; 37] = [
     // **A stone is palmed, not hafted, which makes this the one row where
     // `lay` is wrong and the one where the scale cheat is not about
     // frame area.** Laid forward the model's 16 cm axis stands up and its
@@ -542,6 +541,104 @@ pub const HELD_MODELS: [HeldModelDef; 15] = [
         0.15,
     ),
     HeldModelDef::upright("hearth", "models/deploy/hearth.glb", 1.000, 0.80, 0.20),
+    // Built in Blender by `ci/prop_kit.py` (`ci/prop_recipes.py`): authored
+    // standing with the grip on the +Y axis, so no `stand_grip.py` pass. The
+    // metal tools and the spear carry the stone rows' poses; everything small
+    // is palmed upright. The deployables are the world's own models again.
+    HeldModelDef::hafted(
+        "metal_hatchet",
+        "models/held/metal_hatchet.glb",
+        0.547,
+        0.15,
+        0.72,
+    ),
+    HeldModelDef::hafted(
+        "metal_pickaxe",
+        "models/held/metal_pickaxe.glb",
+        0.640,
+        0.22,
+        1.00,
+    ),
+    HeldModelDef::thrust("metal_spear", "models/held/metal_spear.glb", 2.000, 0.35),
+    HeldModelDef::upright(
+        "satchel_charge",
+        "models/held/satchel_charge.glb",
+        0.297,
+        0.45,
+        0.90,
+    ),
+    HeldModelDef::upright("bandage", "models/held/bandage.glb", 0.072, 0.50, 1.00),
+    HeldModelDef::upright("medkit", "models/held/medkit.glb", 0.182, 0.45, 0.90),
+    HeldModelDef::upright("berries", "models/held/berries.glb", 0.098, 0.30, 1.00),
+    HeldModelDef::upright("mushrooms", "models/held/mushrooms.glb", 0.114, 0.25, 1.00),
+    HeldModelDef::upright("corn", "models/held/corn.glb", 0.215, 0.30, 1.00),
+    HeldModelDef::upright("raw_meat", "models/held/raw_meat.glb", 0.205, 0.12, 1.00),
+    HeldModelDef::upright(
+        "cooked_meat",
+        "models/held/cooked_meat.glb",
+        0.205,
+        0.12,
+        1.00,
+    ),
+    HeldModelDef::upright(
+        "burnt_meat",
+        "models/held/burnt_meat.glb",
+        0.205,
+        0.12,
+        1.00,
+    ),
+    HeldModelDef::upright(
+        "green_keycard",
+        "models/held/green_keycard.glb",
+        0.086,
+        0.30,
+        1.00,
+    ),
+    HeldModelDef::upright(
+        "blue_keycard",
+        "models/held/blue_keycard.glb",
+        0.086,
+        0.30,
+        1.00,
+    ),
+    HeldModelDef::upright(
+        "red_keycard",
+        "models/held/red_keycard.glb",
+        0.086,
+        0.30,
+        1.00,
+    ),
+    HeldModelDef::upright("furnace", "models/deploy/furnace.glb", 0.950, 0.80, 0.16),
+    HeldModelDef::upright("recycler", "models/deploy/recycler.glb", 1.037, 0.80, 0.15),
+    HeldModelDef::upright(
+        "research_table",
+        "models/deploy/research_table.glb",
+        0.800,
+        0.81,
+        0.15,
+    ),
+    HeldModelDef::upright(
+        "workbench_2",
+        "models/deploy/workbench2.glb",
+        0.999,
+        0.81,
+        0.14,
+    ),
+    HeldModelDef::upright(
+        "workbench_3",
+        "models/deploy/workbench3.glb",
+        1.099,
+        0.81,
+        0.13,
+    ),
+    HeldModelDef::upright("wooden_door", "models/deploy/door.glb", 2.086, 0.50, 0.08),
+    HeldModelDef::upright(
+        "metal_door",
+        "models/deploy/door_locked.glb",
+        2.086,
+        0.50,
+        0.08,
+    ),
 ];
 
 /// The pose a head-heavy hafted tool is carried in — the axe's, shared by the
@@ -1461,11 +1558,11 @@ mod tests {
 
     #[test]
     fn an_item_with_no_model_is_none_and_not_a_default() {
-        // The revolver used to be this test's example and then grew a model,
-        // which is the point of the table. The metal hatchet is the honest
-        // example now: `reference/ARMOR.md`'s shape of gap — content priced
-        // and validated with no picture behind it.
-        let c = catalog_with(&["Metal Hatchet"]);
+        // The revolver and then the metal hatchet were this test's example
+        // until each grew a model, which is the point of the table. Worn
+        // armour is the honest example now: `reference/ARMOR.md`'s shape of
+        // gap — content priced and validated with no picture behind it.
+        let c = catalog_with(&["Burlap Hood"]);
         // `None` here means "wear the generic stand-in", which is a different
         // picture from an empty hand and from a modelled item. Returning
         // `Some(0)` would put a rock in the player's hand instead of a tool.

@@ -529,13 +529,16 @@ fn the_draw_path_picks_the_mesh_off_the_slot() {
             body: Handle::default(),
             leg: Handle::default(),
             anchors: LEG_ANCHORS,
+            material: Handle::default(),
+            leg_material: Handle::default(),
         },
         wolf: SpeciesAssets {
             body: Handle::default(),
             leg: Handle::default(),
             anchors: WOLF_LEG_ANCHORS,
+            material: Handle::default(),
+            leg_material: Handle::default(),
         },
-        material: Handle::default(),
     };
     let mut seen_wolf = 0;
     let mut seen_pig = 0;
