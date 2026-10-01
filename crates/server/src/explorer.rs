@@ -3436,6 +3436,9 @@ impl Survivor {
             ),
             Ward::Done => {
                 if self.outbox.is_none() {
+                    if self.defend_job.gave_up() {
+                        self.defend_failed = Some(tick);
+                    }
                     if let Some(a) = self.goal.as_mut() {
                         a.gained = a.gained.saturating_add(self.defend_job.mended);
                     }

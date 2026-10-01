@@ -288,6 +288,13 @@ impl DefendJob {
         }
     }
 
+    /// Something damaged was let be this defence (no spot the key takes it
+    /// from, no answer, a refusal): it is not called home again for it at
+    /// once.
+    pub fn gave_up(&self) -> bool {
+        self.skipped.iter().any(Option::is_some)
+    }
+
     /// A build refusal: a repair's, while one is in flight.
     pub fn on_refused(&mut self, reason: u8) {
         if self.sent.is_some() {
